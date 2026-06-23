@@ -1,0 +1,10 @@
+{
+  "_comment": "Copy to settings.local.json (gitignored). Holds machine-local permissions/env. The committed settings.json wires the hooks; keep local-only tweaks here.",
+  "permissions": {
+    "allow": [
+      "Bash(uv run:*)",
+      "Bash(bash setup.sh)",
+      "Bash(bash scripts/generate-baseline.sh)"
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+# Keep shell scripts LF so bash hooks run on every platform (CRLF breaks them).
+*.sh text eol=lf
+# Normalize everything else by default.
+* text=auto

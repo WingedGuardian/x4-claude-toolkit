@@ -1,0 +1,41 @@
+# --- Local / machine-specific settings (may contain local paths) ---
+.claude/settings.local.json
+
+# --- Runtime backups (generated as Claude edits files) ---
+.claude/backups/
+
+# ============================================================
+# NEVER COMMIT EGOSOFT GAME DATA (copyright) — these are the
+# unpacked base game / DLC and packed archives. Redistributing
+# them violates Egosoft's terms and will get the repo removed.
+# ============================================================
+reference/
+extensions/
+*.cat
+*.dat
+*.sig
+lang.dat
+X4.exe
+
+# --- Never commit saves / profile / logs ---
+save/
+*.xml.gz
+debug.txt
+content.xml
+config.xml
+
+# --- Python (x4validate) ---
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Node ---
+node_modules/
+
+# --- OS noise ---
+Thumbs.db
+Desktop.ini
+.DS_Store
