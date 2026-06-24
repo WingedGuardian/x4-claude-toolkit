@@ -71,15 +71,18 @@ It also ships **`x4modlist`** (mod-registry triage via the Nexus API) and an **X
 Subscribe to Claude (Pro/Max), then install the desktop app from [claude.ai/code](https://claude.ai/code),
 or the CLI: install [Node.js](https://nodejs.org/) and run `npm install -g @anthropic-ai/claude-code`.
 
-### 2. Get the toolkit
-Clone it next to your other projects (it lives **outside** your game install):
-```
-git clone https://github.com/WingedGuardian/x4-claude-toolkit.git
-cd x4-claude-toolkit
-```
+### 2. Get the toolkit into your X4 folder
+Download the latest release zip (from [Releases](https://github.com/WingedGuardian/x4-claude-toolkit/releases)
+or Nexus) and **extract it into your X4: Foundations game folder** — the one containing
+`01.cat` … `09.cat`. In Steam: right-click X4: Foundations → Properties → Installed Files →
+Browse. Nothing is overwritten; the toolkit files blend in alongside the game, and the safety
+hooks anchor on that folder.
 
-### 3. Open Claude Code in the toolkit folder and paste the setup prompt
-Open Claude Code with this folder as the working directory, then paste the contents of
+> Contributing or just reading the source? Clone it standalone instead:
+> `git clone https://github.com/WingedGuardian/x4-claude-toolkit.git`
+
+### 3. Open Claude Code in your X4 folder and paste the setup prompt
+Open Claude Code with your X4 game folder as the working directory, then paste the contents of
 `SETUP_PROMPT.txt`. Claude runs `bash setup.sh`, checks prerequisites (jq, uv/Python 3.13),
 wires up x4validate, and walks you through unpacking your own `reference\` and (optionally)
 adding your Nexus API key. Answer any questions it asks.
