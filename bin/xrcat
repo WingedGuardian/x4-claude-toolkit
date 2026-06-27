@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Cross-platform wrapper for Egosoft's XRCatTool (X4 .cat/.dat pack/unpack).
+#
+#   Windows (Git Bash / MSYS / Cygwin): calls XRCatTool.exe directly (native paths).
+#   Linux / macOS:                      runs it through Wine and translates every
+#                                       absolute unix path argument to a Wine path
+#                                       (Z:\...), because XRCatTool reads a leading
+#                                       "/" as a switch and would choke on unix paths.
+#
+# Configure the tool location via $XRCATTOOL (see .claude/x4-paths.env).
+set -uo pipefail
+
+XRCATTOOL="${XRCATTOOL:-XRCatTool.exe}"
+
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*|Windows*)            # Windows shells: run the exe as-is
+    exec "$XRCATTOOL" "$@"
+    ;;
+  *)                                        # Linux / macOS: Wine + path translation
+    command -v wine >/dev/null 2>&1 || { echo "xrcat: 'wine' not found (needed to run XRCatTool on this OS)" >&2; exit 1; }
+    [ -f "$XRCATTOOL" ] || { echo "xrcat: XRCatTool not found at: $XRCATTOOL (set \$XRCATTOOL)" >&2; exit 1; }
+    args=()
+    for a in "$@"; do
+      if [[ "$a" == /* ]]; then
+        args+=( "$(winepath -w "$a" 2>/dev/null || echo "$a")" )
+      else
+        args+=( "$a" )
+      fi
+    done
+    WINEDEBUG="${WINEDEBUG:--all}" exec wine "$XRCATTOOL" "${args[@]}"
+    ;;
+esac

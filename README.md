@@ -88,9 +88,39 @@ wires up x4validate, and walks you through unpacking your own `reference\` and (
 adding your Nexus API key. Answer any questions it asks.
 
 ### Prerequisites it will check for
-- **jq** — `winget install jqlang.jq`
+- **jq** — Windows `winget install jqlang.jq` · Linux `sudo pacman -S jq` / `apt install jq` · macOS `brew install jq`
 - **uv** (+ Python 3.13) — for x4validate (https://docs.astral.sh/uv/)
-- **XRCatTool** (from Egosoft) — to unpack your own game to `reference\`
+- **XRCatTool** (from Egosoft) — to unpack your own game to `reference/` (run via `bin/xrcat`)
+- **Wine** — only on **Linux/macOS**, to run XRCatTool (a Windows `.exe`)
+
+### Platform support
+Runs on **Linux, macOS, and Windows (Git Bash)**. All locations are configurable via
+`.claude/x4-paths.env` (no hardcoded OS paths); the hooks accept both `/` and `\` styles.
+On Linux/macOS, XRCatTool is invoked through Wine automatically by `bin/xrcat`.
+
+### Install methods (`install.sh` / `install.ps1`)
+One guided installer, three layouts — pick what fits. Every path is auto-detected where
+possible and overridable (`--game`, `--profile`, `--toolkit`, `--mods`, `--reference`,
+`--extensions`, `--xrcattool`; `--unpack` to build `reference/` immediately; `--yes` non-interactive).
+The chosen paths are written to `<toolkit>/.claude/x4-paths.env`.
+
+| Method | What it does | When to use |
+|--------|--------------|-------------|
+| **in-game** | Copies the toolkit into your X4 game folder (the original model). | One game, one workspace. |
+| **separate** | Toolkit lives in its own folder, pointed at the game via config. | Keep the game folder clean. |
+| **global** | Installs the skills/agents into `~/.claude` and writes the `X4_*` paths into your global Claude settings. | **Several mod repos** — the skills/validator then work from any of them. |
+
+```bash
+# Linux / macOS / Windows (Git Bash)
+bash install.sh --method separate --game "/path/to/X4 Foundations" --unpack
+bash install.sh --method global            # multi-repo: skills+paths into ~/.claude
+```
+```powershell
+# Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -File install.ps1 -Method global
+```
+> Windows note: the hooks/scripts are bash, so running the toolkit needs **Git Bash**
+> (the PowerShell installer just does the setup).
 
 ---
 

@@ -1,5 +1,7 @@
 # --- Local / machine-specific settings (may contain local paths) ---
 .claude/settings.local.json
+.claude/x4-paths.env
+.claude/.reference-buildid
 
 # --- Runtime backups (generated as Claude edits files) ---
 .claude/backups/
