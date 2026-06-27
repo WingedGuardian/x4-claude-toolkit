@@ -44,7 +44,7 @@ inter-mod load order is undocumented.
 - `x4validate/_xpath.py` — lxml XPath wrapper (genuine no-match vs invalid-expr).
 - `x4validate/_refs.py` — reference graph, dangling-ref detection, completeness.
 - `x4validate/_check.py` — orchestration + t-file union; `_cli.py` — CLI.
-- `tests/` — `uv run --with pytest pytest` (26 tests, incl. the x4cat spike cases).
+- `tests/` — `uv run --with pytest pytest` (incl. the x4cat spike cases).
 
 ## Extending
 Add reference types by extending the catalog in `_refs.py`; add completeness

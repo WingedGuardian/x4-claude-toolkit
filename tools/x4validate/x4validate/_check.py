@@ -357,6 +357,35 @@ def check_xsd(mod_dir: Path, config: _merge.Config, report: Report) -> None:
         report.add("info", "xsd-strict", f.message, _relpath(f.file, mod_dir), f.line)
 
 
+def reference_ready(config: _merge.Config, report: Report) -> bool:
+    """Guard: the reference tree must actually be loaded.
+
+    Without it EVERY check degrades to a meaningless pass -- a sel matches
+    nothing because there is nothing there, refs dangle against an empty
+    catalog, completeness has no analogue. The tool's whole reason to exist
+    (catch the silent no-op) would itself silently no-op and report 'OK'.
+    So fail loud and non-zero instead of falsely passing.
+
+    `libraries/wares.xml` is always present in the base game, so if it cannot
+    be resolved the reference tree is missing or empty.
+    """
+    ref = config.reference
+    if not ref.is_dir():
+        report.add("error", "reference",
+                   f"reference tree not found at '{ref}' -- unpack the base game first "
+                   "($X4_REFERENCE / --reference). Validation is meaningless without it.",
+                   str(ref))
+        return False
+    if _merge.build_effective(WARES_FILE, config).tree is None:
+        report.add("error", "reference",
+                   f"reference tree at '{ref}' is empty or incomplete "
+                   f"(base '{WARES_FILE}' not found) -- re-unpack the base game; "
+                   "results are meaningless without a real reference tree.",
+                   str(ref))
+        return False
+    return True
+
+
 def validate(
     mod_dir: Path,
     config: _merge.Config | None = None,
@@ -367,6 +396,8 @@ def validate(
 ) -> Report:
     config = config or _merge.Config()
     report = Report()
+    if not reference_ready(config, report):
+        return report  # empty/missing reference -> a clean run would be a false 'OK'
     if only_file is not None:
         # Fast path for the per-edit hook: sel-resolution for one file only.
         check_sel_resolution_one(Path(only_file), mod_dir, config, report)

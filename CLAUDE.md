@@ -12,15 +12,17 @@ cross-file work and catch the silent-failure bugs before an in-game test cycle i
 
 ## Key Paths (personalize during setup)
 
-X4 modding spans a few locations. Configure these for your install — `setup.sh` and the
-environment variables below personalize them; nothing here hardcodes a user path.
+The toolkit/project root (`$CLAUDE_PROJECT_DIR` — wherever you put this folder) holds the
+working dirs `reference\`, `dev\`, `dist\`, and `tools\`. The safety hooks anchor on it, so
+nothing here hardcodes a user path — `setup.sh` and the environment variables below personalize
+the rest.
 
 | Location | What |
 |----------|------|
 | Game root | your Steam/GOG `X4 Foundations\` folder (holds `01.cat`–`09.cat`, `extensions\`) |
 | Base game archives | `{game root}\01.cat` … `09.cat` (+ DLC under `extensions\ego_dlc_*`) |
-| **Reference (read-only)** | a local `reference\` you unpack from your OWN game with XRCatTool (`X4_REFERENCE`) |
-| Mod dev workspace | wherever you author mods, one folder per mod (`dev\{mod_name}\`) |
+| **Reference (read-only)** | `{project root}\reference\`, unpacked from your OWN game with XRCatTool (`X4_REFERENCE`) |
+| Mod dev workspace | `{project root}\dev\{mod_name}\`, one folder per mod |
 | User profile | `Documents\Egosoft\X4\<profile-id>\` — the active one has the newest `debug.txt`/saves |
 | Active mod list | `{user profile}\content.xml` |
 | Testing (in-game) | `{user profile}\extensions\{mod_name}\` |
@@ -98,7 +100,9 @@ For any bulk XML operation (mass stat changes, adding content to many files):
 ### Hard blocked
 - Writing to `reference\` (read-only base game data, ever)
 - Directly writing `.cat` / `.dat` files (use XRCatTool)
-- Writing game installation files outside `.claude\`
+
+These are anchored on the project root (`$CLAUDE_PROJECT_DIR`); `.claude\`, `dev\`, `dist\`,
+and `tools\` under it are recognized as the editable workspace.
 
 ### Requires confirmation
 - Edits to any `content.xml` (mod manifests)
