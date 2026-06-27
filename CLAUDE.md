@@ -28,6 +28,18 @@ environment variables below personalize them; nothing here hardcodes a user path
 > **Never redistribute Egosoft game data.** `reference\` is unpacked from your own copy and
 > is gitignored. The toolkit ships no `.cat`/`.dat`/XML game content.
 
+### Cross-platform & configurable paths
+Works on **Linux, macOS, and Windows (Git Bash)**. None of the paths above are hardcoded — they
+are read from `.claude/x4-paths.env` (copy from `.claude/x4-paths.env.example`) or matching env
+vars, in this order: **env var > `x4-paths.env` > default**. The hooks normalize `\` vs `/` and
+case, so either path style works. Keys: `X4_TOOLKIT`, `X4_GAME`, `X4_REFERENCE`, `X4_PROFILE`,
+`X4_DEBUGLOG`, `X4_MODS`, `X4_EXTENSIONS`, `XRCATTOOL`, `X4_APPMANIFEST`, `X4_NEXUS_KEY`.
+- **XRCatTool runs through `bin/xrcat`** — directly on Windows, via **Wine** on Linux/macOS (it
+  translates unix paths to `Z:\` so a leading `/` isn't read as a switch). `bin/unpack-reference.sh`
+  unpacks base+DLC (text-only) into `reference/`.
+- **Install methods** (`install.sh` / `install.ps1`): in the game folder, in a separate dir, or
+  globally across multiple mod repos. See README.
+
 ## Bundled Tools
 
 | Tool | Purpose |
