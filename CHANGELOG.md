@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.1
+
+Bug fixes from a cold-start install red-team (a no-context agent following only the shipped
+docs), which surfaced gaps invisible from the inside.
+
+### Fixed
+- **`x4validate` no longer false-passes when the reference tree is missing or empty.** It used
+  to report `OK: no issues found` (exit 0) even on a `sel=` that matched nothing, because there
+  was nothing to match against — the exact silent-no-op the tool exists to catch, in the tool
+  itself. It now errors and exits non-zero until a real `reference\` is present. (+ regression
+  tests.)
+- **`protect-files` hook now actually fires.** The game-install block used a PCRE lookahead
+  invalid under `grep -E`, so it never triggered; path matching was also tied to one personal
+  workspace layout. Reworked to anchor on `$CLAUDE_PROJECT_DIR`, so the `reference\` read-only
+  block and the workspace whitelist work at any install location.
+
+### Changed
+- `CLAUDE.md` reconciled to the "workspace under the project root" layout and to the
+  protections that actually exist; removed a hardcoded x4validate test count from docs.
+
 ## v1.0
 
 Initial release. An AI-assisted X4: Foundations modding environment for Claude Code,
