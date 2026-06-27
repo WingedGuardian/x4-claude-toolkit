@@ -297,6 +297,96 @@ live in the ship COMPONENT and are ship-specific/inconsistent.
 
 ---
 
+## MD ↔ Lua, FFI & UI — Field-Tested Patterns
+
+Hard-won patterns from building MD+Lua mods (logistics/UI). Engine facts, not mod-specific.
+
+### MD ↔ Lua bridge
+- **MD → Lua:** `<raise_lua_event>` / `AddUITriggeredEvent("NS","Name")`; Lua listens via
+  `RegisterEvent("NS.Name", handler)`. Pass data through the player blackboard
+  (`SetNPCBlackboard(pid,"$Var",table)` / `GetNPCBlackboard`).
+- **Nested blackboard table keys: write them WITHOUT the `$` prefix.** The bridge adds `$`
+  when MD reads. WRONG `{ ["$ware"]=w }` → MD `$req.$ware` looks up `$$ware` → **null**
+  (symptom in the log: `Property lookup failed: ware.{null}`). RIGHT `{ ware=w }`.
+- **Lua reading MD-written keys** usually sees them WITHOUT `$` (`entry.field`) — read both
+  forms defensively: `entry["$field"] or entry.field`.
+- **Why split MD/Lua:** MD can READ ware/economy info but CANNOT set buy/sell limits, trade
+  rules, or storage allocation — those are engine-only, exposed through the Lua FFI. Pattern:
+  MD computes values → writes to `player.entity` blackboard → raises an event → Lua reads +
+  writes via FFI.
+
+### FFI from UI-Lua (container limits / trade rules / storage)
+- `SetContainerStockLimitOverride` / `Clear…` / `SetContainerBuyLimitOverride` /
+  `SetContainerSellLimitOverride` / `SetContainerTradeRule` **DO work in the UI-Lua context**
+  (files loaded from `ui.xml`, including `RegisterEvent` handlers fired by MD via
+  `AddUITriggeredEvent`) — they are not sandboxed away there.
+- `HasContainerStockLimitOverride`: the **raw `C.` (FFI cdef) variant can return `false` even
+  when an override exists** — call the **global** function; keep `C.` only as a fallback.
+- `GetWareProductionLimit(id64, ware)` (global, not in cdef) gives the effective storage limit
+  (override OR auto); `C.GetContainerStockLimit` often returns 0.
+- `GetContainerWareConsumption(id, ware, ignorestate=true)` — `ignorestate=true` is REQUIRED,
+  or it returns 0 for inactive modules.
+- **Robustness:** wrap each state-changing FFI call in its own `pcall` (one failure shouldn't
+  skip the rest); avoid full-station rescans in a single callback (crash risk) — update
+  incrementally and cache. **Log a read-back** to confirm a write actually took effect; a
+  `pcall`-true-but-engine-no-op "phantom success" is otherwise invisible.
+
+### Lua gotcha
+- **`a and nil or b` ALWAYS yields `b`** (`a and nil` → `nil`). Never use `x and nil or y` for
+  a toggle; use an explicit `if`.
+
+### MD persistence (save/load)
+- **Vars on a SHIP component (`$ship.$var`) do NOT reliably persist** across save/load. Vars on
+  the **NPC/pilot** component and on **`player.entity`** DO. The durable store is a
+  `player.entity.$saved_*` **flat list of component refs**, rebuilt in your `Init` cue on load.
+- **Writing the list isn't enough — signal your save cue after mutating it** (do it inside the
+  core set/remove cue, not in each caller), or it serializes empty: live state looks correct
+  but vanishes on every reload.
+- **Live counts flicker:** values derived each scan from the `commander`/subordinate chain drop
+  out transiently after `cancel_all_orders` (e.g. mass reassignment) breaks the chain — keep a
+  sticky ship→owner cache as a fallback for when the chain is momentarily unresolvable.
+
+### Engine XML / script syntax traps (seen as real `[=ERROR=]` lines)
+- **`@` cannot be combined with `?`** — `@$obj.$x?` is a parse error. Use `$obj.$x?` (exists
+  test) OR `@$obj.$x` (safe read), not both.
+- **`.keys.list.count` is wrong → `.keys.count`.**
+- In diff XPath, `//` matches ANY descendant; in complex cue trees prefer the fully-qualified
+  `[@name='X']/child` to avoid matching the wrong node.
+
+### kuertee UI Extensions — station-info tab (a common UI dependency)
+- Register via `info_sub_menu_to_show` / `info_sub_menu_is_valid_for` / `info_sub_menu_create`
+  (`menu.registerCallback`, MapMenu).
+- **13-column limit** in the tab strip: count `config.infoCategories` before inserting; at ≥13,
+  don't insert (the info page fails validation and crashes).
+- **Return `is_valid_for` true for ALL player-owned stations**, not just one subtype — otherwise
+  switching stations invalidates the active tab and the info window "disappears"; handle content
+  special-cases with a hint text inside `create`.
+- **Tab-nav scaffolding:** finish with `menu.createOrdersMenuHeader(frame, infoBorder, instance)`
+  (v9) or `(frame, instance)` (older — test via `pcall`), plus `addConnection` on the header/info
+  tables and positioning `tableInfo.properties.y`. Omit it and the tab bar vanishes.
+- **Tables:** `addTable` with `backgroundColor = Color["container_subsection_background"]`,
+  `backgroundID="solid"`, `backgroundPadding=0`, and an explicit `width` — else the background
+  renders wrong and columns overflow ("column width exceeds max table width"). Narrow columns as
+  fixed px (`setColWidth(i,px,false)`); exactly one flexible column via `setColWidthMinPercent`.
+- **Interactive cells need real widgets** (`createButton`/`createCheckBox`); clicks don't fire on
+  `createText`. Give interactive rows a string id so selection survives `refreshInfoFrame()`.
+- **Sliders:** track the value in `onSliderCellChanged`, commit+refresh in
+  `onSliderCellDeactivated`; `onSliderCellConfirm` doesn't fire reliably on drag-release.
+
+### Station storage allocation (when scripting stock-limit overrides)
+- Never set a ware's override **below its current stock** (it would show >100% / not fit):
+  `units = max(computed, stock)`.
+- A "max share per ware" cap fits container storage; solid/liquid behave better with fixed
+  per-ware caps because the engine splits the physical space (else stores with few wares never
+  reach 100%).
+- Reserve large headroom only for wares actually **consumed** (`consumption > 0`); give
+  surplus/products just current stock plus a small margin.
+
+### Debug
+- The debug log is **overwritten each game session** — copy it promptly after a test. Tag your
+  own log lines with a short prefix so they're greppable. A mod that loads without crashing is
+  not necessarily correct — watch for silent reference failures.
+
 ## Hook Candidates
 
 *Proposed protections — implement when patterns emerge.*
