@@ -127,6 +127,45 @@ Usage: `cd tools\x4validate && uv run x4validate <dev\mod>` (`--json` for machin
 **Limits:** reference catalog = ware + macro + text (extend in `_refs.py`); completeness
 recipes = ware/ship/module. A clean run is necessary, not sufficient — still test in-game.
 
+### x4modlist (bundled — mod-registry triage, Nexus API-first)
+
+Location: `tools\x4validate\` (same package as x4validate, run via `uv`). Ingests, tracks, and
+triages the installed modlist against upstream Nexus/Steam metadata.
+
+**Design principle — installed-folder scan is PRIMARY, `content.xml` is secondary.**
+`content.xml`'s enabled-list can (and does, over time) diverge badly from what's actually on
+disk — see "content.xml ≠ what's installed" above. A registry tool built the other way around
+(content.xml as the source of truth, folder scan as an afterthought) will confidently report
+mods as installed/active that aren't, and miss mods that are. `x4modlist ingest` scans the real
+extension folders (game-root `extensions\`, profile `extensions\`, Steam Workshop
+`content\392160\`) first and treats that as authoritative; the profile `content.xml` is ingested
+as a secondary backfill pass so nothing tracked historically is silently lost, surfaced in its
+own "not currently installed" view rather than counted as active. **Apply this principle to any
+new tool that answers "what's actually running" — prefer scanning live state over trusting a
+manifest/index that can silently drift from it.**
+
+**Identity resolution — a mod's own manifest name beats a humanized folder/id guess.** Each
+extension folder's `content.xml` carries the mod's real `name` attribute, which is far more
+reliable for matching against a Nexus search than reconstructing a guess from the folder name or
+content-id (camelCase/underscore splitting). Common naming patterns that need stripping before
+searching: an author-prefix like `"kuertee: Ship scanner"` → `"Ship scanner"`, and a trailing
+qualifier like `"X - Divinity Edition"` or `"X VRO"` → `"X"`. **Nexus search can return a
+wrong/deprecated/adoption-patch fork as the top hit** — always surface the candidate list for a
+human spot-check rather than auto-trusting rank #1.
+
+**The custom-local classification lane.** A mod whose upstream Nexus status is
+`removed`/`hidden` isn't automatically "abandoned, drop it" — if the user has marked it
+`custom_edited` (they maintain their own local fork/port, e.g. because the author is mid-update
+or vanished but the user still wants the mod), classify it as its own distinct lane instead of
+lumping it in with genuinely-dead mods. Silently treating "unavailable upstream" the same as
+"abandon this" is actively wrong guidance for a mod the user is deliberately still maintaining.
+
+**Never auto-decide keep/drop/junk from a name or category alone** (e.g. "this mod's folder name
+contains 'cheat'") — only classify/ignore a specific mod when the user names it, or when the
+evidence is about that specific mod (e.g. the API reports `status=removed` for that id). A
+shared keyword is at most a reason to flag several mods together for the user's attention, never
+a verdict on its own.
+
 ### Other tools
 - **X4-XMLDiffAndPatch** — generate/apply diff patches (schema-shape only; pair with x4validate).
 - **X4_Customizer** (github.com/bvbohnen/X4_Customizer) — Python framework for bulk stat edits.
@@ -144,8 +183,8 @@ everything. When unpacking reference, unpack in order so later files overwrite e
 Reproducing the game's *effective* XML for a file = base + DLC + enabled-mod overlays.
 - **Base files are full documents.** Overlays use a strategy decided by **root element**, not folder:
   - root `<diff>` → apply ops to the prior tree (DLC `libraries/*.xml` are diffs).
-  - non-`<diff>` root → **full-file override** for most files, BUT `t/` language files and `index/` files are **additively UNIONED**.
-- **`index/macros.xml` and `index/components.xml` are UNIONED** across base + every DLC + every mod. A macro "exists" if its name appears in the merged index. Mods register new ship/module macros via `<add sel="/index">`.
+  - non-`<diff>` root → **full-file override** for most files, BUT `libraries/`, `index/`, and `t/` files are **additively UNIONED** — every DLC ships its own full `libraries/ships.xml`, `libraries/wares.xml`, etc., and the engine merges their entries with the base rather than replacing it.
+- **`libraries/*.xml`, `index/macros.xml`, `index/components.xml` are UNIONED** across base + every DLC + every mod, deduped by `@id`/`@name` (later source wins on a collision). A ship/ware/macro "exists" if its id appears anywhere in the merged set. Treating these as full-file overrides instead of a union is a real bug class: it silently clobbers the base game's entries out of the effective tree, producing phantom "sel matched nothing" errors for any mod patching a base-game entry in one of these files. Mods register new ship/module macros via `<add sel="/index">`.
 - **Diff ops** (`reference\libraries\diff.xsd`): `add` (attrs `sel`, optional `pos`=before|after|prepend [default append], `type`, `if`, `silent`), `replace` (`sel` incl. `/@attr`, `if`, `silent`), `remove` (`sel`, `if`, `silent`). `if=` is evaluated against the *current* merged state; a false `if` silently skips. `silent="true"` makes a non-matching `sel` non-fatal. Diffs apply sequentially.
 - **Load order is NOT encoded in `content.xml`** (only `id` + `enabled`). Tiering: base → DLC → enabled mods. **Inter-mod order is undocumented** — confirm empirically (dump the merged XML) for bit-exact multi-mod fidelity.
 

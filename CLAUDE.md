@@ -35,7 +35,7 @@ the rest.
 | Tool | Purpose |
 |------|---------|
 | **x4validate** ⭐ | Cross-file validator (`tools\x4validate\`, lxml). Checks every diff `sel=` resolves against the real base+DLC merged tree, that ware/macro/`{page,t}` references resolve, and completeness of new content vs a vanilla analogue. **Run on every mod before deploying.** `cd tools\x4validate && uv run x4validate <dev\mod>` |
-| **x4modlist** | Mod-registry triage via the Nexus API (version/status/changelog). `uv run x4modlist <cmd>` |
+| **x4modlist** | Mod-registry triage via the Nexus API (version/status/changelog). Scans the ACTUALLY INSTALLED extension folders as the primary source of truth (content.xml is a secondary cross-check only). `uv run x4modlist <cmd>` |
 | **XRCatTool** (Egosoft) | Unpack base game CAT/DAT → `reference\`; pack `dev\` → distributable CAT/DAT. You supply this. |
 
 ## Mod Structure

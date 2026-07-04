@@ -2,7 +2,7 @@
 
 from lxml import etree
 
-from x4validate import _merge
+from x4validate import _merge, _resolve
 
 
 def _wares():
@@ -108,11 +108,56 @@ def test_build_effective_dlc_diff_and_mod(tmp_path):
     assert with_mod.tree.xpath("//ware[@id='ore']/@price_average") == ["999"]
 
 
-def test_full_file_override(tmp_path):
+def test_full_file_override_asset(tmp_path):
+    # Asset files (outside libraries/index/t) keep full-override semantics.
     ref = tmp_path / "reference"
-    _write(ref / "index/macros.xml", '<index><entry name="a"/></index>')
-    _write(ref / "extensions/ego_dlc_x/index/macros.xml",
-           '<index><entry name="b"/></index>')  # full file, not a diff
+    _write(ref / "assets/props/x/macros/bar_macro.xml", '<macros><macro name="a"/></macros>')
+    _write(ref / "extensions/ego_dlc_x/assets/props/x/macros/bar_macro.xml",
+           '<macros><macro name="b"/></macros>')  # full file, not a diff
     cfg = _merge.Config(reference=ref)
-    merged = _merge.build_effective("index/macros.xml", cfg)
-    assert merged.tree.xpath("//entry/@name") == ["b"]  # DLC fully overrode base
+    merged = _merge.build_effective("assets/props/x/macros/bar_macro.xml", cfg)
+    assert merged.tree.xpath("//macro/@name") == ["b"]  # DLC fully overrode base
+
+
+def test_full_file_registry_union(tmp_path):
+    # Shared-registry files (libraries/, index/, t/) UNION entries — base must NOT be
+    # clobbered by a DLC's full file. This is the clobber-bug regression test.
+    ref = tmp_path / "reference"
+    _write(ref / "libraries/ships.xml", '<ships><ship id="base_ship"/></ships>')
+    _write(ref / "extensions/ego_dlc_x/libraries/ships.xml",
+           '<ships><ship id="dlc_ship"/></ships>')  # full file, not a diff
+    cfg = _merge.Config(reference=ref)
+    merged = _merge.build_effective("libraries/ships.xml", cfg)
+    assert set(merged.tree.xpath("//ship/@id")) == {"base_ship", "dlc_ship"}
+    assert "ego_dlc_x:union" in merged.sources
+
+
+def test_full_file_registry_union_same_id_overrides(tmp_path):
+    # Same id across base + overlay -> later-overlay-wins (replaced, not duplicated).
+    ref = tmp_path / "reference"
+    _write(ref / "libraries/ships.xml", '<ships><ship id="dup" hull="1"/></ships>')
+    _write(ref / "extensions/ego_dlc_x/libraries/ships.xml",
+           '<ships><ship id="dup" hull="2"/></ships>')
+    cfg = _merge.Config(reference=ref)
+    merged = _merge.build_effective("libraries/ships.xml", cfg)
+    assert merged.tree.xpath("//ship[@id='dup']/@hull") == ["2"]
+    assert len(merged.tree.xpath("//ship[@id='dup']")) == 1
+
+
+def test_textfile_synthetic_language_base(tmp_path):
+    # t/0001.xml has no single base file in reference (real base t-files are
+    # 0001-lNNN.xml); build_effective synthesizes a <language> root so a mod's
+    # <add sel="/language"> resolves instead of "no base game file".
+    cfg = _merge.Config(reference=tmp_path / "reference")
+    merged = _merge.build_effective("t/0001.xml", cfg)
+    assert merged.tree is not None and merged.tree.tag == "language"
+
+
+def test_strip_mod_index_prefix():
+    # Mod index values are written game-root-relative (extensions/<mod>/...) but
+    # resolve relative to the mod root here -> the prefix must be stripped, else
+    # the path doubles into a spurious 'file missing'.
+    assert _resolve._strip_mod_index_prefix(
+        r"extensions\mymod\assets\props\x_macro") == "assets/props/x_macro"
+    # No prefix -> unchanged (mod-relative style).
+    assert _resolve._strip_mod_index_prefix(r"assets\props\x_macro") == r"assets\props\x_macro"

@@ -27,10 +27,18 @@ def _dash_path(reg_path) -> Path:
     return Path(base).parent / "WORKLIST.md"
 
 
-def _classify(meta: "_nexus.ModMeta", today: date) -> tuple[str, str]:
+def _classify(meta: "_nexus.ModMeta", today: date, is_custom: bool = False) -> tuple[str, str]:
     """(classification, settled) from API truth only. 9.0-readiness is NOT in the
-    API, so post-9.0-update is a *proxy*; pre-9.0 mods are 'predates-9.0/review'."""
-    if meta.status in ("removed", "hidden"):  # both = unavailable for download
+    API, so post-9.0-update is a *proxy*; pre-9.0 mods are 'predates-9.0/review'.
+
+    removed/hidden means "unavailable to DOWNLOAD from Nexus" — for a mod the user
+    is NOT custom-editing that's a real drop (abandoned/pulled). But if the mod is
+    marked custom_edited (a locally-maintained fork, e.g. an author who hid their
+    page mid-update while we keep porting our own copy), "drop" is actively wrong
+    guidance — surface it as its own lane instead."""
+    if meta.status in ("removed", "hidden"):
+        if is_custom:
+            return "custom-local", "n/a — upstream unavailable, local fork maintained"
         return "drop", "unavailable"
     try:
         upd = date.fromisoformat(meta.updated)
@@ -51,30 +59,71 @@ def _humanize(content_id: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def _strip_author_label(name: str) -> str:
+    """Manifest names often prefix the real title with an author/category label,
+    e.g. 'kuertee: Ship scanner' or 'kuertee UI: Boarding operation notifications'
+    -> 'Ship scanner' / 'Boarding operation notifications' (the label usually
+    isn't in the Nexus mod title)."""
+    if ":" in name:
+        prefix, rest = name.split(":", 1)
+        if len(prefix.split()) <= 3 and rest.strip():
+            return rest.strip()
+    return name.strip()
+
+
+def _manifest_name_variants(name: str) -> list[str]:
+    """Progressive fallback variants for a manifest title, most-specific first:
+    full name -> drop a ' - <suffix>' qualifier (e.g. 'Vibrant Engine Plumes -
+    Divinity Edition' -> 'Vibrant Engine Plumes') -> drop a trailing ALL-CAPS
+    qualifier word (e.g. 'Terran Beam Weapons VRO' -> 'Terran Beam Weapons')."""
+    variants = [name]
+    if " - " in name:
+        variants.append(name.split(" - ", 1)[0].strip())
+    words = name.split()
+    if len(words) > 1 and words[-1].isupper() and 2 <= len(words[-1]) <= 5:
+        variants.append(" ".join(words[:-1]))
+    return variants
+
+
+def _search_with_fallback(name_hint: str) -> list[tuple[int, str]]:
+    """Search; if empty and multi-word, retry dropping the leading token (often
+    an author prefix not present in the Nexus title)."""
+    hits = _nexus.search_mods(name_hint, 5)
+    if not hits and " " in name_hint:
+        hits = _nexus.search_mods(name_hint.split(" ", 1)[1], 5)
+    return hits
+
+
 def _resolve_identity(content_id: str, auto) -> int | None:
-    """A3 cascade (API-first): ws_ -> Steam title -> Nexus search; named ->
-    humanized-id -> Nexus search. Auto-match (top hit); flagged for spot-check.
-    Never scrapes Nexus."""
+    """A3 cascade (API-first): ws_ -> Steam title -> Nexus search; named -> prefer
+    the mod's OWN manifest name (`installed_name`, read straight from its
+    content.xml — far more reliable than guessing from the folder/content id) ->
+    else a humanized-id guess -> Nexus search, with an author-prefix-drop retry.
+    Auto-match (top hit); flagged for spot-check. Never scrapes Nexus."""
     if content_id.startswith("ws_"):
         name_hint = content_id
         t = _nexus.steam_title(content_id)
         if t:
             name_hint = t[0]
             auto["steam_title"] = t[0]
+        candidates = [name_hint]
     else:
-        name_hint = _humanize(content_id)
+        installed_name = auto.get("installed_name")
+        candidates = (_manifest_name_variants(_strip_author_label(installed_name))
+                     if installed_name else []) + [_humanize(content_id)]
+
+    hits, used_hint = [], None
     try:
-        hits = _nexus.search_mods(name_hint, 5)
-        if not hits and " " in name_hint:
-            # The leading token is often an author prefix (kuertee, DeadAir) NOT in
-            # the Nexus title — retry without it.
-            name_hint = name_hint.split(" ", 1)[1]
-            hits = _nexus.search_mods(name_hint, 5)
+        for hint in candidates:
+            hits = _search_with_fallback(hint)
+            if hits:
+                used_hint = hint
+                break
     except _nexus.NexusError:
         return None
     if hits:
         auto["resolve"] = "auto (spot-check)"
-        auto["resolve_hint"] = name_hint
+        auto["resolve_hint"] = used_hint
         # Keep top candidates so the user can spot-check / correct cheaply.
         auto["candidates"] = [f"{mid}:{nm}" for mid, nm in hits[:3]]
         return hits[0][0]
@@ -82,18 +131,31 @@ def _resolve_identity(content_id: str, auto) -> int | None:
 
 
 def cmd_ingest(args) -> int:
+    """Two passes: (1) the profile content.xml — SECONDARY, just backfills a
+    registry row for any historically-tracked id so nothing is silently dropped;
+    (2) the installed-folder scan — PRIMARY, authoritative for installed/enabled/
+    version/name/author. Pass 2 always runs last so it wins."""
     reg_path = Path(args.registry) if args.registry else None
-    content = Path(args.content) if args.content else None
     reg = _registry.load_registry(reg_path)
-    ids = _registry.ingest_content_xml(content)
-    added, existing = _registry.merge(reg, ids, enabled_only=not args.all)
+
+    added = existing = 0
+    if not args.installed_only:
+        content = Path(args.content) if args.content else None
+        ids = _registry.ingest_content_xml(content)
+        added, existing = _registry.merge(reg, ids, enabled_only=not args.all)
+
+    dirs = [Path(d) for d in args.dirs.split(",")] if args.dirs else None
+    installed = _registry.scan_installed(dirs)
+    new, matched, not_installed = _registry.merge_installed(reg, installed)
+
     reg["meta"]["game_build"] = args.build
     reg["meta"]["generated"] = _now()
     _registry.save_registry(reg, reg_path)
     dash = _registry.write_dashboard(reg, _dash_path(reg_path))
-    enabled = sum(1 for m in reg["mods"] if m["auto"].get("enabled"))
-    print(f"ingested {len(ids)} extensions: +{added} new, {existing} existing "
-          f"({enabled} enabled in registry)")
+    print(f"profile content.xml (cross-check): +{added} new, {existing} existing")
+    print(f"installed folders (PRIMARY, {len(installed)} found): "
+          f"+{new} new to registry, {matched} matched prior research, "
+          f"{not_installed} tracked-but-not-installed")
     print(f"registry:  {reg_path or _registry.DEFAULT_REGISTRY}")
     print(f"dashboard: {dash}")
     return 0
@@ -105,9 +167,12 @@ def cmd_refresh(args) -> int:
     today = datetime.now(timezone.utc).date()
     want = set(args.ids.split(",")) if args.ids else None
 
-    mods = [m for m in reg["mods"] if m["auto"].get("enabled")]
     if want:
-        mods = [m for m in mods if m["id"] in want]
+        # Explicit --ids targets a mod regardless of installed status (e.g. to
+        # check an old-modlist mod's upstream status before re-acquiring it).
+        mods = [m for m in reg["mods"] if m["id"] in want]
+    else:
+        mods = [m for m in reg["mods"] if m["auto"].get("installed")]
     if args.seeded:
         mods = [m for m in mods if m["auto"].get("nexus_id")]
     if args.limit:
@@ -137,7 +202,7 @@ def cmd_refresh(args) -> int:
         a["name"], a["version"], a["updated"] = meta.name, meta.version, meta.updated
         a["status"], a["author"] = meta.status, meta.author
         a["checked_at"] = today.isoformat()
-        a["classification"], a["settled"] = _classify(meta, today)
+        a["classification"], a["settled"] = _classify(meta, today, m["human"].get("custom_edited", False))
         fetched += 1
 
     _registry.save_registry(reg, reg_path)
@@ -199,7 +264,7 @@ def cmd_resolve(args) -> int:
     a["name"], a["version"], a["updated"] = meta.name, meta.version, meta.updated
     a["status"], a["author"] = meta.status, meta.author
     a["checked_at"] = today.isoformat()
-    a["classification"], a["settled"] = _classify(meta, today)
+    a["classification"], a["settled"] = _classify(meta, today, m["human"].get("custom_edited", False))
     _registry.save_registry(reg, reg_path)
     _registry.write_dashboard(reg, _dash_path(reg_path))
     print(f"resolved {args.id} -> {args.nexus_id} {meta.name!r} [{a['classification']}]")
@@ -246,10 +311,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--registry", help="path to modlist.yaml (default: dev\\_registry\\modlist.yaml)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    pi = sub.add_parser("ingest", help="ingest profile content.xml into the registry")
-    pi.add_argument("--content", help="path to profile content.xml")
+    pi = sub.add_parser("ingest", help="scan installed extension folders (PRIMARY) into the "
+                        "registry, cross-checked against the profile content.xml")
+    pi.add_argument("--content", help="path to profile content.xml (secondary cross-check)")
+    pi.add_argument("--dirs", help="comma-separated extension dirs to scan "
+                    "(default: game-root extensions\\, profile extensions\\, Steam Workshop)")
+    pi.add_argument("--installed-only", action="store_true", dest="installed_only",
+                    help="skip the profile content.xml cross-check pass entirely")
     pi.add_argument("--build", default="23660954", help="current game build id")
-    pi.add_argument("--all", action="store_true", help="include disabled extensions too")
+    pi.add_argument("--all", action="store_true",
+                    help="content.xml cross-check: include disabled extensions too")
     pi.set_defaults(func=cmd_ingest)
 
     pr = sub.add_parser("refresh", help="refresh upstream metadata via Nexus/Steam API")

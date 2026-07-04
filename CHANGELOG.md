@@ -1,5 +1,41 @@
 # Changelog
 
+## v1.2
+
+Fixes and redesign from continued dogfooding on a real 30+ mod install.
+
+### Fixed
+- **`libraries/*.xml` (ships, wares, loadouts, ...) are now correctly UNIONED**, not
+  full-file-overridden, matching the engine. Every DLC ships its own full `libraries/`
+  files; treating them as full overrides silently clobbered base-game entries out of the
+  effective tree, producing phantom "sel matched nothing" errors for any mod patching a
+  base-game ship/ware/loadout. (`index/` and `t/` were already unioned — `libraries/` is
+  now folded into the same additive-merge path.)
+- **Mod-authored index entries (`index/macros.xml` etc.) no longer double their own
+  path prefix.** Mods conventionally write index values game-root-relative
+  (`extensions\<mod>\assets\...`); resolving that literally against the mod root (which
+  already IS that `extensions\<mod>\` directory) produced a spurious "file missing".
+  The leading `extensions\<mod>\` is now stripped before resolving.
+- **Loadout connection-checking no longer flags `path=".."`/`"."` as a missing
+  connection name.** Vanilla `<groups>` entries use `path=".."` to mean "the ship root,"
+  not a connection — that's not a checkable name.
+
+### Changed — `x4modlist` redesign
+- **Installed-folder scan is now the PRIMARY source of truth**, not the profile
+  `content.xml`. A registry built content.xml-first drifts from reality over time (see
+  "content.xml ≠ what's installed" in KNOWLEDGEBASE.md) — `x4modlist ingest` now scans
+  the real extension folders first and treats that as authoritative; content.xml is
+  ingested as a secondary backfill/cross-check pass so a historically-tracked mod isn't
+  silently lost, surfaced in its own "not currently installed" view instead.
+- **Identity resolution now prefers a mod's own manifest name** over a humanized
+  folder/id guess, with fallbacks for common author-prefix (`"kuertee: X"` → `"X"`) and
+  suffix-qualifier (`"X - Divinity Edition"` / `"X VRO"` → `"X"`) naming patterns —
+  substantially fewer wrong Nexus-search top hits.
+- **New `custom-local` classification lane**: a mod whose upstream Nexus status is
+  `removed`/`hidden` is no longer automatically classified `drop` if the user has
+  marked it `custom_edited` — a locally-maintained fork/port isn't "abandoned" just
+  because the author's page is temporarily unavailable.
+
 ## v1.1
 
 Bug fixes from a cold-start install red-team (a no-context agent following only the shipped

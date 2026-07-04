@@ -1,8 +1,18 @@
 """Reproduce X4's *effective* XML for a virtual path: base + DLC (+ mods).
 
-Per-overlay strategy is decided by the overlay's ROOT ELEMENT, not its folder:
-  - root <diff>      -> apply add/replace/remove ops (honoring pos/if/silent)
-  - any other root   -> full-file override (e.g. index/macros.xml, DLC t-files)
+Per-overlay strategy:
+  - root <diff>                         -> apply add/replace/remove ops (pos/if/silent)
+  - non-diff under a shared-registry
+    dir (libraries/, index/, t/) with
+    the same root tag as the base       -> UNION direct children (dedupe by @id/@name,
+                                           later-overlay-wins) — engine merges these
+  - any other non-diff root             -> full-file override (asset macro/component files)
+
+The union case matters: every DLC ships libraries/ships.xml, character_macros.xml,
+wares.xml, loadouts.xml, ... as full files, and the engine merges their entries with
+the base. Treating them as full-file overrides (the old behavior) clobbered base-game
+ships/macros out of the effective tree, producing phantom "sel matched nothing" errors
+for any mod patching a base entry.
 """
 
 from __future__ import annotations
@@ -169,6 +179,45 @@ def _do_add(targets, op) -> None:
 
 # --- Effective-tree assembly --------------------------------------------------
 
+# Shared-registry dirs whose same-rooted full files the engine MERGES by entry
+# (base + every DLC coexist). Asset files (assets/...) keep full-override semantics.
+_ADDITIVE_DIRS = ("libraries/", "index/", "t/")
+
+
+def _child_key(el: etree._Element) -> tuple[str, str] | None:
+    """Dedupe key for a registry entry: (tag, id|name). None if neither attr."""
+    for attr in ("id", "name"):
+        v = el.get(attr)
+        if v is not None:
+            return (el.tag, f"{attr}={v}")
+    return None
+
+
+def _union_children(tree: etree._Element, overlay: etree._Element) -> None:
+    """Merge *overlay*'s direct children into *tree* in place.
+
+    Dedupe by _child_key with later-overlay-wins (same id/name -> overlay's element
+    replaces the base's); keyless children (e.g. <defaults>, comments) are appended.
+    Correct for BOTH additive registries (distinct ids coexist) and a same-vpath
+    single-file override (same id/name -> replaced)."""
+    index: dict[tuple[str, str], etree._Element] = {}
+    for child in tree:
+        if isinstance(child.tag, str):
+            key = _child_key(child)
+            if key is not None:
+                index[key] = child
+    for child in overlay:
+        if not isinstance(child.tag, str):  # comments / PIs
+            continue
+        key = _child_key(child)
+        new = copy.deepcopy(child)
+        if key is not None and key in index:
+            tree.replace(index[key], new)
+        else:
+            tree.append(new)
+        if key is not None:
+            index[key] = new
+
 
 def build_effective(
     virtual_path: str,
@@ -204,9 +253,21 @@ def build_effective(
                 continue
             apply_diff(tree, oroot)
             sources.append(f"{odir.name}:diff")
+        elif tree is not None and oroot.tag == tree.tag and vpath.startswith(_ADDITIVE_DIRS):
+            _union_children(tree, oroot)  # shared registry: merge entries, don't clobber
+            base_found = True
+            sources.append(f"{odir.name}:union")
         else:
-            tree = oroot  # full-file override
+            tree = oroot  # full-file override (asset files, or no/other base)
             base_found = True
             sources.append(f"{odir.name}:full")
+
+    # Text files (t/0001.xml, t/0001-lNNN.xml) have no single base file in reference
+    # — the engine overlays them onto the language tree. A mod's t-diff adds <page>s
+    # to /language; synthesize an empty <language> root so /language-targeted ops
+    # resolve (page/string collisions are covered separately by check_text).
+    if tree is None and vpath.startswith("t/") and vpath.endswith(".xml"):
+        tree = etree.Element("language")
+        sources.append("synthetic:language")
 
     return MergeResult(tree=tree, sources=sources, base_found=base_found or tree is not None)

@@ -9,6 +9,9 @@ Powers two v1.1 checks:
 Index `value` is a path WITHOUT `.xml`, backslash-separated, relative to the
 SOURCE ROOT that defined the entry (base/DLC entries -> reference root, since DLC
 values carry the `extensions\\ego_dlc_x\\` prefix; mod entries -> the mod root).
+Mods conventionally write values game-root-relative too (`extensions\\<mod>\\assets\\...`,
+matching the engine), so for mod entries that leading `extensions\\<mod>\\` is stripped
+before resolving against the mod root (else the path doubles -> spurious 'file missing').
 Wildcard entries (`character_*`) are skipped — they're patterns, not files.
 """
 
@@ -33,6 +36,16 @@ def _index_entries(root: etree._Element):
         yield name, value
 
 
+def _strip_mod_index_prefix(value: str) -> str:
+    """Drop a leading `extensions/<mod>/` from a MOD index value so it resolves
+    relative to the mod root (the engine resolves these game-root-relative; here
+    the mod root already IS that `extensions/<mod>/` dir)."""
+    parts = value.replace("\\", "/").lstrip("/").split("/")
+    if len(parts) > 2 and parts[0].lower() == "extensions":
+        return "/".join(parts[2:])
+    return value
+
+
 def build_index(config: _merge.Config, extra_overlays, index_rel: str) -> dict[str, tuple[Path, str]]:
     """name -> (resolution_root, value). Later sources win (mod over base)."""
     index: dict[str, tuple[Path, str]] = {}
@@ -51,7 +64,7 @@ def build_index(config: _merge.Config, extra_overlays, index_rel: str) -> dict[s
         if f.is_file():
             try:
                 for name, value in _index_entries(_merge.parse_file(f)):
-                    index[name] = (ov, value)
+                    index[name] = (ov, _strip_mod_index_prefix(value))
             except etree.XMLSyntaxError:
                 pass
     return index
@@ -117,7 +130,10 @@ def loadout_targets(loadout_el: etree._Element) -> list[tuple[str, int]]:
     for el in loadout_el.xpath(".//*[@path]"):
         path = el.get("path", "")
         conn = path.rsplit("/", 1)[-1]  # strip leading ../ (or any prefix)
-        if conn:
+        # `..`/`.` are the parent/self (ship root), not a named connection — e.g.
+        # <groups> entries use path=".." (vanilla does this 64x). Only a trailing
+        # connection NAME is checkable against the component's connections.
+        if conn and conn not in ("..", "."):
             out.append((conn, el.sourceline or 0))
     return out
 
