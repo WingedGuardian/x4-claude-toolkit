@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.3
+
+New cross-mod interaction suite — the toolkit can now analyze how a mod behaves against your
+installed set, not just validate it in isolation.
+
+### Added
+- **`x4compat`** — detects how installed mods collide over the effective (base+DLC+mods) tree:
+  HARD (two mods replace/remove the same node — one silently loses), UNION-KEY (two mods define
+  the same registry entry id), FULL-OVERRIDE (two full-file overrides of one asset), SOFT (benign
+  coexisting adds). Dispatches by actual merge semantics, not raw file overlap — a shared-registry
+  overlap (`t/`, `libraries/`, `index/`) isn't automatically a conflict. Candidate mode
+  (`check <mod-folder>`) answers "what would collide if I added this?" before installing.
+- **`_cat.py`** — an independent `.cat`/`.dat` reader so PACKED mods are finally visible to the
+  whole toolkit (previously only loose-file mods could be analyzed). MD5-verified, reads both
+  `ext_*` and `subst_*` catalogs, case-insensitive virtual-path lookup. Wired into the merge
+  engine as a loose-over-packed fallback.
+- **`x4xref`** — a who-calls / who-listens / cue cross-index over every MD/aiscript in base+DLC+
+  installed mods. Answers behavioral-interaction questions ("who else touches this event/action")
+  in one query instead of many exploratory greps — the useful tokens for this class of question
+  often share no keyword with the concept you're actually asking about.
+- **`x4stats`** — advisory numeric comparison of a candidate mod's wares/macros against the
+  effective tree's same-group peers (so an installed overhaul's rescaled values are the baseline
+  you're compared against, not vanilla's). Grounds a balance discussion; does not settle one.
+- **`x4similar`** — advisory fuzzy same-ship detection: flags a mod's ship as a probable
+  near-duplicate of one already present under a DIFFERENT id/name (an overhaul's rebalanced
+  reskin, or two mods independently adding "the same" ship). Hard-filtered by ship class+purpose;
+  requires 4+ shared numeric stats to avoid coincidental matches between unrelated small ships.
+- **`/x4-mod-interaction` skill** orchestrating all four tools plus README/Nexus context into a
+  single interaction brief with per-claim confidence — never loads a whole mod's XML into context.
+
 ## v1.2
 
 Fixes and redesign from continued dogfooding on a real 30+ mod install.

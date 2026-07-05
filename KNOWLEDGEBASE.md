@@ -166,6 +166,57 @@ evidence is about that specific mod (e.g. the API reports `status=removed` for t
 shared keyword is at most a reason to flag several mods together for the user's attention, never
 a verdict on its own.
 
+### x4compat / x4xref / x4stats / x4similar (bundled — cross-mod interaction suite)
+
+Location: `tools\x4validate\` (same package, run via `uv`). Built because no published tool does
+node-level cross-mod collision detection, effective-tree diffing, or semantic comparison — the
+closest, x4cat's `check-conflicts`, works on modder source dirs with string-equality sel matching
+(the same `//` false-negative defect this project already rejected in x4cat's `validate-diff`) and
+can't see packed mods.
+
+- **`_cat.py`** — a pure-Python `.cat`/`.dat` reader (independent implementation; format
+  cross-checked byte-for-byte against another implementation on real data). Reads BOTH `ext_*`
+  and `subst_*` catalogs, MD5-verified, XML/XSD members only, **case-insensitive virtual-path
+  lookup** (some mods' catalogs mix path casing for the same logical file). Wired into
+  `_merge.build_effective` via `overlay_root()` (loose-over-packed within a mod) — packed mods are
+  now visible to every tool in the package, not just the ones that unpack first.
+- **`x4compat check <mod>`** (`_compat.py`) — collision classes over the EFFECTIVE tree: **HARD**
+  (≥2 mods replace/remove the same resolved node — later load-order wins, earlier silently dead),
+  **UNION-KEY** (≥2 mods define the same `@id`/`@name` in a shared registry file), **FULL-OVERRIDE**
+  (≥2 non-diff full files at one asset path), **SOFT** (benign same-parent `<add>`s). Dispatches by
+  merge semantics — a shared-registry-dir overlap (`t/`,`libraries/`,`index/`) is NOT automatically
+  a conflict. Excludes per-extension files (e.g. `ui.xml`, loaded once per extension, never
+  overridden across mods) from FULL-OVERRIDE. Candidate mode (`check <mod-folder>`) restricts the
+  report to collisions involving one mod — the "before I add this" question.
+- **`x4xref`** (`_xref.py`) — a who-calls / who-listens / cue cross-index over base+DLC+every
+  installed mod's MD/aiscripts. Behavioral mod interactions (two mods reacting to the same event,
+  one disabling an engine feature another relies on) are invisible to a collision check and painful
+  to trace by grep — the decisive tokens often share no keyword with the user-facing concept.
+  `x4xref who-calls <action>` / `who-listens <event>` / `cue <name>` answer in one query what would
+  otherwise take many exploratory searches. Indexes real action/event/signal tags; skips
+  control-flow and variable-plumbing noise so the index stays about behavior.
+- **`x4stats wares <mod>`** (`_stats.py`) — ADVISORY numeric comparison: a candidate mod's wares
+  against the same-`group` price distribution in the EFFECTIVE tree (so an installed overhaul's
+  rescaled prices are the baseline being compared against, not vanilla's). Grounds a balance
+  discussion — e.g. "this ware sits at the 98th percentile of its group" — it does NOT settle one;
+  same price ≠ same effectiveness, and a mod can be perfectly fine at any percentile. `x4stats
+  macro <file>` flattens one macro's numeric property vector for a manual peer comparison.
+- **`x4similar`** (`_similarity.py`) — ADVISORY fuzzy same-entity detection: a mod adding a ship
+  under its own id/name that's stat-wise a near-duplicate of one already in the effective tree
+  (a different overhaul mod's rescaled reskin, or two mods independently adding "the same" ship).
+  A same-registry-KEY duplicate is x4compat's UNION-KEY job; this catches a DIFFERENT id/name
+  describing the same ship. Hard-filtered by macro `class` (ship_xs/s/m/l/xl) and `purpose.primary`
+  — never compares across ship size or role. Require ≥4 shared numeric stat keys before scoring; 3
+  or fewer produces coincidental high-similarity matches between otherwise-unrelated ships (verified
+  against real data — a combat drone and an unrelated scout ship shared exactly 3 sparse stats and
+  scored a false 100%). Score is a weighted relative-difference metric, not a power model.
+
+**Load order (who wins a collision) is derivable, not documented by Egosoft**: extensions load
+alphabetically by folder, later overrides earlier, with a mod's `content.xml` `<dependency>`
+entries forced to load first (community-reported convention, matches how other X4 tooling models
+it). `x4compat`'s load-order computation is a topological sort on dependency edges with an
+alphabetical tiebreak — state this caveat whenever reporting a "winner."
+
 ### Other tools
 - **X4-XMLDiffAndPatch** — generate/apply diff patches (schema-shape only; pair with x4validate).
 - **X4_Customizer** (github.com/bvbohnen/X4_Customizer) — Python framework for bulk stat edits.
@@ -264,6 +315,40 @@ reset/cancelled cues. **Safe pattern:** use the `@` operator for potentially-inv
   intend to replace all.
 - `/conditions` or `[@name='X']/conditions` matches only the direct child — safer in complex
   cue trees. When in doubt, use the fully-qualified path.
+
+### Player ejection/death is ENGINE-INTERNAL, not an MD cue
+Vanilla emergency-eject is a built-in engine feature ("Automatically eject in an emergency"), NOT
+a script. No MD cue spawns the spacesuit — the engine does, then raises `event_player_ejected`,
+which MD only *observes* (a help-text cue and a rescue-arrangement cue; neither creates the suit).
+Toggled via the action `set_emergency_eject_active` / read via `player.hasemergencyeject`. A mod
+that wants to REPLACE the death sequence (e.g. kuertee's "Alternatives To Death") needs TWO
+independent locks, not one: (1) disable the engine feature globally
+(`<set_emergency_eject_active active="false"/>`) so `event_player_ejected` can never fire, AND
+(2) prevent the engine from ever reaching "ship destroyed with player aboard" in the first place
+(e.g. pin the occupied ship's hull with `<set_object_min_hull object="$ship" exact="1"/>` on first
+damage) — then teleport the player out before destroying the now-empty ship. Missing either lock
+leaves a race with the vanilla mechanism. **Interaction consequence for a THIRD mod**: anything
+hooking `event_player_ejected` or destruction-of-occupied-ship is dead under such a mod; only a
+hull-percentage POLL (not an event) could still co-fire, since the ship's hull is held constant
+during the alternative-death sequence. Trace this class of question with a who-calls/who-listens
+index over MD actions/events (see `x4xref` above) — the decisive action/event tokens frequently
+share no keyword with the user-facing concept (neither `set_emergency_eject_active` nor
+`set_object_min_hull` contains "eject" or "death").
+
+### NPC starting skills live in `libraries/characters.xml`
+Each `<character>` has a `<skills><skill type= min= max= exact=>` block on a **0–15 scale** (15 =
+5 stars, in 1/3-star steps per the schema). Selection into a role is by `<category tags= faction=
+race=>` + `<owner>`. Skill TIERS (rookie/regular/veteran/elite) are SEPARATE `<character>` entries
+with their own ranges — there is no global multiplier, so a broad skill rebalance must patch each
+tier/faction entry individually. Non-organic factions still have real skilled pilots: they use one
+"fully qualified" `class="computer"` character covering every role (pilot/manager/marine/...)
+rather than per-job templates — `class="computer"` means non-commable (no portrait/dialogue), NOT
+skill-less. A separate file, `libraries/experiences.xml`, governs skill PROGRESSION (gain per
+event: kills, trades, boarding), not starting values. **Engine-side, not in any XML** (verify via
+in-game testing, not more file-reading): the actual distribution used to roll a min–max range, and
+how a job/ship assignment maps to which character tier gets picked. There is no script-side skill
+override action (`create_npc_*` actions take no skill parameter) — skills always come from the
+character definition.
 
 ### set_owner on player ships
 Triggers economic recalcs for both factions; `overridenpc="true"` bypasses NPC resistance;

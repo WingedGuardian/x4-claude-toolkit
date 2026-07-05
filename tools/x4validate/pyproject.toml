@@ -8,6 +8,10 @@ dependencies = ["lxml>=5.0", "ruamel.yaml>=0.18"]
 [project.scripts]
 x4validate = "x4validate._cli:main"
 x4modlist = "x4validate._modlist:main"
+x4compat = "x4validate._compat:main"
+x4xref = "x4validate._xref:main"
+x4stats = "x4validate._stats:main"
+x4similar = "x4validate._similarity:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

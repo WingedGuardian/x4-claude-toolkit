@@ -24,6 +24,8 @@ from pathlib import Path
 
 from lxml import etree
 
+from x4validate import _cat
+
 # --- Workspace defaults (overridable via Config / --reference / $X4_REFERENCE) ---
 # Keep this injectable: no hardcoded user path should be the only way to point at
 # the reference tree (community-release portability).
@@ -65,6 +67,26 @@ class MergeResult:
 
 def parse_file(path: Path) -> etree._Element:
     return etree.parse(str(path), _PARSER).getroot()
+
+
+def parse_bytes(data: bytes) -> etree._Element:
+    return etree.fromstring(data, _PARSER)
+
+
+def overlay_root(odir: Path, vpath: str) -> etree._Element | None:
+    """Resolve *vpath* within an overlay dir to a parsed root, or None if absent.
+
+    Loose files take priority over the mod's packed catalog (they do in the engine
+    too, and during development you edit loose). Falls back to reading the member
+    from the mod's ext_*/subst_* catalogs so packed mods (e.g. VRO) are visible.
+    """
+    loose = odir / vpath
+    if loose.is_file():
+        return parse_file(loose)
+    data = _cat.read_path(odir, vpath)
+    if data is not None:
+        return parse_bytes(data)
+    return None
 
 
 def _truthy(val: str | None) -> bool:
@@ -242,10 +264,9 @@ def build_effective(
 
     overlay_dirs = config.dlc_dirs() + list(extra_overlays or [])
     for odir in overlay_dirs:
-        f = odir / vpath
-        if not f.is_file():
+        oroot = overlay_root(odir, vpath)
+        if oroot is None:
             continue
-        oroot = parse_file(f)
         if oroot.tag == "diff":
             if tree is None:
                 # Diff with no base — record but cannot apply.

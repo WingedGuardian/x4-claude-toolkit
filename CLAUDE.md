@@ -36,6 +36,7 @@ the rest.
 |------|---------|
 | **x4validate** ⭐ | Cross-file validator (`tools\x4validate\`, lxml). Checks every diff `sel=` resolves against the real base+DLC merged tree, that ware/macro/`{page,t}` references resolve, and completeness of new content vs a vanilla analogue. **Run on every mod before deploying.** `cd tools\x4validate && uv run x4validate <dev\mod>` |
 | **x4modlist** | Mod-registry triage via the Nexus API (version/status/changelog). Scans the ACTUALLY INSTALLED extension folders as the primary source of truth (content.xml is a secondary cross-check only). `uv run x4modlist <cmd>` |
+| **x4compat / x4xref / x4stats / x4similar** ⭐ | Cross-mod interaction suite (same package). **x4compat**: detects how installed mods collide over the effective tree (HARD node clashes, UNION-KEY same-id, FULL-OVERRIDE, benign SOFT) — reads packed mods too. **x4xref**: a who-calls/who-listens/cue index over all MD+aiscripts. **x4stats**: advisory ware/macro numeric comparison vs the effective tree (grounds a balance discussion, not a verdict). **x4similar**: fuzzy same-ship detection across mods (different id/name, near-identical stats), hard-filtered by ship class+purpose. `/x4-mod-interaction` skill, or `uv run x4compat check <mod>` |
 | **XRCatTool** (Egosoft) | Unpack base game CAT/DAT → `reference\`; pack `dev\` → distributable CAT/DAT. You supply this. |
 
 ## Mod Structure
