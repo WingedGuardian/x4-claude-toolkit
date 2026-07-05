@@ -2,8 +2,9 @@
 
 An AI-assisted **X4: Foundations** modding environment for Claude Code. It handles the
 tedious, error-prone work of modding — coordinated multi-file XML edits, porting mods across
-game versions, validating diff patches, triaging your mod list, and reading debug logs — with
-safety hooks, pre-loaded engine knowledge, and a bundled cross-file validator.
+game versions, validating diff patches, checking how a mod interacts with everything else
+you've installed, triaging your mod list, and reading debug logs — with safety hooks, pre-loaded
+engine knowledge, and a bundled cross-file validator.
 
 Built from hands-on X4 v9.0 mod development. **Claude Code is the brain; this is the
 environment with the setup prework already done.**
@@ -50,9 +51,30 @@ was built (Python / lxml). It checks:
 It also ships **`x4modlist`** (mod-registry triage via the Nexus API) and an **XSD-based
 7.x→9.0 migration checker**.
 
+### The cross-mod interaction suite — how does a mod behave against everything else installed?
+Validating a mod in isolation isn't the same question as "how does this play with my other 40
+mods?" No published tool answers that for X4 — the interaction suite does, reading packed mods
+(e.g. VRO) as well as loose ones:
+- **`x4compat`** — collision detection over the *effective* tree: two mods editing the same node
+  (one silently loses), defining the same registry id, or fully overriding the same file. A
+  candidate mode answers "what would break if I added this mod?" before you install it.
+- **`x4xref`** — a who-calls/who-listens/cue index over every MD/aiscript in base+DLC+your mods.
+  Answers "does anything else react to this event/action?" in one query — the kind of question
+  that otherwise takes many rounds of grepping for tokens that share no keyword with what you're
+  actually asking about.
+- **`x4stats`** — advisory: how does a mod's ware/weapon pricing compare to everything else in
+  *your* effective game (including an installed overhaul's rescaled values)? Grounds a balance
+  discussion; doesn't settle one.
+- **`x4similar`** — advisory: flags a mod's ship as a likely near-duplicate of one you already
+  have under a different name (e.g. two mods independently adding "the same" ship).
+
+The `/x4-mod-interaction` skill ties all four together into one interaction brief.
+
 ### Skills & subagents
 - `/x4-debug` — read the active profile's `debug.txt`, filter benign noise, surface real errors.
 - `/x4-modlist-review` — triage your mod registry against the Nexus API.
+- `/x4-mod-interaction` — analyze how a mod interacts with your installed set: collisions,
+  shared event/action hooks, advisory balance fit, and same-ship redundancy.
 - `/x4-scaffold` — scaffold the full cross-file footprint for new content from a vanilla analogue.
 - `/x4-update-mod` — port a mod to a newer game version (mechanical checks + design brief).
 - `cross-file-impact` / `mod-research` subagents — trace the fan-out / research a mod before editing.
@@ -110,6 +132,10 @@ Open Claude Code in the toolkit folder and just talk. Some examples:
 **Mod-list & research**
 - *"Triage my mod list against Nexus — what's updated, obsolete, or abandoned for 9.0?"*
 - *"What does this Nexus mod do, and are there known 9.0 issues, before I edit it?"*
+
+**Interaction analysis**
+- *"Before I add this weapon mod — does it conflict with anything I have, and is it balanced for VRO?"*
+- *"Why does my death-alternative mod stop the vanilla eject sequence, and what would happen if I added an escape-pod mod too?"*
 
 If it involves X4 XML, diff patches, MD/Lua scripts, the economy, or mod files, ask. Claude has
 the engine context loaded and will figure out the path — and validate before you burn an
