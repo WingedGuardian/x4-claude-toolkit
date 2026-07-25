@@ -10,6 +10,31 @@ def _write(p: Path, text: str):
     p.write_text(text, encoding="utf-8")
 
 
+def test_missing_reference_tree_is_loud_error_not_false_ok(tmp_path):
+    """A mod with a real no-op sel must NOT pass just because reference is absent."""
+    cfg = _merge.Config(reference=tmp_path / "does_not_exist")
+    mod = tmp_path / "mod"
+    _write(mod / "libraries/wares.xml",
+           '<diff><replace sel="//ware[@id=\'ore\']/@x">1</replace></diff>')
+
+    report = _check.validate(mod, cfg)
+    assert report.errors, "missing reference tree must produce an error, not 'OK'"
+    assert any(f.category == "reference" for f in report.errors)
+
+
+def test_empty_reference_tree_is_loud_error(tmp_path):
+    """Reference dir exists but has no base wares.xml -> still a loud error."""
+    ref = tmp_path / "reference"
+    ref.mkdir()
+    cfg = _merge.Config(reference=ref)
+    mod = tmp_path / "mod"
+    _write(mod / "libraries/wares.xml",
+           '<diff><replace sel="//ware[@id=\'ore\']/@x">1</replace></diff>')
+
+    report = _check.validate(mod, cfg)
+    assert any(f.category == "reference" for f in report.errors)
+
+
 def test_text_defs_union_across_base_dlc_mod(tmp_path):
     ref = tmp_path / "reference"
     # Base English file (would be wiped by a naive override):
@@ -47,28 +72,3 @@ def test_validate_no_false_dangling_when_strings_in_neutral_file(tmp_path):
     report = _check.validate(mod, cfg)
     ref_findings = [f for f in report.findings if f.category == "ref"]
     assert ref_findings == [], [f.message for f in ref_findings]
-
-
-def test_missing_reference_tree_is_loud_error_not_false_ok(tmp_path):
-    """A mod with a real no-op sel must NOT pass just because reference is absent."""
-    cfg = _merge.Config(reference=tmp_path / "does_not_exist")
-    mod = tmp_path / "mod"
-    _write(mod / "libraries/wares.xml",
-           '<diff><replace sel="//ware[@id=\'ore\']/@x">1</replace></diff>')
-
-    report = _check.validate(mod, cfg)
-    assert report.errors, "missing reference tree must produce an error, not 'OK'"
-    assert any(f.category == "reference" for f in report.errors)
-
-
-def test_empty_reference_tree_is_loud_error(tmp_path):
-    """Reference dir exists but has no base wares.xml -> still a loud error."""
-    ref = tmp_path / "reference"
-    ref.mkdir()
-    cfg = _merge.Config(reference=ref)
-    mod = tmp_path / "mod"
-    _write(mod / "libraries/wares.xml",
-           '<diff><replace sel="//ware[@id=\'ore\']/@x">1</replace></diff>')
-
-    report = _check.validate(mod, cfg)
-    assert any(f.category == "reference" for f in report.errors)

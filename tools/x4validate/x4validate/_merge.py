@@ -25,6 +25,7 @@ from pathlib import Path
 from lxml import etree
 
 from x4validate import _cat
+from x4validate._provenance import Origin, Recorder
 
 # --- Workspace defaults (overridable via Config / --reference / $X4_REFERENCE) ---
 # Keep this injectable: no hardcoded user path should be the only way to point at
@@ -37,6 +38,11 @@ _PARSER = etree.XMLParser(remove_blank_text=False, recover=False, resolve_entiti
 @dataclass
 class Config:
     reference: Path = REFERENCE
+    #: Tier B — other INSTALLED extension roots to merge in after DLC, in load
+    #: order. Empty (Tier A) = base+DLC only, which cannot see content that
+    #: another mod adds, removes or overrides. Threaded automatically into every
+    #: build_effective() call that receives this Config.
+    overlays: tuple[Path, ...] = ()
 
     def dlc_dirs(self) -> list[Path]:
         ext = self.reference / "extensions"
@@ -56,6 +62,7 @@ class AppliedOp:
     detail: str
     silent: bool = False
     skipped_if: bool = False
+    ambiguous: bool = False
 
 
 @dataclass
@@ -98,8 +105,12 @@ def _truthy(val: str | None) -> bool:
 _OPS = {"add", "replace", "remove"}
 
 
-def apply_diff(tree: etree._Element, diff_root: etree._Element) -> list[AppliedOp]:
-    """Apply every op in *diff_root* to *tree* in document order. Mutates tree."""
+def apply_diff(tree: etree._Element, diff_root: etree._Element,
+               recorder: Recorder | None = None, source: str = "") -> list[AppliedOp]:
+    """Apply every op in *diff_root* to *tree* in document order. Mutates tree.
+
+    With *recorder*, every mutation is stamped with an Origin(source, op, line)
+    at mutation time (see _provenance for the identity model)."""
     applied: list[AppliedOp] = []
     for op in diff_root:
         if not isinstance(op.tag, str) or op.tag not in _OPS:
@@ -130,12 +141,25 @@ def apply_diff(tree: etree._Element, diff_root: etree._Element) -> list[AppliedO
             applied.append(AppliedOp(op.tag, sel, line, False, "sel matched nothing", silent))
             continue
 
+        # RFC 5261: sel must select exactly ONE node. X4 enforces this — it logs
+        # "Multiple matching nodes for path '<sel>' in patch file '<f>'. Skipping
+        # node." and applies NOTHING. Modelling that faithfully matters: applying
+        # to every match instead would produce an effective tree the game never
+        # has (e.g. a material added to both collections named "map").
+        if len(targets) > 1:
+            applied.append(AppliedOp(op.tag, sel, line, False,
+                                     f"sel matched {len(targets)} nodes — engine skips "
+                                     "ambiguous ops (RFC 5261: must match exactly one)",
+                                     silent, ambiguous=True))
+            continue
+
+        origin = Origin(source, op.tag, line) if recorder is not None else None
         if op.tag == "remove":
-            _do_remove(targets)
+            _do_remove(targets, recorder, origin)
         elif op.tag == "replace":
-            _do_replace(targets, op)
+            _do_replace(targets, op, recorder, origin)
         elif op.tag == "add":
-            _do_add(targets, op)
+            _do_add(targets, op, recorder, origin)
         applied.append(AppliedOp(op.tag, sel, line, True, f"{len(targets)} target(s)", silent))
     return applied
 
@@ -144,8 +168,19 @@ def _is_attr(node) -> bool:
     return getattr(node, "is_attribute", False)
 
 
-def _do_remove(targets) -> None:
+def _path_of(node) -> str:
+    """Display path for a node/attribute at this instant (removal records only)."""
+    if _is_attr(node):
+        parent = node.getparent()
+        base = parent.getroottree().getpath(parent) if parent is not None else ""
+        return f"{base}/@{node.attrname}"
+    return node.getroottree().getpath(node)
+
+
+def _do_remove(targets, recorder: Recorder | None = None, origin: Origin | None = None) -> None:
     for t in targets:
+        if recorder is not None:
+            recorder.node_removed(_path_of(t), origin)
         if _is_attr(t):
             parent = t.getparent()
             if parent is not None:
@@ -156,13 +191,17 @@ def _do_remove(targets) -> None:
                 parent.remove(t)
 
 
-def _do_replace(targets, op) -> None:
+def _do_replace(targets, op, recorder: Recorder | None = None,
+                origin: Origin | None = None) -> None:
     new_children = [c for c in op if isinstance(c.tag, str)]
     for t in targets:
         if _is_attr(t):
             parent = t.getparent()
             if parent is not None:
                 parent.set(t.attrname, op.text or "")
+                if recorder is not None:
+                    recorder.attr_set(parent, t.attrname,
+                                      Origin(origin.source, "replace-attr", origin.line))
         elif new_children:
             parent = t.getparent()
             if parent is None:
@@ -170,33 +209,54 @@ def _do_replace(targets, op) -> None:
             idx = parent.index(t)
             parent.remove(t)
             for off, child in enumerate(new_children):
-                parent.insert(idx + off, copy.deepcopy(child))
+                new = copy.deepcopy(child)
+                parent.insert(idx + off, new)
+                if recorder is not None:
+                    if off == 0:  # first inserted child carries the replaced node's lineage
+                        recorder.elem_replaced(t, new, origin)
+                    else:
+                        recorder.elem_created(new, origin)
         else:
             # Replace element's inner text/content.
             t.text = op.text
             for c in list(t):
                 t.remove(c)
+            if recorder is not None:
+                recorder.elem_created(t, Origin(origin.source, "replace-text", origin.line),
+                                      prior_chain=recorder.elem_chain(t))
 
 
-def _do_add(targets, op) -> None:
+def _do_add(targets, op, recorder: Recorder | None = None,
+            origin: Origin | None = None) -> None:
     pos = op.get("pos", "")
     new_children = [c for c in op if isinstance(c.tag, str)]
+
+    def _record(new):
+        if recorder is not None:
+            recorder.elem_created(new, origin)
+
     for t in targets:
         if _is_attr(t):
             continue  # add cannot target an attribute
         if pos == "prepend":
             for i, child in enumerate(new_children):
-                t.insert(i, copy.deepcopy(child))
+                new = copy.deepcopy(child)
+                t.insert(i, new)
+                _record(new)
         elif pos in {"before", "after"}:
             parent = t.getparent()
             if parent is None:
                 continue
             idx = parent.index(t) + (1 if pos == "after" else 0)
             for off, child in enumerate(new_children):
-                parent.insert(idx + off, copy.deepcopy(child))
+                new = copy.deepcopy(child)
+                parent.insert(idx + off, new)
+                _record(new)
         else:  # append (default)
             for child in new_children:
-                t.append(copy.deepcopy(child))
+                new = copy.deepcopy(child)
+                t.append(new)
+                _record(new)
 
 
 # --- Effective-tree assembly --------------------------------------------------
@@ -215,7 +275,8 @@ def _child_key(el: etree._Element) -> tuple[str, str] | None:
     return None
 
 
-def _union_children(tree: etree._Element, overlay: etree._Element) -> None:
+def _union_children(tree: etree._Element, overlay: etree._Element,
+                    recorder: Recorder | None = None, source: str = "") -> None:
     """Merge *overlay*'s direct children into *tree* in place.
 
     Dedupe by _child_key with later-overlay-wins (same id/name -> overlay's element
@@ -234,17 +295,93 @@ def _union_children(tree: etree._Element, overlay: etree._Element) -> None:
         key = _child_key(child)
         new = copy.deepcopy(child)
         if key is not None and key in index:
-            tree.replace(index[key], new)
+            old = index[key]
+            tree.replace(old, new)
+            if recorder is not None:
+                recorder.elem_replaced(old, new, Origin(source, "union-replace"))
         else:
             tree.append(new)
+            if recorder is not None:
+                recorder.elem_created(new, Origin(source, "union-add"))
         if key is not None:
             index[key] = new
+
+
+def apply_overlay(
+    tree: etree._Element | None,
+    oroot: etree._Element,
+    vpath: str,
+    source: str,
+    recorder: Recorder | None = None,
+) -> tuple[etree._Element | None, str]:
+    """Apply one overlay root onto *tree*; returns (new tree, mode).
+
+    Mode is one of "diff", "diff(no-base!)", "union", "full" — mirrors the
+    source-tag suffixes recorded by build_effective. Extracted so callers other
+    than build_effective (e.g. x4effective's mod-owned-base path) reuse the exact
+    dispatch semantics."""
+    if oroot.tag == "diff":
+        if tree is None:
+            return None, "diff(no-base!)"  # diff with no base — cannot apply
+        apply_diff(tree, oroot, recorder=recorder, source=source)
+        return tree, "diff"
+    if tree is not None and oroot.tag == tree.tag and vpath.startswith(_ADDITIVE_DIRS):
+        _union_children(tree, oroot, recorder=recorder, source=source)
+        return tree, "union"
+    if recorder is not None:
+        recorder.full_override(Origin(source, "full-override"))
+    return oroot, "full"  # full-file override (asset files, or no/other base)
+
+
+def _nested_target(vpath: str) -> tuple[str, str] | None:
+    """'extensions/<target>/<rel>' -> ('<target>', '<rel>'); else None.
+
+    This is the cross-mod patch idiom: the path is owned by <target>, not by the
+    base game. `ego_dlc_*` is excluded — DLC live under reference/extensions/ and
+    are already handled as ordinary base content.
+    """
+    parts = vpath.split("/")
+    if len(parts) < 3 or parts[0].lower() != "extensions":
+        return None
+    if parts[1].lower().startswith("ego_dlc_"):
+        return None
+    return parts[1], "/".join(parts[2:])
+
+
+def _build_owned(owner_name: str, rel: str, vpath: str,
+                 overlay_dirs: list[Path],
+                 recorder: Recorder | None) -> MergeResult:
+    """Merge a file OWNED by another mod: that mod supplies the base at *rel*,
+    every other mod patches it at the nested *vpath*."""
+    sources: list[str] = []
+    tree: etree._Element | None = None
+
+    owner_dir = next((d for d in overlay_dirs if d.name.lower() == owner_name.lower()), None)
+    if owner_dir is not None:
+        oroot = overlay_root(owner_dir, rel)
+        if oroot is not None and oroot.tag != "diff":
+            tree = oroot
+            sources.append(f"{owner_dir.name}:owner")
+
+    for odir in overlay_dirs:
+        if odir is owner_dir:
+            continue
+        oroot = overlay_root(odir, vpath)
+        if oroot is None:
+            continue
+        tree, mode = apply_overlay(tree, oroot, vpath, odir.name, recorder=recorder)
+        if recorder is not None and mode != "full":
+            recorder.file_chain.append(Origin(odir.name, mode))
+        sources.append(f"{odir.name}:{mode}")
+
+    return MergeResult(tree=tree, sources=sources, base_found=tree is not None)
 
 
 def build_effective(
     virtual_path: str,
     config: Config | None = None,
     extra_overlays: list[Path] | None = None,
+    recorder: Recorder | None = None,
 ) -> MergeResult:
     """Build the effective tree for *virtual_path* = base + DLC + extra_overlays.
 
@@ -255,6 +392,20 @@ def build_effective(
     vpath = virtual_path.replace("\\", "/").lstrip("/")
     sources: list[str] = []
 
+    # DLC, then the Tier-B installed set (load order), then any explicit extras
+    # (e.g. the mod under test) last.
+    overlay_dirs = config.dlc_dirs() + list(config.overlays) + list(extra_overlays or [])
+
+    # Cross-mod nesting: a file at  <mymod>/extensions/<target>/<rel>  patches
+    # <target>'s OWN <rel>. The base therefore lives inside <target>, not in
+    # reference/. Without this, every such patch reports "no base game file"
+    # even though the engine applies it (proven: ship_variation_expansion_vro
+    # patches ship_variation_expansion this way and its ops take effect).
+    owner_rel = _nested_target(vpath)
+    if owner_rel is not None:
+        owner_name, rel = owner_rel
+        return _build_owned(owner_name, rel, vpath, overlay_dirs, recorder)
+
     base_path = config.reference / vpath
     tree: etree._Element | None = None
     base_found = base_path.is_file()
@@ -262,26 +413,17 @@ def build_effective(
         tree = parse_file(base_path)
         sources.append("base")
 
-    overlay_dirs = config.dlc_dirs() + list(extra_overlays or [])
     for odir in overlay_dirs:
         oroot = overlay_root(odir, vpath)
         if oroot is None:
             continue
-        if oroot.tag == "diff":
-            if tree is None:
-                # Diff with no base — record but cannot apply.
-                sources.append(f"{odir.name}:diff(no-base!)")
-                continue
-            apply_diff(tree, oroot)
-            sources.append(f"{odir.name}:diff")
-        elif tree is not None and oroot.tag == tree.tag and vpath.startswith(_ADDITIVE_DIRS):
-            _union_children(tree, oroot)  # shared registry: merge entries, don't clobber
-            base_found = True
-            sources.append(f"{odir.name}:union")
-        else:
-            tree = oroot  # full-file override (asset files, or no/other base)
-            base_found = True
-            sources.append(f"{odir.name}:full")
+        tree, mode = apply_overlay(tree, oroot, vpath, odir.name, recorder=recorder)
+        if mode != "diff(no-base!)":
+            base_found = base_found or mode in {"union", "full"}
+        if recorder is not None and mode != "full":
+            # full-override already appended to file_chain inside apply_overlay
+            recorder.file_chain.append(Origin(odir.name, mode))
+        sources.append(f"{odir.name}:{mode}")
 
     # Text files (t/0001.xml, t/0001-lNNN.xml) have no single base file in reference
     # — the engine overlays them onto the language tree. A mod's t-diff adds <page>s

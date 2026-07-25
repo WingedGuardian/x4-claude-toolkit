@@ -88,6 +88,12 @@ Running `x4validate` is routine and non-optional — like checking `debug.txt`.
   (2) forgetting one of the many files a change must touch. x4validate catches both statically.
 - **Trust but verify:** a clean run is necessary, not sufficient — still test in-game and read
   `debug.txt`.
+- **Cross-mod work → add `--tier b`.** Tier A (default) is base+DLC only: it cannot see a node
+  another mod adds (false alarm) *or* one another mod removed (false OK). Tier B merges the
+  installed set in load order. Ordering is community-convention → treat ordering-dependent
+  results as advisory.
+- **`if=`-guarded ops report INFO, not ERROR** — a false guard is a designed no-op. A guard that
+  PASSES while its `sel=` still misses is a real error.
 
 ## Dry-Run Convention
 
@@ -168,6 +174,26 @@ approach. Approaches disconnected from how the engine works lead to silent failu
 2. Match its exact form — attributes, structure, values.
 3. Only diverge when the vanilla pattern genuinely cannot be adapted.
 
+## Core Principle: Assume Existing Content Is REAL AND LIVE Until Proven Dead
+
+**Anything present in a mod or script is there because it worked.** The burden of proof is on
+"this is dead", never on "this is alive". The failure mode this prevents is pattern-matching a
+symptom onto a plausible story ("the new version removed this") and then *deleting working
+content* on that story — the one action whose damage is invisible in a clean validate run.
+
+Before calling anything obsolete/removed/vestigial:
+1. **Read the error literally** — it usually names the scope. `Order 'MiningRoutine': Parameter
+   'stayinspace' was not expected` scopes the problem to **one order**, not the parameter globally.
+   (`stayinspace` is still valid in 9.0 for `order.fight.patrol` and `move.seekenemies`.)
+2. **Grep `reference\` for live uses.** Any vanilla/DLC use means it is alive and your call is wrong.
+3. **Date the change** — a thing missing from an old file is usually old, not new.
+4. **Check who else references it** — content other installed mods use is not yours to remove.
+
+**Destructive changes (`<remove>`, deleting files, stripping attributes, "cleanup") require
+explicit user approval**, a higher evidence bar than additive changes, and a snapshot first.
+**Prefer additive/restorative repairs**: restoring an orphaned index entry is reversible and
+provably scoped; deleting a reference is not.
+
 ## Core Principle: Native Engine Solutions First
 
 Before a convoluted workaround, ask: "how does the engine already handle this?" "Simple"
@@ -197,5 +223,8 @@ The environment gets smarter the more you use it.
 4. **content.xml `save="1"`** — mod is baked into saves; removing it can corrupt them. Use `save="0"` for cosmetic/UI mods.
 5. **content.xml does NOT reflect what's installed** — it can list dead/unsubscribed entries the engine ignores. The `extensions\` folder is the source of truth.
 6. **9.0: `find_station` (and the whole `find_*`/`count_*`/`set_space_*` family) now REQUIRE `space=`** — a 7.x mod without it throws `Required attribute 'space' is missing` on load. Galaxy-wide = `space="player.galaxy"`.
+7. **A `sel=` matching MULTIPLE nodes is a SILENT NO-OP** — RFC 5261 requires exactly one match; X4 logs `Multiple matching nodes for path '<sel>' ... Skipping node` and applies **nothing**. The patch reads fine and does nothing. Disambiguate with a predicate (prefer a content predicate like `[material[@shader='x']]` over a positional index). Run `x4validate` — it flags this.
+8. **Patching ANOTHER mod uses a NESTED path** — `<your_mod>/extensions/<target_folder>/<mirrored path>`, not a bare mirrored path. The `<dependency id=>` you declare is the target's `content.xml` **id**, which can differ from its folder name.
+9. **A stale `<remove>` in an old mod can delete content the base game added LATER**, breaking every other mod that uses it. Diagnose *why* a remove exists (usually half of a stale remove/re-add pair) before assuming the author meant it.
 
 *Consult `KNOWLEDGEBASE.md` for the full list and the 7.x→9.0 migration map.*

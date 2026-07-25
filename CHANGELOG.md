@@ -1,5 +1,78 @@
 # Changelog
 
+## v1.4
+
+Engine-fidelity release. Three ways X4's patch semantics differ from a naive XML merge were
+found by dogfooding against a 95-mod install — each one had been silently producing either a
+false alarm or, worse, a false OK. Plus the effective-values browser (`x4effective`) and the
+version-diff tool (`x4diff`).
+
+### Fixed — three silent-no-op / false-alarm classes
+
+- **A `sel=` matching MULTIPLE nodes is a silent no-op, and was never flagged.** RFC 5261
+  requires `sel` to select exactly one node; X4 enforces it by logging
+  `Multiple matching nodes for path '<sel>' ... Skipping node` and applying **nothing**. The
+  patch looks correct, validates clean, and does nothing. **236 such ops were being skipped
+  across one real modlist** — including 11 belonging to a mod whose entire purpose was the
+  behaviour those ops implement. `x4validate` now reports this as an ERROR, and the merge
+  engine models the skip instead of applying the op to every match (which used to build an
+  effective tree the game never has).
+
+- **`if=` guards were unknown to the checker.** `if=` is the idiom for targeting content that
+  may not be installed. The merge engine honoured it; the sel-checker did not know it existed
+  and reported every deliberately-guarded op as a hard ERROR. Guards are now evaluated first,
+  exactly as the engine does: a false guard reports INFO ("guarded no-op") and short-circuits
+  before `sel=` is parsed. A guard that *passes* while its `sel=` still misses remains an
+  ERROR — the author asserted that target exists.
+
+- **Cross-mod patches at `extensions/<target>/<rel>` reported "no base game file".** That path
+  is owned by `<target>`, not by the base game, so the base was never found and the patch's
+  selectors went unchecked — while the engine applied them fine. The merge engine now resolves
+  the owning mod and layers other mods' nested patches on top.
+
+### Added
+
+- **`--tier b`** — previously a stub that printed a warning and was never passed to the
+  validator. It now merges the **installed extension set in load order**, so cross-mod patches
+  resolve for real. It also catches the reverse failure Tier A silently passes: content another
+  mod has **removed**. Real case that motivated it — one mod's `index/macros.xml` `<remove>`s a
+  vanilla macro and never re-adds it, orphaning it for six other mods and generating 415 engine
+  errors; Tier A reported that macro as defined. The mod under test is auto-excluded by both
+  folder name and `content.xml` id (a dev folder is usually also deployed, and merging that copy
+  would pre-apply its own ops and mask real misses). ~8s over 93 extensions.
+  Ordering follows the community convention (alphabetical, dependencies first) — advisory.
+
+- **`x4effective`** — the "xEdit for X4" effective-values browser. Every final value with
+  per-attribute provenance (`base → modA replace-attr:12 → modB`), backed by SQLite.
+  Subcommands: `build`, `ls`, `show`, `attr`, `who-sets`, `diff-mod`, `dump`, `sql`.
+  Answers "show me all missiles and their damage" and "who set this, and what did it override".
+
+- **`x4diff`** — semantic XML diff between two versions of a mod, with multi-baseline support
+  (`--overlay`). Built for separating *your* edits from an author's when recovering personal
+  modifications made to an older release.
+
+- **`_provenance.py`** — provenance capture threaded through the merge (`Origin`/`Recorder`),
+  keyed by live element objects rather than XPath strings, since paths shift as the tree mutates.
+
+- **`_debuglog.py` / `--debug`** — folds the engine's own `debug.txt` errors for the mod under
+  test into the report, and gates on them. The engine is the authority; static checks are not.
+
+- **`_exprlint.py`** — always-on heuristic lint for MD/aiscript expression grammar.
+
+### Changed
+
+- `collect_macro_defs` now builds the **effective** `index/macros.xml` via the merge engine
+  instead of unioning each directory's file. The old approach could see neither `<diff>`/
+  `<remove>` ops nor packed `.cat` mods, so it reported macros as defined after they had been
+  deleted from the effective index.
+- `_merge.Config` gained an `overlays` field, threaded automatically into every
+  `build_effective()` call, so Tier B needs no signature changes across the checkers.
+
+### Tests
+
+125 → 152. New `tests/test_tierb.py` encodes all three engine-fidelity rules plus Tier B
+overlay resolution as permanent regressions.
+
 ## v1.3
 
 New cross-mod interaction suite — the toolkit can now analyze how a mod behaves against your

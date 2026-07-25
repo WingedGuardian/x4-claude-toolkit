@@ -51,6 +51,29 @@ was built (Python / lxml). It checks:
 It also ships **`x4modlist`** (mod-registry triage via the Nexus API) and an **XSD-based
 7.x→9.0 migration checker**.
 
+**`--tier b`** merges your *installed* extension set in load order, so cross-mod patches resolve
+for real — and it catches the failure that looks like success: content **another mod removed**.
+(Dogfooding case: one mod `<remove>`s a vanilla macro from `index/macros.xml` and never re-adds
+it, orphaning it for six other mods — 415 engine errors that base+DLC validation reports as fine.)
+
+x4validate models three X4 patch rules a naive XML merge gets wrong, each of which otherwise
+produces a silent no-op or a false alarm:
+- **`sel=` must match exactly one node** (RFC 5261). On multiple matches X4 logs
+  `Multiple matching nodes ... Skipping node` and applies **nothing** — the patch validates clean
+  and does nothing. 236 such ops were being skipped across one real modlist.
+- **`if=` guards** gate an op before `sel=` is evaluated, so a guarded no-op is by design, not an error.
+- **`extensions/<target>/<rel>`** paths are owned by `<target>`, not the base game.
+
+### `x4effective` — see every final value, and who set it
+An "xEdit for X4": the effective value of every ware/macro/job across base + DLC + all your mods,
+with **per-attribute provenance** (`base → modA replace-attr:12 → modB`), in a SQLite store you can
+query directly. `show` gives the full record view, `attr` reads one column across everything
+("all missiles and their damage"), `who-sets` gives just the chain, `diff-mod` shows everything a
+mod wins, and `dump` prints the live merged XML for any path.
+
+**`x4diff`** does a semantic XML diff between two versions of a mod, with multi-baseline support —
+built for separating *your* edits from the author's when recovering personal modifications.
+
 ### The cross-mod interaction suite — how does a mod behave against everything else installed?
 Validating a mod in isolation isn't the same question as "how does this play with my other 40
 mods?" No published tool answers that for X4 — the interaction suite does, reading packed mods
