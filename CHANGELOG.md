@@ -1,31 +1,5 @@
 # Changelog
 
-## v2.0.1
-
-Follow-up to v2.0: the remaining silently-inert safety feature, and assertions so this class of
-bug cannot ship again.
-
-### Fixed
-- **Auto-backup was not anchored to the toolkit.** `backup-before-edit.sh` was the only hook that
-  never adopted the shared path resolver; it used `${CLAUDE_PROJECT_DIR:-.}`, so with that variable
-  unset it wrote backups into whatever directory the shell happened to be in. It now resolves
-  through `_x4-env.sh`, and Windows-style paths are normalized before the copy.
-- **`_x4-env.sh` no longer falls back to `$(pwd)` for the toolkit root.** It derives it from the
-  hook's own location (`<toolkit>/.claude/hooks/` -> `<toolkit>`) instead, so every hook stays
-  anchored even when `CLAUDE_PROJECT_DIR` is absent.
-
-### Added
-- **`scripts/test-hooks.sh`** — feeds every hook synthetic tool-call JSON and asserts the decision
-  it returns: 33 assertions covering both the in-game and separate layouts (deny `reference/`,
-  `.cat`/`.dat`, base-game files; ask on `content.xml`, profile, deployed `extensions/`; allow
-  `dev/`, `$X4_MODS`, toolkit dirs), plus backup creation, audit-log append, backup anchoring, and
-  the stale-reference warning in both directions.
-
-  Three separate hooks shipped inert across previous releases — a PCRE lookahead that cannot match
-  under `grep -E`, a hook anchored to one developer's folder, and backups escaping the toolkit.
-  Every one passed code review. **A silent guard is worse than no guard**, so the guards now have
-  tests.
-
 ## v2.0
 
 **The toolkit is no longer Windows-only, and no longer assumes one folder layout.** Plus two
@@ -73,6 +47,24 @@ global-vs-`C.` cdef variant trap), `$ship.$var` not surviving save/load, the
   the advertised auto-validate-on-edit hook could never fire for anyone else. Now it triggers on
   any diff XML outside `reference/`, resolving the mod root by walking up to `content.xml`.
 
+- **Auto-backup was not anchored to the toolkit.** `backup-before-edit.sh` was the only hook that
+  never adopted the shared path resolver; it used `${CLAUDE_PROJECT_DIR:-.}`, so with that variable
+  unset it wrote backups into whatever directory the shell happened to be in. It now resolves
+  through `_x4-env.sh`, and Windows-style paths are normalized before the copy.
+- **`_x4-env.sh` no longer falls back to `$(pwd)` for the toolkit root.** It derives it from the
+  hook's own location (`<toolkit>/.claude/hooks/` -> `<toolkit>`), so every hook stays anchored
+  even when `CLAUDE_PROJECT_DIR` is absent.
+
+### Added — the guards now have tests
+- **`scripts/test-hooks.sh`** — feeds every hook synthetic tool-call JSON and asserts the decision
+  it returns: **33 assertions** across both the in-game and separate layouts (deny `reference/`,
+  `.cat`/`.dat`, base-game files; ask on `content.xml`, profile, deployed `extensions/`; allow
+  `dev/`, `$X4_MODS`, toolkit dirs), plus backup creation, audit-log append, backup anchoring, and
+  the stale-reference warning in both directions. Run it after any change to `.claude/hooks/`.
+
+  **Four** separate safety features shipped silently inert before this release, and every one of
+  them passed code review. A silent guard is worse than no guard, so the guards now have tests.
+
 ### Changed
 - `/x4-debug` no longer ships a hardcoded workshop id as a "known-benign" suppression rule — it
   now describes the *class* (an extension id not in your installed set) and warns against
@@ -83,9 +75,7 @@ global-vs-`C.` cdef variant trap), `$ship.$var` not surviving save/load, the
   error counts — they aren't comparable across that boundary.
 
 ### Verification
-Hook decisions smoke-tested with synthetic JSON in **both** the in-game and separate layouts
-(17/17: deny on `reference/`, `.cat`/`.dat` and base-game files; ask on `content.xml`, profile and
-deployed `extensions/`; allow on `dev/`, `$X4_MODS` and the toolkit's own dirs). Python suite: 152.
+`bash scripts/test-hooks.sh` — **33/33** assertions across both install layouts. Python suite: 152.
 
 ## v1.4
 
