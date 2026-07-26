@@ -1,14 +1,26 @@
 # Changelog
 
-## v2.1
+## v2.0
 
-**x4validate's model of the engine had never been validated against the engine.** This release
-closes that gap: a `debug.txt`-driven oracle now measures x4validate's verdicts against what X4
-actually did, and every defect below was found and fixed using it — not by inspection. 156 tests
-grew to 170, and none of them are cosmetic: each is a real-data regression test for a real false
-result, several mutation-verified against the pre-fix code to confirm they actually catch it.
+**The toolkit is no longer Windows-only, and no longer assumes one folder layout.** Plus two
+community contributions, a round of safety-hook fixes found by red-teaming the install flow, and
+a `debug.txt`-driven oracle that measured x4validate's verdicts against what the engine actually
+did — closing every gap it found.
 
-### Fixed — the tool was blind to 9 of the 10 mods with the errors that matter, and said "OK"
+Major version because the install model changed: there are now three supported layouts and every
+X4 location is configurable. Existing v1.x users keep working — the in-game layout is unchanged
+and the hooks fall back to the old folder-name patterns when nothing is configured.
+
+### Fixed — x4validate: validated against the ENGINE, not against itself
+
+x4validate's model of the engine had never been checked against the engine's own output. This
+built and ran that check: a `debug.txt`-driven oracle that measures x4validate's verdicts against
+what X4 actually did, op-for-op. Every defect below was found and fixed using it — not by
+inspection. Tests grew to 170, and none of them are cosmetic: each is a real-data regression test
+for a real false result, several mutation-verified against the pre-fix code to confirm they
+actually catch it.
+
+**The tool was blind to 9 of the 10 mods with the errors that matter, and said "OK":**
 - **Packed mods were never sel-checked, and reported a clean pass.** `iter_diff_files` walked
   `mod_dir.rglob("*.xml")`, which finds nothing inside a `.cat`/`.dat` archive — so the core
   sel-resolution check silently examined zero ops on any packed mod and printed
@@ -43,44 +55,31 @@ result, several mutation-verified against the pre-fix code to confirm they actua
   doesn't exist** — something the tool cannot actually know. Now reported as an honest
   "cannot verify" INFO naming the DLC, not a false ERROR.
 
-### Fixed — x4modlist auto-resolved ~10% of mods to the wrong Nexus page
-`_resolve_identity` accepted the top search hit unconditionally. Measured on a live 101-mod
-registry: **7 of 69 resolved entries pointed at an unrelated mod**, most flagged
-`settled: stable` — silently tracking someone else's update history. Root cause: a multi-word
-Nexus search can return zero hits where a single-word search returns several correct ones, and
-the empty-result fallback (drop the leading word and retry) can land on an unrelated mod sharing
-only a generic word like "VRO" or "patch." Now requires at least one shared identity-bearing
-token (generic modding filler excluded) before accepting a match; an unresolvable mod is now
-flagged for manual review instead of silently mis-tracked.
+**x4modlist auto-resolved ~10% of mods to the wrong Nexus page:** `_resolve_identity` accepted
+the top search hit unconditionally. Measured on a live 101-mod registry: **7 of 69 resolved
+entries pointed at an unrelated mod**, most flagged `settled: stable` — silently tracking someone
+else's update history. Root cause: a multi-word Nexus search can return zero hits where a
+single-word search returns several correct ones, and the empty-result fallback (drop the leading
+word and retry) can land on an unrelated mod sharing only a generic word like "VRO" or "patch."
+Now requires at least one shared identity-bearing token (generic modding filler excluded) before
+accepting a match; an unresolvable mod is now flagged for manual review instead of silently
+mis-tracked.
 
-### Fixed — x4effective and x4stats: confident-looking answers that meant "nothing was checked"
-- **`x4effective ls ship` printed `0 ship(s)`** — reading as "this game has no ships," when the
-  real issue is that `ship` isn't a stored entity kind (ships are `kind=macro`). Unknown kinds
-  are now rejected with the actual list of valid kinds and a hint for the common ship/equipment
-  aliases.
-- **x4stats compared ungrouped wares against an unrelated 1386-ware pool.** A ware with no
-  `group=` attribute (a paint mod, a cosmetic prop) was bucketed with every *other* ungrouped
-  ware in the game and given a real-looking percentile against a wildly unrelated price
-  distribution. Now reported as "not comparable," never a fabricated percentile.
+**x4effective and x4stats gave confident-looking answers that meant "nothing was checked":**
+- `x4effective ls ship` printed `0 ship(s)` — reading as "this game has no ships," when the real
+  issue is that `ship` isn't a stored entity kind (ships are `kind=macro`). Unknown kinds are now
+  rejected with the actual list of valid kinds and a hint for the common ship/equipment aliases.
+- x4stats compared ungrouped wares against an unrelated 1386-ware pool. A ware with no `group=`
+  attribute (a paint mod, a cosmetic prop) was bucketed with every *other* ungrouped ware in the
+  game and given a real-looking percentile against a wildly unrelated price distribution. Now
+  reported as "not comparable," never a fabricated percentile.
 
-### Notes
-- All of the above were found by building and running a real **oracle**: parse `debug.txt`,
-  extract exactly what the engine accepted/rejected, and compare it to x4validate's verdict on
-  the same mod — op-for-op, not file-for-file. If you maintain a fork or a similar tool, this
-  pattern (ground truth from the engine's own log, not from your own model of the engine) is the
-  single highest-leverage test you can add.
-- No regressions: all 10 previously-tracked dev mods re-validated clean; the corrected oracle
-  count is unchanged after every fix (234/234 ops, 100% agreement, 0 false OK, 0 unclassified,
-  across all mods the reference log names — 9 of them packed).
-
-## v2.0
-
-**The toolkit is no longer Windows-only, and no longer assumes one folder layout.** Plus two
-community contributions and a round of safety-hook fixes found by red-teaming the install flow.
-
-Major version because the install model changed: there are now three supported layouts and every
-X4 location is configurable. Existing v1.x users keep working — the in-game layout is unchanged
-and the hooks fall back to the old folder-name patterns when nothing is configured.
+If you maintain a fork or a similar tool: the single highest-leverage test you can add is this
+pattern — ground truth from the engine's own log (`debug.txt`), not from your own model of the
+engine, compared op-for-op, not file-for-file. No regressions found: all 10 previously-tracked
+dev mods re-validated clean; the corrected oracle count is unchanged after every fix (234/234
+ops, 100% agreement, 0 false OK, 0 unclassified, across all mods the reference log names — 9 of
+them packed).
 
 ### Added — cross-platform support & guided installer (thanks @blablup, #2)
 - **Runs on Linux, macOS and Windows (Git Bash).** `.claude/hooks/_x4-env.sh` is a shared
@@ -138,14 +137,14 @@ global-vs-`C.` cdef variant trap), `$ship.$var` not surviving save/load, the
   **Four** separate safety features shipped silently inert before this release, and every one of
   them passed code review. A silent guard is worse than no guard, so the guards now have tests.
 
-### Fixed — x4validate reported a false OK on attribute-add ops
+### Fixed — x4validate reported a false OK on attribute-add ops (found before the oracle existed)
 - **`<add sel="…" type="@attr">value</add>` was silently ignored.** RFC 5261 §4.3 defines an
   attribute-add; X4 supports it and real mods use it. `_merge._do_add` never implemented it — the
   op fell through to the append-children branch, found no element children, mutated nothing, and
   still reported `OK 1 target(s)`. That is a **false OK on exactly the silent-no-op class this tool
   exists to catch**, and it survived earlier review because the op *looks* handled when you read
   the code. `_do_add` now sets the attribute, and `apply_diff` reports any `type=` it does not
-  model rather than pretending to apply it. Four regression tests (156 total).
+  model rather than pretending to apply it. Four regression tests.
 
   Attribute ops matter for cross-mod work: when another mod owns a sibling attribute, a whole-node
   `<replace>` bakes in whatever value was winning when you wrote the patch, while
@@ -161,7 +160,7 @@ global-vs-`C.` cdef variant trap), `$ship.$var` not surviving save/load, the
   error counts — they aren't comparable across that boundary.
 
 ### Verification
-`bash scripts/test-hooks.sh` — **33/33** assertions across both install layouts. Python suite: 152.
+`bash scripts/test-hooks.sh` — **33/33** assertions across both install layouts. Python suite: 170.
 
 ## v1.4
 
