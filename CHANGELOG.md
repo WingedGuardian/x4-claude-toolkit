@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.0.1
+
+Follow-up to v2.0: the remaining silently-inert safety feature, and assertions so this class of
+bug cannot ship again.
+
+### Fixed
+- **Auto-backup was not anchored to the toolkit.** `backup-before-edit.sh` was the only hook that
+  never adopted the shared path resolver; it used `${CLAUDE_PROJECT_DIR:-.}`, so with that variable
+  unset it wrote backups into whatever directory the shell happened to be in. It now resolves
+  through `_x4-env.sh`, and Windows-style paths are normalized before the copy.
+- **`_x4-env.sh` no longer falls back to `$(pwd)` for the toolkit root.** It derives it from the
+  hook's own location (`<toolkit>/.claude/hooks/` -> `<toolkit>`) instead, so every hook stays
+  anchored even when `CLAUDE_PROJECT_DIR` is absent.
+
+### Added
+- **`scripts/test-hooks.sh`** — feeds every hook synthetic tool-call JSON and asserts the decision
+  it returns: 33 assertions covering both the in-game and separate layouts (deny `reference/`,
+  `.cat`/`.dat`, base-game files; ask on `content.xml`, profile, deployed `extensions/`; allow
+  `dev/`, `$X4_MODS`, toolkit dirs), plus backup creation, audit-log append, backup anchoring, and
+  the stale-reference warning in both directions.
+
+  Three separate hooks shipped inert across previous releases — a PCRE lookahead that cannot match
+  under `grep -E`, a hook anchored to one developer's folder, and backups escaping the toolkit.
+  Every one passed code review. **A silent guard is worse than no guard**, so the guards now have
+  tests.
+
 ## v2.0
 
 **The toolkit is no longer Windows-only, and no longer assumes one folder layout.** Plus two

@@ -14,6 +14,7 @@
       "Bash(bash install.sh:*)",
       "Bash(bash bin/unpack-reference.sh)",
       "Bash(bin/xrcat:*)",
+      "Bash(bash scripts/test-hooks.sh)",
       "Bash(bash scripts/generate-baseline.sh)"
     ]
   }

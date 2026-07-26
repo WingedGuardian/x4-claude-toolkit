@@ -7,7 +7,19 @@
 # All locations are overridable; see .claude/x4-paths.env.example for the keys.
 
 # Toolkit root (where this toolkit lives).
-: "${X4_TOOLKIT:=${CLAUDE_PROJECT_DIR:-$(pwd)}}"
+# Prefer $CLAUDE_PROJECT_DIR; otherwise derive it from the hook's OWN location
+# (<toolkit>/.claude/hooks/ -> <toolkit>), because falling back to $(pwd) makes every
+# path resolve against whatever directory the shell happened to be in — which silently
+# scattered auto-backups outside the toolkit whenever the var was unset.
+if [ -z "${X4_TOOLKIT:-}" ]; then
+  if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
+    X4_TOOLKIT="$CLAUDE_PROJECT_DIR"
+  elif [ -n "${HOOK_DIR:-}" ] && [ -d "$HOOK_DIR/../.." ]; then
+    X4_TOOLKIT="$(cd "$HOOK_DIR/../.." && pwd)"
+  else
+    X4_TOOLKIT="$(pwd)"
+  fi
+fi
 
 # Load the user's path config if present (KEY=VALUE lines).
 _x4_cfg="${X4_CONFIG:-$X4_TOOLKIT/.claude/x4-paths.env}"

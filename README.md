@@ -107,6 +107,7 @@ The `/x4-mod-interaction` skill ties all four together into one interaction brie
 - **Auto-backup** — every edited file is copied to `.claude\backups\` with an audit log.
 - **Confidence system** — no guessing; Claude rates confidence and lists assumptions first.
 - **Baseline capture** — `scripts/generate-baseline.sh` records a known-good snapshot (game version, installed-mod hashes, a normalized debug.txt error fingerprint) to diff against later.
+- **The guards are tested** — `bash scripts/test-hooks.sh` feeds every hook synthetic tool-call JSON and asserts the decision it returns (33 assertions, across both the in-game and separate layouts). Run it after any change to `.claude/hooks/`. This exists because a silent guard is worse than no guard: several hooks were inert for entire releases and code review never caught it.
 
 ---
 

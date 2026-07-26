@@ -106,6 +106,9 @@ Running `x4validate` is routine and non-optional — like checking `debug.txt`.
   results as advisory.
 - **`if=`-guarded ops report INFO, not ERROR** — a false guard is a designed no-op. A guard that
   PASSES while its `sel=` still misses is a real error.
+- **After ANY change to `.claude/hooks/`, run `bash scripts/test-hooks.sh`** (33 assertions over
+  both install layouts). The hooks are the safety net and nothing else exercises them — several
+  shipped silently inert because reading the code looked fine.
 
 ## Dry-Run Convention
 
