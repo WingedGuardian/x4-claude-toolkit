@@ -1,22 +1,25 @@
 #!/bin/bash
-# PostToolUse (Edit|Write): advisory x4validate on dev\ diff-XML edits.
+# PostToolUse (Edit|Write): advisory x4validate on a mod's diff-XML edits.
 # Non-blocking — surfaces unmatched sel= findings as additionalContext. Never denies.
 JQ="${JQ:-jq}"
 UV="${UV:-uv}"
-X4V="${X4V:-$CLAUDE_PROJECT_DIR/tools/x4validate}"
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$HOOK_DIR/_x4-env.sh"
+X4V="${X4V:-$X4_TOOLKIT/tools/x4validate}"
 
 INPUT=$(cat /dev/stdin)
 FP=$(echo "$INPUT" | "$JQ" -r '.tool_input.file_path // empty')
 [ -z "$FP" ] && exit 0
 
-# Only X4 dev\ XML files
-echo "$FP" | grep -qiE 'Modding[/\\]X4[/\\]dev[/\\].*\.xml$' || exit 0
+# Only XML files, and never the read-only reference tree.
+echo "$FP" | grep -qiE '\.xml$' || exit 0
+x4_under "$FP" "$X4_REFERENCE" && exit 0
 
 F="${FP//\\//}"                  # normalize backslashes for bash
 [ -f "$F" ] || exit 0
 grep -qi '<diff' "$F" 2>/dev/null || exit 0   # only diff patches
 
-# Mod root = nearest ancestor with content.xml
+# Mod root = nearest ancestor with content.xml (so this works wherever mods live)
 D=$(dirname "$F"); ROOT=""
 for _ in $(seq 1 25); do
   [ -f "$D/content.xml" ] && { ROOT="$D"; break; }
