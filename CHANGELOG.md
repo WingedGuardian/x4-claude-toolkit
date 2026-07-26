@@ -65,6 +65,19 @@ global-vs-`C.` cdef variant trap), `$ship.$var` not surviving save/load, the
   **Four** separate safety features shipped silently inert before this release, and every one of
   them passed code review. A silent guard is worse than no guard, so the guards now have tests.
 
+### Fixed — x4validate reported a false OK on attribute-add ops
+- **`<add sel="…" type="@attr">value</add>` was silently ignored.** RFC 5261 §4.3 defines an
+  attribute-add; X4 supports it and real mods use it. `_merge._do_add` never implemented it — the
+  op fell through to the append-children branch, found no element children, mutated nothing, and
+  still reported `OK 1 target(s)`. That is a **false OK on exactly the silent-no-op class this tool
+  exists to catch**, and it survived earlier review because the op *looks* handled when you read
+  the code. `_do_add` now sets the attribute, and `apply_diff` reports any `type=` it does not
+  model rather than pretending to apply it. Four regression tests (156 total).
+
+  Attribute ops matter for cross-mod work: when another mod owns a sibling attribute, a whole-node
+  `<replace>` bakes in whatever value was winning when you wrote the patch, while
+  `<remove sel="…/@x"/>` + `<add type="@value">` leaves it alone.
+
 ### Changed
 - `/x4-debug` no longer ships a hardcoded workshop id as a "known-benign" suppression rule — it
   now describes the *class* (an extension id not in your installed set) and warns against

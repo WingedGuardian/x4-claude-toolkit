@@ -153,6 +153,16 @@ def apply_diff(tree: etree._Element, diff_root: etree._Element,
                                      silent, ambiguous=True))
             continue
 
+        # An <add type=...> we do not implement must not be reported as applied.
+        # Anything other than RFC 5261's "@attr" form (e.g. a namespace add) would
+        # silently change nothing here while the engine acts on it.
+        typ = op.get("type", "")
+        if op.tag == "add" and typ and not typ.startswith("@"):
+            applied.append(AppliedOp(op.tag, sel, line, False,
+                                     f"unsupported add type={typ!r} — only RFC 5261 "
+                                     "type=\"@attr\" is modelled", silent))
+            continue
+
         origin = Origin(source, op.tag, line) if recorder is not None else None
         if op.tag == "remove":
             _do_remove(targets, recorder, origin)
@@ -229,11 +239,33 @@ def _do_replace(targets, op, recorder: Recorder | None = None,
 def _do_add(targets, op, recorder: Recorder | None = None,
             origin: Origin | None = None) -> None:
     pos = op.get("pos", "")
+    typ = op.get("type", "")
     new_children = [c for c in op if isinstance(c.tag, str)]
 
     def _record(new):
         if recorder is not None:
             recorder.elem_created(new, origin)
+
+    # RFC 5261 §4.3: type="@name" adds an ATTRIBUTE to each target, valued from the
+    # op's text. X4 supports this and installed mods rely on it (da_ku_ai_tweaks,
+    # axes10k20kscanshiprange). It is the right tool when another mod owns a sibling
+    # attribute you must not clobber — a whole-node <replace> would bake in whatever
+    # value happened to be winning at authoring time.
+    #
+    # Without this branch the op fell through to "append children"; with no element
+    # children to append it mutated nothing yet still reported "1 target(s)" — a
+    # false OK on precisely the silent-no-op class this tool exists to catch.
+    if typ.startswith("@"):
+        name = typ[1:]
+        if not name:
+            return
+        for t in targets:
+            if _is_attr(t):
+                continue  # cannot hang an attribute off an attribute
+            t.set(name, op.text or "")
+            if recorder is not None and origin is not None:
+                recorder.attr_set(t, name, Origin(origin.source, "add-attr", origin.line))
+        return
 
     for t in targets:
         if _is_attr(t):

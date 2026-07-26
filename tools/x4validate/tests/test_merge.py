@@ -161,3 +161,47 @@ def test_strip_mod_index_prefix():
         r"extensions\mymod\assets\props\x_macro") == "assets/props/x_macro"
     # No prefix -> unchanged (mod-relative style).
     assert _resolve._strip_mod_index_prefix(r"assets\props\x_macro") == r"assets\props\x_macro"
+
+
+# --- RFC 5261 attribute-add ---------------------------------------------------
+# Regression: <add type="@attr"> fell through to the append-children branch and,
+# with no element children, reported "1 target(s)" while mutating nothing. Found
+# while repairing higher_dimensional_space, where a whole-node <replace> would have
+# baked in another mod's @radius.
+
+def _apply(base_xml: str, diff_xml: str):
+    tree = _merge.parse_bytes(base_xml.encode())
+    ops = _merge.apply_diff(tree, _merge.parse_bytes(diff_xml.encode()))
+    return tree, ops
+
+
+def test_add_type_attr_sets_the_attribute():
+    tree, ops = _apply(
+        "<r><safepos x='1' radius='21km'/></r>",
+        '<diff><add sel="//safepos" type="@value">$Position</add></diff>')
+    assert [o.ok for o in ops] == [True]
+    sp = tree.find("safepos")
+    assert sp.get("value") == "$Position"
+    assert sp.get("radius") == "21km", "sibling attributes must survive"
+
+
+def test_add_type_attr_overwrites_existing_value():
+    tree, _ = _apply(
+        "<r><safepos value='old'/></r>",
+        '<diff><add sel="//safepos" type="@value">new</add></diff>')
+    assert tree.find("safepos").get("value") == "new"
+
+
+def test_add_with_unsupported_type_is_reported_not_silently_ok():
+    _, ops = _apply(
+        "<r><safepos/></r>",
+        '<diff><add sel="//safepos" type="namespace">urn:x</add></diff>')
+    assert [o.ok for o in ops] == [False]
+    assert "unsupported add type" in ops[0].detail
+
+
+def test_plain_add_still_appends_children():
+    tree, ops = _apply(
+        "<r><a/></r>", '<diff><add sel="//a"><b/></add></diff>')
+    assert [o.ok for o in ops] == [True]
+    assert tree.find("a/b") is not None
