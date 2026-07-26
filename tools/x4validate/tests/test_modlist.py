@@ -191,3 +191,52 @@ def test_merge_installed_matches_by_id_and_flags_missing():
     assert gone2 == 1
     assert reg["mods"][0]["auto"]["installed"] is False
     assert reg["mods"][0]["auto"]["nexus_id"] == 305  # still preserved
+
+
+# --------------------------------------------------------------------------
+# Identity plausibility. Fixtures are the REAL misresolutions found on
+# 2026-07-26 by auditing a live registry: 7 of 69 resolved mods pointed at an
+# unrelated Nexus page, most of them marked `settled: stable, ready`, because
+# _resolve_identity took the top search hit on faith.
+# --------------------------------------------------------------------------
+
+WRONG = [
+    # (installed name, the Nexus title the tool actually chose)
+    ("CPSDO VRO Adaptation Pack 8.0+", "Firefly (Serenity) VRO and standard versions"),
+    ("CPSDO Faction Pack 9.0+",        "Larger Fleets Factions and Xenon - 9.00 Port"),
+    ("Vaygr Battlecruiser",            "Dreadnaughts and Battlecruisers for SWI"),
+    ("AM7OU VRO Patch",                "new bor ship (Boron Hammerhead) - VRO patch"),
+    ("Immersive Sounds",               "X4 Sound Experience"),
+    ("Realspace - STARS",              "X4 Star Trek Starfleet Command shippack"),
+]
+
+RIGHT = [
+    ("CPSDO Modpack 9.0+",       "CPSDO Modpack"),
+    ("CPSDO VRO Adaptation Pack", "CPSDO Modpack VRO"),
+    # squashed folder-style name vs the spaced Nexus title — no shared token, same mod
+    ("MoreAtmosphericShield",    "More Atmospheric Shield"),
+    ("Higher Dimensional Space", "Higher Dimensional Space"),
+]
+
+
+def test_plausible_match_rejects_the_real_misresolutions():
+    for own, nexus in WRONG:
+        assert not _modlist._plausible_match(own, nexus), (
+            f"{own!r} must NOT auto-resolve to {nexus!r} — a wrong id silently "
+            "tracks another mod's version while the row reads 'settled: stable'")
+
+
+def test_plausible_match_accepts_genuine_pages():
+    for own, nexus in RIGHT:
+        assert _modlist._plausible_match(own, nexus), f"{own!r} should match {nexus!r}"
+
+
+def test_plausible_match_ignores_filler_only_overlap():
+    """Sharing only generic words ('VRO', 'patch', 'ship') is not evidence."""
+    assert not _modlist._plausible_match("Terran Beam Weapons VRO patch",
+                                         "Boron Hammerhead ship VRO patch")
+
+
+def test_plausible_match_abstains_when_there_is_nothing_to_judge():
+    """No identity tokens on either side -> don't invent a rejection."""
+    assert _modlist._plausible_match("VRO patch", "mod pack")

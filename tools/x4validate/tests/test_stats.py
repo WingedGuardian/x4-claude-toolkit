@@ -90,3 +90,49 @@ def test_effective_wares_reads_installed_overlay(tmp_path):
     eff = _stats.effective_wares(ext, cfg)
     assert "ore" in eff and "newware" in eff
     assert eff["newware"].price_avg == 999.0
+
+
+# --------------------------------------------------------------------------
+# Ungrouped wares must never be compared as if they were peers.
+#
+# Real incident (2026-07-26): group="" was used as a real dict key, so all 1386
+# ungrouped wares in the game (paint mods, cosmetic props) were bucketed together.
+# A candidate priced 1 was reported "~0th percentile" against a pool with median
+# 51,696 — a comparison as meaningless as it looks.
+# --------------------------------------------------------------------------
+
+def test_ungrouped_ware_is_not_comparable_not_measured_against_junk_bucket():
+    candidate = {"cpsdo_paintmod_01": _stats.Ware(
+        id="cpsdo_paintmod_01", group="", transport="", volume=0, tags="",
+        price_avg=1.0, price_min=1.0, price_max=1.0)}
+    effective = {
+        "cpsdo_paintmod_01": candidate["cpsdo_paintmod_01"],
+        # another ungrouped ware with a wildly different price — must NEVER become a peer
+        "some_other_cosmetic": _stats.Ware(
+            id="some_other_cosmetic", group="", transport="", volume=0, tags="",
+            price_avg=450_000_000.0, price_min=1.0, price_max=1.0),
+        "ore": _stats.Ware(id="ore", group="minerals", transport="", volume=0, tags="",
+                           price_avg=500.0, price_min=1.0, price_max=1.0),
+    }
+    out = _stats.compare_wares(candidate, effective)
+    assert len(out) == 1
+    cmp = out[0]
+    assert cmp.peer_count == 0
+    assert "not comparable" in cmp.note
+    assert "percentile" not in cmp.note
+
+
+def test_grouped_ware_comparison_still_works():
+    candidate = {"newweap": _stats.Ware(id="newweap", group="weapons", transport="",
+                                    volume=0, tags="", price_avg=1000.0,
+                                    price_min=1.0, price_max=1.0)}
+    effective = {
+        "newweap": candidate["newweap"],
+        "w1": _stats.Ware(id="w1", group="weapons", transport="", volume=0, tags="",
+                          price_avg=500.0, price_min=1.0, price_max=1.0),
+        "w2": _stats.Ware(id="w2", group="weapons", transport="", volume=0, tags="",
+                          price_avg=2000.0, price_min=1.0, price_max=1.0),
+    }
+    out = _stats.compare_wares(candidate, effective)
+    assert out[0].peer_count == 2
+    assert "percentile" in out[0].note

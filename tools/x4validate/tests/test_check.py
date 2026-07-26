@@ -72,3 +72,41 @@ def test_validate_no_false_dangling_when_strings_in_neutral_file(tmp_path):
     report = _check.validate(mod, cfg)
     ref_findings = [f for f in report.findings if f.category == "ref"]
     assert ref_findings == [], [f.message for f in ref_findings]
+
+
+# --------------------------------------------------------------------------
+# extensions/ego_dlc_*/... whose DLC was never unpacked into reference/.
+#
+# Real incident (2026-07-26): ego_dlc_mini_01 (Hyperion Pack) and ego_dlc_mini_02
+# (Envoy Pack) are genuinely installed+packed in the live game but were never
+# unpacked into reference/ (only the 6 DLC named in CLAUDE.md were). A patch
+# targeting Hyperion content reported a hard ERROR ("no base game file"), which
+# asserts the file doesn't exist — something we cannot actually know, since our
+# reference simply never covered that DLC.
+# --------------------------------------------------------------------------
+
+def test_unpacked_dlc_missing_from_reference_is_info_not_error(tmp_path):
+    ref = tmp_path / "reference"
+    # only one DLC unpacked into reference/, mirroring the real gap
+    _write(ref / "extensions/ego_dlc_split/libraries/wares.xml", "<wares/>")
+    cfg = _merge.Config(reference=ref)
+
+    mod = tmp_path / "mod"
+    _write(mod / "content.xml", '<content id="mod"/>')
+    _write(mod / "extensions/ego_dlc_mini_01/assets/units/size_l/ship_l.xml",
+           '<diff><replace sel="//ship/@id">x</replace></diff>')
+
+    sev, cat, msg = _check._no_base_finding(
+        "extensions/ego_dlc_mini_01/assets/units/size_l/ship_l.xml", cfg)
+    assert sev == "info"
+    assert "never unpacked" in msg and "ego_dlc_mini_01" in msg
+
+
+def test_dlc_unpacked_in_reference_still_reports_real_path_mismatch(tmp_path):
+    ref = tmp_path / "reference"
+    _write(ref / "extensions/ego_dlc_split/libraries/wares.xml", "<wares/>")
+    cfg = _merge.Config(reference=ref)
+
+    sev, cat, msg = _check._no_base_finding(
+        "extensions/ego_dlc_split/libraries/nonexistent.xml", cfg)
+    assert sev == "error" and cat == "path"

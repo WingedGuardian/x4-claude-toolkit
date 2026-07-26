@@ -1,5 +1,78 @@
 # Changelog
 
+## v2.1
+
+**x4validate's model of the engine had never been validated against the engine.** This release
+closes that gap: a `debug.txt`-driven oracle now measures x4validate's verdicts against what X4
+actually did, and every defect below was found and fixed using it — not by inspection. 156 tests
+grew to 170, and none of them are cosmetic: each is a real-data regression test for a real false
+result, several mutation-verified against the pre-fix code to confirm they actually catch it.
+
+### Fixed — the tool was blind to 9 of the 10 mods with the errors that matter, and said "OK"
+- **Packed mods were never sel-checked, and reported a clean pass.** `iter_diff_files` walked
+  `mod_dir.rglob("*.xml")`, which finds nothing inside a `.cat`/`.dat` archive — so the core
+  sel-resolution check silently examined zero ops on any packed mod and printed
+  `OK: no issues found`, exit 0. Sibling code (`iter_mod_xml_roots`) already read packed mods via
+  the catalog reader; the core check simply never used it. Measured against a real debug.txt: **9
+  of 10 mods with engine-rejected diff ops are packed** — this covered most of the real damage.
+  Fixed by delegating to the packed-aware iterator; a mod where nothing could be read is now a
+  WARN, never a silent pass.
+- **`--debug` correlation missed 74% of the log, and 100% of the class it exists to catch.**
+  `_debuglog.parse_debug` recognized 4 error shapes; a real 2463-line `debug.txt` showed it
+  returning 645 (26%) — and **zero** of the 453 "diff op matched 0 or >1 nodes" lines, the
+  RFC-5261 failure this tool is built around. Two new shapes fixed it (453/453 now captured),
+  after finding two parser traps: the engine omits the file extension on these lines (`'…\
+  material_library'`, not `…material_library.xml`), and the selector itself contains single
+  quotes (`@id='ore'`) in 91% of real cases, which a naive `[^']*` capture group truncates.
+- **Tier B applied the mod under test LAST — the engine does not.** Cross-mod validation merged
+  every *other* installed mod, then applied the mod under test on top — a tree that never exists
+  at the moment the engine actually applies that mod's patches. A node added by a
+  **later-loading** mod looked present when it should not have. Fixed by truncating the merge at
+  the mod's own load-order position. Measured on a real 192-op case: **27 false "OK" results,
+  now 0** — full agreement with the engine, verified op-for-op.
+- **One malformed overlay file crashed validation of every OTHER mod that touched the same
+  path.** An `XMLSyntaxError` while reading an overlay escaped uncaught; exit code 1 made a crash
+  indistinguishable from "found real errors." Now recorded and reported as a WARN naming the mod
+  and file, never a crash.
+- **A patch targeting an uninstalled mod is a designed no-op, not an error.** Compatibility-patch
+  mods commonly ship nested cross-mod patches for dozens of optional targets. Enabling packed
+  input surfaced this loudly (one mod went from 0 to 76 reported errors, 72 of them for targets
+  simply not installed). Now reported as INFO, the same treatment already given to a
+  false `if=` guard. **76 errors → 4 errors + 72 info** on that mod.
+- **A DLC installed-but-never-unpacked-into-`reference/` reported a hard ERROR asserting content
+  doesn't exist** — something the tool cannot actually know. Now reported as an honest
+  "cannot verify" INFO naming the DLC, not a false ERROR.
+
+### Fixed — x4modlist auto-resolved ~10% of mods to the wrong Nexus page
+`_resolve_identity` accepted the top search hit unconditionally. Measured on a live 101-mod
+registry: **7 of 69 resolved entries pointed at an unrelated mod**, most flagged
+`settled: stable` — silently tracking someone else's update history. Root cause: a multi-word
+Nexus search can return zero hits where a single-word search returns several correct ones, and
+the empty-result fallback (drop the leading word and retry) can land on an unrelated mod sharing
+only a generic word like "VRO" or "patch." Now requires at least one shared identity-bearing
+token (generic modding filler excluded) before accepting a match; an unresolvable mod is now
+flagged for manual review instead of silently mis-tracked.
+
+### Fixed — x4effective and x4stats: confident-looking answers that meant "nothing was checked"
+- **`x4effective ls ship` printed `0 ship(s)`** — reading as "this game has no ships," when the
+  real issue is that `ship` isn't a stored entity kind (ships are `kind=macro`). Unknown kinds
+  are now rejected with the actual list of valid kinds and a hint for the common ship/equipment
+  aliases.
+- **x4stats compared ungrouped wares against an unrelated 1386-ware pool.** A ware with no
+  `group=` attribute (a paint mod, a cosmetic prop) was bucketed with every *other* ungrouped
+  ware in the game and given a real-looking percentile against a wildly unrelated price
+  distribution. Now reported as "not comparable," never a fabricated percentile.
+
+### Notes
+- All of the above were found by building and running a real **oracle**: parse `debug.txt`,
+  extract exactly what the engine accepted/rejected, and compare it to x4validate's verdict on
+  the same mod — op-for-op, not file-for-file. If you maintain a fork or a similar tool, this
+  pattern (ground truth from the engine's own log, not from your own model of the engine) is the
+  single highest-leverage test you can add.
+- No regressions: all 10 previously-tracked dev mods re-validated clean; the corrected oracle
+  count is unchanged after every fix (234/234 ops, 100% agreement, 0 false OK, 0 unclassified,
+  across all mods the reference log names — 9 of them packed).
+
 ## v2.0
 
 **The toolkit is no longer Windows-only, and no longer assumes one folder layout.** Plus two

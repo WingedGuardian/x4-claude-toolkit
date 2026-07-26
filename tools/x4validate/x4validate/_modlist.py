@@ -94,6 +94,40 @@ def _search_with_fallback(name_hint: str) -> list[tuple[int, str]]:
     return hits
 
 
+# Words that carry no identity — they appear in hundreds of X4 mod titles, so two
+# names sharing only these are NOT the same mod ("... VRO patch" matches everything).
+_GENERIC = {
+    "x4", "foundations", "mod", "mods", "modpack", "pack", "patch", "patches",
+    "vro", "the", "and", "for", "of", "a", "an", "to", "with", "version", "versions",
+    "standard", "compatibility", "compat", "fix", "fixes", "update", "updated",
+    "port", "edition", "addon", "add", "on", "new", "reworked", "rebalanced",
+    "trimmed", "adaptation", "expansion", "overhaul", "ship", "ships", "extension",
+}
+
+
+def _identity_tokens(name: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", (name or "").lower())
+            if w not in _GENERIC and len(w) > 2}
+
+
+def _plausible_match(own_name: str, nexus_name: str) -> bool:
+    """Could *nexus_name* really be the upstream page for *own_name*?
+
+    Requires at least one shared identity-bearing token, so a match cannot rest
+    entirely on filler like "VRO" or "patch". Also accepts the squashed form
+    ("MoreAtmosphericShield" vs "More Atmospheric Shield"), which shares no
+    whitespace tokens but is obviously the same mod.
+    """
+    a, b = _identity_tokens(own_name), _identity_tokens(nexus_name)
+    if not a or not b:
+        return True  # nothing to judge on — don't invent a rejection
+    if a & b:
+        return True
+    squash_a = re.sub(r"[^a-z0-9]", "", (own_name or "").lower())
+    squash_b = re.sub(r"[^a-z0-9]", "", (nexus_name or "").lower())
+    return bool(squash_a) and bool(squash_b) and (squash_a in squash_b or squash_b in squash_a)
+
+
 def _resolve_identity(content_id: str, auto) -> int | None:
     """A3 cascade (API-first): ws_ -> Steam title -> Nexus search; named -> prefer
     the mod's OWN manifest name (`installed_name`, read straight from its
@@ -122,11 +156,24 @@ def _resolve_identity(content_id: str, auto) -> int | None:
     except _nexus.NexusError:
         return None
     if hits:
-        auto["resolve"] = "auto (spot-check)"
         auto["resolve_hint"] = used_hint
         # Keep top candidates so the user can spot-check / correct cheaply.
         auto["candidates"] = [f"{mid}:{nm}" for mid, nm in hits[:3]]
-        return hits[0][0]
+        own_name = auto.get("installed_name") or _humanize(content_id)
+        match = next((h for h in hits if _plausible_match(own_name, h[1])), None)
+        if match is None:
+            # Every hit is unrelated. Leaving it UNRESOLVED is strictly better than a
+            # confident wrong id: a wrong id makes update-detection track someone
+            # else's mod while the row reads 'settled: stable'. Measured 2026-07-26:
+            # 7 of 69 resolved mods were wrong this way, e.g. cpsdo_vro ("CPSDO VRO
+            # Adaptation Pack") -> 2017 "Firefly (Serenity) VRO and standard versions",
+            # because the search for 'cpsdo vro' returns nothing while 'cpsdo' returns
+            # five correct hits, and the top result was taken on faith.
+            auto["resolve"] = "unmatched (needs review)"
+            return None
+        auto["resolve"] = ("auto (spot-check)" if match is hits[0]
+                           else "auto (skipped implausible top hit; spot-check)")
+        return match[0]
     return None
 
 

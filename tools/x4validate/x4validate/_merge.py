@@ -70,6 +70,10 @@ class MergeResult:
     tree: etree._Element | None
     sources: list[str] = field(default_factory=list)  # which overlays contributed
     base_found: bool = False
+    # Work NOT done: overlays that could not be parsed and were left out of the tree.
+    # Without this channel a malformed overlay is indistinguishable from an absent
+    # one, and the resulting tree looks complete when it is not.
+    skipped: list[str] = field(default_factory=list)
 
 
 def parse_file(path: Path) -> etree._Element:
@@ -80,19 +84,33 @@ def parse_bytes(data: bytes) -> etree._Element:
     return etree.fromstring(data, _PARSER)
 
 
-def overlay_root(odir: Path, vpath: str) -> etree._Element | None:
+def overlay_root(odir: Path, vpath: str,
+                 skipped: list[str] | None = None) -> etree._Element | None:
     """Resolve *vpath* within an overlay dir to a parsed root, or None if absent.
 
     Loose files take priority over the mod's packed catalog (they do in the engine
     too, and during development you edit loose). Falls back to reading the member
     from the mod's ext_*/subst_* catalogs so packed mods (e.g. VRO) are visible.
+
+    A MALFORMED overlay file is recorded in *skipped* and treated as absent — it must
+    be neither a crash nor a silent pass. Before 2026-07-26 the XMLSyntaxError escaped
+    and killed the whole run: `cpsdo_faction/t/0001-l088.xml` has a mismatched tag, so
+    validating `ship_variation_expansion_vro` (which touches the same vpath) died with
+    a traceback. Exit code 1 made that indistinguishable from "found errors".
+    Returning a bare None instead would be the opposite failure — a file the engine
+    also refuses to load, silently counted as "nothing here".
     """
     loose = odir / vpath
-    if loose.is_file():
-        return parse_file(loose)
-    data = _cat.read_path(odir, vpath)
-    if data is not None:
-        return parse_bytes(data)
+    try:
+        if loose.is_file():
+            return parse_file(loose)
+        data = _cat.read_path(odir, vpath)
+        if data is not None:
+            return parse_bytes(data)
+    except etree.XMLSyntaxError as exc:
+        if skipped is not None:
+            skipped.append(f"{odir.name}/{vpath}: malformed XML, overlay skipped ({exc})")
+        return None
     return None
 
 
@@ -386,11 +404,12 @@ def _build_owned(owner_name: str, rel: str, vpath: str,
     """Merge a file OWNED by another mod: that mod supplies the base at *rel*,
     every other mod patches it at the nested *vpath*."""
     sources: list[str] = []
+    skipped: list[str] = []
     tree: etree._Element | None = None
 
     owner_dir = next((d for d in overlay_dirs if d.name.lower() == owner_name.lower()), None)
     if owner_dir is not None:
-        oroot = overlay_root(owner_dir, rel)
+        oroot = overlay_root(owner_dir, rel, skipped)
         if oroot is not None and oroot.tag != "diff":
             tree = oroot
             sources.append(f"{owner_dir.name}:owner")
@@ -398,7 +417,7 @@ def _build_owned(owner_name: str, rel: str, vpath: str,
     for odir in overlay_dirs:
         if odir is owner_dir:
             continue
-        oroot = overlay_root(odir, vpath)
+        oroot = overlay_root(odir, vpath, skipped)
         if oroot is None:
             continue
         tree, mode = apply_overlay(tree, oroot, vpath, odir.name, recorder=recorder)
@@ -406,7 +425,8 @@ def _build_owned(owner_name: str, rel: str, vpath: str,
             recorder.file_chain.append(Origin(odir.name, mode))
         sources.append(f"{odir.name}:{mode}")
 
-    return MergeResult(tree=tree, sources=sources, base_found=tree is not None)
+    return MergeResult(tree=tree, sources=sources, base_found=tree is not None,
+                       skipped=skipped)
 
 
 def build_effective(
@@ -423,6 +443,7 @@ def build_effective(
     config = config or Config()
     vpath = virtual_path.replace("\\", "/").lstrip("/")
     sources: list[str] = []
+    skipped: list[str] = []
 
     # DLC, then the Tier-B installed set (load order), then any explicit extras
     # (e.g. the mod under test) last.
@@ -446,7 +467,7 @@ def build_effective(
         sources.append("base")
 
     for odir in overlay_dirs:
-        oroot = overlay_root(odir, vpath)
+        oroot = overlay_root(odir, vpath, skipped)
         if oroot is None:
             continue
         tree, mode = apply_overlay(tree, oroot, vpath, odir.name, recorder=recorder)
@@ -465,4 +486,5 @@ def build_effective(
         tree = etree.Element("language")
         sources.append("synthetic:language")
 
-    return MergeResult(tree=tree, sources=sources, base_found=base_found or tree is not None)
+    return MergeResult(tree=tree, sources=sources,
+                       base_found=base_found or tree is not None, skipped=skipped)

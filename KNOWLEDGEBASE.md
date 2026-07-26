@@ -115,17 +115,28 @@ reference graph.
 What it checks (non-zero exit on errors → usable as a gate):
 1. **`sel=` resolution** — every `<add>/<replace>/<remove>` `sel=`/`if=` is evaluated (real
    lxml XPath) against the effective base+DLC merged tree. Flags any op matching nothing (the
-   silent-no-op gotcha). Correctly handles the `//descendant` idioms that naive ElementTree
-   engines false-negative.
-2. **Reference integrity** — ware / macro (`<component ref>`) / `{page,t}` references the mod
+   silent-no-op gotcha) or matching MORE than one (also a silent no-op — X4 skips ambiguous ops
+   per RFC 5261). Correctly handles the `//descendant` idioms that naive ElementTree engines
+   false-negative. Works against **packed mods** (`.cat`/`.dat`) as well as loose XML.
+2. **`--tier b`** — merges the installed extension set, truncated at the mod under test's own
+   load-order position (the tree its selectors actually see — not every other installed mod,
+   which would include content that loads *after* it and never validate). Cross-mod patches
+   resolve; a node another mod removed is caught too. Load order is community convention, not
+   engine-verified — ordering-dependent results are advisory.
+3. **`--debug <debug.txt>`** — folds the ENGINE's own `[=ERROR=]` lines for this mod into the
+   report and GATES on them. This is the authoritative layer: it catches real ops the engine
+   skipped (0 or >1 matches) that static analysis alone might still call a pass. Pass a log
+   captured AFTER your latest edits, or the gate is checking stale state.
+4. **Reference integrity** — ware / macro (`<component ref>`) / `{page,t}` references the mod
    introduces must resolve (defs unioned across base+DLC+mod).
-3. **Completeness** — `--entity <type>:<id> --like <type>:<vanilla>` models a new entity's
+5. **Completeness** — `--entity <type>:<id> --like <type>:<vanilla>` models a new entity's
    footprint on a vanilla analogue and lists missing pieces (`ware`/`ship`/`module`).
 
 Usage: `cd tools\x4validate && uv run x4validate <dev\mod>` (`--json` for machine output;
 `--update` runs the 7.x→9.0 XSD migration checker). Set `X4_REFERENCE` to your unpacked tree.
 **Limits:** reference catalog = ware + macro + text (extend in `_refs.py`); completeness
-recipes = ware/ship/module. A clean run is necessary, not sufficient — still test in-game.
+recipes = ware/ship/module; a DLC that's installed but not unpacked into `reference/` reports
+"cannot verify," not a real check. A clean run is necessary, not sufficient — still test in-game.
 
 ### x4modlist (bundled — mod-registry triage, Nexus API-first)
 
@@ -199,8 +210,10 @@ can't see packed mods.
   against the same-`group` price distribution in the EFFECTIVE tree (so an installed overhaul's
   rescaled prices are the baseline being compared against, not vanilla's). Grounds a balance
   discussion — e.g. "this ware sits at the 98th percentile of its group" — it does NOT settle one;
-  same price ≠ same effectiveness, and a mod can be perfectly fine at any percentile. `x4stats
-  macro <file>` flattens one macro's numeric property vector for a manual peer comparison.
+  same price ≠ same effectiveness, and a mod can be perfectly fine at any percentile. A ware with
+  no `group=` (a paint mod, a cosmetic prop) is reported "not comparable," never measured against
+  an unrelated bucket. `x4stats macro <file>` flattens one macro's numeric property vector for a
+  manual peer comparison.
 - **`x4similar`** (`_similarity.py`) — ADVISORY fuzzy same-entity detection: a mod adding a ship
   under its own id/name that's stat-wise a near-duplicate of one already in the effective tree
   (a different overhaul mod's rescaled reskin, or two mods independently adding "the same" ship).

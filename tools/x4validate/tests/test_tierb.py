@@ -181,8 +181,80 @@ def test_tier_b_excludes_mod_under_test_by_content_id(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# RFC 5261 ambiguity: sel must match exactly one node, or X4 skips the op
+# Load-order truncation: a mod's selectors only see mods that load BEFORE it.
+#
+# Real incident (2026-07-26): `cpsdo_vro` <add>s ishield_cpsdo_* wares and loads
+# AFTER `cpsdo_faction`, which patches them. The engine runs the patch first and
+# skips it (27 "No matching node" ops). Merging *all* other mods made those ops
+# look fine — 27 FALSE OKs. Truncating at the mod's own position took the oracle
+# from 165/192 to 192/192 agreement with the engine.
 # --------------------------------------------------------------------------
+
+def test_tier_b_truncates_at_mod_load_order_position(tmp_path, monkeypatch):
+    installed = tmp_path / "extensions"
+    for name in ("aaa_earlier", "mmm_target", "zzz_later"):
+        _write(installed / name / "content.xml", f'<content id="{name}_id"/>')
+    dev = tmp_path / "dev" / "mmm_target"
+    _write(dev / "content.xml", '<content id="mmm_target_id"/>')
+
+    monkeypatch.setattr("x4validate._registry.default_installed_dirs", lambda: [installed])
+
+    overlays, notes = _check.tier_b_overlays(dev)
+    names = [p.name for p in overlays]
+    assert names == ["aaa_earlier"], (
+        "only mods loading BEFORE the target may be merged — including a later mod "
+        "builds a tree that never exists when this mod is patched")
+    assert "zzz_later" not in names
+    assert any("load BEFORE this mod" in n for n in notes)
+
+
+def test_tier_b_uninstalled_mod_says_it_assumes_last(tmp_path, monkeypatch):
+    """A dev-only mod has no knowable position. Falling back to 'last' is the
+    optimistic tree, so the note must SAY so rather than imply the tree is exact."""
+    installed = tmp_path / "extensions"
+    for name in ("aaa_earlier", "zzz_later"):
+        _write(installed / name / "content.xml", f'<content id="{name}_id"/>')
+    dev = tmp_path / "dev" / "never_deployed"
+    _write(dev / "content.xml", '<content id="never_deployed_id"/>')
+
+    monkeypatch.setattr("x4validate._registry.default_installed_dirs", lambda: [installed])
+
+    overlays, notes = _check.tier_b_overlays(dev)
+    assert len(overlays) == 2, "unknown position -> assume last, merge everything"
+    assert any("NOT installed" in n and "assumed to load LAST" in n for n in notes)
+
+
+def test_op_targeting_a_later_mods_node_fails_like_the_engine(tmp_path, monkeypatch):
+    """The ishield_cpsdo_* shape, end to end: a LATER mod adds the ware, we patch it.
+
+    The engine skips this op. Before the truncation fix our tree already contained
+    the ware, so the op applied cleanly and we reported OK.
+    """
+    ref = _ref_with_wares(tmp_path)
+    installed = tmp_path / "extensions"
+    _write(installed / "mmm_target" / "content.xml", '<content id="mmm_target_id"/>')
+    # loads AFTER the target, and is the only source of the ware being patched
+    _write(installed / "zzz_adder" / "content.xml", '<content id="zzz_adder_id"/>')
+    _write(installed / "zzz_adder" / "libraries/wares.xml",
+           '<diff><add sel="/wares"><ware id="late_ware"><owner faction="argon"/>'
+           '</ware></add></diff>')
+
+    dev = tmp_path / "dev" / "mmm_target"
+    _write(dev / "content.xml", '<content id="mmm_target_id"/>')
+    _write(dev / "libraries/wares.xml",
+           '<diff><replace sel="//wares/ware[@id=\'late_ware\']/owner/@faction">'
+           'teladi</replace></diff>')
+
+    monkeypatch.setattr("x4validate._registry.default_installed_dirs", lambda: [installed])
+
+    overlays, _notes = _check.tier_b_overlays(dev)
+    assert [p.name for p in overlays] == [], "zzz_adder loads later -> not visible"
+
+    cfg = _merge.Config(reference=ref, overlays=overlays)
+    res = _merge.build_effective("libraries/wares.xml", cfg)
+    applied = _merge.apply_diff(res.tree, _merge.parse_file(dev / "libraries/wares.xml"))
+    assert applied and not applied[0].ok, (
+        "patching a ware only a LATER mod adds must fail, exactly as the engine does")
 
 def test_multi_match_sel_is_error_not_silent_pass(tmp_path):
     """A sel matching >1 node is a SILENT no-op in X4 — must be flagged.

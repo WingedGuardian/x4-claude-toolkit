@@ -440,7 +440,34 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
+def _known_kinds(con) -> list[str]:
+    return [r[0] for r in con.execute(
+        "SELECT DISTINCT kind FROM entities ORDER BY kind").fetchall()]
+
+
+def _reject_unknown_kind(con, kind: str) -> bool:
+    """True (and prints) if *kind* is not a stored kind.
+
+    Without this an unknown kind reads as a confident empty answer: `ls ship`
+    printed "0 ship(s)" — which looks like "this game has no ships" rather than
+    "there is no such kind". Ships are stored as kind='macro' (and their wares as
+    kind='ware'), so the natural guess is silently wrong. Same false-negative shape
+    as a validator reporting OK because it examined nothing.
+    """
+    kinds = _known_kinds(con)
+    if kind in kinds:
+        return False
+    print(f"unknown kind {kind!r} — stored kinds are: {', '.join(kinds) or '(store is empty; run build)'}",
+          file=sys.stderr)
+    if kind in {"ship", "engine", "shield", "turret", "weapon", "station", "module"}:
+        print(f"       ships/equipment are stored as kind 'macro' "
+              f"(try: ls macro --filter {kind}) and as kind 'ware'", file=sys.stderr)
+    return True
+
+
 def _cmd_ls(con, args) -> int:
+    if _reject_unknown_kind(con, args.kind):
+        return 2
     q = "SELECT name, klass, origin, chain FROM entities WHERE kind=?"
     params: list = [args.kind]
     if args.klass:
@@ -465,6 +492,8 @@ def _cmd_show(con, args) -> int:
     ent = con.execute("SELECT * FROM entities WHERE kind=? AND name=?",
                       (args.kind, args.name)).fetchone()
     if ent is None:
+        if _reject_unknown_kind(con, args.kind):
+            return 2
         print(f"no {args.kind} named {args.name!r}", file=sys.stderr)
         return 1
     print(f"{args.kind} {ent['name']}  (class={ent['klass']})  vpath={ent['vpath']}")
@@ -502,6 +531,8 @@ def _cmd_who_sets(con, args) -> int:
     ent = con.execute("SELECT * FROM entities WHERE kind=? AND name=?",
                       (args.kind, args.name)).fetchone()
     if ent is None:
+        if _reject_unknown_kind(con, args.kind):
+            return 2
         print(f"no {args.kind} named {args.name!r}", file=sys.stderr)
         return 1
     if args.prop:

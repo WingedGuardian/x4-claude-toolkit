@@ -1,7 +1,12 @@
 """debug.txt correlation — the authoritative layer that gates on the engine's
-own verdict. Covers all 4 real log shapes (the two runtime shapes were the ones
+own verdict. Covers all 6 real log shapes (the two runtime shapes were the ones
 the first design missed; the MD-cue shape carries the `'null' is not a list`
-error), plus script-name -> file resolution and other-mod filtering."""
+error), plus script-name -> file resolution and other-mod filtering.
+
+Shapes E/F (diff-op cardinality) were added 2026-07-26 after measuring that the
+parser saw only 26% of a real 2463-error log and *none* of the 453 cardinality
+failures — the exact class this tool exists to catch. Every E/F line below is
+copied verbatim from that log, so these are real-data tests, not synthetic ones."""
 
 from x4validate import _check, _debuglog, _merge
 
@@ -78,6 +83,74 @@ def test_correlation_resolves_scripts_filters_others_and_gates(tmp_path):
     # engine errors gate the build; the warning stays advisory
     assert rep.errors
     assert any(f.severity == "warn" for f in dbg)
+
+
+# Shapes E/F — copied verbatim from the 2026-07-26 log. Each line encodes one of the
+# quirks that silently breaks a naive parser (see _debuglog's module docstring).
+_SAMPLE_EF = "\n".join([
+    # quirk 1: patch file printed WITHOUT its .xml extension (441 of 453 lines)
+    # quirk 2: the sel contains single quotes (413 of 453) -> the group must be greedy
+    r"[=ERROR=] 0.00 No matching node for path '/factions/faction[@id='scaleplate']/relations/relation[@faction='teladi']/@relation' in patch file 'extensions\ebi_pirate_chaos_conflict\libraries\factions'. Skipping node.",
+    r"[=ERROR=] 0.00 Multiple matching nodes for path '/materiallibrary/collection[@name='map']' in patch file 'extensions\stars\libraries\material_library'. Skipping node.",
+    # a sel with no quotes at all (40 of 453), and a path that DOES carry an extension (12 of 453)
+    r"[=ERROR=] 0.00 No matching node for path '//wares' in patch file 'extensions\mymod\libraries\wares.xml'. Skipping node.",
+])
+
+
+def test_parse_debug_shapes_e_f_cardinality(tmp_path):
+    log = tmp_path / "debug.txt"
+    log.write_text(_SAMPLE_EF, encoding="utf-8")
+    errs = _debuglog.parse_debug(log)
+    ops = [e for e in errs if e.cardinality]
+    assert len(ops) == 3, "every cardinality failure must be captured"
+
+    none_ = [e for e in ops if e.cardinality == "none"]
+    mult = [e for e in ops if e.cardinality == "multiple"]
+    assert len(none_) == 2 and len(mult) == 1
+
+    # quirk 2 — the greedy group must keep the WHOLE selector, quotes and all.
+    # A `[^']*` group truncates this to "/factions/faction[@id=" and the op is unusable.
+    e = [x for x in ops if x.folder == "ebi_pirate_chaos_conflict"][0]
+    assert e.sel == ("/factions/faction[@id='scaleplate']/relations/"
+                     "relation[@faction='teladi']/@relation")
+    assert e.vpath == "libraries/factions"   # quirk 1: no extension, as the engine printed it
+    assert e.severity == "error" and e.line == 0
+
+    m = mult[0]
+    assert m.folder == "stars" and m.sel == "/materiallibrary/collection[@name='map']"
+
+    # the `extensions\` prefix must be consumed, exactly as shapes A/B do
+    assert all(x.folder != "extensions" for x in ops)
+
+
+def test_xml_candidates_resolves_the_missing_extension():
+    # engine printed it without an extension -> try the literal form, then .xml
+    assert _debuglog.xml_candidates("libraries/factions") == (
+        "libraries/factions", "libraries/factions.xml")
+    # already has one -> don't invent a second
+    assert _debuglog.xml_candidates("libraries/wares.xml") == ("libraries/wares.xml",)
+    assert _debuglog.xml_candidates("") == ()
+
+
+def test_correlation_reports_cardinality_failures_against_real_file(tmp_path):
+    """End-to-end: an extension-less engine path must land on the real file on disk."""
+    mod = tmp_path / "ebi_pirate_chaos_conflict"
+    (mod / "libraries").mkdir(parents=True)
+    (mod / "content.xml").write_text('<content id="ebi_pirate_chaos_conflict"/>',
+                                     encoding="utf-8")
+    (mod / "libraries" / "factions.xml").write_text("<diff/>", encoding="utf-8")
+    log = tmp_path / "debug.txt"
+    log.write_text(_SAMPLE_EF, encoding="utf-8")
+
+    rep = _check.Report()
+    _check.check_debug_correlation(mod, _merge.Config(reference=tmp_path / "ref"), rep, log)
+    dbg = [f for f in rep.findings if f.category == "debug"]
+
+    assert len(dbg) == 1, "only this mod's failure is kept; stars/mymod are filtered out"
+    # resolved from 'libraries/factions' to the file that actually exists
+    assert dbg[0].vpath == "libraries/factions.xml"
+    assert rep.errors, "a skipped diff op is a real error and must gate"
+    assert any("silently did nothing" in n for n in rep.notes)
 
 
 def test_correlation_empty_log_notes_not_crashes(tmp_path):

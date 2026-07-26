@@ -80,12 +80,33 @@ def _mod_identity(mod_dir: Path) -> tuple[str, str]:
 
 
 def tier_b_overlays(mod_dir: Path) -> tuple[tuple[Path, ...], list[str]]:
-    """Installed extension roots in load order, EXCLUDING the mod under test.
+    """Installed extension roots that load BEFORE the mod under test — the tree its
+    `sel=` selectors actually see.
 
     Returns (overlay_dirs, notes). This is what makes a cross-mod patch
     checkable: Tier A (base+DLC) cannot see a node another mod adds, nor notice
     one another mod removed, so both directions produce false results —
     a false 'sel matched nothing' for the former, a false 'OK' for the latter.
+
+    **Truncated at the mod's own load-order position (fixed 2026-07-26).** Merging
+    *every* other mod builds a tree that never exists at the moment this mod is
+    patched: a node some LATER mod adds is already present, so an op that the
+    engine skips looks fine to us. Measured against the engine's own debug.txt for
+    `cpsdo_faction` (192 rejected ops):
+
+        overlays = all others (old)  -> 165 agree, 27 FALSE OK, 3 false alarm
+        overlays = those before (new)-> 192 agree,  0 FALSE OK, 3 false alarm
+
+    All 27 were `//wares/ware[@id='ishield_cpsdo_*']/owner/@faction`: `cpsdo_vro`
+    *adds* those wares and loads AFTER `cpsdo_faction`, which patches them — neither
+    declares a dependency on the other, so the engine runs the patch first and skips
+    it. A real upstream bug our optimistic tree was hiding.
+
+    KNOWN LIMITATION: reference checks (does this ware/macro id exist?) are a
+    *runtime* question and would ideally use the FINAL tree (all overlays), not this
+    patch-time one. They currently share this tree, so a ware added only by a
+    later-loading mod can read as unresolved. Measured impact on the dev mods at the
+    time of the change: none. Split the two trees if that ever produces a false alarm.
 
     The mod under test is excluded by BOTH folder name and content.xml id, since
     a dev folder is usually also deployed under extensions\\ and would otherwise
@@ -108,21 +129,34 @@ def tier_b_overlays(mod_dir: Path) -> tuple[tuple[Path, ...], list[str]]:
 
     dirs: list[Path] = []
     skipped = ""
+    placed = False
     for name in order:
         m = by_folder.get(name)
         if m is None:
             continue
         if m["folder"] == folder or (mod_id and m["id"] == mod_id):
-            skipped = m["folder"]
-            continue
+            skipped, placed = m["folder"], True
+            break  # everything after this loads LATER — not visible to our selectors
         p = Path(m["path"])
         if p.is_dir():
             dirs.append(p)
 
-    notes.append(f"Tier B: merged {len(dirs)} installed extension(s) in load order "
-                 "(community-reported convention — advisory, not engine-verified)")
-    if skipped:
-        notes.append(f"Tier B: excluded the mod under test's installed copy '{skipped}'")
+    if placed:
+        notes.append(
+            f"Tier B: merged {len(dirs)} extension(s) that load BEFORE this mod "
+            f"(of {len(order)} installed) — the tree its selectors actually see")
+        notes.append(f"Tier B: excluded the mod under test's installed copy '{skipped}' "
+                     "and everything loading after it")
+    else:
+        # Not installed (dev-only): we cannot place it, so assume it loads last —
+        # the optimistic tree. Say so, because that is exactly the FALSE-OK shape.
+        notes.append(
+            f"Tier B: merged all {len(dirs)} installed extension(s) — this mod is NOT "
+            "installed, so its load-order position is unknown and it is assumed to load "
+            "LAST. Ops targeting nodes added by a mod that really loads later would be "
+            "reported OK here but SKIPPED by the engine; deploy it to place it exactly")
+    notes.append("Tier B: load order is the community-reported convention "
+                 "(dependencies first, then alphabetical) — advisory, not engine-verified")
     return tuple(dirs), notes
 
 
@@ -149,18 +183,19 @@ class Report:
 
 
 def iter_diff_files(mod_dir: Path):
-    """Yield (virtual_path, file_path, diff_root) for every <diff> file in the mod."""
-    for path in sorted(mod_dir.rglob("*.xml")):
-        if not path.is_file():
-            continue
-        try:
-            root = _merge.parse_file(path)
-        except etree.XMLSyntaxError:
-            continue
-        if root.tag != "diff":
-            continue
-        vpath = path.relative_to(mod_dir).as_posix()
-        yield vpath, path, root
+    """Yield (virtual_path, diff_root) for every <diff> file in the mod.
+
+    Delegates to iter_mod_xml_roots so PACKED mods are covered too. Until
+    2026-07-26 this walked mod_dir.rglob("*.xml") directly, which finds nothing in
+    a mod shipped as ext_01.cat/.dat — so sel-resolution, the tool's core check,
+    silently examined ZERO ops and the run printed "OK: no issues found". That is a
+    whole-mod false pass: `moreroomsforships` reported clean while the engine was
+    rejecting 6 of its ops. 9 of the 10 mods with cardinality failures in the
+    reference log are packed, so this blind spot covered most of the real damage.
+    """
+    for vpath, root in iter_mod_xml_roots(mod_dir):
+        if root.tag == "diff":
+            yield vpath, root
 
 
 
@@ -246,15 +281,79 @@ def _check_ops(diff_root, tree, vpath: str, report: Report) -> None:
                        vpath, line)
 
 
+def _installed_folders() -> set[str]:
+    """Lowercased folder names of every installed extension (empty if unscannable)."""
+    try:
+        return {m["folder"].lower() for m in _registry.scan_installed()}
+    except OSError:
+        return set()
+
+
+def _no_base_finding(vpath: str, config: _merge.Config) -> tuple[str, str, str]:
+    """(severity, category, message) for a file whose base tree could not be built.
+
+    A NESTED cross-mod patch — `extensions/<target>/<rel>` — whose <target> is not
+    installed is a DESIGNED no-op, not an error: compatibility-patch mods ship
+    patches for dozens of optional targets and you only have some. The engine simply
+    never loads that file. Treating it as an error is the same mistake as flagging an
+    `if=`-guarded op whose guard is false, and it is loud: enabling packed-mod input
+    made `moreroomsforships` report 76 errors, of which 72 were absent targets.
+
+    `extensions/ego_dlc_*/...` is a SEPARATE case, because `_nested_target` treats
+    `ego_dlc_*` as ordinary base content living in `reference/extensions/` — which is
+    only true for DLC that were actually unpacked there. Real case: `ego_dlc_mini_01`
+    (Hyperion Pack) and `ego_dlc_mini_02` (Envoy Pack) are genuinely INSTALLED and
+    PACKED in the live game (`extensions/ego_dlc_mini_01/ext_01.cat`), but `reference/`
+    was only ever unpacked for the 6 DLC named in CLAUDE.md — these two are simply
+    missing from it. So this is not "target not installed" (it is), and not "path
+    mismatch" (the file may genuinely exist) — it is "cannot verify with the reference
+    we have". Reporting it as ERROR asserts non-existence we cannot actually back up.
+
+    Target installed but no base found is still a real error — that is a genuine
+    path mismatch or a file the target does not actually ship.
+    """
+    nested = _merge._nested_target(vpath)
+    if nested is not None and nested[0].lower() not in _installed_folders():
+        return ("info", "inactive",
+                f"patch targets extension '{nested[0]}', which is not installed — "
+                "the engine never loads this file (designed no-op, not an error)")
+    parts = vpath.split("/")
+    if len(parts) > 1 and parts[0] == "extensions" and parts[1].lower().startswith("ego_dlc_"):
+        dlc = parts[1]
+        known = {d.name.lower() for d in config.dlc_dirs()}
+        if dlc.lower() not in known:
+            return ("info", "unverifiable",
+                    f"targets DLC '{dlc}', which is installed but was never unpacked into "
+                    "reference/ — cannot verify this path exists (not a confirmed error)")
+    return ("error", "path",
+            f"no base game file for '{vpath}' (path mismatch? this patch can never apply)")
+
+
 def check_sel_resolution(mod_dir: Path, config: _merge.Config, report: Report) -> None:
     """Flag any non-silent op whose sel= matches nothing in the merged base+DLC tree."""
-    for vpath, _path, diff_root in iter_diff_files(mod_dir):
+    checked = 0
+    seen_skips: set[str] = set()
+    for vpath, diff_root in iter_diff_files(mod_dir):
+        checked += 1
         merged = _merge.build_effective(vpath, config)
+        # An overlay we could not parse was left out of this tree — say so, because
+        # every verdict below is computed against an incomplete tree.
+        for msg in merged.skipped:
+            if msg not in seen_skips:
+                seen_skips.add(msg)
+                report.add("warn", "skipped", f"tree may be incomplete: {msg}", vpath)
         if merged.tree is None:
-            report.add("error", "path", f"no base game file for '{vpath}' "
-                       "(path mismatch? this patch can never apply)", vpath)
+            report.add(*_no_base_finding(vpath, config), vpath)
             continue
         _check_ops(diff_root, merged.tree, vpath, report)
+    if checked == 0:
+        # A mod with no readable <diff> file was silently reported "OK" until
+        # 2026-07-26, which is how packed mods passed while the engine rejected
+        # their ops. Nothing examined is a SKIP, never a pass.
+        report.add("warn", "skipped",
+                   "no <diff> file could be read from this mod — nothing was "
+                   "sel-checked. If the mod ships a .cat/.dat, its catalog could not "
+                   "be opened; if it ships loose XML, check the folder layout", "")
 
 
 def check_sel_resolution_one(file_path: Path, mod_dir: Path,
@@ -300,7 +399,7 @@ def check_references(mod_dir: Path, config: _merge.Config, report: Report) -> No
         f"reference defs: {len(ware_def_set)} wares, {len(text_def_set)} text strings, "
         f"{len(macro_def_set)} macros")
 
-    for vpath, _path, diff_root in iter_diff_files(mod_dir):
+    for vpath, diff_root in iter_diff_files(mod_dir):
         for holder in _added_subtrees(diff_root):
             for d in _refs.find_dangling(holder, ware_def_set, text_def_set, macro_def_set, where=vpath):
                 report.add("error", "ref",
@@ -315,7 +414,7 @@ def check_file_existence(mod_dir: Path, config: _merge.Config, report: Report) -
     macro_index = _resolve.build_index(config, mod_overlay, _resolve.MACRO_INDEX)
     component_index = _resolve.build_index(config, mod_overlay, _resolve.COMPONENT_INDEX)
     seen: set[str] = set()
-    for vpath, _path, diff_root in iter_diff_files(mod_dir):
+    for vpath, diff_root in iter_diff_files(mod_dir):
         for holder in _added_subtrees(diff_root):
             for comp in holder.xpath("//component[@ref]"):
                 macro = comp.get("ref")
@@ -329,7 +428,7 @@ def check_file_existence(mod_dir: Path, config: _merge.Config, report: Report) -
 def check_page_collisions(mod_dir: Path, config: _merge.Config, report: Report) -> None:
     """Warn when the mod's added {page,t} pairs already exist in base/DLC (silent clobber)."""
     existing = collect_text_defs(config)  # base + DLC only (NOT the mod)
-    for vpath, _path, diff_root in iter_diff_files(mod_dir):
+    for vpath, diff_root in iter_diff_files(mod_dir):
         added: set[tuple[str, str]] = set()
         for holder in _added_subtrees(diff_root):
             added |= _refs.text_defs(holder)
@@ -580,20 +679,31 @@ def check_debug_correlation(mod_dir: Path, config: _merge.Config, report: Report
     ids = _mod_ids(mod_dir)
     names = _script_name_map(mod_dir)
     matched = 0
+    diffops = 0
     for e in entries:
         if e.ident_kind == "path":
             if e.folder.lower() not in ids:
                 continue
+            # Shapes E/F name the patch file WITHOUT its extension — resolve it back
+            # to the real file so the finding points somewhere openable.
             vpath = e.vpath
+            for cand in _debuglog.xml_candidates(e.vpath):
+                if (mod_dir / cand).is_file():
+                    vpath = cand
+                    break
         else:  # "script" — resolve name -> file via the mod's own scripts
             vpath = names.get(e.script_name)
             if vpath is None:
                 continue
         matched += 1
+        if e.cardinality:
+            diffops += 1
         report.add(e.severity, "debug", f"(engine) {e.message}", vpath, e.line)
     report.notes.append(
         f"debug: {matched} engine finding(s) matched this mod from '{debug_path}' "
         f"(of {len(entries)} total in the log)"
+        + (f"; {diffops} are diff-op cardinality failures — the engine SKIPPED those "
+           "ops, so those patches silently did nothing" if diffops else "")
         + ("" if matched else " — clean load for this mod, or a stale/other-mod log"))
 
 

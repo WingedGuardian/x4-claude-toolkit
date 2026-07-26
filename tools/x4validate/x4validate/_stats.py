@@ -113,17 +113,31 @@ class WareComparison:
 
 
 def compare_wares(candidate: dict[str, Ware], effective: dict[str, Ware]) -> list[WareComparison]:
-    """Place each candidate ware against the effective same-group price distribution."""
+    """Place each candidate ware against the effective same-group price distribution.
+
+    A ware with no `group=` attribute is not "in the empty group" — it has no
+    grouping information at all. Before 2026-07-26 `group=""` was used as a real
+    dict key, so every ungrouped ware in the game (1386 of them: paint mods,
+    cosmetics, misc props) was bucketed together and compared as peers. A paint mod
+    priced 1 was reported "~0th percentile" against a 1386-ware pool with a median
+    of 51,696 — a comparison as meaningless as it looks. Ungrouped wares are now
+    always reported NOT COMPARABLE rather than measured against an arbitrary bucket.
+    """
     # Peer prices by group (exclude the candidate's own ids so it doesn't skew itself).
     cand_ids = set(candidate)
     prices_by_group: dict[str, list[float]] = {}
     for w in effective.values():
-        if w.id in cand_ids or w.price_avg <= 0:
+        if w.id in cand_ids or w.price_avg <= 0 or not w.group:
             continue
         prices_by_group.setdefault(w.group, []).append(w.price_avg)
 
     out: list[WareComparison] = []
     for w in sorted(candidate.values(), key=lambda x: x.id):
+        if not w.group:
+            out.append(WareComparison(ware=w, peer_group="", peer_count=0,
+                                      note="not comparable: this ware has no group= "
+                                           "attribute (e.g. a paint mod or cosmetic prop)"))
+            continue
         peers = sorted(prices_by_group.get(w.group, []))
         cmp = WareComparison(ware=w, peer_group=w.group, peer_count=len(peers))
         if peers:
