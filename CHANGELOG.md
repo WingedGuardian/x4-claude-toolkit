@@ -1,5 +1,66 @@
 # Changelog
 
+## v2.0
+
+**The toolkit is no longer Windows-only, and no longer assumes one folder layout.** Plus two
+community contributions and a round of safety-hook fixes found by red-teaming the install flow.
+
+Major version because the install model changed: there are now three supported layouts and every
+X4 location is configurable. Existing v1.x users keep working — the in-game layout is unchanged
+and the hooks fall back to the old folder-name patterns when nothing is configured.
+
+### Added — cross-platform support & guided installer (thanks @blablup, #2)
+- **Runs on Linux, macOS and Windows (Git Bash).** `.claude/hooks/_x4-env.sh` is a shared
+  resolver — **env var > `.claude/x4-paths.env` > default** — with case- and slash-insensitive
+  matching that resolves symlinks and `..` via `realpath`, guarded so a Windows `C:\...` path is
+  never mangled.
+- **`install.sh` / `install.ps1` with three methods:** `in-game` (copy into the X4 folder — the
+  original model), `separate` (toolkit in its own folder, pointed at the game via config), and
+  `global` (skills/agents into `~/.claude` so the toolkit works across many mod repos). Paths are
+  auto-detected from Steam's `libraryfolders.vdf` and overridable by flag.
+- **`bin/xrcat`** — OS-aware XRCatTool wrapper (direct on Windows, Wine + `winepath` elsewhere).
+  **`bin/unpack-reference.sh`** — config-driven text-only base+DLC unpack into `reference/`.
+- **`.claude/x4-paths.env.example`** — one documented source of truth for every path.
+  Keys: `X4_TOOLKIT`, `X4_GAME`, `X4_REFERENCE`, `X4_PROFILE`, `X4_DEBUGLOG`, `X4_MODS`,
+  `X4_EXTENSIONS`, `XRCATTOOL`, `X4_APPMANIFEST`.
+- All five hooks and `setup.sh` are now driven by the configured paths, with the old folder-name
+  patterns kept as a backstop so protection still works out of the box.
+
+### Added — engine knowledge (thanks @blablup, #1)
+Field-tested MD↔Lua / FFI / UI / persistence patterns in `KNOWLEDGEBASE.md`: the nested-blackboard
+`$`-prefix key trap, which container/trade-rule FFI functions actually work from UI-Lua (and the
+global-vs-`C.` cdef variant trap), `$ship.$var` not surviving save/load, the
+`a and nil or b` Lua footgun, and the kuertee UI-Extensions station-tab gotchas (13-column limit,
+`is_valid_for` scope, slider/table widget behaviour).
+
+### Fixed — safety hooks
+- **The game-installation hard block never fired.** It used a PCRE lookahead `(?!\.claude)` under
+  `grep -E`, which cannot match — so the rule has been silently dead in every release to date.
+- **`in-game` layout hard-denied edits to your own mod sources.** With the toolkit installed into
+  the game folder, `dev/`, `dist/` and `$X4_MODS` fell through every whitelist to the
+  game-installation block. Now whitelisted.
+- **`content.xml` edits were silently allowed inside the working dirs.** The manifest confirmation
+  sat *below* the workspace whitelist; it now runs above it, so a manifest edit always confirms.
+- **`check-reference-version.sh` hardcoded one Steam path** — now derived from `X4_GAME` with
+  cross-platform fallbacks, so GOG / second-library / Linux users get the stale-reference warning.
+- **`x4validate-on-edit.sh` was anchored to the author's personal folder** (`Modding/X4/dev/`), so
+  the advertised auto-validate-on-edit hook could never fire for anyone else. Now it triggers on
+  any diff XML outside `reference/`, resolving the mod root by walking up to `content.xml`.
+
+### Changed
+- `/x4-debug` no longer ships a hardcoded workshop id as a "known-benign" suppression rule — it
+  now describes the *class* (an extension id not in your installed set) and warns against
+  suppressing ids you haven't confirmed absent. It also documents two engine behaviours that look
+  like regressions but aren't: an upstream mod's failed `<replace>` still logs even when a
+  load-last overlay supplies the value, and a `sel=` matching multiple nodes is a silent no-op.
+- Log comparison guidance: check whether each log is a new game or a save load before comparing
+  error counts — they aren't comparable across that boundary.
+
+### Verification
+Hook decisions smoke-tested with synthetic JSON in **both** the in-game and separate layouts
+(17/17: deny on `reference/`, `.cat`/`.dat` and base-game files; ask on `content.xml`, profile and
+deployed `extensions/`; allow on `dev/`, `$X4_MODS` and the toolkit's own dirs). Python suite: 152.
+
 ## v1.4
 
 Engine-fidelity release. Three ways X4's patch semantics differ from a naive XML merge were

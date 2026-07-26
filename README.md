@@ -116,23 +116,36 @@ The `/x4-mod-interaction` skill ties all four together into one interaction brie
 Subscribe to Claude (Pro/Max), then install the desktop app from [claude.ai/code](https://claude.ai/code),
 or the CLI: install [Node.js](https://nodejs.org/) and run `npm install -g @anthropic-ai/claude-code`.
 
-### 2. Get the toolkit into your X4 folder
+### 2. Get the toolkit and run the installer
 Download the latest release zip (from [Releases](https://github.com/WingedGuardian/x4-claude-toolkit/releases)
-or Nexus) and **extract it into your X4: Foundations game folder** — the one containing
-`01.cat` … `09.cat`. In Steam: right-click X4: Foundations → Properties → Installed Files →
-Browse. Nothing is overwritten; the toolkit files blend in alongside the game, and the safety
-hooks anchor on that folder.
+or Nexus) and extract it anywhere, then run the guided installer:
+
+```bash
+bash install.sh          # Linux / macOS / Windows (Git Bash)
+```
+```powershell
+.\install.ps1            # Windows PowerShell
+```
+
+It asks which **layout** you want (see the table below), auto-detects your game, profile and
+XRCatTool, and writes the result to `<toolkit>/.claude/x4-paths.env`. Nothing is hardcoded.
+
+> **Which layout?** If you're unsure, pick **separate** — it keeps the game folder untouched and
+> avoids needing write access to `C:\Program Files`. Pick **in-game** only if you want the
+> single-folder model. Pick **global** if you have several mod repos.
 
 > Contributing or just reading the source? Clone it standalone instead:
 > `git clone https://github.com/WingedGuardian/x4-claude-toolkit.git`
 
-### 3. Open Claude Code in your X4 folder and paste the setup prompt
-Open Claude Code with your X4 game folder as the working directory, then paste the contents of
-`SETUP_PROMPT.txt`. Claude runs `bash setup.sh`, checks prerequisites (jq, uv/Python 3.13),
-wires up x4validate, and walks you through unpacking your own `reference\` and (optionally)
-adding your Nexus API key. Answer any questions it asks.
+### 3. Open Claude Code in the toolkit folder and paste the setup prompt
+Paste the contents of `SETUP_PROMPT.txt`. Claude runs `bash setup.sh`, checks prerequisites
+(bash, jq, uv/Python 3.13), wires up x4validate, and walks you through unpacking your own
+`reference/` and (optionally) adding your Nexus API key. Answer any questions it asks.
 
 ### Prerequisites it will check for
+- **bash** — required. Every safety hook and both setup scripts run under it. Linux/macOS have it;
+  on **Windows install [Git for Windows](https://git-scm.com/download/win)** (Git Bash) — without
+  it the hooks silently do nothing, so the safety guards below would not be active.
 - **jq** — Windows `winget install jqlang.jq` · Linux `sudo pacman -S jq` / `apt install jq` · macOS `brew install jq`
 - **uv** (+ Python 3.13) — for x4validate (https://docs.astral.sh/uv/)
 - **XRCatTool** (from Egosoft) — to unpack your own game to `reference/` (run via `bin/xrcat`)
