@@ -44,6 +44,21 @@ connection tag sets on a single component. These checks run against loose XML an
 packed catalog XML through the shared CAT/DAT reader, with loose files overriding
 packed members. Connection validation also uses this packed-aware XML iterator.
 
+v2.01 adds **effective-schema validation for data files** (`--update`). 42 vanilla files
+under `libraries/` declare a schema in `xsi:noNamespaceSchemaLocation`, and mods ship them
+as `<diff>` — so the patch is not the thing to validate, the *merged document* is. This
+catches a class nothing else here can: a diff whose selector matches and whose XML is
+well-formed, but which leaves the merged document structurally broken (measured: a mod
+that `<remove>`s `<production>` orphans the `<limits>` sibling 30 times).
+
+It is **differential**, and that is not a refinement — it is the only form that works.
+Egosoft's own base+DLC data fails Egosoft's own bundled schemas (66 errors across 6 files),
+the same stricter-than-the-engine gap already known for `md.xsd`. So the tool validates the
+tree *without* your mod, then *with* it, and reports only what you introduced. Enumeration
+failures naming a race or faction your modlist actually defines are suppressed and counted
+(the XSD list is a vanilla floor, not a closed set); one naming something nothing defines
+is reported. Structural breakage gates; value-facet complaints are advisory.
+
 ## Usage
 
 ```sh
@@ -60,20 +75,90 @@ The expression linter runs on **every** invocation (cheap, advisory). `--debug`
 is the authoritative gate — run it against a `debug.txt` captured *after* your latest
 edits (a gate on a stale log is a false failure).
 
+`--update` is deliberately slow: schema compilation dominates. Budget ~100s for the
+md/aiscripts schemas, and a further **~122s if your mod patches `libraries/diplomacy.xml`**
+— that one schema pulls in the 40k-line `common.xsd`, where every other data schema
+measured ≤0.1s. It looks like a hang and is not.
+
 Exit code is non-zero if any error-level finding is present (suitable as a
 pre-deploy / pre-pack gate). Default merge tier is **A** (base + DLC,
 deterministic); `--tier b` also folds in enabled mods but warns, because X4's
 inter-mod load order is undocumented.
 
+## Configuration — where it looks for things
+
+Run **`x4validate --paths`** to see what resolved, and which config file was read.
+Do that first whenever a result looks impossible: silent misconfiguration is this
+tool's worst failure mode, because "found nothing" and "looked in the wrong place"
+print the same way.
+
+Every location resolves in **layers** — for each one, all aliases *and* derivations
+in a layer are tried before dropping to the next:
+
+1. **Environment.** The installer's names first — `X4_GAME`, `X4_EXTENSIONS`,
+   `X4_PROFILE`, `X4_MODS`, `X4_REFERENCE`, `X4_DEBUGLOG` — then the older
+   `X4_GAME_ROOT`, `X4_GAME_EXTENSIONS`, `X4_PROFILE_CONTENT`,
+   `X4_PROFILE_EXTENSIONS`, `X4_WORKSHOP_CONTENT`, `X4_REGISTRY`.
+2. **`.claude/x4-paths.env`** — the file `install.sh` / `install.ps1` write. Found via
+   `$X4_TOOLKIT`, else by walking up from the current directory.
+3. `_paths._LOCAL_FALLBACK` — deliberately empty; the documented seam for a local
+   override, so nobody hardcodes one somewhere else.
+
+**Set `X4_TOOLKIT` in your user environment yourself** — the installers write it
+*into* `x4-paths.env` but do not export it, so nothing sets it for you:
+
+```sh
+setx X4_TOOLKIT "C:\path\to\toolkit"           # Windows (new shells only)
+echo 'export X4_TOOLKIT=/path/to/toolkit' >> ~/.bashrc   # Linux / macOS
+```
+
+Without it, resolution depends on walking up from the current directory — and the
+CLI and gates are often run from the game folder, which has a `.claude/` but no
+`x4-paths.env`. You would get `(unresolved)` locations with a perfectly good config
+file sitting one directory tree away.
+
+Prefer the **installer names**. The two schemes exist because until v2.01 the
+installers wrote one set and the Python read another, overlapping on a single name
+(`X4_REFERENCE`) — so a successful install still left every cross-mod command
+pointed at CWD-relative paths. The old names keep working; they are not the ones to
+teach.
+
+Values may reference each other — `X4_REFERENCE="$X4_TOOLKIT/reference"` and
+`${X4_TOOLKIT}/reference` both expand, matching what the shell half does with the
+same file. The file is parsed, never executed, so only `$VAR` expansion happens: no
+command substitution, no subshell.
+
+**Git Bash / WSL drive paths are translated on Windows.** `install.sh` writes
+`/c/Program Files (x86)/...` under Git Bash; `/c/...` and `/mnt/c/...` become
+`C:/...` so Python can open them. On Linux those are left exactly as written,
+because there they are legitimate absolute paths.
+
+Derived when not set explicitly: `$X4_GAME/extensions`;
+`$X4_PROFILE/{content.xml,extensions,debug.txt}`; `$X4_MODS/_registry/modlist.yaml`;
+and the Steam workshop directory from `steamapps/common/<game>` — **only** when the
+install really has that shape, since a guessed path scans nothing and would report
+"no mods" as though it were a finding.
+
+Nothing is guessed: an unresolved location prints `(unresolved)` and the run says so
+rather than quietly substituting a default. `$X4_NEXUS_KEY` is deliberately NOT
+handled here — it is a secret, not a path, and must never be written to a file.
+
 ## Layout
+- `x4validate/_paths.py` — path resolution (the layers above) + `--paths` report.
 - `x4validate/_merge.py` — effective-tree assembly (diff apply: add/replace/remove,
   pos/if/silent; full-file override by root element).
 - `x4validate/_xpath.py` — lxml XPath wrapper (genuine no-match vs invalid-expr).
 - `x4validate/_refs.py` — reference graph, dangling-ref detection, completeness.
 - `x4validate/_exprlint.py` — expression-grammar heuristic (attribute-value rules).
-- `x4validate/_debuglog.py` — `debug.txt` parser (4 engine-error shapes).
+- `x4validate/_debuglog.py` — `debug.txt` parser (7 engine-error shapes, incl. diff-op
+  cardinality and index-lookup misses).
+- `x4validate/_xsd.py` — schema validation: script files as written, data files as merged
+  (differential — see `introduced`).
 - `x4validate/_check.py` — orchestration + t-file union; `_cli.py` — CLI.
-- `tests/` — `uv run --with pytest pytest` (125 tests, incl. the x4cat spike cases).
+- `tests/` — `uv run pytest` (260 tests, incl. the x4cat spike cases).
+- `gates/` — measured against the engine / the real modlist: `oracle.py` (diff layer,
+  234/234, 0 FALSE OK), `oracle_index.py` (index layer, 12/12), `regress.py` (per-mod
+  Tier A/B sweep), `schema_sweep.py` (effective-schema composition over 102 mods).
 
 ## Extending
 Add reference types by extending the catalog in `_refs.py`; add completeness

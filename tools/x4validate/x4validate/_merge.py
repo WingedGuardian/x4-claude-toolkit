@@ -19,20 +19,40 @@ from __future__ import annotations
 
 import copy
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat
+from x4validate import _cat, _paths
 from x4validate._provenance import Origin, Recorder
 
 # --- Workspace defaults (overridable via Config / --reference / $X4_REFERENCE) ---
 # Keep this injectable: no hardcoded user path should be the only way to point at
 # the reference tree (community-release portability).
-REFERENCE = Path(os.environ.get(
-    "X4_REFERENCE", "reference"))
+REFERENCE = _paths.reference() or Path("reference")
 _PARSER = etree.XMLParser(remove_blank_text=False, recover=False, resolve_entities=False)
+
+
+def _default_game_root() -> Path:
+    """Where the LIVE game's DLC live, for DLC never unpacked into `reference/`.
+
+    Delegates to `_paths`, which accepts the installer's `$X4_GAME` / `$X4_EXTENSIONS`,
+    the legacy `$X4_GAME_ROOT` / `$X4_GAME_EXTENSIONS`, and `.claude/x4-paths.env`.
+    Before that existed this read only the legacy names, so a user who configured the
+    documented ones got packed-DLC support pointed at the wrong place — and it
+    degrades quietly back to "cannot verify", which reads like the feature simply
+    does not apply to them.
+
+    Falls back to a non-existent relative path rather than raising: `dlc_dirs()`
+    treats a missing game root as "no packed DLC", which is the honest answer when
+    nothing is configured.
+    """
+    return _paths.game_root() or Path("x4-game-root-not-configured")
+
+
+#: Read through `_cat`, never modified.
+GAME_ROOT = _default_game_root()
 
 
 @dataclass
@@ -43,14 +63,75 @@ class Config:
     #: another mod adds, removes or overrides. Threaded automatically into every
     #: build_effective() call that receives this Config.
     overlays: tuple[Path, ...] = ()
+    #: The RUNTIME tree: every installed extension, including those loading AFTER
+    #: the mod under test. `overlays` is truncated at the mod's own position, which
+    #: is right for `sel=` (a node a later mod adds is genuinely not there yet) and
+    #: wrong for existence questions (does macro X resolve?), which the engine
+    #: answers once everything has loaded. Empty = "same as `overlays`", so Tier A
+    #: and every existing caller are unaffected. Use via `for_runtime()`.
+    final_overlays: tuple[Path, ...] = ()
+    #: Also treat DLC that exist only PACKED in the live game install as part of
+    #: the Tier A reference tree. Set False for a hermetic, reference-only run.
+    include_packed_dlc: bool = True
+
+    def for_runtime(self) -> "Config":
+        """This config with the runtime tree swapped in as `overlays`.
+
+        Returns `self` unchanged when no separate runtime tree was supplied, so a
+        Tier A run and any caller predating the split behave exactly as before.
+        """
+        if not self.final_overlays or self.final_overlays == self.overlays:
+            return self
+        return replace(self, overlays=self.final_overlays)
 
     def dlc_dirs(self) -> list[Path]:
+        """Every DLC root, unpacked-in-reference first, then packed-in-game.
+
+        `reference/` only holds the DLC that were actually unpacked. The two
+        mini-DLC (`ego_dlc_mini_01` Hyperion Pack, `ego_dlc_mini_02` Envoy Pack)
+        never were — so a patch targeting their content used to report
+        "installed but never unpacked — cannot verify". No unpack is needed to
+        fix that: `_cat` reads their archives directly (55 and 104 XML members),
+        which is exactly how `tools\\basex\\stage.py` already indexes them.
+
+        A packed DLC is included only when reference/ does NOT already have it,
+        so an unpacked copy always wins and this can never double-count.
+
+        The supplement applies ONLY to the configured workspace reference
+        (`REFERENCE` / `$X4_REFERENCE`), because that is the one tree we know
+        mirrors this game install. A caller who passes some other `--reference`
+        is deliberately isolating, and grafting the live game's DLC onto their
+        tree would inject content that is not part of what they asked about.
+        """
         ext = self.reference / "extensions"
-        if not ext.is_dir():
-            return []
         # Deterministic order; inter-DLC order is order-independent in practice
         # (DLC diffs guard with if="not(...)").
-        return sorted(p for p in ext.iterdir() if p.is_dir() and p.name.startswith("ego_dlc_"))
+        dirs = (sorted(p for p in ext.iterdir()
+                       if p.is_dir() and p.name.startswith("ego_dlc_"))
+                if ext.is_dir() else [])
+        if not self.include_packed_dlc or self.reference != REFERENCE:
+            return dirs
+        have = {p.name.lower() for p in dirs}
+        game_ext = GAME_ROOT / "extensions"
+        if not game_ext.is_dir():
+            return dirs
+        packed = sorted(p for p in game_ext.iterdir()
+                        if p.is_dir() and p.name.startswith("ego_dlc_")
+                        and p.name.lower() not in have and _cat.is_packed(p))
+        return dirs + packed
+
+    def packed_dlc_names(self) -> set[str]:
+        """Lowercased names of DLC that exist only PACKED, outside reference/.
+
+        Their content is reached through the DLC's own root (like any packed
+        mod), NOT as a plain path under the reference tree — so a vpath of
+        `extensions/<name>/<rel>` has to be resolved as OWNED by <name>. Getting
+        this wrong turns an honest "cannot verify" into a false
+        "no base game file" on every mod that patches them (measured: 4 mods).
+        """
+        ext = self.reference / "extensions"
+        return {p.name.lower() for p in self.dlc_dirs()
+                if not (ext / p.name).is_dir()}
 
 
 @dataclass
@@ -131,7 +212,19 @@ def apply_diff(tree: etree._Element, diff_root: etree._Element,
     at mutation time (see _provenance for the identity model)."""
     applied: list[AppliedOp] = []
     for op in diff_root:
-        if not isinstance(op.tag, str) or op.tag not in _OPS:
+        # Comments and processing instructions are legitimately not ops — skip
+        # them silently. An ELEMENT that is not add/replace/remove is a different
+        # thing: libraries/diff.xsd admits exactly those three and nothing else,
+        # so <relace sel="..."> or <modify> is a schema violation the engine
+        # ignores. Lumping both into one silent `continue` meant a typo'd op tag
+        # vanished without a trace and the file still reported OK.
+        if not isinstance(op.tag, str):
+            continue
+        if op.tag not in _OPS:
+            applied.append(AppliedOp(op.tag, op.get("sel", ""), op.sourceline or 0, False,
+                                     f"unknown op <{op.tag}> — diff.xsd allows only "
+                                     f"{'/'.join(sorted(_OPS))}; the engine ignores it",
+                                     _truthy(op.get("silent"))))
             continue
         sel = op.get("sel", "")
         line = op.sourceline or 0
@@ -383,26 +476,40 @@ def apply_overlay(
     return oroot, "full"  # full-file override (asset files, or no/other base)
 
 
-def _nested_target(vpath: str) -> tuple[str, str] | None:
+def _nested_target(vpath: str, owned_dlc: set[str] | None = None) -> tuple[str, str] | None:
     """'extensions/<target>/<rel>' -> ('<target>', '<rel>'); else None.
 
     This is the cross-mod patch idiom: the path is owned by <target>, not by the
-    base game. `ego_dlc_*` is excluded — DLC live under reference/extensions/ and
-    are already handled as ordinary base content.
+    base game. An UNPACKED `ego_dlc_*` is excluded — it lives under
+    reference/extensions/ and is already ordinary base content.
+
+    *owned_dlc* names the DLC that exist only packed in the live install (see
+    `Config.packed_dlc_names`). Those have no reference/ copy, so their content
+    has to be reached through their own root exactly like a packed mod's.
     """
     parts = vpath.split("/")
     if len(parts) < 3 or parts[0].lower() != "extensions":
         return None
-    if parts[1].lower().startswith("ego_dlc_"):
+    if parts[1].lower().startswith("ego_dlc_") and parts[1].lower() not in (owned_dlc or set()):
         return None
     return parts[1], "/".join(parts[2:])
 
 
 def _build_owned(owner_name: str, rel: str, vpath: str,
                  overlay_dirs: list[Path],
-                 recorder: Recorder | None) -> MergeResult:
+                 recorder: Recorder | None,
+                 owner_is_dlc: bool = False) -> MergeResult:
     """Merge a file OWNED by another mod: that mod supplies the base at *rel*,
-    every other mod patches it at the nested *vpath*."""
+    every other mod patches it at the nested *vpath*.
+
+    *owner_is_dlc* marks a packed-only DLC owner, where a `<diff>` root IS the
+    base. Every DLC ships `libraries/god.xml` as a diff, and for an UNPACKED DLC
+    the ordinary reference-path branch already uses that diff as the base tree.
+    Refusing it here purely because the DLC happens to be packed would make the
+    same mod's same patch an ERROR for mini_01 and fine for split — a difference
+    with no counterpart in the engine. (A third-party MOD's diff at *rel* is a
+    different matter and still not a base: it is a patch, and the file it patches
+    lives elsewhere.)"""
     sources: list[str] = []
     skipped: list[str] = []
     tree: etree._Element | None = None
@@ -410,7 +517,7 @@ def _build_owned(owner_name: str, rel: str, vpath: str,
     owner_dir = next((d for d in overlay_dirs if d.name.lower() == owner_name.lower()), None)
     if owner_dir is not None:
         oroot = overlay_root(owner_dir, rel, skipped)
-        if oroot is not None and oroot.tag != "diff":
+        if oroot is not None and (owner_is_dlc or oroot.tag != "diff"):
             tree = oroot
             sources.append(f"{owner_dir.name}:owner")
 
@@ -454,10 +561,11 @@ def build_effective(
     # reference/. Without this, every such patch reports "no base game file"
     # even though the engine applies it (proven: ship_variation_expansion_vro
     # patches ship_variation_expansion this way and its ops take effect).
-    owner_rel = _nested_target(vpath)
+    owner_rel = _nested_target(vpath, config.packed_dlc_names())
     if owner_rel is not None:
         owner_name, rel = owner_rel
-        return _build_owned(owner_name, rel, vpath, overlay_dirs, recorder)
+        return _build_owned(owner_name, rel, vpath, overlay_dirs, recorder,
+                            owner_is_dlc=owner_name.lower() in config.packed_dlc_names())
 
     base_path = config.reference / vpath
     tree: etree._Element | None = None

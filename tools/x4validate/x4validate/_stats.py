@@ -26,7 +26,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _compat, _merge, _registry
+from x4validate import _cat, _compat, _merge, _registry, _input
 
 
 # --- ware extraction ----------------------------------------------------------
@@ -52,6 +52,8 @@ def _ware_from_el(el: etree._Element) -> Ware | None:
         try:
             return float(v)
         except (TypeError, ValueError):
+            # silent-ok: a missing or non-numeric price attribute; 0.0 is the
+            # documented neutral value for an unpriced ware, not a read failure.
             return 0.0
     return Ware(
         id=wid,
@@ -187,12 +189,18 @@ def flatten_macro_props(root: etree._Element) -> dict[str, float | str]:
     return out
 
 
-def macro_stats(path: Path) -> dict[str, float | str]:
-    """Flattened numeric vector for a single macro file (loose path)."""
+def macro_stats(path: Path) -> dict[str, float | str] | None:
+    """Flattened numeric vector for a single macro file, or None if unreadable.
+
+    None, not `{}`: an empty dict is a real answer ("this file is valid XML with
+    no macro properties"), and the CLI prints exactly that. Returning it for an
+    unreadable file blamed the mod author for a problem on our side of the read.
+    """
     try:
         root = _merge.parse_file(path)
-    except (OSError, etree.XMLSyntaxError):
-        return {}
+    except (OSError, etree.XMLSyntaxError) as exc:
+        print(f"error: cannot read {path}: {exc}", file=sys.stderr)
+        return None
     return flatten_macro_props(root)
 
 
@@ -229,7 +237,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
-        pass
+        pass  # silent-ok: console encoding shim. Failure means the default codec
+        # stays; it affects how output LOOKS, never what was examined.
 
     p = argparse.ArgumentParser(
         prog="x4stats",
@@ -248,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "macro":
         stats = macro_stats(Path(args.file))
+        if stats is None:
+            return 2          # unreadable — already explained on stderr
         if not stats:
             print("no macro properties found (not a macro file?).", file=sys.stderr)
             return 2
@@ -258,6 +269,7 @@ def main(argv: list[str] | None = None) -> int:
     ext_dir = Path(args.ext_dir) if args.ext_dir else _registry.GAME_EXTENSIONS
     config = _merge.Config(reference=Path(args.reference)) if args.reference else _merge.Config()
     candidate = Path(args.candidate)
+    _input.require_mod_dir(candidate, "candidate mod folder")
     eff = effective_wares(ext_dir, config)
     cand = candidate_wares(candidate)
     print(render_wares(compare_wares(cand, eff)))

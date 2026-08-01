@@ -11,7 +11,7 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import _nexus, _registry
+from . import _nexus, _paths, _registry
 
 NINE_ZERO = date(2026, 6, 10)  # X4 9.00 release
 CHURN_DAYS = 14
@@ -154,6 +154,9 @@ def _resolve_identity(content_id: str, auto) -> int | None:
                 used_hint = hint
                 break
     except _nexus.NexusError:
+        # silent-ok: an upstream-lookup failure is not a statement about the mod.
+        # The caller leaves the field unset (never "no update available"), so the
+        # unknown stays visibly unknown in the registry.
         return None
     if hits:
         auto["resolve_hint"] = used_hint
@@ -192,7 +195,22 @@ def cmd_ingest(args) -> int:
         added, existing = _registry.merge(reg, ids, enabled_only=not args.all)
 
     dirs = [Path(d) for d in args.dirs.split(",")] if args.dirs else None
-    installed = _registry.scan_installed(dirs)
+    if dirs:
+        # scan_installed skips a non-directory, so a typo'd --dirs scans nothing
+        # and the run reports "0 installed" — which reads as "you have no mods".
+        missing = [str(d) for d in dirs if not d.is_dir()]
+        if missing:
+            print(f"error: --dirs entries are not directories: {', '.join(missing)}",
+                  file=sys.stderr)
+            print("       (refusing to report an installed-mod count for a path that "
+                  "was never scanned)", file=sys.stderr)
+            return 2
+    dropped: list[str] = []
+    installed = _registry.scan_installed(dirs, dropped)
+    for d in dropped:
+        # Excluding the mod is right — X4 needs a readable content.xml too — but
+        # it must not shrink the registry's world model in silence.
+        print(f"warning: NOT INGESTED — {d}", file=sys.stderr)
     new, matched, not_installed = _registry.merge_installed(reg, installed)
 
     reg["meta"]["game_build"] = args.build
@@ -268,6 +286,36 @@ def cmd_dashboard(args) -> int:
     return 0
 
 
+def _registry_path(args) -> Path:
+    """The registry file these args address, and refuse a path that isn't one.
+
+    `load_registry` falls back to a fresh EMPTY registry for a missing file, so a
+    typo'd --registry made every later "not in registry: <id>" a lie about the
+    mod rather than about the path.
+    """
+    if not getattr(args, "registry", None):
+        # Not configured is NOT the same as not created yet. Unconfigured leaves
+        # DEFAULT_REGISTRY as a bare relative path, so load_registry returns an empty
+        # registry and every count downstream reads "0 mods" — a statement about your
+        # modlist rather than about the missing setting. A first run before `ingest`
+        # legitimately has no file, so this warns and continues; it does not exit.
+        if _paths.registry() is None:
+            print("warning: no registry location configured ($X4_REGISTRY / $X4_MODS, see "
+                  f"'.claude/x4-paths.env'); using '{_registry.DEFAULT_REGISTRY}'.",
+                  file=sys.stderr)
+            print("         If that file does not exist you will see an EMPTY registry — "
+                  "'0 mods' would mean 'not configured', not 'no mods'. "
+                  "Run `x4validate --paths` to check.", file=sys.stderr)
+        return _registry.DEFAULT_REGISTRY
+    path = Path(args.registry)
+    if not path.is_file():
+        print(f"error: --registry is not a file: {path}", file=sys.stderr)
+        print("       (an empty registry would make every id below look untracked)",
+              file=sys.stderr)
+        raise SystemExit(2)
+    return path
+
+
 def _find(reg, content_id):
     for m in reg["mods"]:
         if m["id"] == content_id:
@@ -291,7 +339,7 @@ def cmd_needs_review(args) -> int:
 
 
 def cmd_resolve(args) -> int:
-    reg_path = Path(args.registry) if args.registry else None
+    reg_path = _registry_path(args)
     reg = _registry.load_registry(reg_path)
     m = _find(reg, args.id)
     if m is None:
@@ -319,7 +367,7 @@ def cmd_resolve(args) -> int:
 
 
 def cmd_ignore(args) -> int:
-    reg_path = Path(args.registry) if args.registry else None
+    reg_path = _registry_path(args)
     reg = _registry.load_registry(reg_path)
     m = _find(reg, args.id)
     if m is None:
@@ -335,7 +383,7 @@ def cmd_ignore(args) -> int:
 
 
 def cmd_mark(args) -> int:
-    reg_path = Path(args.registry) if args.registry else None
+    reg_path = _registry_path(args)
     reg = _registry.load_registry(reg_path)
     m = _find(reg, args.id)
     if m is None:
@@ -353,7 +401,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
-        pass
+        pass  # silent-ok: console encoding shim. Failure means the default codec
+        # stays; it affects how output LOOKS, never what was examined.
     p = argparse.ArgumentParser(prog="x4modlist", description="X4 mod-registry triage tool (API-first).")
     p.add_argument("--registry", help="path to modlist.yaml (default: dev\\_registry\\modlist.yaml)")
     sub = p.add_subparsers(dest="cmd", required=True)

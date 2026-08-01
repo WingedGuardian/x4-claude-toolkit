@@ -8,7 +8,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from . import _check, _merge
+from . import _check, _merge, _paths
 
 _SEV_ORDER = {"error": 0, "warn": 1, "info": 2}
 _SEV_LABEL = {"error": "ERROR", "warn": "WARN ", "info": "INFO "}
@@ -19,7 +19,11 @@ def main(argv: list[str] | None = None) -> int:
         prog="x4validate",
         description="Validate X4 mod diff patches against the effective merged game tree.",
     )
-    p.add_argument("mod_dir", help="path to the mod's dev folder")
+    # Optional ONLY so `--paths` can run without one; still required otherwise (see below).
+    p.add_argument("mod_dir", nargs="?", help="path to the mod's dev folder")
+    p.add_argument("--paths", action="store_true",
+                   help="show where the tool resolves the game, reference, profile and registry "
+                        "(and which config file it read), then exit")
     p.add_argument("--reference", default=str(_merge.REFERENCE),
                    help="path to the unpacked base-game reference tree")
     p.add_argument("--tier", choices=["a", "b"], default="a",
@@ -27,7 +31,9 @@ def main(argv: list[str] | None = None) -> int:
                         "b = also merge the INSTALLED extensions in load order, so cross-mod "
                         "patches resolve and removed-by-another-mod content is caught "
                         "(ordering is community-reported: advisory)")
-    p.add_argument("--profile", default=None, help="active user profile id (Tier B)")
+    p.add_argument("--profile", metavar="ID",
+                   help="user profile id (the numeric folder under the X4 profile dir) — only "
+                        "needed to locate debug.txt when $X4_PROFILE / $X4_DEBUGLOG are unset")
     p.add_argument("--entity", help="completeness target, e.g. ware:my_new_ware")
     p.add_argument("--like", help="vanilla analogue, e.g. ware:ore")
     p.add_argument("--json", action="store_true", help="emit findings as JSON")
@@ -45,8 +51,19 @@ def main(argv: list[str] | None = None) -> int:
     try:  # Windows consoles default to cp1252; mod content may not be ASCII.
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
-        pass
+        pass  # silent-ok: console encoding shim. Failure means the default codec
+        # stays; it affects how output LOOKS, never what was examined.
 
+    if args.paths:
+        # Silent misconfiguration is this tool's worst failure mode — every location is
+        # overridable and most are derived, so there has to be one command that answers
+        # "where do you think everything is, and which config file did you read?".
+        print("\n".join(_paths.describe()))
+        return 0
+
+    if not args.mod_dir:
+        print("error: mod_dir is required (or use --paths)", file=sys.stderr)
+        return 2
     mod_dir = Path(args.mod_dir)
     if not mod_dir.is_dir():
         print(f"error: mod folder not found: {mod_dir}", file=sys.stderr)
@@ -60,7 +77,19 @@ def main(argv: list[str] | None = None) -> int:
 
     debug_path = args.debug
     if debug_path == "\0":  # bare --debug -> the active profile's debug.txt
-        debug_path = str(Path.home() / "Documents" / "Egosoft" / "X4" / args.profile / "debug.txt")
+        # Ask _paths first ($X4_DEBUGLOG, else $X4_PROFILE/debug.txt). This used to be
+        # `Path.home()/"Documents"/"Egosoft"/"X4"/<id>/"debug.txt"` — the WINDOWS layout,
+        # hardcoded, so bare --debug could never work on Linux (~/.config/EgoSoft/X4/<id>)
+        # or macOS, both of which the toolkit documents and supports.
+        resolved = _paths.debug_log()
+        if resolved is None and args.profile:
+            resolved = Path.home() / "Documents" / "Egosoft" / "X4" / args.profile / "debug.txt"
+        if resolved is None:
+            print("error: --debug needs a log to read. Configure $X4_PROFILE or $X4_DEBUGLOG "
+                  "(see .claude/x4-paths.env), pass --profile <id>, or give the path: "
+                  "--debug <path/to/debug.txt>", file=sys.stderr)
+            return 2
+        debug_path = str(resolved)
 
     report = _check.validate(mod_dir, config, entity=args.entity, like=args.like,
                              only_file=args.file, update=args.update, debug=debug_path,
@@ -71,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
             "findings": [asdict(f) for f in report.findings],
             "notes": report.notes,
             "error_count": len(report.errors),
+            "skipped": [asdict(s) for s in report.skipped],
+            "degraded": bool(report.degraded),
         }, indent=2))
     else:
         _print_human(mod_dir, report)
@@ -79,7 +110,26 @@ def main(argv: list[str] | None = None) -> int:
             print("\n  note: expression-grammar findings above are heuristic — confirm against a "
                   "real load with  --debug <profile>/debug.txt  after an in-game test.")
 
-    return 1 if report.errors else 0
+    # Exit codes: 0 clean · 1 errors found · 3 DEGRADED (a requested check could
+    # not run, so a clean result proves nothing). 3 is separate from 1 so a gate
+    # can tell "your mod is broken" from "the validator was blindfolded" — the
+    # second used to exit 0 and read as a pass.
+    if report.errors:
+        return 1
+    return 3 if report.degraded else 0
+
+
+def _print_skipped(report: _check.Report) -> None:
+    """Print work that was NOT done. Never let this be silent: a check that could
+    not run must not be indistinguishable from a check that found nothing."""
+    if not report.skipped:
+        return
+    print("\n  NOT CHECKED:")
+    for s in report.skipped:
+        mark = "!!" if s.degraded else " -"
+        print(f"  {mark} {s.what}: {s.why}")
+    if report.degraded:
+        print("  ** a check you asked for did not run — this result is NOT a pass **")
 
 
 def _print_human(mod_dir: Path, report: _check.Report) -> None:
@@ -87,7 +137,10 @@ def _print_human(mod_dir: Path, report: _check.Report) -> None:
     for note in report.notes:
         print(f"  - {note}")
     if not report.findings:
-        print("  OK: no issues found")
+        # "no findings" is only OK if everything was actually examined.
+        print("  OK: no issues found" if not report.skipped
+              else "  no issues found in what could be checked")
+        _print_skipped(report)
         return
     ordered = sorted(report.findings, key=lambda f: (_SEV_ORDER[f.severity], f.vpath, f.line))
     for f in ordered:
@@ -96,7 +149,9 @@ def _print_human(mod_dir: Path, report: _check.Report) -> None:
     n_info = sum(1 for f in report.findings if f.severity == "info")
     print(f"\n  {len(report.errors)} error(s), "
           f"{sum(1 for f in report.findings if f.severity == 'warn')} warning(s)"
-          + (f", {n_info} info" if n_info else ""))
+          + (f", {n_info} info" if n_info else "")
+          + (f", {len(report.skipped)} not checked" if report.skipped else ""))
+    _print_skipped(report)
 
 
 if __name__ == "__main__":

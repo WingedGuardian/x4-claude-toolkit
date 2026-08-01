@@ -29,7 +29,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _compat, _merge, _registry
+from x4validate import _cat, _compat, _merge, _registry, _scan
 from x4validate._provenance import BASE, Origin, Recorder
 
 DB_PATH = Path(os.environ.get(
@@ -38,6 +38,20 @@ DB_PATH = Path(os.environ.get(
 SCHEMA_VERSION = 1
 _ADVISORY = ("winner reflects community-standard load order "
              "(alphabetical + dependency-first), not engine-verified")
+
+
+def _count_line(shown: int, total: int, noun: str) -> str:
+    """Footer count that NEVER hides truncation.
+
+    `--limit` defaults to 200 and the footer used to print a bare "200 ware(s)"
+    while the store holds 2,431 — so the capped number read as the total. A
+    silent cap is the same class of lie as a silent skip: the output looks like
+    an answer about everything when it is an answer about the first N.
+
+    Lives in `_scan` now so `x4diff --top` shares one implementation; kept here
+    as the module-local name every call site already uses.
+    """
+    return _scan.count_line(shown, total, noun)
 
 
 # --- active mod set + load order ---------------------------------------------
@@ -123,6 +137,8 @@ def _num(val: str) -> float | None:
     try:
         return float(val)
     except (TypeError, ValueError):
+        # silent-ok: "this attribute is not numeric" is the ANSWER here, not a
+        # failure to look. Callers keep the original string either way.
         return None
 
 
@@ -367,7 +383,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
-        pass
+        pass  # silent-ok: console encoding shim. Failure means the default codec
+        # stays; it affects how output LOOKS, never what was examined.
     p = argparse.ArgumentParser(
         prog="x4effective",
         description="Browse the effective merged values of every X4 entity, with provenance.")
@@ -478,13 +495,15 @@ def _cmd_ls(con, args) -> int:
         params.append(f"%{args.filter}%")
     if args.modified_only:
         q += " AND chain IS NOT NULL"
+    total = con.execute(q.replace("SELECT name, klass, origin, chain", "SELECT count(*)"),
+                        params).fetchone()[0]
     q += " ORDER BY name LIMIT ?"
     params.append(args.limit)
     rows = con.execute(q, params).fetchall()
     for r in rows:
         mod = "" if r["chain"] is None else f"  ← {r['origin']}"
         print(f"{r['name']:<44} {r['klass']:<16}{mod}")
-    print(f"\n{len(rows)} {args.kind}(s)  ·  {_ADVISORY}")
+    print(f"\n{_count_line(len(rows), total, f'{args.kind}(s)')}  ·  {_ADVISORY}")
     return 0
 
 
@@ -516,6 +535,9 @@ def _cmd_attr(con, args) -> int:
     if args.klass:
         q += " AND e.klass=?"
         params.append(args.klass)
+    total = con.execute(
+        q.replace("SELECT e.name, e.klass, a.value, a.value_num, a.origin, a.chain",
+                  "SELECT count(*)"), params).fetchone()[0]
     order = "a.value_num" if args.sort == "num" else "e.name"
     q += f" ORDER BY {order} LIMIT ?"
     params.append(args.limit)
@@ -523,7 +545,7 @@ def _cmd_attr(con, args) -> int:
     for r in rows:
         mod = "" if r["chain"] is None else f"  ← {r['origin']}"
         print(f"{r['name']:<44} {r['value']:>14}{mod}")
-    print(f"\n{len(rows)} value(s) for {args.prop}  ·  {_ADVISORY}")
+    print(f"\n{_count_line(len(rows), total, f'value(s) for {args.prop}')}  ·  {_ADVISORY}")
     return 0
 
 
@@ -548,13 +570,18 @@ def _cmd_who_sets(con, args) -> int:
 
 
 def _cmd_diff_mod(con, args) -> int:
+    total = con.execute("SELECT COUNT(*) FROM attrs a JOIN entities e ON e.id=a.entity_id "
+                        "WHERE a.origin=?", (args.folder,)).fetchone()[0]
     rows = con.execute(
         "SELECT e.kind, e.name, a.prop, a.value FROM attrs a "
         "JOIN entities e ON e.id=a.entity_id WHERE a.origin=? "
         "ORDER BY e.kind, e.name, a.prop LIMIT ?", (args.folder, args.limit)).fetchall()
     for r in rows:
         print(f"{r['kind']:<6} {r['name']:<40} {r['prop']:<28} = {r['value']}")
-    print(f"\n{len(rows)} value(s) won by {args.folder}  ·  {_ADVISORY}")
+    # "N value(s) won by X" is the headline number a balance discussion turns on;
+    # printing the LIMIT as if it were the total makes that number wrong, not
+    # merely the list incomplete.
+    print(f"\n{_count_line(len(rows), total, f'value(s) won by {args.folder}')}  ·  {_ADVISORY}")
     return 0
 
 

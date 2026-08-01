@@ -69,6 +69,9 @@ def _parse_line(line: str) -> tuple[str, int, int, str] | None:
     try:
         size, mtime = int(size_s), int(mtime_s)
     except ValueError:
+        # silent-ok: int() coercion on one catalog index line. The caller logs
+        # "Malformed catalog line in %s: %r" for every None, so the failure IS
+        # reported — one level up, where the file name is known.
         return None
     if size < 0 or mtime < 0 or not _MD5_RE.match(md5):
         return None

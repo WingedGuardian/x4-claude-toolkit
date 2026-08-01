@@ -17,11 +17,12 @@ Wildcard entries (`character_*`) are skipped — they're patterns, not files.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from lxml import etree
 
-from . import _merge
+from . import _cat, _merge
 
 MACRO_INDEX = "index/macros.xml"
 COMPONENT_INDEX = "index/components.xml"
@@ -46,8 +47,31 @@ def _strip_mod_index_prefix(value: str) -> str:
     return value
 
 
-def build_index(config: _merge.Config, extra_overlays, index_rel: str) -> dict[str, tuple[Path, str]]:
-    """name -> (resolution_root, value). Later sources win (mod over base)."""
+def _read_source(root: Path, rel: str) -> etree._Element | None:
+    """Parse *rel* under *root*, LOOSE first then inside the root's .cat catalogs.
+
+    A packed mod has no loose XML at all, so a `.is_file()`-only read returns
+    None for every file it owns — indistinguishable from "this mod has no index".
+    """
+    f = root / rel
+    if f.is_file():
+        return _merge.parse_file(f)
+    data = _cat.read_path(root, rel)
+    return _merge.parse_bytes(data) if data is not None else None
+
+
+def build_index(config: _merge.Config, extra_overlays, index_rel: str,
+                report=None) -> dict[str, tuple[Path, str]]:
+    """name -> (resolution_root, value). Later sources win (mod over base).
+
+    `config.overlays` (the Tier B installed set) is merged in BEFORE
+    *extra_overlays* (the mod under test), matching load order — until
+    2026-07-28 it was ignored entirely, so `--tier b` ran the file-existence and
+    connection checks against a base+DLC-only index while every other check saw
+    the merged tree. Both index and payload reads are packed-aware; making only
+    the index packed-aware registers a macro whose file then cannot be found,
+    turning a missed check into a FALSE 'registered but file missing' error.
+    """
     index: dict[str, tuple[Path, str]] = {}
     # base + DLC: values are resolved relative to the reference root.
     for src in [config.reference] + config.dlc_dirs():
@@ -56,17 +80,25 @@ def build_index(config: _merge.Config, extra_overlays, index_rel: str) -> dict[s
             try:
                 for name, value in _index_entries(_merge.parse_file(f)):
                     index[name] = (config.reference, value)
-            except etree.XMLSyntaxError:
-                pass
+            except etree.XMLSyntaxError as exc:
+                if report is not None:
+                    report.skip(f"{index_rel} resolution",
+                                f"base/DLC index {f} is unparseable ({exc}) — the entries it "
+                                "defines were not registered", degraded=True)
     # mod overlays: values are resolved relative to the mod root.
-    for ov in extra_overlays or []:
-        f = ov / index_rel
-        if f.is_file():
-            try:
-                for name, value in _index_entries(_merge.parse_file(f)):
-                    index[name] = (ov, _strip_mod_index_prefix(value))
-            except etree.XMLSyntaxError:
-                pass
+    for ov in list(config.overlays) + list(extra_overlays or []):
+        try:
+            root = _read_source(ov, index_rel)
+        except (etree.XMLSyntaxError, OSError) as exc:
+            if report is not None:
+                report.skip(f"{index_rel} resolution",
+                            f"{ov.name}: index unreadable ({exc}) — macros it registers will "
+                            "read as unregistered")
+            continue
+        if root is None:
+            continue
+        for name, value in _index_entries(root):
+            index[name] = (ov, _strip_mod_index_prefix(value))
     return index
 
 
@@ -74,8 +106,53 @@ def resolve_path(root: Path, value: str) -> Path:
     return root / (value.replace("\\", "/").lstrip("/") + ".xml")
 
 
+@dataclass
+class Located:
+    """A file an index entry points at, wherever it actually lives."""
+    display: Path       #: for messages — the on-disk path, or root/vpath if packed
+    data: bytes
+    packed: bool = False
+
+
+def _rel_of(value: str) -> str:
+    return value.replace("\\", "/").lstrip("/") + ".xml"
+
+
+def read_indexed(index: dict[str, tuple[Path, str]], name: str) -> Located | None:
+    """Contents of the file *name* is registered to, loose or inside a .cat.
+
+    None means "not registered, or registered to a file that does not exist" —
+    the caller distinguishes those by checking `name in index` first.
+
+    Packed-awareness is not optional here. `code_vgr_battlecruiser` registers
+    `ship_vgr_battlecruiser_01_a_macro` and ships the macro inside its `.cat`;
+    a loose-only check calls that file missing and reports an error about a mod
+    that is perfectly fine. Measured 2026-07-28: 11 such false errors across two
+    installed mods.
+    """
+    if name not in index:
+        return None
+    root, value = index[name]
+    p = resolve_path(root, value)
+    if p.is_file():
+        try:
+            return Located(p, p.read_bytes())
+        except OSError:
+            # silent-ok: an unreadable file is treated as absent, which is what the
+            # caller then reports — "registered but file missing" names the path.
+            return None
+    data = _cat.read_path(root, _rel_of(value))
+    if data is None:
+        return None
+    return Located(p, data, packed=True)
+
+
 def file_present(index: dict[str, tuple[Path, str]], name: str) -> Path | None:
-    """Resolved file path if the index has *name* and the file exists, else None."""
+    """Resolved LOOSE file path if the index has *name* and the file exists.
+
+    Kept for callers that genuinely need a real on-disk path. Anything that only
+    wants to READ the file must use `read_indexed`, which also sees packed mods.
+    """
     if name not in index:
         return None
     p = resolve_path(*index[name])
@@ -94,12 +171,13 @@ def macro_component_links(
     out: list[str] = []
     if macro_name not in macro_index:
         return out  # not our job here; dangling-ref check covers unregistered
-    macro_file = resolve_path(*macro_index[macro_name])
-    if not macro_file.is_file():
-        out.append(f"macro '{macro_name}' registered but file missing: {macro_file}")
+    located = read_indexed(macro_index, macro_name)
+    if located is None:
+        out.append(f"macro '{macro_name}' registered but file missing: "
+                   f"{resolve_path(*macro_index[macro_name])}")
         return out
     try:
-        mroot = _merge.parse_file(macro_file)
+        mroot = _merge.parse_bytes(located.data)
     except etree.XMLSyntaxError as exc:
         out.append(f"macro '{macro_name}' file unparseable: {exc}")
         return out
@@ -110,17 +188,39 @@ def macro_component_links(
     if comp_ref not in component_index:
         out.append(f"macro '{macro_name}' -> component '{comp_ref}' not registered in index/components.xml")
         return out
-    comp_file = resolve_path(*component_index[comp_ref])
-    if not comp_file.is_file():
-        out.append(f"component '{comp_ref}' registered but file missing: {comp_file}")
+    if read_indexed(component_index, comp_ref) is None:
+        out.append(f"component '{comp_ref}' registered but file missing: "
+                   f"{resolve_path(*component_index[comp_ref])}")
     return out
 
 
-def component_connections(component_file: Path) -> set[str]:
+def connections_of(data: bytes) -> set[str] | None:
+    """Connection names in a component document, or None if it will not parse."""
+    try:
+        root = _merge.parse_bytes(data)
+    except etree.XMLSyntaxError:
+        # silent-ok: None is this function's whole point — see the docstring on
+        # component_connections. The caller reports it via Report.skip.
+        return None
+    return set(root.xpath("//connection/@name"))
+
+
+def component_connections(component_file: Path) -> set[str] | None:
+    """Connection names on a component, or **None** if the file can't be read.
+
+    None is the caller's established skip sentinel (`conns_for_component` returns
+    it for an unresolved component and `check_loadout` bails on it). Returning an
+    empty set instead — as this did until 2026-07-27 — reads as "this component
+    has zero connections", so a single unparseable component file turned every
+    loadout entry pointing at it into a false 'references connection not on
+    component' ERROR. Un-evaluable is not the same as empty.
+    """
     try:
         root = _merge.parse_file(component_file)
-    except etree.XMLSyntaxError:
-        return set()
+    except (etree.XMLSyntaxError, OSError):
+        # silent-ok: the documented un-evaluable sentinel (see docstring above);
+        # returning set() instead is the exact bug this function was fixed for.
+        return None
     return set(root.xpath("//connection/@name"))
 
 

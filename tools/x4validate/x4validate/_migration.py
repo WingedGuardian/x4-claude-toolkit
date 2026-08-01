@@ -34,14 +34,16 @@ class MigrationFinding:
     snippet: str
 
 
-def scan_mod(mod_dir: Path) -> list[MigrationFinding]:
+def scan_mod(mod_dir: Path, unreadable: list[str] | None = None) -> list[MigrationFinding]:
     out: list[MigrationFinding] = []
     for f in sorted(mod_dir.rglob("*")):
         if not f.is_file() or f.suffix.lower() not in _EXTS:
             continue
         try:
             lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
+        except OSError as exc:
+            if unreadable is not None:
+                unreadable.append(f"{f.relative_to(mod_dir).as_posix()}: {exc}")
             continue
         for i, line in enumerate(lines, 1):
             for pat, note in PATTERNS:

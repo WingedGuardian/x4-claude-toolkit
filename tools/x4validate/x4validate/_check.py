@@ -9,7 +9,7 @@ from pathlib import Path
 from lxml import etree
 
 from . import (_cat, _compat, _debuglog, _exprlint, _merge, _migration, _refs,
-               _registry, _resolve, _xref, _xsd)
+               _registry, _resolve, _scan, _xref, _xsd)
 
 # A ship variant macro file: <base>_<a|b|c|...>_macro.xml
 VARIANT_RE = re.compile(r"^(?P<base>.+)_(?P<v>[a-z0-9])_macro\.xml$")
@@ -24,30 +24,53 @@ WARES_FILE = "libraries/wares.xml"
 # overridden — each extension registers its own macro->file mappings.
 MACRO_INDEX = "index/macros.xml"
 RACES_FILE = "libraries/races.xml"
+FACTIONS_FILE = "libraries/factions.xml"
 
 
-def collect_text_defs(config: _merge.Config, extra_overlays=None) -> set[tuple[str, str]]:
+def collect_text_defs(config: _merge.Config, extra_overlays=None,
+                      report: Report | None = None) -> set[tuple[str, str]]:
     """Union (page,t) definitions from every t-file across base + DLC + overlays.
 
     Works for full <language> files and <diff> files alike (text_defs scans
     //page[@id]//t[@id] regardless of root). t-files are purely additive, so a
-    plain union is faithful here."""
+    plain union is faithful here.
+
+    **PACKED t-files count** (fixed 2026-07-27). This used to test `f.is_file()`
+    only, so a mod shipping its strings inside ext_01.cat contributed nothing —
+    the same blind spot that made iter_diff_files report packed mods as clean.
+    Measured on the live modlist: **977 strings exist only in packed t-files**
+    (vro 425, ship_variation_expansion 108, xenon_backup 102, ...). Every one was
+    a potential false "introduced text reference does not resolve", and Tier B —
+    where you patch another mod and quote its strings — is exactly where it bites.
+
+    A t-file that fails to parse is REPORTED, not swallowed: a shrunken def set
+    turns into false unresolved-reference errors downstream, and silently
+    dropping it is indistinguishable from the string genuinely not existing.
+    """
     defs: set[tuple[str, str]] = set()
     sources = ([config.reference] + config.dlc_dirs()
                + list(config.overlays) + list(extra_overlays or []))
     for src in sources:
         for rel in TEXT_FILES:
             f = src / rel
-            if f.is_file():
-                try:
+            try:
+                if f.is_file():
                     defs |= _refs.text_defs(_merge.parse_file(f))
-                except etree.XMLSyntaxError:
-                    pass
+                    continue
+                data = _cat.read_path(src, rel)  # packed: ext_01.cat/.dat
+                if data is not None:
+                    defs |= _refs.text_defs(_merge.parse_bytes(data))
+            except (etree.XMLSyntaxError, OSError) as exc:
+                if report is not None:
+                    report.skip("text-reference checks",
+                                f"{src.name}/{rel}: unreadable, its strings are missing "
+                                f"from the definition set ({exc})")
     return defs
 
 
-def collect_macro_defs(config: _merge.Config, extra_overlays=None) -> set[str]:
-    """Registered macro names from the EFFECTIVE index/macros.xml.
+def collect_macro_defs(config: _merge.Config, extra_overlays=None,
+                       report: Report | None = None) -> set[str] | None:
+    """Registered macro names from the EFFECTIVE index/macros.xml, or None.
 
     Built through build_effective rather than by unioning each directory's file,
     because an extension may ship index/macros.xml as a <diff> containing
@@ -56,34 +79,87 @@ def collect_macro_defs(config: _merge.Config, extra_overlays=None) -> set[str]:
     no longer contains it. (Real case: xspvro removes
     turret_xen_m_beam_02_mk1_macro without re-adding it, orphaning a vanilla
     macro that six other mods reference.)
+
+    Returns **None** when the index could not be built — never an empty set.
+    Both `_refs` consumers gate on this value, and they used to do so by
+    truthiness: an empty set silently disabled *every* macro-reference check and
+    made ware completeness's `component` field pass unconditionally. "Could not
+    read the index" and "the index defines no macros" must not be the same value.
     """
+    def _fail(why: str) -> None:
+        if report is not None:
+            report.skip("macro-reference checks", f"{MACRO_INDEX}: {why}", degraded=True)
+
     try:
         merged = _merge.build_effective(MACRO_INDEX, config, extra_overlays=extra_overlays)
-    except (etree.LxmlError, OSError):
-        return set()
+    except (etree.LxmlError, OSError) as exc:
+        _fail(f"could not build the effective macro index ({exc})")
+        return None
     if merged.tree is None:
-        return set()
+        _fail("no effective macro index (missing from base+DLC and every overlay)")
+        return None
+    for s in merged.skipped:
+        if report is not None:
+            report.skip("macro index overlay", s)
     return _refs.macro_names(merged.tree)
 
 
-def _mod_identity(mod_dir: Path) -> tuple[str, str]:
-    """(folder name, content.xml id) for the mod under test; id may be ''."""
+def _mod_identity(mod_dir: Path, report: Report | None = None) -> tuple[str, str]:
+    """(folder name, content.xml id) for the mod under test; id may be ''.
+
+    An empty id is not free: Tier B excludes the mod's own installed copy by
+    folder name AND by id, so losing the id means a mod deployed under a
+    different folder name gets merged in as if it were a third-party overlay —
+    the mod validated against itself.
+    """
     folder = mod_dir.resolve().name
     mod_id = ""
     cx = mod_dir / "content.xml"
     if cx.is_file():
         try:
             mod_id = _merge.parse_file(cx).get("id") or ""
-        except etree.XMLSyntaxError:
-            pass
+        except etree.XMLSyntaxError as exc:
+            if report is not None:
+                report.skip("mod identity",
+                            f"content.xml will not parse ({exc}) — this mod's own installed "
+                            "copy can only be excluded by folder name, not by id")
     return folder, mod_id
 
 
-def tier_b_overlays(mod_dir: Path) -> tuple[tuple[Path, ...], list[str]]:
-    """Installed extension roots that load BEFORE the mod under test — the tree its
-    `sel=` selectors actually see.
+@dataclass
+class TierB:
+    """The two trees a cross-mod check needs. They are NOT interchangeable.
 
-    Returns (overlay_dirs, notes). This is what makes a cross-mod patch
+    `patch_time` is truncated at the mod's own load-order position — the tree that
+    exists at the moment the engine applies this mod's diffs. `final` is every
+    installed extension — the tree that exists once loading is done, which is what
+    a *runtime* lookup (does macro X resolve? does ware Y exist?) actually sees.
+
+    Using one for the other's job is wrong in both directions, and `X4CapturableXenonXL`
+    demonstrates both at once (measured 2026-07-28 — see `tier_b_overlays`).
+    """
+    patch_time: tuple[Path, ...] = ()
+    final: tuple[Path, ...] = ()
+    notes: list[str] = field(default_factory=list)
+
+
+def tier_b_overlays(mod_dir: Path,
+                    report: Report | None = None) -> tuple[tuple[Path, ...], list[str]]:
+    """The PATCH-TIME tree only, as `(overlay_dirs, notes)`.
+
+    Thin wrapper over `tier_b_trees` for callers that genuinely only care about the
+    tree a `sel=` sees (the diff oracle, ad-hoc scripts). Anything validating a mod
+    should use `tier_b_trees` and honour BOTH trees.
+    """
+    t = tier_b_trees(mod_dir, report)
+    return t.patch_time, t.notes
+
+
+def tier_b_trees(mod_dir: Path, report: Report | None = None) -> TierB:
+    """Both installed-extension trees for the mod under test — see `TierB`.
+
+    `patch_time` holds the roots that load BEFORE the mod, which is the tree its
+    `sel=` selectors actually see. This is what makes a cross-mod patch
     checkable: Tier A (base+DLC) cannot see a node another mod adds, nor notice
     one another mod removed, so both directions produce false results —
     a false 'sel matched nothing' for the former, a false 'OK' for the latter.
@@ -102,11 +178,26 @@ def tier_b_overlays(mod_dir: Path) -> tuple[tuple[Path, ...], list[str]]:
     declares a dependency on the other, so the engine runs the patch first and skips
     it. A real upstream bug our optimistic tree was hiding.
 
-    KNOWN LIMITATION: reference checks (does this ware/macro id exist?) are a
-    *runtime* question and would ideally use the FINAL tree (all overlays), not this
-    patch-time one. They currently share this tree, so a ware added only by a
-    later-loading mod can read as unresolved. Measured impact on the dev mods at the
-    time of the change: none. Split the two trees if that ever produces a false alarm.
+    **The two trees ARE now split (2026-07-28).** The limitation this docstring used
+    to describe as theoretical was confirmed against the engine, so reference /
+    file-existence / connection checks run on `TierB.final` while `sel=` resolution
+    keeps this patch-time tree. `X4CapturableXenonXL` (load position 79) proves both
+    directions at once, which is why one tree cannot serve both:
+
+      - patch-time is RIGHT for `sel=`: its three `<remove sel="…connection_cockpit">`
+        ops match the vanilla node at position 79. Against the final tree they read as
+        'sel matched nothing' — 3 false alarms — because `xspvro` (position 92)
+        replaces that macro file wholesale.
+      - final is RIGHT for references: `xspvro` re-points `ship_xen_xl_carrier_01_a_macro`
+        at component `ship_pla_xl_battleship`, which has 243 connections and lacks
+        `connection_shieldgen_external03` (vanilla `ship_xen_xl_carrier_01` HAS it).
+        The mod's `libraries/loadouts.xml:44` still asks for it, so at runtime the
+        loadout is broken — a REAL defect the patch-time tree cannot see, and which
+        the deployed copy therefore reported as 0 errors.
+
+    Not engine-logged: a loadout mismatch only surfaces when the ship is instantiated,
+    and the reference log is a load-time capture. The chain is verified statically
+    instead (load order 79 < 92; both mods ship the macro file, so the later wins).
 
     The mod under test is excluded by BOTH folder name and content.xml id, since
     a dev folder is usually also deployed under extensions\\ and would otherwise
@@ -116,18 +207,35 @@ def tier_b_overlays(mod_dir: Path) -> tuple[tuple[Path, ...], list[str]]:
     dependencies first) — advisory, not engine-verified.
     """
     notes: list[str] = []
+
+    def _fallback(why: str) -> TierB:
+        """Tier B was asked for and could not be built.
+
+        The fallback tree is base+DLC — i.e. Tier A — which cannot see anything
+        another mod adds or removes. A cross-mod patch validated against it is
+        not validated at all. This used to emit a note and exit 0, so a gate or
+        CI step read the run as a pass; it is now a degraded skip, which the CLI
+        turns into a non-zero exit.
+        """
+        if report is not None:
+            report.skip("Tier B cross-mod validation",
+                        f"{why}; fell back to base+DLC (Tier A) — cross-mod selectors "
+                        "cannot resolve against that tree", degraded=True)
+        return TierB((), (), [f"Tier B: {why}; fell back to base+DLC only"])
+
     try:
         mods = _registry.scan_installed()
     except OSError as exc:
-        return (), [f"Tier B: could not scan installed mods ({exc}); fell back to base+DLC only"]
+        return _fallback(f"could not scan installed mods ({exc})")
     if not mods:
-        return (), ["Tier B: no installed extensions found; fell back to base+DLC only"]
+        return _fallback("no installed extensions found")
 
-    folder, mod_id = _mod_identity(mod_dir)
+    folder, mod_id = _mod_identity(mod_dir, report)
     by_folder = {m["folder"]: m for m in mods}
     order = _compat.compute_load_order(mods)
 
-    dirs: list[Path] = []
+    dirs: list[Path] = []       # patch-time: up to the mod's own position
+    final_dirs: list[Path] = []  # runtime: every other installed extension
     skipped = ""
     placed = False
     for name in order:
@@ -135,11 +243,15 @@ def tier_b_overlays(mod_dir: Path) -> tuple[tuple[Path, ...], list[str]]:
         if m is None:
             continue
         if m["folder"] == folder or (mod_id and m["id"] == mod_id):
+            # The mod under test is excluded from BOTH trees — merging its own copy
+            # would pre-apply its ops and mask exactly the misses we look for.
             skipped, placed = m["folder"], True
-            break  # everything after this loads LATER — not visible to our selectors
+            continue  # keep walking: later mods are invisible to selectors, but REAL at runtime
         p = Path(m["path"])
         if p.is_dir():
-            dirs.append(p)
+            final_dirs.append(p)
+            if not placed:  # everything after the mod loads LATER — not visible to our selectors
+                dirs.append(p)
 
     if placed:
         notes.append(
@@ -147,6 +259,10 @@ def tier_b_overlays(mod_dir: Path) -> tuple[tuple[Path, ...], list[str]]:
             f"(of {len(order)} installed) — the tree its selectors actually see")
         notes.append(f"Tier B: excluded the mod under test's installed copy '{skipped}' "
                      "and everything loading after it")
+        if len(final_dirs) > len(dirs):
+            notes.append(
+                f"Tier B: reference/connection checks additionally see the {len(final_dirs) - len(dirs)} "
+                "extension(s) loading AFTER it — those are invisible to selectors but real at runtime")
     else:
         # Not installed (dev-only): we cannot place it, so assume it loads last —
         # the optimistic tree. Say so, because that is exactly the FALSE-OK shape.
@@ -157,7 +273,7 @@ def tier_b_overlays(mod_dir: Path) -> tuple[tuple[Path, ...], list[str]]:
             "reported OK here but SKIPPED by the engine; deploy it to place it exactly")
     notes.append("Tier B: load order is the community-reported convention "
                  "(dependencies first, then alphabetical) — advisory, not engine-verified")
-    return tuple(dirs), notes
+    return TierB(tuple(dirs), tuple(final_dirs), notes)
 
 
 @dataclass
@@ -170,16 +286,45 @@ class Finding:
 
 
 @dataclass
+class Skipped:
+    """A piece of work the validator could NOT do.
+
+    Every false-pass this tool has ever shipped had the same shape: a helper hit
+    an unreadable file, returned a falsy sentinel (`set()` / `[]` / `None`), and
+    the caller could not tell "found nothing" from "could not look". With no
+    channel to say *"I did not check this"*, silence rendered as OK.
+
+    *degraded* = the skip disabled an ENTIRE check, so a clean run is not
+    evidence of correctness and the CLI exits non-zero. A partial skip (one
+    unreadable file among many) is reported but does not gate.
+    """
+    what: str       # which check / input was affected
+    why: str        # the concrete reason, including the exception text
+    degraded: bool = False
+
+
+@dataclass
 class Report:
     findings: list[Finding] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    #: Work that was NOT done. See the Skipped docstring — this is the channel
+    #: whose absence caused every "nothing examined rendered as OK" defect.
+    skipped: list[Skipped] = field(default_factory=list)
 
     @property
     def errors(self) -> list[Finding]:
         return [f for f in self.findings if f.severity == "error"]
 
+    @property
+    def degraded(self) -> list[Skipped]:
+        """Skips that disabled a whole check — the run cannot be trusted as a pass."""
+        return [s for s in self.skipped if s.degraded]
+
     def add(self, *args, **kwargs) -> None:
         self.findings.append(Finding(*args, **kwargs))
+
+    def skip(self, what: str, why: str, degraded: bool = False) -> None:
+        self.skipped.append(Skipped(what, why, degraded))
 
 
 def iter_diff_files(mod_dir: Path):
@@ -199,33 +344,51 @@ def iter_diff_files(mod_dir: Path):
 
 
 
-def iter_mod_xml_roots(mod_dir: Path):
+def iter_mod_xml_roots(mod_dir: Path, predicate=None):
     """Yield (virtual_path, root) for every XML file owned by a mod.
 
-    Loose files win over packed catalog members, matching the engine and
-    _merge.overlay_root. This lets static checks see packed-only mods without
-    duplicating catalog parsing in each check.
+    Thin wrapper over `_scan.iter_mod_xml` — loose wins over packed, matching
+    the engine. Files that will not parse are skipped here and reported ONCE by
+    `check_readability`, rather than at each of this function's eight call sites.
     """
-    yielded: set[str] = set()
-    for path in sorted(mod_dir.rglob("*.xml")):
-        if not path.is_file():
-            continue
-        try:
-            root = _merge.parse_file(path)
-        except etree.XMLSyntaxError:
-            continue
-        vpath = path.relative_to(mod_dir).as_posix()
-        yielded.add(vpath.lower())
-        yield vpath, root
+    yield from _scan.iter_mod_xml(mod_dir, predicate)
 
-    for vpath, member in sorted(_cat.mod_vfs(mod_dir).items()):
-        if not vpath.lower().endswith(".xml") or vpath.lower() in yielded:
-            continue
-        try:
-            root = _merge.parse_bytes(_cat.read_member(member))
-        except (OSError, etree.XMLSyntaxError):
-            continue
-        yield vpath, root
+
+#: Directory segments whose contents the engine never loads — a mod's own
+#: scratch space. A malformed file in one of these is untidy, not broken.
+#: Measured over 100 installed mods: 10 of the 12 unparseable files live here
+#: (all in VRO's tmp/, backup/ and md_debug/), so without this split the check
+#: would be 83% noise.
+SCRATCH_DIRS = frozenset({"tmp", "backup", "backups", "old", "unused", "md_debug", ".git"})
+
+
+def check_readability(mod_dir: Path, config: _merge.Config, report: Report) -> None:
+    """Report every XML file in the mod that will not parse.
+
+    Until 2026-07-28 these vanished: `iter_mod_xml_roots` ended both its branches
+    in a bare `except XMLSyntaxError: continue`. Neither nearby guard covered it —
+    `MergeResult.skipped` is a different code path (overlay-tree parses), and the
+    "checked == 0" warning only fires at *zero*, so five good diffs plus one
+    malformed printed nothing at all.
+
+    A file at a real content path is also a `warn`: the engine's parser is no more
+    forgiving than lxml, so it cannot load that file either. Confirmed live on two
+    installed mods — `cpsdo_faction/t/0001-l088.xml` (stray `</t>`, drops a whole
+    Traditional-Chinese page) and `xspvro/assets/units/size_xl/xen_shell.xml`
+    (`<offset>`/`<lights>` mis-nested, drops a component).
+    """
+    unreadable: list[_scan.Unreadable] = []
+    for _ in _scan.iter_mod_xml(mod_dir, unreadable=unreadable):
+        pass
+    for u in unreadable:
+        segments = {s.lower() for s in u.vpath.split("/")[:-1]}
+        scratch = bool(segments & SCRATCH_DIRS)
+        report.skip("this file was not examined at all",
+                    f"{u.vpath}: will not parse ({u.why})")
+        if not scratch:
+            report.add("warn", "parse",
+                       f"file will not parse, so the engine cannot load it either: {u.why}",
+                       u.vpath)
 
 
 def _check_ops(diff_root, tree, vpath: str, report: Report) -> None:
@@ -281,12 +444,20 @@ def _check_ops(diff_root, tree, vpath: str, report: Report) -> None:
                        vpath, line)
 
 
-def _installed_folders() -> set[str]:
-    """Lowercased folder names of every installed extension (empty if unscannable)."""
+def _installed_folders() -> set[str] | None:
+    """Lowercased folder names of every installed extension, or None if unscannable.
+
+    None, not `set()`: an empty set means "no mods are installed", which reads as
+    a definite fact about the world. The caller must be able to tell that apart
+    from "the extensions directory could not be listed".
+    """
     try:
         return {m["folder"].lower() for m in _registry.scan_installed()}
     except OSError:
-        return set()
+        # silent-ok: None is this function's whole contract (see docstring) —
+        # distinct from set(). _path_verdict branches on it and reports
+        # "unverifiable" rather than silently excusing the patch.
+        return None
 
 
 def _no_base_finding(vpath: str, config: _merge.Config) -> tuple[str, str, str]:
@@ -312,11 +483,23 @@ def _no_base_finding(vpath: str, config: _merge.Config) -> tuple[str, str, str]:
     Target installed but no base found is still a real error — that is a genuine
     path mismatch or a file the target does not actually ship.
     """
-    nested = _merge._nested_target(vpath)
-    if nested is not None and nested[0].lower() not in _installed_folders():
-        return ("info", "inactive",
-                f"patch targets extension '{nested[0]}', which is not installed — "
-                "the engine never loads this file (designed no-op, not an error)")
+    nested = _merge._nested_target(vpath, config.packed_dlc_names())
+    if nested is not None:
+        installed = _installed_folders()
+        if installed is None:
+            # Could not list the extensions dir. Downgrading to "not installed"
+            # would silently excuse a genuine path mismatch; saying so is the
+            # only honest option.
+            return ("info", "unverifiable",
+                    f"patch targets extension '{nested[0]}', but the installed extension "
+                    "set could not be listed — cannot tell an inactive patch from a broken path")
+        # A packed-only DLC is owned like a mod (so it lands here) but is NOT in
+        # scan_installed, which filters ego_dlc_* out. Calling it "not installed"
+        # would be flatly false.
+        if nested[0].lower() not in installed | config.packed_dlc_names():
+            return ("info", "inactive",
+                    f"patch targets extension '{nested[0]}', which is not installed — "
+                    "the engine never loads this file (designed no-op, not an error)")
     parts = vpath.split("/")
     if len(parts) > 1 and parts[0] == "extensions" and parts[1].lower().startswith("ego_dlc_"):
         dlc = parts[1]
@@ -393,11 +576,12 @@ def check_references(mod_dir: Path, config: _merge.Config, report: Report) -> No
     mod_overlay = [mod_dir]
     wares_merged = _merge.build_effective(WARES_FILE, config, extra_overlays=mod_overlay)
     ware_def_set = _refs.ware_defs(wares_merged.tree)
-    text_def_set = collect_text_defs(config, mod_overlay)
-    macro_def_set = collect_macro_defs(config, mod_overlay)
+    text_def_set = collect_text_defs(config, mod_overlay, report)
+    macro_def_set = collect_macro_defs(config, mod_overlay, report)
     report.notes.append(
         f"reference defs: {len(ware_def_set)} wares, {len(text_def_set)} text strings, "
-        f"{len(macro_def_set)} macros")
+        + (f"{len(macro_def_set)} macros" if macro_def_set is not None
+           else "macros NOT CHECKED (index unreadable)"))
 
     for vpath, diff_root in iter_diff_files(mod_dir):
         for holder in _added_subtrees(diff_root):
@@ -411,8 +595,8 @@ def check_file_existence(mod_dir: Path, config: _merge.Config, report: Report) -
     chain resolves to real files: macro registered -> macro file -> its component
     -> component file."""
     mod_overlay = [mod_dir]
-    macro_index = _resolve.build_index(config, mod_overlay, _resolve.MACRO_INDEX)
-    component_index = _resolve.build_index(config, mod_overlay, _resolve.COMPONENT_INDEX)
+    macro_index = _resolve.build_index(config, mod_overlay, _resolve.MACRO_INDEX, report)
+    component_index = _resolve.build_index(config, mod_overlay, _resolve.COMPONENT_INDEX, report)
     seen: set[str] = set()
     for vpath, diff_root in iter_diff_files(mod_dir):
         for holder in _added_subtrees(diff_root):
@@ -427,7 +611,7 @@ def check_file_existence(mod_dir: Path, config: _merge.Config, report: Report) -
 
 def check_page_collisions(mod_dir: Path, config: _merge.Config, report: Report) -> None:
     """Warn when the mod's added {page,t} pairs already exist in base/DLC (silent clobber)."""
-    existing = collect_text_defs(config)  # base + DLC only (NOT the mod)
+    existing = collect_text_defs(config, report=report)  # base + DLC only (NOT the mod)
     for vpath, diff_root in iter_diff_files(mod_dir):
         added: set[tuple[str, str]] = set()
         for holder in _added_subtrees(diff_root):
@@ -521,25 +705,33 @@ def check_connections(mod_dir: Path, config: _merge.Config, report: Report) -> N
     connection the mesh doesn't have). Skips silently when the component can't be
     resolved (avoids false positives)."""
     mod_overlay = [mod_dir]
-    macro_index = _resolve.build_index(config, mod_overlay, _resolve.MACRO_INDEX)
-    component_index = _resolve.build_index(config, mod_overlay, _resolve.COMPONENT_INDEX)
+    macro_index = _resolve.build_index(config, mod_overlay, _resolve.MACRO_INDEX, report)
+    component_index = _resolve.build_index(config, mod_overlay, _resolve.COMPONENT_INDEX, report)
     conn_cache: dict[str, set[str] | None] = {}
 
     def conns_for_component(comp_ref: str | None) -> set[str] | None:
         if not comp_ref:
             return None
         if comp_ref not in conn_cache:
-            cf = _resolve.file_present(component_index, comp_ref)
-            conn_cache[comp_ref] = _resolve.component_connections(cf) if cf else None
+            cf = _resolve.read_indexed(component_index, comp_ref)
+            conns = _resolve.connections_of(cf.data) if cf else None
+            if cf and conns is None:
+                report.skip("connection checks",
+                            f"component '{comp_ref}' ({cf.display.name}): unreadable, its loadout "
+                            "targets were not verified")
+            conn_cache[comp_ref] = conns
         return conn_cache[comp_ref]
 
     def component_of_macro(macro_name: str) -> str | None:
-        mf = _resolve.file_present(macro_index, macro_name)
+        mf = _resolve.read_indexed(macro_index, macro_name)
         if mf is None:
             return None
         try:
-            mr = _merge.parse_file(mf)
-        except etree.XMLSyntaxError:
+            mr = _merge.parse_bytes(mf.data)
+        except etree.XMLSyntaxError as exc:
+            report.skip("connection checks",
+                        f"macro '{macro_name}' ({mf.display.name}): will not parse ({exc}), "
+                        "its loadout targets were not verified")
             return None
         refs = mr.xpath(f"//macro[@name={_resolve._xq(macro_name)}]/component/@ref")
         return refs[0] if refs else None
@@ -604,10 +796,26 @@ def check_completeness(
         return
     mod_overlay = [mod_dir]
     wares = _merge.build_effective(WARES_FILE, config, extra_overlays=mod_overlay)
-    text_def_set = collect_text_defs(config, mod_overlay)
-    macro_def_set = collect_macro_defs(config, mod_overlay)
+    text_def_set = collect_text_defs(config, mod_overlay, report)
+    macro_def_set = collect_macro_defs(config, mod_overlay, report)
     rep = _refs.ware_completeness(eid, lid, wares.tree, text_def_set, macro_def_set)
     report.notes.append(f"completeness checked kinds: {', '.join(rep.checked)}")
+
+    # A nonexistent --like analogue makes every comparison vacuous: its footprint
+    # is all-False, so `missing` is empty and the old code cheerfully reported
+    # "matches the footprint". Bail before that, and say which id was not found.
+    if rep.analogue_missing:
+        report.add("error", "completeness",
+                   f"analogue '{lid}' does not exist in the effective wares tree — "
+                   "nothing to compare against, so this check did not run "
+                   "(check the --like id, or whether the mod defining it is installed)")
+        report.skip("completeness", f"--like analogue '{lid}' not found", degraded=True)
+        return
+    if rep.entity_missing:
+        report.add("error", "completeness",
+                   f"entity '{eid}' does not exist in the effective wares tree — "
+                   "the mod does not define it (check the --entity id)")
+        return
     if not rep.missing:
         report.add("info", "completeness", f"ware '{eid}' matches the footprint of '{lid}'")
     for kind in rep.missing:
@@ -624,8 +832,11 @@ def _relpath(abs_file: str, mod_dir: Path) -> str:
 
 def check_migration(mod_dir: Path, config: _merge.Config, report: Report) -> None:
     """Runtime-only 9.0 breakages (dead APIs / deprecated Lua) the XSD can't catch."""
-    for m in _migration.scan_mod(mod_dir):
+    unreadable: list[str] = []
+    for m in _migration.scan_mod(mod_dir, unreadable):
         report.add("warn", "migration", f"{m.note}  [{m.snippet}]", _relpath(m.file, mod_dir), m.line)
+    for u in unreadable:
+        report.skip("9.0 migration scan", f"{u} — not scanned for dead APIs")
 
 
 def check_exprlint(mod_dir: Path, config: _merge.Config, report: Report) -> None:
@@ -661,6 +872,9 @@ def _mod_ids(mod_dir: Path) -> set[str]:
             if mid:
                 ids.add(mid.lower())
         except (etree.XMLSyntaxError, OSError):
+            # silent-ok: the folder name (already in `ids`) is the identity that
+            # matters for an extensions/<folder> path; the content.xml id is a
+            # bonus alias. _mod_identity reports the same unreadable file.
             pass
     return ids
 
@@ -738,6 +952,117 @@ def check_xsd(mod_dir: Path, config: _merge.Config, report: Report) -> None:
         report.add("info", "xsd-strict", f.message, _relpath(f.file, mod_dir), f.line)
 
 
+def _faction_defs(config: _merge.Config, extra_overlays=None) -> set[str]:
+    f = _merge.build_effective(FACTIONS_FILE, config, extra_overlays=list(extra_overlays or []))
+    if f.tree is None:
+        return set()
+    return set(f.tree.xpath("//faction/@id"))
+
+
+def _schema_gates(msg: str) -> bool:
+    """Same evidence-based split `check_xsd` uses, applied to merged data files.
+
+    GATE on structural breakage — a missing required attribute or an element the
+    content model does not admit. Those are what a bad diff produces, and the
+    measured examples are all real (an orphaned `<limits>`, a `<filter>` placed
+    under `<sound>` when every one of vanilla's 309 sits under `<effects>`).
+
+    ADVISORY for attribute-not-allowed, facet failures and key-constraint
+    cascades: these are where the bundled XSDs lag the engine. Nothing is hidden
+    either way — this only sets severity and the exit code.
+    """
+    return "is required but missing" in msg or "is not expected" in msg
+
+
+def check_effective_schema(mod_dir: Path, config: _merge.Config, report: Report) -> None:
+    """Schema-validate the EFFECTIVE merged tree for every data file the mod patches.
+
+    Differential: baseline (everything but this mod) vs baseline+mod, and only the
+    delta is reported. `_xsd.introduced` documents why that is mandatory rather
+    than merely tidy.
+
+    Under Tier B the baseline already contains the other installed mods, so their
+    damage is subtracted out too and what remains is this mod's own contribution.
+    """
+    lib = config.reference / "libraries"
+    defs: dict[str, set[str]] = {}
+    checked = suppressed = 0
+    seen: set[str] = set()
+
+    for vpath, _root in iter_mod_xml_roots(mod_dir):
+        v = vpath.replace("\\", "/")
+        if v.lower() in seen or not _xsd.eligible(v):
+            continue
+        seen.add(v.lower())
+
+        base = _merge.build_effective(v, config)
+        if base.tree is None:
+            continue  # brand-new file the mod introduces: nothing to difference against
+        schema_path, why_not = _xsd.schema_of(base.tree, lib)
+        if why_not:
+            report.skip(f"schema check for {v}", why_not)
+            continue
+        if schema_path is None:
+            continue  # declares no schema (macros, components, wares.xml) — not a finding
+
+        before, why_not = _xsd.errors_against(base.tree, schema_path)
+        merged = _merge.build_effective(v, config, extra_overlays=[mod_dir])
+        if why_not or merged.tree is None:
+            report.skip(f"schema check for {v}",
+                        why_not or "the merged tree could not be built")
+            continue
+        after, why_not = _xsd.errors_against(merged.tree, schema_path)
+        if why_not or before is None or after is None:
+            report.skip(f"schema check for {v}", why_not or "the schema could not be applied")
+            continue
+        checked += 1
+
+        for msg in _xsd.introduced(before, after):
+            if not defs:  # built once, and only if something actually needs it
+                defs = {"race": _race_defs(config, [mod_dir]),
+                        "faction": _faction_defs(config, [mod_dir])}
+            if _xsd.open_lookup_ok(msg, defs):
+                suppressed += 1
+                continue
+            sev = "error" if _schema_gates(msg) else "info"
+            report.add(sev, "schema" if sev == "error" else "schema-strict",
+                       f"{msg} (introduced by this mod into the merged {v})", v, 0)
+
+    if checked:
+        report.notes.append(
+            f"effective-schema: {checked} merged data file(s) validated against their declared "
+            f"schema, differenced against the same tree without this mod"
+            + (f"; {suppressed} enumeration failure(s) suppressed as mod-defined races/factions"
+               if suppressed else ""))
+
+
+def check_packed_dlc_available(config: _merge.Config, report: Report) -> None:
+    r"""Report when DLC that exist only PACKED cannot be reached.
+
+    `reference/` holds only the DLC that were unpacked; the mini-DLC
+    (`ego_dlc_mini_01` Hyperion Pack, `ego_dlc_mini_02` Envoy Pack) never were, so
+    `dlc_dirs()` reaches them through the live game install instead. When the game
+    root is not configured that silently drops from **8 DLC to 6** (measured
+    2026-07-29) and `packed_dlc_names()` returns empty — every patch against
+    Hyperion/Envoy content then falls back to "installed but never unpacked — cannot
+    verify", which reads as *does not apply to me* rather than *I could not look*.
+
+    This is the same shape B2 fixed one level down: B2 taught `dlc_dirs()` to SEE the
+    packed DLC but gave it no channel for "I couldn't". Not `degraded` — most mods
+    touch no mini-DLC content, so this is a partial skip, not a failed run.
+    """
+    if not config.include_packed_dlc or config.reference != _merge.REFERENCE:
+        return  # deliberately isolated (hermetic run / foreign --reference)
+    game_ext = _merge.GAME_ROOT / "extensions"
+    if game_ext.is_dir():
+        return
+    report.skip("packed-DLC content",
+                f"the live game install is not reachable at '{_merge.GAME_ROOT}', so DLC that "
+                "were never unpacked into reference/ (the Hyperion and Envoy mini-DLC) are NOT "
+                "in the tree. Patches targeting their content cannot be verified. Set $X4_GAME "
+                "(see .claude/x4-paths.env) or run `x4validate --paths` to see what resolved")
+
+
 def reference_ready(config: _merge.Config, report: Report) -> bool:
     """Guard: the reference tree must actually be loaded.
 
@@ -781,18 +1106,26 @@ def validate(
     report = Report()
     if not reference_ready(config, report):
         return report  # empty/missing reference -> a clean run would be a false 'OK'
+    check_packed_dlc_available(config, report)
     if tier == "b" and not config.overlays:
-        overlays, notes = tier_b_overlays(mod_dir)
-        config = replace(config, overlays=overlays)
-        report.notes.extend(notes)
+        trees = tier_b_trees(mod_dir, report)
+        config = replace(config, overlays=trees.patch_time, final_overlays=trees.final)
+        report.notes.extend(trees.notes)
     if only_file is not None:
         # Fast path for the per-edit hook: sel-resolution for one file only.
         check_sel_resolution_one(Path(only_file), mod_dir, config, report)
         return report
+    check_readability(mod_dir, config, report)  # first: names what every other check will miss
+    # PATCH-TIME tree: a selector only sees what has loaded by this mod's turn.
     check_sel_resolution(mod_dir, config, report)
-    check_references(mod_dir, config, report)
-    check_file_existence(mod_dir, config, report)
-    check_connections(mod_dir, config, report)
+    # RUNTIME tree: "does this id resolve?" is answered after every extension loads,
+    # so these must also see mods that load LATER. Same tree under Tier A — see
+    # Config.for_runtime. Getting this backwards costs a real finding in each
+    # direction; `tier_b_trees` documents the measured case.
+    runtime = config.for_runtime()
+    check_references(mod_dir, runtime, report)
+    check_file_existence(mod_dir, runtime, report)
+    check_connections(mod_dir, runtime, report)
     check_page_collisions(mod_dir, config, report)
     check_text_sanity(mod_dir, config, report)
     check_identity_values(mod_dir, config, report)
@@ -800,10 +1133,11 @@ def validate(
     check_variant_consistency(mod_dir, config, report)
     check_exprlint(mod_dir, config, report)  # cheap, always-on: expression-grammar heuristic
     if entity and like:
-        check_completeness(mod_dir, config, report, entity, like)
+        check_completeness(mod_dir, runtime, report, entity, like)  # runtime: needs macro defs
     if debug is not None:  # authoritative: fold the engine's own errors for this mod (gates)
         check_debug_correlation(mod_dir, config, report, debug)
     if update:  # mechanical-port extras (9.0 migration): runtime heuristic + XSD (slow, last)
         check_migration(mod_dir, config, report)
-        check_xsd(mod_dir, config, report)
+        check_xsd(mod_dir, config, report)          # script files, as written
+        check_effective_schema(mod_dir, config, report)  # data files, as merged
     return report

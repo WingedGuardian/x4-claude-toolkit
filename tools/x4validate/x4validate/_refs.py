@@ -75,10 +75,18 @@ def find_dangling(
     introduced_tree: etree._Element | None,
     ware_def_set: set[str],
     text_def_set: set[tuple[str, str]],
-    macro_def_set: set[str] = frozenset(),
+    macro_def_set: set[str] | None = None,
     where: str = "",
 ) -> list[DanglingRef]:
-    """References present in *introduced_tree* that resolve to no definition."""
+    """References present in *introduced_tree* that resolve to no definition.
+
+    *macro_def_set* is None when the effective macro index could not be built —
+    the macro check is then skipped, and the caller must have reported that skip.
+    An EMPTY set is a different thing: an index that genuinely registers no
+    macros, under which every `<component ref>` really is dangling. Gating these
+    two on truthiness (as this did until 2026-07-27) collapsed them, so an
+    unreadable index silently switched the whole check off and the run read OK.
+    """
     out: list[DanglingRef] = []
     if introduced_tree is None:
         return out
@@ -87,7 +95,7 @@ def find_dangling(
             out.append(DanglingRef("ware", wid, where, line))
     for comp in introduced_tree.xpath("//component[@ref]"):
         ref = comp.get("ref")
-        if macro_def_set and ref not in macro_def_set:
+        if macro_def_set is not None and ref not in macro_def_set:
             out.append(DanglingRef("macro", ref, where, comp.sourceline or 0))
     for el in introduced_tree.iter():
         if not isinstance(el.tag, str):
@@ -108,6 +116,14 @@ class CompletenessReport:
     analogue: str
     checked: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    #: The analogue named by --like does not exist in the effective wares tree.
+    #: Without this flag its footprint is all-False, nothing can be "missing",
+    #: and the run reports "matches the footprint of <X>" — a vacuous pass over
+    #: an empty comparison set, and the most misleading output the tool had.
+    analogue_missing: bool = False
+    #: The entity under test does not exist either (usually a typo in --entity,
+    #: or a mod that never actually adds the ware it claims to).
+    entity_missing: bool = False
 
 
 def _ware_element(tree: etree._Element | None, ware_id: str):
@@ -135,14 +151,18 @@ ALL_KINDS = ("definition", "name_string", "description_string", "price",
 
 
 def _entity_kinds(elem, text_def_set: set[tuple[str, str]],
-                  macro_def_set: set[str]) -> dict[str, bool]:
+                  macro_def_set: set[str] | None) -> dict[str, bool]:
     if elem is None:
         return dict.fromkeys(ALL_KINDS, False)
     name_ok = any((p, t) in text_def_set for p, t in text_refs_in(elem.get("name")))
     desc_ok = any((p, t) in text_def_set for p, t in text_refs_in(elem.get("description")))
     comp = elem.find("component")
-    # "component" present AND its macro resolves (when we have an index to check).
-    comp_ok = comp is not None and (not macro_def_set or comp.get("ref") in macro_def_set)
+    # "component" present AND its macro resolves. macro_def_set is None only when
+    # the index could not be built (reported as a degraded skip) — then we check
+    # presence alone. An empty set still means "no macro is registered", so the
+    # ref genuinely does not resolve; testing truthiness here conflated the two
+    # and let an unreadable index silently pass the component kind.
+    comp_ok = comp is not None and (macro_def_set is None or comp.get("ref") in macro_def_set)
     return {
         "definition": True,
         "name_string": name_ok,
@@ -160,14 +180,23 @@ def ware_completeness(
     analogue_id: str,
     wares_tree: etree._Element | None,
     text_def_set: set[tuple[str, str]],
-    macro_def_set: set[str] = frozenset(),
+    macro_def_set: set[str] | None = None,
 ) -> CompletenessReport:
     """Report footprint kinds the analogue has but the new entity lacks.
 
     Handles ware / ship / module — all are <ware> entries that differ only in
-    which footprint kinds the vanilla analogue exhibits."""
-    analogue_kinds = _entity_kinds(_ware_element(wares_tree, analogue_id), text_def_set, macro_def_set)
-    new_kinds = _entity_kinds(_ware_element(wares_tree, new_id), text_def_set, macro_def_set)
+    which footprint kinds the vanilla analogue exhibits.
+
+    A nonexistent analogue is flagged rather than silently compared against:
+    its footprint would be all-False, so nothing is ever "missing" and the
+    result reads as a clean pass.
+    """
+    analogue_el = _ware_element(wares_tree, analogue_id)
+    new_el = _ware_element(wares_tree, new_id)
+    analogue_kinds = _entity_kinds(analogue_el, text_def_set, macro_def_set)
+    new_kinds = _entity_kinds(new_el, text_def_set, macro_def_set)
     checked = sorted(analogue_kinds)
     missing = [k for k in checked if analogue_kinds[k] and not new_kinds[k]]
-    return CompletenessReport(new_id, analogue_id, checked, missing)
+    return CompletenessReport(new_id, analogue_id, checked, missing,
+                              analogue_missing=analogue_el is None,
+                              entity_missing=new_el is None)

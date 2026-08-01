@@ -6,7 +6,7 @@ the game engine's own `[=ERROR=]` output. This module parses that log so
 `_check.check_debug_correlation` can fold the engine's errors for *this* mod into
 the same report and GATE on them (a real engine error = exit 1).
 
-Six real shapes occur (all verified against a live 9.0 log):
+Seven real shapes occur (all verified against a live 9.0 log):
   A. load parse error   `[=ERROR=] <t> extensions\<folder>\<rel>(<line>): <msg>`
   B. load lookup error  `... Originated from: extensions\<folder>\<rel>.(xml|xml.gz)`  (no line)
   C. runtime MD cue     `[=ERROR=] <t> Error in MD cue md.<Script>.<Cue><inst:..>: <msg>`
@@ -15,9 +15,17 @@ Six real shapes occur (all verified against a live 9.0 log):
                         followed by  `* Action: <tag>, line <N>`
   E. diff op, 0 matches `<t> No matching node for path '<sel>' in patch file '<f>'. Skipping node.`
   F. diff op, >1 match  `<t> Multiple matching nodes for path '<sel>' in patch file '<f>'. ...`
+  G. index lookup miss  `<t> Cannot find XML file component macro '<name>' in index '<index>'`
 A/B/E/F identify a FILE (path); C/D identify a SCRIPT by NAME (resolved to a file by
 the caller, via each mdscript/aiscript's `name=` attribute). The `'null' is not a
 list` runtime error is shape C — hence why the file-path-only parse would miss it.
+
+G identifies NEITHER — the engine names the macro and the index, never the mod that
+referenced it or the mod whose index entry is broken. That is the whole reason it is
+worth parsing: it is the only ground truth we have for the INDEX layer (does a macro
+name resolve to a loadable file?), which is a different question from E/F's diff-op
+layer and had never been measured before 2026-07-28. Attribution back to a mod is the
+consumer's job, and is inherently a search, not a lookup.
 
 E/F are the **diff-op cardinality failures** — the exact class x4validate exists to
 catch (RFC 5261: a `sel` must match exactly one node; the engine skips the op and
@@ -51,6 +59,10 @@ _RE_ACTION_LINE = re.compile(r"\bline\s+(?P<line>\d+)")
 _RE_DIFFOP = re.compile(
     r"(?P<kind>No matching node|Multiple matching nodes) for path "
     r"'(?P<sel>.*)' in patch file '(?:\.[\\/])?extensions[\\/](?P<path>[^']*)'")
+# G. Neither name nor index can contain a quote (they are XML ids / index paths), so
+# `[^']*` is correct here — unlike quirk 2's selectors, which routinely do.
+_RE_INDEXMISS = re.compile(
+    r"Cannot find XML file (?P<kind>[a-z ]+?) '(?P<name>[^']*)' in index '(?P<index>[^']*)'")
 
 
 @dataclass
@@ -65,6 +77,10 @@ class DebugError:
     # E/F only — the engine's own per-op verdict, for op-for-op comparison.
     sel: str = ""            # the XPath the op used
     cardinality: str = ""    # "" (not a diff op) | "none" (0 matches) | "multiple" (>1)
+    # G only — the index-layer lookup the engine could not satisfy.
+    lookup: str = ""         # the name it looked for, e.g. `ishield_xen_s_scout_01_a_macro`
+    lookup_kind: str = ""    # "" (not shape G) | what it was looking for, e.g. "component macro"
+    lookup_index: str = ""   # the index it searched, e.g. `index\macros`
 
 
 def xml_candidates(vpath: str) -> tuple[str, ...]:
@@ -129,6 +145,13 @@ def parse_debug(path: str | Path) -> list[DebugError]:
                                   sel=m.group("sel"),
                                   cardinality=("none" if m.group("kind").startswith("No")
                                                else "multiple")))
+            continue
+        m = _RE_INDEXMISS.search(content)  # G — before A, whose `(<line>):` shape it lacks
+        if m:
+            out.append(DebugError("lookup", "", "", "", 0, content, "error",
+                                  lookup=m.group("name"),
+                                  lookup_kind=m.group("kind").strip(),
+                                  lookup_index=m.group("index")))
             continue
         m = _RE_PARSE.search(content)  # A
         if m:

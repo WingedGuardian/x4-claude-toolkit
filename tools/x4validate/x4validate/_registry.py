@@ -21,23 +21,30 @@ from lxml import etree
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+from x4validate import _paths
+
 _yaml = YAML()
 _yaml.preserve_quotes = True
 _yaml.width = 4096  # don't line-wrap long notes
 
-DEFAULT_REGISTRY = Path(os.environ.get(
-    "X4_REGISTRY", os.path.join("dev", "_registry", "modlist.yaml")))
-PROFILE_CONTENT = Path(os.environ.get(
-    "X4_PROFILE_CONTENT", "content.xml"))
-GAME_EXTENSIONS = Path(os.environ.get(
-    "X4_GAME_EXTENSIONS", "extensions"))
-PROFILE_EXTENSIONS = Path(os.environ.get(
-    "X4_PROFILE_EXTENSIONS", os.path.join("profile", "extensions")))
-WORKSHOP_CONTENT = Path(os.environ.get(
-    "X4_WORKSHOP_CONTENT", os.path.join("workshop", "content", "392160")))
+# Resolved through _paths, which accepts BOTH the installer's env names and the
+# legacy ones this module used to read directly, and falls back to the installer's
+# .claude/x4-paths.env. These stay module-level constants because tests (and the
+# CLI's --dirs) monkeypatch them.
+DEFAULT_REGISTRY = _paths.registry() or Path("_registry/modlist.yaml")
+PROFILE_CONTENT = _paths.profile_content() or Path("content.xml")
+GAME_EXTENSIONS = _paths.game_extensions() or Path("extensions")
+PROFILE_EXTENSIONS = _paths.profile_extensions() or Path("profile-extensions")
+WORKSHOP_CONTENT = _paths.workshop_content() or Path("workshop-content")
 
 
 def default_installed_dirs() -> list[Path]:
+    """The three roots a mod can be installed into, best-effort.
+
+    A root that does not exist is NOT dropped here — `scan_installed` reports what
+    it actually found, and silently shrinking this list is how "0 installed mods"
+    starts reading as "you have no mods" instead of "I looked in the wrong place".
+    """
     return [GAME_EXTENSIONS, PROFILE_EXTENSIONS, WORKSHOP_CONTENT]
 
 # Seed: content-id -> Nexus mod_id already resolved from the batch triage.
@@ -66,13 +73,21 @@ def ingest_content_xml(path: Path | None = None) -> list[tuple[str, bool]]:
     return out
 
 
-def scan_installed(dirs: list[Path] | None = None) -> list[dict]:
+def scan_installed(dirs: list[Path] | None = None,
+                   dropped: list[str] | None = None) -> list[dict]:
     """Scan extension folders for a content.xml and return each mod's OWN
     manifest identity — this is the PRIMARY source of truth (what the game
     actually loads). Skips `ego_dlc_*` (base-game DLC, not a mod to triage).
 
     Folder name may differ from the manifest `id` (e.g. folder `X4CapturableXenonXL`
     has id `X4_Capturable_Xenon XL PERSONAL`) — always read the real `id` attribute.
+
+    A folder whose `content.xml` will not parse is EXCLUDED and appended to
+    *dropped*. Excluding it is almost certainly right — X4 needs that manifest to
+    load the mod at all — but doing so **silently** is not: this list is the world
+    model behind Tier B, x4compat, x4stats, x4similar and x4modlist, so a mod
+    vanishing from it shrinks all five at once with nothing said. Report the
+    exclusion; do not force the mod back in.
     """
     out = []
     for base in dirs or default_installed_dirs():
@@ -86,7 +101,9 @@ def scan_installed(dirs: list[Path] | None = None) -> list[dict]:
                 continue
             try:
                 root = etree.parse(str(cxml)).getroot()
-            except etree.XMLSyntaxError:
+            except etree.XMLSyntaxError as exc:
+                if dropped is not None:
+                    dropped.append(f"{sub.name}: content.xml will not parse ({exc})")
                 continue
             mod_id = root.get("id") or sub.name
             # enabled="0"/"false" explicitly disables; absent/blank/anything else = enabled.

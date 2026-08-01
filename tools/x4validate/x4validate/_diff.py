@@ -18,7 +18,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _compat, _merge
+from x4validate import _compat, _merge, _input, _scan
 
 
 def mod_xml_vpaths(mod_dir: Path) -> dict[str, str]:
@@ -30,10 +30,14 @@ def read_vpath(mod_dir: Path, vpath: str) -> etree._Element | None:
     try:
         return _merge.overlay_root(mod_dir, vpath)
     except etree.LxmlError:
+        # silent-ok: None is this function's documented "could not read" sentinel
+        # and every caller branches on it (diff_mods records it in
+        # ModDiff.unreadable). Absent != unreadable is preserved by the caller.
         return None
 
 
-def read_merged(dirs: list[Path], vpath: str) -> etree._Element | None:
+def read_merged(dirs: list[Path], vpath: str,
+                unreadable: list[str] | None = None) -> etree._Element | None:
     """Effective root for *vpath* after applying *dirs* in order (later wins).
 
     Lets the baseline be a stack (e.g. pristine core + pristine VRO submod), so a
@@ -42,7 +46,9 @@ def read_merged(dirs: list[Path], vpath: str) -> etree._Element | None:
     for d in dirs:
         try:
             oroot = _merge.overlay_root(d, vpath)
-        except etree.LxmlError:
+        except etree.LxmlError as exc:
+            if unreadable is not None:
+                unreadable.append(f"{d.name}/{vpath}: {exc}")
             continue
         if oroot is None:
             continue
@@ -137,6 +143,10 @@ class ModDiff:
     old: str
     new: str
     files: list[FileDiff] = field(default_factory=list)
+    #: vpaths present on BOTH sides that could not be compared because one side
+    #: would not parse. Without this they fell out of `files` entirely and read
+    #: as UNCHANGED — the one verdict a diff must never invent.
+    unreadable: list[str] = field(default_factory=list)
 
     def changed(self):
         return [f for f in self.files if f.status == "changed" and f.weight]
@@ -164,9 +174,13 @@ def diff_mods(old_dirs: Path | list[Path], new_dir: Path,
     for low in ov.keys() & nv.keys():
         if drop(low):
             continue
-        o = read_merged(old_list, ov[low]) if len(old_list) > 1 else read_vpath(old_list[0], ov[low])
+        o = (read_merged(old_list, ov[low], md.unreadable) if len(old_list) > 1
+             else read_vpath(old_list[0], ov[low]))
         n = read_vpath(new_dir, nv[low])
         if o is None or n is None:
+            side = "OLD" if o is None else "NEW"
+            md.unreadable.append(f"{nv[low]}: the {side} copy would not parse — "
+                                 "not compared, and NOT counted as unchanged")
             continue
         fd = diff_file(o, n, nv[low])
         if fd.weight:
@@ -179,6 +193,9 @@ def _fmt_summary(md: ModDiff) -> str:
     lines = [f"# diff  {Path(md.old).name}  ->  {Path(md.new).name}",
              f"  changed files: {len(ch)}   added: {len(ad)}   removed: {len(rm)}",
              f"  total attr changes: {sum(f.weight for f in ch)}"]
+    if md.unreadable:
+        lines.append(f"  NOT COMPARED: {len(md.unreadable)} file(s) — see the list below; "
+                     "they are absent from every section, not 'unchanged'")
     return "\n".join(lines)
 
 
@@ -186,7 +203,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
-        pass
+        pass  # silent-ok: console encoding shim. Failure means the default codec
+        # stays; it affects how output LOOKS, never what was examined.
     p = argparse.ArgumentParser(prog="x4diff",
                                 description="Semantic XML diff between two mod versions.")
     p.add_argument("old", help="pristine/older mod dir (baseline)")
@@ -197,6 +215,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--file", help="detail one vpath only")
     p.add_argument("--top", type=int, default=30, help="show N heaviest changed files")
     args = p.parse_args(argv)
+
+    # Without this, a mistyped NEW path reports every file as "removed" — i.e.
+    # "the new version deleted your whole mod" — with exit 0.
+    _input.require_mod_dir(Path(args.old), "OLD (baseline) mod folder")
+    _input.require_mod_dir(Path(args.new), "NEW mod folder")
+    for o in args.overlay:
+        _input.require_mod_dir(Path(o), "--overlay dir")
 
     baseline = [Path(args.old)] + [Path(o) for o in args.overlay]
     md = diff_mods(baseline, Path(args.new))
@@ -209,17 +234,28 @@ def main(argv: list[str] | None = None) -> int:
         _print_file(fd)
         return 0
 
-    print("\n## added files (present only in NEW):")
-    for f in sorted(md.added(), key=lambda x: x.vpath)[:args.top]:
-        print(f"  + {f.vpath}")
-    print("\n## removed files (present only in OLD):")
-    for f in sorted(md.removed(), key=lambda x: x.vpath)[:args.top]:
-        print(f"  - {f.vpath}")
-    print(f"\n## changed files (heaviest {args.top}):")
-    for f in sorted(md.changed(), key=lambda x: -x.weight)[:args.top]:
-        print(f"  ~ {f.vpath}  ({f.weight} changes)")
-        if args.detail:
-            _print_file(f, indent="      ")
+    # Every one of these lists is truncated by --top. A bare list reads as
+    # complete, and "removed files" reading as complete is the worst of the three
+    # — it says the new version DELETED content it may simply not have listed.
+    def _section(title: str, items: list, mark: str, detail: bool = False) -> None:
+        shown = items[:args.top] if args.top else items
+        print(f"\n## {title}: {_scan.count_line(len(shown), len(items), 'file(s)', '--top')}")
+        for f in shown:
+            suffix = f"  ({f.weight} changes)" if detail else ""
+            print(f"  {mark} {f.vpath}{suffix}")
+            if detail and args.detail:
+                _print_file(f, indent="      ")
+
+    _section("added files (present only in NEW)",
+             sorted(md.added(), key=lambda x: x.vpath), "+")
+    _section("removed files (present only in OLD)",
+             sorted(md.removed(), key=lambda x: x.vpath), "-")
+    _section("changed files (heaviest first)",
+             sorted(md.changed(), key=lambda x: -x.weight), "~", detail=True)
+    if md.unreadable:
+        print(f"\n## NOT COMPARED ({len(md.unreadable)}):")
+        for u in md.unreadable:
+            print(f"  ? {u}")
     return 0
 
 

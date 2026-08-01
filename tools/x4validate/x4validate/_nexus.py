@@ -88,6 +88,9 @@ def search_mods(name: str, count: int = 5) -> list[tuple[int, str]]:
         try:
             out.append((int(n["modId"]), n.get("name", "")))
         except (KeyError, TypeError, ValueError):
+            # silent-ok: one malformed node in a GraphQL search result. The result
+            # is a ranked suggestion list, not a denominator — a dropped candidate
+            # cannot turn into a false negative about the local modlist.
             continue
     return out
 
@@ -101,6 +104,8 @@ def steam_title(ws_number: str) -> tuple[str, str] | None:
         with urllib.request.urlopen(req, timeout=30) as r:
             d = json.load(r)
     except urllib.error.HTTPError:
+        # silent-ok: None is the documented "no answer from Steam" sentinel and the
+        # caller distinguishes it from a title of "". Network absence is not data.
         return None
     details = (((d or {}).get("response") or {}).get("publishedfiledetails") or [])
     if details and details[0].get("title"):

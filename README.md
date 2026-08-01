@@ -51,6 +51,18 @@ was built (Python / lxml). It checks:
 It also ships **`x4modlist`** (mod-registry triage via the Nexus API) and an **XSD-based
 7.x→9.0 migration checker**.
 
+```bash
+cd tools/x4validate
+uv run x4validate --paths                  # where did it resolve everything? read this first
+uv run x4validate --tier b /path/to/mymod  # validate against your installed modlist
+```
+
+**`x4validate --paths`** prints where it resolved the game, reference, profile and registry, and
+which config file it read. Run it first whenever a result looks impossible — silent
+misconfiguration is this tool's worst failure mode, because "found nothing" and "looked in the
+wrong place" otherwise print the same way. Full configuration model:
+[`tools/x4validate/README.md`](tools/x4validate/README.md#configuration--where-it-looks-for-things).
+
 **`--tier b`** merges your *installed* extension set in load order, so cross-mod patches resolve
 for real — and it catches the failure that looks like success: content **another mod removed**.
 (Dogfooding case: one mod `<remove>`s a vanilla macro from `index/macros.xml` and never re-adds
@@ -156,6 +168,23 @@ Paste the contents of `SETUP_PROMPT.txt`. Claude runs `bash setup.sh`, checks pr
 Runs on **Linux, macOS, and Windows (Git Bash)**. All locations are configurable via
 `.claude/x4-paths.env` (no hardcoded OS paths); the hooks accept both `/` and `\` styles.
 On Linux/macOS, XRCatTool is invoked through Wine automatically by `bin/xrcat`.
+
+As of **v2.01** that is true of the Python tools too — they read the same
+`.claude/x4-paths.env` the installer writes. Before v2.01 they read a *different* set of variable
+names, so on the `separate` and `global` layouts a successful install still left the cross-mod
+commands pointed at CWD-relative paths. If you installed v2.0, take this update.
+
+**Set `X4_TOOLKIT` in your user environment yourself.** The installers write it *into*
+`x4-paths.env` but do not export it — nothing sets it for you:
+
+```bash
+setx X4_TOOLKIT "C:\path\to\toolkit"                      # Windows (takes effect in new shells)
+echo 'export X4_TOOLKIT=/path/to/toolkit' >> ~/.bashrc    # Linux / macOS
+```
+
+Without it, the config file is found only by walking up from the current directory — and the tools
+are often run from the game folder, which has a `.claude/` but no `x4-paths.env`. You would see
+`(unresolved)` locations with a perfectly good config sitting one directory tree away.
 
 ### Install methods (`install.sh` / `install.ps1`)
 One guided installer, three layouts — pick what fits. Every path is auto-detected where

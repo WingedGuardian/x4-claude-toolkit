@@ -26,7 +26,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _merge, _registry
+from x4validate import _cat, _merge, _registry, _scan
 
 # Excluded from the `action` index: structural containers, control flow, and
 # variable/debug plumbing whose element TAG carries no behavioral meaning (the
@@ -83,61 +83,44 @@ def _walk(root: etree._Element, source: str, vpath: str, out: list[XrefRow]) -> 
     rec(root, script_name)
 
 
-def _iter_source_files(base: Path, source: str):
-    """Yield (vpath, parse_root) for md/ + aiscripts/ under a loose directory."""
-    for sub in _SCRIPT_DIRS:
-        d = base / sub.rstrip("/")
-        if not d.is_dir():
-            continue
-        for f in sorted(d.rglob("*.xml")):
-            if not f.is_file():
-                continue
-            try:
-                root = etree.parse(str(f), _merge._PARSER).getroot()
-            except etree.XMLSyntaxError:
-                continue
-            yield f"{sub}{f.relative_to(d).as_posix()}", root
+def _iter_source_files(base: Path, source: str, unreadable: list | None = None):
+    """Yield (vpath, parse_root) for md/ + aiscripts/ under a loose directory.
+
+    `under()` narrows the walk to those two subtrees, so pointing this at the
+    reference root does not rglob the whole ~13k-file base game.
+    """
+    yield from _scan.iter_mod_xml(base, _scan.under(*_SCRIPT_DIRS), unreadable)
 
 
-def _iter_mod_files(mod_dir: Path):
+def _iter_mod_files(mod_dir: Path, unreadable: list | None = None):
     """Yield (vpath, root) for a mod's md/aiscripts — packed (via _cat) and loose."""
-    seen: set[str] = set()
-    for f in sorted(mod_dir.rglob("*.xml")):
-        if not f.is_file():
-            continue
-        vpath = f.relative_to(mod_dir).as_posix()
-        if vpath.lower().startswith(_SCRIPT_DIRS):
-            seen.add(vpath.lower())
-            try:
-                yield vpath, etree.parse(str(f), _merge._PARSER).getroot()
-            except etree.XMLSyntaxError:
-                continue
-    for vpath, member in _cat.mod_vfs(mod_dir).items():
-        if vpath.lower().startswith(_SCRIPT_DIRS) and vpath.lower() not in seen:
-            try:
-                yield vpath, _merge.parse_bytes(_cat.read_member(member))
-            except etree.XMLSyntaxError:
-                continue
+    yield from _scan.iter_mod_xml(mod_dir, _scan.under(*_SCRIPT_DIRS), unreadable)
 
 
-def build_index(reference: Path, ext_dir: Path) -> list[XrefRow]:
-    """Index base + DLC + every installed mod's MD/aiscripts."""
+def build_index(reference: Path, ext_dir: Path,
+                unreadable: list | None = None) -> list[XrefRow]:
+    """Index base + DLC + every installed mod's MD/aiscripts.
+
+    *unreadable* collects files that would not parse. An index is the
+    denominator behind every "nobody references X" answer this tool gives, so a
+    file silently missing from it turns a negative into a guess.
+    """
     rows: list[XrefRow] = []
 
     # Base game (reference root, excluding the DLC extensions subtree).
-    for vpath, root in _iter_source_files(reference, "base"):
+    for vpath, root in _iter_source_files(reference, "base", unreadable):
         _walk(root, "base", vpath, rows)
     # DLC.
     dlc_root = reference / "extensions"
     if dlc_root.is_dir():
         for dlc in sorted(p for p in dlc_root.iterdir()
                           if p.is_dir() and p.name.startswith("ego_dlc_")):
-            for vpath, root in _iter_source_files(dlc, f"dlc:{dlc.name}"):
+            for vpath, root in _iter_source_files(dlc, f"dlc:{dlc.name}", unreadable):
                 _walk(root, f"dlc:{dlc.name}", vpath, rows)
     # Installed mods.
     if ext_dir.is_dir():
         for m in _registry.scan_installed([ext_dir]):
-            for vpath, root in _iter_mod_files(Path(m["path"])):
+            for vpath, root in _iter_mod_files(Path(m["path"]), unreadable):
                 _walk(root, m["folder"], vpath, rows)
     return rows
 
@@ -203,13 +186,63 @@ def _fmt(r: XrefRow) -> str:
     return f"  {loc}{ctx}{tgt}"
 
 
+_KIND_CMD = {"action": "who-calls", "event": "who-listens", "cuedef": "cue", "signal": "cue"}
+
+
+def _sidecar(tsv: Path) -> Path:
+    """Where an index records the files it could NOT read."""
+    return tsv.with_suffix(tsv.suffix + ".notindexed")
+
+
+def _exclusions(tsv: Path | None) -> str:
+    """Render the index's own exclusions, so a negative carries its denominator.
+
+    "0 hits" is a lead; "0 hits over N rows with M named exclusions" is a
+    finding. Same contract as `tools\\basex\\ask.py`, which refuses to render a
+    zero-result without coverage. A negative that hides its blind spots is the
+    most confidently wrong answer this tool can give.
+    """
+    if tsv is None or not _sidecar(tsv).is_file():
+        return ""
+    lines = [ln for ln in _sidecar(tsv).read_text(encoding="utf-8").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    return (f" — EXCEPT {len(lines)} file(s) that would not parse and are not in the "
+            f"index at all (see {_sidecar(tsv).name})")
+
+
+def _hint_other_kinds(rows: list[XrefRow], name: str, asked_kind: str,
+                      tsv: Path | None = None) -> None:
+    """When a name isn't found in the asked-for kind, say whether it exists at all.
+
+    `who-calls event_player_ejected` used to print exactly the same line as
+    `who-calls definitely_not_a_real_thing` — yet the first name is in the index
+    5 times as an EVENT. Two completely different states, one message, exit 0.
+    (That was also the example CLAUDE.md advertises for this tool.) A name that
+    exists under another kind is a wrong-command mistake; a name that exists
+    nowhere is a real negative. They must never read the same.
+    """
+    from collections import Counter
+    elsewhere = Counter(r.kind for r in rows if r.name == name and r.kind != asked_kind)
+    if not elsewhere:
+        print(f"  and '{name}' does not appear under ANY kind — "
+              f"a real negative over {len(rows)} indexed rows{_exclusions(tsv)}.")
+        return
+    print(f"  BUT '{name}' IS in the index under other kind(s):")
+    for kind, n in elsewhere.most_common():
+        cmd = _KIND_CMD.get(kind)
+        suffix = f"   -> try:  x4xref {cmd} {name}" if cmd else ""
+        print(f"    {kind:8} {n:>5} occurrence(s){suffix}")
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
-        pass
+        pass  # silent-ok: console encoding shim. Failure means the default codec
+        # stays; it affects how output LOOKS, never what was examined.
 
     p = argparse.ArgumentParser(
         prog="x4xref",
@@ -242,12 +275,20 @@ def main(argv: list[str] | None = None) -> int:
         ref = Path(args.reference) if args.reference else _merge.Config().reference
         ext = Path(args.ext_dir) if args.ext_dir else _registry.GAME_EXTENSIONS
         out = Path(args.out) if args.out else _default_tsv()
-        rows = build_index(ref, ext)
+        unreadable: list = []
+        rows = build_index(ref, ext, unreadable)
         write_tsv(rows, out)
         from collections import Counter
         by = Counter(r.kind for r in rows)
         print(f"indexed {len(rows)} rows -> {out}")
         print("  " + "  ".join(f"{k}={v}" for k, v in sorted(by.items())))
+        if unreadable:
+            # The index is the denominator behind every negative answer below.
+            # A file missing from it must be named, not quietly absent.
+            print(f"\n  NOT INDEXED — {len(unreadable)} file(s) would not parse; "
+                  "any 'no references' answer excludes them:", file=sys.stderr)
+            for u in unreadable:
+                print(f"   - {u}", file=sys.stderr)
         return 0
 
     tsv = Path(args.tsv) if getattr(args, "tsv", None) else _default_tsv()
@@ -260,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
         edges = cue_edges(rows, args.name)
         if not edges:
             print(f"no references to cue '{args.name}'")
+            _hint_other_kinds(rows, args.name, "cue", tsv)
             return 0
         for group in ("defined", *sorted(k for k in edges if k != "defined")):
             if group in edges:
@@ -271,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
     hits = query(rows, args._kind, args.name)
     if not hits:
         print(f"no {args._kind} '{args.name}' found in the index.")
+        _hint_other_kinds(rows, args.name, args._kind, tsv)
         return 0
     by_source: dict[str, list[XrefRow]] = defaultdict(list)
     for h in hits:

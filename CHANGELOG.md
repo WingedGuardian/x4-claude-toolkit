@@ -1,5 +1,95 @@
 # Changelog
 
+## v2.01
+
+**If you installed v2.0, take this update.** v2.0 shipped an installer that wrote one set of
+environment variables and Python tools that read a different set. They overlapped on exactly one
+name (`X4_REFERENCE`), and nothing bridged them — so on the **`separate`** and **`global`**
+layouts, two of the three the README documents, a *successful* install still left `--tier b`,
+`x4compat`, `x4stats`, `x4similar`, `x4xref`, `x4modlist` and `x4effective` resolving against
+CWD-relative paths. They did not error; they looked in the wrong place and reported finding
+nothing. The README's claim that "nothing is hardcoded" was true of the shell half and false of
+the Python half.
+
+### Fixed — the installed toolkit is actually wired up
+
+- **One resolver for every location** (`x4validate/_paths.py`), layered: real environment →
+  `.claude/x4-paths.env` → an explicit (empty) local seam. Within each layer, every alias *and*
+  derivation is tried before dropping to the next. Both naming schemes work; the installer's names
+  (`X4_GAME`, `X4_EXTENSIONS`, `X4_PROFILE`, `X4_MODS`, `X4_REFERENCE`) are the ones to teach.
+- **`x4validate --paths`** — prints what resolved and which config file was read, marking anything
+  that does not exist. Run it first when a result looks impossible.
+- **Bare `--debug` was Windows-only.** It built `~/Documents/Egosoft/X4/<id>/debug.txt` — the
+  Windows layout, hardcoded — so it could never work on Linux (`~/.config/EgoSoft/X4/<id>`) or
+  macOS, both of which this toolkit documents and supports.
+- **Two silent degradations closed.** With the game root unresolved, the packed mini-DLC dropped
+  from 8 DLC to 6 with nothing reported (every patch against Hyperion/Envoy content quietly
+  became "cannot verify"); an unresolved registry read as "0 mods" rather than "not configured".
+  Both now name the loss.
+- **Git Bash paths now work.** `install.sh` detects Steam at `/c/Program Files (x86)/...` under
+  Git Bash, and the config file has always promised either style is fine. Python cannot open
+  `/c/...` on Windows — it becomes `\c\...`, which does not exist. So the *first command the
+  README gives a Windows user* wrote a config the Python silently could not use. `/c/...` and
+  `/mnt/c/...` are now translated on Windows and left untouched on Linux, where they are
+  legitimate paths. **Found by red-teaming this release's own install flow.**
+- **`X4_TOOLKIT` is no longer claimed to be set for you.** The docs said "(the installer does)";
+  no installer ever did. Both installers now print the exact `setx` / `export` command at the end,
+  and the READMEs give it instead of the claim. Without it the config file is found only by
+  walking up from the current directory, which fails from the game folder — the case the docs
+  themselves call out as common.
+- **Nothing is guessed.** An unresolved location prints `(unresolved)`; the Steam workshop path is
+  derived only when the install really has that shape, because a guessed path scans nothing and
+  would report "no mods" as though it were a finding.
+
+### Fixed — patch-time and runtime are two different trees
+
+A `sel=` sees only what has loaded by your mod's turn; "does this id exist?" is answered after
+*every* extension has loaded. Tier B used one tree for both, which is wrong in both directions —
+measured on a real pair of installed mods: 3 false alarms in one direction, and one genuine
+runtime defect missed in the other (a loadout referencing a connection that the winning component
+does not have). The trees are now separate.
+
+### Added — schema validation of merged data files (`--update`)
+
+42 vanilla files under `libraries/` declare an XSD, and mods ship them as `<diff>`, so the
+document that has to be valid is the *merged* one. This catches a class nothing else here can: a
+patch whose selector matches and whose XML is well-formed, but which leaves the merged document
+structurally broken — measured case, a mod that `<remove>`s `<production>` and orphans the
+`<limits>` sibling 30 times.
+
+It is **differential**, which is not a refinement but the only workable form: Egosoft's own
+base+DLC data produces 66 errors against Egosoft's own bundled schemas, so an absolute check would
+open with 66 false positives on a mod that changed nothing. Enumeration failures naming a race or
+faction your modlist actually defines are suppressed and counted; one naming something nothing
+defines is reported.
+
+### Added — `gates/`, so the engine-fidelity numbers are reproducible
+
+The four harnesses that measure this tool against the engine rather than against itself:
+`oracle.py` (diff layer, 234/234 ops, 0 false OK), `oracle_index.py` (index layer, 12/12),
+`regress.py`, `schema_sweep.py`. They take every input from your configuration and **skip with a
+named reason (exit 2)** when something is missing, rather than running empty and printing like a
+pass. You supply your own captured `debug.txt` via `$X4_ORACLE_LOG` — a real log names your mods
+and paths, so none is shipped. What transfers is the bars, not the counts.
+
+### Measured and deliberately NOT shipped
+
+An MD ordering lint (flagging `signal_cue_instantly` to a cue that cannot be listening yet) was
+built and dropped. It scored **0 false positives** across 1,094 vanilla call sites and 2,912 in
+installed mods — and also **0 on a saved copy of the exact bug it was written for**. The real
+defect reaches its target through a variable, from a second cue, so a rule keyed on a literal name
+cannot see it; widening it to catch that fires 407 times in vanilla code that demonstrably works.
+A rule with no demonstrated true positive is not quiet, it is inert. Recorded here because a
+changelog that only ever adds is a sales sheet.
+
+### Also
+
+- 243 → **264** tests.
+- Docs: the root README now shows how to actually invoke `x4validate` and links to the
+  configuration model; `x4-paths.env.example` states that `$VAR` expands and that the file is
+  parsed, never executed; `gates/README.md` says up front that it is for contributors only.
+- Every number above traces to a gate run, not to a claim.
+
 ## v2.0
 
 **The toolkit is no longer Windows-only, and no longer assumes one folder layout.** Plus two

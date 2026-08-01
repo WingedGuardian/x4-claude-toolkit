@@ -27,7 +27,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _merge, _registry
+from x4validate import _cat, _merge, _registry, _xpath, _input
 
 UNION_DIRS = ("libraries/", "index/", "t/")
 _OPS = ("add", "replace", "remove")
@@ -52,6 +52,11 @@ class CompatReport:
     mods_scanned: int = 0
     files_examined: int = 0
     load_order: list[str] = field(default_factory=list)
+    #: Ops whose sel= could not be EVALUATED (malformed XPath), so the mod
+    #: contributed no targets and cannot participate in collision detection.
+    #: For a conflict detector, silently contributing nothing is the worst
+    #: failure mode there is: it renders as "these mods do not collide".
+    unresolvable: list[str] = field(default_factory=list)
 
     def by_kind(self, kind: str) -> list[Collision]:
         return [c for c in self.collisions if c.kind == kind]
@@ -146,11 +151,22 @@ def _canonical(node) -> str | None:
     return None
 
 
-def _resolve_op_targets(tree: etree._Element, sel: str) -> list[str]:
-    """Canonical ids the sel resolves to in *tree* (empty on no-match/invalid)."""
+def _resolve_op_targets(tree: etree._Element, sel: str) -> list[str] | None:
+    """Canonical ids the sel resolves to in *tree*, or **None** if un-evaluable.
+
+    Uses _xpath.evaluate so a malformed expression raises rather than passing as
+    a no-match. The old contract was literally "empty on no-match/invalid" — one
+    value for two states, which in a COLLISION detector means an unparseable sel
+    contributes no targets and the mods silently read as compatible.
+    """
     try:
-        results = tree.xpath(sel)
+        results = _xpath.evaluate(tree, sel)
     except etree.XPathEvalError:
+        # silent-ok: None is this function's documented sentinel for "un-evaluable",
+        # distinct from [] for "evaluated, matched nothing". _analyze_vpath records
+        # every None in CompatReport.unresolvable and render() prints them.
+        return None
+    if not isinstance(results, list):  # scalar result (count(), name(), ...)
         return []
     ids = []
     for r in results:
@@ -191,8 +207,13 @@ def _analyze_vpath(
     folder_to_path: dict[str, Path],
     rank: dict[str, int],
     config: _merge.Config,
+    unresolvable: list[str] | None = None,
 ) -> list[Collision]:
-    """Classify collisions among mods touching a single virtual path."""
+    """Classify collisions among mods touching a single virtual path.
+
+    *unresolvable* accumulates ops whose sel= could not be evaluated — they
+    contribute no targets, so without this channel they read as "no collision".
+    """
     base_tree = _merge.build_effective(vpath, config).tree
     is_union = vpath.lower().startswith(UNION_DIRS)
 
@@ -217,7 +238,14 @@ def _analyze_vpath(
                 sel = op.get("sel", "")
                 # xpath resolution is read-only; resolve against the shared base tree
                 # (no copy) so positional node ids are comparable across mods.
-                for cid in _resolve_op_targets(base_tree, sel):
+                cids = _resolve_op_targets(base_tree, sel)
+                if cids is None:
+                    if unresolvable is not None:
+                        unresolvable.append(
+                            f"{folder}/{vpath}:{op.sourceline or 0}: sel={sel!r} is not "
+                            "valid XPath — this op was excluded from collision detection")
+                    continue
+                for cid in cids:
                     node_map[cid].append(op.tag)
                     if op.tag == "add":
                         child_map[cid].extend(_added_child_keys(op))
@@ -337,7 +365,8 @@ def analyze(
             continue  # candidate-focused: only files the candidate also touches
         report.files_examined += 1
         real_vpath = next(iter(per_mod.values()))
-        found = _analyze_vpath(real_vpath, list(per_mod), folder_to_path, rank, config)
+        found = _analyze_vpath(real_vpath, list(per_mod), folder_to_path, rank, config,
+                               report.unresolvable)
         if cand_folder is not None:
             found = [c for c in found if cand_folder in c.mods]
         report.collisions.extend(found)
@@ -376,7 +405,15 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
         lines.append("")
     hard = report.hard
     if not hard and not shown_any:
-        lines.append("No HARD / UNION-KEY / FULL-OVERRIDE collisions found.")
+        lines.append("No HARD / UNION-KEY / FULL-OVERRIDE collisions found."
+                     + (" (but see NOT CHECKED below — that clean result is partial)"
+                        if report.unresolvable else ""))
+    if report.unresolvable:
+        lines.append(f"\n=== NOT CHECKED  ({len(report.unresolvable)}) ===")
+        lines.append("  These ops could not be resolved, so they took no part in collision")
+        lines.append("  detection. A conflict involving them would NOT appear above.")
+        for u in report.unresolvable:
+            lines.append(f"  !! {u}")
     lines.append(f"\nSummary: {len(report.hard)} hard-ish "
                  f"(HARD+FULL-OVERRIDE), {len(report.by_kind('UNION-KEY'))} union-key, "
                  f"{len(report.by_kind('SOFT'))} soft.")
@@ -390,7 +427,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
-        pass
+        pass  # silent-ok: console encoding shim. Failure means the default codec
+        # stays; it affects how output LOOKS, never what was examined.
 
     p = argparse.ArgumentParser(
         prog="x4compat",
@@ -414,6 +452,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     config = _merge.Config(reference=Path(args.reference)) if args.reference else _merge.Config()
     candidate = Path(args.candidate) if args.candidate else None
+    if candidate is not None:
+        _input.require_mod_dir(candidate, "candidate mod folder")
 
     report = analyze(ext_dir, candidate=candidate, config=config)
 

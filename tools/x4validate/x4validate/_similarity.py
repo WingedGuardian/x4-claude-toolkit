@@ -21,7 +21,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _merge, _stats
+from x4validate import _cat, _merge, _scan, _stats, _input
 
 # Numeric keys compared, with weights (a rough "how much does this stat define the
 # ship's role/tier" prior) — hull/cargo/crew dominate; handling stats are secondary.
@@ -72,32 +72,17 @@ def extract_ship_vector(root: etree._Element, source: str, vpath: str) -> ShipVe
     )
 
 
-def _iter_ship_macros(base: Path, source: str, script_dirs=("assets/units/",)):
+def _iter_ship_macros(base: Path, source: str, script_dirs=("assets/units/",),
+                      unreadable: list | None = None):
     """Yield (vpath, root) for every *_macro.xml under assets/units/ (loose + packed)."""
-    seen: set[str] = set()
-    for f in sorted(base.rglob("*_macro.xml")):
-        if not f.is_file():
-            continue
-        vpath = f.relative_to(base).as_posix()
-        if not vpath.lower().startswith(script_dirs):
-            continue
-        seen.add(vpath.lower())
-        try:
-            yield vpath, etree.parse(str(f), _merge._PARSER).getroot()
-        except etree.XMLSyntaxError:
-            continue
-    for vpath, member in _cat.mod_vfs(base).items():
-        if vpath.lower().startswith(script_dirs) and vpath.lower().endswith("_macro.xml") \
-                and vpath.lower() not in seen:
-            try:
-                yield vpath, _merge.parse_bytes(_cat.read_member(member))
-            except etree.XMLSyntaxError:
-                continue
+    yield from _scan.iter_mod_xml(
+        base, _scan.all_of(_scan.under(*script_dirs), _scan.ending("_macro.xml")), unreadable)
 
 
-def collect_ship_vectors(base: Path, source: str) -> list[ShipVector]:
+def collect_ship_vectors(base: Path, source: str,
+                         unreadable: list | None = None) -> list[ShipVector]:
     out = []
-    for vpath, root in _iter_ship_macros(base, source):
+    for vpath, root in _iter_ship_macros(base, source, unreadable=unreadable):
         v = extract_ship_vector(root, source, vpath)
         if v is not None:
             out.append(v)
@@ -154,17 +139,18 @@ def find_similar(vectors: list[ShipVector], threshold: float = 0.85,
 
 # --- CLI ----------------------------------------------------------------------
 
-def _collect_all(reference: Path, ext_dir: Path) -> list[ShipVector]:
+def _collect_all(reference: Path, ext_dir: Path,
+                 unreadable: list | None = None) -> list[ShipVector]:
     from x4validate import _registry
-    vectors = collect_ship_vectors(reference, "base")
+    vectors = collect_ship_vectors(reference, "base", unreadable)
     dlc_root = reference / "extensions"
     if dlc_root.is_dir():
         for dlc in sorted(p for p in dlc_root.iterdir()
                           if p.is_dir() and p.name.startswith("ego_dlc_")):
-            vectors += collect_ship_vectors(dlc, f"dlc:{dlc.name}")
+            vectors += collect_ship_vectors(dlc, f"dlc:{dlc.name}", unreadable)
     if ext_dir.is_dir():
         for m in _registry.scan_installed([ext_dir]):
-            vectors += collect_ship_vectors(Path(m["path"]), m["folder"])
+            vectors += collect_ship_vectors(Path(m["path"]), m["folder"], unreadable)
     return vectors
 
 
@@ -188,7 +174,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
-        pass
+        pass  # silent-ok: console encoding shim. Failure means the default codec
+        # stays; it affects how output LOOKS, never what was examined.
 
     from x4validate import _registry
 
@@ -207,11 +194,31 @@ def main(argv: list[str] | None = None) -> int:
     ref = Path(args.reference) if args.reference else _merge.Config().reference
     ext = Path(args.ext_dir) if args.ext_dir else _registry.GAME_EXTENSIONS
 
-    vectors = _collect_all(ref, ext)
+    unreadable: list = []
+    vectors = _collect_all(ref, ext, unreadable)
     pairs = find_similar(vectors, threshold=args.threshold,
                          exclude_same_source=args.cross_mod_only)
     if args.candidate:
-        pairs = [p for p in pairs if args.candidate in (p.a.source, p.b.source)]
+        # --candidate is a SOURCE NAME (mod folder), not a path. A value that
+        # matches no scanned source used to filter every pair away and print
+        # "no near-duplicate ships found" — a clean negative produced by a typo.
+        # Accept a path too, and refuse to answer if it names nothing we scanned.
+        cand = Path(args.candidate).name if ("/" in args.candidate or "\\" in args.candidate) \
+            else args.candidate
+        sources = {v.source for v in vectors}
+        if cand not in sources:
+            print(f"error: --candidate '{args.candidate}' matches none of the "
+                  f"{len(sources)} scanned sources.", file=sys.stderr)
+            print("       (a 'no near-duplicates' answer here would be about an "
+                  "empty filter, not about your mod)", file=sys.stderr)
+            return 2
+        pairs = [p for p in pairs if cand in (p.a.source, p.b.source)]
     print(f"scanned {len(vectors)} ship macros.\n")
     print(render(pairs))
+    if unreadable:
+        # "No near-duplicates" is a negative, and a negative needs its denominator.
+        print(f"\n  NOT COMPARED — {len(unreadable)} macro file(s) would not parse:",
+              file=sys.stderr)
+        for u in unreadable:
+            print(f"   - {u}", file=sys.stderr)
     return 0

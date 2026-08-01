@@ -222,3 +222,12 @@ echo "Toolkit:   $TOOLKIT"
 echo "Config:    $TOOLKIT/.claude/x4-paths.env  (edit any path here)"
 [ "$METHOD" = global ] && echo "Global:    skills/agents + X4_* env added to your ~/.claude — works from any mod repo."
 echo "Next:      set X4_GAME if blank, then  (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/."
+echo
+echo "IMPORTANT — set X4_TOOLKIT in your user environment so the tools find the config"
+echo "above from ANY directory (they are often run from the game folder, which has a"
+echo ".claude/ but no x4-paths.env). This installer cannot do it for you:"
+case "$OS" in
+  windows) echo "           setx X4_TOOLKIT \"$TOOLKIT\"        (takes effect in NEW shells)";;
+  *)       echo "           echo 'export X4_TOOLKIT=\"$TOOLKIT\"' >> ~/.bashrc   # or your shell's rc";;
+esac
+echo "Verify:    (cd \"$TOOLKIT/tools/x4validate\" && uv run x4validate --paths)"
