@@ -2,5 +2,8 @@
 *.sh text eol=lf
 # bin/xrcat is a bash script without the .sh extension — same rule applies.
 bin/xrcat text eol=lf
+# x4-paths.env.example becomes a bash-sourced file when setup.sh copies it live;
+# CRLF would put a trailing \r inside every value on Windows clones.
+.claude/x4-paths.env.example text eol=lf
 # Normalize everything else by default.
 * text=auto

@@ -154,9 +154,13 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
   cp "$TOOLKIT/.claude/agents/"*.md "$home_claude/agents/" 2>/dev/null || true
   # global skills/agents run from any repo → resolve the validator via $X4_TOOLKIT, not
   # $CLAUDE_PROJECT_DIR. Rewrite ONLY the files this installer just copied — a user's
-  # pre-existing agents may use $CLAUDE_PROJECT_DIR on purpose and must not be touched.
+  # pre-existing skills/agents may use $CLAUDE_PROJECT_DIR on purpose and must not be
+  # touched, so both lists are derived from the TOOLKIT's own contents, never from a
+  # destination glob (a pre-existing user skill named x4-* must not match).
   {
-    ls -d "$home_claude/skills/"x4-* 2>/dev/null
+    for s in "$TOOLKIT/.claude/skills/"x4-*; do
+      [ -e "$s" ] && echo "$home_claude/skills/$(basename "$s")"
+    done
     for a in "$TOOLKIT/.claude/agents/"*.md; do
       [ -e "$a" ] && echo "$home_claude/agents/$(basename "$a")"
     done

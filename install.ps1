@@ -130,10 +130,13 @@ function Install-Global($t) {
       Copy-Item -Recurse -Force $_.FullName $dst
       $copied += Get-ChildItem -Recurse -File (Join-Path $dst $_.Name) -Filter '*.md'
     }
+  $agentsDst = Join-Path $hc 'agents'
   Get-ChildItem -File (Join-Path $t '.claude\agents') -Filter '*.md' -ErrorAction SilentlyContinue |
     ForEach-Object {
-      Copy-Item -Force $_.FullName (Join-Path $hc 'agents')
-      $copied += Get-Item (Join-Path $hc 'agents' $_.Name)
+      Copy-Item -Force $_.FullName $agentsDst
+      # NB: two-argument Join-Path only — the 3-arg form is pwsh 7+ and this script
+      # must run under Windows PowerShell 5.1 (the README's own command).
+      $copied += Get-Item (Join-Path $agentsDst $_.Name)
     }
   # global skills/agents run from any repo -> resolve validator via $X4_TOOLKIT
   foreach ($file in $copied) {
