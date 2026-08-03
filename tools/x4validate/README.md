@@ -80,10 +80,29 @@ md/aiscripts schemas, and a further **~122s if your mod patches `libraries/diplo
 — that one schema pulls in the 40k-line `common.xsd`, where every other data schema
 measured ≤0.1s. It looks like a hang and is not.
 
-Exit code is non-zero if any error-level finding is present (suitable as a
-pre-deploy / pre-pack gate). Default merge tier is **A** (base + DLC,
-deterministic); `--tier b` also folds in enabled mods but warns, because X4's
-inter-mod load order is undocumented.
+### Exit codes
+
+| code | meaning |
+|---|---|
+| **0** | clean — and something was actually examined |
+| **1** | error-level findings (use as the pre-deploy / pre-pack gate) |
+| **2** | could not run: bad path, missing reference tree, usage error |
+| **3** | **degraded** — a check you asked for could not run, so a clean result proves nothing |
+
+**3 is separate from 1 on purpose:** a gate needs to tell "your mod is broken" from "the validator
+was blindfolded". Cases that reach it: no `content.xml` (X4 would never load the folder), a packed
+mod whose catalog will not open, an overlay that would not parse so the comparison tree is
+incomplete, or a `--like` analogue that does not exist.
+
+A mod with **no `<diff>` files is not degraded** — additive-only and asset-only mods are normal and
+are reported as notes. Measured on a 102-mod install: 16 additive-only, 1 asset-only, 0 unreadable.
+
+Every run states its denominator (`sel-resolution: N diff file(s) checked across M payload XML
+file(s)`), because "checked 14 files, all fine" and "checked 1 file, all fine" must not print the
+same way.
+
+Default merge tier is **A** (base + DLC, deterministic); `--tier b` also folds in enabled mods but
+warns, because X4's inter-mod load order is undocumented.
 
 ## Configuration — where it looks for things
 

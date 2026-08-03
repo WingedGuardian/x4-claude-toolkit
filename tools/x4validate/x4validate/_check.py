@@ -25,6 +25,10 @@ WARES_FILE = "libraries/wares.xml"
 MACRO_INDEX = "index/macros.xml"
 RACES_FILE = "libraries/races.xml"
 FACTIONS_FILE = "libraries/factions.xml"
+#: A mod's manifest, not payload. It is XML that `iter_mod_xml_roots` yields, so any
+#: "does this mod ship content?" count must exclude it — otherwise a folder holding
+#: nothing but content.xml looks like it has one payload file.
+MANIFEST = "content.xml"
 
 
 def collect_text_defs(config: _merge.Config, extra_overlays=None,
@@ -377,6 +381,16 @@ def check_readability(mod_dir: Path, config: _merge.Config, report: Report) -> N
     Traditional-Chinese page) and `xspvro/assets/units/size_xl/xen_shell.xml`
     (`<offset>`/`<lights>` mis-nested, drops a component).
     """
+    # No manifest = not an extension. X4 discovers mods by content.xml, so a folder
+    # without one is never loaded and every verdict below it is about a file the
+    # engine will not read. Reporting that clean is a false pass about the whole run,
+    # so it gates. Packed mods keep content.xml LOOSE (it is read before the catalog),
+    # so this is safe for them too.
+    if not (mod_dir / MANIFEST).is_file():
+        report.skip("this folder as an extension",
+                    f"no {MANIFEST} — X4 discovers extensions by their manifest, so it "
+                    "would never load this folder at all", degraded=True)
+
     unreadable: list[_scan.Unreadable] = []
     for _ in _scan.iter_mod_xml(mod_dir, unreadable=unreadable):
         pass
@@ -512,6 +526,45 @@ def _no_base_finding(vpath: str, config: _merge.Config) -> tuple[str, str, str]:
             f"no base game file for '{vpath}' (path mismatch? this patch can never apply)")
 
 
+def _inert_bare_path_finding(vpath: str, merged: _merge.MergeResult) -> tuple[str, str, str]:
+    """(severity, category, message) for a <diff> the engine never loads at all.
+
+    A patch aimed at ANOTHER MOD's file must live at `extensions/<owner>/<rel>` inside
+    your mod. At the BARE mirrored path it is inert: the engine only consults
+    reference/ + DLC for that path, finds the file is not base-game content, and never
+    opens the file. Nothing is logged, no op is rejected, and the mod loads clean — the
+    quietest failure in X4 modding.
+
+    Proven 2026-08-01 from a two-run debug.txt, on ONE identical rel path
+    (`assets/units/size_s/macros/ship_cpsdo_s_hengdao_01_macro.xml`): the owner
+    `cpsdo_zb_modpack` is logged, `cpsdo_faction`'s NESTED patch of it is logged AND has
+    its op evaluated (`[=ERROR=] No matching node ... @makerrace`), while
+    `zzz_moona_cpsdo_tweaks`'s BARE-path patch of the same path is absent from both runs
+    — though that mod is loaded, its two base-game-path files being logged three times.
+    Same path, same load, three mods, two logged and one not.
+
+    Why this needs its own finding rather than falling out of the existing
+    `_no_base_finding`: under Tier B an installed mod's full file satisfies `base_found`
+    (`_merge.build_effective`'s `base_found or mode in {union, full}`), so `merged.tree`
+    is non-None and the Tier A error is silently CURED by installing more mods. Measured
+    on the live 101-mod install: Tier A reports these 7 files, Tier B reports 0 errors and
+    exits 0 — a false OK, in the tier the convention tells you to use for cross-mod work.
+    """
+    # Only union/full contributors SUPPLY the file; a `diff` contributor is another
+    # mod patching it, exactly as this mod is. Listing patchers as suppliers would
+    # send the reader to move their file under a mod that does not own it — the
+    # wrong-reason failure that stops the next person checking.
+    suppliers = [s.rsplit(":", 1)[0] for s in merged.sources
+                 if s.rsplit(":", 1)[-1] in {"union", "full", "owner"}]
+    owner = suppliers[0] if suppliers else "<owner>"
+    who = ", ".join(suppliers) if suppliers else "another mod, not the base game"
+    return ("error", "path",
+            f"'{vpath}' is not a base game file — it is supplied by {who}. "
+            f"A patch over another MOD's file must live at "
+            f"'extensions/{owner}/{vpath}' inside your mod; at this bare path "
+            f"the engine never loads it (silent no-op, no log line, no rejected op)")
+
+
 def check_sel_resolution(mod_dir: Path, config: _merge.Config, report: Report) -> None:
     """Flag any non-silent op whose sel= matches nothing in the merged base+DLC tree."""
     checked = 0
@@ -519,24 +572,69 @@ def check_sel_resolution(mod_dir: Path, config: _merge.Config, report: Report) -
     for vpath, diff_root in iter_diff_files(mod_dir):
         checked += 1
         merged = _merge.build_effective(vpath, config)
-        # An overlay we could not parse was left out of this tree — say so, because
-        # every verdict below is computed against an incomplete tree.
+        # An overlay we could not parse was left out of this tree, so every verdict
+        # below is computed against an incomplete tree. That disables the check's
+        # premise, not one file — the Skipped docstring's definition of degraded.
         for msg in merged.skipped:
             if msg not in seen_skips:
                 seen_skips.add(msg)
-                report.add("warn", "skipped", f"tree may be incomplete: {msg}", vpath)
+                report.skip(f"sel-resolution against a complete tree ({vpath})",
+                            f"an overlay could not be parsed, so the comparison tree is "
+                            f"incomplete: {msg}", degraded=True)
         if merged.tree is None:
             report.add(*_no_base_finding(vpath, config), vpath)
             continue
+        if (not merged.base_from_game
+                and _merge._nested_target(vpath, config.packed_dlc_names()) is None):
+            # Some mod supplies this file, but the GAME does not — so a bare-path diff
+            # over it is inert. Deliberately `continue` without _check_ops: its verdict
+            # on a file the engine never opens is noise, and "sel resolves fine" on a
+            # dead patch is exactly the false reassurance this finding exists to kill.
+            report.add(*_inert_bare_path_finding(vpath, merged), vpath)
+            continue
         _check_ops(diff_root, merged.tree, vpath, report)
-    if checked == 0:
-        # A mod with no readable <diff> file was silently reported "OK" until
-        # 2026-07-26, which is how packed mods passed while the engine rejected
-        # their ops. Nothing examined is a SKIP, never a pass.
-        report.add("warn", "skipped",
-                   "no <diff> file could be read from this mod — nothing was "
-                   "sel-checked. If the mod ships a .cat/.dat, its catalog could not "
-                   "be opened; if it ships loose XML, check the folder layout", "")
+
+    # Always state the denominator. "OK: no issues found" over 14 files and over 1
+    # file printed identically until 2026-08-01, for the tool's PRIMARY check.
+    payload = [v for v, _ in iter_mod_xml_roots(mod_dir) if v.lower() != MANIFEST]
+    report.notes.append(
+        f"sel-resolution: {checked} diff file(s) checked "
+        f"across {len(payload)} payload XML file(s)")
+
+    if checked:
+        return
+    # Nothing was sel-checked. That has three causes with three different verdicts,
+    # and until 2026-08-01 all three produced one warning asserting the third —
+    # via report.add("warn", "skipped", ...), which LOOKS like the skip channel but
+    # creates a Finding, so report.degraded stayed empty and the CLI exited 0.
+    #
+    # Measured over the 102 installed mods before this was written: 16 additive-only,
+    # 1 asset-only (XTex: 0 XML but 4695 catalog members), 0 unreadable. Marking all
+    # of them degraded would have been a second half-fix — 17 false exit-3s.
+    if payload:
+        report.notes.append(
+            "sel-resolution: this mod is additive-only — it ships payload XML but no "
+            "<diff>, so there are no selectors to resolve (not a problem)")
+    elif _cat.is_packed(mod_dir):
+        # Packed with no XML is normal for a texture/shader mod, but only if the
+        # catalog actually OPENED. XTex is the live example: 0 XML members, 4695
+        # total. An empty vfs means the .cat/.dat could not be read.
+        if _cat.mod_vfs(mod_dir, xml_only=False):
+            report.notes.append(
+                "sel-resolution: this mod is packed and ships no XML (assets only) — "
+                "there is nothing for the selector check to examine")
+        else:
+            report.skip("sel-resolution", "this mod is packed but not one catalog member "
+                        "could be read — the .cat/.dat could not be opened", degraded=True)
+    elif any(p.is_file() and p.name.lower() != MANIFEST for p in mod_dir.rglob("*")):
+        report.notes.append(
+            "sel-resolution: this mod ships loose assets but no XML — there is nothing "
+            "for the selector check to examine")
+    else:
+        # Nothing but a manifest. Not an extension the engine can do anything with,
+        # and reporting it clean is the same false pass this branch exists to end.
+        report.skip("sel-resolution", "this folder contains nothing but content.xml — "
+                    "no payload of any kind was found to check", degraded=True)
 
 
 def check_sel_resolution_one(file_path: Path, mod_dir: Path,
@@ -949,7 +1047,16 @@ def check_xsd(mod_dir: Path, config: _merge.Config, report: Report) -> None:
     for f in high:
         report.add("error", "xsd", f.message, _relpath(f.file, mod_dir), f.line)
     for f in low:
-        report.add("info", "xsd-strict", f.message, _relpath(f.file, mod_dir), f.line)
+        # F7's dead-attr class gets its OWN CATEGORY here but stays INFO — never
+        # promote it to error on the MD side. Deliberate asymmetry with
+        # check_effective_schema: MD attributes can be spawn-time engine features
+        # that neither debug.txt nor a static pass can settle (the four
+        # kuertee_atd attributes, audit F8, deliberately left unresolved by the
+        # user). The distinct category makes the class queryable without gating
+        # a working released mod on an unsettleable question.
+        cat = ("xsd-unknown-attr"
+               if _xsd.dead_attr(f.message, config) else "xsd-strict")
+        report.add("info", cat, f.message, _relpath(f.file, mod_dir), f.line)
 
 
 def _faction_defs(config: _merge.Config, extra_overlays=None) -> set[str]:
@@ -987,6 +1094,10 @@ def check_effective_schema(mod_dir: Path, config: _merge.Config, report: Report)
     lib = config.reference / "libraries"
     defs: dict[str, set[str]] = {}
     checked = suppressed = 0
+    #: Counted rather than silently `continue`d, so the note can say WHY nothing was
+    #: validated. `new_files` is the known gap: a file the mod introduces has no base
+    #: to difference against, so it gets no schema check at all.
+    new_files = no_schema = 0
     seen: set[str] = set()
 
     for vpath, _root in iter_mod_xml_roots(mod_dir):
@@ -997,13 +1108,15 @@ def check_effective_schema(mod_dir: Path, config: _merge.Config, report: Report)
 
         base = _merge.build_effective(v, config)
         if base.tree is None:
-            continue  # brand-new file the mod introduces: nothing to difference against
-        schema_path, why_not = _xsd.schema_of(base.tree, lib)
+            new_files += 1  # brand-new file: nothing to difference against
+            continue
+        schema_path, why_not = _xsd.schema_of(base.tree, lib, v)
         if why_not:
             report.skip(f"schema check for {v}", why_not)
             continue
         if schema_path is None:
-            continue  # declares no schema (macros, components, wares.xml) — not a finding
+            no_schema += 1  # macros, components, wares.xml — not a finding
+            continue
 
         before, why_not = _xsd.errors_against(base.tree, schema_path)
         merged = _merge.build_effective(v, config, extra_overlays=[mod_dir])
@@ -1024,16 +1137,41 @@ def check_effective_schema(mod_dir: Path, config: _merge.Config, report: Report)
             if _xsd.open_lookup_ok(msg, defs):
                 suppressed += 1
                 continue
-            sev = "error" if _schema_gates(msg) else "info"
-            report.add(sev, "schema" if sev == "error" else "schema-strict",
+            # Severity ladder (audit F7+F14, measured 2026-08-02 before written:
+            # exactly 15 findings move INFO->ERROR across 3 mods, each verified
+            # individually real — see gates/schema_sweep.py's re-measurement table).
+            # The "md.xsd is stricter than the engine" excuse only covers what the
+            # engine demonstrably tolerates; a value defined NOWHERE (enum-undefined)
+            # or an (element, attribute) pair vanilla never uses (dead-attr) has
+            # nothing to lag, so those gate.
+            if _schema_gates(msg):
+                sev, cat = "error", "schema"
+            elif _xsd.enum_undefined(msg, defs):
+                sev, cat = "error", "schema-enum-undefined"
+            elif _xsd.dead_attr(msg, config):
+                sev, cat = "error", "schema-dead-attr"
+            else:
+                sev, cat = "info", "schema-strict"
+            report.add(sev, cat,
                        f"{msg} (introduced by this mod into the merged {v})", v, 0)
 
-    if checked:
-        report.notes.append(
-            f"effective-schema: {checked} merged data file(s) validated against their declared "
-            f"schema, differenced against the same tree without this mod"
-            + (f"; {suppressed} enumeration failure(s) suppressed as mod-defined races/factions"
-               if suppressed else ""))
+    # Unconditional, exactly like check_xsd's note 40 lines above. Guarding this on
+    # `if checked:` meant a mod where nothing was validated printed NO schema line at
+    # all, so "we validated 0 files" and "we did not run" looked identical — measured
+    # on atd_ejection_router, which produced a bare "OK: no issues found".
+    detail = ""
+    if not checked and (new_files or no_schema):
+        why = []
+        if new_files:
+            why.append(f"{new_files} brand-new (no base to difference against)")
+        if no_schema:
+            why.append(f"{no_schema} declaring no schema")
+        detail = " — " + ", ".join(why)
+    report.notes.append(
+        f"effective-schema: {checked} merged data file(s) validated against their declared "
+        f"schema, differenced against the same tree without this mod{detail}"
+        + (f"; {suppressed} enumeration failure(s) suppressed as mod-defined races/factions"
+           if suppressed else ""))
 
 
 def check_packed_dlc_available(config: _merge.Config, report: Report) -> None:

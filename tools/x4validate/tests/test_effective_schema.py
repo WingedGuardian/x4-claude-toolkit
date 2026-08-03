@@ -161,6 +161,11 @@ _XSD = """<?xml version="1.0" encoding="utf-8"?>
               <xs:enumeration value="argon"/>
             </xs:restriction></xs:simpleType>
           </xs:attribute>
+          <xs:attribute name="tag">
+            <xs:simpleType><xs:restriction base="xs:string">
+              <xs:pattern value="ego_.+"/>
+            </xs:restriction></xs:simpleType>
+          </xs:attribute>
         </xs:complexType>
       </xs:element>
     </xs:sequence></xs:complexType>
@@ -215,15 +220,96 @@ def test_a_diff_that_breaks_the_merged_document_gates(tmp_path):
 
 
 def test_a_facet_failure_is_advisory_not_a_gate(tmp_path):
-    """The bundled XSDs lag the engine on value facets, so those inform, never gate."""
+    """The bundled XSDs lag the engine on value facets, so those inform, never gate.
+
+    RE-POINTED for F14 (2026-08-02): this test used `race='klingon'` — an
+    open-lookup value defined nowhere, which is exactly what F14 now GATES. The
+    still-advisory class is a pattern facet (the `ego_.+` naming convention every
+    third-party UI mod harmlessly violates), so that is what this test pins now;
+    the klingon fixture moved to `test_an_undefined_open_lookup_value_gates`.
+    """
+    ref, cfg = _world(tmp_path)
+    mod = tmp_path / "mod"
+    _write(mod / "libraries" / "things.xml",
+           "<diff><add sel='/things'><thing id='b' tag='not_ego_prefixed'/></add></diff>")
+    report = _check.Report()
+    _check.check_effective_schema(mod, cfg, report)
+    assert not [f for f in report.findings if f.severity == "error"]
+    assert [f for f in report.findings if f.category == "schema-strict"]
+
+
+# --- F7 + F14: what has no excuse, gates (measured 2026-08-02: 15 findings move,
+# --- all individually verified real — see gates/schema_sweep.py) -----------------
+
+def test_an_undefined_open_lookup_value_gates(tmp_path):
+    """F14: race='klingon' with NO definition anywhere — not the XSD floor, not
+    the effective tree. 'The schema lags the engine' cannot excuse a value that
+    nothing defines. The real instance is cpsdo_faction's race='central' x7."""
     ref, cfg = _world(tmp_path)
     mod = tmp_path / "mod"
     _write(mod / "libraries" / "things.xml",
            "<diff><add sel='/things'><thing id='b' race='klingon'/></add></diff>")
     report = _check.Report()
     _check.check_effective_schema(mod, cfg, report)
+    errs = [f for f in report.findings if f.severity == "error"]
+    assert errs and errs[0].category == "schema-enum-undefined"
+
+
+def test_an_attr_vanilla_never_uses_gates(tmp_path):
+    """F7: attribute unknown to the schema AND absent from vanilla at
+    (element, attribute) granularity. Real instances: category/@matchextension
+    (a real attribute on the WRONG element — vanilla's 140 uses are all on
+    <location>) and element/@forkmaterial (invented by VRO, read by nothing)."""
+    ref, cfg = _world(tmp_path)
+    mod = tmp_path / "mod"
+    _write(mod / "libraries" / "things.xml",
+           "<diff><add sel='/things'><thing id='b' bogusattr='1'/></add></diff>")
+    report = _check.Report()
+    _check.check_effective_schema(mod, cfg, report)
+    errs = [f for f in report.findings if f.severity == "error"]
+    assert errs and errs[0].category == "schema-dead-attr"
+
+
+def test_an_attr_vanilla_uses_elsewhere_stays_advisory(tmp_path):
+    """The other half of F7's pair check: vanilla uses (thing, legacyattr) in a
+    DIFFERENT file, so the schema plausibly lags the engine — advisory. This is
+    also why the check is per-PAIR and cross-file: per-file differencing alone
+    cannot see a use in another document."""
+    ref, cfg = _world(tmp_path)
+    # vanilla usage of the pair, in a file the mod does not touch
+    _write(ref / "libraries" / "other.xml", "<other><thing legacyattr='x'/></other>")
+    mod = tmp_path / "mod"
+    _write(mod / "libraries" / "things.xml",
+           "<diff><add sel='/things'><thing id='b' legacyattr='1'/></add></diff>")
+    report = _check.Report()
+    _check.check_effective_schema(mod, cfg, report)
     assert not [f for f in report.findings if f.severity == "error"]
     assert [f for f in report.findings if f.category == "schema-strict"]
+
+
+def test_md_side_dead_attr_is_categorized_but_never_gates(tmp_path, monkeypatch):
+    """ATD-PROTECTION PIN (audit F8). The same F7 rule on the MD side must change
+    the CATEGORY only, never the severity: MD attributes can be spawn-time engine
+    features no static pass or debug.txt can settle, and the user explicitly left
+    kuertee_atd's four unresolved. If this test fails because check_xsd started
+    emitting errors for attribute-not-allowed, that is a decision to re-litigate
+    with the user, not a code cleanup."""
+    from x4validate import _xsd
+    ref, cfg = _world(tmp_path)
+    findings = [
+        _xsd.XsdFinding("md/x.xml", 1,
+                        "Element 'create_ship', attribute 'position': "
+                        "The attribute 'position' is not allowed."),
+        _xsd.XsdFinding("md/x.xml", 2,
+                        "Element 'thing', attribute 'race': [facet 'enumeration'] "
+                        "The value 'z' is not an element of the set {'argon'}."),
+    ]
+    monkeypatch.setattr(_xsd, "validate_mod", lambda mod_dir, config: (findings, 1, 0))
+    report = _check.Report()
+    _check.check_xsd(tmp_path / "mod", cfg, report)
+    assert not [f for f in report.findings if f.severity == "error"]
+    cats = sorted(f.category for f in report.findings)
+    assert cats == ["xsd-strict", "xsd-unknown-attr"]
 
 
 def test_a_mod_defined_race_is_suppressed_end_to_end(tmp_path):

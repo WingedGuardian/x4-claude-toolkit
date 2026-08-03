@@ -32,11 +32,74 @@ import _env
 
 from x4validate import _check, _merge
 
-EXPECT_PAIRS = 127
-EXPECT_ERR = 45
-EXPECT_INFO = 57
+#
+# RE-MEASURED 2026-08-01 after the schema-resolution fix (audit finding F1).
+# Quoted rather than quietly re-baselined, because this gate's whole job is to
+# make a moved number visible:
+#
+#            pairs  gating  advisory  suppressed  NOT checked  mods flagged
+#   before     127      45        57           3          31*            10
+#   after      157      45        91           3            1            39
+#   delta      +30       0       +34           0          -30           +29
+#
+#   * the 31 were always happening; they were invisible until EXPECT_SKIPPED
+#     existed, which is exactly why it now exists.
+#
+# What moved and why: 30 mods ship a root `ui.xml` whose declared schema
+# resolves nowhere from where the file actually sits, so they were skipped with
+# the false reason "not bundled in .../libraries" — the schema IS bundled, at
+# reference/ui/core/coreaddon.xsd. Those 30 documents are now validated.
+#
+# GATING DID NOT MOVE (45 -> 45). The +34 advisories are one benign class:
+# coreaddon.xsd constrains addon/@name to the pattern 'ego_.+', Egosoft's own
+# naming convention, which every third-party UI mod violates harmlessly. That is
+# the textbook "XSD stricter than the engine" case _schema_gates exists to
+# downgrade, and it is why more coverage cost zero new errors.
+#
+# RE-MEASURED 2026-08-02 for the F7+F14 severity split — the movement was
+# measured across all 91 advisories BEFORE the code was written, and the
+# implementation was then required to reproduce it:
+#
+#            pairs  gating  advisory  suppressed  NOT checked  mods flagged
+#   before     157      45        91           3            1            39
+#   after      157      60        76           3            1            39
+#   delta        0     +15       -15           0            0             0
+#
+# The 15 that moved are the two classes whose "XSD lags the engine" excuse
+# cannot apply, each verified individually against the packed-inclusive corpus:
+#   * 7  enum-undefined (F14): cpsdo_faction race='central' — defined by the
+#        XSD floor nowhere AND by the effective 102-mod tree nowhere.
+#   * 8  dead-attr (F7): (element, attribute) pairs vanilla never uses —
+#        category/@matchextension x3 (vanilla's 140 uses are ALL on <location>;
+#        a real attribute on the wrong element) and element/@forkmaterial x5
+#        (invented by VRO, 4 corpus hits, all VRO itself).
+# The 76 that stayed advisory: 36 pattern facets, 34 non-lookup enums (mods
+# cannot extend those by defining something, but the engine may still accept
+# more than the XSD lists — e.g. ship_variation_expansion's list-in-enum
+# relation='[friend, ally]' x27, recorded as a possible upstream defect the
+# captured log cannot settle), 2 key-constraint cascades, 4 cascade noise.
+#
+# RE-MEASURED 2026-08-02 (same day, later): the MODLIST changed, not the check —
+# rer_boronphaser became discoverable (its content.xml had been one folder too
+# deep since extraction; F19-era install hygiene moved it up). It contributes
+# 2 pairs, 1 advisory, 0 gating:
+#
+#            pairs  gating  advisory  suppressed  NOT checked  mods flagged
+#   before     157      60        76           3            1            39
+#   after      159      60        77           3            1            40
+#   delta       +2       0        +1           0            0            +1
+EXPECT_PAIRS = 159
+EXPECT_ERR = 60
+EXPECT_INFO = 77
 EXPECT_SUPPRESSED = 3
-EXPECT_MODS_FLAGGED = 10
+EXPECT_MODS_FLAGGED = 40
+#: Files this sweep could NOT schema-check. Pinned from 2026-08-01, because the
+#: gate previously froze only what WAS checked — so 31 documents skipped with a
+#: false reason never moved a single number here. A rise means coverage was lost
+#: silently. The 1 that remains is honest: shadergl.xsd is declared by
+#: bh_shader but ships in no unpacked layer, so there is genuinely nothing to
+#: validate against.
+EXPECT_SKIPPED = 1
 
 #: Independently evidenced against `reference\`, not just "the tool said so".
 #: Each entry: mod -> (gating, advisory, what makes it real).
@@ -44,9 +107,17 @@ KNOWN_REAL = {
     "mlog_deadair_eco_no_da_wares": (30, 0,
         "removes <production>, orphaning the <limits> sibling — structural damage "
         "caused BY a diff, which no other check in this package can see"),
-    "cpsdo_faction": (7, 8,
+    "cpsdo_faction": (14, 1,
         "race='central' x7 — the effective race list (base+DLC+all 102 mods) has 10 "
-        "entries and 'central' is not one of them"),
+        "entries and 'central' is not one of them; GATING since the F14 split "
+        "(2026-08-02), joining the 7 element-not-expected it already had"),
+    "ebi_timelines_faction_use_ship": (3, 0,
+        "category/@matchextension x3 — a real attribute on the WRONG element: "
+        "vanilla uses matchextension 140 times, every one on <location>, never on "
+        "<category>, so the engine drops the intended DLC-matching silently (F7)"),
+    "vro": (5, 3,
+        "element/@forkmaterial x5 in libraries/effects.xml — invented attribute, "
+        "4 corpus-wide occurrences and all of them are VRO itself (F7)"),
     "xspvro": (2, 9,
         "job ids containing a SPACE ('xenon_carrier_defense xl_EP') against the id "
         "pattern facet"),
@@ -64,11 +135,18 @@ def main() -> int:
             if d.is_dir() and not d.name.lower().startswith("ego_dlc_")]
     cfg = _merge.Config()
 
-    pairs = err = info = sup = 0
+    pairs = err = info = sup = skipped = 0
+    skip_why: dict[str, int] = {}
     per_mod: dict[str, tuple[int, int]] = {}
     for d in mods:
         report = _check.Report()
         _check.check_effective_schema(d, cfg, report)
+        # Files the check could NOT validate. Unpinned until 2026-08-01, which is
+        # precisely how 31 false "not bundled" skips survived: the gate froze what
+        # WAS checked and had no denominator for what was not.
+        for s in report.skipped:
+            skipped += 1
+            skip_why[s.why.split(":")[0][:60]] = skip_why.get(s.why.split(":")[0][:60], 0) + 1
         e = sum(1 for f in report.findings if f.severity == "error")
         i = sum(1 for f in report.findings if f.severity == "info")
         for note in report.notes:
@@ -82,9 +160,14 @@ def main() -> int:
         if e or i:
             per_mod[d.name] = (e, i)
 
-    print(f"{len(mods)} non-DLC mods | {pairs} (mod,file) pairs validated")
+    print(f"{len(mods)} non-DLC mods | {pairs} (mod,file) pairs validated "
+          f"| {skipped} NOT checked")
     print(f"{err} gating + {info} advisory + {sup} suppressed = "
           f"{err + info + sup} introduced | {len(per_mod)} mods flagged\n")
+    for why, n in sorted(skip_why.items(), key=lambda kv: -kv[1]):
+        print(f"   NOT CHECKED x{n}: {why}")
+    if skip_why:
+        print()
     for name, (e, i) in sorted(per_mod.items(), key=lambda kv: -sum(kv[1])):
         mark = "*" if name in KNOWN_REAL else " "
         print(f" {mark} {name:36} {e:>3} gating  {i:>3} advisory")
@@ -94,6 +177,7 @@ def main() -> int:
                              ("gating", err, EXPECT_ERR),
                              ("advisory", info, EXPECT_INFO),
                              ("suppressed", sup, EXPECT_SUPPRESSED),
+                             ("NOT checked", skipped, EXPECT_SKIPPED),
                              ("mods flagged", len(per_mod), EXPECT_MODS_FLAGGED)):
         if got != want:
             fail.append(f"{label}: got {got}, measured baseline is {want}")
@@ -114,8 +198,9 @@ def main() -> int:
               "changed (re-measure and update the constants, saying so) or the check did "
               "(that is the regression this gate exists to catch).")
         return 1
-    print("OK — matches the pre-implementation sweep exactly, and all four "
-          "independently-evidenced defects are still reported.")
+    print("OK — matches the recorded baseline exactly (see the re-measurement table "
+          "above the constants), and all four independently-evidenced defects are "
+          "still reported.")
     return 0
 
 

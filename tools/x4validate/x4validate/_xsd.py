@@ -116,7 +116,8 @@ def eligible(vpath: str) -> bool:
     return v.endswith(".xml") and not v.startswith(EFFECTIVE_SKIP_PREFIXES)
 
 
-def schema_of(root: etree._Element, lib: Path) -> tuple[Path | None, str | None]:
+def schema_of(root: etree._Element, lib: Path,
+              vpath: str = "") -> tuple[Path | None, str | None]:
     """(schema_path, why_not) for a merged document root.
 
     Read off the MERGED root rather than a hardcoded file list: a full-file
@@ -124,18 +125,88 @@ def schema_of(root: etree._Element, lib: Path) -> tuple[Path | None, str | None]
     silently rot against the next DLC. Returns (None, None) for the common,
     uninteresting case of a file that declares no schema at all — macros,
     components and `libraries/wares.xml` are all in that group.
+
+    `xsi:noNamespaceSchemaLocation` is a path **relative to the document**, and
+    vanilla uses it that way — `libraries/factions.xml` says `factions.xsd`,
+    `cutscenes/*.xml` says `cutscenes.xsd`, and a mod's root `ui.xml` says
+    `../../ui/core/addon.xsd`, climbing out of `extensions/<mod>/` to the game
+    root. Until 2026-08-01 this took only the BASENAME and looked only in
+    `reference/libraries`, so 31 documents were skipped as "not bundled" when the
+    schema was bundled — a false statement, which is the worse half: a wrong
+    reason is what stops the next person checking.
+
+    Resolving against *vpath* is layer-aware for free. A DLC document carries its
+    own `extensions/ego_dlc_*/` prefix, so `cutscenes.xsd` lands in that DLC's
+    copy rather than whichever of the six the filesystem happened to yield first.
     """
     declared = root.get(_XSI)
     if not declared:
         return None, None
-    name = declared.replace("\\", "/").split("/")[-1]
-    p = lib / name
-    if not p.is_file():
-        # Real, and it must not be silent: coreaddon.xsd / cutscenes.xsd /
-        # shadergl.xsd are declared by vanilla content but not shipped in
-        # reference/libraries.
-        return None, f"declared schema '{name}' is not bundled in {lib}"
-    return p, None
+    rel = declared.replace("\\", "/").lstrip("/")
+    name = rel.split("/")[-1]
+    reference = lib.parent
+
+    for cand in _schema_candidates(rel, name, vpath, reference, lib):
+        if cand.is_file():
+            return cand, None
+    return None, (f"declared schema '{rel}' could not be resolved relative to "
+                  f"'{vpath or name}' or found in {lib}")
+
+
+def _schema_candidates(rel: str, name: str, vpath: str,
+                       reference: Path, lib: Path):
+    """Where a declared schema could live, best guess first.
+
+    Kept separate so the ordering is testable without a filesystem full of XSDs.
+    """
+    v = vpath.replace("\\", "/").lstrip("/")
+    if v:
+        # 1. Relative to the document's own position in the reference tree. This
+        #    is the engine's own rule and handles every vanilla form, DLC layers
+        #    included.
+        yield _resolve(reference / v, rel, reference)
+        # 2. The same document seen as an EXTENSION file. A mod's ui.xml sits at
+        #    extensions/<mod>/ui.xml, two levels below the game root, which is
+        #    exactly what its "../../" is written to climb.
+        yield _resolve(reference / "extensions" / "_mod_" / v, rel, reference)
+    # 3. Legacy behaviour, and still correct for a bare name under libraries/.
+    yield lib / name
+    # 4. Unique basename anywhere in the tree. Needed because a declaration can
+    #    be relative to where the author COPIED it from rather than where the file
+    #    ended up: 30 mods ship ui.xml at their root declaring
+    #    "../../core/coreaddon.xsd", which is written for vanilla's
+    #    ui/addons/<x>/ layout and resolves nowhere from a mod root. The engine
+    #    does not read this attribute at all, so those mods work — but we would
+    #    lose the check. Only accepted when the name is UNAMBIGUOUS: cutscenes.xsd
+    #    exists in six layers, and guessing between them is how a layer-aware fix
+    #    would quietly become layer-blind again.
+    found = _by_basename(reference).get(name.lower())
+    if found is not None:
+        yield found
+
+
+@lru_cache(maxsize=8)
+def _by_basename(reference: Path) -> dict[str, Path]:
+    """{lowercased xsd filename: path} for names that occur EXACTLY ONCE."""
+    seen: dict[str, Path | None] = {}
+    for p in reference.rglob("*.xsd"):
+        key = p.name.lower()
+        seen[key] = None if key in seen else p  # None marks "ambiguous"
+    return {k: v for k, v in seen.items() if v is not None}
+
+
+def _resolve(doc_path: Path, rel: str, reference: Path) -> Path:
+    """`rel` resolved against `doc_path`'s directory, clamped inside `reference`.
+
+    The clamp matters: a declaration with enough `../` to escape the tree must
+    not turn into a probe of the developer's filesystem.
+    """
+    target = (doc_path.parent / rel).resolve()
+    try:
+        target.relative_to(reference.resolve())
+    except ValueError:
+        return reference / "__outside_reference__"
+    return target
 
 
 def errors_against(root: etree._Element,
@@ -207,6 +278,88 @@ def open_lookup_ok(message: str, defs: dict[str, set[str]]) -> bool:
         return False
     kind = OPEN_LOOKUPS.get(m.group("attr").lower())
     return kind is not None and m.group("value") in defs.get(kind, set())
+
+
+def enum_undefined(message: str, defs: dict[str, set[str]]) -> bool:
+    """True when an enumeration failure names an open-lookup value that NOTHING
+    defines — not the XSD's vanilla floor, not the effective modlist tree.
+
+    This is audit F14: `open_lookup_ok` already computed the distinction (it
+    correctly suppressed `xenon_backup`'s mod-defined race while reporting
+    `cpsdo_faction`'s race='central'), but severity never consulted it — both
+    landed as INFO with the excuse "the XSD lags the engine". For a value defined
+    NOWHERE that excuse cannot apply: there is nothing to lag. Measured 2026-08-02:
+    exactly 7 findings move, all `cpsdo_faction`'s race='central', the confirmed
+    July upstream defect. Non-lookup enums are untouched — mods cannot extend
+    those by defining something, so their failures keep the advisory treatment.
+    """
+    m = _RE_ENUM_FACET.search(message)
+    if m is None:
+        return False
+    kind = OPEN_LOOKUPS.get(m.group("attr").lower())
+    return kind is not None and m.group("value") not in defs.get(kind, set())
+
+
+_RE_ATTR_NOT_ALLOWED = re.compile(
+    r"Element '(?P<elem>[\w:-]+)', attribute '(?P<attr>[\w:-]+)': "
+    r"The attribute '[\w:-]+' is not allowed")
+
+
+def dead_attr_pair(message: str) -> tuple[str, str] | None:
+    """('element', 'attribute') from an attribute-not-allowed message, else None."""
+    m = _RE_ATTR_NOT_ALLOWED.search(message)
+    if m is None:
+        return None
+    return (m.group("elem").lower(), m.group("attr").lower())
+
+
+#: (element, attribute) pairs used anywhere in vanilla+DLC, keyed by reference
+#: path. Built ONCE per process on first demand — a full corpus walk (~9k loose
+#: files + the packed DLC) is far too slow per finding, and the pair vocabulary
+#: is small enough to hold whole.
+_VANILLA_PAIRS: dict[str, set[tuple[str, str]]] = {}
+
+
+def vanilla_pair_exists(elem: str, attr: str, config: _merge.Config | None = None) -> bool:
+    """Does vanilla+DLC use *attr* on *elem* ANYWHERE? Pair granularity is
+    load-bearing, not pedantry (audit F7, measured 2026-08-02): `matchextension`
+    has 140 base-game uses — every one on `<location>` — so a name-level lookup
+    would excuse the real defect of writing it on `<category>`, where the engine
+    ignores it. Includes the packed-only DLC via `dlc_dirs()`, because a
+    loose-reference-only scan has a two-DLC blind spot.
+    """
+    config = config or _merge.Config()
+    key = str(config.reference)
+    pairs = _VANILLA_PAIRS.get(key)
+    if pairs is None:
+        from . import _scan
+        pairs = set()
+        roots = [config.reference] + [d for d in config.dlc_dirs()
+                                      if not str(d).startswith(key)]
+        for base in roots:
+            for _vpath, root in _scan.iter_mod_xml(base, lambda v: True, None):
+                for el in root.iter():
+                    if not isinstance(el.tag, str):
+                        continue
+                    t = el.tag.lower()
+                    for k in el.attrib:
+                        pairs.add((t, k.lower()))
+        _VANILLA_PAIRS[key] = pairs
+    return (elem.lower(), attr.lower()) in pairs
+
+
+def dead_attr(message: str, config: _merge.Config | None = None) -> bool:
+    """True for an attribute-not-allowed failure whose (element, attribute) pair
+    appears NOWHERE in vanilla+DLC — unknown to the schema AND absent from the
+    engine's own content, so the "schema lags the engine" excuse cannot apply.
+    Measured 2026-08-02: 8 findings move (3 `category/@matchextension` — a real
+    attribute on the wrong element — and 5 `element/@forkmaterial`, invented by
+    VRO and read by nothing).
+    """
+    pair = dead_attr_pair(message)
+    if pair is None:
+        return False
+    return not vanilla_pair_exists(pair[0], pair[1], config)
 
 
 def validate_mod(mod_dir: Path, config: _merge.Config | None = None):

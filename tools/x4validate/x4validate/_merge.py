@@ -151,6 +151,14 @@ class MergeResult:
     tree: etree._Element | None
     sources: list[str] = field(default_factory=list)  # which overlays contributed
     base_found: bool = False
+    # Did the base come from the GAME (reference/ or a DLC layer), as opposed to from
+    # another mod? `base_found` deliberately cannot answer that: it degrades to
+    # "somebody supplied a tree", so under Tier B an installed mod's full file makes it
+    # True and a bare-path cross-mod patch — which the engine never loads at all — looks
+    # perfectly well-founded. Keeping the distinction here rather than recomputing it in
+    # callers keeps ONE definition of "the game has this file", including the synthetic
+    # <language> root for t/*.xml (see build_effective).
+    base_from_game: bool = False
     # Work NOT done: overlays that could not be parsed and were left out of the tree.
     # Without this channel a malformed overlay is indistinguishable from an absent
     # one, and the resulting tree looks complete when it is not.
@@ -532,7 +540,12 @@ def _build_owned(owner_name: str, rel: str, vpath: str,
             recorder.file_chain.append(Origin(odir.name, mode))
         sources.append(f"{odir.name}:{mode}")
 
+    # A nested patch's base legitimately comes from another MOD, so "from the game"
+    # is only true for a packed-DLC owner. No caller keys the inert-bare-path check
+    # off this branch (it requires a non-nested path), but leaving the field False
+    # for a DLC owner would be a lie waiting for the next caller.
     return MergeResult(tree=tree, sources=sources, base_found=tree is not None,
+                       base_from_game=owner_is_dlc and tree is not None,
                        skipped=skipped)
 
 
@@ -554,7 +567,8 @@ def build_effective(
 
     # DLC, then the Tier-B installed set (load order), then any explicit extras
     # (e.g. the mod under test) last.
-    overlay_dirs = config.dlc_dirs() + list(config.overlays) + list(extra_overlays or [])
+    dlc_layers = config.dlc_dirs()
+    overlay_dirs = dlc_layers + list(config.overlays) + list(extra_overlays or [])
 
     # Cross-mod nesting: a file at  <mymod>/extensions/<target>/<rel>  patches
     # <target>'s OWN <rel>. The base therefore lives inside <target>, not in
@@ -570,6 +584,17 @@ def build_effective(
     base_path = config.reference / vpath
     tree: etree._Element | None = None
     base_found = base_path.is_file()
+    # Which layers count as "the game has this file" — see MergeResult.base_from_game.
+    game_dirs = {d.resolve() for d in dlc_layers}
+    # The ENGINE always supplies a language tree at t/*.xml, so a diff there is
+    # well-founded no matter who else ships the path — this keys off the PATH, never
+    # off `tree is None`. Getting that wrong is not theoretical: the first cut set it
+    # after the loop inside the tree-is-None branch, and any mod whose t/ file another
+    # mod also ships (which fills `tree` first) was then reported as an inert
+    # bare-path patch. 33 of the 101 installed mods ship a t/ diff — the single
+    # largest false-positive class this distinction exists to avoid.
+    is_text_file = vpath.startswith("t/") and vpath.endswith(".xml")
+    from_game = base_found or is_text_file
     if base_found:
         tree = parse_file(base_path)
         sources.append("base")
@@ -578,9 +603,25 @@ def build_effective(
         oroot = overlay_root(odir, vpath, skipped)
         if oroot is None:
             continue
+        # The engine only loads a bare-path <diff> when the GAME supplies the file;
+        # over another mod's file it never even opens it (proven from debug.txt's
+        # per-file signature lines — same rel path, owner logged, nested patcher
+        # logged with its op evaluated, bare-path patcher absent). Applying it
+        # anyway put 14 attribute values in the effective tree that the engine
+        # never sees. By this point `from_game` is FINAL for mod overlays:
+        # reference/ and t/ are decided upfront and DLC layers always precede mods
+        # in overlay_dirs, so the refusal is load-order-independent. DLC-shipped
+        # diffs are exempt — the engine trusts its own content, and a DLC diff
+        # with no base is already the diff(no-base!) case.
+        if (oroot.tag == "diff" and not from_game
+                and odir.resolve() not in game_dirs):
+            sources.append(f"{odir.name}:diff(inert)")
+            continue
         tree, mode = apply_overlay(tree, oroot, vpath, odir.name, recorder=recorder)
         if mode != "diff(no-base!)":
             base_found = base_found or mode in {"union", "full"}
+            if mode in {"union", "full"} and odir.resolve() in game_dirs:
+                from_game = True
         if recorder is not None and mode != "full":
             # full-override already appended to file_chain inside apply_overlay
             recorder.file_chain.append(Origin(odir.name, mode))
@@ -590,9 +631,10 @@ def build_effective(
     # — the engine overlays them onto the language tree. A mod's t-diff adds <page>s
     # to /language; synthesize an empty <language> root so /language-targeted ops
     # resolve (page/string collisions are covered separately by check_text).
-    if tree is None and vpath.startswith("t/") and vpath.endswith(".xml"):
+    if tree is None and is_text_file:
         tree = etree.Element("language")
         sources.append("synthetic:language")
 
     return MergeResult(tree=tree, sources=sources,
-                       base_found=base_found or tree is not None, skipped=skipped)
+                       base_found=base_found or tree is not None,
+                       base_from_game=from_game, skipped=skipped)

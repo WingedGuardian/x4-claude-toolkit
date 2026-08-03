@@ -150,3 +150,340 @@ def test_candidate_mode_only_reports_candidate_collisions(tmp_path):
     assert all("cand_mod" in c.mods for c in rep.collisions)
     assert any(set(c.mods) == {"a_mod", "cand_mod"} for c in rep.by_kind("HARD"))
     assert not any("b_mod" in c.mods for c in rep.collisions)
+
+
+# --- cross-mod NESTED patches (audit 2026-08-01, finding F10) ------------------
+#
+# A mod that exists purely to patch ANOTHER mod ships extensions/<target>/<rel>
+# while the target itself ships <rel>. Keyed on the raw vpath those never meet,
+# so x4compat reported "0 shared files examined … no collisions", exit 0 — blind
+# to the most collision-prone construct in X4 modding.
+
+def test_nested_patch_collides_with_its_target(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "target_mod", {"md/Thing.xml": '<mdscript name="Thing"><cues/></mdscript>'})
+    _mod(ext, "zzz_patcher", {"extensions/target_mod/md/thing.xml":
+         '<diff><add sel="//cues"><cue name="Extra"/></add></diff>'})
+    rep = _compat.analyze(ext, config=cfg)
+    assert rep.files_examined >= 1, "the patch and its target must share a file"
+
+
+def test_nested_patch_matches_target_case_insensitively(tmp_path):
+    """The live case differed in BOTH prefix and case: the overlay shipped
+    .../md/morerooms.xml while moreroomsforships ships md/MoreRooms.xml."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "Target_Mod", {"md/MixedCase.xml": '<mdscript name="M"><cues/></mdscript>'})
+    _mod(ext, "zzz_patcher", {"extensions/target_mod/md/mixedcase.xml":
+         '<diff><add sel="//cues"><cue name="Extra"/></add></diff>'})
+    rep = _compat.analyze(ext, config=cfg)
+    assert rep.files_examined >= 1
+
+
+def test_two_nested_patches_on_one_target_still_collide(tmp_path):
+    """The alias must not lose the ordinary patcher-vs-patcher HARD case.
+
+    The owner must be reachable through the config, exactly as it is in a real
+    run: `build_effective` resolves extensions/<owner>/<rel> by finding <owner>
+    among the overlay dirs. Without that the base tree is None and _analyze_vpath
+    reports nothing at all — see the note on that branch.
+    """
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    target = _mod(ext, "target_mod", {"md/Thing.xml":
+                  '<mdscript name="Thing"><cues><cue name="C"/></cues></mdscript>'})
+    for p in ("y_patch", "z_patch"):
+        _mod(ext, p, {"extensions/target_mod/md/thing.xml":
+             '<diff><replace sel="//cue[@name=\'C\']/@name">' + p + '</replace></diff>'})
+    cfg = _merge.replace(cfg, overlays=[target])
+    rep = _compat.analyze(ext, config=cfg)
+    hard = rep.by_kind("HARD")
+    assert hard and hard[0].winner == "z_patch"
+
+
+def test_unrelated_mods_are_not_aliased_together(tmp_path):
+    """Both sides asserted: the alias must not invent shared files."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_mod", {"md/OwnA.xml": "<mdscript name='A'/>"})
+    _mod(ext, "b_mod", {"md/OwnB.xml": "<mdscript name='B'/>"})
+    rep = _compat.analyze(ext, config=cfg)
+    assert rep.files_examined == 0
+
+
+# --- F17: the owner mod must be found without the caller staging it ------------
+
+def test_nested_patch_collides_without_a_manually_staged_owner(tmp_path):
+    """The F17 regression test.
+
+    `test_two_nested_patches_on_one_target_still_collide` above only passes
+    because it hand-stages the owner via `_merge.replace(cfg, overlays=[target])`.
+    A real x4compat run cannot do that: `analyze()` is handed one Config for the
+    whole sweep and the owner differs per vpath. So `_build_owned` never found the
+    owner, the base tree was None, and every mod on the file was dropped by a bare
+    `continue` — measured at 140 of 523 examined files on the live 101-mod install,
+    silently discarding 144 <diff> mods.
+
+    Same fixture, WITHOUT the staging line. It must still find the collision.
+    """
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "target_mod", {"md/Thing.xml":
+         '<mdscript name="Thing"><cues><cue name="C"/></cues></mdscript>'})
+    for p in ("y_patch", "z_patch"):
+        _mod(ext, p, {"extensions/target_mod/md/thing.xml":
+             '<diff><replace sel="//cue[@name=\'C\']/@name">' + p + '</replace></diff>'})
+
+    rep = _compat.analyze(ext, config=cfg)          # <- no overlays= staging
+
+    hard = rep.by_kind("HARD")
+    assert hard, f"nested collision missed; skipped={[s.why for s in rep.skipped]}"
+    assert hard[0].winner == "z_patch"
+    assert not rep.degraded, "a resolvable file must not be reported as degraded"
+
+
+def test_owner_overlay_does_not_apply_the_other_patchers(tmp_path):
+    """The base must stay UNPATCHED, or one mod's <remove> hides another's target.
+
+    y_patch removes the very cue z_patch replaces. Both must still be seen to
+    resolve against the same pristine owner tree and collide; if the fix folded
+    every patcher into the base, z_patch's sel would match nothing and the
+    collision would vanish — a false clean.
+
+    Both ops target the cue ELEMENT deliberately. An earlier draft had z_patch
+    target `.../@name`, which does not collide here — `_canonical` keys an
+    attribute as `<elem path>/@name`, a different string from the element's own
+    path, so an element-vs-its-own-attribute overlap is invisible to the detector.
+    That is a real gap (logged as F18) but a separate one; pulling it into this
+    test would have hidden the thing this test exists to prove.
+    """
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "target_mod", {"md/Thing.xml":
+         '<mdscript name="Thing"><cues><cue name="C"/></cues></mdscript>'})
+    _mod(ext, "y_patch", {"extensions/target_mod/md/thing.xml":
+         '<diff><remove sel="//cue[@name=\'C\']"/></diff>'})
+    _mod(ext, "z_patch", {"extensions/target_mod/md/thing.xml":
+         '<diff><replace sel="//cue[@name=\'C\']"><cue name="zz"/></replace></diff>'})
+
+    rep = _compat.analyze(ext, config=cfg)
+
+    hard = rep.by_kind("HARD")
+    assert hard, "a remove-vs-replace on one node is the canonical HARD case"
+    assert set(hard[0].mods) == {"y_patch", "z_patch"}
+
+
+# --- F17: a file that yields no comparison must SAY so -------------------------
+
+def test_missing_owner_is_a_degraded_skip_not_silence(tmp_path):
+    """No owner installed => no base => no comparison. That must not read as OK."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    for p in ("y_patch", "z_patch"):
+        _mod(ext, p, {"extensions/ghost_mod/md/thing.xml":
+             '<diff><replace sel="//cue[@name=\'C\']/@name">' + p + '</replace></diff>'})
+
+    rep = _compat.analyze(ext, config=cfg)
+
+    assert not rep.collisions
+    assert rep.degraded, "silently contributing nothing is the F4 failure mode"
+    assert "ghost_mod" in rep.degraded[0].why
+    assert "not installed" in rep.degraded[0].why
+
+
+def test_no_base_reason_is_computed_not_guessed(tmp_path):
+    """An owner that ships its own <diff> is a DIFFERENT cause from a missing one.
+
+    A draft of this fix hard-coded "the owning mod is not installed" for every
+    nested path. A wrong reason is worse than none — it is what stops the next
+    person checking (the F1 lesson).
+    """
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "target_mod", {"md/thing.xml":
+         '<diff><replace sel="//x/@y">1</replace></diff>'})   # a patch, not a base
+    _mod(ext, "z_patch", {"extensions/target_mod/md/thing.xml":
+         '<diff><replace sel="//cue/@name">z</replace></diff>'})
+
+    rep = _compat.analyze(ext, config=cfg)
+
+    assert rep.degraded
+    why = rep.degraded[0].why
+    assert "<diff> itself" in why, why
+    assert "not installed" not in why, "target_mod IS installed — do not guess"
+
+
+def test_clean_run_reports_no_skips(tmp_path):
+    """The channel must stay quiet when everything really was compared."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_mod", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ore\']/price/@average">200</replace></diff>'})
+    _mod(ext, "b_mod", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ore\']/price/@average">300</replace></diff>'})
+    rep = _compat.analyze(ext, config=cfg)
+    assert rep.by_kind("HARD")
+    assert rep.skipped == []
+
+
+def test_cli_exits_3_when_degraded_without_hard_collisions(tmp_path, capsys):
+    """Exit-code contract, mirrored from x4validate: 1 findings > 3 degraded > 0."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    for p in ("y_patch", "z_patch"):
+        _mod(ext, p, {"extensions/ghost_mod/md/thing.xml":
+             '<diff><replace sel="//cue/@name">' + p + '</replace></diff>'})
+
+    code = _compat.main(["check", "--all", "--ext-dir", str(ext),
+                         "--reference", str(cfg.reference)])
+
+    assert code == 3, "a run that compared nothing must not exit 0"
+    out = capsys.readouterr().out
+    assert "NOT ANALYSED" in out
+    assert "DEGRADED" in out
+
+
+# --------------------------------------------------------------------------
+# F12 (2026-08-02): registry uniqueness is per-DOCUMENT, and identity is @id.
+# Both engine-confirmed duplicates (WareDB shield_xen_xl_standard_02_mk1,
+# GroupDB yak_destroyer_l) shaped these rules; mod-vs-base duplication was
+# measured (476 tolerated instances incl. VRO/SVE) and deliberately DROPPED.
+# --------------------------------------------------------------------------
+
+def test_added_child_keys_prefer_id_over_name():
+    """A ware's name= is a localized {page,t} TEXT REFERENCE, not identity.
+    Keying by name hid the engine-confirmed shield duplicate and compared
+    unrelated jobs by display name."""
+    from lxml import etree
+    op = etree.fromstring('<add sel="/wares">'
+                          '<ware id="shield_x" name="{20204,1}"/></add>')
+    assert _compat._added_child_keys(op) == ["ware#shield_x"]
+
+
+def test_docwide_duplicate_add_different_anchors_is_union_key(tmp_path):
+    """The shield_xen_xl_standard_02_mk1 shape: two mods add the same ware id
+    anchored at DIFFERENT siblings — same-anchor HARD never compares them, and
+    before 2026-08-02 nothing else did either."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_mod", {"libraries/wares.xml":
+         '<diff><add sel="//ware[@id=\'ore\']" pos="after">'
+         '<ware id="dupware" name="{20204,9}"/></add></diff>'})
+    _mod(ext, "b_mod", {"libraries/wares.xml":
+         '<diff><add sel="//ware[@id=\'ice\']" pos="after">'
+         '<ware id="dupware" name="{20204,9}"/></add></diff>'})
+    rep = _compat.analyze(ext, config=cfg)
+    uk = [c for c in rep.by_kind("UNION-KEY") if c.target == "ware#dupware"]
+    assert len(uk) == 1 and set(uk[0].mods) == {"a_mod", "b_mod"}
+
+
+def test_same_anchor_duplicate_stays_hard_only(tmp_path):
+    """One fact, one finding: a same-anchor duplicate is already HARD, so the
+    document-wide pass must not report it a second time as UNION-KEY."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    body = ('<diff><add sel="/wares"><ware id="dupware"/></add></diff>')
+    _mod(ext, "a_mod", {"libraries/wares.xml": body})
+    _mod(ext, "b_mod", {"libraries/wares.xml": body})
+    rep = _compat.analyze(ext, config=cfg)
+    assert [c for c in rep.by_kind("HARD") if "dupware" in c.detail]
+    assert not [c for c in rep.by_kind("UNION-KEY") if "dupware" in c.target]
+
+
+def test_wildcard_and_guarded_adds_do_not_join_the_docwide_pass(tmp_path):
+    """icon#upgrade_* style wildcard entries are the generic-icon idiom (32 of
+    37 measured document-wide duplicates, zero engine complaints), and an
+    if=-guarded add is a designed conditional."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_mod", {"libraries/wares.xml":
+         '<diff><add sel="/wares"><ware id="upgrade_*"/></add>'
+         '<add sel="//ware[@id=\'ore\']" pos="after" if="not(//ware[@id=\'g\'])">'
+         '<ware id="guarded_ware"/></add></diff>'})
+    _mod(ext, "b_mod", {"libraries/wares.xml":
+         '<diff><add sel="//ware[@id=\'ice\']" pos="after"><ware id="upgrade_*"/></add>'
+         '<add sel="/wares" if="not(//ware[@id=\'g\'])">'
+         '<ware id="guarded_ware"/></add></diff>'})
+    rep = _compat.analyze(ext, config=cfg)
+    assert not [c for c in rep.by_kind("UNION-KEY")
+                if "upgrade" in c.target or "guarded" in c.target]
+
+
+# --------------------------------------------------------------------------
+# F18 (2026-08-02): a later mod replace/removing an ELEMENT wipes an earlier
+# mod's change INSIDE it — _canonical gave the two unrelated ids. Order-aware:
+# 184 measured pair-hits -> 165 real clobbers; the filter correctly cleared
+# ebi_m0_vro, whose ws_ dependency on VRO orders it after the wipe.
+# --------------------------------------------------------------------------
+
+def test_later_element_replace_wiping_earlier_inner_edit_is_subtree(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_mod", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ore\']/price/@average">7</replace></diff>'})
+    _mod(ext, "z_mod", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ore\']">'
+         '<ware id="ore"><price average="1"/></ware></replace></diff>'})
+    rep = _compat.analyze(ext, config=cfg)
+    st = rep.by_kind("SUBTREE")
+    assert len(st) == 1
+    assert st[0].mods == ["a_mod", "z_mod"] and st[0].winner == "z_mod"
+    assert st[0] in rep.hard, "SUBTREE gates hard-ish by user decision"
+    assert "advisory" in st[0].detail, "the load-order caveat must ride every row"
+
+
+def test_element_replace_loading_before_the_inner_edit_is_not_subtree(tmp_path):
+    """A wipe that loads FIRST merely changes what the victim's sel sees —
+    the Tier B sel check covers that; nothing is destroyed."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_mod", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ore\']">'
+         '<ware id="ore"><price average="1"/></ware></replace></diff>'})
+    _mod(ext, "z_mod", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ore\']/price/@average">7</replace></diff>'})
+    rep = _compat.analyze(ext, config=cfg)
+    assert not rep.by_kind("SUBTREE")
+
+
+def test_add_on_the_ancestor_does_not_wipe(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_mod", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ore\']/price/@average">7</replace></diff>'})
+    _mod(ext, "z_mod", {"libraries/wares.xml":
+         '<diff><add sel="//ware[@id=\'ore\']"><production time="1"/></add></diff>'})
+    rep = _compat.analyze(ext, config=cfg)
+    assert not rep.by_kind("SUBTREE")
+
+
+def test_textref_keys_never_join_the_docwide_pass(tmp_path):
+    """A {page,text} key is localized display text (a <production>'s name=),
+    not identity — keying on it matched production stages of UNRELATED wares."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_mod", {"libraries/wares.xml":
+         '<diff><add sel="//ware[@id=\'ore\']"><production name="{20206,601}"/></add></diff>'})
+    _mod(ext, "b_mod", {"libraries/wares.xml":
+         '<diff><add sel="//ware[@id=\'ice\']"><production name="{20206,601}"/></add></diff>'})
+    rep = _compat.analyze(ext, config=cfg)
+    assert not [c for c in rep.by_kind("UNION-KEY") if "20206" in c.target]
+
+
+def test_union_key_row_survives_when_it_names_mods_the_hard_row_missed(tmp_path):
+    """Subset-fold semantics: a same-anchor HARD duplicate between a and b must
+    not swallow the fact that FULL-FILE shipper c also defines the key — the
+    real-world case is icon#upgrade_*, where the full-file shippers are
+    entirely different mods from the same-anchor adders."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    body = '<diff><add sel="/wares"><ware id="dupware"/></add></diff>'
+    _mod(ext, "a_mod", {"libraries/wares.xml": body})
+    _mod(ext, "b_mod", {"libraries/wares.xml": body})
+    _mod(ext, "c_mod", {"libraries/wares.xml":
+         '<wares><ware id="dupware"/></wares>'})   # full union file
+    rep = _compat.analyze(ext, config=cfg)
+    assert [c for c in rep.by_kind("HARD") if "dupware" in c.detail]
+    uk = [c for c in rep.by_kind("UNION-KEY") if c.target == "ware#dupware"]
+    assert len(uk) == 1 and "c_mod" in uk[0].mods

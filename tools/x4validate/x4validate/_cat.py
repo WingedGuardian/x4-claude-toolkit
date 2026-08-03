@@ -16,10 +16,12 @@ must read its catalog directly. The format is simple and community-documented:
   ``subst_NN.cat`` (full-file base-game substitutions). Both are read and resolve by
   virtual path; later catalogs override earlier ones for the same path.
 - ``*_sig.cat`` are signatures — skipped.
-- Version/diff catalogs (``ext_vNNN.cat``, ``ext_NN_diff_vNNN.cat``) are a base-game
-  DLC construct (e.g. ego_dlc_ventures) resolved at unpack time into ``reference\``;
-  they do not appear in mods. If ever encountered here they are skipped with a
-  warning rather than silently mis-applied.
+- Version/diff catalogs (``ext_vNNN.cat``, ``ext_NN_diff_vNNN.cat``) load ONLY when
+  the game version equals NNN exactly (Egosoft workshop guide; engine-proven
+  2026-08-02 via two independent debug.txt fingerprints). Mods DO ship them — a
+  stale one is dead weight the engine ignores too, so skipping matches the engine
+  for every non-matching version. A cat matching the CURRENT game version would be
+  live; those are still skipped here, with a warning, until support is built.
 
 This is an independent implementation from the documented format; cross-checked for
 correctness against Egosoft's XRCatTool and meethune/x4cat (MIT) as format references.
@@ -94,8 +96,14 @@ def _iter_mod_cats(mod_dir: Path) -> list[Path]:
         if not p.is_file() or p.name.lower().endswith("_sig.cat"):
             continue
         if _VERSION_CAT_RE.match(p.name):
+            # Name the OWNER. Two different mods each ship an ext_v800.cat, so
+            # without the folder the two legitimate warnings are indistinguishable
+            # from one emitted twice — which is exactly how it was misread.
             logger.warning(
-                "Skipping version/diff catalog %s (unsupported outside base-game DLC)", p.name
+                "Skipping version/diff catalog %s in '%s' (loads only when the game "
+                "version matches its vNNN exactly; a non-matching one is ignored by "
+                "the engine too)",
+                p.name, mod_dir.name
             )
             continue
         m = _PLAIN_CAT_RE.match(p.name)

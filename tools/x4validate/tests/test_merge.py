@@ -205,3 +205,109 @@ def test_plain_add_still_appends_children():
         "<r><a/></r>", '<diff><add sel="//a"><b/></add></diff>')
     assert [o.ok for o in ops] == [True]
     assert tree.find("a/b") is not None
+
+
+# --------------------------------------------------------------------------
+# F19 phase 2: the engine only loads a bare-path <diff> when the GAME supplies
+# the file — over another mod's file it never opens it. build_effective must
+# refuse such a diff (sources records ':diff(inert)') or the effective tree
+# carries values the engine never sees (measured: 14 lied attribute values
+# before this landed). Full non-diff files keep overriding cross-mod — the
+# engine's VFS honours those (cpsdo_vro clobbering cpsdo_zb_modpack, live).
+# --------------------------------------------------------------------------
+
+
+def _f19p2_world(tmp_path):
+    """A reference tree with one real base file, plus a supplier mod that owns
+    an asset file the base game does not have."""
+    ref = tmp_path / "reference"
+    _write(ref / "libraries/wares.xml", '<wares><ware id="ore"/></wares>')
+    supplier = tmp_path / "supplier_mod"
+    _write(supplier / "assets/units/size_s/macros/ship_x_macro.xml",
+           '<macros><macro name="ship_x"><properties hull="100"/></macro></macros>')
+    return _merge.Config(reference=ref), supplier
+
+
+def test_bare_diff_over_mod_only_file_is_refused(tmp_path):
+    from x4validate._provenance import Recorder
+    cfg, supplier = _f19p2_world(tmp_path)
+    patcher = tmp_path / "patcher_mod"
+    _write(patcher / "assets/units/size_s/macros/ship_x_macro.xml",
+           '<diff><replace sel="//properties/@hull">9999</replace></diff>')
+
+    rec = Recorder()
+    res = _merge.build_effective("assets/units/size_s/macros/ship_x_macro.xml", cfg,
+                                 extra_overlays=[supplier, patcher], recorder=rec)
+    # Supplier's file, UNMODIFIED — the engine never opens the patcher's diff.
+    assert res.tree.xpath("//properties/@hull") == ["100"]
+    assert "patcher_mod:diff(inert)" in res.sources
+    assert not res.base_from_game
+    # No provenance entry for a file that contributed nothing.
+    assert all(o.source != "patcher_mod" for o in rec.file_chain)
+
+
+def test_bare_diff_over_reference_base_still_applies(tmp_path):
+    cfg, supplier = _f19p2_world(tmp_path)
+    patcher = tmp_path / "patcher_mod"
+    _write(patcher / "libraries/wares.xml",
+           '<diff><add sel="//wares"><ware id="newware"/></add></diff>')
+    res = _merge.build_effective("libraries/wares.xml", cfg,
+                                 extra_overlays=[supplier, patcher])
+    assert res.tree.xpath("//ware[@id='newware']")
+    assert "patcher_mod:diff" in res.sources
+
+
+def test_bare_diff_over_dlc_supplied_base_still_applies(tmp_path):
+    # reference/ lacks the file; a DLC layer supplies it -> from_game via the loop.
+    cfg, supplier = _f19p2_world(tmp_path)
+    _write(cfg.reference / "extensions/ego_dlc_x/assets/props/y/macros/gun_macro.xml",
+           '<macros><macro name="gun"><properties damage="5"/></macro></macros>')
+    patcher = tmp_path / "patcher_mod"
+    _write(patcher / "assets/props/y/macros/gun_macro.xml",
+           '<diff><replace sel="//properties/@damage">7</replace></diff>')
+    res = _merge.build_effective("assets/props/y/macros/gun_macro.xml", cfg,
+                                 extra_overlays=[patcher])
+    assert res.tree.xpath("//properties/@damage") == ["7"]
+    assert res.base_from_game
+
+
+def test_t_diff_with_only_mod_suppliers_still_applies(tmp_path):
+    # The 33-file class, phase-2 edition: the ENGINE supplies the language tree,
+    # so a t/ diff is never inert no matter who else ships the path.
+    cfg, supplier = _f19p2_world(tmp_path)
+    _write(supplier / "t/0001.xml", '<language id="44"><page id="1"/></language>')
+    patcher = tmp_path / "patcher_mod"
+    _write(patcher / "t/0001.xml",
+           '<diff><add sel="/language"><page id="99"/></add></diff>')
+    res = _merge.build_effective("t/0001.xml", cfg,
+                                 extra_overlays=[supplier, patcher])
+    assert res.tree.xpath("//page[@id='99']")
+    assert "patcher_mod:diff" in res.sources
+
+
+def test_diff_mod_loading_before_supplier_is_still_refused(tmp_path):
+    # Order-independence: the engine's decision does not depend on load order
+    # (the file is not base-game content, full stop), and neither may ours —
+    # from_game is final before ANY mod overlay is processed.
+    cfg, supplier = _f19p2_world(tmp_path)
+    patcher = tmp_path / "patcher_mod"
+    _write(patcher / "assets/units/size_s/macros/ship_x_macro.xml",
+           '<diff><replace sel="//properties/@hull">9999</replace></diff>')
+    res = _merge.build_effective("assets/units/size_s/macros/ship_x_macro.xml", cfg,
+                                 extra_overlays=[patcher, supplier])  # patcher FIRST
+    assert res.tree.xpath("//properties/@hull") == ["100"]
+    assert "patcher_mod:diff(inert)" in res.sources
+
+
+def test_mod_full_file_over_mod_only_base_still_overrides(tmp_path):
+    # The cpsdo_vro idiom: a full (non-diff) file at a bare path DOES override
+    # another mod's file — the engine's VFS chain honours it. Refusing diffs
+    # must not leak into refusing full files.
+    cfg, supplier = _f19p2_world(tmp_path)
+    clobberer = tmp_path / "clobber_mod"
+    _write(clobberer / "assets/units/size_s/macros/ship_x_macro.xml",
+           '<macros><macro name="ship_x"><properties hull="777"/></macro></macros>')
+    res = _merge.build_effective("assets/units/size_s/macros/ship_x_macro.xml", cfg,
+                                 extra_overlays=[supplier, clobberer])
+    assert res.tree.xpath("//properties/@hull") == ["777"]
+    assert "clobber_mod:full" in res.sources

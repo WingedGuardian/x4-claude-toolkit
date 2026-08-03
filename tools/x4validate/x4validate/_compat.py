@@ -21,6 +21,8 @@ declared ``content.xml`` dependencies forced earlier. That order is community-re
 
 from __future__ import annotations
 
+import re
+
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +30,9 @@ from pathlib import Path
 from lxml import etree
 
 from x4validate import _cat, _merge, _registry, _xpath, _input
+
+#: `{page,text}` localized reference - display text, never a registry identity.
+_TEXTREF_KEY = re.compile(r"#\{\d+,\s*\d+\}$")
 
 UNION_DIRS = ("libraries/", "index/", "t/")
 _OPS = ("add", "replace", "remove")
@@ -47,6 +52,20 @@ class Collision:
 
 
 @dataclass
+class Skipped:
+    """A file x4compat could NOT analyse. Mirrors `_check.Skipped`'s contract.
+
+    Defined here rather than imported because `_check` imports `_compat`, so the
+    dependency only runs one way. Keep the two in step: *degraded* means a whole
+    file contributed ZERO collisions, so a clean report is not evidence of
+    compatibility and the CLI exits 3.
+    """
+    what: str       # the vpath / input that could not be analysed
+    why: str        # the concrete reason
+    degraded: bool = False
+
+
+@dataclass
 class CompatReport:
     collisions: list[Collision] = field(default_factory=list)
     mods_scanned: int = 0
@@ -57,13 +76,30 @@ class CompatReport:
     #: For a conflict detector, silently contributing nothing is the worst
     #: failure mode there is: it renders as "these mods do not collide".
     unresolvable: list[str] = field(default_factory=list)
+    #: Files that produced no comparison at all. Until 2026-08-01 `_analyze_vpath`
+    #: simply `continue`d past every mod when the base tree could not be built,
+    #: so 140 of 523 examined files contributed zero collisions and rendered
+    #: identically to "analysed, no conflicts". Same failure family as F4.
+    skipped: list[Skipped] = field(default_factory=list)
 
     def by_kind(self, kind: str) -> list[Collision]:
         return [c for c in self.collisions if c.kind == kind]
 
     @property
     def hard(self) -> list[Collision]:
-        return self.by_kind("HARD") + self.by_kind("FULL-OVERRIDE")
+        # SUBTREE counts as hard-ish by user decision (2026-08-02): a later mod
+        # provably wiping an earlier mod's applied change gates, with the
+        # load-order-is-convention caveat carried in every row's detail text.
+        return (self.by_kind("HARD") + self.by_kind("FULL-OVERRIDE")
+                + self.by_kind("SUBTREE"))
+
+    @property
+    def degraded(self) -> list[Skipped]:
+        """Skips that cost a whole file — the clean parts prove nothing about them."""
+        return [s for s in self.skipped if s.degraded]
+
+    def skip(self, what: str, why: str, degraded: bool = False) -> None:
+        self.skipped.append(Skipped(what, why, degraded))
 
 
 # --- mod discovery + load order ----------------------------------------------
@@ -177,11 +213,20 @@ def _resolve_op_targets(tree: etree._Element, sel: str) -> list[str] | None:
 
 
 def _added_child_keys(op: etree._Element) -> list[str]:
-    """@name/@id of an <add>'s child elements (for duplicate-add detection)."""
+    """@id/@name of an <add>'s child elements (for duplicate-add detection).
+
+    ID FIRST, matching `_child_keys` — this was `name or id` until 2026-08-02,
+    which is the wrong identity for the two biggest registries: a ware's or
+    job's `name=` is a localized `{page,t}` TEXT REFERENCE, not its key. The
+    measured consequence of the mismatch: the engine-confirmed duplicate
+    `ware#shield_xen_xl_standard_02_mk1` (`WareDB::Import(): Duplicate
+    definition`, two log runs) was invisible, because the diff-add side keyed it
+    `ware#{20204,...}` while the union side keyed it `ware#<id>` — and jobs
+    compared by display name, which collides across UNRELATED jobs."""
     keys = []
     for child in op:
         if isinstance(child.tag, str):
-            k = child.get("name") or child.get("id")
+            k = child.get("id") or child.get("name")
             if k:
                 keys.append(f"{child.tag}#{k}")
     return keys
@@ -201,6 +246,63 @@ def _child_keys(root: etree._Element) -> set[str]:
 
 # --- analysis -----------------------------------------------------------------
 
+def _owner_aware_config(vpath: str, folder_to_path: dict[str, Path],
+                        config: _merge.Config) -> _merge.Config:
+    """Add the OWNER mod to *config*.overlays when *vpath* is a cross-mod patch.
+
+    For `extensions/<owner>/<rel>` the base is `<owner>`'s own `<rel>` — it is not
+    in `reference/`. `_merge._build_owned` finds the owner by scanning
+    `dlc_dirs() + config.overlays`, so with the bare `Config()` x4compat used to
+    pass, the owner was NEVER in that list: `owner_dir` came back None, the tree
+    came back None, and `_analyze_vpath` dropped every mod on the file.
+
+    Measured before this fix: **140 of 523 examined files** produced no comparison,
+    silently discarding 144 `<diff>` mods across 10 mods — i.e. x4compat could not
+    analyse a single cross-mod nested patch, the construct its own module docstring
+    calls the most collision-prone in X4 modding. F10 (wave 2) made those files
+    visible; they all landed in the drop.
+
+    Only the owner is added, never the other patchers: every mod's `sel=` must
+    resolve against the same UNPATCHED base, exactly as the non-nested path does
+    (base+DLC, no mods). Folding the patchers in would let one mod's `<remove>`
+    hide the very node another mod collides on.
+    """
+    nested = _merge._nested_target(vpath, config.packed_dlc_names())
+    if nested is None:
+        return config
+    owner = nested[0].lower()
+    owner_dir = next((p for f, p in folder_to_path.items() if f.lower() == owner), None)
+    if owner_dir is None or owner_dir in tuple(config.overlays):
+        return config
+    return _merge.replace(config, overlays=tuple(config.overlays) + (owner_dir,))
+
+
+def _no_base_reason(vpath: str, folder_to_path: dict[str, Path],
+                    config: _merge.Config) -> str:
+    """Say WHY no base tree exists, computed — never guessed.
+
+    An earlier draft of this message asserted "the owning mod is not installed"
+    for every nested path. That is only one of three causes, and stating an
+    unverified one is worse than stating none: a wrong reason is what stops the
+    next person checking (the F1 lesson).
+    """
+    nested = _merge._nested_target(vpath, config.packed_dlc_names())
+    if nested is None:
+        return f"no file at {vpath} in the base+DLC reference tree"
+    owner, rel = nested
+    owner_dir = next((p for f, p in folder_to_path.items() if f.lower() == owner.lower()),
+                     None)
+    if owner_dir is None:
+        return f"the owning mod '{owner}' is not installed"
+    oroot = _merge.overlay_root(owner_dir, rel)
+    if oroot is None:
+        return f"'{owner}' does not ship {rel}, or it could not be parsed"
+    if oroot.tag == "diff":
+        return (f"'{owner}' ships {rel} as a <diff> itself, so it is a patch rather "
+                "than a base")
+    return f"'{owner}' supplies {rel} but the merge produced no tree"
+
+
 def _analyze_vpath(
     vpath: str,
     mod_folders: list[str],
@@ -208,33 +310,70 @@ def _analyze_vpath(
     rank: dict[str, int],
     config: _merge.Config,
     unresolvable: list[str] | None = None,
+    per_mod_vpath: dict[str, str] | None = None,
+    report: CompatReport | None = None,
 ) -> list[Collision]:
     """Classify collisions among mods touching a single virtual path.
 
     *unresolvable* accumulates ops whose sel= could not be evaluated — they
     contribute no targets, so without this channel they read as "no collision".
+
+    *per_mod_vpath* gives each mod's OWN path to the same effective file, which
+    differ for a cross-mod nested patch: the overlay ships
+    `extensions/<target>/<rel>` while the target itself ships `<rel>`. Reading
+    every mod at one shared path missed that collision entirely — and it is the
+    most collision-prone construct in X4 modding, one mod deliberately
+    overwriting another's file. Defaults to *vpath* for every mod.
+
+    *report* receives the files that could not be analysed at all.
     """
+    config = _owner_aware_config(vpath, folder_to_path, config)
     base_tree = _merge.build_effective(vpath, config).tree
     is_union = vpath.lower().startswith(UNION_DIRS)
+    at = per_mod_vpath or {}
 
     # Per mod: resolved diff-target ids (tag -> ids), union keys, and full-override flag.
     diff_targets: dict[str, dict[str, list[str]]] = {}   # folder -> {node_id: [tags]}
     add_child_keys: dict[str, dict[str, list[str]]] = {}  # folder -> {parent_id: [childkeys]}
     union_keys: dict[str, set[str]] = {}
+    diff_add_doc_keys: dict[str, set[str]] = {}  # folder -> doc-wide added keys (F12)
     overriders: list[str] = []
+    no_base_reported: set[str] = set()  # one skip per mod, not one per op
 
     for folder in sorted(mod_folders, key=lambda f: rank[f]):
-        root = _merge.overlay_root(folder_to_path[folder], vpath)
+        mod_vpath = at.get(folder, vpath)
+        root = _merge.overlay_root(folder_to_path[folder], mod_vpath)
         if root is None:
+            if report is not None:
+                report.skip(
+                    f"{folder} at {mod_vpath}",
+                    "the mod lists this file but it could not be read or parsed, so "
+                    "this mod took no part in the comparison")
             continue
         if root.tag == "diff":
             if base_tree is None:
+                if report is not None and folder not in no_base_reported:
+                    no_base_reported.add(folder)
+                    report.skip(
+                        vpath,
+                        f"{folder} ships a <diff> here but no base tree could be built "
+                        f"({_no_base_reason(vpath, folder_to_path, config)}), so its ops "
+                        "could not be resolved to nodes",
+                        degraded=True)
                 continue
             node_map: dict[str, list[str]] = defaultdict(list)
             child_map: dict[str, list[str]] = defaultdict(list)
+            doc_keys: set[str] = set()
             for op in root:
                 if not isinstance(op.tag, str) or op.tag not in _OPS:
                     continue
+                # Document-wide registry keys (F12): the engine's uniqueness is
+                # per-DOCUMENT (WareDB/GroupDB import), but the same-anchor check
+                # below only compares adds under one parent cid — two mods adding
+                # the same ware anchored at DIFFERENT siblings never met. Guarded
+                # adds are designed conditionals and contribute nothing.
+                if op.tag == "add" and not op.get("if"):
+                    doc_keys.update(_added_child_keys(op))
                 sel = op.get("sel", "")
                 # xpath resolution is read-only; resolve against the shared base tree
                 # (no copy) so positional node ids are comparable across mods.
@@ -253,12 +392,33 @@ def _analyze_vpath(
                 diff_targets[folder] = dict(node_map)
             if child_map:
                 add_child_keys[folder] = dict(child_map)
+            # Diff-adds join the registry-key comparison for union files. t/ is
+            # check_text's domain; wildcard keys (icon#upgrade_*, icon#ship_*)
+            # are the generic-icon idiom — 32 of 37 measured document-wide
+            # duplicates, none engine-complained — so they are excluded HERE
+            # (the new mechanism) while full-file-vs-full-file keys keep their
+            # existing behavior unchanged.
+            if (is_union and doc_keys
+                    and not vpath.lower().lstrip("/").startswith("t/")):
+                # Two key classes are NOT identities and must not join:
+                # wildcards (icon#upgrade_* — the generic-icon idiom) and
+                # {page,text} references (a <production>'s name= is localized
+                # display text; keying on it matched production stages of
+                # UNRELATED wares in the measurement).
+                diff_add_doc_keys[folder] = {
+                    k for k in doc_keys
+                    if "*" not in k and not _TEXTREF_KEY.search(k)}
         elif is_union and base_tree is not None and root.tag == base_tree.tag:
             union_keys[folder] = _child_keys(root)
         elif vpath.lower() not in _PER_EXTENSION_FILES:
             overriders.append(folder)
 
     collisions: list[Collision] = []
+    # Keys pass 1 already reported as HARD duplicates, with the mods of that
+    # row: a union-key row is folded only when it names NO mod the hard row
+    # missed (icons: the full-file shippers of icon#upgrade_* are different
+    # mods from the same-anchor adders — folding them would lose information).
+    hard_dup_keys: dict[str, set[str]] = {}
 
     def winner(fs: list[str]) -> str:
         return max(fs, key=lambda f: rank[f])
@@ -277,6 +437,7 @@ def _analyze_vpath(
             # Same-parent adds: SOFT, unless two mods add a child with the same key.
             dup = _dup_add_key(cid, fs, add_child_keys)
             if dup:
+                hard_dup_keys.setdefault(dup, set()).update(fs)
                 collisions.append(Collision(
                     vpath, "HARD", cid, fs, winner(fs),
                     f"both add {dup} under the same parent (duplicate)"))
@@ -290,13 +451,21 @@ def _analyze_vpath(
                 vpath, "HARD", cid, fs, winner(fs),
                 f"{ops_desc} — '{winner(fs)}' loads last and wins"))
 
-    # 2. union-key collisions (two mods define the same registry entry)
+    # 2. union-key collisions (two mods define the same registry entry).
+    # Since 2026-08-02 diff-ADDED keys participate too (document-wide, any
+    # anchor): registry uniqueness is per-document, and the engine-confirmed
+    # `ware#shield_xen_xl_standard_02_mk1` duplicate was an add-vs-add pair
+    # anchored at different siblings — invisible to both the same-anchor HARD
+    # check and the full-file-only comparison here. Keys pass 1 already
+    # reported as HARD duplicates are skipped (one finding per fact).
     key_to_mods: dict[str, list[str]] = defaultdict(list)
-    for folder, keys in union_keys.items():
-        for k in keys:
-            key_to_mods[k].append(folder)
+    for source in (union_keys, diff_add_doc_keys):
+        for folder, keys in source.items():
+            for k in keys:
+                if folder not in key_to_mods[k]:
+                    key_to_mods[k].append(folder)
     for k, fs_ in key_to_mods.items():
-        if len(fs_) < 2:
+        if len(fs_) < 2 or set(fs_) <= hard_dup_keys.get(k, set()):
             continue
         fs = sorted(fs_, key=lambda f: rank[f])
         collisions.append(Collision(
@@ -309,6 +478,33 @@ def _analyze_vpath(
         collisions.append(Collision(
             vpath, "FULL-OVERRIDE", vpath, fs, winner(fs),
             f"{len(fs)} mods ship a full non-diff file here — '{winner(fs)}' clobbers the rest"))
+
+    # 4. subtree clobbers (F18): _canonical gives an element and its own
+    # attribute unrelated ids, so a mod replacing an ELEMENT and a mod patching
+    # INSIDE that element never registered as colliding — though the later
+    # replace plainly wipes the earlier edit. Order-aware by construction: only
+    # a wipe that loads AFTER the victim destroys an applied change (a wipe
+    # that loads first merely changes what the victim's sel sees, which the
+    # Tier B sel check already covers). Measured 2026-08-02 on the 101-mod
+    # install: 184 raw pair-hits → 165 real clobbers, and the order filter
+    # proved itself by correctly clearing ebi_m0_vro (its ws_ dependency on VRO
+    # resolves, so it loads after the wipe it would otherwise be a victim of).
+    for a, amap in diff_targets.items():
+        wipes = [cid for cid, tags in amap.items()
+                 if ("replace" in tags or "remove" in tags) and "/@" not in cid]
+        if not wipes:
+            continue
+        for b, bmap in diff_targets.items():
+            if b == a or rank[a] < rank[b]:
+                continue
+            hits = [(w, cb) for w in wipes for cb in bmap if cb.startswith(w + "/")]
+            if hits:
+                w0, cb0 = hits[0]
+                collisions.append(Collision(
+                    vpath, "SUBTREE", w0, [b, a], a,
+                    f"'{a}' loads after '{b}' and replace/removes {w0}, wiping "
+                    f"{len(hits)} of '{b}'s change(s) inside it (e.g. {cb0}) — "
+                    "load order is community convention, so this is advisory"))
 
     return collisions
 
@@ -351,11 +547,21 @@ def analyze(
     order = compute_load_order(mods)
     rank = {f: i for i, f in enumerate(order)}
 
-    # Invert: lowercased vpath -> {folder: real_vpath}
+    # Invert: lowercased vpath -> {folder: that mod's OWN real vpath}
+    #
+    # Each owned file is ALSO registered under extensions/<owner>/<rel>, the form
+    # a cross-mod nested patch uses to target it. Without the alias the two never
+    # share a key — zzz_moona_morerooms_fixes ships
+    # extensions/moreroomsforships/md/morerooms.xml while moreroomsforships ships
+    # md/MoreRooms.xml — so a mod that exists purely to patch another reported
+    # "0 shared files examined … no collisions" and exit 0.
     inv: dict[str, dict[str, str]] = defaultdict(dict)
     for m in mods:
+        folder = m["folder"]
         for low, real in _mod_xml_paths(Path(m["path"])).items():
-            inv[low][m["folder"]] = real
+            inv[low][folder] = real
+            if not low.startswith("extensions/"):
+                inv[f"extensions/{folder.lower()}/{low}"][folder] = real
 
     report = CompatReport(mods_scanned=len(mods), load_order=order)
     for low, per_mod in inv.items():
@@ -364,9 +570,14 @@ def analyze(
         if cand_folder is not None and cand_folder not in per_mod:
             continue  # candidate-focused: only files the candidate also touches
         report.files_examined += 1
-        real_vpath = next(iter(per_mod.values()))
+        # The canonical path is the NESTED form when one exists: build_effective
+        # understands extensions/<owner>/<rel> and resolves it to the owner's own
+        # file, which is the base every op here is really patching.
+        real_vpath = next((v for v in per_mod.values() if v.lower().startswith("extensions/")),
+                          next(iter(per_mod.values())))
         found = _analyze_vpath(real_vpath, list(per_mod), folder_to_path, rank, config,
-                               report.unresolvable)
+                               report.unresolvable, per_mod_vpath=per_mod,
+                               report=report)
         if cand_folder is not None:
             found = [c for c in found if cand_folder in c.mods]
         report.collisions.extend(found)
@@ -375,7 +586,7 @@ def analyze(
 
 # --- CLI ----------------------------------------------------------------------
 
-_KIND_ORDER = ["HARD", "FULL-OVERRIDE", "UNION-KEY", "SOFT"]
+_KIND_ORDER = ["HARD", "FULL-OVERRIDE", "SUBTREE", "UNION-KEY", "SOFT"]
 
 
 def render(report: CompatReport, show_soft: bool = False) -> str:
@@ -405,9 +616,18 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
         lines.append("")
     hard = report.hard
     if not hard and not shown_any:
-        lines.append("No HARD / UNION-KEY / FULL-OVERRIDE collisions found."
+        lines.append("No HARD / FULL-OVERRIDE / SUBTREE / UNION-KEY collisions found."
                      + (" (but see NOT CHECKED below — that clean result is partial)"
-                        if report.unresolvable else ""))
+                        if report.unresolvable or report.skipped else ""))
+    if report.skipped:
+        deg = report.degraded
+        lines.append(f"\n=== NOT ANALYSED  ({len(report.skipped)}, "
+                     f"{len(deg)} cost a whole file) ===")
+        lines.append("  These produced no comparison at all. A collision here would NOT")
+        lines.append("  appear above — this is not the same as 'checked, no conflict'.")
+        for s in report.skipped:
+            lines.append(f"  {'!!' if s.degraded else ' -'} {s.what}")
+            lines.append(f"       {s.why}")
     if report.unresolvable:
         lines.append(f"\n=== NOT CHECKED  ({len(report.unresolvable)}) ===")
         lines.append("  These ops could not be resolved, so they took no part in collision")
@@ -415,8 +635,12 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
         for u in report.unresolvable:
             lines.append(f"  !! {u}")
     lines.append(f"\nSummary: {len(report.hard)} hard-ish "
-                 f"(HARD+FULL-OVERRIDE), {len(report.by_kind('UNION-KEY'))} union-key, "
-                 f"{len(report.by_kind('SOFT'))} soft.")
+                 f"(HARD+FULL-OVERRIDE+SUBTREE), {len(report.by_kind('UNION-KEY'))} union-key, "
+                 f"{len(report.by_kind('SOFT'))} soft, "
+                 f"{len(report.degraded)} file(s) not analysed.")
+    if report.degraded:
+        lines.append("DEGRADED: some files yielded no comparison — see NOT ANALYSED "
+                     "above. Exit 3.")
     return "\n".join(lines)
 
 
@@ -465,10 +689,16 @@ def main(argv: list[str] | None = None) -> int:
             "files_examined": report.files_examined,
             "load_order": report.load_order,
             "collisions": [dataclasses.asdict(c) for c in report.collisions],
+            "skipped": [dataclasses.asdict(s) for s in report.skipped],
+            "degraded": bool(report.degraded),
         }
         print(json.dumps(payload, indent=2))
     else:
         print(render(report, show_soft=args.soft))
 
-    # Non-zero exit when there are real (hard-ish) collisions — usable as a gate.
-    return 1 if report.hard else 0
+    # Same contract as x4validate: 1 = real findings, 3 = a check could not run so a
+    # clean result proves nothing, 0 = clean AND something was actually compared.
+    # Findings outrank degradation — you fix what is known broken first.
+    if report.hard:
+        return 1
+    return 3 if report.degraded else 0

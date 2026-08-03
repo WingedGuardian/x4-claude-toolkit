@@ -28,6 +28,11 @@ def _write_cat(mod_dir, cat_name, members):
 
 def _mod(tmp_path, files: dict[str, str]):
     mod = tmp_path / "mod"
+    mod.mkdir(parents=True, exist_ok=True)
+    # A real extension always has a manifest — X4 discovers mods by it, and
+    # check_readability now gates on its absence. Fixtures that omitted it were
+    # describing a folder the engine would never load.
+    files = {"content.xml": '<content id="mod"/>', **files}
     for rel, text in files.items():
         f = mod / rel
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -39,7 +44,9 @@ def test_unparseable_loose_file_is_recorded_not_dropped(tmp_path):
     mod = _mod(tmp_path, {"md/good.xml": "<mdscript/>", "md/bad.xml": "<mdscript"})
     bad: list = []
     seen = [v for v, _ in _scan.iter_mod_xml(mod, unreadable=bad)]
-    assert seen == ["md/good.xml"]
+    # content.xml is real XML the scanner genuinely yields; the point of this test
+    # is that the good file survives and the bad one is RECORDED, not dropped.
+    assert seen == ["content.xml", "md/good.xml"]
     assert len(bad) == 1 and bad[0].vpath == "md/bad.xml" and not bad[0].packed
 
 

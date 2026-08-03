@@ -16,7 +16,11 @@ from x4validate import _check, _merge
 DEV = _env.mods_dir()
 EXT = _env.extensions()
 
-mods = [p for p in sorted(DEV.iterdir()) if p.is_dir() and p.name != "_registry"]
+# Leading "_" marks a workspace folder, not a mod (_registry, _reports). They have
+# no content.xml, so since 2026-08-01 they are correctly reported as degraded —
+# which is the right verdict about the wrong input. Excluding the whole prefix
+# rather than naming folders one at a time, which is how _reports slipped in.
+mods = [p for p in sorted(DEV.iterdir()) if p.is_dir() and not p.name.startswith("_")]
 mods += [p for p in (EXT / n for n in sys.argv[1:]) if p.is_dir()]
 
 for mod in mods:

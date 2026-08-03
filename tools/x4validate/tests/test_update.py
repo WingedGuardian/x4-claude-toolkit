@@ -64,10 +64,15 @@ def test_check_xsd_categorizes_required_vs_strict(tmp_path):
     rep = _check.Report()
     _check.check_xsd(tmp_path / "mod", cfg, rep)
     errs = {f.vpath for f in rep.findings if f.severity == "error" and f.category == "xsd"}
-    advs = {f.vpath for f in rep.findings if f.severity == "info" and f.category == "xsd-strict"}
+    advs = {f.vpath for f in rep.findings if f.severity == "info"}
     assert any("req.xml" in e for e in errs)     # required-attr breakage gates
     assert any("elem.xml" in e for e in errs)    # removed/unknown element gates
-    assert any("extra.xml" in a for a in advs)   # attribute-not-allowed is advisory
+    # F7 (2026-08-02): attribute-not-allowed is STILL advisory on the MD side, but
+    # a pair vanilla never uses now carries its own category, `xsd-unknown-attr`
+    # (here the tmp reference uses (root, extra) nowhere). Severity unchanged —
+    # that is the ATD-protection asymmetry pinned in test_effective_schema.
+    assert any("extra.xml" in f.vpath for f in rep.findings
+               if f.severity == "info" and f.category == "xsd-unknown-attr")
     assert not any("extra.xml" in e for e in errs)
 
 

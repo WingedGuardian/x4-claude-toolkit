@@ -93,10 +93,15 @@ def find_dangling(
     for wid, line in ware_refs(introduced_tree):
         if wid not in ware_def_set:
             out.append(DanglingRef("ware", wid, where, line))
-    for comp in introduced_tree.xpath("//component[@ref]"):
-        ref = comp.get("ref")
+    # <container ref> was unchecked until 2026-08-01 — a new ware pointing at a
+    # nonexistent pickup macro passed while its ware and text refs were both caught.
+    # Both elements name entries in the SAME index/macros.xml, and in vanilla
+    # libraries/wares.xml they are the only two that carry @ref: 734 component +
+    # 183 container, all 917 of which resolve. So this cannot flood.
+    for el in introduced_tree.xpath("//component[@ref] | //container[@ref]"):
+        ref = el.get("ref")
         if macro_def_set is not None and ref not in macro_def_set:
-            out.append(DanglingRef("macro", ref, where, comp.sourceline or 0))
+            out.append(DanglingRef("macro", ref, where, el.sourceline or 0))
     for el in introduced_tree.iter():
         if not isinstance(el.tag, str):
             continue

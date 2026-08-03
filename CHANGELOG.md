@@ -1,5 +1,61 @@
 # Changelog
 
+## v2.02
+
+**If you use `--tier b` or the schema checks, take this update.** A red-team audit of the whole
+toolkit (19 findings, every one dispositioned with measurements) found two defects that made
+*clean results lie*, plus a class of cross-mod collisions nothing detected. All fixed here.
+Suite 303 → 316, every fix mutation-verified, all four engine gates green (oracle 234/234).
+
+### Fixed — results you could not trust
+
+- **Schema checks looked up XSDs by basename in `libraries/` only.** Every schema whose XSD lives
+  elsewhere (`index/`, `assets/`, cutscenes) was skipped as "not bundled" — all 31 such skips in a
+  102-mod install were false. Schema coverage went 127 → 159 element-attribute pairs; the skips
+  dropped to 1 (honest: a shader XSD the game truly does not ship).
+- **Tier B blessed a cross-mod patch the engine never loads.** A `<diff>` at a BARE mirrored path
+  targeting another MOD's file is never opened by X4 — only the nested
+  `extensions/<owner>/<rel>` form works (engine-proven twice over: the same 7 files were absent
+  from the engine's per-file log at the bare path and present after moving to the nested path,
+  zero rejected ops). Tier B used to report such a mod **0 errors, exit 0**. Now it is an ERROR
+  naming the owning mod and the exact path to move to, and the effective-tree model refuses the
+  dead diff — `x4effective`/`x4stats` no longer show values the engine never sees (14 such lied
+  values in the reference install, now 0). Language files (`t/*.xml`) are exempt: the engine
+  always supplies the language tree.
+- **`x4compat` could not analyze any cross-mod nested patch.** The owner extension was never
+  supplied when building the comparison base, so every `extensions/<owner>/...` diff was silently
+  discarded — 140 of 523 files in the reference install. They are analyzed now.
+
+### New — collisions that were invisible
+
+- **SUBTREE collisions.** A later-loading mod that `replace`s or `remove`s an element wipes every
+  earlier mod's edit inside that subtree. Order-aware (a wipe loading *first* is the other mods'
+  sel-check problem, not a collision), reported as hard-ish with the load-order caveat on every
+  row. The reference install surfaced 153 — dominated by an overhaul wholesale-replacing engine
+  macros another mod had tuned.
+- **Duplicate-id detection now keys by `@id` first and spans whole documents.** A ware's `name=`
+  is a `{page,text}` reference, not an identity — keying name-first hid an engine-confirmed
+  same-id ware collision behind display-text noise, and per-anchor grouping missed same-id adds
+  under different anchors. Mod-vs-BASE re-adds stay benign (measured: an engine-tolerated idiom
+  used 476 times across major overhauls; the engine's own duplicate detector complained only
+  about mod-vs-mod pairs).
+
+### Changed
+
+- **Two advisory classes now gate as errors, on individually-verified evidence:** an enum value
+  neither the XSD floor nor the whole effective tree defines (`schema-enum-undefined`), and an
+  attribute on an element vanilla never pairs it with (`schema-dead-attr` — pair granularity
+  matters: one real attribute on the wrong element was excusable at name level). MD-script
+  unknown attributes stay advisory by design: spawn-time behavior cannot be settled statically,
+  and a working released mod outranks a schema's opinion.
+- **Version catalogs (`ext_vNNN.cat`): the skip is now known-correct.** Researched and
+  engine-proven: X4 loads a version catalog only when the game version matches its `vNNN`
+  *exactly* — a stale one is dead weight the engine ignores too. The skip warning now states the
+  rule instead of guessing.
+- Exit-code contract documented in the README (0 clean / 1 findings / 2 could-not-run /
+  3 degraded), including why "the validator was blindfolded" is deliberately not "your mod is
+  broken".
+
 ## v2.01
 
 **If you installed v2.0, take this update.** v2.0 shipped an installer that wrote one set of

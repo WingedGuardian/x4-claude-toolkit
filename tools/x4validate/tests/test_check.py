@@ -110,3 +110,132 @@ def test_dlc_unpacked_in_reference_still_reports_real_path_mismatch(tmp_path):
     sev, cat, msg = _check._no_base_finding(
         "extensions/ego_dlc_split/libraries/nonexistent.xml", cfg)
     assert sev == "error" and cat == "path"
+
+
+# --------------------------------------------------------------------------
+# F19: a <diff> at a BARE mirrored path over another MOD's file is INERT — the
+# engine only consults reference/ + DLC for that path and never opens the file.
+# Tier B hid this completely: an installed mod's full file satisfies `base_found`,
+# so the tree is non-None and the Tier A error is CURED by installing more mods.
+# Measured on the live 101-mod install before the fix: Tier A 7 errors,
+# Tier B 0 errors exit 0 — a false OK, in the tier used for cross-mod work.
+# Population: 7 true positives in 1 mod, against 33 t/ files that must NOT flag.
+# --------------------------------------------------------------------------
+
+def _f19_world(tmp_path, *, base_file: str | None = None):
+    """reference/ (+ optional base file) and one installed supplier mod.
+
+    `libraries/wares.xml` is NOT decoration: validate() refuses to run against an
+    incomplete reference tree and returns only that error. Without the sentinel these
+    tests would assert "no path finding" against a check that never executed — three
+    of the six failed outright and the t/ one passed VACUOUSLY when this was omitted.
+    """
+    ref = tmp_path / "reference"
+    (ref / "extensions").mkdir(parents=True)
+    _write(ref / "libraries/wares.xml", "<wares/>")
+    if base_file:
+        _write(ref / base_file, "<macros/>")
+    supplier = tmp_path / "supplier_mod"
+    _write(supplier / "content.xml", '<content id="supplier"/>')
+    return ref, supplier
+
+
+def test_bare_path_diff_over_a_mod_only_file_is_an_error(tmp_path):
+    """The 7-file class: names the supplier and the path the file must move to."""
+    ref, supplier = _f19_world(tmp_path)
+    rel = "assets/units/size_s/macros/ship_x_macro.xml"
+    _write(supplier / rel, '<macros><macro name="ship_x"/></macros>')
+    cfg = _merge.Config(reference=ref, overlays=(supplier,))
+
+    mod = tmp_path / "mod"
+    _write(mod / "content.xml", '<content id="mod"/>')
+    _write(mod / rel, '<diff><replace sel="//macro/@name">y</replace></diff>')
+
+    report = _check.validate(mod, cfg)
+    paths = [f for f in report.errors if f.category == "path"]
+    assert len(paths) == 1, [f.message for f in report.errors]
+    assert "supplier_mod" in paths[0].message
+    assert f"extensions/supplier_mod/{rel}" in paths[0].message
+
+
+def test_bare_path_diff_over_a_real_base_file_is_fine(tmp_path):
+    """The ~1,510-vpath majority. Also covers a DLC-supplied base, which reaches
+    base_from_game through the overlay loop rather than the reference/ branch."""
+    rel = "libraries/shipsizes.xml"
+    ref, supplier = _f19_world(tmp_path, base_file=rel)
+    cfg = _merge.Config(reference=ref, overlays=(supplier,))
+    mod = tmp_path / "mod"
+    _write(mod / "content.xml", '<content id="mod"/>')
+    _write(mod / rel, '<diff><add sel="//macros"><macro name="q"/></add></diff>')
+    assert not [f for f in _check.validate(mod, cfg).errors if f.category == "path"]
+
+    # DLC layer supplies it, reference/ does not.
+    dlc_rel = "libraries/dlconly.xml"
+    _write(ref / "extensions/ego_dlc_split" / dlc_rel, "<macros/>")
+    mod2 = tmp_path / "mod2"
+    _write(mod2 / "content.xml", '<content id="mod2"/>')
+    _write(mod2 / dlc_rel, '<diff><add sel="//macros"><macro name="q"/></add></diff>')
+    assert not [f for f in _check.validate(mod2, cfg).errors if f.category == "path"]
+
+
+def test_t_file_diff_with_only_mod_suppliers_is_not_flagged(tmp_path):
+    """The 33 false positives this check had to avoid. t/*.xml has no single base
+    file; build_effective synthesizes a <language> root because the ENGINE supplies
+    one, so a t/ diff is well-founded even when only mods ship that path."""
+    ref, supplier = _f19_world(tmp_path)
+    _write(supplier / "t/0001.xml", '<language id="44"><page id="1"/></language>')
+    cfg = _merge.Config(reference=ref, overlays=(supplier,))
+
+    mod = tmp_path / "mod"
+    _write(mod / "content.xml", '<content id="mod"/>')
+    _write(mod / "t/0001.xml",
+           '<diff><add sel="/language"><page id="99"><t id="1">x</t></page></add></diff>')
+    assert not [f for f in _check.validate(mod, cfg).errors if f.category == "path"]
+
+
+def test_nested_form_is_never_flagged_inert(tmp_path):
+    """The CORRECT idiom must stay silent — it is what the finding tells you to do."""
+    ref, supplier = _f19_world(tmp_path)
+    rel = "assets/units/size_s/macros/ship_x_macro.xml"
+    _write(supplier / rel, '<macros><macro name="ship_x"/></macros>')
+    cfg = _merge.Config(reference=ref, overlays=(supplier,))
+
+    mod = tmp_path / "mod"
+    _write(mod / "content.xml", '<content id="mod"/>')
+    _write(mod / f"extensions/supplier_mod/{rel}",
+           '<diff><replace sel="//macro/@name">y</replace></diff>')
+    assert not [f for f in _check.validate(mod, cfg).errors if f.category == "path"]
+
+
+def test_no_source_anywhere_still_reports_no_base_finding(tmp_path):
+    """No double-report with the existing 16-file 'nobody supplies it' class:
+    that one leaves tree None, so the inert branch is never reached."""
+    ref, supplier = _f19_world(tmp_path)
+    cfg = _merge.Config(reference=ref, overlays=(supplier,))
+    mod = tmp_path / "mod"
+    _write(mod / "content.xml", '<content id="mod"/>')
+    _write(mod / "libraries/nobody_has_this.xml",
+           '<diff><replace sel="//x/@y">1</replace></diff>')
+
+    paths = [f for f in _check.validate(mod, cfg).errors if f.category == "path"]
+    assert len(paths) == 1
+    assert "no base game file" in paths[0].message
+    assert "engine never loads it" not in paths[0].message
+
+
+def test_inert_bare_path_skips_op_checking(tmp_path):
+    """A sel that would FAIL against the supplier's tree must not add a second
+    finding: op verdicts on a file the engine never opens are noise, and a
+    PASSING one would be the false reassurance this whole check exists to kill."""
+    ref, supplier = _f19_world(tmp_path)
+    rel = "assets/units/size_s/macros/ship_x_macro.xml"
+    _write(supplier / rel, '<macros><macro name="ship_x"/></macros>')
+    cfg = _merge.Config(reference=ref, overlays=(supplier,))
+
+    mod = tmp_path / "mod"
+    _write(mod / "content.xml", '<content id="mod"/>')
+    _write(mod / rel, '<diff><replace sel="//nope/@gone">1</replace></diff>')
+
+    report = _check.validate(mod, cfg)
+    assert len([f for f in report.errors if f.category == "path"]) == 1
+    assert not [f for f in report.errors if f.category == "sel"]
