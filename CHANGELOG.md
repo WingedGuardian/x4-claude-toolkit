@@ -40,6 +40,33 @@ Suite 303 → 316, every fix mutation-verified, all four engine gates green (ora
   used 476 times across major overhauls; the engine's own duplicate detector complained only
   about mod-vs-mod pairs).
 
+### Fixed — found by red-teaming this release's own install flow (a v2.01 tradition)
+
+- **The PowerShell installer wrote its config with a UTF-8 BOM** (Windows PowerShell 5.1's
+  `-Encoding UTF8`), which bash reads as a command — so `bin/unpack-reference.sh`, the step that
+  builds `reference/`, exited 127 on line 1 of `x4-paths.env`, and with `-Unpack` the installer
+  still printed "install complete". The Python half tolerated the BOM, so the README's own verify
+  step passed and the break only surfaced later. All installer writes are now BOM-free (and the
+  bash-sourced config is written LF).
+- **`x4modlist` no longer guesses CWD-relative paths.** Unconfigured, it either ingested whatever
+  `content.xml` the working directory happened to hold, or reported "PRIMARY, 0 found" with
+  exit 0 — "you have no mods" as a statement about your modlist instead of the missing setting.
+  Every unresolved location is now a named refusal (exit 2, tells you the setting and points at
+  `x4validate --paths`), the SECONDARY cross-check announces itself when skipped, and ingest
+  prints the roots it scanned so "0 found" is auditable. Pinned by tests including a source-level
+  guard on the fallback pattern itself.
+- **The `global` install method no longer rewrites other people's skills/agents.** The
+  `$CLAUDE_PROJECT_DIR` → `$X4_TOOLKIT` rewrite now touches only the files the installer itself
+  just copied — a pre-existing agent in `~/.claude` that uses that variable on purpose is left
+  alone.
+- Windows Setup now leads with `powershell -ExecutionPolicy Bypass -File install.ps1` (a stock
+  Windows install refuses a bare `.\install.ps1` before it runs anything) · `bin/xrcat` is pinned
+  LF in `.gitattributes` and both OS branches now say "XRCatTool not found — set $XRCATTOOL"
+  instead of a bare exec failure · `scripts/generate-baseline.sh` reads `x4-paths.env`
+  (`X4_GAME`/`X4_PROFILE`) like everything else · the `x4-debug` and `x4-modlist-review` skills
+  now give the configurable paths (and the Linux profile location) instead of hardcoded
+  Windows ones · stale claims fixed (test count, "bundled" uv, "read automatically").
+
 ### Changed
 
 - **Two advisory classes now gate as errors, on individually-verified evidence:** an enum value

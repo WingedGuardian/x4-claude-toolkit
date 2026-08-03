@@ -14,6 +14,10 @@ XRCATTOOL="${XRCATTOOL:-XRCatTool.exe}"
 
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*|Windows*)            # Windows shells: run the exe as-is
+    if [ ! -f "$XRCATTOOL" ] && ! command -v "$XRCATTOOL" >/dev/null 2>&1; then
+      echo "xrcat: XRCatTool not found at: $XRCATTOOL (set \$XRCATTOOL in .claude/x4-paths.env)" >&2
+      exit 1
+    fi
     exec "$XRCATTOOL" "$@"
     ;;
   *)                                        # Linux / macOS: Wine + path translation

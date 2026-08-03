@@ -11,7 +11,7 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import _nexus, _paths, _registry
+from . import _nexus, _registry
 
 NINE_ZERO = date(2026, 6, 10)  # X4 9.00 release
 CHURN_DAYS = 14
@@ -23,7 +23,9 @@ def _now() -> str:
 
 def _dash_path(reg_path) -> Path:
     """WORKLIST.md sits next to whichever registry we're using."""
-    base = reg_path if reg_path else _registry.DEFAULT_REGISTRY
+    base = reg_path if reg_path else _registry.require(
+        _registry.DEFAULT_REGISTRY, "the registry location",
+        "set X4_MODS (or X4_REGISTRY), or pass --registry")
     return Path(base).parent / "WORKLIST.md"
 
 
@@ -185,14 +187,28 @@ def cmd_ingest(args) -> int:
     registry row for any historically-tracked id so nothing is silently dropped;
     (2) the installed-folder scan — PRIMARY, authoritative for installed/enabled/
     version/name/author. Pass 2 always runs last so it wins."""
-    reg_path = Path(args.registry) if args.registry else None
+    reg_path = Path(args.registry) if args.registry else _registry.require(
+        _registry.DEFAULT_REGISTRY, "the registry location",
+        "set X4_MODS (or X4_REGISTRY), or pass --registry")
     reg = _registry.load_registry(reg_path)
 
     added = existing = 0
     if not args.installed_only:
-        content = Path(args.content) if args.content else None
-        ids = _registry.ingest_content_xml(content)
-        added, existing = _registry.merge(reg, ids, enabled_only=not args.all)
+        content = Path(args.content) if args.content else _registry.PROFILE_CONTENT
+        if content is None:
+            # SECONDARY source only — skipping it is fine, skipping it SILENTLY
+            # is not (it looks like the cross-check ran and found nothing).
+            print("note: profile content.xml not configured (X4_PROFILE) — "
+                  "SECONDARY cross-check skipped", file=sys.stderr)
+        else:
+            try:
+                ids = _registry.ingest_content_xml(content)
+            except OSError as exc:
+                print(f"error: cannot read profile content.xml: {exc}", file=sys.stderr)
+                print("       (pass --content, or --installed-only to skip the "
+                      "cross-check)", file=sys.stderr)
+                return 2
+            added, existing = _registry.merge(reg, ids, enabled_only=not args.all)
 
     dirs = [Path(d) for d in args.dirs.split(",")] if args.dirs else None
     if dirs:
@@ -205,6 +221,26 @@ def cmd_ingest(args) -> int:
             print("       (refusing to report an installed-mod count for a path that "
                   "was never scanned)", file=sys.stderr)
             return 2
+    else:
+        roots = _registry.default_installed_dirs()
+        if not roots:
+            print("error: no installed-mod roots configured — the PRIMARY scan has "
+                  "nowhere to look", file=sys.stderr)
+            print("       set X4_GAME (or X4_EXTENSIONS) for the game-root "
+                  "extensions\\ folder, or pass --dirs", file=sys.stderr)
+            print("       (run `x4validate --paths` to see what resolved)",
+                  file=sys.stderr)
+            return 2
+        existing_roots = [d for d in roots if d.is_dir()]
+        if not existing_roots:
+            print("error: none of the configured installed-mod roots exist:",
+                  file=sys.stderr)
+            for d in roots:
+                print(f"       {d}", file=sys.stderr)
+            print("       (refusing to report an installed-mod count for paths that "
+                  "were never scanned)", file=sys.stderr)
+            return 2
+        print("scanning roots: " + ", ".join(str(d) for d in roots))
     dropped: list[str] = []
     installed = _registry.scan_installed(dirs, dropped)
     for d in dropped:
@@ -221,7 +257,7 @@ def cmd_ingest(args) -> int:
     print(f"installed folders (PRIMARY, {len(installed)} found): "
           f"+{new} new to registry, {matched} matched prior research, "
           f"{not_installed} tracked-but-not-installed")
-    print(f"registry:  {reg_path or _registry.DEFAULT_REGISTRY}")
+    print(f"registry:  {reg_path}")
     print(f"dashboard: {dash}")
     return 0
 
@@ -294,19 +330,14 @@ def _registry_path(args) -> Path:
     mod rather than about the path.
     """
     if not getattr(args, "registry", None):
-        # Not configured is NOT the same as not created yet. Unconfigured leaves
-        # DEFAULT_REGISTRY as a bare relative path, so load_registry returns an empty
-        # registry and every count downstream reads "0 mods" — a statement about your
-        # modlist rather than about the missing setting. A first run before `ingest`
-        # legitimately has no file, so this warns and continues; it does not exit.
-        if _paths.registry() is None:
-            print("warning: no registry location configured ($X4_REGISTRY / $X4_MODS, see "
-                  f"'.claude/x4-paths.env'); using '{_registry.DEFAULT_REGISTRY}'.",
-                  file=sys.stderr)
-            print("         If that file does not exist you will see an EMPTY registry — "
-                  "'0 mods' would mean 'not configured', not 'no mods'. "
-                  "Run `x4validate --paths` to check.", file=sys.stderr)
-        return _registry.DEFAULT_REGISTRY
+        # Not configured is NOT the same as not created yet. This used to warn and
+        # continue with a CWD-relative guess, so an empty registry made every count
+        # downstream read "0 mods" — a statement about your modlist rather than
+        # about the missing setting. Unconfigured now refuses with the setting
+        # named (a first run before `ingest` with the location CONFIGURED still
+        # proceeds on the legitimately-not-yet-created file).
+        return _registry.require(_registry.DEFAULT_REGISTRY, "the registry location",
+                                 "set X4_MODS (or X4_REGISTRY), or pass --registry")
     path = Path(args.registry)
     if not path.is_file():
         print(f"error: --registry is not a file: {path}", file=sys.stderr)

@@ -266,7 +266,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {k} = {stats[k]}")
         return 0
 
-    ext_dir = Path(args.ext_dir) if args.ext_dir else _registry.GAME_EXTENSIONS
+    ext_dir = Path(args.ext_dir) if args.ext_dir else _registry.require(
+        _registry.GAME_EXTENSIONS, "the game extensions dir",
+        "set X4_GAME (or X4_EXTENSIONS), or pass --ext-dir")
     config = _merge.Config(reference=Path(args.reference)) if args.reference else _merge.Config()
     candidate = Path(args.candidate)
     _input.require_mod_dir(candidate, "candidate mod folder")

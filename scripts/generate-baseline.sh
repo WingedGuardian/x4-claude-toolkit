@@ -12,8 +12,13 @@
 
 set -euo pipefail
 
-GAME_DIR="${GAME_DIR:-$(pwd)}"
-PROFILE_DIR="${PROFILE_DIR:-}"
+# Honour the toolkit's own config: .claude/x4-paths.env (X4_GAME / X4_PROFILE),
+# then this script's legacy GAME_DIR / PROFILE_DIR names, then CWD as last resort.
+_here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC1091
+[ -f "$_here/.claude/x4-paths.env" ] && . "$_here/.claude/x4-paths.env"
+GAME_DIR="${GAME_DIR:-${X4_GAME:-$(pwd)}}"
+PROFILE_DIR="${PROFILE_DIR:-${X4_PROFILE:-}}"
 STAMP="${STAMP:-baseline}"   # pass a date, e.g. STAMP=2026-06-23, to name the folder
 OUT="$GAME_DIR/.claude/backups/known-good-${STAMP}"
 

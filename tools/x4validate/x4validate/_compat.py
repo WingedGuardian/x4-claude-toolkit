@@ -670,7 +670,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args = p.parse_args(argv)
 
-    ext_dir = Path(args.ext_dir) if args.ext_dir else _registry.GAME_EXTENSIONS
+    ext_dir = Path(args.ext_dir) if args.ext_dir else _registry.require(
+        _registry.GAME_EXTENSIONS, "the game extensions dir",
+        "set X4_GAME (or X4_EXTENSIONS), or pass --ext-dir")
     if not ext_dir.is_dir():
         print(f"error: extensions dir not found: {ext_dir}", file=sys.stderr)
         return 2

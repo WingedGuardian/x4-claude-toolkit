@@ -6,7 +6,7 @@ allowed-tools: Read, Bash
 
 Read the active profile debug log and report only REAL errors.
 
-**Path:** `Documents\Egosoft\X4\<profile-id>\debug.txt`. The `<profile-id>` is a numeric folder; if there are several, the ACTIVE one has the newest `debug.txt`/save timestamps (older profiles are stale).
+**Path:** `$X4_DEBUGLOG` if set (the installer writes it to `.claude/x4-paths.env`; `x4validate --paths` shows what resolved). Otherwise: Windows `Documents\Egosoft\X4\<profile-id>\debug.txt`, Linux `~/.config/EgoSoft/X4/<profile-id>/debug.txt`. The `<profile-id>` is a numeric folder; if there are several, the ACTIVE one has the newest `debug.txt`/save timestamps (older profiles are stale).
 
 **Filter out known-benign noise** (do NOT report these):
 - `Failed to verify the file signature` (error 13/14) — normal for unsigned mods.

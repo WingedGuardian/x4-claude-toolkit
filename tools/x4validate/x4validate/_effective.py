@@ -32,8 +32,12 @@ from lxml import etree
 from x4validate import _cat, _compat, _merge, _registry, _scan
 from x4validate._provenance import BASE, Origin, Recorder
 
-DB_PATH = Path(os.environ.get(
-    "X4_EFFECTIVE_DB", str(_registry.DEFAULT_REGISTRY.parent / "effective.sqlite")))
+# None when neither $X4_EFFECTIVE_DB nor a registry location is configured —
+# resolved through _registry.require() at CLI time, never guessed at import time.
+_env_db = os.environ.get("X4_EFFECTIVE_DB")
+DB_PATH: Path | None = (Path(_env_db) if _env_db
+                        else (_registry.DEFAULT_REGISTRY.parent / "effective.sqlite"
+                              if _registry.DEFAULT_REGISTRY else None))
 
 SCHEMA_VERSION = 1
 _ADVISORY = ("winner reflects community-standard load order "
@@ -261,7 +265,9 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
           dirs: list[Path] | None = None, kinds: tuple[str, ...] = ("ware", "macro", "job"),
           progress=lambda s: None) -> Path:
     config = config or _merge.Config()
-    db_path = db_path or DB_PATH
+    db_path = db_path or _registry.require(
+        DB_PATH, "the effective-store location",
+        "set X4_EFFECTIVE_DB or X4_MODS (or X4_REGISTRY), or pass --db")
     mods = active_mods(dirs)
     ordered = ordered_overlays(mods)
     folder_to_path = {m["folder"]: p for m, p in ordered}
@@ -388,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="x4effective",
         description="Browse the effective merged values of every X4 entity, with provenance.")
-    p.add_argument("--db", default=str(DB_PATH))
+    p.add_argument("--db", default=str(DB_PATH) if DB_PATH else None)
     sub = p.add_subparsers(dest="cmd", required=True)
 
     b = sub.add_parser("build", help="(re)build the effective store")
@@ -431,7 +437,9 @@ def main(argv: list[str] | None = None) -> int:
     sq.add_argument("query")
 
     args = p.parse_args(argv)
-    db = Path(args.db)
+    db = Path(args.db) if args.db else _registry.require(
+        DB_PATH, "the effective-store location",
+        "set X4_EFFECTIVE_DB or X4_MODS (or X4_REGISTRY), or pass --db")
 
     if args.cmd == "build":
         cfg = _merge.Config(reference=Path(args.reference))

@@ -192,7 +192,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args = p.parse_args(argv)
     ref = Path(args.reference) if args.reference else _merge.Config().reference
-    ext = Path(args.ext_dir) if args.ext_dir else _registry.GAME_EXTENSIONS
+    ext = Path(args.ext_dir) if args.ext_dir else _registry.require(
+        _registry.GAME_EXTENSIONS, "the game extensions dir",
+        "set X4_GAME (or X4_EXTENSIONS), or pass --ext-dir")
 
     unreadable: list = []
     vectors = _collect_all(ref, ext, unreadable)

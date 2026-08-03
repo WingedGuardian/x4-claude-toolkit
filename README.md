@@ -34,7 +34,8 @@ ships with those footguns already documented and guarded against.
 - **`KNOWLEDGEBASE.md`** — XML schema patterns, the diff-patch idioms, the **extension
   merge/load-order model** (what overrides vs unions), the **7.x→9.0 version migration map**
   (the `space=` requirement, the dead Lua_Loader, Protected UI Mode), a **mechanics interlock
-  map** for reasoning about balance ripples, and tool notes. Read automatically every session.
+  map** for reasoning about balance ripples, and tool notes. `CLAUDE.md` (which IS loaded
+  automatically) tells Claude to consult it before making changes.
 - **`CLAUDE.md`** — the workflow: diff-patch-first, confidence levels (Claude rates 0–100% and
   lists assumptions before any change), "vanilla as frame of reference," native-engine-solutions
   first, and a cognitive-co-pilot stance (surfaces what you *didn't* ask about).
@@ -137,8 +138,11 @@ or Nexus) and extract it anywhere, then run the guided installer:
 bash install.sh          # Linux / macOS / Windows (Git Bash)
 ```
 ```powershell
-.\install.ps1            # Windows PowerShell
+powershell -ExecutionPolicy Bypass -File install.ps1    # Windows PowerShell
 ```
+
+(The explicit `-ExecutionPolicy Bypass` form is given because a stock Windows install ships
+with scripts disabled — a bare `.\install.ps1` would be refused before it ran anything.)
 
 It asks which **layout** you want (see the table below), auto-detects your game, profile and
 XRCatTool, and writes the result to `<toolkit>/.claude/x4-paths.env`. Nothing is hardcoded.

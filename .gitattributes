@@ -1,4 +1,6 @@
 # Keep shell scripts LF so bash hooks run on every platform (CRLF breaks them).
 *.sh text eol=lf
+# bin/xrcat is a bash script without the .sh extension — same rule applies.
+bin/xrcat text eol=lf
 # Normalize everything else by default.
 * text=auto

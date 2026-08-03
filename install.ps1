@@ -37,6 +37,13 @@ if (-not $Reference) { $Reference  = $env:X4_REFERENCE }
 if (-not $Extensions){ $Extensions = $env:X4_EXTENSIONS }
 if (-not $XRCatTool) { $XRCatTool  = $env:XRCATTOOL }
 
+# UTF-8 WITHOUT BOM, identical under Windows PowerShell 5.1 and pwsh 7. 5.1's
+# -Encoding UTF8 writes a BOM, which bash reads as a command when it sources
+# x4-paths.env — the whole bash half of the toolkit then fails on line 1.
+function Write-Utf8NoBom($path, [string]$content) {
+  [IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Ask($cur, $prompt, $def) {
   if ($cur) { $def = $cur }
   if ($Yes) { return $def }
@@ -104,22 +111,37 @@ function Write-PathsEnv($t) {
   if ($ext)       { $lines += "X4_EXTENSIONS=`"$ext`"" }
   if ($XRCatTool) { $lines += "XRCATTOOL=`"$XRCatTool`"" }
   $f = Join-Path $dir 'x4-paths.env'
-  Set-Content -Path $f -Value $lines -Encoding UTF8
+  # UTF-8 WITHOUT BOM, LF endings: this file is sourced by bash (set -euo pipefail),
+  # and Windows PowerShell 5.1's -Encoding UTF8 writes a BOM that bash reads as a
+  # command ("command not found" on line 1, exit 127 before any path resolves).
+  Write-Utf8NoBom $f (($lines -join "`n") + "`n")
   Write-Host "  wrote $f"
 }
 
 function Install-Global($t) {
   $hc = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
   New-Item -ItemType Directory -Force -Path (Join-Path $hc 'skills'),(Join-Path $hc 'agents') | Out-Null
+  # Track exactly what WE copy — the $CLAUDE_PROJECT_DIR rewrite below must never
+  # touch a user's pre-existing skills/agents (they may use that variable on purpose).
+  $copied = @()
   Get-ChildItem -Directory (Join-Path $t '.claude\skills') -Filter 'x4-*' -ErrorAction SilentlyContinue |
-    ForEach-Object { Copy-Item -Recurse -Force $_.FullName (Join-Path $hc 'skills') }
-  Copy-Item -Force (Join-Path $t '.claude\agents\*.md') (Join-Path $hc 'agents') -ErrorAction SilentlyContinue
-  # global skills/agents run from any repo -> resolve validator via $X4_TOOLKIT
-  Get-ChildItem -Recurse -File (Join-Path $hc 'skills'),(Join-Path $hc 'agents') -Include '*.md' -ErrorAction SilentlyContinue |
     ForEach-Object {
-      $c = Get-Content -Raw $_.FullName
-      if ($c.Contains('$CLAUDE_PROJECT_DIR')) { $c.Replace('$CLAUDE_PROJECT_DIR','$X4_TOOLKIT') | Set-Content -Path $_.FullName -Encoding UTF8 }
+      $dst = Join-Path $hc 'skills'
+      Copy-Item -Recurse -Force $_.FullName $dst
+      $copied += Get-ChildItem -Recurse -File (Join-Path $dst $_.Name) -Filter '*.md'
     }
+  Get-ChildItem -File (Join-Path $t '.claude\agents') -Filter '*.md' -ErrorAction SilentlyContinue |
+    ForEach-Object {
+      Copy-Item -Force $_.FullName (Join-Path $hc 'agents')
+      $copied += Get-Item (Join-Path $hc 'agents' $_.Name)
+    }
+  # global skills/agents run from any repo -> resolve validator via $X4_TOOLKIT
+  foreach ($file in $copied) {
+    $c = Get-Content -Raw $file.FullName
+    if ($c.Contains('$CLAUDE_PROJECT_DIR')) {
+      Write-Utf8NoBom $file.FullName ($c.Replace('$CLAUDE_PROJECT_DIR','$X4_TOOLKIT'))
+    }
+  }
   Write-Host "  installed x4 skills + agents into $hc"
   # merge env into settings.json
   $sj = Join-Path $hc 'settings.json'
@@ -131,7 +153,7 @@ function Install-Global($t) {
   setenv X4_TOOLKIT $t; setenv X4_REFERENCE $ref; setenv X4_GAME $Game; setenv X4_PROFILE $Profile
   if ($Profile) { setenv X4_DEBUGLOG (Join-Path $Profile 'debug.txt') }
   setenv X4_MODS $Mods; setenv X4_EXTENSIONS $ext; setenv XRCATTOOL $XRCatTool
-  ($cfg | ConvertTo-Json -Depth 20) | Set-Content -Path $sj -Encoding UTF8
+  Write-Utf8NoBom $sj (($cfg | ConvertTo-Json -Depth 20) + "`n")
   Write-Host "  merged X4_* env into $sj"
 }
 

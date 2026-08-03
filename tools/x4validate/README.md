@@ -62,7 +62,7 @@ is reported. Structural breakage gates; value-facet complaints are advisory.
 ## Usage
 
 ```sh
-# from tools\x4validate\  (uses the bundled uv + Python 3.13 toolchain)
+# from tools\x4validate\  (requires uv — https://docs.astral.sh/uv/ — which fetches Python 3.13)
 uv run x4validate <path-to-mod-dev-folder>
 uv run x4validate <mod> --entity ware:my_new_ware --like ware:ore   # completeness
 uv run x4validate <mod> --json                                       # machine-readable
@@ -174,7 +174,7 @@ handled here — it is a secret, not a path, and must never be written to a file
 - `x4validate/_xsd.py` — schema validation: script files as written, data files as merged
   (differential — see `introduced`).
 - `x4validate/_check.py` — orchestration + t-file union; `_cli.py` — CLI.
-- `tests/` — `uv run pytest` (260 tests, incl. the x4cat spike cases).
+- `tests/` — `uv run pytest` (323 tests as of v2.02, incl. the x4cat spike cases).
 - `gates/` — measured against the engine / the real modlist: `oracle.py` (diff layer,
   234/234, 0 FALSE OK), `oracle_index.py` (index layer, 12/12), `regress.py` (per-mod
   Tier A/B sweep), `schema_sweep.py` (effective-schema composition over 102 mods).

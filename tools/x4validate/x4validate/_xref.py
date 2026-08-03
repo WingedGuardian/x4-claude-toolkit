@@ -176,7 +176,9 @@ def cue_edges(rows: list[XrefRow], cue_name: str) -> dict[str, list[XrefRow]]:
 # --- CLI ----------------------------------------------------------------------
 
 def _default_tsv() -> Path:
-    return _registry.DEFAULT_REGISTRY.parent / "md_xref.tsv"
+    return _registry.require(
+        _registry.DEFAULT_REGISTRY, "the registry location",
+        "set X4_MODS (or X4_REGISTRY), or pass --out/--index").parent / "md_xref.tsv"
 
 
 def _fmt(r: XrefRow) -> str:
@@ -273,7 +275,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "build":
         ref = Path(args.reference) if args.reference else _merge.Config().reference
-        ext = Path(args.ext_dir) if args.ext_dir else _registry.GAME_EXTENSIONS
+        ext = Path(args.ext_dir) if args.ext_dir else _registry.require(
+        _registry.GAME_EXTENSIONS, "the game extensions dir",
+        "set X4_GAME (or X4_EXTENSIONS), or pass --ext-dir")
         out = Path(args.out) if args.out else _default_tsv()
         unreadable: list = []
         rows = build_index(ref, ext, unreadable)

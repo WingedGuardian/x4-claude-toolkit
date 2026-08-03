@@ -1,10 +1,10 @@
 ---
 name: x4-modlist-review
-description: Review and triage the X4 mod registry (Phase-A worklist) — scan the ACTUALLY INSTALLED extension folders (the primary source of truth), cross-check against the old profile content.xml (diff/backstop only), refresh upstream mod metadata via the Nexus API, and drive the spot-check loop (confirm/correct identities, ignore junk, mark custom edits). Use when the user wants to triage their modlist for a game version, see what has updates / is obsolete / abandoned, or work the Phase-A modlist rebuild.
+description: Review and triage the X4 mod registry — scan the ACTUALLY INSTALLED extension folders (the primary source of truth), cross-check against the old profile content.xml (diff/backstop only), refresh upstream mod metadata via the Nexus API, and drive the spot-check loop (confirm/correct identities, ignore junk, mark custom edits). Use when the user wants to triage their modlist for a game version, or see what has updates / is obsolete / abandoned.
 allowed-tools: Bash, Read
 ---
 
-Triage the X4 modlist via the `x4modlist` CLI. **API-FIRST — never scrape Nexus.** Registry: `dev\_registry\modlist.yaml`; human dashboard: `dev\_registry\WORKLIST.md`.
+Triage the X4 modlist via the `x4modlist` CLI. **API-FIRST — never scrape Nexus.** Registry: `$X4_MODS/_registry/modlist.yaml` (or `$X4_REGISTRY` if set — the tool resolves it; `x4validate --paths` shows where); human dashboard: `WORKLIST.md` next to it.
 
 **★ SOURCE OF TRUTH: the physically INSTALLED extension folders are PRIMARY** — game-root `extensions\`, profile `extensions\` (if present), Steam Workshop `content\392160\` (if present). That's what the game actually loads. The profile's `content.xml` enabled-list is a **SECONDARY cross-check only** ("did I forget to re-acquire something from my old modlist?") — it does NOT determine what's active. A mod tracked historically but not found on disk shows up in a separate "OLD MODLIST — NOT CURRENTLY INSTALLED" dashboard section, not in the active lanes.
 
@@ -13,7 +13,7 @@ Run commands via uv from the tool dir:
 Needs `X4_NEXUS_KEY` (user env). If a command errors "X4_NEXUS_KEY not set", the user must set it (see CLAUDE.md "Nexus API").
 
 ## Workflow
-1. **Ingest** — `x4modlist ingest` scans the installed folders (reading each mod's OWN `content.xml` for its real `id`/`name`/`version`/`author` — folder names can differ from the manifest `id`, e.g. folder `X4CapturableXenonXL` → id `X4_Capturable_Xenon XL PERSONAL`) and merges that as PRIMARY; the old profile content.xml is a secondary backfill pass so nothing tracked historically is silently dropped. `--installed-only` skips the content.xml pass; `--dirs a,b,c` overrides the scanned directories.
+1. **Ingest** — `x4modlist ingest` scans the installed folders (reading each mod's OWN `content.xml` for its real `id`/`name`/`version`/`author` — a folder's name can differ from its manifest `id`, so always trust the manifest) and merges that as PRIMARY; the old profile content.xml is a secondary backfill pass so nothing tracked historically is silently dropped. `--installed-only` skips the content.xml pass; `--dirs a,b,c` overrides the scanned directories.
 2. **Refresh** — `x4modlist refresh` pulls upstream version/status and auto-resolves identities for installed mods. Identity resolution prefers each mod's REAL manifest name (far more reliable than guessing from the folder/id) over a humanized-id guess, with fallbacks for common author-prefix ("kuertee: X" → "X") and suffix-qualifier ("X - Divinity Edition" / "X VRO" → "X") naming patterns. `--force` bypasses the once-per-day TTL; `--ids a,b,c` targets specific mods (works even for NOT-installed old-list mods, to check upstream status before deciding to re-acquire).
 3. **Present** — read `WORKLIST.md`; summarize the lanes (✅ ready / ⏸ churning / ⚠ predates-9.0 / 🔧 custom-local / ❌ drop), the **NEEDS SPOT-CHECK** count, and the **OLD MODLIST — NOT CURRENTLY INSTALLED** count (mods to potentially re-acquire).
 4. **Spot-check loop** — `x4modlist needs-review` lists entries needing a human call. For each, show the auto-matched candidate(s) and have the user decide:

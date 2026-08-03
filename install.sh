@@ -152,9 +152,18 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
   local s
   for s in "$TOOLKIT/.claude/skills/"x4-*; do [ -e "$s" ] && cp -r "$s" "$home_claude/skills/"; done
   cp "$TOOLKIT/.claude/agents/"*.md "$home_claude/agents/" 2>/dev/null || true
-  # global skills/agents run from any repo → resolve the validator via $X4_TOOLKIT, not $CLAUDE_PROJECT_DIR
-  grep -rl 'CLAUDE_PROJECT_DIR' "$home_claude/skills/"x4-* "$home_claude/agents/"*.md 2>/dev/null \
-    | while read -r f; do sed -i.bak 's#\$CLAUDE_PROJECT_DIR#$X4_TOOLKIT#g' "$f" && rm -f "$f.bak"; done
+  # global skills/agents run from any repo → resolve the validator via $X4_TOOLKIT, not
+  # $CLAUDE_PROJECT_DIR. Rewrite ONLY the files this installer just copied — a user's
+  # pre-existing agents may use $CLAUDE_PROJECT_DIR on purpose and must not be touched.
+  {
+    ls -d "$home_claude/skills/"x4-* 2>/dev/null
+    for a in "$TOOLKIT/.claude/agents/"*.md; do
+      [ -e "$a" ] && echo "$home_claude/agents/$(basename "$a")"
+    done
+  } | while read -r tgt; do
+    grep -rl 'CLAUDE_PROJECT_DIR' "$tgt" 2>/dev/null \
+      | while read -r f; do sed -i.bak 's#\$CLAUDE_PROJECT_DIR#$X4_TOOLKIT#g' "$f" && rm -f "$f.bak"; done
+  done
   echo "  installed x4 skills + agents into $home_claude"
   # merge env into settings.json (jq); create if absent
   local sj="$home_claude/settings.json"

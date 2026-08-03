@@ -15,6 +15,7 @@ a separate dashboard section rather than counted as active.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from lxml import etree
@@ -31,21 +32,45 @@ _yaml.width = 4096  # don't line-wrap long notes
 # legacy ones this module used to read directly, and falls back to the installer's
 # .claude/x4-paths.env. These stay module-level constants because tests (and the
 # CLI's --dirs) monkeypatch them.
-DEFAULT_REGISTRY = _paths.registry() or Path("_registry/modlist.yaml")
-PROFILE_CONTENT = _paths.profile_content() or Path("content.xml")
-GAME_EXTENSIONS = _paths.game_extensions() or Path("extensions")
-PROFILE_EXTENSIONS = _paths.profile_extensions() or Path("profile-extensions")
-WORKSHOP_CONTENT = _paths.workshop_content() or Path("workshop-content")
+#
+# UNRESOLVED IS None, NEVER A GUESS. These used to fall back to CWD-relative
+# paths (`Path("content.xml")`, `Path("extensions")`, ...), which meant an
+# unconfigured install silently ingested whatever content.xml the CWD happened
+# to hold and wrote its registry into the CWD — "0 installed mods" as a
+# statement about your modlist instead of about the missing setting. Callers
+# pass a value through `require()` (exit 2, names the setting) before using it.
+DEFAULT_REGISTRY = _paths.registry()
+PROFILE_CONTENT = _paths.profile_content()
+GAME_EXTENSIONS = _paths.game_extensions()
+PROFILE_EXTENSIONS = _paths.profile_extensions()
+WORKSHOP_CONTENT = _paths.workshop_content()
+
+
+def require(value: Path | None, what: str, fix: str) -> Path:
+    """Named-loss gate for an unresolved location: exit 2 rather than guess.
+
+    A guessed CWD-relative path does not error — it looks in the wrong place and
+    reports finding nothing, which reads as a fact about the user's mods."""
+    if value is None:
+        print(f"error: {what} is not configured — {fix}", file=sys.stderr)
+        print("       (run `x4validate --paths` to see what resolved; "
+              "config file: .claude/x4-paths.env)", file=sys.stderr)
+        raise SystemExit(2)
+    return Path(value)
 
 
 def default_installed_dirs() -> list[Path]:
-    """The three roots a mod can be installed into, best-effort.
+    """The configured roots a mod can be installed into.
 
-    A root that does not exist is NOT dropped here — `scan_installed` reports what
-    it actually found, and silently shrinking this list is how "0 installed mods"
-    starts reading as "you have no mods" instead of "I looked in the wrong place".
+    A root that is configured but does not exist is NOT dropped here —
+    `scan_installed` reports what it actually found, and silently shrinking this
+    list is how "0 installed mods" starts reading as "you have no mods" instead
+    of "I looked in the wrong place". A root that is NOT CONFIGURED is a
+    different thing: there is nowhere to look, and the CLI names that loss
+    (empty list) instead of scanning a guessed CWD-relative folder.
     """
-    return [GAME_EXTENSIONS, PROFILE_EXTENSIONS, WORKSHOP_CONTENT]
+    return [d for d in (GAME_EXTENSIONS, PROFILE_EXTENSIONS, WORKSHOP_CONTENT)
+            if d is not None]
 
 # Seed: content-id -> Nexus mod_id already resolved from the batch triage.
 SEED_NEXUS_IDS = {
@@ -66,6 +91,10 @@ def ingest_content_xml(path: Path | None = None) -> list[tuple[str, bool]]:
 
     SECONDARY source (cross-check only) — see module docstring."""
     path = path or PROFILE_CONTENT
+    if path is None:
+        raise FileNotFoundError(
+            "profile content.xml is not configured (set X4_PROFILE or "
+            "X4_PROFILE_CONTENT, or pass --content)")
     root = etree.parse(str(path)).getroot()
     out = []
     for ext in root.xpath("//extension[@id]"):
@@ -155,7 +184,8 @@ def _new_registry() -> CommentedMap:
 
 
 def load_registry(path: Path | None = None) -> CommentedMap:
-    path = path or DEFAULT_REGISTRY
+    path = path or require(DEFAULT_REGISTRY, "the registry location",
+                           "set X4_MODS (or X4_REGISTRY), or pass --registry")
     if path.is_file():
         with open(path, encoding="utf-8") as f:
             data = _yaml.load(f)
@@ -167,7 +197,8 @@ def load_registry(path: Path | None = None) -> CommentedMap:
 
 
 def save_registry(reg: CommentedMap, path: Path | None = None) -> None:
-    path = path or DEFAULT_REGISTRY
+    path = path or require(DEFAULT_REGISTRY, "the registry location",
+                           "set X4_MODS (or X4_REGISTRY), or pass --registry")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         _yaml.dump(reg, f)
@@ -340,7 +371,9 @@ def generate_dashboard(reg: CommentedMap) -> str:
 
 
 def write_dashboard(reg: CommentedMap, path: Path | None = None) -> Path:
-    path = path or (DEFAULT_REGISTRY.parent / "WORKLIST.md")
+    path = path or (require(DEFAULT_REGISTRY, "the registry location",
+                            "set X4_MODS (or X4_REGISTRY), or pass --registry")
+                    .parent / "WORKLIST.md")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(generate_dashboard(reg), encoding="utf-8")
     return path
