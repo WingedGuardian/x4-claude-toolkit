@@ -27,6 +27,7 @@ from pathlib import Path
 from lxml import etree
 
 from x4validate import _cat, _compat, _merge, _registry, _input
+from x4validate import __version__
 
 
 # --- ware extraction ----------------------------------------------------------
@@ -243,6 +244,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="x4stats",
         description="Advisory numeric comparison of mod content vs the effective game.")
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pw = sub.add_parser("wares", help="compare a candidate mod's wares to same-group peers")

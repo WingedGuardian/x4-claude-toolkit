@@ -19,6 +19,7 @@ from pathlib import Path
 from lxml import etree
 
 from x4validate import _compat, _merge, _input, _scan
+from x4validate import __version__
 
 
 def mod_xml_vpaths(mod_dir: Path) -> dict[str, str]:
@@ -207,6 +208,8 @@ def main(argv: list[str] | None = None) -> int:
         # stays; it affects how output LOOKS, never what was examined.
     p = argparse.ArgumentParser(prog="x4diff",
                                 description="Semantic XML diff between two mod versions.")
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {__version__}")
     p.add_argument("old", help="pristine/older mod dir (baseline)")
     p.add_argument("new", help="edited/newer mod dir")
     p.add_argument("--overlay", action="append", default=[],

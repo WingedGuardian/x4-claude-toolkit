@@ -31,6 +31,7 @@ from lxml import etree
 
 from x4validate import _cat, _compat, _merge, _registry, _scan
 from x4validate._provenance import BASE, Origin, Recorder
+from x4validate import __version__
 
 # None when neither $X4_EFFECTIVE_DB nor a registry location is configured —
 # resolved through _registry.require() at CLI time, never guessed at import time.
@@ -394,6 +395,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="x4effective",
         description="Browse the effective merged values of every X4 entity, with provenance.")
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {__version__}")
     p.add_argument("--db", default=str(DB_PATH) if DB_PATH else None)
     sub = p.add_subparsers(dest="cmd", required=True)
 

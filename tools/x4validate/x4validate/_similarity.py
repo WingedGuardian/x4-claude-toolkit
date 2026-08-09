@@ -22,6 +22,7 @@ from pathlib import Path
 from lxml import etree
 
 from x4validate import _cat, _merge, _scan, _stats, _input
+from x4validate import __version__
 
 # Numeric keys compared, with weights (a rough "how much does this stat define the
 # ship's role/tier" prior) — hull/cargo/crew dominate; handling stats are secondary.
@@ -199,6 +200,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="x4similar",
         description="Advisory fuzzy same-ship detection across base+DLC+installed mods.")
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {__version__}")
     p.add_argument("--reference", help="unpacked base+DLC tree ($X4_REFERENCE)")
     p.add_argument("--ext-dir", help="extensions dir (default: game-root from _registry)")
     p.add_argument("--threshold", type=_threshold, default=0.85,

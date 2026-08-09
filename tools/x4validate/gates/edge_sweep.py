@@ -27,20 +27,33 @@ TOOLS = ["x4validate", "x4modlist", "x4compat", "x4xref",
          "x4stats", "x4similar", "x4effective", "x4diff"]
 
 
-def run(argv: list[str], env: dict | None = None, timeout: int = 900):
+#: Every variable `_paths` consults. Blanking a subset is worse than blanking
+#: none, because the run then LOOKS unconfigured while quietly resolving through
+#: whichever alias was missed — the first version of this sweep blanked
+#: `X4_GAME_ROOT` and never `X4_GAME`, so its headline claim was false.
+_PATH_VARS = ("X4_TOOLKIT", "X4_GAME", "X4_GAME_ROOT", "X4_GAME_EXTENSIONS",
+              "X4_EXTENSIONS", "X4_REFERENCE", "X4_PROFILE", "X4_PROFILE_CONTENT",
+              "X4_PROFILE_EXTENSIONS", "X4_WORKSHOP_CONTENT", "X4_REGISTRY",
+              "X4_MODS", "X4_DEBUGLOG", "X4_EFFECTIVE_DB", "X4_ORACLE_LOG")
+
+
+def run(argv: list[str], env: dict | None = None, timeout: int = 900,
+        cwd: Path | None = None):
     e = dict(os.environ)
     if env is not None:
         e.update(env)
-    p = subprocess.run(["uv", "run", *argv], cwd=ROOT, capture_output=True,
+    p = subprocess.run(["uv", "run", "--project", str(ROOT), *argv],
+                       cwd=str(cwd or ROOT), capture_output=True,
                        text=True, encoding="utf-8", errors="replace",
                        timeout=timeout, env=e)
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
-def check(label: str, argv: list[str], env: dict | None = None) -> tuple[str, str]:
+def check(label: str, argv: list[str], env: dict | None = None,
+          cwd: Path | None = None) -> tuple[str, str]:
     """A cell passes when it neither crashes nor hangs."""
     try:
-        rc, out = run(argv, env)
+        rc, out = run(argv, env, cwd=cwd)
     except subprocess.TimeoutExpired:
         return "FAIL", "HANG (>15min)"
     if "Traceback (most recent call last)" in out:
@@ -83,7 +96,7 @@ def main() -> int:
 
         missing = tmp / "does_not_exist"
 
-        cases: list[tuple[str, list[str], dict | None]] = [
+        cases: list[tuple] = [
             ("empty mod dir",            ["x4validate", str(empty)], None),
             ("manifest only",            ["x4validate", str(manifest_only)], None),
             ("malformed content.xml",    ["x4validate", str(broken)], None),
@@ -110,18 +123,33 @@ def main() -> int:
             ("x4compat bad subcommand",  ["x4compat", "nosuchcmd"], None),
             ("x4modlist bad subcommand", ["x4modlist", "nosuchcmd"], None),
         ]
-        # every tool must survive a fully unconfigured environment
-        blank = {k: "" for k in ("X4_GAME_ROOT", "X4_REFERENCE", "X4_PROFILE",
-                                 "X4_REGISTRY", "X4_MODS", "X4_EFFECTIVE_DB")}
+        # Every tool must survive a fully unconfigured environment — the state a
+        # NEW USER is in. Two things are required and both were missing before:
+        #   * blank every alias in _PATH_VARS, not a subset;
+        #   * run from a directory OUTSIDE any toolkit, because
+        #     `_paths._find_env_file()` walks up from CWD and will happily find
+        #     the developer's own `.claude/x4-paths.env` otherwise.
+        blank = {k: "" for k in _PATH_VARS}
+        away = tmp / "elsewhere"
+        away.mkdir()
         for t in TOOLS:
-            cases.append((f"{t} unconfigured env", [t, "--help"], blank))
-        cases.append(("x4validate unconfigured run", ["x4validate", str(manifest_only)], blank))
-        cases.append(("x4effective unconfigured", ["x4effective", "ls", "macro"], blank))
+            cases.append((f"{t} unconfigured --help", [t, "--help"], blank, away))
+        # --help barely touches resolution; these actually exercise the chain.
+        cases.append(("x4validate unconfigured run",
+                      ["x4validate", str(manifest_only)], blank, away))
+        cases.append(("x4validate --paths unconfigured", ["x4validate", "--paths"], blank, away))
+        cases.append(("x4effective unconfigured", ["x4effective", "ls", "macro"], blank, away))
+        cases.append(("x4compat unconfigured run", ["x4compat", "check"], blank, away))
+        cases.append(("x4similar unconfigured run", ["x4similar"], blank, away))
+        cases.append(("x4xref unconfigured query",
+                      ["x4xref", "who-calls", "find_station"], blank, away))
 
         print(f"EDGE SWEEP — {len(cases)} hostile-input cells\n" + "=" * 78)
-        for label, argv, env in cases:
+        for case in cases:
+            label, argv, env = case[0], case[1], case[2]
+            cwd = case[3] if len(case) > 3 else None
             total += 1
-            status, detail = check(label, argv, env)
+            status, detail = check(label, argv, env, cwd)
             print(f"  {status:<5} {label:<30} {detail}")
             if status == "FAIL":
                 fails.append((label, argv, detail))

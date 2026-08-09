@@ -49,7 +49,8 @@ filesystem layout and your play session. Reproducing these numbers means supplyi
 your own log against your own modlist; the *bars* are what transfer, not the counts.
 
 **A missing input is a SKIP with a named reason and exit 2** — never an empty run
-that prints like a pass. Verified 2026-07-29 from a scrubbed environment: all four
+that prints like a pass. Verified 2026-07-29 from a scrubbed environment, and re-verified 2026-08-08 across
+all gates that take inputs: each
 exit 2 and say which setting is absent.
 
 > Until 2026-07-29 three of these four opened with hardcoded absolute paths from

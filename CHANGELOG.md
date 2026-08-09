@@ -34,6 +34,27 @@ corpus gates, all four engine gates green.
 - **`x4similar --threshold` accepted values outside 0–1.** A similarity score is a ratio;
   `--threshold -1` matched every ship against every other and emitted 1.7 MB of meaningless output.
 
+- **`install.sh` could not auto-detect your game on Windows or macOS.** The Steam-root loop used
+  an unquoted command substitution, so every path containing a space was word-split —
+  `/c/Program Files (x86)/Steam` became three fragments. Only Linux (whose default paths have no
+  spaces) ever worked, and the `libraryfolders.vdf` fallback was unreachable for the same reason.
+
+- **`install.ps1` printed "install complete" after a failed unpack.** `$ErrorActionPreference` does
+  not trap a native exit code, so a failing step was invisible. It now checks each step, reports
+  which one failed, and exits non-zero. It also passes `CLAUDE_PROJECT_DIR` (the shell installer
+  always did), so running it from a shell that already exports one no longer wires up the wrong
+  folder — and the "bash not found" message now names the actual fix, since Git for Windows puts
+  `bash.exe` in a directory it does not add to PATH by default.
+
+- **`x4compat check` emitted its findings in a non-deterministic order.** Two identical runs
+  produced the same 419 collisions in different orders, because a set's iteration order (which
+  varies per process) leaked into the report. The *content* was never wrong — but it made every
+  baseline diff noisy, which is how a real change hides. Now sorted at the source and at the
+  reporting boundary.
+
+- **No tool could tell you which build it was.** All eight CLIs now accept `--version`, and the
+  package version is 2.1.0 (it had been left at 0.1.0).
+
 ### Added — gates that hunt the class, not the instance
 
 That defect survived three sessions because nothing ever exercised the path. Six new contributor
@@ -50,6 +71,17 @@ gates now run against **your** installed modlist rather than fixtures:
 - `qa_sweep.py` — every CLI × every subcommand; targets discovered from your install, never named.
 - `edge_sweep.py` — hostile inputs (empty mods, malformed manifests, SQL injection, path traversal,
   an unconfigured environment). The bar is *fail well*, and it needs no game paths.
+
+- `determinism_audit.py` — the same command twice must give byte-identical output, and a rebuilt
+  store must be logically identical. Without this, every recorded baseline is noise.
+- `stress_sweep.py` — unseen mod corpora, chained tools, and deliberately pathological XML
+  (entity bombs, XXE, 400-deep nesting, cyclic cross-mod patches, unicode with RTL overrides).
+
+**Known characteristic, measured not guessed:** `apply_diff` is O(n²) in operations-per-file —
+doubling the ops multiplies time by ~2.8→3.7×. It is not fixed here because severity is low by
+measurement (the worst real file in a ~120-mod install is 1,443 ops, about 0.03 s — roughly 22×
+headroom) and the fix would touch selector evaluation, the exact path this release exists to make
+trustworthy.
 
 The silent-swallow AST guard now also covers **control-flow** swallows in the diff mutators. The
 pre-existing guard only inspected `except` handlers, so it could not have caught this one.

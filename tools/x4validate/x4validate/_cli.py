@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from . import _check, _merge, _paths
+from x4validate import __version__
 
 _SEV_ORDER = {"error": 0, "warn": 1, "info": 2}
 _SEV_LABEL = {"error": "ERROR", "warn": "WARN ", "info": "INFO "}
@@ -19,6 +20,8 @@ def main(argv: list[str] | None = None) -> int:
         prog="x4validate",
         description="Validate X4 mod diff patches against the effective merged game tree.",
     )
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {__version__}")
     # Optional ONLY so `--paths` can run without one; still required otherwise (see below).
     p.add_argument("mod_dir", nargs="?", help="path to the mod's dev folder")
     p.add_argument("--paths", action="store_true",

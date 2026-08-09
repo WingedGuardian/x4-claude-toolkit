@@ -6,7 +6,7 @@ every malformed file anyone actually ships. A tool that survives this survives
 the user's install. Looks for crashes and hangs, NOT for findings — a mod with
 errors is the tool working.
 
-Run:  uv run python gates/corpus_sweep.py [--tier a|b|both] [--verbose]
+Run:  uv run python gates/corpus_sweep.py [--tier=a|b|both] [--verbose]
 Exit: 0 no crashes, 1 any traceback/hang.
 """
 from __future__ import annotations

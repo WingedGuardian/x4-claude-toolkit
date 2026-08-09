@@ -11,7 +11,7 @@ pick whichever is convenient, the drift would surface as an inexplicable
 contradiction rather than an error. Cross-checking independent paths finds what
 no single-path test can.
 
-Run:  uv run python gates/consistency_audit.py [--samples N]
+Run:  uv run python gates/consistency_audit.py [--samples=N]
 Exit: 0 all agree, 1 any disagreement.
 """
 from __future__ import annotations

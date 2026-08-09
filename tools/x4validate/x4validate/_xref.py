@@ -27,6 +27,7 @@ from pathlib import Path
 from lxml import etree
 
 from x4validate import _cat, _merge, _registry, _scan
+from x4validate import __version__
 
 # Excluded from the `action` index: structural containers, control flow, and
 # variable/debug plumbing whose element TAG carries no behavioral meaning (the
@@ -249,6 +250,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="x4xref",
         description="Cross-index of MD/aiscript actions, events, and cue edges.")
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pb = sub.add_parser("build", help="(re)build the index over base+DLC+installed mods")

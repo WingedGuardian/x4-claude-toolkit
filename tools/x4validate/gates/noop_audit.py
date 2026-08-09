@@ -15,7 +15,7 @@ An attribute <replace> that sets a value it already had is genuinely idempotent,
 so those are excluded; only STRUCTURAL ops (element payloads, removes) are held
 to "must change something".
 
-Run:  uv run python gates/noop_audit.py [--limit N] [--verbose]
+Run:  uv run python gates/noop_audit.py [--limit=N] [--verbose]
 Exit: 0 clean, 1 any false OK / false alarm.
 """
 from __future__ import annotations

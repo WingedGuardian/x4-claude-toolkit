@@ -30,6 +30,7 @@ from pathlib import Path
 from lxml import etree
 
 from x4validate import _cat, _merge, _registry, _xpath, _input
+from x4validate import __version__
 
 #: `{page,text}` localized reference - display text, never a registry identity.
 _TEXTREF_KEY = re.compile(r"#\{\d+,\s*\d+\}$")
@@ -83,7 +84,16 @@ class CompatReport:
     skipped: list[Skipped] = field(default_factory=list)
 
     def by_kind(self, kind: str) -> list[Collision]:
-        return [c for c in self.collisions if c.kind == kind]
+        """Collisions of *kind*, in a STABLE order.
+
+        Sorted here rather than at each call site because every consumer — the
+        renderer, the JSON dump, a saved baseline — must agree run to run. An
+        upstream set-iteration made two identical runs emit the same collisions
+        in different orders, which turns a baseline diff into noise and lets a
+        real change hide in it.
+        """
+        return sorted((c for c in self.collisions if c.kind == kind),
+                      key=lambda c: (c.vpath, c.target, tuple(c.mods)))
 
     @property
     def hard(self) -> list[Collision]:
@@ -461,10 +471,15 @@ def _analyze_vpath(
     key_to_mods: dict[str, list[str]] = defaultdict(list)
     for source in (union_keys, diff_add_doc_keys):
         for folder, keys in source.items():
-            for k in keys:
+            # `keys` is a set, and set iteration order varies between processes
+            # (hash randomization). Unsorted, that leaked into key_to_mods'
+            # insertion order and out into the report, so two identical runs
+            # emitted the same 419 collisions in different orders — enough to
+            # make a baseline diff look like a change.
+            for k in sorted(keys):
                 if folder not in key_to_mods[k]:
                     key_to_mods[k].append(folder)
-    for k, fs_ in key_to_mods.items():
+    for k, fs_ in sorted(key_to_mods.items()):
         if len(fs_) < 2 or set(fs_) <= hard_dup_keys.get(k, set()):
             continue
         fs = sorted(fs_, key=lambda f: rank[f])
@@ -657,6 +672,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="x4compat",
         description="Detect how installed X4 mods collide over the effective XML tree.")
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
     pc = sub.add_parser("check", help="analyze collisions across the installed modlist")
     pc.add_argument("candidate", nargs="?",

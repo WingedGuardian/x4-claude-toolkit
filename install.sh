@@ -81,14 +81,21 @@ steam_roots() {
 detect_game() {
   [ -n "$GAME" ] && return 0
   local root vdf lib
-  for root in $(steam_roots); do
+  # Read line-by-line, NOT `for root in $(steam_roots)`. Unquoted command
+  # substitution word-splits on spaces, which shreds every path this function
+  # emits on Windows ("/c/Program Files (x86)/Steam" -> three fragments) and on
+  # macOS ("$HOME/Library/Application Support/Steam"). Only Linux's paths happen
+  # to be space-free, so auto-detection silently worked on exactly one platform
+  # — including the libraryfolders.vdf fallback, which the loop never reached.
+  while IFS= read -r root; do
+    [ -n "$root" ] || continue
     [ -d "$root/steamapps/common/X4 Foundations" ] && { GAME="$root/steamapps/common/X4 Foundations"; return 0; }
     vdf="$root/steamapps/libraryfolders.vdf"
     [ -f "$vdf" ] || continue
     while IFS= read -r lib; do
       [ -d "$lib/steamapps/common/X4 Foundations" ] && { GAME="$lib/steamapps/common/X4 Foundations"; return 0; }
     done < <(grep -oE '"path"[[:space:]]*"[^"]+"' "$vdf" | sed -E 's/.*"path"[[:space:]]*"([^"]+)"/\1/')
-  done
+  done < <(steam_roots)
   return 0
 }
 

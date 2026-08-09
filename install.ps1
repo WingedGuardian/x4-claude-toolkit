@@ -194,13 +194,46 @@ switch ($Method) {
 
 # wire x4validate (needs bash/uv); skip gracefully if bash missing
 $bash = Get-Command bash -ErrorAction SilentlyContinue
+$failed = @()
 if ($bash) {
   Push-Location $Toolkit
-  & bash setup.sh
-  if ($Unpack) { & bash bin/unpack-reference.sh }
-  Pop-Location
+  # CLAUDE_PROJECT_DIR must be set explicitly: setup.sh falls back to $(pwd), and
+  # if the caller already exports it (running from inside Claude Code is the
+  # documented path) the fallback never applies and we would wire up THEIR repo
+  # instead of the toolkit. install.sh has always passed it; this did not.
+  $prev = $env:CLAUDE_PROJECT_DIR
+  $env:CLAUDE_PROJECT_DIR = $Toolkit
+  try {
+    # $ErrorActionPreference='Stop' does NOT trap a native exit code, so each
+    # call needs its own check — otherwise a failed unpack still reached
+    # "=== install complete ===" and the user believed a broken install.
+    & bash setup.sh
+    if ($LASTEXITCODE -ne 0) { $failed += "setup.sh (exit $LASTEXITCODE)" }
+    if ($Unpack) {
+      & bash bin/unpack-reference.sh
+      if ($LASTEXITCODE -ne 0) { $failed += "bin/unpack-reference.sh (exit $LASTEXITCODE)" }
+    }
+  } finally {
+    $env:CLAUDE_PROJECT_DIR = $prev
+    Pop-Location
+  }
 } else {
-  Write-Host "  [note] bash not found — install Git Bash, then run 'bash setup.sh' in $Toolkit"
+  # Git for Windows only adds ...\Git\cmd to PATH by default; bash.exe lives in
+  # ...\Git\bin. Name the actual fix rather than telling them to run a command
+  # they equally cannot run.
+  Write-Host "  [note] bash not found on PATH, so x4validate was NOT wired up."
+  Write-Host "         Git for Windows ships bash in <install>\bin (e.g. C:\Program Files\Git\bin)."
+  Write-Host "         Either add that to PATH, or run setup from Git Bash:"
+  Write-Host "           cd '$Toolkit' && CLAUDE_PROJECT_DIR='$Toolkit' bash setup.sh"
+  $failed += "bash not found (x4validate not wired up)"
+}
+
+if ($failed.Count) {
+  Write-Host "`n=== install INCOMPLETE ($Method) ===" -ForegroundColor Yellow
+  foreach ($f in $failed) { Write-Host "  failed: $f" -ForegroundColor Yellow }
+  Write-Host "Toolkit: $Toolkit"
+  Write-Host "Fix the above and re-run, or complete the step by hand."
+  exit 1
 }
 
 Write-Host "`n=== install complete ($Method) ==="

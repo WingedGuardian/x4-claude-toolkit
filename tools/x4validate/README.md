@@ -95,7 +95,7 @@ mod whose catalog will not open, an overlay that would not parse so the comparis
 incomplete, or a `--like` analogue that does not exist.
 
 A mod with **no `<diff>` files is not degraded** — additive-only and asset-only mods are normal and
-are reported as notes. Measured on a 102-mod install: 16 additive-only, 1 asset-only, 0 unreadable.
+are reported as notes. Measured on a ~120-mod install: 16 additive-only, 1 asset-only, 0 unreadable.
 
 Every run states its denominator (`sel-resolution: N diff file(s) checked across M payload XML
 file(s)`), because "checked 14 files, all fine" and "checked 1 file, all fine" must not print the
@@ -175,9 +175,14 @@ handled here — it is a secret, not a path, and must never be written to a file
   (differential — see `introduced`).
 - `x4validate/_check.py` — orchestration + t-file union; `_cli.py` — CLI.
 - `tests/` — `uv run pytest` (333 tests as of v2.1.0, incl. the x4cat spike cases).
-- `gates/` — measured against the engine / the real modlist: `oracle.py` (diff layer,
-  234/234, 0 FALSE OK), `oracle_index.py` (index layer, 12/12), `regress.py` (per-mod
-  Tier A/B sweep), `schema_sweep.py` (effective-schema composition over 102 mods).
+- `gates/` — measured against the engine / the real modlist, not fixtures. Four engine
+  gates: `oracle.py` (diff layer, 0 FALSE OK), `oracle_index.py` (index layer),
+  `regress.py` (per-mod Tier A/B sweep), `schema_sweep.py` (effective-schema
+  composition). Plus six corpus audits added in v2.1.0 — `noop_audit.py` (reported ≡
+  actual, per op), `provenance_audit.py` (a changed value names its mod),
+  `consistency_audit.py` (store ≡ merge ≡ dump), `corpus_sweep.py` (every installed
+  mod, both tiers), `qa_sweep.py` (every CLI × subcommand), `edge_sweep.py` (hostile
+  inputs). See `gates/README.md` for the bar each one holds.
 
 ## Extending
 Add reference types by extending the catalog in `_refs.py`; add completeness

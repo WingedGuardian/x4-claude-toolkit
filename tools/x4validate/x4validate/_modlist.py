@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import _nexus, _registry
+from x4validate import __version__
 
 NINE_ZERO = date(2026, 6, 10)  # X4 9.00 release
 CHURN_DAYS = 14
@@ -435,6 +436,8 @@ def main(argv: list[str] | None = None) -> int:
         pass  # silent-ok: console encoding shim. Failure means the default codec
         # stays; it affects how output LOOKS, never what was examined.
     p = argparse.ArgumentParser(prog="x4modlist", description="X4 mod-registry triage tool (API-first).")
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {__version__}")
     p.add_argument("--registry", help="path to modlist.yaml (default: dev\\_registry\\modlist.yaml)")
     sub = p.add_subparsers(dest="cmd", required=True)
 

@@ -487,3 +487,30 @@ def test_union_key_row_survives_when_it_names_mods_the_hard_row_missed(tmp_path)
     assert [c for c in rep.by_kind("HARD") if "dupware" in c.detail]
     uk = [c for c in rep.by_kind("UNION-KEY") if c.target == "ware#dupware"]
     assert len(uk) == 1 and "c_mod" in uk[0].mods
+
+
+def test_by_kind_order_is_stable():
+    """Two identical runs must emit collisions in the same order.
+
+    An upstream `for k in <set>` leaked hash-randomized iteration order into the
+    report, so two identical runs produced the same 419 collisions in different
+    orders. Content was never wrong — but a baseline diff became noise, which is
+    how a real change hides.
+    """
+    import random
+    from x4validate._compat import Collision, CompatReport
+
+    rows = [Collision(vpath=f"libraries/f{i % 3}.xml", kind="UNION-KEY",
+                      target=f"entry#e{i}", mods=[f"mod_{i%2}", f"mod_{(i+1)%2}"],
+                      winner=f"mod_{i%2}")
+            for i in range(50)]
+
+    first = None
+    for _ in range(5):
+        shuffled = rows[:]
+        random.shuffle(shuffled)              # simulate a different discovery order
+        rep = CompatReport(collisions=shuffled)
+        order = [(c.vpath, c.target, tuple(c.mods)) for c in rep.by_kind("UNION-KEY")]
+        if first is None:
+            first = order
+        assert order == first, "by_kind order depends on insertion order"
