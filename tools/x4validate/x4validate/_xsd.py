@@ -26,6 +26,8 @@ the default/hook path.
 from __future__ import annotations
 
 import re
+import sys
+import time
 
 from dataclasses import dataclass
 from functools import lru_cache
@@ -57,11 +59,34 @@ class XsdFinding:
 # the corpus reaches 20+ distinct schemas in a single run. An evicted entry is not
 # just slow — `diplomacy.xsd` costs 122s to compile (it pulls in the 40k-line
 # common.xsd), against <=0.1s for every other schema measured 2026-07-29.
+#: Schemas whose compile costs minutes, not milliseconds (measured 2026-07-29:
+#: md/aiscripts ~100s, diplomacy 122s; every other bundled schema <=0.1s).
+_SLOW_SCHEMAS = {"md.xsd", "aiscripts.xsd", "diplomacy.xsd"}
+
+
 @lru_cache(maxsize=64)
 def _compiled(xsd_path: str) -> etree.XMLSchema:
-    # Parse from the schema's own dir so <xs:include schemaLocation="common.xsd"/>
-    # resolves relative to it.
-    return etree.XMLSchema(etree.parse(xsd_path))
+    # Announce the wait BEFORE it happens. Compiling md.xsd/aiscripts.xsd pulls in
+    # the 40k-line common.xsd and costs ~100s; until 2026-08-09 that happened in
+    # total silence, so `--update` on a mod with one script file looked hung for
+    # two minutes. Measured then: `arck_job_registry` 2.8s -> 112s and
+    # `battle_repair_support` 2.4s -> 121s, purely because those mods are PACKED
+    # and had previously been checked against NO schema at all — the old speed was
+    # the bug, not the new cost. Same remedy as the O(n^2) case: the silence was
+    # what needed fixing.
+    name = Path(xsd_path).name
+    if name.lower() in _SLOW_SCHEMAS:
+        # Only the ones that actually cost minutes — announcing a 0.0s compile
+        # would be noise, and noise is how a real warning stops being read.
+        print(f"  [xsd] compiling {name} — one-off, ~100s (it includes the 40k-line "
+              f"common.xsd); cached for the rest of this run",
+              file=sys.stderr, flush=True)
+    t0 = time.perf_counter()
+    schema = etree.XMLSchema(etree.parse(xsd_path))
+    elapsed = time.perf_counter() - t0
+    if elapsed >= 5.0:
+        print(f"  [xsd] {name} compiled in {elapsed:.1f}s", file=sys.stderr, flush=True)
+    return schema
 
 
 def _schema_for(root: etree._Element, declared: str | None, lib: Path) -> Path | None:
