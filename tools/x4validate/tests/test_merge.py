@@ -466,3 +466,27 @@ def test_overlapping_overlays_last_one_wins(tmp_path):
             return
         got = [w.get("volume") for w in res.tree.iter("ware") if w.get("id") == "ore"]
         assert got == [expected], f"expected last overlay to win, got {got}"
+
+
+def test_replace_attribute_with_element_payload_is_rejected():
+    """An attribute can only hold text.
+
+    Given element children the old code set the attribute to `op.text or ""`,
+    silently blanking it and throwing the payload away — while reporting the op
+    applied. Found by the diff fuzzer on the case where the attribute was already
+    empty, so "applied" changed nothing whatsoever.
+    """
+    tree = etree.fromstring(b'<wares><ware id="a" transport="container"/></wares>')
+    ops = _merge.apply_diff(tree, _diff(
+        b'<replace sel="//ware/@transport"><ware id="new"/></replace>'))
+    assert tree.xpath("//ware/@transport") == ["container"], "must not blank the attribute"
+    assert [o.ok for o in ops] == [False]
+    assert "element" in ops[0].detail
+
+
+def test_replace_attribute_with_text_still_works():
+    """The valid form must be untouched by that guard."""
+    tree = etree.fromstring(b'<wares><ware id="a" transport="container"/></wares>')
+    ops = _merge.apply_diff(tree, _diff(b'<replace sel="//ware/@transport">liquid</replace>'))
+    assert tree.xpath("//ware/@transport") == ["liquid"]
+    assert [o.ok for o in ops] == [True]

@@ -339,6 +339,14 @@ def _do_replace(targets, op, recorder: Recorder | None = None,
             parent = t.getparent()
             if parent is None:
                 return "attribute target has no owning element"
+            if new_children:
+                # An attribute can only hold text. Given element children we used
+                # to set it to `op.text or ""` — silently BLANKING the attribute
+                # and discarding the payload, then reporting success. Found by
+                # gates/fuzz_diff.py, which flagged the case where the attribute
+                # was already empty so "applied" changed nothing at all.
+                return ("replace on an attribute takes text, but the op carries "
+                        f"{len(new_children)} element(s)")
             parent.set(t.attrname, op.text or "")
             if recorder is not None:
                 recorder.attr_set(parent, t.attrname,
