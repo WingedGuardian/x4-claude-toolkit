@@ -100,3 +100,16 @@ def test_exclude_same_source():
                                 "storage.missile": 2.0, "secrecy.level": 2.0})
     assert _similarity.find_similar([a, b], threshold=0.85) != []
     assert _similarity.find_similar([a, b], threshold=0.85, exclude_same_source=True) == []
+
+
+def test_threshold_rejects_values_outside_0_1():
+    """A similarity score is a ratio. `--threshold -1` used to match every pair
+    with every other and emit 1.7 MB of meaningless 'findings'."""
+    import argparse
+    import pytest
+
+    for bad in ("-1", "9", "1.5"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _similarity._threshold(bad)
+    for good in ("0", "0.85", "1"):
+        assert 0.0 <= _similarity._threshold(good) <= 1.0

@@ -551,10 +551,10 @@ def analyze(
     #
     # Each owned file is ALSO registered under extensions/<owner>/<rel>, the form
     # a cross-mod nested patch uses to target it. Without the alias the two never
-    # share a key — zzz_moona_morerooms_fixes ships
-    # extensions/moreroomsforships/md/morerooms.xml while moreroomsforships ships
-    # md/MoreRooms.xml — so a mod that exists purely to patch another reported
-    # "0 shared files examined … no collisions" and exit 0.
+    # share a key — the patching mod ships `extensions/<owner>/md/somefile.xml`
+    # while the owner ships `md/SomeFile.xml` (note the case, which the engine
+    # ignores and a naive key does not) — so a mod that exists purely to patch
+    # another reported "0 shared files examined … no collisions" and exit 0.
     inv: dict[str, dict[str, str]] = defaultdict(dict)
     for m in mods:
         folder = m["folder"]

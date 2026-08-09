@@ -283,13 +283,20 @@ def apply_diff(tree: etree._Element, diff_root: etree._Element,
             continue
 
         origin = Origin(source, op.tag, line) if recorder is not None else None
+        # The helpers return a reason string when they could NOT apply the op, else
+        # None. Deriving AppliedOp.ok from that (rather than hard-coding True) is
+        # what keeps a silent no-op from being reported as success — the failure
+        # class that hid 858 dropped ops behind "applied=True".
         if op.tag == "remove":
-            _do_remove(targets, recorder, origin)
+            reason = _do_remove(targets, recorder, origin)
         elif op.tag == "replace":
-            _do_replace(targets, op, recorder, origin)
+            reason = _do_replace(targets, op, recorder, origin)
         elif op.tag == "add":
-            _do_add(targets, op, recorder, origin)
-        applied.append(AppliedOp(op.tag, sel, line, True, f"{len(targets)} target(s)", silent))
+            reason = _do_add(targets, op, recorder, origin)
+        else:
+            reason = None
+        applied.append(AppliedOp(op.tag, sel, line, reason is None,
+                                 reason or f"{len(targets)} target(s)", silent))
     return applied
 
 
@@ -306,34 +313,61 @@ def _path_of(node) -> str:
     return node.getroottree().getpath(node)
 
 
-def _do_remove(targets, recorder: Recorder | None = None, origin: Origin | None = None) -> None:
+def _do_remove(targets, recorder: Recorder | None = None,
+               origin: Origin | None = None) -> str | None:
     for t in targets:
         if recorder is not None:
             recorder.node_removed(_path_of(t), origin)
+        parent = t.getparent()
+        if parent is None:
+            # No current mod does this, but a bare skip here would be the same
+            # silent-no-op class as the root <replace> was. Report it instead.
+            return ("remove targets the document root — a document cannot be "
+                    "left without one")
         if _is_attr(t):
-            parent = t.getparent()
-            if parent is not None:
-                parent.attrib.pop(t.attrname, None)
+            parent.attrib.pop(t.attrname, None)
         else:
-            parent = t.getparent()
-            if parent is not None:
-                parent.remove(t)
+            parent.remove(t)
+    return None
 
 
 def _do_replace(targets, op, recorder: Recorder | None = None,
-                origin: Origin | None = None) -> None:
+                origin: Origin | None = None) -> str | None:
     new_children = [c for c in op if isinstance(c.tag, str)]
     for t in targets:
         if _is_attr(t):
             parent = t.getparent()
-            if parent is not None:
-                parent.set(t.attrname, op.text or "")
-                if recorder is not None:
-                    recorder.attr_set(parent, t.attrname,
-                                      Origin(origin.source, "replace-attr", origin.line))
+            if parent is None:
+                return "attribute target has no owning element"
+            parent.set(t.attrname, op.text or "")
+            if recorder is not None:
+                recorder.attr_set(parent, t.attrname,
+                                  Origin(origin.source, "replace-attr", origin.line))
         elif new_children:
             parent = t.getparent()
             if parent is None:
+                # The target IS the document root. lxml cannot swap a root through
+                # its parent, so mutate it in place — the ElementTree identity and
+                # every caller's handle stay valid. The engine DOES apply these:
+                # `<replace sel="//macros">` is the standard whole-file override
+                # idiom (VRO alone ships 848 of them) and X4 logs no complaint,
+                # while it does log every other patch failure. Before this, the op
+                # was dropped with a bare `continue` yet still reported applied.
+                if len(new_children) != 1:
+                    return (f"replace on the document root needs exactly one payload "
+                            f"element (a document has one root), got {len(new_children)}")
+                nc = copy.deepcopy(new_children[0])
+                tail = t.tail
+                t.clear()
+                t.tag = nc.tag
+                t.text, t.tail = nc.text, tail
+                for k, v in nc.attrib.items():
+                    t.set(k, v)
+                t.extend(list(nc))
+                if recorder is not None:
+                    # Semantically identical to a full-file override: all prior
+                    # lineage is gone and this source becomes the default origin.
+                    recorder.full_override(Origin(origin.source, "replace-root", origin.line))
                 continue
             idx = parent.index(t)
             parent.remove(t)
@@ -353,10 +387,11 @@ def _do_replace(targets, op, recorder: Recorder | None = None,
             if recorder is not None:
                 recorder.elem_created(t, Origin(origin.source, "replace-text", origin.line),
                                       prior_chain=recorder.elem_chain(t))
+    return None
 
 
 def _do_add(targets, op, recorder: Recorder | None = None,
-            origin: Origin | None = None) -> None:
+            origin: Origin | None = None) -> str | None:
     pos = op.get("pos", "")
     typ = op.get("type", "")
     new_children = [c for c in op if isinstance(c.tag, str)]
@@ -377,18 +412,18 @@ def _do_add(targets, op, recorder: Recorder | None = None,
     if typ.startswith("@"):
         name = typ[1:]
         if not name:
-            return
+            return "add type=\"@\" names no attribute"
         for t in targets:
             if _is_attr(t):
-                continue  # cannot hang an attribute off an attribute
+                return "cannot hang an attribute off an attribute"
             t.set(name, op.text or "")
             if recorder is not None and origin is not None:
                 recorder.attr_set(t, name, Origin(origin.source, "add-attr", origin.line))
-        return
+        return None
 
     for t in targets:
         if _is_attr(t):
-            continue  # add cannot target an attribute
+            return "add cannot target an attribute"
         if pos == "prepend":
             for i, child in enumerate(new_children):
                 new = copy.deepcopy(child)
@@ -397,7 +432,8 @@ def _do_add(targets, op, recorder: Recorder | None = None,
         elif pos in {"before", "after"}:
             parent = t.getparent()
             if parent is None:
-                continue
+                return (f"add pos={pos!r} targets the document root, which has no "
+                        "siblings")
             idx = parent.index(t) + (1 if pos == "after" else 0)
             for off, child in enumerate(new_children):
                 new = copy.deepcopy(child)
@@ -408,6 +444,7 @@ def _do_add(targets, op, recorder: Recorder | None = None,
                 new = copy.deepcopy(child)
                 t.append(new)
                 _record(new)
+    return None
 
 
 # --- Effective-tree assembly --------------------------------------------------

@@ -3,6 +3,7 @@
 from lxml import etree
 
 from x4validate import _merge, _resolve
+from x4validate._provenance import Recorder
 
 
 def _wares():
@@ -311,3 +312,82 @@ def test_mod_full_file_over_mod_only_base_still_overrides(tmp_path):
                                  extra_overlays=[supplier, clobberer])
     assert res.tree.xpath("//properties/@hull") == ["777"]
     assert "clobber_mod:full" in res.sources
+
+
+# --- <replace> targeting the document ROOT -----------------------------------
+# Regression guard for the defect that silently dropped 858 installed-mod ops
+# (VRO alone ships 848 `<replace sel="//macros">` whole-file overrides). The op
+# was discarded because a root has no parent to swap it through, yet apply_diff
+# still reported applied=True. The engine applies these — it logs every other
+# patch failure and never one of these.
+
+def _macros(hull="100"):
+    return etree.fromstring(
+        f'<macros><macro name="m"><properties hull="{hull}"/></macro></macros>'.encode())
+
+
+def test_replace_document_root_applies():
+    tree = _macros()
+    ops = _merge.apply_diff(tree, _diff(
+        b'<replace sel="//macros">'
+        b'<macros><macro name="m"><properties hull="999"/></macro></macros>'
+        b'</replace>'))
+    assert tree.xpath("//properties/@hull") == ["999"]
+    assert tree.tag == "macros"          # still a well-formed document
+    assert [o.ok for o in ops] == [True]
+
+
+def test_replace_document_root_absolute_and_components_selectors():
+    for sel, root in ((b"/macros", b"macros"), (b"//components", b"components"),
+                      (b"/components", b"components")):
+        tree = etree.fromstring(b"<" + root + b'><c hull="1"/></' + root + b">")
+        _merge.apply_diff(tree, _diff(
+            b'<replace sel="' + sel + b'"><' + root + b'><c hull="2"/></' + root + b"></replace>"))
+        assert tree.xpath("//c/@hull") == ["2"], sel
+
+
+def test_replace_document_root_multi_element_payload_reports_not_applied():
+    tree = _macros()
+    ops = _merge.apply_diff(tree, _diff(
+        b'<replace sel="//macros"><macros/><macros/></replace>'))
+    assert [o.ok for o in ops] == [False]
+    assert "one payload element" in ops[0].detail
+    assert tree.xpath("//properties/@hull") == ["100"]   # unchanged
+
+
+def test_replace_document_root_records_provenance():
+    tree = _macros()
+    rec = Recorder()
+    _merge.apply_diff(tree, _diff(
+        b'<replace sel="//macros">'
+        b'<macros><macro name="m"><properties hull="999"/></macro></macros>'
+        b'</replace>'), recorder=rec, source="vro")
+    # A root replace is a whole-file override: every node's origin is the mod.
+    assert rec.default_origin.source == "vro"
+    assert [o.source for o in rec.file_chain] == ["vro"]
+
+
+def test_remove_document_root_reports_not_applied():
+    tree = _macros()
+    ops = _merge.apply_diff(tree, _diff(b'<remove sel="//macros"/>'))
+    assert [o.ok for o in ops] == [False]
+    assert "document root" in ops[0].detail
+
+
+def test_apply_diff_never_reports_ok_for_a_noop():
+    """The contract that makes the whole class visible: if the tree did not
+    change, the op must not be reported as applied."""
+    cases = [
+        b'<replace sel="//macros"><macros/><macros/></replace>',   # multi-root payload
+        b'<remove sel="//macros"/>',                                # root removal
+        b'<add sel="//macros" type="@"/>',                          # unnamed attribute
+        b'<add sel="//macros" pos="after"><macro/></add>',          # sibling of a root
+    ]
+    for body in cases:
+        tree = _macros()
+        before = etree.tostring(tree)
+        ops = _merge.apply_diff(tree, _diff(body))
+        unchanged = etree.tostring(tree) == before
+        if unchanged:
+            assert all(not o.ok for o in ops), f"silent no-op reported as applied: {body}"
+            assert all(o.detail for o in ops)

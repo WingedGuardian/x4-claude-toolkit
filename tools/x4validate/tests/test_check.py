@@ -239,3 +239,18 @@ def test_inert_bare_path_skips_op_checking(tmp_path):
     report = _check.validate(mod, cfg)
     assert len([f for f in report.errors if f.category == "path"]) == 1
     assert not [f for f in report.errors if f.category == "sel"]
+
+
+def test_only_file_missing_reports_instead_of_raising(tmp_path):
+    """A typo'd --file must be a finding, not a traceback.
+
+    `_merge.parse_file` raises OSError for a missing path, but the handler only
+    caught XMLSyntaxError — so `x4validate --file no/such.xml` crashed with a raw
+    lxml OSError instead of telling the user the path was wrong.
+    """
+    mod = tmp_path / "mod"
+    mod.mkdir()
+    report = _check.Report()
+    _check.check_sel_resolution_one(mod / "nope.xml", mod, _merge.Config(), report)
+    assert any(f.category == "path" and "cannot read file" in f.message
+               for f in report.findings), report.findings

@@ -167,6 +167,23 @@ def render(pairs: list[SimilarPair]) -> str:
     return "\n".join(lines)
 
 
+def _threshold(raw: str) -> float:
+    """A similarity score is a ratio; anything outside 0-1 is a typo, not a setting.
+
+    Unvalidated, `--threshold -1` matched every pair against every other and
+    emitted 1.7 MB of "findings" that mean nothing.
+    """
+    import argparse
+    try:
+        val = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {raw!r}")
+    if not 0.0 <= val <= 1.0:
+        raise argparse.ArgumentTypeError(
+            f"similarity is a ratio: expected 0-1, got {val:g}")
+    return val
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import sys
@@ -184,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Advisory fuzzy same-ship detection across base+DLC+installed mods.")
     p.add_argument("--reference", help="unpacked base+DLC tree ($X4_REFERENCE)")
     p.add_argument("--ext-dir", help="extensions dir (default: game-root from _registry)")
-    p.add_argument("--threshold", type=float, default=0.85,
+    p.add_argument("--threshold", type=_threshold, default=0.85,
                   help="minimum similarity 0-1 to report (default 0.85)")
     p.add_argument("--cross-mod-only", action="store_true",
                   help="only report pairs from DIFFERENT sources (skip a mod's own paint variants)")

@@ -88,11 +88,39 @@ from x4validate import _check, _merge
 #   before     157      60        76           3            1            39
 #   after      159      60        77           3            1            40
 #   delta       +2       0        +1           0            0            +1
-EXPECT_PAIRS = 159
-EXPECT_ERR = 60
-EXPECT_INFO = 77
+#
+# RE-MEASURED 2026-08-08: the MODLIST changed, not the check — and unlike the
+# previous re-baselines this one is attributed per-mod, so the numbers are
+# explained rather than merely observed.
+#
+# The check is provably unchanged: this sweep produced these exact numbers BEFORE
+# and AFTER the root-<replace> merge fix landed the same day (72aea46). The fix
+# alters values, not schema shapes.
+#
+# Population change, established from extension folder timestamps (not memory):
+#   + 12 mods added 2026-08-07/08. Only three contribute anything:
+#       ter_radar_turret       1 gating   0 advisory
+#       lc4hunter_argon_titan  0 gating   1 advisory
+#       arck_job_registry      0 gating   1 advisory
+#     the other nine are clean.
+#   - xspvro removed 2026-08-08, taking its KNOWN_REAL 2 gating / 9 advisory with
+#     it (entry deleted below).
+#
+# The arithmetic closes exactly on three of the four constants:
+#   gating       60 - 2 + 1 = 59   observed 59
+#   advisory     77 - 9 + 2 = 70   observed 70
+#   mods flagged 40 - 1 + 3 = 42   observed 42
+#   pairs       159 -> 168 (+9)    coverage growth from the new mods' own files
+#
+#            pairs  gating  advisory  suppressed  NOT checked  mods flagged
+#   before     159      60        77           3            1            40
+#   after      168      59        70           3            1            42
+#   delta       +9      -1        -7           0            0            +2
+EXPECT_PAIRS = 168
+EXPECT_ERR = 59
+EXPECT_INFO = 70
 EXPECT_SUPPRESSED = 3
-EXPECT_MODS_FLAGGED = 40
+EXPECT_MODS_FLAGGED = 42
 #: Files this sweep could NOT schema-check. Pinned from 2026-08-01, because the
 #: gate previously froze only what WAS checked — so 31 documents skipped with a
 #: false reason never moved a single number here. A rise means coverage was lost
@@ -118,9 +146,13 @@ KNOWN_REAL = {
     "vro": (5, 3,
         "element/@forkmaterial x5 in libraries/effects.xml — invented attribute, "
         "4 corpus-wide occurrences and all of them are VRO itself (F7)"),
-    "xspvro": (2, 9,
-        "job ids containing a SPACE ('xenon_carrier_defense xl_EP') against the id "
-        "pattern facet"),
+    # xspvro removed 2026-08-08 (mod moved out of extensions\). Its entry was
+    # (2 gating, 9 advisory) — "job ids containing a SPACE against the id pattern
+    # facet" — and its departure accounts for the whole gating/advisory drop in
+    # the re-measurement above. Restore this entry if the mod ever returns.
+    "ter_radar_turret": (1, 0,
+        "patch shipped at libraries/factiongoal_hold_space.xml when vanilla is "
+        "md/factiongoal_hold_space.xml — schema-checked against the wrong shape"),
     "escape_pod": (1, 0,
         "<filter> placed directly under <sound>; all 309 vanilla <filter> elements "
         "sit under <effects>, and <sound>'s content model has no filter child"),

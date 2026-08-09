@@ -174,7 +174,7 @@ handled here — it is a secret, not a path, and must never be written to a file
 - `x4validate/_xsd.py` — schema validation: script files as written, data files as merged
   (differential — see `introduced`).
 - `x4validate/_check.py` — orchestration + t-file union; `_cli.py` — CLI.
-- `tests/` — `uv run pytest` (323 tests as of v2.02, incl. the x4cat spike cases).
+- `tests/` — `uv run pytest` (333 tests as of v2.1.0, incl. the x4cat spike cases).
 - `gates/` — measured against the engine / the real modlist: `oracle.py` (diff layer,
   234/234, 0 FALSE OK), `oracle_index.py` (index layer, 12/12), `regress.py` (per-mod
   Tier A/B sweep), `schema_sweep.py` (effective-schema composition over 102 mods).

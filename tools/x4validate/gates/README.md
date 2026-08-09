@@ -14,7 +14,22 @@ Run them from `tools/x4validate/`.
 | `oracle.py` | `uv run python gates/oracle.py` | **234/234 ops agree, 0 FALSE OK.** Replays every diff op the engine itself rejected (from a captured `debug.txt`) and requires x4validate to reject the same ones. `debug.txt` is ground truth; a drop here means the merge model moved. |
 | `oracle_index.py` | `uv run python gates/oracle_index.py` | **12/12 agree, 0 FALSE OK** over the index-lookup failures the engine logged. Note the structural limit stated in its own output: a failure-only log can prove FALSE OK but never completeness. |
 | `regress.py` | `uv run python gates/regress.py [installed_mod ...]` | Tier A + Tier B error/degraded counts per mod under `$X4_MODS`. *(The recorded baseline — `X4CapturableXenonXL_public` 4 Tier B errors, every other 0 — is the author's own local mod set; yours will differ. What transfers is "no unexplained change from your own last run".)* |
-| `schema_sweep.py` | `uv run python gates/schema_sweep.py` | **159 pairs · 60 gating + 77 advisory + 3 suppressed · 1 NOT checked · 40/102 mods flagged**, and the four independently-evidenced defects still reported. Freezes the composition of the output so it cannot drift unnoticed. *(Baseline history lives in the measurement tables above the constants: re-measured 2026-08-01 when schema resolution was fixed, 2026-08-02 for the F7+F14 severity split — 15 advisories promoted to gating on individually-verified evidence — and again 2026-08-02 when the modlist gained a mod. **`NOT checked` is pinned too**: the gate previously froze only what WAS checked, so 31 documents skipped with a false reason never moved a number here.)* |
+| `schema_sweep.py` | `uv run python gates/schema_sweep.py` | **168 pairs · 59 gating + 70 advisory + 3 suppressed · 1 NOT checked · 42 mods flagged**, and the independently-evidenced defects still reported. Freezes the composition of the output so it cannot drift unnoticed. *(Baseline history lives in the measurement tables above the constants — most recently 2026-08-08, where the move was attributed per-mod rather than assumed: three added mods contribute 1 gating + 2 advisory, and one removed mod took 2 gating + 9 advisory with it, so the arithmetic closes exactly. **`NOT checked` is pinned too**: the gate previously froze only what WAS checked, so 31 documents skipped with a false reason never moved a number here.)* |
+
+### Corpus audits (added 2026-08-08)
+
+Written after a defect — a `<replace>` on a document root was discarded while being reported as
+applied — survived three sessions because **nothing exercised that path**. These hunt the class,
+not the instance, and they run over your own installed modlist rather than fixtures.
+
+| Gate | Run | Bar |
+|---|---|---|
+| `noop_audit.py` | `uv run python gates/noop_audit.py` | **0 FALSE OK, 0 FALSE ALARM.** Applies every diff op of every installed mod against its real base document and compares what the tool *reports* to what the tree *does*. A structural op that changes nothing must never be reported as applied. Also surfaces mod XML that will not parse. |
+| `provenance_audit.py` | `uv run python gates/provenance_audit.py` | **0 mis-attributed.** A value that differs from vanilla must name the mod that changed it; `origin=base` on a changed value is always a provenance bug — the subtle half of the defect above, where numbers look right and "who set this?" is wrong. |
+| `consistency_audit.py` | `uv run python gates/consistency_audit.py [--samples=N]` | **0 disagreements** between three independent paths to the same truth: the store, `build_effective`, and `x4effective dump`. Callers pick whichever is convenient, so drift shows up as an inexplicable contradiction rather than an error. |
+| `corpus_sweep.py` | `uv run python gates/corpus_sweep.py [--tier=a\|b\|both]` | **0 crashes, 0 hangs** running `x4validate` over every installed mod in both tiers. Looks for robustness, not findings — a mod with errors is the tool working. |
+| `qa_sweep.py` | `uv run python gates/qa_sweep.py` | Every CLI × every subcommand against the real install. Mods and targets are discovered from your install, never named. |
+| `edge_sweep.py` | `uv run python gates/edge_sweep.py` | Hostile and degenerate inputs — empty mods, malformed manifests, missing operands, SQL injection, path traversal, an unconfigured environment. The bar is **fail well**: a clear message and a sane exit code, never a traceback. Needs no game paths. |
 
 ## Inputs
 

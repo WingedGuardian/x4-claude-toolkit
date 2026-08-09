@@ -1,5 +1,65 @@
 # Changelog
 
+## v2.1.0
+
+**If you run a total-conversion overhaul, take this update.** A `<replace>` whose selector resolved
+to a document *root* was silently discarded — and reported as applied. On a 123-mod install that was
+**858 mod operations** the tools never applied while telling you they had. Suite 316 → 333, six new
+corpus gates, all four engine gates green.
+
+### Fixed — the tools reported values the game does not use
+
+- **`<replace sel="//macros">` was dropped.** That selector matches the document root, and a root
+  has no parent to swap it through, so the operation was abandoned by a bare `continue` — while
+  `apply_diff` still recorded `applied=True`. It is not an exotic form: it is the standard
+  whole-file override idiom. One overhaul alone ships **848** of them, covering ships, weapons,
+  engines, shields and bullets; two other mods contributed 10 more.
+  **Consequence:** `x4effective`, `x4stats` and anything reading effective *values* reported the
+  vanilla number wherever a mod had overridden it. After the fix, one overhaul went from owning
+  **0** shield generators to **101** — matching exactly what its archive ships.
+  *The engine was never affected*: it applies these operations and logs no complaint (it logs 467
+  patch failures of two other shapes, and none of this one).
+  **`x4compat` was proven unaffected** — same modlist before and after gives 419 rows, 0 added,
+  0 removed, **0 winner changes** — because collision topology and load-order winners do not depend
+  on whether a value landed.
+
+- **A helper that could not apply an operation now says so.** `_do_replace` / `_do_remove` /
+  `_do_add` return a reason, and `apply_diff` derives `AppliedOp.ok` from it instead of hard-coding
+  `True`. That closes the *class*: any future unhandled case surfaces as "not applied, here's why"
+  rather than a silent success.
+
+- **`x4validate --file <missing>` crashed** with a raw lxml `OSError` traceback instead of telling
+  you the path was wrong. A typo should not produce a stack trace.
+
+- **`x4similar --threshold` accepted values outside 0–1.** A similarity score is a ratio;
+  `--threshold -1` matched every ship against every other and emitted 1.7 MB of meaningless output.
+
+### Added — gates that hunt the class, not the instance
+
+That defect survived three sessions because nothing ever exercised the path. Six new contributor
+gates now run against **your** installed modlist rather than fixtures:
+
+- `noop_audit.py` — every operation of every installed mod applied against its real base document,
+  comparing what the tool *reports* to what the tree *does*. **13,332 ops: 0 false OK, 0 false
+  alarm.** Also surfaces mod XML that will not parse.
+- `provenance_audit.py` — a changed value must name the mod that changed it. **3,709 values,
+  917 mod-changed: 0 mis-attributed.**
+- `consistency_audit.py` — the store, `build_effective` and `x4effective dump` are three paths to
+  one truth and must agree. **120 sampled values: 0 disagreements.**
+- `corpus_sweep.py` — `x4validate` over every installed mod, both tiers. **230 runs, 0 crashes.**
+- `qa_sweep.py` — every CLI × every subcommand; targets discovered from your install, never named.
+- `edge_sweep.py` — hostile inputs (empty mods, malformed manifests, SQL injection, path traversal,
+  an unconfigured environment). The bar is *fail well*, and it needs no game paths.
+
+The silent-swallow AST guard now also covers **control-flow** swallows in the diff mutators. The
+pre-existing guard only inspected `except` handlers, so it could not have caught this one.
+
+### Changed
+
+- `schema_sweep` re-baselined to 168 pairs · 59 gating · 70 advisory · 42 mods flagged — attributed
+  per mod (three added mods contribute 1 gating + 2 advisory; one removed mod took 2 + 9 with it),
+  so the arithmetic closes rather than being asserted.
+
 ## v2.02
 
 **If you use `--tier b` or the schema checks, take this update.** A red-team audit of the whole

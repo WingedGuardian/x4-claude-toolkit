@@ -68,6 +68,9 @@ def main(argv: list[str] | None = None) -> int:
     if not mod_dir.is_dir():
         print(f"error: mod folder not found: {mod_dir}", file=sys.stderr)
         return 2
+    if args.file and not Path(args.file).is_file():
+        print(f"error: --file not found: {args.file}", file=sys.stderr)
+        return 2
 
     config = _merge.Config(reference=Path(args.reference))
     if args.tier == "b":

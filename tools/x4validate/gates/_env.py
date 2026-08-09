@@ -57,6 +57,27 @@ def mods_dir() -> Path:
     return p
 
 
+def reference() -> Path:
+    """The unpacked base+DLC tree the audits compare mod patches against."""
+    p = _paths.reference()
+    if p is None or not p.is_dir():
+        skip(f"no reference tree (resolved to {p or 'nothing'})",
+             "set $X4_REFERENCE (see .claude/x4-paths.env), then check with "
+             "`x4validate --paths`")
+    return p
+
+
+def effective_db() -> Path:
+    """The x4effective store. Built, not shipped — a missing one is a SKIP."""
+    from x4validate import _effective
+    p = _paths._resolve(lambda layer: _paths._pick(layer, "X4_EFFECTIVE_DB"))
+    path = Path(p) if p else _effective.DB_PATH
+    if path is None or not Path(path).is_file():
+        skip(f"no effective store (resolved to {path or 'nothing'})",
+             "run `x4effective build` first, or set $X4_EFFECTIVE_DB")
+    return Path(path)
+
+
 def oracle_log() -> Path:
     """A pinned debug.txt capture. Never committed — see the module docstring.
 

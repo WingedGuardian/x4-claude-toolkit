@@ -535,12 +535,12 @@ def _inert_bare_path_finding(vpath: str, merged: _merge.MergeResult) -> tuple[st
     opens the file. Nothing is logged, no op is rejected, and the mod loads clean — the
     quietest failure in X4 modding.
 
-    Proven 2026-08-01 from a two-run debug.txt, on ONE identical rel path
-    (`assets/units/size_s/macros/ship_cpsdo_s_hengdao_01_macro.xml`): the owner
-    `cpsdo_zb_modpack` is logged, `cpsdo_faction`'s NESTED patch of it is logged AND has
-    its op evaluated (`[=ERROR=] No matching node ... @makerrace`), while
-    `zzz_moona_cpsdo_tweaks`'s BARE-path patch of the same path is absent from both runs
-    — though that mod is loaded, its two base-game-path files being logged three times.
+    Proven 2026-08-01 from a two-run debug.txt, on ONE identical rel path under
+    `assets/units/size_s/macros/`, with three mods involved: the file's OWNER is
+    logged; a second mod's NESTED patch (`extensions/<owner>/<rel>`) of it is logged
+    AND has its op evaluated (`[=ERROR=] No matching node ... @makerrace`); a third
+    mod's BARE-path patch of the same path is absent from both runs — even though
+    that mod is loaded, its own base-game-path files being logged three times.
     Same path, same load, three mods, two logged and one not.
 
     Why this needs its own finding rather than falling out of the existing
@@ -644,6 +644,11 @@ def check_sel_resolution_one(file_path: Path, mod_dir: Path,
         root = _merge.parse_file(file_path)
     except etree.XMLSyntaxError as exc:
         report.add("error", "sel", f"unparseable XML: {exc}", str(file_path))
+        return
+    except OSError as exc:
+        # Missing/unreadable file. lxml raises OSError here, not XMLSyntaxError,
+        # so the narrower catch above let a plain typo escape as a traceback.
+        report.add("error", "path", f"cannot read file: {exc}", str(file_path))
         return
     if root.tag != "diff":
         return

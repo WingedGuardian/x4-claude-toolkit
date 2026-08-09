@@ -110,3 +110,59 @@ def test_the_marker_silences_it(tmp_path):
         "        continue  # silent-ok: tested reason\n",
         encoding="utf-8")
     assert _offenders(fake) == []
+
+
+# --- second shape of the same class: control-flow swallow --------------------
+# The guard above only inspects `except` handlers. The defect that dropped 858
+# installed-mod ops was not in a handler at all::
+#
+#     parent = t.getparent()
+#     if parent is None:
+#         continue          # op discarded, yet reported applied=True
+#
+# Same failure — a branch that does nothing and tells no one — different syntax.
+# Scope this to the diff-application helpers, where "did nothing" must always be
+# reportable, so the rule stays sharp instead of flagging ordinary guard clauses.
+
+MUTATORS = {"_do_replace", "_do_remove", "_do_add"}
+
+
+def _control_flow_swallows(package: Path = PACKAGE) -> list[str]:
+    out = []
+    path = package / "_merge.py"
+    source = path.read_text(encoding="utf-8")
+    lines = source.splitlines()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.FunctionDef) or node.name not in MUTATORS:
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.If):
+                continue
+            if not _is_swallow(inner.body):
+                continue
+            start, end = inner.lineno - 1, getattr(inner, "end_lineno", inner.lineno)
+            if not any(MARKER in ln for ln in lines[start:end]):
+                out.append(f"{path.name}:{inner.lineno} in {node.name}()")
+    return out
+
+
+def test_diff_helpers_never_swallow_an_op_silently():
+    """A mutation helper that cannot apply an op must SAY so (return a reason),
+    never just `continue` — otherwise apply_diff reports it as applied."""
+    offenders = _control_flow_swallows()
+    assert not offenders, (
+        "these branches abandon a diff op without reporting why:\n  "
+        + "\n  ".join(offenders) +
+        "\n\nReturn a reason string so apply_diff can set AppliedOp.ok=False, or "
+        "add an inline `# silent-ok: <reason>` marker."
+    )
+
+
+def test_the_control_flow_guard_actually_detects_one(tmp_path):
+    """Mutation test for the new guard, mirroring the one above it."""
+    fake = tmp_path / "pkg"
+    fake.mkdir()
+    (fake / "_merge.py").write_text(
+        "def _do_replace(t):\n    for x in t:\n        if x is None:\n            continue\n",
+        encoding="utf-8")
+    assert _control_flow_swallows(fake) == ["_merge.py:3 in _do_replace()"]
