@@ -41,3 +41,7 @@ node_modules/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Per-mod --update timings for gates/perf_guard.py — MACHINE-LOCAL by design
+# (wall-clock differs per machine; a committed baseline would fail everywhere else)
+tools/x4validate/.perf-baseline.json

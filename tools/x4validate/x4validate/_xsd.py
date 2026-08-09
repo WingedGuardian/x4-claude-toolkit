@@ -18,9 +18,15 @@ fails Egosoft's own bundled schemas** (66 errors across 6 files, measured
 only the delta between baseline and baseline+mod is attributable to the mod. See
 `introduced`.
 
-Schema compilation is slow (~100s for md/aiscripts; 122s for `diplomacy.xsd`,
-<=0.1s for the rest), so both layers are ON-DEMAND (the `--update` flag), never
-the default/hook path.
+Schema compilation is slow (98.5s md, 122s aiscripts/diplomacy; <=0.1s for the
+rest — the driver is the recursive `actions` content model, NOT file size), so
+both layers are ON-DEMAND (the `--update` flag), never the default/hook path.
+
+**Layer 1 has a FAST path** (`required_attr_table` / `required_attr_findings`):
+the gating class alone — `attribute X is required but missing` — is a flat fact
+per element and needs no automaton, so it is extracted by plain parsing in
+~0.05s and runs ALWAYS. `gates/xsd_fast_parity.py` proves it equals libxml2 on
+that class corpus-wide.
 """
 
 from __future__ import annotations
@@ -57,8 +63,15 @@ class XsdFinding:
 
 # 64, not 8: the effective-tree check touches one schema per patched data file and
 # the corpus reaches 20+ distinct schemas in a single run. An evicted entry is not
-# just slow — `diplomacy.xsd` costs 122s to compile (it pulls in the 40k-line
-# common.xsd), against <=0.1s for every other schema measured 2026-07-29.
+# just slow — `diplomacy.xsd` costs 122s to compile, against <=0.1s for every
+# other schema measured 2026-07-29.
+#
+# ⚠ CORRECTED 2026-08-09: the cost is NOT "they include the 40k-line common.xsd".
+# Measured: XMLSchema(common.xsd) = 0.03s at 1660 KB, md.xsd = 98.55s at 190 KB,
+# aiscripts.xsd = 122.15s at 151 KB. Size is not the driver — libxml2 is building
+# a content-model automaton for the RECURSIVE `actions` group (referenced 10x in
+# md.xsd; MD actions nest inside do_if/do_all). Anything that deepens a recursive
+# content model is expensive; adding elements to a flat schema is not.
 #: Schemas whose compile costs minutes, not milliseconds (measured 2026-07-29:
 #: md/aiscripts ~100s, diplomacy 122s; every other bundled schema <=0.1s).
 _SLOW_SCHEMAS = {"md.xsd", "aiscripts.xsd", "diplomacy.xsd"}
@@ -66,8 +79,8 @@ _SLOW_SCHEMAS = {"md.xsd", "aiscripts.xsd", "diplomacy.xsd"}
 
 @lru_cache(maxsize=64)
 def _compiled(xsd_path: str) -> etree.XMLSchema:
-    # Announce the wait BEFORE it happens. Compiling md.xsd/aiscripts.xsd pulls in
-    # the 40k-line common.xsd and costs ~100s; until 2026-08-09 that happened in
+    # Announce the wait BEFORE it happens. md.xsd costs ~98.5s and aiscripts.xsd
+    # ~122s; until 2026-08-09 that happened in
     # total silence, so `--update` on a mod with one script file looked hung for
     # two minutes. Measured then: `arck_job_registry` 2.8s -> 112s and
     # `battle_repair_support` 2.4s -> 121s, purely because those mods are PACKED
@@ -78,15 +91,195 @@ def _compiled(xsd_path: str) -> etree.XMLSchema:
     if name.lower() in _SLOW_SCHEMAS:
         # Only the ones that actually cost minutes — announcing a 0.0s compile
         # would be noise, and noise is how a real warning stops being read.
-        print(f"  [xsd] compiling {name} — one-off, ~100s (it includes the 40k-line "
-              f"common.xsd); cached for the rest of this run",
-              file=sys.stderr, flush=True)
+        print(f"  [xsd] compiling {name} — one-off, ~100s; cached for the rest of "
+              f"this run", file=sys.stderr, flush=True)
     t0 = time.perf_counter()
     schema = etree.XMLSchema(etree.parse(xsd_path))
     elapsed = time.perf_counter() - t0
     if elapsed >= 5.0:
         print(f"  [xsd] {name} compiled in {elapsed:.1f}s", file=sys.stderr, flush=True)
     return schema
+
+
+XSD_NS = "{http://www.w3.org/2001/XMLSchema}"
+
+
+def _own_children(node):
+    """Children of *node*, NOT descending into a nested `xs:element` declaration.
+
+    Load-bearing. A plain `node.iter()` walks into child element declarations and
+    would attribute THEIR required attributes to the parent — inventing
+    requirements, i.e. false gating ERRORs, which is the one outcome this whole
+    path must never produce.
+    """
+    for child in node:
+        if not isinstance(child.tag, str):
+            continue
+        yield child
+        if child.tag != XSD_NS + "element":
+            yield from _own_children(child)
+
+
+def _required_here(node, groups, types, seen: frozenset) -> set[str]:
+    """Required attribute names contributed by *node*'s own definition.
+
+    Follows `xs:attributeGroup ref=` and `xs:extension base=` to their named
+    definitions (cycle-guarded via *seen*). Skipping the `base=` hop would only
+    UNDER-report, never over-report — but `gates/xsd_fast_parity.py` requires
+    exact equality with the compiled schema, so it is resolved.
+    """
+    out: set[str] = set()
+    for child in _own_children(node):
+        tag = child.tag
+        if tag == XSD_NS + "attribute":
+            if child.get("use") == "required" and child.get("name"):
+                out.add(child.get("name"))
+        elif tag == XSD_NS + "attributeGroup":
+            ref = child.get("ref")
+            if ref and ref not in seen and ref in groups:
+                out |= _required_here(groups[ref], groups, types, seen | {ref})
+        elif tag in (XSD_NS + "extension", XSD_NS + "restriction"):
+            base = child.get("base")
+            if base and base not in seen and base in types:
+                out |= _required_here(types[base], groups, types, seen | {base})
+    return out
+
+
+def _schema_closure(path: Path, seen: set[str] | None = None) -> list:
+    """A schema's parsed root plus every root it `xs:include`/`xs:import`s.
+
+    Scoping matters, and getting it wrong is not theoretical. A table built from a
+    FIXED trio (common/md/aiscripts) reported `<replace sel=...>` in a `<diff>`
+    as missing `string`/`with` — because `common.xsd` happens to declare an
+    unrelated `replace`. The document actually declares `diff.xsd`, where
+    `replace` requires neither, and libxml2 validates against THAT. So the table
+    must follow the same closure libxml2 does: the declared schema and its
+    includes, nothing else.
+    """
+    seen = seen if seen is not None else set()
+    key = str(path).lower()
+    if key in seen or not path.is_file():
+        return []
+    seen.add(key)
+    try:
+        root = etree.parse(str(path)).getroot()
+    except etree.XMLSyntaxError:
+        return []  # silent-ok: an unparseable schema contributes no rules; the
+        # parity gate compares against the compiled schema and fails loudly if
+        # that ever costs a real finding.
+    out = [root]
+    for inc in root.iter(XSD_NS + "include", XSD_NS + "import"):
+        loc = inc.get("schemaLocation")
+        if loc:
+            out.extend(_schema_closure(path.parent / loc, seen))
+    return out
+
+
+@lru_cache(maxsize=32)
+def required_attr_table(schema_path_str: str) -> dict[str, tuple[str, ...]]:
+    """`{element_name: (required attribute names, ...)}` — WITHOUT compiling.
+
+    Why this exists: compiling `md.xsd` costs 98.5s and `aiscripts.xsd` 122s, and
+    the result is not picklable so it cannot be cached between runs. Measured
+    2026-08-09, the cost is NOT "they include the 40k-line common.xsd" — that
+    compiles in 0.03s — it is libxml2 building a content-model automaton for the
+    recursive `actions` group. But the one class the KB calls the *only reliable
+    9.0 migration signal*, `"attribute X is required but missing"`, needs no
+    automaton at all: it is a flat fact per element. Extracting it by plain
+    parsing takes ~0.03s.
+
+    **Ambiguity is resolved conservatively by INTERSECTION.** 25 element names are
+    declared with different required sets in different contexts (`ware` requires
+    nothing in one place and `ware` in another). Taking the intersection means an
+    ambiguous name can only ever under-report. Over-reporting here would be a
+    false ERROR on a working mod — the exact defect class this codebase has spent
+    the most effort removing.
+    """
+    roots = _schema_closure(Path(schema_path_str))
+    groups, types = {}, {}
+    for r in roots:
+        for g in r.iter(XSD_NS + "attributeGroup"):
+            if g.get("name"):
+                groups[g.get("name")] = g
+        for t in r.iter(XSD_NS + "complexType"):
+            if t.get("name"):
+                types[t.get("name")] = t
+
+    per_name: dict[str, list[set[str]]] = {}
+    for r in roots:
+        for el in r.iter(XSD_NS + "element"):
+            name = el.get("name")
+            if not name:
+                continue
+            req = _required_here(el, groups, types, frozenset())
+            ref_type = el.get("type")
+            if ref_type and ref_type in types:
+                req |= _required_here(types[ref_type], groups, types, frozenset({ref_type}))
+            per_name.setdefault(name, []).append(req)
+
+    table: dict[str, tuple[str, ...]] = {}
+    for name, sets in per_name.items():
+        common = set.intersection(*sets) if sets else set()
+        if common:
+            table[name] = tuple(sorted(common))
+    return table
+
+
+def required_attr_findings(root: etree._Element, display: str,
+                           lib: Path) -> list[XsdFinding]:
+    """`required but missing` findings for one parsed script, via the fast table.
+
+    The message is byte-identical to what libxml2 emits for the same defect, so
+    the two paths de-duplicate cleanly and `gates/xsd_fast_parity.py` can compare
+    them as sets.
+    """
+    # A <diff> is a PATCH, never a script "as written", and its payload is not the
+    # diff schema's business — libxml2 treats what sits inside <add>/<replace> as
+    # lax and rules on none of it. Two parity failures came from ignoring that,
+    # and they looked different enough to seem unrelated:
+    #   226 false positives when NO schema resolved for the diff, so the fixed
+    #       common/md/aiscripts table matched its `<replace sel=...>` ops; then
+    #    10 more once the table was correctly scoped and `diff.xsd` DID resolve,
+    #       applying diff.xsd's `replace` (which requires `sel`) to PAYLOAD
+    #       `<replace string= with=/>` elements that legitimately have none.
+    # Same wrong premise both times: that a diff document is ours to rule on.
+    if root.tag == "diff":
+        return []
+    # Otherwise mirror the compiled path exactly: no schema, no verdict.
+    schema_path = _schema_for(root, root.get(_XSI), lib)
+    if schema_path is None:
+        return []
+    table = required_attr_table(str(schema_path))
+    out: list[XsdFinding] = []
+    for el in root.iter():
+        if not isinstance(el.tag, str):
+            continue
+        for attr in table.get(el.tag, ()):
+            if el.get(attr) is None:
+                out.append(XsdFinding(
+                    display, el.sourceline or 0,
+                    f"Element '{el.tag}': The attribute '{attr}' is required but missing."))
+    return out
+
+
+def ambiguous_element_names(schema_path_str: str) -> int:
+    """How many element names carry conflicting required sets (disclosure only)."""
+    roots = _schema_closure(Path(schema_path_str))
+    groups, types = {}, {}
+    for r in roots:
+        for g in r.iter(XSD_NS + "attributeGroup"):
+            if g.get("name"):
+                groups[g.get("name")] = g
+        for t in r.iter(XSD_NS + "complexType"):
+            if t.get("name"):
+                types[t.get("name")] = t
+    per: dict[str, set[frozenset]] = {}
+    for r in roots:
+        for el in r.iter(XSD_NS + "element"):
+            if el.get("name"):
+                per.setdefault(el.get("name"), set()).add(
+                    frozenset(_required_here(el, groups, types, frozenset())))
+    return sum(1 for v in per.values() if len(v) > 1)
 
 
 def _schema_for(root: etree._Element, declared: str | None, lib: Path) -> Path | None:

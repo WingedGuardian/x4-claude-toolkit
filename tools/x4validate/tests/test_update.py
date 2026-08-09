@@ -149,3 +149,150 @@ def test_a_real_removed_element_still_gates(tmp_path, monkeypatch):
                         lambda *a, **k: ([_xsd.XsdFinding("md/x.xml", 1, msg)], 1, 0))
     _check.check_xsd(tmp_path, _merge.Config(reference=tmp_path), report)
     assert [f.severity for f in report.findings if "gone_in_9" in f.message] == ["error"]
+
+
+# --------------------------------------------------------------------------
+# Fast required-attribute path (no schema compilation).
+#
+# Compiling md.xsd costs 98.5s and aiscripts.xsd 122s, and the compiled object
+# is not picklable so it cannot be cached between runs. Measured 2026-08-09 the
+# cost is NOT "they include the 40k-line common.xsd" (that compiles in 0.03s) --
+# it is the recursive `actions` content model. But the gating class,
+# "attribute X is required but missing", is a flat fact per element and needs
+# none of that: extracting it by plain parsing takes ~0.05s.
+#
+# Equivalence with libxml2 is proven corpus-wide by gates/xsd_fast_parity.py.
+# These tests pin the extractor's own rules.
+# --------------------------------------------------------------------------
+
+_SCHEMA_HEAD = '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">'
+
+
+def _lib(tmp_path, body: str, name: str = "probe.xsd") -> str:
+    """Write a one-file schema and return ITS PATH.
+
+    The table is scoped to the schema a document declares (plus its includes),
+    not to a fixed set of files -- see `_schema_closure`.
+    """
+    lib = tmp_path / "libraries"
+    lib.mkdir(parents=True, exist_ok=True)
+    (lib / name).write_text(f"{_SCHEMA_HEAD}{body}</xs:schema>", encoding="utf-8")
+    _xsd.required_attr_table.cache_clear()
+    return str(lib / name)
+
+
+def test_required_attr_inline_and_via_attributegroup(tmp_path):
+    lib = _lib(tmp_path, '''
+      <xs:attributeGroup name="grp">
+        <xs:attribute name="fromgroup" use="required"/>
+      </xs:attributeGroup>
+      <xs:element name="probe">
+        <xs:complexType>
+          <xs:attribute name="inline" use="required"/>
+          <xs:attribute name="optional"/>
+          <xs:attributeGroup ref="grp"/>
+        </xs:complexType>
+      </xs:element>''')
+    assert _xsd.required_attr_table(lib)["probe"] == ("fromgroup", "inline")
+
+
+def test_required_attr_via_extension_base(tmp_path):
+    """The spike missed this hop; only under-reporting, but parity demands it."""
+    lib = _lib(tmp_path, '''
+      <xs:complexType name="basetype">
+        <xs:attribute name="frombase" use="required"/>
+      </xs:complexType>
+      <xs:element name="probe">
+        <xs:complexType>
+          <xs:complexContent>
+            <xs:extension base="basetype">
+              <xs:attribute name="own" use="required"/>
+            </xs:extension>
+          </xs:complexContent>
+        </xs:complexType>
+      </xs:element>''')
+    assert _xsd.required_attr_table(lib)["probe"] == ("frombase", "own")
+
+
+def test_attributegroup_cycle_does_not_hang(tmp_path):
+    lib = _lib(tmp_path, '''
+      <xs:attributeGroup name="a">
+        <xs:attribute name="fa" use="required"/><xs:attributeGroup ref="b"/>
+      </xs:attributeGroup>
+      <xs:attributeGroup name="b">
+        <xs:attribute name="fb" use="required"/><xs:attributeGroup ref="a"/>
+      </xs:attributeGroup>
+      <xs:element name="probe">
+        <xs:complexType><xs:attributeGroup ref="a"/></xs:complexType>
+      </xs:element>''')
+    assert _xsd.required_attr_table(lib)["probe"] == ("fa", "fb")
+
+
+def test_nested_child_requirements_are_not_attributed_to_the_parent(tmp_path):
+    """A plain node.iter() walks into CHILD element declarations and would invent
+    requirements on the parent -- i.e. false gating ERRORs, the one outcome this
+    path must never produce."""
+    lib = _lib(tmp_path, '''
+      <xs:element name="parent">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="child">
+              <xs:complexType><xs:attribute name="childreq" use="required"/></xs:complexType>
+            </xs:element>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>''')
+    table = _xsd.required_attr_table(lib)
+    assert "parent" not in table          # parent itself requires nothing
+    assert table["child"] == ("childreq",)
+
+
+def test_conflicting_declarations_use_the_intersection(tmp_path):
+    """24 real element names are declared with different required sets. Taking the
+    intersection means such a name can only under-report, never false-positive."""
+    lib = _lib(tmp_path, '''
+      <xs:element name="dual">
+        <xs:complexType>
+          <xs:attribute name="both" use="required"/>
+          <xs:attribute name="onlyhere" use="required"/>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="dual">
+        <xs:complexType><xs:attribute name="both" use="required"/></xs:complexType>
+      </xs:element>''')
+    assert _xsd.required_attr_table(lib)["dual"] == ("both",)
+    assert _xsd.ambiguous_element_names(lib) == 1
+
+
+def test_a_diff_document_yields_no_required_attr_findings(tmp_path):
+    """Regression: the first parity run produced 226 false positives by walking
+    <diff> files and matching their `<replace sel=...>` ops against the schema's
+    unrelated `replace` element. libxml2 never validates a diff either."""
+    from lxml import etree
+    lib = _lib(tmp_path, '''
+      <xs:element name="replace">
+        <xs:complexType><xs:attribute name="string" use="required"/></xs:complexType>
+      </xs:element>''', name="md.xsd")
+    diff = etree.fromstring('<diff><replace sel="//x/@y">1</replace></diff>')
+    # No <diff> root in ROOT_TO_SCHEMA and no xsi declaration -> no schema -> no findings.
+    assert _xsd.required_attr_findings(diff, "md/x.xml", Path(lib).parent) == []
+
+
+def test_findings_message_matches_libxml2_wording(tmp_path):
+    """Byte-identical wording is what lets the two paths de-duplicate and lets the
+    parity gate compare them as sets."""
+    from lxml import etree
+    lib = _lib(tmp_path, '''
+      <xs:element name="mdscript">
+        <xs:complexType><xs:sequence>
+          <xs:element name="find_ship">
+            <xs:complexType><xs:attribute name="space" use="required"/></xs:complexType>
+          </xs:element>
+        </xs:sequence></xs:complexType>
+      </xs:element>''', name="md.xsd")
+    doc = etree.fromstring('<mdscript name="x"><find_ship name="$s"/></mdscript>')
+    got = _xsd.required_attr_findings(doc, "md/x.xml", Path(lib).parent)
+    assert len(got) == 1
+    assert got[0].message == (
+        "Element 'find_ship': The attribute 'space' is required but missing.")
+    assert "is required but missing" in got[0].message   # the gating classifier's key

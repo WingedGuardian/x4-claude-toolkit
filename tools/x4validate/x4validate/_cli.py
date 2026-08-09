@@ -47,6 +47,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--update", action="store_true",
                    help="add 9.0 mechanical-port checks: XSD schema validation of MD/aiscript "
                    "files (~100s warmup) + the runtime-only migration-map heuristic")
+    p.add_argument("--xsd-fast", action="store_true",
+                   help="with --update: skip the compiled-schema pass (~100-122s). Gating "
+                   "required-attribute breakages are still COMPLETE; you lose the advisories "
+                   "and the 'element not expected' class")
     p.add_argument("--debug", nargs="?", const="\0", metavar="DEBUG_TXT",
                    help="correlate the engine's own debug.txt errors for this mod (authoritative; "
                    "GATES on engine errors). Bare --debug uses the active profile's debug.txt")
@@ -99,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report = _check.validate(mod_dir, config, entity=args.entity, like=args.like,
                              only_file=args.file, update=args.update, debug=debug_path,
-                             tier=args.tier)
+                             tier=args.tier, xsd_fast=args.xsd_fast)
 
     if args.json:
         print(json.dumps({

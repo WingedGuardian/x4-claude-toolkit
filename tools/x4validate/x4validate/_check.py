@@ -1068,7 +1068,50 @@ def check_debug_correlation(mod_dir: Path, config: _merge.Config, report: Report
         + ("" if matched else " — clean load for this mod, or a stale/other-mod log"))
 
 
-def check_xsd(mod_dir: Path, config: _merge.Config, report: Report) -> None:
+def check_required_attrs(mod_dir: Path, config: _merge.Config,
+                         report: Report) -> set[tuple[str, int, str]]:
+    """Gating pass for `attribute X is required but missing` — no schema compile.
+
+    FAST (~0.05s vs 98-122s). The KB calls this class the only reliable 9.0
+    migration signal, and it is a flat fact per element, so it needs none of the
+    content-model automaton that makes compiling `md.xsd`/`aiscripts.xsd` slow.
+
+    Runs ALWAYS, ahead of `check_xsd`, so the gating answer is available
+    immediately even when the full compile follows. Returns the keys it reported
+    so `check_xsd` can avoid double-reporting the same finding.
+
+    Equivalence with libxml2 on this class is proven corpus-wide by
+    `gates/xsd_fast_parity.py` — it is not assumed.
+    """
+    lib = config.reference / "libraries"
+    prefixes = tuple(f"{s}/" for s in _xsd.SCRIPT_DIRS)
+    unreadable: list[_scan.Unreadable] = []
+    reported: set[tuple[str, int, str]] = set()
+    files = 0
+    for vpath, root in _scan.iter_mod_xml(
+            mod_dir,
+            lambda v: v.lower().startswith(prefixes) and v.lower().count("/") == 1,
+            unreadable):
+        files += 1
+        for f in _xsd.required_attr_findings(root, vpath, lib):
+            key = (vpath, f.line, f.message)
+            if key in reported:
+                continue
+            reported.add(key)
+            report.add("error", "xsd", f.message, vpath, f.line)
+    for u in unreadable:
+        report.skip("required-attribute scan", str(u))
+    report.notes.append(
+        f"required-attrs: {files} script file(s) checked without compiling a schema "
+        f"({len(reported)} gating breakage(s)); "
+        f"{_xsd.ambiguous_element_names(str(lib / 'md.xsd'))} element name(s) are declared with "
+        f"conflicting requirements and use the INTERSECTION, so they can only "
+        f"under-report, never raise a false error")
+    return reported
+
+
+def check_xsd(mod_dir: Path, config: _merge.Config, report: Report,
+              already: set[tuple[str, int, str]] | None = None) -> None:
     """Validate MD/aiscript files against the bundled schemas (the 9.0 migration
     backbone). SLOW (~100s schema warmup) — only via --update, never the default.
 
@@ -1091,11 +1134,18 @@ def check_xsd(mod_dir: Path, config: _merge.Config, report: Report) -> None:
 
     high = [f for f in findings if _gates(f.message)]
     low = [f for f in findings if not _gates(f.message)]
+    # Anything the fast pass already reported must not be reported twice.
+    seen = already or set()
+    dupes = sum(1 for f in high
+                if (_relpath(f.file, mod_dir), f.line, f.message) in seen)
     report.notes.append(
         f"XSD: {checked} validated — {len(high)} gating breakage(s) "
-        f"(required-attr / removed-element), {len(low)} schema-strict "
+        f"(required-attr / removed-element{f'; {dupes} already reported by the fast pass'
+                                           if dupes else ''}), {len(low)} schema-strict "
         f"advisor{'y' if len(low) == 1 else 'ies'} (md.xsd stricter than the engine)")
     for f in high:
+        if (_relpath(f.file, mod_dir), f.line, f.message) in seen:
+            continue
         report.add("error", "xsd", f.message, _relpath(f.file, mod_dir), f.line)
     for f in low:
         # F7's dead-attr class gets its OWN CATEGORY here but stays INFO — never
@@ -1298,6 +1348,7 @@ def validate(
     update: bool = False,
     debug: str | Path | None = None,
     tier: str = "a",
+    xsd_fast: bool = False,
 ) -> Report:
     config = config or _merge.Config()
     report = Report()
@@ -1335,6 +1386,16 @@ def validate(
         check_debug_correlation(mod_dir, config, report, debug)
     if update:  # mechanical-port extras (9.0 migration): runtime heuristic + XSD (slow, last)
         check_migration(mod_dir, config, report)
-        check_xsd(mod_dir, config, report)          # script files, as written
-        check_effective_schema(mod_dir, config, report)  # data files, as merged
+        # Fast gating pass FIRST — no schema compile, so the required-attribute
+        # answer (the KB's only reliable 9.0 signal) lands in ~0.05s instead of
+        # after a ~100s wait. `already` stops the slow pass double-reporting it.
+        already = check_required_attrs(mod_dir, config, report)
+        if not xsd_fast:
+            check_xsd(mod_dir, config, report, already)   # script files, as written
+            check_effective_schema(mod_dir, config, report)  # data files, as merged
+        else:
+            report.notes.append(
+                "--xsd-fast: skipped the compiled-schema pass (~100-122s). Gating "
+                "required-attribute breakages above are COMPLETE; what is skipped is "
+                "the advisory set and the 'element not expected' class.")
     return report

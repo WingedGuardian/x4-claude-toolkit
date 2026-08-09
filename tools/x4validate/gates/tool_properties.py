@@ -62,6 +62,13 @@ import _env  # noqa: E402
 from x4validate import _cat, _compat, _merge, _stats, _xref  # noqa: E402
 
 SAMPLES = next((int(a.split("=")[1]) for a in sys.argv if a.startswith("--samples=")), 12)
+#: --exhaustive: verify EVERY output row, not a sample. Slower (~10 min) but it is
+#: the release bar — "strictly and totally verify all of the output". First full
+#: run 2026-08-09: xref 23,646/23,646 exact, stats 10,150 values 0 mismatched,
+#: similar 808/808 pairs, diff 30/30 planted mutations. Three apparent violations
+#: along the way were all bugs in the VERIFIER (wrong ship copy compared; `id`
+#: mutations that legitimately read as structural) — check the checker first.
+EXHAUSTIVE = "--exhaustive" in sys.argv
 EXT = _env.extensions()
 REF = _env.reference()
 failures: list[str] = []
@@ -375,6 +382,99 @@ def check_x4similar() -> None:
          "no crash at either threshold")
 
 
+def _xref_source_root(source: str) -> Path:
+    """Resolve an index row's source to its root. `dlc:` rows live unpacked
+    under reference/extensions/ — missing that made 10,473 rows (44%) read as
+    unreadable on the first exhaustive run."""
+    if source == "base":
+        return REF
+    if source.startswith("dlc:"):
+        return REF / "extensions" / source[4:]
+    return EXT / source
+
+
+def check_x4xref_exhaustive() -> None:
+    """EVERY cuedef row, packed and DLC included — not a sample."""
+    print("\nx4xref (exhaustive)")
+    from collections import defaultdict
+    rows = [r for r in _xref.read_tsv(_xref._default_tsv()) if r.kind == "cuedef"]
+    by_file = defaultdict(list)
+    for r in rows:
+        by_file[(r.source, r.file)].append(r)
+    ok = bad = unreadable = 0
+    for (source, vfile), items in sorted(by_file.items()):
+        base = _xref_source_root(source)
+        data = None
+        pth = base / vfile
+        if pth.is_file():
+            try:
+                data = pth.read_bytes()
+            except OSError:
+                pass  # silent-ok: falls through to the packed read; if that also
+                # fails the rows count as UNREADABLE, which FAILS the check
+        if data is None and source != "base":
+            data = _cat.read_path(base, vfile)
+        if data is None:
+            unreadable += len(items)
+            continue
+        try:
+            root = etree.fromstring(data)
+        except etree.XMLSyntaxError:
+            unreadable += len(items)
+            continue
+        present = {(el.get("name"), el.sourceline) for el in root.iter("cue")}
+        for r in items:
+            if (r.name, r.line) in present:
+                ok += 1
+            else:
+                bad += 1
+    note(bad == 0 and unreadable == 0,
+         "EVERY cuedef citation resolves to the exact line",
+         f"{ok}/{ok + bad + unreadable} exact, {bad} mis-cited, {unreadable} unreadable")
+
+
+def check_x4stats_exhaustive() -> None:
+    """Every *_macro.xml under reference assets/, every reported value."""
+    print("\nx4stats (exhaustive)")
+    macros = []
+    for sub in ("assets/props", "assets/units"):
+        d = REF / sub
+        if d.is_dir():
+            macros += sorted(d.rglob("*_macro.xml"))
+    values = mismatched = 0
+    for path in macros:
+        reported = _stats.macro_stats(path)
+        if not reported:
+            continue
+        try:
+            root = etree.parse(str(path)).getroot()
+        except (etree.XMLSyntaxError, OSError):
+            continue  # silent-ok: macro_stats returned for it, so an unreadable
+            # re-parse here only shrinks the verified count, never fakes a pass
+        macro = next(iter(root.iter("macro")), None)
+        if macro is None:
+            continue
+        truth: dict[str, str] = {}
+        for el in macro.iter():
+            if el is macro or not isinstance(el.tag, str):
+                continue
+            for k, v in el.attrib.items():
+                truth.setdefault(f"{el.tag}.{k}", v)
+        for prop, value in reported.items():
+            if prop == "class" or prop not in truth:
+                continue
+            values += 1
+            want = truth[prop]
+            try:
+                same = abs(float(value) - float(want)) < 1e-9
+            except (TypeError, ValueError):
+                same = str(value) == want
+            if not same:
+                mismatched += 1
+    note(mismatched == 0, "EVERY reported macro value matches a fresh parse",
+         f"{len(macros)} files, {values} values, {mismatched} mismatched")
+
+
 def main() -> int:
     print("=" * 88)
     print("TOOL PROPERTIES — x4diff / x4xref / x4stats, checked against independent truth")
@@ -382,6 +482,9 @@ def main() -> int:
     check_x4diff()
     check_x4xref()
     check_x4stats()
+    if EXHAUSTIVE:
+        check_x4xref_exhaustive()
+        check_x4stats_exhaustive()
     check_x4compat()
     check_x4similar()
     print("\n" + "=" * 88)
