@@ -16,6 +16,7 @@ Exit: 0 all agree, 1 any disagreement.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 import subprocess
 import sys
@@ -61,6 +62,33 @@ def store_rows():
     return rows
 
 
+_INDEXED = re.compile(r"^(?P<tag>[^\[]+)\[(?P<idx>\d+)\]$")
+
+
+def _lookup(macro, prop: str) -> str | None:
+    """Resolve a store prop path like `boost[1].thrust` against a macro element.
+
+    The store disambiguates repeated sibling elements with a ZERO-based index
+    (10,224 attrs use one). `Element.find` cannot help here: it reads `[1]` as an
+    XPath predicate and rejects 0 outright — which made this audit crash on a
+    random sample and report the crash as a DISAGREEMENT, i.e. a tool bug that
+    did not exist.
+    """
+    tag, _, attr = prop.rpartition(".")
+    if not tag:
+        return macro.get(attr)
+    node = macro
+    for step in tag.split("."):
+        m = _INDEXED.match(step)
+        want = int(m.group("idx")) if m else 0
+        step_tag = m.group("tag") if m else step
+        matches = node.findall(f".//{step_tag}") if node is macro else node.findall(step_tag)
+        if len(matches) <= want:
+            return None
+        node = matches[want]
+    return node.get(attr)
+
+
 def from_merge(vpath: str, name: str, prop: str) -> str | None:
     # Must use the SAME overlay set the store was built with. A default Config()
     # is Tier A (base+DLC only), so comparing against it just re-discovers that
@@ -69,14 +97,9 @@ def from_merge(vpath: str, name: str, prop: str) -> str | None:
                                  extra_overlays=_overlays_for(vpath))
     if res.tree is None:
         return None
-    tag, _, attr = prop.rpartition(".")
     for macro in res.tree.iter("macro"):
-        if macro.get("name") != name:
-            continue
-        if tag in ("", "@"):
-            return macro.get(attr)
-        el = macro.find(f".//{tag}")
-        return el.get(attr) if el is not None else None
+        if macro.get("name") == name:
+            return _lookup(macro, prop)
     return None
 
 
@@ -90,12 +113,9 @@ def from_dump(vpath: str, name: str, prop: str) -> str | None:
         root = etree.fromstring(p.stdout.encode())
     except Exception:
         return None
-    tag, _, attr = prop.rpartition(".")
     for macro in root.iter("macro"):
-        if macro.get("name") != name:
-            continue
-        el = macro.find(f".//{tag}")
-        return el.get(attr) if el is not None else None
+        if macro.get("name") == name:
+            return _lookup(macro, prop)
     return None
 
 
