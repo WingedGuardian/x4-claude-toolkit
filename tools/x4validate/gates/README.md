@@ -37,6 +37,25 @@ not the instance, and they run over your own installed modlist rather than fixtu
 | `fuzz_diff.py` | `uv run python gates/fuzz_diff.py [--n=N] [--seed=N]` | **0 invariant violations.** Generates random-but-legal diff ops and asserts what must hold for ANY of them: never raises · applied-and-structural implies the tree changed · not-applied implies unchanged · not-applied always carries a reason · the same op twice gives the same result. Seeded, so a failure reproduces. The corpus audits prove we handle every op that *exists*; this probes every op that is *legal*. |
 | `edge_sweep.py` | `uv run python gates/edge_sweep.py` | Hostile and degenerate inputs — empty mods, malformed manifests, missing operands, SQL injection, path traversal, an unconfigured environment. The bar is **fail well**: a clear message and a sane exit code, never a traceback. Needs no game paths. |
 
+### Output-truth, parity and performance gates (added 2026-08-09)
+
+The audits above prove the tool handles every op that *exists* and every op that is
+*legal*. These ask the next question: is what it **prints** true, and is a second
+implementation of an existing check really equivalent? Every one of them derives its
+ground truth independently of the tool under test — a fresh parse, a planted mutation,
+or libxml2 — never the tool's own index.
+
+| Gate | Run | Bar |
+|---|---|---|
+| `tool_properties.py` | `uv run python gates/tool_properties.py [--exhaustive]` | **0 violations** of properties that must hold for any input, for the three tools that previously had only "it ran and printed something" coverage (`x4diff`, `x4xref`, `x4stats`): identity, antisymmetry, monotonicity, and every printed citation/number re-derived from a fresh lxml parse. `--exhaustive` checks the entire output rather than a sample. "Exits 0 with output" is exactly the bar a confidently-wrong tool clears. |
+| `cross_tool.py` | `uv run python gates/cross_tool.py` | **0 disagreements between different tools** answering the same question (the winner `x4compat` names for a contested file vs the origin `x4effective` records for entities in it), plus sensitivity — a planted delta must actually be *detected*, since identity and antisymmetry both hold trivially for a tool that under-reports. |
+| `diff_truth.py` | `uv run python gates/diff_truth.py` | **exact.** Copies a real installed mod, mutates N numeric attributes chosen by a seeded RNG, and requires `x4diff --detail` to report exactly that set — every planted change found, nothing invented. Identity attributes are never mutated: changing an `id` changes *which element it is*, which correctly reads as structural. |
+| `similar_audit.py` | `uv run python gates/similar_audit.py` | **every reported pair recomputed and confirmed, 0 unresolved.** Locates both macros with its own packed-aware scan, re-extracts the stat vector, recomputes the documented score, and asserts the printed percentage matches. Pairs are keyed by (name, **source**) — collapsing copies by name compares the wrong ones. |
+| `update_corpus.py` | `uv run python gates/update_corpus.py` | **every planted break found.** A synthetic mod carrying every documented 9.0 break (XSD-gating, runtime-grep and expression-lint tiers). `--update` was only ever smoke-tested, and a migration checker that silently detects nothing is indistinguishable from a clean mod. |
+| `xsd_fast_parity.py` | `uv run python gates/xsd_fast_parity.py` | **set-equal, corpus-wide.** The fast required-attribute table must produce exactly the findings libxml2 does over every installed mod's md/aiscript files. `fast \ full` is a false gating ERROR on a working mod and must be zero; `full \ fast` is a miss. A second implementation is only worth having if proven equivalent — otherwise it is a faster way to be wrong. Sampling is not enough: this passed at 25 mods and failed at 123, three separate times. |
+| `perf_guard.py` | `uv run python gates/perf_guard.py --record` then `uv run python gates/perf_guard.py` | **no per-mod regression** beyond ratio > 3× **and** delta > 2.0 s together. Compares **items, never a total**: a measured 39×/51× regression on two mods summed to a 1.00× aggregate because a third got faster. The baseline is machine-local and gitignored — wall-clock is machine-specific, so a committed one would fail for everybody else. |
+| `nexus_fixture.py` | `uv run python gates/nexus_fixture.py` (replay) · `--record` (live, needs a key) | **0 parse/classification failures** against a recorded fixture, so the only network-dependent path is testable offline. The fixture is anonymized at record time — field names, types and status values preserved, ids and titles replaced — and asserted to contain no API key. Re-record periodically: a fixture that never drifts is a fixture that stopped tracking the API. |
+
 ## Inputs
 
 Every input resolves through `gates/_env.py` → `x4validate._paths`, i.e. the same
