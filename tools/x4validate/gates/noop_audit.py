@@ -47,6 +47,9 @@ def vanilla_index() -> dict[str, str]:
     return out
 
 
+UNREADABLE: list[str] = []
+
+
 def mod_docs(mod: Path):
     """(vpath, bytes) for every XML the mod ships, packed or loose."""
     try:
@@ -54,9 +57,12 @@ def mod_docs(mod: Path):
             try:
                 yield vp, _cat.read_member(mem, verify=False)
             except Exception as exc:                    # a reader failure is itself a finding
-                print(f"  ! unreadable {mod.name}/{vp}: {exc!r}")
-    except Exception:
-        pass
+                UNREADABLE.append(f"{mod.name}/{vp}: {exc!r}")
+    except Exception as exc:
+        # NOT `pass`: an unreadable archive means NONE of this mod's ops were
+        # audited. Swallowing that turns "I could not check this mod" into
+        # "this mod is clean" — the exact failure this gate exists to catch.
+        UNREADABLE.append(f"{mod.name}: catalog unreadable ({exc!r})")
     for p in glob.iglob(str(mod / "**" / "*.xml"), recursive=True):
         try:
             yield os.path.relpath(p, mod).replace("\\", "/"), open(p, "rb").read()
@@ -84,18 +90,18 @@ def cross_mod_base(vpath: str, mods_by_name: dict) -> etree._Element | None:
         try:
             data = loose.read_bytes()
         except OSError:
-            return None
+            return None  # silent-ok: counted by the caller as "no base doc anywhere"
     else:
         try:
             data = _cat.read_path(owner, rel, verify=False)
         except Exception:
-            return None
+            return None  # silent-ok: counted as "no base doc anywhere"
     if not data:
         return None
     try:
         root = etree.fromstring(data)
     except Exception:
-        return None
+        return None  # silent-ok: owner file unparseable; counted as "no base doc anywhere"
     # The owner's own file must be a real document, not itself a diff.
     return root if root.tag != "diff" else None
 

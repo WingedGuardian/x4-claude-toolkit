@@ -161,6 +161,19 @@ def mod_vfs(mod_dir: Path, xml_only: bool = True) -> dict[str, CatMember]:
     return _cached_vfs(str(mod_dir), xml_only)
 
 
+@lru_cache(maxsize=256)
+def _folded_vfs(mod_dir_str: str, xml_only: bool) -> dict[str, CatMember]:
+    """Case-folded index of a mod's VFS, built once per archive.
+
+    `_get_ci` previously answered a MISS by scanning every key and lowercasing
+    it — and a miss is the common case, because most overlays do not contain the
+    path being asked about. Cost was O(members) per lookup, per overlay, per
+    file: validating a 116-file cross-mod patch against ~120 installed
+    extensions ran past 900s. Folding once and caching makes the miss O(1).
+    """
+    return {k.lower(): v for k, v in _cached_vfs(mod_dir_str, xml_only).items()}
+
+
 def read_member(member: CatMember, verify: bool = True) -> bytes:
     """Read a member's raw bytes from its ``.dat``; verify the MD5 by default."""
     dat_path = member.cat_path.with_suffix(".dat")
@@ -182,13 +195,22 @@ def read_member(member: CatMember, verify: bool = True) -> bytes:
     return data
 
 
-def _get_ci(vfs: dict[str, CatMember], vpath: str) -> CatMember | None:
+def _get_ci(vfs: dict[str, CatMember], vpath: str,
+            folded: dict[str, CatMember] | None = None) -> CatMember | None:
     """Case-insensitive VFS lookup — X4 treats virtual paths case-insensitively
-    (e.g. VRO ships ``t/0001-L007.xml`` where others use ``l007``)."""
+    (e.g. VRO ships ``t/0001-L007.xml`` where others use ``l007``).
+
+    Pass *folded* (see :func:`_folded_vfs`) to make a miss O(1). Without it this
+    falls back to a linear scan, which is correct but was the hot path: a miss is
+    the NORMAL outcome, since most overlays simply do not contain the file being
+    asked about.
+    """
     member = vfs.get(vpath)
     if member is not None:
         return member
     low = vpath.lower()
+    if folded is not None:
+        return folded.get(low)
     for k, v in vfs.items():
         if k.lower() == low:
             return v
@@ -198,7 +220,7 @@ def _get_ci(vfs: dict[str, CatMember], vpath: str) -> CatMember | None:
 def read_path(mod_dir: Path, vpath: str, verify: bool = True) -> bytes | None:
     """Read one virtual path's bytes from a mod's catalogs, or ``None`` if absent."""
     vpath = vpath.replace("\\", "/").lstrip("/")
-    member = _get_ci(mod_vfs(mod_dir), vpath)
+    member = _get_ci(mod_vfs(mod_dir), vpath, _folded_vfs(str(mod_dir), True))
     return None if member is None else read_member(member, verify=verify)
 
 

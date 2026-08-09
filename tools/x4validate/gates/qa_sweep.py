@@ -64,7 +64,7 @@ def _pick_mod(*, patching: bool = False) -> str:
                     if b"<diff" in f.read_bytes()[:2000]:
                         return str(d)
                 except OSError:
-                    continue
+                    continue  # silent-ok: only picking a sample mod; try the next file
     return str(mods[0]) if mods else str(EXT)
 
 

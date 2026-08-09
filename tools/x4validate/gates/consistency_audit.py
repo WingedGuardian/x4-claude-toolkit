@@ -62,31 +62,51 @@ def store_rows():
     return rows
 
 
-_INDEXED = re.compile(r"^(?P<tag>[^\[]+)\[(?P<idx>\d+)\]$")
+#: `tag[3]` (positional) or `tag[{20206,601}]` (keyed by a text reference).
+_STEP = re.compile(r"^(?P<tag>[^\[]+)(?:\[(?P<key>[^\]]+)\])?$")
 
 
 def _lookup(macro, prop: str) -> str | None:
-    """Resolve a store prop path like `boost[1].thrust` against a macro element.
+    """Resolve a store prop path against a macro element, or return None.
 
-    The store disambiguates repeated sibling elements with a ZERO-based index
-    (10,224 attrs use one). `Element.find` cannot help here: it reads `[1]` as an
-    XPath predicate and rejects 0 outright — which made this audit crash on a
-    random sample and report the crash as a DISAGREEMENT, i.e. a tool bug that
-    did not exist.
+    The store disambiguates repeated sibling elements two ways: a ZERO-based
+    index (`boost[1].thrust`, ~10k attrs) and a text-reference key
+    (`x[{20206,601}].y`). `Element.find` handles neither — it reads `[1]` as an
+    XPath predicate, rejects 0 outright, and chokes on the brace form.
+
+    **Never raises.** A resolver that throws makes this audit report its own
+    limitation as a DISAGREEMENT — a checker accusing the thing it checks, which
+    is exactly how this gate failed intermittently before. An unknown shape is
+    "I cannot answer", not "they disagree".
     """
-    tag, _, attr = prop.rpartition(".")
-    if not tag:
-        return macro.get(attr)
-    node = macro
-    for step in tag.split("."):
-        m = _INDEXED.match(step)
-        want = int(m.group("idx")) if m else 0
-        step_tag = m.group("tag") if m else step
-        matches = node.findall(f".//{step_tag}") if node is macro else node.findall(step_tag)
-        if len(matches) <= want:
-            return None
-        node = matches[want]
-    return node.get(attr)
+    try:
+        tag, _, attr = prop.rpartition(".")
+        if not tag:
+            return macro.get(attr.lstrip("@"))
+        node = macro
+        for i, step in enumerate(tag.split(".")):
+            m = _STEP.match(step)
+            if not m:
+                return None
+            key = m.group("key")
+            matches = (node.findall(f".//{m.group('tag')}") if i == 0
+                       else node.findall(m.group("tag")))
+            if not matches:
+                return None
+            if key is None:
+                node = matches[0]
+            elif key.isdigit():
+                idx = int(key)
+                if len(matches) <= idx:
+                    return None
+                node = matches[idx]
+            else:                       # keyed: match any attribute equal to it
+                node = next((e for e in matches if key in e.attrib.values()), None)
+                if node is None:
+                    return None
+        return node.get(attr.lstrip("@"))
+    except Exception:                   # silent-ok: see docstring — never accuse
+        return None
 
 
 def from_merge(vpath: str, name: str, prop: str) -> str | None:
@@ -112,7 +132,7 @@ def from_dump(vpath: str, name: str, prop: str) -> str | None:
     try:
         root = etree.fromstring(p.stdout.encode())
     except Exception:
-        return None
+        return None  # silent-ok: dump unparseable; the cross-checked count drops visibly
     for macro in root.iter("macro"):
         if macro.get("name") == name:
             return _lookup(macro, prop)

@@ -77,6 +77,27 @@ def _offenders(package: Path = PACKAGE) -> list[str]:
     return out
 
 
+GATES = PACKAGE.parent / "gates"
+
+
+def test_no_unmarked_silent_swallow_in_the_gates():
+    """The gates ship publicly and are subject to the same rule.
+
+    Added after `consistency_audit.py` crashed on a prop shape it did not
+    understand and its own failure surfaced as "the tools DISAGREE" — a checker
+    accusing the thing it checks. A gate that swallows is worse than a module
+    that does: it converts its own blind spot into a verdict about someone
+    else's code.
+    """
+    offenders = _offenders(GATES)
+    assert not offenders, (
+        "these gate handlers swallow a failure with no channel and no reason:\n  "
+        + "\n  ".join(offenders) +
+        "\n\nA gate must distinguish 'I could not check this' from 'this is wrong'. "
+        "Record the skip, or add an inline `# silent-ok: <reason>` marker."
+    )
+
+
 def test_no_unmarked_silent_swallow():
     """A handler that discards a failure must say why, at the code that does it."""
     offenders = _offenders()

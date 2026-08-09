@@ -96,14 +96,14 @@ def main() -> int:
             try:
                 pid = int(page.get("id") or -1)
             except ValueError:
-                continue
+                continue  # silent-ok: a non-numeric page id cannot match an engine complaint
             if pid not in pages_wanted:
                 continue
             for t_el in page.iter("t"):
                 try:
                     found_ids.add((pid, int(t_el.get("id") or -1)))
                 except ValueError:
-                    pass
+                    pass  # silent-ok: a non-numeric text id cannot match an engine complaint
     disagree_a = sorted(missing_ids & found_ids)
     print(f"   effective t/ files scanned : {scanned}")
     print(f"   of those, ids WE resolve   : {len(disagree_a)}")
