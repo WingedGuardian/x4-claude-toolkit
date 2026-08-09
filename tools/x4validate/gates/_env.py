@@ -98,3 +98,21 @@ def oracle_log() -> Path:
         skip(f"$X4_ORACLE_LOG points at nothing readable: {p}",
              "check the path; a captured log, not the live debug.txt")
     return p
+
+
+def registry_file() -> Path:
+    """The mod registry (`modlist.yaml`), resolved the way the package does.
+
+    Exists so a gate that needs the registry copies the REAL one into a sandbox
+    rather than either hardcoding a path or writing to the live file. `qa_sweep`
+    used to run `x4modlist dashboard` against the live registry, regenerating
+    the user's WORKLIST.md on every sweep.
+    """
+    from x4validate import _registry
+    p = _registry.DEFAULT_REGISTRY
+    if p is None:
+        skip("no registry configured", "set $X4_MODS or $X4_REGISTRY")
+    p = _registry._registry_file(Path(p))
+    if not p.is_file():
+        skip(f"no registry file at {p}", "run `x4modlist ingest` first")
+    return p

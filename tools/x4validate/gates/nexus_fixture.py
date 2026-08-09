@@ -31,6 +31,7 @@ Exit: 0 all replays behave as recorded, 1 any mismatch, 2 no fixture.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import urllib.error
 from datetime import date
@@ -171,6 +172,73 @@ def _check(label: str, got, want, failures: list[str]) -> None:
         failures.append(f"{label}: got {got!r}, want {want!r}")
 
 
+def _sandbox_registry(tmp: Path, fx: dict) -> Path:
+    """A throwaway registry with one seeded mod and one whose id 404s.
+
+    Never the real registry: `cmd_refresh` WRITES (registry + dashboard), and a
+    gate must not mutate the user's triage state to test itself.
+    """
+    good = sorted(fx["rest"])[0]
+    reg = {
+        "meta": {"generated": "gate"},
+        "mods": [
+            {"id": "gate_good", "auto": {"installed": True, "nexus_id": int(good)},
+             "human": {"custom_edited": False}},
+            {"id": "gate_404", "auto": {"installed": True, "nexus_id": fx["missing_id"]},
+             "human": {"custom_edited": False}},
+        ],
+    }
+    path = tmp / "modlist.yaml"
+    _registry.save_registry(reg, path)
+    return path
+
+
+def _check_refresh_end_to_end(fx: dict, failures: list[str]) -> None:
+    """Drive `x4modlist refresh` itself, not just the API helpers underneath it.
+
+    Added after noticing the gate claimed to make `refresh` testable while never
+    invoking it. These branches are only reachable through the command: the
+    once-per-day TTL, `--force`, the 404 -> classification="error" path, and the
+    registry/dashboard writes.
+    """
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(prefix="x4gate_refresh_"))
+    try:
+        reg_path = _sandbox_registry(tmp, fx)
+        # --registry is a TOP-LEVEL argument, before the subcommand.
+        argv = ["--registry", str(reg_path), "refresh", "--seeded"]
+
+        rc = _modlist.main(argv)
+        reg = _registry.load_registry(reg_path)
+        by_id = {m["id"]: m["auto"] for m in reg["mods"]}
+        ok = rc == 0 and by_id["gate_good"].get("status") == \
+            fx["rest"][sorted(fx["rest"])[0]]["status"]
+        _check("refresh populates a seeded mod", ok, True, failures)
+        _check("refresh marks an unreachable id as error",
+               by_id["gate_404"].get("classification"), "error", failures)
+        _check("refresh recorded the check date",
+               bool(by_id["gate_good"].get("checked_at")), True, failures)
+
+        # TTL: a second run must fetch nothing, --force must fetch again.
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _modlist.main(argv)
+        _check("second run is a TTL no-op", "0 fetched" in buf.getvalue(), True, failures)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _modlist.main(argv + ["--force"])
+        _check("--force re-fetches", "0 fetched" not in buf.getvalue(), True, failures)
+
+        dash = _registry.write_dashboard.__name__ and (reg_path.parent / "WORKLIST.md")
+        _check("dashboard written beside the registry", dash.is_file(), True, failures)
+    except Exception as exc:                      # a crash here IS the finding
+        _check(f"refresh end-to-end raised {type(exc).__name__}", str(exc), "", failures)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def replay() -> int:
     if not FIXTURE.is_file():
         print(f"no fixture at {FIXTURE} — run with --record once (needs X4_NEXUS_KEY)",
@@ -224,6 +292,7 @@ def replay() -> int:
         if not label:
             failures.append("_classify returned an empty label")
 
+        _check_refresh_end_to_end(fx, failures)
         print(f"\n  recorded calls served: {len(rp.calls)}  (network calls made: 0)")
     finally:
         _nexus._get_json, _nexus._post_json = orig_get, orig_post

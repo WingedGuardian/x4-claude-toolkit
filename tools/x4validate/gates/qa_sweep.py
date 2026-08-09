@@ -93,6 +93,33 @@ def _owning_mod() -> str:
 _MOD = _pick_mod(patching=True)
 _MOD2 = _pick_mod()
 
+_SANDBOX: str | None = None
+
+
+def _sandbox_registry() -> str:
+    """A throwaway copy of the real registry, made once per sweep.
+
+    Copied rather than synthesized so the cells still exercise real data with
+    real shape; written to a temp dir so the WRITING commands (`dashboard`)
+    cannot touch the user's triage state.
+    """
+    global _SANDBOX
+    if _SANDBOX is None:
+        import shutil
+        import tempfile
+        tmp = Path(tempfile.mkdtemp(prefix="x4qa_registry_"))
+        dest = tmp / "modlist.yaml"
+        try:
+            src = _env.registry_file()
+        except (SystemExit, AttributeError):
+            src = None
+        if src and Path(src).is_file():
+            shutil.copy2(src, dest)
+        else:
+            dest.write_text("meta: {}\nmods: []\n", encoding="utf-8")
+        _SANDBOX = str(dest)
+    return _SANDBOX
+
 
 CELLS: list[Cell] = [
     # ---- x4validate -----------------------------------------------------
@@ -169,8 +196,14 @@ CELLS: list[Cell] = [
          expect=(0, 1, 3), findings_ok=True),
 
     # ---- x4modlist ------------------------------------------------------
-    Cell("x4modlist", "dashboard", ["dashboard"], expect=(0, 1), findings_ok=True),
-    Cell("x4modlist", "needs-review", ["needs-review"], expect=(0, 1), findings_ok=True),
+    # --registry points at a THROWAWAY COPY: `dashboard` WRITES WORKLIST.md, and
+    # this cell was regenerating the user's real one on every sweep. It is a pure
+    # function of modlist.yaml so nothing was corrupted, but a gate must not
+    # mutate the state it is inspecting — that is how a sweep turns into an edit.
+    Cell("x4modlist", "dashboard", ["--registry", _sandbox_registry(), "dashboard"],
+         expect=(0, 1), findings_ok=True),
+    Cell("x4modlist", "needs-review", ["--registry", _sandbox_registry(), "needs-review"],
+         expect=(0, 1), findings_ok=True),
 
     # ---- x4diff ---------------------------------------------------------
     Cell("x4diff", "two mod versions",

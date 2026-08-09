@@ -22,6 +22,17 @@ being tested (a fresh lxml parse of the same file, not the tool's own index):
                          — reported WITH a denominator, never as a bare count.
   x4stats  fidelity      every numeric it reports for a macro must equal the
                          value in the file, re-parsed from scratch.
+  x4compat soundness     every mod named in a collision must really ship that
+                         vpath, and the winner must be one of them. A conflict
+                         detector that invents a conflict is as bad as one that
+                         misses it.
+           completeness  a shared FULL-FILE path is either reported or a known
+                         non-override class (per-mod manifest, union-merged
+                         registry). NOT "any shared vpath must collide" -- two
+                         diffs on disjoint nodes legitimately do not.
+  x4similar monotonicity results at a LOWER threshold must be a superset of
+                         those at a higher one. A scoring bug breaks this even
+                         when every individual run looks plausible.
 
 Targets are discovered from the local install; nothing is named.
 
@@ -42,12 +53,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _env  # noqa: E402
-from x4validate import _stats, _xref  # noqa: E402
+from x4validate import _cat, _compat, _merge, _stats, _xref  # noqa: E402
 
 SAMPLES = next((int(a.split("=")[1]) for a in sys.argv if a.startswith("--samples=")), 12)
 EXT = _env.extensions()
 REF = _env.reference()
 failures: list[str] = []
+#: Files `_is_full_file` could not read. Reported, never silently dropped.
+_UNREADABLE: list[str] = []
 
 
 def run(tool: str, *argv: str) -> str:
@@ -199,6 +212,135 @@ def check_x4stats() -> None:
          f"{total - mismatched}/{total} values agree")
 
 
+def _ships_vpath(mod: Path) -> set[str]:
+    """Every XML vpath a mod ships, loose or packed — computed WITHOUT using
+    x4compat's own path helper, so it is genuinely independent evidence."""
+    out = {p.relative_to(mod).as_posix().lower()
+           for p in mod.rglob("*.xml") if p.is_file()}
+    try:
+        out |= {v.lower() for v in _cat.mod_vfs(mod)}
+    except OSError:
+        pass  # silent-ok: an unreadable archive shrinks this mod's evidence set;
+              # the soundness check below reports any vpath it then cannot back up
+    return out
+
+
+def _is_full_file(mod: Path, vpath: str) -> bool:
+    """True when the mod ships *vpath* as a whole-file override, not a <diff>.
+
+    Read independently of x4compat (fresh parse / raw catalog read).
+    """
+    p = mod / vpath
+    try:
+        if p.is_file():
+            return etree.parse(str(p)).getroot().tag != "diff"
+        data = _cat.read_path(mod, vpath)
+        if data is None:
+            return False
+        return etree.fromstring(data).tag != "diff"
+    except (etree.XMLSyntaxError, OSError, ValueError) as exc:
+        # Counted, not swallowed. Returning False quietly would shrink the
+        # completeness denominator with nothing said — the shape that turns a
+        # missed override into "all clear". The count is printed with the result.
+        _UNREADABLE.append(f"{mod.name}/{vpath}: {exc}")
+        return False
+
+
+def check_x4compat() -> None:
+    print("\nx4compat")
+    report = _compat.analyze(EXT, config=_merge.Config())
+    if not report.collisions:
+        note(False, "produced collisions to check", "none found on this install")
+        return
+    print(f"  ({report.mods_scanned} mods scanned, {len(report.collisions)} collisions)")
+
+    owns: dict[str, set[str]] = {}
+    unsound = winnerless = 0
+    for c in report.collisions:
+        for folder in c.mods:
+            d = EXT / folder
+            if folder not in owns:
+                owns[folder] = _ships_vpath(d) if d.is_dir() else set()
+            v = c.vpath.lower()
+            # A cross-mod patch's vpath is the TARGET's path, `extensions/<target>/<rel>`.
+            # The target itself ships plain `<rel>`; only the patching mod ships the
+            # nested form. Comparing literally called that unsound -- the property was
+            # wrong, not the tool. Accept either spelling for this mod.
+            nested = f"extensions/{folder.lower()}/"
+            candidates = {v, v[len(nested):]} if v.startswith(nested) else {v}
+            if not (candidates & owns[folder]):
+                unsound += 1
+                if unsound <= 3:
+                    print(f"          unsound: {folder} named for {c.vpath}, but does not ship it")
+        if c.winner not in c.mods:
+            winnerless += 1
+            if winnerless <= 3:
+                print(f"          winner {c.winner!r} not among {c.mods}")
+    note(unsound == 0, "every named mod really ships the colliding vpath",
+         f"{len(report.collisions)} collisions checked")
+    note(winnerless == 0, "winner is always one of the involved mods",
+         f"{len(report.collisions)} checked")
+
+    # Completeness -- stated as something actually TRUE, after three attempts at
+    # it were each too strong and each blamed the tool for being RIGHT:
+    #
+    #   1. "two mods ship the same vpath => must collide" is false: two <diff>s
+    #      touching disjoint nodes do not conflict (107 of 392 shared paths here).
+    #   2. "...as a full file => must collide" is false for MANIFESTS: content.xml
+    #      and ui.xml are per-mod declarations, not game content, and neither
+    #      exists in reference/.
+    #   3. ...and false for UNION-MERGED registries: shipping a whole
+    #      libraries/loadouts.xml is a CONTRIBUTION, not an override. Only a
+    #      same-id clash is a conflict, which is what x4compat's UNION-KEY kind
+    #      already models.
+    #
+    # So the check is: a shared full-file path must be either REPORTED or a
+    # known non-override class. A path in neither bucket fails, which keeps this
+    # falsifiable -- a genuinely missed override still trips it.
+    manifests = {"content.xml", "ui.xml"}
+    union_merged = {"libraries/camerasettings.xml", "libraries/loadouts.xml",
+                    "libraries/region_definitions.xml", "libraries/wares.xml",
+                    "libraries/jobs.xml"}
+    full: dict[str, list[str]] = {}
+    for d in sorted(EXT.iterdir()):
+        if not d.is_dir() or d.name.lower().startswith("ego_dlc_"):
+            continue
+        for v in _ships_vpath(d):
+            if v.endswith(".xml") and not v.startswith("extensions/") and _is_full_file(d, v):
+                full.setdefault(v, []).append(d.name)
+    shared_full = {v for v, m in full.items() if len(m) > 1}
+    reported = {c.vpath.lower() for c in report.collisions}
+    unexplained = sorted(shared_full - reported - manifests - union_merged)
+    note(not unexplained, "shared full-file paths are reported or a known non-override class",
+         f"{len(shared_full)} shared; {len(shared_full & reported)} reported, "
+         f"{len(shared_full & (manifests | union_merged))} manifest/union-merged, "
+         f"{len(unexplained)} unexplained"
+         + (f"; e.g. {unexplained[:2]}" if unexplained else ""))
+    if _UNREADABLE:
+        print(f"          note: {len(_UNREADABLE)} file(s) unreadable, excluded from the "
+              f"denominator — e.g. {_UNREADABLE[0][:90]}")
+
+
+_SIM_PAIR = re.compile(r"^\s*([\w./-]+)\s+.*?([\w./-]+)\s*$")
+
+
+def check_x4similar() -> None:
+    print("\nx4similar")
+    loose = run("x4similar", "--threshold", "0.80")
+    tight = run("x4similar", "--threshold", "0.95")
+
+    def pairs(text: str) -> set[str]:
+        # Identity-bearing lines only; the exact render is not the property.
+        return {ln.strip() for ln in text.splitlines()
+                if "_macro" in ln and "<->" in ln or " vs " in ln}
+
+    lo, hi = pairs(loose), pairs(tight)
+    note(hi <= lo, "0.95 results are a subset of 0.80 results",
+         f"loose={len(lo)} tight={len(hi)} extra_in_tight={len(hi - lo)}")
+    note("Traceback" not in loose and "Traceback" not in tight,
+         "no crash at either threshold")
+
+
 def main() -> int:
     print("=" * 88)
     print("TOOL PROPERTIES — x4diff / x4xref / x4stats, checked against independent truth")
@@ -206,6 +348,8 @@ def main() -> int:
     check_x4diff()
     check_x4xref()
     check_x4stats()
+    check_x4compat()
+    check_x4similar()
     print("\n" + "=" * 88)
     if failures:
         print(f"PROPERTY VIOLATIONS: {len(failures)}")
