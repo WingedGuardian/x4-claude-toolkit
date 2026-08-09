@@ -87,3 +87,65 @@ def test_migration_flags_dead_apis_only(tmp_path):
     assert any("Lua_Loader" in m.note for m in out)
     clone = [m for m in out if "use .keys.list" in m.note]
     assert len(clone) == 1  # only the .clone, not the plain .keys.list in ok.lua
+
+
+# --------------------------------------------------------------------------
+# Engine-verified md.xsd element-model gaps.
+#
+# `check_xsd` GATES "element not expected" on the deliberate reasoning that a
+# removed/renamed action is safer flagged than missed. That policy produced 9
+# false ERRORs on a working mod using <ammunition> inside <create_ship>.
+# Settled 2026-08-09 by the engine itself, not by judgement: a live debug.txt
+# shows the engine parsing those same files to LINE granularity (expression
+# warnings at specific lines) while raising no objection at any of the 9
+# <ammunition> sites -- and common.xsd:11738 defines exactly that nested shape.
+# --------------------------------------------------------------------------
+
+_AMMO_MSG = ("Element 'ammunition': This element is not expected. "
+             "Expected is one of ( orientation, position, safepos, rotation ).")
+
+
+def test_known_schema_gap_is_recognized():
+    reason = _xsd.schema_element_gap(_AMMO_MSG)
+    assert reason and "create_ship" in reason
+    assert "debug.txt" in reason, "an entry must carry its engine evidence"
+
+
+def test_an_unknown_element_is_NOT_excused():
+    """The whole risk of an allowlist is becoming a place real breaks hide.
+    A different element, and the same element in a different parent context,
+    must both still gate."""
+    other = ("Element 'no_such_action': This element is not expected. "
+             "Expected is one of ( orientation, position, safepos, rotation ).")
+    assert _xsd.schema_element_gap(other) is None
+    # same element, different expected-set => different parent => not excused
+    elsewhere = ("Element 'ammunition': This element is not expected. "
+                 "Expected is one of ( alpha, beta ).")
+    assert _xsd.schema_element_gap(elsewhere) is None
+    # a required-attr message is a different class entirely
+    assert _xsd.schema_element_gap(
+        "Element 'find_ship': The attribute 'space' is required but missing.") is None
+
+
+def test_gap_is_reported_as_advisory_not_dropped(tmp_path, monkeypatch):
+    """Demoted, never hidden -- and it must say why."""
+    report = _check.Report()
+    monkeypatch.setattr(_xsd, "validate_mod",
+                        lambda *a, **k: ([_xsd.XsdFinding("md/x.xml", 32, _AMMO_MSG)], 1, 0))
+    _check.check_xsd(tmp_path, _merge.Config(reference=tmp_path), report)
+    ammo = [f for f in report.findings if "ammunition" in f.message]
+    assert len(ammo) == 1
+    assert ammo[0].severity == "info"
+    assert ammo[0].category == "xsd-schema-gap"
+    assert "create_ship" in ammo[0].message      # the reason travels with it
+
+
+def test_a_real_removed_element_still_gates(tmp_path, monkeypatch):
+    """Both sides asserted: the demotion must not have opened the floodgates."""
+    msg = ("Element 'gone_in_9': This element is not expected. "
+           "Expected is one of ( orientation, position ).")
+    report = _check.Report()
+    monkeypatch.setattr(_xsd, "validate_mod",
+                        lambda *a, **k: ([_xsd.XsdFinding("md/x.xml", 1, msg)], 1, 0))
+    _check.check_xsd(tmp_path, _merge.Config(reference=tmp_path), report)
+    assert [f.severity for f in report.findings if "gone_in_9" in f.message] == ["error"]

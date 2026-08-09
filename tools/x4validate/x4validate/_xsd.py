@@ -33,7 +33,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from . import _merge
+from . import _cat, _merge
 
 _XSI = "{http://www.w3.org/2001/XMLSchema-instance}noNamespaceSchemaLocation"
 ROOT_TO_SCHEMA = {"mdscript": "md.xsd", "aiscript": "aiscripts.xsd"}
@@ -78,12 +78,9 @@ def _schema_for(root: etree._Element, declared: str | None, lib: Path) -> Path |
     return None
 
 
-def validate_file(path: Path, lib: Path) -> tuple[list[XsdFinding], str | None]:
-    """(findings, skip_reason). Empty findings + no reason = valid."""
-    try:
-        doc = etree.parse(str(path))
-    except etree.XMLSyntaxError as exc:
-        return [XsdFinding(str(path), exc.lineno or 0, f"XML parse error: {exc.msg}")], None
+def _validate_doc(doc, display: str, lib: Path) -> tuple[list[XsdFinding], str | None]:
+    """Schema-check one parsed document. Shared by the loose and packed readers
+    so the two can never drift into checking different things."""
     root = doc.getroot()
     schema_path = _schema_for(root, root.get(_XSI), lib)
     if schema_path is None:
@@ -91,10 +88,28 @@ def validate_file(path: Path, lib: Path) -> tuple[list[XsdFinding], str | None]:
     try:
         schema = _compiled(str(schema_path))
     except etree.XMLSchemaParseError as exc:
-        return [XsdFinding(str(path), 0, f"could not compile {schema_path.name}: {exc}")], None
+        return [XsdFinding(display, 0, f"could not compile {schema_path.name}: {exc}")], None
     if schema.validate(doc):
         return [], None
-    return [XsdFinding(str(path), e.line, e.message) for e in schema.error_log], None
+    return [XsdFinding(display, e.line, e.message) for e in schema.error_log], None
+
+
+def validate_file(path: Path, lib: Path) -> tuple[list[XsdFinding], str | None]:
+    """(findings, skip_reason). Empty findings + no reason = valid."""
+    try:
+        doc = etree.parse(str(path))
+    except etree.XMLSyntaxError as exc:
+        return [XsdFinding(str(path), exc.lineno or 0, f"XML parse error: {exc.msg}")], None
+    return _validate_doc(doc, str(path), lib)
+
+
+def validate_bytes(data: bytes, display: str, lib: Path) -> tuple[list[XsdFinding], str | None]:
+    """Schema-check a script file read out of a mod's `.cat` catalog."""
+    try:
+        doc = etree.ElementTree(etree.fromstring(data))
+    except etree.XMLSyntaxError as exc:
+        return [XsdFinding(display, exc.lineno or 0, f"XML parse error: {exc.msg}")], None
+    return _validate_doc(doc, display, lib)
 
 
 def eligible(vpath: str) -> bool:
@@ -362,21 +377,88 @@ def dead_attr(message: str, config: _merge.Config | None = None) -> bool:
     return not vanilla_pair_exists(pair[0], pair[1], config)
 
 
+_RE_ELEM_NOT_EXPECTED = re.compile(
+    r"Element '(?P<elem>[\w:-]+)': This element is not expected\."
+    r"\s*Expected is one of \((?P<expected>[^)]*)\)")
+
+#: Child elements `md.xsd` fails to model but the ENGINE accepts. Keyed by
+#: (child, frozenset(expected siblings)) — the expected-set identifies which
+#: parent's content model the schema was evaluating, which the message itself
+#: never names.
+#:
+#: The bar for an entry here is ENGINE EVIDENCE, not plausibility. `check_xsd`
+#: gates "element not expected" on the deliberate reasoning that a removed or
+#: renamed action is safer flagged than missed, so demoting one needs proof the
+#: engine tolerates it — otherwise this list becomes a place to hide real breaks.
+SCHEMA_ELEMENT_GAPS: dict[tuple[str, frozenset], str] = {
+    ("ammunition", frozenset({"orientation", "position", "safepos", "rotation"})):
+        "md.xsd does not model <ammunition> under <create_ship>, but the engine accepts it "
+        "(verified 2026-08-09 against a live debug.txt: the engine parsed the same files to "
+        "LINE granularity — expression warnings at specific lines — while raising no objection "
+        "at any of the 9 <ammunition> sites; and common.xsd:11738 defines exactly this nested "
+        "<ammunition><ammunition macro= exact=/></ammunition> shape)",
+}
+
+
+def schema_element_gap(message: str) -> str | None:
+    """Why this element-not-expected finding is md.xsd incompleteness, else None."""
+    m = _RE_ELEM_NOT_EXPECTED.search(message)
+    if m is None:
+        return None
+    expected = frozenset(p.strip().lower() for p in m.group("expected").split(",") if p.strip())
+    return SCHEMA_ELEMENT_GAPS.get((m.group("elem").lower(), expected))
+
+
 def validate_mod(mod_dir: Path, config: _merge.Config | None = None):
-    """Validate all md/ + aiscripts/ files. Returns (findings, checked, skipped)."""
+    """Validate all md/ + aiscripts/ files, loose AND packed.
+
+    The packed half is not a nicety. This walked only the loose tree until
+    2026-08-09, so on a PACKED mod it validated zero files and `--update`
+    reported no schema breakages at all — while the KB names
+    "attribute X is required but missing" as *the only reliable 9.0 migration
+    signal*. The most trustworthy check we have was silently off for the
+    majority of installed mods.
+
+    Returns (findings, checked, skipped).
+    """
     config = config or _merge.Config()
     lib = config.reference / "libraries"
     findings: list[XsdFinding] = []
     checked = skipped = 0
+    seen: set[str] = set()
     for sub in SCRIPT_DIRS:
         d = mod_dir / sub
         if not d.is_dir():
             continue
         for f in sorted(d.glob("*.xml")):
+            seen.add(f.relative_to(mod_dir).as_posix().lower())
             fnds, reason = validate_file(f, lib)
             if reason:
                 skipped += 1
             else:
                 checked += 1
             findings.extend(fnds)
+
+    # Catalog members under md/ or aiscripts/. Loose wins (engine ordering, and
+    # the same contract `_scan` documents). Depth matches the loose `glob("*.xml")`
+    # above — direct children only — so the two halves check the same population.
+    prefixes = tuple(f"{s}/" for s in SCRIPT_DIRS)
+    for vpath, member in sorted(_cat.mod_vfs(mod_dir).items()):
+        low = vpath.lower()
+        if not low.endswith(".xml") or low in seen or not low.startswith(prefixes):
+            continue
+        if low.count("/") != 1:
+            continue
+        try:
+            data = _cat.read_member(member)
+        except OSError as exc:
+            skipped += 1
+            findings.append(XsdFinding(vpath, 0, f"could not read from catalog: {exc}"))
+            continue
+        fnds, reason = validate_bytes(data, vpath, lib)
+        if reason:
+            skipped += 1
+        else:
+            checked += 1
+        findings.extend(fnds)
     return findings, checked, skipped

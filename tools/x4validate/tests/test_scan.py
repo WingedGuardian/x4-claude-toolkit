@@ -126,3 +126,81 @@ def test_a_clean_mod_produces_neither(tmp_path):
     report = _check.Report()
     _check.check_readability(mod, _ref(tmp_path), report)
     assert report.skipped == [] and report.findings == []
+
+
+# --------------------------------------------------------------------------
+# iter_mod_text — the packed-aware TEXT walk.
+#
+# Real incident (2026-08-09): `_migration.scan_mod` walked `mod_dir.rglob`
+# alone, so `--update` scanned nothing at all on a PACKED mod and reported a
+# clean 9.0 port. Measured on `sn_mod_support_apis` — the very mod whose
+# `Lua_Loader` the check exists to flag — which ships ONE loose file
+# (content.xml) and 4 `Lua_Loader.Load` hits inside `ext_01.cat`: the tool
+# reported 0. Also the only route to `.lua`, which `iter_mod_xml` can never
+# yield because it is not XML.
+# --------------------------------------------------------------------------
+
+def _write_cat(mod_dir, cat_name, members):
+    """Write a .cat/.dat pair. *members* = list of (vpath, bytes)."""
+    mod_dir.mkdir(parents=True, exist_ok=True)
+    cat = mod_dir / cat_name
+    lines, blob = [], bytearray()
+    for vpath, data in members:
+        lines.append(f"{vpath} {len(data)} 1700000000 {hashlib.md5(data).hexdigest()}")
+        blob += data
+    cat.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    cat.with_suffix(".dat").write_bytes(bytes(blob))
+
+
+def test_iter_mod_text_reads_lua_inside_the_catalog(tmp_path):
+    mod = tmp_path / "packedmod"
+    _write_cat(mod, "ext_01.cat", [
+        ("ui/lua_loader.lua", b'RegisterEvent("Lua_Loader.Load", f)\n'),
+        ("md/thing.xml", b"<mdscript/>\n"),
+    ])
+    got = {v: (t, packed) for v, t, packed in
+           _scan.iter_mod_text(mod, (".xml", ".lua"))}
+    assert set(got) == {"ui/lua_loader.lua", "md/thing.xml"}
+    assert "Lua_Loader.Load" in got["ui/lua_loader.lua"][0]
+    assert got["ui/lua_loader.lua"][1] is True          # reported as packed
+
+
+def test_iter_mod_text_loose_file_shadows_its_packed_twin(tmp_path):
+    """Same ordering contract as iter_mod_xml — the engine prefers loose."""
+    mod = tmp_path / "mod"
+    _write_cat(mod, "ext_01.cat", [("ui/x.lua", b"PACKED\n")])
+    (mod / "ui").mkdir(parents=True, exist_ok=True)
+    (mod / "ui/x.lua").write_text("LOOSE\n", encoding="utf-8")
+    got = [(v, t.strip(), p) for v, t, p in _scan.iter_mod_text(mod, (".lua",))]
+    assert got == [("ui/x.lua", "LOOSE", False)]
+
+
+def test_migration_scan_sees_a_packed_mod(tmp_path):
+    from x4validate import _migration
+    mod = tmp_path / "packedmod"
+    _write_cat(mod, "ext_01.cat", [
+        ("ui/lua_loader.lua", b'RegisterEvent("Lua_Loader.Load", on_Load)\n'),
+    ])
+    found = _migration.scan_mod(mod)
+    assert len(found) == 1, [f.note for f in found]
+    assert found[0].file == "ui/lua_loader.lua"
+    assert found[0].line == 1
+    assert found[0].packed is True
+
+
+def test_migration_scan_still_sees_a_loose_mod(tmp_path):
+    """Both sides asserted — the packed fix must not cost the loose path."""
+    from x4validate import _migration
+    mod = tmp_path / "loosemod"
+    (mod / "ui").mkdir(parents=True)
+    (mod / "ui/boot.lua").write_text('x = "Lua_Loader.Load"\n', encoding="utf-8")
+    found = _migration.scan_mod(mod)
+    assert len(found) == 1 and found[0].packed is False
+    assert found[0].file == "ui/boot.lua"
+
+
+def test_migration_scan_clean_mod_reports_nothing(tmp_path):
+    from x4validate import _migration
+    mod = tmp_path / "cleanmod"
+    _write_cat(mod, "ext_01.cat", [("md/ok.xml", b"<mdscript/>\n")])
+    assert _migration.scan_mod(mod) == []

@@ -151,6 +151,56 @@ def iter_mod_xml(
         yield vpath, root
 
 
+def iter_mod_text(
+    mod_dir: Path,
+    suffixes: tuple[str, ...],
+    unreadable: list[Unreadable] | None = None,
+) -> Iterator[tuple[str, str, bool]]:
+    """Yield ``(vpath, text, packed)`` for a mod's files ending in *suffixes*.
+
+    The text-level twin of :func:`iter_mod_xml`, for scanners that match on raw
+    source lines rather than parsed structure — and the only option for ``.lua``,
+    which is not XML and so can never arrive through `iter_mod_xml`.
+
+    Same ordering contract: loose wins over packed, matching the engine.
+
+    Measured reason this exists: `_migration.scan_mod` walked `mod_dir.rglob`
+    alone, so on a PACKED mod it scanned nothing and reported a clean 9.0 port.
+    `sn_mod_support_apis` — the very mod whose `Lua_Loader` the check is about —
+    ships one loose file (`content.xml`) and **4 `Lua_Loader.Load` hits inside
+    `ext_01.cat`**, and `--update` reported zero.
+    """
+    lowered = tuple(s.lower() for s in suffixes)
+    yielded: set[str] = set()
+
+    for path in sorted(mod_dir.rglob("*")):
+        if not path.is_file() or not path.name.lower().endswith(lowered):
+            continue
+        vpath = path.relative_to(mod_dir).as_posix()
+        # Claim before reading, for the same reason iter_mod_xml does: a loose
+        # file shadows its packed twin even when it cannot be read.
+        yielded.add(vpath.lower())
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            if unreadable is not None:
+                unreadable.append(Unreadable(vpath, str(exc)))
+            continue
+        yield vpath, text, False
+
+    # xml_only=False: .lua members are exactly what the default index drops.
+    for vpath, member in sorted(_cat.mod_vfs(mod_dir, xml_only=False).items()):
+        if not vpath.lower().endswith(lowered) or vpath.lower() in yielded:
+            continue
+        try:
+            text = _cat.read_member(member).decode("utf-8", errors="replace")
+        except (OSError, ValueError) as exc:
+            if unreadable is not None:
+                unreadable.append(Unreadable(vpath, str(exc), packed=True))
+            continue
+        yield vpath, text, True
+
+
 def count_line(shown: int, total: int, noun: str, flag: str = "--limit") -> str:
     """Render a count that discloses its own bound.
 

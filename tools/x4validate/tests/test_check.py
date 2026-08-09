@@ -85,7 +85,7 @@ def test_validate_no_false_dangling_when_strings_in_neutral_file(tmp_path):
 # reference simply never covered that DLC.
 # --------------------------------------------------------------------------
 
-def test_unpacked_dlc_missing_from_reference_is_info_not_error(tmp_path):
+def test_unpacked_dlc_missing_from_reference_is_info_not_error(tmp_path, monkeypatch):
     ref = tmp_path / "reference"
     # only one DLC unpacked into reference/, mirroring the real gap
     _write(ref / "extensions/ego_dlc_split/libraries/wares.xml", "<wares/>")
@@ -96,10 +96,52 @@ def test_unpacked_dlc_missing_from_reference_is_info_not_error(tmp_path):
     _write(mod / "extensions/ego_dlc_mini_01/assets/units/size_l/ship_l.xml",
            '<diff><replace sel="//ship/@id">x</replace></diff>')
 
+    # The DLC really is present in the game root — that is what makes
+    # "installed but not readable from reference/" a true statement here.
+    game = tmp_path / "game"
+    (game / "extensions/ego_dlc_mini_01").mkdir(parents=True)
+    monkeypatch.setattr(_merge, "GAME_ROOT", game)
+
     sev, cat, msg = _check._no_base_finding(
         "extensions/ego_dlc_mini_01/assets/units/size_l/ship_l.xml", cfg)
-    assert sev == "info"
-    assert "never unpacked" in msg and "ego_dlc_mini_01" in msg
+    assert sev == "info" and cat == "unverifiable"
+    assert "is installed" in msg and "ego_dlc_mini_01" in msg
+
+
+def test_dlc_absent_from_game_root_is_not_called_installed(tmp_path, monkeypatch):
+    """A DLC that is not installed must never be described as installed.
+
+    Regression for a real finding: an X Rebirth mod patching `ego_dlc_2` and
+    `ego_dlc_teladi_outpost` drew 11 findings each asserting the DLC "is
+    installed but was never unpacked". Neither is an X4 DLC at all. The branch
+    reported an install it had never checked — and in a normally-configured run
+    it is reachable ONLY when the DLC is missing, so the claim was false every
+    time it could fire.
+    """
+    ref = tmp_path / "reference"
+    _write(ref / "extensions/ego_dlc_split/libraries/wares.xml", "<wares/>")
+    cfg = _merge.Config(reference=ref)
+
+    game = tmp_path / "game"
+    (game / "extensions/ego_dlc_split").mkdir(parents=True)   # exists, but not ego_dlc_2
+    monkeypatch.setattr(_merge, "GAME_ROOT", game)
+
+    sev, cat, msg = _check._no_base_finding("extensions/ego_dlc_2/md/Setup_DLC2.xml", cfg)
+    assert sev == "info" and cat == "inactive"
+    assert "not installed" in msg
+    assert "is installed but" not in msg
+
+
+def test_dlc_verdict_admits_it_cannot_tell_without_a_game_root(tmp_path, monkeypatch):
+    """No game root => no evidence either way, and we must say so."""
+    ref = tmp_path / "reference"
+    _write(ref / "extensions/ego_dlc_split/libraries/wares.xml", "<wares/>")
+    cfg = _merge.Config(reference=ref)
+    monkeypatch.setattr(_merge, "GAME_ROOT", tmp_path / "no-such-game-root")
+
+    sev, cat, msg = _check._no_base_finding("extensions/ego_dlc_2/md/Setup_DLC2.xml", cfg)
+    assert sev == "info" and cat == "unverifiable"
+    assert "not configured" in msg
 
 
 def test_dlc_unpacked_in_reference_still_reports_real_path_mismatch(tmp_path):

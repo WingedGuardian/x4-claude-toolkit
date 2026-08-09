@@ -262,10 +262,29 @@ class _SkipCount:
             self.samples.append(f"{vpath}: {exc}")
 
 
+#: The kinds `build` knows how to extract. Kept beside the extractors below so
+#: adding one without listing it here fails loudly rather than silently.
+BUILDABLE_KINDS = ("ware", "macro", "job")
+
+
 def build(config: _merge.Config | None = None, db_path: Path | None = None,
-          dirs: list[Path] | None = None, kinds: tuple[str, ...] = ("ware", "macro", "job"),
+          dirs: list[Path] | None = None, kinds: tuple[str, ...] = BUILDABLE_KINDS,
           progress=lambda s: None) -> Path:
     config = config or _merge.Config()
+    # Reject an unknown kind instead of quietly building nothing. `--kinds
+    # shieldgenerator` (a *klass*, not a kind) used to write an empty store and
+    # exit 0, so every later query answered from an empty database with nothing
+    # ever saying the name was wrong. The read side already refuses this — `ls`
+    # prints "unknown kind ... stored kinds are: ..." — and the build side must
+    # agree, because a false clean here poisons everything downstream.
+    unknown = [k for k in kinds if k not in BUILDABLE_KINDS]
+    if unknown:
+        raise ValueError(
+            f"unknown kind(s) {', '.join(sorted(unknown))} — buildable kinds are "
+            f"{', '.join(sorted(BUILDABLE_KINDS))}. (Values like 'shieldgenerator' "
+            "are entity CLASSES; filter those at query time, e.g. "
+            "`x4effective attr macro <prop> --class shieldgenerator`.)"
+        )
     db_path = db_path or _registry.require(
         DB_PATH, "the effective-store location",
         "set X4_EFFECTIVE_DB or X4_MODS (or X4_REGISTRY), or pass --db")
@@ -331,7 +350,11 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
 
 
 def _write_db(db_path, config, mods, ordered, order_rank, entities, removed):
-    tmp = db_path.with_suffix(db_path.suffix + ".tmp")
+    # PID-qualified: two concurrent builds used to pick the SAME `<db>.tmp`, so
+    # they raced on os.replace and BOTH died with a raw PermissionError
+    # (WinError 32). Build-then-atomically-replace already keeps the store safe
+    # — the loser must simply lose quietly and leave a valid db behind.
+    tmp = db_path.with_suffix(f"{db_path.suffix}.{os.getpid()}.tmp")
     if tmp.exists():
         tmp.unlink()
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -364,7 +387,22 @@ def _write_db(db_path, config, mods, ordered, order_rank, entities, removed):
         con.commit()
     finally:
         con.close()
-    os.replace(tmp, db_path)
+    try:
+        os.replace(tmp, db_path)
+    except OSError as exc:
+        # Windows refuses the replace while another process holds the target
+        # (a concurrent build, or a reader with the store open). The store is
+        # untouched and still valid, so say that plainly instead of unwinding a
+        # traceback that reads like data loss.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass  # silent-ok: best-effort cleanup of our own temp; the real error is raised below
+        raise OSError(
+            f"could not install the rebuilt store at {db_path}: {exc}. "
+            "Another x4effective build or an open reader is holding it — "
+            "the existing store is unchanged; retry once that finishes."
+        ) from exc
 
 
 # --- queries ------------------------------------------------------------------
@@ -447,7 +485,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "build":
         cfg = _merge.Config(reference=Path(args.reference))
         kinds = tuple(k.strip() for k in args.kinds.split(",") if k.strip())
-        build(cfg, db, kinds=kinds, progress=lambda s: print(f"  {s}", file=sys.stderr))
+        try:
+            build(cfg, db, kinds=kinds, progress=lambda s: print(f"  {s}", file=sys.stderr))
+        except (ValueError, OSError) as exc:
+            # A bad --kinds and a lost install race are both ordinary operator
+            # errors with an actionable message; a traceback would bury it.
+            print(f"x4effective build: {exc}", file=sys.stderr)
+            return 2
         return 0
     if args.cmd == "dump":
         return _cmd_dump(args)

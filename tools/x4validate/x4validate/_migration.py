@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import _scan
+
 # (compiled pattern, human note) — keep in sync with KB "Version Migration Map" Tier-2.
 PATTERNS = [
     (re.compile(r"Lua_Loader\.Load"),
@@ -32,21 +34,24 @@ class MigrationFinding:
     line: int
     note: str
     snippet: str
+    packed: bool = False
 
 
 def scan_mod(mod_dir: Path, unreadable: list[str] | None = None) -> list[MigrationFinding]:
+    """Every 9.0 runtime-breakage pattern in a mod's XML and Lua, packed or loose.
+
+    Goes through `_scan` rather than walking the loose tree itself. It used to do
+    the latter, which made `--update` blind to any PACKED mod — it read only what
+    `rglob` could see and then reported a clean port. That is a false clean on the
+    majority of installed mods, and it is silent.
+    """
     out: list[MigrationFinding] = []
-    for f in sorted(mod_dir.rglob("*")):
-        if not f.is_file() or f.suffix.lower() not in _EXTS:
-            continue
-        try:
-            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError as exc:
-            if unreadable is not None:
-                unreadable.append(f"{f.relative_to(mod_dir).as_posix()}: {exc}")
-            continue
-        for i, line in enumerate(lines, 1):
+    skipped: list[_scan.Unreadable] = []
+    for vpath, text, packed in _scan.iter_mod_text(mod_dir, tuple(sorted(_EXTS)), skipped):
+        for i, line in enumerate(text.splitlines(), 1):
             for pat, note in PATTERNS:
                 if pat.search(line):
-                    out.append(MigrationFinding(str(f), i, note, line.strip()[:120]))
+                    out.append(MigrationFinding(vpath, i, note, line.strip()[:120], packed))
+    if unreadable is not None:
+        unreadable.extend(str(u) for u in skipped)
     return out

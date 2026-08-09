@@ -1,5 +1,6 @@
 """End-to-end: enumerate -> merge -> extract -> store -> query, with provenance."""
 
+import os
 import sqlite3
 
 from x4validate import _effective, _merge
@@ -106,3 +107,63 @@ def test_cli_queries(tmp_path, monkeypatch, capsys):
 def test_sql_rejects_writes(tmp_path, monkeypatch, capsys):
     db = _build(tmp_path, monkeypatch)
     assert _effective.main(["--db", str(db), "sql", "DELETE FROM entities"]) == 2
+
+
+# --------------------------------------------------------------------------
+# build-time guards, both found 2026-08-09 by racing builders in a concurrency
+# probe (the probe's own first version silently stopped testing the race
+# because it passed the newly-rejected kind -- which is how #2 surfaced).
+# --------------------------------------------------------------------------
+
+def test_build_rejects_an_unknown_kind(tmp_path, monkeypatch):
+    """`--kinds shieldgenerator` (a CLASS, not a kind) used to write an empty
+    store and exit 0, so every later query answered from an empty database and
+    nothing ever said the name was wrong. The read side already refuses this."""
+    import pytest
+    ref = tmp_path / "reference"
+    (ref / "libraries").mkdir(parents=True)
+    monkeypatch.setattr(_effective._registry, "ingest_content_xml", lambda *a, **k: [])
+    with pytest.raises(ValueError) as exc:
+        _effective.build(_merge.Config(reference=ref), tmp_path / "x.sqlite",
+                         dirs=[], kinds=("shieldgenerator",))
+    msg = str(exc.value)
+    assert "shieldgenerator" in msg
+    for kind in _effective.BUILDABLE_KINDS:
+        assert kind in msg          # tells the user what IS buildable
+
+
+def test_build_accepts_every_advertised_kind(tmp_path, monkeypatch):
+    """Both sides asserted: a guard that rejected everything would pass the test
+    above. BUILDABLE_KINDS must be exactly what build() will accept."""
+    ref = tmp_path / "reference"
+    (ref / "libraries").mkdir(parents=True)
+    (ref / "libraries" / "wares.xml").write_bytes(b"<wares/>")
+    (ref / "libraries" / "jobs.xml").write_bytes(b"<jobs/>")
+    monkeypatch.setattr(_effective._registry, "ingest_content_xml", lambda *a, **k: [])
+    db = _effective.build(_merge.Config(reference=ref), tmp_path / "all.sqlite",
+                          dirs=[], kinds=_effective.BUILDABLE_KINDS)
+    assert db.is_file()
+
+
+def test_build_temp_file_is_unique_per_process(tmp_path, monkeypatch):
+    """Two concurrent builds picked the SAME `<db>.tmp` and raced on os.replace,
+    so BOTH died with a raw PermissionError (WinError 32) and no store was
+    installed at all. Measured after the fix: 3 racers, all rc=0, store intact."""
+    ref = tmp_path / "reference"
+    (ref / "libraries").mkdir(parents=True)
+    (ref / "libraries" / "jobs.xml").write_bytes(b"<jobs/>")
+    monkeypatch.setattr(_effective._registry, "ingest_content_xml", lambda *a, **k: [])
+
+    seen = []
+    real_replace = _effective.os.replace
+
+    def spy(src, dst):
+        seen.append(str(src))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(_effective.os, "replace", spy)
+    db = tmp_path / "eff.sqlite"
+    _effective.build(_merge.Config(reference=ref), db, dirs=[], kinds=("job",))
+    assert seen, "build never installed a temp file"
+    assert str(os.getpid()) in seen[0], f"temp path not process-unique: {seen[0]}"
+    assert not list(tmp_path.glob("*.tmp")), "temp file left behind"

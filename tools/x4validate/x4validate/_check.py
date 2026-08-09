@@ -519,9 +519,28 @@ def _no_base_finding(vpath: str, config: _merge.Config) -> tuple[str, str, str]:
         dlc = parts[1]
         known = {d.name.lower() for d in config.dlc_dirs()}
         if dlc.lower() not in known:
-            return ("info", "unverifiable",
-                    f"targets DLC '{dlc}', which is installed but was never unpacked into "
-                    "reference/ — cannot verify this path exists (not a confirmed error)")
+            # Whether the DLC is INSTALLED is a fact about the game root, and it
+            # has to be looked up — not assumed. This branch used to answer every
+            # unknown `ego_dlc_*` with "which is installed but was never unpacked",
+            # asserting an install it never checked. Both clauses can be false:
+            # `dlc_dirs()` now covers all 8 real DLC (mini-DLC included, read
+            # packed), so in a normally-configured run this is reachable ONLY when
+            # the DLC is absent. Measured on an X Rebirth mod misfiled among X4
+            # ones: 11 findings swearing `ego_dlc_2` and `ego_dlc_teladi_outpost`
+            # were installed, when neither is even an X4 DLC.
+            game_ext = _merge.GAME_ROOT / "extensions"
+            if not game_ext.is_dir():
+                return ("info", "unverifiable",
+                        f"targets DLC '{dlc}', which is not in the reference tree, and the "
+                        "game root is not configured — cannot tell an uninstalled DLC from "
+                        "an un-unpacked one")
+            if (game_ext / dlc).is_dir():
+                return ("info", "unverifiable",
+                        f"targets DLC '{dlc}', which is installed but is not readable from "
+                        "reference/ — cannot verify this path exists (not a confirmed error)")
+            return ("info", "inactive",
+                    f"targets DLC '{dlc}', which is not installed — "
+                    "the engine never loads this file (designed no-op, not an error)")
     return ("error", "path",
             f"no base game file for '{vpath}' (path mismatch? this patch can never apply)")
 
@@ -958,7 +977,11 @@ def check_migration(mod_dir: Path, config: _merge.Config, report: Report) -> Non
     """Runtime-only 9.0 breakages (dead APIs / deprecated Lua) the XSD can't catch."""
     unreadable: list[str] = []
     for m in _migration.scan_mod(mod_dir, unreadable):
-        report.add("warn", "migration", f"{m.note}  [{m.snippet}]", _relpath(m.file, mod_dir), m.line)
+        # Say when the hit is inside the catalog: the user cannot open that file
+        # in an editor, and the fix is a repack, not a text edit.
+        where = "  (inside the mod's catalog)" if m.packed else ""
+        report.add("warn", "migration", f"{m.note}  [{m.snippet}]{where}",
+                   _relpath(m.file, mod_dir), m.line)
     for u in unreadable:
         report.skip("9.0 migration scan", f"{u} — not scanned for dead APIs")
 
@@ -1062,6 +1085,8 @@ def check_xsd(mod_dir: Path, config: _merge.Config, report: Report) -> None:
     findings, checked, skipped = _xsd.validate_mod(mod_dir, config)
 
     def _gates(msg: str) -> bool:
+        if _xsd.schema_element_gap(msg):
+            return False  # engine-verified md.xsd gap — advisory, never a gate
         return "is required but missing" in msg or "is not expected" in msg
 
     high = [f for f in findings if _gates(f.message)]
@@ -1080,6 +1105,14 @@ def check_xsd(mod_dir: Path, config: _merge.Config, report: Report) -> None:
         # kuertee_atd attributes, audit F8, deliberately left unresolved by the
         # user). The distinct category makes the class queryable without gating
         # a working released mod on an unsettleable question.
+        gap = _xsd.schema_element_gap(f.message)
+        if gap:
+            # Say WHY it was demoted. A silent demotion is indistinguishable from
+            # the checker simply not noticing, and it is the shape that would let
+            # a real removed-element break hide in the advisory bucket.
+            report.add("info", "xsd-schema-gap", f"{f.message}  [{gap}]",
+                       _relpath(f.file, mod_dir), f.line)
+            continue
         cat = ("xsd-unknown-attr"
                if _xsd.dead_attr(f.message, config) else "xsd-strict")
         report.add("info", cat, f.message, _relpath(f.file, mod_dir), f.line)
