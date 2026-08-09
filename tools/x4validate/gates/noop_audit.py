@@ -64,6 +64,42 @@ def mod_docs(mod: Path):
             print(f"  ! unreadable {mod.name}/{p}: {exc!r}")
 
 
+def cross_mod_base(vpath: str, mods_by_name: dict) -> etree._Element | None:
+    """Resolve `extensions/<owner>/<rel>` against the OWNER mod's own copy.
+
+    A cross-mod patch targets a file another mod ships, so there is no vanilla
+    document to apply it to — but there IS a real base, and without it a third
+    of the corpus's cross-mod ops go unaudited.
+    """
+    parts = vpath.split("/")
+    if len(parts) < 3 or parts[0].lower() != "extensions":
+        return None
+    owner = mods_by_name.get(parts[1].lower())
+    if owner is None:
+        return None
+    rel = "/".join(parts[2:])
+    data = None
+    loose = owner / rel
+    if loose.is_file():
+        try:
+            data = loose.read_bytes()
+        except OSError:
+            return None
+    else:
+        try:
+            data = _cat.read_path(owner, rel, verify=False)
+        except Exception:
+            return None
+    if not data:
+        return None
+    try:
+        root = etree.fromstring(data)
+    except Exception:
+        return None
+    # The owner's own file must be a real document, not itself a diff.
+    return root if root.tag != "diff" else None
+
+
 def is_structural(op: etree._Element) -> bool:
     """Ops that MUST alter the tree when applied."""
     kids = [c for c in op if isinstance(c.tag, str)]
@@ -79,6 +115,7 @@ def main() -> int:
     false_ok, false_alarm, unparseable = [], [], []
     stats = Counter()
     mods = [d for d in sorted(EXT.iterdir()) if d.is_dir()]
+    mods_by_name = {d.name.lower(): d for d in mods}
     if LIMIT:
         mods = mods[:LIMIT]
 
@@ -96,18 +133,26 @@ def main() -> int:
                 continue
             key = vp.lower()
             base_path = van.get(key)
+            base = None
             if base_path is None and key.startswith("extensions/"):
                 parts = vp.split("/")
                 if len(parts) > 2 and not parts[1].lower().startswith("ego_dlc_"):
                     base_path = van.get("/".join(parts[2:]).lower())
             if base_path is None:
-                stats["no base doc (cross-mod)"] += 1
-                continue
-            try:
-                base = etree.parse(base_path).getroot()
-            except Exception:
-                stats["unparseable base"] += 1
-                continue
+                # CROSS-MOD: the target is another MOD's file, not a vanilla one.
+                # Skipping these left 433 ops unaudited — a third of the corpus's
+                # cross-mod surface, and exactly where a patch is most fragile.
+                base = cross_mod_base(vp, mods_by_name)
+                if base is None:
+                    stats["no base doc anywhere"] += 1
+                    continue
+                stats["cross-mod base resolved"] += 1
+            if base is None:
+                try:
+                    base = etree.parse(base_path).getroot()
+                except Exception:
+                    stats["unparseable base"] += 1
+                    continue
 
             for op in droot:
                 if not isinstance(op.tag, str) or op.tag not in ("add", "replace", "remove"):

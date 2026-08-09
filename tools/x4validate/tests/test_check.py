@@ -254,3 +254,40 @@ def test_only_file_missing_reports_instead_of_raising(tmp_path):
     _check.check_sel_resolution_one(mod / "nope.xml", mod, _merge.Config(), report)
     assert any(f.category == "path" and "cannot read file" in f.message
                for f in report.findings), report.findings
+
+
+def test_huge_op_count_is_flagged_before_the_slow_part(tmp_path):
+    """A file with a pathological op count must SAY so, not just appear to hang.
+
+    Applying a diff is O(n^2) in ops-per-file (each op re-evaluates its selector
+    against a tree the previous ops grew) — inherent, not a defect to optimize
+    away. What IS fixable is the silence: a 32k-op file took >900s with no
+    indication that anything was wrong.
+    """
+    mod = tmp_path / "big"
+    (mod / "libraries").mkdir(parents=True)
+    (mod / "content.xml").write_text('<content id="big" name="b" version="1"/>',
+                                     encoding="utf-8")
+    ops = "".join(f'<add sel="//wares"><ware id="w{i}"/></add>'
+                  for i in range(_check._LARGE_OP_COUNT))
+    (mod / "libraries" / "wares.xml").write_text(f"<diff>{ops}</diff>", encoding="utf-8")
+
+    report = _check.Report()
+    root = _merge.parse_file(mod / "libraries" / "wares.xml")
+    _check._warn_if_pathologically_large(root, "libraries/wares.xml", report)
+    assert any(f.severity == "info" and "O(n^2)" in f.message for f in report.findings), \
+        report.findings
+
+
+def test_normal_op_count_is_not_flagged(tmp_path):
+    """The largest file in a real ~120-mod install is 1,443 ops — well under the
+    threshold, so ordinary content must never see this note."""
+    mod = tmp_path / "normal"
+    (mod / "libraries").mkdir(parents=True)
+    (mod / "libraries" / "wares.xml").write_text(
+        "<diff>" + "".join(f'<add sel="//wares"><ware id="w{i}"/></add>'
+                           for i in range(1443)) + "</diff>", encoding="utf-8")
+    report = _check.Report()
+    root = _merge.parse_file(mod / "libraries" / "wares.xml")
+    _check._warn_if_pathologically_large(root, "libraries/wares.xml", report)
+    assert not report.findings

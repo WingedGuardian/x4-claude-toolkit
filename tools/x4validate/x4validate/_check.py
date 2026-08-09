@@ -565,12 +565,33 @@ def _inert_bare_path_finding(vpath: str, merged: _merge.MergeResult) -> tuple[st
             f"the engine never loads it (silent no-op, no log line, no rejected op)")
 
 
+#: Ops in ONE file beyond which validation gets visibly slow. Applying a diff is
+#: O(n^2) in ops-per-file — every op re-evaluates its selector against a tree the
+#: previous ops just grew — so cost rises ~3.5x each time the count doubles
+#: (measured 2026-08-08). That is inherent to "N ops x a full-tree evaluation",
+#: not a defect to optimize away: an op cannot reuse a match the op before it
+#: invalidated. The threshold is ~3x the largest file in a real ~120-mod install
+#: (1,443 ops, about 0.03s), so normal content never trips it and nobody is left
+#: staring at an apparent hang with no explanation.
+_LARGE_OP_COUNT = 5000
+
+
+def _warn_if_pathologically_large(diff_root, vpath: str, report: Report) -> None:
+    n = sum(1 for op in diff_root if isinstance(op.tag, str))
+    if n >= _LARGE_OP_COUNT:
+        report.add("info", "path",
+                   f"{n} ops in one file — validation is O(n^2) in ops-per-file, so "
+                   f"this file alone may take a while (typical mods ship under 1,500)",
+                   vpath)
+
+
 def check_sel_resolution(mod_dir: Path, config: _merge.Config, report: Report) -> None:
     """Flag any non-silent op whose sel= matches nothing in the merged base+DLC tree."""
     checked = 0
     seen_skips: set[str] = set()
     for vpath, diff_root in iter_diff_files(mod_dir):
         checked += 1
+        _warn_if_pathologically_large(diff_root, vpath, report)
         merged = _merge.build_effective(vpath, config)
         # An overlay we could not parse was left out of this tree, so every verdict
         # below is computed against an incomplete tree. That disables the check's

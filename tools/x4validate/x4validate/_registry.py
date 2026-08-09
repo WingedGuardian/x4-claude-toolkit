@@ -183,9 +183,26 @@ def _new_registry() -> CommentedMap:
     return m
 
 
+#: Filename used when the configured registry location names a DIRECTORY.
+REGISTRY_FILENAME = "modlist.yaml"
+
+
+def _registry_file(path: Path) -> Path:
+    """Normalize a configured registry location to the FILE to read/write.
+
+    `$X4_REGISTRY` is documented as a file, but its name invites a directory and
+    the fallback (`$X4_MODS/_registry/modlist.yaml`) makes either reading
+    plausible. Given a directory we used to hand it straight to `open(..., "w")`,
+    which raises a bare PermissionError traceback on Windows — a confusing crash
+    for a reasonable setting. Treat a directory as "put the registry in here".
+    """
+    return path / REGISTRY_FILENAME if path.is_dir() else path
+
+
 def load_registry(path: Path | None = None) -> CommentedMap:
-    path = path or require(DEFAULT_REGISTRY, "the registry location",
-                           "set X4_MODS (or X4_REGISTRY), or pass --registry")
+    path = _registry_file(path or require(
+        DEFAULT_REGISTRY, "the registry location",
+        "set X4_MODS (or X4_REGISTRY), or pass --registry"))
     if path.is_file():
         with open(path, encoding="utf-8") as f:
             data = _yaml.load(f)
@@ -197,8 +214,9 @@ def load_registry(path: Path | None = None) -> CommentedMap:
 
 
 def save_registry(reg: CommentedMap, path: Path | None = None) -> None:
-    path = path or require(DEFAULT_REGISTRY, "the registry location",
-                           "set X4_MODS (or X4_REGISTRY), or pass --registry")
+    path = _registry_file(path or require(
+        DEFAULT_REGISTRY, "the registry location",
+        "set X4_MODS (or X4_REGISTRY), or pass --registry"))
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         _yaml.dump(reg, f)
@@ -371,9 +389,13 @@ def generate_dashboard(reg: CommentedMap) -> str:
 
 
 def write_dashboard(reg: CommentedMap, path: Path | None = None) -> Path:
-    path = path or (require(DEFAULT_REGISTRY, "the registry location",
-                            "set X4_MODS (or X4_REGISTRY), or pass --registry")
-                    .parent / "WORKLIST.md")
+    # Same normalization as load/save, or the dashboard lands somewhere else:
+    # with a DIRECTORY configured, `.parent` of the raw path is the directory
+    # ABOVE it, so WORKLIST.md ended up beside the registry folder instead of
+    # inside it. Every step of a lookup chain has to learn the same rule.
+    path = path or (_registry_file(require(
+        DEFAULT_REGISTRY, "the registry location",
+        "set X4_MODS (or X4_REGISTRY), or pass --registry")).parent / "WORKLIST.md")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(generate_dashboard(reg), encoding="utf-8")
     return path

@@ -23,11 +23,18 @@ def _now() -> str:
 
 
 def _dash_path(reg_path) -> Path:
-    """WORKLIST.md sits next to whichever registry we're using."""
+    """WORKLIST.md sits next to whichever registry we're using.
+
+    Normalize through `_registry_file` first: when the configured location is a
+    DIRECTORY, `.parent` of the raw path is the directory ABOVE it, so the
+    dashboard landed beside the registry folder instead of inside it. This is
+    the third place that has to know the rule (load, save, and here) — teaching
+    only some of them is how a "fixed" path bug half-persists.
+    """
     base = reg_path if reg_path else _registry.require(
         _registry.DEFAULT_REGISTRY, "the registry location",
         "set X4_MODS (or X4_REGISTRY), or pass --registry")
-    return Path(base).parent / "WORKLIST.md"
+    return _registry._registry_file(Path(base)).parent / "WORKLIST.md"
 
 
 def _classify(meta: "_nexus.ModMeta", today: date, is_custom: bool = False) -> tuple[str, str]:

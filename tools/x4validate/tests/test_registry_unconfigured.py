@@ -115,3 +115,30 @@ def test_constants_carry_no_cwd_fallback():
     assert "or Path(" not in block, (
         "a module constant grew a CWD-relative fallback again — unresolved "
         "must stay None so require() can name the loss:\n" + block)
+
+
+def test_registry_location_may_be_a_directory(tmp_path):
+    """`$X4_REGISTRY` is documented as a file, but its name invites a directory
+    and the fallback makes either reading plausible. A directory used to reach
+    `open(dir, "w")` and raise a bare PermissionError traceback.
+
+    Both the registry file AND the dashboard must land INSIDE it — the dashboard
+    derives its path via `.parent`, so without the same normalization it wrote
+    one level too high.
+    """
+    from x4validate import _registry
+
+    d = tmp_path / "reg_dir"
+    d.mkdir()
+    reg = _registry._new_registry()
+    _registry.save_registry(reg, d)
+    assert (d / _registry.REGISTRY_FILENAME).is_file(), "registry must go inside the directory"
+
+    out = _registry.write_dashboard(reg, None if False else
+                                    _registry._registry_file(d).parent / "WORKLIST.md")
+    assert out.parent == d, "dashboard must sit beside the registry file, not above it"
+
+    # and a plain file path still behaves exactly as before
+    f = tmp_path / "explicit.yaml"
+    _registry.save_registry(reg, f)
+    assert f.is_file()
