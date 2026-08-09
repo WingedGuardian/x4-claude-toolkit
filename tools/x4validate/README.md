@@ -178,11 +178,16 @@ handled here — it is a secret, not a path, and must never be written to a file
 - `gates/` — measured against the engine / the real modlist, not fixtures. Four engine
   gates: `oracle.py` (diff layer, 0 FALSE OK), `oracle_index.py` (index layer),
   `regress.py` (per-mod Tier A/B sweep), `schema_sweep.py` (effective-schema
-  composition). Plus six corpus audits added in v2.1.0 — `noop_audit.py` (reported ≡
-  actual, per op), `provenance_audit.py` (a changed value names its mod),
-  `consistency_audit.py` (store ≡ merge ≡ dump), `corpus_sweep.py` (every installed
-  mod, both tiers), `qa_sweep.py` (every CLI × subcommand), `edge_sweep.py` (hostile
-  inputs). See `gates/README.md` for the bar each one holds.
+  composition), plus `oracle_reverse.py` (the direction the first two cannot test:
+  the engine complained — do we notice?). Plus nine corpus audits added in v2.1.0 —
+  `noop_audit.py` (reported ≡ actual, per op), `provenance_audit.py` (a changed value
+  names its mod), `consistency_audit.py` (store ≡ merge ≡ dump), `corpus_sweep.py`
+  (every installed mod, both tiers), `qa_sweep.py` (every CLI × subcommand),
+  `edge_sweep.py` (hostile inputs), `reader_edges.py` (damaged archives/encodings),
+  `determinism_audit.py` (identical input ⇒ identical output), `mutation_probe.py`
+  (break it and require the suite to notice), `fuzz_diff.py` (random legal ops vs
+  invariants) and `stress_sweep.py` (unseen corpora, chained tools, pathological XML).
+  **16 in total.** See `gates/README.md` for the bar each one holds.
 
 ## Extending
 Add reference types by extending the catalog in `_refs.py`; add completeness
