@@ -391,3 +391,78 @@ def test_apply_diff_never_reports_ok_for_a_noop():
         if unchanged:
             assert all(not o.ok for o in ops), f"silent no-op reported as applied: {body}"
             assert all(o.detail for o in ops)
+
+
+def test_ambiguous_sel_applies_nothing_and_is_reported():
+    """RFC 5261: sel must select exactly ONE node, and X4 enforces it — it logs
+    "Multiple matching nodes ... Skipping node" and applies NOTHING.
+
+    Modelling that faithfully matters: applying to every match instead would
+    produce an effective tree the game never has. Added after a mutation probe
+    showed this guard could be deleted with the whole unit suite still green —
+    only the oracle gate covered it, and that needs a captured engine log.
+    """
+    tree = etree.fromstring(
+        b'<wares><ware id="a" price="1"/><ware id="b" price="1"/></wares>')
+    ops = _merge.apply_diff(tree, _diff(b'<replace sel="//ware/@price">999</replace>'))
+    assert tree.xpath("//ware/@price") == ["1", "1"], "an ambiguous op must change nothing"
+    assert [o.ok for o in ops] == [False]
+    assert ops[0].ambiguous is True
+    assert "2 nodes" in ops[0].detail
+
+
+def test_ambiguous_remove_also_applies_nothing():
+    """Same rule for <remove> — the destructive direction, where applying to
+    every match would delete content the engine keeps."""
+    tree = etree.fromstring(b'<wares><ware id="a"/><ware id="b"/></wares>')
+    ops = _merge.apply_diff(tree, _diff(b'<remove sel="//ware"/>'))
+    assert len(tree.findall("ware")) == 2, "an ambiguous remove must delete nothing"
+    assert [o.ok for o in ops] == [False]
+
+
+def _ware_mod(tmp_path, name, sel, value, attr="transport"):
+    d = tmp_path / name
+    (d / "libraries").mkdir(parents=True, exist_ok=True)
+    (d / "content.xml").write_text(
+        f'<content id="{name}" name="{name}" version="1"/>', encoding="utf-8")
+    (d / "libraries" / "wares.xml").write_text(
+        f'<diff><replace sel="//ware[@id=\'{sel}\']/@{attr}">{value}</replace></diff>',
+        encoding="utf-8")
+    return d
+
+
+def test_merge_depends_on_load_order_and_nothing_else(tmp_path):
+    """Non-overlapping overlays must give the SAME result in any order.
+
+    If a permutation changes the outcome, something depends on enumeration order
+    rather than semantics — and every collision "winner" we report would be a
+    coin flip dressed as an answer.
+    """
+    import itertools
+    mods = [_ware_mod(tmp_path, "ord_a", "ore", "liquid"),
+            _ware_mod(tmp_path, "ord_b", "silicon", "liquid"),
+            _ware_mod(tmp_path, "ord_c", "ice", "liquid")]
+    seen = set()
+    for perm in itertools.permutations(mods):
+        res = _merge.build_effective("libraries/wares.xml", _merge.Config(),
+                                     extra_overlays=list(perm))
+        if res.tree is None:
+            return  # no reference tree available in this environment
+        seen.add(tuple(sorted(
+            (w.get("id"), w.get("transport")) for w in res.tree.iter("ware")
+            if w.get("id") in ("ore", "silicon", "ice"))))
+    assert len(seen) == 1, "result depends on overlay order for non-overlapping mods"
+
+
+def test_overlapping_overlays_last_one_wins(tmp_path):
+    """And where they DO overlap, the winner must be the last overlay — the whole
+    load-order model rests on this being true and predictable."""
+    x = _ware_mod(tmp_path, "ord_x", "ore", "111", attr="volume")
+    y = _ware_mod(tmp_path, "ord_y", "ore", "222", attr="volume")
+    for overlays, expected in (([x, y], "222"), ([y, x], "111")):
+        res = _merge.build_effective("libraries/wares.xml", _merge.Config(),
+                                     extra_overlays=overlays)
+        if res.tree is None:
+            return
+        got = [w.get("volume") for w in res.tree.iter("ware") if w.get("id") == "ore"]
+        assert got == [expected], f"expected last overlay to win, got {got}"
