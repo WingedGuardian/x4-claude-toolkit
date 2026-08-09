@@ -29,7 +29,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _merge, _registry, _xpath, _input
+from x4validate import _cat, _merge, _registry, _scan, _xpath, _input
 from x4validate import __version__
 
 #: `{page,text}` localized reference - display text, never a registry identity.
@@ -536,6 +536,108 @@ def _dup_add_key(parent_id: str, folders: list[str],
     return None
 
 
+def _macro_defs(mod_path: Path) -> dict[str, str]:
+    """`{macro_name_lower: vpath}` for macros this mod DEFINES (not diffs).
+
+    Narrowed to files under a `macros/` directory — the engine-wide convention
+    (`assets/.../macros/<name>_macro.xml`) that every observed case follows.
+    Parsing every XML of every mod would roughly double `analyze`'s runtime for
+    definitions that do not live there.
+    """
+    out: dict[str, str] = {}
+    for vpath, root in _scan.iter_mod_xml(
+            mod_path, lambda v: "/macros/" in v.replace("\\", "/").lower(), None):
+        if root.tag == "diff":
+            # A <diff> can still DEFINE macros: `<replace sel="//macros">` with a
+            # fresh <macros> payload is the standard whole-file override idiom
+            # (VRO ships 848 of them). Skipping all diffs missed the very case
+            # this check was built for — `missile_flagship_light_mk1_macro`,
+            # where VRO's definition arrives exactly that way. Only count a macro
+            # the op actually SUPPLIES; a bare `<replace sel=".../@attr">` tweak
+            # names no macro and defines nothing.
+            for op in root:
+                if not isinstance(op.tag, str) or op.tag not in ("add", "replace"):
+                    continue
+                for m in op.iter("macro"):
+                    name = m.get("name")
+                    if name:
+                        out.setdefault(name.lower(), vpath)
+            continue
+        for m in root.iter("macro"):
+            name = m.get("name")
+            if name:
+                out.setdefault(name.lower(), vpath)
+    return out
+
+
+def _strip_nesting(vpath: str) -> str:
+    """`extensions/<owner>/<rel>` -> `<rel>`; anything else unchanged (lowercased).
+
+    The nested form is a PATCH INTO <owner>'s file, so both spellings name the
+    same logical file. Unpacked `ego_dlc_*` content genuinely lives under
+    `extensions/`, so it is left alone.
+    """
+    v = vpath.replace("\\", "/").lower().lstrip("/")
+    parts = v.split("/")
+    if len(parts) > 2 and parts[0] == "extensions" and not parts[1].startswith("ego_dlc_"):
+        return "/".join(parts[2:])
+    return v
+
+
+def _name_clashes(mods: list[dict], rank: dict[str, int],
+                  cand_folder: str | None) -> list[Collision]:
+    """Macro NAMES defined by 2+ mods in DIFFERENT files.
+
+    A collision class the per-vpath scan structurally cannot see: the two mods
+    never share a path, so nothing ever compares them — yet X4 resolves macros by
+    NAME through `index/macros.xml`, so only ONE definition is ever loaded and the
+    other is dead content the author cannot tell is dead.
+
+    Found 2026-08-09 by re-deriving the missile roster:
+    `missile_flagship_light_mk1_macro` is defined by both `rackham` and `vro` at
+    different paths, and the effective index points at VRO's — so rackham's file
+    is never read. Measured extent: 22 names across the installed set.
+
+    Base/DLC are excluded: vanilla itself ships `cluster_sm3_background_macro` at
+    six paths, so the pattern is legal and only becomes a question between mods.
+
+    **The winner is NOT decided by load order** — `index/macros.xml` decides, and
+    that file is itself patchable. So `winner` is left empty and the detail says
+    to resolve it with `x4effective dump index/macros.xml`. Naming a load-order
+    winner here would be a confident wrong answer.
+    """
+    defs: dict[str, dict[str, str]] = defaultdict(dict)
+    for m in mods:
+        folder = m["folder"]
+        if folder.lower().startswith("ego_dlc_"):
+            continue
+        for name, vpath in _macro_defs(Path(m["path"])).items():
+            defs[name][folder] = vpath
+
+    out: list[Collision] = []
+    for name, per_mod in sorted(defs.items()):
+        if len(per_mod) < 2:
+            continue
+        # Compare LOGICAL files. `extensions/<owner>/<rel>` is the nested
+        # cross-mod patch form of `<rel>` — the engine merges it INTO the owner's
+        # file, so it is the same file, not a rival definition. Without this
+        # every cross-mod patch pair looked like a name clash (measured: 57 rows,
+        # of which 35 were this).
+        if len({_strip_nesting(v) for v in per_mod.values()}) < 2:
+            continue          # same logical file -> already a file-level collision
+        if cand_folder is not None and cand_folder not in per_mod:
+            continue
+        folders = sorted(per_mod, key=lambda f: rank.get(f, len(rank)))
+        out.append(Collision(
+            vpath=" | ".join(f"{f}:{per_mod[f]}" for f in folders),
+            kind="NAME-CLASH", target=name, mods=folders, winner="",
+            detail=("same macro name defined in DIFFERENT files; X4 loads only the one "
+                    "index/macros.xml points at, so the others are dead. Resolve with "
+                    "`x4effective dump index/macros.xml` — load order does NOT decide this."),
+        ))
+    return out
+
+
 def analyze(
     ext_dir: Path,
     candidate: Path | None = None,
@@ -596,12 +698,16 @@ def analyze(
         if cand_folder is not None:
             found = [c for c in found if cand_folder in c.mods]
         report.collisions.extend(found)
+
+    # Entity-level pass: same macro NAME, different files. Structurally invisible
+    # to the loop above, which keys on vpath.
+    report.collisions.extend(_name_clashes(mods, rank, cand_folder))
     return report
 
 
 # --- CLI ----------------------------------------------------------------------
 
-_KIND_ORDER = ["HARD", "FULL-OVERRIDE", "SUBTREE", "UNION-KEY", "SOFT"]
+_KIND_ORDER = ["HARD", "FULL-OVERRIDE", "SUBTREE", "NAME-CLASH", "UNION-KEY", "SOFT"]
 
 
 def render(report: CompatReport, show_soft: bool = False) -> str:

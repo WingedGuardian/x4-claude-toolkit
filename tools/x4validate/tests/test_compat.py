@@ -514,3 +514,81 @@ def test_by_kind_order_is_stable():
         if first is None:
             first = order
         assert order == first, "by_kind order depends on insertion order"
+
+
+# --------------------------------------------------------------------------
+# NAME-CLASH: the same macro NAME defined by two mods in DIFFERENT files.
+#
+# Structurally invisible to the per-vpath scan (the two mods never share a
+# path), yet X4 resolves macros by NAME via index/macros.xml, so only one
+# definition is ever loaded and the other is dead content the author cannot
+# tell is dead. Found 2026-08-09 re-deriving the missile roster:
+# `missile_flagship_light_mk1_macro` is defined by two mods at different paths
+# and the effective index points at only one of them.
+# --------------------------------------------------------------------------
+
+_MACROS = ('<macros><macro name="ship_probe_macro" class="ship_s">'
+           "<properties/></macro></macros>")
+
+
+def _clashes(report):
+    return [c for c in report.collisions if c.kind == "NAME-CLASH"]
+
+
+def test_same_macro_name_in_different_files_is_reported(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "amod", {"assets/units/size_s/macros/ship_probe_macro.xml": _MACROS})
+    _mod(ext, "bmod", {"assets/units/other/macros/ship_probe_macro.xml": _MACROS})
+    rep = _compat.analyze(ext, config=cfg)
+    cl = _clashes(rep)
+    assert len(cl) == 1, [c.target for c in cl]
+    assert cl[0].target == "ship_probe_macro"
+    assert sorted(cl[0].mods) == ["amod", "bmod"]
+    # index/macros.xml decides, NOT load order -- so no winner may be claimed.
+    assert cl[0].winner == ""
+    assert "index/macros.xml" in cl[0].detail
+
+
+def test_same_macro_name_in_the_SAME_file_is_not_a_name_clash(tmp_path):
+    """That is a plain file-level collision; reporting it twice is noise."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    same = "assets/units/size_s/macros/ship_probe_macro.xml"
+    _mod(ext, "amod", {same: _MACROS})
+    _mod(ext, "bmod", {same: _MACROS})
+    assert _clashes(_compat.analyze(ext, config=cfg)) == []
+
+
+def test_nested_cross_mod_patch_is_the_same_logical_file(tmp_path):
+    """`extensions/<owner>/<rel>` is a patch INTO <owner>'s file, not a rival
+    definition. Measured: without this, 35 of 57 reported rows were this case."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    rel = "assets/units/size_s/macros/ship_probe_macro.xml"
+    _mod(ext, "amod", {rel: _MACROS})
+    _mod(ext, "bmod", {f"extensions/amod/{rel}": _MACROS})
+    assert _clashes(_compat.analyze(ext, config=cfg)) == []
+
+
+def test_a_macro_defined_inside_a_diff_still_counts(tmp_path):
+    """`<replace sel="//macros">` with a fresh payload is the standard whole-file
+    override idiom. Skipping all <diff> roots missed the very case this check was
+    built for, because that is exactly how the overhaul mod ships its macros."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "amod", {"assets/units/size_s/macros/ship_probe_macro.xml": _MACROS})
+    _mod(ext, "bmod", {"assets/units/other/macros/ship_probe_macro.xml":
+                       f'<diff><replace sel="//macros">{_MACROS}</replace></diff>'})
+    cl = _clashes(_compat.analyze(ext, config=cfg))
+    assert len(cl) == 1 and cl[0].target == "ship_probe_macro"
+
+
+def test_a_diff_that_defines_no_macro_is_not_a_definition(tmp_path):
+    """A bare attribute tweak names no macro and must not count as defining one."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "amod", {"assets/units/size_s/macros/ship_probe_macro.xml": _MACROS})
+    _mod(ext, "bmod", {"assets/units/other/macros/ship_probe_macro.xml":
+                       '<diff><replace sel="//macro/@class">ship_m</replace></diff>'})
+    assert _clashes(_compat.analyze(ext, config=cfg)) == []

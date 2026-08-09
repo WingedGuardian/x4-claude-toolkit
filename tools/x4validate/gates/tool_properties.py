@@ -30,6 +30,12 @@ being tested (a fresh lxml parse of the same file, not the tool's own index):
                          non-override class (per-mod manifest, union-merged
                          registry). NOT "any shared vpath must collide" -- two
                          diffs on disjoint nodes legitimately do not.
+           name-clash    the ENTITY-level kind gets its own invariants: every
+                         named mod must really DEFINE that macro, and no
+                         load-order winner may be claimed (index/macros.xml
+                         decides). Its composite vpath makes the two file-level
+                         properties above inapplicable, so it is checked
+                         separately rather than waved through.
   x4similar monotonicity results at a LOWER threshold must be a superset of
                          those at a higher one. A scoring bug breaks this even
                          when every individual run looks plausible.
@@ -254,9 +260,16 @@ def check_x4compat() -> None:
         return
     print(f"  ({report.mods_scanned} mods scanned, {len(report.collisions)} collisions)")
 
+    # NAME-CLASH is an ENTITY-level kind: its `vpath` is a composite
+    # "mod:path | mod:path" and its winner is deliberately EMPTY (index/macros.xml
+    # decides, not load order). The two file-level properties below do not apply
+    # to it, so it gets its own below rather than being waved through.
+    clashes = [c for c in report.collisions if c.kind == "NAME-CLASH"]
+    file_level = [c for c in report.collisions if c.kind != "NAME-CLASH"]
+
     owns: dict[str, set[str]] = {}
     unsound = winnerless = 0
-    for c in report.collisions:
+    for c in file_level:
         for folder in c.mods:
             d = EXT / folder
             if folder not in owns:
@@ -277,9 +290,30 @@ def check_x4compat() -> None:
             if winnerless <= 3:
                 print(f"          winner {c.winner!r} not among {c.mods}")
     note(unsound == 0, "every named mod really ships the colliding vpath",
-         f"{len(report.collisions)} collisions checked")
+         f"{len(file_level)} file-level collisions checked")
     note(winnerless == 0, "winner is always one of the involved mods",
-         f"{len(report.collisions)} checked")
+         f"{len(file_level)} checked")
+
+    # NAME-CLASH invariants: every named mod must really DEFINE that macro name,
+    # and no winner may be claimed (index/macros.xml decides, not load order).
+    bad_def = bad_win = 0
+    for c in clashes:
+        if c.winner:
+            bad_win += 1
+        for part in c.vpath.split(" | "):
+            folder, _, vp = part.partition(":")
+            d = EXT / folder
+            if not d.is_dir():
+                continue
+            defs = _compat._macro_defs(d)
+            if c.target.lower() not in defs:
+                bad_def += 1
+                if bad_def <= 3:
+                    print(f"          {folder} named for {c.target}, but does not define it")
+    note(bad_def == 0, "NAME-CLASH: every named mod defines that macro",
+         f"{len(clashes)} clash(es) checked")
+    note(bad_win == 0, "NAME-CLASH: claims no load-order winner",
+         f"{len(clashes)} checked")
 
     # Completeness -- stated as something actually TRUE, after three attempts at
     # it were each too strong and each blamed the tool for being RIGHT:
