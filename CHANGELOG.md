@@ -1,5 +1,66 @@
 # Changelog
 
+## v2.1.1
+
+**`--update` is no longer a 2-minute wait, and the whole toolkit's output has now been
+verified exhaustively against independent ground truth.** 17 findings fixed across the
+campaign, suite 363 → 379, 20 → 24 gates.
+
+### Faster
+
+- **`--update --xsd-fast`: ~112 s → ~2.5 s.** The gating class — `attribute X is required
+  but missing`, the one reliable 9.0 migration signal — is a flat fact per element and
+  needs no schema compile. It is now extracted by plain parsing (~0.05 s), scoped to the
+  include-closure of the schema each document declares. Both passes still run by default,
+  so nothing is lost; the flag skips only the slow advisory compile.
+- The slow compile now **announces itself** instead of sitting silent for two minutes
+  (a quiet spell that long reads as a hang), and only for the schemas that genuinely
+  cost minutes.
+- Corrected a false explanation in docs/comments: the compile cost was never "it includes
+  the huge common.xsd" (that compiles in 0.03 s) — it is the recursive `actions` content
+  model in `md.xsd`/`aiscripts.xsd`.
+
+### Fixed
+
+- **`--update` was blind to packed mods** in both the XSD and migration-heuristic passes —
+  on a packed mod it examined zero script files and reported a clean 9.0 port. 33 installed
+  packed mods were affected on the reference modlist.
+- **9 false gating ERRORs demoted**: `md.xsd` does not model `<ammunition>` under
+  `<create_ship>`, but the engine accepts it (verified against a live engine log). Now an
+  advisory with the evidence inline, via an allowlist whose entry bar is engine evidence.
+- A DLC-verdict message asserted "is installed" for extensions it never checked; it now
+  looks in the game root and distinguishes installed-but-unreadable / not-installed /
+  no-game-root.
+- Two concurrent `x4effective build`s raced on one temp file and both died; the temp is
+  now PID-qualified and the loser reports an actionable message. `build --kinds <typo>`
+  no longer writes an empty store and exits 0.
+- `x4compat` gained a **NAME-CLASH** collision class: two mods defining the same macro
+  name in *different* files. X4 resolves macros by name through `index/macros.xml`, so
+  only one definition is ever loaded and the other is dead content — structurally
+  invisible to per-path collision scans. No load-order winner is claimed, because the
+  index decides, not load order.
+
+### Verified
+
+- **`gates/xsd_fast_parity.py`** — the fast path proven set-equal to libxml2 over every
+  script file in the corpus (it caught three would-be false-positive bugs during its own
+  development; none reached a release).
+- **Exhaustive output audits, shipped as gates**: every xref citation resolves to its
+  exact line (packed and DLC included) · every stats value matches a fresh parse · every
+  reported similar-pair recomputes to its printed score · planted mutations on real
+  content are reported exactly (`tool_properties --exhaustive`, `similar_audit`,
+  `diff_truth`).
+- **`gates/perf_guard.py`** — per-mod runtime vs a machine-local baseline (aggregates
+  hide regressions: a real 39×/51× slowdown summed to a 1.00× total), proven to fire.
+- An old-vs-new output differential across the full modlist: zero unexplained changes.
+
+### Docs
+
+- **`docs/QA-PROCESS.md`** — the formal QA process for new tools, distilled from this
+  campaign: contracts at design time, property tests, generative/perturbing techniques,
+  differential and oracle testing, real-workflow use, the exhaustive output audit, and a
+  stopping criterion that is a discovery curve rather than a feeling.
+
 ## v2.1.0
 
 **If you run a total-conversion overhaul, take this update.** A `<replace>` whose selector resolved
