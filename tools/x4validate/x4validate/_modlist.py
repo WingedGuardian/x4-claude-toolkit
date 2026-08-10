@@ -61,6 +61,18 @@ def _classify(meta: "_nexus.ModMeta", today: date, is_custom: bool = False) -> t
     return "predates-9.0", "unknown"
 
 
+def _file_as_meta(meta: "_nexus.ModMeta", fmeta: "_nexus.FileMeta") -> "_nexus.ModMeta":
+    """The page's status/name with the FILE's version and upload date.
+
+    Classification asks "was this updated after 9.0, and has it settled?" — for an
+    add-on shipped as a file, the honest input is the file's own upload date, not
+    the page's. The page's `status` still applies (a hidden page means the file is
+    not downloadable either), so that is kept.
+    """
+    return _nexus.ModMeta(meta.nexus_id, meta.name, fmeta.version, fmeta.uploaded,
+                          meta.status, meta.author)
+
+
 def _humanize(content_id: str) -> str:
     """Turn a folder-id into a searchable name: split camelCase + underscores.
     e.g. kuerteeSocialStandingsAndCitizenships -> 'kuertee Social Standings And Citizenships'."""
@@ -120,30 +132,55 @@ def _identity_tokens(name: str) -> set[str]:
             if w not in _GENERIC and len(w) > 2}
 
 
-def _plausible_match(own_name: str, nexus_name: str) -> bool:
-    """Could *nexus_name* really be the upstream page for *own_name*?
+def _match_strength(own_name: str, nexus_name: str) -> str:
+    """How well could *nexus_name* be the upstream page for *own_name*?
 
-    Requires at least one shared identity-bearing token, so a match cannot rest
-    entirely on filler like "VRO" or "patch". Also accepts the squashed form
-    ("MoreAtmosphericShield" vs "More Atmospheric Shield"), which shares no
-    whitespace tokens but is obviously the same mod.
+    Returns "strong" | "weak" | "none". The three-way answer is the point: the
+    previous boolean version made every plausible hit equally acceptable and the
+    caller simply took the first one, so a single shared word decided an identity.
+    Measured case: "CPSDO Faction Pack 9.0+" scores a shared token against BOTH
+    "Faction Filter for Ships" and "Apus Stellar Treaty - New Faction and Sectors",
+    and the real answer is neither — it is a FILE on a different mod's page, which
+    no name search can reach. Two weak candidates must produce a question, not a
+    winner.
+
+    strong = the whole name matches once punctuation is removed (either direction),
+             or the names share a *distinctive* token (>=5 chars, e.g. "cpsdo").
+    weak   = they share only short/common identity tokens ("beam", "hud", "war").
     """
     a, b = _identity_tokens(own_name), _identity_tokens(nexus_name)
-    if not a or not b:
-        return True  # nothing to judge on — don't invent a rejection
-    if a & b:
-        return True
     squash_a = re.sub(r"[^a-z0-9]", "", (own_name or "").lower())
     squash_b = re.sub(r"[^a-z0-9]", "", (nexus_name or "").lower())
-    return bool(squash_a) and bool(squash_b) and (squash_a in squash_b or squash_b in squash_a)
+    if squash_a and squash_b and (squash_a in squash_b or squash_b in squash_a):
+        return "strong"
+    if not a or not b:
+        # Nothing to judge on. Formerly this returned True ("don't invent a
+        # rejection") and the hit was then taken as the answer — an absence of
+        # evidence spent as evidence. It is weak: keep it as a candidate, never
+        # as a verdict.
+        return "weak"
+    shared = a & b
+    if not shared:
+        return "none"
+    return "strong" if any(len(t) >= 5 for t in shared) else "weak"
 
 
-def _resolve_identity(content_id: str, auto) -> int | None:
-    """A3 cascade (API-first): ws_ -> Steam title -> Nexus search; named -> prefer
-    the mod's OWN manifest name (`installed_name`, read straight from its
-    content.xml — far more reliable than guessing from the folder/content id) ->
-    else a humanized-id guess -> Nexus search, with an author-prefix-drop retry.
-    Auto-match (top hit); flagged for spot-check. Never scrapes Nexus."""
+def _plausible_match(own_name: str, nexus_name: str) -> bool:
+    """Back-compat shim: is this hit worth keeping as a candidate at all?"""
+    return _match_strength(own_name, nexus_name) != "none"
+
+
+def _resolve_identity(content_id: str, auto) -> tuple[int | None, str]:
+    """A3 cascade (API-first) -> (nexus_id | None, id_state).
+
+    ws_ -> Steam title -> Nexus search; named -> prefer the mod's OWN manifest name
+    (`installed_name`, straight from its content.xml — far more reliable than
+    guessing from the folder/content id) -> else a humanized-id guess -> Nexus
+    search, with an author-prefix-drop retry. Never scrapes Nexus.
+
+    Returns a STATE alongside the id, and returns no id at all when the evidence
+    does not single one out. Guessing is fine; guessing silently is not.
+    """
     if content_id.startswith("ws_"):
         name_hint = content_id
         t = _nexus.steam_title(content_id)
@@ -167,27 +204,42 @@ def _resolve_identity(content_id: str, auto) -> int | None:
         # silent-ok: an upstream-lookup failure is not a statement about the mod.
         # The caller leaves the field unset (never "no update available"), so the
         # unknown stays visibly unknown in the registry.
-        return None
-    if hits:
-        auto["resolve_hint"] = used_hint
-        # Keep top candidates so the user can spot-check / correct cheaply.
-        auto["candidates"] = [f"{mid}:{nm}" for mid, nm in hits[:3]]
-        own_name = auto.get("installed_name") or _humanize(content_id)
-        match = next((h for h in hits if _plausible_match(own_name, h[1])), None)
-        if match is None:
-            # Every hit is unrelated. Leaving it UNRESOLVED is strictly better than a
-            # confident wrong id: a wrong id makes update-detection track someone
-            # else's mod while the row reads 'settled: stable'. Measured 2026-07-26:
-            # 7 of 69 resolved mods were wrong this way, e.g. cpsdo_vro ("CPSDO VRO
-            # Adaptation Pack") -> 2017 "Firefly (Serenity) VRO and standard versions",
-            # because the search for 'cpsdo vro' returns nothing while 'cpsdo' returns
-            # five correct hits, and the top result was taken on faith.
-            auto["resolve"] = "unmatched (needs review)"
-            return None
-        auto["resolve"] = ("auto (spot-check)" if match is hits[0]
-                           else "auto (skipped implausible top hit; spot-check)")
-        return match[0]
-    return None
+        return None, "unsearched"
+    if not hits:
+        return None, "unmatched"
+
+    auto["resolve_hint"] = used_hint
+    # Keep top candidates so the user can spot-check / correct cheaply.
+    auto["candidates"] = [f"{mid}:{nm}" for mid, nm in hits[:3]]
+    own_name = auto.get("installed_name") or _humanize(content_id)
+
+    scored = [(h, _match_strength(own_name, h[1])) for h in hits]
+    strong = [h for h, s in scored if s == "strong"]
+    weak = [h for h, s in scored if s == "weak"]
+
+    if len(strong) == 1:
+        auto["resolve"] = "auto (strong match)"
+        return strong[0][0], "exact"
+    if len(strong) > 1:
+        # Several names each look like this mod. Picking one is a coin flip dressed
+        # as an answer, so record the question instead and store NO id.
+        auto["resolve"] = f"ambiguous ({len(strong)} strong matches)"
+        return None, "ambiguous"
+    if len(weak) == 1:
+        auto["resolve"] = "auto (weak match — spot-check)"
+        return weak[0][0], "guess"
+    if len(weak) > 1:
+        auto["resolve"] = f"ambiguous ({len(weak)} weak matches)"
+        return None, "ambiguous"
+    # Every hit is unrelated. Leaving it UNRESOLVED is strictly better than a
+    # confident wrong id: a wrong id makes update-detection track someone else's
+    # mod while the row reads 'settled: stable'. Measured 2026-07-26: 7 of 69
+    # resolved mods were wrong this way, e.g. cpsdo_vro ("CPSDO VRO Adaptation
+    # Pack") -> 2017 "Firefly (Serenity) VRO and standard versions", because the
+    # search for 'cpsdo vro' returns nothing while 'cpsdo' returns five correct
+    # hits, and the top result was taken on faith.
+    auto["resolve"] = "unmatched (needs review)"
+    return None, "unmatched"
 
 
 def cmd_ingest(args) -> int:
@@ -287,37 +339,74 @@ def cmd_refresh(args) -> int:
     if args.limit:
         mods = mods[: args.limit]
 
-    resolved = fetched = errors = 0
+    resolved = fetched = errors = skipped = 0
     for m in mods:
         a = m["auto"]
         if a.get("checked_at") == today.isoformat() and not args.force:
             continue  # already refreshed today (TTL)
-        nid = a.get("nexus_id")
+
+        nid, fid, state = _registry.identity(m)
+        if state in _registry.TERMINAL_ID_STATES and not nid:
+            # off-nexus: a human already answered "there is no page". Searching
+            # again would burn an API call to re-derive a wrong guess they have
+            # already overruled once.
+            a["classification"] = "off-nexus"
+            a["settled"] = "n/a — not distributed on Nexus"
+            skipped += 1
+            continue
         if not nid and not args.no_resolve:
-            nid = _resolve_identity(m["id"], a)
+            nid, state = _resolve_identity(m["id"], a)
+            a["id_state"] = state
             if nid:
                 a["nexus_id"] = nid
                 resolved += 1
         if not nid:
+            # `ambiguous` and `unmatched` are real answers and must not be flattened
+            # into the same bucket as "never looked" — that is what made 31 rows
+            # indistinguishable from each other.
             a["classification"] = "untriaged"
+            a["settled"] = f"identity {state}"
             continue
+
         try:
             meta = _nexus.fetch_mod(nid)
+            fmeta = _nexus.fetch_file(nid, fid) if fid else None
         except _nexus.NexusError as exc:
             a["classification"] = "error"
             a["error"] = str(exc)
             errors += 1
             continue
-        a["name"], a["version"], a["updated"] = meta.name, meta.version, meta.updated
-        a["status"], a["author"] = meta.status, meta.author
+
+        a["name"], a["author"] = meta.name, meta.author
+        a["status"] = meta.status
+        if fmeta is not None:
+            # This mod ships as a FILE on someone else's page: the page's version
+            # tracks whatever its owner last uploaded, which is a different mod's
+            # release cadence. Report the FILE, and say which one, or the row
+            # answers a question nobody asked.
+            a["version"], a["updated"] = fmeta.version, fmeta.uploaded
+            a["upstream_file"] = f"{fmeta.file_id}:{fmeta.name} [{fmeta.category}]"
+        else:
+            a["version"], a["updated"] = meta.version, meta.updated
+            a.pop("upstream_file", None)
         a["checked_at"] = today.isoformat()
-        a["classification"], a["settled"] = _classify(meta, today, m["human"].get("custom_edited", False))
+        a["upstream_from"] = "exact" if state in _registry.TRUSTED_ID_STATES else state
+
+        cls, settled = _classify(meta if fmeta is None else _file_as_meta(meta, fmeta),
+                                 today, m["human"].get("custom_edited", False))
+        a["classification"], a["settled"] = _registry.cap_classification(state, cls, settled)
         fetched += 1
 
     _registry.save_registry(reg, reg_path)
     dash = _registry.write_dashboard(reg, _dash_path(reg_path))
-    print(f"refresh: {fetched} fetched, {resolved} newly id-resolved, {errors} errors "
-          f"({len(mods)} processed)")
+    unconfirmed = len(_registry.needs_review(reg))
+    print(f"refresh: {fetched} fetched, {resolved} newly id-resolved, {errors} errors, "
+          f"{skipped} off-nexus (not searched) ({len(mods)} processed)")
+    if unconfirmed:
+        # Never let a refresh read as "everything is up to date" while a chunk of
+        # what it just fetched was fetched against a guessed identity.
+        print(f"         {unconfirmed} active mod(s) still have an UNCONFIRMED identity — "
+              f"their upstream data may describe a different mod. Run `x4modlist verify`.")
     print(f"dashboard: {dash}")
     return 0
 
@@ -378,31 +467,180 @@ def cmd_needs_review(args) -> int:
 
 
 def cmd_resolve(args) -> int:
+    """Pin an identity. The pin goes in `human:` so it is PERMANENT.
+
+    Previously this wrote `auto.nexus_id` + `resolve: manual`, i.e. a human verdict
+    stored in the tool-owned half of the row. Nothing overwrote it in practice, but
+    nothing guaranteed not to either, and it left no way to say the two things a
+    human most often knows: "this ships as a FILE on that page" and "this has no
+    page at all".
+    """
     reg_path = _registry_path(args)
     reg = _registry.load_registry(reg_path)
     m = _find(reg, args.id)
     if m is None:
         print(f"not in registry: {args.id}", file=sys.stderr)
         return 2
-    a = m["auto"]
-    a["nexus_id"] = args.nexus_id
+    a, h = m["auto"], m["human"]
+    today = datetime.now(timezone.utc).date()
+
+    if str(args.nexus_id).strip().lower() == "none":
+        h["nexus_id"] = "none"
+        h["nexus_file_id"] = None
+        h["verified_on"] = today.isoformat()
+        a["classification"], a["settled"] = "off-nexus", "n/a — not distributed on Nexus"
+        a.pop("candidates", None)
+        _registry.save_registry(reg, reg_path)
+        _registry.write_dashboard(reg, _dash_path(reg_path))
+        print(f"{args.id}: recorded as NOT on Nexus — it will not be searched again")
+        return 0
+
+    try:
+        nexus_id = int(args.nexus_id)
+    except (TypeError, ValueError):
+        print(f"error: nexus_id must be an integer or 'none', got {args.nexus_id!r}",
+              file=sys.stderr)
+        return 2
+
+    h["nexus_id"] = nexus_id
+    file_arg = getattr(args, "file", None)
+    h["nexus_file_id"] = int(file_arg) if file_arg else None
+    h["verified_on"] = today.isoformat()
+    a["nexus_id"] = nexus_id            # mirrored for readability; human: is authoritative
+    a["nexus_file_id"] = h["nexus_file_id"]
+    a["id_state"] = "pinned"
     a["resolve"] = "manual"
     a.pop("candidates", None)
+
     try:
-        meta = _nexus.fetch_mod(args.nexus_id)
+        meta = _nexus.fetch_mod(nexus_id)
+        fmeta = _nexus.fetch_file(nexus_id, h["nexus_file_id"]) if h["nexus_file_id"] else None
     except _nexus.NexusError as exc:
+        # The PIN still stands — it is a human statement of fact and does not depend
+        # on the network. Only the fetched-metadata half failed, and saying so is the
+        # difference between "your correction was lost" and "we could not look it up".
         _registry.save_registry(reg, reg_path)
-        print(f"set nexus_id but fetch failed: {exc}", file=sys.stderr)
+        _registry.write_dashboard(reg, _dash_path(reg_path))
+        print(f"pinned {args.id} -> {nexus_id}"
+              + (f" file {h['nexus_file_id']}" if h["nexus_file_id"] else "")
+              + f"; upstream fetch failed: {exc}", file=sys.stderr)
         return 1
-    today = datetime.now(timezone.utc).date()
-    a["name"], a["version"], a["updated"] = meta.name, meta.version, meta.updated
-    a["status"], a["author"] = meta.status, meta.author
+
+    a["name"], a["author"], a["status"] = meta.name, meta.author, meta.status
+    if fmeta is not None:
+        a["version"], a["updated"] = fmeta.version, fmeta.uploaded
+        a["upstream_file"] = f"{fmeta.file_id}:{fmeta.name} [{fmeta.category}]"
+    else:
+        a["version"], a["updated"] = meta.version, meta.updated
+        a.pop("upstream_file", None)
     a["checked_at"] = today.isoformat()
-    a["classification"], a["settled"] = _classify(meta, today, m["human"].get("custom_edited", False))
+    a["upstream_from"] = "exact"
+    a["classification"], a["settled"] = _classify(
+        meta if fmeta is None else _file_as_meta(meta, fmeta), today,
+        m["human"].get("custom_edited", False))
     _registry.save_registry(reg, reg_path)
     _registry.write_dashboard(reg, _dash_path(reg_path))
-    print(f"resolved {args.id} -> {args.nexus_id} {meta.name!r} [{a['classification']}]")
+    detail = f" file {fmeta.file_id} ({fmeta.name!r} v{fmeta.version})" if fmeta else ""
+    print(f"pinned {args.id} -> {nexus_id} {meta.name!r}{detail} [{a['classification']}]")
     return 0
+
+
+def cmd_source(args) -> int:
+    """Record where a mod actually comes from when it is not a Nexus page.
+
+    31 of the installed rows had no id and sat as `untriaged` forever, re-searched
+    on every refresh — Workshop items, bundled add-ons, and the user's own local
+    mods, none of which a Nexus name search can ever resolve. `untriaged` implied
+    unfinished work; this states the finished answer.
+    """
+    reg_path = _registry_path(args)
+    reg = _registry.load_registry(reg_path)
+    m = _find(reg, args.id)
+    if m is None:
+        print(f"not in registry: {args.id}", file=sys.stderr)
+        return 2
+    h, a = m["human"], m["auto"]
+    h["source"] = args.source
+    h["verified_on"] = datetime.now(timezone.utc).date().isoformat()
+    a["classification"], a["settled"] = "off-nexus", f"tracked via {args.source}"
+    a.pop("candidates", None)
+    _registry.save_registry(reg, reg_path)
+    _registry.write_dashboard(reg, _dash_path(reg_path))
+    print(f"{args.id}: source = {args.source} (no longer searched on Nexus)")
+    return 0
+
+
+def _squash(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _rescore(reg) -> tuple[int, int]:
+    """Promote guess -> exact ONLY where the two names are literally the same string.
+
+    Deliberately far stricter than `_match_strength`'s "strong". Containment is not
+    enough here and the difference is not academic: the stored id for `Ventures` is
+    "Savegame for Ventures", which shares a long distinctive token and *contains*
+    the name, and is a different mod. Equality modulo punctuation/case is the only
+    evidence cheap enough to act on offline without re-introducing the laundering
+    this whole change exists to stop.
+
+    Returns (promoted, left_alone). Never downgrades a pin, never touches an id.
+    """
+    promoted = left = 0
+    for m in reg["mods"]:
+        a = m["auto"]
+        _, _, state = _registry.identity(m)
+        if state != "guess" or not a.get("nexus_id"):
+            continue
+        own, upstream = a.get("installed_name") or "", a.get("name") or ""
+        if own and upstream and _squash(own) == _squash(upstream):
+            a["id_state"] = "exact"
+            a["resolve"] = "rescored (manifest name == upstream title)"
+            promoted += 1
+        else:
+            left += 1
+    return promoted, left
+
+
+def cmd_verify(args) -> int:
+    """The identity burn-down list, with the denominator stated."""
+    reg_path = Path(args.registry) if args.registry else None
+    reg = _registry.load_registry(reg_path)
+    if getattr(args, "rescore", False):
+        promoted, left = _rescore(reg)
+        _registry.save_registry(reg, reg_path)
+        _registry.write_dashboard(reg, _dash_path(reg_path))
+        print(f"rescore: {promoted} promoted to `exact` (installed manifest name is "
+              f"IDENTICAL to the upstream title), {left} left as guesses\n"
+              f"         a near-match is deliberately NOT enough — one stored id whose "
+              f"title merely CONTAINS the mod name is a different mod.\n")
+    counts = _registry.unverified_summary(reg)
+    active = sum(counts.values())
+    trusted = sum(n for s, n in counts.items() if s in _registry.TRUSTED_ID_STATES)
+    print(f"identity provenance over {active} active mods: {trusted} confirmed "
+          f"(pinned/exact), {active - trusted} not")
+    for state, n in sorted(counts.items()):
+        print(f"   {n:4d}  {state}")
+
+    review = _registry.needs_review(reg)
+    if not review:
+        print("\nnothing unconfirmed — every active identity is pinned, exact or off-nexus")
+        return 0
+    print(f"\n{len(review)} unconfirmed — anything upstream said about these may be a "
+          f"different mod:")
+    for m in sorted(review, key=lambda x: (_registry.identity(x)[2], x["id"])):
+        a = m["auto"]
+        nid, fid, state = _registry.identity(m)
+        cur = (f"{nid}" + (f"/file {fid}" if fid else "") + f" {a.get('name') or ''}").strip() \
+            if nid else "(no id)"
+        cands = " | ".join(a.get("candidates") or [])
+        print(f"  [{state:10}] {m['id']:42} -> {cur}"
+              + (f"\n{'':16}candidates: {cands}" if cands else ""))
+    print("\nfix with:  x4modlist resolve <id> <nexus_id> [--file <file_id>]"
+          "\n           x4modlist resolve <id> none            (confirmed: no Nexus page)"
+          "\n           x4modlist source  <id> steam:<n>|local|bundled:<mod-id>|<url>")
+    # Exit 1: unconfirmed identities are findings, not an error. Usable as a gate.
+    return 1
 
 
 def cmd_ignore(args) -> int:
@@ -474,10 +712,25 @@ def main(argv: list[str] | None = None) -> int:
     pn = sub.add_parser("needs-review", help="list entries needing a spot-check decision")
     pn.set_defaults(func=cmd_needs_review)
 
-    prs = sub.add_parser("resolve", help="manually set/confirm a mod's Nexus id (+fetch)")
+    prs = sub.add_parser("resolve", help="pin a mod's Nexus identity permanently (+fetch)")
     prs.add_argument("id", help="content.xml extension id")
-    prs.add_argument("nexus_id", type=int, help="the correct Nexus mod id")
+    prs.add_argument("nexus_id", help="the correct Nexus mod id, or 'none' if it has no page")
+    prs.add_argument("--file", type=int, help="file id, when this mod ships as a FILE on that "
+                     "page (an add-on); update-detection then tracks the FILE's version, not "
+                     "the page's")
     prs.set_defaults(func=cmd_resolve)
+
+    pso = sub.add_parser("source", help="record a non-Nexus origin (stops it being searched)")
+    pso.add_argument("id", help="content.xml extension id")
+    pso.add_argument("source", help="steam:<publishedfileid> | local | bundled:<mod-id> | <url>")
+    pso.set_defaults(func=cmd_source)
+
+    pv = sub.add_parser("verify", help="list identities that are guesses, with the denominator")
+    pv.add_argument("--rescore", action="store_true",
+                    help="offline: promote a guess to `exact` only where the installed "
+                         "manifest name is IDENTICAL to the stored upstream title "
+                         "(no API calls, no near-matches)")
+    pv.set_defaults(func=cmd_verify)
 
     pig = sub.add_parser("ignore", help="mark a junk/personal mod out of the active worklist")
     pig.add_argument("id", help="content.xml extension id")

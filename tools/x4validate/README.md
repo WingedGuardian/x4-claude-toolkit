@@ -174,7 +174,7 @@ handled here — it is a secret, not a path, and must never be written to a file
 - `x4validate/_xsd.py` — schema validation: script files as written, data files as merged
   (differential — see `introduced`).
 - `x4validate/_check.py` — orchestration + t-file union; `_cli.py` — CLI.
-- `tests/` — `uv run pytest` (379 tests as of v2.1.1, incl. the x4cat spike cases).
+- `tests/` — `uv run pytest` (392 tests as of v2.2.0, incl. the x4cat spike cases).
 - `gates/` — measured against the engine / the real modlist, not fixtures. Four engine
   gates: `oracle.py` (diff layer, 0 FALSE OK), `oracle_index.py` (index layer),
   `regress.py` (per-mod Tier A/B sweep), `schema_sweep.py` (effective-schema
@@ -194,7 +194,9 @@ handled here — it is a secret, not a path, and must never be written to a file
   found), `xsd_fast_parity.py` (the fast path must be set-equal to libxml2, corpus-wide),
   `perf_guard.py` (per-mod runtime, never an aggregate) and `nexus_fixture.py` (the
   network path, replayed offline).
-  **24 in total.** See `gates/README.md` for the bar each one holds.
+  v2.2.0 adds `registry_provenance.py` (a guessed mod identity may never produce a
+  confident verdict).
+  **25 in total.** See `gates/README.md` for the bar each one holds.
 - `docs/QA-PROCESS.md` — the process these gates came out of: what to test, in what
   order, and when it is honest to call a tool releasable. Read it before adding a tool.
 

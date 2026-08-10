@@ -169,6 +169,29 @@ Before proposing ANY change to mod files, game XML, or profile files:
 | 60–79% | Reasonable assumption, some unknowns | Research more first |
 | < 60% | Speculative | Do NOT proceed — investigate |
 
+## Core Principle: Tooling Comes FIRST — Everything Else Is Downstream
+
+**Never frame tool work as time taken away from "the real work."** Work produced on an
+untrusted instrument is not merely wasted — it is **negative**: it is confident, it
+compounds, and it gets written down where the next session reads it as truth. When a tool
+defect and downstream work compete, **the tool wins**, and that is stated as a reason, not
+an apology.
+
+**Corollary — a tool that cannot distinguish a GUESS from a MEASUREMENT is a defect, not a
+limitation.** Provenance travels with the value: a guessed field must never occupy the same
+slot, in the same grammar, as a verified one, and nothing *derived* from a guess may be
+promoted into a confident state. This applies to your own output too — a report, a registry
+row and a knowledgebase line each carry their evidence tier or they do not ship.
+
+> **The two cases that produced this rule.** (1) The mod registry stored a **guessed** Nexus
+> id in the same field as a verified one, beside `settled: stable` — so "is my installed copy
+> the old version or the new one?" could not be answered from the registry at all, and anyone
+> trusting the row would have tracked an unrelated author's mod for updates indefinitely.
+> (2) An upstream bug report proved **file-path** resolution and then asserted an **in-game**
+> outcome from it. Wrong for two weeks, written into permanent record, and queued to be posted
+> publicly to the mod author — while the engine's own `debug.txt` had been contradicting it
+> dozens of times per session, unsearched.
+
 ## Core Principle: Do Your Homework (Due Diligence Before Acting)
 
 Do enough due diligence before changing anything that the user has to do as little

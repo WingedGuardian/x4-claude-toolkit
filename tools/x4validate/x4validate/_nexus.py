@@ -73,6 +73,61 @@ def fetch_mod(nexus_id: int) -> ModMeta:
                    upd, m.get("status", ""), m.get("author", ""))
 
 
+@dataclass
+class FileMeta:
+    """One FILE on a mod page.
+
+    Exists because a mod is not always a page. Plenty of add-ons ship as a file on
+    someone else's mod page, and for those the page's own `version` is not the
+    add-on's version — it tracks whatever the page owner last uploaded. Comparing
+    an installed add-on against the page version silently answers a different
+    question than the one asked.
+    """
+    file_id: int
+    mod_id: int
+    name: str
+    version: str
+    uploaded: str  # YYYY-MM-DD
+    category: str  # MAIN | OPTIONAL | OLD_VERSION | ARCHIVED | ...
+
+
+def fetch_files(nexus_id: int) -> list[FileMeta]:
+    """Every file on a mod page, newest-uploaded last (API order preserved)."""
+    h = {"apikey": nexus_key(), **_APP}
+    try:
+        d = _get_json(f"{NEXUS_REST}/{int(nexus_id)}/files.json", h)
+    except urllib.error.HTTPError as exc:
+        raise NexusError(f"fetch_files({nexus_id}) HTTP {exc.code}") from exc
+    out = []
+    for f in (d or {}).get("files") or []:
+        try:
+            out.append(FileMeta(int(f["file_id"]), int(nexus_id), f.get("name", ""),
+                                str(f.get("version", "")),
+                                str(f.get("uploaded_time", ""))[:10],
+                                f.get("category_name") or ""))
+        except (KeyError, TypeError, ValueError):
+            # silent-ok: one malformed entry in a file listing. Callers that need a
+            # SPECIFIC file use fetch_file(), which raises when its id is absent —
+            # so a dropped row here can never render as "that file is gone".
+            continue
+    return out
+
+
+def fetch_file(nexus_id: int, file_id: int) -> FileMeta:
+    """One file by id.
+
+    Raises NexusError when the id is not on the page — which is real information,
+    not a lookup failure: an add-on file that has been superseded and archived off
+    the page is exactly the "you are running something upstream no longer offers"
+    signal the registry should surface, so it must never be swallowed.
+    """
+    for f in fetch_files(nexus_id):
+        if f.file_id == int(file_id):
+            return f
+    raise NexusError(f"file {file_id} is not listed on mod {nexus_id} "
+                     f"(superseded, archived, or the wrong page)")
+
+
 def search_mods(name: str, count: int = 5) -> list[tuple[int, str]]:
     """v2 GraphQL name search (nameStemmed, X4). Returns [(mod_id, name), ...] best-first."""
     safe = json.dumps(name)  # JSON-quoted+escaped GraphQL string literal

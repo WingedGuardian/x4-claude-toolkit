@@ -1,5 +1,60 @@
 # Changelog
 
+## v2.2.0
+
+**A guessed mod identity can no longer be laundered into a fact.** The registry stored a
+fuzzy name match and a human-verified id in the *same field*, so a row whose identity was
+invented by a search still read `settled: stable` / `classification: ready`. Measured on a
+real 100-mod install: **3 of 100 identities were actually confirmed** — the other 97 were
+guesses or blanks, all rendered with the same confidence as the 3.
+
+Guessing is still fine. Guessing *silently* is not.
+
+### Identity provenance
+
+- **`auto.id_state` on every row** — `pinned` · `exact` · `guess` · `ambiguous` ·
+  `unmatched` · `off-nexus` · `unsearched`. A stored id now always says how it was obtained.
+- **Nothing derived from an untrusted id may reach a confident lane.** `classification` and
+  `settled` are computed from upstream data fetched *using* the id, so they are only ever as
+  good as the id. A guess is capped at the new `needs-confirmation` lane no matter how
+  healthy the fetch looked — the reassuring part may describe somebody else's mod. This is
+  the load-bearing invariant, and `gates/registry_provenance.py` proves it over the whole
+  real registry (and was verified to FAIL when a single row is tampered).
+- **Ambiguity is a real outcome.** `_match_strength` replaces a boolean "plausible?" with
+  strong/weak/none, and the resolver now stores **no id at all** when two or more candidates
+  are equally weak, instead of taking the first. The case that forced this: one mod name
+  shares a single filler-ish token with several unrelated mods, and the true answer was
+  unreachable by name search entirely.
+- **Migration promotes nothing.** Every historical `auto (spot-check)` becomes `guess`, and
+  a confident lane computed *before* the cap existed is withdrawn rather than grandfathered.
+  Downgrading a real match costs one spot-check; upgrading a bad one re-creates the defect.
+
+### Human-owned identity (permanent, never overwritten by a refresh)
+
+- **`x4modlist resolve <id> <nexus_id> [--file <file_id>]`** now pins into `human:`.
+- **`--file`: a mod is not always a page.** Plenty of add-ons ship as a *file* on someone
+  else's mod page, where the page's version tracks a different release cadence entirely.
+  Update-detection now compares the **file's** version and upload date (`_nexus.fetch_file`,
+  which raises when the file is no longer listed — being superseded is information, not a
+  lookup failure).
+- **`x4modlist resolve <id> none`** and **`x4modlist source <id> steam:…|local|bundled:…|<url>`**
+  record a mod with no Nexus page — Workshop items, bundled add-ons, your own overlays. They
+  stop being searched, and move out of `untriaged` (which implied unfinished work) into a new
+  `off-nexus` lane.
+
+### Seeing it
+
+- **`x4modlist verify`** — the burn-down list, with the denominator stated. Exit 1 while any
+  identity is unconfirmed, so it works as a gate.
+- **`verify --rescore`** — offline promotion of `guess` → `exact`, but **only** where the
+  installed manifest name is *identical* to the stored upstream title. Containment is
+  deliberately not enough: one real row's stored title merely *contains* the mod's name and
+  is a different mod.
+- The dashboard prints `N/M confirmed`, labels every row's provenance in its own lane table,
+  and `refresh` refuses to end on a clean-sounding summary while unconfirmed rows remain.
+
+Suite 379 → **392**. Gates 24 → **25**. QA sweep 38 → 41 cells.
+
 ## v2.1.1
 
 **`--update` is no longer a 2-minute wait, and the whole toolkit's output has now been

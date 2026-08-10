@@ -70,10 +70,11 @@ def test_resolve_identity_prefers_installed_name(monkeypatch):
 
     monkeypatch.setattr(_modlist._nexus, "search_mods", fake_search)
     auto = {"installed_name": "kuertee: Ship scanner"}
-    nid = _modlist._resolve_identity("kuerteeShipScanner", auto)
+    nid, state = _modlist._resolve_identity("kuerteeShipScanner", auto)
     assert nid == 999
+    assert state == "exact"  # single strong match ("scanner" is distinctive)
     assert calls[0] == "Ship scanner"  # tried the manifest name FIRST, not a humanized guess
-    assert auto["resolve"] == "auto (spot-check)"
+    assert auto["resolve"] == "auto (strong match)"
 
 
 def test_humanize_splits_camel_and_underscore():
@@ -112,15 +113,22 @@ def test_classify_churning_ready_predates():
 
 
 def test_needs_review_filters():
+    """Keyed on IDENTITY provenance: an unconfirmed id stays visible however
+    healthy the mod it fetched looks."""
     reg = _registry._new_registry()
-    e_untri = _installed_entry("u")                                  # untriaged -> review
-    e_auto = _installed_entry("a", classification="churning", resolve="auto (spot-check)")  # -> review
-    e_clean = _installed_entry("m", classification="ready", resolve="manual")  # resolved clean -> NOT
+    e_untri = _installed_entry("u")                                   # unsearched -> review
+    e_guess = _installed_entry("a", classification="churning", nexus_id=5,
+                               id_state="guess")                      # -> review
+    e_clean = _installed_entry("m", classification="ready", nexus_id=7,
+                               id_state="pinned")                     # confirmed -> NOT
+    e_exact = _installed_entry("e", classification="ready", nexus_id=8,
+                               id_state="exact")                      # confirmed -> NOT
     e_ign = _installed_entry("ig")
-    e_ign["human"]["ignored"] = True                                 # ignored -> NOT
-    e_not_installed = _registry._new_entry("ni", True)                # installed=False -> NOT
-    e_not_installed["auto"]["classification"] = "untriaged"
-    reg["mods"].extend([e_untri, e_auto, e_clean, e_ign, e_not_installed])
+    e_ign["human"]["ignored"] = True                                  # ignored -> NOT
+    e_off = _installed_entry("off")
+    e_off["human"]["source"] = "steam:123"                            # answered -> NOT
+    e_not_installed = _registry._new_entry("ni", True)                 # installed=False -> NOT
+    reg["mods"].extend([e_untri, e_guess, e_clean, e_exact, e_ign, e_off, e_not_installed])
     assert {m["id"] for m in _registry.needs_review(reg)} == {"u", "a"}
 
 
@@ -156,6 +164,181 @@ def test_resolve_sets_manual_and_fetches(tmp_path, monkeypatch):
     a = _registry.load_registry(regp)["mods"][0]["auto"]
     assert a["nexus_id"] == 999 and a["resolve"] == "manual" and a["name"] == "Cool Mod"
     assert a["classification"] in ("churning", "ready", "predates-9.0")
+
+
+# --- identity provenance -----------------------------------------------------
+#
+# The defect these pin: a fuzzy name match was stored in the same field as a
+# verified id, so a guess read as a fact and was promoted to `settled: stable`.
+# One real row pointed at an unrelated author's mod for weeks.
+
+def test_match_strength_three_way():
+    # distinctive shared token -> strong
+    assert _modlist._match_strength("CPSDO Faction Pack 9.0+", "CPSDO Modpack") == "strong"
+    # whole name contained (punctuation-insensitive) -> strong
+    assert _modlist._match_strength("MoreAtmosphericShield", "More Atmospheric Shield") == "strong"
+    # shares only a SHORT identity token -> weak, never a verdict on its own
+    assert _modlist._match_strength("Beam Weapons VRO", "Beam Effects") == "weak"
+    # nothing in common -> none
+    assert _modlist._match_strength("CPSDO Faction Pack", "Larger Fleets and Xenon") == "none"
+
+
+def test_resolve_refuses_to_pick_between_weak_candidates(monkeypatch):
+    """The measured failure: 'CPSDO Faction Pack' shares one filler-ish token with
+    several unrelated mods. Picking the first was a coin flip presented as an id."""
+    monkeypatch.setattr(_modlist._nexus, "search_mods",
+                        lambda name, count=5: [(2202, "Faction Filter for Ships"),
+                                               (2189, "Apus Treaty - New Faction Sectors")])
+    auto = {"installed_name": "Zzz Faction Thing"}
+    nid, state = _modlist._resolve_identity("zzz_faction_thing", auto)
+    assert nid is None, "no id may be stored when the evidence does not single one out"
+    assert state == "ambiguous"
+    assert auto["candidates"], "the alternatives are kept so a human can settle it"
+
+
+def test_guess_cannot_reach_a_confident_lane():
+    """The load-bearing invariant: everything downstream of an id is only as good
+    as the id, so a guess is capped no matter how healthy the fetch looked."""
+    assert _registry.cap_classification("guess", "ready", "stable") \
+        == (_registry.UNCONFIRMED_LANE, "unconfirmed identity (guess)")
+    assert _registry.cap_classification("ambiguous", "ready", "stable")[0] \
+        == _registry.UNCONFIRMED_LANE
+    # ...and a confirmed identity passes through untouched
+    assert _registry.cap_classification("pinned", "ready", "stable") == ("ready", "stable")
+    assert _registry.cap_classification("exact", "churning", "churning") == ("churning", "churning")
+
+
+def test_human_pin_wins_and_survives_refresh_fields():
+    m = _registry._new_entry("x", True)
+    m["auto"].update(nexus_id=999, id_state="guess")     # a wrong auto guess
+    m["human"]["nexus_id"] = 1330                         # the human's correction
+    m["human"]["nexus_file_id"] = 13671
+    assert _registry.identity(m) == (1330, 13671, "pinned")
+
+
+def test_human_none_and_source_stop_the_search():
+    m = _registry._new_entry("x", True)
+    m["human"]["nexus_id"] = "none"
+    assert _registry.identity(m) == (None, None, "off-nexus")
+    m2 = _registry._new_entry("y", True)
+    m2["human"]["source"] = "steam:3272713594"
+    assert _registry.identity(m2)[2] == "off-nexus"
+
+
+def test_malformed_pin_degrades_to_unconfirmed_not_silently_dropped():
+    m = _registry._new_entry("x", True)
+    m["auto"].update(nexus_id=42, id_state="guess")
+    m["human"]["nexus_id"] = "1330 maybe?"        # not parseable
+    nid, _, state = _registry.identity(m)
+    assert state == "guess" and nid == 42, "falls through, stays visibly unconfirmed"
+
+
+def test_migration_promotes_nothing():
+    """Legacy rows carry no provenance. Every historical auto-match becomes a
+    GUESS — downgrading a real match costs one spot-check; upgrading a bad one
+    re-creates the defect."""
+    legacy = _registry._new_entry("old", True)
+    del legacy["auto"]["id_state"]
+    legacy["auto"].update(nexus_id=2215, resolve="auto (spot-check)")
+    assert _registry.migrate_entry(legacy) is True
+    assert legacy["auto"]["id_state"] == "guess"
+    assert _registry.migrate_entry(legacy) is False, "idempotent"
+
+    manual = _registry._new_entry("m", True)
+    del manual["auto"]["id_state"]
+    manual["auto"].update(nexus_id=7, resolve="manual")
+    _registry.migrate_entry(manual)
+    assert manual["auto"]["id_state"] == "pinned"
+
+    # An id with NO provenance at all is a guess, never `exact`.
+    bare = _registry._new_entry("b", True)
+    del bare["auto"]["id_state"]
+    bare["auto"]["nexus_id"] = 3
+    _registry.migrate_entry(bare)
+    assert bare["auto"]["id_state"] == "guess"
+
+
+def test_unknown_id_state_is_never_trusted():
+    m = _registry._new_entry("x", True)
+    m["auto"].update(nexus_id=5, id_state="totally-fine-honest")
+    assert _registry.identity(m)[2] == "guess"
+
+
+def test_resolve_pins_into_human_and_records_file(tmp_path, monkeypatch):
+    from x4validate._nexus import FileMeta
+    monkeypatch.setattr(_modlist._nexus, "fetch_mod",
+                        lambda nid: ModMeta(nid, "CPSDO Modpack", "9.00", "2026-06-10",
+                                            "published", "HYLT2233"))
+    monkeypatch.setattr(_modlist._nexus, "fetch_file",
+                        lambda nid, fid: FileMeta(fid, nid, "CPSDO Faction 9.00", "9.00",
+                                                  "2026-06-22", "MAIN"))
+    regp = tmp_path / "r.yaml"
+    reg = _registry._new_registry()
+    reg["mods"].append(_registry._new_entry("cpsdo_faction", True))
+    _registry.save_registry(reg, regp)
+    assert _modlist.cmd_resolve(_args(registry=str(regp), id="cpsdo_faction",
+                                      nexus_id="1330", file=13671)) == 0
+    m = _registry.load_registry(regp)["mods"][0]
+    assert m["human"]["nexus_id"] == 1330 and m["human"]["nexus_file_id"] == 13671
+    assert _registry.identity(m)[2] == "pinned"
+    # the FILE's date drives the verdict, not the page's
+    assert m["auto"]["updated"] == "2026-06-22"
+    assert "13671" in m["auto"]["upstream_file"]
+
+
+def test_resolve_none_records_no_page(tmp_path):
+    regp = tmp_path / "r.yaml"
+    reg = _registry._new_registry()
+    reg["mods"].append(_registry._new_entry("my_own_overlay", True))
+    _registry.save_registry(reg, regp)
+    assert _modlist.cmd_resolve(_args(registry=str(regp), id="my_own_overlay",
+                                      nexus_id="none", file=None)) == 0
+    m = _registry.load_registry(regp)["mods"][0]
+    assert _registry.identity(m)[2] == "off-nexus"
+    assert m["auto"]["classification"] == "off-nexus"
+
+
+def test_source_command_marks_off_nexus(tmp_path):
+    regp = tmp_path / "r.yaml"
+    reg = _registry._new_registry()
+    reg["mods"].append(_registry._new_entry("ws_123", True))
+    _registry.save_registry(reg, regp)
+    assert _modlist.cmd_source(_args(registry=str(regp), id="ws_123",
+                                     source="steam:123")) == 0
+    m = _registry.load_registry(regp)["mods"][0]
+    assert m["human"]["source"] == "steam:123"
+    assert _registry.identity(m)[2] == "off-nexus"
+
+
+def test_rescore_promotes_only_on_identical_names():
+    """Containment is NOT enough. The real counter-example: a row whose stored
+    upstream title merely CONTAINS the mod's name is a different mod."""
+    reg = _registry._new_registry()
+    same = _installed_entry("MoreAtmosphericShield", nexus_id=2158, id_state="guess",
+                            installed_name="MoreAtmosphericShield",
+                            name="More Atmospheric Shield")
+    contained = _installed_entry("Ventures", nexus_id=292, id_state="guess",
+                                 installed_name="Ventures",
+                                 name="Savegame for Ventures")
+    pinned = _installed_entry("p", nexus_id=1, id_state="pinned",
+                              installed_name="X", name="X")
+    reg["mods"].extend([same, contained, pinned])
+    promoted, left = _modlist._rescore(reg)
+    assert (promoted, left) == (1, 1)
+    assert same["auto"]["id_state"] == "exact"
+    assert contained["auto"]["id_state"] == "guess", "containment must not promote"
+    assert pinned["auto"]["id_state"] == "pinned", "a pin is never rewritten"
+
+
+def test_dashboard_labels_guesses(tmp_path):
+    reg = _registry._new_registry()
+    reg["mods"].append(_installed_entry("g", name="Something", nexus_id=1,
+                                        id_state="guess",
+                                        classification=_registry.UNCONFIRMED_LANE))
+    out = _registry.generate_dashboard(reg)
+    assert "UNCONFIRMED IDENTITY" in out
+    assert "guess" in out
+    assert "Identity provenance:" in out
 
 
 def test_dashboard_groups_by_lane():

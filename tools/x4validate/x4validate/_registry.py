@@ -46,6 +46,143 @@ PROFILE_EXTENSIONS = _paths.profile_extensions()
 WORKSHOP_CONTENT = _paths.workshop_content()
 
 
+# --- Identity provenance -----------------------------------------------------
+#
+# A guess and a measurement must never occupy the same slot in the same grammar.
+# Before this existed, `auto.nexus_id` held both, so a fuzzy name match sat next to
+# `settled: stable` and read as fact — one real row pointed at an unrelated author's
+# mod for weeks. Every stored id now carries HOW it was obtained, and anything
+# DERIVED from a guessed id is capped so it cannot be promoted into a confident lane.
+
+#: How the id in `auto.nexus_id` was arrived at. Order is roughly most→least trusted.
+ID_STATES = (
+    "pinned",      # a human set it — authoritative, never re-searched
+    "exact",       # unambiguous: a ws_ id, or one clearly-dominant name match
+    "guess",       # matched on weak evidence; `candidates` records the alternatives
+    "ambiguous",   # several plausible hits, no winner -> NO id is stored
+    "unmatched",   # searched, nothing plausible came back
+    "off-nexus",   # a human says there is no Nexus page for this at all
+    "unsearched",  # never attempted
+)
+#: States whose id may be trusted by anything downstream.
+TRUSTED_ID_STATES = frozenset({"pinned", "exact"})
+#: States that mean "do not spend an API call on this again".
+TERMINAL_ID_STATES = frozenset({"pinned", "off-nexus"})
+#: The lane a row is capped at while its identity is not trusted. A guess must
+#: never reach `ready`/`settled: stable` — that is the whole point of the split.
+UNCONFIRMED_LANE = "needs-confirmation"
+#: Lanes that assert something CONFIDENT about the upstream mod, and therefore
+#: may only be occupied by a row whose identity is trusted.
+_CONFIDENT_LANES = frozenset({"ready", "churning", "predates-9.0", "drop", "custom-local"})
+
+
+def identity(m) -> tuple[int | None, int | None, str]:
+    """(nexus_id, nexus_file_id, id_state) for one entry, human pins winning.
+
+    The single place that answers "who is this mod upstream?". `human:` is checked
+    first and unconditionally: a human verdict is permanent, including the verdict
+    "there is no page" (`human.nexus_id: none` / a `human.source`), which stops the
+    resolver from re-guessing something it already got wrong.
+    """
+    a, h = m.get("auto") or {}, m.get("human") or {}
+    hid, hfile = h.get("nexus_id"), h.get("nexus_file_id")
+    if isinstance(hid, str) and hid.strip().lower() in ("none", "no", "off-nexus"):
+        return None, None, "off-nexus"
+    if hid not in (None, ""):
+        try:
+            return int(hid), (int(hfile) if hfile not in (None, "") else None), "pinned"
+        except (TypeError, ValueError):
+            # silent-ok: a malformed human pin (e.g. `nexus_id: "1330 maybe?"`) falls
+            # through to the auto side, which yields a NON-trusted id_state — so the
+            # row surfaces in `needs_review`/`verify` as unconfirmed rather than
+            # vanishing. The miss is reported there, not swallowed here.
+            pass
+    if str(h.get("source") or "").strip():
+        return None, None, "off-nexus"
+    state = a.get("id_state") or "unsearched"
+    nid = a.get("nexus_id")
+    if state not in ID_STATES:
+        state = "guess" if nid else "unsearched"   # unknown label is never promoted
+    return (int(nid) if nid not in (None, "") else None,
+            int(a["nexus_file_id"]) if a.get("nexus_file_id") not in (None, "") else None,
+            state)
+
+
+def cap_classification(state: str, classification: str, settled: str) -> tuple[str, str]:
+    """Stop an unverified identity from producing a confident verdict.
+
+    `classification`/`settled` are computed from upstream data that was fetched
+    using the id — so they are only ever as good as the id. A row whose identity is
+    a guess is held at `needs-confirmation` no matter how healthy the mod it fetched
+    looks, because the reassuring part ("updated recently, stable") may describe
+    somebody else's mod entirely.
+    """
+    if state in TRUSTED_ID_STATES:
+        return classification, settled
+    return UNCONFIRMED_LANE, f"unconfirmed identity ({state})"
+
+
+#: Legacy `auto.resolve` values -> the id_state they honestly correspond to.
+#: NOTHING is promoted here: every historical auto-match becomes `guess`, because
+#: that is what it always was — the old label just did not say so.
+_LEGACY_RESOLVE = {
+    "manual": "pinned",
+    "auto (spot-check)": "guess",
+    "auto (skipped implausible top hit; spot-check)": "guess",
+    "unmatched (needs review)": "unmatched",
+}
+
+
+def migrate_entry(m) -> bool:
+    """Bring one entry up to the identity-provenance schema. True if it changed.
+
+    Idempotent, and deliberately pessimistic: an id whose provenance cannot be
+    reconstructed becomes `guess`, never `exact`. Downgrading a real match costs
+    one spot-check; upgrading a bad one re-creates the defect this schema exists
+    to remove.
+    """
+    changed = False
+    a = m.setdefault("auto", CommentedMap())
+    h = m.setdefault("human", CommentedMap())
+    for key, default in (("nexus_id", None), ("nexus_file_id", None),
+                         ("source", ""), ("verified_on", None)):
+        if key not in h:
+            h[key] = default
+            changed = True
+    if "nexus_file_id" not in a:
+        a["nexus_file_id"] = None
+        changed = True
+    if "upstream_from" not in a:
+        a["upstream_from"] = None
+        changed = True
+    if "id_state" not in a:
+        legacy = str(a.get("resolve") or "")
+        if legacy in _LEGACY_RESOLVE:
+            a["id_state"] = _LEGACY_RESOLVE[legacy]
+        elif legacy.startswith("auto"):
+            a["id_state"] = "guess"
+        else:
+            a["id_state"] = "guess" if a.get("nexus_id") else "unsearched"
+        changed = True
+        # A lane computed BEFORE the cap existed is a confident verdict resting on
+        # an identity nobody confirmed — the exact falsehood this schema removes,
+        # so it does not get grandfathered. Measured on the first real migration:
+        # 62 of 101 active rows were sitting in `ready`/`churning`/`predates-9.0`
+        # on the strength of a fuzzy name match. The upstream data is kept; only
+        # the verdict drawn from it is withdrawn, and one refresh restores any
+        # lane whose identity is confirmed.
+        _, _, state = identity(m)
+        if state not in TRUSTED_ID_STATES and a.get("classification") in _CONFIDENT_LANES:
+            a["classification"], a["settled"] = cap_classification(
+                state, a.get("classification"), a.get("settled") or "")
+    return changed
+
+
+def migrate(reg: CommentedMap) -> int:
+    """Migrate every entry; returns how many changed. Called on load."""
+    return sum(1 for m in reg.get("mods") or [] if migrate_entry(m))
+
+
 def require(value: Path | None, what: str, fix: str) -> Path:
     """Named-loss gate for an unresolved location: exit 2 rather than guess.
 
@@ -155,7 +292,13 @@ def _new_entry(mod_id: str, enabled: bool) -> CommentedMap:
     auto["enabled"] = enabled
     auto["installed"] = False  # set True by merge_installed() when actually found on disk
     auto["source"] = _source_of(mod_id)
-    auto["nexus_id"] = SEED_NEXUS_IDS.get(mod_id)
+    seeded = SEED_NEXUS_IDS.get(mod_id)
+    auto["nexus_id"] = seeded
+    auto["nexus_file_id"] = None
+    # A seed is curated, not searched — but it is still not a human looking at this
+    # install, so it is `exact`, never `pinned`.
+    auto["id_state"] = "exact" if seeded else "unsearched"
+    auto["upstream_from"] = None
     for k in ("name", "version", "updated", "status", "author", "settled", "checked_at",
               "installed_version", "installed_date", "installed_name", "folder", "path"):
         auto[k] = None
@@ -166,6 +309,14 @@ def _new_entry(mod_id: str, enabled: bool) -> CommentedMap:
     human["decision"] = ""
     human["done"] = False
     human["notes"] = ""
+    # Human-owned identity. These are the durable answers: a pin survives every
+    # refresh, and `source` (or nexus_id: none) records a mod that has no Nexus
+    # page at all — your own overlays, Workshop-only mods, bundled add-ons —
+    # so the resolver stops searching for something that was never there.
+    human["nexus_id"] = None        # int | "none"
+    human["nexus_file_id"] = None   # int — for an add-on shipped as a FILE on another page
+    human["source"] = ""            # steam:<id> | local | bundled:<mod-id> | <url>
+    human["verified_on"] = None
     e = CommentedMap()
     e["id"] = mod_id
     e["auto"] = auto
@@ -209,6 +360,7 @@ def load_registry(path: Path | None = None) -> CommentedMap:
         if data is not None:
             data.setdefault("mods", CommentedSeq())
             data.setdefault("meta", CommentedMap())
+            migrate(data)  # add identity-provenance fields; promotes nothing
             return data
     return _new_registry()
 
@@ -289,9 +441,11 @@ def merge_installed(reg: CommentedMap, installed: list[dict]) -> tuple[int, int,
 # are "predates-9.0 / review", never auto-claimed compatible.
 _LANES = [
     ("ready", "✅ LIKELY 9.0-READY (updated post-9.0, settled)"),
+    (UNCONFIRMED_LANE, "🔎 NEEDS IDENTITY CONFIRMATION (upstream data fetched, but the id is a GUESS)"),
     ("churning", "⏸ CHURNING (updated <14d ago — defer / pin)"),
     ("predates-9.0", "⚠ PREDATES 9.0 — review (compat unconfirmed)"),
     ("custom-local", "🔧 CUSTOM-LOCAL FORK (upstream hidden/removed, but you maintain your own edits)"),
+    ("off-nexus", "📎 OFF-NEXUS (no Nexus page — Workshop, bundled, or your own; confirmed, not pending)"),
     ("drop", "❌ DROP (removed from Nexus)"),
     ("untriaged", "❓ UNTRIAGED (identity unresolved)"),
     ("error", "⚠ ERROR (API fetch failed)"),
@@ -311,15 +465,23 @@ def _active(m) -> bool:
 
 
 def needs_review(reg: CommentedMap) -> list:
-    """Active entries that need a human decision: auto-matched (spot-check) or
-    still untriaged."""
-    out = []
+    """Active entries whose IDENTITY a human has not settled.
+
+    Keyed on `id_state`, not on the old free-text `resolve` label — the point is
+    that a guess stays visible until somebody confirms or corrects it. `off-nexus`
+    is settled (a human said so) and drops out; `pinned`/`exact` never appear.
+    """
+    return [m for m in reg["mods"]
+            if _active(m) and identity(m)[2] not in TRUSTED_ID_STATES | {"off-nexus"}]
+
+
+def unverified_summary(reg: CommentedMap) -> dict[str, int]:
+    """Counts by id_state over the active set — the denominator for 'how much of
+    this registry is guesswork?', which is not answerable without it."""
+    out: dict[str, int] = {}
     for m in reg["mods"]:
-        if not _active(m):
-            continue
-        if str(m["auto"].get("resolve") or "").startswith("auto") \
-                or m["auto"].get("classification") == "untriaged":
-            out.append(m)
+        if _active(m):
+            out[identity(m)[2]] = out.get(identity(m)[2], 0) + 1
     return out
 
 
@@ -342,17 +504,30 @@ def generate_dashboard(reg: CommentedMap) -> str:
              f"({ignored} ignored) · {done} done\n",
              f"```\nprogress  {_bar(done, total)}  {done}/{total}\n```\n"]
 
+    counts = unverified_summary(reg)
+    trusted = sum(n for s, n in counts.items() if s in TRUSTED_ID_STATES)
+    lines.append(f"**Identity provenance:** {trusted}/{total} confirmed · " +
+                 " · ".join(f"{n} {s}" for s, n in sorted(counts.items())
+                            if s not in TRUSTED_ID_STATES) + "\n")
+
     review = needs_review(reg)
     if review:
-        lines.append(f"## ⚠ NEEDS SPOT-CHECK  ({len(review)})")
-        lines.append("Confirm/correct: `x4modlist resolve <id> <nexus_id>` · "
-                     "junk → `x4modlist ignore <id>`\n")
+        lines.append(f"## ⚠ UNCONFIRMED IDENTITY  ({len(review)})")
+        lines.append("Every row below is a **guess or a blank**, not a fact — anything upstream "
+                     "said about it may describe a different mod. Confirm/correct with "
+                     "`x4modlist resolve <id> <nexus_id> [--file <file_id>]`; if it has no "
+                     "Nexus page at all say so with `x4modlist source <id> <steam:…|local|"
+                     "bundled:…|url>` (or `x4modlist resolve <id> none`) and it stops being "
+                     "searched; junk → `x4modlist ignore <id>`.\n")
+        lines.append("| Mod | id_state | current guess | candidates |")
+        lines.append("|-----|----------|---------------|------------|")
         for m in sorted(review, key=lambda x: x["id"]):
             a = m["auto"]
-            cur = (f"{a.get('nexus_id')}:{a.get('name')}" if a.get("nexus_id")
-                   else "unresolved")
-            cands = " | ".join(a.get("candidates") or [])
-            lines.append(f"- `{m['id']}` → {cur}" + (f"  ·  candidates: {cands}" if cands else ""))
+            nid, fid, state = identity(m)
+            cur = (f"{nid}" + (f" file {fid}" if fid else "") +
+                   f":{a.get('name')}" if nid else "—")
+            cands = " | ".join(a.get("candidates") or []) or "—"
+            lines.append(f"| `{m['id']}` | **{state}** | {cur} | {cands} |")
         lines.append("")
 
     by_class: dict[str, list] = {}
@@ -363,15 +538,20 @@ def generate_dashboard(reg: CommentedMap) -> str:
         if not group:
             continue
         lines.append(f"## {title}  ({len(group)})")
-        lines.append("| Mod | id | source | installed | upstream | updated | status |")
-        lines.append("|-----|----|--------|-----------|----------|---------|--------|")
+        lines.append("| Mod | id | identity | source | installed | upstream | updated | status |")
+        lines.append("|-----|----|----------|--------|-----------|----------|---------|--------|")
         for m in sorted(group, key=lambda x: str(x["auto"].get("name") or x["id"])):
             a = m["auto"]
             name = a.get("name") or a.get("installed_name") or "—"
             inst = a.get("installed_version") or "—"
             ver = a.get("version") or "—"
             upd = a.get("updated") or "—"
-            lines.append(f"| {name} | {m['id']} | {a.get('source')} | {inst} | {ver} | {upd} | {a.get('status') or '—'} |")
+            _, fid, state = identity(m)
+            # The upstream columns are only as good as the id that fetched them, so
+            # the provenance travels in the same row rather than in a footnote.
+            prov = state + (f" · file {fid}" if fid else "")
+            lines.append(f"| {name} | {m['id']} | {prov} | {a.get('source')} | {inst} | "
+                         f"{ver} | {upd} | {a.get('status') or '—'} |")
         lines.append("")
 
     old = not_installed(reg)

@@ -96,6 +96,27 @@ _MOD2 = _pick_mod()
 _SANDBOX: str | None = None
 
 
+def _any_registry_id() -> str:
+    """Some id that exists in the sandbox registry — DISCOVERED, never named.
+
+    Naming a mod here would bake one machine's modlist into a gate; it also has to
+    come from the SANDBOX, because the command under test writes to whatever
+    registry it is pointed at.
+    """
+    try:
+        from ruamel.yaml import YAML
+        data = YAML().load(Path(_sandbox_registry()).read_text(encoding="utf-8"))
+        for m in (data or {}).get("mods") or []:
+            if m.get("id"):
+                return str(m["id"])
+    except (OSError, AttributeError, TypeError, ValueError):
+        # silent-ok: no usable registry -> a sentinel id. The cell then exercises
+        # the not-in-registry path (exit 2), which is in its expected set, so the
+        # cell still asserts a real behaviour rather than silently not running.
+        pass
+    return "__no_such_mod__"
+
+
 def _sandbox_registry() -> str:
     """A throwaway copy of the real registry, made once per sweep.
 
@@ -204,6 +225,18 @@ CELLS: list[Cell] = [
          expect=(0, 1), findings_ok=True),
     Cell("x4modlist", "needs-review", ["--registry", _sandbox_registry(), "needs-review"],
          expect=(0, 1), findings_ok=True),
+    # `verify` exits 1 while any identity is unconfirmed — that is a FINDING, not a
+    # failure, so it is usable as a gate without making a normal run look broken.
+    Cell("x4modlist", "verify", ["--registry", _sandbox_registry(), "verify"],
+         expect=(0, 1), findings_ok=True),
+    Cell("x4modlist", "verify --rescore", ["--registry", _sandbox_registry(),
+                                           "verify", "--rescore"],
+         expect=(0, 1), findings_ok=True),
+    # A pin is offline and must not need the network: `source` records a non-Nexus
+    # origin, which is exactly the case where no API call can help.
+    Cell("x4modlist", "source (off-nexus)", ["--registry", _sandbox_registry(),
+                                             "source", _any_registry_id(), "local"],
+         expect=(0, 2), findings_ok=True),
 
     # ---- x4diff ---------------------------------------------------------
     Cell("x4diff", "two mod versions",
