@@ -490,3 +490,100 @@ def test_replace_attribute_with_text_still_works():
     ops = _merge.apply_diff(tree, _diff(b'<replace sel="//ware/@transport">liquid</replace>'))
     assert tree.xpath("//ware/@transport") == ["liquid"]
     assert [o.ok for o in ops] == [True]
+
+
+# --- nested cross-mod patches through the PLAIN door --------------------------
+#
+# The defect (2026-08-11): build_effective handled nesting only when the
+# REQUESTED vpath was itself nested (-> _build_owned). Asking for the OWNER's
+# plain vpath consulted only `odir/<vpath>` per overlay, so a later mod's file at
+# `odir/extensions/<owner>/<vpath>` was invisible. Two doors to one logical file
+# gave two different answers: Tier B (nested door) said a real mod's 27 bullet
+# overrides resolve; the effective store (plain door) attributed every value to
+# the owner. The engine has ONE document (F19, engine-proven), so the plain door
+# was wrong. Found because two of our own tools disagreed — which is exactly what
+# gates/cross_tool.py exists to catch, one class wider now.
+
+def _nested_pair(tmp_path, patch_xml: str):
+    ext = tmp_path / "extensions"
+    owner = ext / "mod_owner"
+    patch = ext / "mod_patch"
+    (owner / "assets/test/macros").mkdir(parents=True)
+    (patch / "extensions/mod_owner/assets/test/macros").mkdir(parents=True)
+    (owner / "content.xml").write_text(
+        '<content id="mod_owner" version="100" name="o" enabled="1"/>', encoding="utf-8")
+    (patch / "content.xml").write_text(
+        '<content id="mod_patch" version="100" name="p" enabled="1">'
+        '<dependency id="mod_owner" optional="false"/></content>', encoding="utf-8")
+    (owner / "assets/test/macros/widget_macro.xml").write_text(
+        '<macros><macro name="widget_macro" class="bullet"><properties>'
+        '<damage value="100" shield="100"/></properties></macro></macros>',
+        encoding="utf-8")
+    (patch / "extensions/mod_owner/assets/test/macros/widget_macro.xml").write_text(
+        patch_xml, encoding="utf-8")
+    return [owner, patch]
+
+
+def test_nested_root_replace_applies_through_the_plain_door(tmp_path):
+    overlays = _nested_pair(tmp_path, (
+        '<diff><replace sel="//macros"><macros>'
+        '<macro name="widget_macro" class="bullet"><properties>'
+        '<damage value="999" shield="999"/></properties></macro>'
+        '</macros></replace></diff>'))
+    res = _merge.build_effective("assets/test/macros/widget_macro.xml",
+                                 _merge.Config(overlays=overlays))
+    dmg = res.tree.find(".//damage")
+    assert dmg is not None and dmg.get("value") == "999"
+    assert any("nested:mod_owner" in s for s in res.sources), res.sources
+
+
+def test_nested_attr_replace_applies_through_the_plain_door(tmp_path):
+    overlays = _nested_pair(tmp_path, (
+        "<diff><replace sel=\"//macro[@name='widget_macro']"
+        "/properties/damage/@value\">777</replace></diff>"))
+    res = _merge.build_effective("assets/test/macros/widget_macro.xml",
+                                 _merge.Config(overlays=overlays))
+    assert res.tree.find(".//damage").get("value") == "777"
+
+
+def test_nested_remove_deletes_through_the_plain_door(tmp_path):
+    """A real mod ships exactly this: <remove> of a whole macro it replaces
+    elsewhere. The old code resurrected the removed ship in the effective tree."""
+    overlays = _nested_pair(tmp_path, (
+        "<diff><remove sel=\"//macros/macro[@name='widget_macro']\"/></diff>"))
+    res = _merge.build_effective("assets/test/macros/widget_macro.xml",
+                                 _merge.Config(overlays=overlays))
+    assert res.tree is not None
+    assert res.tree.find(".//macro") is None, "the removed macro must stay removed"
+
+
+def test_both_doors_agree(tmp_path):
+    """The invariant the defect violated: the plain vpath and the nested vpath
+    are the same logical document and must merge to the same tree."""
+    overlays = _nested_pair(tmp_path, (
+        '<diff><replace sel="//macros"><macros>'
+        '<macro name="widget_macro" class="bullet"><properties>'
+        '<damage value="999" shield="999"/></properties></macro>'
+        '</macros></replace></diff>'))
+    cfg = _merge.Config(overlays=overlays)
+    plain = _merge.build_effective("assets/test/macros/widget_macro.xml", cfg)
+    nested = _merge.build_effective(
+        "extensions/mod_owner/assets/test/macros/widget_macro.xml", cfg)
+    pv = plain.tree.find(".//damage").get("value")
+    nv = nested.tree.find(".//damage").get("value")
+    assert pv == nv == "999"
+
+
+def test_bare_diff_over_another_mods_file_stays_inert(tmp_path):
+    """The rule this fix must NOT loosen: a BARE-path diff over another mod's
+    file is never opened by the engine. Only the nested form applies."""
+    overlays = _nested_pair(tmp_path, "<diff/>")
+    bare = overlays[1] / "assets/test/macros/widget_macro.xml"
+    bare.parent.mkdir(parents=True, exist_ok=True)
+    bare.write_text("<diff><replace sel=\"//macro[@name='widget_macro']"
+                    "/properties/damage/@value\">666</replace></diff>",
+                    encoding="utf-8")
+    res = _merge.build_effective("assets/test/macros/widget_macro.xml",
+                                 _merge.Config(overlays=overlays))
+    assert res.tree.find(".//damage").get("value") == "100"
+    assert any("diff(inert)" in s for s in res.sources), res.sources

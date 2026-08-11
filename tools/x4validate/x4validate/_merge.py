@@ -644,33 +644,65 @@ def build_effective(
         tree = parse_file(base_path)
         sources.append("base")
 
+    # Overlays that SUPPLIED this file (full/union): later mods may patch the same
+    # logical file at the NESTED path `extensions/<that folder>/<vpath>`. Those
+    # nested patches used to be invisible from this door — build_effective(plain
+    # vpath) consulted only `odir/<vpath>`, while build_effective(nested vpath)
+    # merged owner+patches via _build_owned. Two doors to one logical file, giving
+    # two different answers: Tier B (nested door) said cpsdo_vro's 27 bullet
+    # overrides resolve; the store (this door) said cpsdo_zb_modpack still owns
+    # every value. The engine has ONE document, and F19's debug.txt evidence shows
+    # nested ops ARE evaluated — so this door was the wrong one.
+    owner_folders: list[str] = []
+
     for odir in overlay_dirs:
         oroot = overlay_root(odir, vpath, skipped)
-        if oroot is None:
-            continue
-        # The engine only loads a bare-path <diff> when the GAME supplies the file;
-        # over another mod's file it never even opens it (proven from debug.txt's
-        # per-file signature lines — same rel path, owner logged, nested patcher
-        # logged with its op evaluated, bare-path patcher absent). Applying it
-        # anyway put 14 attribute values in the effective tree that the engine
-        # never sees. By this point `from_game` is FINAL for mod overlays:
-        # reference/ and t/ are decided upfront and DLC layers always precede mods
-        # in overlay_dirs, so the refusal is load-order-independent. DLC-shipped
-        # diffs are exempt — the engine trusts its own content, and a DLC diff
-        # with no base is already the diff(no-base!) case.
-        if (oroot.tag == "diff" and not from_game
-                and odir.resolve() not in game_dirs):
-            sources.append(f"{odir.name}:diff(inert)")
-            continue
-        tree, mode = apply_overlay(tree, oroot, vpath, odir.name, recorder=recorder)
-        if mode != "diff(no-base!)":
-            base_found = base_found or mode in {"union", "full"}
-            if mode in {"union", "full"} and odir.resolve() in game_dirs:
-                from_game = True
-        if recorder is not None and mode != "full":
-            # full-override already appended to file_chain inside apply_overlay
-            recorder.file_chain.append(Origin(odir.name, mode))
-        sources.append(f"{odir.name}:{mode}")
+        if oroot is not None:
+            # The engine only loads a bare-path <diff> when the GAME supplies the
+            # file; over another mod's file it never even opens it (proven from
+            # debug.txt's per-file signature lines — same rel path, owner logged,
+            # nested patcher logged with its op evaluated, bare-path patcher
+            # absent). Applying it anyway put 14 attribute values in the effective
+            # tree that the engine never sees. By this point `from_game` is FINAL
+            # for mod overlays: reference/ and t/ are decided upfront and DLC
+            # layers always precede mods in overlay_dirs, so the refusal is
+            # load-order-independent. DLC-shipped diffs are exempt — the engine
+            # trusts its own content, and a DLC diff with no base is already the
+            # diff(no-base!) case.
+            if (oroot.tag == "diff" and not from_game
+                    and odir.resolve() not in game_dirs):
+                sources.append(f"{odir.name}:diff(inert)")
+            else:
+                tree, mode = apply_overlay(tree, oroot, vpath, odir.name,
+                                           recorder=recorder)
+                applied_here = True
+                if mode != "diff(no-base!)":
+                    base_found = base_found or mode in {"union", "full"}
+                    if mode in {"union", "full"} and odir.resolve() in game_dirs:
+                        from_game = True
+                if mode in {"union", "full"} and odir.resolve() not in game_dirs:
+                    owner_folders.append(odir.name)
+                if recorder is not None and mode != "full":
+                    # full-override already appended to file_chain in apply_overlay
+                    recorder.file_chain.append(Origin(odir.name, mode))
+                sources.append(f"{odir.name}:{mode}")
+
+        # Nested candidates: this overlay patching an EARLIER overlay's file at
+        # `extensions/<owner>/<vpath>`. The inert-bare-diff rule does NOT apply —
+        # a nested diff over another mod's file is exactly the form the engine
+        # loads (KB gotcha #6; engine-proven). A mod is never its own nested
+        # patcher, and a file already applied bare is not applied again.
+        for owner in owner_folders:
+            if odir.name.lower() == owner.lower():
+                continue
+            nroot = overlay_root(odir, f"extensions/{owner}/{vpath}", skipped)
+            if nroot is None:
+                continue
+            tree, mode = apply_overlay(tree, nroot, vpath, odir.name,
+                                       recorder=recorder)
+            if recorder is not None and mode != "full":
+                recorder.file_chain.append(Origin(odir.name, mode))
+            sources.append(f"{odir.name}:{mode}(nested:{owner})")
 
     # Text files (t/0001.xml, t/0001-lNNN.xml) have no single base file in reference
     # — the engine overlays them onto the language tree. A mod's t-diff adds <page>s

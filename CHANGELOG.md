@@ -1,5 +1,41 @@
 # Changelog
 
+## v2.2.1
+
+**Nested cross-mod patches now apply through the owner's-file door too.**
+
+`build_effective` handled `extensions/<owner>/<rel>` only when the *requested* vpath was
+itself the nested path. Building the OWNER's plain vpath — which is what the effective
+store does for every file — consulted only each overlay's bare `<vpath>`, so a later mod's
+nested patch was invisible. Two doors to one logical file, two different answers: Tier B
+(nested door) said a real add-on's 27 whole-file bullet overrides resolve; `x4effective`
+(plain door) attributed every one of those values to the owner. The engine has ONE
+document (F19, engine-proven), so the plain door was wrong.
+
+Found because two of our own tools disagreed about the same value — cross-tool
+disagreement is a defect signal, and this time it was real.
+
+- The plain-door build now probes each later overlay for `extensions/<owner>/<vpath>`
+  whenever an earlier overlay supplied the file, applying nested diffs (which are exempt
+  from the bare-diff inert rule — the engine loads them) and nested full overrides.
+- The store's touch map registers a nested patch under its owner's rel, so the patcher is
+  handed to the merge and the phantom duplicate entity at the nested vpath disappears.
+  **Single-level nesting only** — a double-nested file (a patch on another mod's patch
+  file) keeps its old behavior, because the engine's handling of that shape is unproven
+  and one installed mod ships both forms (rewriting it double-applied its ops).
+- An applied nested `<remove>` now really removes: one installed add-on deletes a ship it
+  rebalances elsewhere, and the old code resurrected it in the effective tree.
+
+Measured impact on a real 114-mod install, full old-vs-new differential with **every**
+changed row attributed and **0 unexplained**: 834 attribute values changed owner or value,
+27 entity origins moved to the real winner, 60 phantom duplicates removed, 21 rows from
+the now-honoured `<remove>`. `x4compat` was verified NOT to share the blindness (it
+already aliases owner files under the nested key), and the engine oracles, noop/provenance/
+consistency audits, determinism and the per-mod perf guard all pass unchanged.
+
+Suite 392 → **397** (5 regression tests pin both doors agreeing, the inert bare-diff rule
+surviving, and the nested `<remove>`).
+
 ## v2.2.0
 
 **A guessed mod identity can no longer be laundered into a fact.** The registry stored a

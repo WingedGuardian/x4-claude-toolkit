@@ -85,10 +85,34 @@ def ordered_overlays(mods: list[dict]) -> list[tuple[dict, Path]]:
 # --- vpath enumeration + touch map -------------------------------------------
 
 def build_touch_map(ordered: list[tuple[dict, Path]]) -> dict[str, list[tuple[str, str]]]:
-    """lower(vpath) -> [(mod_folder, real_vpath), ...] in load order."""
+    """lower(LOGICAL vpath) -> [(mod_folder, real_vpath), ...] in load order.
+
+    A mod-on-mod nested patch — a file at ``extensions/<owner>/<rel>`` where
+    <owner> is an INSTALLED MOD folder — is registered under the owner's own
+    ``<rel>``, because that is the one document the engine builds. Keying it by
+    its literal path gave the same logical file two disconnected keys: the
+    owner's entities never saw the patcher (wrong values, wrong provenance), and
+    the patcher's key minted a phantom duplicate entity at a vpath the game does
+    not have. DLC-nested paths (``extensions/ego_dlc_*``) are NOT rewritten —
+    those are genuine game vpaths, and ego_dlc folders never appear in *ordered*.
+    """
+    folders = {mod["folder"].lower() for mod, _ in ordered}
     touch: dict[str, list[tuple[str, str]]] = {}
     for mod, path in ordered:
         for low, real in _compat._mod_xml_paths(path).items():
+            parts = low.split("/")
+            if (len(parts) >= 3 and parts[0] == "extensions"
+                    and parts[1] in folders
+                    and parts[1] != mod["folder"].lower()
+                    # SINGLE-level nesting only. A double-nested file —
+                    # extensions/<modA>/extensions/<dlc-or-mod>/<rel> — is a patch
+                    # on another mod's PATCH FILE, and whether the engine applies
+                    # that transitively is not engine-proven. Rewriting it onto the
+                    # inner vpath double-applied ebi_m0_vro (it ships BOTH the
+                    # direct DLC patch and the double-nested form) and flipped six
+                    # entity origins. Unproven == keep the old behavior.
+                    and parts[2] != "extensions"):
+                low = "/".join(parts[2:])
             touch.setdefault(low, []).append((mod["folder"], real))
     return touch
 
@@ -327,7 +351,11 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
         progress(f"macro files to merge: {len(mvpaths)}")
         n = 0
         for low, vpath in sorted(mvpaths.items()):
-            ov = touchers_for(vpath, touch, folder_to_path)
+            # Look up touchers by the map KEY, not the real path: for a nested
+            # patch normalized onto its owner's rel, the real path no longer
+            # equals the key, and a real-path lookup would silently hand the
+            # merge an empty overlay list.
+            ov = touchers_for(low, touch, folder_to_path)
             try:
                 tree, rec = _merge_one(vpath, config, ov)
             except etree.LxmlError as exc:
