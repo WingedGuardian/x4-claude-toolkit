@@ -1,0 +1,116 @@
+# Continuous integration for the X4 Claude Code Modding Toolkit.
+#
+# WHY THIS EXISTS. Until now every release was verified only on the author's machine,
+# against the author's own large mod install. That is the one environment guaranteed NOT
+# to resemble a new user's. The concrete failure it allows: a test that reads a file which
+# exists only in the author's working tree passes locally and ERRORS on a fresh clone —
+# which is the first thing a new user runs, so it reads as "this toolkit is broken".
+#
+# What CI can and cannot cover, stated plainly rather than implied:
+#   CAN  — the unit/regression suite. MEASURED on a clean `git archive` checkout with NO
+#          game installed and no env vars set: 397 passed, exit 0, ~12 s.
+#   CANNOT — the `gates/` suite. Those are integration checks that need a real X4 install,
+#          an unpacked reference tree and a live mod list. They stay a local, pre-release
+#          step. A green CI badge therefore means "the code is sound", NOT "the gates pass".
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Ubuntu is INFORMATIONAL, not a gate. The toolkit targets Windows (that is where X4
+    # lives) and the suite is verified there; POSIX behaviour has never been measured, so
+    # gating on it would be asserting something unverified. It runs so the answer becomes
+    # known instead of assumed — promote it to a gate once it is green on its own merits.
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            experimental: false
+          - os: ubuntu-latest
+            experimental: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      # --frozen fails if uv.lock has drifted from pyproject.toml instead of silently
+      # resolving something newer. A CI run that quietly installs different versions than
+      # a user gets is not testing what ships.
+      - name: Run the suite with NO game installed
+        working-directory: tools/x4validate
+        run: uv run --frozen python -m pytest -q
+
+  scrub:
+    name: no personal data in tracked files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Scans TRACKED FILES ONLY, via `git ls-files`. This is not a detail: a raw
+      # recursive grep also walks `.venv/`, whose activate scripts and dist-info embed the
+      # absolute path of whoever last built it — MEASURED, that alone produced 8 hits, all
+      # false. Scanning the wrong population is how a scrub check becomes noise and then
+      # gets ignored.
+      #
+      # The patterns are deliberately GENERIC — no real username, profile id or key is
+      # written here, because the guard must not itself leak what it is guarding against.
+      - name: Scan for absolute user paths, profile ids and secrets
+        shell: bash
+        run: |
+          set -uo pipefail
+          mapfile -t FILES < <(git ls-files)
+          echo "scanning ${#FILES[@]} tracked file(s)"
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "::error::git ls-files returned nothing — the scan population is empty, so a clean result would prove nothing."
+            exit 1
+          fi
+
+          fail=0
+
+          # A real Windows user path: drive, Users, a name, then MORE path. Requiring a
+          # trailing separator keeps an illustrative `C:\Users\...` in a comment from
+          # firing (verified: 0 hits on the clean tree, still catches a genuine path).
+          if grep -rniE 'C:[/\\]+Users[/\\]+[A-Za-z0-9_-]+[/\\]+[A-Za-z0-9_.-]' "${FILES[@]}"; then
+            echo "::error::An absolute user path is committed. Toolkit copies must use a project-relative default (e.g. bare \"reference\"), not the author's machine."
+            fail=1
+          fi
+
+          # An X4 user-profile id is a long digit run under the Egosoft profile dir.
+          if grep -rniE 'Egosoft[/\\]+X4[/\\]+[0-9]{6,}' "${FILES[@]}"; then
+            echo "::error::A personal X4 profile id is committed."
+            fail=1
+          fi
+
+          # A Nexus API key assigned to a literal. Each user supplies their OWN key via the
+          # X4_NEXUS_KEY environment variable; a bundled key would also breach Nexus AUP.
+          if grep -rnE 'X4_NEXUS_KEY[^A-Za-z_]{0,4}=[^A-Za-z_]{0,4}["'"'"'][A-Za-z0-9]{8,}' "${FILES[@]}"; then
+            echo "::error::A Nexus API key literal is committed. Keys are per-user and must never be bundled."
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "clean — no absolute user paths, profile ids or key literals in tracked files."
