@@ -13,9 +13,11 @@ the CHECKER's bug, not x4compat's.
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gates"))
+from conftest import import_gate  # noqa: E402
 
-import cross_tool  # noqa: E402
+# Module-scope import of a gate exits the whole pytest session on a machine
+# with no X4 install -- see tests/conftest.py. Skip, do not abort.
+cross_tool = import_gate("cross_tool")
 
 
 # --- SUBTREE targets are NODE-scoped, not file-scoped -------------------------

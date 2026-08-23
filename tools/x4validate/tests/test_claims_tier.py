@@ -14,9 +14,11 @@ from pathlib import Path
 import pytest
 
 GATES = Path(__file__).resolve().parent.parent / "gates"
-sys.path.insert(0, str(GATES))
+from conftest import import_gate  # noqa: E402
 
-import claims_audit  # noqa: E402
+# Module-scope import of a gate exits the whole pytest session on a machine
+# with no X4 install -- see tests/conftest.py. Skip, do not abort.
+claims_audit = import_gate("claims_audit")
 
 
 def _rows(tmp_path, text: str, monkeypatch):

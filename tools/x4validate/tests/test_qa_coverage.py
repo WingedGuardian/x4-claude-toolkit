@@ -29,7 +29,8 @@ def _declared_clis() -> set[str]:
 
 
 def test_every_console_script_has_at_least_one_qa_cell():
-    from gates import qa_sweep
+    from conftest import import_gate
+    qa_sweep = import_gate("qa_sweep", module_level=False)
 
     covered = {c.tool for c in qa_sweep.CELLS}
     missing = _declared_clis() - covered
@@ -40,7 +41,8 @@ def test_every_console_script_has_at_least_one_qa_cell():
 
 def test_no_qa_cell_names_a_cli_that_does_not_exist():
     """The mirror: a renamed CLI must not leave a cell silently testing nothing."""
-    from gates import qa_sweep
+    from conftest import import_gate
+    qa_sweep = import_gate("qa_sweep", module_level=False)
 
     stale = {c.tool for c in qa_sweep.CELLS} - _declared_clis()
     assert not stale, f"qa_sweep has cells for CLIs that are not shipped: {sorted(stale)}"
