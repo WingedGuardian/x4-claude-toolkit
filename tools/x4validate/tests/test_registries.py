@@ -52,7 +52,7 @@ def test_an_empty_registry_FILE_is_not_treated_as_a_misconfiguration():
 
 
 def test_every_planned_registry_key_matches_the_real_vanilla_file():
-    """Pins the measured key-attr table against reference\ so a wrong entry cannot
+    r"""Pins the measured key-attr table against reference\ so a wrong entry cannot
     silently ship. Skips cleanly when the reference tree is not configured."""
     from pathlib import Path
     from x4validate import _paths
