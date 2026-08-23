@@ -1,0 +1,444 @@
+r"""`x4debug` — the engine's own verdict, bucketed, attributed, and compared to ours.
+
+The engine log is the only ground truth we have about what actually happens at
+load and at galaxy generation. Until now, reading it was a hand-rolled
+`grep | sed | sort | uniq -c` pass, repeated from scratch every session, producing
+a table nobody could diff against the last one.
+
+Three things follow from that, and they are the whole design:
+
+**1. The rows must sum to the input.** A hand-rolled table has no way to notice it
+dropped a shape — which is exactly how `parse_debug` lost 44% of a log for two
+weeks. `triage` prints the residue row unconditionally, including when it is zero,
+because a row that appears only when non-zero teaches the reader to read its
+absence as "nothing there" rather than "not measured".
+
+**2. Two states are compared PER ITEM, never by their totals.** The 2026-08-13 log
+holds 342 failing ops in one cpsdo file; `x4validate --tier b` independently
+predicted 310 for that mod. Close enough to look like agreement, and not the same
+set. `crosscheck` reports three buckets, and the one that matters most is
+`observed-not-predicted`: an op the ENGINE skipped that we never predicted is a
+blind spot in the validator, and folding it into a total would hide it.
+
+**3. Subsystem errors name an ENTITY, not a mod.** `[JobEngine] ... JobID: 'x'`
+says a job could not spawn; it never says whose job it is. Attribution is
+therefore a SEARCH against the effective store, and must be reported as a search —
+with its denominator — rather than as a lookup that quietly returns nothing.
+
+What this does NOT do, stated so the scope message can say it: it classifies, it
+never fixes, and it never edits a mod. Which buckets are *benign* stays a dated
+decision in KNOWLEDGEBASE.md that this tool cites — a suppression compiled into
+code outlives the reason for it, and one such line here survived the mod it
+referred to being uninstalled.
+"""
+
+from __future__ import annotations
+
+import collections
+import json
+import re
+import shutil
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+
+from . import _debuglog, _freshness, _paths
+from . import __version__
+
+#: A new game generates the galaxy; a save load does not. God/job/station errors
+#: occur only in the former, so raw counts are NOT comparable across the boundary.
+_NEW_GAME_MARKER = "Universe generation begins"
+
+
+# --------------------------------------------------------------------------- #
+# crosscheck                                                                   #
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class OpComparison:
+    """Engine-observed vs validator-predicted, per item.
+
+    `observed_total`/`predicted_total` keep the multiplicities: the engine logs an
+    op once per application pass, so the same selector legitimately appears twice.
+    Collapsing to sets would silently reconcile 342 with 310 and hide whichever
+    gap is real.
+    """
+
+    both: list[str] = field(default_factory=list)
+    predicted_only: list[str] = field(default_factory=list)
+    observed_only: list[str] = field(default_factory=list)
+    observed_total: int = 0
+    predicted_total: int = 0
+
+    @property
+    def clean(self) -> bool:
+        return not self.predicted_only and not self.observed_only
+
+
+def compare_ops(observed: list[str], predicted: list[str]) -> OpComparison:
+    o, p = collections.Counter(observed), collections.Counter(predicted)
+    return OpComparison(
+        both=sorted(o.keys() & p.keys()),
+        predicted_only=sorted(p.keys() - o.keys()),
+        observed_only=sorted(o.keys() - p.keys()),
+        observed_total=sum(o.values()),
+        predicted_total=sum(p.values()),
+    )
+
+
+class UnparsedFinding(RuntimeError):
+    """A `sel` finding whose selector could not be extracted.
+
+    Raised rather than skipped, on purpose. See `predicted_ops`.
+    """
+
+
+#: Fallback only — `Finding.sel` is the authority (see `predicted_ops`).
+#:
+#: x4validate reports TWO cardinality failures and RFC 5261 makes both fatal: a
+#: `sel` must match exactly one node, so 0 matches and 2 matches are equally
+#: skipped by the engine. The "matched nothing" message also carries OPTIONAL
+#: suffixes — " (silent)" and " [if= passed: <cond>]" — which are NOT part of the
+#: selector and must be stripped, or the comparison can never match.
+_SEL_SUFFIX = r"(?:\s*\(silent\))?(?:\s*\[if= passed:[^\]]*\])?"
+_SEL_SHAPES = (
+    re.compile(r"sel matched nothing:\s*(?P<sel>.+?)" + _SEL_SUFFIX + r"\s*$"),
+    re.compile(r"sel matched \d+ nodes \([^)]*\):\s*(?P<sel>.+?)" + _SEL_SUFFIX + r"\s*$"),
+)
+
+
+def predicted_ops(report) -> list[str]:
+    """The selectors x4validate says are cardinality failures.
+
+    Reads `Finding.sel` — the selector verbatim — and falls back to parsing the
+    message only for findings that predate that field.
+
+    Two bugs of the same shape were committed here, both caught by running the
+    comparison across the whole modlist rather than one mod:
+
+    1. The first version matched only "matched nothing", silently dropped all 116
+       "matched 2 nodes" predictions for cpsdo_faction, and reported those very
+       ops as "a VALIDATOR BLIND SPOT".
+    2. The second swallowed the " (silent)" suffix into the selector, so six
+       xenon_backup ops could never match and were reported as predicted-only.
+
+    Both are the register's one shape — a narrowing step reporting its residue as
+    a finding — inside the tool built to detect it. Hence: structured field
+    first, and **raise** on anything unreadable, because a silent skip here does
+    not lose a row, it invents one somewhere else.
+    """
+    out = []
+    for f in getattr(report, "findings", []):
+        if f.category != "sel":
+            continue
+        structured = getattr(f, "sel", "")
+        if structured:
+            out.append(structured)
+            continue
+        for rx in _SEL_SHAPES:
+            m = rx.search(f.message)
+            if m:
+                out.append(m.group("sel"))
+                break
+        else:
+            # Not every "sel"-category finding IS a cardinality failure — invalid
+            # sel=/if= and guarded no-ops share the category and carry no selector
+            # to compare. Those are legitimately not predictions.
+            if _NON_CARDINALITY.search(f.message):
+                continue
+            raise UnparsedFinding(
+                "x4validate emitted a `sel` finding this comparison cannot read, so "
+                "the prediction set would be short by at least one op:\n  "
+                f"{f.message}\nAdd its shape to _SEL_SHAPES.")
+    return out
+
+
+#: `sel`-category findings that are not cardinality failures and carry no
+#: selector to compare against the engine.
+_NON_CARDINALITY = re.compile(
+    r"invalid (?:sel|if)=|skipped: if= is false|unparseable XML")
+
+
+def observed_ops(parsed: _debuglog.ParsedLog, folder: str) -> list[str]:
+    """The selectors the ENGINE skipped for one mod folder (shapes E/F)."""
+    low = folder.lower()
+    return [e.sel for e in parsed.entries
+            if e.cardinality and e.folder.lower() == low]
+
+
+# --------------------------------------------------------------------------- #
+# baseline                                                                     #
+# --------------------------------------------------------------------------- #
+
+def _meta_path(archived: Path) -> Path:
+    return Path(str(archived) + ".meta.json")
+
+
+def archive(log: Path, dest_dir: Path, config=None) -> Path:
+    """Copy a log into the archive with a fingerprint, so two runs are comparable.
+
+    Stamped on the CONTENT axis only. A log records a game launch, not a merge
+    product: marking it engine-dependent would make it read STALE every time
+    `_merge.py` is touched, and a banner that cries wolf is one the reader learns
+    to skip. `engine_dependent: false` is recorded explicitly rather than left
+    implied, so the next reader need not infer the intent.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    # LOCAL time, matching the `captured` field below. A UTC filename beside a
+    # local `captured` reads as two different launches to anyone diffing the
+    # archive by name.
+    stamp = datetime.fromtimestamp(log.stat().st_mtime).strftime("%Y-%m-%dT%H%M")
+    out = dest_dir / f"debug-{stamp}.txt"
+    shutil.copy2(log, out)
+
+    text = log.read_text(encoding="utf-8", errors="replace")
+    parsed = _debuglog.parse_log_text(text)
+    if config is None:
+        from . import _merge
+        config = _merge.Config()
+    ext = _paths.game_extensions() or Path("")
+    _meta_path(out).write_text(json.dumps({
+        "source": str(log),
+        "captured": datetime.fromtimestamp(log.stat().st_mtime).isoformat(timespec="seconds"),
+        "new_game": _is_new_game(text),
+        "total_errors": parsed.total,
+        "classified": len(parsed.classified),
+        "unclassified": len(parsed.unclassified),
+        "engine_dependent": False,
+        "fingerprint": _freshness.fingerprint(config, ext),
+    }, indent=2), encoding="utf-8")
+    return out
+
+
+def read_archive_meta(archived: Path) -> dict:
+    return json.loads(_meta_path(archived).read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------- #
+# triage                                                                       #
+# --------------------------------------------------------------------------- #
+
+def _is_new_game(text: str) -> bool:
+    return _NEW_GAME_MARKER in text
+
+
+def _bucket(e: _debuglog.DebugError) -> tuple[str, str]:
+    """(bucket kind, label) for one error. Mods first, then subsystems."""
+    if e.folder:
+        return "mod", e.folder
+    if e.script_name:
+        return "script", e.script_name
+    if e.subsystem:
+        return "subsystem", e.subsystem
+    if e.lookup:
+        return "index", e.lookup_index or "index"
+    return "unclassified", "unclassified"
+
+
+_SECTIONS = (
+    ("mod", "BY MOD (engine named a file the mod owns)"),
+    ("script", "BY SCRIPT (resolves to a mod via its name= attribute)"),
+    ("subsystem", "BY SUBSYSTEM (engine named an ENTITY, not a mod)"),
+    ("index", "INDEX LAYER"),
+)
+
+
+def triage(log: Path, out=None) -> int:
+    # Resolved at CALL time, not definition time: a default of `sys.stdout` binds
+    # the stream that existed at import, so anything that later replaces it (a test
+    # harness, a redirect) is written past rather than into. The bug is invisible in
+    # normal use and makes the output untestable, which is worse.
+    out = sys.stdout if out is None else out
+    text = log.read_text(encoding="utf-8", errors="replace")
+    parsed = _debuglog.parse_log_text(text)
+    new_game = _is_new_game(text)
+    mtime = datetime.fromtimestamp(log.stat().st_mtime)
+
+    def w(s=""):
+        print(s, file=out)
+
+    w(f"x4debug triage  {log}")
+    w(f"  captured        : {mtime:%Y-%m-%d %H:%M:%S}  (mtime)")
+    w(f"  session type    : {'NEW GAME (galaxy generated)' if new_game else 'save load'}")
+    if new_game:
+        w("                    god / job / station errors occur only at generation, so")
+        w("                    raw counts are NOT comparable with a save-load log")
+    w(f"  {parsed.coverage_note()}")
+    w()
+
+    groups: collections.Counter = collections.Counter()
+    for e in parsed.entries:
+        groups[_bucket(e)] += 1
+
+    for kind, title in _SECTIONS:
+        rows = sorted(((lbl, n) for (k, lbl), n in groups.items() if k == kind),
+                      key=lambda r: -r[1])
+        if not rows:
+            continue
+        w(f"  {title}")
+        for lbl, n in rows:
+            w(f"    {n:6d}  {lbl}")
+        w(f"    {sum(n for _, n in rows):6d}  = subtotal")
+        w()
+
+    # Printed unconditionally, zero included — see the module docstring.
+    resid = groups.get(("unclassified", "unclassified"), 0)
+    w(f"  UNCLASSIFIED      {resid:6d}   (a shape this parser does not know)")
+    if resid:
+        w("    Any count derived from the buckets above is a FLOOR, not a total.")
+        for msg, n in collections.Counter(
+                u.message[:96] for u in parsed.unclassified).most_common(6):
+            w(f"    {n:6d}  {msg}")
+    w()
+
+    total_rows = sum(groups.values())
+    if total_rows != parsed.total:  # pragma: no cover - the invariant is structural
+        w(f"  rows {total_rows} != lines read {parsed.total}: VIOLATED")
+        w("  !! the table does not account for the input; treat every number above "
+          "as unreliable")
+        return 1
+    w(f"  rows {total_rows} == lines read {parsed.total}: OK")
+    w()
+    w('  Which buckets are BENIGN is a dated decision in KNOWLEDGEBASE.md ("Debug '
+      'triage"),')
+    w("  not a rule compiled in here — a suppression in code outlives its reason.")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# CLI                                                                          #
+# --------------------------------------------------------------------------- #
+
+def _resolve_log(arg: str | None) -> Path | None:
+    if arg:
+        p = Path(arg)
+        return p if p.is_file() else None
+    p = _paths.debug_log()
+    return p if p and p.is_file() else None
+
+
+def _default_archive_dir() -> Path:
+    reg = _paths.registry()
+    if reg:
+        return reg.parent.parent / "_reports" / "debug"
+    return Path.cwd() / "debug-archive"
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass  # silent-ok: console encoding shim. Failure changes how output LOOKS,
+        # never what was examined.
+
+    p = argparse.ArgumentParser(
+        prog="x4debug",
+        description="Triage the engine's debug.txt, and compare it to what we predicted.")
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pt = sub.add_parser("triage", help="bucket and attribute every [=ERROR=] line")
+    pt.add_argument("log", nargs="?", help="debug.txt (default: $X4_DEBUGLOG / $X4_PROFILE)")
+
+    pc = sub.add_parser(
+        "crosscheck",
+        help="per-item diff of engine-skipped ops vs x4validate's prediction")
+    pc.add_argument("mod", help="mod path (use the DEPLOYED copy — load order matters)")
+    pc.add_argument("log", nargs="?")
+    pc.add_argument("--tier", default="b", choices=["a", "b"])
+
+    pb = sub.add_parser("baseline", help="archive this log with a content fingerprint")
+    pb.add_argument("log", nargs="?")
+    pb.add_argument("--dest", help="archive dir (default: dev\\_reports\\debug)")
+
+    args = p.parse_args(argv)
+
+    log = _resolve_log(getattr(args, "log", None))
+    if log is None:
+        print("x4debug: could not read a debug log. Pass one explicitly, or set "
+              "$X4_DEBUGLOG / $X4_PROFILE.", file=sys.stderr)
+        print("  This is a NON-ANSWER, not a clean log — a run that examined "
+              "nothing must never exit 0.", file=sys.stderr)
+        return 2
+
+    if args.cmd == "triage":
+        return triage(log)
+
+    if args.cmd == "baseline":
+        dest = Path(args.dest) if args.dest else _default_archive_dir()
+        out = archive(log, dest)
+        meta = read_archive_meta(out)
+        print(f"  archived {out}")
+        print(f"  {meta['total_errors']} errors ({meta['unclassified']} unclassified), "
+              f"new_game={meta['new_game']}")
+        print(f"  content fingerprint {meta['fingerprint']['content']} "
+              "(engine axis N/A — a log is not a merge product)")
+        return 0
+
+    return _crosscheck_cmd(args, log)
+
+
+def _crosscheck_cmd(args, log: Path) -> int:
+    from . import _check, _merge
+
+    mod = Path(args.mod)
+    if not mod.is_dir():
+        print(f"x4debug: not a mod directory: {mod}", file=sys.stderr)
+        return 2
+
+    parsed = _debuglog.parse_log(log)
+    observed = observed_ops(parsed, mod.name)
+
+    config = _merge.Config()
+    report = _check.validate(mod, config, tier=args.tier)
+    try:
+        predicted = predicted_ops(report)
+    except UnparsedFinding as exc:
+        # `predicted_ops` raises on purpose; the CLI has to land it cleanly. The
+        # state here is worse than "no answer": the prediction set is INCOMPLETE,
+        # so every bucket below would be wrong in a way that looks authoritative.
+        # Same contract the staleness CLI follows — a reason and a distinct code,
+        # never a traceback, which says nothing about which state you are in.
+        print(f"x4debug: cannot compare — the prediction set is incomplete.\n{exc}",
+              file=sys.stderr)
+        print("  Reporting buckets from a short prediction set would invent "
+              "'observed-only' rows that are really our own blind spot.",
+              file=sys.stderr)
+        print("  Fix: add the message's shape to _SEL_SHAPES in _debugcli.py, or "
+              "populate Finding.sel at the site that emits it.", file=sys.stderr)
+        return 4
+    r = compare_ops(observed, predicted)
+
+    print(f"x4debug crosscheck  {mod.name}  (tier {args.tier})")
+    print(f"  engine skipped   : {r.observed_total} op(s), {len(set(observed))} distinct")
+    print(f"  we predicted     : {r.predicted_total} op(s), {len(set(predicted))} distinct")
+    print()
+    print(f"  agreed           : {len(r.both)}")
+    print(f"  predicted only   : {len(r.predicted_only)}  "
+          "(we flag it, the engine did not — a stale prediction, or an op that "
+          "never ran)")
+    for sel in r.predicted_only[:10]:
+        print(f"      {sel}")
+    if len(r.predicted_only) > 10:
+        print(f"      ... and {len(r.predicted_only) - 10} more")
+    print(f"  OBSERVED ONLY    : {len(r.observed_only)}  "
+          "(the engine skipped it and we never predicted it — a VALIDATOR BLIND SPOT)")
+    for sel in r.observed_only[:20]:
+        print(f"      {sel}")
+    if len(r.observed_only) > 20:
+        print(f"      ... and {len(r.observed_only) - 20} more")
+    print()
+    if report.degraded:
+        print("  [!] the validator run was DEGRADED — a whole check did not execute, "
+              "so 'predicted' is not a complete prediction:")
+        for s in report.degraded:
+            print(f"      {s.what}: {s.why}")
+    print("  Totals are context only; the three buckets above are the finding.")
+    return 0 if r.clean else 1
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

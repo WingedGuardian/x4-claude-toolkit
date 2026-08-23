@@ -156,9 +156,57 @@ def _cached_vfs(mod_dir_str: str, xml_only: bool) -> dict[str, CatMember]:
     return build_mod_vfs(Path(mod_dir_str), xml_only)
 
 
-def mod_vfs(mod_dir: Path, xml_only: bool = True) -> dict[str, CatMember]:
-    """Memoized :func:`build_mod_vfs` — safe within a single CLI run (cats are static)."""
-    return _cached_vfs(str(mod_dir), xml_only)
+#: Directories already warned about, so a loop over 115 mods cannot spam.
+_warned_packed_only: set[str] = set()
+
+
+def mod_vfs(mod_dir: Path, xml_only: bool = True,
+            packed_only: bool = False) -> dict[str, CatMember]:
+    """Memoized :func:`build_mod_vfs` — safe within a single CLI run (cats are static).
+
+    ⚠ **This reads CATALOGS ONLY.** For a loose (unpacked) mod it returns ``{}``,
+    which is the correct answer to "what is in this mod's archives" and the WRONG
+    answer to "what XML does this mod own". Use `_scan.iter_mod_xml` /
+    `iter_mod_xml_bytes` for the latter — they enumerate loose THEN packed with the
+    engine's loose-shadows-packed rule.
+
+    MEASURED 2026-08-13, the sixth instance of this defect shape: an ad-hoc corpus
+    scan built on `mod_vfs` alone read **2,681** XML files across 115 mods and
+    reported a name "NOT FOUND". Adding the loose half read **4,401** and found it
+    immediately, in a loose file. Nothing warned; only the count looking too low did.
+
+    So: when this is about to return ``{}`` for a directory that *does* contain
+    loose XML, and the caller has not passed *packed_only*, say so on stderr. That
+    is exactly the silent-narrowing case and nothing else — a packed mod, an empty
+    mod, and an acknowledged is-it-packed test are all silent.
+
+    Pass ``packed_only=True`` when "catalogs only" is genuinely what you mean (an
+    is-this-mod-packed test, or a reader-edge assertion). It documents the intent
+    at the call site as well as silencing the warning.
+    """
+    vfs = _cached_vfs(str(mod_dir), xml_only)
+    if vfs or packed_only:
+        return vfs
+    key = str(mod_dir)
+    if key in _warned_packed_only:
+        return vfs
+    # Recorded BEFORE the check, not after: a loose mod with no XML at all would
+    # otherwise re-walk its whole tree on every call, since it never warns.
+    _warned_packed_only.add(key)
+    try:
+        has_loose = next(mod_dir.rglob("*.xml"), None) is not None
+    except OSError:
+        # silent-ok: an unreadable dir is not the case this warning is about, and
+        # the empty result is already the honest answer for it.
+        return vfs
+    if has_loose:
+        logger.warning(
+            "mod_vfs('%s') reads CATALOGS ONLY and returned 0 members, but this mod "
+            "ships loose .xml. If you meant 'every XML this mod owns', use "
+            "_scan.iter_mod_xml(); pass packed_only=True to acknowledge catalogs-only.",
+            mod_dir.name
+        )
+    return vfs
 
 
 @lru_cache(maxsize=256)
@@ -220,7 +268,14 @@ def _get_ci(vfs: dict[str, CatMember], vpath: str,
 def read_path(mod_dir: Path, vpath: str, verify: bool = True) -> bytes | None:
     """Read one virtual path's bytes from a mod's catalogs, or ``None`` if absent."""
     vpath = vpath.replace("\\", "/").lstrip("/")
-    member = _get_ci(mod_vfs(mod_dir), vpath, _folded_vfs(str(mod_dir), True))
+    # packed-ok: this function IS the catalogs reader — its docstring says so, and every
+    # caller pairs it with the loose half first (`_merge.overlay_root` checks
+    # `loose.is_file()` and only then falls through to here). MEASURED 2026-08-22: without
+    # this acknowledgement the warning fired ~15 times on an ordinary `x4validate` run,
+    # once per loose mod, at a call site where it can never be right. A check that floods
+    # is worse than no check — it trains you to skim past the run it IS right about.
+    member = _get_ci(mod_vfs(mod_dir, packed_only=True), vpath,
+                     _folded_vfs(str(mod_dir), True))
     return None if member is None else read_member(member, verify=verify)
 
 

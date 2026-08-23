@@ -61,7 +61,9 @@ def main():
     if not entries:
         raise SystemExit("no shape-G entries parsed — the oracle has no ground truth")
 
-    mods = _registry.scan_installed()
+    # ACTIVE: the oracle is scored against the ENGINE's own debug.txt, so its
+    # world model has to be the engine's world model.
+    mods = _registry.mods("active")
     order = _compat.compute_load_order(mods)
     by_folder = {m["folder"]: m for m in mods}
     all_dirs = tuple(Path(by_folder[n]["path"]) for n in order

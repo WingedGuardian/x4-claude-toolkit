@@ -137,7 +137,7 @@ def iter_mod_xml(
             continue
         yield vpath, root
 
-    for vpath, member in sorted(_cat.mod_vfs(mod_dir).items()):
+    for vpath, member in sorted(_cat.mod_vfs(mod_dir, packed_only=True).items()):
         if not vpath.lower().endswith(".xml") or vpath.lower() in yielded:
             continue
         if predicate is not None and not predicate(vpath):
@@ -149,6 +149,57 @@ def iter_mod_xml(
                 unreadable.append(Unreadable(vpath, str(exc), packed=True))
             continue
         yield vpath, root
+
+
+def iter_mod_xml_bytes(
+    mod_dir: Path,
+    predicate: Predicate | None = None,
+    unreadable: list[Unreadable] | None = None,
+) -> Iterator[tuple[str, bytes]]:
+    """Yield ``(vpath, raw_bytes)`` for every XML a mod owns, loose then packed.
+
+    Same enumeration and same loose-shadows-packed rule as `iter_mod_xml`, minus
+    the parse. For callers that want to CHEAPLY REJECT most files and parse only
+    the survivors — a byte test is roughly 3.5x cheaper than building the tree
+    (MEASURED over the reference tree: 8.9s parsing everything vs 2.5s reading
+    everything). Anything that needs a tree must still parse; this exists so a
+    caller can avoid parsing files that provably cannot match, never so it can
+    answer a structural question by looking at raw text.
+
+    Unreadable files are skipped, and `check_readability` owns the parse-failure
+    report over the same enumeration. A caller that keeps its OWN unreadable ledger
+    (``gates/noop_audit.py``) may pass *unreadable* to receive read failures here
+    too — added so that gate could stop hand-rolling a packed-only walk without
+    losing the channel it already reported.
+    """
+    yielded: set[str] = set()
+    loose = sorted(p for root in _scan_roots(mod_dir, predicate)
+                   for p in root.rglob("*.xml"))
+    for path in loose:
+        if not path.is_file():
+            continue
+        vpath = path.relative_to(mod_dir).as_posix()
+        if predicate is not None and not predicate(vpath):
+            continue
+        yielded.add(vpath.lower())
+        try:
+            yield vpath, path.read_bytes()
+        except OSError as exc:
+            if unreadable is not None:
+                unreadable.append(Unreadable(vpath, str(exc)))
+            continue  # silent-ok: see docstring — check_readability reports it.
+
+    for vpath, member in sorted(_cat.mod_vfs(mod_dir, packed_only=True).items()):
+        if not vpath.lower().endswith(".xml") or vpath.lower() in yielded:
+            continue
+        if predicate is not None and not predicate(vpath):
+            continue
+        try:
+            yield vpath, _cat.read_member(member)
+        except (OSError, ValueError) as exc:
+            if unreadable is not None:
+                unreadable.append(Unreadable(vpath, str(exc), packed=True))
+            continue  # silent-ok: as above.
 
 
 def iter_mod_text(
@@ -189,7 +240,7 @@ def iter_mod_text(
         yield vpath, text, False
 
     # xml_only=False: .lua members are exactly what the default index drops.
-    for vpath, member in sorted(_cat.mod_vfs(mod_dir, xml_only=False).items()):
+    for vpath, member in sorted(_cat.mod_vfs(mod_dir, xml_only=False, packed_only=True).items()):
         if not vpath.lower().endswith(lowered) or vpath.lower() in yielded:
             continue
         try:
@@ -212,3 +263,161 @@ def count_line(shown: int, total: int, noun: str, flag: str = "--limit") -> str:
         return (f"{shown} of {total} {noun} shown — TRUNCATED by {flag}; "
                 f"use {flag} {total} (or 0) for all")
     return f"{shown} {noun}"
+
+
+@dataclass(frozen=True)
+class Coverage:
+    """How much of a mod's XML a scan saw, split loose vs packed.
+
+    Exists so an ad-hoc measurement gets its denominator for FREE instead of
+    remembering to compute one. MEASURED 2026-08-13: a corpus scan built on
+    `_cat.mod_vfs` (catalogs only) read **2,681** XML files across 115 mods and
+    reported a name "NOT FOUND"; the correct enumeration read **4,401** and found
+    it in a loose file. A single total could not have shown which half was
+    missing — only the split can, which is why `loose` and `packed` are separate
+    fields rather than one number.
+
+    ⚠ Parse failures are NOT counted here: this classifies the files the walk
+    YIELDED. For unreadable files use `iter_mod_xml(unreadable=[...])`, which is
+    the channel that exists for exactly that.
+    """
+    mod: str
+    loose: int
+    packed: int
+
+    @property
+    def total(self) -> int:
+        return self.loose + self.packed
+
+    def __str__(self) -> str:
+        return (f"{self.mod}: {self.total} XML "
+                f"({self.loose} loose + {self.packed} packed)")
+
+
+def mod_xml_inventory(mod_dir: Path, predicate: Predicate | None = None) -> Coverage:
+    """Count a mod's XML, loose vs packed, over the SAME walk everything else uses.
+
+    Deliberately consumes `iter_mod_xml_bytes` rather than re-enumerating: a second
+    enumeration here would be the very defect this module was created to end (see
+    the module docstring — six hand-rolled copies, and the seventh appeared anyway
+    in a throwaway script). The loose/packed split is DERIVED from the yielded
+    vpaths, because loose-shadows-packed means a vpath that exists on disk is the
+    one the walk yielded.
+    """
+    loose = packed = 0
+    for vpath, _raw in iter_mod_xml_bytes(mod_dir, predicate):
+        if (mod_dir / vpath).is_file():
+            loose += 1
+        else:
+            packed += 1
+    return Coverage(mod_dir.name, loose, packed)
+
+
+@dataclass
+class CorpusScan:
+    """The denominator for a scan across the WHOLE installed set.
+
+    `Coverage` answers "how much of ONE mod did I see". This answers the question
+    that keeps being got wrong: *did my corpus scan look at anything at all?*
+
+    MEASURED, the recurring failure (7 instances, `docs/BLIND-SPOTS.md`): an ad-hoc
+    sweep called `etree.fromstring()` on roots `iter_mod_xml` had ALREADY parsed,
+    raised `TypeError` on every one of 4,391 files, swallowed it in a bare
+    ``except Exception: continue``, and reported **0 dangling across 115 mods** --
+    a clean corpus over a population of zero. The truth was 3, in 1 mod. It was
+    caught only because one mod was known to have them.
+
+    So a zero cannot be rendered as a finding here: `verdict()` RAISES when nothing
+    parsed. That is the same contract `tools/basex/ask.py` enforces for BaseX
+    queries, which the Python side had no equivalent of -- which is why the bug
+    kept coming back.
+    """
+    mods_scanned: int = 0
+    files_parsed: int = 0
+    unreadable: list[Unreadable] | None = None
+    skipped_mods: list[tuple[str, str]] | None = None
+
+    def __post_init__(self) -> None:
+        if self.unreadable is None:
+            self.unreadable = []
+        if self.skipped_mods is None:
+            self.skipped_mods = []
+
+    def denominator(self) -> str:
+        """The scanned SOURCE SET, not just the failures.
+
+        Names what was looked at, because a blind spot is by definition absent from
+        the list of things that failed -- the lesson `x4xref` learned the hard way.
+        """
+        s = (f"SCANNED SOURCE SET: {self.mods_scanned} mod(s), "
+             f"{self.files_parsed} XML file(s) parsed")
+        if self.unreadable:
+            s += f", {len(self.unreadable)} unreadable"
+        if self.skipped_mods:
+            s += f", {len(self.skipped_mods)} mod(s) SKIPPED ENTIRELY"
+        return s
+
+    def verdict(self, hits: int, noun: str) -> str:
+        """Render a finding WITH its denominator, or refuse.
+
+        Raises when nothing parsed: `hits == 0` over `files_parsed == 0` is a
+        NON-ANSWER, not an absence, and the whole point of this class is that the
+        two can never again be printed in the same grammar.
+        """
+        if self.files_parsed == 0:
+            raise ValueError(
+                f"refusing to report '{hits} {noun}': NOTHING WAS PARSED "
+                f"({self.denominator()}). That is a non-answer, not an absence — "
+                f"fix the scan before quoting a result from it.")
+        return f"{hits} {noun} — {self.denominator()}"
+
+
+def iter_corpus_xml(
+    ext_dir: Path,
+    report: CorpusScan,
+    predicate: Predicate | None = None,
+) -> Iterator[tuple[str, str, etree._Element]]:
+    """Yield ``(mod_folder, vpath, root)`` for every installed MOD, filling *report*.
+
+    Mods come from `_registry.scan_installed`, which is the single implementation of
+    "what is installed": it reads each mod's own manifest and already excludes
+    `ego_dlc_*`. Hand-rolling that walk here was caught by
+    `tests/test_dlc_enumeration.py` -- fittingly, since re-implementing something the
+    package already owns is the very bug class this helper exists to end.
+
+    DLC is deliberately NOT reachable from here. The reference tree IS the unpacked
+    base+DLC, so a sweep over both double-counts every DLC -- it reported 92 md
+    collisions where the answer was 1, and 200 module groups where it was 146, twice
+    in one session (CLAUDE.md #20). For DLC content use `Config.dlc_dirs()`.
+
+    ``content.xml`` IS yielded — it is XML the mod owns, and every corpus denominator
+    already recorded (4,391 files over 115 mods) counts it. Filter it in the caller if
+    your question is about content; do not change it here, or previously recorded
+    numbers stop reproducing.
+
+    Nothing is dropped in silence: a mod whose manifest will not parse lands in
+    `report.skipped_mods`, and a file that will not parse lands in
+    `report.unreadable`. Both shrink the denominator that `verdict()` prints.
+    """
+    from . import _registry
+
+    dropped: list[str] = []
+    # INSTALLED: a corpus sweep asks "does this appear anywhere I have", which
+    # is broader than "what loads" on purpose -- narrowing it would make a
+    # negative weaker, not stronger.
+    mods = _registry.mods("installed", [ext_dir], dropped=dropped)
+    for reason in dropped:
+        report.skipped_mods.append((reason.split(":", 1)[0], reason))
+    for mod in mods:
+        report.mods_scanned += 1
+        mod_dir = Path(mod["path"])
+        try:
+            items = list(iter_mod_xml(mod_dir, predicate, unreadable=report.unreadable))
+        except (OSError, ValueError) as exc:
+            # Recorded, never swallowed: a mod we could not walk is a hole in the
+            # denominator, and mods_scanned above would otherwise overstate coverage.
+            report.skipped_mods.append((mod["folder"], str(exc)))
+            continue
+        for vpath, root in items:
+            report.files_parsed += 1
+            yield mod["folder"], vpath, root

@@ -248,6 +248,20 @@ CELLS: list[Cell] = [
     Cell("x4diff", "same dir (no-op diff)",
          [_MOD, _MOD],
          expect=(0, 1), findings_ok=True),
+
+    # ---- x4debug --------------------------------------------------------
+    # The log is a real artifact of a real launch, so these cells depend on one
+    # existing. Both "no log configured" and "a clean log" are legitimate, hence
+    # the widened expect: what is NOT legitimate is a crash or a silent 0 over
+    # nothing, which `wants` pins down.
+    Cell("x4debug", "triage", ["triage"], expect=(0, 2), findings_ok=True,
+         wants=None),
+    Cell("x4debug", "triage missing log", ["triage", "__no_such_log__.txt"],
+         expect=(2,), findings_ok=True),
+    Cell("x4debug", "crosscheck", ["crosscheck", _MOD], expect=(0, 1, 2),
+         findings_ok=True),
+    Cell("x4debug", "crosscheck bad mod", ["crosscheck", "__no_such_mod__"],
+         expect=(2,), findings_ok=True),
 ]
 
 

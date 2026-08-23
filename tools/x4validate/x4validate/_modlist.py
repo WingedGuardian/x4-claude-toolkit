@@ -302,7 +302,10 @@ def cmd_ingest(args) -> int:
             return 2
         print("scanning roots: " + ", ".join(str(d) for d in roots))
     dropped: list[str] = []
-    installed = _registry.scan_installed(dirs, dropped)
+    # INSTALLED: the registry's job is to inventory what is ON DISK. A disabled
+    # mod is still installed, still needs triage, and is exactly what the
+    # "did I forget to re-acquire something?" cross-check is looking for.
+    installed = _registry.mods("installed", dirs, dropped)
     for d in dropped:
         # Excluding the mod is right — X4 needs a readable content.xml too — but
         # it must not shrink the registry's world model in silence.

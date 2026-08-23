@@ -239,6 +239,58 @@ def ingest_content_xml(path: Path | None = None) -> list[tuple[str, bool]]:
     return out
 
 
+#: The two questions people ask about "the mod list", which are NOT the same
+#: question. Nothing in the code used to say which one a caller wanted, so it was
+#: decided by whichever helper the author happened to import.
+#:
+#:   "active"    — what the ENGINE WILL LOAD: installed, enabled in its own
+#:                 manifest, and enabled in the profile content.xml.
+#:   "installed" — what is ON DISK, enabled or not. The right answer when you are
+#:                 inventorying, or evaluating a mod before switching it on.
+#:
+#: MEASURED 2026-08-22 across 13 call sites: 5 correct, 3 defensible but silent,
+#: and **4 wrong**, all wrong the same way — modelling the running game from the
+#: disk. Concretely, with exactly ONE mod installed-but-disabled (`escape_pod`,
+#: 19 files): `x4eff` carried its 3 macros as live; `x4compat` listed it as a
+#: participant in 4 collision rows; and Tier B — the mode whose entire job is
+#: proving a cross-mod selector resolves — would resolve a selector against it
+#: and report OK. That last one is a FALSE PASS in the tool built to catch
+#: silent no-ops.
+#:
+#: The cost was 1 mod only because you happen to have one disabled. It scales
+#: with the disabled set, and nothing warned.
+MOD_SCOPES = ("active", "installed")
+
+
+def mods(scope: str, dirs: list[Path] | None = None,
+         dropped: list[str] | None = None) -> list[dict]:
+    """The mod set, for an EXPLICITLY NAMED *scope* — see :data:`MOD_SCOPES`.
+
+    *scope* is positional and required on purpose. A default would just recreate
+    the bug: the whole defect was that callers never had to say which world they
+    meant, so they silently got whichever one the helper happened to implement.
+
+    Prefer this over calling :func:`scan_installed` directly; that is the raw
+    disk reader and `tests/test_mod_scope_is_explicit.py` enforces the boundary.
+    """
+    if scope not in MOD_SCOPES:
+        raise ValueError(
+            f"mod scope must be one of {MOD_SCOPES}, got {scope!r}. "
+            f"'active' = what the engine will load; 'installed' = what is on disk.")
+    installed = scan_installed(dirs, dropped=dropped)
+    if scope == "installed":
+        return installed
+    try:
+        prof = dict(ingest_content_xml())
+    except (OSError, etree.XMLSyntaxError):
+        # silent-ok: FAIL OPEN, and deliberately. No readable profile means we
+        # cannot know what is switched off; treating every mod as enabled matches
+        # the registry's documented "absent = enabled" convention and keeps this
+        # from quietly EMPTYING the world model on a machine with no profile.
+        prof = {}
+    return [m for m in installed if m["enabled"] and prof.get(m["id"], True)]
+
+
 def scan_installed(dirs: list[Path] | None = None,
                    dropped: list[str] | None = None) -> list[dict]:
     """Scan extension folders for a content.xml and return each mod's OWN

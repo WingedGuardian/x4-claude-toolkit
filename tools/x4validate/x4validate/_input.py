@@ -49,7 +49,7 @@ def has_any_xml(path: Path) -> bool:
     if any(path.rglob("*.xml")):
         return True
     try:
-        return bool(_cat.mod_vfs(path))
+        return bool(_cat.mod_vfs(path, packed_only=True))  # packed-ok: is-this-mod-packed
     except Exception:  # noqa: BLE001 - unreadable catalog is not "no xml"
         return True
 

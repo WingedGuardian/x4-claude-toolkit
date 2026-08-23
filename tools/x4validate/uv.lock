@@ -136,7 +136,7 @@ wheels = [
 
 [[package]]
 name = "x4validate"
-version = "2.2.1"
+version = "2.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "lxml" },

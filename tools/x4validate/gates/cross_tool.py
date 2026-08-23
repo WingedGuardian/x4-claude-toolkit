@@ -14,7 +14,11 @@ itself found three more issues. So: what has NOTHING checked yet?
      fresh parse. Two different tools answering the same question differently is
      a whole failure class nothing looks for: x4compat names a winner for a
      contested file; x4effective records an origin for entities in that file.
-     They must be the same mod.
+     They must be the same mod -- but ONLY for the kinds where `winner` means
+     "supplies the live value". It does not mean that for SUBTREE (the winner is
+     the WIPER) or NAME-CLASH (deliberately empty), so the assertion is PER KIND.
+     Until 2026-08-13 this checked FULL-OVERRIDE alone -- 14 of 445 collisions,
+     3.1%, with HARD/SUBTREE/UNION-KEY never verified against the store at all.
 
   3. BUILDER IDEMPOTENCE. `determinism_audit` covers x4compat's output ordering.
      The BUILDERS were never checked: build the same store twice from unchanged
@@ -30,6 +34,7 @@ Exit: 0 all checks hold, 1 any violation.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -100,39 +105,183 @@ def check_sensitivity(tmp: Path) -> None:
 
 # --------------------------------------------------- 2. cross-tool agreement
 
+#: `Collision.winner` answers a DIFFERENT question per kind, so one blanket
+#: assertion is wrong. See KB 2026-08-13d, BLIND-SPOTS F25/F26, CLAUDE.md #18.
+#:
+#:   FULL-OVERRIDE / UNION-KEY  winner supplies the ENTITY  -> entities.origin
+#:   HARD                       winner owns the VALUE       -> attrs.origin
+#:   SUBTREE                    winner is the WIPER, not the owner of the final
+#:                              value; assert the VICTIM is gone (scoped to w0)
+#:   NAME-CLASH                 winner deliberately '' (index/macros.xml decides,
+#:                              not load order) -> assert it IS empty
+#:   SOFT                       benign coexistence; nothing to assert
+#:
+#: MEASURED 2026-08-13 over the 115-mod install, and every number is the whole
+#: population, not a sample: FULL-OVERRIDE 14/14, HARD 40/40, UNION-KEY 2/2,
+#: SUBTREE 148/148, NAME-CLASH 20/20 -- 0 disagreements. Before the per-kind
+#: split, HARD reported 6 FALSE disagreements purely from reading
+#: entities.origin where the fact lives in attrs.origin.
+
+_PRED = re.compile(r"\[[^\]]*\]")
+
+
+def _vpath_forms(vpath: str) -> tuple[str, str]:
+    """Literal and nesting-stripped spellings of one logical file.
+
+    `build_touch_map` rewrites a mod-on-mod `extensions/<owner>/<rel>` patch to
+    the owner's own `<rel>`, so a collision reported at the literal path must be
+    looked up both ways or it silently finds nothing. Omitting this left 6 of 148
+    SUBTREE rows unresolvable, which very nearly got written up as an x4compat
+    blind spot instead of what it was -- a lookup bug in the checker.
+    """
+    return vpath.lower(), _compat._strip_nesting(vpath)
+
+
+def _origins(con, vpath: str, column: str) -> set[str]:
+    """Distinct origins at *vpath*, from `entities` or `attrs`."""
+    for form in _vpath_forms(vpath):
+        if column == "entities":
+            rows = con.execute(
+                "SELECT DISTINCT origin FROM entities WHERE lower(vpath) = ?",
+                (form,)).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT DISTINCT a.origin FROM attrs a JOIN entities e "
+                "ON a.entity_id = e.id WHERE lower(e.vpath) = ?", (form,)).fetchall()
+        if rows:
+            return {r[0] for r in rows}
+    return set()
+
+
+def _subtree_scope(w0: str) -> tuple[str, str | None]:
+    """Map a SUBTREE target to ('file'|'node'|'unmapped', prop_prefix).
+
+    A wipe is NODE-scoped, not file-scoped: a mod replacing
+    `/macros/macro/properties/explosiondamage` wipes ONE node, and the victim
+    legitimately keeps its other attributes in the same document. Asserting
+    file-wide absence for every row produced 6 false alarms out of 148.
+
+    MEASURED: only three w0 shapes occur on this install and NONE carries a
+    predicate -- `/macros` (140), `/macros/macro/properties/<node>` (6),
+    `/macros/macro` (2). The first and third are whole-document / whole-entity
+    replaces, where file-wide absence IS the correct assertion.
+    """
+    if _PRED.search(w0):
+        return "unmapped", None
+    parts = [p for p in w0.split("/") if p]
+    if parts in (["macros"], ["macros", "macro"]):
+        return "file", None
+    if "properties" in parts:
+        tail = parts[parts.index("properties") + 1:]
+        return ("node", ".".join(tail)) if tail else ("file", None)
+    return "unmapped", None
+
+
+def _victim_attrs(con, vpath: str, victim: str, prop: str | None) -> int | None:
+    """How many attrs *victim* still owns at *vpath* (under *prop* if given).
+
+    None = the file holds no store-tracked entity, which is an ABSENCE of
+    coverage rather than a pass -- counted and printed separately.
+    """
+    for form in _vpath_forms(vpath):
+        if not con.execute("SELECT COUNT(*) FROM entities WHERE lower(vpath) = ?",
+                           (form,)).fetchone()[0]:
+            continue
+        if prop is None:
+            return con.execute(
+                "SELECT COUNT(*) FROM attrs a JOIN entities e ON a.entity_id = e.id "
+                "WHERE lower(e.vpath) = ? AND a.origin = ?", (form, victim)).fetchone()[0]
+        return con.execute(
+            "SELECT COUNT(*) FROM attrs a JOIN entities e ON a.entity_id = e.id "
+            "WHERE lower(e.vpath) = ? AND a.origin = ? AND (a.prop = ? OR a.prop LIKE ?)",
+            (form, victim, prop, prop + ".%")).fetchone()[0]
+    return None
+
+
 def check_cross_tool_agreement() -> None:
-    print("\n2. CROSS-TOOL AGREEMENT — x4compat's winner vs x4effective's origin")
+    print("\n2. CROSS-TOOL AGREEMENT - x4compat's winner vs x4effective's origin")
     try:
         db = _env.effective_db()
     except SystemExit:
         note(False, "effective store available", "not built")
         return
     report = _compat.analyze(EXT, config=_merge.Config())
-    overrides = [c for c in report.collisions if c.kind == "FULL-OVERRIDE"]
-    if not overrides:
-        note(False, "found FULL-OVERRIDE collisions to cross-check", "none on this install")
+    if not report.collisions:
+        note(False, "found collisions to cross-check", "none on this install")
         return
+    by_kind: dict[str, list] = {}
+    for c in report.collisions:
+        by_kind.setdefault(c.kind, []).append(c)
 
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    checked = disagree = absent = 0
-    for c in overrides:
-        rows = con.execute(
-            "SELECT DISTINCT origin FROM entities WHERE lower(vpath) = ?",
-            (c.vpath.lower(),)).fetchall()
+
+    # --- kinds where the winner supplies the live value ----------------------
+    for kind, column in (("FULL-OVERRIDE", "entities"),
+                         ("UNION-KEY", "entities"),
+                         ("HARD", "attrs")):
+        rows = by_kind.get(kind, [])
         if not rows:
-            absent += 1          # file holds no store-tracked entity kind
+            print(f"          {kind}: none on this install")
             continue
-        origins = {r[0] for r in rows}
-        checked += 1
-        # The store's origin must be the mod x4compat says wins. Anything else
-        # means one of the two is modelling load order differently.
-        if c.winner not in origins:
-            disagree += 1
-            if disagree <= 3:
-                print(f"          {c.vpath}: compat winner={c.winner!r}, store origin={origins}")
+        checked = disagree = absent = 0
+        for c in rows:
+            # `live_value_owner()` is the single definition of "which mod's value
+            # is live" — it returns None for the kinds where naming one would be a
+            # confident wrong answer, so this loop cannot ask the question of a
+            # kind that has no answer.
+            owner = c.live_value_owner()
+            if owner is None:
+                absent += 1
+                continue
+            origins = _origins(con, c.vpath, column)
+            if not origins:
+                absent += 1          # file holds no store-tracked entity kind
+                continue
+            checked += 1
+            if owner not in origins:
+                disagree += 1
+                if disagree <= 3:
+                    print(f"          {c.vpath}: compat live owner={owner!r}, "
+                          f"{column} origin={sorted(origins)}")
+        note(disagree == 0, f"{kind}: compat winner is the store's origin",
+             f"{checked - disagree}/{checked} agree via {column}.origin "
+             f"({absent} of {len(rows)} hold no stored entity)")
+
+    # --- SUBTREE: the winner is the WIPER; the VICTIM must be gone -----------
+    subs = by_kind.get("SUBTREE", [])
+    if subs:
+        ok = viol = absent = unmapped = 0
+        for c in subs:
+            mode, prop = _subtree_scope(c.target)
+            if mode == "unmapped":
+                unmapped += 1
+                continue
+            n = _victim_attrs(con, c.vpath, c.mods[0], prop)
+            if n is None:
+                absent += 1
+                continue
+            if n:
+                viol += 1
+                if viol <= 3:
+                    print(f"          {c.vpath}: w0={c.target} victim={c.mods[0]!r} "
+                          f"wiped_by={c.wiped_by!r} still owns {n} attr(s)")
+            else:
+                ok += 1
+        # Every row is accounted for, and the residue prints even when it is 0.
+        note(viol == 0, "SUBTREE: the wiped mod owns nothing under the wiped node",
+             f"{ok}/{ok + viol} clean - {unmapped} unmapped w0 - {absent} no stored "
+             f"entity - accounted {ok + viol + unmapped + absent}/{len(subs)}")
+
+    # --- NAME-CLASH: winner is deliberately empty ---------------------------
+    clashes = by_kind.get("NAME-CLASH", [])
+    if clashes:
+        named = [c for c in clashes if c.winner]
+        note(not named, "NAME-CLASH: winner left empty (index/macros.xml decides)",
+             f"{len(clashes) - len(named)}/{len(clashes)} empty")
+
+    soft = len(by_kind.get("SOFT", []))
+    print(f"          (SOFT {soft} not cross-checked: benign coexistence, no winner claim)")
     con.close()
-    note(disagree == 0, "compat winner is the store's origin",
-         f"{checked - disagree}/{checked} agree ({absent} files hold no stored entity)")
 
 
 # ------------------------------------------------------ 3. builder idempotence

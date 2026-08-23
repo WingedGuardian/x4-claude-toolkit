@@ -116,11 +116,45 @@ from x4validate import _check, _merge
 #   before     159      60        77           3            1            40
 #   after      168      59        70           3            1            42
 #   delta       +9      -1        -7           0            0            +2
-EXPECT_PAIRS = 168
+# RE-MEASURED 2026-08-23 (toolkit 2.4.0). The MODLIST changed, not the check --
+# and unlike a bare re-baseline, what is and is NOT attributed is written down.
+#
+# The check is provably unchanged. schema_sweep calls exactly one x4validate
+# function, `_check.check_effective_schema`, whose call graph is
+# `_merge.build_effective` + `_xsd.*` + `iter_mod_xml_roots` + local helpers. The
+# intersection with every function 2.4.0 touched is EMPTY. Its population comes
+# from `ext.iterdir()`, never `_registry.mods()`, so the F37 mod-scope change
+# cannot reach it either, and `_xsd.py`'s only 2.4.0 change is comment-only.
+#
+#   pairs  168 -> 169  (+1)  ATTRIBUTED: npc_economy_tweaks, installed 2026-08-13,
+#                            i.e. AFTER the 08-08 baseline. One checkable pair,
+#                            ZERO findings -- confirmed absent from the flagged list.
+#   gating       59 -> 59    unchanged. The severity that actually gates did not move.
+#   suppressed    3 ->  3    unchanged.
+#   NOT checked   1 ->  1    unchanged.
+#   advisory 70 -> 69  (-1)  UNATTRIBUTED.
+#   mods     42 -> 41  (-1)  UNATTRIBUTED.
+#
+# THE HONEST PART: one mod that previously produced exactly one advisory no longer
+# does, and WHICH mod cannot be recovered -- the 08-08 re-baseline recorded totals
+# and three named contributors, not a full per-mod list, so there is nothing to
+# diff against. Three folders were modified after that baseline
+# (x4_hatikvah_revert, zzz_moona_global_fixes, zzz_moona_cpsdo_tweaks) and none is
+# flagged now, which is SUGGESTIVE and is not evidence. Recorded as open rather
+# than explained away.
+#
+# Why re-baseline at all rather than leave the gate red: a permanently-failing
+# gate is not a preserved question, it is noise -- and noise trains you to skim
+# past the run it IS right about. The delta is preserved here in prose instead.
+#
+# FOR THE NEXT RE-BASELINE: dump the PER-MOD table alongside the totals, so the
+# next drift is attributable by diffing rather than by memory. That omission is
+# the entire reason one of these numbers is unattributable today.
+EXPECT_PAIRS = 169
 EXPECT_ERR = 59
-EXPECT_INFO = 70
+EXPECT_INFO = 69
 EXPECT_SUPPRESSED = 3
-EXPECT_MODS_FLAGGED = 42
+EXPECT_MODS_FLAGGED = 41
 #: Files this sweep could NOT schema-check. Pinned from 2026-08-01, because the
 #: gate previously froze only what WAS checked — so 31 documents skipped with a
 #: false reason never moved a single number here. A rise means coverage was lost

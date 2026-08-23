@@ -428,7 +428,15 @@ def test_later_element_replace_wiping_earlier_inner_edit_is_subtree(tmp_path):
     rep = _compat.analyze(ext, config=cfg)
     st = rep.by_kind("SUBTREE")
     assert len(st) == 1
-    assert st[0].mods == ["a_mod", "z_mod"] and st[0].winner == "z_mod"
+    assert st[0].mods == ["a_mod", "z_mod"]
+    # The wiper goes in its OWN field, and `winner` is deliberately empty: for a
+    # SUBTREE the load-order winner is the mod that WIPED, not the owner of the
+    # final value, and a later mod can re-supply what was wiped (MEASURED: 3 of
+    # 148 on the live install). Reporting the wiper as `winner` is what made an
+    # inbound report conclude x4compat was wrong. Same precedent as NAME-CLASH.
+    assert st[0].wiped_by == "z_mod", "the wiper must still be reported"
+    assert st[0].winner == "", "a SUBTREE has no live-value winner"
+    assert st[0].live_value_owner() is None, "and must refuse to name one"
     assert st[0] in rep.hard, "SUBTREE gates hard-ish by user decision"
     assert "advisory" in st[0].detail, "the load-order caveat must ride every row"
 

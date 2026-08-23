@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Tool state — these live outside the tree by default (dev\_registry\), but never
+# commit one if X4_REGISTRY / X4_EFFECTIVE_DB is ever pointed in here.
+*.sqlite
+*.sqlite-journal
+modlist.yaml
+WORKLIST.md
+
+# Real-game-data test corpus: GENERATED (see tests/conftest.py), never committed.
+# The toolkit ships no game data — tests skip when the corpus is absent.
+tests/corpus/
+
+# Per-mod --update timings for gates/perf_guard.py. MACHINE-LOCAL by design:
+# wall-clock differs per machine, so a committed baseline would fail on every
+# other setup. Re-record deliberately after an intended perf change.
+.perf-baseline.json

@@ -11,11 +11,24 @@ across many files:
 1. **Will this patch silently do nothing?** — every `<add>/<replace>/<remove>`
    `sel=` (and `if=`) is evaluated against the real base+DLC merged tree (via
    lxml — correct XPath, unlike ElementTree-based matchers).
-2. **Do the references resolve?** — ware / `{page,t}` text references the mod
-   *introduces* must point at a real definition (text defs are **unioned**
-   across base + DLC + mod, and across `0001.xml` + `0001-l044.xml`).
+2. **Do the references resolve?** — ware / `{page,t}` / macro / component
+   references must point at a real definition. Two scopes: what the mod
+   *introduces* via `<add>` ops in `<diff>` files **gates as an error**, while
+   references in **full (non-diff) files** report as INFO for now — that half was
+   unchecked entirely until 2026-08-13 (1,625 files across 56 mods, 38% of their
+   XML). Definitions are **unioned** across base + DLC + mod: text defs from every
+   English/language-neutral t-file at any depth (not a fixed two-path list), and
+   macro/component names from `index/` ∪ the libraries ∪ — only on a miss — the
+   whole corpus, because the index is *not* the definition set. `@ware` values
+   that are script expressions (`$var`, `ware.x`) are excluded and counted.
 3. **Did I forget a spot?** — completeness: model a changed entity on a vanilla
    analogue and report which footprint pieces are missing.
+   ⚠ **Scope: `<ware>`-WRAPPER fields only** (definition, name/description strings,
+   price, production, `<component ref>`, owner, restriction). `ship` and `module`
+   targets route through the same check, so the macro's INTERIOR — physics,
+   connections/hardpoints, engine/shield/turret slots, storage, hull, software,
+   steering curves — is never inspected. A clean completeness result does **not**
+   mean the macro is complete; the run says so via a NOT CHECKED entry.
 
 v1.1 adds: **file-existence** (a `<component ref>` macro resolves through
 index→macro file→component→file), **connection-validation** (every `<loadout>`
@@ -70,6 +83,23 @@ uv run x4validate <mod> --update                                     # + 9.0 XSD
 uv run x4validate <mod> --debug                                      # correlate the active profile's debug.txt
 uv run x4validate <mod> --debug path\to\debug.txt                    # correlate a specific log (gates on engine errors)
 ```
+
+### `x4debug` — the engine's verdict, bucketed and compared to ours
+
+```sh
+uv run x4debug triage                      # bucket + attribute EVERY [=ERROR=] line
+uv run x4debug crosscheck <deployed-mod>   # per-item diff: engine-skipped ops vs our predictions
+uv run x4debug baseline                    # archive the log with a content fingerprint
+```
+
+`triage` states the log's mtime and whether it was a **new game** or a save load — error
+counts are not comparable across that boundary — and its rows must sum to the lines read,
+with the unclassified row printed **even when zero**. A row that appears only when non-zero
+teaches you to read its absence as "nothing there" rather than "not measured".
+
+`crosscheck` reports three buckets, never two totals. `observed-not-predicted` is a
+**validator blind spot**, and is the reason the command exists: it is what found that a
+diff's ops apply in order to a mutating tree (see `docs/BLIND-SPOTS.md`).
 
 The expression linter runs on **every** invocation (cheap, advisory). `--debug`
 is the authoritative gate — run it against a `debug.txt` captured *after* your latest
@@ -169,12 +199,19 @@ handled here — it is a secret, not a path, and must never be written to a file
 - `x4validate/_xpath.py` — lxml XPath wrapper (genuine no-match vs invalid-expr).
 - `x4validate/_refs.py` — reference graph, dangling-ref detection, completeness.
 - `x4validate/_exprlint.py` — expression-grammar heuristic (attribute-value rules).
-- `x4validate/_debuglog.py` — `debug.txt` parser (7 engine-error shapes, incl. diff-op
-  cardinality and index-lookup misses).
+- `x4validate/_debuglog.py` — `debug.txt` parser. 7 mod-identifying shapes (incl. diff-op
+  cardinality and index-lookup misses) plus 17 engine-SUBSYSTEM shapes that name a game
+  entity rather than a mod. `parse_log` accounts for every `[=ERROR=]` line: classified,
+  or labelled `unclassified` and counted — never dropped.
+- `x4validate/_debugcli.py` — `x4debug`: triage / crosscheck / baseline.
 - `x4validate/_xsd.py` — schema validation: script files as written, data files as merged
   (differential — see `introduced`).
 - `x4validate/_check.py` — orchestration + t-file union; `_cli.py` — CLI.
-- `tests/` — `uv run pytest` (392 tests as of v2.2.0, incl. the x4cat spike cases).
+- `tests/` — `uv run pytest` (595 tests as of v2.4.0, incl. the x4cat spike cases).
+  On a fresh clone with no X4 installed you should see **584 passed, 11 skipped** — the
+  skips are tests for dev-only tooling that is not part of this bundle, and each one
+  names its reason. A skip is reported distinctly from a pass on purpose: "not checked
+  here" must never read as "checked and fine".
 - `gates/` — measured against the engine / the real modlist, not fixtures. Four engine
   gates: `oracle.py` (diff layer, 0 FALSE OK), `oracle_index.py` (index layer),
   `regress.py` (per-mod Tier A/B sweep), `schema_sweep.py` (effective-schema
@@ -196,9 +233,18 @@ handled here — it is a secret, not a path, and must never be written to a file
   network path, replayed offline).
   v2.2.0 adds `registry_provenance.py` (a guessed mod identity may never produce a
   confident verdict).
-  **25 in total.** See `gates/README.md` for the bar each one holds.
+  **26 in total.** See `gates/README.md` for the bar each one holds.
 - `docs/QA-PROCESS.md` — the process these gates came out of: what to test, in what
   order, and when it is honest to call a tool releasable. Read it before adding a tool.
+- `docs/BLIND-SPOTS.md` — the narrowing-point register: every place a step could
+  narrow the data and report success anyway, each with a **measured denominator** and
+  an explicit STATE (re-verified against the code 2026-08-22). Includes the findings
+  that turned out **not** to be defects — a register without its negatives has no
+  denominator either.
+- `CHANGELOG.md` — starts at **2.3.0**. Read the 2.3.0 entry before upgrading: it
+  carries a **breaking change to `x4compat --json` output** (SUBTREE rows no longer
+  populate `winner`; use `wiped_by`, or `live_value_owner()`) shipped under a minor
+  version bump, so the version number alone does not warn you.
 
 ## Extending
 Add reference types by extending the catalog in `_refs.py`; add completeness

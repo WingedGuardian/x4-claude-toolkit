@@ -51,9 +51,17 @@ UNREADABLE: list[str] = []
 
 
 def mod_docs(mod: Path):
-    """(vpath, bytes) for every XML the mod ships, packed or loose."""
+    """(vpath, bytes) for every XML the mod ships, packed or loose.
+
+    Packed first, then the loose `iglob` below — the reverse of `_scan`'s order,
+    and without `_scan`'s `yielded` shadowing set, so a vpath shipped BOTH ways is
+    yielded twice and the packed copy is audited even though the engine ignores it
+    (loose shadows packed). MEASURED 2026-08-13 over 123 installed mods: exactly
+    **1 mod, 1 file** does that (`rook`, `t/0001.xml`), so the divergence is real
+    and negligible. Recorded rather than fixed; revisit if that count grows.
+    """
     try:
-        for vp, mem in _cat.mod_vfs(mod).items():
+        for vp, mem in _cat.mod_vfs(mod, packed_only=True).items():  # packed-ok: loose iglob below
             try:
                 yield vp, _cat.read_member(mem, verify=False)
             except Exception as exc:                    # a reader failure is itself a finding

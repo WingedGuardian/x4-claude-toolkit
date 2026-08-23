@@ -1,5 +1,235 @@
 # Changelog
 
+## v2.4.0
+
+Four defects, all one shape: **a set was enumerated twice, by two different rules, and nothing
+compared them.** Three were found by cross-tool disagreement rather than by a user; the fourth by
+chasing three stray numbers left over from a coverage refresh.
+
+### ⚠ BREAKING (output schema) — prop keys gain a collision suffix
+
+When several sibling elements share a bracket discriminator, the 2nd and later now carry `#n`:
+`licences.licence[generaluseequipment].factions`, then `licence[generaluseequipment#1]…`. The first
+claimant keeps its original key, so **99.8% of prop keys are byte-identical** and stored baselines
+mostly survive.
+
+Why it had to move: the key was not unique, and `select value … where prop=?` with `fetchone()`
+returned an arbitrary one of several genuinely different values. `faction/player` held **eight
+distinct faction lists under one key**. MEASURED: 627 duplicate `(entity_id, prop)` groups → **0**;
+1,153 rows changed prop and nothing else; 582,107 attr rows, 22,966 entities and the entire
+entity+value multiset **unchanged**. `dev/_registry/CLAIMS.tsv` uses no bracket props, so no recorded
+claim was invalidated. (BLIND-SPOTS **F33**, attr axis. The **entity** axis stays open on purpose —
+`index/macros.xml` decides, not load order.)
+
+### Fixed
+
+- **x4eff was blind to the packed mini-DLC** (F34). `build-effective.py` walked `reference/`
+  loose-only, so the index held **23 of 142 mini-DLC documents (16%)** — and the 23 only arrived
+  because two unrelated mods nest patches under `extensions/ego_dlc_mini_0X/`. New
+  `_effective.base_vpaths()` enumerates loose THEN packed, and the copy branch materializes packed
+  members via `_cat` (without that half, the fix would have produced 119 *silent copy failures*).
+  Now **142/142**. `reference_vpaths` is re-expressed as `base_vpaths` + an explicit `assets/` filter,
+  proven set-equal beforehand: 4,002 and 7,551 vpaths, **0 added / 0 removed / 0 changed**.
+
+- **Coverage took its denominator from the artifact it audited** (F35). `coverage.py` reconciled
+  "documents produced" against "documents indexed" — both from the same build — so a vpath never
+  enumerated could not fail, and it printed COVERAGE COMPLETE while missing 119 documents. The
+  manifest now records the **scanned source set** (every configured source, its contributed count,
+  loose or packed) and coverage fails when any contributed zero. The exclusions are carried in the
+  JSON so a caller can render the caveat instead of reading a bare boolean.
+
+- **The freshness fingerprint covered merge but not enumeration** (F36). `ENGINE_SOURCES` gained
+  `_effective.py` and `_registry.py` — the modules deciding which documents, entities and *mods*
+  exist. Near-miss that found it: F34's fix edited `reference_vpaths` and `claims_audit` returned
+  21/21 green against a store built by the old enumeration. A dead duplicate of the list in
+  `staleness.py` was deleted.
+
+- **"The mod list" was two sets with no name for either** (F37). `_registry.mods(scope)` — `scope`
+  positional and required, `"active"` (what the engine loads) vs `"installed"` (what is on disk).
+  Across 13 call sites, 4 were wrong the same way. With one disabled mod present, x4eff carried its
+  macros as live, x4compat listed it in 4 collision rows, and **Tier B would resolve a cross-mod
+  selector against it and report OK — a false pass in the mode built to catch silent no-ops.**
+  Verified per item: compat 445→445 rows, the same 4 rows minus that mod, **0 winner changes**;
+  x4eff 10,799→10,789; x4raw unchanged (it correctly asks the other question); Tier B findings
+  byte-identical across the 6 highest-overlap mods, so that repair is preventive, not corrective.
+
+- **The variant-sibling check was blind to packed mods** (F22, re-scoped from "scope gap costing 0").
+  All three of its enumerations walked loose files on disk. Of **378** variant-macro files it could
+  reach **14 (3.7%)**. Now 378 are examined and it reports **3 real findings**. The identical defect
+  was fixed in the function directly above it on 2026-07-26 and never carried across; an
+  unresolvable owner is now `report.skip`, not silence.
+
+- `build-effective.py` no longer emits **70+ spurious warning lines** per build (`_cat.mod_vfs`
+  without `packed_only=True`, at a call site where the loose half is directly above).
+
+### Added
+
+- `tests/test_no_loose_only_reference_walk.py` — bans a loose-only `reference/` walk across
+  `x4validate/`, `gates/` and `tools/basex/`. All 6 surviving sites were hand-verified before it was
+  allowed to gate. Raises on a parse failure rather than skipping the file.
+- `tests/test_mod_scope_is_explicit.py` — bans bare `scan_installed`, requires the scope to be a
+  **literal** (a computed scope puts the choice back out of sight), and asserts both scopes remain in
+  use so the API cannot become decorative.
+- `tests/test_similarity_weights_pinned.py` — pins x4similar's weights equal to its oracle's
+  hand-duplicated copy. The duplication is correct and stays; the silence about drift does not.
+  Read by AST, never imported, so it works with no game installed.
+- `gates/tool_properties.py` — mod-scope agreement: the store's mod set and x4eff's manifest must
+  match **and** both be the ACTIVE set (two artifacts can agree while both modelling the wrong world).
+- `gates/README.md` now documents `claims_audit.py`, which was undocumented since it was added.
+- `tests/test_basex_tests_are_not_orphaned.py` — the 23 tests under `tools/basex/` PASSED but were
+  never collected (`testpaths = ["tests"]`), so the suite reported green while saying nothing
+  about `ask.py` (which gates every negative claim) and `staleness.py` (the freshness contract).
+  They now run, and SKIP with a reason where the dev-only BaseX tooling is absent.
+- `_effective.base_vpaths` is memoized (**2.25 s → 0.004 s** warm). Uncached it was re-derived per
+  mod: the variant sweep over 115 mods went **47.6 s → 2.4 s**, same 3 findings.
+
+### Changed
+
+- `gates/tool_properties.py` re-pins F33's attr axis at **0** (a regression now fails); the entity
+  axis stays pinned at 63 with its reason.
+- `docs/BLIND-SPOTS.md`: F34/F35/F36/F37 registered; **F3's figures refreshed** (balance-relevant
+  coverage **99.8%**, 3 of 1,916) and its scope confirmed rather than widened; F8 closed WONTFIX with
+  a drift guard; F22 corrected with its wrong denominator called out; F33 split into a fixed axis and
+  an open one.
+- Suite **577 → 595**.
+
+### Note on how these were found
+
+None came from a user report. F34 and F35 came from two tools disagreeing about the same corpus; F37
+came from F3's refreshed coverage leaving exactly three macros unaccounted for, and chasing those
+three to ground. The alternative — writing "3 unexplained misses" into the register and moving on —
+was one keystroke away, and would have left a false-pass path in Tier B in place.
+
+Sixteen checking-step errors were made and caught during this work, and in **16 of 16 the checker was
+wrong, not the finding** — including counting a *set* where a multiset was needed, comparing against
+`kind='macro'` when ship macros are filed under `ship`, and running an AST scan on Python 3.10 that
+could not parse a PEP 701 f-string. That base rate is the reason every number above was diffed per
+item and predicted before it was measured.
+
+---
+
+## v2.3.0
+
+### ⚠ BREAKING (output schema) — `Collision.winner` for SUBTREE rows
+
+**This is a breaking change to tool OUTPUT shipped under a MINOR version bump.** SemVer is being
+applied to the CLI *contract* (flags, exit codes), which is unchanged; the JSON payload moved. The
+version number therefore does **not** signal this, and that is precisely why it is the first entry.
+
+`Collision.winner` never meant one thing. For FULL-OVERRIDE / HARD / UNION-KEY it names the mod
+whose value is **live**. For **SUBTREE it named the mod that did the WIPING** — which is not the
+owner of the final value, because a third mod loading later can re-supply what was wiped.
+
+    SUBTREE rows:   winner: "<mod>"   ->   winner: ""      + new key  wiped_by: "<mod>"
+
+**Migration:**
+
+| you want | before | now |
+|---|---|---|
+| the mod that wiped the subtree | `winner` | `wiped_by` |
+| the mod whose value is actually live | `winner` (WRONG for SUBTREE) | `live_value_owner()` — returns `None` for SUBTREE / NAME-CLASH / SOFT, where naming one would be a guess |
+
+`live_value_owner()` returning `None` is an answer, not a failure: it is the tool declining to
+invent a winner it cannot know.
+
+**Measured drift on the live modlist (115 mods), diffed PER ROW, not by totals:**
+
+- 445 collision rows before, **445 after** — 0 added, 0 removed
+- `winner` changed on **exactly 148 rows**, and all 148 are SUBTREE
+- `detail` changed on **0** rows; every other field **0**
+- a wipe later undone by another mod: **3 of 148 (2.0%)** — so the advisory is not noise
+
+**Why it was worth breaking.** An inbound bug report claimed x4compat's winner was wrong for ~7
+attributes across 2 Kha'ak ships and 1 engine. Re-measured: **x4compat was correct** and the report
+had compared a SUBTREE `winner` against `x4effective`'s `origin` — two different questions. One
+field answering two questions is a defect even when every value in it is right. See BLIND-SPOTS
+**F25** (the report) and **F30** (the fix), and CLAUDE.md gotcha #18.
+
+### Fixed
+
+- **F27 — `md/` scripts were merged as if they were assets.** The engine registers MD scripts by
+  **filename**, so a complete `<mdscript>` shipped at a vpath the base game already supplies is
+  **inert** — it loads and its cues never take effect, with no error line anywhere. Our merge
+  returned the mod's file; the engine was running vanilla's. `_merge` now returns mode
+  `script(inert)` for that case, so `x4effective dump md/setup.xml` returns vanilla's **1,784-line**
+  `Setup` instead of a mod's 44-line file. **Exactly 1 vpath of 299 changed hands.**
+
+  *(Two line counts appear in the records and both are correct: the raw
+  `reference\md\setup.xml` on disk is **1,795** lines; `dump` re-serialises through lxml and emits
+  **1,784**. Neither is a typo for the other — MEASURED 2026-08-22.)*
+
+  Mechanism **proven by controlled experiment**, not inferred: a uniquely-named mdscript in an
+  overlay registers and runs, while a functionally identical script at the colliding vpath does not
+  — same cue structure, same actions, same load position, both script `name=` differing from
+  vanilla's, leaving the FILE PATH as the only variable.
+
+  Scoped to `md/` **only**. `aiscripts/` is deliberately excluded: the corpus contains **zero**
+  instances to verify a generalisation against, and `gates/tool_properties.py` carries a tripwire
+  that fails the moment a real one appears.
+
+- **F26 — `gates/cross_tool.py` verified one collision kind of five.** It checked FULL-OVERRIDE
+  only: **14 of 445 rows (3.1%)**, with HARD / SUBTREE / UNION-KEY never checked against the store
+  at all. Now asserts per kind, over the full population: FULL-OVERRIDE 14/14 · HARD 40/40 ·
+  UNION-KEY 2/2 · SUBTREE 148/148 · NAME-CLASH 20/20 — **0 disagreements**.
+
+  A single blanket assertion would have been wrong three different ways, and each wrong form was
+  written and measured before being discarded — see F26 for the two checker bugs it produced.
+
+- **F28 — a known-partial checker was presented as a completeness GATE.** `--entity ship:x
+  --like ship:y` compares the `<ware>` wrapper only; the macro interior (physics, connections,
+  engine/shield/turret slots, storage, hull, software, steering curves) was never examined, and a
+  clean result read as "the ship is complete". It now declares the gap through the skip channel.
+
+- **F29 — `_cat.mod_vfs` returned `{}` for a loose mod and said nothing.** Catalogs-only by nature,
+  but silent about it: one corpus scan read **2,681 files instead of 4,401** and reported NOT FOUND.
+  Now takes `packed_only=` and warns when a caller has not acknowledged the limit, enforced by an
+  AST guard (`tests/test_no_packed_only_scan.py`) that accepts an inline `# packed-ok:` marker.
+
+- **F31 — `<module group=>` was checked by nothing.** `modulegroups` was not an indexed registry and
+  `module/@group` was unknown to `_refs`, so the engine rejected 3 references **43× per launch**
+  while we reported the mod clean. Added as the 21st registry plus `check_module_groups`;
+  engine-verified. Corpus: 146 groups, 22 references, **3 dangling in 1 of 115 mods**.
+
+### Added
+
+- `CHANGELOG.md` (this file).
+- `tests/test_blind_spots_ids.py` — the register may not hand the same F-id to two findings. Written
+  after two **concurrent sessions** each created a `## F30`, caught only by eye. Also pins the
+  register's known bookkeeping gaps so new drift fails loudly.
+- `_scan.iter_corpus_xml` + `CorpusScan` — one way to sweep every installed mod's XML, excluding
+  `ego_dlc_*`, recording unreadable files, and **raising rather than rendering a zero** when nothing
+  parsed. The hand-rolled form of this loop had been written **7 times** and was wrong in at least 3.
+- **Summary-table integrity check** in `tests/test_blind_spots_ids.py`. A markdown row with fewer
+  cells than the header does not fail to render — it renders **wrong**, shifting cells left and
+  blanking the tail. That is how 15 register rows displayed an empty Status for weeks. The
+  escape-aware cell splitter lives here once, with its own proven-to-fail test, so nobody hand-rolls
+  `awk -F'|'` again (which cannot see a `\|` escape and calls a valid row malformed).
+- **`check_store_key_uniqueness`** in `gates/tool_properties.py` — pins F33's measured duplicate-key
+  counts (63 entity groups, 627 attr groups) so a known-open defect cannot grow in silence. A stale
+  or absent store **SKIPS with a reason** rather than reading as a pass.
+
+### Documentation
+
+- `docs/BLIND-SPOTS.md`: every entry **re-verified against the code** and given an explicit STATE.
+  The summary table was repaired in the same pass — it was missing **6 findings outright**
+  (F21, F25, F26, F28, F29, F30) and **15 rows carried 4 of the header's 5 cells**, so their Status
+  column rendered blank.
+- **F33 (new)** — a non-unique key read with a singular read, measured and **left open**: 63
+  duplicate `(kind,name)` entity groups (23 diverge) and 627 duplicate `(entity_id,prop)` groups
+  (**201 diverge**). Identical pre- and post-rebuild, so pre-existing. **0 of 21** recorded claims
+  resolve through an ambiguous key, so `claims_audit`'s 21/21 PASS is sound.
+- **F32** — a dev-only *variant* is validated against a tree containing its own ops; documented as a
+  scope limit and deliberately not "fixed", because the obvious relaxation trades a visible false
+  alarm for an invisible false OK.
+
+### Notes
+
+- Suite **561 passing**. `gates/qa_sweep.py` 45 GREEN / 0 YELLOW / 0 RED.
+- Effective store rebuilt 2026-08-22. Both freshness axes had moved (engine, via the F27 `_merge`
+  change; content, via a redeployed overlay). Diffed per item against the pre-rebuild store:
+  **0 entities added/removed, 0 attrs added/removed, 0 values changed, 0 origins changed** —
+  confirming the F27 change has no blast radius outside `md/`.
+
 ## v2.2.1
 
 **Nested cross-mod patches now apply through the owner's-file door too.**

@@ -226,3 +226,64 @@ def test_compat_unresolvable_sel_is_not_silent():
     tree = etree.fromstring("<wares><ware id='ore'/></wares>")
     assert _compat._resolve_op_targets(tree, "//ware[@id='nope']") == [], "valid, no match"
     assert _compat._resolve_op_targets(tree, "//ware[[[") is None, "invalid must not read as no-match"
+
+
+# --- F28: a "complete" ship is only complete in the <ware> wrapper ------------
+
+def _completeness_case(tmp_path, etype: str):
+    """Analogue and new entity match on every checked kind -> `missing` is empty.
+
+    That is the false-clean the skip channel has to make visible: for a ship,
+    nothing here opens the macro.
+    """
+    ref = tmp_path / "reference"
+    (ref / "libraries").mkdir(parents=True)
+    (ref / "libraries/wares.xml").write_text(
+        '<wares><ware id="analogue"><price/></ware></wares>', encoding="utf-8")
+    mod = tmp_path / "mod"
+    (mod / "libraries").mkdir(parents=True)
+    (mod / "libraries/wares.xml").write_text(
+        '<diff><add sel="//wares">'
+        '<ware id="mine"><price/></ware>'
+        '</add></diff>', encoding="utf-8")
+    return _check.validate(mod, _merge.Config(reference=ref),
+                           entity=f"{etype}:mine", like=f"{etype}:analogue")
+
+
+def test_ship_completeness_declares_the_macro_interior_not_checked(tmp_path):
+    """0 missing kinds must NOT read as "the ship is complete"."""
+    report = _completeness_case(tmp_path, "ship")
+    interior = [s for s in report.skipped if "macro interior" in s.what]
+    assert interior, "a ship with no physics/turrets reported clean and said nothing"
+    why = interior[0].why
+    for term in ("physics", "connections", "storage", "hull"):
+        assert term in why, f"the skip must name what it did not check; missing {term!r}"
+
+
+def test_macro_interior_skip_is_declared_not_degraded(tmp_path):
+    """A stated scope limit is not a failed run.
+
+    degraded=True exits 3, so marking this degraded would fail EVERY ship
+    scaffold and train the reader to ignore exit 3 — the flood anti-pattern.
+    """
+    report = _completeness_case(tmp_path, "ship")
+    interior = [s for s in report.skipped if "macro interior" in s.what]
+    assert interior and not any(s.degraded for s in interior),         "a documented scope limit must not be degraded (degraded => exit 3)"
+
+
+def test_plain_ware_does_not_claim_a_macro_interior(tmp_path):
+    """A consumable ware has no ship macro to open — no skip, no scary note."""
+    report = _completeness_case(tmp_path, "ware")
+    assert not [s for s in report.skipped if "macro interior" in s.what]
+
+
+def test_ship_success_message_states_the_wrapper_scope(tmp_path):
+    report = _completeness_case(tmp_path, "ship")
+    msgs = [f.message for f in report.findings if f.category == "completeness"]
+    assert any("wrapper" in m and "NOT checked" in m for m in msgs), msgs
+
+
+def test_module_target_also_declares_the_macro_interior(tmp_path):
+    """`module` shares the ship branch — assert it, do not assume it."""
+    report = _completeness_case(tmp_path, "module")
+    assert [s for s in report.skipped if "macro interior" in s.what]

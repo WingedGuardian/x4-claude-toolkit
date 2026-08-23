@@ -26,13 +26,41 @@ def ware_defs(tree: etree._Element | None) -> set[str]:
 
 
 def ware_refs(tree: etree._Element | None) -> list[tuple[str, int]]:
-    """All @ware references as (id, sourceline)."""
+    """All @ware references as (id, sourceline).
+
+    Deliberately UNFILTERED — script expressions are excluded by the consumer
+    (`find_dangling`), which counts what it drops. Filtering here would make the
+    exclusion invisible to every caller.
+    """
     if tree is None:
         return []
     out = []
     for el in tree.xpath("//*[@ware]"):
         out.append((el.get("ware"), el.sourceline or 0))
     return out
+
+
+#: Characters that only ever appear in a script EXPRESSION, never in a ware id.
+#: In `md/` and `aiscripts/` the @ware attribute holds an expression rather than
+#: an id — `$tradeware` (a variable), `ware.energycells` (a lookup) — and the
+#: same forms turn up outside those directories too (a mod's own `backups/`), so
+#: this keys on the value SHAPE rather than the file path.
+_EXPRESSION_CHARS = ("$", ".", "@", "{", "[", "(", " ", "'", '"')
+
+
+def is_script_expression(value: str | None) -> bool:
+    """True when *value* is an MD/aiscript expression rather than a ware id.
+
+    MEASURED over the 114 installed mods: this skips 183 of the 236 unresolved
+    @ware references (md/ 170 of 172, aiscripts/ 7 of 7, plus expression forms in
+    scratch directories) and matches **0 of 2,462** effective ware ids and **0 of
+    1,980** vanilla ids. That denominator is the point — a filter that could
+    match a real id would convert a false POSITIVE into a false NEGATIVE, which
+    is strictly worse because nothing would ever surface it again.
+    """
+    if not value:
+        return True
+    return any(c in value for c in _EXPRESSION_CHARS)
 
 
 def text_defs(tree: etree._Element | None) -> set[tuple[str, str]]:
@@ -77,6 +105,7 @@ def find_dangling(
     text_def_set: set[tuple[str, str]],
     macro_def_set: set[str] | None = None,
     where: str = "",
+    expressions: list[str] | None = None,
 ) -> list[DanglingRef]:
     """References present in *introduced_tree* that resolve to no definition.
 
@@ -86,11 +115,19 @@ def find_dangling(
     macros, under which every `<component ref>` really is dangling. Gating these
     two on truthiness (as this did until 2026-07-27) collapsed them, so an
     unreadable index silently switched the whole check off and the run read OK.
+
+    *expressions* collects the @ware values skipped as script expressions. That
+    skip NARROWS the data, so it announces what it dropped instead of dropping it
+    silently — the caller reports the count.
     """
     out: list[DanglingRef] = []
     if introduced_tree is None:
         return out
     for wid, line in ware_refs(introduced_tree):
+        if is_script_expression(wid):
+            if expressions is not None:
+                expressions.append(wid)
+            continue
         if wid not in ware_def_set:
             out.append(DanglingRef("ware", wid, where, line))
     # <container ref> was unchecked until 2026-08-01 — a new ware pointing at a

@@ -26,7 +26,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _merge, _registry, _scan
+from x4validate import _cat, _merge, _registry, _scan, _freshness
 from x4validate import __version__
 
 # Excluded from the `action` index: structural containers, control flow, and
@@ -99,7 +99,8 @@ def _iter_mod_files(mod_dir: Path, unreadable: list | None = None):
 
 
 def build_index(reference: Path, ext_dir: Path,
-                unreadable: list | None = None) -> list[XrefRow]:
+                unreadable: list | None = None,
+                dlc_dirs: list[Path] | None = None) -> list[XrefRow]:
     """Index base + DLC + every installed mod's MD/aiscripts.
 
     *unreadable* collects files that would not parse. An index is the
@@ -111,16 +112,23 @@ def build_index(reference: Path, ext_dir: Path,
     # Base game (reference root, excluding the DLC extensions subtree).
     for vpath, root in _iter_source_files(reference, "base", unreadable):
         _walk(root, "base", vpath, rows)
-    # DLC.
-    dlc_root = reference / "extensions"
-    if dlc_root.is_dir():
-        for dlc in sorted(p for p in dlc_root.iterdir()
-                          if p.is_dir() and p.name.startswith("ego_dlc_")):
-            for vpath, root in _iter_source_files(dlc, f"dlc:{dlc.name}", unreadable):
-                _walk(root, f"dlc:{dlc.name}", vpath, rows)
+    # DLC. Ask Config, do NOT re-derive from `reference / "extensions"`: the two
+    # mini-DLC are never unpacked into reference\ (their content lives in
+    # ext_*.cat inside the game install), so a directory walk there misses them
+    # entirely -- 13 md/aiscript files that indexed 0 rows, which silently breaks
+    # every NEGATIVE this index exists to make admissible. `_scan.iter_mod_xml`
+    # was already packed-aware; only the directory list was wrong.
+    if dlc_dirs is None:
+        dlc_dirs = _merge.Config(reference=reference).dlc_dirs()
+    for dlc in sorted(dlc_dirs, key=lambda p: p.name):
+        for vpath, root in _iter_source_files(dlc, f"dlc:{dlc.name}", unreadable):
+            _walk(root, f"dlc:{dlc.name}", vpath, rows)
     # Installed mods.
     if ext_dir.is_dir():
-        for m in _registry.scan_installed([ext_dir]):
+        # INSTALLED: x4xref exists to make NEGATIVES admissible ("nobody calls
+        # X"). The broader set is the conservative one -- excluding a disabled
+        # mod could turn a real caller into a false negative.
+        for m in _registry.mods("installed", [ext_dir]):
             for vpath, root in _iter_mod_files(Path(m["path"]), unreadable):
                 _walk(root, m["folder"], vpath, rows)
     return rows
@@ -214,6 +222,34 @@ def _exclusions(tsv: Path | None) -> str:
             f"index at all (see {_sidecar(tsv).name})")
 
 
+def coverage_note(rows: list[XrefRow]) -> str:
+    """Describe the SCANNED SOURCE SET behind an answer, and flag a shortfall.
+
+    `_exclusions` below reports files that were tried and would not parse. That is
+    a different thing from a source never enumerated at all -- and the second is
+    what a blind spot actually looks like. F10 hid in exactly that gap: the packed
+    mini-DLC were not unreadable, they were unvisited, so nothing anywhere said a
+    word while `who-calls` answered over 6 of the 8 installed DLC.
+
+    Comparing the DLC actually present in the index against `Config.dlc_dirs()`
+    turns that silence into a visible INCOMPLETE.
+    """
+    from x4validate import _merge
+    srcs = {r.source for r in rows}
+    dlc = {s for s in srcs if s.startswith("dlc:")}
+    mods = srcs - dlc - {"base"}
+    note = (f" from base + {len(dlc)} DLC + {len(mods)} mod(s)")
+    try:
+        expected = len(_merge.Config().dlc_dirs())
+    except Exception:  # silent-ok: no configured game root is a SETUP state, not a
+        # coverage claim. Report what was scanned; assert nothing about what is missing.
+        return note
+    if expected and len(dlc) < expected:
+        note += (f" — ⚠ INCOMPLETE: {len(dlc)} of {expected} installed DLC are in this "
+                 f"index, so any negative here is a lead, not a finding")
+    return note
+
+
 def _hint_other_kinds(rows: list[XrefRow], name: str, asked_kind: str,
                       tsv: Path | None = None) -> None:
     """When a name isn't found in the asked-for kind, say whether it exists at all.
@@ -229,7 +265,8 @@ def _hint_other_kinds(rows: list[XrefRow], name: str, asked_kind: str,
     elsewhere = Counter(r.kind for r in rows if r.name == name and r.kind != asked_kind)
     if not elsewhere:
         print(f"  and '{name}' does not appear under ANY kind — "
-              f"a real negative over {len(rows)} indexed rows{_exclusions(tsv)}.")
+              f"a real negative over {len(rows)} indexed rows"
+              f"{coverage_note(rows)}{_exclusions(tsv)}.")
         return
     print(f"  BUT '{name}' IS in the index under other kind(s):")
     for kind, n in elsewhere.most_common():
@@ -285,6 +322,9 @@ def main(argv: list[str] | None = None) -> int:
         unreadable: list = []
         rows = build_index(ref, ext, unreadable)
         write_tsv(rows, out)
+        # WHEN this index was true. Its whole purpose is to make "nobody calls X"
+        # admissible, and a negative from a superseded world is not admissible.
+        _freshness.stamp_sidecar(out, _freshness.fingerprint(_merge.Config(reference=ref), ext))
         from collections import Counter
         by = Counter(r.kind for r in rows)
         print(f"indexed {len(rows)} rows -> {out}")
@@ -302,6 +342,17 @@ def main(argv: list[str] | None = None) -> int:
     if not tsv.is_file():
         print(f"index not found: {tsv}\nrun `x4xref build` first.", file=sys.stderr)
         return 2
+    # Printed on EVERY query until rebuilt. x4xref exists to support NEGATIVES
+    # ("nobody listens to this event"), which is precisely the claim a stale
+    # index gets wrong -- a mod added since the build is simply not in it.
+    _stale = _freshness.compare(
+        _freshness.read_sidecar(tsv),
+        _freshness.fingerprint(_merge.Config(), _registry.GAME_EXTENSIONS),
+        engine_dependent=False)
+    if not _stale.fresh:
+        print(_stale.banner("the x4xref index"), file=sys.stderr)
+        print("!! Rebuild:  uv run x4xref build", file=sys.stderr)
+
     rows = read_tsv(tsv)
 
     if args.cmd == "cue":

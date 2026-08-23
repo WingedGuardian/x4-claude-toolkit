@@ -461,6 +461,20 @@ def _do_add(targets, op, recorder: Recorder | None = None,
 # (base + every DLC coexist). Asset files (assets/...) keep full-override semantics.
 _ADDITIVE_DIRS = ("libraries/", "index/", "t/")
 
+#: Dirs where the engine keys its script registry on FILENAME, so a complete
+#: (non-diff) file at an already-supplied vpath is INERT rather than an override.
+#:
+#: ⚠ Deliberately `md/` ONLY. That is where the rule is engine-proven (F27, a
+#: controlled experiment on 2026-08-22). `aiscripts/` is *believed* to behave the
+#: same way, but MEASURED over 115 installed mods / 4,391 XML files there are
+#: **zero** complete-file-at-a-vanilla-vpath instances under `aiscripts/` — so
+#: there is nothing to test the generalisation against and no observable
+#: difference either way. Widening this tuple without an instance to verify would
+#: encode an inference as a fact, which is what BLIND-SPOTS exists to prevent.
+#: `gates/tool_properties.py` carries a tripwire that fails the moment a real
+#: `aiscripts/` instance appears in the corpus.
+_SCRIPT_REGISTRY_DIRS = ("md/",)
+
 
 def _child_key(el: etree._Element) -> tuple[str, str] | None:
     """Dedupe key for a registry entry: (tag, id|name). None if neither attr."""
@@ -524,6 +538,24 @@ def apply_overlay(
     if tree is not None and oroot.tag == tree.tag and vpath.startswith(_ADDITIVE_DIRS):
         _union_children(tree, oroot, recorder=recorder, source=source)
         return tree, "union"
+    if tree is not None and vpath.lower().startswith(_SCRIPT_REGISTRY_DIRS):
+        # F27 — the engine registers MD scripts by FILENAME, and a duplicate
+        # filename is DISCARDED. A complete <mdscript> at a vpath something
+        # already supplied never runs: no override, no merge, no error line.
+        #
+        # ENGINE-PROVEN 2026-08-22 by a controlled pair differing in one variable
+        # (same cue structure, same actions, same load position, both script
+        # name= differing from vanilla's `Setup`):
+        #   md/setup_moona_central.xml (new vpath)      -> registers, cues run
+        #   md/setup.xml               (vanilla vpath)  -> never takes effect
+        # Modelling it as a full override made `x4effective dump md/setup.xml`
+        # return a mod's 44-line file while the engine was demonstrably running
+        # vanilla's 1,795-line `Setup`.
+        #
+        # Note the test is `tree is not None`, not "vanilla owns it": first
+        # registration wins whoever got there first, so a second mod shipping the
+        # same script filename is inert for the same reason.
+        return tree, "script(inert)"
     if recorder is not None:
         recorder.full_override(Origin(source, "full-override"))
     return oroot, "full"  # full-file override (asset files, or no/other base)

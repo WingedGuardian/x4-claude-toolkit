@@ -44,12 +44,47 @@ _PER_EXTENSION_FILES = {"ui.xml"}
 
 @dataclass
 class Collision:
+    """One way two mods contend over the same effective XML.
+
+    ⚠ **`winner` does NOT mean the same thing for every kind, and for two kinds it
+    is deliberately empty.** Reading it as "the mod whose value is live" is wrong
+    for SUBTREE and NAME-CLASH; use :meth:`live_value_owner` instead, which cannot
+    give a confident wrong answer.
+    """
     vpath: str
-    kind: str            # HARD | UNION-KEY | FULL-OVERRIDE | SOFT
+    kind: str            # HARD | UNION-KEY | FULL-OVERRIDE | SUBTREE | NAME-CLASH | SOFT
     target: str          # node identity / registry key / file path
     mods: list[str]      # involved mod folders, in load order (winner last)
-    winner: str
+    winner: str          # the mod whose value is LIVE — empty for SUBTREE/NAME-CLASH
     detail: str = ""
+    #: SUBTREE only: the mod that did the WIPING. It is not the owner of the final
+    #: value — a third mod loading later can re-supply what was wiped — which is
+    #: exactly why it is not called `winner`.
+    wiped_by: str = ""
+
+    def live_value_owner(self) -> str | None:
+        """The mod whose value is live, or ``None`` when that is unknowable here.
+
+        =============== ==========================================================
+        kind            meaning
+        =============== ==========================================================
+        FULL-OVERRIDE   the mod that clobbers — its file is the document
+        HARD            the mod that loads last at the clashing node
+        UNION-KEY       the mod that defines the surviving registry entry
+        SUBTREE         ``None`` — `winner` was the WIPER, and a later mod may
+                        have restored the values (MEASURED: 3 of 148, 2.0%)
+        NAME-CLASH      ``None`` — ``index/macros.xml`` decides, not load order
+        SOFT            ``None`` — benign coexistence, nobody "wins"
+        =============== ==========================================================
+
+        Added 2026-08-13 after an inbound report compared a SUBTREE `winner`
+        against `x4effective`'s per-attribute origin and concluded x4compat was
+        wrong. It was not: the two answer different questions. This method is the
+        one place that distinction lives. See CLAUDE.md gotcha #18.
+        """
+        if self.kind in ("SUBTREE", "NAME-CLASH", "SOFT"):
+            return None
+        return self.winner or None
 
 
 @dataclass
@@ -114,32 +149,50 @@ class CompatReport:
 
 # --- mod discovery + load order ----------------------------------------------
 
-def _mod_deps(mod_path: Path) -> tuple[str, list[str]]:
-    """Return (mod_id, [dependency_ids]) from a mod's content.xml."""
+def _mod_deps(mod_path: Path, dropped: list[str] | None = None) -> tuple[str, list[str]]:
+    """Return (mod_id, [dependency_ids]) from a mod's content.xml.
+
+    A manifest that will not parse yields ZERO dependencies, and dependencies are
+    what force a mod to load EARLIER — so silently swallowing the failure changes
+    the computed load order, which decides every collision winner this module
+    reports. Report it through *dropped* (same convention as
+    `_registry.scan_installed`, which already handles this case correctly).
+    MEASURED 2026-08-12: 0 of 122 installed manifests are malformed, so this is a
+    latent defect — the cost is zero today and unbounded the day it isn't.
+    """
     cx = mod_path / "content.xml"
     if not cx.is_file():
+        if dropped is not None:
+            dropped.append(f"{mod_path.name}: no content.xml — assuming no dependencies")
         return mod_path.name, []
     try:
         root = etree.parse(str(cx)).getroot()
-    except etree.XMLSyntaxError:
+    except etree.XMLSyntaxError as exc:
+        if dropped is not None:
+            dropped.append(f"{mod_path.name}: content.xml will not parse ({exc}) — "
+                           "load-order position assumed alphabetical")
         return mod_path.name, []
     mod_id = root.get("id") or mod_path.name
     deps = [d.get("id") for d in root.findall(".//dependency") if d.get("id")]
     return mod_id, deps
 
 
-def compute_load_order(mods: list[dict]) -> list[str]:
+def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> list[str]:
     """Order mod FOLDERS as X4 loads them: alphabetical, dependencies forced earlier.
 
     Kahn topological sort with an alphabetical tiebreak on the ready set, so the
     result is deterministic and matches "alphabetical unless a dependency requires
     otherwise". *mods* are entries from `_registry.scan_installed()`.
+
+    Pass *dropped* to receive manifests whose dependencies could not be read —
+    those mods fall back to alphabetical placement, which can silently change who
+    wins a collision. See `_mod_deps`.
     """
     folders = [m["folder"] for m in mods]
     id_to_folder: dict[str, str] = {}
     deps_by_folder: dict[str, list[str]] = {}
     for m in mods:
-        mod_id, deps = _mod_deps(Path(m["path"]))
+        mod_id, deps = _mod_deps(Path(m["path"]), dropped)
         id_to_folder[mod_id] = m["folder"]
         deps_by_folder[m["folder"]] = deps
 
@@ -168,7 +221,7 @@ def compute_load_order(mods: list[dict]) -> list[str]:
 def _mod_xml_paths(mod_path: Path) -> dict[str, str]:
     """Return ``{lowercased_vpath: real_vpath}`` for a mod's XML (packed + loose)."""
     out: dict[str, str] = {}
-    for vpath in _cat.mod_vfs(mod_path):
+    for vpath in _cat.mod_vfs(mod_path, packed_only=True):  # packed-ok: loose added below
         out[vpath.lower()] = vpath
     for f in mod_path.rglob("*.xml"):
         if f.is_file():
@@ -515,11 +568,17 @@ def _analyze_vpath(
             hits = [(w, cb) for w in wipes for cb in bmap if cb.startswith(w + "/")]
             if hits:
                 w0, cb0 = hits[0]
+                # winner is deliberately EMPTY, exactly as NAME-CLASH is: for a
+                # SUBTREE the load-order "winner" is the mod that WIPED, which is
+                # not the owner of the final value, and reporting it in the winner
+                # field is a confident wrong answer waiting to be compared against
+                # x4effective's origin. The wiper keeps its own field.
                 collisions.append(Collision(
-                    vpath, "SUBTREE", w0, [b, a], a,
+                    vpath, "SUBTREE", w0, [b, a], "",
                     f"'{a}' loads after '{b}' and replace/removes {w0}, wiping "
                     f"{len(hits)} of '{b}'s change(s) inside it (e.g. {cb0}) — "
-                    "load order is community convention, so this is advisory"))
+                    "load order is community convention, so this is advisory",
+                    wiped_by=a))
 
     return collisions
 
@@ -649,7 +708,11 @@ def analyze(
     "before I add this mod" mode); its folder is included in the scanned set.
     """
     config = config or _merge.Config()
-    mods = _registry.scan_installed([ext_dir])
+    # ACTIVE: two mods only collide if the engine loads both. The on-disk set
+    # named a disabled mod as a participant in 4 collision rows of the 2026-08-22
+    # baseline. The "what if I added this" case is *candidate*, below -- an
+    # explicit opt-in, not a side effect of how the world is enumerated.
+    mods = _registry.mods("active", [ext_dir])
     folder_to_path = {m["folder"]: Path(m["path"]) for m in mods}
 
     cand_folder = None
@@ -661,7 +724,8 @@ def analyze(
             mods = mods + [{"folder": cand_folder, "path": str(candidate),
                             "id": cand_folder}]
 
-    order = compute_load_order(mods)
+    order_dropped: list[str] = []
+    order = compute_load_order(mods, order_dropped)
     rank = {f: i for i, f in enumerate(order)}
 
     # Invert: lowercased vpath -> {folder: that mod's OWN real vpath}
@@ -681,6 +745,12 @@ def analyze(
                 inv[f"extensions/{folder.lower()}/{low}"][folder] = real
 
     report = CompatReport(mods_scanned=len(mods), load_order=order)
+    for msg in order_dropped:
+        # degraded=True: an unreadable manifest costs this mod its dependency
+        # edges, so its load-order position — and therefore every collision
+        # winner involving it — is a guess. The clean rows prove nothing about it.
+        report.skip(msg, "load order degraded to alphabetical for this mod",
+                    degraded=True)
     for low, per_mod in inv.items():
         if len(per_mod) < 2:
             continue
@@ -731,7 +801,13 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
             lines.append(f"  {c.vpath}")
             lines.append(f"     node/key : {c.target}")
             lines.append(f"     mods     : {', '.join(c.mods)}")
-            lines.append(f"     winner   : {c.winner}")
+            # A SUBTREE has no live-value winner; showing the WIPER under a
+            # "winner" label is what made an inbound report mis-read this row.
+            if c.wiped_by:
+                lines.append(f"     wiped by : {c.wiped_by}  (NOT the owner of the "
+                             f"final value — a later mod may re-supply it)")
+            else:
+                lines.append(f"     winner   : {c.winner}")
             if c.detail:
                 lines.append(f"     note     : {c.detail}")
         lines.append("")

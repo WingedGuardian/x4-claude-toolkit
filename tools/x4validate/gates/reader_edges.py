@@ -86,7 +86,7 @@ def main() -> int:
                     b'<content id="c" name="c" version="1"/>')
                 (d / "ext_01.cat").write_bytes(cat)
                 (d / "ext_01.dat").write_bytes(dat)
-                vfs = _cat.mod_vfs(d)
+                vfs = _cat.mod_vfs(d, packed_only=True)  # packed-ok: exercising the catalog reader itself
                 # Reading every member must not crash; a corrupt one must raise
                 # a real error rather than return wrong bytes.
                 bad = 0
@@ -115,17 +115,17 @@ def main() -> int:
             d = tmp / "datonly"
             d.mkdir(parents=True, exist_ok=True)
             (d / "ext_01.dat").write_bytes(b"orphan")
-            return True, f"{len(_cat.mod_vfs(d))} member(s) (expected 0)"
+            return True, f"{len(_cat.mod_vfs(d, packed_only=True))} member(s) (expected 0)"  # packed-ok
         check(".dat with no .cat", dat_only)
 
         def mod_is_a_file():
             f = tmp / "not_a_dir"
             f.write_bytes(b"x")
-            return True, f"{len(_cat.mod_vfs(f))} member(s) (expected 0)"
+            return True, f"{len(_cat.mod_vfs(f, packed_only=True))} member(s) (expected 0)"  # packed-ok
         check("mod path is a file", mod_is_a_file)
 
         def missing_dir():
-            return True, f"{len(_cat.mod_vfs(tmp / 'nope'))} member(s) (expected 0)"
+            return True, f"{len(_cat.mod_vfs(tmp / 'nope', packed_only=True))} member(s) (expected 0)"  # packed-ok
         check("mod dir does not exist", missing_dir)
 
         fails = [r for r in RESULTS if r[1] == "FAIL"]

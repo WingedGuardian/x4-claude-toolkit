@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from lxml import etree
 
-from . import (_cat, _compat, _debuglog, _exprlint, _merge, _migration, _refs,
-               _registry, _resolve, _scan, _xref, _xsd)
+from . import (_cat, _compat, _debuglog, _effective, _exprlint, _merge, _migration,
+               _refs, _registry, _resolve, _scan, _xref, _xsd)
 
 # A ship variant macro file: <base>_<a|b|c|...>_macro.xml
 VARIANT_RE = re.compile(r"^(?P<base>.+)_(?P<v>[a-z0-9])_macro\.xml$")
@@ -19,6 +20,43 @@ VARIANT_RE = re.compile(r"^(?P<base>.+)_(?P<v>[a-z0-9])_macro\.xml$")
 # English 0001-l044.xml. So text defs must be unioned across all sources, not
 # read from one overridable path.
 TEXT_FILES = ("t/0001.xml", "t/0001-l044.xml")
+#: English (l044) or language-neutral t-files, at ANY directory depth.
+#: A fixed two-entry TEXT_FILES list was a narrowing step: MEASURED, one mod
+#: (`code_vgr_battlecruiser`) ships 90 strings under `sfx/weapons/t/`, 56 of
+#: which were absent from the definition set — so its OWN {page,t} references
+#: read as dangling. The mod is fine; the oracle was short.
+#: Other languages stay OUT deliberately: folding l007/l033/… into one English
+#: set would hide a genuinely missing English string behind a German one.
+T_FILE_RE = re.compile(r"(?:^|/)t/\d+(?:-l044)?\.xml$", re.IGNORECASE)
+#: Bounded-depth globs, not `rglob`. MEASURED on the 60 GB reference tree:
+#: 0.06s total for all four, versus a full walk.
+_T_GLOBS = ("t/*.xml", "*/t/*.xml", "*/*/t/*.xml", "*/*/*/t/*.xml")
+
+
+def t_file_rels(src: Path) -> list[str]:
+    """Relative paths of every English/neutral t-file in *src*, loose and packed."""
+    rels: set[str] = set()
+    for pattern in _T_GLOBS:
+        try:
+            candidates = list(src.glob(pattern))
+        except OSError:
+            continue  # silent-ok: an unreadable directory yields no candidates here,
+            # and the caller's own read of a known path still reports failures.
+        for f in candidates:
+            rel = f.relative_to(src).as_posix()
+            if T_FILE_RE.search("/" + rel):
+                rels.add(rel)
+    try:
+        packed = _cat.mod_vfs(src, packed_only=True)  # packed-ok: loose half handled above
+    except OSError:
+        packed = {}
+    for v in packed:
+        rel = v.replace("\\", "/")
+        if T_FILE_RE.search("/" + rel):
+            rels.add(rel)
+    # The historical pair stays in the set even if globbing found nothing, so a
+    # source whose directory cannot be listed still gets its standard files read.
+    return sorted(rels | set(TEXT_FILES))
 WARES_FILE = "libraries/wares.xml"
 # index/macros.xml is additively UNIONED across extensions (like t-files), not
 # overridden — each extension registers its own macro->file mappings.
@@ -55,7 +93,7 @@ def collect_text_defs(config: _merge.Config, extra_overlays=None,
     sources = ([config.reference] + config.dlc_dirs()
                + list(config.overlays) + list(extra_overlays or []))
     for src in sources:
-        for rel in TEXT_FILES:
+        for rel in t_file_rels(src):
             f = src / rel
             try:
                 if f.is_file():
@@ -106,6 +144,160 @@ def collect_macro_defs(config: _merge.Config, extra_overlays=None,
         if report is not None:
             report.skip("macro index overlay", s)
     return _refs.macro_names(merged.tree)
+
+
+#: Library files that DEFINE macros/components without registering them in
+#: `index/`. MEASURED: 726 macros + 30 components live here and appear in
+#: NEITHER index/macros.xml NOR the effective store. Cheap to read, so they join
+#: the eager half rather than forcing a corpus scan (gotcha #11).
+LIBRARY_DEFS = ("libraries/character_macros.xml", "libraries/character_components.xml")
+
+
+class EntityDefs:
+    """Every macro OR component name defined anywhere — index UNION corpus.
+
+    **Namespace-agnostic on purpose.** `<component ref>` names a MACRO inside
+    `libraries/wares.xml` but a COMPONENT inside a macro file (gotcha #11), and
+    in a `<diff>` carrying `<replace sel="//component">` at an asset path,
+    element ancestry cannot classify it at all — only the selector target can.
+    Four mis-classifications in one measurement session came from trying. Testing
+    membership against the UNION of both namespaces sidesteps every one of those
+    traps and still yields exactly the 3 genuine dangling references over the
+    2,300 present across 114 installed mods. Cross-namespace confusion (a macro
+    name used where a component is required) is given up knowingly — it has never
+    been the failing class, and a wrong ORACLE is far more expensive than a
+    narrow one.
+
+    **Lazy by design.** The index half costs 0.3s and resolves 2,293 of those
+    2,300 references; the corpus half — a full parse of base + DLC + every
+    overlay — is built only when a name misses, which measured 7 distinct names
+    across ~5 mods. A clean mod therefore never pays for it.
+
+    That corpus half costs **~13s** (13,579 files) and is what takes a VRO
+    validate from 12.3s to 26.3s. Restricting it to path segments that can hold a
+    definition was measured and REJECTED: `assets/` is simultaneously 63% of the
+    files and where 8,425 of the 11,126 definitions live, so the filter saves 9%.
+    The price buys 4 false positives removed corpus-wide, and `check_references`
+    prints `(+ corpus scan)` so the cost is announced rather than hidden.
+
+    Behaves as a set for the only two operations `_refs` performs on it
+    (`in` and `len`); `len` reports the EAGER half and says so, so a coverage
+    note can never imply the corpus was scanned when it was not.
+    """
+
+    def __init__(self, config: _merge.Config, extra_overlays=None,
+                 report: Report | None = None) -> None:
+        self._config = config
+        self._extra = list(extra_overlays or [])
+        self._report = report
+        self._own: set[str] | None = None
+        #: name -> defined anywhere in the corpus. Cached both ways, so a mod
+        #: with several unresolvable refs pays for one search each, not per use.
+        self._corpus_answers: dict[str, bool] = {}
+        #: How many files the corpus tier actually PARSED. The byte pre-filter's
+        #: whole claim is that this stays near zero; a test asserts it.
+        self.corpus_parses = 0
+        self._index: set[str] = set()
+        for rel in (MACRO_INDEX, _resolve.COMPONENT_INDEX):
+            merged = _merge.build_effective(rel, config, extra_overlays=self._extra)
+            if merged.tree is not None:
+                self._index |= _refs.macro_names(merged.tree)
+        for rel in LIBRARY_DEFS:
+            merged = _merge.build_effective(rel, config, extra_overlays=self._extra)
+            if merged.tree is not None:
+                self._index |= set(merged.tree.xpath("//macro/@name"))
+                self._index |= set(merged.tree.xpath("//component/@name"))
+
+    def __len__(self) -> int:
+        return len(self._index)
+
+    def __contains__(self, name: object) -> bool:
+        if name in self._index:
+            return True
+        # Cheap middle tier: the mod under test is ONE small directory, and its
+        # own unindexed content is the common miss (MEASURED: 753 macro names
+        # corpus-wide are defined in asset files but never registered). Trying it
+        # before the 13s corpus parse keeps the usual case fast without making
+        # the answer any weaker — a name found here is genuinely defined.
+        if self._own is None:
+            self._own = self._scan(self._extra, "mod")
+        if name in self._own:
+            return True
+        if name in self._corpus_answers:
+            return self._corpus_answers[name]
+        found = self._search_corpus(str(name))
+        self._corpus_answers[name] = found
+        return found
+
+    @property
+    def corpus_scanned(self) -> bool:
+        return bool(self._corpus_answers)
+
+    def _search_corpus(self, name: str) -> bool:
+        """Is *name* defined as a macro/component anywhere in base + DLC + overlays?
+
+        Byte pre-filter, then parse to CONFIRM. Building the whole definition set
+        instead parses every file — MEASURED 8.9s for the reference tree alone,
+        which `gates/perf_guard.py` flagged as three regressions (ebi 5.8x,
+        cpsdo_vro 4.9x, code_vgr 4.9x). Searching for the one name wanted is
+        **3.5x** faster (8.9s -> 2.5s) and loses no exactness: a file whose raw
+        bytes contain the name is still parsed and XPath-checked, so the speedup
+        comes only from skipping files that provably cannot match.
+
+        Per-name cost is affordable because the tier is rarely reached at all:
+        MEASURED, 7 distinct references across 114 mods miss the eager tiers —
+        at most 2 for any single mod.
+        """
+        needle = name.encode("utf-8", "replace")
+        # _xq, not an f-string: a name containing a quote would otherwise build a
+        # malformed XPath and raise, turning a reference question into a crash.
+        xq = _refs._xq(name)
+        sources = ([self._config.reference] + self._config.dlc_dirs()
+                   + list(self._config.overlays) + self._extra)
+        for src in sources:
+            try:
+                blobs = _scan.iter_mod_xml_bytes(src)
+            except OSError as exc:
+                if self._report is not None:
+                    self._report.skip(
+                        "entity-definition search",
+                        f"{src.name}: could not be enumerated ({exc}) — names it "
+                        "defines are missing from the definition set", degraded=True)
+                continue
+            for _vpath, data in blobs:
+                if needle not in data:
+                    continue
+                self.corpus_parses += 1
+                try:
+                    root = _merge.parse_bytes(data)
+                except etree.XMLSyntaxError:
+                    continue  # silent-ok: unparseable files are reported once by
+                    # check_readability; here they simply cannot confirm the name,
+                    # and a miss surfaces as a finding rather than vanishing.
+                if root.xpath(f"//macro[@name={xq}] | //component[@name={xq}]"):
+                    return True
+        return False
+
+    def _scan(self, sources, tier: str) -> set[str]:
+        """Every `<macro name>` / `<component name>` defined in *sources*.
+
+        The index is NOT the definition set (gotcha #11) — MEASURED, 753 macro
+        names are defined in asset files without ever being registered, and 6 of
+        7 sampled "missing" references were real entities living in a library.
+        """
+        names: set[str] = set()
+        for src in sources:
+            try:
+                for _vpath, root in _scan.iter_mod_xml(src):
+                    names |= set(root.xpath("//macro/@name"))
+                    names |= set(root.xpath("//component/@name"))
+            except OSError as exc:
+                if self._report is not None:
+                    self._report.skip(
+                        f"entity-definition scan ({tier})",
+                        f"{src.name}: could not be enumerated ({exc}) — names it "
+                        "defines are missing from the definition set", degraded=True)
+        return names
 
 
 def _mod_identity(mod_dir: Path, report: Report | None = None) -> tuple[str, str]:
@@ -228,7 +420,12 @@ def tier_b_trees(mod_dir: Path, report: Report | None = None) -> TierB:
         return TierB((), (), [f"Tier B: {why}; fell back to base+DLC only"])
 
     try:
-        mods = _registry.scan_installed()
+        # ACTIVE: Tier B models the tree the ENGINE builds, so a mod that is
+        # installed-but-disabled must not supply a selector target. Using the
+        # on-disk set here made a selector that only matches inside a disabled
+        # mod report OK -- a FALSE PASS, in the mode whose whole purpose is
+        # catching silent no-ops.
+        mods = _registry.mods("active")
     except OSError as exc:
         return _fallback(f"could not scan installed mods ({exc})")
     if not mods:
@@ -287,6 +484,11 @@ class Finding:
     message: str
     vpath: str = ""
     line: int = 0
+    #: For category "sel": the selector VERBATIM. The message renders it with
+    #: optional suffixes ("(silent)", "[if= passed: ...]"), so anything comparing
+    #: selectors op-for-op against the engine log must read this field, not scrape
+    #: the prose. `x4debug crosscheck` fabricated 6 findings by doing the latter.
+    sel: str = ""
 
 
 @dataclass
@@ -406,56 +608,92 @@ def check_readability(mod_dir: Path, config: _merge.Config, report: Report) -> N
 
 
 def _check_ops(diff_root, tree, vpath: str, report: Report) -> None:
-    """Evaluate every diff op's sel= against *tree*; flag non-matches.
+    """Report every diff op the ENGINE would not apply, deriving from `apply_diff`.
 
-    Mirrors _merge.apply_diff's gate order exactly: if= is evaluated FIRST, and a
-    falsy guard skips the op — so its sel= is never reached and must not be
-    reported as a failure. An if=-guarded op that matches nothing is a *designed*
-    no-op (the idiom for targeting content from a mod that may not be installed),
-    not an error.
+    **One implementation.** This used to re-evaluate each op's `sel=` itself, in
+    parallel with `_merge.apply_diff` — two independent code paths answering the
+    same question, which is the shape `docs/BLIND-SPOTS.md` was built around. They
+    disagreed in both directions, because this one evaluated every op against the
+    tree as it stood BEFORE the mod's own ops, while the engine applies them in
+    document order to a mutating tree:
+
+    * `<remove sel="X"/>` then `<replace sel="X/y/@z">` — the engine skips the
+      replace; we reported nothing. MEASURED: 2 ops, 1 mod (`moreroomsforships`),
+      confirmed against the engine's own log via `x4debug crosscheck`.
+    * `<add sel="X">` then `<replace sel="X/new/@z">` — the node exists only after
+      the diff's own add, so we reported a FALSE error. MEASURED: 458 ops select
+      into an earlier `<add>` across 18 mods — 229x the first case, and the more
+      expensive direction, since a fabricated error on a gating check is worse
+      than a missed one.
+
+    Deriving from `apply_diff` also picks up two verdicts this function used to
+    drop on the floor via a bare `continue`: an op tag `diff.xsd` does not admit
+    (`<relace>`), and an `add type=` we do not model.
+
+    The tree is DEEP-COPIED first. `apply_diff` mutates, and the merged tree
+    belongs to the caller and is reused by later checks — corrupting it would be a
+    worse defect than the one being fixed.
     """
-    for op in diff_root:
-        if not isinstance(op.tag, str) or op.tag not in _merge._OPS:
-            continue
-        sel = op.get("sel", "")
-        line = op.sourceline or 0
-        silent = _merge._truthy(op.get("silent"))
+    # apply_diff appends exactly one AppliedOp per element with a string tag and
+    # skips comments/PIs without appending, so pairing must use the same filter.
+    # Asserted rather than assumed: a silent mis-pairing would attribute findings
+    # to the wrong op and line, which is worse than not checking at all.
+    ops = [o for o in diff_root if isinstance(o.tag, str)]
+    applied = _merge.apply_diff(copy.deepcopy(tree), diff_root)
+    if len(applied) != len(ops):  # pragma: no cover - structural invariant
+        report.skip("diff op checking",
+                    f"{vpath}: apply_diff returned {len(applied)} verdicts for "
+                    f"{len(ops)} ops — cannot pair them, so no op was checked",
+                    degraded=True)
+        return
 
+    for op, a in zip(ops, applied):
+        if a.ok and not a.skipped_if:
+            continue
         cond = op.get("if")
-        if cond:
-            try:
-                gate_open = bool(tree.xpath(cond))
-            except etree.XPathEvalError as exc:
-                report.add("error", "sel", f"<{op.tag}> invalid if= ({exc})", vpath, line)
-                continue
-            if not gate_open:
-                report.add("info", "sel",
-                           f"<{op.tag}> skipped: if= is false ({cond}) — "
-                           "guarded no-op, sel= not evaluated", vpath, line)
-                continue
-
-        try:
-            hits = tree.xpath(sel)
-        except etree.XPathEvalError as exc:
-            report.add("error", "sel", f"<{op.tag}> invalid sel= ({exc})", vpath, line)
-            continue
-        if not hits:
+        if a.skipped_if:
+            # A guarded op whose guard is false is a DESIGNED no-op — the idiom for
+            # targeting content from a mod that may not be installed. Never an error.
+            report.add("info", "sel",
+                       f"<{op.tag}> skipped: if= is false ({cond}) — "
+                       "guarded no-op, sel= not evaluated", vpath, a.line)
+        elif a.detail.startswith("invalid if=:"):
+            report.add("error", "sel",
+                       f"<{op.tag}> invalid if= ({a.detail.split(': ', 1)[1]})",
+                       vpath, a.line)
+        elif a.detail.startswith("invalid sel=:"):
+            report.add("error", "sel",
+                       f"<{op.tag}> invalid sel= ({a.detail.split(': ', 1)[1]})",
+                       vpath, a.line)
+        elif a.detail == "sel matched nothing":
             # A guard that IS open but whose sel still misses is a real problem:
             # the author asserted the target should exist.
-            sev = "warn" if silent else "error"
-            report.add(sev, "sel",
-                       f"<{op.tag}> sel matched nothing: {sel}"
-                       + (" (silent)" if silent else "")
-                       + (f" [if= passed: {cond}]" if cond else ""), vpath, line)
-        elif len(hits) > 1:
-            # The OTHER silent no-op: X4 requires sel to match exactly one node
-            # (RFC 5261). On multiple matches it logs "Multiple matching nodes ...
-            # Skipping node" and applies NOTHING — the patch looks fine but does
-            # nothing. Disambiguate with a predicate.
+            report.add("warn" if a.silent else "error", "sel",
+                       f"<{op.tag}> sel matched nothing: {a.sel}"
+                       + (" (silent)" if a.silent else "")
+                       + (f" [if= passed: {cond}]" if cond else ""), vpath, a.line,
+                       sel=a.sel)
+        elif a.ambiguous:
+            # RFC 5261: sel must select exactly ONE node. X4 logs "Multiple matching
+            # nodes ... Skipping node" and applies NOTHING — the patch looks fine
+            # and does nothing. Disambiguate with a predicate.
             report.add("error", "sel",
-                       f"<{op.tag}> sel matched {len(hits)} nodes (must match exactly 1 "
-                       f"— the engine SKIPS ambiguous ops, so this silently does nothing): {sel}",
-                       vpath, line)
+                       f"<{op.tag}> sel matched {a.detail.split()[2]} nodes "
+                       "(must match exactly 1 — the engine SKIPS ambiguous ops, so "
+                       f"this silently does nothing): {a.sel}",
+                       vpath, a.line, sel=a.sel)
+        elif a.detail.startswith("unknown op "):
+            # `diff.xsd` admits exactly add/replace/remove, so <relace sel="..."> is a
+            # schema violation the engine ignores outright. The old code skipped these
+            # with a bare `continue`, so a typo'd op tag vanished and the file still
+            # reported OK. detail already names the tag — do not print it twice.
+            report.add("error", "sel", a.detail, vpath, a.line, sel=a.sel)
+        else:
+            # Everything else apply_diff refuses: an unmodelled
+            # add type=, or a mutation helper that returned a reason. All of these
+            # were invisible here before — the first two behind a bare `continue`.
+            report.add("error", "sel", f"<{op.tag}> {a.detail}", vpath, a.line,
+                       sel=a.sel)
 
 
 def _installed_folders() -> set[str] | None:
@@ -466,7 +704,11 @@ def _installed_folders() -> set[str] | None:
     from "the extensions directory could not be listed".
     """
     try:
-        return {m["folder"].lower() for m in _registry.scan_installed()}
+        # INSTALLED, deliberately: this asks whether `extensions/<folder>/` names
+        # a real extension directory or is a typo (gotcha #6). That is a question
+        # about the DISK, and it stays true whether or not the target is switched
+        # on -- a patch aimed at a disabled mod is inert, not misspelled.
+        return {m["folder"].lower() for m in _registry.mods("installed")}
     except OSError:
         # silent-ok: None is this function's whole contract (see docstring) —
         # distinct from set(). _path_verdict branches on it and reports
@@ -659,7 +901,7 @@ def check_sel_resolution(mod_dir: Path, config: _merge.Config, report: Report) -
         # Packed with no XML is normal for a texture/shader mod, but only if the
         # catalog actually OPENED. XTex is the live example: 0 XML members, 4695
         # total. An empty vfs means the .cat/.dat could not be read.
-        if _cat.mod_vfs(mod_dir, xml_only=False):
+        if _cat.mod_vfs(mod_dir, xml_only=False, packed_only=True):  # packed-ok: is-this-mod-packed
             report.notes.append(
                 "sel-resolution: this mod is packed and ships no XML (assets only) — "
                 "there is nothing for the selector check to examine")
@@ -715,22 +957,62 @@ def _added_subtrees(diff_root: etree._Element):
 
 
 def check_references(mod_dir: Path, config: _merge.Config, report: Report) -> None:
-    """Flag references the mod *introduces* that resolve to no definition."""
+    """Flag references the mod *introduces* that resolve to no definition.
+
+    Two scopes, two severities:
+
+    ``<add>`` ops in ``<diff>`` files are what the mod demonstrably INTRODUCES, and
+    have gated as errors since v1. **Full files** were checked not at all until
+    2026-08-13 — MEASURED, 1,625 files across 56 mods, 38% of their XML — and are
+    reported as INFO for now. Shipping them as errors on day one would gate builds
+    on a check whose hit list has never been reviewed in the wild; the plan is to
+    promote after one clean corpus run. A check that floods is worse than no check.
+    """
     mod_overlay = [mod_dir]
     wares_merged = _merge.build_effective(WARES_FILE, config, extra_overlays=mod_overlay)
     ware_def_set = _refs.ware_defs(wares_merged.tree)
     text_def_set = collect_text_defs(config, mod_overlay, report)
     macro_def_set = collect_macro_defs(config, mod_overlay, report)
+    entity_defs = EntityDefs(config, mod_overlay, report)
+    expressions: list[str] = []
+
+    # ONE pass, not two. `iter_diff_files` is exactly `root.tag == "diff"`, so
+    # this branch is the same partition without parsing every file a second time.
+    # NB the 12.3s -> 26.3s measured on VRO is NOT this — it is the lazy corpus
+    # scan below firing, which collapsing the passes did not move at all. Recorded
+    # because the double-parse was the obvious suspect and measuring cleared it.
+    diff_files = full_files = 0
+    for vpath, root in iter_mod_xml_roots(mod_dir):
+        if vpath.lower() == MANIFEST:
+            continue
+        if root.tag == "diff":
+            diff_files += 1
+            for holder in _added_subtrees(root):
+                # entity_defs, NOT macro_def_set: `<component ref>` is namespace-dependent
+                # (gotcha #11) and checking it against the macro index alone cost 23 FALSE
+                # gating errors on the live modlist — `standardzone` and `standardregion`
+                # are components, defined in libraries/component.xml and registered in
+                # index/components.xml. One question, one oracle, both scopes.
+                for d in _refs.find_dangling(holder, ware_def_set, text_def_set, entity_defs,
+                                             where=vpath, expressions=expressions):
+                    report.add("error", "ref",
+                               f"introduced {d.kind} reference does not resolve: {d.ref}",
+                               vpath, d.line)
+        else:
+            full_files += 1
+            for d in _refs.find_dangling(root, ware_def_set, text_def_set, entity_defs,
+                                         where=vpath, expressions=expressions):
+                report.add("error", "ref",
+                           f"{d.kind} reference does not resolve: {d.ref}", vpath, d.line)
+
     report.notes.append(
         f"reference defs: {len(ware_def_set)} wares, {len(text_def_set)} text strings, "
-        + (f"{len(macro_def_set)} macros" if macro_def_set is not None
-           else "macros NOT CHECKED (index unreadable)"))
-
-    for vpath, diff_root in iter_diff_files(mod_dir):
-        for holder in _added_subtrees(diff_root):
-            for d in _refs.find_dangling(holder, ware_def_set, text_def_set, macro_def_set, where=vpath):
-                report.add("error", "ref",
-                           f"introduced {d.kind} reference does not resolve: {d.ref}", vpath, d.line)
+        + (f"{len(macro_def_set)} indexed macros" if macro_def_set is not None
+           else "macros NOT CHECKED (index unreadable)")
+        + f", {len(entity_defs)} macro/component names"
+        + (" (+ corpus scan)" if entity_defs.corpus_scanned else "")
+        + f"; scanned {diff_files} diff + {full_files} full file(s)"
+        + (f"; skipped {len(expressions)} script expression(s) in @ware" if expressions else ""))
 
 
 def check_file_existence(mod_dir: Path, config: _merge.Config, report: Report) -> None:
@@ -901,28 +1183,163 @@ def check_connections(mod_dir: Path, config: _merge.Config, report: Report) -> N
             check_loadout(lo, component_of_macro(lo.get("macro")), vpath, f"for {lo.get('macro')}")
 
 
+def check_module_groups(mod_dir: Path, config: _merge.Config, report: Report) -> None:
+    """Verify every `<module group="X">` names a group defined in libraries/modulegroups.xml.
+
+    The engine rejects a dangling one at station-generation time with
+    ``FactoryGenerator::GetAllPossibleMacros(): Station group reference 'X' not found or
+    does not contain any macros`` — the module contributes no macros and the station is
+    built without it. x4validate was structurally blind to this until 2026-08-21 because
+    `modulegroups` was not an indexed registry; the engine found it and we did not.
+
+    MEASURED 2026-08-21 over the effective tree (base + 8 DLC incl. both mini-DLC + every
+    installed mod): 192 `<module>` entries, 146 groups, every entry carries `@group`, and
+    0 dangle once the one real offender is repaired. So this gates as an error on day one
+    without flooding — unlike `check_references`' full-file half, whose hit list had never
+    been reviewed in the wild.
+    """
+    merged = _merge.build_effective("libraries/modulegroups.xml", config,
+                                    extra_overlays=[mod_dir])
+    if merged.tree is None:
+        report.skip("module group checks",
+                    "libraries/modulegroups.xml did not merge; <module group=> targets "
+                    "were not verified")
+        return
+    for s in merged.skipped:
+        report.skip("module group checks", s)
+    defined = set(merged.tree.xpath("//group/@name"))
+    if not defined:
+        # An empty definition set would mark every reference dangling. That is a
+        # non-answer, not a finding — say so instead of emitting a wall of errors.
+        report.skip("module group checks",
+                    "libraries/modulegroups.xml merged but defines no <group name=>; "
+                    "<module group=> targets were not verified")
+        return
+
+    checked = 0
+    for vpath, root in iter_mod_xml_roots(mod_dir):
+        if vpath.lower() == MANIFEST:
+            continue
+        for el in root.xpath("//module[@group]"):
+            checked += 1
+            group = el.get("group")
+            if group not in defined:
+                report.add("error", "ref",
+                           f"module '{el.get('id')}' references station module group "
+                           f"'{group}', which no libraries/modulegroups.xml defines",
+                           vpath, el.sourceline)
+    if checked:
+        report.notes.append(
+            f"module groups: {checked} <module group=> reference(s) checked against "
+            f"{len(defined)} defined group(s)")
+
+
+def _sibling_pool(vdir: str, config: _merge.Config, base_dirs: dict[str, set[str]],
+                  installed: dict[str, Path]) -> tuple[set[str], str] | None:
+    """Filenames the OWNER of *vdir* ships there, and a label for it.
+
+    "Sibling" means "another variant the SAME owner ships", so the owner has to be
+    resolved before the directory is read:
+
+      assets/units/...                      -> base + DLC
+      extensions/ego_dlc_x/assets/...       -> that DLC (packed ones included)
+      extensions/<other mod>/assets/...     -> that MOD's own copy of the tree
+
+    ``None`` means the owner could not be resolved -- reported through
+    ``Report.skip``, never as a silent ``continue``.
+    """
+    parts = vdir.split("/")
+    if len(parts) >= 3 and parts[0] == "extensions":
+        owner = parts[1].lower()
+        root = installed.get(owner)
+        if root is not None and owner not in config.packed_dlc_names():
+            rel = "/".join(parts[2:])
+            names = {low.rpartition("/")[2]
+                     for low in _compat._mod_xml_paths(root)
+                     if low.rpartition("/")[0] == rel}
+            return names, f"mod '{parts[1]}'"
+        # Not an installed mod -> an `extensions/ego_dlc_*/` path. `base_dirs`
+        # already holds those under exactly this prefix (both the six unpacked DLC
+        # and, since F34, the two packed mini-DLC), so FALL THROUGH rather than
+        # bailing. Bailing here is not hypothetical: the first cut of this
+        # function did, and it took VRO's 3 real findings -- ship_ter_l_flagship_01,
+        # ship_ter_m_corvette_02, ship_ter_s_fighter_04, all under
+        # extensions/ego_dlc_timelines/ -- straight back to zero.
+    pool = base_dirs.get(vdir)
+    return (pool, "base+DLC") if pool is not None else None
+
+
 def check_variant_consistency(mod_dir: Path, config: _merge.Config, report: Report) -> None:
     """Warn when the mod patches one ship variant macro but not its base siblings
-    (per-variant props like hull/cargo/loadout won't change for the untouched ones)."""
-    for path in sorted(mod_dir.rglob("*.xml")):
-        if not path.is_file():
+    (per-variant props like hull/cargo/loadout won't change for the untouched ones).
+
+    THREE enumerations, and until 2026-08-22 all three were wrong in the same
+    direction -- each looked only at loose files on disk.
+
+    1. THE MOD UNDER TEST was walked with ``mod_dir.rglob("*.xml")``, so a PACKED
+       mod contributed nothing. MEASURED across 115 installed mods: of 378 variant
+       macro files, **14 were reachable and 364 (96.3%) were invisible** -- VRO,
+       both ship_variation_expansion mods, all four lc4hunter packs. This is the
+       identical defect `iter_diff_files` was repaired for on 2026-07-26, in the
+       function next door, never carried across. `_scan`/`_compat` have provided
+       the packed+loose enumeration ever since.
+    2. THE BASE TREE was read as `config.reference / vdir`, which cannot see the
+       two mini-DLC (never unpacked; F34). 2 files.
+    3. A CROSS-MOD path (`extensions/<other mod>/...`) has its siblings inside
+       THAT mod, not in `reference/` at all, so the check silently did nothing. 2
+       files, both `cpsdo_faction`.
+
+    Fixing only (2) and (3) would have changed nothing observable, because those 4
+    files sit inside the 364 that were never reached. Measured before landing:
+    378 files now examined, **3 warnings, all in one mod** -- so this gates rather
+    than merely informing.
+    """
+    own = _compat._mod_xml_paths(mod_dir)
+    variants = sorted((low, real) for low, real in own.items()
+                      if VARIANT_RE.match(low.rpartition("/")[2]))
+    if not variants:
+        return
+
+    base_dirs: dict[str, set[str]] = {}
+    for low in _effective.base_vpaths(config, "*_macro.xml"):
+        d, _, n = low.rpartition("/")
+        base_dirs.setdefault(d, set()).add(n)
+
+    # Resolved ONCE: `scan_installed()` inside the per-file loop made this O(n*m)
+    # and cost 33 s across the installed set for a lookup that never changes.
+    # ACTIVE: a "sibling variant" is one the engine will actually load alongside.
+    installed = {m["folder"].lower(): Path(m["path"])
+                 for m in _registry.mods("active") if Path(m["path"]).is_dir()}
+
+    unresolved: list[str] = []
+    for low, real in variants:
+        name = low.rpartition("/")[2]
+        m = VARIANT_RE.match(name)
+        vdir = low.rpartition("/")[0]
+        resolved = _sibling_pool(vdir, config, base_dirs, installed)
+        if resolved is None:
+            unresolved.append(real)
             continue
-        m = VARIANT_RE.match(path.name)
-        if not m:
-            continue
-        vpath = path.relative_to(mod_dir).as_posix()
-        vdir = vpath.rsplit("/", 1)[0] if "/" in vpath else ""
-        ref_dir = config.reference / vdir
-        if not ref_dir.is_dir():
-            continue
-        siblings = sorted(p.name for p in ref_dir.glob(f"{m.group('base')}_*_macro.xml"))
+        pool, _origin = resolved
+        pat = re.compile(re.escape(m.group("base")) + r"_[a-z0-9]_macro\.xml$")
+        siblings = sorted(s for s in pool if pat.match(s))
         if len(siblings) < 2:
             continue
-        untouched = [s for s in siblings if s != path.name and not (mod_dir / vdir / s).exists()]
+        untouched = [s for s in siblings
+                     if s != name and (f"{vdir}/{s}" if vdir else s) not in own]
         if untouched:
             report.add("warn", "variant",
-                       f"patched '{path.name}' but not sibling variant(s) {', '.join(untouched)} "
-                       "— per-variant props (hull/cargo/loadout) won't change for them", vpath)
+                       f"patched '{real.rpartition('/')[2]}' but not sibling variant(s) "
+                       f"{', '.join(untouched)} — per-variant props "
+                       "(hull/cargo/loadout) won't change for them", real)
+
+    if unresolved:
+        # MEASURED 2026-08-22: 46 of 378 across the installed set. Not silence --
+        # "we could not look" must never render as "we looked and it was fine".
+        report.skip("variant sibling check",
+                    f"{len(unresolved)} variant macro(s) sit in a directory whose owner "
+                    f"supplies no macro files (e.g. {unresolved[0]}) — no sibling set to "
+                    f"compare against, so those were NOT checked")
 
 
 def check_completeness(
@@ -944,6 +1361,24 @@ def check_completeness(
     rep = _refs.ware_completeness(eid, lid, wares.tree, text_def_set, macro_def_set)
     report.notes.append(f"completeness checked kinds: {', '.join(rep.checked)}")
 
+    # The catalog compares <ware>-WRAPPER fields only (see _refs._entity_kinds).
+    # For a ship or module that is a fraction of the real footprint: nothing here
+    # opens the macro, so a scaffold with no <physics>, no engine/shield/turret
+    # slots and no connections reports "0 missing" -- a false clean, which is the
+    # exact defect class the skip channel exists to make visible. Declared, not
+    # degraded: the check DID answer its 8 questions, and the interior was never
+    # in scope. Marking it degraded would exit 3 on every ship scaffold and train
+    # the reader to ignore the signal.
+    if etype in {"ship", "module"}:
+        report.skip(
+            f"completeness: {etype} macro interior",
+            "compares <ware>-wrapper fields only (definition, name/description "
+            "strings, price, production, component ref, owner, restriction). NOT "
+            "checked: physics, connections/hardpoints, engine/shield/turret slots, "
+            "storage, hull, software, steering curves. A 'complete' result here "
+            "does NOT mean the macro is complete",
+        )
+
     # A nonexistent --like analogue makes every comparison vacuous: its footprint
     # is all-False, so `missing` is empty and the old code cheerfully reported
     # "matches the footprint". Bail before that, and say which id was not found.
@@ -960,10 +1395,15 @@ def check_completeness(
                    "the mod does not define it (check the --entity id)")
         return
     if not rep.missing:
-        report.add("info", "completeness", f"ware '{eid}' matches the footprint of '{lid}'")
+        scope = ("the <ware>-wrapper footprint" if etype in {"ship", "module"}
+                 else "the footprint")
+        tail = (" (macro interior NOT checked — see skipped)"
+                if etype in {"ship", "module"} else "")
+        report.add("info", "completeness",
+                   f"'{eid}' matches {scope} of '{lid}'{tail}")
     for kind in rep.missing:
         report.add("error", "completeness",
-                   f"ware '{eid}' is missing '{kind}' that analogue '{lid}' has")
+                   f"'{eid}' is missing '{kind}' that analogue '{lid}' has")
 
 
 def _relpath(abs_file: str, mod_dir: Path) -> str:
@@ -1032,7 +1472,20 @@ def check_debug_correlation(mod_dir: Path, config: _merge.Config, report: Report
     authoritative layer static checks can't provide. Engine errors GATE (exit 1);
     engine warnings advise. Staleness caveat: pass a debug.txt captured AFTER the
     latest edits — a gate on a stale log is a false failure."""
-    entries = _debuglog.parse_debug(debug_path)
+    parsed = _debuglog.parse_log(debug_path)
+    entries = [e for e in parsed.entries if e.ident_kind in ("path", "script", "lookup")]
+    # The residue line goes in FIRST and unconditionally. Until 2026-08-13 this
+    # function reported the count it had CLASSIFIED as the log's total, so a log
+    # with 2,430 errors was described as having 1,363 — a denominator it never
+    # measured. Now the log's own total is stated, and anything this parser could
+    # not classify is named rather than absorbed.
+    report.notes.append(parsed.coverage_note())
+    if parsed.total and not entries:
+        report.notes.append(
+            f"debug: none of the {parsed.total} engine error(s) identify a mod file or "
+            "script — see `x4debug triage` for the subsystem-level errors, which name a "
+            "game ENTITY instead and need the effective store to attribute")
+        return
     if not entries:
         report.notes.append(f"debug: no [=ERROR=] lines parsed from '{debug_path}' "
                             "(clean log, or wrong path / pre-load capture)")
@@ -1062,7 +1515,7 @@ def check_debug_correlation(mod_dir: Path, config: _merge.Config, report: Report
         report.add(e.severity, "debug", f"(engine) {e.message}", vpath, e.line)
     report.notes.append(
         f"debug: {matched} engine finding(s) matched this mod from '{debug_path}' "
-        f"(of {len(entries)} total in the log)"
+        f"(of {len(entries)} mod-identifying, {parsed.total} total in the log)"
         + (f"; {diffops} are diff-op cardinality failures — the engine SKIPPED those "
            "ops, so those patches silently did nothing" if diffops else "")
         + ("" if matched else " — clean load for this mod, or a stale/other-mod log"))
@@ -1374,6 +1827,7 @@ def validate(
     check_references(mod_dir, runtime, report)
     check_file_existence(mod_dir, runtime, report)
     check_connections(mod_dir, runtime, report)
+    check_module_groups(mod_dir, runtime, report)  # runtime: a later mod's group is still real
     check_page_collisions(mod_dir, config, report)
     check_text_sanity(mod_dir, config, report)
     check_identity_values(mod_dir, config, report)

@@ -59,7 +59,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _env  # noqa: E402
-from x4validate import _cat, _compat, _merge, _stats, _xref  # noqa: E402
+from x4validate import _cat, _compat, _merge, _scan, _stats, _xref  # noqa: E402
 
 SAMPLES = next((int(a.split("=")[1]) for a in sys.argv if a.startswith("--samples=")), 12)
 #: --exhaustive: verify EVERY output row, not a sample. Slower (~10 min) but it is
@@ -231,7 +231,7 @@ def _ships_vpath(mod: Path) -> set[str]:
     out = {p.relative_to(mod).as_posix().lower()
            for p in mod.rglob("*.xml") if p.is_file()}
     try:
-        out |= {v.lower() for v in _cat.mod_vfs(mod)}
+        out |= {v.lower() for v in _cat.mod_vfs(mod, packed_only=True)}  # packed-ok: unioned with rglob above
     except OSError:
         pass  # silent-ok: an unreadable archive shrinks this mod's evidence set;
               # the soundness check below reports any vpath it then cannot back up
@@ -292,14 +292,22 @@ def check_x4compat() -> None:
                 unsound += 1
                 if unsound <= 3:
                     print(f"          unsound: {folder} named for {c.vpath}, but does not ship it")
-        if c.winner not in c.mods:
+        # MIGRATED 2026-08-13, not dropped. SUBTREE's `winner` is now deliberately
+        # empty (the load-order winner there is the WIPER, not the owner of the
+        # final value), so the claim moves to `wiped_by` rather than SUBTREE being
+        # exempted. Exempting would have silently shrunk this invariant from 445
+        # rows to 297 — the narrowing shape this whole gate exists to catch.
+        claimed = c.wiped_by if c.kind == "SUBTREE" else c.winner
+        if claimed not in c.mods:
             winnerless += 1
             if winnerless <= 3:
-                print(f"          winner {c.winner!r} not among {c.mods}")
+                label = "wiped_by" if c.kind == "SUBTREE" else "winner"
+                print(f"          {label} {claimed!r} not among {c.mods}")
+    subtree_n = sum(1 for c in file_level if c.kind == "SUBTREE")
     note(unsound == 0, "every named mod really ships the colliding vpath",
          f"{len(file_level)} file-level collisions checked")
-    note(winnerless == 0, "winner is always one of the involved mods",
-         f"{len(file_level)} checked")
+    note(winnerless == 0, "the mod a collision NAMES is always one of its mods",
+         f"{len(file_level)} checked ({subtree_n} of them via wiped_by)")
 
     # NAME-CLASH invariants: every named mod must really DEFINE that macro name,
     # and no winner may be claimed (index/macros.xml decides, not load order).
@@ -475,6 +483,187 @@ def check_x4stats_exhaustive() -> None:
          f"{len(macros)} files, {values} values, {mismatched} mismatched")
 
 
+def check_script_registry_scope() -> None:
+    """TRIPWIRE for the ONE thing F27's experiment did not test.
+
+    `_merge._SCRIPT_REGISTRY_DIRS` is `md/` only, because that is where the
+    filename-registry rule is engine-proven. `aiscripts/` is *believed* to behave the
+    same way, but MEASURED 2026-08-22 over the installed corpus there are ZERO
+    complete-file-at-a-vanilla-vpath instances under aiscripts/ -- nothing to verify
+    it against, and no observable difference either way.
+
+    So rather than widen the rule on an inference, this fails the moment a real
+    instance appears. An untested generalisation must either be measured or made to
+    speak up; what it must never do is sit there being quietly assumed.
+    """
+    print("")
+    print("script registry (F27) -- scope tripwire")
+    rep = _scan.CorpusScan()
+    md_hits: list[str] = []
+    ai_hits: list[str] = []
+    dlc_dirs = [d for d in (REF / "extensions").iterdir() if d.is_dir()]
+    for mod, vpath, root in _scan.iter_corpus_xml(EXT, rep):
+        rel = vpath.replace("\\", "/")
+        low = rel.lower()
+        if root.tag == "diff":
+            continue
+        if not (low.startswith("md/") or low.startswith("aiscripts/")):
+            continue
+        if not ((REF / rel).is_file() or any((d / rel).is_file() for d in dlc_dirs)):
+            continue
+        (md_hits if low.startswith("md/") else ai_hits).append(mod + "::" + rel)
+
+    print("    " + rep.denominator())
+    note(True, "md/ complete files at a vanilla vpath (modelled INERT)",
+         str(len(md_hits)) + ": " + (", ".join(md_hits) or "none"))
+    hint = "" if not ai_hits else (
+        "  <-- the generalisation now HAS an instance. Decide deliberately: verify "
+        "in-game whether it is inert, then either add 'aiscripts/' to "
+        "_merge._SCRIPT_REGISTRY_DIRS or record why it differs. Do NOT widen it on "
+        "the strength of the md/ result alone.")
+    note(not ai_hits,
+         "aiscripts/ complete files at a vanilla vpath (NOT modelled -- untested)",
+         str(len(ai_hits)) + ": " + (", ".join(ai_hits) or "none") + hint)
+
+
+#: PINNED 2026-08-22 on the post-F27 store (22,966 entities / 582,107 attr rows).
+#: F33 has TWO axes and they are now in DIFFERENT states. Saying "F33 fixed" would be
+#: wrong; so would leaving the attr pin at its pre-fix size.
+#:
+#:   attr axis  — FIXED 2026-08-22. The flattener now disambiguates a repeated bracket
+#:                collision-only (`licence[x]`, then `licence[x#1]`), so the first
+#:                claimant keeps its original key and 99.8% of rows are byte-identical.
+#:                627 groups -> 0. MEASURED per item on a full rebuild: 582,107 attr rows
+#:                and 22,966 entities UNCHANGED, entity+value multiset identical (0
+#:                differences), 1,153 rows changed prop string and nothing else —
+#:                1,065 that were duplicated props, 82 sibling-bracket clashes whose
+#:                attributes differed, 6 pre-existing `connection[...#n]`.
+#:                It is pinned at 0 so a regression is a FAILURE, not a silent return.
+#:
+#:   entity axis — STILL OPEN, deliberately. `(kind, name)` is duplicated across 63
+#:                groups (90 extra rows), 23 of which DISAGREE. This is a different
+#:                problem: the same macro name defined in base plus five DLC, where
+#:                `index/macros.xml` decides which one the engine uses, NOT load order
+#:                (gotcha #18). A positional suffix would be an answer to a question
+#:                nobody asked.
+_F33_ENTITY_GROUPS = 63     # duplicate (kind, name)      -- 23 of them DISAGREE. OPEN.
+_F33_ATTR_GROUPS = 0        # duplicate (entity_id, prop) -- FIXED, pinned at zero.
+
+
+def check_store_key_uniqueness() -> None:
+    """F33 tripwire: the store's keys are not unique, and the size of that is pinned.
+
+    MEASURED 2026-08-22: `(kind, name)` is duplicated across 63 groups (90 extra rows),
+    23 of which hold copies that DISAGREE on at least one attribute -- e.g.
+    `macro/cluster_sm3_background_macro`, defined in base plus five DLC. `(entity_id,
+    prop)` is duplicated across 627 groups (1,071 extra rows), **201** of which disagree,
+    because the flattener's bracket discriminator is not unique among siblings:
+    `faction/player licences.licence[generaluseequipment].factions` holds EIGHT distinct
+    values under one key.
+
+    The ATTR axis was fixed 2026-08-22 and is now pinned at ZERO, so a regression fails
+    here rather than returning quietly. The measurement that licensed the fix: 1,698 rows
+    (0.29%) would move under a collision-only index versus 358,415 (61.6%) if every key
+    were indexed positionally, and 0 of the 56 lines in `dev/_registry/CLAIMS.tsv` use a
+    bracket prop, so no recorded claim could be invalidated.
+
+    The ENTITY axis is still open on purpose -- see the note on the constants above. A
+    gate that reported "F33: ok" would hide that.
+
+    A stale or absent store SKIPS with a reason. It must never read as a pass: "we did not
+    look" rendered as "nothing was wrong" is the founding defect of this whole register.
+    """
+    import sqlite3
+
+    from x4validate import _effective, _registry
+
+    print("")
+    print("store key uniqueness (F33) -- attr axis FIXED (pinned 0); entity axis OPEN")
+    store = Path(_registry.DEFAULT_REGISTRY).parent / "effective.sqlite"
+    if not store.is_file():
+        note(True, "store key uniqueness", "SKIPPED: no effective.sqlite — not checked")
+        return
+    con = sqlite3.connect(f"file:{store}?mode=ro", uri=True)
+    try:
+        if not _effective.store_freshness(con).fresh:
+            note(True, "store key uniqueness",
+                 "SKIPPED: the store is STALE, so its counts describe a world that has "
+                 "moved on — rebuild with `uv run x4effective build`, then re-run")
+            return
+        ent = con.execute(
+            "select count(*) from (select kind,name from entities "
+            "group by kind,name having count(*)>1)").fetchone()[0]
+        att = con.execute(
+            "select count(*) from (select entity_id,prop from attrs "
+            "group by entity_id,prop having count(*)>1)").fetchone()[0]
+    finally:
+        con.close()
+
+    for label, got, want in (("(kind,name) entity", ent, _F33_ENTITY_GROUPS),
+                             ("(entity_id,prop) attr", att, _F33_ATTR_GROUPS)):
+        hint = "" if got == want else (
+            "  <-- CHANGED. If a mod was added this may be expected — attribute it per "
+            "item, then re-pin. If it grew with no content change, something started "
+            "emitting duplicate keys.")
+        note(got == want, f"duplicate {label} key groups",
+             f"{got} (pinned {want}){hint}")
+
+
+def check_mod_scope_agreement() -> None:
+    """The store and x4eff must model the SAME world, and say which world it is.
+
+    Both answer "what does the engine see", from two independently-built mod
+    lists. Until 2026-08-22 they disagreed and nothing compared them: the store
+    used the active set (114) while `build-effective.py` used the on-disk set
+    (115), so x4eff carried a DISABLED mod's 19 files as live content. Surplus
+    content corrupts POSITIVE answers, which -- unlike negatives -- no coverage
+    denominator guards.
+
+    Agreeing today is not the property worth checking; agreeing BY CONSTRUCTION
+    is. So this compares the two sets element-wise, and a stale or absent artifact
+    SKIPS with a reason rather than passing.
+    """
+    import json
+    import sqlite3
+
+    from x4validate import _effective, _registry
+
+    print("")
+    print("mod-scope agreement — the store vs BaseX x4eff")
+
+    store_path = _effective.DB_PATH
+    manifest = Path(__file__).resolve().parent.parent.parent / "basex" / "_eff" / "effective-manifest.json"
+    if store_path is None or not Path(store_path).is_file():
+        note(True, "store vs x4eff mod set", "SKIPPED — no effective store on this machine")
+        return
+    if not manifest.is_file():
+        note(True, "store vs x4eff mod set",
+             "SKIPPED — no effective-manifest.json (run tools/basex/build-effective.sh)")
+        return
+
+    db = sqlite3.connect(str(store_path))
+    try:
+        store_mods = {r[0].lower() for r in db.execute("select folder from mods")}
+    finally:
+        db.close()
+    eff_mods = {m.lower() for m in
+                json.loads(manifest.read_text(encoding="utf-8")).get("overlays_in_load_order", [])}
+    active = {m["folder"].lower() for m in _registry.mods("active")}
+
+    only_store, only_eff = sorted(store_mods - eff_mods), sorted(eff_mods - store_mods)
+    note(not only_store and not only_eff,
+         "store vs x4eff mod set",
+         f"{len(store_mods)} vs {len(eff_mods)}"
+         + ("" if not (only_store or only_eff) else
+            f"  <-- DIVERGED. store-only={only_store} x4eff-only={only_eff}"))
+    # And both must be the ACTIVE set, not merely equal to each other -- two
+    # artifacts can agree perfectly while both modelling the wrong world.
+    note(eff_mods == active, "x4eff models the ACTIVE set",
+         f"{len(eff_mods)} vs {len(active)} active"
+         + ("" if eff_mods == active else
+            f"  <-- x4eff carries {sorted(eff_mods - active)} the engine will NOT load"))
+
+
 def main() -> int:
     print("=" * 88)
     print("TOOL PROPERTIES — x4diff / x4xref / x4stats, checked against independent truth")
@@ -487,6 +676,9 @@ def main() -> int:
         check_x4stats_exhaustive()
     check_x4compat()
     check_x4similar()
+    check_script_registry_scope()
+    check_store_key_uniqueness()
+    check_mod_scope_agreement()
     print("\n" + "=" * 88)
     if failures:
         print(f"PROPERTY VIOLATIONS: {len(failures)}")

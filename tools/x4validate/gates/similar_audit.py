@@ -74,7 +74,14 @@ def all_ship_macros() -> dict[tuple, dict]:
     if (REF / "extensions").is_dir():
         roots += [(f"dlc:{d.name}", d)
                   for d in (REF / "extensions").iterdir() if d.is_dir()]
-    roots += [(d.name, d) for d in sorted(EXT.iterdir()) if d.is_dir()]
+    # A DLC installed in the GAME tree (the packed mini-DLC are only ever there,
+    # never unpacked into reference\) must carry the same `dlc:` label the tool
+    # uses, or the (name, source) lookup below misses and the pair is scored
+    # UNRESOLVED. This scan already read them via _cat — the labels just did not
+    # agree, which is a verifier bug, not a tool bug. Keep the independent scan;
+    # only the naming is shared.
+    roots += [(f"dlc:{d.name}" if d.name.lower().startswith("ego_dlc_") else d.name, d)
+              for d in sorted(EXT.iterdir()) if d.is_dir()]
     for source, base in roots:
         for f in base.rglob("*_macro.xml"):
             try:
@@ -84,7 +91,7 @@ def all_ship_macros() -> dict[tuple, dict]:
                 # pair the tool reports from it then counts as UNRESOLVED (which
                 # fails the gate) — the miss cannot hide
         try:
-            for v, mem in _cat.mod_vfs(base).items():
+            for v, mem in _cat.mod_vfs(base, packed_only=True).items():  # packed-ok: loose rglob above
                 if v.lower().endswith("_macro.xml"):
                     try:
                         eat(etree.fromstring(_cat.read_member(mem)), source)

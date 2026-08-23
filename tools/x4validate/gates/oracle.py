@@ -41,7 +41,7 @@ for folder in sorted(by_mod, key=lambda f: -len(by_mod[f])):
         else:
             # packed: resolve against the catalog VFS
             from x4validate import _cat
-            keys = {k.lower(): k for k in _cat.mod_vfs(mod_dir)}
+            keys = {k.lower(): k for k in _cat.mod_vfs(mod_dir, packed_only=True)}  # packed-ok: loose checked first
             for cand in _debuglog.xml_candidates(e.vpath):
                 if cand.lower() in keys:
                     vpath = keys[cand.lower()]

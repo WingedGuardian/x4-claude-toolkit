@@ -422,6 +422,10 @@ def _schema_candidates(rel: str, name: str, vpath: str,
 def _by_basename(reference: Path) -> dict[str, Path]:
     """{lowercased xsd filename: path} for names that occur EXACTLY ONCE."""
     seen: dict[str, Path | None] = {}
+    # reference-scope-ok: SCHEMAS, not content, and measured 2026-08-22: of the 17 .xsd
+    # the two packed mini-DLC ship, 16 are byte-identical to their base copy and the
+    # seventeenth (mini_02 libraries/stances.xsd, 212 bytes) is a stub whose whole body
+    # is <xs:include> of the base file. Resolving the base copy is the same schema.
     for p in reference.rglob("*.xsd"):
         key = p.name.lower()
         seen[key] = None if key in seen else p  # None marks "ambiguous"
@@ -661,7 +665,7 @@ def validate_mod(mod_dir: Path, config: _merge.Config | None = None):
     # the same contract `_scan` documents). Depth matches the loose `glob("*.xml")`
     # above — direct children only — so the two halves check the same population.
     prefixes = tuple(f"{s}/" for s in SCRIPT_DIRS)
-    for vpath, member in sorted(_cat.mod_vfs(mod_dir).items()):
+    for vpath, member in sorted(_cat.mod_vfs(mod_dir, packed_only=True).items()):  # packed-ok: loose glob above, `seen` shadows
         low = vpath.lower()
         if not low.endswith(".xml") or low in seen or not low.startswith(prefixes):
             continue

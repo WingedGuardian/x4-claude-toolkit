@@ -70,7 +70,8 @@ def _ware_from_el(el: etree._Element) -> Ware | None:
 
 def effective_wares(ext_dir: Path, config: _merge.Config) -> dict[str, Ware]:
     """Every ware in the effective tree = base + DLC + all installed mods (load order)."""
-    mods = _registry.scan_installed([ext_dir])
+    # INSTALLED: x4stats is advisory comparison across everything you have.
+    mods = _registry.mods("installed", [ext_dir])
     order = _compat.compute_load_order(mods)
     by_folder = {m["folder"]: Path(m["path"]) for m in mods}
     overlays = [by_folder[f] for f in order if f in by_folder]
@@ -163,31 +164,75 @@ def compare_wares(candidate: dict[str, Ware], effective: dict[str, Ware]) -> lis
 
 # --- macro numeric vector -----------------------------------------------------
 
-def flatten_macro_props(root: etree._Element) -> dict[str, float | str]:
-    """Flatten a macro's <properties> into ``{element.attr: value}``.
+#: Mirrors `_effective.MAX_PROP_DEPTH`; see there for the measured justification.
+MAX_PROP_DEPTH = 8
+
+
+def _walk(scope: etree._Element, out: dict[str, float | str], prefix: str,
+          depth: int) -> None:
+    """Recursively add ``<prefix><tag>.attr`` entries for *scope*'s children.
+
+    Repeated sibling tags still collapse last-wins, exactly as the depth-1
+    version did -- this is a flat comparison vector, not the provenance store,
+    and keeping the key space stable matters more here than completeness of
+    duplicates. (`_effective.flatten_with_prov` DOES disambiguate.)
+    """
+    for el in scope:
+        if not isinstance(el.tag, str):
+            continue
+        key = f"{prefix}{el.tag}"
+        for attr, val in el.attrib.items():
+            try:
+                out[f"{key}.{attr}"] = float(val)
+            except ValueError:
+                out[f"{key}.{attr}"] = val
+        if len(el) and depth < MAX_PROP_DEPTH:
+            _walk(el, out, f"{key}.", depth + 1)
+
+
+def flatten_props_of(macro: etree._Element) -> dict[str, float | str]:
+    """Flatten ONE macro element's <properties> into ``{element.attr: value}``,
+    at every depth.
 
     Numeric attrs become floats; the ``<bullet class=>`` ref (weapon DPS lives in the
     referenced bullet macro) is kept as a string so a peer lookup can chase it.
+
+    Depth-recursive since 2026-08-12: the previous one-level walk made the entire
+    flight model (`physics/drag`, `physics/inertia`, `jerk`, `steeringcurve`)
+    invisible, so two ships differing ONLY in handling flattened to identical
+    vectors -- an actively wrong answer for x4similar, not just a missing one.
     """
-    macro = root.find("macro") if root.tag != "macro" else root
-    if macro is None:
-        return {}
     out: dict[str, float | str] = {}
     if macro.get("class"):
         out["class"] = macro.get("class")
     props = macro.find("properties")
     if props is None:
         return out
-    for el in props:
-        if not isinstance(el.tag, str):
-            continue
-        for attr, val in el.attrib.items():
-            key = f"{el.tag}.{attr}"
-            try:
-                out[key] = float(val)
-            except ValueError:
-                out[key] = val
+    _walk(props, out, "", 1)
     return out
+
+
+def iter_macros(root: etree._Element) -> list[etree._Element]:
+    """Every named macro in a parsed macro file.
+
+    Was `root.find("macro")` -- FIRST only -- while `_effective` and `_compat`
+    read them all via `iter`. Two tools disagreeing about what a file contains is
+    how the 2026-08-11 nested-door defect started, so they now agree. MEASURED:
+    2,221 macros sit in multi-macro files, though 0 of them are `ship_*`, so the
+    corrected reading changes no current answer (docs/BLIND-SPOTS.md F6).
+    """
+    if root.tag == "macro":
+        return [root]
+    return [m for m in root.iter("macro") if m.get("name")]
+
+
+def flatten_macro_props(root: etree._Element) -> dict[str, float | str]:
+    """Flatten the FIRST macro in *root*. Kept for callers that assume one macro
+    per file; use `iter_macros` + `flatten_props_of` to see them all."""
+    macros = iter_macros(root)
+    if not macros:
+        return {}
+    return flatten_props_of(macros[0])
 
 
 def macro_stats(path: Path) -> dict[str, float | str] | None:

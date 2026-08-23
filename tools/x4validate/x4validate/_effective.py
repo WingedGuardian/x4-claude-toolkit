@@ -20,16 +20,18 @@ Design notes:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import sqlite3
 import sys
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _compat, _merge, _registry, _scan
+from x4validate import _cat, _compat, _merge, _registry, _freshness, _resolve, _scan
 from x4validate._provenance import BASE, Origin, Recorder
 from x4validate import __version__
 
@@ -66,13 +68,7 @@ def active_mods(dirs: list[Path] | None = None) -> list[dict]:
 
     A mod id absent from the profile content.xml is treated as enabled
     (matches the registry's "absent = enabled" convention)."""
-    installed = _registry.scan_installed(dirs)
-    try:
-        prof = dict(_registry.ingest_content_xml())
-    except (OSError, etree.XMLSyntaxError):
-        prof = {}
-    return [m for m in installed
-            if m["enabled"] and prof.get(m["id"], True)]
+    return _registry.mods("active", dirs)
 
 
 def ordered_overlays(mods: list[dict]) -> list[tuple[dict, Path]]:
@@ -117,30 +113,182 @@ def build_touch_map(ordered: list[tuple[dict, Path]]) -> dict[str, list[tuple[st
     return touch
 
 
-def reference_vpaths(config: _merge.Config, pattern: str) -> dict[str, str]:
-    """lower(vpath) -> vpath for reference base + DLC files matching *pattern*
-    (rglob) under assets/. vpaths are game-root relative (DLC keeps its
-    extensions/ego_dlc_x/ prefix)."""
+def _under_assets(low: str) -> bool:
+    """True when *low* is an ``assets/`` path of the game root or of a DLC.
+
+    Deliberately exact rather than ``"assets/" in low``: the substring form also
+    matches ``libraries/assets/...``, and a filter that is *nearly* the old walk
+    is precisely how a documented scope quietly turns into a different one.
+    """
+    if low.startswith("assets/"):
+        return True
+    parts = low.split("/")
+    return len(parts) >= 3 and parts[0] == "extensions" and parts[2] == "assets"
+
+
+@lru_cache(maxsize=16)
+def _base_vpaths_cached(reference: Path, dlc: tuple[Path, ...],
+                        packed: frozenset[str], pattern: str) -> dict[str, str]:
+    """Memoized core of :func:`base_vpaths`.
+
+    MEASURED 2026-08-22: one call is **1.72 s** (rglob over 9,138 loose files plus
+    two catalog reads), and the inputs cannot change inside a run. Uncached, every
+    caller that loops over mods repaid it -- `check_variant_consistency` alone
+    spent ~25-35 s per corpus sweep re-deriving a byte-identical answer.
+
+    Keyed on the CONFIG-DERIVED inputs rather than on the Config object, which is
+    not hashable. Callers that monkeypatch `_cat.mod_vfs` under a fixed reference
+    path must call `base_vpaths.cache_clear()`; every current test uses a unique
+    tmp_path, so the key already distinguishes them.
+    """
     out: dict[str, str] = {}
-    root = config.reference
-    roots = [root] + config.dlc_dirs()
-    for src in roots:
-        adir = src / "assets"
-        if not adir.is_dir():
+    for f in reference.rglob(pattern):  # reference-scope-ok: THE sanctioned walk; packed pass below
+        if f.is_file():
+            v = f.relative_to(reference).as_posix()
+            out[v.lower()] = v
+    for src in dlc:
+        if src.name.lower() not in packed:
             continue
-        for f in adir.rglob(pattern):
-            if f.is_file():
-                v = f.relative_to(root).as_posix()
-                out[v.lower()] = v
+        for entry in _cat.mod_vfs(src, packed_only=True):  # packed-ok: loose pass is above
+            rel = entry.replace("\\", "/")
+            if not fnmatch.fnmatch(rel.rsplit("/", 1)[-1].lower(), pattern.lower()):
+                continue
+            v = f"extensions/{src.name}/{rel}"
+            out[v.lower()] = v
     return out
 
 
-def macro_vpaths(config: _merge.Config, touch: dict[str, list[tuple[str, str]]]) -> dict[str, str]:
-    """All effective macro-file vpaths: reference/DLC + mod-provided."""
+def base_vpaths(config: _merge.Config, pattern: str = "*.xml") -> dict[str, str]:
+    r"""lower(vpath) -> vpath for EVERY base+DLC file matching *pattern*, WHOLE tree.
+
+    THE single enumeration of "what the game itself ships". vpaths are game-root
+    relative and a DLC keeps its ``extensions/ego_dlc_x/`` prefix, which is the
+    spelling ``_merge._nested_target`` already expects.
+
+    Loose THEN packed, and that ordering is the whole point. Six of the eight DLC
+    are unpacked under ``reference\``; the two mini-DLC (Hyperion, Envoy) are
+    NEVER unpacked and live only in ``ext_*.cat``. A plain ``reference.rglob``
+    therefore cannot see them, and every hand-rolled copy of that walk has lost
+    them silently:
+
+      _input.py . _migration.py . _effective.py . _xref.py . _similarity.py .
+      stage.py . build-effective.py   -- SEVEN occurrences, MEASURED.
+
+    The last one (2026-08-22) cost BaseX ``x4eff`` **119 of 142 mini-DLC
+    documents (84%)**, and the coverage check that gates negative claims over
+    that index reported COMPLETE throughout, because a vpath never attempted
+    cannot appear in a failure list. See docs/BLIND-SPOTS.md F34 and F35.
+
+    Prose did not stop occurrences two through seven -- ``tests/test_no_loose_only_reference_walk.py``
+    is the part that is expected to.
+    """
+    # Returns the CACHED dict; callers must not mutate it. `reference_vpaths`
+    # builds a new dict, and every other caller only reads.
+    return _base_vpaths_cached(config.reference, tuple(config.dlc_dirs()),
+                               frozenset(config.packed_dlc_names()), pattern)
+
+
+def reference_vpaths(config: _merge.Config, pattern: str) -> dict[str, str]:
+    """base+DLC files matching *pattern*, RESTRICTED TO ``assets/``.
+
+    The restriction is F3's documented scope decision -- galaxy-map macros
+    (``maps/xu_ep2_universe/*``) and character macros
+    (``libraries/character_macros.xml``) are out of scope for the store, not
+    missing from it. MEASURED 2026-08-22 on the two mini-DLC: of 72 macro names,
+    **40 are in scope and 35 sit in those two excluded classes**.
+
+    It is written as an explicit FILTER over :func:`base_vpaths` rather than as a
+    walk that happens to start at ``assets/``, so the scope is a decision someone
+    can find and change -- and so there is exactly one enumeration underneath.
+    Set-equality with the pre-refactor walk is pinned by
+    ``tests/test_prop_depth.py``.
+    """
+    return {low: v for low, v in base_vpaths(config, pattern).items() if _under_assets(low)}
+
+
+#: Test hook: drop the memo when a fixture changes what a fixed path resolves to.
+base_vpaths.cache_clear = _base_vpaths_cached.cache_clear  # type: ignore[attr-defined]
+
+
+def _defines_macro(folder_to_path: dict[str, Path], touchers: list[tuple[str, str]]) -> bool:
+    """True if any toucher's copy of the file actually contains a <macro name=>.
+
+    Cheap byte-level test on files the touch map already located — no XML parse,
+    no extra directory walk.
+    """
+    unreadable = False
+    for folder, real in touchers:
+        base = folder_to_path.get(folder)
+        if base is None:
+            continue
+        try:
+            data = _cat.read_path(base, real)
+        except OSError:
+            # silent-ok: FAIL OPEN. This helper only decides whether to LOOK at a
+            # file; "I could not read it" is not "it holds no macros". Admitting
+            # it hands the file to the merge, which parses it for real and reports
+            # any failure through `skipped` — so an unreadable file surfaces there
+            # instead of vanishing here. Swallowing to `False` would be the exact
+            # silent-narrowing defect this change exists to remove.
+            unreadable = True
+            continue
+        if data and b"<macro" in data:
+            return True
+    return unreadable
+
+
+def macro_vpaths(config: _merge.Config, touch: dict[str, list[tuple[str, str]]],
+                 folder_to_path: dict[str, Path] | None = None) -> dict[str, str]:
+    """All effective macro-file vpaths: reference/DLC + mod-provided.
+
+    Admission is by FILENAME (`*_macro.xml`, the cheap fast path) and, when
+    *folder_to_path* is supplied, additionally by CONTENT for other
+    ``assets/**.xml``. VRO ships macro files that simply are not named
+    `*_macro.xml` (`bullet_gen_turret_l_rotor`, `bullet_ter_m_graviton`) and the
+    engine loads them — both are in the effective `index/macros.xml` — so a
+    filename rule silently loses real, live weapon balance data.
+
+    The ``assets/`` restriction is deliberate and stays: galaxy-map and character
+    macros are documented out of scope (docs/BLIND-SPOTS.md F3), not a defect.
+    """
     out = reference_vpaths(config, "*_macro.xml")
-    for low, real in ((low, ts[0][1]) for low, ts in touch.items() if ts):
-        if low.endswith("_macro.xml") and ("assets/" in low):
-            out.setdefault(low, real)
+    for low, touchers in touch.items():
+        if not touchers or "assets/" not in low or not low.endswith(".xml"):
+            continue
+        if low.endswith("_macro.xml"):
+            out.setdefault(low, touchers[0][1])
+        elif folder_to_path is not None and _defines_macro(folder_to_path, touchers):
+            out.setdefault(low, touchers[0][1])
+    return out
+
+
+def component_vpaths(config: _merge.Config, touch: dict[str, list[tuple[str, str]]]) -> dict[str, str]:
+    """lower(vpath) -> vpath for every component file: all `assets/**.xml` that is
+    not a `*_macro.xml`, from reference + DLC + mod-provided.
+
+    **Not enumerated from `index/components.xml`.** That was the first design and
+    it silently lost **487 of 3,959 components (12%), 34 of them vanilla** --
+    `ship_xen_xl_mothership_01`, `engine_ter_s_01` and friends simply are not in
+    the index. Which is precisely KNOWLEDGEBASE's "the index is NOT the definition
+    set", written the same day and then relied on anyway.
+
+    Excluding `*_macro.xml` is safe and measured: **0 files** anywhere define both
+    a macro and a component, so the two enumerations cannot double-count.
+    Components in `libraries/character_components.xml` stay out, consistent with
+    character macros being out.
+    """
+    out: dict[str, str] = {}
+    for low, real in reference_vpaths(config, "*.xml").items():
+        if not low.endswith("_macro.xml"):
+            out[low] = real
+    for low, ts in touch.items():
+        # `"assets/" IN low`, not startswith: a mod may ship content nested under
+        # a DLC (`extensions/ego_dlc_timelines/assets/units/...`), and startswith
+        # silently dropped 12 such components. `macro_vpaths` already uses the
+        # substring form -- two enumerations of the same tree must agree.
+        if (ts and "assets/" in low and low.endswith(".xml")
+                and not low.endswith("_macro.xml")):
+            out.setdefault(low, ts[0][1])
     return out
 
 
@@ -186,23 +334,44 @@ def _child_ident(el: etree._Element) -> str | None:
     return None
 
 
-def flatten_with_prov(el: etree._Element, rec: Recorder,
-                      child_scope: etree._Element | None = None,
-                      ) -> list[tuple[str, str, float | None, list[Origin]]]:
-    """Flatten *el*'s own attrs (``@attr``) + one level of children (``tag.attr``,
-    or ``tag[ident].attr`` for disambiguated duplicates) to (prop, value, num, chain).
+#: Recursion guard for `flatten_with_prov`. MEASURED 2026-08-12 over the whole
+#: reference tree: the deepest <properties> subtree is 5 (character macros; ship
+#: macros stop at 2), so 8 is headroom, not a limit anyone should hit. If it IS
+#: hit the path is recorded in `truncated_props` and reported by the build --
+#: never silently dropped, which is the defect class this whole change exists to
+#: kill (see docs/BLIND-SPOTS.md).
+MAX_PROP_DEPTH = 8
 
-    *child_scope* limits which children are walked (e.g. a macro's <properties>);
-    default = direct children of *el*."""
-    rows: list[tuple[str, str, float | None, list[Origin]]] = []
-    for attr, val in el.attrib.items():
-        rows.append((f"@{attr}", val, _num(val), rec.attr_chain(el, attr)))
-    scope = child_scope if child_scope is not None else el
+#: Property paths abandoned at MAX_PROP_DEPTH during the last build.
+truncated_props: list[str] = []
+
+
+def _walk_props(scope: etree._Element, rec: Recorder, prefix: str, depth: int,
+                rows: list[tuple[str, str, float | None, list[Origin]]],
+                no_recurse: frozenset | tuple = ()) -> None:
+    """Append `<prefix><tag>[ident].attr` rows for *scope*'s children, recursively.
+
+    The depth-1 key shape is byte-identical to the pre-2026-08-12 implementation
+    (that is the golden-vector regression guard); deeper levels simply extend the
+    same grammar with another dotted segment. Provenance is per-attribute at every
+    depth: `Recorder.attr_chain` is keyed by (element, attr) and falls back to the
+    nearest recorded ancestor, so a grandchild an overlay touched carries that
+    overlay, and one it did not carries the inherited chain.
+    """
     tag_counts: dict[str, int] = {}
     for child in scope:
         if isinstance(child.tag, str):
             tag_counts[child.tag] = tag_counts.get(child.tag, 0) + 1
     seen: dict[str, int] = {}
+    #: (tag, ident) -> how many siblings have already claimed that exact bracket.
+    #: F33: the bracket discriminator is NOT unique among siblings, so several
+    #: collapsed onto one key and a `where prop=?` + `fetchone()` returned an
+    #: arbitrary one of them. MEASURED on 582,107 attr rows: 627 duplicate
+    #: (entity_id, prop) groups, 1,071 extra rows (0.18%), and 201 of those groups
+    #: held genuinely DIFFERENT values under one key. Worst case:
+    #: faction/player `licences.licence[generaluseequipment].factions` -- 8 rows,
+    #: 8 distinct values.
+    ident_seen: dict[tuple[str, str], int] = {}
     for child in scope:
         if not isinstance(child.tag, str):
             continue
@@ -210,13 +379,59 @@ def flatten_with_prov(el: etree._Element, rec: Recorder,
         if tag_counts[tag] > 1:
             ident = _child_ident(child)
             if ident is None:
+                # Zero-based positional index counting ONLY the ident-less
+                # siblings -- preserved exactly from the original.
                 seen[tag] = seen.get(tag, -1) + 1
                 ident = str(seen[tag])
-            prefix = f"{tag}[{ident}]"
+            # Disambiguate COLLISION-ONLY: the first claimant of a bracket keeps
+            # the original key untouched, so 99.8% of rows are byte-identical and
+            # the golden-vector guard still means something. Only the 2nd, 3rd...
+            # gain `#1`, `#2` -- the same grammar `connection[name#n]` already
+            # uses below, rather than a second invented one. Indexing EVERY key
+            # positionally would have rewritten 358,415 rows (61.6%) to fix 0.18%.
+            n = ident_seen.get((tag, ident), -1) + 1
+            ident_seen[(tag, ident)] = n
+            key = f"{tag}[{ident}]" if n == 0 else f"{tag}[{ident}#{n}]"
         else:
-            prefix = tag
+            key = tag
+        full = f"{prefix}{key}"
         for attr, val in child.attrib.items():
-            rows.append((f"{prefix}.{attr}", val, _num(val), rec.attr_chain(child, attr)))
+            rows.append((f"{full}.{attr}", val, _num(val), rec.attr_chain(child, attr)))
+        if len(child) and child not in no_recurse:
+            if depth >= MAX_PROP_DEPTH:
+                truncated_props.append(full)
+                continue
+            _walk_props(child, rec, f"{full}.", depth + 1, rows, no_recurse)
+
+
+def flatten_with_prov(el: etree._Element, rec: Recorder,
+                      child_scope: etree._Element | None = None,
+                      no_recurse: frozenset | tuple = (),
+                      ) -> list[tuple[str, str, float | None, list[Origin]]]:
+    """Flatten *el*'s own attrs (``@attr``) + its children at EVERY depth
+    (``tag.attr``, ``tag[ident].attr``, ``tag.child.attr``, ...) to
+    (prop, value, num, chain).
+
+    Until 2026-08-12 this walked exactly one level of children, which made the
+    entire flight model invisible -- `physics/drag` (8 axes), `physics/inertia`,
+    `jerk/*`, `steeringcurve/point` -- and dropped ware recipes
+    (`production/primary/ware`). MEASURED over 339 vanilla ship macros: 4,094
+    attribute occurrences indexed vs 9,197 invisible. The merged tree was always
+    complete; only this projection was lossy.
+
+    *child_scope* limits which children are walked (e.g. a macro's <properties>);
+    default = direct children of *el*.
+
+    *no_recurse* names child elements whose OWN attrs are still emitted but whose
+    subtree is not descended into. `extract_macros` walks a macro twice — once for
+    the macro itself and once scoped to <properties> — so without this the
+    recursion re-emitted every property a second time under a `properties.` prefix
+    (MEASURED: 67,333 duplicate rows, 23.1% of the store, before this guard)."""
+    rows: list[tuple[str, str, float | None, list[Origin]]] = []
+    for attr, val in el.attrib.items():
+        rows.append((f"@{attr}", val, _num(val), rec.attr_chain(el, attr)))
+    scope = child_scope if child_scope is not None else el
+    _walk_props(scope, rec, "", 1, rows, no_recurse)
     return rows
 
 
@@ -228,7 +443,10 @@ def extract_macros(tree: etree._Element, vpath: str, rec: Recorder) -> list[Enti
         if not name:
             continue
         props = m.find("properties")
-        rows = flatten_with_prov(m, rec)  # @name/@class + top-level (component, etc.)
+        # @name/@class + top-level (component, etc.). <properties> is walked by the
+        # scoped call below, so exclude its subtree here or every property lands
+        # twice (once as `x.y`, once as `properties.x.y`).
+        rows = flatten_with_prov(m, rec, no_recurse=(props,) if props is not None else ())
         if props is not None:
             rows += flatten_with_prov(props, rec, child_scope=props)
         out.append(Entity("macro", name, m.get("class", ""), vpath,
@@ -236,16 +454,120 @@ def extract_macros(tree: etree._Element, vpath: str, rec: Recorder) -> list[Enti
     return out
 
 
-def _extract_registry(tree: etree._Element, kind: str, child_tag: str,
-                      klass_attr: str, vpath: str, rec: Recorder) -> list[Entity]:
+def extract_components(tree: etree._Element, vpath: str, rec: Recorder) -> list[Entity]:
+    """Component identity + its connection SLOTS. Deliberately not the geometry.
+
+    A component is what a macro's ``<connections><connection><macro ref=...>``
+    points at: the slot a cockpit, turret, shield or engine actually occupies.
+    Macro-side connections became visible on 2026-08-12 (0 -> 19,994 rows); this
+    is the other half of that join, and together they answer "what is installed
+    in this slot" without hand-parsing files.
+
+    SCOPE: identity + ``connections/connection`` only. ``<layers>`` and
+    ``<source>`` are 3D data -- MEASURED, flattening components wholesale yields
+    **33,131,780 attribute rows, 148x the entire store**, so the naive design was
+    not merely expensive but impossible. This one measures ~204k rows (+91%).
+    Keyed by ``@name`` (components have no ``@id``).
+    """
     out: list[Entity] = []
-    for el in tree.findall(child_tag):
-        name = el.get("id")
+    for comp in tree.iter("component"):
+        name = comp.get("name")
+        if not name:
+            continue
+        rows: list[tuple[str, str, float | None, list[Origin]]] = []
+        for attr, val in comp.attrib.items():
+            rows.append((f"@{attr}", val, _num(val), rec.attr_chain(comp, attr)))
+        conns = comp.find("connections")
+        if conns is not None:
+            seen: dict[str, int] = {}
+            for conn in conns.findall("connection"):
+                cname = conn.get("name")
+                if cname is None:
+                    continue
+                # 11 of 5,011 components repeat a connection name. Two slots must
+                # never collapse into one row -- that is the silent-narrowing
+                # defect this whole effort exists to remove -- so a repeat takes
+                # an explicit ordinal suffix rather than overwriting.
+                n = seen.get(cname, 0)
+                seen[cname] = n + 1
+                key = f"connection[{cname}]" if n == 0 else f"connection[{cname}#{n}]"
+                for attr, val in conn.attrib.items():
+                    if attr == "name":
+                        continue
+                    rows.append((f"{key}.{attr}", val, _num(val),
+                                 rec.attr_chain(conn, attr)))
+        out.append(Entity("component", name, comp.get("class", ""), vpath,
+                          rec.winner(comp).source, rec.elem_chain(comp), rows))
+    return out
+
+
+#: kind -> (vpath, child tag, class attr, KEY attr). Measured 2026-08-12 against
+#: reference\: every entry verified 100% keyed on the attribute named here, every
+#: registry verified to merge, and each is patched by 4-28 installed mods.
+#: `god`, `parameters`, `loadoutrules` and `camerasettings` are deliberately absent
+#: -- they are structured documents, not flat id-keyed registries, and need a
+#: different entity model.
+LIBRARY_REGISTRIES: dict[str, tuple[str, str, str, str]] = {
+    "ware":        ("libraries/wares.xml", "ware", "group", "id"),
+    "job":         ("libraries/jobs.xml", "job", "category", "id"),
+    "ship":        ("libraries/ships.xml", "ship", "group", "id"),
+    "shipgroup":   ("libraries/shipgroups.xml", "group", "tags", "name"),
+    "loadout":     ("libraries/loadouts.xml", "loadout", "name", "id"),
+    "station":     ("libraries/stations.xml", "station", "type", "id"),
+    "stationgroup": ("libraries/stationgroups.xml", "group", "tags", "name"),
+    "module":      ("libraries/modules.xml", "module", "group", "id"),
+    # MEASURED 2026-08-21 over the EFFECTIVE tree (base + 8 DLC incl. both mini-DLC +
+    # every installed mod): 146 groups, and every one is a bare <group name="...">
+    # carrying no second attribute -- so there is no distinct class to record. Reusing
+    # the key as the class follows the existing `mapdataset` row rather than inventing a
+    # meaning. Added because the engine caught a bad <module group=> reference that
+    # x4validate was structurally blind to (cpsdo_faction, 43 FactoryGenerator errors).
+    "modulegroup": ("libraries/modulegroups.xml", "group", "name", "name"),
+    "plan":        ("libraries/constructionplans.xml", "plan", "name", "id"),
+    "basket":      ("libraries/baskets.xml", "basket", "name", "id"),
+    "people":      ("libraries/people.xml", "people", "name", "id"),
+    "mapdataset":  ("libraries/mapdefaults.xml", "dataset", "macro", "macro"),
+    "sound":       ("libraries/sound_library.xml", "sound", "name", "id"),
+    "icon":        ("libraries/icons.xml", "icon", "texture", "name"),
+    "gfxeffect":   ("libraries/effects.xml", "effect", "type", "name"),
+    "roomgroup":   ("libraries/roomgroups.xml", "group", "tags", "name"),
+    "room":        ("libraries/rooms.xml", "room", "type", "id"),
+    "character":   ("libraries/characters.xml", "character", "race", "id"),
+    "region":      ("libraries/region_definitions.xml", "region", "density", "name"),
+    "faction":     ("libraries/factions.xml", "faction", "primaryrace", "id"),
+}
+
+
+def _extract_registry(tree: etree._Element, kind: str, child_tag: str,
+                      klass_attr: str, vpath: str, rec: Recorder,
+                      key_attr: str = "id") -> list[Entity]:
+    """Entities from a flat id-keyed registry file.
+
+    *key_attr* exists because this used to hardcode ``el.get("id")`` and skip
+    silently when absent. MEASURED: 7 of 18 registries key by ``@name`` and one by
+    ``@macro``, so hardcoding would have indexed **zero entities while reporting
+    success** for seven of them -- a confident empty answer downstream, with
+    nothing anywhere saying the key was wrong.
+
+    Raises when children exist but none are keyed, because that is a
+    misconfiguration and not data. A file with no children at all is data, and
+    returns empty quietly.
+    """
+    out: list[Entity] = []
+    children = tree.findall(child_tag)
+    for el in children:
+        name = el.get(key_attr)
         if not name:
             continue
         out.append(Entity(kind, name, el.get(klass_attr, ""), vpath,
                           rec.winner(el).source, rec.elem_chain(el),
                           flatten_with_prov(el, rec)))
+    if children and not out:
+        raise ValueError(
+            f"{kind}: {vpath} has {len(children)} <{child_tag}> element(s) but the "
+            f"registry yielded no entities — @{key_attr!r} matches none of them. "
+            f"Indexing nothing while reporting success is the defect this guard exists "
+            f"to catch; fix the key attribute in LIBRARY_REGISTRIES.")
     return out
 
 
@@ -288,7 +610,8 @@ class _SkipCount:
 
 #: The kinds `build` knows how to extract. Kept beside the extractors below so
 #: adding one without listing it here fails loudly rather than silently.
-BUILDABLE_KINDS = ("ware", "macro", "job")
+#: Derived, never re-typed: every flat registry, plus the two per-file kinds.
+BUILDABLE_KINDS = tuple(LIBRARY_REGISTRIES) + ("macro", "component")
 
 
 def build(config: _merge.Config | None = None, db_path: Path | None = None,
@@ -329,11 +652,9 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
             removed.append((vpath, path, o.source, o.line))
 
     # library registries (single union-merged files)
-    lib = {"ware": ("libraries/wares.xml", "ware", "group"),
-           "job": ("libraries/jobs.xml", "job", "category")}
     for kind in kinds:
-        if kind in lib:
-            vpath, child, klass_attr = lib[kind]
+        if kind in LIBRARY_REGISTRIES:
+            vpath, child, klass_attr, key_attr = LIBRARY_REGISTRIES[kind]
             ov = touchers_for(vpath, touch, folder_to_path)
             try:
                 tree, rec = _merge_one(vpath, config, ov)
@@ -341,13 +662,14 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
                 skipped.add(vpath, exc)
                 continue
             if tree is not None:
-                entities += _extract_registry(tree, kind, child, klass_attr, vpath, rec)
+                entities += _extract_registry(tree, kind, child, klass_attr, vpath,
+                                              rec, key_attr=key_attr)
                 collect_removed(vpath, rec)
             progress(f"{kind}s: {sum(1 for e in entities if e.kind == kind)}")
 
     # macros (per-file)
     if "macro" in kinds:
-        mvpaths = macro_vpaths(config, touch)
+        mvpaths = macro_vpaths(config, touch, folder_to_path)
         progress(f"macro files to merge: {len(mvpaths)}")
         n = 0
         for low, vpath in sorted(mvpaths.items()):
@@ -370,8 +692,37 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
             if n % 500 == 0:
                 progress(f"  merged {n}/{len(mvpaths)} macro files, {len(entities)} entities")
 
+    # components (per-file, enumerated from index/components.xml)
+    if "component" in kinds:
+        cvpaths = component_vpaths(config, touch)
+        progress(f"component files to merge: {len(cvpaths)}")
+        n = 0
+        for low, vpath in sorted(cvpaths.items()):
+            ov = touchers_for(low, touch, folder_to_path)
+            try:
+                tree, rec = _merge_one(vpath, config, ov)
+            except etree.LxmlError as exc:
+                skipped.add(vpath, exc)
+                n += 1
+                continue
+            if tree is not None:
+                entities += extract_components(tree, vpath, rec)
+                if rec.removed:
+                    collect_removed(vpath, rec)
+            n += 1
+            if n % 1000 == 0:
+                progress(f"  merged {n}/{len(cvpaths)} component files, "
+                         f"{sum(1 for e in entities if e.kind == 'component')} components")
+        progress(f"components: {sum(1 for e in entities if e.kind == 'component')}")
+
     if skipped.n:
         progress(f"skipped {skipped.n} unparseable file(s); e.g. {skipped.samples[0]}")
+    if truncated_props:
+        # Never silent: a truncated property subtree is exactly the "narrowed the
+        # data and reported success" shape this build was fixed to stop doing.
+        progress(f"WARNING: {len(truncated_props)} property subtree(s) hit the "
+                 f"depth-{MAX_PROP_DEPTH} guard and were NOT indexed; "
+                 f"e.g. {truncated_props[0]}. Raise MAX_PROP_DEPTH.")
     _write_db(db_path, config, mods, ordered, order_rank, entities, removed)
     progress(f"wrote {len(entities)} entities to {db_path}")
     return db_path
@@ -396,6 +747,11 @@ def _write_db(db_path, config, mods, ordered, order_rank, entities, removed):
             ("load_order", json.dumps([m["folder"] for m, _ in ordered])),
             ("advisory", _ADVISORY),
         ])
+        # WHEN this store was true, not just how much it holds. Without it the
+        # store cannot tell a current answer from one about a superseded world —
+        # the exact failure that let BaseX's x4eff serve pre-merge-fix values for
+        # eleven days (140 of 194 engine thrust rows wrong).
+        _freshness.stamp_sqlite(con, _freshness.fingerprint(config, _ext_root(config)))
         con.executemany("INSERT INTO mods VALUES(?,?,?,?,?,?,?)", [
             (m["folder"], m["id"], m["name"], m["version"], order_rank[m["folder"]],
              int(m["enabled"]), int(_cat.is_packed(p))) for m, p in ordered])
@@ -435,6 +791,29 @@ def _write_db(db_path, config, mods, ordered, order_rank, entities, removed):
 
 # --- queries ------------------------------------------------------------------
 
+def _ext_root(config) -> Path:
+    """The extensions directory this store was built over.
+
+    Freshness is judged against the same world the build enumerated, so this asks
+    `_registry` rather than guessing from `config.overlays` — an empty overlay
+    list would otherwise fingerprint "no mods" and read as fresh forever.
+    """
+    try:
+        return _registry.GAME_EXTENSIONS
+    except AttributeError:
+        overlays = list(getattr(config, "overlays", ()) or ())
+        return overlays[0].parent if overlays else Path("")
+
+
+def store_freshness(con, config=None):
+    """Does this store still describe the installed world? (see `_freshness`)"""
+    config = config or _merge.Config()
+    return _freshness.compare(
+        _freshness.read_sqlite(con),
+        _freshness.fingerprint(config, _ext_root(config)),
+        engine_dependent=True)
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     if not db_path.is_file():
         raise SystemExit(f"no store at {db_path} — run `x4effective build` first")
@@ -468,7 +847,10 @@ def main(argv: list[str] | None = None) -> int:
 
     b = sub.add_parser("build", help="(re)build the effective store")
     b.add_argument("--reference", default=str(_merge.REFERENCE))
-    b.add_argument("--kinds", default="ware,macro,job")
+    # Derived, never re-typed: this default was a hardcoded "ware,macro,job" and
+    # adding a kind to BUILDABLE_KINDS silently did not build it. Two sources of
+    # truth for one list is the same defect class as five copies of the DLC walk.
+    b.add_argument("--kinds", default=",".join(BUILDABLE_KINDS))
 
     lsp = sub.add_parser("ls", help="list entities of a kind")
     lsp.add_argument("kind")
@@ -505,6 +887,9 @@ def main(argv: list[str] | None = None) -> int:
     sq = sub.add_parser("sql", help="read-only SELECT against the store")
     sq.add_argument("query")
 
+    sub.add_parser("coverage", help="what this store DOES and does not index "
+                                    "(so a negative can carry its denominator)")
+
     args = p.parse_args(argv)
     db = Path(args.db) if args.db else _registry.require(
         DB_PATH, "the effective-store location",
@@ -525,6 +910,14 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_dump(args)
 
     con = _connect(db)
+    # Printed on EVERY read command until the store is rebuilt. A stale store is
+    # not an absence and not a non-answer -- it is an answer about a world that
+    # has moved on, and these are the commands a modlist decision leans on.
+    _stale = store_freshness(con)
+    if not _stale.fresh:
+        print(_stale.banner("the effective store"), file=sys.stderr)
+        print("!! Rebuild:  uv run x4effective build", file=sys.stderr)
+
     if args.cmd == "ls":
         return _cmd_ls(con, args)
     if args.cmd == "show":
@@ -537,6 +930,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_diff_mod(con, args)
     if args.cmd == "sql":
         return _cmd_sql(con, args)
+    if args.cmd == "coverage":
+        return _cmd_coverage(con, args)
     return 2
 
 
@@ -590,13 +985,58 @@ def _cmd_ls(con, args) -> int:
     return 0
 
 
+def scope_note() -> str:
+    """What this store DOES and does NOT index, in one line.
+
+    A query that misses must never read like "no mod changes this". MEASURED
+    2026-08-12: 3,349 of 7,995 corpus macros are outside the store -- the galaxy
+    map (~1,371: zones, sectors, clusters, highways) and characters/npc (~1,810)
+    -- while balance-relevant classes are 99.0% covered. Neither number is
+    guessable from a bare "not found".
+    """
+    return (f"scope: {len(LIBRARY_REGISTRIES)} registry kinds from libraries/*.xml "
+            f"({', '.join(sorted(LIBRARY_REGISTRIES))}), plus macro and component "
+            f"per-file from assets/**. "
+            f"NOT indexed: galaxy-map macros (zone/sector/cluster/highway); character & npc "
+            f"MACROS (distinct from the `character` registry, which IS indexed); the structured "
+            f"library documents god/parameters/loadoutrules/camerasettings; a component's "
+            f"geometry (source/layers — indexing it measured 148x the whole store); and Lua "
+            f"(never analysed by any tool). "
+            f"See docs/BLIND-SPOTS.md for the measured denominators.")
+
+
+def _cmd_coverage(con, args) -> int:
+    """Answer 'what can this tool NOT see?' as a command, not as archaeology.
+
+    Mirrors BaseX's coverage-<db>.json: the point is that scope is queryable, so a
+    negative can carry its denominator instead of being taken on trust.
+    """
+    meta = dict(con.execute("SELECT key, value FROM meta"))
+    print("x4effective coverage")
+    print(f"  store           : {meta.get('active_mods', '?')} active mods indexed")
+    ents = con.execute("SELECT kind, count(*) FROM entities GROUP BY kind ORDER BY 2 DESC").fetchall()
+    total = sum(r[1] for r in ents)
+    print(f"  entities        : {total}")
+    for kind, n in ents:
+        print(f"      {kind:<12} {n}")
+    print(f"  attributes      : "
+          f"{con.execute('SELECT count(*) FROM attrs').fetchone()[0]}")
+    origins = con.execute("SELECT count(DISTINCT origin) FROM entities").fetchone()[0]
+    print(f"  distinct origins: {origins}")
+    print()
+    print(f"  {scope_note()}")
+    return 0
+
+
 def _cmd_show(con, args) -> int:
     ent = con.execute("SELECT * FROM entities WHERE kind=? AND name=?",
                       (args.kind, args.name)).fetchone()
     if ent is None:
         if _reject_unknown_kind(con, args.kind):
             return 2
-        print(f"no {args.kind} named {args.name!r}", file=sys.stderr)
+        print(f"no {args.kind} named {args.name!r} in the store — this is NOT proof "
+              f"that nothing defines or changes it.", file=sys.stderr)
+        print(f"  {scope_note()}", file=sys.stderr)
         return 1
     print(f"{args.kind} {ent['name']}  (class={ent['klass']})  vpath={ent['vpath']}")
     print(f"  entity origin: {_fmt_chain(ent['chain'])}")

@@ -45,7 +45,14 @@ class ShipVector:
     vpath: str
     ship_class: str     # ship_s / ship_m / ...
     purpose: str
+    #: The SCORED subset — keys in `_WEIGHTS` only. Changing this changes scores.
     stats: dict[str, float] = field(default_factory=dict)
+    #: EVERY numeric axis the macro exposes, a superset of `stats`. Reporting
+    #: only; never fed to `similarity()`. MEASURED: a ship macro exposes 34
+    #: numeric axes and only 5 are scored — the unscored remainder is the whole
+    #: flight model (physics.drag.*, physics.inertia.*, jerk.*, steeringcurve.*),
+    #: which was 0 rows anywhere until the depth-1 flatten was fixed 2026-08-12.
+    all_stats: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -54,6 +61,57 @@ class SimilarPair:
     b: ShipVector
     score: float           # 0..1, 1 = identical on every compared key
     compared_keys: list[str]
+
+
+@dataclass
+class AxisDifference:
+    key: str
+    a_value: float
+    b_value: float
+    rel_diff: float        # |a-b| / max(|a|,|b|), so 0.5 = "one is half the other"
+
+
+@dataclass
+class DifferenceProfile:
+    """HOW two near-duplicate ships differ, across EVERY numeric axis.
+
+    The score answers *"are these the same ship?"* on 8 weighted keys. This
+    answers the follow-up — *"if not, where?"* — and deliberately covers axes the
+    score ignores, because that is where near-duplicates actually diverge.
+
+    MEASURED over the 816 pairs the tool reports at its default threshold: only
+    **35** are identical on every shared axis. The rest differ, most often on
+    `physics.drag.forward` (624 pairs), `physics.mass` (514) and
+    `physics.inertia.pitch`/`yaw` (497 each) — none of which are scored.
+    """
+    identical: list[str] = field(default_factory=list)
+    differing: list[AxisDifference] = field(default_factory=list)
+    #: Axes one ship has and the other does not. This IS a difference; dropping
+    #: it by intersecting the key sets would be the narrowing shape again.
+    only_in_a: list[str] = field(default_factory=list)
+    only_in_b: list[str] = field(default_factory=list)
+
+
+def difference_profile(a: ShipVector, b: ShipVector,
+                       epsilon: float = 1e-9) -> DifferenceProfile:
+    """Per-axis comparison of two ships over the union of their numeric axes."""
+    prof = DifferenceProfile()
+    for key in sorted(set(a.all_stats) | set(b.all_stats)):
+        in_a, in_b = key in a.all_stats, key in b.all_stats
+        if not in_b:
+            prof.only_in_a.append(key)
+            continue
+        if not in_a:
+            prof.only_in_b.append(key)
+            continue
+        va, vb = a.all_stats[key], b.all_stats[key]
+        rel = abs(va - vb) / max(abs(va), abs(vb), epsilon)
+        if rel <= epsilon:
+            prof.identical.append(key)
+        else:
+            prof.differing.append(AxisDifference(key, va, vb, rel))
+    prof.differing.sort(key=lambda d: (-d.rel_diff, d.key))
+    return prof
 
 
 def extract_ship_vector(root: etree._Element, source: str, vpath: str) -> ShipVector | None:
@@ -66,10 +124,12 @@ def extract_ship_vector(root: etree._Element, source: str, vpath: str) -> ShipVe
     flat = _stats.flatten_macro_props(root)
     purpose_el = props.find("purpose")
     purpose = purpose_el.get("primary", "") if purpose_el is not None else ""
-    stats = {k: v for k, v in flat.items() if k in _WEIGHTS and isinstance(v, float)}
+    numeric = {k: v for k, v in flat.items() if isinstance(v, float)}
+    stats = {k: v for k, v in numeric.items() if k in _WEIGHTS}
     return ShipVector(
         macro_name=macro.get("name", ""), source=source, vpath=vpath,
         ship_class=macro.get("class", ""), purpose=purpose, stats=stats,
+        all_stats=numeric,
     )
 
 
@@ -141,16 +201,22 @@ def find_similar(vectors: list[ShipVector], threshold: float = 0.85,
 # --- CLI ----------------------------------------------------------------------
 
 def _collect_all(reference: Path, ext_dir: Path,
-                 unreadable: list | None = None) -> list[ShipVector]:
-    from x4validate import _registry
+                 unreadable: list | None = None,
+                 dlc_dirs: list[Path] | None = None) -> list[ShipVector]:
+    from x4validate import _merge, _registry
     vectors = collect_ship_vectors(reference, "base", unreadable)
-    dlc_root = reference / "extensions"
-    if dlc_root.is_dir():
-        for dlc in sorted(p for p in dlc_root.iterdir()
-                          if p.is_dir() and p.name.startswith("ego_dlc_")):
-            vectors += collect_ship_vectors(dlc, f"dlc:{dlc.name}", unreadable)
+    # Ask Config rather than walking `reference / "extensions"`: the packed
+    # mini-DLC are not unpacked there, and skipping them hid 3 real ships --
+    # the Hyperion (ship_par_l_expeditionary_01_a_macro) and 2 Envoy corvettes --
+    # from a tool whose whole question is "is this a duplicate of one I own?".
+    if dlc_dirs is None:
+        dlc_dirs = _merge.Config(reference=reference).dlc_dirs()
+    for dlc in sorted(dlc_dirs, key=lambda p: p.name):
+        vectors += collect_ship_vectors(dlc, f"dlc:{dlc.name}", unreadable)
     if ext_dir.is_dir():
-        for m in _registry.scan_installed([ext_dir]):
+        # INSTALLED: "is this ship a near-duplicate of one I own?" is about
+        # ownership, not load state -- a disabled ship pack is still a duplicate.
+        for m in _registry.mods("installed", [ext_dir]):
             vectors += collect_ship_vectors(Path(m["path"]), m["folder"], unreadable)
     return vectors
 
@@ -165,7 +231,37 @@ def render(pairs: list[SimilarPair]) -> str:
                      f"{p.a.macro_name} [{p.a.source}]  <->  {p.b.macro_name} [{p.b.source}]")
         lines.append(f"        class={p.a.ship_class} purpose={p.a.purpose} "
                      f"compared={','.join(p.compared_keys)}")
+        # A THIRD line, deliberately. `gates/similar_audit.py` matches the score
+        # row and then reads the NEXT line for class/purpose/compared; appending
+        # rather than altering keeps that exhaustive audit resolving every pair.
+        lines.append("        " + summarise_profile(difference_profile(p.a, p.b)))
     return "\n".join(lines)
+
+
+#: How many differing axes to name inline. The full list is available from
+#: `difference_profile`; the renderer is a summary, and a pair can differ on
+#: dozens of axes (34 numeric axes exist on a ship macro).
+PROFILE_TOP_N = 4
+
+
+def summarise_profile(prof: DifferenceProfile, top_n: int = PROFILE_TOP_N) -> str:
+    """One-line answer to 'is it different, and if so how?'."""
+    if not prof.differing and not prof.only_in_a and not prof.only_in_b:
+        return f"IDENTICAL on all {len(prof.identical)} shared numeric axes"
+    parts = [f"same on {len(prof.identical)}",
+             f"differs on {len(prof.differing)}"]
+    if prof.only_in_a or prof.only_in_b:
+        parts.append(f"{len(prof.only_in_a) + len(prof.only_in_b)} axis/axes on one ship only")
+    head = "; ".join(parts)
+    if not prof.differing:
+        return head
+    # `:.3g`, not `:.0f`: a real 0.5% difference printed as "(0%)" next to the
+    # word "differs" reads as a contradiction, and an output the reader learns to
+    # distrust is worse than no output.
+    top = ", ".join(f"{d.key} {d.a_value:g}->{d.b_value:g} ({d.rel_diff*100:.3g}%)"
+                    for d in prof.differing[:top_n])
+    more = "" if len(prof.differing) <= top_n else f", +{len(prof.differing) - top_n} more"
+    return f"{head} — biggest: {top}{more}"
 
 
 def _threshold(raw: str) -> float:
