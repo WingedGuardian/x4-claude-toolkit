@@ -138,3 +138,44 @@ null AND a real-use round has happened AND every identified gap is closed —
 then say plainly that this is evidence of diminishing discovery, not proof of
 zero bugs, because no testing provides that. What protects users afterwards is
 the gates re-running on every change, not the memory of this campaign.
+
+## Verifying like a fresh clone (and why it is harder than it looks)
+
+A release is verified on the author's machine, which is the one environment
+guaranteed NOT to resemble a new user's. Getting a genuine cold run wrong cost
+three consecutive CI failures on the v2.4.0 push, each time because the local
+"cold" check was not actually cold.
+
+**Unsetting `$X4_REFERENCE` / `$X4_EXTENSIONS` is NOT enough.** `_paths` resolves
+through three layers, and the one that keeps finding a real install is
+`$X4_TOOLKIT` -> `<toolkit>/.claude/x4-paths.env`. Leave that set and every path
+resolves no matter what else you clear.
+
+The recipe that actually reproduces a clean machine:
+
+```sh
+# a real fresh checkout, outside any .claude/ tree
+git archive HEAD | tar -x -C /tmp/coldclone
+cd /tmp/coldclone/tools/x4validate
+
+# clear EVERY X4_* var, not a hand-picked few -- X4_TOOLKIT is the one that bites
+UNSET=""; for v in $(env | grep '^X4_' | cut -d= -f1); do UNSET="$UNSET -u $v"; done
+env $UNSET uv run --frozen python -m pytest -q
+```
+
+Confirm the environment really is unresolvable before trusting the result:
+
+```sh
+env $UNSET uv run --frozen python -c   "from x4validate import _paths; print(_paths.registry(), _paths.game_extensions(), _paths.reference())"
+# must print: None None None
+```
+
+**What this catches that nothing else does.** Every module under `gates/` resolves
+its paths at IMPORT time, and `gates/_env.py` signals a missing install with
+`raise SystemExit(2)`. A `SystemExit` during pytest COLLECTION is an
+INTERNALERROR: the whole session aborts with exit 3 rather than one module
+failing. A second variant raises `TypeError` instead, from `Path(None)`. Both are
+invisible on a configured machine and fatal on a fresh clone -- which is the first
+thing a new user runs. `tests/conftest.py::import_gate` turns both into a SKIP
+with a named reason, but only when the environment is genuinely unresolvable, so
+a real defect on a configured machine still fails loudly.

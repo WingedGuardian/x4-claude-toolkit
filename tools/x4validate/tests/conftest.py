@@ -51,9 +51,39 @@ def import_gate(name: str, *, module_level: bool = True):
         sys.path.insert(0, str(GATES))
     try:
         return importlib.import_module(name)
-    except SystemExit as exc:  # gates/_env.py exits when no install is configured
-        reason = (f"gates/{name}.py needs a configured X4 install (exited {exc.code} at "
-                  f"import). Set $X4_GAME / $X4_EXTENSIONS, or see .claude/x4-paths.env.")
+    except (SystemExit, TypeError, OSError) as exc:
+        # A gate can fail to import for TWO reasons on an unconfigured machine, and
+        # only one of them is a SystemExit:
+        #   gates/_env.py::skip          -> SystemExit(2)      (the documented path)
+        #   Path(_paths.<thing>())       -> TypeError          (None is not a PathLike)
+        # `gates/claims_audit.py` does the latter at module scope, and CI caught it
+        # one push after the SystemExit case was fixed.
+        #
+        # The skip is CONDITIONED on the environment actually being unresolvable, not
+        # on the exception type. A blanket catch would silently swallow a real
+        # TypeError in a gate on a properly configured machine -- turning a defect
+        # into a green skip, which is the exact inversion this suite exists to stop.
+        if not _environment_is_unresolvable():
+            raise
+        reason = (f"gates/{name}.py needs a configured X4 install "
+                  f"({type(exc).__name__} at import: {exc}). "
+                  f"Set $X4_GAME / $X4_EXTENSIONS, or see .claude/x4-paths.env.")
         if module_level:
             pytest.skip(reason, allow_module_level=True)
         pytest.skip(reason)
+
+
+def _environment_is_unresolvable() -> bool:
+    """True when this machine has no usable X4 configuration.
+
+    Deliberately checks the THREE things the gates actually need, rather than
+    trusting any single one: a machine can have a reference tree but no registry,
+    and the failure mode differs per gate.
+    """
+    try:
+        from x4validate import _paths
+    except ImportError:
+        return True
+    return (_paths.registry() is None
+            or _paths.game_extensions() is None
+            or _paths.reference() is None)
