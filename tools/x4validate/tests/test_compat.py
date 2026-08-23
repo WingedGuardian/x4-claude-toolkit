@@ -159,7 +159,7 @@ def test_candidate_mode_only_reports_candidate_collisions(tmp_path):
 # so x4compat reported "0 shared files examined … no collisions", exit 0 — blind
 # to the most collision-prone construct in X4 modding.
 
-def test_nested_patch_collides_with_its_target(tmp_path):
+def test_nested_patch_collides_with_its_target(tmp_path, case_insensitive_fs):
     cfg = _setup_ref(tmp_path)
     ext = tmp_path / "extensions"
     _mod(ext, "target_mod", {"md/Thing.xml": '<mdscript name="Thing"><cues/></mdscript>'})
@@ -169,7 +169,7 @@ def test_nested_patch_collides_with_its_target(tmp_path):
     assert rep.files_examined >= 1, "the patch and its target must share a file"
 
 
-def test_nested_patch_matches_target_case_insensitively(tmp_path):
+def test_nested_patch_matches_target_case_insensitively(tmp_path, case_insensitive_fs):
     """The live case differed in BOTH prefix and case: the overlay shipped
     .../md/morerooms.xml while moreroomsforships ships md/MoreRooms.xml."""
     cfg = _setup_ref(tmp_path)
@@ -181,7 +181,7 @@ def test_nested_patch_matches_target_case_insensitively(tmp_path):
     assert rep.files_examined >= 1
 
 
-def test_two_nested_patches_on_one_target_still_collide(tmp_path):
+def test_two_nested_patches_on_one_target_still_collide(tmp_path, case_insensitive_fs):
     """The alias must not lose the ordinary patcher-vs-patcher HARD case.
 
     The owner must be reachable through the config, exactly as it is in a real
@@ -214,7 +214,7 @@ def test_unrelated_mods_are_not_aliased_together(tmp_path):
 
 # --- F17: the owner mod must be found without the caller staging it ------------
 
-def test_nested_patch_collides_without_a_manually_staged_owner(tmp_path):
+def test_nested_patch_collides_without_a_manually_staged_owner(tmp_path, case_insensitive_fs):
     """The F17 regression test.
 
     `test_two_nested_patches_on_one_target_still_collide` above only passes
@@ -243,7 +243,7 @@ def test_nested_patch_collides_without_a_manually_staged_owner(tmp_path):
     assert not rep.degraded, "a resolvable file must not be reported as degraded"
 
 
-def test_owner_overlay_does_not_apply_the_other_patchers(tmp_path):
+def test_owner_overlay_does_not_apply_the_other_patchers(tmp_path, case_insensitive_fs):
     """The base must stay UNPATCHED, or one mod's <remove> hides another's target.
 
     y_patch removes the very cue z_patch replaces. Both must still be seen to
@@ -600,3 +600,32 @@ def test_a_diff_that_defines_no_macro_is_not_a_definition(tmp_path):
     _mod(ext, "bmod", {"assets/units/other/macros/ship_probe_macro.xml":
                        '<diff><replace sel="//macro/@class">ship_m</replace></diff>'})
     assert _clashes(_compat.analyze(ext, config=cfg)) == []
+
+
+# --- the precondition guard itself ------------------------------------------
+
+def test_case_probe_detects_this_filesystem(tmp_path):
+    """The probe must return a real answer, and both branches must be reachable.
+
+    Five tests above stage `md/Thing.xml` and patch `md/thing.xml`. That is one
+    file under X4's Windows VFS and two on a case-sensitive filesystem, so on
+    Linux they were failing for a reason that says nothing about the code. They
+    now declare the precondition instead — but a guard nobody can make flip is
+    not a guard, so both outcomes are exercised here.
+    """
+    from conftest import fs_is_case_insensitive
+    assert fs_is_case_insensitive(tmp_path) is True, (
+        "this machine's filesystem folds case; if that ever stops being true the "
+        "five nested-patch tests should start SKIPPING, not failing")
+
+
+def test_case_probe_reports_false_on_a_case_sensitive_filesystem(tmp_path, monkeypatch):
+    """Simulate the Linux answer — the branch this machine can never take."""
+    from pathlib import Path
+
+    import conftest
+    real_exists = Path.exists
+    monkeypatch.setattr(
+        Path, "exists",
+        lambda self: False if self.name == "caseprobe.tmp" else real_exists(self))
+    assert conftest.fs_is_case_insensitive(tmp_path) is False

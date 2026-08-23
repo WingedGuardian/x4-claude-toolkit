@@ -1,5 +1,53 @@
 # Changelog
 
+## v2.5.0
+
+Three defects, one shape: **an executable that resolves its own environment instead of delegating to
+the one resolver.** A probe of the whole population (9 CLIs, 26 gates, 7 BaseX scripts, 3 installers,
+`bin/`, `scripts/`, 2 harnesses) found the CLIs already clean via `_paths` and the gates clean via
+`gates/_env.py` — every defect was in something that hand-rolled its own lookup.
+
+### Fixed
+
+- **An unconfigured toolkit refuses instead of guessing (F39).** `_merge.REFERENCE` fell back to the
+  *relative* path `reference`, so on a machine with nothing configured `x4validate <mod>` validated
+  against a tree that does not exist, reported the whole base game missing **as findings about your
+  mod**, and exited **1** — the code that means "your mod is broken". It now exits **2** and names
+  `$X4_REFERENCE` and `.claude/x4-paths.env`.
+  The refusal fires on *unresolved*, never on "you named a tree that happens not to exist".
+- **Configuration is read through one door (F40).** `X4_NEXUS_KEY` placed in
+  `.claude/x4-paths.env` — the placement `setup.sh` documents — was invisible, because `_nexus` read
+  `os.environ` directly. `_effective` bound `X4_EFFECTIVE_DB` at *import* time into an argparse
+  default while `gates/_env.py` resolved the same variable through `_paths`. New `_paths.value()` /
+  `path_value()`; the split matters because the path form rewrites `/c/x` to `C:/x`, which would
+  silently corrupt a credential. The Nexus key remains **optional** — callers catch and degrade to
+  local facts, so offline work is unaffected.
+- **Shipped scripts refuse instead of guessing (F41).** `scripts/generate-baseline.sh` defaulted its
+  game directory to `$(pwd)`; a baseline is a *recovery* artifact, so that silently snapshotted
+  whatever install you happened to be standing in. `bin/unpack-reference.sh` reported "not
+  configured" as exit 1. Both exit **2** now.
+- **24 tests that never ran on a fresh clone now run (F42).** Two test modules were skipped wholesale
+  because the gate modules they import resolved configuration at import time — and a module-level
+  skip collapses N tests into ONE line, so the summary read "586 passed, 11 skipped" while 24 tests
+  had never been collected. Cold collection now equals warm: **619** either way.
+
+### Added
+
+- **`docs/TRUST.md`** — the trust register: every defect *shape* found in this toolkit, the measured
+  cost when it happened, and the test or gate that now bans it. So "is this shape guarded?" is a
+  lookup rather than a matter of confidence.
+- **AST guard** (`tests/test_env_resolution_is_delegated.py`) banning direct `os.environ` reads
+  outside `_paths`, with an `# env-ok:` escape hatch that cannot become a blanket amnesty.
+- **A mechanical check that every entry point in `pyproject.toml`** carries the refusal wrapper, so a
+  tenth CLI cannot be added without one.
+- **A cold CLI matrix in `scripts/verify-cold.sh`** — every configuration-dependent executable is run
+  on a genuinely cold checkout and must exit 2 with no traceback.
+
+### Contract
+
+Exit codes are uniform across the toolkit: **0** clean · **1** findings · **2** not configured or
+usage error · **3** degraded · **5** stale artifact.
+
 ## v2.4.0
 
 Four defects, all one shape: **a set was enumerated twice, by two different rules, and nothing

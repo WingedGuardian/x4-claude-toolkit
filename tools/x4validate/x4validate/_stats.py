@@ -26,7 +26,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _compat, _merge, _registry, _input
+from x4validate import _paths, _cat, _compat, _merge, _registry, _input
 from x4validate import __version__
 
 
@@ -277,6 +277,7 @@ def render_wares(comparisons: list[WareComparison]) -> str:
     return "\n".join(lines)
 
 
+@_paths.refuses_unconfigured
 def main(argv: list[str] | None = None) -> int:
     import argparse
 

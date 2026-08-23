@@ -26,7 +26,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _merge, _registry, _scan, _freshness
+from x4validate import _paths, _cat, _merge, _registry, _scan, _freshness
 from x4validate import __version__
 
 # Excluded from the `action` index: structural containers, control flow, and
@@ -275,6 +275,7 @@ def _hint_other_kinds(rows: list[XrefRow], name: str, asked_kind: str,
         print(f"    {kind:8} {n:>5} occurrence(s){suffix}")
 
 
+@_paths.refuses_unconfigured
 def main(argv: list[str] | None = None) -> int:
     import argparse
 

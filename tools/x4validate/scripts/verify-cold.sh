@@ -78,11 +78,74 @@ echo "== running the suite as a new user would =="
 env "${UNSET[@]}" uv run --frozen python -m pytest -q
 rc=$?
 
+# --- the CLI matrix ---------------------------------------------------------
+# The suite proves the LIBRARY behaves cold. This proves the EXECUTABLES do,
+# which is what a new user actually types. Two properties per CLI:
+#
+#   exit code 2   "this toolkit is not configured" — never 0 (a plausible-looking
+#                 answer computed from nothing) and never 1, which several CLIs
+#                 use for "the thing you asked about has findings". A caller that
+#                 cannot tell those apart is told to fix the wrong thing. Until
+#                 2.5.0, `x4validate <mod>` on a cold machine guessed a relative
+#                 `reference/`, found nothing there, and reported the whole base
+#                 game missing as MOD ERRORS with rc=1.
+#   no traceback  a stack trace is not a refusal. It is the tool failing to have
+#                 an opinion, and it is what an unwrapped main() produces.
+#
+# Arguments are the minimum that gets PAST argparse, because argparse's own usage
+# error is also exit 2 -- a bare `x4validate` would pass this check while proving
+# nothing. Each invocation must actually reach path resolution.
+MOD="$WORK/_coldmod"; mkdir -p "$MOD/libraries"
+printf '<diff/>' > "$MOD/libraries/wares.xml"
+
+cli_case() {  # module  function  args...
+  local mod="$1" fn="$2"; shift 2
+  local out crc
+  out=$(env "${UNSET[@]}" uv run --frozen python -c "
+import sys
+from x4validate import $mod
+sys.exit($mod.$fn(sys.argv[1:]) or 0)" "$@" 2>&1); crc=$?
+
+  if printf '%s' "$out" | grep -q '^Traceback'; then
+    echo "   FAIL $mod: traceback instead of a refusal"; MFAIL=$((MFAIL+1)); return
+  fi
+  if [ "$crc" -ne 2 ]; then
+    echo "   FAIL $mod: exit $crc (want 2 = not configured)"; MFAIL=$((MFAIL+1)); return
+  fi
+  echo "   ok   $mod: exit 2, no traceback"
+}
+
+echo
+echo "== COLD CLI MATRIX: every executable must refuse with exit 2 =="
+MFAIL=0
+cli_case _cli        main "$MOD"
+cli_case _compat     main check "$MOD"
+cli_case _stats      main wares "$MOD"
+cli_case _similarity main --candidate "$MOD"
+cli_case _xref       main who-calls somecue
+cli_case _effective  main ls
+cli_case _debugcli   main triage
+cli_case _modlist    main refresh
+
+# x4diff is DELIBERATELY not in the matrix. It compares two mod folders to each
+# other -- `_merge.overlay_root` / `apply_overlay`, no Config, no reference tree --
+# so it is genuinely usable with no game installed, and exit 0 there is the right
+# answer. Asserting 2 for it was a bug in THIS script, caught on the first cold
+# run: the checker was wrong, not the tool. Recorded rather than deleted, because
+# the next person will otherwise "fix" the gap by adding it back.
+
+if [ "$MFAIL" -ne 0 ]; then
+  echo "   $MFAIL CLI(s) did not refuse cleanly."
+  rc=1
+else
+  echo "   all 8 configuration-dependent CLIs refuse cleanly (x4diff needs none)."
+fi
+
 echo
 if [ "$rc" -eq 0 ]; then
-  echo "COLD RUN CLEAN — the suite passes on a machine with no X4 installed."
+  echo "COLD RUN CLEAN — suite and every CLI behave on a machine with no X4 installed."
 else
-  echo "COLD RUN FAILED (pytest exit $rc)."
+  echo "COLD RUN FAILED (exit $rc)."
   echo "  exit 3 = INTERNALERROR, usually a gates/ module imported at test-module"
   echo "           scope: see tests/conftest.py::import_gate."
 fi

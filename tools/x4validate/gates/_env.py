@@ -70,8 +70,10 @@ def reference() -> Path:
 def effective_db() -> Path:
     """The x4effective store. Built, not shipped — a missing one is a SKIP."""
     from x4validate import _effective
-    p = _paths._resolve(lambda layer: _paths._pick(layer, "X4_EFFECTIVE_DB"))
-    path = Path(p) if p else _effective.DB_PATH
+    # ONE door. This used to open-code the resolution while `_effective` read
+    # os.environ at import, so a gate and the CLI could disagree about which
+    # store was configured. `effective_db()` is now the only answer to this.
+    path = _effective.effective_db()
     if path is None or not Path(path).is_file():
         skip(f"no effective store (resolved to {path or 'nothing'})",
              "run `x4effective build` first, or set $X4_EFFECTIVE_DB")

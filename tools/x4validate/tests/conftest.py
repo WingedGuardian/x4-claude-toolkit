@@ -73,6 +73,79 @@ def import_gate(name: str, *, module_level: bool = True):
         pytest.skip(reason)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _reference_for_unit_tests(tmp_path_factory):
+    """Give `_merge` an empty reference directory when the machine has no X4.
+
+    Since 2.5.0 `_merge.Config()` REFUSES when no reference tree is configured,
+    rather than falling back to a CWD-relative guess (F39). That is right for the
+    CLIs — an unconfigured toolkit must not invent an answer — but it changed the
+    result of the SUITE depending on the machine it ran on: 15 unit tests that
+    construct a Config only to exercise overlay merging, TierB shape or archive
+    metadata began failing on a fresh clone with no X4 installed. A new user's
+    first `pytest` would have shown 15 errors about their own machine.
+
+    So the tests that do not care about a reference tree are given one that is
+    empty, and ONLY when the machine cannot resolve a real one. On a configured
+    machine this is inert.
+
+    It does not weaken anything. The refusal is pinned directly by
+    `tests/test_unconfigured_refusal.py`, which sets `_merge.REFERENCE = None`
+    itself and is unaffected by a default; and the real proof lives in
+    `scripts/verify-cold.sh`, which runs the actual EXECUTABLES on a cold
+    checkout and requires exit 2. What this fixture buys is that a test result
+    means the same thing on every machine — which is the property a suite is for.
+    """
+    from x4validate import _merge, _paths
+    if _paths.reference() is not None:
+        yield
+        return
+    previous = _merge.REFERENCE
+    _merge.REFERENCE = tmp_path_factory.mktemp("empty-reference")
+    try:
+        yield
+    finally:
+        _merge.REFERENCE = previous
+
+
+@pytest.fixture
+def case_insensitive_fs(tmp_path):
+    """Skip unless the filesystem treats `Thing.xml` and `thing.xml` as one file.
+
+    X4 is a Windows game and its VFS is case-insensitive: a mod patching
+    `md/thing.xml` reaches a file shipped as `md/Thing.xml`, and the toolkit
+    models that. Tests that stage one case and patch the other are therefore
+    asserting real engine behaviour — but on a case-sensitive filesystem they
+    stage two DIFFERENT files, so the scenario they describe cannot be built and
+    the failure says nothing about the code.
+
+    DETECTED, not assumed from `sys.platform`. macOS defaults to
+    case-insensitive and Linux does not, but either can be configured the other
+    way, and a platform guess would then skip a test that would have run (or run
+    one that cannot pass). The precondition is a property of the filesystem, so
+    it is measured on the filesystem.
+    """
+    if not fs_is_case_insensitive(tmp_path):
+        pytest.skip("needs a case-insensitive filesystem: this test stages one "
+                    "case and patches another, which is a single file under "
+                    "X4's Windows VFS but two files here")
+
+
+def fs_is_case_insensitive(directory) -> bool:
+    """Does *directory*'s filesystem fold case? Probed, never assumed.
+
+    Split out of the fixture so both branches are reachable from a test. A
+    precondition check that can only ever return one answer on the machine you
+    are sitting at is not verified — it is merely unexercised.
+    """
+    probe = directory / "CaseProbe.tmp"
+    probe.write_text("x", encoding="utf-8")
+    try:
+        return (directory / "caseprobe.tmp").exists()
+    finally:
+        probe.unlink()
+
+
 def _environment_is_unresolvable() -> bool:
     """True when this machine has no usable X4 configuration.
 

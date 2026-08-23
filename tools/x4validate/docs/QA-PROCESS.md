@@ -179,3 +179,46 @@ invisible on a configured machine and fatal on a fresh clone -- which is the fir
 thing a new user runs. `tests/conftest.py::import_gate` turns both into a SKIP
 with a named reason, but only when the environment is genuinely unresolvable, so
 a real defect on a configured machine still fails loudly.
+
+## Never port, package or copy source while a MUTATING gate is running
+
+`gates/mutation_probe.py` works by editing `x4validate/_merge.py` in place, running
+the targeted tests, and restoring it. That is the correct design — it is the only
+honest way to ask "would the suite notice if this line were wrong?" — but it means
+**the working tree is briefly, deliberately wrong**, with no marker saying so.
+
+**The near-miss (2026-08-23, v2.5.0).** `mutation_probe` was running in the
+background while the release was being copied from the development tree to the
+public bundle. The copy read `_merge.py` at the instant it held a live mutant, and
+the public tree ended up with:
+
+```python
+if len(targets) > 99999:      # dev, correctly: > 1
+```
+
+That single line disables **ambiguous-`sel` detection** — the check for X4's
+"Multiple matching nodes ... Skipping node", which silently drops a patch. It would
+have shipped as a release that validates cleanly and misses the most expensive bug
+class the tool exists to catch.
+
+Nothing about the copy failed. The port reported success, and the diff of *tracked
+files* looked exactly as intended, because the mutated file **is** a tracked file.
+
+**What caught it:** running the suite in the destination — 5 failures, all
+ambiguity-related. **What would have missed it:** trusting the port, or dismissing
+the failures as "environment differences", which was the first hypothesis and was
+wrong.
+
+**The rules:**
+
+1. Let every mutating gate finish before copying, packaging, tagging or committing.
+   `mutation_probe` is the one that edits source today; treat any gate that writes
+   into `x4validate/` the same way.
+2. **Prove the port, do not assume it.** `diff -rq` the destination against the
+   source afterwards and require empty output. A file-count match is not proof — the
+   count was right here.
+3. **Always run the suite in the destination tree**, not only in the source. The
+   source was green throughout.
+4. When ported code fails and the source passes, the difference is in the BYTES
+   before it is in the environment. Diff first; the environment hypothesis cost
+   several minutes and was a dead end.

@@ -29,7 +29,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _merge, _registry, _scan, _xpath, _input
+from x4validate import _paths, _cat, _merge, _registry, _scan, _xpath, _input
 from x4validate import __version__
 
 #: `{page,text}` localized reference - display text, never a registry identity.
@@ -841,6 +841,7 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
     return "\n".join(lines)
 
 
+@_paths.refuses_unconfigured
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import sys

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _compat, _merge, _input, _scan
+from x4validate import _paths, _compat, _merge, _input, _scan
 from x4validate import __version__
 
 
@@ -200,6 +200,7 @@ def _fmt_summary(md: ModDiff) -> str:
     return "\n".join(lines)
 
 
+@_paths.refuses_unconfigured
 def main(argv: list[str] | None = None) -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")

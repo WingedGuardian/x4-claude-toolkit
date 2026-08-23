@@ -17,8 +17,18 @@ set -euo pipefail
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck disable=SC1091
 [ -f "$_here/.claude/x4-paths.env" ] && . "$_here/.claude/x4-paths.env"
-GAME_DIR="${GAME_DIR:-${X4_GAME:-$(pwd)}}"
+# Never $(pwd). A baseline is a RECOVERY artifact: silently taking it from
+# whatever directory you happened to stand in writes a "known-good" snapshot of
+# the wrong game install, and you find out at the moment you need to restore.
+# Refusing to guess is the same rule the Python side follows.
+GAME_DIR="${GAME_DIR:-${X4_GAME:-}}"
 PROFILE_DIR="${PROFILE_DIR:-${X4_PROFILE:-}}"
+
+if [ -z "$GAME_DIR" ] || [ ! -d "$GAME_DIR" ]; then
+  echo "ERROR: set GAME_DIR (or X4_GAME) to your X4 install — the folder holding 01.cat..09.cat." >&2
+  echo "       Configure it in .claude/x4-paths.env, or pass GAME_DIR=... on the command line." >&2
+  exit 2
+fi
 STAMP="${STAMP:-baseline}"   # pass a date, e.g. STAMP=2026-06-23, to name the folder
 OUT="$GAME_DIR/.claude/backups/known-good-${STAMP}"
 

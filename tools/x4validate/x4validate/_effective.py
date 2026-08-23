@@ -31,16 +31,32 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _compat, _merge, _registry, _freshness, _resolve, _scan
+from x4validate import _cat, _compat, _merge, _paths, _registry, _freshness, _resolve, _scan
 from x4validate._provenance import BASE, Origin, Recorder
 from x4validate import __version__
 
-# None when neither $X4_EFFECTIVE_DB nor a registry location is configured —
-# resolved through _registry.require() at CLI time, never guessed at import time.
-_env_db = os.environ.get("X4_EFFECTIVE_DB")
-DB_PATH: Path | None = (Path(_env_db) if _env_db
-                        else (_registry.DEFAULT_REGISTRY.parent / "effective.sqlite"
-                              if _registry.DEFAULT_REGISTRY else None))
+
+def effective_db() -> Path | None:
+    """Where the effective store lives, or None when nothing is configured.
+
+    Resolved on CALL and through `_paths` — the ONE door. This used to be
+    `os.environ.get("X4_EFFECTIVE_DB")` evaluated at IMPORT time into a module
+    constant that is also an argparse default, which had two consequences:
+    a value in `.claude/x4-paths.env` was invisible, and `gates/_env.py` — which
+    resolved the same variable through `_paths` — could disagree with this module
+    about which store was configured. Two doors to one question is the shape that
+    produced F30; it does not get to exist twice.
+    """
+    p = _paths.path_value("X4_EFFECTIVE_DB")
+    if p is not None:
+        return p
+    reg = _registry.DEFAULT_REGISTRY
+    return (reg.parent / "effective.sqlite") if reg else None
+
+
+#: Backwards-compatible module constant. Prefer `effective_db()`: this is a
+#: snapshot taken at import, so it cannot see configuration set afterwards.
+DB_PATH: Path | None = effective_db()
 
 SCHEMA_VERSION = 1
 _ADVISORY = ("winner reflects community-standard load order "
@@ -633,7 +649,7 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
             "`x4effective attr macro <prop> --class shieldgenerator`.)"
         )
     db_path = db_path or _registry.require(
-        DB_PATH, "the effective-store location",
+        effective_db(), "the effective-store location",
         "set X4_EFFECTIVE_DB or X4_MODS (or X4_REGISTRY), or pass --db")
     mods = active_mods(dirs)
     ordered = ordered_overlays(mods)
@@ -831,6 +847,7 @@ def _fmt_chain(chain_json: str | None) -> str:
 
 # --- CLI ----------------------------------------------------------------------
 
+@_paths.refuses_unconfigured
 def main(argv: list[str] | None = None) -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -842,7 +859,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Browse the effective merged values of every X4 entity, with provenance.")
     p.add_argument("--version", action="version",
                    version=f"%(prog)s {__version__}")
-    p.add_argument("--db", default=str(DB_PATH) if DB_PATH else None)
+    p.add_argument("--db", default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
 
     b = sub.add_parser("build", help="(re)build the effective store")
@@ -892,7 +909,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = p.parse_args(argv)
     db = Path(args.db) if args.db else _registry.require(
-        DB_PATH, "the effective-store location",
+        effective_db(), "the effective-store location",
         "set X4_EFFECTIVE_DB or X4_MODS (or X4_REGISTRY), or pass --db")
 
     if args.cmd == "build":

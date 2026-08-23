@@ -325,6 +325,7 @@ def _default_archive_dir() -> Path:
     return Path.cwd() / "debug-archive"
 
 
+@_paths.refuses_unconfigured
 def main(argv: list[str] | None = None) -> int:
     import argparse
 

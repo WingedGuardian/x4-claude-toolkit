@@ -39,6 +39,9 @@ _PATH_VARS = ("X4_TOOLKIT", "X4_GAME", "X4_GAME_ROOT", "X4_GAME_EXTENSIONS",
 
 def run(argv: list[str], env: dict | None = None, timeout: int = 900,
         cwd: Path | None = None):
+    # env-ok: inheriting the whole environment for a subprocess, not resolving a
+    # setting. `_paths` answers "where is X configured"; this is "hand the child
+    # what I was given", and filtering it through a resolver would be wrong.
     e = dict(os.environ)
     if env is not None:
         e.update(env)

@@ -38,10 +38,43 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _env  # noqa: E402
 
-from x4validate import _effective, _merge, _provenance, _registry  # noqa: E402
+from x4validate import _effective, _merge, _paths, _provenance, _registry  # noqa: E402
 
-CLAIMS = Path(_registry.DEFAULT_REGISTRY).parent / "CLAIMS.tsv"
-STORE = Path(_registry.DEFAULT_REGISTRY).parent / "effective.sqlite"
+
+def _registry_dir() -> Path:
+    """Where the registry lives, or REFUSE.
+
+    These were module CONSTANTS: `Path(_registry.DEFAULT_REGISTRY).parent / ...`
+    evaluated at import, and `DEFAULT_REGISTRY` is None on an unconfigured
+    machine — so merely importing this module raised `TypeError: argument should
+    be a str or os.PathLike, not NoneType`. `tests/test_claims_tier.py` imports
+    it only for the TSV row parser, which reads nothing from disk, so on a fresh
+    clone all **9** of its tests were silently uncollected and reported as ONE
+    skip (F42).
+
+    Plain functions, deliberately — NOT a module `__getattr__`. That was tried
+    and is a trap twice over: PEP 562 does not serve a module's own global reads
+    (every internal use became `NameError`), and `monkeypatch.setattr` calls
+    `getattr(target, name, sentinel)` to save the original, which swallows only
+    `AttributeError` — so a lazy attribute that refuses with anything else makes
+    the test's own fixture seam explode before it can be installed. A function is
+    boring, and boring is the point.
+    """
+    registry = _registry.DEFAULT_REGISTRY
+    if registry is None:
+        raise _paths.Unconfigured(
+            "no registry is configured, so the claims file and effective store "
+            "cannot be located. Set $X4_REGISTRY or $X4_MODS, or see "
+            ".claude/x4-paths.env.")
+    return Path(registry).parent
+
+
+def _claims() -> Path:
+    return _registry_dir() / "CLAIMS.tsv"
+
+
+def _store() -> Path:
+    return _registry_dir() / "effective.sqlite"
 
 TIERS = {"vanilla", "effective"}
 #: Kinds the vanilla path can rebuild. Anything else is declared UNRESOLVED with a
@@ -54,7 +87,7 @@ _vanilla_cache: dict[str, dict] = {}
 
 def rows():
     """Yield (line_no, kind, entity, prop, expected, tol, source, tier, error)."""
-    for n, line in enumerate(CLAIMS.read_text(encoding="utf-8").splitlines(), 1):
+    for n, line in enumerate(_claims().read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         p = line.split("\t")
@@ -104,10 +137,10 @@ def vanilla_rows(vpath: str) -> dict[str, str]:
 
 
 def main() -> int:
-    if not CLAIMS.is_file():
-        print(f"no claims file at {CLAIMS} — nothing to verify.")
+    if not _claims().is_file():
+        print(f"no claims file at {_claims()} — nothing to verify.")
         return 0
-    con = sqlite3.connect(f"file:{STORE}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{_store()}?mode=ro", uri=True)
 
     # A claim verified against a STALE store is worth nothing: that is precisely
     # how the axis-1 numbers became wrong in the first place.

@@ -29,8 +29,10 @@ code path we do not need, and it would not work on Windows without a shell anywa
 
 from __future__ import annotations
 
+import functools
 import os
 import re
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -187,6 +189,76 @@ def _resolve(fn) -> Path | None:
         if got is not None:
             return got
     return None
+
+
+class Unconfigured(RuntimeError):
+    """A required location could not be resolved from any layer.
+
+    Deliberately NOT used for every missing setting. It means *"you never told me
+    where this is, and I refuse to guess"* — the reference tree being the case
+    that produced it. A setting whose absence is recoverable must NOT raise this:
+    `_nexus.nexus_key()` raises `NexusError` instead, because every caller catches
+    it and degrades to local facts, and an optional key promoted to a hard refusal
+    would break offline work.
+    """
+
+
+def refuses_unconfigured(fn):
+    """Wrap a CLI `main` so `Unconfigured` becomes **rc=2**, not a traceback.
+
+    rc=2 is "this toolkit is not set up". It has to be distinguishable from rc=1,
+    which several CLIs use for "the thing you asked about has findings" — a caller
+    that cannot tell those apart is told to fix the wrong thing. Applied to every
+    entry point in `pyproject.toml`, which `tests/test_unconfigured_refusal.py`
+    asserts mechanically rather than trusting anyone to remember.
+    """
+    @functools.wraps(fn)
+    def wrapper(argv=None):
+        try:
+            return fn(argv)
+        except Unconfigured as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+    wrapper._refuses_unconfigured = True
+    return wrapper
+
+
+def _pick_raw(layer: dict[str, str], *names: str) -> str | None:
+    """First of *names* this layer defines, EXACTLY as written.
+
+    The counterpart to `_pick`, which path-translates what it returns. A setting
+    that is not a path must not be rewritten: `native()` turns `/c/deadbeef` into
+    `C:/deadbeef`, and silently corrupting a credential produces an
+    authentication failure with nothing pointing back at this module.
+    """
+    for n in names:
+        if layer.get(n):
+            return layer[n]
+    return None
+
+
+def value(*names: str) -> str | None:
+    """A NON-path setting, resolved through the same layers as every location.
+
+    Use this instead of `os.environ.get`. The config file is a LAYER, and the
+    documentation tells users they may put settings there — `setup.sh` says so
+    for `X4_NEXUS_KEY` in as many words. Two consumers read the environment
+    directly and therefore could not see a value in `.claude/x4-paths.env`,
+    so following our own instructions produced "not set".
+    """
+    return _resolve(lambda layer: _pick_raw(layer, *names))
+
+
+def path_value(*names: str) -> Path | None:
+    """A PATH setting, resolved through the layers and translated for this OS.
+
+    The path-shaped sibling of `value()`. Exists so that a caller needing a
+    configurable location (`$X4_EFFECTIVE_DB`) uses the SAME door as everything
+    else — `gates/_env.py` open-coded this resolution while `_effective` read
+    `os.environ` at import time, and the two could disagree about which store
+    was configured.
+    """
+    return _resolve(lambda layer: Path(v) if (v := _pick(layer, *names)) else None)
 
 
 def game_root() -> Path | None:

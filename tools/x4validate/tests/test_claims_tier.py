@@ -16,6 +16,8 @@ import pytest
 GATES = Path(__file__).resolve().parent.parent / "gates"
 from conftest import import_gate  # noqa: E402
 
+from x4validate import _paths  # noqa: E402
+
 # Module-scope import of a gate exits the whole pytest session on a machine
 # with no X4 install -- see tests/conftest.py. Skip, do not abort.
 claims_audit = import_gate("claims_audit")
@@ -24,7 +26,11 @@ claims_audit = import_gate("claims_audit")
 def _rows(tmp_path, text: str, monkeypatch):
     f = tmp_path / "CLAIMS.tsv"
     f.write_text(text, encoding="utf-8")
-    monkeypatch.setattr(claims_audit, "CLAIMS", f)
+    # Patch the FUNCTION. It used to patch a module constant, which stopped
+    # working the moment resolution became lazy -- monkeypatch saves the old
+    # value with getattr() first, and that itself refused on an unconfigured
+    # machine, so the fixture seam blew up before it was installed.
+    monkeypatch.setattr(claims_audit, "_claims", lambda: f)
     return list(claims_audit.rows())
 
 
@@ -78,7 +84,10 @@ def test_comments_and_blank_lines_are_ignored(tmp_path, monkeypatch):
 
 def test_the_real_claims_file_is_fully_tiered():
     """Guards the shipped registry: every row carries a valid tier."""
-    real = claims_audit.CLAIMS
+    try:
+        real = claims_audit._claims()
+    except _paths.Unconfigured:
+        pytest.skip("no registry configured, so there is no CLAIMS.tsv to guard")
     if not real.is_file():
         pytest.skip("no CLAIMS.tsv on this machine")
     bad = []

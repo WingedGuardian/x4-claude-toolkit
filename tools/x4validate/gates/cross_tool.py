@@ -48,7 +48,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _env  # noqa: E402
 from x4validate import _compat, _merge  # noqa: E402
 
-EXT = _env.extensions()
+# NOTE: `EXT = _env.extensions()` used to live here, resolved at IMPORT.
+# `_env` reports "no install" by raising SystemExit, so importing this module
+# required a configured machine -- and tests/test_cross_tool_semantics.py
+# imports it for pure mapping helpers that touch no path at all. On a fresh
+# clone its 15 tests were never collected, shown as ONE skip (F42). The single
+# real use now calls _env.extensions() where it is needed.
+
 failures: list[str] = []
 
 
@@ -205,7 +211,7 @@ def check_cross_tool_agreement() -> None:
     except SystemExit:
         note(False, "effective store available", "not built")
         return
-    report = _compat.analyze(EXT, config=_merge.Config())
+    report = _compat.analyze(_env.extensions(), config=_merge.Config())
     if not report.collisions:
         note(False, "found collisions to cross-check", "none on this install")
         return

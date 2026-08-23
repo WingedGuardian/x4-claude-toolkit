@@ -30,7 +30,13 @@ from x4validate._provenance import Origin, Recorder
 # --- Workspace defaults (overridable via Config / --reference / $X4_REFERENCE) ---
 # Keep this injectable: no hardcoded user path should be the only way to point at
 # the reference tree (community-release portability).
-REFERENCE = _paths.reference() or Path("reference")
+#: None when nothing is configured. It used to fall back to the RELATIVE path
+#: `reference`, i.e. whatever happened to sit under the current directory — so a
+#: cold run validated against a tree that does not exist, reported every missing
+#: base-game file as a mod finding, and exited 1 ("your mod is broken") when the
+#: truth was "your toolkit is not set up". `ae79fcd` had already named
+#: CWD-relative fallback as a defect; this was the last survivor.
+REFERENCE = _paths.reference()
 _PARSER = etree.XMLParser(remove_blank_text=False, recover=False, resolve_entities=False)
 
 
@@ -57,7 +63,12 @@ GAME_ROOT = _default_game_root()
 
 @dataclass
 class Config:
-    reference: Path = REFERENCE
+    #: Defaults to the configured reference tree, resolved when the Config is
+    #: BUILT rather than when this class is defined. An import-time default would
+    #: be a second snapshot of configuration (the shape that made `X4_EFFECTIVE_DB`
+    #: unreadable from the config file) and would make the refusal below
+    #: untestable, since the captured value survives any later change.
+    reference: Path | None = None
     #: Tier B — other INSTALLED extension roots to merge in after DLC, in load
     #: order. Empty (Tier A) = base+DLC only, which cannot see content that
     #: another mod adds, removes or overrides. Threaded automatically into every
@@ -73,6 +84,25 @@ class Config:
     #: Also treat DLC that exist only PACKED in the live game install as part of
     #: the Tier A reference tree. Set False for a hermetic, reference-only run.
     include_packed_dlc: bool = True
+
+    def __post_init__(self) -> None:
+        """Resolve the reference tree, or REFUSE — never guess.
+
+        The refusal fires only when the reference is UNRESOLVED. A caller that
+        names a tree which happens not to exist is left alone on purpose:
+        12 tests pass `reference=tmp_path / "does_not_exist"` because they
+        exercise paths that never read it (`test_exprlint.py:80` says so in as
+        many words). "You never told me where it is" and "the path you gave me is
+        empty" are different questions, and only the first is a misconfiguration.
+        """
+        if self.reference is None:
+            self.reference = REFERENCE
+        if self.reference is None:
+            raise _paths.Unconfigured(
+                "no reference tree is configured. Set $X4_REFERENCE (or $X4_TOOLKIT) "
+                "in the environment or in .claude/x4-paths.env, or pass --reference. "
+                "Refusing to guess: a relative fallback validates against a tree that "
+                "does not exist and reports every base-game file as a mod error.")
 
     def for_runtime(self) -> "Config":
         """This config with the runtime tree swapped in as `overlays`.

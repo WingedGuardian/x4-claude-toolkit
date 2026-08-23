@@ -207,11 +207,7 @@ handled here — it is a secret, not a path, and must never be written to a file
 - `x4validate/_xsd.py` — schema validation: script files as written, data files as merged
   (differential — see `introduced`).
 - `x4validate/_check.py` — orchestration + t-file union; `_cli.py` — CLI.
-- `tests/` — `uv run pytest` (595 tests as of v2.4.0, incl. the x4cat spike cases).
-  On a fresh clone with no X4 installed you should see **584 passed, 11 skipped** — the
-  skips are tests for dev-only tooling that is not part of this bundle, and each one
-  names its reason. A skip is reported distinctly from a pass on purpose: "not checked
-  here" must never read as "checked and fine".
+- `tests/` — `uv run pytest` (616 tests as of v2.5.0, incl. the x4cat spike cases).
 - `gates/` — measured against the engine / the real modlist, not fixtures. Four engine
   gates: `oracle.py` (diff layer, 0 FALSE OK), `oracle_index.py` (index layer),
   `regress.py` (per-mod Tier A/B sweep), `schema_sweep.py` (effective-schema
@@ -234,6 +230,10 @@ handled here — it is a secret, not a path, and must never be written to a file
   v2.2.0 adds `registry_provenance.py` (a guessed mod identity may never produce a
   confident verdict).
   **26 in total.** See `gates/README.md` for the bar each one holds.
+- `docs/TRUST.md` — **start here if you are deciding whether to rely on this.** Every
+  defect *shape* ever found in the toolkit, the measured cost when it happened, and
+  the test or gate that now bans it — so *"is this shape guarded?"* is a lookup, not a
+  matter of confidence. It also states plainly where the tools cannot be trusted.
 - `docs/QA-PROCESS.md` — the process these gates came out of: what to test, in what
   order, and when it is honest to call a tool releasable. Read it before adding a tool.
 - `docs/BLIND-SPOTS.md` — the narrowing-point register: every place a step could

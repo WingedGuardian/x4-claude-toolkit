@@ -21,7 +21,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _merge, _scan, _stats, _input
+from x4validate import _paths, _cat, _merge, _scan, _stats, _input
 from x4validate import __version__
 
 # Numeric keys compared, with weights (a rough "how much does this stat define the
@@ -281,6 +281,7 @@ def _threshold(raw: str) -> float:
     return val
 
 
+@_paths.refuses_unconfigured
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import sys

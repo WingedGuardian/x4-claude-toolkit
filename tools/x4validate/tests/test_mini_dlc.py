@@ -19,8 +19,11 @@ never reach into the real game install.
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from x4validate import _merge
 
@@ -111,17 +114,33 @@ def test_a_genuinely_absent_path_is_still_not_found(tmp_path, monkeypatch):
     assert not res.base_found
 
 
-def test_game_root_follows_the_documented_extensions_env_var(monkeypatch):
+@pytest.mark.parametrize("ext, root, other", [
+    pytest.param(r"D:\Games\X4\extensions", r"D:\Games\X4", r"E:\elsewhere",
+                 id="windows-drive-path",
+                 marks=pytest.mark.skipif(
+                     os.name != "nt",
+                     reason="a backslash drive path is ONE filename on POSIX, so "
+                            "the parent of it is '.', not a game root")),
+    pytest.param("/games/x4/extensions", "/games/x4", "/elsewhere",
+                 id="posix-path"),
+])
+def test_game_root_follows_the_documented_extensions_env_var(
+        monkeypatch, ext, root, other):
     """$X4_GAME_EXTENSIONS is the knob the toolkit documents and users set.
 
     A second independent $X4_GAME_ROOT would leave anyone who configured the
     documented one with packed-DLC support pointed at the wrong place — and it
     fails back to "cannot verify", so it reads as "does not apply to me".
+
+    Parametrised over both path shapes because the DERIVATION being tested
+    (root = parent of extensions) is platform-independent, while the literal is
+    not: a Windows drive path is a single filename on a POSIX system, so the
+    original test failed on Linux for a reason that said nothing about the code.
     """
     monkeypatch.delenv("X4_GAME_ROOT", raising=False)
-    monkeypatch.setenv("X4_GAME_EXTENSIONS", r"D:\Games\X4\extensions")
-    assert _merge._default_game_root() == Path(r"D:\Games\X4")
+    monkeypatch.setenv("X4_GAME_EXTENSIONS", ext)
+    assert _merge._default_game_root() == Path(root)
 
-    monkeypatch.setenv("X4_GAME_ROOT", r"E:\elsewhere")
-    assert _merge._default_game_root() == Path(r"E:\elsewhere"), \
+    monkeypatch.setenv("X4_GAME_ROOT", other)
+    assert _merge._default_game_root() == Path(other), \
         "an explicit X4_GAME_ROOT must still win"

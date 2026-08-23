@@ -13,9 +13,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 XRCAT="$HERE/xrcat"
 INCLUDE='\.(xml|xsd|lua|xpl)$'               # text/markup only — keeps the tree small
 
-[ -n "${X4_GAME:-}" ]  || { echo "ERROR: X4_GAME not set (path to 'X4 Foundations' with 01.cat..09.cat). Set it in .claude/x4-paths.env." >&2; exit 1; }
-[ -d "$X4_GAME" ]      || { echo "ERROR: game dir not found: $X4_GAME" >&2; exit 1; }
-REF="${X4_REFERENCE:?X4_REFERENCE not set}"
+# Exit 2 == "this toolkit is not configured", everywhere in the toolkit. Kept
+# distinct from 1 ("it ran and something was wrong") so a caller can tell "set
+# X4_GAME" from "the unpack failed" — they need opposite responses.
+[ -n "${X4_GAME:-}" ]  || { echo "ERROR: X4_GAME not set (path to 'X4 Foundations' with 01.cat..09.cat). Set it in .claude/x4-paths.env." >&2; exit 2; }
+[ -d "$X4_GAME" ]      || { echo "ERROR: game dir not found: $X4_GAME" >&2; exit 2; }
+[ -n "${X4_REFERENCE:-}" ] || { echo "ERROR: X4_REFERENCE not set (where to write the unpacked tree). Set it in .claude/x4-paths.env." >&2; exit 2; }
+REF="$X4_REFERENCE"
 
 echo "Game:      $X4_GAME"
 echo "Reference: $REF"

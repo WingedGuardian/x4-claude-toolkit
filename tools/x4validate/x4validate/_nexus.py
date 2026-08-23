@@ -8,12 +8,13 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+
+from x4validate import _paths
 
 NEXUS_REST = "https://api.nexusmods.com/v1/games/x4foundations/mods"
 NEXUS_GQL = "https://api.nexusmods.com/v2/graphql"
@@ -30,9 +31,17 @@ class NexusError(Exception):
 
 
 def nexus_key() -> str:
-    k = os.environ.get("X4_NEXUS_KEY")
+    """The personal API key, from the environment OR `.claude/x4-paths.env`.
+
+    Resolved through `_paths`, not `os.environ`: `setup.sh` tells users they may
+    put `X4_NEXUS_KEY` in the config file, and reading only the environment made
+    that documented placement silently ineffective. `value()` (not `path_value()`)
+    because a key is not a path and must come back byte-for-byte.
+    """
+    k = _paths.value("X4_NEXUS_KEY")
     if not k:
-        raise NexusError("X4_NEXUS_KEY not set (Nexus personal API key)")
+        raise NexusError("X4_NEXUS_KEY not set (Nexus personal API key). Export it, "
+                         "or add it to .claude/x4-paths.env.")
     return k
 
 

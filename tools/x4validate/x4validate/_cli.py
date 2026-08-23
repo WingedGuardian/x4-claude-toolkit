@@ -9,12 +9,13 @@ from dataclasses import asdict
 from pathlib import Path
 
 from . import _check, _merge, _paths
-from x4validate import __version__
+from x4validate import _paths, __version__
 
 _SEV_ORDER = {"error": 0, "warn": 1, "info": 2}
 _SEV_LABEL = {"error": "ERROR", "warn": "WARN ", "info": "INFO "}
 
 
+@_paths.refuses_unconfigured
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="x4validate",
@@ -27,8 +28,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--paths", action="store_true",
                    help="show where the tool resolves the game, reference, profile and registry "
                         "(and which config file it read), then exit")
-    p.add_argument("--reference", default=str(_merge.REFERENCE),
-                   help="path to the unpacked base-game reference tree")
+    # No default: `str(_merge.REFERENCE)` produced the literal string "None" once
+    # REFERENCE stopped guessing, and before that it baked in a CWD-relative
+    # fallback. Unset means "use the configured tree", and Config refuses if there
+    # isn't one — which the boundary turns into rc=2.
+    p.add_argument("--reference", default=None,
+                   help="path to the unpacked base-game reference tree "
+                        "(default: $X4_REFERENCE / .claude/x4-paths.env)")
     p.add_argument("--tier", choices=["a", "b"], default="a",
                    help="a = base+DLC only (default, deterministic); "
                         "b = also merge the INSTALLED extensions in load order, so cross-mod "
@@ -79,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: --file not found: {args.file}", file=sys.stderr)
         return 2
 
-    config = _merge.Config(reference=Path(args.reference))
+    config = _merge.Config(reference=Path(args.reference) if args.reference else None)
     if args.tier == "b":
         print("note: Tier B merges the INSTALLED extension set in load order so cross-mod "
               "patches resolve. Inter-mod load order is community-reported, not documented "
