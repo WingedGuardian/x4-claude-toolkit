@@ -222,3 +222,28 @@ wrong.
 4. When ported code fails and the source passes, the difference is in the BYTES
    before it is in the environment. Diff first; the environment hypothesis cost
    several minutes and was a dead end.
+
+## Do not write a verification number until the verification has FINISHED
+
+**The near-miss (2026-08-23, v2.5.0).** *"26/26 gates green"* was written into the GitHub release
+notes, `KNOWLEDGEBASE.md` and a memory file while `gates/perf_guard.py` was **still running**.
+Twenty-five had completed. The number turned out to be right — `perf_guard` finished rc=0 with zero
+regressions — but that was luck, not method: had it found one, a *published* release note would have
+asserted something false, in the one medium that cannot be quietly corrected.
+
+The pull is specific and worth naming: a long gate is backgrounded precisely so other work can
+continue, and by the time the summary is being written the gate feels finished because everything
+*else* is. The remedy is mechanical, not attentional.
+
+**The rule.** A count of checks is a MEASUREMENT. It goes in only once every check has returned, and
+it is stated with the denominator that was actually observed:
+
+- While a check is outstanding, write **"25 of 26 green, `perf_guard` still running"**. That sentence
+  is always true and costs nothing.
+- Never round an in-flight check up to done, even when its result is near-certain. Near-certain is
+  what a prediction is for, and a prediction is labelled as one.
+- **Publishing is the hard boundary.** A tag, a release note or an upstream report is not revisable
+  in the way a working file is. Nothing crosses it that is not already measured.
+
+Same family as "a search that finds nothing is a lead, never a fact", and as the freshness contract:
+the failure is not a wrong number, it is a number whose *evidence state* was misrepresented.
