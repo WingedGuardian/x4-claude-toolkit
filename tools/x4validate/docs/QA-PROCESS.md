@@ -223,27 +223,46 @@ wrong.
    before it is in the environment. Diff first; the environment hypothesis cost
    several minutes and was a dead end.
 
-## Do not write a verification number until the verification has FINISHED
+## Finish the verification. Then write it up.
 
-**The near-miss (2026-08-23, v2.5.0).** *"26/26 gates green"* was written into the GitHub release
-notes, `KNOWLEDGEBASE.md` and a memory file while `gates/perf_guard.py` was **still running**.
-Twenty-five had completed. The number turned out to be right — `perf_guard` finished rc=0 with zero
-regressions — but that was luck, not method: had it found one, a *published* release note would have
-asserted something false, in the one medium that cannot be quietly corrected.
+**The rule: no summary, no commit, no tag and no release while a check is still running.** Wait for
+it. That is the whole rule, and it is a rule about SEQUENCING, not about phrasing.
 
-The pull is specific and worth naming: a long gate is backgrounded precisely so other work can
-continue, and by the time the summary is being written the gate feels finished because everything
-*else* is. The remedy is mechanical, not attentional.
+**The near-miss (2026-08-23, v2.5.0).** *"26/26 gates green"* went into the GitHub release notes,
+`KNOWLEDGEBASE.md` and a memory file while `gates/perf_guard.py` was **still running** — 25 had
+returned. It finished rc=0 with zero regressions, so the number was right. That was luck. Had it
+found a regression, a *published* release note would have asserted something false, in the one
+medium that cannot be quietly corrected.
 
-**The rule.** A count of checks is a MEASUREMENT. It goes in only once every check has returned, and
-it is stated with the denominator that was actually observed:
+**The first fix for this was wrong, and the wrongness is instructive.** It was: *"while a check is
+outstanding, write '25 of 26 green, perf_guard still running'."* Accurate, and still not good
+enough:
 
-- While a check is outstanding, write **"25 of 26 green, `perf_guard` still running"**. That sentence
-  is always true and costs nothing.
-- Never round an in-flight check up to done, even when its result is near-certain. Near-certain is
-  what a prediction is for, and a prediction is labelled as one.
-- **Publishing is the hard boundary.** A tag, a release note or an upstream report is not revisable
-  in the way a working file is. Nothing crosses it that is not already measured.
+- It exports the incompleteness to the reader, who must now track a pending item on the author's
+  behalf.
+- It does not actually protect the release. A hedged claim in a published note still needs an
+  amendment when the pending check fails.
+- A release is meant to *be* a finished thing. A release note narrating work-in-progress is
+  unprofessional however accurately it is narrated.
+- It treats a **scheduling** defect as a **wording** defect, so the same mistake recurs in every
+  other form: committing before the suite finishes, tagging before CI reports, reporting an outcome
+  before the last measurement lands.
+
+The pull is worth naming, because it is structural rather than careless: a long gate is backgrounded
+precisely so other work can continue, so by the time the summary is being written it *feels*
+finished — everything else is. The remedy is a hard ordering, not more attention.
+
+**In practice**
+
+1. Long checks go in the background early, so waiting costs wall-clock you were spending anyway.
+2. **Before writing any verification summary, enumerate the checks and confirm every one has
+   RETURNED.** A count of checks is a measurement; it is written once, when it is complete.
+3. **Publishing is the hard boundary** — a tag, a release note, an upstream report. Nothing crosses
+   it that is not already measured. If the last gate needs ten more minutes, the release waits ten
+   more minutes; that trade is never close.
+4. The hedged form (*"25 of 26, one running"*) is for **live status to a person mid-task** — never
+   for an artifact, a commit message, a recorded result or anything published.
 
 Same family as "a search that finds nothing is a lead, never a fact", and as the freshness contract:
-the failure is not a wrong number, it is a number whose *evidence state* was misrepresented.
+the failure is not a wrong number, it is a number whose evidence state was misrepresented — here, by
+being written down before the evidence existed.
