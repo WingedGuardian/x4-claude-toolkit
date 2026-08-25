@@ -64,6 +64,12 @@ gates found while we did.
   only `os.environ` / `os.getenv` — so a hardcoded absolute path, the form that defect actually
   shipped in, sailed through. `docs/TRUST.md` named that test as what banned the shape, which means
   **the shipped trust document was overclaiming**. Both are corrected.
+- **A corpus-wide crash check that could not see a crash.** `gates/corpus_sweep.py` decided whether a
+  run had crashed by looking for a Python traceback in its output. A process killed by the OS loader
+  never starts Python, so it prints nothing at all — and in a real run **173 of 242 invocations (71.5%)**
+  died that way while the gate printed `CRASHES/HANGS: 0` and passed. The exit codes were in its own
+  output, four lines above the verdict that ignored them. It now treats any code outside the documented
+  `{0, 1, 3}` as a crash.
 - **A coverage denominator taken from the current directory (F46).** `coverage.py`'s `--reference`
   and `--extensions` defaulted to `""`, and `Path("")` is `Path(".")` — so a bare run counted the
   directory it was standing in and published that as the denominator. It now refuses and writes

@@ -7,7 +7,7 @@ the user's install. Looks for crashes and hangs, NOT for findings — a mod with
 errors is the tool working.
 
 Run:  uv run python gates/corpus_sweep.py [--tier=a|b|both] [--verbose]
-Exit: 0 no crashes, 1 any traceback/hang.
+Exit: 0 no crashes, 1 any traceback, hang, or undocumented exit code.
 """
 from __future__ import annotations
 
@@ -24,6 +24,37 @@ import _env  # noqa: E402
 EXT = _env.extensions()
 TIER = next((a.split("=")[1] for a in sys.argv if a.startswith("--tier=")), "both")
 VERBOSE = "--verbose" in sys.argv
+
+
+#: The only exit codes x4validate is documented to produce. ANYTHING else means the
+#: process did not run to a decision, and "did not reach a verdict" is not "passed".
+EXPECTED_CODES = frozenset({0, 1, 3})
+
+
+def crash_reason(returncode: int, out: str) -> str | None:
+    """Why this run counts as a crash, or None if it reached a verdict.
+
+    WHY THE RETURN CODE AND NOT JUST THE TRACEBACK (F55, MEASURED 2026-08-25).
+    Detection used to be `"Traceback (most recent call last)" in out` plus a
+    subprocess timeout. A process killed by the Windows LOADER never starts
+    Python, so it emits no traceback and no output whatsoever -- neither test can
+    fire. A real run of this gate recorded:
+
+        tier a  exit 3221225794: 52
+        tier b  exit 3221225794: 121
+        CRASHES/HANGS: 0            <-- and this gate returned 0
+
+    3221225794 is 0xC0000142 (STATUS_DLL_INIT_FAILED). 173 of 242 invocations
+    never started and the sweep passed. The exit codes were already printed in the
+    distribution block below; only the VERDICT failed to consult them -- the
+    register's founding shape, but printing the evidence rather than hiding it.
+    """
+    if "Traceback (most recent call last)" in out:
+        return "traceback"
+    if returncode not in EXPECTED_CODES:
+        return (f"exit {returncode} (0x{returncode & 0xFFFFFFFF:08X}) -- not a documented "
+                f"exit code, so the process did not run to a decision")
+    return None
 
 
 def main() -> int:
@@ -51,10 +82,11 @@ def main() -> int:
             dt = time.time() - t0
             out = (p.stdout or "") + (p.stderr or "")
             codes[(tier, p.returncode)] += 1
-            if "Traceback (most recent call last)" in out:
+            reason = crash_reason(p.returncode, out)
+            if reason:
                 tail = [ln for ln in out.strip().splitlines() if ln.strip()][-3:]
-                crashes.append((mod.name, tier, "traceback", "\n      ".join(tail)))
-                print(f"  CRASH {mod.name} (tier {tier})")
+                crashes.append((mod.name, tier, reason, "\n      ".join(tail)))
+                print(f"  CRASH {mod.name} (tier {tier}) -- {reason}")
             elif dt > 120:
                 slow.append((mod.name, tier, dt))
             if VERBOSE:
