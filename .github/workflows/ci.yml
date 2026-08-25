@@ -68,7 +68,16 @@ jobs:
     name: no personal data in tracked files
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 is LOad-BEARING, not tidiness. The identifier scan below
+      # derives what to look for from this repo's own commit metadata, and the
+      # default depth-1 checkout exposes ONE commit. MEASURED on a real depth-1
+      # clone: 0 identifiers to check, "clean", exit 0 — a green light produced
+      # by looking for nothing, while three real hits sat in the tree. The scan
+      # now refuses (exit 2) rather than pass vacuously, and this is what keeps
+      # it from ever having to.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Scans TRACKED FILES ONLY, via `git ls-files`. This is not a detail: a raw
       # recursive grep also walks `.venv/`, whose activate scripts and dist-info embed the
@@ -114,3 +123,18 @@ jobs:
 
           if [ "$fail" -ne 0 ]; then exit 1; fi
           echo "clean — no absolute user paths, profile ids or key literals in tracked files."
+
+      # The three checks above are pattern-shaped: a user path needs a trailing
+      # separator, a profile id needs the Egosoft prefix, a key needs an
+      # assignment. A BARE contributor name matches none of them. This closes
+      # that gap without writing any name into the workflow — the list is
+      # derived from the repo's own commit metadata, minus whatever LICENSE and
+      # the clone URL publish on purpose. See scripts/scan-identifiers.py.
+      #
+      # EXTRA_FORBIDDEN is optional: set the repo secret SCRUB_EXTRA to a
+      # newline-separated list to ban strings git does not know about (an old
+      # handle, a private folder name). Absent, the derived list stands alone.
+      - name: Scan for contributor identifiers
+        env:
+          EXTRA_FORBIDDEN: ${{ secrets.SCRUB_EXTRA }}
+        run: python3 scripts/scan-identifiers.py
