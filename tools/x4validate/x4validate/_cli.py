@@ -15,6 +15,24 @@ _SEV_ORDER = {"error": 0, "warn": 1, "info": 2}
 _SEV_LABEL = {"error": "ERROR", "warn": "WARN ", "info": "INFO "}
 
 
+def default_debug_log(profile: str) -> Path:
+    """Where X4 writes `debug.txt` for *profile*, on THIS platform.
+
+    OS-aware since 2026-08-24. This was the Windows layout
+    (`~/Documents/Egosoft/X4/<id>`) unconditionally, so a bare `--profile <id>`
+    could never work on Linux or macOS -- both of which the README documents as
+    supported. `install.sh:107` already writes the POSIX location, so the shell
+    half knew something the Python half did not.
+
+    A named function rather than an inline branch so it can be tested for what
+    it IS, instead of a test re-stating the same `if` and passing while the CLI
+    is broken.
+    """
+    if _paths._IS_WINDOWS:
+        return Path.home() / "Documents" / "Egosoft" / "X4" / profile / "debug.txt"
+    return Path.home() / ".config" / "EgoSoft" / "X4" / profile / "debug.txt"
+
+
 @_paths.refuses_unconfigured
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
@@ -99,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         # or macOS, both of which the toolkit documents and supports.
         resolved = _paths.debug_log()
         if resolved is None and args.profile:
-            resolved = Path.home() / "Documents" / "Egosoft" / "X4" / args.profile / "debug.txt"
+            resolved = default_debug_log(args.profile)
         if resolved is None:
             print("error: --debug needs a log to read. Configure $X4_PROFILE or $X4_DEBUGLOG "
                   "(see .claude/x4-paths.env), pass --profile <id>, or give the path: "

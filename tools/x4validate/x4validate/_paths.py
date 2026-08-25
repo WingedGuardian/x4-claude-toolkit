@@ -146,6 +146,16 @@ def _layers() -> list[dict[str, str]]:
 _RE_WSL = re.compile(r"^/mnt/([a-zA-Z])/(.*)$")
 _RE_MSYS = re.compile(r"^/([a-zA-Z])/(.*)$")
 
+#: The platform seam. Read this rather than `os.name` directly, so a test can
+#: steer the behaviour without patching the SHARED `os` module — which `pathlib`
+#: also dispatches its flavour on. MEASURED 2026-08-24 (ubuntu CI): tests doing
+#: `monkeypatch.setattr(_paths.os, "name", "nt")` made the next `Path(...)` raise
+#: `UnsupportedOperation: cannot instantiate 'WindowsPath' on your system`. One
+#: failed; two passed by luck, depending on whether a `Path` was constructed
+#: while the patch was live. Reaching around a module into a global is not
+#: patching a seam, it is editing the interpreter.
+_IS_WINDOWS = os.name == "nt"
+
 
 def native(value: str) -> str:
     r"""Translate a POSIX drive path into one Python can actually open on Windows.
@@ -161,7 +171,7 @@ def native(value: str) -> str:
     Only applied on Windows. On Linux `/c/...` and `/mnt/c/...` are legitimate
     absolute paths and must be left exactly as written.
     """
-    if os.name != "nt":
+    if not _IS_WINDOWS:
         return value
     for rx in (_RE_WSL, _RE_MSYS):
         if m := rx.match(value):

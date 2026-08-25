@@ -1,0 +1,16 @@
+# Keep shell scripts LF. core.autocrlf is true on this machine, so without this
+# a fresh checkout hands Git Bash a CRLF build-corpus.sh and every line fails
+# with "$'\r': command not found" -- in the tree where these scripts are
+# actually RUN, not just stored. The public mirror pins the same rule.
+*.sh text eol=lf
+# Normalize everything else by default.
+* text=auto
+
+# Vendored upstream BaseX files — keep them BYTE-IDENTICAL to the distribution.
+# LICENSE is the BSD-3-Clause notice we are required to reproduce in order to
+# redistribute BaseX.jar at all, so it must not be line-ending-normalised on the
+# way through a Windows checkout (autocrlf is on here). The jar is detected as
+# binary anyway; saying so is cheaper than relying on the detection.
+basex/LICENSE -text
+basex/.basexhome -text
+basex/BaseX.jar binary

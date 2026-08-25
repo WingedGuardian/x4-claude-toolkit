@@ -587,3 +587,65 @@ def test_bare_diff_over_another_mods_file_stays_inert(tmp_path):
                                  _merge.Config(overlays=overlays))
     assert res.tree.find(".//damage").get("value") == "100"
     assert any("diff(inert)" in s for s in res.sources), res.sources
+
+
+# --- Engine semantics: a MALFORMED overlay is contained ------------------------
+# Researched 2026-08-23 (KB 2026-08-23b). The engine logs
+#   "Error loading from XML merge/patch file '<TARGET>'. ... Skipping file."
+# naming the merge TARGET, not the failing patch -- so the message reads as though
+# the whole document were discarded. It is not: the PATCH is skipped and the base
+# survives. Evidence (~90%): after logging the failure the engine went on to open
+# exactly that macro's own <component ref> and its con_storage_01 target, i.e. it
+# walked the merged document's reference list -- which would not exist had the
+# document been discarded. Corroborated by X4_Customizer's Source_Reader, which
+# skips the offending patch and continues with the next extension.
+#
+# These pin the property so a future refactor cannot quietly switch to the
+# discard reading, which would silently drop real content for every mod that
+# ships one bad file (MEASURED: 12 malformed docs across 114 active mods).
+
+def test_malformed_overlay_is_skipped_and_the_BASE_still_wins(tmp_path):
+    cfg, supplier = _f19p2_world(tmp_path)
+    broken = tmp_path / "broken_mod"
+    # Truncated exactly like amphitrite_vro's raider macro: unclosed tags. The op
+    # would REMOVE the only base ware, so if the discard reading were right -- or
+    # if the op leaked through -- 'ore' would be gone and this test goes red.
+    _write(broken / "libraries/wares.xml",
+           '<diff><remove sel="//ware[@id=&apos;ore&apos;]"/>')
+    res = _merge.build_effective("libraries/wares.xml", cfg,
+                                 extra_overlays=[supplier, broken])
+    assert res.tree.xpath("//wares"), "base document must survive a malformed overlay"
+    assert res.tree.xpath("//ware[@id='ore']"), \
+        "base content must be intact -- the malformed overlay contributes NOTHING"
+
+
+def test_malformed_overlay_does_not_block_a_LATER_good_overlay(tmp_path):
+    """The load-last repair overlay must still apply.
+
+    This is the load-bearing half: a personal fix layered after someone else's
+    broken patch has to reach the document. If a parse failure poisoned the whole
+    merge chain, the repair would be inert and the correct fix would instead be to
+    edit or remove the upstream file.
+    """
+    cfg, supplier = _f19p2_world(tmp_path)
+    broken = tmp_path / "broken_mod"
+    _write(broken / "libraries/wares.xml",
+           '<diff><add sel="//wares"><ware id="never"/></add>')   # unclosed <diff>
+    fixer = tmp_path / "zzz_fixer"
+    _write(fixer / "libraries/wares.xml",
+           '<diff><add sel="//wares"><ware id="repaired"/></add></diff>')
+    res = _merge.build_effective("libraries/wares.xml", cfg,
+                                 extra_overlays=[supplier, broken, fixer])
+    assert res.tree.xpath("//ware[@id='repaired']"), "later overlay must still apply"
+    assert not res.tree.xpath("//ware[@id='never']"), "malformed overlay must contribute nothing"
+
+
+def test_a_malformed_overlay_is_REPORTED_not_silently_absent(tmp_path):
+    """Absence and non-answer must stay distinguishable (BLIND-SPOTS, passim)."""
+    skipped: list[str] = []
+    broken = tmp_path / "broken_mod"
+    _write(broken / "libraries/wares.xml", '<diff><add sel="//wares"><ware id="x"/></add>')
+    root = _merge.overlay_root(broken, "libraries/wares.xml", skipped)
+    assert root is None
+    assert skipped and "malformed" in skipped[0].lower(), \
+        "a skipped overlay must say WHY, or it is indistinguishable from 'no such file'"

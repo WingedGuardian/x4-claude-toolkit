@@ -4,8 +4,8 @@ ENGINE-PROVEN 2026-08-22 by a controlled pair differing in exactly one variable 
 same cue structure, same actions, same load position, and both script `name=`
 differing from vanilla's `Setup`, so the script name is not the discriminator:
 
-    md/setup_moona_central.xml (new vpath)     -> registers, its cues run
-    md/setup.xml               (vanilla vpath) -> never takes effect, silently
+    md/setup_probe_unique.xml (new vpath)     -> registers, its cues run
+    md/setup.xml              (vanilla vpath) -> never takes effect, silently
 
 Modelling the second as a full-file override made `x4effective dump md/setup.xml`
 return a mod's 44-line file while the engine was demonstrably running vanilla's

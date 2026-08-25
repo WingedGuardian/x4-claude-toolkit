@@ -138,10 +138,9 @@ from x4validate import _check, _merge
 # THE HONEST PART: one mod that previously produced exactly one advisory no longer
 # does, and WHICH mod cannot be recovered -- the 08-08 re-baseline recorded totals
 # and three named contributors, not a full per-mod list, so there is nothing to
-# diff against. Three folders were modified after that baseline
-# (x4_hatikvah_revert, zzz_moona_global_fixes, zzz_moona_cpsdo_tweaks) and none is
-# flagged now, which is SUGGESTIVE and is not evidence. Recorded as open rather
-# than explained away.
+# diff against. Three folders were modified after that baseline (one public
+# revert mod and two personal overlays) and none is flagged now, which is
+# SUGGESTIVE and is not evidence. Recorded as open rather than explained away.
 #
 # Why re-baseline at all rather than leave the gate red: a permanently-failing
 # gate is not a preserved question, it is noise -- and noise trains you to skim
@@ -150,7 +149,98 @@ from x4validate import _check, _merge
 # FOR THE NEXT RE-BASELINE: dump the PER-MOD table alongside the totals, so the
 # next drift is attributable by diffing rather than by memory. That omission is
 # the entire reason one of these numbers is unattributable today.
-EXPECT_PAIRS = 169
+# ---------------------------------------------------------------------------
+# RE-BASELINE 2026-08-25 — FULLY ATTRIBUTED, per item, and the per-mod table is
+# recorded this time (the previous block asked its successor to do exactly that,
+# because one number in it could not be attributed for want of one).
+#
+# CAUSE: the modlist grew, the check did not. Three mods were deployed 2026-08-24
+# (the three most recently modified folders under extensions\), taking the active
+# set 114 -> 117. Measured by running the gate's OWN check on just those three:
+#
+#     personal overlay A            pairs=0  gating=0  advisory=0
+#     personal overlay B            pairs=2  gating=0  advisory=0
+#     Station_ink                   pairs=6  gating=1  advisory=0
+#                                   -------  --------
+#                                   pairs=8  gating=1
+#
+#   pairs  169 -> 177  (+8)  ATTRIBUTED in full: 6 + 2 + 0 from the three above.
+#   gating  59 ->  60  (+1)  ATTRIBUTED: Station_ink, libraries/god.xml —
+#                            "Element 'pilot': This element is not expected"
+#                            introduced by that mod into the merged god.xml.
+#                            An UPSTREAM finding about the mod, not a tool change.
+#   mods    41 ->  42  (+1)  ATTRIBUTED: Station_ink (the only newly flagged mod).
+#   advisory     69 ->  69   unchanged.
+#   suppressed    3 ->   3   unchanged.
+#   NOT checked   1 ->   1   unchanged.
+#
+# NOTHING IS UNATTRIBUTED IN THIS RE-BASELINE. A first attempt at attribution was
+# WRONG and is worth recording: counting md/aiscript files in the three new mods
+# gave 2, not 8, leaving 6 unexplained. The error was the instrument — "pairs"
+# is whatever `check_effective_schema` reports in its own note, not an
+# md/aiscript file count. Re-measured with the gate's own code, it reconciled
+# exactly. An unexplained remainder is a lead; this one led to my own checker.
+#
+# AMENDED 2026-08-25 (same day): Station_ink's single gating finding was FIXED
+# at source, so it drops out of both counts. The mod added a `pilot` block to
+# libraries/god.xml using ships.xml's content model; libraries.xsd (the schema
+# god.xml declares) defines no such element and vanilla god.xml contains none,
+# and the engine logged no complaint -- it was silently ignored, so the block
+# only ever tripped validation. Removed; the inner <station> now reads
+# <select> then <loadout>, matching vanilla's shipyard_argon_01 exactly.
+#
+#   gating  60 -> 59  (-1)  ATTRIBUTED: Station_ink libraries/god.xml, fixed.
+#   mods    42 -> 41  (-1)  ATTRIBUTED: Station_ink no longer flagged.
+#   pairs        177        unchanged -- the file is still validated, it now passes.
+#
+# Verified per item BEFORE re-baselining: the gate's own check run against
+# Station_ink alone reports pairs=6 gating=0 advisory=0 (was gating=1).
+#
+# PER-MOD TABLE AS OF 2026-08-25 (42 flagged; sums verified = 60 gating,
+# 69 advisory, matching the totals above). Diff against this on the next drift.
+#     arck_job_registry                       0 gating   1 advisory
+#     battle_repair_support                   0 gating   1 advisory
+#     cpsdo_faction                          14 gating   1 advisory
+#     cpsdo_zb_modpack                        0 gating   1 advisory
+#     deploy_all_defense                      0 gating   1 advisory
+#     ebi_timelines_faction_use_ship          3 gating   0 advisory
+#     escape_pod                              1 gating   0 advisory
+#     gs_debug_report                         0 gating   1 advisory
+#     gs_lib                                  0 gating   1 advisory
+#     gs_qol_fleet_transfer_crew              0 gating   1 advisory
+#     gs_qol_show_on_map                      0 gating   1 advisory
+#     higher_dimensional_space                1 gating   0 advisory
+#     kuertee_additional_agent_actions        0 gating   1 advisory
+#     kuertee_alternatives_to_death           0 gating   1 advisory
+#     kuertee_emergent_missions               0 gating   1 advisory
+#     kuertee_high_security_rooms_are_locked  0 gating   1 advisory
+#     kuertee_loot_mining                     0 gating   1 advisory
+#     kuertee_military_exercises              0 gating   1 advisory
+#     kuertee_npc_reactions                   0 gating   1 advisory
+#     kuertee_ship_scanner                    0 gating   1 advisory
+#     kuertee_station_scanner                 0 gating   1 advisory
+#     kuertee_surface_element_targeting       0 gating   1 advisory
+#     kuertee_teleport_from_transporter_room  0 gating   1 advisory
+#     kuertee_ui_accept_mission_for_later_button  0 gating   1 advisory
+#     kuertee_ui_active_mission_button        0 gating   1 advisory
+#     kuertee_ui_extensions                   0 gating   3 advisory
+#     kuertee_ui_grouped_save_files           0 gating   2 advisory
+#     kuertee_waypoint_fields_for_deployments  0 gating   1 advisory
+#     lc4hunter_argon_titan                   0 gating   1 advisory
+#     mlog_deadair_eco_no_da_wares           30 gating   0 advisory
+#     mycu_equipment_tooltips                 0 gating   1 advisory
+#     mycu_verbose_transaction_log            0 gating   1 advisory
+#     rer_boronphaser                         0 gating   1 advisory
+#     shadow_tracker                          0 gating   1 advisory
+#     ship_testfield_gamestart                1 gating   1 advisory
+#     ship_variation_expansion                3 gating  27 advisory
+#     sn_mod_support_apis                     0 gating   2 advisory
+#     stars                                   0 gating   2 advisory
+#     station_production_overview             0 gating   1 advisory
+#     ter_radar_turret                        1 gating   0 advisory
+#     vro                                     5 gating   3 advisory
+# ---------------------------------------------------------------------------
+EXPECT_PAIRS = 177
 EXPECT_ERR = 59
 EXPECT_INFO = 69
 EXPECT_SUPPRESSED = 3

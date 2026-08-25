@@ -103,7 +103,10 @@ def forbidden_tokens() -> tuple[list[str], list[str]]:
             continue
         if t.lower() in ok:
             continue
-        # A multi-word name ("Jesai Langenbach") is allowed if either part is.
+        # A multi-word name ("Firstname Lastname") is allowed if either part is.
+        # The placeholder is deliberately synthetic: an earlier draft used a REAL
+        # contributor's name here as the illustration, which made this guard an
+        # instance of the thing it bans. It caught itself on the next run.
         if any(part.lower() in ok for part in re.split(r"[\s@.]+", t) if part):
             continue
         banned.add(t)

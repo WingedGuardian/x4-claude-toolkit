@@ -15,6 +15,7 @@ layers into one dict lets a fallback outrank a variable the user really exported
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -57,28 +58,46 @@ def _write_env(tmp_path, body: str, monkeypatch) -> Path:
 
 # --- layer 1: env vars, both naming schemes ---------------------------------
 
+def _abs(*parts: str) -> str:
+    r"""An absolute path literal that is absolute on the RUNNING platform.
+
+    `D:\X4` is a drive-absolute path on Windows and a single RELATIVE filename on
+    POSIX — so `Path(r"D:\X4").parent` is `.`, and every DERIVATION assertion
+    below (root-from-extensions, workshop-from-game-root) collapses into a
+    tautology instead of failing loudly. MEASURED on ubuntu CI (run
+    32677055434): four tests here failed exactly that way, e.g.
+    `PosixPath('D:\\X4/extensions') != PosixPath('D:\\X4\\extensions')`.
+
+    Windows normalises `/` to `\` inside `Path`, so `Path(_abs("X4"))` still
+    equals `Path(r"D:\X4")` there — the Windows assertions are unchanged in
+    meaning, and the same test finally exercises the real logic on Linux.
+    """
+    root = "D:/" if os.name == "nt" else "/d/"
+    return root + "/".join(parts)
+
+
 def test_installer_names_are_understood(clean, monkeypatch):
     """The whole point: these are what install.sh writes and the docs teach."""
-    monkeypatch.setenv("X4_GAME", r"D:\X4")
-    monkeypatch.setenv("X4_PROFILE", r"D:\prof")
-    monkeypatch.setenv("X4_MODS", r"D:\mods")
-    assert _paths.game_root() == Path(r"D:\X4")
-    assert _paths.game_extensions() == Path(r"D:\X4\extensions")
-    assert _paths.profile_content() == Path(r"D:\prof\content.xml")
-    assert _paths.profile_extensions() == Path(r"D:\prof\extensions")
-    assert _paths.registry() == Path(r"D:\mods\_registry\modlist.yaml")
-    assert _paths.debug_log() == Path(r"D:\prof\debug.txt")
+    monkeypatch.setenv("X4_GAME", _abs("X4"))
+    monkeypatch.setenv("X4_PROFILE", _abs("prof"))
+    monkeypatch.setenv("X4_MODS", _abs("mods"))
+    assert _paths.game_root() == Path(_abs("X4"))
+    assert _paths.game_extensions() == Path(_abs("X4", "extensions"))
+    assert _paths.profile_content() == Path(_abs("prof", "content.xml"))
+    assert _paths.profile_extensions() == Path(_abs("prof", "extensions"))
+    assert _paths.registry() == Path(_abs("mods", "_registry", "modlist.yaml"))
+    assert _paths.debug_log() == Path(_abs("prof", "debug.txt"))
 
 
 def test_legacy_names_still_work(clean, monkeypatch):
     """Nothing that works today may break."""
-    monkeypatch.setenv("X4_GAME_EXTENSIONS", r"D:\X4\extensions")
-    monkeypatch.setenv("X4_PROFILE_CONTENT", r"D:\prof\content.xml")
-    monkeypatch.setenv("X4_REGISTRY", r"D:\r.yaml")
-    assert _paths.game_extensions() == Path(r"D:\X4\extensions")
-    assert _paths.game_root() == Path(r"D:\X4"), "derive the root from the legacy extensions var"
-    assert _paths.profile_content() == Path(r"D:\prof\content.xml")
-    assert _paths.registry() == Path(r"D:\r.yaml")
+    monkeypatch.setenv("X4_GAME_EXTENSIONS", _abs("X4", "extensions"))
+    monkeypatch.setenv("X4_PROFILE_CONTENT", _abs("prof", "content.xml"))
+    monkeypatch.setenv("X4_REGISTRY", _abs("r.yaml"))
+    assert _paths.game_extensions() == Path(_abs("X4", "extensions"))
+    assert _paths.game_root() == Path(_abs("X4")), "derive the root from the legacy extensions var"
+    assert _paths.profile_content() == Path(_abs("prof", "content.xml"))
+    assert _paths.registry() == Path(_abs("r.yaml"))
 
 
 def test_installer_name_wins_over_legacy(clean, monkeypatch):
@@ -136,11 +155,11 @@ def test_a_fallback_never_outranks_a_real_env_var(clean, monkeypatch):
     tried first. Resolution must exhaust the higher layer — aliases AND derivations
     — before consulting the next one.
     """
-    monkeypatch.setattr(_paths, "_LOCAL_FALLBACK", {"X4_GAME": r"C:\dev-machine\X4"})
-    monkeypatch.setenv("X4_GAME_EXTENSIONS", r"D:\real\extensions")
-    assert _paths.game_root() == Path(r"D:\real"), \
+    monkeypatch.setattr(_paths, "_LOCAL_FALLBACK", {"X4_GAME": _abs("dev-machine", "X4")})
+    monkeypatch.setenv("X4_GAME_EXTENSIONS", _abs("real", "extensions"))
+    assert _paths.game_root() == Path(_abs("real")), \
         "the user's exported legacy var must win over a dev-machine fallback"
-    assert _paths.game_extensions() == Path(r"D:\real\extensions")
+    assert _paths.game_extensions() == Path(_abs("real", "extensions"))
 
 
 def test_fallback_applies_only_when_nothing_else_answers(clean, monkeypatch):
@@ -159,8 +178,9 @@ def test_unresolved_is_none_not_a_guess(clean):
 # --- derivations ------------------------------------------------------------
 
 def test_workshop_is_derived_only_from_a_real_steam_layout(clean, monkeypatch):
-    monkeypatch.setenv("X4_GAME", r"C:\Steam\steamapps\common\X4 Foundations")
-    assert _paths.workshop_content() == Path(r"C:\Steam\steamapps\workshop\content\392160")
+    monkeypatch.setenv("X4_GAME", _abs("Steam", "steamapps", "common", "X4 Foundations"))
+    assert _paths.workshop_content() == Path(
+        _abs("Steam", "steamapps", "workshop", "content", "392160"))
 
 
 def test_workshop_is_not_invented_for_a_relocated_install(clean, monkeypatch):
@@ -189,7 +209,7 @@ def test_msys_drive_paths_are_translated_on_windows(clean, monkeypatch):
     the first command the README gives a Windows user wrote a config the Python
     silently could not use: a successful install pointing at nothing.
     """
-    monkeypatch.setattr(_paths.os, "name", "nt")
+    monkeypatch.setattr(_paths, "_IS_WINDOWS", True)
     monkeypatch.setenv("X4_GAME", "/c/Program Files (x86)/Steam/steamapps/common/X4 Foundations")
     assert _paths.game_root() == Path(r"C:/Program Files (x86)/Steam/steamapps/common/X4 Foundations")
     assert _paths.game_extensions() == Path(
@@ -198,20 +218,20 @@ def test_msys_drive_paths_are_translated_on_windows(clean, monkeypatch):
 
 def test_wsl_drive_paths_are_translated_before_the_msys_shape(clean, monkeypatch):
     """`/mnt/c/x` also matches the MSYS pattern as drive 'm' + 'nt/c/x'. Order matters."""
-    monkeypatch.setattr(_paths.os, "name", "nt")
+    monkeypatch.setattr(_paths, "_IS_WINDOWS", True)
     monkeypatch.setenv("X4_GAME", "/mnt/d/Games/X4")
     assert _paths.game_root() == Path("D:/Games/X4")
 
 
 def test_posix_paths_are_untouched_off_windows(clean, monkeypatch):
     """On Linux `/c/...` is a legitimate absolute path and must survive verbatim."""
-    monkeypatch.setattr(_paths.os, "name", "posix")
+    monkeypatch.setattr(_paths, "_IS_WINDOWS", False)
     monkeypatch.setenv("X4_GAME", "/c/games/X4")
     assert _paths.game_root() == Path("/c/games/X4")
 
 
 def test_native_windows_paths_are_left_alone(clean, monkeypatch):
-    monkeypatch.setattr(_paths.os, "name", "nt")
+    monkeypatch.setattr(_paths, "_IS_WINDOWS", True)
     monkeypatch.setenv("X4_GAME", r"D:\Games\X4")
     assert _paths.game_root() == Path(r"D:\Games\X4")
 
@@ -222,3 +242,55 @@ def test_describe_names_the_config_file_and_every_location(clean, monkeypatch):
     assert "x4-paths.env" in out
     for label in ("game", "extensions", "reference", "profile", "registry", "debug log"):
         assert label in out
+
+
+def test_native_translation_is_steered_by_a_module_seam_not_global_os(monkeypatch):
+    """The platform must be steerable WITHOUT patching the shared `os` module.
+
+    THE DEFECT THIS PINS (MEASURED 2026-08-24, ubuntu CI run 32677055434). Three
+    tests here patched `name` on the `os` module reached through `_paths`. That
+    edits the GLOBAL `os`, not a `_paths` attribute -- and `pathlib` dispatches
+    its flavour on `os.name`, so on Linux the very next `Path(...)` raised
+    `UnsupportedOperation: cannot instantiate 'WindowsPath' on your system`. One
+    of the three failed outright; the other two passed by luck, depending on
+    whether a `Path` happened to be constructed while the patch was live.
+
+    A test that reaches around a module into a shared global is not testing a
+    seam, it is editing the interpreter. `_IS_WINDOWS` is the seam, and this test
+    exercises BOTH directions on every platform -- which is the point: the
+    translation's behaviour is now assertable on Linux, where it could not
+    previously even be examined.
+    """
+    monkeypatch.setattr(_paths, "_IS_WINDOWS", True)
+    assert _paths.native("/c/games/X4") == "C:/games/X4"
+    assert _paths.native("/mnt/d/Games/X4") == "D:/Games/X4"
+    assert _paths.native(r"C:\already\native") == r"C:\already\native"
+
+    monkeypatch.setattr(_paths, "_IS_WINDOWS", False)
+    assert _paths.native("/c/games/X4") == "/c/games/X4", (
+        "on POSIX, /c/... is a legitimate absolute path and must be left alone")
+    assert _paths.native("/mnt/d/Games/X4") == "/mnt/d/Games/X4"
+
+
+def test_the_profile_debuglog_fallback_follows_the_PLATFORM(monkeypatch):
+    """`--profile <id>` must resolve where the installer actually writes.
+
+    `_cli` hardcoded `~/Documents/Egosoft/X4/<id>/debug.txt` -- the Windows
+    layout -- unconditionally, so the bare `--profile` fallback could never work
+    on Linux or macOS, both of which the README documents as supported.
+    `install.sh:107` already uses `~/.config/EgoSoft/X4` off Windows, so the
+    shell half knew something the Python half did not.
+
+    Asserted through the seam in BOTH directions, so the branch that does not
+    match the running machine is still covered -- which is the whole reason the
+    seam exists.
+    """
+    from x4validate import _cli
+
+    monkeypatch.setattr(_paths, "_IS_WINDOWS", True)
+    assert _cli.default_debug_log("12345678") == (
+        Path.home() / "Documents" / "Egosoft" / "X4" / "12345678" / "debug.txt")
+
+    monkeypatch.setattr(_paths, "_IS_WINDOWS", False)
+    assert _cli.default_debug_log("12345678") == (
+        Path.home() / ".config" / "EgoSoft" / "X4" / "12345678" / "debug.txt")

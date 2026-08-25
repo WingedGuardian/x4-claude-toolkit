@@ -576,8 +576,8 @@ def apply_overlay(
         # ENGINE-PROVEN 2026-08-22 by a controlled pair differing in one variable
         # (same cue structure, same actions, same load position, both script
         # name= differing from vanilla's `Setup`):
-        #   md/setup_moona_central.xml (new vpath)      -> registers, cues run
-        #   md/setup.xml               (vanilla vpath)  -> never takes effect
+        #   md/setup_probe_unique.xml (new vpath)      -> registers, cues run
+        #   md/setup.xml              (vanilla vpath)  -> never takes effect
         # Modelling it as a full override made `x4effective dump md/setup.xml`
         # return a mod's 44-line file while the engine was demonstrably running
         # vanilla's 1,795-line `Setup`.

@@ -85,6 +85,15 @@ def test_value_does_not_path_translate_a_secret(clean, monkeypatch):
 
 
 def test_path_value_does_translate_a_posix_drive_path(clean, monkeypatch):
+    """The counterpart to the test above: a PATH may be translated, a key may not.
+
+    Forces the Windows branch through the `_IS_WINDOWS` seam so the assertion is
+    about `path_value`'s CONTRACT rather than about which machine is running it.
+    Off Windows `native()` correctly leaves `/c/...` alone -- it is a legitimate
+    absolute path there -- so without the seam this test asserted a falsehood on
+    Linux and failed for a reason that said nothing about the code.
+    """
+    monkeypatch.setattr(_paths, "_IS_WINDOWS", True)
     monkeypatch.setenv("X4_EFFECTIVE_DB", "/c/store/effective.sqlite")
     assert str(_paths.path_value("X4_EFFECTIVE_DB")).replace("\\", "/") == \
         "C:/store/effective.sqlite"
@@ -106,7 +115,12 @@ def test_nexus_key_absent_everywhere_still_raises(clean):
 
 
 def test_effective_db_is_found_in_the_config_file(clean, monkeypatch):
-    """Resolved on CALL, not bound at import — and through the same one door."""
+    """Resolved on CALL, not bound at import — and through the same one door.
+
+    Windows branch forced via the seam, for the reason given on
+    `test_path_value_does_translate_a_posix_drive_path`.
+    """
+    monkeypatch.setattr(_paths, "_IS_WINDOWS", True)
     _write_env(clean, 'X4_EFFECTIVE_DB="/c/store/effective.sqlite"\n', monkeypatch)
     from x4validate import _effective
     got = _effective.effective_db()

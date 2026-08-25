@@ -612,11 +612,34 @@ def test_case_probe_detects_this_filesystem(tmp_path):
     Linux they were failing for a reason that says nothing about the code. They
     now declare the precondition instead — but a guard nobody can make flip is
     not a guard, so both outcomes are exercised here.
+
+    Asserting `is True` was wrong, and contradicted the paragraph above it: on
+    Linux the honest answer is False, and demanding True made this guard the only
+    thing in the file that FAILED there rather than skipped. What actually needs
+    pinning is that the probe reports the truth about whatever filesystem it is
+    handed — so it is checked against an INDEPENDENT mechanism. The probe asks
+    "does the other casing exist?"; `os.path.samefile` asks "are these the same
+    file?" — different syscalls, so agreement is evidence rather than tautology.
     """
+    import os.path
+
     from conftest import fs_is_case_insensitive
-    assert fs_is_case_insensitive(tmp_path) is True, (
-        "this machine's filesystem folds case; if that ever stops being true the "
-        "five nested-patch tests should start SKIPPING, not failing")
+
+    probe = fs_is_case_insensitive(tmp_path)
+    assert isinstance(probe, bool), "the probe must give a real answer, not None"
+
+    original = tmp_path / "SameFileProbe.tmp"
+    original.write_text("x", encoding="utf-8")
+    other_casing = tmp_path / "samefileprobe.tmp"
+    try:
+        independently_same = os.path.samefile(original, other_casing)
+    except (FileNotFoundError, OSError):
+        independently_same = False
+
+    assert probe == independently_same, (
+        f"the case probe says folds={probe} but os.path.samefile says "
+        f"{independently_same}; one of them is lying about this filesystem, and "
+        f"five nested-patch tests decide whether to run based on the first")
 
 
 def test_case_probe_reports_false_on_a_case_sensitive_filesystem(tmp_path, monkeypatch):

@@ -2,9 +2,9 @@
 
 This is the honest answer to *"how do I know these tools are telling me the truth?"*
 
-It is not a claim that the toolkit is bug-free. Forty-two defects have been found in
+It is not a claim that the toolkit is bug-free. Fifty-one defects have been found in
 it so far, every one by the toolkit or its own gates rather than by a user getting a
-wrong answer, and the forty-third exists. The claim is narrower and checkable:
+wrong answer, and the fifty-second exists. The claim is narrower and checkable:
 
 > **Every defect SHAPE that has occurred here has a test or gate that mechanically
 > bans its recurrence; every answer that could be wrong carries a denominator and a
@@ -20,16 +20,17 @@ enforces it, so *"is this shape guarded?"* is a lookup rather than a feeling.
 
 | # | Defect shape | MEASURED cost when it happened | What bans it now |
 |---|---|---|---|
-| 1 | **Enumeration narrowing** — a walk that sees only part of the corpus (loose files only, so packed mods and the two packed mini-DLC are invisible) | BaseX `x4eff` held **23 of 142** mini-DLC documents (16%) and reported success. The same shape was written **7 times** in different files | `tests/test_no_loose_only_reference_walk.py`, `tests/test_no_packed_only_scan.py`; one shared helper (`_scan.iter_mod_xml`, `_effective.base_vpaths`) that every caller must use |
+| 1 | **Enumeration narrowing** — a walk that sees only part of the corpus (loose files only, so packed mods and the two packed mini-DLC are invisible) | BaseX `x4eff` held **23 of 142** mini-DLC documents (16%) and reported success. The same shape was written **7 times** in different files | `tests/test_no_loose_only_reference_walk.py`, `tests/test_no_packed_only_scan.py`; one shared helper (`_scan.iter_mod_xml`, `_effective.base_vpaths`) that every caller must use. **Recurred 2026-08-24 inside the test runner itself**: the guard against orphaned BaseX tests pinned a *shrinking* file list but not a growing one, so 22 newly added tests were collected by nothing and nothing said so. A guard whose denominator comes from its own hand-maintained list can only ever be as complete as that list; it now discovers the files on disk |
 | 2 | **Wrong population** — the check covers a different set than the finding | A `modulegroups` census reported **200** groups from 9 sources; the answer was **146** from 5, because `reference/` and `extensions/ego_dlc_*` are the same content counted twice | `gates/tool_properties.py`; the routing table in `CLAUDE.md`; `_scan.iter_corpus_xml` excludes `ego_dlc_*` by construction |
 | 3 | **Wrong mod scope** — "installed on disk" used where "what the engine loads" was meant | One disabled mod put 3 macros into the effective index as live, named it in 4 collision rows, and let **Tier B resolve a selector against it and report OK** — a false pass in the mode built to catch silent no-ops | `tests/test_mod_scope_is_explicit.py` (scope must be a **literal**), `_registry.mods(scope)` with scope positional and required |
-| 4 | **A stale artifact answering for a world that moved** | BaseX `x4eff` served pre-merge-fix values for **11 days**; on rebuild **140 of 194** engine-thrust rows changed, with no input file altered | `_freshness.py` two-axis fingerprint (content + engine bytes); `ask.py` and `gates/claims_audit.py` **refuse** rather than answer from a stale store |
+| 4 | **A stale artifact answering for a world that moved** | BaseX `x4eff` served pre-merge-fix values for **11 days**; on rebuild **140 of 194** engine-thrust rows changed, with no input file altered | `_freshness.py` two-axis fingerprint (content + engine bytes); `ask.py` and `gates/claims_audit.py` **refuse** rather than answer from a stale store. ⚠ **Partial, and the gap is known:** the content axis hashes each mod's own `content.xml` but never opens the **profile** manifest, which is the third term of "which mods are active" — so a mod being **enabled or disabled** cannot move the fingerprint and the artifact reports FRESH across that change. Additions and removals DO move it (positive control: 3 deployments, 123→126 folders, hash moved). Open, tracked |
 | 5 | **A silent no-op reported as applied** | A bare `continue` dropped **858** root-`<replace>` operations while marking them applied, so the effective store served vanilla values for real mod overrides | `AppliedOp.ok` must carry a reason; `gates/noop_audit.py` re-proves it corpus-wide |
 | 6 | **A zero rendered as a finding** — "nothing found" reported without saying whether anything was looked at | A corpus sweep threw on **all 4,391 files**, swallowed it, and reported *"0 dangling across 115 mods"* when the answer was 3 | `CorpusScan.verdict()` **raises** rather than render a zero over an empty population; `ask.py` requires a coverage denominator before printing a negative |
-| 7 | **The checker was wrong, not the code** | **16 of 16** checking-step errors across four sessions were the instrument: `$?` after a pipeline, a text splitter arbitrating a structured format, an AST scan under the wrong interpreter reporting a file "unparseable" | Planted-truth gates (`gates/diff_truth.py`, `gates/oracle*.py`) — the checker is validated against known answers; every AST guard **raises** on a parse failure instead of skipping |
-| 8 | **An aggregate hiding a per-item regression** | Two mods went **2.8 s → 112 s** and **2.4 s → 121 s** while the total moved **1.00×**, because a third got faster | `gates/perf_guard.py` compares **items, never totals** |
+| 7 | **The checker was wrong, not the code** | **37 of 37** checking-step errors across eight sessions were the instrument — most recently a gate reporting a **814× performance regression** that was the machine having been asleep, and a TSV reader that took a comment line as its header and reported "0 problems" over an **empty population**. Earlier ones: `$?` after a pipeline, a text splitter arbitrating a structured format, an AST scan under the wrong interpreter reporting a file "unparseable", a "cold" verification that was warm because path resolution walks up to a config file, and a unit test whose verdict came from a mutable artifact outside its fixture | Planted-truth gates (`gates/diff_truth.py`, `gates/oracle*.py`) — the checker is validated against known answers; every AST guard **raises** on a parse failure instead of skipping; `scripts/verify-cold.sh` **refuses to run until it has proven the environment is unconfigured** |
+| 8 | **An aggregate hiding a per-item regression** | Two mods went **2.8 s → 112 s** and **2.4 s → 121 s** while the total moved **1.00×**, because a third got faster | `gates/perf_guard.py` compares **items, never totals**. ⚠ **The same gate had the opposite defect until 2026-08-25**, and it is worth knowing about: its clock advances while the machine is *suspended*, so a sweep left running overnight reported a **814× regression** on a mod that re-timed at **3.47 s**. A timing that spans a suspend is a non-answer, not a finding. A suspected regression is now **re-timed once** and reported only if it reproduces; one that cannot be re-timed is reported UNCONFIRMED and still fails, because "could not check" is not "not a regression" |
 | 9 | **Two doors to one question** — the same thing resolved by two independent code paths | Tier B and `x4effective` gave contradictory answers about the same value, each internally consistent | One implementation per question; `gates/cross_tool.py` asserts tools agree |
-| 10 | **An executable that resolves its own environment** — instead of delegating to the one resolver | A fingerprint script defaulted to a developer's absolute path: on any other machine it fingerprinted nothing and reported **FRESH forever**. A corpus build did the same and would index **zero documents, exit 0** | `tests/test_env_resolution_is_delegated.py` (AST, with a scoped escape hatch); `scripts/verify-cold.sh` runs all 9 CLIs on a genuinely cold checkout |
+| 10 | **An executable that resolves its own environment** — instead of delegating to the one resolver | A fingerprint script defaulted to a developer's absolute path: on any other machine it fingerprinted nothing and reported **FRESH forever**. A corpus build did the same and would index **zero documents, exit 0** | `tests/test_env_resolution_is_delegated.py` (AST, with a scoped escape hatch); `scripts/verify-cold.sh` runs all 9 CLIs on a genuinely cold checkout. **This row overclaimed until 2026-08-24**: the guard detected only `os.environ`/`os.getenv`, so a hardcoded absolute-path *literal* — the form this very defect shipped in — was invisible to it, and one survived in `tools/basex/stage.py`. It now covers literals too, and three further scripts that returned **rc 1 ("has findings") instead of rc 2 ("not configured")** were found by running them cold, not by reading them |
+| 11 | **Failing late, and blaming the wrong component** — the error a user actually sees names something other than the cause | Reproduced 2026-08-24: with no JVM installed, the corpus tool reported `BaseX query failed: [WinError 2]` — blaming BaseX for a missing Java. With no index built it printed a raw resource error and **never named the build script**, because the one line that does sits on a code path an unbuilt index can never reach. The build script spent its entire multi-minute staging pass before reaching the check that would fail | One shared `preflight.py`, called by all three entry points, that checks the JVM (floor read from the shipped jar's own bytecode level, not chosen), the jar, the index, `uv` and free disk **before** any long work, and refuses with **exit 2**. 24 tests exercise every check in **both** directions, including that an unrecognised `java -version` banner refuses rather than assuming a pass. ⚠ **The same row's defect recurred inside the fix, and was caught before shipping (2026-08-25):** the preflight reported *“the database has not been built”* over a database that was built and queryable, because the vendoring left out a 0-byte upstream marker and BaseX had silently relocated its home. A first run would have been *build → told to build*, forever. The check now looks for the marker and names the relocation |
 
 ---
 
@@ -43,6 +44,23 @@ every exclusion. A bare zero is a lead, never a fact.
 fingerprint: the installed content, and a hash of the merge/enumeration engine's own
 bytes. A merge fix changes the right answer for identical inputs — so the artifact
 goes stale and the tools say so, rather than serving the old answer confidently.
+
+**The engine axis hashes source BYTES, so a comment change marks artifacts stale.**
+That is deliberate, and worth stating because it looks like a fault the first time
+it happens: demonstrated 2026-08-24, when a two-line comment edit moved the engine
+fingerprint and every derived artifact reported STALE with nothing semantic
+changed. The alternative — deciding which edits "really" change behaviour — needs
+an equivalence oracle nobody has, and would fail in the one direction that
+matters, by calling a real change cosmetic. A spurious rebuild costs minutes; a
+missed one silently serves wrong values, as it did for eleven days. Rebuild after
+editing the merge sources, even if you only touched a comment.
+
+⚠ **With one measured hole, stated here rather than left for you to find.** The content
+axis reads each installed mod's own manifest, but not the profile manifest that records
+which mods are *enabled*. Installing or removing a mod moves the fingerprint; **toggling
+one on or off does not** — so across that one change an artifact reports FRESH while
+describing a different game. If you have enabled or disabled a mod since your last
+build, rebuild rather than trusting the banner.
 
 **A guess never wears the grammar of a measurement.** Provenance travels with the
 value; nothing derived from a guess is promoted into a confident state.
@@ -62,7 +80,7 @@ fooled by our assumptions.
 
 - **Load order between mods is community convention, not engine-documented.** Any
   result that turns on *which mod won* is advisory and says so.
-- **Every finding is recorded individually** — F1–F42, each with a measured cost, and
+- **Every finding is recorded individually** — F1–F51, each with a measured cost, and
   where a limit was accepted rather than fixed, the reason it was accepted. The
   per-finding register (`docs/BLIND-SPOTS.md`) lives in the development tree because
   its evidence cites a specific private modlist by name; the findings fixed in each
@@ -71,8 +89,18 @@ fooled by our assumptions.
   test and a `debug.txt` read. The reference/completeness catalog is partial.
 - **BaseX indexes are discovery instruments.** Use the effective store for claims
   about live values.
-- **Windows is the tested platform.** Linux/macOS paths exist and are exercised, but
-  a handful of tests are Windows-only by construction and skip elsewhere.
+- **Windows is the tested platform, and on Linux there is a specific unfixed gap —
+  do not read a green Linux test run as a Linux guarantee.** X4's own filesystem
+  folds case; NTFS does too, so the toolkit never had to. Four lookups compare
+  paths case-sensitively, and on a case-sensitive filesystem a mod shipping `MD/`
+  or `AIScripts/` resolves to nothing. **One of the four fails silently** — the
+  subtree simply contributes zero files and nothing says so, which by this
+  document's own standard is worse than the three that fail loudly. Note the
+  inconsistency this produces: packed archives ARE read case-insensitively, so on
+  Linux a packed mod resolves while its loose twin does not.
+  Linux CI runs and is expected to pass, but it is **informational, not gating**,
+  precisely because passing tests do not close that gap. It will be promoted to a
+  gate when the case-folding work lands, not before.
 
 ## How to check any of this yourself
 

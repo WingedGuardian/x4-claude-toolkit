@@ -87,6 +87,63 @@ def measure() -> dict[str, float]:
     return out
 
 
+def retime(mod_name: str, cfg) -> float | None:
+    """Time ONE mod again. None means it could not be measured at all."""
+    d = _env.extensions() / mod_name
+    if not d.is_dir():
+        print(f"  re-time {mod_name}: no such mod directory — cannot confirm",
+              file=sys.stderr)
+        return None
+    t = time.perf_counter()
+    try:
+        _check.validate(d, cfg, update=True)
+    except Exception as exc:
+        # Say so. A re-time that could not run is the UNCONFIRMED path, and the
+        # caller escalates it rather than clearing it -- but a reader still has
+        # to be able to see WHY it could not be confirmed. (Caught by
+        # tests/test_no_silent_swallow.py on the first draft of this function,
+        # which returned None with no word to anyone.)
+        print(f"  re-time {mod_name}: {type(exc).__name__}: {exc} — cannot confirm",
+              file=sys.stderr)
+        return None
+    return round(time.perf_counter() - t, 3)
+
+
+def confirm_regressions(bad, retime_fn):
+    """Re-time each suspected regression once; keep only those that REPRODUCE.
+
+    WHY (MEASURED 2026-08-24). `time.perf_counter()` on Windows advances while
+    the machine is SUSPENDED, so a gate run left overnight charges the whole
+    sleep to whichever mod happened to be timing when the lid closed. A real
+    run reported:
+
+        bh_shader   2.71s -> 2210.88s  (814.9x)   PERF REGRESSION
+
+    and the same mod re-timed at **3.47s** minutes later. The suspend was
+    confirmed independently in the Windows event log (Kernel-Power 131,
+    ResumeCount: 3, across an 18-hour wall-clock window for a sweep that used
+    well under an hour of CPU).
+
+    A timing that spans a suspend is a NON-ANSWER, and this register's founding
+    rule is that a non-answer must never be rendered as a finding. Re-timing is
+    platform-independent -- it assumes nothing about whether a given clock
+    advances across sleep -- and costs nothing on the normal path, because it
+    only runs for items already flagged.
+
+    A re-time that FAILS is reported as UNCONFIRMED and still fails the gate:
+    "could not check" is not "not a regression".
+    """
+    confirmed, spurious = [], []
+    for row in bad:
+        _d, _ratio, b, _c, mod = row
+        again = retime_fn(mod)
+        if again is None or is_regression(b, again):
+            confirmed.append((row, again))
+        else:
+            spurious.append((row, again))
+    return confirmed, spurious
+
+
 def main() -> int:
     if RECORD:
         data = measure()
@@ -123,10 +180,21 @@ def main() -> int:
         r = "inf" if ratio == float("inf") else f"{ratio:.1f}x"
         print(f"    {mod:<34} {b:>7.2f}s -> {c:>7.2f}s  {d:+7.2f}s  {r}")
 
-    bad = [r for r in rows if is_regression(r[2], r[3])]
-    print(f"\n  REGRESSIONS (>{RATIO_FAIL}x AND >{DELTA_FAIL}s): {len(bad)}")
-    for d, ratio, b, c, mod in sorted(bad, reverse=True):
-        print(f"    {mod:<34} {b:.2f}s -> {c:.2f}s  ({d:+.2f}s, {ratio:.1f}x)")
+    suspected = [r for r in rows if is_regression(r[2], r[3])]
+    if suspected:
+        print(f"\n  {len(suspected)} suspected — re-timing each once before reporting "
+              f"(a timing that spans a machine SUSPEND is a non-answer, not a finding)")
+    confirmed, spurious = confirm_regressions(suspected, lambda m: retime(m, cfg))
+    for (d, ratio, b, c, mod), again in sorted(spurious, reverse=True):
+        print(f"    DISCARDED {mod:<28} {b:.2f}s -> {c:.2f}s ({ratio:.1f}x) "
+              f"did NOT reproduce: {again:.2f}s on re-timing")
+
+    bad = [row for row, _again in confirmed]
+    print(f"\n  REGRESSIONS (>{RATIO_FAIL}x AND >{DELTA_FAIL}s, CONFIRMED): {len(bad)}")
+    for (d, ratio, b, c, mod), again in sorted(confirmed, reverse=True):
+        note = "could NOT be re-timed — reported UNCONFIRMED" if again is None \
+            else f"reproduced at {again:.2f}s"
+        print(f"    {mod:<34} {b:.2f}s -> {c:.2f}s  ({d:+.2f}s, {ratio:.1f}x)  [{note}]")
     missing = sorted(set(base) - set(curr))
     if missing:
         print(f"\n  note: {len(missing)} baselined mod(s) not measured this run "

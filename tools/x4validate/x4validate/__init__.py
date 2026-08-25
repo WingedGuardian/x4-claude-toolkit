@@ -10,4 +10,4 @@ Built on lxml (real XPath) because X4's most common selector idiom (`//ware[...]
 breaks naive ElementTree-based matchers.
 """
 
-__version__ = "2.5.0"
+__version__ = "2.6.0"

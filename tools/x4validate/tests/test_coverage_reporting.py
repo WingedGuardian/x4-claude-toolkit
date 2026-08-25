@@ -74,16 +74,17 @@ _COV_PATH = Path(__file__).resolve().parent.parent.parent / "basex" / "coverage.
 def _coverage_module():
     """Load `tools/basex/coverage.py`, or SKIP.
 
-    BaseX is deliberately dev-only and is NOT part of the public bundle (it needs
-    a JVM and a multi-GB corpus). Without this guard these four tests FAIL on a
-    fresh public clone -- MEASURED on the 2.4.0 port: 4 failed, 584 passed -- and
+    BaseX ships as of v2.6.0, so this normally resolves. It did NOT before: the
+    tooling was dev-only, and without this guard these four tests FAIL on a fresh
+    public clone -- MEASURED on the 2.4.0 port: 4 failed, 584 passed. The guard
+    stays because it is still reachable (a pruned checkout, an older bundle), and
     a failing suite is the first thing a new user sees.
 
     A skip, not a silent pass: pytest reports it distinctly, so "not checked here"
     can never read as "checked and fine".
     """
     if not _COV_PATH.is_file():
-        pytest.skip(f"no BaseX tooling at {_COV_PATH} (dev-only, not in the public bundle)")
+        pytest.skip(f"no BaseX tooling at {_COV_PATH} — it ships, so this means a pruned checkout")
     spec = importlib.util.spec_from_file_location("basex_coverage", _COV_PATH)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -154,3 +155,63 @@ def test_the_exclusions_are_machine_readable_not_only_printed(tmp_path):
     assert cov["negative_claim_excludes"] == {
         "vpaths_without_effective_tree": 2, "unparseable_overlays": 1}
     assert cov["enumeration"]["sources_configured"] == 1
+
+
+def test_bare_roots_REFUSE_rather_than_write_a_garbage_denominator(tmp_path, capsys):
+    """F46. `--reference` and `--extensions` defaulted to `""`, i.e. `Path(".")`.
+
+    Run bare, `coverage.py` therefore counted the XML in whatever directory you
+    happened to be standing in, called that the expected total, and reported a
+    DEFICIT — in the one tool whose entire job is to supply a denominator. It did
+    not refuse; it answered, confidently, from a population it never looked at.
+
+    MEASURED blast radius 2026-08-24, from one bare invocation against the real
+    artifact: `expected` was rewritten from **13,684 to 2,822** (the stage-manifest
+    counts alone, the reference tree contributing nothing), `deficit` flipped to
+    -10,857, `supports_negative_claim` went false, and the recorded freshness
+    fingerprint was DROPPED. Second-order cost: a unit test that read that artifact
+    silently changed verdict, so one bad invocation produced both a corrupted
+    denominator and a false test result.
+
+    This is `_scan.CorpusScan.verdict`'s rule, which RAISES rather than render a
+    zero over an empty population — applied to the tool that publishes denominators
+    for everything else.
+    """
+    cov = _coverage_module()
+    out = tmp_path / "coverage-x4raw.json"
+    rc = cov.main(["--db", "x4raw", "--out", str(out)])
+    err = capsys.readouterr().err
+    assert rc == 2, f"expected the not-configured code, got {rc}"
+    assert not out.exists(), "it must not write a coverage report it cannot compute"
+    assert "--reference" in err and "--extensions" in err, (
+        "the refusal must name what to supply")
+
+
+def test_the_eff_manifest_path_does_NOT_require_the_roots(tmp_path):
+    """`--eff-manifest` reconciles against a manifest, so it needs no disk roots.
+
+    WHY THIS IS PINNED RATHER THAN LEFT TO READ (found by the parallel session,
+    2026-08-24). `build-effective.sh:57-58` passes NEITHER `--reference` nor
+    `--extensions` -- only `--db` and `--eff-manifest`. It survives F46's guard
+    purely because the `--eff-manifest` branch RETURNS before the guard is
+    reached. That is accidental safety: reorder those two blocks and x4eff
+    coverage breaks.
+
+    It would also break SILENTLY. `build-effective.sh` wraps the call in
+    `|| true`, so a exit-2 refusal there prints and is discarded, and the next
+    thing to consume `coverage-x4eff.json` would read a stale file believing it
+    current. A guard that protects one script by breaking another, quietly, is a
+    net loss -- so the ordering is now a test, not a coincidence.
+    """
+    cov = _coverage_module()
+    cov.basex_query = lambda db, xq: "10"
+    man = tmp_path / "effective-manifest.json"
+    man.write_text(json.dumps(_manifest({"reference": 8, "ego_dlc_x": 2})),
+                   encoding="utf-8")
+    out = tmp_path / "coverage-x4eff.json"
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc = cov.main(["--db", "x4eff", "--eff-manifest", str(man), "--out", str(out)])
+    assert rc != 2, (
+        "the F46 root guard must not fire on the eff-manifest path -- "
+        "build-effective.sh passes no roots and swallows the exit code")
+    assert out.is_file(), "the eff-manifest path must still write its report"

@@ -106,6 +106,34 @@ mods?" No published tool answers that for X4 — the interaction suite does, rea
 
 The `/x4-mod-interaction` skill ties all four together into one interaction brief.
 
+### BaseX corpus search — ask questions across every file at once
+
+New in **v2.6.0**, and *optional*: the tools above answer questions about a mod. This answers
+questions about the whole corpus — 36M nodes across the base game, every DLC and every installed
+mod — in about a second.
+
+```bash
+cd tools/basex
+bash build-corpus.sh        # one-off index of every file AS WRITTEN
+bash build-effective.sh     # one-off index of the merged, live tree
+uv run python ask.py "which ships set a drag value below 1?"
+```
+
+Use it for the questions a grep cannot answer honestly: *what values does this attribute take across
+the corpus?* · *who references this macro?* · *which mods define a ware nobody produces?*
+
+**The reason it is worth a JVM: it can back a negative.** A recursive grep that finds nothing tells
+you nothing — it cannot distinguish "this does not exist" from "I did not look everywhere", and 62%
+of mod XML is inside packed archives a grep never opens. `ask.py` refuses to print a zero as a
+finding unless it can state its denominator, and then says *"NEGATIVE CONFIRMED over N of M
+documents"* with every exclusion named. It also refuses to answer at all from a stale index rather
+than serving you a confidently wrong number.
+
+**Be honest with yourself about the cost before you start:** Java 17+, roughly 3 GB of disk, and a
+build measured in minutes, not seconds. BaseX itself is bundled (BSD-3-Clause, 5.2 MB) so there is
+nothing extra to download. See [`tools/basex/README.md`](tools/basex/README.md) for the install, the
+freshness contract and the exit codes, and `tools/basex/QUERIES.md` for worked queries.
+
 ### Skills & subagents
 - `/x4-debug` — read the active profile's `debug.txt`, filter benign noise, surface real errors.
 - `/x4-modlist-review` — triage your mod registry against the Nexus API.
@@ -167,6 +195,8 @@ Paste the contents of `SETUP_PROMPT.txt`. Claude runs `bash setup.sh`, checks pr
 - **uv** (+ Python 3.13) — for x4validate (https://docs.astral.sh/uv/)
 - **XRCatTool** (from Egosoft) — to unpack your own game to `reference/` (run via `bin/xrcat`)
 - **Wine** — only on **Linux/macOS**, to run XRCatTool (a Windows `.exe`)
+- **Java 17+** — *optional*, only for the BaseX corpus search described above. Nothing else needs a
+  JVM, and the rest of the toolkit works without it.
 
 ### Platform support
 Runs on **Linux, macOS, and Windows (Git Bash)**. All locations are configurable via

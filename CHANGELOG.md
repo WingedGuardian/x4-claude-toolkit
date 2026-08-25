@@ -1,5 +1,95 @@
 # Changelog
 
+## v2.6.0
+
+**BaseX ships.** The corpus-search tool has been dev-only since it was written; it is now part of the
+bundle, jar included. It exists to answer the one class of question a recursive grep answers
+*dishonestly* — "nothing references X" — because a grep cannot distinguish *this does not exist* from
+*I did not look everywhere*, and 62% of mod XML sits inside packed archives a grep never opens.
+`ask.py` refuses to print a zero as a finding unless it can state the denominator it looked over, and
+then says **"NEGATIVE CONFIRMED over N of M documents"** with every exclusion named.
+
+It is **optional** and it is not free: Java 17+, roughly 3 GB of disk, and a build measured in
+minutes. That is said up front rather than discovered on your first run.
+
+Everything else here is the cost of making it safe to hand to someone else — plus five defects the
+gates found while we did.
+
+### Added
+
+- **`tools/basex/`** — two indexes over the corpus: `x4raw` (every file *as written*) and `x4eff`
+  (the merged, live tree, diffs applied in load order). Use `x4eff` for any claim about what the game
+  actually sees; `x4raw` will happily quote a vanilla value your mod list overwrote.
+- **BaseX itself is bundled** (5.2 MB, BSD-3-Clause, notice reproduced in `tools/basex/basex/LICENSE`)
+  so there is nothing extra to download. Only the JVM is yours to install.
+- **`tools/basex/README.md`** — install, and the two things that were nowhere in writing before: the
+  **freshness refusal contract** (without it, a tool declining to answer reads as a bug rather than
+  the feature it is) and the **exit codes** for all four entry points.
+- **A preflight (F47).** Every entry point now checks the JVM, the jar, the index, `uv` and free disk
+  **before** any long work, and refuses with exit **2** ("not configured"), never 1 ("your corpus has
+  findings"). Previously: a missing JVM surfaced as `BaseX query failed: [WinError 2]` — blaming
+  BaseX for a missing Java — and an unbuilt index printed a raw resource error that **never named the
+  build script**, because the one line that does sits on a code path an unbuilt index cannot reach.
+  The Java floor is read from the shipped jar's own bytecode level, not chosen.
+
+### Fixed
+
+- **A build that SUCCEEDED and was then reported as never built (F51).** `.basexhome` is a 0-byte
+  marker in the BaseX archive, and it is what tells BaseX that a directory is its home. Without it
+  BaseX relocates its whole home to `$HOME/basex` and builds there — successfully, and queryably —
+  while every check looks in the tool's own directory and finds nothing. The first run would have
+  been: run the multi-minute build, get told to run the build, forever. Caught before shipping;
+  the marker is vendored and the preflight now names the relocation.
+- **A crashed build reported as success (F48).** `build-effective.sh` swallowed its builder's exit
+  code and wrote its manifest only at the end, so a crash left the *previous* run's manifest in place
+  and coverage reconciled the new index against the old one — and could print `COVERAGE COMPLETE`.
+  It now fails fast and deletes the manifest before rebuilding.
+- **`ask.py` gave a traceback where it owed an answer.** An undeterminable freshness verdict escaped
+  as a raw `EngineUnavailable` and exited **1**. "Could not check" is not "stale", and printing STALE
+  would be an assertion where the honest answer is that nobody checked: it now reports
+  **FRESHNESS UNKNOWN** and exits 4.
+- **A guard blind to additions (F49).** The check that stops BaseX tests being orphaned pinned a
+  *shrinking* file list but not a growing one — so adding a test file created 22 tests that passed by
+  hand and were collected by nothing. A guard whose denominator comes from its own hand-maintained
+  list can only ever be as complete as that list; it now discovers the files on disk.
+- **A performance gate that could not tell a slow run from a sleeping machine (F50).**
+  `time.perf_counter()` advances while Windows is suspended, so a sweep left running overnight
+  charged the entire suspend to whichever item was being timed — reported as a **814× regression**
+  with "investigate before shipping", on an item that re-timed *faster than its baseline*. A
+  suspected regression is now re-timed once and reported only if it reproduces; one that **cannot**
+  be re-timed is reported UNCONFIRMED and still fails, because "could not check" is not "not a
+  regression".
+- **The environment guard could not see a hardcoded path (F44).** v2.5.0's theme was "an executable
+  that resolves its own environment instead of delegating", and the AST test that bans it detected
+  only `os.environ` / `os.getenv` — so a hardcoded absolute path, the form that defect actually
+  shipped in, sailed through. `docs/TRUST.md` named that test as what banned the shape, which means
+  **the shipped trust document was overclaiming**. Both are corrected.
+- **A coverage denominator taken from the current directory (F46).** `coverage.py`'s `--reference`
+  and `--extensions` defaulted to `""`, and `Path("")` is `Path(".")` — so a bare run counted the
+  directory it was standing in and published that as the denominator. It now refuses and writes
+  nothing.
+
+### Changed
+
+- **POSIX: the 8 Linux CI failures are fixed** — all were test-side, none a library defect. Tests no
+  longer patch the global `os` module to fake Windows (that steers `pathlib`'s flavour dispatch and
+  raises `UnsupportedOperation`); `_paths._IS_WINDOWS` is a real seam instead. `x4validate --debug`
+  now finds the log on POSIX. **Ubuntu deliberately stays informational, not a gate** — see below.
+- **`docs/TRUST.md` gained a stated hole rather than a stronger claim.** The freshness fingerprint
+  hashes each installed mod's manifest but not the *profile* manifest, so **enabling or disabling** a
+  mod cannot move it and an artifact reports FRESH across that change. Installing or removing one
+  does move it. Also newly stated: on Linux, four path lookups compare case-sensitively and **one of
+  them fails silently**, which is why the Linux run stays informational — passing tests do not close
+  that gap, and a green badge should not imply they did.
+- **Java 17+** added to the prerequisite list, marked optional and scoped to BaseX.
+
+### Verification
+
+638 tests in the main suite plus 50 run as a subprocess in `tools/basex`, all 26 gates green, and the
+suite verified on a genuinely cold checkout — one with every `X4_*` variable cleared and *proven*
+unresolved first, because a partially-configured machine will otherwise masquerade as a clean one and
+hand you a green that means nothing.
+
 ## v2.5.0
 
 Three defects, one shape: **an executable that resolves its own environment instead of delegating to

@@ -34,6 +34,7 @@ script is covered by no linter — the same caveat the sibling guards carry.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -92,6 +93,77 @@ def _env_reads(path: Path) -> list[tuple[int, str]]:
         if any(MARKER in ln for ln in _annotation_window(lines, start, end)):
             continue
         out.append((node.lineno, (ast.get_source_segment(source, node) or "")[:70]))
+    return out
+
+
+#: A string literal that NAMES AN ABSOLUTE MACHINE LOCATION. Deliberately narrow:
+#: a URL is skipped (it is not a location on this disk), and a path DERIVATION
+#: built from separate components -- `Path.home() / "Documents" / "Egosoft"` -- is
+#: a different defect (a hardcoded OS LAYOUT, not a hardcoded location) and is not
+#: this guard's business. Widening it to bare proper nouns was tried and rejected:
+#: it flagged a user-facing message reading "not documented by Egosoft", and a
+#: gating check that cries wolf on prose is one you learn to ignore.
+LOCATION = re.compile(
+    r"(^[A-Za-z]:[\/])"          # C:\... or C:/...
+    r"|(^/(home|Users|mnt)/)"       # /home/you/..., /mnt/c/...
+    r"|(steamapps)"                 # any Steam library path fragment
+    r"|(Program\ Files)"
+    r"|([\/]\.steam[\/])",     # the Linux Steam dir
+    re.IGNORECASE)
+
+
+def _docstring_ids(tree: ast.AST) -> set[int]:
+    """Ids of every module/class/function docstring node.
+
+    Prose explaining the rule must not trip the rule -- the same reason this file
+    uses AST rather than grep, one level down.
+    """
+    out: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                             ast.AsyncFunctionDef)):
+            body = getattr(node, "body", None)
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                out.add(id(body[0].value))
+    return out
+
+
+def _location_literals(path: Path) -> list[tuple[int, str]]:
+    r"""(lineno, literal) for each hardcoded absolute machine location in *path*.
+
+    THE DEFECT THIS PINS (MEASURED 2026-08-24). `_env_reads` above catches only
+    `os.environ` / `os.getenv`, so a hand-rolled fallback spelled as a LITERAL
+    was invisible to it -- and a literal is exactly how the F39-F41 family
+    actually shipped. `tools/basex/stage.py` carried a
+    `C:\Program Files (x86)\Steam\...\extensions` default: on any other machine
+    it stages ZERO documents and exits 0. `docs/TRUST.md` row 10 cited this very
+    file as what bans that shape, so the shipped trust document was overclaiming.
+
+    Honours the same `# env-ok:` marker as `_env_reads`; there is deliberately
+    one hatch, not two. Parse errors RAISE, for the reason given above.
+    """
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    lines = source.splitlines()
+    skip = _docstring_ids(tree)
+    out: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+            continue
+        if id(node) in skip:
+            continue
+        value = node.value
+        if value.startswith(("http://", "https://")):
+            continue
+        if not LOCATION.search(value):
+            continue
+        start = node.lineno - 1
+        end = getattr(node, "end_lineno", node.lineno)
+        if any(MARKER in ln for ln in _annotation_window(lines, start, end)):
+            continue
+        out.append((node.lineno, value[:70]))
     return out
 
 
@@ -175,3 +247,59 @@ def test_a_file_that_cannot_be_parsed_raises(tmp_path):
     broken.write_text("def (:\n", encoding="utf-8")
     with pytest.raises(SyntaxError):
         _env_reads(broken)
+
+
+def test_no_module_hardcodes_an_absolute_machine_location():
+    """F44. A literal path is the form the F39-F41 family actually shipped in.
+
+    MEASURED 2026-08-24 over 61 production files (docstrings and `_paths.py`
+    excluded): exactly ONE hit, `tools/basex/stage.py:42`, and zero false
+    positives. That precision is why this gates rather than merely informs -- a
+    check that floods is one you train yourself to skip.
+    """
+    offenders: list[str] = []
+    for path in _files():
+        if path.name in EXEMPT_FILES:
+            continue
+        for lineno, literal in _location_literals(path):
+            offenders.append(f"{path.relative_to(ROOT.parent)}:{lineno}: {literal!r}")
+    assert not offenders, (
+        "resolve the location through `_paths` and REFUSE when it is unset, rather "
+        "than defaulting to this machine. A hardcoded path does not fail on someone "
+        f"else's disk -- it silently reads nothing and exits 0:\n  "
+        + "\n  ".join(offenders))
+
+
+def test_the_location_guard_can_actually_fail(tmp_path):
+    """Red on purpose, or it verifies nothing (CLAUDE.md #26).
+
+    Each branch of LOCATION is exercised, plus the two deliberate NON-findings --
+    a URL and prose in a docstring -- because a guard is defined as much by what
+    it declines to flag as by what it catches.
+    """
+    for name, body in [
+        ("drive.py",  'P = r"C:\\Program Files (x86)\\Steam\\steamapps\\common\\X4"\n'),
+        ("posix.py",  'P = "/home/you/x4/extensions"\n'),
+        ("wsl.py",    'P = "/mnt/c/Games/X4"\n'),
+        ("steam.py",  'P = "somewhere/steamapps/common/X4"\n'),
+        ("lsteam.py", 'P = "/opt/.steam/steam/x4"\n'),
+    ]:
+        f = tmp_path / name
+        f.write_text(body, encoding="utf-8")
+        assert _location_literals(f), f"{name}: a hardcoded location went undetected"
+
+    url = tmp_path / "url.py"
+    url.write_text('U = "https://api.steampowered.com/ISteamRemoteStorage/x"\n',
+                   encoding="utf-8")
+    assert not _location_literals(url), "a URL is not a machine location"
+
+    prose = tmp_path / "prose.py"
+    prose.write_text('r"""Never hardcode C:\\Program Files (x86)\\Steam here."""\n',
+                     encoding="utf-8")
+    assert not _location_literals(prose), "a docstring explaining the rule must not trip it"
+
+    hatched = tmp_path / "hatched.py"
+    hatched.write_text(
+        '# env-ok: a FIXTURE path, never resolved against a real disk\n'
+        'P = r"C:\\Program Files (x86)\\Steam"\n', encoding="utf-8")
+    assert not _location_literals(hatched), "the escape hatch did not suppress the finding"
