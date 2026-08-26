@@ -14,10 +14,14 @@ Run them from `tools/x4validate/`.
 > **Measured runtimes — background the long ones.** A foreground Bash call is capped at
 > 600000 ms (10 min) and a larger `timeout` is silently clamped, so an over-cap run is killed
 > mid-way and looks like a hang. MEASURED on the reference machine over 115 mods:
-> **`corpus_sweep.py` ~2100 s** (230 runs, both tiers) · **`perf_guard.py` and `--record`
-> ~600 s+** (replays `--update` per mod) · `schema_sweep.py`, `stress_sweep.py`,
-> `mutation_probe.py` minutes. Everything else is seconds to ~1 min. Run the long ones in the
-> background, or scope them down (`perf_guard.py --limit=N`).
+> MEASURED on a full sweep 2026-08-26: **`corpus_sweep.py` ~1230 s** (242 runs, both tiers) ·
+> **`perf_guard.py` and `--record` ~685 s** (replays `--update` per mod) ·
+> `xsd_fast_parity.py` ~220 s · `schema_sweep.py` ~180 s · `noop_audit.py` ~160 s ·
+> `regress.py` ~155 s · `stress_sweep.py` ~150 s · `update_corpus.py` ~105 s ·
+> **`mutation_probe.py` ~70 s** (11 mutants across 3 files; a survivor costs one extra
+> full-suite run, so it is slower only when it finds something). Everything else is seconds
+> to ~1 min; the whole sweep is ~55 min. Run the long ones in the background, or scope them
+> down (`perf_guard.py --limit=N`).
 
 | `oracle.py` | `uv run python gates/oracle.py` | **234/234 ops agree, 0 FALSE OK.** Replays every diff op the engine itself rejected (from a captured `debug.txt`) and requires x4validate to reject the same ones. `debug.txt` is ground truth; a drop here means the merge model moved. |
 | `oracle_index.py` | `uv run python gates/oracle_index.py` | **12/12 agree, 0 FALSE OK** over the index-lookup failures the engine logged. Note the structural limit stated in its own output: a failure-only log can prove FALSE OK but never completeness. |
