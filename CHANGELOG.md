@@ -1,5 +1,63 @@
 # Changelog
 
+## Unreleased
+
+### Fixed — a mutating gate could not put the tree back if it died (F59)
+
+`gates/mutation_probe.py` breaks a source file on purpose, runs the tests, and restores it. The
+restore lived in a `finally:` — and **`finally` does not run on SIGKILL**. A killed probe therefore
+left a deliberately-broken source on disk, and because that file is **tracked**, `git status` shows
+an ordinary modification. **v2.5.0 shipped exactly that way once**: ambiguous-`sel` detection
+silently disabled in a public release.
+
+Not hypothetical. A stop command that **reported success and did not stop** left three gate sweeps
+racing, so "never run a mutating gate against a tree in use" can be broken by accident.
+
+**Reproduced rather than simulated** — launched the probe, polled until a target really differed from
+HEAD, hard-killed it at t=7.5 s. It left `if len(new_children) != 1 and False:` on disk. Re-running
+refused with **rc 2**; `--recover` restored it and named the mutated file.
+
+Byte-for-byte pristine copies plus a `.mutation-probe-active` marker written **before** the first
+mutation, so recovery never depends on the thing that failed. Recovery is explicit, never automatic:
+auto-restore would need pid liveness, and on Windows `os.kill(pid, 0)` maps to `TerminateProcess`.
+
+### Added — the mutation window is visible to every tool, and refuses writers
+
+During a window every CLI answers from broken code with nothing on screen saying so. Reads now get a
+**banner**; writes **refuse with rc 2**. The asymmetry is the point: a wrong read can be re-taken
+once the ~70 s window closes, but a poisoned **artifact** outlives it and is trusted afterwards.
+
+The banner rides on the decorator every entry point already carries, so all 9 CLIs are covered by
+construction. The refusal sits at the two **stamping sites**, not at argument parsing, so no other
+entry path can slip past it. ⚠ The marker resolves from `__file__`, never the CWD — these tools are
+normally run from the game directory, where a CWD-relative lookup would report all-clear from the one
+place it matters most.
+
+### Changed — mutation coverage 1 file → 3, and a hang is its own verdict (F54)
+
+`_merge` (6 mutants), `_registry` (3), `_compat` (2) — **11/11 killed**. Every mutant inverts a guard
+whose failure has a **measured** cost, so a contrived mutant nothing kills cannot pad the number.
+Per-mutant timeout **1800 s → 120 s**, and **HUNG** is now distinct from both killed and survived: a
+mutant that hangs is a finding about the suite, not a pass.
+
+### Changed — a stale verdict says how far it moved
+
+Both freshness axes now quote `[stored -> now]`. "Moved how far, and by whose change?" is the first
+question on hitting a stale artifact, and answering it previously needed a hand-written script.
+
+### Fixed — a capability that existed, was correct, and was never reached (F58)
+
+`x4effective dump --chain` answers whether a vpath exists in the live tree, **who supplies it**, and
+whether they supply or merely patch it (`vro:full` vs `base, ego_dlc_x:diff`). A gap was filed
+against it anyway, and a hand-rolled base-only substitute labelled **65 of 241 vpaths** as
+"paths Egosoft renamed" — they are mod-supplied files that actually **win** those paths, so the error
+pointed toward deleting them.
+
+Fixed with a routing-table row, and **deliberately not a new helper**: the one added for this exact
+trap the day before had **zero callers**. Also deliberately not a lint — the failure was in a
+throwaway script, which no linter covers. MEASURED alongside: **21 of 30** CLI subcommands appear in
+no routing surface.
+
 ## v2.6.0
 
 **BaseX ships.** The corpus-search tool has been dev-only since it was written; it is now part of the
