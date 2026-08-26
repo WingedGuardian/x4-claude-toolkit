@@ -20,3 +20,11 @@ tests/corpus/
 # wall-clock differs per machine, so a committed baseline would fail on every
 # other setup. Re-record deliberately after an intended perf change.
 .perf-baseline.json
+
+# gates/mutation_probe.py crash-safety artifacts. The marker means the tree MAY BE
+# MUTATED right now; the pristine copies are how it recovers without depending on
+# `finally` (which does not run on SIGKILL). Neither must ever be committed -- and
+# note the mutated SOURCE is a tracked file, so a crashed probe looks like an
+# ordinary modification. That is gotcha #27's actual lesson.
+.mutation-probe-active
+.mutation-probe-pristine/

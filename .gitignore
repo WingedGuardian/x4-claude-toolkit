@@ -45,3 +45,9 @@ Desktop.ini
 # Per-mod --update timings for gates/perf_guard.py — MACHINE-LOCAL by design
 # (wall-clock differs per machine; a committed baseline would fail everywhere else)
 tools/x4validate/.perf-baseline.json
+
+# gates/mutation_probe.py crash-safety artifacts (see tools/x4validate/gates/).
+# The marker means the tree MAY BE MUTATED right now; the pristine copies are how
+# it recovers without depending on `finally`, which does not run on SIGKILL.
+tools/x4validate/.mutation-probe-active
+tools/x4validate/.mutation-probe-pristine/

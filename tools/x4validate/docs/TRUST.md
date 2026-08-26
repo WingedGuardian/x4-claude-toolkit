@@ -2,9 +2,12 @@
 
 This is the honest answer to *"how do I know these tools are telling me the truth?"*
 
-It is not a claim that the toolkit is bug-free. Fifty-five defects have been found in
-it so far, every one by the toolkit or its own gates rather than by a user getting a
-wrong answer, and the fifty-sixth exists. The claim is narrower and checkable:
+It is not a claim that the toolkit is bug-free. Fifty-nine defects have been found in
+it so far, and the sixtieth exists. All but one were caught by the toolkit or its own
+gates rather than by a user getting a wrong answer — the exception is **F58**, and it is
+named here rather than rounded away: a correct, documented capability went unused, a
+hand-rolled substitute produced a confidently wrong answer, and that answer reached a
+planning document before anyone re-derived it. No tool misbehaved; the routing did. The claim is narrower and checkable:
 
 > **Every defect SHAPE that has occurred here has a test or gate that mechanically
 > bans its recurrence; every answer that could be wrong carries a denominator and a
@@ -31,6 +34,8 @@ enforces it, so *"is this shape guarded?"* is a lookup rather than a feeling.
 | 9 | **Two doors to one question** — the same thing resolved by two independent code paths | Tier B and `x4effective` gave contradictory answers about the same value, each internally consistent | One implementation per question; `gates/cross_tool.py` asserts tools agree |
 | 10 | **An executable that resolves its own environment** — instead of delegating to the one resolver | A fingerprint script defaulted to a developer's absolute path: on any other machine it fingerprinted nothing and reported **FRESH forever**. A corpus build did the same and would index **zero documents, exit 0** | `tests/test_env_resolution_is_delegated.py` (AST, with a scoped escape hatch); `scripts/verify-cold.sh` runs all 9 CLIs on a genuinely cold checkout. **This row overclaimed until 2026-08-24**: the guard detected only `os.environ`/`os.getenv`, so a hardcoded absolute-path *literal* — the form this very defect shipped in — was invisible to it, and one survived in `tools/basex/stage.py`. It now covers literals too, and three further scripts that returned **rc 1 ("has findings") instead of rc 2 ("not configured")** were found by running them cold, not by reading them |
 | 11 | **Failing late, and blaming the wrong component** — the error a user actually sees names something other than the cause | Reproduced 2026-08-24: with no JVM installed, the corpus tool reported `BaseX query failed: [WinError 2]` — blaming BaseX for a missing Java. With no index built it printed a raw resource error and **never named the build script**, because the one line that does sits on a code path an unbuilt index can never reach. The build script spent its entire multi-minute staging pass before reaching the check that would fail | One shared `preflight.py`, called by all three entry points, that checks the JVM (floor read from the shipped jar's own bytecode level, not chosen), the jar, the index, `uv` and free disk **before** any long work, and refuses with **exit 2**. 24 tests exercise every check in **both** directions, including that an unrecognised `java -version` banner refuses rather than assuming a pass. ⚠ **The same row's defect recurred inside the fix, and was caught before shipping (2026-08-25):** the preflight reported *“the database has not been built”* over a database that was built and queryable, because the vendoring left out a 0-byte upstream marker and BaseX had silently relocated its home. A first run would have been *build → told to build*, forever. The check now looks for the marker and names the relocation |
+| 12 | **A capability that exists, is correct, and is never reached** — the failure is routing, not code | A gap was filed against a command that already answered it. A throwaway script hand-rolled a base-only substitute and labelled **65 of 241 vpaths (27%)** as renamed-and-deletable when they were mod-supplied and actually WIN those paths. MEASURED alongside it: **21 of 30** CLI subcommands (70%) appear in no routing surface | A row in `CLAUDE.md`'s Discovery-vs-Proof table — the only surface always in context. Deliberately **not** a new helper: the one added for this exact trap the day before had **zero callers**, and deliberately **not** a lint, because the failure was in a throwaway script and no linter covers those (F58) |
+| 13 | **A tool that breaks the tree on purpose, and cannot put it back if it dies** | The mutation gate restored its target in a `finally:`, which does not run on SIGKILL — so a killed run left a deliberately-broken TRACKED file that `git status` shows as an ordinary modification. **v2.5.0 shipped that way once**: ambiguous-`sel` detection silently disabled in a public release. REPRODUCED by a real kill, not simulated | Pristine copies taken before the first mutation plus a `.mutation-probe-active` marker, so recovery never depends on the thing that failed. A killed run makes the next invocation **refuse with exit 2** and name `--recover`, which restores and says WHICH file was poisoned. A second party can see the marker without asking — **a control only one side can see is still an assurance** (F59) |
 
 ---
 
@@ -80,7 +85,7 @@ fooled by our assumptions.
 
 - **Load order between mods is community convention, not engine-documented.** Any
   result that turns on *which mod won* is advisory and says so.
-- **Every finding is recorded individually** — F1–F55, each with a measured cost, and
+- **Every finding is recorded individually** — F1–F59, each with a measured cost, and
   where a limit was accepted rather than fixed, the reason it was accepted. The
   per-finding register (`docs/BLIND-SPOTS.md`) lives in the development tree because
   its evidence cites a specific private modlist by name; the findings fixed in each
