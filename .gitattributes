@@ -5,5 +5,25 @@ bin/xrcat text eol=lf
 # x4-paths.env.example becomes a bash-sourced file when setup.sh copies it live;
 # CRLF would put a trailing \r inside every value on Windows clones.
 .claude/x4-paths.env.example text eol=lf
+# Pin Python sources to LF (F53).
+#
+# WHY. `_freshness.hash_engine()` fingerprints artifacts by hashing the RAW BYTES of
+# x4validate/_merge.py, _diff.py, _cat.py, _xpath.py, _scan.py, _effective.py and
+# _registry.py. Line endings are bytes. With core.autocrlf=true and no rule here, a
+# checkout writes CRLF while a tool that rewrites a file in place writes LF -- so the
+# same commit hashes differently depending on how each file last arrived on disk.
+#
+# MEASURED 2026-08-25: this tree held three of the seven as CRLF (still as checked out)
+# and four as LF (rewritten by tooling). Engine hash 73517fd69c0c1aad here versus
+# 490e9a6a64909fa1 for `git archive HEAD` of the SAME commit, every file byte-identical
+# after --strip-trailing-cr. Cost: a 26-gate sweep stopped mid-run and a wrong first
+# diagnosis, because the staleness message asserts "the merge code has been edited"
+# when nothing was.
+#
+# It fails safe -- a false STALE, never a false FRESH -- which is why it survived so
+# long. The fix is to make the bytes deterministic rather than to trust habit.
+# Shell scripts must be LF or Git Bash fails on every line with $'\r': command not found.
+# Normalize everything else by default.
+*.py text eol=lf
 # Normalize everything else by default.
 * text=auto
