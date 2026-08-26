@@ -26,7 +26,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _paths, _cat, _merge, _registry, _scan, _freshness
+from x4validate import _paths, _cat, _merge, _mutation, _registry, _scan, _freshness
 from x4validate import __version__
 
 # Excluded from the `action` index: structural containers, control flow, and
@@ -325,6 +325,7 @@ def main(argv: list[str] | None = None) -> int:
         write_tsv(rows, out)
         # WHEN this index was true. Its whole purpose is to make "nobody calls X"
         # admissible, and a negative from a superseded world is not admissible.
+        _mutation.refuse_if_mutating("build the md/aiscript xref index")
         _freshness.stamp_sidecar(out, _freshness.fingerprint(_merge.Config(reference=ref), ext))
         from collections import Counter
         by = Counter(r.kind for r in rows)

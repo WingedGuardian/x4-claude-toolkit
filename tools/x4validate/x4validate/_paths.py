@@ -36,6 +36,8 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
+from . import _mutation
+
 #: Steam Workshop id for X4: Foundations, used to derive the workshop content dir.
 STEAM_APPID = "392160"
 
@@ -221,12 +223,33 @@ def refuses_unconfigured(fn):
     that cannot tell those apart is told to fix the wrong thing. Applied to every
     entry point in `pyproject.toml`, which `tests/test_unconfigured_refusal.py`
     asserts mechanically rather than trusting anyone to remember.
+
+    IT ALSO ANNOUNCES A MUTATION WINDOW, and that second duty lives here for
+    one reason: this is the only place already GUARANTEED to wrap every entry
+    point. While `gates/mutation_probe.py` runs, the source tree is
+    deliberately broken and every tool answers from it -- with `git status`
+    looking normal, because the mutated file is TRACKED. Reads get a banner,
+    never a refusal: a wrong answer can be re-taken, whereas breaking an
+    unrelated session for the ~70s a probe takes cannot be undone. WRITES
+    refuse instead, at the two stamping sites. See `_mutation`.
     """
     @functools.wraps(fn)
     def wrapper(argv=None):
+        warning = _mutation.banner()
+        if warning:
+            print(warning, file=sys.stderr)
         try:
             return fn(argv)
         except Unconfigured as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        except _mutation.TreeMutating as exc:
+            # rc 2 = "cannot run", NOT rc 1 = "the thing you asked about has
+            # findings". Caught here so a refusal reads as a decision rather
+            # than a crash -- an unhandled raise gave a raw traceback and rc 1,
+            # which is the same defect F39/F47 fixed elsewhere and which this
+            # module's own docstring warns about. Found by running it, not by
+            # reading it.
             print(f"error: {exc}", file=sys.stderr)
             return 2
     wrapper._refuses_unconfigured = True

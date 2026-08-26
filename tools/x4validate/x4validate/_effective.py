@@ -27,11 +27,11 @@ import sqlite3
 import sys
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from lxml import etree
 
-from x4validate import _cat, _compat, _merge, _paths, _registry, _freshness, _resolve, _scan
+from x4validate import _cat, _compat, _merge, _mutation, _paths, _registry, _freshness, _resolve, _scan
 from x4validate._provenance import BASE, Origin, Recorder
 from x4validate import __version__
 
@@ -224,6 +224,48 @@ def reference_vpaths(config: _merge.Config, pattern: str) -> dict[str, str]:
 
 #: Test hook: drop the memo when a fixture changes what a fixed path resolves to.
 base_vpaths.cache_clear = _base_vpaths_cached.cache_clear  # type: ignore[attr-defined]
+
+
+def base_has(config: _merge.Config, vpath: str, owner: str | None = None) -> bool:
+    r"""Does base+DLC ship *vpath*? Handles the DLC prefix so callers need not.
+
+    THE TRAP THIS EXISTS TO REMOVE. :func:`base_vpaths` keys base-game files
+    BARE (``libraries/wares.xml``) but keeps a DLC's ``extensions/ego_dlc_x/``
+    prefix, because that is the spelling ``_merge._nested_target`` expects. Both
+    spellings are correct; what is not correct is a caller that knows only one.
+
+    MEASURED 2026-08-25: an audit looked up 58 DLC targets with the prefix
+    STRIPPED and reported **all 58 GONE** when every one of them exists. Nothing
+    was wrong with the data or with `base_vpaths`; the lookup asked the wrong
+    question and got a confident, uniform, entirely false answer -- the shape
+    CLAUDE.md #22 is about.
+
+    No shipped call site had this bug (all three ITERATE the mapping rather than
+    look up a key), so this is PREVENTIVE. It is worth the twelve lines because
+    the failure mode is a wall of false negatives that looks like a real finding,
+    and because ad-hoc analysis scripts are written far more often than call
+    sites are.
+
+    *owner*, when given, is a DLC folder name (``ego_dlc_terran``) to try as a
+    prefix as well -- so a caller holding a vpath relative to a DLC root can ask
+    about it without hand-assembling the prefix.
+    """
+    low = str(vpath).replace("\\", "/").lstrip("/").lower()
+    # Keyed to THIS vpath's suffix, never "*": the enumeration is memoized per
+    # pattern, and a bare "*" would walk the whole 60 GB base+DLC tree and cache
+    # it -- paying a tree walk to answer one membership question.
+    suffix = PurePosixPath(low).suffix
+    known = base_vpaths(config, f"*{suffix}" if suffix else "*")
+    if low in known:
+        return True
+    # A caller may hold either spelling; try the other rather than judge them.
+    if low.startswith("extensions/"):
+        tail = low.split("/", 2)
+        if len(tail) == 3 and tail[2] in known:
+            return True
+    if owner and f"extensions/{owner.lower()}/{low}" in known:
+        return True
+    return any(k.endswith("/" + low) and k.startswith("extensions/") for k in known)
 
 
 def _defines_macro(folder_to_path: dict[str, Path], touchers: list[tuple[str, str]]) -> bool:
@@ -767,6 +809,7 @@ def _write_db(db_path, config, mods, ordered, order_rank, entities, removed):
         # store cannot tell a current answer from one about a superseded world —
         # the exact failure that let BaseX's x4eff serve pre-merge-fix values for
         # eleven days (140 of 194 engine thrust rows wrong).
+        _mutation.refuse_if_mutating("build the effective store")
         _freshness.stamp_sqlite(con, _freshness.fingerprint(config, _ext_root(config)))
         con.executemany("INSERT INTO mods VALUES(?,?,?,?,?,?,?)", [
             (m["folder"], m["id"], m["name"], m["version"], order_rank[m["folder"]],

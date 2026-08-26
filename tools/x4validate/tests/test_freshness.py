@@ -135,6 +135,13 @@ def test_every_persisted_artifact_module_is_wired_to_freshness():
     If a future tool starts persisting an index, it belongs in this list AND must
     stamp/read a fingerprint. A persisted artifact that cannot say when it was
     true is the defect this module exists to prevent.
+
+    `_changed.py` writes snapshots and is deliberately NOT listed. A snapshot does
+    not DERIVE anything from the world -- it *is* a fingerprint plus the vector it
+    was folded from, so it cannot disagree with the world it describes the way an
+    index can. Stamping a fingerprint onto a fingerprint would be circular. What
+    it must do instead is refuse to answer from a baseline that lacks a vector,
+    and that is pinned in `tests/test_changed_cli.py`.
     """
     from pathlib import Path as P
     pkg = P(__file__).resolve().parent.parent / "x4validate"
@@ -164,3 +171,24 @@ def test_store_stamp_and_check_roundtrip(tmp_path):
     after = _freshness.compare(_freshness.read_sqlite(con),
                                _freshness.fingerprint(cfg, ext), engine_dependent=True)
     assert not after.fresh and "content changed" in " ".join(after.reasons)
+
+
+def test_a_stale_verdict_names_the_hashes_it_compared():
+    """"Moved how far, and by whose change?" is the first question a consumer asks
+    on hitting a stale artifact, and without the two hashes answering it needs a
+    hand-written script against fingerprint(). Raised by a downstream session that
+    hit this for real while its published numbers were stamped with the old hash."""
+    v = _freshness.compare({"content": "aaaaaaaaaaaaaaaa", "engine": "bbbbbbbbbbbbbbbb"},
+                           {"content": "cccccccccccccccc", "engine": "dddddddddddddddd"},
+                           engine_dependent=True)
+    joined = " ".join(v.reasons)
+    assert not v.fresh
+    for h in ("aaaaaaaaaaaaaaaa", "cccccccccccccccc", "bbbbbbbbbbbbbbbb", "dddddddddddddddd"):
+        assert h in joined, f"{h} missing: the reader cannot tell how far it moved"
+
+
+def test_a_FRESH_verdict_says_nothing_extra():
+    """Falsification twin: the hashes must appear only when something moved."""
+    fp = {"content": "aaaaaaaaaaaaaaaa", "engine": "bbbbbbbbbbbbbbbb"}
+    v = _freshness.compare(fp, dict(fp), engine_dependent=True)
+    assert v.fresh and v.reasons == []
