@@ -75,3 +75,39 @@ def test_the_check_can_actually_fail(corpus_sweep):
     purpose is not verification (#26)."""
     assert corpus_sweep.crash_reason(0, "") is None
     assert corpus_sweep.crash_reason(LOADER_FAILURE, "") is not None
+
+
+# --- a HANG must be confirmed before it is reported (F50's shape, second gate) ---
+
+def test_a_hang_that_does_not_reproduce_is_DISCARDED(corpus_sweep):
+    """MEASURED 2026-08-26. A sweep reported `xenon_backup (tier b) HANG (>20min)`.
+    The same mod re-ran in **13 s**. The machine had SUSPENDED mid-sweep (Windows
+    event log, Kernel-Power 131 at 16:49), and a suspend makes
+    `subprocess.run(timeout=...)` fire on WALL CLOCK while no CPU time passed.
+
+    This is exactly F50, which was fixed in `perf_guard` and left unfixed here:
+    one gate re-timed a suspected regression before reporting it, the other
+    reported a suspend as a hang. A timing that spans a suspend is a NON-ANSWER,
+    and this register's founding rule is that a non-answer must never be rendered
+    as a finding."""
+    hung, why = corpus_sweep.confirm_hang("m", "b", run=lambda mod, tier: "completed")
+    assert hung is False
+    assert "not reproduce" in why.lower()
+
+
+def test_a_hang_that_DOES_reproduce_is_kept(corpus_sweep):
+    """Falsification twin. Without it, 'discards spurious hangs' would be
+    indistinguishable from 'discards every hang', i.e. a detector switched off."""
+    hung, why = corpus_sweep.confirm_hang("m", "b", run=lambda mod, tier: None)
+    assert hung is True
+    assert "reproduc" in why.lower()
+
+
+def test_a_hang_that_CANNOT_be_rechecked_stays_a_finding(corpus_sweep):
+    """"Could not check" is never "not a hang" -- the same rule perf_guard applies
+    to a regression it cannot re-time."""
+    def explode(mod, tier):
+        raise OSError("cannot spawn")
+    hung, why = corpus_sweep.confirm_hang("m", "b", run=explode)
+    assert hung is True
+    assert "unconfirmed" in why.lower()

@@ -747,6 +747,13 @@ def main(argv: list[str] | None = None) -> int:
     pm.add_argument("--notes", help="what you edited")
     pm.set_defaults(func=cmd_mark)
 
+    # `changed` / `snapshot` — localise a moved freshness fingerprint (F56).
+    # They live on x4modlist because it already owns the installed-mod domain;
+    # a new CLI would have had to re-learn packed-vs-loose reading, mod scope,
+    # DLC prefixes and unreadable-file honesty from scratch.
+    from x4validate import _changed
+    _changed.register(sub)
+
     args = p.parse_args(argv)
     return args.func(args)
 

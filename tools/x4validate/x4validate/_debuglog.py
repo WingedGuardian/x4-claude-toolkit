@@ -69,7 +69,10 @@ from pathlib import Path
 
 _RE_PARSE = re.compile(r"extensions[\\/](?P<path>[^()\r\n]+?)\((?P<line>\d+)\):\s*(?P<msg>.*)")
 _RE_ORIG = re.compile(r"(?P<msg>.*?)\s*Originated from:\s*extensions[\\/](?P<path>[^\r\n]+?)\.\(xml")
-_RE_MDCUE = re.compile(r"Error in MD cue\s+md\.(?P<script>[^.]+)\.(?P<cue>[^<:]+?)(?:<[^>]*>)?:\s*(?P<msg>.*)")
+# Two prefixes, one shape: the engine writes "Error in MD cue md.X.Y:" and also
+# "Context:md.X.Y:" for the same kind of failure. Both belong in the SCRIPT
+# bucket - routing the second to a subsystem bucket would lose mod attribution.
+_RE_MDCUE = re.compile(r"(?:Error in MD cue|Context:)\s*md\.(?P<script>[^.]+)\.(?P<cue>[^<:]+?)(?:<[^>]*>)?:\s*(?P<msg>.*)")
 _RE_AISCR = re.compile(r"Error in AI script\s+(?P<script>\S+)\s+on entity\s+[^:]+:\s*(?P<msg>.*)")
 _RE_ACTION_LINE = re.compile(r"\bline\s+(?P<line>\d+)")
 # E/F. `sel` is greedy by necessity — see quirk 2 in the module docstring.
@@ -210,6 +213,66 @@ _SUBSYSTEM_SHAPES = (
      re.compile(r"Duplicate macro ID '(?P<entity>[^']*)'")),
     ("textpage", "macro",
      re.compile(r"GetTextPage\(\)[^:]*Source:\s*(?P<entity>\S+)")),
+    # --- added 2026-08-25, from the 2026-08-24 log's 263-line unclassified residue.
+    # Counts below are that log's and are the denominator for any later claim that
+    # this table's coverage improved. 114 distinct shapes made up those 263 lines,
+    # so this is the head of a long tail, not the whole of it.
+    #
+    # 24 - `race` is looked up but the id given is a FACTION ('central'), so the
+    # faction id is the actionable entity.
+    ("contextrace", "faction",
+     re.compile(r"Error in context race:\s*Property lookup failed:\s*(?P<entity>\S+)")),
+    # 49 (41 bar2 + 8 infrastructure2) - a roomtype the station-interior code wants
+    # and cannot find.
+    ("roomtype", "roomtype",
+     re.compile(r"Property lookup failed:\s*roomtype\.(?P<entity>\S+)")),
+    # 12 - the job exists and the subordinate exists; the `subordinate` flag does
+    # not. Anchored on the PARENT job, which is the definition that must change.
+    ("jobclass", "job",
+     re.compile(r"JobClass::ResolveReferences\(\):\s*job (?P<entity>\S+) references non-subordinate")),
+    ("jobclass", "job",
+     re.compile(r"Unable to resolve subordinate job ID:\s*'(?P<entity>[^']*)'")),
+    # 8 - a station module with no wreck mesh: invisible until it is destroyed.
+    ("wreckgeometry", "macro",
+     re.compile(r"Non-virtual module '(?P<entity>[^']*)' does not have a wreck geometry")),
+    # 12 - two message bodies, one artist-facing turret-group complaint.
+    ("turretgroup", "macro",
+     re.compile(r"'(?P<entity>[^']*)' has (?:only turrets in group|one or more turrets in engine group)")),
+    # 9 - equipment-mod wares that bind to nothing.
+    ("equipmentmod", "ware",
+     re.compile(r"Evaluated EquipmentModsDefinition ware '(?P<entity>[^']*)'")),
+    ("equipmentmod", "ware",
+     re.compile(r"The ware '(?P<entity>[^']*)' is tagged as equipment mod but does not have")),
+    # 3
+    ("countermeasure", "template",
+     re.compile(r"template '(?P<entity>[^']*)' does not have any countermeasure connection")),
+    # 2 each
+    ("stockdata", "ware",
+     re.compile(r"StockData:\s*Invalid ware '(?P<entity>[^']*)'")),
+    ("groupdb", "group",
+     re.compile(r"GroupDB::ImportDB\(\):\s*Duplicate definition of '(?P<entity>[^']*)'")),
+    ("factionimport", "faction",
+     re.compile(r"Duplicate named licence of type '[^']*' for faction '(?P<entity>[^']*)'")),
+    ("effectproperties", "effect",
+     re.compile(r"EffectProperties:.*?in effect '(?P<entity>[^']*)'")),
+    ("textdb", "textref",
+     re.compile(r"ConvertTextDBString\] Found newline in text:\s*(?P<entity>\S+)")),
+    ("textpage", "textref",
+     re.compile(r"GetText\(pageid=(?P<entity>\d+),\s*textid=\d+\) TextID not found")),
+    # 6 - the merge/patch PAIR. The first names the merge TARGET, the second the
+    # PATCH file, and both describe the SAME failure. Deliberately two rows so the
+    # two names stay distinguishable - see CLAUDE.md #28b, the engine's skip
+    # vocabulary names an inconsistent object.
+    ("mergepatch", "vpath",
+     re.compile(r"Error loading from XML merge/patch file '(?P<entity>[^']*)'")),
+    ("libxml2", "vpath",
+     re.compile(r"LIBXML2: file:///(?P<entity>[^?\s]+)")),
+    # 10 - these two carry NO id at all. The entity group is empty on purpose so the
+    # row still satisfies this table's contract instead of inventing an identity.
+    ("npcblackboard", "",
+     re.compile(r"(?P<entity>)GetNPCBlackboard\(\): Component \d+ does not exist")),
+    ("sectioncurve", "",
+     re.compile(r"(?P<entity>)\[SectionCurve::Import\]")),
     # No entity at all — matched last, so a row above always wins if it applies.
     ("aicontext", "",
      re.compile(r"^aicontext<(?P<entity>[^>]*)>")),

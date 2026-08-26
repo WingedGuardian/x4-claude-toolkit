@@ -19,6 +19,8 @@ because each caller rolled its own.
 
 from pathlib import Path
 
+import pytest
+
 from x4validate import _freshness, _merge
 
 
@@ -192,3 +194,39 @@ def test_a_FRESH_verdict_says_nothing_extra():
     fp = {"content": "aaaaaaaaaaaaaaaa", "engine": "bbbbbbbbbbbbbbbb"}
     v = _freshness.compare(fp, dict(fp), engine_dependent=True)
     assert v.fresh and v.reasons == []
+
+
+# --- "there is no extensions root" is not the same as "you forgot to pass one" ---
+#
+# MEASURED 2026-08-26: public CI was RED for two runs and five tests failed on any
+# machine with no X4 installed. `_effective._ext_root()` returns
+# `_registry.GAME_EXTENSIONS`, which is None when nothing is configured -- its
+# `except AttributeError` guard never fires, because the attribute EXISTS and is
+# None. fingerprint() then refused, correctly, because it cannot tell that None
+# from a caller who simply forgot. Both readings need to exist.
+
+def test_OMITTING_extensions_with_no_overlays_still_REFUSES(tmp_path):
+    """F46's guard must survive this change. A caller who forgot is still a bug:
+    falling back to Path("") hashes whatever directory you are standing in."""
+    cfg, _ = _world(tmp_path)
+    with pytest.raises(ValueError, match="cannot infer the extensions root"):
+        _freshness.fingerprint(cfg)
+
+
+def test_an_EXPLICIT_None_means_there_is_no_root_and_is_recorded_as_UNKNOWN(tmp_path):
+    """The caller HAS decided -- there is no installed world to hash. That is an
+    answer, and it must not be a crash."""
+    cfg, _ = _world(tmp_path)
+    fp = _freshness.fingerprint(cfg, extensions=None)
+    assert fp["content"] is None, "an unknowable content axis must not carry a digest"
+    assert fp["engine"], "the engine axis is still knowable and must still be hashed"
+
+
+def test_two_UNKNOWN_content_axes_do_NOT_compare_equal_into_a_false_FRESH():
+    """The trap this design has to avoid. `None == None`, so a naive equality
+    check would call two unknowns a match and report FRESH -- an artifact that
+    cannot say what world it describes, declaring it still describes it."""
+    unknown = {"content": None, "engine": "e"}
+    v = _freshness.compare(unknown, dict(unknown), engine_dependent=True)
+    assert not v.fresh, "UNKNOWN must never read as fresh"
+    assert any("establish" in r or "unknown" in r.lower() for r in v.reasons), v.reasons

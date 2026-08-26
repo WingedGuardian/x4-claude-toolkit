@@ -328,6 +328,41 @@ def test_a_mod_defined_race_is_suppressed_end_to_end(tmp_path):
         "suppression must be disclosed — a silent one is indistinguishable from a miss"
 
 
+def test_a_mod_that_validated_SOMETHING_still_says_what_it_SKIPPED(tmp_path):
+    """F52. The note used to go silent about skips as soon as it validated one file.
+
+    MEASURED 2026-08-25 on three mods deployed the same day: one correctly said
+    "0 validated — 2 declaring no schema", while `Synthetium_Music` said "1
+    validated" and stayed silent about its other two eligible files. Attributing a
+    `schema_sweep` pairs delta then had to be re-derived by hand.
+
+    The rule this restores is the register's founding one: a step that NARROWS the
+    data announces it even when it also succeeded at something.
+    """
+    ref, cfg = _world(tmp_path)
+    mod = tmp_path / "mod"
+    # one file that CAN be schema-checked (things.xsd exists beside things.xml)...
+    _write(mod / "libraries" / "things.xml",
+           "<diff><add sel='/things'><thing id='b'><production/></thing></add></diff>")
+    # ...and one at a base path with no declared schema, which is silently skipped
+    _write(mod / "libraries" / "factions.xml",
+           "<diff><add sel='/factions'><faction id='x'/></add></diff>")
+
+    report = _check.Report()
+    _check.check_effective_schema(mod, cfg, report)
+    note = next(n for n in report.notes if n.startswith("effective-schema:"))
+
+    assert "1 merged data file" in note, "the positive half must still be reported"
+    assert "declaring no schema" in note, (
+        "a file that was NOT checked must be disclosed even though another file "
+        "WAS -- silent-on-any-success is the F52 defect")
+
+    # The gate parses this note positionally; the detail must stay a SUFFIX.
+    assert note.split()[1] == "1", (
+        "gates/schema_sweep.py reads the pair count as note.split()[1] -- moving "
+        "the leading tokens would silently break the sweep's totals")
+
+
 def test_validate_actually_runs_the_check_under_update(tmp_path):
     """WIRING PIN. Everything above passes with the check unreachable from validate()."""
     ref, cfg = _world(tmp_path)

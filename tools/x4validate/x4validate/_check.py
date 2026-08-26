@@ -1721,8 +1721,24 @@ def check_effective_schema(mod_dir: Path, config: _merge.Config, report: Report)
     # `if checked:` meant a mod where nothing was validated printed NO schema line at
     # all, so "we validated 0 files" and "we did not run" looked identical — measured
     # on atd_ejection_router, which produced a bare "OK: no issues found".
+    # F52 (fixed 2026-08-25): this used to be `if not checked and (...)`, so the
+    # reason was emitted only when ZERO files were validated. A mod that validated
+    # one file and skipped two reported "1 merged data file(s) validated" and said
+    # NOTHING about the other two. MEASURED on three mods deployed the same day:
+    # `a personal overlay` correctly said "0 validated — 2 declaring no
+    # schema", while `Synthetium_Music` said "1 validated" and stayed silent about
+    # its other two eligible files.
+    #
+    # The guard was added for a real reason (`if checked:` made "validated 0" and
+    # "did not run" indistinguishable) but it over-corrected from silent-on-zero to
+    # silent-on-any-success. This register's own rule is that a step which narrows
+    # the data announces it EVEN WHEN it also succeeded at something.
+    #
+    # ⚠ The leading `effective-schema: {checked} ` tokens must not move:
+    # `gates/schema_sweep.py:427` reads the pair count with `int(note.split()[1])`.
+    # The detail is a SUFFIX for exactly that reason.
     detail = ""
-    if not checked and (new_files or no_schema):
+    if new_files or no_schema:
         why = []
         if new_files:
             why.append(f"{new_files} brand-new (no base to difference against)")

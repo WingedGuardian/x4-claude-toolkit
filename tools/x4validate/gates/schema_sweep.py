@@ -239,8 +239,55 @@ from x4validate import _check, _merge
 #     station_production_overview             0 gating   1 advisory
 #     ter_radar_turret                        1 gating   0 advisory
 #     vro                                     5 gating   3 advisory
+# RE-MEASURED 2026-08-25. The MODLIST changed, not the check.
+#
+# Three mods were deployed this session and one FILE was deleted:
+#   + Synthetium_Music                (music mod, first deployment)
+#   + personal overlay C              (restores vanilla music_bigfight_5)
+#   + personal overlay D              (repairs a vanilla aiscript bug)
+#   - amphitrite_vro's truncated ship_l_arethusa_raider_macro.xml (unparseable;
+#     an identical repaired copy already ships in personal overlay A)
+#
+#   pairs   177 -> 178  (+1)  ATTRIBUTED IN FULL, per-mod:
+#                               Synthetium_Music               pairs=1 gating=0 advisory=0
+#                               personal overlay C             pairs=0 -- both its files
+#                                 declare no schema
+#                               personal overlay D             pairs=0 -- aiscripts/ is not
+#                                 schema-eligible, and content.xml declares no schema
+#   gating       59 -> 59     unchanged
+#   advisory     69 -> 69     unchanged
+#   suppressed    3 ->  3     unchanged
+#   NOT checked   1 ->  1     unchanged
+#   mods flagged 41 -> 41     unchanged -- none of the three is flagged
+#
+# NOTHING IS UNATTRIBUTED THIS TIME. The 08-23 re-baseline left one advisory delta
+# permanently unexplainable because it recorded totals and three named contributors
+# rather than a full per-mod list, and asked its successor to fix that. Done below.
+#
+# NOTE FOR WHOEVER READS THE PER-MOD NOTE NEXT: `_check.check_effective_schema`
+# emits its "N declaring no schema / brand-new" detail ONLY when `checked == 0`
+# (`_check.py`, `if not checked and (new_files or no_schema)`). So a mod that
+# validated ANY file reports no reason for the files it did NOT validate --
+# Synthetium_Music shows "1 validated" and stays silent about its other two. That
+# is why the attribution above had to be derived per mod rather than read off the
+# notes, and it is a mild instance of the register's own rule: a step that narrows
+# the data should announce it even when it also succeeded at something.
+#
+# ⚠ Two folder names contain SPACES ('xenon e class ship', 'Pirates and Buccaneers
+# stop shooting Satellites'). A field-count parse of this table (awk NF==4) silently
+# drops both and undercounts pairs by 6. Parse from the RIGHT: the last three
+# columns are numbers, everything before them is the name.
+#
+# PER-MOD TABLE — 74 mods, 2026-08-25. NOT HERE: this file is MIRRORED to the public
+# repo, and the table names every installed mod, i.e. one person's entire modlist. It is
+# also not reproducible by anyone else — it describes one install — so publishing it costs
+# privacy and buys a public reader nothing.
+#
+# It lives in `AUDIT-2026-08.md` (dev-only), § "Per-mod schema baseline". Diff against THAT
+# next time instead of reasoning from memory. Its columns sum to the constants below, which
+# is what makes it an audit rather than a note: pairs 178, gating 59, advisory 69.
 # ---------------------------------------------------------------------------
-EXPECT_PAIRS = 177
+EXPECT_PAIRS = 178
 EXPECT_ERR = 59
 EXPECT_INFO = 69
 EXPECT_SUPPRESSED = 3

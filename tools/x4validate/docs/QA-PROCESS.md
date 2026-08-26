@@ -214,9 +214,24 @@ wrong.
 1. Let every mutating gate finish before copying, packaging, tagging or committing.
    `mutation_probe` is the one that edits source today; treat any gate that writes
    into `x4validate/` the same way.
-2. **Prove the port, do not assume it.** `diff -rq` the destination against the
-   source afterwards and require empty output. A file-count match is not proof — the
-   count was right here.
+2. **Prove the port, do not assume it** — with
+   `uv run python scripts/verify-port.py`, which classifies every dev-tracked file
+   into buckets that must SUM to the population and reports a denominator. A
+   file-count match is not proof; the count was right here.
+
+   ⚠ **Do NOT use `diff -rq` for this, despite what this rule used to say.**
+   MEASURED 2026-08-26 on the real pair of trees: it reports **52 differences where
+   12 are real**. The other 40 are line endings — dev's working tree was
+   renormalised to LF by F53, the mirror's is a stale pre-pin checkout, and both
+   repos store the *same* LF bytes. A proof that buries 12 findings under 40
+   non-findings teaches you to skip it. Compare **committed blobs**, never
+   working-tree files.
+
+   What the old rule missed, and why it is worth a script: a file-by-file port
+   **split a commit**. Two of `f5c976d`'s five files crossed over — only because
+   the porter had independently edited those two — and public `master` then
+   shipped a stale-artifact message naming a subcommand it did not have. Nothing
+   crashed, so nothing noticed. Registered **F60**.
 3. **Always run the suite in the destination tree**, not only in the source. The
    source was green throughout.
 4. When ported code fails and the source passes, the difference is in the BYTES

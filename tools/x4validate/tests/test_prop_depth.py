@@ -247,6 +247,41 @@ def test_base_vpaths_covers_the_whole_tree_loose_and_packed(monkeypatch, tmp_pat
     assert "extensions/ego_dlc_mini_99/assets/units/ship_z_macro.xml" in out
 
 
+def test_base_has_accepts_EITHER_spelling_of_a_DLC_vpath(monkeypatch, tmp_path):
+    """The 58-false-GONE trap, pinned.
+
+    `base_vpaths` keys base files BARE but keeps a DLC's `extensions/ego_dlc_x/`
+    prefix. MEASURED 2026-08-25: an audit stripped the prefix before looking up 58
+    DLC targets and reported all 58 GONE when every one exists. Both spellings are
+    legitimate; a caller that knows only one gets a uniform, confident, false
+    answer.
+    """
+    cfg = _mini_dlc_cfg(monkeypatch, tmp_path)
+    _effective.base_vpaths.cache_clear()
+    known = _effective.base_vpaths(cfg, "*.xml")
+
+    bare = [v for v in known if not v.startswith("extensions/")]
+    dlc = [v for v in known if v.startswith("extensions/")]
+    assert bare and dlc, "fixture must contain both spellings for this to prove anything"
+
+    for v in bare + dlc:
+        assert _effective.base_has(cfg, v), f"the stored spelling must resolve: {v}"
+
+    # ...and the OTHER spelling of the same DLC file must resolve too -- this is
+    # the assertion that goes red against a plain `vpath in base_vpaths(...)`.
+    for v in dlc:
+        stripped = v.split("/", 2)[2]
+        assert _effective.base_has(cfg, stripped), (
+            f"a DLC vpath with the prefix stripped must still resolve: {stripped}")
+        owner = v.split("/")[1]
+        assert _effective.base_has(cfg, stripped, owner=owner)
+
+    # The falsification twin: something genuinely absent must still say NO, or the
+    # assertions above would pass for a function that returns True unconditionally.
+    assert not _effective.base_has(cfg, "libraries/definitely_not_a_real_file.xml")
+    assert not _effective.base_has(cfg, "extensions/ego_dlc_nope/libraries/x.xml")
+
+
 def test_reference_vpaths_is_exactly_the_assets_subset(monkeypatch, tmp_path):
     """F3's scope is a documented decision, and this pins that the refactor to
     `base_vpaths` did not quietly widen or narrow it.

@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+### Fixed — five tests failed on any machine with no game installed (F63)
+
+`_effective._ext_root()` returns `_registry.GAME_EXTENSIONS`, guarded by `except AttributeError`.
+**That guard never fires** — the attribute exists and its *value* is `None` when nothing is
+configured. `_freshness.fingerprint()` then refused, correctly (it must never guess an extensions
+root and hash whatever directory you are standing in), but it could not tell *"the caller forgot"*
+from *"the caller looked and there is none"*.
+
+Every fresh clone and every CI runner is the second case. Both now have spellings:
+`fingerprint(config)` still **raises**; `fingerprint(config, extensions=None)` records the content
+axis as **UNKNOWN**.
+
+⚠ And UNKNOWN never reads as fresh. `None == None`, so a naive comparison would have made two
+unknown content axes *match* and report FRESH — an artifact that cannot say which world it describes,
+declaring that it still describes it. `compare()` now says freshness could not be **established**,
+which is neither fresh nor known-stale.
+
+`_freshness.py` is deliberately not among the sources the engine fingerprint hashes, so this changes
+no artifact's fingerprint and nothing needs rebuilding.
+
+### Fixed — the mutation gate ran a narrower scope than it reported (F62)
+
+`gates/mutation_probe.py` drops a missing test path from a mutant's scope before invoking pytest.
+Filtering a vanished path is right; doing it **silently** is not — and it was happening inside the
+one gate built to detect vacuous assertions.
+
+MEASURED: this gate's `_registry.py` scope lists four test files. In one checkout only three exist,
+so it ran **3 of 4** and printed the same `killed` line as a full scope.
+
+Two more in the same function. An **empty** scope returned the verdict `"hang"` — an absence
+rendered as a timeout that was never measured, which the caller then "confirms" by re-running,
+against a file that is still not there. And the test meant to catch all of this,
+`test_every_target_has_tests_that_exist`, asserted `any(... exists ...)`: its NAME promises every
+file, its ASSERTION accepted one, so three of four present passed.
+
+Now: a partial scope **names what it dropped**; an empty scope returns a new verdict `noscope` with
+its own bucket, excluded from the killed count and failing the gate; an empty BASELINE scope returns
+**rc 2** (cannot run), never rc 1 (has findings). The check is `mp_scope_gaps()`, which returns the
+**named gaps** rather than a boolean.
+
+The asymmetry is the proof: it is GREEN against a complete tree and RED against an incomplete one,
+naming the exact missing file. Six tests written first and each watched fail for the right reason —
+one printing `killed 1/1` for a mutant that was never challenged. Probe re-run afterwards:
+**11/11 killed, 0 survivors, 0 hangs, 0 unmeasured.**
+
+### Changed — `docs/QA-PROCESS.md`: how to prove a port
+
+Rule 2 said to prove a port with `diff -rq`. MEASURED on a real pair of trees, that reports **52
+differences where 12 are real** — the other 40 are line endings, from a working tree checked out
+before an LF pin, while both repositories store identical bytes. A proof that buries findings under
+non-findings teaches you to skip it. The rule now says to compare **committed blobs**.
+
 ### Fixed — a mutating gate could not put the tree back if it died (F59)
 
 `gates/mutation_probe.py` breaks a source file on purpose, runs the tests, and restores it. The
@@ -57,6 +109,72 @@ Fixed with a routing-table row, and **deliberately not a new helper**: the one a
 trap the day before had **zero callers**. Also deliberately not a lint — the failure was in a
 throwaway script, which no linter covers. MEASURED alongside: **21 of 30** CLI subcommands appear in
 no routing surface.
+
+### Fixed — the freshness content axis was blind to a mod's files changing (F57)
+
+`_freshness.hash_content` stat'd **only** each mod folder's `content.xml`. The ordinary
+overlay-deploy workflow — edit a file, copy it in, manifest untouched — moved nothing, so every
+artifact reported **FRESH** while describing a different tree.
+
+MEASURED: **72 of 121 non-DLC mods (59.5%)** have at least one file newer than their own manifest,
+and the old code returned the identical digest `03122df005f47fbd` before and after a file-only edit.
+This is a false **FRESH** — it fails in the unsafe direction, unlike F53's false STALE.
+
+The axis now also hashes a per-mod `tree_sha` over sorted `(relpath, mtime, size)` for
+`.xml/.cat/.dat/.lua`. Cost on a live 129-mod install: **0.10 s / 2,170 files**.
+
+⚠ The suffix filter is **correctness, not speed**: 8 mods would otherwise move the fingerprint on
+README/CHANGES/LICENCE churn alone.
+
+⚠ **Scope limit**: `(mtime, size)`, not a content hash. An edit changing neither is invisible; a
+same-size edit reads as `touched` rather than `content`. Manifests *are* hashed.
+
+### Added — `x4modlist changed` / `x4modlist snapshot` (F56)
+
+The digest said THAT the world moved, never WHAT. Localising one changed mod took nine investigative
+steps and three false leads, and only worked because it happened to bump its `version`.
+
+`content_detail()` now returns the per-folder vector, `hash_content()` folds it through a single
+`_fold()`, and the vector is **persisted** beside the digest (190 KB) so a move is localised by
+diffing rather than by forensics.
+
+```sh
+x4modlist changed [--since store|xref|latest|<path>] [--files] [--usn]
+x4modlist snapshot [--label <name>]
+```
+
+- Triples are hashed as a **set**, never `max(mtime)` — the incident mod had **back-dated** its 26
+  files, which is exactly what defeats a max and what made `find -newermt` useless.
+- A baseline with **no vector raises `NoBaseline` and exits 3** — a non-answer, never "no change".
+  Reading is optional, so no existing artifact flips to UNKNOWN.
+- `--usn` needs Administrator (Microsoft's documented requirement for change-journal reads) and
+  **degrades to a message** rather than failing the command.
+
+### Fixed
+
+- **F43** — the content axis could not see a mod being enabled or disabled in-game, because toggling
+  rewrites only the PROFILE manifest. Now carried per mod, joined by **manifest id, never folder
+  name**, defaulting to enabled for a mod the profile has never seen. Verified against the live
+  profile: it finds exactly one disabled mod, matching independently-recorded ground truth.
+- **F52** — `check_effective_schema`'s note went silent about files it skipped as soon as it
+  validated anything. The `effective-schema: {checked} ` prefix is preserved; `gates/schema_sweep.py`
+  parses it positionally.
+- **F46 (swept)** — `fingerprint()` fell back to `Path("")` = `Path(".")`, hashing the current
+  directory. It now refuses. All four production callers already passed the root explicitly.
+- **F53** — the working tree is renormalised, so the untouched `ENGINE_SOURCES` are byte-identical to
+  HEAD and this tree hashes like a fresh checkout.
+- `_freshness` now walks **every** configured install root, not just one, so a mod deployed to the
+  profile extensions root is no longer invisible.
+- `_effective.base_has()` encapsulates the base-bare / DLC-prefixed vpath rule that made an audit
+  report 58 DLC targets GONE when all 58 exist.
+
+### Notes
+
+- Tests **664 → 697**.
+- The content and engine fingerprints each move **once**, deliberately. **The merge code has not
+  changed** — `_freshness.py` is intentionally not in `ENGINE_SOURCES`.
+
+---
 
 ## v2.6.0
 

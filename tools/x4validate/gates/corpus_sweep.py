@@ -7,7 +7,7 @@ the user's install. Looks for crashes and hangs, NOT for findings — a mod with
 errors is the tool working.
 
 Run:  uv run python gates/corpus_sweep.py [--tier=a|b|both] [--verbose]
-Exit: 0 no crashes, 1 any traceback, hang, or undocumented exit code.
+Exit: 0 no crashes, 1 any traceback, CONFIRMED hang, or undocumented exit code.
 """
 from __future__ import annotations
 
@@ -57,6 +57,50 @@ def crash_reason(returncode: int, out: str) -> str | None:
     return None
 
 
+def run_one(mod, tier: str):
+    """Run x4validate once. None means it TIMED OUT."""
+    try:
+        return subprocess.run(
+            ["uv", "run", "x4validate", str(mod), "--tier", tier],
+            cwd=ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=1200)
+    except subprocess.TimeoutExpired:  # silent-ok: None IS the channel -- the
+        # caller reads it as "timed out" and escalates. Nothing is discarded.
+        return None
+
+
+def confirm_hang(mod, tier: str, run=run_one) -> tuple[bool, str]:
+    """Re-run once before calling a timeout a hang. (still_hung, why).
+
+    WHY (MEASURED 2026-08-26). This gate reported
+    `xenon_backup (tier b) HANG (>20min)`. The same mod re-ran in **13 s**. The
+    machine had SUSPENDED mid-sweep -- Windows event log, resume from S3 at
+    16:49:29, with the sweep finishing 82 s later and total elapsed 13,879 s
+    against a healthy 1,228 s. `subprocess.run(timeout=...)` counts WALL CLOCK,
+    so a suspend fires it while no CPU time passed at all.
+
+    This is F50 in a second gate: `perf_guard` already re-times a suspected
+    regression before reporting it, and this one did not. A timing that spans a
+    suspend is a NON-ANSWER, and a non-answer must never be rendered as a finding.
+
+    ⚠ It WILL recur on this machine: the sleep timer counts USER inactivity, not
+    CPU, so any long unattended sweep can be interrupted by it.
+
+    A re-run that cannot be performed leaves the hang UNCONFIRMED and still
+    reported -- "could not check" is never "not a hang".
+    """
+    try:
+        again = run(mod, tier)
+    except Exception as exc:  # silent-ok: NOT silent -- the reason is returned to
+        # the caller and printed beside the mod, and the hang is still REPORTED.
+        # A re-check that could not run must escalate, never clear: "could not
+        # check" is never "not a hang" (same rule as perf_guard's retime).
+        return True, f"UNCONFIRMED - could not re-check ({type(exc).__name__}: {exc})"
+    if again is None:
+        return True, "HANG reproduced on a second run"
+    return False, "did NOT reproduce on a second run (suspect a machine suspend)"
+
+
 def main() -> int:
     mods = [d for d in sorted(EXT.iterdir())
             if d.is_dir() and not d.name.lower().startswith("ego_dlc_")]
@@ -76,8 +120,13 @@ def main() -> int:
                     cwd=ROOT, capture_output=True, text=True,
                     encoding="utf-8", errors="replace", timeout=1200)
             except subprocess.TimeoutExpired:
-                crashes.append((mod.name, tier, "HANG (>20min)", ""))
-                print(f"  HANG  {mod.name} (tier {tier})")
+                # Confirm before reporting -- same rule as perf_guard (F50).
+                still, why = confirm_hang(mod, tier)
+                if still:
+                    crashes.append((mod.name, tier, f"HANG (>20min) - {why}", ""))
+                    print(f"  HANG  {mod.name} (tier {tier}) - {why}")
+                else:
+                    print(f"  DISCARDED {mod.name} (tier {tier}) - {why}")
                 continue
             dt = time.time() - t0
             out = (p.stdout or "") + (p.stderr or "")

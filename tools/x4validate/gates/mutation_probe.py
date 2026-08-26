@@ -198,11 +198,30 @@ def recover() -> int:
     return 0
 
 
+#: Verdicts that make the GATE fail. `fail` is absent on purpose: it means the
+#: MUTANT died, which is the outcome this gate exists to confirm.
+FAILING_VERDICTS = frozenset({"pass", "hang", "noscope"})
+
+
 def run_tests(tests: list[str]) -> str:
-    """'pass' = mutant survived | 'fail' = killed | 'hang' = a finding of its own."""
+    """'pass' = mutant survived | 'fail' = killed | 'hang' = did not finish
+    | 'noscope' = there were no tests to run, which is a NON-ANSWER.
+
+    A missing path is filtered out rather than handed to pytest, which is the
+    right thing to DO and was the wrong thing to do SILENTLY (F62): the public
+    copy of this gate ran 3 of the 4 `_registry` test files -- the fourth was
+    never ported -- and printed the same `killed` line as a full scope.
+    """
     present = [t for t in tests if (ROOT / t).exists()]
+    missing = [t for t in tests if t not in present]
+    if missing:
+        print(f"    scope narrowed: {len(present)} of {len(tests)} test file(s) "
+              f"present; MISSING {', '.join(missing)}")
     if not present:
-        return "hang"
+        # NOT "hang". Reporting an absence as a timeout asserts a measurement
+        # that was never taken -- and the caller then re-runs it as though it
+        # were confirming a hang, which cannot resolve a file that is not there.
+        return "noscope"
     try:
         p = subprocess.run(["uv", "run", "--project", str(ROOT), "pytest", "-q", *present],
                            cwd=str(ROOT), capture_output=True, text=True,
@@ -229,6 +248,10 @@ def main() -> int:
         return 2
 
     baseline = run_tests(sorted({t for ts in TARGETS.values() for t in ts}))
+    if baseline == "noscope":
+        print("BASELINE has NO TEST FILES in scope - every path in TARGETS is "
+              "missing, so this gate cannot measure anything.", file=sys.stderr)
+        return 2
     if baseline == "hang":
         print(f"BASELINE did not finish within {TEST_TIMEOUT}s - fix that first.",
               file=sys.stderr)
@@ -243,7 +266,7 @@ def main() -> int:
     print(f"MUTATION PROBE - {len(MUTANTS)} mutants across {len(by_target)} file(s)")
     print("=" * 88)
 
-    survivors, hangs = [], []
+    survivors, hangs, noscopes = [], [], []
     take_pristine()
     try:
         for target, group in by_target.items():
@@ -258,13 +281,29 @@ def main() -> int:
                     continue
                 path.write_text(original.replace(m.old, m.new, 1), encoding="utf-8")
                 verdict = run_tests(TARGETS[target])
+                if verdict == "hang":
+                    # Confirm before reporting. `subprocess.run(timeout=)` counts
+                    # WALL CLOCK, so a machine suspend fires it while no CPU time
+                    # passed -- MEASURED 2026-08-26 in corpus_sweep, which reported
+                    # a 20-minute HANG for a mod that re-ran in 13s. On this machine
+                    # the sleep timer counts USER inactivity, and neither the agent's
+                    # commands nor CPU load reset it, so any long unattended run can
+                    # be interrupted. Same rule as perf_guard (F50) and now
+                    # corpus_sweep: a timing that spans a suspend is a NON-ANSWER.
+                    verdict = run_tests(TARGETS[target])
                 if verdict == "pass":
                     # Scoped tests missed it. Before calling it a survivor, ask the
                     # WHOLE suite - scoping must never manufacture a false survivor.
                     # Same shape as perf_guard's confirm-before-reporting (F50).
                     verdict = full_suite()
                 path.write_text(original, encoding="utf-8")
-                if verdict == "hang":
+                if verdict == "noscope":
+                    # Never challenged, so not a kill. F62 in one line: the public
+                    # copy of this gate ran 3 of 4 _registry test files and still
+                    # printed `killed`.
+                    print(f"    NOSCOPE {m.name:<43} no test file in scope exists")
+                    noscopes.append((m, "no test file in this target's scope exists"))
+                elif verdict == "hang":
                     print(f"    HUNG   {m.name:<44} exceeded {TEST_TIMEOUT}s")
                     hangs.append((m, f"tests did not finish within {TEST_TIMEOUT}s"))
                 elif verdict == "pass":
@@ -276,9 +315,10 @@ def main() -> int:
         restore_all()
         clear_marker()
 
-    killed = len(MUTANTS) - len(survivors) - len(hangs)
+    killed = len(MUTANTS) - len(survivors) - len(hangs) - len(noscopes)
     print("\n" + "=" * 88)
-    print(f"killed {killed}/{len(MUTANTS)}   survivors: {len(survivors)}   hangs: {len(hangs)}")
+    print(f"killed {killed}/{len(MUTANTS)}   survivors: {len(survivors)}   "
+          f"hangs: {len(hangs)}   unmeasured: {len(noscopes)}")
     for m, why in survivors:
         print(f"\n  SURVIVOR: {m.target} - {m.name}")
         print(f"    edit:  {m.old[:66]}")
@@ -287,7 +327,11 @@ def main() -> int:
     for m, why in hangs:
         print(f"\n  HUNG: {m.target} - {m.name}")
         print(f"    means: {why} (a mutant that hangs is a finding, not a pass)")
-    return 1 if (survivors or hangs) else 0
+    for m, why in noscopes:
+        print(f"    UNMEASURED: {m.target} - {m.name}")
+        print(f"    means: {why}. Nothing was asked of this mutant, so nothing "
+              f"was learned - 'could not check' is never 'nothing wrong'.")
+    return 1 if (survivors or hangs or noscopes) else 0
 
 
 if __name__ == "__main__":

@@ -110,6 +110,46 @@ md/aiscripts schemas, and a further **~122s if your mod patches `libraries/diplo
 — that one schema pulls in the 40k-line `common.xsd`, where every other data schema
 measured ≤0.1s. It looks like a hang and is not.
 
+### `x4modlist changed` — which mod moved, when a fingerprint does
+
+```sh
+uv run x4modlist changed                       # vs the effective store (default)
+uv run x4modlist changed --since latest --files  # vs the newest snapshot, naming files
+uv run x4modlist snapshot --label pre-wave     # ~0.1s baseline, no rebuild needed
+```
+
+Every persisted artifact carries a two-axis fingerprint saying *when* it was true. When the
+**content** axis moves, this says **what moved**: added / removed / version / content /
+`touched` (rewritten with identical bytes) / `toggled` (enabled or disabled in the profile).
+
+It exists because localising ONE changed mod once took nine investigative steps, and only
+worked because that mod happened to bump its `version`. Three of those steps were the wrong
+instrument — notably `find -newermt`, which is **structurally blind to a back-dated write**,
+and the mod in question had back-dated all 26 of its files. Per-file identity is therefore
+hashed as a **set** of `(relpath, mtime, size)`, never `max(mtime)`.
+
+`snapshot` fills the gap between expensive rebuilds: the store and the xref index only
+advance when something slow runs, so several days of drops otherwise collapse into one
+unsequenced delta. Snapshots are named by **content**, so repeats of an unchanged world
+collapse onto one file.
+
+**A baseline with no vector exits 3 and says so.** Artifacts built before the vector existed
+cannot answer "what changed", and reporting *no change* for one would be a wrong answer where
+a non-answer is the honest one.
+
+⚠ **Scope limit.** Per-file identity is `(mtime, size)`, not a content hash — hashing every
+file would mean reading multi-hundred-MB `.cat` archives on every run. An edit changing
+neither size nor mtime is invisible, and a same-size edit reads as `touched` rather than
+`content`. Manifests *are* hashed. `--usn` adds NTFS change-journal corroboration (immune to
+back-dating and to NTFS tunneling) but needs an elevated shell, so it degrades to a message
+rather than failing.
+
+⚠ MEASURED on an unelevated shell: **`fsutil usn queryjournal` SUCCEEDS while
+`fsutil usn readjournal` returns `Error 5: Access is denied`.** The probe therefore tests
+`readjournal` — the operation actually needed — because probing with `queryjournal` reported
+the journal as readable when it was not. A tool claiming a capability it lacks is the
+false-positive this package exists to refuse.
+
 ### Exit codes
 
 | code | meaning |
@@ -204,6 +244,11 @@ handled here — it is a secret, not a path, and must never be written to a file
   entity rather than a mod. `parse_log` accounts for every `[=ERROR=]` line: classified,
   or labelled `unclassified` and counted — never dropped.
 - `x4validate/_debugcli.py` — `x4debug`: triage / crosscheck / baseline.
+- `x4validate/_freshness.py` — the two-axis fingerprint every persisted artifact carries, and
+  the per-folder **content vector** it is folded from. Deliberately NOT in `ENGINE_SOURCES`:
+  widening the content axis must not claim the merge code changed.
+- `x4validate/_changed.py` — `x4modlist changed` / `snapshot`: localise a moved fingerprint by
+  diffing two vectors instead of investigating. Owns no enumeration of its own.
 - `x4validate/_xsd.py` — schema validation: script files as written, data files as merged
   (differential — see `introduced`).
 - `x4validate/_check.py` — orchestration + t-file union; `_cli.py` — CLI.

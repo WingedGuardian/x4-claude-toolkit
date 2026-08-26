@@ -139,11 +139,32 @@ def test_every_anchor_is_unique_in_its_real_target():
         assert text.count(m.old) == 1, f"{m.target} :: {m.name} anchor is not unique"
 
 
+def mp_scope_gaps(root: Path, targets: dict) -> dict:
+    """{target: [scoped test paths that do not exist]}, omitting complete targets.
+
+    Extracted so the check itself can be tested. Named gaps beat a bare boolean:
+    F62 was invisible for exactly as long as this answered yes/no.
+    """
+    gaps = {}
+    for target, tests in targets.items():
+        missing = [t for t in tests if not (root / t).exists()]
+        if missing:
+            gaps[target] = missing
+    return gaps
+
+
 def test_every_target_has_tests_that_exist():
+    """ALL of them, not `any` of them -- see test_the_scope_check_can_actually_fail.
+
+    `run_tests` drops a missing path from the scope, so a test file that was never
+    ported does not error, it just quietly stops being run. This is the only thing
+    standing between that and a gate reporting 11/11 over a partial scope.
+    """
     root = Path(__file__).resolve().parent.parent
-    for target, tests in mp.TARGETS.items():
+    for target in mp.TARGETS:
         assert (root / "x4validate" / target).is_file(), target
-        assert any((root / t).exists() for t in tests), f"{target} has no runnable tests"
+    gaps = mp_scope_gaps(root, mp.TARGETS)
+    assert gaps == {}, f"scoped test file(s) missing, so the probe measures less than it claims: {gaps}"
 
 
 def test_every_mutant_names_a_target_with_a_test_scope():
@@ -157,3 +178,109 @@ def test_the_uniqueness_check_can_actually_fail():
     root = Path(__file__).resolve().parent.parent
     text = (root / "x4validate" / "_merge.py").read_text(encoding="utf-8")
     assert text.count("def ") > 1, "a planted non-unique anchor must be detectable"
+
+
+def test_a_hang_is_re_run_before_being_reported(fake_tree, monkeypatch):
+    """A suspend fires `subprocess.run(timeout=)` on wall clock while no CPU time
+    passed. MEASURED 2026-08-26: corpus_sweep reported a 20-minute HANG for a mod
+    that re-ran in 13s, after the machine slept mid-sweep. Same rule as
+    perf_guard (F50) -- confirm before reporting."""
+    calls = []
+
+    def flaky(tests):
+        # call 1 is the BASELINE (must pass), call 2 is the mutant (hangs),
+        # call 3 is the re-run that decides it.
+        calls.append(tests)
+        return {1: "pass", 2: "hang"}.get(len(calls), "fail")
+
+    monkeypatch.setattr(mp, "run_tests", flaky)
+    monkeypatch.setattr(mp, "RECOVER", False)
+    rc = mp.main()
+    assert len(calls) >= 3, "baseline + first attempt + a re-run after the hang"
+    assert rc == 0, "a hang that does not reproduce must not be reported as a finding"
+
+
+# --- a narrowed scope must announce itself (F62) ------------------------------
+#
+# `run_tests` filters missing paths out of its scope before invoking pytest. That
+# is the right thing to DO and the wrong thing to do SILENTLY: the public copy of
+# this gate ran 3 of the 4 `_registry` test files -- because the fourth was never
+# ported -- and printed the identical "killed" line. A step that narrows the data
+# must announce it, and an empty scope is a non-answer, not a timeout.
+
+def test_a_PARTIALLY_missing_scope_says_which_files_it_skipped(monkeypatch, capsys, tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_real.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(mp, "ROOT", tmp_path)
+    monkeypatch.setattr(mp.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
+
+    mp.run_tests(["tests/test_real.py", "tests/test_vanished.py"])
+
+    out = capsys.readouterr().out
+    assert "test_vanished.py" in out, (
+        "a silently narrowed scope is the defect this test exists for; "
+        f"nothing named the missing file. Got: {out!r}")
+    assert "test_real.py" not in out, "only the MISSING files are news"
+
+
+def test_an_EMPTY_scope_is_its_own_verdict_not_a_hang(monkeypatch, tmp_path):
+    """'I had no tests to run' and 'the tests did not finish in 120s' are
+    different findings. Reporting the first as the second asserts a timeout that
+    was never measured -- and the caller then re-runs it as if confirming a hang."""
+    monkeypatch.setattr(mp, "ROOT", tmp_path)
+    assert mp.run_tests(["tests/gone.py"]) == "noscope"
+
+
+def test_an_empty_scope_FAILS_the_gate(monkeypatch, tmp_path, capsys):
+    """noscope must not be quietly tolerated either: it is a failure, like
+    corpus_sweep's UNCONFIRMED. 'Could not check' is never 'nothing wrong'."""
+    monkeypatch.setattr(mp, "ROOT", tmp_path)
+    assert mp.run_tests(["tests/gone.py"]) in mp.FAILING_VERDICTS
+
+
+def test_main_reports_an_empty_scope_SEPARATELY_and_fails(fake_tree, monkeypatch, capsys):
+    """A mutant whose scope was empty was never challenged, so it is not a kill.
+    Counting it as one is how a gate reports 11/11 while measuring 3 of 4 files."""
+    calls = []
+
+    def scoped(tests):
+        calls.append(tests)          # call 1 is the BASELINE and must pass
+        return "pass" if len(calls) == 1 else "noscope"
+
+    monkeypatch.setattr(mp, "run_tests", scoped)
+    monkeypatch.setattr(mp, "RECOVER", False)
+    rc = mp.main()
+    out = capsys.readouterr().out
+
+    assert rc != 0, "an unchallenged mutant must not make the gate pass"
+    assert "NOSCOPE" in out, f"the empty scope was not reported as such:\n{out}"
+    assert "killed 0/" in out, f"an unchallenged mutant was counted as killed:\n{out}"
+
+
+def test_main_REFUSES_when_the_BASELINE_scope_is_empty(fake_tree, monkeypatch, capsys):
+    """rc 2 = could not run, never rc 1 = has findings. The F39/F47 distinction."""
+    monkeypatch.setattr(mp, "run_tests", lambda tests: "noscope")
+    monkeypatch.setattr(mp, "RECOVER", False)
+    assert mp.main() == 2
+
+
+def test_the_scope_check_can_actually_fail(tmp_path):
+    """Falsification twin for `all` vs `any`, and the reason F62 went unseen.
+
+    `test_every_target_has_tests_that_exist` used to assert `any(... exists ...)`.
+    Its NAME promises every file; its ASSERTION accepted one. Three of four present
+    passed -- which is exactly how the public copy of the gate ran 3 of the 4
+    `_registry` test files and printed the same `killed` line as a full scope.
+    """
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_present.py").write_text("", encoding="utf-8")
+    targets = {"_x.py": ["tests/test_present.py", "tests/test_absent.py"]}
+
+    assert any((tmp_path / t).exists() for t in targets["_x.py"]), \
+        "precondition: the OLD any() predicate is satisfied by this tree"
+    assert mp_scope_gaps(tmp_path, targets) == {"_x.py": ["tests/test_absent.py"]}, \
+        "the check must NAME the missing file, not merely fail"
+
+    whole = {"_x.py": ["tests/test_present.py"]}
+    assert mp_scope_gaps(tmp_path, whole) == {}, "a complete scope must be clean"

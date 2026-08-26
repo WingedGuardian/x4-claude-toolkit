@@ -447,7 +447,7 @@ def diff_detail(before, after) -> list[dict]:
     return changes
 
 
-def fingerprint(config, extensions=None, engine_dir: Path | None = None,
+def fingerprint(config, extensions=_UNSET, engine_dir: Path | None = None,
                 profile=_UNSET) -> dict:
     """Both axes for *config*'s world, plus the vector the content axis folds.
 
@@ -460,6 +460,18 @@ def fingerprint(config, extensions=None, engine_dir: Path | None = None,
     """
     ext = extensions
     if ext is None:
+        # EXPLICIT None: the caller looked and there is no installed world -- a
+        # machine with no game, which is every fresh clone and every CI runner.
+        # That is an ANSWER, not a mistake, and it is not the same as OMITTING
+        # the argument. Recording it as UNKNOWN keeps the F46 guard intact for
+        # the caller who simply forgot, while letting the honest caller through.
+        # MEASURED 2026-08-26: conflating the two made 5 tests fail on any
+        # machine without X4 installed and turned public CI red for two runs,
+        # because `_registry.GAME_EXTENSIONS` is None when nothing is configured
+        # and `_effective._ext_root`'s `except AttributeError` never fires -- the
+        # attribute exists, its VALUE is None.
+        return {"content": None, "engine": hash_engine(engine_dir), "detail": []}
+    if ext is _UNSET:
         overlays = list(getattr(config, "overlays", ()) or ())
         if not overlays:
             raise ValueError(
@@ -498,6 +510,15 @@ def compare(stored: dict | None, current: dict, engine_dependent: bool) -> Verdi
         return Verdict(False, ["no fingerprint recorded — built before freshness "
                                "tracking existed, so it cannot be established"])
     reasons = []
+    # An UNKNOWN content axis is not a value to compare, it is the absence of
+    # one -- and `None == None` would otherwise make two unknowns MATCH and
+    # report FRESH. An artifact that cannot say which world it describes must
+    # never claim it still describes it.
+    if stored.get("content") is None or current.get("content") is None:
+        return Verdict(False, [
+            "content axis UNKNOWN: no extensions root was available when this "
+            "was stamped or when it was checked, so freshness cannot be "
+            "established (it is not fresh, and it is not known to be stale)"])
     # Both reasons quote STORED -> NOW. A consumer's first question on hitting a
     # stale artifact is "moved how far, and by whose change?", and without the two
     # hashes answering it takes a hand-written script against `fingerprint()`.
