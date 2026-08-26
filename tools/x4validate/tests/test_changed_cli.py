@@ -150,7 +150,8 @@ def test_usn_DEGRADES_and_never_raises(monkeypatch):
     privilege the session cannot have is a tool people stop running."""
     import subprocess
     monkeypatch.setattr(_changed.sys, "platform", "win32")
-    monkeypatch.setattr(_changed, "_dirs", lambda: [__import__("pathlib").Path("C:/x")])
+    monkeypatch.setattr(_changed, "_dirs",
+                        lambda: [__import__("pathlib").PureWindowsPath("C:/x")])
 
     # THE CASE THAT MATTERS, MEASURED on a real unelevated shell 2026-08-26:
     # `queryjournal` returns 0 and prints the journal id, while `readjournal`
@@ -181,12 +182,32 @@ def test_usn_DEGRADES_and_never_raises(monkeypatch):
     assert any("READABLE" in ln for ln in _changed.usn_supplement(["distances"]))
 
 
+def test_usn_says_so_on_a_NON_WINDOWS_platform(monkeypatch):
+    """The branch public CI runs on, and which nothing pinned until it went red.
+
+    `usn_supplement` returns early on anything but win32. That early return was
+    correct and untested, so the two tests above -- which force win32 -- were the
+    only coverage, and they silently exercised the WRONG path on Linux: a
+    `Path("C:/x")` is a PosixPath there, its `.drive` is '', and the function bailed
+    at "could not determine the volume" long before fsutil. Both now use
+    PureWindowsPath, which carries a drive on every platform; this pins the real
+    POSIX behaviour separately so the two concerns cannot be confused again.
+    """
+    monkeypatch.setattr(_changed.sys, "platform", "linux")
+    lines = _changed.usn_supplement(["distances"])
+    assert len(lines) == 1 and "not available on this platform" in lines[0], lines
+    assert "NOT READABLE" not in lines[0], (
+        "a platform without the journal is not a PERMISSION problem, and saying so "
+        "would send someone hunting for an elevated shell they cannot use")
+
+
 def test_usn_probes_readjournal_not_just_queryjournal(monkeypatch):
     """Pin the exact call, because the distinction is invisible in the output."""
     import subprocess
     seen = []
     monkeypatch.setattr(_changed.sys, "platform", "win32")
-    monkeypatch.setattr(_changed, "_dirs", lambda: [__import__("pathlib").Path("C:/x")])
+    monkeypatch.setattr(_changed, "_dirs",
+                        lambda: [__import__("pathlib").PureWindowsPath("C:/x")])
 
     def _record(*a, **k):
         seen.append(list(a[0]))
