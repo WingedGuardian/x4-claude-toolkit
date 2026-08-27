@@ -239,3 +239,204 @@ def test_the_baseline_may_be_named_by_its_content_xml_id(tmp_path):
     arch = _nested_mod(tmp_path, "myoverlay", "vro", {"gun": {"damage": "30500"}})
     r = _threeway.three_way(base, arch, cur)
     assert r.documents_compared == 1, "folder name and content.xml id must both match"
+
+
+# --- second round from real use: DOCUMENT SHAPE across the join -------------------
+
+def _diff_mod(root: Path, name: str, target: str, wares: dict[str, dict[str, str]]) -> Path:
+    """A nested overlay that supplies its payload via `<diff><replace sel="//wares">`.
+
+    This is the whole-file override idiom (CLAUDE.md #10; VRO alone ships 848).
+    """
+    d = root / name
+    inner = d / "extensions" / target / "libraries"
+    inner.mkdir(parents=True)
+    body = "".join(
+        '<ware id="%s" %s/>' % (w, " ".join(f'{k}="{v}"' for k, v in a.items()))
+        for w, a in wares.items())
+    (inner / "wares.xml").write_text(
+        "<?xml version='1.0' encoding='utf-8'?>"
+        f'<diff><replace sel="//wares"><wares>{body}</wares></replace></diff>',
+        encoding="utf-8")
+    (d / "content.xml").write_text(
+        f"<?xml version='1.0' encoding='utf-8'?><content id='{name}' version='100'/>",
+        encoding="utf-8")
+    return d
+
+
+def test_a_root_replace_payload_is_joined_against_a_plain_document(tmp_path):
+    """MEASURED as broken on real use: 0 BOTH-MOVED, the conflict invisible.
+
+    The archive supplies `<diff><replace sel="//wares">PAYLOAD</replace></diff>`
+    while the baseline is a plain `<wares>`, so every attribute path differs by a
+    `/diff/replace/` prefix and nothing joins. The whole document then falls to
+    node-level counts -- honest, but useless for the files that matter.
+
+    ⚠ The earlier nested fixture could NOT have caught this: both of its sides
+    were plain documents, so the shapes matched and it went green for a reason
+    unrelated to the defect. A fixture that cannot exhibit the failure is not a
+    test of it.
+    """
+    base = _mod(tmp_path, "vro", {"gun": {"damage": "5500"}})
+    cur = _mod(tmp_path, "vro_current", {"gun": {"damage": "8500"}})
+    arch = _diff_mod(tmp_path, "myoverlay", "vro", {"gun": {"damage": "30500"}})
+
+    r = _threeway.three_way(base, arch, cur)
+    assert len(r.both_moved) == 1, (
+        f"the root-replace payload must join the plain document; "
+        f"node_level={r.node_level}")
+    c = r.both_moved[0]
+    assert (c.base, c.archived, c.current) == ("5500", "30500", "8500")
+
+
+def test_root_replace_unwrapping_is_REPORTED(tmp_path):
+    base = _mod(tmp_path, "vro", {"gun": {"damage": "5500"}})
+    cur = _mod(tmp_path, "vro_current", {"gun": {"damage": "8500"}})
+    arch = _diff_mod(tmp_path, "myoverlay", "vro", {"gun": {"damage": "30500"}})
+    r = _threeway.three_way(base, arch, cur)
+    assert any("replace" in u.lower() for u in r.unwrapped), r.unwrapped
+
+
+def test_a_NON_root_diff_is_left_alone(tmp_path):
+    """Falsification twin: an ordinary attribute patch is not a whole-document swap.
+
+    Unwrapping it would discard the diff structure and invent a comparison.
+    """
+    base = _mod(tmp_path, "vro", {"gun": {"damage": "5500"}})
+    cur = _mod(tmp_path, "vro_current", {"gun": {"damage": "8500"}})
+    d = tmp_path / "narrow"
+    inner = d / "extensions" / "vro" / "libraries"
+    inner.mkdir(parents=True)
+    (inner / "wares.xml").write_text(
+        "<?xml version='1.0' encoding='utf-8'?>"
+        '<diff><replace sel="//ware[@id=\'gun\']/@damage">30500</replace></diff>',
+        encoding="utf-8")
+    (d / "content.xml").write_text(
+        "<?xml version='1.0' encoding='utf-8'?><content id='narrow' version='100'/>",
+        encoding="utf-8")
+    r = _threeway.three_way(base, d, cur)
+    assert not any("replace" in u.lower() for u in r.unwrapped), (
+        "a targeted attribute patch is not a whole-document override")
+
+
+def test_an_author_REMOVAL_is_labelled_as_such(tmp_path):
+    """base has it, archive dropped it, upstream kept it.
+
+    Reported from real use: `explosiondamage@shield` 7500 in base and current,
+    absent in the archive. That is neither drift nor a value edit, and a consumer
+    applying it as a value edit would write the sentinel instead of deleting the
+    attribute.
+    """
+    base = _mod(tmp_path, "vro", {"gun": {"damage": "5500", "shield": "7500"}})
+    cur = _mod(tmp_path, "vro_current", {"gun": {"damage": "5500", "shield": "7500"}})
+    arch = _diff_mod(tmp_path, "myoverlay", "vro", {"gun": {"damage": "5500"}})
+
+    r = _threeway.three_way(base, arch, cur)
+    kinds = {c.attr: c.kind for c in r.author_edits}
+    assert kinds.get("shield") == "author-removal", kinds
+
+
+def test_an_upstream_ADDITION_is_labelled_as_such(tmp_path):
+    """The 16-macro case, now stated by the tool rather than inferred by a reader."""
+    base = _mod(tmp_path, "vro", {"msl": {"speed": "100"}})
+    cur = _mod(tmp_path, "vro_current", {"msl": {"speed": "100", "targetable": "1"}})
+    arch = _mod(tmp_path, "arch", {"msl": {"speed": "100"}})
+    r = _threeway.three_way(base, arch, cur)
+    kinds = {c.attr: c.kind for c in r.upstream_drift}
+    assert kinds.get("targetable") == "upstream-addition", kinds
+
+
+def _one_op_mod(root: Path, name: str, target: str, op: str, sel: str, payload: str) -> Path:
+    """A nested overlay whose diff holds exactly ONE op with exactly ONE element payload.
+
+    This shape is what actually reaches the root-selector check. The earlier
+    `test_a_NON_root_diff_is_left_alone` twin used a TEXT payload, so the
+    "exactly one element payload" guard fired first and the selector and op-tag
+    checks were never evaluated -- it passed for an unrelated reason, and two
+    planted mutants survived it. Third instance today of a green that could not
+    have gone red.
+    """
+    d = root / name
+    inner = d / "extensions" / target / "libraries"
+    inner.mkdir(parents=True)
+    (inner / "wares.xml").write_text(
+        "<?xml version='1.0' encoding='utf-8'?>"
+        f'<diff><{op} sel="{sel}">{payload}</{op}></diff>', encoding="utf-8")
+    (d / "content.xml").write_text(
+        f"<?xml version='1.0' encoding='utf-8'?><content id='{name}' version='100'/>",
+        encoding="utf-8")
+    return d
+
+
+def test_a_replace_targeting_a_NODE_is_not_treated_as_a_root_override(tmp_path):
+    """One op, one ELEMENT payload, but the selector names a node, not the root.
+
+    Unwrapping this would replace the whole document with a single <ware>.
+    Kills the mutant that drops the root-selector check.
+    """
+    base = _mod(tmp_path, "vro", {"gun": {"damage": "5500"}})
+    cur = _mod(tmp_path, "vro_current", {"gun": {"damage": "8500"}})
+    arch = _one_op_mod(tmp_path, "nodepatch", "vro", "replace",
+                       "//wares/ware[@id='gun']", '<ware id="gun" damage="30500"/>')
+    r = _threeway.three_way(base, arch, cur)
+    assert not any("payload unwrapped" in u for u in r.unwrapped), (
+        f"a node-targeted replace is not a whole-document override: {r.unwrapped}")
+
+
+def test_an_ADD_op_is_never_unwrapped(tmp_path):
+    """One op, one element payload, root-ish selector -- but it is an <add>.
+
+    An add EXTENDS the document; unwrapping it would substitute the added node
+    for the whole file. Kills the mutant that drops the op-tag check.
+    """
+    base = _mod(tmp_path, "vro", {"gun": {"damage": "5500"}})
+    cur = _mod(tmp_path, "vro_current", {"gun": {"damage": "8500"}})
+    arch = _one_op_mod(tmp_path, "addpatch", "vro", "add",
+                       "//wares", '<ware id="brandnew" damage="1"/>')
+    r = _threeway.three_way(base, arch, cur)
+    assert not any("payload unwrapped" in u for u in r.unwrapped), (
+        f"an <add> is not a whole-document override: {r.unwrapped}")
+
+
+def test_an_ADD_whose_selector_names_the_payload_tag_is_still_not_unwrapped(tmp_path):
+    """Reaches the OP-TAG check specifically.
+
+    `<add sel="//wares"><wares>...</wares></add>` passes the one-payload check AND
+    the root-selector check, so only the op-tag check can stop it. The earlier add
+    twin used a `<ware>` payload, whose tag does not match the selector -- so the
+    selector check stopped it first and the op-tag mutant survived. A compound
+    condition needs a twin per clause.
+    """
+    base = _mod(tmp_path, "vro", {"gun": {"damage": "5500"}})
+    cur = _mod(tmp_path, "vro_current", {"gun": {"damage": "8500"}})
+    arch = _one_op_mod(tmp_path, "addwares", "vro", "add", "//wares",
+                       '<wares><ware id="brandnew" damage="1"/></wares>')
+    r = _threeway.three_way(base, arch, cur)
+    assert not any("payload unwrapped" in u for u in r.unwrapped), (
+        f"an <add> is not a whole-document override: {r.unwrapped}")
+
+
+def test_a_diff_with_MORE_THAN_ONE_op_is_not_unwrapped(tmp_path):
+    """Reaches the SINGLE-OP clause.
+
+    A document supplied by a root replace has exactly one op. Two ops means the
+    later one patches the payload the first installed (CLAUDE.md #17 -- ops apply
+    in order, to a tree earlier ops have changed), so the file is not a plain
+    whole-document override and unwrapping it would discard the second op.
+    """
+    base = _mod(tmp_path, "vro", {"gun": {"damage": "5500"}})
+    cur = _mod(tmp_path, "vro_current", {"gun": {"damage": "8500"}})
+    d = tmp_path / "twoop"
+    inner = d / "extensions" / "vro" / "libraries"
+    inner.mkdir(parents=True)
+    (inner / "wares.xml").write_text(
+        "<?xml version='1.0' encoding='utf-8'?><diff>"
+        '<replace sel="//wares"><wares><ware id="gun" damage="30500"/></wares></replace>'
+        '<replace sel="//ware[@id=\'gun\']/@damage">31000</replace>'
+        "</diff>", encoding="utf-8")
+    (d / "content.xml").write_text(
+        "<?xml version='1.0' encoding='utf-8'?><content id='twoop' version='100'/>",
+        encoding="utf-8")
+    r = _threeway.three_way(base, d, cur)
+    assert not any("payload unwrapped" in u for u in r.unwrapped), (
+        f"a multi-op diff is not a plain whole-document override: {r.unwrapped}")

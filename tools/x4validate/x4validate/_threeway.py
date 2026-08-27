@@ -106,6 +106,62 @@ class ThreeWay:
         return (len(self.author_edits) + len(self.upstream_drift)
                 + len(self.converged) + len(self.both_moved))
 
+ABSENT = "\u2205"
+
+
+def _unwrap_root_replace(root, label: str, vpath: str, log: list[str]):
+    """`<diff><replace sel="//macros">PAYLOAD</replace></diff>` -> PAYLOAD.
+
+    The whole-file override idiom (CLAUDE.md #10; VRO alone ships 848 of them).
+    A mod supplies a document this way while the mod it patches supplies the same
+    document plainly, so across a three-way join every attribute path on one side
+    carries a `/diff/replace/` prefix the other lacks and NOTHING matches. MEASURED
+    on a real overlay: 0 BOTH-MOVED, with the four files of interest falling to
+    node-level counts (+14/-12 and the like) -- honest, and useless.
+
+    Deliberately narrow, and narrowed by SELF-CONSISTENCY rather than a hard-coded
+    list of selectors: the diff must hold exactly one element op, it must be a
+    `replace`, it must carry exactly one payload element, and the selector must
+    name that payload's own tag (`//macros` for a `<macros>` payload). A targeted
+    patch such as `<replace sel="//ware[@id='x']/@damage">` therefore never
+    matches, which is the point -- unwrapping one would discard the diff structure
+    and invent a comparison.
+
+    Mirrors `_merge`'s own rule for the same construct: "replace on the document
+    root needs exactly one payload element (a document has one root)".
+    """
+    if root is None or root.tag != "diff":
+        return root
+    ops = [op for op in root if isinstance(op.tag, str)]
+    if len(ops) != 1 or ops[0].tag != "replace":
+        return root
+    sel = (ops[0].get("sel") or "").strip()
+    kids = [c for c in ops[0] if isinstance(c.tag, str)]
+    if len(kids) != 1:
+        return root
+    if sel not in (f"//{kids[0].tag}", f"/{kids[0].tag}"):
+        return root
+    log.append(f"{label}: {vpath}  ->  root <replace sel=\"{sel}\"> payload unwrapped "
+               f"to <{kids[0].tag}>")
+    return kids[0]
+
+
+def _kind(side: str, basev: str, newv: str) -> str:
+    """Distinguish a value change from an ADDITION or a REMOVAL.
+
+    The workspace's most expensive rule is that a one-sided absence in an old
+    document is upstream ADDITION far more often than author deletion. A three-way
+    diff can tell them apart, so it should SAY which it found rather than leave a
+    reader to infer it from a sentinel. And a consumer applying an "author edit"
+    whose new value is the absence sentinel would write that sentinel into an
+    attribute instead of deleting it.
+    """
+    if basev == ABSENT:
+        return f"{side}-addition"
+    if newv == ABSENT:
+        return f"{side}-removal"
+    return "author-edit" if side == "author" else "upstream-drift"
+
 def _identities(base_dirs: list[Path]) -> set[str]:
     """Every name the baseline answers to: folder name AND content.xml id.
 
@@ -186,8 +242,10 @@ def three_way(base: Path | list[Path], archived: Path, current: Path) -> ThreeWa
 
     def _read_base(real: str):
         if len(base_dirs) > 1:
-            return _diff.read_merged(base_dirs, real, r.unreadable)
-        return _diff.read_vpath(base_dirs[0], real)
+            root = _diff.read_merged(base_dirs, real, r.unreadable)
+        else:
+            root = _diff.read_vpath(base_dirs[0], real)
+        return _unwrap_root_replace(root, "base", real, r.unwrapped)
 
     # The classification population is the documents the BASELINE and the ARCHIVE
     # share. A document the archive never had is not "drift the author is behind
@@ -205,7 +263,9 @@ def three_way(base: Path | list[Path], archived: Path, current: Path) -> ThreeWa
             if key.endswith(".xsd"):
                 continue
             o = _read_base(b_map[key])
-            n = _diff.read_vpath(other_dir, other_map[key])
+            n = _unwrap_root_replace(
+                _diff.read_vpath(other_dir, other_map[key]),
+                side, other_map[key], r.unwrapped)
             if o is None or n is None:
                 bad = "BASE" if o is None else side.upper()
                 r.unreadable.append(
@@ -233,10 +293,11 @@ def three_way(base: Path | list[Path], archived: Path, current: Path) -> ThreeWa
         in_a, in_u = key in a_idx, key in u_idx
         basev = (a_idx.get(key) or u_idx.get(key))[0]
         if in_a and not in_u:
-            r.author_edits.append(Change(vpath, node, attr, basev, a_idx[key][1], "author-edit"))
+            r.author_edits.append(Change(vpath, node, attr, basev, a_idx[key][1],
+                                         _kind("author", basev, a_idx[key][1])))
         elif in_u and not in_a:
-            r.upstream_drift.append(
-                Change(vpath, node, attr, basev, u_idx[key][1], "upstream-drift"))
+            r.upstream_drift.append(Change(vpath, node, attr, basev, u_idx[key][1],
+                                           _kind("upstream", basev, u_idx[key][1])))
         elif a_idx[key][1] == u_idx[key][1]:
             r.converged.append(Change(vpath, node, attr, basev, a_idx[key][1], "converged"))
         else:

@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### Fixed — three-way diff: a whole-file override now joins the plain document it overrides
+
+Found on the second real use, once the nested-path fix let the comparison get far enough to fail here
+instead.
+
+A mod supplies a document as `<diff><replace sel="//macros">PAYLOAD</replace></diff>` — the standard
+whole-file override idiom, of which VRO alone ships 848 — while the mod it patches supplies the same
+document plainly. Across the join every attribute path on one side then carried a `/diff/replace/`
+prefix the other lacked, **nothing matched, and the whole document fell to node-level counts** like
+`+14 / -12 node(s)`. That output was honest — node-level changes are reported, not classified — but
+the files most worth classifying were exactly the ones it could not classify.
+
+The payload is now unwrapped on each side independently, and the unwrapping is listed under
+`UNWRAPPED` like any other path rewrite. It is narrowed by **self-consistency rather than a list of
+known selectors**: the diff must hold exactly one element op, it must be a `replace`, it must carry
+exactly one payload element, and the selector must name that payload's own tag. So
+`<replace sel="//ware[@id='gun']/@damage">`, an `<add>`, and a two-op diff are all left alone.
+
+### Added — additions and removals are labelled, not left to be inferred
+
+An attribute the author **removed** and one upstream **added** are not value edits, and a consumer
+applying either as a value edit would write the absence sentinel into the attribute rather than
+deleting it. Both are now named in the listing:
+
+```
+  author edits (1):
+    .../bullet_x.xml  ...damage@shield: 7500 -> ∅  [author-removal]
+
+  upstream drift (1):
+    libraries/wares.xml  ...@targetable: ∅ -> 1  [upstream-addition]
+```
+
+The second is the case this whole tool exists for: an attribute present today and missing from an
+old file is upstream *addition* far more often than author *removal*, and it is now stated by the
+tool rather than inferred by a reader. Bucket totals are unchanged — only the label is new.
+
 ### Fixed — three-way diff: a nested overlay is now compared against the mod it patches
 
 Both defects below were found on the tool's **first real use**, hours after it shipped.

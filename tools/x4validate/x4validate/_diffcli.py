@@ -210,7 +210,12 @@ def _three_way(args) -> int:
             print()
             print(f"  {title} ({len(rows)}):")
             for c in rows[:args.top]:
-                print(f"    {c.vpath}  {c.node}@{c.attr}: {c.base} -> {c.value}")
+                # The KIND matters most exactly where the sentinel appears: an
+                # addition and a removal are not value edits, and a consumer that
+                # applied one as a value edit would write the sentinel into the
+                # attribute instead of deleting it.
+                tag = "" if c.kind in ("author-edit", "upstream-drift") else f"  [{c.kind}]"
+                print(f"    {c.vpath}  {c.node}@{c.attr}: {c.base} -> {c.value}{tag}")
             if len(rows) > args.top:
                 print(f"    ... {len(rows) - args.top} more (raise --top)")
 
