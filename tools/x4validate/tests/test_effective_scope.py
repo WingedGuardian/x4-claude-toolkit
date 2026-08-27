@@ -12,7 +12,7 @@ the store (galaxy map ~1,371, characters/npc ~1,810), while balance classes are
 
 import sqlite3
 
-from x4validate import _effective
+from x4validate import _effective, _effectivecli
 
 
 def _store(tmp_path):
@@ -30,13 +30,13 @@ def _store(tmp_path):
 
 
 def test_scope_note_names_indexed_kinds_and_exclusions():
-    note = _effective.scope_note()
+    note = _effectivecli.scope_note()
     assert "ware" in note and "macro" in note and "job" in note
     assert "BLIND-SPOTS" in note
 
 
 def test_scope_note_names_the_documented_exclusions():
-    note = _effective.scope_note()
+    note = _effectivecli.scope_note()
     low = note.lower()
     assert "galaxy" in low or "map" in low, "map macros are out of scope and must say so"
     assert "character" in low
@@ -46,7 +46,7 @@ def test_scope_note_names_the_documented_exclusions():
 def test_a_missing_entity_states_scope_rather_than_implying_absence(tmp_path, capsys):
     con = _store(tmp_path)
     args = type("A", (), {"kind": "macro", "name": "cluster_01_sector001_macro"})()
-    rc = _effective._cmd_show(con, args)
+    rc = _effectivecli._cmd_show(con, args)
     err = capsys.readouterr().err
     assert rc == 1
     assert "BLIND-SPOTS" in err, (
@@ -55,7 +55,7 @@ def test_a_missing_entity_states_scope_rather_than_implying_absence(tmp_path, ca
 
 def test_coverage_command_reports_kinds_sources_and_counts(tmp_path, capsys):
     con = _store(tmp_path)
-    rc = _effective._cmd_coverage(con, type("A", (), {})())
+    rc = _effectivecli._cmd_coverage(con, type("A", (), {})())
     out = capsys.readouterr().out
     assert rc == 0
     assert "macro" in out and "ware" in out
@@ -68,7 +68,7 @@ def test_coverage_command_reports_kinds_sources_and_counts(tmp_path, capsys):
 def test_scope_note_lists_exactly_the_kinds_the_store_can_build():
     """If a kind is added to BUILDABLE_KINDS and not to the scope note, the tool
     starts understating what it holds -- and the understatement is invisible."""
-    note = _effective.scope_note()
+    note = _effectivecli.scope_note()
     for kind in _effective.BUILDABLE_KINDS:
         assert kind in note, f"BUILDABLE_KINDS has {kind!r} but the scope note omits it"
 
@@ -83,7 +83,7 @@ def test_scope_note_and_the_register_agree_on_exclusions():
     if not reg.is_file():          # the register ships with the toolkit; skip if absent
         return
     text = reg.read_text(encoding="utf-8").lower()
-    note = _effective.scope_note().lower()
+    note = _effectivecli.scope_note().lower()
     for term in ("galaxy", "character", "lua"):
         assert term in note and term in text, (
             f"{term!r} must appear in BOTH the runtime scope note and BLIND-SPOTS.md")

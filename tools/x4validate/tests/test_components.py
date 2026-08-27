@@ -12,7 +12,7 @@ is the half that answers "what is installed in this slot".
 
 from lxml import etree
 
-from x4validate import _effective
+from x4validate import _effective, _effectivecli
 from x4validate._provenance import Origin, Recorder
 
 
@@ -93,7 +93,7 @@ def test_build_default_kinds_cannot_drift_from_BUILDABLE_KINDS():
 
     with patch.object(argparse.ArgumentParser, "add_argument", spy):
         try:
-            _effective.main(["--help"])
+            _effectivecli.main(["--help"])
         except SystemExit:
             pass
     assert captured.get("default") == ",".join(_effective.BUILDABLE_KINDS)

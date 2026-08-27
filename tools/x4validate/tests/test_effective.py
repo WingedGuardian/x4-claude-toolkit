@@ -3,7 +3,7 @@
 import os
 import sqlite3
 
-from x4validate import _effective, _merge
+from x4validate import _effective, _effectivecli, _merge
 
 
 def _world(tmp_path):
@@ -87,26 +87,26 @@ def test_cli_queries(tmp_path, monkeypatch, capsys):
     db = _build(tmp_path, monkeypatch)
     monkeypatch.setattr(_effective._registry, "ingest_content_xml", lambda *a, **k: [])
 
-    assert _effective.main(["--db", str(db), "ls", "macro", "--class", "engine"]) == 0
+    assert _effectivecli.main(["--db", str(db), "ls", "macro", "--class", "engine"]) == 0
     out = capsys.readouterr().out
     assert "engine_arg_s_01_macro" in out and "engine_new_01_macro" in out
 
-    assert _effective.main(["--db", str(db), "attr", "macro", "thrust.forward",
+    assert _effectivecli.main(["--db", str(db), "attr", "macro", "thrust.forward",
                             "--class", "engine", "--sort", "num"]) == 0
     out = capsys.readouterr().out
     assert "250" in out and "900" in out
 
-    assert _effective.main(["--db", str(db), "who-sets", "macro",
+    assert _effectivecli.main(["--db", str(db), "who-sets", "macro",
                             "engine_arg_s_01_macro", "thrust.forward"]) == 0
     assert "aaa_thrust" in capsys.readouterr().out
 
-    assert _effective.main(["--db", str(db), "diff-mod", "aaa_thrust"]) == 0
+    assert _effectivecli.main(["--db", str(db), "diff-mod", "aaa_thrust"]) == 0
     assert "thrust.forward" in capsys.readouterr().out
 
 
 def test_sql_rejects_writes(tmp_path, monkeypatch, capsys):
     db = _build(tmp_path, monkeypatch)
-    assert _effective.main(["--db", str(db), "sql", "DELETE FROM entities"]) == 2
+    assert _effectivecli.main(["--db", str(db), "sql", "DELETE FROM entities"]) == 2
 
 
 # --------------------------------------------------------------------------

@@ -658,10 +658,21 @@ def check_mod_scope_agreement() -> None:
             f"  <-- DIVERGED. store-only={only_store} x4eff-only={only_eff}"))
     # And both must be the ACTIVE set, not merely equal to each other -- two
     # artifacts can agree perfectly while both modelling the wrong world.
+    # BOTH directions. Reporting only `eff_mods - active` meant a merely STALE
+    # index -- the common case, a mod deployed since the last build -- printed an
+    # empty list beside a failure, naming a direction that was not the problem.
+    # Same shape as the 2026-08-25 finding: a two-channel comparison diffed on one.
+    _extra = sorted(eff_mods - active)
+    _missing = sorted(active - eff_mods)
+    _why = []
+    if _extra:
+        _why.append(f"x4eff carries {_extra} the engine will NOT load")
+    if _missing:
+        _why.append(f"x4eff is MISSING {_missing}, active but never indexed "
+                    f"(usually just stale -- rebuild)")
     note(eff_mods == active, "x4eff models the ACTIVE set",
          f"{len(eff_mods)} vs {len(active)} active"
-         + ("" if eff_mods == active else
-            f"  <-- x4eff carries {sorted(eff_mods - active)} the engine will NOT load"))
+         + ("" if eff_mods == active else "  <-- " + "; ".join(_why)))
 
 
 def main() -> int:

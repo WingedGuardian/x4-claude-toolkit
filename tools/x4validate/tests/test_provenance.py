@@ -2,7 +2,7 @@
 
 from lxml import etree
 
-from x4validate import _merge
+from x4validate import _effectivecli, _merge
 from x4validate._provenance import Origin, Recorder
 
 
@@ -147,9 +147,9 @@ import json
 
 def test_note_fires_for_a_single_non_base_chain_over_a_vanilla_vpath(monkeypatch):
     """The F64 case itself."""
-    from x4validate import _effective
+    from x4validate import _effective, _effectivecli
     monkeypatch.setattr(_effective, "base_has", lambda cfg, vp, owner=None: True)
-    note = _effective._winner_not_origin_note(
+    note = _effectivecli._winner_not_origin_note(
         "assets/props/x_macro.xml", json.dumps([["vro", "replace-root", 3]]), cfg=object())
     assert note and "WON" in note.upper(), note
 
@@ -158,7 +158,7 @@ def test_note_is_SILENT_when_base_does_not_ship_the_vpath(monkeypatch):
     """The 39 genuinely mod-added vpaths must not be slandered as re-supplies."""
     from x4validate import _effective
     monkeypatch.setattr(_effective, "base_has", lambda cfg, vp, owner=None: False)
-    assert _effective._winner_not_origin_note(
+    assert _effectivecli._winner_not_origin_note(
         "assets/props/modonly_macro.xml", json.dumps([["vro", "replace-root", 3]]),
         cfg=object()) is None
 
@@ -167,7 +167,7 @@ def test_note_is_SILENT_for_a_pure_base_value(monkeypatch):
     """`chain` is None for a pure-default value -- there is no winner to disclaim."""
     from x4validate import _effective
     monkeypatch.setattr(_effective, "base_has", lambda cfg, vp, owner=None: True)
-    assert _effective._winner_not_origin_note("libraries/wares.xml", None, cfg=object()) is None
+    assert _effectivecli._winner_not_origin_note("libraries/wares.xml", None, cfg=object()) is None
 
 
 def test_note_is_SILENT_when_the_chain_ALREADY_shows_base(monkeypatch):
@@ -175,6 +175,6 @@ def test_note_is_SILENT_when_the_chain_ALREADY_shows_base(monkeypatch):
     would be noise -- and a note that fires on the 99% trains you to ignore it."""
     from x4validate import _effective
     monkeypatch.setattr(_effective, "base_has", lambda cfg, vp, owner=None: True)
-    assert _effective._winner_not_origin_note(
+    assert _effectivecli._winner_not_origin_note(
         "libraries/wares.xml",
         json.dumps([["base", "full", 0], ["vro", "replace", 7]]), cfg=object()) is None

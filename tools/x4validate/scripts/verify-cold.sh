@@ -123,7 +123,7 @@ cli_case _compat     main check "$MOD"
 cli_case _stats      main wares "$MOD"
 cli_case _similarity main --candidate "$MOD"
 cli_case _xref       main who-calls somecue
-cli_case _effective  main ls
+cli_case _effectivecli  main ls
 cli_case _debugcli   main triage
 cli_case _modlist    main refresh
 cli_case _savecli    main info

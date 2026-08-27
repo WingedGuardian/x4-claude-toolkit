@@ -27,7 +27,7 @@ A blanket "the store strips `properties.`" rule would be wrong for every one of 
 
 import sqlite3
 
-from x4validate import _effective
+from x4validate import _effective, _effectivecli
 
 
 def _store(tmp_path):
@@ -56,7 +56,7 @@ def _args(kind, prop, klass=None):
 
 def test_attr_rejects_an_unknown_kind_instead_of_printing_zero(tmp_path, capsys):
     con = _store(tmp_path)
-    rc = _effective._cmd_attr(con, _args("zzznotakind", "hull.max"))
+    rc = _effectivecli._cmd_attr(con, _args("zzznotakind", "hull.max"))
     cap = capsys.readouterr()
     assert rc != 0, "an unknown kind must not exit 0 with a clean-looking zero"
     assert "0 value(s)" not in cap.out, "a zero over a kind that does not exist is not a finding"
@@ -65,7 +65,7 @@ def test_attr_rejects_an_unknown_kind_instead_of_printing_zero(tmp_path, capsys)
 
 def test_attr_rejects_an_unknown_prop_instead_of_printing_zero(tmp_path, capsys):
     con = _store(tmp_path)
-    rc = _effective._cmd_attr(con, _args("macro", "zzznotaprop"))
+    rc = _effectivecli._cmd_attr(con, _args("macro", "zzznotaprop"))
     cap = capsys.readouterr()
     assert rc != 0, "a prop no macro carries must not exit 0"
     assert "0 value(s)" not in cap.out
@@ -75,7 +75,7 @@ def test_attr_rejects_an_unknown_prop_instead_of_printing_zero(tmp_path, capsys)
 def test_attr_names_the_stripped_key_when_the_guess_kept_the_wrapper(tmp_path, capsys):
     """The 2.6%-vs-65.4% case: the suggestion is what makes the rejection useful."""
     con = _store(tmp_path)
-    rc = _effective._cmd_attr(con, _args("macro", "properties.hull.max"))
+    rc = _effectivecli._cmd_attr(con, _args("macro", "properties.hull.max"))
     err = capsys.readouterr().err
     assert rc != 0
     assert "hull.max" in err, "the key that DOES exist must be named, not merely 'no such prop'"
@@ -84,7 +84,7 @@ def test_attr_names_the_stripped_key_when_the_guess_kept_the_wrapper(tmp_path, c
 def test_a_prop_that_really_does_keep_the_wrapper_is_answered_normally(tmp_path, capsys):
     """6,842 mapdataset rows keep `properties.` -- a blanket strip rule would be wrong."""
     con = _store(tmp_path)
-    rc = _effective._cmd_attr(con, _args("mapdataset", "properties.area.sunlight"))
+    rc = _effectivecli._cmd_attr(con, _args("mapdataset", "properties.area.sunlight"))
     cap = capsys.readouterr()
     assert rc == 0, "this key exists; rejecting it would install a new wrong belief"
     assert "1.4" in cap.out
@@ -97,7 +97,7 @@ def test_a_TRUE_zero_is_still_reported_as_zero(tmp_path, capsys):
     which would turn a real, correct absence into an error.
     """
     con = _store(tmp_path)
-    rc = _effective._cmd_attr(con, _args("macro", "hull.max", klass="ship_xl"))
+    rc = _effectivecli._cmd_attr(con, _args("macro", "hull.max", klass="ship_xl"))
     cap = capsys.readouterr()
     assert rc == 0, "no XL ship carries it is a genuine answer, not a bad query"
     assert "0 value(s)" in cap.out
@@ -105,7 +105,7 @@ def test_a_TRUE_zero_is_still_reported_as_zero(tmp_path, capsys):
 
 def test_the_guard_does_not_fire_on_a_prop_that_exists(tmp_path, capsys):
     con = _store(tmp_path)
-    rc = _effective._cmd_attr(con, _args("macro", "hull.max"))
+    rc = _effectivecli._cmd_attr(con, _args("macro", "hull.max"))
     cap = capsys.readouterr()
     assert rc == 0
     assert "100" in cap.out and "200" in cap.out
@@ -123,7 +123,7 @@ def test_a_prop_that_lives_under_ANOTHER_kind_names_that_kind(tmp_path, capsys):
     con.execute("INSERT INTO entities VALUES (4,'ware','ore','minerals','w.xml','base',NULL)")
     con.execute("INSERT INTO attrs VALUES (4,'price.min','50',50.0,'base',NULL)")
     con.commit()
-    rc = _effective._cmd_attr(con, _args("macro", "price.min"))
+    rc = _effectivecli._cmd_attr(con, _args("macro", "price.min"))
     err = capsys.readouterr().err
     assert rc != 0
     assert "ware" in err, "name the kind that DOES carry it, or the rejection is a dead end"
@@ -132,7 +132,7 @@ def test_a_prop_that_lives_under_ANOTHER_kind_names_that_kind(tmp_path, capsys):
 def test_the_cross_kind_hint_stays_silent_when_no_other_kind_has_it(tmp_path, capsys):
     """Falsification twin: a prop nothing carries must not invent a kind."""
     con = _store(tmp_path)
-    rc = _effective._cmd_attr(con, _args("macro", "zzznotaprop"))
+    rc = _effectivecli._cmd_attr(con, _args("macro", "zzznotaprop"))
     err = capsys.readouterr().err
     assert rc != 0
     assert "carried by kind" not in err

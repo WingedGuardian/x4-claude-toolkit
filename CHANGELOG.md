@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Changed — the CLI no longer lives inside the freshness-hashed engine sources
+
+The `engine` freshness axis hashes the whole bytes of seven source files, so **editing an error
+message invalidated the effective store and BaseX `x4eff`** exactly as a merge-semantics change
+would — while the stale banner asserted *"the SAME inputs would now merge differently"*. Measured
+twice in one session: a guard's CLI text moved the hash, and then a pure **docstring** (10 lines
+added, 0 executable) moved it again.
+
+The CLI surface is now `_effectivecli.py` and `_diffcli.py`, neither of which is hashed.
+`_effective.py` drops 1,360 → 897 lines and `_diff.py` 276 → 188. Nothing about the merge changed,
+and nothing you run changed — `x4effective` and `x4diff` behave identically.
+
+Deliberately **not** done: making the hash cleverer. An AST- or token-level digest would fail in the
+unsafe direction, where one missed merge change lets a stale artifact report itself fresh. Six tests
+now pin the boundary: no hashed source may parse arguments, define a command entry point, or print
+beyond a stated two-call allowance for the unconfigured-install refusal. Verified in both directions
+— a CLI edit leaves the hash alone, an engine edit still moves it.
+
+### Fixed — a mod-set mismatch reported the wrong direction
+
+The check that BaseX `x4eff` models the *active* mod set listed only mods `x4eff` carries that the
+engine will not load. In the common case — an index built before you added a mod — that list is
+empty, so the failure printed an empty set and named a direction that was not the problem. It now
+reports both, and names the mods that are active but not indexed.
+
 ### Fixed — `x4effective attr` no longer answers a bad question with a clean zero
 
 `attr` took two free-form arguments and validated neither, so a query that could never match
