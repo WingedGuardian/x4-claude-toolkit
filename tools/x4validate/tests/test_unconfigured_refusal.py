@@ -105,7 +105,11 @@ def test_every_console_script_refuses_unconfigured():
     root = Path(__file__).resolve().parent.parent
     scripts = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     entries = scripts["project"]["scripts"]
-    assert len(entries) >= 9, "expected the full CLI set; did an entry point vanish?"
+    assert len(entries) == 10, (
+        "expected exactly the 10 shipped CLIs. This was `>= 9` until 2026-08-26, "
+        "which caught a VANISHING entry point but silently accepted a new one — so "
+        "adding a CLI passed a guard meant to notice. If you added or removed one, "
+        "change this number deliberately.")
 
     unwrapped = []
     for name, target in entries.items():

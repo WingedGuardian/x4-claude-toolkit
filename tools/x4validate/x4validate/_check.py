@@ -191,6 +191,8 @@ class EntityDefs:
         self._extra = list(extra_overlays or [])
         self._report = report
         self._own: set[str] | None = None
+        #: bulk definition set, built once by all_names() (F65)
+        self._all: set[str] | None = None
         #: name -> defined anywhere in the corpus. Cached both ways, so a mod
         #: with several unresolvable refs pays for one search each, not per use.
         self._corpus_answers: dict[str, bool] = {}
@@ -277,6 +279,34 @@ class EntityDefs:
                 if root.xpath(f"//macro[@name={xq}] | //component[@name={xq}]"):
                     return True
         return False
+
+    def all_names(self) -> set[str]:
+        """Every macro/component name defined anywhere — built ONCE, not per name.
+
+        **This is not an optimisation of `__contains__`; it is the accessor a
+        MANY-NAME caller must use instead.**
+
+        `__contains__` answers a per-name question at per-name cost, and its own
+        docstring states the population that makes that affordable: *"7 distinct
+        references across 114 mods miss the eager tiers — at most 2 for any single
+        mod."* True for a MOD, which is the caller it was built for. It is not a
+        property of the tool, it is a property of that caller.
+
+        MEASURED 2026-08-26 with a different caller: one savegame carries **5,022**
+        distinct macro references, ~2,500 of which miss the eager index. The lazy
+        tier re-enumerates base + DLC + every overlay for each of them (~2.5s a
+        call) and blew a 600s cap with no result. The same question answered in
+        bulk takes **19.4s**. Registered as BLIND-SPOTS **F65**.
+
+        Cached, so repeated calls are free. Returns the union of the eager index
+        and the corpus scan — the same set `__contains__` would answer from,
+        never a narrower one.
+        """
+        if self._all is None:
+            sources = ([self._config.reference] + self._config.dlc_dirs()
+                       + list(self._config.overlays) + self._extra)
+            self._all = set(self._index) | self._scan(sources, "corpus")
+        return self._all
 
     def _scan(self, sources, tier: str) -> set[str]:
         """Every `<macro name>` / `<component name>` defined in *sources*.

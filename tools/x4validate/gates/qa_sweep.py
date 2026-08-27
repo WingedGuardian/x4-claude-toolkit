@@ -262,6 +262,15 @@ CELLS: list[Cell] = [
          findings_ok=True),
     Cell("x4debug", "crosscheck bad mod", ["crosscheck", "__no_such_mod__"],
          expect=(2,), findings_ok=True),
+    # ---- x4save ---------------------------------------------------------
+    # info reads only the header, so it is fast and must always succeed.
+    Cell("x4save", "info (newest save)", ["info"], wants="SAVE-BAKED"),
+    # check builds the full definition set (~20s) and legitimately exits 1 when a
+    # save references content the live tree no longer defines.
+    Cell("x4save", "check (newest save)", ["check", "--limit", "5"],
+         expect=(0, 1, 3), findings_ok=True, wants="examined"),
+    # a non-save must be rc 2 -- a NON-ANSWER, never a clean result.
+    Cell("x4save", "refuses a non-save", ["info", "pyproject.toml"], expect=(2,)),
 ]
 
 

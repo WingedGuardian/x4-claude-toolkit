@@ -399,6 +399,26 @@ def debug_log() -> Path | None:
         return None
     return _resolve(_in)
 
+def savegames() -> Path | None:
+    """The savegame directory, or None.
+
+    A save is an artifact the engine WROTE, so it answers questions no manifest
+    can: which extensions are baked into it (`save` absent or `="1"` — CLAUDE.md
+    #33), and what content it references that the live tree no longer defines.
+
+    Same two-layer shape as `debug_log`: an explicit override, else derived from
+    the profile. Returns None rather than guessing — a save reader pointed at the
+    wrong directory reports "no saves" and that is indistinguishable from a clean
+    result unless the caller refuses instead.
+    """
+    def _in(layer):
+        if v := _pick(layer, "X4_SAVES"):
+            return Path(v)
+        if p := _pick(layer, "X4_PROFILE"):
+            return Path(p) / "save"
+        return None
+    return _resolve(_in)
+
 
 def describe() -> list[str]:
     """Human-readable resolution report, for `--paths` and for bug reports.
@@ -413,7 +433,8 @@ def describe() -> list[str]:
                      ("profile content.xml", profile_content),
                      ("profile extensions", profile_extensions),
                      ("workshop", workshop_content), ("mods", mods),
-                     ("registry", registry), ("debug log", debug_log)):
+                     ("registry", registry), ("debug log", debug_log),
+                     ("savegames", savegames)):
         p = fn()
         mark = "" if p is None else ("" if p.exists() else "   (does not exist)")
         lines.append(f"  {name:<20} {p or '(unresolved)'}{mark}")

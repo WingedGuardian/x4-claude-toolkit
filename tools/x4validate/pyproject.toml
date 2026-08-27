@@ -1,6 +1,6 @@
 [project]
 name = "x4validate"
-version = "2.7.0"
+version = "2.8.0"
 description = "X4 Foundations cross-file XML diff/reference/completeness validator"
 requires-python = ">=3.13"
 dependencies = ["lxml>=5.0", "ruamel.yaml>=0.18"]
@@ -15,6 +15,7 @@ x4similar = "x4validate._similarity:main"
 x4effective = "x4validate._effective:main"
 x4diff = "x4validate._diff:main"
 x4debug = "x4validate._debugcli:main"
+x4save = "x4validate._savecli:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

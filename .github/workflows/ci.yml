@@ -57,6 +57,25 @@ jobs:
       - name: Install Python 3.13
         run: uv python install 3.13
 
+      # The vendored BaseX jar had NEVER been executed by CI, on any OS. The 24 BaseX
+      # unit tests pass without a JVM because they mock -- test_preflight.py monkeypatches
+      # shutil.which and writes a jar that is literally b"not really a jar, but it is a
+      # file". So a bad jar, a classpath change or an untracked .basexhome would ship
+      # silently: a green that could not have gone red. Java 17 is the MEASURED floor,
+      # read out of the jar itself (Build-Jdk-Spec: 17, bytecode major 61).
+      - name: Install Java 17 (for the BaseX smoke test)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Deliberately not a pytest that skips when java is absent: a skip in CI is
+      # indistinguishable from a pass. This fails loudly. Scope is 3 documents -- it
+      # proves the jar RUNS, not that the corpus is correct.
+      - name: BaseX smoke test (real JVM, real query)
+        shell: bash
+        run: bash tools/basex/smoke-basex.sh
+
       # --frozen fails if uv.lock has drifted from pyproject.toml instead of silently
       # resolving something newer. A CI run that quietly installs different versions than
       # a user gets is not testing what ships.

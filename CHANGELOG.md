@@ -1,5 +1,71 @@
 # Changelog
 
+## v2.8.0 — 2026-08-26
+
+### Added — `x4save`: read a savegame, and say what it would silently lose
+
+A save is the only artifact the ENGINE wrote, and it answers two questions no manifest can.
+Both measured in-game.
+
+`uv run x4save info` — the header, and the **save-baked** extensions. **`<patches>` is not a
+record of what loaded.** An extension appears iff its `content.xml` `save` attribute is ABSENT
+or `="1"`: of 129 installed extensions 11 qualify, 10 were recorded (the gap is an online DLC
+not loaded as a content patch), and **0 of the 118** declaring `"0"`/`"false"` appeared. For
+mods that is **3 of 121 (2.5%)** — *less* complete than the profile `content.xml`. The command
+prints that denominator, so the list cannot be misread as coverage. What it does tell you is
+which mods are welded into the save, i.e. which removals are dangerous.
+
+`uv run x4save check <save>` — macro references the live tree no longer defines.
+
+**This exists because the engine is silent.** Removing a mod leaves no dangling references: X4
+**deletes the orphaned content**. Disabling one mod took its 37 macros / 46 references to zero;
+the engine logged **one** error line, and it named a galaxy connection rather than the station,
+the ship, the production modules or the 36 other macros that vanished. No dialog. And the net
+error count went **down by 3**, because the mod's own 4 errors left with it — judged by
+`debug.txt`, the removal looked like an improvement. `check` names 37 items where the log names
+one. (Scope: n=1 mod, one save. The tool reports what a save references; it does not assert the
+general rule.)
+
+Cheap, despite the file size: the largest save here is 140 MB compressed and **1.28 GB**
+expanded, and streams in **2.5 s**. Everything is streamed; nothing builds a tree.
+
+### Fixed — a guard that caught a vanishing CLI but not a new one
+
+`tests/test_unconfigured_refusal.py` asserted `len(entries) >= 9`. That catches an entry point
+*disappearing* and silently accepts one being *added* — so shipping a new CLI passed a check
+written to notice exactly that. Now `== 10`, changed deliberately.
+
+### Fixed — CI had never once started a JVM (the vendored BaseX jar was untested)
+
+The 24 BaseX tests pass on a machine with no Java, **because they mock**: `test_preflight.py`
+monkeypatches `shutil.which` and writes a jar that is literally
+`b"not really a jar, but it is a file"`. Since the jar was vendored in v2.6.0, no CI job on any
+OS had executed it. A bad jar, a classpath change or an untracked `.basexhome` would have
+shipped in silence — a green that could not have gone red.
+
+CI now installs Temurin 17 and runs `tools/basex/smoke-basex.sh`, which builds a three-document
+database and runs a real `collection()` query against the real jar. It is deliberately **not** a
+pytest that skips when Java is absent, because a skip in CI is indistinguishable from a pass.
+Proven able to fail in three ways: remove `.basexhome` → red, corrupt the jar → red, hide `java`
+→ red.
+
+### Fixed — `setup.sh` never checked for Java, while `README.md` promised it
+
+`README.md` states "Java 17+ — optional, only for the BaseX corpus search", and the guided
+install flow (`setup.sh`, `install.sh`, `install.ps1`, `SETUP_PROMPT.txt`) contained **zero**
+mentions of it. Users met the requirement only when a corpus build refused with exit 2 — correct
+behaviour, but the only mechanism. `setup.sh` now probes for it alongside `jq`/`uv`/`wine`, as a
+warning rather than a failure since BaseX is optional. The floor is measured, not chosen: BaseX
+12.4's classes are bytecode major 61.
+
+### Added — `EntityDefs.all_names()`, and BLIND-SPOTS **F65**
+
+`EntityDefs.__contains__` answers a per-NAME question at per-name cost, justified by a stated
+population: *"7 distinct references across 114 mods miss the eager tiers."* True for a mod —
+which is a property of the caller, not of the tool, and nothing enforced it. A savegame carries
+**5,022** references, ~2,500 of which miss the eager index; the lazy tier blew a 600 s cap with
+no result. Built in bulk the same answer takes ~19 s. No shipped caller was affected.
+
 ## v2.7.0 — 2026-08-26
 
 ### Fixed — five tests failed on any machine with no game installed (F63)

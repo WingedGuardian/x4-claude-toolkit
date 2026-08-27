@@ -24,7 +24,7 @@ VERBOSE = "--verbose" in sys.argv
 # needed — deliberately, since hostile-input coverage should run anywhere.
 
 TOOLS = ["x4validate", "x4modlist", "x4compat", "x4xref",
-         "x4stats", "x4similar", "x4effective", "x4diff"]
+         "x4stats", "x4similar", "x4effective", "x4diff", "x4save"]
 
 
 #: Every variable `_paths` consults. Blanking a subset is worse than blanking
@@ -34,7 +34,8 @@ TOOLS = ["x4validate", "x4modlist", "x4compat", "x4xref",
 _PATH_VARS = ("X4_TOOLKIT", "X4_GAME", "X4_GAME_ROOT", "X4_GAME_EXTENSIONS",
               "X4_EXTENSIONS", "X4_REFERENCE", "X4_PROFILE", "X4_PROFILE_CONTENT",
               "X4_PROFILE_EXTENSIONS", "X4_WORKSHOP_CONTENT", "X4_REGISTRY",
-              "X4_MODS", "X4_DEBUGLOG", "X4_EFFECTIVE_DB", "X4_ORACLE_LOG")
+              "X4_MODS", "X4_DEBUGLOG", "X4_SAVES", "X4_EFFECTIVE_DB",
+              "X4_ORACLE_LOG")
 
 
 def run(argv: list[str], env: dict | None = None, timeout: int = 900,

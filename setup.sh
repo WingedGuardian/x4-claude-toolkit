@@ -29,6 +29,23 @@ if command -v jq >/dev/null 2>&1; then ok "jq found"; else
 if command -v uv >/dev/null 2>&1; then ok "uv found"; else
   warn "uv not found — install from https://docs.astral.sh/uv/ (powers x4validate / Python 3.13)"; fi
 
+# Java is OPTIONAL and scoped to the BaseX corpus search (tools/basex). The floor is
+# MEASURED, not chosen: BaseX 12.4's classes are bytecode major 61, so an older JVM
+# refuses to load them outright (UnsupportedClassVersionError) rather than running
+# slowly. Nothing else in this toolkit needs a JVM.
+if command -v java >/dev/null 2>&1; then
+  JV=$(java -version 2>&1 | head -1 | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p')
+  # the pre-9 form is `java version "1.8.0_402"`, where the major is the SECOND field
+  if [ "$JV" = "1" ]; then JV=$(java -version 2>&1 | head -1 | sed -n 's/.*version "1\.\([0-9][0-9]*\).*/\1/p'); fi
+  if [ -n "$JV" ] && [ "$JV" -ge 17 ] 2>/dev/null; then
+    ok "java $JV found (optional — powers the BaseX corpus search)"
+  else
+    warn "java found but reports version '${JV:-unparsed}' — BaseX 12.4 needs 17+. Optional: only tools/basex uses it."
+  fi
+else
+  warn "java not found — OPTIONAL, needed only for the BaseX corpus search (tools/basex, Java 17+). Everything else works without a JVM."
+fi
+
 if [ "$OS" != "windows" ]; then
   if command -v wine >/dev/null 2>&1; then ok "wine found (needed to run XRCatTool on $OS)"; else
     warn "wine not found — needed to run Egosoft's XRCatTool on $OS (bin/xrcat). Install it via $PKG-equivalent."; fi

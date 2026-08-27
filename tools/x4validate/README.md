@@ -92,6 +92,27 @@ uv run x4debug crosscheck <deployed-mod>   # per-item diff: engine-skipped ops v
 uv run x4debug baseline                    # archive the log with a content fingerprint
 ```
 
+### `x4save` — what a savegame bakes in, and what it would silently lose
+
+```bash
+uv run x4save info                         # header + the SAVE-BAKED extensions
+uv run x4save check <save>                 # macro refs the live tree no longer defines
+```
+
+A save is the only artifact the ENGINE wrote, and it is cheap to read: the largest here
+is 1.28 GB expanded and streams in **2.5s**. Two measured facts drive the output.
+
+`<patches>` is **not** a record of what loaded — an extension appears iff its
+`content.xml` `save` attribute is absent or `="1"`. MEASURED: **3 of 121 mods (2.5%)**.
+It is the save-baked set, i.e. the removals that are dangerous.
+
+And removing a mod leaves **no** dangling references — the engine deletes the orphaned
+content **silently**. MEASURED on one removal: 37 macros went to 0, the engine logged
+**one** error line naming a galaxy connection rather than any of the lost content, there
+was no dialog, and the net error count went *down* because the mod's own errors left with
+it. `check` is worth running precisely because `debug.txt` will not tell you.
+
+
 `triage` states the log's mtime and whether it was a **new game** or a save load — error
 counts are not comparable across that boundary — and its rows must sum to the lines read,
 with the unclassified row printed **even when zero**. A row that appears only when non-zero
@@ -244,6 +265,8 @@ handled here — it is a secret, not a path, and must never be written to a file
   entity rather than a mod. `parse_log` accounts for every `[=ERROR=]` line: classified,
   or labelled `unclassified` and counted — never dropped.
 - `x4validate/_debugcli.py` — `x4debug`: triage / crosscheck / baseline.
+- `x4validate/_savecli.py` — `x4save`: savegame header + save-vs-live-tree
+  reference check. Streams gzip; never builds a tree.
 - `x4validate/_freshness.py` — the two-axis fingerprint every persisted artifact carries, and
   the per-folder **content vector** it is folded from. Deliberately NOT in `ENGINE_SOURCES`:
   widening the content axis must not claim the merge code changed.
