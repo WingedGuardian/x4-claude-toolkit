@@ -605,6 +605,70 @@ def _rescore(reg) -> tuple[int, int]:
     return promoted, left
 
 
+def cmd_tracked(args) -> int:
+    """What the ACCOUNT tracks on Nexus, set against what is INSTALLED here.
+
+    Tracking is a THIRD population, distinct from the two `_registry` already
+    models (`installed` = on disk, `active` = engine-loadable). It is what the
+    user asked Nexus to watch, and the interesting rows are the two mismatches:
+
+      followed, not installed  -- candidates the user already showed interest in
+      installed, not followed  -- updates NOBODY WILL HEAR ABOUT, which is the
+                                  one that costs something silently
+
+    The account-wide denominator is printed first and always. MEASURED: the
+    endpoint returned 1,616 rows across 9 games for 413 x4foundations ones, so a
+    bare "413 tracked" would hide three quarters of the payload.
+    """
+    t = _nexus.fetch_tracked(args.domain)
+    others = t.total - t.kept
+    print(f"tracked on Nexus: {t.kept} for {args.domain}, from {t.total} row(s) "
+          f"across {len(t.domains)} game(s) — {others} belong to other games")
+    if t.malformed:
+        print(f"  ⚠ {t.malformed} row(s) dropped: no usable mod_id (counted, not skipped)")
+    if args.domain not in t.domains and t.total:
+        print(f"  ⚠ {args.domain!r} appears in NONE of the {t.total} rows — check the "
+              f"domain name against: {', '.join(sorted(t.domains))}")
+
+    reg = _registry.load_registry(Path(args.registry) if args.registry else None)
+    installed: dict[int, str] = {}
+    unidentified = 0
+    for m in reg["mods"]:
+        if not _registry._active(m):
+            continue
+        nid, _fid, state = _registry.identity(m)
+        if nid is None:
+            unidentified += 1
+            continue
+        installed.setdefault(int(nid), m["id"])
+
+    tracked = set(t.ids)
+    have = set(installed)
+    untracked = sorted(have - tracked)
+    unowned = sorted(tracked - have)
+
+    print(f"\ninstalled with a known Nexus id: {len(have)}"
+          + (f"   (+{unidentified} active mod(s) with no id — NOT counted either way)"
+             if unidentified else ""))
+
+    print(f"\ninstalled but NOT tracked: {len(untracked)} — no update notification for these")
+    for nid in untracked[:args.limit]:
+        print(f"   {nid:>7}  {installed[nid]}")
+    if len(untracked) > args.limit:
+        print(f"   … {len(untracked) - args.limit} more (--limit)")
+
+    print(f"\ntracked but NOT installed: {len(unowned)} — followed, never adopted")
+    for nid in unowned[:args.limit]:
+        print(f"   {nid:>7}")
+    if len(unowned) > args.limit:
+        print(f"   … {len(unowned) - args.limit} more (--limit)")
+
+    # The arithmetic must reconcile, or one of the three populations is wrong.
+    print(f"\n{len(have & tracked)} of {len(have)} installed-with-id are tracked; "
+          f"{len(have)} = {len(have & tracked)} tracked + {len(untracked)} not")
+    return 0
+
+
 def cmd_verify(args) -> int:
     """The identity burn-down list, with the denominator stated."""
     reg_path = Path(args.registry) if args.registry else None
@@ -735,6 +799,12 @@ def main(argv: list[str] | None = None) -> int:
                          "manifest name is IDENTICAL to the stored upstream title "
                          "(no API calls, no near-matches)")
     pv.set_defaults(func=cmd_verify)
+
+    pt = sub.add_parser("tracked", help="what the ACCOUNT tracks on Nexus vs what is INSTALLED")
+    pt.add_argument("--domain", default="x4foundations",
+                    help="Nexus game domain (the endpoint is account-wide across all games)")
+    pt.add_argument("--limit", type=int, default=20, help="rows to show per list")
+    pt.set_defaults(func=cmd_tracked)
 
     pig = sub.add_parser("ignore", help="mark a junk/personal mod out of the active worklist")
     pig.add_argument("id", help="content.xml extension id")

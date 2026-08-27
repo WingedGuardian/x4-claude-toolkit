@@ -8,7 +8,9 @@ import types
 from datetime import date
 from pathlib import Path
 
-from x4validate import _modlist, _registry
+import pytest
+
+from x4validate import _modlist, _nexus, _registry
 from x4validate._nexus import ModMeta
 
 
@@ -423,3 +425,64 @@ def test_plausible_match_ignores_filler_only_overlap():
 def test_plausible_match_abstains_when_there_is_nothing_to_judge():
     """No identity tokens on either side -> don't invent a rejection."""
     assert _modlist._plausible_match("VRO patch", "mod pack")
+
+
+# --- tracked mods: an ACCOUNT-WIDE endpoint, filtered to one game --------------
+#
+# `/v1/user/tracked_mods.json` returns every mod the ACCOUNT tracks, across every
+# game. MEASURED 2026-08-27 on the live key: 1,616 rows over 9 domains, of which
+# 413 are x4foundations. Filtering to one domain is therefore a NARROWING STEP,
+# and this workspace's founding rule is that a step which narrows the data must
+# ANNOUNCE it -- otherwise "413 tracked" reads as the whole answer.
+
+def test_fetch_tracked_filters_to_the_domain_AND_reports_the_denominator(monkeypatch):
+    payload = [
+        {"mod_id": 7, "domain_name": "x4foundations"},
+        {"mod_id": 7, "domain_name": "x4foundations"},      # duplicate row
+        {"mod_id": 2, "domain_name": "x4foundations"},
+        {"mod_id": 9, "domain_name": "skyrimspecialedition"},
+        {"mod_id": 4, "domain_name": "starfield"},
+    ]
+    monkeypatch.setattr(_nexus, "nexus_key", lambda: "k")
+    monkeypatch.setattr(_nexus, "_get_json", lambda url, headers: payload)
+    t = _nexus.fetch_tracked("x4foundations")
+    assert t.ids == [2, 7], "must dedupe and sort"
+    assert t.total == 5, "the ACCOUNT-WIDE total is the denominator and must survive"
+    assert t.domains["skyrimspecialedition"] == 1 and t.domains["x4foundations"] == 3
+    assert t.kept == 2
+
+
+def test_fetch_tracked_REFUSES_a_payload_that_is_not_a_list(monkeypatch):
+    """A shape change upstream must be a NON-ANSWER, never an empty result.
+
+    Returning [] here would render "you track 0 mods" — indistinguishable from a
+    real zero, and the caller would act on it."""
+    monkeypatch.setattr(_nexus, "nexus_key", lambda: "k")
+    monkeypatch.setattr(_nexus, "_get_json", lambda url, headers: {"error": "nope"})
+    with pytest.raises(_nexus.NexusError, match="unexpected"):
+        _nexus.fetch_tracked("x4foundations")
+
+
+def test_fetch_tracked_distinguishes_a_REAL_zero_from_a_narrowing(monkeypatch):
+    """Tracking nothing for THIS game while tracking plenty elsewhere is a real
+    zero — and the denominator is what makes it legible as one."""
+    monkeypatch.setattr(_nexus, "nexus_key", lambda: "k")
+    monkeypatch.setattr(_nexus, "_get_json",
+                        lambda url, headers: [{"mod_id": 9, "domain_name": "skyrim"}])
+    t = _nexus.fetch_tracked("x4foundations")
+    assert t.ids == [] and t.kept == 0
+    assert t.total == 1, "an empty result with a NON-zero denominator is a narrowing, not an absence"
+
+
+def test_fetch_tracked_survives_a_row_with_no_mod_id(monkeypatch):
+    """`el.get(...)` skipping silently is a registered shape (7 registries would
+    have indexed zero entities while reporting success). A malformed row must be
+    counted as dropped, not vanish."""
+    monkeypatch.setattr(_nexus, "nexus_key", lambda: "k")
+    monkeypatch.setattr(_nexus, "_get_json", lambda url, headers: [
+        {"mod_id": 5, "domain_name": "x4foundations"},
+        {"domain_name": "x4foundations"},                    # no mod_id
+    ])
+    t = _nexus.fetch_tracked("x4foundations")
+    assert t.ids == [5]
+    assert t.malformed == 1, "a dropped row must be COUNTED, not silently skipped"

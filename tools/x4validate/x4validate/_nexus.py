@@ -59,6 +59,68 @@ def _post_json(url: str, body: dict, headers: dict) -> dict:
         return json.load(r)
 
 
+#: ACCOUNT-WIDE: every mod the key's account tracks, across every game. Filtering
+#: it to one game is a NARROWING STEP, which is why `fetch_tracked` returns the
+#: denominator alongside the kept ids rather than a bare list.
+NEXUS_TRACKED = "https://api.nexusmods.com/v1/user/tracked_mods.json"
+
+
+@dataclass
+class Tracked:
+    """Tracked mods for ONE game, carrying the account-wide denominator.
+
+    `ids` alone would read as the whole answer. MEASURED 2026-08-27 on a live
+    key: 1,616 tracked rows across 9 domains, of which 413 are x4foundations —
+    so a bare "413" hides three quarters of what the endpoint returned, and an
+    empty `ids` would be indistinguishable from "you track nothing at all".
+    """
+    ids: list[int]            # deduped, sorted, for the requested domain
+    kept: int                 # len(ids) — stated so the pair reads as a fraction
+    total: int                # rows returned ACROSS ALL GAMES: the denominator
+    domains: dict[str, int]   # per-domain counts, so the exclusion is nameable
+    malformed: int            # rows dropped for having no usable mod_id
+
+
+def fetch_tracked(domain: str = "x4foundations") -> Tracked:
+    """Mods the account TRACKS on Nexus, filtered to *domain*.
+
+    Tracking is a SUPERSET of installing and a different question from either
+    "what is on disk" or "what is enabled": it is what the user asked Nexus to
+    watch. That makes it the right source for two things `_registry` cannot
+    answer — mods followed but never installed (candidates), and mods installed
+    but NOT followed (updates nobody will hear about).
+
+    Raises rather than returning an empty result when the payload is not a list.
+    A shape change upstream must be a NON-ANSWER; rendering it as "you track 0"
+    is the absence-versus-non-answer confusion this toolkit exists to refuse.
+    """
+    rows = _get_json(NEXUS_TRACKED, {"apikey": nexus_key(), **_APP})
+    if not isinstance(rows, list):
+        raise NexusError(
+            f"unexpected payload from {NEXUS_TRACKED}: expected a list, got "
+            f"{type(rows).__name__}. Refusing to report a count from a shape "
+            "this function does not understand.")
+    domains: dict[str, int] = {}
+    ids: set[int] = set()
+    malformed = 0
+    for r in rows:
+        d = r.get("domain_name") if isinstance(r, dict) else None
+        if d:
+            domains[d] = domains.get(d, 0) + 1
+        if d != domain:
+            continue
+        raw = r.get("mod_id")
+        # A missing key must be COUNTED, never silently skipped: `el.get(...)`
+        # dropping rows quietly is a registered defect shape in this workspace.
+        try:
+            ids.add(int(raw))
+        except (TypeError, ValueError):
+            malformed += 1
+    out = sorted(ids)
+    return Tracked(ids=out, kept=len(out), total=len(rows),
+                   domains=domains, malformed=malformed)
+
+
 @dataclass
 class ModMeta:
     nexus_id: int

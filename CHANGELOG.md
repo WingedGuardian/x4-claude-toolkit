@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added — `x4modlist tracked`: what the account FOLLOWS, against what is installed
+
+Tracking is a **third population**, distinct from *installed* (on disk) and *active*
+(engine-loadable): it is what you asked Nexus to watch. The two mismatches are the point —
+**followed but not installed** (candidates you already showed interest in) and **installed but not
+followed**, which means no update notification, and that one costs something silently. MEASURED on a
+live account: **36 of 73** installed mods with a known Nexus id were untracked.
+
+⚠ The endpoint is **account-wide** (1,616 rows across 9 games for 413 X4 ones), so filtering to one
+game is a narrowing step and the denominator is printed first, always. A payload that is not a list
+**raises** rather than reporting "0 tracked" — an upstream shape change is a non-answer, not an
+absence.
+
 ## v2.8.0 — 2026-08-26
 
 ### Added — `x4save`: read a savegame, and say what it would silently lose
