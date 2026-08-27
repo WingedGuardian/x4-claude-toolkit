@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Fixed — a mod shipping `md/` or `aiscripts/` no longer reads as a clean pass
+
+An additive-only `<mdscript>` with three `md.xsd` violations returned **"OK: no issues found"**,
+exit 0.
+
+The schema check was not missing — `--update` reports two of those three as **errors** (element
+ordering) and the third as an advisory. What was missing was the *sentence*. Compiling `md.xsd`
+takes about 102 seconds, so every script check deliberately sits behind `--update`; in the default
+run nothing examined the file, and the summary still said OK. For an additive-only script mod that
+is the whole story: no diffs, no selectors, nothing else to resolve — **the one check that could
+have failed was the one not run.**
+
+The default run now records it in the existing NOT CHECKED channel, and the summary line changes
+itself accordingly:
+
+```
+  no issues found in what could be checked
+
+  NOT CHECKED:
+   - script-schema: 1 md/aiscripts file(s) were NOT validated against their schema and are this
+     mod's ONLY payload, so nothing that can fail was examined — the schema pass costs ~102s to
+     compile and runs only under `--update`
+```
+
+**The exit code is unchanged.** MEASURED over the installed set, **77 of 124 mods ship script XML
+and 17 are script-only**, so degrading the run here would fire on most of the corpus by default —
+and a check that floods is worse than no check, because it teaches you to skip the output. Whether
+the script-only case should degrade is left as a deliberate decision.
+
 ### Fixed — three-way diff: a whole-file override now joins the plain document it overrides
 
 Found on the second real use, once the nested-path fix let the comparison get far enough to fail here

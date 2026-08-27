@@ -1551,6 +1551,52 @@ def check_debug_correlation(mod_dir: Path, config: _merge.Config, report: Report
         + ("" if matched else " — clean load for this mod, or a stale/other-mod log"))
 
 
+
+def check_script_validation_scope(mod_dir: Path, config: _merge.Config,
+                                  report: Report) -> None:
+    """Disclose that md/ and aiscripts/ files went unvalidated in the default run.
+
+    Reported from real use 2026-08-27: an additive-only <mdscript> with three
+    md.xsd violations returned "OK: no issues found", exit 0.
+
+    The tool CAN catch those -- MEASURED on the same file, `--update` reports the
+    element-ordering ones as ERROR rc 1 and the surplus-attribute one as an
+    advisory. What it does not do is run any script check by default, and that is
+    deliberate: compiling md.xsd costs ~102s, so both `check_xsd` and the fast
+    `check_required_attrs` pass sit behind --update.
+
+    So the defect was never a missing check. It was a missing SENTENCE: for a mod
+    whose payload is script files, nothing applicable ran, and the run still said
+    "OK: no issues found" -- exactly what `Skipped` exists to prevent, and what
+    this same tool already refuses to do for a content.xml-only folder.
+
+    NOT degraded, deliberately. MEASURED over the installed set: 77 of 124 mods
+    ship script XML and 17 are script-only. A degraded exit here would fire on the
+    majority of the corpus in default mode, and a check that floods is worse than
+    no check -- it trains you to ignore the output. Whether the script-ONLY case
+    should degrade is a live question, and a decision rather than a drive-by.
+    """
+    prefixes = tuple(f"{s}/" for s in _xsd.SCRIPT_DIRS)
+    unreadable: list[_scan.Unreadable] = []
+    scripts, other = 0, 0
+    for vpath, _root in _scan.iter_mod_xml(mod_dir, lambda v: True, unreadable):
+        low = vpath.lower()
+        if not low.endswith(".xml") or low == "content.xml":
+            continue
+        if low.startswith(prefixes):
+            scripts += 1
+        else:
+            other += 1
+    if not scripts:
+        return
+    only = " and are this mod's ONLY payload, so nothing that can fail was examined" \
+        if not other else ""
+    report.skip(
+        "script-schema",
+        f"{scripts} md/aiscripts file(s) were NOT validated against their schema"
+        f"{only} — the schema pass costs ~102s to compile and runs only under "
+        f"`--update` (or `--update --xsd-fast` for the gating subset)")
+
 def check_required_attrs(mod_dir: Path, config: _merge.Config,
                          report: Report) -> set[tuple[str, int, str]]:
     """Gating pass for `attribute X is required but missing` — no schema compile.
@@ -1884,6 +1930,10 @@ def validate(
         check_completeness(mod_dir, runtime, report, entity, like)  # runtime: needs macro defs
     if debug is not None:  # authoritative: fold the engine's own errors for this mod (gates)
         check_debug_correlation(mod_dir, config, report, debug)
+    # Runs in EVERY mode: the default run is exactly where a script
+    # file goes unexamined while the summary says OK.
+    if not update:
+        check_script_validation_scope(mod_dir, config, report)
     if update:  # mechanical-port extras (9.0 migration): runtime heuristic + XSD (slow, last)
         check_migration(mod_dir, config, report)
         # Fast gating pass FIRST — no schema compile, so the required-attribute
