@@ -23,8 +23,23 @@ VERBOSE = "--verbose" in sys.argv
 # Every input this sweep uses is synthesized in a temp dir, so no game paths are
 # needed — deliberately, since hostile-input coverage should run anywhere.
 
-TOOLS = ["x4validate", "x4modlist", "x4compat", "x4xref",
-         "x4stats", "x4similar", "x4effective", "x4diff", "x4save"]
+def _declared_clis() -> list[str]:
+    """The CLI set, DERIVED from `[project.scripts]` rather than restated here.
+
+    This was a hand-maintained literal until 2026-08-26, and it listed 9 of 10 --
+    `x4debug` was missing, so the sweep covered a subset AND PRINTED SUCCESS. That
+    is this register's founding shape, sitting inside a gate. A literal cannot
+    notice a new CLI; the source of truth can.
+
+    Pinned by tests/test_cli_enumerations_agree.py, which checks every
+    hand-maintained enumeration of "the CLIs" against pyproject at once.
+    """
+    import tomllib
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return sorted(data["project"]["scripts"])
+
+
+TOOLS = _declared_clis()
 
 
 #: Every variable `_paths` consults. Blanking a subset is worse than blanking

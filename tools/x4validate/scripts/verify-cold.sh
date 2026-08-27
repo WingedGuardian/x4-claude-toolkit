@@ -112,12 +112,12 @@ sys.exit($mod.$fn(sys.argv[1:]) or 0)" "$@" 2>&1); crc=$?
   if [ "$crc" -ne 2 ]; then
     echo "   FAIL $mod: exit $crc (want 2 = not configured)"; MFAIL=$((MFAIL+1)); return
   fi
-  echo "   ok   $mod: exit 2, no traceback"
+  echo "   ok   $mod: exit 2, no traceback"; MOK=$((MOK+1))
 }
 
 echo
 echo "== COLD CLI MATRIX: every executable must refuse with exit 2 =="
-MFAIL=0
+MFAIL=0; MOK=0
 cli_case _cli        main "$MOD"
 cli_case _compat     main check "$MOD"
 cli_case _stats      main wares "$MOD"
@@ -139,7 +139,26 @@ if [ "$MFAIL" -ne 0 ]; then
   echo "   $MFAIL CLI(s) did not refuse cleanly."
   rc=1
 else
-  echo "   all 9 configuration-dependent CLIs refuse cleanly (x4diff needs none)."
+  # The count is DERIVED, never a literal. This line read "all 8" until a tenth
+  # CLI was added, and it was correct-then-stale exactly as `>= 9` had been in
+  # tests/test_unconfigured_refusal.py -- the same defect, in the sentence that
+  # reports the result. It now says what it ran, and reconciles that against the
+  # source of truth so drift is LOUD instead of silent.
+  # Counted with awk, NOT `uv run python`: the first version of this shelled out to
+  # uv, which fails whenever pyproject.toml has drifted from uv.lock -- exactly the
+  # moment a CLI is being added. DECLARED fell back to "?", the comparison was
+  # skipped, and the run reported success. A check that cannot run must never be
+  # quiet: an undeterminable count is now a FAILURE, not a skip.
+  DECLARED=$(awk '/^\[project\.scripts\]/{f=1;next} /^\[/{f=0} f && /=/{n++} END{print n+0}' pyproject.toml)
+  echo "   all $MOK configuration-dependent CLIs refuse cleanly (x4diff needs none)."
+  if ! [ "$DECLARED" -gt 0 ] 2>/dev/null; then
+    echo "   CANNOT DETERMINE how many CLIs pyproject declares -- this matrix proves nothing."
+    rc=1
+  elif [ "$((MOK+1))" -ne "$DECLARED" ]; then
+    echo "   DRIFT: pyproject declares $DECLARED CLIs; this matrix exercised $MOK + x4diff."
+    echo "   A matrix that silently covers a subset is the defect this file exists to catch."
+    rc=1
+  fi
 fi
 
 echo
