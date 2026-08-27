@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.7.0 — 2026-08-26
 
 ### Fixed — five tests failed on any machine with no game installed (F63)
 
