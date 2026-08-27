@@ -66,6 +66,12 @@ TARGETS: dict[str, list[str]] = {
                      "tests/test_mod_scope_is_explicit.py",
                      "tests/test_profile_is_a_decision_log.py"],
     "_compat.py": ["tests/test_compat.py", "tests/test_compat_dropped.py"],
+    "_check.py": ["tests/test_check.py", "tests/test_tierb.py",
+                  "tests/test_reference_scope.py"],
+    "_effective.py": ["tests/test_effective.py", "tests/test_prop_depth.py",
+                      "tests/test_effective_scope.py", "tests/test_provenance.py"],
+    "_scan.py": ["tests/test_scan.py", "tests/test_corpus_scan.py",
+                 "tests/test_no_packed_only_scan.py"],
 }
 
 
@@ -133,6 +139,27 @@ MUTANTS = [
            'kind="NAME-CLASH", target=name, mods=folders, winner=folders[0],',
            "index/macros.xml decides a name clash, not load order; naming one is "
            "a guess wearing the grammar of a measurement"),
+    # --- _check.py: the bare-vs-nested door (gotcha #6, F19) -------------------
+    Mutant("_check.py", "nested-path rewrite disabled",
+           "nested = _merge._nested_target(vpath, config.packed_dlc_names())",
+           "nested = None  # mutant: mod-on-mod patches lose their target",
+           "a cross-mod patch silently no-ops; the engine never opens the bare form"),
+
+    # --- _effective.py: load order and property depth --------------------------
+    Mutant("_effective.py", "load order replaced by ALPHABETICAL (gotcha #13)",
+           "order = _compat.compute_load_order(mods)",
+           'order = sorted(m["folder"] for m in mods)  # mutant: alphabetical',
+           "the wrong mod wins: people.capacity reads 0 alphabetically, 200 in true order"),
+    Mutant("_effective.py", "property recursion truncated at depth 1",
+           "if depth >= MAX_PROP_DEPTH:",
+           "if depth >= 1:  # mutant: the whole flight model disappears",
+           "9,197 of 13,291 ship attributes vanish and the store still reports success"),
+
+    # --- _scan.py: loose THEN packed (F1, written 7 times) ---------------------
+    Mutant("_scan.py", "packed half of iter_mod_xml never entered",
+           '    for vpath, member in sorted(_cat.mod_vfs(mod_dir, packed_only=True).items()):\n        if not vpath.lower().endswith(".xml") or vpath.lower() in yielded:\n            continue\n        if predicate is not None and not predicate(vpath):\n            continue\n        try:\n            root = _merge.parse_bytes(_cat.read_member(member))',
+           '    for vpath, member in []:  # mutant: packed half never entered\n        if not vpath.lower().endswith(".xml") or vpath.lower() in yielded:\n            continue\n        if predicate is not None and not predicate(vpath):\n            continue\n        try:\n            root = _merge.parse_bytes(_cat.read_member(member))',
+           "62% of mod XML invisible; a negative becomes a confident false absence"),
 ]
 
 

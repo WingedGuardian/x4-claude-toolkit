@@ -377,3 +377,103 @@ def test_corpus_search_resolves_a_name_defined_only_in_a_packed_mod(tmp_path):
         "the corpus tier is blind to packed mods — the recurring defect class")
     assert defs.corpus_parses == 1, (
         f"expected exactly the one candidate file to be parsed, got {defs.corpus_parses}")
+
+
+# --- F65: the BULK door must answer from the same set as the per-name door ------
+#
+# `EntityDefs.__contains__` answers a per-name question at per-name cost, and its
+# docstring states the population that makes that affordable: 7 distinct references
+# across 114 mods miss the eager tiers. True for a MOD -- and a property of that
+# CALLER, not of the tool. MEASURED 2026-08-26 with a different caller: one savegame
+# carries 5,022 distinct macro references, ~2,500 of which miss, at ~2.5s each. It
+# blew a 600s cap with no result. `all_names()` answers the same question in bulk
+# (19.4s) and is what `x4save check` builds its whole oracle from.
+#
+# THE INVARIANT THAT MATTERS is the docstring's own claim: the bulk set is "the same
+# set `__contains__` would answer from, NEVER A NARROWER ONE". A narrower bulk set
+# would not crash -- it would silently report defined names as DANGLING, inflating
+# `x4save check`'s count with false positives that look exactly like real findings.
+# That is the narrowing-step shape, in an oracle.
+#
+# Shipped 2026-08-26 with NO test. This is that test.
+
+def test_all_names_is_not_narrower_than_the_per_name_door(tmp_path):
+    """The load-bearing claim. A macro defined ONLY in an asset file -- never
+    registered in the index (gotcha #11: MEASURED, 753 such names in the reference
+    tree) -- resolves through `__contains__`, so it MUST be in `all_names()`."""
+    ref = _game(tmp_path)
+    (ref / "assets").mkdir(parents=True, exist_ok=True)
+    (ref / "assets" / "unindexed.xml").write_bytes(
+        b'<macros><macro name="only_in_an_asset_file" class="ship_s"/></macros>')
+    defs = _check.EntityDefs(_merge.Config(reference=ref))
+    assert "only_in_an_asset_file" in defs, "per-name door must resolve it"
+    assert "only_in_an_asset_file" in defs.all_names(), (
+        "the BULK door is narrower than the per-name door -- an oracle built on it "
+        "would report a defined name as DANGLING")
+
+
+def test_all_names_agrees_with_the_per_name_door_in_BOTH_directions(tmp_path):
+    """Agreement, not merely containment. A bulk set that is WIDER is also wrong:
+    it would mask real dangling references, which is the costlier direction."""
+    ref = _game(tmp_path)
+    (ref / "assets").mkdir(parents=True, exist_ok=True)
+    (ref / "assets" / "extra.xml").write_bytes(
+        b'<macros><macro name="defined_a" class="ship_s"/>'
+        b'<macro name="defined_b" class="ship_m"/></macros>')
+    defs = _check.EntityDefs(_merge.Config(reference=ref))
+    bulk = defs.all_names()
+    assert len(bulk) >= 2, f"bulk set has {len(bulk)} names -- too small to mean anything"
+    for name in ("defined_a", "defined_b", "nothing_defines_this", "nor_this"):
+        assert (name in defs) == (name in bulk), (
+            f"{name!r}: per-name says {name in defs}, bulk says {name in bulk}")
+
+
+def test_all_names_is_CACHED_so_a_many_name_caller_pays_once(tmp_path):
+    """The entire point of the accessor. Rebuilding per call would reintroduce F65
+    in a slower shape, and nothing in the output would say so."""
+    ref = _game(tmp_path)
+    defs = _check.EntityDefs(_merge.Config(reference=ref))
+    first = defs.all_names()
+    assert defs.all_names() is first, "not cached -- a 5,022-name caller pays 5,022 times"
+
+
+def test_the_agreement_check_can_actually_fail(tmp_path):
+    """Proven-to-fail guard (#26). If a narrowed bulk set did NOT trip the comparison
+    above, that comparison would be decoration."""
+    ref = _game(tmp_path)
+    (ref / "assets").mkdir(parents=True, exist_ok=True)
+    (ref / "assets" / "u.xml").write_bytes(
+        b'<macros><macro name="present_everywhere" class="ship_s"/></macros>')
+    defs = _check.EntityDefs(_merge.Config(reference=ref))
+    narrowed = defs.all_names() - {"present_everywhere"}
+    assert ("present_everywhere" in defs) != ("present_everywhere" in narrowed), (
+        "a deliberately narrowed set must break the agreement the tests above assert")
+
+
+def test_all_names_is_NAMESPACE_AGNOSTIC_like_the_per_name_door(tmp_path):
+    """macro UNION component, not macros alone (gotcha #11).
+
+    `<component ref>` names a MACRO inside `libraries/wares.xml` but a COMPONENT
+    inside a macro file — one attribute, two namespaces — and in a `<diff>` carrying
+    `<replace sel="//component">` at an asset path, element ancestry cannot classify
+    it at all. MEASURED: checking membership against the macro namespace alone
+    produced **1,792 misses**; the union took 2,300 references down to **3 genuine,
+    0 false**.
+
+    A macro-only `all_names()` would therefore hand `x4save check` ~1,800 false
+    dangling references that look exactly like real findings. This is the property
+    that turns the accessor from plausible into correct."""
+    ref = _game(tmp_path)
+    (ref / "assets").mkdir(parents=True, exist_ok=True)
+    (ref / "assets" / "both_namespaces.xml").write_bytes(
+        b'<macros><macro name="a_macro_name" class="ship_s"/></macros>')
+    (ref / "libraries" / "component.xml").write_bytes(
+        b'<components><component name="a_component_name"/></components>')
+    defs = _check.EntityDefs(_merge.Config(reference=ref))
+    bulk = defs.all_names()
+    assert "a_macro_name" in bulk, "macro namespace missing from the bulk set"
+    assert "a_component_name" in bulk, (
+        "COMPONENT namespace missing — a macro-only bulk set produced 1,792 false "
+        "misses when this was measured")
+    # and the per-name door must agree, or the two doors disagree about one name
+    assert "a_component_name" in defs
