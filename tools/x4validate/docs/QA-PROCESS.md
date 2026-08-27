@@ -219,6 +219,15 @@ wrong.
    into buckets that must SUM to the population and reports a denominator. A
    file-count match is not proof; the count was right here.
 
+   ⚠ **`scripts/verify-port.py` is DEV-SIDE ONLY and is deliberately absent from
+   the public bundle** — it hardcodes a mirror path no public user has, and the
+   identifier scrub would reject it. **If you are reading this in the public
+   toolkit, rule 2 is not a step you can run**: there is no second tree to prove a
+   port against. What still applies to you is the instrument lesson below it —
+   compare committed blobs, never working-tree files. Recorded because a rule that
+   names an unrunnable command trains its reader to skip the whole document, which
+   is the same failure the `diff -rq` note under it describes.
+
    ⚠ **Do NOT use `diff -rq` for this, despite what this rule used to say.**
    MEASURED 2026-08-26 on the real pair of trees: it reports **52 differences where
    12 are real**. The other 40 are line endings — dev's working tree was

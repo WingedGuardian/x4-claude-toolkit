@@ -176,3 +176,93 @@ def test_every_summary_row_has_the_header_s_column_count(text):
         f"summary rows whose column count differs from the header's {want}: {bad}. "
         f"Markdown shifts a short row's cells LEFT and blanks the tail, so the Status "
         f"column renders EMPTY while the source looks plausible.")
+
+
+# --- heading / summary-row status agreement -----------------------------------
+#
+# ADDED 2026-08-26. The register carries each finding's status TWICE: in the section
+# heading's tail (`## F52 — ... · confidence 97% · ⏳ OPEN`) and in the summary table's
+# STATE column. Nothing compared them, so they were free to drift apart -- and had.
+#
+# MEASURED when this test was written: 17 findings declare a status in BOTH places, and
+# **2 disagreed** -- F52 and F53, each with heading `⏳ OPEN` against a STATE cell reading
+# `✅ FIXED 2026-08-26`. Both were verified against the CODE, not the register: F52's
+# guard is gone from `_check.py` (`if new_files or no_schema:`) and F53's `.gitattributes`
+# pins `*.py text eol=lf` in both trees. So the rows were right and the headings stale.
+#
+# Only ONE of the two was reported; the second was found by measuring the population
+# instead of fixing the reported instance. That is the reason this is a test and not a
+# one-time correction.
+#
+# Deliberately narrow, in the spirit of the uniqueness test above: it compares only
+# FIXED-vs-OPEN, only for findings that declare a status in both places, and says nothing
+# about dates or wording.
+
+_STATUS_HEADING = re.compile(r"^## (F\d+) .*?(\u2705 FIXED|\u23f3 OPEN|\u26a0 OPEN)", re.M)
+_STATE_CELL = re.compile(r"^\s*(?:\u2705|\u23f3|\u26a0)?\s*\*\*(FIXED|OPEN)")
+
+
+def _norm(marker: str) -> str:
+    return "FIXED" if "FIXED" in marker else "OPEN"
+
+
+def heading_statuses(text: str) -> dict[str, str]:
+    """F-id -> FIXED/OPEN, for headings that declare one. First heading wins: a
+    continuation heading must not overwrite the declaring one."""
+    out: dict[str, str] = {}
+    for m in _STATUS_HEADING.finditer(text):
+        out.setdefault(m.group(1), _norm(m.group(2)))
+    return out
+
+
+def row_statuses(text: str) -> dict[str, str]:
+    """F-id -> FIXED/OPEN, read from the STATE column of the summary table."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        m = _TABLE_ROW.match(line)
+        if not m:
+            continue
+        cells = split_cells(line)
+        if len(cells) < 5:
+            continue
+        s = _STATE_CELL.match(cells[4])
+        if s:
+            out[m.group(1)] = s.group(1)
+    return out
+
+
+def test_the_status_readers_are_not_blind(text):
+    """Denominator guard, same role as `test_the_register_parses_at_all`.
+
+    Both readers returning `{}` would make the agreement test below vacuously green --
+    the register's own founding defect shape, inside the register's own bookkeeping."""
+    heads, rows = heading_statuses(text), row_statuses(text)
+    assert len(heads) >= 15, f"heading status reader went blind: {len(heads)} found"
+    assert len(rows) >= 40, f"STATE-column reader went blind: {len(rows)} found"
+    assert len(set(heads) & set(rows)) >= 15, (
+        f"only {len(set(heads) & set(rows))} findings declare a status in both places -- "
+        f"the comparison below has almost nothing to compare")
+
+
+def test_the_status_readers_can_actually_disagree():
+    """Proven-to-fail guard. A comparison that cannot go red is not evidence (#26)."""
+    planted = (
+        "## F999 \u2014 a planted finding \u00b7 confidence 99% \u00b7 \u23f3 OPEN\n"
+        "| F999 | x | y | z | \u2705 **FIXED 2026-01-01** \u2014 planted |\n")
+    assert heading_statuses(planted) == {"F999": "OPEN"}
+    assert row_statuses(planted) == {"F999": "FIXED"}
+
+
+def test_a_findings_heading_and_its_summary_row_agree_on_status(text):
+    """A register that says both OPEN and FIXED for one finding answers neither question.
+
+    Direction matters: a heading reading OPEN over a row reading FIXED makes closed work
+    look outstanding, and the reverse hides real work. Fix whichever half the CODE
+    contradicts -- neither the heading nor the row is authoritative on its own."""
+    heads, rows = heading_statuses(text), row_statuses(text)
+    disagree = {f: (heads[f], rows[f]) for f in set(heads) & set(rows)
+                if heads[f] != rows[f]}
+    assert not disagree, (
+        "findings whose heading and summary row disagree about status "
+        f"(heading, row): {dict(sorted(disagree.items()))}. Check the CODE to decide "
+        "which half is stale, then fix that half.")
