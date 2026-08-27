@@ -100,7 +100,7 @@ fooled by our assumptions.
 
 - **Load order between mods is community convention, not engine-documented.** Any
   result that turns on *which mod won* is advisory and says so.
-- **Every finding is recorded individually** — F1–F63, each with a measured cost, and
+- **Every finding is recorded individually** — F1–F64, each with a measured cost, and
   where a limit was accepted rather than fixed, the reason it was accepted. The
   per-finding register (`docs/BLIND-SPOTS.md`) lives in the development tree because
   its evidence cites a specific private modlist by name; the findings fixed in each
