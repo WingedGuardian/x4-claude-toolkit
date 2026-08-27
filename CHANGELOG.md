@@ -66,6 +66,52 @@ which is a property of the caller, not of the tool, and nothing enforced it. A s
 **5,022** references, ~2,500 of which miss the eager index; the lazy tier blew a 600 s cap with
 no result. Built in bulk the same answer takes ~19 s. No shipped caller was affected.
 
+### Changed — provenance now says which source WON, not which INTRODUCED
+
+`x4effective who-sets` and `dump --chain` report which overlays produced a value. A root
+`<replace sel="//macros">` swaps the whole document, so **base contributes no chain entry at all** —
+VRO's dominant idiom, 848 of them. A single-entry chain therefore read as *"this mod introduced this"*
+when it usually means *"this mod re-supplied what vanilla already had."*
+
+MEASURED: of **35,423** single-op root-replace attributes, **23,182 (65.4%)** also exist in vanilla
+with the chain hiding it; only **39** vpaths are genuinely mod-added. `bullet_arg_m_ion_01_mk1_macro`
+is the sharpest — vanilla 10, live 10, chain `[vro]`: identical value, sole credit, no hint a base
+file exists. It cost a real design conclusion.
+
+Both commands now disclose when base+DLC also supply the vpath, and stay **silent** for genuinely
+mod-added vpaths, pure-base values, and chains that already name base. Scope is existence, not the
+vanilla value — reporting the value would mean a second implementation of the property flatten, and
+that is what made the original measurement of this defect report 2.6%. BLIND-SPOTS **F64**.
+
+### Fixed — a store could be stamped with a world it was never built from
+
+`_ext_root()` returned the real extensions directory unconditionally, behind an `except
+AttributeError` that can never fire — the attribute exists and its value is `None`. A store built
+over throwaway directories was stamped with a fingerprint describing the **real** installed game.
+It now records an **UNKNOWN** content axis instead, which never reads as fresh. **F63 symptom 2.**
+
+### Fixed — the line-ending pin was never checked against the bytes it governs
+
+`.gitattributes` pins shell scripts and Python to LF. **A pin governs CHECKOUT; it does not repair a
+file already in a working tree**, and nothing counted the bytes. MEASURED: **14 of 155** pinned files
+held CRLF here — including `bin/xrcat` and `.claude/x4-paths.env.example`, where CRLF is
+**functionally fatal** rather than cosmetic, because both are sourced by bash and a trailing CR lands
+inside every value.
+
+A fresh clone was never affected — checkout applies the pin — but nothing would have caught the next
+file to drift. The new guard asks **git** what the pin resolves to and reads the **working tree**,
+with no allow-list. BLIND-SPOTS **F67**.
+
+### Internal — the checks that check the checks
+
+**Mutation coverage 1 module → 6, 15 mutants, `killed 15/15, survivors 0`.** Every detector it names
+is now provably killable rather than assumed so: the bare-vs-nested door, load order replaced by
+alphabetical, property recursion truncated to depth 1, and the packed half of a scan never entered
+(**F54**). `all_names()` gained the tests it shipped without — the property that matters is that it
+is **never narrower** than the per-name door, since a narrower set does not crash, it reports defined
+names as dangling. And **F66** records an investigation that found *nothing*: producer/consumer key
+normalisation, three pairs, no disagreement — filed so the line is not silently re-opened.
+
 ## v2.7.0 — 2026-08-26
 
 ### Fixed — five tests failed on any machine with no game installed (F63)
