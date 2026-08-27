@@ -101,3 +101,50 @@ def test_the_script_dirs_come_from_the_xsd_module(tmp_path):
     assert _xsd.SCRIPT_DIRS, "the shared list must be non-empty or the check is vacuous"
     mod = _script_mod(tmp_path, MD, rel=f"{sorted(_xsd.SCRIPT_DIRS)[0]}/probe.xml")
     assert _run(mod).skipped
+
+
+# --- found by SWEEPING for the shape, not by tripping over it ---------------------
+
+def test_a_schema_declaring_data_file_is_also_disclosed(tmp_path):
+    """The same gap, one surface along, found by asking what ELSE is gated.
+
+    `check_effective_schema` validates merged data files against the schema they
+    declare, and sits behind `--update` exactly like the script pass. MEASURED: a
+    mod patching `libraries/audiologs.xml` (which declares `audiologs.xsd`)
+    returned "OK: no issues found" with no mention that the schema pass had not run.
+
+    Weaker than the script-only case -- sel-resolution genuinely examined the diff,
+    so exit 0 is defensible -- but the schema claim was still never made and never
+    disclosed. Disclosure costs nothing and is the difference between "checked" and
+    "not checked".
+    """
+    d = tmp_path / "datamod"
+    (d / "libraries").mkdir(parents=True)
+    (d / "libraries" / "audiologs.xml").write_text(
+        "<?xml version='1.0' encoding='utf-8'?><diff>"
+        "<add sel='/audiologs'><audiolog id='probe'/></add></diff>", encoding="utf-8")
+    (d / "content.xml").write_text(
+        "<?xml version='1.0' encoding='utf-8'?><content id='d' version='100'/>",
+        encoding="utf-8")
+    report = _run(d)
+    why = " ".join(s.why for s in report.skipped)
+    assert report.skipped, "a schema-declaring data file must not silently go unvalidated"
+    assert "--update" in why
+    assert not report.degraded, "disclosure only; the diff itself WAS examined"
+
+
+def test_a_data_file_that_declares_NO_schema_is_not_disclosed(tmp_path):
+    """Falsification twin: the disclosure is about files with a schema to check.
+
+    Without this the check could pass by firing on every mod that ships any
+    library file at all -- which would flood, and mean nothing.
+    """
+    d = tmp_path / "plainlib"
+    (d / "libraries").mkdir(parents=True)
+    (d / "libraries" / "zzz_not_a_vanilla_file.xml").write_text(
+        "<?xml version='1.0' encoding='utf-8'?><diff/>", encoding="utf-8")
+    (d / "content.xml").write_text(
+        "<?xml version='1.0' encoding='utf-8'?><content id='p' version='100'/>",
+        encoding="utf-8")
+    report = _run(d)
+    assert not report.skipped, f"nothing declares a schema here: {report.skipped}"

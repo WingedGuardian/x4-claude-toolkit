@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Fixed — a patched data file that declares a schema is disclosed as unvalidated too
+
+Found by sweeping for the shape rather than by tripping over it. `check_effective_schema` validates
+the *merged* result of every data file a mod patches against the schema that file declares, and it
+sits behind `--update` exactly like the script pass. So a mod patching `libraries/god.xml` — which
+declares a schema — reported `OK: no issues found` with no mention that the check existed and had
+not run.
+
+Now disclosed in the same NOT CHECKED channel, naming the count and an example file. Exit code
+unchanged: unlike the script-only case, the diff itself genuinely *was* examined, so a clean result
+is defensible — it just was not the whole story.
+
+Eligibility and the schema lookup come from the existing `_xsd` helpers rather than being re-derived,
+because a second implementation of the same normalisation is how these gaps get made in the first
+place.
+
 ### Fixed — a mod shipping `md/` or `aiscripts/` no longer reads as a clean pass
 
 An additive-only `<mdscript>` with three `md.xsd` violations returned **"OK: no issues found"**,

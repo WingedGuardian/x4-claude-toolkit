@@ -1587,15 +1587,42 @@ def check_script_validation_scope(mod_dir: Path, config: _merge.Config,
             scripts += 1
         else:
             other += 1
-    if not scripts:
-        return
-    only = " and are this mod's ONLY payload, so nothing that can fail was examined" \
-        if not other else ""
-    report.skip(
-        "script-schema",
-        f"{scripts} md/aiscripts file(s) were NOT validated against their schema"
-        f"{only} — the schema pass costs ~102s to compile and runs only under "
-        f"`--update` (or `--update --xsd-fast` for the gating subset)")
+    if scripts:
+        only = " and are this mod's ONLY payload, so nothing that can fail was examined" \
+            if not other else ""
+        report.skip(
+            "script-schema",
+            f"{scripts} md/aiscripts file(s) were NOT validated against their schema"
+            f"{only} — the schema pass costs ~102s to compile and runs only under "
+            f"`--update` (or `--update --xsd-fast` for the gating subset)")
+
+    # The same gap one surface along, found by sweeping for the SHAPE rather than
+    # by tripping over it: `check_effective_schema` validates merged data files
+    # against the schema they declare and is gated behind --update identically.
+    # Eligibility and the declaration lookup come from _xsd, never re-derived here
+    # — a second implementation of the same normalisation is F66's whole point.
+    lib = config.reference / "libraries"
+    with_schema: list[str] = []
+    seen: set[str] = set()
+    for vpath, _root in iter_mod_xml_roots(mod_dir):
+        v = vpath.replace("\\", "/")
+        if v.lower() in seen or not _xsd.eligible(v):
+            continue
+        seen.add(v.lower())
+        base = _merge.build_effective(v, config)
+        if base.tree is None:
+            continue                      # brand-new file: no base to validate against
+        schema_path, why_not = _xsd.schema_of(base.tree, lib, v)
+        if why_not or schema_path is None:
+            continue
+        with_schema.append(v)
+    if with_schema:
+        report.skip(
+            "effective-schema",
+            f"{len(with_schema)} patched data file(s) declare a schema and the merged "
+            f"result was NOT validated against it — runs only under `--update` "
+            f"(e.g. {with_schema[0]})")
+
 
 def check_required_attrs(mod_dir: Path, config: _merge.Config,
                          report: Report) -> set[tuple[str, int, str]]:
