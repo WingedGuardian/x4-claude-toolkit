@@ -230,3 +230,62 @@ def test_two_UNKNOWN_content_axes_do_NOT_compare_equal_into_a_false_FRESH():
     v = _freshness.compare(unknown, dict(unknown), engine_dependent=True)
     assert not v.fresh, "UNKNOWN must never read as fresh"
     assert any("establish" in r or "unknown" in r.lower() for r in v.reasons), v.reasons
+
+
+# --- F63 symptom 2: a store must not be stamped with a world it was not built from ---
+#
+# Warm, `_effective._ext_root()` returned `_registry.GAME_EXTENSIONS` unconditionally
+# -- so a store built over throwaway test directories was stamped with a fingerprint
+# describing the REAL installed game. An artifact claiming provenance it does not
+# have, which is the failure "a tool that cannot distinguish a GUESS from a
+# MEASUREMENT is a defect" exists to prevent.
+#
+# Population RE-DERIVED 2026-08-27 rather than trusted (gotcha #23, a recorded cost
+# of zero is where a wrong denominator hides): 2 call sites (`_effective.py:813`
+# stamp, `:872` store_freshness), **4** test functions across 2 files -- the register
+# said 5 -- and 3 production consumers of `store_freshness`, ALL of which pass
+# `config=None` and therefore describe the real world. Cost today genuinely zero;
+# the defect is that the stamp cannot be trusted to mean what it says.
+
+def test_ext_root_returns_None_for_a_config_describing_a_DIFFERENT_world(tmp_path):
+    """The symptom-2 defect. A test-built store's config points at a throwaway
+    reference tree, so the real extensions root is NOT what it was built over."""
+    from x4validate import _effective
+    cfg = _merge.Config(reference=tmp_path / "ref")
+    assert _effective._ext_root(cfg) is None, (
+        "a config describing a throwaway world must not be handed the REAL "
+        "extensions root -- that stamps the store with provenance it lacks")
+
+
+def test_ext_root_still_returns_the_REAL_root_for_the_REAL_world():
+    """The other direction, which is what makes the test above mean something.
+    Skipped rather than faked when nothing is configured -- a cold machine cannot
+    answer this question, and pretending otherwise is the defect under test."""
+    from x4validate import _effective, _paths
+    real = _paths.reference()
+    if real is None or _paths.game_extensions() is None:
+        pytest.skip("no configured game install -- cannot exercise the warm path")
+    assert _effective._ext_root(_merge.Config()) == _paths.game_extensions()
+
+
+def test_ext_root_does_NOT_guess_a_root_from_overlays(tmp_path):
+    """Preserves the reason the original code existed, stated in its own docstring:
+    guessing from `config.overlays` would fingerprint "no mods" for an empty list
+    and read as FRESH FOREVER. UNKNOWN is the honest answer, never an inferred root."""
+    from x4validate import _effective
+    (tmp_path / "ext" / "modA").mkdir(parents=True)
+    cfg = _merge.Config(reference=tmp_path / "ref",
+                        overlays=(tmp_path / "ext" / "modA",))
+    assert _effective._ext_root(cfg) is None, "must not infer a root from overlays"
+
+
+def test_a_store_stamped_UNKNOWN_reads_NOT_fresh_through_the_real_path(tmp_path):
+    """End of the chain: symptom 2's fix feeds `fingerprint(config, None)`, and the
+    resulting UNKNOWN content axis must not compare equal into a false FRESH. This
+    is symptom 1's trap arriving through symptom 2's door."""
+    from x4validate import _effective
+    cfg = _merge.Config(reference=tmp_path / "ref")
+    fp = _freshness.fingerprint(cfg, _effective._ext_root(cfg))
+    assert fp["content"] is None
+    v = _freshness.compare(fp, dict(fp), engine_dependent=True)
+    assert not v.fresh, "two UNKNOWN content axes must never read as fresh"

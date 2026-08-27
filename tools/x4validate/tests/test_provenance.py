@@ -125,3 +125,56 @@ def test_recorder_none_is_noop_regression():
     a2 = _merge.apply_diff(t2, ops, recorder=Recorder(), source="m")
     assert etree.tostring(t1) == etree.tostring(t2)
     assert [(o.tag, o.ok) for o in a1] == [(o.tag, o.ok) for o in a2]
+
+
+import json
+
+
+# --- F64: provenance reports WHO WON, never WHO INTRODUCED --------------------
+#
+# A root `<replace sel="//macros">` swaps the whole document, so base contributes
+# NO chain entry -- and that is VRO's dominant idiom (848 root-replaces, CLAUDE.md
+# #10). A single-entry chain then reads as "this mod introduced this" when it
+# usually means "this mod re-supplied what vanilla already had".
+#
+# PEER-MEASURED: of 35,423 single-op root-replace attributes, 23,182 (65.4%) also
+# exist in vanilla with the chain hiding it; only 39 vpaths are truly mod-added.
+# It cost a real design conclusion ("VRO added Kha'ak shield disruption" -- false).
+#
+# Scope is deliberately EXISTENCE, not the vanilla value: extracting the value
+# means re-deriving the flatten, and a second implementation of a normaliser is
+# exactly what made a peer's check report 2.6% where the answer was 65.4%.
+
+def test_note_fires_for_a_single_non_base_chain_over_a_vanilla_vpath(monkeypatch):
+    """The F64 case itself."""
+    from x4validate import _effective
+    monkeypatch.setattr(_effective, "base_has", lambda cfg, vp, owner=None: True)
+    note = _effective._winner_not_origin_note(
+        "assets/props/x_macro.xml", json.dumps([["vro", "replace-root", 3]]), cfg=object())
+    assert note and "WON" in note.upper(), note
+
+
+def test_note_is_SILENT_when_base_does_not_ship_the_vpath(monkeypatch):
+    """The 39 genuinely mod-added vpaths must not be slandered as re-supplies."""
+    from x4validate import _effective
+    monkeypatch.setattr(_effective, "base_has", lambda cfg, vp, owner=None: False)
+    assert _effective._winner_not_origin_note(
+        "assets/props/modonly_macro.xml", json.dumps([["vro", "replace-root", 3]]),
+        cfg=object()) is None
+
+
+def test_note_is_SILENT_for_a_pure_base_value(monkeypatch):
+    """`chain` is None for a pure-default value -- there is no winner to disclaim."""
+    from x4validate import _effective
+    monkeypatch.setattr(_effective, "base_has", lambda cfg, vp, owner=None: True)
+    assert _effective._winner_not_origin_note("libraries/wares.xml", None, cfg=object()) is None
+
+
+def test_note_is_SILENT_when_the_chain_ALREADY_shows_base(monkeypatch):
+    """A multi-entry chain that names base is not hiding anything, so annotating it
+    would be noise -- and a note that fires on the 99% trains you to ignore it."""
+    from x4validate import _effective
+    monkeypatch.setattr(_effective, "base_has", lambda cfg, vp, owner=None: True)
+    assert _effective._winner_not_origin_note(
+        "libraries/wares.xml",
+        json.dumps([["base", "full", 0], ["vro", "replace", 7]]), cfg=object()) is None

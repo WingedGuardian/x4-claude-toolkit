@@ -850,18 +850,35 @@ def _write_db(db_path, config, mods, ordered, order_rank, entities, removed):
 
 # --- queries ------------------------------------------------------------------
 
-def _ext_root(config) -> Path:
-    """The extensions directory this store was built over.
+def _ext_root(config) -> Path | None:
+    """The extensions directory this store was built over, or ``None`` when that
+    cannot be established.
 
     Freshness is judged against the same world the build enumerated, so this asks
-    `_registry` rather than guessing from `config.overlays` — an empty overlay
-    list would otherwise fingerprint "no mods" and read as fresh forever.
+    `_paths` rather than guessing from `config.overlays` -- an empty overlay list
+    would otherwise fingerprint "no mods" and read as fresh forever. That reason
+    is why the original code existed and it still holds: UNKNOWN is the honest
+    answer here, never an inferred root.
+
+    RETURNS ``None`` WHEN THE CONFIG DESCRIBES A DIFFERENT WORLD (F63 symptom 2).
+    This used to return `_registry.GAME_EXTENSIONS` unconditionally, behind an
+    `except AttributeError` that can never fire -- the attribute EXISTS and its
+    VALUE is None when nothing is configured. So a store built over throwaway test
+    directories was stamped with a fingerprint describing the REAL installed game:
+    an artifact claiming provenance it does not have.
+
+    `fingerprint()` already models the three states this needs (F63 symptom 1):
+    OMITTED raises (F46's guard -- a caller who forgot must not silently hash the
+    current directory), explicit ``None`` records the content axis as UNKNOWN, and
+    `compare()` refuses to call an UNKNOWN axis fresh.
     """
-    try:
-        return _registry.GAME_EXTENSIONS
-    except AttributeError:
-        overlays = list(getattr(config, "overlays", ()) or ())
-        return overlays[0].parent if overlays else Path("")
+    real_ref = _paths.reference()
+    cfg_ref = getattr(config, "reference", None)
+    if real_ref is None or cfg_ref is None:
+        return None
+    if Path(cfg_ref) != Path(real_ref):
+        return None
+    return _paths.game_extensions()
 
 
 def store_freshness(con, config=None):
@@ -879,6 +896,56 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     return con
+
+
+def _winner_not_origin_note(vpath: str, chain_json: str | None, cfg=None) -> str | None:
+    """Disclaimer for a chain that shows a WINNER and reads like an ORIGIN (F64).
+
+    A root ``<replace sel="//macros">`` swaps the whole document, so base
+    contributes NO chain entry -- and that is VRO's dominant idiom (848
+    root-replaces, CLAUDE.md #10). A single-entry chain therefore reads as
+    "this mod introduced this" when it usually means "this mod re-supplied what
+    vanilla already had".
+
+    PEER-MEASURED: of 35,423 single-op root-replace attributes, 23,182 (65.4%)
+    also exist in vanilla with the chain hiding it; only 39 vpaths are genuinely
+    mod-added. `bullet_arg_m_ion_01_mk1_macro` is the sharpest case -- vanilla 10,
+    live 10, chain ``[vro]``: identical value, sole credit, no hint a base file
+    exists. It cost a real design conclusion ("VRO added Kha'ak shield
+    disruption" -- false).
+
+    SCOPE IS EXISTENCE, NOT THE VANILLA VALUE, on purpose. Reporting the value
+    would mean re-deriving the property flatten, and a second implementation of a
+    normaliser is exactly what made an independent check of this very defect
+    report 2.6% where the answer was 65.4%. `base_has` answers existence, handles
+    the DLC-prefix trap, and is not a second door.
+
+    Returns None -- deliberately silent -- when there is nothing to disclaim:
+    a pure-base value, a chain that already names base, or a vpath base+DLC do
+    not ship (those 39 are genuinely mod-added and must not be slandered as
+    re-supplies). A note that fires on the common case trains you to ignore it.
+    """
+    if not vpath or not chain_json:
+        return None
+    try:
+        chain = json.loads(chain_json)
+    except (ValueError, TypeError):  # silent-ok: a malformed chain is a STORE defect,
+        # surfaced by the build and by claims_audit; this is an advisory annotation and
+        # must not invent a second error channel for it.
+        return None
+    if len(chain) != 1 or not chain[0] or chain[0][0] == "base":
+        return None
+    try:
+        cfg = cfg if cfg is not None else _merge.Config()
+        if not base_has(cfg, vpath):
+            return None
+    except Exception:  # silent-ok: no resolvable reference tree means the question
+        # 'does base ship this?' is UNANSWERABLE here, and an absent advisory note is a
+        # non-answer while a wrong one would be a false claim. The caller's real output
+        # (the chain itself) is unaffected, so there is no work silently not done.
+        return None
+    return (f"    (base+DLC ALSO supply {vpath} -- this chain shows which source "
+            f"WON, not which introduced the value)")
 
 
 def _fmt_chain(chain_json: str | None) -> str:
@@ -1147,8 +1214,14 @@ def _cmd_who_sets(con, args) -> int:
             print(f"no prop {args.prop!r} on {args.name}", file=sys.stderr)
             return 1
         print(f"{args.name}.{args.prop}: {_fmt_chain(r['chain'])}")
+        _note = _winner_not_origin_note(ent["vpath"], r["chain"])
+        if _note:
+            print(_note)
     else:
         print(f"{args.name} (entity): {_fmt_chain(ent['chain'])}")
+        _note = _winner_not_origin_note(ent["vpath"], ent["chain"])
+        if _note:
+            print(_note)
     return 0
 
 
@@ -1197,6 +1270,9 @@ def _cmd_dump(args) -> int:
         return 1
     if args.chain:
         print(f"<!-- sources: {', '.join(res.sources)} -->")
+        if "base" not in res.sources and base_has(cfg, args.vpath):
+            print(f"<!-- note: base+DLC ALSO supply {args.vpath}; "
+                  f"sources show which WON, not which introduced it -->")
     print(etree.tostring(res.tree, pretty_print=True, encoding="unicode"))
     return 0
 
