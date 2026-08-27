@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Fixed — three-way diff: a nested overlay is now compared against the mod it patches
+
+Both defects below were found on the tool's **first real use**, hours after it shipped.
+
+A mod that patches another mod puts its files at `<mymod>/extensions/<target>/<mirrored path>`, and
+that is the normal shape for a personal overlay — which is precisely the porting job this tool
+exists for. The overlay's vpaths therefore never joined with the vpaths of the mod it patches:
+**0 documents compared**, with the *same logical file* listed under both exclusions at once, once as
+`NO BASELINE` under the nested path and once as `NOT IN THE ARCHIVE` under the plain one. On the real
+mod that surfaced this, all four files of interest were excluded and the comparison was empty.
+
+The prefix is now removed when — and only when — `<target>` is a name the baseline answers to, by
+folder name *or* `content.xml` id, since those differ often enough to matter. A patch aimed at some
+third mod stays excluded: trading a false negative for a false positive would be no improvement.
+Every rewrite is listed under `UNWRAPPED`, because silently rewriting a path is a transforming step,
+and two paths collapsing onto one join key are reported rather than one being dropped.
+
+### Fixed — three-way diff: `--file` was ignored
+
+`--file` filtered nothing in three-way mode: two different files and no filter at all produced
+byte-identical output. It now filters the listings while the **counts stay the whole comparison**,
+said so explicitly, so the denominator is never quietly narrowed by a display option. A `--file`
+that matches no classified attribute now says that this is an absence *only if the file is in the
+comparison*, and points at the exclusion lists — rather than reading as "no differences".
+
 ### Added — `x4diff --base`: three-way diff, separating your edits from upstream drift
 
 A two-way diff between an archived mod and the current release answers the wrong question and

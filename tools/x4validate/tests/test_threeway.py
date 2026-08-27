@@ -155,3 +155,87 @@ def test_a_document_the_ARCHIVE_never_had_produces_no_drift_rows(tmp_path):
     assert not any("only_upstream" in c.vpath for c in r.upstream_drift), (
         "a document the archive never had must not generate drift rows")
     assert r.attributes_classified == 0
+
+
+# --- reported from real use, 2026-08-27 ------------------------------------------
+# The first outing of this tool on a real mod found two defects in it. Both are
+# reproduced here before being fixed.
+
+def _nested_mod(root: Path, name: str, target: str, wares: dict[str, dict[str, str]]) -> Path:
+    """A mod that patches ANOTHER mod through the nested form (CLAUDE.md #6).
+
+    `<mymod>/extensions/<target>/<mirrored path>` is how a personal overlay patches
+    another mod -- the normal shape for exactly the porting job this tool is for.
+    Every zzz_* overlay that touches VRO or a DLC looks like this.
+    """
+    d = root / name
+    inner = d / "extensions" / target / "libraries"
+    inner.mkdir(parents=True)
+    body = "".join(
+        '<ware id="%s" %s/>' % (w, " ".join(f'{k}="{v}"' for k, v in a.items()))
+        for w, a in wares.items())
+    (inner / "wares.xml").write_text(
+        f"<?xml version='1.0' encoding='utf-8'?><wares>{body}</wares>", encoding="utf-8")
+    (d / "content.xml").write_text(
+        f"<?xml version='1.0' encoding='utf-8'?><content id='{name}' version='100'/>",
+        encoding="utf-8")
+    return d
+
+
+def test_a_nested_overlay_is_compared_against_the_mod_it_patches(tmp_path):
+    """MEASURED as broken on first real use: 0 documents compared.
+
+    The archive's vpaths are `extensions/vro/assets/...` while the baseline's are
+    `assets/...`, so nothing joined. The SAME logical file appeared in both
+    exclusion lists at once -- NO BASELINE under the nested path and NOT IN THE
+    ARCHIVE under the plain one -- which is the tell. Reported against a real mod
+    where all four files of interest were excluded.
+    """
+    base = _mod(tmp_path, "vro", {"gun": {"damage": "5500"}})
+    cur = _mod(tmp_path, "vro_current", {"gun": {"damage": "8500"}})
+    arch = _nested_mod(tmp_path, "myoverlay", "vro", {"gun": {"damage": "30500"}})
+
+    r = _threeway.three_way(base, arch, cur)
+    assert r.documents_compared == 1, (
+        f"the nested overlay must be paired with the mod it patches; "
+        f"no_base={r.no_base} dropped={r.dropped_by_author}")
+    assert len(r.both_moved) == 1, r.both_moved
+    c = r.both_moved[0]
+    assert (c.base, c.archived, c.current) == ("5500", "30500", "8500")
+
+
+def test_unwrapping_is_REPORTED_not_silent(tmp_path):
+    """Rewriting a path is a transforming step, so it has to announce itself."""
+    base = _mod(tmp_path, "vro", {"gun": {"damage": "5500"}})
+    cur = _mod(tmp_path, "vro_current", {"gun": {"damage": "8500"}})
+    arch = _nested_mod(tmp_path, "myoverlay", "vro", {"gun": {"damage": "30500"}})
+    r = _threeway.three_way(base, arch, cur)
+    assert r.unwrapped, "a rewritten vpath must be stated, never applied silently"
+    assert any("vro" in u for u in r.unwrapped)
+
+
+def test_a_nested_path_aimed_at_a_DIFFERENT_mod_is_NOT_unwrapped(tmp_path):
+    """Falsification twin: unwrapping everything would invent comparisons.
+
+    A patch against some third mod is genuinely outside this comparison and must
+    stay excluded -- otherwise the fix trades a false negative for a false positive.
+    """
+    base = _mod(tmp_path, "vro", {"gun": {"damage": "5500"}})
+    cur = _mod(tmp_path, "vro_current", {"gun": {"damage": "8500"}})
+    arch = _nested_mod(tmp_path, "myoverlay", "someothermod", {"gun": {"damage": "30500"}})
+    r = _threeway.three_way(base, arch, cur)
+    assert r.documents_compared == 0
+    assert r.unwrapped == [], "nothing should have been unwrapped"
+    assert any("someothermod" in v for v in r.no_base)
+
+
+def test_the_baseline_may_be_named_by_its_content_xml_id(tmp_path):
+    """The nested FOLDER uses the folder name, but a mod's id can differ (#6)."""
+    base = _mod(tmp_path, "vro_folder", {"gun": {"damage": "5500"}})
+    (base / "content.xml").write_text(
+        "<?xml version='1.0' encoding='utf-8'?><content id='vro' version='100'/>",
+        encoding="utf-8")
+    cur = _mod(tmp_path, "vro_current", {"gun": {"damage": "8500"}})
+    arch = _nested_mod(tmp_path, "myoverlay", "vro", {"gun": {"damage": "30500"}})
+    r = _threeway.three_way(base, arch, cur)
+    assert r.documents_compared == 1, "folder name and content.xml id must both match"

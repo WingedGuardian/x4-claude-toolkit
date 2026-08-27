@@ -37,7 +37,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from x4validate import _diff
+from lxml import etree
+
+from x4validate import _diff, _merge
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,13 @@ class ThreeWay:
     unreadable: list[str] = field(default_factory=list)
     #: node-level adds/removes are surfaced, not classified -- stated, not hidden.
     node_level: list[str] = field(default_factory=list)
+    #: `extensions/<baseline>/` prefixes removed so a nested overlay joins with
+    #: the mod it patches. Rewriting a path is a transforming step, so it is
+    #: reported, never applied silently.
+    unwrapped: list[str] = field(default_factory=list)
+    #: two source paths that collapsed onto one join key -- reported rather
+    #: than silently dropping one of them.
+    key_collisions: list[str] = field(default_factory=list)
 
     documents_compared: int = 0
     author_edited_docs: list[str] = field(default_factory=list)
@@ -97,20 +106,61 @@ class ThreeWay:
         return (len(self.author_edits) + len(self.upstream_drift)
                 + len(self.converged) + len(self.both_moved))
 
+def _identities(base_dirs: list[Path]) -> set[str]:
+    """Every name the baseline answers to: folder name AND content.xml id.
 
-def _attr_index(md: _diff.ModDiff) -> dict[tuple[str, str, str], tuple[str, str]]:
-    """(vpath, node, attr) -> (base value, new value) for every changed attribute."""
-    out: dict[tuple[str, str, str], tuple[str, str]] = {}
-    for fd in md.files:
-        if fd.status != "changed":
+    The nested FOLDER uses the target's folder name, but the `<dependency id=>`
+    a mod declares uses its content.xml id, and those differ often enough that
+    CLAUDE.md #6 calls it out. Accept either, case-folded.
+    """
+    out: set[str] = set()
+    for d in base_dirs:
+        out.add(d.name.casefold())
+        cx = d / "content.xml"
+        if not cx.is_file():
             continue
-        for node, attr, old, new in fd.attr_changes:
-            out[(fd.vpath, node, attr)] = (old, new)
+        try:
+            mid = _merge.parse_file(cx).get("id")
+        except (OSError, etree.LxmlError):
+            # silent-ok: an unreadable manifest costs us one ALIAS, never a
+            # comparison -- the folder name is already in `out`. It is not an
+            # absence of data, and nothing downstream reads a verdict from it.
+            continue
+        if mid:
+            out.add(mid.casefold())
     return out
 
 
-def _status_set(md: _diff.ModDiff, status: str) -> set[str]:
-    return {f.vpath for f in md.files if f.status == status}
+def _join_keys(vmap: dict[str, str], ids: set[str], label: str,
+               unwrapped: list[str], collisions: list[str]) -> dict[str, str]:
+    """low vpath -> real vpath, with `extensions/<baseline>/` prefixes removed.
+
+    A mod patching another mod puts its files at `<mymod>/extensions/<target>/...`
+    (CLAUDE.md #6), so an overlay's vpaths never join with the vpaths of the mod
+    it patches. That is the normal shape for a personal overlay, and it made the
+    three-way diff report 0 documents compared on its first real use, with the
+    SAME logical file listed under both exclusions at once.
+
+    Unwrapping is deliberately NARROW: only when `<target>` is a name the baseline
+    answers to. A patch aimed at some third mod is genuinely outside this
+    comparison and stays excluded -- trading a false negative for a false positive
+    would be no improvement.
+    """
+    out: dict[str, str] = {}
+    for low, real in sorted(vmap.items()):
+        nt = _merge._nested_target(real)
+        if nt and nt[0].casefold() in ids:
+            key = nt[1].lower()
+            unwrapped.append(f"{label}: {real}  ->  {nt[1]}")
+        else:
+            key = low
+        if key in out:
+            # Two source paths collapsing onto one key would silently drop a
+            # document. Report it and keep the first, rather than lose one.
+            collisions.append(f"{label}: {real} collides with {out[key]} on {key}")
+            continue
+        out[key] = real
+    return out
 
 
 def three_way(base: Path | list[Path], archived: Path, current: Path) -> ThreeWay:
@@ -119,46 +169,80 @@ def three_way(base: Path | list[Path], archived: Path, current: Path) -> ThreeWa
     *base* may be a list, so a baseline can be a stack (pristine core + pristine
     submod), matching `_diff.diff_mods`.
     """
-    d_author = _diff.diff_mods(base, archived)
-    d_upstream = _diff.diff_mods(base, current)
+    base_dirs = [base] if isinstance(base, Path) else list(base)
+    r = ThreeWay(base=" + ".join(d.name for d in base_dirs),
+                 archived=str(archived), current=str(current))
+    ids = _identities(base_dirs)
 
-    r = ThreeWay(base=d_author.old, archived=str(archived), current=str(current))
-    r.unreadable = list(dict.fromkeys(d_author.unreadable + d_upstream.unreadable))
+    b_map = _join_keys(_diff.merged_vpaths(base_dirs), ids, "base",
+                       r.unwrapped, r.key_collisions)
+    a_map = _join_keys(_diff.mod_xml_vpaths(archived), ids, "archived",
+                       r.unwrapped, r.key_collisions)
+    c_map = _join_keys(_diff.mod_xml_vpaths(current), ids, "current",
+                       r.unwrapped, r.key_collisions)
 
-    # Documents with no counterpart in the baseline: direction is UNKNOWABLE.
-    # They are named and excluded -- never rendered as an author addition or an
-    # upstream removal, which is the failure this whole tool exists to prevent.
-    r.no_base = sorted(_status_set(d_author, "added"))
-    r.dropped_by_author = sorted(_status_set(d_author, "removed"))
-    excluded = set(r.no_base) | set(r.dropped_by_author)
+    r.no_base = sorted(a_map[k] for k in a_map.keys() - b_map.keys())
+    r.dropped_by_author = sorted(b_map[k] for k in b_map.keys() - a_map.keys())
 
-    a = {k: v for k, v in _attr_index(d_author).items() if k[0] not in excluded}
-    u = {k: v for k, v in _attr_index(d_upstream).items() if k[0] not in excluded}
+    def _read_base(real: str):
+        if len(base_dirs) > 1:
+            return _diff.read_merged(base_dirs, real, r.unreadable)
+        return _diff.read_vpath(base_dirs[0], real)
 
-    for key in sorted(a.keys() | u.keys()):
-        vpath, node, attr = key
-        in_a, in_u = key in a, key in u
-        basev = (a.get(key) or u.get(key))[0]
+    # The classification population is the documents the BASELINE and the ARCHIVE
+    # share. A document the archive never had is not "drift the author is behind
+    # on" -- the author never possessed the file -- and letting those rows in
+    # inflates the very number this tool exists to deflate. A planted mutant
+    # (`excluded = set()`) once survived here because the first test asserted the
+    # right outcome for the wrong reason; this restriction is what it guards.
+    shared = b_map.keys() & a_map.keys()
+
+    def _index(other_map: dict[str, str], other_dir: Path, side: str):
+        """(key, node, attr) -> (base value, other value) for shared documents."""
+        idx: dict[tuple[str, str, str], tuple[str, str]] = {}
+        touched: set[str] = set()
+        for key in sorted(shared & other_map.keys()):
+            if key.endswith(".xsd"):
+                continue
+            o = _read_base(b_map[key])
+            n = _diff.read_vpath(other_dir, other_map[key])
+            if o is None or n is None:
+                bad = "BASE" if o is None else side.upper()
+                r.unreadable.append(
+                    f"{other_map[key]}: the {bad} copy would not parse - not "
+                    f"compared, and NOT counted as unchanged")
+                continue
+            fd = _diff.diff_file(o, n, other_map[key])
+            if fd.weight:
+                touched.add(other_map[key])
+            for node, attr, old, new in fd.attr_changes:
+                idx[(key, node, attr)] = (old, new)
+            if side == "archived" and (fd.nodes_added or fd.nodes_removed):
+                r.node_level.append(
+                    f"{other_map[key]}: +{len(fd.nodes_added)} / "
+                    f"-{len(fd.nodes_removed)} node(s) (author side; node-level "
+                    f"changes are reported, not classified)")
+        return idx, touched
+
+    a_idx, a_touched = _index(a_map, archived, "archived")
+    u_idx, _ = _index(c_map, current, "current")
+
+    for key in sorted(a_idx.keys() | u_idx.keys()):
+        joinkey, node, attr = key
+        vpath = a_map.get(joinkey) or c_map.get(joinkey) or joinkey
+        in_a, in_u = key in a_idx, key in u_idx
+        basev = (a_idx.get(key) or u_idx.get(key))[0]
         if in_a and not in_u:
-            r.author_edits.append(Change(vpath, node, attr, basev, a[key][1], "author-edit"))
+            r.author_edits.append(Change(vpath, node, attr, basev, a_idx[key][1], "author-edit"))
         elif in_u and not in_a:
-            r.upstream_drift.append(Change(vpath, node, attr, basev, u[key][1], "upstream-drift"))
-        elif a[key][1] == u[key][1]:
-            r.converged.append(Change(vpath, node, attr, basev, a[key][1], "converged"))
+            r.upstream_drift.append(
+                Change(vpath, node, attr, basev, u_idx[key][1], "upstream-drift"))
+        elif a_idx[key][1] == u_idx[key][1]:
+            r.converged.append(Change(vpath, node, attr, basev, a_idx[key][1], "converged"))
         else:
-            r.both_moved.append(Conflict(vpath, node, attr, basev, a[key][1], u[key][1]))
+            r.both_moved.append(
+                Conflict(vpath, node, attr, basev, a_idx[key][1], u_idx[key][1]))
 
-    for fd in d_author.files:
-        if fd.status == "changed" and (fd.nodes_added or fd.nodes_removed):
-            r.node_level.append(
-                f"{fd.vpath}: +{len(fd.nodes_added)} / -{len(fd.nodes_removed)} node(s) "
-                f"(author side; node-level changes are reported, not classified)")
-
-    compared = {f.vpath for f in d_author.files} - excluded
-    # `diff_mods` only records files that actually differ, so unchanged documents
-    # are absent from `files` -- count the shared population from the vpath maps.
-    shared = set(_diff.mod_xml_vpaths(archived).keys()) & set(
-        _diff.merged_vpaths([base] if isinstance(base, Path) else list(base)).keys())
-    r.documents_compared = len(shared)
-    r.author_edited_docs = sorted(compared)
+    r.documents_compared = len(b_map.keys() & a_map.keys())
+    r.author_edited_docs = sorted(a_touched)
     return r

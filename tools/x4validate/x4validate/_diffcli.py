@@ -133,6 +133,23 @@ def _three_way(args) -> int:
     print(f"    converged .......... {len(r.converged)}   (both sides, same change)")
     print(f"    BOTH-MOVED ......... {len(r.both_moved)}   <-- the decisions")
 
+    # A rewritten vpath is a transforming step and says so. Reported BEFORE the
+    # exclusions, because it is what moves a document out of them.
+    if r.unwrapped:
+        print()
+        print(f"  UNWRAPPED ({len(r.unwrapped)}): nested `extensions/<baseline>/` prefixes "
+              f"removed so the overlay joins the mod it patches:")
+        for u in r.unwrapped[:args.top]:
+            print(f"    {u}")
+        if len(r.unwrapped) > args.top:
+            print(f"    ... {len(r.unwrapped) - args.top} more (raise --top)")
+    if r.key_collisions:
+        print()
+        print(f"  KEY COLLISIONS ({len(r.key_collisions)}): two paths collapsed onto one "
+              f"join key; the first was kept and the other NOT compared:")
+        for c in r.key_collisions[:args.top]:
+            print(f"    {c}")
+
     # Everything excluded from the verdict is NAMED. A silent exclusion is the
     # narrowing step this toolkit refuses.
     if r.no_base:
@@ -163,18 +180,31 @@ def _three_way(args) -> int:
         for v in r.node_level[:args.top]:
             print(f"    {v}")
 
-    if r.both_moved:
+    want = (args.file or "").lower()
+
+    def _keep(rows):
+        return [c for c in rows if not want or c.vpath.lower() == want
+                or c.vpath.lower().endswith("/" + want.lstrip("/"))]
+
+    if want:
+        print()
+        print(f"  --file {args.file}: the counts above are the WHOLE comparison; "
+              f"only the listings below are filtered")
+
+    _bm = _keep(r.both_moved)
+    if _bm:
         print()
         print("  BOTH-MOVED - both sides changed these, to different values:")
-        for c in r.both_moved:
+        for c in _bm:
             print(f"    {c.vpath}")
             print(f"      {c.node}@{c.attr}:  base {c.base}  ->  archived {c.archived}"
                   f"  |  upstream {c.current}")
 
     if args.detail:
-        for title, rows in (("author edits", r.author_edits),
-                            ("upstream drift", r.upstream_drift),
-                            ("converged", r.converged)):
+        for title, allrows in (("author edits", r.author_edits),
+                               ("upstream drift", r.upstream_drift),
+                               ("converged", r.converged)):
+            rows = _keep(allrows)
             if not rows:
                 continue
             print()
@@ -184,5 +214,12 @@ def _three_way(args) -> int:
             if len(rows) > args.top:
                 print(f"    ... {len(rows) - args.top} more (raise --top)")
 
+    if want and not any(_keep(rows) for rows in
+                        (r.both_moved, r.author_edits, r.upstream_drift, r.converged)):
+        print()
+        print(f"  --file {args.file}: no classified attribute in that document. "
+              f"That is an ABSENCE only if the file is in the comparison - check the "
+              f"exclusion lists above.")
+
     # Exit 1 when there is a decision to make, 0 when the port is mechanical.
-    return 1 if r.both_moved else 0
+    return 1 if _keep(r.both_moved) else 0
