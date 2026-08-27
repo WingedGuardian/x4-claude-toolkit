@@ -14,7 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from x4validate import __version__, _diff, _input, _paths, _scan
+from x4validate import __version__, _diff, _input, _paths, _scan, _threeway
 from x4validate._diff import FileDiff, ModDiff, diff_mods
 
 
@@ -47,6 +47,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--detail", action="store_true", help="list every attr change")
     p.add_argument("--file", help="detail one vpath only")
     p.add_argument("--top", type=int, default=30, help="show N heaviest changed files")
+    p.add_argument("--base", action="append", default=[],
+                   help="COMMON ANCESTOR of OLD and NEW: makes this a THREE-WAY "
+                        "diff separating the author's edits from upstream drift "
+                        "(repeatable, merged in order)")
     args = p.parse_args(argv)
 
     # Without this, a mistyped NEW path reports every file as "removed" — i.e.
@@ -55,6 +59,11 @@ def main(argv: list[str] | None = None) -> int:
     _input.require_mod_dir(Path(args.new), "NEW mod folder")
     for o in args.overlay:
         _input.require_mod_dir(Path(o), "--overlay dir")
+
+    if args.base:
+        for b in args.base:
+            _input.require_mod_dir(Path(b), "--base (common ancestor) dir")
+        return _three_way(args)
 
     baseline = [Path(args.old)] + [Path(o) for o in args.overlay]
     md = diff_mods(baseline, Path(args.new))
@@ -103,3 +112,77 @@ def _print_file(fd: FileDiff, indent: str = "  ") -> None:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _three_way(args) -> int:
+    """Render a three-way classification. OLD = archived, NEW = current."""
+    base = [Path(b) for b in args.base]
+    r = _threeway.three_way(base if len(base) > 1 else base[0],
+                            Path(args.old), Path(args.new))
+
+    print(f"# three-way  base={r.base}")
+    print(f"#   archived={Path(r.archived).name}   current={Path(r.current).name}")
+    # Denominator FIRST. The headline of the case this was built for was
+    # "124 of 135 documents verbatim", and a bare change list hides exactly that.
+    print(f"  documents shared with the baseline : {r.documents_compared}")
+    print(f"    the author edited                : {len(r.author_edited_docs)}")
+    print(f"    VERBATIM (author touched nothing): {r.verbatim}")
+    print(f"  attributes classified              : {r.attributes_classified}")
+    print(f"    author edits ....... {len(r.author_edits)}")
+    print(f"    upstream drift ..... {len(r.upstream_drift)}")
+    print(f"    converged .......... {len(r.converged)}   (both sides, same change)")
+    print(f"    BOTH-MOVED ......... {len(r.both_moved)}   <-- the decisions")
+
+    # Everything excluded from the verdict is NAMED. A silent exclusion is the
+    # narrowing step this toolkit refuses.
+    if r.no_base:
+        print()
+        print(f"  NO BASELINE ({len(r.no_base)}): in the archive, absent from the base "
+              f"- direction UNKNOWABLE, excluded from every bucket above")
+        for v in r.no_base[:args.top]:
+            print(f"    {v}")
+        if len(r.no_base) > args.top:
+            print(f"    ... {len(r.no_base) - args.top} more (raise --top)")
+    if r.dropped_by_author:
+        print()
+        print(f"  NOT IN THE ARCHIVE ({len(r.dropped_by_author)}): in the base, absent "
+              f"from the archive - excluded, and NOT reported as upstream drift")
+        for v in r.dropped_by_author[:args.top]:
+            print(f"    {v}")
+        if len(r.dropped_by_author) > args.top:
+            print(f"    ... {len(r.dropped_by_author) - args.top} more (raise --top)")
+    if r.unreadable:
+        print()
+        print(f"  NOT COMPARED ({len(r.unreadable)}) - absent from every section above, "
+              f"and NOT counted as unchanged:")
+        for v in r.unreadable[:args.top]:
+            print(f"    {v}")
+    if r.node_level:
+        print()
+        print(f"  node-level changes ({len(r.node_level)}) - reported, not classified:")
+        for v in r.node_level[:args.top]:
+            print(f"    {v}")
+
+    if r.both_moved:
+        print()
+        print("  BOTH-MOVED - both sides changed these, to different values:")
+        for c in r.both_moved:
+            print(f"    {c.vpath}")
+            print(f"      {c.node}@{c.attr}:  base {c.base}  ->  archived {c.archived}"
+                  f"  |  upstream {c.current}")
+
+    if args.detail:
+        for title, rows in (("author edits", r.author_edits),
+                            ("upstream drift", r.upstream_drift),
+                            ("converged", r.converged)):
+            if not rows:
+                continue
+            print()
+            print(f"  {title} ({len(rows)}):")
+            for c in rows[:args.top]:
+                print(f"    {c.vpath}  {c.node}@{c.attr}: {c.base} -> {c.value}")
+            if len(rows) > args.top:
+                print(f"    ... {len(rows) - args.top} more (raise --top)")
+
+    # Exit 1 when there is a decision to make, 0 when the port is mechanical.
+    return 1 if r.both_moved else 0

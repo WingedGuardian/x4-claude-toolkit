@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### Added — `x4diff --base`: three-way diff, separating your edits from upstream drift
+
+A two-way diff between an archived mod and the current release answers the wrong question and
+answers it confidently. Measured on one real 2021 mod of 135 documents: **~440 attribute deltas
+two-way, but only 15 were the author's.** 340 were upstream's own work since, and **124 of 135
+documents were verbatim copies of the baseline** — so **96% of what the two-way diff called "the
+port" was someone else's work.** Acting on it would have re-applied 340 upstream changes as if they
+were the user's, and reverted the current release across 124 files.
+
+Supply the common ancestor with `--base` and every attribute lands in exactly one bucket:
+
+```
+  documents shared with the baseline : 135
+    the author edited                : 11
+    VERBATIM (author touched nothing): 124
+  attributes classified              : 356
+    author edits ....... 15
+    upstream drift ..... 340
+    converged .......... 0   (both sides, same change)
+    BOTH-MOVED ......... 1   <-- the decisions
+```
+
+**`BOTH-MOVED` is the point.** One conflict is a decision you can make; 440 undifferentiated deltas
+are a wall you cannot. Exit 1 when there is one, 0 when the port is mechanical.
+
+⚠ **A one-sided absence is reported as unknown, never as a deletion.** An attribute present in the
+current tree and missing from an old file is upstream *addition* far more often than author
+*removal*, and a two-way diff cannot distinguish them — 16 macros in that same mod appeared to have
+lost an attribute nobody had touched. A three-way diff can tell them apart wherever a baseline
+exists; where one does not, the document is **named and excluded from every bucket** rather than
+guessed at. Documents present in the baseline but absent from the archive are likewise excluded and
+never reported as drift.
+
+The classification is a join over two ordinary two-way diffs, not a second differ — a duplicate
+implementation of the same normalisation is exactly what once made an independent measurement report
+2.6% where the truth was 65.4%.
+
 ### Changed — the CLI no longer lives inside the freshness-hashed engine sources
 
 The `engine` freshness axis hashes the whole bytes of seven source files, so **editing an error

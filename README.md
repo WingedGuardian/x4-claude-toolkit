@@ -87,6 +87,20 @@ mod wins, and `dump` prints the live merged XML for any path.
 **`x4diff`** does a semantic XML diff between two versions of a mod, with multi-baseline support —
 built for separating *your* edits from the author's when recovering personal modifications.
 
+Give it `--base` and it becomes a **three-way** diff, which answers the question a two-way one
+cannot: *of these changes, which are the author's and which are drift that upstream has made since?*
+Two-way, an archived mod against the current release looks like hundreds of edits — measured on one
+real 2021 mod, **~440 attribute deltas, of which 15 were the author's**; 340 were upstream's own
+work and **124 of 135 documents were verbatim copies of the baseline**. Porting from that number
+means re-applying someone else's changes as if they were yours, and reverting the current release
+across most of the tree.
+
+With a common ancestor each attribute lands in exactly one bucket — author edit, upstream drift,
+converged, or **BOTH-MOVED**, the only rows that are actually a decision. Documents the baseline
+does not contain are *named and excluded*, never guessed at: an attribute present today and absent
+in an old file is upstream **addition** far more often than author deletion, and a two-way diff
+cannot tell those apart. Exit 1 when there is a decision to make, 0 when the port is mechanical.
+
 ### The cross-mod interaction suite — how does a mod behave against everything else installed?
 Validating a mod in isolation isn't the same question as "how does this play with my other 40
 mods?" No published tool answers that for X4 — the interaction suite does, reading packed mods
