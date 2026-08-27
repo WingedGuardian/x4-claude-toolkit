@@ -126,6 +126,7 @@ cli_case _xref       main who-calls somecue
 cli_case _effective  main ls
 cli_case _debugcli   main triage
 cli_case _modlist    main refresh
+cli_case _savecli    main info
 
 # x4diff is DELIBERATELY not in the matrix. It compares two mod folders to each
 # other -- `_merge.overlay_root` / `apply_overlay`, no Config, no reference tree --
@@ -138,7 +139,7 @@ if [ "$MFAIL" -ne 0 ]; then
   echo "   $MFAIL CLI(s) did not refuse cleanly."
   rc=1
 else
-  echo "   all 8 configuration-dependent CLIs refuse cleanly (x4diff needs none)."
+  echo "   all 9 configuration-dependent CLIs refuse cleanly (x4diff needs none)."
 fi
 
 echo
