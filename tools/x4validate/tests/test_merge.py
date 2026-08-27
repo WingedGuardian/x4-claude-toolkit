@@ -649,3 +649,36 @@ def test_a_malformed_overlay_is_REPORTED_not_silently_absent(tmp_path):
     assert root is None
     assert skipped and "malformed" in skipped[0].lower(), \
         "a skipped overlay must say WHY, or it is indistinguishable from 'no such file'"
+
+
+def test_apply_diff_rejects_a_string_where_the_recorder_goes():
+    """The third positional is `recorder`, not `source` -- and the guess fails deep.
+
+    Reported by a parallel session 2026-08-27:
+
+        _merge.apply_diff(tree, diff_root, "myfile.xml")
+          -> AttributeError: 'str' object has no attribute 'elem_replaced'
+             at _merge.py:417 in _do_replace
+
+    Four frames from the call, naming an internal protocol method rather than the
+    bad argument, and only for diffs that happen to contain a <replace> -- a diff
+    of pure <add> ops would sail through and record nothing. The signature is fine;
+    the failure mode is not.
+    """
+    import pytest
+    tree = etree.fromstring("<wares><ware id='ore'/></wares>")
+    diff = etree.fromstring("<diff><add sel='//wares'><ware id='x'/></add></diff>")
+    with pytest.raises(TypeError) as exc:
+        _merge.apply_diff(tree, diff, "myfile.xml")
+    msg = str(exc.value)
+    assert "recorder" in msg, "the message must name the parameter that was misused"
+    assert "source" in msg, "and point at the keyword the caller actually wanted"
+
+
+def test_apply_diff_still_accepts_a_real_recorder_and_None():
+    """Falsification twin: the guard must not reject the two legitimate forms."""
+    tree = etree.fromstring("<wares><ware id='ore'/></wares>")
+    diff = etree.fromstring("<diff><add sel='//wares'><ware id='x'/></add></diff>")
+    assert _merge.apply_diff(tree, diff, None, "f.xml")[0].ok
+    tree2 = etree.fromstring("<wares><ware id='ore'/></wares>")
+    assert _merge.apply_diff(tree2, diff, Recorder(), "f.xml")[0].ok

@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### Fixed — `x4effective attr` no longer answers a bad question with a clean zero
+
+`attr` took two free-form arguments and validated neither, so a query that could never match
+anything printed `0 value(s)` and exited **0** — indistinguishable from a real, informative absence.
+
+The guard for this already existed and was wired into `ls`, `show` and `who-sets`; `attr` was the
+one command it never reached, and the only one where **both arguments can be individually valid
+while the pair matches nothing**. `attr ship hull.max` is that case: `ship` is a real kind (514
+entities) and `hull.max` is a real property (1,973 values) — they just live in different kinds.
+
+`attr` now rejects an unknown kind (**exit 2**) or an unknown property (**exit 1**), states the
+denominator, and points somewhere useful:
+
+```
+$ x4effective attr macro properties.hull.max
+no macro carries prop 'properties.hull.max' - that kind has 8672 distinct prop(s)
+       did you mean 'hull.max'? (1973 value(s))
+
+$ x4effective attr ship hull.max
+no ship carries prop 'hull.max' - that kind has 31 distinct prop(s)
+       'hull.max' is carried by kind 'macro' (1973 value(s))
+```
+
+Suggestions are looked up **in the store**, never derived from a rule. Property names for *macros*
+are stored with the `<properties>` wrapper stripped (`hull.max`, not `properties.hull.max`) — but
+that is a macro convention, not a store-wide one: **6,842 rows legitimately keep the prefix**, so a
+blanket rule would be wrong for every one of them. A genuine zero — the property exists for the kind
+and a `--class` filter excludes every row — is still **exit 0**.
+
+### Fixed — `apply_diff` names the argument you got wrong
+
+The third positional parameter is `recorder`, not `source`. Passing a filename there failed four
+frames down with `AttributeError: 'str' object has no attribute 'elem_replaced'`, naming an internal
+method rather than the bad argument — and *which* method it named depended on which operation the
+diff happened to contain, so a diff of pure `<remove>` ops recorded nothing and sailed through. It
+now raises `TypeError` at the call, naming both `recorder` and `source`.
+
+### Changed — a docstring that had rotted
+
+`_registry.mods()` did not mention that **neither** scope includes the DLC — `ego_dlc_*` is
+base-game content, and counting it would double-count against the unpacked reference tree. The
+caveat was documented on `scan_installed`, but not on the function the documentation tells you to
+prefer instead, so a dependency check asked `mods("installed")` whether a DLC was present and was
+told no. For that question use `Config().dlc_dirs()` or `.packed_dlc_names()`.
+
+
 ### Added — `x4modlist tracked`: what the account FOLLOWS, against what is installed
 
 Tracking is a **third population**, distinct from *installed* (on disk) and *active*

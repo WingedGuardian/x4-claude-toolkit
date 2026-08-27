@@ -248,6 +248,17 @@ def apply_diff(tree: etree._Element, diff_root: etree._Element,
 
     With *recorder*, every mutation is stamped with an Origin(source, op, line)
     at mutation time (see _provenance for the identity model)."""
+    # The third positional is `recorder`, not `source`, and passing a str for it
+    # failed FOUR frames down inside _do_replace/_record with "'str' object has no
+    # attribute 'elem_replaced'" -- a message naming an internal protocol method
+    # rather than the bad argument. Worse, WHICH method it named depended on which
+    # op the diff happened to contain, and a diff of pure <remove> ops recorded
+    # nothing and sailed through. Fail here, naming both parameters.
+    if recorder is not None and not hasattr(recorder, "elem_created"):
+        raise TypeError(
+            f"apply_diff(recorder=...) expects a _provenance.Recorder (or None), got "
+            f"{type(recorder).__name__}; the third positional is `recorder` — if you "
+            f"meant the filename, pass it as source=...")
     applied: list[AppliedOp] = []
     for op in diff_root:
         # Comments and processing instructions are legitimately not ops — skip

@@ -272,6 +272,16 @@ def mods(scope: str, dirs: list[Path] | None = None,
 
     Prefer this over calling :func:`scan_installed` directly; that is the raw
     disk reader and `tests/test_mod_scope_is_explicit.py` enforces the boundary.
+
+    ⚠ NEITHER scope includes the DLC. `ego_dlc_*` is skipped as base-game
+    content, not a mod to triage (see :func:`scan_installed`), and enumerating it
+    here would DOUBLE-COUNT every DLC against the unpacked reference tree, which is the
+    base+DLC (CLAUDE.md #20). MEASURED 2026-08-27: 123 installed, 0 of them a DLC.
+    The caveat is documented on `scan_installed` and was missing here, on the
+    function this docstring tells everyone to call instead -- so a dependency
+    check asked `mods("installed")` whether the Terran DLC was present and was
+    told NO. For that question use `_merge.Config().dlc_dirs()` (8 here) or
+    `.packed_dlc_names()` (the two mini-DLC, which are never unpacked).
     """
     if scope not in MOD_SCOPES:
         raise ValueError(

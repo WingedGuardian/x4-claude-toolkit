@@ -1072,9 +1072,17 @@ def _reject_unknown_kind(con, kind: str) -> bool:
 
     Without this an unknown kind reads as a confident empty answer: `ls ship`
     printed "0 ship(s)" — which looks like "this game has no ships" rather than
-    "there is no such kind". Ships are stored as kind='macro' (and their wares as
-    kind='ware'), so the natural guess is silently wrong. Same false-negative shape
-    as a validator reporting OK because it examined nothing.
+    "there is no such kind". Same false-negative shape as a validator reporting OK
+    because it examined nothing.
+
+    ⚠ The hint below is for a PARTIAL build. A full build now stores kind='ship'
+    (MEASURED 2026-08-27: 514 entities), plus 'station' and 'module', so for those
+    three this branch is unreachable — but `--kinds` can build a subset, which is
+    exactly when the hint earns its place, so it stays. What had rotted was this
+    docstring's claim that ships are stored ONLY as kind='macro': a ship's balance
+    props do live on kind='macro' (hull.max: 1,973 values there, 0 on kind='ship'),
+    but the kind itself exists, so the guard passes the name through and the
+    unknown-PROP guard is what has to catch it.
     """
     kinds = _known_kinds(con)
     if kind in kinds:
@@ -1085,6 +1093,71 @@ def _reject_unknown_kind(con, kind: str) -> bool:
         print(f"       ships/equipment are stored as kind 'macro' "
               f"(try: ls macro --filter {kind}) and as kind 'ware'", file=sys.stderr)
     return True
+
+
+def _reject_unknown_prop(con, kind: str, prop: str) -> bool:
+    """True (and prints) if no entity of *kind* carries *prop*.
+
+    The companion to _reject_unknown_kind, and it was missing from the one command
+    that needed it most. `attr` printed "0 value(s) for properties.hull.max" and
+    exited 0 -- a confident zero over a key that cannot exist, which reads as "no
+    mod sets this" rather than "you spelled it the way the store does not".
+
+    The predictable wrong guess is the <properties> wrapper: for MACRO entities the
+    store strips it (`hull.max`), because emitting both was F9. A parallel session
+    hand-rolled a flatten that kept it, matched only the keys living OUTSIDE
+    <properties>, and reported 2.6% where the truth was 65.4% -- plausible and
+    self-consistent, so nothing looked wrong.
+
+    The strip is NOT universal: MEASURED 6,842 rows keep a `properties.` prefix,
+    all of them kind='mapdataset' (`properties.area.sunlight`), with 0 duplicate
+    pairs. So the suggestion is looked up IN THE STORE rather than derived from a
+    rule -- a blanket strip would be wrong for every one of those rows.
+    """
+    hit = con.execute("SELECT COUNT(*) FROM attrs a JOIN entities e ON e.id=a.entity_id "
+                      "WHERE e.kind=? AND a.prop=?", (kind, prop)).fetchone()[0]
+    if hit:
+        return False
+    total = con.execute("SELECT COUNT(DISTINCT a.prop) FROM attrs a "
+                        "JOIN entities e ON e.id=a.entity_id WHERE e.kind=?",
+                        (kind,)).fetchone()[0]
+    print(f"no {kind} carries prop {prop!r} - that kind has {total} distinct prop(s)",
+          file=sys.stderr)
+    for alt in _prop_suggestions(con, kind, prop):
+        n = con.execute("SELECT COUNT(*) FROM attrs a JOIN entities e ON e.id=a.entity_id "
+                        "WHERE e.kind=? AND a.prop=?", (kind, alt)).fetchone()[0]
+        print(f"       did you mean {alt!r}? ({n} value(s))", file=sys.stderr)
+    # A prop can be real and the KIND can be real while the pair matches nothing:
+    # `attr ship hull.max` is 0 rows because hull.max is a macro prop. Rejecting
+    # without saying where it DOES live leaves the caller as stuck as the zero did.
+    elsewhere = con.execute(
+        "SELECT e.kind, COUNT(*) FROM attrs a JOIN entities e ON e.id=a.entity_id "
+        "WHERE a.prop=? AND e.kind != ? GROUP BY e.kind ORDER BY 2 DESC LIMIT 3",
+        (prop, kind)).fetchall()
+    for row in elsewhere:
+        print(f"       {prop!r} is carried by kind {row[0]!r} ({row[1]} value(s))",
+              file=sys.stderr)
+    return True
+
+
+def _prop_suggestions(con, kind: str, prop: str, limit: int = 3) -> list[str]:
+    """Stored props for *kind* a caller plausibly meant. Store-derived, never a rule."""
+    out: list[str] = []
+    cand = (prop[len("properties."):] if prop.startswith("properties.")
+            else "properties." + prop)
+    r = con.execute("SELECT 1 FROM attrs a JOIN entities e ON e.id=a.entity_id "
+                    "WHERE e.kind=? AND a.prop=? LIMIT 1", (kind, cand)).fetchone()
+    if r is not None:
+        out.append(cand)
+    # last-segment match catches the other half of the guesses (`max` for `hull.max`)
+    tail = prop.rsplit(".", 1)[-1]
+    for (p,) in con.execute(
+            "SELECT DISTINCT a.prop FROM attrs a JOIN entities e ON e.id=a.entity_id "
+            "WHERE e.kind=? AND (a.prop = ? OR a.prop LIKE ?) ORDER BY a.prop LIMIT ?",
+            (kind, tail, "%." + tail, limit)):
+        if p not in out:
+            out.append(p)
+    return out[:limit]
 
 
 def _cmd_ls(con, args) -> int:
@@ -1178,6 +1251,12 @@ def _cmd_show(con, args) -> int:
 
 
 def _cmd_attr(con, args) -> int:
+    # Both arguments can be individually plausible while the PAIR matches nothing.
+    # Without these, `attr zzznotakind hull.max` printed "0 value(s)" and exited 0.
+    if _reject_unknown_kind(con, args.kind):
+        return 2
+    if _reject_unknown_prop(con, args.kind, args.prop):
+        return 1
     q = ("SELECT e.name, e.klass, a.value, a.value_num, a.origin, a.chain "
          "FROM attrs a JOIN entities e ON e.id=a.entity_id "
          "WHERE e.kind=? AND a.prop=?")
