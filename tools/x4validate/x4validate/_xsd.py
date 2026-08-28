@@ -718,3 +718,134 @@ def validate_mod(mod_dir: Path, config: _merge.Config | None = None):
             checked += 1
         findings.extend(fnds)
     return findings, checked, skipped
+
+
+@dataclass
+class NestedScriptResult:
+    """Outcome of validating a mod's nested cross-mod script patches.
+
+    `introduced` and `fixed` are the two halves of an ATTRIBUTION diff, not a raw
+    verdict. `skips` carries (vpath, reason) so a file that could not be checked is
+    never indistinguishable from one that was checked and came back clean.
+    """
+    introduced: list[XsdFinding]
+    fixed: list[XsdFinding]
+    checked: int
+    skips: list[tuple[str, str]]
+
+
+def validate_nested_scripts(mod_dir: Path, config, mod_dirs: dict[str, Path]
+                            ) -> NestedScriptResult:
+    r"""Validate nested cross-mod script patches through their MERGED result.
+
+    A patch at `<mymod>/extensions/<target>/md/foo.xml` is validated by nothing:
+    both halves of `validate_mod` filter `count("/") != 1`, deliberately, so the
+    loose and packed halves cover the same population. Widening those selectors
+    would validate the patch FILE -- a `<diff>` the engine never parses on its own.
+    This validates the document the engine actually builds.
+
+    **The attribution diff is the check, not a refinement of it.** MEASURED
+    2026-08-27 over all 16 nested patches in the installed set: validating only the
+    merged result yields **182 findings, 167 of them (91.8%) inherited from the
+    TARGET** -- `mdscript name='moreroomsforships'` fails md.xsd's `[A-Z]` pattern
+    because that mod's own author named it so, and the patching mod neither caused
+    it nor can fix it. Reporting those would flood, and a check that floods is worse
+    than no check. Diffing both sides leaves **15 introduced and 1 fixed**.
+
+    Findings are matched by MESSAGE, never by line: a patch shifts line numbers, so
+    a line-keyed diff would report every inherited finding as both removed and added.
+
+    ⚠ SCOPE LIMIT, stated because a tool that names its edges is easier to trust.
+    The baseline is the target ALONE, not the target as the engine finally builds
+    it, which includes every other mod patching the same document. So a finding
+    that appears only in COMBINATION with a third mod's patch is outside what this
+    can attribute, and will read as inherited rather than introduced. Widening the
+    baseline to the full effective tree would answer a different question -- "is
+    the live document valid?" -- and would re-import exactly the noise the
+    attribution diff exists to remove.
+
+    *mod_dirs* maps lower-cased folder name -> extension root, passed in rather than
+    looked up so the caller decides the scope (CLAUDE.md #24: `active` vs `installed`
+    is a real distinction and must not be chosen implicitly by a helper).
+    """
+    from collections import Counter
+
+    from x4validate import _merge, _scan
+
+    prefixes = tuple(f"{s}/" for s in SCRIPT_DIRS)
+    lib = config.reference / "libraries"
+    introduced: list[XsdFinding] = []
+    fixed: list[XsdFinding] = []
+    skips: list[tuple[str, str]] = []
+    checked = 0
+
+    for raw, _root in _scan.iter_mod_xml(mod_dir, lambda v: True, []):
+        vpath = raw.replace("\\", "/")
+        low = vpath.lower()
+        if not low.endswith(".xml") or low == "content.xml":
+            continue
+        if low.startswith(prefixes) or not strip_nesting(vpath).startswith(prefixes):
+            continue
+
+        target = _merge._nested_target(vpath, config.packed_dlc_names())
+        base_overlays: list[Path] = []
+        if target is not None:
+            owner = target[0].lower()
+            if owner not in mod_dirs:
+                # The engine no-ops this too, so it is not the patcher's defect.
+                skips.append((vpath, f"target mod '{target[0]}' is not installed "
+                                     f"— the engine no-ops this patch too"))
+                continue
+            base_overlays.append(mod_dirs[owner])
+
+        after = _merge.build_effective(vpath, config,
+                                       extra_overlays=base_overlays + [mod_dir])
+        if after.tree is None:
+            if target is not None:
+                # DISTINCT from "not installed": the mod IS here and the document is
+                # not, which is a stale patch against an older version of its target
+                # -- a silent no-op the engine reports nothing about. MEASURED in the
+                # live set: ship_variation_expansion_vro patches spawnclaymore.xml,
+                # and ship_variation_expansion ships 7 md files, none of them that.
+                skips.append((vpath, f"target mod '{target[0]}' is installed but "
+                                     f"does not supply '{target[1]}' — this patch "
+                                     f"never applies (probable stale patch)"))
+            else:
+                skips.append((vpath, f"no base or DLC document at '{vpath}' "
+                                     f"— this patch never applies"))
+            continue
+
+        found_after, reason = validate_bytes(
+            etree.tostring(after.tree, encoding="utf-8"), vpath, lib)
+        if reason:
+            skips.append((vpath, reason))
+            continue
+
+        before = _merge.build_effective(vpath, config, extra_overlays=base_overlays)
+        found_before: list[XsdFinding] = []
+        if before.tree is not None:
+            found_before, before_reason = validate_bytes(
+                etree.tostring(before.tree, encoding="utf-8"), vpath, lib)
+            if before_reason:
+                # No baseline means no attribution is possible. Refusing to guess is
+                # the whole contract -- reporting every finding as "introduced" here
+                # is exactly the flood this function exists to avoid.
+                skips.append((vpath, f"baseline could not be validated ({before_reason})"
+                                     f" — attribution impossible"))
+                continue
+
+        checked += 1
+        remaining = Counter(f.message for f in found_before)
+        for f in found_after:
+            if remaining[f.message]:
+                remaining[f.message] -= 1
+            else:
+                introduced.append(f)
+        remaining = Counter(f.message for f in found_after)
+        for f in found_before:
+            if remaining[f.message]:
+                remaining[f.message] -= 1
+            else:
+                fixed.append(f)
+
+    return NestedScriptResult(introduced, fixed, checked, skips)

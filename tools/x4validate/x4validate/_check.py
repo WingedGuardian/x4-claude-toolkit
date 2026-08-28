@@ -1719,6 +1719,30 @@ def check_xsd(mod_dir: Path, config: _merge.Config, report: Report,
     severity + exit code. Authority on what truly breaks = the Migration Map + in-game test."""
     findings, checked, skipped = _xsd.validate_mod(mod_dir, config)
 
+    # F70: a nested cross-mod script patch is validated by NOTHING otherwise --
+    # both halves of `validate_mod` filter `count("/") != 1`, so a patch at
+    # `<mymod>/extensions/<target>/md/foo.xml` is never examined. Validate it
+    # through the document the ENGINE builds, and ATTRIBUTE the result: MEASURED
+    # over all 16 nested patches installed here, a merged-only check yields 182
+    # findings of which 167 (91.8%) are the TARGET's own -- a flood, and a check
+    # that floods is worse than no check.
+    #
+    # Scope "active" is a LITERAL, per CLAUDE.md #24: a target the engine will not
+    # load cannot contribute to the document the engine builds, and `installed`
+    # here would resolve a patch against a mod that is switched off.
+    nested = _xsd.validate_nested_scripts(
+        mod_dir, config,
+        {m["folder"].lower(): Path(m["path"]) for m in _registry.mods("active")})
+    findings = findings + nested.introduced
+    checked += nested.checked
+    for nvpath, why in nested.skips:
+        report.skip(f"nested script patch {nvpath}", why)
+    if nested.checked or nested.skips:
+        report.notes.append(
+            f"XSD(nested): {nested.checked} cross-mod script patch(es) validated via "
+            f"their merged result — {len(nested.introduced)} introduced, "
+            f"{len(nested.fixed)} fixed, {len(nested.skips)} not checkable")
+
     def _gates(msg: str) -> bool:
         if _xsd.schema_element_gap(msg):
             return False  # engine-verified md.xsd gap — advisory, never a gate

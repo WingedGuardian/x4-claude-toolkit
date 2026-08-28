@@ -478,6 +478,46 @@ def _cmd_sql(con, args) -> int:
     return 0
 
 
+def logical_vpath(vpath: str, mod_folders: set[str],
+                  dlc_folders: set[str]) -> str | None:
+    """LOGICAL (game) vpath for a PHYSICAL ``extensions/<mod>/<rel>`` disk path.
+
+    Returns None -- meaning "leave it alone" -- when *vpath* is already logical,
+    names a DLC, names a folder that is not an installed mod, or is double-nested.
+
+    **Why a DLC is excluded rather than handled.** For a DLC,
+    ``extensions/ego_dlc_split/md/story_split.xml`` IS the game vpath: the engine
+    builds that document under that name, and `_effective.build_touch_map`
+    deliberately does not rewrite it. For a MOD the identical shape is a path on
+    disk with no engine meaning -- the document the engine builds is
+    ``md/morerooms.xml``. That asymmetry is the engine's, not ours.
+
+    **Why double-nested is excluded.** It mirrors ``build_touch_map``, which
+    refuses ``extensions/<modA>/extensions/<x>/<rel>`` because whether the engine
+    applies a patch-on-a-patch transitively is not engine-proven. Resolving it here
+    would let the CLI answer a question the merge model declines to answer.
+
+    *dlc_folders* is asked of ``Config.dlc_dirs()``, never guessed from an
+    ``ego_dlc_`` name prefix: a prefix test cannot notice a DLC being added, and
+    `tests/test_dlc_enumeration.py` bans the form because this workspace wrote
+    that guess six times. The guard caught this function on its first run.
+
+    MEASURED 2026-08-27 (F71): 1,713 of 3,257 touched vpaths are mod-owned, so a
+    missing physical form rendered a *wrong form* as a confident *absence*.
+    """
+    parts = [p for p in vpath.replace("\\", "/").split("/") if p]
+    if len(parts) < 3 or parts[0].lower() != "extensions":
+        return None
+    folder = parts[1].lower()
+    if folder in {d.lower() for d in dlc_folders}:
+        return None
+    if folder not in {f.lower() for f in mod_folders}:
+        return None
+    if parts[2].lower() == "extensions":
+        return None
+    return "/".join(parts[2:])
+
+
 def _cmd_dump(args) -> int:
     cfg = _merge.Config(reference=Path(args.reference))
     mods = active_mods()
@@ -487,13 +527,37 @@ def _cmd_dump(args) -> int:
     ov = touchers_for(args.vpath, touch, folder_to_path)
     rec = Recorder()
     res = _merge.build_effective(args.vpath, cfg, extra_overlays=ov, recorder=rec)
+
+    # A miss may be the wrong FORM rather than an absence. Retry the logical vpath
+    # -- but only AFTER the literal one has genuinely failed, so every path that
+    # resolves today keeps resolving by exactly the route it does now.
+    vpath, note_folder, note_alt = args.vpath, None, None
+    if res.tree is None:
+        alt = logical_vpath(args.vpath, {m["folder"] for m in mods},
+                            {d.name for d in cfg.dlc_dirs()})
+        if alt is not None:
+            alt_rec = Recorder()
+            alt_res = _merge.build_effective(
+                alt, cfg, extra_overlays=touchers_for(alt, touch, folder_to_path),
+                recorder=alt_rec)
+            if alt_res.tree is not None:
+                note_folder = [p for p in args.vpath.replace("\\", "/").split("/") if p][1]
+                note_alt = alt
+                vpath, res, rec = alt, alt_res, alt_rec
+
     if res.tree is None:
         print(f"no effective content for {args.vpath}", file=sys.stderr)
         return 1
+    # Printed whether or not --chain: resolving a reinterpreted path SILENTLY would
+    # trade one confident-wrong answer for another.
+    if note_alt is not None:
+        print(f"<!-- note: '{note_folder}' is an installed MOD, not a DLC, so that is "
+              f"a disk path, not a game vpath;")
+        print(f"     interpreted as logical vpath '{note_alt}' -->")
     if args.chain:
         print(f"<!-- sources: {', '.join(res.sources)} -->")
-        if "base" not in res.sources and _effective.base_has(cfg, args.vpath):
-            print(f"<!-- note: base+DLC ALSO supply {args.vpath}; "
+        if "base" not in res.sources and _effective.base_has(cfg, vpath):
+            print(f"<!-- note: base+DLC ALSO supply {vpath}; "
                   f"sources show which WON, not which introduced it -->")
     print(etree.tostring(res.tree, pretty_print=True, encoding="unicode"))
     return 0

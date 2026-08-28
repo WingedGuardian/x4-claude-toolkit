@@ -1,6 +1,73 @@
 # Changelog
 
-## Unreleased
+## v2.9.0 — 2026-08-28
+
+### Added — nested cross-mod script patches are now validated, through the document the engine builds (F70)
+
+A patch at `<mymod>/extensions/<target>/md/foo.xml` was validated by **nothing**: both halves of the
+script pass check direct children only. `--update` now validates each one through its **merged
+result** — target + patch — rather than the patch file, which is a `<diff>` the engine never parses
+on its own.
+
+**It reports only what the patch is responsible for.** Validating the merged document alone would
+blame a mod for its target's pre-existing schema violations. MEASURED over all 16 nested patches in
+a real 125-mod install: **182 findings, of which 167 (91.8%) belong to the target** — a mod named
+`moreroomsforships` fails `md.xsd`'s capital-letter pattern because its own author named it that, and
+the patching mod can neither cause nor fix it. So both sides are validated and diffed per finding:
+
+```
+- XSD(nested): 1 cross-mod script patch(es) validated via their merged result
+  — 0 introduced, 1 fixed, 0 not checkable
+```
+
+`fixed` is reported as well as `introduced`, because a check that can only go one way cannot be
+trusted to go the other.
+
+**A file that could not be checked never reads as one that came back clean**, and the two reasons are
+kept apart:
+
+- *target mod is not installed* — the engine no-ops the patch too; not a defect.
+- *target is installed but does not supply that file* — a **stale patch that silently never applies**.
+  One real instance in the live set: `ship_variation_expansion_vro` patches `md/spawnclaymore.xml`,
+  and its target ships seven md files, none of them that one. No engine error is produced for this.
+
+Findings are matched by message, not line number, so a patch shifting lines does not report every
+inherited finding as both removed and added.
+
+*Known limit, stated because it is easier to trust a tool that names its edges:* the attribution
+compares the target alone against the target plus this mod. A finding that appears only in
+combination with a **third** mod's patch is outside what it can see.
+
+### Fixed — `x4effective dump` no longer reports a wrong FORM as a confident ABSENCE (F71)
+
+`dump` keys documents by their **logical** vpath — the one the engine builds. Addressing a mod's
+document by its path on disk, `extensions/<mod>/md/foo.xml`, missed and printed
+`no effective content`. That reads as *the file is not in the live tree*, when the truth was *right
+file, wrong form*. **1,713 of 3,257 touched vpaths are mod-owned**, so this covered a third of the
+surface.
+
+It now resolves the logical vpath and **says so**, because resolving silently would swap one
+confident-wrong answer for another:
+
+```
+$ x4effective dump --chain extensions/moreroomsforships/md/morerooms.xml
+<!-- note: 'moreroomsforships' is an installed MOD, not a DLC, so that is a disk path,
+     not a game vpath; interpreted as logical vpath 'md/morerooms.xml' -->
+<!-- sources: moreroomsforships:full, zzz_moona_morerooms_fixes:diff(nested:moreroomsforships) -->
+```
+
+Deliberately narrow, and each limit is tested:
+
+- The retry runs **only after the literal lookup genuinely fails**, so every path that resolves
+  today resolves by the same route it does now.
+- **DLC paths are never rewritten.** `extensions/ego_dlc_split/...` *is* a real game vpath; that
+  case was already correct and is unchanged.
+- **Double-nested paths are never rewritten**, mirroring `_effective.build_touch_map`, which
+  refuses the same shape because patch-on-a-patch is not engine-proven.
+- **A genuine absence is still `rc 1`.**
+
+DLC-ness is asked of `Config.dlc_dirs()`, never guessed from an `ego_dlc_` name prefix — the
+existing `test_dlc_enumeration` guard rejected the prefix form, correctly, on its first run.
 
 ### Correction — the "0 mods newly report an error" figure was wrong; it is 1, and it is a real bug found
 
