@@ -28,7 +28,24 @@ run, turns exit 3 from "investigate" into "ignore".
 
 from pathlib import Path
 
-from x4validate import _check, _merge
+import pytest
+
+from x4validate import _check, _merge, _paths
+
+#: These exercise paths that need a REAL reference tree: `validate()` refuses via
+#: `reference_ready` when `libraries/wares.xml` cannot be resolved, and the
+#: effective-schema disclosure calls `_merge.build_effective`. conftest supplies an
+#: EMPTY reference on a machine with no X4, which is right for tests that only need
+#: a Config -- but it makes these return an empty report.
+#:
+#: A SKIP, never a silent pass: without this they failed on every fresh clone and
+#: every CI runner while passing here (F63's shape, and gotcha #26 -- "cold is the
+#: check that lies most"). `scripts/verify-cold.sh` is the instrument that catches
+#: it; I did not run it on these before pushing, and public CI went red.
+needs_reference = pytest.mark.skipif(
+    _paths.reference() is None,
+    reason="needs a real reference tree (no X4 installed on this machine)")
+
 
 
 def _script_mod(tmp_path: Path) -> Path:
@@ -46,6 +63,7 @@ def _script_mod(tmp_path: Path) -> Path:
     return d
 
 
+@needs_reference
 def test_the_fast_pass_runs_without_update(tmp_path):
     report = _check.validate(_script_mod(tmp_path), _merge.Config())
     notes = " ".join(report.notes)
@@ -53,6 +71,7 @@ def test_the_fast_pass_runs_without_update(tmp_path):
         f"the cheap script check must run by default; notes were: {report.notes}")
 
 
+@needs_reference
 def test_it_reports_how_many_script_files_it_checked(tmp_path):
     """A denominator, not a bare 'checked'. 'checked 1 file, all fine' and
     'checked 14 files, all fine' must not print the same way."""
@@ -61,6 +80,7 @@ def test_it_reports_how_many_script_files_it_checked(tmp_path):
     assert "1 script file" in note, note
 
 
+@needs_reference
 def test_the_disclosure_no_longer_claims_nothing_was_examined(tmp_path):
     """Once the fast pass runs, that sentence stops being true for a script-only mod."""
     report = _check.validate(_script_mod(tmp_path), _merge.Config())
@@ -70,6 +90,7 @@ def test_the_disclosure_no_longer_claims_nothing_was_examined(tmp_path):
         "state what IS still unchecked, by name: " + why)
 
 
+@needs_reference
 def test_a_mod_with_no_script_files_gets_no_such_note(tmp_path):
     """Twin: without this the check could 'pass' by always emitting the note."""
     d = tmp_path / "plain"

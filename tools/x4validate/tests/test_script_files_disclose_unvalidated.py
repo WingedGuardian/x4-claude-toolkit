@@ -35,7 +35,16 @@ a single shared helper, `_xsd.strip_nesting`.
 
 from pathlib import Path
 
-from x4validate import _check, _merge, _xsd
+import pytest
+
+from x4validate import _check, _merge, _paths, _xsd
+
+#: See the note in test_fast_script_pass_runs_by_default.py -- the
+#: effective-schema disclosure needs a REAL reference tree. A skip, never a
+#: silent pass.
+needs_reference = pytest.mark.skipif(
+    _paths.reference() is None,
+    reason="needs a real reference tree (no X4 installed on this machine)")
 
 
 def _script_mod(tmp_path: Path, body: str, rel: str = "md/probe.xml") -> Path:
@@ -147,6 +156,7 @@ def test_the_script_dirs_come_from_the_xsd_module(tmp_path):
 
 # --- found by SWEEPING for the shape, not by tripping over it ---------------------
 
+@needs_reference
 def test_a_schema_declaring_data_file_is_also_disclosed(tmp_path):
     """The same gap, one surface along, found by asking what ELSE is gated.
 
