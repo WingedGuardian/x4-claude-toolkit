@@ -9,7 +9,12 @@ MEASURED before making this change:
 
     check_required_attrs over all 125 installed mods : 6.3s total
     slowest single mod                               : 0.100s
-    mods that would newly report ERROR-level findings : 0
+    mods that newly report an ERROR (per-mod census)  : 1  <- a TRUE POSITIVE
+
+`xenon e class ship` has `find_ship` missing its required `space` attribute -- a
+real 9.0 breakage the default run could not see before. An earlier measurement
+said 0 and was WRONG: it filtered on `f.level` where the field is `f.severity`,
+and `getattr(f, 'level', '')` returns '' instead of raising. Use `Report.errors`.
 
 So the exit codes of a real modlist do not move, and a script-only mod stops
 being a run where nothing that can fail was examined -- which is the honest way

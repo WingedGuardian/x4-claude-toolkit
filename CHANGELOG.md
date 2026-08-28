@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Correction — the "0 mods newly report an error" figure was wrong; it is 1, and it is a real bug found
+
+The entry below claimed a per-mod census showed **0** mods changing exit code. A proper per-mod
+census — the same run, both tiers, all 125 installed mods — shows **exactly one**, and it is a
+**true positive**:
+
+```
+xenon e class ship   0 -> 1   md/xenone_resistant_system.xml:17
+                             Element 'find_ship': attribute 'space' is required but missing
+```
+
+That is a genuine 9.0 breakage (`find_ship`/`find_station` gained a required `space` in 9.0), of the
+class the knowledgebase calls the only reliable 9.0 migration signal — and it was **invisible in a
+default run** until this change. So the change is doing exactly what it was built to do; the claim
+about its blast radius was simply false.
+
+**Why the first measurement said 0:** it filtered findings on `f.level`, and the field is
+`f.severity`. `getattr(f, "level", "")` returns `""` rather than raising, so the filter matched
+nothing and produced a confident zero. Use `Report.errors`, which cannot fail that way.
+
+**One other row moved and is not a code change:** a mod folder was deleted between the two census
+runs, so it went from validating cleanly to "mod folder not found" (exit 2). Corpus drift, named
+here rather than absorbed.
+
 ### Changed — the cheap script check now runs on every validate, not only under `--update`
 
 A mod whose payload is `md/` or `aiscripts/` files used to have **no script check at all** in a

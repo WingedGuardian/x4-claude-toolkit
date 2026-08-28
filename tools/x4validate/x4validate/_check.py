@@ -2005,8 +2005,17 @@ def validate(
     # to exit 3: MEASURED 18 of 125, permanently, clearable only by paying 102s
     # every run -- which turns exit 3 from "investigate" into "ignore".
     #
-    # MEASURED before the move: 0 installed mods newly report an error-level
-    # finding, so no real modlist changes exit code.
+    # MEASURED by a per-mod exit-code census across all 125 installed mods,
+    # both tiers: EXACTLY ONE mod changes exit code, 0 -> 1, and it is a TRUE
+    # POSITIVE -- `xenon e class ship` has `find_ship` missing the required
+    # `space` attribute (md/xenone_resistant_system.xml:17), a real 9.0
+    # breakage that was invisible without --update.
+    #
+    # An earlier measurement claimed ZERO and was wrong: it filtered findings
+    # on `f.level`, and the field is `f.severity`. `getattr(f, 'level', '')`
+    # returns '' rather than raising, so the filter matched nothing and
+    # reported a confident 0 -- the silent-default shape (CLAUDE.md's
+    # `el.get("id")` row). Use `Report.errors`, which cannot miss this way.
     already = check_required_attrs(mod_dir, config, report)
     if not update:
         # Discloses what is STILL not checked now that the cheap half has run.
