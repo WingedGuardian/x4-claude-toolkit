@@ -342,7 +342,7 @@ def strip_nesting(vpath: str) -> str:
     prefix test in `check_script_validation_scope` missed **15 script files across
     7 mods** (vro 4, kuertee_additional_agent_actions 3, ship_variation_expansion_vro
     3, kuertee_npc_reactions 2, and one each from atd_ejection_router,
-    kuertee_emergent_missions, zzz_moona_morerooms_fixes). The first time cost 5 MD
+    kuertee_emergent_missions, and one personal overlay). The first time cost 5 MD
     scripts through the effective-check exclusion (2026-07-29).
 
     Shared deliberately: the measurement that FOUND the second occurrence

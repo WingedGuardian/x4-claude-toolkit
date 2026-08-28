@@ -204,7 +204,7 @@ def test_a_nested_script_file_is_counted(tmp_path):
 
     Real owners of the 15: vro (4), kuertee_additional_agent_actions (3),
     ship_variation_expansion_vro (3), kuertee_npc_reactions (2), and one each from
-    atd_ejection_router, kuertee_emergent_missions, zzz_moona_morerooms_fixes.
+    atd_ejection_router, kuertee_emergent_missions, and one personal overlay.
     All 15 are `<diff>`, none a complete <mdscript>.
     """
     d = tmp_path / "nested"
@@ -274,7 +274,7 @@ def test_a_NESTED_ONLY_mod_is_told_nothing_was_examined(tmp_path):
 
     Caught by a prediction that disagreed: the corrected tool reported 17
     script-only mods where 18 were predicted, and the missing one
-    (`zzz_moona_morerooms_fixes`) ships exactly one nested patch and nothing else.
+    (a personal overlay) ships exactly one nested patch and nothing else.
     """
     d = tmp_path / "nestonly"
     inner = d / "extensions" / "someothermod" / "md"
