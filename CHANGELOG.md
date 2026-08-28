@@ -53,7 +53,7 @@ confident-wrong answer for another:
 $ x4effective dump --chain extensions/moreroomsforships/md/morerooms.xml
 <!-- note: 'moreroomsforships' is an installed MOD, not a DLC, so that is a disk path,
      not a game vpath; interpreted as logical vpath 'md/morerooms.xml' -->
-<!-- sources: moreroomsforships:full, zzz_moona_morerooms_fixes:diff(nested:moreroomsforships) -->
+<!-- sources: moreroomsforships:full, zzz_fixer_morerooms:diff(nested:moreroomsforships) -->
 ```
 
 Deliberately narrow, and each limit is tested:
