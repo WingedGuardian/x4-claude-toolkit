@@ -330,6 +330,33 @@ def validate_bytes(data: bytes, display: str, lib: Path) -> tuple[list[XsdFindin
     return _validate_doc(doc, display, lib)
 
 
+def strip_nesting(vpath: str) -> str:
+    """`extensions/<target>/<rel>` -> `<rel>`, slash-normalised and lower-cased.
+
+    THE one implementation of the cross-mod nesting strip. A mod patching another
+    mod puts its files at `<mymod>/extensions/<target>/<mirrored path>` (CLAUDE.md
+    #6), so any test that matches a leading `md/` or `libraries/` on a raw vpath
+    misses every cross-mod patch.
+
+    MEASURED 2026-08-27, the second time this exact trap was walked into: a plain
+    prefix test in `check_script_validation_scope` missed **15 script files across
+    7 mods** (vro 4, kuertee_additional_agent_actions 3, ship_variation_expansion_vro
+    3, kuertee_npc_reactions 2, and one each from atd_ejection_router,
+    kuertee_emergent_missions, zzz_moona_morerooms_fixes). The first time cost 5 MD
+    scripts through the effective-check exclusion (2026-07-29).
+
+    Shared deliberately: the measurement that FOUND the second occurrence
+    re-implemented this strip rather than calling it, which is the same defect one
+    level up. Callers must agree by construction, not by both being edited right.
+    """
+    v = vpath.replace("\\", "/").lstrip("/").lower()
+    if v.startswith("extensions/"):
+        parts = v.split("/", 2)
+        if len(parts) == 3:
+            v = parts[2]
+    return v
+
+
 def eligible(vpath: str) -> bool:
     r"""Can this virtual path be schema-checked as an effective merged document?
 
@@ -337,15 +364,22 @@ def eligible(vpath: str) -> bool:
     patch lives at `<mymod>/extensions/<target>/md/foo.xml`, which does not START
     with `md/` — so a plain prefix test let 5 MD scripts through the exclusion
     (measured 2026-07-29: 4 from `vro`, 1 from `kuertee_emergent_missions`). They
-    were then validated against `md.xsd`, which is both already covered by
-    `validate_mod` and documented as stricter than the engine. Match the path
-    SEGMENT after the nesting is removed.
+    were then validated against `md.xsd`, which is documented as stricter than the
+    engine. Match the path SEGMENT after the nesting is removed.
+
+    CORRECTION 2026-08-27: this docstring used to say those files were "already
+    covered by `validate_mod`". THEY ARE NOT. Both halves of `validate_mod` filter
+    `count("/") != 1` -- direct children only, deliberately, so the loose and packed
+    halves cover the same population. A nested cross-mod script patch is therefore
+    validated by NOTHING. MEASURED: 15 such files across 7 mods, every one a
+    `<diff>`, and the engine demonstrably loads their targets (KNOWLEDGEBASE.md
+    records it running `md.moreroomsforships.Init` and logging 364 warnings from
+    that file). Excluding them here may still be right -- the effective-tree check
+    is the wrong instrument for a script -- but the JUSTIFICATION was false, and a
+    false justification is how a gap stays invisible. See `check_script_validation_scope`,
+    which now discloses them separately, and the blind-spot register.
     """
-    v = vpath.replace("\\", "/").lstrip("/").lower()
-    if v.startswith("extensions/"):
-        parts = v.split("/", 2)
-        if len(parts) == 3:
-            v = parts[2]
+    v = strip_nesting(vpath)
     return v.endswith(".xml") and not v.startswith(EFFECTIVE_SKIP_PREFIXES)
 
 

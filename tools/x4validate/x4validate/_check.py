@@ -1570,31 +1570,60 @@ def check_script_validation_scope(mod_dir: Path, config: _merge.Config,
     "OK: no issues found" -- exactly what `Skipped` exists to prevent, and what
     this same tool already refuses to do for a content.xml-only folder.
 
-    NOT degraded, deliberately. MEASURED over the installed set: 77 of 124 mods
-    ship script XML and 17 are script-only. A degraded exit here would fire on the
-    majority of the corpus in default mode, and a check that floods is worse than
-    no check -- it trains you to ignore the output. Whether the script-ONLY case
-    should degrade is a live question, and a decision rather than a drive-by.
+    NOT degraded. MEASURED with the corrected predicate: 79 of 125 installed mods
+    ship script XML and 18 are script-only. An exit 3 firing on 18 mods
+    permanently, clearable only by paying the ~102s compile every run, converts it
+    from "investigate" into "ignore" -- a check that floods is worse than no check.
+
+    TWO populations, reported separately, because the ADVICE differs. Direct
+    children of `md/` and `aiscripts/` are fixable by `--update`. A nested
+    cross-mod patch is not: both halves of `_xsd.validate_mod` filter
+    `count("/") != 1`, so nothing validates those at all. Counting them into a
+    "run --update" message would have made the number complete and the advice
+    FALSE -- worse than the under-count it replaced.
     """
     prefixes = tuple(f"{s}/" for s in _xsd.SCRIPT_DIRS)
     unreadable: list[_scan.Unreadable] = []
-    scripts, other = 0, 0
+    top = nested = other = 0
     for vpath, _root in _scan.iter_mod_xml(mod_dir, lambda v: True, unreadable):
         low = vpath.lower()
         if not low.endswith(".xml") or low == "content.xml":
             continue
         if low.startswith(prefixes):
-            scripts += 1
+            top += 1
+        elif _xsd.strip_nesting(vpath).startswith(prefixes):
+            nested += 1          # a cross-mod script patch (CLAUDE.md #6)
         else:
             other += 1
-    if scripts:
-        only = " and are this mod's ONLY payload, so nothing that can fail was examined" \
-            if not other else ""
+    if top:
+        # The required-attribute class now runs in every mode, so "nothing was
+        # examined" is no longer true here -- name what IS still missing instead.
+        # `--xsd-fast`'s own note uses this same split, deliberately.
         report.skip(
             "script-schema",
-            f"{scripts} md/aiscripts file(s) were NOT validated against their schema"
-            f"{only} — the schema pass costs ~102s to compile and runs only under "
-            f"`--update` (or `--update --xsd-fast` for the gating subset)")
+            f"{top} md/aiscripts file(s): the required-attribute class was checked "
+            f"and is COMPLETE, but the 'element not expected' class - where element "
+            f"ORDERING errors live - and the schema-strict advisories were not. "
+            f"Those need the ~102s schema compile: `--update`")
+    if nested:
+        # A SEPARATE statement, because the advice differs. Both halves of
+        # `_xsd.validate_mod` filter `count("/") != 1` -- direct children only, and
+        # deliberately, so the loose and packed halves cover the same population.
+        # A nested cross-mod script patch is therefore validated by NOTHING, and
+        # telling the caller to run `--update` would be false advice. MEASURED
+        # 2026-08-27: 15 such files across 7 mods, every one a `<diff>`.
+        # "only payload" belongs on THIS branch too. A mod whose sole payload is a
+        # nested patch never reaches the branch above, so without this it is never
+        # told that nothing was examined -- and it is the stronger case, since not
+        # even `--update` would examine it. Caught by a prediction that disagreed:
+        # 17 reported where 18 were expected.
+        n_only = ("; they are this mod's only payload, so nothing that can fail "
+                  "was examined" if not (top or other) else "")
+        report.skip(
+            "script-schema-nested",
+            f"{nested} nested cross-mod script patch(es) at `extensions/<target>/"
+            f"md|aiscripts/` are NOT VALIDATED BY ANYTHING - not by this run, and "
+            f"not by `--update` either, which checks direct children only{n_only}")
 
     # The same gap one surface along, found by sweeping for the SHAPE rather than
     # by tripping over it: `check_effective_schema` validates merged data files
@@ -1657,6 +1686,13 @@ def check_required_attrs(mod_dir: Path, config: _merge.Config,
             report.add("error", "xsd", f.message, vpath, f.line)
     for u in unreadable:
         report.skip("required-attribute scan", str(u))
+    # Only speak when there was something to check. This pass now runs in EVERY
+    # mode, and a "0 script file(s) checked" line on the 46 of 125 installed mods
+    # that ship no scripts is noise -- and noise is what trains people to stop
+    # reading the notes. A mod with no script files gets no script commentary,
+    # here or from check_script_validation_scope.
+    if not files:
+        return reported
     report.notes.append(
         f"required-attrs: {files} script file(s) checked without compiling a schema "
         f"({len(reported)} gating breakage(s)); "
@@ -1957,16 +1993,26 @@ def validate(
         check_completeness(mod_dir, runtime, report, entity, like)  # runtime: needs macro defs
     if debug is not None:  # authoritative: fold the engine's own errors for this mod (gates)
         check_debug_correlation(mod_dir, config, report, debug)
-    # Runs in EVERY mode: the default run is exactly where a script
-    # file goes unexamined while the summary says OK.
+    # Runs in EVERY mode. No schema compile, so it costs ~0.1s on the heaviest
+    # script mod in a real install (60 files) and 6.3s across all 125 -- and its
+    # corpus-wide parity with libxml2 is proven by gates/xsd_fast_parity.py (555
+    # script files, 0 false positives, 0 misses). It sat behind --update only by
+    # association with check_xsd, which compiles md.xsd at ~102s.
+    #
+    # This is what stops a script-only default run from examining NOTHING, which
+    # is the honest way to satisfy README's "0 = clean AND something was actually
+    # examined". The alternative considered and rejected was degrading those mods
+    # to exit 3: MEASURED 18 of 125, permanently, clearable only by paying 102s
+    # every run -- which turns exit 3 from "investigate" into "ignore".
+    #
+    # MEASURED before the move: 0 installed mods newly report an error-level
+    # finding, so no real modlist changes exit code.
+    already = check_required_attrs(mod_dir, config, report)
     if not update:
+        # Discloses what is STILL not checked now that the cheap half has run.
         check_script_validation_scope(mod_dir, config, report)
     if update:  # mechanical-port extras (9.0 migration): runtime heuristic + XSD (slow, last)
         check_migration(mod_dir, config, report)
-        # Fast gating pass FIRST — no schema compile, so the required-attribute
-        # answer (the KB's only reliable 9.0 signal) lands in ~0.05s instead of
-        # after a ~100s wait. `already` stops the slow pass double-reporting it.
-        already = check_required_attrs(mod_dir, config, report)
         if not xsd_fast:
             check_xsd(mod_dir, config, report, already)   # script files, as written
             check_effective_schema(mod_dir, config, report)  # data files, as merged

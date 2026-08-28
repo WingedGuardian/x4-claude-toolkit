@@ -2,6 +2,69 @@
 
 ## Unreleased
 
+### Changed — the cheap script check now runs on every validate, not only under `--update`
+
+A mod whose payload is `md/` or `aiscripts/` files used to have **no script check at all** in a
+default run, because every script check sat behind `--update` — which compiles `md.xsd` at ~102s.
+For an additive-only script mod that meant the one check capable of failing was the one not run,
+while the summary said "OK".
+
+The required-attribute pass needs no schema compile, so it now runs always. MEASURED on a real
+125-mod install: **6.3s total, 0.100s for the heaviest single mod, and 0 mods newly report an
+error** — so no real modlist changes exit code. Its corpus-wide parity with libxml2 is proven by
+`gates/xsd_fast_parity.py`: **555 script files, 0 false positives, 0 misses.**
+
+What still needs `--update` is now named rather than implied:
+
+```
+ - required-attrs: 5 script file(s) checked without compiling a schema (0 gating breakage(s))
+ - script-schema: 5 md/aiscripts file(s): the required-attribute class was checked and is
+   COMPLETE, but the 'element not expected' class - where element ORDERING errors live - and
+   the schema-strict advisories were not. Those need the ~102s schema compile: `--update`
+```
+
+That class matters: of the three real violations in the report that prompted this work, **two were
+element-ordering errors**, and `--update` reports them as errors with exit 1.
+
+⚠ **Considered and rejected: degrading those mods to exit 3.** It would have fired on 18 of 125 mods
+permanently, clearable only by paying 102s every run — which turns exit 3 from "investigate" into
+"ignore". The right answer to "a check did not run" is to run the check.
+
+A mod with no script files gets no script commentary at all, in either direction.
+
+### Fixed — cross-mod script patches were missed by the disclosure, and are validated by nothing
+
+Found by red-teaming the follow-up plan rather than by a failure.
+
+A mod that patches another mod puts its files at `<mymod>/extensions/<target>/md/foo.xml`, which
+does not start with `md/`. The disclosure added in the previous release matched on that bare prefix
+and so **missed every cross-mod script patch — 15 files across 7 mods**, which means the figures
+published with it (77 of 124 mods, 17 script-only) were wrong. The true figures are **79 of 125 and
+18**. The nesting strip is now a single shared helper used by both call sites, so they agree by
+construction rather than by both being edited correctly.
+
+**The larger half:** those nested files are validated by *nothing*. Both halves of the script pass
+check direct children only — deliberately, so the loose and packed halves cover the same population
+— while the effective-tree check skipped nested scripts *on the stated grounds that the script pass
+already covered them*. It does not. That justification has been corrected in place, because a false
+justification is how a gap stays invisible.
+
+So the two populations are now reported **separately, because the advice differs**:
+
+```
+ - script-schema: N md/aiscripts file(s) were NOT validated ... runs only under `--update`
+ - script-schema-nested: M nested cross-mod script patch(es) ... are NOT VALIDATED BY ANYTHING
+   - not by this run and not by `--update` either, which checks direct children only
+```
+
+Simply counting the nested files into the existing message would have made the number complete and
+the **advice false**, which is worse than the under-count it replaced.
+
+⚠ **Coverage is unchanged and that is deliberate.** Widening the script pass to nested files alters
+what `--update` validates and needs its own measurement; it is registered rather than done. The
+evidence that these files are live: all 15 are `<diff>`, the nested path is the engine's documented
+cross-mod patch form, and the engine demonstrably loads their targets.
+
 ### Fixed — a patched data file that declares a schema is disclosed as unvalidated too
 
 Found by sweeping for the shape rather than by tripping over it. `check_effective_schema` validates
@@ -42,8 +105,8 @@ itself accordingly:
      compile and runs only under `--update`
 ```
 
-**The exit code is unchanged.** MEASURED over the installed set, **77 of 124 mods ship script XML
-and 17 are script-only**, so degrading the run here would fire on most of the corpus by default —
+**The exit code is unchanged.** MEASURED over the installed set, **79 of 125 mods ship script XML
+and 18 are script-only**, so degrading the run here would fire on most of the corpus by default —
 and a check that floods is worse than no check, because it teaches you to skip the output. Whether
 the script-only case should degrade is left as a deliberate decision.
 

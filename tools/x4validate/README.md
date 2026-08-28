@@ -131,6 +131,14 @@ md/aiscripts schemas, and a further **~122s if your mod patches `libraries/diplo
 — that one schema pulls in the 40k-line `common.xsd`, where every other data schema
 measured ≤0.1s. It looks like a hang and is not.
 
+**The cheap half of the script check runs by default**, since it needs no schema compile: the
+required-attribute class — the KB's most reliable 9.0 migration signal — is checked on every run,
+with corpus-wide parity against libxml2 proven by `gates/xsd_fast_parity.py` (555 script files, 0
+false positives, 0 misses) and a measured cost of ~0.1s on the heaviest script mod in a 125-mod
+install. What still needs `--update` is the `element not expected` class, where element-ordering
+errors live, plus the schema-strict advisories — and a default run now says so by name rather than
+reporting a bare "OK".
+
 ### `x4modlist changed` — which mod moved, when a fingerprint does
 
 ```sh
