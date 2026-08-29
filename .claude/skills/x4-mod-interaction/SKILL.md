@@ -1,6 +1,6 @@
 ---
 name: x4-mod-interaction
-description: Analyze how a mod interacts with the installed X4 modlist — mechanical patch collisions, behavioral event/action interactions, advisory balance fit (e.g. a vanilla-balanced weapon mod in a VRO game), and same-entity redundancy (a mod adding an independent ship that's really a reskin of one VRO/DLC already has). Use when the user asks "how would this mod behave in my game", "does X conflict with Y", "is this balanced for VRO", "is this ship a duplicate of one I already have", or wants an interaction brief before adding/keeping a mod. Orchestrates x4compat + x4xref + x4stats + x4similar; never loads whole mods into context.
+description: Analyze how a mod interacts with the installed X4 modlist — mechanical patch collisions, behavioral event/action interactions, advisory balance fit (e.g. a vanilla-balanced weapon mod in a game running a rebalance overhaul), and same-entity redundancy (a mod adding an independent ship that's really a reskin of one an installed overhaul or DLC already has). Use when the user asks "how would this mod behave in my game", "does X conflict with Y", "is this balanced for my modlist", "is this ship a duplicate of one I already have", or wants an interaction brief before adding/keeping a mod. Orchestrates x4compat + x4xref + x4stats + x4similar; never loads whole mods into context.
 allowed-tools: Bash, Read, Grep, WebFetch
 ---
 
@@ -34,7 +34,7 @@ Run tools via uv from the tool dir:
 
 3. **Balance (advisory) — `x4stats wares <mod-folder>`** and `x4stats macro <file>`. For a
    content mod (weapons, ships, wares), shows its numbers against the EFFECTIVE tree's same-group
-   peers (VRO's rescaled prices included). **This is advisory grounding, not a verdict** — e.g.
+   peers (including any rebalance overhaul's rescaled prices). **This is advisory grounding, not a verdict** — e.g.
    "this turret sits at the 98th percentile of all turret prices" flags a likely balance
    mismatch to investigate, it does not decide it. For weapon DPS, `x4stats macro` gives one
    file's numbers + its `<bullet class=>` ref; chase the peer's bullet macro for a full compare.
@@ -43,7 +43,7 @@ Run tools via uv from the tool dir:
    Flags fuzzy same-entity matches against base+DLC+every installed mod's ships (hull/crew/
    cargo/handling stat similarity, hard-filtered by ship class+purpose so an S fighter never
    matches an XL destroyer). A same-registry-KEY duplicate is x4compat's UNION-KEY, not this —
-   this catches a DIFFERENT id/name describing essentially the same ship (the "VRO ship vs an
+   this catches a DIFFERENT id/name describing essentially the same ship (the "an overhaul's ship vs an
    independently-named clone" case). Score is a distance metric over shared numeric stats, not
    a power model — always eyeball flagged pairs, and note how many stats were actually compared
    (few shared keys = a weaker claim).
@@ -66,6 +66,13 @@ user can jump to the source.
 ## Honest limits
 - Load order among mutually-independent mods is alphabetical (community-reported, undocumented).
 - Behavioral coverage is only as good as the hooks you feed x4xref — a mod can interact via Lua
-  or engine features that leave no MD/aiscript token (e.g. ATD disables the engine emergency-eject
-  feature; the *effect* on an ejection mod is inferable but the race is a playtest).
+  or engine features that leave no MD/aiscript token (e.g. a mod that disables an engine
+  feature another depends on; the *effect* is inferable but the race is a playtest).
 - `x4stats` is a distribution comparison, not a power model. Same price ≠ same effectiveness.
+- **An empty result is not automatically a negative.** Each tool indexes a defined slice; content
+  outside it returns nothing that *looks* identical to "nothing matched". Before reporting "no
+  interaction found", confirm the area is in scope — the toolkit's `docs/BLIND-SPOTS.md` is the
+  register of what each tool does and does not see, with measured denominators.
+- Known structural exclusions to state rather than silently absorb: Lua is not analysed by any tool;
+  galaxy-map and character macros are outside the effective store; `x4similar` scores on a fixed
+  numeric whitelist, so two ships differing only in handling can still read as near-duplicates.
