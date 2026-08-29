@@ -14,7 +14,9 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASEX_DIR="$HERE/basex"
-X4VALIDATE="${X4VALIDATE_DIR:-$HERE/../x4validate}"
+. "$HERE/_x4v-tree.sh"
+X4VALIDATE="$(x4v_resolve "$HERE")"
+x4v_announce "$X4VALIDATE"
 EFF="$HERE/_eff"
 DB=x4eff
 MANIFEST="$EFF/effective-manifest.json"

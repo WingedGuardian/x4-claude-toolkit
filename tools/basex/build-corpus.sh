@@ -16,7 +16,9 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASEX_DIR="$HERE/basex"
-X4VALIDATE="${X4VALIDATE_DIR:-$HERE/../x4validate}"
+. "$HERE/_x4v-tree.sh"
+X4VALIDATE="$(x4v_resolve "$HERE")"
+x4v_announce "$X4VALIDATE"
 # Resolve, never guess. These used to fall back to one developer's absolute
 # paths, so on any other machine the build ran happily over directories that do
 # not exist -- and reported success. (It also shipped a username.)

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added — the BaseX builds name the engine tree they used, and refuse an ambiguous one
+
+`build-effective.sh` and `build-corpus.sh` defaulted `X4VALIDATE_DIR` to `$HERE/../x4validate`.
+That is a *position*, not an identity. The freshness `engine` axis hashes the bytes of the engine
+sources, so when more than one checkout sits side by side — one git worktree per concurrent
+session — a build can stamp the artifact with a different tree's engine hash. A wrong engine hash
+reads as **fresh**, not as an error.
+
+Both builds now print the resolved tree with its git branch and HEAD, every run. That half has no
+failure mode: a build whose provenance is in its own output can be audited afterwards.
+
+The refusal fires **only** when the choice is genuinely ambiguous — more than one sibling that
+actually contains `x4validate/_merge.py`, and no `X4VALIDATE_DIR`. A single-checkout install can
+never trip it, and a stray `x4validate-backup/` is not mistaken for a rival.
+
 ### Changed — a deployed-mod edit is a hard block when the source lives elsewhere
 
 Writing to a file under the live `extensions/` folder used to always ask. It now depends on
