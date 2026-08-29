@@ -52,7 +52,21 @@ echo "$FILE_PATH" | grep -qiE 'Egosoft[/\\]X4[/\\]' && ask "EDITING USER PROFILE
 # === CONFIRMATION — live extensions/ (deploy target, overwritten on every deploy) ===
 # This is mod territory, NOT base-game content — so it's an "ask", even though it usually sits
 # inside the game folder (often as a symlink). Must precede the game-install block below.
-x4_under "$FILE_PATH" "$X4_EXTENSIONS" && ask "EDITING DEPLOYED MOD: $FILE_PATH — the live extensions/ folder is overwritten on each deploy; edit the source instead. Confirm?"
+# Whether the deployed copy is EDITABLE depends on whether a source copy exists elsewhere.
+# If a separate mods root is configured and it is NOT inside the game folder, the source
+# lives there, every deploy overwrites this copy, and editing it is simply a mistake -- so
+# it is a hard block naming where to go instead. When mods live only inside the game folder
+# (the common single-location setup) there IS no other copy, and denying would block all
+# normal work -- so it stays a confirmation.
+x4_mods_are_separate() {
+  [ -n "${X4_MODS:-}" ] && [ -n "${X4_GAME:-}" ] || return 1
+  x4_under "$X4_MODS" "$X4_GAME" && return 1
+  return 0
+}
+if x4_under "$FILE_PATH" "$X4_EXTENSIONS"; then
+  x4_mods_are_separate     && deny "BLOCKED: $FILE_PATH is a DEPLOYED copy; the live extensions/ folder is overwritten on every deploy. Edit the source under $X4_MODS and redeploy."
+  ask "EDITING DEPLOYED MOD: $FILE_PATH -- the live extensions/ folder is overwritten on each deploy; edit the source instead. Confirm?"
+fi
 
 # === HARD BLOCK — game installation files (base-game content that isn't the toolkit) ===
 if [ -n "${X4_GAME:-}" ] && x4_under "$FILE_PATH" "$X4_GAME"; then

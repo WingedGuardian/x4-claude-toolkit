@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Changed — a deployed-mod edit is a hard block when the source lives elsewhere
+
+Writing to a file under the live `extensions/` folder used to always ask. It now depends on
+whether a source copy exists somewhere else, because that is what decides whether the edit is
+recoverable:
+
+| your setup | writing under `extensions/` |
+|---|---|
+| a separate mods root outside the game folder | **denied**, naming where the source is — every deploy overwrites this copy, so the edit would be silently lost |
+| mods root IS the extensions folder | **allowed** — the deployed copy *is* the source; this is ordinary work |
+| no mods root configured | **ask** — nothing says where the source is, so it cannot be decided for you |
+
+All three branches have their own probe. The first two are reachable only in different
+configurations, so testing one of them would have left the others as dead code.
+
+### Fixed — `scripts/test-hooks.sh` counted a dropped probe as no probe at all
+
+A probe line that fails to parse increments neither the pass nor the fail counter: it vanishes,
+and the run still prints a cheerful total. That happened while adding the probes above — bash
+printed `n: command not found` and the suite reported `33 passed, 0 failed`. The total is now
+asserted against an expected count that has to be updated deliberately.
+
+### Added — `X4_BACKUPS` documented in `x4-paths.env.example`
+
+`backup-before-edit.sh` has always honoured it; nothing said so. It matters when the toolkit root
+is not where an existing audit trail lives, because otherwise changing `X4_TOOLKIT` quietly starts
+a second trail and the history splits in two.
+
+### Changed — the advisory validate hook routes cross-mod files to Tier B
+
+A file at `<mod>/extensions/<target>/...` is a cross-mod patch, and Tier A builds base+DLC only,
+so it reports "no base game file — can never apply" for every such file. Measured on a real
+cross-mod overlay: Tier A `error_count=1`, Tier B `error_count=0`, same correct file. Left on
+Tier A the hook cries wolf on every edit to a cross-mod overlay, which is worse than not running.
+
 ### Fixed — the identifier scan could not see your newest file
 
 `scripts/scan-identifiers.py` built its population from `git ls-files`, which reports the **index**.

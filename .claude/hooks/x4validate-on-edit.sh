@@ -27,12 +27,24 @@ for _ in $(seq 1 25); do
 done
 [ -z "$ROOT" ] && exit 0
 
-OUT=$(cd "$X4V" && "$UV" run --python 3.13 x4validate "$ROOT" --file "$F" --json 2>/dev/null)
+# TIER SELECTION.  A file at <mod>/extensions/<target>/... is a CROSS-MOD patch, and
+# Tier A builds base+DLC only -- so it reports "no base game file ... can never apply"
+# for EVERY such file.  MEASURED 2026-08-28 on a real cross-mod overlay: Tier A
+# error_count=1, Tier B error_count=0, same correct file.  Left on Tier A this hook
+# cries wolf on every edit to a cross-mod overlay and trains the reader to ignore it,
+# which is worse than not running at all.
+REL="${F#"$ROOT"/}"
+TIER=""
+case "$REL" in
+  extensions/*) TIER="--tier b" ;;
+esac
+
+OUT=$(cd "$X4V" && "$UV" run --python 3.13 x4validate "$ROOT" --file "$F" $TIER --json 2>/dev/null)
 [ -z "$OUT" ] && exit 0
 ERRS=$(echo "$OUT" | "$JQ" -r '.error_count // 0' 2>/dev/null)
 if [ "${ERRS:-0}" -gt 0 ]; then
   MSG=$(echo "$OUT" | "$JQ" -r '.findings[] | "  [\(.severity)] \(.message) (\(.vpath):\(.line))"')
-  "$JQ" -n --arg c "x4validate (advisory) flagged this edit:
+  "$JQ" -n --arg c "x4validate (advisory${TIER:+, tier B}) flagged this edit:
 $MSG" '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$c}}'
 fi
 exit 0

@@ -50,13 +50,38 @@ run_layout(){ # run_layout <name> <toolkit> <game>
   decide deny  protect-files.sh "$(fj "$GAME/libraries/wares.xml")"         "base game file"
   decide ask   protect-files.sh "$(fj "$TK/dev/mymod/content.xml")"         "content.xml manifest"
   decide ask   protect-files.sh "$(fj "$TMP/profile/config.xml")"           "user profile file"
-  decide ask   protect-files.sh "$(fj "$GAME/extensions/deployed/x.xml")"   "deployed extensions/"
+  # X4_MODS is outside $GAME in both layouts, so the source lives elsewhere -> hard block.
+  decide deny  protect-files.sh "$(fj "$GAME/extensions/deployed/x.xml")"   "deployed extensions/ (source elsewhere)"
 }
 
 # The in-game layout is the interesting one: toolkit IS the game folder, so mod sources sit
 # inside it and must not be caught by the game-installation block.
 run_layout "in-game"  "$TMP/game/X4 Foundations" "$TMP/game/X4 Foundations"
 run_layout "separate" "$TMP/sep/toolkit"         "$TMP/sep/X4 Foundations"
+
+# The OTHER branch of the same rule, and it must be exercised or the deny above is the
+# only reachable outcome and the ask is dead code. Mods living INSIDE the game folder is
+# the common single-location setup: there is no separate source, so denying would block
+# every normal edit.
+echo; echo "=== protect-files.sh -- deployed edit when mods live INSIDE the game ==="
+GAME="$TMP/game/X4 Foundations"
+mkdir -p "$GAME/extensions/deployed"
+# The hook runs as a CHILD process, so a bare `VAR=x decide ...` prefix does not reach
+# it -- the values must be EXPORTED. That is why this saves and restores instead of
+# using a subshell: `decide` increments the pass/fail counters, which a subshell would
+# discard, and the run would go quiet again in a different way.
+_sm="$X4_MODS"; _se="$X4_EXTENSIONS"; _sg="$X4_GAME"
+# THREE reachable branches for a write under extensions/, one probe each -- otherwise
+# the deny above is the only outcome ever exercised and the rest is dead code.
+export X4_EXTENSIONS="$GAME/extensions" X4_GAME="$GAME"
+#  (a) no mods root configured at all: nothing says where the source is, so CONFIRM.
+unset X4_MODS
+decide ask protect-files.sh "$(fj "$GAME/extensions/deployed/x.xml")" "deployed edit, no mods root configured"
+#  (b) mods root IS the extensions folder: the deployed copy IS the source, so this is
+#      ordinary work and must not prompt at all.
+export X4_MODS="$GAME/extensions"
+decide allow protect-files.sh "$(fj "$GAME/extensions/deployed/x.xml")" "deployed edit IS the source"
+export X4_MODS="$_sm" X4_EXTENSIONS="$_se" X4_GAME="$_sg"
 
 echo; echo "=== protect-bash.sh ==="
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_GAME'")"      "rm the game directory"
@@ -92,5 +117,15 @@ echo "99999999" > "$TK/.claude/.reference-buildid"
   && ok "silent when builds match" || no "warned when builds match"
 
 echo
+# A probe line that fails to PARSE increments neither counter -- it vanishes, and the
+# run still prints a cheerful total. That happened while adding the probe above: bash
+# reported "n: command not found" and the suite still said "33 passed, 0 failed".
+# So the total is asserted against a number that must be updated deliberately.
+EXPECT=35
 echo "RESULT: $pass passed, $fail failed"
+if [ $((pass + fail)) -ne "$EXPECT" ]; then
+  echo "FAIL: $((pass + fail)) probes ran, expected $EXPECT -- a probe was DROPPED, not passed."
+  echo "      (If you added or removed one deliberately, update EXPECT.)"
+  exit 1
+fi
 [ "$fail" -eq 0 ]
