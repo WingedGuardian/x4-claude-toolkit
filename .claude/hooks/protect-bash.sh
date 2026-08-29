@@ -6,7 +6,8 @@ JQ="${JQ:-jq}"
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$HOOK_DIR/_x4-env.sh"
 
-INPUT=$(cat /dev/stdin)
+INPUT=$(x4_hook_input)
+x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it checked nothing. Allowing silently is how five hooks sat dead for weeks while their suites passed. Confirm only if you know why the payload is missing."
 # ONE jq call for all three fields. This hook runs on EVERY Bash invocation, so a
 # second invocation is a tax paid forever -- MEASURED at +58 ms/call (+14%).
 # The command is emitted LAST and read with `cat`, because a command may be
@@ -26,6 +27,12 @@ BACKGROUND=${BACKGROUND%$'\r'}
 [ -z "$COMMAND" ] && exit 0
 
 deny() { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'; exit 0; }
+# advise <reason> -- ALLOW, and explain to CLAUDE why the command is questionable.
+# The user's attention is the scarce resource: a prompt spends theirs, a deny or an
+# advisory spends mine. Anything that is merely MY hygiene must never reach them.
+# MEASURED 2026-08-29: fixing the stdin defect brought five inert hooks to life at
+# once and turned bypass-permissions mode into manual mode.
+advise() { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'; exit 0; }
 ask()  { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}'; exit 0; }
 
 nCMD="$(x4_norm "$COMMAND")"
@@ -77,20 +84,22 @@ fi
 # === CONFIRM — mv/cp into the game or profile dirs ===
 printf '%s' "$COMMAND" | grep -qiE '^[[:space:]]*(mv|cp|move|copy)\b' \
   && { has "$X4_GAME" || has "$X4_PROFILE" || printf '%s' "$nCMD" | grep -qE 'x4 foundations|egosoft/x4'; } \
-  && ask "Moving/copying into game or profile directory — confirm: $COMMAND"
+  && advise "Copying into a game or profile directory. That is the documented DEPLOY path, so it is allowed -- but use dev/_tools/deploy.py rather than a hand-rolled cp: it refuses a wrong destination, deletes orphans one named file at a time, and re-reads the destination to prove every file is byte-identical."
 
 # === CONFIRM — output redirect into game or profile dirs ===
 printf '%s' "$COMMAND" | grep -qE '>' \
   && { has "$X4_GAME" || has "$X4_PROFILE" || printf '%s' "$nCMD" | grep -qE 'x4 foundations|egosoft/x4'; } \
-  && ask "Redirecting output into game/profile directory — confirm: $COMMAND"
+  && advise "Redirecting output into a game or profile directory. Allowed, but a truncating > has no backup: if the target is a durable record, write to a temp file and move it into place."
 
 # === CONFIRM — sed -i on game or profile files ===
 printf '%s' "$COMMAND" | grep -qE 'sed[[:space:]]+-i' \
   && { has "$X4_GAME" || has "$X4_PROFILE" || printf '%s' "$nCMD" | grep -qE 'x4 foundations|egosoft/x4'; } \
-  && ask "In-place edit in game/profile directory — confirm: $COMMAND"
+  && deny "In-place edit in game/profile directory — confirm: $COMMAND"
 
 # === CONFIRM — direct reference to .cat/.dat archives ===
-printf '%s' "$COMMAND" | grep -qiE '\.(cat|dat)\b' && ask "Command references archive files (.cat/.dat) — confirm: $COMMAND"
+# DROPPED 2026-08-29: this fired on any command whose TEXT mentioned a .cat -- including
+# an `echo` that merely discussed one. Writing a .cat is already covered by 
+# protect-files.sh, which checks the actual TARGET PATH rather than the command text.
 
 
 # =============================================================================
@@ -110,7 +119,7 @@ printf '%s' "$COMMAND" | grep -qiE '\.(cat|dat)\b' && ask "Command references ar
 # Deliberately ASK, not deny: with a worktree per session `-A` is safe again, and
 # there are legitimate uses (an initial import, a scripted scrub). The prompt is
 # there to make you look at `git status` first, not to forbid the flag.
-echo "$COMMAND" | grep -qE '(^|[;&|]\s*)git\s+add\s+(-A\b|--all\b|\.\s*$|\.\s*[;&|])' && ask "GIT ADD -A / . IN A SHARED WORKSPACE: this stages EVERY untracked file, including another session's work-in-progress. MEASURED 2026-08-27: 4 untracked files from a concurrent session sat in this tree. Prefer explicit paths (git add <file> ...). Proceed?"
+echo "$COMMAND" | grep -qE '(^|[;&|]\s*)git\s+add\s+(-A\b|--all\b|\.\s*$|\.\s*[;&|])' && deny "GIT ADD -A / . IN A SHARED WORKSPACE: this stages EVERY untracked file, including another session's work-in-progress. MEASURED 2026-08-27: 4 untracked files from a concurrent session sat in this tree. Prefer explicit paths (git add <file> ...). Proceed?"
 
 
 # === DURABLE RECORDS — a truncating write via Bash has NO backup and NO guard ===
@@ -137,7 +146,7 @@ fi
 # path is usually in a variable, so it will not appear inside open() itself.
 if echo "$COMMAND" | grep -qE "$DURABLE" \
    && echo "$COMMAND" | grep -qE "open\([^)]*,[[:space:]]*[\"']w[\"']"; then
-  ask "python open(...,'w') in a command that names a durable record (memory / KNOWLEDGEBASE / CLAUDE.md / BLIND-SPOTS).
+  deny "python open(...,'w') in a command that names a durable record (memory / KNOWLEDGEBASE / CLAUDE.md / BLIND-SPOTS).
 open() TRUNCATES AT OPEN — if the write then raises, the file is left EMPTY. This wiped a memory file on 2026-08-22.
 Prefer the Edit/Write tools (backed up), or write to a temp and rename. If you proceed, VERIFY the size afterwards.
 Command: $COMMAND"
@@ -177,7 +186,7 @@ fi
 if echo "$COMMAND" | grep -qiE '\b(grep|rg|ag|findstr|Select-String)\b' \
    && { has "$X4_PROFILE" || echo "$COMMAND" | grep -q "X4_PROFILE"; } && echo "$COMMAND" | grep -qi "content" \
    && ! echo "$COMMAND" | grep -qE 'ws_[0-9]{4,}'; then
-  ask "CHECK THE INSTRUMENT: the profile content.xml is keyed by MANIFEST ID, not by mod name.
+  deny "CHECK THE INSTRUMENT: the profile content.xml is keyed by MANIFEST ID, not by mod name.
 A name-shaped search finding nothing proves NOTHING -- it is the wrong query.
 MEASURED: 60 of 123 on-disk mods match by manifest id, only 9 by folder name.
 Real case (2026-08-23): 'grep -i xspvro' -> 0 hits, but the entry is 'ws_3691358137'.
@@ -234,7 +243,7 @@ _PB_NOHD=$(printf '%s\n' "$COMMAND" | awk '
 if printf '%s' "$_PB_NOHD" | grep -qE '\$\?' \
    && printf '%s' "$_PB_NOHD" | sed "s/'[^']*'//g; s/\"[^\"]*\"//g" \
       | grep -qE '[^|]\|[^|]'; then
-  ask "\$? AFTER A PIPELINE reports the LAST command's exit code, not the one you mean.
+  deny "\$? AFTER A PIPELINE reports the LAST command's exit code, not the one you mean.
   cmd | head; echo \$?      -> that is HEAD's exit code
 Measured 2026-08-22: this reported a stale-index refusal (real exit 5) as 'exit 0',
 and it was nearly written up as a tool defect. See CLAUDE.md #22.
@@ -251,7 +260,7 @@ fi
 # read back were a parallel session's, 4 hours stale, and were nearly reported
 # as this session's results. Reads and cleanup are fine; only writes fire.
 if echo "$COMMAND" | grep -qE '(>|>>|-o|--output[= ])[[:space:]]*"?/tmp/'; then
-  ask "WRITING MEASUREMENT OUTPUT TO /tmp — it is shared across concurrent sessions.
+  deny "WRITING MEASUREMENT OUTPUT TO /tmp — it is shared across concurrent sessions.
 A parallel session's stale files were once nearly reported as this session's results.
 Use the session scratchpad instead (see the 'Scratchpad Directory' section of the
 system prompt), and never glob a pattern that can match another run's files.
@@ -313,7 +322,7 @@ case "$COMMAND" in
 esac
 if [ "$LONGJOB" = 1 ] && [ "$BACKGROUND" != "true" ] \
    && echo "$COMMAND" | grep -qE '\b(uv run|python|python3|bash)\b'; then
-  ask "LONG JOB IN THE FOREGROUND — this is a known multi-minute command and the Bash
+  deny "LONG JOB IN THE FOREGROUND — this is a known multi-minute command and the Bash
 tool hard-caps a foreground call at 600000ms (10 min).
 MEASURED: corpus_sweep ~2100s · perf_guard ~600s+ · build-effective.sh ~100-200s.
 Prefer  run_in_background: true  — it has no cap and re-invokes you on completion.

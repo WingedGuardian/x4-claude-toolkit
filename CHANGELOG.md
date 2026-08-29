@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+### Fixed — ⚠ every hook was INERT: they read stdin in a way that returns nothing
+
+**If you have been relying on these hooks, they have not been protecting you.** All five read their
+JSON payload with `INPUT=$(cat /dev/stdin)`. In the Claude Code hook environment that returns **zero
+bytes**; a bare `cat` returns the payload. Measured across seven consecutive probes: 0 bytes versus
+641–2,840 bytes, on both PreToolUse and PostToolUse.
+
+The failure is invisible by design. A hook that reads nothing falls through its first guard clause
+and exits 0 — which is byte-identical to deciding the command is fine. No error, no log line, no
+behavioural difference from a hook that looked and approved.
+
+So `protect-bash.sh`, `protect-files.sh`, `backup-before-edit.sh`, `search-scope.sh` and
+`x4validate-on-edit.sh` were all doing nothing.
+
+**The test suite was green throughout**, because it pipes stdin explicitly and `/dev/stdin` resolves
+fine that way. Independent confirmation on the reference machine: no `AUDIT_LOG.txt` existed at all,
+and the only one found anywhere contained 17 entries — every one of them the suite's own synthetic
+`/tmp` fixture. Not a single real edit in five weeks.
+
+Fixed with one shared `x4_hook_input()` in `_x4-env.sh`. The suite gained probes that **close** stdin
+rather than piping it — reproducing the production condition a pipe never can — plus a static rule
+that fails if any hook reads `/dev/stdin` again.
+
+### Added — a hook that receives no input now says so instead of falling silent
+
+The read method was only the proximate cause. The real defect: **a hook could not distinguish "I
+received no input" from "the input said this is fine."** Silence was consent, which is exactly how
+this hid for weeks. `x4_require_input` closes that — a guard that cannot see its input now says so.
+
+### Changed — hooks now advise or deny CLAUDE rather than prompting YOU
+
+Bringing five never-exercised guards to life at once made the problem obvious: **17 rules could
+interrupt the user**, most of them about nothing more than the assistant's own command hygiene.
+
+Your attention is the scarce resource. A prompt spends yours; a deny or an advisory spends the
+assistant's — it reads the reason, fixes the command and retries, and you never see it. So:
+
+| verdict | when |
+|---|---|
+| **deny** | there is a correct alternative the assistant can simply take — `git add -A`, `$?` after a pipeline, a long job in the foreground, searching the profile by name |
+| **advise** | no alternative to offer, just a caveat worth knowing — e.g. a search that can only return a partial answer |
+| **ask** | genuinely yours to decide: editing `content.xml`, editing profile files, deleting inside the game directory |
+
+**17 user-facing rules → 3.** One rule was dropped entirely as too broad: it fired on any command
+whose *text* mentioned a `.cat`, including an `echo` that merely discussed one. Writing a `.cat` is
+still blocked by `protect-files.sh`, which checks the actual target path.
+
+⚠ **Note for anyone who had these hooks installed:** no rule in them had ever run in production, so
+none of their false-positive rates were known. One surfaced within two commands of the fix — the
+`rm` rule matched *"an rm appears anywhere"* and *"the game path appears anywhere"* independently,
+so deleting a temp file was blocked because the command mentioned the game directory elsewhere.
+
 ### Added — a search under the game's `extensions/` folder now warns that the answer is partial
 
 Grep and Glob read **loose files only**. X4 mods ship as packed `.cat` archives, loose XML, or

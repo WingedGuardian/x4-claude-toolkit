@@ -26,7 +26,15 @@ decide(){
   local exp="$1" hook="$2" json="$3" label="$4" out got
   out=$(printf '%s' "$json" | bash "$HOOKS/$hook" 2>/dev/null)
   if [ -z "$out" ]; then got="allow"
-  else got=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null); fi
+  else
+    got=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null)
+    # An advisory is an allow that CARRIES A REASON FOR CLAUDE. Distinguishing the two
+    # matters: "allow" and "advise" are the same decision and a different intent, and a
+    # hook that silently stopped advising would otherwise still read as passing.
+    if [ "$got" = "allow" ]        && [ -n "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null)" ]; then
+      got="advise"
+    fi
+  fi
   [ "$got" = "$exp" ] && ok "$label ($got)" || no "$label — expected $exp, got $got"
 }
 fj(){ printf '{"tool_name":"Edit","tool_input":{"file_path":"%s"}}' "$1"; }
@@ -99,8 +107,8 @@ mkdir -p "$GAME/extensions/packedmod" "$GAME/extensions/loosemod/md" \n         
 : > "$GAME/extensions/packedmod/readme.txt"
 : > "$GAME/extensions/loosemod/md/a.xml"
 export X4_EXTENSIONS="$GAME/extensions" X4_GAME="$GAME"
-decide ask   search-scope.sh "$(pj "$GAME/extensions")"              "search rooted at extensions/"
-decide ask   search-scope.sh "$(pj "$GAME/extensions/packedmod")"    "search inside a .cat-shipping mod"
+decide advise  search-scope.sh "$(pj "$GAME/extensions")"              "search rooted at extensions/"
+decide advise  search-scope.sh "$(pj "$GAME/extensions/packedmod")"    "search inside a .cat-shipping mod"
 # The must-NOT-fire half is not decoration: when this hook was first written a
 # collapsed backslash made it inert, every must-fire probe went red and every
 # must-NOT-fire probe went green. Silence is indistinguishable from allow, so the
@@ -114,7 +122,7 @@ echo; echo "=== protect-bash.sh ==="
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_GAME'")"      "rm the game directory"
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_REFERENCE'")" "rm reference/"
 decide ask   protect-bash.sh "$(cj "rm -rf '$X4_MODS/other'")" "rm inside mod sources"
-decide ask   protect-bash.sh "$(cj "ls '$X4_GAME/01.cat'")"   "command naming a .cat"
+decide allow  protect-bash.sh "$(cj "ls '$X4_GAME/01.cat'")"   "command naming a .cat"   # DROPPED: naming a .cat is harmless; protect-files.sh checks the TARGET
 decide allow protect-bash.sh "$(cj "ls -la .")"               "harmless ls"
 decide allow protect-bash.sh "$(cj "git status")"             "git status"
 
@@ -148,7 +156,36 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=41
+EXPECT=46
+
+# =============================================================================
+# THE STDIN CONTRACT -- a hook that receives NOTHING must not read as ALLOW
+# =============================================================================
+# MEASURED 2026-08-29, and it had made every hook here inert: `cat /dev/stdin`
+# returns ZERO BYTES in the Claude Code hook environment while a bare `cat`
+# returns the payload (7 of 7 probes: 0 vs 641-2840 bytes). The failure is
+# invisible by construction -- a hook that reads nothing falls through its first
+# guard clause and exits 0, which is byte-identical to deciding "this is fine".
+#
+# THIS SUITE PASSED THROUGHOUT, because it pipes stdin explicitly and /dev/stdin
+# resolves fine that way. So the probes below deliberately close stdin instead:
+# they reproduce the PRODUCTION condition, which piping never can.
+echo; echo "=== stdin contract ==="
+for h in protect-bash.sh protect-files.sh search-scope.sh backup-before-edit.sh; do
+  out=$(bash "$HOOKS/$h" </dev/null 2>/dev/null)
+  got=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null)
+  [ -z "$got" ] && got="allow"
+  if [ "$got" = "ask" ]; then ok "$h asks when it received no input"
+  else no "$h -- empty stdin read as '$got'; silence IS allow"; fi
+done
+# The static half. A runtime probe only covers the hooks it lists; this covers any
+# hook, including one added later, and it is the cheaper of the two to keep true.
+if grep -nE '^[^#]*cat /dev/stdin' "$HOOKS"/*.sh >/dev/null 2>&1; then
+  no "a hook reads 'cat /dev/stdin' again -- that returns EMPTY in the real hook environment"
+else
+  ok "no hook reads 'cat /dev/stdin'"
+fi
+
 echo "RESULT: $pass passed, $fail failed"
 if [ $((pass + fail)) -ne "$EXPECT" ]; then
   echo "FAIL: $((pass + fail)) probes ran, expected $EXPECT -- a probe was DROPPED, not passed."

@@ -5,7 +5,8 @@ JQ="${JQ:-jq}"
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$HOOK_DIR/_x4-env.sh"
 
-INPUT=$(cat /dev/stdin)
+INPUT=$(x4_hook_input)
+x4_require_input "$INPUT" "X4 BACKUP INERT: this hook received NO INPUT, so NO BACKUP was taken and nothing was written to the audit log. Confirm only if you accept this edit being unrecoverable."
 TOOL_NAME=$(echo "$INPUT" | "$JQ" -r '.tool_name // "unknown"')
 FILE_PATH=$(echo "$INPUT" | "$JQ" -r '.tool_input.file_path // empty')
 

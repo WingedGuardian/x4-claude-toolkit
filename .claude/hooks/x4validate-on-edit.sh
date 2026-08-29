@@ -7,7 +7,10 @@ HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$HOOK_DIR/_x4-env.sh"
 X4V="${X4V:-$X4_TOOLKIT/tools/x4validate}"
 
-INPUT=$(cat /dev/stdin)
+INPUT=$(x4_hook_input)
+# Advisory only, so an absent payload must NOT prompt -- it exits below.
+# Recurrence is caught statically by test-hooks.sh, which fails if any
+# hook reads /dev/stdin again.
 FP=$(echo "$INPUT" | "$JQ" -r '.tool_input.file_path // empty')
 [ -z "$FP" ] && exit 0
 

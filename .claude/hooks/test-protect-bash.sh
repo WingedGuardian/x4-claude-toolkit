@@ -67,13 +67,16 @@ probe_rt() {  # want_decision  label  command  timeout  run_in_background
 bash -n "$HOOK" || { echo "FATAL: $HOOK does not parse"; exit 1; }
 
 echo "--- guards must FIRE ---"
-probe ask  "pipe-then-exitcode"   'uv run python x.py 2>&1 | tail -5; echo "exit=$?"'
-probe ask  "pipe-plain-dollarq"   'cmd | head -3 && echo $?'
-probe ask  "tmp-write"            'uv run python gates/g.py > /tmp/g.txt 2>&1'
+probe deny  "pipe-then-exitcode"   'uv run python x.py 2>&1 | tail -5; echo "exit=$?"'
+probe deny  "pipe-plain-dollarq"   'cmd | head -3 && echo $?'
+probe deny  "tmp-write"            'uv run python gates/g.py > /tmp/g.txt 2>&1'
 need "$X4_TOOLKIT" "unscoped-search" X4_TOOLKIT && probe deny "unscoped-search"      "grep -rn foo \"$X4_TOOLKIT\""
 probe deny "durable-truncate"     'echo hi > KNOWLEDGEBASE.md'
 need "$X4_REFERENCE" "ref-recursive-grep" X4_REFERENCE && probe deny "ref-recursive-grep"   "grep -rn x \"$X4_REFERENCE\""
-probe ask  "cat-dat-reference"    'XRCatTool -in 01.cat -out ref'
+# DROPPED 2026-08-29: merely NAMING a .cat is harmless -- this fired on an `echo`
+# that discussed one. Writing a .cat is covered by protect-files.sh, which
+# checks the TARGET PATH. Probe kept and inverted so a re-add is not silent.
+probe allow  "cat-dat-reference"    'XRCatTool -in 01.cat -out ref'
 need "$X4_MODS" "rm-in-modding" X4_MODS && probe ask  "rm-in-modding"        "rm -rf \"$X4_MODS/dev/foo\""
 
 # --- runtime rules: the harness caps a foreground call at 600000 ms ---------
@@ -81,8 +84,8 @@ need "$X4_MODS" "rm-in-modding" X4_MODS && probe ask  "rm-in-modding"        "rm
 # and assuming it raised the ceiling. It never did; the job was killed at 10:00.
 probe_rt deny  "timeout-over-cap"      'echo hi' 900000 false
 probe_rt deny  "timeout-just-over"     'echo hi' 600001 false
-probe_rt ask   "longjob-foreground"    'uv run python gates/corpus_sweep.py' 0 false
-probe_rt ask   "longjob-x4eff-build"   'uv run x4effective build' 0 false
+probe_rt deny   "longjob-foreground"    'uv run python gates/corpus_sweep.py' 0 false
+probe_rt deny   "longjob-x4eff-build"   'uv run x4effective build' 0 false
 
 echo "--- guards must STAY QUIET (the important half) ---"
 need "$X4_TOOLKIT" "scoped-search" X4_TOOLKIT && probe allow "scoped-search"       "grep -rn foo \"$X4_TOOLKIT/tools/x4validate\""
@@ -108,10 +111,10 @@ probe_rt allow "longjob-cat-the-file"  'cat gates/perf_guard.py' 0 false
 
 echo
 echo "--- git add -A / . in a shared workspace (must ASK) ---"
-probe ask   "git-add-A"          'git add -A'
-probe ask   "git-add-all-long"   'git add --all'
-probe ask   "git-add-dot"        'cd /tmp/repo && git add .'
-probe ask   "git-add-A-chained"  'cd x && git add -A && git commit -m x'
+probe deny   "git-add-A"          'git add -A'
+probe deny   "git-add-all-long"   'git add --all'
+probe deny   "git-add-dot"        'cd /tmp/repo && git add .'
+probe deny   "git-add-A-chained"  'cd x && git add -A && git commit -m x'
 
 echo "--- explicit paths and lookalikes (must NOT fire) ---"
 probe allow "git-add-explicit"   'git add tests/test_one.py x4validate/_check.py'
@@ -122,9 +125,9 @@ probe allow "git-add-dotdir"     'git add .claude/hooks/protect-bash.sh'
 probe allow "not-git-add"        'uv add --dev pytest'
 
 echo "--- profile content.xml searched by NAME (must ASK) ---"
-need "$X4_PROFILE" "profile-grep-by-name" X4_PROFILE && probe ask   "profile-grep-by-name"   "grep -i somemod \"$X4_PROFILE/content.xml\""
-need "$X4_PROFILE" "profile-rg-by-name" X4_PROFILE && probe ask   "profile-rg-by-name"     "rg somemod \"$X4_PROFILE/content.xml\""
-probe ask   "profile-grep-envvar"    'grep -n MoreRooms "$X4_PROFILE/content.xml"'
+need "$X4_PROFILE" "profile-grep-by-name" X4_PROFILE && probe deny   "profile-grep-by-name"   "grep -i somemod \"$X4_PROFILE/content.xml\""
+need "$X4_PROFILE" "profile-rg-by-name" X4_PROFILE && probe deny   "profile-rg-by-name"     "rg somemod \"$X4_PROFILE/content.xml\""
+probe deny   "profile-grep-envvar"    'grep -n MoreRooms "$X4_PROFILE/content.xml"'
 
 echo "--- ...but these must NOT fire (the important half) ---"
 # already holding the manifest id -- that is the CORRECT query, do not nag

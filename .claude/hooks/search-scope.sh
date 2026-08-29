@@ -22,9 +22,13 @@ JQ="${JQ:-jq}"
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$HOOK_DIR/_x4-env.sh"
 
-ask() { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}'; exit 0; }
+# ADVISE, never ask. A partial-answer warning is about MY instrument choice, so it
+# must cost me a note and the user nothing. Renamed from ask() 2026-08-29, when
+# fixing the stdin defect turned five newly-live hooks into a prompt storm.
+advise() { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'; exit 0; }
 
-INPUT=$(cat /dev/stdin)
+INPUT=$(x4_hook_input)
+x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it checked nothing. Allowing silently is how five hooks sat dead for weeks while their suites passed. Confirm only if you know why the payload is missing."
 FP=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.path // empty' 2>/dev/null)
 [ -z "$FP" ] && exit 0
 [ -z "${X4_EXTENSIONS:-}" ] && exit 0
@@ -49,7 +53,7 @@ F="${FP//"$BS"//}"
 [ -d "$F" ] || exit 0            # a single file is not a survey
 
 if [ "$nFP" = "$nEXT" ]; then
-  ask "PARTIAL ANSWER: a search rooted at the whole extensions/ folder reads LOOSE files only. Mods that ship .cat archives are invisible to it, so a 'no matches' here means 'not found in the loose subset', NOT 'absent'. Use _scan.iter_corpus_xml (packed-inclusive) for a corpus sweep, or confirm you want the loose-only view."
+  advise "PARTIAL ANSWER: a search rooted at the whole extensions/ folder reads LOOSE files only. Mods that ship .cat archives are invisible to it, so a 'no matches' here means 'not found in the loose subset', NOT 'absent'. Use _scan.iter_corpus_xml (packed-inclusive) for a corpus sweep, or confirm you want the loose-only view."
 fi
 
 # Which mod folder is this inside? First path component under extensions/.
@@ -62,7 +66,7 @@ MOD="${REL%%/*}"
 EXTDIR="${X4_EXTENSIONS//"$BS"//}"
 for c in "$EXTDIR/$MOD"/*.cat; do
   if [ -e "$c" ]; then
-    ask "PARTIAL ANSWER: '$MOD' ships packed .cat archives as well as loose files, and this search reads LOOSE files only. A zero result here is 'not in the loose subset', NOT 'absent'. Use _scan.iter_mod_xml_bytes / _scan.iter_corpus_xml to include packed content, or confirm you want the loose-only view."
+    advise "PARTIAL ANSWER: '$MOD' ships packed .cat archives as well as loose files, and this search reads LOOSE files only. A zero result here is 'not in the loose subset', NOT 'absent'. Use _scan.iter_mod_xml_bytes / _scan.iter_corpus_xml to include packed content, or confirm you want the loose-only view."
   fi
 done
 exit 0

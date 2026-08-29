@@ -8,7 +8,8 @@ JQ="${JQ:-jq}"
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$HOOK_DIR/_x4-env.sh"
 
-INPUT=$(cat /dev/stdin)
+INPUT=$(x4_hook_input)
+x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it checked nothing. Allowing silently is how five hooks sat dead for weeks while their suites passed. Confirm only if you know why the payload is missing."
 FILE_PATH=$(echo "$INPUT" | "$JQ" -r '.tool_input.file_path // empty')
 [ -z "$FILE_PATH" ] && exit 0
 

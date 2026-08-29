@@ -57,3 +57,32 @@ x4_under() {
   local f d; f="$(x4_canon "$1")"; d="$(x4_canon "$2")"; d="${d%/}"
   case "$f" in "$d"/*|"$d") return 0;; *) return 1;; esac
 }
+
+# --- hook payload -------------------------------------------------------------
+# Read the hook's JSON payload from stdin.
+#
+# ⚠ MEASURED 2026-08-29, and it had made EVERY HOOK HERE INERT: `cat /dev/stdin`
+# returns ZERO BYTES in the Claude Code hook environment, while a bare `cat`
+# returns the payload. Seven consecutive probes: 0 bytes via /dev/stdin,
+# 641-2840 bytes via bare cat, PreToolUse and PostToolUse alike.
+#
+# All five hooks used the former. The failure is invisible by construction: a hook
+# that reads nothing falls through its first guard clause and exits 0, which is
+# byte-identical to deciding "this is fine". Independent confirmation: no
+# AUDIT_LOG.txt existed anywhere, and the only one that did contained 17 entries,
+# all of them the test suite's synthetic /tmp fixture -- not one real edit in five
+# weeks, while CLAUDE.md stated every edit was backed up.
+#
+# The suites passed throughout, because a suite pipes stdin explicitly and
+# /dev/stdin resolves fine there. Green in the harness, dead in production.
+x4_hook_input() { cat; }
+
+# x4_require_input <payload> <reason> [event]
+# A guard that cannot see its input cannot vouch for it, so it must not stay
+# silent -- silence IS allow, and that is exactly how the defect above survived.
+x4_require_input() {
+  [ -n "$1" ] && return 0
+  "${JQ:-jq}" -n --arg r "$2" --arg e "${3:-PreToolUse}" \
+    '{hookSpecificOutput:{hookEventName:$e,permissionDecision:"ask",permissionDecisionReason:$r}}'
+  exit 0
+}
