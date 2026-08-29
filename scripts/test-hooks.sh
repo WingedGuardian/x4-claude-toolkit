@@ -122,6 +122,17 @@ echo; echo "=== protect-bash.sh ==="
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_GAME'")"      "rm the game directory"
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_REFERENCE'")" "rm reference/"
 decide ask   protect-bash.sh "$(cj "rm -rf '$X4_MODS/other'")" "rm inside mod sources"
+# The FALSE POSITIVES these rules produced the moment they first ran (2026-08-29).
+# Until this week no rule in protect-bash.sh had ever executed in production, so
+# none of their false-positive rates were known. The delete rules tested 'an rm
+# appears SOMEWHERE' AND 'the game path appears SOMEWHERE' as two independent
+# checks over the whole command -- so deleting a temp file was blocked because the
+# command also mentioned the game directory in a variable. They now test only the
+# segments that actually invoke a delete.
+decide allow protect-bash.sh "$(cj "L='$X4_GAME/.claude'; rm -f /tmp/scratch.log")" "temp delete, game dir in a variable"
+decide allow protect-bash.sh "$(cj "echo 'working on $X4_GAME'; rm -f /tmp/x")"      "temp delete, game dir in an echo"
+decide allow protect-bash.sh "$(cj "ls -la '$X4_GAME/extensions'")"                 "no delete at all, game dir named"
+decide deny  protect-bash.sh "$(cj "cd /tmp && rm -rf '$X4_GAME/extensions'")"     "delete of the game dir, chained"
 decide allow  protect-bash.sh "$(cj "ls '$X4_GAME/01.cat'")"   "command naming a .cat"   # DROPPED: naming a .cat is harmless; protect-files.sh checks the TARGET
 decide allow protect-bash.sh "$(cj "ls -la .")"               "harmless ls"
 decide allow protect-bash.sh "$(cj "git status")"             "git status"
@@ -156,7 +167,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=46
+EXPECT=50
 
 # =============================================================================
 # THE STDIN CONTRACT -- a hook that receives NOTHING must not read as ALLOW

@@ -63,11 +63,28 @@ has_root() {
 
 is_rm() { printf '%s' "$COMMAND" | grep -qE '(^|[;&|[:space:]])rm([[:space:]]|$)'; }
 
+# Which SEGMENTS actually invoke a delete. `is_rm` only says the token appears
+# SOMEWHERE, and the old rules paired that with "the game path appears SOMEWHERE" --
+# two independent tests over the whole command string, joined by AND.
+#
+# MEASURED 2026-08-29, twice within minutes of these hooks first executing: a command
+# deleting a TEMP file was blocked because it also assigned the game directory to a
+# shell variable. Then a command writing THIS FIX was blocked, because its comment
+# contained an example. That is a false positive, and until this week no rule in this
+# file had ever run in production -- so nothing had ever exercised any of them.
+#
+# Splitting on the command separators and testing only the delete-bearing segments
+# keeps the guard and removes that class. It stays deliberately conservative: a
+# segment naming the path anywhere still counts, because a variable target cannot be
+# resolved from the command text alone.
+rm_segments() { printf '%s' "$nCMD" | tr ';&|' '\n\n\n' | grep -E '(^|[[:space:]])rm([[:space:]]|$)'; }
+rm_targets()  { [ -n "$1" ] && rm_segments | grep -qF "$(x4_norm "$1")"; }
+
 # === HARD BLOCK — delete the game installation ===
-{ is_rm && { has "$X4_GAME" || printf '%s' "$nCMD" | grep -qF 'x4 foundations'; }; } && deny "BLOCKED: cannot delete the X4 game installation directory."
+{ is_rm && { rm_targets "$X4_GAME" || rm_segments | grep -qF 'x4 foundations'; }; } && deny "BLOCKED: cannot delete the X4 game installation directory."
 
 # === HARD BLOCK — delete the reference folder (read-only base game data) ===
-{ is_rm && has "$X4_REFERENCE"; } && deny "BLOCKED: cannot delete reference/ — it is the read-only unpacked base game data (re-unpack only via bin/unpack-reference.sh)."
+{ is_rm && rm_targets "$X4_REFERENCE"; } && deny "BLOCKED: reference/ is the read-only unpacked base game data (re-unpack only via bin/unpack-reference.sh)."
 
 # === HARD BLOCK — re-unpack into a locked reference/ ===
 # Sentinel-gated: once reference/.unpacked-and-locked exists, block accidental re-unpacks.
@@ -77,8 +94,8 @@ if printf '%s' "$COMMAND" | grep -qiE 'xrcat|XRCatTool' && printf '%s' "$nCMD" |
 fi
 
 # === CONFIRM — rm targeting the game, profile, reference, mods, or toolkit ===
-{ is_rm && { has "$X4_GAME" || has "$X4_PROFILE" || has "$X4_MODS" || has "$X4_TOOLKIT" \
-    || printf '%s' "$nCMD" | grep -qE 'x4 foundations|egosoft/x4'; }; } \
+{ is_rm && { rm_targets "$X4_GAME" || rm_targets "$X4_PROFILE" || rm_targets "$X4_MODS" || rm_targets "$X4_TOOLKIT" \
+    || rm_segments | grep -qE 'x4 foundations|egosoft/x4'; }; } \
   && ask "Deleting files in an X4 directory — confirm: $COMMAND"
 
 # === CONFIRM — mv/cp into the game or profile dirs ===
