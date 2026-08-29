@@ -79,6 +79,16 @@ jobs:
       # --frozen fails if uv.lock has drifted from pyproject.toml instead of silently
       # resolving something newer. A CI run that quietly installs different versions than
       # a user gets is not testing what ships.
+      # The hook regression suite. A PreToolUse hook sits in front of every Bash
+      # call, so its two failure modes are both expensive: over-block makes
+      # legitimate work impossible, under-block makes the guard decorative while
+      # you still trust it. Until 2026-08-29 the shipped hooks had NO test at all.
+      # Path-dependent probes SKIP loudly here (no X4 install on a runner) and the
+      # tally names the skip count, so a green cannot mean "nothing was exercised".
+      - name: Hook regression suite
+        shell: bash
+        run: bash .claude/hooks/test-protect-bash.sh
+
       - name: Run the suite with NO game installed
         working-directory: tools/x4validate
         run: uv run --frozen python -m pytest -q
