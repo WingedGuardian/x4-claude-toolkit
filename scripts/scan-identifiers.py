@@ -122,9 +122,58 @@ def forbidden_tokens() -> tuple[list[str], list[str]]:
     return sorted(banned), notes
 
 
+def population() -> tuple[list[str], list[str]]:
+    """(tracked, untracked). Both ship; only one is in `git ls-files`.
+
+    MEASURED 2026-08-29: this scanner reported "scanning 200 tracked file(s) ...
+    clean" over a port whose NEW file was untracked -- so the file most likely to
+    carry a leak was the one file never examined. `ls-files` reports the INDEX,
+    and your newest work is by definition not in it yet.
+
+    In CI this changes nothing: `actions/checkout` produces a tree with no
+    untracked files, so the second list is empty. It is the LOCAL pre-push run
+    that this fixes, which is exactly where the miss happened.
+
+    `--exclude-standard` keeps ignored build output out -- that is not work.
+    """
+    tracked = [f for f in _git("ls-files").splitlines() if f]
+    untracked = [f for f in _git("ls-files", "--others", "--exclude-standard")
+                 .splitlines() if f]
+    return tracked, untracked
+
+
+def merged_population(tracked: list[str], untracked: list[str]) -> list[str]:
+    """Pure, so the selftest can prove untracked files are really included."""
+    return sorted(set(tracked) | set(untracked))
+
+
+def selftest() -> int:
+    """A guard that cannot be shown to fail proves nothing. One twin per clause."""
+    checks = [
+        ("a tracked file is scanned",
+         merged_population(["a.py"], []) == ["a.py"]),
+        ("an UNTRACKED file is scanned too -- the whole point",
+         merged_population(["a.py"], ["new.py"]) == ["a.py", "new.py"]),
+        ("a file that is both is counted once",
+         merged_population(["a.py"], ["a.py"]) == ["a.py"]),
+        ("an untracked file ALONE still forms a population",
+         merged_population([], ["new.py"]) == ["new.py"]),
+        ("an empty population stays empty, so the caller can refuse",
+         merged_population([], []) == []),
+    ]
+    bad = [n for n, ok in checks if not ok]
+    for n, ok in checks:
+        print(f"  {'PASS' if ok else 'FAIL'}  {n}")
+    print("")
+    print(f"  selftest: {len(checks) - len(bad)}/{len(checks)} passed")
+    return 1 if bad else 0
+
+
 def main() -> int:
+    if "--selftest" in sys.argv:
+        return selftest()
     try:
-        tracked = [f for f in _git("ls-files").splitlines() if f]
+        tracked, untracked = population()
         banned, notes = forbidden_tokens()
     except RuntimeError as exc:
         print(f"::error::cannot run the identifier scan: {exc}")
@@ -133,8 +182,9 @@ def main() -> int:
     for n in notes:
         print(f"  {n}")
 
-    if not tracked:
-        print("::error::git ls-files returned nothing — the scan population is "
+    files = merged_population(tracked, untracked)
+    if not files:
+        print("::error::git reported no files at all — the scan population is "
               "empty, so a clean result would prove nothing.")
         return 2
 
@@ -142,8 +192,9 @@ def main() -> int:
     # that passes without checking anything. Say so rather than report success:
     # this workflow must use actions/checkout with fetch-depth: 0.
     depth = len(_git("log", "--format=%H").splitlines())
-    print(f"  scanning {len(tracked)} tracked file(s) against {len(banned)} "
-          f"identifier(s), derived from {depth} commit(s)")
+    print(f"  scanning {len(tracked)} tracked + {len(untracked)} untracked "
+          f"file(s) against {len(banned)} identifier(s), derived from "
+          f"{depth} commit(s)")
     if depth <= 1 and not os.environ.get("EXTRA_FORBIDDEN", "").strip():
         print("::error::only one commit is visible, so the identifier list is "
               "derived from almost nothing and this scan proves nothing. "
@@ -155,7 +206,7 @@ def main() -> int:
 
     lowered = [t.lower() for t in banned]
     found = 0
-    for rel in tracked:
+    for rel in files:
         path = Path(rel)
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -173,7 +224,8 @@ def main() -> int:
     if found:
         print(f"::error::{found} line(s) contain a contributor identifier.")
         return 1
-    print("clean — no contributor identifiers in tracked file contents.")
+    print(f"clean — no contributor identifiers in {len(files)} file(s) "
+          f"({len(untracked)} of them not yet tracked).")
     return 0
 
 

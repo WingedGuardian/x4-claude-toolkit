@@ -163,6 +163,13 @@ jobs:
       # EXTRA_FORBIDDEN is optional: set the repo secret SCRUB_EXTRA to a
       # newline-separated list to ban strings git does not know about (an old
       # handle, a private folder name). Absent, the derived list stands alone.
+      # Prove the scanner can still fail before trusting it to pass. Its own
+      # population was wrong until 2026-08-29: it read `git ls-files`, which is
+      # the INDEX, so a NEW file was structurally invisible to it. In CI that
+      # list is always empty; the selftest is what keeps the merge honest.
+      - name: Prove the identifier scanner can fail
+        run: python3 scripts/scan-identifiers.py --selftest
+
       - name: Scan for contributor identifiers
         env:
           EXTRA_FORBIDDEN: ${{ secrets.SCRUB_EXTRA }}

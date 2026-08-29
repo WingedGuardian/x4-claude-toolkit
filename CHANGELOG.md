@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Fixed — the identifier scan could not see your newest file
+
+`scripts/scan-identifiers.py` built its population from `git ls-files`, which reports the **index**.
+A file you have created but not yet staged is therefore invisible to it by construction — and that
+is the file most likely to carry something you have not thought about. It printed *"scanning 200
+tracked file(s) ... clean"* over exactly such a file; staging it took the population to 201 and the
+scan then meant something.
+
+Both halves are now scanned, and the population line names both, so a zero is visible rather than
+implied. Ignored build output stays out. A hit in an untracked file is a full finding, because that
+is the case being prevented.
+
+`--selftest` is new and CI runs it **before** the scan. In CI the untracked list is always empty, so
+CI could never have caught this defect and cannot demonstrate the fix either; the selftest is the
+only thing there that can go red over it.
+
 ### Added — the hooks that were only ever running locally, and a suite that proves them
 
 `.claude/hooks/protect-bash.sh` shipped at **3,445 bytes** while the version in daily use was
