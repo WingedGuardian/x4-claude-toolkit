@@ -38,7 +38,7 @@ def _detail(**mods):
 def test_a_vectorless_baseline_is_a_NON_ANSWER_with_its_own_exit_code(capsys, monkeypatch):
     """rc 3, and nothing on stdout that could be mistaken for a result."""
     monkeypatch.setattr(_changed, "load_baseline",
-                        lambda spec: (None, "the effective store (built 08-02)"))
+                        lambda spec, registry=None: (None, "the effective store (built 08-02)"))
     monkeypatch.setattr(_changed, "_dirs", lambda: [])
     monkeypatch.setattr(_freshness, "content_detail", lambda *a, **k: _detail())
     rc = _changed.cmd_changed(types.SimpleNamespace(since="store", files=False, usn=False))
@@ -51,7 +51,7 @@ def test_a_vectorless_baseline_is_a_NON_ANSWER_with_its_own_exit_code(capsys, mo
 def test_no_change_and_changes_found_have_DIFFERENT_exit_codes(capsys, monkeypatch):
     same = _detail(mod_a=(1, "sha1", "100"))
     monkeypatch.setattr(_changed, "_dirs", lambda: [])
-    monkeypatch.setattr(_changed, "load_baseline", lambda spec: (same, "snap"))
+    monkeypatch.setattr(_changed, "load_baseline", lambda spec, registry=None: (same, "snap"))
     monkeypatch.setattr(_freshness, "content_detail", lambda *a, **k: same)
     args = types.SimpleNamespace(since="latest", files=False, usn=False)
     assert _changed.cmd_changed(args) == 0
@@ -113,7 +113,7 @@ def test_a_snapshot_is_named_by_CONTENT_not_by_CLOCK(tmp_path, monkeypatch):
     Naming by timestamp would accumulate look-alike baselines that cannot be told
     apart without opening them -- and the name would say WHEN it was taken rather
     than WHICH world it describes."""
-    monkeypatch.setattr(_changed, "snapshots_dir", lambda: tmp_path)
+    monkeypatch.setattr(_changed, "snapshots_dir", lambda registry=None: tmp_path)
     monkeypatch.setattr(_changed, "_dirs", lambda: [])
     monkeypatch.setattr(_freshness, "fingerprint",
                         lambda *a, **k: {"content": "cafe1234", "engine": "e",
@@ -129,7 +129,7 @@ def test_a_snapshot_is_named_by_CONTENT_not_by_CLOCK(tmp_path, monkeypatch):
 
 
 def test_a_snapshot_label_cannot_escape_the_filename(tmp_path, monkeypatch):
-    monkeypatch.setattr(_changed, "snapshots_dir", lambda: tmp_path)
+    monkeypatch.setattr(_changed, "snapshots_dir", lambda registry=None: tmp_path)
     monkeypatch.setattr(_changed, "_dirs", lambda: [])
     monkeypatch.setattr(_freshness, "fingerprint",
                         lambda *a, **k: {"content": "c", "engine": "e", "detail": []})
@@ -265,3 +265,52 @@ def test_x4modlist_main_exposes_them(capsys):
     assert exc.value.code != 0, (
         "if an unknown subcommand also exited 0, the check above would prove "
         "nothing")
+
+
+# ---------------------------------------------------------------------------
+# `--registry` must redirect WRITES too, not only reads
+# ---------------------------------------------------------------------------
+def test_snapshots_dir_honours_an_explicit_registry_directory(tmp_path):
+    """MEASURED 2026-08-29: `x4modlist --registry <throwaway> snapshot` wrote a
+    real snapshot into the DEFAULT registry's folder. `gates/qa_sweep.py` points
+    every x4modlist cell at a throwaway copy precisely so a gate cannot mutate the
+    state it inspects, and this one mutated it anyway."""
+    assert _changed.snapshots_dir(tmp_path) == tmp_path / "snapshots"
+
+
+def test_snapshots_dir_accepts_the_registry_FILE_not_only_its_folder(tmp_path):
+    """`--registry` is documented as taking either. Honouring one and not the
+    other is the same defect one level down."""
+    reg = tmp_path / "modlist.yaml"
+    reg.write_text("meta: {}\nmods: []\n", encoding="utf-8")
+    assert _changed.snapshots_dir(reg) == tmp_path / "snapshots"
+
+
+def test_snapshots_dir_without_an_argument_does_NOT_use_the_test_directory(tmp_path):
+    """The falsification twin. Without it the two assertions above would pass for
+    a function that ignored its argument and happened to return the right shape."""
+    try:
+        default = _changed.snapshots_dir()
+    except SystemExit:
+        return  # unconfigured machine: it refused rather than guessing, which is correct
+    assert default != tmp_path / "snapshots"
+
+
+def test_load_baseline_latest_reads_the_SAME_registry_it_would_write(tmp_path):
+    """Fixing the write and not the read would leave `--registry X changed --since
+    latest` writing to X and reading from the default -- a half-taught lookup
+    chain, which is a subtler bug than the one it replaced."""
+    snaps = tmp_path / "snapshots"
+    snaps.mkdir()
+    (snaps / "snapshot-deadbeef-probe.json").write_text(
+        json.dumps({"detail": [{"folder": "m", "hash": "h"}]}), encoding="utf-8")
+    vector, desc = _changed.load_baseline("latest", tmp_path)
+    assert vector == [{"folder": "m", "hash": "h"}]
+    assert "probe" in desc
+
+
+def test_load_baseline_latest_says_so_when_that_registry_has_no_snapshot(tmp_path):
+    """An empty directory is an ABSENCE with a description, never a bare failure."""
+    vector, desc = _changed.load_baseline("latest", tmp_path)
+    assert vector is None
+    assert "none taken yet" in desc

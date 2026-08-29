@@ -57,15 +57,25 @@ _GLYPH = {"added": "+", "removed": "-", "toggled": "~",
 _FILE_CAP = 200
 
 
-def snapshots_dir() -> Path:
+def snapshots_dir(registry: str | Path | None = None) -> Path:
     """Beside the other derived artifacts, not in a temp dir.
 
     A baseline that evaporates is not a baseline.
+
+    ⚠ `registry` is NOT optional decoration. This used to resolve
+    `DEFAULT_REGISTRY` unconditionally, so `x4modlist --registry <somewhere>
+    snapshot` honoured the override for every read and then wrote its output
+    into the DEFAULT registry's folder anyway. MEASURED 2026-08-29 while adding
+    a `snapshot` cell to `gates/qa_sweep.py`: the sweep points every x4modlist
+    cell at a throwaway copy precisely so a gate cannot mutate the state it
+    inspects, and this one wrote a real snapshot into `dev/_registry/snapshots/`
+    regardless. A documented override that ONE code path ignores is worse than
+    no override, because everything else honouring it is what makes you trust it.
     """
-    reg = _registry.require(
+    base = Path(registry) if registry else _registry.require(
         _registry.DEFAULT_REGISTRY, "the registry location",
-        "set X4_MODS (or X4_REGISTRY)")
-    return reg.parent / "snapshots"
+        "set X4_MODS (or X4_REGISTRY), or pass --registry")
+    return _registry._registry_file(Path(base)).parent / "snapshots"
 
 
 def _dirs() -> list[Path]:
@@ -80,11 +90,12 @@ def _dirs() -> list[Path]:
     return _registry.default_installed_dirs()
 
 
-def take_snapshot(label: str | None = None) -> Path:
+def take_snapshot(label: str | None = None,
+                  registry: str | Path | None = None) -> Path:
     """Record the current vector, cheaply. ~0.1 s."""
     config = _merge.Config()
     fp = _freshness.fingerprint(config, _dirs())
-    out_dir = snapshots_dir()
+    out_dir = snapshots_dir(registry)
     out_dir.mkdir(parents=True, exist_ok=True)
     # Named by CONTENT, not by clock: two snapshots of an unchanged world collapse
     # onto one file instead of accumulating look-alike baselines, and the name
@@ -131,7 +142,8 @@ def _from_snapshot(path: Path) -> tuple[list | None, str]:
     return data.get("detail"), f"snapshot {path.name}"
 
 
-def load_baseline(spec: str) -> tuple[list | None, str]:
+def load_baseline(spec: str,
+                  registry: str | Path | None = None) -> tuple[list | None, str]:
     """Resolve ``--since`` to (vector, human description).
 
     A missing vector comes back as None WITH its description, so the caller can
@@ -142,8 +154,13 @@ def load_baseline(spec: str) -> tuple[list | None, str]:
     if spec == "xref":
         return _from_xref()
     if spec == "latest":
-        snaps = sorted(snapshots_dir().glob("snapshot-*.json"),
-                       key=lambda p: p.stat().st_mtime) if snapshots_dir().is_dir() else []
+        # The READ side of the same override. Fixing only the write would leave
+        # `--registry X changed --since latest` writing to X and reading from the
+        # default -- a half-taught lookup chain, which is how a fix becomes a
+        # subtler bug than the one it replaced.
+        sd = snapshots_dir(registry)
+        snaps = sorted(sd.glob("snapshot-*.json"),
+                       key=lambda p: p.stat().st_mtime) if sd.is_dir() else []
         if not snaps:
             return None, "the latest snapshot — none taken yet"
         return _from_snapshot(snaps[-1])
@@ -288,14 +305,15 @@ def render(changes: list[dict], baseline_desc: str, show_files: bool) -> list[st
 
 
 def cmd_snapshot(args) -> int:
-    out = take_snapshot(getattr(args, "label", None))
+    out = take_snapshot(getattr(args, "label", None),
+                        getattr(args, "registry", None))
     print(f"snapshot written: {out}")
     print("  Use it as a baseline:  x4modlist changed --since latest")
     return 0
 
 
 def cmd_changed(args) -> int:
-    baseline, desc = load_baseline(args.since)
+    baseline, desc = load_baseline(args.since, getattr(args, "registry", None))
     config = _merge.Config()
     now = _freshness.content_detail(config.reference, _dirs())
 

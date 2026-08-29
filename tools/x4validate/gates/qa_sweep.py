@@ -14,6 +14,7 @@ Exit: 0 all green, 1 any red, 3 only yellows.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -43,6 +44,13 @@ class Cell:
     wants: str | None = None
     #: True when a non-zero exit is a legitimate finding, not a tool failure
     findings_ok: bool = False
+    #: Minutes, not seconds. Excluded unless --all, so the default sweep stays a
+    #: thing you actually run. A slow cell that makes the sweep unbearable is a
+    #: cell that gets skipped by a human instead of by a flag.
+    slow: bool = False
+    #: Extra environment for THIS cell only -- how a build is redirected at a
+    #: throwaway output instead of the artifact the workspace depends on.
+    env: dict = field(default_factory=dict)
     status: str = ""
     detail: str = ""
     out: str = field(default="", repr=False)
@@ -94,6 +102,7 @@ _MOD = _pick_mod(patching=True)
 _MOD2 = _pick_mod()
 
 _SANDBOX: str | None = None
+_SANDBOX_DIR: Path | None = None
 
 
 def _any_registry_id() -> str:
@@ -115,6 +124,22 @@ def _any_registry_id() -> str:
         # cell still asserts a real behaviour rather than silently not running.
         pass
     return "__no_such_mod__"
+
+
+def _sandbox_dir() -> Path:
+    """One throwaway directory per sweep, for cells that WRITE something.
+
+    Same reasoning as `_sandbox_registry`: a gate must not mutate the state it
+    inspects. MEASURED 2026-08-29 while adding these cells -- `x4modlist
+    --registry <throwaway> snapshot` wrote a real snapshot into the DEFAULT
+    registry's folder, because `snapshots_dir()` resolved DEFAULT_REGISTRY and
+    ignored the override every other command honoured.
+    """
+    global _SANDBOX_DIR
+    if _SANDBOX_DIR is None:
+        import tempfile
+        _SANDBOX_DIR = Path(tempfile.mkdtemp(prefix="x4qa_out_"))
+    return _SANDBOX_DIR
 
 
 def _sandbox_registry() -> str:
@@ -142,7 +167,35 @@ def _sandbox_registry() -> str:
     return _SANDBOX
 
 
-CELLS: list[Cell] = [
+def _shipped_clis() -> set[str]:
+    """Which console scripts THIS checkout actually declares.
+
+    The dev tree and the public bundle do not ship the same set -- work lands in
+    dev first and is released deliberately. Until 2026-08-29 the port handled that
+    by HAND-DELETING the cells for unshipped CLIs on the way across, which is the
+    same class as F73 and F76: a step a human performs on every port, invisible to
+    every guard, and wrong the first time somebody forgets. (It was forgotten
+    immediately: copying this file across turned `test_no_qa_cell_names_a_cli_that
+    _does_not_exist` red, which is the only reason it was noticed.)
+
+    So the roster adapts instead. One file, both trees, and the difference is
+    DERIVED from pyproject rather than maintained by memory.
+    """
+    import tomllib     # requires-python is >=3.13, so this is always available
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    scripts = set(data.get("project", {}).get("scripts", {}))
+    if not scripts:
+        # REFUSE rather than guess. An empty set would mean "filter nothing", so a
+        # broken pyproject would silently restore the very cells this is meant to
+        # drop -- a non-answer wearing the shape of an answer.
+        raise RuntimeError(
+            f"{ROOT / 'pyproject.toml'} declares no [project.scripts]; the cell "
+            f"roster cannot be decided, and filtering nothing would silently "
+            f"restore cells for CLIs that may not exist.")
+    return scripts
+
+
+_ALL_CELLS: list[Cell] = [
     # ---- x4validate -----------------------------------------------------
     Cell("x4validate", "--paths", ["--paths"], wants="reference"),
     Cell("x4validate", "tier a (overlay mod)", [_MOD, "--tier", "a"],
@@ -271,7 +324,76 @@ CELLS: list[Cell] = [
          expect=(0, 1, 3), findings_ok=True, wants="examined"),
     # a non-save must be rc 2 -- a NON-ANSWER, never a clean result.
     Cell("x4save", "refuses a non-save", ["info", "pyproject.toml"], expect=(2,)),
+    # ---- x4live ---------------------------------------------------------
+    # These read a dump written by an in-game probe, so "no dump present" (rc 2)
+    # is a legitimate state on a machine that has never run one -- what is NOT
+    # legitimate is rc 0 over nothing, which is the whole point of the tool.
+    Cell("x4live", "dump", ["dump"], expect=(0, 2, 3), findings_ok=True),
+    Cell("x4live", "extensions", ["extensions"], expect=(0, 1, 2, 3),
+         findings_ok=True),
+    Cell("x4live", "errors", ["errors", "--limit", "5"], expect=(0, 1, 2, 3),
+         findings_ok=True),
+    Cell("x4live", "oracle", ["oracle"], expect=(0, 1, 2, 3), findings_ok=True),
+    # a file that is not a uidata.xml must be a NON-ANSWER, never a clean zero.
+    Cell("x4live", "refuses a non-uidata file", ["--file", "pyproject.toml", "dump"],
+         expect=(2, 3), findings_ok=True),
+    Cell("x4live", "refuses a missing file",
+         ["--file", "__no_such_uidata__.xml", "dump"], expect=(2,), findings_ok=True),
+    # `mappings` PROPOSES field mappings from a dump; with no dump it must be the
+    # same rc 2 non-answer as its siblings, never a clean zero over nothing.
+    Cell("x4live", "mappings", ["mappings"], expect=(0, 2, 3), findings_ok=True),
+
+    # ---- the F75 backlog: capabilities the sweep did not exercise --------
+    # Every WRITING x4modlist cell points at the throwaway registry, so a sweep
+    # cannot edit the user's triage state. `snapshot` needed a tool fix before it
+    # could honour that: it wrote to the DEFAULT registry regardless.
+    Cell("x4modlist", "ingest", ["--registry", _sandbox_registry(), "ingest"],
+         expect=(0, 1), findings_ok=True),
+    Cell("x4modlist", "snapshot", ["--registry", _sandbox_registry(),
+                                   "snapshot", "--label", "qa-sweep"], expect=(0,)),
+    Cell("x4modlist", "tracked", ["--registry", _sandbox_registry(),
+                                  "tracked", "--limit", "3"], expect=(0, 1),
+         findings_ok=True),
+    Cell("x4modlist", "mark", ["--registry", _sandbox_registry(),
+                               "mark", _any_registry_id()], expect=(0, 2),
+         findings_ok=True),
+    Cell("x4modlist", "ignore", ["--registry", _sandbox_registry(), "ignore",
+                                 _any_registry_id(), "--reason", "qa-sweep"],
+         expect=(0, 2), findings_ok=True),
+    Cell("x4modlist", "resolve", ["--registry", _sandbox_registry(), "resolve",
+                                  _any_registry_id(), "1"], expect=(0, 2),
+         findings_ok=True),
+    # `refresh` is the only cell that COULD reach the network. A bogus id resolves
+    # to nothing, so it exercises the command's plumbing without an API call and
+    # without spending the rate budget. A gate must not depend on a remote host.
+    Cell("x4modlist", "refresh (no network)", ["--registry", _sandbox_registry(),
+                                               "refresh", "--ids", "__no_such_mod__"],
+         expect=(0, 1), findings_ok=True),
+    # `changed` exits 1 when it FINDS something, which is the normal state.
+    Cell("x4modlist", "changed", ["--registry", _sandbox_registry(), "changed"],
+         expect=(0, 1, 3), findings_ok=True),
+    Cell("x4debug", "baseline", ["baseline", "--dest", str(_sandbox_dir() / "baseline")],
+         expect=(0, 2), findings_ok=True),
+    Cell("x4effective", "coverage", ["coverage"], expect=(0, 1, 3), findings_ok=True),
+
+    # ---- SLOW: real builds, redirected at throwaway outputs --------------
+    # These exercise the real code path end to end. They are excluded by default
+    # because they take minutes; they must NEVER write the shared artifacts, so
+    # each is pointed at a temp output and the fingerprints are asserted unchanged
+    # afterwards by whoever runs --all.
+    Cell("x4effective", "build (sandboxed)", ["build"], expect=(0,), slow=True,
+         env={"X4_EFFECTIVE_DB": str(_sandbox_dir() / "effective.sqlite")}),
+    Cell("x4xref", "build (sandboxed)",
+         ["build", "--out", str(_sandbox_dir() / "md_xref.tsv")],
+         expect=(0,), slow=True),
 ]
+
+#: CLIs named by a cell that this checkout does not ship. NAMED, never silently
+#: dropped -- a roster that shrinks without saying so is the defect this gate exists
+#: to catch, and it would be embarrassing for the gate to commit it.
+_SHIPPED = _shipped_clis()
+UNSHIPPED: list[str] = sorted({c.tool for c in _ALL_CELLS} - _SHIPPED)
+CELLS: list[Cell] = [c for c in _ALL_CELLS if c.tool in _SHIPPED]
 
 
 def run(cell: Cell) -> Cell:
@@ -279,9 +401,14 @@ def run(cell: Cell) -> Cell:
     # columns, and Windows' default cp1252 raises UnicodeDecodeError mid-read,
     # silently yielding an empty capture that looks like "the tool printed
     # nothing". Anyone piping these tools on Windows hits the same thing.
+    # env-ok: this INHERITS the ambient environment to hand to a child process, it
+    # does not RESOLVE configuration. Going through `_paths` here would be wrong:
+    # the child must see the same environment a human running the command would,
+    # plus this cell's overrides. Reading a setting still goes through `_env`.
+    env = {**os.environ, **cell.env} if cell.env else None
     proc = subprocess.run(["uv", "run", cell.tool, *cell.argv], cwd=ROOT,
                           capture_output=True, text=True, timeout=1800,
-                          encoding="utf-8", errors="replace")
+                          encoding="utf-8", errors="replace", env=env)
     out = (proc.stdout or "") + (proc.stderr or "")
     cell.out = out
     tb = "Traceback (most recent call last)" in out
@@ -300,10 +427,25 @@ def run(cell: Cell) -> Cell:
 
 
 def main() -> int:
-    print(f"QA sweep — {len(CELLS)} cells across "
-          f"{len({c.tool for c in CELLS})} tools\n" + "=" * 78)
+    run_slow = "--all" in sys.argv
+    cells = [c for c in CELLS if run_slow or not c.slow]
+    skipped = [c for c in CELLS if c.slow and not run_slow]
+    print(f"QA sweep - {len(cells)} cells across "
+          f"{len({c.tool for c in cells})} tools" + chr(10) + "=" * 78)
+    # NAME what was left out. A sweep that silently runs a subset and prints a
+    # clean total is this repository's founding defect, and a gate is not exempt
+    # from it because the exclusion happened to be deliberate.
+    if UNSHIPPED:
+        print(f"  NOT IN THIS BUILD: {len(_ALL_CELLS) - len(CELLS)} cell(s) name "
+              f"CLI(s) this checkout does not ship: {', '.join(UNSHIPPED)}")
+        print("=" * 78)
+    if skipped:
+        print(f"  SKIPPED {len(skipped)} slow cell(s) - pass --all to include them:")
+        for c in skipped:
+            print(f"    {c.tool} {c.label}")
+        print("=" * 78)
     reds, yellows = [], []
-    for cell in CELLS:
+    for cell in cells:
         try:
             run(cell)
         except subprocess.TimeoutExpired:
@@ -321,7 +463,9 @@ def main() -> int:
                 print(f"          | {line}")
 
     print("=" * 78)
-    print(f"GREEN {len(CELLS) - len(reds) - len(yellows)}   YELLOW {len(yellows)}   RED {len(reds)}")
+    print(f"GREEN {len(cells) - len(reds) - len(yellows)}   YELLOW {len(yellows)}   "
+          f"RED {len(reds)}"
+          + (f"   SKIPPED {len(skipped)} (slow)" if skipped else ""))
     for c in reds:
         print(f"\nRED  {c.tool} {c.label}: {c.detail}")
         for line in c.out.splitlines()[-14:]:

@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Added — a search under the game's `extensions/` folder now warns that the answer is partial
+
+Grep and Glob read **loose files only**. X4 mods ship as packed `.cat` archives, loose XML, or
+both — so a search over a packed mod does not fail and does not say anything was unreadable. It
+returns the loose subset, silently, in the same shape a complete answer would have. Measured on
+the reference machine: **54 of 133 installed mods (41%) ship both**, so the misleading case is the
+common one rather than an edge.
+
+A new `Grep|Glob` hook asks for confirmation when a search targets the `extensions/` root, or a
+directory inside a mod that actually ships a `.cat`, and names the packed-inclusive alternative.
+It is deliberately narrow — a single named file is not a survey and never prompts, and a
+loose-only mod is fully visible so it never prompts either. Measured against 21 sessions of real
+history: it fires on 4 searches out of 311.
+
+### Fixed — `x4modlist --registry <path> snapshot` wrote to the DEFAULT registry
+
+Every read honoured the override; the one path that WRITES did not. `snapshots_dir()` resolved the
+default registry unconditionally, so a snapshot taken against a throwaway registry landed in the
+real one — and reported success. The read side (`changed --since latest`) looked in the same wrong
+place and was fixed with it, because a lookup chain taught in only one direction is a subtler bug
+than the one it replaces.
+
+### Changed — the CLI sweep covers all 41 capabilities, and names what it skips
+
+`gates/qa_sweep.py` exercised 28 of 41. The remaining 13 are now cells: 11 in the default run, and
+two real builds behind `--all`, each redirected at a throwaway output so no shared artifact is
+written. The default run prints the slow cells it skipped rather than reporting a clean total over
+a subset.
+
 ### Added — the BaseX builds name the engine tree they used, and refuse an ambiguous one
 
 `build-effective.sh` and `build-corpus.sh` defaulted `X4VALIDATE_DIR` to `$HERE/../x4validate`.

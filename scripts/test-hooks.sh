@@ -31,6 +31,7 @@ decide(){
 }
 fj(){ printf '{"tool_name":"Edit","tool_input":{"file_path":"%s"}}' "$1"; }
 cj(){ printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$1"; }
+pj(){ printf '{"tool_name":"Grep","tool_input":{"pattern":"x","path":"%s"}}' "$1"; }
 
 run_layout(){ # run_layout <name> <toolkit> <game>
   local name="$1" TK="$2" GAME="$3"
@@ -83,6 +84,32 @@ export X4_MODS="$GAME/extensions"
 decide allow protect-files.sh "$(fj "$GAME/extensions/deployed/x.xml")" "deployed edit IS the source"
 export X4_MODS="$_sm" X4_EXTENSIONS="$_se" X4_GAME="$_sg"
 
+
+# =============================================================================
+# search-scope.sh -- a content search that returns a PARTIAL answer looking complete
+# =============================================================================
+# Grep and Glob read LOOSE files only. A mod that ships a .cat archive is invisible to
+# them, so a zero result means "not in the loose subset", not "absent" -- in the same
+# shape a complete answer would have. Measured on the reference machine: 54 of 133
+# installed mods ship BOTH, so the misleading case is the common one.
+echo; echo "=== search-scope.sh ==="
+GAME="$TMP/game/X4 Foundations"
+mkdir -p "$GAME/extensions/packedmod" "$GAME/extensions/loosemod/md" \n         "$X4_TOOLKIT/dev/mymod"
+: > "$GAME/extensions/packedmod/ext_01.cat"
+: > "$GAME/extensions/packedmod/readme.txt"
+: > "$GAME/extensions/loosemod/md/a.xml"
+export X4_EXTENSIONS="$GAME/extensions" X4_GAME="$GAME"
+decide ask   search-scope.sh "$(pj "$GAME/extensions")"              "search rooted at extensions/"
+decide ask   search-scope.sh "$(pj "$GAME/extensions/packedmod")"    "search inside a .cat-shipping mod"
+# The must-NOT-fire half is not decoration: when this hook was first written a
+# collapsed backslash made it inert, every must-fire probe went red and every
+# must-NOT-fire probe went green. Silence is indistinguishable from allow, so the
+# fire cases above are what give these their meaning.
+decide allow search-scope.sh "$(pj "$GAME/extensions/loosemod")"     "loose-only mod is fully visible"
+decide allow search-scope.sh "$(pj "$GAME/extensions/packedmod/readme.txt")" "a single FILE is not a survey"
+decide allow search-scope.sh "$(pj "$X4_TOOLKIT/dev/mymod")"          "the mod workspace"
+decide allow search-scope.sh '{"tool_name":"Grep","tool_input":{"pattern":"x"}}' "no path at all"
+
 echo; echo "=== protect-bash.sh ==="
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_GAME'")"      "rm the game directory"
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_REFERENCE'")" "rm reference/"
@@ -121,7 +148,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=35
+EXPECT=41
 echo "RESULT: $pass passed, $fail failed"
 if [ $((pass + fail)) -ne "$EXPECT" ]; then
   echo "FAIL: $((pass + fail)) probes ran, expected $EXPECT -- a probe was DROPPED, not passed."
