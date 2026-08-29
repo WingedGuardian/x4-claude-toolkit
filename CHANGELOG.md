@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased
+
+### Added — the hooks that were only ever running locally, and a suite that proves them
+
+`.claude/hooks/protect-bash.sh` shipped at **3,445 bytes** while the version in daily use was
+**17,722**, and it was missing every rule added over the past month. `test-protect-bash.sh` — the
+regression suite that makes those rules trustworthy — had never shipped at all.
+
+Nine rule families are now here, each keeping the MEASURED cost of the failure it prevents, because a
+guard whose reason has been trimmed away is the first one someone deletes:
+
+| guard | what it cost when it happened |
+|---|---|
+| `git add -A` / `.` in a shared tree | 4 untracked files from a concurrent session, one commit-timing away from being committed |
+| `timeout` above the harness cap | 600000 ms is silently clamped; four separate 10-minute losses in one session |
+| a known long job in the foreground | the same clamp, reached by a different route |
+| truncating redirect onto a durable record | `>` gets no backup; this wiped a file to 0 bytes |
+| recursive search over the reference tree | route it to a tool that returns a denominator |
+| recursive search rooted at a workspace root | `grep -r` killed at 300 s; ripgrep timed out at 20 s |
+| profile `content.xml` searched by NAME | it is keyed by manifest id — a name-shaped zero is the wrong query, not an answer |
+| `$?` read after a pipeline | reported a real exit 5 as "exit 0" |
+| measurement output into shared `/tmp` | another session's stale files nearly reported as this run's results |
+
+All paths resolve through `_x4-env.sh`; nothing is hardcoded. Path-dependent probes **SKIP loudly**
+when a location is unconfigured and the tally names the skip count — otherwise a fresh clone would
+print the same cheerful line as a real run, over rules that were never exercised.
+
+**The suite immediately earned its place** by catching two regressions the port itself introduced: an
+over-block that denied a deliberately *scoped* search, and an under-block where an unexpanded
+`$X4_PROFILE` stopped matching. CI now runs it before the test suite.
+
+### Changed — the six skills, merged rather than replaced
+
+The shipped skills were behind the ones in use (one at 2,777 bytes against 5,131) but were **not
+simply stale**: they carried cross-platform work the newer copies lacked — registry resolution
+through `$X4_MODS`/`$X4_REGISTRY`, Linux profile locations, and an interpreter pin. Each file was
+merged in both directions and every dropped line reviewed, so nothing regressed to a
+machine-specific path.
+
+Adds **`x4-balance`**, which grounds a stat-tuning discussion before any value is proposed: it names
+which instrument answers which question and **what a zero from each one means**, then enforces the
+three-values rule (vanilla / effective / proposed) and an in-sector vs out-of-sector check.
+
+### Fixed — two named mods in published skill descriptions
+
+Skills are generic procedure and must never name a specific mod. `x4-mod-interaction`'s description
+referred to a particular overhaul by name, and `x4-update-mod` named specific mod APIs as its
+migration examples. Both are generalised. Measured across all six skills: 0 named mods, 0 personal
+paths.
+
 ## v2.9.0 — 2026-08-28
 
 ### Added — nested cross-mod script patches are now validated, through the document the engine builds (F70)
