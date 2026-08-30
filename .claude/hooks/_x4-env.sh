@@ -37,7 +37,18 @@ if [ -z "${X4_APPMANIFEST:-}" ] && [ -n "${X4_GAME:-}" ]; then
 fi
 
 # --- path helpers: case-insensitive + backslash-insensitive (Windows/Git-Bash/macOS/Linux) ---
-x4_norm() { printf '%s' "$1" | tr 'A-Z\\' 'a-z/'; }   # lowercase, backslashes -> slashes
+# x4_norm PATH_OR_COMMAND -> lowercase, backslashes to slashes, and the DRIVE DIALECT
+# unified. MEASURED 2026-08-30: without the last step, Git Bash's "/c/Users/..." and
+# Windows' "C:/Users/..." never compare equal, so any guard rooted purely on a
+# configured PATH missed one of the two dialects -- the same Documents write asked in
+# one form and was ALLOWED in the other. 2,553 historical commands use the MSYS form,
+# and no probe in the suite had ever used a drive-lettered root, so nothing could have
+# caught it. Rules carrying a NAME backstop (the game, the profile) were unaffected.
+#
+# Windows-to-MSYS is the safe direction: "c:/" is unambiguous, since a colon is illegal
+# elsewhere in a Windows path, whereas "/c/" also occurs mid-path. The guard on the
+# preceding character is what keeps "https://" from matching as a drive named "s".
+x4_norm() { printf '%s' "$1" | tr 'A-Z\\' 'a-z/' | sed -E 's#(^|[^a-z0-9])([a-z]):/#\1/\2/#g'; }
 # x4_canon PATH -> resolve symlinks + .. (so e.g. a game-dir 'extensions' symlink and its real
 # target compare equal). Uses realpath -m when available (no need for the file to exist);
 # falls back to the raw path otherwise. Then normalized for case/slash-insensitive compare.

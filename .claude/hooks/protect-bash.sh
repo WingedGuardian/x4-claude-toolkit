@@ -111,6 +111,95 @@ is_rm() { printf '%s' "$COMMAND" | grep -qE '(^|[;&|[:space:]])rm([[:space:]]|$)
 rm_segments() { printf '%s' "$nCMD" | tr ';&|' '\n\n\n' | grep -E '(^|[[:space:]])rm([[:space:]]|$)'; }
 rm_targets()  { [ -n "$1" ] && rm_segments | grep -qF "$(x4_norm "$1")"; }
 
+# --- WHAT A COMMAND ACTUALLY WRITES TO -------------------------------------
+# Shared by the Documents, redirect and copy rules. Each of those paired "a write
+# verb appears SOMEWHERE" with "the path appears SOMEWHERE" -- two independent
+# tests over one string. MEASURED 2026-08-30: that shape accounted for 193 of 196
+# Documents confirmations and 1,269 of 1,320 redirect advisories.
+
+# Tokens of one segment, respecting quotes so a path containing spaces stays ONE
+# token. Whitespace splitting is wrong here: every real path in this workspace has
+# a space in it ("Program Files (x86)", "X4 Foundations").
+seg_tokens() { printf '%s' "$1" | grep -oE '"[^"]*"|'\''[^'\'']*'\''|[^[:space:]]+'; }
+
+unquote() { local t="$1"; t="${t%\"}"; t="${t#\"}"; t="${t%\'}"; t="${t#\'}"; printf '%s' "$t"; }
+
+# Substitute NAME=value assignments made in this same command. Text is all a hook
+# can see, so this is the most it could ever resolve; an unresolved $VAR is handled
+# by the CALLER, conservatively.
+resolve_var() {
+  local t="$1" n v
+  for n in $(printf '%s' "$COMMAND" | grep -oE '(^|[;&|[:space:]])[A-Za-z_][A-Za-z0-9_]*=' \
+             | grep -oE '[A-Za-z_][A-Za-z0-9_]*'); do
+    v=$(printf '%s' "$COMMAND" | grep -oE "(^|[;&|[:space:]])$n=(\"[^\"]*\"|'[^']*'|[^[:space:];&|]*)" \
+        | head -1 | sed -E "s/^[;&| ]*$n=//")
+    v="$(unquote "$v")"
+    [ -n "$v" ] && { t="${t//\$\{$n\}/$v}"; t="${t//\$$n/$v}"; }
+  done
+  printf '%s' "$t"
+}
+
+# Every path this command WRITES to, one per line, normalized: redirect targets
+# (excluding fd duplication and the null device) plus copy/move/tee destinations.
+# $1 = truncate | append | all -- only the redirect rule cares about the difference.
+write_targets() {
+  local mode="${1:-all}" t op seg verb last skip
+  printf '%s' "$COMMAND" \
+    | grep -oE '[0-9]?>>?[[:space:]]*("[^"]*"|'\''[^'\'']*'\''|[^[:space:];&|<>()]+)' \
+    | while IFS= read -r t; do
+        case "$t" in *'>>'*) op=append ;; *) op=truncate ;; esac
+        [ "$mode" = truncate ] && [ "$op" = append ] && continue
+        [ "$mode" = append ] && [ "$op" = truncate ] && continue
+        t="${t#*>}"; t="${t#>}"
+        t="$(unquote "$(printf '%s' "$t" | sed -E 's/^[[:space:]]*//')")"
+        case "$t" in ''|'&'*) continue ;; esac
+        [ "$(x4_norm "$t")" = "/dev/null" ] && continue
+        x4_norm "$(resolve_var "$t")"
+      done
+  # printf with a trailing NEWLINE, not without: `while read` sets the variable and
+  # then returns FALSE on a line with no terminator, so a single-segment command
+  # never enters the loop at all. rm_segments survives the same idiom only because
+  # grep tolerates a missing final newline; a read loop does not.
+  printf '%s\n' "$COMMAND" | tr ';&|' '\n\n\n' | while IFS= read -r seg; do
+    verb="$(printf '%s' "$seg" | sed -E 's/^[[:space:]]*//' | cut -d' ' -f1)"
+    case "$verb" in cp|mv|move|copy|tee) ;; *) continue ;; esac
+    # cp/mv write to their LAST operand; tee writes to EVERY file operand, so its
+    # destination is the FIRST. Taking "the last token" for tee picked up the source
+    # of a `< input` redirect instead -- a READ, not a write.
+    last=""; skip=0
+    while IFS= read -r t; do
+      [ "$skip" = 1 ] && { skip=0; continue; }
+      case "$t" in
+        '<') skip=1; continue ;;
+        '<'*|-*) continue ;;
+      esac
+      if [ "$verb" = tee ]; then x4_norm "$(resolve_var "$(unquote "$t")")"; else last="$t"; fi
+    done <<TOKS
+$(seg_tokens "$seg" | tail -n +2)
+TOKS
+    [ "$verb" != tee ] && [ -n "$last" ] && x4_norm "$(resolve_var "$(unquote "$last")")"
+  done
+}
+
+# 0 if some write target is under $1 -- or if a target still holds an unresolved
+# variable while the command names $1 anyway. That fallback is deliberate: a hook
+# reads text, and an unresolvable destination must keep the guard, not drop it.
+writes_under() {
+  [ -n "$1" ] || return 1
+  local root t; root="$(x4_norm "$1")"; root="${root%/}"
+  rm_targets "$1" && return 0
+  while IFS= read -r t; do
+    [ -z "$t" ] && continue
+    case "$t" in
+      "$root"|"$root"/*) return 0 ;;
+      *'$'*) has "$1" && return 0 ;;
+    esac
+  done <<TARGETS
+$(write_targets "${2:-all}")
+TARGETS
+  return 1
+}
+
 # Does a pipeline immediately precede the $? ? Segments are split on ; && || and
 # newlines; quoted strings are blanked first so a `;` inside a string cannot split.
 # `$?` refers to the command just before it, so only the SAME segment or the one
@@ -162,8 +251,10 @@ fi
 
 # === CONFIRM - deleting or overwriting anything else under Documents ===
 # Game settings, other games' data, personal files. Not ours, not reproducible.
-{ { is_rm || printf %s "$nCMD" | grep -qE '(^|[;&|[:space:]])(mv|cp|tee)([[:space:]]|$)|>'; } \
-  && has "${X4_DOCUMENTS:-}"; } \
+# MEASURED 2026-08-30: 193 of 196 hits were a command that merely NAMED a path
+# there. This was the only rule left spending the USERs attention on a
+# false positive, so it now tests the write TARGET, not the whole string.
+writes_under "${X4_DOCUMENTS:-}" \
   && ask "WRITING OR DELETING UNDER YOUR DOCUMENTS FOLDER: this is outside the toolkit and the game. Confirm: $COMMAND"
 
 # === CONFIRM — mv/cp into the game or profile dirs ===

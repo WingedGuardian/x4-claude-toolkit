@@ -24,6 +24,11 @@ no(){ fail=$((fail+1)); printf '  FAIL %s\n' "$1"; }
 # decide <expected> <hook> <json> <label>
 decide(){
   local exp="$1" hook="$2" json="$3" label="$4" out got
+  if ! printf '%s' "$json" | jq -e . >/dev/null 2>&1; then
+    no "$label -- MALFORMED PROBE PAYLOAD: not valid JSON, so this probe exercises the
+        parser-contract guard rather than its own rule"
+    return
+  fi
   out=$(printf '%s' "$json" | bash "$HOOKS/$hook" 2>/dev/null)
   if [ -z "$out" ]; then got="allow"
   else
@@ -37,9 +42,13 @@ decide(){
   fi
   [ "$got" = "$exp" ] && ok "$label ($got)" || no "$label — expected $exp, got $got"
 }
-fj(){ printf '{"tool_name":"Edit","tool_input":{"file_path":"%s"}}' "$1"; }
-cj(){ printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$1"; }
-pj(){ printf '{"tool_name":"Grep","tool_input":{"pattern":"x","path":"%s"}}' "$1"; }
+fj(){ printf '{"tool_name":"Edit","tool_input":{"file_path":%s}}' "$(printf '%s' "$1" | jq -Rs .)"; }
+# jq -Rs does the JSON escaping. The first version interpolated the command RAW,
+# so any probe containing a double quote emitted INVALID JSON -- and since the
+# parser-contract guard landed, the hook correctly answers `ask` to that. A probe
+# written with quotes was therefore testing the parser guard, not its own rule.
+cj(){ printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(printf '%s' "$1" | jq -Rs .)"; }
+pj(){ printf '{"tool_name":"Grep","tool_input":{"pattern":"x","path":%s}}' "$(printf '%s' "$1" | jq -Rs .)"; }
 
 run_layout(){ # run_layout <name> <toolkit> <game>
   local name="$1" TK="$2" GAME="$3"
@@ -56,6 +65,11 @@ run_layout(){ # run_layout <name> <toolkit> <game>
   decide allow protect-files.sh "$(fj "$TK/.claude/hooks/x.sh")"            "toolkit .claude/"
   decide allow protect-files.sh "$(fj "$TK/CLAUDE.md")"                     "CLAUDE.md"
   decide deny  protect-files.sh "$(fj "$TK/reference/libraries/wares.xml")" "reference/ is read-only"
+  # A BACKSLASH path, which the harness could not carry until 2026-08-30: fj
+  # interpolated raw, so a Windows path was invalid JSON (\U is not a valid
+  # JSON escape) and the probe silently exercised the parser-contract guard.
+  decide deny  protect-files.sh "$(fj "$(printf '%s' "$TK/reference/libraries/wares.xml" | tr / '\\')")" \
+    "reference/ is read-only, named with BACKSLASHES"
   decide deny  protect-files.sh "$(fj "$GAME/01.cat")"                      ".cat archive"
   decide deny  protect-files.sh "$(fj "$GAME/01.dat")"                      ".dat archive"
   decide deny  protect-files.sh "$(fj "$GAME/libraries/wares.xml")"         "base game file"
@@ -147,6 +161,17 @@ decide deny  protect-bash.sh "$(cj "rm -rf '$X4_GAME'")"      "rm the game direc
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_REFERENCE'")" "rm reference/"
 decide ask   protect-bash.sh "$(cj "rm -f '$TMP/profile/save/save_001.xml.gz'")" "deleting a save game"
 decide ask   protect-bash.sh "$(cj "echo x > '$TMP/docs/notes.txt'")"            "writing into Documents"
+# ...but only when Documents is the TARGET. MEASURED 2026-08-30: 193 of 196 hits
+# were a command that merely NAMED a path there -- `(rm|mv|cp|tee|>) anywhere` AND
+# `a Documents path anywhere`, two independent tests over the whole string. This is
+# the only rule left that spends the USER's attention on a false positive.
+decide allow protect-bash.sh "$(cj "P='$TMP/docs/Egosoft'; ls -la \"\$P\" 2>/dev/null")"   "reading a Documents path is not writing to it"
+decide allow protect-bash.sh "$(cj "cp '$TMP/docs/notes.txt' '$TMP/copy.txt'")"   "copying OUT of Documents"
+decide allow protect-bash.sh "$(cj "grep -n x '$TMP/docs/notes.txt' > '$TMP/out.txt'")"   "reading from Documents, writing elsewhere"
+decide ask   protect-bash.sh "$(cj "cp '$TMP/a.txt' '$TMP/docs/b.txt'")"   "copying INTO Documents"
+decide ask   protect-bash.sh "$(cj "rm -f '$TMP/docs/notes.txt'")"   "deleting inside Documents"
+decide ask   protect-bash.sh "$(cj "tee '$TMP/docs/log.txt' < '$TMP/a.txt'")"   "tee INTO Documents"
+decide ask   protect-bash.sh "$(cj "D='$TMP/docs'; echo x > \"\$D/n.txt\"")"   "a variable Documents destination still confirms"
 decide ask   protect-bash.sh "$(cj "rm -rf '$X4_MODS/other'")" "rm inside mod sources"
 # The FALSE POSITIVES these rules produced the moment they first ran (2026-08-29).
 # Until this week no rule in protect-bash.sh had ever executed in production, so
@@ -193,7 +218,30 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=76
+EXPECT=90
+
+# =============================================================================
+# PATH DIALECT -- a verdict must not depend on HOW the path was written
+# =============================================================================
+# MEASURED 2026-08-30: x4_norm is `tr 'A-Z\' 'a-z/'` -- lowercase and backslash to
+# slash, and nothing else. So Git Bash's "/c/Users/..." and Windows' "C:/Users/..."
+# never compare equal, and a rule rooted purely on a configured PATH misses one of
+# the two dialects entirely. Rules carrying a NAME backstop (the game, the profile)
+# survived; Documents, reference/ and the workspace root did not.
+# 2,553 historical commands use the MSYS form. No probe in this suite had ever used
+# a drive-lettered root at all, so nothing here could have caught it.
+echo; echo "=== path dialect ==="
+_sd="$X4_DOCUMENTS"; _sr="$X4_REFERENCE"
+export X4_DOCUMENTS="C:/fixture/Documents"
+decide ask   protect-bash.sh "$(cj 'echo x > "C:/fixture/Documents/n.txt"')"   "Documents write, root Windows / command Windows"
+decide ask   protect-bash.sh "$(cj 'echo x > "/c/fixture/Documents/n.txt"')"   "Documents write, root Windows / command MSYS"
+export X4_DOCUMENTS="/c/fixture/Documents"
+decide ask   protect-bash.sh "$(cj 'echo x > "C:/fixture/Documents/n.txt"')"   "Documents write, root MSYS / command Windows"
+decide allow protect-bash.sh "$(cj 'echo x > "C:/elsewhere/n.txt"')"   "an unrelated path is still allowed in either dialect"
+export X4_DOCUMENTS="$_sd"
+export X4_REFERENCE="C:/fixture/reference"
+decide deny  protect-bash.sh "$(cj 'grep -rn foo "/c/fixture/reference"')"   "recursive search at reference root, MSYS form"
+export X4_REFERENCE="$_sr"
 
 # =============================================================================
 # THE STDIN CONTRACT -- a hook that receives NOTHING must not read as ALLOW
