@@ -192,7 +192,7 @@ fi
 # Purpose-built tools answer these far faster and with a denominator. See CLAUDE.md
 # "Discovery vs. Proof" routing table. This blocks the reflex, not the capability:
 # a scoped grep at a specific subdirectory still works.
-if echo "$COMMAND" | grep -qiE '\b(grep|rg|ag)\b[^|;]*(-[a-zA-Z]*[rR]|--recursive)' \
+if printf '%s' "$COMMAND" | sed "s/'[^']*'//g; s/\"[^\"]*\"//g" | grep -qiE '\b(grep|rg|ag)\b[^|;]*(-[a-zA-Z]*[rR]|--recursive)' \
    && has "$X4_REFERENCE"; then
   deny "WRONG TOOL: recursive text search over the whole reference\\ tree (~60 GB).
 Route the question first (CLAUDE.md 'Discovery vs. Proof'):
@@ -307,7 +307,7 @@ fi
 # ripgrep tool timed out at 20 s -- tools\basex\basex\data\ alone was 3.7 GB of
 # binary database pages. The path must TERMINATE at the root, so a scoped
 # search into any subdirectory is unaffected.
-if echo "$COMMAND" | grep -qiE '\b(grep|rg|ag)\b[^|;]*(-[a-zA-Z]*[rR]|--recursive)' \
+if printf '%s' "$COMMAND" | sed "s/'[^']*'//g; s/\"[^\"]*\"//g" | grep -qiE '\b(grep|rg|ag)\b[^|;]*(-[a-zA-Z]*[rR]|--recursive)' \
    && { has_root "$X4_TOOLKIT" || has_root "$X4_GAME" || has_root "$X4_MODS"; }; then
   deny "WRONG SCOPE: recursive text search rooted at the whole workspace / game root.
 It does not finish — MEASURED 2026-08-22: grep -r killed at 300 s, ripgrep timed out at

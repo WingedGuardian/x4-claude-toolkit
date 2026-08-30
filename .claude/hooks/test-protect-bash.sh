@@ -83,6 +83,16 @@ probe allow "pipeline-after-the-dollarq" 'uv run python x.py; rc=$?; echo done |
 probe deny  "dollarq-inside-double-quotes" 'cmd | tail -5 && echo "exit=$?"'
 probe deny  "tmp-write"            'uv run python gates/g.py > /tmp/g.txt 2>&1'
 need "$X4_TOOLKIT" "unscoped-search" X4_TOOLKIT && probe deny "unscoped-search"      "grep -rn foo \"$X4_TOOLKIT\""
+# FIXED 2026-08-29, reported by a concurrent session on a real command. The flag
+# regex scanned the WHOLE command including the quoted search PATTERN, and a
+# hyphenated pattern such as "IN-SECTOR vs OUT-OF-SECTOR" contains `-SECTOR` --
+# a dash followed by letters ending in R, which reads as -r. Combined with a `cd`
+# into the game root it denied a grep of ONE named 128 KB file. A search STRING is
+# data, never flags.
+need "$X4_GAME" "grep-one-file-hyphenated-pattern" X4_GAME && probe allow "grep-one-file-hyphenated-pattern" "cd \"$X4_GAME\" && grep -n \"IN-SECTOR vs OUT-OF-SECTOR\" CLAUDE.md"
+need "$X4_GAME" "grep-two-named-files" X4_GAME && probe allow "grep-two-named-files" "grep -c \"pre-flight\" \"$X4_GAME/CLAUDE.md\" \"$X4_GAME/KNOWLEDGEBASE.md\""
+# ...and the case the rule exists for must still fire, from the same cwd.
+need "$X4_GAME" "recursive-from-game-root-cwd" X4_GAME && probe deny "recursive-from-game-root-cwd" "cd \"$X4_GAME\" && grep -rn foo ."
 probe deny "durable-truncate"     'echo hi > KNOWLEDGEBASE.md'
 need "$X4_REFERENCE" "ref-recursive-grep" X4_REFERENCE && probe deny "ref-recursive-grep"   "grep -rn x \"$X4_REFERENCE\""
 # DROPPED 2026-08-29: merely NAMING a .cat is harmless -- this fired on an `echo`
