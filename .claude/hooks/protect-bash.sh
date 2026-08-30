@@ -13,11 +13,22 @@ x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it ch
 # The command is emitted LAST and read with `cat`, because a command may be
 # multi-line (heredocs are routine here) and @tsv would escape the newlines,
 # silently changing what every rule below matches against.
-{ read -r TIMEOUT; read -r BACKGROUND; COMMAND=$(cat); } < <(
-  echo "$INPUT" | "$JQ" -r '(.tool_input.timeout // 0),
-                             (.tool_input.run_in_background // false),
-                             (.tool_input.command // "")'
-)
+# Captured, not process-substituted, so jq's EXIT STATUS survives. MEASURED
+# 2026-08-30 (code-review probe): with JQ pointing at a missing binary the old
+# form lost the failure inside `< <(...)`, $COMMAND came back empty, and the
+# `[ -z "$COMMAND" ] && exit 0` below treated "could not parse" as "nothing to
+# check" -- the stdin contract's failure, one layer in.
+if ! PARSED=$(echo "$INPUT" | "$JQ" -r '(.tool_input.timeout // 0),
+                                       (.tool_input.run_in_background // false),
+                                       (.tool_input.command // "")'); then
+  # A LITERAL, not a jq call: the first draft reported the failure through
+  # x4_require_input, which emits its verdict WITH jq -- so a broken jq made the
+  # refusal itself silent, and the probe still read "allow". Static text only;
+  # interpolating $JQ here would need the escaping we no longer have.
+  printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"X4 GUARD INERT: this hook could not PARSE its input (the jq call failed), so it checked nothing. Allowing silently would be the stdin defect one layer in. Confirm only if you know why jq is unavailable."}}'
+  exit 0
+fi
+{ read -r TIMEOUT; read -r BACKGROUND; COMMAND=$(cat); } <<< "$PARSED"
 TIMEOUT=${TIMEOUT%$'\r'}
 BACKGROUND=${BACKGROUND%$'\r'}
 # jq.exe on Windows emits CRLF. Strip the CR or `[ "$TIMEOUT" -gt N ]` dies with

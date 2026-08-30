@@ -101,9 +101,16 @@ x4_hook_input() { cat; }
 # x4_require_input <payload> <reason> [event]
 # A guard that cannot see its input cannot vouch for it, so it must not stay
 # silent -- silence IS allow, and that is exactly how the defect above survived.
+#
+# The refusal must not depend on the tool that may have failed. MEASURED
+# 2026-08-30: this emitted its `ask` THROUGH jq, so with jq unavailable an empty
+# payload was reported by nothing at all -- allow again, one layer in. If jq
+# cannot render the reason, a static literal goes out instead (no interpolation:
+# a reason with a quote in it would need escaping we no longer have).
 x4_require_input() {
   [ -n "$1" ] && return 0
   "${JQ:-jq}" -n --arg r "$2" --arg e "${3:-PreToolUse}" \
-    '{hookSpecificOutput:{hookEventName:$e,permissionDecision:"ask",permissionDecisionReason:$r}}'
+    '{hookSpecificOutput:{hookEventName:$e,permissionDecision:"ask",permissionDecisionReason:$r}}' 2>/dev/null \
+  || printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"X4 GUARD INERT: this hook received NO INPUT and could not run jq to report it, so it checked nothing. Confirm only if you know why both are missing."}}'
   exit 0
 }

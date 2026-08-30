@@ -186,7 +186,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=62
+EXPECT=67
 
 # =============================================================================
 # THE STDIN CONTRACT -- a hook that receives NOTHING must not read as ALLOW
@@ -208,6 +208,16 @@ for h in protect-bash.sh protect-files.sh search-scope.sh backup-before-edit.sh;
   if [ "$got" = "ask" ]; then ok "$h asks when it received no input"
   else no "$h -- empty stdin read as '$got'; silence IS allow"; fi
 done
+# ...and the refusal itself must not depend on the tool that may have failed.
+# MEASURED 2026-08-30: x4_require_input emitted its `ask` THROUGH jq, so with jq
+# unavailable an empty payload was reported by nothing at all -- allow again.
+for h in protect-bash.sh protect-files.sh search-scope.sh backup-before-edit.sh; do
+  out=$(JQ=no_such_jq_binary bash "$HOOKS/$h" </dev/null 2>/dev/null)
+  got=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null)
+  [ -z "$got" ] && got="allow"
+  if [ "$got" = "ask" ]; then ok "$h asks on empty input even with jq unavailable"
+  else no "$h -- empty input + broken jq read as '$got'; the refusal ran through the broken tool"; fi
+done
 # The static half. A runtime probe only covers the hooks it lists; this covers any
 # hook, including one added later, and it is the cheaper of the two to keep true.
 if grep -nE '^[^#]*cat /dev/stdin' "$HOOKS"/*.sh >/dev/null 2>&1; then
@@ -215,6 +225,18 @@ if grep -nE '^[^#]*cat /dev/stdin' "$HOOKS"/*.sh >/dev/null 2>&1; then
 else
   ok "no hook reads 'cat /dev/stdin'"
 fi
+
+# A hook whose PARSER fails must not read as ALLOW either. MEASURED 2026-08-30
+# (code-review probe): with JQ pointing at a missing binary, protect-bash.sh
+# exited 0 with EMPTY stdout -- the jq call failed, $COMMAND came back empty, and
+# `[ -z "$COMMAND" ] && exit 0` treated "could not parse" as "nothing to check".
+# Same shape as the stdin contract, one layer in.
+echo; echo "=== parser contract ==="
+out=$(printf '%s' "$(cj 'rm -rf /')" | JQ=no_such_jq_binary bash "$HOOKS/protect-bash.sh" 2>/dev/null)
+got=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null)
+[ -z "$got" ] && got="allow"
+if [ "$got" = "ask" ]; then ok "protect-bash.sh asks when its jq parse fails"
+else no "protect-bash.sh -- a FAILED jq parse read as '$got'; an unparsed command IS allow"; fi
 
 echo "RESULT: $pass passed, $fail failed"
 if [ $((pass + fail)) -ne "$EXPECT" ]; then
