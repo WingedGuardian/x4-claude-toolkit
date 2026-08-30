@@ -31,6 +31,27 @@ The read method was only the proximate cause. The real defect: **a hook could no
 received no input" from "the input said this is fine."** Silence was consent, which is exactly how
 this hid for weeks. `x4_require_input` closes that — a guard that cannot see its input now says so.
 
+### Fixed — an ADVISORY suppressed every rule below it, hiding 298 real refusals
+
+An advisory is an *allow that carries a note*, but it ended by exiting, exactly like a refusal or a
+confirmation — and it sat eighth of nineteen rules. Every rule below it was unreachable for any
+command that earned one.
+
+MEASURED before changing anything, by disabling the six advisory/confirmation rules and replaying the
+1,846 historical commands they catch: 1,548 are plain allows, and **298 are refused by a rule further
+down** — 130 timeout-above-the-cap, 64 shared-`/tmp`, 35 truncating-open on a durable record, 27
+exit-status-after-a-pipeline, 26 profile-manifest-searched-by-name, 11 stage-everything. So the noisy
+rules were not only noisy: they were **suppressing correct refusals**, the largest being the guard
+against a timeout the harness silently clamps.
+
+The file guard had it worse. Its manifest advisory sits above the profile confirmation, the
+deployed-copy rule and the game-install block, so editing a **deployed mod's `content.xml` was advised
+and never confirmed** — and the deployed-copy rule's three branches were unreachable for a manifest.
+
+Advisories now accumulate and are emitted once, on every exit path (`trap`), while refusals and
+confirmations stay terminal. Probes 67 → 76. Two of the new probe EXPECTATIONS turned out to be wrong
+rather than the code, and both had only ever passed because the advisory masked them.
+
 ### Fixed — the same silence one layer in: a failed jq parse, and a refusal that ran through jq
 
 Found by a code-review probe on 2026-08-30 and reproduced before fixing. `protect-bash.sh` read its
