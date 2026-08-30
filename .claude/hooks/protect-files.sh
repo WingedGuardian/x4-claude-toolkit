@@ -3,7 +3,8 @@
 # Locations come from .claude/x4-paths.env / env vars (see _x4-env.sh); when those are
 # unset the legacy path-name patterns act as a backstop, so it still protects out of the box.
 # - Hard blocks: reference/ (read-only base game), .cat/.dat, the game installation
-# - Confirmation: content.xml (manifests), user profile, live extensions/ (deploy target)
+# - Confirmation: user profile, live extensions/ (deploy target)
+# - Advisory only: content.xml (manifests) -- the user turned the prompt off 2026-08-29
 JQ="${JQ:-jq}"
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$HOOK_DIR/_x4-env.sh"
@@ -14,6 +15,10 @@ FILE_PATH=$(echo "$INPUT" | "$JQ" -r '.tool_input.file_path // empty')
 [ -z "$FILE_PATH" ] && exit 0
 
 deny() { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'; exit 0; }
+# advise <reason> -- ALLOW, and explain to CLAUDE. Added 2026-08-29 when the user
+# turned off the content.xml confirmation: the reminder is still worth having, the
+# INTERRUPTION is not. A prompt spends the user's attention; an advisory spends mine.
+advise() { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'; exit 0; }
 ask()  { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}'; exit 0; }
 
 # === HARD BLOCK — read-only reference data (unpacked base game, never edit) ===
@@ -27,7 +32,12 @@ echo "$FILE_PATH" | grep -qiE '\.(cat|dat)$' && deny "BLOCKED: cannot write .cat
 # Deliberately ABOVE the workspace whitelist: a manifest edit always confirms, even inside
 # dev/ or X4_MODS. (Before this it was below the whitelist, so mod manifests in the working
 # dirs were silently allowed — contradicting the documented safety rule.)
-echo "$FILE_PATH" | grep -qiE '(^|[/\\])content\.xml$' && ask "EDITING MOD MANIFEST: $FILE_PATH — this controls what the mod loads. Confirm?"
+# ...but NOT the profile's own content.xml: that is the mod enable/disable list
+# and the Steam Workshop toggle, and the profile CONFIRMATION below must own it.
+# This advisory exits 0, so firing here would silently bypass a prompt the user kept.
+if ! x4_under "$FILE_PATH" "${X4_PROFILE:-}"; then
+  echo "$FILE_PATH" | grep -qiE '(^|[/\\])content\.xml$' && advise "MOD MANIFEST: $FILE_PATH controls what this mod loads, its id, version and dependencies. A wrong id makes every dependent mod report MISSING, and `save=\"1\"` bakes the mod into save files. Allowed without confirmation (user decision 2026-08-29) -- so check the change yourself rather than expecting a prompt."
+fi
 
 # === WHITELIST — the toolkit's own working dirs & docs (editable in every install mode) ===
 case "$(x4_norm "$FILE_PATH")" in */claude.md|*/knowledgebase.md) exit 0;; esac
@@ -44,7 +54,8 @@ echo "$FILE_PATH" | grep -qiE '\.claude[/\\](hooks|skills|agents|commands|plans|
 # NOTE: the "ask" rules below run BEFORE the game-install block, so the deploy target
 # (extensions/), mod manifests and the profile get a confirmation even when they live inside
 # (or are symlinked into) the game folder — x4_under resolves symlinks via realpath.
-# (content.xml is handled earlier, above the whitelist, so manifests always confirm.)
+# (content.xml is handled earlier, above the whitelist, so the advisory reaches Claude
+# even for a manifest inside dev/ or X4_MODS.)
 
 # === CONFIRMATION — user profile files (saves, config, active mod list) ===
 x4_under "$FILE_PATH" "$X4_PROFILE" && ask "EDITING USER PROFILE FILE: $FILE_PATH — changes affect live game config/saves. Confirm?"

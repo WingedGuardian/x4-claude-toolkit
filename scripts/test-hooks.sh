@@ -57,7 +57,12 @@ run_layout(){ # run_layout <name> <toolkit> <game>
   decide deny  protect-files.sh "$(fj "$GAME/01.cat")"                      ".cat archive"
   decide deny  protect-files.sh "$(fj "$GAME/01.dat")"                      ".dat archive"
   decide deny  protect-files.sh "$(fj "$GAME/libraries/wares.xml")"         "base game file"
-  decide ask   protect-files.sh "$(fj "$TK/dev/mymod/content.xml")"         "content.xml manifest"
+  decide advise protect-files.sh "$(fj "$TK/dev/mymod/content.xml")"        "content.xml manifest"
+  # The PROFILE's own content.xml is the mod enable/disable list and the Steam
+  # Workshop toggle. Turning the manifest prompt into an advisory (2026-08-29)
+  # nearly bypassed the profile confirmation for it: the advisory exits 0, so it
+  # short-circuited a rule the user had explicitly kept. It must still ASK.
+  decide ask   protect-files.sh "$(fj "$TMP/profile/content.xml")"          "profile content.xml still confirms"
   decide ask   protect-files.sh "$(fj "$TMP/profile/config.xml")"           "user profile file"
   # X4_MODS is outside $GAME in both layouts, so the source lives elsewhere -> hard block.
   decide deny  protect-files.sh "$(fj "$GAME/extensions/deployed/x.xml")"   "deployed extensions/ (source elsewhere)"
@@ -167,7 +172,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=50
+EXPECT=52
 
 # =============================================================================
 # THE STDIN CONTRACT -- a hook that receives NOTHING must not read as ALLOW
