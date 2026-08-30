@@ -65,6 +65,10 @@ run_layout(){ # run_layout <name> <toolkit> <game>
   # nearly bypassed the profile confirmation for it: the advisory exits 0, so it
   # short-circuited a rule the user had explicitly kept. It must still ASK.
   decide ask   protect-files.sh "$(fj "$TMP/profile/content.xml")"          "profile content.xml still confirms"
+  # ...and a DEPLOYED mod's manifest must still reach the extensions rule below the
+  # advisory. MEASURED 2026-08-30 (F84): an advisory that exits makes every rule under
+  # it unreachable, so this manifest was advised and never confirmed.
+  decide deny  protect-files.sh "$(fj "$GAME/extensions/deployed/content.xml")"  "a deployed mod manifest reaches the deployed-copy rule"
   decide ask   protect-files.sh "$(fj "$TMP/profile/config.xml")"           "user profile file"
   # Saves, game settings and everything else under Documents (user request
   # 2026-08-30). MEASURED first: over 11,133 historical commands this fires on 7
@@ -103,6 +107,9 @@ export X4_EXTENSIONS="$GAME/extensions" X4_GAME="$GAME"
 #  (a) no mods root configured at all: nothing says where the source is, so CONFIRM.
 unset X4_MODS
 decide ask protect-files.sh "$(fj "$GAME/extensions/deployed/x.xml")" "deployed edit, no mods root configured"
+#      ...and a MANIFEST must reach it too: the manifest advisory sits above this rule
+#      and used to exit, so it never did (F84).
+decide ask protect-files.sh "$(fj "$GAME/extensions/deployed/content.xml")" "a deployed manifest still confirms"
 #  (b) mods root IS the extensions folder: the deployed copy IS the source, so this is
 #      ordinary work and must not prompt at all.
 export X4_MODS="$GAME/extensions"
@@ -186,7 +193,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=67
+EXPECT=76
 
 # =============================================================================
 # THE STDIN CONTRACT -- a hook that receives NOTHING must not read as ALLOW
@@ -237,6 +244,32 @@ got=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "all
 [ -z "$got" ] && got="allow"
 if [ "$got" = "ask" ]; then ok "protect-bash.sh asks when its jq parse fails"
 else no "protect-bash.sh -- a FAILED jq parse read as '$got'; an unparsed command IS allow"; fi
+
+# =============================================================================
+# AN ADVISORY MUST NOT SUPPRESS A LATER REFUSAL
+# =============================================================================
+# An `advise` is an ALLOW that carries a note; a `deny` is a refusal. Emitting the
+# note and EXITING made every rule below the advisory unreachable.
+# MEASURED 2026-08-30 by neutralising the six advisory/ask rules and replaying the
+# 1,846 commands they catch: 298 are refused by a rule further down -- 130
+# TIMEOUT-above-the-cap, 64 /tmp, 35 durable open(,'w'), 27 dollar-question-mark
+# after a pipeline, 26 profile-content.xml-by-name, 11 stage-everything. Each was
+# measured GENUINE, and each was silently suppressed by a note.
+echo; echo "=== an advisory never masks a later verdict ==="
+_GA="git ""add -A"
+decide deny   protect-bash.sh "$(cj "cd $GAME && $_GA > $GAME/build.log")"   "a redirect advisory does not hide the stage-everything refusal"
+decide deny   protect-bash.sh "$(cj "grep -rn foo $X4_REFERENCE > $GAME/out.txt")"   "a redirect advisory does not hide the reference-tree refusal"
+# NB the fixture roots live under /tmp, so a redirect INTO the fixture game dir is
+# also a write to /tmp and is refused for that -- correctly. These two use a
+# relative redirect target so the advisories can be observed in isolation.
+decide advise protect-bash.sh "$(cj "cp $GAME/a b")"   "one advisory still advises"
+decide advise protect-bash.sh "$(cj "cp $GAME/a b > log.txt")"   "two advisories still advise"
+# ...and BOTH texts must survive into the single note, not just the last one.
+_out=$(printf '%s' "$(cj "cp $GAME/a b > log.txt")" | bash "$HOOKS/protect-bash.sh" 2>/dev/null)
+_n=$(printf '%s' "$_out" | jq -r '.hookSpecificOutput.additionalContext // ""' | grep -c .)
+if [ "$_n" = "2" ]; then ok "both advisories are carried in ONE note"
+else no "advisory accumulation -- expected 2 lines in additionalContext, got $_n"; fi
+decide deny   protect-bash.sh "$(cj "rm -rf $GAME")"   "a hard block still wins over everything"
 
 echo "RESULT: $pass passed, $fail failed"
 if [ $((pass + fail)) -ne "$EXPECT" ]; then

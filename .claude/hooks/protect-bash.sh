@@ -37,14 +37,34 @@ BACKGROUND=${BACKGROUND%$'\r'}
 # value it cannot compare. Caught by the hook's own regression suite, 15 failures.
 [ -z "$COMMAND" ] && exit 0
 
-deny() { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'; exit 0; }
+deny() { VERDICT=1; "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'; exit 0; }
 # advise <reason> -- ALLOW, and explain to CLAUDE why the command is questionable.
 # The user's attention is the scarce resource: a prompt spends theirs, a deny or an
 # advisory spends mine. Anything that is merely MY hygiene must never reach them.
 # MEASURED 2026-08-29: fixing the stdin defect brought five inert hooks to life at
 # once and turned bypass-permissions mode into manual mode.
-advise() { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'; exit 0; }
-ask()  { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}'; exit 0; }
+# ACCUMULATES, and does NOT exit. An advisory is an ALLOW THAT CARRIES A NOTE, not a
+# decision -- so it must never make the rules below it unreachable. MEASURED
+# 2026-08-30 (F84): with the six advisory/ask rules off, 298 of the 1,846 commands
+# they catch are REFUSED by a rule further down -- 130 timeout-above-the-cap, 64
+# shared-/tmp, 35 durable truncating-open, 27 exit-status-after-a-pipeline, 26
+# profile-manifest-by-name, 11 stage-everything. Every one measured genuine, every
+# one silently suppressed by a note. deny/ask still exit: those ARE decisions.
+VERDICT=""
+ADVICE=""
+# Flush on EVERY exit path. A tail-only flush is silently skipped by the
+# whitelist `exit 0`s in the middle of this file -- MEASURED 2026-08-30: it turned
+# the manifest advisory into a plain allow. Nothing is emitted if a terminal
+# verdict already spoke, or if no advisory accumulated.
+flush_advice() {
+  [ -n "$VERDICT" ] && return 0
+  [ -n "$ADVICE" ] || return 0
+  "$JQ" -n --arg r "$ADVICE" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'
+}
+trap flush_advice EXIT
+advise() { if [ -n "$ADVICE" ]; then ADVICE="$ADVICE
+$1"; else ADVICE="$1"; fi; }
+ask()  { VERDICT=1; "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}'; exit 0; }
 
 nCMD="$(x4_norm "$COMMAND")"
 # has VALUE -> 0 if the (normalized) command mentions that (non-empty, normalized) path/name.
@@ -392,7 +412,5 @@ Prefer  run_in_background: true  — it has no cap and re-invokes you on complet
 Proceed in the foreground only if you have scoped it down (e.g. --limit=N).
 Command: $COMMAND"
 fi
-
-exit 0
 
 exit 0

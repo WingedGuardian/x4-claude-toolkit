@@ -14,12 +14,31 @@ x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it ch
 FILE_PATH=$(echo "$INPUT" | "$JQ" -r '.tool_input.file_path // empty')
 [ -z "$FILE_PATH" ] && exit 0
 
-deny() { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'; exit 0; }
+deny() { VERDICT=1; "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'; exit 0; }
 # advise <reason> -- ALLOW, and explain to CLAUDE. Added 2026-08-29 when the user
 # turned off the content.xml confirmation: the reminder is still worth having, the
 # INTERRUPTION is not. A prompt spends the user's attention; an advisory spends mine.
-advise() { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'; exit 0; }
-ask()  { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}'; exit 0; }
+#
+# ACCUMULATES, and does NOT exit (2026-08-30, F84). An advisory is an ALLOW THAT
+# CARRIES A NOTE, not a decision, so it must never make the rules below it
+# unreachable. Here that had teeth: the manifest advisory sits ABOVE the profile
+# confirmation, the deployed-extensions confirmation AND the game-install hard
+# block, so editing a DEPLOYED mod manifest was advised and never confirmed.
+VERDICT=""
+ADVICE=""
+# Flush on EVERY exit path. A tail-only flush is silently skipped by the
+# whitelist `exit 0`s in the middle of this file -- MEASURED 2026-08-30: it turned
+# the manifest advisory into a plain allow. Nothing is emitted if a terminal
+# verdict already spoke, or if no advisory accumulated.
+flush_advice() {
+  [ -n "$VERDICT" ] && return 0
+  [ -n "$ADVICE" ] || return 0
+  "$JQ" -n --arg r "$ADVICE" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'
+}
+trap flush_advice EXIT
+advise() { if [ -n "$ADVICE" ]; then ADVICE="$ADVICE
+$1"; else ADVICE="$1"; fi; }
+ask()  { VERDICT=1; "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}'; exit 0; }
 
 # === HARD BLOCK — read-only reference data (unpacked base game, never edit) ===
 # X4_REFERENCE defaults to $X4_TOOLKIT/reference, so this covers the default layout too.
@@ -38,10 +57,11 @@ fi
 # Deliberately ABOVE the workspace whitelist: a manifest edit always confirms, even inside
 # dev/ or X4_MODS. (Before this it was below the whitelist, so mod manifests in the working
 # dirs were silently allowed — contradicting the documented safety rule.)
-# ...but NOT the profile's own content.xml: that is the mod enable/disable list
-# and the Steam Workshop toggle, and the profile CONFIRMATION below must own it.
-# This advisory exits 0, so firing here would silently bypass a prompt the user kept.
-if ! x4_under "$FILE_PATH" "${X4_PROFILE:-}"; then
+# The profile's own manifest is the mod enable/disable list and the Steam Workshop
+# toggle, and the profile CONFIRMATION below owns it. That used to need a guard here,
+# because this advisory exited and would have bypassed the prompt the user kept; since
+# advisories accumulate (F84) the confirmation below is reached on its own and wins.
+if true; then
   echo "$FILE_PATH" | grep -qiE '(^|[/\\])content\.xml$' && advise "MOD MANIFEST: $FILE_PATH controls what this mod loads, its id, version and dependencies. A wrong id makes every dependent mod report MISSING, and `save=\"1\"` bakes the mod into save files. Allowed without confirmation (user decision 2026-08-29) -- so check the change yourself rather than expecting a prompt."
 fi
 
