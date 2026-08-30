@@ -90,7 +90,13 @@ pipe_feeds_dollarq() {
     {
       seg = $0
       chk = seg
-      gsub(/"[^"]*"/, "", chk)          # pipes inside a string are not pipes
+      gsub(/"[^"]*"/, "", chk)          # a pipe inside a string is not a pipe
+      # ...nor is one inside a PROCESS SUBSTITUTION. `<(a | b)` runs in a subshell,
+      # so its exit status never becomes $?. MEASURED 2026-08-29: this denied a
+      # `diff <(grep x | sort) <(grep y | sort); echo $?` where the $? correctly
+      # belonged to diff. Fifth instance in one day of a predicate matching
+      # something that is not the thing it is about.
+      gsub(/[<>]\([^)]*\)/, "", chk)
       if (seg ~ /\$\?/ && (chk ~ /[^|]\|[^|]/ || prevchk ~ /[^|]\|[^|]/)) {
         found = 1; exit
       }

@@ -78,6 +78,10 @@ probe deny  "pipe-plain-dollarq"   'cmd | head -3 && echo $?'
 probe allow "pipe-far-from-dollarq"   'cd /a && grep -o x f | head -1; cd /b && uv run python t.py; rc=$?'
 probe allow "dollarq-with-no-pipeline" 'uv run pytest -q; rc=$?'
 probe allow "pipeline-after-the-dollarq" 'uv run python x.py; rc=$?; echo done | tee log.txt'
+# A pipe inside a PROCESS SUBSTITUTION runs in a subshell, so its status never
+# becomes $?. This denied a real `diff <(grep|sort) <(grep|sort); echo $?` where
+# the $? correctly belonged to diff.
+probe allow "pipe-in-process-substitution" 'diff <(grep a f | sort) <(grep b g | sort) > /dev/null; echo $?'
 # $? EXPANDS inside double quotes, so blanking them to find pipes also hid the
 # thing being detected. `echo "exit=$?"` is the commonest form of the mistake.
 probe deny  "dollarq-inside-double-quotes" 'cmd | tail -5 && echo "exit=$?"'
