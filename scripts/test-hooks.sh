@@ -47,7 +47,9 @@ run_layout(){ # run_layout <name> <toolkit> <game>
            "$TMP/profile" "$TMP/mods/other"
   export X4_TOOLKIT="$TK" X4_GAME="$GAME" X4_REFERENCE="$TK/reference" \
          X4_PROFILE="$TMP/profile" X4_MODS="$TMP/mods" X4_EXTENSIONS="$GAME/extensions" \
-         X4_CONFIG=/nonexistent CLAUDE_PROJECT_DIR="$TK"
+         X4_CONFIG=/nonexistent CLAUDE_PROJECT_DIR="$TK" \
+         X4_SAVES="$TMP/profile/save" X4_DOCUMENTS="$TMP/docs"
+  mkdir -p "$TMP/profile/save" "$TMP/docs/My Games/SomeGame" "$TMP/docs/Other Game"
   echo; echo "=== protect-files.sh — $name layout ==="
   decide allow protect-files.sh "$(fj "$TK/dev/mymod/libraries/wares.xml")" "mod source in dev/"
   decide allow protect-files.sh "$(fj "$TMP/mods/other/wares.xml")"         "mod source in \$X4_MODS"
@@ -64,6 +66,16 @@ run_layout(){ # run_layout <name> <toolkit> <game>
   # short-circuited a rule the user had explicitly kept. It must still ASK.
   decide ask   protect-files.sh "$(fj "$TMP/profile/content.xml")"          "profile content.xml still confirms"
   decide ask   protect-files.sh "$(fj "$TMP/profile/config.xml")"           "user profile file"
+  # Saves, game settings and everything else under Documents (user request
+  # 2026-08-30). MEASURED first: over 11,133 historical commands this fires on 7
+  # MORE than the existing profile rules already did, and on zero more edits.
+  decide ask   protect-files.sh "$(fj "$TMP/profile/save/save_001.xml.gz")"  "a save game"
+  decide ask   protect-files.sh "$(fj "$TMP/docs/My Games/SomeGame/x.ini")"  "under My Games"
+  # `.dat` is a GENERIC extension. The X4-archive rule denied another game's save
+  # outright until it was scoped to X4 locations -- a guard blocking a file that was
+  # never ours. It must ask here, and still deny inside the game folder.
+  decide ask   protect-files.sh "$(fj "$TMP/docs/Other Game/saved.dat")"     "another game's .dat is not an X4 archive"
+  decide deny  protect-files.sh "$(fj "$GAME/01.dat")"                       ".dat INSIDE the game still denies"
   # X4_MODS is outside $GAME in both layouts, so the source lives elsewhere -> hard block.
   decide deny  protect-files.sh "$(fj "$GAME/extensions/deployed/x.xml")"   "deployed extensions/ (source elsewhere)"
 }
@@ -126,6 +138,8 @@ decide allow search-scope.sh '{"tool_name":"Grep","tool_input":{"pattern":"x"}}'
 echo; echo "=== protect-bash.sh ==="
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_GAME'")"      "rm the game directory"
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_REFERENCE'")" "rm reference/"
+decide ask   protect-bash.sh "$(cj "rm -f '$TMP/profile/save/save_001.xml.gz'")" "deleting a save game"
+decide ask   protect-bash.sh "$(cj "echo x > '$TMP/docs/notes.txt'")"            "writing into Documents"
 decide ask   protect-bash.sh "$(cj "rm -rf '$X4_MODS/other'")" "rm inside mod sources"
 # The FALSE POSITIVES these rules produced the moment they first ran (2026-08-29).
 # Until this week no rule in protect-bash.sh had ever executed in production, so
@@ -172,7 +186,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=52
+EXPECT=62
 
 # =============================================================================
 # THE STDIN CONTRACT -- a hook that receives NOTHING must not read as ALLOW

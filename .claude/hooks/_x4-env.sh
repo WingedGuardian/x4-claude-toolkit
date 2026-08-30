@@ -58,6 +58,27 @@ x4_under() {
   case "$f" in "$d"/*|"$d") return 0;; *) return 1;; esac
 }
 
+# --- user documents ----------------------------------------------------------
+# Everything a person keeps outside the toolkit: game settings, saves, other games'
+# data. On the reference machine Documents holds Elder Scrolls Online, Paradox
+# Interactive, My Games and a backup archive alongside the X4 profile -- none of it
+# reproducible, none of it ours.
+#
+# MEASURED 2026-08-29 before adding the rules that use this: over 11,133 historical
+# commands, guarding all of Documents fires on 7 MORE commands (0.06%) than the
+# existing X4-profile rules already did, and on ZERO more Edit/Write calls. Cheap.
+#
+# Empty when it cannot be resolved, and every rule below is guarded on non-empty --
+# so an unconfigured machine gets no rule rather than a rule against "".
+if [ -z "${X4_DOCUMENTS:-}" ]; then
+  for _d in "${USERPROFILE:-}/Documents" "$HOME/Documents" "$HOME/My Documents"; do
+    [ -n "${_d#/Documents}" ] && [ -d "$_d" ] && { X4_DOCUMENTS="$_d"; break; }
+  done
+fi
+# The save folder, named separately because deleting one is unrecoverable and the
+# message should say so rather than talking about "an X4 directory".
+: "${X4_SAVES:=${X4_PROFILE:+$X4_PROFILE/save}}"
+
 # --- hook payload -------------------------------------------------------------
 # Read the hook's JSON payload from stdin.
 #

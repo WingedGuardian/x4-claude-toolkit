@@ -26,7 +26,13 @@ ask()  { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",
 x4_under "$FILE_PATH" "$X4_REFERENCE" && deny "BLOCKED: reference/ is read-only unpacked base game data — never edit. Make a diff patch in your mod instead."
 
 # === HARD BLOCK — CAT/DAT archive files (use bin/xrcat / XRCatTool only) ===
-echo "$FILE_PATH" | grep -qiE '\.(cat|dat)$' && deny "BLOCKED: cannot write .cat/.dat archives directly. Use bin/xrcat (XRCatTool) to pack/unpack."
+# Scoped 2026-08-29: only where X4 keeps archives. `.dat` is a generic extension --
+# this denied editing another game's save in Documents, which is not ours to block.
+if echo "$FILE_PATH" | grep -qiE '\.(cat|dat)$'; then
+  for _r in "${X4_GAME:-}" "${X4_EXTENSIONS:-}" "${X4_MODS:-}" "${X4_TOOLKIT:-}"; do
+    x4_under "$FILE_PATH" "$_r" && deny "BLOCKED: cannot write .cat/.dat archives directly. Use bin/xrcat (XRCatTool) to pack/unpack."
+  done
+fi
 
 # === CONFIRMATION — content.xml (mod manifests; changing breaks mod loading) ===
 # Deliberately ABOVE the workspace whitelist: a manifest edit always confirms, even inside
@@ -59,6 +65,11 @@ echo "$FILE_PATH" | grep -qiE '\.claude[/\\](hooks|skills|agents|commands|plans|
 
 # === CONFIRMATION — user profile files (saves, config, active mod list) ===
 x4_under "$FILE_PATH" "$X4_PROFILE" && ask "EDITING USER PROFILE FILE: $FILE_PATH — changes affect live game config/saves. Confirm?"
+# Saves first: the message must name what is actually at risk.
+x4_under "$FILE_PATH" "${X4_SAVES:-}" && ask "EDITING A SAVE GAME: $FILE_PATH -- saves are not reproducible and there is no undo. Confirm?"
+# ...and the rest of Documents: game settings, other games, personal files.
+# Not ours, not reproducible, and nothing else here guards them.
+x4_under "$FILE_PATH" "${X4_DOCUMENTS:-}" && ask "EDITING A FILE IN YOUR DOCUMENTS FOLDER: $FILE_PATH -- this is outside the toolkit and the game. Confirm?"
 echo "$FILE_PATH" | grep -qiE 'Egosoft[/\\]X4[/\\]' && ask "EDITING USER PROFILE FILE: $FILE_PATH — changes affect live game config/saves. Confirm?"
 
 # === CONFIRMATION — live extensions/ (deploy target, overwritten on every deploy) ===

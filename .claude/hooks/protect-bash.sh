@@ -123,6 +123,18 @@ fi
     || rm_segments | grep -qE 'x4 foundations|egosoft/x4'; }; } \
   && ask "Deleting files in an X4 directory — confirm: $COMMAND"
 
+# === CONFIRM - deleting a SAVE GAME ===
+# Named separately from the rule above so the prompt says what is at risk. There is
+# no undo and no backup: on the reference machine that is 25 files and 1.7 GB.
+{ is_rm && rm_targets "${X4_SAVES:-}"; } \
+  && ask "DELETING A SAVE GAME. Saves are not reproducible and nothing backs them up. Confirm: $COMMAND"
+
+# === CONFIRM - deleting or overwriting anything else under Documents ===
+# Game settings, other games' data, personal files. Not ours, not reproducible.
+{ { is_rm || printf %s "$nCMD" | grep -qE '(^|[;&|[:space:]])(mv|cp|tee)([[:space:]]|$)|>'; } \
+  && has "${X4_DOCUMENTS:-}"; } \
+  && ask "WRITING OR DELETING UNDER YOUR DOCUMENTS FOLDER: this is outside the toolkit and the game. Confirm: $COMMAND"
+
 # === CONFIRM — mv/cp into the game or profile dirs ===
 printf '%s' "$COMMAND" | grep -qiE '^[[:space:]]*(mv|cp|move|copy)\b' \
   && { has "$X4_GAME" || has "$X4_PROFILE" || printf '%s' "$nCMD" | grep -qE 'x4 foundations|egosoft/x4'; } \
