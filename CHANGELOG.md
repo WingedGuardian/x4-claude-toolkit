@@ -31,6 +31,15 @@ The read method was only the proximate cause. The real defect: **a hook could no
 received no input" from "the input said this is fine."** Silence was consent, which is exactly how
 this hid for weeks. `x4_require_input` closes that — a guard that cannot see its input now says so.
 
+### Fixed — the same silence one layer in: a failed jq parse, and a refusal that ran through jq
+
+Found by a code-review probe on 2026-08-30 and reproduced before fixing. `protect-bash.sh` read its
+fields through `< <(jq ...)`, which loses jq's exit status: with jq unavailable the command came back
+empty and the hook exited 0 — *could not parse* read as *nothing to check*. And the first fix reported
+that failure through `x4_require_input`, which emits its verdict **with jq**, so a broken jq made the
+refusal itself silent. Both now fall back to a static JSON literal. The suite gained a parser-contract
+probe and four empty-input-with-broken-jq probes (62 → 67), every one watched fail first.
+
 ### Changed — hooks now advise or deny CLAUDE rather than prompting YOU
 
 Bringing five never-exercised guards to life at once made the problem obvious: **17 rules could
