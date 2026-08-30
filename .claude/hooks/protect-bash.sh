@@ -80,6 +80,25 @@ is_rm() { printf '%s' "$COMMAND" | grep -qE '(^|[;&|[:space:]])rm([[:space:]]|$)
 rm_segments() { printf '%s' "$nCMD" | tr ';&|' '\n\n\n' | grep -E '(^|[[:space:]])rm([[:space:]]|$)'; }
 rm_targets()  { [ -n "$1" ] && rm_segments | grep -qF "$(x4_norm "$1")"; }
 
+# Does a pipeline immediately precede the $? ? Segments are split on ; && || and
+# newlines; quoted strings are blanked first so a `;` inside a string cannot split.
+# `$?` refers to the command just before it, so only the SAME segment or the one
+# immediately preceding can be the referent.
+pipe_feeds_dollarq() {
+  printf '%s' "$1" | sed "s/'[^']*'//g" | awk '
+    BEGIN { RS = "[;\n]|&&|\\|\\|"; prevchk = ""; found = 0 }
+    {
+      seg = $0
+      chk = seg
+      gsub(/"[^"]*"/, "", chk)          # pipes inside a string are not pipes
+      if (seg ~ /\$\?/ && (chk ~ /[^|]\|[^|]/ || prevchk ~ /[^|]\|[^|]/)) {
+        found = 1; exit
+      }
+      prevchk = chk
+    }
+    END { exit found ? 0 : 1 }'
+}
+
 # === HARD BLOCK — delete the game installation ===
 { is_rm && { rm_targets "$X4_GAME" || rm_segments | grep -qF 'x4 foundations'; }; } && deny "BLOCKED: cannot delete the X4 game installation directory."
 
@@ -257,9 +276,7 @@ _PB_NOHD=$(printf '%s\n' "$COMMAND" | awk '
     if (match(line, /<<-?[ ]*["\x27]?[A-Za-z_][A-Za-z0-9_]*["\x27]?/)) {
       t = term(substr(line, RSTART, RLENGTH)); skip=1 }
     print line }')
-if printf '%s' "$_PB_NOHD" | grep -qE '\$\?' \
-   && printf '%s' "$_PB_NOHD" | sed "s/'[^']*'//g; s/\"[^\"]*\"//g" \
-      | grep -qE '[^|]\|[^|]'; then
+if pipe_feeds_dollarq "$_PB_NOHD"; then
   deny "\$? AFTER A PIPELINE reports the LAST command's exit code, not the one you mean.
   cmd | head; echo \$?      -> that is HEAD's exit code
 Measured 2026-08-22: this reported a stale-index refusal (real exit 5) as 'exit 0',

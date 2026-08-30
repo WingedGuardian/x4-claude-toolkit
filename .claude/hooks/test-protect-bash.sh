@@ -69,6 +69,18 @@ bash -n "$HOOK" || { echo "FATAL: $HOOK does not parse"; exit 1; }
 echo "--- guards must FIRE ---"
 probe deny  "pipe-then-exitcode"   'uv run python x.py 2>&1 | tail -5; echo "exit=$?"'
 probe deny  "pipe-plain-dollarq"   'cmd | head -3 && echo $?'
+# NARROWED 2026-08-29. The rule tested '$? appears somewhere' AND 'a pipeline
+# appears somewhere' as independent predicates over the whole command -- the same
+# shape as the delete rules fixed the same day. A peer session hit the false
+# positive on a real command where the pipeline sat three segments before a $?
+# that belonged to an unpiped command. $? refers to the command IMMEDIATELY
+# before it, so only the same segment or the one just prior can be the referent.
+probe allow "pipe-far-from-dollarq"   'cd /a && grep -o x f | head -1; cd /b && uv run python t.py; rc=$?'
+probe allow "dollarq-with-no-pipeline" 'uv run pytest -q; rc=$?'
+probe allow "pipeline-after-the-dollarq" 'uv run python x.py; rc=$?; echo done | tee log.txt'
+# $? EXPANDS inside double quotes, so blanking them to find pipes also hid the
+# thing being detected. `echo "exit=$?"` is the commonest form of the mistake.
+probe deny  "dollarq-inside-double-quotes" 'cmd | tail -5 && echo "exit=$?"'
 probe deny  "tmp-write"            'uv run python gates/g.py > /tmp/g.txt 2>&1'
 need "$X4_TOOLKIT" "unscoped-search" X4_TOOLKIT && probe deny "unscoped-search"      "grep -rn foo \"$X4_TOOLKIT\""
 probe deny "durable-truncate"     'echo hi > KNOWLEDGEBASE.md'
