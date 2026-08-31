@@ -16,7 +16,19 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 HOOKS="$REPO/.claude/hooks"
 command -v jq >/dev/null 2>&1 || { echo "jq is required"; exit 2; }
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+# The sandbox must NOT live under /tmp. One of the rules under test refuses writes into
+# shared /tmp, so a sandbox rooted there makes every unrelated write probe trip it -- the
+# probe for "an append cannot truncate" would fail for a reason that has nothing to do
+# with appends. That went unnoticed until 2026-08-31 only because the /tmp rule's regex
+# accepted a double quote and not a single one, and these probes quote with singles: the
+# harness was passing because of a gap in the rule it was standing next to.
+_SBX="${X4_TEST_SANDBOX:-$REPO/.test-sandbox}"
+mkdir -p "$_SBX" || { echo "cannot create sandbox base $_SBX"; exit 2; }
+TMP="$(mktemp -d "$_SBX/hooks.XXXXXX")"; trap 'rm -rf "$TMP"' EXIT
+case "$TMP" in
+  /tmp/*|/var/tmp/*) echo "REFUSING: sandbox landed under /tmp ($TMP); the shared-/tmp rule
+       would fire on unrelated write probes and the failures would be misattributed."; exit 2 ;;
+esac
 pass=0; fail=0
 ok(){ pass=$((pass+1)); printf '  OK   %s\n' "$1"; }
 no(){ fail=$((fail+1)); printf '  FAIL %s\n' "$1"; }
@@ -228,6 +240,17 @@ decide advise protect-bash.sh "$(cj "G='$X4_GAME'; echo x > \"\$G/notes.txt\"")"
 # segments that actually invoke a delete.
 decide allow protect-bash.sh "$(cj "L='$X4_GAME/.claude'; rm -f /tmp/scratch.log")" "temp delete, game dir in a variable"
 decide allow protect-bash.sh "$(cj "echo 'working on $X4_GAME'; rm -f /tmp/x")"      "temp delete, game dir in an echo"
+
+# --- shared /tmp: the rule had NO probe, and its regex accepted only a DOUBLE quote ---
+# So a single-quoted target slipped past, and the hook suite's own sandbox depended on
+# that gap. Both quote styles are asserted here so closing it cannot silently reopen.
+decide deny  protect-bash.sh "$(cj 'uv run x4validate > "/tmp/out.log"')"  "measurement output to /tmp, double-quoted"
+decide deny  protect-bash.sh "$(cj "uv run x4validate > '/tmp/out.log'")"  "measurement output to /tmp, SINGLE-quoted"
+decide deny  protect-bash.sh "$(cj 'uv run x4validate > /tmp/out.log')"    "measurement output to /tmp, unquoted"
+# Reads and cleanup are fine; only writes fire. Without these the rule could be widened
+# to "mentions /tmp" and nothing would notice.
+decide allow protect-bash.sh "$(cj 'cat /tmp/out.log')"                    "READING from /tmp is fine"
+decide allow protect-bash.sh "$(cj 'ls -la /tmp/')"                        "listing /tmp is fine"
 decide allow protect-bash.sh "$(cj "ls -la '$X4_GAME/extensions'")"                 "no delete at all, game dir named"
 decide deny  protect-bash.sh "$(cj "cd /tmp && rm -rf '$X4_GAME/extensions'")"     "delete of the game dir, chained"
 decide allow  protect-bash.sh "$(cj "ls '$X4_GAME/01.cat'")"   "command naming a .cat"   # DROPPED: naming a .cat is harmless; protect-files.sh checks the TARGET
@@ -264,7 +287,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=115
+EXPECT=122
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -341,11 +364,42 @@ fi
 # `[ -z "$COMMAND" ] && exit 0` treated "could not parse" as "nothing to check".
 # Same shape as the stdin contract, one layer in.
 echo; echo "=== parser contract ==="
-out=$(printf '%s' "$(cj 'rm -rf /')" | JQ=no_such_jq_binary bash "$HOOKS/protect-bash.sh" 2>/dev/null)
+# --- STATIC: no hook may use a bash-4-only feature ---------------------------
+# macOS ships bash 3.2 as /bin/bash. `declare -A` there is not a syntax error that stops
+# the script -- it fails, then `F[key]=v` becomes an ARITHMETIC index into an ordinary
+# array, every predicate collapses into one slot, and the hook ALLOWS EVERYTHING while
+# looking healthy. This machine cannot run bash 3.2, so a runtime probe is impossible and
+# a static check is the only reachable one. Comments are excluded so the entry
+# explaining the trap does not trip it.
+_b4=$(grep -nE '^[^#]*(declare[[:space:]]+-A|\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^)\}|mapfile|readarray)' \
+        "$HOOKS"/*.sh 2>/dev/null)
+if [ -z "$_b4" ]; then ok "no hook uses a bash-4-only feature (macOS /bin/bash is 3.2)"
+else no "a hook uses a bash-4-only feature -- on macOS the guard would die SILENTLY: $_b4"; fi
+
+# CONTRACT CHANGED, and it is now STRONGER. protect-bash.sh no longer PARSES with jq --
+# hook_facts.py does that -- so jq is only the EMITTER. That made a broken jq far more
+# dangerous than before: every deny became empty stdout, which the client reads as
+# ALLOW. So there is now a Python emitter fallback, and the assertion is that a broken
+# jq still produces the CORRECT VERDICT rather than degrading to a prompt.
+# The probe also needs a command that actually triggers a rule: the old one used a
+# delete of "/" which matches no configured root, so it could only ever have tested the
+# refusal path, never the verdict path.
+out=$(printf '%s' "$(cj 'git add -A')" | JQ=no_such_jq_binary bash "$HOOKS/protect-bash.sh" 2>/dev/null)
 got=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null)
 [ -z "$got" ] && got="allow"
-if [ "$got" = "ask" ]; then ok "protect-bash.sh asks when its jq parse fails"
-else no "protect-bash.sh -- a FAILED jq parse read as '$got'; an unparsed command IS allow"; fi
+if [ "$got" = "deny" ]; then ok "a broken jq still emits the verdict (python fallback)"
+else no "protect-bash.sh -- with jq broken the deny came out as '$got'; silence IS allow"; fi
+
+# And a missing PYTHON must ASK: the parse pass is the only thing that inspects the
+# command now, so without it the hook has checked nothing at all.
+# X4_PYTHON points at a binary that does NOT run. Emptying PATH instead would break
+# `dirname` and `cat` as well, so the hook would fail before reaching the python check
+# and the probe would be testing nothing -- a green with no reachable failure branch.
+out=$(printf '%s' "$(cj 'git add -A')" | X4_PYTHON="$TMP/no_such_python" bash "$HOOKS/protect-bash.sh" 2>/dev/null)
+got=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null)
+[ -z "$got" ] && got="allow"
+if [ "$got" = "ask" ]; then ok "protect-bash.sh asks when no Python is available"
+else no "protect-bash.sh -- with no Python the command read as '$got'; unchecked IS allow"; fi
 
 # =============================================================================
 # AN ADVISORY MUST NOT SUPPRESS A LATER REFUSAL

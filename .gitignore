@@ -51,3 +51,6 @@ tools/x4validate/.perf-baseline.json
 # it recovers without depending on `finally`, which does not run on SIGKILL.
 tools/x4validate/.mutation-probe-active
 tools/x4validate/.mutation-probe-pristine/
+
+# hook test sandbox (scripts/test-hooks.sh)
+.test-sandbox/

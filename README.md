@@ -162,7 +162,7 @@ freshness contract and the exit codes, and `tools/basex/QUERIES.md` for worked q
 - **Auto-backup** — every edited file is copied to `.claude\backups\` with an audit log.
 - **Confidence system** — no guessing; Claude rates confidence and lists assumptions first.
 - **Baseline capture** — `scripts/generate-baseline.sh` records a known-good snapshot (game version, installed-mod hashes, a normalized debug.txt error fingerprint) to diff against later.
-- **The guards are tested** — `bash scripts/test-hooks.sh` feeds every hook synthetic tool-call JSON and asserts the decision it returns (33 assertions, across both the in-game and separate layouts). Run it after any change to `.claude/hooks/`. This exists because a silent guard is worse than no guard: several hooks were inert for entire releases and code review never caught it.
+- **The guards are tested** — `bash scripts/test-hooks.sh` feeds every hook synthetic tool-call JSON and asserts the decision it returns, across both the in-game and separate layouts. `python .claude/hooks/test_hook_facts.py` adds ~100 unit tests over the command parser in well under a second. Run both after any change to `.claude/hooks/`. This exists because a silent guard is worse than no guard: several hooks were inert for entire releases and code review never caught it. Coverage is *verified* rather than claimed: `python scripts/verify-hook-tests.py` plants a specific defect and requires the **named** test for it to go red, then pins each rule true and false in turn and requires a must-fire / must-not-fire test to break each way. A suite that cannot go red is decoration, and several guards here were inert for entire releases while their suite was green.
 
 ---
 
@@ -206,6 +206,10 @@ Paste the contents of `SETUP_PROMPT.txt`. Claude runs `bash setup.sh`, checks pr
   on **Windows install [Git for Windows](https://git-scm.com/download/win)** (Git Bash) — without
   it the hooks silently do nothing, so the safety guards below would not be active.
 - **jq** — Windows `winget install jqlang.jq` · Linux `sudo pacman -S jq` / `apt install jq` · macOS `brew install jq`
+- **Python 3** — required, and **not only for the tools**: the Bash guard (`protect-bash.sh`) analyses
+  each command with `hook_facts.py`, so without an interpreter on `PATH` (or `X4_PYTHON` pointing at
+  one) it **asks** on every command instead of checking it. Any `python`/`python3`/`py` will do; the
+  parse pass has no third-party dependencies.
 - **uv** (+ Python 3.13) — for x4validate (https://docs.astral.sh/uv/)
 - **XRCatTool** (from Egosoft) — to unpack your own game to `reference/` (run via `bin/xrcat`)
 - **Wine** — only on **Linux/macOS**, to run XRCatTool (a Windows `.exe`)

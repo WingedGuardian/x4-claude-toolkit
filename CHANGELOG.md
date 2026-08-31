@@ -2,6 +2,87 @@
 
 ## Unreleased
 
+### Changed — ⚠ `protect-bash.sh` now requires Python, and is 12× faster for it
+
+**If you install this toolkit, the Bash guard now needs a Python interpreter on PATH** (or
+`X4_PYTHON` pointing at one). Python was already a prerequisite for the tools; it is now one for the
+hooks too. Without it the hook **asks** rather than silently allowing.
+
+The guard rules used to hand-roll quote-aware shell parsing in bash, once per rule. MEASURED on a
+clean machine, PreToolUse being on the critical path of every Bash call:
+
+| payload | before the rules were re-scoped | after | with the parse pass |
+|---|---|---|---|
+| `echo hi` | 978 ms | 3,379 ms | **~380 ms** |
+| a 201-char command | 1,205 ms | 13,585 ms (max 18,713) | **~700 ms** |
+
+Attributed by profiling each helper: one helper cost **236 ms for a single token** and ran per-token
+inside per-segment loops, while two others were re-invoked five and four times, each re-tokenising
+from scratch.
+
+`.claude/hooks/hook_facts.py` now does ONE parse pass and answers every rule's question;
+`protect-bash.sh` keeps the policy and the prose. Every verdict and every explanation is unchanged —
+19 verdict calls before, 19 after, no rule lost and no verdict kind changed.
+
+### Fixed — six guard gaps that all lived in that duplicated parsing
+
+Each was demonstrated against the old hook, not inferred:
+
+- **`rg` and `ag` recurse by default.** The reference-tree and workspace-root rules gated on a
+  recursive *flag*, so `rg <pattern> <reference>` — the exact full-tree search the rule exists to
+  stop — was allowed.
+- **Wrapper verbs hid the command.** `time grep -rn …`, `echo x | sudo tee <path>`, `nice cp …` and
+  `env mv …` all escaped, because the rules required the verb to be the segment's first word.
+- **`mv -t <dir> a b`** wrote to a destination no rule could see (it took the last operand).
+- **`>|`** (the noclobber override) never matched the redirect pattern, so it truncated unwatched.
+- **`grep -r <root> -e <pattern>`** consumed the root as "the pattern" and the search rules missed it.
+- **A heredoc marker inside a quoted string** opened a body-skip region, hiding every following
+  command from three refusal rules.
+
+Also fixed: `.`/`..` path segments are now canonicalised (`<root>/./X4 Foundations` compared unequal
+to the root), the game-delete hard block regained its name backstop — which is the only protection an
+installation with no configured paths has — and `bash -c "<command>"` is now parsed rather than
+treated as opaque.
+
+### Fixed — two ways the guard could go silently dead on a whole platform
+
+Both were introduced by the rewrite above and caught by its own checks, not by reading:
+
+- **MSYS translates a POSIX path in an environment variable** when handing it to a *native* Windows
+  process. Bash exported `X4_DOCUMENTS=/tmp/x/docs`; Python received
+  `C:/Users/…/AppData/Local/Temp/x/docs`, while the command text it was compared against still said
+  `/tmp/x/docs`. They can never match, so the Documents confirm, the save-game confirm, the
+  `reference/` hard block, the mod-source delete and the deploy advisory **all stopped firing**. This
+  is not test-only: the README tells you that you may write roots as `C:\…` *or* `/c/…`. The
+  configured roots now travel on **stdin**, which is a byte stream and is not translated.
+  (Independently, `_x4-env.sh` only *exports* what came from `x4-paths.env`, so `X4_DOCUMENTS`,
+  `X4_SAVES` and `X4_REFERENCE` were never exported at all — two separate causes of the same silence,
+  in one line of code.)
+- **`declare -A` is a bash 4 feature and macOS ships bash 3.2 as `/bin/bash`.** There it does not
+  abort the script: the declare fails, the next assignment becomes an *arithmetic* index into an
+  ordinary array, every rule collapses into one slot, and the hook **allows everything while looking
+  healthy**. Replaced with a newline-delimited membership test that works on bash 3.2, plus a static
+  check in the suite — this machine cannot run bash 3.2, so a static check is the only reachable one,
+  and it is verified to fire against a planted feature.
+
+### Fixed — a broken `jq` turned every refusal into an allow
+
+`protect-bash.sh` no longer parses with jq, only emits with it. That made a missing or broken jq far
+more dangerous than before: a `deny` became empty stdout, which is read as **allow**. There is now a
+Python fallback emitter, so a broken jq still produces the correct verdict.
+
+### Added — every guard rule is now probed in both directions, and proven able to fail
+
+`.claude/hooks/test_hook_facts.py` — 92 unit tests over the parse pass, run in ~15 ms with no
+dependencies (`python .claude/hooks/test_hook_facts.py`).
+
+Coverage is *verified*, not asserted: pinning each predicate false must break a must-fire test, and
+pinning it true must break a must-not-fire test. **All 19 rule predicates pass both**, where a review
+had found several rules with no probe at all (`sed -i`, XRCatTool re-unpack, the durable-record
+rules, the timeout cap, the workspace-root search). Twelve planted mutations are each caught by their
+specific target test — the first run caught **three tests that were passing for the wrong reason**,
+including one shadowed by a guard clause in front of the thing it meant to test.
+
 ### Fixed — ⚠ every hook was INERT: they read stdin in a way that returns nothing
 
 **If you have been relying on these hooks, they have not been protecting you.** All five read their

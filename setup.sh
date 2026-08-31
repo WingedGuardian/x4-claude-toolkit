@@ -29,6 +29,16 @@ if command -v jq >/dev/null 2>&1; then ok "jq found"; else
 if command -v uv >/dev/null 2>&1; then ok "uv found"; else
   warn "uv not found — install from https://docs.astral.sh/uv/ (powers x4validate / Python 3.13)"; fi
 
+# A bare interpreter, checked SEPARATELY from uv. protect-bash.sh analyses every command
+# with .claude/hooks/hook_facts.py, so without one the Bash guard asks on every command
+# instead of checking it. uv can be present while `python` is not on PATH, so testing uv
+# alone would report a healthy setup for a machine whose main guard cannot run.
+_py=""
+for _c in python python3 py; do command -v "$_c" >/dev/null 2>&1 && { _py="$_c"; break; }; done
+if [ -n "$_py" ]; then ok "python found ($_py) — the Bash guard can analyse commands"; else
+  warn "no python/python3/py on PATH — protect-bash.sh cannot analyse commands and will ASK on
+       every one. Install Python 3, or set X4_PYTHON to an interpreter."; fi
+
 # Java is OPTIONAL and scoped to the BaseX corpus search (tools/basex). The floor is
 # MEASURED, not chosen: BaseX 12.4's classes are bytecode major 61, so an older JVM
 # refuses to load them outright (UnsupportedClassVersionError) rather than running
