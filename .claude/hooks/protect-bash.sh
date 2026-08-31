@@ -493,12 +493,27 @@ fi
 # ZERO subprocesses here. Only a command naming a known long job goes on to the
 # grep that confirms it is an INVOCATION rather than a mention -- which is what
 # keeps `grep -n corpus_sweep gates/README.md` from firing.
-case "$COMMAND" in
-  *corpus_sweep*|*perf_guard*|*build-effective.sh*|*build-corpus.sh*|*stage.py*|*x4effective*build*) LONGJOB=1 ;;
-  *) LONGJOB=0 ;;
-esac
-if [ "$LONGJOB" = 1 ] && [ "$BACKGROUND" != "true" ] \
-   && echo "$COMMAND" | grep -qE '\b(uv run|python|python3|bash)\b'; then
+# MEASURED 2026-08-30: 125 of this rule's 144 hits merely NAMED a job rather than running
+# one. It denied this session's own analysis script (the name sat inside a regex literal)
+# and the write of the plan that proposed fixing it -- a plan file being the purest
+# possible mention-not-invocation. The old test was "the name appears anywhere" AND "an
+# invoker appears anywhere", two independent checks over one string.
+#
+# Now both must hold in the SAME segment, with quoted strings blanked first so a name
+# inside a literal is a mention. Still a pure-bash `case` per segment: this hook runs on
+# every Bash call and the overwhelming majority of commands name no job at all.
+LONGJOB=0
+while IFS= read -r _seg; do
+  _b="$(printf '%s' "$_seg" | sed -E "s/'[^']*'/''/g; s/\"[^\"]*\"/\"\"/g")"
+  case "$_b" in
+    *corpus_sweep*|*perf_guard*|*build-effective.sh*|*build-corpus.sh*|*stage.py*|*x4effective*build*) ;;
+    *) continue ;;
+  esac
+  if printf '%s' "$_b" | grep -qE '\b(uv run|python|python3|bash)\b'; then LONGJOB=1; break; fi
+done <<SEGS
+$(printf '%s\n' "$COMMAND" | tr ';&|' '\n\n\n')
+SEGS
+if [ "$LONGJOB" = 1 ] && [ "$BACKGROUND" != "true" ]; then
   deny "LONG JOB IN THE FOREGROUND — this is a known multi-minute command and the Bash
 tool hard-caps a foreground call at 600000ms (10 min).
 MEASURED: corpus_sweep ~2100s · perf_guard ~600s+ · build-effective.sh ~100-200s.

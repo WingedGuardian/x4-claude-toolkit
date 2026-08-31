@@ -180,6 +180,15 @@ decide allow protect-bash.sh "$(cj "find '$X4_GAME/extensions' -maxdepth 2 -type
 decide allow protect-bash.sh "$(cj "cat '$X4_GAME/CLAUDE.md' > '$TMP/copy.md'")"   "reading from the game, writing elsewhere"
 decide advise protect-bash.sh "$(cj "echo x > '$X4_GAME/notes.txt'")"   "a truncating write into the game still advises"
 decide allow protect-bash.sh "$(cj "echo x >> '$X4_GAME/notes.txt'")"   "an APPEND cannot truncate, so it does not advise"
+# --- rule 3: the long-job rule must see an INVOCATION, not a mention -----------
+# MEASURED 2026-08-30: 125 of its 144 hits merely NAMED a job. It denied this session's
+# own analysis script (the name sat in a regex literal) and the write of the PLAN that
+# proposed fixing it -- a plan file being the purest possible mention-not-invocation.
+_J="corpus_sweep"
+decide deny  protect-bash.sh "$(cj "uv run python gates/$_J.py")"   "invoking a long job in the foreground still denies"
+decide allow protect-bash.sh "$(cj "python -c \"print('$_J')\"")"   "the job name inside a quoted string is a mention"
+decide allow protect-bash.sh "$(cj "grep -n $_J gates/README.md")"   "searching for the job name is a mention"
+decide allow protect-bash.sh "$(cj "echo 'see gates/$_J.py for details' >> notes.md")"   "writing the name into a document is a mention"
 decide advise protect-bash.sh "$(cj "G='$X4_GAME'; echo x > \"\$G/notes.txt\"")"   "a variable game destination still advises"
 # The FALSE POSITIVES these rules produced the moment they first ran (2026-08-29).
 # Until this week no rule in protect-bash.sh had ever executed in production, so
@@ -226,7 +235,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=95
+EXPECT=99
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
