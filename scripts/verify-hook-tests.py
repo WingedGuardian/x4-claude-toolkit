@@ -43,8 +43,19 @@ MUTANTS = [
      '"rg": False, "ag": False, "ack": False', "test_rg_is_recursive_BY_DEFAULT"),
     ("game-delete name backstop", 'or rm_named_game,\n        "rm_targets_reference"',
      'or False,\n        "rm_targets_reference"', "test_unconfigured_root_falls_back_to_the_NAME"),
-    ("archive exclusion on the backstop", "and not ARCHIVE.search(res(p))", "and True",
-     "test_an_archive_merely_NAMED_after_the_game_does_not_hit"),
+    # The hard block must stay scoped to the catastrophic cases. Widening it back to
+    # "anything under the tree" hard-denies the documented deploy path -- measured over a
+    # 1,000-command sample, all 4 hits were exactly that.
+    ("hard block is ROOT-scoped, not under-scoped",
+     'return n == g or n == g + "/extensions"', "return n.startswith(g)",
+     "test_deleting_ONE_deployed_mod_is_NOT_a_hard_block"),
+    ("extensions/ wholesale is still a hard block",
+     'return n == g or n == g + "/extensions"', "return n == g",
+     "test_deleting_extensions_WHOLESALE_is_a_hard_block"),
+    ("the name backstop is ROOT-anchored",
+     r'GAME_ROOTISH = re.compile(r"(x4 foundations|egosoft/x4)(/extensions)?$", re.I)',
+     r'GAME_ROOTISH = re.compile(r"(x4 foundations|egosoft/x4)", re.I)',
+     "test_unconfigured_backstop_does_not_catch_a_mod_folder"),
     ("heredoc << must be OUTSIDE quotes",
      "if line[i] == chr(60) and line[i + 1] == chr(60) and not mask[i] and not mask[i + 1]:",
      "if line[i] == chr(60) and line[i + 1] == chr(60):",

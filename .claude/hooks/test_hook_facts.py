@@ -211,6 +211,47 @@ class TestDeletePredicates(unittest.TestCase):
         p = GAME.replace("/X4 Foundations", "/./X4 Foundations")
         self.assertTrue(F(D + ' -rf "' + p + '"')["rm_hits_game"])
 
+    def test_deleting_extensions_WHOLESALE_is_a_hard_block(self):
+        # Wiping extensions/ destroys every deployed mod. Narrowing the block to the
+        # install root alone would let that fall through to a mere confirmation.
+        #
+        # The root here is deliberately NOT named "X4 Foundations": with the real name the
+        # legacy backstop also matches, so the test passed against a mutant that removed
+        # the extensions clause entirely -- it was asserting the right OUTCOME through the
+        # wrong MECHANISM. Third instance of a guard clause shadowing the thing under test
+        # in one session (CLAUDE.md #26).
+        r = dict(ROOTS)
+        r["game"] = "C:/Games/PlainlyNamedInstall"
+        self.assertTrue(F(D + ' -rf "C:/Games/PlainlyNamedInstall/extensions"',
+                          roots=r)["rm_hits_game"])
+        # ...and the same root, one level deeper, must NOT be a hard block.
+        self.assertFalse(F(D + ' -rf "C:/Games/PlainlyNamedInstall/extensions/mymod"',
+                           roots=r)["rm_hits_game"])
+
+    def test_deleting_ONE_deployed_mod_is_NOT_a_hard_block(self):
+        # MEASURED 2026-08-31 over a 1,000-command corpus sample: all 4 hits of this rule
+        # were `rm -rf "$DST"` where DST resolved to extensions/<one mod> -- the documented
+        # deploy path, which deploy.py itself performs. Hard-denying it blocks routine
+        # work. It must still CONFIRM (rm_in_x4_dir), which is the verdict meant for it.
+        cmd = 'DST="' + GAME + '/extensions/mymod"; ' + D + ' -rf "$DST"'
+        f = F(cmd)
+        self.assertFalse(f["rm_hits_game"])
+        self.assertTrue(f["rm_in_x4_dir"])
+
+    def test_deleting_a_file_inside_a_deployed_mod_is_NOT_a_hard_block(self):
+        cmd = D + ' -f "' + GAME + '/extensions/mymod/music/track.mp3"'
+        f = F(cmd)
+        self.assertFalse(f["rm_hits_game"])
+        self.assertTrue(f["rm_in_x4_dir"])
+
+    def test_unconfigured_backstop_does_not_catch_a_mod_folder(self):
+        # The name backstop must be root-scoped too, or an unconfigured machine gets the
+        # same over-block by a different route.
+        r = dict(ROOTS)
+        r["game"] = ""
+        self.assertFalse(F(D + ' -rf "/opt/games/X4 Foundations/extensions/mymod"',
+                           roots=r)["rm_hits_game"])
+
     def test_an_archive_merely_NAMED_after_the_game_does_not_hit(self):
         self.assertFalse(F(D + ' -f "/c/backups/X4 Foundations v2.zip"')["rm_hits_game"])
 

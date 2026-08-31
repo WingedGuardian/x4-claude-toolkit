@@ -44,6 +44,26 @@ to the root), the game-delete hard block regained its name backstop — which is
 installation with no configured paths has — and `bash -c "<command>"` is now parsed rather than
 treated as opaque.
 
+### Fixed — the game-delete block is scoped to what is actually catastrophic
+
+The hard block covered anything *under* the game folder. That was survivable while the guard could
+not resolve `$VAR`; once the parse pass could, it began hard-denying `rm -rf "$DST"` where `DST`
+resolved to `extensions/<one mod>` — the documented deploy path, which `deploy.py` performs itself.
+MEASURED over a 1,000-command replay of real history: **all 4 hits of the rule were exactly that.**
+
+**A capability improvement widened a guard nobody re-scoped for it**, and no probe caught it because
+no probe used a variable-resolved deploy path.
+
+The hard block is now the install **root**, or `extensions/` **wholesale** (which destroys every
+deployed mod). Anything inside the tree falls through to the confirmation that was always meant for
+it. The name backstop for unconfigured installs is anchored the same way — a path merely *containing*
+the game's name is not the install. Across all 12,482 distinct historical commands: **0 hard blocks,
+48 confirmations.**
+
+(The archive exclusion that used to sit on that backstop is gone: anchoring the name test at the end
+of the path and requiring an archive extension at the end of the path are mutually exclusive, so it
+had become unreachable — which is what the mutation gate reports as a term no mutation can kill.)
+
 ### Fixed — two ways the guard could go silently dead on a whole platform
 
 Both were introduced by the rewrite above and caught by its own checks, not by reading:

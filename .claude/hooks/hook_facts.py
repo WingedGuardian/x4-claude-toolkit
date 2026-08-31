@@ -478,8 +478,11 @@ DURABLE = re.compile(r"(memory[/\\][A-Za-z0-9_.-]+\.md|MEMORY\.md|KNOWLEDGEBASE\
 LONG_JOBS = ("corpus_sweep", "perf_guard", "build-effective.sh", "build-corpus.sh",
              "stage.py")
 INVOKERS = re.compile(r"\b(uv run|python|python3|bash)\b")
-ARCHIVE = re.compile(r"\.(zip|7z|rar|tar|gz|log|bak)$", re.I)
 LEGACY_GAME = re.compile(r"x4 foundations|egosoft/x4", re.I)
+# ROOT-scoped: the path must END at the game folder (or at its extensions/), not
+# merely contain the name. Without the anchor the backstop re-created the very
+# over-block it sits beside, by a different route.
+GAME_ROOTISH = re.compile(r"(x4 foundations|egosoft/x4)(/extensions)?$", re.I)
 
 
 def _expand(seg: str, paths: list[str], assigns: dict) -> list[tuple[str, bool]]:
@@ -548,12 +551,35 @@ def facts(payload: dict, roots: dict) -> dict:
     writes_any = [p for p in copy_t + rm_t] + [t for _, t in redir_t]
     trunc_redirect = [t for m, t in redir_t if m == "truncate"]
 
-    # The game-delete backstop, restored. A machine with no configured paths must still
-    # be protected -- the header of protect-bash.sh promises exactly that -- and the
-    # measured false positive (7 of 8) was an ARCHIVE merely named after the game, which
-    # the extension exclusion removes without giving up the name test.
-    rm_named_game = any(LEGACY_GAME.search(res(p)) and not ARCHIVE.search(res(p))
-                        for p in rm_t)
+    # The game-delete HARD BLOCK is scoped to what is actually catastrophic: the install
+    # root itself, or extensions/ wholesale (which destroys every deployed mod). Anything
+    # INSIDE the tree falls through to the confirmation, which is the verdict meant for
+    # it.
+    #
+    # MEASURED 2026-08-31 over a 1,000-command corpus sample: all 4 hits of this rule were
+    # `rm -rf "$DST"` where DST resolved to extensions/<one mod> -- the documented deploy
+    # path, which dev/_tools/deploy.py performs itself. A hard deny there blocks routine
+    # work, and it only started happening because variable resolution got BETTER: the old
+    # helper could not see through $DST at all. A capability improvement widened a guard
+    # nobody re-scoped for it.
+    #
+    # The name backstop is root-scoped for the same reason. It is the only protection an
+    # installation with no configured paths has, so it stays -- but a path merely CONTAINING
+    # the game's name is not the install, and the archive exclusion is what removed the
+    # measured false positive (7 of 8 were a .zip named after the game).
+    def hits_game_root(p):
+        g = norm(roots.get("game") or "")
+        if not g:
+            return False
+        n = norm(res(p))
+        return n == g or n == g + "/extensions"
+
+    # No archive exclusion: GAME_ROOTISH is anchored at $ and so is ARCHIVE, and they
+    # demand different endings, so nothing can match both -- PROVEN over probes, and
+    # the mutation gate reported the term as unkillable, which is what dead code looks
+    # like from the outside. The anchoring subsumes it; the .zip false positive that
+    # motivated the exclusion (7 of 8 hits) can no longer reach this line.
+    rm_named_game = any(GAME_ROOTISH.search(norm(res(p))) for p in rm_t)
 
     search_roots = []
     for c in all_cmds:
@@ -581,7 +607,7 @@ def facts(payload: dict, roots: dict) -> dict:
         "timeout": timeout,
         "background": background,
 
-        "rm_hits_game": hit(rm_t, roots.get("game")) or rm_named_game,
+        "rm_hits_game": any(hits_game_root(p) for p in rm_t) or rm_named_game,
         "rm_targets_reference": hit(rm_t, roots.get("reference")),
         "rm_in_x4_dir": any(hit(rm_t, roots.get(k)) for k in
                             ("game", "profile", "mods", "toolkit")) or rm_named_game,

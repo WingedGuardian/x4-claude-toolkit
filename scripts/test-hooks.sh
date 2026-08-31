@@ -220,7 +220,22 @@ decide allow protect-bash.sh "$(cj "cp '$X4_GAME/CLAUDE.md' '$TMP/backup.md'")" 
 # MEASURED: 7 of 8 hits were a .zip merely NAMED after the game, in another folder.
 decide allow protect-bash.sh "$(cj "rm -f '$TMP/X4 Foundations Toolkit v1.zip'")"   "a zip named after the game is a file, not the install"
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_GAME'")"   "deleting the install itself still denies"
-decide deny  protect-bash.sh "$(cj "rm -f '$X4_GAME/extensions/deployed/ext_01.cat'")"   "a real path inside the game tree is still a hard block"
+# The BOUNDARY of the hard block, probed on both sides. It used to cover anything UNDER
+# the game folder. MEASURED 2026-08-31 over a 1,000-command replay of real history: all 4
+# hits of the rule were `rm -rf "$DST"` with DST resolving to extensions/<one mod> -- the
+# documented deploy path, which deploy.py performs itself. It only started firing there
+# because variable resolution got BETTER; the predicate was never edited.
+#
+# The original objection to narrowing was that `rm -rf <game>/extensions` would fall
+# through to a confirmation. It does not: extensions/ WHOLESALE is still a hard block.
+# Only a path INSIDE it falls to the confirm, which is the verdict CLAUDE.md assigns to
+# deleting in an X4 directory, and it is recoverable by redeploying from dev/.
+decide deny  protect-bash.sh "$(cj "rm -rf '$X4_GAME/extensions'")"   "extensions/ WHOLESALE is still a hard block"
+decide ask   protect-bash.sh "$(cj "rm -rf '$X4_GAME/extensions/deployed'")"   "ONE deployed mod confirms, it is not a hard block"
+decide ask   protect-bash.sh "$(cj "rm -f '$X4_GAME/extensions/deployed/ext_01.cat'")"   "one file inside a deployed mod confirms"
+# ...and with the destination in a VARIABLE, which is the form that exposed this and the
+# form no probe used before.
+decide ask   protect-bash.sh "$(cj "DST='$X4_GAME/extensions/deployed'; rm -rf \"\$DST\"")"   "a variable deploy destination confirms, not blocks"
 # --- rule 3: the long-job rule must see an INVOCATION, not a mention -----------
 # MEASURED 2026-08-30: 125 of its 144 hits merely NAMED a job. It denied this session's
 # own analysis script (the name sat in a regex literal) and the write of the PLAN that
@@ -287,7 +302,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=122
+EXPECT=125
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
