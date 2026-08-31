@@ -263,8 +263,11 @@ printf '%s' "$COMMAND" | grep -qiE '^[[:space:]]*(mv|cp|move|copy)\b' \
   && advise "Copying into a game or profile directory. That is the documented DEPLOY path, so it is allowed -- but use dev/_tools/deploy.py rather than a hand-rolled cp: it refuses a wrong destination, deletes orphans one named file at a time, and re-reads the destination to prove every file is byte-identical."
 
 # === CONFIRM — output redirect into game or profile dirs ===
-printf '%s' "$COMMAND" | grep -qE '>' \
-  && { has "$X4_GAME" || has "$X4_PROFILE" || printf '%s' "$nCMD" | grep -qE 'x4 foundations|egosoft/x4'; } \
+# MEASURED 2026-08-30: 1,269 of 1,320 hits were `2>/dev/null` plus a game path
+# mentioned anywhere -- 13.4% of every command in the corpus carrying a note about
+# a write it was not making. Now the TRUNCATING redirect target must resolve under
+# the tree. An append cannot truncate, so it is not this rule's business.
+{ writes_under "$X4_GAME" truncate || writes_under "$X4_PROFILE" truncate; } \
   && advise "Redirecting output into a game or profile directory. Allowed, but a truncating > has no backup: if the target is a durable record, write to a temp file and move it into place."
 
 # === CONFIRM — sed -i on game or profile files ===

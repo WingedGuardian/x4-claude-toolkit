@@ -173,6 +173,14 @@ decide ask   protect-bash.sh "$(cj "rm -f '$TMP/docs/notes.txt'")"   "deleting i
 decide ask   protect-bash.sh "$(cj "tee '$TMP/docs/log.txt' < '$TMP/a.txt'")"   "tee INTO Documents"
 decide ask   protect-bash.sh "$(cj "D='$TMP/docs'; echo x > \"\$D/n.txt\"")"   "a variable Documents destination still confirms"
 decide ask   protect-bash.sh "$(cj "rm -rf '$X4_MODS/other'")" "rm inside mod sources"
+# --- rule 2: the redirect advisory must test the TARGET, not the whole string ----
+# MEASURED 2026-08-30: 1,269 of its 1,320 hits were `2>/dev/null` plus a game path
+# mentioned anywhere -- 13.4% of every command in the corpus carrying a spurious note.
+decide allow protect-bash.sh "$(cj "find '$X4_GAME/extensions' -maxdepth 2 -type d 2>/dev/null")"   "stderr suppression is not a write into the game"
+decide allow protect-bash.sh "$(cj "cat '$X4_GAME/CLAUDE.md' > '$TMP/copy.md'")"   "reading from the game, writing elsewhere"
+decide advise protect-bash.sh "$(cj "echo x > '$X4_GAME/notes.txt'")"   "a truncating write into the game still advises"
+decide allow protect-bash.sh "$(cj "echo x >> '$X4_GAME/notes.txt'")"   "an APPEND cannot truncate, so it does not advise"
+decide advise protect-bash.sh "$(cj "G='$X4_GAME'; echo x > \"\$G/notes.txt\"")"   "a variable game destination still advises"
 # The FALSE POSITIVES these rules produced the moment they first ran (2026-08-29).
 # Until this week no rule in protect-bash.sh had ever executed in production, so
 # none of their false-positive rates were known. The delete rules tested 'an rm
@@ -218,7 +226,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=90
+EXPECT=95
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -313,10 +321,15 @@ decide deny   protect-bash.sh "$(cj "grep -rn foo $X4_REFERENCE > $GAME/out.txt"
 decide advise protect-bash.sh "$(cj "cp $GAME/a b")"   "one advisory still advises"
 decide advise protect-bash.sh "$(cj "cp $GAME/a b > log.txt")"   "two advisories still advise"
 # ...and BOTH texts must survive into the single note, not just the last one.
-_out=$(printf '%s' "$(cj "cp $GAME/a b > log.txt")" | bash "$HOOKS/protect-bash.sh" 2>/dev/null)
+# Uses a FAKE game root outside /tmp: the fixture roots live under /tmp, so a real
+# redirect into the fixture game dir is also a shared-/tmp write and is refused for
+# that instead -- correctly, but it would stop this probe reaching the advisories.
+_sg2="$X4_GAME"; export X4_GAME="C:/fixture/game"
+_out=$(printf '%s' "$(cj 'cp a "C:/fixture/game/b" > "C:/fixture/game/log.txt"')" | bash "$HOOKS/protect-bash.sh" 2>/dev/null)
 _n=$(printf '%s' "$_out" | jq -r '.hookSpecificOutput.additionalContext // ""' | grep -c .)
 if [ "$_n" = "2" ]; then ok "both advisories are carried in ONE note"
 else no "advisory accumulation -- expected 2 lines in additionalContext, got $_n"; fi
+export X4_GAME="$_sg2"
 decide deny   protect-bash.sh "$(cj "rm -rf $GAME")"   "a hard block still wins over everything"
 
 echo "RESULT: $pass passed, $fail failed"
