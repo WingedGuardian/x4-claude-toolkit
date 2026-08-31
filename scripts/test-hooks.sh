@@ -235,7 +235,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=99
+EXPECT=103
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -258,6 +258,14 @@ decide allow protect-bash.sh "$(cj 'echo x > "C:/elsewhere/n.txt"')"   "an unrel
 export X4_DOCUMENTS="$_sd"
 export X4_REFERENCE="C:/fixture/reference"
 decide deny  protect-bash.sh "$(cj 'grep -rn foo "/c/fixture/reference"')"   "recursive search at reference root, MSYS form"
+# --- rules 4 and 5: a search rule must test the SEARCH PATH, not the whole string
+# MEASURED 2026-08-30: 67 of 80 reference refusals and 12 of 20 workspace refusals were a
+# search SCOPED to a subdirectory, or not recursive at all. The reference rule's own
+# comment already promised a scoped search would be allowed; it never was.
+decide allow protect-bash.sh "$(cj 'grep -rn foo "C:/fixture/reference/aiscripts"')"   "a subdirectory-scoped search is allowed, as its own message promises"
+decide allow protect-bash.sh "$(cj 'cd "C:/fixture/reference" && grep -rn foo aiscripts/')"   "cd to the root, then scope to a subdirectory"
+decide allow protect-bash.sh "$(cj 'cd "C:/fixture/reference" && grep -n foo one.xml')"   "a NON-recursive search is not this rule"
+decide deny  protect-bash.sh "$(cj 'cd "C:/fixture/reference" && grep -rn foo .')"   "cd to the root then search dot still denies"
 export X4_REFERENCE="$_sr"
 
 # =============================================================================

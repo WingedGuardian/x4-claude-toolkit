@@ -200,6 +200,57 @@ TARGETS
   return 1
 }
 
+# --- WHICH SEGMENT ACTUALLY RUNS A RECURSIVE SEARCH, AND OVER WHAT ------------
+# Both search rules paired "a recursive flag appears somewhere" with "the root appears
+# somewhere", over the WHOLE command. MEASURED 2026-08-30: 67 of 80 reference-tree
+# refusals and 12 of 20 workspace-root refusals were a search SCOPED to a subdirectory,
+# or not recursive at all -- the `[^|;]*` in the old regex reached across newlines and
+# && into a -r belonging to a different command. The reference rule's own comment
+# already promised a scoped search would be allowed; it never was.
+
+# searches_rooted_at ROOT -> 0 if some segment runs a RECURSIVE search whose path IS
+# that root (not a subdirectory of it). Quotes are blanked for FLAG detection only --
+# a hyphenated search PATTERN is data, not flags -- but paths are read from the raw
+# tokens so a quoted path with spaces survives intact.
+searches_rooted_at() {
+  [ -n "$1" ] || return 1
+  local root seg flags rest w cwd p hit
+  root="$(x4_norm "$1")"; root="${root%/}"
+  cwd=""
+  hit=1
+  while IFS= read -r seg; do
+    case "$(printf '%s' "$seg" | sed -E 's/^[[:space:]]*//' | cut -d' ' -f1)" in
+      # trim TRAILING space before unquoting: `cd "$X" && ...` splits to `cd "$X" ` and
+      # unquote only strips a quote that is the last character, so the quotes survived
+      # into the comparison and no cd was ever recognised.
+      cd) cwd="$(x4_norm "$(resolve_var "$(unquote "$(printf '%s' "$seg" | sed -E 's/^[[:space:]]*cd[[:space:]]+//; s/[[:space:]]+$//')")")")" ;;
+      grep|rg|ag|egrep|fgrep) ;;
+      *) continue ;;
+    esac
+    case "$(printf '%s' "$seg" | sed -E 's/^[[:space:]]*//' | cut -d' ' -f1)" in cd) continue ;; esac
+    flags="$(printf '%s' "$seg" | sed -E "s/'[^']*'/''/g; s/\"[^\"]*\"/\"\"/g")"
+    # NB the recursive letter may sit ANYWHERE in a bundle: -rn, -rl, -rhoE. Requiring it
+    # LAST is the same mistake that made a pre-filter miss `-rn` -- the commonest form --
+    # earlier today, and it made this helper silently inert on all four must-fire cases.
+    printf '%s' "$flags" | grep -qE '(^|[[:space:]])-[a-zA-Z]*[rR][a-zA-Z]*([[:space:]]|$)|--recursive' || continue
+    rest=0
+    while IFS= read -r w; do
+      case "$w" in -*) continue ;; esac
+      rest=$((rest+1))
+      [ "$rest" = 1 ] && continue          # the first non-flag operand is the PATTERN
+      p="$(x4_norm "$(resolve_var "$(unquote "$w")")")"; p="${p%/}"
+      [ "$p" = "." ] || [ "$p" = "./" ] && p="$cwd"
+      [ "$p" = "$root" ] && hit=0
+    done <<TOK
+$(seg_tokens "$seg" | tail -n +2)
+TOK
+    [ "$rest" -le 1 ] && [ -n "$cwd" ] && [ "${cwd%/}" = "$root" ] && hit=0
+  done <<SEGS
+$(printf '%s\n' "$COMMAND" | tr ';&|' '\n\n\n')
+SEGS
+  return $hit
+}
+
 # Does a pipeline immediately precede the $? ? Segments are split on ; && || and
 # newlines; quoted strings are blanked first so a `;` inside a string cannot split.
 # `$?` refers to the command just before it, so only the SAME segment or the one
@@ -335,8 +386,7 @@ fi
 # Purpose-built tools answer these far faster and with a denominator. See CLAUDE.md
 # "Discovery vs. Proof" routing table. This blocks the reflex, not the capability:
 # a scoped grep at a specific subdirectory still works.
-if printf '%s' "$COMMAND" | sed "s/'[^']*'//g; s/\"[^\"]*\"//g" | grep -qiE '\b(grep|rg|ag)\b[^|;]*(-[a-zA-Z]*[rR]|--recursive)' \
-   && has "$X4_REFERENCE"; then
+if searches_rooted_at "$X4_REFERENCE"; then
   deny "WRONG TOOL: recursive text search over the whole reference\\ tree (~60 GB).
 Route the question first (CLAUDE.md 'Discovery vs. Proof'):
   - 'what values does attribute X take / who references X?' -> BaseX: cd tools\\basex && python ask.py ...
@@ -450,8 +500,7 @@ fi
 # ripgrep tool timed out at 20 s -- tools\basex\basex\data\ alone was 3.7 GB of
 # binary database pages. The path must TERMINATE at the root, so a scoped
 # search into any subdirectory is unaffected.
-if printf '%s' "$COMMAND" | sed "s/'[^']*'//g; s/\"[^\"]*\"//g" | grep -qiE '\b(grep|rg|ag)\b[^|;]*(-[a-zA-Z]*[rR]|--recursive)' \
-   && { has_root "$X4_TOOLKIT" || has_root "$X4_GAME" || has_root "$X4_MODS"; }; then
+if searches_rooted_at "$X4_TOOLKIT" || searches_rooted_at "$X4_GAME" || searches_rooted_at "$X4_MODS"; then
   deny "WRONG SCOPE: recursive text search rooted at the whole workspace / game root.
 It does not finish — MEASURED 2026-08-22: grep -r killed at 300 s, ripgrep timed out at
 20 s, because tools\basex\basex\data\ alone is GBs of binary database pages.
