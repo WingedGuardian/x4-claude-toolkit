@@ -284,6 +284,22 @@ SEGS
   return 1
 }
 
+# strip_heredocs -> $COMMAND with every heredoc BODY removed. A heredoc body is DATA:
+# the payload of a script being written, not commands being run. MEASURED 2026-08-30:
+# two rules measured ~97% genuine still blocked this session's own work on text inside
+# one -- a payload containing the staging phrase at what LOOKS like a command position,
+# and one merely naming a search, the profile variable and the word content. Factored out
+# of the $?-after-a-pipeline rule, which has stripped bodies this way since 2026-08-22.
+strip_heredocs() {
+  printf '%s\n' "$COMMAND" | awk '
+    function term(s){ gsub(/^<<-?[ ]*/,"",s); gsub(/["\x27]/,"",s); return s }
+    { if (skip) { if ($0 == t || $0 == t";") { skip=0 }; next }
+      line=$0
+      if (match(line, /<<-?[ ]*["\x27]?[A-Za-z_][A-Za-z0-9_]*["\x27]?/)) {
+        t = term(substr(line, RSTART, RLENGTH)); skip=1 }
+      print line }'
+}
+
 # Does a pipeline immediately precede the $? ? Segments are split on ; && || and
 # newlines; quoted strings are blanked first so a `;` inside a string cannot split.
 # `$?` refers to the command just before it, so only the SAME segment or the one
@@ -386,7 +402,7 @@ printf '%s' "$COMMAND" | grep -qE 'sed[[:space:]]+-i' \
 # Deliberately ASK, not deny: with a worktree per session `-A` is safe again, and
 # there are legitimate uses (an initial import, a scripted scrub). The prompt is
 # there to make you look at `git status` first, not to forbid the flag.
-echo "$COMMAND" | grep -qE '(^|[;&|]\s*)git\s+add\s+(-A\b|--all\b|\.\s*$|\.\s*[;&|])' && deny "GIT ADD -A / . IN A SHARED WORKSPACE: this stages EVERY untracked file, including another session's work-in-progress. MEASURED 2026-08-27: 4 untracked files from a concurrent session sat in this tree. Prefer explicit paths (git add <file> ...). Proceed?"
+strip_heredocs | grep -qE '(^|[;&|]\s*)git\s+add\s+(-A\b|--all\b|\.\s*$|\.\s*[;&|])' && deny "GIT ADD -A / . IN A SHARED WORKSPACE: this stages EVERY untracked file, including another session's work-in-progress. MEASURED 2026-08-27: 4 untracked files from a concurrent session sat in this tree. Prefer explicit paths (git add <file> ...). Proceed?"
 
 
 # === DURABLE RECORDS — a truncating write via Bash has NO backup and NO guard ===
@@ -449,7 +465,7 @@ fi
 # syntactically distinguishable (`escape_pod` is both), so a deny would
 # over-block legitimate id lookups. This interrupts the reflex; it does not
 # remove the capability.
-if echo "$COMMAND" | grep -qiE '\b(grep|rg|ag|findstr|Select-String)\b' \
+if strip_heredocs | grep -qiE '\b(grep|rg|ag|findstr|Select-String)\b' \
    && { has "$X4_PROFILE" || echo "$COMMAND" | grep -q "X4_PROFILE"; } && echo "$COMMAND" | grep -qi "content" \
    && ! echo "$COMMAND" | grep -qE 'ws_[0-9]{4,}'; then
   deny "CHECK THE INSTRUMENT: the profile content.xml is keyed by MANIFEST ID, not by mod name.
@@ -499,13 +515,7 @@ fi
 # and MEASURED it added ~195 ms (+59%) when run unconditionally. The overwhelming
 # majority of commands contain no `$?` at all, so one grep short-circuits them.
 if echo "$COMMAND" | grep -qE '\$\?' && ! echo "$COMMAND" | grep -q 'PIPESTATUS'; then
-_PB_NOHD=$(printf '%s\n' "$COMMAND" | awk '
-  function term(s){ gsub(/^<<-?[ ]*/,"",s); gsub(/["\x27]/,"",s); return s }
-  { if (skip) { if ($0 == t || $0 == t";") { skip=0 }; next }
-    line=$0
-    if (match(line, /<<-?[ ]*["\x27]?[A-Za-z_][A-Za-z0-9_]*["\x27]?/)) {
-      t = term(substr(line, RSTART, RLENGTH)); skip=1 }
-    print line }')
+_PB_NOHD="$(strip_heredocs)"
 if pipe_feeds_dollarq "$_PB_NOHD"; then
   deny "\$? AFTER A PIPELINE reports the LAST command's exit code, not the one you mean.
   cmd | head; echo \$?      -> that is HEAD's exit code

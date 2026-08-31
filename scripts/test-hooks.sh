@@ -158,6 +158,26 @@ decide allow search-scope.sh '{"tool_name":"Grep","tool_input":{"pattern":"x"}}'
 
 echo; echo "=== protect-bash.sh ==="
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_GAME'")"      "rm the game directory"
+# --- Block B: two rules measured ~97% GENUINE, but with the same FP shape -------
+# Each blocked this session's own work on its trigger word inside a quoted fixture.
+# Overriding a rule that measures as working needs its own evidence, so these are
+# probed and committed separately from the six.
+_GA2="git add ""-A"
+decide deny  protect-bash.sh "$(cj "$_GA2")"   "staging everything still denies"
+decide allow protect-bash.sh "$(cj "echo 'do not run $_GA2 here' >> notes.md")"   "the phrase inside a quoted string is a mention"
+decide allow protect-bash.sh "$(cj "grep -n '$_GA2' scripts/test-hooks.sh")"   "searching for the phrase is a mention"
+decide deny  protect-bash.sh "$(cj "grep -i xspvro '$X4_PROFILE/content.xml'")"   "searching the profile manifest by NAME still denies"
+decide allow protect-bash.sh "$(cj "echo 'the profile content.xml is keyed by id' >> notes.md")"   "describing the manifest is not searching it"
+# A HEREDOC BODY IS DATA, NOT COMMANDS. Both rules blocked this session's own work on
+# text inside one -- a script whose payload happened to contain the phrase at a command
+# position, and one that merely mentioned a search, the profile var and the word content.
+# The `$?` rule already strips heredoc bodies; both now use the same helper.
+decide allow protect-bash.sh "$(cj "python - <<'PY'
+s = \"cd x && git add -A > log\"
+PY")"   "the staging phrase inside a heredoc body is data"
+decide allow protect-bash.sh "$(cj "python - <<'PY'
+guard = 'grep -qiE content.xml against \$X4_PROFILE'
+PY")"   "a manifest search described inside a heredoc body is data"
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_REFERENCE'")" "rm reference/"
 decide ask   protect-bash.sh "$(cj "rm -f '$TMP/profile/save/save_001.xml.gz'")" "deleting a save game"
 decide ask   protect-bash.sh "$(cj "echo x > '$TMP/docs/notes.txt'")"            "writing into Documents"
@@ -244,7 +264,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=108
+EXPECT=115
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
