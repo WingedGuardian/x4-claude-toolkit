@@ -143,8 +143,8 @@ resolve_var() {
 # (excluding fd duplication and the null device) plus copy/move/tee destinations.
 # $1 = truncate | append | all -- only the redirect rule cares about the difference.
 write_targets() {
-  local mode="${1:-all}" t op seg verb last skip
-  printf '%s' "$COMMAND" \
+  local mode="${1:-all}" kind="${2:-all}" t op seg verb last skip
+  [ "$kind" = copy ] || printf '%s' "$COMMAND" \
     | grep -oE '[0-9]?>>?[[:space:]]*("[^"]*"|'\''[^'\'']*'\''|[^[:space:];&|<>()]+)' \
     | while IFS= read -r t; do
         case "$t" in *'>>'*) op=append ;; *) op=truncate ;; esac
@@ -160,6 +160,9 @@ write_targets() {
   # then returns FALSE on a line with no terminator, so a single-segment command
   # never enters the loop at all. rm_segments survives the same idiom only because
   # grep tolerates a missing final newline; a read loop does not.
+  # KIND keeps each rule to the writes it is about: the redirect advisory must not
+  # match a cp DESTINATION, and the copy advisory must not match a redirect.
+  [ "$kind" = redirect ] && return 0
   printf '%s\n' "$COMMAND" | tr ';&|' '\n\n\n' | while IFS= read -r seg; do
     verb="$(printf '%s' "$seg" | sed -E 's/^[[:space:]]*//' | cut -d' ' -f1)"
     case "$verb" in cp|mv|move|copy|tee) ;; *) continue ;; esac
@@ -169,9 +172,12 @@ write_targets() {
     last=""; skip=0
     while IFS= read -r t; do
       [ "$skip" = 1 ] && { skip=0; continue; }
+      # A REDIRECT and its operand are not copy arguments. Skipping only the input
+      # form left `cp a b > log.txt` reporting log.txt as the destination, so a deploy
+      # INTO the game read as a copy to a local file and the rule went silent.
       case "$t" in
-        '<') skip=1; continue ;;
-        '<'*|-*) continue ;;
+        '<'|'>'|'>>'|'&>') skip=1; continue ;;
+        '<'*|'>'*|[0-9]'>'*|-*) continue ;;
       esac
       if [ "$verb" = tee ]; then x4_norm "$(resolve_var "$(unquote "$t")")"; else last="$t"; fi
     done <<TOKS
@@ -195,7 +201,7 @@ writes_under() {
       *'$'*) has "$1" && return 0 ;;
     esac
   done <<TARGETS
-$(write_targets "${2:-all}")
+$(write_targets "${2:-all}" "${3:-all}")
 TARGETS
   return 1
 }
@@ -251,6 +257,33 @@ SEGS
   return $hit
 }
 
+# rm_hits_game_tree ROOT -> 0 if an rm segment names ROOT ITSELF as a target. MEASURED
+# 2026-08-30: 7 of 8 refusals here were a .zip merely NAMED after the game, sitting in an
+# unrelated folder -- the legacy backstop matched the NAME anywhere in a delete segment.
+# A file INSIDE the tree is not the install either; it falls through to the confirmation
+# below, which is the verdict that was always meant for it.
+rm_hits_game_tree() {
+  [ -n "$1" ] || return 1
+  local root seg w p; root="$(x4_norm "$1")"; root="${root%/}"
+  while IFS= read -r seg; do
+    case "$seg" in *rm*) ;; *) continue ;; esac
+    while IFS= read -r w; do
+      case "$w" in -*) continue ;; esac
+      p="$(x4_norm "$(resolve_var "$(unquote "$w")")")"; p="${p%/}"
+      # UNDER the root counts too. The measured false positive was a file bearing the
+      # NAME while living somewhere else entirely -- not a real path inside the tree.
+      # Deleting $GAME/extensions wipes every deployed mod and was always a hard block;
+      # narrowing to the root alone would have weakened that as a side effect.
+      case "$p" in "$root"|"$root"/*) return 0 ;; esac
+    done <<TOK
+$(seg_tokens "$seg")
+TOK
+  done <<SEGS
+$(printf '%s\n' "$COMMAND" | tr ';&|' '\n\n\n')
+SEGS
+  return 1
+}
+
 # Does a pipeline immediately precede the $? ? Segments are split on ; && || and
 # newlines; quoted strings are blanked first so a `;` inside a string cannot split.
 # `$?` refers to the command just before it, so only the SAME segment or the one
@@ -277,7 +310,8 @@ pipe_feeds_dollarq() {
 }
 
 # === HARD BLOCK — delete the game installation ===
-{ is_rm && { rm_targets "$X4_GAME" || rm_segments | grep -qF 'x4 foundations'; }; } && deny "BLOCKED: cannot delete the X4 game installation directory."
+# The target must be a real path in the tree -- see rm_hits_game_tree above.
+rm_hits_game_tree "$X4_GAME" && deny "BLOCKED: cannot delete the X4 game installation directory."
 
 # === HARD BLOCK — delete the reference folder (read-only base game data) ===
 { is_rm && rm_targets "$X4_REFERENCE"; } && deny "BLOCKED: reference/ is the read-only unpacked base game data (re-unpack only via bin/unpack-reference.sh)."
@@ -291,7 +325,8 @@ fi
 
 # === CONFIRM — rm targeting the game, profile, reference, mods, or toolkit ===
 { is_rm && { rm_targets "$X4_GAME" || rm_targets "$X4_PROFILE" || rm_targets "$X4_MODS" || rm_targets "$X4_TOOLKIT" \
-    || rm_segments | grep -qE 'x4 foundations|egosoft/x4'; }; } \
+    || { rm_segments | grep -qE 'x4 foundations|egosoft/x4' \
+         && ! rm_segments | grep -qE '[.](zip|7z|rar|tar|gz|log|bak)([[:space:]"'"'"']|$)'; }; }; } \
   && ask "Deleting files in an X4 directory — confirm: $COMMAND"
 
 # === CONFIRM - deleting a SAVE GAME ===
@@ -309,8 +344,10 @@ writes_under "${X4_DOCUMENTS:-}" \
   && ask "WRITING OR DELETING UNDER YOUR DOCUMENTS FOLDER: this is outside the toolkit and the game. Confirm: $COMMAND"
 
 # === CONFIRM — mv/cp into the game or profile dirs ===
+# MEASURED: 49 of 86 hits were a copy OUT of the game, or a mention. The DESTINATION
+# decides -- write_targets already returns it for cp/mv/tee.
 printf '%s' "$COMMAND" | grep -qiE '^[[:space:]]*(mv|cp|move|copy)\b' \
-  && { has "$X4_GAME" || has "$X4_PROFILE" || printf '%s' "$nCMD" | grep -qE 'x4 foundations|egosoft/x4'; } \
+  && { writes_under "$X4_GAME" all copy || writes_under "$X4_PROFILE" all copy; } \
   && advise "Copying into a game or profile directory. That is the documented DEPLOY path, so it is allowed -- but use dev/_tools/deploy.py rather than a hand-rolled cp: it refuses a wrong destination, deletes orphans one named file at a time, and re-reads the destination to prove every file is byte-identical."
 
 # === CONFIRM — output redirect into game or profile dirs ===
@@ -318,7 +355,7 @@ printf '%s' "$COMMAND" | grep -qiE '^[[:space:]]*(mv|cp|move|copy)\b' \
 # mentioned anywhere -- 13.4% of every command in the corpus carrying a note about
 # a write it was not making. Now the TRUNCATING redirect target must resolve under
 # the tree. An append cannot truncate, so it is not this rule's business.
-{ writes_under "$X4_GAME" truncate || writes_under "$X4_PROFILE" truncate; } \
+{ writes_under "$X4_GAME" truncate redirect || writes_under "$X4_PROFILE" truncate redirect; } \
   && advise "Redirecting output into a game or profile directory. Allowed, but a truncating > has no backup: if the target is a durable record, write to a temp file and move it into place."
 
 # === CONFIRM — sed -i on game or profile files ===

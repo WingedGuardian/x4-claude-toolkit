@@ -180,6 +180,15 @@ decide allow protect-bash.sh "$(cj "find '$X4_GAME/extensions' -maxdepth 2 -type
 decide allow protect-bash.sh "$(cj "cat '$X4_GAME/CLAUDE.md' > '$TMP/copy.md'")"   "reading from the game, writing elsewhere"
 decide advise protect-bash.sh "$(cj "echo x > '$X4_GAME/notes.txt'")"   "a truncating write into the game still advises"
 decide allow protect-bash.sh "$(cj "echo x >> '$X4_GAME/notes.txt'")"   "an APPEND cannot truncate, so it does not advise"
+# --- rule 6: cp/mv must test the DESTINATION -----------------------------------
+# MEASURED: 49 of 86 hits were a copy OUT of the game, or a mention.
+decide advise protect-bash.sh "$(cj "cp -r '$TMP/mods/other' '$X4_GAME/extensions/other'")"   "a deploy INTO the game still advises"
+decide allow protect-bash.sh "$(cj "cp '$X4_GAME/CLAUDE.md' '$TMP/backup.md'")"   "copying OUT of the game is not a deploy"
+# --- rule 7: the game-delete backstop must name the install ROOT ---------------
+# MEASURED: 7 of 8 hits were a .zip merely NAMED after the game, in another folder.
+decide allow protect-bash.sh "$(cj "rm -f '$TMP/X4 Foundations Toolkit v1.zip'")"   "a zip named after the game is a file, not the install"
+decide deny  protect-bash.sh "$(cj "rm -rf '$X4_GAME'")"   "deleting the install itself still denies"
+decide deny  protect-bash.sh "$(cj "rm -f '$X4_GAME/extensions/deployed/ext_01.cat'")"   "a real path inside the game tree is still a hard block"
 # --- rule 3: the long-job rule must see an INVOCATION, not a mention -----------
 # MEASURED 2026-08-30: 125 of its 144 hits merely NAMED a job. It denied this session's
 # own analysis script (the name sat in a regex literal) and the write of the PLAN that
@@ -235,7 +244,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=103
+EXPECT=108
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -335,8 +344,8 @@ decide deny   protect-bash.sh "$(cj "grep -rn foo $X4_REFERENCE > $GAME/out.txt"
 # NB the fixture roots live under /tmp, so a redirect INTO the fixture game dir is
 # also a write to /tmp and is refused for that -- correctly. These two use a
 # relative redirect target so the advisories can be observed in isolation.
-decide advise protect-bash.sh "$(cj "cp $GAME/a b")"   "one advisory still advises"
-decide advise protect-bash.sh "$(cj "cp $GAME/a b > log.txt")"   "two advisories still advise"
+decide advise protect-bash.sh "$(cj "cp a '$GAME/b'")"   "one advisory still advises"
+decide advise protect-bash.sh "$(cj "cp a '$GAME/b' > log.txt")"   "two advisories still advise"
 # ...and BOTH texts must survive into the single note, not just the last one.
 # Uses a FAKE game root outside /tmp: the fixture roots live under /tmp, so a real
 # redirect into the fixture game dir is also a shared-/tmp write and is refused for
@@ -347,7 +356,7 @@ _n=$(printf '%s' "$_out" | jq -r '.hookSpecificOutput.additionalContext // ""' |
 if [ "$_n" = "2" ]; then ok "both advisories are carried in ONE note"
 else no "advisory accumulation -- expected 2 lines in additionalContext, got $_n"; fi
 export X4_GAME="$_sg2"
-decide deny   protect-bash.sh "$(cj "rm -rf $GAME")"   "a hard block still wins over everything"
+decide deny   protect-bash.sh "$(cj "rm -rf '$GAME'")"   "a hard block still wins over everything"
 
 echo "RESULT: $pass passed, $fail failed"
 if [ $((pass + fail)) -ne "$EXPECT" ]; then
