@@ -93,6 +93,81 @@ to the root), the game-delete hard block regained its name backstop — which is
 installation with no configured paths has — and `bash -c "<command>"` is now parsed rather than
 treated as opaque.
 
+### Fixed — an operand is now classified WHERE IT RUNS, not as written
+
+The parse pass traded whole-string grepping for structured operands, and in doing so went blind to
+every *indirect* way of naming a path. `cwd_of()` already existed and only the search rules consumed
+it, so a path named relative to a `cd` reached no other rule at all.
+
+Measured against `c400a05` (the last state where these rules ran — not `v2.9.0`, whose hook predates
+the F79 fix and allows everything, which would have made "no regressions" unfalsifiable):
+
+| command | before | now |
+|---|---|---|
+| `cd <saves> && rm -f *.xml.gz` | allow | **ask** |
+| `cd <game> && rm -rf extensions` | allow | **deny** |
+| `cd <game> && rm -rf .` | allow | **deny** |
+| `cd <reference> && rm -rf assets` | allow | **deny** |
+| `pushd` / subshell `(cd …)` variants | allow | **deny** |
+| `cd <game>/extensions && rm -rf <mod>` | allow | **ask** |
+| `rm -rf "$(echo <game>)"` | allow | **ask** |
+| `rm -rf "$X4_GAME"` | allow | **ask** |
+
+Three of those were verdicts the old hook produced and the rewrite had lost; the rest were gaps in
+both. The savegame one mattered most: nothing backs saves up, and the guard had stopped mentioning
+them.
+
+The fix is one change, not eight — every operand (`rm`, `cp`/`mv`/`tee`, redirects) is resolved
+against the directory in force for its own segment, tracking `cd`, `pushd` and `popd`. Two supporting
+repairs: `$(…)` and backticks now count as *unresolvable* (they read as literal paths before, so a
+delete through one matched no root), and a root named only by its environment variable —
+`rm -rf "$X4_GAME"`, whose text never contains the path — is recognised by the variable name.
+
+**Unresolvable operands are treated conservatively for DELETES only.** A delete is the one channel
+with nothing behind it. Writes keep their existing verdicts, so this cannot add prompts to routine
+work — and that was measured, not assumed, by replaying **13,041 distinct historical commands**:
+
+| | before | after |
+|---|---|---|
+| commands **denied** (work blocked) | 836 | **836** — no change |
+| commands **asked** (you are prompted) | 152 | 187 |
+
+**+35 prompts across 13,041 commands (1.16% → 1.43%), 0 additional work blocked, and 0 facts that
+went from true to false** — no protection was traded away for this. Every one of the 43 commands that
+gained an ask-level fact is accounted for: 8 were already being denied, 35 newly move allow→ask.
+
+### Fixed — `install.ps1` did not parse at all on Windows PowerShell 5.1
+
+The file held nine UTF-8 em-dashes and **no BOM**. Windows PowerShell 5.1 — the default shell on
+Windows 10/11, and the one this README tells you to run — reads a BOM-less `.ps1` as the ANSI
+codepage, so each `—` became three mojibake characters. One sat inside an interpolated string and the
+parser derailed: **3 parse errors, dead before its first statement.** `pwsh` 7 parsed it fine, which
+is how it survived this long.
+
+Two further installer defects were found behind it, each masked by the one before:
+
+- **Neither installer copied `mods/`**, so the README's "copy that folder into `{game}/extensions/`"
+  pointed at a directory the installer never created. (`.gitignore`'s bare `content.xml` rule also
+  excluded the mod's own manifest, so `git archive` shipped 3 of its 4 files — an X4 extension
+  without a manifest does not load, silently.)
+- **`Get-Command bash` resolved to the WSL stub** (`C:\Windows\System32\bash.exe`), present on every
+  machine with WSL enabled — including every Docker Desktop install. `setup.sh` died with
+  `execvpe(/bin/bash) failed` and the install reported INCOMPLETE. On a machine *with* a real distro
+  it would have been worse: setup would have run inside Linux, where `C:\…` paths do not resolve at
+  all — a silent wrong install rather than a loud failure. The installer now prefers a real Git Bash
+  and refuses the known stubs by path.
+
+All three were found by *executing* the installer rather than reading it — `separate` and `in-game`
+now complete with exit 0 under both PowerShell 5.1 and pwsh 7, with all four mod files present.
+
+### Fixed — `protect-files.sh` failed open when `jq` was broken
+
+It emitted every verdict through `jq` with no fallback, and empty stdout from a hook means **allow**.
+MEASURED with a live baseline: with `JQ=no_such_binary` a blocked edit to `reference/` produced **0
+bytes — a silent allow**; it now emits the deny through a Python fallback. It also could not tell
+"this payload has no file path" from "jq failed to read it", and treated both as an allow; the second
+now asks. `protect-bash.sh` gained this in `bccffc1`; this file never did.
+
 ### Fixed — the game-delete block is scoped to what is actually catastrophic
 
 The hard block covered anything *under* the game folder. That was survivable while the guard could

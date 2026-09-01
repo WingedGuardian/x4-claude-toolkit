@@ -69,11 +69,27 @@ MIN_TOKEN = 5
 #: ignore.
 ACCOUNT_PATTERNS = [
     (re.compile(r"egosoft[/\\]x4[/\\](\d{4,})", re.I), "an X4 profile id"),
+    # An absolute Windows user path. Requires a trailing separator AND more path, so an
+    # illustrative bare `C:\Users\...` in prose does not fire.
+    #
+    # This lived as a hand-rolled grep in ci.yml until 2026-09-01, where it had no idea
+    # placeholders existed -- so the GENERIC fixtures that replaced a real leak made CI
+    # red (7 hits across 2 files). Two implementations of one predicate that disagree is
+    # worse than either alone: the workflow copy is the one nobody can test, and the
+    # selftest below is what makes this copy honest.
+    (re.compile(r"[a-z]:[/\\]+users[/\\]+([A-Za-z0-9_.-]+)[/\\]+[A-Za-z0-9_.-]", re.I),
+     "an absolute user path"),
 ]
 
 #: Values that are obviously stand-ins. Without this the scan fires on the generic
 #: fixture that REPLACED the real one, which would train everyone to pass --no-verify.
 PLACEHOLDER_IDS = {"12345678", "00000000", "11111111", "1234", "99999999"}
+
+#: Stand-in USERNAMES for the user-path pattern. Kept separate from the ids above on
+#: purpose: `87654321` is a placeholder-looking number that the profile-id twin needs
+#: to FIRE on, so one shared set would have made that twin silently vacuous.
+PLACEHOLDER_USERS = {"tester", "user", "username", "you", "x", "someone", "youruser",
+                     "public", "all users", "default", "example", "me", "dev"}
 
 
 def _git(*args: str) -> str:
@@ -175,8 +191,17 @@ def account_match(line: str) -> str | None:
     """
     for rx, what in ACCOUNT_PATTERNS:
         m = rx.search(line)
-        if m and m.group(1) not in PLACEHOLDER_IDS:
-            return what
+        if not m:
+            continue
+        val = m.group(1)
+        if val in PLACEHOLDER_IDS or val.lower() in PLACEHOLDER_USERS:
+            continue
+        # An ELISION is not a name. `C:/Users/.../AppData/...` is how these comments
+        # already redact a path, and firing on it would demand "fixing" three lines
+        # that are the redaction. MEASURED: 3 of 3 first hits were exactly this.
+        if not re.search(r"[A-Za-z0-9]", val):
+            continue
+        return what
     return None
 
 
@@ -213,6 +238,21 @@ def selftest() -> int:
          not _account_hit("blob sha " + "8765" + "4321 size 12345678")),
         ("an unrelated Egosoft path with no id is NOT caught",
          not _account_hit("see Documents/Egosoft/X4/ for the profile folder")),
+        # --- absolute user paths: moved here from ci.yml, which had no placeholders ---
+        ("a REAL-shaped absolute user path is caught",
+         _account_hit("SRC = 'C:/Users/" + "dev" + "user/Desktop/Modding'")),
+        ("...with BACKSLASHES too",
+         _account_hit(r"SRC = 'C:\Users" + chr(92) + "dev" + r"user\Desktop\Modding'")),
+        ("a PLACEHOLDER username is NOT caught, or the generic fixtures trip CI",
+         not _account_hit("PROF = 'C:/Users/tester/Documents/Egosoft/X4/12345678'")),
+        ("an illustrative bare C:\\Users\\... in prose is NOT caught",
+         not _account_hit("paths look like C:" + chr(92) + "Users" + chr(92) + "...")),
+        ("a path with a user segment but nothing after it is NOT caught",
+         not _account_hit("cd C:/Users/")),
+        ("an ELIDED user path is NOT caught -- that IS the redaction",
+         not _account_hit('received "C:/Users/.../AppData/Local/Temp/x/docs"')),
+        ("...but a name that merely CONTAINS a dot still is",
+         _account_hit("SRC = 'C:/Users/" + "ada" + ".lovelace/Desktop'")),
     ]
     bad = [n for n, ok in checks if not ok]
     for n, ok in checks:

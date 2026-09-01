@@ -129,19 +129,17 @@ jobs:
 
           fail=0
 
-          # A real Windows user path: drive, Users, a name, then MORE path. Requiring a
-          # trailing separator keeps an illustrative `C:\Users\...` in a comment from
-          # firing (verified: 0 hits on the clean tree, still catches a genuine path).
-          if grep -rniE 'C:[/\\]+Users[/\\]+[A-Za-z0-9_-]+[/\\]+[A-Za-z0-9_.-]' "${FILES[@]}"; then
-            echo "::error::An absolute user path is committed. Toolkit copies must use a project-relative default (e.g. bare \"reference\"), not the author's machine."
-            fail=1
-          fi
-
-          # An X4 user-profile id is a long digit run under the Egosoft profile dir.
-          if grep -rniE 'Egosoft[/\\]+X4[/\\]+[0-9]{6,}' "${FILES[@]}"; then
-            echo "::error::A personal X4 profile id is committed."
-            fail=1
-          fi
+          # NOTE (2026-09-01): the absolute-user-path and X4-profile-id checks that used
+          # to live here as greps have MOVED into scripts/scan-identifiers.py, which
+          # runs as its own step below.
+          #
+          # They were two implementations of one predicate, and they disagreed: the
+          # greps knew nothing about placeholders, so the GENERIC fixtures that replaced
+          # a real leak made this job red -- 7 hits across 2 files, every one a
+          # stand-in. The copy that lives in the workflow is also the copy nobody can
+          # test; the scanner's `--selftest` step proves its patterns fire AND stay
+          # silent, one twin per clause. Do not re-add a grep here without deleting the
+          # scanner's pattern, or the next fixture change will fail one and pass the other.
 
           # A Nexus API key assigned to a literal. Each user supplies their OWN key via the
           # X4_NEXUS_KEY environment variable; a bundled key would also breach Nexus AUP.
