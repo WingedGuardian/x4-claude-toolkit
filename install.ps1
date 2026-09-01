@@ -1,5 +1,5 @@
 <#
-  X4 Claude Toolkit installer — Windows (PowerShell).
+  X4 Claude Toolkit installer - Windows (PowerShell).
 
   Three install methods, all with fully configurable paths (nothing hardcoded):
     in-game   Copy the toolkit INTO your X4 game folder (one workspace).
@@ -26,7 +26,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $SRC = Split-Path -Parent $MyInvocation.MyCommand.Path
-Write-Host "X4 Claude Toolkit installer (Windows) — source: $SRC"
+Write-Host "X4 Claude Toolkit installer (Windows) - source: $SRC"
 
 # env fallbacks
 if (-not $Game)      { $Game      = $env:X4_GAME }
@@ -39,7 +39,7 @@ if (-not $XRCatTool) { $XRCatTool  = $env:XRCATTOOL }
 
 # UTF-8 WITHOUT BOM, identical under Windows PowerShell 5.1 and pwsh 7. 5.1's
 # -Encoding UTF8 writes a BOM, which bash reads as a command when it sources
-# x4-paths.env — the whole bash half of the toolkit then fails on line 1.
+# x4-paths.env - the whole bash half of the toolkit then fails on line 1.
 function Write-Utf8NoBom($path, [string]$content) {
   [IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
 }
@@ -89,7 +89,10 @@ function Detect-XRCat {
 
 function Copy-Toolkit($dest) {
   New-Item -ItemType Directory -Force -Path $dest | Out-Null
-  $items = '.claude','tools','bin','scripts','CLAUDE.md','KNOWLEDGEBASE.md','README.md',
+  # 'mods' carries the game extension x4live needs (README: "copy that folder into
+  # {game}/extensions/"). Omitting it shipped a documented instruction pointing at a
+  # directory the installer never created.
+  $items = '.claude','tools','bin','scripts','mods','CLAUDE.md','KNOWLEDGEBASE.md','README.md',
            'CHANGELOG.md','LICENSE','setup.sh','install.sh','install.ps1','SETUP_PROMPT.txt','.gitignore','.gitattributes'
   foreach ($i in $items) {
     $s = Join-Path $SRC $i
@@ -102,7 +105,7 @@ function Write-PathsEnv($t) {
   $dir = Join-Path $t '.claude'; New-Item -ItemType Directory -Force -Path $dir | Out-Null
   $ref = if ($Reference) { $Reference } else { Join-Path $t 'reference' }
   $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-Path $Game 'extensions' } else { '' }
-  $lines = @("# Written by install.ps1 ($(Get-Date -Format s)) — edit freely. All paths overridable.",
+  $lines = @("# Written by install.ps1 ($(Get-Date -Format s)) - edit freely. All paths overridable.",
              "X4_TOOLKIT=`"$t`"")
   if ($Game)      { $lines += "X4_GAME=`"$Game`"" }
   $lines += "X4_REFERENCE=`"$ref`""
@@ -121,7 +124,7 @@ function Write-PathsEnv($t) {
 function Install-Global($t) {
   $hc = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
   New-Item -ItemType Directory -Force -Path (Join-Path $hc 'skills'),(Join-Path $hc 'agents') | Out-Null
-  # Track exactly what WE copy — the $CLAUDE_PROJECT_DIR rewrite below must never
+  # Track exactly what WE copy - the $CLAUDE_PROJECT_DIR rewrite below must never
   # touch a user's pre-existing skills/agents (they may use that variable on purpose).
   $copied = @()
   Get-ChildItem -Directory (Join-Path $t '.claude\skills') -Filter 'x4-*' -ErrorAction SilentlyContinue |
@@ -134,7 +137,7 @@ function Install-Global($t) {
   Get-ChildItem -File (Join-Path $t '.claude\agents') -Filter '*.md' -ErrorAction SilentlyContinue |
     ForEach-Object {
       Copy-Item -Force $_.FullName $agentsDst
-      # NB: two-argument Join-Path only — the 3-arg form is pwsh 7+ and this script
+      # NB: two-argument Join-Path only - the 3-arg form is pwsh 7+ and this script
       # must run under Windows PowerShell 5.1 (the README's own command).
       $copied += Get-Item (Join-Path $agentsDst $_.Name)
     }
@@ -193,7 +196,32 @@ switch ($Method) {
 }
 
 # wire x4validate (needs bash/uv); skip gracefully if bash missing
-$bash = Get-Command bash -ErrorAction SilentlyContinue
+#
+# `Get-Command bash` is NOT good enough. On any Windows machine with WSL enabled --
+# which includes every Docker Desktop install -- `bash` resolves to the WSL stub at
+# C:\Windows\System32\bash.exe (or the WindowsApps alias), NOT to Git Bash. MEASURED
+# 2026-09-01 on a machine whose only distro is docker-desktop: setup.sh died with
+#   WSL (9 - Relay) ERROR: CreateProcessCommon:640: execvpe(/bin/bash) failed
+# and the installer reported INCOMPLETE. Worse, a machine WITH a real distro would
+# have run setup.sh inside Linux, where C:\... paths do not resolve at all -- a
+# silent wrong install rather than a loud failure.
+#
+# So: prefer a real Git Bash, and refuse the known stubs by path.
+function Find-GitBash {
+  $cands = @()
+  foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)},
+                      (Join-Path $env:LOCALAPPDATA 'Programs'))) {
+    if ($base) { $cands += (Join-Path $base 'Git\bin\bash.exe') }
+  }
+  foreach ($c in $cands) { if (Test-Path $c) { return (Get-Command $c) } }
+  # Fall back to PATH, but never to a WSL stub.
+  foreach ($c in @(Get-Command bash -All -ErrorAction SilentlyContinue)) {
+    $p = $c.Source
+    if ($p -and $p -notmatch '\\(System32|SysWOW64|WindowsApps)\\') { return $c }
+  }
+  return $null
+}
+$bash = Find-GitBash
 $failed = @()
 if ($bash) {
   Push-Location $Toolkit
@@ -205,12 +233,12 @@ if ($bash) {
   $env:CLAUDE_PROJECT_DIR = $Toolkit
   try {
     # $ErrorActionPreference='Stop' does NOT trap a native exit code, so each
-    # call needs its own check — otherwise a failed unpack still reached
+    # call needs its own check - otherwise a failed unpack still reached
     # "=== install complete ===" and the user believed a broken install.
-    & bash setup.sh
+    & $bash.Source setup.sh
     if ($LASTEXITCODE -ne 0) { $failed += "setup.sh (exit $LASTEXITCODE)" }
     if ($Unpack) {
-      & bash bin/unpack-reference.sh
+      & $bash.Source bin/unpack-reference.sh
       if ($LASTEXITCODE -ne 0) { $failed += "bin/unpack-reference.sh (exit $LASTEXITCODE)" }
     }
   } finally {
@@ -239,9 +267,9 @@ if ($failed.Count) {
 Write-Host "`n=== install complete ($Method) ==="
 Write-Host "Toolkit: $Toolkit"
 Write-Host "Config:  $Toolkit\.claude\x4-paths.env  (edit any path here)"
-if ($Method -eq 'global') { Write-Host "Global:  skills/agents + X4_* env added to your ~/.claude — works from any mod repo." }
+if ($Method -eq 'global') { Write-Host "Global:  skills/agents + X4_* env added to your ~/.claude - works from any mod repo." }
 Write-Host ""
-Write-Host "IMPORTANT — set X4_TOOLKIT in your user environment so the tools find the config"
+Write-Host "IMPORTANT - set X4_TOOLKIT in your user environment so the tools find the config"
 Write-Host "above from ANY directory (they are often run from the game folder, which has a"
 Write-Host ".claude\ but no x4-paths.env). This installer cannot do it for you:"
 Write-Host "         setx X4_TOOLKIT `"$Toolkit`"        (takes effect in NEW shells)"

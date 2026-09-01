@@ -128,7 +128,10 @@ detect_xrcat() {
 copy_toolkit() {  # copy_toolkit DEST  — copy tracked toolkit files (never game data / local config)
   local dest="$1"; mkdir -p "$dest"
   local item
-  for item in .claude tools bin scripts CLAUDE.md KNOWLEDGEBASE.md README.md CHANGELOG.md \
+  # `mods` carries the game extension x4live needs (README: "copy that folder into
+  # {game}/extensions/"). Omitting it shipped a documented instruction pointing at a
+  # directory the installer never created.
+  for item in .claude tools bin scripts mods CLAUDE.md KNOWLEDGEBASE.md README.md CHANGELOG.md \
               LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt .gitignore .gitattributes; do
     [ -e "$SRC/$item" ] || continue
     cp -r "$SRC/$item" "$dest/"
