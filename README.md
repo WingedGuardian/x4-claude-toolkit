@@ -148,6 +148,29 @@ build measured in minutes, not seconds. BaseX itself is bundled (BSD-3-Clause, 5
 nothing extra to download. See [`tools/basex/README.md`](tools/basex/README.md) for the install, the
 freshness contract and the exit codes, and `tools/basex/QUERIES.md` for worked queries.
 
+### `x4live` — ask the RUNNING game, instead of quitting to read a log
+
+Every other tool here reads files. `x4live` reads the **live engine**: what objects exist right
+now, what a macro's real values resolved to, whether an extension actually loaded — without a
+quit-and-relaunch cycle for each question.
+
+It needs one thing inside the game, and **this toolkit ships it**: `mods/x4_toolkit_helper/`.
+Copy that folder into `{game}/extensions/`. It is **read-only** — a fixed, enumerated vocabulary
+with no write verb, gated or otherwise; it declares `save="false"` so it cannot bake into a save,
+and it adds no content, no menu and no MD script. Its one third-party dependency
+(**Mod Support APIs**, `ws_2042901274`, from Steam Workshop or Nexus) is declared **optional**: the
+addon still loads without it and the snapshot half keeps working, while only the named-pipe verbs
+report the api unavailable. The two halves fail independently, deliberately.
+
+⚠ **Enumeration is not a census, and the tool says so rather than rounding it away.** Ownerless
+objects belong to no faction and are invisible to any owner query, hidden factions are opt-in, and
+name and sector are *player knowledge* — so many rows come back `Unknown` while ids, positions,
+class and flags stay exact. Object ids also do not survive a UI reload, which the engine performs on
+a save load and on an alt-enter graphics change.
+
+See [`tools/x4validate/README.md`](tools/x4validate/README.md) for the verb list and the evidence
+tiers behind each answer.
+
 ### Skills & subagents
 - `/x4-debug` — read the active profile's `debug.txt`, filter benign noise, surface real errors.
 - `/x4-modlist-review` — triage your mod registry against the Nexus API.
