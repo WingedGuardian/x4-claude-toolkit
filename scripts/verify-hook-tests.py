@@ -78,6 +78,52 @@ MUTANTS = [
      "return [ops[-1]]", "test_tee_writes_EVERY_file_operand"),
     ("last assignment wins", "found[m.group(1)] = m.group(2)",
      "found.setdefault(m.group(1), m.group(2))", "test_last_assignment_wins"),
+    # --- operands resolve against the command's own cwd (2026-09-01) ---------------
+    # Each clause gets its OWN mutant. Mutating the whole feature to a no-op cannot
+    # distinguish "the join is untested" from "some earlier guard covers it".
+    ("a relative operand is joined to the cwd",
+     'out.append((r if unres else join_cwd(c_cwd, r), unres, r))',
+     'out.append((r if unres else r, unres, r))',
+     "test_cd_then_relative_delete_of_extensions_is_the_game_delete"),
+    # The NAME backstop is the opposite call from hits_game_root, and the difference is
+    # load-bearing: it must NOT skip unresolved operands, because on an unconfigured
+    # machine it is the only protection there is and the visible text is the evidence.
+    # A `not u` filter added here on 2026-09-01 removed that defence; the 13,041-command
+    # corpus could not see it (no historical command has the shape) and only this gate did.
+    ("the NAME backstop does NOT skip unresolved operands",
+     "rm_named_game = any(GAME_ROOTISH.search(norm(p)) for p, _u, _ in rm_t)",
+     "rm_named_game = any(not _u and GAME_ROOTISH.search(norm(p)) for p, _u, _ in rm_t)",
+     "test_the_NAME_backstop_still_fires_on_an_unresolvable_path"),
+    #
+    # NOT MUTATED, deliberately -- two guards whose removal is BEHAVIOURALLY EQUIVALENT
+    # today, so a mutant for them would sit here permanently "not caught" and train
+    # everyone to ignore this table:
+    #   * join_cwd's `is_abs(cwd)` check. A relative cwd joined to a relative operand
+    #     yields a relative path, which matches no root either way.
+    #   * hits_game_root's `unres` check. An unresolved operand still contains `$`, so
+    #     norm(path) can never equal the game root.
+    # Both are kept as PROSPECTIVE guards: if resolve() ever learns to expand
+    # environment variables, each becomes load-bearing immediately -- which is exactly
+    # the F93 shape, a capability improvement widening a guard nobody re-scoped.
+    ("pushd relocates as well as cd",
+     'DIR_VERBS = {"cd", "pushd"}', 'DIR_VERBS = {"cd"}',
+     "test_pushd_relocates_like_cd"),
+    ("popd pops, rather than being ignored",
+     'elif v == "popd" and stack:\n            cwd = stack.pop()',
+     'elif v == "popd" and stack:\n            pass',
+     "test_popd_returns_to_the_previous_directory"),
+    ("subshell punctuation is stripped from a segment",
+     "    return [_unwrap(p) for p in parts if p.strip()]",
+     "    return [p for p in parts if p.strip()]",
+     "test_subshell_cd_relocates"),
+    ("command substitution counts as unresolved",
+     "    return bool(_VAR.search(tok) or _SUBST.search(tok))",
+     "    return bool(_VAR.search(tok))",
+     "test_command_substitution_counts_as_unresolved"),
+    ("a root named only by its ENV VAR is still that root",
+     "                if conservative and key in root_vars_named(raw):\n                    return True",
+     "                if False:\n                    return True",
+     "test_delete_of_a_root_env_var_by_name"),
     ("bash -c is parsed too", "all_cmds = [cmd] + _inner_commands(cmd)", "all_cmds = [cmd]",
      "test_delete_inside_bash_c_is_seen"),
 ]

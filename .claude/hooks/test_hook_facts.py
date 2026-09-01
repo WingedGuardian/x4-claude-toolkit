@@ -541,5 +541,149 @@ class TestCliContract(unittest.TestCase):
         self.assertTrue(out.endswith(cmd), repr(out[-60:]))
 
 
+# ------------------------------------------------- operands resolve against cwd
+class TestCwdRelativeOperands(unittest.TestCase):
+    """A path named RELATIVE to a `cd` is the same path.
+
+    MEASURED 2026-09-01 against c400a05 (the last state where the rules ran): the
+    parse-pass rewrite traded whole-string grepping for structured operands, and so
+    became blind to every INDIRECT way of naming a path. Nine cases, three of them
+    verdicts the old hook produced and this one had lost:
+
+        cd <saves> && rm -f *.xml.gz        ask    -> allow   REGRESSION
+        rm -rf "$(echo <game>)"             deny   -> allow   REGRESSION
+        cd <game> && echo x > notes.txt     advise -> allow   REGRESSION
+        cd <game> && rm -rf .               allow  -> allow   pre-existing gap
+        cd <reference> && rm -rf assets     allow  -> allow   pre-existing gap
+        ... and the pushd / subshell / extensions variants
+
+    The cause is ONE thing, which is why the fix is one thing: an operand was
+    classified as written instead of as resolved. `cwd_of` already existed and was
+    consumed only by the search rules.
+    """
+
+    def test_cd_then_relative_delete_of_extensions_is_the_game_delete(self):
+        f = F('cd "%s" && %s -rf extensions' % (GAME, D))
+        self.assertTrue(f["rm_hits_game"])
+
+    def test_cd_then_delete_dot_is_the_game_root(self):
+        f = F('cd "%s" && %s -rf .' % (GAME, D))
+        self.assertTrue(f["rm_hits_game"])
+
+    def test_cd_then_relative_delete_under_reference(self):
+        f = F('cd "%s" && %s -rf assets' % (REF, D))
+        self.assertTrue(f["rm_targets_reference"])
+
+    def test_cd_then_relative_delete_of_saves(self):
+        f = F('cd "%s" && %s -f *.xml.gz' % (ROOTS["saves"], D))
+        self.assertTrue(f["rm_saves"])
+
+    def test_pushd_relocates_like_cd(self):
+        f = F('pushd "%s" && %s -rf extensions' % (GAME, D))
+        self.assertTrue(f["rm_hits_game"])
+
+    def test_popd_returns_to_the_previous_directory(self):
+        # Without a stack, ignoring popd would resolve `build` against the game and
+        # invent a false positive. The pop must actually pop.
+        f = F('pushd "%s" && ls; popd && %s -rf build' % (GAME, D))
+        self.assertFalse(f["rm_in_x4_dir"])
+
+    def test_subshell_cd_relocates(self):
+        f = F('(cd "%s" && %s -rf extensions)' % (GAME, D))
+        self.assertTrue(f["rm_hits_game"])
+
+    def test_cd_into_extensions_then_delete_one_mod_confirms(self):
+        # One deployed mod is a redeploy, not a catastrophe: confirm, never hard block.
+        f = F('cd "%s/extensions" && %s -rf amod' % (GAME, D))
+        self.assertTrue(f["rm_in_x4_dir"])
+        self.assertFalse(f["rm_hits_game"])
+
+    def test_cd_then_relative_redirect_is_a_write_into_the_game(self):
+        f = F('cd "%s" && echo x > notes.txt' % GAME)
+        self.assertTrue(f["redirect_truncate_into_game_or_profile"])
+
+    def test_cd_then_relative_copy_into_the_game(self):
+        f = F('cd "%s" && cp /c/tmp/a extensions/a' % GAME)
+        self.assertTrue(f["copy_into_game_or_profile"])
+
+    # --- the other side: a relocation that is NOT into a protected root ----------
+    def test_cd_elsewhere_then_delete_is_untouched(self):
+        f = F('cd /c/build && %s -rf out' % D)
+        self.assertFalse(f["rm_in_x4_dir"])
+        self.assertFalse(f["rm_hits_game"])
+
+    def test_a_relative_cd_cannot_be_resolved_and_must_not_guess(self):
+        # The hook does not know the shell's real cwd, so `cd extensions` is
+        # unresolvable. Guessing a root here would fire on unrelated work.
+        f = F('cd extensions && %s -rf amod' % D)
+        self.assertFalse(f["rm_in_x4_dir"])
+
+    def test_delete_outside_any_root_still_allowed(self):
+        f = F('%s -f /c/Windows/Temp/scratch.txt' % D)
+        self.assertFalse(f["rm_in_x4_dir"])
+        self.assertFalse(f["rm_hits_game"])
+
+
+# ------------------------------------------- unresolvable operands, deletes only
+class TestUnresolvedDeleteOperands(unittest.TestCase):
+    """An operand a hook CANNOT resolve is not evidence of safety.
+
+    Scoped to deletes by user decision (2026-09-01): a delete is the one channel
+    with no backup behind it -- MEASURED, 0 of 186 auto-backups cover anything
+    outside dev/, and savegames are covered by nothing. Writes keep their existing
+    verdicts, so this cannot add prompts to routine work.
+    """
+
+    def test_command_substitution_counts_as_unresolved(self):
+        # `$(...)` and backticks were invisible to has_unresolved, which tests only
+        # for $NAME / ${NAME}. So the whole token read as a literal path, matched no
+        # root, and a delete of the game root through `$(echo ...)` was allowed.
+        self.assertTrue(H.has_unresolved("$(echo x)"))
+        self.assertTrue(H.has_unresolved(chr(96) + "echo x" + chr(96)))
+        self.assertTrue(H.has_unresolved("$NAME"))
+        self.assertTrue(H.has_unresolved("${NAME}"))
+        self.assertFalse(H.has_unresolved("/plain/path"))
+
+    def test_delete_through_command_substitution_naming_the_root(self):
+        f = F('%s -rf "$(echo %s)"' % (D, GAME))
+        self.assertTrue(f["rm_in_x4_dir"])
+
+    def test_delete_of_a_root_env_var_by_name(self):
+        # $X4_GAME never appears expanded in the text, so no amount of string
+        # matching finds the root. The VARIABLE NAME is the evidence.
+        f = F('%s -rf "$X4_GAME"' % D)
+        self.assertTrue(f["rm_in_x4_dir"])
+
+    def test_delete_of_the_saves_env_var_by_name(self):
+        f = F('%s -rf "$X4_SAVES"' % D)
+        self.assertTrue(f["rm_saves"])
+
+    def test_the_NAME_backstop_still_fires_on_an_unresolvable_path(self):
+        """The name backstop must NOT skip unresolved operands.
+
+        It is the only protection an unconfigured machine has, and there the visible
+        text is the evidence: this path still ends in the game's name. A `not u` filter
+        added here on 2026-09-01 removed that last defence, and the 13,041-command
+        corpus could not detect it because no historical command has this shape -- only
+        the mutation gate did.
+        """
+        f = F('%s -rf "$BUILD/X4 Foundations"' % D)
+        self.assertTrue(f["rm_hits_game"])
+
+    def test_the_NAME_backstop_fires_even_with_NO_roots_configured(self):
+        f = F('%s -rf "$BUILD/X4 Foundations"' % D, roots={})
+        self.assertTrue(f["rm_hits_game"])
+
+    def test_an_unrelated_variable_is_not_assumed_dangerous(self):
+        f = F('%s -rf "$BUILD_DIR"' % D)
+        self.assertFalse(f["rm_in_x4_dir"])
+        self.assertFalse(f["rm_hits_game"])
+
+    def test_an_unresolved_WRITE_is_still_not_guessed_at(self):
+        # Deletes only. A write through an unresolved variable keeps today's verdict.
+        f = F('echo x > "$SOME_DIR/notes.txt"')
+        self.assertFalse(f["redirect_truncate_into_game_or_profile"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

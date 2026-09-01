@@ -68,6 +68,28 @@ def is_root(path: str, root: str) -> bool:
     return bool(root) and bool(path) and norm(path) == norm(root)
 
 
+def is_abs(p: str) -> bool:
+    """Absolute after normalisation -- `C:/x` and `/c/x` are both absolute."""
+    return norm(p).startswith("/")
+
+
+def join_cwd(cwd: str, p: str) -> str:
+    """Resolve `p` against the directory in force, or return "" when that is unknowable.
+
+    Returning "" rather than guessing is the whole safety property: the hook does not
+    know the shell's real starting directory, so `cd extensions && rm -rf amod` must
+    reach NO rule. Inventing a root there would fire on unrelated work, which is the
+    failure mode that gets a guard ignored.
+    """
+    if not p:
+        return cwd
+    if is_abs(p):
+        return p
+    if not cwd or not is_abs(cwd):
+        return ""
+    return norm(norm(cwd) + "/" + p)
+
+
 # ---------------------------------------------------------------- tokenising
 _OPERATORS = ("&&", "||", ";", "|", "&", "\n")
 
@@ -141,7 +163,33 @@ def segments(cmd: str) -> list[str]:
         buf.append(c)
         i += 1
     parts.append("".join(buf))
-    return [p for p in parts if p.strip()]
+    return [_unwrap(p) for p in parts if p.strip()]
+
+
+def _unwrap(seg: str) -> str:
+    """Strip subshell/group punctuation at a segment's edges.
+
+    `(cd X && rm -rf Y)` splits into `(cd X` and ` rm -rf Y)`, so the verb carried a
+    leading paren and the operand a trailing one -- MEASURED 2026-09-01: verb was
+    `'(cd'` and the operand `'extensions)'`, so neither matched anything and the
+    subshell form of a game delete was silently allowed.
+
+    A trailing `)` is punctuation only when UNBALANCED. `rm -rf $(echo x)` closes its
+    own paren, and stripping that would tear up the token.
+    """
+    s = seg.strip()
+    while s[:1] in ("(", "{"):
+        s = s[1:].lstrip()
+    while s and s[-1] in ")}":
+        marks = list(_scan(s))
+        if marks and marks[-1][1]:          # quoted -- it is data, not punctuation
+            break
+        opens = sum(1 for ch, inq in marks if not inq and ch in "({")
+        closes = sum(1 for ch, inq in marks if not inq and ch in ")}")
+        if closes <= opens:
+            break
+        s = s[:-1].rstrip()
+    return s
 
 
 def tokens(seg: str) -> list[tuple[str, bool]]:
@@ -219,8 +267,32 @@ def resolve(tok: str, assigns: dict[str, str]) -> str:
     return out
 
 
+# `$(...)` and `` `...` `` are values this hook can NEVER know. Without them a
+# substitution read as a LITERAL path: MEASURED 2026-09-01, `rm -rf "$(echo <game>)"`
+# matched no root and was allowed, while c400a05 -- which grepped the whole command
+# string -- denied it. Precision about operands bought blindness to indirection.
+_SUBST = re.compile(r"\$\(|" + chr(96))
+
+# An unexpanded root variable is the ONLY evidence there is: `rm -rf "$X4_GAME"` never
+# contains the game path as text, so no amount of string matching can find it. The
+# variable NAME is what identifies the root.
+ROOT_VARS = {"X4_GAME": "game", "X4_REFERENCE": "reference", "X4_PROFILE": "profile",
+             "X4_SAVES": "saves", "X4_MODS": "mods", "X4_TOOLKIT": "toolkit",
+             "X4_DOCUMENTS": "documents"}
+
+
 def has_unresolved(tok: str) -> bool:
-    return bool(_VAR.search(tok))
+    return bool(_VAR.search(tok) or _SUBST.search(tok))
+
+
+def root_vars_named(tok: str) -> set:
+    """Root KEYS named by an unexpanded environment variable in this token."""
+    out = set()
+    for m in _VAR.finditer(tok):
+        key = ROOT_VARS.get((m.group(1) or m.group(2)).upper())
+        if key:
+            out.add(key)
+    return out
 
 
 # ------------------------------------------------------------------ heredocs
@@ -443,15 +515,41 @@ def search_paths(seg: str) -> list[str]:
     return ops if pattern_given else ops[1:]
 
 
+DIR_VERBS = {"cd", "pushd"}
+
+
 def cwd_of(cmd: str) -> str:
-    """The last `cd` target in the command, so `cd <root> && grep -rn foo .` resolves."""
-    cwd = ""
+    """The last directory the command relocates to, so `cd <root> && grep -rn foo .`
+    resolves. Kept for the search rules, which ask only about the end state."""
+    tracked = cwd_track(cmd)
+    return tracked[-1][1] if tracked else ""
+
+
+def cwd_track(cmd: str, base: str = "") -> list:
+    """[(segment, the directory in force FOR that segment)], in command order.
+
+    Positional, not end-state: in `cd X && rm -rf Y` the `cd` itself still runs from
+    the base, and only `rm` sees X. `pushd` pushes, `popd` pops -- without the stack,
+    ignoring `popd` would resolve a later relative path against a directory the shell
+    had already left, inventing a false positive.
+
+    A subshell's `cd` is deliberately NOT unwound at the closing paren. Modelling that
+    needs a real parser, and for a guard the relocated directory is the safe error.
+    """
+    out, cwd, stack = [], base, []
     for seg in segments(cmd):
-        if verb(seg) == "cd":
+        out.append((seg, cwd))
+        v = verb(seg)
+        if v in DIR_VERBS:
             ops = _operands(seg)
             if ops:
-                cwd = ops[0]
-    return cwd
+                if v == "pushd":
+                    stack.append(cwd)
+                # `cd -` returns somewhere this hook cannot know; refuse to guess.
+                cwd = "" if ops[0] == "-" else join_cwd(cwd, ops[0])
+        elif v == "popd" and stack:
+            cwd = stack.pop()
+    return out
 
 
 # ------------------------------------------------------------------- $? rule
@@ -522,34 +620,53 @@ def facts(payload: dict, roots: dict) -> dict:
     background = inp.get("run_in_background", False)
 
     all_cmds = [cmd] + _inner_commands(cmd)
-    segs = [s for c in all_cmds for s in segments(c)]
     assigns = assignments(cmd)
     ncmd = norm(cmd)
-    cwd = cwd_of(cmd)
+
+    # Every operand is classified WHERE IT RUNS. `cwd_track` was the missing link: the
+    # directory was already computed and only the search rules ever consumed it, so a
+    # path named relative to a `cd` reached no other rule at all.
+    seg_cwd = [pair for c in all_cmds for pair in cwd_track(c)]
+    segs = [s for s, _ in seg_cwd]
+    cwd = seg_cwd[-1][1] if seg_cwd else ""
+
+    def prep(paths, c_cwd):
+        """(path resolved where it runs, unresolvable?, the token as written)."""
+        out = []
+        for p in paths:
+            r = resolve(p, assigns)
+            unres = has_unresolved(r)
+            out.append((r if unres else join_cwd(c_cwd, r), unres, r))
+        return out
 
     rm_t, copy_t, redir_t = [], [], []
-    for s in segs:
-        rm_t += rm_paths(s)
-        copy_t += copy_dests(s)
-        redir_t += redirects(s)
+    for s, c_cwd in seg_cwd:
+        rm_t += prep(rm_paths(s), c_cwd)
+        copy_t += prep(copy_dests(s), c_cwd)
+        for mode, tgt in redirects(s):
+            redir_t += [(mode,) + o for o in prep([tgt], c_cwd)]
 
-    def res(p):
-        return resolve(p, assigns)
-
-    def hit(paths, root):
+    def hit(ops, key, conservative=False):
+        """`conservative` is the delete-only rule (user decision 2026-09-01): an
+        operand this hook cannot resolve is not evidence of safety. Deletes are the one
+        channel with nothing behind them -- MEASURED, 0 of 186 auto-backups cover
+        anything outside dev/, and savegames are covered by nothing at all. Writes keep
+        their existing verdicts so this cannot add prompts to routine work."""
+        root = roots.get(key)
         if not root:
             return False
-        for p in paths:
-            r = res(p)
-            if has_unresolved(r):
+        for path, unres, raw in ops:
+            if unres:
                 if norm(root) in ncmd:
                     return True
-            elif under(r, root):
+                if conservative and key in root_vars_named(raw):
+                    return True
+            elif under(path, root):
                 return True
         return False
 
-    writes_any = [p for p in copy_t + rm_t] + [t for _, t in redir_t]
-    trunc_redirect = [t for m, t in redir_t if m == "truncate"]
+    writes_any = copy_t + rm_t + [(p, u, r) for _, p, u, r in redir_t]
+    trunc_redirect = [(p, u, r) for m, p, u, r in redir_t if m == "truncate"]
 
     # The game-delete HARD BLOCK is scoped to what is actually catastrophic: the install
     # root itself, or extensions/ wholesale (which destroys every deployed mod). Anything
@@ -567,11 +684,15 @@ def facts(payload: dict, roots: dict) -> dict:
     # installation with no configured paths has, so it stays -- but a path merely CONTAINING
     # the game's name is not the install, and the archive exclusion is what removed the
     # measured false positive (7 of 8 were a .zip named after the game).
-    def hits_game_root(p):
+    def hits_game_root(op):
         g = norm(roots.get("game") or "")
-        if not g:
+        path, unres, _raw = op
+        if not g or unres:
+            # An unresolvable operand never reaches the HARD BLOCK. It cannot be
+            # PROVEN to be the install root, and a deny the user cannot override is
+            # the F93 failure -- it goes to the confirmation below instead.
             return False
-        n = norm(res(p))
+        n = norm(path)
         return n == g or n == g + "/extensions"
 
     # No archive exclusion: GAME_ROOTISH is anchored at $ and so is ARCHIVE, and they
@@ -579,14 +700,21 @@ def facts(payload: dict, roots: dict) -> dict:
     # the mutation gate reported the term as unkillable, which is what dead code looks
     # like from the outside. The anchoring subsumes it; the .zip false positive that
     # motivated the exclusion (7 of 8 hits) can no longer reach this line.
-    rm_named_game = any(GAME_ROOTISH.search(norm(res(p))) for p in rm_t)
+    # NB: deliberately does NOT skip unresolved operands, unlike hits_game_root above.
+    # The two ask different questions. hits_game_root compares against a CONFIGURED
+    # root, and an operand carrying a `$` can never be proven equal to one. This is the
+    # NAME backstop -- the only protection an unconfigured machine has -- and there the
+    # visible text IS the evidence: `rm -rf "$BUILD/X4 Foundations"` still ends in the
+    # game's name. Adding a `not u` filter here (as this line briefly did on
+    # 2026-09-01) silently removed that last line of defence, and the 13,041-command
+    # corpus could not see it because no historical command has that shape.
+    rm_named_game = any(GAME_ROOTISH.search(norm(p)) for p, _u, _ in rm_t)
 
     search_roots = []
     for c in all_cmds:
-        c_cwd = cwd_of(c)
-        for s in segments(c):
+        for s, c_cwd in cwd_track(c):
             for p in search_paths(s):
-                r = res(p)
+                r = resolve(p, assigns)
                 search_roots.append(c_cwd if r in (".", "./") else r)
 
     def rooted(root):
@@ -607,18 +735,17 @@ def facts(payload: dict, roots: dict) -> dict:
         "timeout": timeout,
         "background": background,
 
-        "rm_hits_game": any(hits_game_root(p) for p in rm_t) or rm_named_game,
-        "rm_targets_reference": hit(rm_t, roots.get("reference")),
-        "rm_in_x4_dir": any(hit(rm_t, roots.get(k)) for k in
+        "rm_hits_game": any(hits_game_root(o) for o in rm_t) or rm_named_game,
+        "rm_targets_reference": hit(rm_t, "reference", conservative=True),
+        "rm_in_x4_dir": any(hit(rm_t, k, conservative=True) for k in
                             ("game", "profile", "mods", "toolkit")) or rm_named_game,
-        "rm_saves": hit(rm_t, roots.get("saves")),
+        "rm_saves": hit(rm_t, "saves", conservative=True),
 
-        "writes_documents": hit(writes_any, roots.get("documents")),
+        "writes_documents": hit(writes_any, "documents"),
         "copy_into_game_or_profile": bool(copy_t) and (
-            hit(copy_t, roots.get("game")) or hit(copy_t, roots.get("profile"))),
+            hit(copy_t, "game") or hit(copy_t, "profile")),
         "redirect_truncate_into_game_or_profile": (
-            hit(trunc_redirect, roots.get("game"))
-            or hit(trunc_redirect, roots.get("profile"))),
+            hit(trunc_redirect, "game") or hit(trunc_redirect, "profile")),
 
         "sed_i_in_game_or_profile": bool(re.search(r"sed\s+-i", stripped_blank)) and (
             (roots.get("game") and norm(roots["game"]) in ncmd)
@@ -630,7 +757,10 @@ def facts(payload: dict, roots: dict) -> dict:
         # characters were `git add`, and multi-line commands are routine here.
         "git_add_all": bool(re.search(r"(^|[;&|]\s*)git\s+add\s+(-A\b|--all\b|\.\s*$|\.\s*[;&|])",
                                       stripped_blank, re.M)),
-        "durable_truncating_redirect": any(DURABLE.search(res(t)) for t in trunc_redirect),
+        # Matched on the token AS WRITTEN as well as resolved: a durable record is
+        # recognised by its filename, which survives either form.
+        "durable_truncating_redirect": any(DURABLE.search(p) or DURABLE.search(raw)
+                                           for p, _u, raw in trunc_redirect),
         "durable_python_open_w": bool(DURABLE.search(cmd)) and bool(
             re.search(r"open\([^)]*,\s*[\"']w[\"']", cmd)),
 

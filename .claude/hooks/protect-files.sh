@@ -11,10 +11,65 @@ HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 INPUT=$(x4_hook_input)
 x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it checked nothing. Allowing silently is how five hooks sat dead for weeks while their suites passed. Confirm only if you know why the payload is missing."
-FILE_PATH=$(echo "$INPUT" | "$JQ" -r '.tool_input.file_path // empty')
+
+# Is jq actually usable? A BROKEN jq made every verdict below print nothing, and empty
+# stdout from a hook means ALLOW -- so the guard failed open, silently, exactly like
+# F79. protect-bash.sh gained this fallback in bccffc1; this file never did.
+PY=""
+for _c in "${X4_PYTHON:-}" python3 python py; do
+  [ -n "$_c" ] && command -v "$_c" >/dev/null 2>&1 && { PY="$_c"; break; }
+done
+JQ_OK=0
+printf '%s' '{}' | "$JQ" -e . >/dev/null 2>&1 && JQ_OK=1
+
+emit() {   # emit <deny|ask|advise> <reason>
+  if [ "$JQ_OK" = 1 ]; then
+    if [ "$1" = "advise" ]; then
+      "$JQ" -n --arg r "$2" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'
+    else
+      "$JQ" -n --arg k "$1" --arg r "$2" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:$k,permissionDecisionReason:$r}}'
+    fi
+  elif [ -n "$PY" ]; then
+    X4_KIND="$1" X4_REASON="$2" "$PY" -c 'import json, os, sys
+k = os.environ["X4_KIND"]; r = os.environ["X4_REASON"]
+h = {"hookEventName": "PreToolUse"}
+if k == "advise":
+    h["additionalContext"] = r
+else:
+    h["permissionDecision"] = k; h["permissionDecisionReason"] = r
+sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": h}).encode("utf-8"))'
+  else
+    # Neither emitter available. Hand-rolled JSON is the last resort, and the reason is
+    # deliberately literal: a verdict that cannot be rendered must still be a verdict.
+    printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"X4 GUARD: neither jq nor python is available, so this hook could not evaluate its rules. Confirm only if you know the edit is safe."}}'
+  fi
+}
+
+if [ "$JQ_OK" = 1 ]; then
+  FILE_PATH=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.file_path // empty')
+  FP_OK=1
+elif [ -n "$PY" ]; then
+  FILE_PATH=$(X4_IN="$INPUT" "$PY" -c 'import json, os, sys
+try:
+    sys.stdout.write((json.loads(os.environ["X4_IN"]).get("tool_input") or {}).get("file_path") or "")
+except Exception:
+    sys.exit(9)')
+  FP_OK=$?
+  [ "$FP_OK" -eq 0 ] && FP_OK=1 || FP_OK=0
+else
+  FP_OK=0
+fi
+
+# An EMPTY path and an UNREADABLE payload are different facts, and conflating them is
+# how a guard reports success over nothing. Only the first is an allow.
+if [ "$FP_OK" != 1 ]; then
+  VERDICT=1
+  emit ask "X4 GUARD: could not read the file path from this payload (no working jq or python), so NO rule below was evaluated. This is not a clean pass. Confirm only if you know the edit is safe."
+  exit 0
+fi
 [ -z "$FILE_PATH" ] && exit 0
 
-deny() { VERDICT=1; "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'; exit 0; }
+deny() { VERDICT=1; emit deny "$1"; exit 0; }
 # advise <reason> -- ALLOW, and explain to CLAUDE. Added 2026-08-29 when the user
 # turned off the content.xml confirmation: the reminder is still worth having, the
 # INTERRUPTION is not. A prompt spends the user's attention; an advisory spends mine.
@@ -33,12 +88,12 @@ ADVICE=""
 flush_advice() {
   [ -n "$VERDICT" ] && return 0
   [ -n "$ADVICE" ] || return 0
-  "$JQ" -n --arg r "$ADVICE" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'
+  emit advise "$ADVICE"
 }
 trap flush_advice EXIT
 advise() { if [ -n "$ADVICE" ]; then ADVICE="$ADVICE
 $1"; else ADVICE="$1"; fi; }
-ask()  { VERDICT=1; "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}'; exit 0; }
+ask()  { VERDICT=1; emit ask "$1"; exit 0; }
 
 # === HARD BLOCK — read-only reference data (unpacked base game, never edit) ===
 # X4_REFERENCE defaults to $X4_TOOLKIT/reference, so this covers the default layout too.

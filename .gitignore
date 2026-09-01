@@ -25,6 +25,12 @@ save/
 debug.txt
 content.xml
 config.xml
+# ...but the toolkit SHIPS a game extension, and an X4 extension without its manifest
+# does not load AT ALL -- silently, with no error line anywhere. MEASURED 2026-09-01:
+# `git archive HEAD mods/` listed 3 files and no content.xml, so every install from a
+# release tarball would have carried a dead mod. The broad ignore above stays as
+# defence for anyone who copies a profile into the tree; this exempts only our own.
+!mods/**/content.xml
 
 # --- Python (x4validate) ---
 __pycache__/
