@@ -48,7 +48,22 @@ fi
 # Windows-to-MSYS is the safe direction: "c:/" is unambiguous, since a colon is illegal
 # elsewhere in a Windows path, whereas "/c/" also occurs mid-path. The guard on the
 # preceding character is what keeps "https://" from matching as a drive named "s".
-x4_norm() { printf '%s' "$1" | tr 'A-Z\\' 'a-z/' | sed -E 's#(^|[^a-z0-9])([a-z]):/#\1/\2/#g'; }
+#
+# ONE subprocess, not two: sed's `y` transliterates, which is all `tr` was doing. This
+# helper is the hot path of protect-files.sh -- MEASURED 2026-08-31 at 145 ms per call
+# and ~22 calls per Edit/Write, i.e. ~6 s on every file edit, because x4_under
+# canonicalises BOTH of its arguments on all 11 of its call sites. Process spawn is the
+# whole cost on Windows; halving the spawns halves the bill.
+#
+# Behaviour is UNCHANGED and that was proven, not assumed: 43 of 43 path shapes agree
+# with the two-process form, including the live configured roots, and the differential
+# harness was shown able to detect a deliberately-wrong implementation. x4_norm is shared
+# by every guard, and F93 is the entry about a shared helper quietly re-scoping the rules
+# above it -- so this may cost less, and must not decide differently.
+x4_norm() {
+  printf '%s' "$1" | sed -E 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ\\/abcdefghijklmnopqrstuvwxyz\//
+s#(^|[^a-z0-9])([a-z]):/#\1/\2/#g'
+}
 # x4_canon PATH -> resolve symlinks + .. (so e.g. a game-dir 'extensions' symlink and its real
 # target compare equal). Uses realpath -m when available (no need for the file to exist);
 # falls back to the raw path otherwise. Then normalized for case/slash-insensitive compare.
@@ -63,9 +78,44 @@ x4_canon() {
   x4_norm "$p"
 }
 # x4_under FILE DIR -> 0 (true) if FILE is inside DIR or equals it; false if DIR empty.
+#
+# The FIRST argument is memoised. protect-files.sh calls this 11 times and passes the
+# SAME file path every time, so the identical canonicalisation was recomputed 10 times
+# for nothing -- a subprocess each. A one-entry cache is enough precisely because the
+# repetition is in argument one; the roots differ per call and caching them would buy
+# little and cost correctness questions.
+#
+# Cache CORRECTNESS: keyed on the exact input string, and x4_canon is a pure function of
+# it (realpath is read-only and the filesystem does not move mid-hook), so a hit returns
+# what a recomputation would. Plain variables, not an associative array -- macOS ships
+# bash 3.2, where `declare -A` fails silently and takes the guard with it.
+#
+# Returns through a GLOBAL, not stdout. A memo read with `x="$(memo ...)"` caches
+# NOTHING: command substitution forks a subshell, the array writes land in the child and
+# die with it. MEASURED 2026-08-31 -- 0 cache entries after two calls -- and the first
+# version of this cost MORE than no cache at all, because every call was a miss plus a
+# scan of a permanently empty array. The interleaved benchmark showed the memo slower
+# than the un-memoised form, which read as noise and was not.
+#
+# Indexed arrays, not `declare -A`: macOS ships bash 3.2, where the associative form
+# fails and takes the guard with it.
+_X4_CK=()                 # cache keys
+_X4_CV=()                 # cache values
+_X4_CANON_RESULT=""       # the out-parameter
+x4_canon_memo() {
+  local i=0 n=${#_X4_CK[@]}
+  while [ "$i" -lt "$n" ]; do
+    if [ "${_X4_CK[$i]}" = "$1" ]; then _X4_CANON_RESULT="${_X4_CV[$i]}"; return 0; fi
+    i=$((i+1))
+  done
+  _X4_CANON_RESULT="$(x4_canon "$1")"
+  _X4_CK[$n]="$1"; _X4_CV[$n]="$_X4_CANON_RESULT"
+}
 x4_under() {
   [ -n "$2" ] || return 1
-  local f d; f="$(x4_canon "$1")"; d="$(x4_canon "$2")"; d="${d%/}"
+  local f d
+  x4_canon_memo "$1"; f="$_X4_CANON_RESULT"
+  x4_canon_memo "$2"; d="${_X4_CANON_RESULT%/}"
   case "$f" in "$d"/*|"$d") return 0;; *) return 1;; esac
 }
 
