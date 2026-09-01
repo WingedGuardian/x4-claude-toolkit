@@ -25,11 +25,11 @@ HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 # ADVISE, never ask. A partial-answer warning is about MY instrument choice, so it
 # must cost me a note and the user nothing. Renamed from ask() 2026-08-29, when
 # fixing the stdin defect turned five newly-live hooks into a prompt storm.
-advise() { "$JQ" -n --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'; exit 0; }
+advise() { x4_advise "$1"; exit 0; }   # shared emitter: survives a missing jq
 
 INPUT=$(x4_hook_input)
 x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it checked nothing. Allowing silently is how five hooks sat dead for weeks while their suites passed. Confirm only if you know why the payload is missing."
-FP=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.path // empty' 2>/dev/null)
+FP=$(x4_field "$INPUT" 'tool_input.path')   # shared reader: survives a missing jq
 [ -z "$FP" ] && exit 0
 [ -z "${X4_EXTENSIONS:-}" ] && exit 0
 

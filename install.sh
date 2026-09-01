@@ -158,6 +158,18 @@ write_paths_env() {  # write_paths_env TOOLKIT_DIR
 
 install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env into settings.json
   local home_claude="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  # jq is checked FIRST, before anything is copied. This method cannot complete without
+  # it (the settings.json merge below is jq-only), and by the time that merge runs the
+  # skills/agents have already been copied AND rewritten to reference $X4_TOOLKIT -- so
+  # failing late leaves a half-install whose every skill resolves to an undefined
+  # variable. setup.sh treats a missing jq as a warning because it can proceed; this
+  # cannot.
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "ERROR: --method global needs jq to merge the X4_* env into $home_claude/settings.json." >&2
+    echo "       Install jq (https://jqlang.github.io/jq/), or use --method separate/in-game," >&2
+    echo "       which do not need it. Nothing has been changed." >&2
+    exit 1
+  fi
   mkdir -p "$home_claude/skills" "$home_claude/agents"
   local s
   for s in "$TOOLKIT/.claude/skills/"x4-*; do [ -e "$s" ] && cp -r "$s" "$home_claude/skills/"; done
@@ -175,8 +187,17 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
       [ -e "$a" ] && echo "$home_claude/agents/$(basename "$a")"
     done
   } | while read -r tgt; do
-    grep -rl 'CLAUDE_PROJECT_DIR' "$tgt" 2>/dev/null \
-      | while read -r f; do sed -i.bak 's#\$CLAUDE_PROJECT_DIR#$X4_TOOLKIT#g' "$f" && rm -f "$f.bak"; done
+    # `|| true` is LOAD-BEARING: grep exits 1 when it matches nothing, `set -o pipefail`
+    # promotes that to the pipeline's status, and `set -e` then killed the whole
+    # installer. MEASURED 2026-09-01: 2 of the 7 shipped skills (x4-debug, x4-probe)
+    # contain no $CLAUDE_PROJECT_DIR, so `--method global` exited 1 on this very tree --
+    # after copying skills and agents, and before writing any env. A skill that needs no
+    # rewrite is the NORMAL case, not an error.
+    hits="$(grep -rl 'CLAUDE_PROJECT_DIR' "$tgt" 2>/dev/null || true)"
+    [ -n "$hits" ] || continue
+    printf '%s\n' "$hits" | while read -r f; do
+      sed -i.bak 's#\$CLAUDE_PROJECT_DIR#$X4_TOOLKIT#g' "$f" && rm -f "$f.bak"
+    done
   done
   echo "  installed x4 skills + agents into $home_claude"
   # merge env into settings.json (jq); create if absent
@@ -192,6 +213,17 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
        + (if $m  != "" then {X4_MODS:$m}       else {} end)
        + (if $ext!= "" then {X4_EXTENSIONS:$ext} else {} end)
        + (if $xc != "" then {XRCATTOOL:$xc}    else {} end))' "$sj" > "$tmp" && mv "$tmp" "$sj"
+  # NEVER announce success from a line that cannot have failed. `A && B` does not trip
+  # `set -e` when A fails (A is not the command following the final &&), so a failing jq
+  # skipped the mv and this echo still printed -- exit 0, "merged X4_* env into ...",
+  # and settings.json left as `{}`. Verify the ARTIFACT, not the exit code of the shell
+  # that wrapped it.
+  if ! jq -e '.env.X4_TOOLKIT' "$sj" >/dev/null 2>&1; then
+    echo "ERROR: the X4_* env merge did not land in $sj." >&2
+    echo "       Skills and agents were copied, but they resolve paths via \$X4_TOOLKIT," >&2
+    echo "       which is now undefined. Set it by hand, or re-run once jq works." >&2
+    exit 1
+  fi
   echo "  merged X4_* env into $sj"
 }
 

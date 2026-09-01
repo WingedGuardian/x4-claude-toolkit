@@ -44,10 +44,32 @@ esac
 
 OUT=$(cd "$X4V" && "$UV" run --python 3.13 x4validate "$ROOT" --file "$F" $TIER --json 2>/dev/null)
 [ -z "$OUT" ] && exit 0
-ERRS=$(echo "$OUT" | "$JQ" -r '.error_count // 0' 2>/dev/null)
+# Both the PARSE and the EMIT need a renderer. With jq missing this block used to go
+# quiet -- ERRS came back empty, `${ERRS:-0}` made it 0, and a real validation failure
+# produced no advisory at all. Python is already a hard prerequisite here (the line above
+# runs x4validate through uv), so it is always the right fallback.
+if printf '%s' '{}' | "$JQ" -e . >/dev/null 2>&1; then
+  ERRS=$(printf '%s' "$OUT" | "$JQ" -r '.error_count // 0' 2>/dev/null)
+  MSG=$(printf '%s' "$OUT" | "$JQ" -r '.findings[] | "  [\(.severity)] \(.message) (\(.vpath):\(.line))"' 2>/dev/null)
+else
+  PY=""
+  for _c in "${X4_PYTHON:-}" python3 python py; do
+    [ -n "$_c" ] && command -v "$_c" >/dev/null 2>&1 && { PY="$_c"; break; }
+  done
+  if [ -n "$PY" ]; then
+    ERRS=$(X4_OUT="$OUT" "$PY" -c 'import json, os, sys
+try: sys.stdout.write(str(json.loads(os.environ["X4_OUT"]).get("error_count") or 0))
+except Exception: sys.stdout.write("0")' 2>/dev/null)
+    MSG=$(X4_OUT="$OUT" "$PY" -c 'import json, os, sys
+try: f = json.loads(os.environ["X4_OUT"]).get("findings") or []
+except Exception: f = []
+sys.stdout.write("\n".join("  [%s] %s (%s:%s)" % (x.get("severity"), x.get("message"), x.get("vpath"), x.get("line")) for x in f))' 2>/dev/null)
+  else
+    ERRS=0; MSG=""
+  fi
+fi
 if [ "${ERRS:-0}" -gt 0 ]; then
-  MSG=$(echo "$OUT" | "$JQ" -r '.findings[] | "  [\(.severity)] \(.message) (\(.vpath):\(.line))"')
-  "$JQ" -n --arg c "x4validate (advisory${TIER:+, tier B}) flagged this edit:
-$MSG" '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$c}}'
+  x4_advise "x4validate (advisory${TIER:+, tier B}) flagged this edit:
+$MSG" PostToolUse
 fi
 exit 0

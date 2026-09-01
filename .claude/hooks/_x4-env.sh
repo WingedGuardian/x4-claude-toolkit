@@ -168,6 +168,70 @@ x4_hook_input() { cat; }
 # payload was reported by nothing at all -- allow again, one layer in. If jq
 # cannot render the reason, a static literal goes out instead (no interpolation:
 # a reason with a quote in it would need escaping we no longer have).
+# x4_field <payload> <dotted path, e.g. tool_input.path>
+# Read one field from a hook payload without depending on jq alone.
+#
+# Fixing only the EMIT was a half fix: search-scope.sh READS its path with jq too, so
+# with jq missing the read returned empty, the next line exited 0, and the shared
+# emitter was never reached. MEASURED 2026-09-01 -- working jq: 420 bytes of advisory;
+# broken jq: 0 bytes, still silent, after the emitter had supposedly been fixed. Teach
+# EVERY step of the chain, not the last one.
+#
+# Returns empty for "absent" AND for "unreadable" -- fine for the ADVISORY hooks that
+# use it, which have nothing to say either way. The two hooks that emit VERDICTS
+# (protect-files, backup-before-edit) deliberately keep their own readers, because they
+# must tell those two cases apart and ASK on the second.
+x4_field() {
+  if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then
+    printf '%s' "$1" | "${JQ:-jq}" -r ".$2 // empty" 2>/dev/null
+    return 0
+  fi
+  local _py=""
+  for _c in "${X4_PYTHON:-}" python3 python py; do
+    [ -n "$_c" ] && command -v "$_c" >/dev/null 2>&1 && { _py="$_c"; break; }
+  done
+  [ -n "$_py" ] || return 0
+  X4_IN="$1" X4_PATH="$2" "$_py" -c 'import json, os, sys
+cur = json.loads(os.environ["X4_IN"])
+for k in os.environ["X4_PATH"].split("."):
+    if not isinstance(cur, dict):
+        cur = None
+        break
+    cur = cur.get(k)
+sys.stdout.write("" if cur is None else str(cur))' 2>/dev/null
+}
+
+# x4_advise <reason> [event]
+# Emit an ADVISORY (an allow that carries a note to the model) without depending on jq
+# alone. MEASURED 2026-09-01: search-scope.sh and x4validate-on-edit.sh emitted straight
+# through `"$JQ"`, so with jq unavailable they produced 0 bytes and the advisory was
+# simply lost -- silently, since 0 bytes is also how "nothing to say" looks. The cost is
+# a lost note rather than a lost refusal, which is exactly why it could sit unnoticed.
+#
+# ONE implementation, so a third advisory hook cannot reintroduce the gap: the two
+# guards that emit VERDICTS carry their own emitter because they also need deny/ask.
+x4_advise() {
+  if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then
+    "${JQ:-jq}" -n --arg r "$1" --arg e "${2:-PreToolUse}" \
+      '{hookSpecificOutput:{hookEventName:$e,additionalContext:$r}}'
+    return 0
+  fi
+  local _py=""
+  for _c in "${X4_PYTHON:-}" python3 python py; do
+    [ -n "$_c" ] && command -v "$_c" >/dev/null 2>&1 && { _py="$_c"; break; }
+  done
+  if [ -n "$_py" ]; then
+    X4_REASON="$1" X4_EVENT="${2:-PreToolUse}" "$_py" -c 'import json, os, sys
+sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": {
+  "hookEventName": os.environ.get("X4_EVENT") or "PreToolUse",
+  "additionalContext": os.environ["X4_REASON"]}}).encode("utf-8"))'
+    return 0
+  fi
+  # Neither renderer. An advisory is a note, not a decision, so a static literal that
+  # says the note was lost beats emitting nothing and pretending there was none.
+  printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"X4 ADVISORY LOST: this hook had something to tell you but neither jq nor python is available to render it. Install jq, or set X4_PYTHON."}}'
+}
+
 x4_require_input() {
   [ -n "$1" ] && return 0
   "${JQ:-jq}" -n --arg r "$2" --arg e "${3:-PreToolUse}" \
