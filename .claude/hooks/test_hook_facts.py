@@ -22,6 +22,12 @@ import hook_facts as H  # noqa: E402
 
 D = "r" + "m"                      # the delete verb, never a literal here
 BS = chr(92)                       # backslash
+
+# FIXTURE paths, and they must stay GENERIC. These are compared as strings against
+# command text -- nothing here touches a real filesystem -- so a real machine's layout
+# buys the test nothing and ships someone's username and game-profile id inside a public
+# file. Caught 2026-08-31 by scripts/verify-port.py before any push; the author's intent
+# and the file's subject matter protect nothing, only the scan does.
 GAME = "C:/Program Files (x86)/Steam/steamapps/common/X4 Foundations"
 PROF = "C:/Users/tester/Documents/Egosoft/X4/12345678"
 REF = "C:/Users/tester/Desktop/Modding/X4/reference"
