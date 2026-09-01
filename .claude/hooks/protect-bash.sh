@@ -182,6 +182,18 @@ timeout	}"
 TIMEOUT_MS="${_t%%
 *}"
 
+# === REFUSE — the command did not PARSE, so no rule below means anything ===
+# FIRST, deliberately. Every rule here is quote-aware, so a single unbalanced quote
+# turns the rest of the command into text no rule can see -- and a rule that sees
+# nothing returns false, which is indistinguishable from "this is fine".
+#
+# MEASURED 2026-09-01 against c400a05, which refused BOTH members of every pair: one
+# apostrophe in an ordinary English comment ("this doesn't need the old install") turned
+# 5 of 5 refusals into a silent allow, the game-delete HARD BLOCK among them. The
+# escape and comment handling below it fix the known trigger; THIS rule is what makes
+# the next unknown one a refusal instead of a hole.
+on unparseable_command && ask "This command does not parse: a quote is opened and never closed, so the guard could evaluate NO rule against it and cannot vouch for it. (Comments and heredoc bodies are excluded from this check, so an apostrophe in prose is fine.) Check the quoting, or confirm if you know the command is safe."
+
 # === HARD BLOCK — delete the game installation ===
 # The target must be a real path in the tree, OR bear the game's name while not being
 # an archive. MEASURED 2026-08-30: 7 of 8 refusals here were a .zip merely NAMED after

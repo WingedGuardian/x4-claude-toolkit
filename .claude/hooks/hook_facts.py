@@ -95,7 +95,14 @@ _OPERATORS = ("&&", "||", ";", "|", "&", "\n")
 
 
 def _scan(s: str):
-    """Yield (char, in_quote) so every helper can respect quoting identically."""
+    """Yield (char, in_quote) so every helper can respect quoting identically.
+
+    A BACKSLASH OUTSIDE QUOTES ESCAPES THE NEXT CHARACTER. Without that, `don\\'t`
+    opened a quote state that never closed, and everything after it read as quoted --
+    which `blank_quoted` then erased and `segments` refused to split. `tokens()` already
+    honoured the escape, so the two disagreed: tokens saw `dont`, _scan saw an open
+    quote (MEASURED 2026-09-01).
+    """
     q = ""
     i = 0
     while i < len(s):
@@ -107,12 +114,80 @@ def _scan(s: str):
             elif c == chr(92) and q == '"' and i + 1 < len(s):
                 i += 1
                 yield s[i], True
+        elif c == chr(92) and i + 1 < len(s):
+            yield c, False
+            i += 1
+            yield s[i], False          # escaped: never opens a quote
         elif c in "\"'":
             q = c
             yield c, True
         else:
             yield c, False
         i += 1
+
+
+def ends_open_quote(s: str) -> bool:
+    """True when the scan finishes inside a quote -- i.e. this text did not parse.
+
+    ★ This is the class-killer. Every helper here is quote-aware, so ONE unbalanced
+    quote silently converts the remainder of a command into 'quoted' text that no rule
+    can see. MEASURED 2026-09-01 against c400a05, which denied both members of every
+    pair: a single apostrophe in an ordinary English comment turned 5 of 5 refusals --
+    including the game-delete HARD BLOCK, the reference block and `git add -A` -- into
+    a silent allow. Position pins it: the same apostrophe placed AFTER the command
+    still denies.
+
+    A parser that cannot parse must SAY SO rather than return a confident empty answer.
+    """
+    q = ""
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if q:
+            if c == q:
+                q = ""
+            elif c == chr(92) and q == '"':
+                i += 1
+        elif c == chr(92):
+            i += 1
+        elif c in "\"'":
+            q = c
+        i += 1
+    return bool(q)
+
+
+def strip_comments(s: str) -> str:
+    """Blank `# ...` to end of line, when the `#` starts a word outside quotes.
+
+    The word-boundary test is what keeps `$#`, `${x#y}` and `http://a#b` intact -- in
+    all three the `#` is preceded by a non-space, so none is a comment.
+    """
+    out, q, i, prev = [], "", 0, ""
+    while i < len(s):
+        c = s[i]
+        if q:
+            out.append(c)
+            if c == q:
+                q = ""
+            elif c == chr(92) and q == '"' and i + 1 < len(s):
+                i += 1
+                out.append(s[i])
+        elif c == chr(92) and i + 1 < len(s):
+            out.append(c)
+            i += 1
+            out.append(s[i])
+        elif c in "\"'":
+            q = c
+            out.append(c)
+        elif c == "#" and (prev == "" or prev.isspace()):
+            while i < len(s) and s[i] != "\n":      # keep the newline: it is a separator
+                i += 1
+            continue
+        else:
+            out.append(c)
+        prev = c
+        i += 1
+    return "".join(out)
 
 
 def blank_quoted(s: str) -> str:
@@ -619,8 +694,12 @@ def facts(payload: dict, roots: dict) -> dict:
     timeout = inp.get("timeout", 0)
     background = inp.get("run_in_background", False)
 
-    all_cmds = [cmd] + _inner_commands(cmd)
-    assigns = assignments(cmd)
+    # PARSE THE COMMANDS, NOT THE PROSE. Heredoc bodies are data (a body line reading
+    # `rm -rf <game>` is text being written, and used to hard-deny), and a `#` comment is
+    # not a command at all -- while an apostrophe inside one blinded every rule after it.
+    body = strip_comments(strip_heredocs(cmd))
+    all_cmds = [body] + _inner_commands(body)
+    assigns = assignments(body)
     ncmd = norm(cmd)
 
     # Every operand is classified WHERE IT RUNS. `cwd_track` was the missing link: the
@@ -720,7 +799,12 @@ def facts(payload: dict, roots: dict) -> dict:
     def rooted(root):
         return bool(root) and any(is_root(p, root) for p in search_roots)
 
-    stripped = strip_heredocs(cmd)
+    # `body` already has heredocs AND comments removed. Deriving these from the raw
+    # command left the string-matching rules (git_add_all, sed -i, longjob, the profile
+    # search) blind to anything after an apostrophe in a comment -- 1 of the 5 measured
+    # bypasses survived the parser fix for exactly this reason, because it read a
+    # different string from the one that had been cleaned.
+    stripped = body
     stripped_blank = blank_quoted(stripped)
 
     longjob = False
@@ -773,6 +857,11 @@ def facts(payload: dict, roots: dict) -> dict:
                  or "X4_PROFILE" in cmd)
             and "content" in cmd.lower()
             and not re.search(r"ws_[0-9]{4,}", cmd)),
+
+        # A parser that cannot parse must SAY SO. Checked on the text the rules actually
+        # read -- heredoc bodies and comments removed first, because an apostrophe is
+        # ordinary English in both and must not raise an alarm there.
+        "unparseable_command": ends_open_quote(body),
 
         "dollarq_after_pipe": dollarq_after_pipe(cmd),
         "write_to_tmp": bool(re.search(r"(>|>>|-o|--output[= ])\s*[\"']?/tmp/", cmd)),

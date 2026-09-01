@@ -78,6 +78,34 @@ MUTANTS = [
      "return [ops[-1]]", "test_tee_writes_EVERY_file_operand"),
     ("last assignment wins", "found[m.group(1)] = m.group(2)",
      "found.setdefault(m.group(1), m.group(2))", "test_last_assignment_wins"),
+    # --- prose must not blind the guard (C1, 2026-09-01) --------------------------
+    # One apostrophe in an English comment disabled EVERY rule after it. Four separate
+    # clauses had to change; each gets its own mutant, because mutating the feature as a
+    # whole cannot tell which clause a test is actually exercising.
+    ("a backslash outside quotes escapes the next char",
+     "        elif c == chr(92) and i + 1 < len(s):\n            yield c, False\n            i += 1\n            yield s[i], False          # escaped: never opens a quote",
+     "        elif False:\n            yield c, False\n            i += 1\n            yield s[i], False",
+     "test_an_escaped_apostrophe_does_not_blind_the_next_command"),
+    ("comments are stripped before parsing",
+     "    body = strip_comments(strip_heredocs(cmd))",
+     "    body = strip_heredocs(cmd)",
+     "test_comment_apostrophe_does_not_hide_a_game_delete"),
+    ("the string rules read the CLEANED text, not the raw command",
+     "    stripped = body", "    stripped = strip_heredocs(cmd)",
+     "test_comment_apostrophe_does_not_hide_git_add_all"),
+    ("an unparseable command is REPORTED, never silently allowed",
+     "        \"unparseable_command\": ends_open_quote(body),",
+     "        \"unparseable_command\": False,",
+     "test_a_genuinely_unbalanced_quote_is_flagged"),
+    ("a heredoc BODY is data for the operand rules too",
+     "    all_cmds = [body] + _inner_commands(body)",
+     "    all_cmds = [cmd] + _inner_commands(cmd)",
+     "test_a_delete_inside_a_heredoc_body_is_not_a_delete"),
+    ("a comment keeps its newline, which is a separator",
+     "            while i < len(s) and s[i] != \"\\n\":      # keep the newline: it is a separator",
+     "            while i < len(s) and s[i] != \"\\r\":",
+     "test_a_comment_keeps_its_newline_which_is_a_separator"),
+
     # --- operands resolve against the command's own cwd (2026-09-01) ---------------
     # Each clause gets its OWN mutant. Mutating the whole feature to a no-op cannot
     # distinguish "the join is untested" from "some earlier guard covers it".
@@ -124,7 +152,7 @@ MUTANTS = [
      "                if conservative and key in root_vars_named(raw):\n                    return True",
      "                if False:\n                    return True",
      "test_delete_of_a_root_env_var_by_name"),
-    ("bash -c is parsed too", "all_cmds = [cmd] + _inner_commands(cmd)", "all_cmds = [cmd]",
+    ("bash -c is parsed too", "all_cmds = [body] + _inner_commands(body)", "all_cmds = [body]",
      "test_delete_inside_bash_c_is_seen"),
 ]
 

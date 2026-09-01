@@ -685,5 +685,122 @@ class TestUnresolvedDeleteOperands(unittest.TestCase):
         self.assertFalse(f["redirect_truncate_into_game_or_profile"])
 
 
+# ------------------------------------------- prose must not blind the guard (C1)
+class TestUnbalancedQuoteDoesNotBlindTheGuard(unittest.TestCase):
+    """One apostrophe in an English comment used to disable EVERY rule after it.
+
+    MEASURED 2026-09-01 against c400a05, which refused both members of every pair:
+    5 of 5 refusals became a silent allow -- the game-delete HARD BLOCK, the reference
+    block, the savegame confirm, the reference-search advisory and `git add -A`. The
+    parse pass is quote-aware everywhere, so an unclosed quote converts the rest of the
+    command into text no rule can see, and a rule that sees nothing returns False, which
+    is indistinguishable from "this is fine". A REGRESSION the rewrite introduced: the
+    old bash hook grepped the raw string and was unaffected.
+
+    Position pins the mechanism: the same apostrophe placed AFTER the command still
+    fires, because only text following the stray quote is blinded.
+    """
+    NL = chr(10)
+
+    def _pair(self, prose_plain, prose_apos, tail, key):
+        plain = F(prose_plain + self.NL + tail)
+        apos = F(prose_apos + self.NL + tail)
+        self.assertTrue(plain[key], "control did not fire; the test proves nothing")
+        self.assertTrue(apos[key], "an apostrophe in a comment blinded %s" % key)
+
+    def test_comment_apostrophe_does_not_hide_a_game_delete(self):
+        self._pair("# clean up: this does not need it", "# clean up: this doesn't need it",
+                   '%s -rf "%s"' % (D, GAME), "rm_hits_game")
+
+    def test_comment_apostrophe_does_not_hide_a_reference_delete(self):
+        self._pair("# it is a cleanup", "# it's a cleanup",
+                   '%s -rf "%s"' % (D, REF), "rm_targets_reference")
+
+    def test_comment_apostrophe_does_not_hide_a_save_delete(self):
+        self._pair("# it is a cleanup", "# it's a cleanup",
+                   '%s -f "%s/save_001.xml.gz"' % (D, ROOTS["saves"]), "rm_saves")
+
+    def test_comment_apostrophe_does_not_hide_git_add_all(self):
+        self._pair("# it is a fresh tree", "# it's a fresh tree",
+                   "git add -A", "git_add_all")
+
+    def test_comment_apostrophe_does_not_hide_a_rooted_search(self):
+        self._pair("# we do not need a denominator", "# we don't need a denominator",
+                   'grep -rn foo "%s"' % REF, "search_rooted_reference")
+
+    def test_an_apostrophe_AFTER_the_command_was_never_the_problem(self):
+        f = F('%s -rf "%s"  # we don%st need it' % (D, GAME, chr(39)))
+        self.assertTrue(f["rm_hits_game"])
+
+
+class TestUnparseableIsRefusedNotIgnored(unittest.TestCase):
+    """A parser that cannot parse must SAY SO. This is the class-killer: it turns the
+    NEXT unknown parser gap into a refusal instead of a silent allow."""
+
+    def test_a_genuinely_unbalanced_quote_is_flagged(self):
+        self.assertTrue(F("echo 'unterminated")["unparseable_command"])
+
+    def test_a_balanced_command_is_not(self):
+        self.assertFalse(F("echo hello")["unparseable_command"])
+
+    # --- the three places an apostrophe is ORDINARY ENGLISH and must NOT alarm ---
+    def test_an_apostrophe_in_a_comment_is_not_flagged(self):
+        self.assertFalse(F("# it's fine" + chr(10) + "echo hi")["unparseable_command"])
+
+    def test_an_apostrophe_in_a_heredoc_body_is_not_flagged(self):
+        cmd = "cat > f <<'X'" + chr(10) + "it's fine" + chr(10) + "X"
+        self.assertFalse(F(cmd)["unparseable_command"])
+
+    def test_an_escaped_apostrophe_is_not_flagged(self):
+        self.assertFalse(F("echo don" + BS + "'t")["unparseable_command"])
+
+    # --- a `#` that is not a comment must survive ---
+    def test_an_escaped_apostrophe_does_not_blind_the_next_command(self):
+        """Exercises _scan's escape handling through its CONSEQUENCE.
+
+        The first version of this test asked ends_open_quote() instead -- which has its
+        OWN escape handling, so it passed with _scan's removed and the mutant survived.
+        A test must touch the code it claims to pin.
+        """
+        f = F("echo don" + BS + "'t && " + D + ' -rf "%s"' % GAME)
+        self.assertTrue(f["rm_hits_game"])
+
+    def test_a_quoted_hash_is_not_a_comment(self):
+        self.assertFalse(F("grep -n '#define' f.c")["unparseable_command"])
+
+    def test_parameter_expansion_hash_is_not_a_comment(self):
+        self.assertEqual(H.strip_comments('echo "${p#/a}"'), 'echo "${p#/a}"')
+
+    def test_a_url_fragment_is_not_a_comment(self):
+        self.assertEqual(H.strip_comments("curl http://a#b"), "curl http://a#b")
+
+    def test_a_comment_keeps_its_newline_which_is_a_separator(self):
+        # Eating the newline would glue the next command onto the comment's line.
+        out = H.strip_comments("# note" + chr(10) + "echo hi")
+        self.assertIn(chr(10), out)
+        self.assertIn("echo hi", out)
+
+
+class TestHeredocBodyIsDataForEveryRule(unittest.TestCase):
+    """A heredoc body is text being WRITTEN, not commands. It was stripped for four
+    rules and not for the other seven, so a body line reading like a delete produced a
+    non-overridable hard deny on a command that only writes a file."""
+
+    def test_a_delete_inside_a_heredoc_body_is_not_a_delete(self):
+        cmd = ("cat > notes.md <<X" + chr(10)
+               + '%s -rf "%s"' % (D, GAME) + chr(10) + "X")
+        self.assertFalse(F(cmd)["rm_hits_game"])
+
+    def test_a_search_inside_a_heredoc_body_is_not_a_search(self):
+        cmd = ("cat > notes.md <<X" + chr(10)
+               + 'grep -rn foo "%s"' % REF + chr(10) + "X")
+        self.assertFalse(F(cmd)["search_rooted_reference"])
+
+    def test_but_a_REAL_delete_beside_a_heredoc_still_fires(self):
+        cmd = ("cat > notes.md <<X" + chr(10) + "just text" + chr(10) + "X" + chr(10)
+               + '%s -rf "%s"' % (D, GAME))
+        self.assertTrue(f_ := F(cmd)["rm_hits_game"], f_)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
