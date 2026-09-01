@@ -302,7 +302,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=125
+EXPECT=127
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -379,6 +379,23 @@ fi
 # `[ -z "$COMMAND" ] && exit 0` treated "could not parse" as "nothing to check".
 # Same shape as the stdin contract, one layer in.
 echo; echo "=== parser contract ==="
+# --- STATIC: no personal identifier may reach a tracked file -----------------
+# This repo already SHIPPED scripts/scan-identifiers.py and it was never wired to
+# anything, so nothing made it run. MEASURED 2026-08-31: a hook test fixture carried the
+# author's Windows username in four paths plus their 8-digit game-profile id, committed
+# (never pushed). Fed the pre-fix content the scanner fires on all four lines -- so the
+# guard was correct the whole time and the only gap was that running it depended on
+# remembering to. That is the third instance in one day of a correct tool going unrun.
+#
+# Its own selftest runs first: a scan that cannot be shown to fail is not evidence that
+# the tree is clean, it is evidence that something printed the word "clean".
+if python "$REPO/scripts/scan-identifiers.py" --selftest >/dev/null 2>&1; then
+  ok "the identifier scanner's own selftest passes"
+else no "scan-identifiers.py --selftest FAILED; its verdict on the tree means nothing"; fi
+if python "$REPO/scripts/scan-identifiers.py" >/dev/null 2>&1; then
+  ok "no personal identifier in any tracked file"
+else no "a personal identifier reached a tracked file -- run scripts/scan-identifiers.py"; fi
+
 # --- STATIC: no hook may use a bash-4-only feature ---------------------------
 # macOS ships bash 3.2 as /bin/bash. `declare -A` there is not a syntax error that stops
 # the script -- it fails, then `F[key]=v` becomes an ARITHMETIC index into an ordinary

@@ -56,6 +56,25 @@ GENERIC = {
 #: ("Jay" would match "Jayne", "jayson", and any three letters in a hash).
 MIN_TOKEN = 5
 
+#: ACCOUNT IDENTIFIERS, which commit metadata does not know about.
+#:
+#: The token scan above derives everything from git author names and emails, so it
+#: catches a username and nothing else. MEASURED 2026-08-31: a test fixture carried a
+#: real Windows username AND the author's 8-digit Egosoft profile id, which identifies
+#: their game account. The username was caught; the profile id was caught only BY
+#: ACCIDENT, because it sat on the same line. On a line of its own it would have shipped.
+#:
+#: Keyed on the surrounding PATH, never on the digits: a bare 8-digit number appears in
+#: hashes, sizes and timestamps everywhere, and a check that floods is one you learn to
+#: ignore.
+ACCOUNT_PATTERNS = [
+    (re.compile(r"egosoft[/\\]x4[/\\](\d{4,})", re.I), "an X4 profile id"),
+]
+
+#: Values that are obviously stand-ins. Without this the scan fires on the generic
+#: fixture that REPLACED the real one, which would train everyone to pass --no-verify.
+PLACEHOLDER_IDS = {"12345678", "00000000", "11111111", "1234", "99999999"}
+
 
 def _git(*args: str) -> str:
     out = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
@@ -147,6 +166,24 @@ def merged_population(tracked: list[str], untracked: list[str]) -> list[str]:
     return sorted(set(tracked) | set(untracked))
 
 
+def account_match(line: str) -> str | None:
+    """What account identifier this line carries, or None. Placeholders excluded.
+
+    ONE implementation, called by both the scan and the selftest. A selftest that
+    re-implements the predicate can only ever prove the two copies agree, which is the
+    least interesting thing it could tell you.
+    """
+    for rx, what in ACCOUNT_PATTERNS:
+        m = rx.search(line)
+        if m and m.group(1) not in PLACEHOLDER_IDS:
+            return what
+    return None
+
+
+def _account_hit(line: str) -> bool:
+    return account_match(line) is not None
+
+
 def selftest() -> int:
     """A guard that cannot be shown to fail proves nothing. One twin per clause."""
     checks = [
@@ -160,6 +197,22 @@ def selftest() -> int:
          merged_population([], ["new.py"]) == ["new.py"]),
         ("an empty population stays empty, so the caller can refuse",
          merged_population([], []) == []),
+        # --- account identifiers: one twin per clause, both directions ---
+        # The must-FIRE id is ASSEMBLED, never written as a literal 8-digit run. A
+        # realistic id spelled out here would be caught by this very scan on its own
+        # file -- which it was, on the first run, and the id it caught was the real one
+        # this check exists to stop. The must-NOT-fire cases can be literals: they are
+        # placeholders by definition.
+        ("a REAL-shaped X4 profile id in a path is caught",
+         _account_hit("PROF = 'C:/Users/x/Documents/Egosoft/X4/" + "8765" + "4321'")),
+        ("...with BACKSLASHES too, which is how Windows writes it",
+         _account_hit(r"PROF = 'C:\Users\x\Documents\Egosoft\X4" + chr(92) + "8765" + "4321'")),
+        ("a PLACEHOLDER id is NOT caught, or the fix would trip the check",
+         not _account_hit("PROF = 'C:/Users/tester/Documents/Egosoft/X4/12345678'")),
+        ("a bare 8-digit number is NOT caught -- a flooding check gets ignored",
+         not _account_hit("blob sha " + "8765" + "4321 size 12345678")),
+        ("an unrelated Egosoft path with no id is NOT caught",
+         not _account_hit("see Documents/Egosoft/X4/ for the profile folder")),
     ]
     bad = [n for n, ok in checks if not ok]
     for n, ok in checks:
@@ -219,6 +272,12 @@ def main() -> int:
                 # public, and echoing the catch publishes what we are suppressing.
                 print(f"::error file={rel},line={i}::a contributor identifier "
                       f"appears here; replace it with a generic description")
+                found += 1
+                continue        # one report per line; the fix is the same either way
+            what = account_match(line)
+            if what:
+                print(f"::error file={rel},line={i}::{what} appears here; "
+                      f"replace it with a placeholder")
                 found += 1
 
     if found:
