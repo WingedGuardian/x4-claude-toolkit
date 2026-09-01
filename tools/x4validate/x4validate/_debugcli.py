@@ -190,24 +190,43 @@ def archive(log: Path, dest_dir: Path, config=None) -> Path:
     # archive by name.
     stamp = datetime.fromtimestamp(log.stat().st_mtime).strftime("%Y-%m-%dT%H%M")
     out = dest_dir / f"debug-{stamp}.txt"
+    # BYTES FIRST, deliberately. This source is a file the GAME owns: X4 rewrites
+    # `debug.txt` (and `{profile}/uidata.xml`) on exit, so the bytes are the one
+    # thing that cannot be re-obtained without another play session. Losing them
+    # to a metadata failure would be the expensive mistake.
     shutil.copy2(log, out)
 
-    text = log.read_text(encoding="utf-8", errors="replace")
-    parsed = _debuglog.parse_log_text(text)
-    if config is None:
-        from . import _merge
-        config = _merge.Config()
-    ext = _paths.game_extensions() or Path("")
-    _meta_path(out).write_text(json.dumps({
+    # ...but copy-first left the other half open: if parsing or fingerprinting
+    # raised, the archive kept a log with NO meta, and `read_archive_meta` threw on
+    # it. A partial artifact that cannot say what it is is neither present nor
+    # absent -- the shape this toolkit exists to refuse. So the meta is ALWAYS
+    # written, and says so when it is degraded.
+    meta = {
         "source": str(log),
-        "captured": datetime.fromtimestamp(log.stat().st_mtime).isoformat(timespec="seconds"),
-        "new_game": _is_new_game(text),
-        "total_errors": parsed.total,
-        "classified": len(parsed.classified),
-        "unclassified": len(parsed.unclassified),
+        # stat the COPY, not the source: by now the game may have replaced it.
+        "captured": datetime.fromtimestamp(out.stat().st_mtime).isoformat(timespec="seconds"),
         "engine_dependent": False,
-        "fingerprint": _freshness.fingerprint(config, ext),
-    }, indent=2), encoding="utf-8")
+        "degraded": False,
+    }
+    try:
+        text = out.read_text(encoding="utf-8", errors="replace")
+        parsed = _debuglog.parse_log_text(text)
+        cfg = config
+        if cfg is None:
+            from . import _merge
+            cfg = _merge.Config()
+        ext = _paths.game_extensions() or Path("")
+        meta.update({
+            "new_game": _is_new_game(text),
+            "total_errors": parsed.total,
+            "classified": len(parsed.classified),
+            "unclassified": len(parsed.unclassified),
+            "fingerprint": _freshness.fingerprint(cfg, ext),
+        })
+    except Exception as exc:  # noqa: BLE001 - the copy must survive ANY meta failure
+        meta["degraded"] = True
+        meta["degraded_reason"] = repr(exc)
+    _meta_path(out).write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return out
 
 

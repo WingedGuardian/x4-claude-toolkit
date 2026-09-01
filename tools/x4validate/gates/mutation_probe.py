@@ -72,6 +72,13 @@ TARGETS: dict[str, list[str]] = {
                       "tests/test_effective_scope.py", "tests/test_provenance.py"],
     "_scan.py": ["tests/test_scan.py", "tests/test_corpus_scan.py",
                  "tests/test_no_packed_only_scan.py"],
+    #: The ORACLE. Everything else here proves the toolkit self-consistent; these
+    #: two are the only code that can say our model disagrees with the ENGINE, so
+    #: a silently-passing guard here is worse than elsewhere -- it would turn the
+    #: one external check into a rubber stamp.
+    "_livedump.py": ["tests/test_livedump.py"],
+    "_livecli.py": ["tests/test_livecli.py", "tests/test_livearchive.py"],
+    "_livepipe.py": ["tests/test_livepipe.py"],
 }
 
 
@@ -160,6 +167,155 @@ MUTANTS = [
            '    for vpath, member in sorted(_cat.mod_vfs(mod_dir, packed_only=True).items()):\n        if not vpath.lower().endswith(".xml") or vpath.lower() in yielded:\n            continue\n        if predicate is not None and not predicate(vpath):\n            continue\n        try:\n            root = _merge.parse_bytes(_cat.read_member(member))',
            '    for vpath, member in []:  # mutant: packed half never entered\n        if not vpath.lower().endswith(".xml") or vpath.lower() in yielded:\n            continue\n        if predicate is not None and not predicate(vpath):\n            continue\n        try:\n            root = _merge.parse_bytes(_cat.read_member(member))',
            "62% of mod XML invisible; a negative becomes a confident false absence"),
+
+    # --- _livedump.py: the four outcomes must never collapse -------------------
+    # Six guards, mutated SEPARATELY because a guard that fires first SHADOWS the
+    # ones behind it -- verified 2026-08-27, where clause 4's mutant survived the
+    # generic test and was caught only by its own dedicated one.
+    Mutant("_livedump.py", "not-a-uidata detection removed",
+           'if "<uidata" not in text:',
+           "if False:  # mutant",
+           "an arbitrary file gets the stub explanation: right rc, confidently wrong reason"),
+    Mutant("_livedump.py", "running-game stub reads as data",
+           'if "<data" not in text:',
+           "if False:  # mutant",
+           "X4 truncates uidata.xml while running; the 61-byte stub would report '0 extensions'"),
+    Mutant("_livedump.py", "variable-absent refusal downgraded",
+           'raise LiveDumpUnavailable(\n            f"the variable {var!r} is not assigned in this uidata.xml - the probe "',
+           'return ""  # mutant\n            f"the variable {var!r} is not assigned in this uidata.xml - the probe "',
+           "'the probe never ran' becomes indistinguishable from a malformed dump"),
+    Mutant("_livedump.py", "HDR guard removed",
+           "if not rows or rows[0][0] != HDR:",
+           "if False:  # mutant",
+           "a payload truncated at the FRONT parses as a short valid answer"),
+    Mutant("_livedump.py", "terminator guard removed",
+           "if rows[-1][0] != END:",
+           "if False:  # mutant",
+           "a truncated dump reports fewer rows and calls it a finding"),
+    Mutant("_livedump.py", "row-count self-check removed",
+           "if claimed != len(rows):",
+           "if False:  # mutant",
+           "the game's own row count stops being checked; a mis-decoded payload passes"),
+
+    # --- _livecli.py: the oracle's comparison rules ----------------------------
+    Mutant("_livecli.py", "unit transform never applied",
+           "cooked = str(_TRANSFORMS[tname](float(ev)))",
+           "cooked = ev  # mutant",
+           "engine radians compared to stored degrees: 3 false disagreements per thruster"),
+    # NOTE the leading newline: the 12-space form is a SUBSTRING of the 20-space
+    # one in cmd_mappings, so without it the anchor matches twice and the clause is
+    # silently left UNMUTATED -- i.e. untested while looking covered.
+    Mutant("_livecli.py", "transform auto-picked instead of declared",
+           chr(10) + "            if _agree(cooked, sv):",
+           chr(10) + "            if _agree(cooked, sv) or _agree(ev, sv):  # mutant",
+           "the comparison can no longer FAIL on a wrong unit: a green that cannot go red"),
+    Mutant("_livecli.py", "TRANSFORM-SUSPECT never reported",
+           'suspect = tname != "identity" and _agree(ev, sv)',
+           "suspect = False  # mutant",
+           "a wrong unit transform is reported as a model disagreement with no cause named"),
+    Mutant("_livecli.py", "mapping table no longer keyed by library type",
+           "return _BY_TYPE.get(ltype, {}).get(field)",
+           "return next((m[field] for m in _BY_TYPE.values() if field in m), None)  # mutant",
+           "a ship's `shield` resolves to a generator's recharge.max -- #18 in a lookup table"),
+    Mutant("_livecli.py", "degeneracy rule accepts 1",
+           "    if f in (0.0, 1.0):\n        return True",
+           "    if f in (0.0,):  # mutant\n        return True",
+           "value-matching on 1 invents mappings: drag_forward=1 -> identification.deployable"),
+    Mutant("_livecli.py", "engine-DERIVED folded back into unmapped",
+           "                if f in _DERIVED:",
+           "                if False:  # mutant",
+           "F72's known modelling gap hides inside a generic bucket and looks like missing rows"),
+
+    # --- _livecli.py: the ARCHIVE contract. Ground truth costs a play session and
+    # lives in a file X4 overwrites on exit -- one has already been lost that way.
+    # NOTE: "copies without decoding first" has NO honest mutant here. The guarantee is
+    # STATEMENT ORDER (parse, then copy), which a one-line substitution cannot invert --
+    # and a mutant that dies of NameError would report "killed" for a reason unrelated to
+    # the claim, which is worse than no mutant: it certifies a test that never ran.
+    # tests/test_livearchive.py asserts the ordering directly instead.
+    Mutant("_livecli.py", "archive size floor removed",
+           "    if len(data) < 4096:",
+           "    if False:  # mutant",
+           "a truncated read archives cleanly and becomes what a future session quotes"),
+    Mutant("_livecli.py", "archive stops being content-addressed",
+           "    if existing:",
+           "    if False:  # mutant",
+           "every run accumulates a near-duplicate; no row can be quoted with confidence"),
+    # NOTE the leading newline + EIGHT spaces. The archive check sits inside a
+    # try-block and the groundtruth one does not, so the 4-space form is a
+    # SUBSTRING of this one -- anchoring on it matches twice and leaves the clause
+    # UNMUTATED while looking covered (register #99, caught here by the
+    # anchor-uniqueness test rather than by luck).
+    Mutant("_livecli.py", "archive trusts the write instead of re-reading",
+           '\n        if back != data:',
+           '\n        if False:  # mutant',
+           "'N written' is the writer's intent, not the file's state -- #98's exact shape"),
+    Mutant("_livecli.py", "groundtruth trusts its write instead of re-reading",
+           '\n    if back != data:',
+           '\n    if False:  # mutant',
+           "the harvested fixture can be written short and reported as complete"),
+    Mutant("_livecli.py", "the archive hint never stops firing",
+           '    if d.is_dir() and any(d.glob(f"livedump-*-{sha}.uidata.xml")):',
+           "    if False:  # mutant",
+           "a reminder that always fires trains you to ignore the channel it shares"),
+
+    # --- _livepipe.py: the live-channel frame contract -------------------------
+    # Eight clauses, mutated SEPARATELY. Clause 3 is COMPOUND and gets TWO mutants,
+    # one per half, because each guard shadows the ones behind it -- a single twin
+    # against a multi-clause condition only ever tests the half it trips first
+    # (register #86, and #99 where the shadowed half survived twice).
+    Mutant("_livepipe.py", "empty reply treated as an empty answer",
+           "if not text:",
+           "if False:  # mutant",
+           "the lua api's nil-for-empty-write becomes a valid zero-field answer"),
+    Mutant("_livepipe.py", "foreign frames and reserved sentinels accepted",
+           "if parts[0] != REPLY_TAG:",
+           "if False:  # mutant",
+           "a bare ERROR/TIMEOUT/CANCELLED from the api reads as payload data"),
+    Mutant("_livepipe.py", "clause 3a: the length half dropped (compound guard)",
+           "if len(parts) < 2 or parts[1] != str(PROTO):",
+           "if parts[1] != str(PROTO):  # mutant",
+           "a bare tag raises IndexError -- a CRASH, which is not one of the four outcomes"),
+    Mutant("_livepipe.py", "clause 3b: the protocol half dropped (compound guard)",
+           "if len(parts) < 2 or parts[1] != str(PROTO):",
+           "if len(parts) < 2:  # mutant",
+           "a mod and a toolkit from different versions mis-parse each other in silence"),
+    Mutant("_livepipe.py", "header-truncation guard removed",
+           "if len(parts) != _REPLY_FIELDS:",
+           "if False:  # mutant",
+           "a frame too short to carry its own length unpacks anyway, or crashes"),
+    Mutant("_livepipe.py", "FIFO desync guard removed",
+           "if seq != expect_seq:",
+           "if False:  # mutant",
+           "correlation is positional; one dropped reply hands back the PREVIOUS question's answer"),
+    Mutant("_livepipe.py", "unknown status accepted",
+           "if status not in STATUSES:",
+           "if False:  # mutant",
+           "the game answers in a vocabulary we do not model and we act on it"),
+    Mutant("_livepipe.py", "TRUNCATION guard removed (the module's whole reason)",
+           "if declared != actual:",
+           "if False:  # mutant",
+           "pipes.lua:698's unhandled ERROR_MORE_DATA lands as a short but well-formed row"),
+    Mutant("_livepipe.py", "truncation no longer NAMED as truncation",
+           'f"TRUNCATED: the game declared {declared} payload bytes and {actual} "',
+           'f"problem: the game declared {declared} payload bytes and {actual} "  # mutant',
+           "clause ordering stops being a contract; the only actionable advice is never printed"),
+    Mutant("_livepipe.py", "corruption guard removed",
+           "if declared_sum != checksum(payload):",
+           "if False:  # mutant",
+           "length-preserving corruption passes as a clean answer"),
+    Mutant("_livepipe.py", "declared length counts CHARACTERS not bytes",
+           'return len(payload.encode("utf-8"))',
+           "return len(payload)  # mutant",
+           "disagrees with lua's `#s` on every non-ASCII payload, reporting truncation where there is none"),
+    Mutant("_livepipe.py", "checksum over latin-1 instead of utf-8",
+           'for b in payload.encode("utf-8"):',
+           'for b in payload.encode("latin-1", "replace"):  # mutant',
+           "both python sides move together and agree; only the fixed lua side disagrees"),
+    Mutant("_livepipe.py", "payload re-split on every tab",
+           r'parts = text.split("\t", _REPLY_FIELDS - 1)',
+           r'parts = text.split("\t")  # mutant',
+           "a multi-column answer loses every field after the first tab, and a short row is still a row"),
 ]
 
 

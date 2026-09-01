@@ -242,3 +242,65 @@ def ware_completeness(
     return CompletenessReport(new_id, analogue_id, checked, missing,
                               analogue_missing=analogue_el is None,
                               entity_missing=new_el is None)
+
+
+@dataclass
+class UnobtainableRef:
+    ref: str
+    line: int
+    wares: list[str]
+
+
+def deprecated_only_macros(wares_tree) -> dict[str, list[str]]:
+    """macro name -> the deprecated wares supplying it, when EVERY supplier is deprecated.
+
+    "Obtainable" is a four-part question -- defined, indexed, supplied by a ware, and
+    that ware not deprecated. This answers only the LAST part, and the scope is a
+    measurement, not a preference.
+
+    MEASURED 2026-08-28 over the effective tree, 125 active mods:
+
+        indexed macros 5559 -> live 1575 (28.3%) | deprecated 39 (0.7%) | no ware 3945 (71.0%)
+
+    The proposal that prompted this was "flag macros with NO ware", generalised from a
+    1-in-5 figure measured on missiles alone. Corpus-wide it is **71%**, and it is the
+    normal state: `bullet` is 170 of 170 (weapons reference bullets; nobody sells them),
+    scenery/story macros 89.5%, `storage` 80.6%, `dock` 78.3%. A check firing on 3,945
+    correctly-by-design macros would train everyone to ignore the channel it shares with
+    real findings. That half needs a per-class expectation model and is deliberately
+    absent here.
+
+    ``all(deprecated)``, not ``any``: a macro still sold by one live ware is obtainable.
+    MEASURED: **0** such macros exist today, so only a synthetic test can hold that
+    clause honest -- which is why one exists.
+    """
+    if wares_tree is None:
+        return {}
+    supplied: dict[str, list[tuple[str, bool]]] = {}
+    for ware in wares_tree.xpath("//ware"):
+        deprecated = "deprecated" in (ware.get("tags") or "").split()
+        for ref in ware.xpath("component/@ref"):
+            supplied.setdefault(ref, []).append((ware.get("id"), deprecated))
+    return {macro: [w for w, _ in suppliers]
+            for macro, suppliers in supplied.items()
+            if suppliers and all(dep for _w, dep in suppliers)}
+
+
+def unobtainable_refs(root, dead: dict[str, list[str]]) -> list[UnobtainableRef]:
+    """Attribute values that EXACTLY equal a macro no live ware supplies.
+
+    Whole-value equality, never a substring: `dead_macro_mk2` is a different macro,
+    and prose mentioning a name is not a reference. An exact match against a small
+    known set cannot invent a finding the way a pattern can.
+    """
+    if root is None or not dead:
+        return []
+    out: list[UnobtainableRef] = []
+    for el in root.iter():
+        if not isinstance(el.tag, str):
+            continue
+        for value in el.attrib.values():
+            wares = dead.get(value)
+            if wares:
+                out.append(UnobtainableRef(value, el.sourceline or 0, list(wares)))
+    return out

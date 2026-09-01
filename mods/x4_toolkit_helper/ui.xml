@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<addon name="x4_toolkit_helper" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:noNamespaceSchemaLocation="../../ui/core/addon.xsd">
+    <environment type="menus">
+        <!--
+          TWO files, one addon. Schema-valid (addon.xsd allows an unbounded sequence)
+          and the normal pattern rather than a workaround. MEASURED over 44 installed
+          and vanilla ui.xml documents: 6 load more than one file from a single
+          environment. Vanilla ego_detailmonitor loads 26, and sn_mod_support_apis,
+          which this addon depends on, loads 19.
+        -->
+        <file name="ui/live_query.lua"/>
+        <file name="ui/engine_probe.lua"/>
+
+        <!--
+          The uidata channel. X4 OVERWRITES uidata.xml on exit and it is readable only
+          while the game is CLOSED, which is why the pipe half exists alongside it.
+        -->
+        <savedvariable name="__x4live_dump" storage="userdata"/>
+
+        <!--
+          live_query.lua calls Helper.addDelayedOneTimeCallbackOnUpdate, which lives in
+          ego_detailmonitorHelper. Without this, our file could load first and the
+          deferred re-arm would refuse, silently leaving the channel disarmed until a
+          reload. The code guards that case; a declared dependency removes it instead
+          of degrading. ego_dlc_ventures does exactly this, for the same reason.
+        -->
+        <dependency name="ego_detailmonitorHelper"/>
+    </environment>
+</addon>

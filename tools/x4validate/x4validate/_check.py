@@ -1001,6 +1001,11 @@ def check_references(mod_dir: Path, config: _merge.Config, report: Report) -> No
     mod_overlay = [mod_dir]
     wares_merged = _merge.build_effective(WARES_FILE, config, extra_overlays=mod_overlay)
     ware_def_set = _refs.ware_defs(wares_merged.tree)
+    # Free ride on the tree above: obtainability is a JOIN, not a scan. Only the
+    # deprecated half ships -- MEASURED corpus-wide, 'no ware' is 71% of indexed
+    # macros and is the NORMAL state (bullet 170/170, scenery 89.5%), so checking
+    # it would fire on 3,945 correctly-by-design macros. See the _refs docstring.
+    dead_macros = _refs.deprecated_only_macros(wares_merged.tree)
     text_def_set = collect_text_defs(config, mod_overlay, report)
     macro_def_set = collect_macro_defs(config, mod_overlay, report)
     entity_defs = EntityDefs(config, mod_overlay, report)
@@ -1012,9 +1017,19 @@ def check_references(mod_dir: Path, config: _merge.Config, report: Report) -> No
     # scan below firing, which collapsing the passes did not move at all. Recorded
     # because the double-parse was the obvious suspect and measuring cleared it.
     diff_files = full_files = 0
+    unobtainable = 0
     for vpath, root in iter_mod_xml_roots(mod_dir):
         if vpath.lower() == MANIFEST:
             continue
+        # INFO, never a gate: an author may reference deprecated content on purpose,
+        # and this DOES resolve -- it is reachable in the tree and simply not
+        # purchasable. Reported so "resolves" stops being read as "usable".
+        for u in _refs.unobtainable_refs(root, dead_macros):
+            unobtainable += 1
+            report.add("info", "unobtainable",
+                       f"{u.ref} resolves, but no LIVE ware supplies it "
+                       f"(only deprecated: {', '.join(u.wares)}) - it cannot be "
+                       f"bought or equipped in game", vpath, u.line)
         if root.tag == "diff":
             diff_files += 1
             for holder in _added_subtrees(root):
@@ -1042,7 +1057,9 @@ def check_references(mod_dir: Path, config: _merge.Config, report: Report) -> No
         + f", {len(entity_defs)} macro/component names"
         + (" (+ corpus scan)" if entity_defs.corpus_scanned else "")
         + f"; scanned {diff_files} diff + {full_files} full file(s)"
-        + (f"; skipped {len(expressions)} script expression(s) in @ware" if expressions else ""))
+        + (f"; skipped {len(expressions)} script expression(s) in @ware" if expressions else "")
+        + f"; {len(dead_macros)} macro(s) have only deprecated suppliers"
+        + f", {unobtainable} reference(s) to them here")
 
 
 def check_file_existence(mod_dir: Path, config: _merge.Config, report: Report) -> None:

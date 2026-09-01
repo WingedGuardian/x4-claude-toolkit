@@ -21,6 +21,10 @@ tests/corpus/
 # other setup. Re-record deliberately after an intended perf change.
 .perf-baseline.json
 
+# corpus counts depend on installed DLC and modlist, so a committed baseline
+# would be wrong for every other machine and fail their first run.
+.obtainability-baseline.json
+
 # gates/mutation_probe.py crash-safety artifacts. The marker means the tree MAY BE
 # MUTATED right now; the pristine copies are how it recovers without depending on
 # `finally` (which does not run on SIGKILL). Neither must ever be committed -- and
@@ -28,3 +32,12 @@ tests/corpus/
 # ordinary modification. That is gotcha #27's actual lesson.
 .mutation-probe-active
 .mutation-probe-pristine/
+
+# behavioural audit: session-history counts for one person on one machine,
+# so a committed baseline would be wrong for every other clone.
+.toolkit-usage-baseline.json
+
+# Per-command verdicts of gates/hook_false_positives.py over THIS machine's
+# Claude Code transcripts. MACHINE-LOCAL by design (the corpus is the user's own
+# command history), and ~1-2 MB. Record with --record; compare runs diff against it.
+.hook-false-positive-baseline.json

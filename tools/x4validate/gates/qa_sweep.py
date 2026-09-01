@@ -15,6 +15,7 @@ Exit: 0 all green, 1 any red, 3 only yellows.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -165,6 +166,25 @@ def _sandbox_registry() -> str:
             dest.write_text("meta: {}\nmods: []\n", encoding="utf-8")
         _SANDBOX = str(dest)
     return _SANDBOX
+
+
+
+def _newest_groundtruth() -> str:
+    """The most recent `x4live groundtruth` fixture, or a path that does not exist.
+
+    NOT a silent skip. With no fixture present the cell runs against a missing path and
+    the tool answers rc 2 ("no such groundtruth file") -- a real answer, inside expect.
+    Dropping the cell instead would shrink what the sweep covers without saying so,
+    which is the defect check_coverage() exists to refuse.
+    """
+    try:
+        hits = sorted((_env.mods_dir() / "_reports").glob("groundtruth-*.tsv"))
+        if hits:
+            return str(hits[-1])
+    except Exception:
+        # silent-ok: absence IS the answer here, and the cell reports it as rc 2.
+        pass
+    return str(ROOT / "__no_groundtruth_fixture__.tsv")
 
 
 def _shipped_clis() -> set[str]:
@@ -386,6 +406,34 @@ _ALL_CELLS: list[Cell] = [
     Cell("x4xref", "build (sandboxed)",
          ["build", "--out", str(_sandbox_dir() / "md_xref.tsv")],
          expect=(0,), slow=True),
+    # The LIVE half needs the game RUNNING with the live-query mod deployed, which
+    # a sweep cannot arrange. So the contract asserted here is the REFUSAL: with no
+    # game (or no pywin32) these must be rc 2 -- a NON-ANSWER naming what is missing
+    # -- and never rc 0. A short timeout keeps the sweep fast; the point is the exit
+    # code, not the wait. rc 0 is allowed only because a sweep run WHILE the game is
+    # up should not be reported as a gate failure.
+    Cell("x4live", "query ping (rc 2 unless the game is up)",
+         ["query", "ping", "--timeout", "1"], expect=(0, 2), findings_ok=True),
+    Cell("x4live", "ramp (rc 2 unless the game is up)",
+         ["ramp", "--timeout", "1"], expect=(0, 2), findings_ok=True),
+    # An unknown verb must still be a real ANSWER from the engine (rc 1), never a
+    # crash -- but with no game up it cannot get that far, so 2 is the honest state.
+    Cell("x4live", "groundtruth (rc 2 unless the game is up)",
+         ["groundtruth", "--timeout", "1"], expect=(0, 2), findings_ok=True),
+    Cell("x4live", "harvest (rc 2 unless the game is up)",
+         ["harvest", "--timeout", "1"], expect=(0, 2), findings_ok=True),
+    # ⚠ The two cells above run the DEFAULT uidata path, which exits 2 whenever the
+    # engine-probe mod is not deployed -- so they were GREEN while never exercising the
+    # oracle at all. These run the groundtruth path, the one that actually compares.
+    Cell("x4live", "oracle --from-groundtruth",
+         ["oracle", "--from-groundtruth", _newest_groundtruth()],
+         expect=(0, 1, 2), findings_ok=True),
+    Cell("x4live", "mappings --from-groundtruth",
+         ["mappings", "--from-groundtruth", _newest_groundtruth()],
+         expect=(0, 1, 2), findings_ok=True),
+    Cell("x4live", "query rejects an unknown verb",
+         ["query", "__no_such_verb__", "--timeout", "1"], expect=(1, 2),
+         findings_ok=True),
 ]
 
 #: CLIs named by a cell that this checkout does not ship. NAMED, never silently
@@ -426,7 +474,155 @@ def run(cell: Cell) -> Cell:
     return cell
 
 
+
+# --------------------------------------------------------------------------- #
+# COVERAGE: does this sweep actually exercise EVERY subcommand it claims to?
+# --------------------------------------------------------------------------- #
+#
+# THE DEFECT THIS CLOSES. The docstring at the top of this file says "EVERY tool x
+# EVERY subcommand". CELLS is a hand-maintained literal and nothing compared the two,
+# so the claim was aspiration, not fact. MEASURED 2026-08-30: 29 of 43 subcommands had
+# a cell. It was found by accident -- a new `x4live harvest` subcommand was added and
+# the sweep reported GREEN 58 / RED 0 having never run it.
+#
+# The exclusions below are not the defect. Some subcommands genuinely should not run in
+# a sweep: they rebuild a store for minutes, call the Nexus API, or mutate the registry
+# the sweep is inspecting. The defect was that NOTHING RECORDED WHICH, so a genuinely
+# missed subcommand was indistinguishable from a considered omission -- exactly the
+# shape `scripts/verify-port.py` already refuses with its ALLOW literal.
+
+#: Subcommands deliberately NOT swept, each with the reason it is excluded. Anything
+#: else uncovered is a FINDING, not a default. Keep the reason attached: an entry nobody
+#: can justify is how an allow-list stops being a decision and starts being an excuse.
+UNSWEPT: dict[tuple[str, str], str] = {
+    # ⚠ NINE OF THESE TEN ARE A BRANCH ARTEFACT, AND THAT IS THE HONEST LABEL.
+    #
+    # They were originally excluded for being expensive, mutating or networked. MEASURED
+    # 2026-08-30 against the `session/tooling` worktree: EVERY ONE of those objections is
+    # already answered there by a redirect, and its cells are better than my reasons were:
+    #
+    #     x4effective build     env={X4_EFFECTIVE_DB: <sandbox>}, slow=True
+    #     x4xref      build     --out <sandbox>, slow=True
+    #     x4debug     baseline  --dest <sandbox>
+    #     x4modlist   refresh   --ids __no_such_mod__      (labelled "no network")
+    #     x4modlist   ingest / resolve / snapshot / ignore / mark   sandbox registry
+    #
+    # ★ THE ERROR WAS THE QUESTION. I asked "is this expensive or mutating?" when the
+    # deciding question is "can a cell REDIRECT it?" -- reasoning from a subcommand's
+    # nature instead of from what a cell can do about it. An exclusion a sandbox would
+    # dissolve is an excuse, which is exactly what this literal exists to refuse.
+    #
+    # They are still listed, with the true reason: this tree cannot run those cells
+    # because it lacks Cell.slow, Cell.env and _sandbox_dir, which live on that branch.
+    # ON MERGE take session/tooling's CELLS and its Cell fields, and delete these nine.
+    # A real check always beats a justified skip.
+    ("x4debug", "baseline"):
+        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
+    ("x4effective", "build"):
+        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
+    ("x4xref", "build"):
+        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
+    ("x4modlist", "ingest"):
+        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
+    ("x4modlist", "refresh"):
+        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
+    ("x4modlist", "resolve"):
+        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
+    ("x4modlist", "ignore"):
+        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
+    ("x4modlist", "mark"):
+        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
+    ("x4modlist", "snapshot"):
+        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
+    # The only genuine one, and even it is doubtful:
+    ("x4live", "archive"):
+        "copies the profile's uidata.xml into _reports/. NOTE: cmd_archive takes an "
+        "--out-dir, so this is very likely redirectable too and deserves a cell rather "
+        "than an excuse. Kept only until the branches merge.",
+}
+
+
+def _subcommands(cli: str) -> list[str] | None:
+    """The subcommands argparse lists for *cli*, or None if we could not ask.
+
+    None is a NON-ANSWER and is reported as one -- never folded into "covered". A
+    coverage check that cannot tell "this CLI has no subcommands" from "we failed to
+    ask" is the defect it exists to catch.
+
+    ⚠ Takes the choices block on its OWN LINE, not the first `{a,b}` in --help. An
+    earlier attempt at this measurement read x4validate's `--tier {a,b}` as two
+    subcommands and reported 0/2 coverage for a CLI that has no subcommands at all.
+    """
+    try:
+        r = subprocess.run(["uv", "run", cli, "--help"], capture_output=True,
+                           text=True, timeout=120, cwd=ROOT)
+    except (subprocess.TimeoutExpired, OSError):
+        # silent-ok: NOT swallowed -- None is the channel. check_coverage()
+        # renders it as 'coverage is UNKNOWN (not assumed complete)', which is
+        # the whole point: a CLI we could not ask must never be folded into
+        # 'nothing missing'. Pinned by
+        # test_a_CLI_whose_help_cannot_be_READ_is_UNKNOWN_not_COMPLETE.
+        return None
+    if r.returncode != 0:
+        return None
+    m = re.search(r"^\s*\{([a-z0-9_,-]+)\}\s*$", r.stdout or "", re.M)
+    return m.group(1).split(",") if m else []
+
+
+def check_coverage() -> tuple[list[str], list[str]]:
+    """Compare the subcommands each CLI advertises against the cells that run them.
+
+    Returns (findings, notes). A finding is an uncovered subcommand with no UNSWEPT
+    entry, and it fails the gate.
+    """
+    findings: list[str] = []
+    notes: list[str] = []
+    covered: dict[str, set[str]] = {}
+    for c in CELLS:
+        # ANY token in the argv counts, wherever it sits. Several cells pass a flag
+        # first (`--registry <sandbox> dashboard`), so assuming argv[0] is the
+        # subcommand under-counts -- it reported x4modlist as 0/12 when it is 4/12.
+        covered.setdefault(c.tool, set()).update(c.argv)
+
+    total = swept = 0
+    for cli in sorted(covered):
+        subs = _subcommands(cli)
+        if subs is None:
+            notes.append(f"{cli}: could not read --help, so coverage is UNKNOWN "
+                         f"(not assumed complete)")
+            continue
+        if not subs:
+            continue                      # a single-command CLI; nothing to enumerate
+        for s in subs:
+            total += 1
+            if s in covered[cli]:
+                swept += 1
+            elif (cli, s) in UNSWEPT:
+                swept += 1
+            else:
+                findings.append(f"{cli} {s}: no cell and no UNSWEPT reason")
+    notes.insert(0, f"subcommand coverage: {swept}/{total} "
+                    f"({len(UNSWEPT)} deliberately unswept, each with a reason)")
+    return findings, notes
+
 def main() -> int:
+    # Make the OUTPUT stream able to carry what the cells produce, before printing
+    # anything. The cells already capture with encoding="utf-8", errors="replace", so
+    # `cell.out` legitimately holds characters like U+2190; printing one to Windows'
+    # default cp1252 stdout raises UnicodeEncodeError. Reported by a peer session and
+    # confirmed by differential run: the gate died MID-REPORT, after the verdict lines,
+    # leaving a partial report plus a traceback instead of a summary -- and it fires
+    # exactly when a cell has already failed, which is the worst possible moment.
+    #
+    # Fixed here rather than at the one line that happened to crash: the same shape sits
+    # on four print paths (the per-cell line, the VERBOSE tail, the RED detail and its
+    # captured output), so patching the crash site would have left three live.
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass  # silent-ok: console encoding shim; a failure here means the
+                  # stream keeps its default codec, which is the pre-fix behaviour
     run_slow = "--all" in sys.argv
     cells = [c for c in CELLS if run_slow or not c.slow]
     skipped = [c for c in CELLS if c.slow and not run_slow]
@@ -462,9 +658,15 @@ def main() -> int:
             for line in cell.out.splitlines()[-12:]:
                 print(f"          | {line}")
 
+    cov_findings, cov_notes = check_coverage()
     print("=" * 78)
-    print(f"GREEN {len(cells) - len(reds) - len(yellows)}   YELLOW {len(yellows)}   "
-          f"RED {len(reds)}"
+    for n in cov_notes:
+        print(f"  {n}")
+    for f in cov_findings:
+        print(f"  UNCOVERED  {f}")
+    print(f"GREEN {len(cells) - len(reds) - len(yellows)}   "
+          f"YELLOW {len(yellows)}   RED {len(reds)}   "
+          f"UNCOVERED {len(cov_findings)}"
           + (f"   SKIPPED {len(skipped)} (slow)" if skipped else ""))
     for c in reds:
         print(f"\nRED  {c.tool} {c.label}: {c.detail}")
@@ -472,7 +674,7 @@ def main() -> int:
             print(f"     | {line}")
     for c in yellows:
         print(f"\nWARN {c.tool} {c.label}: {c.detail}")
-    return 1 if reds else (3 if yellows else 0)
+    return 1 if (reds or cov_findings) else (3 if yellows else 0)
 
 
 if __name__ == "__main__":

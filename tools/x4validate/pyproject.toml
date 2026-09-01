@@ -1,6 +1,6 @@
 [project]
 name = "x4validate"
-version = "2.9.0"
+version = "3.0.0"
 description = "X4 Foundations cross-file XML diff/reference/completeness validator"
 requires-python = ">=3.13"
 dependencies = ["lxml>=5.0", "ruamel.yaml>=0.18"]
@@ -16,9 +16,14 @@ x4effective = "x4validate._effectivecli:main"
 x4diff = "x4validate._diffcli:main"
 x4debug = "x4validate._debugcli:main"
 x4save = "x4validate._savecli:main"
+x4live = "x4validate._livecli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+# pywin32 is DEV-ONLY and Windows-ONLY. The live-query channel (x4live query/ramp)
+# needs it; every other subcommand does not, and the marker keeps the ubuntu CI job
+# installable. `_livepipe._win32()` refuses with rc 2 naming the reason when absent,
+# so a machine without it loses one feature rather than the package.
+dev = ["pytest>=8.0", "pywin32>=306; sys_platform == 'win32'", "lupa>=2.0"]
 
 [build-system]
 requires = ["hatchling"]

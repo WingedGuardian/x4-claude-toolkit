@@ -127,6 +127,7 @@ cli_case _effectivecli  main ls
 cli_case _debugcli   main triage
 cli_case _modlist    main refresh
 cli_case _savecli    main info
+cli_case _livecli    main dump
 
 # x4diff is DELIBERATELY not in the matrix. It compares two mod folders to each
 # other -- `_merge.overlay_root` / `apply_overlay`, no Config, no reference tree --

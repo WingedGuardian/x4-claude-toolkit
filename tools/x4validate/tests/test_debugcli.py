@@ -17,7 +17,7 @@ validator's blind spot — is the one that has to be impossible to overlook.
 
 from pathlib import Path
 
-from x4validate import _debugcli
+from x4validate import _debugcli, _freshness
 
 SAMPLE = "\n".join([
     r"Logfile started, time Thu Aug 13 14:06:37 2026",
@@ -222,3 +222,35 @@ def test_an_unreadable_sel_finding_ends_the_CLI_cleanly_not_in_a_traceback(monke
     assert "Traceback" not in err
     assert "incomplete" in err.lower() or "cannot compare" in err.lower()
     assert "_SEL_SHAPES" in err, "the message must name the fix"
+
+
+def test_archive_never_leaves_a_log_whose_meta_cannot_be_read(tmp_path, monkeypatch):
+    """A VOLATILE source must not produce a half-archived entry.
+
+    `archive()` copies the log FIRST -- deliberately, and that is right for a file
+    the GAME owns: `debug.txt` and `{profile}/uidata.xml` are rewritten by X4 on
+    exit, so the bytes are the one thing that cannot be re-obtained without another
+    play session. Losing them to a metadata failure would be the expensive mistake.
+
+    But copy-first left the other half open: if parsing or fingerprinting raised,
+    the archive kept a log with NO `.meta.json`, and `read_archive_meta` on it threw.
+    A partial artifact that reports nothing is the shape this toolkit exists to
+    refuse -- an entry that cannot say what it is is neither present nor absent.
+
+    So: keep the bytes, ALWAYS write a meta, and make the meta say it is degraded.
+    Prompted by a peer's `x4live archive` design note, not by a failure in the wild.
+    """
+    log = tmp_path / "debug.txt"
+    log.write_text("[=ERROR=] something\n", encoding="utf-8")
+
+    def boom(*a, **k):
+        raise RuntimeError("fingerprint unavailable")
+    monkeypatch.setattr(_freshness, "fingerprint", boom)
+
+    out = _debugcli.archive(log, tmp_path / "archive")
+    assert out.is_file(), "the bytes must survive -- the source may be gone by now"
+    assert out.read_text(encoding="utf-8") == log.read_text(encoding="utf-8")
+
+    meta = _debugcli.read_archive_meta(out)          # must NOT raise
+    assert meta.get("degraded") is True
+    assert "fingerprint" in str(meta.get("degraded_reason", "")).lower()

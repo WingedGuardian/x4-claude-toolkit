@@ -106,6 +106,127 @@ is 1.28 GB expanded and streams in **2.5s**. Two measured facts drive the output
 `content.xml` `save` attribute is absent or `="1"`. MEASURED: **3 of 121 mods (2.5%)**.
 It is the save-baked set, i.e. the removals that are dangerous.
 
+### `x4live` — what the RUNNING ENGINE saw, diffed against our model
+
+```bash
+uv run x4live dump                         # what the probe captured, with denominators
+uv run x4live extensions [--scope active]  # the engine's extension list, diffed PER ITEM
+uv run x4live errors                       # the engine's own error log, as captured
+uv run x4live oracle [--show-derived]      # engine-resolved macro values vs the store
+uv run x4live mappings                     # PROPOSE new field mappings (never auto-applied)
+
+# ---- the LIVE half. Needs the game RUNNING and the query mod deployed.
+uv run x4live query ping                   # is it there, and is it ADVANCING?
+uv run x4live query macro shiptypes_s ship_arg_s_scout_01_a_macro hull
+uv run x4live query ext ws_2042901274      # is this extension loaded, per the engine
+uv run x4live ramp                         # MEASURE the message-size cap
+```
+
+Every other tool here reasons about **files**. This one reports what X4 itself held in
+memory, which makes it the toolkit's only **oracle** — the one thing that can show our
+merged tree is wrong rather than merely self-consistent.
+
+The channel needs no pipe, no launch flag and no permissions grant: a read-only lua
+probe assigns a TSV payload to a lua global declared as a `<savedvariable>`, and the
+engine serialises it into `{profile}/uidata.xml`.
+
+⚠ **`uidata.xml` is only readable while the game is CLOSED.** MEASURED: 342,342 bytes
+closed, **61 bytes** (`<uidata version="1"/>`) while running — X4 truncates it at startup
+and writes it back on exit. That stub is valid XML and parses to zero of everything, so
+a naive reader run mid-session reports "0 extensions" in the grammar of a real answer.
+`x4live` refuses it with **rc 2** and says which of the four states it is in.
+
+
+#### What you must install for the live half
+
+`x4live` is the only tool here that needs anything inside the game. **One extension, and
+one third-party dependency you install yourself:**
+
+| what | why | where |
+|---|---|---|
+| **X4 Toolkit Helper** | ships with this toolkit under `mods/`. Copy it into `{game}/extensions/`. Read-only: it answers a fixed, enumerated vocabulary and has **no write verb, gated or otherwise** | `mods/x4_toolkit_helper/` |
+| **Mod Support APIs** (`ws_2042901274`) | supplies the named-pipe lua the pipe half calls | Steam Workshop / Nexus |
+
+The dependency is declared **optional**, deliberately. Without Mod Support APIs the
+addon still loads and the **uidata half keeps working**; only the pipe verbs report that
+the api is unavailable. The two halves fail independently.
+
+**Everything else in this toolkit needs neither.** The other ten commands read files and
+archives on disk.
+
+If a pipe verb cannot reach the game it refuses with **rc 2** and names what is missing,
+including both installs — a refusal that cannot tell you what to install is half a
+refusal.
+
+⚠ **Do not MINIMIZE the game. Merely unfocused is fine**, and those are two different
+measurements of different ages, kept apart on purpose:
+
+- **windowed**, measured 2026-08-30 by sampling the engine's own `getElapsedTime()` over
+  a 30 s wall window — unfocused **32.98 s / 32.98 s** and focused **32.24 / 32.24**, a
+  ratio of **1.00 in both**. A 370-query harvest completed cleanly while unfocused.
+- **minimized in exclusive fullscreen** — an **older** figure, **not re-measured**:
+  574.76 s of engine time across 70.4 min (**13.6%**). That case never separated
+  minimized from merely unfocused, which is how it came to be generalised to "not in the
+  foreground". Scope it to minimized.
+
+Either way it is retryable, not a failure: the channel re-arms itself every ~2 s.
+
+**Message size**: replies are bounded before sending, because an over-long message does
+not truncate — it tears the pipe down. MEASURED in game: **524,288 bytes round-trip
+intact**, against a self-imposed reply cap of 32,000. The true ceiling is above that and
+remains unmeasured; the ramp reports its own limit rather than presenting it as the
+engine's.
+
+#### The live half — `query` and `ramp`
+
+Because `uidata.xml` is unreadable mid-session, the offline oracle above can only ever
+answer about a game that has been **closed**. `query` is the complement: a fixed,
+**read-only** vocabulary asked of the running engine over a named pipe. There are no
+write verbs in it — not gated, not present.
+
+We create the pipe and the game connects to it, which is why the game-side mod is three
+files and **zero MD**: `sn_mod_support_apis`' `pipes.lua` opens a *client* handle and does
+not care who served it, so `Pipe_Server_Host`, `Register_Module` and `permissions.json`
+are all unnecessary. Requires `pywin32` (a Windows-only dev dependency); without it the
+command refuses with rc 2 naming the reason, and every offline subcommand still works.
+
+⚠ **`ramp` exists because the transport truncates silently.** `pipes.lua:698`, verbatim:
+*"If the message is larger than the lua side buffer, returns partial data and error
+`ERROR_MORE_DATA`. TODO: look into this."* That TODO is unhandled, and a truncated TSV
+row is still a well-formed TSV row. The real ceiling is undocumented — python buffers
+64 KB, an earlier note claimed 2047 bytes from the winpipe DLL with no traceable source,
+and the mod's own readme states no limit — so every reply carries its own **byte length
+and checksum**, and `ramp` measures the ceiling instead of assuming it.
+
+The three silence states are kept apart, never collapsed into one verdict: **never
+connected** (game not running, or the mod not deployed), **connected then silent** (the
+mod IS loaded; paused, in a menu, or hung), and answering. A sibling project shipped a
+liveness probe that was wrong for three releases because it hung in exactly the case it
+existed to detect.
+
+Two facts the output is built around, both measured the hard way:
+
+- **`GetExtensionList()` is an installed INVENTORY with an `enabled` flag, not the load
+  set.** Comparing it to the wrong registry scope is the same category error as reading
+  `Collision.winner` as an owner. The scope is explicit and printed.
+- **Totals lie.** The first run of this channel produced 132 extensions from the engine
+  and 132 from our model — and the membership was wrong on *both* sides, two errors
+  cancelling. Everything here compares per item.
+
+Two things the comparison had to learn the hard way. **The engine does not always answer in
+the units the XML declares** — rotational thrust arrives in radians/sec against a store holding
+degrees/sec (`3.8397243` rad = `220.0000°`), so the map carries a *declared* transform; a
+transform inferred at comparison time would build a check that cannot fail. And **a field NAME
+does not determine its meaning**: `shield` on a shield generator is that generator's capacity,
+while on a *ship* it is the loadout-derived total — so the map is keyed by library type.
+
+`oracle` **refuses a stale store (rc 3)** rather than warning like the other tools:
+elsewhere a stale answer is still an answer about a slightly older world, but here the
+whole output is a verdict on whether our model matches the engine, so staleness does not
+degrade the result — it inverts what it means.
+
+### `x4save` — removing a mod loses content silently
+
 And removing a mod leaves **no** dangling references — the engine deletes the orphaned
 content **silently**. MEASURED on one removal: 37 macros went to 0, the engine logged
 **one** error line naming a galaxy connection rather than any of the lost content, there
@@ -275,6 +396,16 @@ handled here — it is a secret, not a path, and must never be written to a file
 - `x4validate/_debugcli.py` — `x4debug`: triage / crosscheck / baseline.
 - `x4validate/_savecli.py` — `x4save`: savegame header + save-vs-live-tree
   reference check. Streams gzip; never builds a tree.
+- `x4validate/_livedump.py` — decodes the in-game probe's payload out of
+  `{profile}/uidata.xml`. Owns the THREE escaping layers (XML entities → lua escapes,
+  where a tab is `\9` but `\009` before a digit → the probe's own field escaping) and
+  the four-outcome contract that keeps a running-game stub from reading as an empty
+  result. Six independent guard clauses, each with its own fixture and mutant.
+- `x4validate/_livepipe.py` — the live query channel: named-pipe transport plus an
+  eight-clause frame contract (truncation, corruption, protocol skew, FIFO desync).
+- `x4validate/_livecli.py` — `x4live`: dump / extensions / errors / oracle / mappings /
+  query / ramp. The only
+  tool that compares our model against the ENGINE rather than against more files.
 - `x4validate/_freshness.py` — the two-axis fingerprint every persisted artifact carries, and
   the per-folder **content vector** it is folded from. Deliberately NOT in `ENGINE_SOURCES`:
   widening the content axis must not claim the merge code changed.

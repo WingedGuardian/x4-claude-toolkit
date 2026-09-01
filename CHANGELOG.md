@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## v3.0.0
+
+Three things make this a major version rather than a point release: the Bash guard was
+rebuilt around a single parse pass, the toolkit gained a **live channel to the running
+game**, and it now ships a game extension of its own. The first changes how every command
+you run is checked; the second and third change what the toolkit can see.
+
+⚠ **`protect-bash.sh` now requires Python** (see below). Without it the guard **asks**
+rather than silently allowing.
+
 
 ### Changed — ⚠ `protect-bash.sh` now requires Python, and is 12× faster for it
 
