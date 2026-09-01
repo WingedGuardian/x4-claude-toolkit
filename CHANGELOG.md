@@ -10,6 +10,46 @@ you run is checked; the second and third change what the toolkit can see.
 ⚠ **`protect-bash.sh` now requires Python** (see below). Without it the guard **asks**
 rather than silently allowing.
 
+### Added — `x4live`: ask the RUNNING game, and a game extension to make that possible
+
+Every other tool here reads files. `x4live` reads the live engine — what objects exist right now,
+what a value actually resolved to, whether an extension really loaded — without a quit-and-relaunch
+for each question.
+
+**This release ships a game extension for the first time**: `mods/x4_toolkit_helper/`. Copy it into
+`{game}/extensions/`. It is read-only — a fixed, enumerated vocabulary with **no write verb, gated
+or otherwise** — declares `save="false"` so it cannot bake into a save, and adds no content, no menu
+and no MD script. Its third-party dependency (**Mod Support APIs**, `ws_2042901274`) is declared
+**optional**: without it the addon still loads and the snapshot half keeps working, while only the
+named-pipe verbs report the api unavailable. The two halves fail independently, deliberately.
+
+⚠ **Enumeration is not a census, and the tool says so rather than rounding it away.** Ownerless
+objects belong to no faction and are invisible to any owner query, hidden factions are opt-in, and
+name and sector are *player knowledge* — so many rows come back `Unknown` while ids, positions,
+class and flags stay exact. Object ids do not survive a UI reload, which the engine performs on a
+save load and on an alt-enter graphics change; the channel reports its load time so a refusal can
+say whether a reload is the likely cause.
+
+### Changed — `protect-files.sh` is ~2x faster on every Edit/Write
+
+It cost ~2.0 s per file edit against a floor of ~170 ms — roughly 41 subprocess spawns, because
+`x4_under` canonicalised **both** of its arguments on all 11 call sites while argument one was the
+same path every time. `x4_norm` now uses one subprocess instead of two, and `x4_canon` is memoised.
+Median 3,687 → 1,833 ms interleaved (**2.01x** overall, **2.23x** on the rules); the hook suite
+itself 241 s → 188 s.
+
+Behaviour is unchanged and that was proven rather than assumed: 43 of 43 path shapes agree with the
+old implementation, 18 paths plus `Write`/`MultiEdit` produce identical verdicts, and the
+differential harness was shown able to detect a deliberately-wrong implementation.
+
+### Added — `gates/control_bytes.py`
+
+Finds collapsed-escape control bytes (0x07/08/0B/0C/1B) in text files — the defect where content
+written through an inline interpreter string turns `\b` or `\a` into an invisible byte. Three files
+in two days here, one of them *inside the sentence documenting an escaping bug*, and none visible in
+any normal view of the file. Exits 2 on a zero-file sweep, because a sweep over nothing is not a
+clean sweep.
+
 
 ### Changed — ⚠ `protect-bash.sh` now requires Python, and is 12× faster for it
 

@@ -36,14 +36,37 @@ def scan_bytes(data: bytes) -> list[tuple[int, int, str]]:
     return [(i, c, ESCAPES[c]) for i, c in enumerate(data) if c in ESCAPES]
 
 
-def scan_paths(paths) -> dict:
-    hits, scanned, unreadable = [], 0, 0
+def expand(paths) -> list:
+    """Directories become their text files, recursively.
+
+    MEASURED 2026-08-31: this gate's own docstring says to pass the memory DIRECTORY, and
+    doing so scanned NONE of it -- `read_bytes()` on a directory raises OSError, so all 70
+    files were counted as one "unreadable" and skipped. The sweep then reported a clean
+    184 files, which is exactly what a clean sweep of the repo alone looks like. The
+    documented invocation was the broken one, and the only tell was a `1` in a column
+    nobody reads.
+    """
+    out = []
     for p in paths:
+        p = Path(p)
+        if p.is_dir():
+            out.extend(sorted(f for f in p.rglob("*")
+                              if f.is_file() and f.suffix.lower() in TEXT))
+        else:
+            out.append(p)
+    return out
+
+
+def scan_paths(paths) -> dict:
+    hits, scanned, unreadable = [], 0, []
+    for p in expand(paths):
         p = Path(p)
         try:
             data = p.read_bytes()
         except OSError:
-            unreadable += 1
+            # NAMED, not merely counted. A count tells you something was skipped; only a
+            # name tells you whether it mattered.
+            unreadable.append(str(p))
             continue
         scanned += 1
         for off, c, esc in scan_bytes(data):
@@ -64,12 +87,20 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     paths = tracked_text_files() + [Path(a) for a in argv]
     rep = scan_paths(paths)
-    print(f"control-byte sweep: scanned {rep['scanned']} file(s), unreadable {rep['unreadable']}, "
-          f"hits {len(rep['hits'])}")
+    print(f"control-byte sweep: scanned {rep['scanned']} file(s), "
+          f"unreadable {len(rep['unreadable'])}, hits {len(rep['hits'])}")
+    for u in rep["unreadable"]:
+        print(f"  UNREADABLE (not scanned): {u}")
     for h in rep["hits"]:
         print(f"  {h['path']} @{h['offset']} 0x{h['byte']:02x} (was {h['escape']}): ...{h['context']}...")
     if rep["scanned"] == 0:
         print("REFUSING: nothing was scanned, so this is not a clean sweep.", file=sys.stderr)
+        return 2
+    # An UNREADABLE path is a hole in the denominator, not a pass. Reporting "0 hits"
+    # beside a file nobody opened is the shape this whole gate exists to catch.
+    if rep["unreadable"]:
+        print(f"REFUSING: {len(rep['unreadable'])} path(s) could not be read, so this is a "
+              f"sweep with a hole in it, not a clean sweep.", file=sys.stderr)
         return 2
     return 1 if rep["hits"] else 0
 
