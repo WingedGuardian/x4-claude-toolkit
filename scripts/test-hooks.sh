@@ -15,12 +15,6 @@ set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 HOOKS="$REPO/.claude/hooks"
 
-# Snapshot the caller's directory BEFORE the run, so the check at the end compares
-# against a real baseline. The first version of this compared ./x with $REPO/x while
-# running FROM $REPO -- the same path -- so it could never fire, and it duly reported
-# "no stray ./n" with a stray ./n sitting right there. A check whose failing branch is
-# unreachable is decoration.
-_CWD_BEFORE="$(ls -A 2>/dev/null | sort)"
 command -v jq >/dev/null 2>&1 || { echo "jq is required"; exit 2; }
 
 # The sandbox must NOT live under /tmp. One of the rules under test refuses writes into
@@ -31,13 +25,36 @@ command -v jq >/dev/null 2>&1 || { echo "jq is required"; exit 2; }
 # harness was passing because of a gap in the rule it was standing next to.
 _SBX="${X4_TEST_SANDBOX:-$REPO/.test-sandbox}"
 mkdir -p "$_SBX" || { echo "cannot create sandbox base $_SBX"; exit 2; }
-TMP="$(mktemp -d "$_SBX/hooks.XXXXXX")"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d "$_SBX/hooks.XXXXXX")"
+# The sandbox itself is removed too, not just its child. Leaving it behind made the
+# hygiene check at the end of this file report the suite's OWN sandbox as a stray.
+trap 'rm -rf "$TMP"; rmdir "$_SBX" 2>/dev/null' EXIT
+
+# Snapshot the caller's directory AFTER the sandbox exists, so the check at the end
+# compares against a real baseline.
+#
+# MEASURED 2026-09-01, and it is the reason this ordering is spelled out: taking the
+# snapshot FIRST made the suite fail on every FRESH CHECKOUT -- 133 passed, 2 failed,
+# "the suite left new paths in the caller directory: .test-sandbox" -- while passing in
+# a tree where an earlier run had already created that directory. It is gitignored, so
+# `git status` stayed clean and nothing signalled it. CI checks out fresh every time, so
+# the first run is the only run: this would have turned the new CI gate red on the first
+# push. A contaminated baseline, in the check written to detect contamination.
+#
+# The version before THAT compared ./x with $REPO/x while running FROM $REPO -- the same
+# path -- so it could never fire at all. Third time is the charm; both earlier failures
+# are recorded because the shape repeats.
+_CWD_BEFORE="$(ls -A 2>/dev/null | sort)"
 case "$TMP" in
   /tmp/*|/var/tmp/*) echo "REFUSING: sandbox landed under /tmp ($TMP); the shared-/tmp rule
        would fire on unrelated write probes and the failures would be misattributed."; exit 2 ;;
 esac
-pass=0; fail=0
+pass=0; fail=0; skipped=0
 ok(){ pass=$((pass+1)); printf '  OK   %s\n' "$1"; }
+# A SKIP is neither a pass nor a failure: it is a probe that COULD NOT RUN here.
+# It is counted and named, so a green can never quietly mean "nothing was exercised",
+# and it is reconciled against EXPECT below alongside the passes and failures.
+skip(){ skipped=$((skipped+1)); printf '  SKIP %s\n' "$1"; }
 no(){ fail=$((fail+1)); printf '  FAIL %s\n' "$1"; }
 
 # decide <expected> <hook> <json> <label>
@@ -473,9 +490,18 @@ echo; echo "=== parser contract ==="
 if python "$REPO/scripts/scan-identifiers.py" --selftest >/dev/null 2>&1; then
   ok "the identifier scanner's own selftest passes"
 else no "scan-identifiers.py --selftest FAILED; its verdict on the tree means nothing"; fi
-if python "$REPO/scripts/scan-identifiers.py" >/dev/null 2>&1; then
-  ok "no personal identifier in any tracked file"
-else no "a personal identifier reached a tracked file -- run scripts/scan-identifiers.py"; fi
+# rc 1 (found something) and rc 2 (COULD NOT RUN) are different facts, and reporting the
+# second as the first is the error this whole suite exists to refuse. MEASURED
+# 2026-09-01: in a `git archive` extract there is no .git, the scanner correctly returns
+# 2 -- "cannot run the identifier scan" -- and this probe announced "a personal
+# identifier reached a tracked file". Exactly the verify-a-release-tarball case.
+python "$REPO/scripts/scan-identifiers.py" >/dev/null 2>&1
+_scan_rc=$?
+case "$_scan_rc" in
+  0) ok "no personal identifier in any tracked file" ;;
+  1) no "a personal identifier reached a tracked file -- run scripts/scan-identifiers.py" ;;
+  *) skip "the identifier scan could not run here (rc $_scan_rc, e.g. no .git in a tarball) -- not a clean result, but not a finding either" ;;
+esac
 
 # --- STATIC: no hook may use a bash-4-only feature ---------------------------
 # macOS ships bash 3.2 as /bin/bash. `declare -A` there is not a syntax error that stops
@@ -545,9 +571,9 @@ else no "advisory accumulation -- expected 2 lines in additionalContext, got $_n
 export X4_GAME="$_sg2"
 decide deny   protect-bash.sh "$(cj "rm -rf '$GAME'")"   "a hard block still wins over everything"
 
-echo "RESULT: $pass passed, $fail failed"
-if [ $((pass + fail)) -ne "$EXPECT" ]; then
-  echo "FAIL: $((pass + fail)) probes ran, expected $EXPECT -- a probe was DROPPED, not passed."
+echo "RESULT: $pass passed, $fail failed, $skipped skipped"
+if [ $((pass + fail + skipped)) -ne "$EXPECT" ]; then
+  echo "FAIL: $((pass + fail + skipped)) probes ran ($skipped skipped), expected $EXPECT -- a probe was DROPPED, not passed."
   echo "      (If you added or removed one deliberately, update EXPECT.)"
   exit 1
 fi
