@@ -205,9 +205,39 @@ def test_load_refuses_a_missing_file_rather_than_returning_empty(tmp_path):
     assert "does not exist" in str(e.value)
 
 
-def test_game_is_running_is_three_stated():
-    """True / False / None. A bare bool would let 'could not ask' mean 'no'."""
-    assert L.game_is_running() in (True, False, None)
+def test_game_is_running_returns_NONE_when_the_query_fails(monkeypatch):
+    """A FAILED process query must be None, not a confident False.
+
+    The previous assertion was `game_is_running() in (True, False, None)` -- true for
+    every possible return, including a hard-coded `return False`. It could not go red,
+    so it never covered the thing it named. MEASURED 2026-09-01: the sibling
+    implementation in _livepipe chained `.stdout` onto subprocess.run, so the returncode
+    was unreachable and a failing tasklist filter (rc=1) returned False.
+    """
+    class _Failed:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(L.subprocess, "run", lambda *a, **k: _Failed())
+    assert L.game_is_running() is None, "a failed query must abstain, not answer 'no'"
+
+
+def test_game_is_running_returns_TRUE_when_the_process_is_listed(monkeypatch):
+    class _Ok:
+        returncode = 0
+        stdout = "X4.exe   1234 Console"
+
+    monkeypatch.setattr(L.subprocess, "run", lambda *a, **k: _Ok())
+    assert L.game_is_running() is True
+
+
+def test_game_is_running_returns_FALSE_when_the_query_works_and_finds_nothing(monkeypatch):
+    class _Empty:
+        returncode = 0
+        stdout = "INFO: No tasks are running which match the specified criteria."
+
+    monkeypatch.setattr(L.subprocess, "run", lambda *a, **k: _Empty())
+    assert L.game_is_running() is False
 
 
 def test_extensions_returns_nothing_rather_than_inventing_column_names():
@@ -219,13 +249,18 @@ def test_extensions_returns_nothing_rather_than_inventing_column_names():
 
 # ------------------------------------------------- prove the guards are load-bearing
 
-def test_every_guard_is_load_bearing():
-    r"""Mutate each clause SEPARATELY and prove a fixture goes red for each.
+def test_every_guard_rejects_its_own_bad_fixture():
+    r"""One fixture per guard, each differing from a good dump in exactly ONE respect,
+    plus a control that must parse cleanly.
 
-    Written because the code came before the tests. Watching a test fail proves the
-    FEATURE is absent; only mutating finished code proves the TEST is present. And the
-    clauses are mutated one at a time: turning the whole condition off cannot tell
-    "clause B is untested" from "clause A already covers it" (CLAUDE.md #26).
+    RENAMED 2026-09-01. This was called `test_every_guard_is_load_bearing` and its
+    docstring claimed to "mutate each clause SEPARATELY" -- it mutates NOTHING. It is
+    fixture-based testing, which is worth having, but a reader was entitled to believe
+    the guards had been mutation-proven when they had not. A test may not describe work
+    it does not do.
+
+    Real mutation testing in this repo lives in scripts/verify-hook-tests.py, which
+    plants a defect and requires the NAMED test to go red.
     """
     cases = [
         ("not-uidata", "[project]\n",                                     L.LiveDumpUnavailable),

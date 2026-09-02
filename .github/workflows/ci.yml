@@ -89,9 +89,40 @@ jobs:
         shell: bash
         run: bash .claude/hooks/test-protect-bash.sh
 
+      # The three suites that cover this release's central change, and which CI did
+      # not run at all until 2026-09-01: 151 unit tests over the single parse pass,
+      # 134 E2E probes (the only coverage of protect-files.sh, backup-before-edit.sh,
+      # search-scope.sh, the stdin contract and the broken-jq verdict path), and the
+      # mutation gate that proves those tests can fail. All three are pure bash/Python
+      # and need no X4 install, so the reason `gates/` is excluded does not apply.
+      #
+      # They GATE on windows-latest and are informational on ubuntu-latest, matching
+      # this matrix's existing convention: POSIX behaviour of these hooks has never
+      # been measured, and gating on it would assert something unverified.
+      - name: Hook parse-pass unit tests
+        shell: bash
+        run: python .claude/hooks/test_hook_facts.py
+
+      - name: Hook E2E probe suite
+        shell: bash
+        run: bash scripts/test-hooks.sh
+
+      - name: Prove the hook tests can fail (mutation + predicate coverage)
+        shell: bash
+        run: python scripts/verify-hook-tests.py
+
+      - name: Prove the guard has no syntax bypass (differential fuzzer)
+        shell: bash
+        run: python scripts/fuzz-guard.py
+
+      # -rs NAMES every skip, and the budget makes a silent-skip regression LOUD.
+      # MEASURED 2026-09-01: 125 tests skipped because they looked for a `dev/`
+      # directory that does not exist in this repo -- the game extension ships at
+      # `mods/` -- and the total collapsed them into one number nobody reads. They
+      # guarded a Lua contract whose violation hangs X4 and needs a force-kill.
       - name: Run the suite with NO game installed
         working-directory: tools/x4validate
-        run: uv run --frozen python -m pytest -q
+        run: uv run --frozen python -m pytest -q -rs
 
   scrub:
     name: no personal data in tracked files

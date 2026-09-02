@@ -44,14 +44,28 @@ HOOKS = REPO / ".claude" / "hooks"
 # cost this workspace three separate debugging sessions.
 BASH = shutil.which("bash.exe") or shutil.which("bash")
 
+#: Paths that need not exist. Shaped like the real ones -- a drive letter, spaces, and
+#: a nested extensions/ -- because those are the shapes the rules actually turn on.
+SYNTHETIC_ROOTS = {
+    "game": "C:/Games/Steam/steamapps/common/X4 Foundations",
+    "reference": "C:/work/x4/reference",
+    "toolkit": "C:/work/x4",
+    "profile": "C:/Users/tester/Documents/Egosoft/X4/12345678",
+    "mods": "C:/work/x4/dev",
+    "documents": "C:/Users/tester/Documents",
+    "saves": "C:/Users/tester/Documents/Egosoft/X4/12345678/save",
+}
+
 RANK = {"deny": 3, "ask": 2, "advise": 1, "allow": 0}
 
 # Which fact carries which verdict, read off protect-bash.sh. Policy lives there.
 DENY = ("rm_targets_reference", "rm_hits_game", "sed_i_in_game_or_profile",
         "timeout_over_cap", "git_add_all", "dollarq_after_pipe", "write_to_tmp",
         "durable_python_open_w", "profile_search_by_name", "xrcat_reunpack")
-ASK = ("rm_in_x4_dir", "rm_saves", "writes_documents", "longjob_foreground",
-       "unparseable_command")
+# NB no "unparseable_command": that check moved out of hook_facts into
+# protect-bash.sh, which asks `bash -n`. The fuzzer reads FACTS, so it cannot see
+# it -- and does not need to: every mutant it builds is required to parse anyway.
+ASK = ("rm_in_x4_dir", "rm_saves", "writes_documents", "longjob_foreground")
 
 NL = chr(10)
 AP = chr(39)     # apostrophe
@@ -276,9 +290,14 @@ def main():
 
     roots = resolve_roots()
     if not all(roots[k] for k in ("game", "reference", "saves")):
-        print("REFUSING: roots did not resolve, so every seed would be 'allow' and this "
-              "would report a vacuous clean sweep.", file=sys.stderr)
-        return 2
+        # SYNTHETIC roots, not a skip. Nothing here touches the filesystem -- hook_facts
+        # compares strings -- so invented paths exercise every rule exactly as real ones
+        # do, and they make the run deterministic on a machine with no X4 installed
+        # (every CI runner). A skip in CI is indistinguishable from a pass, which is the
+        # failure this whole session has been about.
+        roots = SYNTHETIC_ROOTS.copy()
+        print("no X4 install detected -- using synthetic roots. Every rule is still "
+              "exercised: this analysis is pure string comparison.")
 
     src = (HOOKS / "hook_facts.py").read_text(encoding="utf-8")
     holed = plant_known_hole(src)

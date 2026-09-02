@@ -337,25 +337,19 @@ def decode_reply(text: str | None, expect_seq: int) -> Reply:
 def game_is_running() -> bool | None:
     """True / False / **None when we cannot tell** -- three states, never two.
 
-    Used ONLY to shape a failure message: it turns "nothing connected" into a
-    diagnosis. When the probe itself fails we return None and the caller says so,
-    because a process check that guesses is worse than one that abstains.
+    Delegates to _livedump.game_is_running, which is the same question with the same
+    answer. This was a SECOND implementation, and it broke its own promise: it chained
+    `.stdout` straight onto subprocess.run, so the RETURNCODE was structurally
+    unavailable and a query that FAILED returned a confident False.
 
-    Spawns `tasklist` rather than taking a dependency, and only on the failure path,
-    so the happy path pays nothing for it.
+    MEASURED 2026-09-01 with a deliberately failing tasklist filter (rc=1, empty
+    stdout): this shape returned False -- 'the game is not running' -- where the honest
+    answer is None. wait_for_game would then tell a user whose game IS running to launch
+    it. The only reason it never decided an outcome is that it is used solely to shape a
+    message.
     """
-    import subprocess
-    import sys
-
-    if sys.platform != "win32":
-        return None
-    try:
-        out = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq X4.exe", "/NH"],
-            capture_output=True, text=True, timeout=10).stdout
-    except Exception:  # silent-ok: a diagnosis aid, never a finding
-        return None
-    return "X4.exe" in out
+    from . import _livedump
+    return _livedump.game_is_running()
 
 
 def pipe_name() -> str:

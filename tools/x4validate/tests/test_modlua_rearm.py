@@ -32,9 +32,49 @@ lupa = pytest.importorskip("lupa", reason="lua runtime; dev-only check of the ga
 #: artifact and its folder carries a personal prefix; this file ships, so naming it here
 #: would put that identifier in the public package -- which the mirror's scanner catches
 #: only AFTER a push. Same reason the marker assertions below match a suffix.
-_DEV = pathlib.Path(__file__).resolve().parents[3] / "dev"
-_FOUND = sorted(_DEV.glob("*/ui/*live_query.lua")) if _DEV.is_dir() else []
-MOD_LUA = _FOUND[0] if _FOUND else None
+def _find_mod_lua(pattern):
+    """The shipped game extension, wherever it lives: mods/ in the public toolkit,
+    dev/ in the private workspace.
+
+    MEASURED 2026-09-01: these tests looked ONLY at `parents[3]/"dev"`, which does not
+    exist in the public repo -- the extension ships at mods/. 125 tests skipped silently,
+    guarding a Lua contract whose violation HANGS X4 and needs a force-kill. A skip that
+    is structurally guaranteed is not coverage; it is a green tick over untested code.
+
+    Returns (path, roots_searched). The caller FAILS rather than skips when a root exists
+    but holds no match, because that is a broken layout, not an absent one.
+    """
+    root = pathlib.Path(__file__).resolve().parents[3]
+    searched = []
+    for name in ("mods", "dev"):
+        d = root / name
+        if not d.is_dir():
+            continue
+        searched.append(str(d))
+        hits = sorted(d.glob(pattern))
+        if hits:
+            return hits[0], searched
+    return None, searched
+
+def _require_mod_lua(hit, roots, what):
+    """Skip only when there is nowhere to look; FAIL when a root exists and is empty.
+
+    "mods/ is present but holds no live_query.lua" is a BROKEN LAYOUT, not an absent
+    one, and a skip there is a green tick over untested code -- which is exactly what
+    happened when these tests looked only in dev/: 125 skipped, silently, guarding a Lua
+    contract whose violation hangs X4 and needs a force-kill.
+    """
+    if hit is not None:
+        return hit
+    if roots:
+        raise AssertionError(
+            "searched %s and found no %s. A root exists but holds no game-side mod, "
+            "which is a broken layout -- refusing to skip over it." % (roots, what))
+    pytest.skip("no mods/ or dev/ root in this tree, so there is nothing to check")
+
+
+
+MOD_LUA, _ROOTS = _find_mod_lua("*/ui/*live_query.lua")
 
 HARNESS = r"""
 local src, pre = ...
@@ -281,8 +321,7 @@ def _build(extra: str = "", pre: str = ""):
     reach is exactly the kind that rots untested and is found broken later by the
     first verb that does reach it.
     """
-    if MOD_LUA is None:
-        pytest.skip("game-side live-query mod not present in dev/")
+    _require_mod_lua(MOD_LUA, _ROOTS, "game-side live-query lua")
     src = MOD_LUA.read_text(encoding="utf-8")
     assert not any(ln.startswith("return") for ln in src.splitlines()), (
         "the mod grew a top-level `return`; appended test verbs would be unreachable "
@@ -936,7 +975,7 @@ def test_the_BUILD_constant_matches_the_file():
 
     p = stamp.mod_lua()
     if p is None:
-        pytest.skip("game-side mod not present in dev/")
+        _require_mod_lua(None, _ROOTS if "_ROOTS" in dir() else [], "game-side mod lua")
     text = p.read_text(encoding="utf-8")
     cur, exp = stamp.current(text), stamp.expected(text)
     assert cur is not None, "the mod lost its BUILD line"
@@ -2022,7 +2061,7 @@ def test_GetMacroUnitStorageCapacity_is_NOT_in_the_object_id_list(lua_factory):
     MEASURED by scripts/verify-cold.sh, which is the only run that has no dev tree.
     """
     if MOD_LUA is None:
-        pytest.skip("game-side mod not present in dev/")
+        _require_mod_lua(None, _ROOTS if "_ROOTS" in dir() else [], "game-side mod lua")
     src = MOD_LUA.read_text(encoding="utf-8")
     obj = re.search("local RECON_OBJ = [{](.*?)[}]", src, re.S).group(1)
     mac = re.search("local RECON_MACRO = [{](.*?)[}]", src, re.S).group(1)

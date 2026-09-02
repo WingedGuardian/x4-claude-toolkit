@@ -37,6 +37,7 @@ script is what exposed it.
 """
 from __future__ import annotations
 
+import pathlib
 import os
 import re
 
@@ -49,15 +50,56 @@ MOD_GLOB = "*/ui/*live_query.lua"
 EXPECTED_ARITY = {"RECON_ZERO": 0, "RECON_OBJ": 1, "RECON_FAC": 1, "RECON_MACRO": 1}
 
 
+def _find_mod_lua(pattern):
+    """The shipped game extension, wherever it lives: mods/ in the public toolkit,
+    dev/ in the private workspace.
+
+    MEASURED 2026-09-01: these tests looked ONLY at `parents[3]/"dev"`, which does not
+    exist in the public repo -- the extension ships at mods/. 125 tests skipped silently,
+    guarding a Lua contract whose violation HANGS X4 and needs a force-kill. A skip that
+    is structurally guaranteed is not coverage; it is a green tick over untested code.
+
+    Returns (path, roots_searched). The caller FAILS rather than skips when a root exists
+    but holds no match, because that is a broken layout, not an absent one.
+    """
+    root = pathlib.Path(__file__).resolve().parents[3]
+    searched = []
+    for name in ("mods", "dev"):
+        d = root / name
+        if not d.is_dir():
+            continue
+        searched.append(str(d))
+        hits = sorted(d.glob(pattern))
+        if hits:
+            return hits[0], searched
+    return None, searched
+
+def _require_mod_lua(hit, roots, what):
+    """Skip only when there is nowhere to look; FAIL when a root exists and is empty.
+
+    "mods/ is present but holds no live_query.lua" is a BROKEN LAYOUT, not an absent
+    one, and a skip there is a green tick over untested code -- which is exactly what
+    happened when these tests looked only in dev/: 125 skipped, silently, guarding a Lua
+    contract whose violation hangs X4 and needs a force-kill.
+    """
+    if hit is not None:
+        return hit
+    if roots:
+        raise AssertionError(
+            "searched %s and found no %s. A root exists but holds no game-side mod, "
+            "which is a broken layout -- refusing to skip over it." % (roots, what))
+    pytest.skip("no mods/ or dev/ root in this tree, so there is nothing to check")
+
+
+
 def _mod_lua():
     # Located by GLOB, like tests/test_modlua_rearm.py: the mod folder carries a
     # personal prefix and this file ships, so the name must not be spelled here.
     import pathlib
-    dev = pathlib.Path(__file__).resolve().parents[3] / "dev"
-    if not dev.is_dir():
-        return None
-    hits = sorted(dev.glob(MOD_GLOB))
-    return hits[0] if hits else None
+    # mods/ (public toolkit) then dev/ (private workspace). Looking only in dev/
+    # skipped this silently in the public repo -- see _find_mod_lua's note.
+    hit, _roots = _find_mod_lua(MOD_GLOB)
+    return hit
 
 
 def _strip_noncode(txt: str) -> str:
@@ -122,7 +164,7 @@ def corpus():
 def buckets():
     p = _mod_lua()
     if p is None:
-        pytest.skip("game-side mod not present in dev/")
+        _require_mod_lua(None, _ROOTS if "_ROOTS" in dir() else [], "game-side mod lua")
     src = p.read_text(encoding="utf-8")
     out = {}
     for name in EXPECTED_ARITY:

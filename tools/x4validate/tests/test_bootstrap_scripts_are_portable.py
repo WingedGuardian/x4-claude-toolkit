@@ -38,13 +38,24 @@ def _tracked_ps1() -> list[pathlib.Path]:
     return [ROOT / n for n in out.stdout.split() if n]
 
 
+def non_ascii(data: bytes) -> list:
+    """(offset, byte) for every byte above 127. Extracted so the falsification twin
+    below can CALL it.
+
+    The twin used to write an em-dash to a temp file and assert the FIXTURE carried
+    non-ASCII bytes -- it never touched this predicate, so replacing the real check
+    with `return []` left it green. Decoration, written the same day as the rule
+    against exactly that. A twin must exercise the production code path.
+    """
+    return [(i, data[i]) for i in range(len(data)) if data[i] > 127]
+
+
 @pytest.mark.parametrize("name", BOOTSTRAP)
 def test_bootstrap_script_is_pure_ascii(name):
     p = ROOT / name
     if not p.is_file():
         pytest.skip(f"{name} not present in this tree")
-    data = p.read_bytes()
-    bad = [(i, data[i]) for i in range(len(data)) if data[i] > 127]
+    bad = non_ascii(p.read_bytes())
     assert not bad, (
         f"{name} has {len(bad)} non-ASCII byte(s), first at offset {bad[0][0]}. "
         "Windows PowerShell 5.1 reads a BOM-less script as the ANSI codepage, so a "
@@ -53,11 +64,23 @@ def test_bootstrap_script_is_pure_ascii(name):
 
 
 def test_the_ascii_check_would_catch_a_real_em_dash(tmp_path):
-    """The assertion above must be able to go red, or it is decoration."""
+    """The twin, and it now calls the PRODUCTION predicate.
+
+    The em-dash is the exact character that broke install.ps1 under Windows PowerShell
+    5.1, so this fixture is the real defect rather than a stand-in.
+    """
     f = tmp_path / "sample.ps1"
-    f.write_bytes("Write-Host 'a \u2014 b'".encode("utf-8"))
-    data = f.read_bytes()
-    assert any(b > 127 for b in data), "the fixture is not actually non-ASCII"
+    f.write_bytes(("Write-Host " + chr(39) + "a " + chr(0x2014) + " b" + chr(39)).encode("utf-8"))
+    found = non_ascii(f.read_bytes())
+    assert found, "non_ascii() did not flag a real em-dash -- the check is inert"
+    assert found[0][1] > 127
+
+
+def test_the_ascii_check_stays_silent_on_pure_ascii(tmp_path):
+    """The other direction: a check that fires on everything is no check either."""
+    f = tmp_path / "clean.ps1"
+    f.write_bytes(b"Write-Host 'a - b'")
+    assert non_ascii(f.read_bytes()) == []
 
 
 @pytest.mark.skipif(shutil.which("powershell") is None,
