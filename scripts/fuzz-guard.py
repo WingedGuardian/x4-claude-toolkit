@@ -42,7 +42,16 @@ REPO = Path(__file__).resolve().parent.parent
 HOOKS = REPO / ".claude" / "hooks"
 # NOT plain "bash": on Windows that resolves to the WSL stub in System32, which has
 # cost this workspace three separate debugging sessions.
-BASH = shutil.which("bash.exe") or shutil.which("bash")
+#
+# This line USED to read `which("bash.exe") or which("bash")`, with that same comment.
+# MEASURED 2026-09-01 from PowerShell: `which("bash.exe")` returns
+# `C:\Windows\system32ash.exe` -- the stub IS named bash.exe, so the defence named
+# the right threat and did nothing about it, which is worse than none because it stops
+# anyone looking again. `gitbash.find_bash()` excludes the stub directories by path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gitbash import find_bash            # noqa: E402
+
+BASH = find_bash()
 
 #: Paths that need not exist. Shaped like the real ones -- a drive letter, spaces, and
 #: a nested extensions/ -- because those are the shapes the rules actually turn on.
@@ -70,6 +79,7 @@ ASK = ("rm_in_x4_dir", "rm_saves", "writes_documents", "longjob_foreground")
 NL = chr(10)
 AP = chr(39)     # apostrophe
 QU = chr(34)     # double quote
+BSL = chr(92)    # backslash -- never a literal, it changes meaning per quoting context
 BS = chr(92)     # backslash
 BT = chr(96)     # backtick
 
@@ -176,6 +186,200 @@ def _m_env_prefix(c):
     return "PYTHONIOENCODING=utf-8 " + c
 
 
+# ---------------------------------------------------------------------------
+# SYNTAX CLASSES
+#
+# Added 2026-09-01, after a here-string bypass reached a shipped guard while 151
+# unit tests, 35 mutants and a 13,500-command replay were all green. The mutators
+# above grew one at a time, each one a reaction to a bug already found; that is how
+# `<<<` was missed -- nobody had been bitten by it yet.
+#
+# So these are chosen by CLASS from the shell grammar rather than from experience:
+# every construct that can carry a quote, a `#`, a `<`, or a `>` past a naive
+# scanner, plus the compound commands that can WRAP a dangerous operation instead
+# of merely preceding it. The dangerous operation is untouched in every case, so
+# the verdict must not move. `bash -n` asserts both sides stay parseable.
+#
+# MEASURED incidence in real history for the three shapes this batch was born from:
+# `<<<` 40, `<<` after a `#` 15, `$(( .. <<` 8 -- 49 of 13,503 commands (0.36%).
+# None of the 49 changed verdict, so the corpus could never have found this. That is
+# the argument for a fuzzer: history only contains what has already happened.
+# ---------------------------------------------------------------------------
+
+# --- class: here-strings (`<<<` is not a heredoc) ---------------------------
+def _m_herestring(c):
+    return "cat <<< hello" + NL + c
+
+
+def _m_herestring_marker_word(c):
+    # the word after `<<<` looks exactly like a heredoc terminator
+    return "cat <<<EOF" + NL + c
+
+
+def _m_herestring_quoted(c):
+    return "cat <<< " + AP + "it" + AP + AP + "s here" + AP + NL + c
+
+
+# --- class: arithmetic expansion (`<<` / `>>` are SHIFTS) -------------------
+def _m_arith_lshift(c):
+    return "n=$((1 << 4))" + NL + c
+
+
+def _m_arith_rshift(c):
+    return "n=$((256 >> 2))" + NL + c
+
+
+def _m_arith_nested(c):
+    return "n=$(( (1 << 2) + $((3 >> 1)) ))" + NL + c
+
+
+# --- class: comments carrying shell metacharacters --------------------------
+def _m_comment_heredoc_marker(c):
+    return "# example: cat <<EOF" + NL + c
+
+
+def _m_comment_herestring(c):
+    return "# a <<< b" + NL + c
+
+
+def _m_comment_redirect(c):
+    return "# writes with > and >> and 2>&1" + NL + c
+
+
+# --- class: parameter expansion (a `#` that is NOT a comment) ---------------
+def _m_param_strip(c):
+    return "x=${PATH#/}" + NL + c
+
+
+def _m_param_default_quote(c):
+    return "x=" + QU + "${FOO:-it" + AP + "s}" + QU + NL + c
+
+
+def _m_param_length(c):
+    return "n=${#PATH}" + NL + c
+
+
+# --- class: process substitution --------------------------------------------
+def _m_procsub(c):
+    return "diff <(echo a) <(echo b) >/dev/null 2>&1 || true" + NL + c
+
+
+# --- class: redirection forms ------------------------------------------------
+def _m_redirect_merge(c):
+    return "echo probe 2>&1 >/dev/null" + NL + c
+
+
+def _m_redirect_append(c):
+    return "echo probe >> /dev/null" + NL + c
+
+
+# --- class: brace expansion and globbing ------------------------------------
+def _m_brace_expansion(c):
+    return "echo {a,b}.txt >/dev/null" + NL + c
+
+
+# --- class: line continuation -----------------------------------------------
+def _m_line_continuation(c):
+    return "echo one " + BSL + NL + "  two >/dev/null" + NL + c
+
+
+# --- class: conditional expressions (`<` inside [[ ]] is not a redirect) -----
+def _m_double_bracket(c):
+    return "[[ " + QU + "a" + QU + " < " + QU + "b" + QU + " ]] && true" + NL + c
+
+
+# --- class: compound commands that WRAP the dangerous operation -------------
+# These matter more than the prefixes: the operation is nested, not merely preceded,
+# so a scanner that only inspects the first simple command loses it entirely.
+def _m_wrap_if(c):
+    return "if true; then " + c + "; fi"
+
+
+def _m_wrap_for(c):
+    return "for i in 1; do " + c + "; done"
+
+
+def _m_wrap_braces(c):
+    return "{ " + c + "; }"
+
+
+def _m_wrap_while(c):
+    return "while false; do :; done; " + c
+
+
+def _m_wrap_and_or(c):
+    return "true && " + c + " || true"
+
+
+# --- class: compound commands, the REST of the grammar ----------------------
+# The first two of these (if/then, for/do) were found by the fuzzer on 2026-09-01 and
+# turned out to be a TOTAL guard bypass: a reserved word prefixes the simple command
+# inside a `;`-delimited segment, so verb() returned `then`/`do` and every verb-keyed
+# rule missed -- hard blocks included. The rest are here so the fix is measured against
+# the whole class rather than the two forms that happened to be tried first.
+def _m_wrap_until(c):
+    return "until true; do " + c + "; break; done"
+
+
+def _m_wrap_else(c):
+    return "if false; then :; else " + c + "; fi"
+
+
+def _m_wrap_elif(c):
+    return "if false; then :; elif true; then " + c + "; fi"
+
+
+def _m_wrap_case(c):
+    return "case x in x) " + c + " ;; *) :;; esac"
+
+
+def _m_wrap_negation(c):
+    return "! " + c
+
+
+def _m_wrap_if_condition(c):
+    # the dangerous command is the CONDITION, not the body
+    return "if " + c + "; then :; fi"
+
+
+def _m_wrap_function(c):
+    return "f() { " + c + "; }; f"
+
+
+def _m_wrap_nested(c):
+    return "if true; then for i in 1; do " + c + "; done; fi"
+
+
+# --- class: wrappers that carry a command as TEXT ---------------------------
+# `bash -c`, its flag-cluster spellings and `eval` all run a STRING as a command, so
+# whatever they carry is invisible to any rule that inspects segments. MEASURED
+# 2026-09-01: `bash -lc` and `eval` were both total bypasses of a hard block while
+# `sh -c` was caught -- the unwrapper matched the literal token `-c` only.
+def _sq(c):
+    """Embed arbitrary text in single quotes the way the shell requires."""
+    return AP + c.replace(AP, AP + BSL + AP + AP) + AP
+
+
+def _m_bash_c(c):
+    return "bash -c " + _sq(c)
+
+
+def _m_bash_lc(c):
+    return "bash -lc " + _sq(c)
+
+
+def _m_sh_ic(c):
+    return "sh -ic " + _sq(c)
+
+
+def _m_eval(c):
+    return "eval " + _sq(c)
+
+
+def _m_eval_in_if(c):
+    return "if true; then eval " + _sq(c) + "; fi"
+
+
 MUTATORS = [
     ("comment with an apostrophe", _m_comment_apostrophe),
     ("comment with a quote", _m_comment_quote),
@@ -196,6 +400,43 @@ MUTATORS = [
     ("semicolon chain after", _m_semicolon),
     ("pipe after", _m_pipe),
     ("env prefix", _m_env_prefix),
+    # --- syntax classes, chosen from the grammar rather than from past bugs -----
+    ("here-string: bare", _m_herestring),
+    ("here-string: word looks like a marker", _m_herestring_marker_word),
+    ("here-string: quoted with an apostrophe", _m_herestring_quoted),
+    ("arithmetic: left shift", _m_arith_lshift),
+    ("arithmetic: right shift", _m_arith_rshift),
+    ("arithmetic: nested shifts", _m_arith_nested),
+    ("comment: contains a heredoc marker", _m_comment_heredoc_marker),
+    ("comment: contains a here-string", _m_comment_herestring),
+    ("comment: contains redirects", _m_comment_redirect),
+    ("param expansion: # is not a comment", _m_param_strip),
+    ("param expansion: default with an apostrophe", _m_param_default_quote),
+    ("param expansion: length ${#x}", _m_param_length),
+    ("process substitution", _m_procsub),
+    ("redirect: 2>&1 merge", _m_redirect_merge),
+    ("redirect: append", _m_redirect_append),
+    ("brace expansion", _m_brace_expansion),
+    ("line continuation", _m_line_continuation),
+    ("conditional: < inside [[ ]]", _m_double_bracket),
+    ("wrap: if/then", _m_wrap_if),
+    ("wrap: for/do", _m_wrap_for),
+    ("wrap: brace group", _m_wrap_braces),
+    ("wrap: after a while loop", _m_wrap_while),
+    ("wrap: && chain", _m_wrap_and_or),
+    ("wrap: until/do", _m_wrap_until),
+    ("wrap: else branch", _m_wrap_else),
+    ("wrap: elif branch", _m_wrap_elif),
+    ("wrap: case arm", _m_wrap_case),
+    ("wrap: ! negation", _m_wrap_negation),
+    ("wrap: as an if CONDITION", _m_wrap_if_condition),
+    ("wrap: function body", _m_wrap_function),
+    ("wrap: nested if+for", _m_wrap_nested),
+    ("wrapper: bash -c", _m_bash_c),
+    ("wrapper: bash -lc", _m_bash_lc),
+    ("wrapper: sh -ic", _m_sh_ic),
+    ("wrapper: eval", _m_eval),
+    ("wrapper: eval inside if", _m_eval_in_if),
 ]
 
 

@@ -224,6 +224,88 @@ def segments(cmd: str) -> list[str]:
     return [_unwrap(p) for p in parts if p.strip()]
 
 
+#: Shell RESERVED WORDS that can stand immediately before a simple command inside one
+#: `;`-delimited segment. MEASURED 2026-09-01 by the syntax-class fuzzer: because the
+#: splitter cuts on `;` and `&&`, `if true; then rm -rf <game>; fi` yields the segment
+#: `then rm -rf <game>`, whose verb() is `then` -- so EVERY verb-keyed rule missed and
+#: the hook fell silent. 90 bypasses over 10 compound forms x 9 seeds, including the
+#: three HARD BLOCKS (game root, extensions wholesale, reference tree). The 10th seed
+#: was immune because it is redirect-keyed, not verb-keyed, which is what pins the
+#: root cause: the operand was always there, the VERB was the keyword.
+#:
+#: `time`/`nice`/`sudo` are handled separately by WRAPPERS in verb(); this set exists
+#: because the keyword has to leave the SEGMENT before any rule looks at it, so that
+#: one fix serves every rule instead of each rule learning the grammar.
+RESERVED = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until",
+            "case", "esac", "in", "for", "select", "function", "!", "{", "}"}
+
+#: A `case` ARM LABEL, and nothing else. The label is a single glob token --
+#: `x)`, `*)`, `*.txt)`, `a|b)` -- so it carries NO WHITESPACE, and that is what makes
+#: this safe: every dangerous rule needs an OPERAND, and an operand needs a space, so
+#: a spaceless label can never be hiding one.
+#:
+#: MEASURED 2026-09-01, and it is why the space matters: the first version of this
+#: was `^[^()|&;]*\)\s`, which also matched the tail of a PROCESS SUBSTITUTION --
+#: `diff <(cd "$GAME" && rm -rf extensions) <(echo b)` splits to `rm -rf extensions)`,
+#: the whole thing was eaten as a "label", and the delete went silent. The BASELINE
+#: caught that command. A fix for one bypass that opens another is worse than the bug,
+#: and only the corpus diff -- 20 commands with a paren-suffixed verb -- surfaced it.
+_CASE_ARM = re.compile(r"^[^\s()&;]+\)\s")
+
+#: A function DEFINITION header is not a reserved word, so it survived the first
+#: version of this and `f() { rm -rf <game>; }; f` stayed blind while the other nine
+#: compound forms were fixed. Both spellings: `f() {` and `function f {`.
+_FUNC_HEAD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*\(\)\s*")
+
+
+def _strip_reserved(s: str) -> str:
+    """Drop leading shell reserved words (and a `case` arm label) from a segment.
+
+    Token equality, never a prefix match: a program called `do_thing` or `iffy` keeps
+    its name. Stops at the first token that is not reserved, so `for i in 1` becomes
+    `i in 1` (harmless -- it holds no command) rather than being consumed whole.
+    """
+    prev = None
+    while s and s != prev:
+        prev = s
+        head = s.split(None, 1)
+        if head and head[0] == "case":
+            # `case WORD in LABEL) cmd` -- WORD is not reserved, so a plain keyword loop
+            # stops on it and the label rule below never gets to run. Consume through the
+            # `in`, and the label rule then removes `LABEL)`.
+            rest = head[1] if len(head) > 1 else ""
+            toks = rest.split()
+            if "in" in toks:
+                cut = rest.index("in") + 2
+                s = rest[cut:].lstrip()
+                continue
+            s = rest.lstrip()
+            continue
+        if head and head[0] == "function":
+            # `function NAME {` -- the NAME is not reserved, so drop it with the keyword
+            rest = head[1].lstrip() if len(head) > 1 else ""
+            nxt = rest.split(None, 1)
+            s = (nxt[1].lstrip() if len(nxt) > 1 else "") if nxt else ""
+            continue
+        if head and head[0] in RESERVED:
+            s = head[1].lstrip() if len(head) > 1 else ""
+            continue
+        m = _FUNC_HEAD.match(s)
+        if m:
+            s = s[m.end():].lstrip()
+            continue
+        # `case x in x) rm ...` -- the arm label sits between `in` and the command, and
+        # is not a token, so it needs its own step. Only when the `)` is UNQUOTED and no
+        # `(` opens before it, or `rm -rf $(echo x)` would be torn apart.
+        m = _CASE_ARM.match(s)
+        if m:
+            marks = list(_scan(s[:m.end()]))
+            if not any(inq for _, inq in marks) and not any(
+                    ch == "(" for ch, inq in marks if not inq):
+                s = s[m.end():].lstrip()
+    return s
+
+
 def _unwrap(seg: str) -> str:
     """Strip subshell/group punctuation at a segment's edges.
 
@@ -247,7 +329,10 @@ def _unwrap(seg: str) -> str:
         if closes <= opens:
             break
         s = s[:-1].rstrip()
-    return s
+    # LAST: a reserved word left in front of the command makes verb() return the
+    # KEYWORD, and every verb-keyed rule then misses. Done here, at the one place every
+    # segment passes through, so no rule has to know shell grammar for itself.
+    return _strip_reserved(s)
 
 
 def tokens(seg: str) -> list[tuple[str, bool]]:
@@ -390,12 +475,58 @@ def heredoc_marker(line: str):
     recognising heredocs at all. Test both directions or one of them silently wins.
     """
     mask = _quote_mask(line)
-    for i in range(len(line) - 1):
+    line = _blank_arith(line, mask)
+    stop = _comment_start(line, mask)
+    for i in range(min(len(line) - 1, stop)):
         if line[i] == chr(60) and line[i + 1] == chr(60) and not mask[i] and not mask[i + 1]:
+            # A HERE-STRING is not a heredoc. `cat <<< word` feeds one word on stdin and
+            # opens no skip region -- but the scan reaches the SECOND `<` of `<<<`, sees
+            # `<< word`, and reports a marker. Everything after that line then became
+            # "heredoc body" and was invisible to every rule.
+            if i > 0 and line[i - 1] == chr(60):
+                continue
+            if i + 2 < len(line) and line[i + 2] == chr(60):
+                continue
             m = _HD.match(line, i)
             if m:
                 return m.group(1)
     return None
+
+
+def _comment_start(line: str, mask: list) -> int:
+    """Index of the first UNQUOTED word-initial `#`, or len(line).
+
+    A `#` mid-word is not a comment (`http://x#frag`, `a#b`), and a quoted one is data.
+    """
+    for i, c in enumerate(line):
+        if c == chr(35) and not mask[i] and (i == 0 or line[i - 1] in " 	"):
+            return i
+    return len(line)
+
+
+def _blank_arith(line: str, mask: list) -> str:
+    """Blank `$(( ... ))` regions. `<<` inside arithmetic is a LEFT SHIFT."""
+    if "$((" not in line:
+        return line
+    out = list(line)
+    i = 0
+    while i < len(line) - 2:
+        if line[i] == "$" and line[i + 1] == "(" and line[i + 2] == "(" and not mask[i]:
+            depth, j = 0, i + 1
+            while j < len(line):
+                if line[j] == "(":
+                    depth += 1
+                elif line[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            for k in range(i, min(j + 1, len(line))):
+                out[k] = " "
+            i = j + 1
+            continue
+        i += 1
+    return "".join(out)
 
 
 def strip_heredocs(cmd: str) -> str:
@@ -754,16 +885,41 @@ GAME_ROOTISH = re.compile(r"(x4 foundations|egosoft/x4)(/extensions)?$", re.I)
 
 
 
+#: Shells whose `-c` argument is a command string. `dash`/`ksh` cost nothing to add and
+#: a missing one is a total bypass.
+_SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
+
+#: A SHORT-FLAG CLUSTER containing `c`. Not the literal token `-c`: real invocations
+#: combine flags, and `bash -lc '<cmd>'` is the ordinary way to get a login shell.
+#: MEASURED 2026-09-01, E2E through protect-bash.sh, against a game-root `rm -rf` the
+#: guard denies on its own:
+#:      sh -c '<rm>'      -> deny        bash -lc '<rm>'  -> *** SILENT ALLOW ***
+#:      xargs ... '<rm>'  -> deny        eval '<rm>'      -> *** SILENT ALLOW ***
+#: One character of flag clustering, and the hard block was gone.
+_DASH_C = re.compile(r"^-[A-Za-z]*c[A-Za-z]*$")
+
+
 def _inner_commands(cmd: str) -> list[str]:
-    """`bash -c "<command>"` hides everything inside from every rule. Parse it too."""
+    """Command strings hidden inside a wrapper, so the rules see them too.
+
+    Two carriers: a shell's `-c` argument, and `eval`. Both take TEXT and run it as a
+    command, so anything they carry is invisible to every rule that inspects segments.
+    """
     out = []
     for seg in segments(cmd):
-        if verb(seg) not in ("bash", "sh", "zsh"):
-            continue
+        v = verb(seg)
         toks = tokens(seg)
-        for i, (t, quoted) in enumerate(toks):
-            if not quoted and t == "-c" and i + 1 < len(toks):
-                out.append(toks[i + 1][0])
+        if v in _SHELLS:
+            for i, (t, quoted) in enumerate(toks):
+                if not quoted and _DASH_C.match(t) and i + 1 < len(toks):
+                    out.append(toks[i + 1][0])
+                    break
+        elif v == "eval":
+            # `eval` concatenates its arguments and runs the result. Flags are skipped;
+            # everything else is the command.
+            parts = [t for t, _ in toks[1:] if not t.startswith("-")]
+            if parts:
+                out.append(" ".join(parts))
     return out
 
 

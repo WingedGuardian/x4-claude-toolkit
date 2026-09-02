@@ -126,6 +126,180 @@ class TestHeredocs(unittest.TestCase):
         self.assertIn("git add -A", s)
 
 
+class TestNotEveryDoubleAngleIsAHeredoc(unittest.TestCase):
+    """`<<` appears in three constructs that open NO heredoc, and treating any of them as
+    one blanks the REST OF THE COMMAND -- so every rule below it goes silent and the hook
+    allows.
+
+    MEASURED 2026-09-01, all three E2E through protect-bash.sh: a game-directory
+    `rm -rf` that the guard refuses on its own became a SILENT ALLOW when preceded by a
+    here-string, by `<<` inside a comment, or by an arithmetic left-shift.
+
+    Same class as the apostrophe bypass and the `$( )` nesting error: the PARSER feeding
+    the predicates, not the predicates. 151 unit tests, 31 mutants and a 13k-command
+    replay were green throughout -- the coverage report was true about the predicates and
+    silent about their input. That is why the controls below matter as much as the cases.
+    """
+
+    def test_a_here_string_opens_no_heredoc(self):
+        # The scan reaches the SECOND `<` of `<<<`, sees `<< word`, and reports a marker.
+        self.assertIsNone(H.heredoc_marker("cat <<< hello"))
+        self.assertIsNone(H.heredoc_marker("cat <<<hello"))
+
+    def test_a_double_angle_in_a_COMMENT_opens_no_heredoc(self):
+        self.assertIsNone(H.heredoc_marker("# shifts a << b"))
+        self.assertIsNone(H.heredoc_marker("echo hi   # a << b"))
+
+    def test_an_arithmetic_left_shift_opens_no_heredoc(self):
+        self.assertIsNone(H.heredoc_marker("n=$((1 << FOO))"))
+
+    def test_the_rules_still_SEE_a_delete_after_each_of_them(self):
+        rm = 'rm -rf "C:/Program Files (x86)/Steam/steamapps/common/X4 Foundations/x"'
+        for prefix in ("cat <<< hello", "# shifts a << b", "n=$((1 << 2))"):
+            with self.subTest(prefix=prefix):
+                self.assertTrue(F(prefix + chr(10) + rm)["rm_in_x4_dir"],
+                                "syntax before the delete made the guard blind to it")
+
+    # --- the other direction, or `return None` passes every test above --------------
+    def test_a_real_heredoc_is_still_recognised(self):
+        self.assertEqual(H.heredoc_marker("cat > f <<EOF"), "EOF")
+        self.assertEqual(H.heredoc_marker("cat > f <<'PY'"), "PY")
+        self.assertEqual(H.heredoc_marker("cat <<-END"), "END")
+
+    def test_a_real_heredoc_beside_the_new_exclusions_still_opens(self):
+        self.assertEqual(H.heredoc_marker("n=$((1 << 2)); cat <<EOF"), "EOF")
+        self.assertEqual(H.heredoc_marker("cat <<EOF   # write it"), "EOF")
+
+    def test_a_hash_that_is_not_a_comment_does_not_truncate(self):
+        # a mid-word `#` is a URL fragment, and a quoted one is data -- neither is a comment
+        self.assertEqual(H.heredoc_marker("curl http://x#y <<EOF"), "EOF")
+        self.assertEqual(H.heredoc_marker("grep '#' f <<EOF"), "EOF")
+
+    def test_a_real_heredoc_BODY_is_still_stripped(self):
+        rm = 'rm -rf "C:/Program Files (x86)/Steam/steamapps/common/X4 Foundations/x"'
+        self.assertFalse(F("cat > f <<EOF" + chr(10) + rm + chr(10) + "EOF")["rm_in_x4_dir"],
+                         "a heredoc body is text being written, not a command")
+
+
+class TestReservedWordsDoNotHideTheCommand(unittest.TestCase):
+    """A shell RESERVED WORD in front of a simple command was a TOTAL guard bypass.
+
+    The splitter cuts on `;` and `&&`, so `if true; then rm -rf <game>; fi` yields the
+    segment `then rm -rf <game>` -- and verb() returned `then`. Every verb-keyed rule
+    (rm, sed, git, grep) therefore missed, INCLUDING the three hard blocks: the game
+    root, extensions wholesale, and the reference tree.
+
+    MEASURED 2026-09-01 by the syntax-class fuzzer: 90 bypasses over 10 compound forms
+    x 9 seeds. The 10th seed was immune because it is REDIRECT-keyed rather than
+    verb-keyed, which is exactly what pins the root cause -- the operand was present
+    and correct the whole time; the VERB was the keyword.
+
+    Nothing in 151 unit tests, 35 mutants, a 13,500-command replay or 19 predicate
+    probes could see this: they all start from a verb the parser has already chosen.
+    """
+
+    GAME = "C:/Program Files (x86)/Steam/steamapps/common/X4 Foundations"
+
+    def _verbs(self, cmd):
+        return [H.verb(seg) for seg, _ in
+                H.cwd_track(H.strip_comments(H.strip_heredocs(cmd)))]
+
+    def test_every_compound_form_still_shows_the_command(self):
+        rm = 'rm -rf "%s"' % self.GAME
+        forms = {
+            "if/then":        "if true; then " + rm + "; fi",
+            "if condition":   "if " + rm + "; then :; fi",
+            "for/do":         "for i in 1; do " + rm + "; done",
+            "until/do":       "until true; do " + rm + "; break; done",
+            "else":           "if false; then :; else " + rm + "; fi",
+            "elif":           "if false; then :; elif true; then " + rm + "; fi",
+            "case arm":       "case x in x) " + rm + " ;; *) :;; esac",
+            "case arm glob":  "case $v in *) " + rm + " ;; esac",
+            "negation":       "! " + rm,
+            "function posix": "f() { " + rm + "; }; f",
+            "function kw":    "function f { " + rm + "; }; f",
+            "nested if+for":  "if true; then for i in 1; do " + rm + "; done; fi",
+        }
+        for name, cmd in forms.items():
+            with self.subTest(form=name):
+                self.assertIn("rm", self._verbs(cmd),
+                              "the keyword hid the command from every verb-keyed rule")
+
+    def test_the_hard_block_survives_a_compound_wrapper(self):
+        # the case that matters most: a hard block must not become an allow
+        self.assertTrue(F('if true; then rm -rf "%s"; fi' % self.GAME)["rm_hits_game"])
+
+    # --- must NOT strip: a real program keeps its name ---------------------------
+    def test_a_program_whose_name_merely_starts_with_a_keyword_is_untouched(self):
+        for cmd, want in (("do_thing --flag", "do_thing"),
+                          ("iffy --x", "iffy"),
+                          ("done_marker.sh", "done_marker.sh"),
+                          ("function_helper.py run", "function_helper.py"),
+                          ("casefold.py", "casefold.py")):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(H.verb(H._unwrap(cmd)), want)
+
+    def test_a_keyword_inside_quotes_is_data(self):
+        self.assertEqual(H.verb(H._unwrap('echo "then rm -rf /"')), "echo")
+
+    def test_a_case_with_no_dangerous_op_stays_quiet(self):
+        self.assertFalse(F("case $v in a) echo hi ;; esac")["rm_hits_game"])
+
+    # --- the regression this fix ITSELF introduced, pinned ------------------------
+    def test_a_process_substitution_tail_is_not_a_case_arm_label(self):
+        """The first version of the case-arm rule matched `rm -rf extensions) ` and ate
+        the whole command. The BASELINE caught that one, so the fix was briefly worse
+        than the bug. A case label is a single glob token and carries no whitespace;
+        every dangerous rule needs an operand, and an operand needs a space -- which is
+        what makes the spaceless restriction sound rather than merely convenient."""
+        cmd = 'diff <(cd "%s" && rm -rf extensions) <(echo b)' % self.GAME
+        self.assertIn("rm", self._verbs(cmd),
+                      "the case-arm rule swallowed a process substitution")
+
+
+class TestWrappersThatCarryACommandAsText(unittest.TestCase):
+    """`bash -c`, its flag-cluster spellings, and `eval` all run TEXT as a command.
+
+    Anything they carry is invisible to every rule that inspects segments, so each one
+    is a total bypass on its own. The unwrapper matched the literal token `-c` only.
+
+    MEASURED 2026-09-01, E2E through protect-bash.sh, against a game-root `rm -rf` that
+    the guard denies unaided:
+        sh -c '<rm>'   -> deny            bash -lc '<rm>' -> *** SILENT ALLOW ***
+        xargs '<rm>'   -> deny            eval '<rm>'     -> *** SILENT ALLOW ***
+    One character of flag clustering stood between a hard block and nothing.
+    """
+
+    GAME = "C:/Program Files (x86)/Steam/steamapps/common/X4 Foundations"
+
+    def _rm(self):
+        return 'rm -rf "%s"' % self.GAME
+
+    def test_every_shell_c_spelling_is_unwrapped(self):
+        for w in ("bash -c", "bash -lc", "sh -c", "sh -ic", "zsh -c", "dash -c", "ksh -c"):
+            with self.subTest(wrapper=w):
+                cmd = "%s '%s'" % (w, self._rm())
+                self.assertTrue(F(cmd)["rm_hits_game"], "%s hid the command" % w)
+
+    def test_eval_is_unwrapped(self):
+        self.assertTrue(F("eval '%s'" % self._rm())["rm_hits_game"])
+
+    def test_a_wrapper_inside_a_compound_is_still_unwrapped(self):
+        """The two fixes have to compose: a keyword in front AND a wrapper around."""
+        self.assertTrue(F("if true; then eval '%s'; fi" % self._rm())["rm_hits_game"])
+
+    # --- must NOT fire ------------------------------------------------------------
+    def test_an_unrelated_dash_c_is_not_a_shell(self):
+        # `grep -c` counts; it is not a shell and carries no command
+        self.assertFalse(F("grep -c foo file.txt")["rm_hits_game"])
+
+    def test_a_harmless_wrapped_command_stays_quiet(self):
+        self.assertFalse(F("bash -lc 'ls -la'")["rm_hits_game"])
+
+    def test_a_quoted_dash_c_is_data(self):
+        self.assertFalse(F("echo \"bash -c rm -rf /\"")["rm_hits_game"])
+
+
 # ------------------------------------------------------------ redirect targets
 class TestRedirects(unittest.TestCase):
     def test_truncate_vs_append(self):

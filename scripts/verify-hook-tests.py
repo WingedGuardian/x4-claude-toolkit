@@ -39,6 +39,56 @@ FILES = ("hook_facts.py", "test_hook_facts.py")
 
 # (label, exact source text, replacement, the test that MUST go red)
 MUTANTS = [
+    # --- wrappers that carry a command as TEXT ---------------------------------
+    ("a shell -c flag CLUSTER is unwrapped",
+     r'_DASH_C = re.compile(r"^-[A-Za-z]*c[A-Za-z]*$")',
+     r'_DASH_C = re.compile(r"^-c$")',
+     "test_every_shell_c_spelling_is_unwrapped"),
+    ("eval carries a command",
+     '        elif v == "eval":', '        elif False:',
+     "test_eval_is_unwrapped"),
+    # --- reserved words, one mutant per clause ---------------------------------
+    # The fuzzer found this class; these keep it found. Each clause is mutated on its
+    # own: a single mutant of the whole helper cannot distinguish "this clause is
+    # untested" from "an earlier clause returns before it".
+    ("reserved words leave the segment",
+     '        if head and head[0] in RESERVED:', '        if False:',
+     "test_every_compound_form_still_shows_the_command"),
+    ("`case WORD in` is consumed",
+     '        if head and head[0] == "case":', '        if False and head:',
+     "test_every_compound_form_still_shows_the_command"),
+    ("a function header is consumed",
+     '        m = _FUNC_HEAD.match(s)', '        m = None',
+     "test_every_compound_form_still_shows_the_command"),
+    # The regression the fix itself introduced: the ORIGINAL over-wide label regex,
+    # which ate `rm -rf extensions)` out of a process substitution. If this mutant ever
+    # stops being caught, that hole is open again.
+    ("a case label carries no whitespace",
+     r'_CASE_ARM = re.compile(r"^[^\s()&;]+\)\s")',
+     r'_CASE_ARM = re.compile(r"^[^()|&;]*\)\s")',
+     "test_a_process_substitution_tail_is_not_a_case_arm_label"),
+    # --- the PARSER, one mutant per clause -------------------------------------
+    # Added 2026-09-01. The gate reported "31 of 31 caught, 0 of 19 predicate gaps"
+    # while three total-guard bypasses were live, because every mutant targeted a
+    # PREDICATE and none targeted the parse pass that feeds them. `<<` opens a skip
+    # region, so one wrong marker blanks the rest of the command and every rule below
+    # goes silent. Each clause is mutated SEPARATELY: a single mutant of the whole
+    # condition cannot tell "this clause is untested" from "an earlier clause shadows it".
+    ("a here-string `<<<` is not a heredoc",
+     'if i > 0 and line[i - 1] == chr(60):\n                continue',
+     'if False:\n                continue',
+     "test_a_here_string_opens_no_heredoc"),
+    ("a `<<` in a COMMENT is not a heredoc",
+     "stop = _comment_start(line, mask)", "stop = len(line)",
+     "test_a_double_angle_in_a_COMMENT_opens_no_heredoc"),
+    ("an arithmetic left-shift is not a heredoc",
+     "line = _blank_arith(line, mask)", "line = line",
+     "test_an_arithmetic_left_shift_opens_no_heredoc"),
+    # ...and the other direction: the exclusions must not swallow REAL heredocs, or the
+    # body stripping dies silently and heredoc text is read as commands.
+    ("the exclusions must not kill real heredocs",
+     "            m = _HD.match(line, i)", "            m = None",
+     "test_a_real_heredoc_is_still_recognised"),
     ("rg/ag recurse by default", '"rg": True, "ag": True, "ack": True',
      '"rg": False, "ag": False, "ack": False', "test_rg_is_recursive_BY_DEFAULT"),
     ("game-delete name backstop", 'or rm_named_game,\n        "rm_targets_reference"',
