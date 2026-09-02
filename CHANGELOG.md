@@ -138,6 +138,25 @@ command-by-command over real history did.
 - **Two shipped skills were undocumented.** `/x4-balance` and `/x4-probe` existed but were
   not in the README, so there was no way to know they were there. A test now derives the
   list from the directory.
+- **`~` and `$HOME` were never resolved, so save deletes written the ordinary way were
+  invisible.** `rm -f "C:/Users/.../save/s.xml.gz"` asked for confirmation;
+  `rm -f ~/Documents/.../save/s.xml.gz` did not. Saves are the one thing here with no
+  backup and no undo. Every other way of writing a path was already handled — absolute,
+  relative after a `cd`, the Git-Bash `/c/...` form, backslashes — so this adds an
+  expansion, not a new guess: only a leading `~`, `$HOME` or `$USERPROFILE` is touched.
+  Priced over 13,503 real commands: one verdict changed, and it *relaxed* — read in full,
+  its only delete targets a path outside every X4 folder, so the old prompt was a false
+  positive.
+- **The guard fuzzer was blind to a quarter of the rules it was meant to test.** It kept
+  its own copy of "which rule means deny, which means ask", and that copy had drifted:
+  the guard has 19 rules, the fuzzer knew 14. A rule it doesn't know about looks like
+  "nothing to test here", so two of its twelve test cases were being dropped from every
+  run in silence. It now reads the list from the guard itself and refuses to run if that
+  read comes back short — an empty list would let it report success over testing nothing.
+- **Skipped tests are no longer invisible.** A test suite that says "1159 passed, 14
+  skipped" never says *which* 14, and that is how 125 tests sat dormant for weeks. Every
+  skip is now named with its reason, the count gets its own line, and CI fails if it
+  jumps.
 
 
 ### Added — `scripts/fuzz-guard.py`, a differential fuzzer for the guard
