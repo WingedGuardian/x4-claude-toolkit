@@ -14,10 +14,7 @@ x4_require_input "$INPUT" "X4 BACKUP INERT: this hook received NO INPUT, so NO B
 # JQ=no_such_binary: 0 backups, 0 audit lines, exit 0, no output. The two other guards
 # gained a Python fallback; this one -- the only hook standing between an edit and an
 # unrecoverable loss -- never did.
-PY=""
-for _c in "${X4_PYTHON:-}" python3 python py; do
-  [ -n "$_c" ] && command -v "$_c" >/dev/null 2>&1 && { PY="$_c"; break; }
-done
+PY="$(x4_python)"   # shared: refuses a misconfigured X4_PYTHON
 _ask() {   # a backup that cannot be taken is the user's call, not ours to wave through
   if [ -n "$PY" ]; then
     X4_REASON="$1" "$PY" -c 'import json, os, sys

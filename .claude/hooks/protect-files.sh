@@ -15,10 +15,7 @@ x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it ch
 # Is jq actually usable? A BROKEN jq made every verdict below print nothing, and empty
 # stdout from a hook means ALLOW -- so the guard failed open, silently, exactly like
 # F79. protect-bash.sh gained this fallback in bccffc1; this file never did.
-PY=""
-for _c in "${X4_PYTHON:-}" python3 python py; do
-  [ -n "$_c" ] && command -v "$_c" >/dev/null 2>&1 && { PY="$_c"; break; }
-done
+PY="$(x4_python)"   # shared: refuses a misconfigured X4_PYTHON
 JQ_OK=0
 printf '%s' '{}' | "$JQ" -e . >/dev/null 2>&1 && JQ_OK=1
 

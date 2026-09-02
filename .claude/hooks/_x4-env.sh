@@ -187,6 +187,26 @@ x4_hook_input() { cat; }
 # payload was reported by nothing at all -- allow again, one layer in. If jq
 # cannot render the reason, a static literal goes out instead (no interpolation:
 # a reason with a quote in it would need escaping we no longer have).
+# x4_python -> print the interpreter to use, or nothing.
+#
+# ONE implementation. The three hooks that need Python each grew their own, and they
+# DISAGREED on the case that matters: with X4_PYTHON set to something that does not
+# resolve, protect-bash.sh refused (correctly -- an explicitly configured interpreter
+# that is missing is an error, not a cue to quietly pick a different one), while
+# protect-files.sh and backup-before-edit.sh fell through to python3/python/py. They
+# also probed in opposite orders. A guard that runs under an interpreter the operator
+# did not choose is a guard nobody configured.
+x4_python() {
+  if [ -n "${X4_PYTHON:-}" ]; then
+    command -v "$X4_PYTHON" >/dev/null 2>&1 && printf '%s' "$X4_PYTHON"
+    return 0                      # set but unresolvable -> print NOTHING, deliberately
+  fi
+  for _c in python python3 py; do
+    if command -v "$_c" >/dev/null 2>&1; then printf '%s' "$_c"; return 0; fi
+  done
+  return 0
+}
+
 # x4_field <payload> <dotted path, e.g. tool_input.path>
 # Read one field from a hook payload without depending on jq alone.
 #
@@ -205,10 +225,7 @@ x4_field() {
     printf '%s' "$1" | "${JQ:-jq}" -r ".$2 // empty" 2>/dev/null
     return 0
   fi
-  local _py=""
-  for _c in "${X4_PYTHON:-}" python3 python py; do
-    [ -n "$_c" ] && command -v "$_c" >/dev/null 2>&1 && { _py="$_c"; break; }
-  done
+  local _py; _py="$(x4_python)"
   [ -n "$_py" ] || return 0
   X4_IN="$1" X4_PATH="$2" "$_py" -c 'import json, os, sys
 cur = json.loads(os.environ["X4_IN"])
@@ -235,10 +252,7 @@ x4_advise() {
       '{hookSpecificOutput:{hookEventName:$e,additionalContext:$r}}'
     return 0
   fi
-  local _py=""
-  for _c in "${X4_PYTHON:-}" python3 python py; do
-    [ -n "$_c" ] && command -v "$_c" >/dev/null 2>&1 && { _py="$_c"; break; }
-  done
+  local _py; _py="$(x4_python)"
   if [ -n "$_py" ]; then
     X4_REASON="$1" X4_EVENT="${2:-PreToolUse}" "$_py" -c 'import json, os, sys
 sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": {

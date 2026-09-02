@@ -14,6 +14,13 @@
 set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 HOOKS="$REPO/.claude/hooks"
+
+# Snapshot the caller's directory BEFORE the run, so the check at the end compares
+# against a real baseline. The first version of this compared ./x with $REPO/x while
+# running FROM $REPO -- the same path -- so it could never fire, and it duly reported
+# "no stray ./n" with a stray ./n sitting right there. A check whose failing branch is
+# unreachable is decoration.
+_CWD_BEFORE="$(ls -A 2>/dev/null | sort)"
 command -v jq >/dev/null 2>&1 || { echo "jq is required"; exit 2; }
 
 # The sandbox must NOT live under /tmp. One of the rules under test refuses writes into
@@ -152,7 +159,11 @@ export X4_MODS="$_sm" X4_EXTENSIONS="$_se" X4_GAME="$_sg"
 # installed mods ship BOTH, so the misleading case is the common one.
 echo; echo "=== search-scope.sh ==="
 GAME="$TMP/game/X4 Foundations"
-mkdir -p "$GAME/extensions/packedmod" "$GAME/extensions/loosemod/md" \n         "$X4_TOOLKIT/dev/mymod"
+# One line, deliberately. This held the two characters \n, which OUTSIDE QUOTES is a
+# literal 'n' -- so mkdir -p took it as an argument and created a directory called `n`
+# in the CALLER's cwd on every run. An empty directory is invisible to `git status`,
+# so it accumulated unnoticed. The stray-path assertion below now makes it loud.
+mkdir -p "$GAME/extensions/packedmod" "$GAME/extensions/loosemod/md" "$X4_TOOLKIT/dev/mymod"
 : > "$GAME/extensions/packedmod/ext_01.cat"
 : > "$GAME/extensions/packedmod/readme.txt"
 : > "$GAME/extensions/loosemod/md/a.xml"
@@ -302,7 +313,18 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=134
+# Anything that appeared in the caller's directory during the run is a leak. An empty
+# directory is invisible to `git status`, which is how a stray `n/` accumulated.
+_CWD_AFTER="$(ls -A 2>/dev/null | sort)"
+_NEW="$(comm -13 <(printf "%s" "$_CWD_BEFORE") <(printf "%s" "$_CWD_AFTER") | tr "
+" " ")"
+if [ -n "$(printf "%s" "$_NEW" | tr -d "[:space:]")" ]; then
+  no "the suite left new paths in the caller directory: $_NEW"
+else
+  ok "the suite left nothing behind in the caller directory"
+fi
+
+EXPECT=135
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written

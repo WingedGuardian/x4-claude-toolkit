@@ -87,18 +87,7 @@ $1"; else ADVICE="$1"; fi; }
 # A guard that cannot see its input must not stay silent: silence IS allow, and that
 # is exactly how every hook here sat dead for five weeks. So a missing interpreter, a
 # crash, or an unparseable payload ASKS -- it never falls through.
-PY=""
-if [ -n "${X4_PYTHON:-}" ]; then
-  # An EXPLICITLY configured interpreter that does not resolve is an error, not a cue to
-  # quietly use a different one. Falling through would mean the guard runs under an
-  # interpreter the operator did not choose, and it would leave the "no Python" branch
-  # unreachable -- a failure path that cannot be provoked is not a failure path.
-  command -v "$X4_PYTHON" >/dev/null 2>&1 && PY="$X4_PYTHON"
-else
-  for c in python python3 py; do
-    command -v "$c" >/dev/null 2>&1 && { PY="$c"; break; }
-  done
-fi
+PY="$(x4_python)"   # shared with every other hook (see _x4-env.sh)
 # Does jq actually WORK? Presence on PATH is not the question -- the probe that caught
 # this pointed JQ at a missing binary. Tested once, here, rather than discovered on the
 # verdict path where a failure is silent.

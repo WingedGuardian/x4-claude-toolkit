@@ -424,7 +424,6 @@ def redirects(seg: str) -> list[tuple[str, str]]:
     null device is not a file anyone cares about."""
     out = []
     b = blank_quoted(seg)
-    toks = tokens(seg)
     flat = seg
     i = 0
     while i < len(b):
@@ -444,7 +443,6 @@ def redirects(seg: str) -> list[tuple[str, str]]:
         if tgt and norm(tgt) != "/dev/null":
             out.append((mode, tgt))
         i = m.end()
-    del toks
     return out
 
 
@@ -629,11 +627,6 @@ def search_paths(seg: str, require_recursive: bool = True) -> list[str]:
 DIR_VERBS = {"cd", "pushd"}
 
 
-def cwd_of(cmd: str) -> str:
-    """The last directory the command relocates to, so `cd <root> && grep -rn foo .`
-    resolves. Kept for the search rules, which ask only about the end state."""
-    tracked = cwd_track(cmd)
-    return tracked[-1][1] if tracked else ""
 
 
 def cwd_track(cmd: str, base: str = "") -> list:
@@ -759,21 +752,6 @@ LEGACY_GAME = re.compile(r"x4 foundations|egosoft/x4", re.I)
 GAME_ROOTISH = re.compile(r"(x4 foundations|egosoft/x4)(/extensions)?$", re.I)
 
 
-def _expand(seg: str, paths: list[str], assigns: dict) -> list[tuple[str, bool]]:
-    """(resolved path, still-unresolved) -- an unresolvable destination must keep the
-    guard, not drop it."""
-    return [(resolve(p, assigns), has_unresolved(resolve(p, assigns))) for p in paths]
-
-
-def _hits(paths, root, cmd, assigns) -> bool:
-    for p, unresolved in _expand("", paths, assigns):
-        if unresolved:
-            if root and norm(root) in norm(cmd):
-                return True
-            continue
-        if under(p, root):
-            return True
-    return False
 
 
 def _inner_commands(cmd: str) -> list[str]:
