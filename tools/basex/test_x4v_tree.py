@@ -16,6 +16,7 @@ it and a single probe only ever exercises the first one it trips.
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 import subprocess
 from pathlib import Path
@@ -23,7 +24,13 @@ from pathlib import Path
 import pytest
 
 HELPER = Path(__file__).resolve().parent / "_x4v-tree.sh"
-BASH = shutil.which("bash")
+# Not shutil.which: on Windows that is the WSL stub in System32, which runs a Linux
+# bash in a filesystem where the C:/ paths this file asserts on do not exist.
+_gb = Path(__file__).resolve().parents[2] / "scripts" / "gitbash.py"
+_spec = importlib.util.spec_from_file_location("gitbash", _gb)
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+BASH = _mod.find_bash()
 
 pytestmark = pytest.mark.skipif(
     BASH is None or not HELPER.is_file(),
