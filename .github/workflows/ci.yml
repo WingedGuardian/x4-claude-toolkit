@@ -130,12 +130,25 @@ jobs:
           test -f "$TK/.claude/x4-paths.env" || { echo "no x4-paths.env"; exit 1; }
           test -d "$TK/tools/x4validate"     || { echo "no tools/x4validate"; exit 1; }
           test -d "$TK/mods"                 || { echo "no mods/ (x4live extension)"; exit 1; }
-          # Re-running the installer is the ONLY upgrade path the README offers, and it
-          # used to DELETE these two files. A planted marker must survive in a backup.
+          # A venv must not travel: uv hardlinks from a shared cache, so a recursive
+          # copy of one aborts with "are the same file" part way through.
+          test ! -e "$TK/tools/x4validate/.venv/pyvenv.cfg.SOURCE" || { echo "venv travelled"; exit 1; }
+          # The config bash cannot source is the failure the escaping exists to stop.
+          ( set -a; . "$TK/.claude/x4-paths.env" ) || { echo "x4-paths.env does not source"; exit 1; }
+
+          # DIRECTION: a second install over the same toolkit must REFUSE without the
+          # flag. This is the defect that overwrote a developer's game folder.
+          if bash install.sh --method separate --toolkit "$TK" --yes; then
+            echo "installing over an existing install was ALLOWED without --over-existing"; exit 1
+          fi
+
+          # ...and with the flag it proceeds AND keeps the user's own settings in the
+          # LIVE file. `grep -r` over .claude/ is NOT the test: the .bak satisfies it
+          # whether or not the live config kept anything.
           printf '\nX4_NEXUS_KEY="CI_MARKER"\n' >> "$TK/.claude/x4-paths.env"
-          bash install.sh --method separate --toolkit "$TK" --yes
-          grep -rq CI_MARKER "$TK/.claude/" || {
-            echo "a re-install destroyed the user config with no backup"; exit 1; }
+          bash install.sh --method separate --toolkit "$TK" --over-existing --yes
+          grep -q CI_MARKER "$TK/.claude/x4-paths.env" || {
+            echo "a re-install reverted the LIVE user config"; exit 1; }
           echo "installer smoke OK"
 
       - name: Install for real (PowerShell) and check the artifacts
@@ -145,10 +158,23 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $tk = Join-Path $env:RUNNER_TEMP 'tk-ps'
           & .\install.ps1 -Method separate -Toolkit $tk -Yes
-          if (-not (Test-Path -LiteralPath (Join-Path $tk '.claude\x4-paths.env'))) {
-            Write-Error 'no x4-paths.env' }
-          if (-not (Test-Path -LiteralPath (Join-Path $tk 'mods'))) {
-            Write-Error 'no mods/ (x4live extension)' }
+          foreach ($p in @('.claude\x4-paths.env','tools\x4validate','mods')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $tk $p))) { Write-Error "missing: $p" }
+          }
+
+          # DIRECTION, mirrored from the bash leg. Two legs claiming to test the same
+          # contract while testing different things is how a released claim goes false
+          # with nothing turning red -- which is exactly what happened to the config
+          # backup: fixed in bash, absent in PowerShell, and the CHANGELOG said "both".
+          & .\install.ps1 -Method separate -Toolkit $tk -Yes
+          if ($LASTEXITCODE -eq 0) { Write-Error 'installing over an existing install was ALLOWED without -OverExisting' }
+
+          Add-Content -LiteralPath (Join-Path $tk '.claude\x4-paths.env') -Value 'X4_NEXUS_KEY="CI_MARKER"'
+          & .\install.ps1 -Method separate -Toolkit $tk -OverExisting -Yes
+          if ($LASTEXITCODE -ne 0) { Write-Error 'the -OverExisting upgrade failed' }
+          if (-not ((Get-Content -Raw -LiteralPath (Join-Path $tk '.claude\x4-paths.env')) -match 'CI_MARKER')) {
+            Write-Error 'a re-install reverted the LIVE user config'
+          }
           Write-Host 'installer smoke OK'
 
       # -rs NAMES every skip, and the budget makes a silent-skip regression LOUD.

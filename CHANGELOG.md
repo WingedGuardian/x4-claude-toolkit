@@ -47,11 +47,68 @@ fallback — and for java and wine, which are optional.
   deleted `.claude/settings.local.json` and `.claude/x4-paths.env` — the file
   `setup.sh` itself tells you to keep `X4_NEXUS_KEY` in — and `setup.sh` then logged
   the recreation as `[ok] created ... from example`, so the run read as though nothing
-  had been touched. MEASURED with planted markers: gone after a second install. They
-  are now backed up to `<name>.bak-<timestamp>` and the run says so.
+  had been touched. MEASURED with planted markers: gone after a second install.
+
+  ⚠ The first attempt at this fix, earlier the same day, was **wrong in two ways**
+  and is corrected below: it was applied to `install.sh` only while the entry claimed
+  “both”, and its backup ran **after** the copy had already overwritten the file, so
+  the `.bak` held the SOURCE machine's config while the run printed “kept your
+  existing”. Both are fixed and covered by tests on each installer.
 * **`--help` printed live shell source** (`sed -n '2,16p'` over a header ending at
   line 12), and a flag given with no value died with `install.sh: line 44: $2: unbound
   variable` instead of a usage message.
+
+### ⚠ Changed — installing over an existing installation now requires DIRECTION
+
+**This is a behaviour change, and it is deliberate.** Upgrading in place now needs
+`--over-existing` (`-OverExisting` on PowerShell). Without it the installer refuses,
+names what it found, and tells you what to type.
+
+The rule is the user's, after an installer overwrote seven files in a live game folder:
+*a new install must not proceed over an existing one without strict user DIRECTION —
+not merely approval.* A prompt can be clicked through; a flag has to be typed.
+
+What happened, MEASURED: `install.sh --method in-game --yes` with no `--game` wrote
+**1,642 files** into a real Steam install and exited 0. Every `X4_*` variable had been
+cleared first and none of it mattered — `steam_roots()` is hardcoded, so detection found
+the game directly, and `--yes` accepted that destination without ever printing it. A
+145 KB `CLAUDE.md` and a 631 KB `KNOWLEDGEBASE.md` were among the casualties, recovered
+only from a Volume Shadow Copy taken 22 minutes earlier.
+
+Four changes, each with a test on both installers:
+
+* **An auto-detected destination is refused under `--yes`.** Nobody named it and nobody
+  is watching. Name it with `--game`/`--toolkit`, or run interactively.
+* **An existing installation is refused without `--over-existing`.** In interactive mode
+  too — that is the difference between direction and approval.
+* **The destination is printed before the first write**, in every mode.
+* **`--dry-run`** prints the destination and the item list and writes nothing.
+
+### Fixed — the config backup ran AFTER the copy that destroyed it
+
+`copy_toolkit` took its backup below the copy loop, and `cp -r "$SRC/.claude"` had
+already overwritten the destination's config by then. So the `.bak` preserved the
+SOURCE machine's file, the user's was gone from every file, and the run printed
+`[note] kept your existing x4-paths.env` — a reassurance that fires exactly when the
+thing it names has been destroyed.
+
+Reachable whenever the source tree carries its own config, which is what any toolkit
+folder someone has run `setup.sh` in looks like. The first fix's own test missed it
+because a `git archive` source has no `x4-paths.env` — it is gitignored.
+
+Now: the backup is taken **before** the copy, and the user's file is **restored**
+afterwards rather than deleted. `write_paths_env` also **carries over keys it does not
+own**, so `X4_NEXUS_KEY` survives in the LIVE file instead of only in a `.bak` nobody
+opens — and it **verifies the artifact**, refusing to report success if bash cannot
+source what it just wrote. A path ending in a separator used to produce
+`X4_TOOLKIT="C:\path\"`, whose quote never closes: every `X4_*` came out unset while
+the installer said `install complete`.
+
+**A virtualenv no longer travels.** `uv` hardlinks package files from a shared cache, so
+once source and destination have each been synced the same file has the same inode in
+both — and a recursive copy aborts with *"are the same file"*, 1,334 times, part way
+through, leaving a half-copied destination and (because `set -e` kills the script there)
+no backup at all.
 
 ### Fixed — `bin/unpack-reference.sh` never checked its own lock
 

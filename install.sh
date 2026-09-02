@@ -15,7 +15,11 @@ set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # repo / toolkit source
 
 # --- defaults (overridable by flags / env) ---------------------------------
-METHOD=""; ASSUME_YES=0; DO_UNPACK=0
+METHOD=""; ASSUME_YES=0; DO_UNPACK=0; OVER_EXISTING=0; DRY_RUN=0
+#: Did a HUMAN name the destination, or did we find it by scanning? Recorded at
+#: parse time: an env var is a deliberate act, a Steam-folder scan is not.
+GAME_NAMED=$([ -n "${X4_GAME:-}" ] && echo named || echo detected)
+TOOLKIT_NAMED=$([ -n "${X4_TOOLKIT:-}" ] && echo named || echo detected)
 GAME="${X4_GAME:-}"; PROFILE="${X4_PROFILE:-}"; TOOLKIT="${X4_TOOLKIT:-}"
 MODS="${X4_MODS:-}"; REFERENCE="${X4_REFERENCE:-}"; EXTENSIONS="${X4_EXTENSIONS:-}"
 XRCAT="${XRCATTOOL:-}"
@@ -35,7 +39,10 @@ Usage: bash install.sh --method in-game|separate|global [options]
   --extensions DIR   live deploy target (default <game>/extensions)
   --xrcattool PATH   XRCatTool.exe location
   --unpack           also unpack reference/ now (needs --game + XRCatTool [+wine])
-  --yes              don't prompt; accept detected/blank values
+  --over-existing    REQUIRED to install over an existing installation
+  --dry-run          print the destination and the item list; write nothing
+  --yes              don't prompt; accept detected/blank values (never a
+                     detected DESTINATION -- name that with --game/--toolkit)
   -h, --help         this help
 USAGE
 }
@@ -50,13 +57,15 @@ need2() {
 while [ $# -gt 0 ]; do
   case "$1" in
     --method) need2 "$1" $#; METHOD="$2"; shift 2;;
-    --game) need2 "$1" $#; GAME="$2"; shift 2;;
+    --game) need2 "$1" $#; GAME="$2"; GAME_NAMED=named; shift 2;;
     --profile) need2 "$1" $#; PROFILE="$2"; shift 2;;
-    --toolkit) need2 "$1" $#; TOOLKIT="$2"; shift 2;;
+    --toolkit) need2 "$1" $#; TOOLKIT="$2"; TOOLKIT_NAMED=named; shift 2;;
     --mods) need2 "$1" $#; MODS="$2"; shift 2;;
     --reference) need2 "$1" $#; REFERENCE="$2"; shift 2;;
     --extensions) need2 "$1" $#; EXTENSIONS="$2"; shift 2;;
     --xrcattool) need2 "$1" $#; XRCAT="$2"; shift 2;;
+    --over-existing) OVER_EXISTING=1; shift;;
+    --dry-run) DRY_RUN=1; shift;;
     --unpack) DO_UNPACK=1; shift;;
     --yes|-y) ASSUME_YES=1; shift;;
     -h|--help) usage; exit 0;;
@@ -136,8 +145,23 @@ detect_xrcat() {
 
 MISSING=""
 copy_toolkit() {  # copy_toolkit DEST  — copy tracked toolkit files (never game data / local config)
-  local dest="$1"; mkdir -p "$dest"
+  local dest="$1"; mkdir -p "$dest/.claude"
   local item
+
+  # BEFORE the copy loop, and that ordering IS the fix. `cp -r "$SRC/.claude"`
+  # below overwrites these two, so a backup taken AFTERWARDS preserves the SOURCE
+  # machine's file and reports it as the user's. MEASURED 2026-09-02 against a
+  # source that had itself been set up -- which is what any working toolkit folder
+  # looks like: the destination's X4_NEXUS_KEY was gone from every file, the .bak
+  # held the source's values, and the run printed "kept your existing".
+  # A reassurance that fires exactly when the thing it names has been destroyed is
+  # worse than saying nothing at all.
+  local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
+  local keep
+  for keep in settings.local.json x4-paths.env; do
+    [ -f "$dest/.claude/$keep" ] || continue
+    cp "$dest/.claude/$keep" "$dest/.claude/$keep.bak-$stamp" 2>/dev/null || true
+  done
   # `mods` carries the game extension x4live needs (README: "copy that folder into
   # {game}/extensions/"). Omitting it shipped a documented instruction pointing at a
   # directory the installer never created.
@@ -148,20 +172,35 @@ copy_toolkit() {  # copy_toolkit DEST  — copy tracked toolkit files (never gam
     [ -e "$SRC/$item" ] || { MISSING="$MISSING $item"; continue; }
     cp -r "$SRC/$item" "$dest/"
   done
-  # BACK UP, never delete. These two files are the user's own: x4-paths.env holds the
-  # machine's paths and is where setup.sh tells them to keep X4_NEXUS_KEY, and
-  # settings.local.json is their local overrides. Re-running the installer over an
-  # existing toolkit is the ONLY upgrade path the README offers, and it silently
-  # destroyed both -- while setup.sh logged the recreation as "[ok] created ... from
-  # example", so the run read as though nothing had been touched.
-  local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
-  local keep
+  # A VIRTUALENV MUST NOT TRAVEL. uv hardlinks package files from a shared cache,
+  # so once the source and the destination have each been synced the same file has
+  # the SAME INODE in both -- and `cp -r` then fails with "are the same file", 1,334
+  # times, part way through, leaving a half-copied destination. `set -e` kills the
+  # script there, before the restore below, so there is no backup either.
+  # pyvenv.cfg and the Scripts shims also embed absolute paths, so a copied venv
+  # points back at the source. setup.sh recreates it anyway.
+  for junk in tools/x4validate/.venv tools/x4validate/.pytest_cache \
+              tools/x4validate/.mutation-probe-pristine; do
+    rm -rf "$dest/$junk" 2>/dev/null || true
+  done
+
+  # PUT THE USER'S BACK. Whatever the copy just landed here came from the SOURCE
+  # machine -- its paths, its Nexus key -- and has no business on this one. These
+  # two files are gitignored precisely because they are per-machine.
+  #
+  # PRESERVED, not merely archived. The previous version backed the file up and
+  # then DELETED it, so every upgrade silently reverted the live config and the
+  # user had to know to go looking in a .bak. setup.sh only recreates
+  # settings.local.json when it is ABSENT, so keeping it here is what makes an
+  # upgrade non-destructive rather than merely recoverable.
   for keep in settings.local.json x4-paths.env; do
-    if [ -f "$dest/.claude/$keep" ]; then
-      cp "$dest/.claude/$keep" "$dest/.claude/$keep.bak-$stamp" 2>/dev/null \
-        && echo "  [note] kept your existing $keep as $keep.bak-$stamp"
+    if [ -f "$dest/.claude/$keep.bak-$stamp" ]; then
+      cp "$dest/.claude/$keep.bak-$stamp" "$dest/.claude/$keep"
+      echo "  [note] kept your existing $keep (backup: $keep.bak-$stamp)"
+    else
+      # Nothing was here before, so anything present now arrived from the source.
+      rm -f "$dest/.claude/$keep" 2>/dev/null || true
     fi
-    rm -f "$dest/.claude/$keep" 2>/dev/null || true
   done
   [ -n "$MISSING" ] && echo "  [note] not in the source, so not copied:$MISSING"
   return 0
@@ -170,18 +209,73 @@ copy_toolkit() {  # copy_toolkit DEST  — copy tracked toolkit files (never gam
 write_paths_env() {  # write_paths_env TOOLKIT_DIR
   local t="$1" f="$1/.claude/x4-paths.env"
   mkdir -p "$1/.claude"
+
+  # A trailing separator is not cosmetic here. The value lands inside a bash
+  # double-quoted string, so a path ending in a backslash writes a line whose quote
+  # never closes; `set -a; . "$cfg"` aborts on it and EVERY X4_* comes out unset while
+  # the installer reports success. Windows tab-completion appends that backslash, and a
+  # drive root is one.
+  _esc_env_value() {
+    local v="$1"
+    v="${v%/}"                       # trailing separator, either dialect
+    v="${v%\\}"
+    v="${v//\\/\\\\}"                # backslashes FIRST, or we double the ones added below
+    v="${v//\"/\\\"}"
+    v="${v//\$/\\\$}"
+    v="${v//\`/\\\`}"
+    printf '%s' "$v"
+  }
+
+  # KEYS THIS FUNCTION DOES NOT OWN ARE CARRIED OVER. setup.sh tells the user to keep
+  # X4_NEXUS_KEY in this file, and the file's own header says "edit freely" -- yet every
+  # upgrade rebuilt it from scratch, so both were silently reverted and the key survived
+  # only in a .bak the user had no reason to open.
+  local owned=" X4_TOOLKIT X4_GAME X4_REFERENCE X4_PROFILE X4_DEBUGLOG X4_MODS X4_EXTENSIONS XRCATTOOL "
+  local carried="" line key
+  if [ -f "$f" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        '#'*|'') continue ;;
+        *=*)     key="${line%%=*}" ;;
+        *)       continue ;;
+      esac
+      case "$owned" in
+        *" $key "*) continue ;;
+      esac
+      carried="$carried$line
+"
+    done < "$f"
+  fi
+
   {
-    echo "# Written by install.sh ($(date -u +%Y-%m-%dT%H:%MZ)) — edit freely. All paths overridable."
-    echo "X4_TOOLKIT=\"$t\""
-    [ -n "$GAME" ]       && echo "X4_GAME=\"$GAME\""
-    echo "X4_REFERENCE=\"${REFERENCE:-$t/reference}\""
-    [ -n "$PROFILE" ]    && echo "X4_PROFILE=\"$PROFILE\""
-    [ -n "$PROFILE" ]    && echo "X4_DEBUGLOG=\"$PROFILE/debug.txt\""
-    [ -n "$MODS" ]       && echo "X4_MODS=\"$MODS\""
-    echo "X4_EXTENSIONS=\"${EXTENSIONS:-${GAME:+$GAME/extensions}}\""
-    [ -n "$XRCAT" ]      && echo "XRCATTOOL=\"$XRCAT\""
+    echo "# Written by install.sh ($(date -u +%Y-%m-%dT%H:%MZ)) - edit freely. All paths overridable."
+    echo "X4_TOOLKIT=\"$(_esc_env_value "$t")\""
+    [ -n "$GAME" ]    && echo "X4_GAME=\"$(_esc_env_value "$GAME")\""
+    echo "X4_REFERENCE=\"$(_esc_env_value "${REFERENCE:-$t/reference}")\""
+    [ -n "$PROFILE" ] && echo "X4_PROFILE=\"$(_esc_env_value "$PROFILE")\""
+    [ -n "$PROFILE" ] && echo "X4_DEBUGLOG=\"$(_esc_env_value "$PROFILE")/debug.txt\""
+    [ -n "$MODS" ]    && echo "X4_MODS=\"$(_esc_env_value "$MODS")\""
+    echo "X4_EXTENSIONS=\"$(_esc_env_value "${EXTENSIONS:-${GAME:+$GAME/extensions}}")\""
+    [ -n "$XRCAT" ]   && echo "XRCATTOOL=\"$(_esc_env_value "$XRCAT")\""
+    if [ -n "$carried" ]; then
+      echo "# --- carried over from your previous x4-paths.env ---"
+      printf '%s' "$carried"
+    fi
   } > "$f"
+
+  # VERIFY THE ARTIFACT, never the exit code. A config bash cannot source is exactly the
+  # failure the escaping above exists to prevent, and proving it costs one subshell --
+  # the same rule this installer already applies to the jq merge.
+  if ! ( set -a; . "$f" ) >/dev/null 2>&1; then
+    echo "ERROR: wrote $f but bash cannot SOURCE it, so every X4_* would come out unset." >&2
+    echo "       Refusing to report success. This is a quoting fault in one of the paths." >&2
+    return 1
+  fi
   echo "  wrote $f"
+  if [ -n "$carried" ]; then
+    echo "  [note] carried over $(printf '%s' "$carried" | grep -c .) setting(s) you had added"
+  fi
+  return 0
 }
 
 install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env into settings.json
@@ -276,6 +370,87 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
   echo "  merged X4_* env into $sj"
 }
 
+# --- writing somewhere needs DIRECTION, not inference -----------------------
+#
+# MEASURED 2026-09-02: `install.sh --method in-game --yes` with no --game wrote 1,642
+# files into a real Steam install and exited 0. Every X4_* variable had been cleared
+# first and none of it mattered -- steam_roots() is hardcoded, so detection found the
+# game directly, and --yes accepted that destination without ever printing it. Seven
+# personal files were overwritten, including a 145 KB CLAUDE.md and a 631 KB
+# KNOWLEDGEBASE.md. They were recovered from a Volume Shadow Copy: luck, not design.
+#
+# The rule (user-set, and stronger than "prompt first"): a new install must not proceed
+# over an EXISTING install without strict user DIRECTION -- a flag naming the intent --
+# not merely an approval the user can click through. And a destination the user never
+# named is not a destination at all when nobody is there to read the prompt.
+
+#: Does this directory already hold a toolkit? Any one marker is enough; they are the
+#: things an install would overwrite.
+looks_installed() {
+  local d="$1"
+  [ -e "$d/.claude/hooks/protect-bash.sh" ] && return 0
+  [ -e "$d/tools/x4validate" ]              && return 0
+  [ -e "$d/CLAUDE.md" ]                     && return 0
+  [ -e "$d/KNOWLEDGEBASE.md" ]              && return 0
+  return 1
+}
+
+#: require_direction DEST WHAT_NAMED_IT
+#: Called immediately before the first write of every method.
+require_direction() {
+  local dest="$1" named="$2"
+
+  # (a) Nobody named it AND nobody is watching. `--yes` is documented as "accept
+  #     detected values", which is fine for a profile path and is not fine for the
+  #     directory about to be written to in bulk.
+  if [ "$named" = "detected" ] && [ "$ASSUME_YES" = 1 ]; then
+    echo "REFUSING: --yes with an auto-detected destination." >&2
+    echo "  Detected: $dest" >&2
+    echo "  Nothing named that path -- it came from scanning the usual Steam locations," >&2
+    echo "  and --yes means no one will see this before the write starts." >&2
+    echo "  Name it explicitly:  --game \"$dest\"   (or --toolkit for separate/global)" >&2
+    exit 2
+  fi
+
+  # (b) Something is already installed there. A flag is the direction; a prompt is not.
+  if looks_installed "$dest" && [ "$OVER_EXISTING" != 1 ]; then
+    echo "REFUSING: there is already an installation at the destination." >&2
+    echo "  Destination: $dest" >&2
+    echo "  Found:" >&2
+    for m in .claude/hooks/protect-bash.sh tools/x4validate CLAUDE.md KNOWLEDGEBASE.md; do
+      [ -e "$dest/$m" ] && echo "      $m" >&2
+    done
+    echo >&2
+    echo "  Installing over it REPLACES those files. If any of them are yours -- an" >&2
+    echo "  edited CLAUDE.md, your own KNOWLEDGEBASE.md, customised skills -- they are" >&2
+    echo "  gone, and only .claude/x4-paths.env and settings.local.json are preserved." >&2
+    echo >&2
+    echo "  To upgrade it anyway, say so explicitly:" >&2
+    echo "      bash install.sh --method $METHOD --over-existing ..." >&2
+    exit 2
+  fi
+}
+
+#: announce_target DEST -- say what is about to happen, before it happens.
+announce_target() {
+  local dest="$1"
+  echo
+  echo "  About to write the toolkit into:"
+  echo "      $dest"
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "  --dry-run: nothing will be written. Items that would be copied:"
+    local item
+    for item in .claude tools bin scripts mods CLAUDE.md KNOWLEDGEBASE.md README.md \
+                CHANGELOG.md LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt \
+                .gitignore .gitattributes; do
+      [ -e "$SRC/$item" ] && echo "      $item"
+    done
+    echo
+    echo "=== dry run complete: nothing was changed ==="
+    exit 0
+  fi
+}
+
 # --- choose method ---------------------------------------------------------
 if [ -z "$METHOD" ]; then
   echo; echo "Install method:"; echo "  1) in-game    2) separate    3) global (multi-repo)"
@@ -295,13 +470,23 @@ case "$METHOD" in
   in-game)
     [ -n "$GAME" ] || { echo "ERROR: in-game needs --game"; exit 1; }
     TOOLKIT="$GAME"
-    [ "$SRC" = "$TOOLKIT" ] || copy_toolkit "$TOOLKIT"
+    # Only when a COPY would actually happen. Re-running from inside the toolkit
+    # folder overwrites nothing, so it needs no direction.
+    if [ "$SRC" != "$TOOLKIT" ]; then
+      require_direction "$TOOLKIT" "$GAME_NAMED"
+      announce_target "$TOOLKIT"
+      copy_toolkit "$TOOLKIT"
+    fi
     write_paths_env "$TOOLKIT"
     ;;
   separate)
     [ -n "$TOOLKIT" ] || TOOLKIT="$SRC"
     ask TOOLKIT "Toolkit folder" "$TOOLKIT"
-    [ "$SRC" = "$TOOLKIT" ] || copy_toolkit "$TOOLKIT"
+    if [ "$SRC" != "$TOOLKIT" ]; then
+      require_direction "$TOOLKIT" "$TOOLKIT_NAMED"
+      announce_target "$TOOLKIT"
+      copy_toolkit "$TOOLKIT"
+    fi
     write_paths_env "$TOOLKIT"
     ;;
   global)

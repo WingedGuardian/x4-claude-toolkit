@@ -22,11 +22,16 @@ param(
   [ValidateSet('in-game','separate','global')] [string]$Method,
   [string]$Game, [string]$Profile, [string]$Toolkit, [string]$Mods,
   [string]$Reference, [string]$Extensions, [string]$XRCatTool,
-  [switch]$Unpack, [switch]$Yes
+  [switch]$Unpack, [switch]$Yes, [switch]$OverExisting, [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
 $SRC = Split-Path -Parent $MyInvocation.MyCommand.Path
 Write-Host "X4 Claude Toolkit installer (Windows) - source: $SRC"
+
+# Did a HUMAN name the destination, or did we find it by scanning? An explicit
+# switch or an env var is a deliberate act; a Steam-folder scan is not.
+$GameNamed    = if ($Game)    { 'named' } elseif ($env:X4_GAME)    { 'named' } else { 'detected' }
+$ToolkitNamed = if ($Toolkit) { 'named' } elseif ($env:X4_TOOLKIT) { 'named' } else { 'detected' }
 
 # env fallbacks
 if (-not $Game)      { $Game      = $env:X4_GAME }
@@ -88,7 +93,29 @@ function Detect-XRCat {
 }
 
 function Copy-Toolkit($dest) {
-  New-Item -ItemType Directory -Force -Path $dest | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $dest '.claude') | Out-Null
+
+  # BACK UP BEFORE THE COPY, and that ordering IS the fix. The Copy-Item loop below
+  # overwrites .claude wholesale, so anything saved afterwards is the SOURCE machine's
+  # file being reported as the user's. MEASURED on the bash side against a source that
+  # had itself been set up -- the destination's X4_NEXUS_KEY was gone from every file
+  # while the run printed "kept your existing".
+  #
+  # This side had no backup at all: it ended with a bare Remove-Item of both files, no
+  # copy, no message, exit 0. Windows is the platform this toolkit targets, and
+  # install.ps1 is the README's own Windows command.
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $keeps = @('settings.local.json','x4-paths.env')
+  $saved = @{}
+  foreach ($k in $keeps) {
+    $live = Join-Path $dest (Join-Path '.claude' $k)
+    if (Test-Path -LiteralPath $live) {
+      $bak = "$live.bak-$stamp"
+      Copy-Item -Force -LiteralPath $live -Destination $bak
+      $saved[$k] = $bak
+    }
+  }
+
   # 'mods' carries the game extension x4live needs (README: "copy that folder into
   # {game}/extensions/"). Omitting it shipped a documented instruction pointing at a
   # directory the installer never created.
@@ -114,27 +141,185 @@ function Copy-Toolkit($dest) {
   if ($missing.Count) {
     Write-Host ("  [note] not in the source, so not copied: " + ($missing -join ", "))
   }
-  Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath (Join-Path $dest '.claude\settings.local.json'),(Join-Path $dest '.claude\x4-paths.env')
+
+  # A VIRTUALENV MUST NOT TRAVEL. uv hardlinks package files from a shared cache, so
+  # once both trees have been synced independently the same file has the same inode in
+  # each -- and a recursive copy then fails with "are the same file", 1,334 times, part
+  # way through. pyvenv.cfg and the Scripts shims also embed absolute paths, so a copied
+  # venv points back at the source. setup.sh recreates it anyway.
+  foreach ($junk in @('tools\x4validate\.venv','tools\x4validate\.pytest_cache','tools\x4validate\.mutation-probe-pristine')) {
+    $p = Join-Path $dest $junk
+    if (Test-Path -LiteralPath $p) { Remove-Item -Recurse -Force -LiteralPath $p -ErrorAction SilentlyContinue }
+  }
+
+  # PUT THE USER'S BACK. Whatever the copy just landed came from the SOURCE machine --
+  # its paths, its Nexus key -- and has no business on this one. PRESERVED, not merely
+  # archived: setup.sh only recreates settings.local.json when it is ABSENT, so keeping
+  # it here is what makes an upgrade non-destructive rather than merely recoverable.
+  foreach ($k in $keeps) {
+    $live = Join-Path $dest (Join-Path '.claude' $k)
+    if ($saved.ContainsKey($k)) {
+      Copy-Item -Force -LiteralPath $saved[$k] -Destination $live
+      Write-Host ("  [note] kept your existing $k (backup: " + (Split-Path $saved[$k] -Leaf) + ")")
+    } elseif (Test-Path -LiteralPath $live) {
+      # Nothing was here before, so anything present now arrived from the source.
+      Remove-Item -Force -LiteralPath $live -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+# MOVED ABOVE THE DISPATCH. PowerShell defines a function when execution REACHES
+# it, so this sitting below `switch ($Method)` meant Write-PathsEnv's
+# can-bash-source-this check called a name that did not exist yet and the install
+# died with CommandNotFoundException after the copy.
+function Find-GitBash {
+  $cands = @()
+  foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)},
+                      (Join-Path $env:LOCALAPPDATA 'Programs'))) {
+    if ($base) { $cands += (Join-Path $base 'Git\bin\bash.exe') }
+  }
+  foreach ($c in $cands) { if (Test-Path -LiteralPath $c) { return (Get-Command $c) } }
+  # Fall back to PATH, but never to a WSL stub.
+  foreach ($c in @(Get-Command bash -All -ErrorAction SilentlyContinue)) {
+    $p = $c.Source
+    if ($p -and $p -notmatch '\\(System32|SysWOW64|WindowsApps)\\') { return $c }
+  }
+  return $null
+}
+
+function Get-EscapedEnvValue($v) {
+  # The value lands inside a bash DOUBLE-QUOTED string, so a trailing separator is not
+  # cosmetic: X4_TOOLKIT="C:\path\" never closes its quote, `set -a; . "$cfg"` aborts on
+  # it, and EVERY X4_* comes out unset while this installer reports success. Windows
+  # tab-completion appends that backslash, and a drive root IS one.
+  # MEASURED: with a trailing separator the sourced config yielded X4_GAME, X4_REFERENCE
+  # and X4_EXTENSIONS all UNSET, exit 0, "=== install complete ===".
+  if ($null -eq $v) { return '' }
+  $v = ([string]$v).TrimEnd('/','\')
+  $v = $v.Replace('\','\\')      # backslashes FIRST, or we double the ones added below
+  $v = $v.Replace('"','\"')
+  $v = $v.Replace('$','\$')
+  $v = $v.Replace('`','\`')
+  return $v
 }
 
 function Write-PathsEnv($t) {
   $dir = Join-Path $t '.claude'; New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $f = Join-Path $dir 'x4-paths.env'
   $ref = if ($Reference) { $Reference } else { Join-Path $t 'reference' }
   $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-Path $Game 'extensions' } else { '' }
+
+  # KEYS THIS FUNCTION DOES NOT OWN ARE CARRIED OVER. setup.sh tells the user to keep
+  # X4_NEXUS_KEY in this file and its own header says "edit freely", yet every upgrade
+  # rebuilt it from scratch -- so the key survived only in a .bak nobody opens.
+  $owned = @('X4_TOOLKIT','X4_GAME','X4_REFERENCE','X4_PROFILE','X4_DEBUGLOG','X4_MODS','X4_EXTENSIONS','XRCATTOOL')
+  $carried = @()
+  if (Test-Path -LiteralPath $f) {
+    foreach ($line in (Get-Content -LiteralPath $f)) {
+      if ($line -match '^\s*#' -or $line -notmatch '=') { continue }
+      $key = ($line -split '=', 2)[0].Trim()
+      if ($owned -notcontains $key) { $carried += $line }
+    }
+  }
+
   $lines = @("# Written by install.ps1 ($(Get-Date -Format s)) - edit freely. All paths overridable.",
-             "X4_TOOLKIT=`"$t`"")
-  if ($Game)      { $lines += "X4_GAME=`"$Game`"" }
-  $lines += "X4_REFERENCE=`"$ref`""
-  if ($Profile)   { $lines += "X4_PROFILE=`"$Profile`""; $lines += "X4_DEBUGLOG=`"$Profile\debug.txt`"" }
-  if ($Mods)      { $lines += "X4_MODS=`"$Mods`"" }
-  if ($ext)       { $lines += "X4_EXTENSIONS=`"$ext`"" }
-  if ($XRCatTool) { $lines += "XRCATTOOL=`"$XRCatTool`"" }
-  $f = Join-Path $dir 'x4-paths.env'
+             ('X4_TOOLKIT="' + (Get-EscapedEnvValue $t) + '"'))
+  if ($Game)      { $lines += ('X4_GAME="' + (Get-EscapedEnvValue $Game) + '"') }
+  $lines += ('X4_REFERENCE="' + (Get-EscapedEnvValue $ref) + '"')
+  if ($Profile)   { $lines += ('X4_PROFILE="' + (Get-EscapedEnvValue $Profile) + '"')
+                    $lines += ('X4_DEBUGLOG="' + (Get-EscapedEnvValue (Join-Path $Profile 'debug.txt')) + '"') }
+  if ($Mods)      { $lines += ('X4_MODS="' + (Get-EscapedEnvValue $Mods) + '"') }
+  if ($ext)       { $lines += ('X4_EXTENSIONS="' + (Get-EscapedEnvValue $ext) + '"') }
+  if ($XRCatTool) { $lines += ('XRCATTOOL="' + (Get-EscapedEnvValue $XRCatTool) + '"') }
+  if ($carried.Count) {
+    $lines += '# --- carried over from your previous x4-paths.env ---'
+    $lines += $carried
+  }
+
   # UTF-8 WITHOUT BOM, LF endings: this file is sourced by bash (set -euo pipefail),
   # and Windows PowerShell 5.1's -Encoding UTF8 writes a BOM that bash reads as a
   # command ("command not found" on line 1, exit 127 before any path resolves).
   Write-Utf8NoBom $f (($lines -join "`n") + "`n")
+
+  # VERIFY THE ARTIFACT, never the exit code. A config bash cannot source is exactly
+  # what the escaping above exists to prevent, and proving it costs one bash call --
+  # the same rule this installer already applies to the jq merge. Skipped, loudly, only
+  # when there is no bash to ask.
+  $bash = Find-GitBash
+  if ($bash) {
+    $probe = & $bash -c 'set -a; . "$1"' _ (($f -replace '\\','/')) 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "ERROR: wrote $f but bash cannot SOURCE it, so every X4_* would come out unset." -ForegroundColor Red
+      Write-Host "       Refusing to report success. This is a quoting fault in one of the paths." -ForegroundColor Red
+      Write-Host ("       bash said: " + ($probe -join ' ')) -ForegroundColor Red
+      exit 1
+    }
+  } else {
+    Write-Host "  [warn] no bash found, so $f was NOT verified as sourceable"
+  }
   Write-Host "  wrote $f"
+  if ($carried.Count) { Write-Host ("  [note] carried over " + $carried.Count + " setting(s) you had added") }
+}
+
+function Test-LooksInstalled($d) {
+  foreach ($m in @('.claude\hooks\protect-bash.sh','tools\x4validate','CLAUDE.md','KNOWLEDGEBASE.md')) {
+    if (Test-Path -LiteralPath (Join-Path $d $m)) { return $true }
+  }
+  return $false
+}
+
+function Assert-Direction($dest, $named) {
+  # MEASURED 2026-09-02 on the bash side: an install with an auto-detected destination
+  # and -Yes wrote 1,642 files into a real Steam install and exited 0. Every X4_*
+  # variable had been cleared first and none of it mattered, because the Steam path is
+  # HARDCODED. Seven personal files were overwritten, including a 145 KB CLAUDE.md and a
+  # 631 KB KNOWLEDGEBASE.md, recovered only from a Volume Shadow Copy.
+  #
+  # The rule (user-set): a new install must not proceed over an EXISTING install without
+  # strict DIRECTION -- a switch naming the intent -- not merely an approval that can be
+  # clicked through. And a destination nobody named is not a destination at all when
+  # nobody is watching.
+  if ($named -eq 'detected' -and $Yes) {
+    Write-Host "REFUSING: -Yes with an auto-detected destination." -ForegroundColor Red
+    Write-Host "  Detected: $dest" -ForegroundColor Red
+    Write-Host "  Nothing named that path - it came from scanning the usual Steam locations," -ForegroundColor Red
+    Write-Host "  and -Yes means no one will see this before the write starts." -ForegroundColor Red
+    Write-Host "  Name it explicitly:  -Game `"$dest`"   (or -Toolkit for separate/global)" -ForegroundColor Red
+    exit 2
+  }
+  if ((Test-LooksInstalled $dest) -and -not $OverExisting) {
+    Write-Host "REFUSING: there is already an installation at the destination." -ForegroundColor Red
+    Write-Host "  Destination: $dest" -ForegroundColor Red
+    Write-Host "  Found:" -ForegroundColor Red
+    foreach ($m in @('.claude\hooks\protect-bash.sh','tools\x4validate','CLAUDE.md','KNOWLEDGEBASE.md')) {
+      if (Test-Path -LiteralPath (Join-Path $dest $m)) { Write-Host "      $m" -ForegroundColor Red }
+    }
+    Write-Host "" -ForegroundColor Red
+    Write-Host "  Installing over it REPLACES those files. If any of them are yours - an" -ForegroundColor Red
+    Write-Host "  edited CLAUDE.md, your own KNOWLEDGEBASE.md, customised skills - they are" -ForegroundColor Red
+    Write-Host "  gone, and only .claude\x4-paths.env and settings.local.json are preserved." -ForegroundColor Red
+    Write-Host "" -ForegroundColor Red
+    Write-Host "  To upgrade it anyway, say so explicitly:" -ForegroundColor Red
+    Write-Host "      .\install.ps1 -Method $Method -OverExisting ..." -ForegroundColor Red
+    exit 2
+  }
+}
+
+function Show-Target($dest) {
+  Write-Host ""
+  Write-Host "  About to write the toolkit into:"
+  Write-Host "      $dest"
+  if ($DryRun) {
+    Write-Host "  -DryRun: nothing will be written. Items that would be copied:"
+    foreach ($i in @('.claude','tools','bin','scripts','mods','CLAUDE.md','KNOWLEDGEBASE.md','README.md',
+                     'CHANGELOG.md','LICENSE','setup.sh','install.sh','install.ps1','SETUP_PROMPT.txt',
+                     '.gitignore','.gitattributes')) {
+      if (Test-Path -LiteralPath (Join-Path $SRC $i)) { Write-Host "      $i" }
+    }
+    Write-Host ""
+    Write-Host "=== dry run complete: nothing was changed ==="
+    exit 0
+  }
 }
 
 function Install-Global($t) {
@@ -206,13 +391,13 @@ switch ($Method) {
   'in-game'  {
     if (-not $Game) { throw 'in-game needs -Game' }
     $Toolkit = $Game
-    if ($SRC -ne $Toolkit) { Copy-Toolkit $Toolkit }
+    if ($SRC -ne $Toolkit) { Assert-Direction $Toolkit $GameNamed; Show-Target $Toolkit; Copy-Toolkit $Toolkit }
     Write-PathsEnv $Toolkit
   }
   'separate' {
     if (-not $Toolkit) { $Toolkit = $SRC }
     $Toolkit = Ask $Toolkit 'Toolkit folder' $Toolkit
-    if ($SRC -ne $Toolkit) { Copy-Toolkit $Toolkit }
+    if ($SRC -ne $Toolkit) { Assert-Direction $Toolkit $ToolkitNamed; Show-Target $Toolkit; Copy-Toolkit $Toolkit }
     Write-PathsEnv $Toolkit
   }
   'global'   {
@@ -234,20 +419,7 @@ switch ($Method) {
 # silent wrong install rather than a loud failure.
 #
 # So: prefer a real Git Bash, and refuse the known stubs by path.
-function Find-GitBash {
-  $cands = @()
-  foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)},
-                      (Join-Path $env:LOCALAPPDATA 'Programs'))) {
-    if ($base) { $cands += (Join-Path $base 'Git\bin\bash.exe') }
-  }
-  foreach ($c in $cands) { if (Test-Path -LiteralPath $c) { return (Get-Command $c) } }
-  # Fall back to PATH, but never to a WSL stub.
-  foreach ($c in @(Get-Command bash -All -ErrorAction SilentlyContinue)) {
-    $p = $c.Source
-    if ($p -and $p -notmatch '\\(System32|SysWOW64|WindowsApps)\\') { return $c }
-  }
-  return $null
-}
+
 $bash = Find-GitBash
 $failed = @()
 if ($bash) {

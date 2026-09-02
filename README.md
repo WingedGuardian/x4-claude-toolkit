@@ -293,7 +293,17 @@ are often run from the game folder, which has a `.claude/` but no `x4-paths.env`
 ### Install methods (`install.sh` / `install.ps1`)
 One guided installer, three layouts — pick what fits. Every path is auto-detected where
 possible and overridable (`--game`, `--profile`, `--toolkit`, `--mods`, `--reference`,
-`--extensions`, `--xrcattool`; `--unpack` to build `reference/` immediately; `--yes` non-interactive).
+`--extensions`, `--xrcattool`; `--unpack` to build `reference/` immediately; `--yes` non-interactive;
+`--dry-run` to see the destination and item list without writing).
+
+> **Upgrading an existing install needs `--over-existing`** (`-OverExisting` on PowerShell).
+> Without it the installer refuses, names what it found, and tells you what to type. Installing
+> over a toolkit REPLACES `CLAUDE.md`, `KNOWLEDGEBASE.md`, the skills and the agents — so if you
+> have edited any of those, they are what you would lose. Only `.claude/x4-paths.env` and
+> `.claude/settings.local.json` are preserved (backed up, and kept in place).
+>
+> `--yes` will also refuse an **auto-detected** destination: nothing named it and nobody is
+> watching, so name it with `--game` or `--toolkit`.
 The chosen paths are written to `<toolkit>/.claude/x4-paths.env`.
 
 | Method | What it does | When to use |
