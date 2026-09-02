@@ -65,11 +65,20 @@ def cmd_dump(path: str | None, out=None) -> int:
         print(f"    {kind:<18} {n:>6}", file=out)
     total = sum(d.kinds.values())
     print(f"    {'TOTAL':<18} {total:>6}", file=out)
-    if not d.accounts_for_every_row():
-        print("  !! row kinds do not sum to the row count - unexplained remainder",
-              file=out)
+    # This branch was UNREACHABLE until 2026-09-02: accounts_for_every_row() compared
+    # a Counter built from `rows` against len(rows), so it was true by construction and
+    # the reassurance below printed unconditionally. It now asks whether every row's
+    # KIND is one this toolkit models -- a question that can genuinely be answered no.
+    unknown = d.unknown_kinds()
+    if unknown:
+        named = ", ".join(f"{k} x{n}" for k, n in sorted(unknown.items()))
+        print(f"  !! {sum(unknown.values())} row(s) carry a kind this toolkit does not "
+              f"model: {named}", file=out)
+        print("     The probe emitted something we have no reader for. That is a lead "
+              "about a newer probe, not a corrupt dump.", file=out)
         return 3
-    print("  every row is accounted for by a kind; no remainder.", file=out)
+    print(f"  every row is one of the {len(_livedump.KNOWN_KINDS)} known kinds; "
+          "no unexplained remainder.", file=out)
 
     st = d.one("ERR_STATUS")
     if st and len(st) > 2:
@@ -1772,6 +1781,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "ramp":
             return cmd_ramp(args.pipe, args.timeout)
         return cmd_mappings(args.file, groundtruth=args.from_groundtruth)
+    except _livedump.LiveDumpFatal as exc:
+        # rc 3, and its OWN message. The probe ran and died and recorded why; without
+        # this clause that frame fell to the truncation branch and the user was told
+        # the dump was cut short and "the true length is unknown" -- a guess about the
+        # transport, printed over the probe's own account of the failure.
+        #
+        # Listed BEFORE LiveDumpCorrupt on purpose: if the two are ever made to share a
+        # base class, order is what keeps this diagnosis from being swallowed again.
+        print(f"error: {exc}", file=sys.stderr)
+        print("the probe FAILED; this is not a transport problem and re-reading the "
+              "file will not help.", file=sys.stderr)
+        return 3
     except _livedump.LiveDumpCorrupt as exc:
         # rc 3: something was there and cannot be trusted. NOT a clean result.
         print(f"error: {exc}", file=sys.stderr)

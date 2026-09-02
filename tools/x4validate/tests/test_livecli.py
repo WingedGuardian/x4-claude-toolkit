@@ -63,7 +63,7 @@ def test_dump_prints_the_kind_census_and_states_no_remainder(tmp_path, capsys):
     rc = C.main(["--file", write(tmp_path, uidata(good_rows(3))), "dump"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "TOTAL" in out and "every row is accounted for" in out
+    assert "TOTAL" in out and "no unexplained remainder" in out
     assert "SCOPE" in out, "must say what it did NOT capture"
 
 
@@ -581,3 +581,33 @@ def test_the_real_fixtures_BOTH_yield_the_scouts_full_field_set():
             f"{name}: scout has {len(got.get(key, {}))} fields, expected 37")
     if seen == 0:
         pytest.skip("no groundtruth fixtures present in dev/_reports")
+
+
+def test_an_UNMODELLED_row_kind_is_REPORTED_and_fails(tmp_path, capsys):
+    """The twin that was impossible before 2026-09-02.
+
+    `accounts_for_every_row()` compared a Counter built from `rows` against
+    `len(rows)` -- true by construction, MEASURED over 20,000 randomised dumps as
+    never False and never raising. So this whole branch, including its `return 3`,
+    was unreachable, and the reassurance below it printed on every parseable dump.
+    Three tests used the predicate as a control that "must PASS".
+    """
+    # Built so the END row's own count stays right: parse() compares the game's
+    # declared row count against what it parsed, and a mismatch is a DIFFERENT
+    # failure (a corrupt dump) that would shadow the one under test here.
+    rows = good_rows(3)[:-1]
+    rows.append(["WAT_IS_THIS", "some", "payload"])
+    rows.append(["END", str(len(rows) + 1)])
+    rc = C.main(["--file", write(tmp_path, uidata(rows)), "dump"])
+    out = capsys.readouterr().out
+    assert rc == 3, out
+    assert "WAT_IS_THIS x1" in out, out
+    assert "does not model" in out, out
+
+
+def test_a_dump_of_only_KNOWN_kinds_is_clean(tmp_path, capsys):
+    """The other half: a predicate that rejected everything would pass the test above."""
+    rc = C.main(["--file", write(tmp_path, uidata(good_rows(3))), "dump"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "does not model" not in out

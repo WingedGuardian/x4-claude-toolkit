@@ -2315,3 +2315,85 @@ def test_censusprobe_records_an_ABSENT_function_rather_than_crashing(lua_factory
     r = ask(rt, 2, "censusprobe", "ID: 4301", "argon")
     assert r.status == "OK", r.payload[:200]
     assert any(f.startswith("GetContainedSpacesByOwner|ABSENT") for f in r.fields), r.fields
+
+
+# --- the two verbs that never capped (2026-09-02) -----------------------------
+#
+# MEASURED against this harness before the fix: verbs.ext replied with 40,025 bytes
+# and verbs.macro with 40,017, against MAX_PAYLOAD 32,000 -- status OK, nothing
+# capped, no `shown=` anywhere. Three shipped claims said otherwise, including the
+# user-facing content.xml description: "every enumeration caps its own reply and
+# reports how many rows it omitted, because an over-long message does not truncate:
+# it tears the pipe down."
+#
+# grep -n ROW_BUDGET found it at five call sites, none of them these two verbs, and
+# neither verb had a single test at any size.
+
+_BIG_LIB = ('function(lt, n) local t = {} for i = 1, 2000 do '
+            't["key" .. i] = string.rep("D", 40) end return t end')
+
+
+def test_verbs_macro_CAPS_its_reply(lua_factory):
+    rt = live(GetLibraryEntry=_BIG_LIB)
+    r = ask(rt, 1, "macro", "engine", "some_macro")
+    from x4validate import _livepipe as lp
+    assert r.status == "OK", r.payload
+    assert lp.byte_len(r.payload) <= 32000, lp.byte_len(r.payload)
+
+
+def test_verbs_macro_SAYS_how_much_it_omitted(lua_factory):
+    """A cap that does not report is a step that narrows its data and reports success."""
+    rt = live(GetLibraryEntry=_BIG_LIB)
+    r = ask(rt, 1, "macro", "engine", "some_macro")
+    assert "__total=2000" in r.payload, r.payload[-120:]
+    shown = [f for f in r.payload.split(chr(9)) if f.startswith("__shown=")]
+    assert shown, "capped without saying how many were shown"
+    assert 0 < int(shown[0].split("=")[1]) < 2000
+
+
+def test_an_UNCAPPED_macro_reply_carries_NO_marker(lua_factory):
+    """The twin, and it is also a compatibility guarantee: an ordinary reply must be
+    byte-identical to before the cap existed, because _livecli stores this payload
+    verbatim as the `*` row and it feeds the oracle."""
+    rt = live(GetLibraryEntry='function(lt, n) return {alpha = 1, beta = 2} end')
+    r = ask(rt, 1, "macro", "engine", "some_macro")
+    assert r.status == "OK", r.payload
+    assert "__shown=" not in r.payload and "__total=" not in r.payload, r.payload
+
+
+def test_a_single_oversized_PROPERTY_becomes_an_ERR_not_a_pipe_teardown(lua_factory):
+    """The reply() choke point. The single-property branch calls reply directly with
+    no cap of its own, so a fat value reaches it whole -- and an over-long frame does
+    not truncate, it tears the pipe down in both directions."""
+    rt = live(GetLibraryEntry='function(lt, n) return {fat = string.rep("D", 40000)} end')
+    r = ask(rt, 1, "macro", "engine", "some_macro", "fat")
+    assert r.status == "ERR", f"{r.status}: {r.payload[:80]}"
+    assert "reply too large" in r.payload, r.payload[:120]
+    from x4validate import _livepipe as lp
+    assert lp.byte_len(r.payload) <= 32000
+
+
+def test_an_ordinary_PROPERTY_still_comes_back_OK(lua_factory):
+    """The twin: a guard that ERRed on everything would pass the test above."""
+    rt = live(GetLibraryEntry='function(lt, n) return {thin = "ok"} end')
+    r = ask(rt, 1, "macro", "engine", "some_macro", "thin")
+    assert r.status == "OK", r.payload
+    assert r.payload == "ok", r.payload
+
+
+def test_a_pcall_FAILURE_is_ERR_and_keeps_the_message(lua_factory):
+    """"We could not ask" must never be reported as "the engine has nothing here".
+    _livecli counts ABSENT as a real answer, so a harvest that lost answers this way
+    still balanced -- and the result becomes a groundtruth fixture."""
+    rt = live(GetLibraryEntry='function(lt, n) error("boom from the engine") end')
+    r = ask(rt, 1, "macro", "engine", "some_macro")
+    assert r.status == "ERR", f"{r.status}: {r.payload}"
+    assert "boom from the engine" in r.payload, r.payload
+
+
+def test_a_GENUINE_absence_is_still_ABSENT(lua_factory):
+    """The twin. Blanket-changing ABSENT to ERR would make a macro that genuinely does
+    not exist indistinguishable from one we failed to ask about."""
+    rt = live(GetLibraryEntry='function(lt, n) return nil end')
+    r = ask(rt, 1, "macro", "engine", "some_macro")
+    assert r.status == "ABSENT", f"{r.status}: {r.payload}"

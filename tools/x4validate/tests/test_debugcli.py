@@ -254,3 +254,39 @@ def test_archive_never_leaves_a_log_whose_meta_cannot_be_read(tmp_path, monkeypa
     meta = _debugcli.read_archive_meta(out)          # must NOT raise
     assert meta.get("degraded") is True
     assert "fingerprint" in str(meta.get("degraded_reason", "")).lower()
+
+
+def test_the_CONSUMER_survives_a_degraded_meta(tmp_path, monkeypatch, capsys):
+    """The test above proved the ARCHIVE survives. Nothing proved the READER did.
+
+    `archive()` sets its five keys with one `meta.update({...})` inside a try, so any
+    raise leaves NONE of them and records `degraded` instead -- and `main()` read all
+    five unconditionally. REPRODUCED through the real CLI before the fix:
+    `KeyError: 'total_errors'`, an uncaught traceback, immediately after successfully
+    writing the archive. The degraded flag existed precisely so a reader could act on
+    it, and the only reader never looked.
+    """
+    log = tmp_path / "debug.txt"
+    log.write_text("[=ERROR=] something\n", encoding="utf-8")
+
+    def boom(*a, **k):
+        raise RuntimeError("fingerprint unavailable")
+    monkeypatch.setattr(_freshness, "fingerprint", boom)
+
+    rc = _debugcli.main(["baseline", str(log), "--dest", str(tmp_path / "arch")])
+    out = capsys.readouterr().out
+    assert rc == 1, "a baseline that cannot state its fingerprint must not report success"
+    assert "DEGRADED" in out, out
+    assert "fingerprint unavailable" in out, out
+    assert "archived" in out, "the archive was still written and must still be named"
+
+
+def test_a_HEALTHY_baseline_still_reports_rc0(tmp_path, capsys):
+    """The twin: a guard that returned 1 for everything would pass the test above."""
+    log = tmp_path / "debug.txt"
+    log.write_text("[=ERROR=] something\n", encoding="utf-8")
+    rc = _debugcli.main(["baseline", str(log), "--dest", str(tmp_path / "arch")])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "DEGRADED" not in out
+    assert "content fingerprint" in out, out

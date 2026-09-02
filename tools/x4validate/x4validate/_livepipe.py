@@ -10,7 +10,8 @@ whose `ui/named_pipes/pipes.lua` opens a CLIENT handle to `\\.\pipe\<name>`. It 
 not care who created that pipe, so `Pipe_Server_Host` / `Register_Module` /
 `permissions.json` -- which exist only so a mod can ship a python file the HOST
 auto-launches -- are not needed. We create the pipe; the game connects to it. That
-makes the game-side mod three files and zero MD.
+makes the game-side mod four files and zero MD (content.xml, ui.xml, and the two
+lua under ui/).
 
 READ `pipes.lua:127`: `Schedule_Read(pipe_name, callback, continuous_read)`. With
 `continuous_read` true the callback stays armed (`pipes.lua:513-515` declines to pop
@@ -188,14 +189,18 @@ def checksum(payload: str) -> int:
     regardless.
     """
     h = 5381
-    for b in payload.encode("utf-8"):
+    for b in (payload if isinstance(payload, bytes) else payload.encode("utf-8")):
         h = ((h * 33) + b) & 0xFFFFFFFF
     return h
 
 
-def byte_len(payload: str) -> int:
-    """Length in BYTES, because lua's `#s` is bytes. See `checksum`."""
-    return len(payload.encode("utf-8"))
+def byte_len(payload) -> int:
+    """Length in BYTES, because lua's `#s` is bytes. See `checksum`.
+
+    Accepts bytes unchanged: decode_reply measures the payload BEFORE decoding it, so
+    that a repair cannot change the number being checked.
+    """
+    return len(payload if isinstance(payload, bytes) else payload.encode("utf-8"))
 
 
 def encode_command(seq: int, verb: str, args: tuple[str, ...] = ()) -> str:
@@ -231,7 +236,7 @@ class Reply:
         return self.payload.split("\t") if self.payload else []
 
 
-def decode_reply(text: str | None, expect_seq: int) -> Reply:
+def decode_reply(text: "str | bytes | None", expect_seq: int) -> Reply:
     """Decode one reply, or raise.
 
     EIGHT clauses, each with its own fixture and its own separately-applied mutant.
@@ -242,22 +247,34 @@ def decode_reply(text: str | None, expect_seq: int) -> Reply:
     reported as TRUNCATED -- the diagnosis a caller can act on -- rather than as
     generic corruption.
     """
+    # BYTES throughout. The payload used to arrive already repaired by
+    # errors="replace", and clauses 7 and 8 re-encoded that repair to measure it --
+    # so they measured a string we had invented, not the frame that arrived. Each
+    # replacement character adds +2 bytes, which both invents truncations and cancels
+    # real ones. A `str` argument is still accepted (every test passes one) and is
+    # encoded losslessly here.
+    data = text.encode("utf-8") if isinstance(text, str) else text
+
     # 1. Nothing at all. The lua api hands an empty write over as nil.
-    if not text:
+    if not data:
         raise LiveQueryDegraded(
             "empty reply: the lua pipe api delivers an empty write as nil, so this "
             "is a framing fault game-side, not an empty answer"
         )
 
-    parts = text.split("\t", _REPLY_FIELDS - 1)
+    def _t(b: bytes) -> str:
+        """Bytes -> text FOR A MESSAGE ONLY. Never for a comparison or a measurement."""
+        return b.decode("utf-8", errors="replace")
+
+    parts = data.split(b"\t", _REPLY_FIELDS - 1)
 
     # 2. Not one of our frames. Catches the api's reserved data-channel sentinels
     #    (ERROR / TIMEOUT / CANCELLED), which a naive reader cannot tell from data.
-    if parts[0] != REPLY_TAG:
-        head = text[:40].replace("\n", " ")
+    if parts[0] != REPLY_TAG.encode("utf-8"):
+        head = _t(data[:40]).replace("\n", " ")
         hint = (
             " -- this is one of the lua api's reserved sentinels, not a payload"
-            if text.strip() in ("ERROR", "TIMEOUT", "CANCELLED")
+            if _t(data).strip() in ("ERROR", "TIMEOUT", "CANCELLED")
             else ""
         )
         raise LiveQueryDegraded(
@@ -265,8 +282,8 @@ def decode_reply(text: str | None, expect_seq: int) -> Reply:
         )
 
     # 3. Protocol skew: a mod and a toolkit from different versions.
-    if len(parts) < 2 or parts[1] != str(PROTO):
-        got = parts[1] if len(parts) > 1 else "<absent>"
+    if len(parts) < 2 or parts[1] != str(PROTO).encode("utf-8"):
+        got = _t(parts[1]) if len(parts) > 1 else "<absent>"
         raise LiveQueryDegraded(
             f"protocol {got!r}, expected {PROTO!r} -- the deployed mod and this "
             f"toolkit disagree about the frame; redeploy the live-query mod"
@@ -280,7 +297,11 @@ def decode_reply(text: str | None, expect_seq: int) -> Reply:
             f"header itself is truncated"
         )
 
-    _, _, raw_seq, status, raw_len, raw_sum, payload = parts
+    _, _, b_seq, b_status, b_len, b_sum, payload_bytes = parts
+    # The header fields are ASCII by construction; only the PAYLOAD may be arbitrary,
+    # and it is deliberately left as bytes until clauses 7 and 8 have measured it.
+    raw_seq, status = _t(b_seq), _t(b_status)
+    raw_len, raw_sum = _t(b_len), _t(b_sum)
 
     # 5. FIFO desync. Correlation is positional in the lua api, so the sequence
     #    number travels INSIDE the message; this is what makes it worth having.
@@ -307,7 +328,7 @@ def decode_reply(text: str | None, expect_seq: int) -> Reply:
         declared = int(raw_len)
     except ValueError:
         raise LiveQueryDegraded(f"declared length {raw_len!r} is not a number") from None
-    actual = byte_len(payload)
+    actual = byte_len(payload_bytes)
     if declared != actual:
         raise LiveQueryDegraded(
             f"TRUNCATED: the game declared {declared} payload bytes and {actual} "
@@ -321,12 +342,24 @@ def decode_reply(text: str | None, expect_seq: int) -> Reply:
         declared_sum = int(raw_sum)
     except ValueError:
         raise LiveQueryDegraded(f"declared checksum {raw_sum!r} is not a number") from None
-    if declared_sum != checksum(payload):
+    if declared_sum != checksum(payload_bytes):
         raise LiveQueryDegraded(
             f"checksum mismatch on a payload of the declared length -- the bytes "
             f"changed in transit, which truncation alone does not explain"
         )
 
+    # 9. Decoded LAST, and STRICTLY. The bytes have now passed both the length and
+    #    the checksum, so anything undecodable here is a third, distinct fact -- not
+    #    something to paper over with a replacement character, which is what made
+    #    clauses 7 and 8 measure a string we had invented.
+    try:
+        payload = payload_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise LiveQueryDegraded(
+            f"UNDECODABLE: {len(payload_bytes)} payload bytes matched the declared "
+            f"length and checksum, but byte {exc.start} is not valid UTF-8 "
+            f"({exc.reason}). The frame arrived intact and the game encoded it wrong."
+        ) from None
     return Reply(seq=seq, status=status, payload=payload)
 
 
@@ -508,12 +541,15 @@ class LivePipe:
 
     # -- exchange ----------------------------------------------------------- #
 
-    def _read_raw(self, deadline: float) -> str:
+    def _read_raw(self, deadline: float) -> bytes:
         _win32pipe, win32file, winerror = _win32()
         while True:
             try:
                 _err, data = win32file.ReadFile(self._h, _BUF)
-                return data.decode("utf-8", errors="replace")
+                # RAW BYTES. Decoding here with errors="replace" repaired the frame
+                # before anything had measured it, and the length/checksum clauses
+                # then measured the repair. decode_reply decodes strictly, last.
+                return data
             except Exception as exc:
                 if getattr(exc, "winerror", None) not in (
                     winerror.ERROR_NO_DATA,

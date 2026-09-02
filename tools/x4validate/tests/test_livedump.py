@@ -301,3 +301,36 @@ def test_the_default_savedvariable_name_carries_no_personal_identifier():
     assert L.DEFAULT_VAR.startswith("__x4live")
     from x4validate import _livepipe
     assert "x4live" in _livepipe.DEFAULT_PIPE
+
+
+# --- a FATAL frame is the probe's own account, not a torn transport -----------
+
+def test_a_FATAL_frame_is_reported_as_a_probe_failure(tmp_path):
+    """`emit()` goes out of its way to preserve the build error:
+    `HDR<TAB>schema=N<TAB>FATAL<TAB><message>`. Nothing read it. That frame is a single
+    HDR row, so it tripped the last-row-is-not-END clause and the reader was told the
+    dump was TRUNCATED and "the true length is unknown" -- pointing at the transport
+    while the real cause sat unread in the payload."""
+    import pytest
+    rows = [["HDR", "schema=2", "FATAL", "attempt to index a nil value (global 'C')"]]
+    with pytest.raises(L.LiveDumpFatal) as ei:
+        L.parse(uidata(rows))
+    assert "attempt to index a nil value" in str(ei.value)
+    assert "not truncated" in str(ei.value).lower()
+
+
+def test_a_GENUINELY_truncated_dump_is_still_reported_as_truncated(tmp_path):
+    """The twin. The FATAL clause runs BEFORE the END check, so it must not swallow a
+    real truncation -- otherwise one diagnosis has simply replaced the other."""
+    import pytest
+    rows = [["HDR", "schema=2", "probe=test"], ["EXT_FIELDS", "id,enabled"]]
+    with pytest.raises(L.LiveDumpCorrupt) as ei:
+        L.parse(uidata(rows))
+    assert "TRUNCATED" in str(ei.value)
+
+
+def test_DELAYED_CAPABLE_is_a_known_kind():
+    """The probe now records whether a second dump could even be scheduled. If the
+    reader does not model the kind, `x4live dump` reports it as an unexplained
+    remainder and exits 3 on a perfectly good dump."""
+    assert "DELAYED_CAPABLE" in L.KNOWN_KINDS

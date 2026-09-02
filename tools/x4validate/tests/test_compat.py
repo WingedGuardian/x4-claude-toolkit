@@ -652,3 +652,32 @@ def test_case_probe_reports_false_on_a_case_sensitive_filesystem(tmp_path, monke
         Path, "exists",
         lambda self: False if self.name == "caseprobe.tmp" else real_exists(self))
     assert conftest.fs_is_case_insensitive(tmp_path) is False
+
+
+# --- live_value_owner must REFUSE for the kinds it cannot know (survivor) -----
+#
+# Narrowing the guard to `("SOFT",)` survived the whole suite, and it is exactly the
+# conflation CLAUDE.md #18 exists to prevent: for SUBTREE, `winner` is the mod that did
+# the WIPING -- not the owner of the final value, because a later mod can re-supply it
+# (MEASURED: 3 of 148 SUBTREE rows, 2.0%) -- and for NAME-CLASH nothing in load order
+# decides at all, index/macros.xml does. An inbound report once called x4compat "wrong"
+# by reading `winner` as the live owner; x4compat was right, the reading was not.
+
+
+def _collision(kind, winner="modB"):
+    from x4validate._compat import Collision
+    return Collision(vpath="libraries/wares.xml", kind=kind, target="t",
+                     mods=["modA", "modB"], winner=winner)
+
+
+def test_live_value_owner_is_NONE_for_the_kinds_it_cannot_know():
+    for kind in ("SUBTREE", "NAME-CLASH", "SOFT"):
+        assert _collision(kind).live_value_owner() is None, (
+            f"{kind} named a live owner it has no way to know")
+
+
+def test_live_value_owner_DOES_name_one_when_it_can():
+    """The twin. A method that returned None for everything would pass the test
+    above while destroying the answer for the three kinds that do have one."""
+    for kind in ("FULL-OVERRIDE", "HARD", "UNION-KEY"):
+        assert _collision(kind).live_value_owner() == "modB", kind

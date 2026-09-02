@@ -1405,7 +1405,28 @@ def check_completeness(
     wares = _merge.build_effective(WARES_FILE, config, extra_overlays=mod_overlay)
     text_def_set = collect_text_defs(config, mod_overlay, report)
     macro_def_set = collect_macro_defs(config, mod_overlay, report)
-    rep = _refs.ware_completeness(eid, lid, wares.tree, text_def_set, macro_def_set)
+    # EntityDefs, NOT macro_def_set -- the same correction check_references already
+    # carries, and for the same reason. `_refs` answers the `<component ref>` question
+    # with whatever set it is handed, and the macro INDEX alone is the wrong oracle:
+    # a macro defined in an asset file and never registered in index/macros.xml is
+    # legal and common (EntityDefs records 753 such names corpus-wide). This function
+    # exists for `--entity/--like`, i.e. for a mod UNDER DEVELOPMENT, which is exactly
+    # where an unregistered macro lives.
+    #
+    # REPRODUCED 2026-09-02 on a synthetic mod: check_references reported the ref as
+    # resolving while check_completeness gated with "missing 'component'" -- the two
+    # checks contradicting each other about the same attribute. Adding the one index
+    # entry, the only variable, turned exit 1 into exit 0. Over shipped content the
+    # incidence is 0 of 1,614 component refs (Tier B, 125 active mods), so this is a
+    # live bug for mod authors rather than a wrong answer about the base game.
+    #
+    # None is PRESERVED, not replaced by an empty set: `collect_macro_defs` returns
+    # None only when the index could not be built, and _refs treats that as "check
+    # presence alone". EntityDefs has no such state, so the degraded case must keep
+    # answering None or an unreadable index would start reporting real refs as missing.
+    completeness_defs = (None if macro_def_set is None
+                         else EntityDefs(config, mod_overlay, report))
+    rep = _refs.ware_completeness(eid, lid, wares.tree, text_def_set, completeness_defs)
     report.notes.append(f"completeness checked kinds: {', '.join(rep.checked)}")
 
     # The catalog compares <ware>-WRAPPER fields only (see _refs._entity_kinds).

@@ -392,6 +392,25 @@ def main(argv: list[str] | None = None) -> int:
         out = archive(log, dest)
         meta = read_archive_meta(out)
         print(f"  archived {out}")
+        # The DEGRADED case is checked FIRST, and it is not hypothetical: archive()
+        # builds these five keys with a single `meta.update({...})` inside a try, so
+        # any raise in it -- parse_log_text, Config(), game_extensions(), fingerprint()
+        # -- leaves NONE of them set and records `degraded` instead. This consumer read
+        # all five unconditionally, so the degraded path it exists to serve ended in a
+        # KeyError traceback. REPRODUCED end-to-end through `x4debug baseline` using the
+        # same monkeypatch the shipped test already uses: KeyError: 'total_errors'.
+        #
+        # rc 1, not 0: a baseline that cannot state its own fingerprint cannot back a
+        # later comparison, and reporting it as a clean capture is the failure the
+        # whole two-axis freshness contract exists to prevent. The ARCHIVE itself is
+        # fine and is kept -- that is why archive() is written to survive any meta
+        # failure in the first place.
+        if meta.get("degraded"):
+            print(f"  !! the archive was written, but its metadata is DEGRADED: "
+                  f"{meta.get('degraded_reason', 'no reason recorded')}")
+            print("     This capture cannot be compared against a later one, because "
+                  "it does not know what world it was taken in.")
+            return 1
         print(f"  {meta['total_errors']} errors ({meta['unclassified']} unclassified), "
               f"new_game={meta['new_game']}")
         print(f"  content fingerprint {meta['fingerprint']['content']} "

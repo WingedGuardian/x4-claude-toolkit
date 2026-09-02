@@ -47,6 +47,22 @@ def roots() -> list[pathlib.Path]:
     return [base / n for n in _ROOTS_ORDER if (base / n).is_dir()]
 
 
+def mod_lua_files() -> list[pathlib.Path]:
+    """EVERY shipped game-side lua carrying a BUILD line.
+
+    `mod_lua()` below returns only the primary file and is kept for its callers. It
+    globbed `*live_query.lua` alone, so `engine_probe.lua` -- same extension, runs
+    automatically at load, writes profile UI userdata -- was never stamped and never
+    checked. A change to it shipped undetected.
+    """
+    out: list[pathlib.Path] = []
+    for d in roots():
+        found = sorted(d.glob("*/ui/*.lua"))
+        if found:
+            return [p for p in found if _LINE.search(p.read_text(encoding="utf-8"))]
+    return out
+
+
 def mod_lua() -> pathlib.Path | None:
     #: Located by GLOB, never by a spelled-out folder name -- this file ships, and the
     #: mod's folder carries a personal prefix the mirror's scanner would catch.
@@ -69,6 +85,19 @@ def current(text: str) -> str | None:
 
 
 def main(argv: list[str]) -> int:
+    # ANNOUNCED, never silently skipped: a shipped lua with no BUILD line is outside
+    # this gate entirely, and a stamper that reports success over a file it never
+    # looked at is the defect this whole script exists to prevent.
+    for d in roots():
+        shipped = sorted(d.glob("*/ui/*.lua"))
+        if shipped:
+            bare = [q.name for q in shipped
+                    if not _LINE.search(q.read_text(encoding="utf-8"))]
+            if bare:
+                print("NOT COVERED (no `local BUILD` line, so no staleness check): "
+                      + ", ".join(bare))
+            break
+
     p = mod_lua()
     if p is None:
         # "I could not look" is not "there is nothing to stamp". When a root EXISTS but
@@ -82,6 +111,29 @@ def main(argv: list[str]) -> int:
             return 2
         print("no mods/ or dev/ root in this tree; nothing to stamp")
         return 0
+    # Excluded by IDENTITY, not by position. `files[1:]` assumed the primary was
+    # first; sorted() puts engine_probe.lua before live_query.lua, so the primary was
+    # stamped twice and the OTHER file -- the whole point of this loop -- never at all.
+    files = mod_lua_files() or [p]
+    rc = 0
+    for q in [f for f in files if f.resolve() != p.resolve()]:
+        # Every covered file, not just the first. Reported per FILE, because "the stamp
+        # is current" over a set is only true if it is true of each of them.
+        t = q.read_text(encoding="utf-8")
+        c, e = current(t), expected(t)
+        if c == e:
+            print(f"{q.name}: BUILD {c} is current")
+            continue
+        if "--check" in argv:
+            print(f"{q.name}: BUILD is STALE -- stamped {c}, content says {e}")
+            rc = 1
+            continue
+        q.write_bytes(_LINE.sub(f'local BUILD = "{e}"', t, count=1).encode("utf-8"))
+        back = current(q.read_text(encoding="utf-8"))
+        print(f"{q.name}: BUILD {c} -> {e}   (re-read confirms {back})")
+        if back != e:
+            print(f"{q.name}: RE-READ MISMATCH"); rc = 2
+
     text = p.read_text(encoding="utf-8")
     cur, exp = current(text), expected(text)
     if cur is None:
@@ -90,13 +142,13 @@ def main(argv: list[str]) -> int:
     if "--check" in argv:
         if cur == exp:
             print(f"{p.name}: BUILD {cur} is current")
-            return 0
+            return rc
         print(f"{p.name}: BUILD is STALE -- stamped {cur}, content says {exp}")
         print("run: uv run python scripts/stamp-mod-build.py")
         return 1
     if cur == exp:
         print(f"{p.name}: BUILD {cur} already current")
-        return 0
+        return rc
     # Encode first, then write_bytes: a failed encode must not be able to truncate the
     # file it is halfway through replacing.
     data = _LINE.sub(f'local BUILD = "{exp}"', text, count=1).encode("utf-8")

@@ -166,3 +166,42 @@ def test_a_file_that_will_not_parse_raises(tmp_path):
     broken.write_text("def f(:\n", encoding="utf-8")
     with pytest.raises(SyntaxError):
         _bare_calls(broken)
+
+
+# --- the manifest's OWN enabled flag (mutation survivor, 2026-09-02) ---------
+#
+# `mods("active")` reads:
+#     [m for m in installed if m["enabled"] and prof.get(m["id"], True)]
+# Dropping the `m["enabled"] and` half survived the whole suite. It is the half that
+# honours a mod's OWN content.xml, and losing it models a mod the engine will not load
+# as loaded -- which is the #24 defect in the opposite direction to the one already
+# pinned: Tier B, x4compat, x4effective and x4eff would all resolve against content
+# that is switched off.
+
+
+def _mod(folder, mod_id, enabled):
+    return {"folder": folder, "id": mod_id, "enabled": enabled, "path": "/x/" + folder}
+
+
+def test_a_mod_disabled_in_its_OWN_manifest_is_not_ACTIVE(monkeypatch):
+    from x4validate import _registry
+    installed = [_mod("keep", "KeepMe", True), _mod("off", "SwitchedOff", False)]
+    monkeypatch.setattr(_registry, "scan_installed", lambda *a, **k: list(installed))
+    monkeypatch.setattr(_registry, "ingest_content_xml", lambda *a, **k: {})
+    ids = {m["id"] for m in _registry.mods("active")}
+    assert "KeepMe" in ids, "an enabled mod must still be active"
+    assert "SwitchedOff" not in ids, (
+        "a mod disabled in its own content.xml was modelled as loaded -- the engine "
+        "will not load it, so every tier built on this set is answering about a world "
+        "that does not exist")
+
+
+def test_the_manifest_flag_does_not_also_hide_it_from_INSTALLED(monkeypatch):
+    """The twin: `installed` is the on-disk answer and must NOT apply the flag, or
+    the two scopes collapse into one and #24 comes back the other way."""
+    from x4validate import _registry
+    installed = [_mod("keep", "KeepMe", True), _mod("off", "SwitchedOff", False)]
+    monkeypatch.setattr(_registry, "scan_installed", lambda *a, **k: list(installed))
+    monkeypatch.setattr(_registry, "ingest_content_xml", lambda *a, **k: {})
+    ids = {m["id"] for m in _registry.mods("installed")}
+    assert ids == {"KeepMe", "SwitchedOff"}, ids

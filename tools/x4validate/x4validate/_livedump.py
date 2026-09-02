@@ -55,6 +55,15 @@ DEFAULT_VAR = "__x4live_dump"
 
 #: First field of the header row and of the terminator row.
 HDR = "HDR"
+#: Every row kind engine_probe.lua can emit, read off its `row(...)` calls. `EXT` is
+#: built as a table literal rather than a string constant, which is exactly why this
+#: list is written down here and pinned by a test rather than inferred.
+KNOWN_KINDS = frozenset({
+    "HDR", "END", "DELAYED_CAPABLE",
+    "EXT", "EXT_FIELDS", "EXT_STATUS",
+    "LIB", "LIB_ELEM_FIELDS", "LIB_ENTRY_FIELDS", "LIB_ENTRY_VAL", "LIB_STATUS",
+    "ERR", "ERR_ROWS", "ERR_STATUS", "ERR_WRITTEN",
+})
 END = "END"
 
 
@@ -64,6 +73,18 @@ class LiveDumpUnavailable(Exception):
     Raised for every cause that means "the question was not answered": the profile
     is unresolved, the file is missing, the file holds no saved data at all (the
     running-game stub), or the variable is simply not there.
+    """
+
+
+class LiveDumpFatal(Exception):
+    """The probe RAN and died, and said why.
+
+    Distinct from LiveDumpCorrupt on purpose. `emit()` writes a single
+    `HDR<TAB>schema=N<TAB>FATAL<TAB><message>` row when `build()` raises -- it goes out
+    of its way to preserve the error. Without this class that frame has no END row, so
+    it tripped the truncation clause and the reader was told "the dump is TRUNCATED and
+    the true length is unknown": a diagnosis pointing at the transport, while the real
+    cause sat unread in the payload.
     """
 
 
@@ -235,9 +256,30 @@ class Dump:
                 out.setdefault((r[1], r[2]), {})[r[3]] = r[4] if len(r) > 4 else ""
         return out
 
+    def unknown_kinds(self) -> Counter:
+        """Rows whose KIND is not in KNOWN_KINDS, counted per kind.
+
+        Named, never merely counted: a kind nobody recognises is a lead about a probe
+        this toolkit no longer models, and the whole point is that it cannot be
+        absorbed into a total.
+        """
+        return Counter({k: n for k, n in self.kinds.items() if k not in KNOWN_KINDS})
+
     def accounts_for_every_row(self) -> bool:
-        """Row kinds must sum to the row count: no unexplained remainder (#23)."""
-        return sum(self.kinds.values()) == len(self.rows)
+        """Is every row a kind we know about? No unexplained remainder (#23).
+
+        This used to be `sum(self.kinds.values()) == len(self.rows)` -- and `kinds` is
+        a Counter built from `rows`, so it was TRUE BY CONSTRUCTION. MEASURED over
+        20,000 randomised dumps: never False, never raised. Three tests used it as a
+        control that "must PASS", and _livecli's whole error branch (including its
+        `return 3`) was unreachable.
+
+        The row-COUNT question it looked like it was asking is already answered, and
+        answered independently, by parse(): the END row carries the game's own count
+        and is compared against the rows actually parsed. Duplicating that here bought
+        nothing; asking about KINDS is the question nothing else asks.
+        """
+        return not self.unknown_kinds()
 
 
 # ---------------------------------------------------------------------- parsing
@@ -279,6 +321,15 @@ def parse(text: str, var: str = DEFAULT_VAR) -> Dump:
     if not rows or rows[0][0] != HDR:
         raise LiveDumpCorrupt(
             f"no {HDR} row - the payload is truncated at the FRONT, or is not a dump")
+    # BEFORE the END check. A FATAL frame is a single HDR row by construction, so the
+    # truncation clause below would otherwise claim it, and the probe's own account of
+    # what went wrong would be discarded in favour of a guess about the transport.
+    if "FATAL" in rows[0]:
+        i = rows[0].index("FATAL")
+        why = rows[0][i + 1] if i + 1 < len(rows[0]) else "no reason recorded"
+        raise LiveDumpFatal(
+            f"the probe ran and FAILED while building its dump: {why}. The dump is not "
+            f"truncated - there is nothing more to read.")
     if rows[-1][0] != END:
         raise LiveDumpCorrupt(
             f"last row is {rows[-1][0]!r}, not {END} - the dump is TRUNCATED. "

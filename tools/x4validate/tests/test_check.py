@@ -333,3 +333,49 @@ def test_normal_op_count_is_not_flagged(tmp_path):
     root = _merge.parse_file(mod / "libraries" / "wares.xml")
     _check._warn_if_pathologically_large(root, "libraries/wares.xml", report)
     assert not report.findings
+
+
+# --- the nested cross-mod path (mutation survivor, 2026-09-02) ----------------
+#
+# `nested = _merge._nested_target(vpath, config.packed_dlc_names())` -> `nested = None`
+# survived the whole suite. That call is what tells a CROSS-MOD patch from a broken
+# one: `extensions/<target>/<rel>` is owned by <target>, not by the base game
+# (gotcha #6, and the engine never even opens the bare form). Without it, a patch
+# aimed at a mod the user does not have installed -- a designed no-op -- is reported
+# as a hard path error, and the two states become indistinguishable in the output.
+
+def test_a_patch_targeting_an_UNINSTALLED_extension_is_a_designed_no_op(monkeypatch):
+    from x4validate import _check as C, _merge
+    monkeypatch.setattr(C, "_installed_folders", lambda: {"some_other_mod"})
+    sev, code, msg = C._no_base_finding(
+        "extensions/not_installed_mod/libraries/wares.xml", _merge.Config())
+    assert (sev, code) == ("info", "inactive"), (sev, code, msg)
+    assert "not_installed_mod" in msg, msg
+
+
+def test_a_patch_targeting_an_INSTALLED_extension_is_still_a_real_error(monkeypatch):
+    """The twin. Without it, a check that excused every extensions/ path would pass
+    the test above while hiding genuine path mismatches -- which is the whole reason
+    the cross-mod branch has to distinguish installed from not."""
+    from x4validate import _check as C, _merge
+    monkeypatch.setattr(C, "_installed_folders", lambda: {"target_mod"})
+    sev, code, _msg = C._no_base_finding(
+        "extensions/target_mod/libraries/wares.xml", _merge.Config())
+    assert (sev, code) == ("error", "path"), (sev, code)
+
+
+def test_a_PLAIN_vpath_is_unaffected_by_the_cross_mod_branch(monkeypatch):
+    from x4validate import _check as C, _merge
+    monkeypatch.setattr(C, "_installed_folders", lambda: set())
+    sev, code, _msg = C._no_base_finding("libraries/wares.xml", _merge.Config())
+    assert (sev, code) == ("error", "path"), (sev, code)
+
+
+def test_an_UNLISTABLE_extensions_dir_says_so_rather_than_excusing_the_patch(monkeypatch):
+    """'Could not check' is never 'nothing wrong': downgrading this to `inactive`
+    would silently excuse a genuine path mismatch."""
+    from x4validate import _check as C, _merge
+    monkeypatch.setattr(C, "_installed_folders", lambda: None)
+    sev, code, msg = C._no_base_finding(
+        "extensions/whatever/libraries/wares.xml", _merge.Config())
+    assert (sev, code) == ("info", "unverifiable"), (sev, code, msg)
