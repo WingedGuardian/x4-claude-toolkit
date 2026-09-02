@@ -373,7 +373,10 @@ def test_the_groundtruth_WRITER_escapes_tabs_and_newlines(tmp_path):
     """The writer joined rows with tabs and values could CONTAIN tabs -- a description
     does, and a `*` payload is itself tab-joined. Unescaped, the row structure breaks.
     Same defect `harvest` had; this is the second location."""
-    nasty = "a" + TAB + "b" + NL + "c"
+    # The backslash is the point. Without it this fixture cannot detect the
+    # sequential-replace defect: MEASURED 2026-09-01, the old implementation
+    # round-tripped "a<TAB>b<NL>c" correctly and mangled every Windows path.
+    nasty = "C:" + chr(92) + "temp" + chr(92) + "x " + TAB + " " + NL + " end"
     escaped = (nasty.replace(chr(92), chr(92) * 2)
                     .replace(TAB, chr(92) + "t")
                     .replace(NL, chr(92) + "n"))

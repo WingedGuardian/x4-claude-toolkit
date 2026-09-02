@@ -694,12 +694,19 @@ def _entries_from_groundtruth(path: Path) -> tuple[dict[tuple[str, str], dict[st
 
 
 def _unescape(s: str) -> str:
-    """Reverse the writer's escaping. A fixture written before that existed is
-    unaffected, because it contains no escapes to reverse."""
-    B = chr(92)
-    return (s.replace(B + "t", chr(9))
-             .replace(B + "n", chr(10))
-             .replace(B + B, B))
+    """Reverse the probe's per-field escaping. Delegates to _livedump.unesc_field.
+
+    This was a SECOND implementation doing sequential .replace() calls, and it was
+    wrong for any value containing a backslash. MEASURED 2026-09-01: 3 of 6 round
+    trips failed, including a Windows path -- an escaped backslash followed by a t is
+    rewritten to a TAB by the first replace, before the escaped-backslash rule ever
+    runs. A single left-to-right pass cannot make that mistake, and unesc_field is
+    already that pass.
+
+    The test covering this passed because its fixture contained no backslash: a green
+    that could not go red.
+    """
+    return _livedump.unesc_field(s)
 
 def cmd_mappings(path: str | None, out=None, groundtruth: str | None = None) -> int:
     """DERIVE candidate engine-field -> store-prop mappings from data.

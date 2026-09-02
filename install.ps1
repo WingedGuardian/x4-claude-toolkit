@@ -82,7 +82,7 @@ function Detect-Profile {
 function Detect-XRCat {
   if ($XRCatTool) { return $XRCatTool }
   foreach ($c in @("$SRC\tools\XRCatTool\XRCatTool.exe", "$SRC\XTools\XRCatTool.exe")) {
-    if (Test-Path $c) { return $c }
+    if (Test-Path -LiteralPath $c) { return $c }
   }
   return $XRCatTool
 }
@@ -94,9 +94,25 @@ function Copy-Toolkit($dest) {
   # directory the installer never created.
   $items = '.claude','tools','bin','scripts','mods','CLAUDE.md','KNOWLEDGEBASE.md','README.md',
            'CHANGELOG.md','LICENSE','setup.sh','install.sh','install.ps1','SETUP_PROMPT.txt','.gitignore','.gitattributes'
+  # -LiteralPath throughout. Without it PowerShell treats [ and ] as WILDCARDS, so a
+  # source folder named e.g. "x4-claude-toolkit [v3.0.0]" -- the shape a download gives
+  # you -- matches nothing. MEASURED 2026-09-01: bare Test-Path returned False and bare
+  # Copy-Item copied 0 files, while -LiteralPath copied all of them. The installer then
+  # printed "install complete" over an empty destination, and the README says "extract
+  # it anywhere".
+  $missing = @()
   foreach ($i in $items) {
     $s = Join-Path $SRC $i
-    if (Test-Path $s) { Copy-Item -Recurse -Force $s $dest }
+    if (Test-Path -LiteralPath $s) {
+      Copy-Item -Recurse -Force -LiteralPath $s -Destination $dest
+    } else {
+      # NAMED, never silently skipped: that silence is how the absent mods/ folder
+      # survived a whole release.
+      $missing += $i
+    }
+  }
+  if ($missing.Count) {
+    Write-Host ("  [note] not in the source, so not copied: " + ($missing -join ", "))
   }
   Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $dest '.claude\settings.local.json'),(Join-Path $dest '.claude\x4-paths.env')
 }

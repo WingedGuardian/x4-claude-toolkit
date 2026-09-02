@@ -78,7 +78,23 @@ def scan_paths(paths) -> dict:
 
 
 def tracked_text_files() -> list[Path]:
-    out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True)
+    """Git-tracked text files, or [] when this is not a git checkout.
+
+    MEASURED 2026-09-01 in a `git archive` extract -- which is exactly what a release
+    tarball is: `check=True` raised CalledProcessError, the gate exited 1, and
+    run-gates.sh buckets 1 as FAIL. The refusal path this file already implements
+    (rc 2 = CANNOT) was unreachable because the crash preceded it, so a user running the
+    gates from a tarball saw a failure where the honest answer is "not applicable here".
+    """
+    try:
+        out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT,
+                             capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        # silent-ok: not a git checkout. The caller REFUSES on scanned==0 with rc 2 and
+        # names this cause, so nothing is lost here -- returning [] simply lets that one
+        # refusal speak instead of two. Raising would exit 1 (=FAIL), which is the very
+        # confusion this fix removes: a tarball is "cannot check", not "found a defect".
+        return []
     names = out.stdout.decode("utf-8", "replace").split("\0")
     return [ROOT / n for n in names if n and Path(n).suffix.lower() in TEXT]
 
@@ -94,7 +110,8 @@ def main(argv: list[str] | None = None) -> int:
     for h in rep["hits"]:
         print(f"  {h['path']} @{h['offset']} 0x{h['byte']:02x} (was {h['escape']}): ...{h['context']}...")
     if rep["scanned"] == 0:
-        print("REFUSING: nothing was scanned, so this is not a clean sweep.", file=sys.stderr)
+        print("REFUSING: nothing was scanned, so this is not a clean sweep. (Outside a "
+              "git checkout, pass the paths to scan explicitly.)", file=sys.stderr)
         return 2
     # An UNREADABLE path is a hole in the denominator, not a pass. Reporting "0 hits"
     # beside a file nobody opened is the shape this whole gate exists to catch.

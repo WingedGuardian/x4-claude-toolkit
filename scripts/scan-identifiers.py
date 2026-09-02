@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 import re
+import pathlib
 import subprocess
 import sys
 from pathlib import Path
@@ -262,7 +263,24 @@ def selftest() -> int:
     return 1 if bad else 0
 
 
+#: The scan is anchored to THIS FILE's repository, never to the caller's directory.
+#:
+#: MEASURED 2026-09-01, the same script from three places:
+#:   repo root   234 tracked, 6 identifiers, clean            (correct)
+#:   scripts/      6 tracked, 7 identifiers, FALSE FAILURE    (LICENSE unreadable, so
+#:                                                             the owner handle stopped
+#:                                                             being allow-listed)
+#:   another repo 186 tracked, 34 hits -- a report about a COMPLETELY DIFFERENT
+#:                repository, in the toolkit's name. That is the dangerous direction:
+#:                a wrong population that still prints a verdict.
+#: scripts/test-hooks.sh invokes this without cd'ing, which is how it stayed unnoticed.
+def _anchor_to_repo_root() -> None:
+    import os
+    os.chdir(pathlib.Path(__file__).resolve().parent.parent)
+
+
 def main() -> int:
+    _anchor_to_repo_root()
     if "--selftest" in sys.argv:
         return selftest()
     try:
@@ -294,8 +312,14 @@ def main() -> int:
               "Use actions/checkout with fetch-depth: 0.")
         return 2
     if not banned:
-        print("::warning::no identifiers to check — this run proves nothing.")
-        return 0
+        # REFUSE, do not pass. This sat ABOVE the account-pattern scan, so a fork whose
+        # only committer appears in LICENSE yielded an empty token list and a GREEN exit
+        # -- while a real profile id or absolute user path sailed through untested. The
+        # depth-1 branch a few lines up already returns 2 for exactly this reason: a run
+        # that checked nothing must never look like a run that found nothing.
+        print("::error::no identifiers could be derived, so the token scan proves "
+              "nothing. Refusing rather than reporting a vacuous pass.")
+        return 2
 
     lowered = [t.lower() for t in banned]
     found = 0

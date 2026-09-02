@@ -125,6 +125,7 @@ detect_xrcat() {
   return 0
 }
 
+MISSING=""
 copy_toolkit() {  # copy_toolkit DEST  — copy tracked toolkit files (never game data / local config)
   local dest="$1"; mkdir -p "$dest"
   local item
@@ -133,10 +134,14 @@ copy_toolkit() {  # copy_toolkit DEST  — copy tracked toolkit files (never gam
   # directory the installer never created.
   for item in .claude tools bin scripts mods CLAUDE.md KNOWLEDGEBASE.md README.md CHANGELOG.md \
               LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt .gitignore .gitattributes; do
-    [ -e "$SRC/$item" ] || continue
+    # NAMED, never silently skipped -- that silence is how the absent mods/ folder
+    # survived a whole release.
+    [ -e "$SRC/$item" ] || { MISSING="$MISSING $item"; continue; }
     cp -r "$SRC/$item" "$dest/"
   done
   rm -f "$dest/.claude/settings.local.json" "$dest/.claude/x4-paths.env" 2>/dev/null || true
+  [ -n "$MISSING" ] && echo "  [note] not in the source, so not copied:$MISSING"
+  return 0
 }
 
 write_paths_env() {  # write_paths_env TOOLKIT_DIR
@@ -264,7 +269,12 @@ case "$METHOD" in
 esac
 
 # wire x4validate + prereqs in the target toolkit
-( cd "$TOOLKIT" && CLAUDE_PROJECT_DIR="$TOOLKIT" bash setup.sh ) || true
+# `|| true` swallowed a failed setup.sh entirely, and this script had no INCOMPLETE
+# branch at all -- so a half-finished install printed exactly the same success text as
+# a good one. install.ps1 has accumulated $failed and exited 1 for a while; this is the
+# same accounting on the bash side.
+FAILED=""
+( cd "$TOOLKIT" && CLAUDE_PROJECT_DIR="$TOOLKIT" bash setup.sh ) || FAILED="setup.sh"
 
 if [ "$DO_UNPACK" = 1 ]; then
   echo "Unpacking reference/ ..."
@@ -272,6 +282,19 @@ if [ "$DO_UNPACK" = 1 ]; then
 fi
 
 echo
+# An INCOMPLETE install must not print the success text. install.ps1 has accumulated
+# $failed and exited 1 for a while; install.sh swallowed a failed setup.sh with
+# `|| true` and had no such branch at all, so a half-finished install and a good one
+# were indistinguishable from the output.
+if [ -n "${FAILED:-}" ]; then
+  echo
+  echo "=== install INCOMPLETE ($METHOD) ==="
+  echo "  failed: $FAILED"
+  echo "Toolkit:   $TOOLKIT"
+  echo "Fix the above and re-run, or complete that step by hand."
+  exit 1
+fi
+
 echo "=== install complete ($METHOD) ==="
 echo "Toolkit:   $TOOLKIT"
 echo "Config:    $TOOLKIT/.claude/x4-paths.env  (edit any path here)"

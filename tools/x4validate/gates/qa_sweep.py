@@ -181,7 +181,7 @@ def _newest_groundtruth() -> str:
         hits = sorted((_env.mods_dir() / "_reports").glob("groundtruth-*.tsv"))
         if hits:
             return str(hits[-1])
-    except Exception:
+    except (Exception, SystemExit):   # _env.* raises SystemExit, a BaseException
         # silent-ok: absence IS the answer here, and the cell reports it as rc 2.
         pass
     return str(ROOT / "__no_groundtruth_fixture__.tsv")
