@@ -24,15 +24,37 @@ import pathlib
 import re
 import sys
 
-DEV = pathlib.Path(__file__).resolve().parents[3] / "dev"
 _LINE = re.compile(r'^local BUILD = "([0-9a-f]{8})"$', re.M)
+
+
+#: The extension ships at `mods/` in the public toolkit and at `dev/` in the private
+#: workspace, so BOTH are searched, in that order.
+#:
+#: MEASURED 2026-09-01: this looked only at `parents[3]/"dev"`, which does not exist in
+#: the public repo -- so `mod_lua()` returned None there, `--check` printed "nothing to
+#: stamp" and exited 0, and the staleness gate passed by never running. The mod's BUILD
+#: line sat at e1af07d7 while its content hashed to 539c405e. A deployed-but-not-loaded
+#: mod is the exact failure this file was written to catch, and it was blind to it in
+#: the only tree that ships.
+#:
+#: `tests/test_modlua_rearm.py::_find_mod_lua` is the same lookup; the two are pinned
+#: equal by a test, because this defect IS that divergence.
+_ROOTS_ORDER = ("mods", "dev")
+
+
+def roots() -> list[pathlib.Path]:
+    base = pathlib.Path(__file__).resolve().parents[3]
+    return [base / n for n in _ROOTS_ORDER if (base / n).is_dir()]
 
 
 def mod_lua() -> pathlib.Path | None:
     #: Located by GLOB, never by a spelled-out folder name -- this file ships, and the
     #: mod's folder carries a personal prefix the mirror's scanner would catch.
-    found = sorted(DEV.glob("*/ui/*live_query.lua")) if DEV.is_dir() else []
-    return found[0] if found else None
+    for d in roots():
+        found = sorted(d.glob("*/ui/*live_query.lua"))
+        if found:
+            return found[0]
+    return None
 
 
 def expected(text: str) -> str:
@@ -49,7 +71,16 @@ def current(text: str) -> str | None:
 def main(argv: list[str]) -> int:
     p = mod_lua()
     if p is None:
-        print("no game-side mod lua found under dev/; nothing to stamp")
+        # "I could not look" is not "there is nothing to stamp". When a root EXISTS but
+        # holds no mod the layout is broken, and returning 0 there is a green printed
+        # over a check that never ran -- which is how the stale BUILD survived.
+        found = roots()
+        if found:
+            print("searched %s and found no game-side mod lua -- a root exists but holds "
+                  "no mod, which is a broken layout, not an absent one"
+                  % ", ".join(str(d) for d in found))
+            return 2
+        print("no mods/ or dev/ root in this tree; nothing to stamp")
         return 0
     text = p.read_text(encoding="utf-8")
     cur, exp = current(text), expected(text)

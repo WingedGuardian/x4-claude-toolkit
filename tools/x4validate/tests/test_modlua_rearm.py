@@ -975,7 +975,7 @@ def test_the_BUILD_constant_matches_the_file():
 
     p = stamp.mod_lua()
     if p is None:
-        _require_mod_lua(None, _ROOTS if "_ROOTS" in dir() else [], "game-side mod lua")
+        _require_mod_lua(None, _ROOTS, "game-side mod lua")
     text = p.read_text(encoding="utf-8")
     cur, exp = stamp.current(text), stamp.expected(text)
     assert cur is not None, "the mod lost its BUILD line"
@@ -2061,7 +2061,7 @@ def test_GetMacroUnitStorageCapacity_is_NOT_in_the_object_id_list(lua_factory):
     MEASURED by scripts/verify-cold.sh, which is the only run that has no dev tree.
     """
     if MOD_LUA is None:
-        _require_mod_lua(None, _ROOTS if "_ROOTS" in dir() else [], "game-side mod lua")
+        _require_mod_lua(None, _ROOTS, "game-side mod lua")
     src = MOD_LUA.read_text(encoding="utf-8")
     obj = re.search("local RECON_OBJ = [{](.*?)[}]", src, re.S).group(1)
     mac = re.search("local RECON_MACRO = [{](.*?)[}]", src, re.S).group(1)
