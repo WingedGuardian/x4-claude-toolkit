@@ -370,22 +370,45 @@ export X4_REFERENCE="$_sr"
 # resolves fine that way. So the probes below deliberately close stdin instead:
 # they reproduce the PRODUCTION condition, which piping never can.
 echo; echo "=== stdin contract ==="
-for h in protect-bash.sh protect-files.sh search-scope.sh backup-before-edit.sh; do
+# The property is NOTHING MAY BE SILENT -- not "everything must prompt". A hook that
+# emits nothing has decided "this is fine", which is how five hooks sat dead for weeks.
+#
+# But the verdict differs by KIND, and conflating them cost a real contradiction: the
+# two guards that can REFUSE must ask, while search-scope.sh is advisory-only and its own
+# header says "ADVISE, never ask -- it must cost me a note and the user nothing". It was
+# escalating to a PROMPT on every Grep/Glob if the stdin defect ever recurred.
+# x4validate-on-edit.sh already makes the advisory call for the same situation.
+#
+# Safety is not weakened: a systemic stdin failure is still reported by protect-bash and
+# protect-files, which is where a refusal actually matters.
+for h in protect-bash.sh protect-files.sh backup-before-edit.sh; do
   out=$(bash "$HOOKS/$h" </dev/null 2>/dev/null)
   got=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null)
   [ -z "$got" ] && got="allow"
   if [ "$got" = "ask" ]; then ok "$h asks when it received no input"
   else no "$h -- empty stdin read as '$got'; silence IS allow"; fi
 done
+for h in search-scope.sh; do
+  out=$(bash "$HOOKS/$h" </dev/null 2>/dev/null)
+  if [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
+    ok "$h (advisory) still SAYS something when it received no input"
+  else no "$h -- empty stdin produced NO OUTPUT at all; silence IS allow"; fi
+done
 # ...and the refusal itself must not depend on the tool that may have failed.
 # MEASURED 2026-08-30: x4_require_input emitted its `ask` THROUGH jq, so with jq
 # unavailable an empty payload was reported by nothing at all -- allow again.
-for h in protect-bash.sh protect-files.sh search-scope.sh backup-before-edit.sh; do
+for h in protect-bash.sh protect-files.sh backup-before-edit.sh; do
   out=$(JQ=no_such_jq_binary bash "$HOOKS/$h" </dev/null 2>/dev/null)
   got=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null)
   [ -z "$got" ] && got="allow"
   if [ "$got" = "ask" ]; then ok "$h asks on empty input even with jq unavailable"
   else no "$h -- empty input + broken jq read as '$got'; the refusal ran through the broken tool"; fi
+done
+for h in search-scope.sh; do
+  out=$(JQ=no_such_jq_binary bash "$HOOKS/$h" </dev/null 2>/dev/null)
+  if [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
+    ok "$h (advisory) still SAYS something with jq unavailable"
+  else no "$h -- empty input + broken jq produced NO OUTPUT; the note ran through the broken tool"; fi
 done
 # The static half. A runtime probe only covers the hooks it lists; this covers any
 # hook, including one added later, and it is the cheaper of the two to keep true.

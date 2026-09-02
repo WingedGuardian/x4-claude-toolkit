@@ -16,8 +16,12 @@
 # wrapper verbs (time/nice/env/sudo/xargs), `grep -r -e`, rg being recursive by default,
 # and a heredoc marker inside a quoted string opening a skip region. Fixing them one
 # predicate at a time meant writing the same parser eight more times. The parse pass is
-# unit-tested directly (test_hook_facts.py, 99 tests) and every test is proven able to
-# fail by a planted mutation (13 of 13), with all 19 predicates probed in both directions.
+# unit-tested directly, and every test is proven able to FAIL by a planted mutation with
+# every predicate probed in both directions. The counts are deliberately not written
+# here -- they rot, and a stale number in a comment is worse than none:
+#     python .claude/hooks/test_hook_facts.py     (the unit tests)
+#     python scripts/verify-hook-tests.py         (mutations + predicate coverage)
+#     python scripts/fuzz-guard.py                (syntax-bypass fuzzing)
 JQ="${JQ:-jq}"
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$HOOK_DIR/_x4-env.sh"

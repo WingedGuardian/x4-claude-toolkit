@@ -49,7 +49,7 @@ runs exactly this shape in production.
     BEFORE SENDING, not detected afterwards. Any verb whose result set is
     unbounded caps itself and reports `shown=N of M`.
 
-    The ceiling is still not fully known: python buffers 64 KB (`_BUF`), and the
+    The ceiling is still not fully known: python buffers 1 MiB (`_BUF`, raised from
     ramp MEASURED every size up to 64,000 bytes round-tripping intact on
     2026-08-29 -- which refuted an earlier untraceable 2047-byte figure. The true
     ceiling lies above our own buffer and cannot be probed without raising it.

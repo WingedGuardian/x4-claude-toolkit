@@ -130,7 +130,8 @@ mod — in about a second.
 cd tools/basex
 bash build-corpus.sh        # one-off index of every file AS WRITTEN
 bash build-effective.sh     # one-off index of the merged, live tree
-uv run python ask.py "which ships set a drag value below 1?"
+uv run python ask.py attr drag          # every value this attribute takes
+uv run python ask.py refs turret_x --db x4eff   # who references it, in the LIVE tree
 ```
 
 Use it for the questions a grep cannot answer honestly: *what values does this attribute take across
@@ -181,11 +182,12 @@ tiers behind each answer.
 - `cross-file-impact` / `mod-research` subagents — trace the fan-out / research a mod before editing.
 
 ### Safety, built in
-- **Command + file guards** — block writes to `reference\` and direct `.cat`/`.dat` edits; confirm edits to mod manifests and profile files.
+- **Command + file guards** — block writes to `reference\` and direct `.cat`/`.dat` edits; confirm edits to profile files. A mod manifest is ADVISED rather than confirmed
+  (a deliberate 2026-08-29 choice: the note is worth having, the interruption is not).
 - **Auto-backup** — every edited file is copied to `.claude\backups\` with an audit log.
 - **Confidence system** — no guessing; Claude rates confidence and lists assumptions first.
 - **Baseline capture** — `scripts/generate-baseline.sh` records a known-good snapshot (game version, installed-mod hashes, a normalized debug.txt error fingerprint) to diff against later.
-- **The guards are tested** — `bash scripts/test-hooks.sh` feeds every hook synthetic tool-call JSON and asserts the decision it returns, across both the in-game and separate layouts. `python .claude/hooks/test_hook_facts.py` adds ~100 unit tests over the command parser in well under a second. Run both after any change to `.claude/hooks/`. This exists because a silent guard is worse than no guard: several hooks were inert for entire releases and code review never caught it. Coverage is *verified* rather than claimed: `python scripts/verify-hook-tests.py` plants a specific defect and requires the **named** test for it to go red, then pins each rule true and false in turn and requires a must-fire / must-not-fire test to break each way. A suite that cannot go red is decoration, and several guards here were inert for entire releases while their suite was green.
+- **The guards are tested** — `bash scripts/test-hooks.sh` feeds every hook synthetic tool-call JSON and asserts the decision it returns, across both the in-game and separate layouts. `python .claude/hooks/test_hook_facts.py` adds unit tests over the command parser in well under a second. Run both after any change to `.claude/hooks/`. This exists because a silent guard is worse than no guard: several hooks were inert for entire releases and code review never caught it. Coverage is *verified* rather than claimed: `python scripts/verify-hook-tests.py` plants a specific defect and requires the **named** test for it to go red, then pins each rule true and false in turn and requires a must-fire / must-not-fire test to break each way. A suite that cannot go red is decoration, and several guards here were inert for entire releases while their suite was green.
 
 ---
 

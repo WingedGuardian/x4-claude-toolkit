@@ -8,7 +8,8 @@
 #
 # What CI can and cannot cover, stated plainly rather than implied:
 #   CAN  — the unit/regression suite. MEASURED on a clean `git archive` checkout with NO
-#          game installed and no env vars set: 397 passed, exit 0, ~12 s.
+#          game installed and no env vars set. The pass count is deliberately not
+#          written here -- it rots, and CI prints the real one every run.
 #   CANNOT — the `gates/` suite. Those are integration checks that need a real X4 install,
 #          an unpacked reference tree and a live mod list. They stay a local, pre-release
 #          step. A green CI badge therefore means "the code is sound", NOT "the gates pass".

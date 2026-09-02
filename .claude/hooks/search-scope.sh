@@ -28,7 +28,14 @@ HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 advise() { x4_advise "$1"; exit 0; }   # shared emitter: survives a missing jq
 
 INPUT=$(x4_hook_input)
-x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it checked nothing. Allowing silently is how five hooks sat dead for weeks while their suites passed. Confirm only if you know why the payload is missing."
+# ADVISE, never ask -- this file's own header says so, and it escalated to a PROMPT on
+# every Grep/Glob if the stdin defect ever recurred. A partial-answer warning is about
+# MY instrument choice: it must cost me a note and the user nothing.
+# x4validate-on-edit.sh makes the same (correct) call for the same situation.
+if [ -z "$INPUT" ]; then
+  x4_advise "X4 SEARCH-SCOPE INERT: this hook received NO INPUT, so it checked nothing. Your search may be reading a partial picture (packed mods are invisible to a text search). Nothing is blocked."
+  exit 0
+fi
 FP=$(x4_field "$INPUT" 'tool_input.path')   # shared reader: survives a missing jq
 [ -z "$FP" ] && exit 0
 [ -z "${X4_EXTENSIONS:-}" ] && exit 0

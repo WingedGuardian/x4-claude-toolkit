@@ -1,6 +1,6 @@
 # Changelog
 
-## v3.0.0
+## v3.0.0 — 2026-09-01
 
 Three things make this a major version rather than a point release: the Bash guard was
 rebuilt around a single parse pass, the toolkit gained a **live channel to the running
@@ -217,13 +217,13 @@ Python fallback emitter, so a broken jq still produces the correct verdict.
 
 ### Added — every guard rule is now probed in both directions, and proven able to fail
 
-`.claude/hooks/test_hook_facts.py` — 92 unit tests over the parse pass, run in ~15 ms with no
+`.claude/hooks/test_hook_facts.py` — unit tests over the parse pass, run in well under a second with no
 dependencies (`python .claude/hooks/test_hook_facts.py`).
 
 Coverage is *verified*, not asserted: pinning each predicate false must break a must-fire test, and
 pinning it true must break a must-not-fire test. **All 19 rule predicates pass both**, where a review
 had found several rules with no probe at all (`sed -i`, XRCatTool re-unpack, the durable-record
-rules, the timeout cap, the workspace-root search). Twelve planted mutations are each caught by their
+rules, the timeout cap, the workspace-root search). Every planted mutation is caught by its
 specific target test — the first run caught **three tests that were passing for the wrong reason**,
 including one shadowed by a guard clause in front of the thing it meant to test.
 
@@ -274,7 +274,7 @@ deployed-copy rule and the game-install block, so editing a **deployed mod's `co
 and never confirmed** — and the deployed-copy rule's three branches were unreachable for a manifest.
 
 Advisories now accumulate and are emitted once, on every exit path (`trap`), while refusals and
-confirmations stay terminal. Probes 67 → 76. Two of the new probe EXPECTATIONS turned out to be wrong
+confirmations stay terminal. Two of the new probe EXPECTATIONS turned out to be wrong
 rather than the code, and both had only ever passed because the advisory masked them.
 
 ### Fixed — the same silence one layer in: a failed jq parse, and a refusal that ran through jq

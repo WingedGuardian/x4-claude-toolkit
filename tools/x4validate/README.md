@@ -184,7 +184,7 @@ answer about a game that has been **closed**. `query` is the complement: a fixed
 **read-only** vocabulary asked of the running engine over a named pipe. There are no
 write verbs in it — not gated, not present.
 
-We create the pipe and the game connects to it, which is why the game-side mod is three
+We create the pipe and the game connects to it, which is why the game-side mod is four
 files and **zero MD**: `sn_mod_support_apis`' `pipes.lua` opens a *client* handle and does
 not care who served it, so `Pipe_Server_Host`, `Register_Module` and `permissions.json`
 are all unnecessary. Requires `pywin32` (a Windows-only dev dependency); without it the
@@ -194,7 +194,8 @@ command refuses with rc 2 naming the reason, and every offline subcommand still 
 *"If the message is larger than the lua side buffer, returns partial data and error
 `ERROR_MORE_DATA`. TODO: look into this."* That TODO is unhandled, and a truncated TSV
 row is still a well-formed TSV row. The real ceiling is undocumented — python buffers
-64 KB, an earlier note claimed 2047 bytes from the winpipe DLL with no traceable source,
+1 MiB (raised from 64 KB so the ceiling could be probed at all), an earlier note
+claimed 2047 bytes from the winpipe DLL with no traceable source,
 and the mod's own readme states no limit — so every reply carries its own **byte length
 and checksum**, and `ramp` measures the ceiling instead of assuming it.
 
@@ -414,7 +415,7 @@ handled here — it is a secret, not a path, and must never be written to a file
 - `x4validate/_xsd.py` — schema validation: script files as written, data files as merged
   (differential — see `introduced`).
 - `x4validate/_check.py` — orchestration + t-file union; `_cli.py` — CLI.
-- `tests/` — `uv run pytest` (616 tests as of v2.5.0, incl. the x4cat spike cases).
+- `tests/` — `uv run pytest` (the count is deliberately not written here; it rots).
 - `gates/` — measured against the engine / the real modlist, not fixtures. Four engine
   gates: `oracle.py` (diff layer, 0 FALSE OK), `oracle_index.py` (index layer),
   `regress.py` (per-mod Tier A/B sweep), `schema_sweep.py` (effective-schema
@@ -436,22 +437,22 @@ handled here — it is a secret, not a path, and must never be written to a file
   network path, replayed offline).
   v2.2.0 adds `registry_provenance.py` (a guessed mod identity may never produce a
   confident verdict).
-  **26 in total.** See `gates/README.md` for the bar each one holds.
+  See `gates/README.md` for the roster and the bar each one holds; `bash scripts/run-gates.sh --list` prints the live count.
 - `docs/TRUST.md` — **start here if you are deciding whether to rely on this.** Every
   defect *shape* ever found in the toolkit, the measured cost when it happened, and
   the test or gate that now bans it — so *"is this shape guarded?"* is a lookup, not a
   matter of confidence. It also states plainly where the tools cannot be trusted.
 - `docs/QA-PROCESS.md` — the process these gates came out of: what to test, in what
   order, and when it is honest to call a tool releasable. Read it before adding a tool.
-- `docs/BLIND-SPOTS.md` — the narrowing-point register: every place a step could
-  narrow the data and report success anyway, each with a **measured denominator** and
-  an explicit STATE (re-verified against the code 2026-08-22). Includes the findings
-  that turned out **not** to be defects — a register without its negatives has no
-  denominator either.
-- `CHANGELOG.md` — starts at **2.3.0**. Read the 2.3.0 entry before upgrading: it
-  carries a **breaking change to `x4compat --json` output** (SUBTREE rows no longer
-  populate `winner`; use `wiped_by`, or `live_value_owner()`) shipped under a minor
-  version bump, so the version number alone does not warn you.
+- WARNING `docs/BLIND-SPOTS.md` is referenced above and **is not shipped**: it names a
+  private modlist, so it stays in the development tree (`tests/test_blind_spots_ids.py`
+  pins that). Its *conclusions* reach you through the code comments and this README;
+  the register itself does not.
+- The repository ROOT's `CHANGELOG.md` covers this package too — there is no separate
+  one here. Read the **2.3.0** entry before upgrading from below it: it carries a
+  **breaking change to `x4compat --json`** (SUBTREE rows no longer populate `winner`;
+  use `wiped_by`, or `live_value_owner()`) shipped under a MINOR version bump, so the
+  version number alone does not warn you.
 
 ## Extending
 Add reference types by extending the catalog in `_refs.py`; add completeness

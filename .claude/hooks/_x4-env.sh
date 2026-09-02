@@ -3,7 +3,12 @@
 # SOURCE this (do not execute). Single source of truth for the configurable X4 locations
 # so nothing is hardcoded to one OS or one user's folder layout.
 #
-# Resolution order for each value:  existing env var  >  .claude/x4-paths.env  >  default.
+# Resolution order for each value:  .claude/x4-paths.env  >  existing env var  >  default.
+#
+# NB the FILE WINS over the environment, which is the opposite of what this line said
+# until 2026-09-01. install.sh writes bare KEY="value" lines and this file sources them
+# with `set -a`, so a plain assignment overwrites whatever was exported. If you need an
+# env var to take precedence, write the entry as: KEY="${KEY:-value}".
 # All locations are overridable; see .claude/x4-paths.env.example for the keys.
 
 # Toolkit root (where this toolkit lives).

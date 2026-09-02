@@ -354,7 +354,7 @@ end
 
 --: Bound REPLIES before sending. An over-long message does not truncate, it tears
 --: the pipe down (see the header), so an unbounded enumeration is a connection
---: killer rather than a short answer. 32000 is half the 64,000 bytes proven to
+--: killer rather than a short answer. 32000 is well under the 524,288 bytes proven to
 --: round-trip in game, which leaves room for the frame header and any single
 --: oversized row.
 local MAX_PAYLOAD = 32000
@@ -364,7 +364,7 @@ local MAX_PAYLOAD = 32000
 --:
 --: ⚠ MEASURED IN GAME 2026-08-29: without this, `ships argon` capped its rows at
 --: exactly 32000 and then added a 143-byte header, shipping 32143 bytes against a
---: "32000-byte" budget. Harmless in itself -- the proven ceiling is 64,000 -- but the
+--: "32000-byte" budget. Harmless in itself -- the proven ceiling is 524,288 -- but the
 --: number did not mean what it said, and a budget you cannot trust is not a budget.
 --:
 --: ★ The test was complicit: it asserted `<= 32000 + 200`. That 200-byte slack was
