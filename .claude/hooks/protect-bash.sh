@@ -183,16 +183,22 @@ TIMEOUT_MS="${_t%%
 *}"
 
 # === REFUSE — the command did not PARSE, so no rule below means anything ===
-# FIRST, deliberately. Every rule here is quote-aware, so a single unbalanced quote
-# turns the rest of the command into text no rule can see -- and a rule that sees
-# nothing returns false, which is indistinguishable from "this is fine".
+# FIRST, deliberately. Every rule here is quote-aware, so one unbalanced quote turns the
+# rest of the command into text no rule can see -- and a rule that sees nothing returns
+# false, which is indistinguishable from "this is fine".
 #
-# MEASURED 2026-09-01 against c400a05, which refused BOTH members of every pair: one
-# apostrophe in an ordinary English comment ("this doesn't need the old install") turned
-# 5 of 5 refusals into a silent allow, the game-delete HARD BLOCK among them. The
-# escape and comment handling below it fix the known trigger; THIS rule is what makes
-# the next unknown one a refusal instead of a hole.
-on unparseable_command && ask "This command does not parse: a quote is opened and never closed, so the guard could evaluate NO rule against it and cannot vouch for it. (Comments and heredoc bodies are excluded from this check, so an apostrophe in prose is fine.) Check the quoting, or confirm if you know the command is safe."
+# BASH ITSELF IS THE JUDGE. `-n` parses and executes nothing, costs ~14 ms against a
+# ~186 ms budget, and needs no dependency: this hook already IS bash.
+#
+# The hand-rolled scanner this replaces was wrong in BOTH directions, MEASURED over
+# 13,203 historical commands against bash: 13 FALSE POSITIVES (command substitution
+# inside double quotes resets the quoting context, which a flat scanner cannot model)
+# and 6 FALSE NEGATIVES. Three parser defects shipped from hand-rolling shell
+# tokenisation in one release; this is the one place where the real parser is available
+# for the asking, so it is asked.
+if ! bash -n -c "$COMMAND" 2>/dev/null; then
+  ask "This command does not PARSE (bash -n rejects it), so the guard could evaluate NO rule against it and cannot vouch for it. Check the quoting -- a Windows path ending in a backslash inside double quotes is the usual cause. Confirm only if you know the command is safe."
+fi
 
 # === HARD BLOCK — delete the game installation ===
 # The target must be a real path in the tree, OR bear the game's name while not being

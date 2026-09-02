@@ -92,11 +92,10 @@ MUTANTS = [
      "test_comment_apostrophe_does_not_hide_a_game_delete"),
     ("the string rules read the CLEANED text, not the raw command",
      "    stripped = body", "    stripped = strip_heredocs(cmd)",
-     "test_comment_apostrophe_does_not_hide_git_add_all"),
-    ("an unparseable command is REPORTED, never silently allowed",
-     "        \"unparseable_command\": ends_open_quote(body),",
-     "        \"unparseable_command\": False,",
-     "test_a_genuinely_unbalanced_quote_is_flagged"),
+     "test_a_comment_apostrophe_does_not_hide_a_long_job"),
+    # The parseability check moved OUT of hook_facts into protect-bash.sh, which asks
+    # `bash -n`. It is covered E2E in scripts/test-hooks.sh -- a mutation of the real
+    # shell parser is not something this gate can plant.
     ("a heredoc BODY is data for the operand rules too",
      "    all_cmds = [body] + _inner_commands(body)",
      "    all_cmds = [cmd] + _inner_commands(cmd)",

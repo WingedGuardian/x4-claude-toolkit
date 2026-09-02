@@ -93,6 +93,17 @@ def join_cwd(cwd: str, p: str) -> str:
 # ---------------------------------------------------------------- tokenising
 _OPERATORS = ("&&", "||", ";", "|", "&", "\n")
 
+# Inside DOUBLE quotes bash treats a backslash as an escape ONLY before these five.
+# Before anything else it is a LITERAL backslash -- which is how every Windows path is
+# written.
+#
+# MEASURED 2026-09-01: unescaping unconditionally turned a quoted Windows path into one
+# with the separators deleted, so it matched no root and a delete of the game install
+# fired NOTHING -- the HARD BLOCK bypassed by the most natural way a Windows user writes
+# a path. c400a05 denied it; the parse pass allowed it. Five call sites carried the same
+# wrong rule; this constant is the single answer.
+_DQ_ESCAPES = "$" + chr(96) + chr(34) + chr(92) + chr(10)
+
 
 def _scan(s: str):
     """Yield (char, in_quote) so every helper can respect quoting identically.
@@ -111,7 +122,8 @@ def _scan(s: str):
             yield c, True
             if c == q:
                 q = ""
-            elif c == chr(92) and q == '"' and i + 1 < len(s):
+            elif (c == chr(92) and q == '"' and i + 1 < len(s)
+                  and s[i + 1] in _DQ_ESCAPES):
                 i += 1
                 yield s[i], True
         elif c == chr(92) and i + 1 < len(s):
@@ -124,36 +136,6 @@ def _scan(s: str):
         else:
             yield c, False
         i += 1
-
-
-def ends_open_quote(s: str) -> bool:
-    """True when the scan finishes inside a quote -- i.e. this text did not parse.
-
-    ★ This is the class-killer. Every helper here is quote-aware, so ONE unbalanced
-    quote silently converts the remainder of a command into 'quoted' text that no rule
-    can see. MEASURED 2026-09-01 against c400a05, which denied both members of every
-    pair: a single apostrophe in an ordinary English comment turned 5 of 5 refusals --
-    including the game-delete HARD BLOCK, the reference block and `git add -A` -- into
-    a silent allow. Position pins it: the same apostrophe placed AFTER the command
-    still denies.
-
-    A parser that cannot parse must SAY SO rather than return a confident empty answer.
-    """
-    q = ""
-    i = 0
-    while i < len(s):
-        c = s[i]
-        if q:
-            if c == q:
-                q = ""
-            elif c == chr(92) and q == '"':
-                i += 1
-        elif c == chr(92):
-            i += 1
-        elif c in "\"'":
-            q = c
-        i += 1
-    return bool(q)
 
 
 def strip_comments(s: str) -> str:
@@ -169,7 +151,8 @@ def strip_comments(s: str) -> str:
             out.append(c)
             if c == q:
                 q = ""
-            elif c == chr(92) and q == '"' and i + 1 < len(s):
+            elif (c == chr(92) and q == '"' and i + 1 < len(s)
+                  and s[i + 1] in _DQ_ESCAPES):
                 i += 1
                 out.append(s[i])
         elif c == chr(92) and i + 1 < len(s):
@@ -279,7 +262,8 @@ def tokens(seg: str) -> list[tuple[str, bool]]:
         if q:
             if c == q:
                 q = ""
-            elif c == chr(92) and q == '"' and i + 1 < len(seg):
+            elif (c == chr(92) and q == '"' and i + 1 < len(seg)
+                  and seg[i + 1] in _DQ_ESCAPES):
                 i += 1
                 buf.append(seg[i])
             else:
@@ -385,7 +369,8 @@ def _quote_mask(s: str) -> list[bool]:
             mask[i] = True
             if c == q:
                 q = ""
-            elif c == chr(92) and q == '"' and i + 1 < len(s):
+            elif (c == chr(92) and q == '"' and i + 1 < len(s)
+                  and s[i + 1] in _DQ_ESCAPES):
                 mask[i + 1] = True
                 i += 1
         elif c in "\"'":
@@ -554,9 +539,15 @@ _ARG_FLAGS = {"-e", "-f", "-m", "-A", "-B", "-C", "-d", "-g", "-t",
 _PATTERN_FLAGS = {"-e", "-f", "--regexp", "--file"}
 
 
-def search_paths(seg: str) -> list[str]:
-    """Paths a RECURSIVE search runs over. The first non-flag operand is the PATTERN --
-    unless -e/-f supplied it, in which case every remaining operand is a path."""
+def search_paths(seg: str, require_recursive: bool = True) -> list[str]:
+    """Paths a search runs over. The first non-flag operand is the PATTERN -- unless
+    -e/-f supplied it, in which case every remaining operand is a path.
+
+    `require_recursive=False` gives the file operands of a NON-recursive search too.
+    The profile rule needs those (grepping a manifest by name is not recursive) and
+    used to reach for the raw command text instead, which is what made it fire on a
+    grep of a local file that merely sat beside a mention of the profile. One
+    implementation of the pattern-vs-file logic, two callers."""
     v = verb(seg)
     if v not in SEARCH_VERBS:
         return []
@@ -585,7 +576,7 @@ def search_paths(seg: str) -> list[str]:
         if not quoted and (t.startswith(("<", ">")) or re.match(r"^\d+>", t)):
             continue
         ops.append(t)
-    if not recursive:
+    if require_recursive and not recursive:
         return []
     return ops if pattern_given else ops[1:]
 
@@ -625,6 +616,71 @@ def cwd_track(cmd: str, base: str = "") -> list:
         elif v == "popd" and stack:
             cwd = stack.pop()
     return out
+
+
+# ------------------------------------------------- rules that were raw-string regexes
+# Each ANDed two independent predicates over the WHOLE command text, so it fired when
+# both merely APPEARED anywhere -- and missed when the real invocation did not match the
+# regex's assumed shape. MEASURED 2026-09-01, both directions on the same four rules:
+#   FALSE POSITIVES  an in-place edit of a local file with the game named in a COMMENT
+#                    a grep whose PATTERN mentions the shared temp dir
+#                    a grep of a local file beside a cat of a profile manifest
+#   BYPASSES (found by scripts/fuzz-guard.py, which mutates only surrounding syntax)
+#                    `( git add -A )` and `PYTHONIOENCODING=utf-8 git add -A` -> allow
+# Same root cause in both directions, so one fix: ask the parser which VERB runs and
+# what its OPERANDS are, instead of searching the text.
+
+GIT_ADD_ALL = {"-A", "--all", "."}
+
+
+def git_adds_everything(seg):
+    """`git add -A|--all|.` -- seen through a subshell, an env prefix, a wrapper and
+    `git -C <path> add`, none of which the old anchored regex allowed."""
+    if verb(seg) != "git":
+        return False
+    toks = [t for t, _q in tokens(seg)]
+    if "add" not in toks:
+        return False
+    return any(t in GIT_ADD_ALL for t in toks[toks.index("add") + 1:])
+
+
+def sed_in_place_targets(seg):
+    """Paths an in-place `sed` would rewrite. `-i` may carry a suffix (`-i.bak`). The
+    first operand is the SCRIPT, not a file -- but a script never resolves under a root,
+    so keeping it costs nothing while dropping it would need -e/-f handling."""
+    if verb(seg) not in ("sed", "gsed"):
+        return []
+    inplace = any((not q) and (t.startswith("-i") or t.startswith("--in-place"))
+                  for t, q in tokens(seg))
+    return _operands(seg) if inplace else []
+
+
+_OUT_FLAGS = ("-o", "--output")
+
+
+def output_targets(seg):
+    """Files a command writes via an explicit output flag: `-o PATH`, `--output PATH`,
+    `--output=PATH`. Kept deliberately: scoping the shared-temp rule to redirects alone
+    would silently stop covering a download written with an output flag, which the old
+    regex did cover."""
+    out, toks, i = [], tokens(seg), 0
+    while i < len(toks):
+        t, q = toks[i]
+        if (not q) and t in _OUT_FLAGS and i + 1 < len(toks):
+            out.append(toks[i + 1][0])
+            i += 2
+            continue
+        if (not q) and t.startswith("--output="):
+            out.append(t.split("=", 1)[1])
+        i += 1
+    return out
+
+
+SEARCH_NAMES = {"grep", "egrep", "fgrep", "rg", "ag", "ack", "findstr", "select-string"}
+
+
+def searches(seg):
+    return verb(seg).lower() in SEARCH_NAMES
 
 
 # ------------------------------------------------------------------- $? rule
@@ -719,9 +775,16 @@ def facts(payload: dict, roots: dict) -> dict:
         return out
 
     rm_t, copy_t, redir_t = [], [], []
+    sed_t, out_t, search_files = [], [], []
+    search_seg, git_all = False, False
     for s, c_cwd in seg_cwd:
         rm_t += prep(rm_paths(s), c_cwd)
         copy_t += prep(copy_dests(s), c_cwd)
+        sed_t += prep(sed_in_place_targets(s), c_cwd)
+        out_t += prep(output_targets(s), c_cwd)
+        search_files += prep(search_paths(s, require_recursive=False), c_cwd)
+        search_seg = search_seg or searches(s)
+        git_all = git_all or git_adds_everything(s)
         for mode, tgt in redirects(s):
             redir_t += [(mode,) + o for o in prep([tgt], c_cwd)]
 
@@ -744,6 +807,7 @@ def facts(payload: dict, roots: dict) -> dict:
                 return True
         return False
 
+    redir_t_all = [(p, u, r) for _m, p, u, r in redir_t]
     writes_any = copy_t + rm_t + [(p, u, r) for _, p, u, r in redir_t]
     trunc_redirect = [(p, u, r) for m, p, u, r in redir_t if m == "truncate"]
 
@@ -831,16 +895,20 @@ def facts(payload: dict, roots: dict) -> dict:
         "redirect_truncate_into_game_or_profile": (
             hit(trunc_redirect, "game") or hit(trunc_redirect, "profile")),
 
-        "sed_i_in_game_or_profile": bool(re.search(r"sed\s+-i", stripped_blank)) and (
-            (roots.get("game") and norm(roots["game"]) in ncmd)
-            or (roots.get("profile") and norm(roots["profile"]) in ncmd)
-            or bool(LEGACY_GAME.search(cmd))),
+        # The FILE sed rewrites must be under a root. Was: the text "sed -i" anywhere
+        # AND a root named anywhere -- so editing a local file while a comment happened
+        # to mention the game was a non-overridable DENY.
+        "sed_i_in_game_or_profile": (hit(sed_t, "game") or hit(sed_t, "profile")
+                                     or any((not u) and LEGACY_GAME.search(pp)
+                                            for pp, u, _r in sed_t)),
 
         # re.M is load-bearing: the bash original used grep, which is LINE based, so `^`
         # matched every line start. Without it this only saw a command whose very first
         # characters were `git add`, and multi-line commands are routine here.
-        "git_add_all": bool(re.search(r"(^|[;&|]\s*)git\s+add\s+(-A\b|--all\b|\.\s*$|\.\s*[;&|])",
-                                      stripped_blank, re.M)),
+        # Parsed, not matched. The old anchor required `git` to begin a segment, so a
+        # subshell wrap and an env-assignment prefix both slipped past it -- found by
+        # scripts/fuzz-guard.py, not by any hand-written test.
+        "git_add_all": git_all,
         # Matched on the token AS WRITTEN as well as resolved: a durable record is
         # recognised by its filename, which survives either form.
         "durable_truncating_redirect": any(DURABLE.search(p) or DURABLE.search(raw)
@@ -851,20 +919,29 @@ def facts(payload: dict, roots: dict) -> dict:
         "search_rooted_reference": rooted(roots.get("reference")),
         "search_rooted_workspace": any(rooted(roots.get(k)) for k in
                                        ("toolkit", "game", "mods")),
+        # The SEARCHED PATH must be the profile. Was: any search verb anywhere AND the
+        # profile named anywhere AND "content" anywhere -- so a grep of a local file
+        # beside an unrelated cat of the manifest was a DENY.
         "profile_search_by_name": (
-            bool(re.search(r"\b(grep|rg|ag|findstr|Select-String)\b", stripped, re.I))
-            and ((roots.get("profile") and norm(roots["profile"]) in ncmd)
-                 or "X4_PROFILE" in cmd)
-            and "content" in cmd.lower()
+            search_seg
+            # An operand naming the profile ENV VAR is the profile, even though its
+            # text never contains the path -- the same evidence the delete rules use.
+            # Without this, the env-var form was lost when the rule stopped matching
+            # raw command text.
+            and any("content" in norm(_r) and (
+                        ("profile" in root_vars_named(_r))
+                        or (roots.get("profile") and (not u)
+                            and under(pp, roots["profile"])))
+                    for pp, u, _r in search_files)
             and not re.search(r"ws_[0-9]{4,}", cmd)),
 
-        # A parser that cannot parse must SAY SO. Checked on the text the rules actually
-        # read -- heredoc bodies and comments removed first, because an apostrophe is
-        # ordinary English in both and must not raise an alarm there.
-        "unparseable_command": ends_open_quote(body),
-
         "dollarq_after_pipe": dollarq_after_pipe(cmd),
-        "write_to_tmp": bool(re.search(r"(>|>>|-o|--output[= ])\s*[\"']?/tmp/", cmd)),
+        # A redirect or output-flag TARGET under the shared temp dir. Was a raw regex
+        # with no heredoc strip and no quote blanking, so it fired on a grep PATTERN, on
+        # quoted prose and on heredoc bodies -- while its message tells you to use the
+        # scratchpad. It denied three of this session's own analysis commands.
+        "write_to_tmp": any(under(pp, "/tmp") for pp, u, _r in redir_t_all + out_t
+                            if not u),
         "timeout_over_cap": isinstance(timeout, int) and timeout > 600000,
         "longjob_foreground": longjob and background is not True,
         "xrcat_reunpack": (bool(re.search(r"xrcat", cmd, re.I))

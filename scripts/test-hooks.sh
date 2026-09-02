@@ -302,7 +302,7 @@ echo
 # run still prints a cheerful total. That happened while adding the probe above: bash
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
-EXPECT=127
+EXPECT=134
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -378,6 +378,42 @@ fi
 # exited 0 with EMPTY stdout -- the jq call failed, $COMMAND came back empty, and
 # `[ -z "$COMMAND" ] && exit 0` treated "could not parse" as "nothing to check".
 # Same shape as the stdin contract, one layer in.
+AP=$(printf '\047')
+Q=$(printf '\042')
+# ONE backslash. `printf '\\\\'` emits TWO (single quotes keep both pairs) and the
+# probe below then builds a validly-escaped command instead of a malformed one --
+# which is how this case silently passed as 'allow' while claiming to test a refusal.
+BSL=$(printf '\\')
+X4_GAME_BS="${X4_GAME//\//\\}"
+echo; echo "=== the command must PARSE, and bash is the judge ==="
+# A guard whose helpers are all quote-aware fails OPEN on one unbalanced quote: the rest
+# of the command reads as quoted text, no rule sees it, and every rule returns false --
+# which is indistinguishable from "this is fine". MEASURED 2026-09-01 against c400a05:
+# one apostrophe in an English comment turned 5 of 5 refusals into a silent allow.
+#
+# The hand-rolled scanner that first fixed it was wrong BOTH ways over 13,203 real
+# commands -- 13 false positives (command substitution inside double quotes resets the
+# quoting context) and 6 false negatives. `bash -n` parses, executes nothing, costs
+# ~14 ms, and needs no dependency this hook does not already have.
+#
+# The four ALLOW cases are the ones the hand-rolled version got wrong; they are the
+# point of the exercise, not padding.
+decide allow protect-bash.sh "$(cj "echo hello")"                      "a balanced command parses"
+decide allow protect-bash.sh "$(cj "# it${AP}s fine
+echo hi")"                                                             "an apostrophe in a COMMENT is prose, not a quote"
+decide allow protect-bash.sh "$(cj "cat > f <<${AP}X${AP}
+it${AP}s data
+X")"                                                                   "an apostrophe in a HEREDOC BODY is prose"
+decide allow protect-bash.sh "$(cj "echo ${Q}a \$(grep -o ${AP}x|y${AP} f) b${Q}")"   "nested quotes inside \$( ) still parse"
+decide ask   protect-bash.sh "$(cj "echo ${AP}unterminated")"          "a genuinely unbalanced quote is REFUSED, not ignored"
+decide ask   protect-bash.sh "$(cj "ls ${Q}C:${BSL}Users${BSL}x${BSL}${Q} 2>/dev/null")"  "a Windows path ending in a backslash is REFUSED"
+
+# The most natural way a Windows user writes a path must still reach every rule: inside
+# double quotes bash keeps a backslash literal unless it precedes $ ` " \ or newline.
+# Unescaping unconditionally deleted the separators, so the game-delete HARD BLOCK fired
+# NOTHING on a backslash path -- c400a05 denied it, the parse pass allowed it.
+decide deny  protect-bash.sh "$(cj "rm -rf ${Q}${X4_GAME_BS}${Q}")"    "a BACKSLASH game path still hits the hard block"
+
 echo; echo "=== parser contract ==="
 # --- STATIC: no personal identifier may reach a tracked file -----------------
 # This repo already SHIPPED scripts/scan-identifiers.py and it was never wired to

@@ -731,42 +731,34 @@ class TestUnbalancedQuoteDoesNotBlindTheGuard(unittest.TestCase):
     def test_an_apostrophe_AFTER_the_command_was_never_the_problem(self):
         f = F('%s -rf "%s"  # we don%st need it' % (D, GAME, chr(39)))
         self.assertTrue(f["rm_hits_game"])
+class TestEscapesOutsideQuotes(unittest.TestCase):
+    """A backslash outside quotes escapes the next character, so it must not open a
+    quote state. Exercised through the CONSEQUENCE: with the escape unhandled, `_scan`
+    stops splitting on `&&` and the delete after it becomes invisible.
 
+    An earlier version of this test asked ends_open_quote() instead -- which had its own
+    escape handling, so it passed with _scan's removed and the planted mutant survived.
+    A test must touch the code it claims to pin.
+    """
 
-class TestUnparseableIsRefusedNotIgnored(unittest.TestCase):
-    """A parser that cannot parse must SAY SO. This is the class-killer: it turns the
-    NEXT unknown parser gap into a refusal instead of a silent allow."""
-
-    def test_a_genuinely_unbalanced_quote_is_flagged(self):
-        self.assertTrue(F("echo 'unterminated")["unparseable_command"])
-
-    def test_a_balanced_command_is_not(self):
-        self.assertFalse(F("echo hello")["unparseable_command"])
-
-    # --- the three places an apostrophe is ORDINARY ENGLISH and must NOT alarm ---
-    def test_an_apostrophe_in_a_comment_is_not_flagged(self):
-        self.assertFalse(F("# it's fine" + chr(10) + "echo hi")["unparseable_command"])
-
-    def test_an_apostrophe_in_a_heredoc_body_is_not_flagged(self):
-        cmd = "cat > f <<'X'" + chr(10) + "it's fine" + chr(10) + "X"
-        self.assertFalse(F(cmd)["unparseable_command"])
-
-    def test_an_escaped_apostrophe_is_not_flagged(self):
-        self.assertFalse(F("echo don" + BS + "'t")["unparseable_command"])
-
-    # --- a `#` that is not a comment must survive ---
     def test_an_escaped_apostrophe_does_not_blind_the_next_command(self):
-        """Exercises _scan's escape handling through its CONSEQUENCE.
-
-        The first version of this test asked ends_open_quote() instead -- which has its
-        OWN escape handling, so it passed with _scan's removed and the mutant survived.
-        A test must touch the code it claims to pin.
-        """
         f = F("echo don" + BS + "'t && " + D + ' -rf "%s"' % GAME)
         self.assertTrue(f["rm_hits_game"])
 
-    def test_a_quoted_hash_is_not_a_comment(self):
-        self.assertFalse(F("grep -n '#define' f.c")["unparseable_command"])
+    def test_a_comment_apostrophe_does_not_hide_a_long_job(self):
+        # pins that the STRING-matching rules read the cleaned body, not the raw command
+        f = F("# it's a sweep" + chr(10) + "uv run python gates/corpus_sweep.py")
+        self.assertTrue(f["longjob_foreground"])
+
+
+class TestStripComments(unittest.TestCase):
+    """`#` starts a comment only at a word boundary outside quotes. The boundary test is
+    what keeps $#, ${x#y} and a URL fragment intact."""
+
+    def test_a_comment_keeps_its_newline_which_is_a_separator(self):
+        out = H.strip_comments("# note" + chr(10) + "echo hi")
+        self.assertIn(chr(10), out)
+        self.assertIn("echo hi", out)
 
     def test_parameter_expansion_hash_is_not_a_comment(self):
         self.assertEqual(H.strip_comments('echo "${p#/a}"'), 'echo "${p#/a}"')
@@ -774,11 +766,8 @@ class TestUnparseableIsRefusedNotIgnored(unittest.TestCase):
     def test_a_url_fragment_is_not_a_comment(self):
         self.assertEqual(H.strip_comments("curl http://a#b"), "curl http://a#b")
 
-    def test_a_comment_keeps_its_newline_which_is_a_separator(self):
-        # Eating the newline would glue the next command onto the comment's line.
-        out = H.strip_comments("# note" + chr(10) + "echo hi")
-        self.assertIn(chr(10), out)
-        self.assertIn("echo hi", out)
+    def test_a_quoted_hash_is_not_a_comment(self):
+        self.assertEqual(H.strip_comments("grep -n '#define' f.c"), "grep -n '#define' f.c")
 
 
 class TestHeredocBodyIsDataForEveryRule(unittest.TestCase):
