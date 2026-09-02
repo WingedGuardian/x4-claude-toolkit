@@ -168,3 +168,14 @@ and `x4eff` are live.
 
 BaseX writes a `.basex` config beside the jar on first use. It records absolute
 paths, so it is gitignored — expect to generate your own.
+
+## Licence
+
+The BaseX engine bundled here (`basex/BaseX.jar`) is **third-party software**:
+Copyright (c) 2005-2024 BaseX Team and contributors, licensed under the
+**BSD 3-Clause License**. Its full licence text ships beside it at
+[`basex/LICENSE`](basex/LICENSE) and must be retained in any redistribution.
+
+It is vendored so this tool installs with no separate download. Everything else in
+this directory is part of the X4 Community Toolkit and carries the toolkit's own
+licence (see the repository root `LICENSE`).

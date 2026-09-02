@@ -26,3 +26,19 @@ This toolkit is an independent, fan-made project. It is not affiliated with,
 endorsed by, or supported by Egosoft GmbH. X4: Foundations is a trademark of
 Egosoft. The toolkit ships NO Egosoft game data — you unpack your own legally
 owned copy locally.
+
+THIRD-PARTY COMPONENTS
+----------------------
+
+This toolkit BUNDLES the following third-party software. Each keeps its own licence,
+and those licences are reproduced with the component:
+
+  BaseX (tools/basex/basex/BaseX.jar)
+      Copyright (c) 2005-2024 BaseX Team and contributors.
+      Licensed under the BSD 3-Clause License.
+      Full text: tools/basex/basex/LICENSE
+
+      Vendored so the corpus-search tool installs without a separate download.
+      The BSD 3-Clause License requires that its copyright notice, condition list
+      and disclaimer be retained in redistributions -- which is why that LICENSE
+      file ships alongside the jar and must not be removed.

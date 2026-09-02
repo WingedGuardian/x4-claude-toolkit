@@ -151,6 +151,29 @@ freshness contract and the exit codes, and `tools/basex/QUERIES.md` for worked q
 
 ### `x4live` — ask the RUNNING game, instead of quitting to read a log
 
+> ### ⚠ EXPERIMENTAL — use a throwaway save, not one you care about
+>
+> `x4live` is the least settled thing in this toolkit. **Do not use it on a save you
+> are actually playing.** Make a fresh save, or a copy, and use that.
+>
+> Being precise about why, because an overstated warning gets ignored: **there is no
+> write verb.** Nothing here changes a ship, a station, the economy or a savegame, the
+> addon declares `save="false"` so it cannot bake into a save, and the query channel
+> makes **zero** state-changing engine calls. The reasons to be careful are narrower
+> and real:
+>
+> * it loads a mod into your running game, and the snapshot probe runs automatically
+>   at load;
+> * that probe calls `SaveUIUserData()` — it writes your profile's **UI userdata**,
+>   which is not your save but is not nothing either;
+> * **its answers have been wrong.** Until 2026-09-02 a failed engine call was reported
+>   as "no such macro" rather than as an error, and answers like that feed groundtruth
+>   fixtures. Treat what it tells you as evidence, not as truth;
+> * removing any mod from a save lets the engine silently delete the content that mod
+>   owned — no dialog, and usually no error line.
+>
+> None of that is a reason to avoid it on a scratch save, which is what it is for.
+
 Every other tool here reads files. `x4live` reads the **live engine**: what objects exist right
 now, what a macro's real values resolved to, whether an extension actually loaded — without a
 quit-and-relaunch cycle for each question.

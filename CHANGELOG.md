@@ -1,6 +1,6 @@
 # Changelog
 
-## v3.0.0 — 2026-09-01
+## v3.0.0 — 2026-09-02
 
 Three things make this a major version rather than a point release: the Bash guard was
 rebuilt around a single parse pass, the toolkit gained a **live channel to the running
@@ -9,6 +9,214 @@ you run is checked; the second and third change what the toolkit can see.
 
 ⚠ **`protect-bash.sh` now requires Python** (see below). Without it the guard **asks**
 rather than silently allowing.
+
+### ⚠ Changed — `setup.sh` can now FAIL, and `install.sh` can now notice
+
+**This changes the outcome for existing users.** An install that "succeeded with
+warnings" will now stop and tell you what is missing.
+
+`setup.sh` had zero `exit` statements and zero `return` statements, and ran under
+`set -uo pipefail` with no `-e` — so its status was the status of its final `echo`.
+MEASURED cold, with jq/uv/python all absent from `PATH`: it printed four warnings,
+said `=== setup complete ===`, and exited **0**.
+
+That made the caller's accounting dead code. `install.sh:277` reads
+`( ... bash setup.sh ) || FAILED="setup.sh"`, which was the ONLY setter of `FAILED`,
+so the entire `=== install INCOMPLETE ===` branch could never fire. A cold
+`install.sh --method separate` exited 0 having wired up nothing.
+
+Scoped deliberately narrowly, because this is a behaviour change: **hard** for `uv`
+missing, `uv sync` failing, x4validate not wired up, or no Python interpreter at all
+(without one the Bash guard degrades to ASK on every command, which in a safety
+toolkit is a broken install). **Warning** for jq — the hooks carry a documented Python
+fallback — and for java and wine, which are optional.
+
+### Fixed — four more installer defects, all reproduced end to end
+
+* **`--method global` exited 1 SILENTLY.** The producer group's status is its LAST
+  `for` loop; with no `agents/*.md` match that loop returns 1, `pipefail` promotes it,
+  and `set -e` killed the script **after** copying and **before** the jq merge — no
+  message, no `settings.json`, and every skill it had just rewritten pointing at an
+  undefined `$X4_TOOLKIT`. A per-clause control pinned the cause: removing the
+  *skills* instead exits 0.
+* **…and the same control exposed a live silent success:** with 0 skills copied it
+  still printed `installed x4 skills + agents` and exited 0. `install.ps1` has had a
+  zero-count refusal for a while; bash had none. It does now, and the message names
+  the count.
+* **Both installers destroyed your config on the only upgrade path there is.** They
+  deleted `.claude/settings.local.json` and `.claude/x4-paths.env` — the file
+  `setup.sh` itself tells you to keep `X4_NEXUS_KEY` in — and `setup.sh` then logged
+  the recreation as `[ok] created ... from example`, so the run read as though nothing
+  had been touched. MEASURED with planted markers: gone after a second install. They
+  are now backed up to `<name>.bak-<timestamp>` and the run says so.
+* **`--help` printed live shell source** (`sed -n '2,16p'` over a header ending at
+  line 12), and a flag given with no value died with `install.sh: line 44: $2: unbound
+  variable` instead of a usage message.
+
+### Fixed — `bin/unpack-reference.sh` never checked its own lock
+
+The sentinel `reference/.unpacked-and-locked` was **written** by this script and read
+**nowhere in it**. Its own text — *"reference/ is read-only; remove this file manually
+to re-unpack"* — was false for the one path that actually unpacks.
+
+The lock did exist, but only in `protect-bash.sh`, which guards commands the assistant
+runs through its Bash tool. It cannot see an XRCatTool invocation made by this script
+in a child process, and it does not run at all for a user typing
+`bash bin/unpack-reference.sh` or `bash install.sh --unpack`. **The protection covered
+the assistant's path and not the user's.**
+
+Found the hard way: an `install.sh --unpack` re-unpacked a locked reference tree
+without a word. The script now refuses (rc 2) and names the override,
+`X4_FORCE_UNPACK=1`.
+
+### Fixed — the guard could not see a command that was CARRIED
+
+One root cause behind several total bypasses: the parse pass models shell **grammar**
+well and shell **command resolution** not at all. Two halves — what a verb token
+*names*, and which constructs *carry* a command.
+
+MEASURED end to end through `protect-bash.sh`, each against a game-root delete the
+guard catches when written bare: **14 of 16 probes returned a silent ALLOW.**
+
+| carried by | before | after |
+|---|---|---|
+| `/bin/rm`, `rm.exe`, a quoted Windows path, `$'rm'` | allow | caught |
+| `timeout 5`, `exec`, `setsid`, `nice -n 5` (and their VALUE arguments) | allow | caught |
+| `$( )`, backticks, `<( )` | allow | caught |
+| a heredoc body fed to a shell | allow | caught |
+| `trap '<cmd>' EXIT` | allow | caught |
+| `eval` when it is not token 0 (`time eval …`) | allow | caught |
+| a nested `-c`, to depth 4 | allow | caught |
+| `find <root> -name '*' -delete` (a filter matching everything) | allow | caught |
+
+**What it cost, measured per item against 13,503 real historical commands: 3 changed
+verdict, all TIGHTENED, 0 loosened.** All three are correct — two recursive greps over
+the dev tree that `timeout` had hidden, and one over the 60 GB reference tree nested
+inside `$( )`. Every must-not-fire control held, including `cat > f <<X` and
+`python - <<PY` heredoc bodies, which must NOT be routed through the shell parser.
+
+**The walk is bounded, and it says when it stops.** Following carriers is not free:
+a 128 KB command with unique text at every nesting level produced 9,841 command
+strings and 4.1 s — on the blocking `PreToolUse` path, in a file whose header records
+an 11.3× latency regression. It now caps at 250 carried commands (measured: the
+largest of the 13,503 real commands produced **25**) and emits a fact that makes the
+guard **ask**, because a command too tangled to analyse in full is not a clean pass.
+Latency is unchanged: ~188 ms benign, ~219 ms on a refusal.
+
+`scripts/fuzz-guard.py` gained a second axis for this class — 55 → **71 mutators**,
+852 mutants. Proof it is not decoration: run against the PRE-FIX parse pass it finds
+**157 bypasses, all 157 from the new axis and 0 from the old one.**
+
+### Fixed — four instruments that could not report what they were built to find
+
+Each is a check that could not go red. They were repaired before anything was measured
+with them, and each repair has a falsification twin per clause.
+
+* **`gates/mutation_probe.py` reported EVERY survivor as `killed`.** Three independent
+  causes, and the third was invisible until the first two were fixed and it still
+  said 45/45 — *which is exactly the shape the broken gate produced*. (1) A
+  self-referential anchor test that a mutated tree necessarily fails. (2) `write_text` rewrote
+  the LF-pinned target as CRLF (measured: 0 → 790 in `_merge.py`). (3) The probe's OWN
+  marker makes five artifact-writing tests refuse — correctly — so the full suite can
+  never be green during a probe. The escalation now compares failure **sets** against
+  a baseline taken with the marker present. Proven by planting an inert comment edit
+  and requiring `LIVED`. **It now finds 3 real survivors**, each guarding a documented
+  trap; all three are now killed by new tests.
+* **`scripts/verify-hook-tests.py` returned wrong verdicts** — stale `__pycache__`.
+  CPython invalidates on (source mtime in **seconds**, size), and successive mutants
+  land in the same second, so when two leave the file the same size the second run
+  imports the first one's bytecode. Measured: 2 of 54 reported NOT CAUGHT while both,
+  by hand, turned their target test red — and the tests named belonged to the previous
+  mutant. The silent direction is worse and equally reachable.
+* **`gates/control_bytes.py` scanned 171 of 241 tracked files.** `git ls-files` ran in
+  the package directory, so the sweep that hunts collapsed-escape control bytes could
+  not see `.claude/hooks/` or `scripts/` — the very code where content gets written
+  through interpreter strings. It was blind to the file carrying a literal `0x08`.
+  Now 240 of 241, with the one binary named rather than silently skipped, and the
+  extension allowlist replaced by a content sniff. It had zero tests; it has 11.
+* **`gates/obtainability_audit.py` recorded a denominator it never compared or
+  printed.** A coverage collapse could only ever have surfaced disguised as a change
+  in the findings.
+
+### Fixed — six toolkit defects, and one that made a guarantee backwards
+
+* **`_livepipe` decoded the frame before validating it.** `_read_raw` used
+  `errors="replace"`, so the length and checksum clauses measured a **repaired**
+  string. U+FFFD is 3 bytes, so each bad byte added +2 — inventing truncations *and
+  cancelling real ones*: a genuinely truncated frame could pass the length check and
+  be reported as corruption instead. Now measured in the byte domain and decoded
+  strictly at the end, so an undecodable payload gets its own third diagnosis.
+* **`_livedump.accounts_for_every_row()` was a tautology** — its Counter was built
+  from the rows it compared against. 20,000 randomised dumps: never False, never
+  raised. `_livecli`'s error branch and its `return 3` were unreachable, and three
+  tests used it as a control that "must PASS". It now asks whether every row's KIND is
+  one the reader models, which can genuinely be answered no.
+* **A `FATAL` frame was reported as a truncated one.** `engine_probe` writes its build
+  error into the dump; nothing read it, so the single-row frame tripped the
+  last-row-is-not-END clause and the user was told *"the dump is TRUNCATED and the true
+  length is unknown"* — a guess about the transport, printed over the probe's own
+  account of the failure.
+* **`x4debug baseline` crashed on the degraded metadata it had just written.**
+  `archive()` sets five keys atomically inside a try, so any raise leaves none of them
+  and records `degraded` instead — and the consumer read all five unconditionally.
+  Reproduced through the real CLI: `KeyError: 'total_errors'`.
+* **`check_completeness` asked a definition question with the wrong oracle** — the
+  macro index alone, where `check_references` uses the union and records that the
+  index-only form once cost 23 false gating errors. A macro defined in an asset file
+  and never registered is legal and common, and that is exactly what a mod under
+  development has. 0 of 1,614 shipped component refs hit it; a synthetic mod hit it
+  immediately, with the two checks contradicting each other about the same attribute.
+* **`x4v_announce` had 0 of 4 mutants killed** — announcing the wrong tree, inverting
+  its own explanation, dropping the git revision, and being deleted entirely all left
+  the suite green. It states the provenance of every derived artifact.
+* **`staleness.py` fingerprinted a nonexistent engine tree to a CONSTANT.** Every
+  missing path folds to the same digest, so the artifact reads FRESH against any of
+  them, forever. Two of the three axes already refused for exactly this reason.
+
+### Fixed — the game-side mod capped nothing, and said the wrong thing when it failed
+
+`verbs.ext` and `verbs.macro` concatenated every field with no budget: **40,025 and
+40,017 bytes** against a 32,000-byte cap. An over-long message does not truncate — it
+tears the pipe down. That contradicted three shipped claims, including the user-facing
+`content.xml` description. Both now cap and report `__shown` / `__total`, and
+`reply()` enforces the bound at the one choke point every verb passes through, so a
+future verb cannot reintroduce it.
+
+`verbs.macro` also reported a **failed engine call as `ABSENT`** — "we could not ask"
+in the grammar of "the engine has nothing here" — discarding the error message. The
+harvest still balanced, because `_livecli` counts ABSENT as a real answer, and such
+answers feed groundtruth fixtures.
+
+### ⚠ `x4live` is EXPERIMENTAL — use a throwaway save
+
+Flagged in the README, in the mod's in-game description, and in the assistant-facing
+`CLAUDE.md`, so it reaches you whichever way you meet it.
+
+Accurate rather than alarming, because an overstated warning gets ignored. MEASURED
+across both shipped lua files: the query channel makes **zero** state-changing engine
+calls, there is no write verb of any kind, and the mod declares `save="false"` so it
+cannot bake into a save. The real reasons are narrower: it loads into a **running**
+game, `engine_probe` runs automatically at load and calls `SaveUIUserData()` (your
+profile's UI userdata, not your save), and **its answers have been wrong** — see the
+`ABSENT` defect above. Treat what it says as evidence, not truth.
+
+### Changed — CI now runs the installers, and the tests nothing collected
+
+No step ran `install.sh`, `install.ps1` or `setup.sh` on any OS, which is why every
+installer defect above was structurally invisible to it. There is now a smoke run on
+both legs that asserts the **artifacts** — `x4-paths.env`, `tools/x4validate`, `mods/`
+— and re-runs the installer over the top to prove a planted config marker survives.
+
+(An earlier draft of this entry claimed `tools/basex/`'s 64 tests "had never run in
+CI". That was wrong, and checking it is what found the mistake:
+`tests/test_basex_tests_are_not_orphaned.py` already runs them in a subprocess from
+inside the main suite — deliberately, because they are cwd-sensitive — so they have
+been running all along. The gap it closes was real and was closed in v2.x; there was
+nothing left here to fix.)
+
+`X4_MAX_SKIPS` went 40 → **45**. The 40 had never been exercised — it does not exist
+in the `ci.yml` on `origin/master` — and a true cold clone skips **43**, so its first
+run would have failed the gating leg.
 
 ### Fixed — six parser defects that let commands past the guard entirely
 
@@ -97,7 +305,7 @@ from a command the parser has already identified, so all of them tested the rule
 tested the parser underneath. What found it was `scripts/fuzz-guard.py` extended to walk
 **shell syntax classes** — here-strings, arithmetic, comments, parameter expansion, process
 substitution, redirects, brace expansion, line continuations, compound commands, wrappers —
-rather than re-testing shapes that had already caused a bug. 55 mutators, 550 mutants.
+rather than re-testing shapes that had already caused a bug. It now carries **71 mutators / 852 mutants**, after a second axis was added on 2026-09-02 for the constructs that CARRY a command rather than sit beside one.
 
 **What it cost in practice, measured against 13,503 real commands:** 13 changed verdict,
 all of them *stricter*, none looser. Three were real: a `rmdir` inside the game folder and

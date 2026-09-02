@@ -172,7 +172,10 @@ measurements of different ages, kept apart on purpose:
 Either way it is retryable, not a failure: the channel re-arms itself every ~2 s.
 
 **Message size**: replies are bounded before sending, because an over-long message does
-not truncate — it tears the pipe down. MEASURED in game: **524,288 bytes round-trip
+not truncate — it tears the pipe down. (That is the SEND direction, game to us. The READ
+direction fails the other way: `pipes.lua` returns partial data with `ERROR_MORE_DATA`,
+which is why `ramp` exists — see below. The two sentences describe opposite ends of the
+same pipe, not a contradiction.) MEASURED in game: **524,288 bytes round-trip
 intact**, against a self-imposed reply cap of 32,000. The true ceiling is above that and
 remains unmeasured; the ramp reports its own limit rather than presenting it as the
 engine's.

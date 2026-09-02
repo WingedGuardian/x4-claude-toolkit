@@ -266,3 +266,25 @@ The environment gets smarter the more you use it.
 9. **A stale `<remove>` in an old mod can delete content the base game added LATER**, breaking every other mod that uses it. Diagnose *why* a remove exists (usually half of a stale remove/re-add pair) before assuming the author meant it.
 
 *Consult `KNOWLEDGEBASE.md` for the full list and the 7.x→9.0 migration map.*
+
+## x4live is EXPERIMENTAL — say so before you use it
+
+**Before running any `x4live` command against the user's game, tell them it is
+experimental and recommend a throwaway save.** Do not wait to be asked. Most people
+will not have read the README section, and by the time it matters the mod is already
+loaded into whatever save they had open.
+
+Be accurate about the risk, or the warning gets ignored. MEASURED 2026-09-02 across
+both shipped lua files: the query channel makes **zero** state-changing engine calls,
+there is no write verb of any kind, and `content.xml` declares `save="false"` so it
+cannot bake into a save. What is true is narrower:
+
+* the addon loads into a RUNNING game, and `engine_probe` runs automatically at load;
+* `engine_probe.lua:196` calls `C.SaveUIUserData()`, writing the profile's UI userdata;
+* **its answers have been wrong** — until 2026-09-02 `verbs.macro` reported a failed
+  engine call as `ABSENT`, i.e. "the engine has nothing here", and such answers feed
+  groundtruth fixtures. Report what it says as EVIDENCE, never as truth;
+* removing a mod from a save lets the engine silently delete that mod's content
+  (no dialog, usually no error line).
+
+So: recommend a scratch save, and never imply the tool is a settled instrument.
