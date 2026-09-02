@@ -56,13 +56,13 @@ function Detect-Game {
   $roots = @("${env:ProgramFiles(x86)}\Steam", "$env:ProgramFiles\Steam")
   foreach ($root in $roots) {
     $p = Join-Path $root 'steamapps\common\X4 Foundations'
-    if (Test-Path $p) { return $p }
+    if (Test-Path -LiteralPath $p) { return $p }
     $vdf = Join-Path $root 'steamapps\libraryfolders.vdf'
-    if (Test-Path $vdf) {
-      foreach ($m in [regex]::Matches((Get-Content -Raw $vdf), '"path"\s*"([^"]+)"')) {
+    if (Test-Path -LiteralPath $vdf) {
+      foreach ($m in [regex]::Matches((Get-Content -Raw -LiteralPath $vdf), '"path"\s*"([^"]+)"')) {
         $lib = $m.Groups[1].Value -replace '\\\\','\'
         $p = Join-Path $lib 'steamapps\common\X4 Foundations'
-        if (Test-Path $p) { return $p }
+        if (Test-Path -LiteralPath $p) { return $p }
       }
     }
   }
@@ -72,8 +72,8 @@ function Detect-Game {
 function Detect-Profile {
   if ($Profile) { return $Profile }
   $base = Join-Path $env:USERPROFILE 'Documents\Egosoft\X4'
-  if (Test-Path $base) {
-    $d = Get-ChildItem -Directory $base | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if (Test-Path -LiteralPath $base) {
+    $d = Get-ChildItem -Directory -LiteralPath $base | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($d) { return $d.FullName }
   }
   return $Profile
@@ -114,7 +114,7 @@ function Copy-Toolkit($dest) {
   if ($missing.Count) {
     Write-Host ("  [note] not in the source, so not copied: " + ($missing -join ", "))
   }
-  Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $dest '.claude\settings.local.json'),(Join-Path $dest '.claude\x4-paths.env')
+  Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath (Join-Path $dest '.claude\settings.local.json'),(Join-Path $dest '.claude\x4-paths.env')
 }
 
 function Write-PathsEnv($t) {
@@ -143,31 +143,42 @@ function Install-Global($t) {
   # Track exactly what WE copy - the $CLAUDE_PROJECT_DIR rewrite below must never
   # touch a user's pre-existing skills/agents (they may use that variable on purpose).
   $copied = @()
-  Get-ChildItem -Directory (Join-Path $t '.claude\skills') -Filter 'x4-*' -ErrorAction SilentlyContinue |
+  Get-ChildItem -Directory -LiteralPath (Join-Path $t '.claude\skills') -Filter 'x4-*' -ErrorAction SilentlyContinue |
     ForEach-Object {
       $dst = Join-Path $hc 'skills'
-      Copy-Item -Recurse -Force $_.FullName $dst
-      $copied += Get-ChildItem -Recurse -File (Join-Path $dst $_.Name) -Filter '*.md'
+      Copy-Item -Recurse -Force -LiteralPath $_.FullName -Destination $dst
+      $copied += Get-ChildItem -Recurse -File -LiteralPath (Join-Path $dst $_.Name) -Filter '*.md'
     }
   $agentsDst = Join-Path $hc 'agents'
-  Get-ChildItem -File (Join-Path $t '.claude\agents') -Filter '*.md' -ErrorAction SilentlyContinue |
+  Get-ChildItem -File -LiteralPath (Join-Path $t '.claude\agents') -Filter '*.md' -ErrorAction SilentlyContinue |
     ForEach-Object {
-      Copy-Item -Force $_.FullName $agentsDst
+      Copy-Item -Force -LiteralPath $_.FullName -Destination $agentsDst
       # NB: two-argument Join-Path only - the 3-arg form is pwsh 7+ and this script
       # must run under Windows PowerShell 5.1 (the README's own command).
-      $copied += Get-Item (Join-Path $agentsDst $_.Name)
+      $copied += Get-Item -LiteralPath (Join-Path $agentsDst $_.Name)
     }
   # global skills/agents run from any repo -> resolve validator via $X4_TOOLKIT
   foreach ($file in $copied) {
-    $c = Get-Content -Raw $file.FullName
+    $c = Get-Content -Raw -LiteralPath $file.FullName
     if ($c.Contains('$CLAUDE_PROJECT_DIR')) {
       Write-Utf8NoBom $file.FullName ($c.Replace('$CLAUDE_PROJECT_DIR','$X4_TOOLKIT'))
     }
   }
-  Write-Host "  installed x4 skills + agents into $hc"
+  # "I copied nothing" must never print as "installed". The whole function used bare
+  # path cmdlets, so a toolkit path containing `[` or `]` -- which PowerShell reads as a
+  # WILDCARD CHARACTER CLASS, not as text -- matched nothing, `-ErrorAction
+  # SilentlyContinue` swallowed the miss, and this said "installed x4 skills + agents"
+  # over an empty directory. MEASURED 2026-09-01 under a path named `toolkit [v3]`:
+  # bare Get-ChildItem found 0, -LiteralPath found 1, in both the skills and agents legs.
+  if ($copied.Count -eq 0) {
+    Write-Host "  ERROR: copied NOTHING from $t (.claude\skills\x4-* and .claude\agents\*.md)."
+    Write-Host "         Nothing was installed into $hc -- this is a FAILURE, not a no-op."
+    exit 1
+  }
+  Write-Host "  installed x4 skills + agents into $hc ($($copied.Count) file(s))"
   # merge env into settings.json
   $sj = Join-Path $hc 'settings.json'
-  $cfg = if (Test-Path $sj) { Get-Content -Raw $sj | ConvertFrom-Json } else { [pscustomobject]@{} }
+  $cfg = if (Test-Path -LiteralPath $sj) { Get-Content -Raw -LiteralPath $sj | ConvertFrom-Json } else { [pscustomobject]@{} }
   if (-not $cfg.PSObject.Properties['env']) { $cfg | Add-Member -NotePropertyName env -NotePropertyValue ([pscustomobject]@{}) }
   $ref = if ($Reference) { $Reference } else { Join-Path $t 'reference' }
   $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-Path $Game 'extensions' } else { '' }
@@ -229,7 +240,7 @@ function Find-GitBash {
                       (Join-Path $env:LOCALAPPDATA 'Programs'))) {
     if ($base) { $cands += (Join-Path $base 'Git\bin\bash.exe') }
   }
-  foreach ($c in $cands) { if (Test-Path $c) { return (Get-Command $c) } }
+  foreach ($c in $cands) { if (Test-Path -LiteralPath $c) { return (Get-Command $c) } }
   # Fall back to PATH, but never to a WSL stub.
   foreach ($c in @(Get-Command bash -All -ErrorAction SilentlyContinue)) {
     $p = $c.Source
@@ -240,7 +251,7 @@ function Find-GitBash {
 $bash = Find-GitBash
 $failed = @()
 if ($bash) {
-  Push-Location $Toolkit
+  Push-Location -LiteralPath $Toolkit
   # CLAUDE_PROJECT_DIR must be set explicitly: setup.sh falls back to $(pwd), and
   # if the caller already exports it (running from inside Claude Code is the
   # documented path) the fallback never applies and we would wire up THEIR repo
