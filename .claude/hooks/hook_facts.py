@@ -518,8 +518,53 @@ def copy_dests(seg: str) -> list[str]:
 DELETE_VERBS = {"rm", "rmdir", "unlink", "shred"}
 
 
+#: A find carrying any of these is SCOPED to matching entries, not the whole tree.
+_FIND_FILTERS = {"-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename",
+                 "-regex", "-iregex", "-samefile", "-newer", "-size", "-user", "-group"}
+
+
+def find_deletes(seg: str) -> list:
+    """Paths a `find` would delete. `find <root> -delete` and `find <root> -exec rm ...`
+    remove files just as surely as rm does, and DELETE_VERBS knew neither.
+
+    MEASURED 2026-09-01 over 13,277 historical commands: `-delete` appears 4 times (none
+    on a protected root) and `-exec rm` 0 times. So this is a 0-incidence gap -- fixed
+    because the failure mode is an unguarded delete of the game install, not because it
+    was observed. Recording the denominator is the point: a finding with no incidence
+    over-ranks by construction (F90).
+    """
+    if verb(seg) != "find":
+        return []
+    toks = [t for t, q in tokens(seg)]
+    # A find NARROWED by a name/path filter deletes matching entries, not the tree. That
+    # distinction is the whole rule: `find <game> -delete` removes the install, while
+    # `find . -name __pycache__ -exec rm -rf {} +` is routine hygiene. MEASURED
+    # 2026-09-01: treating both alike added 40 prompts across 13,282 commands, every one
+    # a __pycache__ cleanup -- noise by this project's own standard, since a prompt must
+    # be reserved for what is genuinely the user's decision.
+    if any(t in _FIND_FILTERS for t in toks):
+        return []
+    deletes = "-delete" in toks
+    if not deletes:
+        for i, t in enumerate(toks):
+            if t == "-exec" and i + 1 < len(toks) and toks[i + 1] in DELETE_VERBS:
+                deletes = True
+                break
+    if not deletes:
+        return []
+    # find's PATHS are the operands before the first predicate (a `-flag`).
+    out = []
+    for t, quoted in tokens(seg)[1:]:
+        if not quoted and t.startswith("-"):
+            break
+        out.append(t)
+    return out
+
+
 def rm_paths(seg: str) -> list[str]:
-    return _operands(seg) if verb(seg) in DELETE_VERBS else []
+    if verb(seg) in DELETE_VERBS:
+        return _operands(seg)
+    return find_deletes(seg)
 
 
 # ------------------------------------------------------------------ searches
@@ -744,6 +789,19 @@ def _inner_commands(cmd: str) -> list[str]:
     return out
 
 
+def _as_ms(v) -> float:
+    """A timeout in milliseconds, whatever shape it arrived in. Unparseable -> 0, which
+    keeps the rule off rather than firing on nonsense."""
+    if isinstance(v, bool) or v is None:
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def facts(payload: dict, roots: dict) -> dict:
     inp = payload.get("tool_input") or {}
     cmd = inp.get("command") or ""
@@ -942,7 +1000,12 @@ def facts(payload: dict, roots: dict) -> dict:
         # scratchpad. It denied three of this session's own analysis commands.
         "write_to_tmp": any(under(pp, "/tmp") for pp, u, _r in redir_t_all + out_t
                             if not u),
-        "timeout_over_cap": isinstance(timeout, int) and timeout > 600000,
+        # A JSON number can be a float, and a client may send a string. The old
+        # isinstance(int) turned the rule OFF for both -- silently, which is the
+        # wrong direction for a cap. MEASURED: 0 of 13,277 historical calls used
+        # anything but int, so this is robustness, not an observed bug.
+        # `bool` is excluded deliberately: in Python True is an int.
+        "timeout_over_cap": _as_ms(timeout) > 600000,
         "longjob_foreground": longjob and background is not True,
         "xrcat_reunpack": (bool(re.search(r"xrcat", cmd, re.I))
                            and "-out" in ncmd

@@ -751,6 +751,67 @@ class TestEscapesOutsideQuotes(unittest.TestCase):
         self.assertTrue(f["longjob_foreground"])
 
 
+class TestFindDeletes(unittest.TestCase):
+    """`find <root> -delete` and `find <root> -exec rm` remove files as surely as rm.
+
+    MEASURED 2026-09-01 over 13,277 historical commands: `-delete` appears 4 times (none
+    on a protected root) and `-exec rm` 0 times -- a 0-incidence gap, fixed because the
+    failure mode is an unguarded delete of the game install, not because it was observed.
+    """
+
+    def test_find_delete_on_the_game_is_a_game_delete(self):
+        self.assertTrue(F('find "%s" -delete' % GAME)["rm_hits_game"])
+
+    def test_find_exec_rm_on_the_game_is_a_delete(self):
+        self.assertTrue(F('find "%s" -exec %s -rf {} ;' % (GAME, D))["rm_in_x4_dir"])
+
+    def test_a_find_that_does_NOT_delete_is_not_a_delete(self):
+        """Deliberately UNFILTERED (-type is not a name filter), so the delete check is
+        the clause actually under test. With `-name x` the filter guard returns first and
+        SHADOWS it -- a mutant removing the delete check then survived, which is how a
+        test can look like coverage it does not provide."""
+        self.assertFalse(F('find "%s" -type d' % GAME)["rm_hits_game"])
+
+    def test_a_FILTERED_find_is_scoped_and_does_not_fire(self):
+        """`find . -name __pycache__ -exec rm -rf {} +` is routine hygiene, not a tree
+        delete. MEASURED 2026-09-01: treating it like one added 40 prompts across 13,285
+        commands, every one a cache cleanup -- noise by this project's own standard."""
+        cmd = ('cd "%s" && find . -name __pycache__ -type d -exec %s -rf {} +'
+               % (TOOLKIT, D))
+        self.assertFalse(F(cmd)["rm_in_x4_dir"])
+
+    def test_a_filtered_find_under_the_GAME_is_also_scoped(self):
+        self.assertFalse(F('find "%s" -name x -delete' % GAME)["rm_hits_game"])
+
+    def test_a_find_delete_outside_every_root_is_untouched(self):
+        self.assertFalse(F("find /c/tmp -delete")["rm_in_x4_dir"])
+
+
+class TestTimeoutShapes(unittest.TestCase):
+    """A JSON number may be a float and a client may send a string; isinstance(int)
+    turned the cap OFF for both. MEASURED: 0 of 13,277 historical calls used anything but
+    int, so this is robustness rather than an observed bug -- recorded as such."""
+
+    def test_an_int_over_the_cap_fires(self):
+        self.assertTrue(F("sleep 1", timeout=900000)["timeout_over_cap"])
+
+    def test_a_float_over_the_cap_fires(self):
+        self.assertTrue(F("sleep 1", timeout=900000.0)["timeout_over_cap"])
+
+    def test_a_string_over_the_cap_fires(self):
+        self.assertTrue(F("sleep 1", timeout="900000")["timeout_over_cap"])
+
+    def test_under_the_cap_does_not(self):
+        self.assertFalse(F("sleep 1", timeout=500000)["timeout_over_cap"])
+
+    def test_a_bool_is_not_a_timeout(self):
+        # True is an int in Python; without the explicit exclusion it would read as 1.
+        self.assertFalse(F("sleep 1", timeout=True)["timeout_over_cap"])
+
+    def test_unparseable_keeps_the_rule_OFF_rather_than_firing_on_nonsense(self):
+        self.assertFalse(F("sleep 1", timeout="abc")["timeout_over_cap"])
+
+
 class TestStripComments(unittest.TestCase):
     """`#` starts a comment only at a word boundary outside quotes. The boundary test is
     what keeps $#, ${x#y} and a URL fragment intact."""

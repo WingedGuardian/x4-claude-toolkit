@@ -61,8 +61,27 @@ fi
 # by every guard, and F93 is the entry about a shared helper quietly re-scoping the rules
 # above it -- so this may cost less, and must not decide differently.
 x4_norm() {
+  # Lowercase, backslash -> slash, drive dialect unified, THEN dot segments resolved.
+  #
+  # The dot-segment pass is not cosmetic. x4_canon only feeds POSIX-absolute paths to
+  # realpath, so a WINDOWS-dialect path kept its `..` and compared unequal to the root:
+  # MEASURED 2026-09-01, C:/<toolkit>/other/../reference/libraries/w.xml was NOT under
+  # reference/, and protect-files.sh returned EMPTY -- a silent allow past a HARD BLOCK
+  # -- while the identical /c/... form was correctly caught. hook_facts.norm() has
+  # always collapsed them (posixpath.normpath); this is the same rule on the bash side,
+  # so two implementations of one path fact stop disagreeing.
+  #
+  # Still ONE subprocess: the loops live inside the same sed program.
   printf '%s' "$1" | sed -E 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ\\/abcdefghijklmnopqrstuvwxyz\//
-s#(^|[^a-z0-9])([a-z]):/#\1/\2/#g'
+s#(^|[^a-z0-9])([a-z]):/#\1/\2/#g
+:dot
+s#/[.]/#/#g
+tdot
+s#/[.]$#/#
+:dotdot
+s#/[^/]+/[.][.](/|$)#/#
+tdotdot
+s#(.)/$#\1#'
 }
 # x4_canon PATH -> resolve symlinks + .. (so e.g. a game-dir 'extensions' symlink and its real
 # target compare equal). Uses realpath -m when available (no need for the file to exist);

@@ -78,6 +78,25 @@ MUTANTS = [
      "return [ops[-1]]", "test_tee_writes_EVERY_file_operand"),
     ("last assignment wins", "found[m.group(1)] = m.group(2)",
      "found.setdefault(m.group(1), m.group(2))", "test_last_assignment_wins"),
+    # --- delete verbs and timeout shapes (2026-09-01) -----------------------------
+    ("find -delete is a delete", "    return find_deletes(seg)", "    return []",
+     "test_find_delete_on_the_game_is_a_game_delete"),
+    ("a FILTERED find is scoped, not a tree delete",
+     "    if any(t in _FIND_FILTERS for t in toks):\n        return []",
+     "    if False:\n        return []",
+     "test_a_FILTERED_find_is_scoped_and_does_not_fire"),
+    ("a find WITHOUT -delete is not", 'deletes = "-delete" in toks', "deletes = True",
+     "test_a_find_that_does_NOT_delete_is_not_a_delete"),
+    ("a non-int timeout still counts", '"timeout_over_cap": _as_ms(timeout) > 600000,',
+     '"timeout_over_cap": isinstance(timeout, int) and timeout > 600000,',
+     "test_a_float_over_the_cap_fires"),
+    # NOT MUTATED: the bool guard in _as_ms is BEHAVIOURALLY EQUIVALENT today --
+    # float(True) is 1.0, which is under the cap either way, so removing it cannot
+    # change a verdict. Kept as a guard because Python treats True as an int and a
+    # future cap of 0 or 1 would make it load-bearing; not mutated, because a mutant
+    # that can never be caught sits here permanently red and trains everyone to skim
+    # this table.
+
     # --- prose must not blind the guard (C1, 2026-09-01) --------------------------
     # One apostrophe in an English comment disabled EVERY rule after it. Four separate
     # clauses had to change; each gets its own mutant, because mutating the feature as a
