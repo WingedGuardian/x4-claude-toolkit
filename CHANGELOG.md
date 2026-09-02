@@ -10,6 +10,75 @@ you run is checked; the second and third change what the toolkit can see.
 ⚠ **`protect-bash.sh` now requires Python** (see below). Without it the guard **asks**
 rather than silently allowing.
 
+### Fixed — three parser defects that let commands past the guard entirely
+
+All three were in the single parse pass, all three were introduced by it, and **none was
+found by the test suite** — 151 unit tests, 31 planted mutations and a 13,285-command
+replay were green throughout. They were found by an adversarial code review, by `bash -n`,
+and by a fuzzer built afterwards.
+
+**1. One apostrophe in prose disabled every rule.** Every helper is quote-aware, so an
+unbalanced quote turned the rest of a command into "quoted" text that no rule could see —
+and a rule that sees nothing returns false, which is indistinguishable from *this is fine*.
+Measured against the last release where these rules ran, which refuses **both** members of
+every pair:
+
+| command | before | with `doesn't` in a comment |
+|---|---|---|
+| delete the game install (hard block) | deny | **allow** |
+| delete `reference/` (hard block) | deny | **allow** |
+| delete a savegame | ask | **allow** |
+| recursive search at `reference/` | deny | **allow** |
+| `git add -A` | deny | **allow** |
+
+**2. A quoted Windows path walked straight past the hard block.** Inside double quotes
+bash keeps a backslash literal except before `` $ ` " \ `` and newline; the parser
+unescaped unconditionally, so `C:\Program Files\...` lost its separators and matched no
+root. `rm -rf "C:\…\X4 Foundations"` fired **nothing**. That is the most natural way a
+Windows user writes a path, and the README tells you that you may write roots that way.
+
+**3. The first fix for (1) was itself wrong in both directions** — 13 false positives and
+6 false negatives over 13,203 real commands, because command substitution inside double
+quotes resets the quoting context and a flat scanner cannot model that nesting.
+
+**So `bash -n` is now the judge of whether a command parses.** It executes nothing, costs
+~14 ms against a ~190 ms budget, and needs no dependency the hook lacks — the hook *is*
+bash. Three defects from hand-rolling shell tokenisation was enough.
+
+Also fixed, same root: heredoc **bodies** were parsed as commands (a body line reading like
+a delete produced a non-overridable deny on a command that only writes a file), and five
+rules matched raw command text rather than parsed operands — which is both a
+false-positive engine and a bypass, since `( git add -A )` and an env-assignment prefix
+slipped past the old anchor.
+
+**Cost, measured per rule over 13,285 distinct historical commands** — aggregates hide
+exactly this, so the deltas are per rule and not a total:
+
+| | before | after |
+|---|---|---|
+| commands **denied** (work blocked) | 844 | **780** |
+| commands **asked** (you are prompted) | 152 | 184 |
+
+Sixty-four fewer denials, all verified false positives: the new rules require the
+*operand* to be under a root, so a drop means the old rule matched text rather than an
+operand. ⚠ **Seven facts did stop firing**, and every one was checked by hand: all seven
+are heredoc bodies — a git commit message, a table row, a script being authored — six keep
+their verdict through another rule and one correctly relaxes. That number is recorded here
+because the commit that caused it did not report it.
+
+### Added — `scripts/fuzz-guard.py`, a differential fuzzer for the guard
+
+Takes a command the guard refuses, mutates only the **surrounding syntax** (comments,
+heredocs, substitution, escapes, subshells, prefixes) leaving the dangerous operand
+byte-identical, and requires the verdict not to weaken. It found two real bypasses on its
+first run.
+
+Every run first plants the pre-fix scanner and **requires the known bypass to be
+rediscovered** before it will report anything: a fuzzer that cannot find a known hole
+cannot be trusted to report the absence of one. With no X4 installed it uses synthetic
+roots rather than skipping — nothing in it touches the filesystem, and a skip in CI is
+indistinguishable from a pass.
+
 ### Added — `x4live`: ask the RUNNING game, and a game extension to make that possible
 
 Every other tool here reads files. `x4live` reads the live engine — what objects exist right now,
