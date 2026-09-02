@@ -265,19 +265,19 @@ MUTANTS = [
     # against a multi-clause condition only ever tests the half it trips first
     # (register #86, and #99 where the shadowed half survived twice).
     Mutant("_livepipe.py", "empty reply treated as an empty answer",
-           "if not text:",
+           "if not data:",
            "if False:  # mutant",
            "the lua api's nil-for-empty-write becomes a valid zero-field answer"),
     Mutant("_livepipe.py", "foreign frames and reserved sentinels accepted",
-           "if parts[0] != REPLY_TAG:",
+           'if parts[0] != REPLY_TAG.encode("utf-8"):',
            "if False:  # mutant",
            "a bare ERROR/TIMEOUT/CANCELLED from the api reads as payload data"),
     Mutant("_livepipe.py", "clause 3a: the length half dropped (compound guard)",
-           "if len(parts) < 2 or parts[1] != str(PROTO):",
-           "if parts[1] != str(PROTO):  # mutant",
+           'if len(parts) < 2 or parts[1] != str(PROTO).encode("utf-8"):',
+           'if parts[1] != str(PROTO).encode("utf-8"):  # mutant',
            "a bare tag raises IndexError -- a CRASH, which is not one of the four outcomes"),
     Mutant("_livepipe.py", "clause 3b: the protocol half dropped (compound guard)",
-           "if len(parts) < 2 or parts[1] != str(PROTO):",
+           'if len(parts) < 2 or parts[1] != str(PROTO).encode("utf-8"):',
            "if len(parts) < 2:  # mutant",
            "a mod and a toolkit from different versions mis-parse each other in silence"),
     Mutant("_livepipe.py", "header-truncation guard removed",
@@ -301,20 +301,29 @@ MUTANTS = [
            'f"problem: the game declared {declared} payload bytes and {actual} "  # mutant',
            "clause ordering stops being a contract; the only actionable advice is never printed"),
     Mutant("_livepipe.py", "corruption guard removed",
-           "if declared_sum != checksum(payload):",
+           "if declared_sum != checksum(payload_bytes):",
            "if False:  # mutant",
            "length-preserving corruption passes as a clean answer"),
     Mutant("_livepipe.py", "declared length counts CHARACTERS not bytes",
-           'return len(payload.encode("utf-8"))',
+           'return len(payload if isinstance(payload, bytes) else payload.encode("utf-8"))',
            "return len(payload)  # mutant",
            "disagrees with lua's `#s` on every non-ASCII payload, reporting truncation where there is none"),
     Mutant("_livepipe.py", "checksum over latin-1 instead of utf-8",
-           'for b in payload.encode("utf-8"):',
-           'for b in payload.encode("latin-1", "replace"):  # mutant',
+           'for b in (payload if isinstance(payload, bytes) else payload.encode("utf-8")):',
+           'for b in bytes(str(payload), "latin-1", "replace"):  # mutant',
            "both python sides move together and agree; only the fixed lua side disagrees"),
+    #: The 2026-09-02 fix: _read_raw used to decode with errors="replace", so clauses
+    #: 7 and 8 measured a REPAIRED string. U+FFFD is 3 bytes, so each bad input byte
+    #: added +2 -- inventing truncations and, worse, cancelling real ones.
+    Mutant("_livepipe.py", "the payload is repaired before it is measured",
+           "    data = text.encode(" + chr(34) + "utf-8" + chr(34) + ") if isinstance(text, str) else text",
+           "    data = (text.encode() if isinstance(text, str) else "
+           "text.decode(" + chr(34) + "utf-8" + chr(34) + ", " + chr(34) + "replace" + chr(34)
+           + ").encode())  # mutant",
+           "clauses 7 and 8 go back to measuring a string we invented, not what arrived"),
     Mutant("_livepipe.py", "payload re-split on every tab",
-           r'parts = text.split("\t", _REPLY_FIELDS - 1)',
-           r'parts = text.split("\t")  # mutant',
+           r'parts = data.split(b"\t", _REPLY_FIELDS - 1)',
+           r'parts = data.split(b"\t")  # mutant',
            "a multi-column answer loses every field after the first tab, and a short row is still a row"),
 ]
 
@@ -386,7 +395,7 @@ def recover() -> int:
 FAILING_VERDICTS = frozenset({"pass", "hang", "noscope"})
 
 
-def run_tests(tests: list[str]) -> str:
+def run_tests(tests: list[str], deselect: tuple[str, ...] = ()) -> str:
     """'pass' = mutant survived | 'fail' = killed | 'hang' = did not finish
     | 'noscope' = there were no tests to run, which is a NON-ANSWER.
 
@@ -406,7 +415,10 @@ def run_tests(tests: list[str]) -> str:
         # were confirming a hang, which cannot resolve a file that is not there.
         return "noscope"
     try:
-        p = subprocess.run(["uv", "run", "--project", str(ROOT), "pytest", "-q", *present],
+        args = ["uv", "run", "--project", str(ROOT), "pytest", "-q", *present]
+        for d in deselect:
+            args += ["--deselect", d]
+        p = subprocess.run(args,
                            cwd=str(ROOT), capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=TEST_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -414,8 +426,68 @@ def run_tests(tests: list[str]) -> str:
     return "pass" if p.returncode == 0 else "fail"
 
 
+#: Tests that assert a property of the PRISTINE tree, and therefore fail for EVERY
+#: mutant regardless of whether that mutant was caught. They are tests OF the probe,
+#: not of the code under mutation, so including them in the escalation below turns
+#: every survivor into a "kill".
+#:
+#: MEASURED 2026-09-02, and it had disabled this gate's entire purpose. `full_suite()`
+#: is only reached when the SCOPED tests PASS -- i.e. only for a genuine survivor --
+#: and it returned "fail" for every one of them, so each was printed `killed`. TWO
+#: independent causes, either sufficient on its own:
+#:   1. `test_every_anchor_is_unique_in_its_real_target` reads the real source and
+#:      asserts each anchor appears exactly once; with a mutant applied that mutant's
+#:      own anchor is gone, so the count is 0. Deselected here.
+#:   2. `path.write_text()` re-wrote the LF-pinned target in CRLF (measured: 0 to 790
+#:      CRLF in _merge.py), so the line-ending pin gate failed too. That one is fixed
+#:      at the I/O sites below rather than by deselecting, because it was a real
+#:      defect the probe itself was introducing, not a property of measurement.
+FULL_SUITE_DESELECT = (
+    "tests/test_mutation_probe.py::test_every_anchor_is_unique_in_its_real_target",
+)
+
+
 def full_suite() -> str:
-    return run_tests(["tests"])
+    return run_tests(["tests"], FULL_SUITE_DESELECT)
+
+
+def full_suite_failures() -> set | None:
+    """The SET of failing test ids across the whole suite, or None if it could not run.
+
+    A BOOLEAN is not enough here, and that is the third cause of the false kill.
+    `x4validate/_mutation.py` makes every artifact-writing path REFUSE while
+    `.mutation-probe-active` exists -- deliberately, so a poisoned artifact cannot
+    outlive the window -- so 5 tests in tests/test_effective.py fail for the whole
+    probe run. MEASURED 2026-09-02: 5 failed / 1178 passed with the marker present,
+    1183 passed without it. `full_suite()` was therefore red for every mutant, and
+    every survivor was printed `killed`.
+
+    So the escalation compares failure SETS: a mutant is caught only if it makes a
+    test fail that was NOT already failing. That is the specific consequence, rather
+    than "something changed" -- and it needs no exception list to rot.
+    """
+    args = ["uv", "run", "--project", str(ROOT), "pytest", "-q", "tests",
+            "--tb=no", "-rf"]
+    for d in FULL_SUITE_DESELECT:
+        args += ["--deselect", d]
+    try:
+        p = subprocess.run(args, cwd=str(ROOT), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=TEST_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        # silent-ok: None IS this function's non-answer channel, not a swallow. The
+        # caller REFUSES on None (rc 2) rather than treating it as "nothing failed",
+        # which is the distinction this rule exists to enforce.
+        return None
+    out = set()
+    for line in p.stdout.splitlines():
+        for tag in ("FAILED ", "ERROR "):
+            if line.startswith(tag):
+                out.add(line[len(tag):].split(" ")[0])
+    if p.returncode not in (0, 1):
+        # 2 = interrupted, 3 = internal error, 4 = usage. None of those is a
+        # measurement, and an empty set from one would read as "nothing failed".
+        return None
+    return out
 
 
 def main() -> int:
@@ -451,10 +523,30 @@ def main() -> int:
 
     survivors, hangs, noscopes = [], [], []
     take_pristine()
+    # AFTER take_pristine, deliberately: the marker is now on disk, so this baseline
+    # includes the tests that refuse BECAUSE of it. Taking it before would compare two
+    # different worlds and call every mutant a kill -- which is exactly what happened.
+    baseline_failures = full_suite_failures()
+    if baseline_failures is None:
+        restore_all()
+        clear_marker()
+        print("REFUSING: the full suite could not be run on the pristine tree, so no "
+              "escalation below could distinguish a survivor from a kill.",
+              file=sys.stderr)
+        return 2
+    if baseline_failures:
+        print(f"note: {len(baseline_failures)} test(s) already fail with the mutation "
+              f"marker present; a mutant counts as caught only if it adds to them.")
     try:
         for target, group in by_target.items():
             path = PKG / target
-            original = path.read_text(encoding="utf-8")
+            # BYTES, not text. read_text/write_text round-trip through universal
+            # newlines, and Python text mode on Windows re-writes every line ending as
+            # CRLF -- so mutating an LF-pinned file rewrote the WHOLE file (measured:
+            # 790 CRLF in _merge.py). That turned the line-ending gate red for every
+            # mutant, which made every survivor read as a kill.
+            original_bytes = path.read_bytes()
+            original = original_bytes.decode("utf-8")
             print(f"\n  {target}")
             for m in group:
                 n = original.count(m.old)
@@ -462,7 +554,7 @@ def main() -> int:
                     print(f"    SKIP   {m.name:<44} anchor appears {n}x (need exactly 1)")
                     survivors.append((m, f"anchor not unique ({n}) - probe cannot aim"))
                     continue
-                path.write_text(original.replace(m.old, m.new, 1), encoding="utf-8")
+                path.write_bytes(original.replace(m.old, m.new, 1).encode("utf-8"))
                 verdict = run_tests(TARGETS[target])
                 if verdict == "hang":
                     # Confirm before reporting. `subprocess.run(timeout=)` counts
@@ -478,8 +570,17 @@ def main() -> int:
                     # Scoped tests missed it. Before calling it a survivor, ask the
                     # WHOLE suite - scoping must never manufacture a false survivor.
                     # Same shape as perf_guard's confirm-before-reporting (F50).
-                    verdict = full_suite()
-                path.write_text(original, encoding="utf-8")
+                    #
+                    # NEW failures only. The baseline already contains the tests that
+                    # refuse because the marker exists; counting those as a kill is
+                    # what turned every survivor into one.
+                    now = full_suite_failures()
+                    if now is None:
+                        verdict = "hang"
+                    else:
+                        new = now - baseline_failures
+                        verdict = "fail" if new else "pass"
+                path.write_bytes(original_bytes)
                 if verdict == "noscope":
                     # Never challenged, so not a kill. F62 in one line: the public
                     # copy of this gate ran 3 of 4 _registry test files and still

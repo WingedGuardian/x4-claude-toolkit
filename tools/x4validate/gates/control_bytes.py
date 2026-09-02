@@ -21,13 +21,33 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+#: The REPOSITORY root, not the package root. MEASURED 2026-09-02: this was
+#: `parent.parent` (= tools/x4validate) and `git ls-files` ran there, so the sweep
+#: covered **171 of 241** tracked files. Everything outside the package was invisible
+#: -- including the whole of `.claude/hooks/` and `scripts/`, which is precisely where
+#: content is written through interpreter strings and where the escapes collapse. The
+#: gate could not see the file that carried the defect it exists to find: a literal
+#: 0x08 sat in `scripts/fuzz-guard.py` for a release and this sweep reported clean.
+_PKG = Path(__file__).resolve().parent.parent
+ROOT = _PKG.parent.parent
 # Labels built from the byte value of a backslash, deliberately: the first draft wrote
 # "\a"-style literals and the tool boundary collapsed them to the very control
 # characters this gate hunts, and the tests passed because their expectations had
 # collapsed the same way. test_labels_are_two_char_escapes pins the shape.
 ESCAPES = {c: chr(92) + ch for c, ch in ((0x07, "a"), (0x08, "b"), (0x0B, "v"), (0x0C, "f"), (0x1B, "e"))}
-TEXT = {".md", ".py", ".sh", ".txt", ".toml", ".yaml", ".yml", ".json", ".tsv", ".env"}
+#: Used ONLY to pick files out of a DIRECTORY argument (the memory dir, the game
+#: root's docs). Tracked files are no longer filtered by extension at all -- see
+#: `looks_binary`. An extension allowlist is a narrowing step that reports success,
+#: and this one silently excluded .xml, .lua and .ps1 from a repo that ships all three.
+TEXT = {".md", ".py", ".sh", ".txt", ".toml", ".yaml", ".yml", ".json", ".tsv", ".env",
+        ".xml", ".lua", ".ps1", ".example", ".lock", ".cfg", ".ini", ".bat"}
+
+
+def looks_binary(data: bytes) -> bool:
+    """A NUL byte. MEASURED 2026-09-02 over all 241 tracked files: 240 contain no NUL
+    and exactly one does (BaseX.jar). Sniffing content instead of trusting a suffix
+    means a new file type is covered the day it is added, with no list to update."""
+    return bytes([0]) in data
 
 
 def scan_bytes(data: bytes) -> list[tuple[int, int, str]]:
@@ -58,7 +78,7 @@ def expand(paths) -> list:
 
 
 def scan_paths(paths) -> dict:
-    hits, scanned, unreadable = [], 0, []
+    hits, scanned, unreadable, binary = [], 0, [], []
     for p in expand(paths):
         p = Path(p)
         try:
@@ -68,17 +88,27 @@ def scan_paths(paths) -> dict:
             # name tells you whether it mattered.
             unreadable.append(str(p))
             continue
+        if looks_binary(data):
+            # A separate bucket from `unreadable`: a binary is CORRECTLY not scanned,
+            # so it must not trip the hole-in-the-denominator refusal below. Still
+            # named, because "skipped" with no name is how a hole hides.
+            binary.append(str(p))
+            continue
         scanned += 1
         for off, c, esc in scan_bytes(data):
             ctx = data[max(0, off - 30):off].decode("utf-8", "replace") + "<" + esc + ">" \
                 + data[off + 1:off + 20].decode("utf-8", "replace")
             hits.append({"path": str(p), "offset": off, "byte": c, "escape": esc,
                          "context": ctx.replace("\r", "").replace("\n", " ")})
-    return {"scanned": scanned, "unreadable": unreadable, "hits": hits}
+    return {"scanned": scanned, "unreadable": unreadable, "binary": binary,
+            "hits": hits}
 
 
 def tracked_text_files() -> list[Path]:
-    """Git-tracked text files, or [] when this is not a git checkout.
+    """EVERY git-tracked file, or [] when this is not a git checkout.
+
+    No extension filter: binaries are separated by CONTENT in scan_paths. The name is
+    kept for its callers.
 
     MEASURED 2026-09-01 in a `git archive` extract -- which is exactly what a release
     tarball is: `check=True` raised CalledProcessError, the gate exited 1, and
@@ -96,7 +126,7 @@ def tracked_text_files() -> list[Path]:
         # confusion this fix removes: a tarball is "cannot check", not "found a defect".
         return []
     names = out.stdout.decode("utf-8", "replace").split("\0")
-    return [ROOT / n for n in names if n and Path(n).suffix.lower() in TEXT]
+    return [ROOT / n for n in names if n]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -104,7 +134,10 @@ def main(argv: list[str] | None = None) -> int:
     paths = tracked_text_files() + [Path(a) for a in argv]
     rep = scan_paths(paths)
     print(f"control-byte sweep: scanned {rep['scanned']} file(s), "
+          f"binary-skipped {len(rep['binary'])}, "
           f"unreadable {len(rep['unreadable'])}, hits {len(rep['hits'])}")
+    for b in rep["binary"]:
+        print(f"  binary (correctly not scanned): {b}")
     for u in rep["unreadable"]:
         print(f"  UNREADABLE (not scanned): {u}")
     for h in rep["hits"]:

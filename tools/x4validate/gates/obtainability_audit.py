@@ -120,10 +120,23 @@ def main() -> int:
 
     was = json.loads(BASELINE.read_text(encoding="utf-8"))
     drift = []
-    for key in ("deprecated_only_macros_vanilla", "deprecated_only_macros_effective",
+    #: The DENOMINATOR keys are compared first and deliberately. `audit()` has always
+    #: recorded how many base macro files it read and how many it could not, and until
+    #: 2026-09-02 neither was compared NOR printed -- so a coverage collapse could only
+    #: ever surface disguised as a change in the findings, attributed to content. A
+    #: denominator that is measured and then discarded is the shape this gate exists to
+    #: catch, sitting inside the gate. See CLAUDE.md "A step that narrows data MUST
+    #: announce it" and the sibling defect measured in control_bytes.py the same day.
+    for key in ("base_macro_files_scanned", "base_macro_files_unreadable",
+                "deprecated_only_macros_vanilla", "deprecated_only_macros_effective",
                 "live_macros_with_deprecated_ammo", "of_those_sold_by_a_live_ware"):
-        if was.get(key) != now[key]:
-            drift.append(f"{key}: {was.get(key)} -> {now[key]}")
+        if key not in was:
+            # An older baseline predates the key. NAMED, never silently skipped: a
+            # missing key is "not comparable", which is not the same as "unchanged".
+            drift.append(f"{key}: baseline predates this key (now {now[key]}) "
+                         "-- re-record to make it comparable")
+        elif was[key] != now[key]:
+            drift.append(f"{key}: {was[key]} -> {now[key]}")
 
     # PER ITEM, never the total: a mod losing 3 references while another gains 3 is
     # a net zero that hides both (CLAUDE.md 1b).
@@ -133,6 +146,12 @@ def main() -> int:
             drift.append(f"mod {folder}: {old_m.get(folder, 0)} -> {new_m.get(folder, 0)} reference(s)")
 
     print("OBTAINABILITY AUDIT — vanilla + installed modlist, against the local baseline")
+    #: Denominator FIRST, findings after. A count of findings means nothing until the
+    #: reader knows how many files produced it.
+    print(f"  {'base macro files scanned':<38} {now['base_macro_files_scanned']}")
+    if now["base_macro_files_unreadable"]:
+        print(f"  {'base macro files UNREADABLE':<38} "
+              f"{now['base_macro_files_unreadable']}   <- a hole in the denominator")
     for k in ("deprecated_only_macros_vanilla", "deprecated_only_macros_effective",
               "live_macros_with_deprecated_ammo", "of_those_sold_by_a_live_ware"):
         print(f"  {k:<38} {now[k]}")

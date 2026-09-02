@@ -77,6 +77,9 @@ def fake_tree(tmp_path, monkeypatch):
     monkeypatch.setattr(mp, "PRISTINE", tmp_path / ".mutation-probe-pristine")
     monkeypatch.setattr(mp, "MUTANTS", [
         mp.Mutant("_merge.py", "x", "GOOD", "BROKEN", "y")])
+    # Stubbed by default: without this every fake-tree test that calls main() would
+    # shell out to the REAL pytest suite (~50s each) against the real repo.
+    monkeypatch.setattr(mp, "full_suite_failures", lambda: set())
     return tmp_path, pkg
 
 
@@ -187,9 +190,10 @@ def test_a_hang_is_re_run_before_being_reported(fake_tree, monkeypatch):
     perf_guard (F50) -- confirm before reporting."""
     calls = []
 
-    def flaky(tests):
-        # call 1 is the BASELINE (must pass), call 2 is the mutant (hangs),
-        # call 3 is the re-run that decides it.
+    def flaky(tests, deselect=()):
+        # call 1 is the SCOPED baseline (must pass), call 2 is the mutant (hangs),
+        # call 3 is the re-run that decides it. The full-suite baseline is taken by
+        # full_suite_failures(), which fake_tree stubs, so it is not in this count.
         calls.append(tests)
         return {1: "pass", 2: "hang"}.get(len(calls), "fail")
 
@@ -244,7 +248,7 @@ def test_main_reports_an_empty_scope_SEPARATELY_and_fails(fake_tree, monkeypatch
     Counting it as one is how a gate reports 11/11 while measuring 3 of 4 files."""
     calls = []
 
-    def scoped(tests):
+    def scoped(tests, deselect=()):
         calls.append(tests)          # call 1 is the BASELINE and must pass
         return "pass" if len(calls) == 1 else "noscope"
 
@@ -260,7 +264,7 @@ def test_main_reports_an_empty_scope_SEPARATELY_and_fails(fake_tree, monkeypatch
 
 def test_main_REFUSES_when_the_BASELINE_scope_is_empty(fake_tree, monkeypatch, capsys):
     """rc 2 = could not run, never rc 1 = has findings. The F39/F47 distinction."""
-    monkeypatch.setattr(mp, "run_tests", lambda tests: "noscope")
+    monkeypatch.setattr(mp, "run_tests", lambda tests, deselect=(): "noscope")
     monkeypatch.setattr(mp, "RECOVER", False)
     assert mp.main() == 2
 
@@ -284,3 +288,165 @@ def test_the_scope_check_can_actually_fail(tmp_path):
 
     whole = {"_x.py": ["tests/test_present.py"]}
     assert mp_scope_gaps(tmp_path, whole) == {}, "a complete scope must be clean"
+
+
+# --- the false-kill: every survivor was reported `killed` (2026-09-02) --------
+#
+# `full_suite()` is reached ONLY when the scoped tests PASS -- that is, only for a
+# genuine survivor -- and it returned "fail" for every one of them, so each was
+# printed `killed`. The gate's entire purpose was inverted, and it reported success.
+# TWO independent causes, either sufficient alone; fixing one leaves it broken.
+#   1. `test_every_anchor_is_unique_in_its_real_target` reads the REAL source and
+#      asserts each anchor appears once. Under a mutant its own anchor is gone.
+#   2. `path.write_text()` rewrote the LF-pinned target as CRLF (MEASURED: 0 -> 790
+#      CRLF in _merge.py), turning the line-ending pin gate red for every mutant.
+# REPRODUCED before the fix: both named test files returned rc=1 with a mutant
+# applied and rc=0 on the clean tree.
+
+
+def test_the_mutation_window_does_not_rewrite_line_endings(tmp_path, monkeypatch):
+    """Cause 2, observed WHERE IT HAPPENS. `restore_all()` copies the pristine bytes
+    back, so by the time main() returns the damage is invisible; it is only during
+    the window -- exactly when the suite runs -- that the file is wrong. So the spy
+    reads the bytes from inside the stubbed test run."""
+    pkg = tmp_path / "x4validate"; pkg.mkdir()
+    target = pkg / "_merge.py"
+    body = b"line one" + bytes([13, 10]) + b"GOOD" + bytes([13, 10])
+    target.write_bytes(body)
+    monkeypatch.setattr(mp, "PKG", pkg)
+    monkeypatch.setattr(mp, "MARKER", tmp_path / ".mutation-probe-active")
+    monkeypatch.setattr(mp, "PRISTINE", tmp_path / ".mutation-probe-pristine")
+    monkeypatch.setattr(mp, "MUTANTS",
+                        [mp.Mutant("_merge.py", "x", "GOOD", "BROKEN", "y")])
+    monkeypatch.setattr(mp, "RECOVER", False)
+    monkeypatch.setattr(mp, "full_suite_failures", lambda: set())
+
+    seen = []
+
+    def spy(tests, deselect=()):
+        seen.append(target.read_bytes())
+        return "pass" if len(seen) <= 1 else "fail"   # baseline, then the mutant
+
+    monkeypatch.setattr(mp, "run_tests", spy)
+    mp.main()
+
+    assert len(seen) >= 2, seen
+    during = seen[-1]
+    assert b"BROKEN" in during, "the mutant was not actually applied, so this proves nothing"
+    # EXACT BYTES, not a CRLF count. The first version of this assertion counted
+    # CRLF pairs and could not go red: text mode turns CR-LF into CR-CR-LF, so the
+    # PAIR count is unchanged and a corrupted file passed. Its falsification twin is
+    # what caught that -- the LF twin below went red while this one stayed green.
+    assert during == body.replace(b"GOOD", b"BROKEN"), (
+        "the mutation window did not write the file byte-for-byte: "
+        f"{during!r} != {body.replace(b'GOOD', b'BROKEN')!r}")
+
+
+def test_a_target_with_LF_endings_keeps_them_through_the_window(tmp_path, monkeypatch):
+    """The twin, in the direction the real repo actually uses: LF must stay LF."""
+    pkg = tmp_path / "x4validate"; pkg.mkdir()
+    target = pkg / "_merge.py"
+    body = b"line one" + bytes([10]) + b"GOOD" + bytes([10])
+    target.write_bytes(body)
+    monkeypatch.setattr(mp, "PKG", pkg)
+    monkeypatch.setattr(mp, "MARKER", tmp_path / ".mutation-probe-active")
+    monkeypatch.setattr(mp, "PRISTINE", tmp_path / ".mutation-probe-pristine")
+    monkeypatch.setattr(mp, "MUTANTS",
+                        [mp.Mutant("_merge.py", "x", "GOOD", "BROKEN", "y")])
+    monkeypatch.setattr(mp, "RECOVER", False)
+    monkeypatch.setattr(mp, "full_suite_failures", lambda: set())
+    seen = []
+
+    def spy(tests, deselect=()):
+        seen.append(target.read_bytes())
+        return "pass" if len(seen) <= 1 else "fail"
+
+    monkeypatch.setattr(mp, "run_tests", spy)
+    mp.main()
+    during = seen[-1]
+    assert b"BROKEN" in during
+    assert during.count(bytes([13, 10])) == 0, (
+        "an LF-pinned file was rewritten with CRLF inside the mutation window")
+    assert during == body.replace(b"GOOD", b"BROKEN"), "not written byte-for-byte"
+
+
+def test_FULL_SUITE_DESELECT_names_a_real_and_self_referential_test():
+    """Cause 1. The deselect must be justified, not merely convenient: the test it
+    names has to be one that reads the real package source, which a mutated tree
+    necessarily fails. A deselect of an ordinary test would be hiding a kill."""
+    root = Path(__file__).resolve().parent.parent
+    assert mp.FULL_SUITE_DESELECT, "nothing deselected -- cause 1 is unguarded"
+    for nodeid in mp.FULL_SUITE_DESELECT:
+        rel, sep, name = nodeid.partition("::")
+        assert sep, f"{nodeid!r} is not a file::test node id"
+        f = root / rel
+        assert f.is_file(), f"{rel} does not exist -- the deselect is stale"
+        text = f.read_text(encoding="utf-8")
+        assert f"def {name}(" in text, f"{name} is not defined in {rel} -- stale deselect"
+        body = text.split(f"def {name}(", 1)[1].split("\ndef ", 1)[0]
+        assert "MUTANTS" in body and "read_text" in body, (
+            f"{name} does not read the real sources, so deselecting it hides a real kill")
+
+
+def test_the_deselect_actually_reaches_pytest(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_run(args, **kw):
+        seen["args"] = args
+        class R: returncode = 0
+        return R()
+
+    monkeypatch.setattr(mp, "ROOT", tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "t.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(mp.subprocess, "run", fake_run)
+    mp.run_tests(["tests/t.py"], ("tests/t.py::x",))
+    assert "--deselect" in seen["args"] and "tests/t.py::x" in seen["args"], seen["args"]
+    mp.run_tests(["tests/t.py"])
+    assert "--deselect" not in seen["args"], "a deselect appeared when none was asked for"
+
+
+def test_main_REFUSES_when_the_FULL_SUITE_CANNOT_BE_RUN(fake_tree, monkeypatch, capsys):
+    """Without a baseline there is nothing to subtract, so no escalation below could
+    tell a survivor from a kill. That is a refusal (rc 2), not a clean sweep."""
+    monkeypatch.setattr(mp, "run_tests", lambda tests, deselect=(): "pass")
+    monkeypatch.setattr(mp, "full_suite_failures", lambda: None)
+    monkeypatch.setattr(mp, "RECOVER", False)
+    assert mp.main() == 2, "an unrunnable full suite must refuse, not report kills"
+    assert "REFUSING" in capsys.readouterr().err
+    assert not mp.MARKER.exists(), "the refusal must still clear the marker"
+
+
+def test_a_mutant_that_adds_NO_new_failure_is_a_SURVIVOR(fake_tree, monkeypatch, capsys):
+    """The defect this whole section exists for. The probe's own marker makes 5 tests
+    refuse (x4validate/_mutation.py), so the full suite is red for the entire run --
+    MEASURED 5 failed / 1178 passed with the marker, 1183 passed without. Comparing a
+    boolean therefore said "fail" for every mutant, and every survivor was printed
+    `killed`. Only a NEW failure is a kill."""
+    already = {"tests/test_effective.py::test_build_and_provenance"}
+    monkeypatch.setattr(mp, "run_tests", lambda tests, deselect=(): "pass")
+    monkeypatch.setattr(mp, "full_suite_failures", lambda: set(already))
+    monkeypatch.setattr(mp, "RECOVER", False)
+    rc = mp.main()
+    out = capsys.readouterr().out
+    assert "LIVED" in out, f"a mutant nothing caught was not reported as a survivor:\n{out}"
+    assert rc != 0, "a survivor must fail the gate"
+
+
+def test_a_mutant_that_ADDS_a_failure_is_a_KILL(fake_tree, monkeypatch, capsys):
+    """The twin. Without it, a probe that called everything a survivor would pass the
+    test above."""
+    seen = []
+
+    def failures():
+        seen.append(1)
+        base = {"tests/test_effective.py::test_build_and_provenance"}
+        return base if len(seen) == 1 else base | {"tests/test_merge.py::test_new"}
+
+    monkeypatch.setattr(mp, "run_tests", lambda tests, deselect=(): "pass")
+    monkeypatch.setattr(mp, "full_suite_failures", failures)
+    monkeypatch.setattr(mp, "RECOVER", False)
+    rc = mp.main()
+    out = capsys.readouterr().out
+    assert "killed" in out and "LIVED" not in out, out
+    assert rc == 0
