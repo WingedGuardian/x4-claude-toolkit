@@ -173,10 +173,14 @@ See [`tools/x4validate/README.md`](tools/x4validate/README.md) for the verb list
 tiers behind each answer.
 
 ### Skills & subagents
+- `/x4-balance` — ground a stat or balance change in measured values before proposing it:
+  the three-values rule (vanilla, effective, proposed) and the in-sector vs out-of-sector check.
 - `/x4-debug` — read the active profile's `debug.txt`, filter benign noise, surface real errors.
-- `/x4-modlist-review` — triage your mod registry against the Nexus API.
 - `/x4-mod-interaction` — analyze how a mod interacts with your installed set: collisions,
   shared event/action hooks, advisory balance fit, and same-ship redundancy.
+- `/x4-modlist-review` — triage your mod registry against the Nexus API.
+- `/x4-probe` — build a temporary in-game instrument (a test harness or diagnostic mod), and
+  work out which of "did not load / never fired / logic failed" produced a silent result.
 - `/x4-scaffold` — scaffold the full cross-file footprint for new content from a vanilla analogue.
 - `/x4-update-mod` — port a mod to a newer game version (mechanical checks + design brief).
 - `cross-file-impact` / `mod-research` subagents — trace the fan-out / research a mod before editing.

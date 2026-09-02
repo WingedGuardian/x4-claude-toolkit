@@ -10,12 +10,18 @@ you run is checked; the second and third change what the toolkit can see.
 ⚠ **`protect-bash.sh` now requires Python** (see below). Without it the guard **asks**
 rather than silently allowing.
 
-### Fixed — three parser defects that let commands past the guard entirely
+### Fixed — six parser defects that let commands past the guard entirely
 
-All three were in the single parse pass, all three were introduced by it, and **none was
-found by the test suite** — 151 unit tests, 31 planted mutations and a 13,285-command
-replay were green throughout. They were found by an adversarial code review, by `bash -n`,
-and by a fuzzer built afterwards.
+All six were in the single parse pass and **none was
+found by the test suite** — 151 unit tests, 35 planted mutations, 19 predicate probes and
+a 13,500-command replay were green throughout, and the coverage report read *"0 of 19
+predicates uncovered."* It was telling the truth: every one of those instruments starts
+from a command the parser has already identified, so all of them test the RULES and none
+tests the parser underneath them. They were found by an adversarial code review, by
+`bash -n`, and by a fuzzer — three external oracles, no suite.
+
+The first three are below. The last three were found after the fuzzer was extended to walk
+shell syntax CLASSES rather than shapes that had already caused a bug:
 
 **1. One apostrophe in prose disabled every rule.** Every helper is quote-aware, so an
 unbalanced quote turned the rest of a command into "quoted" text that no rule could see —
@@ -65,6 +71,74 @@ operand. ⚠ **Seven facts did stop firing**, and every one was checked by hand:
 are heredoc bodies — a git commit message, a table row, a script being authored — six keep
 their verdict through another rule and one correctly relaxes. That number is recorded here
 because the commit that caused it did not report it.
+
+The three bypasses below moved those totals again, measured the same way: **+13 commands,
+every one stricter, none looser** — 10 now carry an advisory and 3 now ask. Denials are
+unchanged at 780. The three new prompts are a `rmdir` inside the game folder and two loops
+copying into the game install's own `.claude/hooks`; all three used to pass in silence.
+
+A guard that reads commands has to parse them, and a parser is where this release kept
+finding holes. Three more, all of them silent — the hook returned nothing, which means
+*allow* — and all three closed here:
+
+| what walked past the guard | why |
+|---|---|
+| `if true; then rm -rf "<game>"; fi` — also `for`, `until`, `else`, `elif`, `case`, `!`, and a function body | the command is split on `;`, so the segment began with the reserved word `then`, and the guard read **that** as the command being run |
+| `cat <<< x` · `# a << b` · `n=$((1 << 2))` before anything | each was mistaken for the start of a here-document, so the rest of the command was treated as file content, not as commands |
+| `bash -lc '…'` and `eval '…'` | the unwrapper looked for the exact flag `-c`, so a login shell (`-lc`) slipped through; `sh -c` was caught the whole time |
+
+The first is the serious one: **90 bypasses over 10 compound forms**, and it defeated the
+three hard blocks — the game directory, `extensions/` wholesale, and the reference tree.
+
+**None of this was found by testing.** 151 unit tests, 35 mutants, 19 predicate probes and
+a replay of 13,500 real commands were green throughout, and the coverage report said *"0 of
+19 predicates uncovered."* It was telling the truth: every one of those instruments starts
+from a command the parser has already identified, so all of them tested the rules and none
+tested the parser underneath. What found it was `scripts/fuzz-guard.py` extended to walk
+**shell syntax classes** — here-strings, arithmetic, comments, parameter expansion, process
+substitution, redirects, brace expansion, line continuations, compound commands, wrappers —
+rather than re-testing shapes that had already caused a bug. 55 mutators, 550 mutants.
+
+**What it cost in practice, measured against 13,503 real commands:** 13 changed verdict,
+all of them *stricter*, none looser. Three were real: a `rmdir` inside the game folder and
+two loops copying files into the game install's own `.claude/hooks`, all previously waved
+through without a word.
+
+⚠ **One fix was briefly worse than the bug it fixed.** The first version of the `case`-arm
+rule also matched the tail of a process substitution, so
+`diff <(cd "$GAME" && rm -rf extensions) <(echo b)` lost its delete — a command the old
+code had handled correctly. No test caught that; comparing old and new behaviour
+command-by-command over real history did.
+
+### Also in this release
+
+- **The global install did nothing, silently, if your toolkit path contained `[` or `]`.**
+  PowerShell reads those as a wildcard character class, so `Get-ChildItem` matched nothing,
+  `-ErrorAction SilentlyContinue` hid it, and the installer printed *"installed x4 skills +
+  agents"* over an empty directory. Every path read now uses `-LiteralPath`, and the
+  installer **fails loudly** if it copied nothing. Verified by running it end to end from a
+  folder named `toolkit [v3]`.
+- **`bash` on Windows meant the WSL stub.** `scripts/fuzz-guard.py` carried
+  `which("bash.exe") or which("bash")` with a comment saying it avoided that stub — but the
+  stub *is* named `bash.exe`, so from PowerShell both calls returned
+  `C:\Windows\System32\bash.exe`. The guard fuzzer would have run every mutant under Linux,
+  where the Windows paths its cases are built from do not exist. One resolver,
+  `scripts/gitbash.py`, now serves every caller and returns nothing rather than a stub.
+- **`scripts/test-hooks.sh` failed on a fresh checkout** — it snapshotted the directory
+  *before* creating its own sandbox, then reported that sandbox as litter. It passed on
+  every second and later run, and would have gone red the first time CI ever ran it.
+- **An error is no longer reported as a finding.** The identifier scan returns 2 when it
+  *cannot* run (no `.git`, e.g. inside a release tarball); the suite read that as "an
+  identifier was found". Skips are now counted and named in the result line.
+- **The mod's build stamp was stale in the shipped tree, and nothing could see it.**
+  `stamp-mod-build.py` looked only in `dev/`, which does not exist in the public repo, so
+  `--check` printed "nothing to stamp" and exited 0 — a gate passing by never running. It
+  searches `mods/` first, refuses (exit 2) when a root exists but holds no mod, and a test
+  now pins it to the same lookup the test suite uses.
+- **Two shipped skills were undocumented.** `/x4-balance` and `/x4-probe` existed but were
+  not in the README, so there was no way to know they were there. A test now derives the
+  list from the directory.
+
 
 ### Added — `scripts/fuzz-guard.py`, a differential fuzzer for the guard
 
@@ -366,10 +440,10 @@ assistant's — it reads the reason, fixes the command and retries, and you neve
 | verdict | when |
 |---|---|
 | **deny** | there is a correct alternative the assistant can simply take — `git add -A`, `$?` after a pipeline, a long job in the foreground, searching the profile by name |
-| **advise** | no alternative to offer, just a caveat worth knowing — e.g. a search that can only return a partial answer |
-| **ask** | genuinely yours to decide: editing `content.xml`, editing profile files, deleting inside the game directory |
+| **advise** | no alternative to offer, just a caveat worth knowing — editing a mod's `content.xml`, or a search that can only return a partial answer |
+| **ask** | genuinely yours to decide: editing profile files and save games, editing a deployed mod, and writing or deleting inside the game directory |
 
-**17 user-facing rules → 3.** One rule was dropped entirely as too broad: it fired on any command
+**17 user-facing rules → 2 categories** (your profile and saves, and the game directory). One rule was dropped entirely as too broad: it fired on any command
 whose *text* mentioned a `.cat`, including an `echo` that merely discussed one. Writing a `.cat` is
 still blocked by `protect-files.sh`, which checks the actual target path.
 
