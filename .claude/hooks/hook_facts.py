@@ -23,6 +23,7 @@ here is unit-tested directly in test_hook_facts.py.
 """
 from __future__ import annotations
 
+import os
 import posixpath
 import re
 import sys
@@ -396,6 +397,41 @@ def assignments(cmd: str) -> dict[str, str]:
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
 
+#: `~` and `$HOME` are values a hook genuinely CAN know, unlike `$(...)`. Without them a
+#: save delete written the ordinary way was invisible. MEASURED 2026-09-01, E2E through
+#: protect-bash.sh, all spellings of the SAME file:
+#:      rm -f "C:/Users/.../Egosoft/X4/<id>/save/s.xml.gz"  -> ask
+#:      rm -f ~/Documents/Egosoft/X4/<id>/save/s.xml.gz     -> *** SILENT ALLOW ***
+#:      rm -f $HOME/Documents/.../save/s.xml.gz             -> *** SILENT ALLOW ***
+#: Saves are the one thing here with no backup and no undo, which is why they ask at all.
+#: (Every PATH dialect was already handled -- absolute, relative after `cd`, the MSYS
+#: `/c/...` form and backslashes all resolved correctly. Only home did not.)
+#:
+#: Deliberately NOT a name backstop: this resolves the operand to a real path and lets the
+#: existing root comparison decide, so it cannot fire on something merely home-shaped.
+_HOME = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
+_HOME_VARS = ("$HOME", "${HOME}", "$USERPROFILE", "${USERPROFILE}")
+_SEPS = ("/", chr(92))
+
+
+def expand_home(tok: str) -> str:
+    """A LEADING `~`, `$HOME` or `$USERPROFILE` becomes the real home directory.
+
+    Leading only: `a~b` and `x/$HOME` are not home references, and rewriting them would
+    invent a path the user never wrote.
+    """
+    if not _HOME:
+        return tok
+    if tok == "~" or (tok[:1] == "~" and tok[1:2] in _SEPS):
+        return _HOME + tok[1:]
+    for v in _HOME_VARS:
+        if tok == v:
+            return _HOME
+        if tok.startswith(v) and tok[len(v):len(v) + 1] in _SEPS:
+            return _HOME + tok[len(v):]
+    return tok
+
+
 def resolve(tok: str, assigns: dict[str, str]) -> str:
     """Substitute what this command itself assigned. Text is all a hook can see, so
     this is the most that could ever be resolved."""
@@ -408,7 +444,7 @@ def resolve(tok: str, assigns: dict[str, str]) -> str:
         prev, out = out, _VAR.sub(sub, out)
         if out == prev:
             break
-    return out
+    return expand_home(out)
 
 
 # `$(...)` and `` `...` `` are values this hook can NEVER know. Without them a

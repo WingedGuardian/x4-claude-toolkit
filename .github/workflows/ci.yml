@@ -123,6 +123,14 @@ jobs:
       # guarded a Lua contract whose violation hangs X4 and needs a force-kill.
       - name: Run the suite with NO game installed
         working-directory: tools/x4validate
+        # X4_MAX_SKIPS turns the skip COUNT into a failure instead of a number nobody
+        # reads. Deliberately generous: a runner with no X4 and fewer optional deps
+        # legitimately skips more than a configured machine, and a ceiling that cries
+        # wolf is one people learn to ignore. It is set to catch the failure that
+        # actually happened -- 125 tests going silently dormant at once -- not to police
+        # normal environmental variation.
+        env:
+          X4_MAX_SKIPS: "40"
         run: uv run --frozen python -m pytest -q -rs
 
   scrub:

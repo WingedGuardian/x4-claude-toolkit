@@ -300,6 +300,56 @@ class TestWrappersThatCarryACommandAsText(unittest.TestCase):
         self.assertFalse(F("echo \"bash -c rm -rf /\"")["rm_hits_game"])
 
 
+class TestHomeReferencesResolve(unittest.TestCase):
+    """`~` and `$HOME` are values a hook CAN know, and not knowing them hid save deletes.
+
+    MEASURED 2026-09-01 E2E through protect-bash.sh, on the SAME file: the absolute form
+    asked, while `~/Documents/.../save/s.xml.gz` and `$HOME/...` were **silent allows**.
+    Saves are the one thing in this workspace with no backup and no undo.
+
+    Every other operand dialect was already correct -- absolute, relative after `cd`, the
+    MSYS `/c/...` form, and backslashes. Home was the only gap, which is why this is an
+    expansion rather than a new name backstop.
+    """
+
+    #: The FIXTURE profile id, not a real one. The first draft of this used the real
+    #: id -- which both failed to match the synthetic saves root (so the control could
+    #: not fire) and would have shipped a personal identifier in a public file. The
+    #: broken control is what surfaced it, before scan-identifiers ever ran.
+    TAIL = "Documents/Egosoft/X4/12345678/save/s.xml.gz"
+
+    #: The fixture home, matching this file's synthetic roots. Patched rather than read
+    #: from the environment: a test that depends on the real machine's home is not
+    #: hermetic, and hard-coding a real one would ship a username in a public file.
+    HOME = "C:/Users/tester"
+
+    def test_all_home_spellings_reach_the_same_verdict_as_the_absolute_form(self):
+        import unittest.mock as mock
+        with mock.patch.object(H, "_HOME", self.HOME):
+            want = F('rm -f "%s/%s"' % (self.HOME, self.TAIL))["rm_saves"]
+            self.assertTrue(want, "the absolute control must fire, or this proves nothing")
+            for spell in ("~", "$HOME", "${HOME}", "$USERPROFILE", "${USERPROFILE}"):
+                with self.subTest(spelling=spell):
+                    self.assertTrue(F("rm -f %s/%s" % (spell, self.TAIL))["rm_saves"],
+                                    "%s did not resolve to the same file" % spell)
+
+    def test_only_a_LEADING_home_reference_is_expanded(self):
+        # `a~b` is a filename, and `x/$HOME` is not a home reference; rewriting either
+        # would invent a path the user never wrote.
+        self.assertEqual(H.expand_home("./a~b.txt"), "./a~b.txt")
+        self.assertEqual(H.expand_home("x/$HOME/y"), "x/$HOME/y")
+
+    def test_an_unrelated_file_under_home_still_does_not_fire(self):
+        import unittest.mock as mock
+        with mock.patch.object(H, "_HOME", self.HOME):
+            self.assertFalse(F("rm -f ~/notes.txt")["rm_saves"])
+
+    def test_expansion_is_inert_when_there_is_no_home(self):
+        import unittest.mock as mock
+        with mock.patch.object(H, "_HOME", ""):
+            self.assertEqual(H.expand_home("~/x"), "~/x")
+
+
 # ------------------------------------------------------------ redirect targets
 class TestRedirects(unittest.TestCase):
     def test_truncate_vs_append(self):

@@ -34,3 +34,7 @@ packages = ["x4validate"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# -rs: ALWAYS name every skip and its reason. Without it the summary says "14 skipped"
+# and nothing else, which is how 125 tests sat silently skipped behind a lookup that
+# could not succeed in the public tree. A skip is a test that did not run.
+addopts = "-rs"

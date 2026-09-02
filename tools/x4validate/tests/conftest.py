@@ -160,3 +160,43 @@ def _environment_is_unresolvable() -> bool:
     return (_paths.registry() is None
             or _paths.game_extensions() is None
             or _paths.reference() is None)
+
+
+# --------------------------------------------------------------- skip accounting
+#
+# A skip is a test that did NOT run, and pytest hides them by default: the summary
+# says "1159 passed, 14 skipped" and never says WHICH 14 or WHY. That is how 125 tests
+# sat skipped for weeks behind a lookup that could not succeed in the public tree --
+# a green tick over untested code, guarding a Lua contract whose violation hangs X4.
+#
+# Two things here, and neither can produce a false failure:
+#   * `-rs` in addopts, so every skip is always NAMED with its reason.
+#   * a count printed in the summary, plus an OPT-IN ceiling via X4_MAX_SKIPS for a
+#     caller that knows its environment (CI). A fixed ceiling would be wrong: a cold
+#     machine legitimately skips more than a configured one, and a check that cries
+#     wolf is one people learn to ignore.
+import os as _os
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    skipped = terminalreporter.stats.get("skipped", [])
+    n = len(skipped)
+    terminalreporter.write_line("")
+    terminalreporter.write_line(
+        "skip accounting: %d test(s) did not run. A skip is not a pass; the reasons are "
+        "listed above (-rs)." % n)
+    cap = _os.environ.get("X4_MAX_SKIPS")
+    if cap is None:
+        return
+    try:
+        cap_n = int(cap)
+    except ValueError:
+        terminalreporter.write_line(
+            "  X4_MAX_SKIPS=%r is not a number, so no ceiling was applied. That is a "
+            "NON-ANSWER, not a pass." % cap)
+        return
+    if n > cap_n:
+        terminalreporter.write_line(
+            "  FAIL: %d skips exceeds X4_MAX_SKIPS=%d. A test that stopped running is "
+            "indistinguishable from one that passed unless something counts them." % (n, cap_n))
+        terminalreporter._session.exitstatus = 1

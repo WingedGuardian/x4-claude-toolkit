@@ -39,6 +39,13 @@ FILES = ("hook_facts.py", "test_hook_facts.py")
 
 # (label, exact source text, replacement, the test that MUST go red)
 MUTANTS = [
+    ("a leading ~ / $HOME is expanded",
+     "    return expand_home(out)", "    return out",
+     "test_all_home_spellings_reach_the_same_verdict_as_the_absolute_form"),
+    ("only a LEADING home reference is expanded",
+     'if tok == "~" or (tok[:1] == "~" and tok[1:2] in _SEPS):',
+     'if "~" in tok:',
+     "test_only_a_LEADING_home_reference_is_expanded"),
     # --- wrappers that carry a command as TEXT ---------------------------------
     ("a shell -c flag CLUSTER is unwrapped",
      r'_DASH_C = re.compile(r"^-[A-Za-z]*c[A-Za-z]*$")',

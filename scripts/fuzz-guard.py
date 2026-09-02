@@ -32,6 +32,7 @@ Exit 0 clean / 1 bypass found / 2 refused (controls failed, or nothing exercised
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 import subprocess
 import sys
@@ -67,14 +68,43 @@ SYNTHETIC_ROOTS = {
 
 RANK = {"deny": 3, "ask": 2, "advise": 1, "allow": 0}
 
-# Which fact carries which verdict, read off protect-bash.sh. Policy lives there.
-DENY = ("rm_targets_reference", "rm_hits_game", "sed_i_in_game_or_profile",
-        "timeout_over_cap", "git_add_all", "dollarq_after_pipe", "write_to_tmp",
-        "durable_python_open_w", "profile_search_by_name", "xrcat_reunpack")
-# NB no "unparseable_command": that check moved out of hook_facts into
-# protect-bash.sh, which asks `bash -n`. The fuzzer reads FACTS, so it cannot see
-# it -- and does not need to: every mutant it builds is required to parse anyway.
-ASK = ("rm_in_x4_dir", "rm_saves", "writes_documents", "longjob_foreground")
+# Which fact carries which verdict is DERIVED from protect-bash.sh, never restated here.
+#
+# It used to be two hand-written tuples, and they had drifted. MEASURED 2026-09-01
+# against the hook's own 19 mapped predicates: the tuples listed **14**, so the fuzzer
+# was blind to 5 rules (26%) - `search_rooted_reference`, `search_rooted_workspace`,
+# `copy_into_game_or_profile`, `redirect_truncate_into_game_or_profile` and
+# `durable_truncating_redirect` - and mis-classified a 6th (`longjob_foreground` as ask;
+# the hook denies it, confirmed E2E). A bypass in any of those five could never have been
+# reported: the seed would read "already allow" and be skipped in silence, which is how
+# two of the twelve seeds were being dropped every run.
+#
+# A second copy of a policy is a second thing to keep right. This one is read.
+def policy_map(fact_names):
+    """{fact: deny|ask|advise} parsed from protect-bash.sh.
+
+    Comment lines are dropped first (the hook's prose says "on the", "on every", ...),
+    and every candidate must be a REAL fact name emitted by hook_facts - which is what
+    keeps English out of the map.
+    """
+    lines = (HOOKS / "protect-bash.sh").read_text(encoding="utf-8").splitlines()
+    code = ["" if l.lstrip().startswith("#") else l.split("#")[0] for l in lines]
+    out = {}
+    for i, l in enumerate(code):
+        m = re.search(r"(?:^|\s)on\s+([a-z0-9_]+)\b", l)
+        if not m or m.group(1) not in fact_names:
+            continue
+        window = " ".join(code[i:i + 6])
+        v = re.search(r"\b(deny|ask|advise)\s+\"", window)
+        if v:
+            out[m.group(1)] = v.group(1)
+    return out
+
+
+#: A parse that yields little or nothing must REFUSE, not degrade. An empty map makes
+#: verdict() return "allow" for every seed, every seed is then skipped as "nothing to
+#: weaken", and the run prints "no bypass found" over having tested nothing at all.
+MIN_MAPPED_RULES = 15
 
 NL = chr(10)
 AP = chr(39)     # apostrophe
@@ -91,14 +121,14 @@ def load_facts(path):
     return mod
 
 
-def verdict(mod, cmd, roots):
+def verdict(mod, cmd, roots, policy):
     f = mod.facts({"tool_input": {"command": cmd, "timeout": 0,
                                   "run_in_background": False}}, roots)
-    if any(f.get(k) for k in DENY):
-        return "deny"
-    if any(f.get(k) for k in ASK):
-        return "ask"
-    return "allow"
+    best = "allow"
+    for k, v in policy.items():
+        if f.get(k) and RANK[v] > RANK[best]:
+            best = v
+    return best
 
 
 def parses(cmd):
@@ -466,19 +496,19 @@ def seeds(roots):
     ]
 
 
-def run(mod, roots, verbose=False):
+def run(mod, roots, policy, verbose=False):
     """-> (findings, exercised, seeds_used)."""
     findings = []
     exercised = 0
     used = 0
     for name, cmd in seeds(roots):
-        base = verdict(mod, cmd, roots)
+        base = verdict(mod, cmd, roots, policy)
         if base == "allow":
             continue                       # not a seed: there is nothing to weaken
         used += 1
         for mname, fn in MUTATORS:
             mutant = fn(cmd)
-            after = verdict(mod, mutant, roots)
+            after = verdict(mod, mutant, roots, policy)
             exercised += 1
             if RANK[after] >= RANK[base]:
                 continue
@@ -540,6 +570,29 @@ def main():
         print("no X4 install detected -- using synthetic roots. Every rule is still "
               "exercised: this analysis is pure string comparison.")
 
+    # The verdict map comes from protect-bash.sh. A short parse REFUSES: with an empty
+    # map every seed reads "allow", every seed is skipped as nothing-to-weaken, and the
+    # run prints "no bypass found" over having exercised nothing.
+    probe = load_facts(HOOKS / "hook_facts.py")
+    names = set(probe.facts({"tool_input": {"command": "true", "timeout": 0,
+                                            "run_in_background": False}}, roots))
+    policy = policy_map(names)
+    if len(policy) < MIN_MAPPED_RULES:
+        print("REFUSING: only %d rule(s) parsed out of protect-bash.sh (expected at least "
+              "%d). The verdict map is derived from that file, and a short parse would "
+              "make every seed read 'allow' and the run report success over nothing."
+              % (len(policy), MIN_MAPPED_RULES), file=sys.stderr)
+        return 2
+    unmapped = sorted(n for n in names if n not in policy
+                      and n not in ("command", "cwd", "timeout", "background"))
+    if unmapped:
+        print("note: %d fact(s) hook_facts emits carry no verdict in protect-bash.sh "
+              "and are therefore NOT fuzzed: %s" % (len(unmapped), ", ".join(unmapped)))
+    print("policy: %d rules derived from protect-bash.sh (%d deny, %d ask, %d advise)"
+          % (len(policy), sum(v == "deny" for v in policy.values()),
+             sum(v == "ask" for v in policy.values()),
+             sum(v == "advise" for v in policy.values())))
+
     src = (HOOKS / "hook_facts.py").read_text(encoding="utf-8")
     holed = plant_known_hole(src)
     if holed is None:
@@ -551,7 +604,7 @@ def main():
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "hook_facts.py"
         p.write_text(holed, encoding="utf-8")
-        ctl, ctl_n, _ = run(load_facts(p), roots)
+        ctl, ctl_n, _ = run(load_facts(p), roots, policy)
     if not ctl:
         print("REFUSING: the known defect was planted and the fuzzer found NOTHING over "
               "%d mutants. It cannot detect a bypass, so a clean result from it is "
@@ -561,7 +614,7 @@ def main():
           "mutants. This fuzzer can fail." % (len(ctl), ctl_n))
 
     findings, exercised, used = run(load_facts(HOOKS / "hook_facts.py"), roots,
-                                    verbose="--verbose" in sys.argv)
+                                    policy, verbose="--verbose" in sys.argv)
     print("fuzzed %d mutants: %d seeds (of %d, the rest already allow) x %d mutators"
           % (exercised, used, len(seeds(roots)), len(MUTATORS)))
     if exercised == 0:
