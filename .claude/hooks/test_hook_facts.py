@@ -1076,5 +1076,276 @@ class TestHeredocBodyIsDataForEveryRule(unittest.TestCase):
         self.assertTrue(f_ := F(cmd)["rm_hits_game"], f_)
 
 
+# ---------------------------------------------------- COMMAND RESOLUTION (2026-09-02)
+#
+# One root cause behind six separate total bypasses: the parse pass modelled shell
+# GRAMMAR well and shell COMMAND RESOLUTION not at all. Two halves --
+#   (1) what a verb token NAMES: `/bin/rm`, `rm.exe` and `$'rm'` are all `rm`, and
+#       every verb-keyed rule compared the token verbatim;
+#   (2) which constructs CARRY a command: a substitution, a shell heredoc, `trap`,
+#       and a nested `-c` each run text that reached no rule.
+# MEASURED E2E through protect-bash.sh before the fix: 14 of 16 probes returned a
+# silent ALLOW against a game-root delete the guard catches when written bare.
+
+
+class TestVerbNamesAreResolved(unittest.TestCase):
+    def test_an_absolute_path_is_the_same_command(self):
+        self.assertEqual(H.verb(H._unwrap("/bin/" + D + " -rf x")), D)
+
+    def test_a_windows_path_is_the_same_command(self):
+        # QUOTED, which is how a Windows path is actually written in a shell command.
+        # norm() must run BEFORE basename: posixpath.basename does not split on a
+        # backslash, so without it the whole string comes back as one "name".
+        self.assertEqual(
+            H.verb(H._unwrap(chr(34) + "C:" + BS + "tools" + BS + D + ".exe" + chr(34)
+                             + " -rf x")), D)
+
+    def test_an_UNQUOTED_windows_path_is_not_that_command_at_all(self):
+        """Not a gap -- bash's own semantics. Unquoted, each backslash is an ESCAPE, so
+        the token is the single word `C:toolsrm` and bash would look for a command by
+        exactly that name. Resolving it to the delete verb would be inventing a threat
+        the shell will never execute."""
+        self.assertEqual(H.verb(H._unwrap("C:" + BS + "tools" + BS + D + " -rf x")),
+                         "c:tools" + D)
+
+    def test_a_dot_exe_suffix_is_the_same_command(self):
+        self.assertEqual(H.verb(H._unwrap(D + ".exe -rf x")), D)
+
+    def test_ansi_c_quoting_is_not_part_of_the_name(self):
+        # `$'rm'` tokenised to `$rm` AND set the quoted flag, so verb()'s
+        # `if quoted: return t` short-circuited with a name no rule has heard of.
+        self.assertEqual(H.verb(H._unwrap("$" + chr(39) + D + chr(39) + " -rf x")), D)
+
+    def test_the_hard_block_survives_every_spelling(self):
+        for cmd in ("/bin/" + D + ' -rf "%s"' % GAME,
+                    D + '.exe -rf "%s"' % GAME,
+                    "$" + chr(39) + D + chr(39) + ' -rf "%s"' % GAME):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(F(cmd)["rm_hits_game"], cmd)
+
+    # --- must NOT over-strip -------------------------------------------------
+    def test_only_dot_exe_is_stripped(self):
+        """A general extension strip would break these: they ARE the command names."""
+        for cmd, want in (("done_marker.sh", "done_marker.sh"),
+                          ("function_helper.py run", "function_helper.py"),
+                          ("casefold.py", "casefold.py")):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(H.verb(H._unwrap(cmd)), want)
+
+
+class TestWrapperVerbs(unittest.TestCase):
+    def test_each_wrapper_is_seen_through(self):
+        for w in ("timeout 5", "exec", "setsid", "nice -n 5", "ionice -c2"):
+            with self.subTest(wrapper=w):
+                self.assertTrue(F(w + " " + D + ' -rf "%s"' % GAME)["rm_hits_game"], w)
+
+    def test_a_duration_is_not_mistaken_for_the_command(self):
+        self.assertEqual(H.verb(H._unwrap("timeout 30s " + D + " -rf x")), D)
+
+    def test_an_xargs_placeholder_is_not_the_command(self):
+        self.assertEqual(H.verb(H._unwrap("xargs -I {} " + D + " -rf x")), D)
+
+    def test_a_bare_number_is_still_a_verb_without_a_wrapper(self):
+        """The skip is scoped to AFTER a wrapper. Outside that it must not apply, or
+        a command really named oddly would silently lose its verb."""
+        self.assertEqual(H.verb(H._unwrap("5 --flag")), "5")
+
+
+class TestSubstitutionsCarryCommands(unittest.TestCase):
+    def test_dollar_paren(self):
+        self.assertTrue(F("echo $(" + D + ' -rf "%s")' % GAME)["rm_hits_game"])
+
+    def test_backticks(self):
+        self.assertTrue(F("echo " + chr(96) + D + ' -rf "%s"' % GAME + chr(96))["rm_hits_game"])
+
+    def test_process_substitution(self):
+        self.assertTrue(F("cat <(" + D + ' -rf "%s")' % GAME)["rm_hits_game"])
+
+    def test_inside_SINGLE_quotes_nothing_runs(self):
+        """The twin. Single quotes make it literal text, and treating it as a command
+        would deny writing documentation that quotes one."""
+        self.assertFalse(F("echo " + chr(39) + "$(" + D + ' -rf "%s")' % GAME
+                           + chr(39) + " >> notes.md")["rm_hits_game"])
+
+    def test_arithmetic_is_not_a_subshell(self):
+        self.assertFalse(F("n=$((1 << 4)); echo $n")["rm_hits_game"])
+
+    def test_the_extractor_returns_the_inner_text(self):
+        self.assertEqual(H.substitutions("echo $(ls -la)"), ["ls -la"])
+        self.assertEqual(H.substitutions("echo " + chr(96) + "ls" + chr(96)), ["ls"])
+        self.assertEqual(H.substitutions("echo " + chr(39) + "$(ls)" + chr(39)), [])
+
+
+class TestTrapCarriesACommand(unittest.TestCase):
+    def test_trap_runs_its_first_operand(self):
+        self.assertTrue(F("trap " + chr(39) + D + ' -rf "%s"' % GAME
+                          + chr(39) + " EXIT")["rm_hits_game"])
+
+    def test_a_benign_trap_is_still_benign(self):
+        self.assertFalse(F("trap " + chr(39) + "echo bye" + chr(39) + " EXIT")["rm_hits_game"])
+
+
+class TestEvalIsNotAlwaysTokenZero(unittest.TestCase):
+    def test_a_wrapper_may_precede_eval(self):
+        # `time eval <cmd>` sliced from toks[1:] produced the string "eval <cmd>",
+        # whose own verb is `eval`, so no delete rule fired on that either.
+        self.assertTrue(F("time eval " + chr(39) + D + ' -rf "%s"' % GAME
+                          + chr(39))["rm_hits_game"])
+
+    def test_bare_eval_still_works(self):
+        self.assertTrue(F("eval " + chr(39) + D + ' -rf "%s"' % GAME
+                          + chr(39))["rm_hits_game"])
+
+
+class TestHeredocBodiesOnlyRunForAShell(unittest.TestCase):
+    def _hd(self, opener, body):
+        return opener + " <<" + chr(39) + "EOF" + chr(39) + chr(10) + body + chr(10) + "EOF"
+
+    def test_a_shell_runs_its_heredoc(self):
+        self.assertTrue(F(self._hd("bash", D + ' -rf "%s"' % GAME))["rm_hits_game"])
+
+    def test_cat_writing_a_file_does_NOT(self):
+        """Pinned: the body is the PAYLOAD of a file being written. Routing it would
+        hard-deny writing documentation that quotes a dangerous command."""
+        self.assertFalse(F(self._hd("cat > notes.md", D + ' -rf "%s"' % GAME))["rm_hits_game"])
+
+    def test_a_python_heredoc_does_NOT(self):
+        """Python, not shell. An assignment of a path to a name would parse as a
+        delete verb under a shell tokeniser, inventing deletes out of assignments."""
+        body = D + " = " + chr(34) + GAME + chr(34)
+        self.assertFalse(F(self._hd("python -", body))["rm_hits_game"])
+
+    def test_heredoc_bodies_returns_only_shell_openers(self):
+        self.assertEqual(H.heredoc_bodies(self._hd("bash", "ls")), ["ls"])
+        self.assertEqual(H.heredoc_bodies(self._hd("cat > n.md", "ls")), [])
+
+
+class TestCarriersNest(unittest.TestCase):
+    def test_a_shell_inside_a_shell(self):
+        self.assertTrue(F("bash -c " + chr(39) + "sh -c " + chr(34) + D + " -rf "
+                          + REF + chr(34) + chr(39))["rm_targets_reference"])
+
+    def test_a_shell_inside_a_substitution(self):
+        self.assertTrue(F("echo $(bash -c " + chr(39) + D + " -rf " + REF
+                          + chr(39) + ")")["rm_targets_reference"])
+
+    def test_the_walk_is_BOUNDED(self):
+        """This runs on the blocking PreToolUse path; an unbounded walk over an
+        adversarial string is a hang, and a hang here stops the session."""
+        self.assertLessEqual(H._MAX_CARRIER_DEPTH, 8)
+        deep = "echo ok"
+        for _ in range(40):
+            deep = "bash -c " + chr(39) + deep + chr(39)
+        self.assertIsInstance(F(deep), dict)     # terminates
+
+    def test_carried_commands_deduplicates(self):
+        out, _trunc = H.carried_commands("echo $(ls) $(ls)", [])
+        self.assertEqual(len(out), len(set(out)))
+
+    def test_an_ordinary_command_is_never_truncated(self):
+        """MEASURED over 13,503 real historical commands: the largest walk produced
+        25 of the 250 allowed, p99 was 5 and p50 was 1. The cap must be unreachable
+        by ordinary work or it becomes a prompt nobody reads."""
+        for cmd in ("echo hello && ls -la",
+                    "bash -c " + chr(39) + "sh -c " + chr(34) + "echo x" + chr(34) + chr(39),
+                    "echo $(ls) $(pwd) $(date)"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(F(cmd)["carriers_truncated"], cmd)
+
+    def test_a_TANGLED_command_says_so_instead_of_passing_quietly(self):
+        """The walk is bounded because this runs on the blocking path -- MEASURED: a
+        128 KB command with unique text at every nesting level produced 9,841 command
+        strings and 4.1 s before the bound existed. But a bound that drops data and
+        still returns a verdict is the narrowing-step defect, so it must ANNOUNCE."""
+        def build(depth, n, tag="q"):
+            if depth == 0:
+                return "echo " + tag
+            return " ".join("$(" + build(depth - 1, n, tag + chr(97 + i)) + ")"
+                            for i in range(n))
+        f = F("echo " + build(8, 3))
+        self.assertTrue(f["carriers_truncated"],
+                        "the walk was cut short and said nothing")
+
+    def test_the_cap_is_reported_by_carried_commands_itself(self):
+        deep = " ".join("$(echo a%d)" % i for i in range(400))
+        _out, trunc = H.carried_commands("echo " + deep, [])
+        self.assertTrue(trunc)
+
+
+class TestAFilterThatFiltersNothing(unittest.TestCase):
+    def test_a_universal_name_glob_is_not_a_narrowing(self):
+        self.assertTrue(F("find " + chr(34) + GAME + chr(34) + " -name "
+                          + chr(39) + "*" + chr(39) + " -delete")["rm_hits_game"])
+
+    def test_a_REAL_filter_is_still_scoped(self):
+        """The twin, and it is the whole reason the exemption exists: treating a
+        genuinely-narrowed find as a tree delete added 40 prompts across 13,282
+        commands, every one a __pycache__ cleanup."""
+        self.assertFalse(F("find " + chr(34) + GAME + chr(34)
+                           + " -name __pycache__ -delete")["rm_hits_game"])
+
+
+class TestTheFactStreamCannotBeForged(unittest.TestCase):
+    """protect-bash.sh splits the stream at the FIRST sentinel and `on()` matches
+    "<NL>key<TAB>1<NL>" ANYWHERE before it, so a value carrying a newline can invent a
+    fact no rule computed. `timeout` and `run_in_background` are passed through from
+    the caller's payload, so they are the two values this file did not produce.
+
+    E2E, before the fix: a benign `echo hi` with a forged `run_in_background` came back
+    DENY. `on()` only ever tests for 1, so injection can ADD a fact and never remove
+    one -- the reachable impact is a false refusal, not a bypass.
+    """
+    INJ = "x" + chr(10) + "rm_hits_game" + chr(9) + "1" + chr(10)
+
+    def test_booleans_are_emitted_as_0_or_1(self):
+        self.assertEqual(H._ipc_value("background", True), "1")
+        self.assertEqual(H._ipc_value("background", False), "0")
+
+    def test_a_timeout_is_always_a_number(self):
+        self.assertEqual(H._ipc_value("timeout", 5), "5")
+        self.assertEqual(H._ipc_value("timeout", "600000"), "600000")
+        self.assertEqual(H._ipc_value("timeout", self.INJ), "0")
+
+    def test_no_value_can_carry_a_field_separator(self):
+        for key in ("timeout", "background", "anything"):
+            with self.subTest(key=key):
+                v = H._ipc_value(key, self.INJ)
+                self.assertNotIn(chr(10), v)
+                self.assertNotIn(chr(13), v)
+                self.assertNotIn(chr(9), v)
+
+    def test_a_real_value_still_survives(self):
+        """The twin: a sanitiser that emptied everything would pass the test above."""
+        self.assertEqual(H._ipc_value("something", "plain"), "plain")
+
+
+class TestTheNameBackstopSurvivesARelativeOperand(unittest.TestCase):
+    """prep() stores join_cwd(cwd, resolved) in element 0, and join_cwd returns "" when
+    the operand is RELATIVE and the shell's directory is unknowable. That is correct for
+    the PATH rules -- inventing a root there would fire on unrelated work -- but it
+    silently disarmed the NAME backstop, whose whole job is an operand that bears the
+    game's name WITHOUT being a resolvable path.
+
+    MEASURED 2026-09-02: the backstop fired only when the delete followed a cd to an
+    ABSOLUTE directory, i.e. only in the case it was least needed.
+    """
+    def test_a_bare_named_operand_fires(self):
+        self.assertTrue(F(D + ' -rf "X4 Foundations"')["rm_hits_game"])
+
+    def test_a_named_operand_after_a_RELATIVE_cd_fires(self):
+        self.assertTrue(F('cd sub && ' + D + ' -rf "X4 Foundations"')["rm_hits_game"])
+
+    def test_a_named_operand_after_an_ABSOLUTE_cd_still_fires(self):
+        self.assertTrue(F('cd /somewhere && ' + D + ' -rf "X4 Foundations"')["rm_hits_game"])
+
+    def test_an_ordinary_relative_delete_does_NOT_fire(self):
+        """The twin, and the reason join_cwd returns "" in the first place: a backstop
+        that fired on any relative delete would be a prompt on routine work."""
+        for cmd in (D + " -rf build", "cd sub && " + D + " -rf dist",
+                    D + " -rf __pycache__", "cd sub && " + D + " -rf .venv"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(F(cmd)["rm_hits_game"], cmd)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

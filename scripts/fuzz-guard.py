@@ -46,7 +46,7 @@ HOOKS = REPO / ".claude" / "hooks"
 #
 # This line USED to read `which("bash.exe") or which("bash")`, with that same comment.
 # MEASURED 2026-09-01 from PowerShell: `which("bash.exe")` returns
-# `C:\Windows\system32ash.exe` -- the stub IS named bash.exe, so the defence named
+# `C:\Windows\system32\bash.exe` -- the stub IS named bash.exe, so the defence named
 # the right threat and did nothing about it, which is worse than none because it stops
 # anyone looking again. `gitbash.find_bash()` excludes the stub directories by path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -112,6 +112,8 @@ QU = chr(34)     # double quote
 BSL = chr(92)    # backslash -- never a literal, it changes meaning per quoting context
 BS = chr(92)     # backslash
 BT = chr(96)     # backtick
+Q  = chr(39)     # single quote
+DQ = chr(34)     # double quote
 
 
 def load_facts(path):
@@ -410,6 +412,98 @@ def _m_eval_in_if(c):
     return "if true; then eval " + _sq(c) + "; fi"
 
 
+# --- CARRIER axis: constructs that RUN the command, rather than sit beside it ------
+#
+# Closed 2026-09-02, each MEASURED as a silent ALLOW against a game-root delete the
+# guard catches when written bare. None of the mutators above can reach this class:
+# they vary what is NEXT TO the command, never what CARRIES it.
+
+
+def _last_segment(c):
+    """(prefix, last segment). Seeds are often `cd <dir> && <dangerous>`, so rewriting
+    the FIRST word would rewrite `cd` and test nothing."""
+    for sep in (" && ", "; ", " || "):
+        i = c.rfind(sep)
+        if i != -1:
+            return c[:i + len(sep)], c[i + len(sep):]
+    return "", c
+
+
+def _retitle(c, fn):
+    """Rewrite the VERB of the last segment via fn(verb)."""
+    pre, seg = _last_segment(c)
+    parts = seg.split(" ", 1)
+    if not parts or not parts[0]:
+        return c
+    rest = (" " + parts[1]) if len(parts) > 1 else ""
+    return pre + fn(parts[0]) + rest
+
+
+def _m_carry_cmdsubst(c):
+    return "echo $(" + c + ")"
+
+
+def _m_carry_backtick(c):
+    return "echo " + BT + c + BT
+
+
+def _m_carry_procsub(c):
+    return "cat <(" + c + ")"
+
+
+def _m_carry_shell_heredoc(c):
+    return "bash <<" + Q + "SHX" + Q + NL + c + NL + "SHX"
+
+
+def _m_carry_eval(c):
+    return "eval " + DQ + c.replace(DQ, BS + DQ) + DQ
+
+
+def _m_carry_trap(c):
+    return "trap " + DQ + c.replace(DQ, BS + DQ) + DQ + " EXIT"
+
+
+def _m_carry_nested_dash_c(c):
+    return "bash -c " + DQ + c.replace(DQ, BS + DQ) + DQ
+
+
+def _m_carry_deep_dash_c(c):
+    inner = "sh -c " + DQ + c.replace(DQ, BS + DQ) + DQ
+    return "bash -c " + Q + inner + Q
+
+
+def _m_wrap_timeout(c):
+    return _retitle(c, lambda v: "timeout 5 " + v)
+
+
+def _m_wrap_exec(c):
+    return _retitle(c, lambda v: "exec " + v)
+
+
+def _m_wrap_setsid(c):
+    return _retitle(c, lambda v: "setsid " + v)
+
+
+def _m_wrap_nice(c):
+    return _retitle(c, lambda v: "nice -n 5 " + v)
+
+
+def _m_verb_abspath(c):
+    return _retitle(c, lambda v: "/usr/bin/" + v)
+
+
+def _m_verb_exe(c):
+    return _retitle(c, lambda v: v + ".exe")
+
+
+def _m_verb_ansi_c(c):
+    return _retitle(c, lambda v: "$" + Q + v + Q)
+
+
+def _m_verb_windows_path(c):
+    return _retitle(c, lambda v: DQ + "C:" + BS + "tools" + BS + v + ".exe" + DQ)
+
+
 MUTATORS = [
     ("comment with an apostrophe", _m_comment_apostrophe),
     ("comment with a quote", _m_comment_quote),
@@ -425,6 +519,24 @@ MUTATORS = [
     ("escaped quote before", _m_escaped_quote),
     ("ansi-c quoting before", _m_ansi_c),
     ("subshell wrap", _m_subshell),
+
+    # --- CARRIER axis ---------------------------------------------------------
+    ("CARRIER command substitution", _m_carry_cmdsubst),
+    ("CARRIER backticks", _m_carry_backtick),
+    ("CARRIER process substitution", _m_carry_procsub),
+    ("CARRIER shell heredoc body", _m_carry_shell_heredoc),
+    ("CARRIER eval", _m_carry_eval),
+    ("CARRIER trap EXIT", _m_carry_trap),
+    ("CARRIER nested -c", _m_carry_nested_dash_c),
+    ("CARRIER two shells deep", _m_carry_deep_dash_c),
+    ("WRAPPER timeout", _m_wrap_timeout),
+    ("WRAPPER exec", _m_wrap_exec),
+    ("WRAPPER setsid", _m_wrap_setsid),
+    ("WRAPPER nice", _m_wrap_nice),
+    ("VERB absolute path", _m_verb_abspath),
+    ("VERB .exe suffix", _m_verb_exe),
+    ("VERB ansi-c quoted", _m_verb_ansi_c),
+    ("VERB windows path", _m_verb_windows_path),
     ("leading blank lines", _m_leading_blank),
     ("assignment prefix", _m_assignment),
     ("semicolon chain after", _m_semicolon),
@@ -533,25 +645,47 @@ def resolve_roots():
             "saves": env.get("X4_SAVES", "")}
 
 
+#: (label, old, new) -- each MUST apply exactly ONCE. A stale anchor silently
+#: SHRINKS the control. The old code built every replacement and then refused only
+#: when the result equalled `src` -- i.e. when EVERY anchor had missed -- so three
+#: of four landing read as a perfectly healthy control.
+#: MEASURED 2026-09-02: the "unparseable_command" anchor had **0 occurrences** and
+#: had been inert for a release. That check is no longer a fact at all: it moved to
+#: `bash -n` in protect-bash.sh, which this fuzzer does not exercise. It is dropped
+#: here rather than repointed, because a control anchored on a check the fuzzer
+#: cannot see could never have failed.
+_HOLES = [
+    ("no comment stripping",
+     "    body = strip_comments(strip_heredocs(cmd))",
+     "    body = cmd"),
+    ("no escape handling",
+     "        elif c == chr(92) and i + 1 < len(s):" + NL
+     + "            yield c, False" + NL
+     + "            i += 1" + NL
+     + "            yield s[i], False          # escaped: never opens a quote",
+     "        elif False:" + NL
+     + "            yield c, False" + NL
+     + "            i += 1" + NL
+     + "            yield s[i], False"),
+    ("heredoc bodies re-enter the scan",
+     "    stripped = body",
+     "    stripped = strip_heredocs(cmd)"),
+]
+
+
 def plant_known_hole(src):
-    """Re-create the pre-fix scanner: no comment stripping, no escape handling, no
-    unparseable report. Returns None if an anchor has moved -- in which case the control
-    cannot be planted and no clean result below would mean anything."""
-    holed = src.replace("    body = strip_comments(strip_heredocs(cmd))",
-                        "    body = cmd")
-    holed = holed.replace(
-        "        elif c == chr(92) and i + 1 < len(s):" + NL
-        + "            yield c, False" + NL
-        + "            i += 1" + NL
-        + "            yield s[i], False          # escaped: never opens a quote",
-        "        elif False:" + NL
-        + "            yield c, False" + NL
-        + "            i += 1" + NL
-        + "            yield s[i], False")
-    holed = holed.replace('"unparseable_command": ends_open_quote(body),',
-                          '"unparseable_command": False,')
-    holed = holed.replace("    stripped = body", "    stripped = strip_heredocs(cmd)")
-    return None if holed == src else holed
+    """Re-create the pre-fix scanner: no comment stripping, no escape handling,
+    heredoc bodies scanned as command text. Returns None if ANY anchor has moved --
+    a control that plants fewer holes than it believes is not a control."""
+    holed = src
+    for label, old, new in _HOLES:
+        n = src.count(old)
+        if n != 1:
+            print("  control anchor %r matches %d time(s), need exactly 1"
+                  % (label, n), file=sys.stderr)
+            return None
+        holed = holed.replace(old, new, 1)
+    return holed
 
 
 def main():

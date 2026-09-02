@@ -193,6 +193,21 @@ if ! bash -n -c "$COMMAND" 2>/dev/null; then
   ask "This command does not PARSE (bash -n rejects it), so the guard could evaluate NO rule against it and cannot vouch for it. Check the quoting -- a Windows path ending in a backslash inside double quotes is the usual cause. Confirm only if you know the command is safe."
 fi
 
+# === CONFIRMATION — the analysis could not be completed ===
+# The parse pass follows command CARRIERS: a shell's -c argument, eval, trap, a shell
+# heredoc body, and command substitutions. That walk is bounded, because it runs on the
+# blocking path and an unbounded walk over an adversarial string is a hang. MEASURED
+# 2026-09-02: a 128 KB command with unique text at every nesting level produced 9,841
+# command strings and 4.1 s before the bound existed.
+#
+# When the bound is reached, some command text reached NO rule. Allowing silently would
+# be a step that narrows its data and reports success -- the shape behind every tool
+# defect found in this workspace. Unreachable by ordinary work: over 13,503 real
+# historical commands the largest walk produced 25 of the 250 allowed.
+if on carriers_truncated; then
+  ask "This command nests so many substitutions/wrappers that the guard stopped expanding them, so part of it was NEVER checked against any rule. That is not a clean pass. Simplify it, or confirm only if you know what every nested command does."
+fi
+
 # === HARD BLOCK — delete the game installation ===
 # The target must be a real path in the tree, OR bear the game's name while not being
 # an archive. MEASURED 2026-08-30: 7 of 8 refusals here were a .zip merely NAMED after

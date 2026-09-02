@@ -355,6 +355,12 @@ def tokens(seg: str) -> list[tuple[str, bool]]:
             else:
                 buf.append(c)
         elif c in "\"'":
+            # ANSI-C / locale quoting: `$'rm'` and `$"rm"` are the word `rm`. The `$`
+            # is a quoting SIGIL, not part of the name. Without this the token was
+            # `$rm` AND flagged quoted, so verb()'s `if quoted: return t` handed every
+            # verb-keyed rule a name no rule has ever heard of -- a total bypass.
+            if buf and buf[-1] == "$":
+                buf.pop()
             q = c
             quoted = started = True
         elif c == chr(92) and i + 1 < len(seg):
@@ -565,6 +571,39 @@ def _blank_arith(line: str, mask: list) -> str:
     return "".join(out)
 
 
+def heredoc_bodies(cmd: str) -> list[str]:
+    """Bodies whose OPENING LINE runs a SHELL, because a shell executes its heredoc.
+
+    `bash <<SH ... SH` is a command carrier exactly like `bash -c`, and stripping the
+    body -- which is correct for the file-payload case -- made it invisible to every
+    rule in this file.
+
+    SHELL OPENERS ONLY, and that restriction is load-bearing in BOTH directions:
+      * `cat > notes.md <<X ... X` is a file being WRITTEN. Its body is data, it is
+        pinned as not-a-delete by test_hook_facts, and routing it would hard-deny
+        writing documentation that happens to quote a dangerous command.
+      * `python - <<PY ... PY` is PYTHON. A line such as an assignment of a path to a
+        name would parse as a delete verb under a shell tokeniser, so routing it would
+        invent deletes out of assignments. Python writes have their own rule already.
+    """
+    out, cur, term, opener = [], None, None, ""
+    for line in cmd.split(chr(10)):
+        if cur is not None:
+            if line.strip() == term or line.strip() == term + ";":
+                if verb(_unwrap(opener)) in _SHELLS:
+                    out.append(chr(10).join(cur))
+                cur, term, opener = None, None, ""
+            else:
+                cur.append(line)
+            continue
+        t = heredoc_marker(line)
+        if t:
+            term, cur, opener = t, [], line
+    if cur is not None and verb(_unwrap(opener)) in _SHELLS:
+        out.append(chr(10).join(cur))   # unterminated: still what the shell would run
+    return out
+
+
 def strip_heredocs(cmd: str) -> str:
     """Remove heredoc BODIES: they are the payload of a file being written, not
     commands being run."""
@@ -614,23 +653,69 @@ def redirects(seg: str) -> list[tuple[str, str]]:
 
 
 # --------------------------------------------------------------------- verbs
-WRAPPERS = {"time", "nice", "env", "sudo", "xargs", "command", "nohup", "stdbuf"}
+#: Programs that RUN ANOTHER PROGRAM named in their arguments. Every one of these in
+#: front of a command made verb() return the wrapper, so no verb-keyed rule fired.
+#: MEASURED 2026-09-02, E2E, each against a game-root delete the guard catches bare:
+#:      timeout 5 rm -rf <game>  -> ALLOW      exec rm -rf <game>    -> ALLOW
+#:      setsid rm -rf <game>     -> ALLOW
+#: `timeout` is doubly important: CLAUDE.md #25 recommends it, so it is a prefix this
+#: workspace types on purpose.
+WRAPPERS = {"time", "nice", "env", "sudo", "xargs", "command", "nohup", "stdbuf",
+            "exec", "timeout", "setsid", "ionice", "builtin", "doas", "chronic",
+            "unbuffer", "ltrace", "strace", "proxychains", "catchsegv"}
+
+#: A token that cannot be a command NAME. Only consulted AFTER a wrapper has been
+#: seen, where a bare value is an argument to that wrapper rather than the command:
+#: `timeout 5 rm ...` gave verb `5`, and `xargs -I {} rm ...` gave verb `{}`.
+_WRAPPER_ARG = re.compile(r"^(\d+(\.\d+)?[smhd]?|\{\}|\+)$")
+
+
+def _verb_name(t: str) -> str:
+    """The command NAME carried by a verb token: basename, minus a `.exe` suffix.
+
+    `/bin/rm`, `C:/Windows/System32/cmd.exe` and `rm.exe` are the same commands as
+    `rm` and `cmd`, and every verb-keyed rule compared the token VERBATIM -- so any
+    absolute or suffixed spelling walked past all of them at once.
+
+    norm() runs FIRST and is not optional: it folds backslashes to `/` and lowercases,
+    and posixpath.basename does NOT split on a backslash, so without it a Windows-style
+    path yields the whole string back as one "name".
+
+    Only `.exe` is stripped, and only as a whole suffix. A general extension strip is
+    UNSAFE -- test_hook_facts.py pins `done_marker.sh`, `function_helper.py` and
+    `casefold.py` by exact equality, because those ARE the command names.
+    """
+    if not t:
+        return t
+    n = posixpath.basename(norm(t))
+    if n.endswith(".exe"):
+        n = n[:-4]
+    return n or t
 
 
 def verb(seg: str) -> str:
     """The command actually being run, seeing through env-assignment prefixes and
     wrappers. `write_targets` required the verb to be the segment's FIRST word, so
-    `echo x | sudo tee <docs>/n.txt` and `time cp ...` lost their destination."""
+    `echo x | sudo tee <docs>/n.txt` and `time cp ...` lost their destination.
+
+    The name is NORMALISED (see _verb_name): every caller compares it against a bare
+    command name, and none of the twelve echoes it back to the user, so normalising
+    here fixes all of them at once rather than at each comparison site.
+    """
+    seen_wrapper = False
     for t, quoted in tokens(seg):
         if quoted:
-            return t
+            return _verb_name(t)
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t):
             continue
-        if t in WRAPPERS:
+        if _verb_name(t) in WRAPPERS:
+            seen_wrapper = True
             continue
         if t.startswith("-"):
             continue
-        return t
+        if seen_wrapper and _WRAPPER_ARG.match(t):
+            continue                    # a duration or a placeholder, not a command
+        return _verb_name(t)
     return ""
 
 
@@ -688,6 +773,16 @@ _FIND_FILTERS = {"-name", "-iname", "-path", "-ipath", "-wholename", "-iwholenam
                  "-regex", "-iregex", "-samefile", "-newer", "-size", "-user", "-group"}
 
 
+#: Patterns that match everything, so a filter carrying one narrows nothing.
+_UNIVERSAL = {"*", "**", "*.*", ".*", "?*", "*/*", ""}
+
+
+def _narrows(toks: list, i: int) -> bool:
+    """True when the filter at index `i` genuinely restricts the match set."""
+    arg = toks[i + 1] if i + 1 < len(toks) else ""
+    return arg not in _UNIVERSAL
+
+
 def find_deletes(seg: str) -> list:
     """Paths a `find` would delete. `find <root> -delete` and `find <root> -exec rm ...`
     remove files just as surely as rm does, and DELETE_VERBS knew neither.
@@ -707,7 +802,11 @@ def find_deletes(seg: str) -> list:
     # 2026-09-01: treating both alike added 40 prompts across 13,282 commands, every one
     # a __pycache__ cleanup -- noise by this project's own standard, since a prompt must
     # be reserved for what is genuinely the user's decision.
-    if any(t in _FIND_FILTERS for t in toks):
+    # A filter only NARROWS if its pattern excludes something. `-name` with a
+    # universal glob matches every entry, so `find <game> -name "*" -delete` is a
+    # whole-tree delete wearing a filter's clothing -- and it was exempted by the
+    # very rule that exists to allow genuinely-scoped cleanups.
+    if any(_narrows(toks, i) for i, t in enumerate(toks) if t in _FIND_FILTERS):
         return []
     deletes = "-delete" in toks
     if not deletes:
@@ -921,6 +1020,94 @@ GAME_ROOTISH = re.compile(r"(x4 foundations|egosoft/x4)(/extensions)?$", re.I)
 
 
 
+def _quote_kinds(s: str) -> list:
+    """The quote character in force at each index ("" when unquoted).
+
+    _quote_mask answers "is this quoted", which is not enough here: inside DOUBLE
+    quotes a command substitution still runs, inside SINGLE quotes it is literal text.
+    """
+    kinds = [""] * len(s)
+    q = ""
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if q:
+            kinds[i] = q
+            if c == q:
+                q = ""
+            elif (c == chr(92) and q == chr(34) and i + 1 < len(s)
+                  and s[i + 1] in _DQ_ESCAPES):
+                kinds[i + 1] = q
+                i += 1
+        elif c in (chr(34), chr(39)):
+            q = c
+            kinds[i] = c
+        i += 1
+    return kinds
+
+
+def _match_paren(s: str, start: int) -> int:
+    """Index of the paren closing the one at `start`, or -1."""
+    depth = 0
+    for j in range(start, len(s)):
+        if s[j] == "(":
+            depth += 1
+        elif s[j] == ")":
+            depth -= 1
+            if depth == 0:
+                return j
+    return -1
+
+
+def substitutions(cmd: str) -> list[str]:
+    """Command text inside a substitution: dollar-paren, backticks, and process
+    substitution.
+
+    Every one of these RUNS its contents, and the parse pass treated all of them as
+    ordinary text -- so wrapping a command in three characters walked past every rule
+    at once. MEASURED 2026-09-02, each against a game-root delete the guard catches
+    when written bare: all three returned a silent ALLOW. This file already admitted
+    that "precision about operands bought blindness to indirection", about the
+    dollar-paren form alone; the CLASS was never enumerated.
+
+    Single-quoted regions are skipped: there the text is literal and nothing runs.
+    A doubled open paren is ARITHMETIC, not a subshell, and is stepped over.
+    """
+    out = []
+    kinds = _quote_kinds(cmd)
+    i = 0
+    while i < len(cmd):
+        k = kinds[i]
+        c = cmd[i]
+        if k == chr(39):                        # single-quoted: literal
+            i += 1
+            continue
+        if c == "$" and i + 1 < len(cmd) and cmd[i + 1] == "(":
+            if i + 2 < len(cmd) and cmd[i + 2] == "(":
+                end = _match_paren(cmd, i + 1)
+                i = (end + 1) if end != -1 else i + 3
+                continue                        # arithmetic, not a command
+            end = _match_paren(cmd, i + 1)
+            if end != -1:
+                out.append(cmd[i + 2:end])
+                i = i + 2
+                continue
+        elif c in ("<", ">") and i + 1 < len(cmd) and cmd[i + 1] == "(" and k == "":
+            end = _match_paren(cmd, i + 1)
+            if end != -1:
+                out.append(cmd[i + 2:end])
+                i = i + 2
+                continue
+        elif c == chr(96):
+            end = cmd.find(chr(96), i + 1)
+            if end != -1:
+                out.append(cmd[i + 1:end])
+                i = end + 1
+                continue
+        i += 1
+    return [o for o in out if o.strip()]
+
+
 #: Shells whose `-c` argument is a command string. `dash`/`ksh` cost nothing to add and
 #: a missing one is a total bypass.
 _SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
@@ -951,12 +1138,112 @@ def _inner_commands(cmd: str) -> list[str]:
                     out.append(toks[i + 1][0])
                     break
         elif v == "eval":
-            # `eval` concatenates its arguments and runs the result. Flags are skipped;
-            # everything else is the command.
-            parts = [t for t, _ in toks[1:] if not t.startswith("-")]
+            # `eval` concatenates its arguments and runs the result.
+            #
+            # Sliced from AFTER THE `eval` TOKEN, never from toks[1:]. `eval` is not
+            # necessarily token 0 -- a wrapper can precede it -- and `time eval <cmd>`
+            # then produced the string "eval <cmd>", whose own verb is `eval`, so no
+            # delete rule fired on that either. Matching on the NAME rather than the
+            # token also picks up an absolute spelling, which verb() now normalises.
+            k = next((i for i, (t, _) in enumerate(toks)
+                      if _verb_name(t) == "eval"), 0)
+            parts = [t for t, _ in toks[k + 1:] if not t.startswith("-")]
             if parts:
                 out.append(" ".join(parts))
+        elif v == "trap":
+            # `trap <cmd> <SIGNAL...>` runs its first operand as a command when the
+            # signal fires. That operand is normally single-quoted, which is exactly
+            # why nothing saw it: quoted text is data everywhere else in this file.
+            k = next((i for i, (t, _) in enumerate(toks)
+                      if _verb_name(t) == "trap"), 0)
+            rest = [t for t, _ in toks[k + 1:] if not t.startswith("-")]
+            if rest:
+                out.append(rest[0])
     return out
+
+
+#: How many times a carrier may nest before the walk stops. `bash -c` inside
+#: `bash -c` inside a substitution is three levels, and each is a real construct
+#: someone can type; beyond that the shape is pathological rather than plausible.
+#: Bounded because this runs on the BLOCKING PreToolUse path -- an unbounded walk
+#: over an adversarial string is a hang, and a hang here stops the session.
+_MAX_CARRIER_DEPTH = 4
+
+#: A hard ceiling on how many command strings the walk will produce, whatever their
+#: shape. _MAX_CARRIER_DEPTH does NOT bound this on its own: substitutions() descends
+#: into nested `$( )` inside a single pass, so one call already flattens the whole
+#: tree. MEASURED with unique text at every level (so dedup cannot collapse it):
+#: a 128 KB command yielded 9,841 carried commands and 4.1 s in facts(), on the
+#: BLOCKING PreToolUse path.
+#:
+#: MEASURED over all 13,503 real historical commands: max carried = 25, p99 = 5,
+#: p50 = 1, and ZERO commands exceed 50. So 250 is 10x the observed maximum -- it is
+#: unreachable by ordinary work, and it bounds the adversarial case well under a second.
+#: (An earlier draft of this comment guessed "~180x" and was wrong; the census is the
+#: only reason the number in it is now true.)
+_MAX_CARRIED = 250
+
+
+def carried_commands(body: str, extra: list) -> tuple:
+    """Every command string reachable from `body`, following carriers.
+
+    _inner_commands was applied EXACTLY ONCE, to the top level, so a command one
+    level further in was invisible: `bash -c 'sh -c "<cmd>"'` reached no rule. It
+    also took only the FIRST `-c` per segment.
+
+    Deduplicated, because two carriers can yield the same text and the rules below
+    are pure functions of it -- re-running them buys nothing and costs latency on
+    the blocking path.
+    """
+    seen = {body}
+    out = [body]
+    frontier = [body]
+    truncated = False
+    for e in extra:
+        if e not in seen:
+            seen.add(e)
+            out.append(e)
+            frontier.append(e)
+    for _ in range(_MAX_CARRIER_DEPTH):
+        nxt = []
+        for c in frontier:
+            for inner in _inner_commands(c) + substitutions(c):
+                if inner and inner not in seen:
+                    seen.add(inner)
+                    nxt.append(inner)
+                    if len(out) + len(nxt) >= _MAX_CARRIED:
+                        # STOP, and SAY SO. Dropping the rest and returning a verdict
+                        # would be a step that narrows its data and reports success --
+                        # the shape behind every tool defect found in this workspace.
+                        out.extend(nxt)
+                        return out[:_MAX_CARRIED], True
+        if not nxt:
+            break
+        out.extend(nxt)
+        frontier = nxt
+    return out, truncated
+
+
+def _ipc_value(key: str, v) -> str:
+    """One field of the `key<TAB>value` stream, with no way to forge another field.
+
+    protect-bash.sh splits the stream at the FIRST sentinel, and `on()` matches
+    "<NL>key<TAB>1<NL>" ANYWHERE in what precedes it. So any value carrying a newline
+    can invent a fact that no rule ever computed -- and two of the values are not
+    booleans this file produced: `timeout` and `run_in_background` are passed straight
+    through from the caller's payload.
+
+    Not reachable through the documented schema, where both are a number and a bool.
+    This is defence in depth, on exactly the reasoning that already justifies `_as_ms`
+    accepting a value "whatever shape it arrived in": a schema describes intent, it
+    does not guarantee bytes.
+    """
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if key == "timeout":
+        return str(int(_as_ms(v)))          # a number, always
+    # Anything else stays on ONE field of ONE line.
+    return str(v).replace(chr(13), " ").replace(chr(10), " ").replace(chr(9), " ")
 
 
 def _as_ms(v) -> float:
@@ -982,7 +1269,10 @@ def facts(payload: dict, roots: dict) -> dict:
     # `rm -rf <game>` is text being written, and used to hard-deny), and a `#` comment is
     # not a command at all -- while an apostrophe inside one blinded every rule after it.
     body = strip_comments(strip_heredocs(cmd))
-    all_cmds = [body] + _inner_commands(body)
+    # Heredoc bodies come from the RAW command: strip_heredocs has already removed
+    # them from `body`, and only the ones opened by a shell are commands at all.
+    all_cmds, carriers_truncated = carried_commands(
+        body, [strip_comments(h) for h in heredoc_bodies(cmd)])
     assigns = assignments(body)
     ncmd = norm(cmd)
 
@@ -1079,7 +1369,18 @@ def facts(payload: dict, roots: dict) -> dict:
     # game's name. Adding a `not u` filter here (as this line briefly did on
     # 2026-09-01) silently removed that last line of defence, and the 13,041-command
     # corpus could not see it because no historical command has that shape.
-    rm_named_game = any(GAME_ROOTISH.search(norm(p)) for p, _u, _ in rm_t)
+    # `p or raw`, and the fallback is the whole point. prep() stores
+    # join_cwd(cwd, resolved) in element 0, and join_cwd returns "" whenever the
+    # operand is RELATIVE and the shell's directory is unknowable -- which is correct
+    # for the path rules (inventing a root there would fire on unrelated work) but
+    # silently disarms the NAME backstop, whose entire job is the operand that bears
+    # the game's name WITHOUT being a resolvable path.
+    #
+    # MEASURED 2026-09-02: `rm -rf "X4 Foundations"` and `cd sub && rm -rf "X4
+    # Foundations"` both read False, while the same delete after a cd to an ABSOLUTE
+    # directory read True. The backstop was working only in the case it was least
+    # needed.
+    rm_named_game = any(GAME_ROOTISH.search(norm(p or raw)) for p, _u, raw in rm_t)
 
     search_roots = []
     for c in all_cmds:
@@ -1110,6 +1411,13 @@ def facts(payload: dict, roots: dict) -> dict:
         "command": cmd,
         "timeout": timeout,
         "background": background,
+
+        # A command too tangled to analyse IN FULL is not a clean pass. The carrier
+        # walk is bounded (see _MAX_CARRIED); when that bound is hit, some command
+        # text reached no rule, and saying nothing would be a step that narrows its
+        # data and reports success. Unreachable by ordinary work: MEASURED over
+        # 13,503 real commands, the largest walk produced 25 of the 250 allowed.
+        "carriers_truncated": carriers_truncated,
 
         "rm_hits_game": any(hits_game_root(o) for o in rm_t) or rm_named_game,
         "rm_targets_reference": hit(rm_t, "reference", conservative=True),
@@ -1229,7 +1537,7 @@ def main() -> int:
     f.pop("cwd", None)
     out = []
     for k, v in sorted(f.items()):
-        out.append(k + "\t" + (str(int(v)) if isinstance(v, bool) else str(v)))
+        out.append(k + "\t" + _ipc_value(k, v))
     out.append(SENTINEL)
     # BINARY, and UTF-8 encoded explicitly. Python's text-mode stdout translates "\n"
     # to "\r\n" on Windows, which put a trailing CR on EVERY value: the shell then

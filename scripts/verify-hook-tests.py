@@ -26,12 +26,18 @@ case neither result means anything and no verdict is given).
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+#: A literal newline, built from its byte value. Multi-line mutant
+#: anchors need one, and an escape written here would cross a tool
+#: boundary that has collapsed one into a control byte before now.
+NL = chr(10)
 
 REPO = Path(__file__).resolve().parent.parent
 HOOKS = REPO / ".claude" / "hooks"
@@ -117,15 +123,21 @@ MUTANTS = [
      "if line[i] == chr(60) and line[i + 1] == chr(60) and not mask[i] and not mask[i + 1]:",
      "if line[i] == chr(60) and line[i + 1] == chr(60):",
      "test_marker_inside_quotes_does_NOT_open_a_skip"),
-    ("the heredoc marker may itself be QUOTED", "        t = heredoc_marker(line)",
-     "        t = heredoc_marker(blank_quoted(line))",
+    # Anchored on strip_heredocs' own call: heredoc_bodies() added a SECOND
+    # `t = heredoc_marker(line)` and the bare line now matches twice.
+    ("the heredoc marker may itself be QUOTED",
+     "        t = heredoc_marker(line)" + NL + "        if t:" + NL
+     + "            term, skip = t, True",
+     "        t = heredoc_marker(blank_quoted(line))" + NL + "        if t:" + NL
+     + "            term, skip = t, True",
      "test_a_QUOTED_marker_still_opens_a_heredoc"),
     ("noclobber >| is a redirect", r'_REDIR = re.compile(r"(\d?)>(\|?)(>?)")',
      r'_REDIR = re.compile(r"(\d?)>()(>?)")', "test_noclobber_override_is_a_truncate"),
     ("cp/mv -t destination", 'if not quoted and t in ("-t", "--target-directory"):',
      "if False:", "test_dash_t_names_the_destination"),
-    ("wrapper verbs are seen through", "if t in WRAPPERS:\n            continue",
-     "if False:\n            continue", "test_sees_through_a_wrapper"),
+    ("wrapper verbs are seen through",
+     "        if _verb_name(t) in WRAPPERS:", "        if False:",
+     "test_sees_through_a_wrapper"),
     ("dot-segment canonicalisation", "s = posixpath.normpath(s)", "s = s",
      "test_dot_segment_is_canonicalised"),
     ("-e consumes its argument", 'if base in _ARG_FLAGS and "=" not in t:\n                skip = True',
@@ -139,8 +151,8 @@ MUTANTS = [
     ("find -delete is a delete", "    return find_deletes(seg)", "    return []",
      "test_find_delete_on_the_game_is_a_game_delete"),
     ("a FILTERED find is scoped, not a tree delete",
-     "    if any(t in _FIND_FILTERS for t in toks):\n        return []",
-     "    if False:\n        return []",
+     "    if any(_narrows(toks, i) for i, t in enumerate(toks) if t in _FIND_FILTERS):",
+     "    if False:",
      "test_a_FILTERED_find_is_scoped_and_does_not_fire"),
     ("a find WITHOUT -delete is not", 'deletes = "-delete" in toks', "deletes = True",
      "test_a_find_that_does_NOT_delete_is_not_a_delete"),
@@ -173,8 +185,8 @@ MUTANTS = [
     # `bash -n`. It is covered E2E in scripts/test-hooks.sh -- a mutation of the real
     # shell parser is not something this gate can plant.
     ("a heredoc BODY is data for the operand rules too",
-     "    all_cmds = [body] + _inner_commands(body)",
-     "    all_cmds = [cmd] + _inner_commands(cmd)",
+     '    all_cmds, carriers_truncated = carried_commands(\n        body, [strip_comments(h) for h in heredoc_bodies(cmd)])',
+     "    all_cmds, carriers_truncated = carried_commands(cmd, [])",
      "test_a_delete_inside_a_heredoc_body_is_not_a_delete"),
     ("a comment keeps its newline, which is a separator",
      "            while i < len(s) and s[i] != \"\\n\":      # keep the newline: it is a separator",
@@ -194,8 +206,8 @@ MUTANTS = [
     # A `not u` filter added here on 2026-09-01 removed that defence; the 13,041-command
     # corpus could not see it (no historical command has the shape) and only this gate did.
     ("the NAME backstop does NOT skip unresolved operands",
-     "rm_named_game = any(GAME_ROOTISH.search(norm(p)) for p, _u, _ in rm_t)",
-     "rm_named_game = any(not _u and GAME_ROOTISH.search(norm(p)) for p, _u, _ in rm_t)",
+     "rm_named_game = any(GAME_ROOTISH.search(norm(p or raw)) for p, _u, raw in rm_t)",
+     "rm_named_game = any(not _u and GAME_ROOTISH.search(norm(p or raw)) for p, _u, raw in rm_t)",
      "test_the_NAME_backstop_still_fires_on_an_unresolvable_path"),
     #
     # NOT MUTATED, deliberately -- two guards whose removal is BEHAVIOURALLY EQUIVALENT
@@ -227,8 +239,62 @@ MUTANTS = [
      "                if conservative and key in root_vars_named(raw):\n                    return True",
      "                if False:\n                    return True",
      "test_delete_of_a_root_env_var_by_name"),
-    ("bash -c is parsed too", "all_cmds = [body] + _inner_commands(body)", "all_cmds = [body]",
+    ("bash -c is parsed too",
+     '    all_cmds, carriers_truncated = carried_commands(\n        body, [strip_comments(h) for h in heredoc_bodies(cmd)])',
+     "    all_cmds, carriers_truncated = [body], False",
      "test_delete_inside_bash_c_is_seen"),
+
+    # --- COMMAND RESOLUTION (2026-09-02). Six total bypasses, one root cause: the
+    # parse pass modelled shell GRAMMAR and not command RESOLUTION. Each mutant below
+    # restores one half of the pre-fix behaviour.
+    ("a verb token is resolved to a command NAME",
+     "    n = posixpath.basename(norm(t))", "    n = t",
+     "test_the_hard_block_survives_every_spelling"),
+    ("a .exe suffix is dropped",
+     '    if n.endswith(".exe"):', "    if False:",
+     "test_a_dot_exe_suffix_is_the_same_command"),
+    ("ANSI-C quoting is not part of the name",
+     '            if buf and buf[-1] == "$":', "            if False:",
+     "test_ansi_c_quoting_is_not_part_of_the_name"),
+    ("a wrapper's VALUE argument is not the command",
+     "        if seen_wrapper and _WRAPPER_ARG.match(t):", "        if False:",
+     "test_a_duration_is_not_mistaken_for_the_command"),
+    ("a substitution carries a command",
+     "    return [o for o in out if o.strip()]", "    return []",
+     "test_dollar_paren"),
+    ("single-quoted text is NOT a substitution",
+     "        if k == chr(39):                        # single-quoted: literal",
+     "        if False:",
+     "test_inside_SINGLE_quotes_nothing_runs"),
+    ("trap carries a command",
+     '        elif v == "trap":', "        elif False:",
+     "test_trap_runs_its_first_operand"),
+    ("eval is found wherever it sits",
+     "            k = next((i for i, (t, _) in enumerate(toks)" + NL
+     + '                      if _verb_name(t) == "eval"), 0)',
+     "            k = 0",
+     "test_a_wrapper_may_precede_eval"),
+    ("only a SHELL runs its heredoc body",
+     "                if verb(_unwrap(opener)) in _SHELLS:", "                if True:",
+     "test_a_python_heredoc_does_NOT"),
+    ("carriers are followed more than one level",
+     "    for _ in range(_MAX_CARRIER_DEPTH):", "    for _ in range(0):",
+     "test_a_shell_inside_a_shell"),
+    ("a filter must actually narrow",
+     "    return arg not in _UNIVERSAL", "    return True",
+     "test_a_universal_name_glob_is_not_a_narrowing"),
+    ("the carrier walk ANNOUNCES its bound",
+     "                        return out[:_MAX_CARRIED], True",
+     "                        return out[:_MAX_CARRIED], False",
+     "test_a_TANGLED_command_says_so_instead_of_passing_quietly"),
+    ("no fact-stream value can carry a separator",
+     '    return str(v).replace(chr(13), " ").replace(chr(10), " ").replace(chr(9), " ")',
+     "    return str(v)",
+     "test_no_value_can_carry_a_field_separator"),
+    ("the name backstop sees a relative operand",
+     "    rm_named_game = any(GAME_ROOTISH.search(norm(p or raw)) for p, _u, raw in rm_t)",
+     "    rm_named_game = any(GAME_ROOTISH.search(norm(p)) for p, _u, raw in rm_t)",
+     "test_a_named_operand_after_a_RELATIVE_cd_fires"),
 ]
 
 SHIM = '''
@@ -252,8 +318,26 @@ NOT_A_RULE = {"background"}
 
 
 def run(work: Path):
+    # PYTHONDONTWRITEBYTECODE, and it is not hygiene -- without it this gate returns
+    # WRONG VERDICTS. CPython invalidates a cached .pyc on (source mtime in SECONDS,
+    # source size). Successive mutants are written to the same path within the same
+    # second, so whenever two of them leave the file the same size, the second run
+    # imports the FIRST one's bytecode and the mutant is judged by the previous
+    # mutant's failures.
+    #
+    # MEASURED 2026-09-02: 2 of 54 mutants reported "NOT CAUGHT by its target test"
+    # while each, reproduced by hand, turned its target test red. The tell was that
+    # the failing tests named in each case belonged to the mutant BEFORE it in the
+    # list. With bytecode off: 0 of 54 uncaught.
+    #
+    # The false-alarm direction is the one that was observed; the silent direction is
+    # worse and equally reachable -- a mutant reported CAUGHT because the previous
+    # mutant's failures happened to include its target test.
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    for pyc in work.rglob("__pycache__"):
+        shutil.rmtree(pyc, ignore_errors=True)
     p = subprocess.run([sys.executable, "test_hook_facts.py"], cwd=work,
-                       capture_output=True, text=True, errors="replace")
+                       capture_output=True, text=True, errors="replace", env=env)
     out = p.stdout + p.stderr
     failed = set(re.findall(r"(?:FAIL|ERROR): (\w+) ", out))
     ran = re.search(r"Ran (\d+) tests", out)
