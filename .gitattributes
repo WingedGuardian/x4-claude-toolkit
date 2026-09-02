@@ -25,5 +25,18 @@ bin/xrcat text eol=lf
 # Shell scripts must be LF or Git Bash fails on every line with $'\r': command not found.
 # Normalize everything else by default.
 *.py text eol=lf
+# Pin the SHIPPED game-side lua to LF, for the same reason and a second one.
+#
+# scripts/stamp-mod-build.py rewrites these two files in place with write_bytes,
+# i.e. LF -- while `text=auto` alone lets a Windows clone check them out as CRLF.
+# So the stamper's first run on a fresh Windows checkout rewrites every line of
+# both files and produces a whole-file diff nobody asked for. Exactly F53, in the
+# two files the *.py pin above does not cover.
+#
+# The BUILD hash itself is unaffected -- expected() reads through universal
+# newlines, so it is stable across both endings -- which is precisely why this
+# could sit here unnoticed: it shows up as noise in a diff, never as a wrong
+# verdict.
+mods/**/*.lua text eol=lf
 # Normalize everything else by default.
 * text=auto

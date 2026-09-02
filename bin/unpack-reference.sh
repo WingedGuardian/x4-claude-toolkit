@@ -21,6 +21,29 @@ INCLUDE='\.(xml|xsd|lua|xpl)$'               # text/markup only — keeps the tr
 [ -n "${X4_REFERENCE:-}" ] || { echo "ERROR: X4_REFERENCE not set (where to write the unpacked tree). Set it in .claude/x4-paths.env." >&2; exit 2; }
 REF="$X4_REFERENCE"
 
+# THE LOCK, CHECKED. The sentinel was only ever WRITTEN here (line ~60) and read
+# nowhere in this script -- so its own text, "reference/ is read-only; remove this
+# file manually to re-unpack", was false for the one path that actually unpacks.
+#
+# The lock did exist, but only in protect-bash.sh, which guards commands CLAUDE runs
+# through its Bash tool. It cannot see an XRCatTool invocation made by this script in
+# a child process, and it does not run at all for a user typing
+# `bash bin/unpack-reference.sh` or `bash install.sh --unpack`. So the protection
+# covered the assistant's path and not the user's.
+#
+# MEASURED 2026-09-02: an `install.sh --unpack` re-unpacked 510,711 files / 27 GB over
+# an already-locked reference tree without a word. The content was identical (same
+# .cat files) so nothing was corrupted, but every mtime in the tree changed -- and a
+# real re-unpack after a game update would silently overwrite a tree someone had
+# deliberately pinned.
+if [ -f "$REF/.unpacked-and-locked" ] && [ "${X4_FORCE_UNPACK:-0}" != "1" ]; then
+  echo "REFUSING: $REF is locked by .unpacked-and-locked, so it has already been" >&2
+  echo "  unpacked and is treated as read-only base-game data." >&2
+  echo "  To re-unpack (e.g. after a game update):  rm \"$REF/.unpacked-and-locked\"" >&2
+  echo "  or set X4_FORCE_UNPACK=1 for this one run." >&2
+  exit 2
+fi
+
 echo "Game:      $X4_GAME"
 echo "Reference: $REF"
 mkdir -p "$REF"

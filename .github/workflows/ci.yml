@@ -91,8 +91,8 @@ jobs:
         run: bash .claude/hooks/test-protect-bash.sh
 
       # The three suites that cover this release's central change, and which CI did
-      # not run at all until 2026-09-01: 151 unit tests over the single parse pass,
-      # 134 E2E probes (the only coverage of protect-files.sh, backup-before-edit.sh,
+      # not run at all until 2026-09-01: 217 unit tests over the single parse pass,
+      # 135 E2E probes (the only coverage of protect-files.sh, backup-before-edit.sh,
       # search-scope.sh, the stdin contract and the broken-jq verdict path), and the
       # mutation gate that proves those tests can fail. All three are pure bash/Python
       # and need no X4 install, so the reason `gates/` is excluded does not apply.
@@ -116,6 +116,41 @@ jobs:
         shell: bash
         run: python scripts/fuzz-guard.py
 
+      # THE INSTALLERS, FOR REAL. Nothing in this workflow ran them until 2026-09-02,
+      # which is why a silent `exit 1` in `--method global`, an unaccounted unpack, a
+      # setup.sh that could not fail, and two installers deleting the user's own config
+      # all shipped unnoticed. A smoke run asserts the ARTIFACT, never the exit code
+      # alone -- a build is verified by what it produced.
+      - name: Install for real (bash) and check the artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          TK="$RUNNER_TEMP/tk-sh"
+          bash install.sh --method separate --toolkit "$TK" --yes
+          test -f "$TK/.claude/x4-paths.env" || { echo "no x4-paths.env"; exit 1; }
+          test -d "$TK/tools/x4validate"     || { echo "no tools/x4validate"; exit 1; }
+          test -d "$TK/mods"                 || { echo "no mods/ (x4live extension)"; exit 1; }
+          # Re-running the installer is the ONLY upgrade path the README offers, and it
+          # used to DELETE these two files. A planted marker must survive in a backup.
+          printf '\nX4_NEXUS_KEY="CI_MARKER"\n' >> "$TK/.claude/x4-paths.env"
+          bash install.sh --method separate --toolkit "$TK" --yes
+          grep -rq CI_MARKER "$TK/.claude/" || {
+            echo "a re-install destroyed the user config with no backup"; exit 1; }
+          echo "installer smoke OK"
+
+      - name: Install for real (PowerShell) and check the artifacts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tk = Join-Path $env:RUNNER_TEMP 'tk-ps'
+          & .\install.ps1 -Method separate -Toolkit $tk -Yes
+          if (-not (Test-Path -LiteralPath (Join-Path $tk '.claude\x4-paths.env'))) {
+            Write-Error 'no x4-paths.env' }
+          if (-not (Test-Path -LiteralPath (Join-Path $tk 'mods'))) {
+            Write-Error 'no mods/ (x4live extension)' }
+          Write-Host 'installer smoke OK'
+
       # -rs NAMES every skip, and the budget makes a silent-skip regression LOUD.
       # MEASURED 2026-09-01: 125 tests skipped because they looked for a `dev/`
       # directory that does not exist in this repo -- the game extension ships at
@@ -130,7 +165,18 @@ jobs:
         # actually happened -- 125 tests going silently dormant at once -- not to police
         # normal environmental variation.
         env:
-          X4_MAX_SKIPS: "40"
+          # 45, and the 43 under it is MEASURED, not guessed: a true `git clone` of this
+          # repo with every X4_* variable cleared skips exactly 43 (1139 passed at
+          # 26ab346; 1176 passed with the 2026-09-02 additions, and the skip count did
+          # not move -- all of them run cold). The old ceiling of 40 was never
+          # exercised: X4_MAX_SKIPS does not exist in the ci.yml on origin/master, so
+          # it was introduced unpushed and would have RED the gating Windows leg on its
+          # very first run.
+          #
+          # Two of headroom, not twenty. The point is to catch a block of tests going
+          # silently dormant -- 125 did once -- and a ceiling far above the real floor
+          # cannot do that.
+          X4_MAX_SKIPS: "45"
         run: uv run --frozen python -m pytest -q -rs
 
   scrub:

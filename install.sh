@@ -21,7 +21,9 @@ MODS="${X4_MODS:-}"; REFERENCE="${X4_REFERENCE:-}"; EXTENSIONS="${X4_EXTENSIONS:
 XRCAT="${XRCATTOOL:-}"
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  # The comment block ends at line 12. '2,16p' printed four lines of live shell
+  # source into the middle of the help text.
+  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'USAGE'
 
 Usage: bash install.sh --method in-game|separate|global [options]
@@ -38,16 +40,23 @@ Usage: bash install.sh --method in-game|separate|global [options]
 USAGE
 }
 
+# Every value-taking flag goes through need2 first. Under `set -u` a bare `--game`
+# died with "install.sh: line 44: $2: unbound variable" -- a bash-internal diagnostic
+# naming a line number, with no usage hint. install.ps1 gets this free from param().
+need2() {
+  [ "$2" -ge 2 ] || { echo "ERROR: $1 requires a value" >&2; echo >&2; usage >&2; exit 2; }
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --method) METHOD="$2"; shift 2;;
-    --game) GAME="$2"; shift 2;;
-    --profile) PROFILE="$2"; shift 2;;
-    --toolkit) TOOLKIT="$2"; shift 2;;
-    --mods) MODS="$2"; shift 2;;
-    --reference) REFERENCE="$2"; shift 2;;
-    --extensions) EXTENSIONS="$2"; shift 2;;
-    --xrcattool) XRCAT="$2"; shift 2;;
+    --method) need2 "$1" $#; METHOD="$2"; shift 2;;
+    --game) need2 "$1" $#; GAME="$2"; shift 2;;
+    --profile) need2 "$1" $#; PROFILE="$2"; shift 2;;
+    --toolkit) need2 "$1" $#; TOOLKIT="$2"; shift 2;;
+    --mods) need2 "$1" $#; MODS="$2"; shift 2;;
+    --reference) need2 "$1" $#; REFERENCE="$2"; shift 2;;
+    --extensions) need2 "$1" $#; EXTENSIONS="$2"; shift 2;;
+    --xrcattool) need2 "$1" $#; XRCAT="$2"; shift 2;;
     --unpack) DO_UNPACK=1; shift;;
     --yes|-y) ASSUME_YES=1; shift;;
     -h|--help) usage; exit 0;;
@@ -139,7 +148,21 @@ copy_toolkit() {  # copy_toolkit DEST  — copy tracked toolkit files (never gam
     [ -e "$SRC/$item" ] || { MISSING="$MISSING $item"; continue; }
     cp -r "$SRC/$item" "$dest/"
   done
-  rm -f "$dest/.claude/settings.local.json" "$dest/.claude/x4-paths.env" 2>/dev/null || true
+  # BACK UP, never delete. These two files are the user's own: x4-paths.env holds the
+  # machine's paths and is where setup.sh tells them to keep X4_NEXUS_KEY, and
+  # settings.local.json is their local overrides. Re-running the installer over an
+  # existing toolkit is the ONLY upgrade path the README offers, and it silently
+  # destroyed both -- while setup.sh logged the recreation as "[ok] created ... from
+  # example", so the run read as though nothing had been touched.
+  local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
+  local keep
+  for keep in settings.local.json x4-paths.env; do
+    if [ -f "$dest/.claude/$keep" ]; then
+      cp "$dest/.claude/$keep" "$dest/.claude/$keep.bak-$stamp" 2>/dev/null \
+        && echo "  [note] kept your existing $keep as $keep.bak-$stamp"
+    fi
+    rm -f "$dest/.claude/$keep" 2>/dev/null || true
+  done
   [ -n "$MISSING" ] && echo "  [note] not in the source, so not copied:$MISSING"
   return 0
 }
@@ -176,9 +199,24 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
     exit 1
   fi
   mkdir -p "$home_claude/skills" "$home_claude/agents"
-  local s
-  for s in "$TOOLKIT/.claude/skills/"x4-*; do [ -e "$s" ] && cp -r "$s" "$home_claude/skills/"; done
-  cp "$TOOLKIT/.claude/agents/"*.md "$home_claude/agents/" 2>/dev/null || true
+  local s a copied=0
+  for s in "$TOOLKIT/.claude/skills/"x4-*; do
+    [ -e "$s" ] || continue
+    cp -r "$s" "$home_claude/skills/" && copied=$((copied + 1))
+  done
+  for a in "$TOOLKIT/.claude/agents/"*.md; do
+    [ -e "$a" ] || continue
+    cp "$a" "$home_claude/agents/" && copied=$((copied + 1))
+  done
+  # "Copied nothing" must never print as "installed". MEASURED 2026-09-02: with the x4
+  # skills removed this printed `installed x4 skills + agents` and exited 0.
+  # install.ps1:173-178 has had this refusal; bash had none.
+  if [ "$copied" -eq 0 ]; then
+    echo "ERROR: copied NOTHING from $TOOLKIT (.claude/skills/x4-* and .claude/agents/*.md)." >&2
+    echo "       Nothing was installed into $home_claude -- this is a FAILURE, not a no-op." >&2
+    echo "       Check that --toolkit points at a real toolkit checkout." >&2
+    exit 1
+  fi
   # global skills/agents run from any repo → resolve the validator via $X4_TOOLKIT, not
   # $CLAUDE_PROJECT_DIR. Rewrite ONLY the files this installer just copied — a user's
   # pre-existing skills/agents may use $CLAUDE_PROJECT_DIR on purpose and must not be
@@ -191,6 +229,12 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
     for a in "$TOOLKIT/.claude/agents/"*.md; do
       [ -e "$a" ] && echo "$home_claude/agents/$(basename "$a")"
     done
+    # STATUS-NEUTRAL terminator, and it is load-bearing. A `{ ... }` group's exit
+    # status is its LAST command: with no agents/*.md match the `for` above ends on a
+    # false `[ -e ]` and returns 1, `pipefail` promotes that to the pipeline, and
+    # `set -e` kills the installer HERE -- after the copy, before the jq merge, with
+    # no message. An unmatched glob is a normal state, not a failure.
+    true
   } | while read -r tgt; do
     # `|| true` is LOAD-BEARING: grep exits 1 when it matches nothing, `set -o pipefail`
     # promotes that to the pipeline's status, and `set -e` then killed the whole
@@ -204,7 +248,7 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
       sed -i.bak 's#\$CLAUDE_PROJECT_DIR#$X4_TOOLKIT#g' "$f" && rm -f "$f.bak"
     done
   done
-  echo "  installed x4 skills + agents into $home_claude"
+  echo "  installed $copied x4 skill/agent item(s) into $home_claude"
   # merge env into settings.json (jq); create if absent
   local sj="$home_claude/settings.json"
   [ -f "$sj" ] || echo '{}' > "$sj"
@@ -273,12 +317,19 @@ esac
 # branch at all -- so a half-finished install printed exactly the same success text as
 # a good one. install.ps1 has accumulated $failed and exited 1 for a while; this is the
 # same accounting on the bash side.
+# ACCUMULATES. A single assignment could only ever name one failure, and the unpack
+# below was outside the accounting entirely: under `set -e` a failing unpack killed the
+# script with NO summary -- neither banner, no `failed:` line, no next steps.
+# install.ps1 has used an array with three contributors for a while; this is parity.
 FAILED=""
-( cd "$TOOLKIT" && CLAUDE_PROJECT_DIR="$TOOLKIT" bash setup.sh ) || FAILED="setup.sh"
+add_failed() { FAILED="$FAILED${FAILED:+, }$1"; }
+
+( cd "$TOOLKIT" && CLAUDE_PROJECT_DIR="$TOOLKIT" bash setup.sh ) || add_failed "setup.sh"
 
 if [ "$DO_UNPACK" = 1 ]; then
   echo "Unpacking reference/ ..."
-  ( cd "$TOOLKIT" && CLAUDE_PROJECT_DIR="$TOOLKIT" bash bin/unpack-reference.sh )
+  ( cd "$TOOLKIT" && CLAUDE_PROJECT_DIR="$TOOLKIT" bash bin/unpack-reference.sh ) \
+    || add_failed "bin/unpack-reference.sh"
 fi
 
 echo

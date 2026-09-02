@@ -10,6 +10,12 @@ echo
 
 ok()   { echo "  [ok]   $*"; }
 warn() { echo "  [warn] $*"; }
+# A setup that cannot FAIL cannot be checked by its caller. Recorded here and reported
+# at the end, so every prerequisite is still reported in one pass rather than the run
+# stopping at the first miss.
+MISSING=""
+fail() { echo "  [FAIL] $*"; MISSING="$MISSING
+  - $*"; }
 
 # --- detect OS for install hints ------------------------------------------
 case "$(uname -s 2>/dev/null)" in
@@ -23,11 +29,13 @@ echo
 
 # --- 1. prerequisites ------------------------------------------------------
 echo "1) Checking prerequisites..."
+# jq is WARN, not FAIL: the hooks carry a documented python fallback for emitting a
+# verdict, so jq-missing-but-python-present is degraded, not broken.
 if command -v jq >/dev/null 2>&1; then ok "jq found"; else
   warn "jq not found — install with: $PKG  (then restart your shell)"; fi
 
 if command -v uv >/dev/null 2>&1; then ok "uv found"; else
-  warn "uv not found — install from https://docs.astral.sh/uv/ (powers x4validate / Python 3.13)"; fi
+  fail "uv not found — x4validate cannot run at all. Install from https://docs.astral.sh/uv/"; fi
 
 # A bare interpreter, checked SEPARATELY from uv. protect-bash.sh analyses every command
 # with .claude/hooks/hook_facts.py, so without one the Bash guard asks on every command
@@ -36,8 +44,7 @@ if command -v uv >/dev/null 2>&1; then ok "uv found"; else
 _py=""
 for _c in python python3 py; do command -v "$_c" >/dev/null 2>&1 && { _py="$_c"; break; }; done
 if [ -n "$_py" ]; then ok "python found ($_py) — the Bash guard can analyse commands"; else
-  warn "no python/python3/py on PATH — protect-bash.sh cannot analyse commands and will ASK on
-       every one. Install Python 3, or set X4_PYTHON to an interpreter."; fi
+  fail "no python/python3/py on PATH — protect-bash.sh cannot analyse commands and will ASK on every one. Install Python 3, or set X4_PYTHON to an interpreter."; fi
 
 # Java is OPTIONAL and scoped to the BaseX corpus search (tools/basex). The floor is
 # MEASURED, not chosen: BaseX 12.4's classes are bytecode major 61, so an older JVM
@@ -67,11 +74,11 @@ echo "2) Setting up bundled x4validate..."
 X4V="$ROOT/tools/x4validate"
 if [ -d "$X4V" ] && command -v uv >/dev/null 2>&1; then
   ( cd "$X4V" && uv sync >/dev/null 2>&1 ) && ok "x4validate dependencies synced (uv)" \
-    || warn "uv sync failed — run it manually:  cd tools/x4validate && uv sync"
+    || fail "uv sync failed — x4validate will not run. Try it manually:  cd tools/x4validate && uv sync"
   echo "     test it:  cd tools/x4validate && uv run pytest -q"
   echo "     run it:   cd tools/x4validate && uv run x4validate <your_mod>"
 else
-  warn "skipped (need uv + tools/x4validate)"
+  fail "x4validate NOT wired up (need uv + tools/x4validate)"
 fi
 
 # --- 3. local settings + path config --------------------------------------
@@ -107,5 +114,13 @@ else
 fi
 
 echo
+if [ -n "$MISSING" ]; then
+  echo "=== setup INCOMPLETE ==="
+  echo "These are required and are missing or failed:$MISSING"
+  echo
+  echo "Fix the above and re-run:  bash setup.sh"
+  exit 1
+fi
 echo "=== setup complete ==="
 echo "Open Claude Code in this folder and start modding. See README.md for examples."
+exit 0
