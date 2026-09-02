@@ -25,6 +25,12 @@ pcall(ffi.cdef, [[
     bool        IsErrorLogActive(void);
 ]])
 
+--: Stamped by scripts/stamp-mod-build.py from this file's own content, exactly like
+--: live_query.lua. Until 2026-09-02 only that file was stamped, so an edit to THIS one
+--: -- the half that runs automatically at load and writes profile UI userdata -- shipped
+--: with nothing able to notice.
+local BUILD = "2ad1d93c"
+
 local SCHEMA  = 2
 local ERR_CAP = 400             -- capped, and the true total is always reported
 
@@ -137,6 +143,14 @@ end
 -- result, so its consumed field list is not the returned one.
 local function dump_libraries()
     if type(GetLibrary) ~= "function" then row("LIB_STATUS", "ABSENT", "GetLibrary") return end
+    -- Recorded in EVERY dump, because the scheduling decision itself happens after
+    -- emit("LOAD") has already written this one -- so the outcome can never appear
+    -- here, but the CAPABILITY can. A reader seeing "no" knows why only one dump
+    -- arrived, instead of wondering whether the second was lost.
+    row("DELAYED_CAPABLE",
+        (type(Helper) == "table"
+         and type(Helper.addDelayedOneTimeCallbackOnUpdate) == "function"
+         and type(getElapsedTime) == "function") and "yes" or "no")
     row("LIB_STATUS", "OK", #LIBRARY_TYPES)
     for _, lt in ipairs(LIBRARY_TYPES) do
         local okL, lib = pcall(GetLibrary, lt)
@@ -163,7 +177,16 @@ local function dump_libraries()
                     else
                         row("LIB_ENTRY_FIELDS", lt, tostring(first.id), "CALL_FAILED")
                     end
+                else
+                    -- NAMED, not skipped in silence. Without this the library simply
+                    -- has no LIB_ENTRY_FIELDS row, and the reader is told (by
+                    -- _livecli) that an absent kind "was never asked for" -- which is
+                    -- the opposite of what happened.
+                    row("LIB_ENTRY_FIELDS", lt, tostring(first.id), "NO_GETLIBRARYENTRY")
                 end
+            else
+                row("LIB_ELEM_FIELDS", lt, "SKIPPED",
+                    "first element is " .. type(first) .. " without an id")
             end
         end
     end

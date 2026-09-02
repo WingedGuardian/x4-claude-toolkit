@@ -17,6 +17,7 @@ working tree does not move a commit hash, and half this workspace's merge change
 were uncommitted when they were first used.
 """
 
+import pytest
 import json
 import sys
 from pathlib import Path
@@ -207,3 +208,57 @@ def test_unresolvable_paths_report_UNKNOWN_not_a_traceback(monkeypatch, capsys):
     assert rc == 6, f"expected the distinct 'cannot determine' code, got {rc}"
     assert "Traceback" not in err
     assert "uv run" in err, "the message must name the working invocation"
+
+
+# --- the engine axis must REFUSE a tree that is not there (2026-09-02) --------
+
+def test_a_MISSING_engine_tree_is_a_refusal_not_a_constant(tmp_path, monkeypatch):
+    """`hash_engine` over a missing tree hashes seven fixed names plus seven <ABSENT>
+    markers, so EVERY nonexistent path folds to the SAME digest -- and `check()` then
+    reports the artifact fresh against any of them, forever. Two of the three axes
+    already refused for exactly this reason; the engine axis did not."""
+    import staleness
+    # The other two axes are pinned so ONLY the engine axis is under test.
+    # _defaults() validates reference and extensions FIRST, so on a machine with
+    # no X4 installed this raised for THOSE and the assertion below measured the
+    # wrong refusal -- green configured, red cold.
+    monkeypatch.setenv("X4_REFERENCE", str(tmp_path / "ref"))
+    monkeypatch.setenv("X4_EXTENSIONS", str(tmp_path / "ext"))
+    monkeypatch.setenv("X4VALIDATE_DIR", str(tmp_path / "not-a-checkout"))
+    with pytest.raises(staleness.EngineUnavailable) as ei:
+        staleness._defaults()
+    assert "_merge.py" in str(ei.value)
+
+
+def test_pointing_at_the_PACKAGE_instead_of_the_CHECKOUT_refuses(tmp_path, monkeypatch):
+    """The reachable misconfiguration: the variable is named for the checkout, this
+    code appends `/x4validate` to it, so aiming it one level too deep silently yields
+    .../x4validate/x4validate/x4validate. `cd` there succeeds and `uv run` works, so
+    nothing else in the build notices."""
+    import staleness
+    pkg = tmp_path / "x4validate" / "x4validate"
+    pkg.mkdir(parents=True)
+    (pkg / "_merge.py").write_text("# engine\n", encoding="utf-8")
+    # The other two axes are pinned so ONLY the engine axis is under test.
+    # _defaults() validates reference and extensions FIRST, so on a machine with
+    # no X4 installed this raised for THOSE and the assertion below measured the
+    # wrong refusal -- green configured, red cold.
+    monkeypatch.setenv("X4_REFERENCE", str(tmp_path / "ref"))
+    monkeypatch.setenv("X4_EXTENSIONS", str(tmp_path / "ext"))
+    monkeypatch.setenv("X4VALIDATE_DIR", str(pkg))       # one level too deep
+    with pytest.raises(staleness.EngineUnavailable):
+        staleness._defaults()
+
+
+def test_a_REAL_checkout_is_accepted(tmp_path, monkeypatch):
+    """The twin. A guard that refused everything would pass both tests above while
+    making every build impossible."""
+    import staleness
+    root = tmp_path / "x4validate"
+    (root / "x4validate").mkdir(parents=True)
+    (root / "x4validate" / "_merge.py").write_text("# engine\n", encoding="utf-8")
+    monkeypatch.setenv("X4VALIDATE_DIR", str(root))
+    monkeypatch.setenv("X4_REFERENCE", str(tmp_path / "ref"))
+    monkeypatch.setenv("X4_EXTENSIONS", str(tmp_path / "ext"))
+    _ref, _ext, engine = staleness._defaults()
+    assert (engine / "_merge.py").is_file(), engine

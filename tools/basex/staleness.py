@@ -207,6 +207,29 @@ def _defaults() -> tuple[Path, Path, Path]:
     # `X4_`-prefixed settings — routing it there would widen that contract.
     engine = Path(os.environ.get(
         "X4VALIDATE_DIR", str(HERE.parent / "x4validate"))) / "x4validate"
+    # VALIDATED, exactly like reference and extensions two lines up, and for the reason
+    # already written there: "a fingerprint taken over a path that does not exist
+    # reports FRESH forever."
+    #
+    # That refusal was applied to two of the three axes and not to this one. MEASURED
+    # 2026-09-02: `hash_engine` over a missing tree hashes seven fixed names plus seven
+    # <ABSENT> markers, so EVERY nonexistent path folds to the SAME constant --
+    # 2e797cf6683200c5 -- and `check()` then reports the artifact fresh against any of
+    # them, forever. The `<ABSENT>` marker distinguishes ONE missing file, which is what
+    # it was written for; it cannot distinguish "I hashed nothing".
+    #
+    # Reachable by ordinary misconfiguration: X4VALIDATE_DIR is documented as the
+    # engine CHECKOUT, this line appends "/x4validate" to it, and pointing it at the
+    # PACKAGE directory -- which the variable's name invites -- yields
+    # .../x4validate/x4validate/x4validate, which does not exist. `cd` into the package
+    # dir succeeds and `uv run` works, so nothing else in the build notices.
+    if not (engine / "_merge.py").is_file():
+        raise EngineUnavailable(
+            f"the engine tree at {engine} has no _merge.py, so there is nothing to "
+            f"fingerprint. Set X4VALIDATE_DIR to an x4validate CHECKOUT (the directory "
+            f"CONTAINING the x4validate package), not the package itself. Refusing to "
+            f"guess: every missing tree hashes to the same constant, which reads as "
+            f"FRESH forever.")
     return reference, extensions, engine
 
 

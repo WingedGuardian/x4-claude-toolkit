@@ -109,3 +109,84 @@ def test_no_checkout_at_all_keeps_the_historical_default(tmp_path):
     rc, out, _ = run(b)
     assert rc == 0
     assert out.endswith("/x4validate")
+
+
+# --- x4v_announce: 0 of 4 mutants killed (2026-09-02) ------------------------
+#
+# MEASURED: announcing the WRONG tree, inverting the "chosen by" branch, dropping the
+# git line, and DELETING THE WHOLE FUNCTION all left the suite green. The first is the
+# one that matters -- it makes the build log state a tree that was never used, which is
+# precisely the false provenance this file exists to prevent, and the freshness
+# fingerprint hashes the ENGINE BYTES of whichever tree really was used.
+#
+# Deletion survived too, and would have broken a real build with `command not found`
+# under `set -euo pipefail` -- a failure mode no test could see.
+
+
+def announce(basex_dir: Path, target: Path, env_dir: str | None = None):
+    script = (f'. "{HELPER.as_posix()}"; x4v_announce "{target.as_posix()}"')
+    env = {"PATH": "/usr/bin:/bin"}
+    if env_dir is not None:
+        env["X4VALIDATE_DIR"] = env_dir
+    p = subprocess.run([BASH, "-c", script], capture_output=True, text=True, env=env)
+    return p.returncode, p.stdout, p.stderr
+
+
+def test_announce_names_the_tree_it_was_GIVEN(tmp_path):
+    """Kills the mutant that announces a different path: the log must be able to be
+    audited afterwards, which requires it to be true."""
+    b = layout(tmp_path)
+    tree = engine_tree(b.parent, "x4validate")
+    rc, out, err = announce(b, tree)
+    assert rc == 0, err
+    # Compared on a dialect-independent TAIL. `pwd` inside git-bash prints the MSYS
+    # form (/tmp/...) while Path.as_posix() prints the Windows one (C:/Users/...) --
+    # the same directory in two spellings, which is exactly the translation gotcha the
+    # rest of this toolkit keeps tripping over. The tail is unique to this tmpdir.
+    tail = "/".join(tree.resolve().as_posix().split("/")[-3:])
+    assert tail in out.replace(chr(92), "/"), (tail, out)
+
+
+def test_announce_does_NOT_name_a_tree_it_was_not_given(tmp_path):
+    """The twin: a function printing every path it can find would pass the test above."""
+    b = layout(tmp_path)
+    tree = engine_tree(b.parent, "x4validate")
+    other = engine_tree(b.parent, "x4validate-decoy")
+    rc, out, _ = announce(b, tree)
+    assert rc == 0
+    assert "x4validate-decoy" not in out, out
+
+
+def test_announce_says_WHICH_MECHANISM_chose_the_tree(tmp_path):
+    b = layout(tmp_path)
+    tree = engine_tree(b.parent, "x4validate")
+    _rc, with_var, _ = announce(b, tree, env_dir=str(tree))
+    assert "chosen by X4VALIDATE_DIR" in with_var, with_var
+    _rc, without, _ = announce(b, tree)
+    assert "default position" in without, without
+    assert "chosen by X4VALIDATE_DIR" not in without, without
+
+
+def test_announce_reports_the_git_revision_when_there_is_one(tmp_path):
+    """The build log must be able to say WHICH revision of the engine produced an
+    artifact, not merely which directory."""
+    b = layout(tmp_path)
+    tree = engine_tree(b.parent, "x4validate")
+    for cmd in (["init", "-q"], ["add", "-A"],
+                ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"]):
+        r = subprocess.run(["git", *cmd], cwd=tree, capture_output=True, text=True)
+        if r.returncode != 0:
+            pytest.skip(f"git unavailable here: {r.stderr.strip()[:60]}")
+    rc, out, err = announce(b, tree)
+    assert rc == 0, err
+    assert "git:" in out, out
+
+
+def test_announce_EXISTS(tmp_path):
+    """Deleting the function entirely survived every other check, and both callers run
+    under `set -euo pipefail` -- so its absence is a broken build, not a quiet no-op."""
+    rc, out, err = subprocess.run(
+        [BASH, "-c", f'. "{HELPER.as_posix()}"; type x4v_announce'],
+        capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"}
+    ).returncode, "", ""
+    assert rc == 0, "x4v_announce is not defined by _x4v-tree.sh"

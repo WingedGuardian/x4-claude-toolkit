@@ -51,7 +51,7 @@ local PROTO = 1
 --:
 --: Kept honest by `test_the_BUILD_constant_matches_the_file`, so editing the lua and
 --: forgetting to re-stamp this fails the suite rather than silently lying in game.
-local BUILD = "539c405e"
+local BUILD = "dbe9cacb"
 local TAG_CMD, TAG_REPLY = "MQ", "MR"
 
 -- Cap on echo, the ramp instrument. Generous: the point of the ramp is to FIND the
@@ -176,8 +176,53 @@ local function split_tabs(s)
     end
 end
 
+-- MOVED ABOVE reply(): a Lua `local` is only in scope AFTER its
+-- declaration, so these sat 190 lines BELOW the function that enforces
+-- them and resolved to nil globals there. The lupa suite caught it at
+-- once -- the mod stopped replying to a plain ping, because comparing a
+-- length against nil raises.
+--: Bound REPLIES before sending. An over-long message does not truncate, it tears
+--: the pipe down (see the header), so an unbounded enumeration is a connection
+--: killer rather than a short answer. 32000 is well under the 524,288 bytes proven to
+--: round-trip in game, which leaves room for the frame header and any single
+--: oversized row.
+local MAX_PAYLOAD = 32000
+
+--: Reserved out of MAX_PAYLOAD for the header line, which is prepended AFTER the row
+--: loop and so cannot be measured during it.
+--:
+--: ⚠ MEASURED IN GAME 2026-08-29: without this, `ships argon` capped its rows at
+--: exactly 32000 and then added a 143-byte header, shipping 32143 bytes against a
+--: "32000-byte" budget. Harmless in itself -- the proven ceiling is 524,288 -- but the
+--: number did not mean what it said, and a budget you cannot trust is not a budget.
+--:
+--: ★ The test was complicit: it asserted `<= 32000 + 200`. That 200-byte slack was
+--: added for comfort and is exactly what let a 143-byte overrun through. A tolerance
+--: nobody derived is a place for defects to live; the assertion is now exact.
+local HEADER_RESERVE = 512
+
+--: Per-VALUE budget for `recon --contents`. Deliberately far below ROW_BUDGET: one
+--: fat table must not be able to crowd out the other 100-odd probe results, and the
+--: point of the mode is to see the SHAPE of a payload, not to exfiltrate all of it.
+--: A truncated cell says `+N-more` rather than ending silently.
+local CONTENTS_BUDGET = 400
+local ROW_BUDGET = MAX_PAYLOAD - HEADER_RESERVE
+
 local function reply(seq, status, payload)
     payload = payload or ""
+    -- THE choke point. Every verb goes through here, so the bound is enforced once
+    -- rather than remembered in each of them -- which is how verbs.ext and verbs.macro
+    -- came to send 40,025 and 40,017 bytes against a 32,000-byte cap while the header
+    -- of this file said "any unbounded verb caps itself".
+    --
+    -- An over-long frame is not a truncation, it is a total teardown of the pipe in
+    -- both directions. So it must never be SENT: it becomes an ERR naming the size,
+    -- which is a diagnosis the caller can act on.
+    if #payload > MAX_PAYLOAD then
+        status = "ERR"
+        payload = "reply too large: " .. #payload .. " bytes exceeds MAX_PAYLOAD "
+                  .. MAX_PAYLOAD .. " -- this verb produced an uncapped result set"
+    end
     -- seq is echoed as the RAW STRING it arrived as. Round-tripping it through
     -- tonumber/tostring risks the same exponent rendering as the checksum.
     local frame = table.concat({
@@ -352,32 +397,6 @@ local function issue_token(s)
     return s
 end
 
---: Bound REPLIES before sending. An over-long message does not truncate, it tears
---: the pipe down (see the header), so an unbounded enumeration is a connection
---: killer rather than a short answer. 32000 is well under the 524,288 bytes proven to
---: round-trip in game, which leaves room for the frame header and any single
---: oversized row.
-local MAX_PAYLOAD = 32000
-
---: Reserved out of MAX_PAYLOAD for the header line, which is prepended AFTER the row
---: loop and so cannot be measured during it.
---:
---: ⚠ MEASURED IN GAME 2026-08-29: without this, `ships argon` capped its rows at
---: exactly 32000 and then added a 143-byte header, shipping 32143 bytes against a
---: "32000-byte" budget. Harmless in itself -- the proven ceiling is 524,288 -- but the
---: number did not mean what it said, and a budget you cannot trust is not a budget.
---:
---: ★ The test was complicit: it asserted `<= 32000 + 200`. That 200-byte slack was
---: added for comfort and is exactly what let a 143-byte overrun through. A tolerance
---: nobody derived is a place for defects to live; the assertion is now exact.
-local HEADER_RESERVE = 512
-
---: Per-VALUE budget for `recon --contents`. Deliberately far below ROW_BUDGET: one
---: fat table must not be able to crowd out the other 100-odd probe results, and the
---: point of the mode is to see the SHAPE of a payload, not to exfiltrate all of it.
---: A truncated cell says `+N-more` rather than ending silently.
-local CONTENTS_BUDGET = 400
-local ROW_BUDGET = MAX_PAYLOAD - HEADER_RESERVE
 
 local verbs = {}
 
@@ -781,10 +800,26 @@ verbs.ext = function(seq, id)
             -- Every field, k=v, rather than a hand-picked subset: we do not have to
             -- guess the vocabulary, and a field the engine adds later shows up
             -- instead of being silently dropped.
-            local out = {}
+            local out, used, shown, total = {}, 0, 0, 0
             for _, k in ipairs(sorted_keys(e)) do
                 local v = e[k]
-                out[#out + 1] = k .. "=" .. (type(v) == "table" and "<table>" or tostring(v))
+                total = total + 1
+                local fld = k .. "=" .. (type(v) == "table" and "<table>" or tostring(v))
+                -- Bounded BEFORE sending, and no break: stopping the loop would stop
+                -- counting too, and then `total` would just be `shown` again --
+                -- destroying the honest denominator (the same reasoning as the
+                -- station enumerator).
+                if used + #fld + 1 <= ROW_BUDGET then
+                    out[#out + 1] = fld
+                    used = used + #fld + 1
+                    shown = shown + 1
+                end
+            end
+            -- Appended ONLY when something was omitted, so an ordinary reply is
+            -- byte-identical to before this cap existed.
+            if shown < total then
+                out[#out + 1] = "__shown=" .. shown
+                out[#out + 1] = "__total=" .. total
             end
             reply(seq, "OK", table.concat(out, "\t"))
             return
@@ -804,7 +839,14 @@ verbs.macro = function(seq, ltype, name, prop)
         return
     end
     local ok, entry = pcall(GetLibraryEntry, ltype, name)
-    if not ok then reply(seq, "ABSENT", ltype .. "\t" .. name) return end
+    -- ERR, not ABSENT, and the message is KEPT. On a pcall failure `entry` holds
+    -- the error text, and reporting that as ABSENT says "the engine has nothing
+    -- here" when the truth is "we could not ask" -- the conflation this file's own
+    -- header forbids. It also reconciled silently: _livecli counts ABSENT as a real
+    -- answer, so a harvest that lost N answers this way still balanced, and the
+    -- result becomes a groundtruth fixture. verbs.ext already does this correctly.
+    if not ok then reply(seq, "ERR", "GetLibraryEntry failed: " .. tostring(entry)) return end
+    -- Every ABSENT below is a GENUINE absence: we asked, and there is nothing there.
     if type(entry) ~= "table" then reply(seq, "ABSENT", ltype .. "\t" .. name) return end
 
     local ks = sorted_keys(entry)
@@ -824,10 +866,20 @@ verbs.macro = function(seq, ltype, name, prop)
         return
     end
 
-    local out = {}
+    local out, used, shown, total = {}, 0, 0, 0
     for _, k in ipairs(ks) do
         local v = entry[k]
-        out[#out + 1] = k .. "=" .. (type(v) == "table" and "<table>" or tostring(v))
+        total = total + 1
+        local fld = k .. "=" .. (type(v) == "table" and "<table>" or tostring(v))
+        if used + #fld + 1 <= ROW_BUDGET then
+            out[#out + 1] = fld
+            used = used + #fld + 1
+            shown = shown + 1
+        end
+    end
+    if shown < total then
+        out[#out + 1] = "__shown=" .. shown
+        out[#out + 1] = "__total=" .. total
     end
     reply(seq, "OK", table.concat(out, "\t"))
 end
