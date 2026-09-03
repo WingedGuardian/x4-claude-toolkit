@@ -37,6 +37,12 @@ ROOTS = {"game": GAME, "profile": PROF, "reference": REF, "toolkit": TOOLKIT,
          "mods": TOOLKIT + "/dev", "documents": DOCS, "saves": PROF + "/save"}
 
 
+Q = chr(39)                        # apostrophe
+DQ = chr(34)                       # double quote
+DEL_GAME = D + ' -rf "' + GAME + '"'
+DEL_REF = D + ' -rf "' + REF + '"'
+
+
 def F(command, timeout=0, background=False, roots=None):
     payload = {"tool_input": {"command": command, "timeout": timeout,
                               "run_in_background": background}}
@@ -1345,6 +1351,285 @@ class TestTheNameBackstopSurvivesARelativeOperand(unittest.TestCase):
                     D + " -rf __pycache__", "cd sub && " + D + " -rf .venv"):
             with self.subTest(cmd=cmd):
                 self.assertFalse(F(cmd)["rm_hits_game"], cmd)
+
+
+# --------------------------------------------------- round 3: the four bypass classes
+# Each class below was a MEASURED silent ALLOW on 2026-09-02, against a delete the guard
+# refuses when it is written plainly. Every class carries a twin that must stay ALLOWED:
+# the failure this guard can least afford is a refusal on ordinary work -- 64 verified
+# false denials were removed to earn the present precision and none may come back.
+NLc = chr(10)
+CONT = BS + NLc                    # a line continuation, built from parts
+
+
+class TestALineContinuationIsNotASeparator(unittest.TestCase):
+    """bash splices backslash-newline away before it parses anything; segments() split
+    on it.
+
+    So a delete continued onto a second line became TWO segments -- verb `rm` holding a
+    lone backslash, and the path alone with no verb -- and every verb-keyed rule lost its
+    operand at once, all three hard blocks included. MEASURED against 6 of 12 fuzz seeds;
+    the other 6 have no whitespace to break at. This is how anyone writes a long command.
+    """
+    def test_the_game_root(self):
+        self.assertTrue(F(D + " -rf " + CONT + '  "' + GAME + '"')["rm_hits_game"])
+
+    def test_the_reference_tree(self):
+        self.assertTrue(F(D + " -rf " + CONT + '  "' + REF + '"')["rm_targets_reference"])
+
+    def test_split_between_the_verb_and_its_flag(self):
+        self.assertTrue(F(D + " " + CONT + '  -rf "' + GAME + '"')["rm_hits_game"])
+
+    def test_inside_SINGLE_quotes_it_stays_literal(self):
+        """The twin. bash does NOT splice inside single quotes, so a continuation there
+        is two literal characters of data, and removing it would corrupt text a rule
+        then reads. An implementation that spliced unconditionally passes every test
+        above and fails only this one."""
+        payload = Q + "a" + CONT + "b" + Q
+        self.assertIn(BS, H.join_continuations("echo " + payload))
+
+    def test_an_ordinary_continued_command_is_untouched(self):
+        self.assertFalse(F("echo one " + CONT + "  two && ls -la")["rm_hits_game"])
+
+
+class TestAShellFedOnStdinIsACommandCarrier(unittest.TestCase):
+    """Every way of handing a shell its program on stdin was invisible.
+
+    `_inner_commands` modelled `-c`, `eval` and `trap`; a program arriving by pipe, by
+    here-string or through /dev/stdin was not in the carrier set at all. Separately,
+    `heredoc_bodies` asked whether the OPENER's verb is a shell -- but an opener is a
+    PIPELINE, and where the first verb is `cat` the body was discarded as file payload
+    while the shell on the far end of the pipe ran it unseen.
+    """
+    def test_echo_piped_into_bash(self):
+        self.assertTrue(F("echo " + Q + DEL_GAME + Q + " | bash")["rm_hits_game"])
+
+    def test_printf_piped_into_sh(self):
+        cmd = "printf " + Q + "%s" + Q + " " + Q + DEL_GAME + Q + " | sh"
+        self.assertTrue(F(cmd)["rm_hits_game"])
+
+    def test_a_heredoc_piped_into_bash(self):
+        cmd = "cat <<" + Q + "EOF" + Q + " | bash" + NLc + DEL_GAME + NLc + "EOF"
+        self.assertTrue(F(cmd)["rm_hits_game"])
+
+    def test_a_here_string(self):
+        self.assertTrue(F("bash <<< " + Q + DEL_GAME + Q)["rm_hits_game"])
+
+    def test_a_here_string_with_dash_s(self):
+        self.assertTrue(F("bash -s <<< " + Q + DEL_GAME + Q)["rm_hits_game"])
+
+    def test_source_dev_stdin(self):
+        cmd = ("source /dev/stdin <<" + Q + "EOF" + Q + NLc + DEL_REF + NLc + "EOF")
+        self.assertTrue(F(cmd)["rm_targets_reference"])
+
+    # ---- twins: none of these hands a shell a program on stdin --------------------
+    def test_a_shell_given_a_real_SCRIPT_does_not_pair_with_a_nearby_echo(self):
+        """The pairing is deliberately narrow -- the consumer must have NO script
+        operand. A rule that paired any echo with any later shell would refuse this
+        shape, which appears throughout this repo's own tooling."""
+        cmd = "echo " + Q + "note" + Q + " > n.md && bash script.sh"
+        self.assertFalse(F(cmd)["rm_hits_game"])
+
+    def test_a_heredoc_written_to_a_FILE_is_payload_not_a_program(self):
+        cmd = ("cat > notes.md <<" + Q + "X" + Q + NLc + DEL_GAME + NLc + "X")
+        self.assertFalse(F(cmd)["rm_hits_game"])
+
+    def test_a_PYTHON_heredoc_is_not_routed_through_the_shell_parser(self):
+        """A Python assignment whose first word is the delete verb. Routing non-shell
+        heredoc bodies through the shell rules invents a delete nobody wrote -- which is
+        why the OPENER's verb, not the presence of a body, decides."""
+        cmd = ("python - <<" + Q + "PY" + Q + NLc + D + ' = "/tmp/x"' + NLc + "PY")
+        self.assertFalse(F(cmd)["rm_hits_game"])
+
+
+class TestAnUnresolvedExpansionIsNotALiteralPath(unittest.TestCase):
+    """`_VAR` answered "what is this variable called" and was also asked "is there an
+    expansion here". It matches a braced form only when the brace closes straight after
+    the name, so a suffix strip, a default value, a pattern replace and an array index
+    each matched NEITHER alternative and `has_unresolved` returned False.
+
+    The DIRECTION is what makes this worse than a miss: the conservative branch exists so
+    an operand the hook cannot resolve still refuses, and believing we HAD resolved it
+    skips that branch -- the guard was most confident exactly where it knew least.
+    """
+    def test_suffix_strip(self):
+        self.assertTrue(H.has_unresolved("${Z%ZZ}"))
+
+    def test_default_value(self):
+        self.assertTrue(H.has_unresolved("${NOPE:-" + GAME + "}"))
+
+    def test_pattern_replace(self):
+        self.assertTrue(H.has_unresolved("${Z//QQ/}"))
+
+    def test_array_index(self):
+        self.assertTrue(H.has_unresolved("${A[0]}"))
+
+    def test_positional_and_special(self):
+        for tok in ("$1", "$@", "$*", "$?", "$$"):
+            with self.subTest(tok=tok):
+                self.assertTrue(H.has_unresolved(tok), tok)
+
+    def test_a_plain_literal_is_still_RESOLVED(self):
+        """The twin: a predicate returning True unconditionally passes everything above
+        while making every operand in the repo unresolvable -- refusals everywhere."""
+        for tok in (GAME, "build", "./dist", "a-b_c.d", "100%"):
+            with self.subTest(tok=tok):
+                self.assertFalse(H.has_unresolved(tok), tok)
+
+    def test_an_already_resolved_expansion_is_not_re_flagged(self):
+        """resolve() substitutes what it can, and what comes back must not still look
+        unresolved -- or an ordinary build-directory delete becomes a prompt."""
+        self.assertFalse(F("DST=build; " + D + ' -rf "${DST%/}"')["rm_hits_game"])
+
+
+class TestCoprocHidesACommand(unittest.TestCase):
+    """The same shape as the compound-form bypass closed on 2026-09-01, still open
+    because that fix enumerated the forms a fuzzer had produced instead of bash's own
+    list of reserved words."""
+    def test_coproc_does_not_hide_a_delete(self):
+        self.assertTrue(F("coproc { " + DEL_GAME + "; }")["rm_hits_game"])
+
+    def test_coproc_around_benign_work_is_still_allowed(self):
+        self.assertFalse(F("coproc { echo hi; }")["rm_hits_game"])
+
+
+class TestARedirectIsNotAnOperand(unittest.TestCase):
+    """`_reads_stdin_program` refuses on any non-flag token, reading it as a script file.
+    A REDIRECT is not a script file, and a here-string operator plus its word were what
+    it tripped over -- so the single carrier whose payload is plainly visible in the
+    command text was the one the check declined to look at."""
+    def test_separated_and_attached_here_strings(self):
+        for toks in (["<<<", "payload"], ["<<<payload"]):
+            with self.subTest(toks=toks):
+                self.assertEqual(H._drop_redirects(toks), [])
+
+    def test_an_fd_prefixed_redirect(self):
+        self.assertEqual(H._drop_redirects(["2>", "err", "-x"]), ["-x"])
+        self.assertEqual(H._drop_redirects(["2>err", "-x"]), ["-x"])
+
+    def test_a_real_operand_SURVIVES(self):
+        """The twin: dropping too much makes a shell given a real script look like a
+        stdin-fed one, and every suite this repo runs would start pairing with whatever
+        echo precedes it."""
+        self.assertEqual(H._drop_redirects(["script.sh"]), ["script.sh"])
+        self.assertEqual(H._drop_redirects([">", "out", "script.sh"]), ["script.sh"])
+        self.assertFalse(H._reads_stdin_program("bash script.sh"))
+        self.assertFalse(H._reads_stdin_program("bash > out script.sh"))
+
+
+# ------------------------------------------- round 3b: resolution, not just grammar
+# Found by the twelve mutators added to fuzz-guard.py for the classes above -- 7 further
+# bypasses, every one of them ALSO present on the committed tree, so these are holes the
+# fuzzer previously could not EMIT rather than anything the round-3 fixes introduced.
+
+
+class TestAnExpansionCarryingAnOperatorIsStillResolved(unittest.TestCase):
+    """`resolve()` substituted with `_VAR`, which names only the two brace-free shapes,
+    so every operator form stayed opaque and was matched against the roots as literal
+    text. Resolving MORE can only turn an allow into a refusal on a command whose text
+    really does name a protected root; it cannot invent one."""
+    def test_suffix_strip(self):
+        self.assertEqual(H.resolve("${V%QQ}", {"V": GAME + "QQ"}), GAME)
+
+    def test_greedy_suffix_strip(self):
+        self.assertEqual(H.resolve("${V%%QQ}", {"V": GAME + "QQ"}), GAME)
+
+    def test_prefix_strip(self):
+        self.assertEqual(H.resolve("${V#ZZ}", {"V": "ZZ" + GAME}), GAME)
+
+    def test_default_when_unset(self):
+        self.assertEqual(H.resolve("${NOPE:-" + GAME + "}", {}), GAME)
+
+    def test_default_is_NOT_used_when_set(self):
+        self.assertEqual(H.resolve("${V:-other}", {"V": GAME}), GAME)
+
+    def test_pattern_replace(self):
+        self.assertEqual(H.resolve("${V//QQ/}", {"V": GAME + "QQ"}), GAME)
+
+    def test_array_index(self):
+        a = H.assignments("A=(" + DQ + GAME + DQ + ")")
+        self.assertEqual(H.resolve("${A[0]}", a), GAME)
+
+    # ---- twins: what text alone CANNOT decide stays unresolved ------------------
+    def test_a_GLOB_pattern_is_left_unresolved(self):
+        """`${V%/*}` is the dirname idiom and needs pattern matching this hook does not
+        do. Guessing here would produce a path that never appeared in the command, and a
+        wrongly resolved operand is compared against the roots and CLEARED -- strictly
+        worse than an unresolved one, which takes the conservative path."""
+        out = H.resolve("${V%/*}", {"V": GAME + "/sub"})
+        self.assertTrue(H.has_unresolved(out), out)
+
+    def test_a_SUBSTRING_offset_is_left_unresolved(self):
+        out = H.resolve("${V:2:5}", {"V": GAME})
+        self.assertTrue(H.has_unresolved(out), out)
+
+    def test_an_UNKNOWN_variable_with_no_default_is_left_unresolved(self):
+        out = H.resolve("${NOPE%QQ}", {})
+        self.assertTrue(H.has_unresolved(out), out)
+
+    def test_a_suffix_that_does_not_match_leaves_the_value_alone(self):
+        self.assertEqual(H.resolve("${V%ZZ}", {"V": GAME}), GAME)
+
+
+class TestAnArrayKeepsItsQUOTINGWhenCaptured(unittest.TestCase):
+    """`tokens()` strips quotes, so reading an array value from a token split the one
+    element of a spaced Windows path into three and made element 0 `C:/Program`. The
+    value is re-read from the raw segment for that reason."""
+    def test_a_spaced_path_stays_ONE_element(self):
+        a = H.assignments("A=(" + DQ + GAME + DQ + ")")
+        self.assertEqual(H._array_elements(a["A"]), [GAME])
+
+    def test_several_elements_still_split(self):
+        a = H.assignments("A=(build dist out)")
+        self.assertEqual(H._array_elements(a["A"]), ["build", "dist", "out"])
+
+    def test_a_plain_assignment_is_not_an_array(self):
+        a = H.assignments("A=" + DQ + GAME + DQ)
+        self.assertEqual(H._array_elements(a["A"]), [])
+
+    def test_an_index_past_the_end_is_unresolved(self):
+        a = H.assignments("A=(build)")
+        self.assertTrue(H.has_unresolved(H.resolve("${A[3]}", a)))
+
+
+class TestCdThroughAVariableIsStillCd(unittest.TestCase):
+    """`cwd_track` handed `_operands(seg)[0]` -- the RAW token -- to `join_cwd`, so a
+    `cd` through any variable made the directory unknowable and EVERY later relative
+    operand unattributable. MEASURED 2026-09-02: that walked a plain `$VAR` straight
+    through the extensions hard block, which is the most ordinary idiom there is."""
+    def test_a_plain_variable(self):
+        cmd = "FZ=" + DQ + GAME + DQ + "; cd " + DQ + "$FZ" + DQ + " && " + D + " -rf extensions"
+        self.assertTrue(F(cmd)["rm_hits_game"])
+
+    def test_a_braced_variable(self):
+        cmd = "FZ=" + DQ + GAME + DQ + "; cd " + DQ + "${FZ}" + DQ + " && " + D + " -rf extensions"
+        self.assertTrue(F(cmd)["rm_hits_game"])
+
+    def test_an_operator_bearing_expansion(self):
+        cmd = ("FZ=" + DQ + GAME + "QQ" + DQ + "; cd " + DQ + "${FZ%QQ}" + DQ
+               + " && " + D + " -rf extensions")
+        self.assertTrue(F(cmd)["rm_hits_game"])
+
+    def test_an_array_element(self):
+        cmd = ("FZA=(" + DQ + GAME + DQ + "); cd " + DQ + "${FZA[0]}" + DQ
+               + " && " + D + " -rf extensions")
+        self.assertTrue(F(cmd)["rm_hits_game"])
+
+    # ---- twins ------------------------------------------------------------------
+    def test_an_UNKNOWABLE_cd_does_not_invent_a_root(self):
+        """`cd "$NOPE"` names nothing this hook can see, and the command text contains
+        no protected path. Refusing here would be a prompt on work that is not ours to
+        judge -- the directory is UNKNOWN, which is a different answer from `the game`."""
+        cmd = "cd " + DQ + "$NOPE" + DQ + " && " + D + " -rf extensions"
+        self.assertFalse(F(cmd)["rm_hits_game"])
+
+    def test_ordinary_relative_work_through_a_variable(self):
+        cmd = "DIR=build; cd " + DQ + "$DIR" + DQ + " && " + D + " -rf dist"
+        self.assertFalse(F(cmd)["rm_hits_game"])
+
+    def test_an_array_of_ordinary_directories(self):
+        cmd = "A=(build dist); cd " + DQ + "${A[0]}" + DQ + " && " + D + " -rf out"
+        self.assertFalse(F(cmd)["rm_hits_game"])
 
 
 if __name__ == "__main__":

@@ -139,6 +139,59 @@ def _scan(s: str):
         i += 1
 
 
+def join_continuations(s: str) -> str:
+    """Remove backslash-newline, which bash removes before it does anything else.
+
+    A line continuation is NOT a separator -- the shell splices the two lines into one
+    command. `segments()` split on it anyway, because `_scan` reports the escaped
+    newline with in_quote False and nothing marks it as ESCAPED. MEASURED 2026-09-02:
+
+        rm -rf \\<NL>  "<game>"   ->  segments ['rm -rf \\', '"<game>"']
+                                        verb 'rm' with operand \\, and the
+                                        path in a segment of its own with no verb
+
+    So every verb-keyed rule lost its operand at once, including all three hard blocks.
+    Found against 6 of 12 fuzz seeds; the other 6 have no whitespace to break at.
+
+    Inside SINGLE quotes it is literal text and is left alone. Inside double quotes bash
+    does splice it, so it is removed there too.
+    """
+    out = []
+    q = ""
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if q == "'":
+            if c == "'":
+                q = ""
+            out.append(c)
+            i += 1
+            continue
+        if c == chr(92) and i + 1 < len(s) and s[i + 1] == chr(10):
+            i += 2                      # the splice: emit neither character
+            continue
+        if q == '"':
+            if c == '"':
+                q = ""
+            elif c == chr(92) and i + 1 < len(s):
+                out.append(c)
+                i += 1
+                out.append(s[i])
+                i += 1
+                continue
+        elif c in ("'", '"'):
+            q = c
+        elif c == chr(92) and i + 1 < len(s):
+            out.append(c)
+            i += 1
+            out.append(s[i])
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def strip_comments(s: str) -> str:
     """Blank `# ...` to end of line, when the `#` starts a word outside quotes.
 
@@ -238,7 +291,7 @@ def segments(cmd: str) -> list[str]:
 #: because the keyword has to leave the SEGMENT before any rule looks at it, so that
 #: one fix serves every rule instead of each rule learning the grammar.
 RESERVED = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until",
-            "case", "esac", "in", "for", "select", "function", "!", "{", "}"}
+            "case", "esac", "in", "for", "select", "function", "!", "{", "}", "coproc", "[[", "]]"}
 
 #: A `case` ARM LABEL, and nothing else. The label is a single glob token --
 #: `x)`, `*)`, `*.txt)`, `a|b)` -- so it carries NO WHITESPACE, and that is what makes
@@ -397,10 +450,35 @@ def assignments(cmd: str) -> dict[str, str]:
             m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", tok, re.S)
             if m:
                 found[m.group(1)] = m.group(2)
+        # An ARRAY is re-read from the RAW segment, because `tokens()` has already
+        # stripped the quotes that hold a spaced path together -- and splitting the
+        # de-quoted text gave `C:/Program` as element 0 of a Windows game path. That is
+        # a wrong answer rather than a missing one, and a wrong one is compared against
+        # the roots and cleared. Overrides the de-quoted value captured above.
+        for m in re.finditer(r"(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=\(", seg):
+            close = _match_paren(seg, m.end() - 1)
+            if close > 0:
+                found[m.group(1)] = seg[m.end() - 1:close + 1]
     return found
 
 
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+#: ANY parameter expansion, not just the two shapes `_VAR` can name. `_VAR` exists to
+#: EXTRACT an identifier and only matches `${NAME}` with the brace closing straight
+#: after the name -- so `${DST%/}`, `${VAR:-default}`, `${VAR//a/b}` and `${ARR[0]}`
+#: matched neither alternative, `has_unresolved` returned False, and the token was
+#: treated as a fully-resolved literal path.
+#:
+#: The DIRECTION is the problem. `hit(..., conservative=True)` exists so an operand
+#: the hook cannot resolve still refuses; believing we HAD resolved it skips that
+#: branch entirely. MEASURED 2026-09-02: `Z="<game>ZZ"; rm -rf "${Z%ZZ}"` was a
+#: silent ALLOW, and 3 expansion mutators weakened every seed they applied to.
+#:
+#: Separate from `_VAR` on purpose: "is there an expansion here" and "what is it
+#: called" are different questions, and one regex answering both is what made the
+#: narrow one authoritative.
+_EXPANSION = re.compile(r"\$\{|\$[A-Za-z_]|\$[0-9@*#?!$]")
 
 
 #: `~` and `$HOME` are values a hook genuinely CAN know, unlike `$(...)`. Without them a
@@ -438,16 +516,94 @@ def expand_home(tok: str) -> str:
     return tok
 
 
+#: `${NAME[idx]<op><word>}` -- the forms `_VAR` cannot name. Restricted to a body with
+#: no nested brace, because a nested expansion is not resolvable from text anyway and a
+#: greedy match there would swallow the wrong closing brace.
+_VAR_OP = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)"
+                     r"(\[[0-9]+\])?"
+                     r"([#%/:^,+=-][^{}]*)?\}")
+
+#: A pattern carrying any of these is a GLOB, and matching it needs the filesystem
+#: semantics this hook deliberately does not have. Such an expansion is left unresolved.
+_GLOB_CHARS = set("*?[]")
+
+
+def _array_elements(value: str) -> list:
+    """Elements of an array assignment `(a "b c" d)`, or [] if it is not one."""
+    v = value.strip()
+    if not (v.startswith("(") and v.endswith(")")):
+        return []
+    return [t for t, _q in tokens(v[1:-1])]
+
+
+def _apply_op(name: str, idx, op: str, assigns: dict) -> str:
+    """bash's value for one expansion, or None when text alone cannot say.
+
+    Returning None is not a failure -- it routes the token to the conservative path,
+    which is the correct answer for `${V%/*}` (a glob) or `${V:2:5}` (an offset).
+    """
+    known = name in assigns
+    value = assigns.get(name, "")
+    if idx is not None:
+        elems = _array_elements(value)
+        n = int(idx[1:-1])
+        if not elems or n >= len(elems):
+            return None
+        value, known = elems[n], True
+    elif known:
+        elems = _array_elements(value)
+        if elems:                      # `A=(x y)` used as plain `$A` is element 0
+            value = elems[0]
+
+    if not op:
+        return value if known else None
+
+    kind, rest = op[0], op[1:]
+    if kind == ":" and rest[:1] in ("-", "=", "+", "?"):
+        kind, rest = rest[0], rest[1:]
+        known = known and value != ""      # `:-` also treats EMPTY as unset
+    if kind in ("-", "="):
+        return value if known else rest
+    if kind == "+":
+        return rest if known else ""
+    if kind == "?":
+        return value if known else None
+    if not known:
+        return None
+    if kind in ("#", "%"):
+        greedy = rest[:1] == kind
+        pat = rest[1:] if greedy else rest
+        if set(pat) & _GLOB_CHARS or not pat:
+            return None
+        if kind == "%":
+            return value[:-len(pat)] if value.endswith(pat) else value
+        return value[len(pat):] if value.startswith(pat) else value
+    if kind == "/":
+        every = rest[:1] == "/"
+        body = rest[1:] if every else rest
+        pat, sep, rep = body.partition("/")
+        if not pat or set(pat) & _GLOB_CHARS:
+            return None
+        return value.replace(pat, rep) if every else value.replace(pat, rep, 1)
+    return None                            # ^ , : offsets -- not reproducible from text
+
+
 def resolve(tok: str, assigns: dict[str, str]) -> str:
     """Substitute what this command itself assigned. Text is all a hook can see, so
     this is the most that could ever be resolved."""
     def sub(m):
         name = m.group(1) or m.group(2)
         return assigns.get(name, m.group(0))
+
+    def sub_op(m):
+        got = _apply_op(m.group(1), m.group(2), m.group(3) or "", assigns)
+        return m.group(0) if got is None else got
+
     prev = None
     out = tok
     for _ in range(5):                       # bounded: nested vars, never a loop
-        prev, out = out, _VAR.sub(sub, out)
+        prev = out
+        out = _VAR_OP.sub(sub_op, _VAR.sub(sub, out))
         if out == prev:
             break
     return expand_home(out)
@@ -468,7 +624,7 @@ ROOT_VARS = {"X4_GAME": "game", "X4_REFERENCE": "reference", "X4_PROFILE": "prof
 
 
 def has_unresolved(tok: str) -> bool:
-    return bool(_VAR.search(tok) or _SUBST.search(tok))
+    return bool(_EXPANSION.search(tok) or _SUBST.search(tok))
 
 
 def root_vars_named(tok: str) -> set:
@@ -590,7 +746,11 @@ def heredoc_bodies(cmd: str) -> list[str]:
     for line in cmd.split(chr(10)):
         if cur is not None:
             if line.strip() == term or line.strip() == term + ";":
-                if verb(_unwrap(opener)) in _SHELLS:
+                # ANY segment of the opener, not just the first. The opener is a
+                # pipeline: for `cat <<EOF | bash` the first verb is `cat`, so asking
+                # only that one stripped the body as file payload and the shell on the
+                # other end of the pipe ran it unseen.
+                if any(verb(_unwrap(sg)) in _SHELL_SINKS for sg in segments(opener)):
                     out.append(chr(10).join(cur))
                 cur, term, opener = None, None, ""
             else:
@@ -599,7 +759,8 @@ def heredoc_bodies(cmd: str) -> list[str]:
         t = heredoc_marker(line)
         if t:
             term, cur, opener = t, [], line
-    if cur is not None and verb(_unwrap(opener)) in _SHELLS:
+    if cur is not None and any(verb(_unwrap(sg)) in _SHELL_SINKS
+                              for sg in segments(opener)):
         out.append(chr(10).join(cur))   # unterminated: still what the shell would run
     return out
 
@@ -907,6 +1068,11 @@ def cwd_track(cmd: str, base: str = "") -> list:
     needs a real parser, and for a guard the relocated directory is the safe error.
     """
     out, cwd, stack = [], base, []
+    #: The directory is what every later RELATIVE operand is judged against, so an
+    #: operand read as literal text here disarms the path rules for the rest of the
+    #: command -- `cd "$FZ" && rm -rf extensions` walked through a hard block on that.
+    #: Every other rule resolves before matching; this one did not.
+    assigns = assignments(cmd)
     for seg in segments(cmd):
         out.append((seg, cwd))
         v = verb(seg)
@@ -916,7 +1082,16 @@ def cwd_track(cmd: str, base: str = "") -> list:
                 if v == "pushd":
                     stack.append(cwd)
                 # `cd -` returns somewhere this hook cannot know; refuse to guess.
-                cwd = "" if ops[0] == "-" else join_cwd(cwd, ops[0])
+                if ops[0] == "-":
+                    cwd = ""
+                else:
+                    # RESOLVED, then joined exactly as before. Blanking the directory
+                    # when the target stays unresolved looks more careful and is not:
+                    # MEASURED 2026-09-02, `cd <game> && cd "$NOPE" && rm -rf extensions`
+                    # went deny -> allow under that rule, because the sticky join keeps
+                    # the operand under the root we last knew about. Leaving the join
+                    # alone makes this change a pure tightening.
+                    cwd = join_cwd(cwd, resolve(ops[0], assigns))
         elif v == "popd" and stack:
             cwd = stack.pop()
     return out
@@ -1122,6 +1297,75 @@ _SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
 _DASH_C = re.compile(r"^-[A-Za-z]*c[A-Za-z]*$")
 
 
+#: Verbs that RUN what arrives on stdin. `source` and `.` re-run a file or stream in
+#: the CURRENT shell, which is the same thing for our purposes.
+_SHELL_SINKS = tuple(_SHELLS) + ("source", ".")
+
+
+def _reads_stdin_program(seg: str) -> bool:
+    """A shell with no script to run, so its program can only come from stdin.
+
+    Deliberately narrow. `bash script.sh` and `bash -c '...'` both have somewhere else
+    to get their program, and pairing those with a nearby `echo` would invent a command
+    the user never piped -- a false DENIAL, which is worse here than a miss.
+    """
+    toks = [t for t, _q in tokens(seg)]
+    if not toks or _verb_name(toks[0]) not in _SHELL_SINKS:
+        return False
+    rest = _drop_redirects(toks[1:])
+    for t in rest:
+        if _DASH_C.match(t):
+            return False                       # -c carries its own program
+        if not t.startswith("-"):
+            return False                       # a script file, or /dev/stdin's operand
+    return True
+
+
+#: Redirect operators that CONSUME the following word. A redirect is not an operand, and
+#: reading one as a script file is what kept `bash <<< '<cmd>'` an ALLOW after the rest of
+#: C2 was fixed -- the here-string is the program, so the single carrier whose payload is
+#: plainly visible in the command text was the one we declined to inspect.
+_REDIR_WORD = ("<<<", "<", ">", ">>", "<>", ">|", "<<", "<<-")
+
+
+def _drop_redirects(toks: list[str]) -> list[str]:
+    """Tokens with redirect operators and the words they consume removed.
+
+    Handles both spellings: separated (`<<< payload`) and attached (`<<<payload`,
+    `>file`), plus an fd prefix (`2>err`, `1>&2`). Deliberately syntactic only -- it
+    answers "is this token an operand", never "where does the data go".
+    """
+    out = []
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        core = t.lstrip("0123456789")          # an fd prefix: 2>err, 1>&2
+        hit = ""
+        for op in _REDIR_WORD:                 # longest first, so <<< beats <<
+            if core.startswith(op) and len(op) > len(hit):
+                hit = op
+        if hit:
+            if core == hit:
+                i += 2                         # `<<< payload` -- the word is consumed
+            else:
+                i += 1                         # `<<<payload` -- attached, nothing follows
+            continue
+        out.append(t)
+        i += 1
+    return out
+
+
+def _here_string(seg: str) -> str:
+    """The operand of a `<<<` here-string, or ''."""
+    toks = [t for t, _q in tokens(seg)]
+    for i, t in enumerate(toks):
+        if t == "<<<" and i + 1 < len(toks):
+            return toks[i + 1]
+        if t.startswith("<<<") and len(t) > 3:
+            return t[3:]
+    return ""
+
+
 def _inner_commands(cmd: str) -> list[str]:
     """Command strings hidden inside a wrapper, so the rules see them too.
 
@@ -1129,7 +1373,28 @@ def _inner_commands(cmd: str) -> list[str]:
     command, so anything they carry is invisible to every rule that inspects segments.
     """
     out = []
-    for seg in segments(cmd):
+    segs = segments(cmd)
+    for n, seg in enumerate(segs):
+        # `echo '<cmd>' | bash` and `printf '%s' '<cmd>' | sh`. The consumer must have
+        # NO script operand (see _reads_stdin_program) and the producer must be an echo
+        # or printf of a literal, so an ordinary `echo ... > file && bash script.sh`
+        # cannot pair by accident.
+        if n and _reads_stdin_program(seg):
+            prev = segs[n - 1]
+            if verb(prev) in ("echo", "printf"):
+                lit = [t for t, q in tokens(prev)[1:] if q and not t.startswith("-")]
+                for piece in lit:
+                    if piece.strip() and piece not in ("%s", "%s" + chr(92) + "n"):
+                        out.append(piece)
+        # `bash <<< '<cmd>'` -- the here-string IS the program. A SEPARATE `if`, not an
+        # arm of the chain below: this lived as an `elif` for one measurement and never
+        # ran, because `bash` matches the `-c` arm first and that arm appends nothing when
+        # there is no `-c`. A shell can be handed a program by `-c` AND on stdin in the
+        # same command, so they were never alternatives to begin with.
+        if _reads_stdin_program(seg):
+            hs = _here_string(seg)
+            if hs:
+                out.append(hs)
         v = verb(seg)
         toks = tokens(seg)
         if v in _SHELLS:
@@ -1268,11 +1533,14 @@ def facts(payload: dict, roots: dict) -> dict:
     # PARSE THE COMMANDS, NOT THE PROSE. Heredoc bodies are data (a body line reading
     # `rm -rf <game>` is text being written, and used to hard-deny), and a `#` comment is
     # not a command at all -- while an apostrophe inside one blinded every rule after it.
-    body = strip_comments(strip_heredocs(cmd))
+    # Line continuations FIRST: bash splices them before it parses anything, and
+    # treating one as a separator cost every verb-keyed rule its operand (C1).
+    spliced = join_continuations(cmd)
+    body = strip_comments(strip_heredocs(spliced))
     # Heredoc bodies come from the RAW command: strip_heredocs has already removed
     # them from `body`, and only the ones opened by a shell are commands at all.
     all_cmds, carriers_truncated = carried_commands(
-        body, [strip_comments(h) for h in heredoc_bodies(cmd)])
+        body, [strip_comments(h) for h in heredoc_bodies(spliced)])
     assigns = assignments(body)
     ncmd = norm(cmd)
 

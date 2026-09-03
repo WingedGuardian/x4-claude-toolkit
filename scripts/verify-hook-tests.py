@@ -175,7 +175,7 @@ MUTANTS = [
      "        elif False:\n            yield c, False\n            i += 1\n            yield s[i], False",
      "test_an_escaped_apostrophe_does_not_blind_the_next_command"),
     ("comments are stripped before parsing",
-     "    body = strip_comments(strip_heredocs(cmd))",
+     "    body = strip_comments(strip_heredocs(spliced))",
      "    body = strip_heredocs(cmd)",
      "test_comment_apostrophe_does_not_hide_a_game_delete"),
     ("the string rules read the CLEANED text, not the raw command",
@@ -185,7 +185,7 @@ MUTANTS = [
     # `bash -n`. It is covered E2E in scripts/test-hooks.sh -- a mutation of the real
     # shell parser is not something this gate can plant.
     ("a heredoc BODY is data for the operand rules too",
-     '    all_cmds, carriers_truncated = carried_commands(\n        body, [strip_comments(h) for h in heredoc_bodies(cmd)])',
+     '    all_cmds, carriers_truncated = carried_commands(\n        body, [strip_comments(h) for h in heredoc_bodies(spliced)])',
      "    all_cmds, carriers_truncated = carried_commands(cmd, [])",
      "test_a_delete_inside_a_heredoc_body_is_not_a_delete"),
     ("a comment keeps its newline, which is a separator",
@@ -232,15 +232,15 @@ MUTANTS = [
      "    return [p for p in parts if p.strip()]",
      "test_subshell_cd_relocates"),
     ("command substitution counts as unresolved",
-     "    return bool(_VAR.search(tok) or _SUBST.search(tok))",
-     "    return bool(_VAR.search(tok))",
+     "    return bool(_EXPANSION.search(tok) or _SUBST.search(tok))",
+     "    return bool(_EXPANSION.search(tok))",
      "test_command_substitution_counts_as_unresolved"),
     ("a root named only by its ENV VAR is still that root",
      "                if conservative and key in root_vars_named(raw):\n                    return True",
      "                if False:\n                    return True",
      "test_delete_of_a_root_env_var_by_name"),
     ("bash -c is parsed too",
-     '    all_cmds, carriers_truncated = carried_commands(\n        body, [strip_comments(h) for h in heredoc_bodies(cmd)])',
+     '    all_cmds, carriers_truncated = carried_commands(\n        body, [strip_comments(h) for h in heredoc_bodies(spliced)])',
      "    all_cmds, carriers_truncated = [body], False",
      "test_delete_inside_bash_c_is_seen"),
 
@@ -275,8 +275,52 @@ MUTANTS = [
      "            k = 0",
      "test_a_wrapper_may_precede_eval"),
     ("only a SHELL runs its heredoc body",
-     "                if verb(_unwrap(opener)) in _SHELLS:", "                if True:",
+     "                if any(verb(_unwrap(sg)) in _SHELL_SINKS for sg in segments(opener)):",
+     "                if True:",
      "test_a_python_heredoc_does_NOT"),
+    # ---- round 3: a command reaches the shell without being seen -------------
+    ("a line continuation is spliced, not treated as a separator",
+     "    spliced = join_continuations(cmd)", "    spliced = cmd",
+     "test_the_game_root"),
+    ("a continuation inside SINGLE quotes stays literal",
+     '        if q == "' + "'" + '":' + NL
+     + '            if c == "' + "'" + '":',
+     '        if False:' + NL
+     + '            if c == "' + "'" + '":',
+     "test_inside_SINGLE_quotes_it_stays_literal"),
+    ("a shell with no script operand reads its program from stdin",
+     "    rest = _drop_redirects(toks[1:])",
+     "    return False" + NL + "    rest = _drop_redirects(toks[1:])",
+     "test_a_here_string"),
+    ("a redirect is not an operand",
+     "    out = []" + NL + "    i = 0" + NL + "    while i < len(toks):",
+     "    return list(toks)" + NL + "    out = []" + NL + "    i = 0" + NL
+     + "    while i < len(toks):",
+     "test_separated_and_attached_here_strings"),
+    ("ANY parameter expansion is unresolved, not just the two _VAR names",
+     "    return bool(_EXPANSION.search(tok) or _SUBST.search(tok))",
+     "    return bool(_VAR.search(tok) or _SUBST.search(tok))",
+     "test_suffix_strip"),
+    ("coproc is a reserved word",
+     '"coproc", "[[", "]]"}', '"[[", "]]"}',
+     "test_coproc_does_not_hide_a_delete"),
+    # ---- round 3b: resolution, not just grammar ------------------------------
+    ("an expansion carrying an operator is resolved",
+     "        out = _VAR_OP.sub(sub_op, _VAR.sub(sub, out))",
+     "        out = _VAR.sub(sub, out)",
+     "test_default_when_unset"),
+    ("a GLOB pattern is NOT guessed at",
+     "        if set(pat) & _GLOB_CHARS or not pat:",
+     "        if not pat:",
+     "test_a_GLOB_pattern_is_left_unresolved"),
+    ("an array keeps its quoting when captured",
+     '        for m in re.finditer(r"(?:^|\\s)([A-Za-z_][A-Za-z0-9_]*)=\\(", seg):',
+     '        for m in []:',
+     "test_a_spaced_path_stays_ONE_element"),
+    ("cd resolves its operand",
+     "                    cwd = join_cwd(cwd, resolve(ops[0], assigns))",
+     "                    cwd = join_cwd(cwd, ops[0])",
+     "test_a_plain_variable"),
     ("carriers are followed more than one level",
      "    for _ in range(_MAX_CARRIER_DEPTH):", "    for _ in range(0):",
      "test_a_shell_inside_a_shell"),
@@ -363,6 +407,20 @@ def main() -> int:
                   file=sys.stderr)
             return 2
         print(f"baseline: {ran} tests green\n")
+
+        # A target test that does not exist reports "NOT CAUGHT" -- the same words as
+        # a real coverage hole, and the message you would act on by writing a test that
+        # is already there. MEASURED 2026-09-02: five mutants added that day named test
+        # CLASSES, which unittest never prints in a `FAIL:` line, and all five read as
+        # coverage holes. The direction is safe, so this is legibility, not a bypass.
+        source = (HOOKS / "test_hook_facts.py").read_text(encoding="utf-8")
+        missing = [t for _l, _o, _n, t in MUTANTS if ("def " + t + "(") not in source]
+        if missing:
+            print("REFUSING: %d mutant target(s) name no test in test_hook_facts.py: %s"
+                  % (len(missing), ", ".join(sorted(set(missing)))), file=sys.stderr)
+            print("  (a target must be a test METHOD name -- unittest prints no class "
+                  "name in a FAIL: line)", file=sys.stderr)
+            return 2
 
         bad = 0
         print(f"{'MUTATION':<42} {'target test':<12} verdict")

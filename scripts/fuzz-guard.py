@@ -451,6 +451,25 @@ def _m_carry_procsub(c):
     return "cat <(" + c + ")"
 
 
+def _reoperand(cmd, wrap, assign=None):
+    """Replace the last DOUBLE-QUOTED operand with wrap(<operand>).
+
+    Returns the command unchanged when there is no quoted operand -- a mutator that
+    invents one would change what the seed tests, and an unchanged mutant is scored as
+    "kept its seed's verdict" rather than as a pass.
+    """
+    j = cmd.rfind(DQ)
+    if j <= 0:
+        return cmd
+    i = cmd.rfind(DQ, 0, j)
+    if i < 0:
+        return cmd
+    inner = cmd[i + 1:j]
+    out = cmd[:i] + DQ + wrap(inner) + DQ + cmd[j + 1:]
+    if assign:
+        out = (assign % inner) + "; " + out
+    return out
+
 def _m_carry_shell_heredoc(c):
     return "bash <<" + Q + "SHX" + Q + NL + c + NL + "SHX"
 
@@ -504,6 +523,69 @@ def _m_verb_windows_path(c):
     return _retitle(c, lambda v: DQ + "C:" + BS + "tools" + BS + v + ".exe" + DQ)
 
 
+# --- STDIN axis: a shell whose program never appears as an operand -------------
+# Each of these hands a shell a command through a channel the parse pass has to model
+# separately, because the text is data everywhere else in the file.
+def _m_stdin_echo_pipe(c):
+    return "echo " + Q + c.replace(Q, Q + DQ + Q + DQ + Q) + Q + " | bash"
+
+
+def _m_stdin_printf_pipe(c):
+    return ("printf " + Q + "%s" + Q + " " + Q + c.replace(Q, Q + DQ + Q + DQ + Q)
+            + Q + " | sh")
+
+
+def _m_stdin_heredoc_pipe(c):
+    return "cat <<" + Q + "PIPEX" + Q + " | bash" + NL + c + NL + "PIPEX"
+
+
+def _m_stdin_here_string(c):
+    return "bash <<< " + Q + c.replace(Q, Q + DQ + Q + DQ + Q) + Q
+
+
+def _m_stdin_dash_s(c):
+    return "bash -s <<< " + Q + c.replace(Q, Q + DQ + Q + DQ + Q) + Q
+
+
+def _m_stdin_dev_stdin(c):
+    return "source /dev/stdin <<" + Q + "SRCX" + Q + NL + c + NL + "SRCX"
+
+
+# --- SPLICE axis: a line continuation, which bash removes before parsing -------
+def _m_splice_before_operand(c):
+    """Break at the FIRST space after the verb -- where a long command wraps."""
+    i = c.find(" ")
+    if i < 0:
+        return c
+    return c[:i] + " " + BS + NL + "  " + c[i + 1:]
+
+
+def _m_splice_before_flag(c):
+    i = c.find(" -")
+    if i < 0:
+        return _m_splice_before_operand(c)
+    return c[:i] + " " + BS + NL + "  " + c[i + 1:]
+
+
+# --- EXPANSION axis: an operand the guard cannot resolve, but believed it had ---
+def _m_expand_suffix_strip(c):
+    """Wrap the LAST quoted operand in an expansion carrying an operator."""
+    return _reoperand(c, lambda v: "${FZ%" + "QQ}", assign="FZ=" + DQ + "%s" + "QQ" + DQ)
+
+
+def _m_expand_default(c):
+    return _reoperand(c, lambda v: "${FZ_UNSET:-" + v + "}")
+
+
+def _m_expand_array(c):
+    return _reoperand(c, lambda v: "${FZA[0]}", assign="FZA=(" + DQ + "%s" + DQ + ")")
+
+
+# --- RESERVED axis ------------------------------------------------------------
+def _m_reserved_coproc(c):
+    return "coproc { " + c + "; }"
+
+
 MUTATORS = [
     ("comment with an apostrophe", _m_comment_apostrophe),
     ("comment with a quote", _m_comment_quote),
@@ -533,6 +615,26 @@ MUTATORS = [
     ("WRAPPER exec", _m_wrap_exec),
     ("WRAPPER setsid", _m_wrap_setsid),
     ("WRAPPER nice", _m_wrap_nice),
+    # --- STDIN axis -----------------------------------------------------------
+    ("STDIN echo into bash", _m_stdin_echo_pipe),
+    ("STDIN printf into sh", _m_stdin_printf_pipe),
+    ("STDIN heredoc into bash", _m_stdin_heredoc_pipe),
+    ("STDIN here-string", _m_stdin_here_string),
+    ("STDIN here-string with -s", _m_stdin_dash_s),
+    ("STDIN /dev/stdin", _m_stdin_dev_stdin),
+
+    # --- SPLICE axis ----------------------------------------------------------
+    ("SPLICE continuation before the operand", _m_splice_before_operand),
+    ("SPLICE continuation before a flag", _m_splice_before_flag),
+
+    # --- EXPANSION axis -------------------------------------------------------
+    ("EXPANSION suffix strip", _m_expand_suffix_strip),
+    ("EXPANSION default value", _m_expand_default),
+    ("EXPANSION array index", _m_expand_array),
+
+    # --- RESERVED axis --------------------------------------------------------
+    ("RESERVED coproc", _m_reserved_coproc),
+
     ("VERB absolute path", _m_verb_abspath),
     ("VERB .exe suffix", _m_verb_exe),
     ("VERB ansi-c quoted", _m_verb_ansi_c),
@@ -656,8 +758,14 @@ def resolve_roots():
 #: cannot see could never have failed.
 _HOLES = [
     ("no comment stripping",
-     "    body = strip_comments(strip_heredocs(cmd))",
+     "    body = strip_comments(strip_heredocs(spliced))",
      "    body = cmd"),
+    # The pre-fix scanner also split on a line continuation instead of splicing it, so
+    # `rm -rf \<NL> "<root>"` lost its operand and every verb-keyed rule with it. The
+    # control plants that back: 6 of the 12 seeds reproduce it unaided.
+    ("no continuation splicing",
+     "    spliced = join_continuations(cmd)",
+     "    spliced = cmd"),
     ("no escape handling",
      "        elif c == chr(92) and i + 1 < len(s):" + NL
      + "            yield c, False" + NL
