@@ -126,6 +126,28 @@ Found the hard way: an `install.sh --unpack` re-unpacked a locked reference tree
 without a word. The script now refuses (rc 2) and names the override,
 `X4_FORCE_UNPACK=1`.
 
+### Fixed — `--method global` rewrote your config with no backup
+
+The third instance of "installing destroys the user's config" in this release, and the one
+that got past the first two fixes because each of those was applied at a **call site**.
+
+`copy_toolkit` backs `x4-paths.env` up and puts it back, which covers `in-game` and
+`separate`. `--method global` never calls `copy_toolkit` — it goes straight to
+`write_paths_env`, outside that wrapper — so it rewrote the file with no backup at all.
+
+Found by accident, on this repository: a `--method global` smoke run with
+`--toolkit <the checkout>` replaced that checkout's own config with sandbox paths and left
+no `.bak` beside it. Five cold-clone tests then failed, because the reference path resolved
+to a directory that does not exist and the `needs_reference` skip guarding them therefore
+did not fire — a nice demonstration that a skip condition is a claim about the
+environment, not a constant.
+
+The backup now lives **inside `write_paths_env`**, where every caller gets it and a fourth
+call site cannot be added without one — the same reasoning that already put the
+carry-over of unowned keys (notably `X4_NEXUS_KEY`) in that function rather than at its
+callers. A backup that cannot be written now warns instead of staying silent, because the
+message saying it was kept is worse than no message if it was not.
+
 ### Fixed — six spellings of an action the guard already refused, and one false positive
 
 None of these needed a new concept. Each is a set or a comparison that had been written

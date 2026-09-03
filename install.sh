@@ -228,6 +228,30 @@ write_paths_env() {  # write_paths_env TOOLKIT_DIR
   local t="$1" f="$1/.claude/x4-paths.env"
   mkdir -p "$1/.claude"
 
+  # BACKED UP HERE, not at the call sites. `copy_toolkit` backs this file up and puts it
+  # back, which covers --method in-game and --method separate; --method global never
+  # calls copy_toolkit and went straight to this function, so it rewrote the file with no
+  # backup at all.
+  #
+  # MEASURED 2026-09-02 on this repository, by accident: a `--method global` smoke run
+  # with `--toolkit <the repo>` replaced the checkout's own config with sandbox paths and
+  # left no .bak beside it. Five cold tests then failed, because the reference path
+  # resolved to a directory that does not exist and the skip guarding them did not fire.
+  #
+  # Third instance of "installing destroys the user's config" in this release. The first
+  # two were fixed by adding a backup at one call site each; putting it here means a
+  # fourth caller cannot be added without one.
+  if [ -f "$f" ]; then
+    local _stamp; _stamp="$(date +%Y%m%d-%H%M%S)"
+    if cp "$f" "$f.bak-$_stamp" 2>/dev/null; then
+      echo "  [note] kept your previous x4-paths.env as x4-paths.env.bak-$_stamp"
+    else
+      # A backup that silently did not happen is worse than none, because the message
+      # above would have said it did.
+      echo "  WARNING: could not back up $f -- it is about to be rewritten." >&2
+    fi
+  fi
+
   # A trailing separator is not cosmetic here. The value lands inside a bash
   # double-quoted string, so a path ending in a backslash writes a line whose quote
   # never closes; `set -a; . "$cfg"` aborts on it and EVERY X4_* comes out unset while
