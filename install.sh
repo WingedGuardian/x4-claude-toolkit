@@ -149,6 +149,50 @@ MISSING=""
 #: they drift, and the whole defect here was one of the passes not running.
 X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/x4validate/.mutation-probe-pristine"
 
+#: Copy $SRC/REL to DEST/REL, never descending into a pruned relative path.
+#:
+#: The virtualenv used to be copied in full (1,407 files, 38 MB) and deleted on
+#: arrival, while the CHANGELOG said it no longer travels. Worse than wasteful:
+#: under `set -e` a failure among those copies aborts BEFORE both the prune and
+#: the config restore, so the most expensive thing copied was also the thing most
+#: likely to break the install -- and nothing wanted it copied.
+#:
+#: `cp -r` has no portable exclude. rsync is absent from Git Bash and from a stock
+#: macOS, and tar's --exclude differs between GNU tar and bsdtar, so the walk is
+#: done here -- and ONLY where needed: a directory containing no pruned path is
+#: still copied in one cp, so only tools/ is ever descended into.
+#:
+#: `cp -r "$src/." "$dest/$rel/"`, not `cp -r "$src" "$dest/"`: the second copies a
+#: directory INTO an existing directory of the same name on an upgrade, which is
+#: how you get .claude/.claude. This form merges, and is idempotent.
+copy_item() {   # copy_item REL DEST
+  # `src` is assigned on its OWN line. `local a="$1" b="$SRC/$a"` does not work: bash
+  # expands every word of the `local` command before the builtin assigns any of them,
+  # so `$a` is still unset there -- and under `set -u` that is a hard "unbound
+  # variable", which is how the upgrade case failed the moment this was added.
+  local rel="$1" dest="$2" junk needs_walk=0 child src
+  src="$SRC/$rel"
+  for junk in $X4_COPY_PRUNE; do
+    [ "$junk" = "$rel" ] && return 0
+    case "$junk" in "$rel"/*) needs_walk=1 ;; esac
+  done
+  if [ ! -d "$src" ] || [ "$needs_walk" = 0 ]; then
+    mkdir -p "$dest/$(dirname "$rel")"
+    if [ -d "$src" ]; then
+      mkdir -p "$dest/$rel"
+      cp -r "$src/." "$dest/$rel/"
+    else
+      cp "$src" "$dest/$rel"
+    fi
+    return 0
+  fi
+  mkdir -p "$dest/$rel"
+  for child in "$src"/* "$src"/.[!.]* "$src"/..?*; do
+    [ -e "$child" ] || continue
+    copy_item "$rel/$(basename "$child")" "$dest"
+  done
+}
+
 copy_toolkit() {
   refuse_if_dry_run "copying the toolkit into" "$1"  # copy_toolkit DEST  — copy tracked toolkit files (never game data / local config)
   local dest="$1"; mkdir -p "$dest/.claude"
@@ -187,7 +231,7 @@ copy_toolkit() {
     # NAMED, never silently skipped -- that silence is how the absent mods/ folder
     # survived a whole release.
     [ -e "$SRC/$item" ] || { MISSING="$MISSING $item"; continue; }
-    cp -r "$SRC/$item" "$dest/"
+    copy_item "$item" "$dest"
   done
   # A VIRTUALENV MUST NOT TRAVEL. uv hardlinks package files from a shared cache,
   # so once the source and the destination have each been synced the same file has
@@ -521,23 +565,33 @@ require_direction() {
 }
 
 #: announce_target DEST -- say what is about to happen, before it happens.
+#: Says WHERE, and nothing else. It used to also perform the dry-run exit with a
+#: listing of the items a copy would move -- two unrelated jobs, and because the
+#: second only makes sense where a copy happens, the first was wired into the COPY
+#: branch too. So `global`, and a `separate` install landing in place, reached the
+#: config writer without ever saying where they were writing, while the CHANGELOG
+#: claimed the destination is printed 'in every mode'.
 announce_target() {
-  local dest="$1"
   echo
   echo "  About to write the toolkit into:"
-  echo "      $dest"
-  if [ "$DRY_RUN" = 1 ]; then
-    echo "  --dry-run: nothing will be written. Items that would be copied:"
-    local item
-    for item in .claude tools bin scripts mods CLAUDE.md KNOWLEDGEBASE.md README.md \
-                CHANGELOG.md LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt \
-                .gitignore .gitattributes; do
-      [ -e "$SRC/$item" ] && echo "      $item"
-    done
-    echo
-    echo "=== dry run complete: nothing was changed ==="
-    exit 0
-  fi
+  echo "      $1"
+}
+
+#: The dry-run listing, for the arms where a COPY would actually happen. The gate
+#: itself does not depend on this: refuse_if_dry_run sits inside all three writers,
+#: so an arm that copies nothing still stops before it writes.
+announce_copy_plan() {
+  [ "$DRY_RUN" = 1 ] || return 0
+  echo "  --dry-run: nothing will be written. Items that would be copied:"
+  local item
+  for item in .claude tools bin scripts mods CLAUDE.md KNOWLEDGEBASE.md README.md \
+              CHANGELOG.md LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt \
+              .gitignore .gitattributes; do
+    [ -e "$SRC/$item" ] && echo "      $item"
+  done
+  echo
+  echo "=== dry run complete: nothing was changed ==="
+  exit 0
 }
 
 #: Strip a trailing path separator, which otherwise makes a STRING comparison lie.
@@ -610,11 +664,12 @@ case "$METHOD" in
   in-game)
     [ -n "$GAME" ] || { echo "ERROR: in-game needs --game"; exit 1; }
     TOOLKIT="$GAME"
+    announce_target "$TOOLKIT"
     # Only when a COPY would actually happen. Re-running from inside the toolkit
     # folder overwrites nothing, so it needs no direction.
     if ! same_dir "$SRC" "$TOOLKIT"; then
       require_direction "$TOOLKIT" "$GAME_NAMED"
-      announce_target "$TOOLKIT"
+      announce_copy_plan
       copy_toolkit "$TOOLKIT"
     fi
     write_paths_env "$TOOLKIT"
@@ -623,15 +678,17 @@ case "$METHOD" in
     [ -n "$TOOLKIT" ] || TOOLKIT="$SRC"
     ask TOOLKIT "Toolkit folder" "$TOOLKIT"
     TOOLKIT="$(strip_trailing_sep "$TOOLKIT")"
+    announce_target "$TOOLKIT"
     if ! same_dir "$SRC" "$TOOLKIT"; then
       require_direction "$TOOLKIT" "$TOOLKIT_NAMED"
-      announce_target "$TOOLKIT"
+      announce_copy_plan
       copy_toolkit "$TOOLKIT"
     fi
     write_paths_env "$TOOLKIT"
     ;;
   global)
     [ -n "$TOOLKIT" ] || TOOLKIT="$SRC"
+    announce_target "$TOOLKIT"
     write_paths_env "$TOOLKIT"
     install_global_claude
     ;;

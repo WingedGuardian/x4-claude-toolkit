@@ -464,3 +464,59 @@ def test_a_component_ref_naming_a_macro_defined_NOWHERE_still_gates(tmp_path):
     errs = _completeness_component_errors(tmp_path, define_macro=False)
     assert errs, "a ref to a macro that exists nowhere must still be reported"
     assert "missing 'component'" in str(getattr(errs[0], "message", errs[0]))
+
+
+# --- the DEGRADED completeness path, which nothing reached ---------------------------
+#
+# `_completeness_component_errors` above asserts `not report.skipped`, so every case
+# built on it is a NON-degraded one by construction. That is right for what those tests
+# are about and it left the degraded branch untested: the mutation gate reported the
+# None-preservation as having no test that could detect its removal.
+#
+#   completeness_defs = (None if macro_def_set is None else EntityDefs(...))
+#
+# None means "the index could not be built", and `_refs` answers that with a presence
+# check alone. EntityDefs has no such state -- handed one, it reports every reference
+# it cannot resolve as MISSING. So replacing None with EntityDefs turns an unreadable
+# index into a wall of false "missing" errors about references that are perfectly fine.
+
+def test_an_UNREADABLE_index_does_not_turn_real_references_into_missing_ones(
+        tmp_path, monkeypatch):
+    """The discriminating fixture: a macro defined NOWHERE.
+
+    With None preserved, `_refs` checks presence alone and stays quiet. With
+    EntityDefs substituted, the same reference becomes an error -- which is the
+    behaviour an unreadable index must NOT produce, because the index being
+    unreadable says nothing about whether the reference is real.
+    """
+    ref, mod = _completeness_tree(tmp_path, define_macro=False,
+                                  register_in_index=False)
+    # The degraded state itself: collect_macro_defs answers None when it could not
+    # build the effective index. Monkeypatched rather than simulated by corrupting a
+    # file, so the test pins the CONTRACT (None) instead of one way of reaching it.
+    monkeypatch.setattr(_check, "collect_macro_defs",
+                        lambda *a, **k: None)
+    cfg = _merge.Config(reference=ref)
+    report = _check.Report()
+    _check.check_completeness(mod, cfg, report, "ware:my_ware", "ware:vanilla_thing")
+    component_errors = [e for e in report.errors
+                        if "component" in str(getattr(e, "message", e))]
+    assert component_errors == [], (
+        "an unreadable macro index produced 'missing component' errors; None was not "
+        f"preserved: {component_errors}")
+
+
+def test_the_NON_degraded_path_still_reports_a_genuinely_missing_component(tmp_path):
+    """The twin that stops the test above from being satisfiable by silence.
+
+    With a readable index, a macro defined nowhere IS an error -- so the quiet in the
+    degraded case is a decision about an unreadable index, not the check being off.
+    """
+    ref, mod = _completeness_tree(tmp_path, define_macro=False,
+                                  register_in_index=False)
+    cfg = _merge.Config(reference=ref)
+    report = _check.Report()
+    _check.check_completeness(mod, cfg, report, "ware:my_ware", "ware:vanilla_thing")
+    assert any("component" in str(getattr(e, "message", e)) for e in report.errors), (
+        "a macro defined nowhere did not error even with a readable index; the "
+        "degraded-path test above would then prove nothing")

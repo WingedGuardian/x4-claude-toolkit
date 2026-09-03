@@ -126,12 +126,25 @@ jobs:
         run: |
           set -euo pipefail
           TK="$RUNNER_TEMP/tk-sh"
+          # A REAL SETUP. Without a virtualenv in the source, the venv assertions
+          # below describe a situation that cannot arise, and the collision grep
+          # that used to stand here could never match -- a green with no reachable
+          # red. uv sync creates one, so there is now something that COULD travel.
+          ( cd tools/x4validate && uv sync --frozen >/dev/null 2>&1 ) || true
+          test -d tools/x4validate/.venv || { echo "no source venv: the venv assertions below would be vacuous"; exit 1; }
           bash install.sh --method separate --toolkit "$TK" --yes
           test -f "$TK/.claude/x4-paths.env" || { echo "no x4-paths.env"; exit 1; }
           test -d "$TK/tools/x4validate"     || { echo "no tools/x4validate"; exit 1; }
           test -d "$TK/mods"                 || { echo "no mods/ (x4live extension)"; exit 1; }
-          # (The venv assertion lives on the upgrade run below, where it CAN fail:
-          # the check that stood here named a file nothing creates.)
+          # A VENV MUST NOT TRAVEL. The source has one (asserted above), so this
+          # is a real question with a reachable wrong answer: it goes red if the
+          # copy-time exclusion AND both prunes were removed.
+          #
+          # It does NOT isolate which of the three did the work, and saying so
+          # matters -- what isolates copy-time exclusion is a stubbed cp counting
+          # invocations that name a pruned path (0 on both platforms), which CI
+          # cannot observe. test_installers_agree.py pins that construct instead.
+          test ! -e "$TK/tools/x4validate/.venv" || { echo "a virtualenv travelled into the destination"; exit 1; }
           # The config bash cannot source is the failure the escaping exists to stop.
           ( set -a; . "$TK/.claude/x4-paths.env" ) || { echo "x4-paths.env does not source"; exit 1; }
 
@@ -145,16 +158,17 @@ jobs:
           # LIVE file. `grep -r` over .claude/ is NOT the test: the .bak satisfies it
           # whether or not the live config kept anything.
           printf '\nX4_NEXUS_KEY="CI_MARKER"\n' >> "$TK/.claude/x4-paths.env"
-          # A VENV MUST NOT TRAVEL, and this is where that can be detected. uv
-          # hardlinks package files from a shared cache, so once BOTH trees have
-          # been synced the same file has the same inode in each and `cp -r`
-          # refuses -- hundreds of times, part way through -- and `set -e` then
-          # kills the script before the config restore below.
+          # The upgrade path, with a virtualenv on BOTH sides -- the exact
+          # arrangement that used to break it. uv hardlinks package files from a
+          # shared cache, so once both trees are synced the same file has the same
+          # inode in each and a recursive copy refuses, hundreds of times, part
+          # way through, and `set -e` kills the script before the config restore.
           #
-          # Asserted on the OUTPUT because nothing about the venv's own state can
-          # tell a copied one from a rebuilt one: source and destination
-          # pyvenv.cfg are byte-identical, recording only the interpreter home,
-          # the uv version and the prompt.
+          # The collision grep below is BELT-AND-BRACES, not an independent check:
+          # the destination is pruned BEFORE the copy now, so the collision is no
+          # longer reachable and the grep cannot go red on its own. It stays
+          # because it costs nothing and names the historical failure exactly.
+          ( cd "$TK/tools/x4validate" && uv sync --frozen >/dev/null 2>&1 ) || true
           set +e
           bash install.sh --method separate --toolkit "$TK" --over-existing --yes \
             > "$RUNNER_TEMP/upgrade.log" 2>&1

@@ -5,10 +5,18 @@
 #
 # Resolution order for each value:  .claude/x4-paths.env  >  existing env var  >  default.
 #
-# NB the FILE WINS over the environment, which is the opposite of what this line said
-# until 2026-09-01. install.sh writes bare KEY="value" lines and this file sources them
-# with `set -a`, so a plain assignment overwrites whatever was exported. If you need an
-# env var to take precedence, write the entry as: KEY="${KEY:-value}".
+# THE ENVIRONMENT WINS, matching CLAUDE.md ("env var > x4-paths.env > default") and
+# the Python half (`_paths._layers()` returns [env, file, fallback]).
+#
+# It did not, until 2026-09-03. install.sh writes bare KEY="value" lines and this
+# file sourced them with `set -a`, so a plain assignment overwrote whatever had been
+# exported -- and the note here was rewritten to match that rather than to fix it.
+# A comment corrected to agree with a defect is not a decision.
+#
+# The divergence was the dangerous half: both halves resolve paths for the SAME
+# machine, so exporting X4_GAME pointed x4validate at one install while the guards
+# protecting the game folder read another. Protection and work aimed at different
+# trees, silently.
 # All locations are overridable; see .claude/x4-paths.env.example for the keys.
 
 # Toolkit root (where this toolkit lives).
@@ -26,10 +34,37 @@ if [ -z "${X4_TOOLKIT:-}" ]; then
   fi
 fi
 
+#: The keys whose precedence this file guarantees. Named explicitly rather than
+#: derived from the environment: a `X4_*` glob would also capture whatever a test
+#: harness happens to set, and the guarantee is about the CONFIGURATION, not about
+#: every variable that shares the prefix.
+_X4_ENV_KEYS="X4_TOOLKIT X4_GAME X4_REFERENCE X4_PROFILE X4_DEBUGLOG X4_MODS \
+X4_EXTENSIONS X4_SAVES X4_DOCUMENTS X4_APPMANIFEST X4_NEXUS_KEY XRCATTOOL"
+
 # Load the user's path config if present (KEY=VALUE lines).
 _x4_cfg="${X4_CONFIG:-$X4_TOOLKIT/.claude/x4-paths.env}"
 if [ -f "$_x4_cfg" ]; then
+  # SNAPSHOT, SOURCE, RESTORE. Re-implementing the parser was the alternative and it
+  # is the riskier one: this file is sourced by every hook on every tool call, and
+  # sourcing keeps quoting, escapes, comments and continuations behaving exactly as
+  # they always have. Only the precedence changes.
+  #
+  # A path never contains a newline, so one line per variable is a safe transport.
+  # `IFS='=' read -r k v` puts everything after the FIRST `=` into v, so a value
+  # containing `=` survives.
+  _x4_pre=$(for _k in $_X4_ENV_KEYS; do
+              eval "_v=\${$_k:-}"
+              [ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v"
+            done)
   set -a; . "$_x4_cfg"; set +a
+  if [ -n "$_x4_pre" ]; then
+    while IFS='=' read -r _k _v; do
+      [ -n "$_k" ] && export "$_k=$_v"
+    done <<EOF
+$_x4_pre
+EOF
+  fi
+  unset _x4_pre _k _v
 fi
 
 # Fill only what config/env did not set. (Game/profile/mods/etc. have no safe default — may be empty.)

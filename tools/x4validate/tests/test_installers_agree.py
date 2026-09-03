@@ -115,3 +115,39 @@ def test_both_installers_back_up_the_path_config_before_rewriting_it():
     ps = PS1.read_text(encoding="utf-8")
     assert "x4-paths.env.bak-" in sh, "install.sh no longer backs up the path config"
     assert "x4-paths.env.bak-" in ps, "install.ps1 no longer backs up the path config"
+
+
+def test_neither_installer_copies_the_tree_WHOLESALE():
+    """The virtualenv must be excluded at COPY time, not deleted on arrival.
+
+    It used to be copied in full -- 1,407 files, 38 MB -- and pruned afterwards, while
+    the CHANGELOG said "A virtualenv no longer travels." The waste was the small half:
+    under `set -e` a failure among those copies aborts BEFORE both the prune and the
+    config restore, so the most expensive thing copied was also the likeliest thing to
+    break the install, and nothing wanted it copied.
+
+    An end-state check cannot tell "never copied" from "copied then removed" -- the
+    existing "the SOURCE venv did not travel" case passed before the fix too. So this
+    pins the CONSTRUCT, and the stubbed-copy probes in the scratchpad pin the
+    behaviour: 0 invocations naming .venv on either platform.
+    """
+    sh = SH.read_text(encoding="utf-8")
+    ps = PS1.read_text(encoding="utf-8")
+    assert 'cp -r "$SRC/$item"' not in sh, (
+        "install.sh copies each item wholesale again; the prune list is not consulted "
+        "until after the copy")
+    assert "copy_item()" in sh, "install.sh lost its excluding copy walk"
+    assert "Copy-Item -Recurse -Force -LiteralPath $s -Destination $dest" not in ps, (
+        "install.ps1 copies each item wholesale again")
+    assert "function Copy-Excluding" in ps, "install.ps1 lost its excluding copy walk"
+
+
+def test_the_prune_list_is_named_ONCE_in_each_installer():
+    """Both walks and both prunes read the same list, so an entry cannot be
+    half-applied. Two hand-written copies is how the two passes drifted in the first
+    place -- one of them was not running at all."""
+    sh = SH.read_text(encoding="utf-8")
+    ps = PS1.read_text(encoding="utf-8")
+    assert sh.count("X4_COPY_PRUNE=") == 1, "install.sh defines the prune list twice"
+    assert ps.count("$X4CopyPrune = @(") == 1, (
+        "install.ps1 defines the prune list twice")

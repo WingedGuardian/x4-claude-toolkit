@@ -42,9 +42,6 @@ if (-not $Reference) { $Reference  = $env:X4_REFERENCE }
 if (-not $Extensions){ $Extensions = $env:X4_EXTENSIONS }
 if (-not $XRCatTool) { $XRCatTool  = $env:XRCATTOOL }
 
-# UTF-8 WITHOUT BOM, identical under Windows PowerShell 5.1 and pwsh 7. 5.1's
-# -Encoding UTF8 writes a BOM, which bash reads as a command when it sources
-# x4-paths.env - the whole bash half of the toolkit then fails on line 1.
 # THE DRY-RUN GATE. Called from every function that WRITES, never from the
 # dispatch -- the same placement as refuse_if_dry_run in install.sh, and for the
 # same reason: an arm added later cannot write without passing through one of
@@ -68,6 +65,9 @@ function Refuse-IfDryRun($what, $where) {
   exit 0
 }
 
+# UTF-8 WITHOUT BOM, identical under Windows PowerShell 5.1 and pwsh 7. 5.1's
+# -Encoding UTF8 writes a BOM, which bash reads as a command when it sources
+# x4-paths.env - the whole bash half of the toolkit then fails on line 1.
 function Write-Utf8NoBom($path, [string]$content) {
   [IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
 }
@@ -120,6 +120,48 @@ function Detect-XRCat {
 # they drift, and the defect this fixes was one of the passes not running at all.
 $X4CopyPrune = @('tools\x4validate\.venv','tools\x4validate\.pytest_cache','tools\x4validate\.mutation-probe-pristine')
 
+# Copy $SRC\REL to DEST\REL, never descending into a pruned relative path.
+#
+# The virtualenv used to be copied in full and deleted on arrival, while the
+# CHANGELOG said it no longer travels. Copy-Item -Exclude cannot express this: it
+# matches LEAF NAMES, not paths, and is unreliable with -Recurse. So the walk is
+# explicit, and ONLY where needed -- a directory containing no pruned path is
+# still copied in a single call, so only tools\ is ever descended into.
+#
+# The Copy-Item target is the destination's PARENT: -Recurse into the path itself
+# nests on an upgrade, which is the .claude\.claude shape.
+function Copy-Excluding([string]$rel, [string]$dest) {
+  foreach ($junk in $X4CopyPrune) { if ($junk -ieq $rel) { return } }
+  # $fromPath, NOT $src. PowerShell variable names are CASE-INSENSITIVE, so a local
+  # `$src` IS the script-scope `$SRC` -- assigning it overwrote the source root, and
+  # the first recursion then built `src\tools\tools\basex` and died with
+  # "Cannot find path". In bash those are two different variables; here they are one.
+  $fromPath = Join-Path $SRC $rel
+  $needsWalk = $false
+  foreach ($junk in $X4CopyPrune) {
+    if ($junk -like ($rel + [char]92 + '*') -or $junk -like ($rel + '/*')) {
+      $needsWalk = $true
+    }
+  }
+  $isDir = Test-Path -LiteralPath $fromPath -PathType Container
+  $target = Join-Path $dest $rel
+  if (-not $isDir -or -not $needsWalk) {
+    $parent = Split-Path -Parent $target
+    if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+    # NO Remove-Item on the target first. A draft cleared it to avoid nesting and
+    # thereby deleted the .bak files Copy-Toolkit had just written into $dest\.claude
+    # -- 11 of 17 harness cases red, including "a backup was made". This is the exact
+    # form the original loop used, and the upgrade case proves it merges rather than
+    # nesting.
+    Copy-Item -Recurse -Force -LiteralPath $fromPath -Destination $parent
+    return
+  }
+  New-Item -ItemType Directory -Force -Path $target | Out-Null
+  foreach ($c in (Get-ChildItem -Force -LiteralPath $fromPath)) {
+    Copy-Excluding ($rel + [char]92 + $c.Name) $dest
+  }
+}
+
 function Copy-Toolkit($dest) {
   Refuse-IfDryRun 'copying the toolkit into' $dest
   New-Item -ItemType Directory -Force -Path (Join-Path $dest '.claude') | Out-Null
@@ -171,7 +213,7 @@ function Copy-Toolkit($dest) {
   foreach ($i in $items) {
     $s = Join-Path $SRC $i
     if (Test-Path -LiteralPath $s) {
-      Copy-Item -Recurse -Force -LiteralPath $s -Destination $dest
+      Copy-Excluding $i $dest
     } else {
       # NAMED, never silently skipped: that silence is how the absent mods/ folder
       # survived a whole release.
@@ -421,10 +463,18 @@ function Assert-Direction($dest, $named) {
   }
 }
 
+# Says WHERE, and nothing else -- see announce_target in install.sh for why the
+# dry-run listing moved out: it only makes sense where a copy happens, and having
+# both jobs in one function kept the global arm silent about its destination.
 function Show-Target($dest) {
   Write-Host ""
   Write-Host "  About to write the toolkit into:"
   Write-Host "      $dest"
+}
+
+# The dry-run listing, for the arms where a COPY would actually happen. The gate
+# itself is Refuse-IfDryRun, which sits inside all three writers.
+function Show-CopyPlan {
   if ($DryRun) {
     Write-Host "  -DryRun: nothing will be written. Items that would be copied:"
     foreach ($i in @('.claude','tools','bin','scripts','mods','CLAUDE.md','KNOWLEDGEBASE.md','README.md',
@@ -528,18 +578,21 @@ switch ($Method) {
   'in-game'  {
     if (-not $Game) { throw 'in-game needs -Game' }
     $Toolkit = $Game
-    if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $GameNamed; Show-Target $Toolkit; Copy-Toolkit $Toolkit }
+    Show-Target $Toolkit
+    if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $GameNamed; Show-CopyPlan; Copy-Toolkit $Toolkit }
     Write-PathsEnv $Toolkit
   }
   'separate' {
     if (-not $Toolkit) { $Toolkit = $SRC }
     $Toolkit = Ask $Toolkit 'Toolkit folder' $Toolkit
     $Toolkit = Remove-TrailingSep $Toolkit
-    if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $ToolkitNamed; Show-Target $Toolkit; Copy-Toolkit $Toolkit }
+    Show-Target $Toolkit
+    if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $ToolkitNamed; Show-CopyPlan; Copy-Toolkit $Toolkit }
     Write-PathsEnv $Toolkit
   }
   'global'   {
     if (-not $Toolkit) { $Toolkit = $SRC }
+    Show-Target $Toolkit
     Write-PathsEnv $Toolkit
     Install-Global $Toolkit
   }

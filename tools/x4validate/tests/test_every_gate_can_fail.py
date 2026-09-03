@@ -115,3 +115,38 @@ def test_the_oracle_REFUSES_an_empty_log_when_it_is_RUN(tmp_path):
                     "so the empty-log branch is unreachable here; rc and the crash "
                     "check above still ran, and the AST census covers the rest")
     assert "REFUSING" in r.stderr, r.stderr[-400:]
+
+
+# --- a mutation harness must not be judged by a STALE .pyc --------------------------
+
+def test_both_mutation_harnesses_disable_bytecode_caching():
+    """CPython invalidates a cached .pyc on (source mtime in SECONDS, source size).
+
+    Mutants are written to the same path within the same second, so two of them that
+    leave the file the SAME SIZE make the second run import the first one's bytecode --
+    and the mutant is then judged by the previous mutant's failures.
+    `verify-hook-tests.py` records the measurement: 2 of 54 mutants reported "NOT
+    CAUGHT" while each, reproduced by hand, turned its target test red.
+
+    It bites the RESTORE harder, and that direction was measured on 2026-09-03: a
+    mutant turning `return 2` into `return 0` is identical in LENGTH, so after
+    restoring the pristine source -- byte-identical by sha256 -- the stale .pyc was
+    still imported and every later test ran the MUTANT while the file on disk was
+    correct. A byte-identity check cannot see it; the defect is in the cache.
+
+    Pinned for BOTH harnesses because only one of them had the fix.
+    """
+    root = GATES.parent.parent.parent
+    files = {
+        "scripts/verify-hook-tests.py": root / "scripts" / "verify-hook-tests.py",
+        "gates/mutation_probe.py": GATES / "mutation_probe.py",
+    }
+    for label, path in files.items():
+        if not path.is_file():
+            pytest.skip(f"{label} is not present -- NOT CHECKED")
+        text = path.read_text(encoding="utf-8", errors="replace")
+        assert "PYTHONDONTWRITEBYTECODE" in text, (
+            f"{label} runs mutants without disabling bytecode caching; a same-length "
+            "mutant will be judged by the previous mutant's bytecode")
+        assert "__pycache__" in text, (
+            f"{label} does not purge __pycache__ between mutants")

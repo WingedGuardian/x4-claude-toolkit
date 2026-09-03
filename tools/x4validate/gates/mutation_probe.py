@@ -407,6 +407,37 @@ def recover() -> int:
 FAILING_VERDICTS = frozenset({"pass", "hang", "noscope"})
 
 
+#: The environment every mutant run must use, plus a cache purge to go with it.
+#:
+#: NOT hygiene -- without this the gate returns WRONG VERDICTS. CPython invalidates a
+#: cached .pyc on (source mtime in SECONDS, source size). Successive mutants are
+#: written to the same path within the same second, so whenever two of them leave the
+#: file the SAME SIZE, the second run imports the FIRST one's bytecode and is judged by
+#: the previous mutant's failures.
+#:
+#: `scripts/verify-hook-tests.py` already carries this fix and records the measurement:
+#: 2 of 54 mutants reported "NOT CAUGHT" while each, reproduced by hand, turned its
+#: target test red -- the tell being that the failing tests named belonged to the
+#: mutant BEFORE it. This gate mutates `_merge.py` the same way and had no such guard.
+#:
+#: It bites the RESTORE too, which is the worse direction and the one measured on
+#: 2026-09-03: a mutant turning `return 2` into `return 0` is identical in LENGTH, so
+#: after restoring the pristine source -- verified byte-identical by sha256 -- the
+#: stale .pyc was still imported and every later test in that session ran the MUTANT
+#: while the file on disk was correct. A byte-identity check cannot see this: it looks
+#: at the source, and the defect lives in the cache.
+def _no_bytecode_env() -> dict:
+    # env-ok: PYTHONDONTWRITEBYTECODE is an interpreter switch for the CHILD
+    # process, not toolkit configuration -- there is no config-file layer for it
+    # and _paths would have nothing to say about it.
+    return dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+
+
+def _purge_bytecode() -> None:
+    for pyc in ROOT.rglob("__pycache__"):
+        shutil.rmtree(pyc, ignore_errors=True)
+
+
 def run_tests(tests: list[str], deselect: tuple[str, ...] = ()) -> str:
     """'pass' = mutant survived | 'fail' = killed | 'hang' = did not finish
     | 'noscope' = there were no tests to run, which is a NON-ANSWER.
@@ -430,9 +461,11 @@ def run_tests(tests: list[str], deselect: tuple[str, ...] = ()) -> str:
         args = ["uv", "run", "--project", str(ROOT), "pytest", "-q", *present]
         for d in deselect:
             args += ["--deselect", d]
+        _purge_bytecode()
         p = subprocess.run(args,
                            cwd=str(ROOT), capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=TEST_TIMEOUT)
+                           encoding="utf-8", errors="replace",
+                           timeout=TEST_TIMEOUT, env=_no_bytecode_env())
     except subprocess.TimeoutExpired:
         return "hang"
     return "pass" if p.returncode == 0 else "fail"
@@ -483,8 +516,10 @@ def full_suite_failures() -> set | None:
     for d in FULL_SUITE_DESELECT:
         args += ["--deselect", d]
     try:
+        _purge_bytecode()
         p = subprocess.run(args, cwd=str(ROOT), capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=TEST_TIMEOUT)
+                           encoding="utf-8", errors="replace",
+                           timeout=TEST_TIMEOUT, env=_no_bytecode_env())
     except subprocess.TimeoutExpired:
         # silent-ok: None IS this function's non-answer channel, not a swallow. The
         # caller REFUSES on None (rc 2) rather than treating it as "nothing failed",

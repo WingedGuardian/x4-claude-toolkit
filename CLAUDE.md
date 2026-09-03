@@ -25,7 +25,7 @@ the rest.
 | Mod dev workspace | `{project root}\dev\{mod_name}\`, one folder per mod |
 | User profile | `Documents\Egosoft\X4\<profile-id>\` — the active one has the newest `debug.txt`/saves |
 | Active mod list | `{user profile}\content.xml` |
-| Testing (in-game) | `{user profile}\extensions\{mod_name}\` |
+| Testing (in-game) - deploy HERE | `{game root}\extensions\{mod_name}\` (game-root, **never** the profile) |
 
 > **Never redistribute Egosoft game data.** `reference\` is unpacked from your own copy and
 > is gitignored. The toolkit ships no `.cat`/`.dat`/XML game content.
@@ -64,7 +64,10 @@ dev\{mod_name}\
     └── ...
 ```
 
-**Deploy for testing:** copy `dev\{mod_name}\` to `{user profile}\extensions\{mod_name}\`.
+**Deploy for testing:** copy `dev\{mod_name}\` to the **game-root** `{game root}\extensions\{mod_name}\`,
+**never** the user profile's `extensions\`. Dependencies resolve only within the same
+extensions root, so a mod deployed to the profile makes X4 report every dependency it
+declares as MISSING.
 **Distribute:** pack with XRCatTool → `ext_01.cat` + `ext_01.dat`.
 
 ## XML Patching Rules
@@ -359,7 +362,7 @@ Nexus has a REST + GraphQL API ([api-docs.nexusmods.com](https://api-docs.nexusm
 - Diff patch for existing content, complete file for new content
 - Mirror game folder structure inside `dev\{mod_name}\`
 - **Validate with x4validate (mandatory, before any in-game test)** — `cd tools\x4validate && uv run x4validate <dev\mod>`. Fix every error: a `sel=` that matches nothing, an unresolved ware/macro/`{page,t}` reference, or (for new content) a completeness gap vs the vanilla analogue (`--entity ship:x --like ship:y`). This catches the silent-no-op and forgotten-spot bugs *before* burning an in-game test cycle.
-- Test by copying to `{game root}\extensions\{mod_name}\` (game-root extensions, NEVER the profile — see "Deployment for testing") and launching game
+- Test by copying to `{game root}\extensions\{mod_name}\` (game-root extensions, NEVER the profile — see **Deploy for testing** above) and launching game
 - Check `{user profile}\debug.txt` for errors
 ## Core Principle: PROVE IT RAN BEFORE DEBUGGING WHAT IT DID (Mandatory)
 

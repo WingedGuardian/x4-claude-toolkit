@@ -10,6 +10,50 @@ you run is checked; the second and third change what the toolkit can see.
 ⚠ **`protect-bash.sh` now requires Python** (see below). Without it the guard **asks**
 rather than silently allowing.
 
+### ⚠ Changed — an exported `X4_*` variable now WINS over `x4-paths.env`
+
+**This changes the outcome for anyone who exports one.** Previously the file won in the
+bash half, so a `setx X4_GAME ...` was silently ignored by every hook.
+
+There were three statements of precedence and one disagreed:
+
+| | said |
+|---|---|
+| `CLAUDE.md` | env var > `x4-paths.env` > default |
+| `_paths._layers()` (Python) | `[env, file, fallback]` — env wins |
+| `.claude/hooks/_x4-env.sh` | `set -a; . "$cfg"; set +a` — the **file** won |
+
+Two of three agreed; the third is the one every hook runs on every tool call. The
+inconsistency was the dangerous half rather than an untidiness: both halves resolve
+paths for the same machine, so exporting `X4_GAME` pointed `x4validate` at one install
+while the guards protecting the game folder read another — protection and work aimed
+at different trees, with nothing saying so.
+
+Bash now matches the documented order. If you were relying on the file to override an
+exported variable, unset the variable or remove the entry.
+
+### Fixed — `-DryRun` wrote for real (PowerShell)
+
+`$DryRun` was consulted in exactly ONE place, inside `Show-Target`, which only the
+copying arms reach. So `-Method global -DryRun` overwrote `x4-paths.env` and printed
+`=== install complete (global) ===`; an in-place `-Method separate -DryRun` did the
+same. The gate now lives inside all three writers, as `refuse_if_dry_run` already did
+on the bash side, so an arm added later cannot write without passing one.
+
+### Fixed — a destination that IS the source was copied onto itself
+
+`$SRC` is MSYS-style under Git Bash (`/tmp/...`) while every documented path is
+Windows-style (`C:/...`), so a string comparison of the two spellings of one directory
+said COPY. `cp` reported "are the same file" and `set -e` killed the script before the
+FAILED accounting existed — no INCOMPLETE banner, no `failed:` line, no config
+written. A trailing separator on `--toolkit` produced the same result. Both installers
+now compare canonically.
+
+### Fixed — `-Method global` kept no backup of `x4-paths.env` (PowerShell)
+
+`install.sh` moved this backup into `write_paths_env` so a caller could not be added
+without one; `Write-PathsEnv`, which all three methods call, never got it.
+
 ### ⚠ Changed — `setup.sh` can now FAIL, and `install.sh` can now notice
 
 **This changes the outcome for existing users.** An install that "succeeded with
