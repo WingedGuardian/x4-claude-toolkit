@@ -338,7 +338,7 @@ Nexus has a REST + GraphQL API ([api-docs.nexusmods.com](https://api-docs.nexusm
 
 **Verified endpoints + gotchas (2026-06-22, used by `tools\x4validate\x4modlist`):**
 - Metadata by id: `GET https://api.nexusmods.com/v1/games/x4foundations/mods/{id}.json`, header `apikey`. `status` field = `published`/`removed`/`hidden` (last two = unavailable).
-- Name→id search: `POST https://api.nexusmods.com/v2/graphql`, header `apikey`, filter `gameId:[{value:"2659"}], nameStemmed:[{value:"<name>"}]`. **Must send a real `User-Agent` header** or the GraphQL endpoint 403s (Cloudflare). For folder-ids: humanize (split camelCase/underscores) and **drop the leading author token** (e.g. "kuertee") if the first search is empty.
+- Name→id search: `POST https://api.nexusmods.com/v2/graphql`, header `apikey`, filter `gameId:[{value:"2659"}], nameStemmed:[{value:"<name>"}]`. **Must send a real `User-Agent` header** or the GraphQL endpoint 403s (Cloudflare). For folder-ids: humanize (split camelCase/underscores) and **drop the leading author token** (e.g. "authorname") if the first search is empty.
 - Steam ws_ title: `POST https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/` form `itemcount=1&publishedfileids[0]=<num>` — **keyless**.
 - Rate budget ~20k/day, ~2k/hr (check `X-RL-Daily-Remaining`).
 - **Get a key:** nexusmods.com → log in → Site preferences → **API Access** (`https://www.nexusmods.com/users/myaccount?tab=api`) → **Personal API Key** → Generate. Free, per-user.
@@ -412,7 +412,7 @@ A real schema/engine change shows up across the whole corpus — and checking th
 so there is no excuse for guessing. If a single file surprises you, the honest next sentence is
 *"that's unusual — let me check whether it's the rule or the exception,"* not a theory that explains it.
 
-> **The case that produced this rule (2026-08-08).** SVE's `basilisk_macro.xml` had
+> **The case that produced this rule (2026-08-08).** A ship mod's macro file had
 > `<explosiondamage value="10000"/>` with no `@shield`. From that one file I asserted *"9.0
 > consolidated `explosiondamage` to a single `@value`"* — and wrote it into KNOWLEDGEBASE.md and an
 > upstream report. **It was false.** Measured afterwards: 610 occurrences in vanilla, **488 still
@@ -451,8 +451,8 @@ Every factual claim carries one of these, and **the language must make it unmist
 reports) in the grammar of a fact.** Permanent record has no tone of voice: next session — or the
 next person — reads a confident sentence as measured truth and builds on it.
 
-> **The case that produced this rule.** *"`lc4hunter_small_turrets` is the foundation dependency of
-> the lc4hunter ship family"* was an inference, written as a fact in a working assessment note, then
+> **The case that produced this rule.** *"`hunterpack_small_turrets` is the foundation dependency of
+> the hunterpack ship family"* was an inference, written as a fact in a working assessment note, then
 > re-quoted as a fact by me in a later session. Measured: it defines 22 S-turret macros and the ships
 > reference **zero** of them, and declare no dependency. Wrong for weeks, and load-bearing in a plan.
 
@@ -522,10 +522,10 @@ register without negatives has no denominator either.
 | "is this ship a near-duplicate of one I own?" | **x4similar** | — |
 | **"every XML a mod owns?"** | **`_scan.iter_mod_xml` / `iter_mod_xml_bytes`** (loose THEN packed) | ✗ **`_cat.mod_vfs`** — catalogs only; returns `{}` for a loose mod and says nothing. It now WARNS in that exact case; pass `packed_only=True` when you really mean catalogs |
 | **"which MODS count?"** | **`_registry.mods("active")`** = what the engine loads · **`_registry.mods("installed")`** = what is on disk. Scope is positional and REQUIRED | ✗ `_registry.scan_installed()` — that is only ever the on-disk answer, and reaching for it silently chooses it |
-| **"is this mod installed / active / banned?"** | **`_registry.mods("active"\|"installed")`** — and for a ban, grep the profile by **MANIFEST ID** (`ws_3691358137`), never by name | ✗ reading the profile `content.xml` as an inventory — it is a DECISION LOG: **287 of 348 entries are fossils**, **54 of 115 installed mods are absent**, and a name-shaped search finding nothing is the WRONG QUERY, not evidence (#30) |
+| **"is this mod installed / active / banned?"** | **`_registry.mods("active"\|"installed")`** — and for a ban, grep the profile by **MANIFEST ID** (a workshop mod is `ws_<numeric id>`), never by name | ✗ reading the profile `content.xml` as an inventory — it is a DECISION LOG: **287 of 348 entries are fossils**, **54 of 115 installed mods are absent**, and a name-shaped search finding nothing is the WRONG QUERY, not evidence (#30) |
 | **"scan EVERY installed mod for X"** (an ad-hoc corpus sweep) | **`_scan.iter_corpus_xml(ext, report)`** + **`CorpusScan.verdict(hits, noun)`** — excludes `ego_dlc_*` by default, records unreadable files, and **RAISES rather than render a zero when nothing parsed** | ✗ a hand-rolled `for mod in extensions.iterdir()` loop. **MEASURED: the hand-rolled form has been written 7 times and been wrong at least 3 of them.** The last one called `etree.fromstring()` on already-parsed roots, threw on **all 4,391 files**, swallowed it in `except Exception: continue`, and reported *"0 dangling across 115 mods"* when the answer was 3. **State scanned/parsed/failed BEFORE the finding, always** |
 | **"every base+DLC vpath?"** | **`_effective.base_vpaths`** (loose THEN packed; `reference_vpaths` is its `assets/`-only filter) | ✗ `reference.rglob("*.xml")` — loose-only, so the two mini-DLC are invisible. Written **7 times**; now gated by `tests/test_no_loose_only_reference_walk.py` |
-| **"does this vpath exist in the LIVE tree, and WHO supplies it?"** | **`x4effective dump --chain <vpath>`** — rc 0 + `<!-- sources: ... -->`, rc 1 + *no effective content*. **`vro:full`** = that mod SUPPLIES the document; **`base, ego_dlc_x:diff`** = base supplies it and the DLC only PATCHES it. That full-vs-diff distinction is usually the thing you actually need | ✗ **`_effective.base_has`** — base+DLC ONLY, so a mod-supplied file reads as a confident *absent*. ✗ a hand-rolled base walk. **MEASURED 2026-08-26: this exact mistake labelled 65 of 241 vpaths "paths Egosoft renamed" — Egosoft renamed nothing, and every named example (`missile_cruise`, `missile_heavy`, `turret_multilauncher`) returns `vro:full`.** The direction is what makes it dangerous: "renamed" reads as INERT/deletable when those files actually **win** their vpaths. The capability existed, was correct and was in `--help` the whole time — nobody ran it (F58) |
+| **"does this vpath exist in the LIVE tree, and WHO supplies it?"** | **`x4effective dump --chain <vpath>`** — rc 0 + `<!-- sources: ... -->`, rc 1 + *no effective content*. **`overhaul:full`** = that mod SUPPLIES the document; **`base, ego_dlc_x:diff`** = base supplies it and the DLC only PATCHES it. That full-vs-diff distinction is usually the thing you actually need | ✗ **`_effective.base_has`** — base+DLC ONLY, so a mod-supplied file reads as a confident *absent*. ✗ a hand-rolled base walk. **MEASURED 2026-08-26: this exact mistake labelled 65 of 241 vpaths "paths Egosoft renamed" — Egosoft renamed nothing, and every named example (`missile_cruise`, `missile_heavy`, `turret_multilauncher`) returns `overhaul:full`.** The direction is what makes it dangerous: "renamed" reads as INERT/deletable when those files actually **win** their vpaths. The capability existed, was correct and was in `--help` the whole time — nobody ran it (F58) |
 | **"does a file with this NAME exist?"** | **Glob** | ✗ **Grep** — it searches *contents*; a file can exist without containing its own name |
 | "find this text, in one known area" | **Grep** tool (ripgrep) | ✗ `grep -r` via Bash |
 
@@ -537,7 +537,7 @@ I filed *"it does not schema-validate MD"*. **It does — the pass is gated behi
 **"No such check exists" and "the check is gated" produce an IDENTICAL clean output**, so one
 invocation cannot separate them. The second differently-shaped search was `--help`. **Before
 filing "the tool does not do X", check whether X is behind a FLAG** — a tool's default mode is a
-configuration, not its capability. Gotcha #9 in a new costume; see memory `#88`.
+configuration, not its capability. Gotcha #9 in a new costume.
 
 **Never state a negative ("nothing references X", "no mod overrides Y") from a tool that cannot see
 the whole picture.** Two different questions, two different tools, and conflating them is how a
@@ -545,7 +545,7 @@ confident wrong answer gets made:
 
 | Question | Tool | Why |
 |---|---|---|
-| *Discovery* — "where does this appear, what values exist, who mentions X?" | **BaseX** | Fast across many files; **but loose XML only (62% of mod XML is packed → invisible, incl. VRO), and files as-written, no diff application or load order.** |
+| *Discovery* — "where does this appear, what values exist, who mentions X?" | **BaseX** | Fast across many files; **but loose XML only (62% of mod XML is packed → invisible, including large packed overhauls), and files as-written, no diff application or load order.** |
 | *Proof* — "what does the game actually see / is this reference real?" | **x4validate / x4effective** | Reads packed `.cat` via `_cat`, applies diffs in load order, models the effective merged tree. |
 
 **Updated 2026-07-27 — a BaseX negative can now be admissible, but ONLY with a denominator.**
@@ -564,7 +564,7 @@ x4validate remains the authority for correctness against the engine (oracle: 234
 
 **Validate the DEPLOYED copy, not the `dev\` copy, whenever load order could matter.** A mod that is
 not installed has no knowable load-order position, so Tier B assumes it loads LAST — the optimistic
-tree. Proven: `X4CapturableXenonXL` (deployed) validates 0 errors while its byte-identical `_public`
+tree. Proven: `CapturableShipMod` (deployed) validates 0 errors while its byte-identical `_public`
 twin (dev-only) reports 3 false alarms.
 ## Core Modding Principle: Vanilla X4 as Frame of Reference
 
@@ -695,7 +695,7 @@ thing to do — but it must be written down as that, or the next session reads i
 ⚠ **Scope a corpus claim PACKED-INCLUSIVE before recording it.** The first version of that
 measurement said *"2 places across 399 vanilla documents"* — loose-vanilla only, which cannot see a
 packed mod reading the stat in sector. Re-run with `_scan.iter_mod_xml_bytes` gave **963 documents
-and found a third reader** (`s_combat_tactics`). The claim survived; it might not have.
+and found a third reader** (`combat_tactics_script`). The claim survived; it might not have.
 ## Three Values Rule (Mandatory) — vanilla, effective, proposed
 
 **Never quote a bare number.** For every value you propose changing, state all three, plus what it does in-game:
@@ -784,8 +784,8 @@ non-answer: **an answer about a world that has moved on.**
 > **The case (2026-08-13).** BaseX `x4eff` was built 08-02. The merge engine was fixed 08-08
 > (root-`<replace>`: **858 ops dropped while reported applied**) and 08-11 (nested patches).
 > **Neither date changed one input file.** MEASURED on rebuild: **140 of 194 (72%)** engine thrust
-> rows changed — `engine_arg_l_allround_01_mk1_macro` **3900 → 5283** (vanilla 3900, VRO 5283).
-> A design decision recorded on 08-02 had written vanilla engine values down as VRO's.
+> rows changed — `engine_arg_l_allround_01_mk1_macro` **3900 → 5283** (vanilla 3900, OVERHAUL 5283).
+> A design decision recorded on 08-02 had written vanilla engine values down as OVERHAUL's.
 
 **Every persisted artifact carries a two-axis fingerprint** (`x4validate/_freshness.py` — the single
 implementation; BaseX delegates to it):
@@ -839,7 +839,7 @@ often than the finding (gotcha #22).
 **Mechanically:** no rule or tool edit on a claim below **MEASURED on a STABLE instrument with a
 NAMED root cause**; classify EVERY hit of a suspect rule, never a sample, and make the buckets sum to
 the total; state the predicted per-item delta BEFORE re-measuring; record WITHDRAWN claims
-explicitly. Memory: `feedback_bug_funnel_wide_top_narrow_bottom`.
+explicitly.
 
 > **The case (2026-08-30).** F82 — *"the hooks deny 8.89% of real work"* — was measured while the
 > live hook was REDEPLOYED mid-run: launch 22:28, deploy 00:08:29, finish 00:15:36, three

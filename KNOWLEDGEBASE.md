@@ -70,15 +70,15 @@ The `sel` attribute is an XPath expression. Key XPath patterns for X4:
 To diff-patch a file owned by another MOD (not base/DLC), mirror the target's FULL path INCLUDING its
 extension folder, nested inside your own mod:
 `<your_mod>/extensions/<target_extension_folder>/<original relative path>`
-(e.g. `atd_ejection_router/extensions/kuertee_alternatives_to_death/md/kuertee_atd.xml`). The file is a
+(e.g. `ejection_router/extensions/target_mod/md/target_mod.xml`). The file is a
 normal `<diff>`; the engine applies it onto the target's merged file. This is NOT the base-game form
 (which uses a bare mirrored path like `md/foo.xml`). Load your mod AFTER the target — declare a
 `<dependency id="...">`.
-- Real installed examples: `kuertee_additional_agent_actions/extensions/kuertee_crime_has_consequences/md/kuertee_chc.xml`;
-  `kuertee_emergent_missions/extensions/ego_dlc_pirate/md/story_research_erlking.xml`;
-  `kuertee_npc_reactions/extensions/extendedconversationmenu/md/extendedconversationmenu.xml`.
-- The `<target_extension_folder>` is the target's FOLDER name (e.g. `kuertee_alternatives_to_death`),
-  which can DIFFER from its content.xml `id` (e.g. `kuerteeAlternativesToDeath`). The `<dependency id=>`
+- Real installed examples: `patcher_mod_a/extensions/patched_mod_a/md/patched_mod_a.xml`;
+  `patcher_mod_b/extensions/ego_dlc_pirate/md/story_research_erlking.xml`;
+  `patcher_mod_c/extensions/extendedconversationmenu/md/extendedconversationmenu.xml`.
+- The `<target_extension_folder>` is the target's FOLDER name (e.g. `target_mod`),
+  which can DIFFER from its content.xml `id` (e.g. `TargetModId`). The `<dependency id=>`
   you declare uses the content.xml `id`, NOT the folder name.
 - **x4validate CANNOT verify these** (it builds base+DLC only) — it reports `no base game file for '<path>'
   (path mismatch?)`. That is EXPECTED for a cross-mod patch, not a real error. Verify each `sel=` yourself:
@@ -97,8 +97,8 @@ extension file — 6,144 of them, 3,454 under `assets/`, 1,455 under the nested 
 | file | form | engine loaded it? |
 |---|---|---|
 | `zzz_yourname_overlay\libraries\factions.xml` | base-game path | ✔ yes |
-| `zzz_yourname_overlay\assets\…\shield_cpsdo_*_mk4_macro.xml` ×7 | **bare path over another mod** | ✘ **no** |
-| `zzz_yourname_overlay\extensions\ship_variation_expansion\…\caiman_macro.xml` | nested | ✔ yes |
+| `zzz_yourname_overlay\assets\…\shield_modpack_*_mk4_macro.xml` ×7 | **bare path over another mod** | ✘ **no** |
+| `zzz_yourname_overlay\extensions\shipexp_mod\…\someship_macro.xml` | nested | ✔ yes |
 
 A controlled comparison inside one author's own mods, with the files deployed two days before the
 log. The "the line is per-vpath so a second mod wouldn't log" objection was tested and killed:
@@ -113,15 +113,15 @@ ops the engine *rejected*, and an op never loaded produces no error line). The m
 fixed too: `build_effective` refuses the dead diff (`<mod>:diff(inert)` in sources), so
 `x4effective`/`x4stats` now show engine truth — before, 14 attribute values in the effective tree
 were ones the engine never sees. Full non-diff files still override cross-mod (the engine's VFS
-honours those — `cpsdo_vro` clobbering `cpsdo_zb_modpack` weapon-fx macros is live proof); the
+honours those — `modpack_overhaul_patch` clobbering `example_modpack` weapon-fx macros is live proof); the
 refusal applies to `<diff>` roots only, and `t/*.xml` diffs are never refused (the engine always
 supplies the language tree). NOTE: BaseX's `x4eff` DB predates the fix — rebuild
 (`tools\basex\build-effective.py`) before quoting it on a bare-path-patched vpath.
 - Live instance, **REPAIRED 2026-08-02**: `zzz_yourname_overlay` had 7 such files (2 hengdao ship
-  macros, 5 shield mk4 macros) dead since 2026-07-24 — moved under `extensions/cpsdo_zb_modpack/`
-  (dev + deployed, byte-identical; snapshot at `.claude\backups\known-good-2026-08-01-pre-f19-repair-cpsdo_tweaks\`).
+  macros, 5 shield mk4 macros) dead since 2026-07-24 — moved under `extensions/example_modpack/`
+  (dev + deployed, byte-identical; snapshotted first).
   Tier B now 0 errors with all 9 diffs genuinely sel-checked; install-wide inert count 0. The
-  `<dependency id="cpsdo_zb_modpack">` already existed, so no manifest change was needed.
+  `<dependency id="example_modpack">` already existed, so no manifest change was needed.
   **✅ ENGINE-CONFIRMED 2026-08-02** (`debug.txt` 00:25 run): all 7 files signature-logged at the
   nested path, 0 errors from the mod in 2,590 error lines — the tweaks are live in-game for the
   first time since 2026-07-24. This makes the bare-path rule N=2 on the SAME seven files (absent
@@ -236,23 +236,23 @@ Location: `tools\x4validate\` (lxml-based; runs via the bundled uv + Python 3.13
 
 **Usage:** `cd tools\x4validate && uv run x4validate <dev\mod>` ( `--json` for machine output; `--tier b` folds in enabled mods but warns — inter-mod order is undocumented).
 
-**Verified 2026-06-22:** 30 unit tests pass (incl. the x4cat spike cases); real ATD mod validates clean; deliberately-broken `sel=` flagged; incomplete new ware/ship correctly report missing pieces (e.g. a bare ship flags missing `component`/`production`/`owner`/`restriction`). **Limits:** reference catalog = ware + macro + text (extend in `_refs.py`); completeness recipes = ware/ship/module; Tier B not wired; no MCP wrapper yet. **Cross-mod patch blind spot:** a diff targeting ANOTHER mod's file (not base/DLC) reports "no base game file" and its `sel=` goes unchecked — verify those directly with lxml (`etree.parse(target).xpath(sel)` == 1 node; done 2026-07-06 for the `atd_ejection_router`→ATD patch). A clean run is necessary, not sufficient — still test in-game + read debug.txt.
+**Verified 2026-06-22:** 30 unit tests pass (incl. the x4cat spike cases); a real third-party mod validates clean; deliberately-broken `sel=` flagged; incomplete new ware/ship correctly report missing pieces (e.g. a bare ship flags missing `component`/`production`/`owner`/`restriction`). **Limits:** reference catalog = ware + macro + text (extend in `_refs.py`); completeness recipes = ware/ship/module; Tier B not wired; no MCP wrapper yet. **Cross-mod patch blind spot:** a diff targeting ANOTHER mod's file (not base/DLC) reports "no base game file" and its `sel=` goes unchecked — verify those directly with lxml (`etree.parse(target).xpath(sel)` == 1 node; done 2026-07-06 for the `ejection_router`→TargetMod patch). A clean run is necessary, not sufficient — still test in-game + read debug.txt.
 
 ### x4modlist ⭐ (mod-registry / Phase-A triage tool)
 
 Location: `tools\x4validate\x4validate\{_registry,_modlist,_nexus}.py`, CLI `x4modlist`, skill `/x4-modlist-review`. Canonical store `dev\_registry\modlist.yaml` (ruamel round-trip, `auto:`/`human:` field split so refreshes never clobber user notes); dashboard `dev\_registry\WORKLIST.md`.
 
-**★ SOURCE OF TRUTH (corrected 2026-06-22): the physically INSTALLED extension folders are PRIMARY**, not the profile `content.xml` enabled-list. `content.xml` is now only a secondary cross-check/backfill pass ("did I forget to re-acquire something from the old modlist?"). `x4modlist ingest` scans `extensions\` (game-root + profile + Steam Workshop `content\392160\`), reading each mod's OWN `content.xml` for its real `id`/`name`/`version`/`author` — **folder name can differ from the manifest `id`** (e.g. folder `X4CapturableXenonXL` → id `X4_Capturable_Xenon XL PERSONAL`), so always read the attribute, never infer from the folder. A mod tracked historically but not found on disk gets `auto.installed=False` and moves to a separate dashboard section (not deleted — its prior research, e.g. `nexus_id`, is preserved for if it's ever re-acquired).
+**★ SOURCE OF TRUTH (corrected 2026-06-22): the physically INSTALLED extension folders are PRIMARY**, not the profile `content.xml` enabled-list. `content.xml` is now only a secondary cross-check/backfill pass ("did I forget to re-acquire something from the old modlist?"). `x4modlist ingest` scans `extensions\` (game-root + profile + Steam Workshop `content\392160\`), reading each mod's OWN `content.xml` for its real `id`/`name`/`version`/`author` — **folder name can differ from the manifest `id`** (e.g. folder `CapturableShipMod` → id `Capturable Ship Mod PERSONAL`), so always read the attribute, never infer from the folder. A mod tracked historically but not found on disk gets `auto.installed=False` and moves to a separate dashboard section (not deleted — its prior research, e.g. `nexus_id`, is preserved for if it's ever re-acquired).
 
 **Identity resolution (A3) prefers the mod's REAL manifest name over a humanized-id guess** (`_modlist._resolve_identity`) — since installed-scan captures `installed_name` straight from content.xml, that's searched first via Nexus GraphQL, with two fallback transforms for common manifest naming patterns before falling back to the old humanized-folder-id guess:
-- **leading author/category label** (`_strip_author_label`): `"kuertee: Ship scanner"` → `"Ship scanner"`, `"kuertee UI: Boarding operation notifications"` → `"Boarding operation notifications"`.
-- **trailing qualifier** (`_manifest_name_variants`): `"Vibrant Engine Plumes - Divinity Edition"` → `"Vibrant Engine Plumes"`; `"Terran Beam Weapons VRO"` → `"Terran Beam Weapons"` (drops a trailing ALL-CAPS 2-5 char word).
+- **leading author/category label** (`_strip_author_label`): `"authorname: Ship scanner"` → `"Ship scanner"`, `"authorname UI: Boarding operation notifications"` → `"Boarding operation notifications"`.
+- **trailing qualifier** (`_manifest_name_variants`): `"Example Engine Plumes - Divinity Edition"` → `"Example Engine Plumes"`; `"Terran Beam Weapons REB"` → `"Terran Beam Weapons"` (drops a trailing ALL-CAPS 2-5 char word).
 
 This raised the auto-resolve rate on a real 31-mod installed scan from scattered partial hits to 31/31 having a real candidate (some still need spot-check confirmation — auto-match ≠ verified).
 
-**Classifier gotcha found by dogfooding — `custom-local` lane.** A mod with Nexus `status=hidden`/`removed` is classified `drop` — UNLESS it's `human.custom_edited=True`, in which case it's `custom-local` (upstream unavailable but you maintain your own fork). Caught via ATD itself: its Nexus page is genuinely `hidden` (author updating it, per the ATD session logs below) but ATD is NOT abandoned — we've spent multiple sessions porting it to 9.0 in `dev\`. Classifying it `drop` would have been actively wrong guidance. General lesson: **any auto-classification that only reads upstream status, without checking whether the user has a maintained local fork, risks recommending abandonment of active work.**
+**Classifier gotcha found by dogfooding — `custom-local` lane.** A mod with Nexus `status=hidden`/`removed` is classified `drop` — UNLESS it's `human.custom_edited=True`, in which case it's `custom-local` (upstream unavailable but you maintain your own fork). Caught via TargetMod itself: its Nexus page is genuinely `hidden` (the author was updating it) but TargetMod is NOT abandoned — we've spent multiple sessions porting it to 9.0 in `dev\`. Classifying it `drop` would have been actively wrong guidance. General lesson: **any auto-classification that only reads upstream status, without checking whether the user has a maintained local fork, risks recommending abandonment of active work.**
 
-**Nexus GraphQL quirk:** search can rank a wrong/niche fork above the real mod (e.g. searching "kuertee UI Extensions and HUD" top-matched a niche "...for SW Interworlds adoption mod" instead of the actual popular mod, Nexus 552) — this is exactly why every auto-match is flagged for spot-check with its candidate list shown, never silently trusted.
+**Nexus GraphQL quirk:** search can rank a wrong/niche fork above the real mod (e.g. searching "authorname UI Extensions and HUD" top-matched a niche "...for SW Interworlds adoption mod" instead of the actual popular mod) — this is exactly why every auto-match is flagged for spot-check with its candidate list shown, never silently trusted.
 
 ### x4compat / x4xref / x4stats ⭐ (cross-mod interaction suite — BUILT 2026-07-05)
 
@@ -263,10 +263,10 @@ effective-tree diffing, or semantic comparison (survey 2026-07-05: closest is x4
 `//` false-negative defect we rejected — and can't see packed mods).
 
 - **`_cat.py`** — our own CAT/DAT reader (format independently verified; byte-identical to
-  meethune/x4cat on real VRO data). Reads `ext_*` AND `subst_*` catalogs, MD5-verified, XML/XSD
-  members only, **case-insensitive vpath lookup** (VRO ships `t/0001-L007.xml`, others `l007`).
+  meethune/x4cat on real OVERHAUL data). Reads `ext_*` AND `subst_*` catalogs, MD5-verified, XML/XSD
+  members only, **case-insensitive vpath lookup** (OVERHAUL ships `t/0001-L007.xml`, others `l007`).
   Wired into `_merge.build_effective` via `overlay_root()` (loose-over-packed) so packed mods
-  (VRO, 217 MB / 1,613 XML members) are finally visible to ALL our tooling.
+  (OVERHAUL, 217 MB / 1,613 XML members) are finally visible to ALL our tooling.
 - **`x4compat check <mod>`** (`_compat.py`) — collision classes: **HARD** (≥2 mods replace/remove
   the same resolved node → later load-order wins, earlier silently dead), **UNION-KEY** (≥2 mods
   define the same `@id`/`@name` in a shared registry — the "two versions of the same ship id"
@@ -274,17 +274,17 @@ effective-tree diffing, or semantic comparison (survey 2026-07-05: closest is x4
   same-parent `<add>`s). Dispatches by merge semantics — union dirs (`t/`,`libraries/`,`index/`)
   overlap is NOT a conflict. Excludes per-extension `ui.xml` (loaded once per extension, never
   overrides). Real 33-mod run: 0 hard / 37 SOFT — a curated set genuinely has few structural
-  clashes. **masterranweapons vs VRO is a NON-collision** (it adds a new ware; VRO edits different
+  clashes. **example_weaponmod vs OVERHAUL is a NON-collision** (it adds a new ware; OVERHAUL edits different
   wares) — proving structural ≠ balance (that's x4stats' job).
 - **`x4xref`** (`_xref.py`) — a who-calls / who-listens / cue index over base+DLC+all-mods
   MD+aiscripts (139,890 rows in ~4s). Answers behavioral-interaction questions in ONE query that
-  took ~10 grep searches manually: `x4xref who-calls set_emergency_eject_active` → ATD's
+  took ~10 grep searches manually: `x4xref who-calls set_emergency_eject_active` → TargetMod's
   Init/OnOptionsMenu; `who-listens event_player_ejected` → base `notifications.xml:766` +
   tutorial. Indexes events (`event_*`), cue signal/def edges, and real action tags; skips
   control-flow / variable-plumbing noise.
 - **`x4stats wares <mod>`** (`_stats.py`) — ADVISORY: each candidate ware vs the effective
-  (VRO-inclusive) same-`group` price distribution (percentile). masterranweapons' turret →
-  98th percentile of 161 turret wares (priced like a top-tier VRO turret — a balance flag to
+  (OVERHAUL-inclusive) same-`group` price distribution (percentile). example_weaponmod' turret →
+  98th percentile of 161 turret wares (priced like a top-tier OVERHAUL turret — a balance flag to
   investigate, NOT a verdict). `x4stats macro <file>` flattens a macro's numeric props for
   peer comparison. Weapon DPS spans weapon+bullet macro pair — reports one file + its
   `<bullet class=>` ref; chase the peer manually for full DPS.
@@ -297,9 +297,9 @@ entries forced earlier. `_compat.compute_load_order` = Kahn topo-sort with alpha
   vector per ship macro (hull/crew/cargo/handling), hard-filters by macro `class` (`ship_xs/s/m/l/xl`)
   and `purpose.primary` (an S fighter is NEVER compared to an XL destroyer), scores weighted
   relative-difference similarity over shared keys. **A same-registry-KEY duplicate is x4compat's
-  UNION-KEY job**; this catches a DIFFERENT id/name describing the same ship — the "VRO adds a
+  UNION-KEY job**; this catches a DIFFERENT id/name describing the same ship — the "OVERHAUL adds a
   ship, an unrelated mod adds an independent version, possibly a different name" case. Verified
-  end-to-end: a synthetic VRO-style 2%-rescaled clone of a real vanilla fighter scored 99.4% and
+  end-to-end: a synthetic OVERHAUL-style 2%-rescaled clone of a real vanilla fighter scored 99.4% and
   was correctly flagged. **Tuning note from real data:** require ≥4 shared numeric keys, not 3 —
   a 3-key match (e.g. hull + zero-crew + secrecy) produced a coincidental 100% "match" between a
   combat drone and an unrelated scout ship; 4+ keys covers ~98% of real vanilla near-duplicate
@@ -357,13 +357,13 @@ default:
 ```
 
 Each op's selector only matches *after* the previous one ran — chained **1,443 ops deep** in a
-single file in `mlog_deadair_eco_no_da_wares/libraries/wares.xml`.
+single file in `eco_no_wares_mod/libraries/wares.xml`.
 
 **MEASURED consequence for our own validator** (full-corpus differential, 115 mods, before/after
 teaching `_check_ops` to apply ops in order): **1,206 findings removed — every one a FALSE POSITIVE**,
-each confirmed by the engine logging zero diff-op errors for that mod (mlog_deadair_eco 1,195,
-da_ku_ai_tweaks 7, chillturrets 3, mlog_deadair_scripts 1) — and **6 added, all genuine**
-(moreroomsforships 2 and sve_vro_trim 1, both engine-confirmed; npc_economy_tweaks 3, where
+each confirmed by the engine logging zero diff-op errors for that mod (eco_mod_a 1,195,
+ai_tweak_mod 7, turret_tweak_mod 3, eco_mod_b 1) — and **6 added, all genuine**
+(rooms_mod 2 and shipexp_overhaul_trim 1, both engine-confirmed; economy_tweak_mod 3, where
 `diff.xsd` restricts `type` to `@&qname;` so `type="min"` should be `type="@min"` — the engine never
 logs that one, the schema is the evidence).
 
@@ -388,8 +388,8 @@ nothing in the game or the log says so.** The author can edit it forever with no
 - **Vanilla does this legally** (`cluster_sm3_background_macro` at six paths), so the pattern is only
   a question BETWEEN MODS.
 - Measured on the live modlist: **20 macro names defined at 2+ vpaths by 2+ non-base mods** →
-  20 live / **20 dead** definitions. `cpsdo_faction` 19, `rackham` 1.
-- ⚠ The 19 `cpsdo_faction` ones are all `extensions/cpsdo_zb_modpack/assets/`**`prop`**`/…` against
+  20 live / **20 dead** definitions. `example_faction` 19, `example_shipmod` 1.
+- ⚠ The 19 `example_faction` ones are all `extensions/example_modpack/assets/`**`prop`**`/…` against
   the engine's `assets/`**`props`**`/…` — i.e. the **same one-letter typo** already recorded as
   "134 dead patches", rediscovered by a completely different route. (134 = every file under the
   typo'd dir; 19 = the subset that are macro definitions colliding by name. Both figures are right.)
@@ -422,7 +422,7 @@ engine ALREADY answered.** The profile `debug.txt` is a standing oracle from eve
 - **Capturability is gated in the ship MACRO by `<capture allow="0|1"/>`**, NOT by `libraries/ships.xml`. A ship macro with `<capture allow="0"/>` cannot be captured; **no `<capture>` element = capturable by default.** (The standalone `capturable=` attribute exists only as a `<ship>` attribute on Kha'ak ships in 9.0 — a red herring for Xenon work.)
 - **Xenon capital ships are blocked**: `ship_xen_xl_carrier_01_a_macro` / `..._destroyer_01_a_macro` carry `<capture allow="0"/>` + `<people capacity="0"/>` + an invisible cockpit (`cockpit_gen_invisible_01_macro`). The **Xenon H = `xenon_terraformer_l`** (L-class, added ~8.0) has NO `<capture>` element → it IS natively boardable, and is the right vanilla analogue for capturable-Xenon work. Its bridge is **`bridge_tfm_l_01_macro`** (`tfm`=terraformer).
 - **Boarding difficulty for a crewless (Xenon/AI) ship = `<boarding resistance="N"/>` in the macro properties** (faction ships derive it from real marines instead, so they have no such element). Terraformer baseline = `1600`. Hull-scale for bigger hulls (XL destroyer 265k → ~3800, XL carrier 480k → ~6850 vs the L terraformer's 112k).
-- To make a Xenon capital player-boardable+operable (what the "Capturable Xenon XL" mod does): macro-diff `<remove sel="//properties/capture"/>`, set `<people capacity>`, swap the invisible cockpit for a real bridge (`bridge_tfm_l_01_macro`), add docks/launchtubes/storage, and add `<boarding resistance>`. `noplayerblueprint` on the hull ware also gates player-ownership/equip operations — removing it is part of the workaround and is harmless because there's no in-game method to acquire a Xenon blueprint anyway.
+- To make a Xenon capital player-boardable+operable (what the "Capturable Ship Mod" mod does): macro-diff `<remove sel="//properties/capture"/>`, set `<people capacity>`, swap the invisible cockpit for a real bridge (`bridge_tfm_l_01_macro`), add docks/launchtubes/storage, and add `<boarding resistance>`. `noplayerblueprint` on the hull ware also gates player-ownership/equip operations — removing it is part of the workaround and is harmless because there's no in-game method to acquire a Xenon blueprint anyway.
 
 ### ⚠️ Frozen ship geometry CRASHES on spawn after a version bump (`.jcs` = Jolt collision) — verified 2026-06-24
 - **`.jcs` = Jolt Collision Shape** (X4 migrated to the Jolt physics engine in **6.0**): compiled
@@ -432,7 +432,7 @@ engine ALREADY answered.** The profile `debug.txt` is a standing oracle from eve
   the `.jcs` changes — same shape, new collision encoding.
 - **Symptom:** a mod that ships a **frozen copy of a vanilla ship's geometry folder** (to add a part, e.g.
   a docking-bay door) **hard-CRASHES on spawn** under a newer version, because its stale `.jcs` are
-  rejected by the new Jolt loader. (This is why "Capturable Xenon XL" — frozen at 7.x — crashed spawning a
+  rejected by the new Jolt loader. (This is why "Capturable Ship Mod" — frozen at 7.x — crashed spawning a
   K under 9.0; debug.txt died right after loading `…_data_cx\part_main-hull.jcs`. The author had stayed on
   7.x precisely because 8.0's collision re-bake broke it.)
 - **Durable fix = DON'T ship hull geometry.** Drop the component diff's `<replace sel="//source">…</replace>`
@@ -442,7 +442,7 @@ engine ALREADY answered.** The profile `debug.txt` is a standing oracle from eve
   mesh part the mod genuinely adds (e.g. an `anim_dockdoor`) goes on an **`.xmf`-only sub-component**
   (dockareas carry `anim_dockdoor` + `<animations>` in vanilla — `dockarea_arg_m_station_01.xml`), never
   the hull. **No 3D re-modeling needed** if the vanilla `.xmf` set matches (confirm: every `.xmf`
-  byte-identical → shape unchanged). Standard community fix too (Ship Variation Expansion 9.0 port:
+  byte-identical → shape unchanged). Standard community fix too (Ship Expansion Mod 9.0 port:
   "Fixed JCS collisions"). Caveat: 9.0 also renamed some material/`.out` refs — a stale one can crash
   independently of `.jcs`, so re-check refs + debug.txt after re-pointing.
 
@@ -450,7 +450,7 @@ engine ALREADY answered.** The profile `debug.txt` is a standing oracle from eve
 The durable replacement for a hull-mounted `anim_dockdoor` part (see entry above). A `<part>` always pulls
 its mesh from its component's single `<source geometry>`, so a door part on the **hull** forces a custom
 hull-geometry copy (= the `.jcs` crash). Move it to its **own component** instead. Recipe (per ship,
-"Capturable Xenon XL" K/I):
+"Capturable Ship Mod" K/I):
 - **New `.xmf`-only door component + macro** (`class="dockarea"`), `<source>` → a tiny `_data` folder with
   just `anim_hatch-lod0.xmf` + `-collision.xmf` (**no `.jcs`** → version-proof; the door connection is
   `nocollision` anyway). Register both in `index/components.xml` + `index/macros.xml`.
@@ -471,7 +471,7 @@ hull-geometry copy (= the `.jcs` crash). Move it to its **own component** instea
   Acceptable/cosmetic; clean static fallback = drop `<animations>` + the `.ANI`. The `.ANI` is named
   `<GEOMETRY_FOLDER_UPPERCASE>.ANI` beside the `_data` folder.
 - **Public/personal folder-name dependency:** geometry `<source>` and `index` `value=` paths are relative
-  to game root and **hardcode the extension folder name** (e.g. `extensions\X4CapturableXenonXL\…`). A
+  to game root and **hardcode the extension folder name** (e.g. `extensions\CapturableShipMod\…`). A
   public copy that reuses these paths only resolves its custom geometry if **installed under that exact
   folder name** — so a "personal vs public" pair that's content-identical (id-only diff) must distribute
   under the same folder name, OR have its paths rewritten. (Applies to ALL custom geometry, not just doors.)
@@ -488,15 +488,15 @@ current game version equals NNN exactly** — documented in the official Egosoft
 guide (*"version 1.50 would look for ext_v150.cat; if it exists it will be used to override
 content from your other extension catalog(s)"*) and engine-proven twice from one debug.txt on
 v9.00 (`version.dat` = 900):
-1. `ebi_timelines_faction_use_ship`'s `ext_v800.cat` wares define `ship_tfm_xl_carrier_01_a`;
-   the engine logs `Property lookup failed: ware.ship_tfm_xl_carrier_01_a` → v800 never applied.
+1. `faction_ship_mod`'s `ext_v800.cat` wares define `ship_mod_xl_carrier_01_a`;
+   the engine logs `Property lookup failed: ware.ship_mod_xl_carrier_01_a` → v800 never applied.
 2. The same mod's MD file exists in both cats with the `_a` reference at lines 11+30 (ext_01) vs
    11+26 (v800); the engine's errors cite **11 and 30** → it parsed the ext_01 revision.
 
 Consequences:
 - **A non-matching version cat is dead weight** — "highest vNNN ≤ current" is disproven. After a
-  game update, every mod's `ext_v<old>.cat` silently stops loading (the ebi mods run their
-  pre-8.0 revision on 9.00; ebi_timelines logs 2 cosmetic errors/session from a leftover grant of
+  game update, every mod's `ext_v<old>.cat` silently stops loading (both of those mods run their
+  pre-8.0 revision on 9.00; one of them logs 2 cosmetic errors/session from a leftover grant of
   a ware only its dead v800 wares.xml defines — functionally intact, its MD grants both variants
   and the loaded `_b` set works).
 - **x4validate/`_cat.py` skipping version cats matches the engine** for every installed mod today.
@@ -514,7 +514,7 @@ Reproducing the game's *effective* XML for a file = base + DLC + enabled-mod ove
   - root `<diff>` → apply ops to the prior tree (DLC `libraries/*.xml` are diffs).
   - non-`<diff>` root → strategy depends on the DIRECTORY: **shared-registry dirs (`libraries/`, `index/`, `t/`) are additively UNIONED** (base + every DLC's entries coexist; dedupe by `@id`/`@name`, later-wins), while **`assets/` files are full-file overrides**. Every DLC ships `libraries/ships.xml`, `character_macros.xml`, `wares.xml`, `loadouts.xml`, … as full files and the engine MERGES their entries with the base — `libraries/` is NOT override-only. ⚠️ **x4validate clobber bug (FIXED 2026-06-24):** `_merge.build_effective` used to treat every non-diff overlay as `tree = oroot` (full override), so processing the DLC `libraries/ships.xml` (full `<ships>`) clobbered the base-game ships out of the effective tree → phantom "`sel` matched nothing" for any mod patching a base `<ship>` (e.g. `//ship[@id='xenon_carrier_xl']`). Fix = root-tag-match union for the registry dirs (`_ADDITIVE_DIRS`), dedupe by id/name. See `_merge.py::_union_children` + `tests/test_merge.py::test_full_file_registry_union`.
   - **`index/macros.xml` (and `index/components.xml`) are UNIONED** across base + every DLC + every mod — each extension registers its own `<entry name="X_macro" value="path"/>` mappings. A macro "exists" if its name appears in the merged index. x4validate's `collect_macro_defs` unions these (4663 macros in base+DLC). Mods register new ship/module macros via `<add sel="/index">`.
-  - The three game-root mods (`sn_mod_support_apis`, `kuertee_ui_extensions`, `kuertee_alternatives_to_death`) all use `<diff>` for game XML; `sn_mod_support_apis` ships no game-XML patches (pure Lua/API).
+  - The three game-root mods (`mod_support_apis`, `ui_extensions_mod`, `target_mod`) all use `<diff>` for game XML; `mod_support_apis` ships no game-XML patches (pure Lua/API).
 - **Diff ops (`reference\libraries\diff.xsd`):** `add` (attrs `sel`, optional `pos`=before|after|prepend [default append], `type`, `if`, `silent`), `replace` (`sel` incl. `/@attr`, `if`, `silent`), `remove` (`sel`, `if`, `silent`). `if=` is evaluated against the *current* merged state; a false `if` silently skips. `silent="true"` makes a non-matching `sel` non-fatal. Diffs apply sequentially — a later diff sees earlier diffs' results.
 - **Load order is NOT encoded in `content.xml`** (it lists `id` + `enabled` only). Tiering: base → every installed DLC → enabled mods. **Inter-mod order is undocumented** — any tool wanting bit-exact multi-mod fidelity must confirm empirically (dump the game's merged XML). DLC diffs use defensive `if="not(...)"` guards, implying DLC-applied-before-mods and order-independence within DLC.
 - **The user profile lives at `Documents\Egosoft\X4\<profile-id>\`**, and that id is the Steam3 account id -- treat it as personal data and keep it out of anything you publish. `content.xml` there is the enabled-mod DECISION LOG, not an inventory. With the in-game Steam Workshop download option ON, subscribed mods land directly in the game-root `extensions\` folder; X4 has no `steamapps/workshop` directory of its own, so the absence of one says nothing about what is subscribed.
@@ -543,7 +543,7 @@ When remote-controlling X4 via **RustDesk** (or similar remote desktop software)
 - Mods can add their own translation page IDs — pick a high unique number to avoid collisions with base game and other mods (e.g., 20000+)
 - Without a matching translation entry, the game displays the raw `{page,id}` string as text (visible indicator of a missing string)
 - **t-files are UNIONED, not overridden** (discovered 2026-06-22 building x4validate). The game merges `<page>`/`<t>` entries from *every* `t/` file across base + all DLC + all mods. A DLC's full `<language>` file at the same path does NOT replace the base file — it adds pages. Any tool resolving `{page,t}` must union across all sources, or it will wrongly report base strings as missing (a 5.8 MB base English file was masked by a 73 KB DLC file under naive override).
-- **A string may be defined in the language-NEUTRAL `t/0001.xml` OR the English `t/0001-l044.xml`** (plus per-language `0001-l0NN.xml`). Many mods (e.g. ATD) put their English strings in `0001.xml`. When checking a `{page,t}` exists, look in BOTH `0001.xml` and `0001-l044.xml`. Language code suffixes: l044=English, l049=German, l007=Russian, l086=Chinese.
+- **A string may be defined in the language-NEUTRAL `t/0001.xml` OR the English `t/0001-l044.xml`** (plus per-language `0001-l0NN.xml`). Many mods (e.g. TargetMod) put their English strings in `0001.xml`. When checking a `{page,t}` exists, look in BOTH `0001.xml` and `0001-l044.xml`. Language code suffixes: l044=English, l049=German, l007=Russian, l086=Chinese.
 
 ### content.xml Save Flag
 - `save="1"` means the mod is referenced in save files
@@ -626,41 +626,41 @@ later:
 
 ```xml
 <!-- producer GPP (synchronous): stash result + the pending callback; DO NOT signal the callback here -->
-<set_value name="kATD.$gppResult"          exact="$properties" />
-<set_value name="kATD.$gppPendingCallback" exact="$getPlayerPropertiesCallback" />
+<set_value name="kTargetMod.$gppResult"          exact="$properties" />
+<set_value name="kTargetMod.$gppPendingCallback" exact="$getPlayerPropertiesCallback" />
 
 <!-- sibling: triggered by the producer being signalled, delayed one frame, THEN dispatches -->
 <cue name="DispatchGppCallback" instantiate="true">
   <conditions><event_cue_signalled cue="GetPlayerProperties" /></conditions>
   <delay exact="1ms" />           <!-- any positive delay = next frame; caller sub-cue is live by then -->
-  <actions><do_if value="kATD.$gppPendingCallback">
-    <signal_cue_instantly cue="kATD.$gppPendingCallback" />   <!-- now it IS listening -->
-    <set_value name="kATD.$gppPendingCallback" exact="null" />
+  <actions><do_if value="kTargetMod.$gppPendingCallback">
+    <signal_cue_instantly cue="kTargetMod.$gppPendingCallback" />   <!-- now it IS listening -->
+    <set_value name="kTargetMod.$gppPendingCallback" exact="null" />
   </do_if></actions>
 </cue>
 <!-- callback cue reads the var (signal_cue_instantly could carry param too, but the var keeps callbacks unchanged) -->
-<set_value name="$properties" exact="@kATD.$gppResult" />
+<set_value name="$properties" exact="@kTargetMod.$gppResult" />
 ```
 
 Also note **`signal_cue` cannot carry `param`** (md.xsd rejects `<signal_cue … param=…>`; base-game: 2996
 `signal_cue_instantly` w/ param vs **0** `signal_cue` w/ param) — another reason the var hand-off is needed if
-you ever DO use deferred `signal_cue`. Grounding for the sibling pattern: it's exactly how ATD's own
+you ever DO use deferred `signal_cue`. Grounding for the sibling pattern: it's exactly how TargetMod's own
 `OnGetPlayerProperties_Timeout` and the original async `OnGetPlayerProperties` already dispatch these callbacks
 (from a later frame). A cue with no `namespace="this"` inherits its nearest ancestor's namespace — that's how
-GPP + all four callbacks share `kATD.$gppResult`/`$gppPendingCallback`.
+GPP + all four callbacks share `kTargetMod.$gppResult`/`$gppPendingCallback`.
 
-**Where this bit us:** kuertee ATD's 9.0 port made `GetPlayerProperties` synchronous but kept dispatching from
+**Where this bit us:** a large mod's 9.0 port made `GetPlayerProperties` synchronous but kept dispatching from
 GPP's body → trust/confiscate/destroy/ransom all raced (ransom fired in-game). Two wrong attempts first:
 (1) `_instantly`→`signal_cue` keeping `param` — md.xsd caught it (attribute not allowed); (2) `signal_cue` +
 var hand-off — md.xsd-clean but STILL failed in-game (listener check is at call time). Fixed 2026-07-07 by
-moving the dispatch to the delayed `DispatchGppCallback` sibling. See [[x4_atd_ransom_callback_fix]].
+moving the dispatch to the delayed `DispatchGppCallback` sibling.
 
 ### ⚠️ A library/sub-routine that branches on a value set AFTER it's called → the branch is dead code (verified 2026-07-08)
 An `include_actions`/`run_actions` library that does `<do_if value="$x == 'foo'">` runs its check against `$x`'s
 value **at the moment the include executes**, not later. If the caller sets `$x` *after* the include, that branch
 never fires on the main path — silently. Symptom looks like "the special-case behavior is being ignored."
 
-**Where this bit us:** kuertee ATD `PlayerDeath` set `kATD.$deathAlternative = null`, then `include_actions
+**Where this bit us:** a mod's `PlayerDeath` cue set `kTargetMod.$deathAlternative = null`, then `include_actions
 ref="FindNearestContainers"` (line ~1436, needed early to build the teleport-eligibility list), then chose the
 outcome `$deathAlternatives.random` (`assimilation`/`ransom`/…) at line ~1488 — AFTER. `FindNearestContainers`
 has a dedicated `do_if value="$deathAlternative == 'assimilation'"` branch (respawn at a station aligned with the
@@ -675,10 +675,10 @@ Re-including is safe when the library only writes local find vars (idempotent). 
 branch itself to `match owner="$attackerFaction"` FIRST (land at the new faction's OWN station), falling back to
 the author's original `match_relation_to ge neutral` → `ge kill`. Lesson: **when a shared routine branches on
 state, verify that state is populated at every call site** — a `find`/`include` before the deciding assignment is
-a classic silent no-op. See [[x4_atd_assimilation_respawn_fix]].
+a classic silent no-op.
 
 ### Cue namespace variables and save corruption
-Variables stored on cue namespaces (e.g., `kATD.$ship`, `kATD.$shipCountdownCues`) are serialized into save files. Potential corruption sources:
+Variables stored on cue namespaces (e.g., `kTargetMod.$ship`, `kTargetMod.$shipCountdownCues`) are serialized into save files. Potential corruption sources:
 - Object references to destroyed entities (ships, stations) — deserialize as invalid handles
 - Table keys that mismatch between write and read (key prefix bugs)
 - Cue references pointing to reset/cancelled cues
@@ -687,14 +687,14 @@ Safe pattern: always use `@` operator for potentially-invalid object reads (e.g.
 
 **`save="0"` ≠ "leaves nothing in the save" (common misconception, clarified 2026-06-24).** The content.xml `save` flag ONLY controls whether the mod is recorded as a *save dependency* (the "this save requires extension X" record). It does NOT stop the mod's globals/active-cue namespaces from being serialized. A `save="0"` mod that sets `global.$foo` still writes `global.$foo` into the save; uninstalling leaves orphaned globals + any spawned entities (which persist as normal game objects). This is **residue / can't-cleanly-uninstall**, NOT data-loss corruption — a distinction the community routinely conflates. Mitigation: namespace every global (`global.$mymod_foo`, never `global.$conversation_list_temp`) to avoid cross-mod collisions.
 
-**Cheat-mod "corrupts saves" myth — investigated 2026-06-24 (slan_cheat → iseeu0_cheat lineage).** No evidence of passive/silent vanilla save corruption. The only substantiated mechanism is self-inflicted: **spawning duplicate unique objects (e.g. multiple Player HQs)** — the engine assumes exactly one, so a second one breaks the save (acknowledged by Safe Cheat Panel's own author). The blanket "installing it kills your save" traces to the SWI total-conversion wiki (true only in SWI's script-replacement context) and got generalized as hearsay. Real lesser issues: (1) residue (above); (2) the 2018 `slan_cheat` patches base-game order scripts (`order.move.wait.xml` etc.) via `<diff>` — fragile across version bumps, and confirmed throwing `slan_cheat_database.xml: Property lookup failed` on 9.0. The `iseeu0_cheat` fork already fixed the script-collision by namespacing all orders to `order.iseeu0.cheat.*`.
+**Cheat-mod "corrupts saves" myth — investigated 2026-06-24 (an old cheat menu and the modern fork that replaced it).** No evidence of passive/silent vanilla save corruption. The only substantiated mechanism is self-inflicted: **spawning duplicate unique objects (e.g. multiple Player HQs)** — the engine assumes exactly one, so a second one breaks the save (acknowledged by one such mod's own author). The blanket "installing it kills your save" traces to a total-conversion mod's wiki, where it is true only in that mod's script-replacement context, and got generalized as hearsay. Real lesser issues: (1) residue (above); (2) the 2018 original patches base-game order scripts (`order.move.wait.xml` etc.) via `<diff>` — fragile across version bumps, and confirmed throwing `Property lookup failed` against its own database file on 9.0. The maintained fork already fixed the script-collision by namespacing all of its orders under its own prefix, which is the general lesson: **an order script at a vanilla path is a collision waiting to happen; namespace yours.**
 
 ### Spawning fully-equipped ships: `generate_loadout` + `apply_loadout` (verified vs 9.0 reference, 2026-06-24)
 To spawn an EQUIPPED ship in MD, do NOT try to specify the loadout inline in `<create_ship>` — vanilla creates the ship bare, then equips it afterward:
 - `generate_loadout` **returns a LIST** of loadout variants (vanilla even comments `"returns a LIST of loadouts"`). `apply_loadout` takes ONE element — iterate the list (`<do_for_each>`), or `$loadout.{1}`.
 - `level` is a **scalar 0.0–1.0** (`level="1"`, `"0.9"`, `$ship.loadoutlevel`) — NOT a `<level min/max>` range. 1.0 = fully equipped.
 - `faction` must **match the ship's owner/race** (`faction="$shipfaction"`), NOT hardcoded to one faction. Wrong faction → incompatible/empty loadout → ship spawns with no engines/weapons (the classic cheat-mod spawn bug).
-- Robust pattern (from Safe Cheat Panel, working on 9.0): after `apply_loadout`, `find_object_component class="class.engine"` and retry/iterate until one has an engine.
+- Robust pattern (from a cheat-panel mod, working on 9.0): after `apply_loadout`, `find_object_component class="class.engine"` and retry/iterate until one has an engine.
 ```xml
 <generate_loadout result="$loadout" faction="$ownerFaction" macro="$shipMacro" level="1.0"/>
 <do_for_each name="$lo" in="$loadout"><apply_loadout object="$ship" loadout="$lo"/>
@@ -704,37 +704,37 @@ To spawn an EQUIPPED ship in MD, do NOT try to specify the loadout inline in `<c
 
 ### Conversation choices now REQUIRE `actor` (9.0) — and the cheat-menu activation events
 `<add_player_choice_subconv>` (and `<add_player_choice>`) now **require an `actor` (or `template`) attribute** in 9.0. Missing it → load-time `[=ERROR=] Neither of the attributes 'actor' and 'template' is present!` and the choice **silently does not appear in the menu** (the rest of the conversation still works). Fix: add `actor="player.computer"`. **x4validate's XSD pass does NOT catch this** (conditional-attribute rule, not plain content-model/required-attr) — only the engine/debug.txt flags it. → validator-extension candidate.
-- The **Slan/ICU cheat menu is activated by game controls, not a mod hotkey**: `event_player_toggled_cockpit` → full menu (`start_conversation conversation="iseeu0_cheat_menu"`); `event_player_toggled_hud` → quick menu. User binds/uses **Settings → Controls → "Toggle Cockpit" / "Hide HUD"**. `event_player_toggled_cockpit` confirmed valid in 9.0 (vanilla `scenario_tutorials.xml`).
+- **A cheat menu can be activated by game controls rather than a mod hotkey**: `event_player_toggled_cockpit` → full menu (`start_conversation conversation="<mod>_cheat_menu"`); `event_player_toggled_hud` → quick menu. User binds/uses **Settings → Controls → "Toggle Cockpit" / "Hide HUD"**. `event_player_toggled_cockpit` confirmed valid in 9.0 (vanilla `scenario_tutorials.xml`).
 - Null-safety: `$obj.order.state` throws `Property lookup failed` when `.order` is null (idle ships) — guard with `@$obj.order.state`.
 
-### Player ejection / death is ENGINE-INTERNAL; how ATD suppresses it (verified 2026-07-05)
+### Player ejection / death is ENGINE-INTERNAL; how a mod suppresses it (verified 2026-07-05)
 Vanilla emergency-eject is a **built-in engine feature** ("Automatically eject in an emergency"),
 NOT an MD cue. No script spawns the spacesuit — the engine does, then raises `event_player_ejected`,
 which MD only *observes* (`base:md/tutorial_global.xml:351 FirstEmergencyEject`,
 `base:md/notifications.xml:766 PlayerEjected`). Toggled via `set_emergency_eject_active` /
-`player.hasemergencyeject`. **kuertee Alternatives To Death disables ejection with two independent
+`player.hasemergencyeject`. **A death-alternative mod can disable ejection with two independent
 locks:** (1) `Init` runs `<set_emergency_eject_active active="false"/>` (engine feature off, so
 `event_player_ejected` never fires — flipped back on only while the Options menu is open); (2) on
-first damage `OnPlayerShipHit` pins the ship via `<set_object_min_hull object="$ship" exact="1"/>`
-so the engine never reaches ship-destroyed-with-player-aboard. ATD then teleports the player out
+first damage its hit handler pins the ship via `<set_object_min_hull object="$ship" exact="1"/>`
+so the engine never reaches ship-destroyed-with-player-aboard. It then teleports the player out
 FIRST and destroys the now-empty ship itself. **Interaction consequence:** a third ejection/escape
-mod hooking `event_player_ejected` or `event_object_destroyed` on the player ship is DEAD under ATD
-(neither fires); only a hull-% poll could co-fire (ATD holds hull at 1). ATD integrates kuertee's
-own Escape Pod (Nexus 596) as a manual countdown button via `md.EscapePod.*` probing, not events.
-Trace any such question with `x4xref who-calls set_emergency_eject_active` / `who-listens
+mod hooking `event_player_ejected` or `event_object_destroyed` on the player ship is DEAD under
+such a mod (neither fires); only a hull-% poll could co-fire (the hull is held at 1). Trace any
+such question with `x4xref who-calls set_emergency_eject_active` / `who-listens
 event_player_ejected` (one query vs ~10 greps — the tokens share no keyword with "eject"/"death").
-(The INSTALLED provider of `md.EscapePod` is Nexus **1899** "Escape Pod Reloaded" by
-strayhound/Mystermask625/MrBlair29 — a fork of kuertee's original Nexus 596; both use namespace
-`md.EscapePod`, so ATD's `md.EscapePod.*` integration binds to whichever is installed.)
+**A related trap:** two different mods can publish the SAME cue namespace (a fork and the
+original it forked), so an integration that probes `md.<Namespace>.*` binds to whichever is
+installed. That is a feature, not a bug — but it means *"is mod X installed?"* is the wrong
+question and *"does this namespace resolve?"* is the right one.
 
-### Vanilla crew/NPC bail is OWNERSHIP-gated (not size-gated); the atd_ejection_router mod (2026-07-06)
+### Vanilla crew/NPC bail is OWNERSHIP-gated (not size-gated); injecting into a death flow (2026-07-06)
 Two SEPARATE bail systems, NEITHER picks suit-vs-pod by ship size:
 - **Harassment/surrender bail** — `base:md/notifications.xml:1184 PlayerOwnedShipAttacks`, fires while the
   ship is ALIVE (damage-to-claim). Vehicle = OWNERSHIP: `eject_people ... spacesuit="$target.isplayerowned"`
   → your crew → SUIT; the enemy branch is a bare `eject_people` (no `spacesuit=` → defaults FALSE) → enemy →
   vanilla POD (`crewtransfer.podmacro = ship_gen_xs_escapepod_01_a_macro`), at ALL sizes. The PLAYER is
   EXCLUDED (`not $target.pilot.isclass.player`) — never fires on the player's occupied ship.
-- **Escape Pod mod NPC bail** — `escape_pod_npc.xml:54 PlayerOwnedKilled` on `event_player_owned_destroyed`,
+- **A rescue mod's NPC bail** — `rescue_npc.xml:54 PlayerOwnedKilled` on `event_player_owned_destroyed`,
   player-owned only. Size gates only the survivor COUNT (`$maxnum_bail` S:0-1 … XL:10-30); survivors go to
   SUITS then its own pod-rescue. Vanilla has NO crew-survives-on-destruction; the mod ADDS it.
 - Suit-vs-pod for CREW is cosmetic — vanilla rescue mechanisms (`g_rescueplayersuit`, `RescueShip`,
@@ -744,9 +744,9 @@ Two SEPARATE bail systems, NEITHER picks suit-vs-pod by ship size:
 - **Player spacesuit macro:** `ship_gen_xs_spacesuit_01_a_macro` (what `entity_player_macro` assigns);
   race variants `ship_{arg,par,tel}_xs_spacesuit_01_a_macro` exist. `eject_people`/`eject_npcs` `spacesuit=`
   bool chooses suit vs `crewtransfer.podmacro`; both FORBIDDEN on `ship_xs`.
-- **Reusable technique — injecting an ejection branch into ATD** (from the `atd_ejection_router` mod):
-  inject after ATD's `$deathAlternatives.random` pick (`kuertee_atd.xml:1488`) and null
-  `kATD.$deathAlternative` + `$isDestroyShip` to neutralize ATD's own outcome, then run your own eject.
+- **Reusable technique — injecting an ejection branch into a death-alternative mod:**
+  inject after the host mod's random-outcome pick and null both its chosen-outcome variable
+  and its destroy-ship flag, to neutralize the host's own outcome, then run your own eject.
   Two findings verified in-game 2026-07-06: (1) **re-enabling the engine emergency-eject at the death
   moment DOES NOT eject** — `set_emergency_eject_active active="true"` honors (`isemergencyejectactive`
   0→1) but the engine never ejects on a scripted/held destruction (`event_player_ejected` never fires);
@@ -754,8 +754,8 @@ Two SEPARATE bail systems, NEITHER picks suit-vs-pod by ship size:
   or it dies instantly** — an unprotected spacesuit was killed by enemy `hitbyareadamage` 0.04s after
   spawn. Pin it on creation: `set_object_min_hull object="$craft" exact="100"` (+
   `disable_collisions_between` with the doomed ship), then teleport the player in, destroy the empty
-  hull, and release the pin after a grace window. This is exactly what Escape Pod's TriggerPod does for
-  its pod. Mod specifics in project memory.
+  hull, and release the pin after a grace window. This is exactly what a rescue mod's own pod trigger
+  does for its own pod.
 
 ### NPC starting skills live in `libraries/characters.xml` (verified 2026-07-05)
 Each `<character>` has a `<skills><skill type= min= max= exact=>` block on a **0–15 scale**
@@ -776,9 +776,9 @@ character tier.** No script-side skill override exists (`create_npc_*` has no sk
 ### md.xsd is STRICTER than the live 9.0 engine — false-positive catalog (2026-07-06)
 The reference `md/md.xsd` rejects constructs the running engine accepts. Do NOT "fix" these on the schema's
 say-so alone — check whether vanilla 9.0 `reference\` itself uses the same form:
-- **mdscript `name` must match `[A-Z][A-Za-z0-9_]+`** (uppercase-first) per md.xsd — yet ATD ships
-  `name="kuertee_atd"` (lowercase) and runs fine; the engine ignores the pattern. (Still, uppercasing your
-  own script name, e.g. `ATD_Ejection_Router`, is a free way to pass the schema check.)
+- **mdscript `name` must match `[A-Z][A-Za-z0-9_]+`** (uppercase-first) per md.xsd — yet TargetMod ships
+  `name="target_mod"` (lowercase) and runs fine; the engine ignores the pattern. (Still, uppercasing your
+  own script name, e.g. `Ejection_Router`, is a free way to pass the schema check.)
 - `<orientation refobject= orientation="look_away">` inside `<create_ship>` — flagged, but vanilla 9.0 uses
   it in ~6 places (e.g. `gm_ambush.xml`). Valid.
 - `<wait>` child of `<find_station>` — flagged, but vanilla `order.plunder.xml` uses it. Valid.
@@ -830,16 +830,16 @@ Validate mod MD/aiscript files against the **bundled** schemas `reference\librar
 > **Caveat: 24 element names are declared with conflicting required sets** (`ware` requires nothing
 > in one context, `ware` in another), so the table takes the INTERSECTION and can only under-report. Schema self-declares via root `<aiscript>`/`<mdscript>` + `xsi:noNamespaceSchemaLocation`. lxml catches the break exactly: `Element 'find_station': The attribute 'space' is required but missing`.
 - **`space=` now REQUIRED on a whole family** (common.xsd): `find_station`, `find_station_by_true_owner`, `find_ship`, `find_object`, `find_gate`, `find_highway_entry_gate`, `find_highway_exit_gate`; `count_{gates,objects,ships,stations}`; and every `set_space_*`/`reset_space_*` (faction logic, economy, security, jobs, sunlight, location tags). Fix: add `space="..."` (zone/sector/cluster/galaxy; galaxy-wide = `space="player.galaxy"`).
-- **⚠ md.xsd is STRICTER than the engine — CATEGORIZE XSD results, don't gate** (discovered 2026-06-22 running `x4validate --update` on *working* ATD: 14 schema "errors" yet the mod loads+runs on 9.0). The **only reliable migration signal is `"attribute X is required but missing"`** (the `space=` family — the loader enforces required attrs). FALSE POSITIVES the engine tolerates: **name-pattern facets** (md.xsd demands `[A-Z][A-Za-z0-9_]+` script/cue names, but lowercase `kuertee_atd`/`kATD`/`onDropDownConfirmed` work fine) and **`"attribute not allowed"`** (`debug_text/@exact`, `owner/@faction`, `create_ship/@position|@rotation`, `create_mission/@object` — md.xsd is incomplete; key/identity-constraint errors cascade from the name facet). x4validate's `check_xsd` **gates** (`error`) the **`required but missing`** class (loader enforces) AND **`element not expected`** (an action absent from the engine's schema → likely removed/renamed; for a migration tool, safer to flag than miss); attribute-not-allowed + name-facets + key cascades are `xsd-strict` advisories. **Nothing is hidden** — advisories are still reported; categorization only sets severity/exit-code. The **Migration Map + an in-game `debug.txt` run remain the authority** on what truly breaks; XSD is a categorized detector, not the final word.
+- **⚠ md.xsd is STRICTER than the engine — CATEGORIZE XSD results, don't gate** (discovered 2026-06-22 running `x4validate --update` on *working* TargetMod: 14 schema "errors" yet the mod loads+runs on 9.0). The **only reliable migration signal is `"attribute X is required but missing"`** (the `space=` family — the loader enforces required attrs). FALSE POSITIVES the engine tolerates: **name-pattern facets** (md.xsd demands `[A-Z][A-Za-z0-9_]+` script/cue names, but lowercase `target_mod`/`kTargetMod`/`onDropDownConfirmed` work fine) and **`"attribute not allowed"`** (`debug_text/@exact`, `owner/@faction`, `create_ship/@position|@rotation`, `create_mission/@object` — md.xsd is incomplete; key/identity-constraint errors cascade from the name facet). x4validate's `check_xsd` **gates** (`error`) the **`required but missing`** class (loader enforces) AND **`element not expected`** (an action absent from the engine's schema → likely removed/renamed; for a migration tool, safer to flag than miss); attribute-not-allowed + name-facets + key cascades are `xsd-strict` advisories. **Nothing is hidden** — advisories are still reported; categorization only sets severity/exit-code. The **Migration Map + an in-game `debug.txt` run remain the authority** on what truly breaks; XSD is a categorized detector, not the final word.
 - Future required-attr/removed-action shifts are auto-discoverable by **diffing old vs new XSDs** (the stewardship loop).
 
 ### Tier 2 — Runtime-only (grep-heuristic + debug.txt; NOT in schemas)
-- **SirNukes `Lua_Loader` is DEAD** — `<raise_lua_event name="'Lua_Loader.Load'">` no longer functions. Load UI Lua natively via `ui.xml` + call `ModLua.init()` yourself (see 2026-06-22 Session 4 log).
-- **`kHUD` is now a GLOBAL** in UIX `menu_toplevel.xpl` (standalone `kuertee_hud` module deleted).
+- **The community `Lua_Loader` API is DEAD** — `<raise_lua_event name="'Lua_Loader.Load'">` no longer functions. Load UI Lua natively via `ui.xml` + call `ModLua.init()` yourself.
+- **`kHUD` is now a GLOBAL** in UIX `menu_toplevel.xpl` (standalone `hud_module` module deleted).
 - **`.keys.list.clone` deprecated → `.keys.list`.** Same family: **`.keys.list.count` → `.keys.count`** (engine emits a non-fatal "inefficient lookup pattern" warning, not an error, naming the exact replacement).
 - **Protected UI Mode** must be OFF for UI-extension mods (`<uisafemode>false</uisafemode>` in profile `config.xml`, toggled in-game).
 - Core DATA libraries (wares/jobs/god/factions) are schema-STABLE — data mods port easily; breakage concentrates in scripts + Lua/UI.
-- **9.0 expression-grammar breaks — NOT visible to XSD, only to a live debug.txt load** (found porting `escape_pod`, 2026-07-06):
+- **9.0 expression-grammar breaks — NOT visible to XSD, only to a live debug.txt load** (found porting `rescue_mod`, 2026-07-06):
   - `$list.{random(1,$list.count)}` (the old `random(min,max)` call form) → `'}' expected` parse error. Fix: `$list.random` (vanilla's own idiom for "pick one element", used 12+ times in `fight.attack.object.*`).
   - A format string missing the required `.` before its substitution list — `'fmt'[args]` → `Operator expected`. Must be `'fmt'.[args]`. (Author typo, not itself a 9.0 change, but 9.0's parser now rejects it where 8.0 apparently didn't.)
   - A bare `{a, b}` used as a **list literal** (e.g. as `do_for_each ... in="{a, b}"`) now parses as a `{page,line}` textref reference first → `TextDB page ID expected`. Fix: use `[a, b]` (square brackets) for list literals — confirmed against vanilla `order.mining.routine.xml:788` / `trade.find.commander.xml:288` (`do_for_each ... in="[class.production, class.buildmodule]"`). **This is a silent-until-runtime break**: it doesn't error at load, only when the cue actually executes the malformed expression (yields `null`), producing `Evaluated value 'null' is not a list, group or table` at the `do_for_each`/`do_all` that consumes it — check debug.txt for this exact message, not just load-time `[=ERROR=]` lines.
@@ -861,99 +861,15 @@ be missing this whole block; that's a 7.50-era port gap, not a 9.0 one. Source:
 | Boost gets its own energy pool (previously drew from shields) | **7.50** | high | |
 | Travel-drive charge-time/speed rebalanced per race/engine | **7.50** | high | Terran fastest charge, Paranid fastest top speed |
 | 90+ shields rebalanced; new "shield modifiers" (capacity/recharge bonus on certain hulls) | **9.0** | high | Egosoft's own Beta 1/final notes |
-| L/XL shields have a regen-delay mechanic | **9.0** | **CONFIRMED 2026-08-02** | Measured over every `shieldgenerator` macro in `reference\` (base + 6 DLC): **all four sizes carry `<recharge delay=…>` > 0** — S 34/34 (2–18.5 s), M 43/43 (2.5–16.6 s), L 22/22 (3–19 s), XL 13/13 (3–19 s). The old "previously S/M only" framing is wrong for 9.0; delay is universal. **But see the VRO row below — VRO strips it from S/M.** |
+| L/XL shields have a regen-delay mechanic | **9.0** | **CONFIRMED 2026-08-02** | Measured over every `shieldgenerator` macro in `reference\` (base + 6 DLC): **all four sizes carry `<recharge delay=…>` > 0** — S 34/34 (2–18.5 s), M 43/43 (2.5–16.6 s), L 22/22 (3–19 s), XL 13/13 (3–19 s). The old "previously S/M only" framing is wrong for 9.0; delay is universal. **A total-conversion overhaul in the modlist may strip it from S/M — read the EFFECTIVE tree, not `reference\`.** |
 | "Travel Drive Stability" — ships absorb some hits before being knocked out of travel (previously any hit ended it) | **9.0** | medium-high (existence) / medium (mechanism detail) | |
 | Collision-shape re-export required; S/M ship models resized (engines/shields moved INTO hull mesh) | **9.0** | high | the actual 9.0 ship-porting breaking change — not flight tuning |
 | AI capital-ship movement/station-avoidance tuning | **9.0** | high | AI/piloting, not player-facing physics (drag/mass/thrust unchanged) |
-| **VRO's "internal shield" mechanic** | never vanilla, any version | confirmed | VRO-only feature, removed in VRO 5.01 — see below |
 
 **Practical implication:** a ship failing to load or behaving oddly under 9.0 is much more likely a
 collision-shape/model-resize issue than a missing flight-tuning block (that schema's been stable
 since 7.50). For ground-truth numeric deltas (exact shield rebalance values), diff a pre-9.0 vs
 current `reference\` macro directly — prose changelogs don't carry the numbers.
-
-### VRO-specific 9.0 shifts (VRO 5.01 / the 9.0 line)
-
-**Standing baseline rule (user-set 2026-08-02): for anything weapons / engines / shields / missiles,
-VRO 5.01 IS the baseline, not vanilla.** VRO is a total overhaul and is always in the modlist, so a
-vanilla-only number is provenance, never a verdict. Quote vanilla *and* VRO (Three Values Rule).
-
-- ✅ **`x4effective` under-reported VRO for months — FIXED 2026-08-08 (`72aea46`).** Root cause was
-  NOT case-folding (an earlier entry here said so; that was wrong and unverified). It was
-  `_merge._do_replace` dropping any `<replace>` whose selector resolved to the **document root** —
-  i.e. VRO's `<replace sel="//macros">` whole-file override idiom — while `apply_diff` still
-  reported the op applied. **858 ops** were affected: `vro` 848 (units 266, weaponsystems 220,
-  engines 159, weaponfx 104, surfaceelements 101), `propersized_missile` 9, `code_vgr_battleship` 1.
-  After the fix VRO went from **0 → 101** owned `shieldgenerator` entities.
-  **`x4compat` was proven unaffected** — same modlist before/after gave 419 rows, 0 added, 0
-  removed, **0 winner changes** — because collision topology and load-order winners do not depend on
-  whether a value landed. Values-based tools (`x4effective`, `x4stats`, balance work) were the ones
-  reading vanilla where a mod had overridden.
-  - Case variance is still real but is a **portability** matter only: 491 VRO files and 101
-    `pdrealisticboosters` files differ from vanilla paths by case. Windows and `_cat._get_ci`
-    handle it; **Linux/Proton would not.**
-- ✅ **Sibling defect, same family — NESTED cross-mod patches were invisible from the owner's-file
-  door — FIXED 2026-08-11 (v2.2.1).** `build_effective` resolved `extensions/<owner>/<rel>` only
-  when the *requested* vpath was the nested one; building the owner's PLAIN vpath (what the store
-  does for every file) never probed later overlays for their nested form. Two doors to one logical
-  document gave two answers: **Tier B said cpsdo_vro's 27 bullet overrides resolve, x4effective said
-  cpsdo_zb_modpack owned every value — both were internally consistent and jointly false.** The
-  engine has ONE document (F19), so the plain door was wrong. Measured on the corrected tree:
-  **cpsdo_vro's weapon-fx half is FULLY LIVE** (27 diffs + 2 nested full overrides, all winning),
-  and SVE-VRO's nested `<remove sel="//macros/macro[@name='tartarus_macro']"/>` really deletes the
-  ship the old tree kept alive — any past x4stats/balance read of SVE or CPSDO content predating
-  2026-08-11 is suspect. Full differential over the 114-mod install: 834 attr values, 27 entity
-  origins, 60 phantom dupes, 21 remove-rows — **0 unexplained**. `x4compat` proven NOT blind (it
-  aliases owner files under the nested key). **Double-nesting** (`extensions/<modA>/extensions/…`,
-  a patch on another mod's patch file) is deliberately left at old behavior — engine handling
-  unproven, and `ebi_m0_vro` ships both forms, so rewriting double-applied its ops.
-  **Standing lesson: when two of our own tools disagree about the same value, that disagreement IS
-  the finding — chase it before using either answer.**
-- **VRO REMOVES the S/M shield regen delay that vanilla 9.0 has (measured 2026-08-02, RE-CONFIRMED
-  2026-08-08 by direct `_cat` read of VRO's diffs — `shield_arg_s/m_*` delay=0, `shield_arg_l/xl_*`
-  delay=10, `shield_kha_*` delay=2).** Counting
-  `shieldgenerator` macros with `<recharge delay=…>` > 0: vanilla S **34/34** and M **43/43**; VRO
-  S **1/24** and M **3/44**. L and XL keep it in both (VRO L 22/22, XL 11/11, delay 5–20 s). VRO
-  shields are also much larger at those sizes (median capacity VRO S 3,443 / M 15,300 vs vanilla
-  1,259 / 6,000), so the missing delay compounds. Any "shield regen cooldown for S/M" work is
-  therefore a **VRO regression repair**, not a preference — and a diff written against vanilla's
-  values will silently miss.
-- **VRO travel-engine profile differs by size (measured 2026-08-02).** Median travel thrust
-  multiplier — vanilla S 11.0 / M 8.0 / L 28.3 / XL 25.4; VRO S 14.4 / **M 19.8** / L 30.0 / XL 30.0.
-  So VRO makes **M faster than S** (vanilla is the reverse) and **ties L with XL** (vanilla favors L).
-  VRO expresses the size trade through charge time instead: S/M 1 s, L 8 s, XL 15 s. NB these are
-  thrust multipliers, not m/s — final speed needs thrust × multiplier ÷ drag per ship.
-- **VRO sets radar per-ship, not globally.** Its `libraries/defaults.xml` is a diff patch with **zero**
-  radar elements; instead 54 ship macros carry their own `<radar range=…>` (e.g. Argon destroyers
-  50,000 m, Scylla 60,000 m, Ariadne 55,000 m) against vanilla's 40,000 m default. Removing VRO's
-  radar changes drops those 54 ships to the vanilla default — targeted, not sweeping.
-- **VRO adds 43 missiles on top of vanilla's 41** (62 total) including a **cruise class that does not
-  exist in vanilla** (`missile_cruise` / `missile_xen_cruise`, 30,000 m). Vanilla's longest guided is
-  39,000 m; VRO's is 30,000 m. Within VRO alone, torpedoes cap at 13,000 m — below its own 20,000 m
-  L beams.
-  - ⚠ **CORRECTION (2026-08-08): do NOT quote the VRO-only figures as the game's missile ladder.**
-    The live modlist has **124 effective missiles from 7 sources**, and the VRO-only picture is
-    badly unrepresentative: `propersized_missile` adds **30,000 m torpedoes** (`missile_gen_l_torpedo2/3_01_mk1`,
-    30,000 dmg, hull 300), `xspvro`'s `xen_cruise` reaches **60,000 m**, and `cpsdo_zb_modpack`
-    contributes **33 missiles** including one at **80,000 m / 10,000,000 damage**. Effective spans:
-    torpedo 3,000–30,000 m, cruise 14,000–60,000 m. Any missile-balance claim must come from the
-    **effective store**, not from VRO+vanilla raw files.
-- **Internal shields (`ishield_*`) REMOVED from VRO core (verified 2026-07-19).** Older VRO added an
-  "internal shield" mechanic — extra shield generators mounted as internal surface elements
-  (`ishield_*_macro`, class `shieldgenerator`). VRO 5.01 dropped it: **0 `ishield_` references in
-  `extensions\vro\ext_01.cat`; 0 in vanilla 9.0 reference.** Consequence for porting: any ship/patch
-  mod built for old VRO that ships `ishield_*` macros is now patching a **dead mechanic** — those
-  files are vestigial (they define generators nothing mounts). This is a recurring, high-volume
-  obsolescence signal when recovering pre-9.0 VRO content.
-  - Quantified on the user's own recovery corpus: `mas_ror_vro_patch` = **53 of 54 files** are
-    `ishield_ror_*` (≈98% obsolete for 9.0); `masvro_submod` = **155 of 397** (~39%); the `zMAS191`
-    capstone = **0** (weapons/bullets/mines — survives intact). Ship-addon mods still shipping
-    `ishield` in the effective tree today (advisory, they still load): `ebi_m0_vro` (1), and CPSDO's
-    own **8.1**-era `cpsdo_vro` submod (18) — CPSDO's VRO patch predates the removal too.
-  - **Detection idiom:** `uv run x4effective sql "SELECT name,origin FROM entities WHERE name LIKE
-    '%ishield%'"` (current effective tree) or `grep -c ishield_` a mod's cat/loose files.
-  - Regular (non-internal) shields — the shared `shield_*_macro` in `assets\props\SurfaceElements\
-    macros\` — are UNAFFECTED; see the Mechanics Interlock table below.
 
 ## Mechanics Interlock Map (gameplay-impact reasoning)
 
@@ -1035,7 +951,7 @@ Hard-won patterns from building MD+Lua mods (logistics/UI). Engine facts, not mo
 - In diff XPath, `//` matches ANY descendant; in complex cue trees prefer the fully-qualified
   `[@name='X']/child` to avoid matching the wrong node.
 
-### kuertee UI Extensions — station-info tab (a common UI dependency)
+### Adding a station-info tab through a UI-extension dependency
 - Register via `info_sub_menu_to_show` / `info_sub_menu_is_valid_for` / `info_sub_menu_create`
   (`menu.registerCallback`, MapMenu).
 - **13-column limit** in the tab strip: count `config.infoCategories` before inserting; at ≥13,
