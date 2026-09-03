@@ -92,6 +92,11 @@ function Detect-XRCat {
   return $XRCatTool
 }
 
+# Paths never copied between toolkits, pruned from the destination BOTH before and
+# after the copy. One list, named once: two passes over two hand-written lists is how
+# they drift, and the defect this fixes was one of the passes not running at all.
+$X4CopyPrune = @('tools\x4validate\.venv','tools\x4validate\.pytest_cache','tools\x4validate\.mutation-probe-pristine')
+
 function Copy-Toolkit($dest) {
   New-Item -ItemType Directory -Force -Path (Join-Path $dest '.claude') | Out-Null
 
@@ -127,6 +132,17 @@ function Copy-Toolkit($dest) {
   # Copy-Item copied 0 files, while -LiteralPath copied all of them. The installer then
   # printed "install complete" over an empty destination, and the README says "extract
   # it anywhere".
+  # PRUNE THE DESTINATION FIRST. The same list runs after the copy loop, and running
+  # it ONLY after is what broke the bash installer on the documented upgrade path:
+  # uv hardlinks package files from a shared cache, so once both trees have been synced
+  # the same file has the same inode in each and a recursive copy refuses. A cleanup
+  # that only runs after the copy cannot make the copy possible. Kept in step with
+  # install.sh deliberately -- one installer correct by accident is how the two drift.
+  foreach ($junk in $X4CopyPrune) {
+    $p = Join-Path $dest $junk
+    if (Test-Path -LiteralPath $p) { Remove-Item -Recurse -Force -LiteralPath $p -ErrorAction SilentlyContinue }
+  }
+
   $missing = @()
   foreach ($i in $items) {
     $s = Join-Path $SRC $i
@@ -147,7 +163,8 @@ function Copy-Toolkit($dest) {
   # each -- and a recursive copy then fails with "are the same file", 1,334 times, part
   # way through. pyvenv.cfg and the Scripts shims also embed absolute paths, so a copied
   # venv points back at the source. setup.sh recreates it anyway.
-  foreach ($junk in @('tools\x4validate\.venv','tools\x4validate\.pytest_cache','tools\x4validate\.mutation-probe-pristine')) {
+  # ...and again afterwards, so the SOURCE machine's virtualenv does not linger here.
+  foreach ($junk in $X4CopyPrune) {
     $p = Join-Path $dest $junk
     if (Test-Path -LiteralPath $p) { Remove-Item -Recurse -Force -LiteralPath $p -ErrorAction SilentlyContinue }
   }
@@ -361,6 +378,20 @@ function Install-Global($t) {
     exit 1
   }
   Write-Host "  installed x4 skills + agents into $hc ($($copied.Count) file(s))"
+  # STATED, because it is the difference between this layout and the other two.
+  # The guards are registered in a repo's .claude/settings.json, which this
+  # method does not copy, and each hook is addressed as
+  # $CLAUDE_PROJECT_DIR/.claude/hooks/... -- globally that resolves to whatever
+  # repo the user has open, not to the toolkit. They are NOT installed here on
+  # purpose: running them in every unrelated project, on the blocking hook path,
+  # to guard X4 paths that are not present, is how a guard gets switched off.
+  Write-Host ""
+  Write-Host "  NOTE: this layout installs the SKILLS AND AGENTS ONLY."
+  Write-Host "        The safety guards -- the command and file hooks, and the automatic"
+  Write-Host "        backup before every edit -- are NOT installed by -Method global."
+  Write-Host "        They are per-project: they live in a repo's .claude/settings.json"
+  Write-Host "        and resolve their paths from that project. Use -Method in-game or"
+  Write-Host "        -Method separate in a mod repo to get them there."
   # merge env into settings.json
   $sj = Join-Path $hc 'settings.json'
   $cfg = if (Test-Path -LiteralPath $sj) { Get-Content -Raw -LiteralPath $sj | ConvertFrom-Json } else { [pscustomobject]@{} }

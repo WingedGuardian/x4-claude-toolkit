@@ -310,7 +310,7 @@ The chosen paths are written to `<toolkit>/.claude/x4-paths.env`.
 |--------|--------------|-------------|
 | **in-game** | Copies the toolkit into your X4 game folder (the original model). | One game, one workspace. |
 | **separate** | Toolkit lives in its own folder, pointed at the game via config. | Keep the game folder clean. |
-| **global** | Installs the skills/agents into `~/.claude` and writes the `X4_*` paths into your global Claude settings. | **Several mod repos** — the skills/validator then work from any of them. |
+| **global** | Installs the skills/agents into `~/.claude` and writes the `X4_*` paths into your global Claude settings. **Skills and agents only — the safety guards are not installed.** | **Several mod repos** — the skills/validator then work from any of them. |
 
 ```bash
 # Linux / macOS / Windows (Git Bash)
@@ -323,6 +323,16 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Method global
 ```
 > Windows note: the hooks/scripts are bash, so running the toolkit needs **Git Bash**
 > (the PowerShell installer just does the setup).
+
+> **`global` installs no guards.** The command guard, the file guard and the automatic
+> backup described under *Safety, built in* are registered in a project's
+> `.claude/settings.json`, and each hook resolves its paths from the project it runs
+> in. `--method global` does not copy that file, so a global install gives you the
+> skills and agents and none of the protection. This is deliberate rather than an
+> omission: registering them globally would run them in every unrelated repository
+> you open, on Claude's blocking pre-tool path, to guard X4 paths that are not there.
+> To get the guards, install with `in-game` or `separate` **in the mod repo you want
+> them in** — the two layouts can coexist, and the installer prints this note too.
 
 ---
 

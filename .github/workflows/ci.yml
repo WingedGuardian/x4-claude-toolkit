@@ -130,9 +130,8 @@ jobs:
           test -f "$TK/.claude/x4-paths.env" || { echo "no x4-paths.env"; exit 1; }
           test -d "$TK/tools/x4validate"     || { echo "no tools/x4validate"; exit 1; }
           test -d "$TK/mods"                 || { echo "no mods/ (x4live extension)"; exit 1; }
-          # A venv must not travel: uv hardlinks from a shared cache, so a recursive
-          # copy of one aborts with "are the same file" part way through.
-          test ! -e "$TK/tools/x4validate/.venv/pyvenv.cfg.SOURCE" || { echo "venv travelled"; exit 1; }
+          # (The venv assertion lives on the upgrade run below, where it CAN fail:
+          # the check that stood here named a file nothing creates.)
           # The config bash cannot source is the failure the escaping exists to stop.
           ( set -a; . "$TK/.claude/x4-paths.env" ) || { echo "x4-paths.env does not source"; exit 1; }
 
@@ -146,7 +145,26 @@ jobs:
           # LIVE file. `grep -r` over .claude/ is NOT the test: the .bak satisfies it
           # whether or not the live config kept anything.
           printf '\nX4_NEXUS_KEY="CI_MARKER"\n' >> "$TK/.claude/x4-paths.env"
-          bash install.sh --method separate --toolkit "$TK" --over-existing --yes
+          # A VENV MUST NOT TRAVEL, and this is where that can be detected. uv
+          # hardlinks package files from a shared cache, so once BOTH trees have
+          # been synced the same file has the same inode in each and `cp -r`
+          # refuses -- hundreds of times, part way through -- and `set -e` then
+          # kills the script before the config restore below.
+          #
+          # Asserted on the OUTPUT because nothing about the venv's own state can
+          # tell a copied one from a rebuilt one: source and destination
+          # pyvenv.cfg are byte-identical, recording only the interpreter home,
+          # the uv version and the prompt.
+          set +e
+          bash install.sh --method separate --toolkit "$TK" --over-existing --yes \
+            > "$RUNNER_TEMP/upgrade.log" 2>&1
+          up_rc=$?
+          set -e
+          cat "$RUNNER_TEMP/upgrade.log"
+          test "$up_rc" = "0" || { echo "the --over-existing upgrade failed"; exit 1; }
+          if grep -q "are the same file" "$RUNNER_TEMP/upgrade.log"; then
+            echo "the upgrade copy hit a hardlink collision -- a venv travelled"; exit 1
+          fi
           grep -q CI_MARKER "$TK/.claude/x4-paths.env" || {
             echo "a re-install reverted the LIVE user config"; exit 1; }
           echo "installer smoke OK"

@@ -144,6 +144,11 @@ detect_xrcat() {
 }
 
 MISSING=""
+#: Paths never copied between toolkits, pruned from the destination BOTH before and
+#: after the copy. One list, named once: two passes over two hand-written lists is how
+#: they drift, and the whole defect here was one of the passes not running.
+X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/x4validate/.mutation-probe-pristine"
+
 copy_toolkit() {  # copy_toolkit DEST  — copy tracked toolkit files (never game data / local config)
   local dest="$1"; mkdir -p "$dest/.claude"
   local item
@@ -165,6 +170,17 @@ copy_toolkit() {  # copy_toolkit DEST  — copy tracked toolkit files (never gam
   # `mods` carries the game extension x4live needs (README: "copy that folder into
   # {game}/extensions/"). Omitting it shipped a documented instruction pointing at a
   # directory the installer never created.
+  # PRUNE THE DESTINATION FIRST. This list also runs after the loop, and running it
+  # ONLY after was the defect: uv hardlinks package files from a shared cache, so once
+  # both sides have been synced the same file has the same INODE in each and `cp -r`
+  # refuses with "are the same file". MEASURED 2026-09-02 on the documented upgrade
+  # path: hundreds of those, exit 1, a half-copied destination -- and because `set -e`
+  # kills the script at the cp, neither the prune below nor the config restore after it
+  # ever ran. A cleanup that only runs after the copy cannot make the copy possible.
+  local junk
+  for junk in $X4_COPY_PRUNE; do
+    rm -rf "$dest/$junk" 2>/dev/null || true
+  done
   for item in .claude tools bin scripts mods CLAUDE.md KNOWLEDGEBASE.md README.md CHANGELOG.md \
               LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt .gitignore .gitattributes; do
     # NAMED, never silently skipped -- that silence is how the absent mods/ folder
@@ -179,8 +195,10 @@ copy_toolkit() {  # copy_toolkit DEST  — copy tracked toolkit files (never gam
   # script there, before the restore below, so there is no backup either.
   # pyvenv.cfg and the Scripts shims also embed absolute paths, so a copied venv
   # points back at the source. setup.sh recreates it anyway.
-  for junk in tools/x4validate/.venv tools/x4validate/.pytest_cache \
-              tools/x4validate/.mutation-probe-pristine; do
+  # ...and again afterwards, so the SOURCE machine's virtualenv does not linger here.
+  # pyvenv.cfg and the Scripts shims embed absolute paths, so a copied venv points back
+  # at the machine it came from. setup.sh recreates it.
+  for junk in $X4_COPY_PRUNE; do
     rm -rf "$dest/$junk" 2>/dev/null || true
   done
 
@@ -343,6 +361,18 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
     done
   done
   echo "  installed $copied x4 skill/agent item(s) into $home_claude"
+  # STATED, because it is the difference between this layout and the other two, and
+  # nothing else in the run mentions it. The hooks are registered in the repo's
+  # .claude/settings.json, which this method does not copy, and each is addressed as
+  # $CLAUDE_PROJECT_DIR/.claude/hooks/... -- which globally resolves to whatever repo
+  # the user has open, not to the toolkit.
+  echo
+  echo "  NOTE: this layout installs the SKILLS AND AGENTS ONLY."
+  echo "        The safety guards -- the command and file hooks, and the automatic"
+  echo "        backup before every edit -- are NOT installed by --method global."
+  echo "        They are per-project: they live in a repo's .claude/settings.json and"
+  echo "        resolve their paths from that project. Use --method in-game or"
+  echo "        --method separate in a mod repo to get them there."
   # merge env into settings.json (jq); create if absent
   local sj="$home_claude/settings.json"
   [ -f "$sj" ] || echo '{}' > "$sj"
