@@ -46,6 +46,37 @@ def test_a_malformed_dump_is_rc3_not_rc2(tmp_path):
     assert C.main(["--file", write(tmp_path, bad), "dump"]) == 3
 
 
+def test_a_probe_that_DIED_is_rc3_not_rc0(tmp_path):
+    """rc 0 means "checked and clean". A probe that ran and failed recorded why, and
+    reporting that as a clean capture is the could-not-check-as-clean-result class."""
+    fatal = [["HDR", "schema=2", "FATAL", "attempt to index a nil value"]]
+    assert C.main(["--file", write(tmp_path, uidata(fatal)), "dump"]) == 3
+
+
+def test_the_FATAL_message_is_the_PROBE_s_account_not_a_transport_guess(tmp_path, capsys):
+    """A FATAL frame is a single HDR row by construction, so the truncation clause would
+    otherwise claim it and print "the true length is unknown" -- a guess about the
+    transport, over the probe's own record of what went wrong. Ordering is the fix, and
+    this is what pins it."""
+    fatal = [["HDR", "schema=2", "FATAL", "attempt to index a nil value"]]
+    C.main(["--file", write(tmp_path, uidata(fatal)), "dump"])
+    err = capsys.readouterr().err
+    assert "attempt to index a nil value" in err, err
+    assert "the probe FAILED" in err, err
+    assert "TRUNCATED" not in err, err
+
+
+def test_a_TRUNCATED_dump_is_also_rc3_but_says_something_ELSE(tmp_path, capsys):
+    """The twin. Both are rc 3, so the exit code cannot tell them apart and the MESSAGE
+    has to -- one says re-reading will not help, the other says the read was short."""
+    rows = good_rows(3)
+    truncated = rows[:3]
+    C.main(["--file", write(tmp_path, uidata(truncated)), "dump"])
+    err = capsys.readouterr().err
+    assert "TRUNCATED" in err, err
+    assert "the probe FAILED" not in err, err
+
+
 def test_a_valid_dump_is_rc0(tmp_path):
     assert C.main(["--file", write(tmp_path, uidata(good_rows(2))), "dump"]) == 0
 

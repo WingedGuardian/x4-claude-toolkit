@@ -973,15 +973,65 @@ def test_the_BUILD_constant_matches_the_file():
     stamp = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(stamp)
 
-    p = stamp.mod_lua()
-    if p is None:
+    # EVERY stamped file, not just the primary one. `mod_lua()` returns
+    # live_query.lua alone, so engine_probe.lua -- the other half of the addon, and
+    # the file whose undetected change is the reason this stamp exists -- was checked
+    # by nothing. MEASURED 2026-09-02: editing it without re-stamping survived all
+    # 1208 tests.
+    files = stamp.mod_lua_files()
+    if not files:
         _require_mod_lua(None, _ROOTS, "game-side mod lua")
-    text = p.read_text(encoding="utf-8")
-    cur, exp = stamp.current(text), stamp.expected(text)
-    assert cur is not None, "the mod lost its BUILD line"
-    assert cur == exp, (
-        f"BUILD is stale: stamped {cur}, content hashes to {exp}. "
-        f"Run: uv run python scripts/stamp-mod-build.py")
+    assert len(files) >= 2, (
+        f"expected both stamped lua files, found {[f.name for f in files]} -- if the "
+        f"addon really is one file now, this assertion is the thing to update")
+    for p in files:
+        text = p.read_text(encoding="utf-8")
+        cur, exp = stamp.current(text), stamp.expected(text)
+        assert cur is not None, f"{p.name} lost its BUILD line"
+        assert cur == exp, (
+            f"{p.name}: BUILD is stale: stamped {cur}, content hashes to {exp}. "
+            f"Run: uv run python scripts/stamp-mod-build.py")
+
+
+def test_KNOWN_KINDS_matches_the_kinds_the_probe_actually_EMITS():
+    """`_livedump.KNOWN_KINDS` says it is "read off its `row(...)` calls ... pinned by a
+    test rather than inferred". The only assertion was a single membership check, and
+    nothing parsed the Lua -- so the docstring described a guarantee that did not exist.
+
+    Both directions, because they fail differently and both are bad:
+      * a kind the probe emits and the set does not  -> `x4live dump` returns rc 3 on a
+        perfectly good dump, which is loud and wrong;
+      * a kind in the set the probe no longer emits  -> nothing notices, ever.
+    """
+    import re
+
+    from x4validate import _livedump
+
+    probe = None
+    for p in (pathlib.Path(__file__).resolve().parents[3] / "mods").rglob("engine_probe.lua"):
+        probe = p
+        break
+    if probe is None:
+        pytest.skip("engine_probe.lua is not in this checkout")
+    src = probe.read_text(encoding="utf-8")
+    # TWO emission forms, and missing the second made this test a false alarm on its
+    # first run: it reported EXT as listed-but-never-emitted, when EXT is emitted by
+    # `local vals = { "EXT" }` ... `row(unpack(vals))`. A search finding nothing is a
+    # lead, not a fact -- the second, differently-shaped search is what settled it.
+    direct = set(re.findall(r'row\(\s*"([A-Z_]+)"', src))
+    unpacked = set(re.findall(r'=\s*\{\s*"([A-Z_]+)"\s*\}', src))
+    emitted = direct | unpacked
+    assert direct, "parsed no direct row(\"KIND\" calls -- the extraction has drifted"
+    assert unpacked, (
+        "parsed no table-seeded kinds -- if that form is really gone, delete this "
+        "assertion deliberately rather than letting the regex silently see less")
+    known = set(_livedump.KNOWN_KINDS)
+    assert emitted - known == set(), (
+        f"the probe emits kinds KNOWN_KINDS does not list: {sorted(emitted - known)} -- "
+        f"x4live dump will refuse a good dump")
+    assert known - emitted == set(), (
+        f"KNOWN_KINDS lists kinds the probe never emits: {sorted(known - emitted)} -- "
+        f"a removed kind that nothing noticed")
 
 
 def test_the_probe_REPORTS_the_build(lua_factory):
@@ -2359,6 +2409,53 @@ def test_an_UNCAPPED_macro_reply_carries_NO_marker(lua_factory):
     r = ask(rt, 1, "macro", "engine", "some_macro")
     assert r.status == "OK", r.payload
     assert "__shown=" not in r.payload and "__total=" not in r.payload, r.payload
+
+
+#: An extension record with enough fields to blow the budget. Same shape as _BIG_LIB,
+#: but GetExtensionList returns a LIST of records and verbs.ext caps the fields of the
+#: one whose id matches -- so the fat has to be inside the matching record.
+_BIG_EXT = ('function() local e = {id = "ws_1"} for i = 1, 2000 do '
+            'e["key" .. i] = string.rep("D", 40) end return {e} end')
+
+
+def test_verbs_ext_CAPS_its_reply(lua_factory):
+    """MEASURED before the cap: 40,025 bytes against MAX_PAYLOAD 32,000, status OK,
+    nothing capped. An over-long frame does not truncate -- it tears the pipe down in
+    both directions."""
+    rt = live(GetExtensionList=_BIG_EXT)
+    r = ask(rt, 1, "ext", "ws_1")
+    from x4validate import _livepipe as lp
+    assert r.status == "OK", r.payload[:200]
+    assert lp.byte_len(r.payload) <= 32000, lp.byte_len(r.payload)
+
+
+def test_verbs_ext_SAYS_how_much_it_omitted(lua_factory):
+    """A cap that does not report is a step that narrows its data and reports success --
+    and without the denominator the caller cannot tell a short list from a full one."""
+    rt = live(GetExtensionList=_BIG_EXT)
+    r = ask(rt, 1, "ext", "ws_1")
+    assert "__total=2001" in r.payload, r.payload[-120:]
+    shown = [f for f in r.payload.split(chr(9)) if f.startswith("__shown=")]
+    assert shown, "capped without saying how many were shown"
+    assert 0 < int(shown[0].split("=")[1]) < 2001
+
+
+def test_an_UNCAPPED_ext_reply_carries_NO_marker(lua_factory):
+    """The twin, and a compatibility guarantee: an ordinary reply must be byte-identical
+    to before the cap existed, because _livecli stores these payloads verbatim."""
+    rt = live(GetExtensionList='function() return {{id = "ws_1", name = "n", version = "1"}} end')
+    r = ask(rt, 1, "ext", "ws_1")
+    assert r.status == "OK", r.payload
+    assert "__shown=" not in r.payload and "__total=" not in r.payload, r.payload
+
+
+def test_verbs_ext_still_answers_ABSENT_for_an_unknown_id(lua_factory):
+    """The cap must not change what a MISS looks like. ABSENT is an answer here -- the
+    engine was asked and this id is not in its list -- and it is a different fact from
+    ERR, which means the question could not be put."""
+    rt = live(GetExtensionList='function() return {{id = "other"}} end')
+    r = ask(rt, 1, "ext", "ws_1")
+    assert r.status == "ABSENT", f"{r.status}: {r.payload[:80]}"
 
 
 def test_a_single_oversized_PROPERTY_becomes_an_ERR_not_a_pipe_teardown(lua_factory):

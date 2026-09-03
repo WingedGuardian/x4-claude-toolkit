@@ -200,6 +200,15 @@ jobs:
       # directory that does not exist in this repo -- the game extension ships at
       # `mods/` -- and the total collapsed them into one number nobody reads. They
       # guarded a Lua contract whose violation hangs X4 and needs a force-kill.
+      # The stamper was extended this round to cover BOTH lua files and was then
+      # invoked by nothing -- not here, and not by scripts/run-gates.sh, which
+      # discovers gates/*.py only. A fix that runs nowhere is not a fix: the
+      # defect it addressed (an engine_probe.lua change shipping undetected) could
+      # recur unchanged. --check recomputes and compares; it writes nothing.
+      - name: The shipped lua BUILD stamps are current
+        working-directory: tools/x4validate
+        run: uv run --frozen python scripts/stamp-mod-build.py --check
+
       - name: Run the suite with NO game installed
         working-directory: tools/x4validate
         # X4_MAX_SKIPS turns the skip COUNT into a failure instead of a number nobody

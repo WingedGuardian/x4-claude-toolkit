@@ -300,6 +300,18 @@ MUTANTS = [
            'f"TRUNCATED: the game declared {declared} payload bytes and {actual} "',
            'f"problem: the game declared {declared} payload bytes and {actual} "  # mutant',
            "clause ordering stops being a contract; the only actionable advice is never printed"),
+    #: Clause 9 and the transport, the two halves of "decode LAST and STRICTLY".
+    #: Both survived the full suite on 2026-09-02 because every test passed a str,
+    #: which is encoded losslessly -- so the strict-decode branch was structurally
+    #: unreachable from the suite. Killed now by byte-domain fixtures.
+    Mutant("_livepipe.py", "clause 9 decodes leniently again",
+           "payload = payload_bytes.decode(\"utf-8\")",
+           "payload = payload_bytes.decode(\"utf-8\", errors=\"replace\")  # mutant",
+           "a payload the game encoded wrong is served as a clean answer with the bad bytes silently rewritten"),
+    Mutant("_livepipe.py", "the transport decodes before anything measures it",
+           "                return data",
+           "                return data.decode(\"utf-8\", errors=\"replace\")  # mutant",
+           "each replacement character adds +2 bytes, which invents truncations and CANCELS real ones"),
     Mutant("_livepipe.py", "corruption guard removed",
            "if declared_sum != checksum(payload_bytes):",
            "if False:  # mutant",

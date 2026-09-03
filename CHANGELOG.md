@@ -179,6 +179,56 @@ every one the record name or the call appears only in a comment or a heredoc bod
 real files out of protected directories. Unit tests 265 → **294**, mutants 67 → **75**, all
 caught; the fuzzer still finds 0 bypasses over 996 mutants with its control at 58.
 
+### Fixed — five of this release's own fixes were guarded by nothing
+
+A review planted mutants over the round's own work and ran the full 1208-test suite
+against each. Five reversions — every one of them the exact defect that had just been
+fixed — passed the suite unchanged. Each now has a test that goes red, and each test was
+verified against the mutant rather than merely written.
+
+* **The byte-domain frame contract had no byte-domain fixtures.** Every test passed a
+  `str` to `decode_reply`, which is encoded losslessly, so clause 9's strict-decode branch
+  was structurally unreachable from the suite. Both a lenient clause 9 and a `_read_raw`
+  that decodes in transit survived. That is the original defect: each replacement
+  character adds +2 bytes, so a lenient decode both invents truncations and **cancels real
+  ones** — a corrupt frame served as a clean answer. Added a `frame_bytes()` helper and
+  fixtures for invalid UTF-8 that passes length and checksum, a multibyte character cut at
+  the buffer edge (`TRUNCATED`) and the same cut self-consistently declared
+  (`UNDECODABLE`), plus a `_read_raw` type-and-property test that stubs the lazy win32
+  seam so it runs on Linux CI too.
+* **`verbs.ext`'s cap and denominator had no test, while the identical `verbs.macro` code
+  had four.** Both verbs were named in the same comment as the defect — "neither verb had
+  a single test at any size" — and only one got tests. The shipped `content.xml`
+  description tells users *every* enumeration caps itself and reports what it omitted;
+  that claim was enforced for one verb and by nothing for the other.
+* **`engine_probe.lua` was exercised by nothing, and the stamper that covers it ran
+  nowhere.** The round extended `scripts/stamp-mod-build.py` to see both lua files, and
+  that script is invoked by neither CI nor `run-gates.sh` (which discovers `gates/*.py`
+  only) — so the fix for "a change to engine_probe.lua shipped undetected" was inert in
+  automation. The BUILD test now iterates every stamped file, `--check` runs as a CI step,
+  and `KNOWN_KINDS` is pinned to the Lua in **both** directions: a kind the probe gains
+  makes `x4live dump` refuse a good dump, and a kind it loses was noticed by nothing.
+* **An exit-code contract with no test.** `_livecli` turning `LiveDumpFatal` into rc 3 was
+  covered nowhere, so a mutant returning 0 passed. rc 0 means "checked and clean", so a
+  probe that ran and died would have been reported as a clean capture. The twin pins that
+  a genuinely truncated dump is *also* rc 3 — the exit code cannot separate them, so the
+  message has to.
+* **A reproduced user-facing bug fixed without a regression test.** `check_completeness`
+  passed the macro **index** into the code answering the `<component ref>` question, while
+  `check_references` had already been corrected to pass the index-union-corpus oracle. A
+  macro defined in an asset file and never registered in `index/macros.xml` is legal and
+  common, and this function exists for a mod *under development*, which is exactly where
+  one lives.
+
+**One of the new tests was a false alarm on its first run and is worth recording.** The
+`KNOWN_KINDS` check reported `EXT` as listed-but-never-emitted. `EXT` *is* emitted — via
+`local vals = { "EXT" }` … `row(unpack(vals))`, a table-driven call the direct
+`row("KIND"` regex cannot see. A search finding nothing is a lead, not a fact; the second,
+differently-shaped search settled it, and the test now asserts it found **both** emission
+forms so it cannot quietly see less than it claims.
+
+Suite 1208 → **1228** passed, 14 skipped; basex 69; both shipped lua BUILD stamps current.
+
 ### Fixed — the freshness stamp reported FRESH forever over a tree that was not there
 
 The toolkit's headline safety property is that a negative is admissible only with a

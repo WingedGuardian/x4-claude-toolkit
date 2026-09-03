@@ -38,6 +38,154 @@ def frame(seq=1, status="OK", payload="hello", proto=None, tag=None,
     ))
 
 
+def frame_bytes(payload_bytes, seq=1, status="OK", blen=None, csum=None):
+    """A valid reply whose PAYLOAD is arbitrary bytes.
+
+    The str helper above cannot express this: `decode_reply` encodes a str losslessly,
+    so no test built on it can produce a payload that is not valid UTF-8, and clause 9
+    was therefore unreachable from the entire suite. The header stays ASCII, which is
+    what the frame format guarantees.
+    """
+    head = "\t".join((
+        lp.REPLY_TAG,
+        str(lp.PROTO),
+        str(seq),
+        status,
+        str(lp.byte_len(payload_bytes) if blen is None else blen),
+        str(lp.checksum(payload_bytes) if csum is None else csum),
+        "",
+    ))
+    return head.encode("utf-8") + payload_bytes
+
+
+#: A multibyte character, kept as bytes so a split can be expressed at all.
+_EURO = "\u20ac".encode("utf-8")            # 3 bytes: e2 82 ac
+
+
+def test_the_byte_baseline_decodes_cleanly():
+    """Same reason as the str baseline: if this frame did not decode, every test below
+    would pass for the wrong reason."""
+    r = lp.decode_reply(frame_bytes("caf\u00e9".encode("utf-8")), 1)
+    assert r.payload == "caf\u00e9"
+
+
+def test_clause9_invalid_utf8_that_PASSES_length_and_checksum_is_UNDECODABLE():
+    """The bytes are intact -- the length and the checksum both agree -- so the fault is
+    the game's encoding, and that is a third distinct fact rather than corruption. A
+    lenient decode here reports a clean answer over a payload it silently rewrote."""
+    bad = b"ab" + bytes([0xFF]) + b"cd"
+    with pytest.raises(LiveQueryDegraded, match="UNDECODABLE"):
+        lp.decode_reply(frame_bytes(bad), 1)
+
+
+def test_clause9_names_the_offending_byte_and_the_reason():
+    bad = b"ab" + bytes([0xFF]) + b"cd"
+    with pytest.raises(LiveQueryDegraded) as exc:
+        lp.decode_reply(frame_bytes(bad), 1)
+    msg = str(exc.value)
+    assert "byte 2" in msg, msg
+    assert "5 payload bytes" in msg, msg
+
+
+def test_a_multibyte_char_CUT_at_the_buffer_edge_is_TRUNCATED_not_undecodable():
+    """The distinction the clause ORDER exists to preserve. Two bytes of a three-byte
+    character arrived and the header still declares three, so the caller's problem is a
+    short read -- something they can act on -- not an encoding fault."""
+    cut = _EURO[:2]
+    with pytest.raises(LiveQueryDegraded, match="TRUNCATED"):
+        lp.decode_reply(frame_bytes(cut, blen=3, csum=lp.checksum(_EURO)), 1)
+
+
+def test_a_SELF_CONSISTENT_cut_multibyte_char_is_UNDECODABLE():
+    """The same physical damage, but with a header that agrees with it: length and
+    checksum are computed over the truncated bytes, so clauses 7 and 8 both pass and
+    only the strict decode can still tell that something is wrong. This is the case a
+    lenient decode CANCELS -- it would return a replacement character and call it OK."""
+    cut = _EURO[:2]
+    with pytest.raises(LiveQueryDegraded, match="UNDECODABLE"):
+        lp.decode_reply(frame_bytes(cut), 1)
+
+
+def test_a_lenient_decode_would_INVENT_a_length_mismatch():
+    """Why clause 9 runs last and on bytes. Decoding leniently first turns each bad byte
+    into U+FFFD (+2 bytes on re-encode), so the length clause then measures a string we
+    invented. Here the frame is VALID and must decode -- the arithmetic is the point:
+    a repaired copy would be longer than the bytes that actually arrived."""
+    payload = _EURO * 3
+    r = lp.decode_reply(frame_bytes(payload), 1)
+    assert r.payload == "\u20ac" * 3
+    repaired = payload.decode("utf-8", errors="replace").encode("utf-8")
+    assert len(repaired) == len(payload), "control: a VALID payload survives either way"
+
+    broken = b"a" + bytes([0xFF]) + b"b"
+    assert len(broken.decode("utf-8", errors="replace").encode("utf-8")) > len(broken), (
+        "a lenient decode grows the payload, which is what silently moved the length")
+
+
+def test_a_str_argument_is_still_accepted():
+    """The twin for the bytes work: every existing caller passes a str and must keep
+    working. A rewrite that demanded bytes would break all 20 call sites."""
+    assert lp.decode_reply(frame(payload="hello"), 1).payload == "hello"
+
+
+class _FakeWin32File:
+    """Just enough win32file for `_read_raw`: one ReadFile that returns bytes."""
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def ReadFile(self, handle, size):
+        return 0, self.payload
+
+
+class _FakeWinError:
+    ERROR_NO_DATA = 232
+    ERROR_PIPE_LISTENING = 536
+
+
+def test_read_raw_returns_RAW_BYTES_not_a_decoded_string(monkeypatch):
+    """The transport must hand `decode_reply` exactly what arrived.
+
+    Decoding here with errors="replace" repairs the frame before anything has measured
+    it, and the length and checksum clauses then measure the repair -- each replacement
+    character adding +2 bytes, which both invents truncations and CANCELS real ones. A
+    cancelled truncation is a corrupt frame served as a clean answer.
+
+    Nothing exercised this path, so that exact reversion survived the whole suite.
+    `_win32` is stubbed rather than mocked at the pipe level: it is already a lazy
+    indirection so the package stays installable where there is no pywin32, which makes
+    it the seam that needs neither Windows nor a real pipe.
+    """
+    payload = b"ok" + bytes([0xFF]) + b"raw"
+    monkeypatch.setattr(
+        lp, "_win32",
+        lambda: (None, _FakeWin32File(payload), _FakeWinError))
+    pipe = lp.LivePipe.__new__(lp.LivePipe)
+    pipe._h = object()
+    pipe.timeout = 1.0
+    got = pipe._read_raw(deadline=float("inf"))
+    assert isinstance(got, bytes), "the transport decoded; it must not"
+    assert got == payload, "the bytes must arrive unaltered"
+
+
+def test_read_raw_does_NOT_repair_an_undecodable_byte(monkeypatch):
+    """The twin, stated as the property rather than the type: an invalid byte must still
+    be that byte when decode_reply measures it. `bytes(...)` alone would be satisfied by
+    a lenient round-trip on a payload that happened to be valid UTF-8."""
+    payload = b"a" + bytes([0xFF]) + b"b"
+    monkeypatch.setattr(
+        lp, "_win32",
+        lambda: (None, _FakeWin32File(payload), _FakeWinError))
+    pipe = lp.LivePipe.__new__(lp.LivePipe)
+    pipe._h = object()
+    pipe.timeout = 1.0
+    got = pipe._read_raw(deadline=float("inf"))
+    assert bytes([0xFF]) in got, "the invalid byte was repaired in transit"
+    repaired = payload.decode("utf-8", errors="replace").encode("utf-8")
+    assert len(got) < len(repaired), (
+        "a repaired payload is LONGER, which is how a lenient read moved the length")
+
+
 # --------------------------------------------------------------------------- #
 # the baseline must actually decode -- otherwise every test below is vacuous
 # --------------------------------------------------------------------------- #

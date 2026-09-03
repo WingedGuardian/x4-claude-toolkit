@@ -379,3 +379,88 @@ def test_an_UNLISTABLE_extensions_dir_says_so_rather_than_excusing_the_patch(mon
     sev, code, msg = C._no_base_finding(
         "extensions/whatever/libraries/wares.xml", _merge.Config())
     assert (sev, code) == ("info", "unverifiable"), (sev, code, msg)
+
+
+# ---------------------------------------------- the completeness ORACLE (2026-09-02)
+#
+# `_refs` answers the `<component ref>` question with whatever set it is handed, and the
+# macro INDEX alone is the wrong oracle. A ware whose component ref names a macro defined
+# in an asset file but never registered in index/macros.xml was reported "missing
+# 'component'" by check_completeness while check_references reported the same ref
+# resolving -- two checks contradicting each other about one attribute.
+
+
+def _completeness_tree(tmp_path, *, define_macro=True, register_in_index=False):
+    """A reference tree with one vanilla analogue, and a mod adding one ware.
+
+    The only variable is WHERE the mod's macro is defined: in an asset file, in the
+    index, or nowhere.
+    """
+    ref = tmp_path / "reference"
+    _write(ref / "libraries/wares.xml",
+           '<wares>'
+           '<ware id="vanilla_thing" name="{20101,101}" description="{20101,102}" '
+           'group="s" transport="container" volume="1" tags="economy">'
+           '<price min="1" average="2" max="3"/>'
+           '<production time="1" amount="1" method="default" name="{20206,101}"/>'
+           '<component ref="vanilla_macro"/>'
+           '<restriction licence="generic"/>'
+           '<owner faction="argon"/>'
+           '</ware></wares>')
+    _write(ref / "t/0001-l044.xml",
+           '<language id="44">'
+           '<page id="20101"><t id="101">n</t><t id="102">d</t></page>'
+           '<page id="20206"><t id="101">m</t></page>'
+           '<page id="30101"><t id="101">N</t><t id="102">D</t></page>'
+           '</language>')
+    _write(ref / "index/macros.xml",
+           '<index><entry name="vanilla_macro" value="a/b"/></index>')
+
+    mod = tmp_path / "mod"
+    if register_in_index:
+        _write(mod / "index/macros.xml",
+               '<diff><add sel="/index"><entry name="my_macro" value="x/y"/></add></diff>')
+    if define_macro:
+        # An ASSET file, which is the legal-and-common case this test is about.
+        _write(mod / "assets/units/size_s/macros/my_macro.xml",
+               '<macros><macro name="my_macro" class="ship_s"/></macros>')
+    _write(mod / "libraries/wares.xml",
+           '<diff><add sel="/wares">'
+           '<ware id="my_ware" name="{30101,101}" description="{30101,102}" '
+           'group="s" transport="container" volume="1" tags="economy">'
+           '<price min="1" average="2" max="3"/>'
+           '<production time="1" amount="1" method="default" name="{20206,101}"/>'
+           '<component ref="my_macro"/>'
+           '<restriction licence="generic"/>'
+           '<owner faction="argon"/>'
+           '</ware></add></diff>')
+    return ref, mod
+
+
+def _completeness_component_errors(tmp_path, **kw):
+    ref, mod = _completeness_tree(tmp_path, **kw)
+    cfg = _merge.Config(reference=ref)
+    report = _check.Report()
+    _check.check_completeness(mod, cfg, report, "ware:my_ware", "ware:vanilla_thing")
+    assert not report.skipped, f"the fixture degraded: {report.skipped}"
+    return [e for e in report.errors if "component" in str(getattr(e, "message", e))]
+
+
+def test_a_macro_defined_in_an_ASSET_file_does_not_gate_completeness(tmp_path):
+    """The bug, reproduced: the macro exists, it is simply not in index/macros.xml --
+    which is where a mod under development normally is."""
+    assert _completeness_component_errors(tmp_path) == []
+
+
+def test_a_macro_registered_in_the_INDEX_does_not_gate_either(tmp_path):
+    """The half that already worked. Both routes to "this macro exists" must agree, or
+    the oracle is still deciding by where the definition happens to live."""
+    assert _completeness_component_errors(tmp_path, register_in_index=True) == []
+
+
+def test_a_component_ref_naming_a_macro_defined_NOWHERE_still_gates(tmp_path):
+    """The twin, and the reason the check exists at all. An oracle widened until it
+    accepts everything would pass both tests above while checking nothing."""
+    errs = _completeness_component_errors(tmp_path, define_macro=False)
+    assert errs, "a ref to a macro that exists nowhere must still be reported"
+    assert "missing 'component'" in str(getattr(errs[0], "message", errs[0]))
