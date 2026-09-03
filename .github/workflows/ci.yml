@@ -169,6 +169,30 @@ jobs:
             echo "a re-install reverted the LIVE user config"; exit 1; }
           echo "installer smoke OK"
 
+      # TWO legs, and the difference between them is the point. The pwsh 7 leg is
+      # what ran before, and it could not see the defect that shipped: Windows
+      # PowerShell 5.1 splits a native argument containing double quotes at the
+      # first space, and 7.x does not. The destination here CONTAINS A SPACE,
+      # which is what a stock Steam install looks like and what the README's own
+      # command produces.
+      - name: Install for real (Windows PowerShell 5.1, spaced path)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tk = Join-Path $env:RUNNER_TEMP 'tk ps51'
+          & .\install.ps1 -Method separate -Toolkit $tk -Yes
+          if ($LASTEXITCODE -ne 0) { Write-Error "the 5.1 install failed (exit $LASTEXITCODE)" }
+          foreach ($p in @('.claude\x4-paths.env','tools\x4validate','mods')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $tk $p))) { Write-Error "missing: $p" }
+          }
+          # A FILE COUNT, because the failure produced a half-install of ~243
+          # files that still carried x4-paths.env and tools/x4validate -- so
+          # every existence check above passed straight through it.
+          $n = (Get-ChildItem -Recurse -File -LiteralPath $tk).Count
+          if ($n -lt 1000) { Write-Error "only $n files: this is a half-install, not an install" }
+          Write-Host "5.1 installer smoke OK ($n files, destination contains a space)"
+
       - name: Install for real (PowerShell) and check the artifacts
         if: runner.os == 'Windows'
         shell: pwsh

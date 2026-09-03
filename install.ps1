@@ -264,7 +264,30 @@ function Write-PathsEnv($t) {
   # when there is no bash to ask.
   $bash = Find-GitBash
   if ($bash) {
-    $probe = & $bash -c 'set -a; . "$1"' _ (($f -replace '\\','/')) 2>&1
+    # ONE argument, no embedded double quote, and the path inside a SINGLE-quoted
+    # bash string. Windows PowerShell 5.1 splits a native argument that itself
+    # contains double quotes at the first space, so the previous form failed on
+    # every destination with a space in it -- which is the README's own command on
+    # a stock Steam install, and Write-PathsEnv runs for all three methods.
+    #
+    # ErrorActionPreference is relaxed around the call for the second half of the
+    # same fault: with 'Stop' in force, the 2>&1 merge turns bash's stderr into a
+    # TERMINATING error, so the script died here instead of reaching the branch
+    # below and printing the message written for exactly this case.
+    # .Replace, not -replace: the operator read the concatenation as extra
+    # operands ("allows only two elements to follow it, not 4") and the script
+    # died before installing anything. A path is not a regex either, so
+    # -replace was the wrong tool twice over. A single quote inside a
+    # single-quoted bash string is closed, escaped and reopened.
+    $sq = [string][char]39
+    $bp = ($f -replace '\\','/').Replace($sq, $sq + [char]92 + $sq + $sq)
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+      $probe = & $bash -c "set -a; . '$bp'" 2>&1
+    } finally {
+      $ErrorActionPreference = $prevEAP
+    }
     if ($LASTEXITCODE -ne 0) {
       Write-Host "ERROR: wrote $f but bash cannot SOURCE it, so every X4_* would come out unset." -ForegroundColor Red
       Write-Host "       Refusing to report success. This is a quoting fault in one of the paths." -ForegroundColor Red
