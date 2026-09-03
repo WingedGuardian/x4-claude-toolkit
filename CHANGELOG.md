@@ -126,6 +126,110 @@ Found the hard way: an `install.sh --unpack` re-unpacked a locked reference tree
 without a word. The script now refuses (rc 2) and names the override,
 `X4_FORCE_UNPACK=1`.
 
+### Fixed — four more ways a command reached the shell unseen
+
+The carrier work below enumerated what *carries* a command. A further review found four
+classes it had not reached, and the honest summary is that three of them are shapes a
+person types by habit rather than shapes an attacker constructs.
+
+MEASURED end to end through `protect-bash.sh`, each against a delete the guard refuses
+when it is written plainly: **14 probes returned a silent ALLOW; 0 do now**, with all
+12 must-not-fire controls unchanged.
+
+| carried by | before | after |
+|---|---|---|
+| a backslash-newline **line continuation** before the operand | allow | caught |
+| `echo '<cmd>' \| bash`, `printf '%s' '<cmd>' \| sh` | allow | caught |
+| a heredoc **piped** into a shell (`cat <<EOF \| bash`) | allow | caught |
+| `bash <<< '<cmd>'`, `bash -s <<< '<cmd>'` | allow | caught |
+| `source /dev/stdin <<EOF` | allow | caught |
+| `${VAR%x}`, `${VAR:-x}`, `${VAR//a/b}`, `${ARR[0]}` as an operand | allow | caught |
+| `coproc { <cmd>; }` | allow | caught |
+
+**The line continuation is the one worth reading twice.** bash removes backslash-newline
+before it parses anything; `segments()` treated it as a hard boundary. So a delete
+continued onto a second line became two segments — verb `rm` holding a lone backslash,
+and the path alone with no verb — and **every verb-keyed rule lost its operand at once,
+all three hard blocks included**. It needs no cleverness at all: it is how anyone writes
+a long command, and 6 of 12 fuzz seeds reproduced it unaided.
+
+**The expansion case failed in the dangerous direction.** `_VAR` exists to *extract* a
+variable's name and matches a braced form only when the brace closes straight after the
+name — so `${DST%/}` and friends matched nothing, and `has_unresolved` reported the
+operand **resolved**. The conservative branch exists precisely so an operand the hook
+cannot resolve still refuses; believing we had resolved it skips that branch, which left
+the guard most confident exactly where it knew least. "Is there an expansion here" and
+"what is it called" are now separate predicates.
+
+**Two of the four fixes were themselves wrong first, and both failures had one shape:**
+a correct check that could not be reached.
+
+* `_reads_stdin_program` refuses on any non-flag token, reading it as a script file — and
+  the tokens it tripped over were the here-string operator and its word. The one carrier
+  whose payload is plainly visible in the command text was the one the check declined to
+  look at. A redirect is not an operand, and is now skipped with the word it consumes.
+* The here-string handler was then added as an `elif` in `_inner_commands`. `bash` matches
+  the `-c` arm first, that arm appends nothing when there is no `-c`, and **the new arm
+  never ran** — every part of it tested green in isolation; only the wiring was wrong.
+
+That is the same defect class this release is largely about, appearing twice more inside
+the fix for it. It is recorded rather than tidied away, because "the parts are
+individually tested" is exactly the reassurance that let it through.
+
+**Scoped to avoid false denials, which are the costlier failure here.** The pipe pairing
+requires the consuming shell to have **no** script operand — the only shape that actually
+reads stdin — and the producer to be an `echo` or `printf` of a literal, so
+`echo 'note' > n.md && bash script.sh` cannot pair by accident. Heredoc routing still keys
+on the **opener's** verb, so `cat > notes.md <<X` stays file payload and a `python - <<PY`
+body is never parsed as shell.
+
+### Fixed — the guard modelled shell grammar, then stopped resolving
+
+Adding twelve mutators for the classes above — the fuzzer could not previously *emit* any
+of those shapes — immediately found **seven more bypasses**. All seven are
+**pre-existing**: measured against the previous commit, it allows every one identically,
+so this is reach the fuzzer gained rather than anything the fixes above introduced.
+
+* **`cd` through a variable defeated a hard block.** `cwd_track` handed the RAW token to
+  `join_cwd`, so `FZ="<game>"; cd "$FZ" && rm -rf extensions` was a silent allow — the
+  most ordinary idiom there is. The damage is not confined to that token: the directory
+  it computes is what every later *relative* operand is judged against, so one opaque `cd`
+  argument disarms the path rules for the whole rest of the command.
+* **`resolve()` gave up at the first operator**, so `${V%QQ}`, `${V:-…}`, `${V//a/b}` and
+  `${A[0]}` never resolved even when the command itself assigned the variable.
+* **An array lost its quoting before it was read.** `tokens()` strips quotes, so
+  `A=("C:/Program Files (x86)/…")` split on the spaces and `${A[0]}` resolved to
+  `C:/Program`. That is a *wrong* answer, which is worse than a missing one: an unresolved
+  operand takes the conservative path, while a wrongly resolved one is compared against
+  the roots and cleared. Arrays are now read from the raw segment.
+
+Where text alone cannot reproduce bash's semantics — a glob in the pattern (`${V%/*}`, the
+dirname idiom), a substring offset, an unknown variable with no default — the expansion is
+left **unresolved** on purpose, which is the existing conservative path rather than a guess.
+
+**One of these fixes was a loosening and was reverted before it shipped.** Blanking the
+directory when a `cd` target stays unresolved reads as the careful choice; measured, it
+took `cd <game> && cd "$NOPE" && rm -rf extensions` from deny to allow, because the sticky
+join is what keeps the operand under the root we last knew about. It was caught by a
+mutant that refused to go red — the only reason it was looked at.
+
+**Cost, measured per item against 13,503 real historical commands: 1 changed verdict,
+allow → ask, 0 loosened.** That row is `DEV="<toolkit>"; cd "$DEV" && rm -f …` — a real
+delete of real files inside the workspace, previously unattributable. Latency is unchanged:
+−5.6% / +4.7% / +0.2% against the previous build, sampled interleaved so machine-load drift
+lands on both arms.
+
+**The fuzzer is why any of this was found, so it grew too:** 71 → **83 mutators**, 852 →
+996 mutants, and the planted pre-fix control now rediscovers **58** bypasses instead of 36
+— the new axes strengthen the control rather than decorating it. Unit tests 217 → **265**,
+mutants 57 → **67**, all caught, 0 predicate coverage gaps.
+
+`scripts/verify-hook-tests.py` also gained a refusal of its own: a mutant naming a test
+that does not exist reported "NOT CAUGHT by its target test" — the same words as a genuine
+coverage hole, and the message you would act on by writing a test that is already there.
+Five mutants added that day named test *classes*, which unittest never prints in a `FAIL:`
+line.
+
 ### Fixed — the guard could not see a command that was CARRIED
 
 One root cause behind several total bypasses: the parse pass models shell **grammar**
