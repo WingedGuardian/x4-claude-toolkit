@@ -23,6 +23,19 @@ EXT = _env.extensions()
 mods = [p for p in sorted(DEV.iterdir()) if p.is_dir() and not p.name.startswith("_")]
 mods += [p for p in (EXT / n for n in sys.argv[1:]) if p.is_dir()]
 
+# ADVISORY, and it says so -- there is no baseline here to regress against, so per-mod
+# error counts are a report rather than a verdict. What it must NOT do is sit in gates/
+# and be scored `ok` for having examined nothing: `run-gates.sh` judges purely on the
+# exit code, and this file previously ended on a print. Examining zero mods is its one
+# real failure mode, and it is a NON-ANSWER (rc 2), never a pass.
+if not mods:
+    print(f"REFUSING: no mods to check under {DEV} (and none named on the command "
+          f"line).\n  Zero mods examined is a NON-ANSWER, not a clean run.",
+          file=sys.stderr)
+    raise SystemExit(2)
+print(f"advisory report over {len(mods)} mod(s); there is no baseline to regress "
+      f"against, so a clean run here is not a verdict.")
+
 for mod in mods:
     row = [f"{mod.name:38s}"]
     for tier in ("a", "b"):

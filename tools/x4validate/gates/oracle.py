@@ -5,6 +5,8 @@ path x4validate does. Denominator is the full 453 cardinality failures in the lo
 """
 from collections import Counter, defaultdict
 
+import sys
+
 import _env
 
 from x4validate import _check, _debuglog, _merge
@@ -88,7 +90,26 @@ for r in rows:
 print("-" * 78)
 print(f"{'TOTAL':<32}{tot['lines']:>6}{tot['ops']:>6}{tot['agree']:>7}"
       f"{tot['false_ok']:>10}{tot['unseen']:>8}")
-if tot["ops"]:
-    print(f"\nagreement: {tot['agree']}/{tot['ops']} = "
-          f"{100*tot['agree']//tot['ops']}%   FALSE OK: {tot['false_ok']}   "
-          f"unclassified: {tot['unseen']}")
+# A VERDICT, not just a table. This script computed `false_ok`, printed it with a
+# `<==` marker beside the offending row, and ended -- and `run-gates.sh` judges a gate
+# purely on its exit code, so it printed `ok oracle` whatever the oracle found. The
+# README meanwhile states the gate enforces "234/234 ops agree, 0 FALSE OK".
+#
+# NOTHING EXAMINED IS REFUSED, NOT PASSED. Over an empty log this printed a table of
+# zeroes and exited 0, which reads identically to a clean run. That is the
+# could-not-check-reported-as-checked-and-clean shape this toolkit exists to refuse:
+# rc 2 is the NON-ANSWER, rc 1 is "there are findings".
+if not tot["ops"]:
+    print("\nREFUSING: no ops were examined, so there is nothing to agree or disagree "
+          "with.\n  This is a NON-ANSWER, not a clean run. Point X4_ORACLE_LOG at a "
+          "real engine log.", file=sys.stderr)
+    raise SystemExit(2)
+
+print(f"\nagreement: {tot['agree']}/{tot['ops']} = "
+      f"{100*tot['agree']//tot['ops']}%   FALSE OK: {tot['false_ok']}   "
+      f"unclassified: {tot['unseen']}")
+if tot["false_ok"]:
+    print(f"\nFAIL: {tot['false_ok']} op(s) the validator called OK and the ENGINE "
+          f"did not.\n  A false OK is the one error class this project has no other "
+          f"detector for.", file=sys.stderr)
+    raise SystemExit(1)
