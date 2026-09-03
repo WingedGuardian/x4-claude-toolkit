@@ -106,11 +106,26 @@ s#(.)/$#\1#'
 # falls back to the raw path otherwise. Then normalized for case/slash-insensitive compare.
 x4_canon() {
   local p="$1"
+  # STRIPPED BEFORE realpath, not after. `realpath -m` rewrites `//./X` to `//X`, which
+  # x4_norm then renders `///c/...` -- under no root -- so the ordering fix written
+  # inside x4_norm was defeated by its only caller. MEASURED 2026-09-02:
+  #
+  #   IN  //./C:/X/ref/a.xml    x4_norm  /c/x/ref/a.xml
+  #                             x4_canon ///c/x/ref/a.xml
+  #
+  # The `//?/` form survived only because realpath happens to leave it alone.
+  case "$p" in
+    //[?.]/[Uu][Nn][Cc]/*) p="//${p#//?/???/}" ;;
+    //[?.]/*)              p="${p#//?/}" ;;
+  esac
   # Only canonicalize POSIX-absolute paths (Linux/macOS, and Git-Bash "/c/..."). A Windows
   # "C:\..." path must NOT be fed to realpath (no leading "/" -> treated as relative -> mangled);
   # it falls through to pure string normalization instead.
-  case "$1" in
-    /*) command -v realpath >/dev/null 2>&1 && p="$(realpath -m -- "$1" 2>/dev/null || printf '%s' "$1")" ;;
+  # $p, NOT $1. Reading the original here discarded the strip above -- the branch tested
+  # the unstripped path and realpath was handed it too, so the device form still came out
+  # as ///c/... and a write into reference/ was still allowed.
+  case "$p" in
+    /*) command -v realpath >/dev/null 2>&1 && p="$(realpath -m -- "$p" 2>/dev/null || printf '%s' "$p")" ;;
   esac
   x4_norm "$p"
 }

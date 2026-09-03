@@ -33,6 +33,20 @@ import sys
 _DRIVE = re.compile(r"(^|[^a-z0-9])([a-z]):/")
 
 
+#: `\\?\\` (extended-length) and `\\.\\` (device), after backslashes have been folded
+#: to slashes. The `UNC/` form wraps a network path and unwraps back to a `//host/share`.
+#: Matched at the START only: these are prefixes, and a `//?/` appearing mid-path is not
+#: one.
+_WIN_PREFIX = re.compile(r"^/{1,2}[?]/(unc/)?|^//[.]/(unc/)?")
+#: ONE leading slash is matched for the `?` form and not for `.`, and that asymmetry is
+#: deliberate. Inside double quotes bash turns `\\\\` into `\\`, so the operand that reaches
+#: tokens() is `\\?\\C:\\...` -- one backslash -- which folds to `/?//c/...`. MEASURED
+#: 2026-09-02: `\\\\?\\<path>` DELETED a real directory, so this is a live vector, not
+#: the inert spelling a review reported it as. `/./x` is a legitimate POSIX path
+#: that normpath already collapses, and stripping it would make `/./foo` RELATIVE;
+#: `?` is not legal in a Windows path component, so it has no such reading.
+
+
 def norm(p: str) -> str:
     """Lowercase, backslashes to slashes, drive dialect unified, dot segments resolved.
 
@@ -43,6 +57,20 @@ def norm(p: str) -> str:
     if not p:
         return ""
     s = p.replace(chr(92), "/").lower()
+    # The EXTENDED-LENGTH prefix goes FIRST, and the order is the fix rather than a
+    # detail: applied after the drive rule below it turns `//?/c:/users` into
+    # `//?//c/users`, which still matches nothing.
+    #
+    # MEASURED 2026-09-02, E2E: `rm -rf "//?/<reference>"` was ALLOW while the plain
+    # form denied, and so was the saves confirmation. Windows accepts this spelling for
+    # any path, the Write tool passes it through, Git Bash's own `rm` honours it, and
+    # `_x4-env.sh` and `backup-before-edit.sh` were both taught to strip it earlier the
+    # same day -- this normaliser, the one protect-bash.sh funnels through, was not.
+    #
+    # The game root hid it in my own probe: its folder name appears in the command text,
+    # so the NAME backstop fired. Reference and saves have no backstop. A control that
+    # passes for a reason unrelated to the fix is worse than no control.
+    s = _WIN_PREFIX.sub(lambda m: "//" if m.group(1) else "", s)
     s = _DRIVE.sub(lambda m: m.group(1) + "/" + m.group(2) + "/", s)
     # Only canonicalise something that is actually a path. normpath would happily
     # rewrite "https://a/b" to "https:/a/b".

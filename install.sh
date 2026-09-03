@@ -149,7 +149,8 @@ MISSING=""
 #: they drift, and the whole defect here was one of the passes not running.
 X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/x4validate/.mutation-probe-pristine"
 
-copy_toolkit() {  # copy_toolkit DEST  — copy tracked toolkit files (never game data / local config)
+copy_toolkit() {
+  refuse_if_dry_run "copying the toolkit into" "$1"  # copy_toolkit DEST  — copy tracked toolkit files (never game data / local config)
   local dest="$1"; mkdir -p "$dest/.claude"
   local item
 
@@ -225,6 +226,7 @@ copy_toolkit() {  # copy_toolkit DEST  — copy tracked toolkit files (never gam
 }
 
 write_paths_env() {  # write_paths_env TOOLKIT_DIR
+  refuse_if_dry_run "writing the path config into" "$1/.claude/x4-paths.env"
   local t="$1" f="$1/.claude/x4-paths.env"
   mkdir -p "$1/.claude"
 
@@ -322,6 +324,7 @@ write_paths_env() {  # write_paths_env TOOLKIT_DIR
 
 install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env into settings.json
   local home_claude="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  refuse_if_dry_run "installing skills and agents into" "$home_claude"
   # jq is checked FIRST, before anything is copied. This method cannot complete without
   # it (the settings.json merge below is jq-only), and by the time that merge runs the
   # skills/agents have already been copied AND rewritten to reference $X4_TOOLKIT -- so
@@ -449,6 +452,28 @@ looks_installed() {
   return 1
 }
 
+#: refuse_if_dry_run WHAT DEST -- the ONE dry-run gate, called by every writer.
+#:
+#: It used to live in `announce_target`, which is only called when a COPY would happen --
+#: so `--method global` never reached it and did a complete install, and so did an
+#: in-place `separate`. MEASURED 2026-09-02: `--method global --dry-run` wrote the config,
+#: copied 9 items into the global Claude home over the user's own skills with no backup,
+#: merged settings.json and printed "install complete".
+#:
+#: Placed on the WRITERS instead: every write in this script goes through copy_toolkit,
+#: write_paths_env or install_global_claude, so an arm added later cannot write without
+#: passing it. The flag is documented three times with no qualification, and a user
+#: reaching for it is reaching for safety.
+refuse_if_dry_run() {
+  [ "$DRY_RUN" = 1 ] || return 0
+  echo
+  echo "  --dry-run: NOT $1"
+  echo "      $2"
+  echo
+  echo "=== dry run complete: nothing was changed ==="
+  exit 0
+}
+
 #: require_direction DEST WHAT_NAMED_IT
 #: Called immediately before the first write of every method.
 require_direction() {
@@ -457,11 +482,21 @@ require_direction() {
   # (a) Nobody named it AND nobody is watching. `--yes` is documented as "accept
   #     detected values", which is fine for a profile path and is not fine for the
   #     directory about to be written to in bulk.
-  if [ "$named" = "detected" ] && [ "$ASSUME_YES" = 1 ]; then
-    echo "REFUSING: --yes with an auto-detected destination." >&2
+  # ...or nobody is watching for any other reason. `--yes` was the only trigger, so a
+  # CLOSED STDIN walked straight through: `ask()` is `read ... || true`, the read fails
+  # at EOF, the `|| true` swallows it, and the detected default is accepted in silence.
+  # The rule this branch states is "a destination the user never named is not a
+  # destination at all when nobody is there to read the prompt" -- and no tty is exactly
+  # that. The Bash tool this toolkit is driven by has no tty.
+  if [ "$named" = "detected" ] && { [ "$ASSUME_YES" = 1 ] || [ ! -t 0 ]; }; then
+    if [ "$ASSUME_YES" = 1 ]; then
+      echo "REFUSING: --yes with an auto-detected destination." >&2
+    else
+      echo "REFUSING: an auto-detected destination with no terminal to confirm on." >&2
+    fi
     echo "  Detected: $dest" >&2
     echo "  Nothing named that path -- it came from scanning the usual Steam locations," >&2
-    echo "  and --yes means no one will see this before the write starts." >&2
+    echo "  and nobody will see a prompt before the write starts." >&2
     echo "  Name it explicitly:  --game \"$dest\"   (or --toolkit for separate/global)" >&2
     exit 2
   fi
