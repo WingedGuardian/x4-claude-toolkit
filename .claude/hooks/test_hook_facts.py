@@ -1632,5 +1632,164 @@ class TestCdThroughAVariableIsStillCd(unittest.TestCase):
         self.assertFalse(F(cmd)["rm_hits_game"])
 
 
+# ----------------------------------------------- round 3c: spellings of a known action
+# Each of these is a way of writing something the guard already refuses in its commonest
+# form. None needed a new concept; all six were a set or a comparison that had been
+# written against one example.
+
+
+class TestFindRunsACommandFourWays(unittest.TestCase):
+    """`-execdir`, `-ok` and `-okdir` delete exactly as `-exec` does -- find's own
+    documentation recommends `-execdir` OVER `-exec` -- and the verb after them was
+    compared as a bare token three functions below the `_verb_name()` that folds
+    `/bin/rm` and `rm.exe` onto `rm`."""
+    def test_exec_is_a_delete(self):
+        self.assertTrue(F('find "' + GAME + '" -exec ' + D + ' -rf {} +')["rm_hits_game"])
+
+    def test_execdir_is_a_delete(self):
+        self.assertTrue(F('find "' + GAME + '" -execdir ' + D + ' -rf {} +')["rm_hits_game"])
+
+    def test_okdir_is_a_delete(self):
+        self.assertTrue(F('find "' + GAME + '" -okdir ' + D + ' -rf {} ;')["rm_hits_game"])
+
+    def test_ok_is_a_delete(self):
+        self.assertTrue(F('find "' + GAME + '" -ok ' + D + ' -rf {} ;')["rm_hits_game"])
+
+    def test_an_absolute_delete_under_exec(self):
+        self.assertTrue(F('find "' + GAME + '" -exec /bin/' + D + ' -rf {} +')["rm_hits_game"])
+
+    def test_a_SHELL_under_exec_is_followed(self):
+        cmd = ('find "' + GAME + '" -exec bash -c ' + Q + D + ' -rf $1' + Q + ' _ {} ;')
+        self.assertTrue(F(cmd)["rm_hits_game"])
+
+    # ---- twins ------------------------------------------------------------------
+    def test_a_SCOPED_cleanup_is_still_allowed(self):
+        """The rule that exempts a narrowed find exists because treating it like a tree
+        delete added 40 prompts over 13,282 commands, every one a cache cleanup."""
+        self.assertFalse(F('find . -name __pycache__ -exec ' + D + ' -rf {} +')["rm_hits_game"])
+
+    def test_a_find_that_deletes_NOTHING_is_not_a_delete(self):
+        self.assertFalse(F('find . -name ' + Q + '*.py' + Q)["rm_hits_game"])
+
+
+class TestMovingARootAwayIsDestroyingIt(unittest.TestCase):
+    """`copy_dests` only ever inspected a copy/move DESTINATION, so moving a protected
+    root elsewhere was silent while deleting it was a hard block. The install is equally
+    gone: the game stops working, every deployed mod goes with it, and Steam has to
+    re-validate."""
+    def test_moving_the_game_root_away(self):
+        self.assertTrue(F('mv "' + GAME + '" /tmp/x')["rm_hits_game"])
+
+    def test_moving_extensions_wholesale(self):
+        self.assertTrue(F('mv "' + GAME + '/extensions" /tmp/x')["rm_hits_game"])
+
+    def test_moving_the_reference_tree(self):
+        self.assertTrue(F('mv "' + REF + '" /tmp/x')["rm_targets_reference"])
+
+    def test_a_dash_t_move_makes_every_operand_a_source(self):
+        self.assertTrue(F('mv -t /tmp/x "' + GAME + '"')["rm_hits_game"])
+
+    # ---- twins ------------------------------------------------------------------
+    def test_deploying_INTO_the_game_is_not_a_root_delete(self):
+        """The deploy path is the whole reason this is scoped to the SOURCE. Writing
+        into the game still asks -- that is a separate, designed confirmation -- but it
+        must never reach the non-overridable hard block."""
+        f = F('mv dev/mymod "' + GAME + '/extensions/mymod"')
+        self.assertFalse(f["rm_hits_game"])
+        # The DESTINATION must not be read as something being taken away. Asserting the
+        # hard block alone was not enough to pin this: a mv whose destination sits
+        # INSIDE extensions/ is not the root, so treating every operand as a source
+        # tripped the workspace confirmation instead and no test noticed.
+        self.assertFalse(f["rm_in_x4_dir"])
+        self.assertTrue(f["copy_into_game_or_profile"])
+
+    def test_an_ordinary_rename_is_silent(self):
+        self.assertFalse(F("mv build/a.txt build/b.txt")["rm_hits_game"])
+
+    def test_COPYING_from_a_root_is_not_a_delete(self):
+        """`cp` reads and leaves the original in place, which is why only `mv` counts."""
+        self.assertFalse(F('cp -r "' + GAME + '/extensions/x" /tmp/y')["rm_hits_game"])
+
+
+class TestEverySpellingOfStagingEverything(unittest.TestCase):
+    """The set was three exact tokens. `git add :/` stages from the repository root
+    regardless of the current directory -- strictly broader than the `.` the rule was
+    written for -- and it was the one form allowed. `git stage` is a real synonym."""
+    def test_git_add_dot_slash(self):
+        self.assertTrue(F("git add ./")["git_add_all"])
+
+    def test_git_add_colon_slash(self):
+        self.assertTrue(F("git add :/")["git_add_all"])
+
+    def test_git_add_star(self):
+        self.assertTrue(F("git add *")["git_add_all"])
+
+    def test_git_stage_dash_A(self):
+        self.assertTrue(F("git stage -A")["git_add_all"])
+
+    def test_the_original_spelling_still_fires(self):
+        for c in ("git add .", "git add -A", "git add --all"):
+            with self.subTest(c=c):
+                self.assertTrue(F(c)["git_add_all"], c)
+
+    # ---- twins ------------------------------------------------------------------
+    def test_explicit_paths_are_not_staging_everything(self):
+        for c in ("git add src/a.py src/b.py", "git add -p", "git add .gitignore",
+                  "git add tests/", "git stage src/a.py"):
+            with self.subTest(c=c):
+                self.assertFalse(F(c)["git_add_all"], c)
+
+
+class TestACommandCarriedInAVariable(unittest.TestCase):
+    """`_inner_commands` appended the token `$C` verbatim, although `assignments()` had
+    already computed C from the same command and the delete rules were using it. The
+    carrier walk was the one consumer not resolving."""
+    def test_a_command_carried_in_a_variable(self):
+        cmd = ("C=" + Q + D + ' -rf "' + GAME + '"' + Q + '; bash -c "$C"')
+        self.assertTrue(F(cmd)["rm_hits_game"])
+
+    def test_eval_of_a_variable(self):
+        cmd = ("C=" + Q + D + ' -rf "' + GAME + '"' + Q + '; eval "$C"')
+        self.assertTrue(F(cmd)["rm_hits_game"])
+
+    def test_a_benign_carried_command_is_silent(self):
+        cmd = "C=" + Q + "ls -la" + Q + '; bash -c "$C"'
+        self.assertFalse(F(cmd)["rm_hits_game"])
+
+
+class TestProseAboutARecordIsNotAWriteToIt(unittest.TestCase):
+    """A FALSE POSITIVE, and the costlier direction: a non-overridable deny on ordinary
+    work. The rule ANDed two independent predicates over the RAW command, so a comment
+    naming a durable record plus an unrelated write call anywhere was enough. It fired on
+    the reviewer twice, on me twice, and finally on the very command that fixed it."""
+    def test_a_comment_naming_a_record_is_not_a_write(self):
+        cmd = ("python -c " + DQ + "import io; io.open(" + Q + "x" + Q + "," + Q + "w"
+               + Q + ")" + DQ + "  # per CLAUDE.md")
+        self.assertFalse(F(cmd)["durable_python_open_w"])
+
+    def test_a_heredoc_body_naming_a_record_is_not_a_write(self):
+        cmd = ("cat > s.py <<" + Q + "PY" + Q + NLc + "# see CLAUDE.md" + NLc
+               + "open(" + Q + "x" + Q + ", " + Q + "w" + Q + ")" + NLc + "PY")
+        self.assertFalse(F(cmd)["durable_python_open_w"])
+
+    def test_prose_naming_a_record_is_not_a_write(self):
+        cmd = ("echo " + DQ + "KNOWLEDGEBASE.md says never use open(p, " + Q + "w" + Q
+               + ")" + DQ)
+        self.assertFalse(F(cmd)["durable_python_open_w"])
+
+    # ---- the twin that matters most: the rule must still DO its job -------------
+    def test_a_real_python_write_to_a_durable_record_still_fires(self):
+        cmd = ("python -c " + DQ + "open(" + Q + "CLAUDE.md" + Q + ", " + Q + "w" + Q
+               + ").write(x)" + DQ)
+        self.assertTrue(F(cmd)["durable_python_open_w"])
+
+    def test_the_variable_case_this_rule_EXISTS_for_still_fires(self):
+        """The two-predicate AND is kept precisely for this: the path is in a variable,
+        so a regex demanding the filename inside the call would miss it."""
+        cmd = ("python -c " + DQ + "p=" + Q + "KNOWLEDGEBASE.md" + Q + "; open(p, " + Q
+               + "w" + Q + ")" + DQ)
+        self.assertTrue(F(cmd)["durable_python_open_w"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

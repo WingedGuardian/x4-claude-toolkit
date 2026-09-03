@@ -77,7 +77,20 @@ x4_norm() {
   # so two implementations of one path fact stop disagreeing.
   #
   # Still ONE subprocess: the loops live inside the same sed program.
+  #
+  # The EXTENDED-LENGTH prefix goes first, and the order is the fix rather than a
+  # detail. Windows accepts \\?\C:\... (and the \\.\ device form) for any path, the
+  # Write tool passes it through, and Python opens it -- but it normalises to
+  # //?/c:/... which is under no configured root, so the reference HARD BLOCK simply
+  # did not fire. Stripping it AFTER the drive-dialect rule below would not help:
+  # that rule rewrites <sep>c:/ to <sep>/c/, turning //?/c:/users into //?//c/users,
+  # which still matches nothing.
+  #
+  # \\?\UNC\server\share is the same prefix over a network path and unwraps to
+  # //server/share.
   printf '%s' "$1" | sed -E 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ\\/abcdefghijklmnopqrstuvwxyz\//
+s#^//[?.]/unc/#//#
+s#^//[?.]/##
 s#(^|[^a-z0-9])([a-z]):/#\1/\2/#g
 :dot
 s#/[.]/#/#g

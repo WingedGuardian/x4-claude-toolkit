@@ -623,6 +623,11 @@ ROOT_VARS = {"X4_GAME": "game", "X4_REFERENCE": "reference", "X4_PROFILE": "prof
              "X4_DOCUMENTS": "documents"}
 
 
+#: Interpreters this rule is about. Spelled through `_verb_name`, so an absolute
+#: path or a `.exe` suffix folds in as it does everywhere else in this file.
+_PYTHONS = ("python", "python3", "python2", "py", "pypy", "pypy3", "uv")
+
+
 def has_unresolved(tok: str) -> bool:
     return bool(_EXPANSION.search(tok) or _SUBST.search(tok))
 
@@ -944,6 +949,11 @@ def _narrows(toks: list, i: int) -> bool:
     return arg not in _UNIVERSAL
 
 
+#: find actions that RUN a command per match. `-execdir`/`-okdir` differ from
+#: `-exec`/`-ok` only in the working directory they run from; they delete identically.
+_FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
+
+
 def find_deletes(seg: str) -> list:
     """Paths a `find` would delete. `find <root> -delete` and `find <root> -exec rm ...`
     remove files just as surely as rm does, and DELETE_VERBS knew neither.
@@ -972,9 +982,25 @@ def find_deletes(seg: str) -> list:
     deletes = "-delete" in toks
     if not deletes:
         for i, t in enumerate(toks):
-            if t == "-exec" and i + 1 < len(toks) and toks[i + 1] in DELETE_VERBS:
-                deletes = True
-                break
+            # All four spellings, and the verb NORMALISED. This compared `-exec` to a
+            # bare token, three functions below the `_verb_name()` that exists to fold
+            # `/bin/rm` and `rm.exe` onto `rm` -- so the rule caught the one form it was
+            # written against and missed `-execdir` (which find's own documentation
+            # recommends OVER -exec), `-ok`, `-okdir`, and any absolute spelling.
+            if t in _FIND_EXEC and i + 1 < len(toks):
+                nxt = _verb_name(toks[i + 1])
+                if nxt in DELETE_VERBS:
+                    deletes = True
+                    break
+                # `find <root> -exec bash -c '<cmd>' _ {} ;` -- the shell is a carrier
+                # here exactly as it is anywhere else, so it goes through the same walk
+                # rather than a second implementation.
+                if nxt in _SHELLS:
+                    rest = " ".join(toks[i + 1:])
+                    if any(_verb_name(verb(x)) in DELETE_VERBS
+                           for x in _inner_commands(rest)):
+                        deletes = True
+                        break
     if not deletes:
         return []
     # find's PATHS are the operands before the first predicate (a `-flag`).
@@ -984,6 +1010,30 @@ def find_deletes(seg: str) -> list:
             break
         out.append(t)
     return out
+
+
+def move_sources(seg: str) -> list[str]:
+    """What a `mv` takes AWAY. Every operand but the last is a source.
+
+    `copy_dests` only ever looked at a copy/move DESTINATION, so moving a protected root
+    elsewhere was silent while deleting it was a hard block. The install is equally gone
+    either way: the game stops working, every deployed mod goes with it, and Steam has to
+    re-validate. A guard that blocks the delete and waves the move through is not
+    protecting the thing it names.
+
+    `cp` is deliberately excluded -- copying FROM a root reads it and leaves it in place.
+    """
+    if verb(seg) not in ("mv", "move"):
+        return []
+    toks = tokens(seg)
+    for i, (t, quoted) in enumerate(toks):
+        # With -t the destination is named by the flag, so EVERY operand is a source.
+        if not quoted and t in ("-t", "--target-directory"):
+            return _operands(seg)
+        if not quoted and t.startswith("--target-directory="):
+            return _operands(seg)
+    ops = _operands(seg)
+    return ops[:-1] if len(ops) > 1 else []
 
 
 def rm_paths(seg: str) -> list[str]:
@@ -1111,16 +1161,30 @@ def cwd_track(cmd: str, base: str = "") -> list:
 
 GIT_ADD_ALL = {"-A", "--all", "."}
 
+#: Every operand that means "everything", normalised. This was an exact-token set of
+#: three, so four spellings of the same action walked past -- and `:/` is the WORST of
+#: them: it stages from the repository root regardless of the current directory, so it
+#: is strictly broader than the `.` the rule was written for. `git stage` is a real
+#: built-in synonym for `git add`.
+_GIT_ADD_VERBS = ("add", "stage")
+
+
+def _stages_everything(tok: str) -> bool:
+    t = tok.rstrip("/")
+    return t in ("", ".", ":", ":/", "*", "-A", "--all") or tok in GIT_ADD_ALL
+
 
 def git_adds_everything(seg):
-    """`git add -A|--all|.` -- seen through a subshell, an env prefix, a wrapper and
-    `git -C <path> add`, none of which the old anchored regex allowed."""
+    """`git add -A|--all|.|./|:/|*`, and `git stage` -- seen through a subshell, an env
+    prefix, a wrapper and `git -C <path> add`, none of which the old anchored regex
+    allowed."""
     if verb(seg) != "git":
         return False
     toks = [t for t, _q in tokens(seg)]
-    if "add" not in toks:
+    at = next((i for i, t in enumerate(toks) if t in _GIT_ADD_VERBS), -1)
+    if at < 0:
         return False
-    return any(t in GIT_ADD_ALL for t in toks[toks.index("add") + 1:])
+    return any(_stages_everything(t) for t in toks[at + 1:])
 
 
 def sed_in_place_targets(seg):
@@ -1400,7 +1464,13 @@ def _inner_commands(cmd: str) -> list[str]:
         if v in _SHELLS:
             for i, (t, quoted) in enumerate(toks):
                 if not quoted and _DASH_C.match(t) and i + 1 < len(toks):
-                    out.append(toks[i + 1][0])
+                    # RESOLVED before it is walked. `C='rm -rf "<root>"'; bash -c "$C"`
+                    # appended the token `$C` verbatim, although `assignments()` had
+                    # already computed C from this very command and the delete rules
+                    # were using it. Same-command assignment is exactly what that
+                    # machinery is for; the carrier walk was the one consumer not using
+                    # it, so a two-statement command any script writes lost the block.
+                    out.append(resolve(toks[i + 1][0], assignments(cmd)))
                     break
         elif v == "eval":
             # `eval` concatenates its arguments and runs the result.
@@ -1414,7 +1484,7 @@ def _inner_commands(cmd: str) -> list[str]:
                       if _verb_name(t) == "eval"), 0)
             parts = [t for t, _ in toks[k + 1:] if not t.startswith("-")]
             if parts:
-                out.append(" ".join(parts))
+                out.append(resolve(" ".join(parts), assignments(cmd)))
         elif v == "trap":
             # `trap <cmd> <SIGNAL...>` runs its first operand as a command when the
             # signal fires. That operand is normally single-quoted, which is exactly
@@ -1560,11 +1630,12 @@ def facts(payload: dict, roots: dict) -> dict:
             out.append((r if unres else join_cwd(c_cwd, r), unres, r))
         return out
 
-    rm_t, copy_t, redir_t = [], [], []
+    rm_t, copy_t, redir_t, mv_src = [], [], [], []
     sed_t, out_t, search_files = [], [], []
     search_seg, git_all = False, False
     for s, c_cwd in seg_cwd:
         rm_t += prep(rm_paths(s), c_cwd)
+        mv_src += prep(move_sources(s), c_cwd)
         copy_t += prep(copy_dests(s), c_cwd)
         sed_t += prep(sed_in_place_targets(s), c_cwd)
         out_t += prep(output_targets(s), c_cwd)
@@ -1687,11 +1758,16 @@ def facts(payload: dict, roots: dict) -> dict:
         # 13,503 real commands, the largest walk produced 25 of the 250 allowed.
         "carriers_truncated": carriers_truncated,
 
-        "rm_hits_game": any(hits_game_root(o) for o in rm_t) or rm_named_game,
-        "rm_targets_reference": hit(rm_t, "reference", conservative=True),
-        "rm_in_x4_dir": any(hit(rm_t, k, conservative=True) for k in
+        # A `mv` SOURCE that is a protected root is a delete of that root: the
+        # install is equally gone whether it was removed or moved away. Sources
+        # INSIDE a root are deliberately left to the existing confirmation below,
+        # so the deploy path -- moving a built mod into extensions/ -- is untouched.
+        "rm_hits_game": (any(hits_game_root(o) for o in rm_t + mv_src)
+                         or rm_named_game),
+        "rm_targets_reference": hit(rm_t + mv_src, "reference", conservative=True),
+        "rm_in_x4_dir": any(hit(rm_t + mv_src, k, conservative=True) for k in
                             ("game", "profile", "mods", "toolkit")) or rm_named_game,
-        "rm_saves": hit(rm_t, "saves", conservative=True),
+        "rm_saves": hit(rm_t + mv_src, "saves", conservative=True),
 
         "writes_documents": hit(writes_any, "documents"),
         "copy_into_game_or_profile": bool(copy_t) and (
@@ -1717,8 +1793,28 @@ def facts(payload: dict, roots: dict) -> dict:
         # recognised by its filename, which survives either form.
         "durable_truncating_redirect": any(DURABLE.search(p) or DURABLE.search(raw)
                                            for p, _u, raw in trunc_redirect),
-        "durable_python_open_w": bool(DURABLE.search(cmd)) and bool(
-            re.search(r"open\([^)]*,\s*[\"']w[\"']", cmd)),
+        # Evaluated over `body` -- comments and heredoc bodies removed -- like every
+        # neighbouring rule. Reading the RAW command made this the last rule in the file
+        # ANDing two independent predicates over the whole text, which is the exact shape
+        # the 2026-09-01 rewrite existed to remove. MEASURED 2026-09-02: it fired on the
+        # reviewer's own ordinary commands twice, and on mine twice, because a comment
+        # mentioning a durable record plus an unrelated `open(x, "w")` anywhere in the
+        # command was enough. A non-overridable deny on writing a scratch file is the
+        # failure mode this file's own header names: a rule that fires on ordinary work
+        # gets bypassed.
+        # ...and only when something in the command is actually a PYTHON interpreter.
+        # A sentence naming a durable record and containing the call as PROSE satisfied
+        # both text predicates and was a non-overridable DENY on printing it. MEASURED
+        # 2026-09-02: it fired on the reviewer twice and on me twice, and then on the
+        # very command that applied this fix. The rule is named for a PYTHON write to a
+        # durable record, so the interpreter belongs in the claim.
+        #
+        # The two-predicate AND is kept rather than collapsed into one regex demanding
+        # the filename inside the call: the case this exists for usually writes through
+        # a variable, and the tighter regex would miss precisely that.
+        "durable_python_open_w": bool(DURABLE.search(body)) and bool(
+            re.search(r"open\([^)]*,\s*[\"']w[\"']", body)) and any(
+                _verb_name(verb(sg)) in _PYTHONS for sg in segments(body)),
 
         "search_rooted_reference": rooted(roots.get("reference")),
         "search_rooted_workspace": any(rooted(roots.get(k)) for k in

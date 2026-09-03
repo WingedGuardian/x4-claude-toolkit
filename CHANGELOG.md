@@ -126,6 +126,59 @@ Found the hard way: an `install.sh --unpack` re-unpacked a locked reference tree
 without a word. The script now refuses (rc 2) and names the override,
 `X4_FORCE_UNPACK=1`.
 
+### Fixed — six spellings of an action the guard already refused, and one false positive
+
+None of these needed a new concept. Each is a set or a comparison that had been written
+against one example.
+
+* **`find -execdir`, `-ok`, `-okdir` and an absolute delete walked past.** The rule tested
+  `t == "-exec"` and compared the following token verbatim — three functions below the
+  `_verb_name()` that folds `/bin/rm` and `rm.exe` onto `rm`. `find`'s own documentation
+  recommends `-execdir` **over** `-exec`. A shell under `-exec` is now followed through the
+  same carrier walk used everywhere else. A genuinely scoped cleanup
+  (`find . -name __pycache__ -exec rm -rf {} +`) is untouched — that exemption exists
+  because removing it added 40 prompts over 13,282 commands.
+* **Moving a protected root away was silent while deleting it was a hard block.** Only the
+  *destination* of a `cp`/`mv` was ever inspected. `mv <game> /tmp/x` destroys the install
+  as surely as a delete does. A `mv` **source** that is a protected root now counts as a
+  delete of it; `cp` is deliberately excluded (it reads and leaves the original in place),
+  and a source *inside* a root keeps the existing confirmation, so the deploy path is
+  unaffected.
+* **Four spellings of staging everything.** `GIT_ADD_ALL` was three exact tokens, so
+  `git add ./`, `git add *`, `git stage -A` and — worst — `git add :/` were allowed. `:/`
+  stages from the repository root regardless of the current directory, i.e. it is strictly
+  broader than the `.` the rule was written for. Explicit paths and `git add -p` still pass.
+* **A command carried in a variable reached no rule.** The carrier walk appended the token
+  `$C` verbatim, although `assignments()` had already computed `C` from the same command
+  and the delete rules were using it. It was the one consumer not resolving.
+* **An extended-length Windows path defeated two guards at once.** `\\\\?\\C:\\…` and
+  `//?/C:/…` are spellings the Write tool accepts and Python opens; they normalised to a
+  path under no configured root, so `protect-files.sh`'s reference hard block never fired
+  — **and** `backup-before-edit.sh` could not stat the path, so it exited 0 with no backup
+  and no audit line. The edit was both allowed and unrecoverable. The prefix is stripped
+  first, *before* the drive-dialect rule, and the ordering is the fix rather than a detail:
+  stripping afterwards turns `//?/c:/users` into `//?//c/users`, which still matches nothing.
+
+**And a false positive, which is the costlier direction.** `durable_python_open_w` ANDed
+two independent predicates over the **raw** command — the last rule in the file still doing
+what the 2026-09-01 rewrite existed to remove. A comment naming a durable record, plus an
+unrelated write call anywhere else in the text, was a **non-overridable deny** on writing a
+scratch file. It fired on the reviewer twice, on me twice, and then on the very shell
+command that applied its own fix.
+
+It now reads `body` (comments and heredoc bodies stripped) and additionally requires the
+command to actually run a python interpreter — a sentence *about* the rule is not a write.
+The two-predicate AND is **kept** rather than tightened into a single regex demanding the
+filename inside the call, because the case this rule exists for usually writes through a
+variable, and that regex would miss precisely it.
+
+**Measured per item over 13,503 real historical commands: 144 refusals removed, 16 added,
+and both directions were read rather than totalled.** All 144 are the false positive — in
+every one the record name or the call appears only in a comment or a heredoc body, and
+**zero** were a real python write to a durable record. The 16 additions are real moves of
+real files out of protected directories. Unit tests 265 → **294**, mutants 67 → **75**, all
+caught; the fuzzer still finds 0 bypasses over 996 mutants with its control at 58.
+
 ### Fixed — the freshness stamp reported FRESH forever over a tree that was not there
 
 The toolkit's headline safety property is that a negative is admissible only with a

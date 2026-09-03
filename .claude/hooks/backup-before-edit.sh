@@ -44,6 +44,15 @@ fi
 # Skip if no file path or file doesn't exist yet (new file creation)
 [ -z "$FILE_PATH" ] && exit 0
 SRC="${FILE_PATH//\\//}"          # normalize backslashes so -f works on Windows paths
+# ...and drop an extended-length prefix, which is a real spelling the Write tool accepts.
+# Without this, `//?/C:/...` is not a file bash can stat, `[ ! -f "$SRC" ]` is true, and
+# the hook exits 0 -- NO backup and NO audit line, silently. The same spelling walked
+# past protect-files.sh's reference hard block, so the edit was both allowed and
+# unrecoverable. Two guards, one path form.
+case "$SRC" in
+  //?/UNC/*|//./UNC/*|//?/unc/*|//./unc/*) SRC="//${SRC#//?/???/}" ;;
+  //?/*|//./*)                             SRC="${SRC#//?/}" ; SRC="${SRC#//./}" ;;
+esac
 [ ! -f "$SRC" ] && exit 0
 
 # Skip transient workspace files (backups themselves, hooks, plans)
