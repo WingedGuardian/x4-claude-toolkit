@@ -52,7 +52,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _env  # noqa: E402
 
 #: The CLI half. One assignment, in the module that owns the name.
-CLI_PATH = "x4validate/_livedump.py"
+#:
+#: REPO-RELATIVE CANDIDATES, tried in order, because this gate runs in two layouts: the
+#: private dev workspace, where `tools/x4validate` IS the git root, and the public
+#: monorepo, where it is a subdirectory. A single hardcoded "x4validate/_livedump.py" is
+#: correct only in the first, and MEASURED 2026-09-02 the gate refused on EVERY run in
+#: the second -- `git show HEAD:` could not find the path -- so the control written for
+#: F87 had never once looked at anything in the tree that ships.
+#:
+#: A list rather than a path computed from __file__: the synthetic-repo fixtures build a
+#: checkout in a temp directory, and an absolute path into the real tree is not inside it.
+#: Kept repo-relative so the same constant works for the real repo and for a fixture.
+CLI_PATHS = ("x4validate/_livedump.py", "tools/x4validate/x4validate/_livedump.py")
 CLI_RE = re.compile(r'^DEFAULT_VAR\s*=\s*"([^"]+)"', re.M)
 
 #: The mod half. `ui.xml` declares the lua global the probe writes.
@@ -120,18 +131,32 @@ def main(argv=None) -> int:
     if cli_repo is None:
         _env.skip("the toolkit is not a git checkout",
                   "this gate compares COMMITTED blobs; there is nothing to read")
-    cli_text = committed(cli_repo, CLI_PATH)
+    cli_path, cli_text = None, None
+    for cand in CLI_PATHS:
+        got = committed(cli_repo, cand)
+        if got is not None:
+            cli_path, cli_text = cand, got
+            break
     if cli_text is None:
-        _env.skip(f"could not read HEAD:{CLI_PATH} in {cli_repo}",
+        _env.skip(f"could not read any of {', '.join(CLI_PATHS)} at HEAD in {cli_repo}",
                   "is the file committed? a gate that cannot look must not pass")
     cli_m = CLI_RE.search(cli_text)
     if cli_m is None:
-        _env.skip(f"no DEFAULT_VAR assignment in HEAD:{CLI_PATH}",
+        _env.skip(f"no DEFAULT_VAR assignment in HEAD:{cli_path}",
                   "the pattern found nothing -- that is a NON-ANSWER, not agreement")
     cli_var = cli_m.group(1)
 
     # ---- mod half ------------------------------------------------------------
-    mods = _env.mods_dir()                     # exits 2 by itself if unconfigured
+    # THE MOD THAT SHIPS, when this repo carries one. `_env.mods_dir()` resolves
+    # $X4_MODS, which on a dev machine points at the private working copy -- so
+    # `mods/x4_toolkit_helper/ui.xml`, the file a user actually installs, was compared
+    # on no machine at all. The configured directory stays the fallback, which is what
+    # the dev workspace needs.
+    shipped = cli_repo / "mods"
+    if find_mod_uis(shipped):
+        mods = shipped
+    else:
+        mods = _env.mods_dir()                 # exits 2 by itself if unconfigured
     uis = find_mod_uis(mods)
     if not uis:
         _env.skip(f"no mod ui.xml under {mods} declares a savedvariable",
@@ -163,7 +188,7 @@ def main(argv=None) -> int:
     for rel, var in rows:
         mark = "ok " if var == cli_var else "!! "
         print(f"  {mark}{rel:<52} {var}")
-    print(f"  cli {CLI_PATH:<52} {cli_var}")
+    print(f"  cli {str(cli_path):<52} {cli_var}")
 
     mismatched = [(r, v) for r, v in rows if v != cli_var]
     print()

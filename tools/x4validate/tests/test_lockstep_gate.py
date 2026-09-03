@@ -9,6 +9,7 @@ file on disk" and a fake that stubs `git show` would test the stub.
 """
 from __future__ import annotations
 
+import pathlib
 import subprocess
 
 import pytest
@@ -112,14 +113,17 @@ def test_it_REFUSES_rather_than_passing_when_the_CLI_half_is_unreadable(world):
     """exit 2, never 0. A gate that cannot tell 'they agree' from 'I did not look' is
     worse than no gate -- and 0 is the answer that gets believed."""
     world(mod_committed="__x4live_dump", cli_committed="__x4live_dump")
-    ls.CLI_PATH_SAVED = ls.CLI_PATH
+    saved = ls.CLI_PATHS
     try:
-        ls.CLI_PATH = "x4validate/__no_such_file__.py"
+        # CLI_PATHS is a tuple of repo-relative CANDIDATES now, tried in order, so the
+        # gate works both where tools/x4validate is the git root and where it is a
+        # subdirectory. Point every candidate at a file that does not exist.
+        ls.CLI_PATHS = ("x4validate/__no_such_file__.py",)
         with pytest.raises(SystemExit) as e:
             ls.main()
         assert e.value.code == 2
     finally:
-        ls.CLI_PATH = ls.CLI_PATH_SAVED
+        ls.CLI_PATHS = saved
 
 
 def test_it_REFUSES_when_the_pattern_matches_nothing(world, tmp_path):
@@ -162,10 +166,58 @@ def test_the_real_repos_are_in_lockstep():
     F63 defect this project has already shipped once. Caught by
     scripts/verify-cold.sh, which is the only run where that is true.
     """
+    import contextlib
+    import io
+
+    buf = io.StringIO()
     try:
-        rc = ls.main()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = ls.main()
     except SystemExit as exc:
         if exc.code == 2:
-            pytest.skip("no mod tree configured; the gate refused, which is correct")
+            # The gate's OWN reason, not a guess at it. This skip used to assert
+            # "no mod tree configured" unconditionally -- and MEASURED 2026-09-02 the
+            # real reason was that CLI_PATH named a path that does not exist in this
+            # repository, so the gate refused on EVERY run, everywhere, while the skip
+            # line explained it away as an environmental non-applicability. A permanent
+            # skip carrying a reassuring and false explanation is worse than a failure.
+            pytest.skip("the gate refused (rc 2), which is correct where it cannot "
+                        "look. Its reason: " + buf.getvalue().strip().splitlines()[0]
+                        if buf.getvalue().strip() else "the gate refused (rc 2)")
         raise
-    assert rc == 0
+    assert rc == 0, buf.getvalue()[-500:]
+
+
+def test_the_gate_can_actually_LOOK_in_this_repository():
+    """The refusal above is correct behaviour and must not become the normal outcome.
+
+    MEASURED 2026-09-02: `gates/lockstep.py` refused on every run in this repo because
+    `CLI_PATH` was a path relative to a git root where `tools/x4validate` IS the root --
+    true in the private dev workspace, never here. `git log --follow` shows the value had
+    never changed, so the control written for F87 had not once looked at anything in the
+    tree that ships, and the skip above recorded that as "not applicable".
+
+    So: in a git checkout that carries both halves, the gate must REACH a verdict.
+    """
+    import contextlib
+    import io
+    import subprocess
+
+    repo = pathlib.Path(__file__).resolve().parents[3]
+    if subprocess.run(["git", "rev-parse", "--git-dir"], cwd=str(repo),
+                      capture_output=True).returncode != 0:
+        pytest.skip("not a git checkout, so there are no committed blobs to compare")
+    if not list((repo / "mods").glob("*/ui.xml")):
+        pytest.skip("this checkout ships no mod ui.xml to compare against")
+
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = ls.main()
+    except SystemExit as exc:
+        raise AssertionError(
+            "the gate refused (rc %s) in a checkout that carries BOTH halves, so it "
+            "reached no verdict:%s%s" % (exc.code, chr(10), buf.getvalue()[-600:]))
+    assert rc == 0, buf.getvalue()[-600:]
+    assert "ui.xml" in buf.getvalue(), (
+        "the gate returned 0 without naming a mod declaration -- it examined nothing")
