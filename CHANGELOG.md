@@ -126,6 +126,47 @@ Found the hard way: an `install.sh --unpack` re-unpacked a locked reference tree
 without a word. The script now refuses (rc 2) and names the override,
 `X4_FORCE_UNPACK=1`.
 
+### Fixed — the freshness stamp reported FRESH forever over a tree that was not there
+
+The toolkit's headline safety property is that a negative is admissible only with a
+denominator **and** a freshness stamp. That stamp was defeated on two of its three axes,
+silently, in the one direction that produces a confident wrong answer rather than a
+refusal.
+
+`staleness._defaults()` checked that `reference` and `extensions` **resolve**, never that
+they **exist** — and `_paths` returns a path for any non-empty setting. The engine axis
+gained a real existence check this release, carrying a comment saying it was being applied
+"exactly like reference and extensions two lines up". It was not. The comment asserted a
+validation that did not exist, which is why nobody looking at that line had reason to
+doubt it.
+
+MEASURED, with a control that goes red:
+
+```
+two DIFFERENT nonexistent trees   -> fb2018359186a6be, fb2018359186a6be   IDENTICAL
+a nonexistent vs an EMPTY dir     -> fb2018359186a6be, fb2018359186a6be   IDENTICAL
+a REAL tree (the control)         -> fad17ba6a627f73c                      differs
+_defaults() with both missing     -> ACCEPTED, exists=False for each
+```
+
+`_fold` writes `<NO-EXTENSIONS-DIR>` for an empty vector, which is exactly the collision:
+every broken world folds to one constant, so an index stamped in that state stays fresh
+against any other broken world forever — and `ask.py` prints
+`NEGATIVE CONFIRMED over N of M documents` on precisely that verdict.
+
+**Reachable without contrivance.** `install.sh` writes `X4_REFERENCE` unconditionally and
+then tells you to run `bin/unpack-reference.sh` *to create that directory*. The documented
+post-install state points the variable at a tree that does not exist yet. A moved install,
+a changed drive letter or a typo reach the same place later.
+
+Both axes now refuse, naming what was expected. The reference probe is
+`libraries/wares.xml` — `_fold`'s own marker, the file whose absence silently drops the
+reference axis from the digest — so it refuses in exactly the case the fold would have
+gone blind, rather than merely when the directory is missing. **An empty `extensions/` is
+still accepted**: it means "no mods installed", it fingerprints honestly, and refusing it
+would break a new user's install to fix a misconfiguration they do not have. That line has
+its own test, and reverting any of the four clauses turns its named test red.
+
 ### Fixed — four more ways a command reached the shell unseen
 
 The carrier work below enumerated what *carries* a command. A further review found four

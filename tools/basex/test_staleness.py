@@ -212,6 +212,22 @@ def test_unresolvable_paths_report_UNKNOWN_not_a_traceback(monkeypatch, capsys):
 
 # --- the engine axis must REFUSE a tree that is not there (2026-09-02) --------
 
+def _real_pair(tmp_path):
+    """A reference tree and an extensions dir that actually exist.
+
+    `_defaults()` validates these BEFORE the engine axis, so a test about the engine has
+    to hand it a real pair or it never reaches the line under test. Before 2026-09-02 it
+    did not have to, because neither was checked -- which is the defect these fixtures
+    were changed for.
+    """
+    ref = tmp_path / "ref"
+    (ref / "libraries").mkdir(parents=True)
+    (ref / "libraries" / "wares.xml").write_text("<wares/>", encoding="utf-8")
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    return ref, ext
+
+
 def test_a_MISSING_engine_tree_is_a_refusal_not_a_constant(tmp_path, monkeypatch):
     """`hash_engine` over a missing tree hashes seven fixed names plus seven <ABSENT>
     markers, so EVERY nonexistent path folds to the SAME digest -- and `check()` then
@@ -222,8 +238,9 @@ def test_a_MISSING_engine_tree_is_a_refusal_not_a_constant(tmp_path, monkeypatch
     # _defaults() validates reference and extensions FIRST, so on a machine with
     # no X4 installed this raised for THOSE and the assertion below measured the
     # wrong refusal -- green configured, red cold.
-    monkeypatch.setenv("X4_REFERENCE", str(tmp_path / "ref"))
-    monkeypatch.setenv("X4_EXTENSIONS", str(tmp_path / "ext"))
+    ref, ext = _real_pair(tmp_path)
+    monkeypatch.setenv("X4_REFERENCE", str(ref))
+    monkeypatch.setenv("X4_EXTENSIONS", str(ext))
     monkeypatch.setenv("X4VALIDATE_DIR", str(tmp_path / "not-a-checkout"))
     with pytest.raises(staleness.EngineUnavailable) as ei:
         staleness._defaults()
@@ -243,8 +260,9 @@ def test_pointing_at_the_PACKAGE_instead_of_the_CHECKOUT_refuses(tmp_path, monke
     # _defaults() validates reference and extensions FIRST, so on a machine with
     # no X4 installed this raised for THOSE and the assertion below measured the
     # wrong refusal -- green configured, red cold.
-    monkeypatch.setenv("X4_REFERENCE", str(tmp_path / "ref"))
-    monkeypatch.setenv("X4_EXTENSIONS", str(tmp_path / "ext"))
+    ref, ext = _real_pair(tmp_path)
+    monkeypatch.setenv("X4_REFERENCE", str(ref))
+    monkeypatch.setenv("X4_EXTENSIONS", str(ext))
     monkeypatch.setenv("X4VALIDATE_DIR", str(pkg))       # one level too deep
     with pytest.raises(staleness.EngineUnavailable):
         staleness._defaults()
@@ -257,8 +275,85 @@ def test_a_REAL_checkout_is_accepted(tmp_path, monkeypatch):
     root = tmp_path / "x4validate"
     (root / "x4validate").mkdir(parents=True)
     (root / "x4validate" / "_merge.py").write_text("# engine\n", encoding="utf-8")
+    ref, ext = _real_pair(tmp_path)
     monkeypatch.setenv("X4VALIDATE_DIR", str(root))
-    monkeypatch.setenv("X4_REFERENCE", str(tmp_path / "ref"))
-    monkeypatch.setenv("X4_EXTENSIONS", str(tmp_path / "ext"))
+    monkeypatch.setenv("X4_REFERENCE", str(ref))
+    monkeypatch.setenv("X4_EXTENSIONS", str(ext))
     _ref, _ext, engine = staleness._defaults()
     assert (engine / "_merge.py").is_file(), engine
+
+
+def _real_engine(tmp_path, monkeypatch):
+    root = tmp_path / "x4validate"
+    (root / "x4validate").mkdir(parents=True)
+    (root / "x4validate" / "_merge.py").write_text("# engine\n", encoding="utf-8")
+    monkeypatch.setenv("X4VALIDATE_DIR", str(root))
+
+
+def test_two_DIFFERENT_missing_trees_fold_to_the_SAME_digest(tmp_path):
+    """The measurement the refusal exists for, kept as a test so the reasoning cannot
+    quietly stop being true. Nothing here is about policy -- it is the arithmetic that
+    makes a missing tree indistinguishable from any other missing tree."""
+    import staleness
+    a = staleness._hash_content(tmp_path / "no_A" / "ref", tmp_path / "no_A" / "ext")
+    b = staleness._hash_content(tmp_path / "no_B" / "ref", tmp_path / "no_B" / "ext")
+    assert a == b, "two different nonexistent worlds must be shown to collide"
+
+    ref, ext = _real_pair(tmp_path)
+    assert staleness._hash_content(ref, ext) != a, (
+        "the control: a real tree must fingerprint differently, or the collision above "
+        "says nothing")
+
+
+def test_a_MISSING_reference_tree_is_a_refusal_not_a_constant(tmp_path, monkeypatch):
+    """`_paths.reference()` returns a Path for any non-empty setting, so RESOLVING was
+    never EXISTING. install.sh writes X4_REFERENCE and then tells the user to run
+    bin/unpack-reference.sh to create it, so this is the documented post-install state."""
+    import staleness
+    _real_engine(tmp_path, monkeypatch)
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    monkeypatch.setenv("X4_REFERENCE", str(tmp_path / "not-unpacked"))
+    monkeypatch.setenv("X4_EXTENSIONS", str(ext))
+    with pytest.raises(staleness.EngineUnavailable, match="libraries/wares.xml"):
+        staleness._defaults()
+
+
+def test_a_reference_DIRECTORY_without_the_fold_marker_is_refused(tmp_path, monkeypatch):
+    """A directory that exists but holds no wares.xml drops the reference axis from the
+    digest SILENTLY -- `_fold` only stats the marker `if marker.is_file()`. So existence
+    alone is not the property worth checking; the fold's own marker is."""
+    import staleness
+    _real_engine(tmp_path, monkeypatch)
+    ref = tmp_path / "half-unpacked"
+    ref.mkdir()
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    monkeypatch.setenv("X4_REFERENCE", str(ref))
+    monkeypatch.setenv("X4_EXTENSIONS", str(ext))
+    with pytest.raises(staleness.EngineUnavailable, match="libraries/wares.xml"):
+        staleness._defaults()
+
+
+def test_a_MISSING_extensions_directory_is_a_refusal(tmp_path, monkeypatch):
+    import staleness
+    _real_engine(tmp_path, monkeypatch)
+    ref, _ext = _real_pair(tmp_path)
+    monkeypatch.setenv("X4_REFERENCE", str(ref))
+    monkeypatch.setenv("X4_EXTENSIONS", str(tmp_path / "no-such-extensions"))
+    with pytest.raises(staleness.EngineUnavailable, match="extensions"):
+        staleness._defaults()
+
+
+def test_an_EMPTY_extensions_directory_is_ACCEPTED(tmp_path, monkeypatch):
+    """The twin, and the line this refusal must not cross. An empty extensions/ means
+    "no mods installed", which is a real state that fingerprints honestly. Refusing it
+    would turn a correct answer into a broken install for anyone starting out."""
+    import staleness
+    _real_engine(tmp_path, monkeypatch)
+    ref, ext = _real_pair(tmp_path)
+    monkeypatch.setenv("X4_REFERENCE", str(ref))
+    monkeypatch.setenv("X4_EXTENSIONS", str(ext))
+    got_ref, got_ext, _engine = staleness._defaults()
+    assert Path(got_ref) == ref
+    assert Path(got_ext) == ext

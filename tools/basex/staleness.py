@@ -201,17 +201,53 @@ def _defaults() -> tuple[Path, Path, Path]:
             f"cannot resolve {' and '.join(missing)}. Set $X4_REFERENCE / $X4_EXTENSIONS, "
             f"or configure .claude/x4-paths.env. Refusing to guess: a fingerprint taken "
             f"over a path that does not exist reports FRESH forever.")
+    # RESOLVING is not EXISTING, and only the second one makes a fingerprint mean
+    # anything. `_paths` returns a Path for any non-empty setting, so until now a typo
+    # or a moved install was accepted and then hashed over nothing.
+    #
+    # MEASURED 2026-09-02: two DIFFERENT nonexistent trees both fold to
+    # fb2018359186a6be, and so does an EMPTY directory -- `_fold` writes
+    # `<NO-EXTENSIONS-DIR>` for an empty vector, which is exactly the collision. An
+    # index stamped in that state reads FRESH against any other broken world forever,
+    # and `ask.py` gates `NEGATIVE CONFIRMED over N of M documents` on that verdict. The
+    # headline safety property -- a negative needs a denominator AND a freshness stamp --
+    # was defeated in the one direction that produces a confident wrong answer.
+    #
+    # Reachable without contrivance: install.sh writes X4_REFERENCE and then tells the
+    # user to run bin/unpack-reference.sh to CREATE that directory, so the documented
+    # post-install state points at a tree that is not there yet.
+    #
+    # `libraries/wares.xml` is the probe because it is already `_fold`'s own reference
+    # marker -- the same file whose absence silently drops the reference axis from the
+    # digest -- so this refuses precisely when the fold would have gone blind.
+    if not (Path(reference) / "libraries" / "wares.xml").is_file():
+        raise EngineUnavailable(
+            f"the reference tree at {reference} has no libraries/wares.xml, so there is "
+            f"nothing to fingerprint. Unpack it with bin/unpack-reference.sh, or point "
+            f"$X4_REFERENCE at a tree that exists. Refusing to guess: every missing tree "
+            f"folds to the same digest, which reads as FRESH forever.")
+    # An EMPTY extensions directory is a legitimate state and stays accepted -- it means
+    # no mods, and it fingerprints honestly. A MISSING one is refused, because the fold
+    # cannot tell it apart from the empty case and would call a broken path fresh.
+    if not Path(extensions).is_dir():
+        raise EngineUnavailable(
+            f"the extensions directory at {extensions} does not exist. Point "
+            f"$X4_EXTENSIONS at your game's extensions/ folder. Refusing to guess: a "
+            f"missing directory folds to the same digest as an empty one, so a broken "
+            f"path would read as FRESH forever. An empty extensions/ is fine.")
     # env-ok: $X4VALIDATE_DIR points at a CHECKOUT of the engine source, for
     # fingerprinting. It is a developer override for where this repo lives, not a
     # user-configured X4 location, and `_paths`' layers deliberately cover only
     # `X4_`-prefixed settings — routing it there would widen that contract.
     engine = Path(os.environ.get(
         "X4VALIDATE_DIR", str(HERE.parent / "x4validate"))) / "x4validate"
-    # VALIDATED, exactly like reference and extensions two lines up, and for the reason
-    # already written there: "a fingerprint taken over a path that does not exist
-    # reports FRESH forever."
+    # VALIDATED, like reference and extensions above, for the reason written there:
+    # "a fingerprint taken over a path that does not exist reports FRESH forever."
     #
-    # That refusal was applied to two of the three axes and not to this one. MEASURED
+    # That sentence used to be false where it stood. When this check was added, the two
+    # axes it claimed to be copying tested only that their paths RESOLVED -- so the
+    # comment asserted a validation that did not exist, and a reader (including the next
+    # reviewer) had no reason to doubt it. Both are real checks as of 2026-09-02. MEASURED
     # 2026-09-02: `hash_engine` over a missing tree hashes seven fixed names plus seven
     # <ABSENT> markers, so EVERY nonexistent path folds to the SAME constant --
     # 2e797cf6683200c5 -- and `check()` then reports the artifact fresh against any of
