@@ -51,7 +51,7 @@ local PROTO = 1
 --:
 --: Kept honest by `test_the_BUILD_constant_matches_the_file`, so editing the lua and
 --: forgetting to re-stamp this fails the suite rather than silently lying in game.
-local BUILD = "dbe9cacb"
+local BUILD = "0282cc3c"
 local TAG_CMD, TAG_REPLY = "MQ", "MR"
 
 -- Cap on echo, the ramp instrument. Generous: the point of the ramp is to FIND the
@@ -208,7 +208,7 @@ local HEADER_RESERVE = 512
 local CONTENTS_BUDGET = 400
 local ROW_BUDGET = MAX_PAYLOAD - HEADER_RESERVE
 
-local function reply(seq, status, payload)
+local function reply(seq, status, payload, unbounded)
     payload = payload or ""
     -- THE choke point. Every verb goes through here, so the bound is enforced once
     -- rather than remembered in each of them -- which is how verbs.ext and verbs.macro
@@ -218,7 +218,16 @@ local function reply(seq, status, payload)
     -- An over-long frame is not a truncation, it is a total teardown of the pipe in
     -- both directions. So it must never be SENT: it becomes an ERR naming the size,
     -- which is a diagnosis the caller can act on.
-    if #payload > MAX_PAYLOAD then
+    -- `unbounded` is opt-in, per call, and exactly one verb passes it: `echo`, whose
+    -- entire purpose is to be larger than we think the transport allows so that
+    -- `x4live ramp` can find the ENGINE's ceiling. Capping it made the ramp report OUR
+    -- cap as the game's -- MEASURED: last_ok fell from 524288 to 16384 and the tool
+    -- printed "the ceiling lies in (16384, 32768]" and exited 0. `_BUF`'s comment
+    -- records the same failure happening once before at (60000, 65536].
+    --
+    -- A per-call flag rather than a size exemption: every other verb keeps the choke
+    -- point, and a verb added later gets it without anyone remembering to ask.
+    if (not unbounded) and #payload > MAX_PAYLOAD then
         status = "ERR"
         payload = "reply too large: " .. #payload .. " bytes exceeds MAX_PAYLOAD "
                   .. MAX_PAYLOAD .. " -- this verb produced an uncapped result set"
@@ -771,7 +780,8 @@ verbs.echo = function(seq, n)
         reply(seq, "ERR", "requested " .. count .. " exceeds ECHO_MAX " .. ECHO_MAX)
         return
     end
-    reply(seq, "OK", string.rep("x", count))
+    -- UNBOUNDED on purpose. This verb exists to be too big; see reply().
+    reply(seq, "OK", string.rep("x", count), true)
 end
 
 verbs.errors = function(seq)

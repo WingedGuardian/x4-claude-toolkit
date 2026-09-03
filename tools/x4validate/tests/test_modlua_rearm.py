@@ -2411,6 +2411,49 @@ def test_an_UNCAPPED_macro_reply_carries_NO_marker(lua_factory):
     assert "__shown=" not in r.payload and "__total=" not in r.payload, r.payload
 
 
+# --- verbs.echo: the one verb that MUST be able to exceed MAX_PAYLOAD ------------
+#
+# It had ZERO tests. `x4live ramp` drives it to find where the TRANSPORT gives out, so a
+# cap on it makes the ramp report OUR OWN limit as the engine's -- MEASURED: last_ok fell
+# from 524288 to 16384 and the tool printed "the ceiling lies in (16384, 32768]" and
+# exited 0. `_livepipe._BUF` was raised 64 KiB -> 1 MiB expressly to reach 524288.
+
+
+def test_verbs_echo_may_EXCEED_max_payload(lua_factory):
+    """The whole point of the verb. 65536 is over MAX_PAYLOAD and under ECHO_MAX."""
+    from x4validate import _livepipe as lp
+    r = ask(live(), 1, "echo", "65536")
+    assert r.status == "OK", f"{r.status}: {r.payload[:120]}"
+    assert lp.byte_len(r.payload) == 65536, lp.byte_len(r.payload)
+
+
+def test_verbs_echo_reaches_the_TOP_of_the_ramp(lua_factory):
+    """524288 is the largest size RAMP_SIZES asks for. If this ERRs, `x4live ramp`
+    stops early and reports a ceiling that is ours rather than the game's."""
+    from x4validate import _livepipe as lp
+    r = ask(live(), 1, "echo", "524288")
+    assert r.status == "OK", f"{r.status}: {r.payload[:120]}"
+    assert lp.byte_len(r.payload) == 524288
+
+
+def test_verbs_echo_still_refuses_beyond_ECHO_MAX(lua_factory):
+    """The twin. `unbounded` removes the reply() choke point for this verb, so the
+    verb's OWN limit is the only thing left -- if that stopped working, echo would try
+    to write an arbitrarily large frame and tear the pipe down."""
+    r = ask(live(), 1, "echo", str(1024 * 1024 + 1))
+    assert r.status == "ERR", f"{r.status}: {r.payload[:120]}"
+    assert "ECHO_MAX" in r.payload, r.payload[:160]
+
+
+def test_every_OTHER_verb_still_hits_the_reply_cap(lua_factory):
+    """The twin that matters most: `unbounded` must be opt-in per call, not a hole. A
+    fat single property still becomes an ERR naming MAX_PAYLOAD rather than being sent."""
+    rt = live(GetLibraryEntry='function(lt, n) return {fat = string.rep("D", 40000)} end')
+    r = ask(rt, 1, "macro", "engine", "some_macro", "fat")
+    assert r.status == "ERR", f"{r.status}: {r.payload[:120]}"
+    assert "MAX_PAYLOAD" in r.payload, r.payload[:160]
+
+
 #: An extension record with enough fields to blow the budget. Same shape as _BIG_LIB,
 #: but GetExtensionList returns a LIST of records and verbs.ext caps the fields of the
 #: one whose id matches -- so the fat has to be inside the matching record.
