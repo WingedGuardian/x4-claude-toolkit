@@ -19,6 +19,7 @@ THIS file: a doubled backslash in the patch script became a real NUL byte on dis
 """
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -72,12 +73,28 @@ def test_the_sweep_reaches_files_OUTSIDE_the_package():
 
 def test_tracked_files_are_not_filtered_by_extension():
     """An allowlist is a narrowing step that reports success; this one dropped
-    .xml, .lua and .ps1 from a repo that ships all three."""
+    .xml, .lua and .ps1 from a repo that ships all three.
+
+    A COUNT, not a spot-check. Naming two suffixes proves only that those two are
+    present -- re-imposing an allowlist that happens to include .lua and .ps1 passes
+    this the moment it is written as a spot-check, which is how the mutation gate
+    found it: the mutant reverting to an allowlist stayed GREEN. MEASURED at the
+    time: 10 of 242 tracked files would have been invisible, `bin/xrcat` and `LICENSE`
+    among them -- both extensionless, which is exactly what an extension allowlist
+    cannot see.
+    """
     tracked = cb.tracked_text_files()
     if not tracked:
         pytest.skip("not a git checkout -- NOT CHECKED")
-    suffixes = {p.suffix.lower() for p in tracked}
-    assert ".lua" in suffixes and ".ps1" in suffixes, sorted(suffixes)
+    out = subprocess.run(["git", "ls-files", "-z"], cwd=cb.ROOT,
+                         capture_output=True, check=True)
+    expected = [n for n in out.stdout.decode("utf-8", "replace").split("\0") if n]
+    assert len(tracked) == len(expected), (
+        f"swept {len(tracked)} of {len(expected)} tracked files -- something is "
+        f"filtering the set again")
+    # and specifically the shapes an extension allowlist drops
+    assert any(p.suffix == "" for p in tracked), (
+        "no extensionless file in the swept set (bin/xrcat, LICENSE)")
 
 
 # --- it must be able to go RED ------------------------------------------------

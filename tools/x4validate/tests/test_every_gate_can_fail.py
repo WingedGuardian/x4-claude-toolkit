@@ -16,6 +16,7 @@ this machine would be exactly the kind of green that cannot go red.
 """
 import ast
 import pathlib
+import re
 
 import pytest
 
@@ -70,6 +71,13 @@ def test_the_detector_itself_can_go_red():
     assert _failure_paths(ast.parse("def f():\n    return 0\n")) == 0
 
 
+#: Any refusal that happens BEFORE the empty log can be reached. Kept as one pattern
+#: so a new wording is added in one place rather than discovered in CI.
+_CANNOT_REACH_THE_EMPTY_LOG = re.compile(
+    r"no mod source directory|needs a configured|no installed extension set"
+    r"|no reference tree|^SKIP:", re.M)
+
+
 def test_the_oracle_REFUSES_an_empty_log_when_it_is_RUN(tmp_path):
     """The twin the AST check structurally cannot be.
 
@@ -90,9 +98,20 @@ def test_the_oracle_REFUSES_an_empty_log_when_it_is_RUN(tmp_path):
     env = dict(os.environ, X4_ORACLE_LOG=str(log))
     r = subprocess.run([_sys.executable, "gates/oracle.py"], cwd=str(GATES.parent),
                        capture_output=True, text=True, env=env)
-    if "no mod source directory" in r.stderr or "needs a configured" in r.stderr:
-        pytest.skip("gates/oracle.py needs a configured X4 install to reach its own "
-                    "refusal; the AST check above still covers it")
-    assert r.returncode == 2, (r.returncode, r.stderr[-400:])
-    assert "REFUSING" in r.stderr, r.stderr[-400:]
+    # These two hold in EVERY environment, so they are asserted BEFORE the skip.
+    # The original order skipped first, which meant that on a machine with no X4 --
+    # most machines, and every CI runner -- this test could not have caught the
+    # NameError it exists for. A crash on the refusal path is still a crash whether
+    # the gate refuses for want of a log or for want of an install.
     assert "NameError" not in r.stderr, r.stderr[-400:]
+    assert r.returncode == 2, (r.returncode, r.stderr[-400:])
+
+    # A PATTERN, not a hand-listed pair. The guard named two cold messages and the
+    # real one on a clean runner is a third -- "SKIP: no installed extension set" --
+    # so the assertion below ran against it and demanded the word REFUSING of a
+    # message that says SKIP. Both are refusals; only the wording differed.
+    if _CANNOT_REACH_THE_EMPTY_LOG.search(r.stderr):
+        pytest.skip("gates/oracle.py refuses earlier without a configured X4 install, "
+                    "so the empty-log branch is unreachable here; rc and the crash "
+                    "check above still ran, and the AST census covers the rest")
+    assert "REFUSING" in r.stderr, r.stderr[-400:]

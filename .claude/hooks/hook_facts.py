@@ -265,6 +265,42 @@ def blank_quoted(s: str) -> str:
     return "".join(out)
 
 
+def blank_single_quoted(s: str) -> str:
+    """Blank the contents of SINGLE-quoted strings only, keeping length and quotes.
+
+    The distinction matters wherever the question is "would the shell expand this":
+    `'$?'` is literal text, `"$?"` is an expansion. blank_quoted() erases both, which
+    is right for flag and marker detection and wrong for expansion detection -- using
+    it in dollarq_after_pipe would have silenced `echo "rc=$?"`, a genuine hit.
+    """
+    out, q = [], ""
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if q == "'":
+            out.append(c if c == "'" else " ")
+            if c == "'":
+                q = ""
+        elif q == '"':
+            out.append(c)
+            if c == '"':
+                q = ""
+            elif (c == chr(92) and i + 1 < len(s) and s[i + 1] in _DQ_ESCAPES):
+                i += 1
+                out.append(s[i])
+        elif c == chr(92) and i + 1 < len(s):
+            out.append(c)
+            i += 1
+            out.append(s[i])
+        elif c in "\"'":
+            q = c
+            out.append(c)
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def segments(cmd: str) -> list[str]:
     """Split on shell separators that are OUTSIDE quotes. A `|` inside grep -E 'a|b'
     is not a pipeline."""
@@ -827,8 +863,32 @@ def redirects(seg: str) -> list[tuple[str, str]]:
     flat = seg
     i = 0
     while i < len(b):
+        # `->` IS NOT A REDIRECT. Two characters, and no shell grammar produces them:
+        # `-` is not an fd and not an operator prefix. It is, however, an arrow, and
+        # printing one is routine -- `print(f'{name}: {n} values ->', vals)` inside a
+        # `python -c` payload was read as a truncating redirect whose target was the
+        # rest of the python source. Combined with a `cd` into the read-only reference
+        # tree, that became a WRITE to it.
+        #
+        # MEASURED 2026-09-03: 1 row in 13,503 historical commands -- the last
+        # false positive standing after the grep-`-o` and sed-script fixes, and the
+        # third latent defect in this family that only became visible once a HARD
+        # BLOCK consumed the result.
+        #
+        # THE DEEPER CAUSE IS NOT FIXED HERE, and saying so is the point: that `->`
+        # should have been blanked as quoted text, and was not, because the shell-level
+        # quote scanner loses track inside a `python -c` payload that nests single
+        # quotes and backslash-escaped double quotes. A minimised repro did NOT
+        # reproduce it, so the exact mis-tracking point is UNISOLATED. Rewriting the
+        # scanner is a change under every rule in this file; excluding two characters
+        # that cannot be a redirect is not. Registered as a blind spot rather than
+        # silently absorbed.
+        #
+        # The trade is stated rather than assumed: this gives up `cat x->y`, which
+        # bash really does parse as `cat x-` redirecting into `y`. Nobody writes that;
+        # the arrow is written constantly.
         m = _REDIR.match(b, i)
-        if not m or (i > 0 and b[i - 1] == "<"):
+        if not m or (i > 0 and b[i - 1] in "<-"):
             i += 1
             continue
         mode = "append" if m.group(3) else "truncate"
@@ -887,19 +947,18 @@ def _verb_name(t: str) -> str:
     return n or t
 
 
-def verb(seg: str) -> str:
-    """The command actually being run, seeing through env-assignment prefixes and
-    wrappers. `write_targets` required the verb to be the segment's FIRST word, so
-    `echo x | sudo tee <docs>/n.txt` and `time cp ...` lost their destination.
+def _verb_token(seg: str) -> str:
+    """The RAW token carrying the command name, exactly as written.
 
-    The name is NORMALISED (see _verb_name): every caller compares it against a bare
-    command name, and none of the twelve echoes it back to the user, so normalising
-    here fixes all of them at once rather than at each comparison site.
+    Split out of verb() for resolve_verb(): splicing a variable's value back into a
+    segment needs the token AS WRITTEN (`$RM`), while every rule wants the normalised
+    NAME. verb() below is unchanged in behaviour -- it is now literally
+    _verb_name(_verb_token(seg)) -- so all 22 call sites are untouched.
     """
     seen_wrapper = False
     for t, quoted in tokens(seg):
         if quoted:
-            return _verb_name(t)
+            return t
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t):
             continue
         if _verb_name(t) in WRAPPERS:
@@ -909,8 +968,55 @@ def verb(seg: str) -> str:
             continue
         if seen_wrapper and _WRAPPER_ARG.match(t):
             continue                    # a duration or a placeholder, not a command
-        return _verb_name(t)
+        return t
     return ""
+
+
+def verb(seg: str) -> str:
+    """The command actually being run, seeing through env-assignment prefixes and
+    wrappers. `write_targets` required the verb to be the segment's FIRST word, so
+    `echo x | sudo tee <docs>/n.txt` and `time cp ...` lost their destination.
+
+    The name is NORMALISED (see _verb_name): every caller compares it against a bare
+    command name, and none of the twelve echoes it back to the user, so normalising
+    here fixes all of them at once rather than at each comparison site.
+    """
+    return _verb_name(_verb_token(seg))
+
+
+#: A resolved verb must look like a command NAME. Anything with a space, a quote, a
+#: redirect or a separator in it is a value that happens to be assigned, not a command,
+#: and splicing it in would rewrite the segment into something the user never typed.
+_BARE_VERB = re.compile(r"^[A-Za-z0-9_.:/" + chr(92) + r"+-]+$")
+
+
+def resolve_verb(seg: str, assigns: dict[str, str]) -> str:
+    """Rewrite a segment whose COMMAND NAME arrives through a variable.
+
+    `RM=rm; $RM -rf "<game>"` gave verb `$rm`, so every verb-keyed rule missed at
+    once -- including all three hard blocks. MEASURED 2026-09-03, E2E: both game
+    hard blocks returned ALLOW for the variable spelling while the plain spelling
+    denied. One indirection past the whole file.
+
+    verb() itself cannot do this: it is reached from 22 call sites and not one of them
+    holds the assignment table. Re-deriving the table inside verb() is exactly what
+    caused the 11.3x latency regression recorded in this file's header, so the
+    substitution happens ONCE, here, where segments are prepared and `assigns` is
+    already in hand.
+
+    Conservative by construction -- it only ever rewrites when the value is a bare
+    command name, and returns the segment untouched otherwise.
+    """
+    t = _verb_token(seg)
+    if not t or not has_unresolved(t):
+        return seg
+    r = resolve(t, assigns)
+    if r == t or has_unresolved(r) or not _BARE_VERB.match(r):
+        return seg
+    i = seg.find(t)
+    if i < 0:                            # tokens() de-quoted it beyond recognition
+        return seg
+    return seg[:i] + r + seg[i + len(t):]
 
 
 def _operands(seg: str) -> list[str]:
@@ -1216,17 +1322,83 @@ def git_adds_everything(seg):
 
 
 def sed_in_place_targets(seg):
-    """Paths an in-place `sed` would rewrite. `-i` may carry a suffix (`-i.bak`). The
-    first operand is the SCRIPT, not a file -- but a script never resolves under a root,
-    so keeping it costs nothing while dropping it would need -e/-f handling."""
+    """Paths an in-place `sed` would rewrite. `-i` may carry a suffix (`-i.bak`).
+
+    THE SCRIPT IS NOT A TARGET. This used to return it anyway, on the reasoning -- its
+    own words -- that "a script never resolves under a root, so keeping it costs
+    nothing while dropping it would need -e/-f handling."
+
+    MEASURED 2026-09-03: that is false, and in the most ordinary way. A sed script that
+    REWRITES a path contains that path, so
+
+        sed -i -e 's|<reference>/.unpacked-and-locked|$VAR/...|g' "$f"
+
+    read as an in-place edit OF the reference tree, when the only file touched is
+    `$f` in the toolkit. The cost really was zero -- right up until a hard block
+    consumed the result, which is precisely the shape gotcha #23 warns about: a
+    recorded cost of zero is the line nobody re-checks.
+
+    POSIX rule, now implemented: with any -e/--expression or -f/--file present EVERY
+    non-flag operand is a file; without one the FIRST non-flag operand is the script
+    and the rest are files.
+    """
     if verb(seg) not in ("sed", "gsed"):
         return []
+    toks = list(tokens(seg))
     inplace = any((not q) and (t.startswith("-i") or t.startswith("--in-place"))
-                  for t, q in tokens(seg))
-    return _operands(seg) if inplace else []
+                  for t, q in toks)
+    if not inplace:
+        return []
+    files, seen_verb, skip, script_flag = [], False, False, False
+    for t, q in toks:
+        if skip:
+            skip = False
+            continue
+        if not seen_verb:
+            if q or not (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t) or t in WRAPPERS
+                         or t.startswith("-")):
+                seen_verb = True
+            continue
+        if (not q) and t in ("-e", "-f", "--expression", "--file"):
+            script_flag = True
+            skip = True                  # its argument is a SCRIPT, never a target
+            continue
+        if (not q) and (t.startswith("--expression=") or t.startswith("--file=")):
+            script_flag = True
+            continue
+        if (not q) and (t.startswith("-") or t in ("<", ">", ">>", ">|", "&>")):
+            skip = t in ("<", ">", ">>", ">|", "&>")
+            continue
+        files.append(t)
+    return files if script_flag else files[1:]
 
 
 _OUT_FLAGS = ("-o", "--output")
+
+#: Splits a token at the points where a NEW command can begin inside it. tokens() does
+#: not break on these, so `loc=$(grep` arrives as one token and any verb-keyed question
+#: about it answers about `loc=$(grep` rather than about `grep`.
+_CMD_SPLIT = re.compile(r"[$]\(|" + chr(96) + r"|[|;&]")
+
+
+def _command_names(seg: str) -> set:
+    """Every command NAME that appears anywhere in a segment, substitutions included.
+
+    verb() answers "what does this segment run", which is a different question and the
+    wrong one when a command is nested: `loc=$(grep -o 'pat' f)` has verb `loc=$(grep`
+    -- or, once the assignment prefix is skipped, the quoted PATTERN.
+    """
+    out = set()
+    for t, q in tokens(seg):
+        if q:
+            continue
+        for part in _CMD_SPLIT.split(t):
+            part = part.strip()
+            if "=" in part:
+                part = part.split("=", 1)[1]
+            if part and not part.startswith("-"):
+                out.add(_verb_name(part))
+    return out
 
 
 def output_targets(seg):
@@ -1234,10 +1406,31 @@ def output_targets(seg):
     `--output=PATH`. Kept deliberately: scoping the shared-temp rule to redirects alone
     would silently stop covering a download written with an output flag, which the old
     regex did cover."""
+    # `-o` IS NOT AN OUTPUT FLAG FOR A SEARCH VERB. For grep/egrep/fgrep/rg/ag/ack it
+    # is --only-matching and takes no argument, so the next token is the PATTERN --
+    # and treating that as a path made `cd <reference> && grep -o 'radius="[^"]*"' f`
+    # look like a write to <reference>/radius="[^"]*".
+    #
+    # Latent for as long as this helper has existed, and harmless while only the
+    # shared-temp rule consumed the result. Promoting it into a hard block is what made
+    # it visible -- the same shape as F93, where a capability improvement widened a
+    # guard nobody had re-scoped for it.
+    #
+    # MEASURED 2026-09-03 over 13,503 historical commands: of the 21 rows the new
+    # reference-write rule gained, 20 were this -- every one a read-only research
+    # command (`cd <reference> && grep -o ...`) that would have become a
+    # NON-OVERRIDABLE deny. Not one unit test or E2E probe saw it; the per-item corpus
+    # diff is the only instrument that did.
+    # _command_names, not verb(): the grep is very often inside a substitution, as in
+    # `loc=$(grep -o 'pat' "$f")`, and tokens() keeps `loc=$(grep` as ONE token -- so
+    # verb() returns the assignment prefix and the real command name is lost. That
+    # accounted for the 3 rows still misfiring after the first version of this fix.
+    flags = tuple(f for f in _OUT_FLAGS if f != "-o") \
+        if (_command_names(seg) & SEARCH_NAMES) else _OUT_FLAGS
     out, toks, i = [], tokens(seg), 0
     while i < len(toks):
         t, q = toks[i]
-        if (not q) and t in _OUT_FLAGS and i + 1 < len(toks):
+        if (not q) and t in flags and i + 1 < len(toks):
             out.append(toks[i + 1][0])
             i += 2
             continue
@@ -1260,10 +1453,21 @@ def dollarq_after_pipe(cmd: str) -> bool:
     immediately before can be the referent. A pipe inside a process substitution runs in
     a subshell, so its status never becomes $?."""
     stripped = strip_heredocs(cmd)
-    if "$?" not in stripped or "PIPESTATUS" in stripped:
+    # PIPESTATUS is tested against the UNBLANKED text on purpose: the escape hatch is
+    # normally written `"${PIPESTATUS[0]}"`, i.e. inside double quotes, and blanking
+    # first would hide it and fire on the very idiom the message recommends.
+    if "PIPESTATUS" in stripped:
+        return False
+    # Only SINGLE-quoted content is blanked. Inside single quotes `$?` is literal text
+    # (prose, a message, a regex); inside DOUBLE quotes it still expands, so
+    # `cmd | head; echo "rc=$?"` is a real hit. blank_quoted() blanks both and would
+    # have turned a live rule off -- the opposite mistake to the one being fixed.
+    # Callers pass `body`, so comments are already gone.
+    live = blank_single_quoted(stripped)
+    if "$?" not in live:
         return False
     prev_piped = False
-    for raw in re.split(r"[;\n]|&&|\|\|", stripped):
+    for raw in re.split(r"[;\n]|&&|\|\|", live):
         chk = re.sub(r"[<>]\([^)]*\)", "", blank_quoted(raw))
         piped = bool(re.search(r"[^|]\|[^|]", chk))
         if "$?" in raw and (piped or prev_piped):
@@ -1645,7 +1849,11 @@ def facts(payload: dict, roots: dict) -> dict:
     # Every operand is classified WHERE IT RUNS. `cwd_track` was the missing link: the
     # directory was already computed and only the search rules ever consumed it, so a
     # path named relative to a `cd` reached no other rule at all.
-    seg_cwd = [pair for c in all_cmds for pair in cwd_track(c)]
+    # resolve_verb runs HERE, once per segment, with the assignment table already
+    # computed above: a command name arriving through a variable (`RM=rm; $RM -rf ...`)
+    # otherwise reaches no verb-keyed rule at all, hard blocks included.
+    seg_cwd = [(resolve_verb(s, assigns), c)
+               for c in all_cmds for s, c in cwd_track(c)]
     segs = [s for s, _ in seg_cwd]
     cwd = seg_cwd[-1][1] if seg_cwd else ""
 
@@ -1684,7 +1892,15 @@ def facts(payload: dict, roots: dict) -> dict:
             return False
         for path, unres, raw in ops:
             if unres:
-                if norm(root) in ncmd:
+                # The OPERAND, not the whole command. This read `norm(root) in ncmd`,
+                # i.e. the entire raw command including comments and quoted prose, so
+                # `ls "<ref>" && rm -rf "$TMPDIR/build"` was a non-overridable DENY --
+                # the root is in the command, just not in the thing being deleted.
+                # MEASURED 2026-09-03: 3 of 3 probes of that shape denied, across five
+                # rules, two of which hard-deny. `raw` is the operand after resolve(),
+                # so `rm -rf "<ref>/$SUB"` -- the case this branch exists for -- still
+                # fires: its resolved text does contain the root.
+                if norm(root) in norm(raw):
                     return True
                 if conservative and key in root_vars_named(raw):
                     return True
@@ -1793,6 +2009,17 @@ def facts(payload: dict, roots: dict) -> dict:
         "rm_hits_game": (any(hits_game_root(o) for o in rm_t + mv_src)
                          or rm_named_game),
         "rm_targets_reference": hit(rm_t + mv_src, "reference", conservative=True),
+        # A WRITE into reference/, which had no Bash rule at all -- only deletes were
+        # covered, while protect-files.sh hard-blocks the same tree for Edit/Write and
+        # CLAUDE.md lists it under "Hard blocked". MEASURED 2026-09-03: a truncating
+        # redirect, a cp and a sed -i into reference/ were all ALLOW. Long-standing
+        # gap, not a regression.
+        #
+        # Not `conservative`: an unresolvable operand fires only when its own text
+        # names the root, which is the write convention throughout this file (deletes
+        # are the one channel with nothing behind them). `bin/unpack-reference.sh` is
+        # unaffected -- invoking a script passes no reference path as an operand.
+        "writes_reference": hit(copy_t + trunc_redirect + sed_t + out_t, "reference"),
         "rm_in_x4_dir": any(hit(rm_t + mv_src, k, conservative=True) for k in
                             ("game", "profile", "mods", "toolkit")) or rm_named_game,
         "rm_saves": hit(rm_t + mv_src, "saves", conservative=True),
@@ -1840,9 +2067,19 @@ def facts(payload: dict, roots: dict) -> dict:
         # The two-predicate AND is kept rather than collapsed into one regex demanding
         # the filename inside the call: the case this exists for usually writes through
         # a variable, and the tighter regex would miss precisely that.
-        "durable_python_open_w": bool(DURABLE.search(body)) and bool(
-            re.search(r"open\([^)]*,\s*[\"']w[\"']", body)) and any(
-                _verb_name(verb(sg)) in _PYTHONS for sg in segments(body)),
+        # PER SEGMENT. This ANDed two WHOLE-BODY predicates with "some segment is
+        # python", so prose in one segment and an unrelated write in another fired it:
+        # `echo 'appending to BLIND-SPOTS.md' && python -c "open('/x/o.txt','w')"` was
+        # a DENY. The truncating python must itself be the one naming the record.
+        #
+        # Each segment is checked AS WRITTEN and RESOLVED, because the record name
+        # usually arrives through a variable -- which the whole-body form got for free
+        # and a naive per-segment rewrite would have silently dropped.
+        "durable_python_open_w": any(
+            (DURABLE.search(sg) or DURABLE.search(resolve(sg, assigns)))
+            and re.search(r"open\([^)]*,\s*[\"']w[\"']", sg)
+            and _verb_name(verb(sg)) in _PYTHONS
+            for sg in segments(body)),
 
         "search_rooted_reference": rooted(roots.get("reference")),
         "search_rooted_workspace": any(rooted(roots.get(k)) for k in
@@ -1863,7 +2100,7 @@ def facts(payload: dict, roots: dict) -> dict:
                     for pp, u, _r in search_files)
             and not re.search(r"ws_[0-9]{4,}", cmd)),
 
-        "dollarq_after_pipe": dollarq_after_pipe(cmd),
+        "dollarq_after_pipe": dollarq_after_pipe(body),
         # A redirect or output-flag TARGET under the shared temp dir. Was a raw regex
         # with no heredoc strip and no quote blanking, so it fired on a grep PATTERN, on
         # quoted prose and on heredoc bodies -- while its message tells you to use the

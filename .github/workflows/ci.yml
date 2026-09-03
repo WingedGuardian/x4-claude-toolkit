@@ -242,18 +242,25 @@ jobs:
         # actually happened -- 125 tests going silently dormant at once -- not to police
         # normal environmental variation.
         env:
-          # 45, and the 43 under it is MEASURED, not guessed: a true `git clone` of this
-          # repo with every X4_* variable cleared skips exactly 43 (1139 passed at
-          # 26ab346; 1176 passed with the 2026-09-02 additions, and the skip count did
-          # not move -- all of them run cold). The old ceiling of 40 was never
-          # exercised: X4_MAX_SKIPS does not exist in the ci.yml on origin/master, so
-          # it was introduced unpushed and would have RED the gating Windows leg on its
-          # very first run.
+          # PER-OS, because the single number was calibrated on ONE platform and had
+          # never run on the other. The 43 recorded below was MEASURED on a Windows
+          # clone with every X4_* variable cleared; the first CI run that actually
+          # executed this leg (33777842225, 2026-09-03, over 74 unpushed commits)
+          # measured ubuntu at 53 and windows at 42. So the ceiling was simultaneously
+          # too low where it ran and untested where it mattered -- a bound that could
+          # not go red on Linux and could not stay green there either.
           #
-          # Two of headroom, not twenty. The point is to catch a block of tests going
-          # silently dormant -- 125 did once -- and a ceiling far above the real floor
-          # cannot do that.
-          X4_MAX_SKIPS: "45"
+          # POSIX legitimately skips more, and all 53 were read rather than assumed:
+          # 16 need a configured X4 install (corpus_sweep, qa_sweep), 12 are dev-only
+          # docs/scripts, 10 need a real reference tree, 5 need a case-insensitive
+          # filesystem, 4 are platform-specific, 6 are registry/fixture/path-shape.
+          # None is a test silently dormant, which is the only thing this ceiling is
+          # for -- 125 went dormant at once, once, and that is the shape it must catch.
+          #
+          # Headroom stays small on purpose. A ceiling far above the real floor cannot
+          # detect a dormant block, so windows keeps its measured 42 + 3 and ubuntu
+          # gets 53 + 1 (for the skip this commit's oracle-test fix adds) + 1.
+          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '55' || '45' }}
         run: uv run --frozen python -m pytest -q -rs
 
   scrub:

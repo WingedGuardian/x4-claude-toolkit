@@ -219,6 +219,13 @@ on rm_hits_game && deny "BLOCKED: cannot delete the X4 game installation directo
 # === HARD BLOCK — delete the reference folder (read-only base game data) ===
 on rm_targets_reference && deny "BLOCKED: reference/ is the read-only unpacked base game data (re-unpack only via bin/unpack-reference.sh)."
 
+# === HARD BLOCK — WRITE into the reference folder (read-only base game data) ===
+# The delete case above has been blocked for months; a WRITE had no rule at all, so a
+# truncating redirect, a `cp` or a `sed -i` into reference/ was ALLOW -- while the file
+# channel (protect-files.sh) hard-blocks the identical write for Edit/Write, and
+# CLAUDE.md lists it under "Hard blocked". Two channels, one tree, opposite verdicts.
+on writes_reference && deny "BLOCKED: reference/ is the read-only unpacked base game data — never write into it (re-unpack only via bin/unpack-reference.sh). Work in a mod folder under extensions/ instead."
+
 # === HARD BLOCK — re-unpack into a locked reference/ ===
 # Sentinel-gated: once reference/.unpacked-and-locked exists, block accidental re-unpacks.
 # The FILESYSTEM test stays here; the parse pass never touches the disk.

@@ -1791,5 +1791,281 @@ class TestProseAboutARecordIsNotAWriteToIt(unittest.TestCase):
         self.assertTrue(F(cmd)["durable_python_open_w"])
 
 
+class WritesReference(unittest.TestCase):
+    """reference/ is read-only base game data. The DELETE case has been blocked for
+    months; the WRITE case had no Bash rule at all, while protect-files.sh hard-blocks
+    the identical write through the Edit/Write channel. Two channels, one tree,
+    opposite verdicts -- and the Bash side was the permissive one."""
+
+    def test_a_truncating_redirect_into_reference_fires(self):
+        self.assertTrue(F('echo x > "' + REF + '/libraries/wares.xml"')
+                        ["writes_reference"])
+
+    def test_a_copy_into_reference_fires(self):
+        self.assertTrue(F('cp a.xml "' + REF + '/libraries/wares.xml"')
+                        ["writes_reference"])
+
+    def test_sed_in_place_on_a_reference_file_fires(self):
+        self.assertTrue(F('sed -i s/a/b/ "' + REF + '/libraries/wares.xml"')
+                        ["writes_reference"])
+
+    # ---- the other direction: it must stay silent on everything else -------------
+    def test_READING_under_reference_is_not_a_write(self):
+        self.assertFalse(F('cat "' + REF + '/libraries/wares.xml"')
+                         ["writes_reference"])
+
+    def test_a_write_somewhere_else_does_not_fire(self):
+        self.assertFalse(F('echo x > "' + TOOLKIT + '/notes.txt"')
+                         ["writes_reference"])
+
+    def test_merely_NAMING_reference_beside_another_write_does_not_fire(self):
+        """The G1 shape. Before the operand fix this whole family denied."""
+        self.assertFalse(F('ls "' + REF + '" && echo x > "$TMP/out.txt"')
+                         ["writes_reference"])
+
+
+class DashOIsNotAnOutputFlagForASearchVerb(unittest.TestCase):
+    """`grep -o` is --only-matching and takes no argument, so the next token is the
+    PATTERN, not a path.
+
+    output_targets() treated `-o` as a path for every verb. Latent and harmless while
+    only the shared-temp rule read the result; promoting it into the reference-write
+    HARD BLOCK is what made it visible. MEASURED over 13,503 historical commands: 20
+    of the 21 rows that rule gained were `cd <reference> && grep -o ...` -- read-only
+    research that would have become a non-overridable DENY. No unit test and no E2E
+    probe saw it; only the per-item corpus diff did.
+    """
+
+    def test_grep_dash_o_yields_no_output_target(self):
+        self.assertEqual(H.output_targets("grep -o 'pat' f.xml"), [])
+
+    def test_rg_dash_o_yields_no_output_target(self):
+        self.assertEqual(H.output_targets("rg -o 'pat' f.xml"), [])
+
+    def test_a_search_after_cd_into_reference_is_not_a_write(self):
+        self.assertFalse(F('cd "' + REF + '" && grep -o ' + Q + 'pat' + Q + ' md/x.xml')
+                         ["writes_reference"])
+
+    # ---- the flag is still an output flag everywhere it really is one ------------
+    def test_curl_dash_o_is_still_an_output_target(self):
+        self.assertEqual(H.output_targets("curl -o out.bin http://x"), ["out.bin"])
+
+    def test_sort_dash_o_is_still_an_output_target(self):
+        self.assertEqual(H.output_targets("sort -o sorted.txt in.txt"), ["sorted.txt"])
+
+    def test_curl_dash_o_into_reference_still_fires(self):
+        """The twin that stops the fix from being a deletion: a real output flag
+        writing into the read-only tree must still be blocked."""
+        self.assertTrue(F('cd "' + REF + '" && curl -o out.bin http://x')
+                        ["writes_reference"])
+
+    def test_long_form_output_is_unaffected_for_a_search_verb(self):
+        self.assertEqual(H.output_targets("grep --output=o.txt pat f"), ["o.txt"])
+
+    def test_a_grep_inside_a_SUBSTITUTION_is_still_recognised(self):
+        """tokens() keeps `loc=$(grep` as ONE token, so verb() returns the assignment
+        prefix and the command name is lost. This is what left 3 rows still misfiring
+        after the first version of the fix."""
+        seg = "loc=$(grep -o " + Q + "pat" + Q + " f.xml | head -1)"
+        self.assertIn("grep", H._command_names(seg))
+        self.assertEqual(H.output_targets(seg), [])
+
+
+class AnArrowIsNotARedirect(unittest.TestCase):
+    """`->` cannot be a redirect: `-` is neither an fd nor an operator prefix.
+
+    Printing one is routine, and `print(f'{n} values ->', vals)` inside a `python -c`
+    payload was read as a truncating redirect whose target was the rest of the python
+    source -- which, after a `cd` into the read-only reference tree, became a WRITE to
+    it. One row in 13,503 historical commands, and the last false positive standing.
+    """
+
+    def test_an_arrow_yields_no_redirect(self):
+        self.assertEqual(H.redirects("echo 'a -> b'"), [])
+
+    def test_an_arrow_in_a_python_payload_is_not_a_write(self):
+        cmd = ('cd "' + REF + '" && python -c ' + DQ + "print(f'v ->', z)" + DQ)
+        self.assertFalse(F(cmd)["writes_reference"])
+
+    # ---- every real redirect shape must survive ---------------------------------
+    def test_a_plain_truncating_redirect_still_parses(self):
+        self.assertEqual(H.redirects("echo x > out.txt"), [("truncate", "out.txt")])
+
+    def test_an_append_still_parses(self):
+        self.assertEqual(H.redirects("echo x >> out.txt"), [("append", "out.txt")])
+
+    def test_a_noclobber_override_still_parses(self):
+        self.assertEqual(H.redirects("echo x >| out.txt"), [("truncate", "out.txt")])
+
+    def test_a_redirect_with_no_space_still_parses(self):
+        self.assertEqual(H.redirects("echo x >out.txt"), [("truncate", "out.txt")])
+
+    def test_a_redirect_after_a_FLAG_still_parses(self):
+        """The exclusion is the two-character sequence `-` then `>`, not "a flag
+        appeared somewhere". `ls -l >out` has a space and `ls -l>out` ends in `l`."""
+        self.assertEqual(H.redirects("ls -l >out.txt"), [("truncate", "out.txt")])
+        self.assertEqual(H.redirects("ls -l>out.txt"), [("truncate", "out.txt")])
+
+    def test_a_real_redirect_into_reference_still_fires(self):
+        self.assertTrue(F('echo x > "' + REF + '/md/x.xml"')["writes_reference"])
+
+
+class SedScriptIsNotATarget(unittest.TestCase):
+    """`sed -i -e 's|<root>/a|$V/a|g' f` edits `f`, not <root>.
+
+    The helper returned the SCRIPT as a target, documented as costing nothing because
+    "a script never resolves under a root". A script that REWRITES a path contains that
+    path, so it resolves under one exactly when it matters. Free until something
+    hard-blocked on it.
+    """
+
+    def test_the_script_after_dash_e_is_not_a_file(self):
+        self.assertEqual(H.sed_in_place_targets("sed -i -e 's|a|b|g' file.txt"),
+                         ["file.txt"])
+
+    def test_the_bare_first_operand_is_still_treated_as_the_script(self):
+        self.assertEqual(H.sed_in_place_targets("sed -i 's|a|b|g' file.txt"),
+                         ["file.txt"])
+
+    def test_several_files_after_a_bare_script(self):
+        self.assertEqual(H.sed_in_place_targets("sed -i.bak 's|a|b|' f1 f2"),
+                         ["f1", "f2"])
+
+    def test_sed_without_in_place_edits_nothing(self):
+        self.assertEqual(H.sed_in_place_targets("sed 's|a|b|' f"), [])
+
+    def test_a_script_MENTIONING_reference_is_not_a_write_to_it(self):
+        cmd = ("sed -i -e " + Q + "s|" + REF + "/x|$V/x|g" + Q + ' "$f"')
+        self.assertFalse(F(cmd)["writes_reference"])
+
+    # ---- and the twin: a real in-place edit of the tree must still fire ----------
+    def test_sed_dash_i_dash_e_INTO_reference_still_fires(self):
+        self.assertTrue(F('sed -i -e s/a/b/ "' + REF + '/md/x.xml"')
+                        ["writes_reference"])
+
+
+class UnresolvedOperandIsScopedToTheOperand(unittest.TestCase):
+    """hit()'s unresolved branch compared the root against the WHOLE raw command.
+
+    So any command that so much as mentioned a protected root, in a comment or in an
+    unrelated argument, made every unresolvable operand elsewhere in it look like that
+    root. Five rules share the branch and two of them hard-deny, so this was a
+    non-overridable refusal on ordinary work.
+    """
+
+    def test_naming_reference_elsewhere_does_not_make_an_rm_target_it(self):
+        self.assertFalse(F('ls "' + REF + '" && rm -rf "$TMPDIR/build"')
+                         ["rm_targets_reference"])
+
+    def test_a_comment_naming_reference_does_not_arm_an_unrelated_rm(self):
+        self.assertFalse(F('rm -rf "$WORK/tmp"  # never touch ' + REF)
+                         ["rm_targets_reference"])
+
+    # ---- the case the branch EXISTS for. If this goes green the fix was a deletion.
+    def test_an_unresolvable_operand_UNDER_reference_still_fires(self):
+        self.assertTrue(F('rm -rf "' + REF + '/$SUB"')["rm_targets_reference"])
+
+    def test_the_root_VARIABLE_spelling_still_fires(self):
+        """`rm -rf "$X4_REFERENCE/x"` never contains the path as text; the variable
+        NAME is the only evidence there is, and it must survive the scoping change."""
+        self.assertTrue(F('rm -rf "$X4_REFERENCE/x"')["rm_targets_reference"])
+
+
+class DollarQIsAboutExpansionNotText(unittest.TestCase):
+    """`$?` inside a comment or a single-quoted string is not a read of `$?`.
+
+    The rule read the RAW command, so a comment WARNING about the trap was itself a
+    DENY. The fix is deliberately not blank_quoted(): inside DOUBLE quotes `$?` still
+    expands, so blanking both kinds would have turned a live rule off.
+    """
+
+    def test_a_comment_mentioning_the_trap_is_not_a_hit(self):
+        self.assertFalse(F('ls -1 | wc -l ; true  # never read $? after a pipeline')
+                         ["dollarq_after_pipe"])
+
+    def test_single_quoted_prose_is_not_a_hit(self):
+        cmd = "printf " + Q + "%s" + Q + " " + Q + "the trap is $? after a pipe" + Q               + " | cat"
+        self.assertFalse(F(cmd)["dollarq_after_pipe"])
+
+    # ---- and the three that must still fire ------------------------------------
+    def test_a_real_dollar_q_after_a_pipeline_still_fires(self):
+        self.assertTrue(F('grep -c foo bar | head -1; echo $?')["dollarq_after_pipe"])
+
+    def test_dollar_q_inside_DOUBLE_quotes_still_fires(self):
+        """The reason blank_quoted() is the wrong tool here: this one is real."""
+        self.assertTrue(F('grep -c foo bar | head -1; echo "rc=$?"')
+                        ["dollarq_after_pipe"])
+
+    def test_PIPESTATUS_in_double_quotes_still_disables_the_rule(self):
+        """The escape hatch the message recommends is normally written inside double
+        quotes. Blanking quotes before looking for it would fire on the very idiom the
+        rule tells you to use."""
+        self.assertFalse(F('grep -c foo bar | head -1; echo "${PIPESTATUS[0]}"')
+                         ["dollarq_after_pipe"])
+
+
+class DurablePythonIsPerSegment(unittest.TestCase):
+    """The rule ANDed two WHOLE-BODY predicates with "some segment is python", so
+    prose in one segment plus an unrelated write in another fired it."""
+
+    def test_prose_in_one_segment_and_a_write_in_another_does_not_fire(self):
+        cmd = ("echo " + Q + "appending to BLIND-SPOTS.md" + Q + " && python -c " + DQ
+               + "open(" + Q + "/tmp/o.txt" + Q + ", " + Q + "w" + Q + ")" + DQ)
+        self.assertFalse(F(cmd)["durable_python_open_w"])
+
+    def test_the_record_named_in_a_shell_variable_in_an_EARLIER_segment_still_fires(self):
+        """Per-segment evaluation must not lose the case the rule mainly exists for.
+        Each segment is checked resolved as well as as written, which the whole-body
+        form got for free."""
+        cmd = ("P=KNOWLEDGEBASE.md; python -c " + DQ + "open(" + Q + "$P" + Q + ", "
+               + Q + "w" + Q + ")" + DQ)
+        self.assertTrue(F(cmd)["durable_python_open_w"])
+
+
+class AVerbCarriedInAVariable(unittest.TestCase):
+    """verb() was the one consumer that never called resolve(), so one indirection
+    walked past every verb-keyed rule at once -- all three hard blocks included."""
+
+    def test_rm_through_a_variable_still_hits_the_game_root(self):
+        self.assertTrue(F('RM=rm; $RM -rf "' + GAME + '"')["rm_hits_game"])
+
+    def test_rm_through_a_variable_still_hits_the_extensions_folder(self):
+        self.assertTrue(F('RM=rm; $RM -rf "' + GAME + '/extensions"')["rm_hits_game"])
+
+    def test_the_braced_spelling_resolves_too(self):
+        self.assertTrue(F('RM=rm; ${RM} -rf "' + GAME + '"')["rm_hits_game"])
+
+    # ---- it must not invent a verb ---------------------------------------------
+    def test_an_unassigned_variable_verb_is_left_alone(self):
+        """Nothing to resolve to, so the segment is untouched and no rule fires on a
+        guess."""
+        self.assertFalse(F('$UNSET_CMD -rf "' + GAME + '"')["rm_targets_reference"])
+
+    def test_a_variable_holding_a_NON_command_is_not_spliced_in(self):
+        """Only a bare command NAME is substituted. A value with a space in it is a
+        path or a message that happens to be assigned, not a verb, and rewriting the
+        segment with it would invent a command the user never typed."""
+        self.assertEqual(H.resolve_verb('$P -rf x', {"P": "some path/with space"}),
+                         '$P -rf x')
+
+    def test_a_resolvable_verb_is_spliced_in(self):
+        self.assertEqual(H.resolve_verb('$RM -rf x', {"RM": "rm"}), 'rm -rf x')
+
+
+class BlankSingleQuoted(unittest.TestCase):
+    """The helper the $? fix turns on. blank_quoted() erases both quote kinds, which
+    is right for flag detection and wrong for expansion detection."""
+
+    def test_single_quoted_content_is_blanked(self):
+        self.assertEqual(H.blank_single_quoted("a " + Q + "bc" + Q + " d"),
+                         "a " + Q + "  " + Q + " d")
+
+    def test_double_quoted_content_is_KEPT(self):
+        self.assertEqual(H.blank_single_quoted('a "bc" d'), 'a "bc" d')
+
+    def test_length_is_preserved(self):
+        s = "echo " + Q + "hello world" + Q + " | cat"
+        self.assertEqual(len(H.blank_single_quoted(s)), len(s))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
