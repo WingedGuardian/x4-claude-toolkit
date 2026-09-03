@@ -540,6 +540,50 @@ announce_target() {
   fi
 }
 
+#: Strip a trailing path separator, which otherwise makes a STRING comparison lie.
+#: `--toolkit "$SRC/"` is not equal to `$SRC`, so the `SRC != TOOLKIT` test said
+#: COPY and `cp -r "$SRC/.claude" "$SRC//"` copied a directory into itself. Under
+#: `set -e` the script died there, BEFORE the FAILED accounting exists -- so there
+#: was no INCOMPLETE banner and no config written, and the exit code was the only
+#: sign. MEASURED 2026-09-03 in a sandbox: rc 1, "are the same file", zero config.
+#:
+#: Both separators, because this runs under Git Bash where a Windows path gets
+#: pasted in. A drive root and `/` KEEP their separator: stripping it would turn an
+#: absolute path into a relative one. No backslash appears in a case PATTERN here --
+#: the first draft had one and the tool boundary collapsed it into a syntax error.
+#: Are these the SAME directory? Asked canonically, never as a string.
+#:
+#: `$SRC` is MSYS-style (`/tmp/...`) because it comes from `cd $(dirname) && pwd`
+#: under Git Bash, while `--toolkit` is whatever the user pasted -- and every path
+#: this project documents is Windows-style (`C:/...`). So the plain string test
+#: compared two spellings of one directory and said COPY. `cp -r` then reported
+#: "are the same file" and `set -e` killed the script BEFORE the FAILED accounting
+#: exists: no INCOMPLETE banner, no failed: line, no config. MEASURED in a sandbox.
+#:
+#: `cd ... && pwd -P` settles dialect, trailing separators, . / .. and symlinks at
+#: once. A destination that does not exist YET cannot be the source, so a failed cd
+#: means "different" -- which is the right answer for a fresh install.
+same_dir() {
+  local a b
+  a=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+  b=$(cd "$2" 2>/dev/null && pwd -P) || return 1
+  [ "$a" = "$b" ]
+}
+
+strip_trailing_sep() {
+  local p="$1" bs last
+  bs=$(printf '%b' '\134')            # one backslash, from its octal value
+  while [ ${#p} -gt 1 ]; do
+    last="${p: -1}"
+    [ "$last" = "/" ] || [ "$last" = "$bs" ] || break
+    case "$p" in
+      ?:?) break ;;                   # a drive root
+    esac
+    p="${p%?}"
+  done
+  printf '%s' "$p"
+}
+
 # --- choose method ---------------------------------------------------------
 if [ -z "$METHOD" ]; then
   echo; echo "Install method:"; echo "  1) in-game    2) separate    3) global (multi-repo)"
@@ -555,13 +599,20 @@ ask GAME    "X4 game folder (01.cat..09.cat)" "$GAME"
 ask PROFILE "X4 user profile folder"          "$PROFILE"
 ask XRCAT   "XRCatTool.exe path"              "$XRCAT"
 
+# Normalised HERE and again after the in-arm ask below, because a destination
+# can arrive either way and a single up-front pass would miss the interactive
+# one.
+GAME="$(strip_trailing_sep "$GAME")"
+PROFILE="$(strip_trailing_sep "$PROFILE")"
+TOOLKIT="$(strip_trailing_sep "$TOOLKIT")"
+
 case "$METHOD" in
   in-game)
     [ -n "$GAME" ] || { echo "ERROR: in-game needs --game"; exit 1; }
     TOOLKIT="$GAME"
     # Only when a COPY would actually happen. Re-running from inside the toolkit
     # folder overwrites nothing, so it needs no direction.
-    if [ "$SRC" != "$TOOLKIT" ]; then
+    if ! same_dir "$SRC" "$TOOLKIT"; then
       require_direction "$TOOLKIT" "$GAME_NAMED"
       announce_target "$TOOLKIT"
       copy_toolkit "$TOOLKIT"
@@ -571,7 +622,8 @@ case "$METHOD" in
   separate)
     [ -n "$TOOLKIT" ] || TOOLKIT="$SRC"
     ask TOOLKIT "Toolkit folder" "$TOOLKIT"
-    if [ "$SRC" != "$TOOLKIT" ]; then
+    TOOLKIT="$(strip_trailing_sep "$TOOLKIT")"
+    if ! same_dir "$SRC" "$TOOLKIT"; then
       require_direction "$TOOLKIT" "$TOOLKIT_NAMED"
       announce_target "$TOOLKIT"
       copy_toolkit "$TOOLKIT"

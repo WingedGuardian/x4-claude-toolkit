@@ -45,6 +45,29 @@ if (-not $XRCatTool) { $XRCatTool  = $env:XRCATTOOL }
 # UTF-8 WITHOUT BOM, identical under Windows PowerShell 5.1 and pwsh 7. 5.1's
 # -Encoding UTF8 writes a BOM, which bash reads as a command when it sources
 # x4-paths.env - the whole bash half of the toolkit then fails on line 1.
+# THE DRY-RUN GATE. Called from every function that WRITES, never from the
+# dispatch -- the same placement as refuse_if_dry_run in install.sh, and for the
+# same reason: an arm added later cannot write without passing through one of
+# these three, so it cannot silently escape the flag.
+#
+# It had to exist at all because $DryRun was consulted in exactly ONE place,
+# inside Show-Target, which the global arm never reaches. MEASURED in a sandbox:
+# `-Method global -DryRun` overwrote x4-paths.env and printed
+# '=== install complete (global) ==='.
+#
+# Defined here, above every writer, because PowerShell defines a function when
+# execution REACHES it -- the same trap that already moved Write-PathsEnv's
+# helper above the dispatch.
+function Refuse-IfDryRun($what, $where) {
+  if (-not $DryRun) { return }
+  Write-Host ''
+  Write-Host ('  -DryRun: NOT ' + $what + ':')
+  Write-Host ('      ' + $where)
+  Write-Host ''
+  Write-Host '=== dry run complete: nothing was changed ==='
+  exit 0
+}
+
 function Write-Utf8NoBom($path, [string]$content) {
   [IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
 }
@@ -98,6 +121,7 @@ function Detect-XRCat {
 $X4CopyPrune = @('tools\x4validate\.venv','tools\x4validate\.pytest_cache','tools\x4validate\.mutation-probe-pristine')
 
 function Copy-Toolkit($dest) {
+  Refuse-IfDryRun 'copying the toolkit into' $dest
   New-Item -ItemType Directory -Force -Path (Join-Path $dest '.claude') | Out-Null
 
   # BACK UP BEFORE THE COPY, and that ordering IS the fix. The Copy-Item loop below
@@ -189,6 +213,33 @@ function Copy-Toolkit($dest) {
 # it, so this sitting below `switch ($Method)` meant Write-PathsEnv's
 # can-bash-source-this check called a name that did not exist yet and the install
 # died with CommandNotFoundException after the copy.
+# Strip a trailing path separator. `-Toolkit "$SRC\"` is not -eq to
+# $SRC, so the copy branch is taken and the tree is copied onto itself. The bash
+# twin of this was MEASURED failing with 'are the same file' and writing no
+# config at all. A drive root keeps its separator.
+# Are these the SAME directory? Asked canonically, never as a string -- the bash
+# twin of this compared an MSYS spelling against a Windows one and copied the tree
+# onto itself. Resolve-Path settles dialect, trailing separators and relative
+# segments; a destination that does not exist yet cannot be the source.
+function Test-SameDir([string]$a, [string]$b) {
+  if (-not $a -or -not $b) { return $false }
+  try {
+    $ra = (Resolve-Path -LiteralPath $a -ErrorAction Stop).ProviderPath
+    $rb = (Resolve-Path -LiteralPath $b -ErrorAction Stop).ProviderPath
+  } catch { return $false }
+  return ([System.IO.Path]::GetFullPath($ra).TrimEnd([char]92, [char]47) -ieq
+          [System.IO.Path]::GetFullPath($rb).TrimEnd([char]92, [char]47))
+}
+
+function Remove-TrailingSep([string]$p) {
+  if (-not $p) { return $p }
+  while ($p.Length -gt 1 -and ($p.EndsWith('/') -or $p.EndsWith([char]92))) {
+    if ($p.Length -eq 3 -and $p[1] -eq ':') { break }   # C:/ or C:\
+    $p = $p.Substring(0, $p.Length - 1)
+  }
+  return $p
+}
+
 function Find-GitBash {
   $cands = @()
   foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)},
@@ -223,6 +274,31 @@ function Get-EscapedEnvValue($v) {
 function Write-PathsEnv($t) {
   $dir = Join-Path $t '.claude'; New-Item -ItemType Directory -Force -Path $dir | Out-Null
   $f = Join-Path $dir 'x4-paths.env'
+
+  Refuse-IfDryRun 'writing the path config into' $f
+
+  # BACKED UP HERE, not at the call sites -- the placement install.sh uses, so a
+  # method added later cannot write without a backup. The bash side got this fix;
+  # this one did not, which made it the fourth 'fixed in bash, absent in
+  # PowerShell' defect of the release.
+  #
+  # Less severe than the bash case was, and worth stating rather than glossing:
+  # the carry-over loop below preserves every key this function does not own, so
+  # X4_NEXUS_KEY and hand-added lines survive. But the OWNED keys are replaced
+  # outright, and nothing else records what they used to say.
+  #
+  # A backup that silently did not happen is worse than none, because the message
+  # would have claimed it did -- so a failure is reported, not swallowed.
+  if (Test-Path -LiteralPath $f) {
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    try {
+      Copy-Item -LiteralPath $f -Destination ($f + '.bak-' + $stamp) -Force -ErrorAction Stop
+      Write-Host ('  [note] kept your previous x4-paths.env as x4-paths.env.bak-' + $stamp)
+    } catch {
+      Write-Host ('  [warn] could not back up x4-paths.env: ' + $_.Exception.Message)
+      Write-Host '         the existing values are about to be replaced'
+    }
+  }
   $ref = if ($Reference) { $Reference } else { Join-Path $t 'reference' }
   $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-Path $Game 'extensions' } else { '' }
 
@@ -363,6 +439,7 @@ function Show-Target($dest) {
 }
 
 function Install-Global($t) {
+  Refuse-IfDryRun 'installing the global Claude config for' $t
   $hc = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
   New-Item -ItemType Directory -Force -Path (Join-Path $hc 'skills'),(Join-Path $hc 'agents') | Out-Null
   # Track exactly what WE copy - the $CLAUDE_PROJECT_DIR rewrite below must never
@@ -441,17 +518,24 @@ $Game      = Ask $Game      'X4 game folder (01.cat..09.cat)' $Game
 $Profile   = Ask $Profile   'X4 user profile folder'          $Profile
 $XRCatTool = Ask $XRCatTool 'XRCatTool.exe path'              $XRCatTool
 
+# Normalised here and again after the in-arm Ask below: a destination can arrive
+# either way, and a single up-front pass would miss the interactive one.
+$Game    = Remove-TrailingSep $Game
+$Profile = Remove-TrailingSep $Profile
+$Toolkit = Remove-TrailingSep $Toolkit
+
 switch ($Method) {
   'in-game'  {
     if (-not $Game) { throw 'in-game needs -Game' }
     $Toolkit = $Game
-    if ($SRC -ne $Toolkit) { Assert-Direction $Toolkit $GameNamed; Show-Target $Toolkit; Copy-Toolkit $Toolkit }
+    if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $GameNamed; Show-Target $Toolkit; Copy-Toolkit $Toolkit }
     Write-PathsEnv $Toolkit
   }
   'separate' {
     if (-not $Toolkit) { $Toolkit = $SRC }
     $Toolkit = Ask $Toolkit 'Toolkit folder' $Toolkit
-    if ($SRC -ne $Toolkit) { Assert-Direction $Toolkit $ToolkitNamed; Show-Target $Toolkit; Copy-Toolkit $Toolkit }
+    $Toolkit = Remove-TrailingSep $Toolkit
+    if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $ToolkitNamed; Show-Target $Toolkit; Copy-Toolkit $Toolkit }
     Write-PathsEnv $Toolkit
   }
   'global'   {

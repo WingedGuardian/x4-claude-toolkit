@@ -65,3 +65,53 @@ def test_the_shipped_game_extension_is_in_both():
     x4live needs, and the README tells users to copy it into {game}/extensions/."""
     assert "mods" in sh_items(), "install.sh does not copy mods/"
     assert "mods" in ps1_items(), "install.ps1 does not copy mods/"
+
+
+# --- the round-4 installer fixes, guarded in BOTH files -----------------------------
+#
+# Five of round 3's own fixes shipped guarded by nothing. These are source-level
+# assertions rather than a full install, because the E2E harnesses live outside the
+# repo -- but each names the exact construct whose absence was the defect, so
+# reverting any one of them turns a named test red.
+
+def test_neither_installer_compares_source_and_destination_as_STRINGS():
+    """`$SRC` is MSYS-style under Git Bash; `--toolkit` is whatever the user pasted,
+    and every documented path is Windows-style. Comparing the two spellings as text
+    said COPY for a destination that IS the source, `cp -r` reported "are the same
+    file", and `set -e` killed the script before the FAILED accounting existed -- no
+    banner, no failed: line, no config. MEASURED in a sandbox: rc 1.
+    """
+    sh = SH.read_text(encoding="utf-8")
+    ps = PS1.read_text(encoding="utf-8")
+    assert '[ "$SRC" != "$TOOLKIT" ]' not in sh, (
+        "install.sh is back to a string comparison of source vs destination")
+    assert "($SRC -ne $Toolkit)" not in ps, (
+        "install.ps1 is back to a string comparison of source vs destination")
+    assert "same_dir()" in sh, "install.sh lost its canonical same-directory test"
+    assert "function Test-SameDir" in ps, (
+        "install.ps1 lost its canonical same-directory test")
+
+
+def test_every_powershell_WRITER_consults_the_dry_run_flag():
+    """`$DryRun` was consulted in exactly ONE place -- inside Show-Target, which the
+    global arm never reaches. MEASURED in a sandbox: `-Method global -DryRun`
+    overwrote x4-paths.env and printed "=== install complete (global) ===".
+
+    The guard belongs in the WRITERS, as install.sh does it, so an arm added later
+    cannot write without passing through one of them.
+    """
+    ps = PS1.read_text(encoding="utf-8")
+    assert "function Refuse-IfDryRun" in ps, "install.ps1 lost its dry-run gate"
+    assert ps.count("Refuse-IfDryRun '") >= 3, (
+        f"only {ps.count(chr(82) + 'efuse-IfDryRun ' + chr(39))} writer(s) call the "
+        "dry-run gate; Write-PathsEnv, Copy-Toolkit and Install-Global all must")
+
+
+def test_both_installers_back_up_the_path_config_before_rewriting_it():
+    """install.sh moved this backup INTO write_paths_env so a caller could not be
+    added without one; PowerShell's Write-PathsEnv, which all three methods call,
+    never got it. Fourth 'fixed in bash, absent in PowerShell' of the release."""
+    sh = SH.read_text(encoding="utf-8")
+    ps = PS1.read_text(encoding="utf-8")
+    assert "x4-paths.env.bak-" in sh, "install.sh no longer backs up the path config"
+    assert "x4-paths.env.bak-" in ps, "install.ps1 no longer backs up the path config"
