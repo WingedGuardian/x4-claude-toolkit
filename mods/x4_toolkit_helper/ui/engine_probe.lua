@@ -29,7 +29,7 @@ pcall(ffi.cdef, [[
 --: live_query.lua. Until 2026-09-02 only that file was stamped, so an edit to THIS one
 --: -- the half that runs automatically at load and writes profile UI userdata -- shipped
 --: with nothing able to notice.
-local BUILD = "2ad1d93c"
+local BUILD = "fd7cc5cd"
 
 local SCHEMA  = 2
 local ERR_CAP = 400             -- capped, and the true total is always reported
@@ -234,8 +234,21 @@ emit("LOAD")
 if type(Helper) == "table"
    and type(Helper.addDelayedOneTimeCallbackOnUpdate) == "function"
    and type(getElapsedTime) == "function" then
+    -- blockinput FALSE. The engine's own helper.lua:940 reads
+    --   function Helper.addDelayedOneTimeCallbackOnUpdate(callback, blockinput, delaytime)
+    --     if blockinput then C.SetAllUIInputIgnored(true) end
+    -- and only clears it once `getElapsedTime() > delaytime`. So `true` with a +12s
+    -- delay ignored ALL player input for twelve seconds on every game load, in an
+    -- addon whose content.xml promises it changes no game state.
+    --
+    -- MEASURED against vanilla: all 17 callers that pass true use
+    -- `getElapsedTime() + 0.1` -- a 100ms transition (NewGame, LoadGame, UI scale),
+    -- where covering the switch is the point. None blocks for seconds. This probe
+    -- only reads and writes a saved variable; it has no reason to block input at
+    -- all. live_query.lua:2313 already passes false, with a comment saying never
+    -- to pass true here -- one file in this mod had it right and this one did not.
     local okD = pcall(Helper.addDelayedOneTimeCallbackOnUpdate,
-                      function() pcall(emit, "DELAYED") end, true, getElapsedTime() + 12)
+                      function() pcall(emit, "DELAYED") end, false, getElapsedTime() + 12)
     if not okD then DebugError("X4TOOLKIT_PROBE delayed-schedule FAILED") end
 else
     DebugError("X4TOOLKIT_PROBE no Helper.addDelayedOneTimeCallbackOnUpdate; DELAYED skipped")
