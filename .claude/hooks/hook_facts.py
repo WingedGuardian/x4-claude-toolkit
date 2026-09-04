@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import posixpath
+import fnmatch
 import re
 import sys
 
@@ -1590,6 +1591,95 @@ LEGACY_GAME = re.compile(r"x4 foundations|egosoft/x4", re.I)
 # ROOT-scoped: the path must END at the game folder (or at its extensions/), not
 # merely contain the name. Without the anchor the backstop re-created the very
 # over-block it sits beside, by a different route.
+#: Characters that make an OPERAND a pattern rather than a literal path. Distinct from
+#: `_GLOB_CHARS` above, which is about a ${VAR%pat} expansion and deliberately excludes
+#: `{`: brace expansion is not glob matching, but it IS something the shell does to an
+#: operand before the command runs, so it belongs here. Naming it separately is not
+#: tidiness -- the first draft reused `_GLOB_CHARS`, shadowed a set with a string, and
+#: broke every parameter-expansion test in the suite.
+_OPERAND_PATTERN_CHARS = "*?[{"
+
+
+def _brace_expand(pat, _depth=0):
+    """Expand `a{b,c}d` into ["abd", "acd"]. One primitive bash does before globbing.
+
+    Bounded deliberately: 6 levels and 64 results. A crafted `{a,b}{a,b}{a,b}...`
+    expands combinatorially, and a guard that can be made to hang is a guard that can
+    be removed -- the whole point here is to answer quickly on every command.
+    Over the budget it returns what it has, which is CONSERVATIVE: fewer candidate
+    patterns can only mean fewer matches, never a spurious block.
+    """
+    i = pat.find("{")
+    if i < 0 or _depth > 6:
+        return [pat]
+    depth, j = 0, -1
+    for k in range(i, len(pat)):
+        if pat[k] == "{":
+            depth += 1
+        elif pat[k] == "}":
+            depth -= 1
+            if depth == 0:
+                j = k
+                break
+    if j < 0:
+        return [pat]
+    head, body, tail = pat[:i], pat[i + 1:j], pat[j + 1:]
+    parts, depth, cur = [], 0, ""
+    for ch in body:
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+            continue
+        depth += (ch == "{") - (ch == "}")
+        cur += ch
+    parts.append(cur)
+    out = []
+    for p in parts:
+        for rest in _brace_expand(head + p + tail, _depth + 1):
+            out.append(rest)
+            if len(out) >= 64:
+                return out
+    return out
+
+
+def glob_covers(operand, target):
+    """Would this operand, expanded by the shell, act on `target`?
+
+    WHY THIS EXISTS. The HARD BLOCKS compared the operand to the root with `==`, so a
+    single glob character walked straight past them. MEASURED 2026-09-04, all ALLOW or
+    ASK where the plain form is DENY:
+
+        rm -rf "<game>"*        rm -rf "<game>"/*
+        rm -rf ".../[X]4 Foundations"      rm -rf ".../X4?Foundations"
+        rm -rf ".../X4 Foundation"{s,}
+
+    Every one really does delete the installation. `scripts/fuzz-guard.py` could not
+    have found them: its own docstring says it mutates "the SYNTAX AROUND the dangerous
+    operation... the dangerous operand is byte-identical in every mutant", so the
+    operand is the one axis 996 mutants hold fixed by construction.
+
+    This is NOT the F93 "unresolvable operand" case, and the distinction matters. An
+    unexpanded `$DST` cannot be PROVEN to be the install root, so it must not reach a
+    non-overridable deny. A glob is fully present in the text: whether it covers the
+    root is decidable, and this decides it rather than guessing.
+
+    Two ways to cover a target: BE it (`<game>*` expands to include `<game>`), or
+    contain it (`<game>/*` deletes everything in it, which is the same loss).
+    """
+    if not operand or not target:
+        return False
+    if not any(c in operand for c in _OPERAND_PATTERN_CHARS):
+        return False                      # a literal path; `==` already handled it
+    for cand in _brace_expand(operand):
+        if fnmatch.fnmatchcase(target, cand):
+            return True
+        head, sep, tailseg = cand.rpartition("/")
+        if sep and tailseg and any(c in tailseg for c in _OPERAND_PATTERN_CHARS) \
+                and fnmatch.fnmatchcase(target, head):
+            return True                   # `<target>/<glob>` -- deletes its contents
+    return False
+
+
 GAME_ROOTISH = re.compile(r"(x4 foundations|egosoft/x4)(/extensions)?$", re.I)
 
 
@@ -2013,6 +2103,12 @@ def facts(payload: dict, roots: dict) -> dict:
                     return True
             elif under(path, root):
                 return True
+            elif glob_covers(norm(path), norm(root)):
+                # `under()` compares literal paths, so `rm -rf "<ref>"*` -- which is a
+                # SIBLING pattern that expands to include the root -- slipped past every
+                # root rule. The operand is fully present in the text, so this is
+                # decidable rather than a guess; see glob_covers.
+                return True
         return False
 
     redir_t_all = [(p, u, r) for _m, p, u, r in redir_t]
@@ -2044,7 +2140,13 @@ def facts(payload: dict, roots: dict) -> dict:
             # the F93 failure -- it goes to the confirmation below instead.
             return False
         n = norm(path)
-        return n == g or n == g + "/extensions"
+        if n == g or n == g + "/extensions":
+            return True
+        # A GLOB is not the F93 case. `$DST` cannot be proven to be the install root,
+        # so it must not reach a non-overridable deny; a glob is fully present in the
+        # text, so whether it covers the root is decidable -- and `rm -rf "<game>"*`
+        # deletes the installation exactly as the literal form does.
+        return glob_covers(n, g) or glob_covers(n, g + "/extensions")
 
     # No archive exclusion: GAME_ROOTISH is anchored at $ and so is ARCHIVE, and they
     # demand different endings, so nothing can match both -- PROVEN over probes, and

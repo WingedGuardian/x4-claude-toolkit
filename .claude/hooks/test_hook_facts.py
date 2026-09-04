@@ -2200,5 +2200,101 @@ class TestDestructiveGitInAnX4Directory(unittest.TestCase):
         self.assertFalse(self._fires('cd "C:/Users/x/some-other-project" && git clean -fdx'))
 
 
+
+class TestAGlobOperandCannotWalkPastAHardBlock(unittest.TestCase):
+    r"""One glob character defeated every root rule.
+
+    MEASURED 2026-09-04: `rm -rf "<game>"*` was ALLOW where the identical literal path
+    is DENY, and so were `[X]4 Foundations`, `X4?Foundations` and `X4 Foundation{s,}`.
+    All of them really do delete the installation.
+
+    `scripts/fuzz-guard.py` could not have found this. Its own docstring says it
+    mutates "the SYNTAX AROUND the dangerous operation... the dangerous operand is
+    byte-identical in every mutant" -- so the operand is the single axis 996 mutants
+    hold fixed by construction. An instrument's stated invariant is its blind spot.
+
+    This is NOT the F93 unresolvable-operand case: `$DST` cannot be proven to be the
+    root and must not reach a non-overridable deny, whereas a glob is fully present in
+    the text and decidable. The must-NOT-fire half below pins that distinction.
+    """
+
+    def _deny(self, cmd):
+        return F(cmd)["rm_hits_game"]
+
+    def test_the_literal_form_still_denies(self):
+        self.assertTrue(self._deny(D + ' -rf "' + GAME + '"'))
+
+    def test_a_trailing_glob_is_still_the_installation(self):
+        self.assertTrue(self._deny(D + ' -rf "' + GAME + '"*'))
+
+    def test_deleting_the_contents_is_the_same_loss(self):
+        self.assertTrue(self._deny(D + ' -rf "' + GAME + '"/*'))
+
+    def test_a_character_class_spelling_the_root(self):
+        alt = GAME.replace("/X4 Foundations", "/[X]4 Foundations")
+        self.assertTrue(self._deny(D + ' -rf "' + alt + '"'))
+
+    def test_a_question_mark_matching_the_space(self):
+        alt = GAME.replace("X4 Foundations", "X4?Foundations")
+        self.assertTrue(self._deny(D + ' -rf "' + alt + '"'))
+
+    def test_brace_expansion(self):
+        alt = GAME[:-1]                      # "...X4 Foundation"
+        self.assertTrue(self._deny(D + ' -rf "' + alt + '"{s,}'))
+
+    def test_extensions_wholesale_via_a_glob(self):
+        self.assertTrue(self._deny(D + ' -rf "' + GAME + '/extensions"*'))
+
+    def test_glob_suffix_on_reference_is_still_the_reference(self):
+        """The same bypass on the OTHER hard block, which goes through `hit()` rather
+        than `hits_game_root` -- two code paths, one defect."""
+        self.assertTrue(F(D + ' -rf "' + REF + '"*')["rm_targets_reference"])
+        self.assertTrue(F(D + ' -rf "' + REF + '"/*')["rm_targets_reference"])
+        self.assertFalse(F(D + ' -rf "C:/Users/x/other"*')["rm_targets_reference"])
+
+    # --- must NOT fire ------------------------------------------------------------
+    def test_an_ordinary_glob_elsewhere_is_untouched(self):
+        for c in (D + ' -rf "C:/Users/x/project/build"*',
+                  D + " -rf build/*",
+                  D + ' -rf "C:/Users/x/tmp"/*'):
+            with self.subTest(cmd=c):
+                self.assertFalse(self._deny(c))
+
+    def test_a_glob_INSIDE_the_tree_is_not_the_root(self):
+        """Deleting one mod's files is ordinary work; it must reach the confirmation,
+        not the hard block."""
+        f = F(D + ' -rf "' + GAME + '/extensions/mymod"/*')
+        self.assertFalse(f["rm_hits_game"])
+        self.assertTrue(f["rm_in_x4_dir"], "it should still CONFIRM")
+
+    def test_an_unresolvable_operand_still_does_NOT_hard_block(self):
+        """F93: `$DST` cannot be proven to be the root, so a deny the user cannot
+        override is wrong there. A glob is decidable; a variable is not."""
+        self.assertFalse(self._deny(D + ' -rf "$DST"'))
+
+
+class TestBraceExpansionIsBounded(unittest.TestCase):
+    """A guard that can be made to hang is a guard that gets removed."""
+
+    def test_a_combinatorial_pattern_terminates_and_stays_bounded(self):
+        out = H._brace_expand("a" + "{x,y}" * 12 + "b")
+        self.assertLessEqual(len(out), 64)
+
+    def test_an_unbalanced_brace_is_returned_untouched(self):
+        self.assertEqual(H._brace_expand("a{b,c"), ["a{b,c"])
+
+    def test_a_literal_path_is_never_treated_as_a_pattern(self):
+        self.assertFalse(H.glob_covers("/c/games/x4", "/c/games/x4"))
+
+    def test_the_two_pattern_constants_did_not_collide(self):
+        """The first draft of glob_covers reused the name `_GLOB_CHARS`, shadowing an
+        existing SET with a STRING and breaking every parameter-expansion test.
+        They mean different things and must stay distinct."""
+        self.assertIsInstance(H._GLOB_CHARS, set)
+        self.assertIsInstance(H._OPERAND_PATTERN_CHARS, str)
+        self.assertIn("{", H._OPERAND_PATTERN_CHARS)
+        self.assertNotIn("{", H._GLOB_CHARS)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

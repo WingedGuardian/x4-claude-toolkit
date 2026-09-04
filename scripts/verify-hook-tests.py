@@ -111,12 +111,24 @@ MUTANTS = [
     # The hard block must stay scoped to the catastrophic cases. Widening it back to
     # "anything under the tree" hard-denies the documented deploy path -- measured over a
     # 1,000-command sample, all 4 hits were exactly that.
+    # These anchor on the equality test inside hits_game_root. It grew a glob arm in
+    # 2026-09-04, and the mutants went STALE rather than surviving -- the harness said
+    # "DID NOT APPLY (0 matches)" instead of counting them as caught, which is the only
+    # reason the change did not silently lose two mutants.
     ("hard block is ROOT-scoped, not under-scoped",
-     'return n == g or n == g + "/extensions"', "return n.startswith(g)",
+     'if n == g or n == g + "/extensions":', "if n.startswith(g):",
      "test_deleting_ONE_deployed_mod_is_NOT_a_hard_block"),
     ("extensions/ wholesale is still a hard block",
-     'return n == g or n == g + "/extensions"', "return n == g",
+     'if n == g or n == g + "/extensions":', "if n == g:",
      "test_deleting_extensions_WHOLESALE_is_a_hard_block"),
+    ("a glob operand cannot walk past the game hard block",
+     "        return glob_covers(n, g) or glob_covers(n, g + \"/extensions\")",
+     "        return False",
+     "test_a_trailing_glob_is_still_the_installation"),
+    ("a glob operand cannot walk past a ROOT hard block",
+     "            elif glob_covers(norm(path), norm(root)):",
+     "            elif False:",
+     "test_glob_suffix_on_reference_is_still_the_reference"),
     ("the name backstop is ROOT-anchored",
      r'GAME_ROOTISH = re.compile(r"(x4 foundations|egosoft/x4)(/extensions)?$", re.I)',
      r'GAME_ROOTISH = re.compile(r"(x4 foundations|egosoft/x4)", re.I)',
