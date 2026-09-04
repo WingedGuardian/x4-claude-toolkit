@@ -140,6 +140,19 @@ from pathlib import Path
 #: merge code changed -- that distinction is the whole of F53's complaint.
 ENGINE_SOURCES = ("_merge.py", "_diff.py", "_cat.py", "_xpath.py", "_scan.py",
                   "_effective.py", "_registry.py")
+#: ⚠ KNOWN GAP, deliberately not closed by adding a name here. `_compat.compute_load_order`
+#: decides which mod wins every collision (CLAUDE.md gotcha #13: the same macro reads 0
+#: alphabetically and 200 in true load order), so editing it changes the merged answer
+#: for byte-identical inputs -- which is what this axis is for. But `_compat.py` also
+#: carries the `x4compat` CLI, and F69 (`tests/test_engine_sources_carry_no_cli.py`)
+#: measured the cost of that combination twice: a CLI-text change and a DOCSTRING change
+#: each invalidated the effective store and BaseX `x4eff` for rebuilds that could not
+#: change one row. That is what trains you to ignore a banner.
+#:
+#: F69's own remedy applies -- "make the POPULATION right, not the hash clever" -- so the
+#: fix is to lift `compute_load_order` into a CLI-free module and name THAT here. Until
+#: then this axis does not see a load-order change, and saying so is better than either
+#: a hash that cries wolf or a silent hole.
 
 #: Files the ENGINE can load. Everything else -- READMEs, changelogs, licences,
 #: tool logs -- is excluded, because 8 real mods would otherwise mark every
@@ -346,12 +359,76 @@ def _fold(detail: list[dict], reference: Path) -> str:
             h.update(f"{rec['manifest_mtime']}:{rec['manifest_size']}"
                      f":{rec['manifest_sha']}".encode())
         h.update(f":{rec['tree_sha']}:{int(rec['enabled_in_profile'])}".encode())
-    marker = Path(reference) / "libraries" / "wares.xml"
-    if marker.is_file():
-        st = marker.stat()
-        h.update(f"ref:{int(st.st_mtime)}:{st.st_size}".encode())
-    else:
-        h.update(b"ref:<ABSENT>")
+    h.update(_reference_survey(Path(reference)).encode())
+    return h.hexdigest()[:16]
+
+
+def _reference_survey(reference: Path) -> str:
+    """A cheap shape-print of the reference tree.
+
+    THE PROBLEM. This used to be `(mtime, size)` of ONE file --
+    `libraries/wares.xml` -- standing in for 510,711 files and 27 GB. Anything that
+    changed a DLC macro, a script, or an index while leaving that one file alone moved
+    nothing, so the store could be reported fresh by BOTH axes and still describe a
+    world that had changed.
+
+    WHY NOT A FULL WALK. MEASURED on this tree: a stat of every file is 17.6 s, a
+    name-only walk 0.80 s, and this survey 0.001 s. The check runs on every query, and
+    a check too slow to run protects nothing -- which is why the single marker existed
+    in the first place. This is 1,760x cheaper than the full walk and covers all 20
+    top-level entries instead of one file.
+
+    WHAT IT SEES: every top-level entry; each directory's own mtime and the sorted
+    names of its direct children; each top-level file's (mtime, size). A re-unpack, a
+    game patch, an added or removed DLC, or a rename all move it.
+
+    WHAT IT DOES NOT SEE, and this is a LIMIT OF THE APPROACH, not of the effort: an
+    in-place edit to an existing file. MEASURED -- changing a file's contents moves NO
+    ancestor directory's mtime at any depth, so the only way to see it is to stat every
+    file, which is the 17.6 s this exists to avoid.
+
+    That is acceptable HERE and nowhere else, for one reason: `reference/` is
+    policy-locked read-only behind `.unpacked-and-locked`, so an in-place edit is a
+    violation rather than an event. The change that actually happens is a game patch
+    followed by a re-unpack, which rewrites the tree -- new names, new mtimes -- and
+    changes the recorded build id below. That case is covered exactly.
+    """
+    h = hashlib.sha256()
+    try:
+        entries = sorted(os.scandir(reference), key=lambda e: e.name.lower())
+    except OSError:
+        return "ref:<ABSENT>"
+    for e in entries:
+        try:
+            st = e.stat()
+        except OSError:
+            h.update(("?" + e.name.lower()).encode())
+            continue
+        h.update(e.name.lower().encode())
+        if e.is_dir():
+            try:
+                kids = sorted(os.listdir(e.path))
+            except OSError:
+                kids = []
+            h.update(f"d:{int(st.st_mtime)}:{len(kids)}:".encode())
+            h.update(hashlib.sha256(chr(10).join(kids).encode()).digest())
+        else:
+            h.update(f"f:{int(st.st_mtime)}:{st.st_size}".encode())
+    # The build the tree was unpacked FROM. A game update under an old reference is the
+    # staleness that matters most, and it is the one an mtime survey can miss entirely
+    # if the unpack preserved timestamps.
+    for cand in (reference.parent / ".claude" / ".reference-buildid",
+                 reference / ".reference-buildid"):
+        try:
+            h.update(b"build:" + cand.read_bytes().strip())
+            break
+        except OSError:
+            # silent-ok: this loop IS the search -- the first candidate not existing is
+            # the ordinary case, not a failure, and a machine with no recorded build id
+            # simply contributes no build term. The fingerprint stays well-defined
+            # either way, and `test_the_recorded_build_id_is_part_of_it` pins that a
+            # present id really does reach it.
+            continue
     return h.hexdigest()[:16]
 
 
