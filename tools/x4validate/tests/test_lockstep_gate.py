@@ -221,3 +221,73 @@ def test_the_gate_can_actually_LOOK_in_this_repository():
     assert rc == 0, buf.getvalue()[-600:]
     assert "ui.xml" in buf.getvalue(), (
         "the gate returned 0 without naming a mod declaration -- it examined nothing")
+
+
+# --------------------------------------------------------------------------- #
+# The POPULATION, which is where this gate was blind. The verdict always came
+# from a committed blob; the candidate LIST did not, so a declaration that ships
+# could go unexamined. MEASURED 2026-09-04.
+# --------------------------------------------------------------------------- #
+
+def _mkrepo(root, files):
+    root.mkdir(parents=True, exist_ok=True)
+    _run = lambda *a: subprocess.run(["git", "-C", str(root), *a],
+                                     check=True, capture_output=True)
+    _run("init", "-q")
+    _run("config", "user.email", "t@t")
+    _run("config", "user.name", "t")
+    for rel, text in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        _run("add", rel)
+    _run("commit", "-q", "-m", "base")
+    return root
+
+
+def test_a_COMMITTED_but_tree_absent_declaration_is_still_examined(tmp_path):
+    """The tree-only population missed exactly what SHIPS.
+
+    Deleting a probe's ui.xml from the working tree, leaving HEAD untouched, took
+    the gate from `!! probeB` rc 1 to `OK -- 1 ... agree` rc 0 while the disagreeing
+    blob still shipped. F87's own failure mode, inside the gate written to close it.
+    """
+    repo = _mkrepo(tmp_path / "r", {
+        "mods/probeA/ui.xml": UI % "__x4live_dump",
+        "mods/probeB/ui.xml": UI % "__OLD_STALE_NAME",
+    })
+    (repo / "mods" / "probeB" / "ui.xml").unlink()
+    rels = ls.candidate_ui_rels(repo, repo / "mods")
+    assert "mods/probeB/ui.xml" in rels, (
+        "a declaration that is committed but tree-absent must still be examined")
+
+
+def test_a_tree_present_but_UNCOMMITTED_declaration_is_still_examined(tmp_path):
+    """The control for the test above, and a real regression I introduced fixing it.
+
+    Sourcing the population from `git ls-files` alone drops a ui.xml that was never
+    committed -- which is F87 in its purest form. Neither source alone is the
+    population; the union is.
+    """
+    repo = _mkrepo(tmp_path / "r", {"mods/probeA/ui.xml": UI % "__x4live_dump"})
+    d = repo / "mods" / "probeC"
+    d.mkdir(parents=True)
+    (d / "ui.xml").write_text(UI % "__NEVER_COMMITTED", encoding="utf-8")
+    rels = ls.candidate_ui_rels(repo, repo / "mods")
+    assert "mods/probeC/ui.xml" in rels, (
+        "a tree-present, never-committed declaration must still be examined")
+
+
+def test_EVERY_declaration_in_a_file_is_compared_not_just_the_first(tmp_path):
+    """`MOD_RE.search` took match 1. With a stale name as the SECOND declaration the
+    gate printed "OK -- 1 committed mod declaration(s) agree" rc 0 while the stale
+    one shipped uncompared -- and the printed count claimed DECLARATIONS while
+    counting FILES."""
+    two = ('<content>'
+           '<savedvariable name="__x4live_dump"/>'
+           '<savedvariable name="__OLD_STALE_NAME"/>'
+           '</content>')
+    repo = _mkrepo(tmp_path / "r", {"mods/probeB/ui.xml": two})
+    text = ls.committed(repo, "mods/probeB/ui.xml")
+    found = [m.group(1) for m in ls.MOD_RE.finditer(text)]
+    assert found == ["__x4live_dump", "__OLD_STALE_NAME"], found

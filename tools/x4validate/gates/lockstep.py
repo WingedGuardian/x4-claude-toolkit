@@ -121,6 +121,46 @@ def find_mod_uis(mods: Path) -> list[Path]:
             if MOD_RE.search(p.read_text(encoding="utf-8", errors="replace"))]
 
 
+def candidate_ui_rels(repo: Path, mods: Path) -> list[str]:
+    """Every mod ui.xml that could carry a declaration -- from GIT **and** the TREE.
+
+    NEITHER SOURCE ALONE IS THE POPULATION, and each omission is a different real
+    defect:
+
+      * git only  -- misses a ui.xml present in the tree and NEVER COMMITTED. That is
+        F87 in its purest form: correct where you look, absent from what ships. My
+        first version of this fix did exactly that and turned
+        `test_an_UNCOMMITTED_mod_half_is_a_FAILURE_not_a_skip` from rc 1 to rc 0.
+      * tree only -- misses a declaration that IS committed but tree-absent or
+        tree-edited. MEASURED 2026-09-04: deleting one probe's ui.xml from the tree
+        while leaving HEAD untouched took the gate from `!! probeB` rc 1 to
+        `OK -- 1 committed mod declaration(s) agree` rc 0, with the disagreeing blob
+        still shipping. That is F87's own failure mode inside the gate written to
+        close F87, which is why the docstring's "never reads the working tree" was
+        true of the VERDICT and false of the POPULATION.
+
+    A candidate is filtered by whichever text exists: the committed blob when there
+    is one, the working copy when there is not. The VERDICT still comes only from
+    the committed blob -- an uncommitted candidate is reported as such and FAILS.
+    """
+    rels: set[str] = set()
+    try:
+        out = subprocess.run(["git", "ls-files", "--", MOD_GLOB], cwd=repo,
+                             capture_output=True, timeout=30)
+        if out.returncode == 0:
+            for ln in out.stdout.decode("utf-8", "replace").splitlines():
+                rel = ln.strip()
+                if rel and MOD_RE.search(committed(repo, rel) or ""):
+                    rels.add(rel)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for ui in find_mod_uis(mods):
+        rel = _rel_to_repo(repo, ui)
+        if rel is not None:
+            rels.add(rel.replace(chr(92), "/"))
+    return sorted(rels)
+
+
 def main(argv=None) -> int:
     print("LOCKSTEP — the mod's savedvariable vs the CLI's DEFAULT_VAR, "
           "both from COMMITTED blobs")
@@ -157,33 +197,36 @@ def main(argv=None) -> int:
         mods = shipped
     else:
         mods = _env.mods_dir()                 # exits 2 by itself if unconfigured
-    uis = find_mod_uis(mods)
-    if not uis:
-        _env.skip(f"no mod ui.xml under {mods} declares a savedvariable",
-                  "the mod half of the pair is missing; nothing to compare against")
-
     rows, bad = [], []
     mod_repo = _repo_root(mods)
     if mod_repo is None:
         _env.skip(f"{mods} is not inside a git checkout",
                   "the mod half must be read from a COMMITTED blob, not the tree")
 
-    for ui in uis:
-        rel = _rel_to_repo(mod_repo, ui)
-        if rel is None:
-            bad.append((ui.name, "outside the mod repo", None))
-            continue
+    rels = candidate_ui_rels(mod_repo, mods)
+    if not rels:
+        _env.skip(f"no mod ui.xml under {mod_repo} declares a savedvariable",
+                  "the mod half of the pair is missing; nothing to compare against")
+
+    # Every declaration in the file, not just the first. MEASURED 2026-09-04: with a
+    # stale `__OLD_STALE_NAME` as the SECOND <savedvariable>, the gate printed
+    # "OK -- 1 committed mod declaration(s) agree" rc 0 while the stale one shipped
+    # uncompared and unnamed -- and the printed count claimed DECLARATIONS while
+    # counting FILES. Reversing the order turned it into a false FAIL whose remedy
+    # text ("Commit BOTH sides of the rename") was wrong.
+    for rel in rels:
         text = committed(mod_repo, rel)
         if text is None:
             # UNCOMMITTED is the F87 state exactly: present and correct in the tree,
             # absent from what ships. It is a FAILURE, never a skip.
             bad.append((rel, "not committed (present in the working tree only)", None))
             continue
-        m = MOD_RE.search(text)
-        if m is None:
+        found = [m.group(1) for m in MOD_RE.finditer(text)]
+        if not found:
             bad.append((rel, "committed blob declares no savedvariable", None))
             continue
-        rows.append((rel, m.group(1)))
+        for var in found:
+            rows.append((rel, var))
 
     for rel, var in rows:
         mark = "ok " if var == cli_var else "!! "
