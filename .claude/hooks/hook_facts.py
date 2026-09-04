@@ -381,22 +381,32 @@ def segments(cmd: str) -> list[str]:
 RESERVED = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until",
             "case", "esac", "in", "for", "select", "function", "!", "{", "}", "coproc", "[[", "]]"}
 
-#: A `case` ARM LABEL, and nothing else. The label is a single glob token --
-#: `x)`, `*)`, `*.txt)`, `a|b)` -- so it carries NO WHITESPACE, and that is what makes
-#: this safe: every dangerous rule needs an OPERAND, and an operand needs a space, so
-#: a spaceless label can never be hiding one.
-#:
-#: MEASURED 2026-09-01, and it is why the space matters: the first version of this
-#: was `^[^()|&;]*\)\s`, which also matched the tail of a PROCESS SUBSTITUTION --
-#: `diff <(cd "$GAME" && rm -rf extensions) <(echo b)` splits to `rm -rf extensions)`,
-#: the whole thing was eaten as a "label", and the delete went silent. The BASELINE
-#: caught that command. A fix for one bypass that opens another is worse than the bug,
-#: and only the corpus diff -- 20 commands with a paren-suffixed verb -- surfaced it.
 #: The `in` of `case WORD in`. A TOKEN, not the substring: see the block in
-#: strip_compound_prefix() for the bypass this shape caused.
+#: strip_compound_prefix() for the bypass that shape caused.
 _CASE_IN = re.compile(r"\s+in(?:\s|$)")
 
-_CASE_ARM = re.compile(r"^[^\s()&;]+\)\s")
+#: A `case` ARM LABEL, and nothing else. The label is a single glob token --
+#: `x)`, `*)`, `*.txt)`, `a|b)`, `"a")` -- so it carries NO WHITESPACE, and THAT is
+#: what makes this safe: every dangerous rule needs an OPERAND, an operand needs a
+#: space, so a spaceless label can never hide one.
+#:
+#: MEASURED 2026-09-01, and it is why whitespace must stay excluded: the first
+#: version was `^[^()|&;]*\)\s`, whose class allowed SPACES, so it also matched the
+#: tail of a PROCESS SUBSTITUTION -- `diff <(cd "$GAME" && rm -rf extensions) <(echo b)`
+#: splits to `rm -rf extensions)`, the whole thing was eaten as a "label", and the
+#: delete went silent. A fix for one bypass that opens another is worse than the bug,
+#: and only the corpus diff -- 20 commands with a paren-suffixed verb -- surfaced it.
+#:
+#: MEASURED 2026-09-04: three MORE legal spellings walked past this, each a total
+#: bypass of every hard block, found only once the fuzzer was taught to vary its
+#: template PARAMETERS (it had always emitted `case x in x)`):
+#:   `case $x in *)rm ...`    -- no space after `)`, so the old trailing `\s` missed it
+#:   `case $x in (*) rm ...`  -- the POSIX `(pattern)` arm; `(` was excluded outright
+#:   `case $x in "a") rm ...` -- a quoted label; the guard rejected ANY quoted char
+#: The trailing `\s` was never the safety property -- the no-whitespace CLASS is --
+#: so dropping it costs nothing. `rm -rf extensions)` still cannot match: `[^\s()&;]+`
+#: stops at the first space, long before the `)`.
+_CASE_ARM = re.compile(r"^\(?[^\s()&;]+\)")
 
 #: A function DEFINITION header is not a reserved word, so it survived the first
 #: version of this and `f() { rm -rf <game>; }; f` stayed blind while the other nine
@@ -446,14 +456,21 @@ def _strip_reserved(s: str) -> str:
         if m:
             s = s[m.end():].lstrip()
             continue
-        # `case x in x) rm ...` -- the arm label sits between `in` and the command, and
-        # is not a token, so it needs its own step. Only when the `)` is UNQUOTED and no
-        # `(` opens before it, or `rm -rf $(echo x)` would be torn apart.
+        # `case x in x) rm ...` -- the arm label sits between `in` and the command and
+        # is not a token, so it needs its own step. Two conditions, each scoped to what
+        # it is actually about rather than to the whole span:
+        #   * the CLOSING `)` must be UNQUOTED -- that is what makes this an arm rather
+        #     than part of a quoted string. (The old test rejected any quoted char
+        #     anywhere, which threw away the legitimate `"a")` label with it.)
+        #   * no `(` may OPEN inside the label, or `rm -rf $(echo x)` is torn apart.
+        #     A single LEADING `(` is the POSIX arm and is legitimate.
         m = _CASE_ARM.match(s)
         if m:
             marks = list(_scan(s[:m.end()]))
-            if not any(inq for _, inq in marks) and not any(
-                    ch == "(" for ch, inq in marks if not inq):
+            closing_ok = bool(marks) and marks[-1][0] == ")" and not marks[-1][1]
+            inner_open = any(ch == "(" and not inq
+                             for i, (ch, inq) in enumerate(marks) if i != 0)
+            if closing_ok and not inner_open:
                 s = s[m.end():].lstrip()
     return s
 
@@ -741,7 +758,22 @@ def root_vars_named(tok: str) -> set:
 
 
 # ------------------------------------------------------------------ heredocs
-_HD = re.compile(r"<<-?\s*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?")
+#: A heredoc OPENER's delimiter. Three spellings, because the delimiter is a WORD,
+#: not an identifier: single-quoted, double-quoted, or bare.
+#:
+#: MEASURED 2026-09-04: the old pattern was `[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?`,
+#: which TRUNCATES the marker at the first character an identifier cannot contain.
+#: `<<'E-O-F'` yielded `E`, `<<'EOF.md'` yielded `EOF`, and `<<"my marker"` yielded
+#: `my`. The terminator line then never compares equal, so strip_heredocs' skip
+#: region runs to END OF INPUT -- and everything after the heredoc reaches NO RULE
+#: AT ALL. Not just the path rules: `git add -A` and the profile-name search went
+#: blind too. Found by teaching the fuzzer to vary its template PARAMETERS; 996
+#: mutants had never emitted a non-identifier marker.
+#:
+#: Direction is one-way. The old form MISSED markers, so its skip region was too
+#: LONG and hid commands; matching them correctly can only reveal more commands to
+#: the rules, never fewer.
+_HD = re.compile(r"""<<-?[ \t]*(?:'([^']*)'|"([^"]*)"|([^\s;&|<>()`]+))""")
 
 
 def _quote_mask(s: str) -> list[bool]:
@@ -790,7 +822,8 @@ def heredoc_marker(line: str):
                 continue
             m = _HD.match(line, i)
             if m:
-                return m.group(1)
+                # whichever spelling matched: sq, dq, or bare
+                return m.group(1) or m.group(2) or m.group(3)
     return None
 
 

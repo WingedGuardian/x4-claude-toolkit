@@ -74,11 +74,13 @@ MUTANTS = [
      '        m = _FUNC_HEAD.match(s)', '        m = None',
      "test_every_compound_form_still_shows_the_command"),
     # The regression the fix itself introduced: the ORIGINAL over-wide label regex,
-    # which ate `rm -rf extensions)` out of a process substitution. If this mutant ever
-    # stops being caught, that hole is open again.
+    # which ate `rm -rf extensions)` out of a process substitution. The NO-WHITESPACE
+    # class is the whole safety property -- the trailing `\s` never was, which is why
+    # dropping it on 2026-09-04 to catch `*)cmd` was safe. If this mutant ever stops
+    # being caught, that hole is open again.
     ("a case label carries no whitespace",
-     r'_CASE_ARM = re.compile(r"^[^\s()&;]+\)\s")',
-     r'_CASE_ARM = re.compile(r"^[^()|&;]*\)\s")',
+     r'_CASE_ARM = re.compile(r"^\(?[^\s()&;]+\)")',
+     r'_CASE_ARM = re.compile(r"^\(?[^()|&;]*\)")',
      "test_a_process_substitution_tail_is_not_a_case_arm_label"),
     # --- the PARSER, one mutant per clause -------------------------------------
     # Added 2026-09-01. The gate reported "31 of 31 caught, 0 of 19 predicate gaps"
