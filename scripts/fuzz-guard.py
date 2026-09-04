@@ -382,6 +382,81 @@ def _m_wrap_nested(c):
     return "if true; then for i in 1; do " + c + "; done; fi"
 
 
+# --- class: PARAMETER variation, the axis every mutator above holds CONSTANT -
+# The docstring names one invariant -- the dangerous OPERAND is byte-identical in
+# every mutant. There is a SECOND, unstated one: each compound-command template is a
+# FIXED string. `_m_wrap_case` is always literally `case x in x)`, a one-character
+# word and a one-character label. So the WORD and the LABEL were unreachable by
+# construction, exactly as the operand is.
+#
+# MEASURED 2026-09-04: `case $string in *) rm -rf "<game>";; esac` was a TOTAL bypass
+# of all three HARD BLOCKS, live in BOTH hook copies, while 996 mutants, 82 mutation
+# probes, 23 predicate checks and 388 unit tests were green over it. `verb()` returned
+# `ary`, because `rest.index("in")` cut inside the word. The word `x` cannot contain
+# the substring "in"; `$string`, `$line` and `install` can.
+#
+# The lesson generalises past this bug: read what your fuzzer holds fixed, INCLUDING
+# the parts it does not think of as parameters. Every one of these was checked with
+# `bash -n` before being added -- a mutant the parser rejects is dropped and proves
+# nothing.
+
+def _m_case_word_substring_in(c):
+    return "case $string in *) " + c + " ;; esac"
+
+
+def _m_case_word_install(c):
+    return "case install in *) " + c + " ;; esac"
+
+
+def _m_case_word_is_in(c):
+    return "case in in *) " + c + " ;; esac"
+
+
+def _m_case_arm_no_space(c):
+    # `)` not followed by whitespace -- _CASE_ARM requires `\)\s`
+    return "case $x in *)" + c + " ;; esac"
+
+
+def _m_case_arm_posix_paren(c):
+    # the POSIX `(pattern)` arm; the leading `(` is excluded by _CASE_ARM's class
+    return "case $x in (*) " + c + " ;; esac"
+
+
+def _m_case_arm_quoted_label(c):
+    # A quoted label; the use-site guard rejects any quote in the matched span.
+    # NB the ALTERNATIVE form `"a"|*)` does NOT bypass -- my first version of this
+    # mutator used it and reported the axis clean while `"a")` was live. A mutator
+    # that tests the wrong shape is a false negative wearing a green tick.
+    return 'case $x in "a") ' + c + " ;; esac"
+
+
+def _m_case_arm_sq_label(c):
+    return "case $x in 'a') " + c + " ;; esac"
+
+
+def _m_for_var_substring_in(c):
+    return "for input in 1; do " + c + "; done"
+
+
+def _m_func_name_substring_in(c):
+    return "inflate() { " + c + "; }; inflate"
+
+
+def _m_heredoc_marker_hyphenated(c):
+    # _HD truncates a marker at the first non-identifier char, so the terminator
+    # never compares equal and the skip region runs to EOF -- swallowing the rest
+    # of the command from EVERY rule, not just the path rules.
+    return "cat > /dev/null <<'E-O-F'" + NL + "data" + NL + "E-O-F" + NL + c
+
+
+def _m_heredoc_marker_dotted(c):
+    return "cat > /dev/null <<'EOF.md'" + NL + "data" + NL + "EOF.md" + NL + c
+
+
+def _m_heredoc_marker_spaced(c):
+    return 'cat > /dev/null <<"my marker"' + NL + "data" + NL + "my marker" + NL + c
+
+
 # --- class: wrappers that carry a command as TEXT ---------------------------
 # `bash -c`, its flag-cluster spellings and `eval` all run a STRING as a command, so
 # whatever they carry is invisible to any rule that inspects segments. MEASURED
@@ -676,6 +751,20 @@ MUTATORS = [
     ("wrap: as an if CONDITION", _m_wrap_if_condition),
     ("wrap: function body", _m_wrap_function),
     ("wrap: nested if+for", _m_wrap_nested),
+
+    # --- PARAMETER axis: vary what the templates above hold fixed ------------
+    ("PARAM case word contains 'in'", _m_case_word_substring_in),
+    ("PARAM case word is 'install'", _m_case_word_install),
+    ("PARAM case word IS 'in'", _m_case_word_is_in),
+    ("PARAM case arm without a space", _m_case_arm_no_space),
+    ("PARAM case arm POSIX '(' form", _m_case_arm_posix_paren),
+    ("PARAM case arm quoted label", _m_case_arm_quoted_label),
+    ("PARAM case arm single-quoted label", _m_case_arm_sq_label),
+    ("PARAM for var contains 'in'", _m_for_var_substring_in),
+    ("PARAM function name contains 'in'", _m_func_name_substring_in),
+    ("PARAM heredoc marker hyphenated", _m_heredoc_marker_hyphenated),
+    ("PARAM heredoc marker dotted", _m_heredoc_marker_dotted),
+    ("PARAM heredoc marker with a space", _m_heredoc_marker_spaced),
     ("wrapper: bash -c", _m_bash_c),
     ("wrapper: bash -lc", _m_bash_lc),
     ("wrapper: sh -ic", _m_sh_ic),
