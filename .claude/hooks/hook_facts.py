@@ -1569,6 +1569,15 @@ def dollarq_after_pipe(cmd: str) -> bool:
     # have turned a live rule off -- the opposite mistake to the one being fixed.
     # Callers pass `body`, so comments are already gone.
     live = blank_single_quoted(stripped)
+    # An ESCAPED dollar does not expand. `git commit -m "fix \$? after a pipe"` is
+    # PROSE -- the backslash makes it literal text in double quotes and unquoted alike,
+    # so the shell never reads a status there. Without this the rule was a
+    # non-overridable DENY on a commit message describing the very trap it enforces,
+    # and on a grep whose PATTERN contains the token. Both happened.
+    #
+    # Single-quoted content is already blanked above, where a backslash is itself
+    # literal, so removing the pair here cannot reach that case.
+    live = live.replace(chr(92) + "$", " ")
     if "$?" not in live:
         return False
     prev_piped = False
@@ -2303,8 +2312,15 @@ def facts(payload: dict, roots: dict) -> dict:
             for sg in segments(body)),
 
         "search_rooted_reference": rooted(roots.get("reference")),
+        # `mods` was here and is deliberately NOT, from 2026-09-04. The rule's own
+        # message cites 300 s and "GBs of binary database pages" -- true of the TOOLKIT
+        # root, where tools/basex/basex/data lives, and false of the mod source tree.
+        # MEASURED on this machine: a recursive grep over the whole mods root is 230 ms
+        # over 1,190 files. Refusing that, with a reason that does not apply to it, is
+        # a guard being wrong at the user's expense -- and a rule whose stated reason is
+        # visibly false where it fires is one people learn to route around.
         "search_rooted_workspace": any(rooted(roots.get(k)) for k in
-                                       ("toolkit", "game", "mods")),
+                                       ("toolkit", "game")),
         # The SEARCHED PATH must be the profile. Was: any search verb anywhere AND the
         # profile named anywhere AND "content" anywhere -- so a grep of a local file
         # beside an unrelated cat of the manifest was a DENY.

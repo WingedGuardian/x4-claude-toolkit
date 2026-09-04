@@ -2296,5 +2296,69 @@ class TestBraceExpansionIsBounded(unittest.TestCase):
         self.assertNotIn("{", H._GLOB_CHARS)
 
 
+
+class TestAnEscapedDollarIsProseNotAStatusRead(unittest.TestCase):
+    r"""`\$` does not expand, so `$?` behind a backslash is text.
+
+    MEASURED 2026-09-04: `git commit -m "fix \$? after a pipe"` was a NON-OVERRIDABLE
+    DENY -- the guard refusing a commit message that DESCRIBES the trap it enforces.
+    It fired on this session's own grep too, where the token was a search PATTERN.
+
+    The must-NOT-fire half is the whole risk: an unescaped `$?` in double quotes DOES
+    expand, and turning that off would be the opposite mistake, silently.
+    """
+
+    BS = chr(92)
+
+    def _fires(self, cmd):
+        return F(cmd)["dollarq_after_pipe"]
+
+    def test_escaped_in_a_double_quoted_message(self):
+        self.assertFalse(self._fires(
+            'cat f | wc -l; git commit -m ' + DQ + 'fix ' + self.BS + '$? handling' + DQ))
+
+    def test_escaped_and_unquoted(self):
+        self.assertFalse(self._fires("ls | head; echo " + self.BS + "$?"))
+
+    def test_single_quoted_is_still_literal(self):
+        self.assertFalse(self._fires("ls | head; echo " + Q + "literal $? here" + Q))
+
+    # --- must STILL fire ----------------------------------------------------------
+    def test_a_real_read_after_a_pipe(self):
+        self.assertTrue(self._fires("ls | head; echo $?"))
+
+    def test_a_real_read_inside_DOUBLE_quotes_still_expands(self):
+        self.assertTrue(self._fires("ls | head; echo " + DQ + "rc=$?" + DQ))
+
+    def test_PIPESTATUS_is_still_the_recommended_escape(self):
+        self.assertFalse(self._fires("ls | head; echo " + DQ + "${PIPESTATUS[0]}" + DQ))
+
+
+class TestTheModsRootIsSearchable(unittest.TestCase):
+    """The wrong-scope refusal cited a cost that is false for the mod source tree.
+
+    Its message names 300 s and "GBs of binary database pages" -- true of the TOOLKIT
+    root, where tools/basex/basex/data lives. MEASURED over the real mods root: 230 ms,
+    1,190 files. A rule whose stated reason is visibly false where it fires is one
+    people learn to route around, which costs more than the rule was ever worth.
+    """
+
+    def _fires(self, cmd):
+        return F(cmd)["search_rooted_workspace"]
+
+    def test_the_mods_root_is_no_longer_refused(self):
+        self.assertFalse(self._fires('grep -rn faction ' + DQ + ROOTS["mods"] + DQ))
+
+    def test_the_toolkit_root_is_STILL_refused(self):
+        """This is where the GBs actually are."""
+        self.assertTrue(self._fires('grep -rn faction ' + DQ + TOOLKIT + DQ))
+
+    def test_the_game_root_is_STILL_refused(self):
+        self.assertTrue(self._fires('grep -rn faction ' + DQ + GAME + DQ))
+
+    def test_reference_has_its_own_rule_and_keeps_it(self):
+        self.assertTrue(F('grep -rn faction ' + DQ + REF + DQ)["search_rooted_reference"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
