@@ -33,6 +33,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from x4validate import _paths  # noqa: E402
 
 
+def sandbox_copy(src: Path, dest: Path) -> Path:
+    """Copy a protected file into a throwaway location AND make it writable.
+
+    `shutil.copy2` preserves permission bits, so copying a file that
+    `scripts/x4lock.py` has marked read-only produces a read-only SANDBOX -- and the
+    gate then fails on its own scratch copy, which protects nothing and looks exactly
+    like the tool being broken. MEASURED 2026-09-04: `registry_provenance` went red
+    that way within minutes of the registry being locked for the first time.
+
+    A sandbox exists to be written. The protection belongs to the original, and the
+    original is not what is being handed to the caller here.
+    """
+    import shutil
+    import stat as _stat
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+    try:
+        dest.chmod(dest.stat().st_mode | _stat.S_IWRITE)
+    except OSError as exc:
+        skip("could not make the sandbox copy of %s writable (%s)" % (src.name, exc),
+             "check the destination filesystem; a read-only sandbox would fail the "
+             "gate for a reason that has nothing to do with what it tests")
+    return dest
+
+
 def skip(what: str, how: str) -> NoReturn:
     print(f"SKIP: {what}\n      {how}", file=sys.stderr)
     raise SystemExit(2)

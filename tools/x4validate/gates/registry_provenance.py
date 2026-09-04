@@ -42,7 +42,7 @@ def main() -> int:
     live = _env.registry_file()
     tmp = Path(tempfile.mkdtemp(prefix="x4reg_gate_"))
     sandbox = tmp / "modlist.yaml"
-    shutil.copy2(live, sandbox)
+    _env.sandbox_copy(live, sandbox)   # a locked original must not yield a locked sandbox
     print(f"registry under test (sandbox copy of {live.name}): {sandbox}")
 
     reg = _registry.load_registry(sandbox)

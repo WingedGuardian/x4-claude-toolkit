@@ -134,3 +134,35 @@ def test_the_KNOWN_GAP_is_still_the_gap(tmp_path):
     assert r.returncode == 0 and not p.exists(), (
         "pwsh -Force no longer defeats the read-only attribute -- update x4lock's "
         "documented table and the guard layering that assumes this gap")
+
+
+def test_a_sandbox_copy_of_a_LOCKED_file_is_writable(tmp_path):
+    r"""A gate copies the user's registry into a throwaway sandbox and writes to it.
+
+    `shutil.copy2` preserves permission bits, so once the real registry was locked for
+    the first time the SANDBOX copy was read-only too and `registry_provenance` failed
+    on its own scratch file -- protecting nothing and looking exactly like the tool
+    being broken. MEASURED 2026-09-04, within minutes of the first lock.
+
+    `_env.sandbox_copy` is the fix, and this pins it: a sandbox exists to be written,
+    and the protection belongs to the original.
+    """
+    import shutil
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gates"))
+    import _env
+
+    src = _fresh(tmp_path / "protected.yaml")
+    assert x4lock._apply(src, True)[0]
+
+    naive = tmp_path / "naive.yaml"
+    shutil.copy2(src, naive)
+    assert x4lock.is_locked(naive), (
+        "precondition: copy2 is supposed to carry the read-only bit; if it no longer "
+        "does, this whole failure mode is gone and the helper may be unnecessary")
+
+    good = _env.sandbox_copy(src, tmp_path / "sandbox" / "copy.yaml")
+    assert not x4lock.is_locked(good), "sandbox_copy produced a read-only sandbox"
+    good.write_text("written", encoding="utf-8")          # must not raise
+    assert good.read_text(encoding="utf-8") == "written"
+    assert x4lock.is_locked(src), "the ORIGINAL must still be protected"

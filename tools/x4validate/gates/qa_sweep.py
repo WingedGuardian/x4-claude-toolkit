@@ -161,7 +161,7 @@ def _sandbox_registry() -> str:
         except (SystemExit, AttributeError):
             src = None
         if src and Path(src).is_file():
-            shutil.copy2(src, dest)
+            _env.sandbox_copy(src, dest)   # writable: it is a throwaway, not the original
         else:
             dest.write_text("meta: {}\nmods: []\n", encoding="utf-8")
         _SANDBOX = str(dest)
@@ -361,7 +361,14 @@ _ALL_CELLS: list[Cell] = [
          ["--file", "__no_such_uidata__.xml", "dump"], expect=(2,), findings_ok=True),
     # `mappings` PROPOSES field mappings from a dump; with no dump it must be the
     # same rc 2 non-answer as its siblings, never a clean zero over nothing.
-    Cell("x4live", "mappings", ["mappings"], expect=(0, 2, 3), findings_ok=True),
+    # rc 1 belongs here too: `cmd_mappings` ends `return 1 if (fresh_props or
+    # ambiguous) else 0`, so a dump that HAS candidates to propose is rc 1 -- the
+    # normal, useful outcome. The tuple omitted it and the cell went RED the first
+    # time the store was rebuilt with enough content to produce an ambiguity, which
+    # is why every sibling x4live cell above already says (0, 1, 2, 3). Accepting 1
+    # cannot mask a non-answer: the no-dump and no-store paths return 3 and 2 from
+    # early guards, long before anything could be proposed.
+    Cell("x4live", "mappings", ["mappings"], expect=(0, 1, 2, 3), findings_ok=True),
 
     # ---- the F75 backlog: capabilities the sweep did not exercise --------
     # Every WRITING x4modlist cell points at the throwaway registry, so a sweep
