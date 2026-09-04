@@ -1445,9 +1445,20 @@ def _git_destructive(seg, wanted):
     toks = [t for t, _q in tokens(seg)]
     base = ""
     skip = set()
+    # EVERY pre-subcommand option that consumes the NEXT token, not just -C.
+    # MEASURED 2026-09-04: `git -c core.fileMode=false clean -fdx` was an ALLOW while
+    # the same command without `-c` is an ask. `-c` was treated as a bare flag, so its
+    # VALUE (`core.fileMode=false`) became the "subcommand" and matched nothing in
+    # `wanted`. One config option silenced the only layer that can see a destructive
+    # git -- in the rule whose own docstring records that git ignores the read-only
+    # lock entirely. 15 `git -c` commands in 13,503 of history, 0 with a destructive
+    # subcommand: the same denominator this file already accepted for `find -delete`.
+    _GIT_VALUE_OPTS = ("-C", "-c", "--git-dir", "--work-tree", "--namespace",
+                       "--exec-path", "--config-env")
     for i, t in enumerate(toks):
-        if t == "-C" and i + 1 < len(toks):
-            base = toks[i + 1]
+        if t in _GIT_VALUE_OPTS and i + 1 < len(toks):
+            if t == "-C":          # only -C names the directory acted on
+                base = toks[i + 1]
             skip.add(i + 1)
     sub = next((t for i, t in enumerate(toks[1:], 1)
                 if not t.startswith("-") and i not in skip), None)
@@ -2350,7 +2361,13 @@ def facts(payload: dict, roots: dict) -> dict:
         # and a naive per-segment rewrite would have silently dropped.
         "durable_python_open_w": any(
             (DURABLE.search(sg) or DURABLE.search(resolve(sg, assigns)))
-            and re.search(r"open\([^)]*,\s*[\"']w[\"']", sg)
+            # `[^,]*`, NOT `[^)]*`: a class excluding `)` cannot cross one, and this
+            # machine's game root sits under `Program Files (x86)`. MEASURED 2026-09-04:
+            # the rule was structurally DEAD for the two files its own docstring names --
+            # the game-root CLAUDE.md and KNOWLEDGEBASE.md, the pair a reviewer's
+            # installer probe actually overwrote. A path may hold parens; the first
+            # argument of open() rarely holds a comma.
+            and re.search(r"open\([^,]*,\s*[\"']w[\"']", sg)
             and _verb_name(verb(sg)) in _PYTHONS
             for sg in segments(body)),
 

@@ -661,6 +661,17 @@ class TestPreviouslyUnprobedRules(unittest.TestCase):
         cmd = "python -c \"open('MEMORY.md', 'r').read()\""
         self.assertFalse(F(cmd)["durable_python_open_w"])
 
+    # A `)` IN THE PATH. `open\([^)]*,` cannot cross one, and this workspace's game
+    # root is under `Program Files (x86)` -- so the rule was structurally DEAD for
+    # the two files its own docstring names as the real incident.
+    def test_a_paren_in_the_path_does_not_kill_the_rule(self):
+        cmd = ("python -c \"open('C:/Program Files (x86)/X4/CLAUDE.md','w')\"")
+        self.assertTrue(F(cmd)["durable_python_open_w"])
+
+    def test_a_paren_in_the_path_KNOWLEDGEBASE(self):
+        cmd = ("python -c \"open('C:/Program Files (x86)/X4/KNOWLEDGEBASE.md','w')\"")
+        self.assertTrue(F(cmd)["durable_python_open_w"])
+
     # --- measurement output into shared /tmp
     def test_redirect_into_tmp_fires(self):
         self.assertTrue(F("uv run x4validate > /tmp/out.log")["write_to_tmp"])
@@ -2144,6 +2155,21 @@ class TestDestructiveGitInAnX4Directory(unittest.TestCase):
 
     def test_reset_hard(self):
         self.assertTrue(self._fires('cd "' + self.MODS + '" && git reset --hard'))
+
+    # `-c` consumes the NEXT token. Treating it as a bare flag made its VALUE the
+    # "subcommand", so `clean`/`reset` were never seen and one config option
+    # silenced the rule entirely (MEASURED 2026-09-04: ALLOW vs ask).
+    def test_config_option_does_not_hide_clean(self):
+        self.assertTrue(self._fires(
+            'cd "' + self.MODS + '" && git -c core.fileMode=false clean -fdx'))
+
+    def test_config_option_does_not_hide_reset_hard(self):
+        self.assertTrue(self._fires(
+            'cd "' + self.MODS + '" && git -c a.b=c reset --hard'))
+
+    def test_config_option_on_a_HARMLESS_subcommand_still_does_not_fire(self):
+        self.assertFalse(self._fires(
+            'cd "' + self.MODS + '" && git -c core.fileMode=false status'))
 
     def test_checkout_pathspec_discards_file_contents(self):
         self.assertTrue(self._fires('cd "' + self.MODS + '" && git checkout -- .'))
