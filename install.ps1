@@ -437,8 +437,25 @@ function Assert-Direction($dest, $named) {
   # strict DIRECTION -- a switch naming the intent -- not merely an approval that can be
   # clicked through. And a destination nobody named is not a destination at all when
   # nobody is watching.
-  if ($named -eq 'detected' -and $Yes) {
-    Write-Host "REFUSING: -Yes with an auto-detected destination." -ForegroundColor Red
+  #
+  # TWO triggers, matching install.sh. -Yes was the only one here, so a
+  # NON-INTERACTIVE run without -Yes auto-detected and wrote anyway: Read-Host on a
+  # redirected stdin returns immediately and the detected default is accepted in
+  # silence. The rule is "a destination the user never named is not a destination at
+  # all when nobody is there to read the prompt".
+  #
+  # MEASURED 2026-09-04, and it is why this uses IsInputRedirected: with stdin from
+  # a file, a pipe, and a plain tool-driven launch, [Environment]::UserInteractive
+  # was True in all THREE. A guard keyed on it would never have fired. Both are
+  # tested anyway -- UserInteractive False is a real service case that redirection
+  # does not cover.
+  $unattended = [Console]::IsInputRedirected -or -not [Environment]::UserInteractive
+  if ($named -eq 'detected' -and ($Yes -or $unattended)) {
+    if ($Yes) {
+      Write-Host "REFUSING: -Yes with an auto-detected destination." -ForegroundColor Red
+    } else {
+      Write-Host "REFUSING: an auto-detected destination with no terminal to confirm on." -ForegroundColor Red
+    }
     Write-Host "  Detected: $dest" -ForegroundColor Red
     Write-Host "  Nothing named that path - it came from scanning the usual Steam locations," -ForegroundColor Red
     Write-Host "  and -Yes means no one will see this before the write starts." -ForegroundColor Red
