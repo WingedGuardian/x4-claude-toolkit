@@ -143,3 +143,51 @@ def test_configured_repos_EXTEND_rather_than_replace(repo, monkeypatch):
     got = {str(p) for p in x4canary.repos()}
     assert str(repo) in got and str(sentinel) in got, (
         "X4_CANARY_REPOS replaced the resolved roots instead of extending them")
+
+
+# --------------------------------------------------------------------------- #
+# Two shapes the canary got WRONG in opposite directions, both MEASURED 2026-09-04.
+# The `repo` fixture always commits first, so neither was reachable by any existing
+# test: one needs a repo with NO commits, the other a rename.
+# --------------------------------------------------------------------------- #
+
+def test_an_UNBORN_repository_refuses_rather_than_passing(tmp_path, monkeypatch):
+    """`rev-parse --git-dir` succeeds the moment `git init` has run.
+
+    So a repo with no commits reached every check below it: every file reads `??`,
+    which is drift rather than loss, and the banner said "no tracked file lost" over
+    a directory where nothing is tracked at all. That is this tool's own stated
+    refusal condition -- "nothing is versioned there" -- arriving as a pass.
+
+    Reachable in the scenario the canary exists for: the game-root repo was created
+    in RESPONSE to these losses, so an `rm -rf .git && git init` recovery would have
+    turned it permanently green.
+    """
+    r = tmp_path / "unborn"
+    r.mkdir()
+    _git(r, "init", "-q")
+    (r / "registry.yaml").write_text("x" * 500, encoding="utf-8")
+    assert _check(r, monkeypatch) == 2, (
+        "an unborn repository must REFUSE (2), not pass -- 'could not look' is "
+        "never 'nothing wrong'")
+
+
+def test_a_staged_RENAME_is_not_reported_as_data_loss(repo, monkeypatch):
+    """Porcelain writes a rename as `R  old -> new`: TWO paths in one field.
+
+    Read whole, `p.exists()` is False and an ordinary `git mv` was reported as
+    "DELETED (tracked, now missing)" -- firing the SessionStart banner "A TRACKED
+    IRREPLACEABLE FILE HAS BEEN LOST". The docstring's own argument is that a check
+    which cries wolf gets ignored, "which is how the last one failed".
+    """
+    _git(repo, "mv", "gone.md", "renamed.md")
+    assert _check(repo, monkeypatch) == 0, (
+        "a git mv is not a loss; the destination exists and is what must be checked")
+
+
+def test_a_real_DELETION_is_still_a_loss(repo, monkeypatch):
+    """The control for the test above. Without it, a fix that simply stopped
+    reporting deletions would look identical to a fix that stopped reporting
+    RENAMES as deletions."""
+    (repo / "gone.md").unlink()
+    assert _check(repo, monkeypatch) == 1

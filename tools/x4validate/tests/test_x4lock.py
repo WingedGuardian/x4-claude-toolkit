@@ -166,3 +166,35 @@ def test_a_sandbox_copy_of_a_LOCKED_file_is_writable(tmp_path):
     good.write_text("written", encoding="utf-8")          # must not raise
     assert good.read_text(encoding="utf-8") == "written"
     assert x4lock.is_locked(src), "the ORIGINAL must still be protected"
+
+
+def test_a_DELETED_protected_file_is_NAMED_not_dropped(tmp_path, monkeypatch):
+    """`manifest()` filtered out anything that is not a file, so deleting a locked
+    file simply made the manifest smaller and `status` printed a clean total.
+
+    MEASURED 2026-09-04: 3 protected -> delete one -> "2 protected file(s): 2
+    locked", exit 0. That matters more than it looks, because this module's own
+    table names `rm -f` and `Remove-Item -Force` as the primitives the read-only
+    bit does NOT stop -- deletion is the documented residual risk, and it was
+    rendering as a clean sweep.
+    """
+    a = _fresh(tmp_path / "a.md")
+    b = _fresh(tmp_path / "b.md")
+    monkeypatch.setenv("X4_PROTECTED", os.pathsep.join([str(a), str(b)]))
+    assert not [p for p in x4lock.missing() if p.name in ("a.md", "b.md")]
+    b.unlink()
+    gone = [p.name for p in x4lock.missing()]
+    assert "b.md" in gone, "a deleted protected file must be NAMED, not dropped"
+    assert "b.md" not in [p.name for p in x4lock.manifest()], (
+        "manifest() still returns only lockable files -- absences belong to missing()")
+
+
+def test_an_unimportable_paths_module_REFUSES(monkeypatch):
+    """The ImportError fallback left `_paths = None`, and the manifest then held only
+    this checkout's own x4-paths.env -- 1 of 26 on this machine -- reported as a
+    complete, healthy manifest with exit 0. A partial manifest presented as whole is
+    the narrowing-step-that-reports-success shape this tool exists to stop."""
+    monkeypatch.setattr(x4lock, "_paths", None)
+    with pytest.raises(x4lock.Unresolvable):
+        x4lock.manifest()
+    assert x4lock.main(["status"]) == 2

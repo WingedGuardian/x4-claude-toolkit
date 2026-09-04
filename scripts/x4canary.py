@@ -106,6 +106,17 @@ def check(repo: Path, verbose: bool = False) -> tuple[list[str], list[str], int]
     rc, _out = _git(repo, "rev-parse", "--git-dir")
     if rc != 0:
         return (["%s: not a git repository (nothing is versioned there)" % repo], [], 1)
+    # AN UNBORN HEAD IS THE SAME CONDITION. `rev-parse --git-dir` succeeds the moment
+    # `git init` has run, so a repo with NO COMMITS passed every check below: every
+    # file shows as `??`, which is drift rather than loss, and the banner read
+    # "no tracked file lost" over a directory where nothing is tracked at all.
+    # MEASURED 2026-09-04. It is reachable in the scenario this tool exists for --
+    # the game-root repo was created in RESPONSE to these losses, and an
+    # `rm -rf .git && git init` recovery would turn the canary permanently green.
+    rc, _out = _git(repo, "rev-parse", "--verify", "HEAD")
+    if rc != 0:
+        return (["%s: git repository with NO COMMITS -- nothing is versioned there, "
+                 "so nothing can be compared" % repo], [], 1)
 
     rc, out = _git(repo, "status", "--porcelain")
     if rc != 0:
@@ -115,6 +126,15 @@ def check(repo: Path, verbose: bool = False) -> tuple[list[str], list[str], int]
         if len(line) < 4:
             continue
         code, rel = line[:2], line[3:].strip().strip('"')
+        # A RENAME/COPY carries TWO paths in one field: `R  old.yaml -> new.yaml`.
+        # Read whole, `p.exists()` is False and an ordinary `git mv` was reported as
+        # "DELETED (tracked, now missing)" -- firing the SessionStart banner "A TRACKED
+        # IRREPLACEABLE FILE HAS BEEN LOST". MEASURED 2026-09-04; the watched `dev`
+        # history contains 2 real renames. The docstring's own argument is that a check
+        # which cries wolf gets ignored, "which is how the last one failed".
+        # The DESTINATION is the file that now exists and is what must be checked.
+        if code and code[0] in ("R", "C") and " -> " in rel:
+            rel = rel.split(" -> ", 1)[1].strip().strip('"')
         p = repo / rel
         if "D" in code or not p.exists():
             losses.append("%s: DELETED (tracked, now missing)" % rel)

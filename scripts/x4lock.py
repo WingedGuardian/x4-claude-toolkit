@@ -126,12 +126,29 @@ def _cfg(name: str):
     return fn()
 
 
-def manifest() -> list[Path]:
-    """Every protected file that currently exists, deduplicated and sorted.
+class Unresolvable(RuntimeError):
+    """The manifest cannot be built, so no answer about it means anything."""
 
-    An absent path is simply not listed: this reports on the machine it runs on, and
-    an unconfigured root yields a smaller manifest, never a crash.
+
+def _candidates() -> list[Path]:
+    """Every path the manifest is DERIVED from, existing or not.
+
+    Separate from `manifest()` because an EXPECTED-BUT-ABSENT file is a finding, not
+    an empty slot. MEASURED 2026-09-04: deleting a locked file simply shrank the
+    manifest and `status` printed "2 protected file(s): 2 locked", exit 0 -- while
+    this module's own table names `rm -f` / `Remove-Item -Force` as the primitives
+    the read-only bit does NOT stop. Deletion is the documented residual risk and it
+    was rendering as a clean sweep.
     """
+    if _paths is None:
+        # A 1-of-26 manifest reported as healthy is worse than a crash: it is the
+        # narrowing-step-that-reports-success shape this whole tool exists to stop.
+        raise Unresolvable(
+            "x4validate._paths could not be imported, so the game root, the registry "
+            "and the configured toolkit's x4-paths.env are ALL unknown. The manifest "
+            "would hold only this checkout's own env file -- 1 of 26 on this machine "
+            "-- and reporting that as complete is the failure this tool exists to "
+            "prevent.")
     out: list[Path] = []
 
     game = _cfg("game_root")
@@ -158,15 +175,37 @@ def manifest() -> list[Path]:
         if extra.strip():
             out.append(Path(extra.strip()))
 
+    return out
+
+
+def _dedup(paths, want_file: bool) -> list[Path]:
     seen: dict[str, Path] = {}
-    for p in out:
+    for p in paths:
         try:
             key = str(p.resolve()).lower()
         except OSError:
             continue
-        if p.is_file() and key not in seen:
+        if p.is_file() is want_file and key not in seen:
             seen[key] = p
     return [seen[k] for k in sorted(seen)]
+
+
+def manifest() -> list[Path]:
+    """Every protected file that currently EXISTS, deduplicated and sorted.
+
+    Contract unchanged: only lockable files, so a caller can iterate and chmod. What
+    is absent is reported by `missing()` instead of vanishing.
+    """
+    return _dedup(_candidates(), want_file=True)
+
+
+def missing() -> list[Path]:
+    """Named protected paths that are NOT files -- deleted, renamed, or never there.
+
+    A directory is excluded by `_GAME_GLOBS` yielding only existing files, so every
+    entry here is a file the manifest expected and did not find.
+    """
+    return _dedup(_candidates(), want_file=False)
 
 
 # ----------------------------------------------------------------- the mechanism
@@ -202,6 +241,7 @@ def _apply(p: Path, locked: bool) -> tuple[bool, str]:
 
 def cmd_status(_args) -> int:
     items = manifest()
+    gone = missing()
     if not items:
         print("NOTHING PROTECTED: no roots are configured, so the manifest is empty.",
               file=sys.stderr)
@@ -216,7 +256,21 @@ def cmd_status(_args) -> int:
     print()
     print("%d protected file(s): %s" % (
         len(items), ", ".join("%s %s" % (v, k) for k, v in sorted(counts.items()))))
-    return 1 if counts.get("unlocked", 0) else 0
+    if gone:
+        # NAMED, never merely dropped. A protected file that is GONE is the outcome
+        # the read-only bit cannot prevent -- this module's own table lists `rm -f`
+        # and `Remove-Item -Force` as defeating it -- so rendering its absence as a
+        # smaller clean total is the one report this tool must never produce.
+        print()
+        print("*** %d PROTECTED FILE(S) MISSING -- expected, and not found:" % len(gone),
+              file=sys.stderr)
+        for gp in gone:
+            print("      %s" % gp, file=sys.stderr)
+        print("    A file that is gone cannot be locked, and its absence is not a "
+              "smaller manifest.", file=sys.stderr)
+        print("    Moved or renamed? update the roots or X4_PROTECTED. Otherwise, "
+              "restore it.", file=sys.stderr)
+    return 1 if (counts.get("unlocked", 0) or gone) else 0
 
 
 def _run(items: list[Path], locked: bool) -> int:
@@ -285,12 +339,17 @@ def main(argv=None) -> int:
     un.add_argument("path", nargs="?")
     un.add_argument("--all", action="store_true")
     args = ap.parse_args(argv)
-    if args.cmd == "lock":
-        return cmd_lock(args)
-    if args.cmd == "unlock":
-        return cmd_unlock(args)
-    if args.cmd == "status":
-        return cmd_status(args)
+    try:
+        if args.cmd == "lock":
+            return cmd_lock(args)
+        if args.cmd == "unlock":
+            return cmd_unlock(args)
+        if args.cmd == "status":
+            return cmd_status(args)
+    except Unresolvable as exc:
+        # "could not look" is never "nothing to protect".
+        print("REFUSING: %s" % exc, file=sys.stderr)
+        return 2
     ap.print_help()
     return 2
 
