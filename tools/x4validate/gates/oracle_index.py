@@ -30,6 +30,8 @@ and the trees must be split. If they agree, L9 is refuted and gets withdrawn.
 from collections import Counter, defaultdict
 from pathlib import Path
 
+import sys
+
 import _env
 from lxml import etree
 
@@ -138,6 +140,17 @@ def main():
     print("\nNote: this log lists only FAILURES, so 'false alarm' (we say missing, the "
           "engine is happy) is not observable from here — it needs a second source.")
 
+    # A FALSE OK is a name the validator called fine and the ENGINE rejected.
+    # oracle.py calls it "the one error class this project has no other detector
+    # for" and raises SystemExit(1) on it. This computed the same number, PRINTED
+    # it, and returned None -- and the entry point was a bare `main()`, so the gate
+    # exited 0 whatever it found. A gate that cannot fail is not being run.
+    if tot["false_ok"]:
+        print(f"\nFAIL: {tot['false_ok']} name(s) the validator called OK "
+              f"and the ENGINE did not.", file=sys.stderr)
+        return 1
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

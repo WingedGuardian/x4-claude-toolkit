@@ -16,7 +16,15 @@
 #   scripts/run-gates.sh --all      everything, including the ~55 min sweep
 #   scripts/run-gates.sh --list     show the roster and exit
 #
-# Exit: 0 all attempted gates passed · 1 a gate failed · 2 could not run any
+# Exit: 0 everything attempted PASSED and everything attempted RAN
+#       1 a gate failed
+#       2 nothing ran at all
+#       3 every gate that ran passed, but some COULD NOT RUN -- not a clean
+#         sweep. Split out because 0 said 'fine' over gates that examined
+#         nothing, which is the same conflation the tools themselves refuse:
+#         'could not look' is not 'nothing wrong'. A caller that genuinely
+#         accepts missing fixtures can treat 3 as success; the release
+#         checklist must not.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 
@@ -77,4 +85,11 @@ printf 'NOT ATTEMPTED %d  (buckets sum to %d of %d)\n' \
 
 [ ${#fail[@]} -gt 0 ] && exit 1
 [ ${#pass[@]} -eq 0 ] && { echo "NOTHING PASSED — this is not a green run." >&2; exit 2; }
+if [ ${#cannot[@]} -gt 0 ]; then
+  echo >&2
+  echo "NOT A CLEAN SWEEP: ${#pass[@]} passed, but ${#cannot[@]} gate(s) could not run" >&2
+  echo "and therefore examined nothing. Exit 3, not 0 -- 'could not look' is not" >&2
+  echo "'nothing wrong'. Supply the missing baseline/fixture, or accept 3 knowingly." >&2
+  exit 3
+fi
 exit 0
