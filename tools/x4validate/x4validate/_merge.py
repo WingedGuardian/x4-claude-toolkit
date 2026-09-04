@@ -242,6 +242,18 @@ def _truthy(val: str | None) -> bool:
 _OPS = {"add", "replace", "remove"}
 
 
+def _scalar_kind(value) -> str:
+    """A name a mod author recognises. lxml hands back `_ElementUnicodeResult` for a
+    string result, which names an implementation detail rather than the mistake."""
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, float):
+        return "a number"
+    if isinstance(value, str):
+        return "a string"
+    return type(value).__name__
+
+
 def apply_diff(tree: etree._Element, diff_root: etree._Element,
                recorder: Recorder | None = None, source: str = "") -> list[AppliedOp]:
     """Apply every op in *diff_root* to *tree* in document order. Mutates tree.
@@ -295,6 +307,25 @@ def apply_diff(tree: etree._Element, diff_root: etree._Element,
             targets = tree.xpath(sel)
         except etree.XPathEvalError as exc:
             applied.append(AppliedOp(op.tag, sel, line, False, f"invalid sel=: {exc}", silent))
+            continue
+
+        # `xpath()` returns a LIST for a node selector but a float / bool / string for
+        # an expression -- `count(//ware)`, `true()`, `string(//ware/@id)`. Falling
+        # through to `len(targets)` produced two failures from one cause, and the
+        # quieter one is the worse of the two:
+        #   count(...)  -> TypeError, a raw traceback at rc 1 -- the SAME rc as "your
+        #                  mod has errors" -- and `--json` emitting 0 bytes
+        #   string(...) -> "sel matched 18 nodes", where 18 is the LENGTH OF THE
+        #                  STRING. No crash, a confident wrong number.
+        # A falsey scalar (`count(//nope)` is 0.0, `false()` is False) also has to be
+        # caught HERE: the `if not targets` branch below would otherwise report a
+        # malformed selector as an empty match, which is a different finding.
+        if not isinstance(targets, list):
+            applied.append(AppliedOp(
+                op.tag, sel, line, False,
+                f"sel= is not a node-set: it evaluates to "
+                f"{_scalar_kind(targets)} ({targets!r}). An X4 patch selector must "
+                f"select nodes, not compute a value", silent))
             continue
 
         if not targets:
