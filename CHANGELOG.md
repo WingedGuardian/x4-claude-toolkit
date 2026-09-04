@@ -10,6 +10,35 @@ you run is checked; the second and third change what the toolkit can see.
 ⚠ **`protect-bash.sh` now requires Python** (see below). Without it the guard **asks**
 rather than silently allowing.
 
+### Fixed — a failed or wrong save could destroy the mod registry
+
+`save_registry` opened the destination `"w"` and dumped into it. Two ways to lose the
+file, both MEASURED in anger on this machine:
+
+- **A dump that raised left it EMPTY.** `"w"` truncates at open, so an encode error
+  mid-write emptied the registry while the traceback read like nothing had happened
+  (213 -> 7 bytes, 0 of 2 human decisions surviving).
+- **A dump that SUCCEEDED could still be a loss.** A caller that loaded a registry
+  which was not there — or was already truncated — and saved the fresh one over the
+  real one replaced **258 triaged entries with 46 bytes**. Every layer worked exactly
+  as designed; atomicity does not help, because nothing failed.
+
+`save_registry` now serialises to memory first (so a raising dump never reaches the
+file), **refuses to write fewer entries than the destination already holds**, and
+replaces via a sibling temp plus `os.replace`. The registry is append-only in practice
+— `merge_installed` marks `installed: false` and never removes — and three recovered
+copies bear that out (243 -> 258 -> 266, a strict superset each time). A caller that
+means to shrink it passes `allow_shrink=True`.
+
+The shrink guard has two independent clauses: an entry count (exact on our own output,
+and 4,000x cheaper than parsing — 0.1 ms vs 464 ms on a 202 KB registry, which matters
+because `refresh` saves once per mod) and a size floor, which cannot be fooled by a
+file someone reformatted by hand.
+
+Line endings and encoding on disk are unchanged, so this does not rewrite your file in
+git. Verified by replaying both incidents against a copy of a real 266-entry registry:
+both refused, the bytes untouched, and a routine round trip unaffected.
+
 ### ⚠ Changed — an exported `X4_*` variable now WINS over `x4-paths.env`
 
 **This changes the outcome for anyone who exports one.** Previously the file won in the

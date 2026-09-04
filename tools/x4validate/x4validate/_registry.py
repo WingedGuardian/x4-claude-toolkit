@@ -14,6 +14,7 @@ a separate dashboard section rather than counted as active.
 
 from __future__ import annotations
 
+import io
 import os
 import sys
 from pathlib import Path
@@ -427,13 +428,104 @@ def load_registry(path: Path | None = None) -> CommentedMap:
     return _new_registry()
 
 
-def save_registry(reg: CommentedMap, path: Path | None = None) -> None:
+class RegistryShrink(RuntimeError):
+    """A save would have removed entries that only exist in the registry.
+
+    Not a corruption check -- the write is perfectly well-formed. It is a check
+    that the CONTENT is not a loss, which is the failure atomicity cannot catch:
+    on 2026-09-03 a successful dump of a *fresh* registry replaced 258 triaged
+    entries with 46 bytes, and every layer below (open, dump, close) worked
+    exactly as designed.
+    """
+
+
+#: Marker for one entry in the dumped form. Counting bytes rather than parsing is
+#: deliberate: MEASURED on the live 202,847-byte registry -- parse 464 ms vs count
+#: 0.1 ms -- and `refresh` saves once per mod, so parsing would add minutes to a
+#: routine run. Exact on our own output (266 == 266 against the parser) and
+#: CRLF-safe, because the newline of a CRLF pair still precedes the marker.
+_ENTRY_MARKER = b"\n- id: "
+
+#: Below this the "did it shrink by size" backstop is meaningless -- a small
+#: registry legitimately halves. The failure it exists for was 46 vs 196,363.
+_SIZE_FLOOR = 4096
+
+
+def _entry_count(data: bytes) -> int:
+    return data.count(_ENTRY_MARKER) + (1 if data.startswith(b"- id: ") else 0)
+
+
+def save_registry(reg: CommentedMap, path: Path | None = None,
+                  allow_shrink: bool = False) -> None:
+    """Write the registry so that neither a crash nor a wrong caller can lose it.
+
+    Three properties, each earned by a real incident:
+
+    1. SERIALISE FIRST. `open(path, "w")` truncates at open, so a dump that
+       raised used to leave the file EMPTY while the traceback read like nothing
+       had happened (MEASURED 2026-09-03: 213 -> 7 bytes). Nothing touches the
+       destination until the whole document exists as text.
+    2. REFUSE TO SHRINK. The registry is append-only in practice --
+       `merge_installed` marks `installed: false`, it never removes, and the
+       filtered lists in `_modlist` are report-only. Three recovered copies bear
+       that out: 243 -> 258 -> 266, a strict superset each time. So FEWER entries
+       than are on disk means a caller loaded a registry that was not the user's
+       (or was already damaged) and is about to overwrite the real one. A caller
+       that means it passes `allow_shrink=True`.
+    3. REPLACE ATOMICALLY. A sibling temp plus `os.replace`, so an interrupted
+       write leaves the previous version in place rather than a half-file.
+
+    Raises `RegistryShrink` for (2); nothing catches it, deliberately -- the point
+    is to stop, not to warn into a log nobody reads.
+    """
     path = _registry_file(path or require(
         DEFAULT_REGISTRY, "the registry location",
         "set X4_MODS (or X4_REGISTRY), or pass --registry"))
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        _yaml.dump(reg, f)
+
+    buf = io.StringIO()
+    _yaml.dump(reg, buf)                      # may raise; no file has been opened
+    text = buf.getvalue()
+
+    if not allow_shrink and path.is_file():
+        old = path.read_bytes()
+        new = text.encode("utf-8")
+        old_n, new_n = _entry_count(old), _entry_count(new)
+        # Two INDEPENDENT clauses. The count is exact on our own output but is a
+        # heuristic on a file a human reformatted; size cannot be fooled that way
+        # and catches the catastrophic case regardless of layout.
+        lost = old_n - new_n
+        shrank = len(old) > _SIZE_FLOOR and len(new) * 2 < len(old)
+        if lost > 0 or shrank:
+            raise RegistryShrink(
+                f"REFUSING to write {path}: it holds {old_n} entries "
+                f"({len(old)} bytes) and this save has {new_n} "
+                f"({len(new)} bytes). The registry is append-only, so this is a "
+                f"LOSS, not an update -- most likely the caller loaded a "
+                f"different (or empty) registry than the one it is saving over. "
+                f"Recover with: git -C <mods root> checkout -- "
+                f"_registry/modlist.yaml . If the shrink is intended, pass "
+                f"allow_shrink=True.")
+
+    # `newline` is left at the default so the on-disk line endings are exactly
+    # what the previous implementation produced; changing them would rewrite the
+    # user's whole file in git for no reason (gotcha #57).
+    tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            # silent-ok: best-effort cleanup of OUR OWN temp file while an
+            # exception is already in flight. The real failure is re-raised on
+            # the next line, so nothing is hidden; a stray .tmp<pid> beside the
+            # registry is inert, and masking the original error to report it
+            # would lose the diagnosis the caller actually needs.
+            pass
+        raise
 
 
 def merge(reg: CommentedMap, content_ids: list[tuple[str, bool]],
