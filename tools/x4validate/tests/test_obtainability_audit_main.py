@@ -117,3 +117,34 @@ def test_a_baseline_predating_a_key_is_NOT_COMPARABLE_rather_than_unchanged(
     assert mod.main() == 1
     out = capsys.readouterr().out
     assert "predates this key" in out, out
+
+
+def test_it_REFUSES_to_record_a_ZERO_COVERAGE_baseline(monkeypatch, tmp_path, capsys):
+    """A floor on the BASELINE, not only on the comparison against it.
+
+    The 2026-09-02 fix made a coverage collapse visible RELATIVE to a baseline. But
+    the baseline is written by the same `audit()` with no independent check, so a
+    collapse present at RECORD time was invisible forever after: record zeros, and
+    every later run reports "unchanged since the baseline", rc 0, for good.
+
+    MEASURED 2026-09-04 with `audit()` stubbed to zeros -- exactly this stub --
+    "recorded baseline, base_macro_files_scanned 0" rc 0, then "unchanged" rc 0.
+    A denominator taken from the artifact it audits, one step upstream of where the
+    earlier fix was applied. Both siblings in gates/ already refuse an empty
+    measurement (`control_bytes`: "REFUSING: nothing was scanned"; `lockstep` via
+    `_env.skip`); this one did not.
+    """
+    mod = _load(monkeypatch, tmp_path, record=True)
+    monkeypatch.setattr(mod, "audit", lambda: dict(NOW, base_macro_files_scanned=0))
+    assert mod.main() == 2, "a zero-coverage baseline must be REFUSED, not recorded"
+    assert not mod.BASELINE.exists(), "nothing may be written when the audit is empty"
+    err = capsys.readouterr().err
+    assert "REFUSING" in err and "0 base macro file" in err, err
+
+
+def test_a_REAL_audit_still_records(monkeypatch, tmp_path):
+    """The control. Without it, a fix that refused ALL recording would look
+    identical to one that refused only the empty case."""
+    mod = _load(monkeypatch, tmp_path, record=True)
+    assert mod.main() == 0
+    assert mod.BASELINE.is_file()

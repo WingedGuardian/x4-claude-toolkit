@@ -106,7 +106,25 @@ def audit() -> dict:
 
 def main() -> int:
     now = audit()
+    # NB `RECORD` stays module-level on purpose: `test_obtainability_audit_main.py`
+    # monkeypatches it, and reading sys.argv here instead would leave that test
+    # controlling nothing while still passing. The import-time read is a real but
+    # MINOR hazard (an importer must also CALL main() to write anything), recorded
+    # rather than "fixed" in a way that guts an existing test's only lever.
     if RECORD:
+        # A FLOOR ON THE BASELINE ITSELF. The 2026-09-02 fix made a coverage collapse
+        # visible RELATIVE to a baseline -- but the baseline is written by the same
+        # audit() with no independent check, so a collapse present at RECORD time was
+        # invisible forever after. MEASURED 2026-09-04 with audit() stubbed to zeros:
+        # "recorded baseline, base_macro_files_scanned 0" rc 0, and the next run then
+        # reported "unchanged since the baseline" rc 0. A denominator taken from the
+        # artifact it audits, one step upstream of where it was fixed. Both siblings
+        # in this directory already refuse an empty measurement.
+        if not now.get("base_macro_files_scanned"):
+            print("REFUSING to record a baseline over 0 base macro file(s). "
+                  "A zero-coverage baseline makes every later run report "
+                  "'unchanged' forever.", file=sys.stderr)
+            return 2
         BASELINE.write_text(json.dumps(now, indent=2, sort_keys=True), encoding="utf-8")
         print(f"recorded baseline -> {BASELINE.name}")
         for k, v in now.items():

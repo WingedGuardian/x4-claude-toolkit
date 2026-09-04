@@ -89,14 +89,26 @@ def main(argv: list[str]) -> int:
     # this gate entirely, and a stamper that reports success over a file it never
     # looked at is the defect this whole script exists to prevent.
     for d in roots():
-        shipped = sorted(d.glob("*/ui/*.lua"))
-        if shipped:
-            bare = [q.name for q in shipped
-                    if not _LINE.search(q.read_text(encoding="utf-8"))]
-            if bare:
-                print("NOT COVERED (no `local BUILD` line, so no staleness check): "
-                      + ", ".join(bare))
-            break
+        # WIDER THAN THE COVERAGE, deliberately. This announcement used the IDENTICAL
+        # glob as `mod_lua_files()`, so the only files it could name were files already
+        # covered -- a denominator taken from the artifact it audits, which is the exact
+        # shape this block's own comment says the script exists to prevent. MEASURED
+        # 2026-09-04: `ui/lib/nested.lua` WITH a BUILD line was neither stamped nor
+        # announced, and the run exited 0 saying nothing.
+        every = sorted(q for q in d.glob("*/**/*.lua") if q.is_file())
+        if not every:
+            continue
+        covered = {q.resolve() for q in d.glob("*/ui/*.lua")}
+        outside = [str(q.relative_to(d)) for q in every if q.resolve() not in covered]
+        bare = [str(q.relative_to(d)) for q in every
+                if q.resolve() in covered and not _LINE.search(q.read_text(encoding="utf-8"))]
+        if bare:
+            print("NOT COVERED (no `local BUILD` line, so no staleness check): "
+                  + ", ".join(bare))
+        if outside:
+            print("NOT COVERED (outside the stamped set `*/ui/*.lua`, so no staleness "
+                  "check whatever it contains): " + ", ".join(outside))
+        break
 
     p = mod_lua()
     if p is None:
