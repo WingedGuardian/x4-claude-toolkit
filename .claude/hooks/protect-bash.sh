@@ -236,6 +236,19 @@ fi
 # === CONFIRM — rm targeting the game, profile, reference, mods, or toolkit ===
 on rm_in_x4_dir && ask "Deleting files in an X4 directory — confirm: $COMMAND"
 
+# === CONFIRM — destructive git inside an X4 directory ===
+# git IGNORES the read-only attribute. MEASURED 2026-09-04: `git checkout HEAD~1 -- f`
+# overwrote a LOCKED file and left it unlocked afterwards, and `git clean -fdx` deleted
+# one. So scripts/x4lock.py -- which stops 11 of 14 write primitives -- stops none of
+# these, and this is the only layer that sees them.
+#
+# ASK, not deny: discarding local changes is an ordinary thing to do, and the whole
+# point of the hook policy is that `ask` is for what is genuinely the user's decision.
+# Scoped to the segment's own cwd, so `git clean -fdx` in an unknown directory reaches
+# no rule rather than firing on unrelated work.
+on git_wipes_x4_dir && ask "git clean/reset --hard in an X4 directory DELETES untracked files too, which have no history and no other copy -- and git ignores the read-only protection x4lock applies. Confirm: $COMMAND"
+on git_discards_x4_files && advise "This discards working-tree changes to files in an X4 directory, and git IGNORES the read-only protection x4lock applies (measured: git checkout over a locked file overwrote it AND left it unlocked). The named paths are tracked, so the content is recoverable -- but re-lock afterwards with: python scripts/x4lock.py lock"
+
 # === CONFIRM - deleting a SAVE GAME ===
 # Named separately from the rule above so the prompt says what is at risk. There is
 # no undo and no backup: on the reference machine that is 25 files and 1.7 GB.

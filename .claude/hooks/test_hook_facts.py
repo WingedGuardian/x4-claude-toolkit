@@ -2107,5 +2107,98 @@ class DoubledSeparatorIsOneSeparator(unittest.TestCase):
         self.assertFalse(F('cp m.xml "C:/somewhere/else//file.xml"')
                          ["writes_reference"])
 
+
+class TestDestructiveGitInAnX4Directory(unittest.TestCase):
+    r"""git IGNORES the read-only attribute, so x4lock cannot cover these.
+
+    MEASURED 2026-09-04 on a real repository: `git checkout HEAD~1 -- <locked file>`
+    overwrote the file AND left it unlocked afterwards, and `git clean -fdx` deleted a
+    locked untracked file. The lock stops 11 of 14 write primitives; it stops none of
+    these, which makes the hook the only layer that can see them.
+
+    The must-NOT-fire half is the larger half on purpose. `git checkout <branch>`,
+    `-b`, `reset --soft` and `clean --dry-run` are ordinary work, and a guard that
+    fires on ordinary work gets switched off -- which protects nothing at all.
+    """
+
+    MODS = ROOTS["mods"]
+
+    def _fires(self, cmd):
+        f = F(cmd)
+        return f["git_wipes_x4_dir"] or f["git_discards_x4_files"]
+
+    # --- must FIRE ---------------------------------------------------------------
+    def test_clean_force_in_a_mod_root(self):
+        self.assertTrue(self._fires('cd "' + self.MODS + '" && git clean -fdx'))
+
+    def test_clean_long_force(self):
+        self.assertTrue(self._fires('cd "' + self.MODS + '" && git clean --force'))
+
+    def test_reset_hard(self):
+        self.assertTrue(self._fires('cd "' + self.MODS + '" && git reset --hard'))
+
+    def test_checkout_pathspec_discards_file_contents(self):
+        self.assertTrue(self._fires('cd "' + self.MODS + '" && git checkout -- .'))
+
+    def test_restore_is_always_about_files(self):
+        self.assertTrue(self._fires('cd "' + self.MODS + '" && git restore a.yaml'))
+
+    def test_dash_C_names_the_directory_without_a_cd(self):
+        self.assertTrue(self._fires('git -C "' + self.MODS + '" clean -fdx'))
+
+    def test_inside_the_game_installation(self):
+        self.assertTrue(self._fires('cd "' + GAME + '" && git reset --hard'))
+
+
+    # --- the split is the point: which side does each shape land on? -------------
+    def test_unbounded_forms_ASK_because_they_reach_untracked_files(self):
+        """clean/reset --hard name no paths, so they also delete files with no
+        history and no other copy. That is the user's decision, per the hook policy."""
+        for c in ("git clean -fdx", "git reset --hard"):
+            with self.subTest(cmd=c):
+                f = F('cd "' + self.MODS + '" && ' + c)
+                self.assertTrue(f["git_wipes_x4_dir"], c + " should ASK")
+                self.assertFalse(f["git_discards_x4_files"])
+
+    def test_targeted_forms_only_ADVISE_because_the_content_is_recoverable(self):
+        """Every path `checkout --`/`restore` can name is tracked, so the content is
+        in the object store. Interrupting the USER for that spends their attention on
+        my command hygiene -- MEASURED: all 4 corpus rows this rule touches are
+        exactly this shape (restoring a source file after a mutation run)."""
+        for c in ("git checkout -- .", "git restore a.yaml"):
+            with self.subTest(cmd=c):
+                f = F('cd "' + self.MODS + '" && ' + c)
+                self.assertTrue(f["git_discards_x4_files"], c + " should ADVISE")
+                self.assertFalse(f["git_wipes_x4_dir"], c + " must not reach the ask")
+
+    # --- must NOT fire: ordinary git ---------------------------------------------
+    def test_a_dry_run_removes_nothing(self):
+        self.assertFalse(self._fires('cd "' + self.MODS + '" && git clean -nd'))
+        self.assertFalse(self._fires('cd "' + self.MODS + '" && git clean --dry-run -d'))
+
+    def test_checking_out_a_BRANCH_is_navigation(self):
+        self.assertFalse(self._fires('cd "' + self.MODS + '" && git checkout main'))
+        self.assertFalse(self._fires('cd "' + self.MODS + '" && git checkout -b feature'))
+
+    def test_reset_without_hard_leaves_the_working_tree(self):
+        self.assertFalse(self._fires('cd "' + self.MODS + '" && git reset'))
+        self.assertFalse(self._fires('cd "' + self.MODS + '" && git reset --soft HEAD~1'))
+
+    def test_read_only_git_is_untouched(self):
+        for c in ("git status", "git log --oneline", "git diff HEAD", "git add a.py"):
+            with self.subTest(cmd=c):
+                self.assertFalse(self._fires('cd "' + self.MODS + '" && ' + c))
+
+    # --- must NOT fire: destructive, but not in an X4 directory -------------------
+    def test_an_unknowable_cwd_reaches_no_rule(self):
+        """`join_cwd` returns "" when the directory is unknown. Inventing a root there
+        would fire on every unrelated repository on the machine."""
+        self.assertFalse(self._fires("git clean -fdx"))
+        self.assertFalse(self._fires("git checkout -- ."))
+
+    def test_somewhere_else_entirely(self):
+        self.assertFalse(self._fires('cd "C:/Users/x/some-other-project" && git clean -fdx'))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

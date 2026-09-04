@@ -1344,6 +1344,87 @@ def git_adds_everything(seg):
     return any(_stages_everything(t) for t in toks[at + 1:])
 
 
+#: Subcommands that OVERWRITE OR DELETE the working tree. Deliberately not every
+#: destructive git command -- only the ones that discard uncommitted work in files
+#: that already exist, which is the shape that loses data nobody else has.
+_GIT_DESTRUCTIVE = {"clean", "reset", "checkout", "restore"}
+
+
+def git_wipes_worktree_targets(seg):
+    """UNBOUNDED destructive git: `clean -f` and `reset --hard`.
+
+    Split from the targeted form deliberately. These name no paths, so they reach
+    every file in the repository INCLUDING untracked ones -- which have no history and
+    no other copy. That is the shape that loses something irreplaceable, and it is the
+    one CLAUDE.md's hook policy calls genuinely the user's decision ('deleting inside
+    an X4 directory').
+    """
+    return _git_destructive(seg, {"clean", "reset"})
+
+
+def git_discards_named_files(seg):
+    """TARGETED destructive git: `checkout -- <path>`, `restore <path>`.
+
+    Also overwrites files past the read-only lock, but every path it can name is by
+    definition TRACKED, so the content is recoverable from the object store. Reporting
+    it to the model is useful; interrupting the USER for it is not -- restoring a
+    source file after a mutation run is command hygiene, not a decision that belongs
+    to them. MEASURED over 13,503 real commands: 4 rows, every one exactly that.
+    """
+    return _git_destructive(seg, {"checkout", "restore"})
+
+
+def _git_destructive(seg, wanted):
+    r"""The directory a destructive git subcommand would act on, or [].
+
+    MEASURED 2026-09-04, and it is why this exists at all: **git ignores the
+    read-only attribute entirely.** `git checkout HEAD~1 -- <locked file>` overwrote
+    a locked file AND left it unlocked afterwards; `git clean -fdx` deleted one. So
+    `scripts/x4lock.py` -- which stops 11 of 14 write primitives -- stops none of
+    these, and the hook is the only layer that can see them.
+
+    Scoped to the segment's own cwd (or `git -C <path>`), never to a root named
+    anywhere in the command line: `cd "<root>" && git clean -fdx` is the real shape,
+    and `join_cwd` already returns "" when the directory is unknowable, so an
+    ordinary `git clean` in an unknown cwd reaches no rule rather than firing on
+    unrelated work.
+
+    NOT destructive, and each of these has a must-NOT-fire test:
+      * `git checkout <branch>` / `-b <new>` -- navigation. Only the explicit `--`
+        pathspec form discards file contents.
+      * `git reset` / `--soft` / `--mixed` -- these move refs and the index; the
+        working tree survives. Only `--hard` overwrites files.
+      * `git clean -n` / `--dry-run` -- prints what it would remove.
+    """
+    if verb(seg) != "git":
+        return []
+    toks = [t for t, _q in tokens(seg)]
+    base = ""
+    skip = set()
+    for i, t in enumerate(toks):
+        if t == "-C" and i + 1 < len(toks):
+            base = toks[i + 1]
+            skip.add(i + 1)
+    sub = next((t for i, t in enumerate(toks[1:], 1)
+                if not t.startswith("-") and i not in skip), None)
+    if sub not in wanted:
+        return []
+    rest = toks[toks.index(sub) + 1:]
+    if sub == "clean":
+        # -f is required by git itself before it deletes anything; -n/--dry-run wins.
+        if any(t in ("-n", "--dry-run") for t in rest):
+            return []
+        hot = any(t.startswith("-") and not t.startswith("--") and "f" in t[1:]
+                  for t in rest) or "--force" in rest
+    elif sub == "reset":
+        hot = "--hard" in rest
+    elif sub == "checkout":
+        hot = "--" in rest          # the pathspec form; a branch name is navigation
+    else:                            # restore -- always about file contents
+        hot = True
+    return [base] if hot else []
+
+
 def sed_in_place_targets(seg):
     """Paths an in-place `sed` would rewrite. `-i` may carry a suffix (`-i.bak`).
 
@@ -1891,6 +1972,7 @@ def facts(payload: dict, roots: dict) -> dict:
 
     rm_t, copy_t, redir_t, mv_src = [], [], [], []
     sed_t, out_t, search_files = [], [], []
+    gitwipe_t, gitdiscard_t = [], []
     search_seg, git_all = False, False
     for s, c_cwd in seg_cwd:
         rm_t += prep(rm_paths(s), c_cwd)
@@ -1899,6 +1981,8 @@ def facts(payload: dict, roots: dict) -> dict:
         sed_t += prep(sed_in_place_targets(s), c_cwd)
         out_t += prep(output_targets(s), c_cwd)
         search_files += prep(search_paths(s, require_recursive=False), c_cwd)
+        gitwipe_t += prep(git_wipes_worktree_targets(s), c_cwd)
+        gitdiscard_t += prep(git_discards_named_files(s), c_cwd)
         search_seg = search_seg or searches(s)
         git_all = git_all or git_adds_everything(s)
         for mode, tgt in redirects(s):
@@ -2046,6 +2130,18 @@ def facts(payload: dict, roots: dict) -> dict:
         "rm_in_x4_dir": any(hit(rm_t + mv_src, k, conservative=True) for k in
                             ("game", "profile", "mods", "toolkit")) or rm_named_game,
         "rm_saves": hit(rm_t + mv_src, "saves", conservative=True),
+
+        # git IGNORES the read-only attribute (MEASURED 2026-09-04: `git checkout`
+        # overwrote a locked file and left it unlocked; `git clean -fdx` deleted one),
+        # so x4lock cannot cover this and the hook is the only layer that sees it.
+        # `conservative` for the same reason the delete rules use it: there is nothing
+        # behind this one either.
+        "git_wipes_x4_dir": any(
+            hit(gitwipe_t, k, conservative=True)
+            for k in ("game", "profile", "mods", "toolkit", "reference")),
+        "git_discards_x4_files": any(
+            hit(gitdiscard_t, k, conservative=True)
+            for k in ("game", "profile", "mods", "toolkit", "reference")),
 
         "writes_documents": hit(writes_any, "documents"),
         "copy_into_game_or_profile": bool(copy_t) and (
