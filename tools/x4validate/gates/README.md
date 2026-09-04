@@ -17,6 +17,20 @@ Run them from `tools/x4validate/`.
 to the population: a bare *all green* from a runner that quietly skipped nine gates is the
 defect this toolkit exists to refuse.
 
+Its exit code says which of those two happened:
+
+| code | meaning |
+|---|---|
+| `0` | everything attempted passed, **and everything attempted ran** |
+| `1` | a gate failed |
+| `2` | nothing ran at all |
+| `3` | every gate that ran passed, but some **could not run** — not a clean sweep |
+
+`3` is split out rather than folded into `0`. A missing oracle fixture is a real and
+acceptable state for a contributor, but it must not read as a clean sweep to a release
+checklist: *could not look* is not *nothing wrong*, which is the same conflation the
+tools refuse one level down.
+
 Until 2026-08-28 there were 27 gates and no runner, and CI cannot help — the gates need a
 real X4 install. So they ran when someone remembered, which makes every gate's coverage a
 matter of chance. **A gate nobody runs is indistinguishable from a gate that passes.**

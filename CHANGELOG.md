@@ -72,6 +72,117 @@ prevents.
 `save_registry` now turns the resulting `PermissionError` into a message naming the
 guard and the command that lifts it, instead of a bare `WinError 5`.
 
+### Added — `x4lock` and `x4canary`: the irreplaceable files are protected and watched
+
+Two small tools, both born from data actually being lost here rather than from a risk
+assessment. `scripts/x4lock.py` marks a configured set read-only (the game-root
+`CLAUDE.md` and `KNOWLEDGEBASE.md`, `.claude/settings.json`, the hooks, skills and
+agents, every `x4-paths.env`, the mod registry). `scripts/x4canary.py` refuses when a
+tracked irreplaceable file has been emptied, deleted or lost half its bytes, and runs
+from a SessionStart hook so it happens without anyone remembering.
+
+MEASURED over 14 write primitives, each paired with a control proving the same
+primitive DOES change the file when unlocked: 11 are blocked, including every one of
+the four real incidents. The three that are not — `bash rm -f` and PowerShell's two
+`-Force` forms — are documented rather than glossed, and covered a layer up.
+
+**There is deliberately no ACL.** A first version also applied
+`icacls /deny <user>:(W,D,WDAC,WO)`, which does close the `-Force` gap. It was withdrawn
+after it locked this machine out of two of its own files: icacls `W` is
+`FILE_GENERIC_WRITE`, which includes `SYNCHRONIZE`, so a "write deny" denies READING —
+and because the deny includes `WDAC` it removes the permission needed to remove itself,
+which on a file owned by `BUILTIN\Administrators` cannot be undone without elevation.
+
+### Fixed — the guard: a glob operand walked past every root HARD BLOCK
+
+`rm -rf "<game>"*` was ALLOW where the identical literal path is DENY, and so were
+`[X]4 Foundations`, `X4?Foundations` and `X4 Foundation{s,}` — six bypasses of eleven
+probes, every one of which really does delete the installation. The root rules compared
+operands with `==` and `under()`, which see a literal path; a sibling PATTERN that
+expands to include the root is neither.
+
+`scripts/fuzz-guard.py` could not have found it. Its own docstring says it mutates "the
+SYNTAX AROUND the dangerous operation… the dangerous operand is byte-identical in every
+mutant" — so the operand is the single axis 996 mutants hold fixed by construction.
+
+Per-item over 13,503 real commands: 8,631 contain a glob character, **0 changed
+verdict**, 0 of a 500-command control.
+
+### Fixed — the guard: two rules that refused real work
+
+An escaped `\$?` does not expand, so `git commit -m "fix \$? after a pipe"` is prose —
+it was a non-overridable DENY on a commit message describing the trap the rule enforces.
+And the wrong-scope search refusal listed the mod source tree among its roots while its
+message cites 300 s and "GBs of binary database pages"; MEASURED over that tree, 230 ms
+and 1,190 files. The toolkit, game and reference roots keep theirs.
+
+4 of 6,526 affected commands changed, all `deny -> allow`, each read individually.
+
+### Fixed — `git` ignores the read-only lock, so the hook now sees it
+
+MEASURED: `git checkout HEAD~1 -- <locked file>` overwrote the file AND left it
+unlocked; `git clean -fdx` deleted a locked one. Two predicates, split by consequence:
+`clean -f` and `reset --hard` name no paths and so reach UNTRACKED files with no other
+copy → **ask**; `checkout -- <path>` and `restore <path>` can only name tracked content →
+**advise**. The split took user-facing prompts from 4 to **0** across the corpus while
+keeping the bypass closed.
+
+### Fixed — the mod probe ignored ALL player input for 12 seconds on every game load
+
+`engine_probe.lua` passed `blockinput=true` with a `+12 s` delay to
+`Helper.addDelayedOneTimeCallbackOnUpdate`, which calls `C.SetAllUIInputIgnored(true)`
+until the callback fires. MEASURED against vanilla: all 17 base-game callers that pass
+`true` use `+0.1 s`, covering a transition. Ours was 120x the longest, in an addon whose
+`content.xml` states twice that it changes no game state.
+
+### Fixed — a mixed-case additive vpath made every DLC layer REPLACE instead of union
+
+`Index/macros.xml` and `index/macros.xml` took different merge paths, though to the
+engine they are one file. Every DLC ships an `<index>` root there, so with the union test
+failing each DLC full-overrode the previous one: **4,733 entries became 17**, and a mod
+patching the index saw a tree missing 99.7% of the game's content. The `t/` language-file
+test had the same flaw, which is a hard failure on Linux rather than a quiet one.
+
+### Fixed — a `sel=` that computes a value crashed, or reported a wrong node count
+
+`sel="count(//ware)"` raised `TypeError: object of type 'float' has no len()` — a raw
+traceback at rc 1, the same code as "your mod has errors", with `--json` emitting 0
+bytes. Worse and quieter: `sel="string(//ware/@id)"` reported **"sel matched 18 nodes"**,
+where 18 is the length of the string.
+
+### Fixed — the freshness content axis stood 27 GB on one file's mtime
+
+`hash_content` folded in `(mtime, size)` of `libraries/wares.xml` alone as the whole
+reference tree's contribution — 510,711 files and 27 GB. Now a top-level survey plus the
+recorded `.reference-buildid`, measured at 0.001 s against 17.6 s for a full stat walk.
+
+⚠ Known gap, named rather than closed: `_compat.compute_load_order` decides every
+collision winner and is not in the engine axis, because `_compat.py` also carries the
+`x4compat` CLI and F69 measured that a CLI-text or docstring edit in an engine source
+invalidates the store for a rebuild that cannot change one row. The remedy is to lift
+that function into a CLI-free module.
+
+### Fixed — tests and gates that reported success over nothing
+
+Three tests bailed with a bare `return`, which pytest counts as a PASS and `X4_MAX_SKIPS`
+is structurally blind to — two of them the load-order invariants the whole
+collision-winner report rests on, running green in the CI step named "Run the suite with
+NO game installed". They now run against a staged reference; a repo-wide AST ban stops
+the shape returning. `oracle_index.py` computed a FALSE OK, printed it, and returned
+None under a bare `main()`, so the gate could not fail. `run-gates.sh` exited 0 whenever
+one gate passed, however many could not run — now exit 3, because *could not look* is
+not *nothing wrong*.
+
+### Fixed — the PowerShell installer had one direction trigger where bash has two
+
+`install.ps1` refused an auto-detected destination only under `-Yes`; a non-interactive
+run without it auto-detected and wrote. MEASURED: `[Environment]::UserInteractive` is
+**True** with stdin from a file, a pipe, and a tool-driven launch, so a guard keyed on it
+would never fire — `[Console]::IsInputRedirected` is the real analogue of `[ -t 0 ]`.
+The CI installer smoke step also asserted the destination has no `.venv`, which cannot
+pass: `install.sh` runs `setup.sh`, which runs `uv sync` there. It now plants a sentinel
+in the source venv, so the question becomes whether the SOURCE's venv travelled.
+
 ### ⚠ Changed — an exported `X4_*` variable now WINS over `x4-paths.env`
 
 **This changes the outcome for anyone who exports one.** Previously the file won in the
