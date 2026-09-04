@@ -39,6 +39,39 @@ Line endings and encoding on disk are unchanged, so this does not rewrite your f
 git. Verified by replaying both incidents against a copy of a real 266-entry registry:
 both refused, the bytes untouched, and a routine round trip unaffected.
 
+### Added — `x4lock`: the irreplaceable files can be made unwritable
+
+`scripts/x4lock.py` marks a small, configured set of files read-only: the game-root
+`CLAUDE.md` and `KNOWLEDGEBASE.md`, `.claude/settings.json`, the hooks, skills and
+agents, every `x4-paths.env`, and the mod registry. `status` / `lock` /
+`unlock <path>` / `unlock --all`.
+
+This exists because a command-string hook cannot see a write that happens INSIDE
+another process, and that is where the damage has come from. The read-only bit is the
+only layer that can.
+
+MEASURED over 14 write primitives, each paired with a control proving the same
+primitive does change the file when unlocked: **11 are blocked**. Python's `open("w")`,
+`write_text`, `write_bytes`, `os.truncate`, `os.replace`, `shutil.copy2` and
+`os.remove`; bash `>`, `cp` and `tee`; PowerShell `Set-Content`. Three are not, and
+they are documented rather than glossed: `bash rm -f` (POSIX `unlink` is authorised by
+the DIRECTORY, not the file) and PowerShell `Copy-Item -Force` / `Remove-Item -Force`
+(`-Force` clears the attribute). Those are deletes and force-overwrites, covered a
+layer up by the Bash guard.
+
+**There is deliberately no ACL.** A first version also applied
+`icacls /deny <user>:(W,D,WDAC,WO)`, which does close the `-Force` gap. It was
+withdrawn after it locked this machine out of two of its own files: icacls `W` is
+`FILE_GENERIC_WRITE`, which includes `SYNCHRONIZE`, so a "write deny" denies READING
+too — and because the deny includes `WDAC` it removes the permission needed to remove
+itself, which on a file owned by `BUILTIN\Administrators` (ordinary under Program
+Files) cannot be undone without elevation. A protection whose failure mode is "you can
+no longer read your own file, and cannot fix it" is worse than the accident it
+prevents.
+
+`save_registry` now turns the resulting `PermissionError` into a message naming the
+guard and the command that lifts it, instead of a bare `WinError 5`.
+
 ### ⚠ Changed — an exported `X4_*` variable now WINS over `x4-paths.env`
 
 **This changes the outcome for anyone who exports one.** Previously the file won in the

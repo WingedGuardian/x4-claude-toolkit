@@ -514,7 +514,20 @@ def save_registry(reg: CommentedMap, path: Path | None = None,
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(text)
-        os.replace(tmp, path)
+        try:
+            os.replace(tmp, path)
+        except PermissionError as exc:
+            # `scripts/x4lock.py` marks the registry read-only, so an ACCIDENTAL write
+            # from inside any process fails here. That is the design -- but a bare
+            # WinError 5 traceback would look like a bug in this tool rather than a
+            # guard doing its job, so name the guard and the one command that lifts it.
+            raise PermissionError(
+                f"{path} is READ-ONLY, so it was not written. This is the protection "
+                f"in scripts/x4lock.py, not a failure: the registry holds triage that "
+                f"exists nowhere else. To write it deliberately:\n"
+                f"       python scripts/x4lock.py unlock {path}\n"
+                f"       <your command>\n"
+                f"       python scripts/x4lock.py lock") from exc
     except BaseException:
         try:
             tmp.unlink()
