@@ -47,6 +47,10 @@ _WIN_PREFIX = re.compile(r"^/{1,2}[?]/(unc/)?|^//[.]/(unc/)?")
 #: `?` is not legal in a Windows path component, so it has no such reading.
 
 
+#: Two or more separators in a row. See norm() for why the leading pair survives.
+_SLASHES = re.compile(r"/{2,}")
+
+
 def norm(p: str) -> str:
     """Lowercase, backslashes to slashes, drive dialect unified, dot segments resolved.
 
@@ -72,6 +76,25 @@ def norm(p: str) -> str:
     # passes for a reason unrelated to the fix is worse than no control.
     s = _WIN_PREFIX.sub(lambda m: "//" if m.group(1) else "", s)
     s = _DRIVE.sub(lambda m: m.group(1) + "/" + m.group(2) + "/", s)
+    # COLLAPSE RUNS OF `/`, keeping a leading `//`.
+    #
+    # Both POSIX and Windows treat an interior `//` as one separator, so
+    # `<root>//reference/x` and `<root>/reference/x` are the same file -- but the
+    # first compared equal to nothing and walked straight past the reference/ HARD
+    # BLOCK. MEASURED 2026-09-03, E2E, in both channels: the write was ALLOW here
+    # and in protect-files.sh, while the single-slash spelling denied.
+    #
+    # normpath below would have collapsed it -- but it only runs when a DOT
+    # segment is present, so the `//` case never reached the one function that
+    # would have fixed it. A doubled separator is the ordinary concatenation
+    # artefact (`"$DIR/" + "/reference/..."`), not something anyone types.
+    #
+    # The leading `//` is preserved: on Windows that is a UNC share, a real and
+    # DIFFERENT location, and collapsing it would retarget a path rather than
+    # normalise it. The extended-length rewrite above emits `//` for that reason.
+    if "://" not in s:
+        head, rest = (s[:2], s[2:]) if s.startswith("//") else ("", s)
+        s = head + _SLASHES.sub("/", rest)
     # Only canonicalise something that is actually a path. normpath would happily
     # rewrite "https://a/b" to "https:/a/b".
     if "://" not in s and ("/./" in s or "/../" in s or s.endswith(("/.", "/.."))):

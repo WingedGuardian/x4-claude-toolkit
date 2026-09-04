@@ -101,7 +101,15 @@ fi
 # by every guard, and F93 is the entry about a shared helper quietly re-scoping the rules
 # above it -- so this may cost less, and must not decide differently.
 x4_norm() {
-  # Lowercase, backslash -> slash, drive dialect unified, THEN dot segments resolved.
+  # Lowercase, backslash -> slash, drive dialect unified, repeated separators
+  # collapsed, THEN dot segments resolved.
+  #
+  # The separator pass is the twin of the dot pass below and was added for the same
+  # reason: `<root>//reference/x` names the same file as `<root>/reference/x` on
+  # both POSIX and Windows, but compared equal to nothing and walked past the
+  # reference/ HARD BLOCK. MEASURED 2026-09-03 in BOTH channels. A LEADING `//`
+  # survives -- that is a UNC share, a different location -- which is what the
+  # `(.)` guard in the rule is for.
   #
   # The dot-segment pass is not cosmetic. x4_canon only feeds POSIX-absolute paths to
   # realpath, so a WINDOWS-dialect path kept its `..` and compared unequal to the root:
@@ -127,6 +135,9 @@ x4_norm() {
 s#^//[?.]/unc/#//#
 s#^//[?.]/##
 s#(^|[^a-z0-9])([a-z]):/#\1/\2/#g
+:slash
+s#(.)//+#\1/#g
+tslash
 :dot
 s#/[.]/#/#g
 tdot

@@ -2067,5 +2067,45 @@ class BlankSingleQuoted(unittest.TestCase):
         s = "echo " + Q + "hello world" + Q + " | cat"
         self.assertEqual(len(H.blank_single_quoted(s)), len(s))
 
+class DoubledSeparatorIsOneSeparator(unittest.TestCase):
+    """`<root>//reference/x` names the same file as `<root>/reference/x`.
+
+    POSIX and Windows both collapse an interior run of separators, so the doubled form
+    is the ordinary string-concatenation artefact -- `"$DIR/" + "/reference/..."` --
+    not something anyone types. It compared equal to nothing and walked past the
+    reference/ HARD BLOCK. MEASURED 2026-09-03, E2E, in BOTH channels: the write was
+    ALLOW while the single-slash spelling denied.
+
+    norm() already called posixpath.normpath, which would have collapsed it -- but
+    only when a DOT segment was present, so the `//` case never reached the one
+    function that would have fixed it.
+    """
+
+    def test_an_interior_run_collapses(self):
+        self.assertEqual(H.norm("C:/a//b///c"), "/c/a/b/c")
+
+    def test_a_doubled_separator_is_still_under_the_root(self):
+        self.assertTrue(H.under(REF[:REF.rindex("/")] + "//reference/x", REF))
+
+    def test_a_write_through_a_doubled_separator_still_fires(self):
+        parent = REF[:REF.rindex("/")]
+        self.assertTrue(F('cp m.xml "' + parent + '//reference/libraries/w.xml"')
+                        ["writes_reference"])
+
+    def test_a_delete_through_a_doubled_separator_still_fires(self):
+        parent = REF[:REF.rindex("/")]
+        self.assertTrue(F('rm -rf "' + parent + '//reference"')
+                        ["rm_targets_reference"])
+
+    # ---- and the twin: a LEADING // is a UNC share, a DIFFERENT location ---------
+    def test_a_leading_double_slash_is_PRESERVED(self):
+        """Collapsing it would retarget a path rather than normalise it. The
+        extended-length prefix rewrite emits `//` deliberately for the same reason."""
+        self.assertEqual(H.norm("//server/share/x"), "//server/share/x")
+
+    def test_an_unrelated_path_is_unaffected(self):
+        self.assertFalse(F('cp m.xml "C:/somewhere/else//file.xml"')
+                         ["writes_reference"])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
