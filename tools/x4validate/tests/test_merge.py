@@ -431,6 +431,27 @@ def _ware_mod(tmp_path, name, sel, value, attr="transport"):
     return d
 
 
+def _staged_reference(tmp_path):
+    """A tiny base tree, so the load-order invariants RUN on a machine with no game.
+
+    They used to bail with a bare `return` when `res.tree` was None -- which pytest
+    counts as a PASS, and `X4_MAX_SKIPS` (added expressly to catch tests going silently
+    dormant) is structurally blind to, because nothing was skipped. Both ran green in
+    the CI step named "Run the suite with NO game installed" while asserting nothing.
+
+    Three wares is enough: the invariants are about ORDER, not about content.
+    """
+    ref = tmp_path / "_ref"
+    (ref / "libraries").mkdir(parents=True, exist_ok=True)
+    (ref / "libraries" / "wares.xml").write_text(
+        '<wares>'
+        '<ware id="ore" transport="solid" volume="10"/>'
+        '<ware id="silicon" transport="solid" volume="20"/>'
+        '<ware id="ice" transport="solid" volume="30"/>'
+        '</wares>', encoding="utf-8")
+    return _merge.Config(reference=ref, include_packed_dlc=False)
+
+
 def test_merge_depends_on_load_order_and_nothing_else(tmp_path):
     """Non-overlapping overlays must give the SAME result in any order.
 
@@ -442,12 +463,12 @@ def test_merge_depends_on_load_order_and_nothing_else(tmp_path):
     mods = [_ware_mod(tmp_path, "ord_a", "ore", "liquid"),
             _ware_mod(tmp_path, "ord_b", "silicon", "liquid"),
             _ware_mod(tmp_path, "ord_c", "ice", "liquid")]
+    cfg = _staged_reference(tmp_path)
     seen = set()
     for perm in itertools.permutations(mods):
-        res = _merge.build_effective("libraries/wares.xml", _merge.Config(),
+        res = _merge.build_effective("libraries/wares.xml", cfg,
                                      extra_overlays=list(perm))
-        if res.tree is None:
-            return  # no reference tree available in this environment
+        assert res.tree is not None, "the staged reference did not build"
         seen.add(tuple(sorted(
             (w.get("id"), w.get("transport")) for w in res.tree.iter("ware")
             if w.get("id") in ("ore", "silicon", "ice"))))
@@ -459,11 +480,11 @@ def test_overlapping_overlays_last_one_wins(tmp_path):
     load-order model rests on this being true and predictable."""
     x = _ware_mod(tmp_path, "ord_x", "ore", "111", attr="volume")
     y = _ware_mod(tmp_path, "ord_y", "ore", "222", attr="volume")
+    cfg = _staged_reference(tmp_path)
     for overlays, expected in (([x, y], "222"), ([y, x], "111")):
-        res = _merge.build_effective("libraries/wares.xml", _merge.Config(),
+        res = _merge.build_effective("libraries/wares.xml", cfg,
                                      extra_overlays=overlays)
-        if res.tree is None:
-            return
+        assert res.tree is not None, "the staged reference did not build"
         got = [w.get("volume") for w in res.tree.iter("ware") if w.get("id") == "ore"]
         assert got == [expected], f"expected last overlay to win, got {got}"
 

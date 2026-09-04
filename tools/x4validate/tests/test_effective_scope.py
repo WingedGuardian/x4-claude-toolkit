@@ -10,6 +10,7 @@ the store (galaxy map ~1,371, characters/npc ~1,810), while balance classes are
 99.0% covered.
 """
 
+import pytest
 import sqlite3
 
 from x4validate import _effective, _effectivecli
@@ -80,8 +81,11 @@ def test_scope_note_and_the_register_agree_on_exclusions():
     """
     from pathlib import Path as P
     reg = P(__file__).resolve().parent.parent / "docs" / "BLIND-SPOTS.md"
-    if not reg.is_file():          # the register ships with the toolkit; skip if absent
-        return
+    if not reg.is_file():
+        # SKIP, not `return`: a bare return is counted as a PASS, so this would report
+        # green on a checkout without the register while asserting nothing -- and
+        # X4_MAX_SKIPS, which exists to catch tests going dormant, cannot see it.
+        pytest.skip("docs/BLIND-SPOTS.md is not present in this checkout")
     text = reg.read_text(encoding="utf-8").lower()
     note = _effectivecli.scope_note().lower()
     for term in ("galaxy", "character", "lua"):

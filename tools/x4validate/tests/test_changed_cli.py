@@ -292,7 +292,9 @@ def test_snapshots_dir_without_an_argument_does_NOT_use_the_test_directory(tmp_p
     try:
         default = _changed.snapshots_dir()
     except SystemExit:
-        return  # unconfigured machine: it refused rather than guessing, which is correct
+        # The refusal IS the correct behaviour here, but a bare `return` reports it as
+        # a passing assertion. Skipping says what actually happened, and gets counted.
+        pytest.skip("no registry configured: snapshots_dir() refused, which is correct")
     assert default != tmp_path / "snapshots"
 
 

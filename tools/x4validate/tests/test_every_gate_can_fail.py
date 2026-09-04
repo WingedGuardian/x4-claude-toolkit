@@ -145,8 +145,22 @@ def test_both_mutation_harnesses_disable_bytecode_caching():
         if not path.is_file():
             pytest.skip(f"{label} is not present -- NOT CHECKED")
         text = path.read_text(encoding="utf-8", errors="replace")
-        assert "PYTHONDONTWRITEBYTECODE" in text, (
-            f"{label} runs mutants without disabling bytecode caching; a same-length "
+        # STRUCTURAL, not a substring. Both files also NAME the variable in a comment
+        # explaining why it is there, so `"PYTHONDONTWRITEBYTECODE" in text` was
+        # satisfied by the prose -- deleting the mechanism left the comment and this
+        # assertion still passed. Prose satisfies substrings; it does not satisfy an
+        # AST node.
+        tree = ast.parse(text)
+        kwargs = {k.arg for n in ast.walk(tree) if isinstance(n, ast.Call)
+                  for k in n.keywords if k.arg}
+        assert "PYTHONDONTWRITEBYTECODE" in kwargs, (
+            f"{label} does not PASS PYTHONDONTWRITEBYTECODE to a child process (the "
+            "name may appear in a comment, which is not the mechanism); a same-length "
             "mutant will be judged by the previous mutant's bytecode")
-        assert "__pycache__" in text, (
-            f"{label} does not purge __pycache__ between mutants")
+        purges = [n for n in ast.walk(tree)
+                  if isinstance(n, ast.Call)
+                  and isinstance(n.func, ast.Attribute) and n.func.attr == "rglob"
+                  and n.args and isinstance(n.args[0], ast.Constant)
+                  and n.args[0].value == "__pycache__"]
+        assert purges, (
+            f"{label} does not walk for __pycache__ to purge it between mutants")
