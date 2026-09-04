@@ -521,7 +521,7 @@ def save_registry(reg: CommentedMap, path: Path | None = None,
             # from inside any process fails here. That is the design -- but a bare
             # WinError 5 traceback would look like a bug in this tool rather than a
             # guard doing its job, so name the guard and the one command that lifts it.
-            raise PermissionError(
+            raise _paths.Locked(
                 f"{path} is READ-ONLY, so it was not written. This is the protection "
                 f"in scripts/x4lock.py, not a failure: the registry holds triage that "
                 f"exists nowhere else. To write it deliberately:\n"

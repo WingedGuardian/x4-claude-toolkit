@@ -215,6 +215,16 @@ class Unconfigured(RuntimeError):
     """
 
 
+class Locked(PermissionError):
+    """A protected file was not written because `scripts/x4lock.py` locked it.
+
+    A sibling of `Unconfigured`: both mean *"this did not happen, on purpose"*, and
+    both must reach the user as a decision rather than a traceback. It subclasses
+    `PermissionError` so a caller that already handles one still works, and so the
+    underlying OS error is not disguised as something else.
+    """
+
+
 def refuses_unconfigured(fn):
     """Wrap a CLI `main` so `Unconfigured` becomes **rc=2**, not a traceback.
 
@@ -241,6 +251,14 @@ def refuses_unconfigured(fn):
         try:
             return fn(argv)
         except Unconfigured as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        except Locked as exc:
+            # Same reasoning as TreeMutating below: a guard that fires is a DECISION,
+            # so it gets rc 2 ("cannot run") and a plain message. Left unhandled it
+            # produced a raw traceback and rc 1 -- indistinguishable from "your data
+            # has findings" -- which is the defect this wrapper already exists to
+            # prevent, arriving a third time. Found by running it, not by reading it.
             print(f"error: {exc}", file=sys.stderr)
             return 2
         except _mutation.TreeMutating as exc:
