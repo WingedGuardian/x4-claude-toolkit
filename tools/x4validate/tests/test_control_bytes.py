@@ -40,7 +40,10 @@ def test_labels_are_two_char_escapes():
     for code, label in cb.ESCAPES.items():
         assert len(label) == 2, f"0x{code:02x} -> {label!r} is not a two-character escape"
         assert label[0] == BS, f"0x{code:02x} -> {label!r} does not start with a backslash"
-        assert label[1].isalpha(), f"0x{code:02x} -> {label!r} has no escape letter"
+        # isalnum, not isalpha: the escape for NUL is a DIGIT. The original
+        # assertion held only while every entry happened to be alphabetic -- it
+        # pinned an accident of the table contents, not the shape it describes.
+        assert label[1].isalnum(), f"0x{code:02x} -> {label!r} has no escape character"
 
 
 def test_scan_bytes_finds_every_escape_and_ignores_tab_lf_cr():
@@ -159,3 +162,34 @@ def test_a_directory_argument_is_expanded(tmp_path):
     rep = cb.scan_paths([d])
     assert rep["scanned"] == 2, rep
     assert len(rep["hits"]) == 1, rep
+
+
+# --- a NUL in a TEXT file is the finding, not a reason to look away -----------
+
+def test_a_text_file_with_a_NUL_is_still_scanned(tmp_path):
+    """MEASURED 2026-09-04. `looks_binary` excluded ANY file holding a NUL and printed
+    "binary (correctly not scanned)". But a collapsed NUL escape IS a member of the
+    class this gate hunts -- the workspace's own t-file path, written through an
+    inline interpreter string, collapses to reference<NUL>001-l044.xml. So an affected
+    .md removed ITSELF from the denominator, and a tracked markdown file carrying a
+    live 0x08 beside it was reported as a clean sweep, exit 0.
+    """
+    good = tmp_path / "clean.md"
+    good.write_bytes(b"ordinary text" + bytes([10]))
+    bad = tmp_path / "hit.md"
+    bad.write_bytes(b"a" + NUL + b"b" + bytes([8]) + b"c" + bytes([10]))
+    out = cb.scan_paths([good, bad])
+    assert out["scanned"] == 2, out
+    assert not out["binary"], "a .md must never be excluded as binary: %s" % out["binary"]
+    assert sorted({h["byte"] for h in out["hits"]}) == [0x00, 0x08]
+
+
+def test_a_REAL_binary_is_still_excluded(tmp_path):
+    """The control. Without it, a fix that stopped excluding ANYTHING would look
+    identical to one that stopped excluding TEXT files."""
+    blob = tmp_path / "thing.bin"
+    blob.write_bytes(b"MZ" + NUL + bytes([8]) + NUL * 4)
+    out = cb.scan_paths([blob])
+    assert out["scanned"] == 0
+    assert len(out["binary"]) == 1
+    assert not out["hits"]

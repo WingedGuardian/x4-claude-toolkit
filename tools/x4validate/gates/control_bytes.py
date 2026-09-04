@@ -34,7 +34,13 @@ ROOT = _PKG.parent.parent
 # "\a"-style literals and the tool boundary collapsed them to the very control
 # characters this gate hunts, and the tests passed because their expectations had
 # collapsed the same way. test_labels_are_two_char_escapes pins the shape.
-ESCAPES = {c: chr(92) + ch for c, ch in ((0x07, "a"), (0x08, "b"), (0x0B, "v"), (0x0C, "f"), (0x1B, "e"))}
+#: 0x00 IS a member of this class: `"reference\\0001-l044.xml"` written through an
+#: inline interpreter string collapses to reference<NUL>001-l044.xml, and that is the
+#: workspace's own t-file path shape. It was the one escape the sweep could not
+#: report, because a NUL also made the file "binary" and removed it from the
+#: denominator -- with the word "correctly" attached.
+ESCAPES = {c: chr(92) + ch for c, ch in ((0x00, "0"), (0x07, "a"), (0x08, "b"),
+                                        (0x0B, "v"), (0x0C, "f"), (0x1B, "e"))}
 #: Used ONLY to pick files out of a DIRECTORY argument (the memory dir, the game
 #: root's docs). Tracked files are no longer filtered by extension at all -- see
 #: `looks_binary`. An extension allowlist is a narrowing step that reports success,
@@ -88,10 +94,17 @@ def scan_paths(paths) -> dict:
             # name tells you whether it mattered.
             unreadable.append(str(p))
             continue
-        if looks_binary(data):
+        if looks_binary(data) and p.suffix.lower() not in TEXT:
             # A separate bucket from `unreadable`: a binary is CORRECTLY not scanned,
             # so it must not trip the hole-in-the-denominator refusal below. Still
             # named, because "skipped" with no name is how a hole hides.
+            #
+            # ...but ONLY when the suffix agrees. MEASURED 2026-09-04: content-sniffing
+            # alone meant a `.md` that ACQUIRED a NUL -- via the very collapsed-escape
+            # defect this gate hunts -- excluded ITSELF from the denominator, and the
+            # sweep printed "binary (correctly not scanned)" over it. A tracked .md
+            # carrying a live 0x08 alongside a 0x00 was reported as a clean sweep,
+            # exit 0. A NUL in a TEXT file is the finding, not a reason to look away.
             binary.append(str(p))
             continue
         scanned += 1
