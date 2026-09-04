@@ -502,6 +502,19 @@ def _do_add(targets, op, recorder: Recorder | None = None,
 # (base + every DLC coexist). Asset files (assets/...) keep full-override semantics.
 _ADDITIVE_DIRS = ("libraries/", "index/", "t/")
 
+
+def _is_text_vpath(vpath: str) -> bool:
+    """A language file, in any spelling.
+
+    Case-INSENSITIVE because X4 vpaths are: the corpus genuinely mixes case and
+    Windows resolves either spelling to the same file, so `T/0001.xml` and
+    `t/0001.xml` are one file to the engine. A case-sensitive test made the two take
+    different merge paths -- and on Linux (CI) the filesystem does not forgive it
+    either, so the same mod that merely merged oddly here would fail outright there.
+    """
+    low = vpath.lower()
+    return low.startswith("t/") and low.endswith(".xml")
+
 #: Dirs where the engine keys its script registry on FILENAME, so a complete
 #: (non-diff) file at an already-supplied vpath is INERT rather than an override.
 #:
@@ -576,7 +589,8 @@ def apply_overlay(
             return None, "diff(no-base!)"  # diff with no base — cannot apply
         apply_diff(tree, oroot, recorder=recorder, source=source)
         return tree, "diff"
-    if tree is not None and oroot.tag == tree.tag and vpath.startswith(_ADDITIVE_DIRS):
+    if (tree is not None and oroot.tag == tree.tag
+            and vpath.lower().startswith(_ADDITIVE_DIRS)):
         _union_children(tree, oroot, recorder=recorder, source=source)
         return tree, "union"
     if tree is not None and vpath.lower().startswith(_SCRIPT_REGISTRY_DIRS):
@@ -711,7 +725,7 @@ def build_effective(
     # mod also ships (which fills `tree` first) was then reported as an inert
     # bare-path patch. 33 of the 101 installed mods ship a t/ diff — the single
     # largest false-positive class this distinction exists to avoid.
-    is_text_file = vpath.startswith("t/") and vpath.endswith(".xml")
+    is_text_file = _is_text_vpath(vpath)
     from_game = base_found or is_text_file
     if base_found:
         tree = parse_file(base_path)
