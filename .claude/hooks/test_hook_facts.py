@@ -221,6 +221,14 @@ class TestReservedWordsDoNotHideTheCommand(unittest.TestCase):
             "elif":           "if false; then :; elif true; then " + rm + "; fi",
             "case arm":       "case x in x) " + rm + " ;; *) :;; esac",
             "case arm glob":  "case $v in *) " + rm + " ;; esac",
+            # The WORD contains the substring "in". `rest.index("in")` cut inside it,
+            # so verb() returned `ary`/`all` and every verb-keyed rule missed at once
+            # -- a TOTAL bypass of all three hard blocks (MEASURED E2E 2026-09-04).
+            # 0 of the 388 tests used such a word, which is why 996 fuzz mutants and
+            # 82 mutation probes were all green over it.
+            "case word has in": "case $string in *) " + rm + " ;; esac",
+            "case word is install": "case install in *) " + rm + " ;; esac",
+            "case word IS in":  "case in in *) " + rm + " ;; esac",
             "negation":       "! " + rm,
             "function posix": "f() { " + rm + "; }; f",
             "function kw":    "function f { " + rm + "; }; f",

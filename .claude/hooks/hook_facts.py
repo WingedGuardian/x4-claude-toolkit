@@ -392,6 +392,10 @@ RESERVED = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until",
 #: the whole thing was eaten as a "label", and the delete went silent. The BASELINE
 #: caught that command. A fix for one bypass that opens another is worse than the bug,
 #: and only the corpus diff -- 20 commands with a paren-suffixed verb -- surfaced it.
+#: The `in` of `case WORD in`. A TOKEN, not the substring: see the block in
+#: strip_compound_prefix() for the bypass this shape caused.
+_CASE_IN = re.compile(r"\s+in(?:\s|$)")
+
 _CASE_ARM = re.compile(r"^[^\s()&;]+\)\s")
 
 #: A function DEFINITION header is not a reserved word, so it survived the first
@@ -416,12 +420,18 @@ def _strip_reserved(s: str) -> str:
             # stops on it and the label rule below never gets to run. Consume through the
             # `in`, and the label rule then removes `LABEL)`.
             rest = head[1] if len(head) > 1 else ""
-            toks = rest.split()
-            if "in" in toks:
-                cut = rest.index("in") + 2
-                s = rest[cut:].lstrip()
-                continue
-            s = rest.lstrip()
+            # TOKEN boundary, never a SUBSTRING. `rest.index("in")` cut inside the
+            # WORD for `case $string in`, `case $line in`, `case install in` --
+            # leaving `ary in *) rm -rf <game>` behind, so verb() returned `ary` and
+            # EVERY verb-keyed rule missed at once. MEASURED 2026-09-04 E2E against
+            # both hook copies: a TOTAL bypass of all three HARD BLOCKS, and the NAME
+            # backstop died with it because rm_t was empty. 41 of 15,619 historical
+            # commands use `case ... in`; 0 carry an "in"-bearing word, so closing it
+            # can only tighten. The `in` keyword always FOLLOWS the word, so it always
+            # has whitespace before it -- which keeps `case in in *)` correct too,
+            # where an `(?:^|\s)` form would consume the word instead.
+            m = _CASE_IN.search(rest)
+            s = (rest[m.end():] if m else rest).lstrip()
             continue
         if head and head[0] == "function":
             # `function NAME {` -- the NAME is not reserved, so drop it with the keyword
