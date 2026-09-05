@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 
+import pytest
 from lxml import etree
 
 from x4validate import _merge, _resolve
@@ -807,3 +808,32 @@ def test_is_configured_reference_accepts_a_DIFFERENT_SPELLING_of_one_tree(tmp_pa
 
     monkeypatch.setattr(_merge, "REFERENCE", None)
     assert not _merge.is_configured_reference(ref),         "an UNCONFIGURED toolkit supplements nothing -- absence is not a match"
+
+
+def test_overlay_root_with_NO_channel_RAISES_on_an_unreadable_archive(tmp_path, monkeypatch):
+    """The first cut of the unreadable-archive handler returned None whether or not
+    the caller passed a `skipped` list. FIVE callers pass none (`_compat` x2,
+    `_diff` x2, `_stats`), and for them a corrupt archive went from a loud crash to
+    a silent "absent": x4stats printed "candidate introduces no wares" rc 0, and
+    `_diff.read_merged` built a baseline from the good layers while its `unreadable`
+    list stayed EMPTY. A fix for the narrowing-step shape that introduced the same
+    shape one door over. MEASURED by the 2026-09-05 delta review, pre-fix vs fixed.
+
+    No channel -> the exception propagates, exactly as before the handler existed.
+    """
+    odir = tmp_path / "somemod"
+    odir.mkdir()
+    for exc in (OSError("truncated .dat member"), ValueError("bad catalog line")):
+        monkeypatch.setattr(_merge._cat, "read_path",
+                            lambda d, v, _e=exc: (_ for _ in ()).throw(_e))
+        with pytest.raises(type(exc)):
+            _merge.overlay_root(odir, "libraries/wares.xml")          # NO skipped list
+
+
+def test_overlay_root_with_NO_channel_still_returns_None_for_a_merely_ABSENT_file(tmp_path, monkeypatch):
+    """The twin: re-raising must be scoped to the failure, not to the absence of a
+    channel. A vpath the mod does not ship is None for every caller, as always."""
+    odir = tmp_path / "somemod"
+    odir.mkdir()
+    monkeypatch.setattr(_merge._cat, "read_path", lambda d, v: None)
+    assert _merge.overlay_root(odir, "libraries/wares.xml") is None

@@ -624,8 +624,10 @@ def cmd_tracked(args) -> int:
     # The parts must SUM TO THE DENOMINATOR, and they did not: `others` was
     # `total - kept`, but `kept` counts UNIQUE IDS while `total` counts ROWS, so
     # every duplicate row of THIS domain was reported as belonging to another
-    # game. MEASURED on the suite's own fixture: 5 rows, 3 of them x4foundations
-    # (one a duplicate), rendered as "3 belong to other games" when 2 do.
+    # game. MEASURED on the suite's pre-existing fixture in
+    # test_fetch_tracked_filters_to_the_domain_AND_reports_the_denominator: 5 rows,
+    # 3 of them x4foundations (one a duplicate of another), 1 skyrim, 1 starfield.
+    # total 5 - kept 2 = 3, rendered as "3 belong to other games" when 2 do.
     mine = t.domains.get(args.domain, 0)
     others = sum(n for d, n in t.domains.items() if d != args.domain)
     print(f"tracked on Nexus: {t.kept} for {args.domain}, from {t.total} row(s) "

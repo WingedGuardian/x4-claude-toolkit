@@ -180,7 +180,19 @@ def main(argv=None) -> int:
     all_drift: list[str] = []
     unreadable = 0
     for repo in rs:
-        losses, drift, bad = check(repo, args.verbose)
+        try:
+            losses, drift, bad = check(repo, args.verbose)
+        except Exception as exc:  # noqa: BLE001 -- silent-ok: converted to rc 2 below, never swallowed
+            # The SessionStart hook renders rc 1 as "A TRACKED IRREPLACEABLE FILE HAS
+            # BEEN LOST -- recover it before doing anything else". An uncaught
+            # exception ALSO exits 1, so a canary that itself broke was reported as
+            # the worst possible verdict about the user's files. "Could not look" is
+            # rc 2 here, the same contract every gate in this repo uses. MEASURED by
+            # the 2026-09-05 delta review with a stub that raised PermissionError.
+            print("REFUSING A VERDICT: the canary itself failed on %s: %s: %s"
+                  % (repo.name, type(exc).__name__, exc), file=sys.stderr)
+            unreadable += 1
+            continue
         unreadable += bad
         all_losses += ["%s :: %s" % (repo.name, m) for m in losses] if not bad else losses
         all_drift += ["%s :: %s" % (repo.name, m) for m in drift]

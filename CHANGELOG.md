@@ -293,7 +293,9 @@ another process, and that is where the damage has come from. The read-only bit i
 only layer that can.
 
 MEASURED over 14 write primitives, each paired with a control proving the same
-primitive does change the file when unlocked: **11 are blocked**. Python's `open("w")`,
+primitive does change the file when unlocked: **11 are blocked on Windows** (9 on
+Linux/macOS: `os.remove` and `os.replace` are delete and rename-over, which POSIX
+authorises by the directory's permission -- MEASURED on CI). Python's `open("w")`,
 `write_text`, `write_bytes`, `os.truncate`, `os.replace`, `shutil.copy2` and
 `os.remove`; bash `>`, `cp` and `tee`; PowerShell `Set-Content`. Three are not, and
 they are documented rather than glossed: `bash rm -f` (POSIX `unlink` is authorised by

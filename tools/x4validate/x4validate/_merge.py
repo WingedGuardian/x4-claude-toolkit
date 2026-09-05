@@ -277,8 +277,21 @@ def overlay_root(odir: Path, vpath: str,
         # two readers of one source, not a new claim about what can be raised.
         # `parse_file` can raise OSError too: `loose.is_file()` is a separate
         # syscall from the read, and a mod folder can move between them.
-        if skipped is not None:
-            skipped.append(f"{odir.name}/{vpath}: unreadable, overlay skipped ({exc})")
+        #
+        # NO CHANNEL, NO SWALLOW. The first cut of this handler returned None
+        # whether or not a `skipped` list was passed, and FIVE callers pass none
+        # (`_compat` x2, `_diff` x2, `_stats`). For them a corrupt archive went
+        # from a loud crash to a silent "absent": x4stats printed "candidate
+        # introduces no wares" with rc 0, and `_diff.read_merged` built its
+        # baseline from the good layers while its own `unreadable` list stayed
+        # EMPTY. That is the narrowing-step-that-reports-success shape, introduced
+        # by a fix for the same shape. MEASURED by the 2026-09-05 delta review on
+        # a mod with a truncated .dat, pre-fix vs fixed. So: a caller that gave us
+        # somewhere to record the failure gets it recorded; a caller that did not
+        # gets the exception, exactly as before this handler existed.
+        if skipped is None:
+            raise
+        skipped.append(f"{odir.name}/{vpath}: unreadable, overlay skipped ({exc})")
         return None
     return None
 

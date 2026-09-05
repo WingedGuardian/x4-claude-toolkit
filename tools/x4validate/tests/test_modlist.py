@@ -549,7 +549,8 @@ def test_tracked_render_does_not_call_a_DUPLICATE_row_another_game(monkeypatch, 
     assert "3 row(s) for x4foundations" in head, head
     assert "2 for other games" in head, (
         "a duplicate row of THIS domain must not be counted as another game's: " + head)
-    assert "3 belong to other games" not in head, "the old arithmetic is back"
+    # (an earlier draft also asserted the OLD phrase was absent; the phrase no longer
+    #  exists anywhere, so that assertion could not fail and was decoration -- removed.)
 
 
 def test_tracked_render_ANNOUNCES_rows_that_name_no_game(monkeypatch, capsys):

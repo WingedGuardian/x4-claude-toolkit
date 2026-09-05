@@ -1,7 +1,9 @@
 """ORACLE v4 — every mod the engine rejected ops from, packed included.
 
 Uses the tool's OWN iterator (_check.iter_diff_files) so it exercises the same code
-path x4validate does. Denominator is the full 453 cardinality failures in the log.
+path x4validate does. Denominator is every cardinality-failure line in the log whose
+mod is INSTALLED here; lines for mods that are not are counted and named separately
+(`absent_lines`), never absorbed into the ratio.
 """
 from collections import Counter, defaultdict
 
@@ -144,4 +146,11 @@ if tot["unseen"]:
           f"never examined.\n  Not a disagreement -- an ABSENCE. An op that stops "
           f"being enumerated leaves `agree` quietly, so agreement is only a "
           f"denominator you can trust while this is zero.", file=sys.stderr)
+    # NAME THEM. The comment above says "read the named ops"; the first cut of this
+    # branch printed only the count, so the reader had to patch the gate to learn
+    # which mods it failed on. A refusal that cannot say what it refused is half a
+    # refusal. (Delta review, 2026-09-05.)
+    for r in rows:
+        if len(r) == 7 and r[5]:
+            print(f"    {r[0]}: {r[5]} unseen op(s)  [{r[6]}]", file=sys.stderr)
     raise SystemExit(1)

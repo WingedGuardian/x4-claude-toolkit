@@ -19,16 +19,24 @@ proving the same primitive DOES change the file when it is unlocked):
 
     primitive                                     read-only attribute
     python open("w") / write_text / write_bytes   blocked
-    python os.truncate / os.replace               blocked
-    python shutil.copy2 / os.remove               blocked
+    python os.truncate / os.replace               blocked   (os.replace: WINDOWS ONLY)
+    python shutil.copy2 / os.remove               blocked   (os.remove:  WINDOWS ONLY)
     bash > / cp / tee                             blocked
     pwsh Set-Content                              blocked
     bash rm -f                                    NOT blocked
     pwsh Copy-Item -Force / Remove-Item -Force    NOT blocked
 
-11 of 14. The three that get through are DELETES and force-overwrites: POSIX `unlink`
-is authorised by write permission on the DIRECTORY, not the file, and `-Force` clears
-the attribute before writing. Those are covered a layer up -- the Bash guard asks
+11 of 14 ON WINDOWS. The three that get through are DELETES and force-overwrites:
+POSIX `unlink` is authorised by write permission on the DIRECTORY, not the file, and
+`-Force` clears the attribute before writing.
+
+WARNING: ON LINUX/macOS IT IS 9 OF 14. `os.remove` IS unlink and `os.replace` IS
+rename-over, so the directory-permission rule stated above for `rm -f` applies to BOTH
+python primitives too -- this table listed them as blocked because it was measured on
+Windows, where the read-only attribute does deny both. MEASURED on CI (ubuntu, run
+33994180317): `test_a_locked_file_survives[os_remove]` and `[os_replace]` DID NOT RAISE.
+The test now pins the weaker POSIX guarantee instead of skipping it, so the two rows
+above cannot drift back to "universal" unnoticed. Those are covered a layer up -- the Bash guard asks
 before a delete inside an X4 directory, and `x4canary` notices a file that shrank.
 
 The number that decided the design: ALL FOUR real incidents are in the blocked set.

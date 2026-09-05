@@ -52,6 +52,13 @@ BLOCKED = {
 }
 
 
+#: Primitives the attribute stops ONLY on Windows. On POSIX, delete and rename-over
+#: are authorised by write permission on the DIRECTORY, so the read-only bit is not
+#: consulted at all. MEASURED on CI (ubuntu, run 33994180317): both DID NOT RAISE.
+#: The docstring table in x4lock.py carries the same two rows marked WINDOWS ONLY.
+WINDOWS_ONLY = {"os_remove", "os_replace"}
+
+
 @pytest.mark.parametrize("name", sorted(BLOCKED))
 def test_a_locked_file_survives(name, tmp_path):
     p = _fresh(tmp_path / (name + ".md"))
@@ -59,9 +66,19 @@ def test_a_locked_file_survives(name, tmp_path):
     src.write_text("x", encoding="utf-8")
     ok, msg = x4lock._apply(p, True)
     assert ok, "the lock step itself failed: " + msg
-    with pytest.raises(OSError):
-        BLOCKED[name](p, str(src))
-    assert _intact(p), "a locked file was modified by " + name
+    if os.name != "nt" and name in WINDOWS_ONLY:
+        # PIN the weaker guarantee rather than skip it: if POSIX ever starts refusing
+        # these, the table's WINDOWS ONLY marks are wrong and must be revisited. A skip
+        # here would let the docstring drift from the behaviour in silence. (And no
+        # bare `return`: the suite's own guard reads that as an un-named pass.)
+        BLOCKED[name](p, str(src))            # must NOT raise on POSIX
+        assert not _intact(p), (
+            name + " was blocked on POSIX -- x4lock's table says it is Windows-only; "
+            "re-measure and update the table rather than leaving it weaker than reality")
+    else:
+        with pytest.raises(OSError):
+            BLOCKED[name](p, str(src))
+        assert _intact(p), "a locked file was modified by " + name
 
 
 @pytest.mark.parametrize("name", sorted(BLOCKED))

@@ -191,3 +191,19 @@ def test_a_real_DELETION_is_still_a_loss(repo, monkeypatch):
     RENAMES as deletions."""
     (repo / "gone.md").unlink()
     assert _check(repo, monkeypatch) == 1
+
+
+def test_a_canary_that_ITSELF_breaks_is_rc2_not_DATA_LOSS(repo, monkeypatch, capsys):
+    """The SessionStart hook renders rc 1 as "A TRACKED IRREPLACEABLE FILE HAS BEEN
+    LOST -- recover it before doing anything else". An uncaught exception also exits 1,
+    so a canary that broke was reported as the worst verdict about the user's files.
+    MEASURED by the 2026-09-05 delta review with a stub that raised PermissionError.
+    Could-not-look is rc 2, the contract every gate in this repo uses."""
+    def boom(repo_path, verbose):
+        raise PermissionError("simulated: cannot read the repository")
+    monkeypatch.setattr(x4canary, "check", boom)
+    rc = _check(repo, monkeypatch)
+    err = capsys.readouterr().err
+    assert rc == 2, "an exception inside the canary must be a NON-ANSWER (2), got %r" % rc
+    assert "REFUSING A VERDICT" in err and "PermissionError" in err, err
+    assert "DATA LOSS" not in err, "a broken canary must never claim a loss"
