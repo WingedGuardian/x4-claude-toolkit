@@ -80,6 +80,30 @@ ACCOUNT_PATTERNS = [
     # selftest below is what makes this copy honest.
     (re.compile(r"[a-z]:[/\\]+users[/\\]+([A-Za-z0-9_.-]+)[/\\]+[A-Za-z0-9_.-]", re.I),
      "an absolute user path"),
+    # THE SAME PATH, SPELLED THE OTHER FOUR WAYS. The pattern above requires a DRIVE
+    # LETTER, so it is blind to every non-`C:` spelling of the identical identifier --
+    # and the selftest could not see that, because all six of its path twins are
+    # drive-letter forms. An instrument that holds the spelling axis constant cannot
+    # reach a defect on that axis, however many cases it carries (CLAUDE.md #37).
+    #
+    # MEASURED 2026-09-05: the Git Bash form (the shell this repo runs in), the cygwin
+    # form, a UNC admin share and a POSIX home all passed unflagged. The Git Bash
+    # spelling already appears in 5 tracked files.
+    #
+    # The capture requires a LEADING ALPHANUMERIC, so the elided form those five files
+    # carry is not a hit -- an ellipsis is not a username.
+    (re.compile(r"(?:/cygdrive)?/[a-z]/users/+([A-Za-z0-9][A-Za-z0-9_.-]*)/+[A-Za-z0-9_.-]", re.I),
+     "an absolute user path (Git Bash / cygwin spelling)"),
+    (re.compile(r"//[A-Za-z0-9_.-]+/[a-z][$]/users/+([A-Za-z0-9][A-Za-z0-9_.-]*)/+[A-Za-z0-9_.-]", re.I),
+     "an absolute user path (UNC admin share)"),
+    # `/home/` ONLY, and deliberately not a bare `/Users/`. Case-insensitive `/users/`
+    # would match every REST URL of the shape `api.example.com/users/<name>/repos`, and
+    # a check that floods is one you learn to ignore -- this file's own standard, three
+    # comments up. The macOS `/Users/<name>/` spelling is therefore NOT covered; it is
+    # reachable only for a contributor on macOS whose OS username differs from their git
+    # identity, since the token scan catches the name itself in every other case.
+    (re.compile(r"/home/+([A-Za-z0-9][A-Za-z0-9_.-]*)/+[A-Za-z0-9_.-]", re.I),
+     "a POSIX home path"),
 ]
 
 #: Values that are obviously stand-ins. Without this the scan fires on the generic
@@ -248,6 +272,23 @@ def selftest() -> int:
          not _account_hit("PROF = 'C:/Users/tester/Documents/Egosoft/X4/12345678'")),
         ("an illustrative bare C:\\Users\\... in prose is NOT caught",
          not _account_hit("paths look like C:" + chr(92) + "Users" + chr(92) + "...")),
+        # --- THE SPELLING AXIS, which every twin above holds constant ------------
+        # All six path cases above are DRIVE-LETTER forms, so no number of them could
+        # ever reach a defect in a non-`C:` spelling -- and there was one. MEASURED
+        # 2026-09-05: the Git Bash form (the shell this repo runs in), cygwin, a UNC
+        # admin share and a POSIX home all passed unflagged.
+        ("the GIT BASH spelling of an absolute user path is caught",
+         _account_hit("SRC = '/c/Users/" + "dev" + "user/Desktop/Modding'")),
+        ("the CYGWIN spelling is caught",
+         _account_hit("SRC = '/cygdrive/c/Users/" + "dev" + "user/Desktop'")),
+        ("a UNC ADMIN SHARE spelling is caught",
+         _account_hit("SRC = '//host/c$/Users/" + "dev" + "user/Desktop'")),
+        ("a POSIX HOME path is caught",
+         _account_hit("SRC = '/home/" + "dev" + "user/work'")),
+        ("the ELIDED Git Bash form already in 5 tracked files is NOT caught",
+         not _account_hit("Git Bash writes '/c/Users/...' and Windows 'C:/Users/...'")),
+        ("a REST url with a /users/ segment is NOT caught -- a flooding check gets ignored",
+         not _account_hit("GET https://api.example.com/users/alice/repos")),
         ("a path with a user segment but nothing after it is NOT caught",
          not _account_hit("cd C:/Users/")),
         ("an ELIDED user path is NOT caught -- that IS the redaction",
