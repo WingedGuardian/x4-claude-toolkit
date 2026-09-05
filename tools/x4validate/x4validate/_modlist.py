@@ -621,11 +621,21 @@ def cmd_tracked(args) -> int:
     bare "413 tracked" would hide three quarters of the payload.
     """
     t = _nexus.fetch_tracked(args.domain)
-    others = t.total - t.kept
+    # The parts must SUM TO THE DENOMINATOR, and they did not: `others` was
+    # `total - kept`, but `kept` counts UNIQUE IDS while `total` counts ROWS, so
+    # every duplicate row of THIS domain was reported as belonging to another
+    # game. MEASURED on the suite's own fixture: 5 rows, 3 of them x4foundations
+    # (one a duplicate), rendered as "3 belong to other games" when 2 do.
+    mine = t.domains.get(args.domain, 0)
+    others = sum(n for d, n in t.domains.items() if d != args.domain)
     print(f"tracked on Nexus: {t.kept} for {args.domain}, from {t.total} row(s) "
-          f"across {len(t.domains)} game(s) — {others} belong to other games")
+          f"across {len(t.domains)} game(s) — {mine} row(s) for {args.domain}, "
+          f"{others} for other games")
     if t.malformed:
         print(f"  ⚠ {t.malformed} row(s) dropped: no usable mod_id (counted, not skipped)")
+    if t.no_domain:
+        print(f"  ⚠ {t.no_domain} row(s) name NO game at all — neither this domain nor "
+              "another. Counted here so the rows above add up to the denominator.")
     if args.domain not in t.domains and t.total:
         print(f"  ⚠ {args.domain!r} appears in NONE of the {t.total} rows — check the "
               f"domain name against: {', '.join(sorted(t.domains))}")

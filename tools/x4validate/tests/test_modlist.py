@@ -4,6 +4,7 @@ The live API paths (fetch/search/steam) are integration-validated by the slice r
 these cover the pure, mockable logic.
 """
 
+import argparse
 import types
 from datetime import date
 from pathlib import Path
@@ -486,3 +487,83 @@ def test_fetch_tracked_survives_a_row_with_no_mod_id(monkeypatch):
     t = _nexus.fetch_tracked("x4foundations")
     assert t.ids == [5]
     assert t.malformed == 1, "a dropped row must be COUNTED, not silently skipped"
+
+
+def test_fetch_tracked_channels_ACCOUNT_FOR_EVERY_ROW(monkeypatch):
+    r"""`total` minus the sum of `domains` must be a NAMED quantity, never a remainder.
+
+    A row that is not a dict, or whose `domain_name` is absent or None, used to be
+    counted in NEITHER `domains` NOR `malformed` -- so the one dataclass whose whole
+    job is to make a narrowing step legible had rows falling between its channels.
+    MEASURED 2026-09-05 on the payload below: total 7, domains sum 4, malformed 1,
+    and 3 rows reported by nothing at all.
+
+    The assertion is the RECONCILIATION, not the field: a future channel that drops
+    rows somewhere else fails this even though `no_domain` is still present.
+    """
+    monkeypatch.setattr(_nexus, "nexus_key", lambda: "k")
+    monkeypatch.setattr(_nexus, "_get_json", lambda url, headers: [
+        {"mod_id": 1, "domain_name": "x4foundations"},
+        {"mod_id": 1, "domain_name": "x4foundations"},          # duplicate
+        {"mod_id": "nope", "domain_name": "x4foundations"},     # malformed id
+        {"mod_id": 7, "domain_name": "skyrim"},
+        {"mod_id": 5},                                          # no domain key
+        None,                                                   # not a dict at all
+        {"mod_id": 9, "domain_name": None},                     # explicit None
+    ])
+    t = _nexus.fetch_tracked("x4foundations")
+    assert t.total == 7
+    assert sum(t.domains.values()) + t.no_domain == t.total, (
+        "every row must land in a NAMED channel: %d + %d != %d"
+        % (sum(t.domains.values()), t.no_domain, t.total))
+    assert t.no_domain == 3
+    assert t.malformed == 1, "orthogonal: a row can name a domain and still lack an id"
+    assert t.ids == [1] and t.kept == 1
+
+
+def test_tracked_render_does_not_call_a_DUPLICATE_row_another_game(monkeypatch, capsys):
+    """`others = total - kept` mixed two populations: `kept` counts UNIQUE IDS and
+    `total` counts ROWS, so a second row for the same mod in the SAME game was
+    printed as belonging to another game. MEASURED on the fixture below: it said
+    "3 belong to other games" where 2 do.
+
+    THIS TEST CALLS THE RENDERER. An earlier draft asserted the correct arithmetic
+    in the test body instead, and the mutant that put `total - kept` back into
+    `cmd_tracked` SURVIVED it -- a green with no reachable red, over the exact line
+    the test was written for.
+    """
+    monkeypatch.setattr(_nexus, "nexus_key", lambda: "k")
+    monkeypatch.setattr(_nexus, "_get_json", lambda url, headers: [
+        {"mod_id": 7, "domain_name": "x4foundations"},
+        {"mod_id": 7, "domain_name": "x4foundations"},          # duplicate row
+        {"mod_id": 2, "domain_name": "x4foundations"},
+        {"mod_id": 9, "domain_name": "skyrim"},
+        {"mod_id": 4, "domain_name": "starfield"},
+        {"mod_id": 3},                                          # names no game
+    ])
+    monkeypatch.setattr(_modlist._registry, "load_registry", lambda p: {"mods": []})
+    args = argparse.Namespace(domain="x4foundations", registry=None, limit=10)
+    assert _modlist.cmd_tracked(args) == 0
+    head = capsys.readouterr().out.splitlines()[0]
+
+    assert "3 row(s) for x4foundations" in head, head
+    assert "2 for other games" in head, (
+        "a duplicate row of THIS domain must not be counted as another game's: " + head)
+    assert "3 belong to other games" not in head, "the old arithmetic is back"
+
+
+def test_tracked_render_ANNOUNCES_rows_that_name_no_game(monkeypatch, capsys):
+    """The no-domain rows are the ones that used to fall between both channels.
+    Computing the field and never printing it would move the defect up a layer."""
+    monkeypatch.setattr(_nexus, "nexus_key", lambda: "k")
+    monkeypatch.setattr(_nexus, "_get_json", lambda url, headers: [
+        {"mod_id": 7, "domain_name": "x4foundations"},
+        {"mod_id": 3},
+        None,
+    ])
+    monkeypatch.setattr(_modlist._registry, "load_registry", lambda p: {"mods": []})
+    out = capsys.readouterr()  # discard
+    assert _modlist.cmd_tracked(
+        argparse.Namespace(domain="x4foundations", registry=None, limit=10)) == 0
+    txt = capsys.readouterr().out
+    assert "2 row(s) name NO game at all" in txt, txt

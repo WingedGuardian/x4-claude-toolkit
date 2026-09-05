@@ -79,6 +79,13 @@ class Tracked:
     total: int                # rows returned ACROSS ALL GAMES: the denominator
     domains: dict[str, int]   # per-domain counts, so the exclusion is nameable
     malformed: int            # rows dropped for having no usable mod_id
+    #: rows with NO NAMEABLE DOMAIN -- not a dict, or `domain_name` absent/None.
+    #: These were counted in NEITHER `domains` NOR `malformed`, so `total` minus the
+    #: sum of `domains` was an unexplained remainder with no field to name it, in the
+    #: one class this dataclass exists to make nameable. MEASURED 2026-09-05 with a
+    #: stubbed payload (no network): 7 rows -> kept 1, domains sum 4, malformed 1,
+    #: and 3 rows reported by nothing at all.
+    no_domain: int = 0
 
 
 def fetch_tracked(domain: str = "x4foundations") -> Tracked:
@@ -103,10 +110,14 @@ def fetch_tracked(domain: str = "x4foundations") -> Tracked:
     domains: dict[str, int] = {}
     ids: set[int] = set()
     malformed = 0
+    no_domain = 0
     for r in rows:
         d = r.get("domain_name") if isinstance(r, dict) else None
         if d:
             domains[d] = domains.get(d, 0) + 1
+        else:
+            # NAMED, not dropped between two channels. See Tracked.no_domain.
+            no_domain += 1
         if d != domain:
             continue
         raw = r.get("mod_id")
@@ -118,7 +129,7 @@ def fetch_tracked(domain: str = "x4foundations") -> Tracked:
             malformed += 1
     out = sorted(ids)
     return Tracked(ids=out, kept=len(out), total=len(rows),
-                   domains=domains, malformed=malformed)
+                   domains=domains, malformed=malformed, no_domain=no_domain)
 
 
 @dataclass
