@@ -144,21 +144,27 @@ def candidate_ui_rels(repo: Path, mods: Path) -> list[str]:
     the committed blob -- an uncommitted candidate is reported as such and FAILS.
     """
     rels: set[str] = set()
+    git_listed = False
     try:
         out = subprocess.run(["git", "ls-files", "--", MOD_GLOB], cwd=repo,
                              capture_output=True, timeout=30)
         if out.returncode == 0:
+            git_listed = True
             for ln in out.stdout.decode("utf-8", "replace").splitlines():
                 rel = ln.strip()
                 if rel and MOD_RE.search(committed(repo, rel) or ""):
                     rels.add(rel)
     except (OSError, subprocess.SubprocessError):
-        pass
+        # NOT silent-ok. Falling through with git_listed False is the CHANNEL: the
+        # caller REFUSES (rc 2). Degrading quietly to the tree-only population would
+        # restore the exact defect this function exists to remove, and it would do it
+        # invisibly -- the gate would print a normal PASS about the working tree.
+        git_listed = False
     for ui in find_mod_uis(mods):
         rel = _rel_to_repo(repo, ui)
         if rel is not None:
             rels.add(rel.replace(chr(92), "/"))
-    return sorted(rels)
+    return sorted(rels), git_listed
 
 
 def main(argv=None) -> int:
@@ -203,7 +209,12 @@ def main(argv=None) -> int:
         _env.skip(f"{mods} is not inside a git checkout",
                   "the mod half must be read from a COMMITTED blob, not the tree")
 
-    rels = candidate_ui_rels(mod_repo, mods)
+    rels, git_listed = candidate_ui_rels(mod_repo, mods)
+    if not git_listed:
+        _env.skip(f"could not enumerate COMMITTED mod ui.xml under {mod_repo}",
+                  "half the population is unknown, so a pass here would be a "
+                  "statement about the working tree only -- which is the defect "
+                  "this gate exists to remove")
     if not rels:
         _env.skip(f"no mod ui.xml under {mod_repo} declares a savedvariable",
                   "the mod half of the pair is missing; nothing to compare against")

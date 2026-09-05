@@ -226,5 +226,21 @@ def _three_way(args) -> int:
               f"That is an ABSENCE only if the file is in the comparison - check the "
               f"exclusion lists above.")
 
-    # Exit 1 when there is a decision to make, 0 when the port is mechanical.
-    return 1 if _keep(r.both_moved) else 0
+    # Exit 1 when there is a decision to make, 0 when the port is mechanical --
+    # and "mechanical" cannot be claimed over documents nobody managed to read.
+    # `unreadable`, `no_base`, `dropped_by_author` and `key_collisions` were absent
+    # from this expression entirely, so a three-way whose ARCHIVE was wholly
+    # unparseable exited 0, and so did one against an unrelated baseline (0 shared
+    # documents, 0 attributes classified). MEASURED 2026-09-04.
+    #
+    # Counted unfiltered on purpose: `_keep` filters by --file and reads `c.vpath`,
+    # while these four are plain strings -- and the note printed above already says
+    # the counts are the WHOLE comparison while only the listings are filtered.
+    excluded = (len(r.unreadable) + len(r.no_base) + len(r.dropped_by_author)
+                + len(r.key_collisions))
+    if excluded:
+        print()
+        print(f"  {excluded} document(s) were NOT compared (see the exclusion lists "
+              f"above). Exit is non-zero: a port cannot be called mechanical over "
+              f"documents nobody read.")
+    return 1 if (_keep(r.both_moved) or excluded) else 0

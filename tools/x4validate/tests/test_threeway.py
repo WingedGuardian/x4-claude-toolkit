@@ -440,3 +440,39 @@ def test_a_diff_with_MORE_THAN_ONE_op_is_not_unwrapped(tmp_path):
     r = _threeway.three_way(base, d, cur)
     assert not any("payload unwrapped" in u for u in r.unwrapped), (
         f"a multi-op diff is not a plain whole-document override: {r.unwrapped}")
+
+
+def test_an_UNPARSEABLE_document_is_not_counted_as_VERBATIM(tmp_path):
+    """`verbatim` = documents_compared - author_edited, and `documents_compared` was
+    the shared-key INTERSECTION -- which includes every document the loop skips.
+
+    So a file that would not parse landed in VERBATIM, on the same screen that prints
+    "not compared, and NOT counted as unchanged" about it. MEASURED 2026-09-04: 3 of
+    3 shared documents malformed in the archive reported "VERBATIM (author touched
+    nothing): 3". That is the number the module calls the headline, and it drives a
+    destructive action -- taking upstream wholesale for exactly those files.
+    """
+    base = _mod(tmp_path, "base", {"ore": {"price": "100"}})
+    arch = _mod(tmp_path, "arch", {"ore": {"price": "100"}})
+    cur = _mod(tmp_path, "cur", {"ore": {"price": "100"}})
+    # break the ARCHIVED copy only
+    (arch / "libraries" / "wares.xml").write_text(
+        "<?xml version='1.0'?><wares><ware id='ore' price='100'/>", encoding="utf-8")
+
+    r = _threeway.three_way(base, arch, cur)
+    assert r.unreadable, "precondition: the archived copy must be unreadable"
+    assert r.documents_compared == 0, r.documents_compared
+    assert r.verbatim == 0, (
+        "an unparseable document must never be counted as one the author left alone")
+
+
+def test_a_genuinely_unchanged_document_IS_still_verbatim(tmp_path):
+    """The control. Without it, a fix that drove `verbatim` to zero unconditionally
+    would look identical to one that merely stopped counting unreadable files."""
+    base = _mod(tmp_path, "base", {"ore": {"price": "100"}})
+    arch = _mod(tmp_path, "arch", {"ore": {"price": "100"}})
+    cur = _mod(tmp_path, "cur", {"ore": {"price": "100"}})
+    r = _threeway.three_way(base, arch, cur)
+    assert not r.unreadable
+    assert r.documents_compared == 1
+    assert r.verbatim == 1

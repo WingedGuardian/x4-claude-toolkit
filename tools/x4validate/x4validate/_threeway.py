@@ -259,6 +259,14 @@ def three_way(base: Path | list[Path], archived: Path, current: Path) -> ThreeWa
         """(key, node, attr) -> (base value, other value) for shared documents."""
         idx: dict[tuple[str, str, str], tuple[str, str]] = {}
         touched: set[str] = set()
+        # What was ACTUALLY compared. `documents_compared` used to be the shared-key
+        # intersection, which includes every document the loop below `continue`s past
+        # -- so an UNPARSEABLE file landed in `verbatim`, on the same screen that says
+        # "NOT counted as unchanged". MEASURED 2026-09-04: 3 of 3 shared documents
+        # malformed in the archive reported "VERBATIM (author touched nothing): 3",
+        # rc 0. That is the number this module calls the headline, and it drives a
+        # destructive action -- "take upstream wholesale for these files".
+        compared: set[str] = set()
         for key in sorted(shared & other_map.keys()):
             if key.endswith(".xsd"):
                 continue
@@ -273,6 +281,7 @@ def three_way(base: Path | list[Path], archived: Path, current: Path) -> ThreeWa
                     f"compared, and NOT counted as unchanged")
                 continue
             fd = _diff.diff_file(o, n, other_map[key])
+            compared.add(key)
             if fd.weight:
                 touched.add(other_map[key])
             for node, attr, old, new in fd.attr_changes:
@@ -282,10 +291,10 @@ def three_way(base: Path | list[Path], archived: Path, current: Path) -> ThreeWa
                     f"{other_map[key]}: +{len(fd.nodes_added)} / "
                     f"-{len(fd.nodes_removed)} node(s) (author side; node-level "
                     f"changes are reported, not classified)")
-        return idx, touched
+        return idx, touched, compared
 
-    a_idx, a_touched = _index(a_map, archived, "archived")
-    u_idx, _ = _index(c_map, current, "current")
+    a_idx, a_touched, a_compared = _index(a_map, archived, "archived")
+    u_idx, _, _ = _index(c_map, current, "current")
 
     for key in sorted(a_idx.keys() | u_idx.keys()):
         joinkey, node, attr = key
@@ -304,6 +313,7 @@ def three_way(base: Path | list[Path], archived: Path, current: Path) -> ThreeWa
             r.both_moved.append(
                 Conflict(vpath, node, attr, basev, a_idx[key][1], u_idx[key][1]))
 
-    r.documents_compared = len(b_map.keys() & a_map.keys())
+    # The AUTHOR side's successful comparisons, not the shared-key count.
+    r.documents_compared = len(a_compared)
     r.author_edited_docs = sorted(a_touched)
     return r

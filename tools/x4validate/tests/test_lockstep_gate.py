@@ -257,7 +257,7 @@ def test_a_COMMITTED_but_tree_absent_declaration_is_still_examined(tmp_path):
         "mods/probeB/ui.xml": UI % "__OLD_STALE_NAME",
     })
     (repo / "mods" / "probeB" / "ui.xml").unlink()
-    rels = ls.candidate_ui_rels(repo, repo / "mods")
+    rels, _ok = ls.candidate_ui_rels(repo, repo / "mods")
     assert "mods/probeB/ui.xml" in rels, (
         "a declaration that is committed but tree-absent must still be examined")
 
@@ -273,7 +273,7 @@ def test_a_tree_present_but_UNCOMMITTED_declaration_is_still_examined(tmp_path):
     d = repo / "mods" / "probeC"
     d.mkdir(parents=True)
     (d / "ui.xml").write_text(UI % "__NEVER_COMMITTED", encoding="utf-8")
-    rels = ls.candidate_ui_rels(repo, repo / "mods")
+    rels, _ok = ls.candidate_ui_rels(repo, repo / "mods")
     assert "mods/probeC/ui.xml" in rels, (
         "a tree-present, never-committed declaration must still be examined")
 
