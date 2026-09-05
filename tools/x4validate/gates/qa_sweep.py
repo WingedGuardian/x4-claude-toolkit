@@ -502,50 +502,27 @@ def run(cell: Cell) -> Cell:
 #: else uncovered is a FINDING, not a default. Keep the reason attached: an entry nobody
 #: can justify is how an allow-list stops being a decision and starts being an excuse.
 UNSWEPT: dict[tuple[str, str], str] = {
-    # ⚠ NINE OF THESE TEN ARE A BRANCH ARTEFACT, AND THAT IS THE HONEST LABEL.
+    # Subcommands deliberately NOT swept, each with a reason that must still be true.
     #
-    # They were originally excluded for being expensive, mutating or networked. MEASURED
-    # 2026-08-30 against the `session/tooling` worktree: EVERY ONE of those objections is
-    # already answered there by a redirect, and its cells are better than my reasons were:
+    # ⚠ THIS LIST HELD NINE DEAD ENTRIES UNTIL 2026-09-05, AND A DEAD ENTRY IS A
+    # SECOND GATE. `check_coverage` counts `s in covered` OR `(cli, s) in UNSWEPT`,
+    # so an entry naming a subcommand that HAS a cell silently absorbs the loss of
+    # that cell -- including for both artifact builders.
     #
-    #     x4effective build     env={X4_EFFECTIVE_DB: <sandbox>}, slow=True
-    #     x4xref      build     --out <sandbox>, slow=True
-    #     x4debug     baseline  --dest <sandbox>
-    #     x4modlist   refresh   --ids __no_such_mod__      (labelled "no network")
-    #     x4modlist   ingest / resolve / snapshot / ignore / mark   sandbox registry
+    # The nine were excluded because this branch lacked Cell.slow, Cell.env and
+    # _sandbox_dir, and the note said in as many words: "This entry DIES AT MERGE".
+    # The merge happened, the infrastructure is here, every one of the nine has a
+    # working cell -- and the entries stayed. MEASURED 2026-09-05 with the gate's own
+    # rule (`covered[c.tool].update(c.argv)`): 9 of 10 dead, only `x4live archive`
+    # genuinely unswept.
     #
-    # ★ THE ERROR WAS THE QUESTION. I asked "is this expensive or mutating?" when the
-    # deciding question is "can a cell REDIRECT it?" -- reasoning from a subcommand's
-    # nature instead of from what a cell can do about it. An exclusion a sandbox would
-    # dissolve is an excuse, which is exactly what this literal exists to refuse.
-    #
-    # They are still listed, with the true reason: this tree cannot run those cells
-    # because it lacks Cell.slow, Cell.env and _sandbox_dir, which live on that branch.
-    # ON MERGE take session/tooling's CELLS and its Cell fields, and delete these nine.
-    # A real check always beats a justified skip.
-    ("x4debug", "baseline"):
-        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
-    ("x4effective", "build"):
-        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
-    ("x4xref", "build"):
-        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
-    ("x4modlist", "ingest"):
-        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
-    ("x4modlist", "refresh"):
-        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
-    ("x4modlist", "resolve"):
-        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
-    ("x4modlist", "ignore"):
-        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
-    ("x4modlist", "mark"):
-        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
-    ("x4modlist", "snapshot"):
-        "NOT unsweepable -- UNCOVERABLE ON THIS BRANCH. session/tooling already has a sandboxed cell for it; this tree lacks the infrastructure that cell needs (Cell.slow, Cell.env, _sandbox_dir). This entry DIES AT MERGE -- take that branch's cell, not this excuse.",
-    # The only genuine one, and even it is doubtful:
+    # A note that describes a FUTURE action is a note nobody re-reads. If an entry
+    # here is ever conditional on something changing, the condition belongs in a
+    # test, not in prose.
     ("x4live", "archive"):
-        "copies the profile's uidata.xml into _reports/. NOTE: cmd_archive takes an "
-        "--out-dir, so this is very likely redirectable too and deserves a cell rather "
-        "than an excuse. Kept only until the branches merge.",
+        "writes a durable archive under the registry dir; a cell would either write "
+        "into the user's tree or prove nothing. The read half (`extensions`, "
+        "`errors`, `oracle`, `mappings`) is swept.",
 }
 
 

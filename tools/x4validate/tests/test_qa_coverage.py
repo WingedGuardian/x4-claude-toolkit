@@ -164,3 +164,33 @@ def test_UNSWEPT_does_not_name_a_subcommand_that_no_longer_exists():
         if sub not in subs:
             stale.append(f"{cli} {sub}")
     assert not stale, f"UNSWEPT excuses subcommands that do not exist: {stale}"
+
+
+def test_UNSWEPT_never_names_a_subcommand_THAT_A_CELL_ALREADY_COVERS():
+    """The direction the staleness test does not check, and the one that rotted.
+
+    `check_coverage` counts `s in covered[cli]` OR `(cli, s) in UNSWEPT`, so an entry
+    naming a subcommand that HAS a cell is a dead second gate: it silently absorbs the
+    loss of that cell for ever after.
+
+    MEASURED 2026-09-05: 9 of the 10 entries were in exactly that state. They had been
+    added while this branch lacked Cell.slow / Cell.env / _sandbox_dir, with a note
+    reading "This entry DIES AT MERGE" -- the merge happened, every one of the nine
+    gained a working cell, and the entries stayed. A/B with three real cells deleted:
+    without the dead entries 3 findings; with them, 0.
+
+    Its sibling `test_the_coverage_check_GOES_RED_when_a_cell_is_removed` could not
+    catch this either: it removes the `harvest` cell, the one subcommand NOT in
+    UNSWEPT -- the only choice that could still go red.
+    """
+    qa = _qa()
+    covered: dict[str, set[str]] = {}
+    for c in qa.CELLS:                      # the gate's OWN rule, not a re-derivation
+        covered.setdefault(c.tool, set()).update(c.argv)
+    dead = sorted((cli, sub) for (cli, sub) in qa.UNSWEPT
+                  if sub in covered.get(cli, set()))
+    assert not dead, (
+        "these UNSWEPT entries name subcommands a cell already runs, so each is a "
+        "second gate that would absorb the loss of that cell:\n  "
+        + "\n  ".join("%s %s" % p for p in dead)
+        + "\n\nDelete the entry: a real check always beats a justified skip.")
