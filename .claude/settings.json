@@ -34,7 +34,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/search-scope.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/search-scope.sh\"",
+            "timeout": 5
           }
         ]
       }

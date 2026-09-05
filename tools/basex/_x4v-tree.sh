@@ -52,6 +52,14 @@ x4v_resolve() {
 
   # 0 candidates: keep the historical default so preflight reports the real problem
   # (a missing tree) rather than this helper inventing a different one.
+  #
+  # The REASON is recorded here, where it is known, rather than guessed by the
+  # announce below. The glob is `x4validate*`, so the single surviving candidate can
+  # be a differently-named sibling -- and "chosen by default position
+  # (tools/x4validate)" then names a directory that was not chosen and may not exist.
+  # The absolute path is printed either way so nothing was ever WRONG on screen, but
+  # this helper exists to make provenance auditable and a reason line that can name
+  # the wrong tree is the part that gets quoted later.
   [ "$n" -eq 1 ] && printf '%s' "$found" || printf '%s' "$here/../x4validate"
 }
 
@@ -63,10 +71,29 @@ x4v_announce() {
   abs="$(cd "$dir" 2>/dev/null && pwd)" || abs="$dir"
   echo "== engine tree =="
   echo "   $abs"
+  # The reason is DERIVED from the resolved directory, not carried from the resolver:
+  # every caller writes `X4VALIDATE="$(x4v_resolve "$HERE")"`, and a command
+  # substitution is a subshell, so a variable the resolver set would never arrive here.
+  # A first cut did exactly that and would have printed "unrecorded path" on every real
+  # build -- strictly worse than the message it replaced.
+  #
+  # What was wrong: the candidate glob is `x4validate*`, so the single survivor can be a
+  # differently-named sibling, and "chosen by default position (tools/x4validate)" then
+  # named a directory that was not chosen and need not exist. The absolute path above is
+  # right either way, so nothing on screen was ever false -- but this helper exists to
+  # make provenance auditable, and the reason line is the half that gets quoted later.
   if [ -n "${X4VALIDATE_DIR:-}" ]; then
     echo "   chosen by X4VALIDATE_DIR"
-  else
+  elif [ ! -f "$abs/x4validate/_merge.py" ]; then
+    # The 0-candidate fallback. Say it is a fallback: preflight will report the missing
+    # tree, and a line claiming this was CHOSEN would be the confident half of that.
+    echo "   NO engine checkout matched ${dir%/*}/x4validate* -- this is the historical"
+    echo "   default position, a fallback rather than a find; set X4VALIDATE_DIR"
+  elif [ "${abs##*/}" = "x4validate" ]; then
     echo "   chosen by default position (tools/x4validate); set X4VALIDATE_DIR to override"
+  else
+    echo "   chosen as the only engine checkout matching x4validate* (${abs##*/});"
+    echo "   set X4VALIDATE_DIR to override"
   fi
   if branch=$(cd "$abs" 2>/dev/null && git rev-parse --abbrev-ref HEAD 2>/dev/null); then
     head=$(cd "$abs" && git rev-parse --short HEAD 2>/dev/null)

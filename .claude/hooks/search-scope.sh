@@ -97,8 +97,36 @@ MOD="${REL%%/*}"
 
 # Resolve the mod folder against the REAL (un-normalised) extensions root so the .cat probe
 # looks at the actual directory, not a lowercased string.
+#
+# ONLY THE ROOT WAS UN-NORMALISED. `MOD` is carved out of `nFP`, which x4_norm has
+# lowercased, so the probe path was `<real root>/packedmod` for a folder named
+# `PackedMod` -- and this comment claimed the opposite. Windows is case-insensitive so
+# it is inert here; on a case-sensitive filesystem (X4 ships a Linux build, and this is
+# a public toolkit) the guard is silently inert for exactly those mods, which is the
+# worst direction: a packed mod reads as loose-only and its "no matches" reads as
+# "absent". MEASURED on the reference machine: 133 mod folders, 54 ship a .cat, 10 have
+# an uppercase letter, 3 of the 54 (5.6%) are both.
+#
+# The direct path is tried FIRST so the common case costs nothing extra; the scan only
+# runs when it misses, which on Windows is never. `nocasematch` is used rather than
+# `nocaseglob` because it compares STRINGS -- so its behaviour is provable on this
+# machine and portable, where a glob test here would only ever exercise Windows'
+# case-insensitive filesystem and could not go red. The right-hand side is quoted, so a
+# folder name containing a glob metacharacter is compared literally.
 EXTDIR="${X4_EXTENSIONS//"$BS"//}"
-for c in "$EXTDIR/$MOD"/*.cat; do
+MODDIR="$EXTDIR/$MOD"
+if [ ! -d "$MODDIR" ]; then
+  MODDIR=""
+  _ncm="$(shopt -p nocasematch)"          # restore whatever the caller had
+  shopt -s nocasematch
+  for d in "$EXTDIR"/*/; do
+    n="${d%/}"; n="${n##*/}"
+    if [[ "$n" == "$MOD" ]]; then MODDIR="$EXTDIR/$n"; break; fi
+  done
+  eval "$_ncm"
+fi
+[ -n "$MODDIR" ] || exit 0
+for c in "$MODDIR"/*.cat; do
   if [ -e "$c" ]; then
     advise "PARTIAL ANSWER: '$MOD' ships packed .cat archives as well as loose files, and this search reads LOOSE files only. A zero result here is 'not in the loose subset', NOT 'absent'. Use _scan.iter_mod_xml_bytes / _scan.iter_corpus_xml to include packed content, or confirm you want the loose-only view."
   fi

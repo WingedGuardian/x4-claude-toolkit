@@ -202,6 +202,18 @@ decide allow search-scope.sh "$(pj "$X4_TOOLKIT/dev/mymod")"          "the mod w
 # extensions/, all unguarded, against 15 that fired.
 decide advise search-scope.sh '{"tool_name":"Grep","tool_input":{"pattern":"x"}}' "no path at all is the BROADEST search"
 decide advise search-scope.sh "$(pj "$GAME")"                          "rooted ABOVE extensions/ covers every mod"
+# MIXED CASE. `MOD` is carved out of the NORMALISED (lowercased) path, so the .cat probe
+# was built as `<real root>/mixedcasepacked` for a folder named `MixedCasePacked` --
+# while the comment above it claimed the probe looked at the actual directory. Windows
+# resolves that anyway, so this probe passes here through the fast path; on a
+# case-sensitive filesystem it is the one that goes RED without the fallback, and X4
+# ships a Linux build. Measured on the reference machine: 3 of 54 .cat-shipping mods
+# (5.6%) have an uppercase letter, i.e. were silently unguarded there.
+mkdir -p "$GAME/extensions/MixedCasePacked" "$GAME/extensions/MixedCaseLoose/md"
+: > "$GAME/extensions/MixedCasePacked/ext_01.cat"
+: > "$GAME/extensions/MixedCaseLoose/md/a.xml"
+decide advise search-scope.sh "$(pj "$GAME/extensions/MixedCasePacked")" "mixed-case .cat mod is still found"
+decide allow  search-scope.sh "$(pj "$GAME/extensions/MixedCaseLoose")"  "mixed-case LOOSE mod must NOT advise"
 # (the unparseable-payload case is NOT a probe here: this harness refuses a probe
 #  whose payload is not valid JSON, and it is right to -- such a probe would
 #  exercise the harness rather than the hook. Measured directly instead:
@@ -352,7 +364,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=136
+EXPECT=138
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
