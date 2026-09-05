@@ -1968,7 +1968,7 @@ def check_packed_dlc_available(config: _merge.Config, report: Report) -> None:
     packed DLC but gave it no channel for "I couldn't". Not `degraded` — most mods
     touch no mini-DLC content, so this is a partial skip, not a failed run.
     """
-    if not config.include_packed_dlc or config.reference != _merge.REFERENCE:
+    if not config.include_packed_dlc or not _merge.is_configured_reference(config.reference):
         return  # deliberately isolated (hermetic run / foreign --reference)
     game_ext = _merge.GAME_ROOT / "extensions"
     if game_ext.is_dir():

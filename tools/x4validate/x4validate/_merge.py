@@ -61,6 +61,41 @@ def _default_game_root() -> Path:
 GAME_ROOT = _default_game_root()
 
 
+def is_configured_reference(ref: Path | None) -> bool:
+    """Is *ref* the reference tree this toolkit is configured for?
+
+    The packed-DLC supplement may only be added on top of the CONFIGURED tree: a
+    caller who passed an ad-hoc tree (a test fixture, a second checkout) asked for
+    exactly that tree, and quietly folding the live game's DLC into it would answer
+    a question nobody posed.
+
+    `REFERENCE` stays a module global on purpose -- it is the monkeypatch handle
+    four test modules and `conftest` use to simulate an unconfigured or empty
+    install, so resolving it at call time here would leave those levers controlling
+    nothing. What was wrong was the IDENTITY test: `config.reference != REFERENCE`
+    compares raw `Path` objects, so two spellings of one directory -- a trailing
+    separator, `./`, a relative path, or on a case-sensitive filesystem a differing
+    case -- read as a DIFFERENT tree and silently dropped the supplement, with no
+    line anywhere saying DLC had been left out. Inert on Windows, where `Path`
+    comparison is already case-insensitive; this is the POSIX half, and X4 ships a
+    Linux build.
+
+    `_check.py` asked the same question with its own copy of the comparison. One
+    implementation, because a comment in one file has never stopped the next file.
+    """
+    if ref is None or REFERENCE is None:
+        return False
+    try:
+        return Path(ref).resolve() == Path(REFERENCE).resolve()
+    except OSError:
+        # silent-ok: an unanswerable question is not a yes. `resolve()` can raise
+        # on a path whose parents are unreachable, and the ONLY consequence of
+        # returning False is that the packed-DLC supplement is not added -- which
+        # `check_packed_dlc_available` already reports to the user as its own
+        # finding, so the omission has a channel and it is not this one.
+        return False
+
+
 @dataclass
 class Config:
     #: Defaults to the configured reference tree, resolved when the Config is
@@ -139,7 +174,7 @@ class Config:
         dirs = (sorted(p for p in ext.iterdir()
                        if p.is_dir() and p.name.startswith("ego_dlc_"))
                 if ext.is_dir() else [])
-        if not self.include_packed_dlc or self.reference != REFERENCE:
+        if not self.include_packed_dlc or not is_configured_reference(self.reference):
             return dirs
         have = {p.name.lower() for p in dirs}
         game_ext = GAME_ROOT / "extensions"
@@ -229,6 +264,21 @@ def overlay_root(odir: Path, vpath: str,
     except etree.XMLSyntaxError as exc:
         if skipped is not None:
             skipped.append(f"{odir.name}/{vpath}: malformed XML, overlay skipped ({exc})")
+        return None
+    except (OSError, ValueError) as exc:
+        # The OTHER half of "neither a crash nor a silent pass". Only
+        # XMLSyntaxError was routed here, so a bad ARCHIVE -- rather than bad XML
+        # inside a good one -- still escaped and killed the run, which is the exact
+        # failure this channel was built in 2026-07-26 to stop, surviving in the
+        # branch nobody reproduced. `_cat.read_member` raises OSError for a
+        # truncated or unreadable .dat member and ValueError for a malformed
+        # catalog line; `_scan.iter_mod_xml_bytes` has caught precisely this pair
+        # from the same call since it was written, so this is a divergence between
+        # two readers of one source, not a new claim about what can be raised.
+        # `parse_file` can raise OSError too: `loose.is_file()` is a separate
+        # syscall from the read, and a mod folder can move between them.
+        if skipped is not None:
+            skipped.append(f"{odir.name}/{vpath}: unreadable, overlay skipped ({exc})")
         return None
     return None
 
@@ -388,14 +438,20 @@ def _path_of(node) -> str:
 def _do_remove(targets, recorder: Recorder | None = None,
                origin: Origin | None = None) -> str | None:
     for t in targets:
-        if recorder is not None:
-            recorder.node_removed(_path_of(t), origin)
         parent = t.getparent()
+        # The record is written AFTER the refusal below, not before it. A
+        # root-targeted <remove> is correctly reported as NOT applied, and the
+        # recorder was nonetheless handed a provenance row for it -- the two
+        # channels of one op disagreeing, in the module whose job is to make an
+        # unapplied op say why. No current mod does this, so it is a latent
+        # divergence rather than a wrong number on disk today.
         if parent is None:
             # No current mod does this, but a bare skip here would be the same
             # silent-no-op class as the root <replace> was. Report it instead.
             return ("remove targets the document root — a document cannot be "
                     "left without one")
+        if recorder is not None:
+            recorder.node_removed(_path_of(t), origin)
         if _is_attr(t):
             parent.attrib.pop(t.attrname, None)
         else:
@@ -852,7 +908,6 @@ def build_effective(
             else:
                 tree, mode = apply_overlay(tree, oroot, vpath, odir.name,
                                            recorder=recorder)
-                applied_here = True
                 if mode != "diff(no-base!)":
                     base_found = base_found or mode in {"union", "full"}
                     if mode in {"union", "full"} and odir.resolve() in game_dirs:
@@ -868,7 +923,21 @@ def build_effective(
         # `extensions/<owner>/<vpath>`. The inert-bare-diff rule does NOT apply —
         # a nested diff over another mod's file is exactly the form the engine
         # loads (KB gotcha #6; engine-proven). A mod is never its own nested
-        # patcher, and a file already applied bare is not applied again.
+        # patcher -- enforced by the `continue` below.
+        #
+        # There is deliberately NO guard against an overlay that ships BOTH the
+        # bare vpath and `extensions/<owner>/<vpath>`: those are two distinct
+        # files on disk and the engine evaluates both, so applying both is the
+        # faithful answer. This comment used to claim "a file already applied bare
+        # is not applied again", which nothing enforced -- a dead
+        # `applied_here = True` sat where the guard would have gone, and anyone
+        # reconciling the code to the comment would have ADDED a guard that drops
+        # real ops. MEASURED 2026-09-05 over 125 installed mods: 13 bare+nested
+        # pairs exist (3 mods; `distances` and `moreroomsforships` nest under DLC,
+        # which never enters `owner_folders`, and `ebi_m0_vro` nests under a mod
+        # that supplies its vpath as a `diff`, which does not either). So the case
+        # is LATENT, not live -- it needs an owner supplying full/union -- and a
+        # guard here would have been wrong the day it first fired.
         for owner in owner_folders:
             if odir.name.lower() == owner.lower():
                 continue

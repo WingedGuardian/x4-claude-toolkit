@@ -1,5 +1,8 @@
 """Diff-application and effective-tree assembly."""
 
+import os
+from pathlib import Path
+
 from lxml import etree
 
 from x4validate import _merge, _resolve
@@ -703,3 +706,104 @@ def test_apply_diff_still_accepts_a_real_recorder_and_None():
     assert _merge.apply_diff(tree, diff, None, "f.xml")[0].ok
     tree2 = etree.fromstring("<wares><ware id='ore'/></wares>")
     assert _merge.apply_diff(tree2, diff, Recorder(), "f.xml")[0].ok
+
+
+def test_remove_document_root_leaves_NO_provenance_ROW():
+    """M12. `_do_remove` called `recorder.node_removed()` BEFORE the
+    `parent is None` check, so the op was correctly reported as NOT applied and
+    the recorder was handed a removal row for it anyway -- the two channels of one
+    op disagreeing, inside the module whose whole job is to make an unapplied op
+    say why. No installed mod does this, so it was latent rather than a wrong
+    number on disk; `test_remove_document_root_reports_not_applied` above pins the
+    verdict, and this pins the record that goes with it.
+    """
+    tree = _macros()
+    rec = Recorder()
+    ops = _merge.apply_diff(tree, _diff(b'<remove sel="//macros"/>'), recorder=rec)
+    assert [o.ok for o in ops] == [False]
+    assert rec.removed == [], (
+        "an op reported as NOT applied must not leave a removal record: %r" % (rec.removed,))
+
+
+def test_a_NORMAL_remove_still_records_its_provenance():
+    """The control for the test above. Moving the recorder call past a guard is
+    one edit away from moving it past the removal entirely, and a green from a
+    recorder that records NOTHING would look identical."""
+    tree = _macros()
+    rec = Recorder()
+    ops = _merge.apply_diff(
+        tree, _diff(b'<remove sel="//macro[@name=\'m\']/properties"/>'), recorder=rec)
+    assert [o.ok for o in ops] == [True]
+    assert len(rec.removed) == 1, "a real removal must still be recorded"
+    assert "properties" in rec.removed[0][0], rec.removed[0]
+
+
+def test_overlay_root_routes_an_UNREADABLE_archive_to_skipped_not_a_traceback(tmp_path, monkeypatch):
+    """M7. `overlay_root` caught only `etree.XMLSyntaxError`, so bad XML inside a
+    good archive was routed to `skipped` while a bad ARCHIVE still escaped and
+    killed the run -- which is the exact failure the channel was built to stop,
+    surviving in the branch nobody reproduced. `_cat.read_member` raises OSError
+    for a truncated member and ValueError for a malformed catalog line, and
+    `_scan.iter_mod_xml_bytes` has caught that pair from the same call all along:
+    two readers of one source disagreeing about what it can raise.
+    """
+    odir = tmp_path / "somemod"
+    odir.mkdir()
+
+    for exc in (OSError("truncated .dat member"), ValueError("bad catalog line")):
+        skipped: list[str] = []
+        monkeypatch.setattr(_merge._cat, "read_path",
+                            lambda d, v, _e=exc: (_ for _ in ()).throw(_e))
+        got = _merge.overlay_root(odir, "libraries/wares.xml", skipped)
+        assert got is None, "an unreadable overlay must be None, never a partial tree"
+        assert len(skipped) == 1, (
+            "%s escaped instead of being recorded: %r" % (type(exc).__name__, skipped))
+        assert "somemod/libraries/wares.xml" in skipped[0] and str(exc) in skipped[0]
+
+
+def test_overlay_root_still_DISTINGUISHES_absent_from_unreadable(tmp_path, monkeypatch):
+    """The falsification twin: a blanket `except Exception: return None` would pass
+    the test above only if it also appended -- but a file that simply is not there
+    must stay a silent None with an EMPTY skipped list, or every mod that does not
+    ship a vpath is reported as broken."""
+    odir = tmp_path / "somemod"
+    odir.mkdir()
+    skipped: list[str] = []
+    monkeypatch.setattr(_merge._cat, "read_path", lambda d, v: None)
+    assert _merge.overlay_root(odir, "libraries/wares.xml", skipped) is None
+    assert skipped == [], "a merely ABSENT file must not be reported as unreadable"
+
+
+def test_is_configured_reference_accepts_a_DIFFERENT_SPELLING_of_one_tree(tmp_path, monkeypatch):
+    """M11. `dlc_dirs()` gated the packed-DLC supplement on `self.reference !=
+    REFERENCE` -- an identity test on raw `Path` objects. A caller passing the same
+    directory spelled differently read as a DIFFERENT tree, and the DLC were
+    silently dropped with nothing saying they had been left out.
+
+    The spellings here are the ones pathlib does NOT normalise on construction.
+    A first draft used a trailing separator and a `.` segment; MEASURED, pathlib
+    collapses both at construction, so those assertions passed with or without the
+    fix and the mutant that put `ref == REFERENCE` back SURVIVED them. `..` and a
+    relative path survive construction and are exactly what `os.path.relpath` or a
+    hand-built `<root>/../<root>` produces.
+    """
+    ref = tmp_path / "reference"
+    (ref / "extensions").mkdir(parents=True)
+    (tmp_path / "other").mkdir()
+    monkeypatch.setattr(_merge, "REFERENCE", ref)
+
+    dotdot = tmp_path / "other" / ".." / "reference"
+    assert dotdot != ref, "precondition: pathlib must NOT have normalised this away"
+    assert _merge.is_configured_reference(dotdot), "a `..` segment is the same tree"
+
+    monkeypatch.chdir(tmp_path)
+    rel = Path("reference")
+    assert rel != ref, "precondition: a relative path is a distinct Path object"
+    assert _merge.is_configured_reference(rel), "a relative spelling is the same tree"
+
+    assert _merge.is_configured_reference(ref)
+    assert not _merge.is_configured_reference(tmp_path / "other"),         "a genuinely different tree must still be refused"
+    assert not _merge.is_configured_reference(None)
+
+    monkeypatch.setattr(_merge, "REFERENCE", None)
+    assert not _merge.is_configured_reference(ref),         "an UNCONFIGURED toolkit supplements nothing -- absence is not a match"
