@@ -642,3 +642,74 @@ def test_a_dump_of_only_KNOWN_kinds_is_clean(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0, out
     assert "does not model" not in out
+
+
+# --- the groundtruth WRITER must not trust its own write ------------------------- #
+#
+# MEASURED 2026-09-05 by `gates/mutation_probe.py`: mutating `if back != data:` to
+# `if False:` in `cmd_groundtruth` SURVIVED -- 47 of 48 mutants killed, this one alive.
+# The mechanism was present and correct; nothing proved it stays that way, which is the
+# difference between "the code is right" and "the code is pinned". A harvested fixture
+# could be written short and reported complete, and this fixture is what later decides
+# between two defensible definitions of a derived field -- so a silently truncated one
+# does not read as missing, it reads as the engine's answer.
+
+class _StubPipe:
+    """Answers ABSENT to everything: a REAL answer, so the accounting still balances
+    (present + absent + errored == asked) and execution reaches the write."""
+
+    path = "stub-pipe"
+
+    def ask(self, *a, **k):
+        from x4validate import _livepipe
+        return _livepipe.Reply(seq=1, status="ABSENT", payload="")
+
+
+def _stub_live_open(monkeypatch):
+    import contextlib as _c
+
+    from x4validate import _livecli
+
+    @_c.contextmanager
+    def fake(pipe, timeout):
+        yield _StubPipe()
+
+    monkeypatch.setattr(_livecli, "_live_open", fake)
+
+
+def test_groundtruth_REFUSES_when_the_file_does_not_read_back(tmp_path, monkeypatch):
+    """The write lands SHORT and the re-read must catch it."""
+    import io
+    from pathlib import Path
+
+    from x4validate import _livecli, _livedump
+
+    _stub_live_open(monkeypatch)
+    dest = tmp_path / "gt.tsv"
+
+    real_write = Path.write_bytes
+
+    def short_write(self, data):
+        # A truncating write: exactly the failure mode a re-read exists to see, and
+        # one that reports success to its caller.
+        return real_write(self, data[: len(data) // 2])
+
+    monkeypatch.setattr(Path, "write_bytes", short_write)
+    with pytest.raises(_livedump.LiveDumpCorrupt, match="read back"):
+        _livecli.cmd_groundtruth(None, 1.0, out_file=str(dest), out=io.StringIO())
+
+
+def test_groundtruth_SUCCEEDS_when_the_file_does_read_back(tmp_path, monkeypatch):
+    """The control. Without it, a `raise` added unconditionally would pass the test
+    above while breaking every real harvest -- a red that cannot go green is worth as
+    little as a green that cannot go red."""
+    import io
+
+    from x4validate import _livecli
+
+    _stub_live_open(monkeypatch)
+    dest = tmp_path / "gt.tsv"
+    rc = _livecli.cmd_groundtruth(None, 1.0, out_file=str(dest), out=io.StringIO())
+    assert dest.is_file(), "the harvest must actually write when the write is honest"
+    assert dest.read_bytes(), "and it must not be empty"
+    assert rc in (0, 2), rc          # 2 = nothing harvested, which this stub guarantees
