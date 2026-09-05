@@ -105,3 +105,60 @@ def test_every_engine_source_actually_exists():
     missing = [n for n in _freshness.ENGINE_SOURCES
                if not (_freshness._PKG / n).is_file()]
     assert not missing, "ENGINE_SOURCES names files that do not exist: %s" % missing
+
+
+def _tree(root):
+    (root / "libraries" / "sub").mkdir(parents=True)
+    (root / "assets" / "units" / "deep").mkdir(parents=True)
+    (root / "libraries" / "wares.xml").write_text("x", encoding="utf-8")
+    return root
+
+
+def test_an_ADD_below_the_top_level_moves_the_survey(tmp_path):
+    """The blindness the docstring did not name.
+
+    It described one limit -- "an in-place edit to an existing file" -- while folding
+    only the TOP level, so an ADD or DELETE at depth 3 moved nothing either. That is
+    not an in-place edit, and essentially all reference content sits deeper than
+    depth 2. MEASURED 2026-09-05: `libraries/sub/new.xml` appearing was invisible.
+    """
+    root = _tree(tmp_path / "ref")
+    before = _freshness._reference_survey(root)
+    (root / "libraries" / "sub" / "new.xml").write_text("n", encoding="utf-8")
+    assert _freshness._reference_survey(root) != before, (
+        "an added file at depth 3 must move the survey")
+
+
+def test_a_DELETE_below_the_top_level_moves_the_survey(tmp_path):
+    root = _tree(tmp_path / "ref")
+    f = root / "libraries" / "sub" / "new.xml"
+    f.write_text("n", encoding="utf-8")
+    before = _freshness._reference_survey(root)
+    f.unlink()
+    assert _freshness._reference_survey(root) != before
+
+
+def test_an_edit_to_the_MARKER_file_still_moves_the_survey(tmp_path):
+    """A REGRESSION the move to a shape-print introduced and presented as a widening.
+
+    The single-file survey watched `libraries/wares.xml`, so an in-place edit to it
+    moved the OLD axis. The shape-print moved nothing for that case. One stat buys it
+    back, and this pins it so the trade cannot be re-made silently.
+    """
+    root = _tree(tmp_path / "ref")
+    before = _freshness._reference_survey(root)
+    (root / "libraries" / "wares.xml").write_text("edited", encoding="utf-8")
+    assert _freshness._reference_survey(root) != before
+
+
+def test_the_depth_limit_is_STATED_not_implied(tmp_path):
+    """The control, and the honest half. Depth 4 is still blind -- chosen, because
+    folding depth 3 costs 0.441 s against 0.018 s (MEASURED on the real 510,711-file
+    tree) and this runs on every query. If someone deepens it, this test should be
+    updated deliberately, not discovered by a slowdown."""
+    root = _tree(tmp_path / "ref")
+    before = _freshness._reference_survey(root)
+    (root / "assets" / "units" / "deep" / "ship.xml").write_text("s", encoding="utf-8")
+    assert _freshness._reference_survey(root) == before, (
+        "depth 4 is documented as blind; if this now moves, update _SURVEY_DEPTH's "
+        "note and the docstring rather than leaving them describing the old shape")

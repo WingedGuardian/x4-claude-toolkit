@@ -363,6 +363,26 @@ def _fold(detail: list[dict], reference: Path) -> str:
     return h.hexdigest()[:16]
 
 
+#: How many directory levels of `reference/` the survey folds in. A directory's mtime
+#: moves when its DIRECT children change, so folding depth D detects an add or a delete
+#: at depth D+1.
+#:
+#: MEASURED 2026-09-05 by TIMING THIS FUNCTION on the real 510,711-file tree -- not a
+#: proxy walk. My first estimate came from a bare scandir traversal and said depth 3
+#: cost 0.019 s; the real function, which also stats every entry and lists every child,
+#: costs 0.441 s. Measuring the neighbouring thing is how a design gets chosen wrong:
+#:     depth 1   0.002 s   <- what this was; it detected adds/deletes only at depth 2
+#:     depth 2   0.018 s   <- chosen: 9x, still trivial against a per-query check
+#:     depth 3   0.441 s   <- 220x. "A check too slow to run protects nothing."
+#:
+#: STILL BLIND, stated rather than implied: an add or delete at depth 4 or deeper
+#: (e.g. `assets/units/deep/ship.xml`), and an in-place edit to any file except the
+#: marker below. Both are covered in practice by the recorded build id -- a game patch
+#: plus re-unpack rewrites the tree -- and `reference/` is policy-locked read-only, so
+#: an in-place edit is a violation rather than an event.
+_SURVEY_DEPTH = 2
+
+
 def _reference_survey(reference: Path) -> str:
     """A cheap shape-print of the reference tree.
 
@@ -383,9 +403,16 @@ def _reference_survey(reference: Path) -> str:
     game patch, an added or removed DLC, or a rename all move it.
 
     WHAT IT DOES NOT SEE, and this is a LIMIT OF THE APPROACH, not of the effort: an
-    in-place edit to an existing file. MEASURED -- changing a file's contents moves NO
-    ancestor directory's mtime at any depth, so the only way to see it is to stat every
-    file, which is the 17.6 s this exists to avoid.
+    in-place edit to an existing file (except the marker below). MEASURED -- changing a
+    file's contents moves NO ancestor directory's mtime at any depth, so the only way to
+    see it is to stat every file, which is the 17.6 s this exists to avoid.
+
+    ⚠ AND, until 2026-09-05, an ADD or DELETE below depth 2 -- which is not an in-place
+    edit and was not covered by that sentence. The survey folded only the top level, so
+    `libraries/sub/new.xml` appearing moved nothing, and essentially all reference
+    content sits deeper than depth 2. Folding to _SURVEY_DEPTH now covers adds and
+    deletes to depth 3; depth 4 and below remain blind, and that is now stated at the
+    constant instead of being implied away.
 
     That is acceptable HERE and nowhere else, for one reason: `reference/` is
     policy-locked read-only behind `.unpacked-and-locked`, so an in-place edit is a
@@ -398,22 +425,44 @@ def _reference_survey(reference: Path) -> str:
         entries = sorted(os.scandir(reference), key=lambda e: e.name.lower())
     except OSError:
         return "ref:<ABSENT>"
-    for e in entries:
-        try:
-            st = e.stat()
-        except OSError:
-            h.update(("?" + e.name.lower()).encode())
-            continue
-        h.update(e.name.lower().encode())
-        if e.is_dir():
+    def _fold(items, depth: int) -> None:
+        """Fold one directory level into the hash, recursing to _SURVEY_DEPTH.
+
+        A directory's mtime moves when its DIRECT children change, so folding the
+        mtimes of every directory down to depth D detects an add or a delete at any
+        depth up to D+1. At depth 1 -- what this did until 2026-09-05 -- that is only
+        depth 2, and essentially all reference content sits deeper.
+        """
+        for e in sorted(items, key=lambda x: x.name.lower()):
             try:
-                kids = sorted(os.listdir(e.path))
+                st = e.stat()
             except OSError:
-                kids = []
-            h.update(f"d:{int(st.st_mtime)}:{len(kids)}:".encode())
-            h.update(hashlib.sha256(chr(10).join(kids).encode()).digest())
-        else:
-            h.update(f"f:{int(st.st_mtime)}:{st.st_size}".encode())
+                h.update(("?" + e.name.lower()).encode())
+                continue
+            h.update(e.name.lower().encode())
+            if e.is_dir(follow_symlinks=False):
+                try:
+                    kids = sorted(os.scandir(e.path), key=lambda x: x.name.lower())
+                except OSError:
+                    kids = []
+                h.update(f"d:{int(st.st_mtime)}:{len(kids)}:".encode())
+                h.update(hashlib.sha256(
+                    chr(10).join(k.name for k in kids).encode()).digest())
+                if depth < _SURVEY_DEPTH:
+                    _fold(kids, depth + 1)
+            else:
+                h.update(f"f:{int(st.st_mtime)}:{st.st_size}".encode())
+
+    _fold(entries, 1)
+    # The marker file the SINGLE-FILE survey used to watch. Restored 2026-09-05: the
+    # move to a shape-print was presented as a strict widening and was in fact a TRADE
+    # -- an in-place edit to this one file moved the OLD axis and moved nothing in the
+    # new one. One stat buys that case back.
+    try:
+        mst = (reference / "libraries" / "wares.xml").stat()
+        h.update(f"marker:{int(mst.st_mtime)}:{mst.st_size}".encode())
+    except OSError:
+        h.update(b"marker:<absent>")
     # The build the tree was unpacked FROM. A game update under an old reference is the
     # staleness that matters most, and it is the one an mtime survey can miss entirely
     # if the unpack preserved timestamps.
