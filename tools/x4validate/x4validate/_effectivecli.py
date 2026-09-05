@@ -371,9 +371,37 @@ def _cmd_coverage(con, args) -> int:
     return 0
 
 
+def _one_entity(con, kind: str, name: str):
+    """The entity for (kind, name) -- and a NAMED warning when there is more than one.
+
+    `entities` has no UNIQUE constraint on (kind, name), and `fetchone()` with no
+    ORDER BY took whichever row SQLite happened to return. MEASURED 2026-09-04 on the
+    live store: 63 duplicated (kind, name) pairs of 23,159 entities -- 34 of them
+    kind='macro', and ALL 34 disagree on vpath. `bullet_ter_turret_m_laser_01_mk1_macro`
+    resolves to two rows with 24 and 18 properties; `cluster_sm3_background_macro` has
+    SIX rows across six vpaths and two origins, five with chain NULL and one
+    full-override -- so `who-sets` answered "ego_dlc_timelines full-override" on a
+    coin toss.
+
+    Ordered by id so the choice is at least deterministic, and the alternatives are
+    printed, because a value silently chosen from several is the narrowing step this
+    whole tool exists to announce.
+    """
+    rows = con.execute("SELECT * FROM entities WHERE kind=? AND name=? ORDER BY id",
+                       (kind, name)).fetchall()
+    if not rows:
+        return None
+    if len(rows) > 1:
+        print(f"NOTE: {len(rows)} entities share ({kind}, {name!r}); showing the "
+              f"lowest id. They are NOT interchangeable:", file=sys.stderr)
+        for r in rows:
+            vp = r["vpath"] if "vpath" in r.keys() else "?"
+            print(f"      id={r['id']}  {vp}", file=sys.stderr)
+    return rows[0]
+
+
 def _cmd_show(con, args) -> int:
-    ent = con.execute("SELECT * FROM entities WHERE kind=? AND name=?",
-                      (args.kind, args.name)).fetchone()
+    ent = _one_entity(con, args.kind, args.name)
     if ent is None:
         if _reject_unknown_kind(con, args.kind):
             return 2
@@ -422,8 +450,7 @@ def _cmd_attr(con, args) -> int:
 
 
 def _cmd_who_sets(con, args) -> int:
-    ent = con.execute("SELECT * FROM entities WHERE kind=? AND name=?",
-                      (args.kind, args.name)).fetchone()
+    ent = _one_entity(con, args.kind, args.name)
     if ent is None:
         if _reject_unknown_kind(con, args.kind):
             return 2
@@ -447,7 +474,38 @@ def _cmd_who_sets(con, args) -> int:
     return 0
 
 
+def _reject_unknown_origin(con, folder: str) -> bool:
+    """True (and prints) if *folder* is not a stored origin.
+
+    `diff-mod` was the one read command taking an identifier with NO guard, while its
+    two siblings each carry a paragraph explaining that a confident zero over a name
+    that CANNOT exist is the defect. MEASURED 2026-09-04 against the live store:
+    `x4effective diff-mod zzznotamodatall` printed "0 value(s) won by
+    zzznotamodatall", rc 0 -- which reads as "this mod overrides nothing" rather than
+    "there is no such mod". The comment two lines below calls that count "the
+    headline number a balance discussion turns on".
+
+    Origins are trivially enumerable (base 294,940 / vro 62,673 / ... on this store),
+    so there is no excuse for guessing at one.
+    """
+    have = [r[0] for r in con.execute(
+        "SELECT DISTINCT origin FROM attrs ORDER BY origin").fetchall() if r[0]]
+    if folder in have:
+        return False
+    print(f"{folder!r} is not a stored origin, so '0 values won' would be a "
+          f"statement about the NAME, not about the mod.", file=sys.stderr)
+    near = [o for o in have if folder.lower() in o.lower() or o.lower() in folder.lower()]
+    if near:
+        print("  did you mean: " + ", ".join(sorted(near)[:8]), file=sys.stderr)
+    else:
+        print(f"  {len(have)} stored origin(s); the largest are: "
+              + ", ".join(sorted(have)[:8]), file=sys.stderr)
+    return True
+
+
 def _cmd_diff_mod(con, args) -> int:
+    if _reject_unknown_origin(con, args.folder):
+        return 2
     total = con.execute("SELECT COUNT(*) FROM attrs a JOIN entities e ON e.id=a.entity_id "
                         "WHERE a.origin=?", (args.folder,)).fetchone()[0]
     rows = con.execute(

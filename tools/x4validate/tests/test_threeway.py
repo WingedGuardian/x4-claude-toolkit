@@ -26,7 +26,7 @@ Where it does not, the answer is UNKNOWN and must say so, never "removed".
 
 from pathlib import Path
 
-from x4validate import _threeway
+from x4validate import _diffcli, _threeway
 
 
 def _mod(root: Path, name: str, wares: dict[str, dict[str, str]]) -> Path:
@@ -476,3 +476,43 @@ def test_a_genuinely_unchanged_document_IS_still_verbatim(tmp_path):
     assert not r.unreadable
     assert r.documents_compared == 1
     assert r.verbatim == 1
+
+
+# --------------------------------------------------------------------------- #
+# The `--file` flag answered "no differences" for THREE different situations.
+# MEASURED 2026-09-04; the correct handling already existed in the three-way
+# sibling ("that is an ABSENCE only if the file is in the comparison").
+# --------------------------------------------------------------------------- #
+
+def _two(tmp_path, break_new=False):
+    base = _mod(tmp_path, "base", {"ore": {"price": "100"}})
+    new = _mod(tmp_path, "new", {"ore": {"price": "100"}})
+    if break_new:
+        (new / "libraries" / "wares.xml").write_text(
+            "<?xml version='1.0'?><wares><ware id='ore' price='100'/>", encoding="utf-8")
+    return base, new
+
+
+def test_file_flag_on_a_vpath_NEITHER_side_has_is_not_no_differences(tmp_path, capsys):
+    base, new = _two(tmp_path)
+    rc = _diffcli.main([str(base), str(new), "--file", "libraries/nope.xml"])
+    out = capsys.readouterr().out
+    assert rc == 1, "a vpath nobody has is not an absence of DIFFERENCES"
+    assert "NOT IN THE COMPARISON" in out, out
+
+
+def test_file_flag_on_an_UNREADABLE_file_is_not_no_differences(tmp_path, capsys):
+    base, new = _two(tmp_path, break_new=True)
+    rc = _diffcli.main([str(base), str(new), "--file", "libraries/wares.xml"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "NOT COMPARED" in out, out
+
+
+def test_file_flag_on_a_genuinely_unchanged_file_IS_no_differences(tmp_path, capsys):
+    """The control: without it, a fix that made every --file non-zero would pass."""
+    base, new = _two(tmp_path)
+    rc = _diffcli.main([str(base), str(new), "--file", "libraries/wares.xml"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "no differences" in out, out

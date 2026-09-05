@@ -70,10 +70,31 @@ def main(argv: list[str] | None = None) -> int:
     print(_fmt_summary(md))
 
     if args.file:
-        fd = next((f for f in md.files if f.vpath.lower() == args.file.lower()), None)
-        if fd is None:
-            print(f"  {args.file}: no differences"); return 0
-        _print_file(fd)
+        want = args.file.lower()
+        fd = next((f for f in md.files if f.vpath.lower() == want), None)
+        if fd is not None:
+            _print_file(fd)
+            return 0
+        # `next(...)` returning None meant THREE different things and printed one
+        # answer for all of them. MEASURED 2026-09-04: a vpath that exists on NEITHER
+        # side printed "no differences" rc 0, and so did a file sitting in the
+        # NOT COMPARED list two lines above -- the tool answering "no differences"
+        # about the very file it had just said it could not read. The correct
+        # handling already exists in this function's three-way sibling below: "that
+        # is an ABSENCE only if the file is in the comparison".
+        hit = [u for u in md.unreadable
+               if u.split(":", 1)[0].strip().lower().endswith(want)]
+        if hit:
+            print(f"  {args.file}: NOT COMPARED - {hit[0]}")
+            return 1
+        readable = any(_diff.read_vpath(d, args.file) is not None
+                       for d in baseline + [Path(args.new)])
+        if not readable:
+            print(f"  {args.file}: NOT IN THE COMPARISON - neither side has that "
+                  f"vpath. That is an absence of the FILE, not an absence of "
+                  f"differences.")
+            return 1
+        print(f"  {args.file}: no differences")
         return 0
 
     # Every one of these lists is truncated by --top. A bare list reads as
