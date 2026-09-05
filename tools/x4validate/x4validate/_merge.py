@@ -602,6 +602,45 @@ def _union_children(tree: etree._Element, overlay: etree._Element,
             index[key] = new
 
 
+def _registry_rel(vpath: str) -> str:
+    """The path a MERGE-KIND test must see: the document's path within its OWNER.
+
+    `_ADDITIVE_DIRS` and `_SCRIPT_REGISTRY_DIRS` are prefixes of a document's path
+    inside the extension that owns it -- `libraries/`, `index/`, `t/`, `md/`. Two of
+    the three call sites below hand `apply_overlay` a vpath that still carries an
+    `extensions/<owner>/` prefix, and `extensions/ego_dlc_boron/libraries/rooms.xml`
+    does not start with `libraries/`. So the union branch was skipped and the base
+    document was FULL-OVERRIDDEN -- discarded -- for every shared registry file
+    addressed through an owner-nested path.
+
+    MEASURED 2026-09-05 on the live corpus (125 active mods, packed-inclusive):
+        vpath                                    base   effective
+        ego_dlc_boron/libraries/rooms.xml          19       2
+        ego_dlc_boron/libraries/roomgroups.xml     19       2
+        ego_dlc_split/libraries/rooms.xml          18       2
+        ego_dlc_split/libraries/roomgroups.xml     18       2
+        ego_dlc_terran/libraries/rooms.xml         19       2
+        ego_dlc_terran/libraries/roomgroups.xml    18       2
+    99 base entries discarded, across 6 of the 6 real instances in the corpus (the
+    other nested library files are diffs, which take the `oroot.tag == "diff"`
+    branch first and are unaffected). With the prefix stripped the first becomes 21
+    entries -- 19 + 2 -- and the mode flips `full` -> `union`.
+
+    This also made the TWO DOORS to one logical document disagree, which is the very
+    thing the note at the nested loop says was closed in v2.2.1: the plain door
+    strips nothing because the REQUESTED vpath is already bare, so it unioned, while
+    the nested door full-overrode the same pair.
+
+    ⚠ The sibling of `d368bf3`, this round's own fix for "a mixed-case additive vpath
+    made every DLC layer REPLACE instead of union". Same branch, same consequence,
+    one variant away -- and that fix's test pinned CASE, not PREFIX.
+    """
+    parts = vpath.split("/")
+    if len(parts) >= 3 and parts[0].lower() == "extensions":
+        return "/".join(parts[2:])
+    return vpath
+
+
 def apply_overlay(
     tree: etree._Element | None,
     oroot: etree._Element,
@@ -620,11 +659,13 @@ def apply_overlay(
             return None, "diff(no-base!)"  # diff with no base — cannot apply
         apply_diff(tree, oroot, recorder=recorder, source=source)
         return tree, "diff"
+    # The OWNER-RELATIVE path, never the requested one -- see _registry_rel.
+    _kind = _registry_rel(vpath).lower()
     if (tree is not None and oroot.tag == tree.tag
-            and vpath.lower().startswith(_ADDITIVE_DIRS)):
+            and _kind.startswith(_ADDITIVE_DIRS)):
         _union_children(tree, oroot, recorder=recorder, source=source)
         return tree, "union"
-    if tree is not None and vpath.lower().startswith(_SCRIPT_REGISTRY_DIRS):
+    if tree is not None and _kind.startswith(_SCRIPT_REGISTRY_DIRS):
         # F27 — the engine registers MD scripts by FILENAME, and a duplicate
         # filename is DISCARDED. A complete <mdscript> at a vpath something
         # already supplied never runs: no override, no merge, no error line.

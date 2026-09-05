@@ -79,3 +79,49 @@ def test_the_language_file_test_is_also_case_insensitive():
     assert _merge._is_text_vpath("T/0001-l044.xml")
     assert not _merge._is_text_vpath("libraries/wares.xml")
     assert not _merge._is_text_vpath("t/notxml.txt")
+
+
+# --------------------------------------------------------------------------- #
+# THE OTHER HALF OF THE SAME BRANCH. The tests above vary the CASE of the vpath;
+# nothing varied the PREFIX. `_ADDITIVE_DIRS` are paths inside the extension that
+# OWNS the document, and two of apply_overlay's three call sites pass a vpath that
+# still carries `extensions/<owner>/` -- which does not start with `libraries/`.
+#
+# MEASURED 2026-09-05 on the live corpus: 6 shared registry files full-overridden
+# instead of unioned, 99 base entries discarded from the effective tree. Same
+# branch and same consequence as d368bf3 ("a mixed-case additive vpath made every
+# DLC layer REPLACE instead of union"), one variant away, and that fix's test
+# pinned case rather than prefix.
+# --------------------------------------------------------------------------- #
+
+NESTED = ["extensions/ego_dlc_boron/libraries/rooms.xml",
+          "extensions/ego_dlc_split/index/macros.xml",
+          "extensions/EGO_DLC_TERRAN/Libraries/wares.xml",   # prefix AND case
+          "extensions/some_mod/t/0001.xml"]
+
+
+def test_an_OWNER_NESTED_additive_vpath_still_unions():
+    for vpath in NESTED:
+        base = _index("a", "b")
+        overlay = _index("c")
+        tree, mode = _merge.apply_overlay(base, overlay, vpath, source="m")
+        assert mode == "union", "%s merged as %r, not union" % (vpath, mode)
+        assert len(tree) == 3, "%s lost base entries: %d of 3" % (vpath, len(tree))
+
+
+def test_the_control_a_nested_NON_additive_vpath_still_full_overrides():
+    """Without this, a fix that stripped the prefix and unioned EVERYTHING nested
+    would look identical to one that only fixed the registry dirs."""
+    base = _index("a", "b")
+    overlay = _index("c")
+    tree, mode = _merge.apply_overlay(
+        base, overlay, "extensions/ego_dlc_boron/assets/units/size_s/ship.xml", source="m")
+    assert mode != "union", "a nested NON-additive path must NOT union"
+
+
+def test_a_bare_prefix_lookalike_is_not_stripped():
+    """`extensions` as a top-level FILE name, or a two-segment path, must not be
+    mistaken for an owner prefix -- the strip requires at least three segments."""
+    assert _merge._registry_rel("libraries/wares.xml") == "libraries/wares.xml"
+    assert _merge._registry_rel("extensions/wares.xml") == "extensions/wares.xml"
+    assert _merge._registry_rel("extensions/m/libraries/w.xml") == "libraries/w.xml"
