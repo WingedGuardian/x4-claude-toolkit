@@ -285,9 +285,33 @@ jobs:
           # for -- 125 went dormant at once, once, and that is the shape it must catch.
           #
           # Headroom stays small on purpose. A ceiling far above the real floor cannot
-          # detect a dormant block, so windows keeps its measured 42 + 3 and ubuntu
-          # gets 53 + 1 (for the skip this commit's oracle-test fix adds) + 1.
-          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '55' || '45' }}
+          # detect a dormant block, so windows keeps its measured floor + 3 and ubuntu
+          # + 2.
+          #
+          # RAISED 2026-09-05, 45 -> 49 / 55 -> 59, because the arc's own tests pushed
+          # the floor past the ceiling and this leg would have gone RED on push.
+          #
+          # The floor was re-measured against a REAL CLONE with every X4_* cleared and
+          # the roots ASSERTED to resolve to None -- not `git archive`, which leaves no
+          # .git and adds ~6 "not a git checkout" skips CI never sees. That instrument
+          # was then validated rather than trusted: run against the exact commit CI run
+          # 33777842225 measured, it returned 42 skips -- CI-windows' own figure, to the
+          # test. So the machine difference is ZERO and the whole delta is ours.
+          #
+          # Windows floor is now 46, and all four added skips are accounted for, each
+          # +1, buckets summing to the total:
+          #   qa_sweep import 8 -> 9 (test_UNSWEPT... loads it via import_gate)
+          #   test_changed_cli      snapshots_dir() refused with no registry
+          #   test_effective_scope  docs/BLIND-SPOTS.md is not in this repo at all
+          #   test_every_gate_can_fail  gates/oracle.py refuses without a configured X4
+          # None is a test gone dormant, which is the only thing this ceiling is for.
+          #
+          # Ubuntu's 57 is INFERRED, not measured -- there is no Linux box here. The
+          # inference is narrow: all four causes are platform-neutral (a missing install,
+          # a missing registry, a file absent from the repo), none touches case
+          # sensitivity, path shape or a platform-specific tool, and the Windows
+          # reproduction was exact. If CI reports otherwise, take CI's number.
+          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '59' || '49' }}
         run: uv run --frozen python -m pytest -q -rs
 
   scrub:
