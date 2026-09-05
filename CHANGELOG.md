@@ -1,6 +1,6 @@
 # Changelog
 
-## v3.0.0 — 2026-09-02
+## v3.0.0 — 2026-09-05
 
 Three things make this a major version rather than a point release: the Bash guard was
 rebuilt around a single parse pass, the toolkit gained a **live channel to the running
@@ -9,6 +9,248 @@ you run is checked; the second and third change what the toolkit can see.
 
 ⚠ **`protect-bash.sh` now requires Python** (see below). Without it the guard **asks**
 rather than silently allowing.
+
+### Fixed — a case WORD containing "in" was a TOTAL bypass of every hard block
+
+```python
+toks = rest.split()
+if "in" in toks:                 # correct: TOKEN membership
+    cut = rest.index("in") + 2   # WRONG: SUBSTRING search
+```
+
+`case $string in *) rm -rf "<game>";; esac` cut inside the WORD `string`, leaving
+`ary in *) rm -rf …`. The case-arm pattern cannot match that (it forbids spaces), so
+the segment's verb came out as `ary` and **every verb-keyed rule missed at once** —
+including all three hard blocks. The name backstop died with it, because the `rm`
+target list was empty.
+
+MEASURED end to end against both hook copies, which were byte-identical at the time:
+
+| command | before | after |
+|---|---|---|
+| `rm -rf "<game>"` | deny | deny |
+| `case $string in *) rm -rf "<game>";; esac` | **ALLOW** | deny |
+
+Three more spellings of the same arm were bypasses, plus a fourth in the use-site
+guard: `*)rm` (no space after the paren), the POSIX parenthesised form, and a
+double- or single-quoted label. The trailing whitespace was never the safety
+property — the no-whitespace character class is, which is why a process
+substitution's `rm -rf extensions)` tail still cannot match it.
+
+And `strip_heredocs` truncated any marker that was not a bare identifier, so a
+quoted or dotted marker never found its terminator and blanked the rest of the
+command — it reached no rule at all.
+
+### Fixed — the fuzzer could not reach the bug, and said so in its own docstring
+
+`scripts/fuzz-guard.py` states one invariant: the dangerous **operand** is
+byte-identical in every mutant. There was a **second, unstated** one — every
+compound-command mutator was a FIXED string, always a one-character word and a
+one-character label. **So the word and the label were unreachable by construction,
+exactly as the operand is.**
+
+That is why 996 mutants, 82 mutation probes, 23 predicate checks and 388 unit tests
+were all green while the bypass above was live in both hook copies.
+
+11 parameter-varied mutators were added, each checked with `bash -n` first so a
+mutant the parser rejects is dropped rather than counted. MEASURED: **1,140 mutants,
+80 bypasses** on the first run, **0** after the fixes. Two of the four case-arm
+spellings and all three heredoc markers were found by the new mutators and by nothing
+else.
+
+**An instrument's stated invariant is its blind spot — and so is the one it does not
+state.**
+
+### Fixed — rule precedence was decided by LINE NUMBER, and three hooks failed open
+
+`ask` **exited**, so every `deny` written below it was unreachable and severity was
+decided by position in the file rather than by seriousness. Three separate findings
+turned out to be this one defect:
+
+* 300 trivial command substitutions turned the game-delete **hard block** into an
+  `ask`, because the carrier-truncation refusal sits above it. The blocking fact was
+  computed correctly and then discarded by ordering alone.
+* `rm "<mods>/t.txt" && git add -A` asked, where `git add -A` on its own denies.
+* the save-directory rule was unreachable in the default layout (saves live under the
+  profile), so the warning its own comment exists for never reached anyone.
+
+Precedence is now by **value**: deny > ask > advise. `deny` still exits — nothing
+outranks it — while `ask` records its reason and lets the remaining rules run.
+
+Re-priced per item over 13,503 real commands with the prediction written first:
+**8 changed, all tightening, 0 loosening** — four temp-directory writes, two
+`git add -A`, and two deploy commands running a recursive delete inside the game
+install that had been silent allows.
+
+### Fixed — a git config option silenced the destructive-git rule
+
+The option scanner skipped the value token only for `-C`, so `-c` was read as a bare
+flag and its **value** became the "subcommand":
+
+```
+cd "<x4 dir>" && git clean -fdx                          ask
+cd "<x4 dir>" && git -c core.fileMode=false clean -fdx   ALLOW
+cd "<x4 dir>" && git -c a.b=c reset --hard               ALLOW
+```
+
+One config option silenced the only layer that can see a destructive git — in the
+rule whose own docstring records that **git ignores the read-only attribute**, so
+`x4lock` stops none of these. Every pre-subcommand option that consumes the next
+token is now skipped; only `-C` still names the directory acted on.
+
+A second rule was killed by a closing parenthesis anywhere in a path, and the
+durable-record write guard used a pattern that could not cross one — dead for exactly
+the two files it names, because the game root lives under `Program Files (x86)`.
+
+### Fixed — an owner-nested registry file was FULL-OVERRIDDEN instead of unioned
+
+The additive directories (`libraries/`, `index/`, `t/`) are paths inside the extension
+that **owns** a document. Two of the three call sites pass a vpath that still carries
+`extensions/<owner>/`, and `extensions/ego_dlc_boron/libraries/rooms.xml` does not
+start with `libraries/` — so the union branch was skipped and **the base document was
+discarded**.
+
+MEASURED on the live corpus (125 active mods, packed-inclusive):
+
+| vpath | base entries | effective, before |
+|---|---|---|
+| `ego_dlc_boron/libraries/rooms.xml` | 19 | 2 |
+| `ego_dlc_boron/libraries/roomgroups.xml` | 19 | 2 |
+| `ego_dlc_split/libraries/rooms.xml` | 18 | 2 |
+
+**99 base registry entries in total were being thrown away** and the effective tree
+served the overlay's handful in their place. This is a user-facing data defect, not a
+reporting one: anything asking "what rooms exist" got the wrong answer.
+
+Separately, the synthetic `<language>` root for a mod's `t/` diff was created **after**
+the overlay loop it exists to serve, by which time the ops had already been dropped —
+a well-formed empty answer with nothing saying two overlays' ops had been discarded.
+
+### Fixed — four more defects in the merge engine
+
+* **an unreadable ARCHIVE still killed the run.** `overlay_root` routed only
+  `XMLSyntaxError` into the skipped channel, so bad XML inside a good archive was
+  recorded while a bad archive escaped — the exact failure that channel was built to
+  stop, surviving in the branch nobody reproduced. Both `OSError` and `ValueError` now
+  land in `skipped`, and a merely **absent** file is still a silent `None`.
+* **a dead guard the comment claimed existed.** A flag was assigned and never read,
+  sitting where a guard for "a file already applied bare is not applied again" would
+  have gone. Nothing enforced that, and enforcing it would have been **wrong** — the
+  bare and nested paths are two distinct files and the engine evaluates both.
+  MEASURED: 13 bare+nested pairs across 3 of 125 installed mods, all latent.
+* **an identity test on unresolved paths.** The packed-DLC supplement was gated on an
+  object comparison against an import-time snapshot, so one directory spelled
+  differently read as a different tree and the DLC were silently dropped. Now one
+  shared helper comparing resolved paths, used by both callers that had their own copy.
+* **a provenance row for an op that did not happen.** A root-targeted `<remove>` was
+  correctly reported as not applied and left a removal record anyway.
+
+### Fixed — `x4modlist tracked` called a duplicate row another game's
+
+The "belongs to other games" figure was `total - kept`, which mixes two populations:
+`kept` counts **unique ids** while `total` counts **rows**, so a second row for the
+same mod in the same game was attributed to a different game. The printed parts now
+sum to the denominator.
+
+Underneath it, `fetch_tracked` dropped rows between both of its channels: a row that
+is not a dict, or whose domain name is absent, was counted in neither the per-game
+tally nor the malformed count, leaving an unexplained remainder with no field to name
+it — in the one dataclass that exists to make a narrowing step legible. There is now a
+`no_domain` count, and it is announced.
+
+### Fixed — the search guard's coverage was INVERTED with respect to breadth
+
+A search rooted **at** `extensions/` advised, while a search with **no path at all**
+(which runs from the working directory, a strict superset) and one rooted **above**
+`extensions/` were both silent. MEASURED over 26 transcripts and 397 Grep/Glob calls:
+6 no-path and 4 above-extensions, all unguarded, against 15 that fired.
+
+The mod probe also built its archive glob from the **normalised** (lowercased) path
+while its own comment claimed it looked at the actual directory — only the root had
+been un-normalised. Inert on Windows; on a case-sensitive filesystem the guard was
+silently inert for exactly those mods, in the worst direction, since a packed mod then
+reads as loose-only. MEASURED on the reference machine: 133 mod folders, 54 ship a
+`.cat`, 10 have an uppercase letter, **3 of the 54 (5.6%)** are both.
+
+`search-scope.sh` was also the only hook in `settings.json` with no `timeout`.
+
+### Fixed — instruments that could not report what they were built to find
+
+* **the oracle enforced half its contract.** The half it dropped was the narrowing
+  half: an unseen population did not gate, and absent lines were neither counted nor
+  reported.
+* **nine dead sweep entries were a second gate absorbing coverage loss.**
+* **unparseable documents counted as VERBATIM** in the three-way and diff CLIs, while
+  the same screen said they were not — and the exit code ignored the unreadable,
+  no-base, dropped-by-author and key-collision channels entirely.
+* **a zero-coverage baseline stayed green forever** once recorded, with no floor.
+* **a nested `ui/lib` Lua file was neither stamped nor announced**, because the
+  not-covered announcement globbed the same pattern as the coverage.
+* **the lockstep gate read its population from the working tree** its own docstring
+  promises it never reads, and compared only the first saved variable per file.
+* **a NUL byte removed a file from the control-byte sweep** — and NUL is a member of
+  the class that sweep hunts. The existing test pinned the blind spot as intended
+  behaviour, so it had to be re-reasoned rather than updated.
+* **the reference survey was blind below depth 2** and had lost a case it used to
+  catch. Depth was chosen by measurement (0.002 s / 0.018 s / 0.441 s at depths 1/2/3),
+  after a first attempt timed a proxy rather than the real function.
+* **the account-path scrub was drive-letter-only**, and its selftest could not have
+  seen that. Git Bash, cygwin, UNC and home-directory forms are now covered, each with
+  a twin.
+
+### Fixed — the safety layer reported a clean sweep over a real hole
+
+`x4lock` dropped a **deleted** protected file from its manifest, so deleting one made
+the manifest smaller and `status` printed a clean total — and deletion is the
+documented residual risk the read-only attribute does not cover. Its import fallback
+produced a 1-of-26 manifest reported as complete and healthy. `x4canary` passed clean
+on an unborn repository (so initialising one was a permanent green) and read a staged
+rename as data loss.
+
+### Fixed — the mod's reply cap bounded the ANSWER, not the WORK
+
+MEASURED with the repository's own Lua harness: at N=5,000 the probe showed 489 rows
+while matching all 5,000 and making **40,492 engine calls (8.10 per object)** in a
+single frame — roughly half of it building rows that were then discarded. The reply is
+byte-identical after the fix.
+
+Three quieter defects alongside it: an uncapped extension dump (30.0% of the live
+`uidata.xml`), a wholly failed enumeration reporting four confident zeros with status
+OK, and a `content.xml` claiming twice that it changes no game state while writing
+profile userdata twice per load.
+
+### Fixed — installer defects found by reading the diff rather than running it
+
+The global install method was ungated and kept no backup. A PowerShell dry run created
+a directory; a rewrite list was built from the destination rather than the source; and
+a settings merge was announced as done without being verified. A failed backup became
+a **delete**, and the message "Nothing has been changed" was false when it was.
+
+### Changed — a release review is scoped to what the release CHANGES
+
+`docs/REVIEW-SCOPE.md` splits the work in two. **Track 1** is the release review,
+scoped to the diff between the previous tag and HEAD — every line this release
+actually changes. **Track 2** is a whole-codebase audit that gates nothing, because
+its findings already ship in the previous release.
+
+This was written after measuring that reviewers pointed at "the repository" kept
+returning findings that **pre-date the release**: of one round's 19 findings, **15
+pre-dated it and both CRITICALs ship in v2.8.0 byte-identical**. Those are worth
+fixing; they are not release blockers, and treating them as such is how a release
+never ships.
+
+### Changed — CI's cold-skip ceilings raised
+
+This release's own tests pushed the skip floor past the ceiling, and the leg named
+"Run the suite with NO game installed" — which is the release gate — would have failed
+on push.
+
+The floor was re-measured against a real clone with every `X4_*` cleared and the roots
+**asserted** to resolve to nothing. The instrument was then validated rather than
+trusted: pointed at the exact commit CI last measured, it returns **42** skips, CI's
+own figure to the test. All four added skips are accounted for, each +1, buckets
+summing to the total; none is a test gone dormant, which is the only thing this ceiling
+is for. The Linux figure is labelled INFERRED, because there is no Linux machine here.
 
 ### Fixed — a failed or wrong save could destroy the mod registry
 
