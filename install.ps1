@@ -314,10 +314,19 @@ function Get-EscapedEnvValue($v) {
 }
 
 function Write-PathsEnv($t) {
-  $dir = Join-Path $t '.claude'; New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  # THE GATE COMES FIRST. `New-Item -Force` CREATES the directory, so a -DryRun run
+  # made a directory and then printed "nothing was changed". install.sh gets the order
+  # right (refuse_if_dry_run, then mkdir). Reachable via `-Method global -Toolkit <new
+  # dir> -DryRun` and via `-Method in-game -DryRun` when Test-SameDir is true.
+  #
+  # `test_installers_agree.py::test_every_powershell_WRITER_consults_the_dry_run_flag`
+  # asserts `ps.count("Refuse-IfDryRun '") >= 3` -- a COUNT OF CALL SITES CANNOT SEE
+  # ORDERING, which is why this survived. -DryRun is executed nowhere in CI.
+  $dir = Join-Path $t '.claude'
   $f = Join-Path $dir 'x4-paths.env'
 
   Refuse-IfDryRun 'writing the path config into' $f
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
   # BACKED UP HERE, not at the call sites -- the placement install.sh uses, so a
   # method added later cannot write without a backup. The bash side got this fix;
@@ -516,7 +525,19 @@ function Install-Global($t) {
     ForEach-Object {
       $dst = Join-Path $hc 'skills'
       Copy-Item -Recurse -Force -LiteralPath $_.FullName -Destination $dst
-      $copied += Get-ChildItem -Recurse -File -LiteralPath (Join-Path $dst $_.Name) -Filter '*.md'
+      # DERIVED FROM THE SOURCE, never from a destination glob -- the rule install.sh
+      # states two lines above its own loop, and the agents leg below already follows.
+      # Enumerating the DESTINATION swept in any pre-existing `.md` in a user's
+      # ~/.claude/skills/x4-<name>/ that this toolkit does not ship, and then rewrote
+      # its contents: exactly what "a pre-existing user skill named x4-* must not
+      # match" forbids.
+      $srcRoot = $_.FullName
+      $dstRoot = Join-Path $dst $_.Name
+      $copied += Get-ChildItem -Recurse -File -LiteralPath $srcRoot -Filter '*.md' |
+        ForEach-Object {
+          $rel = $_.FullName.Substring($srcRoot.Length).TrimStart('', '/')
+          Get-Item -LiteralPath (Join-Path $dstRoot $rel) -ErrorAction SilentlyContinue
+        }
     }
   $agentsDst = Join-Path $hc 'agents'
   Get-ChildItem -File -LiteralPath (Join-Path $t '.claude\agents') -Filter '*.md' -ErrorAction SilentlyContinue |
@@ -569,8 +590,24 @@ function Install-Global($t) {
   setenv X4_TOOLKIT $t; setenv X4_REFERENCE $ref; setenv X4_GAME $Game; setenv X4_PROFILE $Profile
   if ($Profile) { setenv X4_DEBUGLOG (Join-Path $Profile 'debug.txt') }
   setenv X4_MODS $Mods; setenv X4_EXTENSIONS $ext; setenv XRCATTOOL $XRCatTool
+  # BACK IT UP FIRST. Write-PathsEnv and Copy-Toolkit both do; this one did not, and
+  # it rewrites the user's GLOBAL settings.json.
+  if (Test-Path -LiteralPath $sj) {
+    $bak = "$sj.bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss')
+    Copy-Item -LiteralPath $sj -Destination $bak -ErrorAction Stop
+    Write-Host "  backed up $sj -> $(Split-Path -Leaf $bak)"
+  }
   Write-Utf8NoBom $sj (($cfg | ConvertTo-Json -Depth 20) + "`n")
-  Write-Host "  merged X4_* env into $sj"
+  # VERIFY THE ARTIFACT, not the fact that a write statement ran -- the rule this
+  # installer already applies to x4-paths.env, and install.sh applies to this very
+  # file with `jq -e '.env.X4_TOOLKIT'` and exit 1.
+  $back = $null
+  try { $back = Get-Content -Raw -LiteralPath $sj | ConvertFrom-Json } catch { }
+  if (-not $back -or -not $back.env -or -not $back.env.X4_TOOLKIT) {
+    Write-Error "wrote $sj but reading it back does not show .env.X4_TOOLKIT -- the merge did not land."
+    exit 1
+  }
+  Write-Host "  merged X4_* env into $sj (verified)"
 }
 
 if (-not $Method) {
