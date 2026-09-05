@@ -294,10 +294,12 @@ only layer that can.
 
 MEASURED over 14 write primitives, each paired with a control proving the same
 primitive does change the file when unlocked: **11 are blocked on Windows** (9 on
-Linux/macOS: `os.remove` and `os.replace` are delete and rename-over, which POSIX
-authorises by the directory's permission -- MEASURED on CI). Python's `open("w")`,
+Linux, MEASURED on CI; macOS INFERRED from the same POSIX rule, no CI leg runs it:
+`os.remove` and `os.replace` are delete and rename-over, which POSIX authorises by
+the directory's permission). Python's `open("w")`,
 `write_text`, `write_bytes`, `os.truncate`, `os.replace`, `shutil.copy2` and
-`os.remove`; bash `>`, `cp` and `tee`; PowerShell `Set-Content`. Three are not, and
+`os.remove`; bash `>`, `cp` and `tee`; PowerShell `Set-Content`. Three are not on
+Windows (five on POSIX, the two above added), and
 they are documented rather than glossed: `bash rm -f` (POSIX `unlink` is authorised by
 the DIRECTORY, not the file) and PowerShell `Copy-Item -Force` / `Remove-Item -Force`
 (`-Force` clears the attribute). Those are deletes and force-overwrites, covered a

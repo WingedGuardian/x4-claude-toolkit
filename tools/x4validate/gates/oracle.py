@@ -1,8 +1,10 @@
 """ORACLE v4 — every mod the engine rejected ops from, packed included.
 
 Uses the tool's OWN iterator (_check.iter_diff_files) so it exercises the same code
-path x4validate does. Denominator is every cardinality-failure line in the log whose
-mod is INSTALLED here; lines for mods that are not are counted and named separately
+path x4validate does. Denominator is every DISTINCT (vpath, sel) cardinality failure in
+the log whose mod is INSTALLED here -- keyed, not per line, because the engine logs
+most failures twice (gotcha #19); raw line counts are tracked separately as `lines`.
+Lines for mods that are not installed are counted and named separately
 (`absent_lines`), never absorbed into the ratio.
 """
 from collections import Counter, defaultdict
