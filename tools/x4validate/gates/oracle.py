@@ -25,6 +25,13 @@ rows = []
 for folder in sorted(by_mod, key=lambda f: -len(by_mod[f])):
     mod_dir = EXT / folder
     if not mod_dir.is_dir():
+        # COUNTED, not merely shown. The row is printed but this `continue` used to
+        # skip every `tot[...] +=` below, so an uninstalled mod's lines left the
+        # DENOMINATOR entirely while the docstring says the denominator is the full
+        # set of cardinality failures in the log. The agreement percentage was then
+        # computed over a population quietly smaller than the one described -- a
+        # denominator taken from what happened to be present.
+        tot["absent_lines"] = tot.get("absent_lines", 0) + len(by_mod[folder])
         rows.append((folder, len(by_mod[folder]), "-", "-", "-", "NOT INSTALLED"))
         continue
 
@@ -108,8 +115,33 @@ if not tot["ops"]:
 print(f"\nagreement: {tot['agree']}/{tot['ops']} = "
       f"{100*tot['agree']//tot['ops']}%   FALSE OK: {tot['false_ok']}   "
       f"unclassified: {tot['unseen']}")
+if tot.get("absent_lines"):
+    print(f"  NB {tot['absent_lines']} log line(s) belong to mods that are NOT "
+          f"INSTALLED here and are outside every number above -- named in the table, "
+          f"and excluded from the denominator rather than silently absorbed into it.")
 if tot["false_ok"]:
     print(f"\nFAIL: {tot['false_ok']} op(s) the validator called OK and the ENGINE "
           f"did not.\n  A false OK is the one error class this project has no other "
           f"detector for.", file=sys.stderr)
+    raise SystemExit(1)
+
+# UNSEEN GATES TOO. The verdict above enforced only half the contract CLAUDE.md
+# states ("oracle: 234/234 ops, 0 false OK") -- and the half it dropped is the
+# NARROWING half. `unseen` counts ops the ENGINE acted on that our iterator never
+# produced at all: an op that stops being examined moves out of `agree` and into
+# `unseen`, lowers agreement below 234/234, and used to exit 0. That is precisely
+# the shape every defect in this codebase takes -- a step that narrows the data and
+# reports success anyway -- and it was the one shape this oracle could not fail on.
+#
+# UNVERIFIED ON THE MACHINE THAT WROTE THIS: $X4_ORACLE_LOG is unset here, so the
+# gate SKIPs (rc 2) and `unseen`'s value could not be measured. If your first
+# configured run fails here, read the named ops before assuming the gate is wrong --
+# either the iterator really has stopped seeing them, or there is a legitimate
+# exclusion, and that belongs in the code with a reason attached rather than in a
+# silent zero.
+if tot["unseen"]:
+    print(f"\nFAIL: {tot['unseen']} op(s) the ENGINE acted on that the validator "
+          f"never examined.\n  Not a disagreement -- an ABSENCE. An op that stops "
+          f"being enumerated leaves `agree` quietly, so agreement is only a "
+          f"denominator you can trust while this is zero.", file=sys.stderr)
     raise SystemExit(1)
