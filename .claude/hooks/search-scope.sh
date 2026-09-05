@@ -36,14 +36,41 @@ if [ -z "$INPUT" ]; then
   x4_advise "X4 SEARCH-SCOPE INERT: this hook received NO INPUT, so it checked nothing. Your search may be reading a partial picture (packed mods are invisible to a text search). Nothing is blocked."
   exit 0
 fi
+# COULD WE READ THIS PAYLOAD AT ALL? `x4_field` returns empty for "field absent" AND
+# for "could not parse", and its own docstring concedes it -- but the INERT branch
+# three lines above is proof this hook has something to say about the second. Probing
+# a field that is always present separates them. MEASURED 2026-09-05: a truncated
+# payload produced 0 bytes and silence, where an EMPTY one produced 288 bytes of INERT.
+# Same condition, opposite reporting.
+if [ -z "$(x4_field "$INPUT" 'tool_name')" ]; then
+  x4_advise "X4 SEARCH-SCOPE INERT: this payload could not be parsed, so the hook checked NOTHING. Your search may be reading a partial picture (packed mods are invisible to a text search). Nothing is blocked."
+  exit 0
+fi
 FP=$(x4_field "$INPUT" 'tool_input.path')   # shared reader: survives a missing jq
-[ -z "$FP" ] && exit 0
 [ -z "${X4_EXTENSIONS:-}" ] && exit 0
+
+# NO PATH AT ALL is the BROADEST search, not the narrowest. Grep/Glob without `path`
+# search the cwd -- and the cwd for this project IS the game root, a strict superset
+# of extensions/. This exited silently while a narrower search rooted INSIDE
+# extensions/ advised, so coverage was inverted with respect to breadth. MEASURED over
+# 26 transcripts / 397 Grep+Glob calls: 6 no-path and 4 above-extensions, all
+# unguarded, against 15 that fired.
+if [ -z "$FP" ]; then
+  advise "PARTIAL ANSWER: this search names no path, so it runs from the working directory -- which here contains the whole extensions/ folder. A text search reads LOOSE files only, so mods shipping .cat archives are invisible and a 'no matches' means 'not found in the loose subset', NOT 'absent'. Use _scan.iter_corpus_xml (packed-inclusive) for a corpus sweep, or confirm you want the loose-only view."
+fi
 
 # Pure-string prefilter first: the overwhelming majority of searches are nowhere near the
 # game folder, and they must not pay for a filesystem probe.
 nFP="$(x4_norm "$FP")"; nFP="${nFP%/}"
 nEXT="$(x4_norm "$X4_EXTENSIONS")"; nEXT="${nEXT%/}"
+# A search root that CONTAINS extensions/ (the game root, or any ancestor) covers a
+# strict superset of it -- including every packed mod -- and was exiting silently
+# while the subset advised.
+case "$nEXT" in
+  "$nFP"/*)
+    advise "PARTIAL ANSWER: this search is rooted ABOVE the extensions/ folder, so it covers every installed mod -- and a text search reads LOOSE files only. Mods shipping .cat archives are invisible to it, so a 'no matches' here means 'not found in the loose subset', NOT 'absent'. Use _scan.iter_corpus_xml (packed-inclusive) for a corpus sweep, or confirm you want the loose-only view."
+    ;;
+esac
 case "$nFP" in
   "$nEXT"|"$nEXT"/*) ;;
   *) exit 0 ;;

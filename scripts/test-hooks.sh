@@ -194,7 +194,18 @@ decide advise  search-scope.sh "$(pj "$GAME/extensions/packedmod")"    "search i
 decide allow search-scope.sh "$(pj "$GAME/extensions/loosemod")"     "loose-only mod is fully visible"
 decide allow search-scope.sh "$(pj "$GAME/extensions/packedmod/readme.txt")" "a single FILE is not a survey"
 decide allow search-scope.sh "$(pj "$X4_TOOLKIT/dev/mymod")"          "the mod workspace"
-decide allow search-scope.sh '{"tool_name":"Grep","tool_input":{"pattern":"x"}}' "no path at all"
+# NO PATH IS THE BROADEST SEARCH, NOT THE NARROWEST. This asserted `allow`, which
+# pinned the defect: a Grep with no path runs from the working directory -- which here
+# contains the whole extensions/ folder -- so it covers a strict SUPERSET of the case
+# two lines up that DOES advise. Coverage was inverted with respect to breadth.
+# MEASURED over 26 transcripts / 397 Grep+Glob calls: 6 no-path and 4 rooted above
+# extensions/, all unguarded, against 15 that fired.
+decide advise search-scope.sh '{"tool_name":"Grep","tool_input":{"pattern":"x"}}' "no path at all is the BROADEST search"
+decide advise search-scope.sh "$(pj "$GAME")"                          "rooted ABOVE extensions/ covers every mod"
+# (the unparseable-payload case is NOT a probe here: this harness refuses a probe
+#  whose payload is not valid JSON, and it is right to -- such a probe would
+#  exercise the harness rather than the hook. Measured directly instead:
+#  truncated payload -> 299 bytes of INERT advisory, was 0 bytes and silent.)
 
 echo; echo "=== protect-bash.sh ==="
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_GAME'")"      "rm the game directory"
@@ -341,7 +352,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=135
+EXPECT=136
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
