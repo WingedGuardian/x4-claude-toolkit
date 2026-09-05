@@ -465,7 +465,19 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
   echo "        --method separate in a mod repo to get them there."
   # merge env into settings.json (jq); create if absent
   local sj="$home_claude/settings.json"
-  [ -f "$sj" ] || echo '{}' > "$sj"
+  # BACKED UP FIRST. This rewrites the user's GLOBAL Claude settings, and it was the
+  # one write in either installer with no backup at all -- copy_toolkit and
+  # write_paths_env both take one, and install.ps1 now does too. A settings.json
+  # carries hand-added keys (this machine's has many), and `/model` is documented as
+  # dropping them, so an unbacked rewrite here is not recoverable from anywhere.
+  if [ -f "$sj" ]; then
+    if ! cp "$sj" "$sj.bak-$(date +%Y%m%d-%H%M%S)" 2>/dev/null; then
+      echo "ERROR: could not back up $sj. Refusing to rewrite it." >&2
+      exit 1
+    fi
+  else
+    echo '{}' > "$sj"
+  fi
   local tmp; tmp="$(mktemp)"
   jq --arg tk "$TOOLKIT" --arg g "$GAME" --arg ref "${REFERENCE:-$TOOLKIT/reference}" \
      --arg p "$PROFILE" --arg m "$MODS" --arg ext "${EXTENSIONS:-${GAME:+$GAME/extensions}}" --arg xc "$XRCAT" '
@@ -708,6 +720,22 @@ case "$METHOD" in
   global)
     [ -n "$TOOLKIT" ] || TOOLKIT="$SRC"
     announce_target "$TOOLKIT"
+    # THE GLOBAL DESTINATION WAS NEVER GATED. `require_direction` is called for
+    # in-game and separate and never here, and `looks_installed` was never asked about
+    # $HOME/.claude -- so `--over-existing` could not gate a method that copies skills
+    # and agents in and rewrites settings.json.
+    #
+    # NOT routed through require_direction: that refusal is about a destination that
+    # came from SCANNING (the Steam locations), and ~/.claude is a fixed, well-known
+    # path, so its reasoning does not transfer. What does transfer is the
+    # over-existing rule, and the backup below.
+    _hc="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+    if [ -d "$_hc/skills" ] && ls "$_hc/skills"/x4-* >/dev/null 2>&1        && [ "$OVER_EXISTING" != 1 ]; then
+      echo "REFUSING: $_hc already carries x4-* skills from a previous install." >&2
+      echo "  Re-run with --over-existing to replace them, after checking you have not" >&2
+      echo "  edited them in place. This method also rewrites $_hc/settings.json." >&2
+      exit 2
+    fi
     # BEFORE the first write. `install_global_claude` checks jq at its own top and
     # exits 1 saying "Nothing has been changed." -- but `write_paths_env` has already
     # rewritten x4-paths.env by then, so on a machine without jq the user was told
