@@ -802,6 +802,24 @@ def build_effective(
     if base_found:
         tree = parse_file(base_path)
         sources.append("base")
+    elif is_text_file:
+        # BEFORE the overlay loop, not after it. `t/0001.xml` has no base file in
+        # reference -- the engine overlays t-files onto the language tree -- so a
+        # mod's t-DIFF needs a `<language>` root to resolve its /language-targeted
+        # ops against. This synthesis used to run AFTER the loop, by which time
+        # apply_overlay had already returned `diff(no-base!)` and DROPPED the ops,
+        # and the comment explaining why the root exists sat beside a root that
+        # could no longer serve anyone.
+        #
+        # MEASURED 2026-09-05, two mods each shipping a t/0001.xml diff and no base:
+        #     sources ['A:diff(no-base!)', 'B:diff(no-base!)', 'synthetic:language']
+        #     tree <language>, pages []   base_found True, skipped EMPTY
+        # A well-formed empty answer with nothing anywhere saying two overlays' ops
+        # had been discarded. 62 of 125 active mods ship t/0001.xml (40 as diffs), and
+        # the loss is load-order dependent: today exactly 1 is hit, because a complete
+        # file at index 1 happens to supply a tree for everyone after it.
+        tree = etree.Element("language")
+        sources.append("synthetic:language")
 
     # Overlays that SUPPLIED this file (full/union): later mods may patch the same
     # logical file at the NESTED path `extensions/<that folder>/<vpath>`. Those
@@ -867,9 +885,7 @@ def build_effective(
     # — the engine overlays them onto the language tree. A mod's t-diff adds <page>s
     # to /language; synthesize an empty <language> root so /language-targeted ops
     # resolve (page/string collisions are covered separately by check_text).
-    if tree is None and is_text_file:
-        tree = etree.Element("language")
-        sources.append("synthetic:language")
+    # (the <language> synthesis now happens BEFORE the overlay loop -- see above)
 
     return MergeResult(tree=tree, sources=sources,
                        base_found=base_found or tree is not None,

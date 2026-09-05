@@ -125,3 +125,32 @@ def test_a_bare_prefix_lookalike_is_not_stripped():
     assert _merge._registry_rel("libraries/wares.xml") == "libraries/wares.xml"
     assert _merge._registry_rel("extensions/wares.xml") == "extensions/wares.xml"
     assert _merge._registry_rel("extensions/m/libraries/w.xml") == "libraries/w.xml"
+
+
+def test_a_t_file_diff_with_NO_BASE_still_applies(tmp_path):
+    """The synthetic `<language>` root must exist BEFORE the overlay loop.
+
+    `t/0001.xml` has no base file in reference -- the engine overlays t-files onto the
+    language tree -- so a mod's t-DIFF needs that root to resolve its /language ops
+    against. The synthesis used to run AFTER the loop, by which time apply_overlay had
+    returned "diff(no-base!)" and dropped the ops, leaving a well-formed EMPTY tree
+    with `base_found=True` and `skipped` empty: nothing anywhere said the ops were
+    discarded.
+
+    MEASURED 2026-09-05: two mods each shipping a t-diff produced pages=[] and
+    sources ['A:diff(no-base!)', 'B:diff(no-base!)', 'synthetic:language'].
+    62 of 125 active mods ship t/0001.xml, 40 of them as diffs.
+    """
+    for name, page in (("A", "99"), ("B", "98")):
+        t = tmp_path / name / "t"
+        t.mkdir(parents=True)
+        (t / "0001.xml").write_text(
+            '<?xml version="1.0"?><diff><add sel="/language">'
+            '<page id="%s"><t id="1">x</t></page></add></diff>' % page, encoding="utf-8")
+    cfg = _merge.Config(overlays=[tmp_path / "A", tmp_path / "B"],
+                        reference=tmp_path / "noref")
+    r = _merge.build_effective("t/0001.xml", cfg)
+    pages = [e.get("id") for e in r.tree] if r.tree is not None else []
+    assert pages == ["99", "98"], (
+        "t-diffs with no base were dropped; sources=%s" % ",".join(r.sources))
+    assert "diff(no-base!)" not in ",".join(r.sources)
