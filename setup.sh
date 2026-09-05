@@ -87,13 +87,28 @@ echo "3) Local settings & path config..."
 LOCAL="$ROOT/.claude/settings.local.json"
 EXAMPLE="$ROOT/.claude/settings.local.json.example"
 if [ -f "$LOCAL" ]; then ok "settings.local.json already present"
-elif [ -f "$EXAMPLE" ]; then cp "$EXAMPLE" "$LOCAL"; ok "created settings.local.json from example (gitignored)"
+# VERIFY THE ARTIFACT, not the intention. `cp ...; ok "created ..."` uses `;` not
+# `&&`, so a cp that failed -- or that succeeded INTO A DIRECTORY of that name --
+# still printed [ok] and contributed nothing to MISSING. MEASURED 2026-09-05 with
+# $LOCAL as a directory: both [ok] lines printed, "=== setup complete ===", exit 0,
+# and neither file existed. Line 76 in this same file already checks its artifact.
+elif [ -f "$EXAMPLE" ]; then
+  if cp "$EXAMPLE" "$LOCAL" 2>/dev/null && [ -f "$LOCAL" ]; then
+    ok "created settings.local.json from example (gitignored)"
+  else
+    fail "could not create settings.local.json from the example (is $LOCAL a directory?)"
+  fi
 else warn "no settings.local.json.example to copy"; fi
 
 CFG="$ROOT/.claude/x4-paths.env"
 CFG_EX="$ROOT/.claude/x4-paths.env.example"
 if [ -f "$CFG" ]; then ok "x4-paths.env already present"
-elif [ -f "$CFG_EX" ]; then cp "$CFG_EX" "$CFG"; ok "created x4-paths.env from example (gitignored) — edit it to point at your game/profile"
+elif [ -f "$CFG_EX" ]; then
+  if cp "$CFG_EX" "$CFG" 2>/dev/null && [ -f "$CFG" ]; then
+    ok "created x4-paths.env from example (gitignored) — edit it to point at your game/profile"
+  else
+    fail "could not create x4-paths.env from the example (is $CFG a directory?)"
+  fi
 else warn "no x4-paths.env.example to copy"; fi
 echo "     For a guided install (game folder / separate dir / global multi-repo) run:  bash install.sh   (or install.ps1 on Windows)"
 

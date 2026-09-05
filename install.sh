@@ -208,9 +208,23 @@ copy_toolkit() {
   # worse than saying nothing at all.
   local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
   local keep
+  # A FAILED BACKUP IS FATAL, because the restore branch below infers "this file did
+  # not exist before" from "no .bak-$stamp is here". With `|| true` those two became
+  # the same fact: a cp that failed meant the copy loop overwrote your file with the
+  # source machine's copy, no backup existed, and the `rm -f` at the bottom then
+  # DELETED it -- silently, with nothing printed. We KNOW the file existed; that
+  # knowledge must not be re-derived from a proxy that cannot tell the two apart.
+  # `write_paths_env` already applies this rule and says why: "A backup that silently
+  # did not happen is worse than none."
   for keep in settings.local.json x4-paths.env; do
     [ -f "$dest/.claude/$keep" ] || continue
-    cp "$dest/.claude/$keep" "$dest/.claude/$keep.bak-$stamp" 2>/dev/null || true
+    if ! cp "$dest/.claude/$keep" "$dest/.claude/$keep.bak-$stamp" 2>/dev/null; then
+      echo "ERROR: could not back up your existing $keep in $dest/.claude/." >&2
+      echo "       Refusing to continue: the upgrade would overwrite it and the" >&2
+      echo "       restore step cannot tell a failed backup from a file that was" >&2
+      echo "       never there. Nothing has been changed." >&2
+      exit 1
+    fi
   done
   # `mods` carries the game extension x4live needs (README: "copy that folder into
   # {game}/extensions/"). Omitting it shipped a documented instruction pointing at a
@@ -366,6 +380,15 @@ write_paths_env() {  # write_paths_env TOOLKIT_DIR
   return 0
 }
 
+require_jq_for_global() {
+  command -v jq >/dev/null 2>&1 && return 0
+  local home_claude="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  echo "ERROR: --method global needs jq to merge the X4_* env into $home_claude/settings.json." >&2
+  echo "       Install jq (https://jqlang.github.io/jq/), or use --method separate/in-game," >&2
+  echo "       which do not need it. Nothing has been changed." >&2
+  exit 1
+}
+
 install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env into settings.json
   local home_claude="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
   refuse_if_dry_run "installing skills and agents into" "$home_claude"
@@ -375,12 +398,8 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
   # failing late leaves a half-install whose every skill resolves to an undefined
   # variable. setup.sh treats a missing jq as a warning because it can proceed; this
   # cannot.
-  if ! command -v jq >/dev/null 2>&1; then
-    echo "ERROR: --method global needs jq to merge the X4_* env into $home_claude/settings.json." >&2
-    echo "       Install jq (https://jqlang.github.io/jq/), or use --method separate/in-game," >&2
-    echo "       which do not need it. Nothing has been changed." >&2
-    exit 1
-  fi
+  require_jq_for_global   # ONE implementation; the arm calls it before any write
+
   mkdir -p "$home_claude/skills" "$home_claude/agents"
   local s a copied=0
   for s in "$TOOLKIT/.claude/skills/"x4-*; do
@@ -689,6 +708,12 @@ case "$METHOD" in
   global)
     [ -n "$TOOLKIT" ] || TOOLKIT="$SRC"
     announce_target "$TOOLKIT"
+    # BEFORE the first write. `install_global_claude` checks jq at its own top and
+    # exits 1 saying "Nothing has been changed." -- but `write_paths_env` has already
+    # rewritten x4-paths.env by then, so on a machine without jq the user was told
+    # nothing changed while their live config had been regenerated. The message was
+    # true of the function and false of the run.
+    require_jq_for_global
     write_paths_env "$TOOLKIT"
     install_global_claude
     ;;
