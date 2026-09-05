@@ -24,6 +24,22 @@
 # (<toolkit>/.claude/hooks/ -> <toolkit>), because falling back to $(pwd) makes every
 # path resolve against whatever directory the shell happened to be in — which silently
 # scattered auto-backups outside the toolkit whenever the var was unset.
+# WAS IT REALLY IN THE ENVIRONMENT? The block below DERIVES a value when it is not,
+# and the snapshot/restore further down exists so a real environment variable outranks
+# the config file. A derived fallback is not an environment variable -- but it is
+# indistinguishable from one by the time the snapshot is taken, so the config file's
+# own X4_TOOLKIT was ALWAYS discarded.
+#
+# MEASURED 2026-09-05 with a config saying X4_TOOLKIT=<tkA> and no X4_* exported:
+#     python  _paths.reference()  ->  <tkA>/reference   (honours the file)
+#     bash    X4_REFERENCE        ->  <tkB>/reference   (ignored it)
+# and a Write into <tkA>/reference was a SILENT ALLOW past the reference/ HARD BLOCK,
+# while <tkB>/reference denied. X4_TOOLKIT is the key every other path derives from,
+# and install.sh writes it into that file on every method -- so the guards were reading
+# a different tree from the validator. That is the exact split this file's header says
+# it exists to prevent.
+_X4_TK_FROM_ENV=0
+[ -n "${X4_TOOLKIT:-}" ] && _X4_TK_FROM_ENV=1
 if [ -z "${X4_TOOLKIT:-}" ]; then
   if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
     X4_TOOLKIT="$CLAUDE_PROJECT_DIR"
@@ -53,6 +69,8 @@ if [ -f "$_x4_cfg" ]; then
   # `IFS='=' read -r k v` puts everything after the FIRST `=` into v, so a value
   # containing `=` survives.
   _x4_pre=$(for _k in $_X4_ENV_KEYS; do
+              # a DERIVED toolkit root must not outrank the config file (see above)
+              [ "$_k" = X4_TOOLKIT ] && [ "$_X4_TK_FROM_ENV" != 1 ] && continue
               eval "_v=\${$_k:-}"
               [ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v"
             done)

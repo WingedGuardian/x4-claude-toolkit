@@ -31,6 +31,14 @@ printf '%s' '{}' | "$JQ" -e . >/dev/null 2>&1 && JQ_OK=1
 if [ "$JQ_OK" = 1 ]; then
   TOOL_NAME=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_name // "unknown"')
   FILE_PATH=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.file_path // empty')
+  # An UNREADABLE payload is not an absent path. On a jq parse error both variables
+  # came back empty, the `[ -z "$FILE_PATH" ] && exit 0` below took it for "new file,
+  # nothing to back up", and the edit proceeded with NO BACKUP AND NO AUDIT LINE. The
+  # python branch beside this one already _ask()s for the same failure; the jq branch
+  # -- the one that actually runs -- did not.
+  if [ $? -ne 0 ]; then
+    _ask "X4 BACKUP: this payload could not be parsed, so NO BACKUP was taken and no audit line was written. Confirm only if you accept this edit being unrecoverable."
+  fi
 elif [ -n "$PY" ]; then
   TOOL_NAME=$(X4_IN="$INPUT" "$PY" -c 'import json, os, sys
 sys.stdout.write(json.loads(os.environ["X4_IN"]).get("tool_name") or "unknown")' 2>/dev/null) || TOOL_NAME=""
@@ -63,7 +71,15 @@ echo "$FILE_PATH" | grep -qiE '(\.claude[/\\](backups|hooks|plans)[/\\])' && exi
 # known place — the old "${CLAUDE_PROJECT_DIR:-.}" fallback scattered them into
 # whatever directory the shell happened to be in.
 BACKUP_DIR="${X4_BACKUPS:-$X4_TOOLKIT/.claude/backups}"
-mkdir -p "$BACKUP_DIR" 2>/dev/null || exit 0
+# A backup directory that cannot be created is the SAME failure as a cp that fails --
+# "the backup did not happen" -- and that one _ask()s and writes an audit line. This
+# one exited 0 in silence, leaving nothing in the trail to notice it by. Given that
+# AUDIT_LOG.txt once sat empty for five weeks while CLAUDE.md asserted every edit was
+# backed up, the silent path is the wrong one to keep.
+if ! mkdir -p "$BACKUP_DIR" 2>/dev/null; then
+  echo "$(date +%Y-%m-%d\ %H:%M:%S) | $TOOL_NAME | $FILE_PATH | (BACKUP FAILED - could not create $BACKUP_DIR)" >> "${AUDIT_LOG:-$BACKUP_DIR/../AUDIT_LOG.txt}" 2>/dev/null || true
+  _ask "X4 BACKUP FAILED for $FILE_PATH: could not create the backup directory $BACKUP_DIR, so NO copy was made. Confirm only if you accept this edit being unrecoverable."
+fi
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # Flatten path for backup filename: replace / \ : with _

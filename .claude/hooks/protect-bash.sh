@@ -60,8 +60,11 @@ sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": h}).encode("utf-8"))'
   fi
 }
 
-deny() { VERDICT=1; emit deny "$1"; exit 0; }
-ask()  { VERDICT=1; emit ask  "$1"; exit 0; }
+deny() { VERDICT=deny; emit deny "$1"; exit 0; }
+# Records and RETURNS -- see the precedence note below. A deny further down must
+# still be able to win.
+ask()  { VERDICT=ask; if [ -n "$ASKS" ]; then ASKS="$ASKS
+$1"; else ASKS="$1"; fi; }
 # advise <reason> -- ALLOW, and explain to CLAUDE why the command is questionable.
 # The user's attention is the scarce resource: a prompt spends theirs, a deny or an
 # advisory spends mine. Anything that is merely MY hygiene must never reach them.
@@ -72,14 +75,30 @@ ask()  { VERDICT=1; emit ask  "$1"; exit 0; }
 # they catch are REFUSED by a rule further down -- 130 timeout-above-the-cap, 64
 # shared-/tmp, 35 durable truncating-open, 27 exit-status-after-a-pipeline, 26
 # profile-manifest-by-name, 11 stage-everything. Every one measured genuine, every
-# one silently suppressed by a note. deny/ask still exit: those ARE decisions.
+# one silently suppressed by a note.
+#
+# ⚠ AND `ask` ACCUMULATES TOO, from 2026-09-05. That same analysis was never run on
+# ask-versus-deny, and the answer is the same: an `ask` that EXITS makes every deny
+# below it unreachable, so precedence was decided by POSITION IN THE FILE rather than
+# by severity. MEASURED: `git add -A` denies, but `rm "<mods>/t.txt" && git add -A`
+# only ASKED; and 300 trivial `$( )` substitutions turned the game-delete HARD BLOCK
+# into an ask, because the carrier-truncation refusal sits above it. The blocking fact
+# was computed correctly in every case and then discarded by ordering alone.
+#
+# Precedence is now by VALUE, not by line number: deny > ask > advise. `deny` still
+# exits -- it is final and nothing outranks it -- while `ask` records its reason and
+# lets the remaining rules run, so a later deny can still win. Multiple asks
+# concatenate exactly as advisories do.
 VERDICT=""
 ADVICE=""
+ASKS=""
 # Flush on EVERY exit path. A tail-only flush is silently skipped by the whitelist
 # `exit 0`s in the middle of this file -- MEASURED 2026-08-30: it turned the manifest
 # advisory into a plain allow.
 flush_advice() {
-  [ -n "$VERDICT" ] && return 0
+  # A deny has already emitted and is final.
+  [ "$VERDICT" = deny ] && return 0
+  if [ -n "$ASKS" ]; then emit ask "$ASKS"; return 0; fi
   [ -n "$ADVICE" ] || return 0
   emit advise "$ADVICE"
 }

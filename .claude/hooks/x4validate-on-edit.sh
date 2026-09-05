@@ -11,7 +11,19 @@ INPUT=$(x4_hook_input)
 # Advisory only, so an absent payload must NOT prompt -- it exits below.
 # Recurrence is caught statically by test-hooks.sh, which fails if any
 # hook reads /dev/stdin again.
-FP=$(echo "$INPUT" | "$JQ" -r '.tool_input.file_path // empty')
+# x4_field, not a bare jq call. This line read through jq ALONE, so with jq missing
+# it produced an empty FP and the next line exited 0 -- which made the python fallback
+# added further down (for the same reason, in the same chain) structurally
+# UNREACHABLE. MEASURED 2026-09-05 with `bash -x` and JQ=/nonexistent: `FP=` then
+# `exit 0`, the whole hook inert. `_x4-env.sh` ships x4_field for exactly this, and
+# documents the identical bug for search-scope.sh at its own definition: teach EVERY
+# step of the chain, not the last one.
+#
+# It also removes a second interpreter probe further down that disagreed with the
+# shared one: `x4_python` REFUSES when $X4_PYTHON is set to something missing, while
+# the local loop silently fell through to python3 -- "a guard that runs under an
+# interpreter the operator did not choose is a guard nobody configured".
+FP=$(x4_field "$INPUT" tool_input.file_path)
 [ -z "$FP" ] && exit 0
 
 # Only XML files, and never the read-only reference tree.
@@ -52,10 +64,7 @@ if printf '%s' '{}' | "$JQ" -e . >/dev/null 2>&1; then
   ERRS=$(printf '%s' "$OUT" | "$JQ" -r '.error_count // 0' 2>/dev/null)
   MSG=$(printf '%s' "$OUT" | "$JQ" -r '.findings[] | "  [\(.severity)] \(.message) (\(.vpath):\(.line))"' 2>/dev/null)
 else
-  PY=""
-  for _c in "${X4_PYTHON:-}" python3 python py; do
-    [ -n "$_c" ] && command -v "$_c" >/dev/null 2>&1 && { PY="$_c"; break; }
-  done
+  PY="$(x4_python)"      # ONE implementation, shared with every other hook
   if [ -n "$PY" ]; then
     ERRS=$(X4_OUT="$OUT" "$PY" -c 'import json, os, sys
 try: sys.stdout.write(str(json.loads(os.environ["X4_OUT"]).get("error_count") or 0))

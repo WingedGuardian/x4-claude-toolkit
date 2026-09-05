@@ -44,7 +44,15 @@ sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": h}).encode("utf-8"))'
 
 if [ "$JQ_OK" = 1 ]; then
   FILE_PATH=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.file_path // empty')
-  FP_OK=1
+  # jq's STATUS, not a literal 1. `FP_OK=1` here meant an UNREADABLE payload was
+  # indistinguishable from an empty path, so the refusal fifteen lines below -- whose
+  # comment says exactly that -- was unreachable whenever jq worked. It existed only
+  # on the python fallback. MEASURED 2026-09-05 with truncated JSON: protect-bash.sh
+  # asks (328 bytes), this hook emitted 0 bytes and ALLOWED. jq exits non-zero on a
+  # parse error and prints nothing, so the two cases are distinguishable here.
+  # NB $? after this assignment is the command substitution's status, which is jq's:
+  # jq is the last element of the pipeline, and it is the one meant.
+  if [ $? -eq 0 ]; then FP_OK=1; else FP_OK=0; fi
 elif [ -n "$PY" ]; then
   FILE_PATH=$(X4_IN="$INPUT" "$PY" -c 'import json, os, sys
 try:
