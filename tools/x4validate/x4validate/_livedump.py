@@ -60,7 +60,7 @@ HDR = "HDR"
 #: list is written down here and pinned by a test rather than inferred.
 KNOWN_KINDS = frozenset({
     "HDR", "END", "DELAYED_CAPABLE",
-    "EXT", "EXT_FIELDS", "EXT_STATUS",
+    "EXT", "EXT_FIELDS", "EXT_STATUS", "EXT_TRUNCATED",
     "LIB", "LIB_ELEM_FIELDS", "LIB_ENTRY_FIELDS", "LIB_ENTRY_VAL", "LIB_STATUS",
     "ERR", "ERR_ROWS", "ERR_STATUS", "ERR_WRITTEN",
 })

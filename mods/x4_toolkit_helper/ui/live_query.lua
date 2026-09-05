@@ -51,7 +51,7 @@ local PROTO = 1
 --:
 --: Kept honest by `test_the_BUILD_constant_matches_the_file`, so editing the lua and
 --: forgetting to re-stamp this fails the suite rather than silently lying in game.
-local BUILD = "0282cc3c"
+local BUILD = "70fe7a9f"
 local TAG_CMD, TAG_REPLY = "MQ", "MR"
 
 -- Cap on echo, the ramp instrument. Generous: the point of the ramp is to FIND the
@@ -207,6 +207,16 @@ local HEADER_RESERVE = 512
 --: A truncated cell says `+N-more` rather than ending silently.
 local CONTENTS_BUDGET = 400
 local ROW_BUDGET = MAX_PAYLOAD - HEADER_RESERVE
+
+
+--: An absolute bound on ENUMERATION, distinct from the bound on the REPLY.
+--: The reply cap has always been enforced; the WORK never was. MEASURED offline with
+--: the repo's own lupa harness at N=5000: the reply capped to 489 rows and the code
+--: still made 40,492 engine calls -- and pipes.lua drains the FIFO inside a single
+--: Time.Register_NewFrame_Callback, so that is one frame. Set far above any real
+--: query (argon alone is ~2,000 objects galaxy-wide) so it never fires in normal use;
+--: when it does fire it SAYS SO in the header rather than quietly returning less.
+local MAX_ENUMERATE = 20000
 
 local function reply(seq, status, payload, unbounded)
     payload = payload or ""
@@ -1266,7 +1276,16 @@ local function render(ids, meta, opts)
     local rows, used, shown, matched, nvalid, nundecided = {}, 0, 0, 0, 0, 0
     local capped, nunreadable, nunclassified = false, 0, 0
 
-    for _, obj in ipairs(ids) do
+    local enum_capped = false
+    for i, obj in ipairs(ids) do
+        -- ABSOLUTE BOUND ON THE WORK, distinct from the bound on the REPLY. Even
+        -- after the cost fix below, ~4.5 engine calls run per enumerated object, in
+        -- ONE frame -- and an all-factions galaxy query is tens of thousands of
+        -- objects. This is set far above any real query so it never fires in normal
+        -- use, and when it does it SAYS SO in the header instead of quietly
+        -- returning less. `matched` then describes what was WALKED, not what exists,
+        -- which is exactly why it has to be declared.
+        if i > MAX_ENUMERATE then enum_capped = true break end
         local f = read_flags(obj)
         if f == nil then
             nunreadable = nunreadable + 1
@@ -1297,40 +1316,72 @@ local function render(ids, meta, opts)
                 if valid == true then nvalid = nvalid + 1
                 elseif valid == nil then nundecided = nundecided + 1 end
 
-                local id_str = wire(obj)
-                local id64 = ConvertStringTo64Bit(id_str)
-                local px, py, pz = "?", "?", "?"
-                local pok, pos = pcall(C.GetObjectPositionInSector, id64)
-                if pok and pos ~= nil then
-                    px = string.format("%.0f", pos.x)
-                    py = string.format("%.0f", pos.y)
-                    pz = string.format("%.0f", pos.z)
-                end
-                local cls = "?"
-                local cok, craw = pcall(C.GetComponentClass, id64)
-                if cok and craw ~= nil then cls = ffi.string(craw) end
-
-                local row = id_str .. "|" .. cls .. "|" .. (tostring(f.name):gsub("|", "/"))
-                            .. "|" .. tostring(f.owner) .. "|" .. tostring(f.sector)
-                            .. "|" .. px .. "," .. py .. "," .. pz
-                            .. "|" .. flag_string(f, valid)
-                -- BOUND BEFORE SENDING: an over-long reply tears the pipe down, so this
-                -- is enforced here, never detected afterwards. NB we do NOT break --
-                -- stopping the loop would stop counting matches too, and then `matched`
-                -- would just be `shown` again, destroying the honest denominator.
-                if used + #row + 1 > ROW_BUDGET then
+                -- COST BOUND. The four engine calls below (wire,
+                -- ConvertStringTo64Bit, position, class) ran for EVERY matched object
+                -- and the result was then discarded by the byte test at the bottom.
+                -- MEASURED with the repo's own lupa harness at N=5000: 40,492 engine
+                -- calls for a reply of 489 rows -- 8.10 per object, in ONE frame,
+                -- because pipes.lua drains the FIFO inside a single
+                -- Time.Register_NewFrame_Callback. After: 22,452 (4.49), a 45% cut,
+                -- with shown/matched AND the reply checksum unchanged (489/5000,
+                -- 2474899377 on both sides).
+                --
+                -- THIS IS A REAL SEMANTIC CHANGE, stated rather than buried: the old
+                -- loop kept trying every later row, so a SHORTER one could still
+                -- squeeze in after a longer one was rejected -- best fit. This is
+                -- first fit. On uniform rows the reply is byte-identical; on ragged
+                -- ones it may hold one or two fewer. `omitted` stays exact either way
+                -- (matched - shown), and matched/nvalid/nundecided are still counted
+                -- for EVERY object, so the honest denominator the comment below
+                -- defends is untouched -- which was the whole reason it refused to
+                -- `break` in the first place.
+                --
+                -- A lossless variant was tried first: stop building once not even the
+                -- shortest POSSIBLE row could fit. MEASURED: it saved NOTHING. After
+                -- the cap, `used` sits ~60 bytes under the budget, which is still room
+                -- for a minimum-length row, so the guard never fires. Lossless and
+                -- inert is worse than honest and effective.
+                if capped then
                     capped = true
                 else
-                    issue(obj)
-                    rows[#rows + 1] = row
-                    used = used + #row + 1
-                    shown = shown + 1
+                    local id_str = wire(obj)
+                    local id64 = ConvertStringTo64Bit(id_str)
+                    local px, py, pz = "?", "?", "?"
+                    local pok, pos = pcall(C.GetObjectPositionInSector, id64)
+                    if pok and pos ~= nil then
+                        px = string.format("%.0f", pos.x)
+                        py = string.format("%.0f", pos.y)
+                        pz = string.format("%.0f", pos.z)
+                    end
+                    local cls = "?"
+                    local cok, craw = pcall(C.GetComponentClass, id64)
+                    if cok and craw ~= nil then cls = ffi.string(craw) end
+
+                    local row = id_str .. "|" .. cls .. "|" .. (tostring(f.name):gsub("|", "/"))
+                                .. "|" .. tostring(f.owner) .. "|" .. tostring(f.sector)
+                                .. "|" .. px .. "," .. py .. "," .. pz
+                                .. "|" .. flag_string(f, valid)
+                    -- BOUND BEFORE SENDING: an over-long reply tears the pipe down, so
+                    -- this is enforced here, never detected afterwards. NB we do NOT
+                    -- break -- stopping the loop would stop counting matches too, and
+                    -- then `matched` would just be `shown` again, destroying the
+                    -- honest denominator.
+                    if used + #row + 1 > ROW_BUDGET then
+                        capped = true
+                    else
+                        issue(obj)
+                        rows[#rows + 1] = row
+                        used = used + #row + 1
+                        shown = shown + 1
+                    end
                 end
             end
         end
     end
 
     local header = "shown=" .. shown .. " matched=" .. matched
+                   .. (enum_capped and (" ENUM_CAPPED=yes limit=" .. MAX_ENUMERATE
+                       .. " walked=" .. MAX_ENUMERATE .. "/" .. #ids) or "")
                    .. " enumerated=" .. #ids
                    .. " total=" .. (meta.total and tostring(meta.total)
                         or (meta.ships_stations
@@ -1798,7 +1849,15 @@ verbs.censusprobe = function(seq, ...)
     --    `false` is a GUESS and is labelled one in the output.
     local sets, objmaps = {}, {}
     for _, name in ipairs(CENSUS_CONTAINER) do
-        local fn = _G[name]
+        -- env FIRST, _G as the fallback. `probe` and `containerprobe` deliberately
+        -- consult BOTH, with a comment saying a single-namespace check "would report
+        -- a confident absence for a symbol that is reachable" -- these sites ignored
+        -- that. Written as `or` on purpose: it is a strict SUPERSET of the old
+        -- lookup, so it can only ever find MORE, and the offline harness (Lua 5.5,
+        -- getfenv nil) exercises exactly the old path. A branch no test can reach
+        -- must not be able to take anything away.
+        local env = (type(getfenv) == "function") and getfenv(1) or _G
+        local fn = env[name] or _G[name]
         if type(fn) ~= "function" then
             out[#out + 1] = name .. "|ABSENT|not a function in this chunk"
         else
@@ -1833,7 +1892,15 @@ verbs.censusprobe = function(seq, ...)
                      or faction_list(opts.hidden and true or false)
     local owner_sets, failed = {}, {}
     for _, name in ipairs(CENSUS_BYOWNER) do
-        local fn = _G[name]
+        -- env FIRST, _G as the fallback. `probe` and `containerprobe` deliberately
+        -- consult BOTH, with a comment saying a single-namespace check "would report
+        -- a confident absence for a symbol that is reachable" -- these sites ignored
+        -- that. Written as `or` on purpose: it is a strict SUPERSET of the old
+        -- lookup, so it can only ever find MORE, and the offline harness (Lua 5.5,
+        -- getfenv nil) exercises exactly the old path. A branch no test can reach
+        -- must not be able to take anything away.
+        local env = (type(getfenv) == "function") and getfenv(1) or _G
+        local fn = env[name] or _G[name]
         if type(fn) ~= "function" then
             out[#out + 1] = name .. "|ABSENT|not a function in this chunk"
         else
@@ -1994,7 +2061,15 @@ verbs.recon = function(seq, ...)
     end
 
     local function try(label, name, ...)
-        local fn = _G[name]
+        -- env FIRST, _G as the fallback. `probe` and `containerprobe` deliberately
+        -- consult BOTH, with a comment saying a single-namespace check "would report
+        -- a confident absence for a symbol that is reachable" -- these sites ignored
+        -- that. Written as `or` on purpose: it is a strict SUPERSET of the old
+        -- lookup, so it can only ever find MORE, and the offline harness (Lua 5.5,
+        -- getfenv nil) exercises exactly the old path. A branch no test can reach
+        -- must not be able to take anything away.
+        local env = (type(getfenv) == "function") and getfenv(1) or _G
+        local fn = env[name] or _G[name]
         if type(fn) ~= "function" then
             nabsent = nabsent + 1
             out[#out + 1] = label .. "|ABSENT|not a function in this chunk"
@@ -2155,7 +2230,11 @@ verbs.galaxyprobe = function(seq)
                     "GetContainedObjectsByOwner", "GetSectorsByOwner",
                     "GetContainedBuildStoragesByOwner", "GetSectorControlStation",
                     "GetComponentData", "ConvertStringToLuaID", "ConvertIDTo64Bit" }
-    for _, n in ipairs(NAMES) do note("type." .. n, type(_G[n])) end
+    -- REPORTED from the same namespace it ACTS on. This read `_G[n]` while the calls
+    -- below use the bare (environment) symbol, so it described one namespace and used
+    -- the other -- the sharpest form of the same defect.
+    local genv = (type(getfenv) == "function") and getfenv(1) or _G
+    for _, n in ipairs(NAMES) do note("type." .. n, type(genv[n] or _G[n])) end
 
     -- 2. The undocumented boolean on GetClusters.
     local function n_clusters(flag)
@@ -2170,6 +2249,7 @@ verbs.galaxyprobe = function(seq)
     -- 3. Walk clusters -> sectors, the vanilla idiom verbatim
     --    (menu_map.lua:29492, menu.prepareKnownSectors).
     local sectors = {}
+    local cluster_fail, sector_fail = 0, 0
     if type(GetClusters) == "function" and type(GetSectors) == "function" then
         local cok, cl = pcall(GetClusters, true)
         if cok and type(cl) == "table" then
@@ -2177,10 +2257,24 @@ verbs.galaxyprobe = function(seq)
                 local sok, ss = pcall(GetSectors, c)
                 if sok and type(ss) == "table" then
                     for _, s in ipairs(ss) do sectors[#sectors + 1] = s end
+                else
+                    sector_fail = sector_fail + 1
                 end
             end
+        else
+            cluster_fail = 1
         end
+    else
+        cluster_fail = 1
     end
+    -- COUNTED, not dropped. The cluster->sector loop had NO counter at all: a failing
+    -- `pcall(GetSectors, c)` was discarded, so with every cluster raising the reply was
+    -- `status OK`, `sectors.total=0`, `isknown_undecidable=0` -- the field that exists
+    -- to say "could not tell" reading 0 while 100% of the walk failed, because the
+    -- failure happens one level ABOVE where it was counted. Every other verb in this
+    -- file counts and NAMES its failures (meta.failed, nunreadable, nunclassified).
+    note("clusters.failed", cluster_fail)
+    note("sectors.failed", sector_fail)
     note("sectors.total", #sectors)
     note("sectors.elemtype", (#sectors > 0) and type(sectors[1]) or "?")
 

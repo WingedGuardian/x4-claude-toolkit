@@ -29,7 +29,7 @@ pcall(ffi.cdef, [[
 --: live_query.lua. Until 2026-09-02 only that file was stamped, so an edit to THIS one
 --: -- the half that runs automatically at load and writes profile UI userdata -- shipped
 --: with nothing able to notice.
-local BUILD = "fd7cc5cd"
+local BUILD = "f7c45be2"
 
 local SCHEMA  = 2
 local ERR_CAP = 400             -- capped, and the true total is always reported
@@ -87,7 +87,18 @@ local function dump_extensions()
     local fields = {}
     if type(list[1]) == "table" then fields = sorted_keys(list[1]) end
     row("EXT_FIELDS", table.concat(fields, ","))
-    for _, e in ipairs(list) do
+    -- CAPPED, AND IT SAYS BY HOW MUCH. This loop was unbounded, so the dump grew with
+    -- the user's mod count. MEASURED 2026-09-04 on a live uidata.xml: `__x4live_dump`
+    -- was 154,153 of 513,932 characters -- 30.0% of the file -- of which EXT alone
+    -- was 132 rows / 76,998 bytes, and the next largest non-vanilla saved variable was
+    -- 445 bytes. The channel's own content.xml promises that "every enumeration caps
+    -- its own reply and reports how many rows it omitted"; this one did neither.
+    -- Set above the real count here (132) so today's dump is unchanged, and it
+    -- declares the omission rather than trailing off.
+    local EXT_CAP = 200
+    if #list > EXT_CAP then row("EXT_TRUNCATED", #list - EXT_CAP, #list) end
+    for i, e in ipairs(list) do
+        if i > EXT_CAP then break end
         local vals = { "EXT" }
         for _, f in ipairs(fields) do
             local v = e[f]
