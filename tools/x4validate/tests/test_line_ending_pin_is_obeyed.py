@@ -37,7 +37,34 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
+#: THE WHOLE REPOSITORY, not this package. `git ls-files` run from a subdirectory
+#: lists that subdirectory, so the guard covered 178 pinned files and the 43 outside
+#: tools/x4validate/ -- .claude/hooks/, scripts/, mods/, tools/basex/ -- were never
+#: byte-checked at all. MEASURED 2026-09-06: 178 -> 221 pinned, 0 CRLF offenders in
+#: EITHER scope, which is exactly why widening now costs nothing and later might not.
+#:
+#: ASK git for the root rather than counting `../..`, for the reason
+#: `scripts/verify-cold.sh` gives where it does the same thing: the package sits at
+#: the repo root in the development tree and under tools/x4validate/ in the public
+#: bundle, so a hardcoded depth silently picks the wrong directory in one of them.
+#: A failure to resolve falls back to the package dir -- narrower, never wider, and
+#: never a crash in a guard whose whole job is to keep working.
+_PKG = Path(__file__).resolve().parent.parent
+
+
+def _repo_root(pkg: Path) -> Path:
+    try:
+        r = subprocess.run(("git", "-C", str(pkg), "rev-parse", "--show-toplevel"),
+                           capture_output=True)
+    except (OSError, ValueError):
+        return pkg
+    if r.returncode != 0:
+        return pkg
+    top = r.stdout.decode("utf-8", "replace").strip()
+    return Path(top) if top else pkg
+
+
+ROOT = _repo_root(_PKG)
 
 
 def _git(*args: str, stdin: str | None = None) -> str | None:

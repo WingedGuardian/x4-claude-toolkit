@@ -453,6 +453,30 @@ jobs:
           X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '59' || '49' }}
         run: uv run --frozen python -m pytest -q -rs
 
+      # THE COLD CHECK, WIRED. `scripts/verify-cold.sh` is named in five documents
+      # (CLAUDE.md, REVIEW-SCOPE.md, SUBAGENT-BRIEF.md, TRUST.md, CHANGELOG.md) and
+      # in five test files -- and until now it was RUN by nothing. One test reads
+      # its SOURCE to check the CLI matrix; none executes it. Every other mention is
+      # prose. `smoke-basex.sh` exists for the same reason and has been wired since
+      # it was written.
+      #
+      # It is the check that has lied most: verifying "like a fresh clone" by hand
+      # produced a confident green THREE TIMES IN A ROW on one release, because path
+      # resolution falls through to $X4_TOOLKIT and a configured machine masquerades
+      # as a clean one. What that hid was fatal for every new user -- gates resolve
+      # paths at IMPORT time and a SystemExit during pytest COLLECTION aborts the
+      # whole session. The script refuses to run until it has PROVEN
+      # registry/game_extensions/reference are all None, which is the load-bearing
+      # part and the reason it cannot be replaced by `env -u`.
+      #
+      # Linux only: it shells out to `git archive | tar -x` and runs the extracted
+      # tree, and the Windows leg already covers the same suite. If it should gate
+      # on Windows too, that is a deliberate widening, not an oversight.
+      - name: Cold-clone verification (the check that has lied most)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/x4validate/scripts/verify-cold.sh
+
   scrub:
     name: no personal data in tracked files
     runs-on: ubuntu-latest
