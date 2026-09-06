@@ -9,14 +9,16 @@ The bars, all measured 2026-07-29 over the 102 installed non-DLC mods:
   * 127 (mod,file) pairs validated
   * 105 findings introduced == 45 gating + 57 advisory + 3 suppressed
   * 10 of 102 mods flagged
-  * the four KNOWN-REAL defects all still reported
+  * the KNOWN-REAL defects all still reported (there were four when this was
+    written; the roster is KNOWN_REAL below and the verdict line COUNTS it, because
+    both this sentence and that line said "four" while six were pinned)
 
 Why the totals are pinned and not just the four defects: a check that reports the
 right four while inventing 200 others is not usable, and a check that reports the
 right four because it reports everything is not a check. The composition is the
 claim, so the composition is what is frozen.
 
-Why the four are pinned SEPARATELY: totals can be met by accident after a tuning
+Why they are pinned SEPARATELY: totals can be met by accident after a tuning
 change that silences a real finding and adds a spurious one. These are the ones
 with independent evidence behind them, so silencing any of them is a regression
 no matter what the totals say.
@@ -278,7 +280,7 @@ from x4validate import _check, _merge
 # drops both and undercounts pairs by 6. Parse from the RIGHT: the last three
 # columns are numbers, everything before them is the name.
 #
-# PER-MOD TABLE — 74 mods, 2026-08-25. NOT HERE: this file is MIRRORED to the public
+# PER-MOD TABLE — 41 FLAGGED mods, 2026-08-25. NOT HERE: this file is MIRRORED to the public
 # repo, and the table names every installed mod, i.e. one person's entire modlist. It is
 # also not reproducible by anyone else — it describes one install — so publishing it costs
 # privacy and buys a public reader nothing.
@@ -286,10 +288,73 @@ from x4validate import _check, _merge
 # It lives in `AUDIT-2026-08.md` (dev-only), § "Per-mod schema baseline". Diff against THAT
 # next time instead of reasoning from memory. Its columns sum to the constants below, which
 # is what makes it an audit rather than a note: pairs 178, gating 59, advisory 69.
+#
+# ⚠ CORRECTED 2026-09-06: this paragraph read "74 mods ... 42 flagged; sums verified =
+# 60 gating, 69 advisory" while the table above it has 41 rows summing to 59/69 — the
+# Station_ink amendment removed that row and updated the constants, but not the sentence
+# introducing them. A summary line that no longer sums is the defect class this gate
+# exists to catch, sitting inside the gate. Found because an extraction REFUSED to hand
+# back a table that could not reproduce the total it claimed.
+# ---------------------------------------------------------------------------
+# RE-BASELINE 2026-09-06 — FULLY ATTRIBUTED, and the cause is a THIRD one this
+# gate's own instruction does not name.
+#
+# ★ THE INSTRUCTION BELOW SAYS "either the modlist changed ... or the check did".
+# IT WAS NEITHER. `reference/` — the SCHEMA FLOOR every one of these findings is
+# measured against — was re-unpacked on 2026-09-02, AFTER the 2026-08-25 baseline
+# (`reference/.unpacked-and-locked` mtime; the game's own .cat files have not moved
+# since 2026-06-12). The gate has a baseline for the modlist and none for the
+# schema, so a schema change is indistinguishable from a regression in the check.
+# **That is the finding worth carrying forward — not the numbers.**
+#
+# HOW THE SCHEMA WAS ISOLATED, without an old copy of the XSD to diff:
+#   * both drifted mods are BYTE-FROZEN well before the baseline — vro's newest file
+#     is 2026-07-27, cpsdo_zb_modpack's 2026-07-24.
+#   * vro's `forkmaterial` count moved 5 -> 4 from an unchanged file that contains
+#     exactly 4 occurrences. Same input, different error count: the only variable
+#     left is what it was validated AGAINST. (The old entry said "x5 ... 4 corpus-wide
+#     occurrences" — internally inconsistent all along; it is 1:1 now.)
+#   * two independent, unchanged mods gained the SAME new error class simultaneously.
+#
+#            pairs  gating  advisory  suppressed  NOT checked  mods flagged
+#   before     178      59        69           3            1            41
+#   after      178      77        71           3            1            41
+#   delta        0     +18        +2           0            0             0
+#
+# PER-ITEM, and it reconciles to the point — every unit of +18/+2 is a named mod:
+#   escape_pod        -1 gating   REMOVED from extensions\ entirely (verified on disk).
+#                                 KNOWN_REAL entry deleted below, xspvro-style.
+#   vro              +15 gating   +16 `amplitude` (new class) and -1 `forkmaterial`.
+#   cpsdo_zb_modpack  +4 gating   +4 `amplitude`. It bundles VRO content: byte-identical
+#                                 payloads (`amplitude="0.025" attackduration="0.1" ...`).
+#   x4_toolkit_helper +2 advisory OUR OWN mod, deployed 2026-08-31 i.e. after the
+#                                 baseline. Both are the benign `ego_.+` addon-name
+#                                 pattern class this file already documents — every
+#                                 third-party UI mod trips it.
+#   mods flagged 41 -> 41 and pairs 178 -> 178 are NET ZERO, not "unchanged":
+#   escape_pod left and x4_toolkit_helper arrived. Two moving parts that cancel is
+#   exactly the shape an aggregate hides (CLAUDE.md § compare PER ITEM), which is why
+#   this was diffed per mod rather than read off the totals.
+#
+# WHY THE NEW CLASS IS GATING, BY THIS FILE'S OWN F7 CRITERION AND NOT BY JUDGEMENT.
+# `amplitude` is real — but the schema declares it a CHILD ELEMENT
+# (`<xs:element name="amplitude" type="amplitude"/>`, effects.xsd), while <low>/<high>
+# take `attributeGroup ref="profile"`, which has no such attribute. These two mods
+# write it as an ATTRIBUTE. That is F7's "a real attribute on the WRONG element",
+# the same rationale `forkmaterial` and `category/@matchextension` are already pinned
+# on. MEASURED packed-inclusive over the installed corpus — 125 mods, 4,618 XML files
+# parsed, 11 unreadable:
+#     as an ATTRIBUTE on <low>/<high>:  20 total — vro 16, cpsdo_zb_modpack 4, NOBODY ELSE
+#     base+DLC (9 effects.xml docs):     0 as an attribute, 99 as a child element
+# 20 occurrences produce exactly 20 findings, 1:1. The engine's own view is UNKNOWN
+# (an ignored attribute logs nothing — CLAUDE.md #29), so this rests on the corpus
+# denominator, exactly as forkmaterial's does.
+#
+# NOTHING IS UNATTRIBUTED IN THIS RE-BASELINE.
 # ---------------------------------------------------------------------------
 EXPECT_PAIRS = 178
-EXPECT_ERR = 59
-EXPECT_INFO = 69
+EXPECT_ERR = 77
+EXPECT_INFO = 71
 EXPECT_SUPPRESSED = 3
 EXPECT_MODS_FLAGGED = 41
 #: Files this sweep could NOT schema-check. Pinned from 2026-08-01, because the
@@ -314,19 +379,32 @@ KNOWN_REAL = {
         "category/@matchextension x3 — a real attribute on the WRONG element: "
         "vanilla uses matchextension 140 times, every one on <location>, never on "
         "<category>, so the engine drops the intended DLC-matching silently (F7)"),
-    "vro": (5, 3,
-        "element/@forkmaterial x5 in libraries/effects.xml — invented attribute, "
-        "4 corpus-wide occurrences and all of them are VRO itself (F7)"),
+    "vro": (20, 3,
+        "libraries/effects.xml, two F7 dead-attr classes: amplitude= as an ATTRIBUTE "
+        "on <low>/<high> x16 -- the schema declares amplitude a CHILD ELEMENT and "
+        "<low>/<high> take attributeGroup 'profile', which has no such attribute; "
+        "MEASURED packed-inclusive over 125 mods / 4,618 files, 20 occurrences exist "
+        "corpus-wide and 16 are VRO's, while base+DLC has 0 as an attribute against "
+        "99 as an element. Plus element/@forkmaterial x4 -- invented attribute, all "
+        "of them VRO itself (F7). Was 5 forkmaterial against the pre-2026-09-02 "
+        "reference/; the file has 4 occurrences and now reports 4, 1:1"),
     # xspvro removed 2026-08-08 (mod moved out of extensions\). Its entry was
     # (2 gating, 9 advisory) — "job ids containing a SPACE against the id pattern
     # facet" — and its departure accounts for the whole gating/advisory drop in
     # the re-measurement above. Restore this entry if the mod ever returns.
+    "cpsdo_zb_modpack": (4, 1,
+        "the same amplitude-as-an-ATTRIBUTE class as VRO's, x4 -- and the payloads are "
+        "byte-identical to VRO's, so this mod is carrying VRO content. Pinned "
+        "SEPARATELY from vro on purpose: they are two shipped copies of one upstream "
+        "defect, and silencing either alone must stay visible"),
     "ter_radar_turret": (1, 0,
         "patch shipped at libraries/factiongoal_hold_space.xml when vanilla is "
         "md/factiongoal_hold_space.xml — schema-checked against the wrong shape"),
-    "escape_pod": (1, 0,
-        "<filter> placed directly under <sound>; all 309 vanilla <filter> elements "
-        "sit under <effects>, and <sound>'s content model has no filter child"),
+    # escape_pod removed 2026-09-06 (mod no longer present in extensions\). Its entry
+    # was (1 gating, 0 advisory) -- "<filter> placed directly under <sound>; all 309
+    # vanilla <filter> elements sit under <effects>, and <sound>'s content model has no
+    # filter child" -- and its departure is the whole -1 in the gating delta above.
+    # Restore this entry if the mod ever returns. (Same treatment as xspvro, 2026-08-08.)
 }
 
 _RE_SUP = re.compile(r"; (\d+) enumeration failure")
@@ -397,13 +475,16 @@ def main() -> int:
         print("FAIL — the check no longer matches its own measurement:")
         for f in fail:
             print(f"  ! {f}")
-        print("\nInvestigate before re-baselining. A moved number means either the modlist "
-              "changed (re-measure and update the constants, saying so) or the check did "
-              "(that is the regression this gate exists to catch).")
+        print("\nInvestigate before re-baselining. A moved number means the modlist "
+              "changed, or the SCHEMA FLOOR did (reference/ re-unpacked -- this gate has "
+              "NO baseline for it, and that is exactly what moved on 2026-09-06), or the "
+              "check did (that is the regression this gate exists to catch). Diff the "
+              "PER-MOD table above, not the totals: on 2026-09-06 both `mods flagged` and "
+              "`pairs` read UNCHANGED while one mod left the install and another arrived.")
         return 1
     print("OK — matches the recorded baseline exactly (see the re-measurement table "
-          "above the constants), and all four independently-evidenced defects are "
-          "still reported.")
+          "above the constants), and all %d independently-evidenced defects are "
+          "still reported." % len(KNOWN_REAL))
     return 0
 
 
