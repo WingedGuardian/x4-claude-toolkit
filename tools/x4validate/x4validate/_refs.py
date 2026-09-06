@@ -63,14 +63,62 @@ def is_script_expression(value: str | None) -> bool:
     return any(c in value for c in _EXPRESSION_CHARS)
 
 
+#: A page id named inside a diff op's SELECTOR, e.g. `//page[@id='20005']` or
+#: `/language[@id='44']/page[@id='20005']`. Needed because a `<t>` added INTO an
+#: existing page has no `<page>` ancestor in the overlay document at all, so the
+#: only place its page id appears is the selector.
+_SEL_PAGE_ID = re.compile(r"page\s*\[\s*@id\s*=\s*['\"]([^'\"]+)['\"]\s*\]")
+
+
 def text_defs(tree: etree._Element | None) -> set[tuple[str, str]]:
-    """Set of (page_id, t_id) defined in a t/*-l044.xml language tree."""
+    r"""Set of (page_id, t_id) defined in a t/*-l044.xml language tree.
+
+    Two shapes, and the second one used to be invisible:
+
+      <add sel="/language"><page id="20101"><t id="1">..    <- has a <page> element
+      <add sel="//page[@id='20101']"><t id="1">..           <- does NOT
+
+    The second adds strings INTO a page the base game already defines, which is the
+    ordinary way to touch existing text -- and the ONLY way to clobber a base string.
+    It has no `<page>` ancestor inside the overlay, so the `//page[@id]` walk below
+    cannot reach it, and `collect_text_defs`' docstring claim that this "works for
+    full <language> files and <diff> files alike" was false for exactly the form the
+    corpus uses.
+
+    MEASURED, two fixtures differing ONLY in the depth of one selector:
+
+      byte-identical mods referencing {1001,900001} and {1001,900002}
+        page-element form : 72381 strings, "OK: no issues found"        rc 0
+        into-page form    : 72379 strings, 2 x [ERROR] "introduced text
+                            reference does not resolve"                 rc 1
+
+    -- so the same run certified the patch's selectors as resolving while calling
+    the strings it defines dangling. And the collision half failed the other way:
+    a mod clobbering base string {1001,1} through the into-page form printed
+    "OK: no issues found" with nothing in NOT CHECKED.
+
+    Corpus, MEASURED over 125 installed extensions / 4,629 documents / 86 t-files:
+    30 `<t id>` definitions invisible, all in `cpsdo_faction`, from one
+    `<add sel="/language[@id='44']/page[@id='20005']">` carrying 16 `<t>` children in
+    each of two t-files. No mod references those ids today, so the live gating cost
+    is currently zero -- the structural defect is not.
+    """
     if tree is None:
         return set()
     out = set()
     for page in tree.xpath("//page[@id]"):
         pid = page.get("id")
         for t in page.xpath(".//t[@id]"):
+            out.add((pid, t.get("id")))
+    # ...and the ops whose payload is <t> directly, whose page id lives only in the
+    # selector. `replace` counts as well as `add`: replacing a page's contents
+    # defines those strings just as much, and it is the other way to clobber one.
+    for op in tree.xpath("//add[@sel] | //replace[@sel]"):
+        m = _SEL_PAGE_ID.search(op.get("sel") or "")
+        if m is None:
+            continue
+        pid = m.group(1)
+        for t in op.xpath(".//t[@id]"):
             out.add((pid, t.get("id")))
     return out
 
