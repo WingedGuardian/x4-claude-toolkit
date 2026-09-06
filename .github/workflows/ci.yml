@@ -246,6 +246,145 @@ jobs:
           }
           Write-Host 'installer smoke OK'
 
+      # THE OTHER TWO METHODS. Every installer step above this line runs `separate`,
+      # and only `separate` -- 8 invocations, one method. So `global` and `in-game`
+      # had no reachable failing branch at all, which is how `-Method global` shipped
+      # in v3.0.0 100% broken: it threw on EVERY run, on 5.1 and 7 alike, and no leg
+      # could have said so. A green that could not have gone red is decoration.
+      #
+      # Each leg asserts the ARTIFACT and then the DIRECTION, mirroring the separate
+      # legs: install, prove what landed, prove a re-install REFUSES without the
+      # opt-in flag, prove the flag lets it through.
+      #
+      # CLAUDE_CONFIG_DIR redirects the global destination away from the runner's own
+      # ~/.claude. It is the ONLY thing that does: the method falls back to
+      # $HOME/.claude (install.sh) and %USERPROFILE%/.claude (install.ps1), so
+      # redirecting one without the other leaves the fallback live.
+
+      - name: Install for real (--method global, bash) and check the gate
+        # Linux only, deliberately: this arm requires jq, which is guaranteed on the
+        # ubuntu image. Asserting its presence on the Windows image would gate the
+        # release on an assumption about someone else's runner. install.ps1's global
+        # arm needs no jq and is covered on Windows below, so both implementations of
+        # the arm are exercised -- just not both on both.
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v jq >/dev/null || { echo "jq is missing on the ubuntu image, so this leg's premise is gone"; exit 1; }
+          TK="$RUNNER_TEMP/tk-sh"                       # installed by the separate leg above
+          test -d "$TK/.claude/skills" || { echo "the separate leg did not run; nothing to install FROM"; exit 1; }
+          export CLAUDE_CONFIG_DIR="$RUNNER_TEMP/globalhome"
+          rm -rf "$CLAUDE_CONFIG_DIR"; mkdir -p "$CLAUDE_CONFIG_DIR"
+          bash install.sh --method global --toolkit "$TK" --yes
+          # ARTIFACTS, not the exit code. A method that copied nothing must not read as
+          # installed -- both installers grew that exact refusal after doing exactly that.
+          n=$(find "$CLAUDE_CONFIG_DIR/skills" -maxdepth 1 -name 'x4-*' -type d | wc -l)
+          test "$n" -ge 5 || { echo "only $n x4-* skills installed"; exit 1; }
+          test -f "$CLAUDE_CONFIG_DIR/settings.json" || { echo "no settings.json"; exit 1; }
+          jq -e '.env.X4_TOOLKIT' "$CLAUDE_CONFIG_DIR/settings.json" >/dev/null || {
+            echo "settings.json has no X4_TOOLKIT: the env merge did not happen"; exit 1; }
+          # A pre-existing file must survive a REFUSED run untouched.
+          echo 'must survive' > "$CLAUDE_CONFIG_DIR/skills/x4-mine.md"
+
+          # DIRECTION: a second global install over pre-existing x4-* skills must
+          # REFUSE. This method force-overwrote them with no prompt and no backup, and
+          # keeps no backup of skills even now -- so the refusal IS the protection.
+          if bash install.sh --method global --toolkit "$TK" --yes; then
+            echo "a global install over existing x4-* skills was ALLOWED without --over-existing"; exit 1
+          fi
+          grep -q 'must survive' "$CLAUDE_CONFIG_DIR/skills/x4-mine.md" || {
+            echo "the refused run still modified a pre-existing file"; exit 1; }
+
+          bash install.sh --method global --toolkit "$TK" --over-existing --yes
+          echo "global installer smoke OK ($n x4-* skills)"
+
+      - name: Install for real (-Method global, PowerShell) and check the gate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tk = Join-Path $env:RUNNER_TEMP 'tk-ps'      # installed by the separate leg above
+          if (-not (Test-Path -LiteralPath (Join-Path $tk '.claude/skills'))) {
+            Write-Error 'the separate leg did not run; nothing to install FROM' }
+          # BOTH the primary and the fallback. install.ps1 reads CLAUDE_CONFIG_DIR and
+          # then %USERPROFILE%/.claude, so setting one leaves the other live.
+          $hc = Join-Path $env:RUNNER_TEMP 'globalhome-ps'
+          if (Test-Path -LiteralPath $hc) { Remove-Item -Recurse -Force -LiteralPath $hc }
+          New-Item -ItemType Directory -Force -Path $hc | Out-Null
+          $env:CLAUDE_CONFIG_DIR = $hc
+
+          & .\install.ps1 -Method global -Toolkit $tk -Yes
+          if ($LASTEXITCODE -ne 0) { Write-Error "the global install failed (exit $LASTEXITCODE)" }
+          $n = @(Get-ChildItem -Directory -LiteralPath (Join-Path $hc 'skills') -Filter 'x4-*').Count
+          if ($n -lt 5) { Write-Error "only $n x4-* skills installed" }
+          $sj = Join-Path $hc 'settings.json'
+          if (-not (Test-Path -LiteralPath $sj)) { Write-Error 'no settings.json' }
+          if (-not ((Get-Content -Raw -LiteralPath $sj | ConvertFrom-Json).env.X4_TOOLKIT)) {
+            Write-Error 'settings.json has no X4_TOOLKIT: the env merge did not happen' }
+
+          # DIRECTION. Until this release the global arm reached NO gate: -OverExisting
+          # was consulted only on the copy-to-destination path, which this method never
+          # takes, so it silently replaced a user's own edited x4-* skills.
+          $mine = Join-Path $hc 'skills/x4-mine.md'
+          Set-Content -LiteralPath $mine -Value 'must survive'
+          & .\install.ps1 -Method global -Toolkit $tk -Yes
+          if ($LASTEXITCODE -eq 0) {
+            Write-Error 'a global install over existing x4-* skills was ALLOWED without -OverExisting' }
+          if ((Get-Content -Raw -LiteralPath $mine) -notmatch 'must survive') {
+            Write-Error 'the refused run still modified a pre-existing file' }
+          & .\install.ps1 -Method global -Toolkit $tk -OverExisting -Yes
+          if ($LASTEXITCODE -ne 0) { Write-Error 'the -OverExisting global upgrade failed' }
+          Write-Host "global installer smoke OK ($n x4-* skills)"
+
+      - name: Install for real (--method in-game, bash) and check the gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A FAKE game folder, named EXPLICITLY. --game must be named: an auto-detected
+          # destination with --yes is refused outright, which is the rule that exists
+          # because an auto-detected install once wrote 1,642 files into a real Steam
+          # install and exited 0.
+          GAME="$RUNNER_TEMP/fakegame-sh"
+          rm -rf "$GAME"; mkdir -p "$GAME/extensions"
+          for n in 01 02 03 04 05 06 07 08 09; do : > "$GAME/$n.cat"; done
+          bash install.sh --method in-game --game "$GAME" --yes
+          test -f "$GAME/.claude/x4-paths.env" || { echo "no x4-paths.env in the game folder"; exit 1; }
+          test -d "$GAME/tools/x4validate"     || { echo "no tools/x4validate"; exit 1; }
+          test -d "$GAME/.claude/hooks"        || { echo "no .claude/hooks: in-game is the layout that HAS the guards"; exit 1; }
+          # The .cat files must still be there. For every user of this method the
+          # destination IS a real game install, and installing may not disturb it.
+          test -f "$GAME/01.cat" || { echo "the installer disturbed the game's own files"; exit 1; }
+          if bash install.sh --method in-game --game "$GAME" --yes; then
+            echo "an in-game install over an existing one was ALLOWED without --over-existing"; exit 1
+          fi
+          bash install.sh --method in-game --game "$GAME" --over-existing --yes
+          echo "in-game installer smoke OK"
+
+      - name: Install for real (-Method in-game, PowerShell) and check the gate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $game = Join-Path $env:RUNNER_TEMP 'fakegame-ps'
+          if (Test-Path -LiteralPath $game) { Remove-Item -Recurse -Force -LiteralPath $game }
+          New-Item -ItemType Directory -Force -Path (Join-Path $game 'extensions') | Out-Null
+          foreach ($n in '01','02','03','04','05','06','07','08','09') {
+            Set-Content -LiteralPath (Join-Path $game ($n + '.cat')) -Value '' }
+          & .\install.ps1 -Method in-game -Game $game -Yes
+          if ($LASTEXITCODE -ne 0) { Write-Error "the in-game install failed (exit $LASTEXITCODE)" }
+          foreach ($p in @('.claude/x4-paths.env','.claude/hooks','tools/x4validate','mods')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $game $p))) { Write-Error "missing: $p" }
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $game '01.cat'))) {
+            Write-Error "the installer disturbed the game's own files" }
+          & .\install.ps1 -Method in-game -Game $game -Yes
+          if ($LASTEXITCODE -eq 0) {
+            Write-Error 'an in-game install over an existing one was ALLOWED without -OverExisting' }
+          & .\install.ps1 -Method in-game -Game $game -OverExisting -Yes
+          if ($LASTEXITCODE -ne 0) { Write-Error 'the -OverExisting in-game upgrade failed' }
+          Write-Host 'in-game installer smoke OK'
+
       # -rs NAMES every skip, and the budget makes a silent-skip regression LOUD.
       # MEASURED 2026-09-01: 125 tests skipped because they looked for a `dev/`
       # directory that does not exist in this repo -- the game extension ships at

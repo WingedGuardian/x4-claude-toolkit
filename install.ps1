@@ -514,9 +514,55 @@ function Show-CopyPlan {
   }
 }
 
+# ONE implementation of "where is the global Claude config". Install-Global resolved it
+# inline, so the gate below would have been a second copy of the same expression -- and
+# this file's history is a list of things that drifted because two places computed one
+# answer.
+function Get-GlobalClaudeDir {
+  if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
+}
+
+function Assert-GlobalOverExisting {
+  # THE GLOBAL DESTINATION WAS NEVER GATED. -OverExisting is consulted in exactly one
+  # place -- Assert-Direction, on the copy-to-destination path -- which the global arm
+  # never reaches. So -Method global force-overwrote a user's own ~\.claude\skills\x4-*
+  # with no prompt, no -OverExisting, and no backup of the skills, then rewrote their
+  # global settings.json. MEASURED in a sandbox: an edited x4-balance\SKILL.md was
+  # replaced by the shipped one; only the settings.json half was ever backed up.
+  #
+  # install.sh has refused this since its own global arm was gated. This is the fifth
+  # "fixed in bash, absent in PowerShell" of the release; the other four are named in
+  # tests/test_installers_agree.py.
+  #
+  # BEFORE Write-PathsEnv, not inside Install-Global: refusing after the path config has
+  # already been rewritten is a partial write, which is the shape of the bug rather than
+  # a fix. install.sh gates in the same position, ahead of its own write_paths_env, so a
+  # dry run refuses here too -- which is the useful answer, because it says what the real
+  # run would do.
+  $hc = Get-GlobalClaudeDir
+  $sk = Join-Path $hc 'skills'
+  if (-not (Test-Path -LiteralPath $sk)) { return }
+  # -LiteralPath for the path and -Filter for the pattern: the bare parameters read a
+  # home directory containing [ or ] as a WILDCARD character class, which is the defect
+  # already recorded further down this file.
+  $existing = @(Get-ChildItem -Directory -LiteralPath $sk -Filter 'x4-*' -ErrorAction SilentlyContinue)
+  if ($existing.Count -eq 0 -or $OverExisting) { return }
+  Write-Host "REFUSING: $hc already carries x4-* skills from a previous install." -ForegroundColor Red
+  Write-Host "  Found:" -ForegroundColor Red
+  foreach ($e in $existing) { Write-Host "      skills\$($e.Name)" -ForegroundColor Red }
+  Write-Host "" -ForegroundColor Red
+  Write-Host "  Installing over them REPLACES those files. If you have edited any in" -ForegroundColor Red
+  Write-Host "  place, they are gone -- this method keeps no backup of skills. It also" -ForegroundColor Red
+  Write-Host "  rewrites $hc\settings.json (that half IS backed up)." -ForegroundColor Red
+  Write-Host "" -ForegroundColor Red
+  Write-Host "  To replace them anyway, say so explicitly:" -ForegroundColor Red
+  Write-Host "      .\install.ps1 -Method global -OverExisting ..." -ForegroundColor Red
+  exit 2
+}
+
 function Install-Global($t) {
   Refuse-IfDryRun 'installing the global Claude config for' $t
-  $hc = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
+  $hc = Get-GlobalClaudeDir
   New-Item -ItemType Directory -Force -Path (Join-Path $hc 'skills'),(Join-Path $hc 'agents') | Out-Null
   # Track exactly what WE copy - the $CLAUDE_PROJECT_DIR rewrite below must never
   # touch a user's pre-existing skills/agents (they may use that variable on purpose).
@@ -535,7 +581,13 @@ function Install-Global($t) {
       $dstRoot = Join-Path $dst $_.Name
       $copied += Get-ChildItem -Recurse -File -LiteralPath $srcRoot -Filter '*.md' |
         ForEach-Object {
-          $rel = $_.FullName.Substring($srcRoot.Length).TrimStart('', '/')
+          # BYTE VALUES, not quoted literals. This shipped as TrimStart('', '/') --
+          # a lone backslash that collapsed to an empty string at authoring time --
+          # and an empty string is not convertible to [char], so -Method global threw
+          # here on EVERY run, on 5.1 and 7 alike, after x4-paths.env had been
+          # rewritten and the first skill force-copied. Test-SameDir dodges the same
+          # hazard the same way; a quoted separator can be re-broken silently.
+          $rel = $_.FullName.Substring($srcRoot.Length).TrimStart([char]92, [char]47)
           Get-Item -LiteralPath (Join-Path $dstRoot $rel) -ErrorAction SilentlyContinue
         }
     }
@@ -647,6 +699,8 @@ switch ($Method) {
   'global'   {
     if (-not $Toolkit) { $Toolkit = $SRC }
     Show-Target $Toolkit
+    # Ahead of every write, exactly where install.sh gates its own global arm.
+    Assert-GlobalOverExisting
     Write-PathsEnv $Toolkit
     Install-Global $Toolkit
   }
