@@ -168,7 +168,21 @@ def main(argv=None) -> int:
                     help="also list benign modifications")
     args = ap.parse_args(argv)
 
-    rs = repos()
+    try:
+        rs = repos()
+    except Exception as exc:  # noqa: BLE001 -- silent-ok: converted to rc 2 here, never swallowed
+        # The guard below covers a broken check(), but check() runs INSIDE the loop that
+        # this call decides the contents of -- so it could never cover this. repos()
+        # resolves _paths.game_root() and calls Path(...).resolve() on $X4_CANARY_REPOS,
+        # where the `except OSError` does not catch the ValueError a NUL byte in a path
+        # raises. An exception escaping main() exits 1, and the SessionStart hook renders
+        # rc 1 as "A TRACKED IRREPLACEABLE FILE HAS BEEN LOST" -- the worst possible
+        # verdict about the user's files, reached by the canary merely failing to
+        # enumerate its own inputs. Could-not-look is rc 2, as the docstring states.
+        print("REFUSING A VERDICT: the canary could not work out what to check: %s: %s"
+              % (type(exc).__name__, exc), file=sys.stderr)
+        return 2
+
     if not rs:
         print("REFUSING A VERDICT: no repositories configured, so 'nothing lost' would "
               "be a statement about nothing.", file=sys.stderr)

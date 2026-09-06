@@ -207,3 +207,28 @@ def test_a_canary_that_ITSELF_breaks_is_rc2_not_DATA_LOSS(repo, monkeypatch, cap
     assert rc == 2, "an exception inside the canary must be a NON-ANSWER (2), got %r" % rc
     assert "REFUSING A VERDICT" in err and "PermissionError" in err, err
     assert "DATA LOSS" not in err, "a broken canary must never claim a loss"
+
+
+def test_a_canary_that_cannot_work_out_WHAT_to_check_is_rc2_not_DATA_LOSS(
+        repo, monkeypatch, capsys):
+    """`check()` was guarded; `repos()` was not, and it runs FIRST.
+
+    The guard added for a broken `check()` sits inside the per-repository loop, so it
+    cannot cover the call that decides what that loop iterates over. `repos()` resolves
+    `_paths.game_root()` and calls `Path(...).resolve()` on `$X4_CANARY_REPOS`; the
+    `except OSError` there does not catch `ValueError`, which is what a NUL byte in a
+    path raises on Windows. An exception escaping `main()` exits the interpreter 1, and
+    the SessionStart hook renders rc 1 as "A TRACKED IRREPLACEABLE FILE HAS BEEN LOST".
+
+    So the worst possible verdict about the user's files was reachable from the canary
+    merely failing to enumerate its own inputs. Could-not-look is rc 2 -- the contract
+    the docstring states and every gate in this repo uses.
+    """
+    def boom():
+        raise PermissionError("simulated: cannot resolve the configured roots")
+    monkeypatch.setattr(x4canary, "repos", boom)
+    rc = x4canary.main([])
+    err = capsys.readouterr().err
+    assert rc == 2, "a canary that cannot enumerate its repos must be rc 2, got %r" % rc
+    assert "REFUSING A VERDICT" in err and "PermissionError" in err, err
+    assert "DATA LOSS" not in err, "a broken canary must never claim a loss"
