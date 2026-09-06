@@ -139,20 +139,22 @@ from pathlib import Path
 #: the tree contains, so widening the CONTENT axis here does not pretend the
 #: merge code changed -- that distinction is the whole of F53's complaint.
 ENGINE_SOURCES = ("_merge.py", "_diff.py", "_cat.py", "_xpath.py", "_scan.py",
-                  "_effective.py", "_registry.py")
-#: ⚠ KNOWN GAP, deliberately not closed by adding a name here. `_compat.compute_load_order`
-#: decides which mod wins every collision (CLAUDE.md gotcha #13: the same macro reads 0
-#: alphabetically and 200 in true load order), so editing it changes the merged answer
-#: for byte-identical inputs -- which is what this axis is for. But `_compat.py` also
-#: carries the `x4compat` CLI, and F69 (`tests/test_engine_sources_carry_no_cli.py`)
-#: measured the cost of that combination twice: a CLI-text change and a DOCSTRING change
-#: each invalidated the effective store and BaseX `x4eff` for rebuilds that could not
-#: change one row. That is what trains you to ignore a banner.
+                  "_effective.py", "_registry.py", "_loadorder.py")
+#: ⚠ THE LOAD-ORDER GAP IS CLOSED (2026-09-06). `compute_load_order` decides which
+#: mod wins every collision (CLAUDE.md gotcha #13: the same macro reads 0
+#: alphabetically and 200 in true load order), so editing it changes the merged
+#: answer for byte-identical inputs -- precisely what this axis is for. It could not
+#: be watched while it lived in `_compat.py`, which also carries the `x4compat` CLI:
+#: F69 (`tests/test_engine_sources_carry_no_cli.py`) measured that cost twice, a
+#: CLI-text change and a DOCSTRING change each invalidating the effective store and
+#: BaseX `x4eff` for rebuilds that could not change one row. That is what trains you
+#: to ignore a banner.
 #:
-#: F69's own remedy applies -- "make the POPULATION right, not the hash clever" -- so the
-#: fix is to lift `compute_load_order` into a CLI-free module and name THAT here. Until
-#: then this axis does not see a load-order change, and saying so is better than either
-#: a hash that cries wolf or a silent hole.
+#: F69's remedy was 'make the POPULATION right, not the hash clever' -- so the two
+#: functions now live in `_loadorder.py`, which imports only `pathlib` and
+#: `lxml.etree` and is named above. `_compat` re-exports them, so every caller and
+#: the `mutation_probe` source-string mutant are unaffected. `_compat.py` itself is
+#: still deliberately absent, and still correctly so: it is a CLI module.
 
 #: Files the ENGINE can load. Everything else -- READMEs, changelogs, licences,
 #: tool logs -- is excluded, because 8 real mods would otherwise mark every

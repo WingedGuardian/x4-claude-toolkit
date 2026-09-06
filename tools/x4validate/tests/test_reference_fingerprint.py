@@ -84,20 +84,41 @@ def test_an_absent_reference_is_named_not_silently_equal(tmp_path):
     assert got == "ref:<ABSENT>"
 
 
-def test_the_load_order_gap_is_still_documented_rather_than_silent():
-    """`_compat.compute_load_order` decides every collision winner, so the engine axis
-    cannot see a load-order change. Adding `_compat.py` to ENGINE_SOURCES was tried and
-    WITHDRAWN: it carries the x4compat CLI, and F69 measured that a CLI-text or even a
-    docstring edit in an engine source invalidates the store for a rebuild that cannot
-    change one row. The remedy is to lift the function into a CLI-free module.
+def test_the_load_order_axis_is_WATCHED_not_merely_documented():
+    """★ RE-POINTED 2026-09-06, when the gap this used to pin was CLOSED.
 
-    This pins that the gap stays NAMED. If someone adds `_compat.py` without doing the
-    split, test_engine_sources_carry_no_cli.py goes red and points here."""
-    assert "_compat.py" not in _freshness.ENGINE_SOURCES
+    It was `test_the_load_order_gap_is_still_documented_rather_than_silent`, and it
+    asserted that `_compat.py` stays OUT of ENGINE_SOURCES -- true then, and still
+    true, but for a different reason. Leaving a test named "the gap is still
+    documented" passing over a gap that no longer exists is the stale-guard shape this
+    suite exists to catch, so it now pins the FIX instead of the hole.
+
+    `compute_load_order` decides every collision winner (gotcha #13: the same macro
+    reads 0 alphabetically and 200 in true load order), so editing it changes the
+    merged answer for byte-identical inputs -- exactly what the ENGINE axis is for. It
+    now lives in `_loadorder.py`, which is named in ENGINE_SOURCES and imports only
+    `pathlib` and `lxml.etree`.
+
+    `_compat.py` stays OUT, still correctly: it carries the x4compat CLI, and F69
+    measured that a CLI-text or docstring edit there invalidates the store for a
+    rebuild that cannot move one row.
+    """
+    assert "_loadorder.py" in _freshness.ENGINE_SOURCES, (
+        "the module that decides load order is not watched by the engine axis, so a "
+        "collision-winner change would read as FRESH")
+    assert "_compat.py" not in _freshness.ENGINE_SOURCES, (
+        "a CLI module in ENGINE_SOURCES makes a docstring edit invalidate the store "
+        "(F69); the split exists precisely to avoid that")
+
+    # the function is really THERE, not just the filename in a tuple
+    from x4validate import _compat, _loadorder
+    assert _compat.compute_load_order is _loadorder.compute_load_order, (
+        "_compat re-exports the lifted function; if that stops being true, the six "
+        "existing call sites and mutation_probe's source-string mutant break silently")
     src = (_freshness._PKG / "_freshness.py").read_text(encoding="utf-8")
     assert "compute_load_order" in src, (
-        "the known load-order gap lost its explanation; a silent hole is worse than a "
-        "documented one")
+        "the load-order axis lost its explanation at the constant; the next reader "
+        "cannot tell a deliberate inclusion from an accidental one")
 
 
 def test_every_engine_source_actually_exists():

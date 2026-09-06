@@ -29,7 +29,8 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _paths, _cat, _merge, _registry, _scan, _xpath, _input
+from x4validate import (_paths, _cat, _merge, _registry, _scan, _xpath, _input,
+                        _loadorder)
 from x4validate import __version__
 
 #: `{page,text}` localized reference - display text, never a registry identity.
@@ -149,73 +150,18 @@ class CompatReport:
 
 # --- mod discovery + load order ----------------------------------------------
 
-def _mod_deps(mod_path: Path, dropped: list[str] | None = None) -> tuple[str, list[str]]:
-    """Return (mod_id, [dependency_ids]) from a mod's content.xml.
-
-    A manifest that will not parse yields ZERO dependencies, and dependencies are
-    what force a mod to load EARLIER — so silently swallowing the failure changes
-    the computed load order, which decides every collision winner this module
-    reports. Report it through *dropped* (same convention as
-    `_registry.scan_installed`, which already handles this case correctly).
-    MEASURED 2026-08-12: 0 of 122 installed manifests are malformed, so this is a
-    latent defect — the cost is zero today and unbounded the day it isn't.
-    """
-    cx = mod_path / "content.xml"
-    if not cx.is_file():
-        if dropped is not None:
-            dropped.append(f"{mod_path.name}: no content.xml — assuming no dependencies")
-        return mod_path.name, []
-    try:
-        root = etree.parse(str(cx)).getroot()
-    except etree.XMLSyntaxError as exc:
-        if dropped is not None:
-            dropped.append(f"{mod_path.name}: content.xml will not parse ({exc}) — "
-                           "load-order position assumed alphabetical")
-        return mod_path.name, []
-    mod_id = root.get("id") or mod_path.name
-    deps = [d.get("id") for d in root.findall(".//dependency") if d.get("id")]
-    return mod_id, deps
-
-
-def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> list[str]:
-    """Order mod FOLDERS as X4 loads them: alphabetical, dependencies forced earlier.
-
-    Kahn topological sort with an alphabetical tiebreak on the ready set, so the
-    result is deterministic and matches "alphabetical unless a dependency requires
-    otherwise". *mods* are entries from `_registry.scan_installed()`.
-
-    Pass *dropped* to receive manifests whose dependencies could not be read —
-    those mods fall back to alphabetical placement, which can silently change who
-    wins a collision. See `_mod_deps`.
-    """
-    folders = [m["folder"] for m in mods]
-    id_to_folder: dict[str, str] = {}
-    deps_by_folder: dict[str, list[str]] = {}
-    for m in mods:
-        mod_id, deps = _mod_deps(Path(m["path"]), dropped)
-        id_to_folder[mod_id] = m["folder"]
-        deps_by_folder[m["folder"]] = deps
-
-    # Edges: dep_folder -> folder (dependency loads first). Ignore uninstalled deps.
-    incoming: dict[str, set[str]] = {f: set() for f in folders}
-    for folder, dep_ids in deps_by_folder.items():
-        for dep_id in dep_ids:
-            dep_folder = id_to_folder.get(dep_id)
-            if dep_folder and dep_folder != folder:
-                incoming[folder].add(dep_folder)
-
-    ordered: list[str] = []
-    resolved: set[str] = set()
-    remaining = set(folders)
-    while remaining:
-        ready = sorted(f for f in remaining if incoming[f] <= resolved)
-        if not ready:  # dependency cycle — fall back to alphabetical for the rest
-            ready = sorted(remaining)
-        nxt = ready[0]
-        ordered.append(nxt)
-        resolved.add(nxt)
-        remaining.discard(nxt)
-    return ordered
+#: LIFTED to `_loadorder.py` 2026-09-06, F69's own named remedy. Load order
+#: decides every collision winner, so editing it changes the merged answer for
+#: byte-identical inputs -- which is what `_freshness`'s ENGINE axis is for. It
+#: could not watch this file, because this file also carries the `x4compat` CLI
+#: and naming it there made a CLI-text or DOCSTRING change invalidate the
+#: effective store and BaseX `x4eff` for a rebuild that could not move one row.
+#:
+#: Re-exported rather than moved outright: six call sites and
+#: `gates/mutation_probe.py`'s source-string mutant name `_compat.compute_load_order`,
+#: and a rename would be churn with a mutation gate attached to it.
+_mod_deps = _loadorder.mod_deps
+compute_load_order = _loadorder.compute_load_order
 
 
 def _mod_xml_paths(mod_path: Path) -> dict[str, str]:
