@@ -17,6 +17,8 @@ validator's blind spot — is the one that has to be impossible to overlook.
 
 from pathlib import Path
 
+import pytest
+
 from x4validate import _debugcli, _freshness
 
 SAMPLE = "\n".join([
@@ -103,7 +105,28 @@ def test_crosscheck_counts_duplicates_rather_than_collapsing_them(tmp_path):
     assert r.both == ["//a"]
 
 
-def test_baseline_stamps_a_content_fingerprint_but_NOT_an_engine_one(tmp_path):
+@pytest.fixture
+def resolved_extensions(tmp_path, monkeypatch):
+    """Give the archive a REAL extensions root, named by the test.
+
+    Without this, the two tests below passed on a machine with NO X4 install for
+    entirely the wrong reason: `archive` fell back to `Path("")` -- which is
+    `Path(".")` -- fingerprinted the CURRENT DIRECTORY as though it were the mod
+    install, and reported degraded: false. They were exercising the defect and
+    calling it the happy path, and CI (which has no install) is exactly where
+    that happened.
+
+    A test whose answer depends on mutable state outside itself is not testing
+    what its name says -- the same reason test_ask.py pins its preflight.
+    """
+    root = tmp_path / "game-extensions"
+    root.mkdir()
+    monkeypatch.setattr(_debugcli._paths, "game_extensions", lambda: root)
+    return root
+
+
+def test_baseline_stamps_a_content_fingerprint_but_NOT_an_engine_one(
+        tmp_path, resolved_extensions):
     """A log is a record of a game launch, not a merge product. Flagging it as
     engine-dependent would make it read STALE every time we touch _merge.py, and a
     banner that cries wolf is one the reader learns to skip."""
@@ -256,7 +279,8 @@ def test_archive_never_leaves_a_log_whose_meta_cannot_be_read(tmp_path, monkeypa
     assert "fingerprint" in str(meta.get("degraded_reason", "")).lower()
 
 
-def test_the_CONSUMER_survives_a_degraded_meta(tmp_path, monkeypatch, capsys):
+def test_the_CONSUMER_survives_a_degraded_meta(tmp_path, monkeypatch, capsys,
+                                              resolved_extensions):
     """The test above proved the ARCHIVE survives. Nothing proved the READER did.
 
     `archive()` sets its five keys with one `meta.update({...})` inside a try, so any
@@ -265,6 +289,10 @@ def test_the_CONSUMER_survives_a_degraded_meta(tmp_path, monkeypatch, capsys):
     `KeyError: 'total_errors'`, an uncaught traceback, immediately after successfully
     writing the archive. The degraded flag existed precisely so a reader could act on
     it, and the only reader never looked.
+
+    `resolved_extensions` is REQUIRED here: with no root, archive() now
+    degrades before it ever reaches the fingerprint call, and this test is
+    about what happens when that call RAISES.
     """
     log = tmp_path / "debug.txt"
     log.write_text("[=ERROR=] something\n", encoding="utf-8")
@@ -281,7 +309,7 @@ def test_the_CONSUMER_survives_a_degraded_meta(tmp_path, monkeypatch, capsys):
     assert "archived" in out, "the archive was still written and must still be named"
 
 
-def test_a_HEALTHY_baseline_still_reports_rc0(tmp_path, capsys):
+def test_a_HEALTHY_baseline_still_reports_rc0(tmp_path, capsys, resolved_extensions):
     """The twin: a guard that returned 1 for everything would pass the test above."""
     log = tmp_path / "debug.txt"
     log.write_text("[=ERROR=] something\n", encoding="utf-8")
@@ -290,3 +318,70 @@ def test_a_HEALTHY_baseline_still_reports_rc0(tmp_path, capsys):
     assert rc == 0, out
     assert "DEGRADED" not in out
     assert "content fingerprint" in out, out
+
+
+def test_an_UNRESOLVED_extensions_root_is_degraded_not_fingerprinted(
+        tmp_path, monkeypatch, capsys):
+    r"""`Path("")` is `Path(".")`, so an unresolved extensions root made the
+    content fingerprint describe the CURRENT DIRECTORY as if it were the mod
+    install -- and reported degraded: false while doing it.
+
+    MEASURED, control red both ways: run from two directories holding 1 and 3
+    subfolders, an unresolved root produced two DIFFERENT content fingerprints
+    and enumerated those subfolders as installed mods (1 and 3 detail rows);
+    with the root resolved, both cwds produced the SAME fingerprint and 0 rows.
+
+    A baseline exists to say WHICH WORLD a capture was taken in. An unresolved
+    root is exactly the case where it cannot, and `degraded` is the field for
+    saying so -- it said the opposite, which is worse than refusing.
+    """
+    monkeypatch.setattr(_debugcli._paths, "game_extensions", lambda: None)
+    log = _write(tmp_path)
+    out = _debugcli.archive(log, tmp_path / "archive")
+    assert out.is_file(), "the log must still be copied -- the archive survives"
+    meta = _debugcli.read_archive_meta(out)
+    assert meta["degraded"] is True, (
+        "a fingerprint taken over the current directory was reported as sound")
+    assert "fingerprint" not in meta, (
+        "a fingerprint was recorded for a world this capture never looked at")
+    assert "extensions root" in meta["degraded_reason"]
+    # the parse results do NOT depend on the root, so they must survive
+    assert meta["total_errors"] == 4
+
+
+def test_a_capture_NEVER_records_a_fingerprint_that_depends_on_the_CWD(
+        tmp_path, monkeypatch):
+    r"""The invariant, stated so that it could actually have failed.
+
+    An earlier draft of this test supplied a resolved extensions root and asserted
+    the two fingerprints matched -- which passed before the fix as well as after,
+    because with a root resolved the cwd never mattered. It was testing the control
+    condition, so it was decoration.
+
+    The condition that was actually broken is the UNRESOLVED root: `Path("")` is
+    `Path(".")`, so the walk enumerated whatever directory the command was run from.
+    The honest invariant covers both outcomes -- a capture may decline to fingerprint,
+    or it may fingerprint the world, but it may never fingerprint the CWD:
+
+        pre-fix : two fingerprints, DIFFERENT (bd308509... vs bb04955c...), plus 1
+                  and 3 detail rows naming the cwd's subfolders as installed mods
+        post-fix: no fingerprint at all, degraded: true, both times
+
+    so the assertion below goes red on the first and green on the second.
+    """
+    monkeypatch.setattr(_debugcli._paths, "game_extensions", lambda: None)
+    log = _write(tmp_path)
+    seen = []
+    for name, subdirs in (("a", 1), ("b", 3)):
+        here = tmp_path / ("cwd_" + name)
+        here.mkdir()
+        for i in range(subdirs):
+            (here / ("looks_like_a_mod_%d" % i)).mkdir()
+        monkeypatch.chdir(here)
+        meta = _debugcli.read_archive_meta(
+            _debugcli.archive(log, tmp_path / ("arch_" + name)))
+        seen.append(meta.get("fingerprint", {}).get("content"))
+    assert seen[0] == seen[1], (
+        "the current directory leaked into the content fingerprint: two captures of "
+        "one world, taken from different directories, disagree about which world "
+        "they are from: %s" % (seen,))

@@ -215,14 +215,40 @@ def archive(log: Path, dest_dir: Path, config=None) -> Path:
         if cfg is None:
             from . import _merge
             cfg = _merge.Config()
-        ext = _paths.game_extensions() or Path("")
         meta.update({
             "new_game": _is_new_game(text),
             "total_errors": parsed.total,
             "classified": len(parsed.classified),
             "unclassified": len(parsed.unclassified),
-            "fingerprint": _freshness.fingerprint(cfg, ext),
         })
+        # `Path("")` is `Path(".")`, so an UNRESOLVED extensions root used to make
+        # this fingerprint the CURRENT DIRECTORY as though it were the mod install.
+        # REPRODUCED with a control that goes both ways: run from two directories
+        # holding 1 and 3 subfolders, an unresolved root produced two DIFFERENT
+        # content fingerprints and enumerated those subfolders as installed mods
+        # (1 and 3 detail rows); a root that resolves produced the SAME fingerprint
+        # from both cwds and 0 rows. The only differing variable is the root.
+        #
+        # A baseline exists to record WHICH WORLD a capture was taken in, so an
+        # unresolved root is precisely the case it cannot answer -- and `degraded`
+        # is the field for saying so. Reporting False there is worse than refusing:
+        # two captures of one world claim to be from different worlds, while the
+        # flag whose whole job is to mark a fingerprint untrustworthy says it is
+        # fine. That also contradicts this block's own comment above -- "says so
+        # when it is degraded".
+        #
+        # CLAUDE.md verifier-bug #45 and F46 are the same empty-Path mechanism;
+        # what is new here is that it reaches a PERSISTED artifact rather than one
+        # ad-hoc measurement.
+        ext = _paths.game_extensions()
+        if ext is None:
+            meta["degraded"] = True
+            meta["degraded_reason"] = (
+                "the game extensions root is not configured (X4_EXTENSIONS /"
+                " X4_GAME), so NO content fingerprint was taken: it would have"
+                " described the current directory instead of the mod install")
+        else:
+            meta["fingerprint"] = _freshness.fingerprint(cfg, ext)
     except Exception as exc:  # noqa: BLE001 - the copy must survive ANY meta failure
         meta["degraded"] = True
         meta["degraded_reason"] = repr(exc)
