@@ -805,3 +805,69 @@ def test_EVERY_build_effective_call_site_consults_the_skip_channel():
         "these functions build an effective tree and never ask what was left out "
         "of it, so a malformed overlay is indistinguishable from an absent one:\n  "
         + "\n  ".join(offenders))
+
+
+# --- the disclosure set must be MONOTONIC -------------------------------------
+#
+# `--xsd-fast` skips BOTH `check_xsd` and `check_effective_schema`, which reopens
+# exactly the holes the default run discloses -- but the disclosure sat behind
+# `if not update:`, so ADDING flags REMOVED disclosures. MEASURED on one fixture:
+#
+#   DEFAULT             rc=1  NOT CHECKED: script-schema, effective-schema
+#   --update --xsd-fast rc=1  (no NOT CHECKED section at all)
+#
+# while the note claimed "Gating required-attribute breakages above are COMPLETE"
+# -- an incomplete enumeration presented as complete, and false for nested
+# cross-mod script patches, which only the compiled pass reaches.
+
+def _script_mod(tmp_path):
+    ref = tmp_path / "reference"
+    _write(ref / "libraries/wares.xml", '<wares><ware id="ore"/></wares>')
+    mod = tmp_path / "mod"
+    _write(mod / "content.xml", '<content id="m" version="1"/>')
+    _write(mod / "md" / "probe.xml", '<mdscript name="Probe"><cues/></mdscript>')
+    return mod, _merge.Config(reference=ref)
+
+
+def test_xsd_fast_never_discloses_LESS_than_the_default_run(tmp_path):
+    """The property, stated directly. A more thorough invocation may disclose
+    more, never less -- it skips the same schema passes the default one does."""
+    mod, cfg = _script_mod(tmp_path)
+    default = {s.what for s in _check.validate(mod, cfg).skipped}
+    fast = {s.what for s in _check.validate(mod, cfg, update=True, xsd_fast=True).skipped}
+    assert default, "the fixture disclosed nothing by default; it proves nothing"
+    assert default <= fast, (
+        "--update --xsd-fast disclosed LESS than the plain default run. Missing: %s"
+        % sorted(default - fast))
+
+
+def test_the_xsd_fast_remedy_names_the_flag_the_caller_must_DROP(tmp_path):
+    """A remedy of "--update" is useless to someone who just passed --update. The
+    disclosure has to name the thing they can actually change."""
+    mod, cfg = _script_mod(tmp_path)
+    fast = _check.validate(mod, cfg, update=True, xsd_fast=True)
+    why = " ".join(s.why for s in fast.skipped)
+    assert "--xsd-fast" in why, why
+
+
+def test_the_xsd_fast_note_no_longer_claims_UNQUALIFIED_completeness(tmp_path):
+    """`check_required_attrs` filters to DIRECT CHILDREN of md/ and aiscripts/, and
+    the one thing covering nested cross-mod patches is `validate_nested_scripts`,
+    called from `check_xsd` -- exactly what --xsd-fast skips. So the old claim
+    "Gating required-attribute breakages above are COMPLETE" was false for the 15
+    such files `_xsd.strip_nesting` measures across 7 mods."""
+    mod, cfg = _script_mod(tmp_path)
+    note = " ".join(_check.validate(mod, cfg, update=True, xsd_fast=True).notes)
+    assert "--xsd-fast" in note
+    assert "DIRECT CHILDREN" in note, note
+    assert "check_effective_schema" in note, (
+        "the enumeration of what is skipped still omits the merged data-file pass")
+
+
+def test_the_DEFAULT_run_still_names_update_as_the_remedy(tmp_path):
+    """The twin. Parameterising the remedy must not change the default advice."""
+    mod, cfg = _script_mod(tmp_path)
+    why = " ".join(s.why for s in _check.validate(mod, cfg).skipped)
+    assert "`--update`" in why
+    assert "--xsd-fast" not in why, (
+        "the default run advised dropping a flag the caller never passed")

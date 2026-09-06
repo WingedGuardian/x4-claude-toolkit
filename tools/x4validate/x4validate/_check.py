@@ -1674,7 +1674,7 @@ def check_debug_correlation(mod_dir: Path, config: _merge.Config, report: Report
 
 
 def check_script_validation_scope(mod_dir: Path, config: _merge.Config,
-                                  report: Report) -> None:
+                                  report: Report, remedy: str = "`--update`") -> None:
     """Disclose that md/ and aiscripts/ files went unvalidated in the default run.
 
     Reported from real use 2026-08-27: an additive-only <mdscript> with three
@@ -1725,7 +1725,7 @@ def check_script_validation_scope(mod_dir: Path, config: _merge.Config,
             f"{top} md/aiscripts file(s): the required-attribute class was checked "
             f"and is COMPLETE, but the 'element not expected' class - where element "
             f"ORDERING errors live - and the schema-strict advisories were not. "
-            f"Those need the ~102s schema compile: `--update`")
+            f"Those need the ~102s schema compile: {remedy}")
     if nested:
         # A SEPARATE statement, because the advice differs. Both halves of
         # `_xsd.validate_mod` filter `count("/") != 1` -- direct children only, and
@@ -1771,7 +1771,7 @@ def check_script_validation_scope(mod_dir: Path, config: _merge.Config,
         report.skip(
             "effective-schema",
             f"{len(with_schema)} patched data file(s) declare a schema and the merged "
-            f"result was NOT validated against it — runs only under `--update` "
+            f"result was NOT validated against it — runs only under {remedy} "
             f"(e.g. {with_schema[0]})")
 
 
@@ -2227,8 +2227,24 @@ def validate(
             check_xsd(mod_dir, config, report, already)   # script files, as written
             check_effective_schema(mod_dir, config, report)  # data files, as merged
         else:
+            # THE DISCLOSURE SET MUST BE MONOTONIC. Adding `--xsd-fast` skips both
+            # `check_xsd` and `check_effective_schema`, which reopens exactly the
+            # holes the DEFAULT run discloses -- but the disclosure lived behind
+            # `if not update:`, so the MORE thorough invocation emitted FEWER NOT
+            # CHECKED entries than the less thorough one. MEASURED on one fixture:
+            #   default             -> script-schema + effective-schema disclosed
+            #   --update --xsd-fast -> no NOT CHECKED section at all
+            # while the note claimed its gating coverage was COMPLETE.
+            #
+            # The remedy differs in this mode -- the caller already passed
+            # `--update` -- so it is named rather than hardcoded.
+            check_script_validation_scope(
+                mod_dir, config, report, remedy="`--update` without `--xsd-fast`")
             report.notes.append(
-                "--xsd-fast: skipped the compiled-schema pass (~100-122s). Gating "
-                "required-attribute breakages above are COMPLETE; what is skipped is "
-                "the advisory set and the 'element not expected' class.")
+                "--xsd-fast: skipped the compiled-schema pass (~100-122s). The "
+                "required-attribute class is COMPLETE FOR DIRECT CHILDREN of md/ "
+                "and aiscripts/; what is skipped is the advisory set, the "
+                "'element not expected' class, the merged data-file schema pass "
+                "(check_effective_schema), and nested cross-mod script patches, "
+                "which only the compiled pass reaches. See NOT CHECKED above.")
     return report

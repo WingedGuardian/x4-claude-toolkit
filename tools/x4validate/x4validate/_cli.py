@@ -72,9 +72,11 @@ def main(argv: list[str] | None = None) -> int:
                    help="add 9.0 mechanical-port checks: XSD schema validation of MD/aiscript "
                    "files (~100s warmup) + the runtime-only migration-map heuristic")
     p.add_argument("--xsd-fast", action="store_true",
-                   help="with --update: skip the compiled-schema pass (~100-122s). Gating "
-                   "required-attribute breakages are still COMPLETE; you lose the advisories "
-                   "and the 'element not expected' class")
+                   help="with --update: skip the compiled-schema pass (~100-122s). The "
+                   "required-attribute class stays COMPLETE FOR DIRECT CHILDREN of md/ and "
+                   "aiscripts/; you lose the advisories, the 'element not expected' class, "
+                   "the merged data-file schema pass, and nested cross-mod script patches. "
+                   "All of it is listed under NOT CHECKED")
     p.add_argument("--debug", nargs="?", const="\0", metavar="DEBUG_TXT",
                    help="correlate the engine's own debug.txt errors for this mod (authoritative; "
                    "GATES on engine errors). Bare --debug uses the active profile's debug.txt")
