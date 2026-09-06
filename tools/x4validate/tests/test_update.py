@@ -296,3 +296,71 @@ def test_findings_message_matches_libxml2_wording(tmp_path):
     assert got[0].message == (
         "Element 'find_ship': The attribute 'space' is required but missing.")
     assert "is required but missing" in got[0].message   # the gating classifier's key
+
+
+# --- the schema pass must say what it could NOT check -------------------------
+#
+# `check_xsd` bound `skipped` from `_xsd.validate_mod` and never read it again, so
+# the files the schema pass could not check left no trace: no note, no skip entry.
+# The NESTED half of the same function already reports its own skips and prints
+# "not checkable" in its note -- one function, two halves, one channel used.
+#
+# `ROOT_TO_SCHEMA` holds only <mdscript> and <aiscript>, so any md/- or
+# aiscripts/-rooted document that is neither is skipped -- and the <diff> form is
+# what CLAUDE.md #21 measures as 263 of 264 script-path collisions.
+#
+# MEASURED over all 125 installed extensions: checked=181, SKIPPED=206 (53.2% of
+# the files --update reaches), across 44 of 125 mods. Two mods have checked == 0
+# and printed "XSD: 0 validated - 0 gating breakage(s)" -- indistinguishable from
+# a mod that ships no scripts at all.
+
+def _xsd_fixture(tmp_path, filename: str, body: str):
+    lib = tmp_path / "reference" / "libraries"
+    lib.mkdir(parents=True)
+    (lib / "test.xsd").write_text(_TINY_XSD, encoding="utf-8")
+    md = tmp_path / "mod" / "md"
+    md.mkdir(parents=True)
+    (md / filename).write_text(body, encoding="utf-8")
+    report = _check.Report()
+    cfg = _merge.Config(reference=tmp_path / "reference")
+    _check.check_xsd(tmp_path / "mod", cfg, report)
+    return report
+
+
+def test_an_unvalidatable_script_is_DISCLOSED_not_silently_dropped(tmp_path):
+    """A <diff>-rooted script -- the ordinary form -- has no bundled schema."""
+    report = _xsd_fixture(tmp_path, "x.xml", '<diff><add sel="/mdscript"/></diff>')
+    assert any("XSD" in s.what for s in report.skipped), (
+        "the schema pass skipped a file and said nothing about it")
+    why = " ".join(s.why for s in report.skipped)
+    assert "no bundled schema" in why
+    assert any("NOT CHECKED" in n for n in report.notes), (
+        "the note still reads as though everything was validated")
+
+
+def test_the_disclosure_does_NOT_degrade_the_run(tmp_path):
+    """Decided on the same evidence as the default-mode disclosure: there is no
+    bundled schema for these roots, so an exit 3 would be permanent and
+    unclearable across 44 of 125 installed mods -- and a gate that can never go
+    green trains you to ignore it."""
+    report = _xsd_fixture(tmp_path, "x.xml", '<diff><add sel="/mdscript"/></diff>')
+    assert not report.degraded, (
+        "an unclearable schema gap was made to gate the run")
+
+
+def test_a_fully_validated_mod_discloses_NOTHING(tmp_path):
+    """The twin. A disclosure that fired unconditionally would pass both tests
+    above while telling every clean run that something was not checked."""
+    report = _xsd_fixture(tmp_path, "good.xml", f'<root {_HDR} req="x"/>')
+    assert not any("XSD" in s.what for s in report.skipped), (
+        "a fully validated mod was told something was not checked")
+    assert not any("NOT CHECKED" in n for n in report.notes)
+
+
+def test_the_note_carries_BOTH_numbers(tmp_path):
+    """checked and skipped together: `XSD: 0 validated` alone is the sentence that
+    reads identically for a mod with no scripts and a mod whose scripts could not
+    be checked."""
+    report = _xsd_fixture(tmp_path, "x.xml", '<diff><add sel="/mdscript"/></diff>')
+    note = " ".join(report.notes)
+    assert "0 validated" in note and "1 NOT CHECKED" in note, note

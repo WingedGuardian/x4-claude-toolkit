@@ -962,13 +962,37 @@ def check_sel_resolution_one(file_path: Path, mod_dir: Path,
         # so the narrower catch above let a plain typo escape as a traceback.
         report.add("error", "path", f"cannot read file: {exc}", str(file_path))
         return
-    if root.tag != "diff":
-        return
     try:
         vpath = file_path.relative_to(mod_dir).as_posix()
     except ValueError:
         vpath = file_path.name
+    if root.tag != "diff":
+        # NOT a silent return. This function only knows how to check a <diff>, and
+        # `validate()` RETURNS immediately after calling it in --file mode -- so for
+        # a complete file nothing whatsoever was examined, and the run printed
+        # "OK: no issues found" with rc 0, no notes and no NOT CHECKED. That is the
+        # sentence the skipped channel exists to prevent, reached by the hook that
+        # auto-validates whatever the user just edited.
+        #
+        # NOT degraded, on the precedent set for the default-mode script disclosure
+        # (tests/test_script_files_disclose_unvalidated.py): a complete file will
+        # never contain selectors, so an exit 3 here would be permanent and
+        # unclearable, and a gate that can never go green trains you to ignore it.
+        report.skip(f"sel-resolution ({vpath})",
+                    f"<{root.tag}> is a complete file, not a <diff>, so it has no "
+                    f"selectors to resolve -- and --file runs no other check")
+        return
     merged = _merge.build_effective(vpath, config)
+    # THE SAME DEGRADED SKIP THE FULL PATH RECORDS. An overlay that could not be
+    # parsed was left out of this tree, so the verdict below is computed against an
+    # incomplete one -- the check's premise is disabled, not one file. The full run
+    # names the dropped overlay and marks it degraded; this path erased it, so the
+    # identical bytes gave `skipped=[( ..., True)]` through `validate()` and
+    # `skipped=[]` through `--file`.
+    for msg in merged.skipped:
+        report.skip(f"sel-resolution against a complete tree ({vpath})",
+                    f"an overlay could not be parsed, so the comparison tree is "
+                    f"incomplete: {msg}", degraded=True)
     if merged.tree is None:
         report.add("error", "path", f"no base game file for '{vpath}'", vpath)
         return
@@ -1757,6 +1781,31 @@ def check_xsd(mod_dir: Path, config: _merge.Config, report: Report,
     severity + exit code. Authority on what truly breaks = the Migration Map + in-game test."""
     findings, checked, skipped = _xsd.validate_mod(mod_dir, config)
 
+    # THE SKIP COUNT WAS DISCARDED. `skipped` was bound here and never read
+    # again, so the files the schema pass could NOT check left no trace at all --
+    # while the NESTED half five lines below already reports its own skips and
+    # says "not checkable" in its note. Same function, two halves, one channel.
+    #
+    # `ROOT_TO_SCHEMA` holds only <mdscript> and <aiscript>, so every md/- or
+    # aiscripts/-rooted document that is not one of those two is skipped -- and
+    # the <diff> form is what CLAUDE.md #21 measures as 263 of 264 script-path
+    # collisions. MEASURED over all 125 installed extensions: checked=181,
+    # SKIPPED=206, i.e. 53.2% of the files --update reaches, across 44 of 125
+    # mods. Two of them have checked == 0 and printed "XSD: 0 validated - 0
+    # gating breakage(s)" -- output indistinguishable from a mod shipping no
+    # scripts at all.
+    #
+    # NOT degraded, on the same evidence the default-mode disclosure was decided
+    # on (tests/test_script_files_disclose_unvalidated.py): there is no bundled
+    # schema for these roots, so an exit 3 would be permanent and unclearable,
+    # and a gate that can never go green trains you to ignore it.
+    if skipped:
+        report.skip("XSD schema validation",
+                    "%d of %d script file(s) have no bundled schema for their root "
+                    "element -- only <mdscript> and <aiscript> have one, so a <diff>-"
+                    "rooted script cannot be schema-checked at all"
+                    % (skipped, checked + skipped))
+
     # F70: a nested cross-mod script patch is validated by NOTHING otherwise --
     # both halves of `validate_mod` filter `count("/") != 1`, so a patch at
     # `<mymod>/extensions/<target>/md/foo.xml` is never examined. Validate it
@@ -1793,7 +1842,9 @@ def check_xsd(mod_dir: Path, config: _merge.Config, report: Report,
     dupes = sum(1 for f in high
                 if (_relpath(f.file, mod_dir), f.line, f.message) in seen)
     report.notes.append(
-        f"XSD: {checked} validated — {len(high)} gating breakage(s) "
+        f"XSD: {checked} validated"
+        f"{f', {skipped} NOT CHECKED (no bundled schema for their root)' if skipped else ''}"
+        f" — {len(high)} gating breakage(s) "
         f"(required-attr / removed-element{f'; {dupes} already reported by the fast pass'
                                            if dupes else ''}), {len(low)} schema-strict "
         f"advisor{'y' if len(low) == 1 else 'ies'} (md.xsd stricter than the engine)")
@@ -2053,6 +2104,29 @@ def validate(
     check_exprlint(mod_dir, config, report)  # cheap, always-on: expression-grammar heuristic
     if entity and like:
         check_completeness(mod_dir, runtime, report, entity, like)  # runtime: needs macro defs
+    elif entity or like:
+        # ONE FLAG IS A REQUEST THAT CANNOT BE HONOURED, not an absent request.
+        # `--entity` and `--like` are two independent optional arguments with no
+        # mutual requirement, so half a request fell off the end of this `if` and
+        # the run printed "OK: no issues found" with rc 0 -- no note, no NOT
+        # CHECKED, no warning. MEASURED on one mod, three invocations: with both
+        # flags, `completeness checked kinds: component, definition, ...` plus an
+        # INFO finding; with either flag alone, every trace of the requested check
+        # is ABSENT -- not downgraded, not skipped.
+        #
+        # README: "3 degraded -- a check you asked for could not run, so a clean
+        # result proves nothing", and it names "a --like analogue that does not
+        # exist" as a case that reaches it. A --like that was never SUPPLIED is a
+        # stronger form of the same condition. `check_completeness` itself already
+        # refuses the vacuous comparison one layer down, for the same reason: an
+        # all-False footprint means nothing is ever "missing" and the result reads
+        # as a clean pass.
+        report.skip("completeness",
+                    "--entity and --like must be given together; got only %s. "
+                    "A footprint comparison needs both the new entity and the "
+                    "vanilla analogue to compare it against, so no completeness "
+                    "check ran." % ("--entity" if entity else "--like"),
+                    degraded=True)
     if debug is not None:  # authoritative: fold the engine's own errors for this mod (gates)
         check_debug_correlation(mod_dir, config, report, debug)
     # Runs in EVERY mode. No schema compile, so it costs ~0.1s on the heaviest

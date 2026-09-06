@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from lxml import etree
+
 from x4validate import _check, _merge
 
 
@@ -520,3 +522,176 @@ def test_the_NON_degraded_path_still_reports_a_genuinely_missing_component(tmp_p
     assert any("component" in str(getattr(e, "message", e)) for e in report.errors), (
         "a macro defined nowhere did not error even with a readable index; the "
         "degraded-path test above would then prove nothing")
+
+
+# --- half a completeness request is a request that could not be honoured ------
+#
+# `--entity` and `--like` are two independent optional arguments with no mutual
+# requirement, and `validate` guarded the check with `if entity and like:`. So
+# supplying one of them fell off the end of that `if` and the run printed
+# "OK: no issues found" with rc 0 -- no note, no NOT CHECKED, no warning.
+#
+# MEASURED, one mod, three invocations:
+#   --entity X --like Y  -> "completeness checked kinds: component, definition,
+#                            description_string, name_string, owner, price,
+#                            production, restriction" + an INFO finding
+#   --entity X           -> "OK: no issues found"
+#   --like Y             -> "OK: no issues found"
+# Every trace of the requested check is ABSENT in the last two -- not downgraded,
+# not skipped.
+#
+# README: "3 degraded - a check you asked for could not run, so a clean result
+# proves nothing", and it names "a --like analogue that does not exist" as a case
+# that reaches it. A --like that was never supplied is a stronger form of the same
+# condition. `check_completeness` already refuses the vacuous comparison one layer
+# down, for the same reason.
+
+def _minimal_mod(tmp_path):
+    """A mod and a REAL reference tree.
+
+    Both are needed: `validate` reports a hard reference error and returns
+    before the completeness dispatch when the reference tree is absent, so a
+    fixture without one tests the early-exit path instead of the one named in
+    these tests. (It did, on the first draft.)
+    """
+    ref = tmp_path / "reference"
+    _write(ref / "libraries/wares.xml", "<wares><ware id=\"ore\"/></wares>")
+    _write(ref / "t/0001-l044.xml",
+           '<language id="44"><page id="1"><t id="1">base</t></page></language>')
+    mod = tmp_path / "mod"
+    _write(mod / "content.xml", '<content id="m" version="1"/>')
+    return mod, _merge.Config(reference=ref)
+
+
+def test_entity_without_like_is_a_DEGRADED_skip_not_a_clean_pass(tmp_path):
+    mod, cfg = _minimal_mod(tmp_path)
+    report = _check.validate(mod, cfg, entity="ware:probe")
+    assert report.degraded, (
+        "a completeness check was requested and did not run, and the report says "
+        "nothing about it -- so a clean result would read as evidence")
+    assert any("completeness" in s.what for s in report.degraded)
+    assert any("--like" in s.why for s in report.degraded)
+
+
+def test_like_without_entity_is_also_a_DEGRADED_skip(tmp_path):
+    """The mirror. A guard written for one direction only would pass the test
+    above and leave the other half live."""
+    mod, cfg = _minimal_mod(tmp_path)
+    report = _check.validate(mod, cfg, like="ware:ore")
+    assert report.degraded
+    assert any("--entity" in s.why for s in report.degraded)
+
+
+def test_NEITHER_flag_is_not_a_skip(tmp_path):
+    """The twin that matters most: a completeness check nobody asked for must not
+    degrade every ordinary run. A guard written as `if not (entity and like)`
+    would pass both tests above and turn the default invocation into rc 3.
+    """
+    mod, cfg = _minimal_mod(tmp_path)
+    report = _check.validate(mod, cfg)
+    assert not any("completeness" in s.what for s in report.skipped), (
+        "an unrequested completeness check was reported as skipped work")
+
+
+# --- the --file fast path erased what the full run discloses ------------------
+#
+# `check_sel_resolution_one` is what the auto-validate hook runs on whatever the
+# user just edited, and `validate()` RETURNS immediately after calling it, so it is
+# the ONLY check that runs in --file mode. It had two silent narrowings:
+#
+#   * `if root.tag != "diff": return` -- a complete file produced "OK: no issues
+#     found", rc 0, no notes and no NOT CHECKED, having examined nothing at all.
+#   * `merged.skipped` was never consulted, so an overlay that could not be parsed
+#     -- which leaves the comparison tree INCOMPLETE -- vanished. MEASURED on the
+#     same bytes: the full run reported
+#     skipped=[('sel-resolution against a complete tree (..)', True)] and the
+#     --file run reported skipped=[].
+
+class _FakeMerged:
+    """Stands in for `_merge.build_effective`'s result.
+
+    What is under test is whether this function CONSUMES `merged.skipped`, not
+    whether `build_effective` produces it -- that half has its own coverage in
+    _merge. Monkeypatching keeps the two questions apart.
+    """
+
+    def __init__(self, tree, skipped):
+        self.tree = tree
+        self.skipped = skipped
+        self.sources = []
+        self.base_found = tree is not None
+        self.base_from_game = tree is not None
+
+
+def _diff_file(tmp_path):
+    mod = tmp_path / "mod"
+    (mod / "libraries").mkdir(parents=True)
+    f = mod / "libraries" / "wares.xml"
+    _write(f, '<diff><replace sel="//ware[@id=\'ore\']/@volume">2</replace></diff>')
+    return mod, f
+
+
+def test_a_COMPLETE_file_is_disclosed_not_reported_as_a_clean_pass(tmp_path):
+    mod = tmp_path / "mod"
+    (mod / "libraries").mkdir(parents=True)
+    f = mod / "libraries" / "probe.xml"
+    _write(f, '<wares><ware id="x"/></wares>')
+
+    report = _check.Report()
+    _check.check_sel_resolution_one(f, mod, _merge.Config(reference=tmp_path / "ref"), report)
+    assert report.skipped, (
+        "a --file run examined nothing and said nothing -- the sentence the "
+        "skipped channel exists to prevent")
+    assert "not a <diff>" in " ".join(s.why for s in report.skipped)
+    assert not report.errors, "a complete file is not an error, it is unexaminable here"
+
+
+def test_that_disclosure_does_not_DEGRADE(tmp_path):
+    """A complete file will never contain selectors, so exit 3 here would be
+    permanent and unclearable -- the same reason the default-mode script
+    disclosure is not degraded."""
+    mod = tmp_path / "mod"
+    (mod / "libraries").mkdir(parents=True)
+    f = mod / "libraries" / "probe.xml"
+    _write(f, '<wares><ware id="x"/></wares>')
+    report = _check.Report()
+    _check.check_sel_resolution_one(f, mod, _merge.Config(reference=tmp_path / "ref"), report)
+    assert not report.degraded
+
+
+def test_a_DIFF_file_is_not_disclosed_as_unexaminable(tmp_path):
+    """The twin: a disclosure that fired for every file would pass the two tests
+    above while telling every ordinary hook run that nothing was checked."""
+    mod, f = _diff_file(tmp_path)
+    report = _check.Report()
+    _check.check_sel_resolution_one(f, mod, _merge.Config(reference=tmp_path / "ref"), report)
+    assert not any("not a <diff>" in s.why for s in report.skipped)
+
+
+def test_the_fast_path_reports_the_SAME_degraded_skip_as_the_full_run(
+        tmp_path, monkeypatch):
+    """Parity, not a new decision: the full run already marks a dropped overlay
+    degraded, because the verdict is then computed against an incomplete tree."""
+    mod, f = _diff_file(tmp_path)
+    monkeypatch.setattr(
+        _merge, "build_effective",
+        lambda *a, **k: _FakeMerged(etree.fromstring(b"<wares/>"),
+                                    ["overlay_x/libraries/wares.xml: not well-formed"]))
+    report = _check.Report()
+    _check.check_sel_resolution_one(f, mod, _merge.Config(reference=tmp_path / "ref"), report)
+    assert report.degraded, (
+        "the fast path erased a dropped overlay that the full run marks degraded")
+    assert "incomplete" in " ".join(s.why for s in report.degraded)
+    assert "overlay_x" in " ".join(s.why for s in report.degraded), \
+        "the reason must NAME the overlay, as the full path does"
+
+
+def test_no_dropped_overlay_means_no_degraded_skip(tmp_path, monkeypatch):
+    """The twin for the clause above."""
+    mod, f = _diff_file(tmp_path)
+    monkeypatch.setattr(
+        _merge, "build_effective",
+        lambda *a, **k: _FakeMerged(etree.fromstring(b"<wares/>"), []))
+    report = _check.Report()
+    _check.check_sel_resolution_one(f, mod, _merge.Config(reference=tmp_path / "ref"), report)
+    assert not report.degraded
