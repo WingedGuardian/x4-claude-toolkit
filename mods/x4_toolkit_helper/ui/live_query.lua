@@ -51,7 +51,7 @@ local PROTO = 1
 --:
 --: Kept honest by `test_the_BUILD_constant_matches_the_file`, so editing the lua and
 --: forgetting to re-stamp this fails the suite rather than silently lying in game.
-local BUILD = "70fe7a9f"
+local BUILD = "5190e508"
 local TAG_CMD, TAG_REPLY = "MQ", "MR"
 
 -- Cap on echo, the ramp instrument. Generous: the point of the ramp is to FIND the
@@ -721,7 +721,23 @@ verbs.containerprobe = function(seq, faction)
 
     -- Q3. Two independent discriminators over the SAME list, plus one independent
     -- engine call over the same question. Three numbers that must agree.
-    if list ~= nil then
+    if list ~= nil and #list > MAX_ENUMERATE then
+        -- The same bound, a different shape: this is ONE block of a probe, and
+        -- the symbol reachability, the wire round-trip and Q2's three counts
+        -- above are cheap and already answered. So the WALK is declined, not the
+        -- verb. MEASURED offline at N=5,000: 25,012 engine calls in one frame,
+        -- 5 per object.
+        --
+        -- ⚠ And not capped, for the reason class.stations_engine_control
+        -- exists: that control is an INDEPENDENT engine count over the WHOLE
+        -- list, so a truncated walk would disagree with it by construction and
+        -- the block would report a class-discrimination defect that is really
+        -- just the cap. A control you have quietly narrowed is worse than none.
+        put("class.SKIPPED", "n=" .. #list .. " over limit=" .. MAX_ENUMERATE
+            .. "; walking it is ~5 engine calls per object in ONE frame, and a"
+            .. " partial walk would disagree with class.stations_engine_control"
+            .. " purely because it is partial. Re-run against a smaller faction.")
+    elseif list ~= nil then
         local nsh_h, nst_h, nsh_b, nst_b, rows = 0, 0, 0, 0, 0
         local helper_ok, bare_ok = true, true
         for _, obj in ipairs(list) do
@@ -1571,9 +1587,39 @@ verbs.compare = function(seq, faction, sector)
     -- new_only set and read as a method difference.
     local bad = bad_sector_token(sector)
     if bad then reply(seq, "ERR", bad) return end
-    local ok, res = pcall(function()
+    local ok, res, refused = pcall(function()
         local old_raw = gather({ wide = true,  class = "all", faction = faction, sector = sector })
         local new_raw = gather({ wide = false, class = "all", faction = faction, sector = sector })
+
+        -- ABSOLUTE BOUND ON THE WORK, and it REFUSES rather than truncating.
+        -- MEASURED offline at N=5,000: 30,008 engine calls, all inside the one
+        -- frame pipes.lua drains the FIFO in. `render` has carried this bound
+        -- since the round-6 finding; compare never called render, so the bound
+        -- was never on this path.
+        --
+        -- ⚠ It must NOT cap the way `render` does. These two lists feed ONE
+        -- set difference, so truncating either side drops objects out of
+        -- `old_set` or `new_set` and every one of them then reads as
+        -- `new_only`/`old_only` -- the exact method difference this verb exists
+        -- to detect, manufactured out of a performance fix. censusprobe's
+        -- `#factions == 0` guard is the same hazard written down, and it too
+        -- refuses rather than reporting.
+        --
+        -- So: an ERR naming both numbers, which is `reply`'s own contract for an
+        -- over-budget frame a few hundred lines up ("it must never be SENT: it
+        -- becomes an ERR naming the size, which is a diagnosis the caller can act
+        -- on"). Checked BEFORE the first read_flags, so a refusal costs the two
+        -- enumeration calls and nothing else.
+        if #old_raw + #new_raw > MAX_ENUMERATE then
+            return nil, ("ENUM_REFUSED wide=" .. #old_raw .. " container=" .. #new_raw
+                .. " limit=" .. MAX_ENUMERATE .. " -- comparing these would walk "
+                .. (#old_raw + #new_raw) .. " objects at ~5 engine calls each inside "
+                .. "ONE frame. Truncating is not available here: both sides feed one "
+                .. "set difference, so a partial walk would report the missing "
+                .. "objects as a method difference. Narrow it -- a smaller faction, "
+                .. "or `objects <sector>` if you want a listing rather than a "
+                .. "comparison.")
+        end
 
         local old_set, new_set, flags = {}, {}, {}
         local luaid_type, old_type = "<none>", "<none>"
@@ -1657,6 +1703,9 @@ verbs.compare = function(seq, faction, sector)
         return out
     end)
     if not ok then reply(seq, "ERR", "compare raised: " .. tostring(res)) return end
+    -- A REFUSAL is not a raise and must not be reported as one: one is this verb
+    -- declining a query it cannot answer soundly, the other is a defect.
+    if res == nil then reply(seq, "ERR", refused) return end
     reply(seq, "OK", table.concat(res, "\t"))
 end
 -- --------------------------------------------------------------------------- --
@@ -1921,6 +1970,34 @@ verbs.censusprobe = function(seq, ...)
                 .. " factions=" .. #factions .. " faction_failures=" .. nfail
         end
     end
+
+    -- 2b. DECLARE THE COST. Unlike compare and containerprobe there is no
+    -- per-object engine call here to bound: each entry above is ONE call that
+    -- returns a whole list, so the only way to make this cheaper is to ask for
+    -- less -- which is the operator's call, not ours, and `censusprobe -` is
+    -- them asking for the galaxy on purpose. What was missing is that the cost
+    -- was nowhere on the wire: a bare `censusprobe -` is 4 + 4x#factions
+    -- enumerations, every one galaxy-wide, inside the single frame pipes.lua
+    -- drains the FIFO in. An undeclared bound is the thing this file keeps
+    -- getting wrong; declaring it is the fix the finding actually asked for.
+    --
+    -- Counted from the SETS rather than from len(CENSUS_*), so an ABSENT or
+    -- RAISING function lowers the number instead of being billed for work it
+    -- never did -- and so the row cannot drift from the rows above it.
+    local n_enum, n_objects = 0, 0
+    for _, s in pairs(sets) do
+        n_enum = n_enum + 1
+        for _ in pairs(s) do n_objects = n_objects + 1 end
+    end
+    for _, s in pairs(owner_sets) do
+        n_enum = n_enum + #factions
+        for _ in pairs(s) do n_objects = n_objects + 1 end
+    end
+    out[#out + 1] = "COST|OK|enumerations=" .. n_enum
+        .. " objects_touched=" .. n_objects
+        .. " factions=" .. #factions
+        .. " scope=" .. (container == nil and "galaxy" or "container")
+        .. " [one frame; each enumeration is a single engine call]"
 
     -- 3. THE COMPARISON, per item. This is the row the verb exists for.
     local PAIRS = {}

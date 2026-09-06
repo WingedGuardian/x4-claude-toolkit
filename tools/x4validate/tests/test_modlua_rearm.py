@@ -2537,3 +2537,191 @@ def test_a_GENUINE_absence_is_still_ABSENT(lua_factory):
     rt = live(GetLibraryEntry='function(lt, n) return nil end')
     r = ask(rt, 1, "macro", "engine", "some_macro")
     assert r.status == "ABSENT", f"{r.status}: {r.payload}"
+
+
+# --- the ENUMERATION bound, on the three verbs that never reached it ---------- #
+#
+# `MAX_ENUMERATE` has existed since the round-6 finding, and it lived entirely inside
+# `render`. `compare`, `containerprobe` and `censusprobe` do not call `render`, so the
+# bound was never on any of their paths -- MEASURED offline at N=5,000: 30,008 and
+# 25,012 engine calls respectively, in the ONE frame pipes.lua drains the FIFO in.
+#
+# Each of the three gets a DIFFERENT mechanism, and the differences are the point:
+# capping a comparison is not a performance fix, it is a way of manufacturing the
+# finding the comparison exists to look for.
+
+BOUND = 20000
+
+
+def _n_engine_reads(rt):
+    """Count GetComponentData calls, which is what read_flags costs (~5 fields, 1
+    call) and therefore what the bound is really about. Wrapping the global is the
+    only honest way to assert WORK rather than OUTPUT."""
+    rt.execute(
+        "_G.__reads = 0 "
+        "local real = _G.GetComponentData "
+        "_G.GetComponentData = function(...) _G.__reads = _G.__reads + 1 "
+        "  return real(...) end")
+    return lambda: int(g(rt, "__reads"))
+
+
+def test_compare_REFUSES_above_the_bound_rather_than_truncating(lua_factory):
+    """★ The CRITICAL half. `compare` walked both lists uncapped inside one frame.
+
+    It must REFUSE, not cap. The two lists feed a single set difference, so truncating
+    either side drops objects that then read as `old_only`/`new_only` -- the exact
+    method difference the verb exists to detect, manufactured out of a performance
+    fix. That is the same hazard censusprobe's `#factions == 0` guard already refuses
+    on, and the same contract `reply` applies to an over-budget frame.
+    """
+    rt = live(n_stations=0, n_ships=BOUND + 1,
+              component_data='{classid = "ship", realclassid = "ship", sectorid = "'
+                             + TOKEN + '"}',
+              contained='{["' + LUAKEY + '"] = {}}')
+    r = ask(rt, 1, "compare", "argon", TOKEN)
+    assert r.status == "ERR", (
+        "a comparison it cannot answer soundly came back as an answer: %s"
+        % r.payload[:250])
+    assert "ENUM_REFUSED" in r.payload, r.payload[:250]
+    assert "wide=%d" % (BOUND + 1) in r.payload, (
+        "the refusal must name the numbers, or the caller cannot act on it: %s"
+        % r.payload[:250])
+    assert "limit=%d" % BOUND in r.payload, r.payload[:250]
+
+
+def test_the_compare_refusal_COSTS_the_two_enumerations_AND_NOTHING_ELSE(lua_factory):
+    """The refusal is only a fix if it happens BEFORE the expensive part.
+
+    A refusal printed after the walk would be a message, not a bound -- the frame is
+    already gone. So this asserts the WORK, not the wording: `read_flags` is ~1
+    GetComponentData call per object, and above the bound there must be none of them.
+    """
+    rt = live(n_stations=0, n_ships=BOUND + 1,
+              component_data='{classid = "ship", realclassid = "ship", sectorid = "'
+                             + TOKEN + '"}',
+              contained='{["' + LUAKEY + '"] = {}}')
+    reads = _n_engine_reads(rt)
+    before = reads()
+    r = ask(rt, 1, "compare", "argon", TOKEN)
+    assert r.status == "ERR", r.payload[:200]
+    walked = reads() - before
+    assert walked == 0, (
+        "the refusal fired only after walking %d objects, so it cost the frame it was "
+        "meant to save" % walked)
+
+
+def test_compare_AT_the_bound_still_ANSWERS_and_DOES_the_work(lua_factory):
+    """The twin, and it is the one that can go red the other way.
+
+    Two claims in one, because either alone is satisfiable by a broken bound: at the
+    limit the verb must still answer (so the guard is `>`, not `>=`, and has not
+    simply swallowed the verb), AND it must actually have walked the objects (so a
+    refusal that returned OK with an empty comparison could not pass this).
+    """
+    rt = live(n_stations=0, n_ships=BOUND,
+              component_data='{classid = "ship", realclassid = "ship", sectorid = "'
+                             + TOKEN + '"}',
+              contained='{["' + LUAKEY + '"] = {}}')
+    reads = _n_engine_reads(rt)
+    before = reads()
+    r = ask(rt, 1, "compare", "argon", TOKEN)
+    assert r.status == "OK", r.payload[:250]
+    assert hdr(r)["old"] == str(BOUND), hdr(r)
+    assert reads() - before >= BOUND, (
+        "it answered without reading the objects, so the OK above proves nothing")
+
+
+def test_containerprobe_SKIPS_ONLY_the_class_walk_and_KEEPS_the_rest(lua_factory):
+    """The other CRITICAL half, and it declines a BLOCK rather than the verb.
+
+    Q3 is one block of a probe whose other answers -- symbol reachability, the wire
+    round-trip, Q2's three counts -- are cheap and already computed. Refusing the
+    whole verb would throw those away for no reason.
+
+    And it must not CAP: `class.stations_engine_control` is an independent engine
+    count over the WHOLE list, so a truncated walk disagrees with it by construction
+    and the block reports a class-discrimination defect that is really just the cap.
+    """
+    ids = "{" + ", ".join('"o%d"' % i for i in range(BOUND + 1)) + "}"
+    rt = live(component_data=SECT,
+              contained='{["' + LUAKEY + '"] = ' + ids + '}',
+              contained_stations='{argon = {"o0"}}')
+    f = cprobe(rt)
+    assert "class.SKIPPED" in f, sorted(k for k in f if k.startswith("class"))
+    assert str(BOUND + 1) in f["class.SKIPPED"] and str(BOUND) in f["class.SKIPPED"], (
+        "the skip must name n and the limit: %s" % f["class.SKIPPED"])
+    assert "class.rows_walked" not in f, (
+        "it said SKIPPED and walked anyway: %s" % f.get("class.rows_walked"))
+    # The cheap half of the probe is the reason this is a block-level skip.
+    assert f["n.sector_via_luaid"] == str(BOUND + 1), f["n.sector_via_luaid"]
+    assert f["sym.IsComponentClass"] == "function", f["sym.IsComponentClass"]
+    assert "wire.roundtrip" in f, sorted(f)
+
+
+def test_containerprobe_BELOW_the_bound_still_WALKS_and_does_not_say_SKIPPED(lua_factory):
+    """The twin. A probe that skipped unconditionally would pass the test above, and
+    Q3 is the question containerprobe exists to answer."""
+    rt = live(component_data=SECT,
+              contained='{["' + LUAKEY + '"] = {"A", "B", "C"}}',
+              obj_class='{A = "ship", B = "ship", C = "station"}',
+              contained_stations='{argon = {"C"}}')
+    f = cprobe(rt)
+    assert f["class.rows_walked"] == "3", f.get("class.rows_walked")
+    assert "class.SKIPPED" not in f, f["class.SKIPPED"]
+
+
+def test_censusprobe_DECLARES_what_it_ENUMERATED(lua_factory):
+    """The MINOR half, and the mechanism is deliberately NOT a bound.
+
+    Each entry here is ONE engine call returning a whole list, so there is nothing to
+    cap without denying the query outright -- and `censusprobe -` is the operator
+    asking for the galaxy on purpose. What was missing is that the cost never reached
+    the wire at all: a bare `censusprobe -` is 4 + 4x#factions galaxy-wide
+    enumerations in a single frame, and nothing said so.
+    """
+    rt = _census_rt(["a", "b"], ["a"])
+    r = ask(rt, 2, "censusprobe", "ID: 4301")
+    assert r.status == "OK", r.payload[:200]
+    cost = [f for f in r.fields if f.startswith("COST|")]
+    assert len(cost) == 1, [f.split("|")[0] for f in r.fields]
+    assert "scope=container" in cost[0], cost[0]
+    assert "enumerations=" in cost[0] and "objects_touched=" in cost[0], cost[0]
+
+
+def test_the_declared_cost_MOVES_with_the_query(lua_factory):
+    """A number that cannot change is decoration. Two runs over different populations
+    must report different costs, or the row says nothing about this query.
+
+    Asserted as the DIRECTION and the exact delta, not merely inequality -- that is
+    what distinguishes a real count from a constant that happens to differ.
+
+    ⚠ The multiplier is x2, not x1, and it is pinned here on purpose. Every
+    CENSUS_CONTAINER function is enumerated with BOTH flag values, so one station is
+    two objects touched: the work really is done twice, and a reader who took
+    `objects_touched` for a headcount would read the cost as half what it is. I
+    predicted +3 for three more stations and MEASURED +6.
+    """
+    def cost_of(stations_all, stations_by_owner, sector="ID: 4301"):
+        rt = _census_rt(stations_all, stations_by_owner)
+        r = ask(rt, 2, "censusprobe", sector)
+        assert r.status == "OK", r.payload[:200]
+        row = [f for f in r.fields if f.startswith("COST|")][0]
+        return dict(kv.split("=", 1) for kv in row.split("|")[2].split(" ") if "=" in kv)
+
+    small = cost_of(["a"], ["a"])
+    big = cost_of(["a", "b", "c", "d"], ["a"])
+    assert small["enumerations"] == big["enumerations"] == "4", (small, big)
+    assert int(small["objects_touched"]) == 2, (
+        "one station, enumerated under both flags: %s" % small)
+    assert int(big["objects_touched"]) - int(small["objects_touched"]) == 6, (small, big)
+
+
+def test_the_galaxy_scope_is_LABELLED_as_such(lua_factory):
+    """The twin for `scope=`. It is the field that tells a reader whether the cost
+    above was one sector or the whole galaxy, which is the entire difference between
+    a cheap census and an expensive one."""
+    rt = _census_rt(["a"], ["a"])
+    r = ask(rt, 2, "censusprobe", "-")
+    assert r.status == "OK", r.payload[:200]
+    cost = [f for f in r.fields if f.startswith("COST|")][0]
+    assert "scope=galaxy" in cost, cost
