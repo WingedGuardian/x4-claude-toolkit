@@ -334,6 +334,41 @@ def game_extensions() -> Path | None:
 
 
 def reference() -> Path | None:
+    """The unpacked base+DLC tree.
+
+    X4_TOOLKIT IS A LAST-RESORT SOURCE HERE, asked only after every layer the
+    user controls has been asked for an explicit X4_REFERENCE.
+
+    Layer order alone was not enough. `install.sh` writes X4_REFERENCE into
+    .claude/x4-paths.env and then tells every Windows user to
+    `setx X4_TOOLKIT "$TOOLKIT"` -- so the ENV layer answers by DERIVATION while
+    the FILE layer answers EXPLICITLY, and the derived answer won. MEASURED
+    end-to-end: a toolkit whose config named a real reference tree validated
+    against `<toolkit>/reference` instead and reported "reference tree not
+    found -- unpack the base game first", while `--paths` called the config file
+    found and in use. That is the installer's own documented setup, not a
+    corner case.
+
+    SCOPED DELIBERATELY TO THIS ONE DERIVATION. The same shadowing shape exists
+    for all 9 accessors that derive (MEASURED: 9 of 9), but the general rule
+    "explicit beats derived" also demotes an ENV-exported X4_GAME_EXTENSIONS
+    below a config-file X4_GAME -- inverting the documented layer priority for a
+    knob `test_game_root_follows_the_documented_extensions_env_var` exists to
+    pin. X4_TOOLKIT is different in kind: it names where the TOOLKIT lives, so
+    `<toolkit>/reference` is a convenience default, not a statement about where
+    the reference tree is. X4_GAME -> extensions is a first-class relationship
+    and keeps its precedence. Widening this is a decision, not a bug fix.
+
+    The FALLBACK layer is excluded from the explicit pass, for the reason
+    `_layers` gives: a dev-machine default must never outrank something the
+    user really exported.
+    """
+    *real_layers, _fallback = _layers()
+    for layer in real_layers:
+        if v := _pick(layer, "X4_REFERENCE"):
+            return Path(v)
+
+    # Nothing explicit anywhere the user controls: previous behaviour, unchanged.
     def _in(layer):
         if v := _pick(layer, "X4_REFERENCE"):
             return Path(v)

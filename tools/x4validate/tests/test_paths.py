@@ -294,3 +294,101 @@ def test_the_profile_debuglog_fallback_follows_the_PLATFORM(monkeypatch):
     monkeypatch.setattr(_paths, "_IS_WINDOWS", False)
     assert _cli.default_debug_log("12345678") == (
         Path.home() / ".config" / "EgoSoft" / "X4" / "12345678" / "debug.txt")
+
+
+# --- X4_TOOLKIT is a LAST-RESORT source for reference() ------------------------
+#
+# `_resolve` takes the first layer that can answer AT ALL, including by DERIVATION
+# from a different variable. `install.sh` writes X4_REFERENCE into
+# .claude/x4-paths.env and then tells every Windows user to
+# `setx X4_TOOLKIT "$TOOLKIT"` -- so the ENV layer answered by derivation while the
+# FILE layer answered explicitly, and the derived answer won.
+#
+# MEASURED end-to-end before the fix: a toolkit whose config named a real reference
+# tree validated against <toolkit>/reference instead and reported "reference tree
+# not found -- unpack the base game first" (rc 1), while `--paths` reported the
+# config file as found and in use.
+
+def test_an_X4_TOOLKIT_derivation_never_shadows_an_explicit_X4_REFERENCE(
+        clean, monkeypatch):
+    """The installer's own arrangement: config file explicit, env var derived."""
+    want = _abs("realref")
+    _write_env(clean, 'X4_REFERENCE="%s"\n' % want, monkeypatch)
+    monkeypatch.setenv("X4_TOOLKIT", _abs("fakekit"))
+    assert _paths.reference() == Path(want), (
+        "a reference path DERIVED from $X4_TOOLKIT shadowed the explicit "
+        "X4_REFERENCE written in x4-paths.env")
+
+
+def test_an_exported_X4_REFERENCE_still_beats_the_config_file(clean, monkeypatch):
+    """The twin that stops the fix inverting the layer order: when BOTH layers name
+    X4_REFERENCE explicitly, the exported one still wins."""
+    _write_env(clean, 'X4_REFERENCE="%s"\n' % _abs("from-file"), monkeypatch)
+    monkeypatch.setenv("X4_REFERENCE", _abs("from-env"))
+    assert _paths.reference() == Path(_abs("from-env"))
+
+
+def test_the_X4_TOOLKIT_derivation_STILL_works_when_nothing_explicit_exists(
+        clean, monkeypatch):
+    """The other twin: the derivation is the feature, not the bug. With no explicit
+    X4_REFERENCE anywhere, deriving from the toolkit must still answer."""
+    monkeypatch.setenv("X4_TOOLKIT", _abs("kit"))
+    assert _paths.reference() == Path(_abs("kit", "reference"))
+
+
+def test_a_fallback_X4_REFERENCE_does_not_outrank_an_exported_X4_TOOLKIT(
+        clean, monkeypatch):
+    """The explicit pass deliberately skips `_LOCAL_FALLBACK`.
+
+    Promoting explicit answers across ALL layers would let a dev-machine default
+    beat something the user really exported -- the trap `_layers` names in its own
+    docstring and `test_a_fallback_never_outranks_a_real_env_var` pins for game_root.
+    The same must hold here.
+    """
+    monkeypatch.setattr(_paths, "_LOCAL_FALLBACK", {"X4_REFERENCE": _abs("dev-machine")})
+    monkeypatch.setenv("X4_TOOLKIT", _abs("kit"))
+    assert _paths.reference() == Path(_abs("kit", "reference")), \
+        "a dev-machine fallback outranked a toolkit the user actually exported"
+
+
+#: The eight OTHER accessors that derive. Their shadowing is real and MEASURED
+#: (9 of 9 including reference), and it is deliberately NOT fixed -- see
+#: `_paths.reference`'s docstring. This test pins that decision so the next person
+#: to notice it finds a recorded choice rather than an oversight, and so "fix the
+#: other eight" has to be a decision rather than a drive-by.
+_STILL_LAYER_ORDERED = [
+    ("game_root", "X4_GAME", ("fromfile",), "X4_EXTENSIONS", ("fromenv", "extensions")),
+    ("game_extensions", "X4_EXTENSIONS", ("fromfile",), "X4_GAME", ("fromenv",)),
+    ("profile_content", "X4_PROFILE_CONTENT", ("f.xml",), "X4_PROFILE", ("fromenv",)),
+    ("profile_extensions", "X4_PROFILE_EXTENSIONS", ("fpext",), "X4_PROFILE", ("fromenv",)),
+    ("registry", "X4_REGISTRY", ("f.yaml",), "X4_MODS", ("fromenv",)),
+    ("debug_log", "X4_DEBUGLOG", ("f.txt",), "X4_PROFILE", ("fromenv",)),
+    ("savegames", "X4_SAVES", ("fsaves",), "X4_PROFILE", ("fromenv",)),
+    ("workshop_content", "X4_WORKSHOP_CONTENT", ("fws",),
+     "X4_GAME", ("steamapps", "common", "X4")),
+]
+
+
+@pytest.mark.parametrize("accessor,explicit_key,explicit_val,derive_key,derive_val",
+                         _STILL_LAYER_ORDERED,
+                         ids=[c[0] for c in _STILL_LAYER_ORDERED])
+def test_the_other_derivations_still_follow_LAYER_ORDER(
+        clean, monkeypatch, accessor, explicit_key, explicit_val, derive_key, derive_val):
+    """DELIBERATE, not an oversight. Recorded rather than silently left.
+
+    Promoting explicit over derived for these too would demote an ENV-exported
+    X4_GAME_EXTENSIONS below a config-file X4_GAME, inverting the documented layer
+    priority for the knob the toolkit tells users to set. X4_TOOLKIT is different in
+    kind: it names where the TOOLKIT lives, so `<toolkit>/reference` is a convenience
+    default rather than a statement about the reference tree.
+
+    If this test starts failing, someone widened the rule -- which is a decision to
+    take on purpose, with this comment read first, not a regression to repair.
+    """
+    _write_env(clean, '%s="%s"\n' % (explicit_key, _abs(*explicit_val)), monkeypatch)
+    monkeypatch.setenv(derive_key, _abs(*derive_val))
+    got = getattr(_paths, accessor)()
+    assert got != Path(_abs(*explicit_val)), (
+        "%s() now prefers the explicit config setting over the env derivation. That "
+        "may well be right -- but it is a DECISION about layer priority, and this "
+        "test exists so it cannot be made by accident." % accessor)
