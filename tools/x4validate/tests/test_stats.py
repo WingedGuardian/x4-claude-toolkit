@@ -136,3 +136,87 @@ def test_grouped_ware_comparison_still_works():
     out = _stats.compare_wares(candidate, effective)
     assert out[0].peer_count == 2
     assert "percentile" in out[0].note
+
+
+# --- an ABSENCE and a NON-ANSWER must not print the same sentence -------------
+#
+# `candidate_wares` reads a ware only from a <ware> ELEMENT, so `<replace sel=...>`
+# and `<remove sel=...>` -- the DEFAULT X4 patch idiom, and the example in the
+# project's own CLAUDE.md -- are invisible to it. `render_wares` then printed
+# "candidate introduces/changes no wares." over them.
+#
+# MEASURED over the live install: 125 mods scanned, 37 supply libraries/wares.xml,
+# 5 reported "no wares", all 5 wrong. The largest hid 1,443 ops (1,067 replace,
+# 132 add, 244 remove) -- a whole-economy rewrite. Two skills route the balance
+# question through this output.
+#
+# The wares are NOT recovered here: attributing a sel= to a ware needs the selector
+# resolved against the merged tree, which is a feature and is recorded separately.
+# What is fixed is that a non-answer stops wearing the grammar of an absence.
+
+_REPLACE_ONLY = (
+    '<diff>'
+    '<replace sel="//ware[@id=\'ore\']/@price_average">500</replace>'
+    '<replace sel="//ware[@id=\'silicon\']/@price_average">600</replace>'
+    '<remove sel="//ware[@id=\'energycells\']"/>'
+    '</diff>')
+
+
+def test_replace_and_remove_ops_are_COUNTED_even_though_unattributable(tmp_path):
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml", _REPLACE_ONLY)
+    assert _stats.candidate_wares(cand) == {}, \
+        "premise of this test: these ops really are invisible to candidate_wares"
+    assert _stats.unattributed_ware_ops(cand) == 3
+
+
+def test_a_mod_that_only_REPLACES_is_not_reported_as_changing_nothing(tmp_path):
+    """The defect, at the surface the user actually reads."""
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml", _REPLACE_ONLY)
+    out = _stats.render_wares(
+        _stats.compare_wares(_stats.candidate_wares(cand), {}),
+        _stats.unattributed_ware_ops(cand))
+    assert "introduces/changes no wares" not in out, (
+        "a mod with 3 ops on libraries/wares.xml was reported as changing nothing")
+    assert "NOT CHECKED" in out
+    assert "3 op(s)" in out
+
+
+def test_an_ADDED_ware_is_still_attributed_and_not_counted_as_unchecked(tmp_path):
+    """The falsification twin. A counter that called everything unattributable
+    would pass the two tests above while making the working case report NOT
+    CHECKED alongside its own results."""
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml",
+       '<diff><add sel="/wares">'
+       '<ware id="new1" group="weapons"><price average="500"/></ware>'
+       '</add></diff>')
+    assert set(_stats.candidate_wares(cand)) == {"new1"}
+    assert _stats.unattributed_ware_ops(cand) == 0
+
+
+def test_a_mod_with_NO_wares_file_still_says_it_changes_no_wares(tmp_path):
+    """The other twin, and the reason the two messages stay distinct: a mod that
+    genuinely touches no wares must keep saying so. Turning every empty result
+    into NOT CHECKED would be the same conflation in the opposite direction."""
+    cand = tmp_path / "mod"
+    _w(cand / "content.xml", '<content id="m"/>')
+    assert _stats.unattributed_ware_ops(cand) == 0
+    out = _stats.render_wares([], _stats.unattributed_ware_ops(cand))
+    assert out == "candidate introduces/changes no wares."
+
+
+def test_a_MIXED_diff_counts_only_the_unattributable_ops(tmp_path):
+    """Both shapes in one file: the <add>ed ware is found, the two <replace> ops
+    are counted. A counter that returned the op TOTAL would say 3 here."""
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml",
+       '<diff>'
+       '<add sel="/wares"><ware id="new1" group="weapons">'
+       '<price average="500"/></ware></add>'
+       '<replace sel="//ware[@id=\'ore\']/@price_average">500</replace>'
+       '<remove sel="//ware[@id=\'silicon\']"/>'
+       '</diff>')
+    assert set(_stats.candidate_wares(cand)) == {"new1"}
+    assert _stats.unattributed_ware_ops(cand) == 2
