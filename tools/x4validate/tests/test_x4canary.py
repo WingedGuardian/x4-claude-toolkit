@@ -13,6 +13,7 @@ is the same outcome by a different route. Both directions are pinned below.
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -232,3 +233,54 @@ def test_a_canary_that_cannot_work_out_WHAT_to_check_is_rc2_not_DATA_LOSS(
     assert rc == 2, "a canary that cannot enumerate its repos must be rc 2, got %r" % rc
     assert "REFUSING A VERDICT" in err and "PermissionError" in err, err
     assert "DATA LOSS" not in err, "a broken canary must never claim a loss"
+
+
+def test_a_canary_that_cannot_LOAD_is_rc2_not_DATA_LOSS(tmp_path):
+    """The last unguarded path: import time.
+
+    `repos()` and `check()` were guarded (bd0d714 and earlier), but everything above
+    `main()` still ran unprotected -- and this script exits 1 to mean A TRACKED FILE HAS
+    BEEN LOST, which the SessionStart hook renders as
+    "*** A TRACKED IRREPLACEABLE FILE HAS BEEN LOST ***". An uncaught exception also
+    exits 1, so a canary that merely failed to LOAD reported the worst possible verdict
+    about the user's files.
+
+    The old `except ImportError` was narrower than the ways an import can fail: a
+    SyntaxError raised WHILE executing `_paths.py` is not an ImportError and propagated
+    straight out.
+
+    Run in a SEPARATE PROCESS with a poisoned package on the path -- an import that dies
+    during collection aborts the whole pytest session, so this cannot be an in-process
+    monkeypatch. That is also why it asserts the real exit code rather than a return
+    value: the exit code is what the hook reads.
+    """
+    import subprocess
+    import sys
+
+    # THE POISON HAS TO BE ON THE PATH THE SCRIPT ITSELF CHOOSES. x4canary does
+    # `sys.path.insert(0, _HERE.parent / "tools" / "x4validate")`, which wins over
+    # PYTHONPATH -- so poisoning via PYTHONPATH loads the REAL _paths and the test
+    # passes with or without the fix. MEASURED: that first version stayed green
+    # against a mutant restoring the narrow `except ImportError`. Mirroring the
+    # layout is the only way to reach the branch.
+    (tmp_path / "scripts").mkdir()
+    script = tmp_path / "scripts" / "x4canary.py"
+    script.write_bytes(Path(REPO / "scripts" / "x4canary.py").read_bytes())
+    poison = tmp_path / "tools" / "x4validate" / "x4validate"
+    poison.mkdir(parents=True)
+    (poison / "__init__.py").write_text("", encoding="utf-8")
+    # NOT an ImportError: a module that blows up mid-execution. The old
+    # `except ImportError` let this straight out, and an uncaught exception exits 1.
+    (poison / "_paths.py").write_text("raise RuntimeError('poisoned')\n", encoding="utf-8")
+
+    env = dict(os.environ)
+    env["X4_CANARY_REPOS"] = str(tmp_path / "nope")
+    r = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                       env=env)
+    assert r.returncode != 1, (
+        "a canary that could not load claimed DATA LOSS (rc 1). It must degrade to "
+        f"'could not check':\n{r.stdout}\n{r.stderr}")
+    assert r.returncode == 2, (
+        f"expected rc 2 (could not check), got {r.returncode}\n{r.stdout}\n{r.stderr}")
+    assert "DATA LOSS" not in r.stderr and "HAS BEEN LOST" not in r.stdout, (
+        "a broken canary must never claim a loss")

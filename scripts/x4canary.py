@@ -46,12 +46,32 @@ import subprocess
 import sys
 from pathlib import Path
 
-_HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_HERE.parent / "tools" / "x4validate"))
+# EVERYTHING HERE RUNS BEFORE main() CAN GUARD IT, and this script exits 1 to
+# mean A TRACKED FILE HAS BEEN LOST -- the SessionStart hook renders that as
+# "*** A TRACKED IRREPLACEABLE FILE HAS BEEN LOST ***". An uncaught exception
+# also exits 1, so a canary that merely failed to LOAD reported the worst
+# possible verdict about the user's files. `repos()` and `check()` were guarded
+# (bd0d714 and earlier); import time was the last unguarded path.
+#
+# `Path.resolve()` can raise OSError or ValueError (a NUL byte in a path), and the
+# `except ImportError` below is narrower than the ways an import can fail: a
+# SyntaxError, AttributeError or OSError raised WHILE executing _paths.py
+# propagates straight out. Both now degrade to "could not check", never to a
+# loss claim.
+try:
+    _HERE = Path(__file__).resolve().parent
+    sys.path.insert(0, str(_HERE.parent / "tools" / "x4validate"))
+except Exception as _exc:  # noqa: BLE001 -- silent-ok: re-raised as rc 2 below
+    _HERE, _BOOT_ERROR = None, _exc
+else:
+    _BOOT_ERROR = None
 
 try:
     from x4validate import _paths
-except ImportError:                     # pragma: no cover - packaging accident
+except Exception:                       # pragma: no cover - packaging accident
+    # NOT just ImportError. A broken _paths.py is a reason to say "could not
+    # check", never a reason to claim data loss -- and never a reason to crash
+    # the session start.
     _paths = None
 
 #: A tracked file that keeps less than this fraction of its committed size is treated
@@ -167,6 +187,13 @@ def main(argv=None) -> int:
     ap.add_argument("--verbose", action="store_true",
                     help="also list benign modifications")
     args = ap.parse_args(argv)
+
+    if _BOOT_ERROR is not None:
+        # Import-time failure, surfaced here instead of as an uncaught traceback.
+        # rc 2 is "could not check"; rc 1 would tell the user a file is GONE.
+        print("REFUSING A VERDICT: the canary could not finish loading: %s: %s"
+              % (type(_BOOT_ERROR).__name__, _BOOT_ERROR), file=sys.stderr)
+        return 2
 
     try:
         rs = repos()
