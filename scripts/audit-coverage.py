@@ -22,6 +22,7 @@ Ledger schema, tab-separated:
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -93,6 +94,23 @@ COUNTS_AS_READ = {"FULL-READ"}
 # 79 -> 134. Coverage decays silently, which is the whole reason this column exists.
 
 
+#: The ledger declares the commit it describes, on a comment line the row reader
+#: already skips:  `# pinned-rev: v3.0.0`
+#:
+#: Without it `check` defaults to HEAD and refuses -- correctly, because the audit
+#: has since edited 20 of the files it audited, but for a reason the operator
+#: cannot guess from the output. A ledger that cannot say WHEN it was true is an
+#: artifact with no freshness fingerprint, which is the defect class this toolkit
+#: exists to refuse -- here in its own instrument.
+_PINNED = re.compile(r"^#\s*pinned-rev:\s*(\S+)\s*$", re.M)
+
+
+def pinned_rev(path: Path) -> str | None:
+    """The rev this ledger describes, or None if it does not say."""
+    m = _PINNED.search(path.read_text(encoding="utf-8"))
+    return m.group(1) if m else None
+
+
 def load_ledger(path: Path) -> dict[str, dict[str, str]]:
     rows: dict[str, dict[str, str]] = {}
     for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -121,12 +139,20 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("command", choices=["population", "check"])
     ap.add_argument("ledger", nargs="?")
-    ap.add_argument("--rev", default="HEAD")
+    # No default here: it is resolved below, so an explicit --rev can be told apart
+    # from an absent one and the ledger's own pin can win over HEAD.
+    ap.add_argument("--rev", default=None)
     ap.add_argument("--repo", default=str(Path(__file__).resolve().parent.parent))
     args = ap.parse_args()
 
     repo = Path(args.repo)
-    pop = population(repo, args.rev)
+    rev = args.rev
+    if rev is None and args.ledger:
+        rev = pinned_rev(Path(args.ledger))
+        if rev:
+            print(f"# using the ledger's own pinned rev: {rev}")
+    rev = rev or "HEAD"
+    pop = population(repo, rev)
     tot = totals(pop)
 
     if args.command == "population":
@@ -149,14 +175,14 @@ def main() -> int:
             print(f"   {p}")
         return 2
     if extra:
-        print(f"REFUSING: {len(extra)} ledger row(s) name a file not in the population at {args.rev}:")
+        print(f"REFUSING: {len(extra)} ledger row(s) name a file not in the population at {rev}:")
         for p in extra[:20]:
             print(f"   {p}")
         return 2
 
     drift = [(p, pop[p], rows[p]["lines"]) for p in pop if str(pop[p]) != rows[p]["lines"]]
     if drift:
-        print(f"REFUSING: {len(drift)} row(s) carry a line count that is not the one at {args.rev}:")
+        print(f"REFUSING: {len(drift)} row(s) carry a line count that is not the one at {rev}:")
         for p, real, claimed in drift[:20]:
             print(f"   {p}: ledger {claimed}, actual {real}")
         return 2
@@ -167,7 +193,7 @@ def main() -> int:
     part = [p for p in nt if rows[p]["method"] == "PARTIAL"]
     part_l = sum(int(rows[p]["reviewed"] or 0) for p in part)
     ntf, ntl = tot["non-test"]
-    print(f"OK  ledger reproduces the population at {args.rev}")
+    print(f"OK  ledger reproduces the population at {rev}")
     print(f"    all source      {tot['all'][0]:>4} files {tot['all'][1]:>7} lines")
     print(f"    non-test        {ntf:>4} files {ntl:>7} lines")
     print(f"    FULL-READ       {len(read_f):>4} files {read_l:>7} lines"

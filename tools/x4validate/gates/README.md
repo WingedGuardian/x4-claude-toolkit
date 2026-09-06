@@ -117,7 +117,7 @@ env → `.claude/x4-paths.env` → fallback chain the CLI uses. Nothing is hardc
 |---|---|
 | installed extension set | `$X4_GAME` / `$X4_EXTENSIONS` |
 | mod source folders (`regress.py`) | `$X4_MODS` |
-| captured engine log (the two oracles) | **`$X4_ORACLE_LOG`** |
+| captured engine log (`oracle`, `oracle_index`, `oracle_reverse` — **three** gates, not two) | **`$X4_ORACLE_LOG`** |
 
 `$X4_ORACLE_LOG` must be a **capture, not the live `debug.txt`** — if the log moves
 between runs the denominator moves and 234/234 stops meaning anything. It is
@@ -126,9 +126,9 @@ filesystem layout and your play session. Reproducing these numbers means supplyi
 your own log against your own modlist; the *bars* are what transfer, not the counts.
 
 **A missing input is a SKIP with a named reason and exit 2** — never an empty run
-that prints like a pass. Verified 2026-07-29 from a scrubbed environment, and re-verified 2026-08-08 across
-all gates that take inputs: each
-exit 2 and say which setting is absent.
+that prints like a pass. Verified 2026-07-29 from a scrubbed environment and
+re-verified 2026-08-08 across all gates that take inputs: each exits 2 and says which
+setting is absent.
 
 > Until 2026-07-29 three of these four opened with hardcoded absolute paths from
 > one developer's machine, and an earlier version of this README claimed the
