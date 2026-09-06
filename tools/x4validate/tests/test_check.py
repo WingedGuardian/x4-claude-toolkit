@@ -871,3 +871,107 @@ def test_the_DEFAULT_run_still_names_update_as_the_remedy(tmp_path):
     assert "`--update`" in why
     assert "--xsd-fast" not in why, (
         "the default run advised dropping a flag the caller never passed")
+
+
+# --- a CROSS-MOD reference is unanswerable under Tier A, not wrong -------------
+#
+# The promotion of full-file ref findings to `error` (2026-08-13) was earned: 114
+# mods, 14 findings, every one confirmed genuine, zero false positives, and pinned
+# by tests/test_reference_scope.py. What decayed since is the PREMISE, not the
+# decision -- the modlist grew a cross-mod pair the run never covered.
+#
+# MEASURED 2026-09-06, Tier A, 125 installed extensions: of 16 full-file ref
+# errors, `cpsdo_vro`'s `bullet_cpsdo_turret_m_ion_01_mk4` and
+# `bullet_cpsdo_l_ion_01_mk1` ARE defined -- in `cpsdo_zb_modpack`, the mod
+# cpsdo_vro patches -- and both findings sit at `extensions/cpsdo_zb_modpack/...`.
+# `Config.overlays` empty is Tier A: "base+DLC only, which cannot see content that
+# another mod adds, removes or overrides", in that field's own words.
+#
+# Per-item corpus effect of this change: ref errors 74 -> 72, info 0 -> 2. Exactly
+# the two verified false positives moved, and cpsdo_vro goes from 2 errors to 0.
+
+def _nested_fixture(tmp_path, target: str, *, overlays=()):
+    ref = tmp_path / "reference"
+    _write(ref / "libraries/wares.xml", '<wares><ware id="ore"/></wares>')
+    _write(ref / "index/macros.xml", "<index/>")
+    mod = tmp_path / "mod"
+    _write(mod / "content.xml", '<content id="m" version="1"/>')
+    _write(mod / "extensions" / target / "libraries" / "wares.xml",
+           '<wares><ware id="w_probe">'
+           '<component ref="defined_in_the_other_mod"/></ware></wares>')
+    report = _check.Report()
+    _check.check_references(
+        mod, _merge.Config(reference=ref, overlays=tuple(overlays)), report)
+    return report
+
+
+def test_a_cross_MOD_reference_is_INFO_under_tier_A(tmp_path):
+    """The verified false-positive class. Tier A cannot merge the target mod, so
+    the reference is unanswerable there rather than wrong."""
+    report = _nested_fixture(tmp_path, "some_other_mod")
+    refs = [f for f in report.findings if f.category == "ref"]
+    assert refs, "the fixture produced no reference finding; it proves nothing"
+    assert {f.severity for f in refs} == {"info"}, (
+        "a cross-mod reference GATED under Tier A, which structurally cannot "
+        "resolve it: %s" % [(f.severity, f.message) for f in refs])
+    assert "--tier b" in " ".join(f.message for f in refs), (
+        "the demoted finding must name the mode that CAN answer")
+    assert not report.errors
+
+
+def test_a_cross_DLC_reference_still_ERRORS(tmp_path):
+    """The clause that keeps this narrow. Tier A merges base AND DLC, so a patch
+    at `extensions/ego_dlc_*/` names content it CAN see -- demoting that would
+    hide a real finding, and a first draft of this rule did exactly that to
+    `ebi_timelines_faction_use_ship`'s `ship_spl_xl_ark_01_c`."""
+    report = _nested_fixture(tmp_path, "ego_dlc_timelines")
+    refs = [f for f in report.findings if f.category == "ref"]
+    assert refs, "the fixture produced no reference finding; it proves nothing"
+    assert {f.severity for f in refs} == {"error"}, (
+        "a DLC-targeting reference was demoted; Tier A can resolve those")
+
+
+def test_a_cross_mod_reference_ERRORS_again_under_tier_B(tmp_path):
+    """Tier B DOES merge the other mods, so a reference that still dangles there
+    really does dangle -- demoting it would delete the one mode that can answer."""
+    other = tmp_path / "other"
+    _write(other / "content.xml", '<content id="o" version="1"/>')
+    report = _nested_fixture(tmp_path, "some_other_mod", overlays=(other,))
+    refs = [f for f in report.findings if f.category == "ref"]
+    assert refs, "the fixture produced no reference finding; it proves nothing"
+    assert {f.severity for f in refs} == {"error"}, (
+        "a cross-mod reference was demoted under Tier B, which CAN see the target")
+
+
+def test_a_NON_nested_reference_is_untouched(tmp_path):
+    """The twin. Only files under `extensions/<mod>/` are cross-mod; an ordinary
+    path must keep gating exactly as the 2026-08-13 promotion established."""
+    ref = tmp_path / "reference"
+    _write(ref / "libraries/wares.xml", '<wares><ware id="ore"/></wares>')
+    _write(ref / "index/macros.xml", "<index/>")
+    mod = tmp_path / "mod"
+    _write(mod / "content.xml", '<content id="m" version="1"/>')
+    _write(mod / "libraries" / "wares.xml",
+           '<wares><ware id="w_probe">'
+           '<component ref="no_such_macro_at_all"/></ware></wares>')
+    report = _check.Report()
+    _check.check_references(mod, _merge.Config(reference=ref), report)
+    refs = [f for f in report.findings if f.category == "ref"]
+    assert refs and {f.severity for f in refs} == {"error"}, (
+        "an ordinary dangling reference stopped gating: %s"
+        % [(f.severity, f.message) for f in refs])
+
+
+def test_the_docstring_no_longer_claims_the_promotion_is_PENDING():
+    """The docstring is permanent record in the grammar of a fact, and it said the
+    promotion had not happened for the module's whole history. A reader deciding
+    whether to promote would have concluded the flood risk was still contained."""
+    doc = _check.check_references.__doc__
+    # Asserted POSITIVELY. A first draft asserted the ABSENCE of "reported as
+    # INFO for now" -- which the corrected docstring legitimately contains, inside
+    # the quotation explaining what it used to say. Prose satisfies substrings
+    # (CLAUDE.md #37), and that cuts both ways.
+    assert "Both scopes gate as errors" in doc, (
+        "the docstring does not state the CURRENT severity of either scope")
+    assert "PROMOTED" in doc and "2026-08-13" in doc, (
+        "the docstring does not record that the promotion happened, or when")

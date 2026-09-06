@@ -1066,17 +1066,79 @@ def _added_subtrees(diff_root: etree._Element):
             yield holder
 
 
+def _ref_severity(vpath: str, config: _merge.Config) -> tuple[str, str]:
+    """(severity, suffix) for a dangling reference found in *vpath*.
+
+    `error`, except for a CROSS-MOD reference under Tier A, which is structurally
+    unanswerable there rather than wrong. `Config.overlays` empty is Tier A --
+    "base+DLC only, which cannot see content that another mod adds, removes or
+    overrides", in that field's own words -- and a file at
+    `extensions/<target>/...` is a nested patch whose payload names `<target>`'s
+    content. CLAUDE.md already records that class as EXPECTED under Tier A for
+    SELECTORS; this is the same rule for REFERENCES.
+
+    MEASURED 2026-09-06, Tier A, 125 installed extensions: of 16 full-file ref
+    errors, `cpsdo_vro`'s `bullet_cpsdo_turret_m_ion_01_mk4` and
+    `bullet_cpsdo_l_ion_01_mk1` ARE defined -- in `cpsdo_zb_modpack`, the mod
+    cpsdo_vro patches. Both findings sit at `extensions/cpsdo_zb_modpack/...`.
+
+    Under Tier B this returns `error` unconditionally: those overlays ARE merged,
+    so a reference that still dangles there really does dangle, and demoting it
+    would delete the one mode that can answer the question.
+    """
+    if config.overlays:
+        return "error", ""
+    # `_merge._nested_target` is the ONE implementation of this question, and it
+    # already draws the line in the right place: a DLC target returns None, because
+    # Tier A merges base AND DLC and so CAN resolve those. A first draft hand-rolled
+    # `parts[0] == "extensions" and not parts[1].startswith("ego_dlc_")` and wrongly
+    # demoted `ebi_timelines_faction_use_ship`'s `ship_spl_xl_ark_01_c` -- which is
+    # absent from Tier A's 4,721-name definition set, whole variant family included.
+    # `_no_base_finding` asks the same question through the same helper.
+    if _merge._nested_target(vpath, config.packed_dlc_names()) is None:
+        return "error", ""
+    return "info", (" [cross-mod: this file patches another MOD, which Tier A does "
+                    "not merge -- re-check with `--tier b`]")
+
+
 def check_references(mod_dir: Path, config: _merge.Config, report: Report) -> None:
     """Flag references the mod *introduces* that resolve to no definition.
 
-    Two scopes, two severities:
+    Both scopes gate as errors. ``<add>`` ops in ``<diff>`` files have done so
+    since v1; **full files** were checked not at all until 2026-08-13 -- MEASURED,
+    1,625 files across 56 mods, 38% of their XML -- shipped as INFO first so a
+    newly-visible check could not break a build before its hit list had ever been
+    read, and PROMOTED once that run earned it: 114 mods, 14 findings, every one
+    confirmed genuine, zero false positives. `test_full_file_findings_gate_as_ERROR`
+    and `test_diff_add_findings_stay_ERROR` in tests/test_reference_scope.py pin
+    both halves.
 
-    ``<add>`` ops in ``<diff>`` files are what the mod demonstrably INTRODUCES, and
-    have gated as errors since v1. **Full files** were checked not at all until
-    2026-08-13 — MEASURED, 1,625 files across 56 mods, 38% of their XML — and are
-    reported as INFO for now. Shipping them as errors on day one would gate builds
-    on a check whose hit list has never been reviewed in the wild; the plan is to
-    promote after one clean corpus run. A check that floods is worse than no check.
+    !! This paragraph said "reported as INFO for now ... the plan is to promote
+    after one clean corpus run" until 2026-09-06, while the code gated from the
+    same commit that wrote it (`fe09e99`) -- so a reader was told the promotion had
+    not happened when it had, and that the flood risk was still contained. The
+    docstring was the stale half, not the code; the promotion above is what
+    actually occurred.
+
+    CROSS-MOD REFERENCES ARE THE ONE EXCEPTION, and they are why the promotion's
+    "zero false positives" no longer holds by itself. Under Tier A `Config.overlays`
+    is empty -- "base+DLC only, which cannot see content that another mod adds,
+    removes or overrides", in that field's own words -- so a reference living in a
+    nested patch at `extensions/<target>/...` names content Tier A structurally
+    cannot resolve. CLAUDE.md already records that class as EXPECTED under Tier A
+    for SELECTORS ("no base game file" / "sel matched nothing"); this is the same
+    rule for REFERENCES.
+
+    MEASURED 2026-09-06 over 125 installed extensions, Tier A: 16 full-file ref
+    errors across six mods, of which `cpsdo_vro`'s two --
+    `bullet_cpsdo_turret_m_ion_01_mk4` and `bullet_cpsdo_l_ion_01_mk1` -- ARE
+    defined, in `cpsdo_zb_modpack`, the very mod cpsdo_vro patches. The 2026-08-13
+    verification could not have seen them; the modlist grew that pair afterwards.
+    So the premise decayed rather than the decision being wrong, and the fix is to
+    scope the gate rather than to lower it.
+
+    Still REPORTED, never hidden: severity decides the exit code, not visibility,
+    and the demoted message names `--tier b` as the mode that CAN answer.
     """
     mod_overlay = [mod_dir]
     wares_merged = _merge.build_effective(WARES_FILE, config, extra_overlays=mod_overlay)
@@ -1121,15 +1183,18 @@ def check_references(mod_dir: Path, config: _merge.Config, report: Report) -> No
                 # index/components.xml. One question, one oracle, both scopes.
                 for d in _refs.find_dangling(holder, ware_def_set, text_def_set, entity_defs,
                                              where=vpath, expressions=expressions):
-                    report.add("error", "ref",
-                               f"introduced {d.kind} reference does not resolve: {d.ref}",
+                    sev, why = _ref_severity(vpath, config)
+                    report.add(sev, "ref",
+                               f"introduced {d.kind} reference does not resolve: {d.ref}{why}",
                                vpath, d.line)
         else:
             full_files += 1
             for d in _refs.find_dangling(root, ware_def_set, text_def_set, entity_defs,
                                          where=vpath, expressions=expressions):
-                report.add("error", "ref",
-                           f"{d.kind} reference does not resolve: {d.ref}", vpath, d.line)
+                sev, why = _ref_severity(vpath, config)
+                report.add(sev, "ref",
+                           f"{d.kind} reference does not resolve: {d.ref}{why}",
+                           vpath, d.line)
 
     report.notes.append(
         f"reference defs: {len(ware_def_set)} wares, {len(text_def_set)} text strings, "
