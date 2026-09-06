@@ -173,7 +173,15 @@ def main() -> int:
         if dumped is not None and not eq(dumped, value):
             bad.append(("store vs dump", name, prop, value, dumped, origin, vpath))
 
+    # A FLOOR, for the reason oracle.py gives: 0 values cross-checked and 0
+    # disagreements is not agreement, it is a run that examined nothing --
+    # reachable with --samples=0, or whenever every sampled value has no
+    # merged counterpart (`if merged is None: continue`, which has no counter).
     print(f"  values cross-checked : {checked}")
+    if not checked:
+        print("REFUSING: 0 values were cross-checked, so there is nothing to "
+              "agree about. A NON-ANSWER, not a clean run.", file=sys.stderr)
+        return 2
     print(f"  DISAGREEMENTS        : {len(bad)}")
     for kind, name, prop, a, b, origin, vpath in bad[:25]:
         print(f"\n  {kind}  {name}  {prop}   (origin={origin})")

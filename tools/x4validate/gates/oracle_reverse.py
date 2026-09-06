@@ -126,6 +126,22 @@ def main() -> int:
     for p in disagree_b[:15]:
         print(f"     DISAGREE  '{p}' x{parts[p]}: engine cannot find it, our index has it")
 
+    # NOTHING EXAMINED IS REFUSED, NOT PASSED -- the floor `gates/oracle.py`
+    # already states in its own words. Over a log carrying no complaint in
+    # either checkable class this printed
+    #   "We agree with the engine on every checkable complaint in this log."
+    # with rc 0, which reads identically to a clean run and is the
+    # could-not-check-reported-as-checked-and-clean shape. rc 2 is the
+    # NON-ANSWER; rc 1 is 'there are findings'.
+    checkable = len(missing_ids) + len(parts)
+    if not checkable:
+        print("\nREFUSING: this log carries no complaint in either checkable "
+              "class (missing TextIDs, unfindable component templates), so there "
+              "is nothing to agree or disagree WITH. That is a NON-ANSWER, not "
+              "agreement with the engine. Point X4_ORACLE_LOG at a real engine "
+              "log.", file=sys.stderr)
+        return 2
+
     total = len(disagree_a) + len(disagree_b)
     print("\n" + "=" * 88)
     print(f"DISAGREEMENTS WITH THE ENGINE: {total}")

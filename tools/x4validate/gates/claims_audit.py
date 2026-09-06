@@ -137,10 +137,25 @@ def vanilla_rows(vpath: str) -> dict[str, str]:
 
 
 def main() -> int:
+    # BOTH non-answers were backwards. An absent claims file returned 0, which
+    # `run-gates.sh` prints as `ok claims_audit` -- losing CLAIMS.tsv silently
+    # switched the gate off. An absent STORE raised out of sqlite3.connect as an
+    # uncaught traceback, rc 1, which reads as FINDINGS. rc 2 is the
+    # not-configured code this toolkit uses everywhere else.
     if not _claims().is_file():
-        print(f"no claims file at {_claims()} — nothing to verify.")
-        return 0
-    con = sqlite3.connect(f"file:{_store()}?mode=ro", uri=True)
+        print(f"REFUSING: no claims file at {_claims()}, so nothing was verified. "
+              f"That is a NON-ANSWER, not a pass.", file=sys.stderr)
+        return 2
+    if not _store().is_file():
+        print(f"REFUSING: no effective store at {_store()}, so no claim could be "
+              f"evaluated.", file=sys.stderr)
+        return 2
+    try:
+        con = sqlite3.connect(f"file:{_store()}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        print(f"REFUSING: could not open the effective store: {exc}",
+              file=sys.stderr)
+        return 2
 
     # A claim verified against a STALE store is worth nothing: that is precisely
     # how the axis-1 numbers became wrong in the first place.
@@ -213,6 +228,10 @@ def main() -> int:
         if p or f or u:
             print(f"  {t:10s} PASS {p:3d}   FAIL {f:3d}   UNRESOLVED {u:3d}")
     print(f"claims checked: {total}   PASS {npass}   FAIL {nfail}   UNRESOLVED {nunres}")
+    if not total:
+        print("REFUSING: the claims file parsed to 0 rows, so no claim was "
+              "evaluated. A NON-ANSWER, not agreement.", file=sys.stderr)
+        return 2
     if nfail or nunres:
         print("A FAIL means the doc is wrong or the world moved. An UNRESOLVED means")
         print("the claim was never evaluated — neither may be read as agreement.")

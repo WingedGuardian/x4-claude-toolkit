@@ -164,3 +164,89 @@ def test_both_mutation_harnesses_disable_bytecode_caching():
                   and n.args[0].value == "__pycache__"]
         assert purges, (
             f"{label} does not walk for __pycache__ to purge it between mutants")
+
+
+# --- FOUR MORE gates that returned a clean 0 over nothing examined -----------------
+#
+# The AST census above proves a gate CAN end non-zero. It cannot prove the gate does
+# so when it examined nothing -- that is a different question, and four gates answered
+# it wrongly. Each now carries the floor `gates/oracle.py` states in its own words:
+# "NOTHING EXAMINED IS REFUSED, NOT PASSED ... rc 2 is the NON-ANSWER, rc 1 is
+# 'there are findings'."
+#
+# MEASURED before the fix, through the real gates:
+#   claims_audit with no CLAIMS.tsv   -> rc 0, printed by run-gates.sh as `ok claims_audit`
+#   consistency_audit --samples=0     -> rc 0, having cross-checked nothing
+# and by reading: oracle_reverse printed "We agree with the engine on every checkable
+# complaint in this log" over a log with no complaints, and fuzz_diff returned the same
+# verdict whether the merge engine applied 58 of 300 structural ops or none.
+
+def _run_gate(name, *args, env_extra=None):
+    import os
+    import subprocess
+    import sys as _sys
+    env = dict(os.environ, **(env_extra or {}))
+    return subprocess.run([_sys.executable, "gates/" + name, *args],
+                          cwd=str(GATES.parent), capture_output=True, text=True, env=env)
+
+
+def test_claims_audit_REFUSES_a_missing_claims_file_rather_than_passing(tmp_path):
+    """Both of this gate's non-answers were backwards: an absent claims file returned
+    0 (so losing CLAIMS.tsv silently switched the gate off, printed `ok` by
+    run-gates.sh), and an absent STORE raised out of sqlite3.connect as an uncaught
+    traceback -- rc 1, which reads as FINDINGS."""
+    empty = tmp_path / "mods"
+    (empty / "_registry").mkdir(parents=True)
+    r = _run_gate("claims_audit.py", env_extra={"X4_MODS": str(empty)})
+    assert "Traceback" not in r.stderr, r.stderr[-400:]
+    assert r.returncode == 2, (r.returncode, r.stdout[-300:], r.stderr[-300:])
+    assert "REFUSING" in r.stderr, r.stderr[-400:]
+
+
+def test_consistency_audit_REFUSES_when_it_cross_checked_NOTHING():
+    """`--samples=0` is the cheapest reachable form; the same state arises whenever
+    every sampled value has no merged counterpart (`if merged is None: continue`,
+    which has no counter at all)."""
+    r = _run_gate("consistency_audit.py", "--samples=0")
+    assert "Traceback" not in r.stderr, r.stderr[-400:]
+    if r.returncode == 2 and "REFUSING" not in r.stderr:
+        pytest.skip("the gate refused earlier for want of a configured store; the rc "
+                    "and crash checks above still ran")
+    assert r.returncode == 2, (r.returncode, r.stdout[-400:])
+    assert "cross-checked" in (r.stdout + r.stderr)
+
+
+def test_the_four_floors_are_REACHABLE_not_just_present():
+    r"""The twin for the AST census, one level up.
+
+    `test_the_gate_can_report_a_failure` counts failure NODES; it was green over a
+    refusal that raised NameError because `sys` was never imported. A floor that
+    references `sys.stderr` in a module without `import sys` is the same trap, so
+    every gate given one is checked for the import.
+    """
+    import ast as _ast
+    for name in ("oracle_reverse.py", "consistency_audit.py", "fuzz_diff.py",
+                 "claims_audit.py"):
+        src = (GATES / name).read_text(encoding="utf-8")
+        tree = _ast.parse(src)
+        uses_sys_stderr = any(
+            isinstance(n, _ast.Attribute) and n.attr == "stderr"
+            and isinstance(n.value, _ast.Name) and n.value.id == "sys"
+            for n in _ast.walk(tree))
+        imports_sys = any(
+            (isinstance(n, _ast.Import) and any(a.name == "sys" for a in n.names))
+            or (isinstance(n, _ast.ImportFrom) and n.module == "sys")
+            for n in _ast.walk(tree))
+        assert not uses_sys_stderr or imports_sys, (
+            "%s writes to sys.stderr without importing sys, so its refusal raises "
+            "NameError -- the exact defect the oracle refusal shipped with" % name)
+        returns_two = any(
+            isinstance(n, _ast.Return) and isinstance(n.value, _ast.Constant)
+            and n.value.value == 2
+            for n in _ast.walk(tree))
+        raises_two = any(
+            isinstance(n, _ast.Raise) and isinstance(n.exc, _ast.Call)
+            and getattr(n.exc.func, "id", "") == "SystemExit"
+            for n in _ast.walk(tree))
+        assert returns_two or raises_two, (
+            "%s has no rc-2 path, so it cannot say 'could not check'" % name)

@@ -134,6 +134,17 @@ def main() -> int:
     print("=" * 78)
     print(f"  structural ops that applied and changed the tree : {structural_applied}")
     print(f"  invariant violations                             : {len(fails)}")
+    # The number was counted, printed, and never consulted: this gate reported
+    # the SAME verdict whether the merge engine applied 58 of 300 structural ops
+    # or none at all. Zero applied means the invariants below were evaluated
+    # against a tree nothing ever changed -- exactly the state the root-<replace>
+    # defect produced (858 ops dropped while reported applied), which is the
+    # defect this gate exists to probe for.
+    if not structural_applied:
+        print("REFUSING: 0 structural ops applied and changed the tree, so every "
+              "invariant below held vacuously. A NON-ANSWER, not a clean fuzz "
+              "run.", file=sys.stderr)
+        return 2
     for i, op, why in fails[:15]:
         print(f"\n  #{i}  {why}")
         print(f"      {etree.tostring(op).decode()[:150]}")
