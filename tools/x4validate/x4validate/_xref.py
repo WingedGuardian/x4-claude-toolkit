@@ -262,7 +262,22 @@ def _hint_other_kinds(rows: list[XrefRow], name: str, asked_kind: str,
     nowhere is a real negative. They must never read the same.
     """
     from collections import Counter
-    elsewhere = Counter(r.kind for r in rows if r.name == name and r.kind != asked_kind)
+    # CASE-INSENSITIVE, exactly as `query` matches. It compared `r.name == name`,
+    # while `query` folds both sides -- so a differently-cased argument fell into
+    # the branch below and printed 'does not appear under ANY kind - a real
+    # negative', with a denominator attached to lend it weight, for a name the
+    # index holds. REPRODUCED through the CLI: `who-calls Event_Player_Ejected`
+    # asserted the negative while `who-calls event_player_ejected` correctly
+    # offered `who-listens`, the only difference being the case of the argument.
+    #
+    # That inverts this function's purpose as stated three lines up: the two
+    # states 'wrong command' and 'real negative' must never read the same, and
+    # they read the same in the direction that manufactures a false fact.
+    # CLAUDE.md #9: default to case-insensitive for X4 identifiers, because the
+    # corpus genuinely mixes case.
+    name_l = name.lower()
+    elsewhere = Counter(r.kind for r in rows
+                        if r.name.lower() == name_l and r.kind != asked_kind)
     if not elsewhere:
         print(f"  and '{name}' does not appear under ANY kind — "
               f"a real negative over {len(rows)} indexed rows"

@@ -124,3 +124,70 @@ def test_aiscript_uses_script_name_as_context():
     rows = _rows(xml, vpath="aiscripts/order.fight.xml")
     order = next(r for r in rows if r.name == "create_order")
     assert order.cue == "order.fight"
+
+
+# --- the hint path was case-SENSITIVE while the query was not ----------------
+#
+# `query` matches `r.name.lower() == name.lower()`, teaching the user that case
+# does not matter for X4 identifiers -- which is correct, and CLAUDE.md #9 says so
+# explicitly, because the corpus genuinely mixes case (`Cluster_104` vs
+# `cluster_104`). `_hint_other_kinds` then compared `r.name == name`, so a
+# differently-cased argument fell into the "does not appear under ANY kind"
+# branch and was printed as "a real negative", with a denominator attached to
+# lend it weight.
+#
+# That inverts the function's whole purpose. Its docstring: "A name that exists
+# under another kind is a wrong-command mistake; a name that exists nowhere is a
+# real negative. They must never read the same." They read the same, in the
+# direction that manufactures a false fact.
+#
+# REPRODUCED through the shipped CLI over a fully-covered index:
+#   who-calls Event_Player_Ejected -> "does not appear under ANY kind - a real negative"
+#   who-calls event_player_ejected -> "BUT ... IS in the index under other kind(s)"
+#   who-listens EVENT_PLAYER_EJECTED -> 1 occurrence(s)
+# The single differing variable is the case of the argument.
+
+def _row(kind, name):
+    return _xref.XrefRow(kind=kind, name=name, source="base",
+                         file="md/x.xml", cue="C", line=1)
+
+
+def test_the_hint_finds_a_name_indexed_under_DIFFERENT_case(capsys):
+    """The defect: an exact-case miss was upgraded into an asserted negative."""
+    rows = [_row("event", "Event_Player_Ejected")]
+    _xref._hint_other_kinds(rows, "event_player_ejected", "action")
+    out = capsys.readouterr().out
+    assert "does not appear under ANY kind" not in out, (
+        "a name that IS indexed was reported as a real negative because its case "
+        "differed from the argument")
+    assert "IS in the index under other kind(s)" in out
+    assert "event" in out
+
+
+def test_the_hint_is_case_insensitive_in_BOTH_directions(capsys):
+    """The argument may be the upper one and the index the lower one, or the
+    reverse -- folding only one side would pass the test above and still be wrong."""
+    rows = [_row("event", "event_player_ejected")]
+    _xref._hint_other_kinds(rows, "EVENT_PLAYER_EJECTED", "action")
+    out = capsys.readouterr().out
+    assert "IS in the index under other kind(s)" in out, out
+
+
+def test_a_name_that_really_is_absent_is_STILL_a_real_negative(capsys):
+    """The falsification twin. A hint that claimed a match for everything would
+    pass both tests above while deleting the distinction the function exists for."""
+    rows = [_row("event", "something_else")]
+    _xref._hint_other_kinds(rows, "definitely_not_a_real_thing", "action")
+    out = capsys.readouterr().out
+    assert "does not appear under ANY kind" in out, out
+    assert "IS in the index" not in out
+
+
+def test_the_asked_kind_is_still_excluded_from_the_hint(capsys):
+    """The other clause of the same condition, tested separately so a guard in
+    front of it cannot shadow it: a row of the kind the user ALREADY asked for is
+    not an 'other kind', and must not be offered as one."""
+    rows = [_row("action", "Set_Object_Min_Hull")]
+    _xref._hint_other_kinds(rows, "set_object_min_hull", "action")
+    out = capsys.readouterr().out
+    assert "does not appear under ANY kind" in out, out
