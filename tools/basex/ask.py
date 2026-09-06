@@ -178,7 +178,14 @@ def main(argv=None) -> int:
     # end-to-end 2026-08-13: `xq "count(collection('x4eff')//macro)"` searched
     # x4eff, reported "in x4raw", and a STALE x4eff raised no warning because
     # x4raw happened to be fresh.
-    named = set(re.findall(r"collection\(\s*['\"]([^'\"]+)['\"]\s*\)", query))
+    # `collection(...)` is not the only spelling. BaseX addresses a database
+    # directly with db:get('<name>') -- db:open before BaseX 10, and the vendored
+    # jar is 12.4 -- and those walked past this guard entirely: a db:get('x4eff')
+    # query ran against x4eff while being scored against x4raw's coverage AND
+    # x4raw's freshness. That is the very failure this block exists to stop,
+    # reached through a different spelling of the same intent.
+    named = set(re.findall(
+        r"(?:collection|db:get|db:open)\(\s*['\"]([^'\"]+)['\"]\s*\)", query))
     foreign = sorted(n for n in named if n != args.db)
     if foreign:
         print(f"error: the query searches {', '.join(foreign)} but --db is "
@@ -250,6 +257,36 @@ def main(argv=None) -> int:
 
     # --- the zero-result path: this is where a denominator is mandatory -------
     print(f"0 items in {args.db}.")
+
+    # AN EMPTY SERIALIZATION IS NOT AN EMPTY SEQUENCE. `run_counted` returns
+    # (output, None) when its count wrapper will not compile -- the documented
+    # case being a query carrying its own prolog, so any query needing a
+    # namespace declaration or a user-defined function. `hits` then falls back to
+    # the LINE count, and three genuine matches that each serialize to a
+    # zero-length string produce zero lines.
+    #
+    # MEASURED against real BaseX: that query printed
+    #     NEGATIVE CONFIRMED over 2 of 2 documents (complete).   rc 0
+    # while the identical query WITHOUT the prolog reported `3 item(s)`.
+    #
+    # The positive branch already says `item count unavailable` (that is what
+    # `unit` is for); the zero branch computed `unit` and never used it, then
+    # issued the guarantee. run_counted's own docstring required otherwise:
+    # "The caller must then say the count is unavailable rather than quote the
+    # line count as though it were meaningful."
+    #
+    # First of the refusals on this path, because it is prior to all of them: if
+    # the count is unknown we do not know the result is empty at all, and a
+    # denominator cannot help with a numerator nobody measured.
+    if n_items is None:
+        print("\n  ** NOT A NEGATIVE FINDING. ** 0 output lines, but the ITEM")
+        print("  COUNT could not be obtained -- the count wrapper would not compile,")
+        print("  which happens when the query carries its own prolog. An empty")
+        print("  serialization is not an empty sequence: matches that serialize to")
+        print("  zero-length strings produce no lines and are still matches.")
+        print("  Re-run as count(...), or without the prolog, for a claim with a")
+        print("  numerator behind it as well as a denominator.")
+        return 4
     if not cov:
         print("\n  ** NOT A NEGATIVE FINDING. ** No coverage report for this database")
         print("  (run build-corpus.sh / build-effective.sh). Without a denominator this")
@@ -270,6 +307,36 @@ def main(argv=None) -> int:
         print("\n  ** NOT A NEGATIVE FINDING. ** Coverage is complete, but the index is")
         print("  STALE (see the banner above), so 'zero hits' describes the world as of")
         print("  the build, not the world now. Rebuild before making this claim.")
+        return 4
+
+    # A DENOMINATOR OF ZERO IS NOT A DENOMINATOR, and neither is an absent one.
+    # The three guards above ask whether a coverage report EXISTS, whether it
+    # CLAIMS to support a negative, and whether it is FRESH. None of them asks
+    # whether it counted anything -- so a report answering yes to all three
+    # printed the bare zero this tool exists to refuse, wearing the one sentence
+    # that means it was checked:
+    #
+    #     NEGATIVE CONFIRMED over 0 of 0 documents (complete).      rc 0
+    #     NEGATIVE CONFIRMED over None of None documents (complete). rc 0
+    #
+    # Both are reachable. None arrives whenever the key is absent, because
+    # `cov.get('indexed', {}).get('total')` yields it and nothing re-checks.
+    # Zero arrives from coverage.py, which validates its roots for NON-EMPTINESS
+    # and never for EXISTENCE: a typo'd --reference makes count_disk_xml return 0
+    # and publishes status 'complete' over nothing at all.
+    #
+    # `(expected or 0) - (indexed or 0)` below is what hid it: it turns None into
+    # 0, so `missing` is falsey and the sentence ends '(complete).'
+    if not isinstance(expected, int) or not isinstance(indexed, int) \
+            or expected <= 0 or indexed <= 0:
+        print("\n  ** NOT A NEGATIVE FINDING. ** The coverage report claims to")
+        print(f"  support a negative claim, but its denominator is {indexed} of")
+        print(f"  {expected} -- nothing was indexed, so 'zero hits' here cannot be")
+        print("  distinguished from 'we never looked', which is the one distinction")
+        print("  this tool exists to make.")
+        print("  Rebuild the index (build-corpus.sh / build-effective.sh), and check")
+        print("  that coverage.py's --reference and --extensions name directories")
+        print("  that actually exist.")
         return 4
 
     missing = (expected or 0) - (indexed or 0)

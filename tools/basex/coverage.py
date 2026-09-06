@@ -205,6 +205,27 @@ def main(argv=None) -> int:
     reference = Path(args.reference)
     extensions = Path(args.extensions)
 
+    # ...and they must EXIST. The check above tests for an empty STRING, so it
+    # catches `--reference ""` and nothing else. A root that is merely WRONG -- a
+    # typo, a stale config, an unmounted drive -- is a non-empty string, sails
+    # through, and `count_disk_xml` returns 0 for it because `root.is_dir()` is
+    # False. Expected then totals 0, indexed totals 0, the deficit is 0, and this
+    # publishes {"status": "complete", "supports_negative_claim": true} over
+    # NOTHING AT ALL -- the artifact ask.py renders as
+    #     NEGATIVE CONFIRMED over 0 of 0 documents (complete).
+    #
+    # Same rule as the refusal above, one failure mode further on: a population
+    # that was never looked at is not a population of zero.
+    unreal = ["%s %s" % (n, v) for n, v in (("--reference", reference),
+                                             ("--extensions", extensions))
+              if not v.is_dir()]
+    if unreal:
+        print("error: not a directory: " + "; ".join(unreal), file=sys.stderr)
+        print("       Refusing to measure: a root that does not exist yields ZERO"
+              " documents, which would be published as a denominator of 0 and"
+              " called complete coverage.", file=sys.stderr)
+        return 2
+
     # --- expected, from disk + the staging manifest ---------------------------
     manifest_path = Path(args.manifest)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
@@ -219,6 +240,20 @@ def main(argv=None) -> int:
         "mods": count_disk_xml(extensions) + staged_mods,
     }
     expected["total"] = expected["base"] + expected["mods"]
+
+    # A DENOMINATOR OF ZERO IS NOT A DENOMINATOR. Both roots can exist and still
+    # hold no XML (an unpopulated reference/, a wrong-but-real path), and the
+    # reconciliation below would then find 0 expected, 0 indexed, deficit 0, and
+    # write supports_negative_claim: true. ask.py refuses that artifact on the
+    # consuming side now; refusing to PRODUCE it is the half that stops a false
+    # licence sitting on disk being quoted by anything else.
+    if expected["total"] <= 0:
+        print("error: 0 expected documents under %s and %s"
+              % (reference, extensions), file=sys.stderr)
+        print("       Refusing to publish coverage over an empty population: it"
+              " would license every negative claim while proving none.",
+              file=sys.stderr)
+        return 2
 
     # --- actual, from BaseX ---------------------------------------------------
     try:

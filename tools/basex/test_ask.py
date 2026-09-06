@@ -261,3 +261,153 @@ def test_undeterminable_freshness_REFUSES_to_render_a_negative(monkeypatch, caps
     cap = capsys.readouterr()
     assert "Traceback" not in cap.out + cap.err
     assert rc == 4, "a negative from an index of unknown currency must not be admissible"
+
+
+# --- the denominator FLOOR (Track 2 audit, 2026-09-06) ------------------------
+#
+# The three guards above this point ask "is there a coverage report", "does it
+# claim to support a negative", and "is it fresh". None of them asks whether the
+# denominator is a NUMBER GREATER THAN ZERO -- so a report that answered yes to
+# all three published the bare zero this tool exists to refuse, wearing the one
+# sentence that means it was checked.
+#
+# Both shapes are reachable, not hypothetical:
+#   * None -- `cov.get("indexed", {}).get("total")` yields None whenever the key
+#     is absent, and nothing downstream re-checks it.
+#   * 0    -- coverage.py validates --reference/--extensions for NON-EMPTINESS
+#     and never for EXISTENCE, and count_disk_xml returns 0 for a root that is
+#     not a directory. A typo'd path therefore publishes
+#     {"expected": {"total": 0}, "indexed": {"total": 0}, "status": "complete",
+#      "supports_negative_claim": true}, which is precisely this input.
+
+def test_a_ZERO_denominator_is_refused_not_confirmed(monkeypatch, capsys):
+    """`NEGATIVE CONFIRMED over 0 of 0 documents (complete).` with rc 0.
+
+    Nothing was indexed, so "zero hits" cannot be distinguished from "we never
+    looked" -- the founding distinction of this tool, inverted by its own verdict
+    line.
+    """
+    _fake_basex(monkeypatch, "")
+    monkeypatch.setattr(ask, "load_coverage", lambda db: {
+        "db": db, "status": "complete", "supports_negative_claim": True,
+        "indexed": {"total": 0}, "expected": {"total": 0}, "unparseable": [],
+    })
+    _stale(monkeypatch, fresh=True)
+    rc = ask.main(["xq", "//nothing"])
+    text = capsys.readouterr().out
+    assert "NEGATIVE CONFIRMED" not in text, (
+        "a denominator of zero was rendered as a confirmed negative")
+    assert rc == 4 and "NOT A NEGATIVE FINDING" in text
+
+
+def test_an_ABSENT_denominator_is_refused_not_confirmed(monkeypatch, capsys):
+    """The other shape: `NEGATIVE CONFIRMED over None of None documents`.
+
+    A coverage report missing its `indexed`/`expected` keys reaches the verdict
+    line with None on both sides, and `(expected or 0) - (indexed or 0)` quietly
+    turns that into 0, so the sentence reads `(complete)`.
+    """
+    _fake_basex(monkeypatch, "")
+    monkeypatch.setattr(ask, "load_coverage", lambda db: {
+        "db": db, "status": "complete", "supports_negative_claim": True,
+        "unparseable": [],
+    })
+    _stale(monkeypatch, fresh=True)
+    rc = ask.main(["xq", "//nothing"])
+    text = capsys.readouterr().out
+    assert "NEGATIVE CONFIRMED" not in text, (
+        "an absent denominator was rendered as a confirmed negative")
+    assert "None of None" not in text
+    assert rc == 4 and "NOT A NEGATIVE FINDING" in text
+
+
+def test_the_floor_does_not_over_fire_on_a_REAL_denominator(monkeypatch, capsys):
+    """The falsification twin for the two above.
+
+    A floor that refused everything would make them pass while deleting the
+    feature. One real document is enough to support a negative, and must still
+    read as one.
+    """
+    _fake_basex(monkeypatch, "")
+    monkeypatch.setattr(ask, "load_coverage", lambda db: {
+        "db": db, "status": "complete", "supports_negative_claim": True,
+        "indexed": {"total": 1}, "expected": {"total": 1}, "unparseable": [],
+    })
+    _stale(monkeypatch, fresh=True)
+    rc = ask.main(["xq", "//nothing"])
+    text = capsys.readouterr().out
+    assert rc == 0 and "NEGATIVE CONFIRMED over 1 of 1" in text
+
+
+# --- the cross-DB guard knows only ONE spelling (Track 2 audit, 2026-09-06) ---
+
+def test_a_foreign_db_named_via_db_get_is_refused(monkeypatch, capsys):
+    """`collection('x4eff')` is not the only way to name a database.
+
+    BaseX addresses one directly with `db:get('<name>')` (`db:open` before BaseX
+    10; the vendored jar is 12.4). The guard's regex matched `collection(...)`
+    only, so a `db:get('x4eff')` query ran against x4eff while being scored
+    against x4raw's coverage AND x4raw's freshness -- the exact failure the guard
+    was written for in the first place, reached through a different spelling.
+    """
+    _fake_basex(monkeypatch, "5")
+    _stale(monkeypatch, fresh=True)
+    rc = ask.main(["--db", "x4raw", "xq", "db:get('x4eff')//macro"])
+    cap = capsys.readouterr()
+    text = cap.out + cap.err
+    assert rc == 2, "a db:get() naming another database was answered, not refused"
+    assert "x4eff" in text and "--db" in text
+
+
+def test_the_legacy_db_open_spelling_is_refused_too(monkeypatch, capsys):
+    """BaseX 10 renamed db:open to db:get. Habit and older notes still use the
+    old name, and the guard should not depend on which one the caller reached for."""
+    _fake_basex(monkeypatch, "5")
+    _stale(monkeypatch, fresh=True)
+    rc = ask.main(["--db", "x4raw", "xq", "db:open('x4eff')//macro"])
+    assert rc == 2
+
+
+def test_db_get_naming_the_SAME_database_is_fine(monkeypatch, capsys):
+    """The falsification twin: a guard that refused every db:get() would make the
+    two above pass while breaking the ordinary case."""
+    _fake_basex(monkeypatch, "5")
+    _stale(monkeypatch, fresh=True)
+    rc = ask.main(["--db", "x4raw", "xq", "db:get('x4raw')//macro"])
+    assert rc == 0, "a db:get() naming the queried database must not be refused"
+
+
+# --- an unavailable item count cannot confirm anything ------------------------
+
+def test_an_UNAVAILABLE_item_count_cannot_confirm_a_negative(monkeypatch, capsys):
+    """`run_counted` returns (output, None) when its count wrapper will not
+    compile -- the documented case being a query carrying its own prolog, i.e.
+    any query needing a namespace declaration or a user-defined function.
+
+    The positive branch honestly labels the number `output line(s), item count
+    unavailable`. The zero branch dropped that caveat entirely -- `unit` is
+    computed and never used there -- and issued the guarantee anyway. MEASURED
+    against real BaseX: three genuine matches, each serializing to a zero-length
+    string, printed `NEGATIVE CONFIRMED over 2 of 2 documents (complete).` with
+    rc 0, while the identical query without the prolog reported `3 item(s)`.
+
+    An empty SERIALIZATION is not an empty SEQUENCE, and this is exactly what
+    `run_counted`'s own docstring already required of its caller: "The caller must
+    then say the count is unavailable rather than quote the line count as though
+    it were meaningful."
+    """
+    _fake_basex(monkeypatch, "", wrap_fails=True)
+    monkeypatch.setattr(ask, "load_coverage", lambda db: {
+        "db": db, "status": "complete", "supports_negative_claim": True,
+        "indexed": {"total": 100}, "expected": {"total": 100}, "unparseable": [],
+    })
+    _stale(monkeypatch, fresh=True)
+    rc = ask.main(["xq", "//nothing"])
+    text = capsys.readouterr().out
+    assert "NEGATIVE CONFIRMED" not in text, (
+        "a negative was confirmed while the item count was unavailable")
+    assert rc == 4 and "NOT A NEGATIVE FINDING" in text
+    # This names a phrase the output does NOT line-wrap. The first draft
+    # asserted a two-word phrase the message splits across two lines, so it
+    # failed against a correct fix -- the checker, not the subject.
+    assert "serialization is not an empty sequence" in text
