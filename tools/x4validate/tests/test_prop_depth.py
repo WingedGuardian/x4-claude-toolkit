@@ -10,6 +10,8 @@ The load-bearing guarantee is that the fix is purely ADDITIVE: depth-1 keys must
 come out byte-identical, or every stored value silently re-keys.
 """
 
+from pathlib import Path
+
 from lxml import etree
 
 from x4validate import _effective, _merge, _stats
@@ -367,3 +369,76 @@ def test_identless_siblings_keep_their_original_positional_numbering():
     """The pre-existing ident-less path is byte-identical -- 0/1/2, not 0/0#1/0#2."""
     rows = _flatten_props('<a><b v="1"/><b v="2"/><b v="3"/></a>')
     assert [p for p, _ in rows] == ["b[0].v", "b[1].v", "b[2].v"]
+
+
+# --- the depth guard: ONE definition, and neither walk truncates in silence -------
+
+def test_the_two_walks_share_ONE_depth_constant():
+    """`_stats` carried a SECOND literal named MAX_PROP_DEPTH with no test pinning it
+    equal, so raising one silently diverged the tools -- and the two answer the same
+    question about the same macro. It is imported now, not mirrored."""
+    from x4validate import _stats
+    assert _stats.MAX_PROP_DEPTH is _effective.MAX_PROP_DEPTH, (
+        "_stats has its own copy again; a mirrored constant is a constant that drifts")
+
+
+def test_the_stats_walk_RECORDS_what_it_abandons(monkeypatch):
+    """It truncated in SILENCE while `_effective` recorded and the build printed. Two
+    tools disagreeing about a macro's properties with only one able to say why is the
+    narrowing-without-announcing shape this register is named after."""
+    from lxml import etree
+    from x4validate import _stats
+
+    deep = ("<properties>" + "<a>" * (_effective.MAX_PROP_DEPTH + 3)
+            + '<leaf v="1"/>' + "</a>" * (_effective.MAX_PROP_DEPTH + 3) + "</properties>")
+    root = etree.fromstring('<macro name="m">' + deep + "</macro>")
+    _stats.truncated_props.clear()
+    _stats.flatten_props_of(root)
+    assert _stats.truncated_props, (
+        "the stats walk hit its depth guard and reported nothing")
+    _stats.truncated_props.clear()
+
+
+def test_a_SHALLOW_macro_records_no_truncation(monkeypatch):
+    """The twin. If every walk recorded a truncation the signal would be worthless."""
+    from lxml import etree
+    from x4validate import _stats
+    root = etree.fromstring(
+        '<macro name="m"><properties><physics><drag forward="1"/></physics>'
+        "</properties></macro>")
+    _stats.truncated_props.clear()
+    _stats.flatten_props_of(root)
+    assert _stats.truncated_props == []
+
+
+def test_a_truncation_NAMES_the_document_it_came_from():
+    """★ The reason the constant could not be re-derived on 2026-09-06.
+
+    The record printed a property PATH and never the vpath, so a build reporting 10
+    truncations gave no way to open one -- and a packed-inclusive sweep of the mod
+    corpus (deepest subtree 5) plus base+DLC maps (deepest 4) could not reproduce a
+    single one. A narrowing step must announce WHERE, or the announcement cannot be
+    acted on.
+    """
+    from lxml import etree
+    deep = ("<properties>" + "<a>" * (_effective.MAX_PROP_DEPTH + 3)
+            + '<leaf v="1"/>' + "</a>" * (_effective.MAX_PROP_DEPTH + 3) + "</properties>")
+    props = etree.fromstring('<macro name="m">' + deep + "</macro>").find("properties")
+    _effective.truncated_props.clear()
+    _effective.flatten_with_prov(props, Recorder(BASE), child_scope=props,
+                                 where="assets/only/here.xml")
+    assert _effective.truncated_props, "the guard did not fire, so this proves nothing"
+    assert all(r.startswith("assets/only/here.xml: ")
+               for r in _effective.truncated_props), _effective.truncated_props
+    _effective.truncated_props.clear()
+
+
+def test_the_depth_fixture_is_DERIVED_from_the_constant():
+    """`test_recursion_depth_guard_reports_rather_than_truncating_silently` nests a
+    literal 12, so it stays green for any MAX_PROP_DEPTH below 12 and goes red the
+    moment someone raises it to 12 -- for the wrong reason. Pinned here so a future
+    raise fixes the fixture instead of being blamed on the guard."""
+    src = (Path(__file__)).read_text(encoding="utf-8")
+    assert "MAX_PROP_DEPTH + 3" in src, (
+        "the deep fixtures no longer derive their nesting from the constant; a raise "
+        "will make them pass vacuously or fail for an unrelated reason")

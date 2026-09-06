@@ -26,7 +26,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _paths, _cat, _compat, _merge, _registry, _input
+from x4validate import _paths, _cat, _compat, _merge, _registry, _input, _effective
 from x4validate import __version__
 
 
@@ -202,8 +202,14 @@ def compare_wares(candidate: dict[str, Ware], effective: dict[str, Ware]) -> lis
 
 # --- macro numeric vector -----------------------------------------------------
 
-#: Mirrors `_effective.MAX_PROP_DEPTH`; see there for the measured justification.
-MAX_PROP_DEPTH = 8
+#: IMPORTED, not mirrored. This was a SECOND literal with the same name and no test
+#: pinning the two equal, so raising one silently diverged the tools -- and unlike
+#: `_effective`, this walk has no `truncated_props` analogue, so it truncated in
+#: SILENCE. One definition, and the guard below now records what it dropped.
+MAX_PROP_DEPTH = _effective.MAX_PROP_DEPTH
+
+#: Property paths this module abandoned at the depth guard, most recent walk.
+truncated_props: list[str] = []
 
 
 def _walk(scope: etree._Element, out: dict[str, float | str], prefix: str,
@@ -224,7 +230,14 @@ def _walk(scope: etree._Element, out: dict[str, float | str], prefix: str,
                 out[f"{key}.{attr}"] = float(val)
             except ValueError:
                 out[f"{key}.{attr}"] = val
-        if len(el) and depth < MAX_PROP_DEPTH:
+        if len(el):
+            if depth >= MAX_PROP_DEPTH:
+                # NOT SILENT. `_effective` records what it abandons at this guard and
+                # the build prints it; this walk dropped the same subtrees and said
+                # nothing, so the two tools disagreed about a macro's properties with
+                # only one of them able to explain why.
+                truncated_props.append(f"{key}.")
+                continue
             _walk(el, out, f"{key}.", depth + 1)
 
 

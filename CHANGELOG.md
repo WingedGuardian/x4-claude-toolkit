@@ -328,9 +328,12 @@ tracked irreplaceable file has been emptied, deleted or lost half its bytes, and
 from a SessionStart hook so it happens without anyone remembering.
 
 MEASURED over 14 write primitives, each paired with a control proving the same
-primitive DOES change the file when unlocked: 11 are blocked, including every one of
-the four real incidents. The three that are not — `bash rm -f` and PowerShell's two
-`-Force` forms — are documented rather than glossed, and covered a layer up.
+primitive DOES change the file when unlocked: **11 are blocked on Windows** (9 on
+POSIX — `os.remove` and `os.replace` are delete and rename-over, which POSIX
+authorises by the DIRECTORY's permission, not the file's), including every one of
+the four real incidents. The three that are not on Windows — `bash rm -f` and
+PowerShell's two `-Force` forms — are documented rather than glossed, and covered a
+layer up; on POSIX it is five, the two above included.
 
 **There is deliberately no ACL.** A first version also applied
 `icacls /deny <user>:(W,D,WDAC,WO)`, which does close the `-Force` gap. It was withdrawn

@@ -397,6 +397,21 @@ def _child_ident(el: etree._Element) -> str | None:
 #: hit the path is recorded in `truncated_props` and reported by the build --
 #: never silently dropped, which is the defect class this whole change exists to
 #: kill (see docs/BLIND-SPOTS.md).
+#:
+#: ⚠ THAT JUSTIFICATION IS STALE FOR THE POPULATION THIS NOW WALKS, and the value is
+#: deliberately UNCHANGED until it can be re-derived. The 08-12 census predates F34
+#: widening `base_vpaths`, and the build reports 10 subtrees hitting the guard --
+#: e.g. `properties.system.planets.planet.moons.moon[...].shaderparams.shaderparam`.
+#: MEASURED 2026-09-06 trying to re-derive it: the installed mod corpus,
+#: packed-inclusive, tops out at depth 5 (125 mods / 4,618 files parsed) and base+DLC
+#: map documents at 4 (177 docs) -- so NOTHING reachable from outside the build
+#: reproduces one of those 10. The records named a property path and never a
+#: document, so they could not be followed either; they now carry the vpath, which is
+#: what makes the next build's report actionable.
+#:
+#: RAISE IT FROM THAT EVIDENCE, not from this comment. A guard whose true ceiling is
+#: unmeasured is the guess this register exists to refuse -- and raising it also adds
+#: store rows, so it belongs with a per-item before/after rather than on its own.
 MAX_PROP_DEPTH = 8
 
 #: Property paths abandoned at MAX_PROP_DEPTH during the last build.
@@ -405,7 +420,7 @@ truncated_props: list[str] = []
 
 def _walk_props(scope: etree._Element, rec: Recorder, prefix: str, depth: int,
                 rows: list[tuple[str, str, float | None, list[Origin]]],
-                no_recurse: frozenset | tuple = ()) -> None:
+                no_recurse: frozenset | tuple = (), where: str = "") -> None:
     """Append `<prefix><tag>[ident].attr` rows for *scope*'s children, recursively.
 
     The depth-1 key shape is byte-identical to the pre-2026-08-12 implementation
@@ -456,14 +471,21 @@ def _walk_props(scope: etree._Element, rec: Recorder, prefix: str, depth: int,
             rows.append((f"{full}.{attr}", val, _num(val), rec.attr_chain(child, attr)))
         if len(child) and child not in no_recurse:
             if depth >= MAX_PROP_DEPTH:
-                truncated_props.append(full)
+                # NAME THE DOCUMENT. Without the vpath this reports a property path
+                # and no way to find it -- MEASURED 2026-09-06: the build reported
+                # 10 truncations while a packed-inclusive sweep of the mod corpus
+                # (deepest 5) and of base+DLC maps (deepest 4) could not reproduce
+                # one, so the constant's own justification could not be re-derived
+                # from outside the build. A narrowing step must announce WHERE.
+                truncated_props.append(f"{where}: {full}" if where else full)
                 continue
-            _walk_props(child, rec, f"{full}.", depth + 1, rows, no_recurse)
+            _walk_props(child, rec, f"{full}.", depth + 1, rows, no_recurse, where)
 
 
 def flatten_with_prov(el: etree._Element, rec: Recorder,
                       child_scope: etree._Element | None = None,
                       no_recurse: frozenset | tuple = (),
+                      where: str = "",
                       ) -> list[tuple[str, str, float | None, list[Origin]]]:
     """Flatten *el*'s own attrs (``@attr``) + its children at EVERY depth
     (``tag.attr``, ``tag[ident].attr``, ``tag.child.attr``, ...) to
@@ -488,7 +510,7 @@ def flatten_with_prov(el: etree._Element, rec: Recorder,
     for attr, val in el.attrib.items():
         rows.append((f"@{attr}", val, _num(val), rec.attr_chain(el, attr)))
     scope = child_scope if child_scope is not None else el
-    _walk_props(scope, rec, "", 1, rows, no_recurse)
+    _walk_props(scope, rec, "", 1, rows, no_recurse, where)
     return rows
 
 
@@ -503,9 +525,10 @@ def extract_macros(tree: etree._Element, vpath: str, rec: Recorder) -> list[Enti
         # @name/@class + top-level (component, etc.). <properties> is walked by the
         # scoped call below, so exclude its subtree here or every property lands
         # twice (once as `x.y`, once as `properties.x.y`).
-        rows = flatten_with_prov(m, rec, no_recurse=(props,) if props is not None else ())
+        rows = flatten_with_prov(m, rec, no_recurse=(props,) if props is not None else (),
+                                 where=vpath)
         if props is not None:
-            rows += flatten_with_prov(props, rec, child_scope=props)
+            rows += flatten_with_prov(props, rec, child_scope=props, where=vpath)
         out.append(Entity("macro", name, m.get("class", ""), vpath,
                           rec.winner(m).source, rec.elem_chain(m), rows))
     return out
@@ -618,7 +641,7 @@ def _extract_registry(tree: etree._Element, kind: str, child_tag: str,
             continue
         out.append(Entity(kind, name, el.get(klass_attr, ""), vpath,
                           rec.winner(el).source, rec.elem_chain(el),
-                          flatten_with_prov(el, rec)))
+                          flatten_with_prov(el, rec, where=vpath)))
     if children and not out:
         raise ValueError(
             f"{kind}: {vpath} has {len(children)} <{child_tag}> element(s) but the "
@@ -737,6 +760,9 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
     entities: list[Entity] = []
     removed: list[tuple[str, str, str, int]] = []
     skipped = _SkipCount()
+    # Module-level and never reset until now, so two builds in one process reported
+    # the first one's truncations again. Only the tests cleared it.
+    truncated_props.clear()
 
     def collect_removed(vpath, rec):
         for path, o in rec.removed:
