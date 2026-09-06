@@ -648,21 +648,55 @@ CREATE INDEX idx_attr_origin ON attrs(origin);
 
 
 def _merge_one(vpath: str, config: _merge.Config,
-               overlays: list[Path]) -> tuple[etree._Element | None, Recorder]:
+               overlays: list[Path]) -> tuple[etree._Element | None, Recorder, list[str]]:
+    """Merge one vpath, and hand back the WORK NOT DONE alongside the tree.
+
+    `MergeResult.skipped`'s own docstring states the contract: *"overlays that
+    could not be parsed and were left out of the tree. Without this channel a
+    malformed overlay is indistinguishable from an absent one, and the resulting
+    tree looks complete when it is not."* `_check.py` honours it in three places.
+    This function returned `(res.tree, rec)` and dropped it on the floor.
+
+    ⚠ AND `build`'s `except etree.LxmlError` COULD NOT COVER FOR IT: `overlay_root`
+    catches `XMLSyntaxError` internally, so no exception ever escapes for an
+    OVERLAY file -- that handler can only fire for the base file's `parse_file`.
+    So an unreadable mod file left the store recording `origin='base'` -- "no
+    override, still vanilla" -- in the identical grammar it uses for a verified
+    base value. MEASURED: 11 unreadable files in the live corpus reach this."""
     rec = Recorder()
     res = _merge.build_effective(vpath, config, extra_overlays=overlays, recorder=rec)
-    return res.tree, rec
+    return res.tree, rec, res.skipped
 
 
 class _SkipCount:
+    """Two DIFFERENT losses, counted separately on purpose.
+
+    `n` / `add`      -- the whole vpath could not be merged, so it contributes NO
+                        entities. The store is missing rows.
+    `dropped` / `add_overlay` -- the tree BUILT, but an overlay was left out of
+                        it. The store has rows, and some of them are WRONG: an
+                        override that could not be read reads as `origin='base'`.
+
+    Summing these into one number would be its own narrowing step -- "absent"
+    and "present but unsound" are not the same defect, and only the second one
+    produces a confident wrong answer."""
+
     def __init__(self):
         self.n = 0
         self.samples: list[str] = []
+        self.dropped = 0
+        self.dropped_samples: list[str] = []
 
     def add(self, vpath: str, exc: Exception):
         self.n += 1
         if len(self.samples) < 10:
             self.samples.append(f"{vpath}: {exc}")
+
+    def add_overlay(self, vpath: str, whys: list[str]):
+        for why in whys:
+            self.dropped += 1
+            if len(self.dropped_samples) < 10:
+                self.dropped_samples.append(f"{vpath}: {why}")
 
 
 #: The kinds `build` knows how to extract. Kept beside the extractors below so
@@ -714,10 +748,11 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
             vpath, child, klass_attr, key_attr = LIBRARY_REGISTRIES[kind]
             ov = touchers_for(vpath, touch, folder_to_path)
             try:
-                tree, rec = _merge_one(vpath, config, ov)
+                tree, rec, dropped = _merge_one(vpath, config, ov)
             except etree.LxmlError as exc:
                 skipped.add(vpath, exc)
                 continue
+            skipped.add_overlay(vpath, dropped)
             if tree is not None:
                 entities += _extract_registry(tree, kind, child, klass_attr, vpath,
                                               rec, key_attr=key_attr)
@@ -736,11 +771,12 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
             # merge an empty overlay list.
             ov = touchers_for(low, touch, folder_to_path)
             try:
-                tree, rec = _merge_one(vpath, config, ov)
+                tree, rec, dropped = _merge_one(vpath, config, ov)
             except etree.LxmlError as exc:
                 skipped.add(vpath, exc)
                 n += 1
                 continue
+            skipped.add_overlay(vpath, dropped)
             if tree is not None:
                 entities += extract_macros(tree, vpath, rec)
                 if rec.removed:
@@ -757,11 +793,12 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
         for low, vpath in sorted(cvpaths.items()):
             ov = touchers_for(low, touch, folder_to_path)
             try:
-                tree, rec = _merge_one(vpath, config, ov)
+                tree, rec, dropped = _merge_one(vpath, config, ov)
             except etree.LxmlError as exc:
                 skipped.add(vpath, exc)
                 n += 1
                 continue
+            skipped.add_overlay(vpath, dropped)
             if tree is not None:
                 entities += extract_components(tree, vpath, rec)
                 if rec.removed:
@@ -774,18 +811,29 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
 
     if skipped.n:
         progress(f"skipped {skipped.n} unparseable file(s); e.g. {skipped.samples[0]}")
+    if skipped.dropped:
+        # NOT the same as the line above, and the wording has to keep them apart:
+        # those files are ABSENT from the store, these are PRESENT AND WRONG.
+        progress(f"WARNING: {skipped.dropped} overlay(s) could not be read and were "
+                 f"left OUT of an otherwise-complete tree, so any attribute they "
+                 f"override is recorded as origin='base' -- i.e. 'no override, "
+                 f"still vanilla' -- which is NOT what was measured; "
+                 f"e.g. {skipped.dropped_samples[0]}")
     if truncated_props:
         # Never silent: a truncated property subtree is exactly the "narrowed the
         # data and reported success" shape this build was fixed to stop doing.
         progress(f"WARNING: {len(truncated_props)} property subtree(s) hit the "
                  f"depth-{MAX_PROP_DEPTH} guard and were NOT indexed; "
                  f"e.g. {truncated_props[0]}. Raise MAX_PROP_DEPTH.")
-    _write_db(db_path, config, mods, ordered, order_rank, entities, removed)
+    _write_db(db_path, config, mods, ordered, order_rank, entities, removed,
+              dropped_overlays=skipped.dropped,
+              dropped_samples=skipped.dropped_samples)
     progress(f"wrote {len(entities)} entities to {db_path}")
     return db_path
 
 
-def _write_db(db_path, config, mods, ordered, order_rank, entities, removed):
+def _write_db(db_path, config, mods, ordered, order_rank, entities, removed,
+              dropped_overlays: int = 0, dropped_samples: list[str] | None = None):
     # PID-qualified: two concurrent builds used to pick the SAME `<db>.tmp`, so
     # they raced on os.replace and BOTH died with a raw PermissionError
     # (WinError 32). Build-then-atomically-replace already keeps the store safe
@@ -803,6 +851,12 @@ def _write_db(db_path, config, mods, ordered, order_rank, entities, removed):
             ("active_mods", str(len(mods))),
             ("load_order", json.dumps([m["folder"] for m, _ in ordered])),
             ("advisory", _ADVISORY),
+            # PERSISTED, not merely printed: build-time progress scrolls past and
+            # is gone, while a store carrying silently-wrong origins outlives the
+            # run that made it. A reader can now ask the store itself whether it
+            # was built over work that did not happen.
+            ("dropped_overlays", str(dropped_overlays)),
+            ("dropped_overlay_samples", json.dumps(dropped_samples or [])),
         ])
         # WHEN this store was true, not just how much it holds. Without it the
         # store cannot tell a current answer from one about a superseded world —
