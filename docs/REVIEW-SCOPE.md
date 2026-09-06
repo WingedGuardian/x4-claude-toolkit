@@ -62,22 +62,28 @@ better than size or age does.
 
 ### Tier 1 — ORACLES. A defect writes a wrong fact into permanent record.
 
+> Every line count on this page is the COMMITTED blob at the pinned commit, counted
+> the way `scripts/audit-coverage.py::line_count` counts it, so this page and
+> `COVERAGE.tsv` can never disagree. Corrected 2026-09-06: five entries were off by
+> one on a counting convention, and `_merge.py` was stale by 138 lines (836 -> 974),
+> which is real drift and the reason a tiering built on these numbers under-ranked it.
+
 | file | lines | why it ranks here |
 |---|---|---|
-| `_compat.py` | 907 | computes LOAD ORDER -- decides who wins every conflict (#13) |
-| `_effective.py` | 898 | builds the effective tree every "effective value" claim quotes |
-| `_merge.py` | 836 | applies diffs; where 858 dropped-ops-reported-applied lived |
+| `_compat.py` | 906 | computes LOAD ORDER -- decides who wins every conflict (#13) |
+| `_effective.py` | 897 | builds the effective tree every "effective value" claim quotes |
+| `_merge.py` | 974 | applies diffs; where 858 dropped-ops-reported-applied lived |
 | `_resolve.py` | 247 | reference resolution (partial coverage only) |
-| `_diff.py` | 189 | the diff primitive |
-| `_xpath.py` | 47 | the selector primitive |
+| `_diff.py` | 188 | the diff primitive |
+| `_xpath.py` | 46 | the selector primitive |
 
-~3,124 lines. **Highest-value review in the repository.** Every Three-Values answer,
+~3,258 lines. **Highest-value review in the repository.** Every Three-Values answer,
 every Tier B verdict and every provenance claim rests on these six. All shipped since
 v2.5.0, so none is a release blocker -- and all are load-bearing for correctness.
 
 ### Tier 2 — INSTRUMENTS. A defect means a gate cannot go red.
 
-`gates/` (31 files, ~7,072 lines), `scripts/run-gates.sh`, `verify-cold.sh`,
+`gates/` (31 files, ~7,146 lines), `scripts/run-gates.sh`, `verify-cold.sh`,
 `fuzz-guard.py`. Review the **contract**, not the logic: for each gate ask *what,
 concretely, would make this go red?* (#26). MEASURED precedent -- round 5's B5 found a
 FALSE OK that could not fail the run; round 6 found `qa_sweep` accepting
@@ -100,8 +106,8 @@ seen, while a wrong fact in the store is not.**
 
 | | lines | why, and what covers it instead |
 |---|---|---|
-| `tests/` | 27,314 | **Not read. Swept MECHANICALLY.** A test that does not assert is exactly a tool declaring something factual when it is not -- so the risk is real, but it is a SHAPE, and shapes are better caught by an AST scan over all 114 files than by reading any of them. Sweeps: bare `return` as a precondition bail (round 5's B6 -- 3 tests reported PASSED without asserting), an assertion satisfied by a COMMENT or docstring (round 5's B7), `assert` on a substring where a structure is meant, and a mutation that leaves the named test green. `tests/test_no_bare_return_in_a_test.py` is the pattern to extend. |
-| `tools/basex/` | 2,088 | Discovery, not proof -- its answers are never quoted as facts without a denominator. **Exception: `ask.py` is Tier 2**, since refusing a zero-result without coverage is the standard the rest of the repo is measured against. |
+| `tests/` | 23,796 | **Not read. Swept MECHANICALLY.** A test that does not assert is exactly a tool declaring something factual when it is not -- so the risk is real, but it is a SHAPE, and shapes are better caught by an AST scan over all 107 files than by reading any of them. Sweeps: bare `return` as a precondition bail (round 5's B6 -- 3 tests reported PASSED without asserting), an assertion satisfied by a COMMENT or docstring (round 5's B7), `assert` on a substring where a structure is meant, and a mutation that leaves the named test green. `tests/test_no_bare_return_in_a_test.py` is the pattern to extend. |
+| `tools/basex/` | 3,151 | Discovery, not proof -- its answers are never quoted as facts without a denominator. **Exception: `ask.py` is Tier 2**, since refusing a zero-result without coverage is the standard the rest of the repo is measured against. |
 | `_nexus.py` | 240 | External API client. A defect yields a failed lookup, not a wrong local fact. |
 | vendored `BaseX.jar` | -- | Third-party binary, BSD-3-Clause. Not ours to review. |
 
