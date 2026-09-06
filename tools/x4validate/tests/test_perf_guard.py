@@ -103,3 +103,51 @@ def test_confirmation_uses_the_SAME_predicate_as_detection():
     _c, spurious = perf_guard.confirm_regressions([_row("m", base, slow)],
                                                   lambda m: base * 2.9)
     assert len(spurious) == 1
+
+
+def _run_main(tmp_path, monkeypatch, base, curr):
+    """Drive `main()` over synthetic timings. Nothing real is measured or timed."""
+    import json
+    import perf_guard
+    b = tmp_path / "baseline.json"
+    b.write_text(json.dumps(base), encoding="utf-8")
+    monkeypatch.setattr(perf_guard, "BASELINE", b)
+    monkeypatch.setattr(perf_guard, "RECORD", False)
+    monkeypatch.setattr(perf_guard, "measure", lambda: curr)
+    # A re-timing that does NOT reproduce, so a working gate discards the spike.
+    monkeypatch.setattr(perf_guard, "retime", lambda mod, cfg: 1.0)
+    return perf_guard.main()
+
+
+def test_a_DETECTED_regression_reaches_a_verdict_instead_of_a_NameError(
+        tmp_path, monkeypatch):
+    """`cfg` was never bound in `main()`.
+
+    `measure()` builds its own `_merge.Config()` and keeps it LOCAL, so the
+    `lambda m: retime(m, cfg)` handed to `confirm_regressions` closed over a name
+    that does not exist in that scope. Python resolves a closed-over name when the
+    lambda is CALLED, and `confirm_regressions` calls it once per suspected
+    regression -- so the gate raised `NameError` exactly when it had something to
+    say, and never when it did not.
+
+    That is why nothing noticed: the clean path is the one that runs. MEASURED
+    2026-09-05, control first --
+
+        base 10.0 -> curr 10.1 (no regression)  rc=0
+        base  1.0 -> curr 100.0 (regression)    NameError: name 'cfg' is not defined
+
+    It also killed the re-timing's whole point. That step exists because a timing
+    which spans a machine SUSPEND is a non-answer rather than a finding -- this
+    gate once reported an 814.9x "regression" that was three sleep cycles -- and
+    the confirmation could never run.
+    """
+    rc = _run_main(tmp_path, monkeypatch, {"modA": 1.0}, {"modA": 100.0})
+    # The spike does not reproduce (retime -> 1.0s), so a working guard DISCARDS it.
+    assert rc == 0, "a spike that does not reproduce must be discarded, got rc=%r" % rc
+
+
+def test_the_CONTROL_no_regression_path_was_always_fine(tmp_path, monkeypatch):
+    """Without this the test above could pass for the wrong reason -- e.g. if
+    `main()` had stopped reaching the confirmation step at all."""
+    rc = _run_main(tmp_path, monkeypatch, {"modA": 10.0}, {"modA": 10.1})
+    assert rc == 0

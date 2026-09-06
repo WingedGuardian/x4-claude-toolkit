@@ -184,6 +184,13 @@ def main() -> int:
     if suspected:
         print(f"\n  {len(suspected)} suspected — re-timing each once before reporting "
               f"(a timing that spans a machine SUSPEND is a non-answer, not a finding)")
+    # `cfg` was never bound in THIS scope: measure() builds its own Config and keeps
+    # it local, so the lambda below closed over a name that does not exist here.
+    # Python resolves a closed-over name when the lambda is CALLED, and
+    # confirm_regressions calls it once per suspected regression -- so this raised
+    # NameError exactly when the gate had something to say, and never when it did
+    # not. Built only when there is something to re-time.
+    cfg = _merge.Config() if suspected else None
     confirmed, spurious = confirm_regressions(suspected, lambda m: retime(m, cfg))
     for (d, ratio, b, c, mod), again in sorted(spurious, reverse=True):
         print(f"    DISCARDED {mod:<28} {b:.2f}s -> {c:.2f}s ({ratio:.1f}x) "
