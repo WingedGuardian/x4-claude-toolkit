@@ -32,10 +32,15 @@ fi
 STAMP="${STAMP:-baseline}"   # pass a date, e.g. STAMP=2026-06-23, to name the folder
 OUT="$GAME_DIR/.claude/backups/known-good-${STAMP}"
 
+# Same condition as the GAME_DIR check above, so the same answer: rc 2, on stderr.
+# "Exit 2 == this toolkit is not configured, everywhere in the toolkit. Kept distinct
+# from 1 (it ran and something was wrong) so a caller can tell 'set X4_GAME' from 'the
+# unpack failed' -- they need opposite responses." (bin/unpack-reference.sh)
 if [ -z "$PROFILE_DIR" ] || [ ! -d "$PROFILE_DIR" ]; then
-  echo "ERROR: set PROFILE_DIR to your active X4 user profile (Documents/Egosoft/X4/<id>)."
-  echo "Tip: the active profile has the newest debug.txt / save timestamps."
-  exit 1
+  echo "ERROR: set PROFILE_DIR (or X4_PROFILE) to your active X4 user profile (Documents/Egosoft/X4/<id>)." >&2
+  echo "       Configure it in .claude/x4-paths.env, or pass PROFILE_DIR=... on the command line." >&2
+  echo "       Tip: the active profile has the newest debug.txt / save timestamps." >&2
+  exit 2
 fi
 
 mkdir -p "$OUT"
