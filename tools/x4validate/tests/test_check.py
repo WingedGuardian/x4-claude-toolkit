@@ -695,3 +695,113 @@ def test_no_dropped_overlay_means_no_degraded_skip(tmp_path, monkeypatch):
     report = _check.Report()
     _check.check_sel_resolution_one(f, mod, _merge.Config(reference=tmp_path / "ref"), report)
     assert not report.degraded
+
+
+# --- a dropped overlay must never be silent, at ANY build_effective site ------
+#
+# `MergeResult.skipped`'s own field comment states the contract: "Work NOT done:
+# overlays that could not be parsed and were left out of the tree. Without this
+# channel a malformed overlay is indistinguishable from an absent one, and the
+# resulting tree looks complete when it is not."
+#
+# It was honoured at 3 of 14 call sites in this module. REPRODUCED: two overlays
+# differing only by a missing </diff>, the mod under test unchanged --
+#     well-formed : errors=[]                               NOT CHECKED=[]  exit 0
+#     MALFORMED   : ['ware reference does not resolve: ..']  NOT CHECKED=[]  exit 1
+# so a THIRD-PARTY mod's unparseable file produced a gating error against an
+# unrelated mod with the reason erased. Under --tier b every installed extension
+# is an overlay, so one malformed file in a 125-mod install can do this.
+
+def test_a_dropped_overlay_is_reported_by_check_references(tmp_path, monkeypatch):
+    real = _merge.build_effective
+
+    def dropping(vpath, config, **kw):
+        got = real(vpath, config, **kw)
+        if vpath == _check.WARES_FILE:
+            got.skipped = list(got.skipped) + [
+                "ov_broken/libraries/wares.xml: malformed XML, overlay skipped"]
+        return got
+
+    monkeypatch.setattr(_merge, "build_effective", dropping)
+    mod = tmp_path / "mod"
+    _write(mod / "libraries/wares.xml", "<diff/>")
+    report = _check.Report()
+    _check.check_references(mod, _merge.Config(reference=tmp_path / "ref"), report)
+    assert report.degraded, (
+        "an overlay was dropped from the comparison tree and the report said nothing")
+    why = " ".join(s.why for s in report.degraded)
+    assert "ov_broken" in why, "the reason must NAME the overlay that was dropped"
+    assert "incomplete" in why
+
+
+def test_the_same_dropped_overlay_is_reported_ONCE(tmp_path, monkeypatch):
+    """`Report.skip` does not deduplicate, and one cause reaches several of these
+    builds through different vpaths. One cause, one line."""
+    real = _merge.build_effective
+
+    def dropping(vpath, config, **kw):
+        got = real(vpath, config, **kw)
+        got.skipped = list(got.skipped) + ["ov_broken/x.xml: malformed XML"]
+        return got
+
+    monkeypatch.setattr(_merge, "build_effective", dropping)
+    mod = tmp_path / "mod"
+    _write(mod / "libraries/wares.xml", "<diff/>")
+    report = _check.Report()
+    _check.check_references(mod, _merge.Config(reference=tmp_path / "ref"), report)
+    same = [s for s in report.skipped if "ov_broken/x.xml" in s.why]
+    assert len({(s.what, s.why) for s in same}) == len(same), \
+        "the same dropped overlay was reported more than once under one heading"
+
+
+def test_a_WELL_FORMED_overlay_set_produces_no_degraded_skip(tmp_path):
+    """The twin. A wiring that reported unconditionally would pass the tests above
+    while degrading every ordinary run."""
+    mod = tmp_path / "mod"
+    _write(mod / "libraries/wares.xml", "<diff/>")
+    report = _check.Report()
+    _check.check_references(mod, _merge.Config(reference=tmp_path / "ref"), report)
+    assert not any("could not be parsed" in s.why for s in report.skipped)
+
+
+def test_EVERY_build_effective_call_site_consults_the_skip_channel():
+    r"""The structural pin, and the point of this change.
+
+    The defect was not one call site, it was ELEVEN -- the same omission repeated
+    until it was the norm. A behavioural test covers whichever site it happens to
+    exercise; this one makes an unwired twelfth site impossible to add quietly.
+
+    Asserted over the AST, not a substring: a comment mentioning `skipped` would
+    satisfy a text search, which is exactly the failure mode CLAUDE.md #37 records
+    (`assert "FLAG" in text` satisfied by the comment that mentions FLAG).
+    """
+    import ast as _ast
+    src = Path(_check.__file__).read_text(encoding="utf-8")
+    tree = _ast.parse(src)
+
+    def calls_build_effective(node):
+        for n in _ast.walk(node):
+            if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Attribute) \
+                    and n.func.attr == "build_effective":
+                return True
+        return False
+
+    def consults_skips(node):
+        for n in _ast.walk(node):
+            if isinstance(n, _ast.Attribute) and n.attr == "skipped":
+                return True
+            if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name) \
+                    and n.func.id == "note_dropped_overlays":
+                return True
+        return False
+
+    offenders = []
+    for node in _ast.walk(tree):
+        if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        if calls_build_effective(node) and not consults_skips(node):
+            offenders.append("%s (line %d)" % (node.name, node.lineno))
+    assert not offenders, (
+        "these functions build an effective tree and never ask what was left out "
+        "of it, so a malformed overlay is indistinguishable from an absent one:\n  "
+        + "\n  ".join(offenders))

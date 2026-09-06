@@ -202,10 +202,12 @@ class EntityDefs:
         self._index: set[str] = set()
         for rel in (MACRO_INDEX, _resolve.COMPONENT_INDEX):
             merged = _merge.build_effective(rel, config, extra_overlays=self._extra)
+            note_dropped_overlays(merged, f"entity definitions ({rel})", self._report)
             if merged.tree is not None:
                 self._index |= _refs.macro_names(merged.tree)
         for rel in LIBRARY_DEFS:
             merged = _merge.build_effective(rel, config, extra_overlays=self._extra)
+            note_dropped_overlays(merged, f"entity definitions ({rel})", self._report)
             if merged.tree is not None:
                 self._index |= set(merged.tree.xpath("//macro/@name"))
                 self._index |= set(merged.tree.xpath("//component/@name"))
@@ -561,6 +563,60 @@ class Report:
 
     def skip(self, what: str, why: str, degraded: bool = False) -> None:
         self.skipped.append(Skipped(what, why, degraded))
+
+
+def note_dropped_overlays(merged, what: str, report: "Report | None") -> None:
+    """Wire `MergeResult.skipped` into the report. ONE implementation, on purpose.
+
+    `MergeResult.skipped`'s own field comment states the contract: *"Work NOT done:
+    overlays that could not be parsed and were left out of the tree. Without this
+    channel a malformed overlay is indistinguishable from an absent one, and the
+    resulting tree looks complete when it is not."*
+
+    It was honoured at 3 of the 14 `build_effective` call sites in this file. The
+    other 11 threw the list away, so an overlay belonging to a THIRD-PARTY mod that
+    would not parse produced gating findings against an UNRELATED mod, with the
+    reason erased. REPRODUCED with two overlays differing only by a missing
+    `</diff>`, the mod under test unchanged between runs:
+
+        overlay well-formed : errors=[]                              NOT CHECKED=[]  exit 0
+        overlay MALFORMED   : ['ware reference does not resolve: ..'] NOT CHECKED=[]  exit 1
+
+    and `_merge` had recorded it all along, as
+    `skipped=['ov_broken/libraries/wares.xml: malformed XML, overlay skipped ..']`.
+
+    Under `--tier b` -- the mode CLAUDE.md tells you to use for anything cross-mod
+    -- every installed extension is an overlay, so ONE malformed file anywhere in a
+    125-mod install can fabricate gating errors in a mod that has nothing to do
+    with it, and leave the reader no thread to pull.
+
+    DEGRADED, matching the three sites that already did this: the verdict is
+    computed against an incomplete tree, so the check's PREMISE is disabled rather
+    than one file. `README.md` names this exact case as a code 3 -- "an overlay that
+    would not parse so the comparison tree is incomplete". It was producing code 1.
+
+    MEASURED before landing: of the 111 files the installed set supplies at the
+    vpaths these call sites build, ZERO are malformed, so this changes no verdict
+    today. The 11 malformed documents in the corpus all sit under `tmp/`, `backup/`,
+    `md_debug/` or a non-active-language t-file -- paths the engine never opens and
+    the merge never loads (CLAUDE.md #29).
+
+    Deduplicated because `Report.skip` does not: the same dropped overlay reaches
+    several of these builds through different vpaths, and one cause should read as
+    one line.
+
+    A `None` report is the `EntityDefs` path, whose caller genuinely may not have
+    one. That is the only case allowed to drop the message, and it is the reason
+    that parameter is optional.
+    """
+    if report is None:
+        return
+    for msg in merged.skipped:
+        why = ("an overlay could not be parsed, so the comparison tree is "
+               "incomplete: %s" % msg)
+        if any(s.what == what and s.why == why for s in report.skipped):
+            continue
+        report.skip(what, why, degraded=True)
 
 
 def iter_diff_files(mod_dir: Path):
@@ -1024,6 +1080,7 @@ def check_references(mod_dir: Path, config: _merge.Config, report: Report) -> No
     """
     mod_overlay = [mod_dir]
     wares_merged = _merge.build_effective(WARES_FILE, config, extra_overlays=mod_overlay)
+    note_dropped_overlays(wares_merged, "ware-reference checks", report)
     ware_def_set = _refs.ware_defs(wares_merged.tree)
     # Free ride on the tree above: obtainability is a JOIN, not a scan. Only the
     # deprecated half ships -- MEASURED corpus-wide, 'no ware' is 71% of indexed
@@ -1137,8 +1194,9 @@ def check_text_sanity(mod_dir: Path, config: _merge.Config, report: Report) -> N
                                "X4 logs this during TextDB import", vpath, t.sourceline or 0)
 
 
-def _race_defs(config: _merge.Config, extra_overlays=None) -> set[str]:
+def _race_defs(config: _merge.Config, extra_overlays=None, report=None) -> set[str]:
     races = _merge.build_effective(RACES_FILE, config, extra_overlays=list(extra_overlays or []))
+    note_dropped_overlays(races, "race definitions", report)
     if races.tree is None:
         return set()
     return set(races.tree.xpath("//race/@id"))
@@ -1150,7 +1208,7 @@ def check_identity_values(mod_dir: Path, config: _merge.Config, report: Report) 
     Factions such as 'loanshark' are valid in owner/job contexts but invalid
     as makerrace values; the engine reports these as race-list import errors.
     """
-    races = _race_defs(config, [mod_dir])
+    races = _race_defs(config, [mod_dir], report)
     if not races:
         report.add("warn", "identity", f"could not resolve race definitions from {RACES_FILE}")
         return
@@ -1427,6 +1485,7 @@ def check_completeness(
         return
     mod_overlay = [mod_dir]
     wares = _merge.build_effective(WARES_FILE, config, extra_overlays=mod_overlay)
+    note_dropped_overlays(wares, "completeness", report)
     text_def_set = collect_text_defs(config, mod_overlay, report)
     macro_def_set = collect_macro_defs(config, mod_overlay, report)
     # EntityDefs, NOT macro_def_set -- the same correction check_references already
@@ -1701,6 +1760,7 @@ def check_script_validation_scope(mod_dir: Path, config: _merge.Config,
             continue
         seen.add(v.lower())
         base = _merge.build_effective(v, config)
+        note_dropped_overlays(base, "script validation scope", report)
         if base.tree is None:
             continue                      # brand-new file: no base to validate against
         schema_path, why_not = _xsd.schema_of(base.tree, lib, v)
@@ -1873,8 +1933,9 @@ def check_xsd(mod_dir: Path, config: _merge.Config, report: Report,
         report.add("info", cat, f.message, _relpath(f.file, mod_dir), f.line)
 
 
-def _faction_defs(config: _merge.Config, extra_overlays=None) -> set[str]:
+def _faction_defs(config: _merge.Config, extra_overlays=None, report=None) -> set[str]:
     f = _merge.build_effective(FACTIONS_FILE, config, extra_overlays=list(extra_overlays or []))
+    note_dropped_overlays(f, "faction definitions", report)
     if f.tree is None:
         return set()
     return set(f.tree.xpath("//faction/@id"))
@@ -1921,6 +1982,7 @@ def check_effective_schema(mod_dir: Path, config: _merge.Config, report: Report)
         seen.add(v.lower())
 
         base = _merge.build_effective(v, config)
+        note_dropped_overlays(base, f"schema check for {v}", report)
         if base.tree is None:
             new_files += 1  # brand-new file: nothing to difference against
             continue
@@ -1934,6 +1996,7 @@ def check_effective_schema(mod_dir: Path, config: _merge.Config, report: Report)
 
         before, why_not = _xsd.errors_against(base.tree, schema_path)
         merged = _merge.build_effective(v, config, extra_overlays=[mod_dir])
+        note_dropped_overlays(merged, f"schema check for {v}", report)
         if why_not or merged.tree is None:
             report.skip(f"schema check for {v}",
                         why_not or "the merged tree could not be built")
@@ -1946,8 +2009,8 @@ def check_effective_schema(mod_dir: Path, config: _merge.Config, report: Report)
 
         for msg in _xsd.introduced(before, after):
             if not defs:  # built once, and only if something actually needs it
-                defs = {"race": _race_defs(config, [mod_dir]),
-                        "faction": _faction_defs(config, [mod_dir])}
+                defs = {"race": _race_defs(config, [mod_dir], report),
+                        "faction": _faction_defs(config, [mod_dir], report)}
             if _xsd.open_lookup_ok(msg, defs):
                 suppressed += 1
                 continue
@@ -2050,7 +2113,9 @@ def reference_ready(config: _merge.Config, report: Report) -> bool:
                    "($X4_REFERENCE / --reference). Validation is meaningless without it.",
                    str(ref))
         return False
-    if _merge.build_effective(WARES_FILE, config).tree is None:
+    _ready = _merge.build_effective(WARES_FILE, config)
+    note_dropped_overlays(_ready, "reference readiness", report)
+    if _ready.tree is None:
         report.add("error", "reference",
                    f"reference tree at '{ref}' is empty or incomplete "
                    f"(base '{WARES_FILE}' not found) -- re-unpack the base game; "
