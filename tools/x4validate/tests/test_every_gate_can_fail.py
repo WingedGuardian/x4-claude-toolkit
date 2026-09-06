@@ -250,3 +250,97 @@ def test_the_four_floors_are_REACHABLE_not_just_present():
             for n in _ast.walk(tree))
         assert returns_two or raises_two, (
             "%s has no rc-2 path, so it cannot say 'could not check'" % name)
+
+
+# --- "can end non-zero" is NOT "can report a finding" ------------------------------
+#
+# `_failure_paths` counts ways to end non-zero, and rc 2 is one of them. But rc 2 is
+# "I could not check" -- the opposite of a finding. So a module whose ONLY non-zero
+# exit is a refusal satisfies the census above while being unable to report anything
+# it looked at, and `regress.py` is exactly that: it ends 2 when it has no mods to
+# sweep and 0 in every other case, so the parametrised test scored it green on the
+# strength of a refusal.
+#
+# MEASURED over all 29 gates with the census's own helper: 28 have a findings path,
+# and 2 can only refuse -- `_env.py` (a helper, not a gate) and `regress.py`.
+#
+# NAMED, never pattern-matched, for the reason NOT_A_GATE gives directly above: a
+# real gate must not be excused by accident. Adding a gate here is a decision
+# somebody makes in a diff, which is the whole point.
+REFUSAL_ONLY = {
+    "_env.py": "a helper, not a gate -- it exists to raise SystemExit(2) on behalf "
+               "of the gates that import it",
+    "regress.py": "DELIBERATELY advisory, and says so in its own words: 'there is no "
+                  "baseline here to regress against, so per-mod error counts are a "
+                  "report rather than a verdict'. Its one real failure mode is "
+                  "examining zero mods, which is rc 2. Giving it an rc 1 would mean "
+                  "inventing the baseline it says it does not have.",
+}
+
+
+def _nonzero_exit_codes(tree: ast.AST) -> set[int]:
+    """Every integer literal that can reach an exit, from a `return` or SystemExit."""
+    codes: set[int] = set()
+    for node in ast.walk(tree):
+        value = None
+        if isinstance(node, ast.Return):
+            value = node.value
+        elif (isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call)
+              and getattr(node.exc.func, "id", "") == "SystemExit" and node.exc.args):
+            value = node.exc.args[0]
+        elif isinstance(node, ast.Call) and node.args and (
+                getattr(node.func, "attr", "") in ("exit", "_exit")
+                or getattr(node.func, "id", "") in ("exit", "SystemExit")):
+            # `sys.exit(1 if bad else 0)` is the third spelling, and omitting it
+            # made this test flag `similar_audit.py` and `diff_truth.py` -- two
+            # gates that report findings perfectly well -- as unable to. A census
+            # that misses a spelling manufactures findings; that is the same
+            # defect it is looking for, pointed the other way.
+            value = node.args[0]
+        if value is None:
+            continue
+        # WALK the expression: `return 1 if fails else 0` is an IfExp, not a Constant.
+        # A census that only read Constants reported 8 gates as having no non-zero
+        # path at all -- which is how a re-implementation of this question goes wrong.
+        for c in ast.walk(value):
+            if isinstance(c, ast.Constant) and isinstance(c.value, int) and c.value:
+                codes.add(c.value)
+    return codes
+
+
+@pytest.mark.parametrize("path", sorted(p for p in GATES.glob("*.py")
+                                        if p.name not in NOT_A_GATE),
+                         ids=lambda p: p.name)
+def test_a_gate_can_report_a_FINDING_not_merely_refuse(path):
+    """The distinction the census above cannot make.
+
+    `run-gates.sh` judges on the exit code, and 2 means "not configured". A gate
+    that can only ever produce 2 is printed as a refusal forever and can never say
+    "I looked, and here is what is wrong" -- which is a different, quieter version
+    of the same defect: it is scored, it runs, and no finding it might have can
+    reach the operator.
+    """
+    codes = _nonzero_exit_codes(ast.parse(path.read_text(encoding="utf-8")))
+    findings = codes - {2}
+    # if/else, not an early `return`: a bare return inside a test is counted as a
+    # PASS and is invisible to the skip accounting -- CLAUDE.md #37, and this
+    # repo's own tests/test_no_bare_return_in_a_test.py caught this exact line.
+    if path.name in REFUSAL_ONLY:
+        assert codes and not findings, (
+            f"{path.name} is listed in REFUSAL_ONLY as refusal-only, but it now has a "
+            f"findings path {sorted(findings)}. That is good news -- remove it from the "
+            "list rather than leaving a stale excuse in place.")
+    else:
+        assert findings, (
+            f"{path.name} can end non-zero only with {sorted(codes)}, and 2 means "
+            "'could not check'. It can never report something it actually found. "
+            "Either give it a findings verdict, or add it to REFUSAL_ONLY with the "
+            "reason -- but not silently.")
+
+
+def test_the_refusal_only_list_names_only_REAL_modules():
+    """A stale name in an excuse list is an excuse that outlives its reason. Every
+    entry must still exist and still carry a reason."""
+    for name, why in REFUSAL_ONLY.items():
+        assert (GATES / name).is_file(), f"REFUSAL_ONLY names {name}, which is gone"
+        assert why.strip(), f"REFUSAL_ONLY[{name}] has no reason"

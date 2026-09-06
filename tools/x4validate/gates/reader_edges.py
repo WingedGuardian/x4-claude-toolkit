@@ -78,7 +78,8 @@ def main() -> int:
         check("empty file", enc_case("empty", b"", False))
 
         # ---- damaged archives ------------------------------------------
-        def cat_case(name: str, cat: bytes, dat: bytes):
+        def cat_case(name: str, cat: bytes, dat: bytes,
+                     want_members: int, want_rejected: int):
             def run():
                 d = tmp / name
                 d.mkdir(parents=True, exist_ok=True)
@@ -95,37 +96,57 @@ def main() -> int:
                         _cat.read_member(mem, verify=True)
                     except (OSError, ValueError):
                         bad += 1
-                return True, f"{len(vfs)} member(s) indexed, {bad} rejected on read"
+                # ASSERTED, not narrated. This returned True unconditionally, so
+                # the cell could only ever fail on an unhandled crash -- while this
+                # module's stated bar is "fail loudly or succeed correctly, NEVER
+                # SILENTLY RETURN SOMETHING WRONG", which is precisely the half it
+                # could not see. A stubbed reader inventing members out of a
+                # nonexistent directory scored ok here.
+                got = (len(vfs), bad)
+                want = (want_members, want_rejected)
+                return got == want, (
+                    f"{len(vfs)} member(s) indexed, {bad} rejected on read"
+                    + ("" if got == want else f"  -- EXPECTED {want}"))
             return run
 
         good_body = b"<diff/>"
         import hashlib
         md5 = hashlib.md5(good_body).hexdigest()
-        check("zero-byte .cat", cat_case("z", b"", b""))
-        check("truncated .cat line", cat_case("t", b"libraries/wares.xml 7", good_body))
+        # Expectations are the reader's MEASURED behaviour today, and every one of
+        # them is the right answer: a malformed index yields NO members, and an
+        # index that points at bad bytes yields a member that REFUSES on read.
+        check("zero-byte .cat", cat_case("z", b"", b"", 0, 0))
+        check("truncated .cat line",
+              cat_case("t", b"libraries/wares.xml 7", good_body, 0, 0))
         check("offset past end of .dat", cat_case(
-            "o", f"libraries/wares.xml 99999 0 {md5}\n".encode(), good_body))
+            "o", f"libraries/wares.xml 99999 0 {md5}\n".encode(), good_body, 1, 1))
         check("wrong md5 in index", cat_case(
-            "m", b"libraries/wares.xml 7 0 " + b"0" * 32 + b"\n", good_body))
+            "m", b"libraries/wares.xml 7 0 " + b"0" * 32 + b"\n", good_body, 1, 1))
         check("negative size", cat_case(
-            "n", f"libraries/wares.xml -5 0 {md5}\n".encode(), good_body))
-        check("garbage index text", cat_case("g", b"\x00\x01\x02 not an index\n", good_body))
+            "n", f"libraries/wares.xml -5 0 {md5}\n".encode(), good_body, 0, 0))
+        check("garbage index text",
+              cat_case("g", b"\x00\x01\x02 not an index\n", good_body, 0, 0))
 
         def dat_only():
             d = tmp / "datonly"
             d.mkdir(parents=True, exist_ok=True)
             (d / "ext_01.dat").write_bytes(b"orphan")
-            return True, f"{len(_cat.mod_vfs(d, packed_only=True))} member(s) (expected 0)"  # packed-ok
+            # The old text said "(expected 0)" and asserted nothing -- prose that
+            # reads exactly like a check. n IS the check now.
+            n = len(_cat.mod_vfs(d, packed_only=True))  # packed-ok
+            return n == 0, f"{n} member(s) (expected 0)"
         check(".dat with no .cat", dat_only)
 
         def mod_is_a_file():
             f = tmp / "not_a_dir"
             f.write_bytes(b"x")
-            return True, f"{len(_cat.mod_vfs(f, packed_only=True))} member(s) (expected 0)"  # packed-ok
+            n = len(_cat.mod_vfs(f, packed_only=True))  # packed-ok
+            return n == 0, f"{n} member(s) (expected 0)"
         check("mod path is a file", mod_is_a_file)
 
         def missing_dir():
-            return True, f"{len(_cat.mod_vfs(tmp / 'nope', packed_only=True))} member(s) (expected 0)"  # packed-ok
+            n = len(_cat.mod_vfs(tmp / 'nope', packed_only=True))  # packed-ok
+            return n == 0, f"{n} member(s) (expected 0)"
         check("mod dir does not exist", missing_dir)
 
         fails = [r for r in RESULTS if r[1] == "FAIL"]
