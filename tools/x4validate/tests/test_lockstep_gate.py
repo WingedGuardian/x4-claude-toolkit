@@ -291,3 +291,106 @@ def test_EVERY_declaration_in_a_file_is_compared_not_just_the_first(tmp_path):
     text = ls.committed(repo, "mods/probeB/ui.xml")
     found = [m.group(1) for m in ls.MOD_RE.finditer(text)]
     assert found == ["__x4live_dump", "__OLD_STALE_NAME"], found
+
+
+# --- and the WORKING TREE must not choose WHICH REPO is judged -------------------
+#
+# `candidate_ui_rels` fixed the POPULATION; selection was the third place the same
+# question is asked and it was still a pure GLOB:
+#
+#     shipped = cli_repo / "mods"
+#     if find_mod_uis(shipped):        # tree only
+#         mods = shipped
+#     else:
+#         mods = _env.mods_dir()       # a DIFFERENT repository
+#
+# So deleting or moving the shipped mods/ copy in the working tree silently switched
+# the gate to $X4_MODS, and a committed, disagreeing shipped ui.xml got rc 0 because
+# the gate went and judged something else entirely. F87's shape a third time: true of
+# the verdict, false of the population, and false of the SUBJECT.
+
+def test_a_tree_absent_but_COMMITTED_shipped_mod_is_still_the_SUBJECT(tmp_path):
+    """The repo carries a shipped mods/ in HEAD; only the tree copy is gone.
+
+    It must still be the thing under test -- not $X4_MODS, whatever that holds.
+    """
+    repo = _mkrepo(tmp_path / "shipped", {
+        "mods/probeA/ui.xml": UI % "__x4live_dump",
+    })
+    (repo / "mods" / "probeA" / "ui.xml").unlink()
+    assert not ls.find_mod_uis(repo / "mods"), (
+        "precondition: the tree-only glob must now find nothing, or this proves nothing")
+    rels, _ = ls.candidate_ui_rels(repo, repo / "mods")
+    assert rels == ["mods/probeA/ui.xml"], (
+        "selection consulted the tree only, so a repo that SHIPS a mod would be "
+        "passed over in favour of $X4_MODS: %s" % rels)
+
+
+def test_selection_still_falls_through_when_the_repo_SHIPS_no_mod(tmp_path):
+    """The twin. A repo with no shipped mods/ in either git or the tree must still
+    fall through to the configured directory -- that fallback is what the private
+    dev workspace runs on, and breaking it would trade one false pass for another."""
+    repo = _mkrepo(tmp_path / "nomods", {"README.md": "no mod here\n"})
+    rels, _ = ls.candidate_ui_rels(repo, repo / "mods")
+    assert rels == [], (
+        "a repo shipping no mod must select nothing, so the caller falls through: %s"
+        % rels)
+
+
+def test_the_two_selection_sources_DISAGREE_only_in_the_direction_that_matters(tmp_path):
+    """States the property directly, so the next reader does not have to infer it:
+    git-or-tree is a SUPERSET of tree-alone. Selection may therefore only ever
+    become MORE willing to judge the shipped repo, never less."""
+    repo = _mkrepo(tmp_path / "both", {
+        "mods/kept/ui.xml": UI % "__x4live_dump",
+        "mods/gone/ui.xml": UI % "__x4live_dump",
+    })
+    (repo / "mods" / "gone" / "ui.xml").unlink()
+    tree_only = {p.relative_to(repo).as_posix() for p in ls.find_mod_uis(repo / "mods")}
+    both, _ = ls.candidate_ui_rels(repo, repo / "mods")
+    assert tree_only <= set(both), (tree_only, both)
+    assert "mods/gone/ui.xml" in both and "mods/gone/ui.xml" not in tree_only
+
+
+def test_a_tree_absent_SHIPPED_mod_is_judged_not_passed_over_for_X4_MODS(
+        tmp_path, monkeypatch, capsys):
+    r"""THE SELECTION DEFECT, end to end through `main()`.
+
+    The repo SHIPS `mods/probe/ui.xml` and its committed blob DISAGREES with the CLI.
+    Only the working-tree copy is missing -- deleted, moved, or simply a checkout
+    where it was never materialised. `$X4_MODS` points at a repo that AGREES.
+
+    Pre-fix the selection was a pure glob over the tree, found nothing, and quietly
+    judged `$X4_MODS` instead: rc 0, "committed mod declaration(s) agree", while the
+    disagreeing blob is the one that ships. The gate looked, and looked at the wrong
+    repository.
+
+    The three tests above pin `candidate_ui_rels`, which was already correct -- they
+    pass with or without this fix. This one is the twin that could go red, and it
+    does: it is the only one that reaches the selection.
+    """
+    cli_repo = _repo(tmp_path / "toolkit")
+    (cli_repo / "x4validate").mkdir(exist_ok=True)
+    (cli_repo / "x4validate" / "_livedump.py").write_text(
+        CLI % "__x4live_dump", encoding="utf-8")
+    shipped = cli_repo / "mods" / "probe"
+    shipped.mkdir(parents=True, exist_ok=True)
+    (shipped / "ui.xml").write_text(UI % "__OLD_STALE_NAME", encoding="utf-8")
+    _commit(cli_repo)
+    (shipped / "ui.xml").unlink()          # committed, tree-absent
+
+    other = _repo(tmp_path / "dev")        # what $X4_MODS points at: it AGREES
+    d = other / "someprobe"
+    d.mkdir(exist_ok=True)
+    (d / "ui.xml").write_text(UI % "__x4live_dump", encoding="utf-8")
+    _commit(other)
+
+    monkeypatch.setattr(ls, "ROOT", cli_repo)
+    monkeypatch.setattr(ls._env, "mods_dir", lambda: other)
+
+    rc = ls.main()
+    err = capsys.readouterr().err
+    assert rc == 1, (
+        "the gate passed a repo whose SHIPPED mod half disagrees, because the "
+        "working tree was consulted to decide which repository to judge (rc=%s)" % rc)
+    assert "__OLD_STALE_NAME" in err or "MISMATCH" in err, err

@@ -199,7 +199,18 @@ def main(argv=None) -> int:
     # on no machine at all. The configured directory stays the fallback, which is what
     # the dev workspace needs.
     shipped = cli_repo / "mods"
-    if find_mod_uis(shipped):
+    # ...AND NEITHER MAY THE WORKING TREE DECIDE **WHICH REPO** IS JUDGED.
+    # This asked `find_mod_uis(shipped)`, a pure GLOB, so deleting or moving the
+    # shipped mods/ copy in the tree silently switched the gate to $X4_MODS -- a
+    # DIFFERENT repository -- and a committed, disagreeing shipped ui.xml then got
+    # rc 0 because the gate went and judged something else. `candidate_ui_rels`
+    # already learned this lesson for the POPULATION (see its docstring: "true of
+    # the VERDICT and false of the POPULATION"); selection is the third place the
+    # same question is asked, and it was still tree-only.
+    #
+    # Same helper, so there is ONE answer to "does this repo carry a shipped mod".
+    shipped_rels, _shipped_git = candidate_ui_rels(cli_repo, shipped)
+    if shipped_rels:
         mods = shipped
     else:
         mods = _env.mods_dir()                 # exits 2 by itself if unconfigured

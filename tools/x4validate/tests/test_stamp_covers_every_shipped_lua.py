@@ -44,7 +44,18 @@ def _shipped_lua_with_a_build_line() -> list[pathlib.Path]:
     if not MODS.is_dir():
         return []
     out = []
-    for p in sorted(MODS.glob("*/ui/*.lua")):
+    # THE WHOLE SHIPPED TREE, not the stamper's own glob. This used
+    # `*/ui/*.lua` -- byte-identical to `mod_lua_files()` -- so the "independent"
+    # denominator could only ever contain files the stamper already covered,
+    # which is the shape this function's own docstring calls a check that cannot
+    # fail. A lua ONE DIRECTORY DEEPER (`*/ui/lib/nested.lua`) carrying a stale
+    # BUILD line was unstamped, absent from this expectation, and only PRINTED
+    # by the stamper's announcement -- so `--check` exited 0 and both tests
+    # passed over it.
+    #
+    # MEASURED 2026-09-06: 2 shipped .lua, 0 outside the narrow glob -- so
+    # widening is free today and would not have been once a nested file existed.
+    for p in sorted(q for q in MODS.glob("*/**/*.lua") if q.is_file()):
         if "local BUILD" in p.read_text(encoding="utf-8", errors="replace"):
             out.append(p)
     return out
@@ -76,3 +87,49 @@ def test_it_finds_MORE_than_the_primary_file():
     assert any("live_query" not in p.name for p in got), (
         "every file returned is a live_query match -- mod_lua_files() has collapsed "
         "into mod_lua()")
+
+
+def test_a_lua_ONE_DIRECTORY_DEEPER_is_in_the_expectation(tmp_path, monkeypatch):
+    """The twin for the widened denominator, on a synthetic tree.
+
+    The stamper covers `*/ui/*.lua`. A file at `*/ui/lib/*.lua` carrying a BUILD line
+    is unstamped and unchecked; the stamper only PRINTS it as NOT COVERED and still
+    exits 0. Before the widening this expectation used the stamper's own glob, so the
+    nested file was absent from both sides and the disagreement could not be seen.
+
+    Asserted as the SET DIFFERENCE, so it states the direction: the expectation must
+    be a strict superset of the stamped glob whenever a nested file exists.
+    """
+    import test_stamp_covers_every_shipped_lua as m
+    mods = tmp_path / "mods"
+    (mods / "probe" / "ui" / "lib").mkdir(parents=True)
+    (mods / "probe" / "ui" / "top.lua").write_text(
+        'local BUILD = "aaaaaaaa"\n', encoding="utf-8")
+    (mods / "probe" / "ui" / "lib" / "nested.lua").write_text(
+        'local BUILD = "bbbbbbbb"\n', encoding="utf-8")
+    monkeypatch.setattr(m, "MODS", mods)
+
+    expected = {p.name for p in m._shipped_lua_with_a_build_line()}
+    narrow = {p.name for p in mods.glob("*/ui/*.lua")}
+    assert "nested.lua" in expected, (
+        "a shipped lua one directory deeper is invisible to the expectation, so the "
+        "stamper and its denominator agree by construction: %s" % sorted(expected))
+    assert "nested.lua" not in narrow, (
+        "precondition: the stamper's own glob must NOT see it, or this proves nothing")
+    assert narrow < expected, (narrow, expected)
+
+
+def test_the_expectation_does_not_invent_files_without_a_BUILD_line(tmp_path, monkeypatch):
+    """The other twin. Widening the glob must not start demanding a stamp on every
+    lua in the tree -- only those that actually carry a BUILD line, which is the
+    stamper's own contract ("a shipped lua with no BUILD line is outside this gate
+    entirely")."""
+    import test_stamp_covers_every_shipped_lua as m
+    mods = tmp_path / "mods"
+    (mods / "probe" / "ui" / "lib").mkdir(parents=True)
+    (mods / "probe" / "ui" / "top.lua").write_text(
+        'local BUILD = "aaaaaaaa"\n', encoding="utf-8")
+    (mods / "probe" / "ui" / "lib" / "helper.lua").write_text(
+        "-- no build line here\nreturn {}\n", encoding="utf-8")
+    monkeypatch.setattr(m, "MODS", mods)
+    assert {p.name for p in m._shipped_lua_with_a_build_line()} == {"top.lua"}
