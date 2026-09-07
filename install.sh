@@ -149,6 +149,23 @@ MISSING=""
 #: they drift, and the whole defect here was one of the passes not running.
 X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/x4validate/.mutation-probe-pristine"
 
+#: Per-machine files that must NEVER travel from the source: they hold THIS
+#: machine paths and secrets, and the destination copy is the user own.
+#:
+#: Distinct from X4_COPY_PRUNE, and the difference is the whole point: a pruned
+#: path is also DELETED from the destination, which is right for a stale .venv and
+#: catastrophic for a config. These are skipped on the way IN and left alone on
+#: the way OUT.
+#:
+#: This replaces a backup-then-overwrite-then-restore round trip on the same two
+#: files. That round trip had two defects and both are removed rather than fixed:
+#: it wrote a file it never intended to change (so `x4lock`, which the README
+#: tells users to run, made the whole install fail with a bare `cp: Permission
+#: denied` on item 1 of 16), and its restore sat 53 lines after its backup with
+#: no trap between them, so any failure in the copy loop skipped the restore and
+#: left an orphaned .bak. Not copying a file cannot fail to restore it.
+X4_KEEP_LOCAL=".claude/x4-paths.env .claude/settings.local.json"
+
 #: Copy $SRC/REL to DEST/REL, never descending into a pruned relative path.
 #:
 #: The virtualenv used to be copied in full (1,407 files, 38 MB) and deleted on
@@ -172,7 +189,7 @@ copy_item() {   # copy_item REL DEST
   # variable", which is how the upgrade case failed the moment this was added.
   local rel="$1" dest="$2" junk needs_walk=0 child src
   src="$SRC/$rel"
-  for junk in $X4_COPY_PRUNE; do
+  for junk in $X4_COPY_PRUNE $X4_KEEP_LOCAL; do
     [ "$junk" = "$rel" ] && return 0
     case "$junk" in "$rel"/*) needs_walk=1 ;; esac
   done
@@ -208,24 +225,6 @@ copy_toolkit() {
   # worse than saying nothing at all.
   local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
   local keep
-  # A FAILED BACKUP IS FATAL, because the restore branch below infers "this file did
-  # not exist before" from "no .bak-$stamp is here". With `|| true` those two became
-  # the same fact: a cp that failed meant the copy loop overwrote your file with the
-  # source machine's copy, no backup existed, and the `rm -f` at the bottom then
-  # DELETED it -- silently, with nothing printed. We KNOW the file existed; that
-  # knowledge must not be re-derived from a proxy that cannot tell the two apart.
-  # `write_paths_env` already applies this rule and says why: "A backup that silently
-  # did not happen is worse than none."
-  for keep in settings.local.json x4-paths.env; do
-    [ -f "$dest/.claude/$keep" ] || continue
-    if ! cp "$dest/.claude/$keep" "$dest/.claude/$keep.bak-$stamp" 2>/dev/null; then
-      echo "ERROR: could not back up your existing $keep in $dest/.claude/." >&2
-      echo "       Refusing to continue: the upgrade would overwrite it and the" >&2
-      echo "       restore step cannot tell a failed backup from a file that was" >&2
-      echo "       never there. Nothing has been changed." >&2
-      exit 1
-    fi
-  done
   # `mods` carries the game extension x4live needs (README: "copy that folder into
   # {game}/extensions/"). Omitting it shipped a documented instruction pointing at a
   # directory the installer never created.
@@ -260,32 +259,122 @@ copy_toolkit() {
   for junk in $X4_COPY_PRUNE; do
     rm -rf "$dest/$junk" 2>/dev/null || true
   done
-
-  # PUT THE USER'S BACK. Whatever the copy just landed here came from the SOURCE
-  # machine -- its paths, its Nexus key -- and has no business on this one. These
-  # two files are gitignored precisely because they are per-machine.
+  # THE BACKUP/RESTORE ROUND TRIP IS GONE, not repaired. These two files are now
+  # in X4_KEEP_LOCAL, so the copy never touches them -- and a file that is never
+  # overwritten needs no backup and no restore.
   #
-  # PRESERVED, not merely archived. The previous version backed the file up and
-  # then DELETED it, so every upgrade silently reverted the live config and the
-  # user had to know to go looking in a .bak. setup.sh only recreates
-  # settings.local.json when it is ABSENT, so keeping it here is what makes an
-  # upgrade non-destructive rather than merely recoverable.
-  for keep in settings.local.json x4-paths.env; do
-    if [ -f "$dest/.claude/$keep.bak-$stamp" ]; then
-      cp "$dest/.claude/$keep.bak-$stamp" "$dest/.claude/$keep"
-      echo "  [note] kept your existing $keep (backup: $keep.bak-$stamp)"
-    else
-      # Nothing was here before, so anything present now arrived from the source.
-      rm -f "$dest/.claude/$keep" 2>/dev/null || true
-    fi
-  done
+  # Removing it fixes two defects at once rather than handling them. The restore
+  # sat 53 lines after the backup with NO trap between, so any failure in the copy
+  # loop skipped it and left an orphaned .bak; and the restore itself WROTE to the
+  # config, so a config the user had locked (as README instructs) failed the
+  # install -- at the restore, after the copy had already succeeded.
+  #
+  # MEASURED 2026-09-07: with the copy skipped but the round trip still present,
+  # the upgrade still died with `cp: cannot create regular file .../x4-paths.env:
+  # Permission denied` -- the restore, not the copy. Half the fix was no fix.
   [ -n "$MISSING" ] && echo "  [note] not in the source, so not copied:$MISSING"
   return 0
 }
 
-write_paths_env() {  # write_paths_env TOOLKIT_DIR
-  refuse_if_dry_run "writing the path config into" "$1/.claude/x4-paths.env"
+#: The key=value lines write_paths_env OWNS, as it would write them now.
+#: Factored out so the precondition below and the writer cannot disagree about
+#: what "would change" means -- two renderings of one rule is the defect this
+#: installer already carries a comment about elsewhere.
+#: HOISTED to file scope. It used to be defined INSIDE write_paths_env, which
+#: means it does not exist until that function has been entered -- so the
+#: precondition check above, which runs BEFORE any writing, called a function
+#: that was not there yet. Bash reports `command not found`, the substitution
+#: yields an empty string, every rendered value comes out blank, and the
+#: comparison therefore ALWAYS differs: the check refused every upgrade,
+#: including the ones it should have waved through. A helper two callers need
+#: cannot live inside one of them.
+_esc_env_value() {
+  local v="$1"
+  v="${v%/}"                       # trailing separator, either dialect
+  v="${v%\\}"
+  v="${v//\\/\\\\}"                # backslashes FIRST, or we double the ones added below
+  v="${v//\"/\\\"}"
+  v="${v//\$/\\\$}"
+  v="${v//\`/\\\`}"
+  printf '%s' "$v"
+}
+
+_owned_lines_new() {   # _owned_lines_new TOOLKIT_DIR
+  local t="$1"
+  echo "X4_TOOLKIT=\"$(_esc_env_value "$t")\""
+  [ -n "$GAME" ]    && echo "X4_GAME=\"$(_esc_env_value "$GAME")\""
+  echo "X4_REFERENCE=\"$(_esc_env_value "${REFERENCE:-$t/reference}")\""
+  [ -n "$PROFILE" ] && echo "X4_PROFILE=\"$(_esc_env_value "$PROFILE")\""
+  [ -n "$PROFILE" ] && echo "X4_DEBUGLOG=\"$(_esc_env_value "$PROFILE")/debug.txt\""
+  [ -n "$MODS" ]    && echo "X4_MODS=\"$(_esc_env_value "$MODS")\""
+  echo "X4_EXTENSIONS=\"$(_esc_env_value "${EXTENSIONS:-${GAME:+$GAME/extensions}}")\""
+  [ -n "$XRCAT" ]   && echo "XRCATTOOL=\"$(_esc_env_value "$XRCAT")\""
+  return 0
+}
+
+#: The same keys as they stand in the file today. Comments and carried keys are
+#: excluded deliberately: carried keys come FROM the file so they can never
+#: differ, and a timestamp header changes on every run, which would make every
+#: upgrade look like a change and defeat the whole check.
+_owned_lines_old() {   # _owned_lines_old CONFIG_FILE
+  local f="$1" line key
+  [ -f "$f" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in '#'*|'') continue ;; *=*) key="${line%%=*}" ;; *) continue ;; esac
+    case " X4_TOOLKIT X4_GAME X4_REFERENCE X4_PROFILE X4_DEBUGLOG X4_MODS X4_EXTENSIONS XRCATTOOL " in
+      *" $key "*) echo "$line" ;;
+    esac
+  done < "$f"
+  return 0
+}
+
+#: PRECONDITION, checked before ANY file is written and in dry-run too.
+#:
+#: `x4lock` marks the path config read-only and README tells users to run it, so
+#: the documented upgrade path met a bare `cp: Permission denied` on item 1 of 16
+#: -- after the copy had already begun, with no statement of what had landed.
+#: MEASURED 2026-09-07 on a real install and reduced to a fixture.
+#:
+#: Two outcomes, and the split is the point. An upgrade that does not need to
+#: CHANGE the config never writes it, so the lock is irrelevant and the install
+#: proceeds. An upgrade that genuinely must change it REFUSES, up front, naming
+#: the unlock command -- because an installer that silently unlocked would defeat
+#: the mechanism the user deliberately turned on.
+precheck_config() {   # precheck_config TOOLKIT_DIR
   local t="$1" f="$1/.claude/x4-paths.env"
+  [ -f "$f" ] || return 0                      # nothing there to protect
+  [ "$(_owned_lines_old "$f")" = "$(_owned_lines_new "$t")" ] && return 0
+  [ -w "$f" ] && return 0
+  echo                                                                        >&2
+  echo "REFUSING: your path config must change, and it is READ-ONLY."         >&2
+  echo "      $f"                                                             >&2
+  echo                                                                        >&2
+  echo "  This is x4lock doing its job -- README tells you to run it, and it"  >&2
+  echo "  cannot tell an installer from any other process that writes here."  >&2
+  echo "  Nothing has been changed."                                          >&2
+  echo                                                                        >&2
+  echo "  Unlock, re-run this installer, then lock again:"                    >&2
+  echo "      python scripts/x4lock.py unlock"                                >&2
+  echo "      <re-run this command>"                                          >&2
+  echo "      python scripts/x4lock.py lock"                                  >&2
+  echo                                                                        >&2
+  echo "  (An upgrade that does NOT change your paths does not need this: it" >&2
+  echo "   leaves the config untouched and the lock never applies.)"          >&2
+  exit 1
+}
+
+write_paths_env() {  # write_paths_env TOOLKIT_DIR
+  local t="$1" f="$1/.claude/x4-paths.env"
+  # NOTHING TO CHANGE, NOTHING TO WRITE. An upgrade that resolves the same
+  # paths used to rewrite this file anyway -- which meant a config the user
+  # had locked (as README instructs) failed the whole install for a write
+  # that would have changed nothing, and a config with hand-written COMMENTS
+  # lost them on every run, because only key=value lines are carried over.
+  if [ -f "$f" ] && [ "$(_owned_lines_old "$f")" = "$(_owned_lines_new "$t")" ]; then
+    echo "  [note] $f already matches these paths; left untouched"
+    return 0
+  fi
+  refuse_if_dry_run "writing the path config into" "$1/.claude/x4-paths.env"
   mkdir -p "$1/.claude"
 
   # BACKED UP HERE, not at the call sites. `copy_toolkit` backs this file up and puts it
@@ -317,17 +406,6 @@ write_paths_env() {  # write_paths_env TOOLKIT_DIR
   # never closes; `set -a; . "$cfg"` aborts on it and EVERY X4_* comes out unset while
   # the installer reports success. Windows tab-completion appends that backslash, and a
   # drive root is one.
-  _esc_env_value() {
-    local v="$1"
-    v="${v%/}"                       # trailing separator, either dialect
-    v="${v%\\}"
-    v="${v//\\/\\\\}"                # backslashes FIRST, or we double the ones added below
-    v="${v//\"/\\\"}"
-    v="${v//\$/\\\$}"
-    v="${v//\`/\\\`}"
-    printf '%s' "$v"
-  }
-
   # KEYS THIS FUNCTION DOES NOT OWN ARE CARRIED OVER. setup.sh tells the user to keep
   # X4_NEXUS_KEY in this file, and the file's own header says "edit freely" -- yet every
   # upgrade rebuilt it from scratch, so both were silently reverted and the key survived
@@ -699,6 +777,7 @@ case "$METHOD" in
     # Only when a COPY would actually happen. Re-running from inside the toolkit
     # folder overwrites nothing, so it needs no direction.
     if ! same_dir "$SRC" "$TOOLKIT"; then
+      precheck_config "$TOOLKIT"
       require_direction "$TOOLKIT" "$GAME_NAMED"
       announce_copy_plan
       copy_toolkit "$TOOLKIT"
@@ -711,6 +790,7 @@ case "$METHOD" in
     TOOLKIT="$(strip_trailing_sep "$TOOLKIT")"
     announce_target "$TOOLKIT"
     if ! same_dir "$SRC" "$TOOLKIT"; then
+      precheck_config "$TOOLKIT"
       require_direction "$TOOLKIT" "$TOOLKIT_NAMED"
       announce_copy_plan
       copy_toolkit "$TOOLKIT"
