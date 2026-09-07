@@ -198,8 +198,17 @@ from x4validate import _check, _merge
 # Verified per item BEFORE re-baselining: the gate's own check run against
 # Station_ink alone reports pairs=6 gating=0 advisory=0 (was gating=1).
 #
-# PER-MOD TABLE AS OF 2026-08-25 (42 flagged; sums verified = 60 gating,
-# 69 advisory, matching the totals above). Diff against this on the next drift.
+# PER-MOD TABLE AS OF 2026-08-25 (41 rows; sums verified = 59 gating, 69
+# advisory). ⚠ THE TABLE IS THE 2026-08-25 STATE AND THE CONSTANTS ARE NOT:
+# EXPECT_ERR is now 77 and EXPECT_INFO 71, and the vro row below still reads 5
+# gating where KNOWN_REAL['vro'] is 20. Diff against it for SHAPE -- which mod
+# moved -- not for totals.
+#
+# The header said '42 flagged; sums verified = 60 gating, 69 advisory' until
+# 2026-09-06. Parsed from the right (this file's own awk NF==4 warning), the
+# rows are 41 / 59 / 69, so it disagreed with the table beneath it. The
+# 2026-09-06 note below fixed the OTHER copy of the same sentence and missed
+# this one; the release reviewer found the survivor.
 #     arck_job_registry                       0 gating   1 advisory
 #     battle_repair_support                   0 gating   1 advisory
 #     cpsdo_faction                          14 gating   1 advisory
@@ -287,7 +296,9 @@ from x4validate import _check, _merge
 #
 # It lives in `AUDIT-2026-08.md` (dev-only), § "Per-mod schema baseline". Diff against THAT
 # next time instead of reasoning from memory. Its columns sum to the constants below, which
-# is what makes it an audit rather than a note: pairs 178, gating 59, advisory 69.
+# is what makes it an audit rather than a note: pairs 178, gating 59, advisory 69
+# AS OF 2026-08-25. Those two figures are now 77 and 71 (EXPECT_ERR/EXPECT_INFO);
+# the 2026-09-06 re-baseline moved them and this sentence was not re-pinned.
 #
 # ⚠ CORRECTED 2026-09-06: this paragraph read "74 mods ... 42 flagged; sums verified =
 # 60 gating, 69 advisory" while the table above it has 41 rows summing to 59/69 — the

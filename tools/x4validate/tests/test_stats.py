@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+
 from lxml import etree
 
 from x4validate import _stats, _merge
@@ -335,3 +337,82 @@ def test_a_sel_that_matches_NOTHING_is_still_counted_not_silently_dropped(tmp_pa
        + ']/@price_average">1</replace></diff>')
     assert _stats.candidate_wares(cand, _base_tree()) == {}
     assert _stats.unattributed_ware_ops(cand, _base_tree()) == 1
+
+
+# ---------------- the v3.1.0 release review, group B2 ------------------------------
+# Two IMPORTANT findings, both IN-ARC, both in the sel=-to-ware feature itself. The
+# existing tests could not have caught either: the value test used a diff with NO
+# <ware> payload (so `out` was empty when setdefault ran and it behaved like `[]=`),
+# and both render_wares call sites passed an EMPTY comparison list.
+
+
+def test_a_ware_ADDED_then_REPLACED_reports_the_value_the_MOD_LEAVES(tmp_path):
+    """Finding 1. setdefault let the PAYLOAD win over the MUTATED tree, so the
+    X4_Customizer chaining idiom (add, then replace the same ware -- gotcha #17)
+    reported the INTERMEDIATE price. The reviewer measured an add at 50 followed by a
+    replace to 500000 reporting 50: "~33th percentile" where the truth is "PRICIER
+    than every same-group peer"."""
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml",
+       '<diff>'
+       '<add sel="/wares"><ware id="newware" group="minerals">'
+       '<price average="50"/></ware></add>'
+       '<replace sel="//ware[@id=' + chr(39) + 'newware' + chr(39)
+       + ']/price/@average">500000</replace>'
+       '</diff>')
+    got = _stats.candidate_wares(cand, _base_tree())
+    assert "newware" in got
+    assert got["newware"].price_avg == 500000.0, (
+        "reported %r -- the pre-modification value, not what the mod leaves"
+        % got["newware"].price_avg)
+
+
+def test_the_NOT_CHECKED_disclosure_survives_a_NON_EMPTY_comparison():
+    """Finding 2. The disclosure was gated on `not comparisons`, which was true when
+    an unattributable mod produced no comparisons at all. Resolving sel= made
+    comparisons non-empty for exactly those mods -- zeros 5 -> 1 while FIVE still
+    carry residue -- so 4 of 5 lost the disclosure to the fix meant to answer them."""
+    c = _stats.WareComparison(
+        ware=_stats.Ware(id="ore", group="minerals", transport="container",
+                         volume=1, price_min=90.0, price_avg=100.0,
+                         price_max=110.0),
+        peer_group="minerals", peer_count=3, peer_price_min=40.0,
+        peer_price_median=100.0, peer_price_max=200.0, percentile=50.0)
+    out = _stats.render_wares([c], unattributed=7)
+    assert "NOT CHECKED" in out, "the residue vanished once there were results to show"
+    assert "7 op(s)" in out
+    assert "ore" in out, "and the comparison itself must still be rendered"
+
+
+def test_an_empty_comparison_with_no_residue_still_says_it_changes_nothing():
+    """The twin. A genuine absence must keep reading as one -- turning every empty
+    result into NOT CHECKED is the same conflation in the other direction."""
+    assert _stats.render_wares([], 0) == "candidate introduces/changes no wares."
+
+
+def test_the_disclosure_no_longer_claims_replace_and_remove_are_invisible():
+    """Finding 3. The message still told users this tool reads a ware only from an
+    <add>ed <ware> element, which stopped being true when the feature landed."""
+    out = _stats.render_wares([], unattributed=3)
+    assert "NOT CHECKED" in out
+    assert "invisible" not in out, "the message outlived the limitation it described"
+    assert "ambiguous selector" in out or "Skipping node" in out
+
+
+def test_the_RESOLUTION_tree_takes_the_ACTIVE_set_not_the_installed_one():
+    """Finding 4, asserted STRUCTURALLY (gotcha #37) rather than by installing a
+    disabled mod: the CLI must ask for scope="active" when building the tree a
+    candidate's selectors resolve against, because that models what the ENGINE loads
+    (CLAUDE.md #24), while the comparison POOL stays "installed"."""
+    import inspect
+    src = inspect.getsource(_stats.main)
+    tree = ast.parse(src.lstrip())
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call)
+             and getattr(n.func, "id", "") == "effective_wares"]
+    assert len(calls) == 2, "expected a pool build and a resolution build"
+    scopes = []
+    for c in calls:
+        kw = {k.arg: k for k in c.keywords}
+        scopes.append(kw["scope"].value.value if "scope" in kw else "installed")
+    assert scopes == ["installed", "active"], scopes

@@ -2477,8 +2477,6 @@ class TestTheModsRootIsSearchable(unittest.TestCase):
         self.assertTrue(F('grep -rn faction ' + DQ + REF + DQ)["search_rooted_reference"])
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 # --------------------------------------------------------------- resolve size ceiling
 # MEASURED 2026-09-06: a value that names its own variable makes resolve() grow
 # MULTIPLICATIVELY -- x9 per pass on the real command, over the 5 passes the loop
@@ -2814,3 +2812,72 @@ def test_a_wrapper_flag_does_not_swallow_an_ORDINARY_command():
     f = F("env -u X4_GAME ls -la")
     assert f["rm_hits_game"] is not True
     assert H._verb_name(H.verb("env -u X4_GAME ls -la")) == "ls"
+
+# ------------- the v3.1.0 release review, group A: a quoted token in verb position
+# `for t, quoted in tokens(seg): if quoted: return t` fired BEFORE the assignment,
+# wrapper and flag-value skips, so quoting ONE token in the prefix flipped 7 of 9
+# verb-keyed rules from fire to allow. PRE-ARC (same ordering at v3.0.0), and it also
+# defeated this arc's own _WRAPPER_VALUE_OPTS fix -- one quote was enough.
+
+
+def test_a_quoted_ASSIGNMENT_prefix_does_not_become_the_verb():
+    """`FOO="bar" rm -rf <game>` resolved its verb to `foo=bar`."""
+    for pre in ('FOO="bar" ', "FOO='bar' ", 'A=1 B="2" ',
+                'PYTHONIOENCODING="utf-8" '):
+        assert H._verb_name(H.verb(pre + "rm -rf /x")) == "rm", pre
+
+
+def test_a_quoted_WRAPPER_VALUE_does_not_become_the_verb():
+    """One quote defeated _WRAPPER_VALUE_OPTS, because the short-circuit was first."""
+    for pre in ('env -u "X4_GAME" ', 'sudo -u "root" ', 'timeout -s "KILL" 5 '):
+        assert H._verb_name(H.verb(pre + "rm -rf /x")) == "rm", pre
+
+
+def test_those_quoted_spellings_still_reach_the_game_HARD_BLOCK():
+    """The consequence: a wrong verb takes every verb-keyed rule with it at once."""
+    for pre in ('FOO="bar" ', 'env -u "X4_GAME" ', 'sudo -u "root" '):
+        cmd = pre + 'rm -rf "' + ROOTS["game"] + '"'
+        assert F(cmd)["rm_hits_game"] is True, pre
+
+
+def test_a_genuinely_QUOTED_COMMAND_NAME_still_resolves():
+    """The twin. Removing the short-circuit must not lose a quoted command name --
+    it now falls through to the ordinary return instead of jumping the queue."""
+    assert H._verb_name(H.verb('"my prog" -x')) == "my prog"
+
+
+def test_a_quoted_ORDINARY_command_is_not_newly_blocked():
+    """And nothing innocent starts firing."""
+    assert F('"ls" -la')["rm_hits_game"] is not True
+    assert H._verb_name(H.verb('"ls" -la')) == "ls"
+
+
+def load_tests(loader, standard_tests, pattern):
+    """unittest.main() collects TestCase SUBCLASSES ONLY, so every module-level
+    `def test_*` in this file was invisible to it.
+
+    MEASURED by the v3.1.0 release reviewer: the runner CI uses
+    (`python .claude/hooks/test_hook_facts.py`, ci.yml:122) reported **403 tests, OK**
+    while pytest reported **433**. The 30 in the gap were added by this arc and are the
+    tests for its headline work -- the resolve() size ceiling, the ANSI-C hex/octal
+    bypass, and four hard-block bypasses. Reverting the wrapper-value fix left CI
+    printing "Ran 403 tests ... OK" while pytest named the four failures.
+
+    `verify-hook-tests.py` drives the same runner, so its "baseline: 403 tests green"
+    and its 0-of-82 mutation result were computed over a population that excluded the
+    very tests those mutants target.
+
+    This is the unittest load_tests protocol: it wraps each module-level function so
+    BOTH runners see the same 433. None of them takes a fixture argument, which is what
+    makes FunctionTestCase sufficient; a test that grows one will fail loudly here
+    rather than vanish.
+    """
+    import types
+    for name, obj in sorted(globals().items()):
+        if name.startswith("test_") and isinstance(obj, types.FunctionType):
+            standard_tests.addTest(unittest.FunctionTestCase(obj, description=name))
+    return standard_tests
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

@@ -140,17 +140,33 @@ def main() -> int:
     # against a tree nothing ever changed -- exactly the state the root-<replace>
     # defect produced (858 ops dropped while reported applied), which is the
     # defect this gate exists to probe for.
-    if not structural_applied:
-        print("REFUSING: 0 structural ops applied and changed the tree, so every "
-              "invariant below held vacuously. A NON-ANSWER, not a clean fuzz "
-              "run.", file=sys.stderr)
-        return 2
+    # THE FINDINGS ARE PRINTED FIRST, AND A FINDING BEATS THE REFUSAL.
+    #
+    # `structural_applied` and `fails` are INDEPENDENT quantities, and the refusal
+    # used to return BEFORE the report. Raised by the v3.1.0 release reviewer and
+    # MEASURED by fault injection: with apply_diff raising on every op the gate had
+    # structural_applied == 0 AND 50 invariant violations, printed NONE of them, and
+    # returned 2. scripts/run-gates.sh maps 2 to CANNOT and the sweep then exits 3 --
+    # so the worst possible merge-engine regression, the exact defect this gate
+    # exists to probe for, reached the operator as a non-answer with its evidence
+    # suppressed.
+    #
+    # A refusal says "I could not look". Having looked and FOUND something is the
+    # stronger statement, so it wins. The vacuity refusal still fires whenever there
+    # is genuinely nothing to report.
     for i, op, why in fails[:15]:
         print(f"\n  #{i}  {why}")
         print(f"      {etree.tostring(op).decode()[:150]}")
     if len(fails) > 15:
         print(f"  ... and {len(fails) - 15} more")
-    return 1 if fails else 0
+    if fails:
+        return 1
+    if not structural_applied:
+        print("REFUSING: 0 structural ops applied and changed the tree, so every "
+              "invariant below held vacuously. A NON-ANSWER, not a clean fuzz "
+              "run.", file=sys.stderr)
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

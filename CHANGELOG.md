@@ -174,8 +174,15 @@ shadows an explicit `x4-paths.env`. `install.sh` tells every Windows user to
 
 `MAX_ENUMERATE` lived only in `render`, so `compare`, `containerprobe` and
 `censusprobe` walked past it. MEASURED at N=5,000: compare made **30,008** engine
-calls and containerprobe **25,012**. All three now refuse, and `censusprobe` emits a
-COST row naming its own enumerations, objects touched and scope.
+calls and containerprobe **25,012**.
+
+**Two of the three now REFUSE; the third reports its cost instead, and that is a
+deliberate difference rather than an omission.** `compare` and `containerprobe` walk
+per object at roughly five engine calls each, so a bound is the only safe answer.
+`censusprobe` has no per-object call at all — every entry is one call returning a
+whole list — so there is nothing for a bound to protect, and it emits a `COST` row
+naming its own enumerations, objects touched and scope. An earlier draft of this
+entry said "all three now refuse", which the release reviewer measured as false.
 
 ### Also — instruments that can now say when they were true
 

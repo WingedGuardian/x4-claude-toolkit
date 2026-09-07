@@ -70,12 +70,19 @@ def _ware_from_el(el: etree._Element) -> Ware | None:
 
 
 def effective_wares(ext_dir: Path, config: _merge.Config,
-                    exclude: Path | None = None
+                    exclude: Path | None = None, scope: str = "installed"
                     ) -> "tuple[dict[str, Ware], etree._Element | None]":
     """Every ware in the effective tree = base + DLC + all installed mods (load order).
 
     Returns the TREE as well, because `candidate_wares` needs something to resolve a
-    `sel=` against and rebuilding it there would merge the whole corpus twice.
+    `sel=` against.
+
+    ⚠ The caller DOES build two trees, and that is not the waste it looks like: the
+    comparison pool must CONTAIN the candidate and the resolution tree must EXCLUDE
+    it, so they are different documents answering different questions. The original
+    wording here claimed returning the tree avoided merging twice; the v3.1.0 release
+    reviewer noted that its caller merges twice anyway. It is one document
+    (`libraries/wares.xml`), not the corpus.
 
     *exclude* drops the mod under test, by FOLDER NAME and by content.xml ID, exactly
     as Tier B does (`_check.py`: *"merging its own copy would pre-apply its ops and
@@ -86,8 +93,22 @@ def effective_wares(ext_dir: Path, config: _merge.Config,
     an earlier op just wrote (`price[@min='432']` then `price[@min='516']`), so
     against a tree where they are ALREADY applied every one of them misses.
     """
-    # INSTALLED: x4stats is advisory comparison across everything you have.
-    mods = _registry.mods("installed", [ext_dir])
+    # SCOPE IS THE CALLER'S, and the two uses genuinely differ (CLAUDE.md #24).
+    # The comparison POOL is advisory across everything you have -> "installed".
+    # The tree a candidate's selectors RESOLVE AGAINST models what the engine does,
+    # so it must be the engine-loadable set -> "active", exactly as Tier B uses.
+    # Raised by the v3.1.0 release reviewer: passing "installed" for the resolution
+    # tree lets a selector resolve against an installed-but-DISABLED mod, so x4stats
+    # would report a change the engine never makes and undercount the residue.
+    # MEASURED on this machine the cost is 0 (installed 125, active 125), but that
+    # denominator is one machine and a disabled mod is ordinary for a user.
+    # LITERAL at the call site, both branches. tests/test_mod_scope_is_explicit.py
+    # requires it and is right to: passing the scope through a variable is exactly how
+    # "which mods count" stops being visible where it is chosen (CLAUDE.md #24).
+    if scope == "active":
+        mods = _registry.mods("active", [ext_dir])
+    else:
+        mods = _registry.mods("installed", [ext_dir])
     order = _compat.compute_load_order(mods)
     by_folder = {m["folder"]: Path(m["path"]) for m in mods}
     if exclude is not None:
@@ -238,7 +259,18 @@ def candidate_wares(candidate: Path,
         if el.get("id") in touched:
             w = _ware_from_el(el)
             if w is not None:
-                out.setdefault(w.id, w)
+                # `[...] =`, NOT setdefault. The mutated tree is the POST-STATE and
+                # therefore authoritative; the payload pass above only exists so a
+                # caller with no tree keeps the answer it used to get.
+                #
+                # setdefault let the payload win, so a ware the mod <add>s and then
+                # <replace>s -- the X4_Customizer chaining idiom, gotcha #17 -- was
+                # reported at its INTERMEDIATE price. MEASURED by the v3.1.0 release
+                # reviewer: an add at 50 followed by a replace to 500000 reported 50,
+                # "~33th percentile of its group", where the true effective value is
+                # "PRICIER than every same-group peer". A 10,000x overprice read as
+                # unremarkable, in the tool two skills route the balance question to.
+                out[w.id] = w
     return out
 
 
@@ -410,23 +442,31 @@ def _fmt_price(v: float) -> str:
 
 
 def render_wares(comparisons: list[WareComparison], unattributed: int = 0) -> str:
+    # AN ABSENCE AND A NON-ANSWER MUST NOT PRINT THE SAME SENTENCE.
+    #
+    # ⚠ THE DISCLOSURE IS NO LONGER GATED ON AN EMPTY COMPARISON, and that gate is
+    # what the v3.1.0 release reviewer caught. It was added when an unattributable
+    # mod produced NO comparisons at all, so "empty" and "had residue" coincided.
+    # Resolving `sel=` to its ware then made `comparisons` non-empty for exactly
+    # those mods -- zeros went 5 -> 1 while FIVE still carry residual ops -- so 4 of
+    # the 5 had their disclosure silently dropped by the very fix that was supposed
+    # to answer them. The residue is now reported alongside the results.
+    note = ""
+    if unattributed:
+        note = (
+            "NOT CHECKED: %d op(s) on libraries/wares.xml could not be attributed "
+            "to a ware.\n"
+            "  Most such ops are ones the ENGINE would not apply either -- an "
+            "ambiguous selector\n"
+            "  (RFC 5261: X4 logs \"Multiple matching nodes ... Skipping node\" and "
+            "applies nothing)\n"
+            "  or one matching nothing. The rest are ops on a non-ware node. This is "
+            "NOT\n"
+            "  'no wares changed', and must not be read as one." % unattributed)
+
     if not comparisons:
-        # AN ABSENCE AND A NON-ANSWER MUST NOT PRINT THE SAME SENTENCE.
-        # `candidate_wares` reads a ware only from a <ware> ELEMENT, so a mod that
-        # changes wares the ordinary way -- <replace sel=...>, <remove sel=...> --
-        # came back empty and was reported as changing nothing at all. MEASURED:
-        # 5 of the 37 mods supplying libraries/wares.xml, all 5 wrong, one of them
-        # hiding 1,443 ops. Two skills route the balance question through this.
-        if unattributed:
-            return (
-                "NOT CHECKED: %d op(s) on libraries/wares.xml could not be "
-                "attributed to a ware.\n"
-                "  This tool reads a ware only from an <add>ed <ware> element, so "
-                "<replace sel=...> and\n"
-                "  <remove sel=...> -- the default X4 patch idiom -- are invisible "
-                "to it.\n"
-                "  This is NOT 'no wares changed', and must not be read as one."
-                % unattributed)
+        if note:
+            return note
         return "candidate introduces/changes no wares."
     lines = ["ADVISORY ware comparison (candidate vs effective same-group peers):",
              "  — grounds a balance discussion; NOT a verdict. Peers include VRO's "
@@ -443,6 +483,9 @@ def render_wares(comparisons: list[WareComparison], unattributed: int = 0) -> st
                          f"median {_fmt_price(c.peer_price_median)} / "
                          f"max {_fmt_price(c.peer_price_max)}")
         lines.append(f"     -> {c.note}")
+    if note:
+        lines.append("")
+        lines.append(note)
     return "\n".join(lines)
 
 
@@ -492,8 +535,9 @@ def main(argv: list[str] | None = None) -> int:
     _input.require_mod_dir(candidate, "candidate mod folder")
     # The comparison POOL is everything installed; the tree the candidate's
     # selectors resolve against must NOT contain the candidate.
-    eff, _ = effective_wares(ext_dir, config)
-    _, eff_tree = effective_wares(ext_dir, config, exclude=candidate)
+    eff, _ = effective_wares(ext_dir, config)                       # pool: installed
+    _, eff_tree = effective_wares(ext_dir, config, exclude=candidate,
+                                  scope="active")                    # resolution: active
     cand = candidate_wares(candidate, eff_tree)
     print(render_wares(compare_wares(cand, eff),
                        unattributed_ware_ops(candidate, eff_tree)))

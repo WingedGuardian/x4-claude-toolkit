@@ -1234,9 +1234,32 @@ def _verb_token(seg: str) -> str:
     seen_wrapper = False
     wrapper = ""
     want_value = False
-    for t, quoted in tokens(seg):
-        if quoted:
-            return t
+    # ⚠ THE `quoted` SHORT-CIRCUIT USED TO BE THE FIRST BRANCH HERE, and it was a
+    # TOTAL BYPASS of every verb-keyed rule -- the seventh parser defect in this file
+    # and the one with the widest blast radius, because a wrong verb takes all three
+    # hard blocks with it at once.
+    #
+    # MEASURED by the v3.1.0 release reviewer, per item over 9 seeds: quoting ONE token
+    # in the prefix flipped 7 of 9 rules from fire to allow -- rm_hits_game,
+    # rm_targets_reference, rm_saves, git_add_all, git_wipes_x4_dir, writes_reference,
+    # sed_i_in_game_or_profile. The two immune rules are dollarq_after_pipe and
+    # longjob_foreground, which are the only two that are NOT verb-keyed; that is what
+    # pins the cause to verb resolution rather than to any predicate.
+    #
+    #     FOO="bar" rm -rf <game>          -> verb `foo=bar`   -> ALLOW
+    #     env -u "X4_GAME" rm -rf <game>   -> verb `x4_game`   -> ALLOW
+    #     sudo -u "root"   rm -rf <game>   -> verb `root`      -> ALLOW
+    #
+    # PRE-ARC -- the same ordering is in v3.0.0 -- and it also defeated this arc's own
+    # _WRAPPER_VALUE_OPTS fix, because one quote is enough to skip past it.
+    #
+    # There is no branch now: a quoted token that survives the skips is returned by the
+    # ordinary `return t` below, so a genuinely quoted COMMAND NAME still resolves. What
+    # changed is that a quoted ASSIGNMENT, WRAPPER or FLAG VALUE no longer short-circuits
+    # ahead of the skip that exists to step over it. Realized incidence in 33,837 real
+    # commands: 568 parse errors, 0 carrying a dangerous verb -- ranked on failure mode,
+    # not on frequency.
+    for t, _quoted in tokens(seg):
         if want_value:
             # The previous token was a wrapper flag that takes a separate value, so
             # THIS token is that value and never the command.

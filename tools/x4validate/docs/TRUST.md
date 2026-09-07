@@ -2,7 +2,7 @@
 
 This is the honest answer to *"how do I know these tools are telling me the truth?"*
 
-It is not a claim that the toolkit is bug-free. Fifty-nine defects have been found in
+It is not a claim that the toolkit is bug-free. Over a hundred defects have been found in
 it so far, and the sixtieth exists. All but one were caught by the toolkit or its own
 gates rather than by a user getting a wrong answer — the exception is **F58**, and it is
 named here rather than rounded away: a correct, documented capability went unused, a
@@ -100,7 +100,7 @@ fooled by our assumptions.
 
 - **Load order between mods is community convention, not engine-documented.** Any
   result that turns on *which mod won* is advisory and says so.
-- **Every finding is recorded individually** — F1–F71, each with a measured cost, and
+- **Every finding is recorded individually** — the register runs past F100 (F106 as of 2026-09-06), each with a measured cost, and
   where a limit was accepted rather than fixed, the reason it was accepted. The
   per-finding register (`docs/BLIND-SPOTS.md`) lives in the development tree because
   its evidence cites a specific private modlist by name; the findings fixed in each

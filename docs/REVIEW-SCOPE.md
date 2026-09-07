@@ -62,11 +62,20 @@ better than size or age does.
 
 ### Tier 1 — ORACLES. A defect writes a wrong fact into permanent record.
 
-> Every line count on this page is the COMMITTED blob at the pinned commit, counted
-> the way `scripts/audit-coverage.py::line_count` counts it, so this page and
-> `COVERAGE.tsv` can never disagree. Corrected 2026-09-06: five entries were off by
-> one on a counting convention, and `_merge.py` was stale by 138 lines (836 -> 974),
-> which is real drift and the reason a tiering built on these numbers under-ranked it.
+> ⚠ **THESE LINE COUNTS ARE A SNAPSHOT, NOT AN INVARIANT, and the claim that they
+> could "never disagree" with `COVERAGE.tsv` was itself false when written.**
+> Corrected 2026-09-06 (second pass): counted with `audit-coverage.py::line_count`,
+> three of twelve entries matched NO commit anywhere in `v3.0.0..HEAD` at the moment
+> the invariance sentence was added -- `_freshness.py` 678 (really 727),
+> `_provenance.py` 119 (118), `_nexus.py` 240 (250). Four later commits in the same
+> arc then moved `_compat.py` (906 -> 852), `_effective.py` (897 -> 977) and
+> `_merge.py` (974 -> 1013) with no re-pin.
+>
+> **Use them for TIERING, which is what they are for, and re-derive before quoting
+> one as a fact.** A page cannot pin a number in a tree that keeps moving; only
+> `audit-coverage.py` can, because it derives the population from `git ls-tree` at a
+> named rev and REFUSES a ledger that disagrees. Found by the v3.1.0 release
+> reviewer, which is the second time this page's own numbers rotted.
 
 | file | lines | why it ranks here |
 |---|---|---|
