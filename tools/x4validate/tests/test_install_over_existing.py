@@ -312,6 +312,10 @@ def test_a_LOCKED_file_anywhere_in_the_copy_set_refuses_UP_FRONT(installer, tmp_
         "error: %s" % (r.stdout + r.stderr)[-900:])
 @pytest.mark.parametrize("path,ignored,why", [
     (".claude/x4-paths.env", True, "the live config: machine paths and X4_NEXUS_KEY"),
+    (".claude/x4-paths.env.tmp12345", True,
+     "the RENDER TARGET: it holds the key by construction, and survives a crash "
+     "between render and move"),
+    (".claude/settings.local.json.tmp999", True, "the same sibling on the other file"),
     (".claude/x4-paths.env.bak-20260907-120000", True,
      "a backup of it, which the carry-over deliberately preserves the key into"),
     (".claude/settings.local.json", True, "per-machine settings"),
