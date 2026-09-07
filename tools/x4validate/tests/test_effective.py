@@ -3,7 +3,9 @@
 import os
 import sqlite3
 
-from x4validate import _effective, _effectivecli, _merge
+import pytest
+
+from x4validate import _effective, _effectivecli, _merge, _mutation
 
 
 def _world(tmp_path):
@@ -167,3 +169,66 @@ def test_build_temp_file_is_unique_per_process(tmp_path, monkeypatch):
     assert seen, "build never installed a temp file"
     assert str(os.getpid()) in seen[0], f"temp path not process-unique: {seen[0]}"
     assert not list(tmp_path.glob("*.tmp")), "temp file left behind"
+
+
+def test_a_build_that_FAILS_leaves_no_temp_file_behind(tmp_path, monkeypatch):
+    """The NEGATIVE twin of the assertion above, which only covered the happy path.
+
+    `_write_db` creates the temp at `sqlite3.connect` and its `try:` carried only
+    `finally: con.close()` -- which closes the handle and never unlinks the file.
+    So every exception between creation and `os.replace` leaked a fully
+    materialised temp permanently, while the ONLY cleanup sat in the `os.replace`
+    OSError handler.
+
+    The sharpest case is architectural rather than exotic:
+    `_mutation.refuse_if_mutating()` is called INSIDE that block by design, so any
+    store build overlapping a mutating gate deposited one. MEASURED in the live
+    registry: three orphans from 2026-08-26 (12:50, 12:52, 12:54), each with zero
+    rows in every table INCLUDING meta -- so they died before `con.commit()`,
+    which is what makes them a leak rather than a corrupted store.
+
+    Injecting at `stamp_sqlite` rather than at `refuse_if_mutating` deliberately:
+    the guarantee is "no exception leaks a temp", not "this particular guard does
+    not", and pinning the specific caller would pass while the next one added
+    inside the block leaked again.
+    """
+    ref = tmp_path / "reference"
+    (ref / "libraries").mkdir(parents=True)
+    (ref / "libraries" / "jobs.xml").write_bytes(b"<jobs/>")
+    monkeypatch.setattr(_effective._registry, "ingest_content_xml", lambda *a, **k: [])
+
+    def _boom(*a, **k):
+        raise RuntimeError("injected mid-build failure")
+
+    monkeypatch.setattr(_effective._freshness, "stamp_sqlite", _boom)
+    db = tmp_path / "eff.sqlite"
+    with pytest.raises(RuntimeError, match="injected mid-build failure"):
+        _effective.build(_merge.Config(reference=ref), db, dirs=[], kinds=("job",))
+
+    leaked = list(tmp_path.glob("*.tmp"))
+    assert not leaked, (
+        "a failed build left %d temp file(s) behind: %s -- and the startup reclaim "
+        "is os.getpid()-scoped, so no later run can ever collect them"
+        % (len(leaked), [p.name for p in leaked]))
+
+
+def test_the_ORIGINAL_failure_is_what_propagates(tmp_path, monkeypatch):
+    """Cleanup must not mask the diagnosis the caller actually needs.
+
+    `_registry.save` states the rule at its own equivalent block: the real failure
+    is re-raised, so nothing is hidden. A cleanup that swallowed the error would
+    turn a refused build into a silent one.
+    """
+    ref = tmp_path / "reference"
+    (ref / "libraries").mkdir(parents=True)
+    (ref / "libraries" / "jobs.xml").write_bytes(b"<jobs/>")
+    monkeypatch.setattr(_effective._registry, "ingest_content_xml", lambda *a, **k: [])
+
+    def _boom(*a, **k):
+        raise _mutation.TreeMutating("refusing to build: a mutating gate is running")
+
+    monkeypatch.setattr(_effective._freshness, "stamp_sqlite", _boom)
+    db = tmp_path / "eff.sqlite"
+    with pytest.raises(_mutation.TreeMutating, match="mutating gate"):
+        _effective.build(_merge.Config(reference=ref), db, dirs=[], kinds=("job",))
+    assert not list(tmp_path.glob("*.tmp"))

@@ -869,46 +869,89 @@ def _write_db(db_path, config, mods, ordered, order_rank, entities, removed,
         tmp.unlink()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(tmp))
+    # BUILD, THEN INSTALL -- and clean up on EVERY exit, not just the one that was
+    # thought of. This block used to carry `finally: con.close()` and nothing
+    # else, so it closed the HANDLE and never removed the FILE. Every exception
+    # between the connect above and the os.replace below therefore leaked a fully
+    # materialised temp, permanently, while the only cleanup sat in the os.replace
+    # OSError handler -- the one failure mode somebody had already imagined.
+    #
+    # The sharpest case is architectural rather than exotic. refuse_if_mutating()
+    # is called INSIDE this block by design, at the stamping site, so that no
+    # other entry path can slip past it -- which means any store build overlapping
+    # a mutating gate deposited an orphan. MEASURED in the live registry: three,
+    # from 2026-08-26 at 12:50, 12:52 and 12:54, each with zero rows in every
+    # table INCLUDING meta, so they died before the commit. That is what makes
+    # them a leak and not a half-written store; build-then-replace is atomic and
+    # the installed store was never at risk.
+    #
+    # AND THE RECLAIM ABOVE CANNOT COLLECT THEM. It is keyed to os.getpid(), so it
+    # only ever matches a leftover from THIS process, and an orphan's creator is
+    # by definition gone. A reclaim scoped to the current process looks present in
+    # review and is unreachable in fact, which is why the fix is "never create
+    # one" rather than "sweep them up later".
+    #
+    # Deliberately NOT an automatic sweep of foreign temps. Deciding whether a
+    # stranger's temp is abandoned means deciding whether its pid is alive, and on
+    # Windows os.kill(pid, 0) maps to TerminateProcess: guessing wrong either
+    # kills a running build or overwrites files underneath it. mutation_probe
+    # reached the same conclusion and made its recovery an explicit step; so does
+    # this. Pre-existing orphans are removed by hand, once.
     try:
-        con.executescript("PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF;" + _SCHEMA)
-        con.executemany("INSERT INTO meta VALUES(?,?)", [
-            ("schema_version", str(SCHEMA_VERSION)),
-            ("reference", str(config.reference)),
-            ("active_mods", str(len(mods))),
-            ("load_order", json.dumps([m["folder"] for m, _ in ordered])),
-            ("advisory", _ADVISORY),
-            # PERSISTED, not merely printed: build-time progress scrolls past and
-            # is gone, while a store carrying silently-wrong origins outlives the
-            # run that made it. A reader can now ask the store itself whether it
-            # was built over work that did not happen.
-            ("dropped_overlays", str(dropped_overlays)),
-            ("dropped_overlay_samples", json.dumps(dropped_samples or [])),
-        ])
-        # WHEN this store was true, not just how much it holds. Without it the
-        # store cannot tell a current answer from one about a superseded world —
-        # the exact failure that let BaseX's x4eff serve pre-merge-fix values for
-        # eleven days (140 of 194 engine thrust rows wrong).
-        _mutation.refuse_if_mutating("build the effective store")
-        _freshness.stamp_sqlite(con, _freshness.fingerprint(config, _ext_root(config)))
-        con.executemany("INSERT INTO mods VALUES(?,?,?,?,?,?,?)", [
-            (m["folder"], m["id"], m["name"], m["version"], order_rank[m["folder"]],
-             int(m["enabled"]), int(_cat.is_packed(p))) for m, p in ordered])
-        default = Origin(BASE, BASE)
-        eid = 0
-        ent_rows, attr_rows = [], []
-        for e in entities:
-            eid += 1
-            ent_rows.append((eid, e.kind, e.name, e.klass, e.vpath, e.origin,
-                             _chain_json(e.chain, default)))
-            for prop, value, num, chain in e.attrs:
-                attr_rows.append((eid, prop, value, num,
-                                  chain[-1].source, _chain_json(chain, default)))
-        con.executemany("INSERT INTO entities VALUES(?,?,?,?,?,?,?)", ent_rows)
-        con.executemany("INSERT INTO attrs VALUES(?,?,?,?,?,?)", attr_rows)
-        con.executemany("INSERT INTO removed VALUES(?,?,?,?)", removed)
-        con.commit()
-    finally:
-        con.close()
+        try:
+            con.executescript("PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF;" + _SCHEMA)
+            con.executemany("INSERT INTO meta VALUES(?,?)", [
+                ("schema_version", str(SCHEMA_VERSION)),
+                ("reference", str(config.reference)),
+                ("active_mods", str(len(mods))),
+                ("load_order", json.dumps([m["folder"] for m, _ in ordered])),
+                ("advisory", _ADVISORY),
+                # PERSISTED, not merely printed: build-time progress scrolls past and
+                # is gone, while a store carrying silently-wrong origins outlives the
+                # run that made it. A reader can now ask the store itself whether it
+                # was built over work that did not happen.
+                ("dropped_overlays", str(dropped_overlays)),
+                ("dropped_overlay_samples", json.dumps(dropped_samples or [])),
+            ])
+            # WHEN this store was true, not just how much it holds. Without it the
+            # store cannot tell a current answer from one about a superseded world —
+            # the exact failure that let BaseX's x4eff serve pre-merge-fix values for
+            # eleven days (140 of 194 engine thrust rows wrong).
+            _mutation.refuse_if_mutating("build the effective store")
+            _freshness.stamp_sqlite(con, _freshness.fingerprint(config, _ext_root(config)))
+            con.executemany("INSERT INTO mods VALUES(?,?,?,?,?,?,?)", [
+                (m["folder"], m["id"], m["name"], m["version"], order_rank[m["folder"]],
+                 int(m["enabled"]), int(_cat.is_packed(p))) for m, p in ordered])
+            default = Origin(BASE, BASE)
+            eid = 0
+            ent_rows, attr_rows = [], []
+            for e in entities:
+                eid += 1
+                ent_rows.append((eid, e.kind, e.name, e.klass, e.vpath, e.origin,
+                                 _chain_json(e.chain, default)))
+                for prop, value, num, chain in e.attrs:
+                    attr_rows.append((eid, prop, value, num,
+                                      chain[-1].source, _chain_json(chain, default)))
+            con.executemany("INSERT INTO entities VALUES(?,?,?,?,?,?,?)", ent_rows)
+            con.executemany("INSERT INTO attrs VALUES(?,?,?,?,?,?)", attr_rows)
+            con.executemany("INSERT INTO removed VALUES(?,?,?,?)", removed)
+            con.commit()
+        finally:
+            con.close()
+    except BaseException:
+        # The handle is closed by the inner finally BEFORE this runs. Windows
+        # refuses to unlink a file it still holds open, so that ordering is the
+        # entire reason these are nested rather than chained.
+        try:
+            tmp.unlink()
+        except OSError:
+            # silent-ok: best-effort removal of OUR OWN temp while an exception is
+            # already in flight. The original failure is re-raised on the next
+            # line, so nothing is hidden -- and masking it to report a cleanup
+            # problem would lose the diagnosis the caller actually needs. Same
+            # reasoning, and the same shape, as _registry.save.
+            pass
+        raise
     try:
         os.replace(tmp, db_path)
     except OSError as exc:
