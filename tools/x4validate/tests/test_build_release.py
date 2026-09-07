@@ -24,11 +24,11 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "build-release.sh"
 
-# NEVER a bare "bash": on Windows `shutil.which("bash")` returns the WSL stub at
-# C:\Windows\System32ash.exe, which runs a Linux shell in a filesystem where
-# C:/Users/... does not exist -- so every path-shaped assertion silently changes
-# meaning. `scripts/gitbash.py` exists because that cost three debugging sessions
-# here, and my first draft of this file walked straight into it.
+# NEVER a bare "bash": on Windows `shutil.which("bash")` returns the WSL stub in
+# System32 (a bash.exe that is not a shell), which runs a Linux bash in a
+# filesystem where the C: drive does not exist -- so every path-shaped assertion
+# silently changes meaning. `scripts/gitbash.py` exists because that cost three
+# debugging sessions here, and my first draft of this file walked straight into it.
 _spec = importlib.util.spec_from_file_location("_gitbash", REPO / "scripts" / "gitbash.py")
 _gitbash = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_gitbash)
