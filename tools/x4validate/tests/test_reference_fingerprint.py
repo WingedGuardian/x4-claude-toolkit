@@ -229,3 +229,51 @@ def test_CLAUDE_md_lists_exactly_the_ENGINE_SOURCES_the_module_derives():
     m2 = re.search(r"\(\*\*(\d+)\*\* as of", cell)
     assert m2 and int(m2.group(1)) == len(derived), (
         "the cell's COUNT must equal the module's %d" % len(derived))
+
+
+def test_the_survey_is_DETERMINISTIC_over_an_unchanged_tree(tmp_path):
+    """A freshness axis that moves without the world moving reports a spurious STALE.
+
+    MEASURED 2026-09-07: with the directory mtime folded in, two surveys taken back to
+    back with NO filesystem change between them differed **1 time in 400** on a freshly
+    built tree. It surfaced as `test_the_depth_limit_is_STATED_not_implied` failing 1 of
+    2 COLD runs — on the leg that GATES the release, which would have reddened a release
+    for a reason that has nothing to do with it.
+
+    The directory mtime was the only value in the fold that could move without the tree
+    moving, and it is redundant: a directory's mtime changes when a child is added,
+    removed or renamed, all of which also change `len(kids)` or the name list, and it
+    does NOT change for a child's in-place edit. Measured over 400 trees, removing it
+    left add@3, del@3 and edit@1 detection at 400/400 while instability went 1 -> 0.
+
+    30 iterations here rather than 400: enough to catch a regression that reintroduces a
+    per-call unstable value (which would fire at ~7% over 30), cheap enough to run every
+    time. The 400-tree measurement lives in the commit and at the fold.
+    """
+    root = _tree(tmp_path / "ref")
+    first = _freshness._reference_survey(root)
+    for i in range(30):
+        assert _freshness._reference_survey(root) == first, (
+            "the survey moved on iteration %d with NO filesystem change — the content "
+            "axis can now report a spurious STALE" % i)
+
+
+def test_removing_the_directory_mtime_did_not_cost_DETECTION(tmp_path):
+    """The twin, and the reason the removal is safe rather than merely quieter. Each
+    of the three change classes the survey exists to catch must still move it."""
+    root = _tree(tmp_path / "ref")
+
+    base = _freshness._reference_survey(root)
+    added = root / "libraries" / "sub" / "new.xml"
+    added.write_text("n", encoding="utf-8")
+    assert _freshness._reference_survey(root) != base, "an ADD at depth 3 must move it"
+
+    base = _freshness._reference_survey(root)
+    added.unlink()
+    assert _freshness._reference_survey(root) != base, "a DELETE at depth 3 must move it"
+
+    import os
+    base = _freshness._reference_survey(root)
+    os.utime(root / "libraries" / "wares.xml", (1, 1))
+    assert _freshness._reference_survey(root) != base, (
+        "an in-place edit to a depth-2 FILE must still move it — file mtimes are kept")

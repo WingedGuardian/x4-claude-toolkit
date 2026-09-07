@@ -400,8 +400,9 @@ def _reference_survey(reference: Path) -> str:
     in the first place. This is 1,760x cheaper than the full walk and covers all 20
     top-level entries instead of one file.
 
-    WHAT IT SEES: every top-level entry; each directory's own mtime and the sorted
-    names of its direct children; each top-level file's (mtime, size). A re-unpack, a
+    WHAT IT SEES: every top-level entry; each directory's CHILD COUNT and the
+    sorted names of its direct children; each top-level file's (mtime, size).
+    Directory mtimes are deliberately NOT folded -- see the note at the fold. A re-unpack, a
     game patch, an added or removed DLC, or a rename all move it.
 
     WHAT IT DOES NOT SEE, and this is a LIMIT OF THE APPROACH, not of the effort: an
@@ -447,7 +448,36 @@ def _reference_survey(reference: Path) -> str:
                     kids = sorted(os.scandir(e.path), key=lambda x: x.name.lower())
                 except OSError:
                     kids = []
-                h.update(f"d:{int(st.st_mtime)}:{len(kids)}:".encode())
+                # ★ NO DIRECTORY MTIME. It was the ONLY value here that could
+                # move without the tree moving, and it carries nothing the child
+                # names do not already carry.
+                #
+                # MEASURED 2026-09-07, 400 freshly-built trees, two surveys taken
+                # back to back with NO filesystem change between them:
+                #
+                #                     unstable   add@3   del@3   edit@1
+                #   with dir mtime           1     400     400     400
+                #   without                  0     400     400     400
+                #
+                # Identical detection, zero instability. A directory mtime moves
+                # when a child is added, removed or renamed -- all three of which
+                # also move `len(kids)` or the name list -- and does NOT move for
+                # a child's in-place edit, which this docstring already states.
+                # So it was redundant for detection and load-bearing for the flake.
+                #
+                # WHY IT MATTERS BEYOND A FLAKY TEST: this survey feeds the CONTENT
+                # axis. A value that changes without the world changing means the
+                # axis can report a spurious STALE -- an artifact declared out of
+                # date over a tree nobody touched. It surfaced as
+                # `test_the_depth_limit_is_STATED_not_implied` failing 1 of 2 COLD
+                # runs on the leg that GATES the release, which would have reddened
+                # a release for a reason unrelated to it.
+                #
+                # (On Windows `DirEntry.stat()` returns metadata cached by the
+                # directory scan, and a freshly created directory's entry can be
+                # read before the OS has settled it. That is the INFERRED
+                # mechanism; the measurement above stands without it.)
+                h.update(f"d:{len(kids)}:".encode())
                 h.update(hashlib.sha256(
                     chr(10).join(k.name for k in kids).encode()).digest())
                 if depth < _SURVEY_DEPTH:
