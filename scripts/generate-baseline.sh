@@ -43,6 +43,19 @@ if [ -z "$PROFILE_DIR" ] || [ ! -d "$PROFILE_DIR" ]; then
   exit 2
 fi
 
+# EVERY REFUSAL BEFORE THE FIRST WRITE. Checked here rather than beside the
+# mod walk because `mkdir -p "$OUT"` had already run by then, so a refused
+# run left an EMPTY known-good-<stamp>/ directory behind -- which is exactly
+# the partial artifact that looks complete this refusal exists to prevent.
+EXT="$GAME_DIR/extensions"
+if [ ! -d "$EXT" ]; then
+  echo "ERROR: no extensions/ directory under $GAME_DIR." >&2
+  echo "       A known-good baseline of an install whose mod folder cannot be" >&2
+  echo "       enumerated would record ZERO mods and look identical to a clean" >&2
+  echo "       vanilla install. Refusing to write one." >&2
+  exit 2
+fi
+
 mkdir -p "$OUT"
 echo "Game dir:    $GAME_DIR"
 echo "Profile dir: $PROFILE_DIR"
@@ -67,14 +80,6 @@ echo "Game version (version.dat): $VER"
 #
 # An existing but EMPTY extensions/ stays accepted: no mods is a real state a
 # player can be in. A MISSING one means we are looking at the wrong place.
-EXT="$GAME_DIR/extensions"
-if [ ! -d "$EXT" ]; then
-  echo "ERROR: no extensions/ directory under $GAME_DIR." >&2
-  echo "       A known-good baseline of an install whose mod folder cannot be" >&2
-  echo "       enumerated would record ZERO mods and look identical to a clean" >&2
-  echo "       vanilla install. Refusing to write one." >&2
-  exit 2
-fi
 TSV="$OUT/installed-mods.tsv"
 printf "folder\tfiles\tbytes\trollup_sha256\n" > "$TSV"
 NMODS=0

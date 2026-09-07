@@ -60,3 +60,8 @@ tools/x4validate/.mutation-probe-pristine/
 
 # hook test sandbox (scripts/test-hooks.sh)
 .test-sandbox/
+
+# Release bundles built by scripts/build-release.sh. Derived from a git ref, so
+# committing one would store the same bytes twice and let a stale copy sit beside
+# a moved tag.
+dist/

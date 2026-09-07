@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Build the release asset, and PROVE it is the tag.
+#
+# WHY THIS EXISTS. v3.0.0 shipped `X4.Foundations.Claude.Code.Toolkit.v3.0.0.zip`
+# (6,508,551 bytes) and NOTHING IN THE REPO MADE IT. The bundle a user downloads was
+# assembled by hand, so it could not be reproduced, could not be diffed against the
+# tag, and had no check that its contents were the reviewed contents.
+#
+# That is not a hypothetical worry in this repo. A release port once ran while a
+# MUTATING gate had `_merge.py` rewritten in place and carried `if len(targets) >
+# 99999:` into the public bundle -- ambiguous-selector detection silently OFF in a
+# shipped release, with the port reporting success and the tracked diff looking right
+# (CLAUDE.md #27). A bundle built from the WORKING TREE is exactly where that recurs.
+#
+# So this builds from `git archive`, which reads the COMMITTED object store and cannot
+# see a working-tree edit at all -- immune to that window by construction rather than
+# by remembering.
+#
+# MEASURED 2026-09-07: `git archive --format=zip v3.0.0` reproduces the shipped v3.0.0
+# asset BYTE FOR BYTE -- 6,508,551 bytes, sha256
+# 273d242c168b4cff5d0679a9251c9e230506c540fd22ff5c39f66edd03fd4de6, all 258 members
+# identical. So this script is not a new convention; it is the existing one, written
+# down and checked. `--selftest` re-proves that claim, which is what makes the build
+# method falsifiable instead of merely asserted.
+#
+#   scripts/build-release.sh <ref>     build dist/X4.Foundations...<ref>.zip
+#   scripts/build-release.sh --selftest  rebuild v3.0.0 and assert its known sha256
+#
+# Exit: 0 built and verified · 1 the archive does not match the ref · 2 cannot build
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 2
+
+NAME_PREFIX="X4.Foundations.Claude.Code.Toolkit"
+V300_SHA="273d242c168b4cff5d0679a9251c9e230506c540fd22ff5c39f66edd03fd4de6"
+V300_SIZE=6508551
+
+die() { echo "REFUSING: $*" >&2; exit 2; }
+
+# THE MEMBER SET MUST BE THE REF'S TRACKED SET, EXACTLY. This is the check the hand
+# build never had: not "did a zip appear" but "is what is in it what the tag says".
+# Both directions matter -- a missing file ships a broken toolkit, an extra file ships
+# something nobody reviewed.
+verify() {
+  local zip="$1" ref="$2"
+  python - "$zip" "$ref" <<'PY'
+import subprocess, sys, zipfile
+zip_path, ref = sys.argv[1], sys.argv[2]
+z = zipfile.ZipFile(zip_path)
+members = {i.filename for i in z.infolist() if not i.is_dir()}
+tracked = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", ref],
+                             capture_output=True, text=True, check=True).stdout.split())
+missing, extra = sorted(tracked - members), sorted(members - tracked)
+print("  members=%d  tracked at %s=%d" % (len(members), ref, len(tracked)))
+if missing or extra:
+    for p in missing[:20]:
+        print("    MISSING FROM THE BUNDLE: " + p, file=sys.stderr)
+    for p in extra[:20]:
+        print("    IN THE BUNDLE, NOT IN THE REF: " + p, file=sys.stderr)
+    sys.exit(1)
+if not members:
+    print("  REFUSING: the bundle is empty", file=sys.stderr)
+    sys.exit(1)
+print("  member set matches the ref exactly")
+PY
+}
+
+sha_of() { python -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$1"; }
+
+if [ "${1:-}" = "--selftest" ]; then
+  # A CONTROL THAT CAN GO RED. If the build method ever stops reproducing the one
+  # asset whose bytes are publicly known, this says so before a release does.
+  git rev-parse -q --verify "v3.0.0^{}" >/dev/null || die "tag v3.0.0 not present, so the control cannot run"
+  tmp="$(mktemp -d)" || die "no temp dir"
+  trap 'rm -rf "$tmp"' EXIT
+  git archive --format=zip v3.0.0 -o "$tmp/x.zip" || die "git archive failed"
+  got_sha="$(sha_of "$tmp/x.zip")"; got_size="$(wc -c < "$tmp/x.zip" | tr -d ' ')"
+  echo "selftest: rebuilt v3.0.0 -> $got_size bytes, sha256 $got_sha"
+  verify "$tmp/x.zip" v3.0.0 || exit 1
+  if [ "$got_sha" = "$V300_SHA" ] && [ "$got_size" = "$V300_SIZE" ]; then
+    echo "SELFTEST PASSED — git archive still reproduces the published v3.0.0 asset byte for byte."
+    exit 0
+  fi
+  echo "SELFTEST FAILED — the rebuild no longer matches the published asset." >&2
+  echo "  expected $V300_SIZE bytes / $V300_SHA" >&2
+  echo "  got      $got_size bytes / $got_sha" >&2
+  echo "  Do NOT ship until this is explained: the build method has changed under us." >&2
+  exit 1
+fi
+
+REF="${1:-}"
+[ -n "$REF" ] || die "usage: scripts/build-release.sh <ref> | --selftest"
+git rev-parse -q --verify "$REF^{}" >/dev/null || die "no such ref: $REF"
+
+# A DIRTY TREE IS NOT AN ERROR HERE -- git archive cannot see it -- but it IS a warning
+# worth printing, because it means the thing you just tested is not the thing you are
+# about to ship, and that gap is where a release defect hides.
+if [ -n "$(git status --porcelain)" ]; then
+  echo "  note: the working tree is dirty. This builds from the COMMITTED state of"
+  echo "        $REF, so those edits are NOT in the bundle — which is correct, and"
+  echo "        worth saying out loud in case you expected them to be."
+fi
+
+mkdir -p dist || die "cannot create dist/"
+OUT="dist/${NAME_PREFIX}.${REF}.zip"
+git archive --format=zip "$REF" -o "$OUT" || die "git archive failed"
+echo "built $OUT"
+verify "$OUT" "$REF" || { echo "the bundle does not match $REF — not shippable." >&2; exit 1; }
+echo "  size   $(wc -c < "$OUT" | tr -d ' ') bytes"
+echo "  sha256 $(sha_of "$OUT")"
+echo
+echo "Attach with:  gh release create $REF \"$OUT\" --title ... --notes-file ..."

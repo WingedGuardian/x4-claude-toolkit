@@ -88,3 +88,96 @@ def test_a_PROFILE_DIR_that_is_not_a_directory_refuses_too(isolated, tmp_path):
     game.mkdir()
     r = _run(isolated, str(game), str(tmp_path / "does-not-exist"))
     assert r.returncode == 2, r.returncode
+
+
+# --- a baseline that records NOTHING must not report success (v3.1.0 review, group A)
+# The mod walk sat inside a bare `if [ -d "$EXT" ]`, so a missing extensions/ wrote a
+# HEADER-ONLY installed-mods.tsv and the script still printed "Baseline written to: ..."
+# and exited 0. This file's own script already argues that a baseline is a RECOVERY
+# artifact and that "you find out at the moment you need to restore" -- an argument it
+# applied to the game DIRECTORY and not to its contents.
+
+
+def _tree(tmp_path, with_extensions=True, mods=(), profile_files=("content.xml",)):
+    game = tmp_path / "game"
+    (game / ".claude" / "backups").mkdir(parents=True)
+    (game / "version.dat").write_text("7.60", encoding="utf-8")
+    if with_extensions:
+        (game / "extensions").mkdir()
+        for m in mods:
+            d = game / "extensions" / m
+            d.mkdir()
+            (d / "content.xml").write_text('<content id="%s"/>' % m, encoding="utf-8")
+    prof = tmp_path / "profile"
+    prof.mkdir()
+    for f in profile_files:
+        body = ("[=ERROR=] 12.34 boom 0xdeadbeef\n" if f == "debug.txt" else "<x/>")
+        (prof / f).write_text(body, encoding="utf-8")
+    return game, prof
+
+
+def _out(game, stamp="baseline"):
+    """`STAMP` defaults to "baseline" inside the script, and `_run` does not set it.
+
+    ⚠ My first draft said "probe" here, and the missing-extensions test still PASSED
+    -- because it asserts the TSV does not exist, and a wrong path does not exist
+    either. It passed for the wrong reason, and only the happy-path twin (which reads
+    the file) caught it. A negative assertion over a path nobody proved is a green
+    that could not go red."""
+    return game / ".claude" / "backups" / ("known-good-" + stamp)
+
+
+def test_a_MISSING_extensions_dir_REFUSES_rather_than_recording_zero_mods(isolated,
+                                                                          tmp_path):
+    """Pre-fix: rc 0, "Baseline written to: ...", and a mod list with only a header --
+    indistinguishable from a clean vanilla install."""
+    game, prof = _tree(tmp_path, with_extensions=False)
+    r = _run(isolated, str(game), str(prof))
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "extensions" in r.stderr and "ZERO mods" in r.stderr
+    assert not _out(game).exists(), (
+        "a refused run must leave NOTHING behind -- an empty known-good-<stamp>/ "
+        "directory is itself a partial artifact that looks like a baseline")
+
+
+def test_an_EXISTING_but_EMPTY_extensions_dir_is_ACCEPTED_and_CALLED_OUT(isolated,
+                                                                         tmp_path):
+    """The twin. No mods is a real state a player can be in; only a MISSING directory
+    is the looked-in-the-wrong-place case. Refusing both would make the check cry wolf
+    on a vanilla install."""
+    game, prof = _tree(tmp_path, mods=())
+    r = _run(isolated, str(game), str(prof))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "NOTE" in r.stderr and "vanilla install" in r.stderr
+
+
+def test_the_summary_is_an_INVENTORY_and_NAMES_what_was_not_captured(isolated, tmp_path):
+    """"Baseline written to: ..." was the entire report, so a baseline missing its
+    config and its error fingerprint announced itself in the same words as a complete
+    one. What a recovery artifact does NOT contain is the thing you need to know
+    before you rely on it."""
+    game, prof = _tree(tmp_path, mods=("mymod",), profile_files=("content.xml",))
+    r = _run(isolated, str(game), str(prof))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "contains:" in r.stdout
+    assert "NOT CAPTURED" in r.stderr
+    assert "config.xml" in r.stderr and "debug.txt" in r.stderr
+    assert "NO error fingerprint" in r.stderr
+
+
+def test_a_COMPLETE_baseline_says_so_and_skips_the_DLC(isolated, tmp_path):
+    """The happy path, so the three above cannot pass on a script that always
+    refuses -- and the DLC exclusion pinned while we are here, because
+    the reference tree and `extensions/ego_dlc_*` are the same content (gotcha #20)."""
+    game, prof = _tree(tmp_path, mods=("mymod", "ego_dlc_split"),
+                       profile_files=("content.xml", "config.xml", "debug.txt"))
+    r = _run(isolated, str(game), str(prof))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "installed mods recorded: 1" in r.stdout, "the DLC must not be counted"
+    assert "NOT CAPTURED" not in r.stderr
+    tsv = (_out(game) / "installed-mods.tsv").read_text(encoding="utf-8")
+    assert "mymod" in tsv and "ego_dlc_split" not in tsv
+    assert (_out(game) / "error-fingerprint.txt").is_file()
+    # every data row must carry a real rollup: a row with no hash cannot detect a change
+    rows = [l for l in tsv.splitlines()[1:] if l.strip()]
+    assert rows and all(len(l.split(chr(9))[3]) == 64 for l in rows), rows
