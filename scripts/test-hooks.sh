@@ -364,7 +364,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=146
+EXPECT=149
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -707,6 +707,39 @@ if [ "$_got" = "$_gotp" ]; then
 else
   no "the jq and python renderers DISAGREE on the bound -- the constant has drifted between them"
 fi
+
+# --- session-canary.sh feeds a BARE-STDOUT channel with a hard ceiling --------
+# This hook does not go through x4_advise, so the cap does not reach it for free.
+# Driven with a stub canary rather than the real one: the real repos are clean,
+# and a test that can only run when something is actually lost is a test that
+# never runs.
+_sc_tk="$TMP/sc_toolkit"; mkdir -p "$_sc_tk/scripts"
+cat > "$_sc_tk/scripts/x4canary.py" <<'CANARY_STUB'
+import sys
+sys.stderr.write("STUBHEAD\n")
+for i in range(400):
+    sys.stderr.write("   repo :: some/reasonably/long/path/to/file_%04d.md: "
+                     "EMPTIED (400 bytes -> 0)\n" % i)
+sys.stderr.write("STUBTAIL\n")
+raise SystemExit(1)
+CANARY_STUB
+_sc_out="$(X4_TOOLKIT="$_sc_tk" bash "$HOOKS/session-canary.sh" </dev/null 2>/dev/null)"
+
+case "$_sc_out" in
+  *x4canary.py*) ok "session-canary names WHICH x4canary it resolved" ;;
+  *) no "session-canary does not say which x4canary it ran -- two copies exist and the divergence is invisible" ;;
+esac
+
+if [ "${#_sc_out}" -le 10000 ]; then
+  ok "a huge canary report is bounded by the hook (${#_sc_out} chars)"
+else
+  no "the canary report reached ${#_sc_out} chars -- above the cap, so CC files the DATA LOSS warning and the session sees a preview"
+fi
+
+case "$_sc_out" in
+  *TRUNCATED*) ok "the bounded canary report ANNOUNCES the truncation" ;;
+  *) no "the canary report was cut with no notice" ;;
+esac
 
 echo "RESULT: $pass passed, $fail failed, $skipped skipped"
 if [ $((pass + fail + skipped)) -ne "$EXPECT" ]; then

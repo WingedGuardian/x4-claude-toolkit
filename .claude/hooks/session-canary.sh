@@ -28,7 +28,7 @@ for c in "${X4_TOOLKIT:-}/scripts/x4canary.py" "$HOOK_DIR/../../scripts/x4canary
   [ -f "$c" ] && { CANARY="$c"; break; }
 done
 if [ -z "$CANARY" ]; then
-  echo "[x4 canary] NOT RUN: scripts/x4canary.py not found under \$X4_TOOLKIT."
+  echo "[x4 canary] NOT RUN: scripts/x4canary.py not found under \$X4_TOOLKIT (${X4_TOOLKIT:-unset})."
   echo "            Irreplaceable files are UNCHECKED this session."
   exit 0
 fi
@@ -42,17 +42,42 @@ fi
 OUT=$("$PY" "$CANARY" 2>&1)
 RC=$?
 
+# BOUNDED, AND DIRECTIVE FIRST. This hook writes BARE STDOUT, so it does not get
+# x4_advise's cap for free -- and MEASURED 2026-09-07 with a 400-item report, the
+# text reached 36,638 characters against a 10,000-character ceiling. Claude Code
+# files anything above that and shows the model a ~2 KB preview, silently, with
+# the exit code unchanged.
+#
+# The preview keeps the HEAD, so the ORDER is the fix, not just the cap: the
+# recovery directive is printed BEFORE the report. Printed after it, the
+# instruction is the first thing dropped -- and "do not re-run whatever wrote it"
+# is the single line that stops the recoverable state being destroyed. The
+# inventory is the part that can afford to be cut; the instruction is not.
+#
+# $CANARY is named because TWO copies of x4canary.py exist on a normal install --
+# $X4_TOOLKIT/scripts/ and the one beside the hooks -- and this hook silently
+# picks whichever it finds first. MEASURED on this machine: the resolved copy was
+# 7,631 bytes with 2 refusal guards while the repo's was 19,630 with 5, so four
+# fixed false-DATA-LOSS bugs were not reaching the running hook. Nothing said so.
 case $RC in
   0) : ;;   # nothing lost; stay quiet, the session start is not the place for noise
   1)
-    echo "[x4 canary] *** A TRACKED IRREPLACEABLE FILE HAS BEEN LOST ***"
-    echo "$OUT" | sed 's/^/            /'
-    echo "            Recover it BEFORE doing anything else, and do not re-run"
-    echo "            whatever wrote it:  git -C <repo> checkout -- <path>"
+    x4_bound "$(
+      echo "[x4 canary] *** A TRACKED IRREPLACEABLE FILE HAS BEEN LOST ***"
+      echo "            Recover it BEFORE doing anything else, and do not re-run"
+      echo "            whatever wrote it:  git -C <repo> checkout -- <path>"
+      echo "            (report from $CANARY)"
+      echo "$OUT" | sed 's/^/            /'
+    )"
+    echo
     ;;
   *)
-    echo "[x4 canary] COULD NOT CHECK (exit $RC) -- this is not a clean result."
-    echo "$OUT" | sed 's/^/            /'
+    x4_bound "$(
+      echo "[x4 canary] COULD NOT CHECK (exit $RC) -- this is not a clean result."
+      echo "            (report from $CANARY)"
+      echo "$OUT" | sed 's/^/            /'
+    )"
+    echo
     ;;
 esac
 exit 0

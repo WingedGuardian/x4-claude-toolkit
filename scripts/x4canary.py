@@ -284,6 +284,43 @@ def check(repo: Path, verbose: bool = False) -> tuple[list[str], list[str], int]
     return losses, drift, 0
 
 
+#: Per-list cap on every item list this tool prints.
+#:
+#: MEASURED 2026-09-07, CC 2.1.263: Claude Code files hook output above 10,000
+#: CHARACTERS and shows the model a ~2 KB preview -- no error, exit code
+#: unchanged. session-canary.sh feeds this tool's whole output into that
+#: channel, so the loss report has a ceiling it never knew about. Uncapped, the
+#: list crossed it at roughly 81 files against the 473 tracked across the two
+#: watched repos (an UPPER bound: a renamed-and-emptied file carries the wider
+#: "new.md (was old.md)" form and crosses sooner).
+#:
+#: The failure was INVERTED AGAINST SEVERITY. One lost file sails under the cap;
+#: a directory-level loss -- the case that actually matters -- is the one that
+#: gets filed. A warning channel whose output length scales with the severity it
+#: reports fails silently exactly when it matters most.
+#:
+#: 40 keeps all three lists plus their headers well inside the limit even when
+#: every one of them is populated. session-canary.sh bounds the whole payload
+#: again as a backstop; this cap exists so the truncation happens on a WHOLE-LINE
+#: boundary with a count, rather than mid-path in the middle of a filename.
+_LIST_CAP = 40
+
+
+def _emit(items: list[str], stream) -> None:
+    """Print a bounded item list that DISCLOSES its own bound.
+
+    A bare `[:n]` slice makes the number wrong, not merely the list -- the same
+    rule `_scan.count_line` exists to enforce on the validator side. Anything
+    dropped here is named as dropped.
+    """
+    for m in items[:_LIST_CAP]:
+        print("   " + m, file=stream)
+    if len(items) > _LIST_CAP:
+        print("   ... and %d more NOT LISTED (showing %d of %d; the report is "
+              "capped so it survives the 10,000-character hook-output limit)"
+              % (len(items) - _LIST_CAP, _LIST_CAP, len(items)), file=stream)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="x4canary",
@@ -360,8 +397,7 @@ def main(argv=None) -> int:
         print("REFUSING A VERDICT: %d of %d repositories could not be checked. "
               "'Could not look' is not 'nothing wrong'." % (unreadable, len(rs)),
               file=sys.stderr)
-        for m in unreadable_reasons:
-            print("   " + m, file=sys.stderr)
+        _emit(unreadable_reasons, sys.stderr)
         # A CONFIRMED LOSS OUTRANKS AN UNREADABLE REPOSITORY, and this returned 2 for
         # both. One unreadable repo therefore DOWNGRADED a real, already detected loss
         # in a DIFFERENT repo from rc 1 to rc 2 — and rc is what the SessionStart
@@ -375,18 +411,22 @@ def main(argv=None) -> int:
 
     if all_drift:
         print("changed (not a loss):")
-        for m in all_drift:
-            print("   " + m)
+        _emit(all_drift, sys.stdout)
 
     if all_losses:
         print(file=sys.stderr)
         print("*** DATA LOSS in %d tracked file(s) ***" % len(all_losses),
               file=sys.stderr)
-        for m in all_losses:
-            print("   " + m, file=sys.stderr)
-        print(file=sys.stderr)
+        # THE DIRECTIVE GOES BEFORE THE LIST, and that ordering is load-bearing.
+        # When this output is filed for length the preview keeps the HEAD, so a
+        # directive printed after the inventory is the first thing dropped -- and
+        # it is the only actionable sentence here. "do not re-run whatever wrote
+        # it" is specifically what stops the recoverable state being destroyed,
+        # so it must survive a truncation that eats everything below it.
         print("Recover the file, do not re-run whatever wrote it:", file=sys.stderr)
         print("   git -C <repo> checkout -- <path>", file=sys.stderr)
+        print(file=sys.stderr)
+        _emit(all_losses, sys.stderr)
         return 1
 
     print("canary: %d repositor%s checked, no tracked file lost."

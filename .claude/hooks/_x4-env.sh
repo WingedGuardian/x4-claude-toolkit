@@ -385,13 +385,23 @@ _X4_BOUND_RESERVE=300
 # count codepoints; the bash arm is a last resort and says so.
 x4_len(){
   _py="$(x4_python)"
-  if [ -n "$_py" ]; then X4_BND="$1" "$_py" -c 'import os,sys; sys.stdout.write(str(len(os.environ["X4_BND"])))'; return 0; fi
+  if [ -n "$_py" ]; then X4_BND="$1" "$_py" -c 'import os,sys; sys.stdout.buffer.write(str(len(os.environ["X4_BND"])).encode())'; return 0; fi
   if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then "${JQ:-jq}" -rn --arg s "$1" '$s|length'; return 0; fi
   printf '%s' "${#1}"
 }
 x4_head(){
+  # sys.stdout.BUFFER, not sys.stdout. On Windows python's text-mode stdout
+  # re-translates LF into CRLF on the way out, so a payload that already carried
+  # CRLF came back as CR CR LF and the slice GREW by one character per line AFTER
+  # the bound had been computed: 9,700 characters in, 9,807 out, and the capped
+  # result landed at 10,007 against a 10,000 ceiling.
+  #
+  # The suite caught it and my own spot-check did NOT, because text-mode open()
+  # collapses CRLF on the way back in and reported an honest-looking 9,900. Two
+  # instruments, one wrong, and the wrong one was the informal one. Read bytes,
+  # write bytes.
   _py="$(x4_python)"
-  if [ -n "$_py" ]; then X4_BND="$1" X4_BNDN="$2" "$_py" -c 'import os,sys; sys.stdout.write(os.environ["X4_BND"][:int(os.environ["X4_BNDN"])])'; return 0; fi
+  if [ -n "$_py" ]; then X4_BND="$1" X4_BNDN="$2" "$_py" -c 'import os,sys; sys.stdout.buffer.write(os.environ["X4_BND"][:int(os.environ["X4_BNDN"])].encode("utf-8"))'; return 0; fi
   if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then "${JQ:-jq}" -rn --arg s "$1" --argjson n "$2" '$s[0:$n]'; return 0; fi
   printf '%s' "${1:0:$2}"
 }

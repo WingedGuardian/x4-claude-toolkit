@@ -396,3 +396,74 @@ def test_a_root_that_does_NOT_RESOLVE_is_NAMED_beside_the_count(repo, monkeypatc
     assert x4canary.main([]) == 0
     out = capsys.readouterr().out
     assert "NOT CHECKED" in out and "game_root" in out and "mods" in out
+
+
+# --- the loss report is a BOUNDED channel, and its directive must survive ------
+#
+# MEASURED 2026-09-07, CC 2.1.263: Claude Code files hook output above 10,000
+# CHARACTERS and shows the model a ~2 KB preview -- silently, exit code
+# unchanged. session-canary.sh pipes this tool's whole output into that channel,
+# so the loss report has a hard ceiling it never knew about.
+#
+# The failure is INVERTED AGAINST SEVERITY: one lost file sails under the cap,
+# and a directory-level loss -- the case that actually matters -- is the one that
+# gets filed. Worse, the preview keeps the HEAD, so what survives is the
+# inventory and what is cut is "do not re-run whatever wrote it", the single
+# line that stops the recoverable state being destroyed.
+#
+# Upper bound on the old behaviour: the list crossed 10,000 characters at about
+# 81 files against the 473 tracked across the two watched repos. "About" and
+# "upper bound" because a renamed-and-emptied file now carries the wider
+# "new.md (was old.md)" form, which crosses sooner.
+def _lose_many(repo: Path, n: int) -> None:
+    """Commit n small tracked files, then empty every one of them."""
+    names = ["f%03d.md" % i for i in range(n)]
+    for nm in names:
+        (repo / nm).write_text("y" * 400, encoding="utf-8")
+    _git(repo, "add", *names)
+    _git(repo, "commit", "-q", "-m", "many")
+    for nm in names:
+        (repo / nm).write_text("", encoding="utf-8")
+
+
+def test_the_recovery_directive_PRECEDES_the_file_list(repo, monkeypatch, capsys):
+    """The preview keeps the HEAD, so the directive must be in the head.
+
+    Printed after the list, it is the first thing dropped -- and it is the only
+    actionable sentence in the report.
+    """
+    _lose_many(repo, 12)
+    assert _check(repo, monkeypatch) == 1
+    err = capsys.readouterr().err
+    directive = err.index("do not re-run whatever wrote it")
+    first_item = err.index("f000.md")
+    assert directive < first_item, (
+        "the recovery directive is printed AFTER the file list, so truncation "
+        "keeps the inventory and drops the instruction")
+
+
+def test_a_large_loss_list_is_CAPPED_and_says_so(repo, monkeypatch, capsys):
+    """A narrowing step must announce itself (CLAUDE.md, and _scan.count_line).
+
+    250, not 120: at 120 the fixture's short names total ~5,600 characters, so the
+    length assertion below COULD NOT FAIL and was decoration. Both assertions have
+    to be reachable or the test only pins the half someone happened to break.
+    """
+    _lose_many(repo, 250)
+    assert _check(repo, monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert len(err) <= 10000, (
+        "the loss report is %d characters -- above the 10,000-char cap, so "
+        "Claude Code files it and the session sees only a preview" % len(err))
+    assert "NOT LISTED" in err, "the list was capped with no disclosure"
+    assert "250" in err, "the disclosure does not state the true total"
+
+
+def test_a_SMALL_loss_list_is_listed_in_full(repo, monkeypatch, capsys):
+    """The twin. A cap that fires when it should not is the other failure."""
+    _lose_many(repo, 3)
+    assert _check(repo, monkeypatch) == 1
+    err = capsys.readouterr().err
+    for nm in ("f000.md", "f001.md", "f002.md"):
+        assert nm in err, "%s was dropped from a list well under the cap" % nm
+    assert "NOT LISTED" not in err, "the cap fired on a 3-item list"
