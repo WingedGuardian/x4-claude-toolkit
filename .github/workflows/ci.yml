@@ -492,11 +492,25 @@ jobs:
           #
           # Headroom is +3 over the measurement, the same margin the 46 -> 49 pair
           # used. Ubuntu stays INFERRED: the one run that measured both had ubuntu 11
-          # above windows (53 vs 42, run 33777842225), so 53 + 11 + 3 = 67.
+          # above windows (53 vs 42, run 33777842225), so measurement + 11 + 3.
+          #
+          # ** RE-MEASURED 2026-09-07 after the release-review round: windows cold is
+          # 56, not 53. ** The whole +3 is `tests/test_build_release.py`, attributed
+          # per file by diffing the two verify-cold runs rather than by reading the
+          # totals: 3 of its 4 tests need a git checkout carrying the v3.0.0 tag, and
+          # a `git archive` extract is neither a repo nor tagged, so they skip for the
+          # same "not this repo" reason as blind_spots_ids and next_blind_spot_id.
+          # Nothing else moved -- every other file is byte-identical in both runs.
+          #
+          # ⚠ THE OLD 56 WAS EXACTLY AT THE MEASUREMENT, so the gating Windows leg had
+          # ZERO headroom and one further skip would have failed the release on a
+          # CEILING rather than on a defect -- which is the failure this pair already
+          # had once, and the reason the margin is stated rather than assumed. New
+          # pair: windows 56 + 3 = 59, ubuntu 56 + 11 + 3 = 70.
           # ** Re-read the per-JOB conclusion after the first push and take CI's
           # numbers over these. ** `gh api .../runs/<id>/jobs` -- never the run
           # conclusion, which reported success while ubuntu FAILED in run 33994180317.
-          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '67' || '56' }}
+          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '70' || '59' }}
         run: uv run --frozen python -m pytest -q -rs
 
       # THE COLD CHECK, WIRED. `scripts/verify-cold.sh` is named in five documents
