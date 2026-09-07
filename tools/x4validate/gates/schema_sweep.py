@@ -299,13 +299,33 @@ from x4validate import _check, _merge
 # RE-BASELINE 2026-09-06 — FULLY ATTRIBUTED, and the cause is a THIRD one this
 # gate's own instruction does not name.
 #
-# ★ THE INSTRUCTION BELOW SAYS "either the modlist changed ... or the check did".
-# IT WAS NEITHER. `reference/` — the SCHEMA FLOOR every one of these findings is
-# measured against — was re-unpacked on 2026-09-02, AFTER the 2026-08-25 baseline
-# (`reference/.unpacked-and-locked` mtime; the game's own .cat files have not moved
-# since 2026-06-12). The gate has a baseline for the modlist and none for the
-# schema, so a schema change is indistinguishable from a regression in the check.
-# **That is the finding worth carrying forward — not the numbers.**
+# ⚠ THE CAUSE IS UNKNOWN, AND THIS COMMENT SAID OTHERWISE. Corrected 2026-09-06,
+# same day it was written. It claimed `reference/` — the SCHEMA FLOOR every one of
+# these findings is measured against — had been re-unpacked on 2026-09-02, AFTER the
+# 2026-08-25 baseline. That was read off `reference/.unpacked-and-locked`'s MTIME,
+# and the sentinel is the one file `bin/unpack-reference.sh` rewrites: its mtime is
+# evidence about the SCRIPT, not about the tree. Gotcha #34 exactly — what an
+# instrument returned, standing in for a fact about the world, written as fact.
+#
+# WHAT IT IS NOT (each measured, so the next reader does not re-walk these):
+#   * NOT a reference/ content change. MEASURED 2026-09-06 by walking the tree:
+#     1 of 510,711 files has an mtime after 2026-08-25, and it IS the sentinel.
+#     XRCatTool preserves catalog timestamps, so the re-unpack rewrote the marker
+#     and changed nothing else. The sentinel's own CONTENTS say 2026-06-22.
+#   * NOT the mods. Both drifted mods are byte-frozen well before the baseline
+#     (vro's newest file 2026-07-27, cpsdo_zb_modpack's 2026-07-24).
+#
+# THE CANDIDATE THAT WAS RULED OUT WITHOUT BEING TESTED, and it is one of the two
+# the instruction below already names: THE CHECK DID CHANGE. `x4validate/_xsd.py`
+# was modified twice after the baseline — 54d997e (2026-08-27, +42/-8, "the cheap
+# script check now runs on every validate") and ffe6dd6 (2026-08-28, +131). Whether
+# either reaches the effects/particle path these `amplitude` findings live on is
+# UNMEASURED. It is the first thing to test, not the last.
+#
+# An honest unknown beats a tidy wrong story, and the REMEDY does not depend on
+# which answer wins: this gate baselines the modlist and has NO fingerprint for the
+# schema floor, so a schema change and a regression in the check are indistinguishable
+# to it. **That is the finding worth carrying forward — not the numbers.**
 #
 # HOW THE SCHEMA WAS ISOLATED, without an old copy of the XSD to diff:
 #   * both drifted mods are BYTE-FROZEN well before the baseline — vro's newest file
@@ -386,8 +406,8 @@ KNOWN_REAL = {
         "MEASURED packed-inclusive over 125 mods / 4,618 files, 20 occurrences exist "
         "corpus-wide and 16 are VRO's, while base+DLC has 0 as an attribute against "
         "99 as an element. Plus element/@forkmaterial x4 -- invented attribute, all "
-        "of them VRO itself (F7). Was 5 forkmaterial against the pre-2026-09-02 "
-        "reference/; the file has 4 occurrences and now reports 4, 1:1"),
+        "of them VRO itself (F7). Was 5 forkmaterial against the 2026-08-25 baseline "
+        "figure; the file has 4 occurrences and now reports 4, 1:1. The old 5 was inconsistent with the file all along, so it is a corrected count rather than evidence that anything moved"),
     # xspvro removed 2026-08-08 (mod moved out of extensions\). Its entry was
     # (2 gating, 9 advisory) — "job ids containing a SPACE against the id pattern
     # facet" — and its departure accounts for the whole gating/advisory drop in
@@ -476,8 +496,9 @@ def main() -> int:
         for f in fail:
             print(f"  ! {f}")
         print("\nInvestigate before re-baselining. A moved number means the modlist "
-              "changed, or the SCHEMA FLOOR did (reference/ re-unpacked -- this gate has "
-              "NO baseline for it, and that is exactly what moved on 2026-09-06), or the "
+              "changed, or the SCHEMA FLOOR did (this gate has NO fingerprint for it, so "
+              "it cannot tell that from a regression -- on 2026-09-06 the movement was "
+              "attributed per mod but its CAUSE was never established), or the "
               "check did (that is the regression this gate exists to catch). Diff the "
               "PER-MOD table above, not the totals: on 2026-09-06 both `mods flagged` and "
               "`pairs` read UNCHANGED while one mod left the install and another arrived.")
