@@ -444,3 +444,34 @@ def test_an_IN_PLACE_dry_run_runs_NOTHING(installer, tmp_path):
         "an in-place --dry-run RAN setup.sh -- it syncs dependencies and writes to "
         "disk:\n%s" % out[-1500:])
     assert marker.exists() == had_venv, "a dry run created or removed the virtualenv"
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_UNREADABLE_config_REFUSES_with_a_crafted_message(installer, tmp_path):
+    """A read that cannot succeed must not be reported as "everything changed".
+
+    `Get-OwnedEnvLinesFromFile` / `_owned_lines_old` read the live config to decide
+    whether a write is needed. Unguarded, a config held open FileShare::None -- an
+    editor, an AV scanner, a sync client -- gave a raw interpreter dump naming the
+    line and the file, with no crafted message and no INCOMPLETE accounting. Worse,
+    an empty result would compare unequal to the rendered lines and be read as
+    "the paths changed", which is a different claim from "I could not look".
+
+    A directory standing where the config belongs is the same failure and can
+    actually be created, which is what makes this a test rather than an argument.
+    The point is not the directory; it is that the guard FIRES and says something
+    a user can act on.
+    """
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    cfg = dest / ".claude" / "x4-paths.env"
+    cfg.unlink()
+    cfg.mkdir()                      # unreadable as a file, and creatable
+
+    r = _install(installer, tmp_path, dest)
+    out = (r.stdout + r.stderr)
+    low = out.lower()
+    assert r.returncode != 0, "an unreadable config was reported as a successful install"
+    assert "refusing" in low or "cannot read" in low, (
+        "the failure is a raw interpreter error rather than a crafted message:\n%s"
+        % out[-1200:])
+    assert "nothing has been changed" in low or "untouched" in low, (
+        "the refusal does not tell the user whether anything was written:\n%s" % out[-1200:])

@@ -317,7 +317,25 @@ _owned_lines_new() {   # _owned_lines_new TOOLKIT_DIR
 #: upgrade look like a change and defeat the whole check.
 _owned_lines_old() {   # _owned_lines_old CONFIG_FILE
   local f="$1" line key
+  # EXISTS-BUT-NOT-A-READABLE-FILE is its own answer. `[ -f ]` is false for a
+  # DIRECTORY standing where the config belongs, so the old form returned "no
+  # config" for a path that plainly is one -- and the caller then compared an
+  # empty result against the rendered lines and read it as "the paths changed".
+  # Absent, unreadable and different are three states, not two.
+  if [ -e "$f" ] && [ ! -f "$f" ]; then
+    echo "__X4_UNREADABLE__"
+    return 0
+  fi
   [ -f "$f" ] || return 0
+  # READABLE, or say so. A config held open by an editor, an AV scanner or a sync
+  # client gives `Device or resource busy` here, and an unreadable file used to
+  # produce raw shell errors and an empty result -- which the caller then compared
+  # against the rendered lines and read as "everything changed". Cannot-read is
+  # not the same as differs, and it must not be silently promoted to it.
+  if ! [ -r "$f" ] || ! head -c 1 "$f" >/dev/null 2>&1; then
+    echo "__X4_UNREADABLE__"
+    return 0
+  fi
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in '#'*|'') continue ;; *=*) key="${line%%=*}" ;; *) continue ;; esac
     case " X4_TOOLKIT X4_GAME X4_REFERENCE X4_PROFILE X4_DEBUGLOG X4_MODS X4_EXTENSIONS XRCATTOOL " in
@@ -407,8 +425,15 @@ precheck_locked_targets() {   # precheck_locked_targets DEST
 
 precheck_config() {   # precheck_config TOOLKIT_DIR
   local t="$1" f="$1/.claude/x4-paths.env"
-  [ -f "$f" ] || return 0                      # nothing there to protect
-  [ "$(_owned_lines_old "$f")" = "$(_owned_lines_new "$t")" ] && return 0
+  [ -e "$f" ] || return 0                      # nothing there to protect
+  local _now; _now="$(_owned_lines_old "$f")"
+  if [ "$_now" = "__X4_UNREADABLE__" ]; then
+    echo "REFUSING: $f exists but cannot be READ, so this run cannot tell whether" >&2
+    echo "      your paths would change. Something is holding it open -- an editor," >&2
+    echo "      an AV scanner, or a sync client. Nothing has been changed." >&2
+    exit 1
+  fi
+  [ "$_now" = "$(_owned_lines_new "$t")" ] && return 0
   [ -w "$f" ] && return 0
   echo                                                                        >&2
   echo "REFUSING: your path config must change, and it is READ-ONLY."         >&2
@@ -474,7 +499,11 @@ write_paths_env() {  # write_paths_env TOOLKIT_DIR
     else
       # A backup that silently did not happen is worse than none, because the message
       # above would have said it did.
-      echo "  WARNING: could not back up $f -- it is about to be rewritten." >&2
+      # States what is TRUE NOW, not a prediction. This used to say "it is about to
+      # be rewritten" and then the run died before rewriting anything -- a warning
+      # that was false in the only case that printed it.
+      echo "  WARNING: could not back up $f. If this run goes on to replace it," >&2
+      echo "           the previous values will not be recoverable from a .bak." >&2
     fi
   fi
 

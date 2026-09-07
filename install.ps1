@@ -161,7 +161,14 @@ function Get-OwnedEnvLinesFromFile($f) {
   $owned = @('X4_TOOLKIT','X4_GAME','X4_REFERENCE','X4_PROFILE','X4_DEBUGLOG','X4_MODS','X4_EXTENSIONS','XRCATTOOL')
   $out = @()
   if (Test-Path -LiteralPath $f) {
-    foreach ($line in (Get-Content -LiteralPath $f)) {
+    # READABLE, or say so. Held open FileShare::None by an editor, an AV scanner or
+    # a sync client, this threw a raw PowerShell dump naming the line and the file:
+    # no crafted message, no INCOMPLETE accounting. Same class as the unguarded
+    # Move-Item, one step earlier in the same flow. Cannot-read must never be
+    # silently promoted to "differs".
+    $lines0 = $null
+    try { $lines0 = Get-Content -LiteralPath $f -ErrorAction Stop } catch { return ,@('__X4_UNREADABLE__') }
+    foreach ($line in $lines0) {
       if ($line -match '^\s*#' -or $line -notmatch '=') { continue }
       $key = ($line -split '=',2)[0]
       if ($owned -contains $key) { $out += $line }
@@ -249,6 +256,12 @@ function Test-ConfigPrecheck($t) {
   $f = Join-Path $t (Join-Path '.claude' 'x4-paths.env')
   if (-not (Test-Path -LiteralPath $f)) { return }
   $now = (Get-OwnedEnvLinesFromFile $f) -join "`n"
+  if ($now -eq '__X4_UNREADABLE__') {
+    Write-Host "REFUSING: $f exists but cannot be READ, so this run cannot tell whether"
+    Write-Host '      your paths would change. Something is holding it open -- an editor,'
+    Write-Host '      an AV scanner, or a sync client. Nothing has been changed.'
+    exit 1
+  }
   $new = (Get-OwnedEnvLines $t) -join "`n"
   if ($now -eq $new) { return }
   $ro = $false
@@ -503,7 +516,17 @@ function Write-PathsEnv($t) {
   $owned = @('X4_TOOLKIT','X4_GAME','X4_REFERENCE','X4_PROFILE','X4_DEBUGLOG','X4_MODS','X4_EXTENSIONS','XRCATTOOL')
   $carried = @()
   if (Test-Path -LiteralPath $f) {
-    foreach ($line in (Get-Content -LiteralPath $f)) {
+    # GUARDED, and this one refuses rather than degrading. These are the keys this
+    # function does NOT own -- X4_NEXUS_KEY among them -- so a read that fails here
+    # would carry over NOTHING and silently drop the user's secret from the file it
+    # is about to rewrite. A raw error is bad; quietly losing a key is worse.
+    $lines1 = $null
+    try { $lines1 = Get-Content -LiteralPath $f -ErrorAction Stop } catch {
+      Write-Host ("ERROR: cannot read " + $f + " to carry over your own settings: " + $_.Exception.Message) -ForegroundColor Red
+      Write-Host "       Refusing rather than rewriting it without them. Nothing has been changed." -ForegroundColor Red
+      exit 1
+    }
+    foreach ($line in $lines1) {
       if ($line -match '^\s*#' -or $line -notmatch '=') { continue }
       $key = ($line -split '=', 2)[0].Trim()
       if ($owned -notcontains $key) { $carried += $line }
