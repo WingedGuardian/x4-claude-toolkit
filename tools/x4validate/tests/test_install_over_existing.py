@@ -337,3 +337,58 @@ def test_the_config_backups_cannot_be_committed(path, ignored, why):
     is_ignored = (r.returncode == 0)
     assert is_ignored == ignored, (
         "%s should%s be git-ignored (%s)" % (path, "" if ignored else " NOT", why))
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_refusal_LIST_is_bounded_and_says_how_many_it_hid(installer, tmp_path):
+    """A regression pin for a branch I wrote and never exercised.
+
+    The refusal prints at most 8 paths plus a count of the rest. Written that way
+    because an UNBOUNDED warning is the defect this same session fixed in the
+    canary -- a report whose length grows with the severity it describes is filed
+    by the harness exactly when it matters. But the >8 branch had no case, so
+    "bounded" was a claim about code nobody had run.
+
+    Locks 12 files so the cap actually bites, and asserts BOTH halves: the list is
+    capped, and the hidden count is stated rather than silently dropped.
+    """
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    hooks = dest / ".claude" / "hooks"
+    victims = sorted(p for p in hooks.glob("*") if p.is_file())[:12]
+    assert len(victims) >= 10, "fixture needs >8 lockable files, found %d" % len(victims)
+    for v in victims:
+        v.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+
+    r = _install(installer, tmp_path, dest)
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, "reported success over %d locked files" % len(victims)
+    listed = sum(1 for ln in out.splitlines() if ln.strip().startswith(str(dest)[:12]) or "hooks" in ln and ln.strip().startswith(("C:", "/")))
+    assert "NOT LISTED" in out, (
+        "more than 8 files were blocked and the refusal did not say how many it "
+        "hid -- a narrowing step must announce itself:\n%s" % out[-1200:])
+    assert "unlock" in out.lower()
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_config_write_leaves_no_temp_behind(installer, tmp_path):
+    """The config is rendered to a temp, verified, then moved.
+
+    Both installers used to write the LIVE config and verify it AFTERWARDS, so a
+    render that failed part way left a half-written file and the check then
+    reported a failure about something it was too late to protect. Third instance
+    of one shape today, after `_effective._write_db` and the round trip removed
+    from copy_toolkit.
+
+    ⚠ WHAT THIS DOES AND DOES NOT PROVE. It asserts the observable half: no temp
+    survives a successful run, and the installed config is sourceable. It does NOT
+    inject a mid-write failure -- the escaping exists to make an unsourceable
+    render impossible, so there is no honest way to provoke one from outside. The
+    partial-write window is closed BY CONSTRUCTION (the live path is never the
+    target of the render), and that is a claim about the code, not about this
+    test.
+    """
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "install failed"
+    cfg = dest / ".claude" / "x4-paths.env"
+    assert cfg.is_file(), "no config was written"
+    strays = sorted(p.name for p in (dest / ".claude").glob("x4-paths.env.tmp*"))
+    assert not strays, "the config write left a temp behind: %s" % strays
+    body = cfg.read_text(encoding="utf-8")
+    assert "X4_TOOLKIT=" in body, "the installed config is not the rendered one"

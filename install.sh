@@ -492,6 +492,18 @@ write_paths_env() {  # write_paths_env TOOLKIT_DIR
     done < "$f"
   fi
 
+  # RENDER TO A TEMP, VERIFY THE TEMP, THEN REPLACE. The redirect used to target
+  # the LIVE config, and `>` truncates before the first byte is written -- so a
+  # render that failed part way left the user with a half-written config, and the
+  # verification below then reported the failure about a file it was already too
+  # late to protect. "Refusing to report success" was honest and the config was
+  # gone regardless, recoverable only from a .bak the user had to go and find.
+  #
+  # This is the third instance of one shape today: `_effective._write_db` leaked
+  # its temp because the cleanup only existed on one exit path, `_registry.save`
+  # already had the answer, and this had the answer inverted -- it wrote to the
+  # live path and checked afterwards. Build beside, prove, then move.
+  tmp="$f.tmp$$"
   {
     echo "# Written by install.sh ($(date -u +%Y-%m-%dT%H:%MZ)) - edit freely. All paths overridable."
     echo "X4_TOOLKIT=\"$(_esc_env_value "$t")\""
@@ -506,16 +518,19 @@ write_paths_env() {  # write_paths_env TOOLKIT_DIR
       echo "# --- carried over from your previous x4-paths.env ---"
       printf '%s' "$carried"
     fi
-  } > "$f"
+  } > "$tmp" || { rm -f "$tmp"; echo "ERROR: could not write $tmp; your existing config is untouched." >&2; return 1; }
 
-  # VERIFY THE ARTIFACT, never the exit code. A config bash cannot source is exactly the
-  # failure the escaping above exists to prevent, and proving it costs one subshell --
-  # the same rule this installer already applies to the jq merge.
-  if ! ( set -a; . "$f" ) >/dev/null 2>&1; then
-    echo "ERROR: wrote $f but bash cannot SOURCE it, so every X4_* would come out unset." >&2
-    echo "       Refusing to report success. This is a quoting fault in one of the paths." >&2
+  # VERIFY THE ARTIFACT, never the exit code -- and verify it BEFORE it is live.
+  # A config bash cannot source is exactly the failure the escaping above exists
+  # to prevent, and proving it costs one subshell.
+  if ! ( set -a; . "$tmp" ) >/dev/null 2>&1; then
+    rm -f "$tmp"
+    echo "ERROR: the config this run would write cannot be SOURCED by bash, so every" >&2
+    echo "       X4_* would come out unset. This is a quoting fault in one of the paths." >&2
+    echo "       NOTHING was changed: your existing $f is untouched." >&2
     return 1
   fi
+  mv -f "$tmp" "$f" || { rm -f "$tmp"; echo "ERROR: could not install $f; your existing config is untouched." >&2; return 1; }
   echo "  wrote $f"
   if [ -n "$carried" ]; then
     echo "  [note] carried over $(printf '%s' "$carried" | grep -c .) setting(s) you had added"

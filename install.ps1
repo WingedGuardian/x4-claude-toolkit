@@ -519,7 +519,13 @@ function Write-PathsEnv($t) {
   # UTF-8 WITHOUT BOM, LF endings: this file is sourced by bash (set -euo pipefail),
   # and Windows PowerShell 5.1's -Encoding UTF8 writes a BOM that bash reads as a
   # command ("command not found" on line 1, exit 127 before any path resolves).
-  Write-Utf8NoBom $f (($lines -join "`n") + "`n")
+  # RENDER TO A TEMP, VERIFY THE TEMP, THEN MOVE. This wrote the LIVE config and
+  # verified it afterwards, so a render that failed part way left the user with a
+  # half-written file and the check below then reported a failure about something
+  # it was already too late to protect. install.sh had the identical inversion.
+  # Build beside, prove, then move.
+  $tmp = "$f.tmp$PID"
+  Write-Utf8NoBom $tmp (($lines -join "`n") + "`n")
 
   # VERIFY THE ARTIFACT, never the exit code. A config bash cannot source is exactly
   # what the escaping above exists to prevent, and proving it costs one bash call --
@@ -543,7 +549,7 @@ function Write-PathsEnv($t) {
     # -replace was the wrong tool twice over. A single quote inside a
     # single-quoted bash string is closed, escaped and reopened.
     $sq = [string][char]39
-    $bp = ($f -replace '\\','/').Replace($sq, $sq + [char]92 + $sq + $sq)
+    $bp = ($tmp -replace '\\','/').Replace($sq, $sq + [char]92 + $sq + $sq)
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -552,14 +558,17 @@ function Write-PathsEnv($t) {
       $ErrorActionPreference = $prevEAP
     }
     if ($LASTEXITCODE -ne 0) {
-      Write-Host "ERROR: wrote $f but bash cannot SOURCE it, so every X4_* would come out unset." -ForegroundColor Red
-      Write-Host "       Refusing to report success. This is a quoting fault in one of the paths." -ForegroundColor Red
+      Remove-Item -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
+      Write-Host "ERROR: the config this run would write cannot be SOURCED by bash, so every" -ForegroundColor Red
+      Write-Host "       X4_* would come out unset. This is a quoting fault in one of the paths." -ForegroundColor Red
+      Write-Host "       NOTHING was changed: your existing $f is untouched." -ForegroundColor Red
       Write-Host ("       bash said: " + ($probe -join ' ')) -ForegroundColor Red
       exit 1
     }
   } else {
-    Write-Host "  [warn] no bash found, so $f was NOT verified as sourceable"
+    Write-Host "  [warn] no bash found, so the new config was NOT verified as sourceable"
   }
+  Move-Item -Force -LiteralPath $tmp -Destination $f
   Write-Host "  wrote $f"
   if ($carried.Count) { Write-Host ("  [note] carried over " + $carried.Count + " setting(s) you had added") }
 }
