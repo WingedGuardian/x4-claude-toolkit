@@ -135,3 +135,39 @@ silently drops commits and mis-reports a file as untouched (#37).
 A review that does not separate the two will keep re-finding the repository's whole
 history at every release, and will read as "the fixes are causing new bugs" when the
 measured answer is the opposite.
+
+### ★ The third bucket: a PRE-ARC defect this release RECRUITS FOR
+
+IN-ARC and PRE-ARC are not exhaustive, and the gap between them shipped once already.
+**A defect can be old while the thing that makes users REACH it is new** — and those two
+halves blame to different commits, so a review that blames only the defect will bucket
+the whole finding PRE-ARC and wave it through.
+
+> **The case (2026-09-07, v3.1.0).** `install.sh` cannot run over an install that
+> `scripts/x4lock.py` has locked: it has no `trap`, so a failure between the backup and
+> the restore skips the restore, and it dies on the first item with
+> `cp: … Permission denied`. Blamed correctly to `2d4582b`, an ancestor of v3.0.0, with
+> `x4lock` itself shipping IN v3.0.0. PRE-ARC, therefore not a gate, therefore ship it.
+>
+> **MEASURED, and it inverts the conclusion: `git show v3.0.0:README.md | grep -ci x4lock`
+> is ZERO.** The line telling users to lock their files was added in the release under
+> review, hours before. v3.1.0 was not merely the first upgrade over a locked install —
+> it was the first release that INSTRUCTS people into the state that breaks the upgrade.
+> The defect is old; its blast radius is new, and the commit that widened it is in-arc.
+
+**So ask two questions of every PRE-ARC finding, not one:**
+
+1. When was the DEFECT introduced? (`git blame` on the broken line.)
+2. When was the thing that makes users ENCOUNTER it introduced? A new doc line, a new
+   default, a new install step, a newly-advertised feature, a new code path that reaches
+   old code. `git show <tag>:<file>` on the DOCS, not only on the source.
+
+If (1) is pre-arc and (2) is in-arc, the finding is **in-arc for triage purposes** even
+though not one line of the defective code changed. Fix the half that is yours — usually
+the recruitment, which is usually cheap — and say plainly which half you left.
+
+⚠ **The reviewer who found this had the right defect and the wrong baseline**, reading
+the README from the WORKING TREE and treating it as shipped state. That is #34's family
+one level out: not "what an instrument returned" standing in for a fact, but "what the
+repo says today" standing in for "what the last release said". `git show <tag>:<path>`
+is the whole remedy and it costs nothing.
