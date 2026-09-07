@@ -108,7 +108,26 @@ def load_coverage(db: str) -> dict:
     path = BASEX_DIR / f"coverage-{db}.json"
     if not path.is_file():
         return {}
-    cov = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        cov = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        # A truncated or half-written coverage file used to escape as a raw
+        # traceback with rc 1, which in this toolkit means "the thing you asked
+        # about has findings" — when the truth is "this artifact
+        # is unreadable". F39 removed exactly that confusion from the CLIs; this
+        # reader was missed, and it sits on the path every query takes.
+        #
+        # {} is the SAFE value, not a shrug: with no coverage,
+        # supports_negative_claim is falsy and the negative is REFUSED. It is
+        # named because a silent {} looks like an index that was never stamped.
+        print(f"  coverage-{db}.json is unreadable ({type(exc).__name__}: {exc}); "
+              f"treating this index as carrying NO coverage, so no negative "
+              f"claim can be made from it.", file=sys.stderr)
+        return {}
+    if not isinstance(cov, dict):
+        print(f"  coverage-{db}.json does not contain a JSON object; treating "
+              f"this index as carrying NO coverage.", file=sys.stderr)
+        return {}
     return cov if cov.get("db") == db else {}
 
 

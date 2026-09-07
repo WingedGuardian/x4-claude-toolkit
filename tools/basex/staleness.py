@@ -135,12 +135,21 @@ class Verdict:
 def check(coverage_path: Path, reference: Path, extensions: Path,
           engine_dir: Path, db: str = "") -> Verdict:
     db = db or coverage_path.stem.replace("coverage-", "")
+    # determinable=False ON ALL THREE OF THESE. The field, its docstring and the
+    # UNKNOWN banner all existed; check() simply never set it, so its only
+    # producer was ask.py own except-clause. An absent report, an unreadable one
+    # and a report with no fingerprint each mean "nobody established which", and
+    # each printed STALE — an ASSERTION that the world has moved, made
+    # about a world nothing looked at. It also sends the reader off to rebuild an
+    # index that may have been perfectly current.
     if not coverage_path.is_file():
-        return Verdict(False, [f"no coverage report at {coverage_path}"], db)
+        return Verdict(False, [f"no coverage report at {coverage_path}"], db,
+                       determinable=False)
     try:
         data = json.loads(coverage_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return Verdict(False, [f"coverage report unreadable ({exc})"], db)
+        return Verdict(False, [f"coverage report unreadable ({exc})"], db,
+                       determinable=False)
 
     stored = data.get("fingerprint")
     if not stored:
@@ -148,9 +157,29 @@ def check(coverage_path: Path, reference: Path, extensions: Path,
         # 2026-08-13 lacks this field, and those are precisely the databases
         # whose staleness prompted the check.
         return Verdict(False, ["no fingerprint recorded — built before staleness "
-                               "tracking existed, so freshness cannot be established"], db)
+                               "tracking existed, so freshness cannot be established"], db,
+                       determinable=False)
 
-    now = fingerprint(reference, extensions, engine_dir)
+    try:
+        now = fingerprint(reference, extensions, engine_dir)
+    except (EngineUnavailable, ImportError):
+        # NOT OURS TO CATCH. `main()` owns this one and turns it into rc 6 via
+        # `_report_unknown`; swallowing it here returned a determinable=False
+        # Verdict that `main` then rendered as rc 5 = STALE, reintroducing the
+        # exact confusion this change exists to remove. Caught by
+        # test_unimportable_engine_reports_UNKNOWN_not_a_traceback, which was
+        # written for that failure and went red on the first draft of this fix.
+        raise
+    except Exception as exc:
+        # The COMPARISON side can fail too, and it fails on a CONFIGURED
+        # machine whose roots have moved — not only on a cold checkout,
+        # which is the one case ask.py caller-side guard covers. With no `now`,
+        # the stored stamp has nothing to be compared against, and that is the
+        # definition of UNKNOWN rather than of stale.
+        return Verdict(False, [f"the current fingerprint could not be computed "
+                               f"({type(exc).__name__}: {exc}), so the stored "
+                               f"one has nothing to be compared against"], db,
+                       determinable=False)
     reasons = []
     if stored.get("content") != now["content"]:
         reasons.append("content changed: a mod was added, removed, updated, "
@@ -340,7 +369,13 @@ def main(argv=None) -> int:
         print(f"  {args.db}: FRESH — still describes the current world.")
         return 0
     print(verdict.banner(), file=sys.stderr)
-    return 5
+    # THE RC HAS TO MATCH THE BANNER. `check()` can now report UNKNOWN -- an
+    # absent coverage report, an unreadable one, one with no fingerprint, a
+    # current fingerprint that could not be computed -- and printing "FRESHNESS
+    # UNKNOWN" while exiting 5 (STALE) would put the two channels in direct
+    # contradiction. 6 is already this CLI code for "cannot determine", used by
+    # both `_report_unknown` call sites and by --write.
+    return 5 if verdict.determinable else 6
 
 
 if __name__ == "__main__":

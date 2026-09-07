@@ -124,6 +124,17 @@ def build_index(reference: Path, ext_dir: Path,
         for vpath, root in _iter_source_files(dlc, f"dlc:{dlc.name}", unreadable):
             _walk(root, f"dlc:{dlc.name}", vpath, rows)
     # Installed mods.
+    #
+    # A MISSING extensions dir is a SETUP failure, not an empty modlist, and
+    # the two used to be the same wordless `if`. `_registry.default_installed_dirs`
+    # already draws that line in its own docstring — "0 installed mods"
+    # must not read as "you have no mods" when the truth is "I looked in the
+    # wrong place" — and this walk sat on the wrong side of it. Recorded
+    # into `unreadable`, which is the channel every caller already renders, so
+    # the state becomes visible instead of being skipped in silence.
+    if not ext_dir.is_dir() and unreadable is not None:
+        unreadable.append(str(ext_dir) + " (the extensions directory does not "
+                          "exist, so NO installed mod was indexed at all)")
     if ext_dir.is_dir():
         # INSTALLED: x4xref exists to make NEGATIVES admissible ("nobody calls
         # X"). The broader set is the conservative one -- excluding a disabled
@@ -336,8 +347,35 @@ def main(argv: list[str] | None = None) -> int:
         "set X4_GAME (or X4_EXTENSIONS), or pass --ext-dir")
         out = Path(args.out) if args.out else _default_tsv()
         unreadable: list = []
+        if not ext.is_dir():
+            # An index with no mods in it cannot support the one thing x4xref
+            # exists for: an admissible NEGATIVE ("nobody calls X"). Building
+            # one anyway and returning 0 hands every later query a denominator
+            # that excludes every mod on the machine without saying so.
+            print("REFUSING: the extensions directory does not exist: "
+                  + str(ext), file=sys.stderr)
+            print("  An xref index built without it covers base + DLC only, "
+                  "and every 'nobody references X' answer from it would "
+                  "silently exclude every installed mod.", file=sys.stderr)
+            print("  Set X4_GAME (or X4_EXTENSIONS), or pass --ext-dir.",
+                  file=sys.stderr)
+            return 2
         rows = build_index(ref, ext, unreadable)
         write_tsv(rows, out)
+        # THE SIDECAR THE QUERY PATH READS, WHICH NOTHING HAS EVER WRITTEN.
+        # `_exclusions()` renders "EXCEPT N file(s) that would not parse" from
+        # this file on every answer — and `_sidecar()` had exactly one
+        # caller, a reader. The unreadable files were printed once at build
+        # time, to stderr, and then discarded, so every later negative was
+        # rendered with no exclusion list at all: precisely what `_exclusions`'
+        # own docstring calls "the most confidently wrong answer this tool can
+        # give".
+        #
+        # Written UNCONDITIONALLY, empty file included. A sidecar left over from
+        # an earlier build would otherwise attach stale exclusions to a clean
+        # index — a wrong denominator is not safer than none.
+        _sidecar(out).write_text(
+            "".join(str(u) + "\n" for u in unreadable), encoding="utf-8")
         # WHEN this index was true. Its whole purpose is to make "nobody calls X"
         # admissible, and a negative from a superseded world is not admissible.
         _mutation.refuse_if_mutating("build the md/aiscript xref index")
