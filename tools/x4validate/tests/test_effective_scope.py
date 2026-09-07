@@ -13,7 +13,7 @@ the store (galaxy map ~1,371, characters/npc ~1,810), while balance classes are
 import pytest
 import sqlite3
 
-from x4validate import _effective, _effectivecli
+from x4validate import _effective, _effectivecli, _merge
 
 
 def _store(tmp_path):
@@ -91,3 +91,42 @@ def test_scope_note_and_the_register_agree_on_exclusions():
     for term in ("galaxy", "character", "lua"):
         assert term in note and term in text, (
             f"{term!r} must appear in BOTH the runtime scope note and BLIND-SPOTS.md")
+
+
+# --- base_has: a BARE FILENAME was a false POSITIVE (v3.1.0 review round 2) --------
+
+
+def _mini_tree(tmp_path):
+    """base + one DLC, the shape the suffix fallback exists for."""
+    ref = tmp_path / "reference"
+    (ref / "libraries").mkdir(parents=True)
+    (ref / "libraries" / "wares.xml").write_text("<wares/>", encoding="utf-8")
+    dlc = ref / "extensions" / "ego_dlc_test" / "libraries"
+    dlc.mkdir(parents=True)
+    (dlc / "wares.xml").write_text("<diff/>", encoding="utf-8")
+    return _merge.Config(reference=ref)
+
+
+def test_a_BARE_FILENAME_is_not_reported_as_shipped_by_base(tmp_path):
+    """The final fallback matched any DLC path ENDING in the string, so a bare
+    filename came back True. A false POSITIVE in a helper whose whole docstring is
+    about preventing false NEGATIVES.
+
+    MEASURED on the live tree before the fix: `wares.xml`, `macros.xml` and
+    `components.xml` all returned True, matching `extensions/ego_dlc_*/libraries/...`.
+    None of them is a vpath in any tree. The documented consumer is the
+    plain-vs-nested decision (gotcha #6), where a wrong True points at the PLAIN form
+    and produces an inert patch.
+    """
+    cfg = _mini_tree(tmp_path)
+    assert _effective.base_has(cfg, "wares.xml") is False
+
+
+def test_the_DLC_SUFFIX_fallback_still_works_for_a_real_vpath(tmp_path):
+    """The twin, and the reason the guard is one separator rather than deleting the
+    fallback: a caller holding `libraries/wares.xml` must still match the DLC's
+    `extensions/ego_dlc_test/libraries/wares.xml`. That case needs a separator, so
+    requiring one costs nothing."""
+    cfg = _mini_tree(tmp_path)
+    assert _effective.base_has(cfg, "libraries/wares.xml") is True
+    assert _effective.base_has(cfg, "no/such/thing.xml") is False

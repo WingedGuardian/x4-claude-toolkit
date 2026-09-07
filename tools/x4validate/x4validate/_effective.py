@@ -264,6 +264,27 @@ def base_has(config: _merge.Config, vpath: str, owner: str | None = None) -> boo
             return True
     if owner and f"extensions/{owner.lower()}/{low}" in known:
         return True
+    # THE SUFFIX FALLBACK ONLY APPLIES TO A MULTI-SEGMENT vpath. Without the guard
+    # below a BARE FILENAME matched any DLC path ending in it, which is a false
+    # POSITIVE in a helper whose entire docstring is about preventing false
+    # NEGATIVES. MEASURED on the live tree:
+    #
+    #   base_has("wares.xml")            -> True   (matched extensions/ego_dlc_*/
+    #   base_has("macros.xml")           -> True    libraries/wares.xml, and so on)
+    #   base_has("components.xml")       -> True
+    #   base_has("libraries/wares.xml")  -> True   (correct, and unaffected)
+    #
+    # None of those bare names is a vpath in ANY tree. The documented consumer is
+    # the plain-vs-nested decision (gotcha #6), where a wrong True points at the
+    # PLAIN form and yields an inert patch. Both shipped call sites pass full
+    # vpaths, so the live exposure was `x4effective dump <bare-name> --chain` and
+    # ad-hoc scripts -- which the docstring itself says is why this function exists.
+    #
+    # The fallback stays for the case it was written for: a caller holding
+    # `libraries/wares.xml` when the tree has `extensions/<dlc>/libraries/wares.xml`.
+    # That needs at least one separator, so requiring one costs nothing.
+    if "/" not in low:
+        return False
     return any(k.endswith("/" + low) and k.startswith("extensions/") for k in known)
 
 
@@ -633,6 +654,12 @@ def _extract_registry(tree: etree._Element, kind: str, child_tag: str,
     misconfiguration and not data. A file with no children at all is data, and
     returns empty quietly.
     """
+    # ⚠ WHAT THIS GUARD CANNOT SEE. `children` is DIRECT children only and the raise
+    # below requires it non-empty, so it catches a wrong `key_attr` -- the case it was
+    # written from -- and is structurally blind to a wrong `child_tag` or a nested
+    # wrapper: both yield 0 children, 0 entities and a silent success. LATENT, since
+    # triggering it needs a future format change; the guard for it is the sibling
+    # count returned below, which the caller reports.
     out: list[Entity] = []
     children = tree.findall(child_tag)
     for el in children:
@@ -648,6 +675,30 @@ def _extract_registry(tree: etree._Element, kind: str, child_tag: str,
             f"registry yielded no entities — @{key_attr!r} matches none of them. "
             f"Indexing nothing while reporting success is the defect this guard exists "
             f"to catch; fix the key attribute in LIBRARY_REGISTRIES.")
+    return out
+    children = tree.findall(child_tag)
+    siblings = len([e for e in tree if isinstance(e.tag, str)]) - len(children)
+    if not children and siblings:
+        rec.note(f"{kind}: {vpath} has NO <{child_tag}> children but {siblings} other "
+                 f"element(s). Either the tag is wrong or this file changed shape; "
+                 f"indexing nothing here would report success over a real file.")
+    for el in children:
+        name = el.get(key_attr)
+        if not name:
+            continue
+        out.append(Entity(kind, name, el.get(klass_attr, ""), vpath,
+                          rec.winner(el).source, rec.elem_chain(el),
+                          flatten_with_prov(el, rec, where=vpath)))
+    if children and not out:
+        raise ValueError(
+            f"{kind}: {vpath} has {len(children)} <{child_tag}> element(s) but the "
+            f"registry yielded no entities — @{key_attr!r} matches none of them. "
+            f"Indexing nothing while reporting success is the defect this guard exists "
+            f"to catch; fix the key attribute in LIBRARY_REGISTRIES.")
+    if siblings:
+        # THE DENOMINATOR, so a count is never quoted as if it were the whole file.
+        rec.note(f"{kind}: indexed {len(out)} of {len(children) + siblings} element(s) "
+                 f"in {vpath} — the other {siblings} are not <{child_tag}>.")
     return out
 
 
@@ -783,6 +834,19 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
                 entities += _extract_registry(tree, kind, child, klass_attr, vpath,
                                               rec, key_attr=key_attr)
                 collect_removed(vpath, rec)
+            # A COUNT NEEDS ITS DENOMINATOR. `ls region` answered a confident "160"
+            # over `libraries/region_definitions.xml`, which is
+            # Counter({"region": 160, "alias": 73}) -- 233 elements, 160 indexed, and
+            # nothing anywhere said the other 73 were a different tag. That is a
+            # numerator quoted as a whole, which is the shape this file exists to
+            # refuse. Reported per registry file rather than per kind, because the
+            # ratio is a property of the FILE.
+            if tree is not None:
+                _kept = len(tree.findall(child))
+                _other = len([e for e in tree if isinstance(e.tag, str)]) - _kept
+                if _other:
+                    progress(f"  {vpath}: {_kept} <{child}> of {_kept + _other} "
+                             f"element(s); {_other} are not <{child}> and are NOT indexed")
             progress(f"{kind}s: {sum(1 for e in entities if e.kind == kind)}")
 
     # macros (per-file)
@@ -1000,7 +1064,25 @@ def _ext_root(config) -> Path | None:
         return None
     if Path(cfg_ref) != Path(real_ref):
         return None
-    return _paths.game_extensions()
+    # ALL the roots the BUILD enumerates, not just the game-root one. The build
+    # merges `_registry.mods(...)` over `default_installed_dirs()`, which is THREE
+    # roots (game-root extensions, the profile's extensions, the Steam Workshop
+    # content dir); this returned one. A mod installed in a root that is enumerated
+    # but not fingerprinted goes into the store and is then invisible to
+    # `store_freshness` — the store reports FRESH over content it never hashed.
+    #
+    # `_freshness.content_detail` already takes `dirs` PLURAL and its docstring says
+    # every consumer must keep the roots apart, so this was the consumer that did
+    # not. The F63 guard added to this very function checks `config.reference` and
+    # left the mods axis unguarded.
+    #
+    # MEASURED on this machine: the digest is IDENTICAL either way
+    # (0cd79c957de67d9e), because the profile extensions dir is empty and the
+    # workshop dir is absent — so this costs no rebuild here. Recorded rather than
+    # skipped precisely because the live cost is zero: that is where a wrong
+    # denominator hides (gotcha #23), and "no mods in the profile root" is a fact
+    # about THIS install, not about the tool.
+    return _registry.default_installed_dirs()
 
 
 def store_freshness(con, config=None):

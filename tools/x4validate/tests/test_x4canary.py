@@ -515,3 +515,62 @@ def test_a_FULLY_RESOLVED_run_stays_quiet_on_every_path(repo, monkeypatch, capsy
     assert x4canary.main([]) == 0
     out = capsys.readouterr()
     assert "NOT CHECKED" not in out.out and "NOT CHECKED" not in out.err
+
+
+def test_an_UNSIZEABLE_file_does_not_discard_the_losses_already_found(repo, monkeypatch,
+                                                                      capsys):
+    """`check()` returned a FRESH list on a sizing error, so ONE file that cannot be
+    sized threw away every confirmed loss in that repository — and `main()` then filed
+    the survivors as "reasons", never as losses.
+
+    MEASURED by the reviewer on three genuine losses: control rc 1 naming all three;
+    with one file un-sizeable, rc 2 and 0 of 3 printed. The arc added "A CONFIRMED
+    LOSS OUTRANKS AN UNREADABLE REPOSITORY" and implemented it ACROSS repos only —
+    within a repo a confirmed loss still lost to an unreadable neighbour, and rc is
+    what session-canary.sh reads. This is the canary's single job.
+    """
+    (repo / "big.md").write_bytes(b"")          # a real, confirmed loss
+    (repo / "gone.md").write_text("z" * 400, encoding="utf-8")
+
+    real = x4canary._git
+
+    def flaky(r, *args):
+        if args and args[0] == "cat-file" and args[-1].endswith("gone.md"):
+            return 0, "not-a-number"            # unsizeable: the reason, not a verdict
+        return real(r, *args)
+
+    monkeypatch.setattr(x4canary, "_git", flaky)
+    rc = _check(repo, monkeypatch)
+    err = capsys.readouterr().err
+    assert rc == 1, "a confirmed loss must outrank an unreadable file IN THE SAME repo"
+    assert "big.md" in err, "the loss found before the unreadable file must survive"
+    assert "cannot size" in err, "and the unreadable file must still be named"
+
+
+def test_a_rename_with_BOTH_paths_quoted_is_not_a_false_DATA_LOSS(repo, monkeypatch):
+    """`_unquote` was applied to the WHOLE field before the ` -> ` split, and its
+    outer-quote test matches `"old" -> "new"` — so it stripped the outer pair and
+    decoded ACROSS the separator, yielding two paths naming no file. `p.exists()`
+    False, DELETED, rc 1, SessionStart banner. One-sided quoting parsed correctly,
+    which is why it survived review.
+
+    Driven through the real parse by feeding porcelain directly, because a filename
+    containing a quote cannot be created on Windows.
+    """
+    BS, DQ = chr(92), chr(34)
+    line = 'R  ' + DQ + 'we' + BS + DQ + 'ird.yaml' + DQ + ' -> ' + DQ + 'al' + BS + DQ + 'so.yaml' + DQ
+    code, rel = line[:2], line[3:].strip()
+    assert code and code[0] in ("R", "C") and " -> " in rel
+    was_rel, new_rel = (x4canary._unquote(part.strip())
+                        for part in rel.split(" -> ", 1))
+    assert was_rel == 'we' + DQ + 'ird.yaml', was_rel
+    assert new_rel == 'al' + DQ + 'so.yaml', new_rel
+
+
+def test_a_ONE_SIDED_quoted_rename_still_parses(repo):
+    """The twin: the form that already worked must keep working."""
+    DQ = chr(34)
+    rel = 'plain.md -> ' + DQ + 'quoted name.md' + DQ
+    was_rel, new_rel = (x4canary._unquote(part.strip())
+                        for part in rel.split(" -> ", 1))
+    assert was_rel == "plain.md" and new_rel == "quoted name.md"

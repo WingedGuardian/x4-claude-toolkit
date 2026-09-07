@@ -207,10 +207,10 @@ def check(repo: Path, verbose: bool = False) -> tuple[list[str], list[str], int]
     drift: list[str] = []
 
     if not repo.is_dir():
-        return ["%s: not a directory" % repo], [], 1
+        return [], [], ["%s: not a directory" % repo]
     rc, _out = _git(repo, "rev-parse", "--git-dir")
     if rc != 0:
-        return (["%s: not a git repository (nothing is versioned there)" % repo], [], 1)
+        return ([], [], ["%s: not a git repository (nothing is versioned there)" % repo])
     # AN UNBORN HEAD IS THE SAME CONDITION. `rev-parse --git-dir` succeeds the moment
     # `git init` has run, so a repo with NO COMMITS passed every check below: every
     # file shows as `??`, which is drift rather than loss, and the banner read
@@ -220,18 +220,26 @@ def check(repo: Path, verbose: bool = False) -> tuple[list[str], list[str], int]
     # `rm -rf .git && git init` recovery would turn the canary permanently green.
     rc, _out = _git(repo, "rev-parse", "--verify", "HEAD")
     if rc != 0:
-        return (["%s: git repository with NO COMMITS -- nothing is versioned there, "
-                 "so nothing can be compared" % repo], [], 1)
+        return ([], [], ["%s: git repository with NO COMMITS -- nothing is versioned there, "
+                 "so nothing can be compared" % repo])
 
     rc, out = _git(repo, "-c", "core.quotePath=false",
                    "status", "--porcelain")
     if rc != 0:
-        return (["%s: git status failed -- %s" % (repo, out.strip()[:120])], [], 1)
+        return ([], [], ["%s: git status failed -- %s" % (repo, out.strip()[:120])])
 
     for line in out.splitlines():
         if len(line) < 4:
             continue
-        code, rel = line[:2], _unquote(line[3:].strip())
+        # UNQUOTE AFTER THE SPLIT, NEVER BEFORE. `_unquote` tests for an outer
+        # quote pair, and a rename where BOTH sides are quoted looks like one:
+        #   R  "we\"ird.yaml" -> "al\"so.yaml"
+        # Unquoting the whole field first strips the outer pair and decodes ACROSS
+        # the separator, yielding two paths that name no file -- so `p.exists()` is
+        # False and an ordinary rename becomes DELETED, rc 1, and the SessionStart
+        # banner. Exactly the cry-wolf failure `_unquote` was added to end.
+        # One-sided quoting parsed correctly, which is why it survived review.
+        code, rel = line[:2], line[3:].strip()
         # A RENAME/COPY carries TWO paths in one field: `R  old.yaml -> new.yaml`.
         # Read whole, `p.exists()` is False and an ordinary `git mv` was reported as
         # "DELETED (tracked, now missing)" -- firing the SessionStart banner "A TRACKED
@@ -241,8 +249,10 @@ def check(repo: Path, verbose: bool = False) -> tuple[list[str], list[str], int]
         # The DESTINATION is the file that now exists and is what must be checked.
         was_rel = ""
         if code and code[0] in ("R", "C") and " -> " in rel:
-            was_rel, rel = (_unquote(s.strip())
-                            for s in rel.split(" -> ", 1))
+            was_rel, rel = (_unquote(part.strip())
+                            for part in rel.split(" -> ", 1))
+        else:
+            rel = _unquote(rel)
         p = repo / rel
         if "D" in code or not p.exists():
             losses.append("%s: DELETED (tracked, now missing)" % rel)
@@ -272,7 +282,17 @@ def check(repo: Path, verbose: bool = False) -> tuple[list[str], list[str], int]
         try:
             was, now = int(blob.strip()), p.stat().st_size
         except (ValueError, OSError) as exc:
-            return ["%s: cannot size %s -- %s" % (repo, rel, exc)], drift, 1
+            # KEEP THE LOSSES ALREADY FOUND. This returned a FRESH list, so one
+            # file that cannot be sized threw away every confirmed loss in that
+            # repository -- and `main()` then routed the survivors to
+            # `unreadable_reasons`, never to `all_losses`. MEASURED by the
+            # reviewer on a sandbox repo with three genuine losses: control rc 1
+            # naming all three; with one file un-sizeable, rc 2 and 0 of 3
+            # printed. The arc added "A CONFIRMED LOSS OUTRANKS AN UNREADABLE
+            # REPOSITORY" and implemented it ACROSS repos only; within a repo a
+            # confirmed loss still lost to an unreadable neighbour, and rc is
+            # what session-canary.sh reads. This is the canary's single job.
+            return losses, drift, ["%s: cannot size %s -- %s" % (repo, rel, exc)]
         named = ("%s (was %s)" % (rel, was_rel)) if was_rel else rel
         if was > 0 and now == 0:
             losses.append("%s: EMPTIED (%d bytes -> 0)" % (named, was))
@@ -281,7 +301,7 @@ def check(repo: Path, verbose: bool = False) -> tuple[list[str], list[str], int]
                           % (named, was, now, 100 * (1 - now / was)))
         elif verbose:
             drift.append("%s: %d -> %d bytes" % (rel, was, now))
-    return losses, drift, 0
+    return losses, drift, []
 
 
 #: Per-list cap on every item list this tool prints.
@@ -404,11 +424,16 @@ def main(argv=None) -> int:
             unreadable_reasons.append("%s: %s: %s"
                                       % (repo.name, type(exc).__name__, exc))
             continue
+        # `bad` is now the LIST OF REASONS, not a count, and the losses come back
+        # ALONGSIDE it rather than instead of it. Previously an un-sizeable file made
+        # check() return a FRESH loss list, so one bad file discarded every confirmed
+        # loss in that repository -- and this branch then filed the survivors as
+        # "reasons", never as losses. Both channels are now kept whole, so a repo can
+        # be PARTLY unreadable and still report what it did find.
         if bad:
-            unreadable += bad
-            unreadable_reasons += losses
-        else:
-            all_losses += ["%s :: %s" % (repo.name, m) for m in losses]
+            unreadable += len(bad)
+            unreadable_reasons += bad
+        all_losses += ["%s :: %s" % (repo.name, m) for m in losses]
         all_drift += ["%s :: %s" % (repo.name, m) for m in drift]
 
     if unreadable:
