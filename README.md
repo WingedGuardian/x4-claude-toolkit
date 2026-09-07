@@ -225,6 +225,13 @@ tiers behind each answer.
   cannot afford to lose by accident (the hooks, the skills, `CLAUDE.md`,
   `KNOWLEDGEBASE.md`, your paths config) read-only, so a stray write fails loudly
   instead of succeeding quietly. Unlock, edit, relock.
+
+  > ⚠ **Run `python scripts/x4lock.py unlock` before re-running the installer, and lock
+  > again afterwards.** The installer does not know about the lock: it copies over
+  > `.claude/`, hits the read-only `x4-paths.env` and stops with
+  > `cp: cannot create regular file … Permission denied`, part way through. Known
+  > limitation, not a safe design — the installer should either skip the files it
+  > preserves or unlock them itself, and it will.
 - **Recovery** — `bash scripts/restore-from-backup.sh` restores a file from the
   timestamped auto-backup trail above.
 - **The guards are tested** — `bash scripts/test-hooks.sh` feeds every hook synthetic tool-call JSON and asserts the decision it returns, across both the in-game and separate layouts. `python .claude/hooks/test_hook_facts.py` adds unit tests over the command parser in well under a second. Run both after any change to `.claude/hooks/`. This exists because a silent guard is worse than no guard: several hooks were inert for entire releases and code review never caught it. Coverage is *verified* rather than claimed: `python scripts/verify-hook-tests.py` plants a specific defect and requires the **named** test for it to go red, then pins each rule true and false in turn and requires a must-fire / must-not-fire test to break each way. A suite that cannot go red is decoration, and several guards here were inert for entire releases while their suite was green.
