@@ -1,5 +1,204 @@
 # Changelog
 
+## v3.1.0 — 2026-09-06
+
+The guard could be hung by ordinary shell, fourteen of its rules had never been
+fuzzed at all, and `x4stats` reported "changes no wares" over a 1,443-op economy
+overhaul. This release is the close-out of the whole-codebase audit that followed
+v3.0.0.
+
+### Fixed — the guard could be made to do unbounded work
+
+`hook_facts.resolve()` substitutes what a command assigned to itself. It loops five
+times, under a comment reading *"bounded: nested vars, never a loop"*. That is true,
+and it is about the wrong axis: the ITERATION COUNT was bounded and the STRING was not.
+
+A value that names its own variable re-expands every reference on every pass. MEASURED
+at a clean **×9 per pass**:
+
+| pass | chars | factor |
+|---|---|---|
+| 1 | 916 | 229 |
+| 2 | 10,316 | 11.3 |
+| 3 | 94,916 | 9.2 |
+| 4 | 856,316 | 9.0 |
+| 5 | 7,708,916 | 9.0 |
+
+so the four-character token `${B}` reached **7.7 MB** inside the five passes the loop
+already allowed. For one **949-character** command out of real session history that
+became **23,128,230 characters** of carried command, **531,448 segments**, and an
+**18.3 GB working set** — 0.7 GB free of 31.8 GB, with a game running. This is the
+blocking PreToolUse path, so it is a hang of the whole session, and it needs no
+adversary: a self-referential assignment is ordinary shell.
+
+Every neighbouring bound was sensible ALONE — `_MAX_CARRIER_DEPTH` 4, `_MAX_CARRIED`
+250 (10× the observed maximum, with a census behind it), the five-pass loop. None
+bounded SIZE, and nothing multiplied them together. **A product of individually
+sensible bounds is not a bound.**
+
+`_MAX_RESOLVED = 65536` (3.3× the longest of 17,268 real commands). On exceeding it,
+`resolve` returns the PREVIOUS COMPLETE PASS with the references still standing, which
+`has_unresolved()` already reports as unresolved. Truncating to the ceiling would be
+equally "bounded" and would hand every path rule a SHORTER OPERAND while looking
+successful — the narrowing-step defect the file exists to catch.
+
+Verified by replaying **17,268 real historical commands** against the previous
+guard: **1 verdict moved**, and it is the incident command itself, going from
+`MemoryError` — no verdict at all — to a real one. **0 loosened.** The whole
+corpus also stops taking **297 s** and takes **47 s**, and exactly **1 of 17,268**
+commands reaches the new ceiling.
+
+### Fixed — 61% of the guard had never been fuzzed, and the run said nothing about it
+
+`scripts/fuzz-guard.py` derives its verdict map from `protect-bash.sh` and refuses
+below a rule-count floor. It never asked how many of those rules any SEED exercises.
+MEASURED: **9 of 23 (39%)**. Fourteen rules had no seed at all — six DENIES and one
+HARD BLOCK — while the run printed a healthy mutant count and *"no bypass found"*.
+
+Thirteen seeds later, coverage is **21 of 23**, with the two unreachable ones NAMED
+(a syntax fuzzer cannot construct a pathological input size or a numeric payload
+field; both are unit-tested instead). Two refusals were added: a reachable rule with
+no seed, and a seed that makes no policy rule true.
+
+**Those seeds immediately found 36 bypasses** in rules that had shipped and were being
+relied on:
+
+- **ANSI-C quoting** — `$'\x72\x6d'` and `$'\162\155'` both spell `rm` and reached the
+  verb resolver as literal escape text, coming out as `x6d` and `155`. A total bypass
+  of all three hard blocks. `$"…"` is left literal, as bash leaves it.
+- **`durable_python_open_w` read `segments(body)`** while the carrier list existed —
+  21 bypasses; `bash -c` alone was enough to overwrite `KNOWLEDGEBASE.md` unseen.
+- **the git subcommand scan stepped over leading assignments but not wrappers**, so
+  `exec`, `setsid`, `nice -n 5` and `timeout 5` each turned a destructive `git` inside
+  the game root into an ALLOW. `timeout` is the prefix this workspace types on purpose.
+- **`dollarq_after_pipe` called `strip_heredocs` on already-stripped input.** That
+  function keeps the OPENER, so the second pass met a dangling `<<X` with no terminator
+  and consumed everything after it — including the command being judged.
+- **a parameter expansion could carry the exit status and a file mode out of sight.**
+  `_apply_op` already modelled suffix-strip, default-value and array-index; the rules
+  never asked.
+- **`longjob_foreground` and `dollarq_after_pipe` read `body`**, wrappers intact, while
+  every path rule reads the unwrapped carrier list.
+
+Verified per item over **17,268 real historical commands**: 14 verdicts moved, all
+tightening, **0 loosened**. Every one is a `dollarq_after_pipe` hit and every one
+was hand-checked as a genuine `$?` immediately after a pipeline — a deny that
+fired on correct work would be worse than the bug it fixes.
+
+### Added — `x4stats` resolves a `sel=` to the ware it acts on
+
+`candidate_wares` found a ware only when a `<ware>` element was present as an op
+payload, so it saw nothing for `<replace sel="//ware[@id='ore']/@price_average">` —
+the default X4 idiom, and the example in the project's own CLAUDE.md. MEASURED over a
+125-mod install: 37 mods supply `libraries/wares.xml` and **5 reported "introduces/
+changes no wares" — all five wrong**, the largest hiding 1,443 ops.
+
+`_merge.AppliedOp` gained `target_keys`: for each node a selector resolved to, the
+nearest ancestor-or-self carrying an `@id`. Opt-in, so the corpus-wide store build pays
+nothing; captured at resolution time, because a `<remove>` detaches its target and a
+detached node has no ancestor chain left.
+
+| | before | after |
+|---|---|---|
+| mods reporting zero wares | 5 | **1** |
+| unattributed ops | 3,414 | **190** |
+| the 1,443-op economy overhaul | 0 wares | **350 wares** |
+
+The residue is explained rather than rounded away: of 192 residual ops, **189 are ops
+the engine itself would not apply** — 116 ambiguous selectors (RFC 5261) and 73
+matching nothing. Attributing those would claim a change the game never makes.
+
+The one mod still reporting zero is correct too: `sve_vro_trim` carries **23 ops and
+every one is a `<remove>`**. Twenty resolve to a ware — which is why its
+unattributed count falls 23 → 3 — but a removed ware has no post-state, so there is
+nothing left to compare a price against. Attributed and not comparable are two
+different answers, and they are kept apart.
+
+### Fixed — the reference marker did not travel with the tree it describes
+
+`check-reference-version.sh` compared the live build against a DETACHED
+`.reference-buildid`. The copies had diverged (23524486 vs 23660954) while the sentinel
+inside `reference/` and the live game both said 23660954, so it announced a stale
+`reference/` **at every session start** — recommending a ~60 GB re-unpack. It was also
+**silent on a genuinely stale tree** when the detached file happened to be current.
+
+It now reads the sentinel, which is written into the tree by the unpack and cannot
+drift from it. MEASURED: 1 of 510,711 files under `reference/` has a newer mtime, and
+it IS the sentinel — XRCatTool preserves catalog timestamps.
+
+The same stale mtime had produced a wrong root cause inside `gates/schema_sweep.py`,
+now corrected in place to an honest UNKNOWN that names what it is not.
+
+### Fixed — `install.ps1 -Method global` was 100% broken, and it shipped
+
+`TrimStart('', '/')` on the install path. Every Windows user choosing the global
+install method got a broken toolkit, and the arm reached no gate at all. The missing
+over-existing gate is added; the installer CI legs go 3 → 7.
+
+### Fixed — checks that returned a clean zero over having examined nothing
+
+The audit's largest single class, and all of it PRE-ARC:
+
+- **`_check`: 11 of 14 `build_effective` call sites discarded the dropped-overlay
+  channel.** An overlay the merge could not READ left the store recording
+  `origin='base'` — "still vanilla" — in the same grammar as a verified value, with 11
+  unreadable files in the live corpus reaching it.
+- **`_check`: three places the validator reported OK over work it had not done**, and
+  a fourth where adding `--update --xsd-fast` REMOVED disclosures the default run
+  emits.
+- **`_refs`: a `<t>` added INTO an existing page was not counted as a definition**, so
+  a reference that resolves in game read as unresolved.
+- **`gates`: 9 of 15 `reader_edges` cells asserted nothing**, and "can end non-zero" is
+  not "can report a finding" — plus four more gates returning a clean 0 over an empty
+  examination.
+- **`perf_guard`: a DETECTED regression reached a `NameError`** instead of a verdict.
+- **`lockstep`: the working tree chose WHICH repo it judged**, and `stamp`'s
+  denominator was its own glob.
+- **`basex`: four ways the negative-claim pipeline confirmed a negative it had not
+  checked.**
+- **`x4debug baseline`: an unresolved extensions root fingerprinted the CURRENT
+  DIRECTORY.**
+- **`x4xref`: the "real negative" hint was case-SENSITIVE while its query was not.**
+- **`x4canary`: a canary that could not enumerate its repos, or could not LOAD, claimed
+  the user had lost a file.** Both are now rc 2 — "could not check" — never DATA LOSS.
+- **`generate-baseline`: an unconfigured `PROFILE_DIR` is rc 2**, like every other
+  refusal.
+
+### Fixed — `_paths`: an env-layer derivation shadowed an explicit setting
+
+`X4_TOOLKIT` is now a LAST-RESORT source for `reference()` rather than one that
+shadows an explicit `x4-paths.env`. `install.sh` tells every Windows user to
+`setx X4_TOOLKIT`, which is exactly the trigger.
+
+### Fixed — the mod's enumeration bound existed and three verbs never reached it
+
+`MAX_ENUMERATE` lived only in `render`, so `compare`, `containerprobe` and
+`censusprobe` walked past it. MEASURED at N=5,000: compare made **30,008** engine
+calls and containerprobe **25,012**. All three now refuse, and `censusprobe` emits a
+COST row naming its own enumerations, objects touched and scope.
+
+### Also — instruments that can now say when they were true
+
+- `compute_load_order` lifted into `_loadorder.py` and added to `ENGINE_SOURCES`: the
+  function that decides every collision winner is now WATCHED by the freshness axis.
+- `MAX_PROP_DEPTH` is one constant with one definition, and truncation is recorded
+  rather than silent.
+- `audit-coverage.py` derives the Track 2 population from `git ls-tree` and REFUSES a
+  ledger that disagrees; it reads its pinned rev from the ledger header.
+- `verify-cold.sh` wired into CI, and the LF guard widened from 178 files to 221.
+- six documentation numbers corrected, with the line-counting convention stated so
+  they cannot drift again.
+
+### Also
+
+- `verify-hook-tests` went from 3 of 82 mutations uncaught to **0**; two dead locals a
+  fix had orphaned are gone, and two stale mutants re-anchored.
+- the two BaseX installs are reconciled and byte-identical (81 tests in each).
+- `scripts/audit-coverage.py` reads its pinned rev from the ledger header.
+- `compute_load_order` lifted into `_loadorder.py` and added to `ENGINE_SOURCES`.
+- `x4canary` guards its own module import and returns rc 2 rather than a DATA LOSS
+  banner.
+
 ## v3.0.0 — 2026-09-05
 
 Three things make this a major version rather than a point release: the Bash guard was

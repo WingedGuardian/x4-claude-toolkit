@@ -47,7 +47,6 @@ Exit: 0 all properties hold, 1 any violation.
 """
 from __future__ import annotations
 
-import os
 import random
 import re
 import subprocess
@@ -60,7 +59,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _env  # noqa: E402
-from x4validate import _cat, _compat, _merge, _scan, _stats, _xref  # noqa: E402
+from x4validate import _cat, _compat, _merge, _paths, _scan, _stats, _xref  # noqa: E402
 
 SAMPLES = next((int(a.split("=")[1]) for a in sys.argv if a.startswith("--samples=")), 12)
 #: --exhaustive: verify EVERY output row, not a sample. Slower (~10 min) but it is
@@ -647,7 +646,11 @@ def check_mod_scope_agreement() -> None:
         Path(__file__).resolve().parent.parent.parent / "basex" / "_eff"
         / "effective-manifest.json",
     ]
-    tk = os.environ.get("X4_TOOLKIT")
+    # `_paths.path_value`, NOT os.environ -- the config file is a LAYER, and
+    # tests/test_env_resolution_is_delegated.py enforces that every module goes
+    # through the same door. My first version read the environment directly and that
+    # test caught it, which is the point of having it.
+    tk = _paths.path_value("X4_TOOLKIT")
     if tk:
         candidates.append(Path(tk) / "tools" / "basex" / "_eff"
                           / "effective-manifest.json")
