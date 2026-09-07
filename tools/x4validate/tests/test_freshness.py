@@ -257,16 +257,31 @@ def test_ext_root_returns_None_for_a_config_describing_a_DIFFERENT_world(tmp_pat
         "extensions root -- that stamps the store with provenance it lacks")
 
 
-def test_ext_root_still_returns_the_REAL_root_for_the_REAL_world():
+def test_ext_root_returns_EVERY_root_the_build_enumerates():
     """The other direction, which is what makes the test above mean something.
-    Skipped rather than faked when nothing is configured -- a cold machine cannot
-    answer this question, and pretending otherwise is the defect under test."""
-    from x4validate import _effective, _paths
+
+    ⚠ CONTRACT CHANGED 2026-09-07: this returns the FULL list of install roots, not
+    the game-root one. The build merges `_registry.mods(...)` over
+    `default_installed_dirs()`, which is three roots; fingerprinting one meant a mod
+    in an enumerated-but-unfingerprinted root went into the store and was then
+    invisible to `store_freshness` — FRESH over content never hashed.
+
+    Asserting the SET rather than the first element on purpose: the defect was a
+    narrowing, so a test that only checks the game root is satisfied by the bug.
+
+    Skipped rather than faked when nothing is configured — a cold machine cannot
+    answer this question, and pretending otherwise is the defect under test.
+    """
+    from x4validate import _effective, _paths, _registry
     real = _paths.reference()
     if real is None or _paths.game_extensions() is None:
         pytest.skip("no configured game install -- cannot exercise the warm path")
-    assert _effective._ext_root(_merge.Config()) == _paths.game_extensions()
-
+    got = _effective._ext_root(_merge.Config())
+    assert isinstance(got, list), "the fingerprint needs every enumerated root"
+    assert set(map(str, got)) == set(map(str, _registry.default_installed_dirs())), (
+        "must be exactly what the BUILD enumerates, or the two disagree about the "
+        "world and the store can read fresh over content nobody hashed")
+    assert _paths.game_extensions() in got, "the game root must still be in there"
 
 def test_ext_root_does_NOT_guess_a_root_from_overlays(tmp_path):
     """Preserves the reason the original code existed, stated in its own docstring:
