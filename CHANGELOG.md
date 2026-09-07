@@ -1,6 +1,6 @@
 # Changelog
 
-## v3.1.0 — 2026-09-06
+## v3.1.0 — 2026-09-07
 
 The guard could be hung by ordinary shell, fourteen of its rules had never been
 fuzzed at all, and `x4stats` reported "changes no wares" over a 1,443-op economy
@@ -47,6 +47,60 @@ guard: **1 verdict moved**, and it is the incident command itself, going from
 `MemoryError` — no verdict at all — to a real one. **0 loosened.** The whole
 corpus also stops taking **297 s** and takes **47 s**, and exactly **1 of 17,268**
 commands reaches the new ceiling.
+
+### Fixed — TWO total bypasses of every hard block, both in verb resolution
+
+**Upgrade for these two if for nothing else.** A rule keyed on the command NAME is
+only as good as the resolution of that name, and both defects made `verb()` return
+something that is not the command. A wrong verb takes all three HARD BLOCKS with it at
+once, so the blast radius is not one rule — it is the whole verb-keyed half of the
+guard. Both are PRE-ARC: the same behaviour shipped in v3.0.0.
+
+**1. A wrapper flag whose VALUE is a word became the command name.** `_verb_token`
+skips any `-flag`, and after a wrapper it also skips a token matching `_WRAPPER_ARG` —
+which matches only a number, `{}` or `+`. A flag whose value is a WORD therefore left
+that word standing as the verb:
+
+| command | resolved verb | verdict |
+|---|---|---|
+| `env -u X4_GAME rm -rf <game>` | `x4_game` | **ALLOW** |
+| `sudo -u root rm -rf <game>` | `root` | **ALLOW** |
+| `env -C /tmp rm -rf <game>` | `tmp` | **ALLOW** |
+| `timeout -s KILL 5 rm -rf <game>` | `kill` | **ALLOW** |
+| `nice -n 5 rm -rf <game>` | `rm` | deny |
+| `xargs -I{} rm -rf <game>` | `rm` | deny |
+
+The last two worked **by accident of their argument shape**, which is what made the gap
+invisible — the wrapper handling looked exercised. `env -u VAR cmd` is not an
+adversarial spelling either: it is the documented way to clear a root in this
+workspace. Fixed with `_WRAPPER_VALUE_OPTS`, a per-wrapper table rather than a union
+set, because honouring `-u` for a wrapper that has no such flag would consume the REAL
+verb and return its first argument — a MISS, strictly less safe than the bug.
+
+**2. A QUOTED token in verb position short-circuited the whole resolver.**
+`for t, quoted in tokens(seg): if quoted: return t` ran BEFORE the assignment, wrapper
+and flag-value skips, so quoting one token in the prefix decided the command name.
+MEASURED per item over 9 seeds: **7 of 9 rules flipped from fire to ALLOW** —
+`rm_hits_game`, `rm_targets_reference`, `rm_saves`, `git_add_all`,
+`git_wipes_x4_dir`, `writes_reference`, `sed_i_in_game_or_profile`.
+
+    FOO="bar" rm -rf <game>          -> verb `foo=bar`   -> ALLOW
+    env -u "X4_GAME" rm -rf <game>   -> verb `x4_game`   -> ALLOW
+
+★ **The two rules that did NOT flip are what pin the cause.** `dollarq_after_pipe` and
+`longjob_foreground` are the only two that are not verb-keyed, so their immunity says
+the defect is in verb resolution and not in any predicate — worth more than the seven
+hits. This one also defeated fix (1) above, landed earlier in the same arc: one quote
+was enough to walk past it.
+
+Neither was reachable by the fuzzer, and it says why in its own docstring: it mutates
+"the SYNTAX AROUND the dangerous operation", holding the operand fixed. Five mutators
+derived from the GRAMMAR of a wrapper prefix now cover the shape and found ten further
+bypasses within seconds of existing — `git_wipes_x4_dir` and `git_discards_x4_files`
+run their own token scan, so fixing `_verb_token` alone left them behind.
+
+Per-item replay over **17,268** real commands after fix (1): 5 verdicts moved, none
+tightened, none loosened.
 
 ### Fixed — 61% of the guard had never been fuzzed, and the run said nothing about it
 
@@ -184,6 +238,99 @@ whole list — so there is nothing for a bound to protect, and it emits a `COST`
 naming its own enumerations, objects touched and scope. An earlier draft of this
 entry said "all three now refuse", which the release reviewer measured as false.
 
+### Fixed — the release review's own round: eleven more verdicts with no reachable red
+
+Four reviewers read the whole `v3.0.0..HEAD` range. Everything they raised IN-ARC is
+closed; so is everything PRE-ARC they found on the way. The findings were one shape
+almost throughout, which is the same shape the audit above kept finding — a verdict
+whose PASS branch is reachable from an input nothing looked at. It is worth stating
+that the round which fixed that class contained eleven more of it.
+
+**`x4canary`, and three of the four fail in the DATA LOSS direction.** A tracked file
+with a NON-ASCII name that was merely EDITED reported as `DELETED (tracked, now
+missing)` with rc 1 — the SessionStart banner. TWO layers, and fixing either alone
+left it broken: `core.quotePath` defaults to true so the path arrives octal-escaped,
+and underneath that `_git` used `text=True` with no `encoding=`, so git's UTF-8 was
+decoded with the locale codepage (cp1252) and the path was still mangled once
+unescaped. The second layer was found only by re-running the sandbox AFTER the first
+fix was declared done and reading the CODEPOINTS, which disagreed with the rendering.
+Also: a rename compared against `HEAD:<new path>`, which does not exist, so a file
+renamed and then EMPTIED read as benign drift; an allow-list of four status codes
+where the question is binary, so `RM`/`MT`/`AT` were never size-checked; and an
+unreadable repo DOWNGRADING a found loss in a different repo from rc 1 to rc 2, which
+is the code the hook reads, so the banner never fired.
+
+**`perf_guard`: a mod that CRASHES left the comparison entirely.** `measure()` caught
+every exception and `continue`d, directly beneath a comment reading "a crash is a
+finding, not a timing" which it then made neither — so the gate printed "No per-mod
+regression beyond tolerance" and returned 0. A `validate()` that RAISES where it used
+to complete is the harshest regression this gate can meet. Crashes are now a second
+channel: rc 1 for a baselined mod, rc 3 for one the baseline never covered, and a mod
+that is simply no longer installed stays the benign note it always was.
+
+**`oracle_reverse`: agreement needs two sides.** Both disagreement sets are
+intersections with our own tree, so a tree that failed to build made them empty BY
+CONSTRUCTION — the engine named the misses, we examined nothing, and the gate printed
+"We agree with the engine on every checkable complaint in this log". The existing
+refusal covered the other empty input (a log with no complaints), which is exactly why
+this one looked handled.
+
+**`x4debug crosscheck`: rc 0 over nothing compared**, which reads identically to a mod
+the engine and the validator concur on and is equally what a log from a session where
+the mod never loaded looks like. And a DEGRADED validator run — where the command
+already prints "'predicted' is not a complete prediction" — no longer returns the code
+that means "we agree".
+
+**`x4xref`: a sidecar nothing ever wrote.** `_sidecar()` had exactly one caller,
+`_exclusions()`, a READER. Unreadable files were printed once at build time to stderr
+and discarded, so every later "nobody references X" was rendered with no exclusion list
+at all — what `_exclusions`' own docstring calls "the most confidently wrong answer this
+tool can give". It is now written at build, empty file included, so a leftover cannot
+attach stale exclusions to a clean index. Separately, a MISSING extensions directory
+skipped the whole mod walk wordlessly and returned 0 over a base+DLC-only index; that
+is now rc 2, while an existing but EMPTY one stays accepted.
+
+**`staleness`: three UNKNOWNs wearing STALE's banner.** `Verdict.determinable`, its
+docstring and the UNKNOWN banner all existed — "a banner that says STALE when it means
+UNKNOWN sends the reader to rebuild an index that may have been perfectly current" —
+and `check()` never set the field. One of the three even carried a comment reading
+"Absent is UNKNOWN, never fresh" directly above a return that said STALE. A fourth case
+is new: the CURRENT fingerprint can fail to compute on a configured machine whose roots
+moved. And `main()` now exits 6 rather than 5 for an undeterminable verdict, because it
+was printing "FRESHNESS UNKNOWN" while returning the code for "the world moved".
+
+**`ask.py`: an unguarded `json.loads` on the path every query takes**, so a truncated
+coverage file escaped as a traceback with rc 1 — which in this toolkit means "the thing
+you asked about has findings".
+
+**`_refs`/`_check`: the into-page COLLISION half**, which the reference-half fix's own
+docstring recorded as still open and did not say so. `check_page_collisions` fed
+`text_defs` throwaway holders that DISCARD the selector — the one place an into-page
+op's page id appears — and matched `<add>` alone, never `<replace>`. So the two forms
+that can actually clobber a base string were the two the warning could not see.
+
+**The skip ceiling: an unusable `X4_MAX_SKIPS` printed "that is a NON-ANSWER, not a
+pass" and then left the run GREEN.** The realistic accident is emptiness rather than
+garbage — a workflow writing the variable from an expression that evaluates to nothing
+sets `""`, which is not `None`, so a CI leg loses its ceiling while every log line still
+says it ran with one. That is the 125-dormant-tests failure with an extra step. The
+ceiling had never been pinned by any test; it is now, all five branches.
+
+**`generate-baseline` and `verify-hook-tests`: three more passes over an empty
+population.** A missing `extensions/` wrote a header-only mod list and still printed
+"Baseline written to: …" — in a RECOVERY artifact, whose own comments already make this
+argument about the game directory and not about its contents. And both halves of
+`verify-hook-tests` scored a perfect zero over an empty set: "0 of 0 uncaught" and "0 of
+0 coverage gaps" each read as a clean run, and the coverage half is reachable without
+anyone editing a list, because its predicate list comes from a live call.
+
+Every fix in this round was mutation-checked by reverting only its subject with the
+tests kept, and every subject restored byte-identical. Two of the fixes were WRONG
+first and their own twins caught them: a broad `except` in `staleness.check` swallowed
+the `EngineUnavailable` that `main()` owns, reintroducing the confusion the change
+removes; and the canary's loss-outranks-unreadable rule fired on an unreadable repo's
+own EXPLANATION, because `check()` returns its reason in the loss slot.
+
 ### Also — instruments that can now say when they were true
 
 - `compute_load_order` lifted into `_loadorder.py` and added to `ENGINE_SOURCES`: the
@@ -195,16 +342,24 @@ entry said "all three now refuse", which the release reviewer measured as false.
 - `verify-cold.sh` wired into CI, and the LF guard widened from 178 files to 221.
 - six documentation numbers corrected, with the line-counting convention stated so
   they cannot drift again.
+- **30 of this arc's own tests were run by NOTHING.** `test_hook_facts.py` mixes
+  `unittest.TestCase` classes with plain `test_*` functions, and `unittest` collects
+  only the former: it reported **403** tests where pytest reported **433**. Every
+  bare-function test added during the guard work was invisible to the runner that
+  `scripts/test-hooks.sh` and `verify-hook-tests.py` both drive. Closed with a
+  `load_tests` protocol hook, so both runners now report the same number — which is
+  itself the check: if they ever disagree again, something is uncollected.
+- **`tool_properties`: the cell that proves the store and `x4eff` agree had been
+  SKIPPING.** Its manifest path was resolved self-relative only, so on any layout
+  where the gate is not beside the artifact it found nothing — and a missing manifest
+  with a store present was recorded as a PASS. It now also asks
+  `_paths.path_value("X4_TOOLKIT")`, and the missing-manifest case is a finding.
 
 ### Also
 
-- `verify-hook-tests` went from 3 of 82 mutations uncaught to **0**; two dead locals a
-  fix had orphaned are gone, and two stale mutants re-anchored.
-- the two BaseX installs are reconciled and byte-identical (81 tests in each).
-- `scripts/audit-coverage.py` reads its pinned rev from the ledger header.
-- `compute_load_order` lifted into `_loadorder.py` and added to `ENGINE_SOURCES`.
-- `x4canary` guards its own module import and returns rc 2 rather than a DATA LOSS
-  banner.
+- `verify-hook-tests` went from 3 of 82 mutations uncaught to **0**; two dead
+  locals a fix had orphaned are gone, and two stale mutants re-anchored.
+- the two BaseX installs are reconciled and byte-identical.
 
 ## v3.0.0 — 2026-09-05
 
