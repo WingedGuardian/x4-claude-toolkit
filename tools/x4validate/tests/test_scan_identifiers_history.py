@@ -125,7 +125,13 @@ def test_the_history_scan_does_NOT_fire_on_the_commit_that_REMOVED_it(planted):
     flagging it would make the remedy trip the check -- so the range starting AFTER
     the offending commit must be clean even though the removal is inside it."""
     r, _base, _clean = planted
-    offending = _git(r, "rev-parse", "HEAD~1").stdout.strip()
+    # ⚠ WRONG BASELINE (#34), and it made this test VACUOUS. The fixture appends
+    # TWO commits after the removal, so `HEAD~1` is not the offending commit and
+    # the range scanned exactly one unrelated commit. PROVEN by the round-2
+    # reviewer: with the shipped range, a mutant that counts `-` lines as hits
+    # stayed GREEN. The added-lines-only rule the release notes headline was
+    # asserted by nothing.
+    offending = _git(r, "rev-parse", "HEAD~3").stdout.strip()
     got = _run(r, "--history", offending + "..HEAD")
     assert got.returncode == 0, got.stdout + got.stderr
 

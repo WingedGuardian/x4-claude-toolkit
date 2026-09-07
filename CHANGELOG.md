@@ -106,16 +106,25 @@ tightened, none loosened.
 
 `scripts/fuzz-guard.py` derives its verdict map from `protect-bash.sh` and refuses
 below a rule-count floor. It never asked how many of those rules any SEED exercises.
-MEASURED: **9 of 23 (39%)**. Fourteen rules had no seed at all — six DENIES and one
-HARD BLOCK — while the run printed a healthy mutant count and *"no bypass found"*.
+MEASURED: **9 of 23 (39%)**. Fourteen rules had no seed at all while the run printed
+a healthy mutant count and *"no bypass found"*. ⚠ This line described those
+fourteen as "six DENIES and one HARD BLOCK", which does not add up and understated
+the composition; the release reviewer measured **9 deny, 3 advise, 2 ask, with two
+unseeded HARD BLOCKS**. The corrected point is worse than the original: more than
+one hard block was unfuzzed, and this same section elsewhere says "all three HARD
+BLOCKS".
 
-Thirteen seeds later, coverage is **21 of 23**, with the two unreachable ones NAMED
+Twelve seeds later (12 — 24; the tool reports **24 seeds** today), coverage is
+**21 of 23**, with the two unreachable ones NAMED
 (a syntax fuzzer cannot construct a pathological input size or a numeric payload
 field; both are unit-tested instead). Two refusals were added: a reachable rule with
 no seed, and a seed that makes no policy rule true.
 
-**Those seeds immediately found 36 bypasses** in rules that had shipped and were being
-relied on:
+**Those seeds immediately found bypasses** in rules that had shipped and were being
+relied on. ⚠ This entry said **36**; the v3.1.0 release reviewer re-ran the gate at
+that commit and measured **68**. The larger figure is the reviewer's and is not
+re-derived here — what is certain is that the original number was wrong and too
+small. The named classes below are what matter:
 
 - **ANSI-C quoting** — `$'\x72\x6d'` and `$'\162\155'` both spell `rm` and reached the
   verb resolver as literal escape text, coming out as `x6d` and `155`. A total bypass
@@ -158,7 +167,9 @@ detached node has no ancestor chain left.
 | unattributed ops | 3,414 | **190** |
 | the 1,443-op economy overhaul | 0 wares | **350 wares** |
 
-The residue is explained rather than rounded away: of 192 residual ops, **189 are ops
+The residue is explained rather than rounded away: of **190** residual ops — the
+figure the table directly above already gives; this line said 192, double-counting
+`sve_vro_trim`'s 3 — **187 are ops
 the engine itself would not apply** — 116 ambiguous selectors (RFC 5261) and 73
 matching nothing. Attributing those would claim a change the game never makes.
 
@@ -196,7 +207,11 @@ The audit's largest single class, and all of it PRE-ARC:
 - **`_check`: 11 of 14 `build_effective` call sites discarded the dropped-overlay
   channel.** An overlay the merge could not READ left the store recording
   `origin='base'` — "still vanilla" — in the same grammar as a verified value, with 11
-  unreadable files in the live corpus reaching it.
+  unreadable files in the live corpus. ⚠ An earlier draft of this line said those 11
+  were "reaching it"; the fixing commit `002ebee` had priced the live impact at
+  **ZERO** ("this changes no verdict now"). A deliberately measured null inverted
+  into a live-impact claim — the structural defect is real, its live cost today
+  is not.
 - **`_check`: three places the validator reported OK over work it had not done**, and
   a fourth where adding `--update --xsd-fast` REMOVED disclosures the default run
   emits.
@@ -422,8 +437,21 @@ own EXPLANATION, because `check()` returns its reason in the loss slot.
   It is gone from the tree and still in the objects. The new mode scans the diff each
   commit INTRODUCES (added lines only — the commit that removes an identifier is the
   fix), reports the SHA and never the line, and REFUSES on an unresolvable or empty
-  range. MEASURED across this release: **zero occurrences of a private identifier in any
-  of the 274 commits.**
+  range, and reads the commit MESSAGE as well as the diff — a message is part of
+  the commit a push publishes, and the first version of this mode read only the
+  diff. It also uses a WORD-BOUNDARY test rather than a substring one: over history
+  a false positive is permanent, and the substring form ran at an 80% false-positive
+  rate (4 of 5 hits were a 5-character token inside a 22-25 character snake_case
+  identifier).
+
+  MEASURED across THIS RELEASE (`v3.0.0..HEAD`, **68** commits): **zero**
+  occurrences of a private identifier, messages included. ⚠ An earlier draft of this
+  line said "any of the 274 commits", which named a DIFFERENT population — 274 was
+  a whole-history count taken mid-arc, while "this release" is the tag range. Over
+  the FULL history the same tool reports **2** flagged commits, both predating
+  v3.0.0 and therefore already public: one an absolute user path in a commit
+  MESSAGE, one an illustration inside `scan-identifiers.py` that its own comment
+  now documents. Neither is a new disclosure; both are why the mode exists.
 - **`scripts/build-release.sh <ref>`** builds the release bundle from `git archive` —
   the committed object store, so it cannot pick up a working-tree edit — verifies the
   member set against the ref in both directions, and carries a `--selftest` that
@@ -447,7 +475,14 @@ own EXPLANATION, because `check()` returns its reason in the loss slot.
 
 - `verify-hook-tests` went from 3 of 82 mutations uncaught to **0**; two dead
   locals a fix had orphaned are gone, and two stale mutants re-anchored.
-- the two BaseX installs are reconciled and byte-identical.
+- the two BaseX installs were reconciled during this arc. ⚠ They are NOT
+  byte-identical at release: this arc's own later commits (`67d55da`, `a368e03`)
+  changed `ask.py` and `staleness.py` and added `test_unknown_is_not_stale.py` in
+  the repo only. RE-MEASURED at HEAD: **3 of 16 files differ**. The claim was true
+  when written and the arc falsified it three commits later — which is why a
+  release note asserting a live-state equality needs re-measuring at the tag, not
+  at the commit that earned it. The SHIPPED bundle is unaffected: it comes from
+  `git archive`, so it carries the repo's copy.
 
 ## v3.0.0 — 2026-09-05
 

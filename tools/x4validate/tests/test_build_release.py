@@ -107,3 +107,45 @@ def test_the_bundle_carries_the_whole_TRACKED_set_and_no_wrapper_folder():
     tracked = set(_git("ls-tree", "-r", "--name-only", "v3.0.0").stdout.split())
     assert members == tracked, sorted(members ^ tracked)[:10]
     assert "install.sh" in members, "the installer must sit at the archive ROOT"
+
+
+def test_an_EXTRA_file_in_the_bundle_is_REFUSED_too(planted_verifier):
+    """Both the script and the sibling test say "Both directions matter", and only
+    MISSING was exercised: a mutant setting `extra = []` left all four tests green.
+
+    A hand-assembled zip, a stray wrapper directory, or an `export-ignore` inversion
+    ships content nobody reviewed, and the verifier passed it. This is the direction
+    that matters for a RELEASE, because a bundle with an extra file is a bundle
+    carrying something outside the reviewed range.
+    """
+    verify, repo, ref = planted_verifier
+    import zipfile, subprocess, sys, os
+    z = os.path.join(repo, "extra.zip")
+    assert subprocess.run(["git", "-C", repo, "archive", "--format=zip", ref, "-o", z],
+                          capture_output=True).returncode == 0
+    with zipfile.ZipFile(z, "a") as zf:
+        zf.writestr("NOT_IN_THE_REF.txt", "shipped without review\n")
+    r = subprocess.run([sys.executable, str(verify), z, ref],
+                       cwd=repo, capture_output=True, text=True)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "IN THE BUNDLE, NOT IN THE REF" in r.stderr, r.stderr
+
+
+@pytest.fixture()
+def planted_verifier(tmp_path):
+    """The verifier body, extracted from the script, plus a tiny repo to run it on."""
+    _needs(SCRIPT.is_file(), "no scripts/build-release.sh (dev-only script) - not checked")
+    import subprocess
+    src = SCRIPT.read_text(encoding="utf-8")
+    body = src[src.index("import subprocess, sys, zipfile"):src.index("\nPY\n")]
+    v = tmp_path / "verify.py"
+    v.write_text(body, encoding="utf-8")
+    r = tmp_path / "repo"
+    r.mkdir()
+    for a in (["init", "-q", "."], ["config", "user.name", "t"],
+              ["config", "user.email", "t@t"]):
+        subprocess.run(["git", "-C", str(r), *a], capture_output=True)
+    (r / "a.txt").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(r), "add", "a.txt"], capture_output=True)
+    subprocess.run(["git", "-C", str(r), "commit", "-qm", "base"], capture_output=True)
+    return v, str(r), "HEAD"

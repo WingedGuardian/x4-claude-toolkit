@@ -456,7 +456,10 @@ def test_a_large_loss_list_is_CAPPED_and_says_so(repo, monkeypatch, capsys):
         "the loss report is %d characters -- above the 10,000-char cap, so "
         "Claude Code files it and the session sees only a preview" % len(err))
     assert "NOT LISTED" in err, "the list was capped with no disclosure"
-    assert "250" in err, "the disclosure does not state the true total"
+    # NOT `"250" in err` -- that is satisfied by the "*** DATA LOSS in 250
+    # tracked file(s) ***" HEADER, so mutating _emit's total to 999999 left it
+    # green. The claim under test is that the DISCLOSURE states the true total.
+    assert "showing 40 of 250" in err, err[:400]
 
 
 def test_a_SMALL_loss_list_is_listed_in_full(repo, monkeypatch, capsys):

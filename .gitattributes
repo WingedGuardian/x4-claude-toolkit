@@ -8,8 +8,16 @@ bin/xrcat text eol=lf
 # Pin Python sources to LF (F53).
 #
 # WHY. `_freshness.hash_engine()` fingerprints artifacts by hashing the RAW BYTES of
-# x4validate/_merge.py, _diff.py, _cat.py, _xpath.py, _scan.py, _effective.py and
-# _registry.py. Line endings are bytes. With core.autocrlf=true and no rule here, a
+# every file in `_freshness.ENGINE_SOURCES` -- EIGHT as of 2026-09-07: _cat.py,
+# _diff.py, _effective.py, _loadorder.py, _merge.py, _registry.py, _scan.py and
+# _xpath.py. Line endings are bytes.
+#
+# (This roster said SEVEN and omitted _loadorder.py until 2026-09-07 -- the same
+# staleness aa1c67d fixed in CLAUDE.md, one file over, found by the round-2
+# reviewer. Harmless here because `*.py text eol=lf` below covers every .py
+# whatever this comment says; the roster is documentation, not the mechanism.
+# Derive it from the module rather than retyping it -- that instruction has now
+# been ignored twice, in two files, by people who had just read it.) With core.autocrlf=true and no rule here, a
 # checkout writes CRLF while a tool that rewrites a file in place writes LF -- so the
 # same commit hashes differently depending on how each file last arrived on disk.
 #

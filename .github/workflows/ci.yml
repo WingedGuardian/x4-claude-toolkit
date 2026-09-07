@@ -616,3 +616,26 @@ jobs:
         env:
           EXTRA_FORBIDDEN: ${{ secrets.SCRUB_EXTRA }}
         run: python3 scripts/scan-identifiers.py
+
+      # ★ THE HISTORY CHANNEL, WHICH NOTHING RAN. `git push` publishes COMMITS, and
+      # every other check here — this job's tree scan included — reads the WORKING
+      # TREE. So all of them return clean on precisely the case that matters: an
+      # identifier committed, noticed, and removed. It is gone from the tree and
+      # still in the objects.
+      #
+      # MEASURED by the round-2 release reviewer: `--history` shipped in this release
+      # and was invoked by NO CI step, so the instrument built for the pre-push check
+      # did not run before a push. It needs the `fetch-depth: 0` this job already has;
+      # the `tests` job's default depth-1 checkout is why its own history test SKIPS
+      # there rather than failing, absorbed silently by X4_MAX_SKIPS.
+      #
+      # Scoped to the range since the last tag rather than to all history: everything
+      # before it is already published, so a hit there is a disclosure that has
+      # already happened and cannot be undone by holding this release. Falls back to
+      # the root commit when no tag is reachable (a fork, a fresh clone).
+      - name: No personal data in the commits this push would publish
+        run: |
+          last_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          base="${last_tag:-$(git rev-list --max-parents=0 HEAD | tail -1)}"
+          echo "scanning $base..HEAD"
+          python3 scripts/scan-identifiers.py --history "$base..HEAD"

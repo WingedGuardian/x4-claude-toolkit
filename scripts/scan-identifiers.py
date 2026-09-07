@@ -320,6 +320,33 @@ def _anchor_to_repo_root() -> None:
     os.chdir(pathlib.Path(__file__).resolve().parent.parent)
 
 
+def _token_hit(low: str, lowered: list) -> bool:
+    """Is a banned token present as a WORD, not as a substring?
+
+    The tree scan uses a bare `t in low`, and that is survivable THERE because a
+    tree can be cleaned: a false positive costs one edit. Over HISTORY it is not,
+    because history cannot be cleaned — every false positive is permanent noise
+    on a check whose own docstring argues that "a check which cries wolf gets
+    ignored".
+
+    MEASURED by the round-2 reviewer over this repo's full history: 5 flagged
+    commits, of which **4 were a 5-character banned token sitting inside a 22-25
+    character snake_case identifier**. An 80% false-positive rate. A word-boundary
+    test keeps the one true hit and drops all four.
+
+    Boundary is non-word-character or string edge, so `foo_bar` does NOT match the
+    token `foo` while `foo/bar`, `"foo"` and a bare `foo` all do. Applied only
+    here: the tree scan keeps its stricter substring behaviour, where over-
+    reporting is cheap and under-reporting is not.
+    """
+    for t in lowered:
+        if t not in low:
+            continue
+        if re.search(r"(?<![0-9a-z_])" + re.escape(t) + r"(?![0-9a-z_])", low):
+            return True
+    return False
+
+
 def scan_history(rng: str, banned: list[str]) -> int:
     """Scan the diff every commit in *rng* INTRODUCES. Tree-clean is not enough.
 
@@ -400,7 +427,7 @@ def scan_history(rng: str, banned: list[str]) -> int:
 
         for _channel, line in scanned_lines:
             low = line.lower()
-            hit = any(t in low for t in lowered) or account_match(line)
+            hit = _token_hit(low, lowered) or account_match(line)
             if hit:
                 # The SHA and nothing else. Echoing the line would publish the very
                 # thing being suppressed, in a log that is itself public.
