@@ -22,6 +22,7 @@ import ast
 from pathlib import Path
 
 TESTS = Path(__file__).resolve().parent
+REPO = TESTS.parent.parent.parent   # the repository root
 
 
 def _bare_returns_in_tests(tree: ast.AST):
@@ -48,13 +49,28 @@ def _bare_returns_in_tests(tree: ast.AST):
 def test_no_test_function_bails_with_a_bare_return():
     offenders = []
     scanned = 0
-    for path in sorted(TESTS.glob("test_*.py")):
+    # EVERY test file the repo ships, not just this directory. `TESTS.glob` is
+    # non-recursive and scoped to `tools/x4validate/tests/`, so it missed SEVEN:
+    # the six under `tools/basex/` and `.claude/hooks/test_hook_facts.py`.
+    # MEASURED 2026-09-07 by the release reviewer: 113 scanned, 7 unscanned, cost
+    # today 0 -- recorded and fixed anyway, because "the cost is zero" is the line
+    # nobody re-checks (gotcha #23), and a bare `return` in one of those seven is
+    # exactly as invisible as in one of the 113.
+    #
+    # `X4_MAX_SKIPS` is the check this one backs up: a bare return counts as a
+    # PASS and is invisible to the skip ceiling, so a file outside this glob had
+    # NEITHER guard.
+    roots = [TESTS,
+             REPO / "tools" / "basex",
+             REPO / ".claude" / "hooks"]
+    files = sorted({f for r in roots for f in r.glob("test_*.py") if f.is_file()})
+    for path in files:
         scanned += 1
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for line in _bare_returns_in_tests(tree):
             offenders.append("%s:%d" % (path.name, line))
-    assert scanned > 10, (
-        "only %d test files were scanned -- this guard would be vacuous" % scanned)
+    assert scanned > 100, (
+        "only %d test files were scanned -- this guard would be vacuous, and the floor is now 100 because the population is the whole repo" % scanned)
     assert not offenders, (
         "a bare `return` inside a test is counted as a PASS. Use "
         "`pytest.skip(reason)` so it is counted and named:\n  "

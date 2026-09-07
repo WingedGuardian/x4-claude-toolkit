@@ -329,7 +329,7 @@ Reclaiming a FOREIGN orphan is
 deliberately left explicit and manual: deciding a stranger's temp is abandoned means
 deciding its pid is dead, and on Windows `os.kill(pid, 0)` maps to TerminateProcess.
 
-### Fixed — the release review's own round: eleven more verdicts with no reachable red
+### Fixed — the release review's own round: more verdicts with no reachable red
 
 Four reviewers read the whole `v3.0.0..HEAD` range. Everything they raised IN-ARC is
 closed; so is everything PRE-ARC they found on the way. The findings were one shape
@@ -422,6 +422,109 @@ the `EngineUnavailable` that `main()` owns, reintroducing the confusion the chan
 removes; and the canary's loss-outranks-unreadable rule fired on an unreadable repo's
 own EXPLANATION, because `check()` returns its reason in the loss slot.
 
+### Fixed — the installers could not upgrade a locked install, which this release told you to create
+
+`scripts/x4lock.py` marks the files you cannot afford to lose read-only, and this
+release's README is the first to tell you to run it. Neither installer knew the lock
+existed. An upgrade over a locked install died PART WAY THROUGH — `cp: cannot create
+regular file '.../.claude/./x4-paths.env': Permission denied` on bash, `Access to the
+path ... is denied` on PowerShell — and left orphaned `.bak` files behind, TWO of them
+on the PowerShell side (one from the copy, one from the config writer).
+
+★ **The defect is PRE-ARC and the TRAP is not.** `install.sh`'s backup/restore block
+predates v3.0.0 and `x4lock` shipped IN v3.0.0, so by the usual rule this is "a defect
+the users already have". But v3.0.0's README mentions `x4lock` **zero times**: this
+release is the first that instructs people into the state that breaks the upgrade. That
+distinction is now written into `docs/REVIEW-SCOPE.md` as a third triage bucket, because
+both sessions reviewing this reasoned correctly from the old rule and both nearly waved
+it through.
+
+The fix removes the mechanism rather than handling it. `x4-paths.env` and
+`settings.local.json` are simply never copied from the source — a new `X4_KEEP_LOCAL`,
+deliberately distinct from `X4_COPY_PRUNE`, which also DELETES from the destination
+(right for a stale `.venv`, catastrophic for a config). The backup/restore round trip is
+DELETED: it backed up a file, overwrote it, and restored it — three operations to reach
+the state of having done nothing, and the source of the missing-`trap` hazard.
+`write_paths_env` now skips an unchanged config, so an upgrade that resolves the same
+paths never writes, which also stops hand-written comments being lost on every run. And
+`precheck_config` refuses UP FRONT when the config must change and is read-only, naming
+the unlock command, including under `--dry-run`.
+
+⚠ **Half the fix was no fix, and only the harness said so.** With the copy skipped but
+the round trip still present, the upgrade STILL failed — at the restore, which also
+writes. And on PowerShell the skip had to sit ABOVE the config writer's own backup, not
+merely inside the function: placed below, the install SUCCEEDED and still left a `.bak`.
+
+`test_install_over_existing.py` drives a real install over a real fixture install and is
+parameterised over **both** installers — ten tests, same cases, same assertions, so a
+divergence in VERDICT fails by name. That matters because `test_installers_agree.py` is
+entirely static: it compares item lists and would have passed on two installers that
+agree about structure and disagree about whether they clean up, which is exactly what
+was true — PowerShell had `finally` where bash had none, **and both still failed this
+path**.
+
+### Fixed — the content axis could report a spurious STALE
+
+`_freshness._reference_survey` was NON-DETERMINISTIC over an unchanged tree. MEASURED
+over 400 freshly built trees, two surveys taken back to back with no filesystem change
+between them:
+
+| | unstable | add@3 | del@3 | edit@1 |
+|---|---|---|---|---|
+| with directory mtime | **1** | 400 | 400 | 400 |
+| without | **0** | 400 | 400 | 400 |
+
+The directory mtime was the only value in the fold that could move without the tree
+moving, and it was redundant: a directory's mtime changes when a child is added, removed
+or renamed — all of which also move the child count or the name list — and does not
+change for a child's in-place edit. Identical detection, zero instability.
+
+It surfaced as a test failing 1 of 2 COLD runs on `windows-latest`, the leg that GATES
+the release, so it would have reddened a release for a reason unrelated to it. The
+failing test was never the defect: the depth-4 add it asserts about moved the survey **0
+times in 400**.
+
+### Fixed — a count quoted as if it were the whole file
+
+`x4effective ls region` answered a confident number over a file it had only partly
+indexed. `_extract_registry` indexes one child tag, and a registry may hold others; the
+anti-vacuity guard fires only when children exist and none are keyed, so it catches a
+wrong key attribute and is blind to a wrong TAG. MEASURED on the effective tree once the
+denominator was reported:
+
+    libraries/wares.xml             2492 <ware>   of 2497   (5 not indexed)
+    libraries/jobs.xml              2082 <job>    of 2083   (1)
+    libraries/sound_library.xml     2873 <sound>  of 2935   (62)
+    libraries/region_definitions    318  <region> of 469    (151)
+
+Four registries, not the one the review found — including `sound_library`, which the
+reviewer checked by hand and judged hypothetical. This is the toolkit's own rule one
+level up: an instrument that returns nothing must say whether that is an absence or a
+non-answer, and an instrument that returns a NUMBER must say what it is a number OF.
+
+### Also — the rest of the review round
+
+- **The hook output cap was defeatable three ways**, and one was a fail-open inside the
+  guard written to close a fail-open: `x4_len` returned success whatever its python arm
+  did, so a python that resolved but failed printed nothing, the length came back empty,
+  and 25,000 characters passed through WHOLE. A cap below its own notice width inverted
+  the bound (a 200-char cap returned 5,097). And `emit()` was never bounded at all while
+  seven rules interpolate the whole command — measured at 20,126 characters of
+  `permissionDecisionReason`.
+- `scan-identifiers.py --history` now reads the commit MESSAGE as well as the diff, uses
+  a word-boundary test (the substring form ran at an 80% false-positive rate over
+  history), and is WIRED INTO CI — it shipped invoked by no step at all.
+- A push to `ci/pre-3.1` triggered no run whatsoever; `ci/**` is now a trigger, so the
+  documented pre-release observation actually observes something.
+- `_ext_root` fingerprinted one install root while the build enumerates three.
+- `base_has` returned TRUE for a bare filename, a false positive in a helper whose whole
+  purpose is preventing false negatives.
+- x4canary: one un-sizeable file discarded every confirmed loss in that repository, and
+  a rename with both paths quoted read as DATA LOSS.
+- The bare-`return` guard scanned 114 of 121 test files; the seven it missed had neither
+  that guard nor the skip ceiling.
+- A literal `0x08` byte reached a tracked file, caught by `gates/control_bytes.py`.
+
 ### Also — instruments that can now say when they were true
 
 - `compute_load_order` lifted into `_loadorder.py` and added to `ENGINE_SOURCES`: the
@@ -430,7 +533,11 @@ own EXPLANATION, because `check()` returns its reason in the loss slot.
   rather than silent.
 - `audit-coverage.py` derives the Track 2 population from `git ls-tree` and REFUSES a
   ledger that disagrees; it reads its pinned rev from the ledger header.
-- `verify-cold.sh` wired into CI, and the LF guard widened from 178 files to 221.
+- `verify-cold.sh` wired into CI, and the LF guard widened from 178 files. ⚠ The
+  count moves as files are added — it was written as 221 and the guard's own
+  predicate matches **231** today. Re-derive it rather than quoting this line; a
+  number in a release note is a snapshot, and this one rotted inside the release
+  that stated it.
 - **`scan-identifiers.py --history <range>` — because `git push` publishes COMMITS.**
   Every identifier check here scanned the working TREE, so all of them returned clean on
   exactly the case that matters: an identifier that was committed, noticed, and removed.
