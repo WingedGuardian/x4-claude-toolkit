@@ -20,11 +20,16 @@ re-unpack, which the build id catches exactly.
 
 from __future__ import annotations
 
+import re
 import time
+from pathlib import Path
 
 import pytest
 
 from x4validate import _freshness
+
+#: The toolkit repository root, four levels up from tests/.
+REPO = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture()
@@ -183,3 +188,44 @@ def test_the_depth_limit_is_STATED_not_implied(tmp_path):
     assert _freshness._reference_survey(root) == before, (
         "depth 4 is documented as blind; if this now moves, update _SURVEY_DEPTH's "
         "note and the docstring rather than leaving them describing the old shape")
+
+
+def test_CLAUDE_md_lists_exactly_the_ENGINE_SOURCES_the_module_derives():
+    """The freshness cell in the SHIPPED CLAUDE.md has been wrong TWICE, the same
+    way, inside the sentence that says "derive that list from the module, never
+    retype it".
+
+    2026-08-29 it said 5 and omitted `_effective` / `_registry` -- and a comparison
+    hand-typed from it came out clean either way, i.e. a check whose result was
+    independent of its input. 2026-09-07 it said 7 and omitted `_loadorder`, which
+    F69's remedy had lifted out of `_compat` during that very arc: the change that
+    made the doc stale was one of ours, and it shipped.
+
+    Prose cannot be tested, so this tests the prose against the module. That is the
+    only thing that stops a third occurrence -- an instruction not to retype a list
+    does not stop anyone retyping it, and both corrections were written BY someone
+    who had just read that instruction.
+    """
+    from x4validate import _freshness
+    doc = REPO / "CLAUDE.md"
+    if not doc.is_file():
+        pytest.skip("no CLAUDE.md beside the toolkit (not the shipped layout)")
+    rows = [l for l in doc.read_text(encoding="utf-8").splitlines()
+            if "_freshness.ENGINE_SOURCES" in l]
+    assert len(rows) == 1, "expected exactly one freshness cell, got %d" % len(rows)
+    cell = rows[0]
+
+    derived = {n[:-3] for n in _freshness.ENGINE_SOURCES}
+    # Only the parenthesised roster, not the whole cell: the prose deliberately names
+    # modules it got WRONG in the past, and those must not read as current members.
+    m = re.search(r"as of \d{4}-\d{2}-\d{2}:([^)]*)\)", cell)
+    assert m, "the cell must carry a dated `as of <date>: <list>)` roster"
+    listed = set(re.findall(r"`(_[a-z_]+)`", m.group(1)))
+    assert listed == derived, (
+        "CLAUDE.md's freshness roster disagrees with _freshness.ENGINE_SOURCES.\n"
+        "  only in the doc   : %s\n  only in the module: %s"
+        % (sorted(listed - derived), sorted(derived - listed)))
+
+    m2 = re.search(r"\(\*\*(\d+)\*\* as of", cell)
+    assert m2 and int(m2.group(1)) == len(derived), (
+        "the cell's COUNT must equal the module's %d" % len(derived))

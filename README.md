@@ -214,7 +214,26 @@ tiers behind each answer.
 - **Auto-backup** — every edited file is copied to `.claude\backups\` with an audit log.
 - **Confidence system** — no guessing; Claude rates confidence and lists assumptions first.
 - **Baseline capture** — `scripts/generate-baseline.sh` records a known-good snapshot (game version, installed-mod hashes, a normalized debug.txt error fingerprint) to diff against later.
+- **Loss canary** — `python scripts/x4canary.py` refuses if a tracked file in a watched
+  repository has been DELETED, EMPTIED or lost more than half its bytes. It runs
+  automatically at session start, so this is the one script here that can interrupt you
+  without being asked for: a `*** DATA LOSS ***` banner naming the file and the
+  `git checkout` that recovers it. It exists because a mod registry went from 196,363
+  bytes to 46 and nobody noticed for six hours — `git status` had shown it immediately.
+  "Could not check" is exit 2 and never reported as loss.
+- **Write lock** — `python scripts/x4lock.py status | lock | unlock` marks the files you
+  cannot afford to lose by accident (the hooks, the skills, `CLAUDE.md`,
+  `KNOWLEDGEBASE.md`, your paths config) read-only, so a stray write fails loudly
+  instead of succeeding quietly. Unlock, edit, relock.
+- **Recovery** — `bash scripts/restore-from-backup.sh` restores a file from the
+  timestamped auto-backup trail above.
 - **The guards are tested** — `bash scripts/test-hooks.sh` feeds every hook synthetic tool-call JSON and asserts the decision it returns, across both the in-game and separate layouts. `python .claude/hooks/test_hook_facts.py` adds unit tests over the command parser in well under a second. Run both after any change to `.claude/hooks/`. This exists because a silent guard is worse than no guard: several hooks were inert for entire releases and code review never caught it. Coverage is *verified* rather than claimed: `python scripts/verify-hook-tests.py` plants a specific defect and requires the **named** test for it to go red, then pins each rule true and false in turn and requires a must-fire / must-not-fire test to break each way. A suite that cannot go red is decoration, and several guards here were inert for entire releases while their suite was green.
+
+> The rest of `scripts/` is maintainer tooling that ships because the bundle is the
+> repository: `fuzz-guard.py` and `verify-hook-tests.py` prove the guards can fail,
+> `scan-identifiers.py` and `audit-coverage.py` are CI gates, `build-release.sh`
+> builds this bundle from a git tag, and `gitbash.py` is a helper the others import.
+> None of them is needed to use the toolkit.
 
 ---
 
