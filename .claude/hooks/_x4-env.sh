@@ -425,6 +425,17 @@ x4_head(){
 }
 
 x4_bound(){
+  # FAST PATH. MEASURED by review: spawning an interpreter unconditionally cost
+  # +117 ms per verdict (+32%) even for a 57-character reason -- a smaller
+  # instance of the 11.3x latency regression this file's header records as the
+  # class it was rewritten to remove, reintroduced by the fix for it.
+  #
+  # ${#1} is BYTES in the C locale and CHARACTERS in a UTF-8 one. Both are >= the
+  # codepoint count, so a payload whose ${#1} already fits is under the cap on
+  # either reading and the exact count is not needed. The skip can therefore only
+  # err toward MEASURING, never toward letting something through unbounded --
+  # which is the only direction that would matter.
+  [ "${#1}" -le "$X4_HOOK_MAX_CHARS" ] && { printf '%s' "$1"; return 0; }
   _t="$(x4_len "$1")"
   # An unreadable length is NOT a licence to pass the text through: every arm of
   # x4_len is checked now, so reaching here means all three failed, and the

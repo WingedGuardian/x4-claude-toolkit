@@ -364,7 +364,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=152
+EXPECT=155
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -793,6 +793,42 @@ elif [ "${#_vr}" -le 10000 ]; then
   ok "a verdict reason is bounded too (${#_vr} chars)"
 else
   no "a verdict reason came back at ${#_vr} chars -- emit() never routes through x4_bound"
+fi
+
+# --- the cap must not COST anything on the common path -----------------------
+# MEASURED by review: x4_bound spawned python unconditionally, so every verdict
+# paid it even for a 57-character reason -- +117 ms, +32% per verdict. That is a
+# smaller instance of the 11.3x latency regression this file's own header records
+# as the class it was rewritten to remove, reintroduced by the fix for it.
+#
+# Probed by MARKER FILE rather than by timing: "did it spawn" is a fact, a
+# duration is a measurement, and a timing assertion in a suite is a flake waiting
+# to happen.
+_sp="$TMP/spawnprobe"; mkdir -p "$_sp"
+printf '%s\n' '#!/bin/bash' "touch \"$_sp/SPAWNED\"" 'exit 0' > "$_sp/python"; chmod +x "$_sp/python"
+
+rm -f "$_sp/SPAWNED"
+_short_out="$( ( HOOK_DIR="$HOOKS"; . "$HOOKS/_x4-env.sh"; X4_PYTHON="$_sp/python" x4_bound "a short advisory" ) )"
+if [ -e "$_sp/SPAWNED" ]; then
+  no "x4_bound spawned an interpreter for a 16-character payload -- every verdict pays that"
+else
+  ok "a payload obviously under the cap costs no interpreter spawn"
+fi
+if [ "$_short_out" = "a short advisory" ]; then
+  ok "and the short payload is returned unchanged"
+else
+  no "the short-circuit altered a short payload: $_short_out"
+fi
+
+# The twin: the short-circuit must NOT swallow a payload that really is over the
+# cap. A pre-check that skips too much is the same defect pointing the other way.
+rm -f "$_sp/SPAWNED"
+_big2="$(printf 'k%.0s' $(seq 1 25000))"
+_big_out="$( ( HOOK_DIR="$HOOKS"; . "$HOOKS/_x4-env.sh"; x4_bound "$_big2" ) )"
+if [ "${#_big_out}" -le 10000 ]; then
+  ok "an over-cap payload is still bounded (${#_big_out} chars)"
+else
+  no "the short-circuit let an over-cap payload through: ${#_big_out} chars"
 fi
 
 echo "RESULT: $pass passed, $fail failed, $skipped skipped"
