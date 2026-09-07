@@ -47,6 +47,7 @@ Exit: 0 all properties hold, 1 any violation.
 """
 from __future__ import annotations
 
+import os
 import random
 import re
 import subprocess
@@ -632,13 +633,41 @@ def check_mod_scope_agreement() -> None:
     print("mod-scope agreement — the store vs BaseX x4eff")
 
     store_path = _effective.DB_PATH
-    manifest = Path(__file__).resolve().parent.parent.parent / "basex" / "_eff" / "effective-manifest.json"
+
+    # TWO BASEX TREES EXIST, and this looked in the wrong one. The self-relative path
+    # resolves to <repo>/tools/basex/_eff/, which is the SHIPPING copy -- it never
+    # builds anything. The databases are built by the LIVE install under $X4_TOOLKIT,
+    # and that is where the manifest lands. MEASURED 2026-09-06: the manifest existed,
+    # 40,014 bytes with 125 overlays, while this cell reported SKIPPED.
+    #
+    # PRE-ARC (fe09e99, v2.4.0). Registered as BLIND-SPOTS F105's shape: when two
+    # copies of one tool exist, a path derived from THIS file's location picks the
+    # copy that happens to hold this file, which is not the copy that does the work.
+    candidates = [
+        Path(__file__).resolve().parent.parent.parent / "basex" / "_eff"
+        / "effective-manifest.json",
+    ]
+    tk = os.environ.get("X4_TOOLKIT")
+    if tk:
+        candidates.append(Path(tk) / "tools" / "basex" / "_eff"
+                          / "effective-manifest.json")
+    manifest = next((c for c in candidates if c.is_file()), candidates[0])
+
     if store_path is None or not Path(store_path).is_file():
+        # Genuinely nothing to compare: no store means no build ever ran here. This
+        # one stays a skip, and it is what CI hits.
         note(True, "store vs x4eff mod set", "SKIPPED — no effective store on this machine")
         return
     if not manifest.is_file():
-        note(True, "store vs x4eff mod set",
-             "SKIPPED — no effective-manifest.json (run tools/basex/build-effective.sh)")
+        # A SKIP IS NOT A PASS. The store exists, so this machine DOES build these
+        # artifacts, and the one cell that proves the two agree could not run. That is
+        # a could-not-check, and it now FAILS rather than printing ok -- the same rule
+        # this file applies to everything else it measures.
+        note(False, "store vs x4eff mod set",
+             "COULD NOT CHECK — an effective store exists but no effective-manifest.json "
+             "was found, so store-vs-x4eff agreement is UNVERIFIED. Looked in: "
+             + "; ".join(str(c) for c in candidates)
+             + ". Run tools/basex/build-effective.sh in the tree that owns the databases.")
         return
 
     db = sqlite3.connect(str(store_path))
