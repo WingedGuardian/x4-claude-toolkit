@@ -812,13 +812,25 @@ def resolve(tok: str, assigns: dict[str, str]) -> str:
 
     prev = None
     out = tok
-    for _ in range(5):                       # bounded: nested vars, never a loop
+    # Bounded on BOTH axes now: five passes AND _MAX_RESOLVED characters. The comment
+    # here used to name only the first, which was true and was about the wrong one --
+    # what grows is the string, and it grew x9 per pass.
+    for _ in range(5):
         prev = out
         out = _VAR_OP.sub(sub_op, _VAR.sub(sub, out))
         if len(out) > _MAX_RESOLVED:
             # STOP, and leave the references standing. Returning `prev` is what makes
             # this safe rather than merely fast: the token still contains "${...}", so
             # has_unresolved() is True and the rules treat the operand as unknowable.
+            #
+            # WHAT THIS BOUND DOES NOT COVER, stated rather than implied: the check is
+            # AFTER the substitution, so one oversized pass is allocated before it is
+            # refused. That is deliberate -- pre-computing the size means re-doing the
+            # substitution's own work -- and it is bounded: `prev` is at most
+            # _MAX_RESOLVED, so a single pass is at most (references in prev) x (longest
+            # assigned value), both of which are bounded by the command text. For the
+            # longest real command in 17,268 (19,583 chars) the worst case is ~94 MB,
+            # once, and then refused. The defect being fixed was 18.3 GB and unbounded.
             return expand_home(prev)
         if out == prev:
             break
