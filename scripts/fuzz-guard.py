@@ -781,6 +781,7 @@ def seeds(roots):
     saves = roots["saves"]
     prof = roots["profile"]
     docs = roots["documents"]
+    tk = roots["toolkit"]
     d = "r" + "m"
     s = "s" + "ed"
     return [
@@ -790,13 +791,57 @@ def seeds(roots):
         ("one deployed mod", d + " -rf " + QU + g + "/extensions/amod" + QU),
         ("savegame delete", d + " -f " + QU + saves + "/save_001.xml.gz" + QU),
         ("write under documents", "echo x > " + QU + docs + "/n.txt" + QU),
+        # B5: `writes_reference` is a HARD BLOCK and had NO seed, so no mutator ever
+        # tried to walk past it. The seed list was assembled from the shapes that had
+        # already bitten us -- which is precisely why the untested one was untested.
+        ("write into reference", "echo x > " + QU + ref + "/f.xml" + QU),
         ("recursive search at reference", "grep -rn foo " + QU + ref + QU),
         ("rg at reference", "rg foo " + QU + ref + QU),
         ("git add -A", "git add -A"),
         ("sed -i in the game", s + " -i " + AP + "s/a/b/" + AP + " " + QU + g + "/f.xml" + QU),
         ("cd then relative delete", "cd " + QU + g + QU + " && " + d + " -rf extensions"),
         ("profile search by name", "grep -n foo " + QU + prof + "/content.xml" + QU),
+        # B5, 2026-09-06: the thirteen below were added because a COVERAGE census
+        # said only 9 of 23 derived policy rules had any seed at all -- so 61% of
+        # the guard was fuzzed zero times while the run printed a healthy mutant
+        # count. Six were denies. The seed list had been assembled from shapes that
+        # had already bitten us, which is exactly why the untested ones were
+        # untested: a bug history is not a specification (CLAUDE.md #36).
+        ("dollar-question after a pipe", "ls | grep x; echo " + QU + "rc=$?" + QU),
+        ("long job in the foreground", "uv run python gates/corpus_sweep.py"),
+        ("write to tmp", "echo x > /tmp/scratch.txt"),
+        ("truncating redirect into the game", "echo x > " + QU + g + "/f.xml" + QU),
+        ("truncating redirect onto a durable file",
+         "echo x > " + QU + g + "/KNOWLEDGEBASE.md" + QU),
+        # DURABLE matches durable FILE NAMES, not any path under a root -- the
+        # first draft of these two used f.xml and fired nothing, which the
+        # coverage census caught as a seed exercising zero rules.
+        ("python open w on a durable file",
+         "python -c " + AP + "open(" + QU + g + "/KNOWLEDGEBASE.md" + QU + ", "
+         + QU + "w" + QU + ")" + AP),
+        ("copy into the game", "cp -r ./mymod " + QU + g + "/extensions/mymod" + QU),
+        ("git discards an x4 file",
+         "git -C " + QU + g + QU + " checkout -- .claude/hooks/hook_facts.py"),
+        ("git clean wipes an x4 dir", "git -C " + QU + g + QU + " clean -fdx"),
+        ("recursive search at the workspace", "grep -rn foo " + QU + tk + QU),
+        ("xrcat re-unpack", "XRCatTool.exe -in 01.cat -out " + QU + ref + QU),
     ]
+
+
+def seed_coverage(mod, roots, policy):
+    """Which policy rules any seed actually makes true.
+
+    `verdict()` scores a command by looking up every policy key in the fact dict,
+    so the rules a seed EXERCISES are exactly the keys true for it. Without this the
+    fuzzer printed a rule count it derived and a success it had not scoped to that
+    count -- 12 seeds against 19 rules, reported as though it had tested all of them.
+    """
+    hit = set()
+    for _name, cmd in seeds(roots):
+        f = mod.facts({"tool_input": {"command": cmd, "timeout": 0,
+                                      "run_in_background": False}}, roots)
+        hit |= {k for k in policy if f.get(k)}
+    return hit
 
 
 def run(mod, roots, policy, verbose=False):
@@ -951,8 +996,65 @@ def main():
     if exercised == 0:
         print("REFUSING: nothing was exercised.", file=sys.stderr)
         return 2
+    # STATE THE DENOMINATOR WITH THE GREEN. "no bypass found" over 12 seeds and 19
+    # derived rules said nothing about the 7 nobody had written a seed for -- and
+    # one of those was a hard block. A pass that does not scope itself is the shape
+    # this fuzzer exists to catch in everything else.
+    covered = seed_coverage(load_facts(HOOKS / "hook_facts.py"), roots, policy)
+    unseeded = sorted(set(policy) - covered)
+    scope = ("%d of %d policy rule(s) are exercised by a seed"
+             % (len(covered), len(policy)))
+
+    # A seed that fires NOTHING is dead weight that inflates the mutant count while
+    # testing no rule. Two of the seeds added on 2026-09-06 were exactly that until
+    # the census caught them: DURABLE matches durable FILE NAMES, not any path under
+    # a root, so `<game>/f.xml` exercised neither durable rule.
+    live = load_facts(HOOKS / "hook_facts.py")
+    dead = []
+    for n, cmd in seeds(roots):
+        f = live.facts({"tool_input": {"command": cmd, "timeout": 0,
+                                       "run_in_background": False}}, roots)
+        if not any(f.get(k) for k in policy):
+            dead.append(n)
+    if dead:
+        print("REFUSING: %d seed(s) make no policy rule true, so they are fuzzed for "
+              "nothing and inflate the mutant count: %s"
+              % (len(dead), ", ".join(dead)), file=sys.stderr)
+        return 2
+
+    # THE FLOOR. Coverage was MEASURED at 9 of 23 (39%) on 2026-09-06 while the run
+    # printed a healthy mutant count -- six DENIES and one HARD BLOCK had no seed at
+    # all. The seed list had been grown from shapes that had already bitten us, which
+    # is precisely why the untested ones were untested: a bug history is not a
+    # specification (CLAUDE.md #36). Reporting the fraction is not enough; a number
+    # nobody refuses on is a number nobody reads.
+    #
+    # STRUCTURALLY OUT OF REACH, and named rather than silently missing -- this
+    # fuzzer mutates command SYNTAX around a fixed operand, so it cannot construct:
+    #   * carriers_truncated -- needs >_MAX_CARRIED carried commands, a pathological
+    #     INPUT SIZE rather than a syntax variation;
+    #   * timeout_over_cap   -- a numeric FIELD of the tool payload, not syntax at all.
+    # Both are covered by unit tests in test_hook_facts.py instead. If a mutator ever
+    # gains the ability to reach one, drop it from here and the floor rises by itself.
+    STRUCTURAL = {"carriers_truncated", "timeout_over_cap"}
+    reachable = sorted(set(policy) - STRUCTURAL)
+    gap = sorted(set(reachable) - covered)
+    if gap:
+        print("REFUSING: %d policy rule(s) a seed COULD reach have none, so this run "
+              "cannot say anything about them: %s" % (len(gap), ", ".join(gap)),
+              file=sys.stderr)
+        print("   Add a seed, or move it into STRUCTURAL with a reason.",
+              file=sys.stderr)
+        return 2
+
     if not findings:
-        print("no bypass found: every mutant kept its seed's verdict.")
+        print("no bypass found over %s: every mutant kept its seed's verdict."
+              % scope)
+        if unseeded:
+            print("   NOT FUZZED (structurally out of reach, unit-tested instead): %s"
+                  % ", ".join(unseeded))
+            print("   A green here is scoped to the %d rule(s) above, not to the guard."
+                  % len(covered))
         return 0
     print()
     print("*** %d BYPASS(ES) — the syntax changed, the dangerous operand did not ***"
