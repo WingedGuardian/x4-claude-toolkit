@@ -12,6 +12,9 @@ come out byte-identical, or every stored value silently re-keys.
 
 from pathlib import Path
 
+import ast
+import pathlib
+
 from lxml import etree
 
 from x4validate import _effective, _merge, _stats
@@ -79,6 +82,87 @@ def test_recursion_depth_guard_reports_rather_than_truncating_silently():
     _effective.flatten_with_prov(props, Recorder(BASE), child_scope=props)
     assert _effective.truncated_props, "hitting the guard must be recorded, never silent"
     _effective.truncated_props.clear()
+
+
+def test_a_truncation_record_NAMES_the_document_it_came_from():
+    """M6. `where=` was added so a truncation says WHICH document truncated; the
+    release reviewer deleted it at all three `build()` call sites and the suite stayed
+    green, because the only test exercising truncation calls flatten_with_prov
+    DIRECTLY and passes no `where` at all.
+
+    A bare `properties.a.a.a...` with no document is the same non-answer the whole
+    channel exists to replace -- it tells you something was cut and not what."""
+    deep = "<properties>" + "<a>" * 12 + '<leaf v="1"/>' + "</a>" * 12 + "</properties>"
+    root = etree.fromstring(f'<macro name="m">{deep}</macro>')
+    props = root.find("properties")
+    _effective.truncated_props.clear()
+    _effective.flatten_with_prov(props, Recorder(BASE), child_scope=props,
+                                 where="assets/props/engines/macros/eng_01.xml")
+    assert _effective.truncated_props, "the guard must record, never truncate silently"
+    rec = _effective.truncated_props[0]
+    assert "eng_01.xml" in rec, rec
+    assert rec.startswith("assets/props/engines/macros/eng_01.xml: "), rec
+    _effective.truncated_props.clear()
+
+
+def test_the_truncation_list_does_not_CARRY_OVER_between_builds():
+    """M7. `build()` clears `truncated_props` at start because it is a MODULE GLOBAL:
+    two builds in one process otherwise make the second re-report the first's
+    truncations as its own. Deleting the clear left the suite green -- nothing built
+    twice in one process."""
+    deep = "<properties>" + "<a>" * 12 + '<leaf v="1"/>' + "</a>" * 12 + "</properties>"
+    root = etree.fromstring(f'<macro name="m">{deep}</macro>')
+    props = root.find("properties")
+    _effective.truncated_props.clear()
+    _effective.flatten_with_prov(props, Recorder(BASE), child_scope=props, where="first.xml")
+    assert any("first.xml" in r for r in _effective.truncated_props)
+
+    # What build() does at its start, and the only thing standing between one run's
+    # findings and the next run's report.
+    _effective.truncated_props.clear()
+    assert _effective.truncated_props == [], (
+        "a second build would inherit the first's truncations")
+    _effective.flatten_with_prov(props, Recorder(BASE), child_scope=props, where="second.xml")
+    assert not any("first.xml" in r for r in _effective.truncated_props),         _effective.truncated_props
+    _effective.truncated_props.clear()
+
+
+def test_every_flatten_call_site_in_effective_PASSES_where():
+    """M6, and my first attempt at it was shadowed exactly as the reviewer's was.
+
+    The test above pins that `flatten_with_prov` HONOURS `where=`; it calls the helper
+    directly and passes one, so deleting `where=vpath` from `_effective`'s own call
+    sites leaves it green. The helper was never the risk -- the WIRING was, and a
+    truncation with no document name is the non-answer the channel exists to replace.
+
+    Asserted over the AST of the module rather than by running a build, because
+    triggering a real truncation needs a corpus with a >8-deep property subtree.
+    """
+    src = pathlib.Path(_effective.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call)
+             and getattr(n.func, "id", getattr(n.func, "attr", "")) == "flatten_with_prov"]
+    assert calls, "no flatten_with_prov call sites found -- the scan is wrong, not the code"
+    missing = [n.lineno for n in calls
+               if not any(k.arg == "where" for k in n.keywords)]
+    assert not missing, (
+        "flatten_with_prov called without `where=` at %s -- a truncation recorded "
+        "there cannot name the document it came from" % missing)
+
+
+def test_build_itself_clears_the_list_before_it_starts():
+    """The wiring, asserted STRUCTURALLY rather than by building twice (a real second
+    build needs a corpus): `build()` must call the clear, and it is the call the
+    reviewer's M7 removed."""
+    import inspect
+    src = inspect.getsource(_effective.build)
+    tree = ast.parse(src.lstrip())
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Attribute) and n.func.attr == "clear"
+             and getattr(n.func.value, "id", "") == "truncated_props"]
+    assert calls, "build() no longer clears truncated_props; a second build in one "                   "process would report the first's truncations as its own"
 
 
 def test_ware_recipe_inputs_are_flattened():

@@ -166,3 +166,69 @@ def test_a_CLEAN_build_records_ZERO_rather_than_omitting_the_key(tmp_path):
         con.close()
     assert got["dropped_overlays"] == "0", got
     assert got["dropped_overlay_samples"] == "[]", got
+
+
+# ---------------------------------------------------------------------------------
+# THE WIRING, not just the helpers. Release reviewer B1 severed three connections
+# inside `build()` and the suite stayed GREEN on all three:
+#
+#   M2  delete the three `skipped.add_overlay(vpath, dropped)` calls
+#   M6  delete `where=vpath` at the three flatten_with_prov call sites
+#   M7  delete `truncated_props.clear()`
+#
+# Every arc change to _effective was pinned at the HELPER level -- `_merge_one`
+# returns three things, `_SkipCount` counts separately, `_write_db` stores the key,
+# `flatten_with_prov` honours `where=` -- and nothing drove `build()` with a real
+# malformed overlay. The two store tests call `_write_db` DIRECTLY with hardcoded
+# values, so they cannot notice a build that never hands it a number.
+#
+# These tests go through `build()` and read the artifact back.
+
+
+def _build_with(tmp_path, monkeypatch, overlay_body, db_name="eff.sqlite"):
+    """A real build over a real reference tree and one real overlay."""
+    ref = tmp_path / "reference"
+    if not ref.exists():
+        (ref / "libraries").mkdir(parents=True)
+        (ref / "libraries" / "wares.xml").write_text(REF_WARES, encoding="utf-8")
+    _mod(tmp_path, "zzz_over", overlay_body)
+    monkeypatch.setattr(_effective._registry, "ingest_content_xml",
+                        lambda *a, **k: [])
+    db = tmp_path / db_name
+    _effective.build(_merge.Config(reference=ref), db,
+                     dirs=[tmp_path / "extensions"], kinds=("ware",))
+    return db
+
+
+def _meta(db, key):
+    import sqlite3
+    con = sqlite3.connect(db)
+    try:
+        row = con.execute("select value from meta where key = ?", (key,)).fetchone()
+    finally:
+        con.close()
+    return row[0] if row else None
+
+
+def test_BUILD_records_a_dropped_overlay_in_the_store(tmp_path, monkeypatch):
+    """M2. Severing `skipped.add_overlay` left the store saying dropped_overlays=0
+    while an overlay really was dropped -- "still vanilla" in the same grammar as a
+    verified value, and the suite did not notice."""
+    db = _build_with(tmp_path, monkeypatch, BAD_DIFF)
+    assert int(_meta(db, "dropped_overlays") or 0) >= 1, (
+        "build() dropped an unreadable overlay and the store recorded none")
+
+
+def test_BUILD_over_a_GOOD_overlay_records_zero(tmp_path, monkeypatch):
+    """The twin: the count must be a measurement, not a constant. If this also
+    reported a drop, the test above would pass for the wrong reason."""
+    db = _build_with(tmp_path, monkeypatch, GOOD_DIFF)
+    assert int(_meta(db, "dropped_overlays") or 0) == 0
+
+
+def test_a_dropped_overlay_is_NAMED_not_merely_counted(tmp_path, monkeypatch):
+    """A count says something was lost; a sample says WHICH. The store carries both,
+    and `_write_db`'s own signature exists to keep them together."""
+    db = _build_with(tmp_path, monkeypatch, BAD_DIFF)
+    samples = _meta(db, "dropped_overlay_samples") or ""
+    assert "zzz_over" in samples or "wares.xml" in samples, samples
