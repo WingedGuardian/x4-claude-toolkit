@@ -161,3 +161,35 @@ def test_the_REAL_repo_history_is_clean_across_the_push_range():
     got = subprocess.run([sys.executable, str(SCRIPT), "--history", "v3.0.0..HEAD"],
                          cwd=str(REPO), capture_output=True, text=True, timeout=900)
     assert got.returncode == 0, got.stdout + got.stderr
+
+
+def test_an_identifier_in_a_COMMIT_MESSAGE_is_caught(planted):
+    """`git show --format=` SUPPRESSES the message, so the first version of this
+    mode read only the diff -- in a check whose premise is that a push publishes
+    COMMITS. A message is part of the commit.
+
+    Not hypothetical: the round-2 reviewer measured exactly one commit-message hit
+    in this repository's real history, carrying an identity token that appears in
+    NO tracked file. Tree mode was correctly clean about it; history mode returned
+    rc 0 over the one case it exists for.
+    """
+    r, _base, clean_from = planted
+    _user = "Testy"
+    _pid = "7418" + "5296"
+    (r / "c.txt").write_text("harmless" + chr(10), encoding="utf-8")
+    _git(r, "add", "c.txt")
+    # the DIFF is clean; only the MESSAGE carries it
+    _git(r, "commit", "-qm",
+         "fix the path " + chr(39) + "C:/Users/" + _user + "/Documents/Egosoft/X4/"
+         + _pid + chr(39))
+    got = _run(r, "--history", clean_from + "..HEAD")
+    assert got.returncode == 1, got.stdout + got.stderr
+    assert "a push publishes it" in got.stdout
+
+
+def test_the_summary_line_NAMES_the_channels_it_covered(planted):
+    """A count without a denominator is what let the message channel go missing
+    unnoticed: "63 commit(s) scanned" reads complete whatever it read."""
+    r, _base, clean_from = planted
+    got = _run(r, "--history", clean_from + "..HEAD")
+    assert "commit MESSAGE" in got.stdout and "diff lines" in got.stdout

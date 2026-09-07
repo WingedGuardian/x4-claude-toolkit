@@ -92,3 +92,29 @@ def test_a_log_with_no_checkable_complaint_is_still_a_NON_ANSWER(monkeypatch, tm
     rc = _drive(monkeypatch, tmp_path, "nothing checkable here\n",
                 {"t/0001-l044.xml": T_WITH_PAGE, "index/components.xml": IDX_WITH_ENTRY})
     assert rc == 2
+
+
+def test_a_REAL_disagreement_OUTRANKS_the_unexamined_refusal(monkeypatch, tmp_path):
+    """The two classes are INDEPENDENT. A fully examined and DISAGREEING, B built to
+    zero entries: returning 2 unconditionally downgraded a finding this gate's own
+    docstring calls "a false OK of the worst kind" into a could-not-run that
+    `run-gates.sh` buckets as `cannot`.
+
+    Same defect this release fixed in x4canary hours earlier -- an unreadable repo
+    downgrading a found loss to rc 2, which is the code the caller reads. The canary
+    got it; this gate did not, in the same round, by the same hand.
+    """
+    rc = _drive(monkeypatch, tmp_path, LOG_BOTH,
+                {"t/0001-l044.xml":
+                     '<language id="44"><page id="1001"><t id="42">x</t></page></language>',
+                 "index/components.xml": "<index/>"})     # B unexamined, A disagrees
+    assert rc == 1, "a disagreement already established must not be downgraded to 2"
+
+
+def test_the_refusal_still_wins_when_NOTHING_was_found(monkeypatch, tmp_path):
+    """The twin. Without it the change above could retire the refusal entirely: with
+    B unexamined and A agreeing, there is no finding to outrank it."""
+    rc = _drive(monkeypatch, tmp_path, LOG_BOTH,
+                {"t/0001-l044.xml": T_WITH_PAGE,          # A agrees (t 42 absent)
+                 "index/components.xml": "<index/>"})     # B unexamined
+    assert rc == 2

@@ -360,6 +360,12 @@ def scan_history(rng: str, banned: list[str]) -> int:
         return 2
     lowered = [t.lower() for t in banned]
     found = 0
+    # `git show` prints "Binary files ... differ" with no `+` line, so a binary
+    # blob's CONTENT is unreadable here while the TREE scan can read it. Counted
+    # and disclosed rather than rounded away: measured 0 in v3.0.0..HEAD and 1 in
+    # all history (the vendored BaseX jar, still tracked, so tree mode covers its
+    # current content). The residual hole is a binary committed then removed.
+    binary = 0
     for sha in shas:
         try:
             raw = subprocess.run(["git", "show", "--format=", "--unified=0", sha],
@@ -367,9 +373,32 @@ def scan_history(rng: str, banned: list[str]) -> int:
         except (OSError, subprocess.CalledProcessError) as exc:
             print(f"::error::could not read commit {sha[:9]}: {exc}")
             return 2
+        # THE MESSAGE IS PART OF THE COMMIT, and `git show --format=` suppresses it.
+        # A mode whose whole premise is "a push publishes COMMITS, not the working
+        # tree" applied that premise to the BLOB only, so neither this scan nor the
+        # tree scan could see a path pasted into a commit message.
+        #
+        # NOT hypothetical: the round-2 reviewer measured exactly one commit-message
+        # hit in this repository's 278-commit history, an absolute user path carrying
+        # a real identity token, present in NO tracked file (so tree mode is correctly
+        # clean about it). It predates v3.0.0 and is already public, so it does not
+        # gate -- but it is the single case this instrument was built for and the
+        # instrument walked past it.
+        try:
+            msg = _git("log", "-1", "--format=%B", sha)
+        except RuntimeError as exc:
+            print(f"::error::could not read the message of {sha[:9]} ({exc}); "
+                  f"a commit whose message was not read cannot be reported clean")
+            return 2
+        if b"Binary files" in raw or b"GIT binary patch" in raw:
+            binary += 1
+        scanned_lines = [("message", l) for l in msg.splitlines()]
         for line in raw.decode("utf-8", "replace").splitlines():
             if not line.startswith("+") or line.startswith("+++"):
                 continue
+            scanned_lines.append(("diff", line))
+
+        for _channel, line in scanned_lines:
             low = line.lower()
             hit = any(t in low for t in lowered) or account_match(line)
             if hit:
@@ -380,7 +409,10 @@ def scan_history(rng: str, banned: list[str]) -> int:
                 found += 1
                 break
     print(f"  history: {len(shas)} commit(s) in {rng} scanned against "
-          f"{len(banned)} identifier(s)")
+          f"{len(banned)} identifier(s), channels: commit MESSAGE + added "
+          f"diff lines"
+          + (f"; {binary} commit(s) carry a BINARY diff whose CONTENT this "
+             f"mode cannot read" if binary else ""))
     if found:
         print(f"::error::{found} commit(s) in {rng} carry a contributor identifier. "
               f"Removing it from the TREE does not remove it from the history.")

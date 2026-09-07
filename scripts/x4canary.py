@@ -351,6 +351,24 @@ def main(argv=None) -> int:
               % (type(exc).__name__, exc), file=sys.stderr)
         return 2
 
+    def _report_unresolved(stream=sys.stdout):
+        """Print the NOT-CHECKED note. Called on EVERY exit path.
+
+        It used to live inside the rc-0 branch alone — and rc 0 is the one
+        branch `session-canary.sh` discards (`0) : ;;  # stay quiet`), so the
+        channel added to stop the run being "silent about the tree this tool was
+        built to watch" reached nobody at all. MEASURED across all three exit
+        paths: printed on rc 0 and swallowed by the hook; absent entirely from
+        rc 1 and rc 2. A disclosure with no reachable reader is decoration, and
+        this one was added THIS RELEASE to close exactly that shape.
+        """
+        if not UNRESOLVED:
+            return
+        print("  NOT CHECKED: %s did not resolve on this machine, so %s not "
+              "among the repositories checked above."
+              % (" and ".join(UNRESOLVED),
+                 "it is" if len(UNRESOLVED) == 1 else "they are"), file=stream)
+
     if not rs:
         print("REFUSING A VERDICT: no repositories configured, so 'nothing lost' would "
               "be a statement about nothing.", file=sys.stderr)
@@ -405,6 +423,7 @@ def main(argv=None) -> int:
         # fired. The losses were printed; nothing acted on them. Falls through to the
         # DATA LOSS block below so the loss is reported in full.
         if not all_losses:
+            _report_unresolved(sys.stderr)
             return 2
         print("   — and a loss was FOUND below, not merely suspected, so this run "
               "is rc 1 (DATA LOSS) rather than rc 2.", file=sys.stderr)
@@ -427,15 +446,12 @@ def main(argv=None) -> int:
         print("   git -C <repo> checkout -- <path>", file=sys.stderr)
         print(file=sys.stderr)
         _emit(all_losses, sys.stderr)
+        _report_unresolved(sys.stderr)
         return 1
 
     print("canary: %d repositor%s checked, no tracked file lost."
           % (len(rs), "y" if len(rs) == 1 else "ies"))
-    if UNRESOLVED:
-        print("  NOT CHECKED: %s did not resolve on this machine, so %s not "
-              "among the %d above."
-              % (" and ".join(UNRESOLVED),
-                 "it is" if len(UNRESOLVED) == 1 else "they are", len(rs)))
+    _report_unresolved()
     return 0
 
 

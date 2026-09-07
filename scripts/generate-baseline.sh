@@ -87,20 +87,38 @@ for d in "$EXT"/*/; do
   [ -d "$d" ] || continue          # no match: the glob stays literal
   name="$(basename "$d")"
   case "$name" in ego_dlc_*) continue;; esac   # skip official DLC
-  cnt=$(find "$d" -type f | wc -l | tr -d ' ')
-  bytes=$(find "$d" -type f -printf "%s\n" 2>/dev/null | awk '{s+=$1} END{print s+0}')
+  # THE STATUS OF `find` IS CHECKED, NOT INFERRED FROM ITS OUTPUT. The guard below
+  # used to test `[ -z "$roll" ]`, which can never be true: `sha256sum` of empty
+  # input still prints e3b0c442..., and `wc -l` still prints a number. Worse, under
+  # `set -euo pipefail` a FAILING find inside a command substitution kills the
+  # assignment outright -- so the named refusal never printed, the script died with
+  # rc 1 rather than the documented rc 2, and it left a TSV listing 2 of 3 mods with
+  # no "Baseline written to", no inventory and no NOT CAPTURED line. Exactly the
+  # "partial artifact that looks complete" the reordering above was meant to end;
+  # the reordering fixed the mkdir case and left this one.
+  if ! _files=$(find "$d" -type f 2>/dev/null); then
+    echo "ERROR: could not enumerate $name -- a baseline row computed over an" >&2
+    echo "       unreadable folder cannot detect any later change, and a partial" >&2
+    echo "       baseline is worse than none because it looks complete." >&2
+    exit 2
+  fi
+  cnt=$(printf '%s' "$_files" | grep -c . || true)
+  bytes=$(printf '%s\n' "$_files" | while IFS= read -r _f; do [ -n "$_f" ] && wc -c < "$_f"; done | awk '{s+=$1} END{print s+0}')
   # NB the rollup hashes sha256sum's output INCLUDING each absolute path, so a
   # baseline is tied to the install location. Left as it is deliberately: changing
   # it would silently invalidate the existing baselines on disk, and comparing
   # across two different install paths is not a workflow this tool has. Recorded
   # rather than fixed, so the next reader does not rediscover it as a surprise.
-  roll=$(find "$d" -type f -exec sha256sum {} \; 2>/dev/null | sort | sha256sum | cut -d' ' -f1)
-  # A ROW WITH NO HASH CANNOT DETECT A CHANGE, so it must not be written as though
-  # it could. An unreadable mod folder produced exactly that, silently.
-  if [ -z "$roll" ] || [ -z "$cnt" ]; then
-    echo "ERROR: could not hash $name -- a baseline row with no rollup cannot" >&2
-    echo "       detect any later change, and a partial baseline is worse than" >&2
-    echo "       none because it looks complete." >&2
+  if ! roll=$(printf '%s\n' "$_files" | while IFS= read -r _f; do [ -n "$_f" ] && sha256sum "$_f"; done | sort | sha256sum | cut -d' ' -f1); then
+    echo "ERROR: could not hash $name -- refusing to write a row that cannot" >&2
+    echo "       detect a change." >&2
+    exit 2
+  fi
+  # An EMPTY folder and an UNREADABLE one must not produce the same row. The first
+  # is a real state; the second is now refused above, so a 0-file row here means
+  # genuinely zero files.
+  if [ -z "$roll" ]; then
+    echo "ERROR: empty rollup for $name -- refusing." >&2
     exit 2
   fi
   printf "%s\t%s\t%s\t%s\n" "$name" "$cnt" "$bytes" "$roll" >> "$TSV"

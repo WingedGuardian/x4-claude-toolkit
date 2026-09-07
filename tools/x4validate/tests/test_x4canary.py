@@ -467,3 +467,48 @@ def test_a_SMALL_loss_list_is_listed_in_full(repo, monkeypatch, capsys):
     for nm in ("f000.md", "f001.md", "f002.md"):
         assert nm in err, "%s was dropped from a list well under the cap" % nm
     assert "NOT LISTED" not in err, "the cap fired on a 3-item list"
+
+
+def test_the_NOT_CHECKED_note_reaches_EVERY_exit_path(repo, tmp_path, monkeypatch, capsys):
+    """It lived in the rc-0 branch alone, and rc 0 is the branch `session-canary.sh`
+    discards (`0) : ;;  # stay quiet`) — so the disclosure added THIS RELEASE to stop
+    the run being "silent about the tree this tool was built to watch" reached nobody.
+
+    A channel with no reachable reader is decoration. Checked on all three codes.
+    """
+    class _Half:
+        @staticmethod
+        def game_root():
+            return None          # unresolved: the note must appear
+        @staticmethod
+        def mods():
+            return None
+    monkeypatch.setattr(x4canary, "_paths", _Half)
+
+    # rc 0 — clean
+    monkeypatch.setenv("X4_CANARY_REPOS", str(repo))
+    assert x4canary.main([]) == 0
+    assert "NOT CHECKED" in capsys.readouterr().out
+
+    # rc 1 — a real loss
+    (repo / "big.md").write_bytes(b"")
+    assert x4canary.main([]) == 1
+    assert "NOT CHECKED" in capsys.readouterr().err
+
+    # rc 2 — could not check
+    (repo / "big.md").write_text("x" * 10000, encoding="utf-8")
+    notrepo = tmp_path / "notrepo2"
+    notrepo.mkdir()
+    monkeypatch.setenv("X4_CANARY_REPOS", os.pathsep.join([str(repo), str(notrepo)]))
+    assert x4canary.main([]) == 2
+    assert "NOT CHECKED" in capsys.readouterr().err
+
+
+def test_a_FULLY_RESOLVED_run_stays_quiet_on_every_path(repo, monkeypatch, capsys):
+    """The twin. Without it the change above could print the note unconditionally,
+    which is noise at session start on every clean machine."""
+    monkeypatch.setenv("X4_CANARY_REPOS", str(repo))
+    monkeypatch.setattr(x4canary, "_paths", None)
+    assert x4canary.main([]) == 0
+    out = capsys.readouterr()
+    assert "NOT CHECKED" not in out.out and "NOT CHECKED" not in out.err

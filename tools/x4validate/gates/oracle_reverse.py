@@ -159,6 +159,23 @@ def main() -> int:
               "agreement would be arithmetic rather than evidence:", file=sys.stderr)
         for why in unexamined:
             print(f"  - {why}", file=sys.stderr)
+        # A FINDING THE OTHER CHANNEL ALREADY PROVED OUTRANKS THIS REFUSAL.
+        # The two classes are INDEPENDENT: A can be fully examined and
+        # disagreeing while B built to zero entries. Returning 2
+        # unconditionally downgraded a real disagreement -- which this gate's
+        # own docstring calls "a false OK of the worst kind" -- into a
+        # could-not-run that `run-gates.sh` buckets as `cannot`.
+        #
+        # That is the SAME defect this release fixed in x4canary hours earlier
+        # ("an unreadable repo DOWNGRADING a found loss ... to rc 2, which is
+        # the code the hook reads"). The canary got it; this gate did not, in
+        # the same round, by the same hand. "Could not look at HALF" is not
+        # "could not look", when the other half already found something.
+        if disagree_a or disagree_b:
+            print(f"  — but {len(disagree_a) + len(disagree_b)} DISAGREEMENT(S) "
+                  f"were already established above, so this run is rc 1 "
+                  f"(findings) rather than rc 2.", file=sys.stderr)
+            return 1
         return 2
 
     # NOTHING EXAMINED IS REFUSED, NOT PASSED -- the floor `gates/oracle.py`

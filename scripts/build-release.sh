@@ -36,19 +36,44 @@ V300_SIZE=6508551
 
 die() { echo "REFUSING: $*" >&2; exit 2; }
 
+# THE INTERPRETER IS RESOLVED, NOT ASSUMED. Both helpers below hard-coded `python`,
+# which does not exist on a great many Linux installs -- including `ubuntu-latest`,
+# where this repo's own CI calls `python3`. The failure mode was the bad one: a
+# missing interpreter made `verify()` return non-zero, which this script's own
+# header defines as "the archive does not match the ref", so a maintainer on Linux
+# was told the bundle was CORRUPT when the truth was that the checker never ran.
+# "Could not look" rendered as "something is wrong" -- the conflation this toolkit
+# refuses everywhere else, inverted into a FALSE FAILURE on the release gate.
+#
+# rc 2 is "cannot build", and that is what a missing interpreter is.
+PY=""
+for _c in python3 python py; do
+  if command -v "$_c" >/dev/null 2>&1 && "$_c" -c "import sys" >/dev/null 2>&1; then
+    PY="$_c"; break
+  fi
+done
+[ -n "$PY" ] || die "no working python found (tried python3, python, py) -- the bundle cannot be verified, and an unverified bundle is not shippable"
+
 # THE MEMBER SET MUST BE THE REF'S TRACKED SET, EXACTLY. This is the check the hand
 # build never had: not "did a zip appear" but "is what is in it what the tag says".
 # Both directions matter -- a missing file ships a broken toolkit, an extra file ships
 # something nobody reviewed.
 verify() {
   local zip="$1" ref="$2"
-  python - "$zip" "$ref" <<'PY'
+  "$PY" - "$zip" "$ref" <<'PY'
 import subprocess, sys, zipfile
 zip_path, ref = sys.argv[1], sys.argv[2]
 z = zipfile.ZipFile(zip_path)
 members = {i.filename for i in z.infolist() if not i.is_dir()}
-tracked = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", ref],
-                             capture_output=True, text=True, check=True).stdout.split())
+# -z: NUL-separated. `.split()` splits on WHITESPACE, so `docs/my notes.md`
+# became two "missing" entries and the real path became an "extra" one -- a
+# FALSE REFUSAL on a correct bundle. Fails safe (refuses rather than ships) and
+# measured 0 of 270 paths affected today, so it is latent: one file with a space
+# in its name makes a correct release unshippable. `-z` also stops git C-quoting
+# non-ASCII, which `--name-only` alone does.
+out = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only", ref],
+                     capture_output=True, check=True).stdout
+tracked = {p.decode("utf-8", "surrogateescape") for p in out.split(b"\x00") if p}
 missing, extra = sorted(tracked - members), sorted(members - tracked)
 print("  members=%d  tracked at %s=%d" % (len(members), ref, len(tracked)))
 if missing or extra:
@@ -64,7 +89,7 @@ print("  member set matches the ref exactly")
 PY
 }
 
-sha_of() { python -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$1"; }
+sha_of() { "$PY" -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$1"; }
 
 if [ "${1:-}" = "--selftest" ]; then
   # A CONTROL THAT CAN GO RED. If the build method ever stops reproducing the one
