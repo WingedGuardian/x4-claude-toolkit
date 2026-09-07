@@ -105,15 +105,20 @@ def test_confirmation_uses_the_SAME_predicate_as_detection():
     assert len(spurious) == 1
 
 
-def _run_main(tmp_path, monkeypatch, base, curr):
-    """Drive `main()` over synthetic timings. Nothing real is measured or timed."""
+def _run_main(tmp_path, monkeypatch, base, curr, crashed=None):
+    """Drive `main()` over synthetic timings. Nothing real is measured or timed.
+
+    `measure()` returns TWO channels since 2026-09-06 -- timings and crashes -- so
+    this helper supplies both. A crash used to be swallowed inside measure() and was
+    therefore unreachable from here at all, which is why no test could pin it.
+    """
     import json
     import perf_guard
     b = tmp_path / "baseline.json"
     b.write_text(json.dumps(base), encoding="utf-8")
     monkeypatch.setattr(perf_guard, "BASELINE", b)
     monkeypatch.setattr(perf_guard, "RECORD", False)
-    monkeypatch.setattr(perf_guard, "measure", lambda: curr)
+    monkeypatch.setattr(perf_guard, "measure", lambda: (curr, dict(crashed or {})))
     # A re-timing that does NOT reproduce, so a working gate discards the spike.
     monkeypatch.setattr(perf_guard, "retime", lambda mod, cfg: 1.0)
     return perf_guard.main()
@@ -151,3 +156,62 @@ def test_the_CONTROL_no_regression_path_was_always_fine(tmp_path, monkeypatch):
     `main()` had stopped reaching the confirmation step at all."""
     rc = _run_main(tmp_path, monkeypatch, {"modA": 10.0}, {"modA": 10.1})
     assert rc == 0
+
+
+# --- a mod that CRASHES (v3.1.0 release review, group C) ---------------------------
+# `measure()` caught every exception, printed to stderr and `continue`d -- directly
+# under a comment reading "a crash is a finding, not a timing", which it then made
+# neither. The mod left `curr`, so `set(base) & set(curr)` no longer held it, and the
+# run printed "No per-mod regression beyond tolerance" and returned 0. A step that
+# narrows the data and reports success anyway, in the gate built to notice a change
+# for the worse; a validate() that RAISES where it used to complete is the harshest
+# regression there is, and it was the one the gate could not see.
+
+
+def test_a_BASELINED_mod_that_now_CRASHES_is_a_regression(tmp_path, monkeypatch):
+    """Pre-fix: rc 0 and a "not measured this run" note."""
+    rc = _run_main(tmp_path, monkeypatch, {"modA": 1.0, "modB": 2.0}, {"modA": 1.0},
+                   crashed={"modB": "XMLSyntaxError: boom"})
+    assert rc == 1, "a mod that went from timing to raising must fail the gate"
+
+
+def test_a_CRASH_is_distinguished_from_a_mod_that_is_simply_GONE(tmp_path,
+                                                                 monkeypatch, capsys):
+    """The two causes shared one bucket. Modlist drift is ordinary and benign --
+    rule 5 of the concurrency section exists because the corpus moves under a
+    measurement -- so it must stay a note, not become a failure."""
+    rc = _run_main(tmp_path, monkeypatch, {"modA": 1.0, "modGone": 2.0}, {"modA": 1.0})
+    assert rc == 0, "an uninstalled mod is drift, not a regression"
+    assert "no longer installed" in capsys.readouterr().out
+
+
+def test_a_crash_in_a_mod_the_baseline_never_covered_is_DEGRADED(tmp_path, monkeypatch):
+    """rc 3, not 0 and not 1: there is nothing to compare it against, so it is a
+    population that was not whole -- "could not check" is never "no regression"."""
+    rc = _run_main(tmp_path, monkeypatch, {"modA": 1.0}, {"modA": 1.0},
+                   crashed={"modNew": "TypeError: boom"})
+    assert rc == 3
+
+
+def test_RECORDING_a_baseline_over_a_crashing_mod_says_so(tmp_path, monkeypatch):
+    """A baseline written while a mod crashes puts that mod outside every later
+    comparison permanently, and no later run can tell that from "it does not
+    exist" -- the denominator-from-the-audited-artifact shape. Recorded anyway
+    (a broken mod must not block a baseline) but never as a clean rc."""
+    import json
+    import perf_guard as pg
+    b = tmp_path / "baseline.json"
+    monkeypatch.setattr(pg, "BASELINE", b)
+    monkeypatch.setattr(pg, "RECORD", True)
+    monkeypatch.setattr(pg, "measure", lambda: ({"modA": 1.0}, {"modB": "OSError: x"}))
+    assert pg.main() == 3
+    assert json.loads(b.read_text(encoding="utf-8")) == {"modA": 1.0}
+
+
+def test_a_CLEAN_record_is_still_rc0(tmp_path, monkeypatch):
+    """The twin, so the test above cannot pass for the wrong reason."""
+    import perf_guard as pg
+    monkeypatch.setattr(pg, "BASELINE", tmp_path / "b.json")
+    monkeypatch.setattr(pg, "RECORD", True)
+    monkeypatch.setattr(pg, "measure", lambda: ({"modA": 1.0}, {}))
+    assert pg.main() == 0

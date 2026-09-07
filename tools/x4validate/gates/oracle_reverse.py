@@ -23,7 +23,8 @@ Both are answered from the merged tree, so this needs no game launch — only a
 captured log ($X4_ORACLE_LOG, or the live profile log passed explicitly).
 
 Run:  uv run python gates/oracle_reverse.py [path/to/debug.txt]
-Exit: 0 we agree with the engine, 1 any disagreement, 2 no log.
+Exit: 0 we agree with the engine, 1 any disagreement, 2 a NON-ANSWER -- no log,
+      a log with no checkable complaint, or our own side not examined at all.
 """
 from __future__ import annotations
 
@@ -87,12 +88,14 @@ def main() -> int:
     # mod's page/id entries are already folded in.
     found_ids: set[tuple[int, int]] = set()
     scanned = 0
+    pages_seen = 0
     for vpath in ("t/0001-l044.xml", "t/0001.xml"):
         tree = effective(vpath)
         if tree is None:
             continue
         scanned += 1
         for page in tree.iter("page"):
+            pages_seen += 1
             try:
                 pid = int(page.get("id") or -1)
             except ValueError:
@@ -106,6 +109,7 @@ def main() -> int:
                     pass  # silent-ok: a non-numeric text id cannot match an engine complaint
     disagree_a = sorted(missing_ids & found_ids)
     print(f"   effective t/ files scanned : {scanned}")
+    print(f"   pages in those files       : {pages_seen}")
     print(f"   of those, ids WE resolve   : {len(disagree_a)}")
     for pid, tid in disagree_a[:15]:
         print(f"     DISAGREE  page {pid} text {tid}: engine says missing, we resolve it")
@@ -125,6 +129,37 @@ def main() -> int:
     print(f"   of the engine's misses, WE resolve    : {len(disagree_b)}")
     for p in disagree_b[:15]:
         print(f"     DISAGREE  '{p}' x{parts[p]}: engine cannot find it, our index has it")
+
+    # ---- OUR SIDE HAS TO HAVE BEEN EXAMINED -----------------------------
+    # The refusal below covers a log with nothing to check. It did NOT cover the
+    # other empty input: OUR tree failing to build. `disagree_a` is
+    # `missing_ids & found_ids` and `disagree_b` is `parts & known`, so if the
+    # effective t/ tree or the component index comes back None -- an unreadable
+    # reference tree, a merge that dropped every overlay, a Config with no roots --
+    # both intersections are empty BY CONSTRUCTION and the gate printed "We agree
+    # with the engine on every checkable complaint in this log", rc 0. That is a
+    # verdict whose PASS branch is reachable from an input that was never read
+    # (gotcha #26/#22): the engine named 50 misses, we examined nothing, and the
+    # two agreed. An agreement needs two sides.
+    unexamined = []
+    if missing_ids and scanned == 0:
+        unexamined.append(
+            f"the engine named {len(missing_ids)} missing TextID(s) but NEITHER "
+            f"effective t/ file could be built, so nothing was compared")
+    elif missing_ids and pages_seen == 0:
+        unexamined.append(
+            f"the engine named {len(missing_ids)} missing TextID(s) but the "
+            f"{scanned} effective t/ file(s) we built contain 0 <page> elements")
+    if parts and not known:
+        unexamined.append(
+            f"the engine could not find {len(parts)} component template(s) but the "
+            f"effective index/components.xml yielded 0 entries")
+    if unexamined:
+        print("\nREFUSING: our own side of the comparison was not examined, so an "
+              "agreement would be arithmetic rather than evidence:", file=sys.stderr)
+        for why in unexamined:
+            print(f"  - {why}", file=sys.stderr)
+        return 2
 
     # NOTHING EXAMINED IS REFUSED, NOT PASSED -- the floor `gates/oracle.py`
     # already states in its own words. Over a log carrying no complaint in

@@ -188,12 +188,33 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     cap = _os.environ.get("X4_MAX_SKIPS")
     if cap is None:
         return
+    # AN UNUSABLE CEILING IS A FAILURE, NOT A PASS. This branch used to print
+    # "that is a NON-ANSWER, not a pass" and then return, leaving the run GREEN --
+    # so the sentence was true and the exit code contradicted it. The caller set
+    # the variable, i.e. asked for a ceiling; if we cannot apply the one they gave
+    # us, the honest outcome is the one the rc contract already specifies for a
+    # could-not-check, not the one that looks like agreement.
+    #
+    # The realistic accident is an EMPTY value, not garbage: a workflow writing
+    # `X4_MAX_SKIPS: ${{ ... }}` from an expression that evaluates to nothing sets
+    # the variable to "", which is not None, so this path is exactly where a CI
+    # leg silently loses its skip ceiling while every log line still says the
+    # suite ran with one.
     try:
         cap_n = int(cap)
     except ValueError:
         terminalreporter.write_line(
-            "  X4_MAX_SKIPS=%r is not a number, so no ceiling was applied. That is a "
-            "NON-ANSWER, not a pass." % cap)
+            "  FAIL: X4_MAX_SKIPS=%r is not a number, so no ceiling could be applied. "
+            "A ceiling that was ASKED FOR and could not be applied is a non-answer, "
+            "and a non-answer is not a pass." % cap)
+        terminalreporter._session.exitstatus = 1
+        return
+    if cap_n < 0:
+        terminalreporter.write_line(
+            "  FAIL: X4_MAX_SKIPS=%d is negative, so no run could ever satisfy it. "
+            "A ceiling nothing can meet is a broken instrument, not a strict one."
+            % cap_n)
+        terminalreporter._session.exitstatus = 1
         return
     if n > cap_n:
         terminalreporter.write_line(

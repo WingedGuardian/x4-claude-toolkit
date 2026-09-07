@@ -63,7 +63,20 @@ def is_regression(base: float, curr: float,
     return ratio > ratio_fail and (curr - base) > delta_fail
 
 
-def measure() -> dict[str, float]:
+def measure() -> "tuple[dict[str, float], dict[str, str]]":
+    """(timings, crashes). TWO channels, because they are two different answers.
+
+    This used to return timings alone and `continue` past an exception, with the
+    comment "a crash is a finding, not a timing" sitting directly above the line
+    that made it neither. The crashed mod simply left `curr`, so `set(base) &
+    set(curr)` no longer contained it, and the run printed "No per-mod regression
+    beyond tolerance" and returned 0 — a step that narrows the data and
+    reports success anyway, in the gate whose whole job is to notice a change for
+    the worse.
+
+    A validate() that RAISES where it used to complete is the harshest regression
+    there is: not slower, but unbounded. It has to reach the verdict.
+    """
     ext = _env.extensions()
     mods = [d for d in sorted(ext.iterdir())
             if d.is_dir() and not d.name.lower().startswith("ego_dlc_")]
@@ -75,16 +88,18 @@ def measure() -> dict[str, float]:
     if mods:
         _check.validate(mods[0], cfg, update=True)
     out: dict[str, float] = {}
+    crashed: dict[str, str] = {}
     for d in mods:
         t = time.perf_counter()
         try:
             _check.validate(d, cfg, update=True)
         except Exception as exc:                      # a crash is a finding, not a timing
-            print(f"  ERROR {d.name}: {type(exc).__name__}: {exc}", file=sys.stderr)
+            crashed[d.name] = f"{type(exc).__name__}: {exc}"
+            print(f"  ERROR {d.name}: {crashed[d.name]}", file=sys.stderr)
             continue
         out[d.name] = round(time.perf_counter() - t, 3)
         print(f"  {d.name}: {out[d.name]}s", file=sys.stderr)
-    return out
+    return out, crashed
 
 
 def retime(mod_name: str, cfg) -> float | None:
@@ -146,10 +161,20 @@ def confirm_regressions(bad, retime_fn):
 
 def main() -> int:
     if RECORD:
-        data = measure()
+        data, crashed = measure()
         BASELINE.write_text(json.dumps(data, indent=1), encoding="utf-8")
         print(f"recorded {len(data)} mod timings -> {BASELINE.name} "
               f"(local only; not committed)")
+        if crashed:
+            # A baseline recorded over a partially-crashing population puts those
+            # mods OUTSIDE the comparison permanently, and nothing downstream can
+            # tell that from "this mod does not exist". Say it at record time, and
+            # in the rc, or the omission is inherited silently by every later run.
+            print(f"\n  DEGRADED: {len(crashed)} mod(s) could not be timed at all, "
+                  f"so the baseline does not cover them:", file=sys.stderr)
+            for name, why in sorted(crashed.items()):
+                print(f"    {name}: {why}", file=sys.stderr)
+            return 3
         return 0
 
     if not BASELINE.is_file():
@@ -158,7 +183,7 @@ def main() -> int:
         return 2
 
     base = json.loads(BASELINE.read_text(encoding="utf-8"))
-    curr = measure()
+    curr, crashed = measure()
     shared = sorted(set(base) & set(curr))
 
     rows = []
@@ -202,14 +227,35 @@ def main() -> int:
         note = "could NOT be re-timed — reported UNCONFIRMED" if again is None \
             else f"reproduced at {again:.2f}s"
         print(f"    {mod:<34} {b:.2f}s -> {c:.2f}s  ({d:+.2f}s, {ratio:.1f}x)  [{note}]")
-    missing = sorted(set(base) - set(curr))
-    if missing:
-        print(f"\n  note: {len(missing)} baselined mod(s) not measured this run "
-              f"(e.g. {missing[:2]}) — excluded from the comparison")
+    # TWO CAUSES, ONE OLD BUCKET. `set(base) - set(curr)` used to collapse "the mod
+    # folder is gone" (benign modlist drift) with "validate() RAISED on it" (the
+    # worst regression this gate can encounter), and printed both as an
+    # excluded-from-the-comparison note underneath a rc 0.
+    regressed_to_crash = sorted(n for n in crashed if n in base)
+    new_crash = sorted(n for n in crashed if n not in base)
+    gone = sorted(set(base) - set(curr) - set(crashed))
+    if gone:
+        print(f"\n  note: {len(gone)} baselined mod(s) are no longer installed "
+              f"(e.g. {gone[:2]}) — excluded from the comparison")
+    if regressed_to_crash:
+        print(f"\n  CRASHED, and the baseline TIMED them — validate() went from "
+              f"completing to raising: {len(regressed_to_crash)}")
+        for n in regressed_to_crash:
+            print(f"    {n:<34} baseline {base[n]:.2f}s -> {crashed[n]}")
+    if new_crash:
+        print(f"\n  NOT CHECKED: {len(new_crash)} mod(s) crashed and are absent from "
+              f"the baseline, so no comparison is possible for them:")
+        for n in new_crash:
+            print(f"    {n}: {crashed[n]}")
+
     print("\n" + "=" * 88)
-    if bad:
+    if bad or regressed_to_crash:
         print("PERF REGRESSION — investigate before shipping.")
         return 1
+    if new_crash:
+        print("DEGRADED: no regression among the mods that COULD be timed, but the "
+              "population was not whole.")
+        return 3
     print("No per-mod regression beyond tolerance.")
     return 0
 
