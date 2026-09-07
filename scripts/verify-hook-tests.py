@@ -501,6 +501,15 @@ def main() -> int:
         # is already there. MEASURED 2026-09-02: five mutants added that day named test
         # CLASSES, which unittest never prints in a `FAIL:` line, and all five read as
         # coverage holes. The direction is safe, so this is legibility, not a bypass.
+        # AN EMPTY MUTANT SET SCORES A PERFECT ZERO. "mutations not caught by
+        # their target test: 0 of 0" reads exactly like a clean run, and
+        # `return 1 if (bad or gaps) else 0` makes it rc 0 — a PASS from an
+        # instrument that examined nothing, in the tool whose whole subject is
+        # whether the tests examine anything.
+        if not MUTANTS:
+            print("REFUSING: the mutant set is EMPTY, so 0 of 0 uncaught would "
+                  "be a statement about nothing.", file=sys.stderr)
+            return 2
         source = (HOOKS / "test_hook_facts.py").read_text(encoding="utf-8")
         missing = [t for _l, _o, _n, t in MUTANTS if ("def " + t + "(") not in source]
         if missing:
@@ -537,6 +546,19 @@ def main() -> int:
         import hook_facts as H
         keys = sorted(k for k, v in H.facts({"tool_input": {"command": "echo x"}}, {}).items()
                       if isinstance(v, bool) and k not in NOT_A_RULE)
+        # THE SAME HOLE ON THE COVERAGE SIDE, and this one is reachable without
+        # anybody editing a list: `keys` is derived from a LIVE call to
+        # `H.facts(...)`, so a module whose shape changed — rules renamed,
+        # made non-boolean, or moved behind a branch this sample input does not
+        # take — yields an empty list, and the run prints "predicates with a
+        # coverage gap: 0 of 0" and exits 0. Probing NO predicate is not the
+        # same as probing every predicate successfully.
+        if not keys:
+            print("REFUSING: no boolean rule predicate was enumerated from "
+                  "hook_facts.facts(), so 0 of 0 coverage gaps would be a "
+                  "statement about nothing. The module shape has probably "
+                  "changed.", file=sys.stderr)
+            return 2
         print(f"\nexcluded as not-a-rule: {sorted(NOT_A_RULE)}")
         print(f"\n{'PREDICATE':<42} {'fires?':<14} silent?")
         print("-" * 78)

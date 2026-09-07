@@ -55,24 +55,63 @@ echo "Game version (version.dat): $VER"
 
 # --- installed mods = source of truth is the extensions/ FOLDER, not content.xml ---
 # (content.xml routinely lists dead/unsubscribed entries the engine ignores.)
+#
+# A BASELINE THAT RECORDS NOTHING MUST NOT REPORT SUCCESS. This walk used to sit
+# inside a bare `if [ -d "$EXT" ]`, so a missing extensions/ wrote a HEADER-ONLY
+# TSV and the script still printed "Baseline written to: ..." and exited 0.
+# MEASURED in a sandbox: zero mods recorded, no config.xml, no error fingerprint,
+# and not one word about any of it. This file's own comment above already says a
+# baseline is a RECOVERY artifact and that you find out at the moment you need to
+# restore -- that argument was applied to the game DIRECTORY and not to its
+# contents.
+#
+# An existing but EMPTY extensions/ stays accepted: no mods is a real state a
+# player can be in. A MISSING one means we are looking at the wrong place.
 EXT="$GAME_DIR/extensions"
+if [ ! -d "$EXT" ]; then
+  echo "ERROR: no extensions/ directory under $GAME_DIR." >&2
+  echo "       A known-good baseline of an install whose mod folder cannot be" >&2
+  echo "       enumerated would record ZERO mods and look identical to a clean" >&2
+  echo "       vanilla install. Refusing to write one." >&2
+  exit 2
+fi
 TSV="$OUT/installed-mods.tsv"
 printf "folder\tfiles\tbytes\trollup_sha256\n" > "$TSV"
-if [ -d "$EXT" ]; then
-  for d in "$EXT"/*/; do
-    name="$(basename "$d")"
-    case "$name" in ego_dlc_*) continue;; esac   # skip official DLC
-    cnt=$(find "$d" -type f | wc -l | tr -d ' ')
-    bytes=$(find "$d" -type f -printf "%s\n" 2>/dev/null | awk '{s+=$1} END{print s+0}')
-    roll=$(find "$d" -type f -exec sha256sum {} \; 2>/dev/null | sort | sha256sum | cut -d' ' -f1)
-    printf "%s\t%s\t%s\t%s\n" "$name" "$cnt" "$bytes" "$roll" >> "$TSV"
-    echo "  mod: $name (files=$cnt, rollup=${roll:0:12}…)"
-  done
-fi
+NMODS=0
+for d in "$EXT"/*/; do
+  [ -d "$d" ] || continue          # no match: the glob stays literal
+  name="$(basename "$d")"
+  case "$name" in ego_dlc_*) continue;; esac   # skip official DLC
+  cnt=$(find "$d" -type f | wc -l | tr -d ' ')
+  bytes=$(find "$d" -type f -printf "%s\n" 2>/dev/null | awk '{s+=$1} END{print s+0}')
+  # NB the rollup hashes sha256sum's output INCLUDING each absolute path, so a
+  # baseline is tied to the install location. Left as it is deliberately: changing
+  # it would silently invalidate the existing baselines on disk, and comparing
+  # across two different install paths is not a workflow this tool has. Recorded
+  # rather than fixed, so the next reader does not rediscover it as a surprise.
+  roll=$(find "$d" -type f -exec sha256sum {} \; 2>/dev/null | sort | sha256sum | cut -d' ' -f1)
+  # A ROW WITH NO HASH CANNOT DETECT A CHANGE, so it must not be written as though
+  # it could. An unreadable mod folder produced exactly that, silently.
+  if [ -z "$roll" ] || [ -z "$cnt" ]; then
+    echo "ERROR: could not hash $name -- a baseline row with no rollup cannot" >&2
+    echo "       detect any later change, and a partial baseline is worse than" >&2
+    echo "       none because it looks complete." >&2
+    exit 2
+  fi
+  printf "%s\t%s\t%s\t%s\n" "$name" "$cnt" "$bytes" "$roll" >> "$TSV"
+  echo "  mod: $name (files=$cnt, rollup=${roll:0:12})"
+  NMODS=$((NMODS + 1))
+done
+echo "  installed mods recorded: $NMODS"
 
-# --- copy live artifacts verbatim ---
+# --- copy live artifacts verbatim, and NAME the ones that were not there --------
+MISSING_ART=""
 for f in content.xml config.xml debug.txt; do
-  [ -f "$PROFILE_DIR/$f" ] && cp "$PROFILE_DIR/$f" "$OUT/$f"
+  if [ -f "$PROFILE_DIR/$f" ]; then
+    cp "$PROFILE_DIR/$f" "$OUT/$f"
+  else
+    MISSING_ART="$MISSING_ART $f"
+  fi
 done
 
 # --- normalized, diffable error fingerprint from debug.txt ---
@@ -93,4 +132,23 @@ fi
 
 echo
 echo "Baseline written to: $OUT"
+# AN INVENTORY, NOT JUST A DESTINATION. "Baseline written to: ..." was the whole
+# report, so a baseline missing its mod list, its config and its error fingerprint
+# announced itself in exactly the same words as a complete one. What a recovery
+# artifact does NOT contain is the thing you need to know before you rely on it.
+echo "  contains: installed-mods.tsv ($NMODS mod(s))"
+for f in content.xml config.xml debug.txt error-fingerprint.txt; do
+  [ -f "$OUT/$f" ] && echo "            $f"
+done
+if [ -n "$MISSING_ART" ]; then
+  echo "  NOT CAPTURED (absent from $PROFILE_DIR):$MISSING_ART" >&2
+  case "$MISSING_ART" in
+    *debug.txt*) echo "            — so there is NO error fingerprint to diff against later." >&2;;
+  esac
+fi
+if [ "$NMODS" -eq 0 ]; then
+  echo "  NOTE: extensions/ exists but holds no non-DLC mod, so this baseline" >&2
+  echo "        records a vanilla install. That is a real state; it is called out" >&2
+  echo "        because a zero here is otherwise indistinguishable from a failure." >&2
+fi
 echo "Re-run after scaling up the mod list, then diff error-fingerprint.txt and re-hash mods vs installed-mods.tsv."
