@@ -494,8 +494,12 @@ jobs:
           # used. Ubuntu stays INFERRED: the one run that measured both had ubuntu 11
           # above windows (53 vs 42, run 33777842225), so measurement + 11 + 3.
           #
-          # ** RE-MEASURED 2026-09-07 after the release-review round: windows cold is
-          # 56, not 53. ** The whole +3 is `tests/test_build_release.py`, attributed
+          # ** RE-MEASURED 2026-09-07, twice more after the review rounds: windows
+          # cold is 57, not 53 and not the 56 this comment said an hour ago. **
+          # Real headroom against the 59 below is therefore +2, not +3. Still safe,
+          # and CI's own floor is LOWER than this figure: `verify-cold.sh` runs from
+          # a `git archive` extract with no `.git` and no tags, so the git-dependent
+          # tests skip there and will NOT skip on a real checkout (measured near 54). The whole +3 is `tests/test_build_release.py`, attributed
           # per file by diffing the two verify-cold runs rather than by reading the
           # totals: 3 of its 4 tests need a git checkout carrying the v3.0.0 tag, and
           # a `git archive` extract is neither a repo nor tagged, so they skip for the
