@@ -320,10 +320,87 @@ def _anchor_to_repo_root() -> None:
     os.chdir(pathlib.Path(__file__).resolve().parent.parent)
 
 
+def scan_history(rng: str, banned: list[str]) -> int:
+    """Scan the diff every commit in *rng* INTRODUCES. Tree-clean is not enough.
+
+    ★ `git push` publishes COMMITS, not the working tree. An identifier that was
+    committed and later removed is still in the objects and still public after the
+    push -- and every other check in this repo, this script's own default mode
+    included, scans the TREE. So all of them return clean on exactly the case that
+    matters, which is the case where somebody noticed and fixed it.
+
+    MEASURED 2026-09-07, and the trigger was real rather than hypothetical: a
+    concurrent session hardcoded a profile path (`.../Documents/Egosoft/X4/<profile
+    id>/save/...`) into a tracked test file, caught it themselves, and replaced it.
+    Only a history scan could establish whether it had reached a commit. It had not
+    -- zero occurrences of the username or the profile id across all 274 commits --
+    but "clean" and "assumed clean" are different states and only this told them
+    apart.
+
+    ⚠ Two TREE-scanning instruments disagreeing about this is expected and is not a
+    bug in either: they run at different moments, and the tree changes between them.
+    Two moments, not two populations.
+
+    Only ADDED lines (`+`) count: a commit that REMOVES an identifier is the fix, not
+    the defect, and flagging it would make the remedy trip the check.
+    """
+    # `git rev-list A..A` is an ERROR ("Invalid revision range"), not an empty
+    # list, so an empty range arrives here as a RuntimeError from `_git` rather
+    # than as `[]`. Both are the same state -- nothing was scanned -- and both must
+    # refuse rather than fall through to a clean-looking exit.
+    try:
+        shas = _git("rev-list", rng).split()
+    except RuntimeError as exc:
+        print(f"::error::cannot resolve the range {rng} ({exc}), so a clean "
+              f"history result would prove nothing.")
+        return 2
+    if not shas:
+        print(f"::error::no commits in {rng}, so a clean history result would "
+              f"prove nothing.")
+        return 2
+    lowered = [t.lower() for t in banned]
+    found = 0
+    for sha in shas:
+        try:
+            raw = subprocess.run(["git", "show", "--format=", "--unified=0", sha],
+                                 capture_output=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"::error::could not read commit {sha[:9]}: {exc}")
+            return 2
+        for line in raw.decode("utf-8", "replace").splitlines():
+            if not line.startswith("+") or line.startswith("+++"):
+                continue
+            low = line.lower()
+            hit = any(t in low for t in lowered) or account_match(line)
+            if hit:
+                # The SHA and nothing else. Echoing the line would publish the very
+                # thing being suppressed, in a log that is itself public.
+                print(f"::error::commit {sha[:9]} introduces a contributor "
+                      f"identifier; it is in the history and a push publishes it")
+                found += 1
+                break
+    print(f"  history: {len(shas)} commit(s) in {rng} scanned against "
+          f"{len(banned)} identifier(s)")
+    if found:
+        print(f"::error::{found} commit(s) in {rng} carry a contributor identifier. "
+              f"Removing it from the TREE does not remove it from the history.")
+        return 1
+    print(f"clean {chr(8212)} no commit in {rng} introduces one.")
+    return 0
+
+
 def main() -> int:
     _anchor_to_repo_root()
     if "--selftest" in sys.argv:
         return selftest()
+    # --history <range>: scan COMMITS instead of the tree. See scan_history().
+    hist = None
+    if "--history" in sys.argv:
+        i = sys.argv.index("--history")
+        if i + 1 >= len(sys.argv):
+            print("::error::--history needs a rev range, e.g. --history v3.0.0..HEAD")
+            return 2
+        hist = sys.argv[i + 1]
     try:
         tracked, untracked = population()
         banned, notes = forbidden_tokens()
@@ -333,6 +410,14 @@ def main() -> int:
 
     for n in notes:
         print(f"  {n}")
+
+    if hist is not None:
+        if not banned:
+            print("::error::no identifiers could be derived, so a history "
+                  "scan proves nothing. Refusing rather than reporting a "
+                  "vacuous pass.")
+            return 2
+        return scan_history(hist, banned)
 
     files = merged_population(tracked, untracked)
     if not files:
