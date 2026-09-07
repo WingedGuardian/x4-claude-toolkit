@@ -1,4 +1,4 @@
-"""Installing OVER an existing install -- the path nothing drove until now.
+"""Installing OVER an existing install -- BOTH installers, the path nothing drove.
 
 The installer had two static test files and neither executes it. That is why a
 guaranteed runtime failure was invisible: `install.sh` cannot install over a
@@ -28,12 +28,14 @@ import importlib.util
 import os
 import pathlib
 import stat
+import shutil
 import subprocess
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_SH = ROOT / "install.sh"
+INSTALL_PS1 = ROOT / "install.ps1"
 SENTINEL = "SENTINEL_DO_NOT_CLOBBER=1"
 
 
@@ -92,39 +94,74 @@ def _fresh(tmp_path: pathlib.Path) -> pathlib.Path:
         (tmp_path / d).mkdir()
     return dest
 
-def _install(bash: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra: str):
+def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra: str):
+    """Run ONE of the two installers with identical intent.
+
+    Parameterised rather than duplicated, because the point is that both reach the
+    same VERDICT. `test_installers_agree.py` compares the two files as TEXT, so it
+    would pass on two installers that agree about item lists and disagree about
+    whether they clean up -- which is exactly what was true here: install.ps1 had
+    `finally` where install.sh had none, and both still failed this path.
+    """
     _refuse_unless_sandboxed(tmp_path, dest, tmp_path / "game",
                              tmp_path / "profile", tmp_path / "mods")
-    cmd = [bash, INSTALL_SH.as_posix(),
-           "--method", "separate",
-           "--toolkit", dest.as_posix(),
-           "--game", (tmp_path / "game").as_posix(),
-           "--profile", (tmp_path / "profile").as_posix(),
-           "--mods", (tmp_path / "mods").as_posix(),
-           "--reference", (dest / "reference").as_posix(),
-           "--extensions", (tmp_path / "game" / "extensions").as_posix(),
-           "--over-existing", "--yes", *extra]
+    common = {
+        "method": "separate",
+        "toolkit": dest.as_posix(),
+        "game": (tmp_path / "game").as_posix(),
+        "profile": (tmp_path / "profile").as_posix(),
+        "mods": (tmp_path / "mods").as_posix(),
+        "reference": (dest / "reference").as_posix(),
+        "extensions": (tmp_path / "game" / "extensions").as_posix(),
+    }
+    # OVERRIDES REPLACE, they do not append. Appending a second `--game` is
+    # tolerated by bash (last wins) and REJECTED by PowerShell with "parameter
+    # 'Game' is specified more than once" -- so the harness would have reported a
+    # missing refusal when the installer never ran. A parameterised test has to
+    # express intent, not one dialect spelled twice.
+    flags = []
+    it = iter(extra)
+    for a in it:
+        if a == "--game":
+            common["game"] = next(it)
+        elif a == "--dry-run":
+            flags.append("dry-run")
+        else:
+            raise AssertionError("unmapped flag: %s" % a)
+
+    if installer == "sh":
+        exe = _bash()
+        if exe is None:
+            pytest.skip("no Git Bash on this machine")
+        cmd = [exe, INSTALL_SH.as_posix()]
+        for k, v in common.items():
+            cmd += ["--" + k, v]
+        cmd += ["--over-existing", "--yes"]
+        cmd += ["--" + f for f in flags]
+    else:
+        exe = shutil.which("pwsh") or shutil.which("powershell")
+        if exe is None:
+            pytest.skip("no PowerShell on this machine")
+        cmd = [exe, "-NoProfile", "-File", INSTALL_PS1.as_posix()]
+        for k, v in common.items():
+            cmd += ["-" + k[:1].upper() + k[1:], v]
+        cmd += ["-OverExisting", "-Yes"]
+        cmd += ["-DryRun" if f == "dry-run" else "-" + f for f in flags]
     return subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT.as_posix())
 
 
-@pytest.fixture()
-def bash():
-    b = _bash()
-    if b is None:
-        pytest.skip("no Git Bash on this machine; the installer is a bash script")
-    return b
-
-
-def test_the_harness_can_install_at_all(bash, tmp_path):
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_harness_can_install_at_all(installer, tmp_path):
     """Denominator first. Without this every assertion below could be passing
     because the installer never ran, and a skip is not a pass."""
     dest = _fresh(tmp_path)
-    r = _install(bash, tmp_path, dest)
+    r = _install(installer, tmp_path, dest)
     assert r.returncode == 0, "unlocked install failed, so the harness proves nothing:\n%s\n%s" % (r.stdout[-2000:], r.stderr[-2000:])
     assert (dest / "scripts").is_dir(), "the installer reported success and copied no scripts/"
 
 
-def test_UPGRADING_over_a_LOCKED_config_succeeds(bash, tmp_path):
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_UPGRADING_over_a_LOCKED_config_succeeds(installer, tmp_path):
     """THE DOCUMENTED PATH, and the one that was broken.
 
     Install, lock (which README tells the user to do), upgrade. The second run
@@ -133,12 +170,12 @@ def test_UPGRADING_over_a_LOCKED_config_succeeds(bash, tmp_path):
     `cp: Permission denied`.
     """
     dest = _fresh(tmp_path)
-    assert _install(bash, tmp_path, dest).returncode == 0, "first install failed"
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
     cfg = dest / ".claude" / "x4-paths.env"
     before = cfg.read_bytes()
     cfg.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)      # what x4lock does
 
-    r = _install(bash, tmp_path, dest)
+    r = _install(installer, tmp_path, dest)
     assert r.returncode == 0, (
         "upgrade over a read-only x4-paths.env failed (rc=%s). The toolkit tells "
         "users to lock, so this IS the documented upgrade path:\n%s" % (r.returncode, r.stderr[-2000:]))
@@ -149,7 +186,8 @@ def test_UPGRADING_over_a_LOCKED_config_succeeds(bash, tmp_path):
         "nothing should have been overwritten" % leftovers)
 
 
-def test_a_locked_config_that_MUST_change_refuses_UP_FRONT(bash, tmp_path):
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_locked_config_that_MUST_change_refuses_UP_FRONT(installer, tmp_path):
     """The other half, and refusing is the right answer.
 
     An installer that silently unlocked would defeat the mechanism the user asked
@@ -157,12 +195,12 @@ def test_a_locked_config_that_MUST_change_refuses_UP_FRONT(bash, tmp_path):
     command, rather than dying part-way through a 16-item copy.
     """
     dest = _fresh(tmp_path)
-    assert _install(bash, tmp_path, dest).returncode == 0, "first install failed"
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
     cfg = dest / ".claude" / "x4-paths.env"
     cfg.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
     (tmp_path / "game2").mkdir()
 
-    r = _install(bash, tmp_path, dest, "--game", (tmp_path / "game2").as_posix())
+    r = _install(installer, tmp_path, dest, "--game", (tmp_path / "game2").as_posix())
     assert r.returncode != 0, "a config that cannot be written was reported as installed"
     out = (r.stdout + r.stderr).lower()
     assert "unlock" in out, (
@@ -172,27 +210,29 @@ def test_a_locked_config_that_MUST_change_refuses_UP_FRONT(bash, tmp_path):
         "the failure is still a raw cp error rather than a precondition check")
 
 
-def test_the_DRY_RUN_predicts_a_refusal_it_would_hit(bash, tmp_path):
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_DRY_RUN_predicts_a_refusal_it_would_hit(installer, tmp_path):
     """Finding 3. A dry run that cannot go red carries no information.
 
     MEASURED before the fix: rc 0 and a clean 16-item list, immediately followed
     by a real run that failed on item 1.
     """
     dest = _fresh(tmp_path)
-    assert _install(bash, tmp_path, dest).returncode == 0, "first install failed"
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
     (dest / ".claude" / "x4-paths.env").chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
     (tmp_path / "game2").mkdir()
 
-    r = _install(bash, tmp_path, dest, "--game", (tmp_path / "game2").as_posix(), "--dry-run")
+    r = _install(installer, tmp_path, dest, "--game", (tmp_path / "game2").as_posix(), "--dry-run")
     assert r.returncode != 0 or "unlock" in (r.stdout + r.stderr).lower(), (
         "the dry run reported success for a run that cannot succeed:\n%s" % (r.stdout + r.stderr)[-1500:])
 
 
-def test_the_dry_run_still_passes_when_the_install_WOULD_work(bash, tmp_path):
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_dry_run_still_passes_when_the_install_WOULD_work(installer, tmp_path):
     """The twin. A precondition that always refuses is not a check."""
     dest = _fresh(tmp_path)
-    assert _install(bash, tmp_path, dest).returncode == 0, "first install failed"
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
     (dest / ".claude" / "x4-paths.env").chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
-    r = _install(bash, tmp_path, dest, "--dry-run")
+    r = _install(installer, tmp_path, dest, "--dry-run")
     assert r.returncode == 0, (
         "the dry run refused an upgrade that needs no config change:\n%s" % (r.stdout + r.stderr)[-1500:])

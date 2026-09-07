@@ -130,15 +130,94 @@ $X4CopyPrune = @('tools\x4validate\.venv','tools\x4validate\.pytest_cache','tool
 #
 # The Copy-Item target is the destination's PARENT: -Recurse into the path itself
 # nests on an upgrade, which is the .claude\.claude shape.
+#: Per-machine files that must NEVER travel from the source. The mirror of
+#: $X4KeepLocal in install.sh, and deliberately SEPARATE from $X4CopyPrune: a
+#: pruned path is also DELETED from the destination, which is right for a stale
+#: .venv and catastrophic for a config.
+$X4KeepLocal = @('.claude\x4-paths.env','.claude\settings.local.json')
+
+#: The key=value lines Write-PathsEnv OWNS, as it would write them now. Factored
+#: out so the precondition and the writer cannot disagree about what "would
+#: change" means.
+function Get-OwnedEnvLines($t) {
+  $ref = if ($Reference) { $Reference } else { Join-Path $t 'reference' }
+  $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-Path $Game 'extensions' } else { '' }
+  $lines = @(('X4_TOOLKIT="' + (Get-EscapedEnvValue $t) + '"'))
+  if ($Game)      { $lines += ('X4_GAME="' + (Get-EscapedEnvValue $Game) + '"') }
+  $lines += ('X4_REFERENCE="' + (Get-EscapedEnvValue $ref) + '"')
+  if ($Profile)   { $lines += ('X4_PROFILE="' + (Get-EscapedEnvValue $Profile) + '"')
+                    $lines += ('X4_DEBUGLOG="' + (Get-EscapedEnvValue (Join-Path $Profile 'debug.txt')) + '"') }
+  if ($Mods)      { $lines += ('X4_MODS="' + (Get-EscapedEnvValue $Mods) + '"') }
+  if ($ext)       { $lines += ('X4_EXTENSIONS="' + (Get-EscapedEnvValue $ext) + '"') }
+  if ($XRCatTool) { $lines += ('XRCATTOOL="' + (Get-EscapedEnvValue $XRCatTool) + '"') }
+  return ,$lines
+}
+
+#: The same keys as they stand in the file today. Comments and carried keys are
+#: excluded deliberately: carried keys come FROM the file so they can never
+#: differ, and the timestamp header changes on every run, which would make every
+#: upgrade look like a change and defeat the check.
+function Get-OwnedEnvLinesFromFile($f) {
+  $owned = @('X4_TOOLKIT','X4_GAME','X4_REFERENCE','X4_PROFILE','X4_DEBUGLOG','X4_MODS','X4_EXTENSIONS','XRCATTOOL')
+  $out = @()
+  if (Test-Path -LiteralPath $f) {
+    foreach ($line in (Get-Content -LiteralPath $f)) {
+      if ($line -match '^\s*#' -or $line -notmatch '=') { continue }
+      $key = ($line -split '=',2)[0]
+      if ($owned -contains $key) { $out += $line }
+    }
+  }
+  return ,$out
+}
+
+#: PRECONDITION, checked before ANY file is written and in -DryRun too.
+#:
+#: x4lock marks the path config read-only and README tells users to run it, so the
+#: documented upgrade path met
+#:   Exception calling "WriteAllText": Access to the path ... is denied
+#: after the copy had already run, leaving TWO orphaned backups behind. MEASURED
+#: 2026-09-07 in a sandbox, the same defect install.sh had with a different error
+#: surface -- which is why the parity test drives BOTH and asserts the verdict.
+#:
+#: An upgrade that does not need to CHANGE the config never writes it, so the lock
+#: is irrelevant. One that must change it REFUSES, naming the unlock command:
+#: silently unlocking would defeat the mechanism the user turned on.
+function Test-ConfigPrecheck($t) {
+  $f = Join-Path $t (Join-Path '.claude' 'x4-paths.env')
+  if (-not (Test-Path -LiteralPath $f)) { return }
+  $now = (Get-OwnedEnvLinesFromFile $f) -join "`n"
+  $new = (Get-OwnedEnvLines $t) -join "`n"
+  if ($now -eq $new) { return }
+  $ro = $false
+  try { $ro = (Get-Item -LiteralPath $f).IsReadOnly } catch { $ro = $false }
+  if (-not $ro) { return }
+  Write-Host ''
+  Write-Host 'REFUSING: your path config must change, and it is READ-ONLY.'
+  Write-Host "      $f"
+  Write-Host ''
+  Write-Host '  This is x4lock doing its job -- README tells you to run it, and it'
+  Write-Host '  cannot tell an installer from any other process that writes here.'
+  Write-Host '  Nothing has been changed.'
+  Write-Host ''
+  Write-Host '  Unlock, re-run this installer, then lock again:'
+  Write-Host '      python scripts/x4lock.py unlock'
+  Write-Host '      <re-run this command>'
+  Write-Host '      python scripts/x4lock.py lock'
+  Write-Host ''
+  Write-Host '  (An upgrade that does NOT change your paths does not need this: it'
+  Write-Host '   leaves the config untouched and the lock never applies.)'
+  exit 1
+}
+
 function Copy-Excluding([string]$rel, [string]$dest) {
-  foreach ($junk in $X4CopyPrune) { if ($junk -ieq $rel) { return } }
+  foreach ($junk in ($X4CopyPrune + $X4KeepLocal)) { if ($junk -ieq $rel) { return } }
   # $fromPath, NOT $src. PowerShell variable names are CASE-INSENSITIVE, so a local
   # `$src` IS the script-scope `$SRC` -- assigning it overwrote the source root, and
   # the first recursion then built `src\tools\tools\basex` and died with
   # "Cannot find path". In bash those are two different variables; here they are one.
   $fromPath = Join-Path $SRC $rel
   $needsWalk = $false
-  foreach ($junk in $X4CopyPrune) {
+  foreach ($junk in ($X4CopyPrune + $X4KeepLocal)) {
     if ($junk -like ($rel + [char]92 + '*') -or $junk -like ($rel + '/*')) {
       $needsWalk = $true
     }
@@ -175,17 +254,11 @@ function Copy-Toolkit($dest) {
   # This side had no backup at all: it ended with a bare Remove-Item of both files, no
   # copy, no message, exit 0. Windows is the platform this toolkit targets, and
   # install.ps1 is the README's own Windows command.
-  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-  $keeps = @('settings.local.json','x4-paths.env')
-  $saved = @{}
-  foreach ($k in $keeps) {
-    $live = Join-Path $dest (Join-Path '.claude' $k)
-    if (Test-Path -LiteralPath $live) {
-      $bak = "$live.bak-$stamp"
-      Copy-Item -Force -LiteralPath $live -Destination $bak
-      $saved[$k] = $bak
-    }
-  }
+  # THE BACKUP/RESTORE ROUND TRIP IS GONE, not repaired -- the mirror of the same
+  # removal in install.sh. These two files are in $X4KeepLocal, so the copy never
+  # touches them, and a file that is never overwritten needs no backup and no
+  # restore. MEASURED before the change: this left TWO orphaned .bak files and the
+  # restore itself failed on a read-only config, after the copy had succeeded.
 
   # 'mods' carries the game extension x4live needs (README: "copy that folder into
   # {game}/extensions/"). Omitting it shipped a documented instruction pointing at a
@@ -239,16 +312,6 @@ function Copy-Toolkit($dest) {
   # its paths, its Nexus key -- and has no business on this one. PRESERVED, not merely
   # archived: setup.sh only recreates settings.local.json when it is ABSENT, so keeping
   # it here is what makes an upgrade non-destructive rather than merely recoverable.
-  foreach ($k in $keeps) {
-    $live = Join-Path $dest (Join-Path '.claude' $k)
-    if ($saved.ContainsKey($k)) {
-      Copy-Item -Force -LiteralPath $saved[$k] -Destination $live
-      Write-Host ("  [note] kept your existing $k (backup: " + (Split-Path $saved[$k] -Leaf) + ")")
-    } elseif (Test-Path -LiteralPath $live) {
-      # Nothing was here before, so anything present now arrived from the source.
-      Remove-Item -Force -LiteralPath $live -ErrorAction SilentlyContinue
-    }
-  }
 }
 
 # MOVED ABOVE THE DISPATCH. PowerShell defines a function when execution REACHES
@@ -325,6 +388,16 @@ function Write-PathsEnv($t) {
   $dir = Join-Path $t '.claude'
   $f = Join-Path $dir 'x4-paths.env'
 
+  # NOTHING TO CHANGE, NOTHING TO WRITE. An upgrade resolving the same paths used
+  # to rewrite this file anyway, which failed a locked config for a write that
+  # would have changed nothing -- and lost hand-written COMMENTS every run, since
+  # only key=value lines are carried over.
+  if (Test-Path -LiteralPath $f) {
+    if (((Get-OwnedEnvLinesFromFile $f) -join "`n") -eq ((Get-OwnedEnvLines $t) -join "`n")) {
+      Write-Host "  [note] $f already matches these paths; left untouched"
+      return
+    }
+
   Refuse-IfDryRun 'writing the path config into' $f
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
@@ -349,6 +422,7 @@ function Write-PathsEnv($t) {
       Write-Host ('  [warn] could not back up x4-paths.env: ' + $_.Exception.Message)
       Write-Host '         the existing values are about to be replaced'
     }
+  }
   }
   $ref = if ($Reference) { $Reference } else { Join-Path $t 'reference' }
   $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-Path $Game 'extensions' } else { '' }
@@ -714,6 +788,7 @@ switch ($Method) {
     if (-not $Game) { throw 'in-game needs -Game' }
     $Toolkit = $Game
     Show-Target $Toolkit
+    Test-ConfigPrecheck $Toolkit
     if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $GameNamed; Show-CopyPlan; Copy-Toolkit $Toolkit }
     Write-PathsEnv $Toolkit
   }
@@ -722,6 +797,7 @@ switch ($Method) {
     $Toolkit = Ask $Toolkit 'Toolkit folder' $Toolkit
     $Toolkit = Remove-TrailingSep $Toolkit
     Show-Target $Toolkit
+    Test-ConfigPrecheck $Toolkit
     if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $ToolkitNamed; Show-CopyPlan; Copy-Toolkit $Toolkit }
     Write-PathsEnv $Toolkit
   }
