@@ -232,3 +232,44 @@ def test_a_dropped_overlay_is_NAMED_not_merely_counted(tmp_path, monkeypatch):
     db = _build_with(tmp_path, monkeypatch, BAD_DIFF)
     samples = _meta(db, "dropped_overlay_samples") or ""
     assert "zzz_over" in samples or "wares.xml" in samples, samples
+
+
+def test_the_COVERAGE_command_reports_the_dropped_count(tmp_path, monkeypatch, capsys):
+    """The channel had no READER. `_write_db` has persisted `dropped_overlays` since
+    0bb435f -- "a reader can now ask the store itself whether it was built over work
+    that did not happen" -- and the release reviewer measured that no shipped reader
+    asked. `x4effective coverage`, whose docstring is "answer 'what can this tool NOT
+    see?' as a command, not as archaeology", was silent about it.
+
+    On the live store this surfaced 8 real dropped overlays that had been invisible.
+    """
+    import sqlite3
+    from x4validate import _effectivecli
+    db = _build_with(tmp_path, monkeypatch, BAD_DIFF, db_name="cov.sqlite")
+    con = sqlite3.connect(db)
+    try:
+        _effectivecli._cmd_coverage(con, None)
+    finally:
+        con.close()
+    out = capsys.readouterr().out
+    assert "dropped overlays" in out, out
+    assert "1" in out.split("dropped overlays")[1].splitlines()[0]
+    assert "WORK THAT DID NOT HAPPEN" in out
+    assert "zzz_over" in out or "wares.xml" in out, "the drop must be NAMED"
+
+
+def test_the_COVERAGE_command_says_so_when_NOTHING_was_dropped(tmp_path, monkeypatch,
+                                                               capsys):
+    """The twin: a clean build must state the zero rather than omit the line, or the
+    reader cannot tell 'none dropped' from 'this build does not report drops'."""
+    import sqlite3
+    from x4validate import _effectivecli
+    db = _build_with(tmp_path, monkeypatch, GOOD_DIFF, db_name="cov0.sqlite")
+    con = sqlite3.connect(db)
+    try:
+        _effectivecli._cmd_coverage(con, None)
+    finally:
+        con.close()
+    out = capsys.readouterr().out
+    assert "dropped overlays: 0" in out
+    assert "WORK THAT DID NOT HAPPEN" not in out

@@ -15,6 +15,7 @@ values as VRO's (140 of 194 rows, 72%). Nothing here can change a merged value.
 
 from __future__ import annotations
 
+import json as _json
 import argparse
 import json
 import sqlite3
@@ -366,6 +367,41 @@ def _cmd_coverage(con, args) -> int:
           f"{con.execute('SELECT count(*) FROM attrs').fetchone()[0]}")
     origins = con.execute("SELECT count(DISTINCT origin) FROM entities").fetchone()[0]
     print(f"  distinct origins: {origins}")
+
+    # THE DROPPED OVERLAYS, WHICH NOTHING READ. `_write_db` has persisted
+    # `dropped_overlays` since 0bb435f, on the stated grounds that build-time progress
+    # "scrolls past and is gone" and "a reader can now ask the store itself whether it
+    # was built over work that did not happen". MEASURED by the v3.1.0 release
+    # reviewer: no shipped reader asked. The key was written, and read only by its own
+    # test -- and THIS command, whose docstring is "answer 'what can this tool NOT
+    # see?' as a command, not as archaeology", was silent about it.
+    #
+    # That silence is the expensive kind: an overlay the merge could not READ leaves
+    # the store recording origin='base' -- "still vanilla" -- in the same grammar it
+    # uses for a verified base value, so `who-sets` answers confidently and wrongly.
+    dropped = int(meta.get("dropped_overlays") or 0)
+    print(f"  dropped overlays: {dropped}"
+          + ("" if dropped else "   (none -- every overlay was readable)"))
+    if dropped:
+        samples = (meta.get("dropped_overlay_samples") or "").strip()
+        print("      ⚠ THIS STORE WAS BUILT OVER WORK THAT DID NOT HAPPEN. Those "
+              "overlays could not be")
+        print("        read, so any value they would have set reads as its BASE value "
+              "here, with")
+        print("        origin='base' -- indistinguishable from a verified vanilla "
+              "value.")
+        if samples:
+            # Stored as JSON; rendered ONE PER LINE. A raw list repr on one line is
+            # technically the same information and unreadable, which is how a
+            # disclosure gets skipped.
+            try:
+                items = _json.loads(samples)
+            except ValueError:
+                items = [samples]
+            for item in items[:10]:
+                print(f"        - {str(item).split(': ', 1)[0]}")
+            if len(items) > 10:
+                print(f"        ... and {len(items) - 10} more")
     print()
     print(f"  {scope_note()}")
     return 0
