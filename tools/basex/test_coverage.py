@@ -127,3 +127,45 @@ def test_an_EMPTY_root_argument_is_still_refused(tmp_path, no_basex):
     existence check sits beside it rather than replacing it."""
     rc = coverage.main(["--db", "x4raw", "--reference", "", "--extensions", ""])
     assert rc == 2
+
+
+# ------------------------------------------------------------------------------
+# coverage_effective returns BEFORE main()'s two producing-side refusals, so the
+# x4eff path could publish a negative licence over an empty index. Release
+# reviewer B2, measured: enumeration succeeded while every merge failed.
+
+
+def _manifest(tmp_path, documents_total):
+    man = tmp_path / "eff-manifest.json"
+    man.write_text(json.dumps({
+        "counts": {"documents_total": documents_total},
+        "enumeration": {"sources_configured": 2, "documents_enumerated": 5000,
+                        "sources": {"reference": {"count": 5000, "read": "loose"}},
+                        "sources_contributing_nothing": []},
+        "failures": [], "merge_skips": [], "out": str(tmp_path)}), encoding="utf-8")
+    return man
+
+
+def test_a_zero_denominator_does_NOT_support_a_negative(tmp_path, monkeypatch):
+    """0 produced, 0 indexed: the deltas reconcile, so nothing else objects. It used
+    to print COVERAGE COMPLETE, write supports_negative_claim=true and exit 0 -- and
+    build-effective.sh then stamped a freshness fingerprint on it."""
+    monkeypatch.setattr(coverage, "basex_query", lambda *a, **k: "0")
+    out = tmp_path / "coverage-x4eff.json"
+    rc = coverage.coverage_effective("x4eff", _manifest(tmp_path, 0), out)
+    assert rc != 0, "an empty index must not exit 0"
+    d = json.loads(out.read_text(encoding="utf-8"))
+    assert d["status"] == "empty"
+    assert d["supports_negative_claim"] is False
+
+
+def test_a_REAL_denominator_still_supports_a_negative(tmp_path, monkeypatch):
+    """The twin: the refusal must be about ZERO, not about being cautious. A store
+    that produced and indexed the same non-zero count is still complete."""
+    monkeypatch.setattr(coverage, "basex_query", lambda *a, **k: "1234")
+    out = tmp_path / "coverage-x4eff.json"
+    rc = coverage.coverage_effective("x4eff", _manifest(tmp_path, 1234), out)
+    assert rc == 0
+    d = json.loads(out.read_text(encoding="utf-8"))
+    assert d["status"] == "complete"
+    assert d["supports_negative_claim"] is True

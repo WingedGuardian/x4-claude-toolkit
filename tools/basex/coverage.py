@@ -79,6 +79,9 @@ def find_unparseable(roots: list[Path]) -> list[str]:
     return bad
 
 
+NEWLINE = chr(10)
+
+
 def coverage_effective(db: str, eff_manifest: Path, out_path: Path) -> int:
     """Reconcile the x4eff DB against what build-effective.py said it produced.
 
@@ -140,9 +143,30 @@ def coverage_effective(db: str, eff_manifest: Path, out_path: Path) -> int:
     print(f"  {len(merge_skips)} overlay(s) were malformed and are absent from the trees.")
     print("  Both are enumerated in effective-manifest.json — a negative over x4eff is")
     print("  a claim about the tree MINUS those, so check them when the answer matters.")
-    if status == "complete":
+    # A COMPLETE OVER ZERO IS NOT A LICENCE. main() grew two producing-side refusals
+    # -- a non-directory root, and expected["total"] <= 0 -- on the stated grounds that
+    # "refusing to PRODUCE it is the half that stops a false licence sitting on disk".
+    # This function RETURNS BEFORE BOTH, so the x4eff path reached neither. MEASURED by
+    # the v3.1.0 release reviewer: a manifest whose enumeration SUCCEEDED (so
+    # sources_contributing_nothing is empty) while every merge failed
+    # (documents_total: 0) printed "COVERAGE COMPLETE — 0 effective documents
+    # indexed", wrote supports_negative_claim=true and exited 0 -- and
+    # build-effective.sh then stamped a freshness fingerprint on it. An artifact that
+    # reads FRESH and COMPLETE over an empty index.
+    #
+    # ask.py refuses such a store on the consuming side, so no false negative reached
+    # a user. The harm is a false-success build exit and a bad artifact on disk, and
+    # leaning on the consumer is the asymmetry those producing-side guards exist to
+    # remove.
+    if status == "complete" and expected_total <= 0:
+        status = "empty"
+        print(
+            NEWLINE + "  ** REFUSING A LICENCE: the manifest reports 0 documents "
+            "produced, so " + chr(39) + "complete" + chr(39) + " would mean complete "
+            "over NOTHING. A zero denominator cannot support a negative. **")
+    elif status == "complete":
         print(f"\n  COVERAGE COMPLETE — {indexed_total} effective documents indexed.")
-    else:
+    elif status != "empty":
         print(f"\n  ** UNEXPLAINED DEFICIT of {deficit} — do not trust a negative. **")
 
     out_path.write_text(json.dumps({
