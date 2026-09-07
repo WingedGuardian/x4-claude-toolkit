@@ -1228,12 +1228,31 @@ def check_file_existence(mod_dir: Path, config: _merge.Config, report: Report) -
 
 
 def check_page_collisions(mod_dir: Path, config: _merge.Config, report: Report) -> None:
-    """Warn when the mod's added {page,t} pairs already exist in base/DLC (silent clobber)."""
+    """Warn when the mod's added {page,t} pairs already exist in base/DLC (silent clobber).
+
+    ⚠ THE OP TREE, NOT `_added_subtrees`. That helper moves an `<add>`'s CHILDREN
+    into a throwaway root, which DISCARDS the selector -- and for the into-page form
+    the selector is the only place the page id appears at all
+    (`<add sel="/language[@id='44']/page[@id='20005']"><t id="1">`). It also matched
+    `op.tag == "add"` and nothing else. So the two forms that can actually clobber a
+    base string -- an into-page `<add>`, and any `<replace>` -- were the two forms
+    this warning could not see.
+
+    `_refs.text_defs` learned both in 4a76af3, which fixed the REFERENCE half; that
+    commit's own docstring recorded that "the collision half failed the other way: a
+    mod clobbering base string {1001,1} through the into-page form printed 'OK: no
+    issues found'", and it stayed true for another day. Handing it the whole diff
+    root is the fix: the `//page[@id]` walk still finds every page-element form, and
+    the selector branch now runs because the selectors still exist.
+
+    The other two `_added_subtrees` callers are deliberately left alone -- they ask
+    "what content does this mod INTRODUCE", where an `<add>` payload is the right
+    population and a `<replace>` payload is a separate question with its own corpus
+    cost. This call site asks "what does it OVERWRITE", which is the opposite one.
+    """
     existing = collect_text_defs(config, report=report)  # base + DLC only (NOT the mod)
     for vpath, diff_root in iter_diff_files(mod_dir):
-        added: set[tuple[str, str]] = set()
-        for holder in _added_subtrees(diff_root):
-            added |= _refs.text_defs(holder)
+        added: set[tuple[str, str]] = _refs.text_defs(diff_root)
         for page, t in sorted(added & existing):
             report.add("warn", "text",
                        f"text {{{page},{t}}} already defined in base/DLC — your add clobbers it", vpath)

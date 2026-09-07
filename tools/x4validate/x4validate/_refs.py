@@ -93,15 +93,36 @@ def text_defs(tree: etree._Element | None) -> set[tuple[str, str]]:
                             reference does not resolve"                 rc 1
 
     -- so the same run certified the patch's selectors as resolving while calling
-    the strings it defines dangling. And the collision half failed the other way:
-    a mod clobbering base string {1001,1} through the into-page form printed
-    "OK: no issues found" with nothing in NOT CHECKED.
+    the strings it defines dangling.
+
+    THE COLLISION HALF FAILED THE OTHER WAY, and teaching THIS function the form did
+    not fix it: a mod clobbering base string {1001,1} through the into-page form
+    printed "OK: no issues found" with nothing in NOT CHECKED. `check_page_collisions`
+    fed us `_check._added_subtrees()` holders, which move an `<add>`'s CHILDREN into a
+    throwaway root and so DISCARD the selector -- the one place an into-page op's page
+    id exists -- and matched `op.tag == "add"` alone, never `<replace>`. Fixed
+    2026-09-06 by handing it the whole diff root; three tests in `tests/test_v11.py`
+    pin both clobber forms and the must-NOT-fire twin.
+
+    ⚠ This paragraph asserted the failure in the present tense for a day after the
+    reference half landed, which is the stale-record shape this workspace keeps
+    paying for: a docstring that names an open defect must be closed WITH it.
 
     Corpus, MEASURED over 125 installed extensions / 4,629 documents / 86 t-files:
     30 `<t id>` definitions invisible, all in `cpsdo_faction`, from one
     `<add sel="/language[@id='44']/page[@id='20005']">` carrying 16 `<t>` children in
     each of two t-files. No mod references those ids today, so the live gating cost
     is currently zero -- the structural defect is not.
+
+    RE-MEASURED 2026-09-06 for the collision half, per mod, never as a total: the
+    {page,t} definition set widens for 2 of 125 mods -- `cpsdo_faction` 144 -> 160
+    and `ship_variation_expansion_vro` 0 -> 24, i.e. 40 definitions the old code
+    could not see AT ALL -- and **0 of the 40 collide with base/DLC**, so warnings
+    move 0 -> 0 and 0 mods lose a finding. The check can now go red; this modlist
+    simply does not make it. (The census that produced those numbers was wrong once:
+    `_added_subtrees` MOVES children out of the tree it is given, so measuring OLD
+    before NEW on one root hollowed the document and reported the fix as LOSING 782
+    findings. Deepcopy per pass; gotcha #22.)
     """
     if tree is None:
         return set()

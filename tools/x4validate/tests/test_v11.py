@@ -227,3 +227,60 @@ def test_loader_sanity_scans_packed_xml(tmp_path):
     _check.check_identity_values(mod, _merge.Config(reference=ref), rep)
     assert any(f.category == "text" and "{99,3}" in f.message for f in rep.findings)
     assert any(f.category == "identity" and "loanshark" in f.message for f in rep.findings)
+
+
+# --- the into-page COLLISION half (v3.1.0 release review, B2 minor 6) --------------
+# `text_defs` learned the into-page form in 4a76af3 and the REFERENCE half was fixed.
+# The COLLISION half was not: `check_page_collisions` fed it `_added_subtrees()`
+# holders, which move an <add>'s CHILDREN into a throwaway root and DISCARD the
+# selector -- and the selector is the only place an into-page op's page id appears.
+# It also handled `<add>` alone, never `<replace>`. So the one form that can actually
+# clobber a base string was the one form the clobber warning could not see.
+
+
+def test_collision_sees_the_INTO_PAGE_form(tmp_path):
+    """The shape the corpus uses: <t> added directly into a page base already
+    defines, page id only in the selector. Pre-fix this printed no finding at all."""
+    ref = tmp_path / "reference"
+    _w(ref / "t/0001-l044.xml",
+       '<language id="44"><page id="1"><t id="1">base</t></page></language>')
+    mod = tmp_path / "mod"
+    _w(mod / "t/0001.xml",
+       '<diff><add sel="/language[@id=' + chr(39) + '44' + chr(39) + ']/page[@id='
+       + chr(39) + '1' + chr(39) + ']"><t id="1">mine</t></add></diff>')
+    rep = _check.Report()
+    _check.check_page_collisions(mod, _merge.Config(reference=ref), rep)
+    msgs = [f.message for f in rep.findings if f.category == "text"]
+    assert any("{1,1}" in m for m in msgs), msgs
+
+
+def test_collision_sees_a_REPLACE_op_too(tmp_path):
+    """`_added_subtrees` matched `op.tag == "add"` and nothing else, so replacing a
+    base string -- the most explicit clobber there is -- was silent."""
+    ref = tmp_path / "reference"
+    _w(ref / "t/0001-l044.xml",
+       '<language id="44"><page id="1"><t id="7">base</t></page></language>')
+    mod = tmp_path / "mod"
+    _w(mod / "t/0001.xml",
+       '<diff><replace sel="//page[@id=' + chr(39) + '1' + chr(39) + ']/t[@id='
+       + chr(39) + '7' + chr(39) + ']"><t id="7">mine</t></replace></diff>')
+    rep = _check.Report()
+    _check.check_page_collisions(mod, _merge.Config(reference=ref), rep)
+    msgs = [f.message for f in rep.findings if f.category == "text"]
+    assert any("{1,7}" in m for m in msgs), msgs
+
+
+def test_an_into_page_add_of_a_NEW_string_is_NOT_a_collision(tmp_path):
+    """The twin, so the two above cannot pass for the wrong reason: adding into an
+    existing page is the ORDINARY way to extend text and must stay silent. A check
+    that warned on every into-page op would be a flood, not a finding."""
+    ref = tmp_path / "reference"
+    _w(ref / "t/0001-l044.xml",
+       '<language id="44"><page id="1"><t id="1">base</t></page></language>')
+    mod = tmp_path / "mod"
+    _w(mod / "t/0001.xml",
+       '<diff><add sel="//page[@id=' + chr(39) + '1' + chr(39)
+       + ']"><t id="900001">mine</t></add></diff>')
+    rep = _check.Report()
+    _check.check_page_collisions(mod, _merge.Config(reference=ref), rep)
+    assert [f for f in rep.findings if f.category == "text"] == []
