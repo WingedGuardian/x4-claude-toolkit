@@ -238,6 +238,77 @@ whole list — so there is nothing for a bound to protect, and it emits a `COST`
 naming its own enumerations, objects touched and scope. An earlier draft of this
 entry said "all three now refuse", which the release reviewer measured as false.
 
+### Fixed — a hook's warning was FILED above 10,000 characters, worst-first
+
+Claude Code files a hook's model-facing output above **10,000 CHARACTERS** and shows the
+model a ~2 KB preview. No error, exit code unchanged — indistinguishable from success.
+MEASURED on CC 2.1.263, four arms per channel with head+tail sentinels, discriminating
+on whether the TAIL survives:
+
+| channel | 500 | ~10,000 | 10,001 | 30,000 |
+|---|---|---|---|---|
+| bare stdout | both | both | head only | head only |
+| `additionalContext` | both | both (9,950) | head only | head only |
+
+The 9,950 arm is load-bearing: its raw stdout was 10,032 characters and still arrived
+whole, so **the cap is on the CONTENT the model receives and the JSON envelope does not
+count** — budget at 10,000 flat, never "10,000 minus envelope". The constant has already
+moved once across a CC bump (high-20s K on 2.1.218 → 10,000 on 2.1.246), so re-deriving
+it is a named step, and this is the only place it is written down.
+
+**The SessionStart canary crossed it, and the failure was INVERTED AGAINST SEVERITY.**
+It wrote one unbounded line per lost file — a 400-item report measures 36,638
+characters. One lost file sails under the cap; a directory-level loss, the case the tool
+exists for, is the one that gets filed. **Worse than the cap was the ORDER**: the preview
+keeps the HEAD, so what survived was the inventory and what was cut was *"do not re-run
+whatever wrote it"* — the one line that stops the recoverable state being destroyed. That
+ordering was backwards independently in both layers. The directive now prints BEFORE the
+list, all three lists route through one `_emit()` that DISCLOSES its own bound (a bare
+slice makes the number wrong, not just the list), and `session-canary.sh` names WHICH
+`x4canary` it resolved — two copies exist on a normal install and the hook silently
+picked the first it found.
+
+A `deny` is honoured at any reason length (500 / 15,000 / 200,000 all blocked against a
+no-hook control), so the cap cannot weaken a hard block.
+
+### Fixed — hooks reading a DEAD input contract would have failed OPEN
+
+`CLAUDE_TOOL_INPUT`, `CLAUDE_TOOL_USE_RESULT` and `CLAUDE_SESSION_ID` are a legacy
+contract current Claude Code does not set. A hook reading one sees an EMPTY value, falls
+through its first guard clause and exits 0 — byte-identical to deciding "this is fine",
+which is F79's exact shape one interface over. MEASURED here: **zero hits**, so this
+pins a property that currently HOLDS rather than fixing a live defect. It is a static
+ban with a coverage floor, because the mutation gate structurally cannot reach the class:
+a dead input read means the hook never blocks, so there is no behaviour for a mutant to
+weaken.
+
+### Fixed — `_effective._write_db` leaked its temp file, and the reclaim could never collect one
+
+`<db>.<pid>.tmp` is created at `sqlite3.connect`, and the `try:` carried
+`finally: con.close()` and nothing else — it closed the HANDLE and never removed the
+FILE. Every exception between creation and `os.replace` leaked a fully materialised temp,
+permanently; the only cleanup sat in the `os.replace` error handler, the one failure mode
+somebody had already imagined. The sharpest case is architectural rather than exotic:
+`refuse_if_mutating()` is called INSIDE that block by design, so any store build
+overlapping a mutating gate deposits one.
+
+MEASURED: three orphans in `dev/_registry/` from 2026-08-26, each 53,248 bytes with
+**zero rows in every table including `meta`** — so they died before `commit()`, which is
+what makes them a leak rather than a half-written store. Build-then-replace is atomic and
+the installed store was never at risk.
+
+★ **The generalisable half is the RECLAIM, not the missing `finally`.** The startup sweep
+was `os.getpid()`-keyed, so it could only ever match a leftover from THIS process — and
+an orphan's creator is by definition gone. **A reclaim scoped to the current process
+looks present in review and is unreachable in fact**, which is why reading the code never
+found it. The contrast lives in the same package: `gates/mutation_probe.py` also records
+a pid and restores BY NAME from a pristine directory. Same ingredient, load-bearing in
+one and decorative in the other. Fixed with the `except BaseException` → unlink → raise
+shape copied unchanged from `_registry.save`, nested so the handle closes before the
+unlink (Windows refuses to unlink a file it holds open). Reclaiming a FOREIGN orphan is
+deliberately left explicit and manual: deciding a stranger's temp is abandoned means
+deciding its pid is dead, and on Windows `os.kill(pid, 0)` maps to TerminateProcess.
+
 ### Fixed — the release review's own round: eleven more verdicts with no reachable red
 
 Four reviewers read the whole `v3.0.0..HEAD` range. Everything they raised IN-ARC is
