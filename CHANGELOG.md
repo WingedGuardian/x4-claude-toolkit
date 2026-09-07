@@ -436,7 +436,7 @@ the `EngineUnavailable` that `main()` owns, reintroducing the confusion the chan
 removes; and the canary's loss-outranks-unreadable rule fired on an unreadable repo's
 own EXPLANATION, because `check()` returns its reason in the loss slot.
 
-### Fixed — the installers could not upgrade a locked install, which this release told you to create
+### Fixed — the installers walked into a lock this release is the first to recommend
 
 `scripts/x4lock.py` marks the files you cannot afford to lose read-only, and this
 release's README is the first to tell you to run it. Neither installer knew the lock
@@ -452,6 +452,17 @@ release is the first that instructs people into the state that breaks the upgrad
 distinction is now written into `docs/REVIEW-SCOPE.md` as a third triage bucket, because
 both sessions reviewing this reasoned correctly from the old rule and both nearly waved
 it through.
+
+**What it does now, stated as behaviour rather than as a repair:** an install that
+would OVERWRITE any read-only file REFUSES before writing anything, names the files
+and gives the unlock / re-run / lock sequence. An install that does not need to change
+a file never touches it, so a locked config on an unchanged upgrade is a non-event.
+Both installers reach the SAME verdict on the same input.
+
+⚠ So it still cannot upgrade a LOCKED install, and should not: it refuses cleanly and
+tells you how to proceed. An earlier draft of this entry claimed the upgrade now works,
+which was false — `--method in-game` could not, and the release reviewer caught the
+note before it shipped.
 
 The fix removes the mechanism rather than handling it. `x4-paths.env` and
 `settings.local.json` are simply never copied from the source — a new `X4_KEEP_LOCAL`,
