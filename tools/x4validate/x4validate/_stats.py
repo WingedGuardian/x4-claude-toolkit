@@ -130,12 +130,23 @@ def unattributed_ware_ops(candidate: Path,
     remove), a whole-economy price and production rewrite; the others 594 adds, 51
     <price> replaces, 23 whole-ware removes, and 4 ops on @tags.
 
-    This does NOT make those wares appear: attributing a `sel=` to a ware needs the
-    selector resolved against the merged tree, which is a feature rather than a bug
-    fix, and is recorded as such. What it does is stop an ABSENCE and a NON-ANSWER
-    printing the same sentence. Two skills route the balance question here, and
-    "changes no wares" over a 1,443-op economy overhaul is a confidently wrong
-    fact, where "N ops I could not attribute" is an honest one.
+    ✅ SINCE 2026-09-06, GIVEN *base_tree*, THOSE WARES DO APPEAR. The paragraph that
+    stood here said attribution "does NOT make those wares appear ... a feature rather
+    than a bug fix"; that feature landed, and the count below now falls to the honest
+    residue. Zeros went 5 -> 1 and unattributed ops 3,414 -> 190 across the corpus.
+
+    WITHOUT a *base_tree* the old behaviour is unchanged and deliberate: resolving a
+    selector needs something to resolve it against, and a caller that has none still
+    gets an honest partial answer rather than a wrong one. Stopping an ABSENCE and a
+    NON-ANSWER from printing the same sentence was always the point -- two skills
+    route the balance question here, and "changes no wares" over a 1,443-op economy
+    overhaul is a confidently wrong fact where "N ops I could not attribute" is not.
+
+    WHAT REMAINS UNATTRIBUTABLE IS NOT A GAP. MEASURED over the five mods that still
+    carry any: of 192 residual ops, 189 are ops THE ENGINE ITSELF WOULD NOT APPLY --
+    116 ambiguous selectors (RFC 5261; X4 logs "Multiple matching nodes ... Skipping
+    node") and 73 matching nothing. Attributing those would claim a change the game
+    never makes.
     """
     root = _merge.overlay_root(candidate, "libraries/wares.xml")
     if root is None or root.tag != "diff":
