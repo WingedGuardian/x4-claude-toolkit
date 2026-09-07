@@ -522,7 +522,7 @@ function Get-GlobalClaudeDir {
   if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
 }
 
-function Assert-GlobalOverExisting {
+function Assert-GlobalOverExisting($t) {
   # THE GLOBAL DESTINATION WAS NEVER GATED. -OverExisting is consulted in exactly one
   # place -- Assert-Direction, on the copy-to-destination path -- which the global arm
   # never reaches. So -Method global force-overwrote a user's own ~\.claude\skills\x4-*
@@ -541,15 +541,44 @@ function Assert-GlobalOverExisting {
   # run would do.
   $hc = Get-GlobalClaudeDir
   $sk = Join-Path $hc 'skills'
-  if (-not (Test-Path -LiteralPath $sk)) { return }
+  # NO EARLY RETURN ON A MISSING skills DIR. It used to return here, which skipped the
+  # agents check below entirely -- so a destination carrying an edited agent but no
+  # skills directory sailed straight through the gate. Caught by testing exactly that
+  # shape rather than the one the gate was written for.
   # -LiteralPath for the path and -Filter for the pattern: the bare parameters read a
   # home directory containing [ or ] as a WILDCARD character class, which is the defect
   # already recorded further down this file.
-  $existing = @(Get-ChildItem -Directory -LiteralPath $sk -Filter 'x4-*' -ErrorAction SilentlyContinue)
-  if ($existing.Count -eq 0 -or $OverExisting) { return }
-  Write-Host "REFUSING: $hc already carries x4-* skills from a previous install." -ForegroundColor Red
+  $existing = @()
+  if (Test-Path -LiteralPath $sk) {
+    $existing = @(Get-ChildItem -Directory -LiteralPath $sk -Filter 'x4-*' -ErrorAction SilentlyContinue)
+  }
+
+  # AGENTS TOO. This gate enumerated skills only, while Install-Global copies every
+  # <toolkit>/.claude/agents/*.md over the destination with -Force -- so a user's own
+  # edited ~/.claude/agents/mod-research.md was replaced with no prompt, no
+  # -OverExisting, no backup, and rc 0. Raised by the v3.1.0 release reviewer, who
+  # measured exactly that in a sandbox. The comment at the top of this function says
+  # "THE GLOBAL DESTINATION WAS NEVER GATED"; it was covering half that destination.
+  #
+  # Only files this install would actually WRITE are named: an unrelated agent of the
+  # user's own is not at risk and must not be listed as though it were.
+  $ag = Join-Path $hc 'agents'
+  $shipped = @()
+  $srcAgents = Join-Path $t '.claude/agents'
+  if (Test-Path -LiteralPath $srcAgents) {
+    $shipped = @(Get-ChildItem -File -LiteralPath $srcAgents -Filter '*.md' -ErrorAction SilentlyContinue |
+                 ForEach-Object { $_.Name })
+  }
+  $agentsHit = @()
+  if ((Test-Path -LiteralPath $ag) -and $shipped.Count -gt 0) {
+    $agentsHit = @($shipped | Where-Object { Test-Path -LiteralPath (Join-Path $ag $_) })
+  }
+
+  if (($existing.Count -eq 0 -and $agentsHit.Count -eq 0) -or $OverExisting) { return }
+  Write-Host "REFUSING: $hc already carries files this install would REPLACE." -ForegroundColor Red
   Write-Host "  Found:" -ForegroundColor Red
   foreach ($e in $existing) { Write-Host "      skills\$($e.Name)" -ForegroundColor Red }
+  foreach ($a in $agentsHit) { Write-Host "      agents\$a" -ForegroundColor Red }
   Write-Host "" -ForegroundColor Red
   Write-Host "  Installing over them REPLACES those files. If you have edited any in" -ForegroundColor Red
   Write-Host "  place, they are gone -- this method keeps no backup of skills. It also" -ForegroundColor Red
@@ -700,7 +729,7 @@ switch ($Method) {
     if (-not $Toolkit) { $Toolkit = $SRC }
     Show-Target $Toolkit
     # Ahead of every write, exactly where install.sh gates its own global arm.
-    Assert-GlobalOverExisting
+    Assert-GlobalOverExisting $Toolkit
     Write-PathsEnv $Toolkit
     Install-Global $Toolkit
   }

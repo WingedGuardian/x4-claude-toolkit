@@ -730,8 +730,34 @@ case "$METHOD" in
     # path, so its reasoning does not transfer. What does transfer is the
     # over-existing rule, and the backup below.
     _hc="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-    if [ -d "$_hc/skills" ] && ls "$_hc/skills"/x4-* >/dev/null 2>&1        && [ "$OVER_EXISTING" != 1 ]; then
-      echo "REFUSING: $_hc already carries x4-* skills from a previous install." >&2
+    # AGENTS TOO. This gate enumerated skills only, while the global install copies
+    # every <toolkit>/.claude/agents/*.md over the destination -- so a user's own
+    # edited ~/.claude/agents/mod-research.md was replaced with no prompt, no
+    # --over-existing, no backup, and rc 0. Raised by the v3.1.0 release reviewer,
+    # who measured it against install.ps1; install.sh had the identical gap, so this
+    # is NOT one of the "fixed in bash, absent in PowerShell" class -- both halves
+    # gated half their destination.
+    #
+    # Only files this install would actually WRITE are named: an unrelated agent of
+    # the user's own is not at risk and must not be listed as though it were.
+    _hits=""
+    _NL='
+'
+    if [ -d "$_hc/skills" ] && ls "$_hc/skills"/x4-* >/dev/null 2>&1; then
+      for _s in "$_hc/skills"/x4-*; do
+        [ -e "$_s" ] && _hits="$_hits      skills/$(basename "$_s")$_NL"
+      done
+    fi
+    if [ -d "$_hc/agents" ] && [ -d "$TOOLKIT/.claude/agents" ]; then
+      for _a in "$TOOLKIT/.claude/agents/"*.md; do
+        [ -e "$_a" ] || continue
+        [ -e "$_hc/agents/$(basename "$_a")" ] &&
+          _hits="$_hits      agents/$(basename "$_a")$_NL"
+      done
+    fi
+    if [ -n "$_hits" ] && [ "$OVER_EXISTING" != 1 ]; then
+      echo "REFUSING: $_hc already carries files this install would REPLACE." >&2
+      printf '%s' "$_hits" >&2
       echo "  Re-run with --over-existing to replace them, after checking you have not" >&2
       echo "  edited them in place. This method also rewrites $_hc/settings.json." >&2
       exit 2
