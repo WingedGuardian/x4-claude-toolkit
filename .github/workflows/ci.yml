@@ -45,6 +45,23 @@ jobs:
           - os: windows-latest
             experimental: false
           - os: ubuntu-latest
+            # ⚠ TWO CHECKS THIS ARC ADDED RUN ONLY HERE, SO ONLY HERE CAN THEY BE
+            # IGNORED. `continue-on-error` above is keyed on this flag, and both
+            # `Install for real (--method global, bash)` and `Cold-clone verification`
+            # are gated `if: runner.os == 'Linux'`. Each is Linux-only for a sound
+            # stated reason (jq on the ubuntu image; `git archive | tar -x`), and
+            # nobody re-scoped THIS flag when they were added -- so the bash
+            # implementation of `--method global`, the exact method whose PowerShell
+            # twin shipped v3.0.0 100% broken because no leg could say so, again has
+            # no leg that can say so. Green that could not go red, one level up.
+            #
+            # NOT FLIPPED HERE ON PURPOSE. CI is observable only on a push, and these
+            # checks have never once been enforced, so flipping blind trades a masked
+            # failure for a red release. The release plan's sequence is: push the
+            # reviewed code to a throwaway `ci/pre-3.1` branch, read the PER-JOB
+            # conclusions (`gh api .../runs/<id>/jobs` -- the run conclusion said
+            # success while ubuntu FAILED in 33994180317), and promote to
+            # `experimental: false` only once ubuntu is observed green on this code.
             experimental: true
 
     steps:
@@ -450,7 +467,36 @@ jobs:
           # a missing registry, a file absent from the repo), none touches case
           # sensitivity, path shape or a platform-specific tool, and the Windows
           # reproduction was exact. If CI reports otherwise, take CI's number.
-          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '59' || '49' }}
+          #
+          # RAISED 2026-09-06 (49 -> 56 windows, 59 -> 67 ubuntu) BEFORE the v3.1.0
+          # push, because the old ceiling would have failed CI on a CEILING rather than
+          # on a defect -- and on the windows leg, which is the one that gates.
+          #
+          # MEASURED cold at 53 on Windows by `scripts/verify-cold.sh`, which is the
+          # ONLY instrument here that can be believed: it REFUSES to run until it has
+          # proved registry/game_extensions/reference all resolve to None. Two cheaper
+          # "cold" setups were tried first and BOTH were fully configured --
+          # `env -u X4_*` gave 14 skips (falls through $X4_TOOLKIT to x4-paths.env,
+          # CLAUDE.md #26), and pointing X4_TOOLKIT at an empty directory still
+          # resolved every root. A CI runner IS genuinely cold, because
+          # `.claude/x4-paths.env` is gitignored and never checked out.
+          #
+          # ATTRIBUTED, not just raised. The 53 breaks down per file, and the four
+          # largest are all "no game / not this repo" causes that hold identically on a
+          # runner: conftest 9, corpus_sweep_crash_detection 8, blind_spots_ids 7,
+          # next_blind_spot_id 5 (the last two because docs/BLIND-SPOTS.md is not in
+          # the public repo at all), then 24 across fifteen files. Only THREE skipping
+          # files were touched by this arc (every_gate_can_fail 2, lockstep_gate 2,
+          # line_ending_pin 1), so most of the rise predates it. None is a test gone
+          # dormant, which is the only thing this ceiling is for.
+          #
+          # Headroom is +3 over the measurement, the same margin the 46 -> 49 pair
+          # used. Ubuntu stays INFERRED: the one run that measured both had ubuntu 11
+          # above windows (53 vs 42, run 33777842225), so 53 + 11 + 3 = 67.
+          # ** Re-read the per-JOB conclusion after the first push and take CI's
+          # numbers over these. ** `gh api .../runs/<id>/jobs` -- never the run
+          # conclusion, which reported success while ubuntu FAILED in run 33994180317.
+          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '67' || '56' }}
         run: uv run --frozen python -m pytest -q -rs
 
       # THE COLD CHECK, WIRED. `scripts/verify-cold.sh` is named in five documents
