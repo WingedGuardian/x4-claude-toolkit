@@ -502,6 +502,31 @@ def _crosscheck_cmd(args, log: Path) -> int:
         for s in report.degraded:
             print(f"      {s.what}: {s.why}")
     print("  Totals are context only; the three buckets above are the finding.")
+    # NOTHING COMPARED IS NOT AGREEMENT. With both sides empty the three buckets
+    # are empty by construction, and this printed "agreed: 0 / predicted only: 0 /
+    # OBSERVED ONLY: 0" and returned 0 — which reads exactly like a mod the engine
+    # and the validator concur on. It is also what a log from a session where this
+    # mod never loaded looks like, and what a log recorded before the mod was
+    # installed looks like, and the counts cannot tell those apart.
+    # `gates/oracle_reverse.py` draws the same line for the same reason; rc 2 is
+    # this toolkit's NON-ANSWER.
+    if not r.observed_total and not r.predicted_total:
+        print("\nREFUSING: this log records no skipped op for " + mod.name
+              + " and we predicted\n  none, so nothing was compared. That is not "
+              "agreement with the engine — it\n  is also what a log from a session "
+              "where " + mod.name + " was never loaded\n  looks like. Confirm the log "
+              "covers a launch with this mod enabled\n  (`x4debug triage` names what "
+              "it does contain), then re-run.", file=sys.stderr)
+        return 2
+
+    if r.clean and report.degraded:
+        # The prose above already said "not a complete prediction" and the exit code
+        # then said "we agree". A check that did not execute cannot have contributed
+        # the predictions that would have populated OBSERVED ONLY — the one bucket
+        # this command exists to fill.
+        print("  DEGRADED: the buckets above agree, but over an INCOMPLETE prediction "
+              "set,\n  so the agreement is not evidence.", file=sys.stderr)
+        return 3
     return 0 if r.clean else 1
 
 

@@ -284,3 +284,115 @@ def test_a_canary_that_cannot_LOAD_is_rc2_not_DATA_LOSS(tmp_path):
         f"expected rc 2 (could not check), got {r.returncode}\n{r.stdout}\n{r.stderr}")
     assert "DATA LOSS" not in r.stderr and "HAS BEEN LOST" not in r.stdout, (
         "a broken canary must never claim a loss")
+
+
+# --- the v3.1.0 release review, group A (all PRE-ARC) -----------------------------
+
+
+def test_a_NON_ASCII_path_that_was_merely_EDITED_is_not_DATA_LOSS(repo, monkeypatch):
+    """TWO layers, and fixing either alone left it broken.
+
+    (1) `core.quotePath` defaults to TRUE, so git returns `"caf\303\251.txt"` and the
+        old reader did `.strip('"')` -- the escaped form matches no file on disk.
+    (2) Underneath that, `_git` used `text=True` with no `encoding=`, so git's UTF-8
+        was decoded with the LOCALE codepage (cp1252 here) and the path came back as
+        mojibake even once unescaped. MEASURED by codepoints: 0xc3 0xa9 where the
+        file on disk has 0xe9 -- found AFTER the first fix had been declared done.
+
+    Either way `p.exists()` was False and an ordinary edit fired "*** DATA LOSS ***"
+    with rc 1, which is what the SessionStart banner reads. A check that cries wolf
+    gets ignored, which this tool's own docstring calls how the last one failed.
+    """
+    name = "caf" + chr(233) + ".md"
+    (repo / name).write_text("y" * 400, encoding="utf-8")
+    _git(repo, "add", name)
+    _git(repo, "commit", "-q", "-m", "add a non-ascii path")
+    (repo / name).write_text("y" * 401, encoding="utf-8")     # an EDIT, not a loss
+    assert _check(repo, monkeypatch) == 0
+
+
+def test_a_NON_ASCII_path_that_really_WAS_emptied_is_still_a_loss(repo, monkeypatch):
+    """The twin. The fix must not make non-ASCII paths invisible instead of
+    mis-read -- that would be the same hole with better manners."""
+    name = "caf" + chr(233) + ".md"
+    (repo / name).write_text("y" * 400, encoding="utf-8")
+    _git(repo, "add", name)
+    _git(repo, "commit", "-q", "-m", "add a non-ascii path")
+    (repo / name).write_bytes(b"")
+    assert _check(repo, monkeypatch) == 1
+
+
+def test_unquote_decodes_what_git_still_escapes():
+    """`core.quotePath=false` removes the octal class; git STILL quotes a path
+    containing a quote, a backslash or a control character."""
+    BS, DQ = chr(92), chr(34)
+    assert x4canary._unquote("plain.md") == "plain.md"
+    assert x4canary._unquote(DQ + "caf" + BS + "303" + BS + "251.md" + DQ) \
+        == "caf" + chr(233) + ".md"
+    assert x4canary._unquote(DQ + "a" + BS + DQ + "b.md" + DQ) == "a" + DQ + "b.md"
+    assert x4canary._unquote(DQ + "a" + BS + "nb.md" + DQ) == "a" + chr(10) + "b.md"
+
+
+def test_a_file_RENAMED_and_then_EMPTIED_is_a_loss(repo, monkeypatch):
+    """`RM` -- renamed in the index, modified in the worktree -- was not in the
+    four-code allow-list (M, MM, AM, T), so it went to drift UNSIZED and a bad `mv`
+    reported as a benign change. That is precisely the shape this tool exists for.
+    """
+    _git(repo, "mv", "big.md", "renamed.md")
+    (repo / "renamed.md").write_bytes(b"")
+    assert _check(repo, monkeypatch) == 1
+
+
+def test_a_file_RENAMED_and_merely_EDITED_is_NOT_a_loss(repo, monkeypatch):
+    """The twin: widening the size check must not turn every rename into an alarm."""
+    _git(repo, "mv", "big.md", "renamed.md")
+    (repo / "renamed.md").write_text("x" * 10001, encoding="utf-8")
+    assert _check(repo, monkeypatch) == 0
+
+
+def test_a_CONFIRMED_loss_outranks_an_UNREADABLE_repository(repo, tmp_path,
+                                                            monkeypatch, capsys):
+    """One unreadable repo used to DOWNGRADE a real, already-detected loss in a
+    DIFFERENT repo from rc 1 to rc 2. rc is what the SessionStart hook reads, so the
+    "A TRACKED IRREPLACEABLE FILE HAS BEEN LOST" banner never fired: the loss was
+    printed and nothing acted on it. "Could not look" must not outrank "I looked and
+    it is gone"."""
+    (repo / "big.md").write_bytes(b"")                       # a real loss
+    notrepo = tmp_path / "notrepo"
+    notrepo.mkdir()                                          # not a git repository
+    monkeypatch.setenv("X4_CANARY_REPOS", os.pathsep.join([str(repo), str(notrepo)]))
+    monkeypatch.setattr(x4canary, "_paths", None)
+    rc = x4canary.main([])
+    err = capsys.readouterr().err
+    assert rc == 1, "a found loss must not be downgraded to could-not-check"
+    assert "could not be checked" in err, "and the unreadable repo must still be named"
+
+
+def test_an_UNREADABLE_repo_with_NO_loss_is_still_rc2(repo, tmp_path, monkeypatch):
+    """The twin. Without it the change above could have retired rc 2 entirely."""
+    notrepo = tmp_path / "notrepo"
+    notrepo.mkdir()
+    monkeypatch.setenv("X4_CANARY_REPOS", os.pathsep.join([str(repo), str(notrepo)]))
+    monkeypatch.setattr(x4canary, "_paths", None)
+    assert x4canary.main([]) == 2
+
+
+def test_a_root_that_does_NOT_RESOLVE_is_NAMED_beside_the_count(repo, monkeypatch,
+                                                                capsys):
+    """An unresolved root used to vanish from `repos()`, and the run then printed
+    "1 repository checked, no tracked file lost" -- true, and silent about the tree
+    this tool was built to watch. Not an error (an unconfigured root is a real setup
+    state, and rc 2 would fire on every cold clone), but the count in the verdict has
+    to be a denominator the reader can check."""
+    class _Half:
+        @staticmethod
+        def game_root():
+            return None
+        @staticmethod
+        def mods():
+            return None
+    monkeypatch.setenv("X4_CANARY_REPOS", str(repo))
+    monkeypatch.setattr(x4canary, "_paths", _Half)
+    assert x4canary.main([]) == 0
+    out = capsys.readouterr().out
+    assert "NOT CHECKED" in out and "game_root" in out and "mods" in out

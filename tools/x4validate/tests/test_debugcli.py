@@ -385,3 +385,63 @@ def test_a_capture_NEVER_records_a_fingerprint_that_depends_on_the_CWD(
         "the current directory leaked into the content fingerprint: two captures of "
         "one world, taken from different directories, disagree about which world "
         "they are from: %s" % (seen,))
+
+
+# --- crosscheck's own empty comparison (v3.1.0 release review, B2, PRE-ARC) --------
+
+
+def _cc(monkeypatch, tmp_path, log_text, findings, degraded=()):
+    """Drive `crosscheck` over a synthetic log and a synthetic validator report."""
+    log = tmp_path / "debug.txt"
+    log.write_text(log_text, encoding="utf-8")
+    mod = tmp_path / "modA"
+    mod.mkdir(exist_ok=True)
+    (mod / "content.xml").write_text('<content id="modA" version="100"/>', encoding="utf-8")
+    from x4validate import _check
+    rep = _R(list(findings))
+    rep.degraded = list(degraded)
+    monkeypatch.setattr(_check, "validate", lambda *a, **k: rep)
+    return _debugcli.main(["crosscheck", str(mod), str(log)])
+
+
+class _Skip:
+    def __init__(self, what, why):
+        self.what, self.why = what, why
+
+
+def test_NOTHING_COMPARED_is_a_non_answer_not_agreement(monkeypatch, tmp_path, capsys):
+    """Pre-fix: "agreed: 0 / predicted only: 0 / OBSERVED ONLY: 0" and rc 0, which
+    reads exactly like a mod the engine and the validator concur on. It is equally
+    what a log from a session where the mod never loaded looks like."""
+    rc = _cc(monkeypatch, tmp_path, "nothing about modA in here\n", [])
+    assert rc == 2
+    assert "REFUSING" in capsys.readouterr().err
+
+
+def test_a_DEGRADED_prediction_set_cannot_produce_AGREEMENT(monkeypatch, tmp_path, capsys):
+    """The command printed "'predicted' is not a complete prediction" and then
+    returned the code that means "we agree". A check that did not execute cannot
+    have contributed the predictions that would fill OBSERVED ONLY -- the one
+    bucket crosscheck exists for."""
+    rc = _cc(monkeypatch, tmp_path, SAMPLE,
+             [_F("sel", "<replace> sel matched nothing: //wares/ware[@id='x']/owner/@faction"),
+              _F("sel", "<add> sel matched nothing: //wares/ware[@id='y']")],
+             degraded=[_Skip("ware-reference checks", "an overlay would not parse")])
+    assert rc == 3
+    assert "DEGRADED" in capsys.readouterr().err
+
+
+def test_a_REAL_agreement_over_a_COMPLETE_prediction_set_is_still_rc0(monkeypatch,
+                                                                      tmp_path):
+    """The twin. Without it both tests above pass on a command that never returns 0."""
+    rc = _cc(monkeypatch, tmp_path, SAMPLE,
+             [_F("sel", "<replace> sel matched nothing: //wares/ware[@id='x']/owner/@faction"),
+              _F("sel", "<add> sel matched nothing: //wares/ware[@id='y']")])
+    assert rc == 0
+
+
+def test_a_REAL_disagreement_still_fails(monkeypatch, tmp_path):
+    """The other twin: the command must still be able to find something."""
+    rc = _cc(monkeypatch, tmp_path, SAMPLE,
+             [_F("sel", "<add> sel matched nothing: /nowhere/at/all")])
+    assert rc == 1
