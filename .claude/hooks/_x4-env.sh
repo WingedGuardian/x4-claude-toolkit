@@ -343,7 +343,70 @@ sys.stdout.write("" if cur is None else str(cur))' 2>/dev/null
 #
 # ONE implementation, so a third advisory hook cannot reintroduce the gap: the two
 # guards that emit VERDICTS carry their own emitter because they also need deny/ask.
+# x4_bound <text>  -- cap model-facing text, and SAY SO when it bites.
+#
+# MEASURED 2026-09-07, CC 2.1.263, this machine: Claude Code FILES a hook's
+# model-facing output above 10,000 CHARACTERS and shows the model a ~2 KB
+# preview. No error, exit code unchanged -- the failure is indistinguishable
+# from success, which is the whole reason this exists. Four arms per channel,
+# head+tail sentinel, discriminating on whether the TAIL survives:
+#
+#   bare stdout        500 BOTH · 10,000 BOTH · 10,001 HEAD · 30,000 HEAD
+#   additionalContext  500 BOTH ·  9,950 BOTH · 10,001 HEAD · 30,000 HEAD
+#
+# The 9,950 arm is load-bearing: its raw stdout was 10,032 characters and it
+# still arrived whole. So the cap is on the CONTENT the model receives and the
+# JSON envelope does NOT count -- budget the reason at 10,000 flat, never
+# "10,000 minus envelope".
+#
+# ⚠ THE NUMBER MOVES BETWEEN CC VERSIONS (high-20s K on 2.1.218 -> 10,000 on
+# 2.1.246 -> still 10,000 on 2.1.263). Re-derive it on a CC bump with the probe
+# above, keeping a small-size control arm so a broken probe cannot read as a
+# clean pass. This is the ONLY place the number is written down; a second copy
+# would drift, and a wrong constant here fails silently in the safe-looking
+# direction.
+#
+# ONE bound, applied BEFORE either renderer runs. Doing it inside jq and again
+# inside the python fallback would be two implementations of one rule, and the
+# fallback is what runs on a machine with no jq -- exactly when nobody is
+# looking. Renderer parity is then structural, not a coincidence two code paths
+# have to keep re-earning.
+X4_HOOK_MAX_CHARS="${X4_HOOK_MAX_CHARS:-10000}"
+#: Room for the notice itself, so the bounded text INCLUDING its disclosure
+#: still fits under the cap. A cap that overflows by the width of its own
+#: warning is the joke version of this function. MEASURED: the notice is
+#: 200 characters at 5-digit totals, so 300 leaves headroom for wider
+#: numbers; the suite asserts the bounded result is <= the cap regardless.
+_X4_BOUND_RESERVE=300
+
+# Codepoint-accurate length/prefix. bash's ${#s} and ${s:0:n} count BYTES in the
+# C locale, and the cap is in characters -- a validator finding carrying one
+# non-ASCII byte would then be cut short of the real limit. python and jq both
+# count codepoints; the bash arm is a last resort and says so.
+x4_len(){
+  _py="$(x4_python)"
+  if [ -n "$_py" ]; then X4_BND="$1" "$_py" -c 'import os,sys; sys.stdout.write(str(len(os.environ["X4_BND"])))'; return 0; fi
+  if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then "${JQ:-jq}" -rn --arg s "$1" '$s|length'; return 0; fi
+  printf '%s' "${#1}"
+}
+x4_head(){
+  _py="$(x4_python)"
+  if [ -n "$_py" ]; then X4_BND="$1" X4_BNDN="$2" "$_py" -c 'import os,sys; sys.stdout.write(os.environ["X4_BND"][:int(os.environ["X4_BNDN"])])'; return 0; fi
+  if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then "${JQ:-jq}" -rn --arg s "$1" --argjson n "$2" '$s[0:$n]'; return 0; fi
+  printf '%s' "${1:0:$2}"
+}
+
+x4_bound(){
+  _t="$(x4_len "$1")"
+  case "$_t" in ''|*[!0-9]*) printf '%s' "$1"; return 0 ;; esac
+  [ "$_t" -le "$X4_HOOK_MAX_CHARS" ] && { printf '%s' "$1"; return 0; }
+  _keep=$((X4_HOOK_MAX_CHARS - _X4_BOUND_RESERVE))
+  printf '%s\n[TRUNCATED: showing %s of %s characters. Claude Code files hook output above %s and shows the model only a preview, so the rest is dropped HERE, deliberately, rather than vanishing silently.]' \
+    "$(x4_head "$1" "$_keep")" "$_keep" "$_t" "$X4_HOOK_MAX_CHARS"
+}
+
 x4_advise() {
+  set -- "$(x4_bound "$1")" "${2:-PreToolUse}"     # ONE bound, before either renderer
   if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then
     "${JQ:-jq}" -n --arg r "$1" --arg e "${2:-PreToolUse}" \
       '{hookSpecificOutput:{hookEventName:$e,additionalContext:$r}}'

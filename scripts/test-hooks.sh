@@ -364,7 +364,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=138
+EXPECT=146
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -457,6 +457,60 @@ if grep -nE '^[^#]*cat /dev/stdin' "$HOOKS"/*.sh >/dev/null 2>&1; then
 else
   ok "no hook reads 'cat /dev/stdin'"
 fi
+# --- STATIC: no hook may read a DEAD payload env var -------------------------
+# Claude Code hands a hook its payload as JSON on STDIN. CLAUDE_TOOL_INPUT,
+# CLAUDE_TOOL_USE_RESULT and CLAUDE_SESSION_ID are a LEGACY contract that current
+# CC does not set, so a hook reading one sees an EMPTY value, falls through its
+# first guard clause and exits 0 -- byte-identical to deciding "this is fine".
+# That is F79's exact shape one interface over: a guard that FAILS OPEN and
+# reports success. Reported 2026-09-06 by an outside project (Genesis) that had
+# FOUR guards dead this way for weeks while their tests passed, because the tests
+# fed the dead env var too -- the tests and the code agreed with each other and
+# both disagreed with reality.
+#
+# MEASURED here 2026-09-07: zero hits, so this pins a property that currently
+# HOLDS rather than fixing a live defect. The mutation gate cannot reach this
+# class -- a dead input read means the hook never blocks, so there is no
+# behaviour for a mutant to weaken -- which is why it is static and why it lives
+# here rather than in test_hook_facts.py (verify-hook-tests.py copies only
+# hook_facts.py and test_hook_facts.py into a temp dir, so a __file__-relative
+# glob there would sweep an EMPTY population and report green).
+#
+# TEST files are scanned deliberately: a hit in test code not mirrored by a
+# real-payload test is exactly where Genesis's bug hid.
+_DEAD_INPUT_VARS='CLAUDE_TOOL_INPUT|CLAUDE_TOOL_USE_RESULT|CLAUDE_SESSION_ID'
+_dead_input_reads(){
+  grep -nE "^[^#]*($_DEAD_INPUT_VARS)" "$1"/*.sh "$1"/*.py 2>/dev/null
+}
+_dead_input_scanned(){ ls "$1"/*.sh "$1"/*.py 2>/dev/null | wc -l; }
+
+_ds="$(_dead_input_scanned "$HOOKS")"
+if [ "$_ds" -lt 8 ]; then
+  no "the dead-payload-env scan covered only $_ds file(s) -- a guard over nothing passes forever"
+elif [ -n "$(_dead_input_reads "$HOOKS")" ]; then
+  no "a hook reads a DEAD payload env var -- CC does not set these, so the read is empty and the hook FAILS OPEN: $(_dead_input_reads "$HOOKS")"
+else
+  ok "no hook reads a dead payload env var ($_ds files scanned)"
+fi
+
+# The twins. A static grep that cannot be shown to FIRE is decoration, and the
+# negative twin alone proves nothing -- an ABSENT detector also matches nothing.
+_deadenv_fixture(){
+  _d="$TMP/deadenv_$1"; mkdir -p "$_d"; printf '%s\n' "$2" > "$_d/probe.sh"; printf '%s' "$_d"
+}
+_dp="$(_deadenv_fixture pos 'INPUT="$CLAUDE_TOOL_INPUT"')"
+if [ -n "$(_dead_input_reads "$_dp" 2>/dev/null)" ]; then
+  ok "the dead-payload-env detector FIRES on a planted hook"
+else
+  no "the dead-payload-env detector did NOT fire on a planted hook -- it cannot go red"
+fi
+_dn="$(_deadenv_fixture neg '# CLAUDE_TOOL_INPUT is dead -- never read it')"
+if [ -z "$(_dead_input_reads "$_dn" 2>/dev/null)" ]; then
+  ok "a COMMENT naming the dead env var does not trip the detector"
+else
+  no "the detector matched a COMMENT -- prose must not satisfy the rule"
+fi
+
 
 # A hook whose PARSER fails must not read as ALLOW either. MEASURED 2026-08-30
 # (code-review probe): with JQ pointing at a missing binary, protect-bash.sh
@@ -593,6 +647,66 @@ if [ "$_n" = "2" ]; then ok "both advisories are carried in ONE note"
 else no "advisory accumulation -- expected 2 lines in additionalContext, got $_n"; fi
 export X4_GAME="$_sg2"
 decide deny   protect-bash.sh "$(cj "rm -rf '$GAME'")"   "a hard block still wins over everything"
+
+# --- The 10,000-character model-output cap -----------------------------------
+# MEASURED 2026-09-07 on CC 2.1.263, this machine. Claude Code FILES a hook's
+# model-facing output above a threshold and shows the model a ~2 KB preview:
+# no error, exit code unchanged, and the failure is indistinguishable from
+# success. Four arms per channel, head+tail sentinel, discriminating on whether
+# the TAIL survives:
+#
+#   bare stdout        500 -> BOTH   10,000 -> BOTH   10,001 -> HEAD   30,000 -> HEAD
+#   additionalContext  500 -> BOTH    9,950 -> BOTH   10,001 -> HEAD   30,000 -> HEAD
+#
+# The 9,950 arm is the load-bearing one: its total stdout was 10,032 characters
+# and it still arrived whole, so the cap is on the CONTENT the model receives and
+# the JSON envelope does NOT count against it. Budgeting "10,000 minus envelope"
+# would be needlessly tight and would rot as the envelope changes.
+#
+# The number has already MOVED once (high-20s K on 2.1.218 -> 10,000 on 2.1.246,
+# still 10,000 on 2.1.263), so re-deriving it is a named step on a CC bump, not a
+# guess. Re-derive with the probe shape above and a small-size control arm.
+_cap_ctx(){ printf '%s' "$1" | "${JQ:-jq}" -r '.hookSpecificOutput.additionalContext'; }
+_cap_env(){ ( HOOK_DIR="$HOOKS"; . "$HOOKS/_x4-env.sh"; x4_advise "$1" PreToolUse ); }
+
+_long="$(printf 'y%.0s' $(seq 1 25000))"
+_short="a short advisory"
+
+_got="$(_cap_ctx "$(_cap_env "$_long")")"
+if [ "${#_got}" -le 10000 ]; then
+  ok "a 25,000-char advisory is bounded to the cap (got ${#_got})"
+else
+  no "a 25,000-char advisory came back at ${#_got} chars -- above the cap, so CC files it and the model sees a preview"
+fi
+
+case "$_got" in
+  *TRUNCATED*) ok "the bounded advisory ANNOUNCES that it was truncated" ;;
+  *) no "the advisory was cut with no notice -- a narrowing step must announce it" ;;
+esac
+
+_gots="$(_cap_ctx "$(_cap_env "$_short")")"
+if [ "$_gots" = "$_short" ]; then
+  ok "a short advisory is passed through UNCHANGED (the cap does not fire spuriously)"
+else
+  no "a short advisory was altered: $_gots"
+fi
+
+# Both renderers must bound. The python fallback exists precisely for a machine
+# with no jq, and a cap that lives in only one of them is a cap that is absent
+# exactly when the fallback is doing the work.
+_gotp="$( ( HOOK_DIR="$HOOKS"; . "$HOOKS/_x4-env.sh"; JQ=no_such_jq_binary x4_advise "$_long" PreToolUse ) \
+          | "${JQ:-jq}" -r '.hookSpecificOutput.additionalContext' )"
+if [ "${#_gotp}" -le 10000 ]; then
+  ok "the PYTHON renderer bounds too (got ${#_gotp})"
+else
+  no "with jq unavailable the advisory came back at ${#_gotp} chars -- the fallback does not bound"
+fi
+
+if [ "$_got" = "$_gotp" ]; then
+  ok "both renderers produce the SAME bounded text (one home for the number)"
+else
+  no "the jq and python renderers DISAGREE on the bound -- the constant has drifted between them"
+fi
 
 echo "RESULT: $pass passed, $fail failed, $skipped skipped"
 if [ $((pass + fail + skipped)) -ne "$EXPECT" ]; then
