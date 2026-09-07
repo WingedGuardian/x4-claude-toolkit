@@ -42,6 +42,20 @@ sensible bounds is not a bound.**
 equally "bounded" and would hand every path rule a SHORTER OPERAND while looking
 successful — the narrowing-step defect the file exists to catch.
 
+> ⚠ **ABOUT THE "17,268 real historical commands" FIGURES BELOW, AND YOU CANNOT
+> REPRODUCE THEM.** That corpus is this machine's own session history. It is not in
+> the repository and cannot be — it is a private command log — so no harness ships
+> that replays it and no CI leg runs one. Every per-item replay number in this
+> section ("5 verdicts moved", "14 moved, 0 loosened", "1 of 17,268", "297 s — 47
+> s") was measured with an ad-hoc instrument against private data, by us, once.
+>
+> They are reported because a guard change with no per-item evidence is worse, and
+> because the DIRECTION ("none loosened") is the claim that matters. But they are
+> **our measurements, not your checks**, and the corpus has since grown to 18,632,
+> so even we cannot re-run the same population. Treat them as testimony. The
+> reproducible evidence for these fixes is the unit tests, `fuzz-guard.py` and
+> `verify-hook-tests.py`, all of which ship and all of which you can run.
+
 Verified by replaying **17,268 real historical commands** against the previous
 guard: **1 verdict moved**, and it is the incident command itself, going from
 `MemoryError` — no verdict at all — to a real one. **0 loosened.** The whole
