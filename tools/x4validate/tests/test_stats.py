@@ -242,6 +242,9 @@ def test_a_MIXED_diff_counts_only_the_unattributable_ops(tmp_path):
 # were wrong; the largest hid 1,443 ops. With attribution: zeros 5 -> 1, unattributed
 # ops 3,414 -> 190, and mlog_deadair_eco_no_da_wares went 0 -> 350 wares.
 
+SQ = chr(39)
+
+
 def _base_tree():
     return etree.fromstring(
         '<wares>'
@@ -286,20 +289,54 @@ def test_the_attributed_ware_carries_the_value_the_MOD_LEAVES(tmp_path):
     assert got["silicon"].price_avg == 600.0
 
 
-def test_a_REMOVE_of_a_whole_ware_is_attributed_before_it_is_detached(tmp_path):
-    """The ordering trap: _do_remove detaches its target, and a detached node has no
-    ancestor chain left to climb. The key has to be taken while it is still in place,
-    which is why apply_diff captures it BEFORE the helper runs (gotcha #17)."""
-    cand = tmp_path / "mod"
-    _w(cand / "libraries" / "wares.xml",
-       '<diff><remove sel="//ware[@id=' + chr(39) + 'energycells' + chr(39) + ']"/></diff>')
-    ops = _merge.apply_diff(_base_tree(),
-                            etree.fromstring(
-                                (cand / "libraries" / "wares.xml").read_text(
-                                    encoding="utf-8")),
-                            want_targets=True)
+def test_a_REMOVE_of_a_whole_ware_is_attributed_before_it_is_detached():
+    """A <remove> whose target CARRIES @id. Kept, but it does NOT test the ordering:
+    _id_key returns on its first iteration and never climbs, so it passes whether the
+    capture happens before or after the helper. The real ordering test is below."""
+    ops = _merge.apply_diff(
+        _base_tree(),
+        etree.fromstring('<diff><remove sel="//ware[@id=' + SQ + 'energycells'
+                         + SQ + ']"/></diff>'),
+        want_targets=True)
     assert ops[0].ok
     assert ops[0].target_keys == (("ware", "energycells"),)
+
+
+def test_a_target_WITHOUT_its_own_id_is_captured_BEFORE_the_helper_detaches_it():
+    """THE ordering test, and the one the release reviewer showed was missing.
+
+    `_do_remove` detaches its target; a detached node has no ancestor chain left to
+    climb, so `_id_key` must run BEFORE the helper. The test above cannot show that,
+    because its target has an `@id` of its own.
+
+    MEASURED by the reviewer per op shape: moving the capture after the helpers is
+    load-bearing for 3 of 6 -- exactly the shapes whose target lacks an id and gets
+    detached. These are the live shapes: one real mod carries 51 `<price>` replaces.
+    """
+    for sel in ("//ware[@id=" + SQ + "ore" + SQ + "]/price",
+                "//ware[@id=" + SQ + "ore" + SQ + "]/production/primary"):
+        ops = _merge.apply_diff(
+            _base_tree(),
+            etree.fromstring('<diff><remove sel="' + sel + '"/></diff>'),
+            want_targets=True)
+        if not ops[0].ok:
+            continue                      # shape absent from the fixture; try the next
+        assert ops[0].target_keys == (("ware", "ore"),), (sel, ops[0].target_keys)
+        break
+    else:
+        raise AssertionError("neither id-less remove shape resolved against the fixture")
+
+
+def test_a_REPLACE_of_an_id_less_element_is_also_captured_before_the_swap():
+    """The other detaching helper. `_do_replace` swaps the node out, so an element
+    payload replacing an id-less child has the same ordering requirement."""
+    ops = _merge.apply_diff(
+        _base_tree(),
+        etree.fromstring('<diff><replace sel="//ware[@id=' + SQ + 'ore' + SQ
+                         + ']/price"><price average="7"/></replace></diff>'),
+        want_targets=True)
+    assert ops[0].ok
+    assert ops[0].target_keys == (("ware", "ore"),), ops[0].target_keys
 
 
 def test_target_keys_are_EMPTY_unless_asked_for(tmp_path):
