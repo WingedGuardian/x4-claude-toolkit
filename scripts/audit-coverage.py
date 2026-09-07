@@ -130,6 +130,29 @@ def load_ledger(path: Path) -> dict[str, dict[str, str]]:
             raise SystemExit(
                 f"REFUSING: {path}:{lineno} {p} is FULL-READ but {reviewed} of {lines} lines "
                 f"were reviewed -- a file that grew after its review is PARTIAL, not read")
+        # A PARTIAL row was bounded by NOTHING. FULL-READ had to equal the file's
+        # length; PARTIAL was summed unchecked, so a ledger could claim more reviewed
+        # lines than the file has -- the v3.1.0 release reviewer measured 397,880
+        # reviewed over a 39,788-line population and still got OK, exit 0.
+        # Compared as NUMBERS. Every field here is a string off the TSV, and the
+        # neighbouring FULL-READ check gets away with `!=` because string equality
+        # happens to agree for equal integers. An ORDERING test does not: my first
+        # version wrote `reviewed > lines` on the raw strings and raised TypeError on
+        # the real ledger. A non-numeric field is itself a refusal, not a crash.
+        try:
+            n_reviewed, n_lines = int(reviewed), int(lines)
+        except ValueError:
+            raise SystemExit(
+                f"REFUSING: {path}:{lineno} {p} has non-numeric lines/reviewed "
+                f"({lines!r}/{reviewed!r})")
+        if n_reviewed > n_lines:
+            raise SystemExit(
+                f"REFUSING: {path}:{lineno} {p} claims {n_reviewed} lines reviewed but "
+                f"the file has {n_lines}. A count that exceeds its own denominator is "
+                f"not a measurement.")
+        if n_reviewed < 0:
+            raise SystemExit(
+                f"REFUSING: {path}:{lineno} {p} claims {n_reviewed} lines reviewed")
         rows[p] = {"lines": lines, "reviewed": reviewed, "round": rnd,
                    "method": method, "report": report}
     return rows
@@ -151,6 +174,19 @@ def main() -> int:
         rev = pinned_rev(Path(args.ledger))
         if rev:
             print(f"# using the ledger's own pinned rev: {rev}")
+        else:
+            # THE REFUSAL THE COMMENT ABOVE PROMISES, which did not exist. It said a
+            # ledger that cannot say WHEN it was true is "an artifact with no freshness
+            # fingerprint, which is the defect class this toolkit exists to refuse --
+            # here in its own instrument", and then fell through to `rev or "HEAD"`.
+            # An assertion satisfied by a comment rather than a mechanism (#37), found
+            # by the v3.1.0 release reviewer: deleting the pin line still printed OK.
+            #
+            # --rev is still honoured, so a caller who KNOWS the rev can say so; what
+            # is refused is silently guessing HEAD for a ledger that never claimed it.
+            raise SystemExit(
+                f"REFUSING: {args.ledger} carries no `# pinned-rev:` line, so it cannot "
+                f"say which commit it describes. Add one, or pass --rev explicitly.")
     rev = rev or "HEAD"
     pop = population(repo, rev)
     tot = totals(pop)
@@ -193,6 +229,23 @@ def main() -> int:
     part = [p for p in nt if rows[p]["method"] == "PARTIAL"]
     part_l = sum(int(rows[p]["reviewed"] or 0) for p in part)
     ntf, ntl = tot["non-test"]
+
+    # A LEDGER THAT DECLARES NOTHING READ IS NOT AN OK. Every refusal above is about
+    # the ledger DISAGREEING with the population; none was about it agreeing while
+    # claiming no work. MEASURED by the v3.1.0 release reviewer: a synthetic ledger
+    # with all 222 rows NOT-READ printed "OK ... 0% of files, 0% of lines" and exited
+    # 0 -- and `OK` leads the output while rc 0 is what a gate reads. The textbook
+    # PASS-reachable-from-empty, in the instrument whose whole subject is coverage.
+    #
+    # The floor is deliberately ZERO-ish rather than a target: this script must stay
+    # usable while an audit is in progress. What it refuses is the degenerate case of
+    # a ledger that reproduces the population perfectly and reports no reading at all.
+    if ntf and not read_f and not part:
+        print(f"REFUSING: the ledger reproduces the population at {rev} and declares "
+              f"NOTHING read -- 0 of {ntf} non-test files are FULL-READ or PARTIAL. "
+              f"That is an empty measurement, not coverage.", file=sys.stderr)
+        return 2
+
     print(f"OK  ledger reproduces the population at {rev}")
     print(f"    all source      {tot['all'][0]:>4} files {tot['all'][1]:>7} lines")
     print(f"    non-test        {ntf:>4} files {ntl:>7} lines")

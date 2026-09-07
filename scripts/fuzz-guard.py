@@ -607,6 +607,42 @@ def _m_wrap_stdbuf_split(c):
     return _retitle(c, lambda v: "stdbuf -o L " + v)
 
 
+# QUOTING, which every prefix mutator above holds FIXED. That is the axis the guard
+# bug of 2026-09-06 lived on: `if quoted: return t` fired before the assignment and
+# wrapper skips, so ONE quote in the prefix flipped 7 of 9 verb-keyed rules to allow.
+# 34 mutators insert a prefix onto the dangerous command and not one quoted a token in
+# it -- the same bias as the seed set had (F104) and the mutator set had (F106), now
+# one level further in. A fuzzer that mutates "the syntax around the operation" must
+# include how that syntax is QUOTED.
+def _m_quoted_assign_dq(c):
+    return _retitle(c, lambda v: 'FZQ="q" ' + v)
+
+
+def _m_quoted_assign_sq(c):
+    return _retitle(c, lambda v: "FZQ='q' " + v)
+
+
+def _m_quoted_assign_second(c):
+    return _retitle(c, lambda v: 'FZA=1 FZB="2" ' + v)
+
+
+def _m_quoted_env_unset(c):
+    return _retitle(c, lambda v: 'env -u "X4_GAME" ' + v)
+
+
+def _m_quoted_sudo_user(c):
+    return _retitle(c, lambda v: 'sudo -u "root" ' + v)
+
+
+def _m_quoted_timeout_signal(c):
+    return _retitle(c, lambda v: 'timeout -s "KILL" 5 ' + v)
+
+
+def _m_quoted_verb(c):
+    return _retitle(c, lambda v: '"' + v.split(" ")[0] + '"'
+                    + (" " + " ".join(v.split(" ")[1:]) if " " in v else ""))
+
+
 def _m_verb_abspath(c):
     return _retitle(c, lambda v: "/usr/bin/" + v)
 
@@ -720,6 +756,13 @@ MUTATORS = [
     ("WRAPPER sudo -u VALUE", _m_wrap_sudo_user),
     ("WRAPPER timeout -s VALUE", _m_wrap_timeout_signal),
     ("WRAPPER stdbuf -o VALUE", _m_wrap_stdbuf_split),
+    ("QUOTED assignment (dq)", _m_quoted_assign_dq),
+    ("QUOTED assignment (sq)", _m_quoted_assign_sq),
+    ("QUOTED second assignment", _m_quoted_assign_second),
+    ("QUOTED env -u value", _m_quoted_env_unset),
+    ("QUOTED sudo -u value", _m_quoted_sudo_user),
+    ("QUOTED timeout -s value", _m_quoted_timeout_signal),
+    ("QUOTED verb itself", _m_quoted_verb),
     # --- STDIN axis -----------------------------------------------------------
     ("STDIN echo into bash", _m_stdin_echo_pipe),
     ("STDIN printf into sh", _m_stdin_printf_pipe),

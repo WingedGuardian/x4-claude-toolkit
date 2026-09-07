@@ -74,12 +74,41 @@ for d in "$X4_GAME"/extensions/ego_dlc_*/; do
 done
 
 # --- record the build id reference/ was unpacked from (stale-reference SessionStart hook) ---
+#
+# TWO PLACES, AND THE ONE THAT MATTERS IS THE SENTINEL. The detached
+# `.claude/.reference-buildid` has to be kept in step by hand, and MEASURED
+# 2026-09-06 it had not been: two copies disagreed (23524486 vs 23660954) while the
+# tree was current, so the SessionStart hook announced a stale reference/ at every
+# session start and recommended a ~60 GB re-unpack.
+#
+# check-reference-version.sh was changed to read the SENTINEL first, because that file
+# lives INSIDE the tree it describes and therefore cannot drift from it. The v3.1.0
+# release reviewer then found the other half: this script wrote the sentinel with a
+# bare `touch`, i.e. ZERO BYTES, so there was no build id in it to read and the hook
+# fell straight back to the detached file it was written to stop trusting. It worked
+# on the developer machine only because that sentinel had been hand-written.
+BUILDID=""
 if [ -n "${X4_APPMANIFEST:-}" ] && [ -f "$X4_APPMANIFEST" ]; then
+  BUILDID=$(grep -i '"buildid"' "$X4_APPMANIFEST" | grep -oE '[0-9]+' | tail -1 || true)
+fi
+if [ -n "$BUILDID" ]; then
   mkdir -p "$X4_TOOLKIT/.claude"
-  grep -i '"buildid"' "$X4_APPMANIFEST" | grep -oE '[0-9]+' | tail -1 > "$X4_TOOLKIT/.claude/.reference-buildid" || true
+  printf '%s
+' "$BUILDID" > "$X4_TOOLKIT/.claude/.reference-buildid"
 fi
 
-# lock against accidental re-unpacks (remove this sentinel to re-unpack, e.g. after a game update)
-touch "$REF/.unpacked-and-locked"
+# lock against accidental re-unpacks (remove this sentinel to re-unpack, e.g. after a
+# game update). The TEXT is load-bearing: check-reference-version.sh parses the build
+# id out of it, and the wording matches what a hand-written sentinel already carried.
+if [ -n "$BUILDID" ]; then
+  printf 'Re-unpacked from X4 (steam buildid %s) on %s. reference/ is read-only; remove this file manually to re-unpack.
+'     "$BUILDID" "$(date +%Y-%m-%d)" > "$REF/.unpacked-and-locked"
+else
+  # No manifest, so no build id to record. Say so IN the sentinel rather than leaving
+  # an empty file that reads as "unpacked from nothing" -- the hook then falls back to
+  # the detached marker and says which source it used.
+  printf 'Re-unpacked on %s; the Steam build id could not be determined (no appmanifest). reference/ is read-only; remove this file manually to re-unpack.
+'     "$(date +%Y-%m-%d)" > "$REF/.unpacked-and-locked"
+fi
 
 echo "DONE: $(find "$REF" -type f | wc -l) files, $(du -sh "$REF" | cut -f1)"
