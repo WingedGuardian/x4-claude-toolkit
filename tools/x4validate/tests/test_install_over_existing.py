@@ -95,7 +95,7 @@ def _fresh(tmp_path: pathlib.Path) -> pathlib.Path:
     return dest
 
 def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra: str,
-             method: str = "separate"):
+             method: str = "separate", from_dest: bool = False):
     """Run ONE of the two installers with identical intent.
 
     Parameterised rather than duplicated, because the point is that both reach the
@@ -134,7 +134,8 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
         exe = _bash()
         if exe is None:
             pytest.skip("no Git Bash on this machine")
-        cmd = [exe, INSTALL_SH.as_posix()]
+        script = (dest / "install.sh") if from_dest else INSTALL_SH
+        cmd = [exe, script.as_posix()]
         for k, v in common.items():
             cmd += ["--" + k, v]
         cmd += ["--over-existing", "--yes"]
@@ -143,12 +144,14 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
         exe = shutil.which("pwsh") or shutil.which("powershell")
         if exe is None:
             pytest.skip("no PowerShell on this machine")
-        cmd = [exe, "-NoProfile", "-File", INSTALL_PS1.as_posix()]
+        script = (dest / "install.ps1") if from_dest else INSTALL_PS1
+        cmd = [exe, "-NoProfile", "-File", script.as_posix()]
         for k, v in common.items():
             cmd += ["-" + k[:1].upper() + k[1:], v]
         cmd += ["-OverExisting", "-Yes"]
         cmd += ["-DryRun" if f == "dry-run" else "-" + f for f in flags]
-    return subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT.as_posix())
+    cwd = dest.as_posix() if from_dest else ROOT.as_posix()
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
@@ -365,7 +368,13 @@ def test_the_refusal_LIST_is_bounded_and_says_how_many_it_hid(installer, tmp_pat
     r = _install(installer, tmp_path, dest)
     out = r.stdout + r.stderr
     assert r.returncode != 0, "reported success over %d locked files" % len(victims)
-    listed = sum(1 for ln in out.splitlines() if ln.strip().startswith(str(dest)[:12]) or "hooks" in ln and ln.strip().startswith(("C:", "/")))
+    # ASSERTED, not merely computed. This was assigned and never used while the
+    # docstring claimed both halves were pinned -- a variable that looks like a
+    # check and is not one.
+    listed = sum(1 for ln in out.splitlines()
+                 if ln.strip().startswith(("C:", "/")) and "hooks" in ln)
+    assert listed <= 8, (
+        "the refusal listed %d paths; the cap is 8 plus a count" % listed)
     assert "NOT LISTED" in out, (
         "more than 8 files were blocked and the refusal did not say how many it "
         "hid -- a narrowing step must announce itself:\n%s" % out[-1200:])
@@ -396,3 +405,42 @@ def test_the_config_write_leaves_no_temp_behind(installer, tmp_path):
     assert not strays, "the config write left a temp behind: %s" % strays
     body = cfg.read_text(encoding="utf-8")
     assert "X4_TOOLKIT=" in body, "the installed config is not the rendered one"
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_IN_PLACE_dry_run_runs_NOTHING(installer, tmp_path):
+    """THE SHAPE NO FIXTURE HERE HAD, and the fourth critical of this arc lived in it.
+
+    Every other case points --toolkit at a NEW directory, so `same_dir` is false,
+    the copy step runs and ITS dry-run gate exits first. When a user re-runs the
+    installer from inside an existing install to preview an upgrade, `same_dir` is
+    TRUE: no copy, so `write_paths_env` is the only writer reached -- and its
+    "nothing to change" fast path returned ABOVE the dry-run gate.
+
+    MEASURED before the fix, all four arms: rc 0, no dry-run banner, "install
+    complete" printed, and `setup.sh` RAN -- syncing dependencies with uv. With
+    --unpack it would also have run bin/unpack-reference.sh, which unpacks the
+    game archives. Proven a regression of this arc against the same fixture at
+    c6fe0f0^, where the banner appeared and setup.sh did not run.
+
+    ★ The structural half matters more than the ordering bug: `setup.sh` and
+    `bin/unpack-reference.sh` are invoked at TOP LEVEL, outside all three writers,
+    so a gate placed in the writers is incapable of covering them however
+    carefully it is positioned. refuse_if_dry_run's own docstring claimed every
+    write goes through one of the three. It does not.
+    """
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    marker = dest / "tools" / "x4validate" / ".venv"
+    had_venv = marker.exists()
+
+    r = _install(installer, tmp_path, dest, "--dry-run", from_dest=True)
+    out = (r.stdout + r.stderr)
+    low = out.lower()
+
+    assert "dry run complete" in low, (
+        "an in-place --dry-run printed no dry-run banner:\n%s" % out[-1200:])
+    assert "install complete" not in low, (
+        "an in-place --dry-run reported a completed INSTALL:\n%s" % out[-1200:])
+    assert "modding toolkit setup" not in low, (
+        "an in-place --dry-run RAN setup.sh -- it syncs dependencies and writes to "
+        "disk:\n%s" % out[-1500:])
+    assert marker.exists() == had_venv, "a dry run created or removed the virtualenv"

@@ -449,6 +449,15 @@ function Write-PathsEnv($t) {
   # ORDERING, which is why this survived. -DryRun is executed nowhere in CI.
   $dir = Join-Path $t '.claude'
   $f = Join-Path $dir 'x4-paths.env'
+  # THE GATE IS THE FIRST STATEMENT, and it has to stay there. The fast path
+  # below was inserted ABOVE it, which made -DryRun perform a REAL install
+  # whenever the toolkit is already at the destination: no copy runs, so this is
+  # the only writer reached, the fast path returned before the gate, and setup.sh
+  # ran for real. The comment a few lines up already warned that a COUNT OF CALL
+  # SITES CANNOT SEE ORDERING -- and the same arc then moved the gate below a
+  # return anyway. A count cannot see nesting either, and neither can it see a
+  # return placed in front.
+  Refuse-IfDryRun 'writing the path config into' $f
 
   # NOTHING TO CHANGE, NOTHING TO WRITE. An upgrade resolving the same paths used
   # to rewrite this file anyway, which failed a locked config for a write that
@@ -461,7 +470,6 @@ function Write-PathsEnv($t) {
     }
   }
 
-  Refuse-IfDryRun 'writing the path config into' $f
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
   # BACKED UP HERE, not at the call sites -- the placement install.sh uses, so a
@@ -568,7 +576,20 @@ function Write-PathsEnv($t) {
   } else {
     Write-Host "  [warn] no bash found, so the new config was NOT verified as sourceable"
   }
-  Move-Item -Force -LiteralPath $tmp -Destination $f
+  # GUARDED, as install.sh guards the identical `mv -f`. Unguarded this throws an
+  # IOException when the destination is held open with FileShare::None -- an
+  # editor, an AV scanner, OneDrive -- and the TEMP SURVIVES ON DISK holding
+  # X4_NEXUS_KEY plus that machine's absolute paths, with a raw .NET error and no
+  # INCOMPLETE accounting. That is the exact gap
+  # test_the_config_write_leaves_no_temp_behind names in its own docstring.
+  try {
+    Move-Item -Force -LiteralPath $tmp -Destination $f -ErrorAction Stop
+  } catch {
+    Remove-Item -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
+    Write-Host ("ERROR: could not install " + $f + ": " + $_.Exception.Message) -ForegroundColor Red
+    Write-Host "       Your existing config is untouched and the temp was removed." -ForegroundColor Red
+    exit 1
+  }
   Write-Host "  wrote $f"
   if ($carried.Count) { Write-Host ("  [note] carried over " + $carried.Count + " setting(s) you had added") }
 }
@@ -912,11 +933,21 @@ if ($bash) {
     # $ErrorActionPreference='Stop' does NOT trap a native exit code, so each
     # call needs its own check - otherwise a failed unpack still reached
     # "=== install complete ===" and the user believed a broken install.
+    # GATED HERE TOO, not only in the writers. These run at TOP LEVEL, so
+    # Refuse-IfDryRun placed inside Copy-Toolkit / Write-PathsEnv / the global arm
+    # is STRUCTURALLY unable to cover them -- it only ever ran because one of
+    # those happened to exit first. A dry run that syncs dependencies or unpacks
+    # the game archives is not a preview.
+    if ($DryRun) {
+      Write-Host '  --dry-run: NOT running setup.sh'
+      if ($Unpack) { Write-Host '  --dry-run: NOT unpacking reference/' }
+    } else {
     & $bash.Source setup.sh
     if ($LASTEXITCODE -ne 0) { $failed += "setup.sh (exit $LASTEXITCODE)" }
     if ($Unpack) {
       & $bash.Source bin/unpack-reference.sh
       if ($LASTEXITCODE -ne 0) { $failed += "bin/unpack-reference.sh (exit $LASTEXITCODE)" }
+    }
     }
   } finally {
     $env:CLAUDE_PROJECT_DIR = $prev

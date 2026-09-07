@@ -430,6 +430,19 @@ precheck_config() {   # precheck_config TOOLKIT_DIR
 
 write_paths_env() {  # write_paths_env TOOLKIT_DIR
   local t="$1" f="$1/.claude/x4-paths.env"
+  # THE GATE IS THE FIRST STATEMENT, and it has to stay there.
+  #
+  # The "nothing to change" fast path below was inserted ABOVE it, which made
+  # --dry-run perform a REAL install whenever `same_dir` was true: no copy runs,
+  # so this is the only writer reached, the fast path returned before the gate,
+  # and execution fell through to `bash setup.sh` at top level -- which synced
+  # dependencies for real. MEASURED on all four arms, rc 0, "install complete",
+  # no dry-run banner. Proven a regression against the same fixture at c6fe0f0^.
+  #
+  # An early return added above a gate is invisible to a check that COUNTS call
+  # sites, which is what install.ps1's own comment here already warned about --
+  # and the same arc then moved the gate below a return anyway.
+  refuse_if_dry_run "writing the path config into" "$1/.claude/x4-paths.env"
   # NOTHING TO CHANGE, NOTHING TO WRITE. An upgrade that resolves the same
   # paths used to rewrite this file anyway -- which meant a config the user
   # had locked (as README instructs) failed the whole install for a write
@@ -439,7 +452,6 @@ write_paths_env() {  # write_paths_env TOOLKIT_DIR
     echo "  [note] $f already matches these paths; left untouched"
     return 0
   fi
-  refuse_if_dry_run "writing the path config into" "$1/.claude/x4-paths.env"
   mkdir -p "$1/.claude"
 
   # BACKED UP HERE, not at the call sites. `copy_toolkit` backs this file up and puts it
@@ -955,9 +967,22 @@ esac
 FAILED=""
 add_failed() { FAILED="$FAILED${FAILED:+, }$1"; }
 
+# GATED HERE TOO, not only in the writers. setup.sh and bin/unpack-reference.sh are
+# invoked at TOP LEVEL, so `refuse_if_dry_run` placed inside copy_toolkit /
+# write_paths_env / install_global_claude is STRUCTURALLY unable to cover them --
+# it only ever ran because one of those happened to exit first. refuse_if_dry_run's
+# own docstring claimed "every write goes through" those three; it does not, and
+# these two are the counter-example. A dry run that syncs dependencies or unpacks
+# 60 GB of game archives is not a preview.
+if [ "$DRY_RUN" = 1 ]; then
+  echo "  --dry-run: NOT running setup.sh"
+else
 ( cd "$TOOLKIT" && CLAUDE_PROJECT_DIR="$TOOLKIT" bash setup.sh ) || add_failed "setup.sh"
+fi
 
-if [ "$DO_UNPACK" = 1 ]; then
+if [ "$DO_UNPACK" = 1 ] && [ "$DRY_RUN" = 1 ]; then
+  echo "  --dry-run: NOT unpacking reference/"
+elif [ "$DO_UNPACK" = 1 ]; then
   echo "Unpacking reference/ ..."
   ( cd "$TOOLKIT" && CLAUDE_PROJECT_DIR="$TOOLKIT" bash bin/unpack-reference.sh ) \
     || add_failed "bin/unpack-reference.sh"
