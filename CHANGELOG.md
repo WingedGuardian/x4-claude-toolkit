@@ -241,7 +241,9 @@ entry said "all three now refuse", which the release reviewer measured as false.
 ### Fixed — a hook's warning was FILED above 10,000 characters, worst-first
 
 Claude Code files a hook's model-facing output above **10,000 CHARACTERS** and shows the
-model a ~2 KB preview. No error, exit code unchanged — indistinguishable from success.
+model only a PREVIEW. No error, exit code unchanged — indistinguishable from
+success. What was measured here is that the HEAD sentinel survives and the TAIL does
+not; the preview's SIZE was not measured and is deliberately not quoted.
 MEASURED on CC 2.1.263, four arms per channel with head+tail sentinels, discriminating
 on whether the TAIL survives:
 
@@ -253,7 +255,8 @@ on whether the TAIL survives:
 The 9,950 arm is load-bearing: its raw stdout was 10,032 characters and still arrived
 whole, so **the cap is on the CONTENT the model receives and the JSON envelope does not
 count** — budget at 10,000 flat, never "10,000 minus envelope". The constant has already
-moved once across a CC bump (high-20s K on 2.1.218 → 10,000 on 2.1.246), so re-deriving
+moved once across a CC bump — REPORTED by an outside audit, not measured here;
+what we measured is 10,000 on 2.1.263 — so re-deriving
 it is a named step, and this is the only place it is written down.
 
 **The SessionStart canary crossed it, and the failure was INVERTED AGAINST SEVERITY.**
@@ -265,7 +268,7 @@ whatever wrote it"* — the one line that stops the recoverable state being dest
 ordering was backwards independently in both layers. The directive now prints BEFORE the
 list, all three lists route through one `_emit()` that DISCLOSES its own bound (a bare
 slice makes the number wrong, not just the list), and `session-canary.sh` names WHICH
-`x4canary` it resolved — two copies exist on a normal install and the hook silently
+`x4canary` it resolved — two copies exist on THIS install (n=1) and the hook silently
 picked the first it found.
 
 A `deny` is honoured at any reason length (500 / 15,000 / 200,000 all blocked against a
@@ -305,7 +308,9 @@ found it. The contrast lives in the same package: `gates/mutation_probe.py` also
 a pid and restores BY NAME from a pristine directory. Same ingredient, load-bearing in
 one and decorative in the other. Fixed with the `except BaseException` → unlink → raise
 shape copied unchanged from `_registry.save`, nested so the handle closes before the
-unlink (Windows refuses to unlink a file it holds open). Reclaiming a FOREIGN orphan is
+unlink (the documented rationale behind `_registry.save`'s shape: Windows refuses to
+unlink a file it holds open — inherited with the code rather than re-probed).
+Reclaiming a FOREIGN orphan is
 deliberately left explicit and manual: deciding a stranger's temp is abandoned means
 deciding its pid is dead, and on Windows `os.kill(pid, 0)` maps to TerminateProcess.
 
