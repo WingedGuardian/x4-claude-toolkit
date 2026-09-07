@@ -182,6 +182,69 @@ function Get-OwnedEnvLinesFromFile($f) {
 #: An upgrade that does not need to CHANGE the config never writes it, so the lock
 #: is irrelevant. One that must change it REFUSES, naming the unlock command:
 #: silently unlocking would defeat the mechanism the user turned on.
+#: THE COPY SET, named ONCE -- the mirror of $X4_COPY_ITEMS in install.sh. It was
+#: written out twice here as well (the copy and the dry-run listing), and the
+#: locked-target precheck below is a third caller.
+$X4CopyItems = @('.claude','tools','bin','scripts','mods','CLAUDE.md','KNOWLEDGEBASE.md','README.md',
+                 'CHANGELOG.md','LICENSE','setup.sh','install.sh','install.ps1','SETUP_PROMPT.txt',
+                 '.gitignore','.gitattributes')
+
+#: Destination files the copy would overwrite that CANNOT be written.
+#:
+#: MEASURED 2026-09-07 with one locked hook in the destination: this installer
+#: returned 0 and OVERWROTE it, because Copy-Item -Force CLEARS the read-only
+#: attribute -- so it destroyed exactly what the lock was protecting and reported
+#: success. install.sh died mid-copy instead. Opposite verdicts on one input, and
+#: nothing decided which was right; refusing before either writes is the only
+#: answer correct for both.
+function Get-LockedTargets($dest) {
+  $blocked = @()
+  foreach ($item in $X4CopyItems) {
+    $from = Join-Path $SRC $item
+    if (-not (Test-Path -LiteralPath $from)) { continue }
+    if (Test-Path -LiteralPath $from -PathType Container) {
+      foreach ($f in (Get-ChildItem -LiteralPath $from -Recurse -File -ErrorAction SilentlyContinue)) {
+        $rel = $f.FullName.Substring($from.Length).TrimStart([char]92, [char]47)
+        $skip = $false
+        foreach ($junk in ($X4CopyPrune + $X4KeepLocal)) {
+          $probe = Join-Path $item $rel
+          if ($probe -ieq $junk -or $probe -like ($junk + [char]92 + '*')) { $skip = $true }
+        }
+        if ($skip) { continue }
+        $t = Join-Path $dest (Join-Path $item $rel)
+        if (Test-Path -LiteralPath $t) {
+          try { if ((Get-Item -LiteralPath $t -Force).IsReadOnly) { $blocked += $t } } catch { }
+        }
+      }
+    } else {
+      $t = Join-Path $dest $item
+      if (Test-Path -LiteralPath $t) {
+        try { if ((Get-Item -LiteralPath $t -Force).IsReadOnly) { $blocked += $t } } catch { }
+      }
+    }
+  }
+  return ,$blocked
+}
+
+function Test-LockedTargetsPrecheck($dest) {
+  $blocked = Get-LockedTargets $dest
+  if (-not $blocked -or $blocked.Count -eq 0) { return }
+  Write-Host ''
+  Write-Host ("REFUSING: " + $blocked.Count + " file(s) this install would overwrite are READ-ONLY.")
+  foreach ($b in ($blocked | Select-Object -First 8)) { Write-Host ("      " + $b) }
+  if ($blocked.Count -gt 8) { Write-Host ("      ... and " + ($blocked.Count - 8) + " more NOT LISTED") }
+  Write-Host ''
+  Write-Host '  This is x4lock doing its job -- README tells you to run it, and it'
+  Write-Host '  cannot tell an installer from any other process that writes here.'
+  Write-Host '  Nothing has been changed.'
+  Write-Host ''
+  Write-Host '  Unlock, re-run this installer, then lock again:'
+  Write-Host '      python scripts/x4lock.py unlock'
+  Write-Host '      <re-run this command>'
+  Write-Host '      python scripts/x4lock.py lock'
+  exit 1
+}
+
 function Test-ConfigPrecheck($t) {
   $f = Join-Path $t (Join-Path '.claude' 'x4-paths.env')
   if (-not (Test-Path -LiteralPath $f)) { return }
@@ -263,8 +326,7 @@ function Copy-Toolkit($dest) {
   # 'mods' carries the game extension x4live needs (README: "copy that folder into
   # {game}/extensions/"). Omitting it shipped a documented instruction pointing at a
   # directory the installer never created.
-  $items = '.claude','tools','bin','scripts','mods','CLAUDE.md','KNOWLEDGEBASE.md','README.md',
-           'CHANGELOG.md','LICENSE','setup.sh','install.sh','install.ps1','SETUP_PROMPT.txt','.gitignore','.gitattributes'
+  $items = $X4CopyItems
   # -LiteralPath throughout. Without it PowerShell treats [ and ] as WILDCARDS, so a
   # source folder named e.g. "x4-claude-toolkit [v3.0.0]" -- the shape a download gives
   # you -- matches nothing. MEASURED 2026-09-01: bare Test-Path returned False and bare
@@ -577,9 +639,7 @@ function Show-Target($dest) {
 function Show-CopyPlan {
   if ($DryRun) {
     Write-Host "  -DryRun: nothing will be written. Items that would be copied:"
-    foreach ($i in @('.claude','tools','bin','scripts','mods','CLAUDE.md','KNOWLEDGEBASE.md','README.md',
-                     'CHANGELOG.md','LICENSE','setup.sh','install.sh','install.ps1','SETUP_PROMPT.txt',
-                     '.gitignore','.gitattributes')) {
+    foreach ($i in $X4CopyItems) {
       if (Test-Path -LiteralPath (Join-Path $SRC $i)) { Write-Host "      $i" }
     }
     Write-Host ""
@@ -788,8 +848,10 @@ switch ($Method) {
     if (-not $Game) { throw 'in-game needs -Game' }
     $Toolkit = $Game
     Show-Target $Toolkit
+    # Test-ConfigPrecheck OUTSIDE, Test-LockedTargetsPrecheck INSIDE -- the config
+    # is written on both branches, the copy is not. install.sh makes the same split.
     Test-ConfigPrecheck $Toolkit
-    if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $GameNamed; Show-CopyPlan; Copy-Toolkit $Toolkit }
+    if (-not (Test-SameDir $SRC $Toolkit)) { Test-LockedTargetsPrecheck $Toolkit; Assert-Direction $Toolkit $GameNamed; Show-CopyPlan; Copy-Toolkit $Toolkit }
     Write-PathsEnv $Toolkit
   }
   'separate' {
@@ -797,8 +859,10 @@ switch ($Method) {
     $Toolkit = Ask $Toolkit 'Toolkit folder' $Toolkit
     $Toolkit = Remove-TrailingSep $Toolkit
     Show-Target $Toolkit
+    # Test-ConfigPrecheck OUTSIDE, Test-LockedTargetsPrecheck INSIDE -- the config
+    # is written on both branches, the copy is not. install.sh makes the same split.
     Test-ConfigPrecheck $Toolkit
-    if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $ToolkitNamed; Show-CopyPlan; Copy-Toolkit $Toolkit }
+    if (-not (Test-SameDir $SRC $Toolkit)) { Test-LockedTargetsPrecheck $Toolkit; Assert-Direction $Toolkit $ToolkitNamed; Show-CopyPlan; Copy-Toolkit $Toolkit }
     Write-PathsEnv $Toolkit
   }
   'global'   {
@@ -806,6 +870,7 @@ switch ($Method) {
     Show-Target $Toolkit
     # Ahead of every write, exactly where install.sh gates its own global arm.
     Assert-GlobalOverExisting $Toolkit
+    Test-ConfigPrecheck $Toolkit   # -Method global writes the config and never copied
     Write-PathsEnv $Toolkit
     Install-Global $Toolkit
   }

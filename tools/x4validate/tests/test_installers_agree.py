@@ -26,24 +26,25 @@ NOT_AN_ITEM = {chr(92), ""}
 
 
 def sh_items() -> list[str]:
-    """The `for item in ... ; do` list inside copy_toolkit()."""
+    """The `X4_COPY_ITEMS=` list in install.sh.
+
+    It used to be parsed out of `for item in ... ; do`. The list is now named ONCE
+    and consumed by three callers -- the copy, the dry-run listing, and the
+    locked-target precheck -- so the definition is what to read. Parsing a loop
+    header would now find `$X4_COPY_ITEMS` and report an empty set as agreement.
+    """
     text = SH.read_text(encoding="utf-8")
-    m = re.search(r"for item in\s+(.*?);\s*do", text, re.S)
-    assert m, "could not find copy_toolkit's item list in install.sh"
+    m = re.search(r'^X4_COPY_ITEMS="([^"]*)"', text, re.M)
+    assert m, "could not find X4_COPY_ITEMS in install.sh"
     return sorted(w for w in m.group(1).split() if w not in NOT_AN_ITEM)
 
 
 def ps1_items() -> list[str]:
-    """The `$items = '...','...'` literal inside Copy-Toolkit."""
+    """The `$X4CopyItems = @(...)` list in install.ps1."""
     text = PS1.read_text(encoding="utf-8")
-    m = re.search(r"\$items\s*=", text)
-    assert m, "could not find Copy-Toolkit's item list in install.ps1"
-    out: list[str] = []
-    for line in text[m.start():].splitlines():
-        out += re.findall(r"'([^']+)'", line)
-        if not line.rstrip().endswith(","):     # the literal ends here
-            break
-    return sorted(w for w in out if w not in NOT_AN_ITEM)
+    m = re.search(r"\$X4CopyItems\s*=\s*@\((.*?)\)", text, re.S)
+    assert m, "could not find $X4CopyItems in install.ps1"
+    return sorted(w for w in re.findall(r"'([^']+)'", m.group(1)) if w not in NOT_AN_ITEM)
 
 
 def test_both_installers_copy_the_same_items():

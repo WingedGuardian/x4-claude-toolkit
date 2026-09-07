@@ -239,8 +239,7 @@ copy_toolkit() {
   for junk in $X4_COPY_PRUNE; do
     rm -rf "$dest/$junk" 2>/dev/null || true
   done
-  for item in .claude tools bin scripts mods CLAUDE.md KNOWLEDGEBASE.md README.md CHANGELOG.md \
-              LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt .gitignore .gitattributes; do
+  for item in $X4_COPY_ITEMS; do
     # NAMED, never silently skipped -- that silence is how the absent mods/ folder
     # survived a whole release.
     [ -e "$SRC/$item" ] || { MISSING="$MISSING $item"; continue; }
@@ -340,6 +339,72 @@ _owned_lines_old() {   # _owned_lines_old CONFIG_FILE
 #: proceeds. An upgrade that genuinely must change it REFUSES, up front, naming
 #: the unlock command -- because an installer that silently unlocked would defeat
 #: the mechanism the user deliberately turned on.
+#: THE COPY SET, named ONCE. It was written out twice -- in the copy loop and in
+#: the dry-run listing -- and a third caller now needs it (the locked-target
+#: precheck below). Two statements of one list is the shape this file already
+#: warns about elsewhere; three would be asking for the listing and the copy to
+#: disagree about what an install actually writes.
+X4_COPY_ITEMS=".claude tools bin scripts mods CLAUDE.md KNOWLEDGEBASE.md README.md CHANGELOG.md LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt .gitignore .gitattributes"
+
+#: Destination files the copy would overwrite that CANNOT be written.
+#:
+#: precheck_config guarded ONE file. x4lock's manifest under a game root covers
+#: about twenty-six -- CLAUDE.md, KNOWLEDGEBASE.md, .claude/settings.json, the
+#: hooks, the skills, the agents -- and for `--method in-game` the game root IS
+#: the destination, so all of them sit inside the copy set. Guarding the env file
+#: alone moved the failure from one filename to another.
+#:
+#: MEASURED 2026-09-07 with one locked hook in the destination: install.sh died
+#: mid-copy on a bare `cp: Permission denied`, half-copied, with no unlock hint;
+#: install.ps1 returned 0 and OVERWROTE it, because `Copy-Item -Force` clears the
+#: read-only attribute. One installer destroyed what the lock protected and the
+#: other left a mess, and nothing decided which was correct. Refusing before
+#: either writes anything is the only answer that is right for both.
+_locked_targets() {   # _locked_targets DEST  -> prints blocked destination paths
+  local dest="$1" item rel f junk skip
+  for item in $X4_COPY_ITEMS; do
+    [ -e "$SRC/$item" ] || continue
+    if [ -d "$SRC/$item" ]; then
+      ( cd "$SRC/$item" 2>/dev/null && find . -type f -print 2>/dev/null ) | while IFS= read -r rel; do
+        rel="${rel#./}"
+        skip=0
+        for junk in $X4_COPY_PRUNE $X4_KEEP_LOCAL; do
+          case "$item/$rel" in "$junk"|"$junk"/*) skip=1 ;; esac
+        done
+        [ "$skip" = 1 ] && continue
+        f="$dest/$item/$rel"
+        [ -e "$f" ] && [ ! -w "$f" ] && printf '%s\n' "$f"
+      done
+    else
+      f="$dest/$item"
+      [ -e "$f" ] && [ ! -w "$f" ] && printf '%s\n' "$f"
+    fi
+  done
+  return 0
+}
+
+#: PRECONDITION over the whole copy set, before anything is written, dry run too.
+precheck_locked_targets() {   # precheck_locked_targets DEST
+  local dest="$1" blocked n
+  blocked="$(_locked_targets "$dest")"
+  [ -z "$blocked" ] && return 0
+  n="$(printf '%s\n' "$blocked" | grep -c .)"
+  echo                                                                          >&2
+  echo "REFUSING: $n file(s) this install would overwrite are READ-ONLY."        >&2
+  printf '%s\n' "$blocked" | head -8 | sed 's/^/      /'                        >&2
+  [ "$n" -gt 8 ] && echo "      ... and $((n - 8)) more NOT LISTED"              >&2
+  echo                                                                          >&2
+  echo "  This is x4lock doing its job -- README tells you to run it, and it"    >&2
+  echo "  cannot tell an installer from any other process that writes here."     >&2
+  echo "  Nothing has been changed."                                            >&2
+  echo                                                                          >&2
+  echo "  Unlock, re-run this installer, then lock again:"                       >&2
+  echo "      python scripts/x4lock.py unlock"                                   >&2
+  echo "      <re-run this command>"                                             >&2
+  echo "      python scripts/x4lock.py lock"                                     >&2
+  exit 1
+}
+
 precheck_config() {   # precheck_config TOOLKIT_DIR
   local t="$1" f="$1/.claude/x4-paths.env"
   [ -f "$f" ] || return 0                      # nothing there to protect
@@ -693,9 +758,7 @@ announce_copy_plan() {
   [ "$DRY_RUN" = 1 ] || return 0
   echo "  --dry-run: nothing will be written. Items that would be copied:"
   local item
-  for item in .claude tools bin scripts mods CLAUDE.md KNOWLEDGEBASE.md README.md \
-              CHANGELOG.md LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt \
-              .gitignore .gitattributes; do
+  for item in $X4_COPY_ITEMS; do
     [ -e "$SRC/$item" ] && echo "      $item"
   done
   echo
@@ -776,8 +839,13 @@ case "$METHOD" in
     announce_target "$TOOLKIT"
     # Only when a COPY would actually happen. Re-running from inside the toolkit
     # folder overwrites nothing, so it needs no direction.
+    # precheck_config sits OUTSIDE this guard: the config is written on BOTH
+    # branches (below), so an in-place upgrade skipped the only check standing
+    # in front of it and the orphaned .bak came back. precheck_locked_targets
+    # stays INSIDE, because with no copy there are no targets to lock.
+    precheck_config "$TOOLKIT"
     if ! same_dir "$SRC" "$TOOLKIT"; then
-      precheck_config "$TOOLKIT"
+      precheck_locked_targets "$TOOLKIT"
       require_direction "$TOOLKIT" "$GAME_NAMED"
       announce_copy_plan
       copy_toolkit "$TOOLKIT"
@@ -789,8 +857,13 @@ case "$METHOD" in
     ask TOOLKIT "Toolkit folder" "$TOOLKIT"
     TOOLKIT="$(strip_trailing_sep "$TOOLKIT")"
     announce_target "$TOOLKIT"
+    # precheck_config sits OUTSIDE this guard: the config is written on BOTH
+    # branches (below), so an in-place upgrade skipped the only check standing
+    # in front of it and the orphaned .bak came back. precheck_locked_targets
+    # stays INSIDE, because with no copy there are no targets to lock.
+    precheck_config "$TOOLKIT"
     if ! same_dir "$SRC" "$TOOLKIT"; then
-      precheck_config "$TOOLKIT"
+      precheck_locked_targets "$TOOLKIT"
       require_direction "$TOOLKIT" "$TOOLKIT_NAMED"
       announce_copy_plan
       copy_toolkit "$TOOLKIT"
@@ -848,6 +921,7 @@ case "$METHOD" in
     # nothing changed while their live config had been regenerated. The message was
     # true of the function and false of the run.
     require_jq_for_global
+    precheck_config "$TOOLKIT"   # --method global writes the config and never copied
     write_paths_env "$TOOLKIT"
     install_global_claude
     ;;

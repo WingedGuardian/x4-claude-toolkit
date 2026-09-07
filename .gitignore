@@ -1,6 +1,16 @@
 # --- Local / machine-specific settings (may contain local paths) ---
+# Per-machine, and their BACKUPS. The two names were pinned exactly, so the
+# .bak-<stamp> files write_paths_env leaves beside them were not ignored at all --
+# and the carry-over deliberately preserves X4_NEXUS_KEY into every rewrite, so each
+# backup holds the key plus that machine's absolute paths. They showed up in
+# `git status`, where a `git add -A` would have taken them.
+#
+# Explicit .bak-* rather than a blanket x4-paths.env*, which would also stop
+# tracking the .example template the installer ships.
 .claude/settings.local.json
+.claude/settings.local.json.bak-*
 .claude/x4-paths.env
+.claude/x4-paths.env.bak-*
 .claude/.reference-buildid
 
 # --- Runtime backups (generated as Claude edits files) ---

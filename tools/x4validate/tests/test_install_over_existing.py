@@ -263,3 +263,77 @@ def test_a_DRY_RUN_writes_NOTHING_on_the_arm_that_SKIPS_the_copy(installer, tmp_
     assert not written, (
         "--dry-run wrote %d file(s): %s (rc=%s) %s"
         % (len(written), written[:8], r.returncode, (r.stdout + r.stderr)[-600:]))
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_LOCKED_file_anywhere_in_the_copy_set_refuses_UP_FRONT(installer, tmp_path):
+    """precheck_config guarded ONE file; x4lock locks about twenty-six.
+
+    Under `--method in-game` the game root IS the destination, and x4lock's
+    manifest there covers CLAUDE.md, KNOWLEDGEBASE.md, .claude/settings.json,
+    the hooks, the skills and the agents -- all of which are inside the 16-item
+    copy set. Guarding only x4-paths.env moved the failure from one filename to
+    another rather than removing it.
+
+    Reproduced with `separate` because the DEFECT is not method-specific: it is
+    "a locked file in the copy set", and a user may lock anything.
+
+    Both halves matter and they fail differently:
+      * bash dies mid-copy with a bare `cp: Permission denied` and a half-copied
+        destination, no unlock hint and no INCOMPLETE banner;
+      * PowerShell's `Copy-Item -Force` CLEARS the read-only attribute and
+        overwrites, so it returns 0 and reports success while destroying the very
+        files the lock was protecting.
+
+    One of those is wrong and nothing decided which. Refusing up front is the only
+    answer that is right for both.
+    """
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    victim = dest / ".claude" / "hooks" / "protect-bash.sh"
+    assert victim.is_file(), "fixture assumption broken: the installer did not place %s" % victim
+    # DISTINGUISHABLE content first. Source and destination otherwise hold the
+    # same bytes, so `read_bytes() == before` would hold whether or not the file
+    # was overwritten -- an assertion that cannot fail for the case it exists to
+    # catch. Marking it makes a clobber visible.
+    victim.write_bytes(b"# SENTINEL - the installer must not replace a locked file")
+    before = victim.read_bytes()
+    victim.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+
+    r = _install(installer, tmp_path, dest)
+    out = (r.stdout + r.stderr).lower()
+
+    assert victim.read_bytes() == before, (
+        "a LOCKED file in the copy set was overwritten -- the lock exists to stop "
+        "exactly this, and the installer cleared it")
+    assert r.returncode != 0, (
+        "the installer reported success over a locked file it could not legitimately "
+        "replace (rc=%s)" % r.returncode)
+    assert "unlock" in out, (
+        "the refusal does not name the remedy, so the user sees a bare permission "
+        "error: %s" % (r.stdout + r.stderr)[-900:])
+@pytest.mark.parametrize("path,ignored,why", [
+    (".claude/x4-paths.env", True, "the live config: machine paths and X4_NEXUS_KEY"),
+    (".claude/x4-paths.env.bak-20260907-120000", True,
+     "a backup of it, which the carry-over deliberately preserves the key into"),
+    (".claude/settings.local.json", True, "per-machine settings"),
+    (".claude/settings.local.json.bak-20260907-120000", True, "and its backups"),
+    (".claude/x4-paths.env.example", False,
+     "the TEMPLATE is tracked on purpose; a blanket x4-paths.env* would swallow it"),
+])
+def test_the_config_backups_cannot_be_committed(path, ignored, why):
+    """`.gitignore` pinned the two config filenames EXACTLY, so the `.bak-<stamp>`
+    files beside them were not ignored at all.
+
+    That matters because `write_paths_env` carries over every key it does not own
+    -- X4_NEXUS_KEY explicitly, per setup.sh -- so each backup holds the key plus
+    that machine's absolute paths, and they show up in `git status` where a
+    `git add -A` would take them. PRE-ARC: v3.0.0 already created `.bak-$stamp`.
+
+    Both directions are asserted, because the obvious fix is a blanket
+    `x4-paths.env*` and that silently stops tracking the `.example` template the
+    installer ships.
+    """
+    r = subprocess.run(["git", "check-ignore", "-q", path],
+                       cwd=ROOT.as_posix(), capture_output=True)
+    is_ignored = (r.returncode == 0)
+    assert is_ignored == ignored, (
+        "%s should%s be git-ignored (%s)" % (path, "" if ignored else " NOT", why))
