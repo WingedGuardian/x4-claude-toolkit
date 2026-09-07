@@ -18,7 +18,18 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    # `ci/**` is HERE FOR THE PRE-RELEASE OBSERVATION RUN, and without it that
+    # run is silent. The release plan (and the note at `experimental` below) says
+    # to push the reviewed code to a throwaway `ci/pre-3.1` branch and read the
+    # per-JOB conclusions before promoting ubuntu out of experimental. With
+    # `[master]` alone that push triggers NOTHING — and "no runs" reads exactly
+    # like "nothing broke", which is the worst possible way for a pre-release
+    # check to fail. Found by the v3.1.0 release reviewer.
+    #
+    # `workflow_dispatch` below also works and needs no branch; this makes the
+    # WRITTEN plan executable as written, rather than requiring the reader to
+    # notice it is not.
+    branches: [master, 'ci/**']
   pull_request:
   workflow_dispatch:
 
@@ -58,7 +69,9 @@ jobs:
             # NOT FLIPPED HERE ON PURPOSE. CI is observable only on a push, and these
             # checks have never once been enforced, so flipping blind trades a masked
             # failure for a red release. The release plan's sequence is: push the
-            # reviewed code to a throwaway `ci/pre-3.1` branch, read the PER-JOB
+            # reviewed code to a throwaway `ci/pre-3.1` branch (which the `ci/**`
+            # trigger at the top of this file exists to make fire — it did not,
+            # until 2026-09-07), read the PER-JOB
             # conclusions (`gh api .../runs/<id>/jobs` -- the run conclusion said
             # success while ubuntu FAILED in 33994180317), and promote to
             # `experimental: false` only once ubuntu is observed green on this code.

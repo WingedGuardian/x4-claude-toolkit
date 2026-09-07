@@ -24,7 +24,14 @@ is 4x and means nothing. Bug #10 (a >900s hang) and the Round 7 regression both
 clear these comfortably; noise does not.
 
 Run:  uv run python gates/perf_guard.py [--record] [--limit=N]
-Exit: 0 within tolerance (or recorded), 1 any regression, 2 no baseline.
+Exit: 0 within tolerance (or recorded), 1 any regression (including a mod that
+      went from timing to CRASHING), 2 no baseline, 3 DEGRADED — nothing
+      regressed among the mods that COULD be timed, but the population was
+      not whole (a crash in a mod the baseline never covered, or --record
+      over one). NB `scripts/run-gates.sh` buckets 3 as a FAILURE, which is
+      the conservative reading and deliberate; the runner's OWN rc 3 means
+      "could not run", so the two scales collide on that number by
+      coincidence rather than by design.
 """
 from __future__ import annotations
 
@@ -233,10 +240,30 @@ def main() -> int:
     # excluded-from-the-comparison note underneath a rc 0.
     regressed_to_crash = sorted(n for n in crashed if n in base)
     new_crash = sorted(n for n in crashed if n not in base)
+    # NOT MEASURED = NOT UNINSTALLED. This bucket used to assert "are no longer
+    # installed", which is a claim about the FILESYSTEM that nothing here checks:
+    # under the documented `--limit=N`, every baselined mod past the limit lands here
+    # while sitting on disk untouched. MEASURED with a 5-mod baseline and --limit=2:
+    # "3 baselined mod(s) are no longer installed" over 3 mods that all exist. The
+    # PRE-ARC wording, "not measured this run", was accurate; this arc replaced a true
+    # statement with a false one. `retime()` already does the `is_dir()` check, so the
+    # two states are separable -- and now are.
     gone = sorted(set(base) - set(curr) - set(crashed))
     if gone:
-        print(f"\n  note: {len(gone)} baselined mod(s) are no longer installed "
-              f"(e.g. {gone[:2]}) — excluded from the comparison")
+        try:
+            _ext = _env.extensions()
+            absent = [m for m in gone if not (_ext / m).is_dir()]
+        except SystemExit:
+            absent = []          # cannot resolve the root: claim nothing about disk
+        still = [m for m in gone if m not in absent]
+        if absent:
+            print("\n  note: %d baselined mod(s) are no longer installed (e.g. %s) — "
+                  "excluded from the comparison" % (len(absent), absent[:2]))
+        if still:
+            print("\n  note: %d baselined mod(s) were NOT MEASURED this run but are "
+                  "still installed\n        (e.g. %s) — excluded from the comparison. "
+                  "Expected under --limit; unexplained otherwise."
+                  % (len(still), still[:2]))
     if regressed_to_crash:
         print(f"\n  CRASHED, and the baseline TIMED them — validate() went from "
               f"completing to raising: {len(regressed_to_crash)}")

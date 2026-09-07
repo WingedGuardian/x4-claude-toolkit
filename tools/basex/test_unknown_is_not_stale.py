@@ -165,3 +165,40 @@ def test_a_GENUINELY_STALE_index_still_exits_5(tmp_path, capsys):
         st._defaults = orig
     assert "FRESHNESS UNKNOWN" not in capsys.readouterr().err
     assert rc == 5
+
+
+def test_an_EngineUnavailable_from_check_does_not_escape_ask_py(tmp_path, monkeypatch):
+    """`staleness_verdict` guarded `_defaults()` only, and `check()` is the OTHER
+    place the engine gets imported: `fingerprint()` -> `_core()` -> `from x4validate
+    import _freshness`, which can fail on a half-install even when `_paths` imported
+    fine. `staleness.check` re-raises that deliberately -- correct for
+    `staleness.main()`, which owns it; ask.py is the second caller and caught nothing,
+    so it reached the user as a traceback with rc 1: "the thing you asked about has
+    findings". F39's confusion, one call deeper."""
+    monkeypatch.setattr(ask, "BASEX_DIR", tmp_path)
+    (tmp_path / "coverage-x4eff.json").write_text(
+        json.dumps({"db": "x4eff", "fingerprint": {"content": "a", "engine": "b"}}),
+        encoding="utf-8")
+    ref, ext, engine = _fake_tree(tmp_path)
+    monkeypatch.setattr(staleness, "_defaults", lambda: (ref, ext, engine))
+
+    def boom():
+        raise staleness.EngineUnavailable("No module named 'x4validate._freshness'")
+    monkeypatch.setattr(staleness, "_core", boom)
+
+    v = ask.staleness_verdict("x4eff")          # must NOT raise
+    assert v.fresh is False and v.determinable is False
+    assert "FRESHNESS UNKNOWN" in v.banner()
+
+
+def test_a_WORKING_engine_still_produces_a_real_verdict(tmp_path, monkeypatch):
+    """The twin: the new except must not swallow a genuine comparison."""
+    monkeypatch.setattr(ask, "BASEX_DIR", tmp_path)
+    ref, ext, engine = _fake_tree(tmp_path)
+    (tmp_path / "coverage-x4eff.json").write_text(
+        json.dumps({"db": "x4eff",
+                    "fingerprint": staleness.fingerprint(ref, ext, engine)}),
+        encoding="utf-8")
+    monkeypatch.setattr(staleness, "_defaults", lambda: (ref, ext, engine))
+    v = ask.staleness_verdict("x4eff")
+    assert v.fresh is True and v.determinable is True

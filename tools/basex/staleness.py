@@ -119,8 +119,20 @@ class Verdict:
                     + f"\n!! FRESHNESS UNKNOWN — {self.db} could not be CHECKED.\n!!   "
                     + "\n!!   ".join(self.reasons)
                     + "\n!! This is not 'stale' and not 'fresh'. Nobody established which."
-                    + "\n!! Run it through the project environment:"
+                    # THE PRESCRIPTION MUST MATCH THE DIAGNOSIS. This said only
+                    # "run it through the project environment", which is the fix for
+                    # exactly ONE of the four causes — the engine not being importable.
+                    # For the other three (no coverage report, an unreadable one, one
+                    # with no fingerprint) the action is to BUILD the index, which the
+                    # STALE banner below does say and this one had stopped saying.
+                    # `reasons` still names the cause, so it was recoverable — but a
+                    # reader who acts on the instruction rather than on the reason does
+                    # the wrong thing, and the instruction is the louder of the two.
+                    + "\n!! If the reason above is that the ENGINE is not importable:"
                     + "\n!!   cd tools/x4validate && uv run python ../basex/ask.py ..."
+                    + "\n!! If it is a MISSING, UNREADABLE or UNSTAMPED coverage report,"
+                    + "\n!! the index has not been built or not been stamped:"
+                    + "\n!!   cd tools/basex && bash build-corpus.sh && bash build-effective.sh"
                     + "\n!! Until then this index cannot back a NEGATIVE claim.\n"
                     + "!" * 78 + "\n")
         return ("\n" + "!" * 78

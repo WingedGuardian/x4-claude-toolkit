@@ -151,8 +151,24 @@ def staleness_verdict(db: str):
         # than STALE: the query itself still ran and its positive answers stand;
         # what nobody established is whether the index still describes the world.
         return staleness.Verdict(False, [str(exc)], db, determinable=False)
-    return staleness.check(BASEX_DIR / f"coverage-{db}.json",
-                           reference, extensions, engine, db)
+    # THE GUARD ABOVE COVERS `_defaults()` ONLY, AND THERE ARE TWO CALLERS.
+    # `check()` calls `fingerprint()` -> `_core()` -> `from x4validate import
+    # _freshness`, which can raise EngineUnavailable on a HALF-INSTALL even when
+    # `_paths` imported fine. `staleness.check` deliberately re-raises that one
+    # ("NOT OURS TO CATCH -- main() owns this") and it is right about
+    # `staleness.main()`; ask.py is the other caller and was catching nothing.
+    #
+    # VERIFIED by the v3.1.0 reviewer with `_defaults` stubbed to succeed and
+    # `_core` raising: the exception escaped `staleness_verdict` and reached the
+    # user as a raw traceback with rc 1 — "the thing you asked about has
+    # findings", when the truth is "this toolkit is not set up". That is exactly
+    # the F39 confusion the block above documents, one call deeper. A 243-file
+    # half-install really happened, which is why the installers have a CI step.
+    try:
+        return staleness.check(BASEX_DIR / f"coverage-{db}.json",
+                               reference, extensions, engine, db)
+    except (staleness.EngineUnavailable, ImportError) as exc:
+        return staleness.Verdict(False, [str(exc)], db, determinable=False)
 
 
 def _xq_literal(value: str) -> str:
