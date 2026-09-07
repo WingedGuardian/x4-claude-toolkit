@@ -703,6 +703,29 @@ def _apply_op(name: str, idx, op: str, assigns: dict) -> str:
     return None                            # ^ , : offsets -- not reproducible from text
 
 
+#: A ceiling on the SIZE of one resolved token. The loop below is bounded at 5
+#: iterations and its own comment says "never a loop" -- true, and it was watching the
+#: wrong axis: what grows is the STRING, and a value that refers to its own name grows
+#: it MULTIPLICATIVELY. `B=...${B}${B}...` re-expands every reference on every pass.
+#:
+#: MEASURED 2026-09-06 on one 949-character command out of real session history:
+#: growth is a clean x9 per pass -- 916, 10316, 94916, 856316, 7708916 -- so the
+#: 4-character token "${B}" reached 7.7 MB in the five passes the loop already allowed.
+#: Downstream that became 23,128,230 characters of carried command and 531,448
+#: segments, and the guard process reached an 18.3 GB working set, leaving 0.7 GB free
+#: of 31.8 GB WITH THE GAME RUNNING. This is the BLOCKING PreToolUse path, so it is a
+#: hang of the whole session, and it needs no adversary: a self-referential assignment
+#: is ordinary shell.
+#:
+#: 65536 is 3.3x the LONGEST of 17,268 real historical commands (19,583 chars), so no
+#: real work can reach it. On exceeding it we return the PREVIOUS pass with the
+#: variable references still in it, which `has_unresolved` reports as unresolved --
+#: the file's existing channel for a value a hook cannot know. That is deliberate and
+#: one-directional: refusing to RESOLVE keeps every rule looking, where truncating the
+#: string would hand the rules a shorter operand and quietly narrow what they see.
+_MAX_RESOLVED = 65536
+
+
 def resolve(tok: str, assigns: dict[str, str]) -> str:
     """Substitute what this command itself assigned. Text is all a hook can see, so
     this is the most that could ever be resolved."""
@@ -719,6 +742,11 @@ def resolve(tok: str, assigns: dict[str, str]) -> str:
     for _ in range(5):                       # bounded: nested vars, never a loop
         prev = out
         out = _VAR_OP.sub(sub_op, _VAR.sub(sub, out))
+        if len(out) > _MAX_RESOLVED:
+            # STOP, and leave the references standing. Returning `prev` is what makes
+            # this safe rather than merely fast: the token still contains "${...}", so
+            # has_unresolved() is True and the rules treat the operand as unknowable.
+            return expand_home(prev)
         if out == prev:
             break
     return expand_home(out)
@@ -773,7 +801,51 @@ def root_vars_named(tok: str) -> set:
 #: Direction is one-way. The old form MISSED markers, so its skip region was too
 #: LONG and hid commands; matching them correctly can only reveal more commands to
 #: the rules, never fewer.
-_HD = re.compile(r"""<<-?[ \t]*(?:'([^']*)'|"([^"]*)"|([^\s;&|<>()`]+))""")
+#: A heredoc delimiter WORD. Bash applies QUOTE REMOVAL to it, so `EOF`,
+#: `'EOF'`, `"EOF"`, `\\EOF` and `E'OF'` all terminate at EOF -- the word is
+#: assembled from quoted runs, escaped characters and plain characters, and
+#: dequoted by `_dequote_marker` below.
+#:
+#: B1, MEASURED 2026-09-06: the previous form had three fixed spellings and a
+#: bare alternative whose class ALLOWED a backslash and a quote, so `<<\\EOF`
+#: captured `\\EOF` and `<<E'OF'` captured `E'OF'`. Neither matches the real
+#: terminator, `strip_heredocs` compares the body line verbatim, and the skip
+#: region therefore ran to END OF INPUT -- deleting every following command
+#: from `body` before a single rule could read it. Three HARD BLOCKS included.
+_HD = re.compile(r"""<<-?[ \t]*((?:'[^']*'|"[^"]*"|\\.|[^\s;&|<>()`'"])+)""")
+
+
+def _dequote_marker(word: str) -> str:
+    """POSIX quote removal for a heredoc delimiter.
+
+    Only the TEXT matters here. Whether the delimiter was quoted also decides
+    if the body is expanded, and we do not care: nothing reads the body.
+    """
+    out = []
+    i = 0
+    while i < len(word):
+        c = word[i]
+        if c == "'":
+            j = word.find("'", i + 1)
+            if j < 0:
+                out.append(word[i + 1:])
+                break
+            out.append(word[i + 1:j])
+            i = j + 1
+        elif c == '"':
+            j = word.find('"', i + 1)
+            if j < 0:
+                out.append(word[i + 1:])
+                break
+            out.append(word[i + 1:j])
+            i = j + 1
+        elif c == chr(92) and i + 1 < len(word):
+            out.append(word[i + 1])
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
 
 
 def _quote_mask(s: str) -> list[bool]:
@@ -822,8 +894,10 @@ def heredoc_marker(line: str):
                 continue
             m = _HD.match(line, i)
             if m:
-                # whichever spelling matched: sq, dq, or bare
-                return m.group(1) or m.group(2) or m.group(3)
+                # ONE group now, dequoted: bash removes quoting from the
+                # delimiter, so `<<\\EOF`, `<<E'OF'` and `<<'EOF'` all
+                # terminate at the same word.
+                return _dequote_marker(m.group(1))
     return None
 
 
@@ -1014,6 +1088,14 @@ def _verb_name(t: str) -> str:
     return n or t
 
 
+#: A leading `VAR=value` assignment. POSIX allows any number of them before the
+#: command name, so the VERB is not always token 0 -- and any scan that assumes it
+#: is goes quiet on `FOO=bar git clean -fdx` (B3). Shared so the two readers of
+#: this shape cannot drift apart, which is exactly how that bypass existed:
+#: `_verb_token` skipped assignments and `_git_destructive` did not.
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
 def _verb_token(seg: str) -> str:
     """The RAW token carrying the command name, exactly as written.
 
@@ -1026,7 +1108,7 @@ def _verb_token(seg: str) -> str:
     for t, quoted in tokens(seg):
         if quoted:
             return t
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t):
+        if _ASSIGNMENT.match(t):
             continue
         if _verb_name(t) in WRAPPERS:
             seen_wrapper = True
@@ -1424,7 +1506,9 @@ def _git_destructive(seg, wanted):
     MEASURED 2026-09-04, and it is why this exists at all: **git ignores the
     read-only attribute entirely.** `git checkout HEAD~1 -- <locked file>` overwrote
     a locked file AND left it unlocked afterwards; `git clean -fdx` deleted one. So
-    `scripts/x4lock.py` -- which stops 11 of 14 write primitives -- stops none of
+    `scripts/x4lock.py` -- which stops 11 of 14 write primitives on Windows and 9
+    of 14 on POSIX (x4lock.py:29; `unlink` and `rename`-over are authorised by
+    DIRECTORY permission there) -- stops none of
     these, and the hook is the only layer that can see them.
 
     Scoped to the segment's own cwd (or `git -C <path>`), never to a root named
@@ -1460,11 +1544,21 @@ def _git_destructive(seg, wanted):
             if t == "-C":          # only -C names the directory acted on
                 base = toks[i + 1]
             skip.add(i + 1)
-    sub = next((t for i, t in enumerate(toks[1:], 1)
-                if not t.startswith("-") and i not in skip), None)
+    # THE VERB IS NOT ALWAYS toks[0]. `verb()` skips leading VAR=value assignments,
+    # this scan did not, and `toks[1:]` therefore started ON the `git` token when a
+    # prefix was present -- so `sub` became "git", matched nothing in `wanted`, and
+    # every destructive-git rule went silent. `git_adds_everything` was unaffected
+    # because it searches ALL tokens; only this scan assumed a position.
+    vi = next((i for i, t in enumerate(toks) if not _ASSIGNMENT.match(t)), 0)
+    si = next((i for i, t in enumerate(toks[vi + 1:], vi + 1)
+               if not t.startswith("-") and i not in skip), None)
+    sub = toks[si] if si is not None else None
     if sub not in wanted:
         return []
-    rest = toks[toks.index(sub) + 1:]
+    # Slice from the FOUND index, not `toks.index(sub)`: the subcommand name can
+    # also appear earlier as an assignment VALUE (`X=clean git clean -fdx`), and
+    # index() would return that one and shift every following operand.
+    rest = toks[si + 1:]
     if sub == "clean":
         # -f is required by git itself before it deletes anything; -n/--dry-run wins.
         if any(t in ("-n", "--dry-run") for t in rest):

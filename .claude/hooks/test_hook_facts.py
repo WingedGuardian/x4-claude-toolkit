@@ -147,6 +147,55 @@ class TestNotEveryDoubleAngleIsAHeredoc(unittest.TestCase):
     silent about their input. That is why the controls below matter as much as the cases.
     """
 
+    # --- B1: the delimiter is QUOTE-REMOVED before it terminates anything -----------
+    #
+    # MEASURED 2026-09-06 against the guard AS SHIPPED, ten guard commits after the
+    # heredoc-marker work: `<<\EOF` and `<<E'OF'` were TOTAL bypasses. `_HD`'s bare
+    # alternative allowed a backslash and a quote, so the captured markers were `\EOF`
+    # and `E'OF'` -- neither of which ever equals the body's `EOF`, so the skip region
+    # ran to END OF INPUT and every following command vanished before any rule read it.
+    #
+    # Bash applies quote removal to a heredoc delimiter. These pin every spelling of
+    # the SAME terminator, so a future regex change cannot fix one and lose another.
+
+    def test_an_escaped_delimiter_terminates_at_the_bare_word(self):
+        self.assertEqual(H.heredoc_marker("cat <<" + BS + "EOF"), "EOF")
+
+    def test_a_PARTIALLY_quoted_delimiter_terminates_at_the_bare_word(self):
+        self.assertEqual(H.heredoc_marker("cat <<E'OF'"), "EOF")
+        self.assertEqual(H.heredoc_marker('cat <<"EO"F'), "EOF")
+
+    def test_the_spellings_that_ALREADY_worked_still_do(self):
+        """The controls. Quote removal must not trade one spelling for another --
+        `<<'E-O-F'`, `<<'EOF.md'` and `<<"my marker"` are the three a previous fix
+        added, and a marker with a SPACE only survives because the quoted run is kept
+        whole."""
+        for line, want in ((r"cat <<EOF", "EOF"),
+                           (r"cat <<'EOF'", "EOF"),
+                           (r'cat <<"EOF"', "EOF"),
+                           (r"cat <<-END", "END"),
+                           (r"cat <<'E-O-F'", "E-O-F"),
+                           (r"cat <<'EOF.md'", "EOF.md"),
+                           (r'cat <<"my marker"', "my marker")):
+            self.assertEqual(H.heredoc_marker(line), want, line)
+
+    def test_a_dangerous_command_after_an_escaped_delimiter_is_still_seen(self):
+        """The consequence, not the parse. With the marker wrong the whole command was
+        blanked, so this asserts the RULE fires -- which is what the bypass defeated."""
+        cmd = ("cat <<" + BS + "EOF >/dev/null" + chr(10) + "x" + chr(10) + "EOF" + chr(10)
+               + 'rm -rf "' + GAME + '"')
+        self.assertTrue(F(cmd)["rm_hits_game"])
+        cmd2 = ("cat <<E'OF' >/dev/null" + chr(10) + "x" + chr(10) + "EOF" + chr(10)
+                + 'rm -rf "' + GAME + '"')
+        self.assertTrue(F(cmd2)["rm_hits_game"])
+
+    def test_a_REAL_heredoc_body_is_still_skipped(self):
+        """The other direction, and the reason this fix is one-way: a correct marker can
+        only make the skip region SHORTER. A dangerous-looking line INSIDE a body is
+        data, not a command, and must stay invisible."""
+        cmd = ("cat <<EOF > notes.txt" + chr(10) + 'rm -rf "' + GAME + '"' + chr(10) + "EOF")
+        self.assertFalse(F(cmd)["rm_hits_game"])
+
     def test_a_here_string_opens_no_heredoc(self):
         # The scan reaches the SECOND `<` of `<<<`, sees `<< word`, and reports a marker.
         self.assertIsNone(H.heredoc_marker("cat <<< hello"))
@@ -2132,7 +2181,8 @@ class TestDestructiveGitInAnX4Directory(unittest.TestCase):
 
     MEASURED 2026-09-04 on a real repository: `git checkout HEAD~1 -- <locked file>`
     overwrote the file AND left it unlocked afterwards, and `git clean -fdx` deleted a
-    locked untracked file. The lock stops 11 of 14 write primitives; it stops none of
+    locked untracked file. The lock stops 11 of 14 write primitives on Windows, 9 of
+    14 on POSIX; it stops none of
     these, which makes the hook the only layer that can see them.
 
     The must-NOT-fire half is the larger half on purpose. `git checkout <branch>`,
@@ -2162,6 +2212,39 @@ class TestDestructiveGitInAnX4Directory(unittest.TestCase):
     def test_config_option_does_not_hide_clean(self):
         self.assertTrue(self._fires(
             'cd "' + self.MODS + '" && git -c core.fileMode=false clean -fdx'))
+
+    # B3, MEASURED 2026-09-06 against the guard AS SHIPPED: a leading `VAR=value`
+    # assignment took all three destructive forms from ask to ALLOW. POSIX allows any
+    # number of them before the command name, and `verb()` already skipped them -- but
+    # the subcommand scan started at `toks[1:]`, assuming the verb sits at index 0, so
+    # with a prefix `sub` became the token "git" itself and matched nothing.
+    #
+    # This one matters beyond the bypass: this rule's own docstring records that git
+    # IGNORES the read-only attribute, so x4lock stops none of these and the hook is
+    # the only layer that can see them.
+    def test_an_assignment_prefix_does_not_hide_clean(self):
+        self.assertTrue(self._fires(
+            'cd "' + self.MODS + '" && FOO=bar git clean -fdx'))
+
+    def test_an_assignment_prefix_does_not_hide_reset_hard(self):
+        self.assertTrue(self._fires(
+            'cd "' + self.MODS + '" && FOO=bar git reset --hard'))
+
+    def test_an_assignment_prefix_does_not_hide_a_dash_C_target(self):
+        self.assertTrue(self._fires('FOO=bar git -C "' + self.MODS + '" clean -fdx'))
+
+    def test_several_assignments_are_skipped_not_just_one(self):
+        """POSIX permits any number; a fix that skipped exactly one would pass the
+        three above and still be wrong."""
+        self.assertTrue(self._fires(
+            'cd "' + self.MODS + '" && A=1 B=2 C=3 git clean -fdx'))
+
+    def test_the_subcommand_name_as_an_assignment_VALUE_does_not_shift_the_operands(self):
+        """`rest` was sliced with `toks.index(sub)`, which finds the FIRST occurrence of
+        that STRING -- so an assignment whose value happens to equal the subcommand
+        would have shifted every following operand by one."""
+        self.assertTrue(self._fires(
+            'cd "' + self.MODS + '" && X=clean git clean -fdx'))
 
     def test_config_option_does_not_hide_reset_hard(self):
         self.assertTrue(self._fires(
@@ -2396,3 +2479,77 @@ class TestTheModsRootIsSearchable(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+# --------------------------------------------------------------- resolve size ceiling
+# MEASURED 2026-09-06: a value that names its own variable makes resolve() grow
+# MULTIPLICATIVELY -- x9 per pass on the real command, over the 5 passes the loop
+# already allowed. The guard process reached an 18.3 GB working set on the BLOCKING
+# PreToolUse path. The iteration count was bounded; the SIZE was the unwatched axis.
+#
+# Every bound below is a LITERAL, never _MAX_RESOLVED: a test that reads the
+# constant it is checking cannot fail when the constant is absent for the right
+# reason. MEASURED against the pre-ceiling module, same file otherwise:
+#   3 self-references ->     6,140,996 chars
+#   4                 ->    74,099,304 chars
+#   6                 -> 2,660,511,704 chars in one string, 7.55 s
+
+
+def test_a_self_referential_assignment_cannot_grow_the_token_without_bound():
+    """PRE-CEILING this returns 6,140,996 characters."""
+    assigns = {"B": "x" * 200 + "${B}" * 3}
+    got = H.resolve("${B}", assigns)
+    assert len(got) < 200_000, (
+        "resolve() returned %d chars -- the size axis is unguarded" % len(got))
+
+
+def test_the_ceiling_costs_a_BOUNDED_amount_of_work_not_merely_a_bounded_result():
+    """A guard's second output is the TIME it costs (gotcha #35). PRE-CEILING this
+    shape allocates 74,099,304 characters before returning."""
+    assigns = {"B": "y" * 200 + "${B}" * 4}
+    got = H.resolve("${B}", assigns)
+    assert len(got) < 1_000_000, "allocated %d chars on the blocking path" % len(got)
+
+
+def test_a_token_that_hit_the_ceiling_is_a_WHOLE_PASS_not_a_truncation():
+    """The DIRECTION, and it needed a structural assertion rather than a behavioural
+    one. `has_unresolved` was the obvious check and it is DECORATION here: MEASURED
+    against a deliberate truncating mutant (`return expand_home(out[:_MAX_RESOLVED])`),
+    all five tests in this block stayed green, because an arbitrary prefix of an
+    exponentially-expanded string still contains "${...}" too.
+
+    So assert the MECHANISM: what comes back must be one of the loop's own intermediate
+    states -- the last complete pass under the ceiling. A truncation is not any pass,
+    and that is what separates "we stopped expanding" from "we handed the rules a
+    shorter operand", which would quietly narrow what every path rule sees.
+    """
+    assigns = {"B": "/some/path/" + "${B}" * 3}
+    got = H.resolve("${B}", assigns)
+
+    def one_pass(s):
+        return H._VAR_OP.sub(
+            lambda m: (lambda g: m.group(0) if g is None else g)(
+                H._apply_op(m.group(1), m.group(2), m.group(3) or "", assigns)),
+            H._VAR.sub(lambda m: assigns.get(m.group(1) or m.group(2), m.group(0)), s))
+
+    states, s = [], "${B}"
+    for _ in range(6):
+        states.append(H.expand_home(s))
+        s = one_pass(s)
+    assert got in states, (
+        "resolve() returned a string that is not any complete pass -- %d chars, "
+        "starts %r" % (len(got), got[:60]))
+    assert H.has_unresolved(got), "and it must still read as unresolved"
+
+
+def test_ordinary_nested_variables_still_resolve_fully():
+    """Falsification twin: this must NOT change, or the ceiling is just a blindfold.
+    Two levels of indirection, which is why the loop exists at all."""
+    assigns = {"A": "/tmp/one", "B": "${A}/two", "C": "${B}/three"}
+    assert H.resolve("${C}", assigns) == "/tmp/one/two/three"
+
+
+def test_a_long_but_finite_expansion_is_not_refused():
+    """Twin for the other clause: BIG is fine, only UNBOUNDED is not. 40 KB of real
+    value sits under the ceiling and must come back fully resolved."""
+    assigns = {"P": "z" * 40000}
+    got = H.resolve("${P}", assigns)
+    assert got == "z" * 40000 and not H.has_unresolved(got)
