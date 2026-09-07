@@ -198,8 +198,14 @@ MUTANTS = [
      "    body = strip_comments(strip_heredocs(spliced))",
      "    body = strip_heredocs(cmd)",
      "test_comment_apostrophe_does_not_hide_a_game_delete"),
+    # Re-anchored 2026-09-06. This used to mutate `stripped = body`, the input to the
+    # longjob loop. B4 moved that loop onto `all_cmds` -- which is the correct input,
+    # since `body` still carries wrappers -- and that left `stripped` DEAD, so the old
+    # mutant changed nothing and its target test stayed green. The gate caught the
+    # orphan; the two dead locals are now gone and this points at the real input.
     ("the string rules read the CLEANED text, not the raw command",
-     "    stripped = body", "    stripped = strip_heredocs(cmd)",
+     "    for c in all_cmds:" + chr(10) + "        for s in segments(c):",
+     "    for c in [cmd]:" + chr(10) + "        for s in segments(c):",
      "test_a_comment_apostrophe_does_not_hide_a_long_job"),
     # The parseability check moved OUT of hook_facts into protect-bash.sh, which asks
     # `bash -n`. It is covered E2E in scripts/test-hooks.sh -- a mutation of the real
@@ -274,7 +280,10 @@ MUTANTS = [
      '    if n.endswith(".exe"):', "    if False:",
      "test_a_dot_exe_suffix_is_the_same_command"),
     ("ANSI-C quoting is not part of the name",
-     '            if buf and buf[-1] == "$":', "            if False:",
+     # Re-anchored 2026-09-06: B2 replaced this line, because popping the sigil was
+     # only half the job -- the $'...' body also has to be DECODED.
+     '            dollar = bool(buf) and buf[-1] == "$"',
+     '            dollar = False',
      "test_ansi_c_quoting_is_not_part_of_the_name"),
     ("a wrapper's VALUE argument is not the command",
      "        if seen_wrapper and _WRAPPER_ARG.match(t):", "        if False:",
@@ -385,7 +394,7 @@ MUTANTS = [
      "    live = stripped",
      "test_single_quoted_prose_is_not_a_hit"),
     ("the $? rule reads the comment-stripped body, not the raw command",
-     '"dollarq_after_pipe": dollarq_after_pipe(body),',
+     '"dollarq_after_pipe": any(dollarq_after_pipe(c, assigns) for c in all_cmds),',
      '"dollarq_after_pipe": dollarq_after_pipe(cmd),',
      "test_a_comment_mentioning_the_trap_is_not_a_hit"),
     ("a WRITE into reference/ is a rule at all",

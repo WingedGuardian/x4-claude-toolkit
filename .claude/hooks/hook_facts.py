@@ -2467,9 +2467,6 @@ def facts(payload: dict, roots: dict) -> dict:
     # search) blind to anything after an apostrophe in a comment -- 1 of the 5 measured
     # bypasses survived the parser fix for exactly this reason, because it read a
     # different string from the one that had been cleaned.
-    stripped = body
-    stripped_blank = blank_quoted(stripped)
-
     # B4: over `all_cmds`, not `body`. These two read the string with its WRAPPERS
     # INTACT while every path rule reads the unwrapped carrier list, so they were
     # answering a question about a different command. MEASURED 2026-09-06: a single
