@@ -379,40 +379,74 @@ X4_HOOK_MAX_CHARS="${X4_HOOK_MAX_CHARS:-10000}"
 #: numbers; the suite asserts the bounded result is <= the cap regardless.
 _X4_BOUND_RESERVE=300
 
-# Codepoint-accurate length/prefix. bash's ${#s} and ${s:0:n} count BYTES in the
-# C locale, and the cap is in characters -- a validator finding carrying one
-# non-ASCII byte would then be cut short of the real limit. python and jq both
-# count codepoints; the bash arm is a last resort and says so.
+# Each arm is CHECKED, and a failing arm falls through to the next. x4_len used
+# to `return 0` after the python arm whatever that arm did, so a python that
+# RESOLVES but FAILS (a Windows Store stub, an X4_PYTHON pointing at a wrapper
+# that errors) printed nothing, the length came back empty, and x4_bound took its
+# non-numeric guard and passed the text through WHOLE. A fail-open inside the
+# function written to close a fail-open, with the jq and bash arms unreachable
+# because the first arm always claimed success. MEASURED with a stub exiting 9:
+# 25,000 characters in, 25,000 out.
 x4_len(){
   _py="$(x4_python)"
-  if [ -n "$_py" ]; then X4_BND="$1" "$_py" -c 'import os,sys; sys.stdout.buffer.write(str(len(os.environ["X4_BND"])).encode())'; return 0; fi
-  if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then "${JQ:-jq}" -rn --arg s "$1" '$s|length'; return 0; fi
-  printf '%s' "${#1}"
+  if [ -n "$_py" ]; then
+    _n="$(X4_BND="$1" "$_py" -c 'import os,sys; sys.stdout.buffer.write(str(len(os.environ["X4_BND"])).encode())' 2>/dev/null)"
+    case "$_n" in ''|*[!0-9]*) : ;; *) printf '%s' "$_n"; return 0 ;; esac
+  fi
+  if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then
+    _n="$("${JQ:-jq}" -rn --arg s "$1" '$s|length' 2>/dev/null)"
+    case "$_n" in ''|*[!0-9]*) : ;; *) printf '%s' "$_n"; return 0 ;; esac
+  fi
+  printf '%s' "${#1}"          # bytes in the C locale; last resort, and it undercounts nothing
 }
+
+# sys.stdout.BUFFER, not sys.stdout. On Windows the text-mode stdout re-translates
+# LF into CRLF on the way out, so a payload that already carried CRLF came back as
+# CR CR LF and the slice GREW by one character per line AFTER the bound had been
+# computed: 9,700 characters in, 9,807 out, capped result 10,007 against a 10,000
+# ceiling. The suite caught it and my own spot-check did NOT, because text-mode
+# open() collapses CRLF on the way back in and reported an honest-looking 9,900.
+# Read bytes, write bytes.
+#
+# Each arm is CHECKED here too, for the same reason as x4_len above.
 x4_head(){
-  # sys.stdout.BUFFER, not sys.stdout. On Windows python's text-mode stdout
-  # re-translates LF into CRLF on the way out, so a payload that already carried
-  # CRLF came back as CR CR LF and the slice GREW by one character per line AFTER
-  # the bound had been computed: 9,700 characters in, 9,807 out, and the capped
-  # result landed at 10,007 against a 10,000 ceiling.
-  #
-  # The suite caught it and my own spot-check did NOT, because text-mode open()
-  # collapses CRLF on the way back in and reported an honest-looking 9,900. Two
-  # instruments, one wrong, and the wrong one was the informal one. Read bytes,
-  # write bytes.
   _py="$(x4_python)"
-  if [ -n "$_py" ]; then X4_BND="$1" X4_BNDN="$2" "$_py" -c 'import os,sys; sys.stdout.buffer.write(os.environ["X4_BND"][:int(os.environ["X4_BNDN"])].encode("utf-8"))'; return 0; fi
-  if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then "${JQ:-jq}" -rn --arg s "$1" --argjson n "$2" '$s[0:$n]'; return 0; fi
+  if [ -n "$_py" ]; then
+    if _o="$(X4_BND="$1" X4_BNDN="$2" "$_py" -c 'import os,sys; sys.stdout.buffer.write(os.environ["X4_BND"][:int(os.environ["X4_BNDN"])].encode("utf-8"))' 2>/dev/null)"; then
+      printf '%s' "$_o"; return 0
+    fi
+  fi
+  if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then
+    if _o="$("${JQ:-jq}" -rn --arg s "$1" --argjson n "$2" '$s[0:$n]' 2>/dev/null)"; then
+      printf '%s' "$_o"; return 0
+    fi
+  fi
   printf '%s' "${1:0:$2}"
 }
 
 x4_bound(){
   _t="$(x4_len "$1")"
-  case "$_t" in ''|*[!0-9]*) printf '%s' "$1"; return 0 ;; esac
-  [ "$_t" -le "$X4_HOOK_MAX_CHARS" ] && { printf '%s' "$1"; return 0; }
+  # An unreadable length is NOT a licence to pass the text through: every arm of
+  # x4_len is checked now, so reaching here means all three failed, and the
+  # honest response is to bound blind rather than emit unbounded.
+  case "$_t" in ''|*[!0-9]*) _t="" ;; esac
+  if [ -n "$_t" ] && [ "$_t" -le "$X4_HOOK_MAX_CHARS" ]; then printf '%s' "$1"; return 0; fi
   _keep=$((X4_HOOK_MAX_CHARS - _X4_BOUND_RESERVE))
+  if [ "$_keep" -lt 1 ]; then
+    # A cap SMALLER than the notice made _keep negative, and a negative slice
+    # keeps almost everything -- so the "bounded" result came back LARGER than
+    # the cap it was asked for. MEASURED at X4_HOOK_MAX_CHARS=200 on a 5,000
+    # character payload: 5,097 characters out, 25x the cap. The knob is
+    # documented as overridable and the constant is expected to be re-derived on
+    # a CC bump, so a lower ceiling is the realistic way in. Below the notice
+    # width the notice itself has to shrink.
+    _keep=$((X4_HOOK_MAX_CHARS / 2))
+    [ "$_keep" -lt 1 ] && _keep=1
+    printf '%s\n[TRUNCATED %s/%s]' "$(x4_head "$1" "$_keep")" "$_keep" "${_t:-?}"
+    return 0
+  fi
   printf '%s\n[TRUNCATED: showing %s of %s characters. Claude Code files hook output above %s and shows the model only a preview, so the rest is dropped HERE, deliberately, rather than vanishing silently.]' \
-    "$(x4_head "$1" "$_keep")" "$_keep" "$_t" "$X4_HOOK_MAX_CHARS"
+    "$(x4_head "$1" "$_keep")" "$_keep" "${_t:-an unreadable number of}" "$X4_HOOK_MAX_CHARS"
 }
 
 x4_advise() {

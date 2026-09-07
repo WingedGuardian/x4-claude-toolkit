@@ -364,7 +364,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=149
+EXPECT=152
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -740,6 +740,60 @@ case "$_sc_out" in
   *TRUNCATED*) ok "the bounded canary report ANNOUNCES the truncation" ;;
   *) no "the canary report was cut with no notice" ;;
 esac
+
+# --- the cap must not be defeatable ------------------------------------------
+# Three ways it was, all found by review and all reproduced before fixing.
+_bnd(){ ( HOOK_DIR="$HOOKS"; . "$HOOKS/_x4-env.sh"; x4_bound "$1" ); }
+
+# (a) A python that RESOLVES but FAILS. x4_len returned 0 regardless of the arm
+# status, so the length came back empty, x4_bound took its non-numeric guard and
+# passed the text through WHOLE -- the fail-open shape the function exists to
+# close, inside the function that closes it.
+_stub="$TMP/pystub"; mkdir -p "$_stub"
+printf '%s\n' '#!/bin/bash' 'exit 9' > "$_stub/python"; chmod +x "$_stub/python"
+_big="$(printf 'z%.0s' $(seq 1 25000))"
+_got="$( ( HOOK_DIR="$HOOKS"; . "$HOOKS/_x4-env.sh"; X4_PYTHON="$_stub/python" x4_bound "$_big" ) )"
+if [ "${#_got}" -le 10000 ]; then
+  ok "a python that resolves but FAILS still bounds (${#_got} chars)"
+else
+  no "with a failing python the cap is ABSENT: ${#_got} chars passed through unbounded"
+fi
+
+# (b) A cap BELOW the notice reserve made _keep negative, and a negative slice
+# keeps almost everything -- so the "bounded" result came back LARGER than the
+# cap it was asked for. The knob is documented as overridable and the constant is
+# expected to be re-derived on a CC bump, so a lower ceiling is the realistic path in.
+_small="$(printf 'w%.0s' $(seq 1 5000))"
+_gs="$( ( HOOK_DIR="$HOOKS"; . "$HOOKS/_x4-env.sh"; X4_HOOK_MAX_CHARS=200 x4_bound "$_small" ) )"
+if [ "${#_gs}" -le 200 ]; then
+  ok "a cap below the notice reserve still bounds (${#_gs} <= 200)"
+else
+  no "cap=200 returned ${#_gs} chars -- a negative slice kept almost everything"
+fi
+
+# (c) THE VERDICT EMITTER. x4_advise was bounded and emit() was not, so deny/ask
+# reasons -- the highest-stakes model-facing channel there is -- stayed unbounded
+# while interpolating the whole command. The verdict itself is honoured at any
+# length (measured: a deny blocks at 200,000 chars), but the REASON is what tells
+# the reader WHY, and a filed reason is a preview.
+#
+# The probe must PARSE. A first attempt used a path with enough slashes to be
+# rejected by `bash -n`, so the parse-refusal rule fired with its own fixed
+# reason and the test passed on 266 characters -- a vacuous pass that looked
+# like a bound working.
+# Uses the SUITE fixture root, not a real profile path: run_layout exports
+# X4_SAVES at a sandbox location, so a real path reaches no rule here and the
+# probe would refuse (correctly) instead of exercising the bound.
+_savep="${X4_SAVES:-$TMP/profile/save}/$(printf 'bbbbbbbbbb/%.0s' $(seq 1 900))x.xml.gz"
+_vr="$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(printf 'rm -f %s' "$_savep" | jq -Rs .)" \
+       | bash "$HOOKS/protect-bash.sh" 2>/dev/null | jq -r '.hookSpecificOutput.permissionDecisionReason // ""')"
+if [ "${#_vr}" -lt 200 ]; then
+  no "the verdict probe produced only ${#_vr} chars -- it did not reach a command-interpolating rule, so this proves nothing"
+elif [ "${#_vr}" -le 10000 ]; then
+  ok "a verdict reason is bounded too (${#_vr} chars)"
+else
+  no "a verdict reason came back at ${#_vr} chars -- emit() never routes through x4_bound"
+fi
 
 echo "RESULT: $pass passed, $fail failed, $skipped skipped"
 if [ $((pass + fail + skipped)) -ne "$EXPECT" ]; then

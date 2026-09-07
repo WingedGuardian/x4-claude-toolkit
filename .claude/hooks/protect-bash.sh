@@ -41,7 +41,17 @@ x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it ch
 # The reason travels through the ENVIRONMENT, never the command line: a message
 # containing quotes, newlines and backslashes is routine here, and every attempt to
 # escape one through an interpreter argument in this workspace has collapsed.
+# The reason is BOUNDED here, for the same reason x4_advise bounds: Claude Code
+# files model-facing output above 10,000 characters and shows only a preview.
+# Seven rules below interpolate the whole command into their reason, and MEASURED
+# with a long path this emitted a 20,126-character permissionDecisionReason --
+# twice the ceiling, on the highest-stakes model-facing channel there is.
+#
+# The VERDICT is never at risk: a deny is honoured at any reason length (measured
+# at 200,000). What was at risk is the reason, which is the part that says WHY --
+# and a filed reason is a preview of itself.
 emit() {
+  set -- "$1" "$(x4_bound "$2")"
   if [ "$JQ_OK" = 1 ]; then
     if [ "$1" = "advise" ]; then
       "$JQ" -n --arg r "$2" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'
