@@ -94,7 +94,8 @@ def _fresh(tmp_path: pathlib.Path) -> pathlib.Path:
         (tmp_path / d).mkdir()
     return dest
 
-def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra: str):
+def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra: str,
+             method: str = "separate"):
     """Run ONE of the two installers with identical intent.
 
     Parameterised rather than duplicated, because the point is that both reach the
@@ -106,7 +107,7 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     _refuse_unless_sandboxed(tmp_path, dest, tmp_path / "game",
                              tmp_path / "profile", tmp_path / "mods")
     common = {
-        "method": "separate",
+        "method": method,
         "toolkit": dest.as_posix(),
         "game": (tmp_path / "game").as_posix(),
         "profile": (tmp_path / "profile").as_posix(),
@@ -236,3 +237,29 @@ def test_the_dry_run_still_passes_when_the_install_WOULD_work(installer, tmp_pat
     r = _install(installer, tmp_path, dest, "--dry-run")
     assert r.returncode == 0, (
         "the dry run refused an upgrade that needs no config change:\n%s" % (r.stdout + r.stderr)[-1500:])
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_DRY_RUN_writes_NOTHING_on_the_arm_that_SKIPS_the_copy(installer, tmp_path):
+    """THE ARM MY OTHER DRY-RUN CASES COULD NOT REACH, and a CRITICAL lived in it.
+
+    Under `--method separate` the COPY step refuses first and exits, so the config
+    writer is never reached -- which is why ten passing tests said nothing about
+    it. `--method global` never copies, so the writer's own gate is the only thing
+    between a dry run and a real write.
+
+    MEASURED before the fix, ps1, with `.claude` present: rc 0,
+    `.claude/x4-paths.env` WRITTEN, "wrote <path>" printed, and then
+    "=== dry run complete: nothing was changed ===". A brace error had nested the
+    gate inside `if (Test-Path $f)`, so with the config ABSENT -- the state of
+    every fresh clone, since it is gitignored -- the gate was skipped entirely and
+    execution fell through to the write. bash on the same intent wrote 0 files.
+
+    Asserting on the ARTIFACT rather than on the wording, because the wording said
+    nothing was changed while it was untrue.
+    """
+    dest = _fresh(tmp_path)
+    (dest / ".claude").mkdir()          # present, which is what makes the write reachable
+    r = _install(installer, tmp_path, dest, "--dry-run", method="global")
+    written = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file())
+    assert not written, (
+        "--dry-run wrote %d file(s): %s (rc=%s) %s"
+        % (len(written), written[:8], r.returncode, (r.stdout + r.stderr)[-600:]))

@@ -397,6 +397,7 @@ function Write-PathsEnv($t) {
       Write-Host "  [note] $f already matches these paths; left untouched"
       return
     }
+  }
 
   Refuse-IfDryRun 'writing the path config into' $f
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -422,7 +423,6 @@ function Write-PathsEnv($t) {
       Write-Host ('  [warn] could not back up x4-paths.env: ' + $_.Exception.Message)
       Write-Host '         the existing values are about to be replaced'
     }
-  }
   }
   $ref = if ($Reference) { $Reference } else { Join-Path $t 'reference' }
   $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-Path $Game 'extensions' } else { '' }
