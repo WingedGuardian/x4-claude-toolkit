@@ -416,6 +416,18 @@ own EXPLANATION, because `check()` returns its reason in the loss slot.
 - `audit-coverage.py` derives the Track 2 population from `git ls-tree` and REFUSES a
   ledger that disagrees; it reads its pinned rev from the ledger header.
 - `verify-cold.sh` wired into CI, and the LF guard widened from 178 files to 221.
+- **`scan-identifiers.py --history <range>` — because `git push` publishes COMMITS.**
+  Every identifier check here scanned the working TREE, so all of them returned clean on
+  exactly the case that matters: an identifier that was committed, noticed, and removed.
+  It is gone from the tree and still in the objects. The new mode scans the diff each
+  commit INTRODUCES (added lines only — the commit that removes an identifier is the
+  fix), reports the SHA and never the line, and REFUSES on an unresolvable or empty
+  range. MEASURED across this release: **zero occurrences of a private identifier in any
+  of the 274 commits.**
+- **`scripts/build-release.sh <ref>`** builds the release bundle from `git archive` —
+  the committed object store, so it cannot pick up a working-tree edit — verifies the
+  member set against the ref in both directions, and carries a `--selftest` that
+  re-proves v3.0.0's published sha256. The v3.0.0 asset had no build script at all.
 - six documentation numbers corrected, with the line-counting convention stated so
   they cannot drift again.
 - **30 of this arc's own tests were run by NOTHING.** `test_hook_facts.py` mixes
