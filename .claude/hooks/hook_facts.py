@@ -504,6 +504,59 @@ def _unwrap(seg: str) -> str:
     return _strip_reserved(s)
 
 
+#: Bash ANSI-C escapes, decoded inside a $'...' run ONLY. The $"..." form is
+#: locale translation and its body is literal, so it is deliberately not decoded.
+_ANSI_C_SIMPLE = {'a': chr(7), 'b': chr(8), 'e': chr(27), 'E': chr(27),
+                  'f': chr(12), 'n': chr(10), 'r': chr(13), 't': chr(9),
+                  'v': chr(11), chr(92): chr(92), chr(39): chr(39),
+                  chr(34): chr(34), '?': '?'}
+
+
+def _ansi_c_decode(body: str) -> str:
+    """Decode one ANSI-C quoted body.
+
+    The hex and octal forms are the ones that matter: two different spellings of
+    `rm` that reached `_verb_name` as literal escape text and came out as `x6d`
+    and `155`. B2, MEASURED as a total bypass of all three hard blocks.
+    """
+    out = []
+    i = 0
+    while i < len(body):
+        c = body[i]
+        if c != chr(92) or i + 1 >= len(body):
+            out.append(c)
+            i += 1
+            continue
+        n = body[i + 1]
+        if n == 'x':
+            h = ''
+            j = i + 2
+            while j < len(body) and len(h) < 2 and body[j] in '0123456789abcdefABCDEF':
+                h += body[j]
+                j += 1
+            if h:
+                out.append(chr(int(h, 16)))
+                i = j
+                continue
+        elif n in '01234567':
+            o = ''
+            j = i + 1
+            while j < len(body) and len(o) < 3 and body[j] in '01234567':
+                o += body[j]
+                j += 1
+            out.append(chr(int(o, 8) & 0xFF))
+            i = j
+            continue
+        elif n in _ANSI_C_SIMPLE:
+            out.append(_ANSI_C_SIMPLE[n])
+            i += 2
+            continue
+        # An unknown escape keeps its backslash, as bash does.
+        out.append(c)
+        i += 1
+    return ''.join(out)
+
+
 def tokens(seg: str) -> list[tuple[str, bool]]:
     """(text, was_quoted) per token. Quotes are stripped from the text; a
     backslash-escaped space JOINS, which is why `X4\\ Foundations` must stay one token
@@ -527,8 +580,28 @@ def tokens(seg: str) -> list[tuple[str, bool]]:
             # is a quoting SIGIL, not part of the name. Without this the token was
             # `$rm` AND flagged quoted, so verb()'s `if quoted: return t` handed every
             # verb-keyed rule a name no rule has ever heard of -- a total bypass.
-            if buf and buf[-1] == "$":
+            dollar = bool(buf) and buf[-1] == "$"
+            if dollar:
                 buf.pop()
+            if dollar and c == chr(39):
+                # $'...' -- take the WHOLE run and decode it. Popping the sigil was
+                # only half the job: inside a single-quoted run this loop appends
+                # every character literally (the escape branch below is guarded by
+                # q == '\"'), so the hex and octal spellings of a verb stayed as
+                # literal escape TEXT and _verb_name reduced them to `x6d` / `155`.
+                # B2, MEASURED: both ALLOW `rm -rf <game root>` past a hard block.
+                j = i + 1
+                body = []
+                while j < len(seg) and seg[j] != chr(39):
+                    if seg[j] == chr(92) and j + 1 < len(seg):
+                        body.append(seg[j])
+                        j += 1
+                    body.append(seg[j])
+                    j += 1
+                buf.append(_ansi_c_decode(''.join(body)))
+                quoted = started = True
+                i = j + 1
+                continue
             q = c
             quoted = started = True
         elif c == chr(92) and i + 1 < len(seg):
@@ -1549,7 +1622,33 @@ def _git_destructive(seg, wanted):
     # prefix was present -- so `sub` became "git", matched nothing in `wanted`, and
     # every destructive-git rule went silent. `git_adds_everything` was unaffected
     # because it searches ALL tokens; only this scan assumed a position.
-    vi = next((i for i, t in enumerate(toks) if not _ASSIGNMENT.match(t)), 0)
+    # ...AND NOT ALWAYS AFTER THE ASSIGNMENTS EITHER. B3 taught this scan to step over
+    # leading `VAR=value`; a leading WRAPPER walks past it the same way, and `verb()`
+    # already steps over both -- so `verb(seg)` said "git" while this scan called the
+    # literal token `git` the SUBCOMMAND and matched nothing in `wanted`.
+    #
+    # MEASURED 2026-09-06 by scripts/fuzz-guard.py, once `git_wipes_x4_dir` and
+    # `git_discards_x4_files` finally had seeds (they had none, so nothing had ever
+    # tried): `exec`, `setsid`, `nice -n 5` and `timeout 5` each turned a destructive
+    # git inside the game root from ask/advise into ALLOW -- 8 bypasses. `timeout` is
+    # the one that matters most, because CLAUDE.md #25 recommends typing it.
+    vi = 0
+    seen_wrapper = False
+    while vi < len(toks):
+        t = toks[vi]
+        if _ASSIGNMENT.match(t):
+            vi += 1
+        elif _verb_name(t) in WRAPPERS:
+            seen_wrapper = True
+            vi += 1
+        elif seen_wrapper and (t.startswith("-") or _WRAPPER_ARG.match(t)):
+            # Only AFTER a wrapper: a bare number or flag there belongs to the
+            # wrapper (`timeout 5`, `nice -n 5`), never to git.
+            vi += 1
+        else:
+            break
+    if vi >= len(toks):
+        return []
     si = next((i for i, t in enumerate(toks[vi + 1:], vi + 1)
                if not t.startswith("-") and i not in skip), None)
     sub = toks[si] if si is not None else None
@@ -1701,11 +1800,22 @@ def searches(seg):
 
 
 # ------------------------------------------------------------------- $? rule
-def dollarq_after_pipe(cmd: str) -> bool:
+def dollarq_after_pipe(cmd: str, assigns: dict | None = None) -> bool:
     """`cmd | head; echo $?` reports HEAD's exit code. Only the same segment or the one
     immediately before can be the referent. A pipe inside a process substitution runs in
     a subshell, so its status never becomes $?."""
-    stripped = strip_heredocs(cmd)
+    # NO strip_heredocs HERE. It used to, and that was a DOUBLE strip: the only
+    # caller passes `all_cmds`, every element of which derives from `body`, which is
+    # already stripped. strip_heredocs removes a body and its terminator and KEEPS the
+    # opener line -- so a second pass met a dangling `<<X` with no terminator left and
+    # consumed everything after it, INCLUDING the command being judged.
+    #
+    # MEASURED 2026-09-06 by scripts/fuzz-guard.py, once this rule had a seed: any
+    # data heredoc written BEFORE the real command turned this deny into an allow --
+    # 5 of its 7 remaining bypasses, across plain, quoted, hyphenated, dotted and
+    # space-containing markers. The rule was not weak about heredocs; it was deleting
+    # its own input.
+    stripped = cmd
     # PIPESTATUS is tested against the UNBLANKED text on purpose: the escape hatch is
     # normally written `"${PIPESTATUS[0]}"`, i.e. inside double quotes, and blanking
     # first would hide it and fire on the very idiom the message recommends.
@@ -1726,13 +1836,24 @@ def dollarq_after_pipe(cmd: str) -> bool:
     # Single-quoted content is already blanked above, where a backslash is itself
     # literal, so removing the pair here cannot reach that case.
     live = live.replace(chr(92) + "$", " ")
-    if "$?" not in live:
+    if "$?" not in live and not (assigns and "${" in live):
         return False
     prev_piped = False
     for raw in re.split(r"[;\n]|&&|\|\|", live):
         chk = re.sub(r"[<>]\([^)]*\)", "", blank_quoted(raw))
         piped = bool(re.search(r"[^|]\|[^|]", chk))
-        if "$?" in raw and (piped or prev_piped):
+        # RESOLVED PER SEGMENT, not once over the whole command. A parameter
+        # expansion can carry the status out of sight -- `FZ="rc=$?QQ"` then
+        # `echo "${FZ%QQ}"` puts no literal `$?` after the pipe at all -- and
+        # `_apply_op` already models suffix-strip, default-value and array-index, so
+        # the rule only had to ask. Resolving GLOBALLY does not work and that was the
+        # first attempt: `$?` is present in the command, inside the ASSIGNMENT, so a
+        # whole-string test short-circuits before it ever looks at the segment that
+        # actually follows the pipe. MEASURED 2026-09-06 by the fuzzer.
+        hot = "$?" in raw
+        if not hot and assigns and "${" in raw:
+            hot = "$?" in resolve(raw, assigns)
+        if hot and (piped or prev_piped):
             return True
         prev_piped = piped
     return False
@@ -2349,12 +2470,22 @@ def facts(payload: dict, roots: dict) -> dict:
     stripped = body
     stripped_blank = blank_quoted(stripped)
 
+    # B4: over `all_cmds`, not `body`. These two read the string with its WRAPPERS
+    # INTACT while every path rule reads the unwrapped carrier list, so they were
+    # answering a question about a different command. MEASURED 2026-09-06: a single
+    # `bash -c` wrapper hid a foreground long job, and two hid it from `$?`-after-a-
+    # pipeline as well -- both silent, both trivially reachable by ordinary scripting.
+    #
+    # Safe on the heredoc axis by construction: heredoc_bodies() already admits only
+    # bodies whose OPENER RUNS A SHELL, so a `cat > notes.md <<X` payload quoting a
+    # long job's name never reaches all_cmds and cannot fire this.
     longjob = False
-    for s in segments(stripped):
-        b = blank_quoted(s)
-        if any(j in b for j in LONG_JOBS) or ("x4effective" in b and "build" in b):
-            if INVOKERS.search(b):
-                longjob = True
+    for c in all_cmds:
+        for s in segments(c):
+            b = blank_quoted(s)
+            if any(j in b for j in LONG_JOBS) or ("x4effective" in b and "build" in b):
+                if INVOKERS.search(b):
+                    longjob = True
 
     return {
         "command": cmd,
@@ -2461,9 +2592,20 @@ def facts(payload: dict, roots: dict) -> dict:
             # the game-root CLAUDE.md and KNOWLEDGEBASE.md, the pair a reviewer's
             # installer probe actually overwrote. A path may hold parens; the first
             # argument of open() rarely holds a comma.
-            and re.search(r"open\([^,]*,\s*[\"']w[\"']", sg)
+            # The MODE can arrive through an expansion just as the path can:
+            # `FZ="wQQ"` then `open(<durable>, "${FZ%QQ}")`. The path half already
+            # consulted `resolve`; the mode half did not, which the fuzzer measured
+            # as 3 bypasses of a DENY on 2026-09-06.
+            and (re.search(r"open\([^,]*,\s*[\"']w[\"']", sg)
+                 or re.search(r"open\([^,]*,\s*[\"']w[\"']",
+                              resolve(sg, assigns)))
             and _verb_name(verb(sg)) in _PYTHONS
-            for sg in segments(body)),
+            # OVER `all_cmds`, not `segments(body)` -- the same defect as B4, in the
+            # rule with the most to lose. MEASURED 2026-09-06 by the fuzzer, once this
+            # rule finally had a seed: 21 bypasses, every one a wrapper, a carrier or
+            # a stdin form the carrier walk ALREADY resolves. `bash -c` alone was
+            # enough to overwrite KNOWLEDGEBASE.md unseen.
+            for c in all_cmds for sg in segments(c)),
 
         "search_rooted_reference": rooted(roots.get("reference")),
         # `mods` was here and is deliberately NOT, from 2026-09-04. The rule's own
@@ -2491,7 +2633,7 @@ def facts(payload: dict, roots: dict) -> dict:
                     for pp, u, _r in search_files)
             and not re.search(r"ws_[0-9]{4,}", cmd)),
 
-        "dollarq_after_pipe": dollarq_after_pipe(body),
+        "dollarq_after_pipe": any(dollarq_after_pipe(c, assigns) for c in all_cmds),
         # A redirect or output-flag TARGET under the shared temp dir. Was a raw regex
         # with no heredoc strip and no quote blanking, so it fired on a grep PATTERN, on
         # quoted prose and on heredoc bodies -- while its message tells you to use the

@@ -2553,3 +2553,203 @@ def test_a_long_but_finite_expansion_is_not_refused():
     assigns = {"P": "z" * 40000}
     got = H.resolve("${P}", assigns)
     assert got == "z" * 40000 and not H.has_unresolved(got)
+
+
+# ------------------------------------------------- B2: ANSI-C quoting hid the verb
+# tokens() already popped the `$` sigil before a quote, so `$'rm'` resolved correctly
+# and the existing test passed. Inside the single-quoted run every character was
+# appended literally, so the HEX and OCTAL spellings survived as escape TEXT and
+# _verb_name's basename(norm(t)) reduced them to `x6d` and `155`.
+#
+# MEASURED 2026-09-06 against the guard as shipped: both spellings ALLOW
+# `rm -rf <game root>` past a HARD BLOCK, and the same for reference/.
+
+_BS = chr(92)
+_SQ = chr(39)
+
+
+def _ansi(body):
+    """Build a $'...' token without writing an escape this file's own reader would eat."""
+    return "$" + _SQ + body + _SQ
+
+
+def test_ansi_c_HEX_escapes_resolve_to_the_real_verb():
+    """$'\x72\x6d' is bash for `rm`. Pre-fix the verb was `x6d`."""
+    seg = _ansi(_BS + "x72" + _BS + "x6d") + " -rf /tmp/x"
+    assert H._verb_name(H._verb_token(seg)) == "rm"
+
+
+def test_ansi_c_OCTAL_escapes_resolve_to_the_real_verb():
+    """$'\162\155' is the same word by the other spelling. Pre-fix: `155`."""
+    seg = _ansi(_BS + "162" + _BS + "155") + " -rf /tmp/x"
+    assert H._verb_name(H._verb_token(seg)) == "rm"
+
+
+def test_an_ansi_c_spelled_rm_still_reaches_the_game_HARD_BLOCK():
+    """The consequence, not just the token: this is the rule that was bypassed."""
+    cmd = _ansi(_BS + "x72" + _BS + "x6d") + ' -rf "' + ROOTS["game"] + '"'
+    assert F(cmd)["rm_hits_game"] is True
+
+
+def test_the_LOCALE_form_is_not_decoded_because_bash_does_not_decode_it():
+    """$"..." is locale translation with a LITERAL body. Decoding it would be us
+    inventing a rule bash does not have -- the twin that keeps the fix honest.
+
+    Asserts the EXACT token, not merely that it is not "rm". The weaker form was
+    decoration: MEASURED against a mutant that drops the `c == chr(39)` guard, the
+    body scan then runs to end-of-string looking for a closing single quote, produces
+    garbage, and `!= "rm"` is satisfied by the garbage. Almost anything passes a
+    not-equal assertion, which is why it caught nothing.
+    """
+    assert H._ansi_c_decode(_BS + "x72" + _BS + "x6d") == "rm"
+    seg = '$"' + _BS + 'x72' + _BS + 'x6d" -rf /tmp/x'
+    toks = [t for t, _q in H.tokens(seg)]
+    assert toks[0] == _BS + "x72" + _BS + "x6d", toks[:2]
+    assert toks[1] == "-rf", "the run must not swallow the rest of the segment"
+
+
+def test_an_UNKNOWN_escape_keeps_its_backslash_as_bash_does():
+    """Falsification twin: the decoder must not swallow what it does not know."""
+    assert H._ansi_c_decode(_BS + "q") == _BS + "q"
+    assert H._ansi_c_decode("plain") == "plain"
+
+
+def test_ordinary_single_quoted_text_is_untouched():
+    """Twin for the guard clause: no `$` sigil means no decoding at all, so a quoted
+    search string that merely LOOKS like an escape stays literal."""
+    seg = "grep -r " + _SQ + _BS + "x72" + _SQ + " ."
+    toks = [t for t, _q in H.tokens(seg)]
+    assert toks[2] == _BS + "x72"
+
+
+# ------------------- B4: two rules read `body`, every path rule reads `all_cmds`
+# MEASURED 2026-09-06: a SINGLE `bash -c` wrapper hid a foreground long job, and two
+# hid `$?`-after-a-pipeline. They were answering a question about a different string
+# from the one the path rules see. Both are DENIES, so the cost was a silent allow.
+
+_LONG = "uv run python gates/corpus_sweep.py"
+
+
+def test_a_long_job_inside_a_shell_wrapper_is_still_a_long_job():
+    """One wrapper. Pre-fix: False."""
+    cmd = "bash -c " + chr(39) + _LONG + chr(39)
+    assert F(cmd)["longjob_foreground"] is True
+
+
+def test_a_long_job_TWO_wrappers_deep_is_still_a_long_job():
+    """The carrier walk already reached this; only these two rules did not."""
+    cmd = "bash -c " + chr(39) + 'sh -c "' + _LONG + '"' + chr(39)
+    assert F(cmd)["longjob_foreground"] is True
+
+
+def test_a_long_job_carried_by_eval_is_still_a_long_job():
+    cmd = "eval " + chr(39) + _LONG + chr(39)
+    assert F(cmd)["longjob_foreground"] is True
+
+
+def test_a_long_job_in_a_SHELL_heredoc_is_still_a_long_job():
+    cmd = "bash <<EOF" + chr(10) + _LONG + chr(10) + "EOF"
+    assert F(cmd)["longjob_foreground"] is True
+
+
+def test_a_long_job_NAMED_IN_A_DATA_HEREDOC_does_not_fire():
+    """The must-NOT-fire half, and the reason this fix is safe to widen at all.
+
+    heredoc_bodies() admits only bodies whose OPENER RUNS A SHELL, so a file being
+    written that happens to quote a long job's name never reaches all_cmds. Without
+    that filter, widening to all_cmds would deny writing documentation.
+    """
+    cmd = "cat > notes.md <<EOF" + chr(10) + "run " + _LONG + chr(10) + "EOF"
+    assert F(cmd)["longjob_foreground"] is not True
+
+
+def test_dollarq_after_a_pipe_survives_a_shell_wrapper():
+    """Pre-fix: False, because dollarq_after_pipe read `body`."""
+    cmd = "bash -c " + chr(39) + 'ls | grep x; echo "rc=$?"' + chr(39)
+    assert F(cmd)["dollarq_after_pipe"] is True
+
+
+def test_an_ordinary_command_still_trips_neither():
+    """Falsification twin: widening the input must not make these fire on everything."""
+    f = F("ls -la")
+    assert f["longjob_foreground"] is not True
+    assert f["dollarq_after_pipe"] is not True
+
+
+# ---------------- B6-B9: four bypasses the fuzzer could only find once it had SEEDS
+# MEASURED 2026-09-06. Seed coverage was 9 of 23 derived policy rules (39%), so six
+# DENIES and a HARD BLOCK had never been fuzzed at all. Adding the seeds took the
+# fuzzer from "no bypass found" to 36 bypasses; these four fixes took it to 0.
+
+_DUR = "/KNOWLEDGEBASE.md"
+
+
+def test_a_WRAPPER_does_not_hide_a_destructive_git():
+    """B7, the B3 shape one step out: the scan stepped over leading assignments and
+    not over leading wrappers, so `verb()` said git while the scan called the literal
+    token `git` the SUBCOMMAND. `timeout` matters most -- CLAUDE.md #25 recommends it."""
+    for pre in ("exec ", "setsid ", "nice -n 5 ", "timeout 5 ", "env FOO=1 "):
+        cmd = pre + 'git -C "' + ROOTS["game"] + '" clean -fdx'
+        assert F(cmd)["git_wipes_x4_dir"] is True, pre
+        cmd = pre + 'git -C "' + ROOTS["game"] + '" checkout -- f.py'
+        assert F(cmd)["git_discards_x4_files"] is True, pre
+
+
+def test_a_wrapper_does_not_INVENT_a_destructive_git():
+    """Falsification twin: stepping over wrappers must not make navigation destructive."""
+    for cmd in ('timeout 5 git -C "' + ROOTS["game"] + '" clean -n',
+                'exec git -C "' + ROOTS["game"] + '" checkout main',
+                'nice -n 5 git -C "' + ROOTS["game"] + '" status'):
+        f = F(cmd)
+        assert f["git_wipes_x4_dir"] is not True, cmd
+        assert f["git_discards_x4_files"] is not True, cmd
+
+
+def test_a_durable_python_write_inside_a_wrapper_is_still_seen():
+    """B6, the B4 shape: this rule read segments(body) while the carrier list existed.
+    `bash -c` alone was enough to overwrite KNOWLEDGEBASE.md unseen."""
+    inner = 'python -c ' + chr(39) + 'open("' + ROOTS["game"] + _DUR + '", "w")' + chr(39)
+    assert F(inner)["durable_python_open_w"] is True            # control
+    # A SHELL HEREDOC, because it nests without quote conflict. Naive attempts to
+    # wrap `inner` in single quotes produce nested single quotes, which is malformed
+    # shell -- an invalid command, not a bypass, and it briefly read as one.
+    heredoc = "bash <<" + chr(39) + "EOF" + chr(39) + chr(10) + inner + chr(10) + "EOF"
+    assert F(heredoc)["durable_python_open_w"] is True
+    assert F("exec " + inner)["durable_python_open_w"] is True
+    assert F("nice -n 5 " + inner)["durable_python_open_w"] is True
+
+
+def test_a_data_heredoc_BEFORE_a_command_no_longer_deletes_it():
+    """B8, and it is the sharpest of the four: dollarq_after_pipe called
+    strip_heredocs on input that was ALREADY stripped. strip_heredocs keeps the
+    OPENER, so the second pass met a dangling `<<X` with no terminator and consumed
+    everything after it -- including the command being judged. The rule was not weak
+    about heredocs; it was deleting its own input."""
+    cmd = ("cat > /dev/null <<" + chr(39) + "X" + chr(39) + chr(10)
+           + "data" + chr(10) + "X" + chr(10) + 'ls | grep x; echo "rc=$?"')
+    assert F(cmd)["dollarq_after_pipe"] is True
+
+
+def test_a_parameter_expansion_cannot_carry_the_status_out_of_sight():
+    """B9. `_apply_op` already modelled suffix-strip and array-index; the rule never
+    asked. Resolved PER SEGMENT -- a whole-string test short-circuits, because `$?`
+    IS present in the command, inside the assignment."""
+    assert F('FZ="rc=$?QQ"; ls | grep x; echo "${FZ%QQ}"')["dollarq_after_pipe"] is True
+    assert F('FZA=("rc=$?"); ls | grep x; echo "${FZA[0]}"')["dollarq_after_pipe"] is True
+
+
+def test_a_parameter_expansion_cannot_hide_a_durable_write_MODE():
+    """B9's other half: the PATH already consulted resolve(), the MODE did not."""
+    py = ('python -c ' + chr(39) + 'FZ=1' + chr(39))    # unused, keeps the line short
+    cmd = ('FZ="wQQ"; python -c ' + chr(39) + 'open("' + ROOTS["game"] + _DUR
+           + '", "${FZ%QQ}")' + chr(39))
+    assert F(cmd)["durable_python_open_w"] is True
+
+
+def test_the_PIPESTATUS_escape_hatch_survives_the_expansion_awareness():
+    """The twin that matters most: the rule's own message recommends PIPESTATUS, and
+    resolving more text must not turn the recommended idiom into a deny."""
+    assert F('ls | grep x; echo "${PIPESTATUS[0]}"')["dollarq_after_pipe"] is not True
+    assert F("git commit -m " + chr(39) + "fix $? after a pipe" + chr(39)
+             )["dollarq_after_pipe"] is not True
+    assert F('ls; echo "rc=$?"')["dollarq_after_pipe"] is not True
