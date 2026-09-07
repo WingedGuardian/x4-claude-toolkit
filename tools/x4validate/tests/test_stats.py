@@ -87,7 +87,11 @@ def test_effective_wares_reads_installed_overlay(tmp_path):
        '<diff><add sel="/wares"><ware id="newware" group="weapons">'
        '<price average="999"/></ware></add></diff>')
     cfg = _merge.Config(reference=ref)
-    eff = _stats.effective_wares(ext, cfg)
+    # effective_wares now returns the TREE alongside the dict: candidate_wares has to
+    # resolve a `sel=` against something, and rebuilding it there would merge the
+    # whole corpus twice.
+    eff, eff_tree = _stats.effective_wares(ext, cfg)
+    assert eff_tree is not None
     assert "ore" in eff and "newware" in eff
     assert eff["newware"].price_avg == 999.0
 
@@ -163,10 +167,16 @@ _REPLACE_ONLY = (
 
 
 def test_replace_and_remove_ops_are_COUNTED_even_though_unattributable(tmp_path):
+    """WITHOUT a base_tree -- the degraded path, and it is deliberately unchanged.
+
+    Resolving a `sel=` needs a tree to resolve it against. A caller that has none
+    still gets an honest partial answer ("N ops I could not attribute") rather than
+    a wrong one ("changes no wares"). The attributed path is tested below.
+    """
     cand = tmp_path / "mod"
     _w(cand / "libraries" / "wares.xml", _REPLACE_ONLY)
     assert _stats.candidate_wares(cand) == {}, \
-        "premise of this test: these ops really are invisible to candidate_wares"
+        "premise of this test: with no tree, these ops are invisible"
     assert _stats.unattributed_ware_ops(cand) == 3
 
 
@@ -220,3 +230,108 @@ def test_a_MIXED_diff_counts_only_the_unattributable_ops(tmp_path):
        '</diff>')
     assert set(_stats.candidate_wares(cand)) == {"new1"}
     assert _stats.unattributed_ware_ops(cand) == 2
+
+
+# ------------------------------------------- RESERVED-A: sel= resolved to its ware
+# `candidate_wares` used to find a ware only when a <ware> ELEMENT was present as an
+# op payload, so it saw nothing for the DEFAULT X4 idiom -- the one in this project's
+# own CLAUDE.md. MEASURED over the live install: of 37 mods supplying
+# libraries/wares.xml, 5 reported "introduces/changes no wares" and all five zeros
+# were wrong; the largest hid 1,443 ops. With attribution: zeros 5 -> 1, unattributed
+# ops 3,414 -> 190, and mlog_deadair_eco_no_da_wares went 0 -> 350 wares.
+
+def _base_tree():
+    return etree.fromstring(
+        '<wares>'
+        '<ware id="ore" group="minerals"><price average="100"/></ware>'
+        '<ware id="silicon" group="minerals"><price average="200"/></ware>'
+        '<ware id="energycells" group="energy"><price average="16"/></ware>'
+        '</wares>')
+
+
+#: Targets `<price average=>`, which is what _ware_from_el actually READS. The older
+#: _REPLACE_ONLY fixture targets `@price_average` on the ware -- a shape the parser
+#: does not read, so it can prove attribution but not the resulting value.
+_REPLACE_PRICES = (
+    '<diff>'
+    '<replace sel="//ware[@id=' + chr(39) + 'ore' + chr(39) + ']/price/@average">500</replace>'
+    '<replace sel="//ware[@id=' + chr(39) + 'silicon' + chr(39) + ']/price/@average">600</replace>'
+    '<remove sel="//ware[@id=' + chr(39) + 'energycells' + chr(39) + ']"/>'
+    '</diff>')
+
+
+def test_a_replace_on_an_ATTRIBUTE_is_attributed_to_its_ware(tmp_path):
+    """The idiom that was invisible. The ware is named only in the SELECTOR, so no
+    amount of reading the op payload can find it."""
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml", _REPLACE_PRICES)
+    got = _stats.candidate_wares(cand, _base_tree())
+    # `energycells` is REMOVED by this diff, so it is ATTRIBUTED (it does not count as
+    # unattributed below) but has no post-state to compare a price against -- there is
+    # no ware left in the merged tree. Those are two different questions and the split
+    # is deliberate: the op is accounted for, and the comparison has nothing to say.
+    assert set(got) == {"ore", "silicon"}, got
+    assert _stats.unattributed_ware_ops(cand, _base_tree()) == 0
+
+
+def test_the_attributed_ware_carries_the_value_the_MOD_LEAVES(tmp_path):
+    """Read back out of the MUTATED copy, because the price comparison is about the
+    value after the candidate applies, not the value it patched over."""
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml", _REPLACE_PRICES)
+    got = _stats.candidate_wares(cand, _base_tree())
+    assert got["ore"].price_avg == 500.0
+    assert got["silicon"].price_avg == 600.0
+
+
+def test_a_REMOVE_of_a_whole_ware_is_attributed_before_it_is_detached(tmp_path):
+    """The ordering trap: _do_remove detaches its target, and a detached node has no
+    ancestor chain left to climb. The key has to be taken while it is still in place,
+    which is why apply_diff captures it BEFORE the helper runs (gotcha #17)."""
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml",
+       '<diff><remove sel="//ware[@id=' + chr(39) + 'energycells' + chr(39) + ']"/></diff>')
+    ops = _merge.apply_diff(_base_tree(),
+                            etree.fromstring(
+                                (cand / "libraries" / "wares.xml").read_text(
+                                    encoding="utf-8")),
+                            want_targets=True)
+    assert ops[0].ok
+    assert ops[0].target_keys == (("ware", "energycells"),)
+
+
+def test_target_keys_are_EMPTY_unless_asked_for(tmp_path):
+    """The opt-in is the point: the corpus-wide store build never asks, so it pays
+    nothing. A change that made every merge do this work would be a guard with an
+    unwatched second output (gotcha #35)."""
+    diff = etree.fromstring(
+        '<diff><replace sel="//ware[@id=' + chr(39) + 'ore' + chr(39)
+        + ']/price/@average">500</replace></diff>')
+    assert _merge.apply_diff(_base_tree(), diff)[0].target_keys == ()
+    assert _merge.apply_diff(_base_tree(), diff, want_targets=True)[0].target_keys != ()
+
+
+def test_an_op_that_the_ENGINE_would_skip_is_NOT_attributed(tmp_path):
+    """The honest residue. An ambiguous selector is one X4 itself refuses (RFC 5261:
+    "Multiple matching nodes ... Skipping node"), so attributing it would claim a
+    change the game never makes. MEASURED over the live install, 189 of the 192
+    residual ops are exactly this or a selector matching nothing."""
+    tree = etree.fromstring(
+        '<wares><ware id="a"><price average="1"/></ware>'
+        '<ware id="b"><price average="2"/></ware></wares>')
+    diff = etree.fromstring(
+        '<diff><replace sel="//price/@average">9</replace></diff>')
+    ops = _merge.apply_diff(tree, diff, want_targets=True)
+    assert ops[0].ok is False and ops[0].ambiguous
+    assert ops[0].target_keys == ()
+
+
+def test_a_sel_that_matches_NOTHING_is_still_counted_not_silently_dropped(tmp_path):
+    """A step that narrows data must announce it. An unresolvable op stays in the
+    unattributed count rather than vanishing into a clean-looking zero."""
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml",
+       '<diff><replace sel="//ware[@id=' + chr(39) + 'nosuchware' + chr(39)
+       + ']/@price_average">1</replace></diff>')
+    assert _stats.candidate_wares(cand, _base_tree()) == {}
+    assert _stats.unattributed_ware_ops(cand, _base_tree()) == 1

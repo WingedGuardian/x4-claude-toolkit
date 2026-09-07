@@ -209,6 +209,19 @@ class AppliedOp:
     silent: bool = False
     skipped_if: bool = False
     ambiguous: bool = False
+    #: For each node `sel=` resolved to, the nearest ancestor-or-self carrying an
+    #: `@id`, as (tag, id). EMPTY unless apply_diff was called with want_targets.
+    #:
+    #: Captured HERE, at resolution time, and not returned as elements: later ops in
+    #: the same diff mutate the tree (gotcha #17), so a `<remove>` can detach the very
+    #: node an earlier op selected and its ancestor chain is gone by the time the
+    #: caller looks. The identity has to be taken while the node is still in place.
+    #:
+    #: Generic on purpose. `_merge` does not know what a ware is, and should not: the
+    #: caller matches on the tag it cares about. This is what lets x4stats attribute
+    #: `<replace sel="//ware[@id='ore']/@price_average">` to the ware `ore`, which no
+    #: amount of reading the op PAYLOAD can do -- there is no <ware> element in it.
+    target_keys: tuple = ()
 
 
 @dataclass
@@ -317,8 +330,25 @@ def _scalar_kind(value) -> str:
     return type(value).__name__
 
 
+def _id_key(node) -> tuple | None:
+    """(tag, @id) of the nearest ancestor-or-self carrying an id, or None.
+
+    Handles an ATTRIBUTE target too: `sel="//ware[@id='ore']/@price_average"` resolves
+    to an lxml smart string, whose getparent() is the element that owns it. Reading
+    only element targets would miss the single most common X4 patch idiom -- it is the
+    example in this project's own CLAUDE.md.
+    """
+    el = node if hasattr(node, "tag") else getattr(node, "getparent", lambda: None)()
+    while el is not None and hasattr(el, "tag"):
+        if isinstance(el.tag, str) and el.get("id"):
+            return (el.tag, el.get("id"))
+        el = el.getparent()
+    return None
+
+
 def apply_diff(tree: etree._Element, diff_root: etree._Element,
-               recorder: Recorder | None = None, source: str = "") -> list[AppliedOp]:
+               recorder: Recorder | None = None, source: str = "",
+               want_targets: bool = False) -> list[AppliedOp]:
     """Apply every op in *diff_root* to *tree* in document order. Mutates tree.
 
     With *recorder*, every mutation is stamped with an Origin(source, op, line)
@@ -417,6 +447,14 @@ def apply_diff(tree: etree._Element, diff_root: etree._Element,
                                      "type=\"@attr\" is modelled", silent))
             continue
 
+        # BEFORE the helpers run, because `_do_remove` detaches its target and a
+        # detached node has no ancestor chain left to climb (gotcha #17: the ops
+        # apply IN ORDER to a mutating tree). Opt-in, so the corpus-wide store build
+        # -- which never asks for this -- pays nothing for it.
+        keys = ()
+        if want_targets:
+            keys = tuple(k for k in (_id_key(t) for t in targets) if k is not None)
+
         origin = Origin(source, op.tag, line) if recorder is not None else None
         # The helpers return a reason string when they could NOT apply the op, else
         # None. Deriving AppliedOp.ok from that (rather than hard-coding True) is
@@ -431,7 +469,8 @@ def apply_diff(tree: etree._Element, diff_root: etree._Element,
         else:
             reason = None
         applied.append(AppliedOp(op.tag, sel, line, reason is None,
-                                 reason or f"{len(targets)} target(s)", silent))
+                                 reason or f"{len(targets)} target(s)", silent,
+                                 target_keys=keys))
     return applied
 
 

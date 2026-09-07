@@ -22,6 +22,7 @@ from __future__ import annotations
 import statistics
 import sys
 from dataclasses import dataclass, field
+import copy
 from pathlib import Path
 
 from lxml import etree
@@ -68,12 +69,40 @@ def _ware_from_el(el: etree._Element) -> Ware | None:
     )
 
 
-def effective_wares(ext_dir: Path, config: _merge.Config) -> dict[str, Ware]:
-    """Every ware in the effective tree = base + DLC + all installed mods (load order)."""
+def effective_wares(ext_dir: Path, config: _merge.Config,
+                    exclude: Path | None = None
+                    ) -> "tuple[dict[str, Ware], etree._Element | None]":
+    """Every ware in the effective tree = base + DLC + all installed mods (load order).
+
+    Returns the TREE as well, because `candidate_wares` needs something to resolve a
+    `sel=` against and rebuilding it there would merge the whole corpus twice.
+
+    *exclude* drops the mod under test, by FOLDER NAME and by content.xml ID, exactly
+    as Tier B does (`_check.py`: *"merging its own copy would pre-apply its ops and
+    mask exactly the misses we look for"*). MEASURED 2026-09-06 by getting this wrong
+    first: against a tree that already contained the candidate, 1,297 of one mod's
+    1,443 ops reported `sel matched nothing` and the attribution gained NOTHING. The
+    reason is gotcha #17 -- X4_Customizer chains selectors that predicate on a value
+    an earlier op just wrote (`price[@min='432']` then `price[@min='516']`), so
+    against a tree where they are ALREADY applied every one of them misses.
+    """
     # INSTALLED: x4stats is advisory comparison across everything you have.
     mods = _registry.mods("installed", [ext_dir])
     order = _compat.compute_load_order(mods)
     by_folder = {m["folder"]: Path(m["path"]) for m in mods}
+    if exclude is not None:
+        drop_folder = exclude.resolve().name
+        drop_id = ""
+        cx = exclude / "content.xml"
+        if cx.is_file():
+            root = _merge.parse_file(cx)
+            drop_id = (root.get("id") or "") if root is not None else ""
+        keep = {}
+        for m in mods:
+            if m["folder"] == drop_folder or (drop_id and m.get("id") == drop_id):
+                continue
+            keep[m["folder"]] = Path(m["path"])
+        by_folder = keep
     overlays = [by_folder[f] for f in order if f in by_folder]
     tree = _merge.build_effective("libraries/wares.xml", config, extra_overlays=overlays).tree
     out: dict[str, Ware] = {}
@@ -82,10 +111,11 @@ def effective_wares(ext_dir: Path, config: _merge.Config) -> dict[str, Ware]:
             w = _ware_from_el(el)
             if w is not None:
                 out[w.id] = w
-    return out
+    return out, tree
 
 
-def unattributed_ware_ops(candidate: Path) -> int:
+def unattributed_ware_ops(candidate: Path,
+                          base_tree: "etree._Element | None" = None) -> int:
     r"""Ops on libraries/wares.xml that `candidate_wares` cannot attribute.
 
     `candidate_wares` finds a ware only when a <ware> ELEMENT is present as an op
@@ -111,32 +141,93 @@ def unattributed_ware_ops(candidate: Path) -> int:
     if root is None or root.tag != "diff":
         return 0
     total = attributed = 0
+    resolved: set[int] = set()
+    if base_tree is not None:
+        work = copy.deepcopy(base_tree)
+        for i, op in enumerate(_merge.apply_diff(work, root, want_targets=True)):
+            if op.ok and any(tag == "ware" for tag, _ in op.target_keys):
+                resolved.add(i)
+    i = -1
     for op in root:
         if not isinstance(op.tag, str):
             continue                      # a comment or PI is not an op
+        i += 1
         total += 1
         if op.tag == "ware":
             attributed += 1
         elif op.tag == "add" and any(
                 isinstance(c.tag, str) and c.tag == "ware" for c in op):
             attributed += 1
+        elif i in resolved:
+            attributed += 1
     return total - attributed
 
 
-def candidate_wares(candidate: Path) -> dict[str, Ware]:
-    """Wares a candidate mod introduces or replaces in libraries/wares.xml.
+def candidate_wares(candidate: Path,
+                    base_tree: "etree._Element | None" = None) -> dict[str, Ware]:
+    """Wares a candidate mod introduces, replaces OR MODIFIES in libraries/wares.xml.
 
-    Handles both a full-file wares.xml and a <diff> that <add>s <ware> nodes.
+    Handles a full-file wares.xml, a <diff> that <add>s <ware> nodes, and -- since
+    2026-09-06, given *base_tree* -- a <diff> whose ops carry no <ware> element at all.
+
+    THE THIRD CASE IS THE COMMON ONE, and reading the op PAYLOAD can never see it:
+
+        <replace sel="//ware[@id='ore']/@price_average">500</replace>
+
+    names its ware only in the SELECTOR. That is the default X4 patch idiom and
+    literally the example in this project's own CLAUDE.md. MEASURED over the live
+    install, packed-inclusive: of 125 mods, 37 supply libraries/wares.xml and 5
+    reported "introduces/changes no wares" -- all five of those zeros wrong. The
+    largest hid 1,443 ops (1,067 replace, 132 add, 244 remove), a whole-economy price
+    and production rewrite.
+
+    Resolving a selector needs a tree to resolve it AGAINST, which is why *base_tree*
+    is required for this case and why it was a FEATURE rather than a bug fix. Without
+    one, behaviour is exactly as before -- an honest partial answer, not a wrong one.
+
+    The ops are applied IN ORDER to a DEEP COPY (gotcha #17: a diff's ops apply to a
+    tree the earlier ops have already changed, and X4_Customizer emits selectors that
+    predicate on a value an earlier op just wrote, chained 1,443 deep in one real
+    file). The copy is why this is safe to hand the caller's effective tree.
+
+    Reading the wares back out of the MUTATED copy is deliberate: it yields each ware
+    as the candidate LEAVES it, which is the value the price comparison is about.
     """
     root = _merge.overlay_root(candidate, "libraries/wares.xml")
     if root is None:
         return {}
     out: dict[str, Ware] = {}
-    wares = root.iter("ware") if root.tag == "diff" else root.findall("ware")
-    for el in wares:
+
+    if root.tag != "diff":
+        for el in root.findall("ware"):
+            w = _ware_from_el(el)
+            if w is not None:
+                out[w.id] = w
+        return out
+
+    # A payload <ware> is attributable with no tree at all; keep that path so a
+    # caller without a base_tree loses nothing it used to have.
+    for el in root.iter("ware"):
         w = _ware_from_el(el)
         if w is not None:
             out[w.id] = w
+
+    if base_tree is None:
+        return out
+
+    work = copy.deepcopy(base_tree)
+    touched: set[str] = set()
+    for op in _merge.apply_diff(work, root, want_targets=True):
+        if not op.ok:
+            continue
+        for tag, ident in op.target_keys:
+            if tag == "ware":
+                touched.add(ident)
+    for el in work.findall("ware"):
+        if el.get("id") in touched:
+            w = _ware_from_el(el)
+            if w is not None:
+                out.setdefault(w.id, w)
     return out
 
 
@@ -388,8 +479,11 @@ def main(argv: list[str] | None = None) -> int:
     config = _merge.Config(reference=Path(args.reference)) if args.reference else _merge.Config()
     candidate = Path(args.candidate)
     _input.require_mod_dir(candidate, "candidate mod folder")
-    eff = effective_wares(ext_dir, config)
-    cand = candidate_wares(candidate)
+    # The comparison POOL is everything installed; the tree the candidate's
+    # selectors resolve against must NOT contain the candidate.
+    eff, _ = effective_wares(ext_dir, config)
+    _, eff_tree = effective_wares(ext_dir, config, exclude=candidate)
+    cand = candidate_wares(candidate, eff_tree)
     print(render_wares(compare_wares(cand, eff),
-                       unattributed_ware_ops(candidate)))
+                       unattributed_ware_ops(candidate, eff_tree)))
     return 0
