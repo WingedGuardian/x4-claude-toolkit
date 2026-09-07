@@ -80,6 +80,17 @@ def _hash_content(reference: Path, extensions: Path) -> str:
 
 
 def fingerprint(reference: Path, extensions: Path, engine_dir: Path) -> dict:
+    """The two axes, and DELIBERATELY not the per-folder vector.
+
+    `_freshness.fingerprint` also carries `detail` — the 190 KB vector that lets
+    `x4modlist changed` name which mod moved. It is NOT stamped here on purpose:
+    `ask.py` re-reads `coverage-<db>.json` on EVERY query to decide whether a
+    negative claim is admissible, and inflating that file ~40x would tax the hot
+    path to duplicate a baseline the sqlite store and `x4modlist snapshot`
+    already provide. The content HASH is delegated (`_hash_content`), so the two
+    still agree about *whether* the world moved; only the localisation lives
+    elsewhere.
+    """
     return {"content": _hash_content(reference, extensions),
             "engine": _hash_engine(engine_dir)}
 
@@ -142,8 +153,9 @@ def check(coverage_path: Path, reference: Path, extensions: Path,
     now = fingerprint(reference, extensions, engine_dir)
     reasons = []
     if stored.get("content") != now["content"]:
-        reasons.append("content changed: a mod was added, removed or updated "
-                       "(or the reference tree moved)")
+        reasons.append("content changed: a mod was added, removed, updated, "
+                       "toggled, or one of its files was edited "
+                       "(run `x4modlist changed` to see which)")
     if db in ENGINE_DEPENDENT and stored.get("engine") != now["engine"]:
         reasons.append("engine changed: the merge code that produced this tree has "
                        "been edited, so the SAME inputs would now merge differently")
