@@ -118,7 +118,23 @@ function Detect-XRCat {
 # Paths never copied between toolkits, pruned from the destination BOTH before and
 # after the copy. One list, named once: two passes over two hand-written lists is how
 # they drift, and the defect this fixes was one of the passes not running at all.
-$X4CopyPrune = @('tools\x4validate\.venv','tools\x4validate\.pytest_cache','tools\x4validate\.mutation-probe-pristine')
+# Mirrors X4_COPY_PRUNE in install.sh -- machine-local paths that must not travel.
+$X4CopyPrune = @('tools\x4validate\.venv',
+                 'tools\x4validate\.pytest_cache',
+                 'tools\x4validate\.mutation-probe-pristine',
+                 '.claude\backups',
+                 '.claude\hooks\__pycache__',
+                 '.claude\hooks\.pytest_cache',
+                 'scripts\__pycache__',
+                 'tools\.pytest_cache',
+                 'tools\basex\__pycache__',
+                 'tools\basex\basex\.basex',
+                 'tools\x4validate\.perf-baseline.json',
+                 'tools\x4validate\.obtainability-baseline.json',
+                 'tools\x4validate\gates\__pycache__',
+                 'tools\x4validate\scripts\__pycache__',
+                 'tools\x4validate\tests\__pycache__',
+                 'tools\x4validate\x4validate\__pycache__')
 
 # Copy $SRC\REL to DEST\REL, never descending into a pruned relative path.
 #
@@ -297,6 +313,14 @@ function Copy-Excluding([string]$rel, [string]$dest) {
     if ($junk -like ($rel + [char]92 + '*') -or $junk -like ($rel + '/*')) {
       $needsWalk = $true
     }
+  }
+  # AND EVERY SIBLING of a keep-local file -- .bak-<stamp> and .tmp<pid> carry
+  # X4_NEXUS_KEY and travelled because this matched two literal names. The
+  # .example templates SHIP, so they are re-included, exactly as .gitignore
+  # negates them.
+  foreach ($junk in $X4KeepLocal) {
+    if ($rel -ieq ($junk + '.example')) { continue }
+    if ($rel -ilike ($junk + '.*')) { return }
   }
   $isDir = Test-Path -LiteralPath $fromPath -PathType Container
   $target = Join-Path $dest $rel
@@ -782,6 +806,39 @@ function Install-Global($t) {
   New-Item -ItemType Directory -Force -Path (Join-Path $hc 'skills'),(Join-Path $hc 'agents') | Out-Null
   # Track exactly what WE copy - the $CLAUDE_PROJECT_DIR rewrite below must never
   # touch a user's pre-existing skills/agents (they may use that variable on purpose).
+  # LOCKED TARGETS IN THIS DESTINATION TOO. Test-LockedTargetsPrecheck covers the
+  # 16 copy items against $Toolkit; this arm writes to a SECOND destination that
+  # neither precheck knew about. MEASURED: Copy-Item -Force CLEARS the read-only
+  # attribute, so a user's edited, locked skill was overwritten and this returned
+  # 0 -- and Assert-GlobalOverExisting's own refusal says "this method keeps no
+  # backup of skills", so the loss is unrecoverable. install.sh skipped the same
+  # file and also returned 0. Opposite outcomes, both success: exactly what
+  # 18b220d called unacceptable, one destination later.
+  $blockedG = @()
+  Get-ChildItem -Directory -LiteralPath (Join-Path $t '.claude\skills') -Filter 'x4-*' -ErrorAction SilentlyContinue |
+    ForEach-Object {
+      $dstRoot0 = Join-Path (Join-Path $hc 'skills') $_.Name
+      if (Test-Path -LiteralPath $dstRoot0) {
+        foreach ($f in (Get-ChildItem -Recurse -File -LiteralPath $dstRoot0 -ErrorAction SilentlyContinue)) {
+          try { if ($f.IsReadOnly) { $blockedG += $f.FullName } } catch { }
+        }
+      }
+    }
+  Get-ChildItem -File -LiteralPath (Join-Path $t '.claude\agents') -Filter '*.md' -ErrorAction SilentlyContinue |
+    ForEach-Object {
+      $a0 = Join-Path (Join-Path $hc 'agents') $_.Name
+      if (Test-Path -LiteralPath $a0) {
+        try { if ((Get-Item -LiteralPath $a0 -Force).IsReadOnly) { $blockedG += $a0 } } catch { }
+      }
+    }
+  if ($blockedG.Count -gt 0) {
+    Write-Host ("REFUSING: " + $blockedG.Count + " file(s) in " + $hc + " are READ-ONLY and this would overwrite them.")
+    foreach ($b in ($blockedG | Select-Object -First 8)) { Write-Host ("      " + $b) }
+    if ($blockedG.Count -gt 8) { Write-Host ("      ... and " + ($blockedG.Count - 8) + " more NOT LISTED") }
+    Write-Host '      Unlock them, or move them aside, and re-run. Nothing has been changed.'
+    exit 1
+  }
+
   $copied = @()
   Get-ChildItem -Directory -LiteralPath (Join-Path $t '.claude\skills') -Filter 'x4-*' -ErrorAction SilentlyContinue |
     ForEach-Object {

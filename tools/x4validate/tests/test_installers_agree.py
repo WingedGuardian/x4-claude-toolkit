@@ -114,8 +114,17 @@ def test_both_installers_back_up_the_path_config_before_rewriting_it():
     never got it. Fourth 'fixed in bash, absent in PowerShell' of the release."""
     sh = SH.read_text(encoding="utf-8")
     ps = PS1.read_text(encoding="utf-8")
-    assert "x4-paths.env.bak-" in sh, "install.sh no longer backs up the path config"
-    assert "x4-paths.env.bak-" in ps, "install.ps1 no longer backs up the path config"
+    # THE BACKUP, not the reassurance. This asserted a literal that occurs exactly
+    # once per file -- inside the echo/Write-Host that ANNOUNCES the backup, never
+    # in the code that takes one. Mutants deleting the backup and keeping the
+    # message stayed GREEN, which is precisely the failure the code's own comment
+    # names: "a backup that silently did not happen is worse than none, because
+    # the message above would have said it did".
+    assert 'cp "$f" "$f.bak-' in sh, (
+        "install.sh no longer COPIES the path config to a .bak (a message saying "
+        "it did is not the same thing)")
+    assert "Copy-Item -LiteralPath $f -Destination ($f + '.bak-'" in ps, (
+        "install.ps1 no longer COPIES the path config to a .bak")
 
 
 def test_neither_installer_copies_the_tree_WHOLESALE():

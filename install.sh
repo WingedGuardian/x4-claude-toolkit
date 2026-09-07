@@ -147,7 +147,14 @@ MISSING=""
 #: Paths never copied between toolkits, pruned from the destination BOTH before and
 #: after the copy. One list, named once: two passes over two hand-written lists is how
 #: they drift, and the whole defect here was one of the passes not running.
-X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/x4validate/.mutation-probe-pristine"
+#: Machine-local paths that must not travel. `.gitignore` is already the correct
+#: enumeration of 'must not leave this machine' and nothing derived this from it,
+#: so the copy carried 217 files of `.claude/backups/`, every __pycache__ and
+#: .pytest_cache under the copy set, and `.perf-baseline.json` -- whose own
+#: .gitignore entry says MACHINE-LOCAL by design because wall-clock differs per
+#: machine, and which the installer then copied to another machine for
+#: perf_guard to compare against a stranger's timings.
+X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/x4validate/.mutation-probe-pristine .claude/backups .claude/hooks/__pycache__ .claude/hooks/.pytest_cache scripts/__pycache__ tools/.pytest_cache tools/basex/__pycache__ tools/basex/basex/.basex tools/x4validate/.perf-baseline.json tools/x4validate/.obtainability-baseline.json tools/x4validate/gates/__pycache__ tools/x4validate/scripts/__pycache__ tools/x4validate/tests/__pycache__ tools/x4validate/x4validate/__pycache__"
 
 #: Per-machine files that must NEVER travel from the source: they hold THIS
 #: machine paths and secrets, and the destination copy is the user own.
@@ -192,6 +199,24 @@ copy_item() {   # copy_item REL DEST
   for junk in $X4_COPY_PRUNE $X4_KEEP_LOCAL; do
     [ "$junk" = "$rel" ] && return 0
     case "$junk" in "$rel"/*) needs_walk=1 ;; esac
+  done
+  # AND EVERY SIBLING OF A KEEP-LOCAL FILE, not just the exact name. `.bak-<stamp>`
+  # and `.tmp<pid>` sit beside the config, carry X4_NEXUS_KEY by construction, and
+  # travelled to the destination because this matched two literal strings.
+  #
+  # ★ The same arc widened .gitignore from those two names to `x4-paths.env.*` and
+  # explained why -- and left THIS matching exactly. The ignore rule and the copy
+  # rule describe one set; only one of them had been told. When you generalise a
+  # rule, find its twin.
+  #
+  # `.example` is re-included for the same reason .gitignore negates it: the
+  # templates SHIP, and a blanket prefix skip stops the installer installing its
+  # own example files.
+  for junk in $X4_KEEP_LOCAL; do
+    case "$rel" in
+      "$junk".example) : ;;
+      "$junk".*)       return 0 ;;
+    esac
   done
   if [ ! -d "$src" ] || [ "$needs_walk" = 0 ]; then
     mkdir -p "$dest/$(dirname "$rel")"
@@ -315,6 +340,7 @@ _owned_lines_new() {   # _owned_lines_new TOOLKIT_DIR
 #: excluded deliberately: carried keys come FROM the file so they can never
 #: differ, and a timestamp header changes on every run, which would make every
 #: upgrade look like a change and defeat the whole check.
+CR=$(printf '\r')   # one carriage return, built once
 _owned_lines_old() {   # _owned_lines_old CONFIG_FILE
   local f="$1" line key
   # EXISTS-BUT-NOT-A-READABLE-FILE is its own answer. `[ -f ]` is false for a
@@ -337,6 +363,13 @@ _owned_lines_old() {   # _owned_lines_old CONFIG_FILE
     return 0
   fi
   while IFS= read -r line || [ -n "$line" ]; do
+    # STRIP THE CR. `read -r` keeps it and `_owned_lines_new` renders without one,
+    # so a config saved by any Windows editor compared UNEQUAL forever: bash
+    # refused the documented locked upgrade with a remedy that cannot help, while
+    # PowerShell's Get-Content strips CR and reported "already matches". One
+    # input, opposite verdicts -- and the test written for that path could not see
+    # it, because the installer it had just run wrote LF.
+    line="${line%$CR}"
     case "$line" in '#'*|'') continue ;; *=*) key="${line%%=*}" ;; *) continue ;; esac
     case " X4_TOOLKIT X4_GAME X4_REFERENCE X4_PROFILE X4_DEBUGLOG X4_MODS X4_EXTENSIONS XRCATTOOL " in
       *" $key "*) echo "$line" ;;
@@ -599,16 +632,51 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
   # cannot.
   require_jq_for_global   # ONE implementation; the arm calls it before any write
 
-  mkdir -p "$home_claude/skills" "$home_claude/agents"
-  local s a copied=0
+  # LOCKED TARGETS IN THIS DESTINATION TOO. precheck_locked_targets covers the
+  # 16 copy items against $TOOLKIT; this arm writes to a SECOND destination that
+  # neither precheck knew about, and the invariant is the same one 18b220d
+  # states: refusing before either installer writes is the only answer correct
+  # for both. MEASURED before this: install.ps1 CLOBBERED a read-only skill via
+  # Copy-Item -Force and returned 0; install.sh skipped it and ALSO returned 0.
+  local blocked="" _t
   for s in "$TOOLKIT/.claude/skills/"x4-*; do
     [ -e "$s" ] || continue
-    cp -r "$s" "$home_claude/skills/" && copied=$((copied + 1))
+    _t="$home_claude/skills/$(basename "$s")"
+    [ -e "$_t" ] && [ ! -w "$_t" ] && blocked="$blocked$_t
+"
   done
   for a in "$TOOLKIT/.claude/agents/"*.md; do
     [ -e "$a" ] || continue
-    cp "$a" "$home_claude/agents/" && copied=$((copied + 1))
+    _t="$home_claude/agents/$(basename "$a")"
+    [ -e "$_t" ] && [ ! -w "$_t" ] && blocked="$blocked$_t
+"
   done
+  if [ -n "$blocked" ]; then
+    echo "REFUSING: file(s) in $home_claude are READ-ONLY and this would overwrite them." >&2
+    printf '%s' "$blocked" | head -8 | sed 's/^/      /' >&2
+    echo "      Unlock them, or move them aside, and re-run. Nothing has been changed." >&2
+    exit 1
+  fi
+
+  mkdir -p "$home_claude/skills" "$home_claude/agents"
+  local s a copied=0 failed_copies=0
+  # `cp … && copied=…` is an && LIST, which `set -e` does NOT trip -- so a failed
+  # copy was invisible and the run still printed "install complete" at rc 0. This
+  # file already carries a comment about that exact construct for the jq merge,
+  # three functions below. Counted explicitly instead.
+  for s in "$TOOLKIT/.claude/skills/"x4-*; do
+    [ -e "$s" ] || continue
+    if cp -r "$s" "$home_claude/skills/"; then copied=$((copied + 1)); else failed_copies=$((failed_copies + 1)); fi
+  done
+  for a in "$TOOLKIT/.claude/agents/"*.md; do
+    [ -e "$a" ] || continue
+    if cp "$a" "$home_claude/agents/"; then copied=$((copied + 1)); else failed_copies=$((failed_copies + 1)); fi
+  done
+  if [ "$failed_copies" -gt 0 ]; then
+    echo "ERROR: $failed_copies item(s) could not be copied into $home_claude." >&2
+    echo "       This method keeps no backup, so a partial install is not recoverable." >&2
+    exit 1
+  fi
   # "Copied nothing" must never print as "installed". MEASURED 2026-09-02: with the x4
   # skills removed this printed `installed x4 skills + agents` and exited 0.
   # install.ps1:173-178 has had this refusal; bash had none.
@@ -996,10 +1064,15 @@ esac
 FAILED=""
 add_failed() { FAILED="$FAILED${FAILED:+, }$1"; }
 
-# GATED HERE TOO, not only in the writers. setup.sh and bin/unpack-reference.sh are
-# invoked at TOP LEVEL, so `refuse_if_dry_run` placed inside copy_toolkit /
-# write_paths_env / install_global_claude is STRUCTURALLY unable to cover them --
-# it only ever ran because one of those happened to exit first. refuse_if_dry_run's
+# A BACKSTOP, and today it is UNREACHED -- stated rather than implied. Every
+# dispatch arm ends in a writer whose first statement is `refuse_if_dry_run`,
+# which exits 0, so control does not arrive here on any path measured (all three
+# arms, both installers: this branch printed zero times). It is kept because the
+# writers' gate covering these two is an accident of ORDERING rather than a
+# property: setup.sh and bin/unpack-reference.sh are invoked at TOP LEVEL,
+# outside all three writers, so any future arm not ending in a writer would run
+# them under --dry-run. Dead today, correct tomorrow -- and nobody should read it
+# as the thing currently doing the work. refuse_if_dry_run's
 # own docstring claimed "every write goes through" those three; it does not, and
 # these two are the counter-example. A dry run that syncs dependencies or unpacks
 # 60 GB of game archives is not a preview.

@@ -70,7 +70,21 @@ _FORBIDDEN_FRAGMENTS = ("x4 foundations", "desktop/modding", "egosoft",
 
 
 def _refuse_unless_sandboxed(tmp_path: pathlib.Path, *paths: pathlib.Path) -> None:
+    """Every path the installer may WRITE must be inside the pytest sandbox.
+
+    ⚠ CLAUDE_CONFIG_DIR and HOME are checked too, and they were the hole: the
+    global arm writes to `<claude-dir>/skills`, `<claude-dir>/agents` and
+    `settings.json`, which are NOT among the six path flags. Only one test drove
+    that arm and only with --dry-run, so the first non-dry-run global case anyone
+    added would have written into the developer's real ~/.claude. Guarding the
+    flags and not the destination is the same shape as a precheck that covers one
+    file of twenty-six.
+    """
     root = tmp_path.resolve()
+    # The paths PASSED here, not the ambient environment: the caller overrides
+    # CLAUDE_CONFIG_DIR/HOME for the child, so validating os.environ would refuse
+    # on the developer's real home while the child never sees it. Check what the
+    # child will actually get.
     for p in paths:
         rp = pathlib.Path(p).resolve()
         if root not in rp.parents and rp != root:
@@ -95,7 +109,8 @@ def _fresh(tmp_path: pathlib.Path) -> pathlib.Path:
     return dest
 
 def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra: str,
-             method: str = "separate", from_dest: bool = False):
+             method: str = "separate", from_dest: bool = False,
+             source: pathlib.Path | None = None):
     """Run ONE of the two installers with identical intent.
 
     Parameterised rather than duplicated, because the point is that both reach the
@@ -104,8 +119,9 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     whether they clean up -- which is exactly what was true here: install.ps1 had
     `finally` where install.sh had none, and both still failed this path.
     """
+    fake_home = tmp_path / "fake-claude-home"
     _refuse_unless_sandboxed(tmp_path, dest, tmp_path / "game",
-                             tmp_path / "profile", tmp_path / "mods")
+                             tmp_path / "profile", tmp_path / "mods", fake_home)
     common = {
         "method": method,
         "toolkit": dest.as_posix(),
@@ -134,7 +150,7 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
         exe = _bash()
         if exe is None:
             pytest.skip("no Git Bash on this machine")
-        script = (dest / "install.sh") if from_dest else INSTALL_SH
+        script = (dest / "install.sh") if from_dest else (source / "install.sh" if source else INSTALL_SH)
         cmd = [exe, script.as_posix()]
         for k, v in common.items():
             cmd += ["--" + k, v]
@@ -144,14 +160,21 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
         exe = shutil.which("pwsh") or shutil.which("powershell")
         if exe is None:
             pytest.skip("no PowerShell on this machine")
-        script = (dest / "install.ps1") if from_dest else INSTALL_PS1
+        script = (dest / "install.ps1") if from_dest else (source / "install.ps1" if source else INSTALL_PS1)
         cmd = [exe, "-NoProfile", "-File", script.as_posix()]
         for k, v in common.items():
             cmd += ["-" + k[:1].upper() + k[1:], v]
         cmd += ["-OverExisting", "-Yes"]
         cmd += ["-DryRun" if f == "dry-run" else "-" + f for f in flags]
-    cwd = dest.as_posix() if from_dest else ROOT.as_posix()
-    return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    cwd = dest.as_posix() if from_dest else (source.as_posix() if source else ROOT.as_posix())
+    # The global arm writes to <claude-dir>, which is NOT one of the six path
+    # flags. Pin it into the sandbox for every run rather than hoping no test
+    # ever drives that arm without --dry-run.
+    env = dict(os.environ)
+    env["CLAUDE_CONFIG_DIR"] = fake_home.as_posix()
+    env["HOME"] = tmp_path.as_posix()
+    env["USERPROFILE"] = tmp_path.as_posix()
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, env=env)
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
@@ -475,3 +498,101 @@ def test_an_UNREADABLE_config_REFUSES_with_a_crafted_message(installer, tmp_path
         % out[-1200:])
     assert "nothing has been changed" in low or "untouched" in low, (
         "the refusal does not tell the user whether anything was written:\n%s" % out[-1200:])
+def _synthetic_source(tmp_path: pathlib.Path) -> pathlib.Path:
+    """A toolkit source that has been installed FROM at least once.
+
+    Which is every maintainer checkout: `.bak-<stamp>` is created on every
+    config-changing run and accumulates, and `.tmp<pid>` survives a crash between
+    render and move. A pristine clone has neither, which is why nothing noticed.
+    """
+    src = tmp_path / "src"
+    (src / ".claude").mkdir(parents=True)
+    for name in ("install.sh", "install.ps1", "setup.sh"):
+        shutil.copy2(ROOT / name, src / name)
+    secret = 'X4_NEXUS_KEY="SECRET_FROM_THE_SOURCE_MACHINE"\n'
+    (src / ".claude" / "x4-paths.env").write_text(secret, encoding="utf-8")
+    (src / ".claude" / "x4-paths.env.bak-20260101-000000").write_text(secret, encoding="utf-8")
+    (src / ".claude" / "x4-paths.env.tmp4242").write_text(secret, encoding="utf-8")
+    (src / ".claude" / "settings.local.json.bak-20260101-000000").write_text(secret, encoding="utf-8")
+    # the two TEMPLATES ship and must still travel
+    (src / ".claude" / "x4-paths.env.example").write_text("X4_TOOLKIT=\n", encoding="utf-8")
+    (src / ".claude" / "settings.local.json.example").write_text("{}\n", encoding="utf-8")
+    return src
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_SOURCE_machines_config_siblings_do_not_travel(installer, tmp_path):
+    """The keep-list matched two EXACT names; the siblings beside them travelled.
+
+    MEASURED before the fix, both installers: a source carrying
+    `x4-paths.env.bak-<stamp>` and `x4-paths.env.tmp<pid>` copied BOTH into the
+    destination, rc 0, silent -- and the carry-over deliberately preserves
+    X4_NEXUS_KEY into every rewrite, so each holds the source machine's key plus
+    its absolute paths.
+
+    ★ This is the previous defect with the roles REVERSED. In the same arc I
+    widened `.gitignore` from two exact names to `x4-paths.env.*` and wrote a
+    comment explaining why -- and did not widen the COPY rule in step. The ignore
+    rule and the copy rule describe the same set and only one of them knew it.
+
+    Both directions, because a blanket prefix skip would stop shipping the
+    templates the installer is supposed to install.
+    """
+    src = _synthetic_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src)
+    # rc is NOT asserted: setup.sh cannot succeed against a synthetic source with
+    # no tools/x4validate, and that failure belongs to the fixture rather than the
+    # installer. What matters is what the COPY did.
+    #
+    # DENOMINATOR FIRST. Without it, "no secret travelled" is equally true of a
+    # run that copied nothing at all.
+    assert (dest / ".claude").is_dir(), "the copy did not run; this proves nothing"
+
+    leaked = sorted(p.relative_to(dest).as_posix()
+                    for p in dest.rglob("*") if p.is_file()
+                    and "SECRET_FROM_THE_SOURCE_MACHINE" in p.read_text(encoding="utf-8", errors="ignore"))
+    assert not leaked, (
+        "the source machine's secret travelled to the destination in %d file(s): %s"
+        % (len(leaked), leaked))
+
+    for tpl in ("x4-paths.env.example", "settings.local.json.example"):
+        assert (dest / ".claude" / tpl).is_file(), (
+            "%s did not travel -- the skip is too broad and the installer no "
+            "longer ships its own template" % tpl)
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_CRLF_config_is_still_recognised_as_UNCHANGED(installer, tmp_path):
+    """One input, and the two installers reached opposite verdicts on it.
+
+    bash reads with `read -r`, which KEEPS the trailing carriage return, while the
+    renderer emits none -- so a config saved by any Windows editor compared
+    unequal forever. PowerShell's Get-Content strips it and said "already
+    matches".
+
+    MEASURED before the fix, same fixture, values byte-identical apart from line
+    endings: install.sh rc 1 "REFUSING: your path config must change, and it is
+    READ-ONLY", install.ps1 rc 0 "already matches these paths; left untouched".
+    The config header says "edit freely" and CLAUDE.md names Notepad++ as the
+    editor, so opening the file once was enough -- and the refusal's remedy
+    (unlock, re-run, re-lock) cannot help, because the "change" is invisible.
+    Unlocked, bash instead rewrote the config on EVERY run, losing the
+    hand-written comments the fast path exists to preserve.
+
+    `test_UPGRADING_over_a_LOCKED_config_succeeds` could not see this: the
+    installer it had just run wrote LF.
+    """
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    cfg = dest / ".claude" / "x4-paths.env"
+    body = cfg.read_bytes()
+    assert b"\r\n" not in body, "fixture assumption broken: the installer wrote CRLF"
+    cfg.write_bytes(body.replace(b"\n", b"\r\n"))          # the only change
+    cfg.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # what x4lock does
+
+    r = _install(installer, tmp_path, dest)
+    out = (r.stdout + r.stderr).lower()
+    assert r.returncode == 0, (
+        "a CRLF config was treated as CHANGED, so the locked upgrade was refused "
+        "over line endings alone:\n%s" % (r.stdout + r.stderr)[-1000:])
+    assert "already matches" in out, (
+        "the config was not recognised as unchanged:\n%s" % (r.stdout + r.stderr)[-1000:])
