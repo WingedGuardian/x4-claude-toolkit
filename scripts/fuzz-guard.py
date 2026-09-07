@@ -582,6 +582,31 @@ def _m_wrap_nice(c):
     return _retitle(c, lambda v: "nice -n 5 " + v)
 
 
+# WRAPPER FLAGS WHOSE VALUE IS A WORD. The four wrapper mutators above all use a BARE
+# wrapper or a NUMERIC argument, which is exactly why none of them ever produced this
+# shape -- and `env -u X4_GAME rm -rf <game>` walked past all three hard blocks until
+# 2026-09-06. The existing set was grown from wrappers that had already bitten us;
+# these are grown from the GRAMMAR of a wrapper prefix instead (CLAUDE.md #36).
+def _m_wrap_env_unset(c):
+    return _retitle(c, lambda v: "env -u X4_GAME " + v)
+
+
+def _m_wrap_env_chdir(c):
+    return _retitle(c, lambda v: "env -C /tmp " + v)
+
+
+def _m_wrap_sudo_user(c):
+    return _retitle(c, lambda v: "sudo -u root " + v)
+
+
+def _m_wrap_timeout_signal(c):
+    return _retitle(c, lambda v: "timeout -s KILL 5 " + v)
+
+
+def _m_wrap_stdbuf_split(c):
+    return _retitle(c, lambda v: "stdbuf -o L " + v)
+
+
 def _m_verb_abspath(c):
     return _retitle(c, lambda v: "/usr/bin/" + v)
 
@@ -690,6 +715,11 @@ MUTATORS = [
     ("WRAPPER exec", _m_wrap_exec),
     ("WRAPPER setsid", _m_wrap_setsid),
     ("WRAPPER nice", _m_wrap_nice),
+    ("WRAPPER env -u VALUE", _m_wrap_env_unset),
+    ("WRAPPER env -C VALUE", _m_wrap_env_chdir),
+    ("WRAPPER sudo -u VALUE", _m_wrap_sudo_user),
+    ("WRAPPER timeout -s VALUE", _m_wrap_timeout_signal),
+    ("WRAPPER stdbuf -o VALUE", _m_wrap_stdbuf_split),
     # --- STDIN axis -----------------------------------------------------------
     ("STDIN echo into bash", _m_stdin_echo_pipe),
     ("STDIN printf into sh", _m_stdin_printf_pipe),
@@ -909,9 +939,20 @@ _HOLES = [
      + "            yield c, False" + NL
      + "            i += 1" + NL
      + "            yield s[i], False"),
-    ("heredoc bodies re-enter the scan",
-     "    stripped = body",
-     "    stripped = strip_heredocs(cmd)"),
+    # RE-ANCHORED 2026-09-06. This used to plant `stripped = strip_heredocs(cmd)` over
+    # `stripped = body`. Both lines are gone: the longjob loop moved onto `all_cmds`
+    # (B4) and that left `stripped` DEAD, so the locals were removed. The fuzzer then
+    # REFUSED with rc 2 rather than reporting a clean run over a control it could not
+    # plant -- which is the behaviour that makes its greens mean anything, and the
+    # second time in one day that a fix orphaned an anchor guarding it.
+    #
+    # The replacement is a REAL historical hole of the same class and a stronger one:
+    # `durable_python_open_w` read `segments(body)` while the carrier list existed,
+    # and that single defect produced 21 measured bypasses on 2026-09-06 -- every one
+    # a wrapper, carrier or stdin form the carrier walk already resolves.
+    ("a rule reads `body` while the path rules read `all_cmds`",
+     "            for c in all_cmds for sg in segments(c)),",
+     "            for sg in segments(body)),"),
 ]
 
 

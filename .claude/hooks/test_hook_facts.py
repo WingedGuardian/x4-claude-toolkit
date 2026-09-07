@@ -2688,7 +2688,12 @@ def test_a_WRAPPER_does_not_hide_a_destructive_git():
     """B7, the B3 shape one step out: the scan stepped over leading assignments and
     not over leading wrappers, so `verb()` said git while the scan called the literal
     token `git` the SUBCOMMAND. `timeout` matters most -- CLAUDE.md #25 recommends it."""
-    for pre in ("exec ", "setsid ", "nice -n 5 ", "timeout 5 ", "env FOO=1 "):
+    # The value-flag spellings are here too (B10): these two rules do their OWN token
+    # scan rather than keying off verb(), so fixing _verb_token alone left 10 bypasses
+    # measured by the fuzzer -- `env -u X4_GAME git -C <game> clean -fdx` among them.
+    for pre in ("exec ", "setsid ", "nice -n 5 ", "timeout 5 ", "env FOO=1 ",
+                "env -u X4_GAME ", "env -C /tmp ", "sudo -u root ",
+                "timeout -s KILL 5 ", "stdbuf -o L "):
         cmd = pre + 'git -C "' + ROOTS["game"] + '" clean -fdx'
         assert F(cmd)["git_wipes_x4_dir"] is True, pre
         cmd = pre + 'git -C "' + ROOTS["game"] + '" checkout -- f.py'
@@ -2753,3 +2758,59 @@ def test_the_PIPESTATUS_escape_hatch_survives_the_expansion_awareness():
     assert F("git commit -m " + chr(39) + "fix $? after a pipe" + chr(39)
              )["dollarq_after_pipe"] is not True
     assert F('ls; echo "rc=$?"')["dollarq_after_pipe"] is not True
+
+
+# ------------------- B10: a wrapper flag whose VALUE is a word became the verb
+# MEASURED 2026-09-06, and this is a HARD BLOCK bypass, not a near miss:
+#   env -u X4_GAME rm -rf <game>   -> verb `x4_game`   -> ALLOW
+#   sudo -u root    rm -rf <game>  -> verb `root`      -> ALLOW
+#   env -C /tmp     rm -rf <game>  -> verb `tmp`       -> ALLOW
+#   timeout -s KILL 5 rm -rf ...   -> verb `kill`      -> ALLOW
+# _verb_token skips any `-flag`, and after a wrapper it also skips a _WRAPPER_ARG --
+# but that matches only a number, `{}` or `+`. `nice -n 5` and `xargs -I{}` worked
+# purely because their values are numeric or braced; a WORD value stayed standing as
+# the command name. PRE-ARC. `env -u VAR cmd` is what this workspace types to clear a
+# root, so it is the reachable one.
+
+
+def test_a_wrapper_flag_VALUE_is_not_the_command():
+    """The verb, directly. Each of these resolved to its flag's value before."""
+    for seg, want in [
+        ("env -u X4_GAME rm -rf /x", "rm"),
+        ("env -C /tmp rm -rf /x", "rm"),
+        ("sudo -u root rm -rf /x", "rm"),
+        ("timeout -s KILL 5 rm -rf /x", "rm"),
+        ("stdbuf -o L rm -rf /x", "rm"),
+    ]:
+        assert H._verb_name(H.verb(seg)) == want, seg
+
+
+def test_those_spellings_still_reach_the_game_HARD_BLOCK():
+    """The consequence. A verb-keyed miss takes every rule with it."""
+    for pre in ("env -u X4_GAME ", "env -C /tmp ", "sudo -u root ",
+                "timeout -s KILL 5 ", "stdbuf -o L "):
+        cmd = pre + 'rm -rf "' + ROOTS["game"] + '"'
+        assert F(cmd)["rm_hits_game"] is True, cmd
+
+
+def test_the_value_skip_is_PER_WRAPPER_not_a_union():
+    """The twin that keeps the fix from being worse than the bug. Consuming a value a
+    flag does NOT take would eat the REAL verb and return its first argument -- a
+    miss, which is strictly less safe. `-u` belongs to env/sudo; it must not be
+    honoured for a wrapper that has no such flag."""
+    assert H._verb_name(H.verb("nice -u rm -rf /x")) == "rm"
+    assert H._verb_name(H.verb("nohup -u rm -rf /x")) == "rm"
+
+
+def test_the_numeric_and_braced_forms_that_already_worked_still_work():
+    """Falsification twin: these passed before via _WRAPPER_ARG and must not regress."""
+    assert H._verb_name(H.verb("nice -n 5 rm -rf /x")) == "rm"
+    assert H._verb_name(H.verb("timeout 5 rm -rf /x")) == "rm"
+    assert H._verb_name(H.verb("xargs -I{} rm -rf /x")) == "rm"
+
+
+def test_a_wrapper_flag_does_not_swallow_an_ORDINARY_command():
+    """And the guard must not start firing on innocent work."""
+    f = F("env -u X4_GAME ls -la")
+    assert f["rm_hits_game"] is not True
+    assert H._verb_name(H.verb("env -u X4_GAME ls -la")) == "ls"

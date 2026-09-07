@@ -1181,6 +1181,48 @@ def _verb_name(t: str) -> str:
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
+#: Wrapper flags that consume the NEXT token as their VALUE, per wrapper.
+#:
+#: MEASURED 2026-09-06: without this, `env -u X4_GAME rm -rf <game>` resolved its verb
+#: to `x4_game` and walked past ALL THREE HARD BLOCKS. So did `sudo -u root rm`,
+#: `env -C /tmp rm` and `timeout -s KILL 5 rm`. The cause is narrow: _verb_token skips
+#: any `-flag`, and after a wrapper it also skips a _WRAPPER_ARG -- but that pattern
+#: matches only a number, `{}` or `+`, so a flag whose value is a WORD left the word
+#: standing as the command name. `nice -n 5` and `xargs -I{}` worked only because
+#: their values happen to be numeric or braced.
+#:
+#: `env -u VAR cmd` is not exotic; it is what this workspace types to clear a root.
+#:
+#: PER WRAPPER, and deliberately not a union set. Skipping a value that a flag does
+#: NOT take would consume the REAL verb and return its first argument instead -- a
+#: miss, i.e. strictly less safe than the bug. Only the attached forms (`-oL`,
+#: `--flag=value`) need no skip, and they do not match these exact tokens.
+_WRAPPER_VALUE_OPTS = {
+    "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
+    "sudo": {"-u", "--user", "-g", "--group", "-p", "--prompt", "-h", "--host",
+             "-C", "--close-from", "-r", "--role", "-t", "--type", "-U", "--other-user"},
+    "doas": {"-u", "-C"},
+    "timeout": {"-s", "--signal", "-k", "--kill-after"},
+    "xargs": {"-I", "-i", "--replace", "-n", "--max-args", "-P", "--max-procs",
+              "-d", "--delimiter", "-E", "-L", "--max-lines", "-s", "--max-chars",
+              "-a", "--arg-file"},
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-c", "--class", "-n", "--classdata", "-p", "--pid"},
+    "stdbuf": {"-i", "--input", "-o", "--output", "-e", "--error"},
+    "strace": {"-o", "-e", "-p", "-s"},
+    "ltrace": {"-o", "-e", "-p", "-s"},
+    "proxychains": {"-f"},
+    "chronic": set(),
+    "setsid": set(),
+    "nohup": set(),
+    "time": set(),
+    "command": set(),
+    "builtin": set(),
+    "unbuffer": set(),
+    "catchsegv": set(),
+}
+
+
 def _verb_token(seg: str) -> str:
     """The RAW token carrying the command name, exactly as written.
 
@@ -1190,15 +1232,26 @@ def _verb_token(seg: str) -> str:
     _verb_name(_verb_token(seg)) -- so all 22 call sites are untouched.
     """
     seen_wrapper = False
+    wrapper = ""
+    want_value = False
     for t, quoted in tokens(seg):
         if quoted:
             return t
+        if want_value:
+            # The previous token was a wrapper flag that takes a separate value, so
+            # THIS token is that value and never the command.
+            want_value = False
+            continue
         if _ASSIGNMENT.match(t):
             continue
-        if _verb_name(t) in WRAPPERS:
+        name = _verb_name(t)
+        if name in WRAPPERS:
             seen_wrapper = True
+            wrapper = name
             continue
         if t.startswith("-"):
+            if t in _WRAPPER_VALUE_OPTS.get(wrapper, ()):
+                want_value = True
             continue
         if seen_wrapper and _WRAPPER_ARG.match(t):
             continue                    # a duration or a placeholder, not a command
@@ -1644,18 +1697,33 @@ def _git_destructive(seg, wanted):
     # tried): `exec`, `setsid`, `nice -n 5` and `timeout 5` each turned a destructive
     # git inside the game root from ask/advise into ALLOW -- 8 bypasses. `timeout` is
     # the one that matters most, because CLAUDE.md #25 recommends typing it.
+    # Consults the SAME `_WRAPPER_VALUE_OPTS` table `_verb_token` uses. The loops are
+    # separate because that one streams `tokens()` with its quoted flag while this one
+    # indexes a plain list, but WHICH flags take a value is one table in one place --
+    # this file's history is a list of things that drifted because two sites computed
+    # one answer. MEASURED 2026-09-06: fixing only `_verb_token` left 10 bypasses here
+    # (`env -u X4_GAME git -C <game> clean -fdx` and four more spellings), because
+    # these two rules do their own scan rather than keying off verb().
     vi = 0
     seen_wrapper = False
+    wrapper = ""
+    want_value = False
     while vi < len(toks):
         t = toks[vi]
-        if _ASSIGNMENT.match(t):
+        if want_value:
+            want_value = False
+            vi += 1
+        elif _ASSIGNMENT.match(t):
             vi += 1
         elif _verb_name(t) in WRAPPERS:
             seen_wrapper = True
+            wrapper = _verb_name(t)
             vi += 1
         elif seen_wrapper and (t.startswith("-") or _WRAPPER_ARG.match(t)):
             # Only AFTER a wrapper: a bare number or flag there belongs to the
             # wrapper (`timeout 5`, `nice -n 5`), never to git.
+            if t in _WRAPPER_VALUE_OPTS.get(wrapper, ()):
+                want_value = True
             vi += 1
         else:
             break

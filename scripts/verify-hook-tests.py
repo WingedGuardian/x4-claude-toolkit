@@ -155,8 +155,12 @@ MUTANTS = [
      'toks = tokens(seg)\n    for i, (t, quoted) in enumerate(toks):\n'
      '        if False:',
      "test_dash_t_names_the_destination"),
+    # Re-anchored 2026-09-06: B10 hoisted the name out (`name = _verb_name(t)`) so the
+    # wrapper's identity could key `_WRAPPER_VALUE_OPTS`. The old anchor stopped
+    # matching and the harness said so rather than passing -- the third orphaned anchor
+    # this session, and the third time refusing beat reporting a clean run.
     ("wrapper verbs are seen through",
-     "        if _verb_name(t) in WRAPPERS:", "        if False:",
+     "        if name in WRAPPERS:", "        if False:",
      "test_sees_through_a_wrapper"),
     ("dot-segment canonicalisation", "s = posixpath.normpath(s)", "s = s",
      "test_dot_segment_is_canonicalised"),
