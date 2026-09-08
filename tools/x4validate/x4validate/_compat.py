@@ -303,7 +303,12 @@ def _no_base_reason(vpath: str, folder_to_path: dict[str, Path],
                      None)
     if owner_dir is None:
         return f"the owning mod '{owner}' is not installed"
-    oroot = _merge.overlay_root(owner_dir, rel)
+    # Same rule: a malformed owner file must produce the EXPLANATION this function
+    # exists to return, not an exception through a caller that only wanted a reason.
+    try:
+        oroot = _merge.overlay_root(owner_dir, rel)
+    except etree.LxmlError as exc:
+        return f"'{owner}' ships {rel} but it is malformed XML: {exc}"
     if oroot is None:
         return f"'{owner}' does not ship {rel}, or it could not be parsed"
     if oroot.tag == "diff":
@@ -351,7 +356,21 @@ def _analyze_vpath(
 
     for folder in sorted(mod_folders, key=lambda f: rank[f]):
         mod_vpath = at.get(folder, vpath)
-        root = _merge.overlay_root(folder_to_path[folder], mod_vpath)
+        # `overlay_root` RAISES on a malformed document for a caller that passes no
+        # `skipped` list -- its "NO CHANNEL, NO SWALLOW" rule, which its
+        # XMLSyntaxError branch only started obeying in this arc. This call site has
+        # a channel two lines below, so route the parse failure into it rather than
+        # letting it escape: MEASURED 2026-09-08, an unhandled raise here took
+        # `gates/tool_properties` down with a traceback on the live corpus, because
+        # cpsdo_faction/t/0001-l088.xml is genuinely malformed.
+        try:
+            root = _merge.overlay_root(folder_to_path[folder], mod_vpath)
+        except etree.LxmlError as exc:
+            if report is not None:
+                report.skip(f"{folder} at {mod_vpath}",
+                            f"malformed XML, so this mod took no part in the "
+                            f"comparison: {exc}")
+            continue
         if root is None:
             if report is not None:
                 report.skip(

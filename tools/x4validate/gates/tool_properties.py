@@ -72,6 +72,7 @@ EXHAUSTIVE = "--exhaustive" in sys.argv
 EXT = _env.extensions()
 REF = _env.reference()
 failures: list[str] = []
+skips: list[str] = []
 #: Files `_is_full_file` could not read. Reported, never silently dropped.
 _UNREADABLE: list[str] = []
 
@@ -86,6 +87,24 @@ def note(ok: bool, label: str, detail: str = "") -> None:
     print(f"  {'  ok ' if ok else ' FAIL'}  {label}{('  ' + detail) if detail else ''}")
     if not ok:
         failures.append(f"{label}: {detail}")
+
+
+def skip(label: str, reason: str) -> None:
+    """A check that COULD NOT RUN. Printed as SKIP, recorded, and it makes the gate
+    return 3 -- never 0.
+
+    Three sites called `note(True, ..., "SKIPPED: ...")`, which prints an `ok` line and
+    never touches `failures`, so the gate printed "All properties hold." and returned 0
+    over checks that never executed. This file already states the rule at the
+    store-vs-x4eff manifest branch -- "A SKIP IS NOT A PASS ... the same rule this file
+    applies to everything else it measures" -- and three places did not apply it.
+    Prose was true; the code was not.
+
+    rc 3 rather than rc 1 because these are ENVIRONMENTAL (no store on a CI runner),
+    not defects. `scripts/run-gates.sh` already has the could-not-run bucket and will
+    report NOT A CLEAN SWEEP, which is the honest answer."""
+    print(f"  SKIP  {label}  {reason}")
+    skips.append(f"{label}: {reason}")
 
 
 def mods(n: int) -> list[Path]:
@@ -581,13 +600,13 @@ def check_store_key_uniqueness() -> None:
     print("store key uniqueness (F33) -- attr axis FIXED (pinned 0); entity axis OPEN")
     store = Path(_registry.DEFAULT_REGISTRY).parent / "effective.sqlite"
     if not store.is_file():
-        note(True, "store key uniqueness", "SKIPPED: no effective.sqlite — not checked")
+        skip("store key uniqueness", "no effective.sqlite — not checked")
         return
     con = sqlite3.connect(f"file:{store}?mode=ro", uri=True)
     try:
         if not _effective.store_freshness(con).fresh:
-            note(True, "store key uniqueness",
-                 "SKIPPED: the store is STALE, so its counts describe a world that has "
+            skip("store key uniqueness",
+                 "the store is STALE, so its counts describe a world that has "
                  "moved on — rebuild with `uv run x4effective build`, then re-run")
             return
         ent = con.execute(
@@ -659,7 +678,7 @@ def check_mod_scope_agreement() -> None:
     if store_path is None or not Path(store_path).is_file():
         # Genuinely nothing to compare: no store means no build ever ran here. This
         # one stays a skip, and it is what CI hits.
-        note(True, "store vs x4eff mod set", "SKIPPED — no effective store on this machine")
+        skip("store vs x4eff mod set", "no effective store on this machine")
         return
     if not manifest.is_file():
         # A SKIP IS NOT A PASS. The store exists, so this machine DOES build these
@@ -728,6 +747,14 @@ def main() -> int:
         for f in failures:
             print(f"  - {f}")
         return 1
+    if skips:
+        # DEGRADED, never a clean pass: some properties were not measured at all.
+        print(f"NOT A CLEAN RUN: {len(skips)} propert(ies) COULD NOT BE CHECKED")
+        for k in skips:
+            print(f"  - {k}")
+        print("Every property that RAN held. That is not the same as all of them "
+              "holding.")
+        return 3
     print("All properties hold.")
     return 0
 
