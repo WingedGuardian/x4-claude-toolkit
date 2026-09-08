@@ -612,6 +612,21 @@ write_paths_env() {  # write_paths_env TOOLKIT_DIR
     echo "       NOTHING was changed: your existing $f is untouched." >&2
     return 1
   fi
+  # PRECHECK_CONFIG IS NOW THE SOLE GUARD ON A LOCKED CONFIG, and that is worth
+  # stating rather than leaving to be rediscovered. This writer used to open the LIVE
+  # file with `>`, so the OS refused a read-only config even if precheck_config were
+  # wrong -- a second, independent answer to the same question. 912cf8e replaced that
+  # with build-to-temp then move, which is the right shape for atomicity and removed
+  # the backstop as a side effect: MEASURED, both `mv -f` under MSYS and PowerShell's
+  # `Move-Item -Force` succeed OVER a read-only destination.
+  # 
+  # No live defect: precheck_config and the fast path above decide "would this
+  # change?" with the same `_owned_lines_old` vs `_owned_lines_new` pair, so a run
+  # reaching here has either been allowed or has nothing to write. Any future drift
+  # between them is a SILENT overwrite of a locked config rather than a permission
+  # error -- which is what the locked-config PAIR in test_install_over_existing.py
+  # actually pins: unchanged-and-locked must be allowed with no write, and
+  # changed-and-locked must refuse up front.
   mv -f "$tmp" "$f" || { rm -f "$tmp"; echo "ERROR: could not install $f; your existing config is untouched." >&2; return 1; }
   echo "  wrote $f"
   if [ -n "$carried" ]; then

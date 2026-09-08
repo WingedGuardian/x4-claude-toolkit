@@ -938,7 +938,39 @@ function Install-Global($t) {
   Write-Host "        -Method separate in a mod repo to get them there."
   # merge env into settings.json
   $sj = Join-Path $hc 'settings.json'
-  $cfg = if (Test-Path -LiteralPath $sj) { Get-Content -Raw -LiteralPath $sj | ConvertFrom-Json } else { [pscustomobject]@{} }
+  # GUARDED, and it was the only unguarded operation left in this function while its
+  # other four writes all gained try/catch. An unparseable settings.json threw RAW --
+  # "Cannot index into a null array" on an empty file, an ArgumentException on a
+  # malformed one -- with a CategoryInfo dump, no crafted message, and no $failed
+  # accounting. install.sh degrades with a crafted ERROR on the same inputs.
+  #
+  # EMPTY refuses too, deliberately: an empty settings.json is indistinguishable from
+  # a truncated one, and overwriting the user's GLOBAL config on that guess is the
+  # wrong call. Nothing has been written at this point, so refusing here costs the
+  # user only a re-run.
+  $cfg = [pscustomobject]@{}
+  if (Test-Path -LiteralPath $sj) {
+    $raw = $null
+    try { $raw = Get-Content -Raw -LiteralPath $sj -ErrorAction Stop } catch {
+      Write-Host ("ERROR: could not read " + $sj + ": " + $_.Exception.Message) -ForegroundColor Red
+      Write-Host "       Nothing has been changed." -ForegroundColor Red
+      exit 1
+    }
+    if ($null -eq $raw -or -not $raw.Trim()) {
+      Write-Host ("ERROR: " + $sj + " is EMPTY, so this run cannot tell an intentionally") -ForegroundColor Red
+      Write-Host "       blank file from a truncated one and will not overwrite your global" -ForegroundColor Red
+      Write-Host "       settings on that guess. Restore or delete it, then re-run. Nothing" -ForegroundColor Red
+      Write-Host "       has been changed." -ForegroundColor Red
+      exit 1
+    }
+    try { $cfg = $raw | ConvertFrom-Json -ErrorAction Stop } catch {
+      Write-Host ("ERROR: " + $sj + " is not valid JSON, so the X4_* env cannot be merged") -ForegroundColor Red
+      Write-Host ("       into it: " + $_.Exception.Message) -ForegroundColor Red
+      Write-Host "       Fix or move that file, then re-run. Nothing has been changed." -ForegroundColor Red
+      exit 1
+    }
+    if ($null -eq $cfg) { $cfg = [pscustomobject]@{} }
+  }
   if (-not $cfg.PSObject.Properties['env']) { $cfg | Add-Member -NotePropertyName env -NotePropertyValue ([pscustomobject]@{}) }
   $ref = if ($Reference) { $Reference } else { Join-Path $t 'reference' }
   $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-Path $Game 'extensions' } else { '' }
@@ -1009,8 +1041,15 @@ switch ($Method) {
     Show-Target $Toolkit
     # Test-ConfigPrecheck OUTSIDE, Test-LockedTargetsPrecheck INSIDE -- the config
     # is written on both branches, the copy is not. install.sh makes the same split.
+    # DIRECTION FIRST, matching install.sh, which carries a nine-line comment at
+    # both of its call sites declaring this order load-bearing. Both prechecks can
+    # exit telling the user to unlock and re-run -- against a destination they have
+    # not authorised replacing, so acting on that advice leads straight back to a
+    # refusal for the real reason. 811a9a7 fixed bash and left this side; seventh
+    # occurrence of the class on this file pair, bash -> ps1 this time.
+    if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $GameNamed }
     Test-ConfigPrecheck $Toolkit
-    if (-not (Test-SameDir $SRC $Toolkit)) { Test-LockedTargetsPrecheck $Toolkit; Assert-Direction $Toolkit $GameNamed; Show-CopyPlan; Copy-Toolkit $Toolkit }
+    if (-not (Test-SameDir $SRC $Toolkit)) { Test-LockedTargetsPrecheck $Toolkit; Show-CopyPlan; Copy-Toolkit $Toolkit }
     Write-PathsEnv $Toolkit
   }
   'separate' {
@@ -1020,8 +1059,15 @@ switch ($Method) {
     Show-Target $Toolkit
     # Test-ConfigPrecheck OUTSIDE, Test-LockedTargetsPrecheck INSIDE -- the config
     # is written on both branches, the copy is not. install.sh makes the same split.
+    # DIRECTION FIRST, matching install.sh, which carries a nine-line comment at
+    # both of its call sites declaring this order load-bearing. Both prechecks can
+    # exit telling the user to unlock and re-run -- against a destination they have
+    # not authorised replacing, so acting on that advice leads straight back to a
+    # refusal for the real reason. 811a9a7 fixed bash and left this side; seventh
+    # occurrence of the class on this file pair, bash -> ps1 this time.
+    if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $ToolkitNamed }
     Test-ConfigPrecheck $Toolkit
-    if (-not (Test-SameDir $SRC $Toolkit)) { Test-LockedTargetsPrecheck $Toolkit; Assert-Direction $Toolkit $ToolkitNamed; Show-CopyPlan; Copy-Toolkit $Toolkit }
+    if (-not (Test-SameDir $SRC $Toolkit)) { Test-LockedTargetsPrecheck $Toolkit; Show-CopyPlan; Copy-Toolkit $Toolkit }
     Write-PathsEnv $Toolkit
   }
   'global'   {

@@ -1084,3 +1084,85 @@ def test_the_rewrite_covers_EVERY_shipped_file_not_only_markdown(installer, tmp_
     assert "$X4_TOOLKIT" in body and "$CLAUDE_PROJECT_DIR" not in body, (
         "a shipped NON-markdown file kept $CLAUDE_PROJECT_DIR, so a global install "
         "resolves it to whichever repo is open: %r" % body)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_refusal_the_user_SEES_first_is_the_same_on_both_installers(
+        installer, tmp_path):
+    """install.sh gates direction FIRST; install.ps1 gated it LAST.
+
+    install.sh carries a nine-line comment at both call sites declaring the order
+    load-bearing: both prechecks can exit telling the user to unlock and re-run --
+    against a destination they never authorised replacing. The refusal they should
+    see is the one about the destination, because acting on the other one (unlock,
+    re-run) leads straight back to a refusal for the real reason.
+
+    MEASURED before the fix, locked CLAUDE.md in an existing install, no
+    --over-existing:
+
+        sh   rc 2 -> "REFUSING: there is already an installation at the destination."
+        ps1  rc 1 -> "REFUSING: ... are READ-ONLY."
+
+    Neither writes, so this is a wrong MESSAGE rather than a wrong action -- and
+    install.sh's own comment concedes exactly that while still calling the order
+    load-bearing. `811a9a7` fixed bash and left PowerShell; seventh occurrence of the
+    class on this file pair, running bash -> ps1 this time.
+
+    Asserted as PARITY plus CONTENT: the two must agree, and they must agree on the
+    destination refusal rather than both drifting to the lock one.
+    """
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    victim = dest / "CLAUDE.md"
+    assert victim.is_file(), "fixture assumption broken: the copy set did not land CLAUDE.md"
+    victim.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    try:
+        r = _install(installer, tmp_path, dest, over_existing=False)
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, "a second install over an existing one was not refused"
+        assert "already an installation at the destination" in out, (
+            "the user is told to unlock and re-run, against a destination they have "
+            "not authorised replacing -- so acting on this refusal leads back to a "
+            "refusal for the real reason:\n%s" % out[-900:])
+    finally:
+        victim.chmod(stat.S_IWRITE | stat.S_IREAD)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("state,body", [("empty", ""), ("malformed", "{ not json")])
+def test_an_UNPARSEABLE_global_settings_file_refuses_in_WORDS_not_a_stack_trace(
+        installer, state, body, tmp_path):
+    """install.ps1 parsed `~/.claude/settings.json` with an UNGUARDED
+    `Get-Content -Raw | ConvertFrom-Json`, and it was the only unguarded operation
+    left in a function whose other four writes all gained try/catch this arc.
+
+    MEASURED before the fix, --method global:
+
+        empty      sh  crafted ERROR, rc 1   |  ps1  raw "Cannot index into a null
+                                                     array" + CategoryInfo dump, rc 1
+        malformed  sh  crafted ERROR, rc 1   |  ps1  raw ConvertFrom-Json
+                                                     ArgumentException, rc 1
+
+    A raw .NET dump is not a refusal a user can act on, and it arrives with the
+    global settings file untouched but no statement that it was untouched -- which
+    reads exactly like a half-finished write.
+
+    Refusing on EMPTY as well as malformed is deliberate and matches install.sh: an
+    empty settings.json is indistinguishable from a truncated one, and overwriting
+    the user's GLOBAL config on that guess is the wrong call.
+    """
+    dest, home = _global_only_fixture(tmp_path)
+    (home / "settings.json").write_text(body, encoding="utf-8")
+
+    r = _install(installer, tmp_path, dest, method="global")
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, "an unparseable global settings.json was not refused"
+    for raw in ("Cannot index into a null array", "CategoryInfo",
+                "System.ArgumentException", "Traceback"):
+        assert raw not in out, (
+            "the refusal is a raw interpreter dump rather than a message the user "
+            "can act on (%s):\n%s" % (raw, out[-900:]))
+    assert "settings.json" in out and "ERROR" in out.upper(), (
+        "the refusal does not name the file or read as an error:\n%s" % out[-900:])
+    assert (home / "settings.json").read_text(encoding="utf-8") == body, (
+        "the unparseable settings.json was modified by a run that refused")
