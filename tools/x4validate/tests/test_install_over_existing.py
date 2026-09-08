@@ -658,3 +658,97 @@ def test_a_CRLF_config_is_still_recognised_as_UNCHANGED(installer, tmp_path):
         "over line endings alone:\n%s" % (r.stdout + r.stderr)[-1000:])
     assert "already matches" in out, (
         "the config was not recognised as unchanged:\n%s" % (r.stdout + r.stderr)[-1000:])
+
+
+def _global_fixture(tmp_path):
+    """A toolkit that ships one skill, beside a user who keeps notes in it.
+
+    The destination directory `x4-balance` is one the toolkit OWNS, which is the
+    whole point: the existing guard is keyed on that name, so it protects
+    `my-own-thing/` and waves through a user file sitting inside `x4-balance/`.
+    """
+    dest = _fresh(tmp_path)
+    sk = dest / ".claude" / "skills" / "x4-balance"
+    sk.mkdir(parents=True)
+    (sk / "SKILL.md").write_text("run $CLAUDE_PROJECT_DIR/tools/x4validate\n",
+                                 encoding="utf-8")
+    quiet = dest / ".claude" / "skills" / "x4-debug"
+    quiet.mkdir(parents=True)
+    (quiet / "SKILL.md").write_text("this one names no variable at all\n",
+                                    encoding="utf-8")
+    ag = dest / ".claude" / "agents"
+    ag.mkdir(parents=True)
+    (ag / "mod-research.md").write_text("see $CLAUDE_PROJECT_DIR/reference\n",
+                                        encoding="utf-8")
+    # setup.sh is invoked at the end of a real run; without it the installer
+    # reports a failed step and the rewrite result would be read through a
+    # non-zero rc that has nothing to do with this claim.
+    (dest / "setup.sh").write_text("exit 0\n", encoding="utf-8")
+
+    home = tmp_path / "fake-claude-home"
+    mine = home / "skills" / "x4-balance"
+    mine.mkdir(parents=True)
+    (mine / "MY_NOTES.md").write_text("my dir is $CLAUDE_PROJECT_DIR/notes\n",
+                                      encoding="utf-8")
+    theirs = home / "skills" / "my-own-thing"
+    theirs.mkdir(parents=True)
+    (theirs / "THEIRS.md").write_text("my dir is $CLAUDE_PROJECT_DIR/mine\n",
+                                      encoding="utf-8")
+    return dest, home
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_global_rewrite_touches_only_files_the_TOOLKIT_SHIPS(installer, tmp_path):
+    """`--method global --over-existing` rewrote a user's own file and deleted the backup.
+
+    install.sh derives the DIRECTORY list from the toolkit -- its comment says
+    "never from a destination glob (a pre-existing user skill named x4-* must not
+    match)" -- and then runs `grep -rl CLAUDE_PROJECT_DIR "$tgt"` over the
+    DESTINATION directory. With --over-existing that directory holds the toolkit's
+    files MERGED with the user's, so every user file inside a shipped skill was
+    rewritten by `sed -i.bak ... && rm -f "$f.bak"`: edited in place, only copy
+    deleted, rc 0, nothing printed.
+
+    Toolkit-derived for directories and destination-derived for files is the
+    wrong-baseline shape: the list is not the thing the comment claims it is.
+
+    install.ps1 already builds `$copied` from `$srcRoot`, so it is the immune case
+    and it names the cause -- the operand was right there in the sibling.
+    """
+    dest, home = _global_fixture(tmp_path)
+    r = _install(installer, tmp_path, dest, method="global")
+
+    shipped = (home / "skills" / "x4-balance" / "SKILL.md").read_text(encoding="utf-8")
+    # THE CONTROL, and it must come first: if the rewrite step never ran, every
+    # "unchanged" assertion below passes for the wrong reason.
+    assert "$X4_TOOLKIT" in shipped, (
+        "the rewrite never ran, so this test proves nothing about what it spares "
+        "(rc=%s) %s" % (r.returncode, (r.stdout + r.stderr)[-800:]))
+
+    mine = (home / "skills" / "x4-balance" / "MY_NOTES.md").read_text(encoding="utf-8")
+    assert mine == "my dir is $CLAUDE_PROJECT_DIR/notes\n", (
+        "the user's own file inside a SHIPPED skill directory was rewritten: %r" % mine)
+
+    theirs = (home / "skills" / "my-own-thing" / "THEIRS.md").read_text(encoding="utf-8")
+    assert theirs == "my dir is $CLAUDE_PROJECT_DIR/mine\n", (
+        "a user skill the toolkit does not ship was rewritten: %r" % theirs)
+
+    left = sorted(p.name for p in home.rglob("*.bak*"))
+    assert not left, "left backups behind: %s" % left
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_shipped_file_with_NO_token_is_left_alone_and_does_not_fail_the_run(
+        installer, tmp_path):
+    """The status twin. 2 of the 7 real skills contain no $CLAUDE_PROJECT_DIR.
+
+    grep exits 1 on no match and `set -o pipefail` + `set -e` once killed the
+    installer here, after copying and before writing any env -- so "needs no
+    rewrite" must stay the normal case, not an error.
+    """
+    dest, home = _global_fixture(tmp_path)
+    r = _install(installer, tmp_path, dest, method="global")
+    assert r.returncode == 0, (
+        "a skill needing no rewrite failed the run:\n%s" % (r.stdout + r.stderr)[-1200:])
+    quiet = (home / "skills" / "x4-debug" / "SKILL.md").read_text(encoding="utf-8")
+    assert quiet == "this one names no variable at all\n", "rewrote a file with no token"

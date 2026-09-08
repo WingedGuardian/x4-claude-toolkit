@@ -692,9 +692,22 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
   # pre-existing skills/agents may use $CLAUDE_PROJECT_DIR on purpose and must not be
   # touched, so both lists are derived from the TOOLKIT's own contents, never from a
   # destination glob (a pre-existing user skill named x4-* must not match).
+  # ...AND THE FILE LIST MUST BE TOOLKIT-DERIVED TOO, not just the directory list.
+  # This emitted DESTINATION DIRECTORIES and then ran `grep -rl` inside them. With
+  # --over-existing that directory holds the toolkit's files MERGED with the user's,
+  # so a note the user kept in ~/.claude/skills/x4-balance/ was rewritten in place by
+  # the sed below and `rm -f "$f.bak"` deleted the only copy: rc 0, nothing printed.
+  # The rule two lines up was already right; it was applied one level too shallow --
+  # toolkit-derived for directories, destination-derived for files. install.ps1 built
+  # its list from $srcRoot and was never exposed, which is what named the fix.
   {
     for s in "$TOOLKIT/.claude/skills/"x4-*; do
-      [ -e "$s" ] && echo "$home_claude/skills/$(basename "$s")"
+      [ -e "$s" ] || continue
+      # Every file THIS TOOLKIT SHIPS in that skill, mapped to where it was copied.
+      # A user's own file has no counterpart under $TOOLKIT, so it cannot be named.
+      find "$s" -type f 2>/dev/null | while read -r src; do
+        echo "$home_claude/skills/${src#"$TOOLKIT/.claude/skills/"}"
+      done
     done
     for a in "$TOOLKIT/.claude/agents/"*.md; do
       [ -e "$a" ] && echo "$home_claude/agents/$(basename "$a")"
@@ -705,18 +718,16 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
     # `set -e` kills the installer HERE -- after the copy, before the jq merge, with
     # no message. An unmatched glob is a normal state, not a failure.
     true
-  } | while read -r tgt; do
-    # `|| true` is LOAD-BEARING: grep exits 1 when it matches nothing, `set -o pipefail`
-    # promotes that to the pipeline's status, and `set -e` then killed the whole
-    # installer. MEASURED 2026-09-01: 2 of the 7 shipped skills (x4-debug, x4-probe)
-    # contain no $CLAUDE_PROJECT_DIR, so `--method global` exited 1 on this very tree --
-    # after copying skills and agents, and before writing any env. A skill that needs no
-    # rewrite is the NORMAL case, not an error.
-    hits="$(grep -rl 'CLAUDE_PROJECT_DIR' "$tgt" 2>/dev/null || true)"
-    [ -n "$hits" ] || continue
-    printf '%s\n' "$hits" | while read -r f; do
-      sed -i.bak 's#\$CLAUDE_PROJECT_DIR#$X4_TOOLKIT#g' "$f" && rm -f "$f.bak"
-    done
+  } | while read -r f; do
+    # `|| continue` on both tests is LOAD-BEARING: grep exits 1 when it matches
+    # nothing, `set -o pipefail` promotes that to the pipeline's status, and `set -e`
+    # then killed the whole installer. MEASURED 2026-09-01: 2 of the 7 shipped skills
+    # (x4-debug, x4-probe) contain no $CLAUDE_PROJECT_DIR, so `--method global` exited
+    # 1 on this very tree -- after copying skills and agents, and before writing any
+    # env. A skill that needs no rewrite is the NORMAL case, not an error.
+    [ -f "$f" ] || continue
+    grep -q 'CLAUDE_PROJECT_DIR' "$f" 2>/dev/null || continue
+    sed -i.bak 's#\$CLAUDE_PROJECT_DIR#$X4_TOOLKIT#g' "$f" && rm -f "$f.bak"
   done
   echo "  installed $copied x4 skill/agent item(s) into $home_claude"
   # STATED, because it is the difference between this layout and the other two, and
