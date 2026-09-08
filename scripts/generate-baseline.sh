@@ -102,14 +102,28 @@ for d in "$EXT"/*/; do
     echo "       baseline is worse than none because it looks complete." >&2
     exit 2
   fi
+  # `if` RATHER THAN `&&`, AND IT IS LOAD-BEARING UNDER `set -euo pipefail`.
+  # `[ -n "$_f" ] && cmd` as the LAST command in the loop body makes the body exit 1
+  # for an empty entry; that becomes the while loop status, `pipefail` propagates it
+  # out of the command substitution, and `set -e` then kills the script AT THE
+  # ASSIGNMENT -- with no message, because bash prints none for this.
+  #
+  # MEASURED 2026-09-08: one EMPTY mod folder in extensions/ aborted the whole run at
+  # rc 1 and left a HEADER-ONLY TSV. `empty_mod` sorts before `normal_mod`, so the real
+  # mod was never recorded either -- a partial artifact that looks complete, three
+  # lines below a comment saying an empty folder "is a real state" that should produce
+  # a 0-file row. `bash -x` ends at `bytes=0` and simply stops.
+  #
+  # An `if` whose condition is false returns 0, so there is nothing for pipefail to
+  # propagate. Proven in isolation both ways before the edit.
   cnt=$(printf '%s' "$_files" | grep -c . || true)
-  bytes=$(printf '%s\n' "$_files" | while IFS= read -r _f; do [ -n "$_f" ] && wc -c < "$_f"; done | awk '{s+=$1} END{print s+0}')
+  bytes=$(printf '%s\n' "$_files" | while IFS= read -r _f; do if [ -n "$_f" ]; then wc -c < "$_f"; fi; done | awk '{s+=$1} END{print s+0}')
   # NB the rollup hashes sha256sum's output INCLUDING each absolute path, so a
   # baseline is tied to the install location. Left as it is deliberately: changing
   # it would silently invalidate the existing baselines on disk, and comparing
   # across two different install paths is not a workflow this tool has. Recorded
   # rather than fixed, so the next reader does not rediscover it as a surprise.
-  if ! roll=$(printf '%s\n' "$_files" | while IFS= read -r _f; do [ -n "$_f" ] && sha256sum "$_f"; done | sort | sha256sum | cut -d' ' -f1); then
+  if ! roll=$(printf '%s\n' "$_files" | while IFS= read -r _f; do if [ -n "$_f" ]; then sha256sum "$_f"; fi; done | sort | sha256sum | cut -d' ' -f1); then
     echo "ERROR: could not hash $name -- refusing to write a row that cannot" >&2
     echo "       detect a change." >&2
     exit 2
@@ -144,7 +158,16 @@ if [ -f "$PROFILE_DIR/debug.txt" ]; then
     echo "# Normalized: timestamps + hex ids + player ids masked, sorted by frequency."
     echo "# Later: regenerate and 'diff' against this; only NEW signatures are suspects."
     echo "#----------------------------------------------------------------------"
-    grep -a "=ERROR=" "$PROFILE_DIR/debug.txt" \
+    # `|| true`: grep exits 1 when it matches NOTHING, and a debug.txt with ZERO
+    # [=ERROR=] lines is the BEST possible state, not a failure. Under
+    # `set -euo pipefail` that 1 propagated out of the pipeline, killed the redirect
+    # block and aborted the whole run with NO message -- leaving a HEADER-ONLY
+    # error-fingerprint.txt, because the echoes above it had already been written.
+    # The COUNT below was already guarded exactly this way; the pipeline was not.
+    # Same file, same hazard, one of the two guarded.
+    # MEASURED 2026-09-08: clean debug.txt -> rc 1 and the run dies; the same fixture
+    # with two [=ERROR=] lines -> rc 0 and the fingerprint is captured and masked.
+    { grep -a "=ERROR=" "$PROFILE_DIR/debug.txt" || true; } \
       | sed -E 's/^\[=ERROR=\] [0-9]+\.[0-9]+ //' \
       | sed -E 's/0x[0-9a-fA-F]+/0xADDR/g; s/inst:[0-9a-fA-F]+/inst:ID/g; s/player_[0-9]+/player_ID/g; s/<[0-9a-fA-F]+>/<ID>/g' \
       | sort | uniq -c | sort -rn

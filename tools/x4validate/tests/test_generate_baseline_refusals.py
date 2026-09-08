@@ -181,3 +181,73 @@ def test_a_COMPLETE_baseline_says_so_and_skips_the_DLC(isolated, tmp_path):
     # every data row must carry a real rollup: a row with no hash cannot detect a change
     rows = [l for l in tsv.splitlines()[1:] if l.strip()]
     assert rows and all(len(l.split(chr(9))[3]) == 64 for l in rows), rows
+
+
+# --- an EMPTY input must not abort the run (v3.1.0 review, batch 3) ------------------
+#
+# Two instances of one shape in this script, both fatal and both SILENT. Under
+# `set -euo pipefail`, `[ -n "$_f" ] && cmd` as the LAST command of a while body exits
+# 1 for an empty entry; pipefail carries that out of the command substitution and
+# `set -e` kills the script AT THE ASSIGNMENT, printing nothing. Same for a `grep`
+# that matches nothing.
+
+
+def _world(tmp_path, mods, debug_text):
+    game = tmp_path / "game"; prof = tmp_path / "prof"
+    (game / "extensions").mkdir(parents=True)
+    prof.mkdir(parents=True)
+    for i in range(1, 10):
+        (game / ("0%d.cat" % i)).write_text("", encoding="utf-8")
+    for name, files in mods.items():
+        d = game / "extensions" / name; d.mkdir()
+        for fn, body in files.items():
+            (d / fn).write_text(body, encoding="utf-8")
+    for fn in ("content.xml", "config.xml"):
+        (prof / fn).write_text("<x/>", encoding="utf-8")
+    (prof / "debug.txt").write_text(debug_text, encoding="utf-8")
+    return game, prof
+
+
+def _tsv_rows(game):
+    t = game / ".claude" / "backups" / "known-good-baseline" / "installed-mods.tsv"
+    if not t.exists():
+        return None
+    return [l for l in t.read_text(encoding="utf-8").splitlines()[1:] if l.strip()]
+
+def test_an_EMPTY_mod_folder_is_RECORDED_not_fatal(isolated, tmp_path):
+    """It sorts before a real mod, so the abort took that mod down with it -- a
+    header-only TSV that looks complete. The code THREE LINES above says an empty
+    folder "is a real state" that should produce a 0-file row."""
+    game, prof = _world(tmp_path, {"aaa_empty": {},
+                                   "zzz_real": {"content.xml": "<c/>"}}, "")
+    r = _run(isolated, str(game), str(prof))
+    rows = _tsv_rows(game)
+    assert rows is not None, "no TSV written at all: " + r.stderr[-400:]
+    assert any(x.startswith("aaa_empty") for x in rows), rows
+    assert any(x.startswith("zzz_real") for x in rows), (
+        "the real mod was lost when the empty one aborted the loop: %r" % rows)
+    assert r.returncode == 0, r.stderr[-400:]
+
+
+def test_a_debug_txt_with_ZERO_errors_is_the_BEST_state_not_a_failure(isolated, tmp_path):
+    """`grep` exits 1 when it matches nothing. That killed the redirect block and the
+    whole run, leaving a header-only error-fingerprint.txt -- so a user whose game
+    logged NO errors could not produce a baseline at all."""
+    game, prof = _world(tmp_path, {"m": {"content.xml": "<c/>"}}, "")
+    r = _run(isolated, str(game), str(prof))
+    assert r.returncode == 0, r.stderr[-400:]
+    assert "Baseline written to" in r.stdout, r.stdout[-400:]
+
+
+def test_a_debug_txt_WITH_errors_is_still_fingerprinted(isolated, tmp_path):
+    """The twin. Without it both assertions above are satisfied by a script that
+    stopped fingerprinting altogether."""
+    game, prof = _world(tmp_path, {"m": {"content.xml": "<c/>"}},
+                        "[=ERROR=] 12.34 bad 0xDEAD" + chr(10) +
+                        "[=ERROR=] 12.35 bad 0xBEEF" + chr(10))
+    r = _run(isolated, str(game), str(prof))
+    assert r.returncode == 0, r.stderr[-400:]
+    fp = (game / ".claude" / "backups" / "known-good-baseline" /
+          "error-fingerprint.txt").read_text(encoding="utf-8")
+    assert "0xADDR" in fp, "the hex mask must still be applied: " + fp
+    assert "2 [=ERROR=] lines captured" in r.stdout, r.stdout[-300:]
