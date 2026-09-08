@@ -51,7 +51,7 @@ local PROTO = 1
 --:
 --: Kept honest by `test_the_BUILD_constant_matches_the_file`, so editing the lua and
 --: forgetting to re-stamp this fails the suite rather than silently lying in game.
-local BUILD = "5190e508"
+local BUILD = "06c982e6"
 local TAG_CMD, TAG_REPLY = "MQ", "MR"
 
 -- Cap on echo, the ramp instrument. Generous: the point of the ramp is to FIND the
@@ -1291,6 +1291,7 @@ end
 local function render(ids, meta, opts)
     local rows, used, shown, matched, nvalid, nundecided = {}, 0, 0, 0, 0, 0
     local capped, nunreadable, nunclassified = false, 0, 0
+    local nunconvertible = 0
 
     local enum_capped = false
     for i, obj in ipairs(ids) do
@@ -1302,7 +1303,26 @@ local function render(ids, meta, opts)
         -- returning less. `matched` then describes what was WALKED, not what exists,
         -- which is exactly why it has to be declared.
         if i > MAX_ENUMERATE then enum_capped = true break end
-        local f = read_flags(obj)
+        --: PER-OBJECT CONTAINMENT. `wire` RAISES on an id at or above 2^53, and
+        --: that raise used to be caught only by the verb's single outer pcall --
+        --: so ONE unconvertible object discarded the entire enumeration and every
+        --: denominator with it. MEASURED with 5 objects, one of them at 2^53: the
+        --: verb returned `ERR enumeration raised: ... cannot be represented
+        --: exactly`, and the four good rows, `shown`, `matched` and `enumerated`
+        --: were all lost. The control run reported shown=5 matched=5.
+        --:
+        --: The 2^53 enforcement is right; the CONTAINMENT was at the wrong
+        --: granularity. `read_flags` two lines down already shows the pattern --
+        --: per object, counted, and announced in the header -- and that is what
+        --: this now does. It matters beyond the 2^53 route, which is remote at
+        --: today's ~10^7 ids: the same outer pcall swallows ANY per-object raise,
+        --: and `Helper.isComponentClass` raising on a nil classid is the failure
+        --: that already killed `compare` and `objects --wide` once.
+        local ok_obj, f = pcall(read_flags, obj)
+        if not ok_obj then
+            nunconvertible = nunconvertible + 1
+            f = nil
+        end
         if f == nil then
             nunreadable = nunreadable + 1
         else
@@ -1360,35 +1380,45 @@ local function render(ids, meta, opts)
                 if capped then
                     capped = true
                 else
-                    local id_str = wire(obj)
-                    local id64 = ConvertStringTo64Bit(id_str)
-                    local px, py, pz = "?", "?", "?"
-                    local pok, pos = pcall(C.GetObjectPositionInSector, id64)
-                    if pok and pos ~= nil then
-                        px = string.format("%.0f", pos.x)
-                        py = string.format("%.0f", pos.y)
-                        pz = string.format("%.0f", pos.z)
-                    end
-                    local cls = "?"
-                    local cok, craw = pcall(C.GetComponentClass, id64)
-                    if cok and craw ~= nil then cls = ffi.string(craw) end
+                    --: THE RAISE LIVES HERE. `wire` enforces the 2^53 rule by
+                    --: raising, and this is the first call that reaches it for a
+                    --: matched object -- so containment has to wrap THIS, not only
+                    --: read_flags above. Counted into the same disclosure.
+                    local ok_id, id_str = pcall(wire, obj)
+                    if not ok_id then
+                        --: NO goto: this must run under the engine's Lua, and 5.1 has
+                        --: none. A conditional costs one indent and cannot be wrong.
+                        nunconvertible = nunconvertible + 1
+                        else
+                        local id64 = ConvertStringTo64Bit(id_str)
+                        local px, py, pz = "?", "?", "?"
+                        local pok, pos = pcall(C.GetObjectPositionInSector, id64)
+                        if pok and pos ~= nil then
+                            px = string.format("%.0f", pos.x)
+                            py = string.format("%.0f", pos.y)
+                            pz = string.format("%.0f", pos.z)
+                        end
+                        local cls = "?"
+                        local cok, craw = pcall(C.GetComponentClass, id64)
+                        if cok and craw ~= nil then cls = ffi.string(craw) end
 
-                    local row = id_str .. "|" .. cls .. "|" .. (tostring(f.name):gsub("|", "/"))
-                                .. "|" .. tostring(f.owner) .. "|" .. tostring(f.sector)
-                                .. "|" .. px .. "," .. py .. "," .. pz
-                                .. "|" .. flag_string(f, valid)
-                    -- BOUND BEFORE SENDING: an over-long reply tears the pipe down, so
-                    -- this is enforced here, never detected afterwards. NB we do NOT
-                    -- break -- stopping the loop would stop counting matches too, and
-                    -- then `matched` would just be `shown` again, destroying the
-                    -- honest denominator.
-                    if used + #row + 1 > ROW_BUDGET then
-                        capped = true
-                    else
-                        issue(obj)
-                        rows[#rows + 1] = row
-                        used = used + #row + 1
-                        shown = shown + 1
+                        local row = id_str .. "|" .. cls .. "|" .. (tostring(f.name):gsub("|", "/"))
+                                    .. "|" .. tostring(f.owner) .. "|" .. tostring(f.sector)
+                                    .. "|" .. px .. "," .. py .. "," .. pz
+                                    .. "|" .. flag_string(f, valid)
+                        -- BOUND BEFORE SENDING: an over-long reply tears the pipe down, so
+                        -- this is enforced here, never detected afterwards. NB we do NOT
+                        -- break -- stopping the loop would stop counting matches too, and
+                        -- then `matched` would just be `shown` again, destroying the
+                        -- honest denominator.
+                        if used + #row + 1 > ROW_BUDGET then
+                            capped = true
+                        else
+                            issue(obj)
+                            rows[#rows + 1] = row
+                            used = used + #row + 1
+                            shown = shown + 1
+                        end
                     end
                 end
             end
@@ -1414,6 +1444,7 @@ local function render(ids, meta, opts)
     -- be a silent loss, the one thing this channel must never do.
     if nundecided > 0 then header = header .. " undecided=" .. nundecided end
     if nunreadable > 0 then header = header .. " unreadable=" .. nunreadable end
+    if nunconvertible > 0 then header = header .. " unconvertible=" .. nunconvertible end
     if nunclassified > 0 then header = header .. " unclassified=" .. nunclassified end
     if meta.dupes > 0 then header = header .. " dupes_dropped=" .. meta.dupes end
     if #meta.failed > 0 then
@@ -1631,7 +1662,18 @@ verbs.compare = function(seq, faction, sector)
             if f == nil then n_old_unreadable = n_old_unreadable + 1
             elseif (is_ship(f) == true or is_station(f) == true)
                    and tostring(f.sectorid) == tostring(sector) then
-                local k = wire(o)
+                --: ISSUE, not wire. `wire` canonicalises; `issue` canonicalises AND
+                --: records the id in the allowlist. `render` (:1388) and
+                --: `censusprobe` both issue; `compare` alone did not -- so every id
+                --: this verb PRINTS was absent from `issued_ids`, and feeding one
+                --: straight back to `component` was refused with "most likely
+                --: mistyped, or left over from before a UI reload". Both named
+                --: causes are false: the tool printed the id one query earlier.
+                --: compare's whole purpose is to name the objects the two
+                --: enumerations disagree about -- its own comment calls those rows
+                --: THE DIAGNOSIS -- so refusing to follow them, and blaming the
+                --: operator for it, defeats the verb.
+                local k = issue(o)
                 old_set[k] = o
                 flags[k] = f
             end
@@ -1641,7 +1683,7 @@ verbs.compare = function(seq, faction, sector)
             local f = read_flags(o)
             if f == nil then n_new_unreadable = n_new_unreadable + 1
             elseif is_ship(f) == true or is_station(f) == true then
-                local k = wire(o)
+                local k = issue(o)
                 new_set[k] = o
                 flags[k] = flags[k] or f
             end
