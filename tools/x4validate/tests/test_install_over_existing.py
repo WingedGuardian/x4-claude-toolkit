@@ -998,3 +998,89 @@ def test_a_READ_ONLY_file_INSIDE_a_shipped_skill_refuses_BEFORE_any_write(
             "partial write -- which is the shape of the bug, not the fix")
     finally:
         os.chmod(victim, stat.S_IWRITE | stat.S_IREAD)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_INDENTED_owned_key_does_not_survive_and_WIN(installer, tmp_path):
+    """An indented `X4_GAME=` was not recognised as owned, so it was CARRIED OVER --
+    and emitted AFTER the authoritative line, which is what bash sources last.
+
+    MEASURED before the fix: a config containing `  X4_GAME="/OLD/STALE/GAME"`,
+    re-installed with `--game <new>`, produced
+
+        X4_GAME="<new>"
+        # --- carried over from your previous x4-paths.env ---
+          X4_GAME="/OLD/STALE/GAME"        <- what bash actually sources
+
+    rc 0, silent. Every hook, gate and tool then resolves the OLD game root. The
+    config's own header tells the user to edit it freely, so an indented key is a
+    supported edit, not abuse.
+
+    Three sites shared the untrimmed extraction, and the range RECRUITED for it:
+    `_owned_lines_old` -- the "would this change?" precondition added this arc --
+    copied the same `${line%%=*}`, so the new precondition was blind to the indented
+    key too and could not stop the run. install.ps1 trimmed in one of its two.
+
+    Asserted as ONE assignment, because "the new value appears" is satisfied by a
+    file that also carries the old one after it.
+    """
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    cfg = dest / ".claude" / "x4-paths.env"
+
+    body = cfg.read_text(encoding="utf-8")
+    assert "X4_GAME=" in body, "fixture assumption broken: no X4_GAME in the config"
+    stale = tmp_path / "OLD-STALE-GAME"
+    stale.mkdir()
+    edited = []
+    for ln in body.splitlines():
+        edited.append("  X4_GAME=\"%s\"" % stale.as_posix()
+                      if ln.startswith("X4_GAME=") else ln)
+    cfg.write_text("\n".join(edited) + "\n", encoding="utf-8")
+
+    newgame = tmp_path / "NEW-GAME"
+    newgame.mkdir()
+    r = _install(installer, tmp_path, dest, "--game", newgame.as_posix())
+    assert r.returncode == 0, "re-install failed: %s" % (r.stdout + r.stderr)[-900:]
+
+    after = cfg.read_text(encoding="utf-8")
+    assigns = [ln for ln in after.splitlines()
+               if ln.strip().startswith("X4_GAME=")]
+    assert len(assigns) == 1, (
+        "X4_GAME is assigned %d times; bash sources the LAST one, so the carried "
+        "copy wins and the tool resolves the stale root:\n%s" % (len(assigns), assigns))
+    assert stale.as_posix() not in after, (
+        "the stale game root survived the upgrade:\n%s" % after)
+    assert newgame.as_posix() in assigns[0], (
+        "the surviving assignment is not the one the user asked for: %r" % assigns[0])
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_rewrite_covers_EVERY_shipped_file_not_only_markdown(installer, tmp_path):
+    """`11fa6d3` widened the bash rewrite to `find -type f` and left install.ps1
+    filtering `*.md`, so the two installers stopped agreeing about which shipped
+    files get `$CLAUDE_PROJECT_DIR` resolved.
+
+    MEASURED cost at the time: ZERO -- no skill ships a non-`.md` file today. Latent
+    thereafter: the first skill to ship a script, template or reference file leaves a
+    Windows global install resolving `$CLAUDE_PROJECT_DIR` to whatever repo the user
+    happens to have open, silently, rc 0.
+
+    Fixed rather than deferred because the divergence was CREATED by this arc -- by a
+    commit of mine -- and a latent divergence is exactly what the parity suite cannot
+    see (BLIND-SPOTS F109).
+    """
+    dest, home = _global_only_fixture(tmp_path)
+    sub = dest / ".claude" / "skills" / "x4-balance" / "sub"
+    sub.mkdir()
+    (sub / "helper.sh").write_text("cd $CLAUDE_PROJECT_DIR/tools\n", encoding="utf-8")
+
+    r = _install(installer, tmp_path, dest, method="global")
+    assert r.returncode == 0, (r.stdout + r.stderr)[-900:]
+
+    landed = home / "skills" / "x4-balance" / "sub" / "helper.sh"
+    assert landed.is_file(), "the non-markdown file was not copied at all"
+    body = landed.read_text(encoding="utf-8")
+    assert "$X4_TOOLKIT" in body and "$CLAUDE_PROJECT_DIR" not in body, (
+        "a shipped NON-markdown file kept $CLAUDE_PROJECT_DIR, so a global install "
+        "resolves it to whichever repo is open: %r" % body)

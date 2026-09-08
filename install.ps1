@@ -185,7 +185,10 @@ function Get-OwnedEnvLinesFromFile($f) {
     try { $lines0 = Get-Content -LiteralPath $f -ErrorAction Stop } catch { return ,@('__X4_UNREADABLE__') }
     foreach ($line in $lines0) {
       if ($line -match '^\s*#' -or $line -notmatch '=') { continue }
-      $key = ($line -split '=',2)[0]
+      # TRIMMED, matching Write-PathsEnv below and install.sh. This one was not,
+      # so the two halves of this installer disagreed about whether an indented
+      # key is owned -- it happened to fail safe, which is not the same as correct.
+      $key = ($line -split '=',2)[0].Trim()
       if ($owned -contains $key) { $out += $line }
     }
   }
@@ -875,7 +878,12 @@ function Install-Global($t) {
       # match" forbids.
       $srcRoot = $_.FullName
       $dstRoot = Join-Path $dst $_.Name
-      $copied += Get-ChildItem -Recurse -File -LiteralPath $srcRoot -Filter '*.md' |
+      # EVERY shipped file, not only *.md -- install.sh rewrites `find -type f` and
+      # this filtered, so a shipped script or template kept $CLAUDE_PROJECT_DIR on
+      # Windows and resolved to whatever repo the user had open. Zero cost when the
+      # divergence was created (no skill ships a non-.md file); latent from the day
+      # one does, and invisible to a parity suite that compares the two files as text.
+      $copied += Get-ChildItem -Recurse -File -LiteralPath $srcRoot |
         ForEach-Object {
           # BYTE VALUES, not quoted literals. This shipped as TrimStart('', '/') --
           # a lone backslash that collapsed to an empty string at authoring time --

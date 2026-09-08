@@ -374,7 +374,14 @@ _owned_lines_old() {   # _owned_lines_old CONFIG_FILE
     # input, opposite verdicts -- and the test written for that path could not see
     # it, because the installer it had just run wrote LF.
     line="${line%$CR}"
-    case "$line" in '#'*|'') continue ;; *=*) key="${line%%=*}" ;; *) continue ;; esac
+    # THE KEY IS TRIMMED. An INDENTED owned key was not recognised as owned, so it
+    # fell through to the carry-over block and was emitted AFTER the authoritative
+    # line -- and bash sources the last assignment. MEASURED: `  X4_GAME="/OLD"`
+    # re-installed with `--game <new>` yielded the OLD root, rc 0, silent. The
+    # config's own header tells the user to edit it freely, so an indented key is a
+    # supported edit. This precondition shares the extraction with the carry-over
+    # loop below, so it was blind to the same line and could not stop the run.
+    case "$line" in '#'*|'') continue ;; *=*) key="${line%%=*}"; key="${key#"${key%%[![:space:]]*}"}" ;; *) continue ;; esac
     case " X4_TOOLKIT X4_GAME X4_REFERENCE X4_PROFILE X4_DEBUGLOG X4_MODS X4_EXTENSIONS XRCATTOOL " in
       *" $key "*) echo "$line" ;;
     esac
@@ -559,7 +566,7 @@ write_paths_env() {  # write_paths_env TOOLKIT_DIR
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in
         '#'*|'') continue ;;
-        *=*)     key="${line%%=*}" ;;
+        *=*)     key="${line%%=*}"; key="${key#"${key%%[![:space:]]*}"}" ;;   # trimmed: see write_paths_env
         *)       continue ;;
       esac
       case "$owned" in
