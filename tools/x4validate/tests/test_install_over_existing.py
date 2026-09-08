@@ -660,16 +660,28 @@ def test_a_CRLF_config_is_still_recognised_as_UNCHANGED(installer, tmp_path):
         "the config was not recognised as unchanged:\n%s" % (r.stdout + r.stderr)[-1000:])
 
 
-def _global_fixture(tmp_path):
+def _global_fixture(tmp_path, toolkit_name: str = "toolkit"):
     """A toolkit that ships one skill, beside a user who keeps notes in it.
 
     The destination directory `x4-balance` is one the toolkit OWNS, which is the
     whole point: the existing guard is keyed on that name, so it protects
     `my-own-thing/` and waves through a user file sitting inside `x4-balance/`.
+
+    `toolkit_name` is a parameter because one twin needs a path carrying `[` and
+    `]`, which is a metacharacter hazard measured on this file rather than an
+    invented one.
     """
-    dest = _fresh(tmp_path)
+    dest = tmp_path / toolkit_name
+    dest.mkdir()
+    for d in ("game", "profile", "mods"):
+        (tmp_path / d).mkdir(exist_ok=True)
     sk = dest / ".claude" / "skills" / "x4-balance"
     sk.mkdir(parents=True)
+    # NESTED, because the loop recurses and a mapping bug shows up here first:
+    # a top-level file survives some wrong prefixes that a nested one does not.
+    (sk / "nested").mkdir()
+    (sk / "nested" / "DEEP.md").write_text("deep $CLAUDE_PROJECT_DIR/x" + chr(10),
+                                           encoding="utf-8")
     (sk / "SKILL.md").write_text("run $CLAUDE_PROJECT_DIR/tools/x4validate\n",
                                  encoding="utf-8")
     quiet = dest / ".claude" / "skills" / "x4-debug"
@@ -752,3 +764,50 @@ def test_a_shipped_file_with_NO_token_is_left_alone_and_does_not_fail_the_run(
         "a skill needing no rewrite failed the run:\n%s" % (r.stdout + r.stderr)[-1200:])
     quiet = (home / "skills" / "x4-debug" / "SKILL.md").read_text(encoding="utf-8")
     assert quiet == "this one names no variable at all\n", "rewrote a file with no token"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_source_to_destination_MAPPING_survives_a_BRACKETED_toolkit_path(
+        installer, tmp_path):
+    """The twin for the PATH-PARSING clause, which the other three cannot reach.
+
+    They vary WHICH files the loop selects and hold the path shape constant. This
+    one varies the path and holds the selection constant, because the failure is
+    not a wrong selection: `${src#"$TOOLKIT/.claude/skills/"}` unquoted treats
+    `[v3]` as a character CLASS matching one of v/3, so it does not match the
+    literal four characters, the prefix is not stripped, `$rel` keeps the whole
+    absolute path, and the destination mapping points outside the skill entirely.
+    The file is then simply not rewritten -- or, with a different prefix, written
+    somewhere in the user's ~/.claude that nobody asked for.
+
+    It is a test rather than the one-off probe it started as because THIS COMMIT
+    made that expression load-bearing. Before the fix the file list came from
+    `grep -rl`, which yields absolute paths and never went through a prefix strip,
+    so nothing in the suite had ever exercised it. A construct that moves onto the
+    path needs coverage on the axis it introduced, not on the axis that was
+    already covered.
+
+    `[` and `]` in a toolkit path is a MEASURED hazard on this file, not a
+    hypothetical: `toolkit [v3]` is what made the PowerShell arm's bare path
+    cmdlets match nothing and report "installed" over an empty directory.
+    test_installer_literal_paths.py pins that, but it never drives --method
+    global, so it cannot cover this.
+    """
+    dest, home = _global_fixture(tmp_path, toolkit_name="toolkit [v3]")
+    r = _install(installer, tmp_path, dest, method="global")
+
+    for rel in ("SKILL.md", "nested/DEEP.md"):
+        f = home / "skills" / "x4-balance" / rel
+        assert f.is_file(), (
+            "%s never arrived at its destination, so the source->destination "
+            "mapping did not survive the bracketed path (rc=%s) %s"
+            % (rel, r.returncode, (r.stdout + r.stderr)[-800:]))
+        body = f.read_text(encoding="utf-8")
+        assert "$X4_TOOLKIT" in body and "$CLAUDE_PROJECT_DIR" not in body, (
+            "%s was copied but NOT rewritten -- the prefix strip did not strip, so "
+            "the mapped path named no real file and the loop skipped it: %r"
+            % (rel, body))
+
+    mine = (home / "skills" / "x4-balance" / "MY_NOTES.md").read_text(encoding="utf-8")
+    assert mine == "my dir is $CLAUDE_PROJECT_DIR/notes\n", (
+        "a bracketed toolkit path must not widen what gets rewritten either: %r" % mine)
