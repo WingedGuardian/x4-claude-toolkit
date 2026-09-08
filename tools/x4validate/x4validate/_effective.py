@@ -676,30 +676,6 @@ def _extract_registry(tree: etree._Element, kind: str, child_tag: str,
             f"Indexing nothing while reporting success is the defect this guard exists "
             f"to catch; fix the key attribute in LIBRARY_REGISTRIES.")
     return out
-    children = tree.findall(child_tag)
-    siblings = len([e for e in tree if isinstance(e.tag, str)]) - len(children)
-    if not children and siblings:
-        rec.note(f"{kind}: {vpath} has NO <{child_tag}> children but {siblings} other "
-                 f"element(s). Either the tag is wrong or this file changed shape; "
-                 f"indexing nothing here would report success over a real file.")
-    for el in children:
-        name = el.get(key_attr)
-        if not name:
-            continue
-        out.append(Entity(kind, name, el.get(klass_attr, ""), vpath,
-                          rec.winner(el).source, rec.elem_chain(el),
-                          flatten_with_prov(el, rec, where=vpath)))
-    if children and not out:
-        raise ValueError(
-            f"{kind}: {vpath} has {len(children)} <{child_tag}> element(s) but the "
-            f"registry yielded no entities — @{key_attr!r} matches none of them. "
-            f"Indexing nothing while reporting success is the defect this guard exists "
-            f"to catch; fix the key attribute in LIBRARY_REGISTRIES.")
-    if siblings:
-        # THE DENOMINATOR, so a count is never quoted as if it were the whole file.
-        rec.note(f"{kind}: indexed {len(out)} of {len(children) + siblings} element(s) "
-                 f"in {vpath} — the other {siblings} are not <{child_tag}>.")
-    return out
 
 
 # --- build --------------------------------------------------------------------
