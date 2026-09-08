@@ -375,8 +375,32 @@ def main(argv=None) -> int:
         return 4
 
     missing = (expected or 0) - (indexed or 0)
+    # THE EXCLUSIONS ARE A DIFFERENT AXIS FROM THE DOCUMENT COUNT, and reading only
+    # the count is how a negative over an INCOMPLETE tree printed as complete. A
+    # malformed overlay does not reduce `documents_total` -- that is written+copied,
+    # and the document still exists, merely without that overlay applied -- so
+    # `missing` is 0, the unparseable list never prints, and the sentence ends
+    # "(complete)" while coverage.json carries a non-zero
+    # negative_claim_excludes.unparseable_overlays.
+    #
+    # coverage.py publishes that field precisely so a caller can "RENDER the caveat
+    # instead of reading a bare boolean" -- and no shipped caller asked. A disclosure
+    # with no reader is decoration.
+    excl = cov.get("negative_claim_excludes") or {}
+    n_unparseable = excl.get("unparseable_overlays") or 0
+    n_unbuilt = excl.get("vpaths_without_effective_tree") or 0
     print(f"\n  NEGATIVE CONFIRMED over {indexed} of {expected} documents"
-          + (f" ({missing} excluded)." if missing else " (complete)."))
+          + (f" ({missing} excluded)." if missing
+             else ("" if (n_unparseable or n_unbuilt) else " (complete).")))
+    if n_unparseable or n_unbuilt:
+        print("  ** NOT COMPLETE. ** This tree EXCLUDES:")
+        if n_unparseable:
+            print(f"      {n_unparseable} overlay(s) that would not parse")
+        if n_unbuilt:
+            print(f"      {n_unbuilt} vpath(s) with no effective tree")
+        print("  so a zero here is a negative over the tree MINUS those, which is a")
+        print("  narrower claim than the sentence above reads as. coverage.json ->")
+        print("  negative_claim_excludes carries the counts; -> unparseable names them.")
     if missing:
         print("  The exclusions are malformed XML the ENGINE cannot read either, so they")
         print("  hold no live content. Named in coverage.json -> unparseable:")

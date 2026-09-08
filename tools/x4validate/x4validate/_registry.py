@@ -288,6 +288,22 @@ def mods(scope: str, dirs: list[Path] | None = None,
         raise ValueError(
             f"mod scope must be one of {MOD_SCOPES}, got {scope!r}. "
             f"'active' = what the engine will load; 'installed' = what is on disk.")
+    # ⚠ A DROP HERE IS STILL SILENT AT 17 OF 19 CALL SITES, and that is recorded
+    # rather than fixed. A mod whose content.xml will not parse is dropped, and only
+    # `_modlist` and `_scan` pass a `dropped` list -- so elsewhere "125 mods" reads
+    # the same as "126 mods, one of which I could not read".
+    #
+    # I tried announcing it HERE, which covers every caller at once, and
+    # tests/test_engine_sources_carry_no_cli.py correctly refused it: this module is
+    # in _freshness.ENGINE_SOURCES, and an engine source does not carry CLI output.
+    # That guard is right and the convenience is not worth eroding it.
+    #
+    # The real fix is to thread `dropped=` through the remaining call sites and render
+    # it, which ripples into each of their outputs -- deliberately NOT done during a
+    # release close-out, where a wide refactor is how the previous rounds introduced
+    # criticals. MEASURED 2026-09-08: 0 of 125 installed mods drop today on both
+    # scopes, so the cost is currently zero -- which is exactly where a wrong
+    # denominator hides (CLAUDE.md #23). Registered as a blind spot with that number.
     installed = scan_installed(dirs, dropped=dropped)
     if scope == "installed":
         return installed
