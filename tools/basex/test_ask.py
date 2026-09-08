@@ -411,3 +411,49 @@ def test_an_UNAVAILABLE_item_count_cannot_confirm_a_negative(monkeypatch, capsys
     # asserted a two-word phrase the message splits across two lines, so it
     # failed against a correct fix -- the checker, not the subject.
     assert "serialization is not an empty sequence" in text
+
+
+def test_a_negative_over_a_tree_with_SKIPPED_OVERLAYS_is_not_called_complete(monkeypatch, capsys):
+    """`missing` is a DOCUMENT-COUNT deficit, and a malformed overlay does not reduce
+    the document count -- the document still exists, merely without that overlay
+    applied. So `missing` was 0, the exclusions never printed, and the sentence ended
+    "(complete)" over a tree that had dropped overlays.
+
+    coverage.py publishes `negative_claim_excludes` precisely so a caller can "RENDER
+    the caveat instead of reading a bare boolean", and no shipped caller asked. A
+    disclosure with no reader is decoration.
+    """
+    _fake_basex(monkeypatch, "")
+    monkeypatch.setattr(ask, "load_coverage", lambda db: {
+        "db": db, "status": "complete", "supports_negative_claim": True,
+        "indexed": {"total": 100}, "expected": {"total": 100},
+        "unparseable": ["mod_a/libraries/wares.xml: malformed XML"],
+        "negative_claim_excludes": {
+            "vpaths_without_effective_tree": 2, "unparseable_overlays": 1},
+    })
+    _stale(monkeypatch, fresh=True)
+    ask.main(["xq", "//nothing"])
+    text = capsys.readouterr().out
+    assert "(complete)" not in text, (
+        "a tree excluding 1 unparseable overlay and 2 unbuilt vpaths was reported as "
+        "complete, so a zero reads as a negative over the whole corpus:\n%s" % text)
+    assert "NOT COMPLETE" in text and "1 overlay" in text and "2 vpath" in text, (
+        "the exclusions coverage.json already carries were not rendered:\n%s" % text)
+
+
+def test_a_genuinely_complete_tree_still_says_complete(monkeypatch, capsys):
+    """The twin. Without it the fix is satisfied by never saying complete at all,
+    which would make the tool useless for the claim it exists to support."""
+    _fake_basex(monkeypatch, "")
+    monkeypatch.setattr(ask, "load_coverage", lambda db: {
+        "db": db, "status": "complete", "supports_negative_claim": True,
+        "indexed": {"total": 100}, "expected": {"total": 100}, "unparseable": [],
+        "negative_claim_excludes": {
+            "vpaths_without_effective_tree": 0, "unparseable_overlays": 0},
+    })
+    _stale(monkeypatch, fresh=True)
+    ask.main(["xq", "//nothing"])
+    text = capsys.readouterr().out
+    assert "(complete)" in text, (
+        "a tree with nothing excluded must still support the negative claim:\n%s" % text)
+    assert "NOT COMPLETE" not in text, text

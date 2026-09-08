@@ -135,11 +135,44 @@ def build_index(reference: Path, ext_dir: Path,
     if not ext_dir.is_dir() and unreadable is not None:
         unreadable.append(str(ext_dir) + " (the extensions directory does not "
                           "exist, so NO installed mod was indexed at all)")
-    if ext_dir.is_dir():
-        # INSTALLED: x4xref exists to make NEGATIVES admissible ("nobody calls
-        # X"). The broader set is the conservative one -- excluding a disabled
-        # mod could turn a real caller into a false negative.
-        for m in _registry.mods("installed", [ext_dir]):
+    # EVERY CONFIGURED ROOT, not just the one named. `_registry.default_installed_dirs`
+    # returns up to THREE -- game-root extensions, the profile's extensions, and the
+    # Steam workshop content dir -- and this walked only the one it was handed. x4xref
+    # exists to make NEGATIVES admissible ("nobody calls X"), so a population missing a
+    # whole configured root makes every negative a claim about part of the install
+    # while reading as a claim about the install.
+    #
+    # MEASURED on this machine when the gap was found: the two populations are
+    # IDENTICAL (the profile extensions dir is empty and no workshop dir exists), so
+    # the index digest does not move here. That is the state in which such a gap
+    # survives -- a recorded cost of zero is where a wrong denominator hides.
+    roots = [ext_dir]
+    try:
+        for extra in _registry.default_installed_dirs():
+            if extra not in roots:
+                roots.append(extra)
+    except Exception:  # silent-ok: a root set that cannot be derived must not
+        # empty the index. The NAMED root is still walked below, and the caller's own
+        # `unreadable` channel still reports whatever that walk could not read -- so
+        # the failure mode is a NARROWER population, never a silent zero. Recording it
+        # here would fire on every machine with no profile extensions dir, which is
+        # the normal state.
+        pass
+    scanned = [r for r in roots if r.is_dir()]
+    # NO failure channel entry for an ABSENT candidate root. `default_installed_dirs`
+    # returns CANDIDATES -- the profile's extensions dir and the Steam workshop dir
+    # are routinely absent (X4 downloads subscribed mods straight into game-root
+    # extensions, and this machine has no workshop dir at all), so their absence is a
+    # normal state and not a read failure. Recording it filled `unreadable` on every
+    # clean build, which a test correctly refused. The widening below IS the fix.
+    seen_folders = set()
+    for root_dir in scanned:
+        for m in _registry.mods("installed", [root_dir]):
+            # A mod present in two roots is ONE mod to the engine; index it once and
+            # keep the first, which is the order default_installed_dirs declares.
+            if m["folder"] in seen_folders:
+                continue
+            seen_folders.add(m["folder"])
             for vpath, root in _iter_mod_files(Path(m["path"]), unreadable):
                 _walk(root, m["folder"], vpath, rows)
     return rows
