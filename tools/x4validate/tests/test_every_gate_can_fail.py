@@ -244,9 +244,19 @@ def test_the_four_floors_are_REACHABLE_not_just_present():
             isinstance(n, _ast.Return) and isinstance(n.value, _ast.Constant)
             and n.value.value == 2
             for n in _ast.walk(tree))
+        # THE ARGUMENT, not just the name. This matched any `raise SystemExit(...)`,
+        # and every gate ends `raise SystemExit(main())` -- so the check was satisfied
+        # by boilerplate for all 31 gates and asserted nothing about an rc-2 PATH.
+        # MEASURED: deleting fuzz_diff's floor (`return 2` -> `return 0`), which is the
+        # arc's own "nothing examined is refused, not passed" guard in a RELEASE GATE,
+        # left this test and the whole suite green. fuzz_diff is named in no other test
+        # file, so it had no behavioural backstop either.
         raises_two = any(
             isinstance(n, _ast.Raise) and isinstance(n.exc, _ast.Call)
             and getattr(n.exc.func, "id", "") == "SystemExit"
+            and len(n.exc.args) == 1
+            and isinstance(n.exc.args[0], _ast.Constant)
+            and n.exc.args[0].value == 2
             for n in _ast.walk(tree))
         assert returns_two or raises_two, (
             "%s has no rc-2 path, so it cannot say 'could not check'" % name)

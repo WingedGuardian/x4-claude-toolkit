@@ -159,7 +159,17 @@ def test_every_file_pinned_to_LF_actually_holds_LF_on_disk():
     pinned = files_pinned_to_lf()
     if pinned is None:
         pytest.skip("git unavailable or not a repository -- pin compliance NOT CHECKED")
-    assert len(pinned) > 20, (
+    # THE ROOT MUST BE THE REPO, not the package. `_repo_root`'s documented fallback
+    # returns the PACKAGE on any git failure -- a submodule, a nested repo, an export
+    # -- which narrows this guard from 231 pinned files to 186 and drops ALL of
+    # .claude/hooks/, scripts/, mods/ and tools/basex/. The old floor of 20 kept it
+    # green either way, so the fallback was undetectable. MEASURED 2026-09-08:
+    # repo scope 231 of 271 tracked; package scope 186 of 194.
+    assert ROOT != _PKG, (
+        "the repo root fell back to the package directory, so this guard covers "
+        "%s and not .claude/hooks, scripts, mods or tools/basex -- 45 fewer files, "
+        "silently" % _PKG)
+    assert len(pinned) > 200, (
         f"only {len(pinned)} files resolved to eol=lf -- the resolver has gone blind, "
         "and a blind resolver makes the assertion below meaningless")
     offenders = crlf_offenders(pinned, ROOT)

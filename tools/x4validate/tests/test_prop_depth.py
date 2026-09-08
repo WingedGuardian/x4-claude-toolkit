@@ -163,6 +163,26 @@ def test_build_itself_clears_the_list_before_it_starts():
              and isinstance(n.func, ast.Attribute) and n.func.attr == "clear"
              and getattr(n.func.value, "id", "") == "truncated_props"]
     assert calls, "build() no longer clears truncated_props; a second build in one "                   "process would report the first's truncations as its own"
+    # ...AND BEFORE THE WALKS THAT POPULATE IT, not merely somewhere in the
+    # function. This asserted only that the call EXISTS: MEASURED 2026-09-08 by
+    # moving it down to just above the `if truncated_props:` report, which
+    # discards every truncation THIS build found and silences the WARNING --
+    # and the test stayed green. My first repair was also insufficient: it
+    # looked for READS before the clear, and build() never reads the list by
+    # name until the report, because the population happens through .append
+    # inside a callee. The ordering that matters is against the WALKS.
+    populators = [n.lineno for n in ast.walk(tree)
+                  if isinstance(n, ast.Call)
+                  and getattr(n.func, "id", getattr(n.func, "attr", ""))
+                  in ("extract_macros", "extract_components", "flatten_with_prov")]
+    assert populators, (
+        "no populating walk found in build() -- the scan is wrong, not the code, "
+        "and an ordering assertion over an empty set proves nothing")
+    first_clear = min(n.lineno for n in calls)
+    assert first_clear < min(populators), (
+        "build() clears truncated_props at line %d, AFTER the first walk that "
+        "populates it at line %d -- so the clear discards this build's own "
+        "findings and the WARNING never prints" % (first_clear, min(populators)))
 
 
 def test_ware_recipe_inputs_are_flattened():
@@ -462,6 +482,20 @@ def test_the_two_walks_share_ONE_depth_constant():
     equal, so raising one silently diverged the tools -- and the two answer the same
     question about the same macro. It is imported now, not mirrored."""
     from x4validate import _stats
+    # IMPORTED, not merely EQUAL. `is` on the value 8 is satisfied by a re-declared
+    # literal, because CPython interns small ints -- MEASURED 2026-09-08: putting
+    # `MAX_PROP_DEPTH = 8` back into _stats.py left this green, so it caught later
+    # DIVERGENCE and never the MIRRORING it is named for. Asserted over the AST of
+    # the module's own source, which a re-declaration cannot satisfy.
+    import ast as _ast
+    src = Path(_stats.__file__).read_text(encoding="utf-8")
+    mirrors = [n.lineno for n in _ast.walk(_ast.parse(src))
+               if isinstance(n, _ast.Assign) and isinstance(n.value, _ast.Constant)
+               for t in n.targets
+               if isinstance(t, _ast.Name) and t.id == "MAX_PROP_DEPTH"]
+    assert not mirrors, (
+        "_stats.py assigns MAX_PROP_DEPTH a LITERAL at line(s) %s -- a mirrored "
+        "constant is a constant that drifts. Deriving it (`= _effective.MAX_PROP_DEPTH`) is correct; re-declaring the value is not." % (mirrors,))
     assert _stats.MAX_PROP_DEPTH is _effective.MAX_PROP_DEPTH, (
         "_stats has its own copy again; a mirrored constant is a constant that drifts")
 
@@ -522,7 +556,17 @@ def test_the_depth_fixture_is_DERIVED_from_the_constant():
     literal 12, so it stays green for any MAX_PROP_DEPTH below 12 and goes red the
     moment someone raises it to 12 -- for the wrong reason. Pinned here so a future
     raise fixes the fixture instead of being blamed on the guard."""
+    # ASSERTED OVER THE AST, and not over this file. It read its own source and
+    # looked for the literal "MAX_PROP_DEPTH + 3" -- a string that IS the assertion
+    # line, so it was a tautology: MEASURED 2026-09-08 by replacing all four derived
+    # fixtures with a literal 11, which left it green.
+    import ast as _ast
     src = (Path(__file__)).read_text(encoding="utf-8")
-    assert "MAX_PROP_DEPTH + 3" in src, (
-        "the deep fixtures no longer derive their nesting from the constant; a raise "
-        "will make them pass vacuously or fail for an unrelated reason")
+    derived = [n for n in _ast.walk(_ast.parse(src))
+               if isinstance(n, _ast.BinOp) and isinstance(n.op, _ast.Add)
+               and (getattr(n.left, "id", None) == "MAX_PROP_DEPTH"
+                    or getattr(n.left, "attr", None) == "MAX_PROP_DEPTH")]
+    assert len(derived) >= 4, (
+        "the deep fixtures no longer derive their nesting from the constant (found "
+        "%d `MAX_PROP_DEPTH + n` expressions, expected the four fixtures); a raise "
+        "will make them pass vacuously or fail for an unrelated reason" % len(derived))
