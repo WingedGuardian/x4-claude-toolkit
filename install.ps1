@@ -122,7 +122,6 @@ function Detect-XRCat {
 $X4CopyPrune = @('tools\x4validate\.venv',
                  'tools\x4validate\.pytest_cache',
                  'tools\x4validate\.mutation-probe-pristine',
-                 '.claude\backups',
                  '.claude\hooks\__pycache__',
                  '.claude\hooks\.pytest_cache',
                  'scripts\__pycache__',
@@ -150,7 +149,7 @@ $X4CopyPrune = @('tools\x4validate\.venv',
 #: $X4KeepLocal in install.sh, and deliberately SEPARATE from $X4CopyPrune: a
 #: pruned path is also DELETED from the destination, which is right for a stale
 #: .venv and catastrophic for a config.
-$X4KeepLocal = @('.claude\x4-paths.env','.claude\settings.local.json')
+$X4KeepLocal = @('.claude\x4-paths.env','.claude\settings.local.json','.claude\backups')
 
 #: The key=value lines Write-PathsEnv OWNS, as it would write them now. Factored
 #: out so the precondition and the writer cannot disagree about what "would

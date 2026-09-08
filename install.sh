@@ -154,7 +154,7 @@ MISSING=""
 #: .gitignore entry says MACHINE-LOCAL by design because wall-clock differs per
 #: machine, and which the installer then copied to another machine for
 #: perf_guard to compare against a stranger's timings.
-X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/x4validate/.mutation-probe-pristine .claude/backups .claude/hooks/__pycache__ .claude/hooks/.pytest_cache scripts/__pycache__ tools/.pytest_cache tools/basex/__pycache__ tools/basex/basex/.basex tools/x4validate/.perf-baseline.json tools/x4validate/.obtainability-baseline.json tools/x4validate/gates/__pycache__ tools/x4validate/scripts/__pycache__ tools/x4validate/tests/__pycache__ tools/x4validate/x4validate/__pycache__"
+X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/x4validate/.mutation-probe-pristine .claude/hooks/__pycache__ .claude/hooks/.pytest_cache scripts/__pycache__ tools/.pytest_cache tools/basex/__pycache__ tools/basex/basex/.basex tools/x4validate/.perf-baseline.json tools/x4validate/.obtainability-baseline.json tools/x4validate/gates/__pycache__ tools/x4validate/scripts/__pycache__ tools/x4validate/tests/__pycache__ tools/x4validate/x4validate/__pycache__"
 
 #: Per-machine files that must NEVER travel from the source: they hold THIS
 #: machine paths and secrets, and the destination copy is the user own.
@@ -171,7 +171,7 @@ X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/x4val
 #: denied` on item 1 of 16), and its restore sat 53 lines after its backup with
 #: no trap between them, so any failure in the copy loop skipped the restore and
 #: left an orphaned .bak. Not copying a file cannot fail to restore it.
-X4_KEEP_LOCAL=".claude/x4-paths.env .claude/settings.local.json"
+X4_KEEP_LOCAL=".claude/x4-paths.env .claude/settings.local.json .claude/backups"
 
 #: Copy $SRC/REL to DEST/REL, never descending into a pruned relative path.
 #:

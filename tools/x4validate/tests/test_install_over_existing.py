@@ -811,3 +811,74 @@ def test_the_source_to_destination_MAPPING_survives_a_BRACKETED_toolkit_path(
     mine = (home / "skills" / "x4-balance" / "MY_NOTES.md").read_text(encoding="utf-8")
     assert mine == "my dir is $CLAUDE_PROJECT_DIR/notes\n", (
         "a bracketed toolkit path must not widen what gets rewritten either: %r" % mine)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_upgrade_KEEPS_the_recovery_store_and_still_PRUNES_build_artifacts(
+        installer, tmp_path):
+    """`.claude/backups/` is the RECOVERY STORE, and the upgrade deleted it.
+
+    X4_COPY_PRUNE is dual-purpose -- skipped on the way IN and `rm -rf`'d from the
+    destination on the way OUT, twice. v3.0.0's list held three build artifacts.
+    24da65e added `.claude/backups` to stop the SOURCE's backup files travelling,
+    and the path silently inherited the destructive second meaning: an upgrade
+    erased every known-good snapshot and the whole audit trail, rc 0, with the word
+    "backup" appearing nowhere in the output.
+
+    That store is not a build artifact. `backup-before-edit.sh` writes every
+    pre-edit backup there, `generate-baseline.sh` writes the known-good snapshots
+    CLAUDE.md mandates before any experiment, `restore-from-backup.sh` reads it --
+    and `x4lock.py` deliberately leaves it UNLOCKED, so the lock guard cannot catch
+    this either. MEASURED on the live install when this was found: 982 files,
+    60 MB, 33 named snapshots.
+
+    FOUR arms, because the obvious repair fails two of them:
+
+      SUBJECT   the destination's own store survives          (the defect)
+      TRAVEL    the SOURCE's store does NOT arrive            (what 24da65e fixed)
+      CONTROL   a real build artifact is STILL pruned         (or this passes for
+                                                               an installer that
+                                                               prunes nothing)
+      TWIN      an unrelated user directory under .claude/    (bounds it to the
+                survives                                       list, not blanket)
+
+    SUBJECT and TRAVEL are asserted as one exact set, so neither can be satisfied
+    by the other going wrong.
+    """
+    dest = _fresh(tmp_path)
+
+    store = dest / ".claude" / "backups" / "known-good-2026-09-01"
+    store.mkdir(parents=True)
+    (store / "snapshot.xml").write_text("MY-IRREPLACEABLE-SNAPSHOT", encoding="utf-8")
+    audit = dest / ".claude" / "backups" / "AUDIT_LOG.txt"
+    audit.write_text("MY-AUDIT-TRAIL", encoding="utf-8")
+
+    artifact = dest / "scripts" / "__pycache__"
+    artifact.mkdir(parents=True)
+    (artifact / "stale.pyc").write_bytes(b"\x00stale")
+
+    mine = dest / ".claude" / "my-own-notes"
+    mine.mkdir(parents=True)
+    (mine / "README.md").write_text("MY-OWN-NOTES", encoding="utf-8")
+
+    r = _install(installer, tmp_path, dest)
+    assert r.returncode == 0, "the install failed: %s" % (r.stdout + r.stderr)[-1500:]
+
+    # SUBJECT + TRAVEL as one exact set: exactly what I put there, nothing else.
+    got = sorted(p.relative_to(dest / ".claude" / "backups").as_posix()
+                 for p in (dest / ".claude" / "backups").rglob("*") if p.is_file())
+    assert got == ["AUDIT_LOG.txt", "known-good-2026-09-01/snapshot.xml"], (
+        "the recovery store is wrong after the upgrade. Either the destination's own "
+        "store was destroyed, or the SOURCE machine's backups travelled into it. "
+        "got=%r" % (got,))
+    assert (store / "snapshot.xml").read_text(encoding="utf-8") == "MY-IRREPLACEABLE-SNAPSHOT"
+    assert audit.read_text(encoding="utf-8") == "MY-AUDIT-TRAIL"
+
+    # CONTROL: without this the test passes for an installer that prunes nothing.
+    assert not (artifact / "stale.pyc").exists(), (
+        "the build-artifact prune stopped working, so the SUBJECT assertion above "
+        "proves nothing about the prune list")
+
+    # TWIN: bounds the change to the list rather than to deletion in general.
+    assert (mine / "README.md").read_text(encoding="utf-8") == "MY-OWN-NOTES", (
+        "an unrelated user directory under .claude/ was removed")
