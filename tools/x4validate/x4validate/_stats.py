@@ -538,7 +538,27 @@ def main(argv: list[str] | None = None) -> int:
     eff, _ = effective_wares(ext_dir, config)                       # pool: installed
     _, eff_tree = effective_wares(ext_dir, config, exclude=candidate,
                                   scope="active")                    # resolution: active
-    cand = candidate_wares(candidate, eff_tree)
-    print(render_wares(compare_wares(cand, eff),
-                       unattributed_ware_ops(candidate, eff_tree)))
+    # COULD-NOT-CHECK IS rc 2, NEVER A CONFIDENT ZERO AND NEVER A TRACEBACK.
+    # `_merge.overlay_root` now RAISES on a malformed document when the caller passes
+    # no `skipped` channel -- its own "NO CHANNEL, NO SWALLOW" rule, which its
+    # XMLSyntaxError branch did not obey. Both calls below are channel-less, so a
+    # candidate whose wares.xml the ENGINE also cannot read arrives here as an
+    # exception, and it must land on the same rc 2 as every other unreadable input.
+    #
+    # MEASURED 2026-09-08 on two fixtures differing ONLY by a `--` inside an XML
+    # comment: before the _merge fix the malformed one printed "candidate
+    # introduces/changes no wares." at rc 0 -- an ABSENCE claim over a file nothing
+    # could read, walking around this module own guard at the "AN ABSENCE AND A
+    # NON-ANSWER MUST NOT PRINT THE SAME SENTENCE" comment.
+    try:
+        cand = candidate_wares(candidate, eff_tree)
+        rows = unattributed_ware_ops(candidate, eff_tree)
+    except etree.XMLSyntaxError as exc:
+        print(f"REFUSING: {candidate.name} has a malformed XML document, so this "
+              f"run cannot say what it changes.", file=sys.stderr)
+        print(f"  {exc}", file=sys.stderr)
+        print("  The engine cannot read it either -- fix the document, then re-run.",
+              file=sys.stderr)
+        return 2
+    print(render_wares(compare_wares(cand, eff), rows))
     return 0

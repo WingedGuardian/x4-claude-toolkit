@@ -275,8 +275,25 @@ def overlay_root(odir: Path, vpath: str,
         if data is not None:
             return parse_bytes(data)
     except etree.XMLSyntaxError as exc:
-        if skipped is not None:
-            skipped.append(f"{odir.name}/{vpath}: malformed XML, overlay skipped ({exc})")
+        # NO CHANNEL, NO SWALLOW — the SAME rule the OSError/ValueError branch below
+        # states and obeys, which this branch did not. It returned None whether or
+        # not a `skipped` list was passed, so for the SIX call sites that pass none
+        # (`_compat` x2, `_diff` x2, `_stats` x2) a malformed document became a
+        # silent "absent".
+        #
+        # MEASURED 2026-09-08 on two fixtures differing ONLY by a `--` inside an XML
+        # comment: the well-formed one reports the ware and its price; the malformed
+        # one prints "candidate introduces/changes no wares." at rc 0. The v3.1.0 arc
+        # RECRUITS for this — it rebuilt `_stats` around that exact sentence and added
+        # a guard at _stats.py:445 reading "AN ABSENCE AND A NON-ANSWER MUST NOT PRINT
+        # THE SAME SENTENCE", and the malformed path walks around that guard. The
+        # release therefore made the wrong answer more authoritative than it was.
+        #
+        # (The comment below says FIVE callers; measured, it is six — `_stats` has two
+        # call sites, 172 and 228. A denominator in prose, counted once and not again.)
+        if skipped is None:
+            raise
+        skipped.append(f"{odir.name}/{vpath}: malformed XML, overlay skipped ({exc})")
         return None
     except (OSError, ValueError) as exc:
         # The OTHER half of "neither a crash nor a silent pass". Only

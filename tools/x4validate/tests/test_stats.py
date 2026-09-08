@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 
+import pytest
+
 from lxml import etree
 
 from x4validate import _stats, _merge
@@ -453,3 +455,56 @@ def test_the_RESOLUTION_tree_takes_the_ACTIVE_set_not_the_installed_one():
         kw = {k.arg: k for k in c.keywords}
         scopes.append(kw["scope"].value.value if "scope" in kw else "installed")
     assert scopes == ["installed", "active"], scopes
+
+
+# --- a malformed document is a NON-ANSWER, not an absence (v3.1.0 review, batch 5) ---
+#
+# `_merge.overlay_root` swallowed XMLSyntaxError and returned None whether or not a
+# `skipped` channel was passed, while the OSError branch FOUR LINES BELOW states and
+# obeys the opposite rule ("NO CHANNEL, NO SWALLOW"). Six call sites pass no channel
+# (_compat x2, _diff x2, _stats x2), so an unreadable wares.xml became a confident
+# "candidate introduces/changes no wares." at rc 0 -- walking around this module own
+# guard at "AN ABSENCE AND A NON-ANSWER MUST NOT PRINT THE SAME SENTENCE".
+
+
+def _cand(root, comment):
+    """A minimal candidate mod whose only variable is the XML comment body."""
+    (root / "libraries").mkdir(parents=True)
+    (root / "content.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<content id="probe_mod" name="probe" version="100" date="2026-09-08"/>',
+        encoding="utf-8")
+    (root / "libraries" / "wares.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?>' + chr(10)
+        + "<diff>" + chr(10)
+        + "  <!-- " + comment + " -->" + chr(10)
+        + "  <replace sel=\"//ware[@id='ore']/price/@average\">500</replace>" + chr(10)
+        + "</diff>" + chr(10), encoding="utf-8")
+    return root
+
+
+def test_a_MALFORMED_overlay_RAISES_rather_than_reading_as_absent(tmp_path):
+    """The root cause, at the layer it lives in.
+
+    A caller that supplies no channel must get the exception -- exactly what the
+    sibling OSError branch promises -- because the alternative is a bare None that
+    every caller reads as "this mod changes nothing"."""
+    cand = _cand(tmp_path / "bad", "a note with -- a double hyphen")
+    with pytest.raises(etree.XMLSyntaxError):
+        _merge.overlay_root(cand, "libraries/wares.xml")
+
+
+def test_a_channel_STILL_records_instead_of_raising(tmp_path):
+    """The twin. Without it the assertion above is satisfied by a function that
+    raises unconditionally, which would break every caller that DOES pass a list."""
+    cand = _cand(tmp_path / "bad2", "a note with -- a double hyphen")
+    skipped = []
+    assert _merge.overlay_root(cand, "libraries/wares.xml", skipped) is None
+    assert len(skipped) == 1 and "malformed XML" in skipped[0], skipped
+
+
+def test_a_WELL_FORMED_overlay_is_unaffected(tmp_path):
+    """The second twin: the guard must key on malformed-ness, not on being called."""
+    cand = _cand(tmp_path / "good", "a normal note")
+    root = _merge.overlay_root(cand, "libraries/wares.xml")
+    assert root is not None and root.tag == "diff"
