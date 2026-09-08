@@ -764,9 +764,16 @@ function Assert-GlobalOverExisting($t) {
   # -LiteralPath for the path and -Filter for the pattern: the bare parameters read a
   # home directory containing [ or ] as a WILDCARD character class, which is the defect
   # already recorded further down this file.
+  # ENUMERATED FROM THE TOOLKIT, then checked against the destination -- the shape the
+  # agents leg below already uses, and the property the comment above already claims.
+  # This listed every x4-* directory IN THE DESTINATION, so a user's own `x4-mycustom/`
+  # was named as a file the install "would REPLACE" and the run refused until they
+  # passed -OverExisting, against a directory this installer never touches.
   $existing = @()
-  if (Test-Path -LiteralPath $sk) {
-    $existing = @(Get-ChildItem -Directory -LiteralPath $sk -Filter 'x4-*' -ErrorAction SilentlyContinue)
+  $srcSkills = Join-Path $t '.claude/skills'
+  if ((Test-Path -LiteralPath $sk) -and (Test-Path -LiteralPath $srcSkills)) {
+    $existing = @(Get-ChildItem -Directory -LiteralPath $srcSkills -Filter 'x4-*' -ErrorAction SilentlyContinue |
+                  Where-Object { Test-Path -LiteralPath (Join-Path $sk $_.Name) })
   }
 
   # AGENTS TOO. This gate enumerated skills only, while Install-Global copies every
@@ -805,10 +812,15 @@ function Assert-GlobalOverExisting($t) {
   exit 2
 }
 
-function Install-Global($t) {
-  Refuse-IfDryRun 'installing the global Claude config for' $t
+
+function Assert-GlobalLockedTargets($t) {
+  # HOISTED out of Install-Global, which the dispatch calls AFTER Write-PathsEnv --
+  # so a refused run had already rewritten the path config and then printed
+  # "Nothing has been changed." This file states the rule itself, two functions up:
+  # refusing after the path config has been rewritten is a partial write, which is
+  # the shape of the bug rather than a fix. Assert-GlobalOverExisting was moved ahead
+  # of the writer for exactly that reason; this check was not, until 2026-09-08.
   $hc = Get-GlobalClaudeDir
-  New-Item -ItemType Directory -Force -Path (Join-Path $hc 'skills'),(Join-Path $hc 'agents') | Out-Null
   # Track exactly what WE copy - the $CLAUDE_PROJECT_DIR rewrite below must never
   # touch a user's pre-existing skills/agents (they may use that variable on purpose).
   # LOCKED TARGETS IN THIS DESTINATION TOO. Test-LockedTargetsPrecheck covers the
@@ -843,6 +855,12 @@ function Install-Global($t) {
     Write-Host '      Unlock them, or move them aside, and re-run. Nothing has been changed.'
     exit 1
   }
+}
+
+function Install-Global($t) {
+  Refuse-IfDryRun 'installing the global Claude config for' $t
+  $hc = Get-GlobalClaudeDir
+  New-Item -ItemType Directory -Force -Path (Join-Path $hc 'skills'),(Join-Path $hc 'agents') | Out-Null
 
   $copied = @()
   Get-ChildItem -Directory -LiteralPath (Join-Path $t '.claude\skills') -Filter 'x4-*' -ErrorAction SilentlyContinue |
@@ -1003,6 +1021,7 @@ switch ($Method) {
     Show-Target $Toolkit
     # Ahead of every write, exactly where install.sh gates its own global arm.
     Assert-GlobalOverExisting $Toolkit
+    Assert-GlobalLockedTargets $Toolkit   # BEFORE the config write, not inside the copier
     Test-ConfigPrecheck $Toolkit   # -Method global writes the config and never copied
     Write-PathsEnv $Toolkit
     Install-Global $Toolkit

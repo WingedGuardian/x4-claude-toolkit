@@ -110,7 +110,7 @@ def _fresh(tmp_path: pathlib.Path) -> pathlib.Path:
 
 def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra: str,
              method: str = "separate", from_dest: bool = False,
-             source: pathlib.Path | None = None):
+             source: pathlib.Path | None = None, over_existing: bool = True):
     """Run ONE of the two installers with identical intent.
 
     Parameterised rather than duplicated, because the point is that both reach the
@@ -154,7 +154,7 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
         cmd = [exe, script.as_posix()]
         for k, v in common.items():
             cmd += ["--" + k, v]
-        cmd += ["--over-existing", "--yes"]
+        cmd += (["--over-existing"] if over_existing else []) + ["--yes"]
         cmd += ["--" + f for f in flags]
     else:
         exe = shutil.which("pwsh") or shutil.which("powershell")
@@ -164,7 +164,7 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
         cmd = [exe, "-NoProfile", "-File", script.as_posix()]
         for k, v in common.items():
             cmd += ["-" + k[:1].upper() + k[1:], v]
-        cmd += ["-OverExisting", "-Yes"]
+        cmd += (["-OverExisting"] if over_existing else []) + ["-Yes"]
         cmd += ["-DryRun" if f == "dry-run" else "-" + f for f in flags]
     cwd = dest.as_posix() if from_dest else (source.as_posix() if source else ROOT.as_posix())
     # The global arm writes to <claude-dir>, which is NOT one of the six path
@@ -882,3 +882,119 @@ def test_the_upgrade_KEEPS_the_recovery_store_and_still_PRUNES_build_artifacts(
     # TWIN: bounds the change to the list rather than to deletion in general.
     assert (mine / "README.md").read_text(encoding="utf-8") == "MY-OWN-NOTES", (
         "an unrelated user directory under .claude/ was removed")
+
+
+def _global_only_fixture(tmp_path, mine: str | None = None, theirs_installed: bool = False):
+    """A toolkit shipping one skill, and a home that may hold the user's own.
+
+    `mine` is a skill directory the TOOLKIT DOES NOT SHIP whose name still starts
+    `x4-`; `theirs_installed` puts the SHIPPED skill into the destination, which is
+    the only thing an install would actually replace.
+    """
+    dest = tmp_path / "toolkit"
+    dest.mkdir()
+    for d in ("game", "profile", "mods"):
+        (tmp_path / d).mkdir(exist_ok=True)
+    sk = dest / ".claude" / "skills" / "x4-balance"
+    sk.mkdir(parents=True)
+    (sk / "SKILL.md").write_text("shipped\n", encoding="utf-8")
+    (dest / "setup.sh").write_text("exit 0\n", encoding="utf-8")
+
+    home = tmp_path / "fake-claude-home"
+    (home / "skills").mkdir(parents=True)
+    if mine:
+        (home / "skills" / mine).mkdir()
+        (home / "skills" / mine / "SKILL.md").write_text("mine\n", encoding="utf-8")
+    if theirs_installed:
+        (home / "skills" / "x4-balance").mkdir()
+        (home / "skills" / "x4-balance" / "SKILL.md").write_text("old\n", encoding="utf-8")
+    return dest, home
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_global_gate_names_only_skills_THIS_TOOLKIT_SHIPS(installer, tmp_path):
+    """The gate listed every `~/.claude/skills/x4-*`, not only the ones it would write.
+
+    So a user with their own `x4-mycustom/` was told the install "would REPLACE" it
+    and refused until they passed --over-existing -- against a directory this
+    installer never touches. The comment directly above the check already claims the
+    correct property: *"Only files this install would actually WRITE are named: an
+    unrelated agent of the user's own is not at risk and must not be listed as though
+    it were."* The AGENTS leg beside it enumerates `$TOOLKIT/.claude/agents/*.md` and
+    maps to the destination; the SKILLS leg globbed the destination.
+
+    ⚠ FIX THE CODE, NOT THE COMMENT. Softening that sentence would launder the defect
+    into documentation -- CLAUDE.md #37's prose-satisfies-the-assertion shape, which
+    this release has already produced once.
+    """
+    dest, home = _global_only_fixture(tmp_path, mine="x4-mycustom")
+    r = _install(installer, tmp_path, dest, method="global", over_existing=False)
+    out = r.stdout + r.stderr
+    assert "x4-mycustom" not in out, (
+        "the gate named a skill this toolkit does not ship, so the user is asked to "
+        "authorise replacing a directory the install never touches:\n%s" % out[-900:])
+    assert r.returncode == 0, (
+        "nothing in the destination would be replaced, so the run must not refuse "
+        "(rc=%s):\n%s" % (r.returncode, out[-900:]))
+    assert (home / "skills" / "x4-mycustom" / "SKILL.md").read_text(encoding="utf-8") \
+        == "mine\n", "the user's own skill was modified"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_global_gate_STILL_refuses_over_a_skill_it_DOES_ship(installer, tmp_path):
+    """The twin, and without it the fix above is satisfied by a gate that refuses
+    nothing at all -- which is the failure the gate exists to prevent."""
+    dest, home = _global_only_fixture(tmp_path, mine="x4-mycustom",
+                                      theirs_installed=True)
+    r = _install(installer, tmp_path, dest, method="global", over_existing=False)
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, (
+        "a shipped skill already present in the destination WOULD be replaced, so "
+        "the gate must still refuse:\n%s" % out[-900:])
+    assert "x4-balance" in out, "the refusal must NAME the skill it would replace"
+    assert "x4-mycustom" not in out, (
+        "even when refusing, the gate must not name a skill it would not write")
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_READ_ONLY_file_INSIDE_a_shipped_skill_refuses_BEFORE_any_write(
+        installer, tmp_path):
+    """Two defects in one trace, and the second is in BOTH installers.
+
+    (a) install.sh tested `[ ! -w "$_t" ]` where `$_t` is the skill DIRECTORY, so a
+        read-only `SKILL.md` inside a writable directory was invisible. It then ran
+        the copy, `cp` failed, and the run ended "1 item(s) could not be copied ... a
+        partial install is not recoverable" -- the outcome the guard exists to
+        prevent. install.ps1 recursed per file and refused correctly, so this is a
+        genuine bash/PowerShell divergence, and the guard's own comment says it was
+        added because "install.sh skipped it and ALSO returned 0".
+
+    (b) BOTH ran the check INSIDE the global installer, which the dispatch calls
+        AFTER `write_paths_env`. So both printed "wrote ... x4-paths.env" before
+        refusing, and PowerShell then said "Nothing has been changed." -- false.
+        install.ps1's own comment states the rule this breaks: "refusing after the
+        path config has already been rewritten is a partial write, which is the shape
+        of the bug rather than a fix."
+
+    Asserted on the ARTIFACT, not the wording, because the wording was untrue.
+    """
+    dest, home = _global_only_fixture(tmp_path, theirs_installed=True)
+    victim = home / "skills" / "x4-balance" / "SKILL.md"
+    os.chmod(victim, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    try:
+        r = _install(installer, tmp_path, dest, method="global")
+        out = r.stdout + r.stderr
+
+        assert r.returncode != 0, (
+            "a read-only file inside a shipped skill was not refused:\n%s" % out[-900:])
+        assert "SKILL.md" in out or "x4-balance" in out, (
+            "the refusal must name what is locked:\n%s" % out[-900:])
+        assert "could not be copied" not in out, (
+            "the run reached the COPY and failed there, so the guard did not fire "
+            "up front:\n%s" % out[-900:])
+        cfg = dest / ".claude" / "x4-paths.env"
+        assert not cfg.exists(), (
+            "the path config was written BEFORE the refusal, so a refused run left a "
+            "partial write -- which is the shape of the bug, not the fix")
+    finally:
+        os.chmod(victim, stat.S_IWRITE | stat.S_IREAD)

@@ -622,6 +622,50 @@ require_jq_for_global() {
   exit 1
 }
 
+#: Read-only targets in the GLOBAL destination, checked BEFORE any write.
+#:
+#: Two defects, and the second was in both installers. (1) This tested `-w` on the
+#: skill DIRECTORY, so a read-only SKILL.md inside a writable directory was
+#: invisible: the run then reached the copy, `cp` failed with Permission denied, and
+#: it ended "1 item(s) could not be copied ... a partial install is not recoverable"
+#: -- the outcome the guard exists to prevent. install.ps1 recursed per file and
+#: refused correctly, so it was a genuine divergence. (2) It lived INSIDE
+#: install_global_claude, which the dispatch calls AFTER write_paths_env, so a
+#: refused run had already rewritten the path config. install.ps1's own comment
+#: states the rule: "refusing after the path config has already been rewritten is a
+#: partial write, which is the shape of the bug rather than a fix" -- which is why
+#: Assert-GlobalOverExisting sits ahead of the writer, and this now does too.
+precheck_global_locked() {
+  local home_claude="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  local blocked="" _t _f
+  for s in "$TOOLKIT/.claude/skills/"x4-*; do
+    [ -e "$s" ] || continue
+    _t="$home_claude/skills/$(basename "$s")"
+    [ -d "$_t" ] || continue
+    # EVERY FILE, not the directory: a directory stays writable while the file
+    # inside it is read-only, which is exactly the case that got through.
+    while IFS= read -r _f; do
+      [ -n "$_f" ] || continue
+      [ -w "$_f" ] || blocked="$blocked$_f
+"
+    done <<EOF
+$(find "$_t" -type f 2>/dev/null)
+EOF
+  done
+  for a in "$TOOLKIT/.claude/agents/"*.md; do
+    [ -e "$a" ] || continue
+    _t="$home_claude/agents/$(basename "$a")"
+    [ -e "$_t" ] && [ ! -w "$_t" ] && blocked="$blocked$_t
+"
+  done
+  if [ -n "$blocked" ]; then
+    echo "REFUSING: file(s) in $home_claude are READ-ONLY and this would overwrite them." >&2
+    printf '%s' "$blocked" | head -8 | sed 's/^/      /' >&2
+    echo "      Unlock them, or move them aside, and re-run. Nothing has been changed." >&2
+    exit 1
+  fi
+}
+
 install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env into settings.json
   local home_claude="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
   refuse_if_dry_run "installing skills and agents into" "$home_claude"
@@ -639,26 +683,6 @@ install_global_claude() {  # copy skills/agents to ~/.claude and write X4_* env 
   # states: refusing before either installer writes is the only answer correct
   # for both. MEASURED before this: install.ps1 CLOBBERED a read-only skill via
   # Copy-Item -Force and returned 0; install.sh skipped it and ALSO returned 0.
-  local blocked="" _t
-  for s in "$TOOLKIT/.claude/skills/"x4-*; do
-    [ -e "$s" ] || continue
-    _t="$home_claude/skills/$(basename "$s")"
-    [ -e "$_t" ] && [ ! -w "$_t" ] && blocked="$blocked$_t
-"
-  done
-  for a in "$TOOLKIT/.claude/agents/"*.md; do
-    [ -e "$a" ] || continue
-    _t="$home_claude/agents/$(basename "$a")"
-    [ -e "$_t" ] && [ ! -w "$_t" ] && blocked="$blocked$_t
-"
-  done
-  if [ -n "$blocked" ]; then
-    echo "REFUSING: file(s) in $home_claude are READ-ONLY and this would overwrite them." >&2
-    printf '%s' "$blocked" | head -8 | sed 's/^/      /' >&2
-    echo "      Unlock them, or move them aside, and re-run. Nothing has been changed." >&2
-    exit 1
-  fi
-
   mkdir -p "$home_claude/skills" "$home_claude/agents"
   local s a copied=0 failed_copies=0
   # `cp … && copied=…` is an && LIST, which `set -e` does NOT trip -- so a failed
@@ -1056,9 +1080,17 @@ case "$METHOD" in
     _hits=""
     _NL='
 '
-    if [ -d "$_hc/skills" ] && ls "$_hc/skills"/x4-* >/dev/null 2>&1; then
-      for _s in "$_hc/skills"/x4-*; do
-        [ -e "$_s" ] && _hits="$_hits      skills/$(basename "$_s")$_NL"
+    # ENUMERATED FROM THE TOOLKIT, then checked against the destination -- the shape
+    # the agents leg below already uses, and the property the comment above already
+    # claims. This globbed the DESTINATION, so a user's own `x4-mycustom/` was listed
+    # as a file the install "would REPLACE" and the run refused until they passed
+    # --over-existing, against a directory this installer never touches. The comment
+    # was right and the code was one enumeration away from it.
+    if [ -d "$_hc/skills" ] && [ -d "$TOOLKIT/.claude/skills" ]; then
+      for _s in "$TOOLKIT/.claude/skills/"x4-*; do
+        [ -e "$_s" ] || continue
+        [ -e "$_hc/skills/$(basename "$_s")" ] &&
+          _hits="$_hits      skills/$(basename "$_s")$_NL"
       done
     fi
     if [ -d "$_hc/agents" ] && [ -d "$TOOLKIT/.claude/agents" ]; then
@@ -1081,6 +1113,7 @@ case "$METHOD" in
     # nothing changed while their live config had been regenerated. The message was
     # true of the function and false of the run.
     require_jq_for_global
+    precheck_global_locked       # BEFORE the config write, not inside the copier
     precheck_config "$TOOLKIT"   # --method global writes the config and never copied
     write_paths_env "$TOOLKIT"
     install_global_claude
