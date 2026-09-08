@@ -331,7 +331,11 @@ _owned_lines_new() {   # _owned_lines_new TOOLKIT_DIR
   [ -n "$PROFILE" ] && echo "X4_PROFILE=\"$(_esc_env_value "$PROFILE")\""
   [ -n "$PROFILE" ] && echo "X4_DEBUGLOG=\"$(_esc_env_value "$PROFILE")/debug.txt\""
   [ -n "$MODS" ]    && echo "X4_MODS=\"$(_esc_env_value "$MODS")\""
-  echo "X4_EXTENSIONS=\"$(_esc_env_value "${EXTENSIONS:-${GAME:+$GAME/extensions}}")\""
+  # CONDITIONAL, matching install.ps1. Emitted unconditionally, with neither
+  # --game nor --extensions this wrote `X4_EXTENSIONS=""` while PowerShell omitted
+  # the key -- two configs from one input, reachable via --method global with no
+  # game detected. An empty value is a claim; an absent key is not.
+  [ -n "${EXTENSIONS:-${GAME:+$GAME/extensions}}" ] && echo "X4_EXTENSIONS=\"$(_esc_env_value "${EXTENSIONS:-${GAME:+$GAME/extensions}}")\""
   [ -n "$XRCAT" ]   && echo "XRCATTOOL=\"$(_esc_env_value "$XRCAT")\""
   return 0
 }
@@ -580,14 +584,11 @@ write_paths_env() {  # write_paths_env TOOLKIT_DIR
   tmp="$f.tmp$$"
   {
     echo "# Written by install.sh ($(date -u +%Y-%m-%dT%H:%MZ)) - edit freely. All paths overridable."
-    echo "X4_TOOLKIT=\"$(_esc_env_value "$t")\""
-    [ -n "$GAME" ]    && echo "X4_GAME=\"$(_esc_env_value "$GAME")\""
-    echo "X4_REFERENCE=\"$(_esc_env_value "${REFERENCE:-$t/reference}")\""
-    [ -n "$PROFILE" ] && echo "X4_PROFILE=\"$(_esc_env_value "$PROFILE")\""
-    [ -n "$PROFILE" ] && echo "X4_DEBUGLOG=\"$(_esc_env_value "$PROFILE")/debug.txt\""
-    [ -n "$MODS" ]    && echo "X4_MODS=\"$(_esc_env_value "$MODS")\""
-    echo "X4_EXTENSIONS=\"$(_esc_env_value "${EXTENSIONS:-${GAME:+$GAME/extensions}}")\""
-    [ -n "$XRCAT" ]   && echo "XRCATTOOL=\"$(_esc_env_value "$XRCAT")\""
+    # ONE RENDERING. These eight lines were re-emitted here by hand while
+    # _owned_lines_new claimed in its own docstring to exist so the
+    # precondition and the writer could not disagree -- a property asserted
+    # and not held, and the X4_EXTENSIONS divergence above is what it hid.
+    _owned_lines_new "$t"
     if [ -n "$carried" ]; then
       echo "# --- carried over from your previous x4-paths.env ---"
       printf '%s' "$carried"
@@ -961,16 +962,27 @@ case "$METHOD" in
     [ -n "$GAME" ] || { echo "ERROR: in-game needs --game"; exit 1; }
     TOOLKIT="$GAME"
     announce_target "$TOOLKIT"
-    # Only when a COPY would actually happen. Re-running from inside the toolkit
-    # folder overwrites nothing, so it needs no direction.
-    # precheck_config sits OUTSIDE this guard: the config is written on BOTH
-    # branches (below), so an in-place upgrade skipped the only check standing
-    # in front of it and the orphaned .bak came back. precheck_locked_targets
-    # stays INSIDE, because with no copy there are no targets to lock.
+    # ORDER, and each position is load-bearing for a different reason:
+    #   require_direction     FIRST, and only when a copy will happen. Both
+    #                         prechecks can exit 1 telling the user to unlock and
+    #                         re-run -- against a destination they never named,
+    #                         when Steam detection picked it. The refusal they
+    #                         should see is "you did not name this". Neither
+    #                         precheck writes, so this was a wrong MESSAGE rather
+    #                         than a wrong outcome.
+    #   precheck_config       OUTSIDE the copy guard: the config is written on
+    #                         BOTH branches, so an in-place upgrade skipped the
+    #                         only check in front of it and the orphaned .bak
+    #                         came back.
+    #   precheck_locked_targets INSIDE: with no copy there is nothing to
+    #                         overwrite, and checking anyway refuses an in-place
+    #                         run for no reason.
+    if ! same_dir "$SRC" "$TOOLKIT"; then
+      require_direction "$TOOLKIT" "$GAME_NAMED"
+    fi
     precheck_config "$TOOLKIT"
     if ! same_dir "$SRC" "$TOOLKIT"; then
       precheck_locked_targets "$TOOLKIT"
-      require_direction "$TOOLKIT" "$GAME_NAMED"
       announce_copy_plan
       copy_toolkit "$TOOLKIT"
     fi
@@ -981,14 +993,27 @@ case "$METHOD" in
     ask TOOLKIT "Toolkit folder" "$TOOLKIT"
     TOOLKIT="$(strip_trailing_sep "$TOOLKIT")"
     announce_target "$TOOLKIT"
-    # precheck_config sits OUTSIDE this guard: the config is written on BOTH
-    # branches (below), so an in-place upgrade skipped the only check standing
-    # in front of it and the orphaned .bak came back. precheck_locked_targets
-    # stays INSIDE, because with no copy there are no targets to lock.
+    # ORDER, and each position is load-bearing for a different reason:
+    #   require_direction     FIRST, and only when a copy will happen. Both
+    #                         prechecks can exit 1 telling the user to unlock and
+    #                         re-run -- against a destination they never named,
+    #                         when Steam detection picked it. The refusal they
+    #                         should see is "you did not name this". Neither
+    #                         precheck writes, so this was a wrong MESSAGE rather
+    #                         than a wrong outcome.
+    #   precheck_config       OUTSIDE the copy guard: the config is written on
+    #                         BOTH branches, so an in-place upgrade skipped the
+    #                         only check in front of it and the orphaned .bak
+    #                         came back.
+    #   precheck_locked_targets INSIDE: with no copy there is nothing to
+    #                         overwrite, and checking anyway refuses an in-place
+    #                         run for no reason.
+    if ! same_dir "$SRC" "$TOOLKIT"; then
+      require_direction "$TOOLKIT" "$TOOLKIT_NAMED"
+    fi
     precheck_config "$TOOLKIT"
     if ! same_dir "$SRC" "$TOOLKIT"; then
       precheck_locked_targets "$TOOLKIT"
-      require_direction "$TOOLKIT" "$TOOLKIT_NAMED"
       announce_copy_plan
       copy_toolkit "$TOOLKIT"
     fi

@@ -557,15 +557,11 @@ function Write-PathsEnv($t) {
     }
   }
 
-  $lines = @("# Written by install.ps1 ($(Get-Date -Format s)) - edit freely. All paths overridable.",
-             ('X4_TOOLKIT="' + (Get-EscapedEnvValue $t) + '"'))
-  if ($Game)      { $lines += ('X4_GAME="' + (Get-EscapedEnvValue $Game) + '"') }
-  $lines += ('X4_REFERENCE="' + (Get-EscapedEnvValue $ref) + '"')
-  if ($Profile)   { $lines += ('X4_PROFILE="' + (Get-EscapedEnvValue $Profile) + '"')
-                    $lines += ('X4_DEBUGLOG="' + (Get-EscapedEnvValue (Join-Path $Profile 'debug.txt')) + '"') }
-  if ($Mods)      { $lines += ('X4_MODS="' + (Get-EscapedEnvValue $Mods) + '"') }
-  if ($ext)       { $lines += ('X4_EXTENSIONS="' + (Get-EscapedEnvValue $ext) + '"') }
-  if ($XRCatTool) { $lines += ('XRCATTOOL="' + (Get-EscapedEnvValue $XRCatTool) + '"') }
+  # ONE RENDERING, as install.sh now does. These eight lines were re-emitted
+  # by hand while Get-OwnedEnvLines claimed to exist so the precondition and
+  # the writer could not disagree.
+  $lines = @("# Written by install.ps1 ($(Get-Date -Format s)) - edit freely. All paths overridable.")
+  $lines += (Get-OwnedEnvLines $t)
   if ($carried.Count) {
     $lines += '# --- carried over from your previous x4-paths.env ---'
     $lines += $carried
@@ -580,7 +576,17 @@ function Write-PathsEnv($t) {
   # it was already too late to protect. install.sh had the identical inversion.
   # Build beside, prove, then move.
   $tmp = "$f.tmp$PID"
-  Write-Utf8NoBom $tmp (($lines -join "`n") + "`n")
+  # GUARDED, as install.sh guards the same render. Unguarded this is a raw .NET
+  # dump with no crafted message and no $failed accounting -- the surface the
+  # Move-Item guard below was added to remove, one statement earlier.
+  try {
+    Write-Utf8NoBom $tmp (($lines -join "`n") + "`n")
+  } catch {
+    Remove-Item -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
+    Write-Host ("ERROR: could not write " + $tmp + ": " + $_.Exception.Message) -ForegroundColor Red
+    Write-Host "       Your existing config is untouched." -ForegroundColor Red
+    exit 1
+  }
 
   # VERIFY THE ARTIFACT, never the exit code. A config bash cannot source is exactly
   # what the escaping above exists to prevent, and proving it costs one bash call --
@@ -919,10 +925,28 @@ function Install-Global($t) {
   # it rewrites the user's GLOBAL settings.json.
   if (Test-Path -LiteralPath $sj) {
     $bak = "$sj.bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss')
-    Copy-Item -LiteralPath $sj -Destination $bak -ErrorAction Stop
+    # GUARDED, as install.sh guards this same backup with an explicit refusal. A
+    # backup that silently did not happen is worse than none, because the message
+    # on the next line would have said it did.
+    try {
+      Copy-Item -LiteralPath $sj -Destination $bak -ErrorAction Stop
+    } catch {
+      Write-Host ("ERROR: could not back up " + $sj + ": " + $_.Exception.Message) -ForegroundColor Red
+      Write-Host "       Refusing to merge into it unbacked. Nothing has been changed." -ForegroundColor Red
+      exit 1
+    }
     Write-Host "  backed up $sj -> $(Split-Path -Leaf $bak)"
   }
-  Write-Utf8NoBom $sj (($cfg | ConvertTo-Json -Depth 20) + "`n")
+  # GUARDED. A raw .NET dump here leaves the merged settings half-written with no
+  # crafted message and no $failed accounting -- and the backup above is the only
+  # copy of what was there.
+  try {
+    Write-Utf8NoBom $sj (($cfg | ConvertTo-Json -Depth 20) + "`n")
+  } catch {
+    Write-Host ("ERROR: could not write " + $sj + ": " + $_.Exception.Message) -ForegroundColor Red
+    Write-Host ("       Your previous settings are in " + $bak) -ForegroundColor Red
+    exit 1
+  }
   # VERIFY THE ARTIFACT, not the fact that a write statement ran -- the rule this
   # installer already applies to x4-paths.env, and install.sh applies to this very
   # file with `jq -e '.env.X4_TOOLKIT'` and exit 1.
