@@ -107,6 +107,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Sized
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -631,12 +632,13 @@ def fingerprint(config, extensions=_UNSET, engine_dir: Path | None = None,
     #     extensions=[missing dir]   -> content=cc9efd07e163e204  mods=0   same digest
     # The last row is the sharper half: a MISCONFIGURED root and NO root were
     # indistinguishable, so a typo in a path read as a clean world.
-    if ext is not _UNSET and ext is not None and not isinstance(ext, (str, Path)):
-        try:
-            if len(ext) == 0:
-                ext = None
-        except TypeError:
-            pass
+    # `Sized` rather than try/len/except: an unmarked `except TypeError: pass` IS a
+    # silent swallow, and this repo's own tests/test_no_silent_swallow.py says so --
+    # it caught this exact handler. Asking whether the object HAS a length cannot
+    # raise, so there is nothing to swallow and nothing to justify.
+    if (isinstance(ext, Sized) and not isinstance(ext, (str, Path))
+            and len(ext) == 0):
+        ext = None
     if ext is None:
         # EXPLICIT None: the caller looked and there is no installed world -- a
         # machine with no game, which is every fresh clone and every CI runner.
