@@ -253,7 +253,20 @@ def test_both_installers_GATE_the_global_destination():
     """
     sh = SH.read_text(encoding="utf-8")
     ps = PS1.read_text(encoding="utf-8")
-    assert 'ls "$_hc/skills"/x4-*' in sh, (
+    # ⚠ THIS ASSERTION USED TO PIN THE DEFECT. It required the literal
+    # `ls "$_hc/skills"/x4-*` -- the DESTINATION glob that named a user's own
+    # `x4-mycustom/` as a file the install "would REPLACE". Correcting the gate to
+    # enumerate from the toolkit therefore turned a NAMED parity test red, which
+    # reads as a regression to whoever hits it. Inverted in the same commit as the
+    # fix, and stated here so it cannot be quietly reverted to make a red go away.
+    #
+    # A substring is the wrong instrument for this either way (BLIND-SPOTS F109):
+    # what matters is that BOTH gates enumerate the SOURCE, which
+    # test_install_over_existing.py now asserts behaviourally on both installers.
+    assert 'ls "$_hc/skills"/x4-*' not in sh, (
+        "install.sh's global gate is enumerating the DESTINATION again; it must list "
+        "only skills this toolkit ships, or a user's own x4-* is named as at risk")
+    assert '"$TOOLKIT/.claude/skills/"x4-*' in sh, (
         "install.sh's global arm no longer checks for pre-existing x4-* skills")
     assert "function Assert-GlobalOverExisting" in ps, (
         "install.ps1 lost its global over-existing gate")

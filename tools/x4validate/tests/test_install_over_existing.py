@@ -110,7 +110,7 @@ def _fresh(tmp_path: pathlib.Path) -> pathlib.Path:
 
 def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra: str,
              method: str = "separate", from_dest: bool = False,
-             source: pathlib.Path | None = None):
+             source: pathlib.Path | None = None, over_existing: bool = True):
     """Run ONE of the two installers with identical intent.
 
     Parameterised rather than duplicated, because the point is that both reach the
@@ -154,7 +154,7 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
         cmd = [exe, script.as_posix()]
         for k, v in common.items():
             cmd += ["--" + k, v]
-        cmd += ["--over-existing", "--yes"]
+        cmd += (["--over-existing"] if over_existing else []) + ["--yes"]
         cmd += ["--" + f for f in flags]
     else:
         exe = shutil.which("pwsh") or shutil.which("powershell")
@@ -164,7 +164,7 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
         cmd = [exe, "-NoProfile", "-File", script.as_posix()]
         for k, v in common.items():
             cmd += ["-" + k[:1].upper() + k[1:], v]
-        cmd += ["-OverExisting", "-Yes"]
+        cmd += (["-OverExisting"] if over_existing else []) + ["-Yes"]
         cmd += ["-DryRun" if f == "dry-run" else "-" + f for f in flags]
     cwd = dest.as_posix() if from_dest else (source.as_posix() if source else ROOT.as_posix())
     # The global arm writes to <claude-dir>, which is NOT one of the six path
@@ -882,3 +882,287 @@ def test_the_upgrade_KEEPS_the_recovery_store_and_still_PRUNES_build_artifacts(
     # TWIN: bounds the change to the list rather than to deletion in general.
     assert (mine / "README.md").read_text(encoding="utf-8") == "MY-OWN-NOTES", (
         "an unrelated user directory under .claude/ was removed")
+
+
+def _global_only_fixture(tmp_path, mine: str | None = None, theirs_installed: bool = False):
+    """A toolkit shipping one skill, and a home that may hold the user's own.
+
+    `mine` is a skill directory the TOOLKIT DOES NOT SHIP whose name still starts
+    `x4-`; `theirs_installed` puts the SHIPPED skill into the destination, which is
+    the only thing an install would actually replace.
+    """
+    dest = tmp_path / "toolkit"
+    dest.mkdir()
+    for d in ("game", "profile", "mods"):
+        (tmp_path / d).mkdir(exist_ok=True)
+    sk = dest / ".claude" / "skills" / "x4-balance"
+    sk.mkdir(parents=True)
+    (sk / "SKILL.md").write_text("shipped\n", encoding="utf-8")
+    (dest / "setup.sh").write_text("exit 0\n", encoding="utf-8")
+
+    home = tmp_path / "fake-claude-home"
+    (home / "skills").mkdir(parents=True)
+    if mine:
+        (home / "skills" / mine).mkdir()
+        (home / "skills" / mine / "SKILL.md").write_text("mine\n", encoding="utf-8")
+    if theirs_installed:
+        (home / "skills" / "x4-balance").mkdir()
+        (home / "skills" / "x4-balance" / "SKILL.md").write_text("old\n", encoding="utf-8")
+    return dest, home
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_global_gate_names_only_skills_THIS_TOOLKIT_SHIPS(installer, tmp_path):
+    """The gate listed every `~/.claude/skills/x4-*`, not only the ones it would write.
+
+    So a user with their own `x4-mycustom/` was told the install "would REPLACE" it
+    and refused until they passed --over-existing -- against a directory this
+    installer never touches. The comment directly above the check already claims the
+    correct property: *"Only files this install would actually WRITE are named: an
+    unrelated agent of the user's own is not at risk and must not be listed as though
+    it were."* The AGENTS leg beside it enumerates `$TOOLKIT/.claude/agents/*.md` and
+    maps to the destination; the SKILLS leg globbed the destination.
+
+    ⚠ FIX THE CODE, NOT THE COMMENT. Softening that sentence would launder the defect
+    into documentation -- CLAUDE.md #37's prose-satisfies-the-assertion shape, which
+    this release has already produced once.
+    """
+    dest, home = _global_only_fixture(tmp_path, mine="x4-mycustom")
+    r = _install(installer, tmp_path, dest, method="global", over_existing=False)
+    out = r.stdout + r.stderr
+    assert "x4-mycustom" not in out, (
+        "the gate named a skill this toolkit does not ship, so the user is asked to "
+        "authorise replacing a directory the install never touches:\n%s" % out[-900:])
+    assert r.returncode == 0, (
+        "nothing in the destination would be replaced, so the run must not refuse "
+        "(rc=%s):\n%s" % (r.returncode, out[-900:]))
+    assert (home / "skills" / "x4-mycustom" / "SKILL.md").read_text(encoding="utf-8") \
+        == "mine\n", "the user's own skill was modified"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_global_gate_STILL_refuses_over_a_skill_it_DOES_ship(installer, tmp_path):
+    """The twin, and without it the fix above is satisfied by a gate that refuses
+    nothing at all -- which is the failure the gate exists to prevent."""
+    dest, home = _global_only_fixture(tmp_path, mine="x4-mycustom",
+                                      theirs_installed=True)
+    r = _install(installer, tmp_path, dest, method="global", over_existing=False)
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, (
+        "a shipped skill already present in the destination WOULD be replaced, so "
+        "the gate must still refuse:\n%s" % out[-900:])
+    assert "x4-balance" in out, "the refusal must NAME the skill it would replace"
+    assert "x4-mycustom" not in out, (
+        "even when refusing, the gate must not name a skill it would not write")
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_READ_ONLY_file_INSIDE_a_shipped_skill_refuses_BEFORE_any_write(
+        installer, tmp_path):
+    """Two defects in one trace, and the second is in BOTH installers.
+
+    (a) install.sh tested `[ ! -w "$_t" ]` where `$_t` is the skill DIRECTORY, so a
+        read-only `SKILL.md` inside a writable directory was invisible. It then ran
+        the copy, `cp` failed, and the run ended "1 item(s) could not be copied ... a
+        partial install is not recoverable" -- the outcome the guard exists to
+        prevent. install.ps1 recursed per file and refused correctly, so this is a
+        genuine bash/PowerShell divergence, and the guard's own comment says it was
+        added because "install.sh skipped it and ALSO returned 0".
+
+    (b) BOTH ran the check INSIDE the global installer, which the dispatch calls
+        AFTER `write_paths_env`. So both printed "wrote ... x4-paths.env" before
+        refusing, and PowerShell then said "Nothing has been changed." -- false.
+        install.ps1's own comment states the rule this breaks: "refusing after the
+        path config has already been rewritten is a partial write, which is the shape
+        of the bug rather than a fix."
+
+    Asserted on the ARTIFACT, not the wording, because the wording was untrue.
+    """
+    dest, home = _global_only_fixture(tmp_path, theirs_installed=True)
+    victim = home / "skills" / "x4-balance" / "SKILL.md"
+    os.chmod(victim, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    try:
+        r = _install(installer, tmp_path, dest, method="global")
+        out = r.stdout + r.stderr
+
+        assert r.returncode != 0, (
+            "a read-only file inside a shipped skill was not refused:\n%s" % out[-900:])
+        assert "SKILL.md" in out or "x4-balance" in out, (
+            "the refusal must name what is locked:\n%s" % out[-900:])
+        assert "could not be copied" not in out, (
+            "the run reached the COPY and failed there, so the guard did not fire "
+            "up front:\n%s" % out[-900:])
+        cfg = dest / ".claude" / "x4-paths.env"
+        assert not cfg.exists(), (
+            "the path config was written BEFORE the refusal, so a refused run left a "
+            "partial write -- which is the shape of the bug, not the fix")
+    finally:
+        os.chmod(victim, stat.S_IWRITE | stat.S_IREAD)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_INDENTED_owned_key_does_not_survive_and_WIN(installer, tmp_path):
+    """An indented `X4_GAME=` was not recognised as owned, so it was CARRIED OVER --
+    and emitted AFTER the authoritative line, which is what bash sources last.
+
+    MEASURED before the fix: a config containing `  X4_GAME="/OLD/STALE/GAME"`,
+    re-installed with `--game <new>`, produced
+
+        X4_GAME="<new>"
+        # --- carried over from your previous x4-paths.env ---
+          X4_GAME="/OLD/STALE/GAME"        <- what bash actually sources
+
+    rc 0, silent. Every hook, gate and tool then resolves the OLD game root. The
+    config's own header tells the user to edit it freely, so an indented key is a
+    supported edit, not abuse.
+
+    Three sites shared the untrimmed extraction, and the range RECRUITED for it:
+    `_owned_lines_old` -- the "would this change?" precondition added this arc --
+    copied the same `${line%%=*}`, so the new precondition was blind to the indented
+    key too and could not stop the run. install.ps1 trimmed in one of its two.
+
+    Asserted as ONE assignment, because "the new value appears" is satisfied by a
+    file that also carries the old one after it.
+    """
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    cfg = dest / ".claude" / "x4-paths.env"
+
+    body = cfg.read_text(encoding="utf-8")
+    assert "X4_GAME=" in body, "fixture assumption broken: no X4_GAME in the config"
+    stale = tmp_path / "OLD-STALE-GAME"
+    stale.mkdir()
+    edited = []
+    for ln in body.splitlines():
+        edited.append("  X4_GAME=\"%s\"" % stale.as_posix()
+                      if ln.startswith("X4_GAME=") else ln)
+    cfg.write_text("\n".join(edited) + "\n", encoding="utf-8")
+
+    newgame = tmp_path / "NEW-GAME"
+    newgame.mkdir()
+    r = _install(installer, tmp_path, dest, "--game", newgame.as_posix())
+    assert r.returncode == 0, "re-install failed: %s" % (r.stdout + r.stderr)[-900:]
+
+    after = cfg.read_text(encoding="utf-8")
+    assigns = [ln for ln in after.splitlines()
+               if ln.strip().startswith("X4_GAME=")]
+    assert len(assigns) == 1, (
+        "X4_GAME is assigned %d times; bash sources the LAST one, so the carried "
+        "copy wins and the tool resolves the stale root:\n%s" % (len(assigns), assigns))
+    assert stale.as_posix() not in after, (
+        "the stale game root survived the upgrade:\n%s" % after)
+    assert newgame.as_posix() in assigns[0], (
+        "the surviving assignment is not the one the user asked for: %r" % assigns[0])
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_rewrite_covers_EVERY_shipped_file_not_only_markdown(installer, tmp_path):
+    """`11fa6d3` widened the bash rewrite to `find -type f` and left install.ps1
+    filtering `*.md`, so the two installers stopped agreeing about which shipped
+    files get `$CLAUDE_PROJECT_DIR` resolved.
+
+    MEASURED cost at the time: ZERO -- no skill ships a non-`.md` file today. Latent
+    thereafter: the first skill to ship a script, template or reference file leaves a
+    Windows global install resolving `$CLAUDE_PROJECT_DIR` to whatever repo the user
+    happens to have open, silently, rc 0.
+
+    Fixed rather than deferred because the divergence was CREATED by this arc -- by a
+    commit of mine -- and a latent divergence is exactly what the parity suite cannot
+    see (BLIND-SPOTS F109).
+    """
+    dest, home = _global_only_fixture(tmp_path)
+    sub = dest / ".claude" / "skills" / "x4-balance" / "sub"
+    sub.mkdir()
+    (sub / "helper.sh").write_text("cd $CLAUDE_PROJECT_DIR/tools\n", encoding="utf-8")
+
+    r = _install(installer, tmp_path, dest, method="global")
+    assert r.returncode == 0, (r.stdout + r.stderr)[-900:]
+
+    landed = home / "skills" / "x4-balance" / "sub" / "helper.sh"
+    assert landed.is_file(), "the non-markdown file was not copied at all"
+    body = landed.read_text(encoding="utf-8")
+    assert "$X4_TOOLKIT" in body and "$CLAUDE_PROJECT_DIR" not in body, (
+        "a shipped NON-markdown file kept $CLAUDE_PROJECT_DIR, so a global install "
+        "resolves it to whichever repo is open: %r" % body)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_refusal_the_user_SEES_first_is_the_same_on_both_installers(
+        installer, tmp_path):
+    """install.sh gates direction FIRST; install.ps1 gated it LAST.
+
+    install.sh carries a nine-line comment at both call sites declaring the order
+    load-bearing: both prechecks can exit telling the user to unlock and re-run --
+    against a destination they never authorised replacing. The refusal they should
+    see is the one about the destination, because acting on the other one (unlock,
+    re-run) leads straight back to a refusal for the real reason.
+
+    MEASURED before the fix, locked CLAUDE.md in an existing install, no
+    --over-existing:
+
+        sh   rc 2 -> "REFUSING: there is already an installation at the destination."
+        ps1  rc 1 -> "REFUSING: ... are READ-ONLY."
+
+    Neither writes, so this is a wrong MESSAGE rather than a wrong action -- and
+    install.sh's own comment concedes exactly that while still calling the order
+    load-bearing. `811a9a7` fixed bash and left PowerShell; seventh occurrence of the
+    class on this file pair, running bash -> ps1 this time.
+
+    Asserted as PARITY plus CONTENT: the two must agree, and they must agree on the
+    destination refusal rather than both drifting to the lock one.
+    """
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    victim = dest / "CLAUDE.md"
+    assert victim.is_file(), "fixture assumption broken: the copy set did not land CLAUDE.md"
+    victim.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    try:
+        r = _install(installer, tmp_path, dest, over_existing=False)
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, "a second install over an existing one was not refused"
+        assert "already an installation at the destination" in out, (
+            "the user is told to unlock and re-run, against a destination they have "
+            "not authorised replacing -- so acting on this refusal leads back to a "
+            "refusal for the real reason:\n%s" % out[-900:])
+    finally:
+        victim.chmod(stat.S_IWRITE | stat.S_IREAD)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("state,body", [("empty", ""), ("malformed", "{ not json")])
+def test_an_UNPARSEABLE_global_settings_file_refuses_in_WORDS_not_a_stack_trace(
+        installer, state, body, tmp_path):
+    """install.ps1 parsed `~/.claude/settings.json` with an UNGUARDED
+    `Get-Content -Raw | ConvertFrom-Json`, and it was the only unguarded operation
+    left in a function whose other four writes all gained try/catch this arc.
+
+    MEASURED before the fix, --method global:
+
+        empty      sh  crafted ERROR, rc 1   |  ps1  raw "Cannot index into a null
+                                                     array" + CategoryInfo dump, rc 1
+        malformed  sh  crafted ERROR, rc 1   |  ps1  raw ConvertFrom-Json
+                                                     ArgumentException, rc 1
+
+    A raw .NET dump is not a refusal a user can act on, and it arrives with the
+    global settings file untouched but no statement that it was untouched -- which
+    reads exactly like a half-finished write.
+
+    Refusing on EMPTY as well as malformed is deliberate and matches install.sh: an
+    empty settings.json is indistinguishable from a truncated one, and overwriting
+    the user's GLOBAL config on that guess is the wrong call.
+    """
+    dest, home = _global_only_fixture(tmp_path)
+    (home / "settings.json").write_text(body, encoding="utf-8")
+
+    r = _install(installer, tmp_path, dest, method="global")
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, "an unparseable global settings.json was not refused"
+    for raw in ("Cannot index into a null array", "CategoryInfo",
+                "System.ArgumentException", "Traceback"):
+        assert raw not in out, (
+            "the refusal is a raw interpreter dump rather than a message the user "
+            "can act on (%s):\n%s" % (raw, out[-900:]))
+    assert "settings.json" in out and "ERROR" in out.upper(), (
+        "the refusal does not name the file or read as an error:\n%s" % out[-900:])
+    assert (home / "settings.json").read_text(encoding="utf-8") == body, (
+        "the unparseable settings.json was modified by a run that refused")

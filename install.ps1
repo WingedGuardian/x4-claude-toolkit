@@ -185,7 +185,10 @@ function Get-OwnedEnvLinesFromFile($f) {
     try { $lines0 = Get-Content -LiteralPath $f -ErrorAction Stop } catch { return ,@('__X4_UNREADABLE__') }
     foreach ($line in $lines0) {
       if ($line -match '^\s*#' -or $line -notmatch '=') { continue }
-      $key = ($line -split '=',2)[0]
+      # TRIMMED, matching Write-PathsEnv below and install.sh. This one was not,
+      # so the two halves of this installer disagreed about whether an indented
+      # key is owned -- it happened to fail safe, which is not the same as correct.
+      $key = ($line -split '=',2)[0].Trim()
       if ($owned -contains $key) { $out += $line }
     }
   }
@@ -764,9 +767,16 @@ function Assert-GlobalOverExisting($t) {
   # -LiteralPath for the path and -Filter for the pattern: the bare parameters read a
   # home directory containing [ or ] as a WILDCARD character class, which is the defect
   # already recorded further down this file.
+  # ENUMERATED FROM THE TOOLKIT, then checked against the destination -- the shape the
+  # agents leg below already uses, and the property the comment above already claims.
+  # This listed every x4-* directory IN THE DESTINATION, so a user's own `x4-mycustom/`
+  # was named as a file the install "would REPLACE" and the run refused until they
+  # passed -OverExisting, against a directory this installer never touches.
   $existing = @()
-  if (Test-Path -LiteralPath $sk) {
-    $existing = @(Get-ChildItem -Directory -LiteralPath $sk -Filter 'x4-*' -ErrorAction SilentlyContinue)
+  $srcSkills = Join-Path $t '.claude/skills'
+  if ((Test-Path -LiteralPath $sk) -and (Test-Path -LiteralPath $srcSkills)) {
+    $existing = @(Get-ChildItem -Directory -LiteralPath $srcSkills -Filter 'x4-*' -ErrorAction SilentlyContinue |
+                  Where-Object { Test-Path -LiteralPath (Join-Path $sk $_.Name) })
   }
 
   # AGENTS TOO. This gate enumerated skills only, while Install-Global copies every
@@ -805,10 +815,15 @@ function Assert-GlobalOverExisting($t) {
   exit 2
 }
 
-function Install-Global($t) {
-  Refuse-IfDryRun 'installing the global Claude config for' $t
+
+function Assert-GlobalLockedTargets($t) {
+  # HOISTED out of Install-Global, which the dispatch calls AFTER Write-PathsEnv --
+  # so a refused run had already rewritten the path config and then printed
+  # "Nothing has been changed." This file states the rule itself, two functions up:
+  # refusing after the path config has been rewritten is a partial write, which is
+  # the shape of the bug rather than a fix. Assert-GlobalOverExisting was moved ahead
+  # of the writer for exactly that reason; this check was not, until 2026-09-08.
   $hc = Get-GlobalClaudeDir
-  New-Item -ItemType Directory -Force -Path (Join-Path $hc 'skills'),(Join-Path $hc 'agents') | Out-Null
   # Track exactly what WE copy - the $CLAUDE_PROJECT_DIR rewrite below must never
   # touch a user's pre-existing skills/agents (they may use that variable on purpose).
   # LOCKED TARGETS IN THIS DESTINATION TOO. Test-LockedTargetsPrecheck covers the
@@ -843,6 +858,12 @@ function Install-Global($t) {
     Write-Host '      Unlock them, or move them aside, and re-run. Nothing has been changed.'
     exit 1
   }
+}
+
+function Install-Global($t) {
+  Refuse-IfDryRun 'installing the global Claude config for' $t
+  $hc = Get-GlobalClaudeDir
+  New-Item -ItemType Directory -Force -Path (Join-Path $hc 'skills'),(Join-Path $hc 'agents') | Out-Null
 
   $copied = @()
   Get-ChildItem -Directory -LiteralPath (Join-Path $t '.claude\skills') -Filter 'x4-*' -ErrorAction SilentlyContinue |
@@ -857,7 +878,12 @@ function Install-Global($t) {
       # match" forbids.
       $srcRoot = $_.FullName
       $dstRoot = Join-Path $dst $_.Name
-      $copied += Get-ChildItem -Recurse -File -LiteralPath $srcRoot -Filter '*.md' |
+      # EVERY shipped file, not only *.md -- install.sh rewrites `find -type f` and
+      # this filtered, so a shipped script or template kept $CLAUDE_PROJECT_DIR on
+      # Windows and resolved to whatever repo the user had open. Zero cost when the
+      # divergence was created (no skill ships a non-.md file); latent from the day
+      # one does, and invisible to a parity suite that compares the two files as text.
+      $copied += Get-ChildItem -Recurse -File -LiteralPath $srcRoot |
         ForEach-Object {
           # BYTE VALUES, not quoted literals. This shipped as TrimStart('', '/') --
           # a lone backslash that collapsed to an empty string at authoring time --
@@ -912,7 +938,39 @@ function Install-Global($t) {
   Write-Host "        -Method separate in a mod repo to get them there."
   # merge env into settings.json
   $sj = Join-Path $hc 'settings.json'
-  $cfg = if (Test-Path -LiteralPath $sj) { Get-Content -Raw -LiteralPath $sj | ConvertFrom-Json } else { [pscustomobject]@{} }
+  # GUARDED, and it was the only unguarded operation left in this function while its
+  # other four writes all gained try/catch. An unparseable settings.json threw RAW --
+  # "Cannot index into a null array" on an empty file, an ArgumentException on a
+  # malformed one -- with a CategoryInfo dump, no crafted message, and no $failed
+  # accounting. install.sh degrades with a crafted ERROR on the same inputs.
+  #
+  # EMPTY refuses too, deliberately: an empty settings.json is indistinguishable from
+  # a truncated one, and overwriting the user's GLOBAL config on that guess is the
+  # wrong call. Nothing has been written at this point, so refusing here costs the
+  # user only a re-run.
+  $cfg = [pscustomobject]@{}
+  if (Test-Path -LiteralPath $sj) {
+    $raw = $null
+    try { $raw = Get-Content -Raw -LiteralPath $sj -ErrorAction Stop } catch {
+      Write-Host ("ERROR: could not read " + $sj + ": " + $_.Exception.Message) -ForegroundColor Red
+      Write-Host "       Nothing has been changed." -ForegroundColor Red
+      exit 1
+    }
+    if ($null -eq $raw -or -not $raw.Trim()) {
+      Write-Host ("ERROR: " + $sj + " is EMPTY, so this run cannot tell an intentionally") -ForegroundColor Red
+      Write-Host "       blank file from a truncated one and will not overwrite your global" -ForegroundColor Red
+      Write-Host "       settings on that guess. Restore or delete it, then re-run. Nothing" -ForegroundColor Red
+      Write-Host "       has been changed." -ForegroundColor Red
+      exit 1
+    }
+    try { $cfg = $raw | ConvertFrom-Json -ErrorAction Stop } catch {
+      Write-Host ("ERROR: " + $sj + " is not valid JSON, so the X4_* env cannot be merged") -ForegroundColor Red
+      Write-Host ("       into it: " + $_.Exception.Message) -ForegroundColor Red
+      Write-Host "       Fix or move that file, then re-run. Nothing has been changed." -ForegroundColor Red
+      exit 1
+    }
+    if ($null -eq $cfg) { $cfg = [pscustomobject]@{} }
+  }
   if (-not $cfg.PSObject.Properties['env']) { $cfg | Add-Member -NotePropertyName env -NotePropertyValue ([pscustomobject]@{}) }
   $ref = if ($Reference) { $Reference } else { Join-Path $t 'reference' }
   $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-Path $Game 'extensions' } else { '' }
@@ -983,8 +1041,15 @@ switch ($Method) {
     Show-Target $Toolkit
     # Test-ConfigPrecheck OUTSIDE, Test-LockedTargetsPrecheck INSIDE -- the config
     # is written on both branches, the copy is not. install.sh makes the same split.
+    # DIRECTION FIRST, matching install.sh, which carries a nine-line comment at
+    # both of its call sites declaring this order load-bearing. Both prechecks can
+    # exit telling the user to unlock and re-run -- against a destination they have
+    # not authorised replacing, so acting on that advice leads straight back to a
+    # refusal for the real reason. 811a9a7 fixed bash and left this side; seventh
+    # occurrence of the class on this file pair, bash -> ps1 this time.
+    if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $GameNamed }
     Test-ConfigPrecheck $Toolkit
-    if (-not (Test-SameDir $SRC $Toolkit)) { Test-LockedTargetsPrecheck $Toolkit; Assert-Direction $Toolkit $GameNamed; Show-CopyPlan; Copy-Toolkit $Toolkit }
+    if (-not (Test-SameDir $SRC $Toolkit)) { Test-LockedTargetsPrecheck $Toolkit; Show-CopyPlan; Copy-Toolkit $Toolkit }
     Write-PathsEnv $Toolkit
   }
   'separate' {
@@ -994,8 +1059,15 @@ switch ($Method) {
     Show-Target $Toolkit
     # Test-ConfigPrecheck OUTSIDE, Test-LockedTargetsPrecheck INSIDE -- the config
     # is written on both branches, the copy is not. install.sh makes the same split.
+    # DIRECTION FIRST, matching install.sh, which carries a nine-line comment at
+    # both of its call sites declaring this order load-bearing. Both prechecks can
+    # exit telling the user to unlock and re-run -- against a destination they have
+    # not authorised replacing, so acting on that advice leads straight back to a
+    # refusal for the real reason. 811a9a7 fixed bash and left this side; seventh
+    # occurrence of the class on this file pair, bash -> ps1 this time.
+    if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $ToolkitNamed }
     Test-ConfigPrecheck $Toolkit
-    if (-not (Test-SameDir $SRC $Toolkit)) { Test-LockedTargetsPrecheck $Toolkit; Assert-Direction $Toolkit $ToolkitNamed; Show-CopyPlan; Copy-Toolkit $Toolkit }
+    if (-not (Test-SameDir $SRC $Toolkit)) { Test-LockedTargetsPrecheck $Toolkit; Show-CopyPlan; Copy-Toolkit $Toolkit }
     Write-PathsEnv $Toolkit
   }
   'global'   {
@@ -1003,6 +1075,7 @@ switch ($Method) {
     Show-Target $Toolkit
     # Ahead of every write, exactly where install.sh gates its own global arm.
     Assert-GlobalOverExisting $Toolkit
+    Assert-GlobalLockedTargets $Toolkit   # BEFORE the config write, not inside the copier
     Test-ConfigPrecheck $Toolkit   # -Method global writes the config and never copied
     Write-PathsEnv $Toolkit
     Install-Global $Toolkit
