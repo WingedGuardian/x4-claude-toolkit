@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from x4validate import _freshness, _merge
+from x4validate import _freshness, _merge, _registry
 
 
 def _world(tmp_path):
@@ -304,3 +304,50 @@ def test_a_store_stamped_UNKNOWN_reads_NOT_fresh_through_the_real_path(tmp_path)
     assert fp["content"] is None
     v = _freshness.compare(fp, dict(fp), engine_dependent=True)
     assert not v.fresh, "two UNKNOWN content axes must never read as fresh"
+
+
+# --- an EMPTY root list is an ANSWER, not a world (v3.1.0 release review, batch 5) ---
+# `_registry.default_installed_dirs()` returns [] when NOTHING is configured. [] is
+# neither None nor _UNSET, so it fell through to `content_detail` and produced a real,
+# stable digest over ZERO enumerated mods -- an artifact stamped with it compares equal
+# to itself forever and reports FRESH having looked at nothing.
+
+
+def test_an_EMPTY_extensions_list_is_UNKNOWN_not_a_digest():
+    """MEASURED before the fix: extensions=[] -> content=cc9efd07e163e204 over 0 mods.
+
+    That is the failure this whole module exists to refuse, arriving through the one
+    argument shape nobody guarded. IN-ARC: widening `_ext_root` from a single Path to
+    the three real roots was correct -- a mod in the profile or workshop root was
+    invisible -- but it silently changed the not-configured answer from None to [].
+    """
+    fp = _freshness.fingerprint(_merge.Config(), extensions=[])
+    assert fp["content"] is None, (
+        "an empty root list means 'there is nowhere to look'; digesting it stamps a "
+        "world with no mods in it and that reads as FRESH forever")
+    assert fp["detail"] == []
+
+
+def test_a_REAL_root_still_digests():
+    """The twin. Without it the assertion above is satisfied by a fingerprint() that
+    returns None for everything, which would disable the content axis entirely."""
+    root = _registry.default_installed_dirs()
+    if not root:
+        pytest.skip("no configured extensions root on this machine")
+    fp = _freshness.fingerprint(_merge.Config(), extensions=root)
+    assert fp["content"] is not None
+    assert len(fp["detail"]) > 0, "a configured root with mods must enumerate them"
+
+
+def test_a_CONFIGURED_but_MISSING_root_is_still_measured(tmp_path):
+    """The second twin, and it pins the boundary rather than the behaviour.
+
+    A root that is configured and absent must NOT collapse to UNKNOWN: that is a real
+    world someone pointed at, and `default_installed_dirs` deliberately keeps it,
+    because dropping it turns 'I looked in the wrong place' into 'you have no mods'.
+    Only the EMPTY list is UNKNOWN.
+    """
+    fp = _freshness.fingerprint(_merge.Config(), extensions=[tmp_path / "nope"])
+    assert fp["content"] is not None, (
+        "a configured-but-missing root is a measurement of an empty world, not the "
+        "absence of a world")

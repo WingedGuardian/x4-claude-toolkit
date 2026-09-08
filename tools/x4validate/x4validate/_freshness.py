@@ -617,6 +617,26 @@ def fingerprint(config, extensions=_UNSET, engine_dir: Path | None = None,
     tell a guess from a measurement is a defect, not a limitation.
     """
     ext = extensions
+    # AN EMPTY SEQUENCE IS THE SAME ANSWER AS None, AND IT USED TO BE DIGESTED.
+    # `_registry.default_installed_dirs()` returns `[]` when NOTHING is configured
+    # -- "there is nowhere to look" -- and `[]` is neither None nor _UNSET, so it
+    # fell through to `content_detail` and produced a real, stable digest over ZERO
+    # enumerated mods. An artifact stamped with it compares equal to itself forever
+    # and reports FRESH having looked at nothing, which is the precise failure this
+    # whole module exists to refuse.
+    #
+    # MEASURED 2026-09-08 at 208019e:
+    #     extensions=None            -> content=None              mods=0   honest
+    #     extensions=[]              -> content=cc9efd07e163e204  mods=0   "fresh"
+    #     extensions=[missing dir]   -> content=cc9efd07e163e204  mods=0   same digest
+    # The last row is the sharper half: a MISCONFIGURED root and NO root were
+    # indistinguishable, so a typo in a path read as a clean world.
+    if ext is not _UNSET and ext is not None and not isinstance(ext, (str, Path)):
+        try:
+            if len(ext) == 0:
+                ext = None
+        except TypeError:
+            pass
     if ext is None:
         # EXPLICIT None: the caller looked and there is no installed world -- a
         # machine with no game, which is every fresh clone and every CI runner.

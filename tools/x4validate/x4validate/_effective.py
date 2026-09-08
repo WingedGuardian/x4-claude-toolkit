@@ -1082,7 +1082,14 @@ def _ext_root(config) -> Path | None:
     # skipped precisely because the live cost is zero: that is where a wrong
     # denominator hides (gotcha #23), and "no mods in the profile root" is a fact
     # about THIS install, not about the tool.
-    return _registry.default_installed_dirs()
+    # `or None` IS LOAD-BEARING. default_installed_dirs() returns [] when nothing
+    # is configured, and this function's docstring promises None for exactly that
+    # state -- "UNKNOWN is the honest answer here, never an inferred root". Widening
+    # the return from one Path to the three real roots (correct: a mod in the profile
+    # or workshop root was invisible before) silently changed the not-configured
+    # answer from None to [], and [] digested as a world with no mods in it.
+    dirs = _registry.default_installed_dirs()
+    return dirs or None
 
 
 def store_freshness(con, config=None):
