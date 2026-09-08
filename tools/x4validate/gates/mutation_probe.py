@@ -53,9 +53,25 @@ MARKER = ROOT / ".mutation-probe-active"
 PRISTINE = ROOT / ".mutation-probe-pristine"
 
 #: A mutant that has not failed in this long is not "slow", it is a finding about
-#: the suite. The whole suite runs in ~20s. The previous 1800s meant one hanging
-#: mutant cost half an hour, which made widening this gate unaffordable.
+#: the suite. This bounds a TARGETED run (the few test files in TARGETS), where the
+#: previous 1800s meant one hanging mutant cost half an hour and made widening this
+#: gate unaffordable.
+#:
+#: ⚠ The claim that used to sit here -- "the whole suite runs in ~20s" -- was a
+#: measurement of the TARGETED runs that read as one about the whole suite, and it
+#: rotted. MEASURED 2026-09-08 at ce986b2: the full suite is 1,649 tests in
+#: **665.52s**, 33x that figure. Because `full_suite_failures()` shared this
+#: constant, it timed out at 120s, returned its None non-answer, and the gate
+#: REFUSED with rc 2 -- correctly, but it meant mutation_probe could not report at
+#: all. Found by the v3.1.0 release sweep, where it was the one gate of 29 left.
 TEST_TIMEOUT = 120
+
+#: The WHOLE suite is a different population from a targeted run and needs its own
+#: budget. Derived from the measurement above (665.52s) with ~2.7x headroom for a
+#: slower machine and for the `.mutation-probe-active` marker being present.
+#: Deliberately NOT shared with TEST_TIMEOUT: a hanging MUTANT must still be caught
+#: in 120s, and one number serving two populations is what broke this gate.
+FULL_SUITE_TIMEOUT = 1800
 
 #: target filename -> the tests that should notice it breaking.
 #: Scoped for speed; a survivor is re-checked against the FULL suite before being
@@ -519,7 +535,7 @@ def full_suite_failures() -> set | None:
         _purge_bytecode()
         p = subprocess.run(args, cwd=str(ROOT), capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
-                           timeout=TEST_TIMEOUT, env=_no_bytecode_env())
+                           timeout=FULL_SUITE_TIMEOUT, env=_no_bytecode_env())
     except subprocess.TimeoutExpired:
         # silent-ok: None IS this function's non-answer channel, not a swallow. The
         # caller REFUSES on None (rc 2) rather than treating it as "nothing failed",
