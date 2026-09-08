@@ -233,8 +233,17 @@ def test_a_locked_config_that_MUST_change_refuses_UP_FRONT(installer, tmp_path):
     assert "unlock" in out, (
         "the refusal does not name the remedy; the user sees a bare permission "
         "error and cannot tell it from a broken install:\n%s" % (r.stdout + r.stderr)[-2000:])
-    assert "permission denied" not in out or "x4lock" in out, (
-        "the failure is still a raw cp error rather than a precondition check")
+    # POSITIVE, not "absent OR present". `"permission denied" not in out or ...`
+    # passes whenever the raw error simply is not there -- including when the run
+    # failed for an unrelated reason and said nothing about either. The claim is
+    # that the refusal came from the PRECHECK, so assert the precheck's own
+    # vocabulary, and assert the raw error absent, separately.
+    assert "x4lock" in out, (
+        "the refusal does not come from the lock precheck -- it names neither "
+        "x4lock nor its remedy:\n%s" % (r.stdout + r.stderr)[-1500:])
+    assert "permission denied" not in out, (
+        "the failure is still a raw cp error rather than a precondition check:\n%s"
+        % (r.stdout + r.stderr)[-1500:])
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
@@ -250,8 +259,17 @@ def test_the_DRY_RUN_predicts_a_refusal_it_would_hit(installer, tmp_path):
     (tmp_path / "game2").mkdir()
 
     r = _install(installer, tmp_path, dest, "--game", (tmp_path / "game2").as_posix(), "--dry-run")
-    assert r.returncode != 0 or "unlock" in (r.stdout + r.stderr).lower(), (
-        "the dry run reported success for a run that cannot succeed:\n%s" % (r.stdout + r.stderr)[-1500:])
+    # TWO ASSERTIONS, NOT ONE `or`. As a single disjunction this was satisfied by
+    # the word "unlock" appearing ANYWHERE in the output -- a help banner, an
+    # unrelated hint -- so a dry run exiting 0, the exact pre-fix behaviour this
+    # test names in its own docstring, passed. Prose satisfying an assertion is
+    # CLAUDE.md #37b, and here the prose can come from the tool itself.
+    assert r.returncode != 0, (
+        "the dry run reported SUCCESS for a run that cannot succeed:\n%s"
+        % (r.stdout + r.stderr)[-1500:])
+    assert "unlock" in (r.stdout + r.stderr).lower(), (
+        "the dry run refused without naming the remedy, so the user cannot tell "
+        "it from a broken install:\n%s" % (r.stdout + r.stderr)[-1500:])
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
@@ -456,8 +474,24 @@ def test_the_refusal_LIST_is_bounded_and_says_how_many_it_hid(installer, tmp_pat
     # ASSERTED, not merely computed. This was assigned and never used while the
     # docstring claimed both halves were pinned -- a variable that looks like a
     # check and is not one.
+    # KEYED ON THE DESTINATION, not on a drive letter. This counted lines
+    # starting "C:" or "/", so on a runner whose temp is on another drive --
+    # GitHub's RUNNER_TEMP is D:\\a\\_temp, and any developer can set TMP
+    # anywhere -- `listed` was 0 and `assert listed <= 8` passed WITHOUT
+    # EXAMINING A SINGLE LINE. That is the half this test exists for: the
+    # docstring calls the >8 branch "a claim about code nobody had run".
+    #
+    # It matters now rather than later because ubuntu is being promoted to a
+    # GATING CI leg: an assertion that cannot go red there is worse than absent.
+    _dest_posix = dest.as_posix()
+    _dest_native = str(dest)
     listed = sum(1 for ln in out.splitlines()
-                 if ln.strip().startswith(("C:", "/")) and "hooks" in ln)
+                 if (_dest_posix in ln or _dest_native in ln) and "hooks" in ln)
+    # A FLOOR, because "<= 8" is also satisfied by counting NOTHING. The fixture
+    # locks more than 8 files on purpose, so the refusal must name some of them.
+    assert listed > 0, (
+        "no listed path matched the destination, so the cap assertion below "
+        "would pass over an empty count:\n%s" % out[-1200:])
     assert listed <= 8, (
         "the refusal listed %d paths; the cap is 8 plus a count" % listed)
     assert "NOT LISTED" in out, (
