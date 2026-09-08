@@ -123,10 +123,22 @@ def from_merge(vpath: str, name: str, prop: str) -> str | None:
     return None
 
 
+#: A dump that RAN and produced an incomplete tree. Distinct from None, which
+#: means the dump could not be used at all.
+_DEGRADED = object()
+
+
 def from_dump(vpath: str, name: str, prop: str) -> str | None:
     p = subprocess.run(["uv", "run", "x4effective", "dump", vpath], cwd=ROOT,
                        capture_output=True, text=True, encoding="utf-8",
                        errors="replace", timeout=900)
+    # rc 3 is DEGRADED, not failed: `dump` produced a tree but an overlay was
+    # dropped, so the tree is real and INCOMPLETE. Comparing against it could
+    # manufacture a disagreement caused by the missing layer, so it is not
+    # comparable -- but it must be COUNTED, not silently discarded. Returning the
+    # sentinel here and counting it at the call site keeps those apart.
+    if p.returncode == 3:
+        return _DEGRADED
     if p.returncode != 0 or not p.stdout.strip():
         return None
     try:
@@ -155,6 +167,7 @@ def main() -> int:
     print("=" * 96)
     bad = []
     checked = 0
+    dump_checked = dump_degraded = dump_unusable = 0
     dump_cache: dict[tuple[str, str, str], str | None] = {}
     for name, vpath, prop, value, origin in rows:
         if not vpath:
@@ -170,8 +183,15 @@ def main() -> int:
         if key not in dump_cache:
             dump_cache[key] = from_dump(vpath, name, prop)
         dumped = dump_cache[key]
-        if dumped is not None and not eq(dumped, value):
-            bad.append(("store vs dump", name, prop, value, dumped, origin, vpath))
+        if dumped is _DEGRADED:
+            dump_degraded += 1
+        elif dumped is None:
+            dump_unusable += 1
+        else:
+            dump_checked += 1
+            if not eq(dumped, value):
+                bad.append(("store vs dump", name, prop, value, dumped, origin,
+                            vpath))
 
     # A FLOOR, for the reason oracle.py gives: 0 values cross-checked and 0
     # disagreements is not agreement, it is a run that examined nothing --
@@ -182,6 +202,19 @@ def main() -> int:
         print("REFUSING: 0 values were cross-checked, so there is nothing to "
               "agree about. A NON-ANSWER, not a clean run.", file=sys.stderr)
         return 2
+    # THE THIRD CHANNEL NEEDS ITS OWN DENOMINATOR. `checked` counts store-vs-merge
+    # and is incremented BEFORE the dump call, so it cannot drop when the dump
+    # channel dies -- the old comment claiming "the cross-checked count drops
+    # visibly" was false. With every dump failing, this header still said "store vs
+    # build_effective vs `dump`" while only TWO channels ran.
+    print(f"  dump cross-checked   : {dump_checked}"
+          + (f"   (degraded, not comparable: {dump_degraded})" if dump_degraded else "")
+          + (f"   (unusable: {dump_unusable})" if dump_unusable else ""))
+    if not dump_checked:
+        print("DEGRADED: this audit claims THREE channels and the `dump` channel "
+              "contributed nothing, so what ran was a two-way comparison.",
+              file=sys.stderr)
+        return 3
     print(f"  DISAGREEMENTS        : {len(bad)}")
     for kind, name, prop, a, b, origin, vpath in bad[:25]:
         print(f"\n  {kind}  {name}  {prop}   (origin={origin})")
