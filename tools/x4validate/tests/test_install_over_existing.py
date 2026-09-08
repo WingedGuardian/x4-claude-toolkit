@@ -336,6 +336,53 @@ def test_a_LOCKED_file_anywhere_in_the_copy_set_refuses_UP_FRONT(installer, tmp_
     assert "unlock" in out, (
         "the refusal does not name the remedy, so the user sees a bare permission "
         "error: %s" % (r.stdout + r.stderr)[-900:])
+
+
+def _probe_repo(tmp_path):
+    """A throwaway repo carrying the SHIPPED .gitignore.
+
+    The assertion is about the file the release ships, so it must be made
+    against that file rather than against whatever repo the suite happens to be
+    standing in -- which in a `git archive` cold extract is no repo at all.
+    """
+    repo = tmp_path / "probe"
+    (repo / ".claude").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo.as_posix(), check=True,
+                   capture_output=True)
+    shutil.copy2(ROOT / ".gitignore", repo / ".gitignore")
+    return repo
+
+
+def _is_git_ignored(repo, path):
+    """0 = ignored, 1 = not ignored, ANYTHING ELSE = git could not answer.
+
+    Reading "non-zero" as "not ignored" is what made the old form pass in cold
+    for the wrong reason: `git check-ignore` exits 128 outside a repository, and
+    an error is not an allow.
+    """
+    r = subprocess.run(["git", "check-ignore", "-q", path],
+                       cwd=str(repo), capture_output=True)
+    if r.returncode not in (0, 1):
+        raise AssertionError(
+            "REFUSING a verdict: `git check-ignore` exited %d for %s, which is "
+            "neither 'ignored' nor 'not ignored'. %s"
+            % (r.returncode, path, r.stderr.decode("utf-8", "replace")[:200]))
+    return r.returncode == 0
+
+
+def test_a_non_repo_REFUSES_rather_than_reading_as_NOT_IGNORED(tmp_path):
+    """The falsification twin for the refusal clause.
+
+    Without it the six positive cases below pass only where a repo happens to
+    exist, and the `.example` case -- the one that expects False -- passes
+    ANYWHERE, including where nothing was checked at all.
+    """
+    bare = tmp_path / "not-a-repo"
+    (bare / ".claude").mkdir(parents=True)
+    with pytest.raises(AssertionError, match="REFUSING a verdict"):
+        _is_git_ignored(bare, ".claude/x4-paths.env")
+
+
 @pytest.mark.parametrize("path,ignored,why", [
     (".claude/x4-paths.env", True, "the live config: machine paths and X4_NEXUS_KEY"),
     (".claude/x4-paths.env.tmp12345", True,
@@ -349,24 +396,39 @@ def test_a_LOCKED_file_anywhere_in_the_copy_set_refuses_UP_FRONT(installer, tmp_
     (".claude/x4-paths.env.example", False,
      "the TEMPLATE is tracked on purpose; a blanket x4-paths.env* would swallow it"),
 ])
-def test_the_config_backups_cannot_be_committed(path, ignored, why):
-    """`.gitignore` pinned the two config filenames EXACTLY, so the `.bak-<stamp>`
-    files beside them were not ignored at all.
+def test_the_config_backups_cannot_be_committed(path, ignored, why, tmp_path):
+    """Asserts the SHIPPED .gitignore, in a repo built for the purpose.
 
-    That matters because `write_paths_env` carries over every key it does not own
-    -- X4_NEXUS_KEY explicitly, per setup.sh -- so each backup holds the key plus
-    that machine's absolute paths, and they show up in `git status` where a
-    `git add -A` would take them. PRE-ARC: v3.0.0 already created `.bak-$stamp`.
+    WHY the rule exists: `.gitignore` pinned the two config filenames EXACTLY, so
+    the `.bak-<stamp>` files beside them were not ignored at all -- and
+    `write_paths_env` carries over every key it does not own (X4_NEXUS_KEY
+    explicitly, per setup.sh), so each backup holds the key plus that machine's
+    absolute paths, and they show up in `git status` where a `git add -A` would
+    take them. PRE-ARC: v3.0.0 already created `.bak-$stamp`. Both directions are
+    asserted, because the obvious fix is a blanket `x4-paths.env*` and that
+    silently stops tracking the `.example` template the installer ships.
 
-    Both directions are asserted, because the obvious fix is a blanket
-    `x4-paths.env*` and that silently stops tracking the `.example` template the
-    installer ships.
+    WHY it is built here rather than run in place. It used to run `git check-ignore` in whatever repo the suite was standing in.
+    Two things were wrong with that, and the second is worse:
+
+    * `verify-cold.sh` extracts via `git archive HEAD` into a directory that is
+      NOT a git repo, so check-ignore exited 128 and every case read as "not
+      ignored" -- six failed and the release gate went red.
+    * rc 128 is an ERROR, not a negative answer. Treating any non-zero as "not
+      ignored" conflated "git could not look" with "git says no", so the
+      `.example` case PASSED IN COLD FOR THE WRONG REASON: it cannot tell
+      "correctly not ignored" from "there is no repo here". An error is not an
+      allow.
+
+    Building the repo here fixes both, and makes the test assert the file the
+    release SHIPS rather than the ignore behaviour of the tree it happens to run
+    in -- which is the thing the claim was always about.
     """
-    r = subprocess.run(["git", "check-ignore", "-q", path],
-                       cwd=ROOT.as_posix(), capture_output=True)
-    is_ignored = (r.returncode == 0)
+    is_ignored = _is_git_ignored(_probe_repo(tmp_path), path)
     assert is_ignored == ignored, (
         "%s should%s be git-ignored (%s)" % (path, "" if ignored else " NOT", why))
+
+
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
 def test_the_refusal_LIST_is_bounded_and_says_how_many_it_hid(installer, tmp_path):
     """A regression pin for a branch I wrote and never exercised.
