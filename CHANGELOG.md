@@ -2,10 +2,194 @@
 
 ## v3.1.0 — 2026-09-07
 
-The guard could be hung by ordinary shell, fourteen of its rules had never been
-fuzzed at all, and `x4stats` reported "changes no wares" over a 1,443-op economy
-overhaul. This release is the close-out of the whole-codebase audit that followed
-v3.0.0.
+**Upgrading DELETED your `.claude/backups/` -- every pre-edit backup, the audit
+trail, and every known-good snapshot -- silently, rc 0.** On the machine where it
+was found that was 982 files, 60 MB and 33 named snapshots. If you have run a
+v3.1.0 pre-release installer with `--over-existing`, check that directory before
+anything else.
+
+Beyond that: a command name arriving through substitution walked past all three
+hard blocks; `--dry-run` performed a real install; the source machine's secrets
+travelled into the destination; the guard could be hung by ordinary shell; fourteen
+of its rules had never been fuzzed at all; and `x4stats` reported "changes no
+wares" over a 1,443-op economy overhaul. Four already-fixed defects could be
+reinstated with the whole suite green.
+
+This release is the close-out of the whole-codebase audit that followed v3.0.0,
+plus a second review round of eight reviewers over 92 files and 50,296 lines.
+
+### Fixed — the upgrade DELETED your recovery store, both installers, rc 0
+
+`.claude/backups/` holds every pre-edit backup, the audit trail, and the known-good
+snapshots CLAUDE.md mandates before any experiment. An upgrade with `--over-existing`
+erased all of it, silently: rc 0, "install complete", and the word "backup" appearing
+nowhere in the output.
+
+MEASURED on the live install when this was found: **982 files, 60 MB, 33 named
+snapshots reaching back to 2026-06-22.** Both `--method separate` and `--method
+in-game`, both installers, reproduced independently by a second session with a
+control and a twin.
+
+`X4_COPY_PRUNE` is dual-purpose — skipped on the way IN and removed from the
+DESTINATION on the way out, twice. v3.0.0's list held three build artifacts. The fix
+that stopped the SOURCE machine's backups travelling added `.claude/backups` to it,
+and the path silently inherited the destructive second meaning. install.sh states
+that exact hazard in its own words — *"a pruned path is also DELETED from the
+destination, which is right for a stale .venv and catastrophic for a config"* —
+directly above the entry that put the recovery store on the pruned side. x4lock
+deliberately leaves that directory UNLOCKED, so the lock guard could not catch it
+either, and the `--over-existing` warning lists only toolkit files, so nothing
+signalled the store was at risk.
+
+Moved to `X4_KEEP_LOCAL`, whose documented semantics were already exactly right:
+skipped on the way in, left alone on the way out. The test asserts SUBJECT and TRAVEL
+as one exact set, so the destination's own store surviving and the source's files not
+arriving cannot be satisfied by the other going wrong — plus a CONTROL (a real build
+artifact is still pruned, or the test passes for an installer that prunes nothing) and
+a TWIN (an unrelated user directory under `.claude/` survives).
+
+### Fixed — three installer CRITICALs these notes previously did not mention
+
+⚠ **These are in v3.1.0 and were absent from this file until 2026-09-08.** A user
+reading it could not learn that an installer had leaked an API key.
+
+- **`--dry-run` performed a REAL install in place, and ran `setup.sh` doing it.** Both
+  installers, both methods: rc 0, no dry-run banner, "install complete" printed, and
+  `setup.sh` synced dependencies. With `--unpack` it would also have run
+  `bin/unpack-reference.sh`. A regression of this arc.
+- **The source machine's secrets travelled.** `X4_KEEP_LOCAL` matched two exact names,
+  so the `.bak-<stamp>` and `.tmp<pid>` siblings of the path config — which hold
+  `X4_NEXUS_KEY` by construction — were copied into the destination. Reproduced on
+  both installers, rc 0 and silent.
+- **`--method global` had no locked-target precheck**, so PowerShell clobbered a
+  read-only user skill with a forced copy and returned 0.
+
+### Fixed — the rest of the installer round
+
+- **The global gate named skills this toolkit does not ship.** It listed every
+  `~/.claude/skills/x4-*`, so a user's own `x4-mycustom/` was reported as a file the
+  install "would REPLACE" and the run refused until `--over-existing` was passed —
+  against a directory the installer never touches. The comment above it already
+  claimed the correct property, and the AGENTS leg beside it already enumerated from
+  the toolkit. Both legs are source-derived now. The parity test ASSERTED THE DEFECT —
+  it required the literal destination glob — so the fix turned a named test red; that
+  assertion is inverted in the same commit, with the reason written at it.
+- **The read-only guard was inert in bash, and both installers refused after
+  writing.** bash tested the skill DIRECTORY, so a read-only file inside a writable
+  directory was invisible: the run reached the copy, failed with a permission error,
+  and ended "a partial install is not recoverable". In BOTH, the check ran after the
+  config writer, so both printed "wrote x4-paths.env" before refusing and PowerShell
+  then said "Nothing has been changed." Hoisted ahead of every write in both, and
+  asserted on the ARTIFACT rather than the wording — the wording was the untrue part.
+- **An INDENTED owned key won over the real one.** The key extraction kept leading
+  whitespace, so an indented X4_GAME assignment was not recognised as owned, was
+  carried over, and was emitted AFTER the authoritative line — and bash sources the
+  last assignment. A re-install with a new game path produced a config whose effective
+  game root was the STALE one, rc 0, silent. Three sites shared that extraction,
+  including the precondition this arc added, so the new precondition was blind to it.
+- **The refusal ORDER was reversed between the installers**, so PowerShell told the
+  user to unlock and re-run against a destination they had not authorised replacing —
+  advice that leads back to a refusal for the real reason.
+- **An unparseable global settings.json threw a raw interpreter dump** with no backup
+  and no crafted message, where bash degrades cleanly. Empty refuses too: an empty
+  file cannot be told from a truncated one, and overwriting a user's GLOBAL config on
+  that guess is the wrong call.
+- **PowerShell rewrote only markdown** where bash rewrote every shipped file — a
+  divergence created by this arc's own fix. Zero cost today, latent from the first
+  skill that ships a script.
+
+### Fixed — a substituted command name walked past all three hard blocks
+
+A command whose NAME arrives through substitution returned ALLOW where the plain
+spelling denies. An unknown OPERAND still reaches the conservative branch; an unknown
+VERB reached no rule at all, so it took every verb-keyed rule with it. The verb
+resolver only ever splices a bare command name out of the assignment table, so a
+substitution is unresolvable by construction.
+
+The guard fuzzer could not find it: its VERB axis has four mutators and every one is a
+SPELLING of a literal name — .exe, absolute path, ANSI-C, Windows path. None is a
+SUBSTITUTION. A bug history is not a grammar.
+
+Priced before shipping, over 28,989 real commands from 110 session transcripts,
+because the obvious rule is far too broad:
+
+| rule | corpus hits |
+|---|---|
+| any unresolved verb token | 679 (2.3%) — mostly a variable holding a PATH |
+| a substituted verb, any target | 834 (2.9%) |
+| **a substituted verb WITH a rooted operand in the same segment** | **4 (0.014%)** |
+
+The last is what shipped, and the root test is on that segment's OWN operands, never on
+a root appearing anywhere in the command.
+
+### Fixed — three more guard holes and two silent channels
+
+- The verb resolver reached only two thirds of the rules: three re-derived their own
+  segment walks and never saw a resolved verb, so the variable spelling of a rooted
+  SEARCH was False while the same spelling of a rooted DELETE was True. Two
+  independent paths answering one question.
+- An APPEND into the reference tree was ALLOW while a truncate hard-blocked — the same
+  primitive on the same file, and the tee spelling was already caught, so the two
+  forms of one append disagreed. The documents rule beside it already used the wider
+  set, so the less valuable tree had the wider channel and the read-only one the
+  narrower.
+- The re-unpack rule ANDed three predicates over the RAW command text, so a comment or
+  a quoted string naming the tool, the flag and the reference path was a
+  NON-OVERRIDABLE DENY on a command that unpacks nothing. It refused a probe that
+  merely LISTED the cases while the finding was being reproduced.
+- The canary's NOT-CHECKED disclosure was invisible on rc 0 — the one branch the hook
+  discards, and the common case (one root configured, one not, nothing lost).
+- The identifier scan dropped unreadable files on a bare continue and then reported a
+  file count that INCLUDED every file it never opened. Now counted, named, and a
+  refusal rather than a green over files nobody read.
+
+### Fixed — live_query: compare refused the ids it printed
+
+One helper canonicalises an id; its sibling canonicalises AND records it in the
+allowlist. Two verbs record; compare alone did not, so every id it PRINTED was absent
+from the allowlist, and feeding one straight back to the component verb was refused
+with "most likely mistyped, or left over from before a UI reload". Both named causes
+are false — the tool printed the id one query earlier. That verb exists to name the
+objects two enumerations disagree about, so refusing to follow them defeats it.
+
+And one unconvertible object discarded the whole enumeration: the id canonicaliser
+raises above 2^53, contained only by the verb's single outer pcall, so four good rows
+and every denominator went with it. The rule is right; the containment was at the
+wrong granularity, and the flag reader beside it already had the correct shape — per
+object, counted, announced. Now disclosed in the header.
+
+Recorded and NOT repaired: each UI reload adds a load-hook listener in the test
+harness. The code's defence is that the global table does not persist, which is
+measured for that table and NOT for the engine's own UI event registry. The real-engine
+behaviour is UNKNOWN and the settlement is five seconds in game; it has not been run.
+
+### Fixed — nine tests that could not fail, four of them holding this arc's own fixes
+
+A review pass mutated production and MEASURED that four already-fixed defects could be
+reinstated with the ENTIRE SUITE GREEN. The suite was not merely missing new bugs; it
+was not holding this release's own repairs in place.
+
+| mutation | before | after |
+|---|---|---|
+| a release gate's rc-2 floor turned into a pass (named in no other test file) | green | RED |
+| delete the dedup guard in the dropped-overlay reporter | green | RED |
+| rename the entry point so the skip-channel pin examines nothing | green | RED |
+| an unwired call site that merely MENTIONS the channel it ignores | green | RED |
+| revert the canary parse fix, so an ordinary rename reads as DATA LOSS | green (34 tests) | RED |
+| re-declare a shared constant as a literal (identity on a small int is satisfied by interning) | green | RED |
+| move a list's clear below the walks that fill it | green | RED |
+| replace the derived depth fixtures with a literal | green | RED |
+| rename a scanned root away from the bare-return guard | green | RED |
+
+The gate census matched any SystemExit raise without checking its argument, and every
+gate ends by raising SystemExit around its main() — so boilerplate satisfied it for all
+31.
+
+Three assertions written earlier in this same arc went the same way and are fixed
+here: a refusal-list count keyed on a drive letter, which counts ZERO and passes
+without examining a line on a runner whose temp is elsewhere — the leg being promoted
+to gating; and two disjunction forms where the assertion was satisfied by a word
+appearing anywhere in the output, including the tool's own help text.
 
 ### Fixed — the guard could be made to do unbounded work
 
@@ -345,8 +529,12 @@ deciding its pid is dead, and on Windows `os.kill(pid, 0)` maps to TerminateProc
 
 ### Fixed — the release review's own round: more verdicts with no reachable red
 
-Four reviewers read the whole `v3.0.0..HEAD` range. Everything they raised IN-ARC is
-closed; so is everything PRE-ARC they found on the way. The findings were one shape
+Four reviewers read the whole `v3.0.0..HEAD` range in that round; a LATER round of
+EIGHT read it again (92 files, 50,296 lines, denominators declared per reviewer)
+and found the installer criticals and the suite holes above, so what follows was
+true of that round rather than of the release. Everything THAT round raised is
+closed, in-arc and pre-arc alike; the later round's findings are the sections at
+the top of this release.
 almost throughout, which is the same shape the audit above kept finding — a verdict
 whose PASS branch is reachable from an input nothing looked at. It is worth stating
 that the round which fixed that class contained eleven more of it.
@@ -481,7 +669,8 @@ writes. And on PowerShell the skip had to sit ABOVE the config writer's own back
 merely inside the function: placed below, the install SUCCEEDED and still left a `.bak`.
 
 `test_install_over_existing.py` drives a real install over a real fixture install and is
-parameterised over **both** installers — ten tests, same cases, same assertions, so a
+parameterised over **both** installers, 58 collected cases as of this release --
+same cases, same assertions -- so a
 divergence in VERDICT fails by name. That matters because `test_installers_agree.py` is
 entirely static: it compares item lists and would have passed on two installers that
 agree about structure and disagree about whether they clean up, which is exactly what
@@ -576,7 +765,8 @@ non-answer, and an instrument that returns a NUMBER must say what it is a number
   rate (4 of 5 hits were a 5-character token inside a 22-25 character snake_case
   identifier).
 
-  MEASURED across THIS RELEASE (`v3.0.0..HEAD`, **68** commits): **zero**
+  MEASURED across THIS RELEASE (`v3.0.0..HEAD`, **111** commits at the time of writing -- and the
+  tool prints its own denominator on every run, so read that rather than this): **zero**
   occurrences of a private identifier, messages included. ⚠ An earlier draft of this
   line said "any of the 274 commits", which named a DIFFERENT population — 274 was
   a whole-history count taken mid-arc, while "this release" is the tag range. Over
