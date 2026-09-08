@@ -18,6 +18,7 @@ TWO THINGS ARE UNDER TEST, and the second is the one that nearly cost a release.
 """
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -63,6 +64,48 @@ def test_the_timeout_is_not_the_old_half_hour():
     assert mp.TEST_TIMEOUT <= 300, (
         "1800s meant a single hanging mutant cost 30 minutes, which is what made "
         "widening this gate unaffordable")
+
+
+def _timeout_arg_of(func_name):
+    """The NAME passed as `timeout=` to subprocess.run inside `func_name`.
+
+    Read off the AST rather than the text: a substring check is satisfied by a
+    comment that merely mentions the constant, which is the shape that let a
+    deleted mechanism keep a green test (#37).
+    """
+    tree = ast.parse(Path(mp.__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == func_name:
+            for call in ast.walk(node):
+                if not isinstance(call, ast.Call):
+                    continue
+                for kw in call.keywords:
+                    if kw.arg == "timeout" and isinstance(kw.value, ast.Name):
+                        return kw.value.id
+    return None
+
+
+def test_the_two_timeouts_stay_on_their_OWN_populations():
+    """The ceiling above guards the VALUE; this guards which call site uses which.
+
+    Splitting them is the fix for a gate that could not run at all -- the whole
+    suite is 1,649 tests in 665s and shared the 120s targeted budget, so it timed
+    out and the gate refused with rc 2. But FULL_SUITE_TIMEOUT is 1800, exactly
+    the number `test_the_timeout_is_not_the_old_half_hour` forbids, so if it ever
+    migrates to the MUTANT call site the old half-hour-per-hanging-mutant problem
+    returns while that ceiling test still passes.
+
+    One number serving two populations is what broke this gate; this is what stops
+    it silently re-merging.
+    """
+    assert _timeout_arg_of("run_tests") == "TEST_TIMEOUT", (
+        "the targeted/mutant run must keep the SHORT budget -- a hanging mutant "
+        "must not cost 30 minutes")
+    assert _timeout_arg_of("full_suite_failures") == "FULL_SUITE_TIMEOUT", (
+        "the whole-suite run must use its own budget -- sharing the 120s targeted "
+        "one is what made this gate unable to report")
+    assert mp.FULL_SUITE_TIMEOUT >= 1000, (
+        "must clear the measured 665.52s full-suite runtime with real headroom")
 
 
 # --- crash safety ------------------------------------------------------------
