@@ -15,9 +15,12 @@ exception would exercise the one path that already worked and prove nothing.
 """
 from __future__ import annotations
 
+import types
 import sqlite3
 
 import pytest
+
+from lxml import etree
 
 from x4validate import _effective, _merge
 
@@ -273,3 +276,49 @@ def test_the_COVERAGE_command_says_so_when_NOTHING_was_dropped(tmp_path, monkeyp
     out = capsys.readouterr().out
     assert "dropped overlays: 0" in out
     assert "WORK THAT DID NOT HAPPEN" not in out
+
+
+# --- the DUMP command had no reader for that channel (v3.1.0 review, batch 5) -------
+#
+# `_cmd_coverage` gained the dropped-overlay reader in-arc (6c7b8ac). Its sibling
+# `_cmd_dump` did not, so it printed a tree at rc 0 with a layer silently missing --
+# and under --chain the `sources:` line OMITS the dropped overlay, which is worse than
+# silence because it reads as an enumeration. MergeResult.skipped says it in its own
+# docstring: "the resulting tree looks complete when it is not".
+
+
+class _Res:
+    """The two fields _cmd_dump reads, and nothing else."""
+    def __init__(self, skipped):
+        self.tree = etree.fromstring("<wares/>")
+        self.sources = ["base"]
+        self.skipped = skipped
+
+
+def _run_dump(monkeypatch, capsys, skipped):
+    from x4validate import _effectivecli as C
+    monkeypatch.setattr(C, "active_mods", lambda: [])
+    monkeypatch.setattr(C, "ordered_overlays", lambda mods: [])
+    monkeypatch.setattr(C, "build_touch_map", lambda ordered: {})
+    monkeypatch.setattr(C, "touchers_for", lambda v, t, f: [])
+    monkeypatch.setattr(C._merge, "build_effective",
+                        lambda *a, **k: _Res(skipped))
+    args = types.SimpleNamespace(reference=".", vpath="libraries/wares.xml", chain=False)
+    rc = C._cmd_dump(args)
+    return rc, capsys.readouterr().out
+
+
+def test_dump_DISCLOSES_a_dropped_overlay_and_is_DEGRADED(monkeypatch, capsys):
+    rc, out = _run_dump(monkeypatch, capsys, ["vro/libraries/wares.xml: malformed XML"])
+    assert "INCOMPLETE" in out, out
+    assert "vro/libraries/wares.xml" in out, (
+        "a count says something was lost; only a NAME says which")
+    assert rc == 3, "a tree built over an incomplete population is degraded, not a pass"
+
+
+def test_dump_over_a_CLEAN_merge_is_rc_0_and_says_nothing(monkeypatch, capsys):
+    """The twin. Without it the assertion above is satisfied by a dump that always
+    cries INCOMPLETE and never returns 0."""
+    rc, out = _run_dump(monkeypatch, capsys, [])
+    assert rc == 0
+    assert "INCOMPLETE" not in out, out

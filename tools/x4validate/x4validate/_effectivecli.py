@@ -653,8 +653,27 @@ def _cmd_dump(args) -> int:
         if "base" not in res.sources and _effective.base_has(cfg, vpath):
             print(f"<!-- note: base+DLC ALSO supply {vpath}; "
                   f"sources show which WON, not which introduced it -->")
+    # THE SKIP CHANNEL HAS A READER HERE TOO. `MergeResult.skipped` says in its own
+    # docstring what its absence costs: "without this channel a malformed overlay is
+    # indistinguishable from an absent one, and the resulting tree looks complete when
+    # it is not". `_cmd_coverage` gained that reader in-arc (6c7b8ac); this sibling did
+    # not, so a dropped overlay printed as a clean tree -- and with --chain the
+    # `sources:` line OMITS it, which is worse than silence because it looks like an
+    # enumeration.
+    #
+    # Disclosed unconditionally, not behind --chain: a caller who did not ask for the
+    # chain is exactly the caller who will read this tree as whole.
+    if res.skipped:
+        print("<!-- INCOMPLETE: " + str(len(res.skipped)) + " overlay(s) could not be"
+              " read and are NOT in this tree.")
+        for item in res.skipped:
+            print("       " + str(item))
+        print("     The engine cannot read them either, so what it loads differs from"
+              " what this shows. -->")
     print(etree.tostring(res.tree, pretty_print=True, encoding="unicode"))
-    return 0
+    # rc 3 == DEGRADED, the toolkit contract: a tree was produced, but not over the
+    # whole population. Never 0 -- "could not check part of it" is not a pass.
+    return 3 if res.skipped else 0
 
 
 if __name__ == "__main__":
