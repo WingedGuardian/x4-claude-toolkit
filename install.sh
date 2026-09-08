@@ -461,7 +461,7 @@ precheck_locked_targets() {   # precheck_locked_targets DEST
   echo "  Nothing has been changed."                                            >&2
   echo                                                                          >&2
   echo "  Unlock, re-run this installer, then lock again:"                       >&2
-  echo "      python scripts/x4lock.py unlock"                                   >&2
+  echo "      python scripts/x4lock.py unlock --all"                                   >&2
   echo "      <re-run this command>"                                             >&2
   echo "      python scripts/x4lock.py lock"                                     >&2
   exit 1
@@ -488,7 +488,7 @@ precheck_config() {   # precheck_config TOOLKIT_DIR
   echo "  Nothing has been changed."                                          >&2
   echo                                                                        >&2
   echo "  Unlock, re-run this installer, then lock again:"                    >&2
-  echo "      python scripts/x4lock.py unlock"                                >&2
+  echo "      python scripts/x4lock.py unlock --all"                                >&2
   echo "      <re-run this command>"                                          >&2
   echo "      python scripts/x4lock.py lock"                                  >&2
   echo                                                                        >&2

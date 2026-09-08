@@ -264,7 +264,7 @@ function Test-LockedTargetsPrecheck($dest) {
   Write-Host '  Nothing has been changed.'
   Write-Host ''
   Write-Host '  Unlock, re-run this installer, then lock again:'
-  Write-Host '      python scripts/x4lock.py unlock'
+  Write-Host '      python scripts/x4lock.py unlock --all'
   Write-Host '      <re-run this command>'
   Write-Host '      python scripts/x4lock.py lock'
   exit 1
@@ -294,7 +294,7 @@ function Test-ConfigPrecheck($t) {
   Write-Host '  Nothing has been changed.'
   Write-Host ''
   Write-Host '  Unlock, re-run this installer, then lock again:'
-  Write-Host '      python scripts/x4lock.py unlock'
+  Write-Host '      python scripts/x4lock.py unlock --all'
   Write-Host '      <re-run this command>'
   Write-Host '      python scripts/x4lock.py lock'
   Write-Host ''
