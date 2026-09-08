@@ -734,24 +734,53 @@ def test_a_dropped_overlay_is_reported_by_check_references(tmp_path, monkeypatch
     assert "incomplete" in why
 
 
-def test_the_same_dropped_overlay_is_reported_ONCE(tmp_path, monkeypatch):
+class _Merged:
+    """The one field `note_dropped_overlays` reads."""
+
+    def __init__(self, skipped):
+        self.skipped = list(skipped)
+
+
+def test_the_same_dropped_overlay_is_reported_ONCE():
     """`Report.skip` does not deduplicate, and one cause reaches several of these
-    builds through different vpaths. One cause, one line."""
-    real = _merge.build_effective
+    builds through different vpaths. One cause, one line.
 
-    def dropping(vpath, config, **kw):
-        got = real(vpath, config, **kw)
-        got.skipped = list(got.skipped) + ["ov_broken/x.xml: malformed XML"]
-        return got
+    ⚠ THIS TEST COULD NOT FAIL until 2026-09-08. It drove `check_references`, which
+    reaches exactly ONE `note_dropped_overlays` heading, so no `(what, why)` pair
+    could repeat whatever the guard did. MEASURED: deleting the two guard lines from
+    `_check.note_dropped_overlays` left the ENTIRE SUITE green -- 1650 passed, rc 0.
+    A test that pins a deduplicator has to hand it a duplicate.
 
-    monkeypatch.setattr(_merge, "build_effective", dropping)
-    mod = tmp_path / "mod"
-    _write(mod / "libraries/wares.xml", "<diff/>")
+    So the guard is now exercised where it lives: the same cause arriving twice under
+    ONE heading, which is the real situation the docstring describes.
+    """
     report = _check.Report()
-    _check.check_references(mod, _merge.Config(reference=tmp_path / "ref"), report)
+    merged = _Merged(["ov_broken/x.xml: malformed XML, overlay skipped"])
+    _check.note_dropped_overlays(merged, "ware references", report)
+    _check.note_dropped_overlays(merged, "ware references", report)
+
     same = [s for s in report.skipped if "ov_broken/x.xml" in s.why]
-    assert len({(s.what, s.why) for s in same}) == len(same), \
-        "the same dropped overlay was reported more than once under one heading"
+    assert len(same) == 1, (
+        "the same dropped overlay was reported %d times under one heading; the "
+        "reader sees one cause as several unrelated failures" % len(same))
+
+
+def test_the_dedup_does_NOT_collapse_the_SAME_cause_under_DIFFERENT_headings():
+    """The twin for the other clause, because the guard tests `what` AND `why`.
+
+    A dedup keyed on the reason alone would hide that a second, unrelated check was
+    also degraded by that overlay -- and the heading is what tells the reader which
+    verdict is now standing on an incomplete tree.
+    """
+    report = _check.Report()
+    merged = _Merged(["ov_broken/x.xml: malformed XML, overlay skipped"])
+    _check.note_dropped_overlays(merged, "ware references", report)
+    _check.note_dropped_overlays(merged, "macro references", report)
+
+    whats = sorted(s.what for s in report.skipped if "ov_broken/x.xml" in s.why)
+    assert whats == ["macro references", "ware references"], (
+        "one cause degrading TWO checks must be reported under both headings; got %r"
+        % (whats,))
 
 
 def test_a_WELL_FORMED_overlay_set_produces_no_degraded_skip(tmp_path):
@@ -788,19 +817,36 @@ def test_EVERY_build_effective_call_site_consults_the_skip_channel():
 
     def consults_skips(node):
         for n in _ast.walk(node):
-            if isinstance(n, _ast.Attribute) and n.attr == "skipped":
+            # `.skipped` ON THE MERGE RESULT, not any attribute of that name.
+            # This used to match ANY `.skipped`, and `report.skipped` is all over
+            # this module for unrelated reasons -- so a twelfth unwired call site
+            # that mentioned `report.skipped` once satisfied the pin. MEASURED: the
+            # exact scenario this docstring exists to prevent was added and PASSED.
+            if isinstance(n, _ast.Attribute) and n.attr == "skipped" \
+                    and not (isinstance(n.value, _ast.Name) and n.value.id == "report"):
                 return True
             if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name) \
                     and n.func.id == "note_dropped_overlays":
                 return True
         return False
 
-    offenders = []
+    builders, offenders = [], []
     for node in _ast.walk(tree):
         if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
             continue
-        if calls_build_effective(node) and not consults_skips(node):
+        if not calls_build_effective(node):
+            continue
+        builders.append(node.name)
+        if not consults_skips(node):
             offenders.append("%s (line %d)" % (node.name, node.lineno))
+    # THE DENOMINATOR. Without it this passed over ZERO examined functions:
+    # MEASURED by renaming the entry point to `_merge.build_eff` and stripping all
+    # 13 wired calls -- green, having looked at nothing. Its own sibling at
+    # test_prop_depth.py:141 already carried this floor; this one did not.
+    assert len(builders) >= 10, (
+        "found only %d function(s) calling build_effective in _check.py -- the "
+        "matcher has stopped finding them, so a clean result here means nothing. "
+        "Found: %r" % (len(builders), builders))
     assert not offenders, (
         "these functions build an effective tree and never ask what was left out "
         "of it, so a malformed overlay is indistinguishable from an absent one:\n  "

@@ -547,30 +547,82 @@ def test_an_UNSIZEABLE_file_does_not_discard_the_losses_already_found(repo, monk
     assert "cannot size" in err, "and the unreadable file must still be named"
 
 
+#: Size the fake reports for every HEAD blob; fixtures are written to match.
+_BLOB_BYTES = 1024
+
+
+def _drive_porcelain(repo, monkeypatch, porcelain: str):
+    """Run the REAL `check()` over synthetic `status --porcelain` output.
+
+    ⚠ THE TWO TESTS BELOW COULD NOT FAIL until 2026-09-08. Each reimplemented the
+    parse in its own body -- `code, rel = line[:2], line[3:].strip()`, then the
+    split, then `_unquote` -- and never called `check()`. MEASURED: reverting the
+    production fix, so `_unquote` runs on the WHOLE field BEFORE the ` -> ` split,
+    left all 34 tests in this file green. That regression turns an ordinary
+    `git mv` into `*** DATA LOSS ***` rc 1 and fires the SessionStart banner, which
+    is the cry-wolf failure the fix exists to end.
+
+    A test that pins a parse has to run the parse. The rename destination is made to
+    EXIST on disk, so if the parse is right the file is found and there is no loss;
+    if the parse is wrong the path names nothing and `p.exists()` is False.
+    """
+    def fake_git(r, *args):
+        if args[:1] == ("rev-parse",):
+            return 0, "ok"
+        if "--porcelain" in args:
+            return 0, porcelain
+        if args[:1] == ("cat-file",):
+            # A CONSTANT, and the fixtures below are written to match it
+            # exactly. My first version sniffed the path out of the ref and
+            # stat-ed it, which returned 1024 for a quoted ref that did not
+            # resolve -- so the SHRANK detector fired on the fixture and read
+            # as a production failure. A harness whose own arithmetic can
+            # disagree with itself is not a harness.
+            return 0, str(_BLOB_BYTES)
+        return 0, ""
+    monkeypatch.setenv("X4_CANARY_REPOS", str(repo))
+    monkeypatch.setattr(x4canary, "_paths", None)
+    monkeypatch.setattr(x4canary, "_git", fake_git)
+    return x4canary.check(repo)
+
+
 def test_a_rename_with_BOTH_paths_quoted_is_not_a_false_DATA_LOSS(repo, monkeypatch):
     """`_unquote` was applied to the WHOLE field before the ` -> ` split, and its
-    outer-quote test matches `"old" -> "new"` — so it stripped the outer pair and
+    outer-quote test matches `"old" -> "new"` -- so it stripped the outer pair and
     decoded ACROSS the separator, yielding two paths naming no file. `p.exists()`
     False, DELETED, rc 1, SessionStart banner. One-sided quoting parsed correctly,
     which is why it survived review.
 
-    Driven through the real parse by feeding porcelain directly, because a filename
-    containing a quote cannot be created on Windows.
+    Driven through the real parse, because a filename containing a quote cannot be
+    created on Windows and the destination must nonetheless be found on disk.
     """
-    BS, DQ = chr(92), chr(34)
-    line = 'R  ' + DQ + 'we' + BS + DQ + 'ird.yaml' + DQ + ' -> ' + DQ + 'al' + BS + DQ + 'so.yaml' + DQ
-    code, rel = line[:2], line[3:].strip()
-    assert code and code[0] in ("R", "C") and " -> " in rel
-    was_rel, new_rel = (x4canary._unquote(part.strip())
-                        for part in rel.split(" -> ", 1))
-    assert was_rel == 'we' + DQ + 'ird.yaml', was_rel
-    assert new_rel == 'al' + DQ + 'so.yaml', new_rel
-
-
-def test_a_ONE_SIDED_quoted_rename_still_parses(repo):
-    """The twin: the form that already worked must keep working."""
     DQ = chr(34)
-    rel = 'plain.md -> ' + DQ + 'quoted name.md' + DQ
-    was_rel, new_rel = (x4canary._unquote(part.strip())
-                        for part in rel.split(" -> ", 1))
-    assert was_rel == "plain.md" and new_rel == "quoted name.md"
+    dest = "also.yaml"
+    (repo / dest).write_text("x" * _BLOB_BYTES, encoding="utf-8")
+    line = "R  " + DQ + "weird.yaml" + DQ + " -> " + DQ + dest + DQ
+    losses, _unreadable, _n = _drive_porcelain(repo, monkeypatch, line)
+    assert not losses, (
+        "an ordinary rename was reported as DATA LOSS: %r. The destination exists on "
+        "disk, so the parse produced a path that names no file." % (losses,))
+
+
+def test_a_ONE_SIDED_quoted_rename_still_parses(repo, monkeypatch):
+    """The twin: the form that already worked must keep working, through the same
+    real parse rather than a second copy of it."""
+    DQ = chr(34)
+    dest = "quoted name.md"
+    (repo / dest).write_text("x" * _BLOB_BYTES, encoding="utf-8")
+    line = "R  plain.md -> " + DQ + dest + DQ
+    losses, _unreadable, _n = _drive_porcelain(repo, monkeypatch, line)
+    assert not losses, "a one-sided quoted rename was reported as a loss: %r" % (losses,)
+
+
+def test_a_REAL_deletion_is_STILL_a_loss_through_the_same_path(repo, monkeypatch):
+    """The control. Without it both tests above pass for a parse that finds nothing
+    at all -- or for a `check()` that stopped reporting losses entirely.
+    """
+    losses, _unreadable, _n = _drive_porcelain(
+        repo, monkeypatch, "R  plain.md -> gone-" + "never-written.yaml")
+    assert losses and "never-written" in " ".join(losses), (
+        "a rename whose DESTINATION does not exist must still read as a loss; "
+        "got %r" % (losses,))

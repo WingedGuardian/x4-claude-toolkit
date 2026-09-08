@@ -69,6 +69,18 @@ def test_no_test_function_bails_with_a_bare_return():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for line in _bare_returns_in_tests(tree):
             offenders.append("%s:%d" % (path.name, line))
+    # A FLOOR PER ROOT, not one total. The total was `> 100` while the population is
+    # 121 across three roots, so the two smaller roots -- 6 files in tools/basex and
+    # 1 in .claude/hooks -- could vanish entirely and 114 in tests/ would still clear
+    # it. MEASURED 2026-09-08: renaming `tools/basex` to `tools/basex-vendored`, with
+    # a bare-return offender still present inside it, left this GREEN. A directory
+    # rename silently reverted the widening this guard was added for.
+    per_root = {r.name: sum(1 for f in files if r in f.parents) for r in roots}
+    empty = sorted(n for n, c in per_root.items() if c == 0)
+    assert not empty, (
+        "root(s) %s contributed ZERO test files, so this guard no longer covers them "
+        "-- a rename or a move silently narrows the population and the total floor "
+        "below cannot see it. Counts: %r" % (empty, per_root))
     assert scanned > 100, (
         "only %d test files were scanned -- this guard would be vacuous, and the floor is now 100 because the population is the whole repo" % scanned)
     assert not offenders, (
