@@ -58,9 +58,42 @@ def test_the_rc3_branch_exists_and_precedes_the_generic_failure(ca):
 
 
 def test_the_dump_channel_has_its_own_counter(ca):
-    """The defect itself: no counter meant no floor could exist."""
+    """The defect itself: no counter meant no floor could exist.
+
+    ⚠ The FIRST version of this test asserted only that the names appear ANYWHERE in
+    the module -- and removing their initialisation left it GREEN, because the
+    increments and the print still mention them. A test that cannot fail is worse than
+    no test: it reads as coverage. Caught by the red-then-green, which is the only
+    reason it is not still sitting here passing.
+
+    So: assert they are ASSIGNED (an initialisation, not a mention), and that the
+    FLOOR keyed on `dump_checked` reaches a `return 3`.
+    """
     import ast
-    src = (GATES / "consistency_audit.py").read_text(encoding="utf-8")
-    names = {n.id for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Name)}
+    tree = ast.parse((GATES / "consistency_audit.py").read_text(encoding="utf-8"))
+    assigned = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    assigned.add(t.id)
     for want in ("dump_checked", "dump_degraded", "dump_unusable"):
-        assert want in names, "the dump channel needs its own denominator: %s" % want
+        assert want in assigned, (
+            "%s must be INITIALISED, not merely mentioned -- without an initial value "
+            "there is no counter and no floor can key on it" % want)
+
+    # the floor: `if not dump_checked:` ... `return 3`
+    floors = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        names = {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
+        if "dump_checked" not in names:
+            continue
+        returns = [r for r in ast.walk(node) if isinstance(r, ast.Return)
+                   and isinstance(r.value, ast.Constant) and r.value.value == 3]
+        if returns:
+            floors.append(node.lineno)
+    assert floors, (
+        "no branch tests dump_checked and returns 3 -- the third channel can still "
+        "contribute nothing while the gate reports a clean three-way agreement")
