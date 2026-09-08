@@ -508,12 +508,26 @@ def main() -> int:
 
     lowered = [t.lower() for t in banned]
     found = 0
+    unreadable = []
     for rel in files:
         path = Path(rel)
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue  # a submodule or a file git tracks but we cannot open
+        except OSError as exc:
+            # COUNTED AND NAMED, never silently dropped. This was a bare
+            # `continue`, and the verdict below reported `len(files)` -- which
+            # INCLUDES every file that was never opened. A scan that could not
+            # read a file was indistinguishable from one that read it and found
+            # nothing, in the tool whose whole job is proving a negative.
+            #
+            # The HISTORY mode in this same file already set the opposite standard
+            # for the same class: it counts binary diffs and says so. MEASURED on
+            # this repo today: 272 tracked, 0 unreadable -- so the denominator is
+            # honest right now and this costs nothing. It is one submodule or one
+            # lock away from not being (CLAUDE.md #23: a recorded cost of zero is
+            # where a wrong denominator hides).
+            unreadable.append((rel, exc.__class__.__name__))
+            continue
         for i, line in enumerate(text.splitlines(), 1):
             low = line.lower()
             if any(t in low for t in lowered):
@@ -532,7 +546,18 @@ def main() -> int:
     if found:
         print(f"::error::{found} line(s) contain a contributor identifier.")
         return 1
-    print(f"clean — no contributor identifiers in {len(files)} file(s) "
+    # THE DENOMINATOR IS WHAT WAS READ, not what was listed.
+    scanned = len(files) - len(unreadable)
+    if unreadable:
+        print(f"::error::{len(unreadable)} of {len(files)} file(s) could not be read, "
+              f"so this scan cannot say they are clean. Refusing to report a "
+              f"negative over files nobody opened.")
+        for rel, why in unreadable[:8]:
+            print(f"      {rel} ({why})")
+        if len(unreadable) > 8:
+            print(f"      ... and {len(unreadable) - 8} more NOT LISTED")
+        return 2
+    print(f"clean - no contributor identifiers in {scanned} file(s) READ "
           f"({len(untracked)} of them not yet tracked).")
     return 0
 

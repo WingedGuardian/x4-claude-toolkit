@@ -1865,6 +1865,29 @@ class WritesReference(unittest.TestCase):
     the identical write through the Edit/Write channel. Two channels, one tree,
     opposite verdicts -- and the Bash side was the permissive one."""
 
+    def test_a_SUBSTITUTED_command_name_at_a_root_fires(self):
+        """An unknown OPERAND still reaches the conservative branch; an unknown
+        VERB reached NO rule, so this walked past all three hard blocks.
+        MEASURED: `$(echo rm) -rf <game>` was ALLOW where `rm -rf <game>`
+        denied."""
+        self.assertTrue(F('$(echo rm) -rf "' + GAME + '"')["verb_unresolved"])
+
+    def test_the_BACKTICK_spelling_of_a_substituted_verb_fires(self):
+        self.assertTrue(F('`echo rm` -rf "' + GAME + '"')["verb_unresolved"])
+
+    def test_a_substituted_ARGUMENT_is_not_a_substituted_verb(self):
+        """The must-NOT-fire half, and the reason this is keyed on the VERB
+        position rather than on a substitution appearing anywhere: over 28,989
+        real commands, keying on any unresolved verb matched 679 (mostly $JQ /
+        $UV, where the variable holds a PATH); this rule matches 4."""
+        self.assertFalse(F('ls -la $(pwd)')["verb_unresolved"])
+        self.assertFalse(F('echo $(date)')["verb_unresolved"])
+
+    def test_a_substituted_verb_AWAY_from_every_root_does_not_fire(self):
+        """Scoped to the segment's own rooted operands, never to a root appearing
+        anywhere in the command."""
+        self.assertFalse(F('$(echo rm) -rf /tmp/scratch')["verb_unresolved"])
+
     def test_a_truncating_redirect_into_reference_fires(self):
         self.assertTrue(F('echo x > "' + REF + '/libraries/wares.xml"')
                         ["writes_reference"])

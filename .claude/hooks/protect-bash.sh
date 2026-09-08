@@ -233,6 +233,20 @@ fi
 # be a step that narrows its data and reports success -- the shape behind every tool
 # defect found in this workspace. Unreachable by ordinary work: over 13,503 real
 # historical commands the largest walk produced 25 of the 250 allowed.
+# A COMMAND NAME THAT ARRIVES THROUGH SUBSTITUTION IS AN UNKNOWN VERB, and an unknown
+# verb reaches NO rule -- unlike an unknown OPERAND, which still reaches the
+# conservative branch. MEASURED 2026-09-08: `$(echo rm) -rf "<game>"` returned ALLOW
+# where the plain spelling denies, walking past all three hard blocks.
+#
+# DENY rather than ask, per this file's own policy: there is a correct alternative I
+# can simply take -- write the command name literally -- so it should spend my
+# attention and not the user's. Scoped to the VERB of a segment, never to the
+# presence of `$(` anywhere in the command, which would deny ordinary substitution
+# in an argument.
+if on verb_unresolved; then
+  deny "A command name here arrives through substitution (\$(...) or backticks), so the guard cannot tell what command this is and NO rule -- including the hard blocks on the game install -- was evaluated for it. Write the command name literally and re-run."
+fi
+
 if on carriers_truncated; then
   ask "This command nests so many substitutions/wrappers that the guard stopped expanding them, so part of it was NEVER checked against any rule. That is not a clean pass. Simplify it, or confirm only if you know what every nested command does."
 fi

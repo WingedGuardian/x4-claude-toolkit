@@ -60,7 +60,19 @@ RC=$?
 # 7,631 bytes with 2 refusal guards while the repo's was 19,630 with 5, so four
 # fixed false-DATA-LOSS bugs were not reaching the running hook. Nothing said so.
 case $RC in
-  0) : ;;   # nothing lost; stay quiet, the session start is not the place for noise
+  0)
+    # NOTHING LOST -- but 'nothing lost' over a PARTIALLY RESOLVED root set is a
+    # narrower claim than it reads as, and rc 0 with one root configured and one
+    # not is the COMMON case rather than an edge. x4canary's own
+    # `_report_unresolved` docstring names this branch as the one that discards
+    # its disclosure, then fixes rc 1 and rc 2 and leaves rc 0 inside it.
+    #
+    # Only the NOT-CHECKED line is surfaced, and only when there is one: a clean
+    # run over a fully resolved set stays silent, which is what keeps the session
+    # start quiet.
+    printf '%s
+' "$OUT" | grep -F 'NOT CHECKED:' >&2 || :
+    ;;
   1)
     x4_bound "$(
       echo "[x4 canary] *** A TRACKED IRREPLACEABLE FILE HAS BEEN LOST ***"

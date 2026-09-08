@@ -183,5 +183,23 @@ if [ "$S" != "0" ]; then
   echo "NOTE: $S probe(s) SKIPPED because their location is not configured."
   echo "      Those rules were NOT exercised. Configure .claude/x4-paths.env to cover them."
 fi
+echo
+echo "--- a SUBSTITUTED command name (must DENY; must not touch substituted ARGS) ---"
+# An unknown OPERAND still reaches the conservative branch; an unknown VERB reached
+# NO rule, so `$(echo rm) -rf <game>` was ALLOW where the plain spelling denied --
+# past all three hard blocks. Priced over 28,989 real commands before shipping: the
+# rule as written matches 4 of them (0.014%); keyed on any unresolved verb it would
+# have matched 679, mostly $JQ / $UV where the variable holds a PATH.
+if need "${X4_GAME:-}" "subst-verb" "X4_GAME"; then
+  probe deny  "subst-verb-game"      "\$(echo rm) -rf '$X4_GAME'"
+  probe deny  "backtick-verb-game"   "\`echo rm\` -rf '$X4_GAME'"
+fi
+# THE MUST-NOT-FIRE HALF, and the reason the rule is keyed on the VERB position
+# rather than on `$(` appearing anywhere: substitution in an ARGUMENT is ordinary.
+probe allow "subst-arg-pwd"        'ls -la $(pwd)'
+probe allow "subst-arg-date"       'echo $(date)'
+probe allow "subst-arg-cd"         'cd $(git rev-parse --show-toplevel) && ls'
+probe allow "var-verb-path"        'JQ=/x/jq.exe; $JQ -n 1'
+
 if [ "$F" = "0" ]; then echo "All hook guards behave. ($F failures, $S skipped)"; else echo "HOOK REGRESSIONS: $F ($S skipped)"; fi
 exit $F

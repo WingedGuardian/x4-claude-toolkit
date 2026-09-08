@@ -1329,6 +1329,11 @@ def resolve_verb(seg: str, assigns: dict[str, str]) -> str:
     return seg[:i] + r + seg[i + len(t):]
 
 
+def tokens_of(seg: str) -> list[str]:
+    """Raw token strings of a segment, flags included."""
+    return [t for t, _q in tokens(seg)]
+
+
 def _operands(seg: str) -> list[str]:
     """Non-flag, non-redirect operands after the verb."""
     out, seen_verb, skip = [], False, False
@@ -2429,6 +2434,39 @@ def facts(payload: dict, roots: dict) -> dict:
     # otherwise reaches no verb-keyed rule at all, hard blocks included.
     seg_cwd = [(resolve_verb(s, assigns), c)
                for c in all_cmds for s, c in cwd_track(c)]
+    # A SUBSTITUTED COMMAND NAME REACHES NO RULE AT ALL. An unknown OPERAND still
+    # reaches the conservative branch; an unknown VERB reaches nothing, so it takes
+    # all three hard blocks with it. MEASURED 2026-09-08 against the live hook:
+    #     rm -rf "<game>"           deny
+    #     $(echo rm) -rf "<game>"   ALLOW   <- total bypass
+    #     `echo rm` -rf "<game>"    ALLOW
+    #
+    # SCOPED TO SUBSTITUTION IN THE VERB POSITION, AND TO A ROOTED OPERAND IN THE
+    # SAME SEGMENT. Both narrowings were forced by measurement, not taste, over
+    # 28,989 real Bash commands from 110 session transcripts:
+    #
+    #   any unresolved verb token          679 hits (2.3%)  -- mostly $JQ / $UV / $f,
+    #                                      where the variable holds a PATH so
+    #                                      resolve_verb correctly leaves it alone
+    #   substituted verb, any target       834 hits (2.9%)
+    #   substituted verb + rooted operand    4 hits (0.014%)   <- this rule
+    #
+    # I predicted "under 20" for the first of those and was wrong by 34x, which is
+    # the whole argument for pricing a guard change before shipping it (CLAUDE.md
+    # #36). The root test is on THIS SEGMENT'S OWN OPERANDS, never on a root
+    # appearing anywhere in the command -- that conjunction over the whole string is
+    # the shape four false positives came from in one day.
+    def _subst_verb_at_root(seg):
+        t = _verb_token(seg)
+        if not t or not (t.startswith("$(") or t.startswith("`")):
+            return False
+        for o in _operands(seg):
+            r = resolve(o, assigns)
+            if any(v and is_root(r, v) for v in roots.values()):
+                return True
+        return False
+
+    verb_unresolved = any(_subst_verb_at_root(s) for s, _ in seg_cwd)
     segs = [s for s, _ in seg_cwd]
     cwd = seg_cwd[-1][1] if seg_cwd else ""
 
@@ -2555,10 +2593,16 @@ def facts(payload: dict, roots: dict) -> dict:
     # needed.
     rm_named_game = any(GAME_ROOTISH.search(norm(p or raw)) for p, _u, raw in rm_t)
 
+    # OVER THE RESOLVED SEGMENTS. This re-derived its own walk from all_cmds and
+    # never saw a verb resolve_verb had spliced, so the two search DENIES were
+    # blind to the variable spelling the resolver exists for. MEASURED:
+    #     rm  -> `RM=rm;  $RM -rf <ref>`   rm_targets_reference        True
+    #     grep-> `GP=grep; $GP -rn x <ref>` search_rooted_reference    FALSE
+    # Two independent paths answering one question, which is the shape this
+    # file's own narrowing table exists to refuse.
     search_roots = []
-    for c in all_cmds:
-        for s, c_cwd in cwd_track(c):
-            for p in search_paths(s):
+    for s, c_cwd in seg_cwd:
+        for p in search_paths(s):
                 r = resolve(p, assigns)
                 search_roots.append(c_cwd if r in (".", "./") else r)
 
@@ -2598,6 +2642,7 @@ def facts(payload: dict, roots: dict) -> dict:
         # data and reports success. Unreachable by ordinary work: MEASURED over
         # 13,503 real commands, the largest walk produced 25 of the 250 allowed.
         "carriers_truncated": carriers_truncated,
+        "verb_unresolved": verb_unresolved,
 
         # A `mv` SOURCE that is a protected root is a delete of that root: the
         # install is equally gone whether it was removed or moved away. Sources
@@ -2616,7 +2661,20 @@ def facts(payload: dict, roots: dict) -> dict:
         # names the root, which is the write convention throughout this file (deletes
         # are the one channel with nothing behind them). `bin/unpack-reference.sh` is
         # unaffected -- invoking a script passes no reference path as an operand.
-        "writes_reference": hit(copy_t + trunc_redirect + sed_t + out_t, "reference"),
+        # APPENDS TOO. This used trunc_redirect, which filters redirects to
+        # m == "truncate", so `echo x >> <ref>/w.xml` was ALLOW while
+        # `echo x > <ref>/w.xml` hard-blocked -- the same primitive on the same
+        # file, under a rule whose own message says "never write into it".
+        # `tee -a` was already caught, so the two spellings of one append
+        # disagreed with each other.
+        #
+        # Truncate-only is correct for the GAME/PROFILE advisory below, whose
+        # stated reason is that an append cannot truncate. It is not this tree's
+        # policy: reference/ is read-only source of truth, and writes_documents
+        # beside it already uses the WIDER writes_any -- so the less valuable
+        # tree had the wider channel and the hard-blocked one the narrower.
+        "writes_reference": hit(copy_t + [(pp, uu, rr) for _m, pp, uu, rr in redir_t]
+                                + sed_t + out_t, "reference"),
         "rm_in_x4_dir": any(hit(rm_t + mv_src, k, conservative=True) for k in
                             ("game", "profile", "mods", "toolkit")) or rm_named_game,
         "rm_saves": hit(rm_t + mv_src, "saves", conservative=True),
@@ -2705,7 +2763,10 @@ def facts(payload: dict, roots: dict) -> dict:
             # rule finally had a seed: 21 bypasses, every one a wrapper, a carrier or
             # a stdin form the carrier walk ALREADY resolves. `bash -c` alone was
             # enough to overwrite KNOWLEDGEBASE.md unseen.
-            for c in all_cmds for sg in segments(c)),
+            # RESOLVED SEGMENTS, for the same reason as search_roots above: this
+            # walked segments(c) raw, so `PY=python; $PY -c "open(...,'w')"`
+            # reached no rule while the plain spelling denied.
+            for sg, _c in seg_cwd),
 
         "search_rooted_reference": rooted(roots.get("reference")),
         # `mods` was here and is deliberately NOT, from 2026-09-04. The rule's own
@@ -2747,10 +2808,24 @@ def facts(payload: dict, roots: dict) -> dict:
         # `bool` is excluded deliberately: in Python True is an int.
         "timeout_over_cap": _as_ms(timeout) > 600000,
         "longjob_foreground": longjob and background is not True,
-        "xrcat_reunpack": (bool(re.search(r"xrcat", cmd, re.I))
-                           and "-out" in ncmd
-                           and bool(roots.get("reference"))
-                           and norm(roots["reference"]) in ncmd),
+        # THE LAST WHOLE-COMMAND AND-OF-INDEPENDENT-PREDICATES RULE IN THIS FILE,
+        # and it hard-denied PROSE. It tested `cmd`/`ncmd` -- the RAW text rather
+        # than `body` -- so a comment or a quoted string naming the tool, the
+        # output flag and the reference path was a NON-OVERRIDABLE DENY on a
+        # command that unpacks nothing. It fired on me while I was testing it:
+        # the probe listing the cases was itself refused.
+        #
+        # This is the shape the 2026-09-01 rewrite removed everywhere else in
+        # this file ("Each ANDed two independent predicates over the WHOLE
+        # command text"); it is the one the sweep missed. Scoped now to a SEGMENT
+        # whose VERB is the tool and whose OWN operands name the reference root.
+        "xrcat_reunpack": any(
+            "xrcat" in _verb_name(verb(sg)).lower()
+            and any(tk.startswith("-out") for tk in tokens_of(sg))
+            and bool(roots.get("reference"))
+            and any(is_root(resolve(o_, assigns), roots["reference"])
+                    for o_ in _operands(sg))
+            for sg, _c in seg_cwd),
         "cwd": cwd,
     }
 
