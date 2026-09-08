@@ -1329,6 +1329,11 @@ def resolve_verb(seg: str, assigns: dict[str, str]) -> str:
     return seg[:i] + r + seg[i + len(t):]
 
 
+def tokens_of(seg: str) -> list[str]:
+    """Raw token strings of a segment, flags included."""
+    return [t for t, _q in tokens(seg)]
+
+
 def _operands(seg: str) -> list[str]:
     """Non-flag, non-redirect operands after the verb."""
     out, seen_verb, skip = [], False, False
@@ -2656,7 +2661,20 @@ def facts(payload: dict, roots: dict) -> dict:
         # names the root, which is the write convention throughout this file (deletes
         # are the one channel with nothing behind them). `bin/unpack-reference.sh` is
         # unaffected -- invoking a script passes no reference path as an operand.
-        "writes_reference": hit(copy_t + trunc_redirect + sed_t + out_t, "reference"),
+        # APPENDS TOO. This used trunc_redirect, which filters redirects to
+        # m == "truncate", so `echo x >> <ref>/w.xml` was ALLOW while
+        # `echo x > <ref>/w.xml` hard-blocked -- the same primitive on the same
+        # file, under a rule whose own message says "never write into it".
+        # `tee -a` was already caught, so the two spellings of one append
+        # disagreed with each other.
+        #
+        # Truncate-only is correct for the GAME/PROFILE advisory below, whose
+        # stated reason is that an append cannot truncate. It is not this tree's
+        # policy: reference/ is read-only source of truth, and writes_documents
+        # beside it already uses the WIDER writes_any -- so the less valuable
+        # tree had the wider channel and the hard-blocked one the narrower.
+        "writes_reference": hit(copy_t + [(pp, uu, rr) for _m, pp, uu, rr in redir_t]
+                                + sed_t + out_t, "reference"),
         "rm_in_x4_dir": any(hit(rm_t + mv_src, k, conservative=True) for k in
                             ("game", "profile", "mods", "toolkit")) or rm_named_game,
         "rm_saves": hit(rm_t + mv_src, "saves", conservative=True),
@@ -2790,10 +2808,24 @@ def facts(payload: dict, roots: dict) -> dict:
         # `bool` is excluded deliberately: in Python True is an int.
         "timeout_over_cap": _as_ms(timeout) > 600000,
         "longjob_foreground": longjob and background is not True,
-        "xrcat_reunpack": (bool(re.search(r"xrcat", cmd, re.I))
-                           and "-out" in ncmd
-                           and bool(roots.get("reference"))
-                           and norm(roots["reference"]) in ncmd),
+        # THE LAST WHOLE-COMMAND AND-OF-INDEPENDENT-PREDICATES RULE IN THIS FILE,
+        # and it hard-denied PROSE. It tested `cmd`/`ncmd` -- the RAW text rather
+        # than `body` -- so a comment or a quoted string naming the tool, the
+        # output flag and the reference path was a NON-OVERRIDABLE DENY on a
+        # command that unpacks nothing. It fired on me while I was testing it:
+        # the probe listing the cases was itself refused.
+        #
+        # This is the shape the 2026-09-01 rewrite removed everywhere else in
+        # this file ("Each ANDed two independent predicates over the WHOLE
+        # command text"); it is the one the sweep missed. Scoped now to a SEGMENT
+        # whose VERB is the tool and whose OWN operands name the reference root.
+        "xrcat_reunpack": any(
+            "xrcat" in _verb_name(verb(sg)).lower()
+            and any(tk.startswith("-out") for tk in tokens_of(sg))
+            and bool(roots.get("reference"))
+            and any(is_root(resolve(o_, assigns), roots["reference"])
+                    for o_ in _operands(sg))
+            for sg, _c in seg_cwd),
         "cwd": cwd,
     }
 

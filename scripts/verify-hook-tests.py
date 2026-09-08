@@ -402,7 +402,7 @@ MUTANTS = [
      '"dollarq_after_pipe": dollarq_after_pipe(cmd),',
      "test_a_comment_mentioning_the_trap_is_not_a_hit"),
     ("a WRITE into reference/ is a rule at all",
-     '"writes_reference": hit(copy_t + trunc_redirect + sed_t + out_t, "reference"),',
+     '"writes_reference": hit(copy_t + [(pp, uu, rr) for _m, pp, uu, rr in redir_t]\n                                + sed_t + out_t, "reference"),',
      '"writes_reference": False,',
      "test_a_truncating_redirect_into_reference_fires"),
     ("a verb carried in a variable is resolved before the rules see it",
