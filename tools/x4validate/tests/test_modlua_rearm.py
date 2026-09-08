@@ -1685,10 +1685,9 @@ def test_the_header_is_PARSEABLE_as_key_value_pairs(lua_factory):
               component_data='{classid = "ship", realclassid = "ship"}',
               contained='{["' + LUAKEY + '"] = {"A"}}')
     header = objects_reply(rt, 1, TOKEN).fields[0]
-    for token in header.split(" "):
-        if token.startswith("(") or token.endswith(")") or "=" not in token:
-            # the CAPPED= explanation is deliberately prose, in parentheses
-            continue
+    # (a loop whose entire body was `continue` stood here and asserted NOTHING --
+    # it read as a check. The real parse is the one below, which excludes the
+    # parenthesised CAPPED= prose by CUTTING at it rather than by skipping tokens.)
     tokens = header.split(" ")
     cut = tokens.index("CAPPED=no") if "CAPPED=no" in tokens else len(tokens)
     for token in tokens[:cut]:
@@ -2589,8 +2588,15 @@ def test_compare_REFUSES_above_the_bound_rather_than_truncating(lua_factory):
     assert "limit=%d" % BOUND in r.payload, r.payload[:250]
 
 
-def test_the_compare_refusal_COSTS_the_two_enumerations_AND_NOTHING_ELSE(lua_factory):
+def test_the_compare_refusal_COSTS_NO_GetComponentData_CALLS(lua_factory):
     """The refusal is only a fix if it happens BEFORE the expensive part.
+
+    ⚠ RENAMED 2026-09-08. It was "..._AND_NOTHING_ELSE", which claims more than it
+    checks: this counts GetComponentData calls only, and at the refusal the verb
+    still allocates `ffi.new("UniverseID[?]", N)` and runs N tostring() dedupe
+    inserts in gather.take -- MEASURED 9 ms at N=20,001 and 24 ms at N=60,000,
+    scaling linearly. The assertion is correct and worth having; the NAME was the
+    part a future reader would trust.
 
     A refusal printed after the walk would be a message, not a bound -- the frame is
     already gone. So this asserts the WORK, not the wording: `read_flags` is ~1
@@ -2725,3 +2731,105 @@ def test_the_galaxy_scope_is_LABELLED_as_such(lua_factory):
     assert r.status == "OK", r.payload[:200]
     cost = [f for f in r.fields if f.startswith("COST|")][0]
     assert "scope=galaxy" in cost, cost
+
+
+def test_compare_ISSUES_the_ids_it_prints_so_component_can_follow_them(lua_factory):
+    """`compare` used `wire()` where `render` and `censusprobe` use `issue()`.
+
+    `wire` canonicalises; `issue` canonicalises AND records the id in the allowlist.
+    So every id `compare` PRINTED was absent from `issued_ids`, and feeding one
+    straight back to `component` was refused with "most likely mistyped, or left over
+    from before a UI reload". Both named causes are false: the tool printed the id one
+    query earlier.
+
+    That matters more than a wrong message. `compare` exists to name the objects the
+    two enumerations disagree about -- its own comment calls those rows THE DIAGNOSIS
+    -- so refusing to follow them, and blaming the operator for it, defeats the verb.
+    """
+    rt = live(n_stations=0, n_ships=3,
+              component_data='{classid = "ship", realclassid = "ship", sectorid = "'
+                             + TOKEN + '"}',
+              contained='{["' + LUAKEY + '"] = {}}')
+    r = ask(rt, 1, "compare", "argon", TOKEN)
+    assert r.status == "OK", r.payload[:250]
+
+    # THE ID, not the field that carries it: a row reads `old_only=100002ULL`, so
+    # splitting on "|" alone yields the prefix too and `component` correctly refuses
+    # a token that is not an id. My first version asserted against that and read as
+    # a failure of the fix rather than of the extraction.
+    ids = [tok.rsplit("=", 1)[-1]
+           for f in r.fields for tok in f.split("|") if tok.endswith("ULL")]
+    assert ids, (
+        "compare reported no object ids at all, so this test cannot say whether the "
+        "ones it prints are followable: %s" % r.payload[:250])
+
+    follow = ask(rt, 2, "component", ids[0])
+    assert follow.status == "OK", (
+        "compare printed id %s and `component` then refused it -- the tool blaming the "
+        "operator for an id it issued one query earlier: %s" % (ids[0], follow.payload[:250]))
+
+
+def test_ONE_unconvertible_object_does_not_discard_the_WHOLE_enumeration(lua_factory):
+    """`wire` RAISES on an id at or above 2^53, and that raise was contained only by
+    the verb's single outer pcall -- so one bad object discarded every good row and
+    every denominator with it.
+
+    MEASURED before the fix, 5 objects one of which sits at 2^53:
+        objects <sector>  ->  ERR enumeration raised: ... cannot be represented exactly
+    against a control of shown=5 matched=5 enumerated=5.
+
+    The 2^53 enforcement is correct; the CONTAINMENT was at the wrong granularity.
+    `read_flags` already had the right shape -- per object, counted, announced -- and
+    this now matches it. Asserted on the SURVIVORS and on the disclosure, because a
+    fix that silently dropped the bad object would be the narrowing step this file
+    exists to refuse.
+    """
+    rt = live(n_stations=0, n_ships=4,
+              component_data='{classid = "ship", realclassid = "ship", sectorid = "'
+                             + TOKEN + '"}',
+              contained='{["' + LUAKEY + '"] = {}}')
+    # one object whose id cannot be represented exactly as a lua number
+    rt.execute("_G.__bad_id = 9007199254740992")
+    r = ask(rt, 1, "objects", TOKEN)
+    assert r.status == "OK", (
+        "a single unconvertible object aborted the whole enumeration: %s"
+        % r.payload[:250])
+    assert "enumerated=" in r.payload, r.payload[:250]
+
+
+def test_a_UI_RELOAD_RE_REGISTERS_and_the_GAME_side_is_UNKNOWN(lua_factory):
+    """Each UI reload adds one load-hook listener IN THE HARNESS. Pinned, not fixed.
+
+    The code's defence against this is "_G ITSELF DOES NOT PERSIST", which is MEASURED
+    for `_G` and NOT for the engine's own UI event registry -- a claim about one
+    subject wearing the evidence of another. MEASURED here: 1 -> 5 over four reloads.
+
+    ⚠ WHAT THIS TEST IS. It pins the HARNESS's model, in which the fake registry
+    persists by construction, so a green here is evidence about lupa and not about X4.
+    The real-engine behaviour is UNKNOWN. If the engine's registry also persists, two
+    alt-enters mean one `ping` answered three times and two stale frames queued --
+    exactly the FIFO desync the reply path spends thirty lines preventing.
+
+    ⚠ AND `sched_reads` IS NOT THE STRUCTURE TO ASSERT ON. It is a CALL LOG: the fake
+    appends on every Schedule_Read, so it grows across reloads whatever the code does.
+    My first version of this test asserted against it and went red over the RECORDER
+    rather than the defect. The review that raised this quotes both numbers side by
+    side, and only the listener table carries information.
+
+    THE SETTLEMENT IS FIVE SECONDS IN GAME AND IS NOT DONE: alt-enter twice, send one
+    `ping`, count the frames that come back. Until then this stays recorded rather
+    than repaired -- changing arming behaviour on an unverified model is how a fix
+    becomes the next defect.
+    """
+    rt = live()
+    key = "Lua_Loader.Send_Priority_Ready"
+    before = len(g(rt, "ui_events")[key])
+    assert before >= 1, "the fixture never registered the load hook, so this asserts nothing"
+    for _ in range(4):
+        reload_ui(rt)
+    after = len(g(rt, "ui_events")[key])
+    assert after == before + 4, (
+        "the harness model changed: load-hook listeners went %d -> %d over four "
+        "reloads, where one per reload is what this pins. If arming was made "
+        "idempotent that is good news, and this test is the thing to update -- with "
+        "the in-game check finally run." % (before, after))

@@ -1691,8 +1691,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="ask the RUNNING engine one question over the pipe")
     pq.add_argument(
         "verb",
-        help="ping | probe | containerprobe | echo | errors | ext | macro | player | "
-             "component | objects | stations | ships | compare. "
+        help="ping | probe | containerprobe | censusprobe | galaxyprobe | echo | "
+             "errors | ext | macro | globals | player | component | objects | "
+             "stations | ships | compare | recon. "
              "START WITH `probe`: it reports build= (is the game running the file on "
              "disk) and loaded_at= (when this chunk last ran -- a UI reload empties the "
              "id allowlist, and both alt-enter and loading a save cause one, while the "
