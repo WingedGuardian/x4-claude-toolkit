@@ -354,6 +354,36 @@ echo
 # reported "n: command not found" and the suite still said "33 passed, 0 failed".
 # So the total is asserted against a number that must be updated deliberately.
 # Anything that appeared in the caller's directory during the run is a leak. An empty
+
+# --- an UNRESOLVABLE VERB reaches no rule at all -----------------------------------
+#
+# MEASURED 2026-09-08 against the live hook, before the fix:
+#     rm -rf "<game>"           deny
+#     $(echo rm) -rf "<game>"   ALLOW    <- past all three hard blocks
+#     `echo rm` -rf "<game>"    ALLOW
+#
+# An unknown OPERAND still reaches the conservative branch; an unknown VERB reaches
+# nothing, which is why this is worse than the variable spelling resolve_verb was
+# written for. The guard fuzzer could not find it: its VERB axis has four mutators and
+# every one is a SPELLING of a literal name -- none is a SUBSTITUTION. A bug history
+# is not a grammar (CLAUDE.md #36).
+#
+# PRICED before shipping, over every Bash command in 110 real session transcripts:
+# 0 of 28,963 carry a substituted verb, so this denies nothing anyone has ever run.
+decide deny protect-bash.sh "$(cj "\$(echo rm) -rf \"$GAME\"")" \
+  "a command-substitution VERB is refused, not silently unmatched"
+decide deny protect-bash.sh "$(cj "\`echo rm\` -rf \"$GAME\"")" \
+  "the backtick spelling of the same bypass is refused too"
+
+# THE MUST-NOT-FIRE SIDE, and it is the whole reason this is keyed on the VERB rather
+# than on `$(` appearing anywhere: substitution in an ARGUMENT is ordinary work.
+decide allow protect-bash.sh "$(cj 'ls -la $(pwd)')" \
+  "substitution in an ARGUMENT is untouched"
+decide allow protect-bash.sh "$(cj 'echo $(date)')" \
+  "a substituted argument to a harmless verb is untouched"
+decide allow protect-bash.sh "$(cj 'cd $(git rev-parse --show-toplevel) && ls')" \
+  "a substituted argument in a cd is untouched"
+
 # directory is invisible to `git status`, which is how a stray `n/` accumulated.
 _CWD_AFTER="$(ls -A 2>/dev/null | sort)"
 _NEW="$(comm -13 <(printf "%s" "$_CWD_BEFORE") <(printf "%s" "$_CWD_AFTER") | tr "
@@ -364,7 +394,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=155
+EXPECT=160
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -667,13 +697,36 @@ decide deny   protect-bash.sh "$(cj "rm -rf '$GAME'")"   "a hard block still win
 # still 10,000 on 2.1.263), so re-deriving it is a named step on a CC bump, not a
 # guess. Re-derive with the probe shape above and a small-size control arm.
 _cap_ctx(){ printf '%s' "$1" | "${JQ:-jq}" -r '.hookSpecificOutput.additionalContext'; }
+# THE CONSTANT, NOT A COPY OF ITS VALUE. Six assertions below hardcoded 10000
+# while _x4-env.sh says of that number: "This is the ONLY place the number is
+# written down; a second copy would drift, and a wrong constant here fails
+# silently in the safe-looking direction."
+#
+# The failure direction is the unsafe one: if a CC bump LOWERS the real cap and
+# X4_HOOK_MAX_CHARS is re-derived per the documented procedure, every bounded
+# payload comes out ABOVE the new cap and is silently filed -- while all six
+# assertions still pass at <= 10000, green over the exact failure the feature
+# exists to prevent.
+#
+# Derived in ONE subshell rather than by sourcing _x4-env.sh here: every probe
+# in this file sources it inside `( ... )`, so the variable never reaches this
+# scope -- the first version of this fix used it bare and died on `unbound
+# variable`, which is the difference between reading that it is in scope and
+# checking.
+CAP="$( ( HOOK_DIR="$HOOKS"; . "$HOOKS/_x4-env.sh"; printf %s "$X4_HOOK_MAX_CHARS" ) )"
+# REFUSE rather than compare against an empty string: `[ N -le "" ]` is a syntax
+# error in some shells and a silent pass in others, and either way six probes
+# would stop asserting what they claim to.
+case "$CAP" in ""|*[!0-9]*) printf 'FATAL: could not derive X4_HOOK_MAX_CHARS (%s); the six cap probes below would assert nothing.
+' "$CAP" >&2; exit 2 ;; esac
+
 _cap_env(){ ( HOOK_DIR="$HOOKS"; . "$HOOKS/_x4-env.sh"; x4_advise "$1" PreToolUse ); }
 
 _long="$(printf 'y%.0s' $(seq 1 25000))"
 _short="a short advisory"
 
 _got="$(_cap_ctx "$(_cap_env "$_long")")"
-if [ "${#_got}" -le 10000 ]; then
+if [ "${#_got}" -le "$CAP" ]; then
   ok "a 25,000-char advisory is bounded to the cap (got ${#_got})"
 else
   no "a 25,000-char advisory came back at ${#_got} chars -- above the cap, so CC files it and the model sees a preview"
@@ -696,7 +749,7 @@ fi
 # exactly when the fallback is doing the work.
 _gotp="$( ( HOOK_DIR="$HOOKS"; . "$HOOKS/_x4-env.sh"; JQ=no_such_jq_binary x4_advise "$_long" PreToolUse ) \
           | "${JQ:-jq}" -r '.hookSpecificOutput.additionalContext' )"
-if [ "${#_gotp}" -le 10000 ]; then
+if [ "${#_gotp}" -le "$CAP" ]; then
   ok "the PYTHON renderer bounds too (got ${#_gotp})"
 else
   no "with jq unavailable the advisory came back at ${#_gotp} chars -- the fallback does not bound"
@@ -730,7 +783,7 @@ case "$_sc_out" in
   *) no "session-canary does not say which x4canary it ran -- two copies exist and the divergence is invisible" ;;
 esac
 
-if [ "${#_sc_out}" -le 10000 ]; then
+if [ "${#_sc_out}" -le "$CAP" ]; then
   ok "a huge canary report is bounded by the hook (${#_sc_out} chars)"
 else
   no "the canary report reached ${#_sc_out} chars -- above the cap, so CC files the DATA LOSS warning and the session sees a preview"
@@ -753,7 +806,7 @@ _stub="$TMP/pystub"; mkdir -p "$_stub"
 printf '%s\n' '#!/bin/bash' 'exit 9' > "$_stub/python"; chmod +x "$_stub/python"
 _big="$(printf 'z%.0s' $(seq 1 25000))"
 _got="$( ( HOOK_DIR="$HOOKS"; . "$HOOKS/_x4-env.sh"; X4_PYTHON="$_stub/python" x4_bound "$_big" ) )"
-if [ "${#_got}" -le 10000 ]; then
+if [ "${#_got}" -le "$CAP" ]; then
   ok "a python that resolves but FAILS still bounds (${#_got} chars)"
 else
   no "with a failing python the cap is ABSENT: ${#_got} chars passed through unbounded"
@@ -789,7 +842,7 @@ _vr="$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(printf 'rm -
        | bash "$HOOKS/protect-bash.sh" 2>/dev/null | jq -r '.hookSpecificOutput.permissionDecisionReason // ""')"
 if [ "${#_vr}" -lt 200 ]; then
   no "the verdict probe produced only ${#_vr} chars -- it did not reach a command-interpolating rule, so this proves nothing"
-elif [ "${#_vr}" -le 10000 ]; then
+elif [ "${#_vr}" -le "$CAP" ]; then
   ok "a verdict reason is bounded too (${#_vr} chars)"
 else
   no "a verdict reason came back at ${#_vr} chars -- emit() never routes through x4_bound"
@@ -825,7 +878,7 @@ fi
 rm -f "$_sp/SPAWNED"
 _big2="$(printf 'k%.0s' $(seq 1 25000))"
 _big_out="$( ( HOOK_DIR="$HOOKS"; . "$HOOKS/_x4-env.sh"; x4_bound "$_big2" ) )"
-if [ "${#_big_out}" -le 10000 ]; then
+if [ "${#_big_out}" -le "$CAP" ]; then
   ok "an over-cap payload is still bounded (${#_big_out} chars)"
 else
   no "the short-circuit let an over-cap payload through: ${#_big_out} chars"

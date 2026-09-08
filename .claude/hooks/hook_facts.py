@@ -2429,6 +2429,39 @@ def facts(payload: dict, roots: dict) -> dict:
     # otherwise reaches no verb-keyed rule at all, hard blocks included.
     seg_cwd = [(resolve_verb(s, assigns), c)
                for c in all_cmds for s, c in cwd_track(c)]
+    # A SUBSTITUTED COMMAND NAME REACHES NO RULE AT ALL. An unknown OPERAND still
+    # reaches the conservative branch; an unknown VERB reaches nothing, so it takes
+    # all three hard blocks with it. MEASURED 2026-09-08 against the live hook:
+    #     rm -rf "<game>"           deny
+    #     $(echo rm) -rf "<game>"   ALLOW   <- total bypass
+    #     `echo rm` -rf "<game>"    ALLOW
+    #
+    # SCOPED TO SUBSTITUTION IN THE VERB POSITION, AND TO A ROOTED OPERAND IN THE
+    # SAME SEGMENT. Both narrowings were forced by measurement, not taste, over
+    # 28,989 real Bash commands from 110 session transcripts:
+    #
+    #   any unresolved verb token          679 hits (2.3%)  -- mostly $JQ / $UV / $f,
+    #                                      where the variable holds a PATH so
+    #                                      resolve_verb correctly leaves it alone
+    #   substituted verb, any target       834 hits (2.9%)
+    #   substituted verb + rooted operand    4 hits (0.014%)   <- this rule
+    #
+    # I predicted "under 20" for the first of those and was wrong by 34x, which is
+    # the whole argument for pricing a guard change before shipping it (CLAUDE.md
+    # #36). The root test is on THIS SEGMENT'S OWN OPERANDS, never on a root
+    # appearing anywhere in the command -- that conjunction over the whole string is
+    # the shape four false positives came from in one day.
+    def _subst_verb_at_root(seg):
+        t = _verb_token(seg)
+        if not t or not (t.startswith("$(") or t.startswith("`")):
+            return False
+        for o in _operands(seg):
+            r = resolve(o, assigns)
+            if any(v and is_root(r, v) for v in roots.values()):
+                return True
+        return False
+
+    verb_unresolved = any(_subst_verb_at_root(s) for s, _ in seg_cwd)
     segs = [s for s, _ in seg_cwd]
     cwd = seg_cwd[-1][1] if seg_cwd else ""
 
@@ -2555,10 +2588,16 @@ def facts(payload: dict, roots: dict) -> dict:
     # needed.
     rm_named_game = any(GAME_ROOTISH.search(norm(p or raw)) for p, _u, raw in rm_t)
 
+    # OVER THE RESOLVED SEGMENTS. This re-derived its own walk from all_cmds and
+    # never saw a verb resolve_verb had spliced, so the two search DENIES were
+    # blind to the variable spelling the resolver exists for. MEASURED:
+    #     rm  -> `RM=rm;  $RM -rf <ref>`   rm_targets_reference        True
+    #     grep-> `GP=grep; $GP -rn x <ref>` search_rooted_reference    FALSE
+    # Two independent paths answering one question, which is the shape this
+    # file's own narrowing table exists to refuse.
     search_roots = []
-    for c in all_cmds:
-        for s, c_cwd in cwd_track(c):
-            for p in search_paths(s):
+    for s, c_cwd in seg_cwd:
+        for p in search_paths(s):
                 r = resolve(p, assigns)
                 search_roots.append(c_cwd if r in (".", "./") else r)
 
@@ -2598,6 +2637,7 @@ def facts(payload: dict, roots: dict) -> dict:
         # data and reports success. Unreachable by ordinary work: MEASURED over
         # 13,503 real commands, the largest walk produced 25 of the 250 allowed.
         "carriers_truncated": carriers_truncated,
+        "verb_unresolved": verb_unresolved,
 
         # A `mv` SOURCE that is a protected root is a delete of that root: the
         # install is equally gone whether it was removed or moved away. Sources
@@ -2705,7 +2745,10 @@ def facts(payload: dict, roots: dict) -> dict:
             # rule finally had a seed: 21 bypasses, every one a wrapper, a carrier or
             # a stdin form the carrier walk ALREADY resolves. `bash -c` alone was
             # enough to overwrite KNOWLEDGEBASE.md unseen.
-            for c in all_cmds for sg in segments(c)),
+            # RESOLVED SEGMENTS, for the same reason as search_roots above: this
+            # walked segments(c) raw, so `PY=python; $PY -c "open(...,'w')"`
+            # reached no rule while the plain spelling denied.
+            for sg, _c in seg_cwd),
 
         "search_rooted_reference": rooted(roots.get("reference")),
         # `mods` was here and is deliberately NOT, from 2026-09-04. The rule's own
