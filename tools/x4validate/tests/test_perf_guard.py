@@ -175,14 +175,52 @@ def test_a_BASELINED_mod_that_now_CRASHES_is_a_regression(tmp_path, monkeypatch)
     assert rc == 1, "a mod that went from timing to raising must fail the gate"
 
 
+def _pin_extensions(monkeypatch, root, present=()):
+    """Pin the extensions root, because `gone` vs `still installed` is a claim about
+    DISK and a test that asserts it must own the disk it is asserting about.
+
+    Without this the test read whatever `_env.extensions()` happened to resolve to.
+    In the dev tree that is the real install and the assertion passed; under
+    `scripts/verify-cold.sh` nothing resolves, `perf_guard` correctly declines to
+    claim anything about disk, and the test failed against a gate that was right.
+    An environment the test does not control is an axis it cannot assert on (#37).
+    """
+    import perf_guard
+    root.mkdir(parents=True, exist_ok=True)
+    for name in present:
+        (root / name).mkdir(exist_ok=True)
+    monkeypatch.setattr(perf_guard._env, "extensions", lambda: root)
+    return root
+
+
 def test_a_CRASH_is_distinguished_from_a_mod_that_is_simply_GONE(tmp_path,
                                                                  monkeypatch, capsys):
     """The two causes shared one bucket. Modlist drift is ordinary and benign --
     rule 5 of the concurrency section exists because the corpus moves under a
     measurement -- so it must stay a note, not become a failure."""
+    _pin_extensions(monkeypatch, tmp_path / "ext")          # modGone is NOT on disk
     rc = _run_main(tmp_path, monkeypatch, {"modA": 1.0, "modGone": 2.0}, {"modA": 1.0})
     assert rc == 0, "an uninstalled mod is drift, not a regression"
-    assert "no longer installed" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "no longer installed" in out, out
+
+
+def test_a_baselined_mod_STILL_ON_DISK_is_not_reported_as_uninstalled(
+        tmp_path, monkeypatch, capsys):
+    """The twin, and the reason the assertion above means anything.
+
+    Same inputs, one bit different: the mod folder EXISTS. `perf_guard` must then say
+    NOT MEASURED rather than "no longer installed" -- the distinction the PRE-ARC
+    wording lost, and the one `--limit=N` makes routine. Without this twin the test
+    above passes for any implementation that prints the uninstalled note
+    unconditionally, which is exactly what the code used to do.
+    """
+    _pin_extensions(monkeypatch, tmp_path / "ext", present=["modGone"])
+    rc = _run_main(tmp_path, monkeypatch, {"modA": 1.0, "modGone": 2.0}, {"modA": 1.0})
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "still installed" in out, out
+    assert "no longer installed" not in out, out
 
 
 def test_a_crash_in_a_mod_the_baseline_never_covered_is_DEGRADED(tmp_path, monkeypatch):
