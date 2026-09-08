@@ -169,6 +169,16 @@ def confirm_regressions(bad, retime_fn):
 def main() -> int:
     if RECORD:
         data, crashed = measure()
+        # A BASELINE OVER ZERO MODS IS NOT A BASELINE. Writing it "succeeds" at
+        # rc 0 and then poisons every later run: `set(base) & set(curr)` is empty
+        # forever, so the comparison prints "No per-mod regression beyond
+        # tolerance." having compared nothing. Refuse where the cause is visible.
+        if not data:
+            print("REFUSING to record an EMPTY baseline: 0 mods were timed, so "
+                  "this file would make every later comparison pass over an "
+                  "empty intersection. Check that mods are installed and "
+                  "readable, then re-run.", file=sys.stderr)
+            return 2
         BASELINE.write_text(json.dumps(data, indent=1), encoding="utf-8")
         print(f"recorded {len(data)} mod timings -> {BASELINE.name} "
               f"(local only; not committed)")
@@ -192,6 +202,19 @@ def main() -> int:
     base = json.loads(BASELINE.read_text(encoding="utf-8"))
     curr, crashed = measure()
     shared = sorted(set(base) & set(curr))
+
+    # THE FLOOR, ASSERTED BEFORE ANY VERDICT. With an empty intersection there are
+    # no rows, so nothing lands in `bad`, `regressed_to_crash` or `new_crash`, and
+    # this fell through to "No per-mod regression beyond tolerance." at rc 0 -- a
+    # clean pass over ZERO comparisons. Reachable whenever the baseline was
+    # recorded against a different modlist, or `measure()` returned nothing.
+    if not shared:
+        msg = ("REFUSING A VERDICT: the baseline holds %d mod(s) and this run "
+               "timed %d, and they have NOTHING in common. There is no "
+               "comparison to make, which is not the same as no regression."
+               % (len(base), len(curr)))
+        print(msg, file=sys.stderr)
+        return 2
 
     rows = []
     for mod in shared:
