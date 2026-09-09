@@ -1,6 +1,6 @@
 # Changelog
 
-## v3.1.1 — unreleased
+## v3.1.1 — 2026-09-09
 
 **CI was RED on the v3.1.0 tag, on both legs, and the release went out anyway.** One
 step failed — `scripts/fuzz-guard.py`, the differential fuzzer the v3.1.0 notes name
