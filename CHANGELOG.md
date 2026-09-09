@@ -1,6 +1,6 @@
 # Changelog
 
-## v3.1.0 — 2026-09-07
+## v3.1.0 — 2026-09-09
 
 **Upgrading DELETED your `.claude/backups/` -- every pre-edit backup, the audit
 trail, and every known-good snapshot -- silently, rc 0.** On the machine where it
