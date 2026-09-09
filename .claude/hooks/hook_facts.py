@@ -2458,7 +2458,16 @@ def facts(payload: dict, roots: dict) -> dict:
     # the shape four false positives came from in one day.
     def _subst_verb_at_root(seg):
         t = _verb_token(seg)
-        if not t or not (t.startswith("$(") or t.startswith("`")):
+        # `_SUBST.search`, NOT startswith. MEASURED 2026-09-09, by the seed this rule
+        # shipped without: `/usr/bin/$(which rm) -rf <game>` was a DENY -> ALLOW. A
+        # substitution EMBEDDED in the command name makes it exactly as unknowable as
+        # one that opens it, and `_SUBST` -- the module's own answer to "is this
+        # unresolvable?", already used by has_unresolved -- was sitting three
+        # definitions away while this hand-rolled a narrower one. Two independent
+        # paths answering one question, the same shape as the verb-resolver defects
+        # above. The narrow conjunct is untouched: a ROOT operand in this segment is
+        # still required, which is what priced this rule at 4 hits in 28,989.
+        if not t or not _SUBST.search(t):
             return False
         for o in _operands(seg):
             r = resolve(o, assigns)

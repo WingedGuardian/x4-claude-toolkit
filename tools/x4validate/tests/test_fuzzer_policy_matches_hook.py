@@ -61,3 +61,49 @@ def test_the_map_refuses_rather_than_degrades(tmp_path, monkeypatch):
     (tmp_path / "protect-bash.sh").write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
     monkeypatch.setattr(m, "HOOKS", tmp_path)
     assert len(m.policy_map(names)) < m.MIN_MAPPED_RULES
+
+
+def test_every_control_anchor_still_plants():
+    """The fuzzer's control re-creates the pre-fix scanner, and it REFUSES (rc 2) if
+    any anchor has moved -- correctly, because a control that plants three of four
+    holes is not a control. But nothing asserted it at commit time, so an ordinary
+    refactor could orphan an anchor and the only thing that noticed was CI.
+
+    MEASURED 2026-09-09: it noticed on the v3.1.0 TAG. `durable_python_open_w`'s
+    iteration moved onto resolved segments, the anchor went to 0 occurrences, and
+    `fuzz-guard.py` exited 2 on BOTH CI legs of the released commit -- a tool the
+    release notes name as evidence users can run themselves. That was the THIRD
+    anchor to die this way. This test is the check that was missing: it costs
+    milliseconds and it fails in the same commit that moves the code.
+    """
+    m = _fz()
+    src = (m.HOOKS / "hook_facts.py").read_text(encoding="utf-8")
+    holed = m.plant_known_hole(src)
+    assert holed is not None, (
+        "at least one control anchor in fuzz-guard.py:_HOLES no longer matches "
+        "hook_facts.py exactly once -- run `python scripts/fuzz-guard.py` to see which"
+    )
+    assert holed != src, "the control planted nothing at all"
+    for label, scope, old, new in m._HOLES:
+        assert new in holed, "hole %r did not land" % (label,)
+
+
+def test_every_reachable_policy_rule_is_exercised_by_a_seed():
+    """The run refuses below this floor too -- but only in CI, minutes in, and only
+    if someone reads the leg. MEASURED 2026-09-09 at the v3.1.0 tag: `verb_unresolved`
+    shipped with NO seed. That is the rule added to close a total bypass of all three
+    hard blocks, so the one rule written to fix a walkable guard was the one rule no
+    mutant ever exercised. Adding its seed found a real DENY -> ALLOW within seconds.
+    """
+    m = _fz()
+    policy = m.policy_map(_names(m))
+    covered = m.seed_coverage(m.load_facts(m.HOOKS / "hook_facts.py"),
+                              m.SYNTHETIC_ROOTS, policy)
+    gap = sorted(set(policy) - m.STRUCTURAL - set(covered))
+    assert not gap, (
+        "%d policy rule(s) a seed could reach have none, so a green fuzz run says "
+        "nothing about them: %s" % (len(gap), ", ".join(gap)))
+    stale = sorted(m.STRUCTURAL - set(policy))
+    assert not stale, (
+        "STRUCTURAL exempts %s, which protect-bash.sh no longer maps -- an exemption "
+        "for a rule that does not exist silently lowers the floor" % ", ".join(stale))

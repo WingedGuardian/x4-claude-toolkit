@@ -1,5 +1,68 @@
 # Changelog
 
+## v3.1.1 — unreleased
+
+**CI was RED on the v3.1.0 tag, on both legs, and the release went out anyway.** One
+step failed — `scripts/fuzz-guard.py`, the differential fuzzer the v3.1.0 notes name
+to users as evidence they can run themselves. It exited **2 for everyone**. The local
+sweep that gated the release ran 28 gates, 1,716 tests and 160 hook probes, and none
+of them is what CI runs; nobody read the run for the released SHA. A local green is
+not CI's green.
+
+The fuzzer was right to refuse, and each refusal unmasked the next defect behind it.
+
+### Fixed — the fuzzer's control anchor died in an ordinary refactor, for the third time
+
+`plant_known_hole()` re-creates the pre-fix scanner so the run can prove it is capable
+of failing, and it REFUSES if any anchor has moved — correctly, because a control that
+plants three of four holes is not a control. v3.1.0's own change moved
+`durable_python_open_w` onto resolved segments, the whole-file anchor
+`for c in all_cmds for sg in segments(c)),` went to **0 occurrences**, and the tool
+stopped running.
+
+That is the THIRD anchor to die this way — `unparseable_command` (09-02), the longjob
+`stripped` locals (09-06), this one (09-09) — so the shape belongs to the anchor, not
+to the refactor. A whole-file anchor has to be long enough to be unique, so it ends up
+carrying neighbouring COMMENT text and dies whenever a comment is rewritten. Anchors
+are now **scoped to the rule they are about** (`(label, scope, old, new)`), needing only
+to be unique inside it. `STRUCTURAL` moves to module level so the suite asserts the
+floor against the same exemption set the run uses.
+
+**The check that was missing is the point.** Both refusals were reachable in
+milliseconds and nothing asserted them at commit time, which is why the only thing that
+noticed was a CI leg nobody read. Two tests now do, in
+`tests/test_fuzzer_policy_matches_hook.py`, each proven red against the exact v3.1.0
+state.
+
+### Fixed — `verb_unresolved` shipped with no seed, and adding one found a live bypass
+
+The rule added in v3.1.0 to close a total bypass of all three hard blocks was the one
+rule no mutant ever exercised. v3.1.0's own seed-coverage floor said so by REFUSING —
+but only behind the anchor failure above, so nothing ever printed it.
+
+With a seed, the fuzzer found a real hole in seconds:
+
+| command | before | after |
+|---|---|---|
+| `$(echo rm) -rf <game>` | deny | deny |
+| `/usr/bin/$(which rm) -rf <game>` | **ALLOW** | deny |
+
+`_subst_verb_at_root` tested `t.startswith("$(")`, so a substitution **embedded** in the
+command name escaped it, and an absolute path in front was enough. A substitution
+anywhere in the name makes the command exactly as unknowable as one that opens it —
+which is what `_SUBST`, this module's own predicate and already the body of
+`has_unresolved`, has always said. Two independent paths answering one question, three
+definitions apart: the same shape as the verb-resolver defects v3.1.0 fixed.
+
+The narrow conjunct is untouched — a ROOT operand in the same segment is still
+required, which is what priced this rule at 4 hits in 28,989 real commands — so the
+widening is confined to segments that already carry a rooted operand. Named tests
+cover both halves, the firing and the must-not-fire twin.
+
+Fuzzer after: **rc 0**, 2,675 mutants, 25 seeds x 107 mutators, control planted and
+rediscovering 126 bypasses, coverage **22 of 24** rules with the two unreachable ones
+named. Before: rc 2, nothing exercised.
+
 ## v3.1.0 — 2026-09-09
 
 **Upgrading DELETED your `.claude/backups/` -- every pre-edit backup, the audit

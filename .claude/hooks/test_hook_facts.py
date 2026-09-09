@@ -1883,6 +1883,24 @@ class WritesReference(unittest.TestCase):
         self.assertFalse(F('ls -la $(pwd)')["verb_unresolved"])
         self.assertFalse(F('echo $(date)')["verb_unresolved"])
 
+    def test_a_substituted_verb_EMBEDDED_in_a_path_fires(self):
+        """The rule tested `startswith("$(")`, so a substitution embedded in the
+        command NAME escaped it. MEASURED 2026-09-09 by the seed this rule shipped
+        WITHOUT: `/usr/bin/$(which rm) -rf <game>` was DENY -> ALLOW, found by the
+        fuzzer's own absolute-path mutator within seconds of the seed existing.
+        A substitution anywhere in the name makes the command exactly as unknowable
+        as one that opens it, which is what `_SUBST` -- the module's own predicate,
+        already behind has_unresolved -- has always said."""
+        self.assertTrue(F('/usr/bin/$(which rm) -rf "' + GAME + '"')["verb_unresolved"])
+        self.assertTrue(F('./$(echo rm) -rf "' + GAME + '"')["verb_unresolved"])
+        self.assertTrue(F('/usr/bin/`which rm` -rf "' + GAME + '"')["verb_unresolved"])
+
+    def test_an_embedded_substitution_still_needs_a_rooted_operand(self):
+        """The must-NOT-fire twin for the widening above: only the VERB test moved,
+        and the conjunct that priced this rule at 4 hits in 28,989 is untouched."""
+        self.assertFalse(F('/usr/bin/$(which rm) -rf /tmp/scratch')["verb_unresolved"])
+        self.assertFalse(F('/usr/bin/env ls -la "' + GAME + '"')["verb_unresolved"])
+
     def test_a_substituted_verb_AWAY_from_every_root_does_not_fire(self):
         """Scoped to the segment's own rooted operands, never to a root appearing
         anywhere in the command."""

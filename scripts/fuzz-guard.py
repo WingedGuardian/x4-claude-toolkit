@@ -898,6 +898,15 @@ def seeds(roots):
         ("git clean wipes an x4 dir", "git -C " + QU + g + QU + " clean -fdx"),
         ("recursive search at the workspace", "grep -rn foo " + QU + tk + QU),
         ("xrcat re-unpack", "XRCatTool.exe -in 01.cat -out " + QU + ref + QU),
+        # 2026-09-09: `verb_unresolved` shipped in v3.1.0 with NO seed. It is the rule
+        # that catches a command whose NAME arrives through substitution -- the defect
+        # that walked past all three hard blocks -- so the one rule added to close a
+        # total bypass was the one rule no mutant ever exercised. The coverage floor
+        # this same release added is what said so, by REFUSING; nothing else would
+        # have. A verb that cannot be resolved plus a root operand in the same segment
+        # is the whole predicate, and the verb-keyed rules stay silent on it by
+        # construction, which is the point.
+        ("substituted verb at a root", "$(which " + d + ") -rf " + QU + g + QU),
     ]
 
 
@@ -954,7 +963,19 @@ def resolve_roots():
             "saves": env.get("X4_SAVES", "")}
 
 
-#: (label, old, new) -- each MUST apply exactly ONCE. A stale anchor silently
+#: STRUCTURALLY OUT OF REACH, and named rather than silently missing -- this fuzzer
+#: mutates command SYNTAX around a fixed operand, so it cannot construct:
+#:   * carriers_truncated -- needs >_MAX_CARRIED carried commands, a pathological
+#:     INPUT SIZE rather than a syntax variation;
+#:   * timeout_over_cap   -- a numeric FIELD of the tool payload, not syntax at all.
+#: Both are covered by unit tests in test_hook_facts.py instead. If a mutator ever
+#: gains the ability to reach one, drop it from here and the floor rises by itself.
+#: Module level, 2026-09-09, so the suite can assert the seed floor against the SAME
+#: exemption set the run uses -- a second copy in a test is a second thing to drift.
+STRUCTURAL = {"carriers_truncated", "timeout_over_cap"}
+
+#: (label, scope, old, new) -- each MUST apply exactly ONCE, and within `scope`
+#: when one is given. A stale anchor silently
 #: SHRINKS the control. The old code built every replacement and then refused only
 #: when the result equalled `src` -- i.e. when EVERY anchor had missed -- so three
 #: of four landing read as a perfectly healthy control.
@@ -963,17 +984,25 @@ def resolve_roots():
 #: `bash -n` in protect-bash.sh, which this fuzzer does not exercise. It is dropped
 #: here rather than repointed, because a control anchored on a check the fuzzer
 #: cannot see could never have failed.
+#: SCOPED anchors, 2026-09-09. This is the THIRD anchor to die in an ordinary
+#: refactor -- "unparseable_command" (09-02), the longjob `stripped` locals (09-06),
+#: and `durable_python_open_w`'s iteration, which moved onto resolved segments and
+#: FAILED CI on both legs at the v3.1.0 tag. The shape is the anchor's, not the
+#: refactor's: a whole-file anchor has to be long enough to be unique, so it ends up
+#: carrying neighbouring COMMENT text and dies whenever a comment is rewritten. A
+#: scoped anchor is keyed to the RULE it is about and need only be unique inside it.
+#: `scope` is None for a hole in a module-level helper, where there is no rule.
 _HOLES = [
-    ("no comment stripping",
+    ("no comment stripping", None,
      "    body = strip_comments(strip_heredocs(spliced))",
      "    body = cmd"),
     # The pre-fix scanner also split on a line continuation instead of splicing it, so
     # `rm -rf \<NL> "<root>"` lost its operand and every verb-keyed rule with it. The
     # control plants that back: 6 of the 12 seeds reproduce it unaided.
-    ("no continuation splicing",
+    ("no continuation splicing", None,
      "    spliced = join_continuations(cmd)",
      "    spliced = cmd"),
-    ("no escape handling",
+    ("no escape handling", None,
      "        elif c == chr(92) and i + 1 < len(s):" + NL
      + "            yield c, False" + NL
      + "            i += 1" + NL
@@ -993,10 +1022,33 @@ _HOLES = [
     # `durable_python_open_w` read `segments(body)` while the carrier list existed,
     # and that single defect produced 21 measured bypasses on 2026-09-06 -- every one
     # a wrapper, carrier or stdin form the carrier walk already resolves.
-    ("a rule reads `body` while the path rules read `all_cmds`",
-     "            for c in all_cmds for sg in segments(c)),",
+    # RE-ANCHORED AGAIN 2026-09-09, and SCOPED this time. The iteration moved from
+    # `for c in all_cmds for sg in segments(c)` onto `seg_cwd` (resolved segments), so
+    # the whole-file anchor went to 0 occurrences and this fuzzer exited 2 on both CI
+    # legs at the v3.1.0 tag. The subject is unchanged -- the hole still plants the
+    # historical `segments(body)` read -- but the anchor is now the RULE KEY plus one
+    # short line of code inside it, neither of which a comment rewrite can move.
+    ("a rule reads `body` while the carrier walk already resolved the segments",
+     '        "durable_python_open_w": any(',
+     "            for sg, _c in seg_cwd),",
      "            for sg in segments(body)),"),
 ]
+
+
+#: A fact-rule key line in `facts()`. Used to bound a scoped anchor to the one rule
+#: it is about, so the anchor never has to be unique across the whole 2,800-line file.
+_FACT_KEY = re.compile(r'^        "[a-z_]+":', re.M)
+
+
+def _rule_region(src, scope):
+    """(start, end) of the fact rule that `scope` opens: from its key line to the
+    start of the next one. None if `scope` is not unique -- a scope that matches twice
+    would silently pick whichever came first."""
+    if src.count(scope) != 1:
+        return None
+    start = src.index(scope)
+    m = _FACT_KEY.search(src, start + len(scope))
+    return start, (m.start() if m else len(src))
 
 
 def plant_known_hole(src):
@@ -1004,13 +1056,24 @@ def plant_known_hole(src):
     heredoc bodies scanned as command text. Returns None if ANY anchor has moved --
     a control that plants fewer holes than it believes is not a control."""
     holed = src
-    for label, old, new in _HOLES:
-        n = src.count(old)
+    for label, scope, old, new in _HOLES:
+        if scope is None:
+            lo, hi = 0, len(holed)
+        else:
+            region = _rule_region(holed, scope)
+            if region is None:
+                print("  control SCOPE %r for %r matches %d time(s), need exactly 1"
+                      % (scope, label, holed.count(scope)), file=sys.stderr)
+                return None
+            lo, hi = region
+        body = holed[lo:hi]
+        n = body.count(old)
         if n != 1:
-            print("  control anchor %r matches %d time(s), need exactly 1"
-                  % (label, n), file=sys.stderr)
+            print("  control anchor %r matches %d time(s)%s, need exactly 1"
+                  % (label, n, "" if scope is None else " within its rule"),
+                  file=sys.stderr)
             return None
-        holed = holed.replace(old, new, 1)
+        holed = holed[:lo] + body.replace(old, new, 1) + holed[hi:]
     return holed
 
 
@@ -1113,14 +1176,6 @@ def main():
     # specification (CLAUDE.md #36). Reporting the fraction is not enough; a number
     # nobody refuses on is a number nobody reads.
     #
-    # STRUCTURALLY OUT OF REACH, and named rather than silently missing -- this
-    # fuzzer mutates command SYNTAX around a fixed operand, so it cannot construct:
-    #   * carriers_truncated -- needs >_MAX_CARRIED carried commands, a pathological
-    #     INPUT SIZE rather than a syntax variation;
-    #   * timeout_over_cap   -- a numeric FIELD of the tool payload, not syntax at all.
-    # Both are covered by unit tests in test_hook_facts.py instead. If a mutator ever
-    # gains the ability to reach one, drop it from here and the floor rises by itself.
-    STRUCTURAL = {"carriers_truncated", "timeout_over_cap"}
     reachable = sorted(set(policy) - STRUCTURAL)
     gap = sorted(set(reachable) - covered)
     if gap:
