@@ -48,3 +48,11 @@ bin/xrcat text eol=lf
 mods/**/*.lua text eol=lf
 # Normalize everything else by default.
 * text=auto
+# Maintainer release artifacts -- the Nexus upload packs.
+#
+# PUBLIC in the repo (nothing here is hidden; anyone can read them on GitHub) and
+# deliberately NOT shipped inside a user's install. MEASURED 2026-09-09: without this,
+# `git archive` put 17 release/nexus/ entries into the bundle -- rollback text,
+# marketing bbcode and raw Nexus API responses -- growing it by 114,401 bytes for
+# every installing user, none of whom has any use for them.
+release/ export-ignore

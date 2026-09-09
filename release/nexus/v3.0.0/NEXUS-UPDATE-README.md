@@ -8,7 +8,15 @@ have never appeared there.
 
 | file | what it is |
 |---|---|
-| `X4.Foundations.Claude.Code.Toolkit.v3.0.0.zip` | the upload. 6,508,551 bytes, sha256 `273d242c…03fd4de6` |
+| `nexus-2186-CURRENT-description.txt` | the live page exactly as the API returned it |
+
+> ⚠ **This pack was never uploaded, and the v3.0.0 bundle is not in this folder.**
+> An earlier version of this table listed
+> `X4.Foundations.Claude.Code.Toolkit.v3.0.0.zip` (6,508,551 bytes, sha256
+> `273d242c…03fd4de6`) as though it were here. It is not, and never was — that row
+> described the GitHub release asset. **`release/nexus/v3.1.1/` supersedes this
+> folder**; this one is kept as the dated record of what was written for v3.0.0.
+
 | `NEXUS-CHANGELOG-v3.0.0.txt` | changelog entries, one line per item, for 3.0.0 / 2.9.0 / 2.8.0 |
 | `NEXUS-DESCRIPTION-v3.0.0.bbcode.txt` | the full updated description, ready to paste |
 | `NEXUS-DESCRIPTION-DIFF.txt` | exactly what changed vs the live page |
@@ -18,7 +26,8 @@ have never appeared there.
 ## What I changed in the description, and nothing else
 
 The page was kept as it is. Nine anchored edits, each one refusing rather than guessing
-if the anchor was not found exactly once. **43 lines added, 6 rewritten, 0 lost.**
+if the anchor was not found exactly once. **42 lines added, 6 rewritten, 0 lost.**  
+*(Corrected 2026-09-09: this said 43. Re-measured against the two files in this folder, and against this pack's own NEXUS-DESCRIPTION-DIFF.txt, both of which say 42. Found by the v3.1.1 release reviewer.)*
 
 **Added, near the top:**
 1. **New in v3.0** section — the live channel, the walkable guard and how it was found, the

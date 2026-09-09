@@ -5,9 +5,10 @@
 **CI was RED on the v3.1.0 tag, on both legs, and the release went out anyway.** One
 step failed — `scripts/fuzz-guard.py`, the differential fuzzer the v3.1.0 notes name
 to users as evidence they can run themselves. It exited **2 for everyone**. The local
-sweep that gated the release ran 28 gates, 1,716 tests and 160 hook probes, and none
-of them is what CI runs; nobody read the run for the released SHA. A local green is
-not CI's green.
+sweep that gated the release ran **28 of the 29 gates** — `run-gates.sh --all` excludes
+`mutation_probe`, which rewrites a source file in place and so never runs beside a tree
+read — plus 1,716 tests and 160 hook probes. None of them is what CI runs; nobody read
+the run for the released SHA. A local green is not CI's green.
 
 The fuzzer was right to refuse, and each refusal unmasked the next defect behind it.
 
@@ -56,7 +57,22 @@ definitions apart: the same shape as the verb-resolver defects v3.1.0 fixed.
 
 The narrow conjunct is untouched — a ROOT operand in the same segment is still
 required, which is what priced this rule at 4 hits in 28,989 real commands — so the
-widening is confined to segments that already carry a rooted operand. Named tests
+widening is confined to segments that already carry a rooted operand.
+
+> ⚠ **That "4 in 28,989" is a number we could not reproduce.** The v3.1.1 release
+> reviewer replicated the pricing independently over **38,763 unique commands from 560
+> session transcripts**, under two different root sets, and measured **0 hits for the
+> old predicate and 0 for the new one — 0 gained, 0 lost.** Its instrument was checked
+> the right way round: the same harness returns True for the seed and for five
+> hand-built bypass shapes, so the zero is an ABSENCE and not a non-answer.
+>
+> The DIRECTION agrees — vanishingly rare either way — and a measured 0 gained is a
+> stronger false-denial argument than 4, not a weaker one. But the original figure was
+> taken against a different corpus and a different root set, both private to this
+> machine, and neither is recoverable. **Treat "4 in 28,989" as testimony, not as a
+> check you can run**, and re-derive it with its own roots before citing it again.
+> The same caveat the v3.1.0 notes already attach to every 17,268-command replay
+> applies here, and for the same reason. Named tests
 cover both halves, the firing and the must-not-fire twin.
 
 Fuzzer after: **rc 0**, 2,675 mutants, 25 seeds x 107 mutators, control planted and
