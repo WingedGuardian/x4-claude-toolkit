@@ -66,10 +66,42 @@ def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> li
     wins a collision. See `mod_deps`.
     """
     folders = [m["folder"] for m in mods]
+    # A REPEATED FOLDER COLLAPSES SILENTLY, AND IT TAKES THE MOD WITH IT.
+    # `incoming` below is keyed by folder, so two entries with the same folder
+    # become ONE node: the mod disappears from the load order, from the effective
+    # tree built over it, and from every provenance answer -- nothing raised,
+    # nothing recorded. Reachable by the profile-vs-game-root mistake CLAUDE.md
+    # warns about, where one folder exists under two configured roots.
+    #
+    # MEASURED 2026-09-08 on this install: 3 configured roots, 133 folders, ZERO
+    # names in more than one root, ZERO duplicates in the computed order, ZERO mods
+    # lost. Verified reachable anyway: three mods, two sharing a folder, produce an
+    # order of length TWO. So this RECORDS rather than restructures -- it costs
+    # nothing today, and changing behaviour during close-out is how earlier rounds
+    # introduced defects. What it must never do again is happen with no channel.
+    _seen_folder: set[str] = set()
     id_to_folder: dict[str, str] = {}
     deps_by_folder: dict[str, list[str]] = {}
     for m in mods:
+        if m["folder"] in _seen_folder and dropped is not None:
+            dropped.append(
+                "%s: folder appears more than once in the mod set, so one entry "
+                "collapses onto the other and vanishes from the load order, the "
+                "effective tree and every provenance answer" % m["folder"])
+        _seen_folder.add(m["folder"])
         mod_id, deps = mod_deps(Path(m["path"]), dropped)
+        # `mod_id` truthy FIRST: `mod_deps` returns "" for a mod with no
+        # content.xml, and an ABSENT id is not a claimed one. Without this the
+        # record fires for every second manifest-less mod -- caught by the twin,
+        # which recorded a clash between two folders that share nothing.
+        _clash = (mod_id
+                  and mod_id in id_to_folder
+                  and id_to_folder[mod_id] != m["folder"])
+        if _clash and dropped is not None:
+            dropped.append(
+                "manifest id %r is claimed by both %r and %r; the later one wins "
+                "the id, so a dependency naming it resolves to only one of them"
+                % (mod_id, id_to_folder[mod_id], m["folder"]))
         id_to_folder[mod_id] = m["folder"]
         deps_by_folder[m["folder"]] = deps
 
@@ -87,6 +119,13 @@ def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> li
     while remaining:
         ready = sorted(f for f in remaining if incoming[f] <= resolved)
         if not ready:  # dependency cycle -- fall back to alphabetical for the rest
+            # RECORDED: the fallback silently changes who wins a collision. The
+            # docstring already says so; nothing said it at the moment it happened.
+            if dropped is not None:
+                dropped.append(
+                    "dependency cycle among %d mod(s) (%s); their load order falls "
+                    "back to ALPHABETICAL, which can change which mod wins a "
+                    "collision" % (len(remaining), ", ".join(sorted(remaining)[:5])))
             ready = sorted(remaining)
         nxt = ready[0]
         ordered.append(nxt)

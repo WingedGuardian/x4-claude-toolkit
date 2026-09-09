@@ -227,19 +227,22 @@ tiers behind each answer.
   instead of succeeding quietly. Unlock, edit, relock.
 
   > ⚠ **Unlock before re-running the installer, then lock again.** The installer will
-  > not write over a read-only file: it REFUSES up front, names every file it would
-  > have overwritten, and changes nothing. That is `x4lock` working — it cannot tell
+  > not write over a read-only file: it REFUSES up front, names the files it would
+  > have overwritten -- the first 8, then a count of the rest -- and changes
+  > nothing. That is `x4lock` working — it cannot tell
   > an installer from any other process. An upgrade that does not need to change a
   > locked file does not touch it, so this only comes up when something you locked
   > has genuinely changed upstream.
-- **Recovery** — `bash scripts/restore-from-backup.sh` restores a file from the
-  timestamped auto-backup trail above.
+- **Recovery** — `bash scripts/restore-from-backup.sh` LISTS the timestamped
+  auto-backup trail above; restoring is a second, deliberate step:
+  `RESTORE=1 bash scripts/restore-from-backup.sh <backup-filename> <dest-path>`.
 - **The guards are tested** — `bash scripts/test-hooks.sh` feeds every hook synthetic tool-call JSON and asserts the decision it returns, across both the in-game and separate layouts. `python .claude/hooks/test_hook_facts.py` adds unit tests over the command parser in well under a second. Run both after any change to `.claude/hooks/`. This exists because a silent guard is worse than no guard: several hooks were inert for entire releases and code review never caught it. Coverage is *verified* rather than claimed: `python scripts/verify-hook-tests.py` plants a specific defect and requires the **named** test for it to go red, then pins each rule true and false in turn and requires a must-fire / must-not-fire test to break each way. A suite that cannot go red is decoration, and several guards here were inert for entire releases while their suite was green.
 
 > The rest of `scripts/` is maintainer tooling that ships because the bundle is the
 > repository: `fuzz-guard.py` and `verify-hook-tests.py` prove the guards can fail,
-> `scan-identifiers.py` and `audit-coverage.py` are CI gates, `build-release.sh`
-> builds this bundle from a git tag, and `gitbash.py` is a helper the others import.
+> `scan-identifiers.py` is a CI gate, `audit-coverage.py` is a local coverage-ledger
+> check, `build-release.sh` builds this bundle from a git tag, and `gitbash.py`
+> resolves a real bash on Windows for the scripts and tests that need one.
 > None of them is needed to use the toolkit.
 
 ---

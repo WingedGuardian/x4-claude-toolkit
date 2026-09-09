@@ -366,9 +366,17 @@ def _fold(detail: list[dict], reference: Path) -> str:
     return h.hexdigest()[:16]
 
 
-#: How many directory levels of `reference/` the survey folds in. A directory's mtime
-#: moves when its DIRECT children change, so folding depth D detects an add or a delete
-#: at depth D+1.
+#: How many directory levels of `reference/` the survey folds in. At each level the
+#: survey folds the CHILD COUNT and the child NAMES, so folding depth D detects an
+#: add or a delete at depth D+1.
+#:
+#: ⚠ This said "a directory's mtime moves when its DIRECT children change" until
+#: 2026-09-08. That mechanism was REMOVED by the commit that fixed the CI flake --
+#: see the '★ NO DIRECTORY MTIME' note in `_reference_survey`, where the directory
+#: mtime was found to be the only value in the fold that could move without the
+#: tree moving (1 unstable run in 400 over an unchanged tree). The prose survived
+#: the mechanism it described, which is the same shape as the timing figures below
+#: being measured on a proxy: a comment is an artifact and it rots.
 #:
 #: MEASURED 2026-09-05 by TIMING THIS FUNCTION on the real 510,711-file tree -- not a
 #: proxy walk. My first estimate came from a bare scandir traversal and said depth 3

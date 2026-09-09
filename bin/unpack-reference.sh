@@ -87,6 +87,30 @@ done
 # bare `touch`, i.e. ZERO BYTES, so there was no build id in it to read and the hook
 # fell straight back to the detached file it was written to stop trusting. It worked
 # on the developer machine only because that sentinel had been hand-written.
+# THE SENTINEL IS A CLAIM THAT THE UNPACK SUCCEEDED, SO COUNT BEFORE WRITING IT.
+# It was written unconditionally and the file count was computed AFTERWARDS, for
+# display only. So a failed or partial extraction still marked the tree "unpacked
+# and locked" -- and the check at the top of this script then REFUSES every later
+# attempt, so the tool that produced the broken tree is the one that will not let
+# you repair it. Recovery needs a manual `rm` the user has no reason to suspect.
+#
+# The floor is MEASURED, not chosen: a real text-only unpack of base 01-09 plus 8
+# DLC produced 510,711 files on this machine (2026-09-08). 1000 is ~0.2% of that,
+# so it catches a catastrophic failure and cannot false-refuse a legitimately
+# smaller install -- deliberately insensitive, because a wrong refusal here costs
+# a 27 GB re-run.
+UNPACK_FLOOR="${X4_UNPACK_FLOOR:-1000}"
+NFILES=$(find "$REF" -type f 2>/dev/null | wc -l)
+if [ "$NFILES" -lt "$UNPACK_FLOOR" ]; then
+  echo "REFUSING to write the lock sentinel: only $NFILES file(s) are in $REF," >&2
+  echo "  and a successful unpack of base+DLC yields orders of magnitude more." >&2
+  echo "  Writing it would mark a BROKEN tree as complete, and this script then" >&2
+  echo "  refuses every later attempt to fix it." >&2
+  echo "  Check XRCatTool output above. Override with X4_UNPACK_FLOOR=<n> if you" >&2
+  echo "  genuinely mean to lock a tree this small." >&2
+  exit 2
+fi
+
 BUILDID=""
 if [ -n "${X4_APPMANIFEST:-}" ] && [ -f "$X4_APPMANIFEST" ]; then
   BUILDID=$(grep -i '"buildid"' "$X4_APPMANIFEST" | grep -oE '[0-9]+' | tail -1 || true)
@@ -111,4 +135,4 @@ else
 '     "$(date +%Y-%m-%d)" > "$REF/.unpacked-and-locked"
 fi
 
-echo "DONE: $(find "$REF" -type f | wc -l) files, $(du -sh "$REF" | cut -f1)"
+echo "DONE: $NFILES files, $(du -sh "$REF" | cut -f1)"
