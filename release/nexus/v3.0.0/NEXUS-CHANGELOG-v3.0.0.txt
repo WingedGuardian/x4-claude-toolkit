@@ -1,0 +1,53 @@
+=====================================================================
+ NEXUS CHANGELOG ENTRIES  --  paste each block into its own version
+ Nexus is on 2.7.0, so 2.8.0 and 2.9.0 have never appeared there.
+ Add all three, or add 3.0.0 only and let the older two ride along.
+=====================================================================
+
+
+---------------------------------------------------------------------
+ VERSION 3.0.0
+---------------------------------------------------------------------
+Added - x4live: query a running game session, through a small optional bundled game extension.
+Added - x4lock: marks irreplaceable files read-only. Measured over 14 write methods, each with a control: 11 blocked on Windows, 9 on Linux/macOS.
+Added - x4canary: refuses at session start if a protected file was emptied or deleted, and reports "could not check" rather than guessing.
+Added - installing over an existing installation now needs an explicit --over-existing, not just a click-through.
+Fixed - the command guard was walkable: a delete aimed at the game folder, wrapped in one shell form, was ALLOWED while the plain form was blocked. All three hard blocks fell with it.
+Fixed - guard rule precedence was decided by position in the file, so deny rules written below an ask rule were unreachable. Precedence is now by severity.
+Fixed - a single "git -c key=value" silenced the entire destructive-git rule.
+Fixed - the fuzz generator could not vary the shape of a command, so it could never have found the bypasses above. Rebuilt: 1,140 mutants, 0 bypasses.
+Fixed - the effective tree discarded base-game content for DLC files; one library went from 19 entries to 2, so "what rooms exist" answered wrongly.
+Fixed - the live-query reply cap bounded the answer instead of the work: 40,492 engine calls in a single frame to display 489 rows.
+Fixed - blockinput=true froze all player input for 12 seconds on every game load.
+Fixed - a mixed-case Index/ made all 8 DLC layers replace rather than union, taking 4,733 entries down to 17.
+Fixed - a scalar sel= either crashed or reported the length of a string as a node count.
+Fixed - unparseable documents were counted as verbatim while the same screen said they were not.
+Fixed - a NUL byte removed a file from the control-byte sweep, and NUL is in the very class that sweep hunts.
+Fixed - three tests reported PASSED without asserting anything, and one guard was satisfied by the comment that mentioned the flag.
+Changed - the mod registry save is atomic and refuses to shrink.
+Note - the command guard now requires Python (already needed by the tools). Without it the guard asks rather than silently allowing.
+Verified - 1,387 tests, 29 gates, engine oracle 241/241 with zero false OKs, 138 hook probes, 1,140 fuzz mutants with zero bypasses, green on both Windows and Ubuntu CI.
+
+
+---------------------------------------------------------------------
+ VERSION 2.9.0
+---------------------------------------------------------------------
+Added - nested cross-mod script patches are now validated, through the document the engine actually builds.
+Added - x4diff --base: three-way diff, separating your edits from the author's updates.
+Added - x4modlist tracked: what your Nexus account follows, set against what is actually installed.
+Added - additions and removals are labelled, rather than left for you to infer.
+Fixed - a mod shipping its own md/ or aiscripts/ no longer reads as a clean pass.
+Fixed - cross-mod script patches were missed by the disclosure, and were validated by nothing at all.
+Fixed - x4effective dump no longer reports a wrong form as a confident absence.
+Fixed - three-way diff ignored --file, and a nested overlay is now compared against the mod it patches.
+Changed - the cheap script check now runs on every validate, not only under --update.
+
+
+---------------------------------------------------------------------
+ VERSION 2.8.0
+---------------------------------------------------------------------
+Added - x4save: read a savegame, and say what removing a mod would silently lose.
+Fixed - CI had never once started a JVM, so the vendored BaseX jar was shipping untested.
+Fixed - setup.sh never checked for Java, while the README promised that it did.
+Fixed - an effective store could be stamped with a world it was never built from.
+Changed - provenance now names the source that WON, not the one that introduced the value.

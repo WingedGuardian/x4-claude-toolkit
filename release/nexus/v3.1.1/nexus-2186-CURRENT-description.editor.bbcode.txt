@@ -1,0 +1,177 @@
+[center][url=https://github.com/WingedGuardian/x4-claude-toolkit][size=6][b]GitHub Repository[/b][/size][/url][/center]
+[center](May have more recent/nightly versions)[/center]
+
+[color=#e06666][size=5][b]What Is This?[/b][/size][/color]
+
+[url=https://claude.ai/code]Claude Code[/url] is an AI assistant by Anthropic that runs directly on your computer. Unlike ChatGPT or a regular Claude chat, it can [b]read your files, run commands, edit configs and execute scripts[/b] -- all with your permission. Think of it as a modding expert sitting next to you who can actually touch your files.
+
+X4 modding is full of [b]silent[/b] failure modes. A diff patch whose [font=Courier New]sel=[/font] matches nothing validates clean, loads clean, and does nothing. A multi-file change forgets one file and the ware never appears. Another mod quietly overwrites the value you just set. None of it crashes; it just doesn't work, and you find out an hour into a playthrough.
+
+Most people who try to use an AI assistant for modding spend days wiring up tools, explaining the engine, and building guardrails so it doesn't wreck their install. [b]This toolkit ships with all of that already solved[/b] -- plus a suite of X4-specific tools, written for this environment, that answer questions no off-the-shelf tool can.
+
+[color=#e06666][size=5][b]New in v2.7 -- the tools tell you WHICH mod moved[/b][/size][/color]
+
+Every tool here refuses to answer from stale data rather than hand you a confidently wrong number. That was the right behaviour and it was [i]exasperating[/i]: it told you the world had changed, never [b]what[/b] changed. Localising a single updated mod took nine investigative steps.
+
+[b][font=Courier New]x4modlist changed[/font][/b] now answers it directly, and [font=Courier New]x4modlist snapshot[/font] gives you a baseline to compare against.
+
+[b]Two things it can now see that it genuinely could not before.[/b] A mod whose [i]files[/i] changed while its [font=Courier New]content.xml[/font] stayed put -- which is the ordinary "edit the file, copy it in" workflow -- was completely invisible: measured on a real 121-mod list, [b]72 of them[/b] had at least one file newer than their own manifest, and every tool reported FRESH while describing a different set of mods. That failed in the unsafe direction. So did a mod enabled or disabled in the game's own mod menu, because toggling rewrites only the profile manifest.
+
+[i]Also in this release:[/i] a stale-data warning that named a command the release did not actually ship (it ships now); stale warnings that show both fingerprints, so "how far did it move?" is answerable without writing a script; and a set of fixes to the toolkit's own self-check -- the one that deliberately breaks the code to confirm the tests notice. It could not restore the tree if it was killed mid-run, and it silently measured a narrower scope than it reported. While it runs, every tool now warns that it is answering from deliberately broken code, and anything that would write data refuses outright.
+
+[color=#e06666][size=5][b]New in v2.6 -- ask questions across every file at once[/b][/size][/color]
+
+[b]BaseX corpus search now ships with the toolkit[/b] (it was internal until now). It indexes the whole corpus -- base game, every DLC, and every installed mod, 36 million nodes -- and answers in about a second the class of question a recursive grep answers [i]dishonestly[/i].
+
+[b]The specific thing it fixes:[/b] "nothing references this macro" is the most dangerous sentence in modding, because a grep cannot tell [i]this does not exist[/i] from [i]I did not look everywhere[/i] -- and roughly 62% of mod XML lives inside packed archives a grep never opens. So it refuses to print a zero as a finding unless it can state the denominator it looked over, and then says [b]"NEGATIVE CONFIRMED over N of M documents"[/b] with every exclusion named. It also refuses to answer at all from an index that has gone stale, rather than handing you a confidently wrong number.
+
+Two indexes: [font=Courier New]x4raw[/font] (every file [i]as written[/i]) and [font=Courier New]x4eff[/font] (the merged tree the game actually sees, diffs applied in load order). Use the second for any claim about a live value -- the first will happily quote a vanilla number your modlist overwrote.
+
+[b]Be honest with yourself about the cost before you start:[/b] it needs Java 17+, about 3 GB of disk, and a one-off build measured in minutes rather than seconds. BaseX itself is bundled (BSD-3-Clause), so there is nothing extra to download. It is entirely optional -- the rest of the toolkit does not need a JVM.
+
+[i]Also in this release:[/i] a preflight so the first run tells you what is actually wrong -- a missing JVM used to surface as [font=Courier New]BaseX query failed: [WinError 2][/font], blaming BaseX for a missing Java, and an unbuilt index printed a raw error that never once named the build script. And the Linux test failures are fixed (all eight were test-side, not library defects), though Linux remains explicitly [i]not[/i] a supported guarantee -- see the honesty note below.
+
+[color=#e06666][size=5][b]The Tools -- and What Each One Does For You[/b][/size][/color]
+
+Eight command-line tools are bundled and pre-wired. No need to stress if it looks like a foreign language--Claude drives them for you as it needs them; though you can also run them yourself. They all read [b]packed[/b] mods ([font=Courier New].cat[/font]/[font=Courier New].dat[/font], VRO included) as well as loose ones.
+
+[size=4][color=#e06666]x4validate[/color] -- the flagship: catch the silent no-op before you launch[/size]
+[list]
+[*][b]Every diff [font=Courier New]sel=[/font] is resolved against the real merged tree[/b] (base + all DLC + your enabled mods), so a patch that matches nothing is an [i]error[/i], not a clean pass.[/*]
+[*][b]References are checked[/b] -- every ware, macro and [font=Courier New]{page,t}[/font] text id your mod introduces must point at something real.[/*]
+[*][b]Completeness[/b] -- compare new content against a vanilla analogue and answer "did I forget a spot?" before the ware turns up priceless and unbuyable.[/*]
+[*][b][font=Courier New]--tier b[/font][/b] merges your [i]installed[/i] modlist in load order, so cross-mod patches resolve for real -- and it catches the failure that looks like success: content [b]another mod removed[/b]. (Real case from development: one mod removes a vanilla macro and never re-adds it, orphaning it for six other mods -- 415 engine errors that base+DLC validation calls fine.)[/*]
+[*][b]It models the X4 patch rules a naive XML merge gets wrong[/b], each of which otherwise produces a silent no-op: a [font=Courier New]sel=[/font] matching multiple nodes applies [b]nothing[/b] (RFC 5261 -- 236 such ops were silently skipped across one real modlist), [font=Courier New]if=[/font] guards gate an op before the selector, and [font=Courier New]extensions/<target>/<rel>[/font] paths belong to that mod, not the base game.[/*]
+[*][b]Validated against the engine, not against itself[/b] -- a test harness replays every patch op X4's own log rejected and requires the same verdict (currently 234/234 agreement, zero false OKs).[/*]
+[/list]
+[size=4][color=#e06666]x4effective[/color] -- "xEdit for X4": every final value, and who set it[/size]
+The effective value of every ware, macro and job across base + DLC + all your mods, with [b]per-attribute provenance[/b] ([font=Courier New]base -> modA -> modB[/font]) in a queryable store. Read one column across everything ("all missiles and their damage"), see the full record, get just the who-set-it chain, list everything a single mod wins, or dump the live merged XML for any path. Stop guessing which mod actually won.
+
+[size=4][color=#e06666]x4compat[/color] -- what breaks if I install this?[/size]
+Collision detection over the effective tree: two mods editing the same node (one silently loses), defining the same registry id, fully overriding the same file, or -- the sneaky one -- a later mod [b]replacing a whole element[/b] and wiping every earlier mod's edits inside it. Candidate mode answers "what would this new mod collide with?" [i]before[/i] you install it.
+
+[size=4][color=#e06666]x4xref[/color] -- who calls this? who listens?[/size]
+A who-calls / who-listens / cue index over every Mission Director and AI script in base + DLC + your mods. "Does anything else react to this event?" in one query, instead of many rounds of grepping for tokens that share no keyword with what you're actually asking.
+
+[size=4][color=#e06666]x4stats[/color] -- is this balanced against MY game?[/size]
+Advisory numeric comparison: how a mod's ware/weapon pricing and stats sit against everything else in [i]your[/i] effective game, including an installed overhaul's rescaled values. Grounds a balance discussion; doesn't pretend to settle one.
+
+[size=4][color=#e06666]x4similar[/color] -- do I already have this ship?[/size]
+Advisory near-duplicate detection: flags a mod's ship as likely "the same ship" you already have under a different name and id, filtered by class and purpose.
+
+[size=4][color=#e06666]x4modlist[/color] -- triage your whole modlist[/size]
+A registry of your installed mods built from what's [b]physically installed[/b] (each mod's own manifest -- folder names lie), cross-checked against your profile. With the optional Nexus API key it pulls upstream versions, update dates, changelogs and status, then sorts everything into lanes: ready / churning / predates your game version / custom-local / dropped-by-the-author.
+
+[size=4][color=#e06666]x4diff[/color] -- separate your edits from the author's[/size]
+Semantic XML diff between two versions of a mod, with multi-baseline support -- built for the "I modified this mod months ago and the author just updated it" problem.
+
+[size=4][color=#e06666]BaseX corpus search[/color] -- the superweapon: what does this look like across EVERYTHING?[/size]
+XQuery over the whole indexed corpus, for the questions that span files rather than living in one: what values does this attribute take across every ship? who references this macro? which mods define a ware nobody produces? It is the only tool here that can back a [i]negative[/i], because it states the denominator it searched. Optional -- needs Java 17+ and a one-off index build.
+
+[color=#e06666][size=5][b]What You Get[/b][/size][/color]
+
+This isn't a guide that tells you what to install and configure yourself. It's a [b]complete, ready-to-run environment[/b] -- every tool pre-calibrated, the engine's quirks already documented, the footguns already guarded. Extract it, run the installer, paste one prompt, and you're working.
+
+[size=4]Everything Included:[/size]
+[list]
+[*][b]The nine tools above[/b] -- bundled, pre-wired, and driven by Claude on your behalf. [b]638 automated tests and 26 gates[/b] that run against a real modlist and X4's own engine log, not against fixtures.[/*]
+[*][b]X4 engine knowledge, pre-loaded[/b] -- XML schema patterns, diff-patch idioms, the [b]extension merge and load-order model[/b] (what overrides vs what unions -- get this wrong and your patch silently does nothing), the [b]7.x -> 9.0 migration map[/b] (the [font=Courier New]space=[/font] requirement, the dead Lua_Loader, Protected UI Mode), and a [b]mechanics interlock map[/b] for reasoning about balance ripples.[/*]
+[*][b]A 7.x -> 9.0 migration checker[/b] -- point it at an old mod and get the mechanical breaks listed, schema-checked, before you start hand-porting.[/*]
+[*][b]Safety hooks[/b] -- Claude can't write to your unpacked reference tree, can't edit [font=Courier New].cat[/font]/[font=Courier New].dat[/font] directly, and must ask before touching mod manifests or your save profile.[/*]
+[*][b]Auto-backup + audit trail[/b] -- every file Claude edits is copied to a timestamped backup folder with a log of what changed and when.[/*]
+[*][b]The guards are tested[/b] -- a harness feeds every hook synthetic tool-call JSON and asserts the decision it returns (33 assertions, both install layouts). This exists because a [i]silent[/i] guard is worse than no guard: several hooks shipped inert for entire releases and code review never caught it.[/*]
+[*][b]Confidence system[/b] -- Claude rates its confidence (0-100%) and lists its assumptions [i]before[/i] proposing a change. No "this should work."[/*]
+[*][b]Dry-run workflow[/b] -- bulk edits show you every file and value that would change, and wait for your approval, before anything is written.[/*]
+[*][b]Baseline capture[/b] -- record a known-good snapshot (game version, installed-mod hashes, a normalized debug.txt error fingerprint) so you can diff new errors after adding 50 more mods.[/*]
+[*][b]Skills (slash commands)[/b] -- [font=Courier New]/x4-debug[/font] (read debug.txt, filter benign noise, surface real errors), [font=Courier New]/x4-modlist-review[/font] (triage your modlist), [font=Courier New]/x4-mod-interaction[/font] (full interaction brief for one mod against your whole install), [font=Courier New]/x4-scaffold[/font] (scaffold the complete cross-file footprint for new content from a vanilla analogue), [font=Courier New]/x4-update-mod[/font] (port a mod to a newer game version).[/*]
+[*][b]Subagents[/b] -- [i]cross-file-impact[/i] traces every file a change must touch before you start; [i]mod-research[/i] reads a mod's Nexus page (description, changelogs, bug reports) and hands back a brief before you edit blind.[/*]
+[*][b]Guided cross-platform installer[/b] -- three layouts, auto-detects your game, profile and XRCatTool, and writes the result to a config file. Nothing is hardcoded; [font=Courier New]x4validate --paths[/font] prints exactly what it resolved.[/*]
+[/list]
+[color=#e06666][size=5][b]Setup (4 Steps)[/b][/size][/color]
+
+[b][color=#e06666]Step 1:[/color] Get Claude Code[/b] (recommended -- but you can also use a free alternative like Opencode and have it adjust file names appropriately. My instructions are Claude-specific because I find it more capable.)
+
+[b]BACK UP YOUR X4 INSTALL AND YOUR SAVE PROFILE FIRST![/b] Yes, there's a backup system built into this workflow, but better to have a known-good install and saves on hand just in case. (Saves live in [font=Courier New]Documents\Egosoft\X4\<your-profile-id>\[/font].)
+
+Install Claude Code -- pick one:
+[list]
+[*][b]Desktop App (easiest):[/b] Download from [url=https://claude.ai/code]claude.ai/code[/url], install, open it.[/*]
+[*][b]Command Line:[/b] Install [url=https://nodejs.org/]Node.js[/url] (big green LTS button), open Windows Terminal and run:
+[code]npm install -g @anthropic-ai/claude-code[/code][/*]
+[/list]Subscribe to Claude Pro ($20/mo) or Claude Max ($100/mo) -- Claude Code requires a paid plan (or use Opencode's free models; you get what you don't pay for).
+
+[b][color=#e06666]Step 2:[/color] Extract and Run the Installer[/b]
+[list=1]
+[*]Download this mod (Manual Download) and extract the zip [i]anywhere[/i].[/*]
+[*]Run the guided installer -- [font=Courier New]bash install.sh[/font] (Windows Git Bash / Linux / macOS) or [font=Courier New]powershell -ExecutionPolicy Bypass -File install.ps1[/font] (PowerShell; the explicit form because stock Windows refuses bare scripts).[/*]
+[*]Pick a layout when it asks. It auto-detects your game, profile and XRCatTool, and writes the result to [font=Courier New].claude/x4-paths.env[/font] -- nothing is hardcoded.[/*]
+[/list][b]Three install layouts:[/b]
+[list]
+[*][b]separate[/b] -- the toolkit lives in its own folder and points at the game via config. [b]Recommended if you're unsure[/b]: it leaves the game folder untouched and needs no write access to [font=Courier New]C:\Program Files[/font].[/*]
+[*][b]in-game[/b] -- copies the toolkit into your X4 folder (the classic single-workspace model).[/*]
+[*][b]global[/b] -- installs the skills into [font=Courier New]~/.claude[/font] so the toolkit works across several mod repos.[/*]
+[/list]
+[b][color=#e06666]Step 3:[/color] Open Claude Code in Your X4 Folder[/b]
+[b]Desktop App:[/b] open Claude Code and navigate to your X4 folder.
+[b]Command Line:[/b] open Windows Terminal and type (use your real path):
+[code]cd "C:\Program Files (x86)\Steam\steamapps\common\X4 Foundations"
+claude[/code]
+[b][color=#e06666]Step 4:[/color] Paste This Prompt (that's it)[/b]
+[code]I just installed the X4 Foundations Claude Code Modding Toolkit into this folder. Run "bash setup.sh" to set everything up. Install any missing prerequisites (jq, uv/Python 3.13) for me, then confirm the bundled x4validate runs (its test suite should pass). After setup, ask me which optional tools I'd like (XRCatTool for unpacking the base game / packing mods, X4-XMLDiffAndPatch, X4_Customizer, X4CodeComplete) and help me set up the ones I pick. Walk me through unpacking my own base game to a local reference\ folder with XRCatTool (you won't redistribute any game data). Also ask whether I want the optional Nexus API integration (mod update-detection / version & changelog checks); if yes, explain how to get a free Personal API Key and store it in the X4_NEXUS_KEY environment variable. Tailor the environment to my game version and installed DLC. Make sure to setup and index BaseX if we're using it. Check Github for more recent updates if available https://github.com/WingedGuardian/x4-claude-toolkit. Explain everything in plain English and ask me any questions you need to.[/code]Claude handles the rest. [b]That's it. You're done.[/b]
+
+[i]Note on the reference tree:[/i] x4validate is most powerful when pointed at an unpacked copy of the base game (so it can resolve every [font=Courier New]sel=[/font] and reference against the real merged tree). Unpacking uses Egosoft's [b]XRCatTool[/b] -- a separate external tool, so like the others it isn't bundled; setup points you to it and walks you through it. You unpack your own copy; no game data is ever shared.
+
+[color=#e06666][size=5][b]Optional: Nexus API Integration[/b][/size][/color]
+Give Claude a free Personal API Key and it can check mod versions, update dates, changelogs, and dependencies -- great for "did any of my mods update?" and pre-investigation research. Entirely optional.
+[list]
+[*]Get a free key: [url=https://www.nexusmods.com/users/myaccount?tab=api]nexusmods.com > Site preferences > API Access[/url] > copy your Personal API Key.[/*]
+[*]Save it to the [font=Courier New]X4_NEXUS_KEY[/font] environment variable ([font=Courier New]setx X4_NEXUS_KEY "<your-key>"[/font]). Or just paste it to Claude during setup and it'll store it for you.[/*]
+[*][b]Security:[/b] personal/local use only. Never share, paste publicly, or commit it. If it leaks, regenerate it on the same page.[/*]
+[/list]
+[color=#e06666][size=5][b]Using It[/b][/size][/color]
+From now on, whenever you open Claude Code in your X4 folder, the full environment loads automatically -- knowledge base, safety hooks, the validator, everything. Just start talking. Some things to try:
+
+[b]Editing and balance:[/b]
+[list]
+[*][i]"Raise all L/XL shield regen by 15% -- show me the dry-run first, then validate it."[/i][/*]
+[*][i]"Add a new tradeable ware modeled on Energy Cells, with every file it needs, and check completeness against a vanilla ware."[/i][/*]
+[*][i]"Buff the Asgard's main battery by 10% and tell me what else that ripples into."[/i][/*]
+[/list][b]Porting, debugging, investigating:[/b]
+[list]
+[*][i]"This mod was made for 7.x. Run the migration checker and fix every 9.0 break."[/i][/*]
+[*][i]"Read my debug.txt and tell me which errors are real vs benign noise."[/i][/*]
+[*][i]"My diff patch isn't doing anything in-game -- check whether the sel= actually matches the merged tree."[/i][/*]
+[*][i]"What does this Nexus mod do, and are there known 9.0 issues, before I touch it?"[/i][/*]
+[/list][b]Your modlist as a whole:[/b]
+[list]
+[*][i]"What would break if I installed this mod? Check it against everything I already have."[/i][/*]
+[*][i]"Which mod is actually setting the Asgard's hull right now, and what did the others try to set?"[/i][/*]
+[*][i]"Triage my mod list against Nexus -- what's updated, obsolete, or abandoned for 9.0?"[/i][/*]
+[*][i]"Capture a known-good baseline so I can diff new errors after I add 50 more mods."[/i][/*]
+[/list]
+[color=#e06666][size=5][b]FAQ[/b][/size][/color]
+[b]Q: Which game versions / DLC does it support?[/b] The knowledgebase targets X4 v7.x-v9.x and includes the 7.x->9.0 migration map. All DLC is supported; just tell Claude your version and what you have installed.
+[b]Q: Do I need to know how to code?[/b] No. You describe what you want in plain English; Claude does the XML. The tools exist to catch its mistakes as much as yours.
+[b]Q: Can Claude break my mods or saves?[/b] The safety hooks should prevent it -- Claude can't write to your reference tree or directly edit .cat/.dat, must ask permission for mod/profile edits, and backs everything up with an audit log. But LLMs are probabilistic; keep your own backups too (X4 saves especially).
+[b]Q: Do I have to unpack the base game?[/b] Only for x4validate's full cross-reference power. You can start without it; setup walks you through unpacking with XRCatTool when you're ready.
+[b]Q: Does it work with VRO / big overhauls?[/b] Yes -- and that's rather the point. The tools read packed mods, so an overhaul's rescaled values show up in the effective tree, in balance comparisons, and in collision checks.
+[b]Q: "jq not found"?[/b] Run [font=Courier New]winget install jqlang.jq[/font] and restart Claude Code.
+[b]Q: How do I update the toolkit?[/b] Download the new version and re-run the installer (or extract over the old one). Your knowledgebase additions are preserved.
+
+[color=#e06666][size=5][b]Requirements[/b][/size][/color]
+[list]
+[*]Claude Code, Opencode, or the agentic coding assistant of your choice[/*]
+[*](If using Claude) a Claude Pro or Max subscription ($20-100/mo)[/*]
+[*][b]Windows 10/11, Linux, or macOS[/b][/*]
+[*][b]bash[/b] -- required; every safety hook runs under it. Linux/macOS already have it; on Windows install [url=https://git-scm.com/download/win]Git for Windows[/url] (Git Bash). Without it the hooks silently do nothing.[/*]
+[*][b]jq[/b] -- small CLI needed by the safety hooks (setup installs it via winget/apt/brew)[/*]
+[*][b]Wine[/b] -- Linux/macOS only, to run Egosoft's XRCatTool (a Windows .exe)[/*]
+[*][b]uv + Python 3.13[/b] -- runs the bundled tools (setup helps you install)[/*]
+[/list]Optional, but recommended (setup will offer to help with these):
+[list]
+[*][b]XRCatTool[/b] (Egosoft) -- unpack the base game to [font=Courier New]reference\[/font] and pack mods for distribution[/*]
+[*][b]X4-XMLDiffAndPatch[/b] -- generate and shape-check diff patches[/*]
+[*][b]X4_Customizer[/b] -- programmatic bulk stat edits[/*]
+[*][b]X4CodeComplete[/b] -- VS Code autocomplete for script properties + Lua (editor-side authoring aid)[/*]
+[/list]
+No mod manager required. Extract anywhere and run the installer. Open source (MIT) -- source, full changelog and issues on [url=https://github.com/WingedGuardian/x4-claude-toolkit]GitHub[/url]. X4: Foundations is a trademark of Egosoft GmbH.

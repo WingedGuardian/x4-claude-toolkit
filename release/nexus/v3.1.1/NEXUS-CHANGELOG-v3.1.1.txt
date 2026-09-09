@@ -1,0 +1,89 @@
+=====================================================================
+ NEXUS CHANGELOG ENTRIES  --  paste each block into its own version
+ Nexus is on 2.7.0 (re-queried via the API 2026-09-09), so 2.8.0,
+ 2.9.0, 3.0.0 and 3.1.x have never appeared there. Add all of them,
+ or add 3.1.1 only and let the older blocks ride along.
+=====================================================================
+
+
+---------------------------------------------------------------------
+ VERSION 3.1.1
+---------------------------------------------------------------------
+Fixed - the bundled guard fuzzer, which the 3.1.0 notes tell you to run yourself, refused to run at all: a control it plants to prove it can still fail had been orphaned by an ordinary refactor. It exited 2 for everyone, and both CI legs were red on the 3.1.0 tag.
+Fixed - with that cleared, the same tool reported a second gap it had been unable to reach: the rule added in 3.1.0 to close a total bypass of all three hard blocks was the one rule nothing ever tested.
+Fixed - and once it had a test, a live bypass: a command name with a substitution buried inside it, aimed at your game folder, was ALLOWED. The plain spelling was correctly blocked.
+Changed - the fuzzer's controls are now anchored to the rule they test rather than to a line of the file, so a refactor cannot silently disarm them, and two new tests catch a dead control in milliseconds instead of in a CI leg nobody reads.
+Verified - fuzzer rc 0 over 2,675 mutants and 25 seeds, with its control planted and rediscovering 126 known bypasses, 22 of 24 guard rules seed-covered and the two unreachable ones named; 160 hook probes; the full suite green.
+
+
+---------------------------------------------------------------------
+ VERSION 3.1.0
+---------------------------------------------------------------------
+Fixed - two total bypasses of every hard block, both in how the guard works out WHICH command it is looking at. Upgrade for these two if for nothing else.
+Fixed - a wrapper flag whose value is a word became the command name, so a delete aimed at the game folder behind "env -u VAR" or "sudo -u root" was ALLOWED. Two similar commands were blocked only by accident of their argument shape, which is what kept the gap invisible.
+Fixed - quoting a single token in front of a command short-circuited the whole resolver: 7 of 9 guard rules flipped from firing to ALLOW.
+Fixed - a command whose name arrived through substitution walked past all three hard blocks. Priced over 28,989 real commands before shipping, so the new rule matches 4 of them rather than the 834 a naive version would have.
+Fixed - the guard could be hung by ordinary shell. A variable that names itself re-expanded 9x per pass, so a four-character token reached 7.7 MB and one real 949-character command became an 18.3 GB working set. That is the blocking path, so it hangs the whole session, and it needs no adversary.
+Fixed - 61% of the guard had never been fuzzed and the run said nothing about it: 14 rules had no test case at all, including two hard blocks, while it printed a healthy mutant count and "no bypass found". Twelve new seeds immediately found bypasses in rules that had shipped and were being relied on.
+Fixed - an append into the read-only reference tree was allowed while a truncate was hard-blocked: the same primitive on the same file, disagreeing.
+Fixed - the installer's --dry-run performed a REAL install in place, on both installers and both methods, and ran the dependency sync while doing it.
+Fixed - the installer copied the source machine's secrets into the destination, including the backup and temp siblings of the path config, which hold your Nexus API key by construction.
+Fixed - an upgrade with --over-existing deleted the toolkit's own backups directory: every pre-edit backup, the audit trail and every named snapshot, silently, reporting success. Never in a Nexus release; found and fixed before this one shipped.
+Fixed - the global install method on Windows was completely broken and had shipped that way, and its locked-file check ran after the config had already been written, so it announced a change and then refused.
+Fixed - the installer's own safety gate listed skills the toolkit does not ship, so your own x4-something skill folder was reported as a file the install would replace.
+Fixed - an indented setting in the path config beat the real one, so re-installing with a new game path silently produced a config still pointing at the old one.
+Fixed - x4stats reported "changes no wares" over a 1,443-op economy overhaul. Five of 37 ware-editing mods were wrong; now one, and that one is correct. Unattributed ops fell from 3,414 to 190, and 187 of the 190 are ops the engine itself would not apply.
+Fixed - x4live compare printed object ids it then refused to accept, blaming a typo or a UI reload; and one unconvertible object threw away an entire enumeration rather than one row.
+Fixed - nine tests that could not fail, four of which were the only thing holding this release's own repairs in place. A review pass reinstated four already-fixed defects with the entire suite green.
+Fixed - a hook's warning was silently discarded above 10,000 characters, worst-first, so the channel failed exactly when it had the most to say.
+Fixed - checks across the toolkit that returned a clean zero over having examined nothing, including a scan that reported a file count including every file it never opened.
+Fixed - the stale-data warning could cry wolf: the marker recording which game build the reference tree came from did not travel with the tree it describes.
+Changed - the toolkit's instruments now say when they were true, so an answer built from stale data is visible rather than confident.
+Verified - 1,716 automated tests, 29 gates, 160 hook probes, 2,675 fuzz mutants with zero bypasses, and the merge engine agreeing with X4's own engine log.
+
+
+---------------------------------------------------------------------
+ VERSION 3.0.0
+---------------------------------------------------------------------
+Added - x4live: query a running game session, through a small optional bundled game extension.
+Added - x4lock: marks irreplaceable files read-only. Measured over 14 write methods, each with a control: 11 blocked on Windows, 9 on Linux/macOS.
+Added - x4canary: refuses at session start if a protected file was emptied or deleted, and reports "could not check" rather than guessing.
+Added - installing over an existing installation now needs an explicit --over-existing, not just a click-through.
+Fixed - the command guard was walkable: a delete aimed at the game folder, wrapped in one shell form, was ALLOWED while the plain form was blocked. All three hard blocks fell with it.
+Fixed - guard rule precedence was decided by position in the file, so deny rules written below an ask rule were unreachable. Precedence is now by severity.
+Fixed - a single "git -c key=value" silenced the entire destructive-git rule.
+Fixed - the fuzz generator could not vary the shape of a command, so it could never have found the bypasses above. Rebuilt: 1,140 mutants, 0 bypasses.
+Fixed - the effective tree discarded base-game content for DLC files; one library went from 19 entries to 2, so "what rooms exist" answered wrongly.
+Fixed - the live-query reply cap bounded the answer instead of the work: 40,492 engine calls in a single frame to display 489 rows.
+Fixed - blockinput=true froze all player input for 12 seconds on every game load.
+Fixed - a mixed-case Index/ made all 8 DLC layers replace rather than union, taking 4,733 entries down to 17.
+Fixed - a scalar sel= either crashed or reported the length of a string as a node count.
+Fixed - unparseable documents were counted as verbatim while the same screen said they were not.
+Fixed - a NUL byte removed a file from the control-byte sweep, and NUL is in the very class that sweep hunts.
+Fixed - three tests reported PASSED without asserting anything, and one guard was satisfied by the comment that mentioned the flag.
+Changed - the mod registry save is atomic and refuses to shrink.
+Note - the command guard now requires Python (already needed by the tools). Without it the guard asks rather than silently allowing.
+
+
+---------------------------------------------------------------------
+ VERSION 2.9.0
+---------------------------------------------------------------------
+Added - nested cross-mod script patches are now validated, through the document the engine actually builds.
+Added - x4diff --base: three-way diff, separating your edits from the author's updates.
+Added - x4modlist tracked: what your Nexus account follows, set against what is actually installed.
+Added - additions and removals are labelled, rather than left for you to infer.
+Fixed - a mod shipping its own md/ or aiscripts/ no longer reads as a clean pass.
+Fixed - cross-mod script patches were missed by the disclosure, and were validated by nothing at all.
+Fixed - x4effective dump no longer reports a wrong form as a confident absence.
+Fixed - three-way diff ignored --file, and a nested overlay is now compared against the mod it patches.
+Changed - the cheap script check now runs on every validate, not only under --update.
+
+
+---------------------------------------------------------------------
+ VERSION 2.8.0
+---------------------------------------------------------------------
+Added - x4save: read a savegame, and say what removing a mod would silently lose.
+Fixed - CI had never once started a JVM, so the vendored BaseX jar was shipping untested.
+Fixed - setup.sh never checked for Java, while the README promised that it did.
+Fixed - an effective store could be stamped with a world it was never built from.
+Changed - provenance now names the source that WON, not the one that introduced the value.
