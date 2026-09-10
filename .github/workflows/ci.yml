@@ -527,7 +527,32 @@ jobs:
           # ** Re-read the per-JOB conclusion after the first push and take CI's
           # numbers over these. ** `gh api .../runs/<id>/jobs` -- never the run
           # conclusion, which reported success while ubuntu FAILED in run 33994180317.
-          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '70' || '59' }}
+          #
+          # ** RE-MEASURED 2026-09-09 from run 34421093364, and it happened AGAIN. **
+          # OBSERVED: windows 59, ubuntu 71. So ubuntu failed this step on the CEILING
+          # with 1,631 passed and ZERO failed, and windows sat at exactly 59 of 59 --
+          # the identical zero-headroom state this comment describes two paragraphs up
+          # and calls "the reason the margin is stated rather than assumed". Twice now,
+          # the same way: the numbers were INFERRED (56 + 11) instead of read off a run.
+          #
+          # Both breaches shipped in v3.1.0 unseen, because this step never executed --
+          # the fuzzer failed at step 11 and everything after it was skipped.
+          #
+          # Every one of ubuntu's 71 was CLASSIFIED before raising anything, buckets
+          # summing to 71 of 71, so this is not a ceiling raised to silence a signal:
+          #    38  no X4 install and no reference tree on the runner
+          #    12  Windows-only behaviour, correctly skipped on Linux
+          #    18  a dev-only file absent from the public mirror
+          #     3  no registry configured, so the guard has nothing to guard
+          # None is a test going dormant, which is the 125-at-once failure this ceiling
+          # exists to catch. The skips are what a bare runner legitimately produces.
+          #
+          # MEASURED + 3, the established margin, and MEASURED means read off a run:
+          #    windows  59 + 3 = 62
+          #    ubuntu   71 + 3 = 74
+          # Ubuntu is no longer inferred from windows. If either leg moves again, read
+          # the per-JOB number and classify the skips before touching these.
+          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '74' || '62' }}
         run: uv run --frozen python -m pytest -q -rs
 
       # THE COLD CHECK, WIRED. `scripts/verify-cold.sh` is named in five documents

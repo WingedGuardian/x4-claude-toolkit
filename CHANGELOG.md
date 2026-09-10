@@ -53,6 +53,31 @@ driven red against the exact defect it names.
 ⚠ **If you are on Linux or macOS, `install.ps1` from v3.1.0 cannot have worked.**
 `install.sh` was never affected.
 
+### Fixed — the CI skip ceiling failed a leg that had zero failures
+
+With the installer fixed, ubuntu ran clean — **1,631 passed, 0 failed** — and the step
+still exited 1. The ceiling: `X4_MAX_SKIPS` is 70 for ubuntu and the run legitimately
+skips **71**. Windows sat at exactly **59 of 59**, i.e. one further skip from failing
+the gating leg on a ceiling rather than on a defect.
+
+That is the second time for this pair, and its own comment describes the first — *"THE
+OLD 56 WAS EXACTLY AT THE MEASUREMENT, so the gating Windows leg had ZERO headroom…
+which is the reason the margin is stated rather than assumed."* Both times the numbers
+were **inferred** (`56 + 11` for ubuntu) rather than read off a run, and the same
+comment already said to *"take CI's numbers over these"*.
+
+Both breaches shipped in v3.1.0 unseen, for the same reason as the installer: this step
+never executed, because the fuzzer failed eleven steps earlier.
+
+**Every one of ubuntu's 71 skips was classified before anything was raised**, buckets
+summing to 71 of 71 — 38 no X4 install or reference tree, 12 Windows-only behaviour,
+18 a dev-only file absent from the public mirror, 3 no registry configured. None is a
+test going dormant, which is the 125-at-once failure the ceiling exists to catch. So
+the ceiling was raised because the measurement moved, not to silence a signal.
+
+Now **measured + 3** on both legs, where measured means read off a run: windows 62,
+ubuntu 74. Ubuntu is no longer inferred from windows.
+
 ### Fixed — the fuzzer's control anchor died in an ordinary refactor, for the third time
 
 `plant_known_hole()` re-creates the pre-fix scanner so the run can prove it is capable
