@@ -18,7 +18,7 @@ updates. The changelog file carries a block for each of them.
 | `nexus-2186-CURRENT-description.editor.bbcode.txt` | the live page before the edits, for rollback |
 | `nexus-2186-CURRENT-description.txt` | the same, exactly as the API returned it (the authoritative copy) |
 | `nexus-2186-CURRENT.json` | the raw API response: dated evidence of the pre-update state |
-| the bundle | **not built yet — see "Before you upload" below** |
+| `X4.Foundations.Claude.Code.Toolkit.v3.1.1.zip` | **the upload.** 6,777,495 bytes, sha256 `5a3453cf3bde638076537db4a069a97d6f3bb6664bfafffa615dc6f426c37bbd`. Not in this folder — get it from the [GitHub release](https://github.com/WingedGuardian/x4-claude-toolkit/releases/tag/v3.1.1), or rebuild it with `bash scripts/build-release.sh v3.1.1`. |
 
 The rollback copy is derived from the API response by stripping the per-line `<br />`
 and decoding `&amp;`/`&lt;`/`&gt;`/`&#92;` in a **single** pass (a sequential decode
@@ -62,18 +62,19 @@ twelve tools above" (11 + BaseX corpus search) are both still correct.
 Every edit is anchored and **refuses** rather than guessing if its anchor is not found
 exactly once.
 
-## ⚠ Before you upload
+## ✅ v3.1.1 is released — this pack is ready to paste
 
-**This pack is for v3.1.1, which is not built or tagged yet.** v3.1.0 is public on
-GitHub, and it should not be what goes to Nexus: CI was **red on both legs at the
-v3.1.0 tag**, on the step that runs `scripts/fuzz-guard.py` — the differential fuzzer
-those release notes tell users to run themselves. It exits 2 for everyone. The three
-defects behind that are fixed and verified (see `CHANGELOG.md`), but the release itself
-still needs your go-ahead, a tag, a bundle built from that tag, and a CI run observed
-green before any of it reaches Nexus.
+Published 2026-09-10T02:14:45Z and confirmed **Latest** by re-querying the API, not by
+the create command's word. The asset was **downloaded back** and is byte-identical to
+the local build: 6,777,495 bytes, sha256 `5a3453cf…c37bbd`, 276 files, and **0
+`release/` entries** — these Nexus artifacts are deliberately kept out of the shipped
+zip, so no installing user gets the maintainer's rollback text.
 
-So the bundle row above is deliberately empty. It gets its size and sha256 when the
-release is cut, and this file is updated in the same step.
+Getting there took five CI rounds, because fixing the fuzzer unmasked defects behind
+it — `install.ps1` was 100% dead on Linux and macOS, the skip ceiling failed a leg with
+zero failures, and the bundle verifier refused a correct bundle. All are in the
+changelog above. The final run was green on **every job, read per job**, with the Linux
+leg able to fail a build for the first time.
 
 ## The upload is yours
 
