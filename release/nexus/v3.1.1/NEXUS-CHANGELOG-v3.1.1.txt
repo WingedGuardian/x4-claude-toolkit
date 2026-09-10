@@ -9,11 +9,14 @@
 ---------------------------------------------------------------------
  VERSION 3.1.1
 ---------------------------------------------------------------------
-Fixed - the bundled guard fuzzer, which the 3.1.0 notes tell you to run yourself, refused to run at all: a control it plants to prove it can still fail had been orphaned by an ordinary refactor. It exited 2 for everyone, and both CI legs were red on the 3.1.0 tag.
-Fixed - with that cleared, the same tool reported a second gap it had been unable to reach: the rule added in 3.1.0 to close a total bypass of all three hard blocks was the one rule nothing ever tested.
-Fixed - and once it had a test, a live bypass: a command name with a substitution buried inside it, aimed at your game folder, was ALLOWED. The plain spelling was correctly blocked.
-Changed - the fuzzer's controls are now anchored to the rule they test rather than to a line of the file, so a refactor cannot silently disarm them, and two new tests catch a dead control in milliseconds instead of in a CI leg nobody reads.
-Verified - fuzzer rc 0 over 2,675 mutants and 25 seeds, with its control planted and rediscovering 126 known bypasses, 22 of 24 guard rules seed-covered and the two unreachable ones named; 160 hook probes; the full suite green.
+Fixed - install.ps1 was 100% dead on Linux and macOS, for both install methods, and 3.1.0 shipped it that way. It looked for Git Bash in a Windows-only folder and crashed before reaching its first decision. install.sh was never affected.
+Fixed - the guard rule added in 3.1.0 to close a total bypass of all three hard blocks was the one rule nothing ever tested. Given a test, it failed one immediately: a command name with a substitution buried inside a path, aimed at your game folder, was ALLOWED. The plain spelling was correctly blocked.
+Fixed - the bundled guard fuzzer, which the 3.1.0 notes tell you to run yourself, refused to run at all: a control it plants to prove it can still fail had been orphaned by an ordinary refactor. It exited with an error for everyone, and it is what hid the other three.
+Fixed - the release bundler refused to package a correct release, and separately the test suite's own skip limit failed a run that had zero failures.
+Changed - the Linux side of continuous integration can fail a build now, for the first time. It was set to "experimental", which means its result was reported and then ignored, so every problem above passed as a green release. Two Linux-only checks are enforced from this version on.
+Changed - the fuzzer's controls are anchored to the rule they test rather than to a line of a file, so a refactor cannot silently disarm them, and new tests catch a dead control in milliseconds rather than in a build log nobody reads.
+Note - if you install on Linux or macOS, use install.sh, and re-download this version if you took 3.1.0. Windows users were unaffected by the installer fault.
+Verified - fuzzer clean over 2,675 mutants with its control live and rediscovering 126 known bypasses, 22 of 24 guard rules covered by a test case and the two unreachable ones named; 160 hook probes; 48 of 48 deliberate sabotages of the merge engine caught; a cold clone with no game installed clean; every continuous-integration job green on both Windows and Linux, checked job by job.
 
 
 ---------------------------------------------------------------------

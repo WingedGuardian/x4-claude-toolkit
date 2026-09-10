@@ -4,9 +4,9 @@
 
  LIVE  nexus.com mod 2186, version 2.7.0, description fetched via the API
        2026-09-09 -- 177 lines.
- NEW   the v3.1.1 description in this folder -- 232 lines.
+ NEW   the v3.1.1 description in this folder -- 236 lines.
 
- 61 line(s) added, 6 removed or rewritten.
+ 65 line(s) added, 6 removed or rewritten.
 
  The base is the v3.0.0 description that was written and NEVER UPLOADED, so
  everything the v3.0.0 pack added is in here too -- the DevBench credit, the
@@ -21,7 +21,7 @@
 +
  [center][url=https://github.com/WingedGuardian/x4-claude-toolkit][size=6][b]GitHub Repository[/b][/size][/url][/center]
  [center](May have more recent/nightly versions)[/center]
-@@ -10,4 +11,48 @@
+@@ -10,4 +11,52 @@
  Most people who try to use an AI assistant for modding spend days wiring up tools, explaining the engine, and building guardrails so it doesn't wreck their install. [b]This toolkit ships with all of that already solved[/b] -- plus a suite of X4-specific tools, written for this environment, that answer questions no off-the-shelf tool can.
  
 +[color=#e06666][size=5][b]New in v3.1 -- the guard that inspects every command got taken apart[/b][/size][/color]
@@ -40,7 +40,11 @@
 +
 +[b]Nine of the toolkit's own tests could not fail.[/b] A review pass deliberately broke the code and measured that [b]four already-fixed defects could be put back with the entire suite green[/b] -- so the suite was not merely missing new bugs, it was not holding this release's own repairs in place. All nine are fixed, each proven to go red against the exact defect it is supposed to catch.
 +
-+[b]v3.1.1[/b] follows immediately, and it exists because the fuzzer above refused to run: a control it plants to prove it can still fail had been orphaned by a routine refactor, so it exited with an error for everyone and both CI legs were red on the v3.1.0 tag. Clearing that unmasked the next thing behind it -- the rule added to close the substituted-name bypass had no test case of its own -- and writing one found a live hole: a command name with a substitution buried inside it, aimed at your game folder, was ALLOWED. All three are fixed, the fuzzer's controls are now anchored to the rule they test rather than to a line of a file, and two new tests catch a dead control in milliseconds instead of in a CI leg nobody reads.
++[b]v3.1.1 follows immediately, and it is the more uncomfortable half.[/b] The fuzzer described above [i]refused to run at all[/i]: a control it plants to prove it can still fail had been orphaned by a routine refactor, so it exited with an error for everyone, and both continuous-integration legs were red on the v3.1.0 tag. Nobody read them. Clearing that unmasked three more things it had been hiding, each one invisible until the one in front of it was fixed.
++
++[b]The worst of them: [font=Courier New]install.ps1[/font] was 100% dead on Linux and macOS[/b] -- both install methods, and v3.1.0 shipped it that way. It looked for Git Bash in a Windows-only folder and crashed before reaching its first decision. [b]If you are on Linux or macOS, use [font=Courier New]install.sh[/font][/b]; it was never affected. Then the guard rule added in v3.1.0 to close a total bypass of all three hard blocks turned out to be the one rule nothing ever tested -- and given a test, it failed one immediately: a command name with a substitution buried inside a path, aimed at your game folder, was ALLOWED, while the plain spelling was correctly blocked. After that, the release bundler refused to package a correct release, and the test suite's own skip limit failed a run that had zero failures.
++
++[b]They all hid in the same place, and that is the part worth telling you.[/b] The Linux side of continuous integration was marked [i]experimental[/i], which means its result was reported and then ignored -- so a run with a red Linux leg still concluded [i]success[/i], and every fault above passed as a green release. That flag is now off. Two Linux-only checks, including the bash installer's global method and the clean-clone verification, are enforced from this version on. A green that could not have gone red was never a green.
 +
 +[color=#e06666][size=5][b]Also new in v3.0 -- ask the running game, and a guard that turned out to be walkable[/b][/size][/color]
 +
@@ -70,21 +74,21 @@
 +
  [color=#e06666][size=5][b]New in v2.7 -- the tools tell you WHICH mod moved[/b][/size][/color]
  
-@@ -34,5 +79,5 @@
+@@ -34,5 +83,5 @@
  [color=#e06666][size=5][b]The Tools -- and What Each One Does For You[/b][/size][/color]
  
 -Eight command-line tools are bundled and pre-wired. No need to stress if it looks like a foreign language--Claude drives them for you as it needs them; though you can also run them yourself. They all read [b]packed[/b] mods ([font=Courier New].cat[/font]/[font=Courier New].dat[/font], VRO included) as well as loose ones.
 +Eleven command-line tools are bundled and pre-wired. No need to stress if it looks like a foreign language--Claude drives them for you as it needs them; though you can also run them yourself. They all read [b]packed[/b] mods ([font=Courier New].cat[/font]/[font=Courier New].dat[/font], VRO included) as well as loose ones.
  
  [size=4][color=#e06666]x4validate[/color] -- the flagship: catch the silent no-op before you launch[/size]
-@@ -43,5 +88,5 @@
+@@ -43,5 +92,5 @@
  [*][b][font=Courier New]--tier b[/font][/b] merges your [i]installed[/i] modlist in load order, so cross-mod patches resolve for real -- and it catches the failure that looks like success: content [b]another mod removed[/b]. (Real case from development: one mod removes a vanilla macro and never re-adds it, orphaning it for six other mods -- 415 engine errors that base+DLC validation calls fine.)[/*]
  [*][b]It models the X4 patch rules a naive XML merge gets wrong[/b], each of which otherwise produces a silent no-op: a [font=Courier New]sel=[/font] matching multiple nodes applies [b]nothing[/b] (RFC 5261 -- 236 such ops were silently skipped across one real modlist), [font=Courier New]if=[/font] guards gate an op before the selector, and [font=Courier New]extensions/<target>/<rel>[/font] paths belong to that mod, not the base game.[/*]
 -[*][b]Validated against the engine, not against itself[/b] -- a test harness replays every patch op X4's own log rejected and requires the same verdict (currently 234/234 agreement, zero false OKs).[/*]
 +[*][b]Validated against the engine, not against itself[/b] -- a test harness replays every patch op X4's own log rejected and requires the same verdict (the bar is zero disagreements and zero false OKs; the count is whatever your own log and modlist produce).[/*]
  [/list]
  [size=4][color=#e06666]x4effective[/color] -- "xEdit for X4": every final value, and who set it[/size]
-@@ -66,4 +111,13 @@
+@@ -66,4 +115,13 @@
  Semantic XML diff between two versions of a mod, with multi-baseline support -- built for the "I modified this mod months ago and the author just updated it" problem.
  
 +[size=4][color=#e06666]x4debug[/color] -- what did the ENGINE actually complain about?[/size]
@@ -98,11 +102,11 @@
 +
  [size=4][color=#e06666]BaseX corpus search[/color] -- the superweapon: what does this look like across EVERYTHING?[/size]
  XQuery over the whole indexed corpus, for the questions that span files rather than living in one: what values does this attribute take across every ship? who references this macro? which mods define a ware nobody produces? It is the only tool here that can back a [i]negative[/i], because it states the denominator it searched. Optional -- needs Java 17+ and a one-off index build.
-@@ -75,15 +129,16 @@
+@@ -75,15 +133,16 @@
  [size=4]Everything Included:[/size]
  [list]
 -[*][b]The nine tools above[/b] -- bundled, pre-wired, and driven by Claude on your behalf. [b]638 automated tests and 26 gates[/b] that run against a real modlist and X4's own engine log, not against fixtures.[/*]
-+[*][b]The twelve tools above[/b] -- bundled, pre-wired, and driven by Claude on your behalf. [b]1,718 automated tests and 29 gates[/b] that run against a real modlist and X4's own engine log, not against fixtures.[/*]
++[*][b]The twelve tools above[/b] -- bundled, pre-wired, and driven by Claude on your behalf. [b]1,721 automated tests and 29 gates[/b] that run against a real modlist and X4's own engine log, not against fixtures.[/*]
  [*][b]X4 engine knowledge, pre-loaded[/b] -- XML schema patterns, diff-patch idioms, the [b]extension merge and load-order model[/b] (what overrides vs what unions -- get this wrong and your patch silently does nothing), the [b]7.x -> 9.0 migration map[/b] (the [font=Courier New]space=[/font] requirement, the dead Lua_Loader, Protected UI Mode), and a [b]mechanics interlock map[/b] for reasoning about balance ripples.[/*]
  [*][b]A 7.x -> 9.0 migration checker[/b] -- point it at an old mod and get the mechanical breaks listed, schema-checked, before you start hand-porting.[/*]
  [*][b]Safety hooks[/b] -- Claude can't write to your unpacked reference tree, can't edit [font=Courier New].cat[/font]/[font=Courier New].dat[/font] directly, and must ask before touching mod manifests or your save profile.[/*]
@@ -118,7 +122,7 @@
 +[*][b]An optional game extension[/b] -- a small mod ([font=Courier New]x4_toolkit_helper[/font]) that opens the live query channel to a running session. Optional, and the only piece of this that goes into your extensions folder.[/*]
  [*][b]Guided cross-platform installer[/b] -- three layouts, auto-detects your game, profile and XRCatTool, and writes the result to a config file. Nothing is hardcoded; [font=Courier New]x4validate --paths[/font] prints exactly what it resolved.[/*]
  [/list]
-@@ -167,5 +222,5 @@
+@@ -167,5 +226,5 @@
  [*][b]jq[/b] -- small CLI needed by the safety hooks (setup installs it via winget/apt/brew)[/*]
  [*][b]Wine[/b] -- Linux/macOS only, to run Egosoft's XRCatTool (a Windows .exe)[/*]
 -[*][b]uv + Python 3.13[/b] -- runs the bundled tools (setup helps you install)[/*]

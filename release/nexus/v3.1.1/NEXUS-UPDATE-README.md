@@ -14,7 +14,7 @@ updates. The changelog file carries a block for each of them.
 |---|---|
 | `NEXUS-CHANGELOG-v3.1.1.txt` | changelog entries, **one item per line**, in a block per version: 3.1.1 / 3.1.0 / 3.0.0 / 2.9.0 / 2.8.0 |
 | `NEXUS-DESCRIPTION-v3.1.1.bbcode.txt` | the full updated description, ready to paste |
-| `NEXUS-DESCRIPTION-DIFF.txt` | exactly what changes vs the live page — **61 lines added, 6 rewritten, 0 lost** |
+| `NEXUS-DESCRIPTION-DIFF.txt` | exactly what changes vs the live page — **65 lines added, 6 rewritten, 0 lost** |
 | `nexus-2186-CURRENT-description.editor.bbcode.txt` | the live page before the edits, for rollback |
 | `nexus-2186-CURRENT-description.txt` | the same, exactly as the API returned it (the authoritative copy) |
 | `nexus-2186-CURRENT.json` | the raw API response: dated evidence of the pre-update state |
@@ -52,7 +52,7 @@ a claim we cannot support:
 
 | was | now | how it was measured |
 |---|---|---|
-| 1,387 automated tests and 29 gates | **1,718** tests and 29 gates | full suite: 1,704 passed, 14 skipped, rc 0 |
+| 1,387 automated tests and 29 gates | **1,721** tests and 29 gates | full suite at the released tree: 1,707 passed, 14 skipped, rc 0 |
 | 138 hook probes | **160** probes | `scripts/test-hooks.sh`: 160 passed, 0 failed, 0 skipped |
 | "currently 241/241 agreement" | the **bar**, not a count | that number is machine-local — it is measured against *your* `debug.txt` and *your* modlist. `gates/README.md` says so itself: "the BARS are what transfer, not the counts." |
 
