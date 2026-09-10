@@ -74,8 +74,60 @@ members = {i.filename for i in z.infolist() if not i.is_dir()}
 out = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only", ref],
                      capture_output=True, check=True).stdout
 tracked = {p.decode("utf-8", "surrogateescape") for p in out.split(b"\x00") if p}
+
+# EXPORT-IGNORE. `git archive` omits paths marked `export-ignore`, so a plain
+# tracked-set comparison calls every one of them MISSING and refuses a CORRECT
+# bundle -- which is exactly what happened the first time `release/ export-ignore`
+# was added, on a release that was otherwise ready to ship.
+#
+# Comparing the zip against `git archive` output instead would be CIRCULAR: the zip
+# IS git archive output, so the check would compare the tool to itself and could
+# never go red. The tracked set stays the reference, minus what the REF omits.
+#
+# ASK THE RIGHT QUESTION. `git check-attr export-ignore -- <file>` answers
+# "unspecified" for every file under `release/`: the pattern names the DIRECTORY and
+# git archive prunes it before descending, so the per-file query is an adjacent
+# question that would exclude nothing and refuse everything. Ancestors are queried
+# too, in the trailing-slash form the directory pattern actually matches.
+#
+# `--source=<ref>` reads the attributes AS OF THE REF -- what git archive used. The
+# working tree's .gitattributes may legitimately differ, and does whenever an older
+# tag is verified (v3.0.0 predates this very rule). If git is too old for --source,
+# REFUSE: guessing with the wrong attributes gives a false verdict in either
+# direction, and an unverified bundle is not shippable.
+probe = subprocess.run(["git", "check-attr", "--source", ref, "export-ignore", "--",
+                        ".gitattributes"], capture_output=True)
+if probe.returncode != 0:
+    print("  REFUSING: this git cannot do `check-attr --source`, so which paths "
+          "`git archive` omitted is undeterminable for %s (git 2.40+ needed)." % ref,
+          file=sys.stderr)
+    sys.exit(1)
+
+def _ancestors(path):
+    """The path itself, plus every parent directory in trailing-slash form."""
+    yield path
+    parts = path.split("/")[:-1]
+    for k in range(1, len(parts) + 1):
+        yield "/".join(parts[:k]) + "/"
+
+ignored = set()
+queries = sorted({q for t in tracked for q in _ancestors(t)})
+if queries:
+    payload = b"\x00".join(q.encode("utf-8", "surrogateescape") for q in queries)
+    ca = subprocess.run(["git", "check-attr", "--source", ref, "-z", "--stdin",
+                         "export-ignore"], input=payload,
+                        capture_output=True, check=True).stdout
+    f = ca.split(b"\x00")
+    # -z output is a flat NUL stream of (path, attr, value) triples.
+    setp = {f[k].decode("utf-8", "surrogateescape")
+            for k in range(0, len(f) - 2, 3) if f[k + 2] == b"set"}
+    if setp:
+        ignored = {t for t in tracked if any(a in setp for a in _ancestors(t))}
+        tracked = tracked - ignored
+
 missing, extra = sorted(tracked - members), sorted(members - tracked)
-print("  members=%d  tracked at %s=%d" % (len(members), ref, len(tracked)))
+print("  members=%d  tracked at %s=%d (export-ignore excluded %d)"
+      % (len(members), ref, len(tracked), len(ignored)))
 if missing or extra:
     for p in missing[:20]:
         print("    MISSING FROM THE BUNDLE: " + p, file=sys.stderr)

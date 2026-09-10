@@ -99,6 +99,31 @@ global` in bash, and the cold-clone verification. Both were previously "green th
 could not go red" — and one of them is the bash twin of the very method whose
 PowerShell side shipped v3.0.0 completely broken because no leg could say so.
 
+### Fixed — the bundle verifier refused a correct bundle over `export-ignore`
+
+`build-release.sh` checks the zip's member set against the ref's tracked set, in both
+directions, because "did a zip appear" is not "is what is in it what the tag says".
+Adding `release/ export-ignore` made `git archive` legitimately omit 14 files, and the
+verifier called every one of them **MISSING** and refused to ship — rc 1 on a bundle
+that was exactly right.
+
+The tempting fix is circular: comparing the zip against `git archive` output would
+compare the tool to itself and could never go red. So the tracked set stays the
+reference, minus what the ref says to omit.
+
+Two things had to be right, and the first was an adjacent-question trap of the kind
+this codebase keeps paying for. `git check-attr export-ignore -- <file>` answers
+**"unspecified"** for every file under `release/`: the pattern names the DIRECTORY,
+and `git archive` prunes it before descending. Querying files alone would have
+excluded nothing and refused everything, while looking like a fix. Ancestors are now
+queried too, in the trailing-slash form the pattern actually matches. Second,
+`--source=<ref>` reads the attributes **as of the ref** — the working tree's may
+legitimately differ, and does whenever an older tag is verified, since v3.0.0 predates
+this rule entirely. Too old a git REFUSES rather than guessing.
+
+The control still holds: `--selftest` reproduces the published v3.0.0 asset byte for
+byte, 258 of 258 members, export-ignore excluding 0 there.
+
 ### Fixed — the fuzzer's control anchor died in an ordinary refactor, for the third time
 
 `plant_known_hole()` re-creates the pre-fix scanner so the run can prove it is capable
