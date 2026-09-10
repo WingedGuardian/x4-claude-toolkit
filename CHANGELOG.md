@@ -78,6 +78,27 @@ the ceiling was raised because the measurement moved, not to silence a signal.
 Now **measured + 3** on both legs, where measured means read off a run: windows 62,
 ubuntu 74. Ubuntu is no longer inferred from windows.
 
+### Changed — the Linux leg can fail a build now, for the first time
+
+`ubuntu-latest` was `experimental: true`, and `continue-on-error` is keyed on that
+flag. So its verdict was a number nobody read: the **run** concludes `success` with
+that job red, and `gh run watch --exit-status` returns **0**. Every defect in this
+release hid behind exactly that.
+
+It is now `experimental: false`, on the condition its own comment set — *"promote only
+once ubuntu is observed green on this code"* — which took three rounds to satisfy, and
+each round is the argument:
+
+1. the differential fuzzer exited 2 on an orphaned control anchor, which also masked
+   every step after it for an entire release;
+2. `install.ps1` was 100% dead on POSIX, 21 tests red — caught **here and only here**;
+3. the skip ceiling failed a leg that had 1,631 passed and 0 failed.
+
+Two Linux-only checks are consequently **enforced for the first time**: `--method
+global` in bash, and the cold-clone verification. Both were previously "green that
+could not go red" — and one of them is the bash twin of the very method whose
+PowerShell side shipped v3.0.0 completely broken because no leg could say so.
+
 ### Fixed — the fuzzer's control anchor died in an ordinary refactor, for the third time
 
 `plant_known_hole()` re-creates the pre-fix scanner so the run can prove it is capable

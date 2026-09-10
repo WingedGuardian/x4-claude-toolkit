@@ -75,7 +75,25 @@ jobs:
             # conclusions (`gh api .../runs/<id>/jobs` -- the run conclusion said
             # success while ubuntu FAILED in 33994180317), and promote to
             # `experimental: false` only once ubuntu is observed green on this code.
-            experimental: true
+            #
+            # ** PROMOTED 2026-09-09. The condition above is met: run 34423… had
+            # tests (ubuntu-latest) = success, per JOB, 25 steps, 0 non-success. **
+            #
+            # It took three rounds to get there, and every one of them is the
+            # argument for this flag going away:
+            #   1. the differential fuzzer exited 2 -- an orphaned control anchor,
+            #      which also masked everything after step 11 for a whole release;
+            #   2. install.ps1 was 100% dead on POSIX, 21 tests red, caught HERE and
+            #      only here, on the leg that cannot fail a build;
+            #   3. the skip ceiling failed a leg that had 1,631 passed and 0 failed.
+            # All three shipped in v3.1.0 while the run said `success`, because
+            # `continue-on-error` turns this leg's verdict into a number nobody reads
+            # -- `gh run watch --exit-status` returned 0 with ubuntu red.
+            #
+            # The two Linux-only checks named above -- `--method global` in bash, and
+            # the cold-clone verification -- are consequently ENFORCED for the first
+            # time. That is the point: a green that could not go red is not a green.
+            experimental: false
 
     steps:
       - uses: actions/checkout@v4
