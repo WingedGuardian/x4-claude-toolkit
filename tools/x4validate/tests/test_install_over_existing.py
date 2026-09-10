@@ -110,7 +110,8 @@ def _fresh(tmp_path: pathlib.Path) -> pathlib.Path:
 
 def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra: str,
              method: str = "separate", from_dest: bool = False,
-             source: pathlib.Path | None = None, over_existing: bool = True):
+             source: pathlib.Path | None = None, over_existing: bool = True,
+             scrub: tuple = ()):
     """Run ONE of the two installers with identical intent.
 
     Parameterised rather than duplicated, because the point is that both reach the
@@ -174,6 +175,11 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     env["CLAUDE_CONFIG_DIR"] = fake_home.as_posix()
     env["HOME"] = tmp_path.as_posix()
     env["USERPROFILE"] = tmp_path.as_posix()
+    # `scrub` REMOVES variables, so a Windows box can reproduce a POSIX
+    # environment. Every name passed there is Windows-only, i.e. exactly
+    # $null under PowerShell on Linux and macOS.
+    for _name in scrub:
+        env.pop(_name, None)
     return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, env=env)
 
 
@@ -1200,3 +1206,111 @@ def test_an_UNPARSEABLE_global_settings_file_refuses_in_WORDS_not_a_stack_trace(
         "the refusal does not name the file or read as an error:\n%s" % out[-900:])
     assert (home / "settings.json").read_text(encoding="utf-8") == body, (
         "the unparseable settings.json was modified by a run that refused")
+
+
+# --- the installers must survive a POSIX environment, ON ANY RUNNER -------------------
+#
+# MEASURED 2026-09-09: install.ps1 was 100% dead under PowerShell on Linux, for BOTH
+# methods. Find-GitBash built its candidate array with
+# (Join-Path $env:LOCALAPPDATA 'Programs') INSIDE the array literal. LOCALAPPDATA is
+# Windows-only, so it threw "Cannot bind argument to parameter 'Path' because it is
+# null" before the `if ($base)` guard on the very next line could skip it -- the guard
+# protected the loop VARIABLE and not the EXPRESSION that produced it.
+#
+# 21 tests in this file already caught it, on the ubuntu leg only, where it is
+# invisible twice over: that leg is continue-on-error, so the RUN still concludes
+# success and even `gh run watch --exit-status` returns 0. It was then masked for a
+# whole release behind an earlier failing step, and shipped in v3.1.0.
+#
+# So this asserts it WITHOUT a POSIX runner: scrub the Windows-only variables and the
+# same code path is exercised on Windows. A defect only one leg can see, on a leg that
+# cannot fail the build, is a defect nothing sees.
+_WINDOWS_ONLY_ENV = ("LOCALAPPDATA", "APPDATA", "ProgramFiles", "ProgramFiles(x86)",
+                     "ProgramW6432", "USERPROFILE")
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_installer_survives_an_environment_with_no_WINDOWS_variables(installer, tmp_path):
+    """A POSIX box has none of these set. Neither installer may dereference one."""
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, scrub=_WINDOWS_ONLY_ENV)
+    out = r.stdout + r.stderr
+    assert "because it is null" not in out, (
+        "the installer dereferenced a Windows-only environment variable, which is "
+        "$null on every Linux and macOS runner:\n%s" % out[-1200:])
+    assert r.returncode == 0, (
+        "install failed with no Windows environment variables set (rc=%s). This is "
+        "what every POSIX user gets:\n%s" % (r.returncode, out[-1200:]))
+    assert (dest / "scripts").is_dir(), "reported success and copied no scripts/"
+
+
+# --- install.ps1's path helpers, called directly, with no Windows environment ---------
+#
+# The test above drives the installer end to end, and the harness pins all six paths --
+# so Detect-Profile returns at its first line and its Join-Path is never reached. That
+# left the SECOND POSIX null of 2026-09-09 uncovered: Detect-Profile and
+# Get-GlobalClaudeDir both built a path from $env:USERPROFILE, which is $null on Linux and
+# macOS, exactly as Find-GitBash did with LOCALAPPDATA.
+#
+# So this parses install.ps1 with PowerShell's own parser, defines every function it
+# declares, and CALLS the path-deriving ones with the Windows variables removed. It
+# needs no POSIX runner and no installed game, and it covers helpers this file's
+# end-to-end tests reach only by accident of which flags they happen to pass.
+_PATH_HELPERS = ("Get-UserHome", "Get-GlobalClaudeDir", "Detect-Profile", "Find-GitBash")
+
+_PROBE = r"""
+$ErrorActionPreference = 'Stop'
+foreach ($n in @('LOCALAPPDATA','APPDATA','ProgramFiles','ProgramFiles(x86)',
+                 'ProgramW6432','USERPROFILE')) {
+  Remove-Item -LiteralPath ('Env:' + $n) -ErrorAction SilentlyContinue
+}
+# install.ps1 declares $Profile / $Game / $Toolkit in its param() block, so inside
+# the script they are $null when not passed. Here there is no param() block, and
+# $Profile would otherwise resolve to PowerShell's AUTOMATIC $PROFILE -- which is
+# always set, so Detect-Profile returned at its first line and this probe could not
+# fail for it. MEASURED: three of four falsification twins went red, that one did not.
+$Profile = $null; $Game = $null; $Toolkit = $null
+$errs = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+         '__PS1__', [ref]$null, [ref]$errs)
+if ($errs) { Write-Output ('PARSE:' + $errs[0].Message); exit 3 }
+$fns = $ast.FindAll({ param($n) $n -is
+        [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+foreach ($f in $fns) { Invoke-Expression $f.Extent.Text }
+foreach ($name in @(__NAMES__)) {
+  if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
+    Write-Output ('MISSING:' + $name); continue
+  }
+  try { $null = & $name; Write-Output ('OK:' + $name) }
+  catch { Write-Output ('THREW:' + $name + ':' + $_.Exception.Message) }
+}
+"""
+
+
+def test_install_ps1_path_helpers_do_not_dereference_a_null_windows_variable(tmp_path):
+    exe = shutil.which("pwsh") or shutil.which("powershell")
+    if exe is None:
+        pytest.skip("no PowerShell on this machine")
+    names = ",".join("'%s'" % n for n in _PATH_HELPERS)
+    script = (_PROBE.replace("__PS1__", INSTALL_PS1.as_posix())
+                    .replace("__NAMES__", names))
+    sf = tmp_path / "probe-helpers.ps1"
+    sf.write_text(script, encoding="utf-8")
+    r = subprocess.run([exe, "-NoProfile", "-File", sf.as_posix()],
+                       capture_output=True, text=True)
+    out = (r.stdout or "") + (r.stderr or "")
+
+    threw = [ln for ln in out.splitlines() if ln.startswith("THREW:")]
+    assert not threw, (
+        "install.ps1 path helper(s) threw with no Windows environment variables set. "
+        "That is every Linux and macOS user:\n%s" % ("\n".join(threw)))
+
+    # DENOMINATOR. Without this the assertion above passes when nothing ran at all.
+    ok = [ln for ln in out.splitlines() if ln.startswith("OK:")]
+    missing = [ln for ln in out.splitlines() if ln.startswith("MISSING:")]
+    assert not missing, (
+        "a helper this test names no longer exists in install.ps1, so it was never "
+        "called: %s -- rename it here or drop it" % (", ".join(missing)))
+    assert len(ok) == len(_PATH_HELPERS), (
+        "expected %d helpers to be exercised, got %d. Full output:\n%s"
+        % (len(_PATH_HELPERS), len(ok), out[-1500:]))

@@ -12,6 +12,47 @@ the run for the released SHA. A local green is not CI's green.
 
 The fuzzer was right to refuse, and each refusal unmasked the next defect behind it.
 
+### Fixed — `install.ps1` was 100% dead on Linux and macOS, and v3.1.0 shipped it
+
+Unmasked by the fuzzer fix above: with CI able to get past step 11, the ubuntu leg ran
+"Run the suite with NO game installed" for the first time this arc and **21 tests
+failed**, `test_the_harness_can_install_at_all` — the denominator test — among them.
+Every one was `install.ps1`, both methods, rc 1:
+
+    install.ps1: Cannot bind argument to parameter 'Path' because it is null.
+
+`Find-GitBash` built its candidate list as
+
+    foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)},
+                        (Join-Path $env:LOCALAPPDATA 'Programs'))) {
+      if ($base) { ... }
+
+**The guard on the next line is correct and it is one level too late.** The ARRAY IS
+BUILT FIRST, so `Join-Path $env:LOCALAPPDATA 'Programs'` is evaluated before `if
+($base)` can skip it — and `LOCALAPPDATA` is Windows-only, i.e. `$null` under
+PowerShell on Linux and macOS. It protected the loop VARIABLE, not the EXPRESSION that
+produced it. `Find-GitBash` runs for every method, so the installer never reached its
+first decision on POSIX.
+
+Two more of the same class, found by reading the rest rather than by waiting for CI:
+`Get-GlobalClaudeDir` and `Detect-Profile` both built paths from bare
+`$env:USERPROFILE`. `install.sh` has always written `${USERPROFILE:-$HOME}`; a single
+`Get-UserHome` now carries that precedence, placed above its first caller because
+PowerShell defines a function when execution REACHES it.
+
+**How it stayed invisible is the more useful half.** 21 tests already covered this —
+on the ubuntu leg only, which is `continue-on-error: true`. So the run still concludes
+**success**, and `gh run watch --exit-status` returns **0**. That is why v3.1.0's own
+red legs read as a green run, and it is why this arc reads CI **per job**. Two tests
+now assert it with no POSIX runner at all: one drives both installers with the
+Windows-only variables scrubbed from the environment, and one parses `install.ps1`
+with PowerShell's own parser and CALLS its four path-deriving helpers directly, with a
+denominator so it cannot pass over having exercised nothing. Every clause of both was
+driven red against the exact defect it names.
+
+⚠ **If you are on Linux or macOS, `install.ps1` from v3.1.0 cannot have worked.**
+`install.sh` was never affected.
+
 ### Fixed — the fuzzer's control anchor died in an ordinary refactor, for the third time
 
 `plant_known_hole()` re-creates the pre-fix scanner so the run can prove it is capable

@@ -97,9 +97,19 @@ function Detect-Game {
   return $Game
 }
 
+# ONE implementation of "where is the user's home", for the same reason as
+# Get-GlobalClaudeDir below. `$env:USERPROFILE` is a WINDOWS-only variable: under
+# PowerShell on Linux and macOS it is $null, and `Join-Path $null '.claude'` throws
+# "Cannot bind argument to parameter 'Path' because it is null" -- which is exactly
+# how `-Method global` died on every POSIX runner. install.sh has always written
+# `${USERPROFILE:-$HOME}`; this is that same precedence, and nothing more.
+function Get-UserHome {
+  if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($env:HOME) { $env:HOME } else { $HOME }
+}
+
 function Detect-Profile {
   if ($Profile) { return $Profile }
-  $base = Join-Path $env:USERPROFILE 'Documents\Egosoft\X4'
+  $base = Join-Path (Get-UserHome) 'Documents\Egosoft\X4'
   if (Test-Path -LiteralPath $base) {
     $d = Get-ChildItem -Directory -LiteralPath $base | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($d) { return $d.FullName }
@@ -448,8 +458,15 @@ function Remove-TrailingSep([string]$p) {
 
 function Find-GitBash {
   $cands = @()
-  foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)},
-                      (Join-Path $env:LOCALAPPDATA 'Programs'))) {
+  # `if ($base)` below skips a null base correctly -- but the ARRAY IS BUILT FIRST, so
+  # `Join-Path $env:LOCALAPPDATA 'Programs'` was evaluated before that guard could run.
+  # LOCALAPPDATA is Windows-only, so under PowerShell on Linux/macOS this threw
+  # "Cannot bind argument to parameter 'Path' because it is null" -- out of Find-GitBash,
+  # which EVERY method calls. install.ps1 was 100% dead on POSIX for -Method separate
+  # and -Method global alike. The guard was one level too late: it protected the loop
+  # variable, not the expression that produced it.
+  $localPrograms = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs' } else { $null }
+  foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $localPrograms)) {
     if ($base) { $cands += (Join-Path $base 'Git\bin\bash.exe') }
   }
   foreach ($c in $cands) { if (Test-Path -LiteralPath $c) { return (Get-Command $c) } }
@@ -738,7 +755,7 @@ function Show-CopyPlan {
 # this file's history is a list of things that drifted because two places computed one
 # answer.
 function Get-GlobalClaudeDir {
-  if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
+  if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path (Get-UserHome) '.claude' }
 }
 
 function Assert-GlobalOverExisting($t) {
