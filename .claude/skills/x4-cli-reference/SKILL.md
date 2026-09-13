@@ -11,7 +11,7 @@ The exact surface of every toolkit CLI, generated from its own argparse help so 
 
 Run a CLI from `tools/x4validate` as `uv run <cli> ...`. The full `--help` of a CLI and of each of its subcommands is in `reference/<cli>.md` -- read it before composing a command line.
 
-11 CLIs, 43 subcommands.
+11 CLIs, 46 subcommands.
 
 | CLI | subcommand | what it does |
 |---|---|---|
@@ -40,6 +40,9 @@ Run a CLI from `tools/x4validate` as `uv run <cli> ...`. The full `--help` of a 
 | | `archive` | copy the dump OUT of uidata.xml, which X4 OVERWRITES on exit (ground truth has been lost this way once) |
 | | `mappings` | DERIVE candidate field mappings from a dump or a groundtruth TSV (proposals only - never auto-applied) |
 | | `query` | ask the RUNNING engine one question over the pipe |
+| | `pausestate` | READ whether the running game is paused, and whether THIS channel made the pause. Changes nothing; the safe check after a lost write reply |
+| | `pause` | WRITE: pause the running game. Refuses if it is already paused; exit 0 only when the engine reads back paused |
+| | `unpause` | WRITE: undo a pause THIS channel made. Refuses anyone else's pause; exit 0 only when the engine reads back running |
 | | `harvest` | ask the RUNNING engine EVERYTHING we can think to ask, in ONE connection, and write it down |
 | | `groundtruth` | harvest the engine's DERIVED values live and WRITE THEM DOWN (the fixture any future traversal must reproduce) |
 | | `ramp` | MEASURE the message-size cap. An over-long message does NOT truncate -- it TEARS THE PIPE DOWN, costing the whole connection (F74, corrected 2026-08-29). Bounded below at 64,000 bytes; the ceiling above that is unmeasured |

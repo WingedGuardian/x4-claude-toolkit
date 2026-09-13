@@ -4,12 +4,12 @@
 
 ```text
 usage: x4live [-h] [--version] [--file FILE]
-              {dump,extensions,errors,oracle,archive,mappings,query,harvest,groundtruth,ramp} ...
+              {dump,extensions,errors,oracle,archive,mappings,query,pausestate,pause,unpause,harvest,groundtruth,ramp} ...
 
 Read what the running engine saw, out of the profile's uidata.xml, and diff it against our model.
 
 positional arguments:
-  {dump,extensions,errors,oracle,archive,mappings,query,harvest,groundtruth,ramp}
+  {dump,extensions,errors,oracle,archive,mappings,query,pausestate,pause,unpause,harvest,groundtruth,ramp}
     dump                what the probe captured, with its denominators
     extensions          the engine's extension list, diffed PER ITEM
     errors              the engine's own error log, as captured
@@ -19,6 +19,12 @@ positional arguments:
     mappings            DERIVE candidate field mappings from a dump or a groundtruth TSV
                         (proposals only - never auto-applied)
     query               ask the RUNNING engine one question over the pipe
+    pausestate          READ whether the running game is paused, and whether THIS channel made the
+                        pause. Changes nothing; the safe check after a lost write reply
+    pause               WRITE: pause the running game. Refuses if it is already paused; exit 0
+                        only when the engine reads back paused
+    unpause             WRITE: undo a pause THIS channel made. Refuses anyone else's pause; exit 0
+                        only when the engine reads back running
     harvest             ask the RUNNING engine EVERYTHING we can think to ask, in ONE connection,
                         and write it down
     groundtruth         harvest the engine's DERIVED values live and WRITE THEM DOWN (the fixture
@@ -112,17 +118,18 @@ usage: x4live query [-h] [--pipe PIPE] [--timeout TIMEOUT] verb ...
 positional arguments:
   verb               ping | probe | containerprobe | censusprobe | galaxyprobe | echo | errors |
                      ext | macro | globals | player | component | objects | stations | ships |
-                     compare | recon. START WITH `probe`: it reports build= (is the game running
-                     the file on disk) and loaded_at= (when this chunk last ran -- a UI reload
-                     empties the id allowlist, and both alt-enter and loading a save cause one,
-                     while the build stays the same). TWO TOKEN KINDS, never interconverted: an
-                     OBJECT id looks like `33556742ULL`, a SECTOR token looks like `ID: 7479`
-                     (quote it -- it contains a space) and comes from `player`. Sector tokens are
-                     NOT stable across launches; never save one. `objects <sector|->
-                     [ship|station|all] [faction] [--hidden] [--wide]` is the enumeration core;
-                     `stations`/`ships <faction> [sector]` are wrappers over it. Rows are
-                     id|class|name|owner|sector|x,y,z|flags where flags is k=known d=docked
-                     m=masstraffic u=unit w=wreck e=enemy and a trailing v for vanilla's
+                     compare | recon | pausestate. `pause` and `unpause` are WRITES and are
+                     refused here: use `x4live pause` / `x4live unpause`. START WITH `probe`: it
+                     reports build= (is the game running the file on disk) and loaded_at= (when
+                     this chunk last ran -- a UI reload empties the id allowlist, and both alt-
+                     enter and loading a save cause one, while the build stays the same). TWO
+                     TOKEN KINDS, never interconverted: an OBJECT id looks like `33556742ULL`, a
+                     SECTOR token looks like `ID: 7479` (quote it -- it contains a space) and
+                     comes from `player`. Sector tokens are NOT stable across launches; never save
+                     one. `objects <sector|-> [ship|station|all] [faction] [--hidden] [--wide]` is
+                     the enumeration core; `stations`/`ships <faction> [sector]` are wrappers over
+                     it. Rows are id|class|name|owner|sector|x,y,z|flags where flags is k=known
+                     d=docked m=masstraffic u=unit w=wreck e=enemy and a trailing v for vanilla's
                      isObjectValid verdict (? = undecidable). NOT A CENSUS: ownerless objects are
                      invisible to any owner query, hidden factions need --hidden, and ~93% of rows
                      are Unknown because names are player-knowledge -- ids, positions and flags
@@ -136,6 +143,39 @@ options:
   -h, --help         show this help message and exit
   --pipe PIPE        pipe name (default: $X4_LIVE_PIPE or built-in)
   --timeout TIMEOUT  seconds to wait for the game, and for each reply (default: 10.0)
+```
+
+## `x4live pausestate`
+
+```text
+usage: x4live pausestate [-h] [--pipe PIPE] [--timeout TIMEOUT]
+
+options:
+  -h, --help         show this help message and exit
+  --pipe PIPE        pipe name (default: $X4_LIVE_PIPE or built-in)
+  --timeout TIMEOUT  seconds to wait for the game, and for the reply
+```
+
+## `x4live pause`
+
+```text
+usage: x4live pause [-h] [--pipe PIPE] [--timeout TIMEOUT]
+
+options:
+  -h, --help         show this help message and exit
+  --pipe PIPE        pipe name (default: $X4_LIVE_PIPE or built-in)
+  --timeout TIMEOUT  seconds to wait for the game, and for the reply
+```
+
+## `x4live unpause`
+
+```text
+usage: x4live unpause [-h] [--pipe PIPE] [--timeout TIMEOUT]
+
+options:
+  -h, --help         show this help message and exit
+  --pipe PIPE        pipe name (default: $X4_LIVE_PIPE or built-in)
+  --timeout TIMEOUT  seconds to wait for the game, and for the reply
 ```
 
 ## `x4live harvest`

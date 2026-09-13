@@ -46,6 +46,9 @@ from the output.
 | **The population drifts by tens of objects per minute** | two separate queries cannot be diffed. Use the verb that compares inside one frame. |
 | **An over-long reply tears the pipe down** | it does not truncate. Every verb caps itself and says how many rows it omitted — read the header, not the row count. |
 | **An error caught inside the probe never reaches `debug.txt`** | the pipe reply is the only record, so do not conclude "no error" from the engine log |
+| **`pause` and `unpause` change the game the user has open** | run them only when the user asked. The exit code is the engine's READ-BACK: 0 verified, 1 refused with nothing changed, 3 do not trust the state |
+| **`unpause` undoes only a pause THIS channel made** | it refuses the player's or a menu's pause. A UI reload forgets which pause was ours, and an unpause whose read-back still shows paused gives up its claim, so in both cases the pause is undone IN GAME, never by retrying |
+| **A write whose reply was lost may still have landed** | the command is sent before the reply is read and is never resent. Run `pausestate` before anything else, never a second `pause` |
 
 ## Read the header, not the rows
 
