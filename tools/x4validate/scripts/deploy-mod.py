@@ -16,16 +16,20 @@ WHY THIS EXISTS
     This script never removes a directory. It diffs the two trees, copies what is new or
     changed, and unlinks orphans one named file at a time after printing them.
 
-GUARDS, in order. Any failure raises `Refused` before a single byte is written:
+GUARDS, in order. Any failure raises `Refused` before a single byte is written, and with
+several mods EVERY mod's guards run before ANY mod is written:
     1. the mod is one this repo SHIPS: a folder under `mods/` carrying a content.xml
-    2. the extensions root resolves, and is not inside the user PROFILE -- dependencies
-       resolve only within one extensions root, so a profile deploy makes every
-       dependency read as MISSING
-    3. the destination is DIRECTLY under that root and carries the mod's folder name
-    4. if the destination exists, its content.xml manifest id EQUALS the source's. Folder
-       name is not identity; the manifest id is the real "same mod" test
-    5. every orphan scheduled for deletion is a plain file that really lives under the
-       destination
+    2. the extensions root is configured and EXISTS -- a typo must not create a folder the
+       game never reads
+    3. it is not inside the user PROFILE: the configured one, and any path SHAPED like
+       `Egosoft/X4/<digits>/...` when none is configured (which is announced). Dependencies
+       resolve only within one extensions root, so a profile deploy reads every
+       dependency as MISSING
+    4. its parent looks like a GAME ROOT (it carries 01.cat)
+    5. both manifests are well-formed; the source has an id; if the destination exists,
+       its manifest id EQUALS the source's. Folder name is not identity
+    6. no file is written through a link that leaves the destination, and every orphan
+       scheduled for deletion is a plain file (not a link) under the destination
 
 AFTERWARDS it re-reads the destination and requires the same file SET with every file
 byte-identical by sha256. A deploy that reports success without re-reading is a claim.
@@ -48,6 +52,7 @@ from pathlib import Path
 #: environment variable: the source must be the tree this script is standing in.
 REPO = Path(__file__).resolve().parents[3]
 MODS = REPO / "mods"
+FLAGS = {"--apply"}
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from x4validate import _paths  # noqa: E402
@@ -69,7 +74,10 @@ def manifest_id(mod: Path) -> str | None:
     man = mod / "content.xml"
     if not man.is_file():
         return None
-    return ET.fromstring(man.read_bytes()).get("id")
+    try:
+        return ET.fromstring(man.read_bytes()).get("id")
+    except ET.ParseError as exc:
+        raise Refused(f"{man} is not well-formed XML ({exc})") from exc
 
 
 def shipped(src_root: Path) -> list[str]:
@@ -86,6 +94,13 @@ def _inside(child: Path, parent: Path) -> bool:
         return False
 
 
+def _profile_shaped(path: Path) -> bool:
+    """`.../Egosoft/X4/<digits>/...` -- the profile layout, recognised by shape."""
+    parts = [p.lower() for p in path.resolve().parts]
+    return any(parts[i] == "egosoft" and parts[i + 1] == "x4" and parts[i + 2].isdigit()
+               for i in range(len(parts) - 2))
+
+
 def deploy(name: str, apply: bool, src_root: Path = MODS, ext_root: Path | None = None,
            out=print) -> bool:
     """Deploy one shipped mod. Raises `Refused`; returns whether the result VERIFIED."""
@@ -99,15 +114,23 @@ def deploy(name: str, apply: bool, src_root: Path = MODS, ext_root: Path | None 
                       f"{', '.join(shipped(src_root)) or 'none'}), so it does not ship")
     if ext_root is None:
         raise Refused("no game extensions folder is configured (X4_EXTENSIONS or X4_GAME)")
+    if not ext_root.is_dir():
+        raise Refused(f"the extensions folder {ext_root} does not exist -- check "
+                      "X4_EXTENSIONS / X4_GAME; nothing is created for a path the game "
+                      "never reads")
     profile = _paths.profile()
-    if profile is not None and _inside(ext_root, profile):
-        raise Refused(f"{ext_root} is inside the user profile {profile}. Deploy to the "
-                      "game-root extensions folder: dependencies resolve only within one "
-                      "extensions root, so a profile deploy reads every dependency as MISSING")
-    src, dst = src_root / name, ext_root / name
-    if dst.parent.resolve() != ext_root.resolve() or dst.name != name:
-        raise Refused(f"destination {dst} is not directly under {ext_root}")
+    if profile is None:
+        out("  profile guard: X4_PROFILE is not configured, so only the path SHAPE "
+            "(Egosoft/X4/<id>) was checked")
+    if (profile is not None and _inside(ext_root, profile)) or _profile_shaped(ext_root):
+        raise Refused(f"{ext_root} is in the user profile. Deploy to the game-root "
+                      "extensions folder: dependencies resolve only within one extensions "
+                      "root, so a profile deploy reads every dependency as MISSING")
+    if not (ext_root.parent / "01.cat").is_file():
+        raise Refused(f"{ext_root.parent} does not look like the X4 game root (no 01.cat), "
+                      "so its extensions folder is not one the game loads")
 
+    src, dst = src_root / name, ext_root / name
     want = manifest_id(src)
     if not want:
         raise Refused(f"source has no readable content.xml id: {src}")
@@ -133,9 +156,12 @@ def deploy(name: str, apply: bool, src_root: Path = MODS, ext_root: Path | None 
         if label != "UNCHANGED":
             for f in items:
                 out(f"      {f}")
+    for f in new + changed:
+        if dst.exists() and not _inside((dst / f).parent, dst):
+            raise Refused(f"refusing to write {dst / f}: it resolves outside {dst}")
     for f in orphan:
         t = dst / f
-        if not (t.is_file() and not t.is_symlink() and _inside(t, dst)):
+        if t.is_symlink() or not t.is_file() or not _inside(t, dst):
             raise Refused(f"refusing to delete {t}: not a plain file under {dst}")
 
     if not apply:
@@ -159,7 +185,12 @@ def deploy(name: str, apply: bool, src_root: Path = MODS, ext_root: Path | None 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    names = [a for a in argv if not a.startswith("--")]
+    unknown = [a for a in argv if a.startswith("-") and a not in FLAGS]
+    if unknown:
+        print(f"REFUSING: unknown option(s) {' '.join(unknown)} -- the only option is "
+              "--apply; a mistyped one would otherwise be a silent dry run", file=sys.stderr)
+        return 2
+    names = [a for a in argv if not a.startswith("-")]
     apply = "--apply" in argv
     if not names:
         print(__doc__)
@@ -171,6 +202,8 @@ def main(argv: list[str] | None = None) -> int:
               "X4_GAME (run the installer, or `uv run x4validate --paths`)", file=sys.stderr)
         return 2
     try:
+        for n in names:                      # every guard, for every mod, first
+            deploy(n, False, MODS, ext, out=lambda s: None)
         ok = all([deploy(n, apply, MODS, ext) for n in names])
     except Refused as exc:
         print(f"REFUSING: {exc}", file=sys.stderr)

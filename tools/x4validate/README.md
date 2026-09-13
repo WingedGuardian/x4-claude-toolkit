@@ -149,7 +149,7 @@ one third-party dependency you install yourself:**
 
 | what | why | where |
 |---|---|---|
-| **X4 Toolkit Helper** | ships with this toolkit under `mods/`. Copy it into `{game}/extensions/`. It answers a fixed, enumerated vocabulary: read verbs, plus exactly two argument-free write verbs, `pause` and `unpause`, and no eval of any kind | `mods/x4_toolkit_helper/` |
+| **X4 Toolkit Helper** | ships with this toolkit under `mods/`. Copy it into `{game}/extensions/`, or run `uv run python scripts/deploy-mod.py x4_toolkit_helper --apply`, which refuses a wrong target and re-reads what it wrote. It answers a fixed, enumerated vocabulary: read verbs, plus exactly two argument-free write verbs, `pause` and `unpause`, and no eval of any kind | `mods/x4_toolkit_helper/` |
 | **Mod Support APIs** (`ws_2042901274`) | supplies the named-pipe lua the pipe half calls | Steam Workshop / Nexus |
 
 The dependency is declared **optional**, deliberately. Without Mod Support APIs the
@@ -240,6 +240,10 @@ Exactly two verbs change the running game. They exist because a live measurement
 while the game runs — a faction gains tens of objects a minute — so two questions asked
 seconds apart cannot be compared unless the simulation is held still between them.
 
+⚠ **Not yet measured: whether a PAUSED game accepts a new connection.** Every `x4live`
+command opens its own connection, so `x4live unpause` after `x4live pause` depends on it.
+If a paused game does not answer, unpause it in game.
+
 - **Ownership, not a toggle.** `unpause` undoes only a pause this channel made, and refuses
   the player's or another mod's — the discipline vanilla's own menus keep. A UI reload
   (alt-enter, loading a save) re-creates the mod's lua, which then cannot prove the pause is
@@ -248,7 +252,7 @@ seconds apart cannot be compared unless the simulation is held still between the
   Exit `0` only when that agrees with what was asked; `1` means refused and nothing
   changed; `3` means the state is not what was asked, or could not be verified.
 - **A lost reply is not a lost write.** The command is sent before the reply is read and is
-  never resent. After a write exits `2`, run `pausestate` before anything else.
+  never resent. After a write exits `2` or `3`, run `pausestate` before anything else.
 - **`query` refuses both names**, so its free-text passthrough is not a second door, and
   each write prints a banner on stderr, never on stdout.
 

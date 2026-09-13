@@ -914,8 +914,8 @@ def _write_banner(verb: str) -> str:
     return "\n".join((
         _BANNER,
         f"!! WRITE -- `x4live {verb}` changes the state of the RUNNING game.",
-        "!!   It pauses or unpauses the simulation and nothing else. It touches no",
-        "!!   savegame, and it is undone by the other verb or by pausing in game.",
+        "!!   It pauses or unpauses the simulation and nothing else, and touches no",
+        "!!   savegame. A pause is undone with `x4live unpause` or by unpausing in game.",
         "!!   `unpause` only undoes a pause THIS channel made. A UI reload (alt-enter,",
         "!!   loading a save) forgets that, and such a pause is then undone in game.",
         "!!   Use a throwaway save.",
@@ -958,10 +958,10 @@ def cmd_write(verb: str, pipe: str | None, timeout: float, out=None) -> int:
             path = lp.path
             sent = True
             r = lp.ask(verb)
-    except (_livepipe.LiveQueryUnavailable, _livepipe.LiveQueryDegraded):
+    except (_livepipe.LiveQueryUnavailable, _livepipe.LiveQueryDegraded, KeyboardInterrupt):
         if sent:
-            print(f"!! the `{verb}` command was SENT before its reply was lost, so it may "
-                  "already have taken effect. Do not resend it blind: run "
+            print(f"!! the `{verb}` command may have been sent before its reply was lost, "
+                  "so it may already have taken effect. Do not resend it blind: run "
                   "`x4live pausestate` to read what the engine now holds.",
                   file=sys.stderr)
         raise
@@ -979,6 +979,11 @@ def cmd_write(verb: str, pipe: str | None, timeout: float, out=None) -> int:
     print(f"advisory: {r.fields[0]}", file=out)
     for line in r.fields[1:]:
         print(f"  {line}", file=out)
+    if adv.get("verb") != verb:
+        print(f"\nUNTRUSTED: the advisory is for verb={adv.get('verb')!r}, not {verb!r} -- "
+              "the channel is out of step. Read the state with `x4live pausestate`.",
+              file=out)
+        return 3
     acted, agree, reason = adv.get("acted"), adv.get("agree"), adv.get("reason", "?")
     if r.status == "OK" and acted == "yes" and agree == "yes":
         print(f"\nverified: the engine reads back what was asked (reason={reason}).",

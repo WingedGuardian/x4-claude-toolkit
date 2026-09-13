@@ -57,7 +57,7 @@ local PROTO = 1
 --:
 --: Kept honest by `test_the_BUILD_constant_matches_the_file`, so editing the lua and
 --: forgetting to re-stamp this fails the suite rather than silently lying in game.
-local BUILD = "9d29069d"
+local BUILD = "39162ddc"
 local TAG_CMD, TAG_REPLY = "MQ", "MR"
 
 -- Cap on echo, the ramp instrument. Generous: the point of the ramp is to FIND the
@@ -273,7 +273,9 @@ local function reply(seq, status, payload, unbounded)
                   .. "this WRITE verb's reply did not lead with its advisory row, so it "
                   .. "was wrapped here and marked untrusted. The pause state was NOT "
                   .. "verified -- check it with `x4live pausestate`. Original reply: "
-                  .. payload
+                  .. (#payload > 2000
+                      and (payload:sub(1, 2000) .. " [+" .. (#payload - 2000) .. " bytes cut]")
+                      or payload)
     end
     -- THE choke point. Every verb goes through here, so the bound is enforced once
     -- rather than remembered in each of them -- which is how verbs.ext and verbs.macro
@@ -296,6 +298,12 @@ local function reply(seq, status, payload, unbounded)
         status = "ERR"
         payload = "reply too large: " .. #payload .. " bytes exceeds MAX_PAYLOAD "
                   .. MAX_PAYLOAD .. " -- this verb produced an uncapped result set"
+        -- A WRITE reply keeps its advisory even here: the cap must not strip what the
+        -- wrap above guarantees.
+        if writing_verb ~= nil then
+            payload = write_advisory({ verb = writing_verb, reason = "too-large" })
+                      .. "\t" .. payload
+        end
     end
     -- seq is echoed as the RAW STRING it arrived as. Round-tripping it through
     -- tonumber/tostring risks the same exponent rendering as the checksum.
@@ -432,10 +440,15 @@ local issued_ids = {}
 --: the same discipline (gamemodified.lua sets menu.paused before Pause() and calls
 --: Unpause() only if it is set).
 --:
---: KNOWN GAP, stated rather than hidden: a pause we made, undone by the player and then
---: re-made by the player BETWEEN two of our calls, is indistinguishable from ours --
---: the engine exposes no pause identity. A stale flag is cleared whenever a write verb
---: SEES the game unpaused, which covers every other case.
+--: KNOWN GAPS, stated rather than hidden -- the engine exposes no pause identity:
+--:  * a pause we made, undone by the player and re-made by the player BETWEEN two of
+--:    our calls, is indistinguishable from ours. A stale flag is cleared whenever a
+--:    write verb SEES the game unpaused.
+--:  * a vanilla MENU that pauses while ours holds (options, ship configuration) calls
+--:    Pause()/Unpause() without checking. Whether the engine COUNTS pauses is
+--:    UNMEASURED. If it does not, our `unpause` resumes the game under an open menu and
+--:    nothing here can see it. If it does, our `unpause` reads back paused, and the
+--:    claim is released rather than retried -- see pause_write.
 local our_pause = false
 
 --: The wire form of a UniverseID is `tostring(cdata)` VERBATIM -- LuaJIT renders it
@@ -2672,7 +2685,9 @@ local function pause_write(seq, verb, want, engine_name, nargs)
     local t = { verb = verb, want = want, acted = false, ownerreset = false }
     local function finish(status, reason, prose)
         t.reason = reason
-        if t.after ~= nil then t.agree = (t.after == t.want) end
+        -- `agree` is a fact about an ACT. A refusal changed nothing, so it has nothing
+        -- to agree with, and `agree=yes` there would read as success to a naive caller.
+        if t.acted and t.after ~= nil then t.agree = (t.after == t.want) end
         t.owner = pause_owner(t.after)
         DebugError("X4TOOLKIT_LIVE WRITE " .. verb .. " result: reason=" .. reason
                    .. " acted=" .. yn(t.acted) .. " before=" .. tri(t.before)
@@ -2729,10 +2744,17 @@ local function pause_write(seq, verb, want, engine_name, nargs)
     local ok, err = pcall(fn)
     local after, awhy = read_paused()
     t.after = after
-    -- Ownership follows a READABLE read-back that matches the request, and nothing else:
-    -- a pause that did not take is not claimed, and an unpause that did not take keeps
-    -- the claim so a retry can still undo our own pause.
-    if after ~= nil and after == want then our_pause = want end
+    -- Ownership after ACTING. A pause is claimed only when the read-back shows it
+    -- landed. An unpause ATTEMPT always releases the claim, whatever the read-back:
+    -- vanilla's menus each call Pause() on show and Unpause() on close without
+    -- checking, so the engine either COUNTS pauses or lets them undo each other --
+    -- UNMEASURED which. If it counts, a pause still holding after our Unpause() is
+    -- somebody else's, and a retry would undo it. Never undo what we cannot prove we made.
+    if want then
+        if after == true then our_pause = true end
+    else
+        our_pause = false
+    end
 
     if not ok then
         return finish("ERR", "raised", engine_name .. "() raised: " .. tostring(err)
@@ -2749,11 +2771,14 @@ local function pause_write(seq, verb, want, engine_name, nargs)
             .. "reads back paused=" .. tostring(after) .. ", not " .. tostring(want)
             .. ". Reported as read, not as intended."
             .. (want and " Ownership was NOT claimed."
-                      or " Ownership is KEPT, so a retry can still undo our pause."))
+                      or (" Ownership is RELEASED and this channel will not retry: another "
+                          .. "pause (an open menu, the player) may be holding the game. "
+                          .. "Unpause it in game if it should be running.")))
     end
     return finish("OK", "ok", want
         and "the game is PAUSED, read back from the engine. Undo it with `x4live "
-            .. "unpause`, or unpause in game -- a UI reload makes it undoable in game only."
+            .. "unpause` or by unpausing in game. If `x4live unpause` cannot reach the "
+            .. "paused game, or the UI has reloaded since, unpause it in game."
         or "the game is RUNNING again, read back from the engine.")
 end
 

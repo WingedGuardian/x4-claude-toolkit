@@ -1830,8 +1830,9 @@ def test_globals_lists_names_and_types_and_NEVER_CALLS_them(lua_factory):
     """The safety property this verb lives or dies by.
 
     `type(v)` cannot run a function; `v()` can, and an unknown engine global may mutate
-    game state. This mod is read-only BY CONTRACT, so a regression here does not make it
-    buggy -- it makes it a different kind of mod. The planted global counts its own
+    game state. This verb only READS, by contract -- the mod's writes are the two named
+    verbs in WRITE_VERBS -- so a regression here would make it a different kind of verb.
+    The planted global counts its own
     invocations, so the assertion can actually go red.
     """
     rt = live()
@@ -2059,7 +2060,7 @@ def test_recon_ONLY_calls_names_from_its_HARDCODED_lists(lua_factory):
 
     Every other verb refuses to call what it finds. This one calls, so the set of names it
     may touch must be fixed in the SOURCE, never supplied by the caller -- otherwise it is
-    an arbitrary-execution primitive wearing a read-only label.
+    an arbitrary-execution primitive wearing a READ label.
 
     THE FIRST VERSION OF THIS TEST WAS VACUOUS AND PASSED. lupa's _G contains none of the
     recon names, so every probe returned ABSENT (ok=0, absent=73), nothing was ever
@@ -2946,8 +2947,9 @@ def test_pause_REFUSES_when_the_game_is_ALREADY_paused():
     r = ask(rt, 1, "pause")
     a = adv(r)
     assert r.status == "ERR"
-    assert (a["reason"], a["acted"], a["before"], a["owner"]) == (
-        "already-paused", "no", "true", "other")
+    assert (a["reason"], a["acted"], a["before"], a["owner"], a["agree"]) == (
+        "already-paused", "no", "true", "other", "unknown"), (
+        "a refusal must not report agree=yes: nothing acted, so there is nothing to agree")
     assert g(rt, "pause_calls") == 0
 
 
@@ -2995,7 +2997,8 @@ def test_a_write_REFUSES_when_IsGamePaused_is_NOT_EXPORTED(verb):
     a = adv(r)
     assert r.status == "ERR"
     assert (a["reason"], a["acted"], a["before"]) == ("unreadable", "no", "unknown")
-    assert g(rt, "unpause_calls") == 0
+    assert (g(rt, "pause_calls"), g(rt, "unpause_calls")) == (
+        (1, 0) if verb == "unpause" else (0, 0))
 
 
 def test_a_write_REFUSES_when_IsGamePaused_answers_a_NON_BOOLEAN():
@@ -3061,7 +3064,8 @@ def test_unpause_REFUSES_when_the_game_is_NOT_paused():
     r = ask(rt, 1, "unpause")
     a = adv(r)
     assert r.status == "ERR"
-    assert (a["reason"], a["acted"], a["before"]) == ("not-paused", "no", "false")
+    assert (a["reason"], a["acted"], a["before"], a["agree"]) == (
+        "not-paused", "no", "false", "unknown")
     assert g(rt, "unpause_calls") == 0
 
 
@@ -3102,21 +3106,26 @@ def test_a_STALE_ownership_flag_is_CLEARED_when_the_engine_shows_the_pause_is_go
     assert g(rt, "unpause_calls") == 0 and g(rt, "game_paused") is True
 
 
-def test_an_unpause_whose_READ_BACK_DISAGREES_KEEPS_ownership():
-    """We still hold a pause. Dropping the flag would strand it: no later retry could
-    ever undo it through this channel."""
+def test_an_unpause_whose_READ_BACK_DISAGREES_RELEASES_ownership_and_never_retries():
+    """The engine still reads paused after our Unpause(). Vanilla's menus each call
+    Pause() on show and Unpause() on close without checking, so the engine either
+    COUNTS pauses or lets them undo each other -- UNMEASURED which. If it counts, the
+    pause still holding is somebody ELSE's (an open menu), and a retry would undo it.
+    So the claim is released and the channel will not unpause again: never undo a
+    pause this channel cannot prove it made."""
     rt = live()
     assert ask(rt, 1, "pause").status == "OK"
     rt.execute("_G.unpause_is_noop = true")
     r = ask(rt, 2, "unpause")
     a = adv(r)
     assert r.status == "OK", r.payload
-    assert (a["reason"], a["acted"], a["after"], a["agree"]) == (
-        "disagree", "yes", "true", "no")
+    assert (a["reason"], a["acted"], a["after"], a["agree"], a["owner"]) == (
+        "disagree", "yes", "true", "no", "other")
     rt.execute("_G.unpause_is_noop = false")
     r = ask(rt, 3, "unpause")
-    assert r.status == "OK" and adv(r)["agree"] == "yes", (
-        "a retry of OUR pause must remain possible")
+    assert r.status == "ERR" and adv(r)["reason"] == "not-ours", (
+        "after a disagreeing unpause the channel must not retry")
+    assert g(rt, "unpause_calls") == 1 and g(rt, "game_paused") is True
 
 
 def test_a_write_verb_that_RAISES_still_answers_with_an_ADVISORY_led_frame():
@@ -3214,3 +3223,46 @@ def test_pausestate_is_ERR_not_a_guess_when_the_state_cannot_be_read():
     # NOT VACUOUS: an unknown verb is also ERR, so the refusal must name what it could
     # not read. The first version of this test passed before the verb existed.
     assert "IsGamePaused" in r.payload, r.payload
+
+
+def test_a_write_whose_state_CANNOT_BE_READ_BACK_after_acting_is_UNVERIFIED():
+    """The call returned, but the read-back vanished: nothing can say what happened."""
+    rt = live()
+    rt.execute("local real = Pause\n"
+               "Pause = function(...) real(...); _G.fake_C.IsGamePaused = nil end")
+    r = ask(rt, 1, "pause")
+    a = adv(r)
+    assert r.status == "ERR"
+    assert (a["reason"], a["acted"], a["after"], a["agree"]) == (
+        "unverified", "yes", "unknown", "unknown")
+    assert "pausestate" in r.payload
+
+
+def test_a_call_that_RAISES_AFTER_pausing_still_owns_the_pause_it_made():
+    """The read-back shows the pause landed, taken from running to paused by our own
+    single-threaded call, so it IS ours. Losing the claim here would strand a pause this
+    channel made and could no longer undo."""
+    rt = live()
+    rt.execute('Pause = function() _G.game_paused = true; error("late failure") end')
+    r = ask(rt, 1, "pause")
+    a = adv(r)
+    assert r.status == "ERR"
+    assert (a["reason"], a["acted"], a["after"], a["owner"]) == ("raised", "yes", "true", "us")
+    r = ask(rt, 2, "unpause")
+    assert r.status == "OK" and adv(r)["agree"] == "yes", r.payload
+
+
+@pytest.mark.parametrize("body,reason", [
+    ('string.rep("x", 40000)', "unwrapped"),
+    ('"write=yes verb=__huge reason=ok acted=yes\\t" .. string.rep("x", 40000)', "too-large"),
+], ids=["no-advisory", "advisory-led"])
+def test_an_OVERSIZED_write_reply_still_LEADS_with_its_advisory(body, reason):
+    """The advisory wrap and the size cap both live in reply(). Neither may strip what
+    the other guarantees: a write frame always leads with its advisory, and always fits."""
+    rt = live(rt=_build(extra=(
+        'WRITE_VERBS.__huge = function(seq) reply(seq, "OK", %s) end' % body)))
+    r = ask(rt, 1, "__huge")
+    a = adv(r)
+    assert r.status == "ERR"
+    assert (a["reason"], a["acted"]) == (reason, "unknown")
+    assert len(r.payload.encode("utf-8")) <= 32000

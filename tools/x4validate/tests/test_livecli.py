@@ -873,3 +873,17 @@ def test_pausestate_exit_code_follows_the_engine_answer(status, rc, monkeypatch,
     out, err = capsys.readouterr()
     assert pipe.asks == [("pausestate", ())]
     assert BANNER not in err.splitlines(), "pausestate is a READ and must not announce a write"
+
+
+def test_a_write_reply_for_a_DIFFERENT_verb_is_UNTRUSTED(monkeypatch, capsys):
+    """An `unpause` advisory answering a `pause` request is a desync, not a result."""
+    _serve(monkeypatch, _WritePipe("OK", _adv(verb="unpause") + "\tprose"))
+    assert C.main(["pause"]) == 3
+
+
+def test_an_INTERRUPTED_wait_after_sending_says_the_write_MAY_HAVE_LANDED(monkeypatch, capsys):
+    """Ctrl-C while waiting for the reply is the same situation as a lost reply."""
+    _serve(monkeypatch, _WritePipe(raises=KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        C.main(["pause"])
+    assert "may already have" in capsys.readouterr().err.lower()

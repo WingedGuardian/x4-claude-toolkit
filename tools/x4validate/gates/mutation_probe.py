@@ -257,11 +257,6 @@ MUTANTS = [
            "    if existing:",
            "    if False:  # mutant",
            "every run accumulates a near-duplicate; no row can be quoted with confidence"),
-    # NOTE the leading newline + EIGHT spaces. The archive check sits inside a
-    # try-block and the groundtruth one does not, so the 4-space form is a
-    # SUBSTRING of this one -- anchoring on it matches twice and leaves the clause
-    # UNMUTATED while looking covered (register #99, caught here by the
-    # anchor-uniqueness test rather than by luck).
     # --- _livecli.py: the WRITE verbs. Each mutant removes one clause of the contract
     # that decides whether a change to the RUNNING game is reported as verified.
     Mutant("_livecli.py", "write banner suppressed",
@@ -288,6 +283,11 @@ MUTANTS = [
            "        if sent:",
            "        if False:  # mutant",
            "a caller resends a pause blind, or assumes nothing happened"),
+    # NOTE the leading newline + EIGHT spaces. The archive check sits inside a
+    # try-block and the groundtruth one does not, so the 4-space form is a
+    # SUBSTRING of this one -- anchoring on it matches twice and leaves the clause
+    # UNMUTATED while looking covered (register #99, caught here by the
+    # anchor-uniqueness test rather than by luck).
     Mutant("_livecli.py", "archive trusts the write instead of re-reading",
            '\n        if back != data:',
            '\n        if False:  # mutant',

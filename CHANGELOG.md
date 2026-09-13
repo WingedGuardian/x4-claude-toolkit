@@ -20,6 +20,17 @@
   `tests/test_write_verb_promises_are_consistent.py` fails if one survives. Gated raw lua eval
   was considered and withdrawn: the engine's debug-console gate has no discoverable switch, and
   it guards a capability UI lua already has, so routing through it would have contained nothing.
+  ⚠ Not yet measured: whether a PAUSED game accepts a new pipe connection. Every `x4live`
+  command opens its own, so `unpause` after `pause` depends on it; if it does not, unpause in
+  game. An unpause whose read-back still shows paused RELEASES its claim rather than retrying,
+  because vanilla menus pause without checking and the engine may count pauses.
+- **`scripts/deploy-mod.py`** — a guarded deploy for the mods this repo ships. The public repo
+  shipped the helper mod with no safe way to install it: the obvious `rm -rf && cp -r` is one
+  empty variable away from deleting the wrong tree inside the game install. It refuses a mod
+  the repo does not ship, a missing extensions folder, one inside (or shaped like) the user
+  profile, one whose parent is not a game root, and a destination with a different manifest id;
+  it runs every guard for every mod before writing any, never removes a directory, and re-reads
+  every file by sha256 after writing.
 - **`gates/routing_coverage.py`** — fails when a CLI in `[project.scripts]` is absent from
   CLAUDE.md's routing-table `Use` column. MEASURED: 5 of 11 were absent (`x4modlist`, `x4stats`,
   `x4diff`, `x4save`, `x4live`), because whether a tool is routed was a prose property nothing

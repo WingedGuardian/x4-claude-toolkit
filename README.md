@@ -182,7 +182,9 @@ now, what a macro's real values resolved to, whether an extension actually loade
 quit-and-relaunch cycle for each question.
 
 It needs one thing inside the game, and **this toolkit ships it**: `mods/x4_toolkit_helper/`.
-Copy that folder into `{game}/extensions/`. It answers a fixed, enumerated vocabulary: read
+Copy that folder into `{game}/extensions/`, or from `tools/x4validate` run
+`uv run python scripts/deploy-mod.py x4_toolkit_helper --apply`, which refuses a wrong target
+and re-reads what it wrote. It answers a fixed, enumerated vocabulary: read
 verbs, plus exactly two write verbs, `pause` and `unpause`, which take no arguments and report
 the pause state the engine reads back. It declares `save="false"` so it cannot bake into a save,
 and it adds no content, no menu and no MD script. Its one third-party dependency
