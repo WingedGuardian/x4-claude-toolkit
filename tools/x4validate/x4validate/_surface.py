@@ -63,7 +63,13 @@ def cli_roster(root: Path | None = None) -> list[str]:
             f"no pyproject.toml at {pj}",
             "the CLI roster is read from [project.scripts]; without it the "
             "surface would be a hand-kept guess")
-    data = tomllib.loads(pj.read_text(encoding="utf-8"))
+    try:
+        data = tomllib.loads(pj.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        # A traceback exits rc 1, which a gate runner reads as a FINDING. An unreadable
+        # roster is a refusal (review, 2026-09-13).
+        raise SurfaceUnavailable(f"{pj} could not be read: {exc}",
+                                 "fix or restore pyproject.toml") from exc
     scripts = sorted((data.get("project") or {}).get("scripts") or {})
     if not scripts:
         raise SurfaceUnavailable(

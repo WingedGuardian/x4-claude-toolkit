@@ -163,6 +163,18 @@ def main(record: bool = False) -> int:
         print("  drift is NOT being checked.", file=sys.stderr)
         return 2
 
+    # NAME the population that is not being checked. violations() skips a file with no
+    # baseline entry (first sight is not growth), which silently narrowed the check: with
+    # X4_GAME unset, or a baseline recorded for different files, it passed having compared
+    # nothing (review, 2026-09-13).
+    for n in sorted(set(measured) - set(baseline)):
+        print(f"  NOT CHECKED  {n}: no baseline entry (run --record to start ratcheting it)")
+    for n in sorted(set(baseline) - set(measured)):
+        print(f"  NOT RESOLVED {n}: in the baseline but not found on this machine now")
+    if not set(measured) & set(baseline):
+        print("REFUSING: no measured file has a baseline entry, so nothing was compared.",
+              file=sys.stderr)
+        return 2
     bad = violations(measured, baseline)
     over_ceiling = [n for n, c in sorted(measured.items()) if c > HARD_CEILING]
     for n in over_ceiling:

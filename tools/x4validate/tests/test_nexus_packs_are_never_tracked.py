@@ -42,12 +42,28 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess | None:
         return None
 
 
+def owning_root(toplevel: Path, pkg: Path) -> Path | None:
+    """`toplevel` only if it is THIS toolkit's own checkout (`<root>/tools/x4validate`).
+
+    `git rev-parse --show-toplevel` answers "which repo contains this directory", which is
+    not the question. MEASURED by review 2026-09-13: with the package installed inside
+    ANOTHER git repository (an in-game install into a game root that is itself under git),
+    it returned that repo, whose .gitignore knows nothing of Nexus packs -- and two tests
+    failed on a correct toolkit.
+    """
+    try:
+        same = toplevel.resolve() == (pkg.parent.parent).resolve()
+    except OSError:
+        same = False
+    return toplevel if same else None
+
+
 def _repo_root(pkg: Path) -> Path | None:
-    """The repository root, ASKED of git. None outside a checkout (a cold archive)."""
+    """This toolkit's own git checkout, or None (a cold archive, or nested in another repo)."""
     r = _git(pkg, "rev-parse", "--show-toplevel")
     if r is None or r.returncode != 0 or not r.stdout.strip():
         return None
-    return Path(r.stdout.strip())
+    return owning_root(Path(r.stdout.strip()), pkg)
 
 
 def tracked_packs(root: Path) -> list[str]:
@@ -106,7 +122,8 @@ def test_the_gitignore_declares_the_packs_ignored():
 
 def test_nothing_under_the_packs_dir_is_tracked():
     if ROOT is None:
-        pytest.skip("not a git checkout (cold archive) -- tracked state NOT CHECKED")
+        pytest.skip("not this toolkit's own git checkout (a cold archive, or nested in another "
+                    "repo) -- tracked state NOT CHECKED")
     tracked = tracked_packs(ROOT)
     assert tracked == [], (
         f"{len(tracked)} Nexus pack file(s) are tracked; untrack with "
@@ -116,7 +133,8 @@ def test_nothing_under_the_packs_dir_is_tracked():
 def test_git_itself_ignores_a_path_under_the_packs_dir():
     """The declared line is not enough on its own: a later negation could undo it."""
     if ROOT is None:
-        pytest.skip("not a git checkout (cold archive) -- ignore resolution NOT CHECKED")
+        pytest.skip("not this toolkit's own git checkout (a cold archive, or nested in another "
+                    "repo) -- ignore resolution NOT CHECKED")
     pat = ignore_pattern(ROOT)
     assert pat is not None, f"git does not ignore a path under {PACKS}/"
 
@@ -170,3 +188,11 @@ def test_TWIN_a_commented_rule_is_not_a_declared_rule(tmp_path):
 
 def test_TWIN_an_absent_gitignore_is_not_a_declared_rule(tmp_path):
     assert gitignore_declares(tmp_path / ".gitignore") is False
+
+
+def test_TWIN_a_FOREIGN_toplevel_is_not_this_toolkits_checkout(tmp_path):
+    """The nested-install case: git names the OUTER repo, which must be rejected."""
+    pkg = tmp_path / "outer" / "tools" / "x4validate"
+    pkg.mkdir(parents=True)
+    assert owning_root(tmp_path, pkg) is None
+    assert owning_root(tmp_path / "outer", pkg) == tmp_path / "outer"

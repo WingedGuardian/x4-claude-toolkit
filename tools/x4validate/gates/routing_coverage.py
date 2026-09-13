@@ -48,6 +48,13 @@ _ESC_PIPE = _BSLASH + "|"
 _SENTINEL = "\x00"
 
 
+#: A TOOL NAME, not any substring that spells one. A path segment is not a route: MEASURED
+#: by review 2026-09-13, the mutation_probe row's Use cell names `x4validate/_*.py`, and the
+#: bare `x4[a-z]+` pattern counted that as routing `x4validate` -- with every real x4validate
+#: row deleted from BOTH files, the gate still reported it routed.
+_TOOL_NAME = re.compile(r"(?<![\w/\\.-])(x4[a-z]+)(?![\w/\\.-])")
+
+
 class TableUnreadable(Exception):
     """The routing table could not be read, so no verdict about it is admissible."""
 
@@ -89,7 +96,7 @@ def routed_clis(text: str) -> set[str]:
     for cells in table_rows(text):
         if len(cells) < 2:
             continue
-        for tok in re.findall(r"x4[a-z]+", cells[1]):
+        for tok in _TOOL_NAME.findall(cells[1]):
             names.add(tok)
     return names
 

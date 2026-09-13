@@ -11,8 +11,8 @@ complete file where a `<diff>` was required — the engine loads the mod, logs n
 and the feature is simply absent. Everything here exists to make that class visible before
 an in-game test cycle is spent on it.
 
-**Gotcha numbers are stable ids.** They are cited ~85 times from `KNOWLEDGEBASE.md` and
-`tools/x4validate/docs/BLIND-SPOTS.md`. Never renumber one; a retired number is never reused.
+**Gotcha numbers are stable ids.** Records written against them cite them by number
+(a knowledgebase, a blind-spots register). Never renumber one; a retired number is never reused.
 
 ---
 
@@ -319,7 +319,7 @@ that is expressible in a schema. **Paste a working example and change the values
 never had — spawn a test fight, force a loadout, drive an experiment. For anything vanilla does
 not itself need to do, an installed mod is the *closer* analogue, proven in THIS game version
 with THIS modlist. Search with `_scan.iter_mod_xml_bytes` (packed-inclusive); a loose-only grep
-misses most of the corpus. Templates live in KNOWLEDGEBASE.md § *COPY-PASTE MD TEMPLATES*.
+misses most of the corpus. Paste a working example from such a mod and change the values.
 
 **Native engine solutions first.** "Simple" means simple from the engine's perspective, not
 fewest lines. A native MD action or a clean `<diff>` beats a fragile multi-step script hack.
@@ -386,8 +386,8 @@ For any bulk XML operation (mass stat changes, adding content to many files at o
 - Diff patch for existing content, complete file for new content.
 - Mirror the game folder structure inside `dev\{mod_name}\`.
 - Validate with x4validate (mandatory).
-- Deploy with **`dev\_tools\deploy.py`** — never a hand-rolled `cp -r`. Dry-run by default,
-  `--apply` to write. It refuses unless the destination is directly under game-root
+- Deploy with a **script**, never a hand-rolled `cp -r` -- one that is dry-run by default,
+  `--apply` to write, and refuses unless the destination is directly under game-root
   `extensions\` AND the destination's manifest id equals the SOURCE's, never `rmtree`s a
   destination, deletes orphans one named file at a time after printing them, and re-reads the
   destination to prove every file is byte-identical.

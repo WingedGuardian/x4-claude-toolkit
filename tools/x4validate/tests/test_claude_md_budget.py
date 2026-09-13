@@ -104,3 +104,25 @@ def test_the_real_files_are_found_and_named():
     assert any("shipped" in n for n in names), names
     for _, p in files:
         assert b_.char_count(p) > 1000
+
+
+def test_a_baseline_for_DIFFERENT_files_is_a_REFUSAL(monkeypatch, tmp_path, capsys):
+    """Disjoint keys compared nothing -- that is not 'within the floor'."""
+    bl = tmp_path / "b.json"
+    bl.write_text(json.dumps({"some other file": 10}), encoding="utf-8")
+    monkeypatch.setattr(b_, "BASELINE", bl)
+    assert b_.main() == 2
+    cap = capsys.readouterr()
+    assert "NOT CHECKED" in cap.out and "REFUSING" in cap.err
+
+
+def test_a_PARTIAL_baseline_names_the_file_it_does_not_check(monkeypatch, tmp_path, capsys):
+    files = b_.budget_files()
+    if len(files) < 2:
+        pytest.skip("needs two resolvable CLAUDE.md files -- NOT CHECKED")
+    first = files[0][0]
+    bl = tmp_path / "b.json"
+    bl.write_text(json.dumps({first: 10_000_000}), encoding="utf-8")
+    monkeypatch.setattr(b_, "BASELINE", bl)
+    assert b_.main() == 0
+    assert "NOT CHECKED  " + files[1][0] in capsys.readouterr().out

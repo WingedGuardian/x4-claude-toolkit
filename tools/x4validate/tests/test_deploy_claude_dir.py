@@ -214,3 +214,29 @@ def test_after_apply_the_parity_gate_agrees(repo, dest):
 def test_the_destination_being_the_repo_is_a_refusal(repo):
     _commit(repo, "skills/a/SKILL.md", b"v1\n")
     assert dep.main(["--repo", str(repo), "--dest", str(repo / ".claude")]) == 2
+
+
+def test_a_plan_WRITE_disagreement_after_apply_is_rc_1(repo, dest, monkeypatch):
+    """The shape of the plan()/target_bytes() split found once already: printed, rc 0."""
+    _commit(repo, "skills/a/SKILL.md", b"v1\n")
+    monkeypatch.setattr(dep, "target_bytes", lambda r, d, n: b"not what the plan said\n")
+    assert dep.main(["--repo", str(repo), "--dest", str(dest), "--apply"]) == 1
+
+
+def test_a_CREATED_file_in_the_lock_manifest_is_locked(repo, dest, monkeypatch):
+    _commit(repo, "skills/a/SKILL.md", b"v1\n")
+    f = dest / "skills" / "a" / "SKILL.md"
+    monkeypatch.setattr(dep.x4lock, "manifest", lambda: [f])
+    try:
+        assert dep.main(["--repo", str(repo), "--dest", str(dest), "--apply"]) == 0
+        assert not (f.stat().st_mode & stat.S_IWRITE), "a created, manifest-covered file was left writable"
+    finally:
+        if f.exists():
+            os.chmod(f, stat.S_IREAD | stat.S_IWRITE)
+
+
+def test_a_CREATED_file_outside_the_manifest_stays_writable(repo, dest, monkeypatch):
+    _commit(repo, "skills/a/SKILL.md", b"v1\n")
+    monkeypatch.setattr(dep.x4lock, "manifest", lambda: [])
+    assert dep.main(["--repo", str(repo), "--dest", str(dest), "--apply"]) == 0
+    assert (dest / "skills" / "a" / "SKILL.md").stat().st_mode & stat.S_IWRITE

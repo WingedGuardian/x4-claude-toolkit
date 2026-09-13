@@ -71,3 +71,9 @@ def test_the_real_roster_is_this_package(tmp_path):
     names = _surface.cli_roster()
     assert "x4validate" in names and "x4live" in names
     assert len(names) >= 10, names
+
+
+def test_a_MALFORMED_pyproject_is_a_refusal_not_a_traceback(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project.scripts\nbroken = ", encoding="utf-8")
+    with pytest.raises(_surface.SurfaceUnavailable):
+        _surface.cli_roster(tmp_path)

@@ -92,3 +92,15 @@ def test_it_goes_RED_against_the_pre_landing_file():
     assert len(before) > 30_000, "fixture truncated"
     missing = rc_.missing(rc_.roster(), before)
     assert sorted(missing) == ["x4diff", "x4live", "x4modlist", "x4save", "x4stats"], missing
+
+
+def test_a_CLI_name_inside_a_PATH_is_not_a_route():
+    """`x4validate/_*.py` names a directory, not the tool. The review's case exactly."""
+    t = TABLE.replace("| do selectors resolve? | **x4validate** | eyeballing |\n", "")
+    t += "| mutation-test code? | **`gates/mutation_probe.py`**, but ONLY `x4validate/_*.py` | x |\n"
+    assert "x4validate" not in rc_.routed_clis(t)
+
+
+def test_a_bold_or_backticked_tool_name_still_routes():
+    t = TABLE + "| a? | **`x4save info`** | x |\n| b? | `x4diff` and x4stats | y |\n"
+    assert {"x4save", "x4diff", "x4stats"} <= rc_.routed_clis(t)

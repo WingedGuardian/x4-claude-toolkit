@@ -54,6 +54,32 @@ def test_the_committed_skill_is_fresh(expected):
         "`uv run python scripts/gen-cli-reference.py`: %s" % found)
 
 
+def test_every_generated_file_is_COMMITTABLE(expected):
+    """A generated file that .gitignore swallows exists only on the machine that made it.
+
+    MEASURED by review 2026-09-13: the repo's `reference/` rule (for unpacked game data)
+    matched `.claude/skills/x4-cli-reference/reference/`, so all 11 help files were never
+    committed -- while the freshness test here stayed green, because it reads the DISK. A
+    clone failed it immediately. Asked of git per file, with `--no-index` so a file that
+    happens to be tracked cannot hide the rule that would drop the next one.
+    """
+    import subprocess
+    root = PKG.parents[1]
+    top = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True)
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != root.resolve():
+        pytest.skip("not this toolkit's own git checkout -- ignore rules NOT CHECKED")
+    ignored = []
+    for rel in expected:
+        path = f".claude/skills/x4-cli-reference/{rel}"
+        r = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "--no-index", path])
+        if r.returncode == 0:
+            ignored.append(path)
+        elif r.returncode != 1:
+            pytest.fail(f"git check-ignore could not answer for {path} (rc {r.returncode})")
+    assert ignored == [], f".gitignore swallows generated file(s): {ignored}"
+
+
 def test_the_skill_frontmatter_is_a_loadable_skill(expected):
     head = expected["SKILL.md"].split("\n")
     assert head[0] == "---" and head[1] == "name: x4-cli-reference", head[:3]

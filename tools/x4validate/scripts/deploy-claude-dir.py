@@ -167,13 +167,30 @@ def target_bytes(repo_root: Path, dest_claude: Path, name: str) -> bytes:
     return data
 
 
+def _lock_manifest() -> set[str] | None:
+    """x4lock's manifest as resolved paths, or None when it cannot be built."""
+    try:
+        return {str(p.resolve()).lower() for p in x4lock.manifest()}
+    except Exception:  # silent-ok: an unbuildable manifest is REPORTED by the caller, not hidden
+        return None
+
+
 def apply(repo_root: Path, dest_claude: Path, actions: list[Action]) -> list[str]:
-    """Write every create/update. Returns failure messages; [] means all landed."""
+    """Write every create/update. Returns failure messages; [] means all landed.
+
+    A CREATED file is locked afterwards when x4lock's manifest covers it. The first version
+    preserved each file's prior lock state, which is always "unlocked" for a file that did
+    not exist -- so a new skill's files stayed writable until someone remembered to run
+    `x4lock.py lock` (review, 2026-09-13).
+    """
     failures: list[str] = []
+    created: list[Path] = []
     for a in actions:
         if a.kind not in (CREATE, UPDATE):
             continue
         dst = dest_claude / a.name
+        if a.kind == CREATE:
+            created.append(dst)
         data = target_bytes(repo_root, dest_claude, a.name)      # encoded before any write
         was_locked = dst.is_file() and x4lock.state(dst) == "locked"
         if was_locked:
@@ -193,6 +210,17 @@ def apply(repo_root: Path, dest_claude: Path, actions: list[Action]) -> list[str
                     failures.append(f"{a.name}: WRITTEN BUT NOT RE-LOCKED ({msg})")
         if dst.is_file() and dst.read_bytes() != data:
             failures.append(f"{a.name}: re-read does not match what was written")
+    if created:
+        wanted = _lock_manifest()
+        if wanted is None:
+            failures.append("x4lock manifest could not be built: created file(s) left UNLOCKED "
+                            "-- run scripts/x4lock.py lock")
+        else:
+            for dst in created:
+                if dst.is_file() and str(dst.resolve()).lower() in wanted:
+                    ok, msg = x4lock._apply(dst, locked=True)
+                    if not ok:
+                        failures.append(f"{dst.name}: created but NOT LOCKED ({msg})")
     return failures
 
 
@@ -252,7 +280,15 @@ def main(argv: list[str] | None = None) -> int:
     if refused:
         print(f"  {len(refused)} file(s) REFUSED -- see above; nothing was written to them",
               file=sys.stderr)
-    return 1 if (refused or failures) else 0
+    # The deploy's OWN files must be at parity afterwards. Printing "N of M" and returning
+    # 0 regardless is how a plan/write disagreement (found once already) would pass at
+    # runtime; files only in the game root are reported above and are not ours to fix.
+    own = {a.name for a in actions if a.kind in (CREATE, UPDATE, SKIP)}
+    broken = [r for r in off if r.name in own]
+    if broken:
+        print(f"  PARITY BROKEN after apply for {len(broken)} file(s) this deploy wrote or "
+              "checked -- the plan and the write disagree", file=sys.stderr)
+    return 1 if (refused or failures or broken) else 0
 
 
 if __name__ == "__main__":  # pragma: no cover

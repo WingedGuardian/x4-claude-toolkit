@@ -66,6 +66,21 @@
 - `x4diff --overlay` help no longer names a specific mod.
 - Nexus release packs under `release/nexus/` are untracked and gitignored: they are a maintainer's
   local artifact, deleted once posted, and tracking them held the suite at two standing failures.
+- Fixes from an independent review of the above, each with a test that goes red without it:
+  - `.gitignore`'s `reference/` rule (for unpacked game data) also swallowed
+    `.claude/skills/x4-cli-reference/reference/`, so the generated help files were never committed and
+    the reference was fresh only on the machine that generated it. Skill `reference/` folders are now
+    re-included, and a test asks git that every generated file is committable.
+  - `routing_coverage` counts a CLI only as a whole tool name: `x4validate/_*.py` in a table cell was
+    being read as routing `x4validate`.
+  - `claude_md_budget` names every file it is NOT checking (no baseline entry) and refuses when no
+    measured file has one, instead of passing having compared nothing.
+  - `deploy-claude-dir.py` exits 1 when its own files are not at parity after applying, and locks a
+    newly created file that x4lock's manifest covers.
+  - A malformed `pyproject.toml` is a refusal from `_surface.cli_roster`, not a traceback.
+  - The Nexus-packs test only trusts `git rev-parse` when the checkout IS this toolkit, so a toolkit
+    installed inside another git repository no longer fails it.
+  - `/x4-xml-patching` no longer points at files and sections the public repo does not contain.
 
 ## v3.1.1 — 2026-09-09
 

@@ -31,6 +31,12 @@
 # them violates Egosoft's terms and will get the repo removed.
 # ============================================================
 reference/
+# ...but a SKILL's reference/ folder is toolkit documentation, not game data. The bare rule
+# above also matched .claude/skills/x4-cli-reference/reference/ and silently kept all 11
+# generated help files out of every commit; the suite was green only on the machine that
+# generated them (code review, 2026-09-13). Re-inclusion works because the skill's own
+# directory is not excluded; test_cli_reference.py pins it.
+!.claude/skills/*/reference/
 extensions/
 *.cat
 *.dat
