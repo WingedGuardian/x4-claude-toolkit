@@ -2893,6 +2893,90 @@ def test_a_quoted_ORDINARY_command_is_not_newly_blocked():
     assert H._verb_name(H.verb('"ls" -la')) == "ls"
 
 
+# ------------------------------------------------- F111 / F112 re-derivation
+# Added 2026-09-13 to close two BLIND-SPOTS entries that were marked FIXED while
+# naming no check that re-derives them. A FIXED with no re-derivation is
+# indistinguishable from a FIXED that regressed, which is why these exist as NAMED
+# tests rather than as coverage of the mechanism: `scripts/fuzz-guard.py` already
+# exercises the resolved-segment path, but nothing asserted F111's per-item claim.
+
+
+def test_F111_a_variable_spelled_verb_denies_like_the_plain_one():
+    """F111: `facts()` resolves once into `seg_cwd`, but three rules re-derived their
+    own walk from the raw text and so never saw a resolved verb. MEASURED pre-fix:
+    the variable spelling of a rooted DELETE was caught while the same spelling of a
+    rooted SEARCH and of a durable python write were not.
+
+    Asserted as an EQUIVALENCE rather than as three separate truths: the claim is that
+    the two spellings agree, so the plain form is checked in the same breath. A test
+    that only asserted the variable form would stay green if the rule broke for both.
+    """
+    ref = DQ + REF + DQ
+    durable = Q + 'open("KNOWLEDGEBASE.md","w")' + Q
+    pairs = [
+        ("search_rooted_reference", "grep -rn x " + ref,
+                                    "GP=grep; $GP -rn x " + ref),
+        ("durable_python_open_w",   "python -c " + durable,
+                                    "PY=python; $PY -c " + durable),
+        ("rm_targets_reference",    "rm -rf " + ref,
+                                    "RM=rm; $RM -rf " + ref),
+    ]
+    for key, plain, spelled in pairs:
+        got_plain = bool(F(plain).get(key))
+        got_var = bool(F(spelled).get(key))
+        assert got_plain, "%s did not fire on the PLAIN spelling: %s" % (key, plain)
+        assert got_var, (
+            "%s fired on the plain spelling but NOT on the variable one -- F111 has "
+            "regressed for this rule: %s" % (key, spelled))
+
+
+def test_F111_an_unrooted_recursive_search_is_untouched():
+    """The other half of F111, and it needs its own test: routing the search rule
+    through resolved segments must not make it fire on a search that names no root.
+    Without this, a fix that simply returned True would satisfy the equivalence test
+    above. This is the clause that proves the fix did not over-widen.
+    """
+    assert not F("grep -rn foo .").get("search_rooted_reference"), (
+        "an unrooted recursive search now reads as rooted at the reference tree")
+    assert not F("GP=grep; $GP -rn foo .").get("search_rooted_reference"), (
+        "same, through a variable-spelled verb")
+
+
+def test_F112_an_APPEND_into_the_read_only_tree_is_denied():
+    """F112: `writes_reference` was built from `trunc_redirect`, which keeps only
+    redirects whose mode is `truncate`. MEASURED pre-fix: `>` into the read-only tree
+    denied and `>>` into the same file was ALLOWED -- two spellings of one operation
+    disagreeing under a rule whose message is "never write into it". `tee -a` is the
+    other spelling of an append and is asserted beside it.
+
+    The truncating form is included as a CONTROL: if it ever stops firing, this test
+    must not keep passing on the append alone.
+    """
+    target = DQ + REF + "/libraries/wares.xml" + DQ
+    assert F("echo x > " + target).get("writes_reference"), (
+        "the TRUNCATING write into the read-only tree stopped being detected -- the "
+        "control for this test is broken, so its append result means nothing")
+    assert F("echo x >> " + target).get("writes_reference"), (
+        "an APPEND into the read-only tree is allowed again -- F112 has regressed")
+    assert F("printf a | tee -a " + DQ + REF + "/w.xml" + DQ).get("writes_reference"), (
+        "tee -a into the read-only tree is allowed again -- the other append spelling")
+
+
+def test_F112_the_advisory_tree_keeps_the_wider_channel():
+    """The asymmetry that PRODUCED F112, pinned so it cannot come back the other way.
+    `writes_documents` always used the wider `writes_any`, which includes appends; the
+    hard-blocked read-only tree had the NARROWER channel and the merely-advisory tree
+    the wider one. Truncate-only was correct where it came from and wrong where it was
+    copied to -- so this asserts the advisory side still sees an append, rather than
+    someone "restoring symmetry" by narrowing it to match.
+    """
+    assert F("echo x >> " + DQ + DOCS + "/x.txt" + DQ).get("writes_documents"), (
+        "the advisory documents tree no longer sees an APPEND -- the wider channel "
+        "was narrowed to match the read-only tree, which inverts F112's fix")
+    assert F("echo x > " + DQ + DOCS + "/x.txt" + DQ).get("writes_documents"), (
+        "the advisory documents tree no longer sees a truncating write either")
+
+
 def load_tests(loader, standard_tests, pattern):
     """unittest.main() collects TestCase SUBCLASSES ONLY, so every module-level
     `def test_*` in this file was invisible to it.
