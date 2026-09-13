@@ -75,7 +75,7 @@ echo "   registry=None game_extensions=None reference=None  <- genuinely cold"
 
 echo
 echo "== running the suite as a new user would =="
-env "${UNSET[@]}" uv run --frozen python -m pytest -q
+env "${UNSET[@]}" PYTHONDONTWRITEBYTECODE=1 uv run --frozen python -m pytest -q
 rc=$?
 
 # --- the CLI matrix ---------------------------------------------------------

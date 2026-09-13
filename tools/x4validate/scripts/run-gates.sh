@@ -64,7 +64,9 @@ echo "GATE RUN — mode=$mode — ${#all_gates[@]} gate(s) known"
 echo "=================================================================="
 pass=(); fail=(); cannot=()
 for g in "${run[@]}"; do
-  out=$(uv run python "gates/$g.py" 2>&1); rc=$?
+  # PYTHONDONTWRITEBYTECODE: a gate run must not leave a .pyc that a later run
+  # could reuse against a same-second, same-size edit (see test_no_stale_bytecode).
+  out=$(PYTHONDONTWRITEBYTECODE=1 uv run python "gates/$g.py" 2>&1); rc=$?
   case $rc in
     0) pass+=("$g");   printf '  ok      %-26s\n' "$g" ;;
     2) cannot+=("$g"); printf '  CANNOT  %-26s %s\n' "$g" "$(echo "$out" | tail -1 | cut -c1-70)" ;;

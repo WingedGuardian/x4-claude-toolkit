@@ -571,6 +571,8 @@ jobs:
           # Ubuntu is no longer inferred from windows. If either leg moves again, read
           # the per-JOB number and classify the skips before touching these.
           X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '74' || '62' }}
+          # No .pyc from CI: a stale cache cannot then masquerade as the source.
+          PYTHONDONTWRITEBYTECODE: '1'
         run: uv run --frozen python -m pytest -q -rs
 
       # THE COLD CHECK, WIRED. `scripts/verify-cold.sh` is named in five documents

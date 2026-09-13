@@ -1,5 +1,44 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`gates/routing_coverage.py`** — fails when a CLI in `[project.scripts]` is absent from
+  CLAUDE.md's routing-table `Use` column. MEASURED: 5 of 11 were absent (`x4modlist`, `x4stats`,
+  `x4diff`, `x4save`, `x4live`), because whether a tool is routed was a prose property nothing
+  tested. It enforces *resident routing* — a cold agent found an unrouted CLI and used it
+  correctly in 193 s via other docs, so the cost was search, not unreachability. It checks
+  BOTH the shipped `CLAUDE.md` at the repo root and the configured game root's copy; the first
+  version read only the game root's, and was green solely because the author's personal copy
+  had been hand-edited while the shipped one stayed 5-unrouted (review, 2026-09-13). The
+  pre-landing file is a committed fixture, so the "it goes red" test runs on every clone
+  instead of skipping everywhere but one machine.
+- **`gates/claude_md_budget.py`** — a ratchet, not a ceiling: no CLAUDE.md may exceed its
+  recorded floor, and growth must name what it displaces. MEASURED: the two CLAUDE.md files on
+  the author's machine moved in opposite directions, one shrinking 75% while the other grew 3.8x
+  in a single unannounced commit. Baseline is local and gitignored; absent is reported as "drift
+  is NOT being checked", never as a pass.
+- **`x4validate/_surface.py`** — the CLI/subcommand surface, asked of the programs via `--help`
+  and argparse's invalid-choice listing rather than parsed from source. A static `add_parser`
+  scan finds 39 of the 43 real subcommands; names built in a loop are invisible to it. Raises
+  `SurfaceUnavailable` rather than `SystemExit`, so a fresh clone cannot abort pytest collection.
+- **`tests/test_no_stale_bytecode.py`** — refuses when cached bytecode disagrees with its source
+  while CPython would still reuse it. A same-length mutant restored within one mtime *second*
+  leaves its `.pyc` behind; the source then reads correct and the next import executes the
+  mutant. Four mutation verdicts were reported before this was caught.
+
+### Changed
+
+- `tests/conftest.py` sets `sys.dont_write_bytecode`, so the suite stops manufacturing the
+  stale-bytecode hazard in-process. `run-gates.sh`, `verify-cold.sh` and CI now run with
+  `PYTHONDONTWRITEBYTECODE=1`, which is the real boundary: conftest's own cache, `tests/`,
+  `scripts/` and gate runs outside pytest are all outside what the conftest line can reach.
+- The shipped `CLAUDE.md` routing table gains the five rows above plus one routing
+  `gates/mutation_probe.py` — and stating that it covers ONLY the nine `x4validate/_*.py`
+  files it names. `install.sh` / `install.ps1` prune the local ratchet baseline like the other
+  per-machine baselines.
+
 ## v3.1.1 — 2026-09-09
 
 **CI was RED on the v3.1.0 tag, on both legs, and the release went out anyway.** One

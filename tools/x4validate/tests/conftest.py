@@ -25,6 +25,28 @@ from pathlib import Path
 
 import pytest
 
+#: STOP CREATING STALE BYTECODE. MEASURED 2026-09-12: a mutation run that writes a
+#: SAME-LENGTH mutant and restores it within the same mtime SECOND leaves the
+#: MUTANT's .pyc in place -- CPython invalidates on (mtime in seconds, size), so the
+#: source reads correct, `cmp` says byte-identical, and the next import executes the
+#: mutant. Four mutation verdicts were reported before it was caught.
+#:
+#: This is the PREVENTION half; `tests/test_no_stale_bytecode.py` is the DETECTION
+#: half, for caches written by gate runs outside pytest. Both exist because one
+#: stops the suite manufacturing the hazard and the other refuses when it already
+#: exists. `gates/mutation_probe.py` clears __pycache__ for the same reason and says
+#: so in capitals -- the defect was reproduced anyway by hand-rolling a harness, so
+#: a fourth written warning was never going to be the fix.
+#: ⚠ WHAT THIS DOES NOT COVER, measured rather than assumed. It cannot prevent
+#: conftest's OWN .pyc (pytest compiles this file before the line below runs, into
+#: tests/__pycache__), nor `tests/`, `scripts/` or `.claude/hooks/` caches written
+#: outside this process, nor a gate run via `uv run python gates/...`. The first
+#: version of this comment claimed the detection test covered all of those; it did
+#: not (review, 2026-09-13). The real boundary is PYTHONDONTWRITEBYTECODE=1 in
+#: run-gates.sh, verify-cold.sh and ci.yml; this line is belt-and-braces for the
+#: in-process case only.
+sys.dont_write_bytecode = True
+
 GATES = Path(__file__).resolve().parent.parent / "gates"
 
 
