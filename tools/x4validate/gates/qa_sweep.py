@@ -421,6 +421,9 @@ _ALL_CELLS: list[Cell] = [
     # up should not be reported as a gate failure.
     Cell("x4live", "query ping (rc 2 unless the game is up)",
          ["query", "ping", "--timeout", "1"], expect=(0, 2), findings_ok=True),
+    # The READ half of the write verbs. 1 is the engine saying the state is unreadable.
+    Cell("x4live", "pausestate (rc 2 unless the game is up)",
+         ["pausestate", "--timeout", "1"], expect=(0, 1, 2), findings_ok=True),
     Cell("x4live", "ramp (rc 2 unless the game is up)",
          ["ramp", "--timeout", "1"], expect=(0, 2), findings_ok=True),
     # An unknown verb must still be a real ANSWER from the engine (rc 1), never a
@@ -523,6 +526,17 @@ UNSWEPT: dict[tuple[str, str], str] = {
         "writes a durable archive under the registry dir; a cell would either write "
         "into the user's tree or prove nothing. The read half (`extensions`, "
         "`errors`, `oracle`, `mappings`) is swept.",
+    # The two GAME-STATE writes. Their read half, `pausestate`, IS swept.
+    ("x4live", "pause"):
+        "a WRITE to the running game: with the game up a cell would pause the user's "
+        "session, and without it the cell exits 2 and proves nothing. Every exit code "
+        "and refusal is covered offline by tests/test_livecli.py, "
+        "tests/test_livepipe_e2e.py and the lupa suite in tests/test_modlua_rearm.py.",
+    ("x4live", "unpause"):
+        "a WRITE to the running game: with the game up a cell would unpause a session "
+        "the user may have paused, and without it the cell exits 2 and proves nothing. "
+        "Covered offline by tests/test_livecli.py, tests/test_livepipe_e2e.py and "
+        "tests/test_modlua_rearm.py.",
 }
 
 

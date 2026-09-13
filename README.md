@@ -156,12 +156,15 @@ freshness contract and the exit codes, and `tools/basex/QUERIES.md` for worked q
 > `x4live` is the least settled thing in this toolkit. **Do not use it on a save you
 > are actually playing.** Make a fresh save, or a copy, and use that.
 >
-> Being precise about why, because an overstated warning gets ignored: **there is no
-> write verb.** Nothing here changes a ship, a station, the economy or a savegame, the
-> addon declares `save="false"` so it cannot bake into a save, and the query channel
-> makes **zero** state-changing engine calls. The reasons to be careful are narrower
-> and real:
+> Being precise about why, because an overstated warning gets ignored: **it changes one
+> thing, and only when you ask.** `x4live pause` and `x4live unpause` pause and unpause
+> the running game; every other verb only reads. Nothing here changes a ship, a station,
+> the economy or a savegame, and the addon declares `save="false"` so it cannot bake
+> into a save. The reasons to be careful are narrower and real:
 >
+> * `pause` and `unpause` change the game you have open. `unpause` only undoes a pause
+>   this channel made, and a UI reload (alt-enter, loading a save) forgets that, so such
+>   a pause is then undone in game;
 > * it loads a mod into your running game, and the snapshot probe runs automatically
 >   at load;
 > * that probe calls `SaveUIUserData()` — it writes your profile's **UI userdata**,
@@ -179,8 +182,9 @@ now, what a macro's real values resolved to, whether an extension actually loade
 quit-and-relaunch cycle for each question.
 
 It needs one thing inside the game, and **this toolkit ships it**: `mods/x4_toolkit_helper/`.
-Copy that folder into `{game}/extensions/`. It is **read-only** — a fixed, enumerated vocabulary
-with no write verb, gated or otherwise; it declares `save="false"` so it cannot bake into a save,
+Copy that folder into `{game}/extensions/`. It answers a fixed, enumerated vocabulary: read
+verbs, plus exactly two write verbs, `pause` and `unpause`, which take no arguments and report
+the pause state the engine reads back. It declares `save="false"` so it cannot bake into a save,
 and it adds no content, no menu and no MD script. Its one third-party dependency
 (**Mod Support APIs**, `ws_2042901274`, from Steam Workshop or Nexus) is declared **optional**: the
 addon still loads without it and the snapshot half keeps working, while only the named-pipe verbs

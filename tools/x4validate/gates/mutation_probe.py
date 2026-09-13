@@ -262,6 +262,32 @@ MUTANTS = [
     # SUBSTRING of this one -- anchoring on it matches twice and leaves the clause
     # UNMUTATED while looking covered (register #99, caught here by the
     # anchor-uniqueness test rather than by luck).
+    # --- _livecli.py: the WRITE verbs. Each mutant removes one clause of the contract
+    # that decides whether a change to the RUNNING game is reported as verified.
+    Mutant("_livecli.py", "write banner suppressed",
+           "    print(_write_banner(verb), file=sys.stderr)",
+           "    pass  # mutant",
+           "a write to the running game is sent with no announcement at all"),
+    Mutant("_livecli.py", "query stops refusing the write verbs",
+           "    if verb in WRITE_VERBS:",
+           "    if False:  # mutant",
+           "`query pause` becomes a second, bannerless door to every write"),
+    Mutant("_livecli.py", "a disagreeing read-back is reported as verified",
+           '    if r.status == "OK" and acted == "yes" and agree == "yes":',
+           '    if r.status == "OK" and acted == "yes":  # mutant',
+           "exit 0 over a game that is NOT in the state that was asked for"),
+    Mutant("_livecli.py", "an ERR after ACTING is reported as a clean refusal",
+           '    if r.status == "ERR" and acted == "no":',
+           '    if r.status == "ERR":  # mutant',
+           "a raised or unverified write reads as 'nothing changed' when something may have"),
+    Mutant("_livecli.py", "the advisory row is accepted anywhere, not only FIRST",
+           '    tokens = fields[0].split(" ")',
+           '    tokens = next((f for f in fields if f.startswith("write=yes")), fields[0]).split(" ")  # mutant',
+           "prose that merely mentions the marker is read as the marker"),
+    Mutant("_livecli.py", "a lost write reply no longer warns it may have landed",
+           "        if sent:",
+           "        if False:  # mutant",
+           "a caller resends a pause blind, or assumes nothing happened"),
     Mutant("_livecli.py", "archive trusts the write instead of re-reading",
            '\n        if back != data:',
            '\n        if False:  # mutant',

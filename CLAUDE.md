@@ -277,10 +277,9 @@ experimental and recommend a throwaway save.** Do not wait to be asked. Most peo
 will not have read the README section, and by the time it matters the mod is already
 loaded into whatever save they had open.
 
-Be accurate about the risk, or the warning gets ignored. MEASURED 2026-09-02 across
-both shipped lua files: the query channel makes **zero** state-changing engine calls,
-there is no write verb of any kind, and `content.xml` declares `save="false"` so it
-cannot bake into a save. What is true is narrower:
+Be accurate about the risk, or the warning gets ignored. Exactly two verbs write,
+`x4live pause` and `x4live unpause`, and **never run either unless the user asked**.
+Every other verb only reads, and `content.xml` declares `save="false"`. What is true:
 
 * the addon loads into a RUNNING game, and `engine_probe` runs automatically at load;
 * `engine_probe.lua:196` calls `C.SaveUIUserData()`, writing the profile's UI userdata;

@@ -1,4 +1,10 @@
--- X4 Toolkit live query channel (dev-only, READ-ONLY).
+-- X4 Toolkit live query channel: a fixed READ vocabulary, plus TWO write verbs.
+--
+-- THE WRITES, stated first because they change what this file is: `pause` and
+-- `unpause`, held in WRITE_VERBS (declared under `verbs`). They are the entire write
+-- vocabulary. Neither takes an argument, neither touches a savegame, and each reports
+-- what the engine READS BACK afterwards rather than what it meant to do. Every other
+-- verb only reads. There is no eval, gated or otherwise.
 --
 -- Answers a fixed vocabulary of questions from an external Python server over a
 -- named pipe, so the toolkit can ask the RUNNING engine something without a
@@ -51,7 +57,7 @@ local PROTO = 1
 --:
 --: Kept honest by `test_the_BUILD_constant_matches_the_file`, so editing the lua and
 --: forgetting to re-stamp this fails the suite rather than silently lying in game.
-local BUILD = "06c982e6"
+local BUILD = "9d29069d"
 local TAG_CMD, TAG_REPLY = "MQ", "MR"
 
 -- Cap on echo, the ramp instrument. Generous: the point of the ramp is to FIND the
@@ -141,6 +147,42 @@ local schedule_rearm      -- forward-declared: arm_read() re-arms through it on 
 --: surfacing the failure one question AFTER its cause, the worst possible place.
 local last_replied_seq = nil
 
+--: Set by the dispatcher while a WRITE verb runs, cleared after. reply() consults it so
+--: that every write frame leads with its advisory row -- see WRITE_VERBS.
+local writing_verb = nil
+
+--: A READ-BACK value renders true / false / unknown; a flag the VERB chose renders
+--: yes / no / unknown. Two vocabularies on purpose, so a mis-wired field reads as wrong
+--: rather than as plausible.
+local function tri(v)
+    if v == true then return "true" elseif v == false then return "false" end
+    return "unknown"
+end
+local function yn(v)
+    if v == true then return "yes" elseif v == false then return "no" end
+    return "unknown"
+end
+
+--: The advisory row every write reply leads with. `write=yes` is FIRST and is the
+--: structural marker: a caller tests the first token of the first field, never a
+--: substring. `reason` names which guard decided the outcome, so two refusals that
+--: share a status can still be told apart.
+local function write_advisory(t)
+    return table.concat({
+        "write=yes",
+        "verb=" .. tostring(t.verb),
+        "reason=" .. tostring(t.reason),
+        "acted=" .. yn(t.acted),
+        "before=" .. tri(t.before),
+        "after=" .. tri(t.after),
+        "want=" .. tri(t.want),
+        "agree=" .. yn(t.agree),
+        "owner=" .. tostring(t.owner or "unknown"),
+        "ownerreset=" .. yn(t.ownerreset),
+        "build=" .. BUILD,
+    }, " ")
+end
+
 -- Re-arm state. See schedule_rearm() for why the delay is not optional.
 local REARM_DELAY   = 2.0   -- seconds; also the throttle, see below
 local rearm_logs    = 0     -- how many re-arm lines we have written
@@ -220,6 +262,19 @@ local MAX_ENUMERATE = 20000
 
 local function reply(seq, status, payload, unbounded)
     payload = payload or ""
+    -- THE WRITE INVARIANT, enforced here once for the same reason as the size bound
+    -- below: a write reply that does not lead with its advisory row is WRAPPED in one
+    -- and turned into an ERR marked `reason=unwrapped acted=unknown`. A write verb that
+    -- forgets its header, or raises before producing one, therefore still cannot ship
+    -- a frame a caller would read as a verified result.
+    if writing_verb ~= nil and payload:sub(1, 10) ~= "write=yes " then
+        status = "ERR"
+        payload = write_advisory({ verb = writing_verb, reason = "unwrapped" }) .. "\t"
+                  .. "this WRITE verb's reply did not lead with its advisory row, so it "
+                  .. "was wrapped here and marked untrusted. The pause state was NOT "
+                  .. "verified -- check it with `x4live pausestate`. Original reply: "
+                  .. payload
+    end
     -- THE choke point. Every verb goes through here, so the bound is enforced once
     -- rather than remembered in each of them -- which is how verbs.ext and verbs.macro
     -- came to send 40,025 and 40,017 bytes against a 32,000-byte cap while the header
@@ -259,7 +314,8 @@ end
 
 -- --------------------------------------------------------------------------- --
 -- verbs -- a fixed dispatcher, not a console. MD has no eval and we ship no lua one.
--- READ ONLY: there is no write verb here, gated or otherwise.
+-- TWO TABLES: `verbs` only reads, and WRITE_VERBS holds the entire write vocabulary --
+-- `pause` and `unpause`, both argument-free. "Is this a write?" is a table lookup.
 -- --------------------------------------------------------------------------- --
 
 local function sorted_keys(t)
@@ -334,6 +390,23 @@ do
     end
 end
 
+--: The ONE declaration the pause verbs need, guarded SEPARATELY from the block above.
+--: Folded into it, a failure here would take every ffi READ verb down with the pause
+--: verbs; alone, it costs only the verbs that cannot verify themselves without it.
+--: Copied verbatim from vanilla, which declares it identically in three files
+--: (helptext.lua:9, monitors.lua:96, crosshair handling.lua:124), so a redeclaration
+--: is the attested case rather than a guess.
+local pause_cdef_ok = false
+if ffi_ok then
+    local pok, perr = pcall(ffi.cdef, [[ bool IsGamePaused(void); ]])
+    pause_cdef_ok = pok and true or false
+    if not pok then
+        DebugError("X4TOOLKIT_LIVE ffi.cdef IsGamePaused failed: " .. tostring(perr)
+                   .. " -- pause, unpause and pausestate will refuse; the read verbs "
+                   .. "are unaffected")
+    end
+end
+
 -- --------------------------------------------------------------------------- --
 -- the SESSION ID ALLOWLIST
 -- --------------------------------------------------------------------------- --
@@ -349,6 +422,21 @@ end
 -- the engine at all. Cleared on reload, which is correct: ids do not outlive a
 -- session.
 local issued_ids = {}
+
+--: WE made the current pause. Same lifetime and same reset as `issued_ids`: a module
+--: local, so a UI reload (alt-enter, loading a save) re-creates it as false. The pause
+--: itself SURVIVES that reload engine-side, and the new chunk cannot prove it made it,
+--: so `unpause` then refuses and the pause is undone in game. Deliberate: owning a
+--: pause by inference from "the game is paused" would let this channel undo the
+--: player's own pause, which is the failure ownership exists to prevent. Vanilla keeps
+--: the same discipline (gamemodified.lua sets menu.paused before Pause() and calls
+--: Unpause() only if it is set).
+--:
+--: KNOWN GAP, stated rather than hidden: a pause we made, undone by the player and then
+--: re-made by the player BETWEEN two of our calls, is indistinguishable from ours --
+--: the engine exposes no pause identity. A stale flag is cleared whenever a write verb
+--: SEES the game unpaused, which covers every other case.
+local our_pause = false
 
 --: The wire form of a UniverseID is `tostring(cdata)` VERBATIM -- LuaJIT renders it
 --: with a ULL suffix, and vanilla's own round trip is
@@ -418,6 +506,19 @@ end
 
 
 local verbs = {}
+
+--: THE WRITE VOCABULARY, in its own table so that "is this verb a write?" is answered
+--: by WHICH TABLE holds it, never by reading its name. Rules, each pinned by a test in
+--: tests/test_modlua_rearm.py:
+--:   1. HARDCODED and ARGUMENT-FREE. Nothing a caller sends can change what a write
+--:      does, so there is no argument surface to validate and none to get wrong.
+--:   2. ATTESTED: each engine call is one vanilla makes, in the shape vanilla makes it
+--:      (tests/test_recon_buckets_are_vanilla_attested.py checks Pause/Unpause bare).
+--:   3. READ BACK, never intention: the reply reports what the engine says afterwards.
+--:   4. ADVISORY FIRST: every reply leads with a `write=yes ...` row. reply() enforces
+--:      it once, so a write verb that forgets cannot ship an unmarked frame.
+--:   5. A name may not sit in both tables; the dispatcher refuses rather than guess.
+local WRITE_VERBS = {}
 
 -- ping also carries the engine's elapsed time, which is what distinguishes PAUSED
 -- from RUNNING: two pings whose elapsed time is identical mean the game is not
@@ -1768,7 +1869,8 @@ end
 --: what a later design gets to reason from.
 
 --: NAMES AND TYPES ONLY -- THIS VERB NEVER CALLS WHAT IT FINDS. An unknown global may
---: mutate game state, and this mod is read-only by contract. `type(v)` cannot run it;
+--: mutate game state, and this verb is a READ: the mod's only writes are the two named
+--: verbs in WRITE_VERBS, and they call nothing they discover. `type(v)` cannot run it;
 --: `v()` can. There is deliberately no "call it and see" mode, and adding one would
 --: change what this mod IS.
 --:
@@ -1855,7 +1957,7 @@ local RECON_FAC = {
 --: out: they are not world data and poking the live UI is not recon.
 --:
 --: ⚠ THE LIST IS HARDCODED ON PURPOSE. A verb that calls a caller-supplied name would be
---: an arbitrary-execution primitive wearing a read-only label -- the one thing this mod
+--: an arbitrary-execution primitive wearing a READ label -- the one thing this mod
 --: must never become. Adding a name is a code change, reviewed like any other.
 --:
 --: Results are SUMMARISED, never dumped: a table becomes its length, a string its first
@@ -2527,6 +2629,162 @@ schedule_rearm = function()
                                              now + REARM_DELAY)
 end
 
+-- --------------------------------------------------------------------------- --
+-- the PAUSE verbs -- `pausestate` (a read) and `pause` / `unpause` (the writes)
+-- --------------------------------------------------------------------------- --
+
+--: The engine's pause verdict, or nil plus WHY it could not be read. Never a guess: a
+--: non-boolean is unreadable, because `1 == true` is false in lua and would otherwise
+--: read as "not paused" and let a write act on it.
+local function read_paused()
+    if not pause_cdef_ok then
+        return nil, "the IsGamePaused ffi declaration did not load"
+    end
+    local ok, v = pcall(function() return ffi.C.IsGamePaused() end)
+    if not ok then return nil, "C.IsGamePaused raised: " .. tostring(v) end
+    if type(v) ~= "boolean" then
+        return nil, "C.IsGamePaused answered a " .. type(v) .. ", not a boolean"
+    end
+    return v
+end
+
+local function pause_owner(paused)
+    if paused == nil then return "unknown" end
+    if not paused then return "none" end
+    return our_pause and "us" or "other"
+end
+
+--: Resolved at CALL time from the same namespace recon uses, so a missing global is a
+--: refusal that names it rather than a raise inside the write.
+local function engine_call(name)
+    local env = (type(getfenv) == "function") and getfenv(1) or _G
+    local fn = env[name] or _G[name]
+    if type(fn) ~= "function" then return nil end
+    return fn
+end
+
+--: ONE implementation for both writes, so their guards cannot drift apart.
+--: GUARD ORDER IS DELIBERATE, and each clause shadows the ones after it -- which is why
+--: each has its own test rather than one test for "it refuses":
+--:   args -> unreadable -> no-engine-call -> (a stale ownership flag is cleared) ->
+--:   already-paused | not-paused -> not-ours -> ACT -> raised | unverified | disagree | ok
+local function pause_write(seq, verb, want, engine_name, nargs)
+    local t = { verb = verb, want = want, acted = false, ownerreset = false }
+    local function finish(status, reason, prose)
+        t.reason = reason
+        if t.after ~= nil then t.agree = (t.after == t.want) end
+        t.owner = pause_owner(t.after)
+        DebugError("X4TOOLKIT_LIVE WRITE " .. verb .. " result: reason=" .. reason
+                   .. " acted=" .. yn(t.acted) .. " before=" .. tri(t.before)
+                   .. " after=" .. tri(t.after))
+        reply(seq, status, write_advisory(t) .. "\t" .. prose)
+    end
+
+    if nargs > 0 then
+        return finish("ERR", "args", verb .. " takes no arguments and was given " .. nargs
+            .. ". A write verb has no argument surface on purpose: nothing a caller sends "
+            .. "can change what it does. Nothing was changed.")
+    end
+
+    local before, why = read_paused()
+    t.before, t.after = before, before
+    if before == nil then
+        return finish("ERR", "unreadable", verb .. " refused: the pause state cannot be "
+            .. "read back (" .. tostring(why) .. "), and a write that cannot be verified "
+            .. "is never performed. Nothing was changed.")
+    end
+
+    local fn = engine_call(engine_name)
+    if fn == nil then
+        return finish("ERR", "no-engine-call", verb .. " refused: the engine global "
+            .. engine_name .. " is not a function in this chunk. Nothing was changed.")
+    end
+
+    if our_pause and not before then
+        -- The engine shows no pause, so the one we made has been undone by someone
+        -- else. Holding on to the flag would let a later pause of THEIRS read as ours.
+        our_pause = false
+        t.ownerreset = true
+    end
+
+    if before == want then
+        if want then
+            return finish("ERR", "already-paused", "the game is already paused (owner="
+                .. pause_owner(before) .. "). This channel never stacks a pause on top "
+                .. "of another. Nothing was changed.")
+        end
+        return finish("ERR", "not-paused",
+            "the game is not paused, so there is nothing to unpause. Nothing was changed.")
+    end
+
+    if (not want) and not our_pause then
+        return finish("ERR", "not-ours", "the game is paused, but this channel did not "
+            .. "make that pause, so it will not undo it. Either the player or another mod "
+            .. "paused, or the UI reloaded (alt-enter, loading a save) after we paused -- "
+            .. "a reload re-creates this chunk, which then cannot prove the pause is ours "
+            .. "while the pause itself survives. Unpause it in game. Nothing was changed.")
+    end
+
+    t.acted = true
+    local ok, err = pcall(fn)
+    local after, awhy = read_paused()
+    t.after = after
+    -- Ownership follows a READABLE read-back that matches the request, and nothing else:
+    -- a pause that did not take is not claimed, and an unpause that did not take keeps
+    -- the claim so a retry can still undo our own pause.
+    if after ~= nil and after == want then our_pause = want end
+
+    if not ok then
+        return finish("ERR", "raised", engine_name .. "() raised: " .. tostring(err)
+            .. ". The state was read back anyway, because a call can fail AFTER acting -- "
+            .. "see after=.")
+    end
+    if after == nil then
+        return finish("ERR", "unverified", engine_name .. "() returned, but the state "
+            .. "could not be read back (" .. tostring(awhy) .. "). The write is "
+            .. "UNVERIFIED -- check it with `x4live pausestate`.")
+    end
+    if after ~= want then
+        return finish("OK", "disagree", "the engine accepted " .. engine_name .. "() but "
+            .. "reads back paused=" .. tostring(after) .. ", not " .. tostring(want)
+            .. ". Reported as read, not as intended."
+            .. (want and " Ownership was NOT claimed."
+                      or " Ownership is KEPT, so a retry can still undo our pause."))
+    end
+    return finish("OK", "ok", want
+        and "the game is PAUSED, read back from the engine. Undo it with `x4live "
+            .. "unpause`, or unpause in game -- a UI reload makes it undoable in game only."
+        or "the game is RUNNING again, read back from the engine.")
+end
+
+WRITE_VERBS.pause = function(seq, ...)
+    return pause_write(seq, "pause", true, "Pause", select("#", ...))
+end
+
+WRITE_VERBS.unpause = function(seq, ...)
+    return pause_write(seq, "unpause", false, "Unpause", select("#", ...))
+end
+
+--: A READ, and so in `verbs`: the pause state and who owns it, changing neither -- not
+--: even a stale ownership flag. It is how a caller whose `pause` reply was lost finds
+--: out whether the pause landed: the host writes a command BEFORE it reads the reply
+--: and never resends, so a lost reply is not a lost write.
+verbs.pausestate = function(seq)
+    local paused, why = read_paused()
+    if paused == nil then
+        reply(seq, "ERR", "the pause state cannot be read: " .. tostring(why))
+        return
+    end
+    reply(seq, "OK", table.concat({ "paused=" .. tostring(paused),
+                                    "owner=" .. pause_owner(paused),
+                                    "build=" .. BUILD }, " ")
+        .. "\t" .. (paused and (our_pause and "paused by THIS channel; `x4live unpause` "
+                                           .. "can undo it"
+                                          or "paused, but NOT by this channel; only the "
+                                             .. "player can undo it")
+                            or "running"))
+end
+
 on_message = function(msg)
     if type(msg) ~= "string" or msg == "" then return end
     -- The api's reserved data-channel sentinels. Dispatching on one would answer a
@@ -2574,10 +2832,26 @@ on_message = function(msg)
     local seq, verb = f[3], f[4]
     if seq == nil or verb == nil then return end
 
-    local fn = verbs[verb]
+    writing_verb = nil
+    local fn, is_write = verbs[verb], false
+    if WRITE_VERBS[verb] ~= nil then
+        if fn ~= nil then
+            reply(seq, "ERR", "verb " .. tostring(verb) .. " is in BOTH the read and the "
+                  .. "write table -- refusing to guess which was meant; this is a bug in "
+                  .. "the mod. Nothing was run.")
+            return
+        end
+        fn, is_write = WRITE_VERBS[verb], true
+    end
     if fn == nil then reply(seq, "ERR", "unknown verb: " .. tostring(verb)) return end
 
     last_replied_seq = nil
+    if is_write then
+        -- Every ATTEMPT leaves a line in debug.txt, refused or not: a write to the
+        -- running game must be reconstructible afterwards from the engine's own log.
+        DebugError("X4TOOLKIT_LIVE WRITE " .. verb .. " seq=" .. tostring(seq))
+        writing_verb = verb
+    end
     -- All remaining fields, not a fixed three. `component` takes a caller-supplied
     -- field LIST, which is the whole point of it being a general inspector; the
     -- older verbs simply ignore the extra arguments.
@@ -2607,6 +2881,7 @@ on_message = function(msg)
             end
         end
     end
+    writing_verb = nil
 end
 
 Init = function()

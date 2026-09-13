@@ -713,3 +713,163 @@ def test_groundtruth_SUCCEEDS_when_the_file_does_read_back(tmp_path, monkeypatch
     assert dest.is_file(), "the harvest must actually write when the write is honest"
     assert dest.read_bytes(), "and it must not be empty"
     assert rc in (0, 2), rc          # 2 = nothing harvested, which this stub guarantees
+
+
+# --- the WRITE subcommands: `pausestate`, `pause`, `unpause` ---------------------- #
+#
+# The exit code is the contract a caller acts on, so every engine outcome maps to one:
+#   0  the verb ACTED and the engine's read-back AGREES with what was asked
+#   1  the engine REFUSED without acting (already paused, not ours, ...)
+#   2  we could not ask -- and, if the command was already sent, it MAY have landed
+#   3  anything that cannot be trusted: acted but disagreed, raised, unverified,
+#      unwrapped, or a reply whose advisory row is missing or not first
+
+BANNER = "!" * 78
+
+
+def _adv(**kw):
+    """An advisory row as the game-side mod writes it. Builds INPUT, never an expectation."""
+    row = {"verb": "pause", "reason": "ok", "acted": "yes", "before": "false",
+           "after": "true", "want": "true", "agree": "yes", "owner": "us",
+           "ownerreset": "no", "build": "deadbeef"}
+    row.update(kw)
+    return "write=yes " + " ".join(f"{k}={v}" for k, v in row.items())
+
+
+class _WritePipe:
+    """Answers one canned reply and RECORDS every ask, so a test can assert what was sent."""
+
+    path = "stub-pipe"
+
+    def __init__(self, status="OK", payload="", raises=None):
+        self.status, self.payload, self.raises = status, payload, raises
+        self.asks = []
+
+    def ask(self, verb, *args):
+        self.asks.append((verb, args))
+        if self.raises is not None:
+            raise self.raises
+        from x4validate import _livepipe
+        return _livepipe.Reply(seq=1, status=self.status, payload=self.payload)
+
+
+def _serve(monkeypatch, pipe):
+    import contextlib as _c
+
+    @_c.contextmanager
+    def fake(p, timeout):
+        yield pipe
+
+    monkeypatch.setattr(C, "_live_open", fake)
+
+
+@pytest.mark.parametrize("verb", ["pause", "unpause"])
+def test_a_write_exits_0_when_it_ACTED_and_the_read_back_AGREES(verb, monkeypatch, capsys):
+    _serve(monkeypatch, _WritePipe("OK", _adv(verb=verb) + "\tprose"))
+    assert C.main([verb]) == 0, capsys.readouterr()
+
+
+@pytest.mark.parametrize("status,fields,rc", [
+    ("OK", {"reason": "disagree", "agree": "no"}, 3),
+    ("ERR", {"reason": "already-paused", "acted": "no"}, 1),
+    ("ERR", {"reason": "not-ours", "acted": "no", "owner": "other"}, 1),
+    ("ERR", {"reason": "raised", "acted": "yes", "agree": "no"}, 3),
+    ("ERR", {"reason": "unverified", "acted": "yes", "agree": "unknown"}, 3),
+    ("ERR", {"reason": "unwrapped", "acted": "unknown", "agree": "unknown"}, 3),
+    ("OK", {"reason": "ok", "acted": "no"}, 3),
+], ids=["disagree", "already-paused", "not-ours", "raised", "unverified", "unwrapped",
+        "OK-without-acting"])
+def test_each_write_outcome_maps_to_its_exit_code(status, fields, rc, monkeypatch, capsys):
+    _serve(monkeypatch, _WritePipe(status, _adv(**fields) + "\tprose"))
+    assert C.main(["pause"]) == rc, capsys.readouterr()
+
+
+def test_a_write_reply_WITHOUT_the_advisory_is_UNTRUSTED(monkeypatch, capsys):
+    _serve(monkeypatch, _WritePipe("OK", "the game is PAUSED"))
+    assert C.main(["pause"]) == 3
+
+
+def test_the_advisory_must_be_the_FIRST_field_not_merely_present(monkeypatch, capsys):
+    _serve(monkeypatch, _WritePipe("OK", "prose first\t" + _adv()))
+    assert C.main(["pause"]) == 3
+
+
+def test_a_write_prints_its_BANNER_on_stderr_and_never_on_stdout(monkeypatch, capsys):
+    """stdout gets piped into files and fixtures; a warning there becomes data."""
+    _serve(monkeypatch, _WritePipe("OK", _adv() + "\tprose"))
+    C.main(["pause"])
+    out, err = capsys.readouterr()
+    lines = err.splitlines()
+    assert lines.count(BANNER) == 2, err
+    block = err.split(BANNER)[1]
+    assert "x4live pause" in block
+    assert BANNER not in out
+
+
+def test_the_banner_is_printed_even_when_the_game_cannot_be_reached(monkeypatch, capsys):
+    from x4validate import _livepipe
+
+    def unreachable(p, timeout):
+        raise _livepipe.LiveQueryUnavailable("the game never connected")
+
+    monkeypatch.setattr(C, "_live_open", unreachable)
+    assert C.main(["pause"]) == 2
+    err = capsys.readouterr().err
+    assert BANNER in err.splitlines()
+    assert "may already have" not in err.lower(), (
+        "nothing was sent, so it must not suggest the write might have landed")
+
+
+def test_a_reply_LOST_after_sending_says_the_write_MAY_HAVE_LANDED(monkeypatch, capsys):
+    """`ask` writes the command BEFORE it reads the reply and never resends, so a lost
+    reply is not a lost write. The only honest next step is a read."""
+    from x4validate import _livepipe
+
+    pipe = _WritePipe(raises=_livepipe.LiveQueryUnavailable("no reply within 1s"))
+    _serve(monkeypatch, pipe)
+    assert C.main(["pause"]) == 2
+    err = capsys.readouterr().err
+    assert "may already have" in err.lower() and "x4live pausestate" in err, err
+    assert pipe.asks == [("pause", ())]
+
+
+@pytest.mark.parametrize("verb", ["pause", "unpause"])
+def test_a_write_sends_its_verb_EXACTLY_once_with_NO_arguments(verb, monkeypatch, capsys):
+    pipe = _WritePipe("OK", _adv(verb=verb) + "\tprose")
+    _serve(monkeypatch, pipe)
+    C.main([verb])
+    assert pipe.asks == [(verb, ())]
+
+
+def test_the_python_write_verb_list_is_exactly_pause_and_unpause():
+    assert set(C.WRITE_VERBS) == {"pause", "unpause"}
+
+
+@pytest.mark.parametrize("verb", ["pause", "unpause"])
+def test_query_REFUSES_a_write_verb_BEFORE_opening_the_pipe(verb, monkeypatch, capsys):
+    """`query` passes its verb through as free text. Without this refusal it would be a
+    second, bannerless door to every write."""
+    def must_not_open(p, timeout):
+        raise AssertionError("query opened the pipe for a WRITE verb")
+
+    monkeypatch.setattr(C, "_live_open", must_not_open)
+    assert C.main(["query", verb]) == 2
+    assert f"x4live {verb}" in capsys.readouterr().err
+
+
+def test_query_still_passes_a_READ_verb_through(monkeypatch, capsys):
+    """The twin: a refusal that swallowed every verb would pass the test above."""
+    pipe = _WritePipe("OK", "pong\t1\t5.0")
+    _serve(monkeypatch, pipe)
+    assert C.main(["query", "ping"]) == 0
+    assert pipe.asks == [("ping", ())]
+
+
+@pytest.mark.parametrize("status,rc", [("OK", 0), ("ERR", 1)])
+def test_pausestate_exit_code_follows_the_engine_answer(status, rc, monkeypatch, capsys):
+    pipe = _WritePipe(status, "paused=false owner=none build=deadbeef\trunning")
+    _serve(monkeypatch, pipe)
+    assert C.main(["pausestate"]) == rc
+    out, err = capsys.readouterr()
+    assert pipe.asks == [("pausestate", ())]
+    assert BANNER not in err.splitlines(), "pausestate is a READ and must not announce a write"

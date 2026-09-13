@@ -120,6 +120,11 @@ uv run x4live query ping                   # is it there, and is it ADVANCING?
 uv run x4live query macro shiptypes_s ship_arg_s_scout_01_a_macro hull
 uv run x4live query ext ws_2042901274      # is this extension loaded, per the engine
 uv run x4live ramp                         # MEASURE the message-size cap
+
+# ---- the WRITE half: the only two verbs that change the running game.
+uv run x4live pausestate                   # READ: is it paused, and did THIS channel pause it?
+uv run x4live pause                        # WRITE: pause it (exit 0 only if the engine reads back paused)
+uv run x4live unpause                      # WRITE: undo a pause THIS channel made
 ```
 
 Every other tool here reasons about **files**. This one reports what X4 itself held in
@@ -144,7 +149,7 @@ one third-party dependency you install yourself:**
 
 | what | why | where |
 |---|---|---|
-| **X4 Toolkit Helper** | ships with this toolkit under `mods/`. Copy it into `{game}/extensions/`. Read-only: it answers a fixed, enumerated vocabulary and has **no write verb, gated or otherwise** | `mods/x4_toolkit_helper/` |
+| **X4 Toolkit Helper** | ships with this toolkit under `mods/`. Copy it into `{game}/extensions/`. It answers a fixed, enumerated vocabulary: read verbs, plus exactly two argument-free write verbs, `pause` and `unpause`, and no eval of any kind | `mods/x4_toolkit_helper/` |
 | **Mod Support APIs** (`ws_2042901274`) | supplies the named-pipe lua the pipe half calls | Steam Workshop / Nexus |
 
 The dependency is declared **optional**, deliberately. Without Mod Support APIs the
@@ -183,9 +188,9 @@ engine's.
 #### The live half — `query` and `ramp`
 
 Because `uidata.xml` is unreadable mid-session, the offline oracle above can only ever
-answer about a game that has been **closed**. `query` is the complement: a fixed,
-**read-only** vocabulary asked of the running engine over a named pipe. There are no
-write verbs in it — not gated, not present.
+answer about a game that has been **closed**. `query` is the complement: a fixed
+vocabulary of questions asked of the running engine over a named pipe. It only reads, and
+it refuses the two write verbs by name; they have subcommands of their own (below).
 
 We create the pipe and the game connects to it, which is why the game-side mod is four
 files and **zero MD**: `sn_mod_support_apis`' `pipes.lua` opens a *client* handle and does
@@ -228,6 +233,24 @@ while on a *ship* it is the loadout-derived total — so the map is keyed by lib
 elsewhere a stale answer is still an answer about a slightly older world, but here the
 whole output is a verdict on whether our model matches the engine, so staleness does not
 degrade the result — it inverts what it means.
+
+#### The write half — `pause`, `unpause`, and `pausestate`
+
+Exactly two verbs change the running game. They exist because a live measurement drifts
+while the game runs — a faction gains tens of objects a minute — so two questions asked
+seconds apart cannot be compared unless the simulation is held still between them.
+
+- **Ownership, not a toggle.** `unpause` undoes only a pause this channel made, and refuses
+  the player's or another mod's — the discipline vanilla's own menus keep. A UI reload
+  (alt-enter, loading a save) re-creates the mod's lua, which then cannot prove the pause is
+  its own, so that pause is undone in game.
+- **The read-back is the result.** Each reply reports what the engine says *afterwards*.
+  Exit `0` only when that agrees with what was asked; `1` means refused and nothing
+  changed; `3` means the state is not what was asked, or could not be verified.
+- **A lost reply is not a lost write.** The command is sent before the reply is read and is
+  never resent. After a write exits `2`, run `pausestate` before anything else.
+- **`query` refuses both names**, so its free-text passthrough is not a second door, and
+  each write prints a banner on stderr, never on stdout.
 
 ### `x4save` — removing a mod loses content silently
 

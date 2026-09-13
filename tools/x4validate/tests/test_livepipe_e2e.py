@@ -125,6 +125,12 @@ class FakeGame:
                         out = self._frame(seq, "OK", f"{len(field)}.5")
                 elif verb == "missing":
                     out = self._frame(seq, "ABSENT", "no such thing")
+                elif verb == "pause":
+                    # The advisory-led shape the game-side mod writes for a write verb.
+                    out = self._frame(seq, "OK", (
+                        "write=yes verb=pause reason=ok acted=yes before=false after=true "
+                        "want=true agree=yes owner=us ownerreset=no build=fake0000"
+                        "\tthe game is PAUSED, read back from the engine"))
                 else:
                     out = self._frame(seq, "ERR", f"unknown verb: {verb}")
                 win32file.WriteFile(h, out.encode("utf-8"))
@@ -487,3 +493,20 @@ def test_the_ramp_reports_TRUNCATION_as_a_NON_ANSWER_not_a_cap_of_zero():
     assert rc == 2, out
     assert "NOTHING round-tripped" in out
     assert "does not bound the cap" in out
+
+
+def test_a_WRITE_subcommand_round_trips_over_a_REAL_pipe(capsys):
+    """The whole write path through the real transport: subcommand, pipe, frame, exit
+    code. And the command on the wire carries NO argument fields at all."""
+    from x4validate import _livecli
+
+    name = _unique("write")
+    game = FakeGame(lp.LivePipe(name=name).path, n=1)
+    game.start()
+    rc = _livecli.main(["pause", "--pipe", name, "--timeout", "8"])
+    game.thread.join(10)
+    assert game.error is None, game.error
+    assert rc == 0, capsys.readouterr()
+    assert len(game.seen) == 1
+    fields = game.seen[0].split("\t")
+    assert fields[3] == "pause" and len(fields) == 4, game.seen[0]

@@ -23,6 +23,15 @@ TWO RULES THIS CLI EXISTS TO KEEP, both learned expensively elsewhere:
 
 A dump that is missing, stale or malformed exits 2 or 3 and never 0: "I could not
 ask" must not look like "there is no disagreement".
+
+THE WRITE HALF. Exactly two verbs change the running game, `pause` and `unpause`, and
+each has its own subcommand (`WRITE_VERBS`). They take no arguments, print a banner on
+stderr before sending, and exit 0 only when the engine's own read-back agrees with what
+was asked. `unpause` undoes only a pause this channel made. `pausestate` is their READ
+half, and the only safe next step when a write's reply is lost: the command is sent
+before the reply is read and is never resent, so a lost reply is not a lost write.
+`query` refuses the write verbs by name, so its free-text passthrough cannot become a
+second, bannerless door to them.
 """
 from __future__ import annotations
 
@@ -892,6 +901,118 @@ def _live_open(pipe: str | None, timeout: float):
         lp.close()
 
 
+#: The ENTIRE write vocabulary. Mirrors the game-side mod's WRITE_VERBS table, and
+#: tests/test_modlua_rearm.py fails if the two ever differ.
+WRITE_VERBS = ("pause", "unpause")
+
+_BANNER = "!" * 78
+
+
+def _write_banner(verb: str) -> str:
+    """Printed on stderr before EVERY write attempt, refused or not -- stdout is what
+    gets piped into files, and a warning there would become data."""
+    return "\n".join((
+        _BANNER,
+        f"!! WRITE -- `x4live {verb}` changes the state of the RUNNING game.",
+        "!!   It pauses or unpauses the simulation and nothing else. It touches no",
+        "!!   savegame, and it is undone by the other verb or by pausing in game.",
+        "!!   `unpause` only undoes a pause THIS channel made. A UI reload (alt-enter,",
+        "!!   loading a save) forgets that, and such a pause is then undone in game.",
+        "!!   Use a throwaway save.",
+        _BANNER,
+    ))
+
+
+def _parse_advisory(fields: list[str]) -> dict[str, str] | None:
+    """The write advisory row, or None unless it is the FIRST field and its first token
+    is exactly `write=yes`. Positional on purpose: prose that merely mentions writing
+    must never be read as the marker."""
+    if not fields:
+        return None
+    tokens = fields[0].split(" ")
+    if tokens[0] != "write=yes":
+        return None
+    return dict(t.split("=", 1) for t in tokens if "=" in t)
+
+
+def cmd_write(verb: str, pipe: str | None, timeout: float, out=None) -> int:
+    """Send ONE argument-free write verb and judge the engine's own read-back.
+
+    0  the verb ACTED and the read-back AGREES with what was asked
+    1  the engine REFUSED without acting; nothing changed
+    2  we could not ask (raised, and mapped by main) -- if the command was already sent,
+       it MAY have landed, and stderr says so
+    3  anything untrusted: acted but disagreed, raised, unverified, unwrapped, or a reply
+       whose advisory row is missing or not first
+    """
+    out = out or sys.stdout
+    if verb not in WRITE_VERBS:
+        return _fmt_rc(f"{verb!r} is not a write verb (the write verbs are: "
+                       f"{', '.join(WRITE_VERBS)})", 2)
+    from . import _livepipe
+
+    print(_write_banner(verb), file=sys.stderr)
+    sent = False
+    try:
+        with _live_open(pipe, timeout) as lp:
+            path = lp.path
+            sent = True
+            r = lp.ask(verb)
+    except (_livepipe.LiveQueryUnavailable, _livepipe.LiveQueryDegraded):
+        if sent:
+            print(f"!! the `{verb}` command was SENT before its reply was lost, so it may "
+                  "already have taken effect. Do not resend it blind: run "
+                  "`x4live pausestate` to read what the engine now holds.",
+                  file=sys.stderr)
+        raise
+
+    print(f"pipe    : {path}", file=out)
+    print(f"verb    : {verb}", file=out)
+    print(f"status  : {r.status}", file=out)
+    adv = _parse_advisory(r.fields)
+    if adv is None:
+        print(f"reply   : {r.payload}", file=out)
+        print("\nUNTRUSTED: a write reply must lead with its `write=yes` advisory row, "
+              "and this one does not -- the game-side mod may be older than this "
+              "toolkit. Read the state with `x4live pausestate`.", file=out)
+        return 3
+    print(f"advisory: {r.fields[0]}", file=out)
+    for line in r.fields[1:]:
+        print(f"  {line}", file=out)
+    acted, agree, reason = adv.get("acted"), adv.get("agree"), adv.get("reason", "?")
+    if r.status == "OK" and acted == "yes" and agree == "yes":
+        print(f"\nverified: the engine reads back what was asked (reason={reason}).",
+              file=out)
+        return 0
+    if r.status == "ERR" and acted == "no":
+        print(f"\nrefused, and nothing was changed (reason={reason}).", file=out)
+        return 1
+    print(f"\nUNTRUSTED (reason={reason}, acted={acted}, agree={agree}): the game may not "
+          "be in the state that was asked for. Read it with `x4live pausestate` before "
+          "relying on it.", file=out)
+    return 3
+
+
+def cmd_pausestate(pipe: str | None, timeout: float, out=None) -> int:
+    """READ whether the running game is paused and whether THIS channel made the pause.
+
+    Changes nothing, so it prints no banner. It is the one safe next step when a
+    write's reply was lost."""
+    out = out or sys.stdout
+    with _live_open(pipe, timeout) as lp:
+        path = lp.path
+        r = lp.ask("pausestate")
+    print(f"pipe    : {path}", file=out)
+    print("verb    : pausestate", file=out)
+    print(f"status  : {r.status}", file=out)
+    if r.status != "OK":
+        print(f"engine  : {r.payload}", file=out)
+        return 1
+    for line in r.fields:
+        print(f"  {line}", file=out)
+    return 0
+
+
 def cmd_query(verb: str, args: list[str], pipe: str | None, timeout: float,
               out=None) -> int:
     """Ask the RUNNING engine one fixed-vocabulary question.
@@ -899,8 +1020,15 @@ def cmd_query(verb: str, args: list[str], pipe: str | None, timeout: float,
     This is the LIVE half of the oracle. `x4live oracle` reads uidata.xml, which the
     engine truncates to 61 bytes while it is running -- so that half only works with
     the game CLOSED. They are complements.
+
+    It REFUSES the write verbs by name, before the pipe is opened: they have their own
+    subcommands, which announce the write first.
     """
     out = out or sys.stdout
+    if verb in WRITE_VERBS:
+        return _fmt_rc(
+            f"`{verb}` is a WRITE verb, and `query` only asks questions. Use "
+            f"`x4live {verb}`, which announces the write before sending it.", 2)
     from . import _livepipe
 
     with _live_open(pipe, timeout) as lp:
@@ -1686,15 +1814,18 @@ def main(argv: list[str] | None = None) -> int:
              "closed game -- which is why this option exists at all")
 
     # ---- the LIVE half. Everything above reads uidata.xml, which is 61 bytes
-    # while the game runs; these two need the game RUNNING and the live-query mod
-    # deployed. READ-ONLY vocabulary, no write verbs.
+    # while the game runs; these need the game RUNNING and the live-query mod
+    # deployed. `query` is the READ vocabulary and refuses the two write verbs, which
+    # have subcommands of their own below.
     pq = sub.add_parser("query",
                         help="ask the RUNNING engine one question over the pipe")
     pq.add_argument(
         "verb",
         help="ping | probe | containerprobe | censusprobe | galaxyprobe | echo | "
              "errors | ext | macro | globals | player | component | objects | "
-             "stations | ships | compare | recon. "
+             "stations | ships | compare | recon | pausestate. "
+             "`pause` and `unpause` are WRITES and are refused here: use `x4live pause` "
+             "/ `x4live unpause`. "
              "START WITH `probe`: it reports build= (is the game running the file on "
              "disk) and loaded_at= (when this chunk last ran -- a UI reload empties the "
              "id allowlist, and both alt-enter and loading a save cause one, while the "
@@ -1727,6 +1858,26 @@ def main(argv: list[str] | None = None) -> int:
     pq.add_argument("--pipe", help="pipe name (default: $X4_LIVE_PIPE or built-in)")
     pq.add_argument("--timeout", type=float, default=10.0,
                     help="seconds to wait for the game, and for each reply (default: %(default)s)")
+
+    # ---- the WRITE half: the entire write vocabulary, one subcommand per verb. Each
+    # prints a banner on stderr before sending, takes no verb arguments, and exits 0
+    # only when the engine's own read-back agrees with what was asked.
+    pps = sub.add_parser(
+        "pausestate",
+        help="READ whether the running game is paused, and whether THIS channel made "
+             "the pause. Changes nothing; the safe check after a lost write reply")
+    pps.add_argument("--pipe", help="pipe name (default: $X4_LIVE_PIPE or built-in)")
+    pps.add_argument("--timeout", type=float, default=10.0,
+                     help="seconds to wait for the game, and for the reply")
+    for wverb, whelp in (
+            ("pause", "WRITE: pause the running game. Refuses if it is already paused; "
+                      "exit 0 only when the engine reads back paused"),
+            ("unpause", "WRITE: undo a pause THIS channel made. Refuses anyone else's "
+                        "pause; exit 0 only when the engine reads back running")):
+        pw = sub.add_parser(wverb, help=whelp)
+        pw.add_argument("--pipe", help="pipe name (default: $X4_LIVE_PIPE or built-in)")
+        pw.add_argument("--timeout", type=float, default=10.0,
+                        help="seconds to wait for the game, and for the reply")
 
     ph = sub.add_parser(
         "harvest",
@@ -1774,6 +1925,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_archive(args.file, args.out)
         if args.cmd == "query":
             return cmd_query(args.verb, args.args, args.pipe, args.timeout)
+        if args.cmd == "pausestate":
+            return cmd_pausestate(args.pipe, args.timeout)
+        if args.cmd in WRITE_VERBS:
+            return cmd_write(args.cmd, args.pipe, args.timeout)
         if args.cmd == "harvest":
             return cmd_harvest(args.pipe, args.timeout, args.out,
                                faction=args.faction)

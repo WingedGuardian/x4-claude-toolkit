@@ -4,6 +4,22 @@
 
 ### Added
 
+- **`x4live pause` / `x4live unpause` — the first WRITE verbs — and `x4live pausestate`,
+  their read half.** A live measurement drifts while the game runs (a faction gains tens of
+  objects a minute), so holding the simulation still is what makes two questions comparable.
+  The design, each clause pinned by its own test and mutant: the write vocabulary sits in a
+  separate `WRITE_VERBS` table on BOTH sides, so "is this a write?" is a lookup, not a name;
+  both verbs are argument-free and call `Pause()`/`Unpause()` bare, the shape vanilla uses;
+  every write reply leads with a `write=yes` advisory row, enforced once at the reply choke
+  point so a verb that forgets cannot ship an unmarked frame; the result is the engine's
+  READ-BACK, never the verb's intention; and `unpause` undoes only a pause this channel made,
+  the discipline vanilla's own menus keep. Exit 0 only when the read-back agrees, 1 refused
+  with nothing changed, 3 untrusted. `query` refuses both names, so its free-text passthrough
+  is not a second door. **This retires a promise made to users:** the helper mod's manifest,
+  both READMEs and the shipped CLAUDE.md said there was no write verb. Each is rewritten, and
+  `tests/test_write_verb_promises_are_consistent.py` fails if one survives. Gated raw lua eval
+  was considered and withdrawn: the engine's debug-console gate has no discoverable switch, and
+  it guards a capability UI lua already has, so routing through it would have contained nothing.
 - **`gates/routing_coverage.py`** — fails when a CLI in `[project.scripts]` is absent from
   CLAUDE.md's routing-table `Use` column. MEASURED: 5 of 11 were absent (`x4modlist`, `x4stats`,
   `x4diff`, `x4save`, `x4live`), because whether a tool is routed was a prose property nothing
@@ -53,6 +69,9 @@
 
 ### Changed
 
+- The X4 Toolkit Helper mod is version 101. Its `IsGamePaused` declaration is guarded
+  separately from the shared ffi block, so a failure there disables only the pause verbs and
+  leaves every read verb working.
 - `tests/conftest.py` sets `sys.dont_write_bytecode`, so the suite stops manufacturing the
   stale-bytecode hazard in-process. `run-gates.sh`, `verify-cold.sh` and CI now run with
   `PYTHONDONTWRITEBYTECODE=1`, which is the real boundary: conftest's own cache, `tests/`,

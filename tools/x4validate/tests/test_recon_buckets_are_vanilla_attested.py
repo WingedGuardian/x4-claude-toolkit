@@ -326,3 +326,16 @@ def test_the_macro_shape_test_recognises_vanillas_two_forms_and_rejects_an_id():
     assert not _macro_shaped("convertedComponent")
     assert not _macro_shaped("pickedcomponent64")
     assert not _macro_shaped('GetComponentData(id, "owner")')
+
+
+def test_the_WRITE_verbs_engine_globals_are_called_BARE_by_vanilla(corpus):
+    """`pause`/`unpause` call `Pause()` and `Unpause()` with NO arguments.
+
+    That shape is only admissible because vanilla uses it. Vanilla also calls
+    `Pause(nil, true)` and `Unpause(true)`, whose meaning nothing documents, so the mod
+    must never copy those -- and if a patch ever removed every bare call, the premise
+    the write verbs rest on would be gone and this must say so."""
+    for name in ("Pause", "Unpause"):
+        ar = _arities(corpus, name)
+        assert ar, f"vanilla never calls {name}; the write verb has no attested shape"
+        assert 0 in ar, f"vanilla never calls {name} bare: {sorted(set(ar))}"

@@ -115,7 +115,16 @@ local fake_pipes = {
 _G.cdefs = {}
 _G.fake_ids = {}          -- what ffi.new("UniverseID[?]", n) hands back
 local fake_ffi = {
-    cdef = function(src) _G.cdefs[#_G.cdefs+1] = src end,
+    cdef = function(src)
+        -- Injectable failure for ONE declaration. `cdef_raises_on` names a symbol, and a
+        -- cdef block containing it raises the way a real redefinition error would. That
+        -- is how the pause verbs' own guarded declaration is shown to fail ALONE, without
+        -- taking every ffi read verb down with it.
+        if _G.cdef_raises_on and tostring(src):find(_G.cdef_raises_on, 1, true) then
+            error("simulated ffi.cdef failure on " .. _G.cdef_raises_on)
+        end
+        _G.cdefs[#_G.cdefs+1] = src
+    end,
     string = function(p) return tostring(p) end,
     new = function(spec, n)
         local buf = {}
@@ -728,7 +737,33 @@ _G.fake_C = {
         return _G.n_factions or 0
     end,
     GetAllFactions           = function(buf, n, hidden) return n end,
+    -- Vanilla declares this exactly: `bool IsGamePaused(void);` (helptext.lua:9). Delete
+    -- it in a test and the fake C RAISES, as real ffi does for an unexported symbol.
+    IsGamePaused             = function() return _G.game_paused end,
 }
+
+-- PAUSE, as ONE engine state that all three entry points share. Separate fakes could
+-- disagree, and a read-back that cannot contradict the write is a control that cannot
+-- move. `*_is_noop` models an engine that ACCEPTS the call and changes nothing -- without
+-- it the read-back-disagrees branch is unreachable, and an unreachable branch is one
+-- nothing defends. `*_nargs` records the call shape: vanilla's argument forms
+-- (`Pause(nil, true)`, `Unpause(true)`) are unexplained, so the mod must call BARE.
+_G.game_paused = false
+_G.pause_calls, _G.unpause_calls = 0, 0
+_G.pause_raises, _G.unpause_raises = false, false
+_G.pause_is_noop, _G.unpause_is_noop = false, false
+function Pause(...)
+    _G.pause_calls = _G.pause_calls + 1
+    _G.pause_nargs = select("#", ...)
+    if _G.pause_raises then error("engine refused to pause") end
+    if not _G.pause_is_noop then _G.game_paused = true end
+end
+function Unpause(...)
+    _G.unpause_calls = _G.unpause_calls + 1
+    _G.unpause_nargs = select("#", ...)
+    if _G.unpause_raises then error("engine refused to unpause") end
+    if not _G.unpause_is_noop then _G.game_paused = false end
+end
 """
 
 
@@ -2833,3 +2868,349 @@ def test_a_UI_RELOAD_RE_REGISTERS_and_the_GAME_side_is_UNKNOWN(lua_factory):
         "reloads, where one per reload is what this pins. If arming was made "
         "idempotent that is good news, and this test is the thing to update -- with "
         "the in-game check finally run." % (before, after))
+
+
+# --------------------------------------------------------------------------- #
+# THE WRITE PATH -- `pausestate` (a read) and `pause` / `unpause` (the first writes)
+# --------------------------------------------------------------------------- #
+#
+# The contract, each clause pinned below by its own test:
+#   * a write verb lives in WRITE_VERBS, never in `verbs`, so "is this a write?" is a
+#     table lookup rather than a naming convention;
+#   * every write reply LEADS with an advisory row whose first token is `write=yes`,
+#     enforced once in reply() rather than remembered per verb;
+#   * the verb reports what the engine READS BACK, never its own intention;
+#   * ownership, not toggling: `unpause` undoes only a pause THIS chunk made, which is
+#     vanilla's own discipline (gamemodified.lua sets menu.paused before Pause() and
+#     calls Unpause() only if it is set).
+
+def pause_externally(rt):
+    """The player's pause, or another mod's: engine state true, ownership NOT ours.
+
+    Deliberately NOT `ask(rt, n, "pause")` -- routing through our own verb would set the
+    ownership flag, and the refusal under test could never fire."""
+    rt.execute("_G.game_paused = true")
+
+
+def unpause_externally(rt):
+    rt.execute("_G.game_paused = false")
+
+
+def adv(r):
+    """The advisory row as a dict, ASSERTING that it leads the payload.
+
+    Positional and token-exact on purpose: a substring check would pass on a reply that
+    merely mentions writing somewhere in its prose."""
+    first = r.fields[0].split(" ") if r.fields else [""]
+    assert first[0] == "write=yes", (
+        f"a write reply must lead with its advisory row: {r.payload[:200]!r}")
+    return dict(kv.split("=", 1) for kv in first if "=" in kv)
+
+
+def test_pause_PAUSES_and_reports_what_the_engine_READS_BACK():
+    rt = live()
+    r = ask(rt, 1, "pause")
+    assert r.status == "OK", r.payload
+    a = adv(r)
+    assert (a["verb"], a["reason"], a["acted"], a["before"], a["after"], a["want"],
+            a["agree"], a["owner"]) == (
+        "pause", "ok", "yes", "false", "true", "true", "yes", "us")
+    assert g(rt, "pause_calls") == 1 and g(rt, "game_paused") is True
+    assert g(rt, "pause_nargs") == 0, "Pause must be called BARE"
+
+
+def test_pause_reports_the_READ_BACK_not_its_own_intention():
+    """The engine accepts the call and nothing changes. A verb that reported its
+    intention would say after=true here."""
+    rt = live(pause_is_noop="true")
+    r = ask(rt, 1, "pause")
+    a = adv(r)
+    assert r.status == "OK", r.payload
+    assert (a["reason"], a["acted"], a["after"], a["agree"]) == (
+        "disagree", "yes", "false", "no")
+
+
+def test_a_pause_whose_READ_BACK_DISAGREES_claims_NO_ownership():
+    rt = live(pause_is_noop="true")
+    ask(rt, 1, "pause")
+    pause_externally(rt)
+    r = ask(rt, 2, "unpause")
+    assert r.status == "ERR"
+    assert adv(r)["reason"] == "not-ours"
+    assert g(rt, "unpause_calls") == 0
+
+
+def test_pause_REFUSES_when_the_game_is_ALREADY_paused():
+    rt = live()
+    pause_externally(rt)
+    r = ask(rt, 1, "pause")
+    a = adv(r)
+    assert r.status == "ERR"
+    assert (a["reason"], a["acted"], a["before"], a["owner"]) == (
+        "already-paused", "no", "true", "other")
+    assert g(rt, "pause_calls") == 0
+
+
+@pytest.mark.parametrize("verb", ["pause", "unpause"])
+def test_a_write_verb_with_ANY_argument_is_REFUSED(verb):
+    """A write verb has no argument surface at all, so nothing a caller types can change
+    what it does."""
+    rt = live()
+    if verb == "unpause":
+        assert ask(rt, 9, "pause").status == "OK"
+    calls = (g(rt, "pause_calls"), g(rt, "unpause_calls"))
+    r = ask(rt, 1, verb, "now")
+    a = adv(r)
+    assert r.status == "ERR"
+    assert (a["reason"], a["acted"]) == ("args", "no")
+    assert (g(rt, "pause_calls"), g(rt, "unpause_calls")) == calls
+
+
+@pytest.mark.parametrize("pre", ['_G.cdef_raises_on = "IsGamePaused"', "_G.no_ffi = true"])
+def test_pause_REFUSES_when_it_cannot_READ_BACK_because_ffi_did_not_load(pre):
+    """A write that cannot be verified is never performed."""
+    rt = live(rt=_build(pre=pre))
+    r = ask(rt, 1, "pause")
+    a = adv(r)
+    assert r.status == "ERR"
+    assert (a["reason"], a["acted"], a["before"]) == ("unreadable", "no", "unknown")
+    assert g(rt, "pause_calls") == 0
+
+
+def test_a_failed_IsGamePaused_declaration_leaves_the_READ_verbs_working():
+    """The pause verbs' declaration is guarded SEPARATELY. Folded into the shared cdef
+    block, one bad line would take `player`, `stations`, `ships` and `objects` down too."""
+    rt = live(rt=_build(pre='_G.cdef_raises_on = "IsGamePaused"'))
+    r = ask(rt, 1, "player")
+    assert r.status == "OK", r.payload[:200]
+
+
+@pytest.mark.parametrize("verb", ["pause", "unpause"])
+def test_a_write_REFUSES_when_IsGamePaused_is_NOT_EXPORTED(verb):
+    rt = live()
+    if verb == "unpause":
+        assert ask(rt, 9, "pause").status == "OK"
+    rt.execute("_G.fake_C.IsGamePaused = nil")
+    r = ask(rt, 1, verb)
+    a = adv(r)
+    assert r.status == "ERR"
+    assert (a["reason"], a["acted"], a["before"]) == ("unreadable", "no", "unknown")
+    assert g(rt, "unpause_calls") == 0
+
+
+def test_a_write_REFUSES_when_IsGamePaused_answers_a_NON_BOOLEAN():
+    """`1 == true` is false in lua, so without the type check a non-boolean answer would
+    read as "not paused" and the verb would act on it."""
+    rt = live()
+    rt.execute("_G.fake_C.IsGamePaused = function() return 1 end")
+    r = ask(rt, 1, "pause")
+    a = adv(r)
+    assert r.status == "ERR"
+    assert (a["reason"], a["before"]) == ("unreadable", "unknown")
+    assert g(rt, "pause_calls") == 0
+
+
+@pytest.mark.parametrize("verb,name", [("pause", "Pause"), ("unpause", "Unpause")])
+def test_a_write_REFUSES_when_its_engine_global_is_ABSENT(verb, name):
+    rt = live()
+    if verb == "unpause":
+        assert ask(rt, 9, "pause").status == "OK"
+    rt.execute(f"{name} = nil")
+    r = ask(rt, 1, verb)
+    a = adv(r)
+    assert r.status == "ERR"
+    assert (a["reason"], a["acted"]) == ("no-engine-call", "no")
+    assert name in r.payload
+
+
+def test_a_RAISING_engine_call_is_ERR_WITH_a_read_back():
+    """It may have raised AFTER acting, so the state is read back regardless."""
+    rt = live(pause_raises="true")
+    r = ask(rt, 1, "pause")
+    a = adv(r)
+    assert r.status == "ERR"
+    assert (a["reason"], a["acted"], a["after"]) == ("raised", "yes", "false")
+    assert "engine refused to pause" in r.payload
+
+
+def test_unpause_UNPAUSES_a_pause_THIS_CHUNK_made():
+    rt = live()
+    assert ask(rt, 1, "pause").status == "OK"
+    r = ask(rt, 2, "unpause")
+    assert r.status == "OK", r.payload
+    a = adv(r)
+    assert (a["verb"], a["reason"], a["acted"], a["before"], a["after"], a["want"],
+            a["agree"], a["owner"]) == (
+        "unpause", "ok", "yes", "true", "false", "false", "yes", "none")
+    assert g(rt, "unpause_calls") == 1 and g(rt, "game_paused") is False
+    assert g(rt, "unpause_nargs") == 0, "Unpause must be called BARE"
+
+
+def test_unpause_REFUSES_a_pause_it_did_not_make():
+    rt = live()
+    pause_externally(rt)
+    r = ask(rt, 1, "unpause")
+    a = adv(r)
+    assert r.status == "ERR"
+    assert (a["reason"], a["acted"], a["owner"]) == ("not-ours", "no", "other")
+    assert g(rt, "unpause_calls") == 0 and g(rt, "game_paused") is True
+
+
+def test_unpause_REFUSES_when_the_game_is_NOT_paused():
+    rt = live()
+    r = ask(rt, 1, "unpause")
+    a = adv(r)
+    assert r.status == "ERR"
+    assert (a["reason"], a["acted"], a["before"]) == ("not-paused", "no", "false")
+    assert g(rt, "unpause_calls") == 0
+
+
+def test_a_successful_unpause_RELEASES_ownership():
+    """After our pause is undone, the NEXT pause is somebody else's."""
+    rt = live()
+    assert ask(rt, 1, "pause").status == "OK"
+    assert ask(rt, 2, "unpause").status == "OK"
+    pause_externally(rt)
+    r = ask(rt, 3, "unpause")
+    assert r.status == "ERR" and adv(r)["reason"] == "not-ours"
+    assert g(rt, "game_paused") is True and g(rt, "unpause_calls") == 1
+
+
+def test_after_a_UI_RELOAD_unpause_REFUSES_the_previous_chunks_pause():
+    """A reload re-creates the chunk; the pause survives engine-side and the new chunk
+    cannot prove it made it. Inventing ownership from `before=true` would let the
+    channel undo the player's pause, which is the failure ownership exists to prevent."""
+    rt = live()
+    assert ask(rt, 1, "pause").status == "OK"
+    reload_ui(rt)
+    r = ask(rt, 2, "unpause")
+    assert r.status == "ERR" and adv(r)["reason"] == "not-ours"
+    assert g(rt, "game_paused") is True and g(rt, "unpause_calls") == 0
+
+
+def test_a_STALE_ownership_flag_is_CLEARED_when_the_engine_shows_the_pause_is_gone():
+    rt = live()
+    assert ask(rt, 1, "pause").status == "OK"
+    unpause_externally(rt)           # the player undid OUR pause by hand
+    r = ask(rt, 2, "unpause")
+    a = adv(r)
+    assert r.status == "ERR"
+    assert (a["reason"], a["ownerreset"]) == ("not-paused", "yes")
+    pause_externally(rt)             # ...and later paused again: THEIR pause now
+    r = ask(rt, 3, "unpause")
+    assert r.status == "ERR" and adv(r)["reason"] == "not-ours"
+    assert g(rt, "unpause_calls") == 0 and g(rt, "game_paused") is True
+
+
+def test_an_unpause_whose_READ_BACK_DISAGREES_KEEPS_ownership():
+    """We still hold a pause. Dropping the flag would strand it: no later retry could
+    ever undo it through this channel."""
+    rt = live()
+    assert ask(rt, 1, "pause").status == "OK"
+    rt.execute("_G.unpause_is_noop = true")
+    r = ask(rt, 2, "unpause")
+    a = adv(r)
+    assert r.status == "OK", r.payload
+    assert (a["reason"], a["acted"], a["after"], a["agree"]) == (
+        "disagree", "yes", "true", "no")
+    rt.execute("_G.unpause_is_noop = false")
+    r = ask(rt, 3, "unpause")
+    assert r.status == "OK" and adv(r)["agree"] == "yes", (
+        "a retry of OUR pause must remain possible")
+
+
+def test_a_write_verb_that_RAISES_still_answers_with_an_ADVISORY_led_frame():
+    rt = live(rt=_build(extra='WRITE_VERBS.__boom = function(seq) error("kaboom") end'))
+    r = ask(rt, 1, "__boom")
+    a = adv(r)
+    assert r.status == "ERR"
+    assert (a["verb"], a["reason"], a["acted"]) == ("__boom", "unwrapped", "unknown")
+    assert "kaboom" in r.payload
+
+
+def test_a_write_reply_WITHOUT_its_advisory_is_WRAPPED_and_marked_untrusted():
+    """The invariant is enforced in reply(), once. A write verb that forgets its header
+    still cannot produce a frame whose first field is not the advisory."""
+    rt = live(rt=_build(
+        extra='WRITE_VERBS.__forgetful = function(seq) reply(seq, "OK", "done") end'))
+    r = ask(rt, 1, "__forgetful")
+    a = adv(r)
+    assert r.status == "ERR", "an unwrapped write reply must not stay OK"
+    assert (a["reason"], a["acted"]) == ("unwrapped", "unknown")
+    assert "done" in r.payload
+
+
+@pytest.mark.parametrize("first", ["pause", "__boom"])
+def test_the_write_flag_is_CLEARED_so_the_next_READ_is_not_wrapped(first):
+    rt = live(rt=_build(extra='WRITE_VERBS.__boom = function(seq) error("kaboom") end'))
+    ask(rt, 1, first)
+    r = ask(rt, 2, "ping")
+    assert r.status == "OK" and r.fields[0] == "pong", r.payload[:120]
+
+
+def test_a_verb_in_BOTH_tables_is_REFUSED_and_neither_runs():
+    rt = live(rt=_build(extra=(
+        'verbs.pause = function(seq) _G.__read_pause_ran = true; '
+        'reply(seq, "OK", "read") end')))
+    r = ask(rt, 1, "pause")
+    assert r.status == "ERR"
+    assert g(rt, "pause_calls") == 0
+    assert g(rt, "__read_pause_ran") is None
+
+
+def test_the_write_verbs_live_ONLY_in_WRITE_VERBS():
+    rt = _build(extra=(
+        "_G.__t = {r_pause = verbs.pause ~= nil, r_unpause = verbs.unpause ~= nil, "
+        "r_state = verbs.pausestate ~= nil, w_pause = WRITE_VERBS.pause ~= nil, "
+        "w_unpause = WRITE_VERBS.unpause ~= nil, w_state = WRITE_VERBS.pausestate ~= nil}"))
+    assert dict(g(rt, "__t").items()) == {
+        "r_pause": False, "r_unpause": False, "r_state": True,
+        "w_pause": True, "w_unpause": True, "w_state": False}
+
+
+def test_the_lua_and_python_WRITE_VERB_lists_are_the_SAME_set():
+    """Without this a verb added game-side would reach `x4live query` unrefused."""
+    from x4validate import _livecli
+
+    rt = _build(extra=(
+        "_G.__w = {} for k in pairs(WRITE_VERBS) do _G.__w[#_G.__w + 1] = k end"))
+    assert set(g(rt, "__w").values()) == {"pause", "unpause"}
+    assert set(_livecli.WRITE_VERBS) == {"pause", "unpause"}
+
+
+def test_every_write_ATTEMPT_is_logged_even_a_refused_one():
+    rt = live()
+    pause_externally(rt)
+    ask(rt, 1, "pause")
+    lines = [s for s in g(rt, "log").values() if "X4TOOLKIT_LIVE WRITE" in s]
+    # BOTH lines, each pinned separately: the dispatcher's ATTEMPT line (it is the only
+    # one a write verb that raises before finishing ever leaves) and the RESULT line.
+    # Asserting "some WRITE line mentions pause" let either one be deleted unnoticed.
+    assert any("WRITE pause seq=1" in s for s in lines), lines
+    assert any("WRITE pause result: reason=already-paused" in s for s in lines), lines
+
+
+def test_pausestate_READS_state_and_ownership_WITHOUT_writing():
+    rt = live()
+    r = ask(rt, 1, "pausestate")
+    assert r.status == "OK", r.payload
+    assert not r.fields[0].startswith("write=")
+    assert (hdr(r)["paused"], hdr(r)["owner"]) == ("false", "none")
+    assert ask(rt, 2, "pause").status == "OK"
+    h = hdr(ask(rt, 3, "pausestate"))
+    assert (h["paused"], h["owner"]) == ("true", "us")
+    assert ask(rt, 4, "unpause").status == "OK"
+    pause_externally(rt)
+    h = hdr(ask(rt, 5, "pausestate"))
+    assert (h["paused"], h["owner"]) == ("true", "other")
+    assert (g(rt, "pause_calls"), g(rt, "unpause_calls")) == (1, 1)
+
+
+def test_pausestate_is_ERR_not_a_guess_when_the_state_cannot_be_read():
+    rt = live()
+    rt.execute("_G.fake_C.IsGamePaused = nil")
+    r = ask(rt, 1, "pausestate")
+    assert r.status == "ERR", r.payload
+    # NOT VACUOUS: an unknown verb is also ERR, so the refusal must name what it could
+    # not read. The first version of this test passed before the verb existed.
+    assert "IsGamePaused" in r.payload, r.payload
