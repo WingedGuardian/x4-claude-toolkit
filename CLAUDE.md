@@ -511,6 +511,8 @@ register without negatives has no denominator either.
 > **Note the framing trap this table used to have:** it was written about *negatives*, so it read as
 > a rule about what you may **claim**. It is also a rule about which tool you **reach for** — for
 > positives, universals and existence checks alike.
+>
+> **Exact flags and subcommands** for every tool below: the generated `x4-cli-reference` skill.
 
 | Question shape | Tool | Not this |
 |---|---|---|

@@ -110,6 +110,9 @@ _GAME_GLOBS = (
     ".claude/hooks/*.sh",
     ".claude/hooks/*.py",
     ".claude/skills/*/SKILL.md",
+    # A skill is more than its SKILL.md: the generated x4-cli-reference skill keeps its
+    # per-CLI help in reference/*.md, and those were deployable but unlockable (2026-09-13).
+    ".claude/skills/*/reference/*.md",
     ".claude/agents/*.md",
 )
 

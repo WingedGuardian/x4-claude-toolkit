@@ -1,0 +1,165 @@
+"""`scripts/gen-cli-reference.py` -- the generated `x4-cli-reference` skill must be FRESH.
+
+The skill is the exact surface of every toolkit CLI, generated from argparse so it
+cannot drift from the code. That guarantee is only as good as this test: without it a
+new flag lands, nobody regenerates, and the "generated" reference is a hand-kept doc
+again with a misleading banner.
+
+Every check here can go red on purpose, and one twin per clause proves it.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import re
+import shutil
+from pathlib import Path
+
+import pytest
+
+PKG = Path(__file__).resolve().parent.parent
+SRC = PKG / "scripts" / "gen-cli-reference.py"
+
+
+def _load():
+    spec = importlib.util.spec_from_file_location("gen_cli_reference_under_test", SRC)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+gen = _load()
+
+
+@pytest.fixture(scope="module")
+def expected() -> dict[str, str]:
+    return gen.generate()
+
+
+# --------------------------------------------------------------------- the real tree
+
+
+def test_the_generation_has_a_denominator(expected):
+    """A generator that enumerated nothing would make every freshness check vacuous."""
+    refs = [k for k in expected if k.startswith("reference/")]
+    assert len(refs) >= 11, refs
+    subs = sum(len(re.findall(r"^## `", expected[k], re.M)) for k in refs)
+    assert subs >= 40, subs
+
+
+def test_the_committed_skill_is_fresh(expected):
+    found = gen.problems(expected)
+    assert found == [], (
+        "the generated CLI reference is out of date -- run "
+        "`uv run python scripts/gen-cli-reference.py`: %s" % found)
+
+
+def test_the_skill_frontmatter_is_a_loadable_skill(expected):
+    head = expected["SKILL.md"].split("\n")
+    assert head[0] == "---" and head[1] == "name: x4-cli-reference", head[:3]
+    assert head[2].startswith("description: Use when"), head[2]
+    assert "---" in head[3:6]
+
+
+def test_no_personal_path_or_profile_id_reaches_the_skill(expected):
+    """Skills ship to every user and hold no personal paths. MEASURED 2026-09-13: the
+    help text names only `$X4_*` variables, so this is expected to stay empty."""
+    bad = re.compile(r"[A-Za-z]:[\\/]|/home/|/Users/|\b\d{8}\b")
+    hits = {k: bad.findall(v) for k, v in expected.items() if bad.search(v)}
+    assert hits == {}, hits
+
+
+def test_generation_is_deterministic(expected):
+    assert gen.generate() == expected
+
+
+# ------------------------------------------------------------- falsification twins
+
+
+@pytest.fixture
+def fresh_copy(tmp_path, expected):
+    d = tmp_path / "x4-cli-reference"
+    for rel, text in expected.items():
+        p = d / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(text.encode("utf-8"))
+    assert gen.problems(expected, d) == [], "precondition: the copy starts fresh"
+    return d
+
+
+def test_TWIN_a_changed_line_is_STALE(fresh_copy, expected):
+    p = fresh_copy / "reference" / "x4save.md"
+    p.write_bytes(p.read_bytes().replace(b"usage:", b"usage :", 1))
+    assert gen.problems(expected, fresh_copy) == ["STALE    reference/x4save.md"]
+
+
+def test_TWIN_a_deleted_reference_is_MISSING(fresh_copy, expected):
+    (fresh_copy / "reference" / "x4diff.md").unlink()
+    assert gen.problems(expected, fresh_copy) == ["MISSING  reference/x4diff.md"]
+
+
+def test_TWIN_an_extra_file_is_a_GHOST(fresh_copy, expected):
+    (fresh_copy / "reference" / "x4retired.md").write_bytes(b"old\n")
+    assert gen.problems(expected, fresh_copy) == ["GHOST    reference/x4retired.md"]
+
+
+def test_TWIN_CRLF_line_endings_alone_are_NOT_stale(fresh_copy, expected):
+    """An autocrlf checkout of a correct file must not fail the suite."""
+    p = fresh_copy / "SKILL.md"
+    p.write_bytes(p.read_bytes().replace(b"\n", b"\r\n"))
+    assert gen.problems(expected, fresh_copy) == []
+
+
+def test_TWIN_the_two_enumerations_disagreeing_REFUSES(monkeypatch):
+    """If argparse's invalid-choice list and the help's {...} block disagree, neither is
+    written -- a reference built on one of two contradicting answers is a guess."""
+    real = gen._surface.subcommands
+
+    def lying(cli, cwd=None):
+        subs, note = real(cli, cwd)
+        return ((subs or []) + ["ghost-subcommand"], note) if cli == "x4save" else (subs, note)
+
+    monkeypatch.setattr(gen._surface, "subcommands", lying)
+    with pytest.raises(gen.GenerationError, match="DISAGREE"):
+        gen.generate()
+
+
+def test_TWIN_an_unenumerable_surface_REFUSES(monkeypatch):
+    monkeypatch.setattr(gen._surface, "subcommands",
+                        lambda cli, cwd=None: (None, "could not be run"))
+    with pytest.raises(gen.GenerationError, match="not enumerable"):
+        gen.generate()
+
+
+def test_TWIN_a_help_that_prints_no_usage_REFUSES():
+    with pytest.raises(gen.GenerationError, match="no usage block"):
+        gen.capture_help("builtins:print", [])
+
+
+def test_listed_subcommands_rejoins_a_hyphen_wrap():
+    """argparse wraps at hyphens; the index must not read 'cross- checked'."""
+    text = ("usage: x [-h] {a,b} ...\n\npositional arguments:\n  {a,b}\n"
+            "    a           scan things, cross-\n"
+            "                checked against a list\n"
+            "    b           other\n")
+    assert gen.listed_subcommands(text) == [("a", "scan things, cross-checked against a list"),
+                                           ("b", "other")]
+
+
+def test_the_check_mode_exits_1_on_a_stale_tree(monkeypatch, fresh_copy):
+    p = fresh_copy / "SKILL.md"
+    p.write_bytes(p.read_bytes() + b"hand edit\n")
+    monkeypatch.setattr(gen, "SKILL_DIR", fresh_copy)
+    assert gen.main(["--check"]) == 1
+
+
+def test_the_check_mode_exits_0_on_a_fresh_tree(monkeypatch, fresh_copy):
+    monkeypatch.setattr(gen, "SKILL_DIR", fresh_copy)
+    assert gen.main(["--check"]) == 0
+
+
+def test_the_generator_writes_into_the_repos_skills_dir():
+    """The skill is under the REPO's .claude/skills, not the package's -- that is the
+    directory both installers copy from."""
+    assert gen.SKILL_DIR == PKG.parents[1] / ".claude" / "skills" / "x4-cli-reference"
+    assert (PKG.parents[1] / ".claude" / "skills").is_dir()

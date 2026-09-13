@@ -132,6 +132,17 @@ run_layout(){ # run_layout <name> <toolkit> <game>
   decide deny  protect-files.sh "$(fj "$GAME/01.dat")"                       ".dat INSIDE the game still denies"
   # X4_MODS is outside $GAME in both layouts, so the source lives elsewhere -> hard block.
   decide deny  protect-files.sh "$(fj "$GAME/extensions/deployed/x.xml")"   "deployed extensions/ (source elsewhere)"
+  # The DEPLOYED-copy advisory (2026-09-13). In the separate layout the game root's
+  # .claude/ is a deployment of the toolkit's, so an edit there is advised toward the
+  # source; in the in-game layout they are the same directory and it must stay silent.
+  if [ "$name" = "separate" ]; then
+    decide advise protect-files.sh "$(fj "$GAME/.claude/skills/x4-debug/SKILL.md")" "a DEPLOYED skill edit advises toward the source"
+    decide advise protect-files.sh "$(fj "$GAME/.claude/agents/mod-research.md")"   "a DEPLOYED agent edit advises"
+    decide advise protect-files.sh "$(fj "$GAME/.claude/hooks/protect-bash.sh")"    "a DEPLOYED hook edit advises"
+    decide allow  protect-files.sh "$(fj "$TK/.claude/skills/x4-debug/SKILL.md")"   "the SOURCE skill does not advise"
+  else
+    decide allow  protect-files.sh "$(fj "$GAME/.claude/skills/x4-debug/SKILL.md")" "in-game layout: .claude/ IS the source, no advisory"
+  fi
 }
 
 # The in-game layout is the interesting one: toolkit IS the game folder, so mod sources sit
@@ -394,7 +405,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=160
+EXPECT=165
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written

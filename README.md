@@ -198,7 +198,12 @@ tiers behind each answer.
 ### Skills & subagents
 - `/x4-balance` — ground a stat or balance change in measured values before proposing it:
   the three-values rule (vanilla, effective, proposed) and the in-sector vs out-of-sector check.
+- `/x4-cli-reference` — the exact subcommands, flags and defaults of every toolkit CLI,
+  GENERATED from each CLI's own `--help` by `tools/x4validate/scripts/gen-cli-reference.py`
+  so it cannot drift; the suite fails if it is stale.
 - `/x4-debug` — read the active profile's `debug.txt`, filter benign noise, surface real errors.
+- `/x4-live` — query the RUNNING game over the live channel, and read a refused id, a short
+  count or a zero correctly (the traps a live enumeration hides).
 - `/x4-mod-interaction` — analyze how a mod interacts with your installed set: collisions,
   shared event/action hooks, advisory balance fit, and same-ship redundancy.
 - `/x4-modlist-review` — triage your mod registry against the Nexus API.
@@ -206,6 +211,8 @@ tiers behind each answer.
   work out which of "did not load / never fired / logic failed" produced a silent result.
 - `/x4-scaffold` — scaffold the full cross-file footprint for new content from a vanilla analogue.
 - `/x4-update-mod` — port a mod to a newer game version (mechanical checks + design brief).
+- `/x4-xml-patching` — the selector, merge-tree and load-order gotchas that make an X4 patch
+  silently no-op, where a fix belongs, and how to validate it; invoke before the first XML edit.
 - `cross-file-impact` / `mod-research` subagents — trace the fan-out / research a mod before editing.
 
 ### Safety, built in

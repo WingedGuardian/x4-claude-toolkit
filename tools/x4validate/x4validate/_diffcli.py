@@ -43,7 +43,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("old", help="pristine/older mod dir (baseline)")
     p.add_argument("new", help="edited/newer mod dir")
     p.add_argument("--overlay", action="append", default=[],
-                   help="extra baseline dir merged onto OLD (repeatable; e.g. a VRO submod)")
+                   help="extra baseline dir merged onto OLD (repeatable; e.g. a submod "
+                        "that patches the mod being compared)")
     p.add_argument("--detail", action="store_true", help="list every attr change")
     p.add_argument("--file", help="detail one vpath only")
     p.add_argument("--top", type=int, default=30, help="show N heaviest changed files")

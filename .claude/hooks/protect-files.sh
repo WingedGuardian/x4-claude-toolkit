@@ -125,6 +125,29 @@ if true; then
   echo "$FILE_PATH" | grep -qiE '(^|[/\\])content\.xml$' && advise "MOD MANIFEST: $FILE_PATH controls what this mod loads, its id, version and dependencies. A wrong id makes every dependent mod report MISSING, and `save=\"1\"` bakes the mod into save files. Allowed without confirmation (user decision 2026-08-29) -- so check the change yourself rather than expecting a prompt."
 fi
 
+# === ADVISORY — editing the DEPLOYED .claude/ instead of its source (2026-09-13) ===
+# When the toolkit lives OUTSIDE the game root, the game root's .claude/ is a deployed
+# copy of $X4_TOOLKIT/.claude/. MEASURED 2026-09-13: five files there had drifted from the
+# source -- two skills written straight into the deployment and never shipped, one skill
+# newer there, two agents with personal paths hand-edited in. Every one was an Edit that
+# landed in the wrong copy. ABOVE the whitelist on purpose: the `.claude/(hooks|skills|..)`
+# whitelist below exits 0, and an advisory placed under it would be unreachable (F84).
+# ADVISORY, never a deny: a deliberate local edit is legitimate; promote only once a
+# false-positive rate has been measured. In the in-game layout the game root IS the
+# toolkit, so its .claude/ is the source and this stays silent.
+if [ -n "${X4_GAME:-}" ] && [ -n "${X4_TOOLKIT:-}" ]; then
+  x4_canon_memo "$X4_GAME";    _dg="${_X4_CANON_RESULT%/}"
+  x4_canon_memo "$X4_TOOLKIT"; _dt="${_X4_CANON_RESULT%/}"
+  if [ "$_dg" != "$_dt" ]; then
+    for _dsub in skills agents hooks commands settings.json; do
+      if x4_under "$FILE_PATH" "$X4_GAME/.claude/$_dsub"; then
+        advise "DEPLOYED COPY: $FILE_PATH is inside the game root's .claude/, which is a DEPLOYMENT of $X4_TOOLKIT/.claude/ -- not its source. An edit made only here never ships and drifts (five files had, 2026-09-13). Make the change under $X4_TOOLKIT/.claude/ (create the file there if it is new), then run: uv run python $X4_TOOLKIT/tools/x4validate/scripts/deploy-claude-dir.py --apply. gates/deploy_parity.py verifies the two agree."
+        break
+      fi
+    done
+  fi
+fi
+
 # === WHITELIST — the toolkit's own working dirs & docs (editable in every install mode) ===
 case "$(x4_norm "$FILE_PATH")" in */claude.md|*/knowledgebase.md) exit 0;; esac
 # dev/ and dist/ are the documented mod workspace; they MUST be whitelisted before the

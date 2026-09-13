@@ -27,6 +27,29 @@
   while CPython would still reuse it. A same-length mutant restored within one mtime *second*
   leaves its `.pyc` behind; the source then reads correct and the next import executes the
   mutant. Four mutation verdicts were reported before this was caught.
+- **`/x4-cli-reference` skill, GENERATED** — the exact subcommands, flags and defaults of all 11
+  CLIs (43 subcommands), written by `tools/x4validate/scripts/gen-cli-reference.py` from each
+  CLI's own argparse help; `tests/test_cli_reference.py` fails the suite when it is stale, missing
+  a file, or carries a ghost. Chosen over an MCP server after measuring the case for one: 2
+  malformed calls in 2,965 invocations, and MCP tool descriptions load name-only in Claude Code
+  while the routing table is in context every turn. Which tool answers which question stays in
+  CLAUDE.md's routing table. Help is captured in-process because a subprocess capture mangles
+  non-ASCII on Windows, and at a pinned width so every machine generates the same bytes.
+- **`gates/deploy_parity.py`** — fails when a configured game root's `.claude/` differs from this
+  repo's, which is its source. MEASURED on the author's machine: 5 of 25 deployed files had drifted
+  in three directions, each from an edit made in the deployed copy. Line endings and the installer's
+  own rewrite (skills and agents only) are not drift; every difference is reported with its
+  direction, and there is deliberately no accept-baseline.
+- **`tools/x4validate/scripts/deploy-claude-dir.py`** — deploys `.claude/` into the game root, one
+  direction, dry-run by default. It refuses to overwrite a deployed file that matches no version
+  this repo ever committed (an edit never ported back; `--force <name>` for one file), never deletes,
+  keeps each file's line endings, and re-locks x4lock'd files. Its first real dry run caught its own
+  defect: an unscoped rewrite would have pointed a game root's `settings.json` at the repo's hooks.
+- **An edit-time advisory** in `.claude/hooks/protect-files.sh`: an Edit landing in a deployed
+  `.claude/` is pointed at the source. Silent in the in-game layout, where the two are one directory.
+- **Three skills now ship** that existed only in one deployment: **`/x4-xml-patching`** (the
+  selector, merge-tree and load-order gotchas; installed-mod names generalised, gotcha numbers kept),
+  **`/x4-live`**, and the newer **`/x4-probe`** with its "can it RECORD?" rung.
 
 ### Changed
 
@@ -38,6 +61,11 @@
   `gates/mutation_probe.py` — and stating that it covers ONLY the nine `x4validate/_*.py`
   files it names. `install.sh` / `install.ps1` prune the local ratchet baseline like the other
   per-machine baselines.
+- `scripts/x4lock.py` also locks `.claude/skills/*/reference/*.md`, so a multi-file skill is
+  protected whole.
+- `x4diff --overlay` help no longer names a specific mod.
+- Nexus release packs under `release/nexus/` are untracked and gitignored: they are a maintainer's
+  local artifact, deleted once posted, and tracking them held the suite at two standing failures.
 
 ## v3.1.1 — 2026-09-09
 

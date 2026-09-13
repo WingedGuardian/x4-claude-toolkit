@@ -102,10 +102,20 @@ debugging the third while the first is true is unbounded.
 |---|---|---|
 | 1 | did it LOAD? | a line in the engine log naming the file. Absent = not installed or not enabled, and nothing after it matters |
 | 2 | did it TRIGGER? | an unconditional marker as the **first action**, before any logic |
-| 3 | did the logic work? | only now |
+| 3 | can it RECORD? | a variable self-test **before anything is created** - set a value, read it back, abort if it does not survive |
+| 4 | did the logic work? | only now |
 
 **The marker is not optional and it goes first.** If it is missing, the trigger is wrong, not the
 logic.
+
+**Rung 3 is the one people leave out, and it is the only rung whose absence causes DAMAGE.** Loading
+and triggering fail harmlessly. Variable binding fails *after* the side effects that produced the
+value, so the run leaves debris - and the cleanup cannot run, because the handles needed to undo the
+work are exactly what failed to bind.
+
+**Prove you can hold a handle before you make one.** A self-test costs one line, can leave no debris,
+and converts that failure into a zero-cost one. A probe that cannot name what it created cannot clean
+it up.
 
 Cue triggering is a runtime fact no schema expresses. Confirm which event actually fires in the
 situation you are testing - some fire only on a save load and are silent on a new game, with no
@@ -177,6 +187,7 @@ check, not the last.
 | schema check per element | the probe does not load; one wasted session |
 | copy, do not compose | the routine-looking parts fail |
 | load and trigger markers | cannot tell which of three failures happened |
+| binding self-test before creating | the run leaves debris it has no handle to clean up |
 | void conditions | a void run gets written down as a null result |
 | control that can fail | a clean null becomes a false finding |
 | three reporting channels | the result exists only where nobody looks |
@@ -190,6 +201,11 @@ check, not the last.
 | omitting a required attribute | `use="required"` fails the file exactly like a bad element name |
 | "it is conventional, I do not need to check" | Convention is where composed bugs live. The check is one grep. |
 | searching only the reference tree | Installed mods solve modder problems vanilla never had, and are proven in THIS version |
+| a cue at t=0 that touches the WORLD | `player.entity` and `player.sector` are NULL at t=0.00. Static macro reads are fine there; spawning is not. Wait on `md.Setup.Start` (93 of 371 vanilla md documents do) |
+| composing the variable plumbing after copying the action | The action is what looks risky, so you check it. The plumbing looks routine, so you invent it - and it is what fails. Copy BOTH. |
+| treating a namespace declaration as an address | Declaring where variables live is not the same as naming that place. Check how the analogue you copied *reads its own variables back*, not just how it declares them. |
+| creating things before proving you can hold them | The failure lands after the side effects. Self-test the binding first (rung 3 above). |
+| a cleanup path that needs the handles that failed | Destroy on the abort path too, guarded per handle, so a partial bind still cleans up what it got |
 | trusting that a spawn did what you asked | Read the resulting value back and log it |
 | a "no X" arm that merely omits X | Generated loadouts supply their own. Remove it explicitly. |
 | a default validate run | The schema pass is behind `--update` |
@@ -198,6 +214,8 @@ check, not the last.
 ## Red flags - stop
 
 - You are about to write an element you have not grepped against the governing schema
+- Your probe creates something in the world before it has proven it can store a reference
+- You copied the risky-looking action and wrote the surrounding variable handling from memory
 - You are calling code "complete enough to deploy" while listing parts you did not verify
 - Your control could not have failed under any realistic outcome
 - You cannot say what would make the run void
@@ -216,3 +234,10 @@ event only fires on a save load, and a spawned ship that was inert because it ha
 A later baseline exercise produced a probe described as deployable that would not have loaded at all
 - two schema violations, both in elements the author had explicitly flagged as unverified. Honesty
 about the uncertainty did not prevent shipping it.
+
+A third probe loaded, triggered, found the world ready and **created all four of its test subjects** -
+then failed to bind a single one to a variable, because the namespace it wrote to did not exist. Every
+element had been schema-checked and the spawn action itself was copied from a working example; the
+*variable handling around it* was composed from memory. The engine's own error named the objects it
+had already built. Cost: four unwanted player-owned ships persisted into a save, uncleanable, because
+the cleanup needed exactly the handles that had failed to bind.
