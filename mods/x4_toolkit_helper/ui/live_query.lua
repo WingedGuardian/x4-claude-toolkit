@@ -57,7 +57,7 @@ local PROTO = 1
 --:
 --: Kept honest by `test_the_BUILD_constant_matches_the_file`, so editing the lua and
 --: forgetting to re-stamp this fails the suite rather than silently lying in game.
-local BUILD = "397bfbac"
+local BUILD = "9076806d"
 local TAG_CMD, TAG_REPLY = "MQ", "MR"
 
 -- Cap on echo, the ramp instrument. Generous: the point of the ramp is to FIND the
@@ -2416,6 +2416,73 @@ verbs.recon = function(seq, ...)
                    .. " deep=" .. (opts.deep and "yes" or "no")
                    .. " faction=" .. fac
                    .. (capped and (" CAPPED=yes omitted=" .. (#out - shown)) or " CAPPED=no")
+    table.insert(rows, 1, header)
+    reply(seq, "OK", table.concat(rows, "\t"))
+end
+
+--: THE FFI CENSUS. `globals` walks _G, and vanilla declares 2,066 C functions in ffi.cdef
+--: that _G never shows (SPEC_2026-09-07) -- so a `globals` negative covered ~30% of the
+--: engine surface. This asks ffi.C about NAMED symbols; `x4live ffi-census` supplies the
+--: names from vanilla's own cdef blocks and batches them.
+--:  * INDEX ONLY, NEVER CALL. `C[name]` resolves a symbol and marshals nothing.
+--:  * NEVER DECLARE. MEASURED with LuaJIT 2.1 (lupa, 2026-09-14): a second ffi.cdef of a
+--:    name with a DIFFERENT signature is silently ignored and the FIRST wins. All UI lua
+--:    shares one ffi state, so a placeholder declared here before a vanilla file's real one
+--:    would corrupt every later call to that function.
+--:  * CLASSIFIED ON LuaJIT's OWN TEXT: "missing declaration for symbol" = nothing in this VM
+--:    declares it; "cannot resolve symbol" = declared, not exported by the engine. Anything
+--:    else is `other`, quoted -- never folded into either.
+--:  * BOUNDED: FFISYMS_MAX_NAMES names of at most FFISYMS_MAX_NAME_LEN bytes, so the worst
+--:    reply (every row `other` with a 60-byte quote) stays far under ROW_BUDGET.
+local FFISYMS_MAX_NAMES = 150
+local FFISYMS_MAX_NAME_LEN = 100
+
+verbs.ffisyms = function(seq, ...)
+    local names = { ... }
+    if not ffi_ok or ffi == nil then
+        reply(seq, "ERR", "ffi is not available in this environment -- no symbol can be censused")
+        return
+    end
+    if #names == 0 then
+        reply(seq, "ERR", "ffisyms needs one or more symbol names")
+        return
+    end
+    if #names > FFISYMS_MAX_NAMES then
+        reply(seq, "ERR", "ffisyms takes at most " .. FFISYMS_MAX_NAMES .. " names per call ("
+              .. #names .. " sent) -- batch them, so the reply stays bounded")
+        return
+    end
+    local lib = ffi.C
+    local rows = {}
+    local n = { exported = 0, notexported = 0, undeclared = 0, other = 0, invalid = 0 }
+    for _, name in ipairs(names) do
+        if #name > FFISYMS_MAX_NAME_LEN or not name:match("^[%a_][%w_]*$") then
+            -- Not indexed at all, and not echoed: the name is what failed validation.
+            n.invalid = n.invalid + 1
+            rows[#rows + 1] = "<invalid>|invalid"
+        else
+            local ok, sym = pcall(function() return lib[name] end)
+            if ok then
+                n.exported = n.exported + 1
+                rows[#rows + 1] = name .. "|exported|" .. type(sym)
+            else
+                local msg = tostring(sym)
+                if msg:find("missing declaration for symbol", 1, true) then
+                    n.undeclared = n.undeclared + 1
+                    rows[#rows + 1] = name .. "|undeclared"
+                elseif msg:find("cannot resolve symbol", 1, true) then
+                    n.notexported = n.notexported + 1
+                    rows[#rows + 1] = name .. "|notexported"
+                else
+                    n.other = n.other + 1
+                    rows[#rows + 1] = name .. "|other|" .. (utf8_prefix(msg, 60):gsub("[|\t\n\r]", " "))
+                end
+            end
+        end
+    end
+    local header = "asked=" .. #names .. " exported=" .. n.exported
+                   .. " notexported=" .. n.notexported .. " undeclared=" .. n.undeclared
+                   .. " other=" .. n.other .. " invalid=" .. n.invalid
     table.insert(rows, 1, header)
     reply(seq, "OK", table.concat(rows, "\t"))
 end

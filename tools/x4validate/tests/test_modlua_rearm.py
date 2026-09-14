@@ -153,6 +153,10 @@ local fake_ffi = {
     -- Indexing a symbol the engine does not export RAISES in real ffi rather than
     -- returning nil. Mirrored, because the probe's pcall depends on it.
     C = setmetatable({}, {__index = function(_, k)
+        -- Injectable error TEXT per symbol, for the census verb: real LuaJIT raises a
+        -- different message for an undeclared symbol than for an unexported one, and the
+        -- verb classifies on that text.
+        if _G.fake_C_errors and _G.fake_C_errors[k] then error(_G.fake_C_errors[k], 0) end
         local f = _G.fake_C and _G.fake_C[k]
         if f == nil then error("C." .. tostring(k) .. " is not exported") end
         return f
@@ -2385,6 +2389,117 @@ def test_recon_without_DEEP_says_so_and_stays_one_level(lua_factory):
     r = ask(rt, 2, "recon", oid, "--contents")
     assert "inner=<table>" in _storage_row(r)
     assert hdr(r)["deep"] == "no"
+
+
+# --- ffisyms: the FFI census verb -- index ffi.C, never call, never declare ------ #
+#
+# MEASURED with lupa's LuaJIT 2.1 (2026-09-14): indexing ffi.C raises
+#   "missing declaration for symbol 'X'"          when no cdef in the VM declares X
+#   "cannot resolve symbol 'X': <os message>"     when X is declared but not exported
+# and a second cdef of X with a DIFFERENT signature is SILENTLY IGNORED -- the first wins.
+# So the verb must never declare: a placeholder that loaded first would corrupt the
+# marshalling of a later real caller.
+
+_SYM_ERRORS = ("{Undecl = \"missing declaration for symbol 'Undecl'\", "
+               "NotExp = \"cannot resolve symbol 'NotExp': The specified procedure could not be found.\", "
+               "Weird = 'something|else\\tentirely'}")
+
+
+def _syms(r):
+    return {f.split("|", 1)[0]: f.split("|", 1)[1] for f in r.fields[1:]}
+
+
+def test_ffisyms_CLASSIFIES_every_name_and_the_buckets_SUM(lua_factory):
+    rt = live(fake_C_errors=_SYM_ERRORS)
+    r = ask(rt, 1, "ffisyms", "GetPlayerID", "Undecl", "NotExp", "Weird")
+    assert r.status == "OK", r.payload
+    rows = _syms(r)
+    assert rows["GetPlayerID"].startswith("exported|"), rows
+    assert rows["Undecl"] == "undeclared", rows
+    assert rows["NotExp"] == "notexported", rows
+    assert rows["Weird"].startswith("other|"), rows
+    h = hdr(r)
+    assert (h["asked"], h["exported"], h["notexported"], h["undeclared"], h["other"],
+            h["invalid"]) == ("4", "1", "1", "1", "1", "0"), h
+    assert len(r.fields) == 1 + 4, "one row per name, plus the header"
+
+
+def test_ffisyms_keeps_the_FRAME_intact_for_an_OTHER_message(lua_factory):
+    """An unrecognised error text is quoted back, and it may carry a tab or a pipe."""
+    rt = live(fake_C_errors=_SYM_ERRORS)
+    r = ask(rt, 1, "ffisyms", "Weird")
+    assert len(r.fields) == 2, r.fields
+    assert r.fields[1].count("|") == 2, r.fields[1]
+
+
+def test_ffisyms_NEVER_CALLS_what_it_resolves(lua_factory):
+    rt = live()
+    rt.execute("_G.fake_C.Tripwire = function(...) _G.tripped = true end")
+    r = ask(rt, 1, "ffisyms", "Tripwire")
+    assert _syms(r)["Tripwire"].startswith("exported|"), r.payload
+    assert g(rt, "tripped") is None, "the census CALLED an engine function"
+
+
+def test_ffisyms_NEVER_DECLARES(lua_factory):
+    rt = live(fake_C_errors=_SYM_ERRORS)
+    before = len(g(rt, "cdefs"))
+    r = ask(rt, 1, "ffisyms", "Undecl", "NotExp", "GetPlayerID")
+    # NOT VACUOUS: an unknown verb declares nothing either, so first prove the census RAN.
+    assert r.status == "OK" and hdr(r)["asked"] == "3", r.payload
+    assert len(g(rt, "cdefs")) == before, "the census issued an ffi.cdef"
+
+
+def test_ffisyms_marks_an_INVALID_name_and_does_not_index_it(lua_factory):
+    rt = live()
+    rt.execute("_G.fake_C_errors = setmetatable({}, {__index = function(_, k) "
+               "_G.indexed = (_G.indexed or '') .. tostring(k) .. ';' end})")
+    r = ask(rt, 1, "ffisyms", "bad|name", "1Leading", "GetPlayerID")
+    assert r.status == "OK", r.payload
+    assert hdr(r)["invalid"] == "2", r.fields[0]
+    assert len(r.fields) == 1 + 3, r.fields
+    assert "bad" not in (g(rt, "indexed") or ""), "an invalid name reached ffi.C"
+
+
+def test_ffisyms_a_name_over_the_LENGTH_bound_is_INVALID(lua_factory):
+    """The pattern alone accepts an identifier of any length, and every valid row echoes its
+    name -- so without the length bound one request could push the reply past the cap."""
+    rt = live()
+    r = ask(rt, 1, "ffisyms", "A" * 101, "B" * 100)
+    assert r.status == "OK", r.payload[:120]
+    assert hdr(r)["invalid"] == "1", r.fields[0]
+    assert r.fields[1] == "<invalid>|invalid", r.fields[1][:120]
+
+
+def test_ffisyms_is_ERR_with_NO_names(lua_factory):
+    r = ask(live(), 1, "ffisyms")
+    assert r.status == "ERR", r.payload
+    # NOT VACUOUS: an unknown verb is also ERR, so the refusal must be the verb's own.
+    assert "needs one or more" in r.payload, r.payload
+
+
+def test_ffisyms_REFUSES_more_names_than_it_will_bound(lua_factory):
+    r = ask(live(), 1, "ffisyms", *["N%d" % i for i in range(151)])
+    assert r.status == "ERR", r.payload[:120]
+    assert "150" in r.payload
+
+
+def test_ffisyms_is_ERR_when_ffi_is_unavailable(lua_factory):
+    rt = live(_build(pre="_G.no_ffi = true"))
+    r = ask(rt, 1, "ffisyms", "GetPlayerID")
+    assert r.status == "ERR", r.payload
+    # "ffi" alone would match the verb's own NAME in an unknown-verb reply.
+    assert "ffi is not available" in r.payload, r.payload
+
+
+def test_ffisyms_reply_stays_BOUNDED_at_the_maximum(lua_factory):
+    from x4validate import _livepipe as lp
+    long_msg = "'" + "x" * 500 + "'"
+    rt = live(fake_C_errors="setmetatable({}, {__index = function(_, k) return " + long_msg + " end})")
+    names = [("S%03d" % i) + "a" * 95 for i in range(150)]
+    r = ask(rt, 1, "ffisyms", *names)
+    assert r.status == "OK", r.payload[:120]
+    assert lp.byte_len(r.payload) <= 32000, lp.byte_len(r.payload)
+    assert hdr(r)["asked"] == "150"
 
 
 # --- censusprobe: the SECOND cause of the census caveat, measured per item ----- #
