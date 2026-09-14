@@ -41,3 +41,7 @@ tests/corpus/
 # Claude Code transcripts. MACHINE-LOCAL by design (the corpus is the user's own
 # command history), and ~1-2 MB. Record with --record; compare runs diff against it.
 .hook-false-positive-baseline.json
+
+# Per-shape rates of gates/instrument_hygiene.py over THIS machine's session transcripts;
+# another clone has other transcripts, so a committed baseline would be wrong there.
+.instrument-hygiene-baseline.json
