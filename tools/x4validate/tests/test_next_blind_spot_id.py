@@ -38,7 +38,7 @@ def _load():
 @pytest.fixture(scope="module")
 def m():
     if not SCRIPT.is_file():
-        pytest.skip(f"no {SCRIPT} (dev-only script) — not checked")
+        pytest.skip(f"no {SCRIPT} — not checked")
     return _load()
 
 
@@ -75,8 +75,77 @@ def test_the_id_parser_ignores_a_CONTINUATION_heading(m):
     assert m.declared_ids(text) == {70, 71}
 
 
+def test_a_SUMMARY_ROW_still_CLAIMS_the_id_even_with_no_section(m):
+    """G1-2, and it is why F94/F95 were each handed out twice.
+
+    `declared_ids` is right that a row is not a DECLARATION. It was wrong as the
+    input to ALLOCATION, which asks whether an id is SPOKEN FOR -- and this
+    script's own printed instruction tells you to claim one by writing the row
+    FIRST. So the tool that exists to prevent collisions offered an id another
+    tree had already committed.
+    """
+    text = ("## F70 — a thing · **DEFECT** · confidence 90%\n"
+            "| F99 | a row with no section is still a claim |\n")
+    assert m.declared_ids(text) == {70}, "the declaration sense must not change"
+    assert m.table_row_ids(text) == {99}
+    assert m.claimed_ids(text) == {70, 99}
+    # the consequence, stated as the number a caller acts on
+    assert m.next_free_id({"b": m.claimed_ids(text)}) == 100, (
+        "allocation used the declaration sense and would re-issue a committed id")
+
+
+def test_allocation_is_not_dragged_down_by_a_row_only_branch(m):
+    """The twin. Widening what counts as a claim must not make an id look FREE that
+    a section already holds -- the union has to be a union, not a swap."""
+    sections_only = "## F80 — x · **DEFECT** · confidence 90%\n"
+    rows_only = "| F60 | y |\n"
+    assert m.next_free_id({"a": m.claimed_ids(sections_only),
+                           "b": m.claimed_ids(rows_only)}) == 81
+
+
 def test_a_register_that_parses_to_nothing_is_a_NON_ANSWER(m):
     """Denominator guard: a heading-format change must not silently yield an empty set
     that then reads as 'this branch has no ids'."""
     with pytest.raises(m.CannotAnswer):
         m.next_free_id({"a": m.declared_ids("no headings here at all\n")})
+
+
+def _git(cwd, *args):
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
+                   cwd=cwd, check=True, capture_output=True)
+
+
+def _repo_with_register(tmp_path, rel):
+    reg = tmp_path / rel / "docs" / "BLIND-SPOTS.md"
+    reg.parent.mkdir(parents=True)
+    nl = chr(10)
+    reg.write_text("## F7 — x · **DEFECT** · confidence 90%" + nl + "| F9 | a row |" + nl,
+                   encoding="utf-8")
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "add", str(reg.relative_to(tmp_path)))
+    _git(tmp_path, "commit", "-q", "-m", "register")
+
+
+def test_the_scan_reads_a_register_NESTED_below_the_repo_root(m, tmp_path):
+    """The script moved in from a repo whose root WAS the package; here the package is
+    `tools/x4validate/`. Reading `<branch>:docs/BLIND-SPOTS.md` from the repo root finds
+    nothing on any branch, so every id request would have been refused. The path is now
+    asked of git from the package directory."""
+    pkg = tmp_path / "tools" / "x4validate"
+    _repo_with_register(tmp_path, "tools/x4validate")
+    per = m.scan_branches(pkg)
+    assert list(per.values()) == [{7, 9}], per
+    assert m.next_free_id(per) == 10
+
+
+def test_TWIN_a_register_elsewhere_in_the_repo_is_not_mistaken_for_this_one(m, tmp_path):
+    """The twin: the scan must read the PACKAGE's register, not any docs/BLIND-SPOTS.md.
+    One committed at the repo root is invisible from a nested package, and that
+    non-answer must refuse rather than hand out F1."""
+    pkg = tmp_path / "tools" / "x4validate"
+    pkg.mkdir(parents=True)
+    _repo_with_register(tmp_path, ".")
+    per = m.scan_branches(pkg)
+    assert all(ids == set() for ids in per.values()) and per, per
+    with pytest.raises(m.CannotAnswer):
+        m.next_free_id(per)
