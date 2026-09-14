@@ -50,10 +50,19 @@ def test_a_struct_body_is_not_a_list_of_functions():
     src = ("ffi.cdef[[ typedef struct { int id; void (*callback)(int); } Thing;\n"
            " Thing GetThing(int id); ]]")
     assert names(src) == {"GetThing"}
+    # The twin the pointer rule cannot shadow: a parenthesised array size inside a body.
+    # MEASURED: dropping the brace-strip survived the function-pointer member above.
+    assert names("ffi.cdef[[ struct Holder { char tag[sizeof(int)]; }; int Real(void); ]]") == {"Real"}
 
 
 def test_a_function_pointer_TYPEDEF_is_not_a_function():
     assert names("ffi.cdef[[ typedef void (*Handler)(int); int Real(void); ]]") == {"Real"}
+
+
+def test_a_function_TYPE_typedef_is_not_a_function():
+    """The twin the pointer rule cannot shadow: no `(*`, so only the typedef rule stops it.
+    MEASURED: dropping the typedef rule survived the pointer-typedef test above."""
+    assert names("ffi.cdef[[ typedef void Callback(int); int Real(void); ]]") == {"Real"}
 
 
 def test_a_function_pointer_VARIABLE_is_not_a_function():
