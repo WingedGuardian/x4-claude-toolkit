@@ -171,6 +171,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F118 | a Windows clone checks the shipped mod's XML out as CRLF, and `deploy-mod.py` compares raw bytes | **DEFECT (measured)** · OPEN | `content.xml` is `i/lf w/crlf` on the author's checkout | OPEN: pin `mods/**/*.xml` as the lua is, or compare normalised content |
 | F119 | `x4lock status` run from a git worktree reports the untracked `.claude/x4-paths.env` as MISSING | **DEFECT (measured)** · OPEN | rc 1 in a worktree, rc 0 in the main checkout, 39 of 39 locked in both | OPEN |
 | F120 | the CLAUDE.md ratchet counted a checkout's CRs as content | **DEFECT (measured)** · ✅ FIXED 2026-09-13 | GREW +872 on a file 52 characters UNDER its baseline | each CRLF now counts as one newline; `tests/test_claude_md_budget.py` |
+| F121 | `x4effective who-sets` with no property answered with the ENTITY's origin while its properties had been changed, and could not see removals at all | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | asked who set `energycells` it said `base`; 33 of its 49 properties were last set by something else | origins and file-level removals now reported; `show` still lists no removals (OPEN) |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -6523,3 +6524,31 @@ deliberately, to avoid `read_text()`'s one-character-per-line loss when a CRLF b
 normalised measurement. That fixed the mixing half and created the checkout half. Now every CRLF counts
 as one newline, whatever the checkout wrote; one twin pins that a newline still counts and that one
 added character is one in either ending, and each clause has a mutant that fails its named test.
+
+## F121 — `who-sets` with no property narrowed to the entity's origin, and removals are not properties · **DEFECT (measured)** · confidence 97% · FIXED 2026-09-14
+
+**RE-DERIVED BY:** `tests/test_effective.py` (`test_who_sets_without_a_prop_names_the_origins_of_changed_properties`, `test_TWIN_who_sets_without_a_prop_says_so_when_nothing_changed`, `test_who_sets_does_not_call_an_entity_all_base_when_a_mod_REMOVED_part_of_it`).
+
+**Found by a cold, docs-only agent** (2026-09-14), asked who set the ware `energycells`.
+`x4effective who-sets ware energycells` printed `energycells (entity): base` and nothing else --
+the ENTITY row's origin -- while `show` revealed a mod setting `price.min` and `price.max`. MEASURED
+on the real store: **33 of the ware's 49 properties** were last set by something other than base.
+A step that narrows the answer and reports it as the whole answer: this register's founding shape.
+
+**Two assumptions were checked before the fix, and one was wrong.**
+
+| assumption | measured over the real store (591,548 attribute rows) | verdict |
+|---|---|---|
+| a non-empty provenance chain means a MOD set the value | 123,414 of the 296,608 non-base rows (42%) were last set by a **DLC** | WRONG -- the output names ORIGINS, never "a mod" |
+| `origin <> 'base'` and `chain IS NOT NULL` pick the same rows | 294,940 base rows with a NULL chain + 296,608 non-base with a chain = all rows, 0 mismatches | right |
+
+**The review then found a third blind spot, in the fix.** A removal is written to the `removed`
+table, not `attrs`, so a property count cannot see it: an entity whose only change was a mod
+removing an attribute printed "every property is still its base value". Removals are keyed by vpath
+and a positional node path, so they attach to one entity only when the file holds one -- MEASURED:
+108 vpaths carry removals; 98 hold one entity, 9 hold several (shared libraries such as
+`libraries/wares.xml`), 1 holds none. The output now says which case applies, and states an all-base
+entity as "every stored property is its base value, and no removal is recorded against its file".
+
+**OPEN:** `x4effective show` has the same removal gap -- it lists stored properties only. It predates
+this fix and is named here rather than left implicit.
