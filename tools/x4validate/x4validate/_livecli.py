@@ -1616,6 +1616,13 @@ def cmd_ffi_census(pipe: str | None, timeout: float, out_file: str | None = None
     if not names:
         return _fmt_rc("ffi-census: the source parse found 0 names -- is reference/ unpacked? "
                        "There is nothing to ask the game.", 2)
+    # The verb would refuse these (`invalid`, never indexed), so they are not sent at all --
+    # and an unasked name is a NON-ANSWER, which is why any of them makes the run exit 3.
+    result: dict[str, tuple[str, str]] = {}
+    for n in names:
+        if not (n.isascii() and n.isidentifier() and len(n.encode("utf-8")) <= 100):
+            result[n] = ("invalid", "not sent: not an ASCII identifier of at most 100 bytes")
+    valid = [n for n in names if n not in result]
 
     dest = Path(out_file) if out_file else None
     if dest is None:
@@ -1626,17 +1633,28 @@ def cmd_ffi_census(pipe: str | None, timeout: float, out_file: str | None = None
         d.mkdir(parents=True, exist_ok=True)
         dest = d / f"ffi-census-{datetime.datetime.now():%Y%m%d-%H%M%S}.tsv"
 
-    result: dict[str, tuple[str, str]] = {}
+    plan = list(_ffi_batches(valid, batch_bytes))
     batches = errored_batches = 0
     with _live_open(pipe, timeout) as lp:
         path = lp.path
-        for batch in _ffi_batches(names, batch_bytes):
+        for bi, batch in enumerate(plan):
             batches += 1
             why = ""
             try:
                 r = lp.ask("ffisyms", *batch)
             except _livepipe.LiveQueryDegraded as exc:
                 r, why = None, f"DEGRADED {exc}"
+            except _livepipe.LiveQueryUnavailable as exc:
+                # The channel is GONE, not one reply bad. What was answered stays answered;
+                # this batch and every later one are a non-answer, and nothing more is sent.
+                # The likeliest cause is the one the byte bound exists for: a request the
+                # game-side read could not take.
+                lost = f"channel lost at batch {bi + 1} of {len(plan)}: {exc}"
+                for rest in plan[bi:]:
+                    errored_batches += 1
+                    for n in rest:
+                        result[n] = ("errored", lost)
+                break
             rows: list[tuple[str, str, str]] = []
             if r is None:
                 pass
@@ -1648,7 +1666,10 @@ def cmd_ffi_census(pipe: str | None, timeout: float, out_file: str | None = None
                 for n, row in zip(batch, r.fields[1:]):
                     parts = row.split("|", 2)
                     cls = parts[1] if len(parts) > 1 else ""
-                    if parts[0] not in (n, "<invalid>") or cls not in _SYM_CLASSES:
+                    # `<invalid>` answers ONLY with class invalid, and a named row never does:
+                    # either mismatch means the rows no longer line up with the names.
+                    if (parts[0] not in (n, "<invalid>") or cls not in _SYM_CLASSES
+                            or (parts[0] == "<invalid>") != (cls == "invalid")):
                         why = f"row {row[:60]!r} does not answer {n!r}"
                         rows = []
                         break
@@ -1672,7 +1693,13 @@ def cmd_ffi_census(pipe: str | None, timeout: float, out_file: str | None = None
               f"# asked over {path} in {batches} batch(es) of <= {batch_bytes} bytes; "
               + " ".join(f"{c}={v}" for c, v in counts.items()),
               "name\tclass\tdetail\tfiles"]
-    body = [f"{n}\t{result[n][0]}\t{result[n][1]}\t{','.join(src.names[n])}" for n in names]
+    # Every cell scrubbed of the TSV's own separators: the detail can be an ERR payload or an
+    # exception text, and one tab in it shifted the row (MEASURED in review 2026-09-14).
+    def _cell(s: str) -> str:
+        return str(s).replace("\t", " ").replace("\r", " ").replace("\n", " ")
+
+    body = [f"{_cell(n)}\t{result[n][0]}\t{_cell(result[n][1])}\t{_cell(','.join(src.names[n]))}"
+            for n in names]
     data = ("\n".join(header + body) + "\n").encode("utf-8")
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(data)
@@ -1688,21 +1715,21 @@ def cmd_ffi_census(pipe: str | None, timeout: float, out_file: str | None = None
     # can read the totals without parsing a table laid out for eyes.
     print("buckets: " + " ".join(f"{c}={v}" for c, v in counts.items()), file=out)
     print(f"wrote {dest}", file=out)
-    print("\n  MEANING -- exported: resolved by the engine. notexported: declared, not exported. "
-          "undeclared: nothing in THIS session's lua declared it (its file's block did not run, "
-          "or it is commented out). errored: NOT ASKED successfully -- a non-answer.", file=out)
+    print("\n  MEANING -- exported: ffi.C resolved it in the game process (on Windows LuaJIT searches "
+          "the executable and the libraries it loaded, so this is not strictly 'the engine'). "
+          "notexported: declared, not resolvable. undeclared: nothing in THIS session's lua "
+          "declared it (its file's block did not run, or it is commented out). invalid and "
+          "errored: NOT ASKED successfully -- a non-answer.", file=out)
     print(f"  SCOPE -- names come only from literal ffi.cdef blocks; unparsed={len(src.unparsed)}"
           f" call(s) could not be read:", file=out)
     for vpath, k in src.unparsed:
         print(f"      {vpath} ({k})", file=out)
     for vpath in src.unreadable:
         print(f"      UNREADABLE {vpath}", file=out)
-    if sum(counts.values()) != len(names):
-        print(f"  !! buckets sum to {sum(counts.values())}, not {len(names)}", file=out)
-        return 3
-    if errored_batches:
-        print(f"\n  {errored_batches} batch(es) unanswered -- {counts['errored']} name(s) are a "
-              f"NON-ANSWER, not a finding.", file=out)
+    if errored_batches or counts["invalid"]:
+        print(f"\n  {errored_batches} batch(es) unanswered, {counts['invalid']} name(s) not "
+              f"askable -- {counts['errored'] + counts['invalid']} name(s) are a NON-ANSWER, "
+              f"not a finding.", file=out)
         return 3
     return 0
 

@@ -856,18 +856,25 @@ class _SymPipe:
 
     path = "sym-pipe"
 
-    def __init__(self, classes, err_on=None, drop_row_on=None, status="OK", swap=False):
+    def __init__(self, classes, err_on=None, drop_row_on=None, status="OK", swap=False,
+                 err_payload="boom", lose_on_request=None, rows_override=None):
         self.classes, self.err_on, self.drop_row_on = classes, err_on, drop_row_on
         self.status, self.swap = status, swap
+        self.err_payload, self.lose_on_request = err_payload, lose_on_request
+        self.rows_override = rows_override
         self.requests = []
 
     def ask(self, verb, *names, **k):
         from x4validate import _livepipe
         self.requests.append((verb, names))
+        if self.lose_on_request == len(self.requests):
+            raise _livepipe.LiveQueryUnavailable("simulated: the pipe went away")
         if self.err_on and self.err_on in names:
-            return _livepipe.Reply(seq=1, status="ERR", payload="boom")
+            return _livepipe.Reply(seq=1, status="ERR", payload=self.err_payload)
         rows = [f"{n}|{self.classes.get(n, 'undeclared')}" for n in names
                 if n != self.drop_row_on]
+        if self.rows_override is not None:
+            rows = self.rows_override(names)
         if self.swap:
             rows.reverse()
         counts: dict[str, int] = {}
@@ -995,6 +1002,57 @@ def test_ffi_census_an_UNKNOWN_class_is_REFUSED(tmp_path, monkeypatch):
     rc, out, dest = _census_run(tmp_path, monkeypatch, ["GetA"], pipe)
     assert rc == 3, out
     assert "GetA\terrored" in dest.read_text(encoding="utf-8")
+
+
+# --- review 2026-09-14 --------------------------------------------------------- #
+
+def _body(dest):
+    return [l for l in dest.read_text(encoding="utf-8").splitlines() if l and not l.startswith("#")]
+
+
+def test_ffi_census_every_TSV_row_keeps_FOUR_columns_whatever_the_error_text(tmp_path, monkeypatch):
+    """MEASURED by review: an ERR payload carrying a tab produced a 5-column row. A substring
+    check (`GetB\\terrored`) cannot see a shifted column; the column COUNT can."""
+    pipe = _SymPipe({}, err_on="GetA", err_payload="bad\tthing\nmore\rstill")
+    rc, out, dest = _census_run(tmp_path, monkeypatch, ["GetA", "GetB"], pipe, batch_bytes=5)
+    assert rc == 3, out
+    rows = _body(dest)
+    assert all(len(r.split("\t")) == 4 for r in rows), rows
+
+
+def test_ffi_census_a_channel_LOST_mid_run_KEEPS_what_was_answered(tmp_path, monkeypatch):
+    """MEASURED by review: a LiveQueryUnavailable on batch 2 raised out of the command, so no
+    TSV was written and batch 1's answers were lost. The likely cause in practice is the one
+    the batching exists for -- a request the game-side read could not take."""
+    pipe = _SymPipe({"GetA": "exported|cdata"}, lose_on_request=2)
+    rc, out, dest = _census_run(tmp_path, monkeypatch, ["GetA", "GetB", "GetC"], pipe,
+                                batch_bytes=5)
+    assert rc == 3, out
+    assert len(pipe.requests) == 2, "nothing more is sent once the channel is gone"
+    text = dest.read_text(encoding="utf-8")
+    assert "GetA\texported" in text, text
+    assert "GetB\terrored" in text and "GetC\terrored" in text, text
+    assert "channel lost" in text, text
+
+
+@pytest.mark.parametrize("row", ["<invalid>|exported|cdata", "GetA|invalid"])
+def test_ffi_census_invalid_must_PAIR_both_ways(tmp_path, monkeypatch, row):
+    """`<invalid>` only ever answers with class `invalid`, and a NAMED row never does."""
+    pipe = _SymPipe({}, rows_override=lambda names: [row])
+    rc, out, dest = _census_run(tmp_path, monkeypatch, ["GetA"], pipe)
+    assert rc == 3, out
+    assert "GetA\terrored" in dest.read_text(encoding="utf-8")
+
+
+def test_ffi_census_an_INVALID_name_is_never_SENT_and_is_a_NON_ANSWER(tmp_path, monkeypatch):
+    long_name = "X" * 101
+    pipe = _SymPipe({"GetA": "exported|cdata"})
+    rc, out, dest = _census_run(tmp_path, monkeypatch, ["GetA", "bad-name", long_name], pipe)
+    assert rc == 3, out
+    sent = [n for _, b in pipe.requests for n in b]
+    assert sent == ["GetA"], sent
+    text = dest.read_text(encoding="utf-8")
+    assert "bad-name\tinvalid" in text and f"{long_name}\tinvalid" in text, text
 
 
 # --- the WRITE subcommands: `pausestate`, `pause`, `unpause` ---------------------- #
