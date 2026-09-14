@@ -102,6 +102,24 @@ def test_an_ALIAS_is_still_counted_as_unparsed():
     assert unparsed == 1
 
 
+def test_a_QUOTE_CALL_with_no_space_is_counted_not_exempted():
+    """`ffi.cdef"..."` is a real call (lua allows a string argument without parentheses).
+    MEASURED by review: the quote exemption, which checked either side, swallowed it --
+    0 blocks and 0 unparsed. Only a mention quoted on BOTH sides is data."""
+    blocks, unparsed = F.cdef_blocks("ffi.cdef\"int A(void);\"\nffi.cdef'int B(void);'")
+    assert blocks == []
+    assert unparsed == 2
+
+
+def test_a_cdef_through_ANOTHER_receiver_is_counted():
+    """`require("ffi").cdef[[...]]` declares through a receiver that is not the name `ffi`;
+    a literal parser keyed on `ffi.cdef` cannot read it, so it must at least be counted."""
+    blocks, unparsed = F.cdef_blocks('require("ffi").cdef[[ int Hidden(void); ]]\n'
+                                     "local x = mylib.cdef([[ int AlsoHidden(void); ]])")
+    assert blocks == []
+    assert unparsed == 2
+
+
 def test_two_blocks_in_one_file_are_both_read():
     assert names("ffi.cdef[[ int A(void); ]]\nx = 1\nffi.cdef[[ int B(void); ]]") == {"A", "B"}
 

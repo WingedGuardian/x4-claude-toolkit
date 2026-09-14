@@ -31,11 +31,17 @@ import re
 from dataclasses import dataclass, field
 
 _OPEN = re.compile(r"ffi\.cdef\s*(\()?\s*\[(=*)\[")
-#: Every mention of `ffi.cdef` that is CODE. A mention wrapped in quotes is data, not a call:
-#: MEASURED 2026-09-14, the one vanilla instance is LuaJIT's own name table
-#: (`ui/core/lua/jit/vmdef.lua:352`, `"ffi.cdef",`). Everything else that is not a literal
-#: block -- `ffi.cdef(src)`, an alias `local c = ffi.cdef` -- is counted as unparsed.
-_ANY = re.compile(r"(?<![\"'])ffi\.cdef\b(?![\"'])")
+#: Every mention of `ffi.cdef`. Each one that is not the start of a literal block counts as
+#: unparsed -- `ffi.cdef(src)`, an alias `local c = ffi.cdef`, and `ffi.cdef"int A(void);"`
+#: (lua allows a string argument without parentheses) -- EXCEPT a mention quoted on BOTH
+#: sides, which is data: MEASURED 2026-09-14, the one vanilla instance is LuaJIT's own name
+#: table (`ui/core/lua/jit/vmdef.lua:352`, `"ffi.cdef",`). An exemption checking EITHER side
+#: swallowed the quote-call form (review 2026-09-14).
+_FFI_CDEF = re.compile(r"\bffi\.cdef\b")
+#: A `.cdef` CALL through any receiver other than the bare name `ffi` --
+#: `require("ffi").cdef[[...]]`, `mylib.cdef(...)`. It declares just the same, and a parser
+#: keyed on `ffi.cdef` cannot read it, so it is counted rather than invisible.
+_OTHER_CDEF = re.compile(r"([\w)\]]+)\s*\.\s*cdef\s*[\[(\"']")
 _COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
 _BRACES = re.compile(r"\{[^{}]*\}")
 _TYPEDEF = re.compile(r"typedef\b")
@@ -53,7 +59,16 @@ def cdef_blocks(text: str) -> tuple[list[str], int]:
             continue                        # unterminated: falls into `unparsed` below
         blocks.append(text[m.end():end])
         literal_at.add(m.start())
-    unparsed = sum(1 for m in _ANY.finditer(text) if m.start() not in literal_at)
+    unparsed = 0
+    for m in _FFI_CDEF.finditer(text):
+        if m.start() in literal_at:
+            continue
+        before = text[m.start() - 1] if m.start() > 0 else ""
+        after = text[m.end()] if m.end() < len(text) else ""
+        if before and before in "\"'" and after and after in "\"'":
+            continue                        # "ffi.cdef" -- quoted on both sides: data
+        unparsed += 1
+    unparsed += sum(1 for m in _OTHER_CDEF.finditer(text) if m.group(1) != "ffi")
     return blocks, unparsed
 
 
