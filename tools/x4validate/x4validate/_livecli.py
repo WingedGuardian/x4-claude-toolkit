@@ -1383,7 +1383,9 @@ def _missing_from_store(pairs: list[tuple[str, str]]) -> list[str] | None:
         return None
     try:
         con = _connect(db)
-    except Exception:                               # noqa: BLE001 - the caller refuses
+    except Exception:                               # noqa: BLE001
+        # silent-ok: None IS the channel -- the only caller refuses (rc 2) on it, naming
+        # that the store could not be opened.
         return None
     return [m for _, m in pairs if _store_props(con, m) is None]
 
