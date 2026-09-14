@@ -6504,15 +6504,19 @@ native line ending, not from autocrlf. MEASURED: a fresh `git worktree add` gave
 **FIXED 2026-09-14** (`.gitattributes`, pin `mods/**/*.xml text eol=lf`): the first remedy, chosen
 because the blobs were already LF (no repository change) and because the existing F67 guard then
 enforces it with no new code. Normalising inside `deploy-mod.py` would have hidden the checkout defect
-instead of removing it. Predictions written first, all held: with the pin added the guard went RED on
-both files (`content.xml` 12 CRLF, `ui.xml` 30); GREEN after rewriting them with their committed bytes
-(no diff); the deploy dry run went from 1 CHANGED to 0 CHANGED / 4 UNCHANGED. ⚠ Any existing Windows
-checkout still holding the CRLF bytes now fails that guard until the files are rewritten -- the F67
-precedent, stated in the commit.
+instead of removing it. With the pin added the guard went RED on both files (`content.xml` 12 CRLF,
+`ui.xml` 30), and GREEN after rewriting them with their committed bytes (no diff). The deploy dry run
+after the fix: 0 CHANGED / 4 UNCHANGED. The BEFORE figure is scoped by tree, because an independent
+review caught the first version of this paragraph comparing two different trees: MEASURED 2026-09-14 in
+a fresh worktree at `aee0afc` (pre-pin), 2 CHANGED (`content.xml`, `ui.xml`); the author's main
+checkout had shown 1, because only `content.xml` was CRLF there. ⚠ Any existing Windows checkout still
+holding the CRLF bytes now fails that guard until the files are checked out again -- the F67
+precedent, stated in the commit and the CHANGELOG. ⚠ Release note: a bundle built by `git archive`
+on Windows now ships these two files LF; the blobs never changed.
 
 ## F119 — `x4lock` run from a git worktree calls an untracked config file MISSING · **DEFECT (measured)** · confidence 97% · FIXED 2026-09-14
 
-**RE-DERIVED BY:** `tests/test_x4lock.py` (`test_a_linked_WORKTREE_does_not_demand_its_own_x4_paths_env`, `test_the_MAIN_checkout_still_reports_a_deleted_x4_paths_env`, `test_a_SUBMODULE_is_not_a_worktree_and_still_demands_its_env`, `test_a_worktree_env_file_that_DOES_exist_is_still_protected`, `test_a_worktree_still_demands_the_CONFIGURED_toolkits_env`, `test_an_UNREADABLE_git_file_fails_closed`).
+**RE-DERIVED BY:** `tests/test_x4lock.py` (`test_a_linked_WORKTREE_does_not_demand_its_own_x4_paths_env`, `test_the_MAIN_checkout_still_reports_a_deleted_x4_paths_env`, `test_a_SUBMODULE_is_not_a_worktree_and_still_demands_its_env`, `test_a_SUBMODULE_under_a_folder_named_worktrees_is_not_waived`, `test_a_worktree_env_file_that_DOES_exist_is_still_protected`, `test_a_worktree_demands_the_MAIN_checkouts_env_even_without_X4_TOOLKIT`, `test_a_worktree_still_demands_the_CONFIGURED_toolkits_env`, `test_a_RELATIVE_gitdir_is_resolved_against_the_checkout`, `test_an_UNRECOGNISED_git_file_fails_closed`, `test_an_UNREADABLE_git_file_fails_closed`, `test_the_note_NAMES_the_copy_checked_instead`, `test_the_note_names_each_copy_ONCE`, `test_X4_TOOLKIT_pointing_at_the_worktree_itself_still_reports_its_config`).
 
 MEASURED 2026-09-13 from a session worktree: `python scripts/x4lock.py status` exits **1** with
 `*** 1 PROTECTED FILE(S) MISSING` naming `<worktree>/.claude/x4-paths.env`, above a summary of
@@ -6525,16 +6529,30 @@ sees a red `x4lock` -- the kind of standing alarm that teaches a reader to ignor
 write-verbs session; re-measured here. **OPEN.**
 
 **FIXED 2026-09-14** (`scripts/x4lock.py`). A checkout counts as a LINKED worktree only when its `.git`
-is a FILE whose `gitdir:` points into `.../worktrees/<name>`; a submodule's `.git` file points into
-`.../modules/<name>` and does not count, and anything unreadable fails closed. There, an ABSENT local
-env file is waived and `status` says so; a present one stays protected. Dropping the candidate outright
-was not an option: in the main checkout it is the only report of a deleted config, because
-`_paths._find_env_file` returns nothing for a file that is gone. For the same reason the waiver now
-demands `$X4_TOOLKIT/.claude/x4-paths.env` explicitly -- without that, a deleted configured copy would be
-reported by nobody. Six tests, RED first (the waiver and the configured-copy demand failed on the old
-code; four twins passed before and after); seven hand-mutants, one per clause, all killed, the file
-restored byte-identical to its commit. Live: the worktree went rc 1 -> rc 0 with the note, 39 of 39
-locked.
+is a FILE whose `gitdir:` (absolute, or relative to the checkout) names an admin directory holding a
+`commondir` file. git writes one there (MEASURED: `../..` in this repository's two worktrees) and not
+in a submodule's `.git/modules/<path>` directory; anything unreadable or unrecognised fails closed.
+There, an ABSENT local env file is waived and `status` says so; a present one stays protected.
+
+Dropping the candidate outright was not an option: in the main checkout it is the only report of a
+deleted config. `_paths._find_env_file` cannot stand in, because it returns only a file that EXISTS --
+from `$X4_TOOLKIT`, else by walking up from the working directory -- so a deleted copy is simply not
+found. The waiver therefore demands the copies it stands in for: the MAIN checkout's, derived from
+`commondir` (skipped for a bare repository, which has no checkout), and `$X4_TOOLKIT`'s when set. The
+note names each once, and says so when `$X4_TOOLKIT` points at the worktree itself.
+
+**Review, then fixes.** The first version (`55be451`) passed its own six tests and seven hand-mutants,
+and an independent review still returned "with fixes": it demanded a configured copy only when
+`$X4_TOOLKIT` was set, waived a submodule added under a folder named `worktrees`, listed a copy twice,
+and its "unreadable" test actually tested an unrecognised file. Fixed in the next commit with seven more
+tests, RED first as predicted (5 failures, then 1). The mutants run against the final code, each aimed
+at a named test, all ten KILLED with the file restored byte-identical: a missing `commondir` counted as a
+worktree; a relative gitdir not joined; an unreadable `.git` raising; the main checkout's env not
+derived; `$X4_TOOLKIT`'s env not demanded; the waiver never applying; the waiver dropping an existing
+env; the note listing a copy twice; the self-reference never flagged; the note naming nothing. Not every
+clause has a mutant (for example `startswith("gitdir:")` and the bare-repository branch), so this is ten
+named mutants, not full clause coverage. Live: the worktree went rc 1 -> rc 0, with `$X4_TOOLKIT` set and
+unset, 39 of 39 locked.
 
 ## F120 — the CLAUDE.md ratchet counted a checkout's line endings as content · **DEFECT (measured)** · confidence 99% · FIXED 2026-09-13
 

@@ -150,14 +150,18 @@
   committed and deployed copies are LF, and `scripts/deploy-mod.py` listed changes nobody made.
   `.gitattributes` now pins `mods/**/*.xml` to LF, as the lua already was; the blobs are
   unchanged. **If you already have a Windows clone**, `tests/test_line_ending_pin_is_obeyed.py`
-  will fail on those two files until they are checked out again. They are tracked and
-  unmodified, so deleting them and running
-  `git checkout -- mods/x4_toolkit_helper/content.xml mods/x4_toolkit_helper/ui.xml`
-  restores them with LF, and no diff results.
+  will fail on those two files until they are checked out again. First check that you have not
+  edited them: `git status --short -- mods/x4_toolkit_helper` must print nothing. Then delete
+  the two files and run
+  `git checkout -- mods/x4_toolkit_helper/content.xml mods/x4_toolkit_helper/ui.xml`; they come
+  back LF and no diff results. If you deployed the helper from a CRLF clone, the next
+  `deploy-mod.py` run lists those files as CHANGED once; that is the fix arriving. A release
+  bundle built on Windows now ships them LF as well.
 - **`scripts/x4lock.py status` failed in every git worktree (F119).** It demanded the checkout's
   own `.claude/x4-paths.env`, a per-machine file a linked worktree never has. It now waives that
-  file only in a linked worktree (a submodule does not count), says so in its output, and demands
-  the configured toolkit's copy instead, so a deleted configuration is still reported.
+  file only in a linked worktree (identified by git's own `commondir` metadata, so a submodule does
+  not count), says so in its output, and demands the main checkout's copy instead, plus
+  `$X4_TOOLKIT`'s when set, so a deleted configuration is still reported.
 
 ## v3.1.1 — 2026-09-09
 
