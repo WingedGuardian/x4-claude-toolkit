@@ -116,7 +116,7 @@ uv run x4live oracle [--show-derived]      # engine-resolved macro values vs the
 uv run x4live mappings                     # PROPOSE new field mappings (never auto-applied)
 
 # ---- the LIVE half. Needs the game RUNNING and the query mod deployed.
-uv run x4live query ping                   # is it there, and is it ADVANCING?
+uv run x4live query ping                   # is it there? (`pausestate` says whether it is paused)
 uv run x4live query macro shiptypes_s ship_arg_s_scout_01_a_macro hull
 uv run x4live query ext ws_2042901274      # is this extension loaded, per the engine
 uv run x4live ramp                         # MEASURE the message-size cap
@@ -209,7 +209,9 @@ and checksum**, and `ramp` measures the ceiling instead of assuming it.
 
 The three silence states are kept apart, never collapsed into one verdict: **never
 connected** (game not running, or the mod not deployed), **connected then silent** (the
-mod IS loaded; paused, in a menu, or hung), and answering. A sibling project shipped a
+mod IS loaded, but the game is minimized in exclusive fullscreen, or hung), and answering.
+A PAUSED game is not silent: MEASURED 2026-09-13, it answers on an open connection and
+accepts a new one. A sibling project shipped a
 liveness probe that was wrong for three releases because it hung in exactly the case it
 existed to detect.
 
@@ -240,9 +242,11 @@ Exactly two verbs change the running game. They exist because a live measurement
 while the game runs — a faction gains tens of objects a minute — so two questions asked
 seconds apart cannot be compared unless the simulation is held still between them.
 
-⚠ **Not yet measured: whether a PAUSED game accepts a new connection.** Every `x4live`
-command opens its own connection, so `x4live unpause` after `x4live pause` depends on it.
-If a paused game does not answer, unpause it in game.
+**A paused game still answers.** Every `x4live` command opens its own connection, so
+`x4live unpause` after `x4live pause` depends on a paused game accepting a new one.
+MEASURED 2026-09-13: `x4live pausestate` from a fresh process read `paused=true owner=us`.
+The same session showed the player's pause key and this channel's pause acting as separate
+holds: with both held, `unpause` read back still-paused, gave up its claim, and did not retry.
 
 - **Ownership, not a toggle.** `unpause` undoes only a pause this channel made, and refuses
   the player's or another mod's — the discipline vanilla's own menus keep. A UI reload

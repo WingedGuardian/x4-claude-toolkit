@@ -20,10 +20,12 @@
   `tests/test_write_verb_promises_are_consistent.py` fails if one survives. Gated raw lua eval
   was considered and withdrawn: the engine's debug-console gate has no discoverable switch, and
   it guards a capability UI lua already has, so routing through it would have contained nothing.
-  ⚠ Not yet measured: whether a PAUSED game accepts a new pipe connection. Every `x4live`
-  command opens its own, so `unpause` after `pause` depends on it; if it does not, unpause in
-  game. An unpause whose read-back still shows paused RELEASES its claim rather than retrying,
-  because vanilla menus pause without checking and the engine may count pauses.
+  MEASURED live on 2026-09-13: a PAUSED game answers on an open connection and accepts a new
+  one, which is what lets `unpause` run as a separate command after `pause`. An unpause whose
+  read-back still shows paused RELEASES its claim rather than retrying; in that session the
+  player's own pause was holding, and the rule left it alone. This also corrects the shipped
+  hint that "a PAUSED game goes silent" and the `ping` comment that equal elapsed times mean
+  paused: `getElapsedTime` is real time and keeps advancing while paused.
 - **`scripts/deploy-mod.py`** — a guarded deploy for the mods this repo ships. The public repo
   shipped the helper mod with no safe way to install it: the obvious `rm -rf && cp -r` is one
   empty variable away from deleting the wrong tree inside the game install. It refuses a mod

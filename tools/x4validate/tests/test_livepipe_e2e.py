@@ -106,7 +106,7 @@ class FakeGame:
                 f = msg.split("\t")
                 seq, verb, args = f[2], f[3], f[4:]
                 if self.behaviour == "silent":
-                    # Connected, then nothing. The "loaded but paused or hung" state,
+                    # Connected, then nothing. The "loaded but not rendering, or hung" state,
                     # which must NOT be reported the same way as "never loaded".
                     time.sleep(30)
                     return

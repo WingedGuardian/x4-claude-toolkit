@@ -540,3 +540,16 @@ def test_the_hint_names_the_extension_and_its_dependency():
     assert "X4 Toolkit Helper" in h, "the refusal never names the extension"
     assert "ws_2042901274" in h, "the refusal never names the pipe-api dependency"
     assert "_LIVE loaded" in h, "no way for the user to check whether it loaded at all"
+
+
+def test_the_hint_does_not_blame_a_PAUSED_game():
+    """WITHDRAWN 2026-09-13 by measurement. The hint said "a PAUSED game goes silent",
+    inferred from the api's MD heartbeat firing only on unpaused frames. Live, a paused
+    game kept answering on an open connection AND accepted a new one -- the UI onUpdate
+    half of the frame detector keeps polling. Telling a user to unpause sends them after
+    the wrong cause."""
+    from x4validate._livepipe import MINIMIZED_HINT as h
+
+    assert "PAUSED game goes silent" not in h, "the withdrawn paused-silence claim is back"
+    assert "unpause, and run it again" not in h, "the hint still tells the user to unpause"
+    assert "MEASURED 2026-09-13" in h, "the correction must carry its evidence date"

@@ -57,7 +57,7 @@ local PROTO = 1
 --:
 --: Kept honest by `test_the_BUILD_constant_matches_the_file`, so editing the lua and
 --: forgetting to re-stamp this fails the suite rather than silently lying in game.
-local BUILD = "39162ddc"
+local BUILD = "c29aba8c"
 local TAG_CMD, TAG_REPLY = "MQ", "MR"
 
 -- Cap on echo, the ramp instrument. Generous: the point of the ramp is to FIND the
@@ -533,10 +533,11 @@ local verbs = {}
 --:   5. A name may not sit in both tables; the dispatcher refuses rather than guess.
 local WRITE_VERBS = {}
 
--- ping also carries the engine's elapsed time, which is what distinguishes PAUSED
--- from RUNNING: two pings whose elapsed time is identical mean the game is not
--- advancing. Collapsing paused/hung/not-loaded into one verdict is the bug that
--- made a sibling project's liveness probe wrong for three releases.
+-- ping also carries getElapsedTime(). ⚠ That is REAL time, not game time: MEASURED
+-- 2026-09-13, it kept advancing across a paused game (76.45 -> 84.81 over 8.35 s of
+-- wall clock, most of it paused), so two identical readings do NOT mean paused. Ask
+-- `pausestate` for that. Collapsing paused/hung/not-loaded into one verdict is the bug
+-- that made a sibling project's liveness probe wrong for three releases.
 verbs.ping = function(seq)
     local t = "unknown"
     if type(getElapsedTime) == "function" then
@@ -2777,8 +2778,8 @@ local function pause_write(seq, verb, want, engine_name, nargs)
     end
     return finish("OK", "ok", want
         and "the game is PAUSED, read back from the engine. Undo it with `x4live "
-            .. "unpause` or by unpausing in game. If `x4live unpause` cannot reach the "
-            .. "paused game, or the UI has reloaded since, unpause it in game."
+            .. "unpause` or by unpausing in game. If the UI has reloaded since, only "
+            .. "unpausing in game will undo it."
         or "the game is RUNNING again, read back from the engine.")
 end
 
