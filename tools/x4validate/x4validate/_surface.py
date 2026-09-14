@@ -10,8 +10,8 @@ surface comes from `--help` plus argparse's own invalid-choice listing, and the
 roster from pyproject's `[project.scripts]` rather than a hand-kept tuple.
 
 WHY THIS IS LIBRARY CODE AND NOT PART OF THE GATE THAT NEEDS IT. The enumeration
-was written inside `gates/toolkit_usage.py`, which is DEV-ONLY and absent from
-this tree, so a gate here cannot import it. Moving it verbatim would have carried
+was written inside `gates/toolkit_usage.py`, while that gate lived in a separate dev
+repository this tree could not import from. Moving it verbatim would have carried
 `_env.skip()` -- which `raise SystemExit(2)`s -- into the shipped package. Gotcha
 #26 records the cost: `gates/` modules resolved paths at import, and a SystemExit
 during pytest collection is an INTERNALERROR that aborts the whole session on a
@@ -20,9 +20,9 @@ fresh clone while being invisible on a configured machine.
 **So the split is: this module RAISES, and the caller decides the exit code.**
 A gate catches `SurfaceUnavailable` and translates it to its own rc 2.
 
-⚠ Dev's `gates/toolkit_usage.py` keeps its own copy of these functions. That is
-duplication across a deliberate tree boundary (dev owns 22 files by policy), not
-an oversight -- the two trees cannot import from each other.
+Since 2026-09-13 `gates/toolkit_usage.py` ships in this tree and asks this module.
+Its private copy retired with the dev repository, having already fallen behind: it
+lacked the `rc < 0` refusal in `subcommands`.
 """
 
 from __future__ import annotations

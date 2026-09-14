@@ -294,7 +294,7 @@ from x4validate import _check, _merge
 # also not reproducible by anyone else — it describes one install — so publishing it costs
 # privacy and buys a public reader nothing.
 #
-# It lives in `AUDIT-2026-08.md` (dev-only), § "Per-mod schema baseline". Diff against THAT
+# It lives in `AUDIT-2026-08.md` (beside this package; overlays appear only by letter), § "Per-mod schema baseline". Diff against THAT
 # next time instead of reasoning from memory. Its columns sum to the constants below, which
 # is what makes it an audit rather than a note: pairs 178, gating 59, advisory 69
 # AS OF 2026-08-25. Those two figures are now 77 and 71 (EXPECT_ERR/EXPECT_INFO);

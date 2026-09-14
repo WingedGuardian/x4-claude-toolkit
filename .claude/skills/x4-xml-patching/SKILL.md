@@ -333,7 +333,7 @@ game's own events/cues over polling.
 **Running `x4validate` is routine and non-optional** — a habit, like checking debug.txt.
 
 ```
-cd tools\x4validate && uv run x4validate <dev\mod_folder>
+cd $CLAUDE_PROJECT_DIR/tools/x4validate && uv run x4validate <dev\mod_folder>
 ```
 
 - **When:** after editing any diff patch or adding content, BEFORE deploying for an in-game

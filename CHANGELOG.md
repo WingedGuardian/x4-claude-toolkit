@@ -80,6 +80,18 @@
 - **Three skills now ship** that existed only in one deployment: **`/x4-xml-patching`** (the
   selector, merge-tree and load-order gotchas; installed-mod names generalised, gotcha numbers kept),
   **`/x4-live`**, and the newer **`/x4-probe`** with its "can it RECORD?" rung.
+- **The blind-spots register, the 2026-08 audit and their tooling now ship.** `docs/BLIND-SPOTS.md`
+  (F1 to F115), `AUDIT-2026-08.md`, `scripts/next-blind-spot-id.py`, and four gates:
+  `register_rederivation` (every FIXED entry must name a check that exists), and
+  `toolkit_usage`, `instrument_hygiene` and `hook_false_positives`, which read this machine's
+  session transcripts and refuse without them. They lived in a separate development repository,
+  now retired: two repositories with disjoint histories could not be kept in step, and on
+  2026-09-13 they had 79 differing files and 24 held only in the second. Personal overlay folder
+  names are scrubbed to `zzz_personal_overlay_A` to `_G`. F106's write-up, which existed only on
+  an unmerged branch of that repository, is restored. 13 tests that skipped on every clone
+  because those files were absent now run. `next-blind-spot-id.py` reads the register where this
+  repository nests it (it would otherwise have refused every request), and `toolkit_usage` asks
+  `x4validate/_surface.py` instead of keeping a copy that had fallen behind it.
 
 ### Changed
 

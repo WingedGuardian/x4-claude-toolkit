@@ -214,19 +214,13 @@ wrong.
 1. Let every mutating gate finish before copying, packaging, tagging or committing.
    `mutation_probe` is the one that edits source today; treat any gate that writes
    into `x4validate/` the same way.
-2. **Prove the port, do not assume it** — with
-   `uv run python scripts/verify-port.py`, which classifies every dev-tracked file
-   into buckets that must SUM to the population and reports a denominator. A
-   file-count match is not proof; the count was right here.
-
-   ⚠ **`scripts/verify-port.py` is DEV-SIDE ONLY and is deliberately absent from
-   the public bundle** — it hardcodes a mirror path no public user has, and the
-   identifier scrub would reject it. **If you are reading this in the public
-   toolkit, rule 2 is not a step you can run**: there is no second tree to prove a
-   port against. What still applies to you is the instrument lesson below it —
-   compare committed blobs, never working-tree files. Recorded because a rule that
-   names an unrunnable command trains its reader to skip the whole document, which
-   is the same failure the `diff -rq` note under it describes.
+2. **Prove a copy by COMMITTED BLOBS, never by working-tree files or a file count.**
+   Until 2026-09-13 this toolkit lived in two repositories, and a port between them
+   was proven with `scripts/verify-port.py`, which classified every tracked file into
+   buckets that had to SUM to the population. One repository now holds everything, so
+   that script retired with the second tree. The instrument lesson did not: a
+   file-count match is not proof (the count was right here), and the retirement itself
+   was measured the same way — every dev blob looked up among the mirror's objects.
 
    ⚠ **Do NOT use `diff -rq` for this, despite what this rule used to say.**
    MEASURED 2026-08-26 on the real pair of trees: it reports **52 differences where

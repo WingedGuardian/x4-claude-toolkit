@@ -1,8 +1,8 @@
 """x4validate/_surface.py -- the CLI/subcommand surface, asked of the programs.
 
 WHY THIS MODULE IS SEPARATE FROM THE GATE THAT NEEDS IT. The enumeration lived in
-`gates/toolkit_usage.py`, which is a DEV-ONLY gate and absent from this tree, so a
-gate here cannot import it. Moving it verbatim would carry `_env.skip()` -- which
+`gates/toolkit_usage.py` while that gate lived in a separate dev repository, so a
+gate here could not import it. Moving it verbatim would carry `_env.skip()` -- which
 `raise SystemExit(2)`s -- into the shipped package. Gotcha #26 records what that
 costs: every `gates/` module resolved paths at import, and a SystemExit during
 pytest collection is an INTERNALERROR that aborts the whole session on a fresh

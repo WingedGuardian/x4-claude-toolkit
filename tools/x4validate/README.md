@@ -481,10 +481,11 @@ handled here — it is a secret, not a path, and must never be written to a file
   matter of confidence. It also states plainly where the tools cannot be trusted.
 - `docs/QA-PROCESS.md` — the process these gates came out of: what to test, in what
   order, and when it is honest to call a tool releasable. Read it before adding a tool.
-- WARNING `docs/BLIND-SPOTS.md` is referenced above and **is not shipped**: it names a
-  private modlist, so it stays in the development tree (`tests/test_blind_spots_ids.py`
-  pins that). Its *conclusions* reach you through the code comments and this README;
-  the register itself does not.
+- `docs/BLIND-SPOTS.md` — the per-finding register: every tool limit and defect found,
+  each with a measured denominator and the check that now re-derives it
+  (`gates/register_rederivation.py` fails a FIXED entry that names none). Its evidence
+  cites a real installed modlist; personal overlays appear only as
+  `zzz_personal_overlay_A` to `_G`.
 - The repository ROOT's `CHANGELOG.md` covers this package too — there is no separate
   one here. Read the **2.3.0** entry before upgrading from below it: it carries a
   **breaking change to `x4compat --json`** (SUBTREE rows no longer populate `winner`;

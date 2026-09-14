@@ -38,16 +38,16 @@ _TABLE_ROW = re.compile(r"^\| (F\d+) \|", re.M)
 def text() -> str:
     """The register, or an explicit SKIP.
 
-    `docs/BLIND-SPOTS.md` is deliberately DEV-ONLY — it names a private modlist, so the
-    public toolkit bundle ships `docs/QA-PROCESS.md` and not this. Without the guard the
-    whole module ERRORS on a fresh public clone (MEASURED: 5 errors), which is the first
-    thing a new user runs.
+    `docs/BLIND-SPOTS.md` ships since 2026-09-13, scrubbed of personal overlay names. Until
+    then it was dev-only, and without the guard the whole module ERRORED on a fresh public
+    clone (MEASURED: 5 errors). The guard stays: a checkout without the register must still
+    say NOT CHECKED rather than error or pass.
 
     A skip, not a silent pass: pytest reports it distinctly, so "not checked here" can
     never read as "checked and fine" — the distinction this register exists to enforce.
     """
     if not REGISTER.is_file():
-        pytest.skip(f"no blind-spot register at {REGISTER} (dev-only doc) — not checked")
+        pytest.skip(f"no blind-spot register at {REGISTER} — not checked")
     return REGISTER.read_text(encoding="utf-8")
 
 
