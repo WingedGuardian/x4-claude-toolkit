@@ -171,22 +171,33 @@ def _worktree_common_dir(root: Path) -> Path | None:
             gitdir = root / gitdir
         try:
             common = (gitdir / "commondir").read_text(encoding="utf-8").strip()
-        except OSError:
+        except (OSError, ValueError):     # ValueError: undecodable bytes, an embedded NUL
             return None
         return (gitdir / common).resolve() if common else None
     return None
 
 
 def _same_file(a: Path, b: Path) -> bool:
-    """The comparison `_dedup` uses, so the note and the manifest cannot disagree."""
-    return str(a.resolve()).lower() == str(b.resolve()).lower()
+    """The comparison `_dedup` uses, so the note and the manifest cannot disagree. A path
+    that cannot be resolved compares by its text rather than raising."""
+    try:
+        return str(a.resolve()).lower() == str(b.resolve()).lower()
+    except OSError:
+        return str(a).lower() == str(b).lower()
 
 
 def _local_env_waived() -> Path | None:
     """This checkout's own `.claude/x4-paths.env` when it is ABSENT from a linked worktree
-    -- the one case where its absence is by design, not a loss (F119). Else None."""
+    AND something can stand in for it -- the one case where its absence is by design, not
+    a loss (F119). Else None.
+
+    Fails closed: with nothing to demand instead (a common dir not named `.git`, and no
+    $X4_TOOLKIT), the local file is demanded as before. A false MISSING is visible; a
+    waiver with nothing in its place is silent.
+    """
     local_env = _HERE.parent / ".claude" / "x4-paths.env"
-    if not local_env.is_file() and _worktree_common_dir(_HERE.parent) is not None:
+    if (not local_env.is_file() and _worktree_common_dir(_HERE.parent) is not None
+            and _waiver_replacements()):
         return local_env
     return None
 
@@ -201,7 +212,10 @@ def _waiver_replacements() -> list[Path]:
     """
     out: list[Path] = []
     common = _worktree_common_dir(_HERE.parent)
-    if common is not None and common.name == ".git":    # a bare repository has no checkout
+    # Only a common dir named `.git` has a known checkout: its parent. A bare repository, a
+    # submodule's `.git/modules/<name>` and a `--separate-git-dir` layout derive nothing --
+    # and then the waiver applies only if $X4_TOOLKIT names a copy (see _local_env_waived).
+    if common is not None and common.name == ".git":
         out.append(common.parent / ".claude" / "x4-paths.env")
     if os.environ.get("X4_TOOLKIT"):
         out.append(Path(os.environ["X4_TOOLKIT"]) / ".claude" / "x4-paths.env")
@@ -355,8 +369,7 @@ def cmd_status(_args) -> int:
         print("  note: this checkout is a linked git worktree, so its own %s is per-machine "
               "config it never has and is not counted MISSING; checked instead: %s%s" % (
                   waived,
-                  ", ".join(str(p.resolve()) for p in others)
-                  or "NOTHING (no main checkout found, and X4_TOOLKIT does not name one)",
+                  ", ".join(str(p.resolve()) for p in others) or "this worktree's own copy",
                   " -- X4_TOOLKIT points at this worktree itself, so its absent config is "
                   "still reported MISSING" if points_here else ""))
     if gone:

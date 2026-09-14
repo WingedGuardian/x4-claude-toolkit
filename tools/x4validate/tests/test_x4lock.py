@@ -307,8 +307,9 @@ def test_a_worktree_env_file_that_DOES_exist_is_still_protected(tmp_path, monkey
 
 def test_a_worktree_still_demands_the_CONFIGURED_toolkits_env(tmp_path, monkeypatch):
     """When the worktree waiver applies, the config that matters is the one $X4_TOOLKIT
-    names. `_paths._find_env_file` returns nothing for a DELETED file, so without an
-    explicit candidate that deletion would be reported by nobody."""
+    names. `_paths._find_env_file` returns only a file that EXISTS, so a deleted one is
+    simply not found, and without an explicit candidate that deletion would be reported
+    by nobody."""
     root = _checkout(tmp_path, "worktree")
     toolkit = tmp_path / "toolkit"
     (toolkit / ".claude").mkdir(parents=True)
@@ -411,3 +412,54 @@ def test_the_note_names_each_copy_ONCE(tmp_path, monkeypatch, capsys):
     want = str((tmp_path / "main" / ".claude" / "x4-paths.env").resolve())
     assert out.count(want) == 1, out
     assert "points at this worktree" not in out, out
+
+
+def _worktree_with_commondir(tmp_path, commondir: bytes, common: Path | None = None) -> Path:
+    """A linked worktree whose admin directory holds exactly the given `commondir` bytes."""
+    root = tmp_path / "checkout"
+    (root / "scripts").mkdir(parents=True)
+    admin = (common or (tmp_path / "main" / ".git")) / "worktrees" / "checkout"
+    admin.mkdir(parents=True)
+    (admin / "commondir").write_bytes(commondir)
+    (root / ".git").write_text(f"gitdir: {admin.as_posix()}\n", encoding="utf-8")
+    return root
+
+
+def test_no_waiver_when_NOTHING_can_stand_in_for_the_config(tmp_path, monkeypatch, capsys):
+    """Re-review finding: a linked worktree of a SUBMODULE (or a --separate-git-dir repo)
+    has a common dir not named `.git`, so no main checkout is derived. With X4_TOOLKIT
+    unset the waiver then replaced the config with NOTHING and still exited 0. It must fail
+    closed: no replacement, no waiver."""
+    common = tmp_path / "super" / ".git" / "modules" / "sub"
+    root = _worktree_with_commondir(tmp_path, b"../..\n", common=common)
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    monkeypatch.delenv("X4_TOOLKIT", raising=False)
+    assert _named(x4lock.missing(), _local_env(root))
+    monkeypatch.setenv("X4_PROTECTED", str(_fresh(tmp_path / "protected.md")))
+    x4lock.main(["status"])
+    assert "linked git worktree" not in capsys.readouterr().out
+
+
+def test_a_CRLF_commondir_is_read(tmp_path, monkeypatch):
+    """Git for Windows or a hand edit can leave a CR on the line; git itself trims it."""
+    root = _worktree_with_commondir(tmp_path, b"../..\r\n")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    monkeypatch.delenv("X4_TOOLKIT", raising=False)
+    assert not _named(x4lock.missing(), _local_env(root))
+    assert _named(x4lock.missing(), tmp_path / "main" / ".claude" / "x4-paths.env")
+
+
+def test_an_ABSOLUTE_commondir_is_used_as_is(tmp_path, monkeypatch):
+    main_git = tmp_path / "main" / ".git"
+    root = _worktree_with_commondir(tmp_path, (main_git.as_posix() + "\n").encode("utf-8"))
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    monkeypatch.delenv("X4_TOOLKIT", raising=False)
+    assert _named(x4lock.missing(), tmp_path / "main" / ".claude" / "x4-paths.env")
+
+
+def test_a_GARBLED_commondir_fails_closed_without_raising(tmp_path, monkeypatch):
+    """Non-UTF-8 bytes raise UnicodeDecodeError, a ValueError -- not an OSError. Uncaught,
+    `status` crashed with a traceback instead of reporting."""
+    root = _worktree_with_commondir(tmp_path, b"\xff\xfe\x00\x81")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    assert _named(x4lock.missing(), _local_env(root))
