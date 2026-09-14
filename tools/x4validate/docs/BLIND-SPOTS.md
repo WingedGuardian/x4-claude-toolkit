@@ -5844,6 +5844,13 @@ is a change to how the workspace is laid out, not a code change, and was not tak
 Until then the reconciliation is a procedure someone has to remember to run — which is
 the same class of guarantee as a marker that does not travel with its subject (F103).
 
+> **2026-09-14: the topology fix WAS taken.** The separate BaseX repository was retired with the dev
+> repository: every one of its code files was an older copy of this repo's `tools/basex/` (its exact
+> bytes are in this repo's history), both databases were rebuilt from here (x4raw 14,054 of 14,065
+> documents with all 11 exclusions named, the same figures as the retired build; x4eff 10,970,
+> complete), the queries compared gave identical per-item answers, and the old repository is archived.
+> One copy remains, so there is nothing left for it to drift from.
+
 ## F106 — a wrapper flag whose VALUE is a word became the command name · **DEFECT (measured)** · confidence 99% · FIXED 2026-09-06
 
 **RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (five tests: the verb directly,
