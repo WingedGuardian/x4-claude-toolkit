@@ -33,6 +33,11 @@ drift fails loudly in either direction.
 absence or a non-answer.* `tools\basex\ask.py` already does this — it refuses to render a zero
 result as a finding without a coverage denominator. `x4effective` and `x4stats` do not, yet.
 
+**Adding an entry.** Claim the next id with `uv run python scripts/next-blind-spot-id.py`, run
+from `tools/x4validate`: it reads the committed register on every branch, so two sessions cannot hand
+out the same number. Write and commit the summary ROW first, then the section. Never take an id from
+memory or from another session -- a remembered id was stale within a day here.
+
 ---
 
 ## Verdict summary
