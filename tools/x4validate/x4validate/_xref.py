@@ -364,12 +364,12 @@ def main(argv: list[str] | None = None) -> int:
         q.add_argument("name", help="the action/event name (e.g. set_object_min_hull)")
         q.add_argument("--tsv", help="index path (default: dev\\_registry\\md_xref.tsv)")
         q.add_argument("--limit", type=int, default=20,
-                       help="max occurrences shown per source (0 = no cap)")
+                       help="max occurrences shown per source, 0 = no cap (default: %(default)s)")
         q.set_defaults(_kind=kind)
 
     qc = sub.add_parser("cue", help="where a cue is defined, signalled, cancelled")
     qc.add_argument("name", help="cue name (short or md.Script.Cue)")
-    qc.add_argument("--tsv")
+    qc.add_argument("--tsv", help="index path (default: dev\\_registry\\md_xref.tsv)")
 
     args = p.parse_args(argv)
 

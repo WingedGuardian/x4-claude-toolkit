@@ -43,7 +43,7 @@ positional arguments:
 options:
   -h, --help     show this help message and exit
   --tsv TSV      index path (default: dev\_registry\md_xref.tsv)
-  --limit LIMIT  max occurrences shown per source (0 = no cap)
+  --limit LIMIT  max occurrences shown per source, 0 = no cap (default: 20)
 ```
 
 ## `x4xref who-listens`
@@ -57,7 +57,7 @@ positional arguments:
 options:
   -h, --help     show this help message and exit
   --tsv TSV      index path (default: dev\_registry\md_xref.tsv)
-  --limit LIMIT  max occurrences shown per source (0 = no cap)
+  --limit LIMIT  max occurrences shown per source, 0 = no cap (default: 20)
 ```
 
 ## `x4xref cue`
@@ -70,5 +70,5 @@ positional arguments:
 
 options:
   -h, --help  show this help message and exit
-  --tsv TSV
+  --tsv TSV   index path (default: dev\_registry\md_xref.tsv)
 ```

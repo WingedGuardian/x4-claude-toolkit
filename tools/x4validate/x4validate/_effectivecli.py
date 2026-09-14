@@ -113,50 +113,64 @@ def main(argv: list[str] | None = None) -> int:
         description="Browse the effective merged values of every X4 entity, with provenance.")
     p.add_argument("--version", action="version",
                    version=f"%(prog)s {__version__}")
-    p.add_argument("--db", default=None)
+    p.add_argument("--db", default=None,
+                   help="effective store to read or build (default: $X4_EFFECTIVE_DB, or derived "
+                        "from $X4_MODS / $X4_REGISTRY)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     b = sub.add_parser("build", help="(re)build the effective store")
-    b.add_argument("--reference", default=str(_merge.REFERENCE))
+    b.add_argument("--reference", default=str(_merge.REFERENCE),
+                   help="unpacked base+DLC tree to build from (default: the configured reference tree)")
     # Derived, never re-typed: this default was a hardcoded "ware,macro,job" and
     # adding a kind to BUILDABLE_KINDS silently did not build it. Two sources of
     # truth for one list is the same defect class as five copies of the DLC walk.
-    b.add_argument("--kinds", default=",".join(BUILDABLE_KINDS))
+    b.add_argument("--kinds", default=",".join(BUILDABLE_KINDS),
+                   help="comma-separated entity kinds to build (default: %(default)s)")
 
     lsp = sub.add_parser("ls", help="list entities of a kind")
-    lsp.add_argument("kind")
-    lsp.add_argument("--class", dest="klass", default=None)
+    lsp.add_argument("kind", help="entity kind as stored, e.g. ware, macro, job")
+    lsp.add_argument("--class", dest="klass", default=None,
+                     help="only entities of this class (the store's class column)")
     lsp.add_argument("--filter", default=None, help="substring match on name")
-    lsp.add_argument("--modified-only", action="store_true")
-    lsp.add_argument("--limit", type=int, default=200)
+    lsp.add_argument("--modified-only", action="store_true",
+                     help="only entities a mod changed; hide pure-vanilla rows")
+    lsp.add_argument("--limit", type=int, default=200,
+                     help="rows to print; the total is still counted (default: %(default)s)")
 
     sh = sub.add_parser("show", help="all props + provenance for one entity")
-    sh.add_argument("kind")
-    sh.add_argument("name")
+    sh.add_argument("kind", help="entity kind as stored, e.g. ware, macro, job")
+    sh.add_argument("name", help="entity name (its id)")
 
     at = sub.add_parser("attr", help="one prop across all entities of a class")
-    at.add_argument("kind")
-    at.add_argument("prop")
-    at.add_argument("--class", dest="klass", default=None)
-    at.add_argument("--sort", choices=["num", "name"], default="name")
-    at.add_argument("--limit", type=int, default=200)
+    at.add_argument("kind", help="entity kind as stored, e.g. ware, macro, job")
+    at.add_argument("prop", help="property key as the store spells it, e.g. hull.max "
+                                 "(macro keys carry no properties. prefix)")
+    at.add_argument("--class", dest="klass", default=None,
+                    help="only entities of this class (the store's class column)")
+    at.add_argument("--sort", choices=["num", "name"], default="name",
+                    help="order by numeric value or by entity name (default: %(default)s)")
+    at.add_argument("--limit", type=int, default=200,
+                    help="rows to print; the total is still counted (default: %(default)s)")
 
     ws = sub.add_parser("who-sets", help="provenance chain for an entity['s prop]")
-    ws.add_argument("kind")
-    ws.add_argument("name")
-    ws.add_argument("prop", nargs="?")
+    ws.add_argument("kind", help="entity kind as stored, e.g. ware, macro, job")
+    ws.add_argument("name", help="entity name (its id)")
+    ws.add_argument("prop", nargs="?",
+                    help="one property; omit it for the entity-level provenance chain")
 
     dm = sub.add_parser("diff-mod", help="every value a mod wins")
-    dm.add_argument("folder")
-    dm.add_argument("--limit", type=int, default=500)
+    dm.add_argument("folder", help="the mod's folder name, as it appears as a provenance origin")
+    dm.add_argument("--limit", type=int, default=500,
+                    help="rows to print; the total is still counted (default: %(default)s)")
 
     du = sub.add_parser("dump", help="live effective XML for ANY vpath (incl. md/, aiscripts/)")
-    du.add_argument("vpath")
-    du.add_argument("--reference", default=str(_merge.REFERENCE))
+    du.add_argument("vpath", help="path inside the game tree, e.g. libraries/wares.xml")
+    du.add_argument("--reference", default=str(_merge.REFERENCE),
+                    help="unpacked base+DLC tree to build from (default: the configured reference tree)")
     du.add_argument("--chain", action="store_true", help="also print the file-level source chain")
 
     sq = sub.add_parser("sql", help="read-only SELECT against the store")
-    sq.add_argument("query")
+    sq.add_argument("query", help="one read-only SELECT or WITH statement (anything else is refused)")
 
     sub.add_parser("coverage", help="what this store DOES and does not index "
                                     "(so a negative can carry its denominator)")

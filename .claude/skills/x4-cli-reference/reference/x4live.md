@@ -62,7 +62,7 @@ usage: x4live errors [-h] [--limit LIMIT]
 
 options:
   -h, --help     show this help message and exit
-  --limit LIMIT
+  --limit LIMIT  emitted error rows to print (default: 25)
 ```
 
 ## `x4live oracle`
@@ -135,7 +135,7 @@ positional arguments:
 options:
   -h, --help         show this help message and exit
   --pipe PIPE        pipe name (default: $X4_LIVE_PIPE or built-in)
-  --timeout TIMEOUT  seconds to wait for the game, and for each reply
+  --timeout TIMEOUT  seconds to wait for the game, and for each reply (default: 10.0)
 ```
 
 ## `x4live harvest`
@@ -145,8 +145,8 @@ usage: x4live harvest [-h] [--pipe PIPE] [--timeout TIMEOUT] [--out OUT] [--fact
 
 options:
   -h, --help         show this help message and exit
-  --pipe PIPE
-  --timeout TIMEOUT
+  --pipe PIPE        pipe name (default: $X4_LIVE_PIPE or built-in)
+  --timeout TIMEOUT  seconds to wait for the game, and for each reply (default: 10.0)
   --out OUT          output .tsv (default: $X4_MODS/_reports/harvest-*.tsv)
   --faction FACTION  faction for the station census, which also supplies a STATION id for the
                      field sweep (default: argon)
@@ -159,8 +159,8 @@ usage: x4live groundtruth [-h] [--pipe PIPE] [--timeout TIMEOUT] [--out OUT] [--
 
 options:
   -h, --help         show this help message and exit
-  --pipe PIPE
-  --timeout TIMEOUT
+  --pipe PIPE        pipe name (default: $X4_LIVE_PIPE or built-in)
+  --timeout TIMEOUT  seconds to wait for the game, and for each reply (default: 10.0)
   --out OUT          output .tsv (default: $X4_MODS/_reports/groundtruth-*.tsv)
   --with-ramp        run the size ramp FIRST, in the SAME connection -- the lua client does not
                      reconnect after a disconnect, so a session's whole budget is one connection
@@ -173,6 +173,6 @@ usage: x4live ramp [-h] [--pipe PIPE] [--timeout TIMEOUT]
 
 options:
   -h, --help         show this help message and exit
-  --pipe PIPE
-  --timeout TIMEOUT
+  --pipe PIPE        pipe name (default: $X4_LIVE_PIPE or built-in)
+  --timeout TIMEOUT  seconds to wait for the game, and for each reply (default: 10.0)
 ```

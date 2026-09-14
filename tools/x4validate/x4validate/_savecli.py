@@ -274,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
 
     pc = sub.add_parser("check",
                         help="macro references the live tree no longer defines")
-    pc.add_argument("save", nargs="?")
+    pc.add_argument("save", nargs="?", help="path or save name (default: newest)")
     pc.add_argument("--limit", type=int, default=40, help="names to print (default 40)")
 
     args = p.parse_args(argv)

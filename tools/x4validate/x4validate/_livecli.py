@@ -1655,7 +1655,8 @@ def main(argv: list[str] | None = None) -> int:
                          "(active = what the engine would load; default)")
 
     pr = sub.add_parser("errors", help="the engine's own error log, as captured")
-    pr.add_argument("--limit", type=int, default=25)
+    pr.add_argument("--limit", type=int, default=25,
+                    help="emitted error rows to print (default: %(default)s)")
 
     po = sub.add_parser("oracle",
                         help="engine-resolved macro values vs the effective store")
@@ -1725,14 +1726,14 @@ def main(argv: list[str] | None = None) -> int:
                          "--timeout BEFORE the verb")
     pq.add_argument("--pipe", help="pipe name (default: $X4_LIVE_PIPE or built-in)")
     pq.add_argument("--timeout", type=float, default=10.0,
-                    help="seconds to wait for the game, and for each reply")
+                    help="seconds to wait for the game, and for each reply (default: %(default)s)")
 
     ph = sub.add_parser(
         "harvest",
         help="ask the RUNNING engine EVERYTHING we can think to ask, in ONE "
              "connection, and write it down")
-    ph.add_argument("--pipe")
-    ph.add_argument("--timeout", type=float, default=10.0)
+    ph.add_argument("--pipe", help="pipe name (default: $X4_LIVE_PIPE or built-in)")
+    ph.add_argument("--timeout", type=float, default=10.0, help="seconds to wait for the game, and for each reply (default: %(default)s)")
     ph.add_argument("--out",
                     help="output .tsv (default: $X4_MODS/_reports/harvest-*.tsv)")
     ph.add_argument("--faction", default="argon",
@@ -1742,8 +1743,8 @@ def main(argv: list[str] | None = None) -> int:
     pg = sub.add_parser("groundtruth",
                         help="harvest the engine's DERIVED values live and WRITE THEM "
                              "DOWN (the fixture any future traversal must reproduce)")
-    pg.add_argument("--pipe")
-    pg.add_argument("--timeout", type=float, default=10.0)
+    pg.add_argument("--pipe", help="pipe name (default: $X4_LIVE_PIPE or built-in)")
+    pg.add_argument("--timeout", type=float, default=10.0, help="seconds to wait for the game, and for each reply (default: %(default)s)")
     pg.add_argument("--out", help="output .tsv (default: $X4_MODS/_reports/groundtruth-*.tsv)")
     pg.add_argument("--with-ramp", action="store_true",
                     help="run the size ramp FIRST, in the SAME connection -- the lua "
@@ -1755,8 +1756,8 @@ def main(argv: list[str] | None = None) -> int:
                              "NOT truncate -- it TEARS THE PIPE DOWN, costing the whole "
                              "connection (F74, corrected 2026-08-29). Bounded below at "
                              "64,000 bytes; the ceiling above that is unmeasured")
-    pm.add_argument("--pipe")
-    pm.add_argument("--timeout", type=float, default=10.0)
+    pm.add_argument("--pipe", help="pipe name (default: $X4_LIVE_PIPE or built-in)")
+    pm.add_argument("--timeout", type=float, default=10.0, help="seconds to wait for the game, and for each reply (default: %(default)s)")
 
     args = p.parse_args(argv)
     try:

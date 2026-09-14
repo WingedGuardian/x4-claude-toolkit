@@ -24,7 +24,8 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   --version             show program's version number and exit
-  --db DB
+  --db DB               effective store to read or build (default: $X4_EFFECTIVE_DB, or derived
+                        from $X4_MODS / $X4_REGISTRY)
 ```
 
 ## `x4effective build`
@@ -35,7 +36,12 @@ usage: x4effective build [-h] [--reference REFERENCE] [--kinds KINDS]
 options:
   -h, --help            show this help message and exit
   --reference REFERENCE
-  --kinds KINDS
+                        unpacked base+DLC tree to build from (default: the configured reference
+                        tree)
+  --kinds KINDS         comma-separated entity kinds to build (default: ware,job,ship,shipgroup,lo
+                        adout,station,stationgroup,module,modulegroup,plan,basket,people,mapdatase
+                        t,sound,icon,gfxeffect,roomgroup,room,character,region,faction,macro,compo
+                        nent)
 ```
 
 ## `x4effective ls`
@@ -45,14 +51,14 @@ usage: x4effective ls [-h] [--class KLASS] [--filter FILTER] [--modified-only] [
                       kind
 
 positional arguments:
-  kind
+  kind             entity kind as stored, e.g. ware, macro, job
 
 options:
   -h, --help       show this help message and exit
-  --class KLASS
+  --class KLASS    only entities of this class (the store's class column)
   --filter FILTER  substring match on name
-  --modified-only
-  --limit LIMIT
+  --modified-only  only entities a mod changed; hide pure-vanilla rows
+  --limit LIMIT    rows to print; the total is still counted (default: 200)
 ```
 
 ## `x4effective show`
@@ -61,8 +67,8 @@ options:
 usage: x4effective show [-h] kind name
 
 positional arguments:
-  kind
-  name
+  kind        entity kind as stored, e.g. ware, macro, job
+  name        entity name (its id)
 
 options:
   -h, --help  show this help message and exit
@@ -74,14 +80,15 @@ options:
 usage: x4effective attr [-h] [--class KLASS] [--sort {num,name}] [--limit LIMIT] kind prop
 
 positional arguments:
-  kind
-  prop
+  kind               entity kind as stored, e.g. ware, macro, job
+  prop               property key as the store spells it, e.g. hull.max (macro keys carry no
+                     properties. prefix)
 
 options:
   -h, --help         show this help message and exit
-  --class KLASS
-  --sort {num,name}
-  --limit LIMIT
+  --class KLASS      only entities of this class (the store's class column)
+  --sort {num,name}  order by numeric value or by entity name (default: name)
+  --limit LIMIT      rows to print; the total is still counted (default: 200)
 ```
 
 ## `x4effective who-sets`
@@ -90,9 +97,9 @@ options:
 usage: x4effective who-sets [-h] kind name [prop]
 
 positional arguments:
-  kind
-  name
-  prop
+  kind        entity kind as stored, e.g. ware, macro, job
+  name        entity name (its id)
+  prop        one property; omit it for the entity-level provenance chain
 
 options:
   -h, --help  show this help message and exit
@@ -104,11 +111,11 @@ options:
 usage: x4effective diff-mod [-h] [--limit LIMIT] folder
 
 positional arguments:
-  folder
+  folder         the mod's folder name, as it appears as a provenance origin
 
 options:
   -h, --help     show this help message and exit
-  --limit LIMIT
+  --limit LIMIT  rows to print; the total is still counted (default: 500)
 ```
 
 ## `x4effective dump`
@@ -117,11 +124,13 @@ options:
 usage: x4effective dump [-h] [--reference REFERENCE] [--chain] vpath
 
 positional arguments:
-  vpath
+  vpath                 path inside the game tree, e.g. libraries/wares.xml
 
 options:
   -h, --help            show this help message and exit
   --reference REFERENCE
+                        unpacked base+DLC tree to build from (default: the configured reference
+                        tree)
   --chain               also print the file-level source chain
 ```
 
@@ -131,7 +140,7 @@ options:
 usage: x4effective sql [-h] query
 
 positional arguments:
-  query
+  query       one read-only SELECT or WITH statement (anything else is refused)
 
 options:
   -h, --help  show this help message and exit

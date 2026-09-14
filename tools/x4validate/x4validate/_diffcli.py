@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
                         "that patches the mod being compared)")
     p.add_argument("--detail", action="store_true", help="list every attr change")
     p.add_argument("--file", help="detail one vpath only")
-    p.add_argument("--top", type=int, default=30, help="show N heaviest changed files")
+    p.add_argument("--top", type=int, default=30, help="show N heaviest changed files (default: %(default)s)")
     p.add_argument("--base", action="append", default=[],
                    help="COMMON ANCESTOR of OLD and NEW: makes this a THREE-WAY "
                         "diff separating the author's edits from upstream drift "

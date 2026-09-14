@@ -36,7 +36,7 @@ options:
 usage: x4save check [-h] [--limit LIMIT] [save]
 
 positional arguments:
-  save
+  save           path or save name (default: newest)
 
 options:
   -h, --help     show this help message and exit

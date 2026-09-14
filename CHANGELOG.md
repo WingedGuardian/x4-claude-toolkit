@@ -81,6 +81,11 @@
   - The Nexus-packs test only trusts `git rev-parse` when the checkout IS this toolkit, so a toolkit
     installed inside another git repository no longer fails it.
   - `/x4-xml-patching` no longer points at files and sections the public repo does not contain.
+- **Every CLI argument now has help text, and a test refuses one that does not.** A cold agent
+  answering from the generated `/x4-cli-reference` tripped on three undocumented arguments; walking
+  every parser found **41** -- 34 with no help at all (22 in `x4effective`) and 7 whose default was
+  never stated. Each string was written from the code it describes. Defaults that are machine paths
+  or pinned ids are stated in words, so no personal path or 8-digit id reaches the shipped skill.
 
 ## v3.1.1 — 2026-09-09
 

@@ -773,7 +773,7 @@ def main(argv: list[str] | None = None) -> int:
                     "(default: game-root extensions\\, profile extensions\\, Steam Workshop)")
     pi.add_argument("--installed-only", action="store_true", dest="installed_only",
                     help="skip the profile content.xml cross-check pass entirely")
-    pi.add_argument("--build", default="23660954", help="current game build id")
+    pi.add_argument("--build", default="23660954", help="current game build id (default: a build id pinned in this release)")
     pi.add_argument("--all", action="store_true",
                     help="content.xml cross-check: include disabled extensions too")
     pi.set_defaults(func=cmd_ingest)
@@ -814,8 +814,8 @@ def main(argv: list[str] | None = None) -> int:
 
     pt = sub.add_parser("tracked", help="what the ACCOUNT tracks on Nexus vs what is INSTALLED")
     pt.add_argument("--domain", default="x4foundations",
-                    help="Nexus game domain (the endpoint is account-wide across all games)")
-    pt.add_argument("--limit", type=int, default=20, help="rows to show per list")
+                    help="Nexus game domain (the endpoint is account-wide across all games) (default: %(default)s)")
+    pt.add_argument("--limit", type=int, default=20, help="rows to show per list (default: %(default)s)")
     pt.set_defaults(func=cmd_tracked)
 
     pig = sub.add_parser("ignore", help="mark a junk/personal mod out of the active worklist")

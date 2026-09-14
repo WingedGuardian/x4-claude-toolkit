@@ -393,11 +393,13 @@ def main(argv: list[str] | None = None) -> int:
         "crosscheck",
         help="per-item diff of engine-skipped ops vs x4validate's prediction")
     pc.add_argument("mod", help="mod path (use the DEPLOYED copy — load order matters)")
-    pc.add_argument("log", nargs="?")
-    pc.add_argument("--tier", default="b", choices=["a", "b"])
+    pc.add_argument("log", nargs="?", help="debug.txt (default: $X4_DEBUGLOG / $X4_PROFILE)")
+    pc.add_argument("--tier", default="b", choices=["a", "b"],
+                    help="x4validate tier for the prediction: a = base+DLC only, b = the "
+                         "installed modlist in load order (default: %(default)s)")
 
     pb = sub.add_parser("baseline", help="archive this log with a content fingerprint")
-    pb.add_argument("log", nargs="?")
+    pb.add_argument("log", nargs="?", help="debug.txt (default: $X4_DEBUGLOG / $X4_PROFILE)")
     pb.add_argument("--dest", help="archive dir (default: dev\\_reports\\debug)")
 
     args = p.parse_args(argv)

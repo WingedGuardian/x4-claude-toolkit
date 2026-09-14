@@ -43,7 +43,7 @@ options:
   --dirs DIRS        comma-separated extension dirs to scan (default: game-root extensions\,
                      profile extensions\, Steam Workshop)
   --installed-only   skip the profile content.xml cross-check pass entirely
-  --build BUILD      current game build id
+  --build BUILD      current game build id (default: a build id pinned in this release)
   --all              content.xml cross-check: include disabled extensions too
 ```
 
@@ -125,8 +125,9 @@ usage: x4modlist tracked [-h] [--domain DOMAIN] [--limit LIMIT]
 
 options:
   -h, --help       show this help message and exit
-  --domain DOMAIN  Nexus game domain (the endpoint is account-wide across all games)
-  --limit LIMIT    rows to show per list
+  --domain DOMAIN  Nexus game domain (the endpoint is account-wide across all games) (default:
+                   x4foundations)
+  --limit LIMIT    rows to show per list (default: 20)
 ```
 
 ## `x4modlist ignore`

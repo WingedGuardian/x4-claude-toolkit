@@ -37,11 +37,12 @@ usage: x4debug crosscheck [-h] [--tier {a,b}] mod [log]
 
 positional arguments:
   mod           mod path (use the DEPLOYED copy — load order matters)
-  log
+  log           debug.txt (default: $X4_DEBUGLOG / $X4_PROFILE)
 
 options:
   -h, --help    show this help message and exit
-  --tier {a,b}
+  --tier {a,b}  x4validate tier for the prediction: a = base+DLC only, b = the installed modlist
+                in load order (default: b)
 ```
 
 ## `x4debug baseline`
@@ -50,7 +51,7 @@ options:
 usage: x4debug baseline [-h] [--dest DEST] [log]
 
 positional arguments:
-  log
+  log          debug.txt (default: $X4_DEBUGLOG / $X4_PROFILE)
 
 options:
   -h, --help   show this help message and exit

@@ -20,7 +20,7 @@ options:
                      the mod being compared)
   --detail           list every attr change
   --file FILE        detail one vpath only
-  --top TOP          show N heaviest changed files
+  --top TOP          show N heaviest changed files (default: 30)
   --base BASE        COMMON ANCESTOR of OLD and NEW: makes this a THREE-WAY diff separating the
                      author's edits from upstream drift (repeatable, merged in order)
 ```
