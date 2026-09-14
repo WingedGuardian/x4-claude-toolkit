@@ -598,8 +598,14 @@ def test_a_star_row_from_a_PRE_ESCAPING_fixture_still_parses(tmp_path):
 def test_the_real_fixtures_BOTH_yield_the_scouts_full_field_set():
     """End to end over the actual artifacts, both vintages. A unit fixture cannot
     catch a writer/reader disagreement that only shows up on real captures."""
-    import pathlib
-    base = pathlib.Path(__file__).resolve().parents[3] / "dev" / "_reports"
+    # ⚠ WHERE `groundtruth` WRITES, not a path relative to this file. It was
+    # `parents[3] / "dev" / "_reports"`, the layout of the retired dev repository; in this
+    # repository that directory does not exist on ANY machine, so the test skipped
+    # everywhere -- MEASURED 2026-09-14 on a machine holding both fixtures in
+    # `$X4_MODS/_reports`. A check that cannot run reports the same as one with nothing to do.
+    base = C._archive_dir()
+    if base is None:
+        pytest.skip("$X4_MODS is not configured -- no groundtruth archive to read")
     key = ("shiptypes_s", "ship_arg_s_scout_01_a_macro")
     seen = 0
     for name in ("groundtruth-20260829-175342.tsv", "groundtruth-20260831-122748.tsv"):
@@ -611,7 +617,7 @@ def test_the_real_fixtures_BOTH_yield_the_scouts_full_field_set():
         assert len(got.get(key, {})) == 37, (
             f"{name}: scout has {len(got.get(key, {}))} fields, expected 37")
     if seen == 0:
-        pytest.skip("no groundtruth fixtures present in dev/_reports")
+        pytest.skip(f"no groundtruth fixtures present in {base}")
 
 
 def test_an_UNMODELLED_row_kind_is_REPORTED_and_fails(tmp_path, capsys):
