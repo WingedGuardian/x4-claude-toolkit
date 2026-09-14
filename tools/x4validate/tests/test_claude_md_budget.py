@@ -145,3 +145,15 @@ def test_a_baseline_from_the_OLD_counting_method_is_a_REFUSAL(monkeypatch, tmp_p
     monkeypatch.setattr(b_, "BASELINE", bl)
     assert b_.main() == 2
     assert "counting method" in capsys.readouterr().err
+
+
+def test_RECORD_replaces_an_OLD_METHOD_baseline_instead_of_refusing(monkeypatch, tmp_path):
+    """The refusal for an old-method baseline says "re-record with --record"; that command
+    must then work, not refuse on the same unreadable baseline."""
+    bl = tmp_path / "b.json"
+    bl.write_text(json.dumps({"shipped (repo root)": 1}), encoding="utf-8")
+    monkeypatch.setattr(b_, "BASELINE", bl)
+    assert b_.main() == 2
+    assert b_.main(record=True) == 0
+    assert json.loads(bl.read_text(encoding="utf-8"))["_counting"] == b_.COUNTING
+    assert b_.main() == 0

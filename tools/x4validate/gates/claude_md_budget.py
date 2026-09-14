@@ -161,18 +161,21 @@ def main(record: bool = False) -> int:
         print(f"REFUSING: {exc}", file=sys.stderr)
         return 2
 
-    try:
-        baseline = _load()
-    except Unmeasurable as exc:
-        print(f"REFUSING: {exc}", file=sys.stderr)
-        return 2
-
+    # BEFORE the load: --record is the remedy every baseline refusal names, so it must
+    # work over a baseline that cannot be read or was counted another way (review of
+    # the F120 follow-up, 2026-09-14: it refused with 're-record with --record').
     if record:
         BASELINE.write_bytes(
             (json.dumps({"_counting": COUNTING, **measured}, indent=2, sort_keys=True)
              + "\n").encode("utf-8"))
         print(f"  recorded {len(measured)} floor(s) to {BASELINE.name}")
         return 0
+
+    try:
+        baseline = _load()
+    except Unmeasurable as exc:
+        print(f"REFUSING: {exc}", file=sys.stderr)
+        return 2
 
     if baseline is None:
         # rc 2, never 0: run-gates.sh buckets 0 as `ok` and discards stdout, so a
