@@ -1342,8 +1342,55 @@ GROUND_TRUTH_MACROS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _read_macro_list(path: Path) -> tuple[list[tuple[str, str]] | None, str]:
+    """`<librarytype><TAB><macro>` per line -> (pairs, "") or (None, why).
+
+    Whole-line and trailing `#` comments and blank lines are skipped. Anything else that
+    is not exactly two fields REFUSES the whole list, naming the line: a list that
+    half-parsed would harvest a different population from the one written down, and the
+    fixture would say nothing about the difference.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, f"cannot read {path}: {exc}"
+    pairs: list[tuple[str, str]] = []
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        cols = line.split()
+        if len(cols) != 2:
+            return None, f"{path.name}:{n}: expected `<librarytype> <macro>`, got {raw!r}"
+        pairs.append((cols[0], cols[1]))
+    if not pairs:
+        return None, f"{path.name} lists no macros"
+    return pairs, ""
+
+
+def _missing_from_store(pairs: list[tuple[str, str]]) -> list[str] | None:
+    """The listed macros the effective store does not hold, or None if it cannot be asked.
+
+    Checked BEFORE the game is contacted. The built-in list once shipped three invented
+    missile names (see GROUND_TRUTH_MACROS): each would have come back ABSENT and read as
+    "the engine exposes nothing for missiles". A user-supplied list is the same risk with
+    nobody reviewing it.
+    """
+    from ._effective import _connect, effective_db
+
+    db = effective_db()
+    if db is None or not db.exists():
+        return None
+    try:
+        con = _connect(db)
+    except Exception:                               # noqa: BLE001 - the caller refuses
+        return None
+    return [m for _, m in pairs if _store_props(con, m) is None]
+
+
 def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = None,
-                    out=None, with_ramp: bool = False) -> int:
+                    out=None, with_ramp: bool = False, macros_file: str | None = None,
+                    contents: bool = False) -> int:
     """Harvest the engine's DERIVED values live, and write them down.
 
     THE PROBLEM THIS SOLVES. Our store records a macro's `<connection>` refs; the
@@ -1367,6 +1414,25 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
     """
     out = out or sys.stdout
     from . import _livepipe
+
+    # WHICH macros, settled before anything is opened or created.
+    targets: tuple[tuple[str, str], ...] | list[tuple[str, str]] = GROUND_TRUTH_MACROS
+    source = "built-in"
+    if macros_file:
+        pairs, why = _read_macro_list(Path(macros_file))
+        if pairs is None:
+            return _fmt_rc(f"--macros: {why}", 2)
+        missing = _missing_from_store(pairs)
+        if missing is None:
+            return _fmt_rc("--macros: the effective store could not be opened, so the "
+                           "names cannot be checked -- run `x4effective build` first", 2)
+        if missing:
+            shown = ", ".join(missing[:10]) + (f" (+{len(missing) - 10} more)"
+                                               if len(missing) > 10 else "")
+            return _fmt_rc(f"--macros: {len(missing)} of {len(pairs)} macro(s) are not in "
+                           f"the effective store: {shown}. An invented name comes back "
+                           f"ABSENT and reads as 'the engine exposes nothing'.", 2)
+        targets, source = pairs, Path(macros_file).name
 
     dest = Path(out_file) if out_file else None
     if dest is None:
@@ -1405,9 +1471,9 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
             _ramp_over(lp, out)
             print("", file=out)
         print(f"harvesting over {path}", file=out)
-        print(f"{len(GROUND_TRUTH_MACROS)} macros x ({len(fields)} derived + 1 all-fields)\n",
-              file=out)
-        for ltype, macro in GROUND_TRUTH_MACROS:
+        print(f"{len(targets)} macros ({source}) x ({len(fields)} derived + 1 all-fields"
+              f"{', with --contents' if contents else ''})\n", file=out)
+        for ltype, macro in targets:
             got = 0
             # ONE all-fields call first, recorded under the field name "*". This is what
             # answers "does the engine expose <x> for this type AT ALL" -- a question the
@@ -1421,7 +1487,9 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
             # the small per-field answers.
             asked += 1
             try:
-                rv = lp.ask("macro", ltype, macro)
+                # `--contents` on the ALL-FIELDS call only: a per-field reply is one
+                # value, and an old helper build would read the flag as a property name.
+                rv = lp.ask("macro", ltype, macro, *(("--contents",) if contents else ()))
                 if rv.status == "OK":
                     rows.append((ltype, macro, "*", rv.payload))
                 elif rv.status == "ABSENT":
@@ -1467,6 +1535,7 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
               "# RECORDED, NOT COMPARED. Several fields have more than one defensible",
               "# definition; this file is what decides between them.",
               f"# asked={asked} present={present} absent={absent} errored={errored}",
+              f"# macros={source} n={len(targets)} contents={'yes' if contents else 'no'}",
               "librarytype\tmacro\tfield\tengine_value"]
     # Values can contain TABS and NEWLINES -- a description does, and the "*"
     # all-fields row is itself tab-joined. Unescaped, those break the row
@@ -1486,7 +1555,7 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
                                         f"{len(back)}")
 
     print(f"\nwrote {dest}", file=out)
-    print(f"  {present} value(s) from {len(GROUND_TRUTH_MACROS)} macros; "
+    print(f"  {present} value(s) from {len(targets)} macros; "
           f"{absent} field(s) absent (a real answer), {errored} errored", file=out)
     if present == 0:
         # Nothing harvested is a NON-ANSWER about the engine, not a finding about it.
@@ -1907,6 +1976,17 @@ def main(argv: list[str] | None = None) -> int:
     pg.add_argument("--pipe", help="pipe name (default: $X4_LIVE_PIPE or built-in)")
     pg.add_argument("--timeout", type=float, default=10.0, help="seconds to wait for the game, and for each reply (default: %(default)s)")
     pg.add_argument("--out", help="output .tsv (default: $X4_MODS/_reports/groundtruth-*.tsv)")
+    pg.add_argument("--macros", metavar="FILE",
+                    help="harvest THESE macros instead of the built-in list: one "
+                         "`<librarytype> <macro>` per line, `#` comments allowed. Every "
+                         "macro must exist in the effective store, checked BEFORE the game "
+                         "is contacted -- an invented name comes back ABSENT and reads as "
+                         "'the engine exposes nothing'")
+    pg.add_argument("--contents", action="store_true",
+                    help="send the all-fields call with --contents, so table-valued fields "
+                         "(a ship's weapons, storagetags) render two levels deep instead of "
+                         "`<table>`. The running helper must be a build that knows the flag: "
+                         "check `x4live query probe` first")
     pg.add_argument("--with-ramp", action="store_true",
                     help="run the size ramp FIRST, in the SAME connection -- the lua "
                          "client does not reconnect after a disconnect, so a session's "
@@ -1944,7 +2024,8 @@ def main(argv: list[str] | None = None) -> int:
                                faction=args.faction)
         if args.cmd == "groundtruth":
             return cmd_groundtruth(args.pipe, args.timeout, args.out,
-                                   with_ramp=args.with_ramp)
+                                   with_ramp=args.with_ramp, macros_file=args.macros,
+                                   contents=args.contents)
         if args.cmd == "ramp":
             return cmd_ramp(args.pipe, args.timeout)
         return cmd_mappings(args.file, groundtruth=args.from_groundtruth)

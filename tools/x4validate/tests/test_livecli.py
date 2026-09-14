@@ -721,6 +721,127 @@ def test_groundtruth_SUCCEEDS_when_the_file_does_read_back(tmp_path, monkeypatch
     assert rc in (0, 2), rc          # 2 = nothing harvested, which this stub guarantees
 
 
+# --- groundtruth --macros FILE / --contents ------------------------------------ #
+
+class _RecordingPipe(_StubPipe):
+    def __init__(self):
+        self.calls = []
+
+    def ask(self, *a, **k):
+        self.calls.append(a)
+        return super().ask(*a, **k)
+
+
+def _open_with(monkeypatch, pipe):
+    import contextlib as _c
+
+    from x4validate import _livecli
+
+    @_c.contextmanager
+    def fake(p, timeout):
+        yield pipe
+
+    monkeypatch.setattr(_livecli, "_live_open", fake)
+
+
+def _never_open(monkeypatch):
+    from x4validate import _livecli
+
+    def refuse(*a, **k):
+        raise AssertionError("the game was contacted before the list was validated")
+
+    monkeypatch.setattr(_livecli, "_live_open", refuse)
+
+
+def _run_groundtruth(tmp_path, **kw):
+    import io
+
+    from x4validate import _livecli
+    buf = io.StringIO()
+    rc = _livecli.cmd_groundtruth(None, 1.0, out_file=str(tmp_path / "gt.tsv"), out=buf, **kw)
+    return rc, buf.getvalue()
+
+
+@pytest.mark.parametrize("body, needle", [
+    (None, "cannot read"),
+    ("# only a comment\n\n", "lists no macros"),
+    ("shiptypes_s ship_a_macro\nonecolumn\n", ":2: expected"),
+    ("shiptypes_s ship_a_macro extra\n", ":1: expected"),
+])
+def test_groundtruth_macros_REFUSES_an_unusable_list_BEFORE_the_game(
+        tmp_path, monkeypatch, capsys, body, needle):
+    _never_open(monkeypatch)
+    f = tmp_path / "list.tsv"
+    if body is not None:
+        f.write_text(body, encoding="utf-8")
+    rc, _ = _run_groundtruth(tmp_path, macros_file=str(f))
+    assert rc == 2
+    assert needle in capsys.readouterr().err
+    assert not (tmp_path / "gt.tsv").exists()
+
+
+def test_groundtruth_macros_REFUSES_a_name_the_store_does_not_hold(tmp_path, monkeypatch, capsys):
+    from x4validate import _livecli
+    _never_open(monkeypatch)
+    monkeypatch.setattr(_livecli, "_missing_from_store", lambda pairs: ["invented_macro"])
+    f = tmp_path / "list.tsv"
+    f.write_text("missiletypes invented_macro\nshiptypes_s real_macro\n", encoding="utf-8")
+    rc, _ = _run_groundtruth(tmp_path, macros_file=str(f))
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "1 of 2" in err and "invented_macro" in err
+
+
+def test_groundtruth_macros_REFUSES_when_the_store_cannot_be_asked(tmp_path, monkeypatch, capsys):
+    from x4validate import _livecli
+    _never_open(monkeypatch)
+    monkeypatch.setattr(_livecli, "_missing_from_store", lambda pairs: None)
+    f = tmp_path / "list.tsv"
+    f.write_text("shiptypes_s real_macro\n", encoding="utf-8")
+    rc, _ = _run_groundtruth(tmp_path, macros_file=str(f))
+    assert rc == 2
+    assert "cannot be checked" in capsys.readouterr().err
+
+
+def test_groundtruth_macros_harvests_EXACTLY_the_listed_macros(tmp_path, monkeypatch):
+    from x4validate import _livecli
+    pipe = _RecordingPipe()
+    _open_with(monkeypatch, pipe)
+    monkeypatch.setattr(_livecli, "_missing_from_store", lambda pairs: [])
+    f = tmp_path / "list.tsv"
+    f.write_text("shiptypes_s ship_a_macro  # why\n\nweapons_lasers weapon_b_macro\n",
+                 encoding="utf-8")
+    _run_groundtruth(tmp_path, macros_file=str(f))
+    asked = {(c[1], c[2]) for c in pipe.calls if c[0] == "macro"}
+    assert asked == {("shiptypes_s", "ship_a_macro"), ("weapons_lasers", "weapon_b_macro")}
+    head = (tmp_path / "gt.tsv").read_text(encoding="utf-8")
+    assert "# macros=list.tsv n=2 contents=no" in head
+
+
+def test_groundtruth_CONTENTS_goes_on_the_all_fields_ask_ONLY(tmp_path, monkeypatch):
+    """A per-field reply is one value; and an old helper build reads the flag as a
+    property name, so it must never ride on the per-field asks."""
+    pipe = _RecordingPipe()
+    _open_with(monkeypatch, pipe)
+    _run_groundtruth(tmp_path, contents=True)
+    macro_calls = [c for c in pipe.calls if c[0] == "macro"]
+    star = [c for c in macro_calls if len(c) == 4 and c[3] == "--contents"]
+    per_field = [c for c in macro_calls if not (len(c) == 4 and c[3] == "--contents")]
+    from x4validate import _livecli
+    assert len(star) == len(_livecli.GROUND_TRUTH_MACROS), star
+    assert per_field and all("--contents" not in c for c in per_field)
+    assert "contents=yes" in (tmp_path / "gt.tsv").read_text(encoding="utf-8")
+
+
+def test_groundtruth_WITHOUT_contents_sends_no_flag(tmp_path, monkeypatch):
+    pipe = _RecordingPipe()
+    _open_with(monkeypatch, pipe)
+    _run_groundtruth(tmp_path)
+    assert not any("--contents" in c for c in pipe.calls)
+    head = (tmp_path / "gt.tsv").read_text(encoding="utf-8")
+    assert "# macros=built-in n=" in head and "contents=no" in head
+
+
 # --- the WRITE subcommands: `pausestate`, `pause`, `unpause` ---------------------- #
 #
 # The exit code is the contract a caller acts on, so every engine outcome maps to one:

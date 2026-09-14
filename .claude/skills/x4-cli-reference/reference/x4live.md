@@ -199,13 +199,22 @@ options:
 ## `x4live groundtruth`
 
 ```text
-usage: x4live groundtruth [-h] [--pipe PIPE] [--timeout TIMEOUT] [--out OUT] [--with-ramp]
+usage: x4live groundtruth [-h] [--pipe PIPE] [--timeout TIMEOUT] [--out OUT] [--macros FILE]
+                          [--contents] [--with-ramp]
 
 options:
   -h, --help         show this help message and exit
   --pipe PIPE        pipe name (default: $X4_LIVE_PIPE or built-in)
   --timeout TIMEOUT  seconds to wait for the game, and for each reply (default: 10.0)
   --out OUT          output .tsv (default: $X4_MODS/_reports/groundtruth-*.tsv)
+  --macros FILE      harvest THESE macros instead of the built-in list: one `<librarytype>
+                     <macro>` per line, `#` comments allowed. Every macro must exist in the
+                     effective store, checked BEFORE the game is contacted -- an invented name
+                     comes back ABSENT and reads as 'the engine exposes nothing'
+  --contents         send the all-fields call with --contents, so table-valued fields (a ship's
+                     weapons, storagetags) render two levels deep instead of `<table>`. The
+                     running helper must be a build that knows the flag: check `x4live query
+                     probe` first
   --with-ramp        run the size ramp FIRST, in the SAME connection -- the lua client does not
                      reconnect after a disconnect, so a session's whole budget is one connection
 ```

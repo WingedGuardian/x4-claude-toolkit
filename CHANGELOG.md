@@ -100,6 +100,14 @@
   a cyclic engine table cannot hang the game, and scrubbed per key and per string so a value
   cannot split the reply's fields. The helper mod's BUILD moves; a running game needs a reload
   to pick it up.
+- **`x4live groundtruth --macros FILE` and `--contents`.** The built-in harvest list holds one
+  macro per library type, so props that happen to share a value (a ship's horizontal and
+  vertical drag, 5 of 5) cannot be told apart, and `x4live mappings` reports them AMBIGUOUS.
+  `--macros` harvests a list you choose -- `<librarytype> <macro>` per line, `#` comments
+  allowed -- and refuses, before contacting the game, a malformed line, an empty list, or any
+  macro the effective store does not hold (an invented name comes back ABSENT and reads as "the
+  engine exposes nothing"). `--contents` sends the all-fields call with `--contents` and never
+  the per-field calls. Every harvest file now records its list and mode in its header.
 
 ### Changed
 
