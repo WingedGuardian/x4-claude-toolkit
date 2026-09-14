@@ -65,7 +65,7 @@ THE FOUR OUTCOMES, matching `_livedump` so the two oracles ladder identically:
   | outcome                                   | meaning                    | exit |
   |-------------------------------------------|----------------------------|------|
   | not Windows / no pywin32 / never connects  | cannot ask                 | 2    |
-  | connects, then silence                     | loaded but paused/hung     | 2    |
+  | connects, then silence                     | loaded, not executing      | 2    |
   | reply malformed, short, or mis-sequenced   | a NON-ANSWER               | 3    |
   | reply self-checks                          | a real answer, even ABSENT | 0/1  |
 
@@ -122,7 +122,7 @@ _BUF = 1024 * 1024
 
 #: Appended to every "nothing connected" refusal. A future session reading one of
 #: these must be able to tell a RETRYABLE state from a broken one -- shrugging at a
-#: paused game and reporting "failed" is exactly the outcome this text prevents.
+#: minimized game and reporting "failed" is exactly the outcome this text prevents.
 #:
 #: NB the grep target below is deliberately the GENERIC suffix. The mod's marker
 #: carries a deployment-specific prefix, and spelling it here would put a personal
@@ -134,7 +134,7 @@ MINIMIZED_HINT = (
     "the old advice wrong: (1) WINDOWED, measured 2026-08-30 by sampling the engine's "
     "own getElapsedTime() over a 30 s wall window -- unfocused 32.98 s engine / "
     "32.98 s wall and focused 32.24 / 32.24, a ratio of 1.00 in BOTH. Windowed and "
-    "unfocused, the game runs at FULL SPEED, and a 370-query harvest completed "
+    "unfocused, the frame loop runs at full rate, and a 370-query harvest completed "
     "cleanly that way. (2) MINIMIZED IN EXCLUSIVE FULLSCREEN, an OLDER figure and "
     "NOT re-measured since: 574.76 s of engine time across 70.4 min of wall clock "
     "(13.6%), and zero bytes written to debug.txt for 5.5 min. That case did not "
@@ -160,7 +160,7 @@ class LiveQueryUnavailable(Exception):
 
     Raised when the platform cannot host the channel at all, when the game never
     connects, and when it connects but stays silent. The message must always name
-    WHICH of those it is: a probe that collapses "not loaded", "paused" and "hung"
+    WHICH of those it is: a probe that collapses "not loaded", "not executing" and "hung"
     into one verdict is wrong in exactly the case it exists for.
     """
 
@@ -516,9 +516,9 @@ class LivePipe:
             if time.monotonic() >= deadline:
                 # THREE distinct states, and the middle one is the trap. Until
                 # 2026-08-29 this said "not running, or not deployed" for ALL of
-                # them -- so a PAUSED game read as a deployment failure, and the
-                # correct response (foreground the window, retry) looked like the
-                # wrong one (go debug the mod).
+                # them -- so a game that was merely not executing read as a deployment
+                # failure, and the correct response (restore the window, retry) looked
+                # like the wrong one (go debug the mod).
                 #
                 # The cause is stated once, in MINIMIZED_HINT, and this comment
                 # deliberately does NOT restate it. An earlier version of these two
@@ -561,9 +561,9 @@ class LivePipe:
                 raise LiveQueryUnavailable(
                     f"the game connected to {self.path} but sent nothing within "
                     f"{self.timeout:.0f}s. The mod IS loaded -- so this is the "
-                    f"game not EXECUTING, not a deployment problem. It is paused, "
-                    f"in a menu, hung, or (by far the most common) no longer in "
-                    f"the foreground: the poller stops with the frame loop."
+                    f"game not EXECUTING, not a deployment problem. It is minimized in "
+                    f"exclusive fullscreen, or hung: the poller stops with the frame loop. "
+                    f"A PAUSED game is not a cause -- MEASURED 2026-09-13, it still answers."
                     + MINIMIZED_HINT
                 )
             time.sleep(0.02)

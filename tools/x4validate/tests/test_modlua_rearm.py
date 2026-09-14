@@ -534,7 +534,7 @@ def test_a_ping_produces_a_frame_the_python_side_accepts(lua):
 
 
 def test_an_unknown_verb_is_answered_not_ignored(lua):
-    """Silence is indistinguishable from a paused game, so every command must produce
+    """Silence is indistinguishable from a hung game, so every command must produce
     a frame -- including a bad one."""
     from x4validate import _livepipe as lp
 
@@ -549,7 +549,7 @@ def test_an_unknown_verb_is_answered_not_ignored(lua):
 # --------------------------------------------------------------------------- #
 
 def test_a_verb_that_raises_WITHOUT_replying_still_produces_a_frame(lua_factory):
-    """Silence on the wire is indistinguishable from a paused game, so a failed verb
+    """Silence on the wire is indistinguishable from a hung game, so a failed verb
     must still answer. This is the twin of the test below: together they pin that the
     guard suppresses a DUPLICATE frame and never the ONLY frame."""
     from x4validate import _livepipe as lp
@@ -603,7 +603,7 @@ def test_a_post_reply_raise_does_not_poison_the_NEXT_query(lua_factory):
 
 def test_a_reply_that_CANNOT_be_sent_is_LOGGED_not_swallowed(lua_factory):
     """If even the error reply fails there is total silence on the wire, which reads
-    as a paused game. The log line is then the only evidence -- and it was previously
+    as a hung game. The log line is then the only evidence -- and it was previously
     swallowed by a bare pcall, i.e. the exact failure its own comment claimed to
     prevent, one layer down."""
     rt = _build(RAISE_ONLY)
@@ -3233,8 +3233,8 @@ def test_a_write_whose_state_CANNOT_BE_READ_BACK_after_acting_is_UNVERIFIED():
     r = ask(rt, 1, "pause")
     a = adv(r)
     assert r.status == "ERR"
-    assert (a["reason"], a["acted"], a["after"], a["agree"]) == (
-        "unverified", "yes", "unknown", "unknown")
+    assert (a["reason"], a["acted"], a["after"], a["agree"], a["owner"]) == (
+        "unverified", "yes", "unknown", "unknown", "unknown")
     assert "pausestate" in r.payload
 
 
@@ -3266,3 +3266,37 @@ def test_an_OVERSIZED_write_reply_still_LEADS_with_its_advisory(body, reason):
     assert r.status == "ERR"
     assert (a["reason"], a["acted"]) == (reason, "unknown")
     assert len(r.payload.encode("utf-8")) <= 32000
+
+
+@pytest.mark.parametrize("mode", ["raised", "unverified"])
+def test_an_unpause_that_RAISED_or_went_UNVERIFIED_still_RELEASES_the_claim(mode):
+    """Every unpause ATTEMPT releases ownership, not only one whose read-back disagrees:
+    if we cannot confirm our pause is gone, some other hold may be what remains."""
+    rt = live()
+    assert ask(rt, 1, "pause").status == "OK"
+    if mode == "raised":
+        rt.execute('Unpause = function() error("engine refused") end')
+    else:
+        rt.execute("local real = Unpause\n"
+                   "Unpause = function(...) _G.fake_C.IsGamePaused = nil end")
+    r = ask(rt, 2, "unpause")
+    a = adv(r)
+    assert r.status == "ERR" and a["reason"] == mode
+    assert "released" in r.payload.lower(), "the reply must say the claim was given up"
+    rt.execute("_G.fake_C.IsGamePaused = function() return _G.game_paused end\n"
+               "Unpause = function() _G.game_paused = false end")
+    r = ask(rt, 3, "unpause")
+    assert r.status == "ERR" and adv(r)["reason"] == "not-ours", r.payload
+    assert "gave up" in r.payload, "not-ours must name an earlier unpause as a possible cause"
+
+
+def test_the_wrap_never_SPLITS_a_multibyte_character():
+    """The host decodes strictly. A 2000-byte cut landing inside a UTF-8 sequence would
+    turn the whole frame into a non-answer and lose the advisory with it."""
+    body = '"\\xc3\\xa9" .. string.rep("\\xc3\\xa9", 1500)'  # 3002 bytes of two-byte chars, offset 0
+    rt = live(rt=_build(extra=(
+        'WRITE_VERBS.__wide = function(seq) reply(seq, "OK", "x" .. %s) end' % body)))
+    r = ask(rt, 1, "__wide")   # ask() decodes strictly: a split character raises here
+    a = adv(r)
+    assert r.status == "ERR" and a["reason"] == "unwrapped"
+    assert "bytes cut" in r.payload

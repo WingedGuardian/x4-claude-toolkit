@@ -508,7 +508,7 @@ def test_the_hint_keeps_the_two_focus_measurements_SEPARATE():
     It said, in capitals, that X4 STOPS EXECUTING WHEN IT IS NOT IN THE FOREGROUND.
     MEASURED 2026-08-30 by sampling the engine's own getElapsedTime() over a 30 s wall
     window: windowed UNFOCUSED is 32.98/32.98 and windowed FOCUSED is 32.24/32.24 --
-    a ratio of **1.00 in both**. Windowed and unfocused, the game runs at full speed.
+    a ratio of **1.00 in both**. Windowed and unfocused, the frame loop runs at full rate.
 
     The 13.6% figure is real but is a DIFFERENT condition (minimized in exclusive
     fullscreen), is OLDER, has NOT been re-measured, and never separated minimized

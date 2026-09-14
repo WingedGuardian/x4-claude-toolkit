@@ -21,8 +21,8 @@
   was considered and withdrawn: the engine's debug-console gate has no discoverable switch, and
   it guards a capability UI lua already has, so routing through it would have contained nothing.
   MEASURED live on 2026-09-13: a PAUSED game answers on an open connection and accepts a new
-  one, which is what lets `unpause` run as a separate command after `pause`. An unpause whose
-  read-back still shows paused RELEASES its claim rather than retrying; in that session the
+  one, which is what lets `unpause` run as a separate command after `pause`. Every unpause
+  attempt RELEASES the claim, so one whose read-back still shows paused never retries; in that session the
   player's own pause was holding, and the rule left it alone. This also corrects the shipped
   hint that "a PAUSED game goes silent" and the `ping` comment that equal elapsed times mean
   paused: `getElapsedTime` is real time and keeps advancing while paused.
@@ -30,8 +30,9 @@
   shipped the helper mod with no safe way to install it: the obvious `rm -rf && cp -r` is one
   empty variable away from deleting the wrong tree inside the game install. It refuses a mod
   the repo does not ship, a missing extensions folder, one inside (or shaped like) the user
-  profile, one whose parent is not a game root, and a destination with a different manifest id;
-  it runs every guard for every mod before writing any, never removes a directory, and re-reads
+  profile, one whose parent is not a game root, a destination with a different manifest id,
+  and a destination folder or file that is a link; it runs every guard for every mod before
+  writing any, never removes a directory, and re-reads
   every file by sha256 after writing.
 - **`gates/routing_coverage.py`** — fails when a CLI in `[project.scripts]` is absent from
   CLAUDE.md's routing-table `Use` column. MEASURED: 5 of 11 were absent (`x4modlist`, `x4stats`,

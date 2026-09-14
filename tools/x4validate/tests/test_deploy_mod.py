@@ -215,6 +215,47 @@ def test_REFUSES_to_delete_an_orphan_that_is_a_SYMLINK(tmp_path):
     assert outside.read_text(encoding="utf-8") == "keep me\n"
 
 
+def test_REFUSES_an_orphan_SYMLINK_even_when_its_target_is_INSIDE_the_destination(tmp_path):
+    """Isolates the is_symlink clause: the target is inside dst, so only that clause
+    can be what refuses."""
+    d = _mod()
+    src_root, ext = _shipped(tmp_path)
+    assert d.deploy("helper", apply=True, src_root=src_root, ext_root=ext, out=_quiet)
+    _symlink_or_skip(ext / "helper" / "ui" / "alias.lua", ext / "helper" / "ui" / "a.lua")
+    with pytest.raises(d.Refused, match="not a plain file"):
+        d.deploy("helper", apply=True, src_root=src_root, ext_root=ext, out=_quiet)
+
+
+def test_REFUSES_a_DESTINATION_folder_that_is_itself_a_LINK(tmp_path):
+    """A junction from extensions/<mod> to another tree -- say another worktree's
+    mods/<mod>, whose manifest id matches -- would take the copies AND the orphan
+    deletions. MEASURED risk class on this machine: several worktrees of one repo."""
+    d = _mod()
+    src_root, ext = _shipped(tmp_path)
+    other = tmp_path / "another_tree" / "helper"
+    other.mkdir(parents=True)
+    (other / "content.xml").write_text(_manifest("helper_id"), encoding="utf-8")
+    (other / "theirs.lua").write_text("keep\n", encoding="utf-8")
+    _symlink_or_skip(ext / "helper", other, is_dir=True)
+    with pytest.raises(d.Refused, match="link"):
+        d.deploy("helper", apply=True, src_root=src_root, ext_root=ext, out=_quiet)
+    assert (other / "theirs.lua").read_text(encoding="utf-8") == "keep\n"
+    assert not (other / "ui").exists()
+
+
+def test_REFUSES_to_write_THROUGH_a_changed_file_that_is_a_SYMLINK(tmp_path):
+    d = _mod()
+    src_root, ext = _shipped(tmp_path, files={"ui/a.lua": "new\n"})
+    (ext / "helper" / "ui").mkdir(parents=True)
+    (ext / "helper" / "content.xml").write_text(_manifest("helper_id"), encoding="utf-8")
+    outside = tmp_path / "precious.lua"
+    outside.write_text("keep me\n", encoding="utf-8")
+    _symlink_or_skip(ext / "helper" / "ui" / "a.lua", outside)
+    with pytest.raises(d.Refused, match="link"):
+        d.deploy("helper", apply=True, src_root=src_root, ext_root=ext, out=_quiet)
+    assert outside.read_text(encoding="utf-8") == "keep me\n"
+
+
 def test_REFUSES_a_copy_that_would_ESCAPE_the_destination_through_a_link(tmp_path):
     d = _mod()
     src_root, ext = _shipped(tmp_path)
@@ -246,10 +287,34 @@ def test_with_SEVERAL_mods_every_guard_runs_before_ANY_is_applied(tmp_path, monk
     assert not (ext / "helper").exists(), "the first mod was applied before the second refused"
 
 
-def test_an_UNKNOWN_flag_is_refused_rather_than_silently_ignored(capsys):
+def test_an_UNKNOWN_flag_is_refused_rather_than_silently_ignored(tmp_path, monkeypatch, capsys):
     d = _mod()
-    assert d.main(["x4_toolkit_helper", "--aply"]) == 2
+    src_root, ext = _shipped(tmp_path)
+    monkeypatch.setattr(d, "MODS", src_root)
+    monkeypatch.setattr(d._paths, "game_extensions", lambda: ext)
+    assert d.main(["helper", "--aply"]) == 2
     assert "--aply" in capsys.readouterr().err
+    assert not (ext / "helper").exists()
+
+
+def test_HELP_prints_the_usage_and_exits_0(capsys):
+    d = _mod()
+    assert d.main(["--help"]) == 0
+    assert "--apply" in capsys.readouterr().out
+
+
+def test_an_OS_ERROR_during_the_write_is_a_failure_not_a_traceback(tmp_path, monkeypatch, capsys):
+    d = _mod()
+    src_root, ext = _shipped(tmp_path)
+    monkeypatch.setattr(d, "MODS", src_root)
+    monkeypatch.setattr(d._paths, "game_extensions", lambda: ext)
+
+    def denied(a, b):
+        raise PermissionError("access denied")
+
+    monkeypatch.setattr(d.shutil, "copy2", denied)
+    assert d.main(["helper", "--apply"]) == 1
+    assert "access denied" in capsys.readouterr().err
 
 
 def test_main_is_rc_2_when_no_game_extensions_folder_is_configured(monkeypatch, capsys):

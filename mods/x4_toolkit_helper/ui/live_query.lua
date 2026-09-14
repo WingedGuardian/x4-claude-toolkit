@@ -57,7 +57,7 @@ local PROTO = 1
 --:
 --: Kept honest by `test_the_BUILD_constant_matches_the_file`, so editing the lua and
 --: forgetting to re-stamp this fails the suite rather than silently lying in game.
-local BUILD = "c29aba8c"
+local BUILD = "c4eda0ea"
 local TAG_CMD, TAG_REPLY = "MQ", "MR"
 
 -- Cap on echo, the ramp instrument. Generous: the point of the ramp is to FIND the
@@ -161,6 +161,19 @@ end
 local function yn(v)
     if v == true then return "yes" elseif v == false then return "no" end
     return "unknown"
+end
+
+--: At most n bytes of s, never ending inside a UTF-8 sequence. The host decodes a frame
+--: strictly, so a split character would turn the whole reply into a non-answer.
+local function utf8_prefix(s, n)
+    if #s <= n then return s end
+    local cut = n
+    while cut > 0 do
+        local b = s:byte(cut + 1)
+        if b == nil or b < 0x80 or b >= 0xC0 then break end
+        cut = cut - 1
+    end
+    return s:sub(1, cut)
 end
 
 --: The advisory row every write reply leads with. `write=yes` is FIRST and is the
@@ -274,7 +287,8 @@ local function reply(seq, status, payload, unbounded)
                   .. "was wrapped here and marked untrusted. The pause state was NOT "
                   .. "verified -- check it with `x4live pausestate`. Original reply: "
                   .. (#payload > 2000
-                      and (payload:sub(1, 2000) .. " [+" .. (#payload - 2000) .. " bytes cut]")
+                      and (utf8_prefix(payload, 2000) .. " [+"
+                           .. (#payload - #utf8_prefix(payload, 2000)) .. " bytes cut]")
                       or payload)
     end
     -- THE choke point. Every verb goes through here, so the bound is enforced once
@@ -2734,11 +2748,13 @@ local function pause_write(seq, verb, want, engine_name, nargs)
     end
 
     if (not want) and not our_pause then
-        return finish("ERR", "not-ours", "the game is paused, but this channel did not "
-            .. "make that pause, so it will not undo it. Either the player or another mod "
-            .. "paused, or the UI reloaded (alt-enter, loading a save) after we paused -- "
-            .. "a reload re-creates this chunk, which then cannot prove the pause is ours "
-            .. "while the pause itself survives. Unpause it in game. Nothing was changed.")
+        return finish("ERR", "not-ours", "the game is paused, but this channel does not "
+            .. "hold that pause, so it will not undo it. Either the player, a menu or another "
+            .. "mod paused; or an earlier `unpause` from this channel could not confirm the "
+            .. "game resumed and gave up the claim; or the UI reloaded (alt-enter, loading a "
+            .. "save) after we paused -- a reload re-creates this chunk, which then cannot "
+            .. "prove the pause is ours while the pause itself survives. Unpause it in game. "
+            .. "Nothing was changed.")
     end
 
     t.acted = true
@@ -2760,12 +2776,15 @@ local function pause_write(seq, verb, want, engine_name, nargs)
     if not ok then
         return finish("ERR", "raised", engine_name .. "() raised: " .. tostring(err)
             .. ". The state was read back anyway, because a call can fail AFTER acting -- "
-            .. "see after=.")
+            .. "see after=."
+            .. (want and "" or " The claim on our pause was RELEASED; if the game is still "
+                                .. "paused, unpause it in game."))
     end
     if after == nil then
         return finish("ERR", "unverified", engine_name .. "() returned, but the state "
             .. "could not be read back (" .. tostring(awhy) .. "). The write is "
-            .. "UNVERIFIED -- check it with `x4live pausestate`.")
+            .. "UNVERIFIED -- check it with `x4live pausestate`."
+            .. (want and "" or " The claim on our pause was RELEASED."))
     end
     if after ~= want then
         return finish("OK", "disagree", "the engine accepted " .. engine_name .. "() but "
@@ -2884,7 +2903,7 @@ on_message = function(msg)
     local ok, err = pcall(fn, seq, table_unpack(f, 5))
     if not ok then
         -- A verb that throws must still produce a frame: silence here is
-        -- indistinguishable from a paused game.
+        -- indistinguishable from a hung game.
         --
         -- But EXACTLY ONE frame. Until 2026-08-29 a verb that replied and THEN
         -- raised emitted a second frame for the same seq. Python reads one message
@@ -2899,7 +2918,7 @@ on_message = function(msg)
                                      "verb " .. verb .. " raised: " .. tostring(err))
             if not sent then
                 -- The one outcome we can never allow is TOTAL silence, because it
-                -- reads as a paused game. If even the error reply failed, say so in
+                -- reads as a hung game. If even the error reply failed, say so in
                 -- the log -- this branch was previously swallowed, which is the
                 -- exact failure the comment above says it exists to prevent.
                 DebugError("X4TOOLKIT_LIVE could not reply to seq " .. tostring(seq)

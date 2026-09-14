@@ -21,14 +21,15 @@ several mods EVERY mod's guards run before ANY mod is written:
     1. the mod is one this repo SHIPS: a folder under `mods/` carrying a content.xml
     2. the extensions root is configured and EXISTS -- a typo must not create a folder the
        game never reads
-    3. it is not inside the user PROFILE: the configured one, and any path SHAPED like
-       `Egosoft/X4/<digits>/...` when none is configured (which is announced). Dependencies
-       resolve only within one extensions root, so a profile deploy reads every
-       dependency as MISSING
+    3. it is not inside the user PROFILE: neither inside the configured one, nor on ANY
+       path shaped like `Egosoft/X4/<digits>/...` (an unconfigured X4_PROFILE is
+       announced). Dependencies resolve only within one extensions root, so a profile
+       deploy reads every dependency as MISSING
     4. its parent looks like a GAME ROOT (it carries 01.cat)
     5. both manifests are well-formed; the source has an id; if the destination exists,
        its manifest id EQUALS the source's. Folder name is not identity
-    6. no file is written through a link that leaves the destination, and every orphan
+    6. LINKS: the destination folder is not itself a link or junction; no file is written
+       through a link, or to a path resolving outside the destination; every orphan
        scheduled for deletion is a plain file (not a link) under the destination
 
 AFTERWARDS it re-reads the destination and requires the same file SET with every file
@@ -38,7 +39,8 @@ A DEPLOYED FILE IS NOT A LOADED FILE. X4 keeps running the lua it read at load; 
 deploying the helper, restart the game and check `x4live query probe` reports the new
 `build=`.
 
-Exit: 0 every deploy verified - 1 a deploy did not verify - 2 refused or not configured.
+Exit: 0 every deploy verified - 1 a deploy did not verify, or failed part way - 2 refused
+or not configured.
 """
 from __future__ import annotations
 
@@ -52,7 +54,7 @@ from pathlib import Path
 #: environment variable: the source must be the tree this script is standing in.
 REPO = Path(__file__).resolve().parents[3]
 MODS = REPO / "mods"
-FLAGS = {"--apply"}
+FLAGS = {"--apply", "-h", "--help"}
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from x4validate import _paths  # noqa: E402
@@ -122,15 +124,24 @@ def deploy(name: str, apply: bool, src_root: Path = MODS, ext_root: Path | None 
     if profile is None:
         out("  profile guard: X4_PROFILE is not configured, so only the path SHAPE "
             "(Egosoft/X4/<id>) was checked")
-    if (profile is not None and _inside(ext_root, profile)) or _profile_shaped(ext_root):
-        raise Refused(f"{ext_root} is in the user profile. Deploy to the game-root "
-                      "extensions folder: dependencies resolve only within one extensions "
-                      "root, so a profile deploy reads every dependency as MISSING")
+    why = None
+    if profile is not None and _inside(ext_root, profile):
+        why = f"is inside the configured user profile {profile}"
+    elif _profile_shaped(ext_root):
+        why = "is shaped like a user profile folder (Egosoft/X4/<id>)"
+    if why:
+        raise Refused(f"{ext_root} {why}. Deploy to the game-root extensions folder: "
+                      "dependencies resolve only within one extensions root, so a profile "
+                      "deploy reads every dependency as MISSING")
     if not (ext_root.parent / "01.cat").is_file():
         raise Refused(f"{ext_root.parent} does not look like the X4 game root (no 01.cat), "
                       "so its extensions folder is not one the game loads")
 
     src, dst = src_root / name, ext_root / name
+    if dst.is_symlink() or dst.is_junction() or (
+            dst.exists() and dst.resolve().parent != ext_root.resolve()):
+        raise Refused(f"{dst} is a link to somewhere else -- deploying through it would "
+                      "write into, and delete orphans from, another tree")
     want = manifest_id(src)
     if not want:
         raise Refused(f"source has no readable content.xml id: {src}")
@@ -157,8 +168,10 @@ def deploy(name: str, apply: bool, src_root: Path = MODS, ext_root: Path | None 
             for f in items:
                 out(f"      {f}")
     for f in new + changed:
-        if dst.exists() and not _inside((dst / f).parent, dst):
-            raise Refused(f"refusing to write {dst / f}: it resolves outside {dst}")
+        t = dst / f
+        if t.is_symlink() or (dst.exists() and not _inside(t.parent, dst)) or (
+                t.exists() and not _inside(t, dst)):
+            raise Refused(f"refusing to write {t}: it is a link, or resolves outside {dst}")
     for f in orphan:
         t = dst / f
         if t.is_symlink() or not t.is_file() or not _inside(t, dst):
@@ -190,6 +203,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"REFUSING: unknown option(s) {' '.join(unknown)} -- the only option is "
               "--apply; a mistyped one would otherwise be a silent dry run", file=sys.stderr)
         return 2
+    if "-h" in argv or "--help" in argv:
+        print(__doc__)
+        print(f"mods this repo ships: {', '.join(shipped(MODS)) or 'none'}")
+        return 0
     names = [a for a in argv if not a.startswith("-")]
     apply = "--apply" in argv
     if not names:
@@ -204,10 +221,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for n in names:                      # every guard, for every mod, first
             deploy(n, False, MODS, ext, out=lambda s: None)
+    except (Refused, OSError) as exc:
+        print(f"REFUSING: {exc}", file=sys.stderr)
+        return 2
+    try:
         ok = all([deploy(n, apply, MODS, ext) for n in names])
     except Refused as exc:
         print(f"REFUSING: {exc}", file=sys.stderr)
         return 2
+    except OSError as exc:
+        print(f"!! a deploy FAILED part way ({exc}); re-run the dry run to see what the "
+              "destination now holds", file=sys.stderr)
+        return 1
     if apply and not ok:
         print("!! a deploy did not verify clean", file=sys.stderr)
     return 0 if ok else 1

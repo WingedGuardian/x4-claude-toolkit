@@ -887,8 +887,8 @@ def _live_open(pipe: str | None, timeout: float):
     close. Opening in exactly one place makes that unrepresentable.
 
     Every verb gets the same three-state diagnosis through here: never connected (mod
-    not loaded, or game not running), connected then silent (loaded but paused or
-    hung), or answering.
+    not loaded, or game not running), connected then silent (loaded but not executing:
+    minimized, or hung -- a paused game still answers), or answering.
     """
     from . import _livepipe
 

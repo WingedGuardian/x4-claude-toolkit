@@ -168,7 +168,9 @@ measurements of different ages, kept apart on purpose:
 
 - **windowed**, measured 2026-08-30 by sampling the engine's own `getElapsedTime()` over
   a 30 s wall window — unfocused **32.98 s / 32.98 s** and focused **32.24 / 32.24**, a
-  ratio of **1.00 in both**. A 370-query harvest completed cleanly while unfocused.
+  ratio of **1.00 in both**. A 370-query harvest completed cleanly while unfocused. That
+  clock is real time and keeps running while paused, so this shows the frame loop runs,
+  which is what the channel needs; it is not a measurement of simulation speed.
 - **minimized in exclusive fullscreen** — an **older** figure, **not re-measured**:
   574.76 s of engine time across 70.4 min (**13.6%**). That case never separated
   minimized from merely unfocused, which is how it came to be generalised to "not in the
@@ -256,7 +258,8 @@ holds: with both held, `unpause` read back still-paused, gave up its claim, and 
   Exit `0` only when that agrees with what was asked; `1` means refused and nothing
   changed; `3` means the state is not what was asked, or could not be verified.
 - **A lost reply is not a lost write.** The command is sent before the reply is read and is
-  never resent. After a write exits `2` or `3`, run `pausestate` before anything else.
+  never resent. After a write exits `2` or `3`, or is interrupted with Ctrl-C, run
+  `pausestate` before anything else.
 - **`query` refuses both names**, so its free-text passthrough is not a second door, and
   each write prints a banner on stderr, never on stdout.
 

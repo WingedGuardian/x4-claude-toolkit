@@ -333,12 +333,14 @@ def test_the_three_messages_are_ACTUALLY_DIFFERENT(monkeypatch):
     assert len(set(msgs)) == 3, "two of the three states are worded identically"
 
 
-def test_CONNECTED_THEN_SILENT_is_reported_as_paused_or_hung_not_as_not_loaded():
+def test_CONNECTED_THEN_SILENT_is_reported_as_not_executing_not_as_not_loaded():
     """The distinction a sibling project's probe collapsed, and was wrong about for
     three releases: it hung in exactly the case it existed to detect.
 
     Here the client IS connected, so the mod is demonstrably loaded -- and the
-    message has to say so, because the next action differs completely.
+    message has to say so, because the next action differs completely. It must NOT
+    name a PAUSED game as a cause: MEASURED 2026-09-13, a paused game still answers,
+    so telling the user to unpause sends them after the wrong fix.
     """
     pipe, _ = run("silent", behaviour="silent", timeout=0.5)
     try:
@@ -346,7 +348,8 @@ def test_CONNECTED_THEN_SILENT_is_reported_as_paused_or_hung_not_as_not_loaded()
             pipe.ask("ping")
         msg = str(exc.value)
         assert "The mod IS loaded" in msg
-        assert "paused" in msg and "hung" in msg
+        assert "hung" in msg and "minimized" in msg.lower()
+        assert "It is paused" not in msg, "the refuted paused-silence cause is back"
     finally:
         pipe.close()
 
