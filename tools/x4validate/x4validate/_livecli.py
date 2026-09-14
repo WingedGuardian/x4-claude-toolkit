@@ -1569,6 +1569,144 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
 
 
 
+#: Bounds for `ffi-census` batches. 150 is the lua verb's own limit (FFISYMS_MAX_NAMES).
+#: The BYTE bound is ours, and deliberately small, because the REQUEST direction has never
+#: been measured: pipes.lua reads through winpipe's buffer and, on a message larger than it,
+#: gets partial data with ERROR_MORE_DATA and raises "read failed" (sn_mod_support_apis
+#: ui/named_pipes/pipes.lua:691-720). Every request sent before this verb was tiny.
+FFI_CENSUS_MAX_NAMES = 150
+FFI_CENSUS_BATCH_BYTES = 1000
+_SYM_CLASSES = ("exported", "notexported", "undeclared", "other", "invalid")
+
+
+def _ffi_batches(names: list[str], batch_bytes: int):
+    """Split *names* so each request holds <= FFI_CENSUS_MAX_NAMES names and <= *batch_bytes*
+    bytes of tab-joined names. A single name longer than the byte bound travels alone."""
+    batch: list[str] = []
+    used = 0
+    for n in names:
+        size = len(n.encode("utf-8"))
+        if batch and (len(batch) >= FFI_CENSUS_MAX_NAMES or used + 1 + size > batch_bytes):
+            yield batch
+            batch, used = [], 0
+        used += size + (1 if batch else 0)
+        batch.append(n)
+    if batch:
+        yield batch
+
+
+def cmd_ffi_census(pipe: str | None, timeout: float, out_file: str | None = None,
+                   out=None, batch_bytes: int = FFI_CENSUS_BATCH_BYTES) -> int:
+    """Ask the RUNNING engine, name by name, about every C function vanilla's ui lua declares.
+
+    The names come from `_ffinames.census` (vanilla's `ffi.cdef` blocks); the answers from the
+    `ffisyms` verb, which INDEXES ffi.C and never calls or declares. Rows come back aligned by
+    POSITION -- an invalid name is not echoed -- so a reply whose row count or names do not
+    line up with its batch is refused whole: a shifted reply would put every later
+    classification on the wrong name while looking complete.
+
+    Exit: 0 every name classified - 2 nothing to ask / no game - 3 any batch unanswered or
+    refused (those names are recorded `errored`, a NON-ANSWER, never dropped).
+    """
+    out = out or sys.stdout
+    from . import _ffinames, _livepipe, _merge
+
+    src = _ffinames.census(_merge.Config())
+    names = sorted(src.names)
+    if not names:
+        return _fmt_rc("ffi-census: the source parse found 0 names -- is reference/ unpacked? "
+                       "There is nothing to ask the game.", 2)
+
+    dest = Path(out_file) if out_file else None
+    if dest is None:
+        d = _archive_dir()
+        if d is None:
+            raise _livedump.LiveDumpUnavailable(
+                "no output directory: $X4_MODS is not configured. Pass --out, or see --paths")
+        d.mkdir(parents=True, exist_ok=True)
+        dest = d / f"ffi-census-{datetime.datetime.now():%Y%m%d-%H%M%S}.tsv"
+
+    result: dict[str, tuple[str, str]] = {}
+    batches = errored_batches = 0
+    with _live_open(pipe, timeout) as lp:
+        path = lp.path
+        for batch in _ffi_batches(names, batch_bytes):
+            batches += 1
+            why = ""
+            try:
+                r = lp.ask("ffisyms", *batch)
+            except _livepipe.LiveQueryDegraded as exc:
+                r, why = None, f"DEGRADED {exc}"
+            rows: list[tuple[str, str, str]] = []
+            if r is None:
+                pass
+            elif r.status != "OK":
+                why = f"{r.status} {r.payload[:80]}"
+            elif len(r.fields) - 1 != len(batch):
+                why = f"reply carried {len(r.fields) - 1} row(s) for {len(batch)} name(s)"
+            else:
+                for n, row in zip(batch, r.fields[1:]):
+                    parts = row.split("|", 2)
+                    cls = parts[1] if len(parts) > 1 else ""
+                    if parts[0] not in (n, "<invalid>") or cls not in _SYM_CLASSES:
+                        why = f"row {row[:60]!r} does not answer {n!r}"
+                        rows = []
+                        break
+                    rows.append((n, cls, parts[2] if len(parts) > 2 else ""))
+            if not rows:
+                errored_batches += 1
+                for n in batch:
+                    result[n] = ("errored", why or "no answer")
+                continue
+            for n, cls, detail in rows:
+                result[n] = (cls, detail)
+
+    counts = {c: 0 for c in (*_SYM_CLASSES, "errored")}
+    for cls, _ in result.values():
+        counts[cls] += 1
+    header = ["# x4live ffi-census -- does the RUNNING engine export each C function vanilla's",
+              "# ui lua declares in ffi.cdef? INDEXED ONLY: nothing was called, nothing declared.",
+              f"# source: files_scanned={src.files_scanned} files_with_names={src.files_with_names}"
+              f" blocks={src.blocks} names={len(names)} unparsed={len(src.unparsed)}"
+              f" unreadable={len(src.unreadable)}",
+              f"# asked over {path} in {batches} batch(es) of <= {batch_bytes} bytes; "
+              + " ".join(f"{c}={v}" for c, v in counts.items()),
+              "name\tclass\tdetail\tfiles"]
+    body = [f"{n}\t{result[n][0]}\t{result[n][1]}\t{','.join(src.names[n])}" for n in names]
+    data = ("\n".join(header + body) + "\n").encode("utf-8")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+    if dest.read_bytes() != data:
+        raise _livedump.LiveDumpCorrupt(f"wrote {len(data)} bytes to {dest}, read back less")
+
+    print(f"ffi-census over {path}: {len(names)} declared name(s) from "
+          f"{src.files_with_names} of {src.files_scanned} vanilla lua file(s), "
+          f"{batches} batch(es)", file=out)
+    for c in (*_SYM_CLASSES, "errored"):
+        print(f"  {c:<12} {counts[c]}", file=out)
+    # The same buckets once more as key=value, the form the TSV header carries, so a caller
+    # can read the totals without parsing a table laid out for eyes.
+    print("buckets: " + " ".join(f"{c}={v}" for c, v in counts.items()), file=out)
+    print(f"wrote {dest}", file=out)
+    print("\n  MEANING -- exported: resolved by the engine. notexported: declared, not exported. "
+          "undeclared: nothing in THIS session's lua declared it (its file's block did not run, "
+          "or it is commented out). errored: NOT ASKED successfully -- a non-answer.", file=out)
+    print(f"  SCOPE -- names come only from literal ffi.cdef blocks; unparsed={len(src.unparsed)}"
+          f" call(s) could not be read:", file=out)
+    for vpath, k in src.unparsed:
+        print(f"      {vpath} ({k})", file=out)
+    for vpath in src.unreadable:
+        print(f"      UNREADABLE {vpath}", file=out)
+    if sum(counts.values()) != len(names):
+        print(f"  !! buckets sum to {sum(counts.values())}, not {len(names)}", file=out)
+        return 3
+    if errored_batches:
+        print(f"\n  {errored_batches} batch(es) unanswered -- {counts['errored']} name(s) are a "
+              f"NON-ANSWER, not a finding.", file=out)
+        return 3
+    return 0
+
+
 #: Every distinct field literal vanilla passes to `GetComponentData`, MEASURED
 #: 2026-08-30 over 887 call-site lines in `ui/addons`: **182 names**. The mod itself
 #: reads 16 of them.
@@ -1899,7 +2037,7 @@ def main(argv: list[str] | None = None) -> int:
         "verb",
         help="ping | probe | containerprobe | censusprobe | galaxyprobe | echo | "
              "errors | ext | macro | globals | player | component | objects | "
-             "stations | ships | compare | recon | pausestate. "
+             "stations | ships | compare | recon | pausestate | ffisyms. "
              "`pause` and `unpause` are WRITES and are refused here: use `x4live pause` "
              "/ `x4live unpause`. "
              "START WITH `probe`: it reports build= (is the game running the file on "
@@ -1972,6 +2110,20 @@ def main(argv: list[str] | None = None) -> int:
                     help="faction for the station census, which also supplies a "
                          "STATION id for the field sweep (default: argon)")
 
+    pf = sub.add_parser("ffi-census",
+                        help="ask the RUNNING engine, name by name, whether it exports each C "
+                             "function vanilla's ui lua declares in ffi.cdef -- the surface "
+                             "`query globals` cannot see. Indexes ffi.C only: nothing is "
+                             "called or declared")
+    pf.add_argument("--pipe", help="pipe name (default: $X4_LIVE_PIPE or built-in)")
+    pf.add_argument("--timeout", type=float, default=10.0,
+                    help="seconds to wait for the game, and for each reply (default: %(default)s)")
+    pf.add_argument("--out", help="output .tsv (default: $X4_MODS/_reports/ffi-census-*.tsv)")
+    pf.add_argument("--batch-bytes", type=int, default=FFI_CENSUS_BATCH_BYTES,
+                    help="largest request, in bytes of names, per ffisyms call (default: "
+                         "%(default)s). The game-side REQUEST ceiling is unmeasured and an "
+                         "over-long request makes its read fail -- raise this only after "
+                         "measuring")
     pg = sub.add_parser("groundtruth",
                         help="harvest the engine's DERIVED values live and WRITE THEM "
                              "DOWN (the fixture any future traversal must reproduce)")
@@ -2028,6 +2180,9 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_groundtruth(args.pipe, args.timeout, args.out,
                                    with_ramp=args.with_ramp, macros_file=args.macros,
                                    contents=args.contents)
+        if args.cmd == "ffi-census":
+            return cmd_ffi_census(args.pipe, args.timeout, args.out,
+                                  batch_bytes=args.batch_bytes)
         if args.cmd == "ramp":
             return cmd_ramp(args.pipe, args.timeout)
         return cmd_mappings(args.file, groundtruth=args.from_groundtruth)

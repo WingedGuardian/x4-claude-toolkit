@@ -108,6 +108,20 @@
   macro the effective store does not hold (an invented name comes back ABSENT and reads as "the
   engine exposes nothing"). `--contents` sends the all-fields call with `--contents` and never
   the per-field calls. Every harvest file now records its list and mode in its header.
+- **`x4live ffi-census` and the `ffisyms` verb: the engine surface `query globals` cannot see.**
+  `globals` walks the lua global table, but vanilla's ui lua declares 2,066 C functions in
+  `ffi.cdef` blocks (2,074 with the Ventures DLC) that never appear there, so a negative from
+  `globals` covered about a third of the surface. `ffi-census` reads those names from your own
+  game files -- literal `ffi.cdef` blocks only; any other `ffi.cdef` call is listed as unparsed --
+  and asks the running game about each one: `exported`, `notexported` (declared but not exported),
+  `undeclared` (nothing loaded this session declares it), `other` (quoted), or `invalid`. The verb
+  only looks symbols up: it never calls one, and never declares one, because a second declaration
+  with a different signature is silently ignored by LuaJIT and could break the game's own later
+  calls. Names go in small batches (`--batch-bytes`, default 1000): the game-side limit on a
+  request's size is unmeasured, and an over-long request makes the read fail. A batch that is not
+  answered, or whose rows do not line up name for name, is recorded as `errored` and the command
+  exits 3. Output is a `.tsv` with the declaring file(s) for every name. The helper mod's BUILD
+  moves; a running game needs a reload.
 
 ### Changed
 

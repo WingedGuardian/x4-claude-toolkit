@@ -4,12 +4,12 @@
 
 ```text
 usage: x4live [-h] [--version] [--file FILE]
-              {dump,extensions,errors,oracle,archive,mappings,query,pausestate,pause,unpause,harvest,groundtruth,ramp} ...
+              {dump,extensions,errors,oracle,archive,mappings,query,pausestate,pause,unpause,harvest,ffi-census,groundtruth,ramp} ...
 
 Read what the running engine saw, out of the profile's uidata.xml, and diff it against our model.
 
 positional arguments:
-  {dump,extensions,errors,oracle,archive,mappings,query,pausestate,pause,unpause,harvest,groundtruth,ramp}
+  {dump,extensions,errors,oracle,archive,mappings,query,pausestate,pause,unpause,harvest,ffi-census,groundtruth,ramp}
     dump                what the probe captured, with its denominators
     extensions          the engine's extension list, diffed PER ITEM
     errors              the engine's own error log, as captured
@@ -27,6 +27,9 @@ positional arguments:
                         only when the engine reads back running
     harvest             ask the RUNNING engine EVERYTHING we can think to ask, in ONE connection,
                         and write it down
+    ffi-census          ask the RUNNING engine, name by name, whether it exports each C function
+                        vanilla's ui lua declares in ffi.cdef -- the surface `query globals`
+                        cannot see. Indexes ffi.C only: nothing is called or declared
     groundtruth         harvest the engine's DERIVED values live and WRITE THEM DOWN (the fixture
                         any future traversal must reproduce)
     ramp                MEASURE the message-size cap. An over-long message does NOT truncate -- it
@@ -118,9 +121,9 @@ usage: x4live query [-h] [--pipe PIPE] [--timeout TIMEOUT] verb ...
 positional arguments:
   verb               ping | probe | containerprobe | censusprobe | galaxyprobe | echo | errors |
                      ext | macro | globals | player | component | objects | stations | ships |
-                     compare | recon | pausestate. `pause` and `unpause` are WRITES and are
-                     refused here: use `x4live pause` / `x4live unpause`. START WITH `probe`: it
-                     reports build= (is the game running the file on disk) and loaded_at= (when
+                     compare | recon | pausestate | ffisyms. `pause` and `unpause` are WRITES and
+                     are refused here: use `x4live pause` / `x4live unpause`. START WITH `probe`:
+                     it reports build= (is the game running the file on disk) and loaded_at= (when
                      this chunk last ran -- a UI reload empties the id allowlist, and both alt-
                      enter and loading a save cause one, while the build stays the same). TWO
                      TOKEN KINDS, never interconverted: an OBJECT id looks like `33556742ULL`, a
@@ -194,6 +197,23 @@ options:
   --out OUT          output .tsv (default: $X4_MODS/_reports/harvest-*.tsv)
   --faction FACTION  faction for the station census, which also supplies a STATION id for the
                      field sweep (default: argon)
+```
+
+## `x4live ffi-census`
+
+```text
+usage: x4live ffi-census [-h] [--pipe PIPE] [--timeout TIMEOUT] [--out OUT]
+                         [--batch-bytes BATCH_BYTES]
+
+options:
+  -h, --help            show this help message and exit
+  --pipe PIPE           pipe name (default: $X4_LIVE_PIPE or built-in)
+  --timeout TIMEOUT     seconds to wait for the game, and for each reply (default: 10.0)
+  --out OUT             output .tsv (default: $X4_MODS/_reports/ffi-census-*.tsv)
+  --batch-bytes BATCH_BYTES
+                        largest request, in bytes of names, per ffisyms call (default: 1000). The
+                        game-side REQUEST ceiling is unmeasured and an over-long request makes its
+                        read fail -- raise this only after measuring
 ```
 
 ## `x4live groundtruth`

@@ -842,6 +842,161 @@ def test_groundtruth_WITHOUT_contents_sends_no_flag(tmp_path, monkeypatch):
     assert "# macros=built-in n=" in head and "contents=no" in head
 
 
+# --- ffi-census: batch vanilla's declared C functions through `ffisyms` --------- #
+
+def _fake_census(names):
+    from x4validate import _ffinames
+    return _ffinames.Census(names={n: [f"ui/{n.lower()}.lua"] for n in names},
+                            files_scanned=len(names) + 1, files_with_names=len(names),
+                            blocks=len(names), unparsed=[("ui/dyn.lua", 1)])
+
+
+class _SymPipe:
+    """Answers `ffisyms` the way the lua verb does, from a class table; records requests."""
+
+    path = "sym-pipe"
+
+    def __init__(self, classes, err_on=None, drop_row_on=None, status="OK", swap=False):
+        self.classes, self.err_on, self.drop_row_on = classes, err_on, drop_row_on
+        self.status, self.swap = status, swap
+        self.requests = []
+
+    def ask(self, verb, *names, **k):
+        from x4validate import _livepipe
+        self.requests.append((verb, names))
+        if self.err_on and self.err_on in names:
+            return _livepipe.Reply(seq=1, status="ERR", payload="boom")
+        rows = [f"{n}|{self.classes.get(n, 'undeclared')}" for n in names
+                if n != self.drop_row_on]
+        if self.swap:
+            rows.reverse()
+        counts: dict[str, int] = {}
+        for n in names:
+            key = self.classes.get(n, "undeclared").split("|")[0]
+            counts[key] = counts.get(key, 0) + 1
+        head = f"asked={len(names)} " + " ".join(f"{c}={v}" for c, v in counts.items())
+        # `status` may be ERR over a perfectly shaped payload: the case where only the
+        # status check stands between a refusal and a believed answer.
+        return _livepipe.Reply(seq=1, status=self.status, payload="\t".join([head, *rows]))
+
+
+def _census_run(tmp_path, monkeypatch, names, pipe, **kw):
+    import io
+
+    from x4validate import _ffinames, _livecli
+    monkeypatch.setattr(_ffinames, "census", lambda config: _fake_census(names))
+    _open_with(monkeypatch, pipe)
+    buf = io.StringIO()
+    dest = tmp_path / "census.tsv"
+    rc = _livecli.cmd_ffi_census(None, 1.0, out_file=str(dest), out=buf, **kw)
+    return rc, buf.getvalue(), dest
+
+
+def test_ffi_census_CLASSIFIES_every_name_and_the_buckets_SUM(tmp_path, monkeypatch):
+    names = ["GetA", "GetB", "GetC"]
+    pipe = _SymPipe({"GetA": "exported|cdata", "GetB": "notexported"})
+    rc, out, dest = _census_run(tmp_path, monkeypatch, names, pipe)
+    assert rc == 0, out
+    rows = [l.split("\t") for l in dest.read_text(encoding="utf-8").splitlines()
+            if l and not l.startswith("#")]
+    assert rows[0][:2] == ["name", "class"]
+    body = {r[0]: r for r in rows[1:]}
+    assert set(body) == set(names)
+    assert body["GetA"][1] == "exported" and body["GetB"][1] == "notexported"
+    assert body["GetC"][1] == "undeclared"
+    assert body["GetA"][-1] == "ui/geta.lua", "provenance travels with every row"
+    assert "exported=1" in out and "notexported=1" in out and "undeclared=1" in out
+    # Scope is printed, never implied: what the source parse could not read.
+    assert "unparsed" in out and "ui/dyn.lua" in out
+
+
+def test_ffi_census_BATCHES_within_both_bounds(tmp_path, monkeypatch):
+    names = ["Fn%03d_%s" % (i, "x" * 20) for i in range(400)]
+    pipe = _SymPipe({})
+    rc, out, _ = _census_run(tmp_path, monkeypatch, names, pipe, batch_bytes=600)
+    assert rc == 0, out
+    sent = [n for _, batch in pipe.requests for n in batch]
+    assert sorted(sent) == sorted(names), "every name asked exactly once"
+    for verb, batch in pipe.requests:
+        assert verb == "ffisyms"
+        assert len(batch) <= 150
+        assert len("\t".join(batch).encode()) <= 600, len("\t".join(batch).encode())
+
+
+def test_ffi_census_an_ERR_batch_is_a_NON_ANSWER_for_its_names_not_a_gap(tmp_path, monkeypatch):
+    names = ["GetA", "GetB"]
+    pipe = _SymPipe({"GetA": "exported|cdata", "GetB": "exported|cdata"}, err_on="GetB")
+    rc, out, dest = _census_run(tmp_path, monkeypatch, names, pipe, batch_bytes=5)
+    assert rc == 3, out
+    text = dest.read_text(encoding="utf-8")
+    assert "GetB\terrored" in text, text
+    assert "GetA\texported" in text, "the batch that answered is still recorded"
+
+
+def test_ffi_census_a_reply_with_the_WRONG_row_count_is_REFUSED(tmp_path, monkeypatch):
+    """Rows are aligned by POSITION (an invalid name is not echoed), so a short reply would
+    shift every later classification onto the wrong name."""
+    names = ["GetA", "GetB", "GetC"]
+    pipe = _SymPipe({}, drop_row_on="GetB")
+    rc, out, dest = _census_run(tmp_path, monkeypatch, names, pipe)
+    assert rc == 3, out
+    assert "GetC\tundeclared" not in dest.read_text(encoding="utf-8")
+
+
+def test_ffi_census_with_NO_names_never_contacts_the_game(tmp_path, monkeypatch, capsys):
+    import io
+
+    from x4validate import _ffinames, _livecli
+    monkeypatch.setattr(_ffinames, "census", lambda config: _fake_census([]))
+    _never_open(monkeypatch)
+    rc = _livecli.cmd_ffi_census(None, 1.0, out_file=str(tmp_path / "c.tsv"), out=io.StringIO())
+    assert rc == 2
+    assert "0 names" in capsys.readouterr().err
+
+
+# Twins: each clause below is otherwise SHADOWED by an earlier guard, so its mutant would
+# survive every test above (MEASURED by the hand-mutant run that added these).
+
+def test_ffi_census_BATCHES_within_the_NAME_bound_when_bytes_allow_more(tmp_path, monkeypatch):
+    names = ["F%03d" % i for i in range(400)]
+    pipe = _SymPipe({})
+    rc, out, _ = _census_run(tmp_path, monkeypatch, names, pipe, batch_bytes=100000)
+    assert rc == 0, out
+    assert all(len(b) <= 150 for _, b in pipe.requests), [len(b) for _, b in pipe.requests]
+    assert len(pipe.requests) >= 3
+
+
+def test_ffi_census_an_ERR_reply_shaped_like_an_answer_is_STILL_refused(tmp_path, monkeypatch):
+    pipe = _SymPipe({"GetA": "exported|cdata"}, status="ERR")
+    rc, out, dest = _census_run(tmp_path, monkeypatch, ["GetA"], pipe)
+    assert rc == 3, out
+    assert "GetA\terrored" in dest.read_text(encoding="utf-8")
+
+
+def test_ffi_census_a_reply_missing_its_LAST_row_is_REFUSED(tmp_path, monkeypatch):
+    """The earlier rows still line up by name, so only the row COUNT can catch this."""
+    pipe = _SymPipe({}, drop_row_on="GetC")
+    rc, out, dest = _census_run(tmp_path, monkeypatch, ["GetA", "GetB", "GetC"], pipe)
+    assert rc == 3, out
+    text = dest.read_text(encoding="utf-8")
+    assert "GetA\terrored" in text and "GetC\terrored" in text, text
+
+
+def test_ffi_census_rows_in_the_WRONG_ORDER_are_REFUSED(tmp_path, monkeypatch):
+    """Right count, wrong names: only the per-row alignment check can catch this."""
+    pipe = _SymPipe({"GetA": "exported|cdata"}, swap=True)
+    rc, out, dest = _census_run(tmp_path, monkeypatch, ["GetA", "GetB"], pipe)
+    assert rc == 3, out
+    assert "GetA\texported" not in dest.read_text(encoding="utf-8")
+
+
+def test_ffi_census_an_UNKNOWN_class_is_REFUSED(tmp_path, monkeypatch):
+    pipe = _SymPipe({"GetA": "bogus"})
+    rc, out, dest = _census_run(tmp_path, monkeypatch, ["GetA"], pipe)
+    assert rc == 3, out
+    assert "GetA\terrored" in dest.read_text(encoding="utf-8")
+
+
 # --- the WRITE subcommands: `pausestate`, `pause`, `unpause` ---------------------- #
 #
 # The exit code is the contract a caller acts on, so every engine outcome maps to one:
