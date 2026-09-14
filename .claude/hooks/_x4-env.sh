@@ -94,6 +94,32 @@ if [ -z "${X4_APPMANIFEST:-}" ] && [ -n "${X4_GAME:-}" ]; then
   [ -f "$_sa/appmanifest_392160.acf" ] && X4_APPMANIFEST="$_sa/appmanifest_392160.acf"
 fi
 
+# x4_acf_buildid FILE -> the INSTALLED build id from a Steam app manifest; prints nothing
+# and returns 1 when there is none. THE ONE READER -- tests/test_acf_buildid_has_one_parser.py.
+#
+# A real manifest carries more than one "buildid": the installed build directly under
+# AppState, plus one per beta branch under PrivateDepots/branches. MEASURED 2026-09-14 on
+# the reference machine: AppState 23660954, public_beta 23524486. A plain grep answers
+# with whichever comes first or last. bin/unpack-reference.sh took the LAST, so a
+# re-unpack would have stamped the beta's build into the lock sentinel and the
+# SessionStart hook would then have called a current reference/ stale. So: the key at
+# brace depth 1, whatever order Steam writes the keys in.
+x4_acf_buildid() {
+  [ -f "${1:-}" ] || return 1
+  # BINMODE=3: Git Bash's gawk strips CR on input by default and Linux/macOS awk does not
+  # (MEASURED: a CRLF line reads length 1 vs 2), so without it the CR handling below would
+  # be exercised on one platform only. Other awks ignore the unused variable.
+  awk -v BINMODE=3 '
+    { line = $0; sub(/\r$/, "", line) }
+    line ~ /^[ \t]*\{[ \t]*$/ { depth++; next }
+    line ~ /^[ \t]*\}[ \t]*$/ { depth--; next }
+    depth == 1 && tolower(line) ~ /^[ \t]*"buildid"[ \t]+"[0-9]+"[ \t]*$/ {
+      n = line; gsub(/[^0-9]/, "", n); print n; found = 1; exit
+    }
+    END { exit found ? 0 : 1 }
+  ' "$1"
+}
+
 # --- path helpers: case-insensitive + backslash-insensitive (Windows/Git-Bash/macOS/Linux) ---
 # x4_norm PATH_OR_COMMAND -> lowercase, backslashes to slashes, and the DRIVE DIALECT
 # unified. MEASURED 2026-08-30: without the last step, Git Bash's "/c/Users/..." and

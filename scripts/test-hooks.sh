@@ -358,6 +358,33 @@ X4_APPMANIFEST="$TMP/acf" bash "$HOOKS/check-reference-version.sh" 2>/dev/null \
 echo "99999999" > "$TK/.claude/.reference-buildid"
 [ -z "$(X4_APPMANIFEST="$TMP/acf" bash "$HOOKS/check-reference-version.sh" 2>/dev/null)" ] \
   && ok "silent when builds match" || no "warned when builds match"
+# A real manifest carries MORE THAN ONE "buildid": the installed build directly under
+# AppState, and one per beta branch under PrivateDepots. MEASURED 2026-09-14 on this
+# machine: AppState 23660954, public_beta 23524486. bin/unpack-reference.sh took the LAST
+# match, so a re-unpack would have stamped the BETA's build into the sentinel; this hook
+# took the FIRST, which is right only while Steam writes AppState's key above the
+# branches. The fixture above has one buildid, so neither could go red. Both now read
+# through x4_acf_buildid, which takes the key at depth 1 whatever the order.
+_acf_real="$TMP/acf-real"; _acf_hostile="$TMP/acf-hostile"
+printf '"AppState"\n{\n\t"appid"\t\t"392160"\n\t"buildid"\t\t"23660954"\n\t"PrivateDepots"\n\t{\n\t\t"branches"\n\t\t{\n\t\t\t"public_beta"\n\t\t\t{\n\t\t\t\t"buildid"\t\t"23524486"\n\t\t\t}\n\t\t}\n\t}\n}\n' > "$_acf_real"
+printf '"AppState"\n{\n\t"PrivateDepots"\n\t{\n\t\t"branches"\n\t\t{\n\t\t\t"public_beta"\n\t\t\t{\n\t\t\t\t"buildid"\t\t"23524486"\n\t\t\t}\n\t\t}\n\t}\n\t"buildid"\t\t"23660954"\n}\n' > "$_acf_hostile"
+[ "$( . "$HOOKS/_x4-env.sh"; x4_acf_buildid "$_acf_real" 2>/dev/null )" = "23660954" ] \
+  && ok "x4_acf_buildid reads the INSTALLED build, not a beta branch's" \
+  || no "x4_acf_buildid did not return the AppState build 23660954"
+echo "23660954" > "$TK/.claude/.reference-buildid"
+[ -z "$(X4_APPMANIFEST="$_acf_hostile" bash "$HOOKS/check-reference-version.sh" 2>/dev/null)" ] \
+  && ok "a beta branch listed ABOVE the installed build does not fake a stale reference" \
+  || no "warned stale because a beta branch's buildid came first"
+[ -z "$(X4_APPMANIFEST="$_acf_real" bash "$HOOKS/check-reference-version.sh" 2>/dev/null)" ] \
+  && ok "silent on a real-shaped manifest whose builds match" \
+  || no "warned on a real-shaped manifest whose builds match"
+# The helper strips a trailing CR. Steam writes LF (measured 2026-09-14, 0 CRLF in 455
+# lines), but a manifest copied through a CRLF-converting tool would otherwise match no
+# brace line, never reach depth 1, and return nothing -- a silent non-answer.
+tr -d '\r' < "$_acf_real" | sed 's/$/\r/' > "$TMP/acf-crlf"
+[ "$( . "$HOOKS/_x4-env.sh"; x4_acf_buildid "$TMP/acf-crlf" 2>/dev/null )" = "23660954" ] \
+  && ok "x4_acf_buildid reads a CRLF manifest too" \
+  || no "x4_acf_buildid returned nothing for a CRLF manifest"
 
 echo
 # A probe line that fails to PARSE increments neither counter -- it vanishes, and the
@@ -405,7 +432,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=165
+EXPECT=169
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written

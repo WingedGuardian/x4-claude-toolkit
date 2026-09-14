@@ -43,7 +43,7 @@ if [ -z "$ACF" ] || [ ! -f "$ACF" ]; then
 fi
 [ -f "$ACF" ] || exit 0
 
-CUR=$(grep -i '"buildid"' "$ACF" | head -1 | grep -oE '[0-9]+' | tail -1)
+CUR=$(x4_acf_buildid "$ACF")          # the INSTALLED build, never a beta branch's (_x4-env.sh)
 [ -z "$CUR" ] && exit 0
 STORED=""
 SRC=""

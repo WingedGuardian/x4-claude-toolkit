@@ -185,6 +185,19 @@
   bare test name defined only there counts only when the entry cites the file: adding them to the
   bare-name pool was measured to resolve F46 on a test it names as a casualty. Per-entry verdicts
   before and after are identical; F122 now cites its checks.
+- **`bin/unpack-reference.sh` recorded a beta branch's build instead of the installed one.** A
+  Steam app manifest carries a `"buildid"` for the installed build and one for each beta branch;
+  the script took the last one found, which on the reference machine was `public_beta` (23524486)
+  rather than the installed 23660954. A re-unpack would have written that into
+  `reference/.unpacked-and-locked`, and the SessionStart stale-reference hook would then have
+  reported a current `reference/` as stale at every session start. Both now read the build through
+  one shared helper, `x4_acf_buildid` in `.claude/hooks/_x4-env.sh`, which takes the installed
+  build whatever order the keys are in. The last-match read dates from v2.0; a manifest lists
+  beta branches even when you are on the public branch (measured). **If you have unpacked with
+  any earlier version**, compare the build named in `reference/.unpacked-and-locked` (or, before
+  v3.1.0, `.claude/.reference-buildid`) with the `"buildid"` directly under `"AppState"` in
+  `appmanifest_392160.acf`. If they differ only because of this, correct the number in that file
+  rather than re-unpacking.
 
 ## v3.1.1 — 2026-09-09
 

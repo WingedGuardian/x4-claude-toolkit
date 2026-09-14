@@ -173,6 +173,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F120 | the CLAUDE.md ratchet counted a checkout's CRs as content | **DEFECT (measured)** · ✅ FIXED 2026-09-13 | GREW +872 on a file 52 characters UNDER its baseline | each CRLF now counts as one newline; `tests/test_claude_md_budget.py` |
 | F121 | `x4effective who-sets` with no property answered with the ENTITY's origin while its properties had been changed, and could not see removals at all | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | asked who set `energycells` it said `base`; 33 of its 49 properties were last set by something else | origins and file-level removals now reported; `show` still lists no removals (OPEN) |
 | F122 | `ask.py xq` certified a negative over a query Git Bash had rewritten before Python saw it | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | `collection("x4raw")//ware` arrived as `.../ware`: `NEGATIVE CONFIRMED` rc 0, where PowerShell counted 14,068 | `--file`; under Git Bash an argument-query zero refuses (rc 4) and every result shows the query as received |
+| F123 | `bin/unpack-reference.sh` took the LAST `"buildid"` in the Steam manifest, which is a beta branch's, not the installed build | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | this machine's manifest: AppState 23660954, `public_beta` 23524486 -- the script's grep returned 23524486 | one depth-1 reader, `x4_acf_buildid`, for the script and the hook; a test bans a third hand-rolled grep |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -6669,3 +6670,52 @@ a truncated or unsaved `--file` -- still certified a negative, the same shape th
 it now refuses (exit 2). And with `MSYS_NO_PATHCONV` or `MSYS2_ARG_CONV_EXCL=*` set the conversion
 is off (measured), so the refusal is too; a query file's UTF-8 BOM is dropped rather than sent to
 BaseX, which misreported it as a context error.
+
+## F123 — `unpack-reference.sh` recorded a beta branch's build: the Steam manifest has more than one `"buildid"` · **DEFECT (measured)** · confidence 97% · FIXED 2026-09-14
+
+**RE-DERIVED BY:** `tests/test_acf_buildid_has_one_parser.py` (`test_the_helper_exists_and_is_the_only_acf_reader`, `test_both_known_callers_use_the_helper`) and four `scripts/test-hooks.sh` probes under `=== check-reference-version.sh ===` (the installed build from a real-shaped manifest, a beta branch listed ABOVE the installed build, the matching-builds twin, a CRLF manifest).
+
+**What happened.** An x4live scoping document listed "`reference/` is build 23524486; game is
+23660954" as an open item needing a ~27 GB re-unpack, which would have meant removing the lock
+sentinel by hand. MEASURED 2026-09-14 on the reference machine, the tree was never stale:
+
+| source | build |
+|---|---|
+| `appmanifest_392160.acf`, `"buildid"` directly under `AppState` (the installed build) | 23660954 |
+| `reference/.unpacked-and-locked` | 23660954 |
+| the detached `.reference-buildid` beside `reference/` | 23660954 |
+| `appmanifest_392160.acf`, `PrivateDepots/branches/public_beta/buildid` | **23524486** |
+
+The user's branch is `public` (`UserConfig/BetaKey`), so a manifest lists beta branches whether
+or not you are on one.
+
+**Root cause, READ and then MEASURED.** Two hand-rolled greps read that file and disagreed.
+`bin/unpack-reference.sh:116` took the LAST match (`grep -i '"buildid"' | grep -oE '[0-9]+' |
+tail -1`); run over this manifest it returns 23524486. `check-reference-version.sh:46` took the
+FIRST, which is right only while Steam writes AppState's key above the branches. The hook suite's
+fixture manifest held ONE `buildid`, so neither shape could go red. The last-match read has been
+there since v2.0 (`a18ab2e`); since v3.1.0 (`a1e9a19`) it also writes the build into the
+sentinel, which the hook trusts first -- so the next re-unpack would have made the hook announce a
+stale `reference/` at every session start and recommend another re-unpack.
+
+⚠ INFERRED, not re-derived: F103's 2026-09-06 finding that a detached `.reference-buildid` said
+23524486 while everything else said 23660954 is exactly this script's output from a v2.x-era
+unpack. F103 fixed which file the hook believes; it did not find what wrote the wrong number.
+
+**The fix is one reader.** `x4_acf_buildid` in `.claude/hooks/_x4-env.sh` takes the `"buildid"`
+at brace depth 1, whatever the key order, and returns nothing (rc 1) when there is none. The script
+and the hook both call it, and the structural test refuses a third hand-rolled grep over the
+quoted key (the sentinel's unquoted read is a different file and is untouched).
+
+**Checking the checker, twice.**
+
+1. The first mutant run reported 4 of 5 SURVIVED with no FAIL lines at all. Python's
+   `subprocess.run(["bash", ...])` on Windows resolves through CreateProcess's search order, which
+   reaches System32's WSL relay before `PATH` -- `execvpe(/bin/bash) failed` -- so the suite never
+   ran, while `shutil.which("bash")` named Git Bash. The harness now uses the resolved path and
+   refuses a run that never reaches the suite's `RESULT:` line.
+2. The CR-strip mutant still survived. MEASURED: Git Bash's gawk strips CR on input in text mode
+   (a `{\r` line reads length 1, and 2 with `-v BINMODE=3`), while Linux and macOS awk keep it --
+   so the clause was exercisable on one platform only. The helper now runs awk with `BINMODE=3`
+   (ignored by other awks), and all **5 of 5** mutants fail their named check: depth clause, key
+   clause, CR strip, hook reverted to first-match, script reverted to last-match.

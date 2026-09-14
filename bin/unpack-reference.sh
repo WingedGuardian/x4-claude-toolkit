@@ -113,7 +113,10 @@ fi
 
 BUILDID=""
 if [ -n "${X4_APPMANIFEST:-}" ] && [ -f "$X4_APPMANIFEST" ]; then
-  BUILDID=$(grep -i '"buildid"' "$X4_APPMANIFEST" | grep -oE '[0-9]+' | tail -1 || true)
+  # NOT `grep buildid | tail -1`: that read the LAST of several and returned the public
+  # beta branch's build (23524486) instead of the installed one (23660954). See
+  # x4_acf_buildid in _x4-env.sh.
+  BUILDID=$(x4_acf_buildid "$X4_APPMANIFEST" || true)
 fi
 if [ -n "$BUILDID" ]; then
   mkdir -p "$X4_TOOLKIT/.claude"
