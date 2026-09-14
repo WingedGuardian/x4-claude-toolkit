@@ -57,7 +57,7 @@ cd ../x4validate
 uv run python ../basex/ask.py refs <macro_or_ware_id> [--db x4eff]
 uv run python ../basex/ask.py attr <attribute-name>
 uv run python ../basex/ask.py xq   '<raw xquery>'
-uv run python ../basex/ask.py xq   --file <query.xq>   # from Git Bash: see below
+uv run python ../basex/ask.py xq   --file <query.xq>   # from Git Bash: see QUERIES.md, "From Git Bash"
 ```
 
 A query over the real corpus takes roughly **1.6 s**.
