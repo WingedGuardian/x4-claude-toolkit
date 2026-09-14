@@ -205,6 +205,10 @@ def test_the_real_register_agrees_with_the_id_gate_about_every_heading():
 def test_a_PACKAGE_relative_citation_resolves_in_the_MIRROR_too(tmp_path, monkeypatch):
     """The mirror is a repo ROOT; this checkout is the PACKAGE root.
 
+    (Written in the retired dev repository, whose root WAS the package: "the lane" is that
+    checkout and "the mirror" is this repository. `_roots` now derives both from the
+    layout; the search pinned here is unchanged.)
+
     So `scripts/fuzz-guard.py` (repo-relative) and `tests/test_x.py` (package-relative)
     live at different depths in the mirror, and `_roots` has to offer both or a citation
     that is TRUE reads as a missing check -- this gate's own worst case inverted. MEASURED

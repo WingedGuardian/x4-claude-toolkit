@@ -100,7 +100,7 @@ fooled by our assumptions.
 
 - **Load order between mods is community convention, not engine-documented.** Any
   result that turns on *which mod won* is advisory and says so.
-- **Every finding is recorded individually** — the register runs past F100 (F115 as of 2026-09-13), each with a measured cost, and
+- **Every finding is recorded individually** — the register runs past F100 (F120 as of 2026-09-13), each with a measured cost, and
   where a limit was accepted rather than fixed, the reason it was accepted. The
   per-finding register (`docs/BLIND-SPOTS.md`) ships with the package since 2026-09-13;
   the findings fixed in each release are summarised in `CHANGELOG.md`, and the shapes

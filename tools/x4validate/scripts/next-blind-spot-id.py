@@ -107,15 +107,26 @@ def _git(pkg: Path, *args: str) -> str:
     return out.stdout
 
 
+def _is_absence(stderr: str) -> bool:
+    """True only for git's two "that path is not in this commit" messages."""
+    return "does not exist in" in stderr or "exists on disk, but not in" in stderr
+
+
 def scan_branches(pkg: Path = PKG) -> dict[str, set[int]]:
     # The register sits under the package, and the package is NESTED in this repo
     # (tools/x4validate/). It was written in a repo whose root WAS the package, so
     # `<branch>:docs/BLIND-SPOTS.md` named a path that does not exist here and every
     # branch read as "no register" -- a refusal at best. Ask git for the prefix.
     prefix = _git(pkg, "rev-parse", "--show-prefix").strip()
-    branches = [b for b in _git(pkg, "branch", "--format=%(refname:short)").split() if b]
+    # One name per LINE, from refs/heads only. `git branch` prints a detached HEAD as
+    # "(HEAD detached at 1a2b3c)", and splitting that on whitespace consulted four
+    # branches that do not exist (review, 2026-09-14). HEAD is consulted as well, so an
+    # id claimed on a detached checkout is not invisible.
+    branches = [b.strip() for b in _git(pkg, "for-each-ref", "--format=%(refname:short)",
+                                        "refs/heads").splitlines() if b.strip()]
     if not branches:
         raise CannotAnswer("no branches found — is this a git repository?")
+    branches.append("HEAD")
     per: dict[str, set[int]] = {}
     for b in branches:
         got = subprocess.run(["git", "-C", str(pkg), "show", f"{b}:{prefix}{REGISTER}"],
@@ -124,7 +135,15 @@ def scan_branches(pkg: Path = PKG) -> dict[str, set[int]]:
         # younger than most branches here (it arrived from the retired dev repository
         # on 2026-09-13). Recorded as empty so the printout
         # still names every branch that was consulted.
-        per[b] = claimed_ids(got.stdout.decode("utf-8", "replace")) if got.returncode == 0 else set()
+        if got.returncode == 0:
+            per[b] = claimed_ids(got.stdout.decode("utf-8", "replace"))
+        elif _is_absence(got.stderr.decode("utf-8", "replace")):
+            per[b] = set()
+        else:
+            # Every other failure used to read as "no register" too, so a read that
+            # failed looked exactly like a branch that predates the register.
+            raise CannotAnswer(f"git show {b}:{prefix}{REGISTER} failed: "
+                               f"{got.stderr.decode('utf-8', 'replace').strip()[:160]}")
     return per
 
 

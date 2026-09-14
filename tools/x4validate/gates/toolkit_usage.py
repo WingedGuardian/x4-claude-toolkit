@@ -87,8 +87,9 @@ def cli_roster() -> list[str]:
     enumeration, because the public tree could not import from it. With one repository
     that copy is a second implementation of one question, and it had already fallen
     behind: the shared one refuses when the subprocess never ran (uv absent, timeout),
-    where the copy read that failure as "single-command CLI". A refusal from the library
-    becomes this gate's rc 2, exactly as the copy's own `_env.skip` did.
+    where the copy read that failure as "single-command CLI". A refusal to read the
+    ROSTER becomes this gate's rc 2, as the copy's own `_env.skip` did; a single CLI
+    whose subcommands cannot be enumerated is reported below as a finding (rc 1).
     """
     try:
         return _surface.cli_roster(ROOT)

@@ -81,7 +81,7 @@
   selector, merge-tree and load-order gotchas; installed-mod names generalised, gotcha numbers kept),
   **`/x4-live`**, and the newer **`/x4-probe`** with its "can it RECORD?" rung.
 - **The blind-spots register, the 2026-08 audit and their tooling now ship.** `docs/BLIND-SPOTS.md`
-  (F1 to F115), `AUDIT-2026-08.md`, `scripts/next-blind-spot-id.py`, and four gates:
+  (F1 to F120), `AUDIT-2026-08.md`, `scripts/next-blind-spot-id.py`, and four gates:
   `register_rederivation` (every FIXED entry must name a check that exists), and
   `toolkit_usage`, `instrument_hygiene` and `hook_false_positives`, which read this machine's
   session transcripts and refuse without them. They lived in a separate development repository,

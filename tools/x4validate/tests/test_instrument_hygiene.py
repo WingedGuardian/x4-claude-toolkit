@@ -175,3 +175,17 @@ def test_the_hookable_threshold_is_a_measured_constant_not_a_guess():
     """It decides whether a shape can become a PreToolUse rule at all. Pinned so a
     silent widening cannot make a flooding rule look viable."""
     assert ih.HOOKABLE_MAX == 0.02
+
+
+def test_a_run_with_NO_BASELINE_is_a_REFUSAL_rc2_never_a_pass(tmp_path, monkeypatch, capsys):
+    """run-gates.sh reads rc 0 as `ok` and discards stdout, so "measures but cannot judge"
+    at rc 0 printed a passing gate over a comparison that never happened (review,
+    2026-09-14)."""
+    t = tmp_path / "t"
+    t.mkdir()
+    (t / "s.jsonl").write_text(_rec("echo hi") + NL + _res("hi") + NL, encoding="utf-8")
+    monkeypatch.setattr(ih, "transcript_dir", lambda: t)
+    monkeypatch.setattr(ih, "BASELINE", tmp_path / "absent.json")
+    monkeypatch.setattr(ih, "RECORD", False)
+    assert ih.main() == 2
+    assert "cannot judge" in capsys.readouterr().out

@@ -134,7 +134,8 @@ def test_the_scan_reads_a_register_NESTED_below_the_repo_root(m, tmp_path):
     pkg = tmp_path / "tools" / "x4validate"
     _repo_with_register(tmp_path, "tools/x4validate")
     per = m.scan_branches(pkg)
-    assert list(per.values()) == [{7, 9}], per
+    assert "HEAD" in per and len(per) == 2, per
+    assert all(ids == {7, 9} for ids in per.values()), per
     assert m.next_free_id(per) == 10
 
 
@@ -149,3 +150,28 @@ def test_TWIN_a_register_elsewhere_in_the_repo_is_not_mistaken_for_this_one(m, t
     assert all(ids == set() for ids in per.values()) and per, per
     with pytest.raises(m.CannotAnswer):
         m.next_free_id(per)
+
+
+def test_a_DETACHED_HEAD_is_consulted_and_invents_no_branches(m, tmp_path):
+    """`git branch` prints a detached HEAD as "(HEAD detached at <sha>)"; splitting that on
+    whitespace consulted four branches that do not exist, and an id claimed only on the
+    detached commit was invisible (review, 2026-09-14)."""
+    pkg = tmp_path / "tools" / "x4validate"
+    _repo_with_register(tmp_path, "tools/x4validate")
+    _git(tmp_path, "checkout", "-q", "--detach")
+    reg = pkg / "docs" / "BLIND-SPOTS.md"
+    reg.write_text(reg.read_text(encoding="utf-8") + "| F20 | claimed while detached |" + chr(10),
+                   encoding="utf-8")
+    _git(tmp_path, "add", str(reg.relative_to(tmp_path)))
+    _git(tmp_path, "commit", "-q", "-m", "claim")
+    per = m.scan_branches(pkg)
+    assert not any(" " in b or "(" in b or "detached" in b for b in per), per
+    assert 20 in per["HEAD"], per
+    assert m.next_free_id(per) == 21
+
+
+def test_only_a_MISSING_PATH_is_an_absence_every_other_git_failure_refuses(m):
+    assert m._is_absence("fatal: path 'tools/x4validate/docs/BLIND-SPOTS.md' does not exist in 'old'")
+    assert m._is_absence("fatal: path 'docs/BLIND-SPOTS.md' exists on disk, but not in 'HEAD'")
+    assert not m._is_absence("fatal: bad object deadbeef")
+    assert not m._is_absence("")

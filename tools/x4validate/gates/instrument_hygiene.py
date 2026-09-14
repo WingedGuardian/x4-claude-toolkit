@@ -244,6 +244,8 @@ def main() -> int:
 
     print(f"INSTRUMENT HYGIENE — {c.commands} Bash command(s) across {c.files} "
           f"transcript(s)")
+    print("  Bash tool calls only: every shape here is bash syntax, so PowerShell calls are "
+          "not in this denominator (toolkit_usage counts both)")
     print(f"  {len(SHAPES)} pattern(s), each verified against a known-bad example and "
           f"a near-miss before counting")
     if c.unreadable:
@@ -280,7 +282,10 @@ def main() -> int:
     if not base:
         print("")
         print("No baseline yet — run with --record. This run measures but cannot judge.")
-        return 0
+        # rc 2, never 0: run-gates.sh buckets 0 as `ok` and discards stdout, so a gate
+        # that compared nothing would read as a passing one on every fresh clone
+        # (review, 2026-09-14; claude_md_budget and hook_false_positives already refuse).
+        return 2
 
     worse, appeared = [], []
     for s in SHAPES:

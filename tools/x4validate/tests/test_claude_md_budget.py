@@ -99,6 +99,7 @@ def test_record_then_check_is_green_and_the_baseline_round_trips(monkeypatch, tm
     assert b_.main(record=True) == 0
     data = json.loads(bl.read_text(encoding="utf-8"))
     assert data, "recorded an empty baseline"
+    assert data.pop("_counting") == b_.COUNTING, data
     assert all(isinstance(v, int) for v in data.values()), data
     assert b_.main() == 0
 
@@ -117,7 +118,7 @@ def test_the_real_files_are_found_and_named():
 def test_a_baseline_for_DIFFERENT_files_is_a_REFUSAL(monkeypatch, tmp_path, capsys):
     """Disjoint keys compared nothing -- that is not 'within the floor'."""
     bl = tmp_path / "b.json"
-    bl.write_text(json.dumps({"some other file": 10}), encoding="utf-8")
+    bl.write_text(json.dumps({"_counting": b_.COUNTING, "some other file": 10}), encoding="utf-8")
     monkeypatch.setattr(b_, "BASELINE", bl)
     assert b_.main() == 2
     cap = capsys.readouterr()
@@ -130,7 +131,17 @@ def test_a_PARTIAL_baseline_names_the_file_it_does_not_check(monkeypatch, tmp_pa
         pytest.skip("needs two resolvable CLAUDE.md files -- NOT CHECKED")
     first = files[0][0]
     bl = tmp_path / "b.json"
-    bl.write_text(json.dumps({first: 10_000_000}), encoding="utf-8")
+    bl.write_text(json.dumps({"_counting": b_.COUNTING, first: 10_000_000}), encoding="utf-8")
     monkeypatch.setattr(b_, "BASELINE", bl)
     assert b_.main() == 0
     assert "NOT CHECKED  " + files[1][0] in capsys.readouterr().out
+
+
+def test_a_baseline_from_the_OLD_counting_method_is_a_REFUSAL(monkeypatch, tmp_path, capsys):
+    """A pre-F120 baseline counted raw CRs, so on a CRLF checkout it is too HIGH by the line
+    count and would pass that much growth in silence. It must be re-recorded, not read."""
+    bl = tmp_path / "b.json"
+    bl.write_text(json.dumps({"shipped (repo root)": 10_000_000}), encoding="utf-8")
+    monkeypatch.setattr(b_, "BASELINE", bl)
+    assert b_.main() == 2
+    assert "counting method" in capsys.readouterr().err

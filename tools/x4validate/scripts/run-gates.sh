@@ -29,7 +29,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 
 # Runtimes from gates/README.md, MEASURED on the reference machine.
-SLOW="corpus_sweep perf_guard xsd_fast_parity schema_sweep noop_audit regress stress_sweep update_corpus"
+SLOW="corpus_sweep perf_guard xsd_fast_parity schema_sweep noop_audit regress stress_sweep update_corpus hook_false_positives"
 # Rewrites source in place; must never run beside anything that reads the tree.
 MUTATING="mutation_probe"
 

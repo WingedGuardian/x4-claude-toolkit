@@ -60,6 +60,11 @@ TOOL_ROOT = Path(__file__).resolve().parents[1]
 
 BASELINE = TOOL_ROOT / ".claude-md-budget-baseline.json"
 
+#: Written into every baseline and required on read. A baseline recorded before F120 counted
+#: raw CRs, so on a CRLF checkout it sits above the content count by the file's line count
+#: and would let that much growth through, silently (review, 2026-09-14).
+COUNTING = "content: each CRLF counts as one newline (F120)"
+
 #: A backstop only. The RATCHET is the operative check -- see the docstring.
 #: chr() rather than escapes: this file's history includes a heredoc eating a backslash.
 _CRLF, _LF = chr(13) + chr(10), chr(10)
@@ -125,6 +130,12 @@ def _load() -> dict[str, int] | None:
         # Not swallowed: an unreadable baseline must not silently mean "nothing
         # recorded", which would read as a clean first run forever.
         raise Unmeasurable(f"baseline {BASELINE.name} is unreadable: {exc}") from exc
+    method = data.pop("_counting", None) if isinstance(data, dict) else None
+    if method != COUNTING:
+        raise Unmeasurable(
+            f"baseline {BASELINE.name} was recorded by a different counting method "
+            f"({method or 'none recorded: raw CRs counted, before F120'}); "
+            f"re-record with --record")
     return {str(k): int(v) for k, v in data.items()}
 
 
@@ -158,7 +169,8 @@ def main(record: bool = False) -> int:
 
     if record:
         BASELINE.write_bytes(
-            (json.dumps(measured, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+            (json.dumps({"_counting": COUNTING, **measured}, indent=2, sort_keys=True)
+             + "\n").encode("utf-8"))
         print(f"  recorded {len(measured)} floor(s) to {BASELINE.name}")
         return 0
 

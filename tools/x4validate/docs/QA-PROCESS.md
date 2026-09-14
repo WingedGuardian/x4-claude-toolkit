@@ -230,7 +230,8 @@ wrong.
    non-findings teaches you to skip it. Compare **committed blobs**, never
    working-tree files.
 
-   What the old rule missed, and why it is worth a script: a file-by-file port
+   What the old rule missed, and why a script was worth having while two trees existed:
+   a file-by-file port
    **split a commit**. Two of `f5c976d`'s five files crossed over — only because
    the porter had independently edited those two — and public `master` then
    shipped a stale-artifact message naming a subcommand it did not have. Nothing
