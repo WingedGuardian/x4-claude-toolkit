@@ -14,8 +14,8 @@ cd ../x4validate && uv run python ../basex/ask.py refs <id> [--db x4eff]
 
 | DB | contents | answers |
 |---|---|---|
-| **`x4raw`** | every file as written, per mod (13,862 docs, as of 2026-08-24) | *who **wrote** this, in which mod* |
-| **`x4eff`** | `_merge.build_effective` per vpath (10,937 docs, as of 2026-08-24) | *what does the **engine** see* |
+| **`x4raw`** | every file as written, per mod (14,054 docs, as of 2026-09-14) | *who **wrote** this, in which mod* |
+| **`x4eff`** | `_merge.build_effective` per vpath (10,970 docs, as of 2026-09-14) | *what does the **engine** see* |
 
 `ask.py` searches **`x4raw` unless you pass `--db`**, and for `refs` and `attr` says so under the
 result (an `xq` query names its own collection). **From Git Bash, give an `xq` query with
@@ -86,11 +86,12 @@ though it meant something.
 carry a coverage-backed negative. `test_ask.py` pins both directions and needs
 neither BaseX nor a JVM.
 
-Current coverage: **x4raw accounted** — 13,862 of 13,874; the 12 exclusions are
-malformed XML (11 packed in `vro/**/tmp|backup|md_debug`, 1 loose in
+Coverage as of 2026-09-14 -- every run prints the current figures, and `coverage-<db>.json`
+holds them: **x4raw accounted** — 14,054 of 14,065; the 11 exclusions are
+malformed XML (10 packed in `vro/**/tmp|backup|md_debug`, 1 loose in
 `cpsdo_faction/t/0001-l088.xml`) that the *engine* cannot read either.
-**x4eff complete** — 10,937 of 10,937, with 212 vpaths that have no effective
-tree and 12 malformed overlays enumerated in `effective-manifest.json`.
+**x4eff complete** — 10,970 of 10,970, with 212 vpaths that have no effective
+tree and 11 malformed overlays enumerated in `effective-manifest.json`.
 
 ### Why the deficit explainer matters — it caught a real bug
 

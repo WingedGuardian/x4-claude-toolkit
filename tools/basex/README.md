@@ -106,7 +106,7 @@ build, rebuild rather than trusting the banner.
 Rebuild with `build-corpus.sh` / `build-effective.sh`; inspect without rebuilding:
 
 ```bash
-cd ../x4validate && uv run python ../basex/staleness.py --db x4eff
+cd ../x4validate && uv run python ../basex/staleness.py --db x4eff --check   # 0 fresh, 5 stale, 6 undeterminable
 ```
 
 ---

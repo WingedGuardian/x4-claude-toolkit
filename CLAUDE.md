@@ -555,7 +555,7 @@ confident wrong answer gets made:
 
 | Question | Tool | Why |
 |---|---|---|
-| *Discovery* — "where does this appear, what values exist, who mentions X?" | **BaseX** | Fast across many files; **but loose XML only (62% of mod XML is packed → invisible, including large packed overhauls), and files as-written, no diff application or load order.** |
+| *Discovery* — "where does this appear, what values exist, who mentions X?" | **BaseX** | Fast across many files, packed mods included; **but `x4raw` is files as-written, with no diff application or load order** (`x4eff` is the merged tree). |
 | *Proof* — "what does the game actually see / is this reference real?" | **x4validate / x4effective** | Reads packed `.cat` via `_cat`, applies diffs in load order, models the effective merged tree. |
 
 **Updated 2026-07-27 — a BaseX negative can now be admissible, but ONLY with a denominator.**

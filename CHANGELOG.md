@@ -174,6 +174,11 @@
   docs-only agent following `QUERIES.md`'s own example. BLIND-SPOTS F122. A second review added:
   an empty or comment-only query refuses (exit 2), a UTF-8 BOM in a query file is dropped, and
   `MSYS_NO_PATHCONV` or `MSYS2_ARG_CONV_EXCL=*` turns the refusal off along with the conversion.
+- **Docs no longer say BaseX sees loose XML only.** `x4raw` has indexed packed archives since `stage.py`
+  (a rebuild on 2026-09-14 listed `[packed] vro/...` exclusions); the shipped CLAUDE.md's Discovery row
+  said packed content was invisible. Also: `tools/basex/README.md`'s freshness command lacked the
+  required `--check` and exited 2, and QUERIES.md's "current" coverage figures were three weeks old --
+  now dated and derived from `coverage-<db>.json`. Found by a cold, docs-only agent.
 
 ## v3.1.1 — 2026-09-09
 
