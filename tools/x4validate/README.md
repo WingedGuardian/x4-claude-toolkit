@@ -120,6 +120,9 @@ uv run x4live query ping                   # is it there? (`pausestate` says whe
 uv run x4live query macro shiptypes_s ship_arg_s_scout_01_a_macro hull
 uv run x4live query ext ws_2042901274      # is this extension loaded, per the engine
 uv run x4live ramp                         # MEASURE the message-size cap
+uv run x4live query macro shiptypes_s ship_arg_s_scout_01_a_macro --contents   # table fields, 2 levels
+uv run x4live ffi-census                   # which C functions vanilla declares does the engine EXPORT?
+uv run x4live groundtruth --macros list.tsv --contents   # harvest engine values for YOUR macro list
 
 # ---- the WRITE half: the only two verbs that change the running game.
 uv run x4live pausestate                   # READ: is it paused, and did THIS channel pause it?

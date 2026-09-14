@@ -49,6 +49,10 @@ from the output.
 | **`pause` and `unpause` change the game the user has open** | run them only when the user asked. The exit code is the engine's READ-BACK: 0 verified, 1 refused with nothing changed, 3 do not trust the state |
 | **`unpause` undoes only a pause THIS channel made** | it refuses the player's or a menu's pause. A UI reload forgets which pause was ours, and EVERY unpause attempt gives up the claim -- even one whose read-back still shows paused -- so in both cases a remaining pause is undone IN GAME, never by retrying |
 | **A write whose reply was lost may still have landed** | the command is sent before the reply is read and is never resent. Run `pausestate` before anything else, never a second `pause` |
+| **`query globals` sees only the lua global table** | vanilla's ui lua declares thousands of C functions in `ffi.cdef` that never appear there, so a `globals` negative covers a fraction of the engine surface. Use `ffi-census` for the C side |
+| **`ffi-census` `undeclared` is about THIS session's lua, not the engine** | it means no lua loaded this session declared the name (its file's block did not run, or it is commented out) -- not that the engine lacks the function. `notexported` is the engine answer |
+| **A request can be too long, not just a reply** | the game-side read fails on a message larger than its buffer, and that ceiling is unmeasured. `ffi-census` batches small by default; do not raise `--batch-bytes` without measuring |
+| **`macro` answers `<table>` for a table-valued field by default** | pass `--contents` to render it two levels deep. Harvests store the default reply, so keep a fixture's mode in its header (`groundtruth` writes it) |
 
 ## Read the header, not the rows
 
