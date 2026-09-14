@@ -17,12 +17,16 @@ That commit is `8289d5a` "promote the working principles and merge the knowledge
 head": +624 lines, unannounced. **This gate would not have blocked it. It would have
 made it name what it displaced.** That is the whole design.
 
-⚠ MEASURE CHARACTERS FROM BYTES, NEVER `read_text()`. `Path.read_text()` applies
-UNIVERSAL NEWLINES and silently deletes one character per line, so a ratchet built
-on it is lax by the file's LINE COUNT and gets laxer as the file grows -- a gate
-that is systematically permissive by a growing margin is worse than no gate.
-MEASURED on the real file: 38,056 preserving vs 37,460 normalised, a gap of exactly
-its 596 CRLF pairs. `wc -c` errs the other way (332 multi-byte glyphs here).
+⚠ COUNT CONTENT, NOT THE CHECKOUT'S LINE ENDINGS. Characters come from the bytes
+(never `wc -c`: 332 multi-byte glyphs here), and every CRLF counts as ONE newline.
+Both halves were paid for. Mixing conventions is lax by the LINE COUNT: a baseline
+taken from a CRLF file and a measurement through `read_text()` differ by exactly the
+file's CRLF pairs (38,056 vs 37,460 on the real file, its 596). The first fix counted
+the raw CR instead, and MEASURED 2026-09-13 that flipped the ratchet on a checkout: a
+fast-forward rewrote the shipped CLAUDE.md as CRLF and this gate reported GREW +872,
+on a file whose committed content was 52 characters SMALLER than its baseline --
+924 lines, 924 CRs, one phantom finding (F120). How a checkout stores a newline is
+not content.
 
 ⚠ PATHS COME FROM `__file__`, NOT FROM `$X4_TOOLKIT`. MEASURED 2026-09-12: that
 variable had two different live values on one machine at the same moment -- a
@@ -57,6 +61,8 @@ TOOL_ROOT = Path(__file__).resolve().parents[1]
 BASELINE = TOOL_ROOT / ".claude-md-budget-baseline.json"
 
 #: A backstop only. The RATCHET is the operative check -- see the docstring.
+#: chr() rather than escapes: this file's history includes a heredoc eating a backslash.
+_CRLF, _LF = chr(13) + chr(10), chr(10)
 HARD_CEILING = 40_000
 
 
@@ -76,9 +82,10 @@ class Violation:
 
 
 def char_count(path: Path) -> int:
-    """Characters, newlines PRESERVED. See the docstring for why this matters."""
+    """Characters of CONTENT: each newline counts once, however the checkout stored it.
+    See the module docstring for why both halves matter."""
     try:
-        return len(Path(path).read_bytes().decode("utf-8"))
+        return len(Path(path).read_bytes().decode("utf-8").replace(_CRLF, _LF))
     except (OSError, UnicodeDecodeError) as exc:
         raise Unmeasurable(f"{path}: {type(exc).__name__}: {exc}") from exc
 

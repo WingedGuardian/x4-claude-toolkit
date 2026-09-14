@@ -28,15 +28,23 @@ def _write(p, text, crlf=False):
     return p
 
 
-def test_char_count_preserves_newlines_and_counts_the_CR(tmp_path):
-    """`read_text()` applies UNIVERSAL NEWLINES and deletes one char per line, so a
-    ratchet built on it is lax by the LINE COUNT and gets laxer as the file grows.
-    MEASURED on the real file: 38,056 preserving vs 37,460 normalised -- a 596 gap
-    that is exactly its CRLF count."""
+def test_char_count_is_the_same_for_an_LF_and_a_CRLF_checkout(tmp_path):
+    """A checkout's line endings are not content (F120). MEASURED 2026-09-13: counting the
+    raw CR made a fast-forward that rewrote the shipped CLAUDE.md as CRLF read as GREW +872,
+    on a file 52 characters SMALLER than its baseline."""
     lf = _write(tmp_path / "lf.md", "a" + LF + "b" + LF)
     crlf = _write(tmp_path / "crlf.md", "a" + LF + "b" + LF, crlf=True)
-    assert b_.char_count(lf) == 4
-    assert b_.char_count(crlf) == 6, "CR must be counted, not swallowed"
+    assert b_.char_count(lf) == b_.char_count(crlf) == 4
+
+
+def test_TWIN_each_newline_still_counts_once_and_real_growth_shows_in_either_ending(tmp_path):
+    """The twin: normalising must not swallow newlines -- the `read_text()`-style loss this
+    gate was first built to avoid -- and one added character is one in both endings."""
+    for crlf in (False, True):
+        base = _write(tmp_path / ("base%s.md" % crlf), "a" + LF + "b" + LF, crlf=crlf)
+        grown = _write(tmp_path / ("grown%s.md" % crlf), "a" + LF + "bc" + LF, crlf=crlf)
+        assert b_.char_count(base) == 4, "a newline must count as a character"
+        assert b_.char_count(grown) - b_.char_count(base) == 1
 
 
 def test_char_count_of_a_multibyte_file_is_chars_not_bytes(tmp_path):
