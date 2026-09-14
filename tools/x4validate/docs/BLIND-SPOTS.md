@@ -161,6 +161,11 @@ result as a finding without a coverage denominator. `x4effective` and `x4stats` 
 | F113 | a prune list whose entries carry a DESTRUCTIVE second meaning; the entry added to fix a leak destroyed the recovery store | **DEFECT (measured)** · ✅ FIXED 2026-09-08 | `X4_COPY_PRUNE` is skipped on the way IN and `rm -rf`'d from the DESTINATION on the way out, twice. An in-arc fix added `.claude/backups` to stop the SOURCE's 217 backup files travelling, and the path inherited the second meaning: an upgrade with `--over-existing` erased the destination's entire recovery store, rc 0, "install complete", the word "backup" nowhere in the output. Both installers, both methods, reproduced independently. Live install: **982 files, 60 MB, 33 known-good snapshots back to 2026-06-22**. ★ Three things made it invisible: the file STATES the hazard directly above the offending entry (prose adjacent to a defect is not a guard); `x4lock` deliberately leaves that directory UNLOCKED so the lock precheck could not see it; and the `--over-existing` warning enumerates TOOLKIT files, so the store never appeared in what was at risk — the reader's model is *replaced*, the behaviour was *erased* | Moved to `X4_KEEP_LOCAL`, whose documented semantics were already right: **the category existed and the path was in the wrong one**. Test asserts SUBJECT and TRAVEL as ONE EXACT SET (destination survives AND source does not arrive), because the obvious repair satisfies one by breaking the other, plus a CONTROL that a real build artifact is still pruned |
 | F115 | the dev checkout and the public mirror FORKED, and the fork was inside `_freshness.py` — the module whose job is detecting drift. The store read STALE forever from dev while the banner blamed mods that had not moved | **DEFECT (measured)** · ✅ RESOLVED 2026-09-12 by running the toolkit FROM the mirror | Folding the store's OWN recorded detail vector with each tree's code: `meta fingerprint_content = 0cd79c95…`, dev `_fold` → `87f1f21d…` (ENGINE_SOURCES=7), mirror `_fold` → `0cd79c95…` (=8). So the store was built by MIRROR code and dev could never read it fresh: `x4live oracle` refused rc 3 permanently while all 133 manifests were byte-identical and `x4modlist changed` reported "no change, file-for-file". ★ The banner names five mod-related causes and **none of them was the cause** — it has no vocabulary for *"you are standing in a different tree than the one that built this"*. ★★ The reconciliation I first planned was DISPROVEN as safe: ancestry proves DIRECTION, not BEHAVIOUR, and **27 of 104 incoming files (26%) resolve paths ABOVE the package root**; porting the mirror's `control_bytes.py` into dev would have run `git ls-files` against a NON-repo, reducing the sweep to zero files **while still exiting 0** — the exact defect that gate exists to prevent, introduced by the fix for a different one | Not reconciled. `X4_TOOLKIT` repointed at the mirror (env outranks the locked config, so no file was edited and `x4lock` was not bypassed); `X4_ORACLE_LOG` carried over. Verified: oracle rc 0 103/103, `gates/oracle.py` 241/241, validator byte-identical on **8 of 8** real mods |
 | F114 | FIVE gates reached a verdict line with no floor under the population it described: "All properties hold" over three unrun checks, "No per-mod regression" over an EMPTY intersection, a completion sentinel over an empty directory, a header-only artifact from an empty input, and a three-channel audit whose third channel was uncounted | **DEFECT (measured)** | 5 gates, all rc 0; each now refuses or returns 3 | v3.1.0 |
+| F116 | a PAUSED game "goes silent" shipped as fact; measured live, a paused game answers | **DEFECT (measured)** · ✅ FIXED 2026-09-13 | a user-facing hint sent people with a silent channel to unpause; 4 of 4 separate processes got answers from a paused game | corrected everywhere it appeared; `tests/test_livepipe.py` fails if it returns |
+| F117 | a `globals` paging test that could not go red, and a lua mutation harness anchored on text the mod no longer has | **DEFECT (measured)** · ✅ FIXED 2026-09-13 | the "stops paging" mutant SURVIVED on pristine code | the test now requires OK on both pages; the stale harness copy retired with the dev repository |
+| F118 | a Windows clone checks the shipped mod's XML out as CRLF, and `deploy-mod.py` compares raw bytes | **DEFECT (measured)** · OPEN | `content.xml` is `i/lf w/crlf` on the author's checkout | OPEN: pin `mods/**/*.xml` as the lua is, or compare normalised content |
+| F119 | `x4lock status` run from a git worktree reports the untracked `.claude/x4-paths.env` as MISSING | **DEFECT (measured)** · OPEN | rc 1 in a worktree, rc 0 in the main checkout, 39 of 39 locked in both | OPEN |
+| F120 | the CLAUDE.md ratchet counted a checkout's CRs as content | **DEFECT (measured)** · ✅ FIXED 2026-09-13 | GREW +872 on a file 52 characters UNDER its baseline | each CRLF now counts as one newline; `tests/test_claude_md_budget.py` |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -6422,3 +6427,87 @@ added `tools/x4validate/tests/test_nexus_packs_are_never_tracked.py`, which fail
 rule is missing, if git does not actually ignore a path under it, or if any pack file is
 tracked. MEASURED on that commit: `test_control_bytes.py` 2 failed -> green, and the
 `control_bytes` gate rc 2 -> rc 0.
+
+## F116 — a PAUSED game "goes silent" shipped as fact, and it was an inference · **DEFECT (measured)** · confidence 95% · FIXED 2026-09-13
+
+**RE-DERIVED BY:** `tests/test_livepipe.py` (`test_the_hint_does_not_blame_a_PAUSED_game`), which fails if the claim returns.
+
+**What shipped.** `_livepipe.py`'s connection hint told a user whose channel had gone silent that
+*"a PAUSED game goes silent"*, and to unpause. The refusal text, an outcome table, docstrings, two lua
+comments and three test docstrings repeated it, and the lua `ping` comment said equal elapsed times
+mean paused.
+
+**What was measured** (live, 2026-09-13, mod build `39162ddc`, by the session that built the write
+verbs; READ here from its commits `da02962` and `b241a9f`, not re-run): a paused game kept answering
+on an open connection AND accepted a new one -- `pause`, `pausestate`, `unpause`, `pausestate` as four
+separate processes agreed 4 of 4 -- and `getElapsedTime()` advanced 76.45 -> 84.81 over 8.35 s of
+mostly-paused wall clock, so it is real time, not game time.
+
+**Where the inference came from.** The api's MD heartbeat fires only on unpaused frames; the UI
+`onUpdate` half of the channel keeps polling. One half of a two-half channel was read as the whole
+channel -- the adjacent-question shape (#22b): the instrument consulted exists, answers, and is not the
+one that decides. It was an INSTRUCTION to users, not a comment: a silent channel sent people to unpause
+a game that was never the cause.
+
+## F117 — a paging test that could not go red, and a mutation harness whose anchors had moved · **DEFECT (measured)** · confidence 90% · FIXED 2026-09-13
+
+**RE-DERIVED BY:** `tests/test_modlua_rearm.py` (`test_globals_never_exceeds_the_payload_cap`), and the
+maintained lua mutation harness `scripts/mutate-mod-lua.py` in this package (excluded from the release
+bundle).
+
+**(a) The test** asserted only that each `globals` page is at most 32,000 bytes. `reply()`'s shared cap
+turns an oversized reply into a short `ERR`, which also fits, so a `globals` that stopped paging passed.
+MEASURED 2026-09-13 by the write-verbs session (READ here from commit `2d40095`): the lua mutant
+*"globals stops paging and emits one oversized reply"* SURVIVED, on pristine `5f128b7` as well as on its
+branch. The test now also requires status `OK` on both pages.
+
+**(b) The harness.** The dev repository's copy of `mutate-mod-lua.py` anchored mutants on text the mod no
+longer contains (reported: `galaxyprobe` 0 matches, `compare` 2 where one is required). Reported by that
+session, NOT re-measured here; the copy retired with the dev repository on 2026-09-13.
+
+Both halves are #26. A size cap plus a shared error path let the failure fit inside the assertion, and a
+mutant whose anchor matches nothing cannot plant the defect it names.
+
+## F118 — a fresh Windows clone checks the shipped mod's XML out as CRLF, so a byte-comparing deploy sees changes nobody made · **DEFECT (measured)** · confidence 90% · OPEN
+
+`.gitattributes` pins `mods/**/*.lua` to LF (the F53 reasoning) but not the mod's XML. Under
+`core.autocrlf=true` with `* text=auto`, MEASURED 2026-09-13 on the author's main checkout:
+`git ls-files --eol mods/` gives `i/lf w/crlf` for `mods/x4_toolkit_helper/content.xml` (1 of its 2 XML
+files; the other is LF on disk because a tool rewrote it). `scripts/deploy-mod.py` decides CHANGED by the
+sha256 of raw bytes (READ: its `changed = ... sha(src / f) != sha(dst / f)`), so an LF deployed copy and a
+CRLF checkout of identical content compare unequal.
+
+The consequence -- a deploy listing CHANGED files nobody edited -- was reported by the write-verbs
+session and is consistent with the code as READ; it is not reproduced here. Two remedies, neither taken
+yet: pin `mods/**/*.xml` as the lua is, or compare content with line endings normalised. **OPEN.**
+
+## F119 — `x4lock` run from a git worktree calls an untracked config file MISSING · **DEFECT (measured)** · confidence 97% · OPEN
+
+MEASURED 2026-09-13 from a session worktree: `python scripts/x4lock.py status` exits **1** with
+`*** 1 PROTECTED FILE(S) MISSING` naming `<worktree>/.claude/x4-paths.env`, above a summary of
+`39 protected file(s): 39 locked`. The same command in the main checkout exits **0**.
+
+`.claude/x4-paths.env` is gitignored machine configuration, so a worktree never has one. The manifest is
+keyed to the checkout the command runs from, not to the configured toolkit whose file it means. And a
+worktree is the isolation CLAUDE.md MANDATES for concurrent sessions, so every session following that rule
+sees a red `x4lock` -- the kind of standing alarm that teaches a reader to ignore the tool. Reported by the
+write-verbs session; re-measured here. **OPEN.**
+
+## F120 — the CLAUDE.md ratchet counted a checkout's line endings as content · **DEFECT (measured)** · confidence 99% · FIXED 2026-09-13
+
+**RE-DERIVED BY:** `tests/test_claude_md_budget.py` (`test_char_count_is_the_same_for_an_LF_and_a_CRLF_checkout`, `test_TWIN_each_newline_still_counts_once_and_real_growth_shows_in_either_ending`).
+
+`gates/claude_md_budget.py` reported `GREW: shipped (repo root) 71897 -> 72769 (+872 chars)` on a file
+nobody had grown. Re-derived per item, never from the verdict:
+
+| the shipped CLAUDE.md | chars | CRLF pairs | chars minus CR |
+|---|---|---|---|
+| committed blob at `c97185b` | 71,845 | 0 | 71,845 |
+| the main checkout on disk (rewritten 21:37 by a fast-forward) | 72,769 | 924 | 71,845 |
+| the recorded baseline | 71,897 | | |
+
+The committed content was **52 characters SMALLER** than its baseline. The gate counted raw `CR`s --
+deliberately, to avoid `read_text()`'s one-character-per-line loss when a CRLF baseline meets a
+normalised measurement. That fixed the mixing half and created the checkout half. Now every CRLF counts
+as one newline, whatever the checkout wrote; one twin pins that a newline still counts and that one
+added character is one in either ending, and each clause has a mutant that fails its named test.
