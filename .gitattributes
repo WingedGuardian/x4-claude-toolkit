@@ -46,6 +46,11 @@ bin/xrcat text eol=lf
 # could sit here unnoticed: it shows up as noise in a diff, never as a wrong
 # verdict.
 mods/**/*.lua text eol=lf
+# ...and its XML (F118). `* text=auto` alone checks these out with the platform's native
+# ending, so a Windows clone got CRLF manifests while the deployed and committed copies are
+# LF -- and `scripts/deploy-mod.py`, which compares raw bytes, then listed changes nobody
+# made. The blobs are already LF, so this pin changes checkouts, never the repository.
+mods/**/*.xml text eol=lf
 # Normalize everything else by default.
 * text=auto
 # Maintainer release artifacts -- the Nexus upload packs.
