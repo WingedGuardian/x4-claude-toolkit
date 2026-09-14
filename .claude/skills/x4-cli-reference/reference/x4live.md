@@ -153,7 +153,7 @@ usage: x4live pausestate [-h] [--pipe PIPE] [--timeout TIMEOUT]
 options:
   -h, --help         show this help message and exit
   --pipe PIPE        pipe name (default: $X4_LIVE_PIPE or built-in)
-  --timeout TIMEOUT  seconds to wait for the game, and for the reply
+  --timeout TIMEOUT  seconds to wait for the game, and for the reply (default: 10.0)
 ```
 
 ## `x4live pause`
@@ -164,7 +164,7 @@ usage: x4live pause [-h] [--pipe PIPE] [--timeout TIMEOUT]
 options:
   -h, --help         show this help message and exit
   --pipe PIPE        pipe name (default: $X4_LIVE_PIPE or built-in)
-  --timeout TIMEOUT  seconds to wait for the game, and for the reply
+  --timeout TIMEOUT  seconds to wait for the game, and for the reply (default: 10.0)
 ```
 
 ## `x4live unpause`
@@ -175,7 +175,7 @@ usage: x4live unpause [-h] [--pipe PIPE] [--timeout TIMEOUT]
 options:
   -h, --help         show this help message and exit
   --pipe PIPE        pipe name (default: $X4_LIVE_PIPE or built-in)
-  --timeout TIMEOUT  seconds to wait for the game, and for the reply
+  --timeout TIMEOUT  seconds to wait for the game, and for the reply (default: 10.0)
 ```
 
 ## `x4live harvest`

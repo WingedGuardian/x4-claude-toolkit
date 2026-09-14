@@ -1873,7 +1873,7 @@ def main(argv: list[str] | None = None) -> int:
              "the pause. Changes nothing; the safe check after a lost write reply")
     pps.add_argument("--pipe", help="pipe name (default: $X4_LIVE_PIPE or built-in)")
     pps.add_argument("--timeout", type=float, default=10.0,
-                     help="seconds to wait for the game, and for the reply")
+                     help="seconds to wait for the game, and for the reply (default: %(default)s)")
     for wverb, whelp in (
             ("pause", "WRITE: pause the running game. Refuses if it is already paused; "
                       "exit 0 only when the engine reads back paused"),
@@ -1882,7 +1882,7 @@ def main(argv: list[str] | None = None) -> int:
         pw = sub.add_parser(wverb, help=whelp)
         pw.add_argument("--pipe", help="pipe name (default: $X4_LIVE_PIPE or built-in)")
         pw.add_argument("--timeout", type=float, default=10.0,
-                        help="seconds to wait for the game, and for the reply")
+                        help="seconds to wait for the game, and for the reply (default: %(default)s)")
 
     ph = sub.add_parser(
         "harvest",
