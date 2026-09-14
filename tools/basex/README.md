@@ -57,6 +57,7 @@ cd ../x4validate
 uv run python ../basex/ask.py refs <macro_or_ware_id> [--db x4eff]
 uv run python ../basex/ask.py attr <attribute-name>
 uv run python ../basex/ask.py xq   '<raw xquery>'
+uv run python ../basex/ask.py xq   --file <query.xq>   # from Git Bash: see below
 ```
 
 A query over the real corpus takes roughly **1.6 s**.
@@ -120,7 +121,7 @@ distinction the `x4validate` CLIs make.
 |---|---|---|
 | **`ask.py`** | 0 | answered (a positive result, or a negative WITH a denominator) |
 | | 2 | not set up, or the query and `--db` disagree about which database to search |
-| | 4 | **cannot back a negative** — zero hits, but coverage is missing/unexplained, or the index is stale, or the query was `count()`-shaped |
+| | 4 | **cannot back a negative** — zero hits, but coverage is missing/unexplained, or the index is stale, or the query was `count()`-shaped, or an `xq` query arrived as a Git Bash argument (use `--file`) |
 | **`coverage.py`** | 0 | complete |
 | | 2 | refused — a required root was not supplied (an empty root resolves to the *current directory*, which would publish a denominator measured over the wrong population) |
 | | 3 | **accounted** — a deficit exists but every missing document is named. Still supports a negative claim. *`x4raw` path only.* |

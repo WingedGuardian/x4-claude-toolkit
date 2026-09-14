@@ -172,6 +172,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F119 | `x4lock status` run from a git worktree reports the untracked `.claude/x4-paths.env` as MISSING | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | rc 1 in a worktree, rc 0 in the main checkout, 39 of 39 locked in both | a linked worktree's absent local config is waived and announced, the configured toolkit's copy demanded instead; `tests/test_x4lock.py` |
 | F120 | the CLAUDE.md ratchet counted a checkout's CRs as content | **DEFECT (measured)** · ✅ FIXED 2026-09-13 | GREW +872 on a file 52 characters UNDER its baseline | each CRLF now counts as one newline; `tests/test_claude_md_budget.py` |
 | F121 | `x4effective who-sets` with no property answered with the ENTITY's origin while its properties had been changed, and could not see removals at all | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | asked who set `energycells` it said `base`; 33 of its 49 properties were last set by something else | origins and file-level removals now reported; `show` still lists no removals (OPEN) |
+| F122 | `ask.py xq` certified a negative over a query Git Bash had rewritten before Python saw it | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | `collection("x4raw")//ware` arrived as `.../ware`: `NEGATIVE CONFIRMED` rc 0, where PowerShell counted 14,068 | `--file`; under Git Bash an argument-query zero refuses (rc 4) and every result shows the query as received |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -6622,3 +6623,37 @@ entity as "every stored property is its base value, and no removal is recorded a
 
 **OPEN:** `x4effective show` has the same removal gap -- it lists stored properties only. It predates
 this fix and is named here rather than left implicit.
+
+## F122 — a verified negative over a query nobody typed: Git Bash rewrites `//` in arguments · **DEFECT (measured)** · confidence 98% · FIXED 2026-09-14
+
+**NO RE-DERIVATION by `gates/register_rederivation.py` -- and that is a gap in the gate, not in the
+evidence.** The checks live in `tools/basex/test_ask.py`: `test_a_ZERO_from_an_argv_xq_under_Git_Bash_is_NOT_a_negative`,
+its three twins (query file, outside Git Bash, `refs`), `test_a_POSITIVE_argv_xq_under_Git_Bash_shows_the_query_AS_RECEIVED`,
+and the usage and unreadable-file tests. The gate resolves citations only under `tests/`, `gates/`,
+`scripts/` and `.claude/`, so a truthful `tools/basex/` citation reads to it as no check at all.
+
+**What happened.** A cold, docs-only agent followed `QUERIES.md`'s own example from Git Bash:
+`ask.py xq 'collection("x4raw")//ware'` printed `0 items` and `NEGATIVE CONFIRMED over 14054 of 14065
+documents`, exit 0. The same count from PowerShell was **14,068**.
+
+**Root cause, MEASURED by printing what Python received:**
+
+| typed in Git Bash | Python's `sys.argv[1]` |
+|---|---|
+| `'count(collection("x4raw")//ware)'` | `count(collection("x4raw")/ware)` |
+| `"count(collection('x4raw')//ware)"` | unchanged |
+| `'//ware'` | `/ware` |
+| the first form with `MSYS_NO_PATHCONV=1` | unchanged |
+
+MSYS path conversion rewrites the ARGUMENT when Git Bash starts a native Windows program -- before
+any toolkit code runs, so nothing inside `ask.py` can see what was typed. Every guard then did its job
+correctly over the wrong query: coverage was real, the index was fresh, the zero was genuine for
+`/ware`. **The instrument was right and the channel lied** -- the argv sibling of F91, whose entry had
+already noted in passing that "argv is not a safe channel either" and was never applied here.
+
+**The fix names the channel instead of guessing the query.** Git Bash exports `MSYSTEM` to native
+children and PowerShell does not (measured both). `xq` takes `--file`, which is not rewritten; an
+argument query run under `MSYSTEM` is refused as a negative (rc 4, the "cannot back a negative" code)
+and shows the query as received on any result, because a rewritten query can also return a wrong
+non-zero. `refs` and `attr` build their query in Python from an id or attribute name and are
+unaffected. Every clause has a twin and a mutant that fails its named test (7 of 7 killed).

@@ -33,12 +33,17 @@ Usage
   uv run python ask.py refs <macro_or_ware_id> [--db x4eff]
   uv run python ask.py attr <attribute-name>
   uv run python ask.py xq   '<raw xquery>'
+  uv run python ask.py xq   --file <query.xq>
+
+From Git Bash, pass an xq query with --file: MSYS rewrites `//` to `/` in command-line
+arguments before Python sees them, and a zero from an argument there is refused.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -199,7 +204,11 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("mode", choices=["refs", "attr", "xq"])
-    p.add_argument("arg")
+    p.add_argument("arg", nargs="?",
+                   help="the id (refs), the attribute name (attr) or the XQuery text (xq)")
+    p.add_argument("--file", default=None,
+                   help="xq only: read the query from this file. Git Bash rewrites `//` to `/` in "
+                        "command-line arguments before Python sees them; a file is not rewritten")
     p.add_argument("--db", default=None, choices=["x4raw", "x4eff"],
                    help="default: x4raw, the files AS WRITTEN (who wrote this, in which mod). "
                         "x4eff is the effective merged tree the engine sees: use it for any "
@@ -211,8 +220,32 @@ def main(argv=None) -> int:
     if db_defaulted:
         args.db = "x4raw"
 
+    if args.mode == "xq":
+        if (args.arg is None) == (args.file is None):
+            p.error("xq takes its query EITHER as an argument OR with --file -- exactly one")
+    else:
+        if args.file is not None:
+            p.error(f"--file is for xq only; {args.mode} takes its value as an argument")
+        if args.arg is None:
+            p.error(f"{args.mode} needs an argument")
+    query_text = args.arg
+    if args.file is not None:
+        try:
+            query_text = Path(args.file).read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"error: cannot read the query file {args.file}: {exc}", file=sys.stderr)
+            return 2
+    # MEASURED 2026-09-14: from Git Bash, `ask.py xq 'count(collection("x4raw")//ware)'` reached
+    # Python as `.../ware`, and `'//ware'` as `/ware` -- MSYS path conversion rewrites the
+    # ARGUMENT before any of this runs, and nothing here can see what was typed. The zero
+    # guard below then certified a negative over a query nobody wrote. Git Bash exports
+    # MSYSTEM to its native children; PowerShell does not. refs/attr build their query here
+    # from an id or attribute name, so no `//` crosses argv for them.
+    argv_under_git_bash = (args.mode == "xq" and args.file is None
+                           and bool(os.environ.get("MSYSTEM")))
+
     xq = {"refs": q_refs, "attr": q_attr}.get(args.mode)
-    query = xq(args.db, args.arg) if xq else args.arg
+    query = xq(args.db, args.arg) if xq else query_text
 
     # `--db` chooses the coverage AND freshness denominator; the query text
     # chooses what is actually searched. If they disagree the result is scored
@@ -293,6 +326,10 @@ def main(argv=None) -> int:
         # Not for `xq`: that query names its own collection, and the foreign-collection
         # guard above refuses a --db that disagrees, so "add --db x4eff" would be advice
         # that fails if followed (review, 2026-09-14).
+        if argv_under_git_bash:
+            print(f"  query as received (Git Bash, MSYSTEM={os.environ.get('MSYSTEM')}): {query}")
+            print("  Git Bash rewrites `//` to `/` in arguments; if that is not what you typed, "
+                  "re-run with --file.")
         if db_defaulted and args.mode in ("refs", "attr"):
             print("  searched x4raw, the default: the files AS WRITTEN. For what the game "
                   "actually loads, add --db x4eff.")
@@ -311,6 +348,16 @@ def main(argv=None) -> int:
 
     # --- the zero-result path: this is where a denominator is mandatory -------
     print(f"0 items in {args.db}.")
+
+    # Prior to every other refusal: they all judge the RESULT of a query, and this one says
+    # the query that ran may not be the query that was typed (see argv_under_git_bash).
+    if argv_under_git_bash:
+        print("\n  ** NOT A NEGATIVE FINDING. ** This query arrived as a command-line argument")
+        print(f"  under Git Bash (MSYSTEM={os.environ.get('MSYSTEM')}), which rewrites `//` to `/`")
+        print("  before Python sees it, so the query that ran may not be the one you typed:")
+        print(f"    as received: {query}")
+        print("  Put the query in a file and re-run with --file <path>; a file is not rewritten.")
+        return 4
 
     # AN EMPTY SERIALIZATION IS NOT AN EMPTY SEQUENCE. `run_counted` returns
     # (output, None) when its count wrapper will not compile -- the documented

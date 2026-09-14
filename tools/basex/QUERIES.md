@@ -18,7 +18,9 @@ cd ../x4validate && uv run python ../basex/ask.py refs <id> [--db x4eff]
 | **`x4eff`** | `_merge.build_effective` per vpath (10,937 docs, as of 2026-08-24) | *what does the **engine** see* |
 
 `ask.py` searches **`x4raw` unless you pass `--db`**, and for `refs` and `attr` says so under the
-result (an `xq` query names its own collection). What it
+result (an `xq` query names its own collection). **From Git Bash, give an `xq` query with
+`--file`:** MSYS rewrites `//` to `/` in command-line arguments before Python sees them, so
+`ask.py` refuses to certify a zero from an argument there and shows the query as received. What it
 counts are XQuery items -- for `refs`, one matching element per line -- not files or entities.
 
 `x4raw` will happily tell you vanilla sets a value that no longer survives the
@@ -67,7 +69,8 @@ so the count is the **result-sequence item count**, and the guard keys off that.
 A count-shaped query that counted nothing is refused explicitly:
 
 ```
-$ ask.py xq 'count(collection("x4raw")//ware[@id="nope"])'
+$ echo 'count(collection("x4raw")//ware[@id="nope"])' > q.xq
+$ ask.py xq --file q.xq
 0
 1 item(s) in x4raw.
   (an item is one node or value the query returned -- not a count of files or entities)

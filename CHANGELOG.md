@@ -164,6 +164,14 @@
   `$X4_TOOLKIT`'s when set, so a deleted configuration is still reported. Where nothing can stand
   in (a worktree of a submodule, or a `--separate-git-dir` repository, with `$X4_TOOLKIT` unset),
   the worktree's own file is still required.
+- **BaseX `ask.py xq` no longer certifies a negative over a query Git Bash rewrote.** MSYS path
+  conversion turns `//` into `/` inside command-line arguments before Python sees them: measured,
+  `'count(collection("x4raw")//ware)'` arrived as `.../ware` and `'//ware'` as `/ware`, and the
+  zero guard then printed `NEGATIVE CONFIRMED` with exit 0 where PowerShell counted 14,068. `xq`
+  now takes `--file <query.xq>`, which is not rewritten; under Git Bash a zero from an argument
+  query is refused (exit 4) and every argument-query result shows the query as received.
+  `refs` and `attr` are unaffected -- they build their query in Python. Found by a cold,
+  docs-only agent following `QUERIES.md`'s own example. BLIND-SPOTS F122.
 
 ## v3.1.1 — 2026-09-09
 

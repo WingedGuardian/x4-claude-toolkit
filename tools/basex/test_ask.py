@@ -38,6 +38,10 @@ def _preflight_is_satisfied(monkeypatch):
     that companion this fixture would be a way to silently delete a guard.
     """
     monkeypatch.setattr(ask.preflight, "check", lambda *a, **k: [])
+    # Git Bash exports MSYSTEM to every native child, pytest included, and ask.py now reads
+    # it. Unset for every test so a verdict never depends on which shell ran the suite;
+    # the Git Bash tests below set it explicitly.
+    monkeypatch.delenv("MSYSTEM", raising=False)
 
 
 def test_the_preflight_is_actually_wired_into_main(monkeypatch, capsys):
@@ -510,3 +514,78 @@ def test_TWIN_an_xq_query_gets_no_default_hint(monkeypatch, capsys):
     _positive(monkeypatch)
     assert ask.main(["xq", "collection('x4raw')//ware"]) == 0
     assert "AS WRITTEN" not in capsys.readouterr().out
+
+
+# --- Git Bash rewrites // in arguments (cold E2E agent, 2026-09-14) -----------------------
+# MEASURED: from Git Bash, `ask.py xq 'count(collection("x4raw")//ware)'` reached Python as
+# `count(collection("x4raw")/ware)`, and `'//ware'` as `/ware` -- MSYS path conversion, before
+# any of this code runs. The coverage guard then certified "NEGATIVE CONFIRMED" rc 0 over a query
+# nobody typed. The same query from PowerShell, or with MSYS_NO_PATHCONV=1, counted 14,068.
+
+def _complete_zero(monkeypatch):
+    _fake_basex(monkeypatch, "")
+    monkeypatch.setattr(ask, "load_coverage", lambda db: {
+        "db": db, "status": "complete", "supports_negative_claim": True,
+        "indexed": {"total": 100}, "expected": {"total": 100}, "unparseable": [],
+    })
+    _stale(monkeypatch, fresh=True)
+
+
+def test_a_ZERO_from_an_argv_xq_under_Git_Bash_is_NOT_a_negative(monkeypatch, capsys):
+    _complete_zero(monkeypatch)
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    rc = ask.main(["xq", "/ware"])
+    out = capsys.readouterr().out
+    assert rc == 4, out
+    assert "NEGATIVE CONFIRMED" not in out and "--file" in out, out
+
+
+def test_TWIN_the_same_zero_read_from_a_query_FILE_is_confirmed(monkeypatch, capsys, tmp_path):
+    _complete_zero(monkeypatch)
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    q = tmp_path / "q.xq"
+    q.write_text("//nothing", encoding="utf-8")
+    rc = ask.main(["xq", "--file", str(q)])
+    out = capsys.readouterr().out
+    assert rc == 0 and "NEGATIVE CONFIRMED over 100 of 100" in out, out
+
+
+def test_TWIN_the_same_argv_zero_outside_Git_Bash_is_confirmed(monkeypatch, capsys):
+    _complete_zero(monkeypatch)
+    rc = ask.main(["xq", "//nothing"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "NEGATIVE CONFIRMED over 100 of 100" in out, out
+
+
+def test_TWIN_refs_under_Git_Bash_is_unaffected(monkeypatch, capsys):
+    """refs/attr build their query in Python from an id or attribute name; no // crosses argv."""
+    _complete_zero(monkeypatch)
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    rc = ask.main(["refs", "nothing_by_this_id", "--db", "x4raw"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "NEGATIVE CONFIRMED" in out, out
+
+
+def test_a_POSITIVE_argv_xq_under_Git_Bash_shows_the_query_AS_RECEIVED(monkeypatch, capsys):
+    """A rewritten query can also return a wrong NON-zero answer, so every argv xq result under
+    Git Bash shows the query exactly as Python received it."""
+    _positive(monkeypatch)
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    assert ask.main(["xq", "collection('x4raw')/ware"]) == 0
+    out = capsys.readouterr().out
+    assert "as received" in out and "collection('x4raw')/ware" in out, out
+
+
+def test_a_query_file_and_an_argv_query_together_is_a_usage_error(tmp_path):
+    import pytest
+    q = tmp_path / "q.xq"
+    q.write_text("//x", encoding="utf-8")
+    for argv in (["xq", "//x", "--file", str(q)], ["xq"], ["refs", "x", "--file", str(q)], ["refs"]):
+        with pytest.raises(SystemExit) as exc:
+            ask.main(argv)
+        assert exc.value.code == 2, argv
+
+
+def test_an_UNREADABLE_query_file_refuses_rc2(tmp_path, capsys):
+    rc = ask.main(["xq", "--file", str(tmp_path / "absent.xq")])
+    assert rc == 2 and "absent.xq" in capsys.readouterr().err
