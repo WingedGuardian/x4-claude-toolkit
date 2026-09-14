@@ -215,3 +215,104 @@ def test_an_unimportable_paths_module_REFUSES(monkeypatch):
     with pytest.raises(x4lock.Unresolvable):
         x4lock.manifest()
     assert x4lock.main(["status"]) == 2
+
+
+# --- F119: a LINKED git worktree has no checkout-local config, by design ------------- #
+#
+# `.claude/x4-paths.env` is gitignored per-machine config written by the installer, so a
+# linked worktree never carries one -- and CLAUDE.md MANDATES a worktree per concurrent
+# session. Demanding it there made every compliant session see a red `x4lock status`.
+# The main checkout must still report a deleted one, a SUBMODULE (whose `.git` is also a
+# file) is not a worktree, and the waiver must never cost the configured toolkit's copy.
+
+def _checkout(tmp_path, kind: str) -> Path:
+    """A checkout root shaped like git lays it out: `.git` a DIRECTORY for the main
+    checkout, a FILE pointing into `<common>/.git/worktrees/<name>` for a linked
+    worktree, and a FILE pointing into `.git/modules/<name>` for a submodule."""
+    root = tmp_path / "checkout"
+    (root / "scripts").mkdir(parents=True)
+    if kind == "main":
+        (root / ".git").mkdir()
+    elif kind == "worktree":
+        (root / ".git").write_text(
+            "gitdir: C:/somewhere/toolkit/.git/worktrees/checkout\n", encoding="utf-8")
+    elif kind == "submodule":
+        (root / ".git").write_text("gitdir: ../.git/modules/checkout\n", encoding="utf-8")
+    else:
+        raise AssertionError(kind)
+    return root
+
+
+def _local_env(root: Path) -> Path:
+    return root / ".claude" / "x4-paths.env"
+
+
+def _named(paths, target: Path) -> bool:
+    want = str(target.resolve()).lower()
+    return any(str(p.resolve()).lower() == want for p in paths)
+
+
+def test_a_linked_WORKTREE_does_not_demand_its_own_x4_paths_env(tmp_path, monkeypatch, capsys):
+    root = _checkout(tmp_path, "worktree")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    monkeypatch.delenv("X4_TOOLKIT", raising=False)
+    assert not _named(x4lock.missing(), _local_env(root)), (
+        "a linked worktree never has its own x4-paths.env; demanding it is F119")
+    monkeypatch.setenv("X4_PROTECTED", str(_fresh(tmp_path / "protected.md")))
+    x4lock.main(["status"])
+    out = capsys.readouterr()
+    assert "linked git worktree" in out.out, "the waiver must be ANNOUNCED, never silent"
+    assert str(_local_env(root)) not in out.err
+
+
+def test_the_MAIN_checkout_still_reports_a_deleted_x4_paths_env(tmp_path, monkeypatch, capsys):
+    """The twin: without it, dropping the candidate for EVERY checkout would pass the
+    test above and lose the only report of a deleted config in the main checkout."""
+    root = _checkout(tmp_path, "main")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    assert _named(x4lock.missing(), _local_env(root))
+    monkeypatch.setenv("X4_PROTECTED", str(_fresh(tmp_path / "protected.md")))
+    x4lock.main(["status"])
+    assert "linked git worktree" not in capsys.readouterr().out
+
+
+def test_a_SUBMODULE_is_not_a_worktree_and_still_demands_its_env(tmp_path, monkeypatch):
+    """A submodule's `.git` is a FILE too. Treating every `.git` file as a worktree
+    would waive the config of a toolkit vendored as a submodule."""
+    root = _checkout(tmp_path, "submodule")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    assert _named(x4lock.missing(), _local_env(root))
+
+
+def test_a_worktree_env_file_that_DOES_exist_is_still_protected(tmp_path, monkeypatch):
+    """The waiver covers ABSENCE only. A worktree that does carry a config keeps it in
+    the manifest, where it gets locked like any other."""
+    root = _checkout(tmp_path, "worktree")
+    env = _local_env(root)
+    env.parent.mkdir(parents=True)
+    _fresh(env)
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    assert _named(x4lock.manifest(), env)
+
+
+def test_a_worktree_still_demands_the_CONFIGURED_toolkits_env(tmp_path, monkeypatch):
+    """When the worktree waiver applies, the config that matters is the one $X4_TOOLKIT
+    names. `_paths._find_env_file` returns nothing for a DELETED file, so without an
+    explicit candidate that deletion would be reported by nobody."""
+    root = _checkout(tmp_path, "worktree")
+    toolkit = tmp_path / "toolkit"
+    (toolkit / ".claude").mkdir(parents=True)
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    monkeypatch.setenv("X4_TOOLKIT", str(toolkit))
+    assert _named(x4lock.missing(), toolkit / ".claude" / "x4-paths.env")
+    assert not _named(x4lock.missing(), _local_env(root))
+
+
+def test_an_UNREADABLE_git_file_fails_closed(tmp_path, monkeypatch):
+    """Anything that cannot be proven a linked worktree is treated as a checkout that
+    should have its config -- a false MISSING is visible, a false waiver is not."""
+    root = tmp_path / "checkout"
+    (root / "scripts").mkdir(parents=True)
+    (root / ".git").write_text("not a gitdir line\n", encoding="utf-8")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    assert _named(x4lock.missing(), _local_env(root))

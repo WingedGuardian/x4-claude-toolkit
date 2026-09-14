@@ -141,6 +141,38 @@ class Unresolvable(RuntimeError):
     """The manifest cannot be built, so no answer about it means anything."""
 
 
+def _linked_worktree(root: Path) -> bool:
+    """True only when `root` is a LINKED git worktree.
+
+    git lays one out with `.git` as a FILE whose `gitdir:` points into
+    `<common>/.git/worktrees/<name>`. The main checkout has a `.git` DIRECTORY, and a
+    SUBMODULE also has a `.git` file -- but it points into `.git/modules/<name>`, so it is
+    not one. Anything unreadable or unrecognised answers False: a false MISSING is
+    visible, a false waiver is silent.
+    """
+    marker = root / ".git"
+    if not marker.is_file():
+        return False
+    try:
+        text = marker.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        if line.startswith("gitdir:"):
+            parts = Path(line[len("gitdir:"):].strip()).parts
+            return len(parts) >= 2 and parts[-2] == "worktrees"
+    return False
+
+
+def _local_env_waived() -> Path | None:
+    """This checkout's own `.claude/x4-paths.env` when it is ABSENT from a linked worktree
+    -- the one case where its absence is by design, not a loss (F119). Else None."""
+    local_env = _HERE.parent / ".claude" / "x4-paths.env"
+    if not local_env.is_file() and _linked_worktree(_HERE.parent):
+        return local_env
+    return None
+
+
 def _candidates() -> list[Path]:
     """Every path the manifest is DERIVED from, existing or not.
 
@@ -177,7 +209,16 @@ def _candidates() -> list[Path]:
     # Every `x4-paths.env` in play: the one this checkout carries, and the one the
     # configured toolkit root carries. They are usually different files, and the
     # second is what every hook actually reads.
-    out.append(_HERE.parent / ".claude" / "x4-paths.env")
+    #
+    # F119: a LINKED git worktree never has its own -- the file is gitignored per-machine
+    # config, and CLAUDE.md mandates a worktree per concurrent session -- so its absence
+    # there is not MISSING. The waiver costs nothing: the configured toolkit's copy is then
+    # demanded explicitly, because `_find_env_file` returns nothing for a DELETED file and
+    # would otherwise leave that deletion reported by nobody.
+    if _local_env_waived() is None:
+        out.append(_HERE.parent / ".claude" / "x4-paths.env")
+    elif os.environ.get("X4_TOOLKIT"):
+        out.append(Path(os.environ["X4_TOOLKIT"]) / ".claude" / "x4-paths.env")
     env_file = _paths._find_env_file() if _paths is not None else None
     if env_file:
         out.append(Path(env_file))
@@ -267,6 +308,14 @@ def cmd_status(_args) -> int:
     print()
     print("%d protected file(s): %s" % (
         len(items), ", ".join("%s %s" % (v, k) for k, v in sorted(counts.items()))))
+    waived = _local_env_waived()
+    if waived is not None:
+        # ANNOUNCED, never silent: a narrowed check says what it narrowed.
+        print("  note: this checkout is a linked git worktree, so its own %s is "
+              "per-machine config it never has and is not counted MISSING; %s" % (
+                  waived, "the configured toolkit's copy is checked instead"
+                  if os.environ.get("X4_TOOLKIT") else
+                  "X4_TOOLKIT is not set, so no configured copy could be checked"))
     if gone:
         # NAMED, never merely dropped. A protected file that is GONE is the outcome
         # the read-only bit cannot prevent -- this module's own table lists `rm -f`
