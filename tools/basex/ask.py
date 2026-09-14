@@ -192,6 +192,21 @@ def _strip_xq_comments(text: str) -> str:
     return text
 
 
+def _git_bash_argv_state() -> tuple[str | None, bool]:
+    """(MSYSTEM, conversion switched off) for THIS process; see `argv_under_git_bash` in main().
+
+    These describe the shell that launched this process and whether it rewrote our arguments.
+    They are not configuration, so `_paths` is the wrong door: a value in x4-paths.env cannot
+    say whether THIS invocation's argv was rewritten.
+    """
+    # env-ok: reads the launching shell's own markers (MSYSTEM, MSYS_NO_PATHCONV,
+    # MSYS2_ARG_CONV_EXCL) -- a fact about this process, not configuration.
+    env = os.environ
+    msystem = env.get("MSYSTEM") or None
+    off = bool(env.get("MSYS_NO_PATHCONV")) or env.get("MSYS2_ARG_CONV_EXCL", "").strip() == "*"
+    return msystem, off
+
+
 def q_refs(db: str, ident: str) -> str:
     lit = _xq_literal(ident)
     return f"""
@@ -266,10 +281,9 @@ def main(argv=None) -> int:
         print("error: the xq query is empty (or only comments), so there is nothing to run; "
               "an empty result from it would not be a negative", file=sys.stderr)
         return 2
-    conversion_off = (bool(os.environ.get("MSYS_NO_PATHCONV"))
-                      or os.environ.get("MSYS2_ARG_CONV_EXCL", "").strip() == "*")
+    msystem, conversion_off = _git_bash_argv_state()
     argv_under_git_bash = (args.mode == "xq" and args.file is None
-                           and bool(os.environ.get("MSYSTEM")) and not conversion_off)
+                           and bool(msystem) and not conversion_off)
 
     xq = {"refs": q_refs, "attr": q_attr}.get(args.mode)
     query = xq(args.db, args.arg) if xq else query_text
@@ -354,7 +368,7 @@ def main(argv=None) -> int:
         # guard above refuses a --db that disagrees, so "add --db x4eff" would be advice
         # that fails if followed (review, 2026-09-14).
         if argv_under_git_bash:
-            print(f"  query as received (Git Bash, MSYSTEM={os.environ.get('MSYSTEM')}): {query}")
+            print(f"  query as received (Git Bash, MSYSTEM={msystem}): {query}")
             print("  Git Bash rewrites path-like parts of arguments (`//` becomes `/`); if that is "
                   "not what you typed, "
                   "re-run with --file.")
@@ -381,7 +395,7 @@ def main(argv=None) -> int:
     # the query that ran may not be the query that was typed (see argv_under_git_bash).
     if argv_under_git_bash:
         print("\n  ** NOT A NEGATIVE FINDING. ** This query arrived as a command-line argument")
-        print(f"  under Git Bash (MSYSTEM={os.environ.get('MSYSTEM')}), which rewrites path-like parts")
+        print(f"  under Git Bash (MSYSTEM={msystem}), which rewrites path-like parts")
         print("  of it (`//` becomes `/`, a leading `/x` becomes a Windows path)")
         print("  before Python sees it, so the query that ran may not be the one you typed:")
         print(f"    as received: {query}")
