@@ -457,3 +457,46 @@ def test_a_genuinely_complete_tree_still_says_complete(monkeypatch, capsys):
     assert "(complete)" in text, (
         "a tree with nothing excluded must still support the negative claim:\n%s" % text)
     assert "NOT COMPLETE" not in text, text
+
+
+# --- what a result MEANS (cold E2E agent, 2026-09-14) ---------------------------
+# A docs-only agent read "3541 item(s) in x4eff." without knowing what an item is, and noted
+# that leaving off --db silently searches the files AS WRITTEN rather than the live tree.
+
+def _positive(monkeypatch):
+    _fake_basex(monkeypatch, "libraries/wares.xml  <ware>")
+    _stale(monkeypatch, fresh=True)
+
+
+def test_a_positive_result_says_what_an_ITEM_is(monkeypatch, capsys):
+    _positive(monkeypatch)
+    assert ask.main(["refs", "energycells", "--db", "x4eff"]) == 0
+    out = capsys.readouterr().out
+    assert "1 item(s) in x4eff." in out, "the count line itself must not change"
+    assert "not a count of files or entities" in out, out
+
+
+def test_an_OMITTED_db_is_named_as_the_as_written_default(monkeypatch, capsys):
+    _positive(monkeypatch)
+    assert ask.main(["refs", "energycells"]) == 0
+    out = capsys.readouterr().out
+    assert "1 item(s) in x4raw." in out
+    assert "--db x4eff" in out and "AS WRITTEN" in out, out
+
+
+def test_TWIN_an_EXPLICIT_db_gets_no_default_hint(monkeypatch, capsys):
+    """The twin, per database: naming --db, even `--db x4raw` itself, is a choice, and
+    re-explaining it on every run is noise that teaches the reader to skip the output."""
+    for db in ("x4raw", "x4eff"):
+        _positive(monkeypatch)
+        assert ask.main(["refs", "energycells", "--db", db]) == 0
+        assert "AS WRITTEN" not in capsys.readouterr().out, db
+
+
+def test_help_states_the_db_default_and_what_each_db_is(capsys):
+    import pytest
+    with pytest.raises(SystemExit) as exc:
+        ask.main(["--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "default: x4raw" in out and "effective" in out, out

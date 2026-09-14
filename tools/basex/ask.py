@@ -200,8 +200,16 @@ def main(argv=None) -> int:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("mode", choices=["refs", "attr", "xq"])
     p.add_argument("arg")
-    p.add_argument("--db", default="x4raw", choices=["x4raw", "x4eff"])
+    p.add_argument("--db", default=None, choices=["x4raw", "x4eff"],
+                   help="default: x4raw, the files AS WRITTEN (who wrote this, in which mod). "
+                        "x4eff is the effective merged tree the engine sees: use it for any "
+                        "claim about what is live")
     args = p.parse_args(argv)
+    # Resolved HERE, from an explicit None, so the output can say when the as-written
+    # database was searched only because nobody chose one (cold E2E agent, 2026-09-14).
+    db_defaulted = args.db is None
+    if db_defaulted:
+        args.db = "x4raw"
 
     xq = {"refs": q_refs, "attr": q_attr}.get(args.mode)
     query = xq(args.db, args.arg) if xq else args.arg
@@ -277,6 +285,14 @@ def main(argv=None) -> int:
     if hits:
         print("\n".join(lines))
         print(f"\n{hits} {unit} in {args.db}.")
+        # What the number counts. A docs-only agent read "3541 item(s) in x4eff." as wares
+        # or files; it is XQuery items -- for `refs`, one matching element per line.
+        if n_items is not None:
+            print("  (an item is one node or value the query returned -- not a count of "
+                  "files or entities)")
+        if db_defaulted:
+            print("  searched x4raw, the default: the files AS WRITTEN. For what the game "
+                  "actually loads, add --db x4eff.")
         # A count()-shaped query returns ONE item — the number — even when it
         # counted nothing. Before 2026-08-01 that printed "1 hit(s)" and skipped
         # the guard below entirely, which is the exact false positive this whole

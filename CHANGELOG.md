@@ -136,6 +136,11 @@
   answered `base` while `show` revealed a mod setting `price.min` and `price.max` -- found by a cold,
   docs-only agent. It names ORIGINS, never "a mod": measured over a real store, 42% of attributes with a
   non-base origin were last set by a DLC. An all-base entity is stated as such.
+- **BaseX `ask.py` says what its count counts, and when it searched the as-written database only by
+  default.** A positive result now adds that an item is one node or value the query returned -- not a
+  count of files or entities -- and, when `--db` was omitted, that it searched `x4raw` (files as written)
+  and to add `--db x4eff` for what the game actually loads. `--help` states the default. The count line
+  itself and the default are unchanged. Both gaps were found by a cold, docs-only agent.
 
 ## v3.1.1 — 2026-09-09
 
