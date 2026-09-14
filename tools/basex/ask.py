@@ -35,8 +35,9 @@ Usage
   uv run python ask.py xq   '<raw xquery>'
   uv run python ask.py xq   --file <query.xq>
 
-From Git Bash, pass an xq query with --file: MSYS rewrites `//` to `/` in command-line
-arguments before Python sees them, and a zero from an argument there is refused.
+From Git Bash, pass an xq query with --file: MSYS rewrites path-like parts of command-line
+arguments before Python sees them (`//` becomes `/`; a leading `/ware` becomes
+`C:/Program Files/Git/ware`), and a zero from an argument there is refused.
 """
 
 from __future__ import annotations
@@ -180,6 +181,17 @@ def _xq_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+_XQ_COMMENT = re.compile(r"\(:(?:(?!\(:|:\)).)*:\)", re.S)
+
+
+def _strip_xq_comments(text: str) -> str:
+    """The query with its XQuery comments removed. They nest, so the innermost go first."""
+    prev = None
+    while prev != text:
+        prev, text = text, _XQ_COMMENT.sub("", text)
+    return text
+
+
 def q_refs(db: str, ident: str) -> str:
     lit = _xq_literal(ident)
     return f"""
@@ -207,8 +219,9 @@ def main(argv=None) -> int:
     p.add_argument("arg", nargs="?",
                    help="the id (refs), the attribute name (attr) or the XQuery text (xq)")
     p.add_argument("--file", default=None,
-                   help="xq only: read the query from this file. Git Bash rewrites `//` to `/` in "
-                        "command-line arguments before Python sees them; a file is not rewritten")
+                   help="xq only: read the query from this file. Git Bash rewrites path-like parts "
+                        "of command-line arguments (`//` becomes `/`) before Python sees them; a "
+                        "file is not rewritten")
     p.add_argument("--db", default=None, choices=["x4raw", "x4eff"],
                    help="default: x4raw, the files AS WRITTEN (who wrote this, in which mod). "
                         "x4eff is the effective merged tree the engine sees: use it for any "
@@ -226,12 +239,14 @@ def main(argv=None) -> int:
     else:
         if args.file is not None:
             p.error(f"--file is for xq only; {args.mode} takes its value as an argument")
-        if args.arg is None:
-            p.error(f"{args.mode} needs an argument")
+        if args.arg is None or not args.arg.strip():
+            p.error(f"{args.mode} needs a non-empty argument")
     query_text = args.arg
     if args.file is not None:
         try:
-            query_text = Path(args.file).read_bytes().decode("utf-8")
+            # utf-8-sig: Notepad and Windows PowerShell 5.1 write a BOM, and BaseX rejects
+            # U+FEFF with a context error that names the wrong cause (review, 2026-09-14).
+            query_text = Path(args.file).read_bytes().decode("utf-8-sig")
         except (OSError, UnicodeDecodeError) as exc:
             print(f"error: cannot read the query file {args.file}: {exc}", file=sys.stderr)
             return 2
@@ -239,10 +254,22 @@ def main(argv=None) -> int:
     # Python as `.../ware`, and `'//ware'` as `/ware` -- MSYS path conversion rewrites the
     # ARGUMENT before any of this runs, and nothing here can see what was typed. The zero
     # guard below then certified a negative over a query nobody wrote. Git Bash exports
-    # MSYSTEM to its native children; PowerShell does not. refs/attr build their query here
-    # from an id or attribute name, so no `//` crosses argv for them.
+    # MSYSTEM to its native children; a PowerShell started on its own does not (one started FROM
+    # Git Bash inherits it and refuses too -- the safe direction, and --file still works).
+    # refs/attr build their query here from an id or attribute name, so nothing crosses argv.
+    # The conversion is wider than `//` -- a leading `/ware` arrives as `C:/Program Files/Git/ware`
+    # -- and MSYS_NO_PATHCONV, or MSYS2_ARG_CONV_EXCL=*, switches it off, measured both ways
+    # (review, 2026-09-14). The guard keys on the CHANNEL, never on a pattern in the query.
+    if args.mode == "xq" and not _strip_xq_comments(query_text).strip():
+        # An empty query returns an empty sequence, and the zero guard would certify it -- a
+        # truncated or unsaved query file printed NEGATIVE CONFIRMED rc 0 (review, 2026-09-14).
+        print("error: the xq query is empty (or only comments), so there is nothing to run; "
+              "an empty result from it would not be a negative", file=sys.stderr)
+        return 2
+    conversion_off = (bool(os.environ.get("MSYS_NO_PATHCONV"))
+                      or os.environ.get("MSYS2_ARG_CONV_EXCL", "").strip() == "*")
     argv_under_git_bash = (args.mode == "xq" and args.file is None
-                           and bool(os.environ.get("MSYSTEM")))
+                           and bool(os.environ.get("MSYSTEM")) and not conversion_off)
 
     xq = {"refs": q_refs, "attr": q_attr}.get(args.mode)
     query = xq(args.db, args.arg) if xq else query_text
@@ -328,7 +355,8 @@ def main(argv=None) -> int:
         # that fails if followed (review, 2026-09-14).
         if argv_under_git_bash:
             print(f"  query as received (Git Bash, MSYSTEM={os.environ.get('MSYSTEM')}): {query}")
-            print("  Git Bash rewrites `//` to `/` in arguments; if that is not what you typed, "
+            print("  Git Bash rewrites path-like parts of arguments (`//` becomes `/`); if that is "
+                  "not what you typed, "
                   "re-run with --file.")
         if db_defaulted and args.mode in ("refs", "attr"):
             print("  searched x4raw, the default: the files AS WRITTEN. For what the game "
@@ -353,7 +381,8 @@ def main(argv=None) -> int:
     # the query that ran may not be the query that was typed (see argv_under_git_bash).
     if argv_under_git_bash:
         print("\n  ** NOT A NEGATIVE FINDING. ** This query arrived as a command-line argument")
-        print(f"  under Git Bash (MSYSTEM={os.environ.get('MSYSTEM')}), which rewrites `//` to `/`")
+        print(f"  under Git Bash (MSYSTEM={os.environ.get('MSYSTEM')}), which rewrites path-like parts")
+        print("  of it (`//` becomes `/`, a leading `/x` becomes a Windows path)")
         print("  before Python sees it, so the query that ran may not be the one you typed:")
         print(f"    as received: {query}")
         print("  Put the query in a file and re-run with --file <path>; a file is not rewritten.")

@@ -6652,8 +6652,17 @@ correctly over the wrong query: coverage was real, the index was fresh, the zero
 already noted in passing that "argv is not a safe channel either" and was never applied here.
 
 **The fix names the channel instead of guessing the query.** Git Bash exports `MSYSTEM` to native
-children and PowerShell does not (measured both). `xq` takes `--file`, which is not rewritten; an
+children and a PowerShell started on its own does not (measured both; one started FROM Git Bash
+inherits it and refuses too, the safe direction). `xq` takes `--file`, which is not rewritten; an
 argument query run under `MSYSTEM` is refused as a negative (rc 4, the "cannot back a negative" code)
 and shows the query as received on any result, because a rewritten query can also return a wrong
 non-zero. `refs` and `attr` build their query in Python from an id or attribute name and are
 unaffected. Every clause has a twin and a mutant that fails its named test (7 of 7 killed).
+
+**A second review found three more, fixed the same way.** The conversion is wider than `//`: a
+leading `/ware` arrives as `C:/Program Files/Git/ware`, so the output and docs now say "path-like
+parts" and the guard keys on the channel, never on a pattern. An empty or comment-only query --
+a truncated or unsaved `--file` -- still certified a negative, the same shape through a new door:
+it now refuses (exit 2). And with `MSYS_NO_PATHCONV` or `MSYS2_ARG_CONV_EXCL=*` set the conversion
+is off (measured), so the refusal is too; a query file's UTF-8 BOM is dropped rather than sent to
+BaseX, which misreported it as a context error.

@@ -19,7 +19,8 @@ cd ../x4validate && uv run python ../basex/ask.py refs <id> [--db x4eff]
 
 `ask.py` searches **`x4raw` unless you pass `--db`**, and for `refs` and `attr` says so under the
 result (an `xq` query names its own collection). **From Git Bash, give an `xq` query with
-`--file`:** MSYS rewrites `//` to `/` in command-line arguments before Python sees them, so
+`--file`:** MSYS rewrites path-like parts of command-line arguments (`//` becomes `/`) before
+Python sees them, so
 `ask.py` refuses to certify a zero from an argument there and shows the query as received. What it
 counts are XQuery items -- for `refs`, one matching element per line -- not files or entities.
 

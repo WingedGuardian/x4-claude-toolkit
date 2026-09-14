@@ -114,14 +114,14 @@ cd ../x4validate && uv run python ../basex/staleness.py --db x4eff
 ## Exit codes
 
 Every code below is **read from the source**, not assumed. Note that `2` always
-means *"this is not set up"* and never *"your corpus has findings"* — the same
+means *"this could not run as asked"* (not set up, or a usage or input error) and never *"your corpus has findings"* — the same
 distinction the `x4validate` CLIs make.
 
 | tool | code | meaning |
 |---|---|---|
 | **`ask.py`** | 0 | answered (a positive result, or a negative WITH a denominator) |
-| | 2 | not set up, or the query and `--db` disagree about which database to search |
-| | 4 | **cannot back a negative** — zero hits, but coverage is missing/unexplained, or the index is stale, or the query was `count()`-shaped, or an `xq` query arrived as a Git Bash argument (use `--file`) |
+| | 2 | not set up; the query and `--db` disagree about which database to search; a usage error (`xq` takes exactly one of a query or `--file`); or a query file that is unreadable, not UTF-8, or empty/comment-only |
+| | 4 | **cannot back a negative** — zero hits, but coverage is missing/unexplained, or the index is stale, or the query was `count()`-shaped, or an `xq` query arrived as a Git Bash argument, where MSYS rewrites path-like parts before Python sees them (use `--file`; not refused when `MSYS_NO_PATHCONV` or `MSYS2_ARG_CONV_EXCL=*` is set) |
 | **`coverage.py`** | 0 | complete |
 | | 2 | refused — a required root was not supplied (an empty root resolves to the *current directory*, which would publish a denominator measured over the wrong population) |
 | | 3 | **accounted** — a deficit exists but every missing document is named. Still supports a negative claim. *`x4raw` path only.* |

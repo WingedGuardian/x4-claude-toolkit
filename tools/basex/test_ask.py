@@ -42,6 +42,8 @@ def _preflight_is_satisfied(monkeypatch):
     # it. Unset for every test so a verdict never depends on which shell ran the suite;
     # the Git Bash tests below set it explicitly.
     monkeypatch.delenv("MSYSTEM", raising=False)
+    monkeypatch.delenv("MSYS_NO_PATHCONV", raising=False)
+    monkeypatch.delenv("MSYS2_ARG_CONV_EXCL", raising=False)
 
 
 def test_the_preflight_is_actually_wired_into_main(monkeypatch, capsys):
@@ -589,3 +591,82 @@ def test_a_query_file_and_an_argv_query_together_is_a_usage_error(tmp_path):
 def test_an_UNREADABLE_query_file_refuses_rc2(tmp_path, capsys):
     rc = ask.main(["xq", "--file", str(tmp_path / "absent.xq")])
     assert rc == 2 and "absent.xq" in capsys.readouterr().err
+
+
+# --- second review of the Git Bash guard (2026-09-14) -------------------------------------
+
+def test_a_BLANK_or_COMMENT_ONLY_query_is_refused_not_confirmed(monkeypatch, capsys, tmp_path):
+    """An empty query returns an empty sequence, and the zero guard certified it: a truncated or
+    unsaved query file gave "NEGATIVE CONFIRMED" rc 0 (measured with the real jar by the review)."""
+    import pytest
+    for n, body in enumerate(["", "  \n\t\n", "(: nothing :)", "(: outer (: nested :) outer :)"]):
+        _complete_zero(monkeypatch)
+        q = tmp_path / ("q%d.xq" % n)
+        q.write_text(body, encoding="utf-8")
+        rc = ask.main(["xq", "--file", str(q)])
+        cap = capsys.readouterr()
+        assert rc == 2 and "NEGATIVE CONFIRMED" not in cap.out and "empty" in cap.err, (body, cap)
+    _complete_zero(monkeypatch)
+    assert ask.main(["xq", "(: just a comment :)"]) == 2
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as exc:
+        ask.main(["refs", "  "])
+    assert exc.value.code == 2
+
+
+def test_TWIN_a_comment_beside_a_real_expression_still_runs(monkeypatch, capsys, tmp_path):
+    _complete_zero(monkeypatch)
+    q = tmp_path / "q.xq"
+    q.write_text("(: why this query exists :) //nothing", encoding="utf-8")
+    rc = ask.main(["xq", "--file", str(q)])
+    assert rc == 0 and "NEGATIVE CONFIRMED" in capsys.readouterr().out
+
+
+def test_a_UTF8_BOM_in_a_query_file_is_not_sent_to_BaseX(monkeypatch, capsys, tmp_path):
+    """Notepad and Windows PowerShell 5.1 write a BOM; BaseX rejects U+FEFF as a context error,
+    so the user saw a BaseX failure naming the wrong cause."""
+    _complete_zero(monkeypatch)
+    seen = []
+    inner = ask.run_xq
+    monkeypatch.setattr(ask, "run_xq", lambda q: (seen.append(q), inner(q))[1])
+    q = tmp_path / "bom.xq"
+    q.write_bytes(b"\xef\xbb\xbf//nothing")
+    assert ask.main(["xq", "--file", str(q)]) == 0
+    assert seen and all("\ufeff" not in s for s in seen), seen
+
+
+def test_conversion_switched_OFF_turns_the_Git_Bash_refusal_off(monkeypatch, capsys):
+    """MSYS_NO_PATHCONV, or MSYS2_ARG_CONV_EXCL=*, leaves `//` intact (measured), so an argument
+    query is what was typed and its zero is a real negative."""
+    for var, value in (("MSYS_NO_PATHCONV", "1"), ("MSYS2_ARG_CONV_EXCL", "*")):
+        _complete_zero(monkeypatch)
+        monkeypatch.setenv("MSYSTEM", "MINGW64")
+        monkeypatch.delenv("MSYS_NO_PATHCONV", raising=False)
+        monkeypatch.delenv("MSYS2_ARG_CONV_EXCL", raising=False)
+        monkeypatch.setenv(var, value)
+        rc = ask.main(["xq", "//nothing"])
+        out = capsys.readouterr().out
+        assert rc == 0 and "NEGATIVE CONFIRMED" in out, (var, out)
+
+
+def test_TWIN_a_PARTIAL_conversion_exclusion_still_refuses(monkeypatch, capsys):
+    """MSYS2_ARG_CONV_EXCL names PREFIXES to leave alone; only `*` excludes every argument."""
+    _complete_zero(monkeypatch)
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    monkeypatch.setenv("MSYS2_ARG_CONV_EXCL", "--file")
+    assert ask.main(["xq", "//nothing"]) == 4
+
+
+def test_TWIN_no_as_received_notice_for_a_query_FILE_under_Git_Bash(monkeypatch, capsys, tmp_path):
+    _positive(monkeypatch)
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    q = tmp_path / "q.xq"
+    q.write_text("collection('x4raw')/ware", encoding="utf-8")
+    assert ask.main(["xq", "--file", str(q)]) == 0
+    assert "as received" not in capsys.readouterr().out
+
+
+def test_TWIN_no_as_received_notice_for_an_argv_query_outside_Git_Bash(monkeypatch, capsys):
+    _positive(monkeypatch)
+    assert ask.main(["xq", "collection('x4raw')/ware"]) == 0
+    assert "as received" not in capsys.readouterr().out
