@@ -6626,11 +6626,14 @@ this fix and is named here rather than left implicit.
 
 ## F122 — a verified negative over a query nobody typed: Git Bash rewrites `//` in arguments · **DEFECT (measured)** · confidence 98% · FIXED 2026-09-14
 
-**NO RE-DERIVATION by `gates/register_rederivation.py` -- and that is a gap in the gate, not in the
-evidence.** The checks live in `tools/basex/test_ask.py`: `test_a_ZERO_from_an_argv_xq_under_Git_Bash_is_NOT_a_negative`,
-its three twins (query file, outside Git Bash, `refs`), `test_a_POSITIVE_argv_xq_under_Git_Bash_shows_the_query_AS_RECEIVED`,
-and the usage and unreadable-file tests. The gate resolves citations only under `tests/`, `gates/`,
-`scripts/` and `.claude/`, so a truthful `tools/basex/` citation reads to it as no check at all.
+**RE-DERIVED BY:** `tools/basex/test_ask.py` (`test_a_ZERO_from_an_argv_xq_under_Git_Bash_is_NOT_a_negative`,
+`test_a_POSITIVE_argv_xq_under_Git_Bash_shows_the_query_AS_RECEIVED`, their twins, and the usage and
+unreadable-file tests).
+
+> 2026-09-14: this entry first had to use the register's opt-out, because `register_rederivation`
+> resolved citations only under `tests/`, `gates/`, `scripts/` and `.claude/` -- a gap in the gate, not
+> in the evidence. The gate now also resolves `tools/basex/test_*.py`, so the citation above is checked
+> like any other.
 
 **What happened.** A cold, docs-only agent followed `QUERIES.md`'s own example from Git Bash:
 `ask.py xq 'collection("x4raw")//ware'` printed `0 items` and `NEGATIVE CONFIRMED over 14054 of 14065

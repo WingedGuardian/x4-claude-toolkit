@@ -69,9 +69,19 @@ _CLOSED = re.compile(r"FIXED|CLOSED")
 #: inside the pattern whose own comment warns about it -- and reported F87 and F89
 #: as naming no check when both name a real one. Widening cannot admit a mere
 #: MENTION: the caller requires the named file to exist in one of the trees.
+#:
+#: EXTENDED 2026-09-14, the same false negative a third time: the BaseX tests live in
+#: `tools/basex/`, so F122's true citation of `tools/basex/test_ask.py` read as no check
+#: and the entry had to use the opt-out below. Only TEST files there count -- F46 cites
+#: `tools/basex/ask.py`, the tool itself, and a program is not a check of itself.
+#: Those files are NOT added to `_pool()`: a bare name defined only there counts when the
+#: entry cites the file (the cited-file clause). MEASURED on the real register: pooling them
+#: resolved F46 on `test_unimportable_engine_reports_UNKNOWN_not_a_traceback`, which that
+#: entry names as a test the defect BROKE, not as the check that proves its fix.
 _NAMES = re.compile(
     r"(?:tests/|gates/)[A-Za-z0-9_./-]+\.py"
     r"|(?:scripts/|\.claude/hooks/)[A-Za-z0-9_./-]+\.(?:sh|py)"
+    r"|tools/basex/test_[A-Za-z0-9_]+\.py"
     r"|`(test_[A-Za-z0-9_]+)`|selftest")
 
 #: The explicit opt-out. An entry whose figure genuinely cannot be re-derived
@@ -105,7 +115,7 @@ def entries(text: str) -> dict[str, str]:
     return out
 
 
-_PATH_PREFIXES = ("tests/", "gates/", "scripts/", ".claude/")
+_PATH_PREFIXES = ("tests/", "gates/", "scripts/", ".claude/", "tools/")
 
 #: A test DEFINITION. A name in a comment or a string is not a test.
 _DEF = re.compile(r"^[ \t]*def (test_[A-Za-z0-9_]+)\(", re.M)

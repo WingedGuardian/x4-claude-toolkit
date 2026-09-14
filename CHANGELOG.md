@@ -179,6 +179,12 @@
   said packed content was invisible. Also: `tools/basex/README.md`'s freshness command lacked the
   required `--check` and exited 2, and QUERIES.md's "current" coverage figures were three weeks old --
   now dated and derived from `coverage-<db>.json`. Found by a cold, docs-only agent.
+- **`gates/register_rederivation.py` sees the BaseX tests.** A FIXED register entry citing
+  `tools/basex/test_*.py` read as naming no check, so F122 had to use the opt-out. Those files now
+  resolve -- test files only (F46 cites `tools/basex/ask.py`, the tool, which is not a check), and a
+  bare test name defined only there counts only when the entry cites the file: adding them to the
+  bare-name pool was measured to resolve F46 on a test it names as a casualty. Per-entry verdicts
+  before and after are identical; F122 now cites its checks.
 
 ## v3.1.1 — 2026-09-09
 

@@ -106,3 +106,45 @@ def test_selftest_and_plain_file_citations_behave_as_before(tmp_path, monkeypatc
     assert rr.names_a_check("fixed; selftest", root) == "selftest"
     assert rr.names_a_check("fixed; `tests/test_real.py`", root) == "tests/test_real.py"
     assert rr.names_a_check("fixed; `tests/test_absent.py`", root) is None
+
+
+# --- tools/basex/ (2026-09-14) -----------------------------------------------------------
+# F122's checks live in tools/basex/test_ask.py, which the citation pattern could not see, so a
+# TRUE citation read as "names no check" and the entry had to use the NO RE-DERIVATION opt-out.
+# Only TEST files there count: F46 cites tools/basex/ask.py, the tool itself, which is not a check.
+
+def test_a_tools_basex_TEST_FILE_citation_resolves(tmp_path, monkeypatch):
+    root = _tree(tmp_path, {"tools/basex/test_ask.py": "def test_real():\n    pass\n"})
+    _only(monkeypatch, root)
+    assert rr.names_a_check("fixed; see `tools/basex/test_ask.py`", root) == "tools/basex/test_ask.py"
+
+
+def test_a_bare_name_defined_in_a_CITED_tools_basex_test_resolves(tmp_path, monkeypatch):
+    """F122's shape: the entry cites tools/basex/test_ask.py AND names tests defined in it."""
+    root = _tree(tmp_path, {"tools/basex/test_ask.py": "def test_only_here():\n    pass\n"})
+    _only(monkeypatch, root)
+    body = "fixed; see `tools/basex/test_ask.py` (`test_only_here`)"
+    assert rr.names_a_check(body, root) == "tools/basex/test_ask.py"
+
+
+def test_TWIN_a_bare_name_defined_only_in_an_UNCITED_tools_basex_test_does_not_resolve(tmp_path, monkeypatch):
+    """F46's shape, MEASURED on the real register: that entry names
+    `test_unimportable_engine_reports_UNKNOWN_not_a_traceback` as a test the defect BROKE, and the
+    file it lives in (tools/basex/test_staleness.py) is not cited. Pooling tools/basex made the
+    mention count as the entry's check. It must not."""
+    root = _tree(tmp_path, {"tools/basex/test_staleness.py": "def test_a_casualty():\n    pass\n"})
+    _only(monkeypatch, root)
+    assert rr.names_a_check("the defect broke `test_a_casualty`", root) is None
+
+
+def test_TWIN_a_tools_basex_TOOL_is_not_a_check(tmp_path, monkeypatch):
+    """F46 names tools/basex/ask.py -- the program the fix is in, not a test of it."""
+    root = _tree(tmp_path, {"tools/basex/ask.py": "print('a tool')\n"})
+    _only(monkeypatch, root)
+    assert rr.names_a_check("the fix is in `tools/basex/ask.py`", root) is None
+
+
+def test_TWIN_a_MISSING_tools_basex_test_file_is_not_a_check(tmp_path, monkeypatch):
+    root = _tree(tmp_path, {"tools/basex/test_other.py": "def test_x():\n    pass\n"})
+    _only(monkeypatch, root)
+    assert rr.names_a_check("see `tools/basex/test_nope.py`", root) is None
