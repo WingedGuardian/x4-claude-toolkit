@@ -4545,6 +4545,13 @@ worth more than the tests I wrote for it.
 
 **RE-DERIVED BY: `gates/published_surface_drift.py` and `tests/test_published_surface_drift.py`.**
 
+> **2026-09-13: both checks above were RETIRED with the dev repository** (their source is in
+> its archive bundle). **RE-DERIVED BY, since then:** `gates/deploy_parity.py` and
+> `tests/test_deploy_parity.py`, for the `.claude/` surfaces -- lifted from
+> `published_surface_drift.py`, deliberately without its accept-baseline. That gate does NOT
+> cover `tools/basex`; that surface is closed by removing its second copy instead, which is
+> part of the same retirement.
+
 `scripts/verify-port.py` proves the dev package matches the public mirror. Its population is
 `git ls-files` of one repository, scoped to `tools/x4validate`. Three things we ship are not in it:
 
@@ -4878,6 +4885,10 @@ counters are not comparable across runs; the intersection-by-item-hash is.
 
 **RE-DERIVED BY:** the port gate that compares the mod's committed `<savedvariable>` name against
 the CLI's committed `DEFAULT_VAR` in one command, rather than checking each side separately.
+
+> **2026-09-13: `scripts/verify-port.py` was RETIRED with the dev repository** -- with one
+> repository there is no port left for it to check. The one-command committed-blob comparison
+> this entry calls for is `gates/lockstep.py`, pinned by `tests/test_lockstep_gate.py`.
 
 The `x4live` channel decodes a TSV payload out of a lua global. The mod's `<savedvariable>` name and
 the CLI's `DEFAULT_VAR` must be identical or the CLI reads **zero of everything** — a NON-ANSWER, not
