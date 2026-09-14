@@ -11,7 +11,7 @@ The exact surface of every toolkit CLI, generated from its own argparse help so 
 
 Run a CLI from `$CLAUDE_PROJECT_DIR/tools/x4validate` as `uv run <cli> ...`. The full `--help` of a CLI and of each of its subcommands is in `reference/<cli>.md` -- read it before composing a command line.
 
-11 CLIs, 46 subcommands.
+11 CLIs, 47 subcommands.
 
 | CLI | subcommand | what it does |
 |---|---|---|
@@ -44,6 +44,7 @@ Run a CLI from `$CLAUDE_PROJECT_DIR/tools/x4validate` as `uv run <cli> ...`. The
 | | `pause` | WRITE: pause the running game. Refuses if it is already paused; exit 0 only when the engine reads back paused |
 | | `unpause` | WRITE: undo a pause THIS channel made. Refuses anyone else's pause; exit 0 only when the engine reads back running |
 | | `harvest` | ask the RUNNING engine EVERYTHING we can think to ask, in ONE connection, and write it down |
+| | `ffi-census` | ask the RUNNING engine, name by name, whether it exports each C function vanilla's ui lua declares in ffi.cdef -- the surface `query globals` cannot see. Indexes ffi.C only: nothing is called or declared |
 | | `groundtruth` | harvest the engine's DERIVED values live and WRITE THEM DOWN (the fixture any future traversal must reproduce) |
 | | `ramp` | MEASURE the message-size cap. An over-long message does NOT truncate -- it TEARS THE PIPE DOWN, costing the whole connection (F74, corrected 2026-08-29). Bounded below at 64,000 bytes; the ceiling above that is unmeasured |
 | **`x4modlist`** | | X4 mod-registry triage tool (API-first). |
