@@ -131,6 +131,11 @@
   every parser found **41** -- 34 with no help at all (22 in `x4effective`) and 7 whose default was
   never stated. Each string was written from the code it describes. Defaults that are machine paths
   or pinned ids are stated in words, so no personal path or 8-digit id reaches the shipped skill.
+- **`x4effective who-sets <kind> <name>` with no property now says which properties something other
+  than base set, by origin.** It printed only the ENTITY's origin, so asked who set `energycells` it
+  answered `base` while `show` revealed a mod setting `price.min` and `price.max` -- found by a cold,
+  docs-only agent. It names ORIGINS, never "a mod": measured over a real store, 42% of attributes with a
+  non-base origin were last set by a DLC. An all-base entity is stated as such.
 
 ## v3.1.1 — 2026-09-09
 

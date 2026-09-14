@@ -232,3 +232,28 @@ def test_the_ORIGINAL_failure_is_what_propagates(tmp_path, monkeypatch):
     with pytest.raises(_mutation.TreeMutating, match="mutating gate"):
         _effective.build(_merge.Config(reference=ref), db, dirs=[], kinds=("job",))
     assert not list(tmp_path.glob("*.tmp"))
+
+
+# --------------------------------------------------------------------------
+# who-sets with no property (cold E2E agent, 2026-09-14): asked who set a ware, it
+# answered `base` -- the ENTITY's origin -- while `show` revealed price.min and
+# price.max set by a mod. A narrowing that does not announce itself.
+# --------------------------------------------------------------------------
+
+def test_who_sets_without_a_prop_names_the_origins_of_changed_properties(tmp_path, monkeypatch, capsys):
+    db = _build(tmp_path, monkeypatch)
+    monkeypatch.setattr(_effective._registry, "ingest_content_xml", lambda *a, **k: [])
+    assert _effectivecli.main(["--db", str(db), "who-sets", "macro", "engine_arg_s_01_macro"]) == 0
+    out = capsys.readouterr().out
+    assert "1 of " in out, out
+    assert "aaa_thrust" in out and "thrust.forward" in out, out
+
+
+def test_TWIN_who_sets_without_a_prop_says_so_when_nothing_changed(tmp_path, monkeypatch, capsys):
+    """The twin: an all-base entity must be STATED as all-base, not merely left unsaid --
+    and the count must not be inflated into a claim that something changed."""
+    db = _build(tmp_path, monkeypatch)
+    monkeypatch.setattr(_effective._registry, "ingest_content_xml", lambda *a, **k: [])
+    assert _effectivecli.main(["--db", str(db), "who-sets", "ware", "ore"]) == 0
+    out = capsys.readouterr().out
+    assert "0 of " in out, out

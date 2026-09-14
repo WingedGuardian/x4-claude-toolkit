@@ -81,7 +81,7 @@ produces a silent no-op or a false alarm:
 An "xEdit for X4": the effective value of every ware/macro/job across base + DLC + all your mods,
 with **per-attribute provenance** (`base → modA replace-attr:12 → modB`), in a SQLite store you can
 query directly. `show` gives the full record view, `attr` reads one column across everything
-("all missiles and their damage"), `who-sets` gives just the chain, `diff-mod` shows everything a
+("all missiles and their damage"), `who-sets` gives the chain (and, for a whole entity, which origins changed its properties), `diff-mod` shows everything a
 mod wins, and `dump` prints the live merged XML for any path.
 
 **`x4diff`** does a semantic XML diff between two versions of a mod, with multi-baseline support —

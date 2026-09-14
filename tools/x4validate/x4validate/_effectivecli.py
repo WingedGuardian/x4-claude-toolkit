@@ -521,7 +521,39 @@ def _cmd_who_sets(con, args) -> int:
         _note = _winner_not_origin_note(ent["vpath"], ent["chain"])
         if _note:
             print(_note)
+        _print_changed_props(con, ent, args)
     return 0
+
+
+def _print_changed_props(con, ent, args) -> None:
+    """Which of this entity's properties something other than base last set, by origin.
+
+    The entity line above is the ENTITY's origin only. Asked "who set energycells?" it
+    answered `base` while `show` revealed price.min and price.max set by a mod (cold E2E
+    agent, 2026-09-14) -- a narrowing that did not announce itself. It is named in terms
+    of ORIGIN, never "a mod": MEASURED over the real store the same day, 123,414 of the
+    296,608 attributes with a non-base origin (42%) were last set by a DLC. `origin` is
+    'base' exactly where `chain` is NULL (294,940 + 296,608 = all 591,548 rows).
+    """
+    rows = con.execute("SELECT prop, origin FROM attrs WHERE entity_id=? ORDER BY prop",
+                       (ent["id"],)).fetchall()
+    changed = [r for r in rows if r["origin"] != "base"]
+    if not changed:
+        print(f"  0 of {len(rows)} properties set by anything but base -- every property "
+              f"is still its base value.")
+        return
+    by_origin: dict[str, list[str]] = {}
+    for r in changed:
+        by_origin.setdefault(r["origin"], []).append(r["prop"])
+    ranked = sorted(by_origin.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    print(f"  {len(changed)} of {len(rows)} properties were last set by something other "
+          f"than base -- the line above is the ENTITY's origin only:")
+    for origin, props in ranked[:5]:
+        print(f"    {origin:<40} {len(props):>4}   e.g. {props[0]}")
+    if len(ranked) > 5:
+        print(f"    ... and {len(ranked) - 5} more origin(s)")
+    print(f"  per property: `x4effective show {args.kind} {args.name}`, or "
+          f"`x4effective who-sets {args.kind} {args.name} <prop>`")
 
 
 def _reject_unknown_origin(con, folder: str) -> bool:
