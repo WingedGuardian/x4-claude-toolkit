@@ -161,7 +161,9 @@
   own `.claude/x4-paths.env`, a per-machine file a linked worktree never has. It now waives that
   file only in a linked worktree (identified by git's own `commondir` metadata, so a submodule does
   not count), says so in its output, and demands the main checkout's copy instead, plus
-  `$X4_TOOLKIT`'s when set, so a deleted configuration is still reported.
+  `$X4_TOOLKIT`'s when set, so a deleted configuration is still reported. Where nothing can stand
+  in (a worktree of a submodule, or a `--separate-git-dir` repository, with `$X4_TOOLKIT` unset),
+  the worktree's own file is still required.
 
 ## v3.1.1 — 2026-09-09
 
