@@ -135,7 +135,11 @@ positional arguments:
                      are Unknown because names are player-knowledge -- ids, positions and flags
                      are still exact. `compare <faction> <sector>` runs the container and --wide
                      paths in ONE call and diffs them per id; two separate queries cannot be
-                     compared because the population drifts by tens of objects a minute
+                     compared because the population drifts by tens of objects a minute. `macro
+                     <librarytype> <macro> [<property>] [--contents]`: a table-valued field reads
+                     `<table>` unless --contents renders it two levels deep (bounded; a cut says
+                     +N-more). `recon <id> [<id>] [<faction>] [--contents [--deep]]`: --contents
+                     renders one level of each table a probe returns, --deep one more
   args               arguments for the verb, passed through verbatim (including game-side flags
                      like --wide and --hidden). Put --pipe and --timeout BEFORE the verb
 

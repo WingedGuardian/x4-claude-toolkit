@@ -92,6 +92,14 @@
   because those files were absent now run. `next-blind-spot-id.py` reads the register where this
   repository nests it (it would otherwise have refused every request), and `toolkit_usage` asks
   `x4validate/_surface.py` instead of keeping a copy that had fallen behind it.
+- **`x4live query macro ... --contents` and `x4live query recon ... --contents --deep`.** A
+  library entry's table-valued fields (a ship's `weapons` and `storagetags`) came back as a
+  bare `<table>`, so they could never be compared. `macro --contents` renders them two levels
+  deep; `recon --deep` adds one level to `--contents`. Both are opt-in -- a reply without the
+  flag is byte-identical to before -- bounded per value (a cut says `+N-more`), depth-bounded so
+  a cyclic engine table cannot hang the game, and scrubbed per key and per string so a value
+  cannot split the reply's fields. The helper mod's BUILD moves; a running game needs a reload
+  to pick it up.
 
 ### Changed
 

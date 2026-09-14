@@ -1849,7 +1849,12 @@ def main(argv: list[str] | None = None) -> int:
              "player-knowledge -- ids, positions and flags are still exact. "
              "`compare <faction> <sector>` runs the container and --wide paths in ONE "
              "call and diffs them per id; two separate queries cannot be compared "
-             "because the population drifts by tens of objects a minute")
+             "because the population drifts by tens of objects a minute. "
+             "`macro <librarytype> <macro> [<property>] [--contents]`: a table-valued "
+             "field reads `<table>` unless --contents renders it two levels deep "
+             "(bounded; a cut says +N-more). `recon <id> [<id>] [<faction>] "
+             "[--contents [--deep]]`: --contents renders one level of each table a probe "
+             "returns, --deep one more")
     # REMAINDER, not "*": the game-side vocabulary has its own flags (--wide, --hidden)
     # and argparse would claim them as unknown OPTIONS, failing the command before it
     # ever reached the pipe. MEASURED 2026-08-30: `objects ... --wide` died at the CLI

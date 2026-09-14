@@ -57,7 +57,7 @@ local PROTO = 1
 --:
 --: Kept honest by `test_the_BUILD_constant_matches_the_file`, so editing the lua and
 --: forgetting to re-stamp this fails the suite rather than silently lying in game.
-local BUILD = "c4eda0ea"
+local BUILD = "397bfbac"
 local TAG_CMD, TAG_REPLY = "MQ", "MR"
 
 -- Cap on echo, the ramp instrument. Generous: the point of the ramp is to FIND the
@@ -262,6 +262,43 @@ local HEADER_RESERVE = 512
 --: A truncated cell says `+N-more` rather than ending silently.
 local CONTENTS_BUDGET = 400
 local ROW_BUDGET = MAX_PAYLOAD - HEADER_RESERVE
+
+--: THE ONE RENDERER for a table's CONTENTS, shared by `recon --contents` (one level, two
+--: with `--deep`) and `macro --contents` (two levels). Every property is load-bearing:
+--:  * DEPTH-BOUNDED, so there is no recursion to GUARD: a cyclic engine table cannot hang
+--:    us, because below `depth` a table renders as `<table>` -- an honest "there is more
+--:    here", never a silent omission.
+--:  * BOUNDED per value by CONTENTS_BUDGET, and a cut says `+N-more`: an over-long reply
+--:    TEARS THE PIPE DOWN (F74) rather than truncating.
+--:  * SANITISED per KEY and per STRING LEAF, never over the assembled cell. A tab or
+--:    newline would split the frame's fields and a comma would forge a sibling inside
+--:    `{...}`; scrubbing the assembled cell instead would also erase the commas of a
+--:    nested table's own rendering.
+--:  * SORTED keys, so two runs are diffable; pairs() order is not guaranteed stable.
+--: At depth 1 the output is byte-identical to recon's previous one-level renderer --
+--: `recon-20260830-211605.tsv` was recorded with it.
+local function render_table(v, depth)
+    local ks = {}
+    for k in pairs(v) do ks[#ks + 1] = k end
+    table.sort(ks, function(a, b) return tostring(a) < tostring(b) end)
+    local parts, used, shown = {}, 0, 0
+    for _, k in ipairs(ks) do
+        local val, vt = v[k], type(v[k])
+        local r
+        if vt == "number" or vt == "boolean" then r = tostring(val)
+        elseif vt == "string" then
+            r = (((#val > 40) and (val:sub(1, 40) .. "..") or val):gsub("[|\t\n\r,]", " "))
+        elseif vt == "table" and depth > 1 then r = render_table(val, depth - 1)
+        else r = "<" .. vt .. ">" end
+        local cell = (tostring(k):gsub("[|\t\n\r,]", " ")) .. "=" .. r
+        if used + #cell + 1 > CONTENTS_BUDGET then break end
+        parts[#parts + 1] = cell
+        used = used + #cell + 1
+        shown = shown + 1
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+           .. ((shown < #ks) and (" +" .. (#ks - shown) .. "-more") or "")
+end
 
 
 --: An absolute bound on ENUMERATION, distinct from the bound on the REPLY.
@@ -994,9 +1031,17 @@ verbs.ext = function(seq, id)
     reply(seq, "ABSENT", id)
 end
 
-verbs.macro = function(seq, ltype, name, prop)
+verbs.macro = function(seq, ltype, name, ...)
+    -- `--contents` is a FLAG, taken out before the positional <property>. Left in place it
+    -- would sit in the property slot and be looked up as a field literally named
+    -- `--contents`, answering ABSENT for an entry that exists.
+    local prop, contents = nil, false
+    for _, a in ipairs({ ... }) do
+        if a == "--contents" then contents = true
+        elseif prop == nil and a ~= "" then prop = a end
+    end
     if ltype == nil or ltype == "" or name == nil or name == "" then
-        reply(seq, "ERR", "macro needs <librarytype> <macroname> [<property>]")
+        reply(seq, "ERR", "macro needs <librarytype> <macroname> [<property>] [--contents]")
         return
     end
     if type(GetLibraryEntry) ~= "function" then
@@ -1035,7 +1080,12 @@ verbs.macro = function(seq, ltype, name, prop)
     for _, k in ipairs(ks) do
         local v = entry[k]
         total = total + 1
-        local fld = k .. "=" .. (type(v) == "table" and "<table>" or tostring(v))
+        -- A table value is `<table>` unless `--contents` asked for two levels of it: the
+        -- default must stay byte-identical, because a harvest stores this payload as its
+        -- `*` row and the oracle reads it.
+        local fld = k .. "=" .. (type(v) == "table"
+                                 and (contents and render_table(v, 2) or "<table>")
+                                 or tostring(v))
         if used + #fld + 1 <= ROW_BUDGET then
             out[#out + 1] = fld
             used = used + #fld + 1
@@ -1601,11 +1651,12 @@ end
 --: Pull the flag tokens out of the positional arguments. They may appear anywhere, so
 --: a caller need not remember an order that exists only inside our parser.
 local function split_flags(...)
-    local opts, pos = { hidden = false, wide = false, contents = false }, {}
+    local opts, pos = { hidden = false, wide = false, contents = false, deep = false }, {}
     for _, a in ipairs({ ... }) do
         if a == "--hidden" then opts.hidden = true
         elseif a == "--wide" then opts.wide = true
         elseif a == "--contents" then opts.contents = true
+        elseif a == "--deep" then opts.deep = true
         elseif a ~= nil and a ~= "" then pos[#pos + 1] = a end
     end
     return opts, pos
@@ -2258,39 +2309,11 @@ verbs.recon = function(seq, ...)
     local id_a, id_b, faction = pos[1], pos[2], pos[3]
     local out, nok, nraise, nabsent, nmacro = {}, 0, 0, 0, 0
 
-    --: `--contents` -- OPT-IN, BOUNDED, SCALAR LEAVES ONLY, ONE LEVEL DEEP. All four
-    --: words are load-bearing:
-    --:  * OPT-IN, because 109 recorded calls in recon-20260830-211605.tsv were taken
-    --:    with the shape-only summary. Changing the default silently would make this
-    --:    run and that fixture non-comparable while looking like the same command.
-    --:  * BOUNDED, because an over-long reply does NOT truncate -- it TEARS THE PIPE
-    --:    DOWN (F74), costing the whole connection rather than a few bytes off the end.
-    --:  * SCALAR LEAVES ONLY / ONE LEVEL, so there is NO RECURSION TO GUARD. A cyclic
-    --:    engine table cannot hang us because we never descend into one. A nested table
-    --:    renders as `<table>` -- an honest "there is more here", not a silent omission.
-    --: Keys are SORTED so two runs are diffable; an engine table's pairs() order is not
-    --: guaranteed stable and an unstable order would make every diff look like a change.
-    local function render_contents(v)
-        local ks = {}
-        for k in pairs(v) do ks[#ks + 1] = k end
-        table.sort(ks, function(a, b) return tostring(a) < tostring(b) end)
-        local parts, used, shown = {}, 0, 0
-        for _, k in ipairs(ks) do
-            local val, vt = v[k], type(v[k])
-            local r
-            if vt == "number" or vt == "boolean" then r = tostring(val)
-            elseif vt == "string" then
-                r = (#val > 40) and (val:sub(1, 40) .. "..") or val
-            else r = "<" .. vt .. ">" end
-            local cell = (tostring(k) .. "=" .. r):gsub("[|\t\n\r,]", " ")
-            if used + #cell + 1 > CONTENTS_BUDGET then break end
-            parts[#parts + 1] = cell
-            used = used + #cell + 1
-            shown = shown + 1
-        end
-        return "{" .. table.concat(parts, ",") .. "}"
-               .. ((shown < #ks) and (" +" .. (#ks - shown) .. "-more") or "")
-    end
+    --: `--contents` is OPT-IN, because 109 recorded calls in recon-20260830-211605.tsv
+    --: were taken with the shape-only summary: changing the default would make this run
+    --: and that fixture non-comparable while looking like the same command. It renders
+    --: ONE level; `--deep` adds exactly one more (GetUnitStorageData's nested tables).
+    --: Bounds, sanitising and sort order live in `render_table`, shared with `macro`.
 
     local function summarize(v)
         local t = type(v)
@@ -2299,7 +2322,7 @@ verbs.recon = function(seq, ...)
             local keys = 0
             for _ in pairs(v) do keys = keys + 1 end
             local s = "table[#" .. #v .. ",keys=" .. keys .. "]"
-            if opts.contents then s = s .. render_contents(v) end
+            if opts.contents then s = s .. render_table(v, opts.deep and 2 or 1) end
             return s
         end
         if t == "string" then
@@ -2390,6 +2413,7 @@ verbs.recon = function(seq, ...)
                    .. " zero=" .. #RECON_ZERO .. " perobj=" .. #RECON_OBJ
                    .. " permacro=" .. #RECON_MACRO .. " macros_resolved=" .. nmacro
                    .. " contents=" .. (opts.contents and "yes" or "no")
+                   .. " deep=" .. (opts.deep and "yes" or "no")
                    .. " faction=" .. fac
                    .. (capped and (" CAPPED=yes omitted=" .. (#out - shown)) or " CAPPED=no")
     table.insert(rows, 1, header)

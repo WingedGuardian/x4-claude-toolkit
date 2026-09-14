@@ -2291,6 +2291,102 @@ def test_contents_keys_are_SORTED_so_two_runs_are_DIFFABLE(lua_factory):
     assert keys == sorted(keys), keys
 
 
+# --- deep contents: `macro --contents` and `recon --contents --deep` ------------ #
+#
+# WHY. The groundtruth harvest records `weapons=<table>` and `storagetags=<table>` for
+# every ship (groundtruth-20260913-115336.tsv), so four of the eight "loadout join"
+# fields were never readable at all. Two levels, bounded, opt-in -- and the renderer is
+# SHARED with recon's one-level form, whose output must stay byte-identical.
+
+
+def _lib(body):
+    return live(GetLibraryEntry="function(lt, n) return " + body + " end")
+
+
+def test_macro_DEFAULT_still_elides_a_nested_table(lua_factory):
+    """The twin, and the compatibility guarantee: the `*` row a harvest stores verbatim
+    must not change for anyone who does not ask."""
+    r = ask(_lib("{hull = 1, weapons = {s = 2}}"), 1, "macro", "engine", "m")
+    assert r.status == "OK", r.payload
+    assert "weapons=<table>" in r.fields, r.fields
+    assert "s=2" not in r.payload, r.payload
+
+
+def test_macro_contents_is_a_FLAG_not_a_property_name(lua_factory):
+    """Positional args put a trailing `--contents` in the <property> slot, where it
+    would read as a lookup of a field literally named `--contents` -> ABSENT."""
+    r = ask(_lib("{hull = 1, weapons = {s = 2}}"), 1, "macro", "engine", "m", "--contents")
+    assert r.status == "OK", f"{r.status}: {r.payload}"
+    assert "hull=1" in r.fields, r.fields
+
+
+def test_macro_contents_RENDERS_two_levels_SORTED(lua_factory):
+    r = ask(_lib("{hull = 1, weapons = {s = 2, m = {x = 1}}}"), 1,
+            "macro", "engine", "m", "--contents")
+    assert "weapons={m={x=1},s=2}" in r.fields, r.fields
+
+
+def test_macro_contents_STOPS_at_two_levels(lua_factory):
+    """Bounded depth is what makes a cycle guard unnecessary. The third level must be
+    VISIBLE as elided, never dropped."""
+    r = ask(_lib("{a = {b = {c = {d = 1}}}}"), 1, "macro", "engine", "m", "--contents")
+    assert "a={b={c=<table>}}" in r.fields, r.fields
+    assert "d=1" not in r.payload, r.payload
+
+
+def test_macro_contents_TERMINATES_on_a_cyclic_table(lua_factory):
+    """If this ever recurses without a bound, this test HANGS -- which is the signal."""
+    rt = live()
+    rt.execute("local t = {name = 'loop'} t.self = t "
+               "_G.GetLibraryEntry = function(lt, n) return {root = t} end")
+    r = ask(rt, 1, "macro", "engine", "m", "--contents")
+    assert r.status == "OK", r.payload
+    assert "self={name=loop,self={" not in r.payload, "rendered THREE levels: " + r.payload
+    assert "root={name=loop,self={name=loop,self=<table>}}" in r.fields, r.fields
+
+
+def test_macro_contents_keeps_the_FRAME_intact(lua_factory):
+    """A leaf string carrying a tab or newline would split one field into several, and a
+    comma would forge a sibling inside `{...}`. The field count is the check a
+    substring cannot fake."""
+    r = ask(_lib("{a = {s = 'x\\ty,z|w\\nq'}, b = 1}"), 1, "macro", "engine", "m",
+            "--contents")
+    assert r.status == "OK", r.payload
+    assert len(r.fields) == 2, r.fields
+    assert r.fields[0] == "a={s=x y z w q}", r.fields[0]
+    # The KEY is scrubbed too, separately: a nested engine table may be keyed by strings.
+    r = ask(_lib("{a = {['k,1\\t'] = 1}, b = 1}"), 2, "macro", "engine", "m", "--contents")
+    assert len(r.fields) == 2, r.fields
+    assert r.fields[0] == "a={k 1 =1}", r.fields[0]
+
+
+def test_macro_contents_is_BOUNDED_and_NAMES_what_it_omitted(lua_factory):
+    big = "{fat = {" + ", ".join(
+        "k%03d = 'vvvvvvvvvvvvvvvvvvvv'" % i for i in range(200)) + "}}"
+    r = ask(_lib(big), 1, "macro", "engine", "m", "--contents")
+    cell = [f for f in r.fields if f.startswith("fat=")][0]
+    assert "-more" in cell, "bounded but silent about it: " + cell[:200]
+    omitted = int(re.search("[+]([0-9]+)-more", cell).group(1))
+    assert 0 < omitted < 200
+    assert len(cell) < 1200, "the bound did not hold: %d bytes" % len(cell)
+
+
+def test_recon_DEEP_descends_exactly_ONE_more_level(lua_factory):
+    rt, oid = _contents_rt("{outer = 1, inner = {secret = 99, deeper = {gone = 1}}}")
+    r = ask(rt, 2, "recon", oid, "--contents", "--deep")
+    row = _storage_row(r)
+    assert "inner={deeper=<table>,secret=99}" in row, row
+    assert "gone" not in row, row
+    assert hdr(r)["deep"] == "yes"
+
+
+def test_recon_without_DEEP_says_so_and_stays_one_level(lua_factory):
+    rt, oid = _contents_rt("{outer = 1, inner = {secret = 99}}")
+    r = ask(rt, 2, "recon", oid, "--contents")
+    assert "inner=<table>" in _storage_row(r)
+    assert hdr(r)["deep"] == "no"
+
+
 # --- censusprobe: the SECOND cause of the census caveat, measured per item ----- #
 
 
