@@ -432,6 +432,10 @@ _ALL_CELLS: list[Cell] = [
          ["groundtruth", "--timeout", "1"], expect=(0, 2), findings_ok=True),
     Cell("x4live", "harvest (rc 2 unless the game is up)",
          ["harvest", "--timeout", "1"], expect=(0, 2), findings_ok=True),
+    # The source parse runs first (reference/ ui lua); then the pipe. 3 is a batch the game
+    # did not answer -- a non-answer the tool refuses to call a finding.
+    Cell("x4live", "ffi-census (rc 2 unless the game is up)",
+         ["ffi-census", "--timeout", "1"], expect=(0, 2, 3), findings_ok=True),
     # ⚠ The two cells above run the DEFAULT uidata path, which exits 2 whenever the
     # engine-probe mod is not deployed -- so they were GREEN while never exercising the
     # oracle at all. These run the groundtruth path, the one that actually compares.
