@@ -237,7 +237,9 @@ tiers behind each answer.
 - **Write lock** — `python scripts/x4lock.py status | lock | unlock` marks the files you
   cannot afford to lose by accident (the hooks, the skills, `CLAUDE.md`,
   `KNOWLEDGEBASE.md`, your paths config) read-only, so a stray write fails loudly
-  instead of succeeding quietly. Unlock, edit, relock.
+  instead of succeeding quietly. Unlock, edit, relock. Run from a linked git worktree,
+  it checks the configured toolkit's paths config instead of the worktree's own, which a
+  worktree never has, and says so.
 
   > ⚠ **Unlock before re-running the installer, then lock again.** The installer will
   > not write over a read-only file: it REFUSES up front, names the files it would

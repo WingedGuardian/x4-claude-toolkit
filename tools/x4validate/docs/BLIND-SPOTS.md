@@ -168,8 +168,8 @@ memory or from another session -- a remembered id was stale within a day here.
 | F114 | FIVE gates reached a verdict line with no floor under the population it described: "All properties hold" over three unrun checks, "No per-mod regression" over an EMPTY intersection, a completion sentinel over an empty directory, a header-only artifact from an empty input, and a three-channel audit whose third channel was uncounted | **DEFECT (measured)** | 5 gates, all rc 0; each now refuses or returns 3 | v3.1.0 |
 | F116 | a PAUSED game "goes silent" shipped as fact; measured live, a paused game answers | **DEFECT (measured)** · ✅ FIXED 2026-09-13 | a user-facing hint sent people with a silent channel to unpause; 4 of 4 separate processes got answers from a paused game | corrected everywhere it appeared; `tests/test_livepipe.py` fails if it returns |
 | F117 | a `globals` paging test that could not go red, and a lua mutation harness anchored on text the mod no longer has | **DEFECT (measured)** · ✅ FIXED 2026-09-13 | the "stops paging" mutant SURVIVED on pristine code | the test now requires OK on both pages; the stale harness copy retired with the dev repository |
-| F118 | a Windows clone checks the shipped mod's XML out as CRLF, and `deploy-mod.py` compares raw bytes | **DEFECT (measured)** · OPEN | `content.xml` is `i/lf w/crlf` on the author's checkout | OPEN: pin `mods/**/*.xml` as the lua is, or compare normalised content |
-| F119 | `x4lock status` run from a git worktree reports the untracked `.claude/x4-paths.env` as MISSING | **DEFECT (measured)** · OPEN | rc 1 in a worktree, rc 0 in the main checkout, 39 of 39 locked in both | OPEN |
+| F118 | a Windows clone checks the shipped mod's XML out as CRLF, and `deploy-mod.py` compares raw bytes | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | `content.xml` is `i/lf w/crlf` on the author's checkout; a fresh worktree had BOTH XML files CRLF | pinned `mods/**/*.xml text eol=lf`; `tests/test_line_ending_pin_is_obeyed.py` now covers the XML |
+| F119 | `x4lock status` run from a git worktree reports the untracked `.claude/x4-paths.env` as MISSING | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | rc 1 in a worktree, rc 0 in the main checkout, 39 of 39 locked in both | a linked worktree's absent local config is waived and announced, the configured toolkit's copy demanded instead; `tests/test_x4lock.py` |
 | F120 | the CLAUDE.md ratchet counted a checkout's CRs as content | **DEFECT (measured)** · ✅ FIXED 2026-09-13 | GREW +872 on a file 52 characters UNDER its baseline | each CRLF now counts as one newline; `tests/test_claude_md_budget.py` |
 | F121 | `x4effective who-sets` with no property answered with the ENTITY's origin while its properties had been changed, and could not see removals at all | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | asked who set `energycells` it said `base`; 33 of its 49 properties were last set by something else | origins and file-level removals now reported; `show` still lists no removals (OPEN) |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
@@ -6481,7 +6481,9 @@ session, NOT re-measured here; the copy retired with the dev repository on 2026-
 Both halves are #26. A size cap plus a shared error path let the failure fit inside the assertion, and a
 mutant whose anchor matches nothing cannot plant the defect it names.
 
-## F118 — a fresh Windows clone checks the shipped mod's XML out as CRLF, so a byte-comparing deploy sees changes nobody made · **DEFECT (measured)** · confidence 90% · OPEN
+## F118 — a fresh Windows clone checks the shipped mod's XML out as CRLF, so a byte-comparing deploy sees changes nobody made · **DEFECT (measured)** · confidence 95% · FIXED 2026-09-14
+
+**RE-DERIVED BY:** `tests/test_line_ending_pin_is_obeyed.py` (`test_every_file_pinned_to_LF_actually_holds_LF_on_disk`).
 
 `.gitattributes` pins `mods/**/*.lua` to LF (the F53 reasoning) but not the mod's XML. Under
 `core.autocrlf=true` with `* text=auto`, MEASURED 2026-09-13 on the author's main checkout:
@@ -6494,7 +6496,23 @@ The consequence -- a deploy listing CHANGED files nobody edited -- was reported 
 session and is consistent with the code as READ; it is not reproduced here. Two remedies, neither taken
 yet: pin `mods/**/*.xml` as the lua is, or compare content with line endings normalised. **OPEN.**
 
-## F119 — `x4lock` run from a git worktree calls an untracked config file MISSING · **DEFECT (measured)** · confidence 97% · OPEN
+**CORRECTED 2026-09-14 (the cause):** this repository's `.git/config` sets `core.autocrlf=false`, which
+overrides the system gitconfig's `true`. The CRLF comes from `* text=auto` checking out with Windows'
+native line ending, not from autocrlf. MEASURED: a fresh `git worktree add` gave `w/crlf` for BOTH
+`content.xml` and `ui.xml`, so "1 of its 2" above was the author's checkout, not the rule.
+
+**FIXED 2026-09-14** (`.gitattributes`, pin `mods/**/*.xml text eol=lf`): the first remedy, chosen
+because the blobs were already LF (no repository change) and because the existing F67 guard then
+enforces it with no new code. Normalising inside `deploy-mod.py` would have hidden the checkout defect
+instead of removing it. Predictions written first, all held: with the pin added the guard went RED on
+both files (`content.xml` 12 CRLF, `ui.xml` 30); GREEN after rewriting them with their committed bytes
+(no diff); the deploy dry run went from 1 CHANGED to 0 CHANGED / 4 UNCHANGED. ⚠ Any existing Windows
+checkout still holding the CRLF bytes now fails that guard until the files are rewritten -- the F67
+precedent, stated in the commit.
+
+## F119 — `x4lock` run from a git worktree calls an untracked config file MISSING · **DEFECT (measured)** · confidence 97% · FIXED 2026-09-14
+
+**RE-DERIVED BY:** `tests/test_x4lock.py` (`test_a_linked_WORKTREE_does_not_demand_its_own_x4_paths_env`, `test_the_MAIN_checkout_still_reports_a_deleted_x4_paths_env`, `test_a_SUBMODULE_is_not_a_worktree_and_still_demands_its_env`, `test_a_worktree_env_file_that_DOES_exist_is_still_protected`, `test_a_worktree_still_demands_the_CONFIGURED_toolkits_env`, `test_an_UNREADABLE_git_file_fails_closed`).
 
 MEASURED 2026-09-13 from a session worktree: `python scripts/x4lock.py status` exits **1** with
 `*** 1 PROTECTED FILE(S) MISSING` naming `<worktree>/.claude/x4-paths.env`, above a summary of
@@ -6505,6 +6523,18 @@ keyed to the checkout the command runs from, not to the configured toolkit whose
 worktree is the isolation CLAUDE.md MANDATES for concurrent sessions, so every session following that rule
 sees a red `x4lock` -- the kind of standing alarm that teaches a reader to ignore the tool. Reported by the
 write-verbs session; re-measured here. **OPEN.**
+
+**FIXED 2026-09-14** (`scripts/x4lock.py`). A checkout counts as a LINKED worktree only when its `.git`
+is a FILE whose `gitdir:` points into `.../worktrees/<name>`; a submodule's `.git` file points into
+`.../modules/<name>` and does not count, and anything unreadable fails closed. There, an ABSENT local
+env file is waived and `status` says so; a present one stays protected. Dropping the candidate outright
+was not an option: in the main checkout it is the only report of a deleted config, because
+`_paths._find_env_file` returns nothing for a file that is gone. For the same reason the waiver now
+demands `$X4_TOOLKIT/.claude/x4-paths.env` explicitly -- without that, a deleted configured copy would be
+reported by nobody. Six tests, RED first (the waiver and the configured-copy demand failed on the old
+code; four twins passed before and after); seven hand-mutants, one per clause, all killed, the file
+restored byte-identical to its commit. Live: the worktree went rc 1 -> rc 0 with the note, 39 of 39
+locked.
 
 ## F120 — the CLAUDE.md ratchet counted a checkout's line endings as content · **DEFECT (measured)** · confidence 99% · FIXED 2026-09-13
 

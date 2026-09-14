@@ -143,6 +143,22 @@
   and to add `--db x4eff` for what the game actually loads. `--help` states the default. The count line
   itself and the default are unchanged. Both gaps were found by a cold, docs-only agent.
 
+### Fixed
+
+- **A Windows clone checked the shipped mod's XML out as CRLF (F118).** `* text=auto` uses the
+  platform's native line ending, so `mods/x4_toolkit_helper/*.xml` arrived CRLF while the
+  committed and deployed copies are LF, and `scripts/deploy-mod.py` listed changes nobody made.
+  `.gitattributes` now pins `mods/**/*.xml` to LF, as the lua already was; the blobs are
+  unchanged. **If you already have a Windows clone**, `tests/test_line_ending_pin_is_obeyed.py`
+  will fail on those two files until they are checked out again. They are tracked and
+  unmodified, so deleting them and running
+  `git checkout -- mods/x4_toolkit_helper/content.xml mods/x4_toolkit_helper/ui.xml`
+  restores them with LF, and no diff results.
+- **`scripts/x4lock.py status` failed in every git worktree (F119).** It demanded the checkout's
+  own `.claude/x4-paths.env`, a per-machine file a linked worktree never has. It now waives that
+  file only in a linked worktree (a submodule does not count), says so in its output, and demands
+  the configured toolkit's copy instead, so a deleted configuration is still reported.
+
 ## v3.1.1 — 2026-09-09
 
 **CI was RED on the v3.1.0 tag, on both legs, and the release went out anyway.** One
