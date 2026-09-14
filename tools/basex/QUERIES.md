@@ -17,7 +17,8 @@ cd ../x4validate && uv run python ../basex/ask.py refs <id> [--db x4eff]
 | **`x4raw`** | every file as written, per mod (13,862 docs, as of 2026-08-24) | *who **wrote** this, in which mod* |
 | **`x4eff`** | `_merge.build_effective` per vpath (10,937 docs, as of 2026-08-24) | *what does the **engine** see* |
 
-`ask.py` searches **`x4raw` unless you pass `--db`**, and says so under the result. What it
+`ask.py` searches **`x4raw` unless you pass `--db`**, and for `refs` and `attr` says so under the
+result (an `xq` query names its own collection). What it
 counts are XQuery items -- for `refs`, one matching element per line -- not files or entities.
 
 `x4raw` will happily tell you vanilla sets a value that no longer survives the
@@ -70,7 +71,6 @@ $ ask.py xq 'count(collection("x4raw")//ware[@id="nope"])'
 0
 1 item(s) in x4raw.
   (an item is one node or value the query returned -- not a count of files or entities)
-  searched x4raw, the default: the files AS WRITTEN. For what the game actually loads, add --db x4eff.
   ** NOT A NEGATIVE FINDING. ** That is one atomic value, not one match …
   Re-run returning the nodes themselves — drop the count(...) wrapper.
 ```

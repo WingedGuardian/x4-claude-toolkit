@@ -290,7 +290,10 @@ def main(argv=None) -> int:
         if n_items is not None:
             print("  (an item is one node or value the query returned -- not a count of "
                   "files or entities)")
-        if db_defaulted:
+        # Not for `xq`: that query names its own collection, and the foreign-collection
+        # guard above refuses a --db that disagrees, so "add --db x4eff" would be advice
+        # that fails if followed (review, 2026-09-14).
+        if db_defaulted and args.mode in ("refs", "attr"):
             print("  searched x4raw, the default: the files AS WRITTEN. For what the game "
                   "actually loads, add --db x4eff.")
         # A count()-shaped query returns ONE item — the number — even when it

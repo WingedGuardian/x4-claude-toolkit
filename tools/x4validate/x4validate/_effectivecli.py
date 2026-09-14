@@ -538,9 +538,11 @@ def _print_changed_props(con, ent, args) -> None:
     rows = con.execute("SELECT prop, origin FROM attrs WHERE entity_id=? ORDER BY prop",
                        (ent["id"],)).fetchall()
     changed = [r for r in rows if r["origin"] != "base"]
+    removals = _removal_note(con, ent)
     if not changed:
-        print(f"  0 of {len(rows)} properties set by anything but base -- every property "
-              f"is still its base value.")
+        print(f"  0 of {len(rows)} stored properties set by anything but base")
+        print(removals or "  -- every stored property is its base value, and no removal is "
+                          "recorded against its file.")
         return
     by_origin: dict[str, list[str]] = {}
     for r in changed:
@@ -554,6 +556,32 @@ def _print_changed_props(con, ent, args) -> None:
         print(f"    ... and {len(ranked) - 5} more origin(s)")
     print(f"  per property: `x4effective show {args.kind} {args.name}`, or "
           f"`x4effective who-sets {args.kind} {args.name} <prop>`")
+    if removals:
+        print(removals)
+
+
+def _removal_note(con, ent) -> str | None:
+    """Removals recorded against this entity's FILE, or None when there are none.
+
+    A removed value is not a property: it is written to the `removed` table, not `attrs`. So
+    counting properties alone called an entity "every property is still its base value"
+    when a mod had removed one of its attributes (review, 2026-09-14). Rows are keyed by
+    vpath and a positional node path, so they tie to ONE entity only when that file holds
+    one. MEASURED on the real store: 108 vpaths carry removals -- 98 hold one entity, 9 hold
+    several (shared libraries such as wares.xml), 1 holds none.
+    """
+    n, sources = con.execute("SELECT count(*), group_concat(DISTINCT source) FROM removed "
+                             "WHERE vpath=?", (ent["vpath"],)).fetchone()
+    if not n:
+        return None
+    who = ", ".join(sorted(set((sources or "").split(","))))
+    shared = con.execute("SELECT count(*) FROM entities WHERE vpath=?",
+                         (ent["vpath"],)).fetchone()[0]
+    if shared <= 1:
+        return (f"  and {n} removal(s) against this entity's file by {who} -- a removed value "
+                f"is not stored as a property, so the count above cannot show it.")
+    return (f"  and {n} removal(s) recorded against its file ({ent['vpath']}, shared by {shared} "
+            f"entities) by {who} -- not attributable to one entity from the store.")
 
 
 def _reject_unknown_origin(con, folder: str) -> bool:

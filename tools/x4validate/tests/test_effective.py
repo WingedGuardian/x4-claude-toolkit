@@ -256,4 +256,25 @@ def test_TWIN_who_sets_without_a_prop_says_so_when_nothing_changed(tmp_path, mon
     monkeypatch.setattr(_effective._registry, "ingest_content_xml", lambda *a, **k: [])
     assert _effectivecli.main(["--db", str(db), "who-sets", "ware", "ore"]) == 0
     out = capsys.readouterr().out
-    assert "0 of " in out, out
+    # Leading spaces: "10 of 10" also contains "0 of " (review, 2026-09-14).
+    assert "  0 of " in out, out
+    assert "no removal is recorded" in out, out
+
+
+def test_who_sets_does_not_call_an_entity_all_base_when_a_mod_REMOVED_part_of_it(tmp_path, monkeypatch, capsys):
+    """A removal is not stored as a property (it goes to the `removed` table), so counting
+    properties alone printed "every property is still its base value" for an entity a mod had
+    removed an attribute from (review, 2026-09-14, reproduced on this fixture)."""
+    ref, exts = _world(tmp_path)
+    rm = exts / "ccc_remove" / "assets" / "props" / "engines" / "macros"
+    rm.mkdir(parents=True)
+    (rm / "engine_arg_s_01_macro.xml").write_bytes(
+        b'<diff><remove sel="//macro[@name=\'engine_arg_s_01_macro\']/properties/thrust/@reverse"/></diff>')
+    (exts / "ccc_remove" / "content.xml").write_bytes(b'<content id="ccc_remove" name="C" version="1"/>')
+    monkeypatch.setattr(_effective._registry, "ingest_content_xml", lambda *a, **k: [])
+    db = tmp_path / "eff.sqlite"
+    _effective.build(_merge.Config(reference=ref), db, dirs=[exts], kinds=("ware", "macro"))
+    assert _effectivecli.main(["--db", str(db), "who-sets", "macro", "engine_arg_s_01_macro"]) == 0
+    out = capsys.readouterr().out
+    assert "removal" in out and "ccc_remove" in out, out
+    assert "every stored property is its base value" not in out, out

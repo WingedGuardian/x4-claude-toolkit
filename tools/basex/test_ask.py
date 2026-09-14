@@ -499,4 +499,14 @@ def test_help_states_the_db_default_and_what_each_db_is(capsys):
         ask.main(["--help"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    assert "default: x4raw" in out and "effective" in out, out
+    # "effective" alone is already in the module docstring --help prints (review, 2026-09-14).
+    assert "default: x4raw" in out and "effective merged tree" in out, out
+
+
+def test_TWIN_an_xq_query_gets_no_default_hint(monkeypatch, capsys):
+    """An `xq` query names its own collection, and the foreign-collection guard refuses a
+    --db that disagrees -- so "add --db x4eff" is advice that fails if followed (review,
+    2026-09-14). The hint belongs to `refs` and `attr`, where --db alone picks the database."""
+    _positive(monkeypatch)
+    assert ask.main(["xq", "collection('x4raw')//ware"]) == 0
+    assert "AS WRITTEN" not in capsys.readouterr().out
