@@ -141,36 +141,71 @@ class Unresolvable(RuntimeError):
     """The manifest cannot be built, so no answer about it means anything."""
 
 
-def _linked_worktree(root: Path) -> bool:
-    """True only when `root` is a LINKED git worktree.
+def _worktree_common_dir(root: Path) -> Path | None:
+    """The shared git directory when `root` is a LINKED git worktree, else None.
 
-    git lays one out with `.git` as a FILE whose `gitdir:` points into
-    `<common>/.git/worktrees/<name>`. The main checkout has a `.git` DIRECTORY, and a
-    SUBMODULE also has a `.git` file -- but it points into `.git/modules/<name>`, so it is
-    not one. Anything unreadable or unrecognised answers False: a false MISSING is
+    git lays a linked worktree out with `.git` as a FILE whose `gitdir:` names an admin
+    directory `<common>/worktrees/<name>`, and that admin directory holds a `commondir`
+    file pointing back at `<common>` (MEASURED: `../..` in this repository's worktrees).
+    The main checkout has a `.git` DIRECTORY. A SUBMODULE also has a `.git` file, but its
+    `.git/modules/<path>` directory has no `commondir` -- which is why that file, and not
+    a folder named `worktrees`, is the test: a submodule added at `vendor/worktrees/x` has
+    one in its path. Anything unreadable or unrecognised answers None: a false MISSING is
     visible, a false waiver is silent.
     """
     marker = root / ".git"
     if not marker.is_file():
-        return False
+        return None
     try:
         text = marker.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return False
+        return None
     for line in text.splitlines():
-        if line.startswith("gitdir:"):
-            parts = Path(line[len("gitdir:"):].strip()).parts
-            return len(parts) >= 2 and parts[-2] == "worktrees"
-    return False
+        if not line.startswith("gitdir:"):
+            continue
+        value = line[len("gitdir:"):].strip()
+        if not value:
+            return None
+        gitdir = Path(value)
+        if not gitdir.is_absolute():
+            gitdir = root / gitdir
+        try:
+            common = (gitdir / "commondir").read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return (gitdir / common).resolve() if common else None
+    return None
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    """The comparison `_dedup` uses, so the note and the manifest cannot disagree."""
+    return str(a.resolve()).lower() == str(b.resolve()).lower()
 
 
 def _local_env_waived() -> Path | None:
     """This checkout's own `.claude/x4-paths.env` when it is ABSENT from a linked worktree
     -- the one case where its absence is by design, not a loss (F119). Else None."""
     local_env = _HERE.parent / ".claude" / "x4-paths.env"
-    if not local_env.is_file() and _linked_worktree(_HERE.parent):
+    if not local_env.is_file() and _worktree_common_dir(_HERE.parent) is not None:
         return local_env
     return None
+
+
+def _waiver_replacements() -> list[Path]:
+    """The config files demanded INSTEAD when this worktree's own is waived: the main
+    checkout's, derived from git's worktree metadata, and $X4_TOOLKIT's.
+
+    `_paths._find_env_file` cannot stand in for them. It returns only a file that EXISTS
+    -- from $X4_TOOLKIT, else by walking up from the working directory -- so a deleted
+    copy is simply not found, and that deletion would be reported by nobody.
+    """
+    out: list[Path] = []
+    common = _worktree_common_dir(_HERE.parent)
+    if common is not None and common.name == ".git":    # a bare repository has no checkout
+        out.append(common.parent / ".claude" / "x4-paths.env")
+    if os.environ.get("X4_TOOLKIT"):
+        out.append(Path(os.environ["X4_TOOLKIT"]) / ".claude" / "x4-paths.env")
+    return out
 
 
 def _candidates() -> list[Path]:
@@ -212,13 +247,12 @@ def _candidates() -> list[Path]:
     #
     # F119: a LINKED git worktree never has its own -- the file is gitignored per-machine
     # config, and CLAUDE.md mandates a worktree per concurrent session -- so its absence
-    # there is not MISSING. The waiver costs nothing: the configured toolkit's copy is then
-    # demanded explicitly, because `_find_env_file` returns nothing for a DELETED file and
-    # would otherwise leave that deletion reported by nobody.
+    # there is not MISSING. The waiver costs nothing: the copies it stands in for are
+    # demanded explicitly instead (see `_waiver_replacements`).
     if _local_env_waived() is None:
         out.append(_HERE.parent / ".claude" / "x4-paths.env")
-    elif os.environ.get("X4_TOOLKIT"):
-        out.append(Path(os.environ["X4_TOOLKIT"]) / ".claude" / "x4-paths.env")
+    else:
+        out.extend(_waiver_replacements())
     env_file = _paths._find_env_file() if _paths is not None else None
     if env_file:
         out.append(Path(env_file))
@@ -310,12 +344,21 @@ def cmd_status(_args) -> int:
         len(items), ", ".join("%s %s" % (v, k) for k, v in sorted(counts.items()))))
     waived = _local_env_waived()
     if waived is not None:
-        # ANNOUNCED, never silent: a narrowed check says what it narrowed.
-        print("  note: this checkout is a linked git worktree, so its own %s is "
-              "per-machine config it never has and is not counted MISSING; %s" % (
-                  waived, "the configured toolkit's copy is checked instead"
-                  if os.environ.get("X4_TOOLKIT") else
-                  "X4_TOOLKIT is not set, so no configured copy could be checked"))
+        # ANNOUNCED, never silent: a narrowed check says what it narrowed, and names what
+        # it checks instead.
+        instead = _waiver_replacements()
+        points_here = any(_same_file(p, waived) for p in instead)
+        others: list[Path] = []
+        for p in instead:
+            if not _same_file(p, waived) and not any(_same_file(p, q) for q in others):
+                others.append(p)
+        print("  note: this checkout is a linked git worktree, so its own %s is per-machine "
+              "config it never has and is not counted MISSING; checked instead: %s%s" % (
+                  waived,
+                  ", ".join(str(p.resolve()) for p in others)
+                  or "NOTHING (no main checkout found, and X4_TOOLKIT does not name one)",
+                  " -- X4_TOOLKIT points at this worktree itself, so its absent config is "
+                  "still reported MISSING" if points_here else ""))
     if gone:
         # NAMED, never merely dropped. A protected file that is GONE is the outcome
         # the read-only bit cannot prevent -- this module's own table lists `rm -f`

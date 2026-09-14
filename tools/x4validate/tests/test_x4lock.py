@@ -226,18 +226,28 @@ def test_an_unimportable_paths_module_REFUSES(monkeypatch):
 # file) is not a worktree, and the waiver must never cost the configured toolkit's copy.
 
 def _checkout(tmp_path, kind: str) -> Path:
-    """A checkout root shaped like git lays it out: `.git` a DIRECTORY for the main
-    checkout, a FILE pointing into `<common>/.git/worktrees/<name>` for a linked
-    worktree, and a FILE pointing into `.git/modules/<name>` for a submodule."""
+    """A checkout root shaped the way git lays one out.
+
+    main       `.git` is a DIRECTORY
+    worktree   `.git` is a FILE whose gitdir is `<main>/.git/worktrees/<name>`, an admin
+               directory holding the `commondir` file git writes there (`../..`, MEASURED
+               in this repository's own worktrees)
+    submodule  `.git` is a FILE whose gitdir is `<super>/.git/modules/<name>`, which has
+               NO `commondir`
+    """
     root = tmp_path / "checkout"
     (root / "scripts").mkdir(parents=True)
     if kind == "main":
         (root / ".git").mkdir()
     elif kind == "worktree":
-        (root / ".git").write_text(
-            "gitdir: C:/somewhere/toolkit/.git/worktrees/checkout\n", encoding="utf-8")
+        admin = tmp_path / "main" / ".git" / "worktrees" / "checkout"
+        admin.mkdir(parents=True)
+        (admin / "commondir").write_text("../..\n", encoding="utf-8")
+        (root / ".git").write_text(f"gitdir: {admin.as_posix()}\n", encoding="utf-8")
     elif kind == "submodule":
-        (root / ".git").write_text("gitdir: ../.git/modules/checkout\n", encoding="utf-8")
+        admin = tmp_path / "super" / ".git" / "modules" / "checkout"
+        admin.mkdir(parents=True)
+        (root / ".git").write_text(f"gitdir: {admin.as_posix()}\n", encoding="utf-8")
     else:
         raise AssertionError(kind)
     return root
@@ -308,7 +318,7 @@ def test_a_worktree_still_demands_the_CONFIGURED_toolkits_env(tmp_path, monkeypa
     assert not _named(x4lock.missing(), _local_env(root))
 
 
-def test_an_UNREADABLE_git_file_fails_closed(tmp_path, monkeypatch):
+def test_an_UNRECOGNISED_git_file_fails_closed(tmp_path, monkeypatch):
     """Anything that cannot be proven a linked worktree is treated as a checkout that
     should have its config -- a false MISSING is visible, a false waiver is not."""
     root = tmp_path / "checkout"
@@ -316,3 +326,88 @@ def test_an_UNREADABLE_git_file_fails_closed(tmp_path, monkeypatch):
     (root / ".git").write_text("not a gitdir line\n", encoding="utf-8")
     monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
     assert _named(x4lock.missing(), _local_env(root))
+
+
+def test_an_UNREADABLE_git_file_fails_closed(tmp_path, monkeypatch):
+    """The twin for the OSError branch: a `.git` file that raises on read."""
+    root = _checkout(tmp_path, "worktree")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    real = x4lock.Path.read_text
+
+    def boom(self, *a, **k):
+        if self.name == ".git":
+            raise OSError("simulated unreadable .git")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(x4lock.Path, "read_text", boom)
+    assert _named(x4lock.missing(), _local_env(root))
+
+
+def test_a_worktree_demands_the_MAIN_checkouts_env_even_without_X4_TOOLKIT(tmp_path, monkeypatch):
+    """Review finding: the waiver was free only when X4_TOOLKIT was set. git's own
+    metadata names the main checkout (`<admin>/commondir` -> `<main>/.git`), so that
+    checkout's config is demanded in every case."""
+    root = _checkout(tmp_path, "worktree")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    monkeypatch.delenv("X4_TOOLKIT", raising=False)
+    assert _named(x4lock.missing(), tmp_path / "main" / ".claude" / "x4-paths.env")
+    assert not _named(x4lock.missing(), _local_env(root))
+
+
+def test_a_SUBMODULE_under_a_folder_named_worktrees_is_not_waived(tmp_path, monkeypatch):
+    """`git submodule add <url> vendor/worktrees/toolkit` gives a gitdir ending
+    `.../modules/vendor/worktrees/toolkit`, whose second-to-last part IS `worktrees`.
+    Only a `commondir` file marks a linked worktree's admin directory."""
+    root = tmp_path / "checkout"
+    (root / "scripts").mkdir(parents=True)
+    admin = tmp_path / "super" / ".git" / "modules" / "vendor" / "worktrees" / "toolkit"
+    admin.mkdir(parents=True)
+    (root / ".git").write_text(f"gitdir: {admin.as_posix()}\n", encoding="utf-8")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    assert _named(x4lock.missing(), _local_env(root))
+
+
+def test_a_RELATIVE_gitdir_is_resolved_against_the_checkout(tmp_path, monkeypatch):
+    root = _checkout(tmp_path, "worktree")
+    (root / ".git").write_text("gitdir: ../main/.git/worktrees/checkout\n", encoding="utf-8")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    monkeypatch.delenv("X4_TOOLKIT", raising=False)
+    assert not _named(x4lock.missing(), _local_env(root))
+    assert _named(x4lock.missing(), tmp_path / "main" / ".claude" / "x4-paths.env")
+
+
+def test_the_note_NAMES_the_copy_checked_instead(tmp_path, monkeypatch, capsys):
+    root = _checkout(tmp_path, "worktree")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    monkeypatch.delenv("X4_TOOLKIT", raising=False)
+    monkeypatch.setenv("X4_PROTECTED", str(_fresh(tmp_path / "protected.md")))
+    x4lock.main(["status"])
+    out = capsys.readouterr().out
+    want = str((tmp_path / "main" / ".claude" / "x4-paths.env").resolve())
+    assert want in out, out
+
+
+def test_X4_TOOLKIT_pointing_at_the_worktree_itself_still_reports_its_config(tmp_path, monkeypatch, capsys):
+    """Hooks would find no config at all here, so rc 1 is right -- and the note must not
+    claim a different copy is being checked."""
+    root = _checkout(tmp_path, "worktree")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    monkeypatch.setenv("X4_TOOLKIT", str(root))
+    assert _named(x4lock.missing(), _local_env(root))
+    monkeypatch.setenv("X4_PROTECTED", str(_fresh(tmp_path / "protected.md")))
+    x4lock.main(["status"])
+    assert "points at this worktree" in capsys.readouterr().out
+
+
+def test_the_note_names_each_copy_ONCE(tmp_path, monkeypatch, capsys):
+    """When $X4_TOOLKIT IS the main checkout, both routes reach one file: name it once,
+    and do not claim X4_TOOLKIT points at this worktree -- it does not."""
+    root = _checkout(tmp_path, "worktree")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    monkeypatch.setenv("X4_TOOLKIT", str(tmp_path / "main"))
+    monkeypatch.setenv("X4_PROTECTED", str(_fresh(tmp_path / "protected.md")))
+    x4lock.main(["status"])
+    out = capsys.readouterr().out
+    want = str((tmp_path / "main" / ".claude" / "x4-paths.env").resolve())
+    assert out.count(want) == 1, out
+    assert "points at this worktree" not in out, out
