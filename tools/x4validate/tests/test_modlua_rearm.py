@@ -1889,10 +1889,15 @@ def test_globals_a_page_past_the_end_is_ABSENT_not_ERR(lua_factory):
 
 
 def test_globals_never_exceeds_the_payload_cap(lua_factory):
+    """The verb must PAGE, not merely fit. reply()'s shared cap turns an oversized reply
+    into a short ERR, which also fits under 32000 bytes -- so asserting only the size let
+    a globals that stopped paging pass. MEASURED 2026-09-13: that mutant survived the
+    size-only form, on the pristine base as well as after the write-verb work."""
     rt = live()
     rt.execute(PAD)
     for page in (1, 2):
         r = ask(rt, page, "globals", "zzpad", str(page))
+        assert r.status == "OK", (page, r.payload[:160])
         assert len(r.payload) <= 32000, (page, len(r.payload))
 
 
