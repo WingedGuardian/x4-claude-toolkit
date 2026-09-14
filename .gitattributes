@@ -56,3 +56,7 @@ mods/**/*.lua text eol=lf
 # marketing bbcode and raw Nexus API responses -- growing it by 114,401 bytes for
 # every installing user, none of whom has any use for them.
 release/ export-ignore
+
+# Maintainer-only: plants mutants in the game-side mod while it runs, so it must never
+# reach a user. Tracked for maintainers; excluded from the bundle.
+tools/x4validate/scripts/mutate-mod-lua.py export-ignore
