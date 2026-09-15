@@ -19,6 +19,13 @@ RULES, each a shape vanilla uses (tests/test_ffinames.py pins a twin for every o
   * a declaration is a function when it has a parameter list, is not a `typedef`, and its name is
     not itself parenthesised (`int (*fp)(void)` is a pointer variable).
 
+KNOWN MISSES, each MEASURED on synthetic input by review 2026-09-14 and each at ZERO cost on
+vanilla today (reference/ uses only `ffi.cdef[[` blocks): `__attribute__((x)) int F(void);`
+yields the name `__attribute__`; `void (*GetHandler(int))(int);` (a function returning a
+function pointer) is dropped; `int A(void), B(void);` loses `B`. These are declarator shapes
+inside a block the parser DID read, so they are not counted in `unparsed` -- which is why they
+are written down here instead.
+
 SOURCE SET. Loose files come from `_effective.base_vpaths(config, "*.lua")`, the one sanctioned
 enumeration. Its PACKED pass lists XML only, so `.lua` inside a packed-only DLC catalog is read here
 directly from the catalog index instead. MEASURED 2026-09-14 on build 23660954: the eight DLC
