@@ -57,7 +57,7 @@ local PROTO = 1
 --:
 --: Kept honest by `test_the_BUILD_constant_matches_the_file`, so editing the lua and
 --: forgetting to re-stamp this fails the suite rather than silently lying in game.
-local BUILD = "7a02082d"
+local BUILD = "9c51735d"
 local TAG_CMD, TAG_REPLY = "MQ", "MR"
 
 -- Cap on echo, the ramp instrument. Generous: the point of the ramp is to FIND the
@@ -283,6 +283,8 @@ local ROW_BUDGET = MAX_PAYLOAD - HEADER_RESERVE
 --: strings>, zzz=1}}` came back `weapons={} +2-more` -- the inner table filled its own budget
 --: and then fitted nowhere. Scalar cells are laid out first; the nested tables then SHARE
 --: what is left, each announcing its own cut; the output keeps sorted key order.
+--: Trade-off, accepted (review round 2): when the scalar cells alone use the budget, a small
+--: nested table shows as `<table>` where one pass would have rendered it -- less, never wrong.
 --: A string is cut with `utf8_prefix`: a 40-byte cut through a multibyte character made the
 --: reply invalid UTF-8, and the host decodes strictly (same review).
 
