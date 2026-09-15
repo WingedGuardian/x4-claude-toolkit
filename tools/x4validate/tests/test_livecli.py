@@ -842,6 +842,96 @@ def test_groundtruth_WITHOUT_contents_sends_no_flag(tmp_path, monkeypatch):
     assert "# macros=built-in n=" in head and "contents=no" in head
 
 
+# --- groundtruth, review 2026-09-14 -------------------------------------------- #
+
+class _MacroPipe:
+    """Answers `macro` like the helper. `knows_contents=False` models a build that predates the
+    flag: it reads `--contents` as a PROPERTY name and answers ABSENT."""
+
+    path = "macro-pipe"
+
+    def __init__(self, knows_contents=True, star_absent_for=()):
+        self.knows_contents, self.star_absent_for = knows_contents, set(star_absent_for)
+        self.calls = []
+
+    def ask(self, verb, *args, **k):
+        from x4validate import _livepipe
+        self.calls.append((verb, *args))
+        ltype, macro, *rest = args
+        absent = _livepipe.Reply(seq=1, status="ABSENT", payload=f"{ltype}\t{macro}")
+        if rest and rest != ["--contents"]:
+            return absent                               # a per-field ask: a real absence
+        if rest == ["--contents"] and not self.knows_contents:
+            return absent
+        if macro in self.star_absent_for:
+            return absent
+        return _livepipe.Reply(seq=1, status="OK", payload="hull=1\tweapons=<table>")
+
+
+def test_groundtruth_CONTENTS_against_a_build_that_predates_it_is_REFUSED(tmp_path, monkeypatch,
+                                                                         capsys):
+    """MEASURED by review: an old build answers ABSENT to `macro <lt> <m> --contents`, and the
+    harvest counted every one as 'a real answer' -- rc 0, zero `*` rows, header contents=yes."""
+    pipe = _MacroPipe(knows_contents=False)
+    _open_with(monkeypatch, pipe)
+    rc, out = _run_groundtruth(tmp_path, contents=True)
+    assert rc == 2, out
+    assert "--contents" in capsys.readouterr().err
+    assert not (tmp_path / "gt.tsv").exists(), "a refused harvest must not leave a fixture"
+
+
+def test_groundtruth_CONTENTS_on_a_build_that_knows_it_still_harvests(tmp_path, monkeypatch):
+    pipe = _MacroPipe(knows_contents=True)
+    _open_with(monkeypatch, pipe)
+    rc, out = _run_groundtruth(tmp_path, contents=True)
+    assert rc == 0, out
+    assert "\t*\thull=1" in (tmp_path / "gt.tsv").read_text(encoding="utf-8")
+
+
+def test_groundtruth_an_ABSENT_all_fields_answer_is_NAMED_not_just_counted(tmp_path, monkeypatch):
+    """A listed macro whose all-fields call is ABSENT may carry the wrong library type (the store
+    check sees names only) or be an entry the library does not hold; the harvest cannot tell
+    which, so it must say WHICH macros, in the output and the header."""
+    from x4validate import _livecli
+    pipe = _MacroPipe(star_absent_for={"ship_b_macro"})
+    _open_with(monkeypatch, pipe)
+    monkeypatch.setattr(_livecli, "_missing_from_store", lambda pairs: [])
+    f = tmp_path / "list.tsv"
+    f.write_text("shiptypes_s ship_a_macro\nweapons_lasers ship_b_macro\n", encoding="utf-8")
+    rc, out = _run_groundtruth(tmp_path, macros_file=str(f))
+    assert "ship_b_macro" in out and "ABSENT" in out, out
+    assert "star_absent=1" in (tmp_path / "gt.tsv").read_text(encoding="utf-8")
+
+
+def test_groundtruth_a_DUPLICATE_macro_line_is_asked_ONCE_and_said(tmp_path, monkeypatch):
+    from x4validate import _livecli
+    pipe = _MacroPipe()
+    _open_with(monkeypatch, pipe)
+    monkeypatch.setattr(_livecli, "_missing_from_store", lambda pairs: [])
+    f = tmp_path / "list.tsv"
+    f.write_text("shiptypes_s ship_a_macro\nshiptypes_s ship_a_macro\n", encoding="utf-8")
+    rc, out = _run_groundtruth(tmp_path, macros_file=str(f))
+    stars = [c for c in pipe.calls if c[0] == "macro" and len(c) == 3]
+    assert len(stars) == 1, stars
+    assert "1 duplicate" in out, out
+    assert "# macros=list.tsv n=1" in (tmp_path / "gt.tsv").read_text(encoding="utf-8")
+
+
+def test_missing_from_store_treats_a_SystemExit_from_the_store_as_UNASKABLE(tmp_path, monkeypatch):
+    """`_connect` reports an unusable store with SystemExit, a BaseException that
+    `except Exception` does not catch -- so the refusal path was a crash (review)."""
+    from x4validate import _effective, _livecli
+    db = tmp_path / "store.sqlite"
+    db.write_bytes(b"not a database")
+    monkeypatch.setattr(_effective, "effective_db", lambda *a, **k: db)
+
+    def boom(*a, **k):
+        raise SystemExit(2)
+
+    monkeypatch.setattr(_effective, "_connect", boom)
+    assert _livecli._missing_from_store([("shiptypes_s", "x")]) is None
+
+
 # --- ffi-census: batch vanilla's declared C functions through `ffisyms` --------- #
 
 def _fake_census(names):

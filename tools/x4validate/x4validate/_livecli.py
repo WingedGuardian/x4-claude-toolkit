@@ -1342,8 +1342,11 @@ GROUND_TRUTH_MACROS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _read_macro_list(path: Path) -> tuple[list[tuple[str, str]] | None, str]:
-    """`<librarytype><TAB><macro>` per line -> (pairs, "") or (None, why).
+def _read_macro_list(path: Path) -> tuple[list[tuple[str, str]] | None, str, int]:
+    """`<librarytype><TAB><macro>` per line -> (pairs, "", duplicates) or (None, why, 0).
+
+    A pair listed twice is kept ONCE and counted -- harvesting it twice would double its rows
+    in the fixture while the caller is told how many it dropped.
 
     Whole-line and trailing `#` comments and blank lines are skipped. Anything else that
     is not exactly two fields REFUSES the whole list, naming the line: a list that
@@ -1353,19 +1356,26 @@ def _read_macro_list(path: Path) -> tuple[list[tuple[str, str]] | None, str]:
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        return None, f"cannot read {path}: {exc}"
+        return None, f"cannot read {path}: {exc}", 0
     pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    dups = 0
     for n, raw in enumerate(text.splitlines(), 1):
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
         cols = line.split()
         if len(cols) != 2:
-            return None, f"{path.name}:{n}: expected `<librarytype> <macro>`, got {raw!r}"
-        pairs.append((cols[0], cols[1]))
+            return None, f"{path.name}:{n}: expected `<librarytype> <macro>`, got {raw!r}", 0
+        pair = (cols[0], cols[1])
+        if pair in seen:
+            dups += 1
+            continue
+        seen.add(pair)
+        pairs.append(pair)
     if not pairs:
-        return None, f"{path.name} lists no macros"
-    return pairs, ""
+        return None, f"{path.name} lists no macros", 0
+    return pairs, "", dups
 
 
 def _missing_from_store(pairs: list[tuple[str, str]]) -> list[str] | None:
@@ -1376,18 +1386,28 @@ def _missing_from_store(pairs: list[tuple[str, str]]) -> list[str] | None:
     "the engine exposes nothing for missiles". A user-supplied list is the same risk with
     nobody reviewing it.
     """
-    from ._effective import _connect, effective_db
+    from ._effective import _connect, effective_db, store_freshness
 
     db = effective_db()
     if db is None or not db.exists():
         return None
     try:
         con = _connect(db)
-    except Exception:                               # noqa: BLE001
+    except (Exception, SystemExit):                 # noqa: BLE001
         # silent-ok: None IS the channel -- the only caller refuses (rc 2) on it, naming
-        # that the store could not be opened.
+        # that the store could not be opened. SystemExit is how _connect reports an unusable
+        # store, and it is a BaseException that `except Exception` does not catch (review).
         return None
-    return [m for _, m in pairs if _store_props(con, m) is None]
+    try:
+        fresh = store_freshness(con)
+        if not fresh.fresh:
+            # Warned, not refused: a stale store can mislead only about macros added or
+            # removed since it was built, and the engine's ABSENT still names any of those.
+            print(fresh.banner("the effective store") + "\n  --macros names are checked "
+                  "against it anyway.", file=sys.stderr)
+        return [m for _, m in pairs if _store_props(con, m) is None]
+    finally:
+        con.close()
 
 
 def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = None,
@@ -1421,7 +1441,7 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
     targets: tuple[tuple[str, str], ...] | list[tuple[str, str]] = GROUND_TRUTH_MACROS
     source = "built-in"
     if macros_file:
-        pairs, why = _read_macro_list(Path(macros_file))
+        pairs, why, dups = _read_macro_list(Path(macros_file))
         if pairs is None:
             return _fmt_rc(f"--macros: {why}", 2)
         missing = _missing_from_store(pairs)
@@ -1435,6 +1455,9 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
                            f"the effective store: {shown}. An invented name comes back "
                            f"ABSENT and reads as 'the engine exposes nothing'.", 2)
         targets, source = pairs, Path(macros_file).name
+        if dups:
+            print(f"--macros: {dups} duplicate line(s) ignored; each pair is asked once",
+                  file=out)
 
     dest = Path(out_file) if out_file else None
     if dest is None:
@@ -1449,6 +1472,8 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
     fields = sorted(_DERIVED)
     rows: list[tuple[str, str, str, str]] = []
     asked = absent = errored = 0
+    #: Macros whose ALL-FIELDS call answered ABSENT, named rather than only counted.
+    star_absent: list[str] = []
 
     with _live_open(pipe, timeout) as lp:
         path = lp.path
@@ -1492,10 +1517,23 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
                 # `--contents` on the ALL-FIELDS call only: a per-field reply is one
                 # value, and an old helper build would read the flag as a property name.
                 rv = lp.ask("macro", ltype, macro, *(("--contents",) if contents else ()))
+                if rv.status == "ABSENT" and contents:
+                    # AMBIGUOUS: a genuine absence, or a helper build that predates --contents
+                    # reading it as a PROPERTY name. MEASURED in review: that case harvested
+                    # zero `*` rows and exited 0. Ask once more without the flag; if THAT
+                    # answers, the running build cannot do what was asked.
+                    plain = lp.ask("macro", ltype, macro)
+                    if plain.status == "OK":
+                        return _fmt_rc(
+                            "groundtruth --contents: the running helper build does not know "
+                            "--contents -- it answered the all-fields call without the flag and "
+                            "ABSENT with it. Reload the game on the deployed build (check "
+                            "`x4live query probe`), or run without --contents. Nothing written.", 2)
                 if rv.status == "OK":
                     rows.append((ltype, macro, "*", rv.payload))
                 elif rv.status == "ABSENT":
                     absent += 1
+                    star_absent.append(f"{ltype} {macro}")
                 else:
                     rows.append((ltype, macro, "*", f"!ERR {rv.payload}"))
                     errored += 1
@@ -1537,7 +1575,8 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
               "# RECORDED, NOT COMPARED. Several fields have more than one defensible",
               "# definition; this file is what decides between them.",
               f"# asked={asked} present={present} absent={absent} errored={errored}",
-              f"# macros={source} n={len(targets)} contents={'yes' if contents else 'no'}",
+              f"# macros={source} n={len(targets)} contents={'yes' if contents else 'no'}"
+              f" star_absent={len(star_absent)}",
               "librarytype\tmacro\tfield\tengine_value"]
     # Values can contain TABS and NEWLINES -- a description does, and the "*"
     # all-fields row is itself tab-joined. Unescaped, those break the row
@@ -1559,6 +1598,12 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
     print(f"\nwrote {dest}", file=out)
     print(f"  {present} value(s) from {len(targets)} macros; "
           f"{absent} field(s) absent (a real answer), {errored} errored", file=out)
+    if star_absent:
+        print(f"  {len(star_absent)} macro(s) answered ABSENT to the ALL-FIELDS call -- a wrong "
+              f"library type, or an entry the library does not hold; the harvest cannot tell "
+              f"which:", file=out)
+        for s in star_absent:
+            print(f"      {s}", file=out)
     if present == 0:
         # Nothing harvested is a NON-ANSWER about the engine, not a finding about it.
         print("\nNOTHING was harvested. This does not say the engine reports no "
