@@ -57,7 +57,7 @@ local PROTO = 1
 --:
 --: Kept honest by `test_the_BUILD_constant_matches_the_file`, so editing the lua and
 --: forgetting to re-stamp this fails the suite rather than silently lying in game.
-local BUILD = "9076806d"
+local BUILD = "7a02082d"
 local TAG_CMD, TAG_REPLY = "MQ", "MR"
 
 -- Cap on echo, the ramp instrument. Generous: the point of the ramp is to FIND the
@@ -277,21 +277,52 @@ local ROW_BUDGET = MAX_PAYLOAD - HEADER_RESERVE
 --:  * SORTED keys, so two runs are diffable; pairs() order is not guaranteed stable.
 --: At depth 1 the output is byte-identical to recon's previous one-level renderer --
 --: `recon-20260830-211605.tsv` was recorded with it.
-local function render_table(v, depth)
+--:
+--: TWO PASSES, so one fat nested table cannot push its small siblings out. MEASURED in
+--: review 2026-09-14: rendered in key order with a full budget each, `{weapons={aaa=<60
+--: strings>, zzz=1}}` came back `weapons={} +2-more` -- the inner table filled its own budget
+--: and then fitted nowhere. Scalar cells are laid out first; the nested tables then SHARE
+--: what is left, each announcing its own cut; the output keeps sorted key order.
+--: A string is cut with `utf8_prefix`: a 40-byte cut through a multibyte character made the
+--: reply invalid UTF-8, and the host decodes strictly (same review).
+
+--: Taken out of a nested cell's share for the child's own braces and "+N-more" marker,
+--: which are appended outside the budget the child is given.
+local CONTENTS_NEST_RESERVE = 16
+
+local function render_table(v, depth, budget)
+    budget = budget or CONTENTS_BUDGET
     local ks = {}
     for k in pairs(v) do ks[#ks + 1] = k end
     table.sort(ks, function(a, b) return tostring(a) < tostring(b) end)
-    local parts, used, shown = {}, 0, 0
-    for _, k in ipairs(ks) do
+    local function keyof(k) return (tostring(k):gsub("[|\t\n\r,]", " ")) end
+    local cells, nested, fixed = {}, {}, 0
+    for i, k in ipairs(ks) do
         local val, vt = v[k], type(v[k])
-        local r
-        if vt == "number" or vt == "boolean" then r = tostring(val)
-        elseif vt == "string" then
-            r = (((#val > 40) and (val:sub(1, 40) .. "..") or val):gsub("[|\t\n\r,]", " "))
-        elseif vt == "table" and depth > 1 then r = render_table(val, depth - 1)
-        else r = "<" .. vt .. ">" end
-        local cell = (tostring(k):gsub("[|\t\n\r,]", " ")) .. "=" .. r
-        if used + #cell + 1 > CONTENTS_BUDGET then break end
+        if vt == "table" and depth > 1 then
+            nested[#nested + 1] = i
+        else
+            local r
+            if vt == "number" or vt == "boolean" then r = tostring(val)
+            elseif vt == "string" then
+                r = (((#val > 40) and (utf8_prefix(val, 40) .. "..") or val):gsub("[|\t\n\r,]", " "))
+            else r = "<" .. vt .. ">" end
+            cells[i] = keyof(k) .. "=" .. r
+            fixed = fixed + #cells[i] + 1
+        end
+    end
+    if #nested > 0 then
+        local share = math.floor((budget - fixed) / #nested)
+        for _, i in ipairs(nested) do
+            local prefix = keyof(ks[i]) .. "="
+            local room = share - #prefix - 1 - CONTENTS_NEST_RESERVE
+            cells[i] = prefix .. ((room > 2) and render_table(v[ks[i]], depth - 1, room) or "<table>")
+        end
+    end
+    local parts, used, shown = {}, 0, 0
+    for i = 1, #ks do
+        local cell = cells[i]
+        if used + #cell + 1 > budget then break end
         parts[#parts + 1] = cell
         used = used + #cell + 1
         shown = shown + 1
@@ -2137,7 +2168,7 @@ verbs.censusprobe = function(seq, ...)
                 local ok, res = pcall(fn, container, flag)
                 if not ok then
                     out[#out + 1] = name .. "(container," .. tostring(flag)
-                        .. ")|RAISED|" .. tostring(res):sub(1, 60):gsub("[|\t\n\r]", " ")
+                        .. ")|RAISED|" .. (utf8_prefix(tostring(res), 60):gsub("[|\t\n\r]", " "))
                 else
                     local s, n, objs = idset(res)
                     objmaps[name .. (flag and ":true" or ":false")] = objs
@@ -2326,7 +2357,7 @@ verbs.recon = function(seq, ...)
             return s
         end
         if t == "string" then
-            return "string:" .. #v .. ":" .. (v:sub(1, 40):gsub("[|\t\n\r]", " "))
+            return "string:" .. #v .. ":" .. (utf8_prefix(v, 40):gsub("[|\t\n\r]", " "))
         end
         if t == "boolean" or t == "number" then return t .. ":" .. tostring(v) end
         return t
@@ -2350,7 +2381,7 @@ verbs.recon = function(seq, ...)
         local ok, a, b = pcall(fn, ...)
         if not ok then
             nraise = nraise + 1
-            out[#out + 1] = label .. "|RAISED|" .. tostring(a):sub(1, 70):gsub("[|\t\n\r]", " ")
+            out[#out + 1] = label .. "|RAISED|" .. (utf8_prefix(tostring(a), 70):gsub("[|\t\n\r]", " "))
         else
             nok = nok + 1
             local s = summarize(a)
@@ -2430,8 +2461,10 @@ end
 --:    shares one ffi state, so a placeholder declared here before a vanilla file's real one
 --:    would corrupt every later call to that function.
 --:  * CLASSIFIED ON LuaJIT's OWN TEXT: "missing declaration for symbol" = nothing in this VM
---:    declares it; "cannot resolve symbol" = declared, not exported by the engine. Anything
---:    else is `other`, quoted -- never folded into either.
+--:    declares it; "cannot resolve symbol" = declared, not resolvable in the process. On
+--:    Windows LuaJIT searches the executable AND the libraries it loaded, so `exported` is
+--:    "resolvable in the game process", not strictly "the engine". Anything else is `other`,
+--:    quoted -- never folded into either.
 --:  * BOUNDED: FFISYMS_MAX_NAMES names of at most FFISYMS_MAX_NAME_LEN bytes, so the worst
 --:    reply (every row `other` with a 60-byte quote) stays far under ROW_BUDGET.
 local FFISYMS_MAX_NAMES = 150

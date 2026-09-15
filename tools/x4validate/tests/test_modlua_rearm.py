@@ -2375,6 +2375,61 @@ def test_macro_contents_is_BOUNDED_and_NAMES_what_it_omitted(lua_factory):
     assert len(cell) < 1200, "the bound did not hold: %d bytes" % len(cell)
 
 
+# Review 2026-09-14, MEASURED: a 40-byte cut through a multibyte character makes the reply
+# invalid UTF-8, and `_livepipe` decodes strictly -- the whole reply is lost, not one field.
+# The file already has `utf8_prefix` for exactly this; these pin every cut that reaches a reply.
+_EURO_AT_40 = "string.rep('x', 39) .. '\\226\\130\\172tail'"      # bytes 40-42 are one char
+
+
+def test_contents_never_SPLITS_a_multibyte_character(lua_factory):
+    r = ask(_lib("{a = {s = " + _EURO_AT_40 + "}}"), 1, "macro", "engine", "m", "--contents")
+    assert r.status == "OK", r.payload
+    assert r.fields[0] == "a={s=" + "x" * 39 + "..}", r.fields[0]
+
+
+def test_recon_string_summary_never_SPLITS_a_multibyte_character(lua_factory):
+    rt, oid = _contents_rt(_EURO_AT_40)
+    r = ask(rt, 2, "recon", oid)
+    assert "string:46:" + "x" * 39 in _storage_row(r), _storage_row(r)
+
+
+def test_recon_RAISED_text_never_SPLITS_a_multibyte_character(lua_factory):
+    rt = live()
+    oid = _issued(rt)
+    rt.execute("_G.GetStorageData = function(o) error(string.rep('y', 69) .. '\\226\\130\\172', 0) end")
+    r = ask(rt, 2, "recon", oid)
+    row = _storage_row(r)
+    assert "|RAISED|" + "y" * 69 in row, row
+
+
+def test_censusprobe_RAISED_text_never_SPLITS_a_multibyte_character(lua_factory):
+    """The fourth cut through reply text (live_query's `:sub(1, 60)` on a RAISED message in
+    censusprobe). Same shape as the three above, found by classifying every `:sub(1,` hit."""
+    rt = _census_rt(["a"], ["a"])
+    rt.execute("_G.GetContainedStations = function(c, flag) "
+               "error(string.rep('y', 59) .. '\\226\\130\\172', 0) end")
+    r = ask(rt, 2, "censusprobe", "ID: 4301")
+    assert any("|RAISED|" + "y" * 59 in f for f in r.fields), r.fields
+
+
+def test_contents_a_FAT_nested_table_does_not_hide_its_small_siblings(lua_factory):
+    """Review 2026-09-14, MEASURED: an inner table that fills its OWN budget could never fit
+    in its parent, so `{weapons={aaa=<60 strings>, zzz=1}}` rendered `weapons={} +2-more`.
+    The inner render must be given the parent's REMAINING room instead.
+
+    ⚠ The first version used 30-byte leaves; their packing slack let even a WHOLE-budget child
+    leave room for `zzz=1`, and the mutant that removed the sharing SURVIVED it. Here 200
+    one-byte leaves fill the child's room almost exactly and the sibling is a 20-byte string,
+    so both fit only when the budget is really shared (391 of 400 bytes; 419 without)."""
+    fat = "{" + ", ".join("k%03d = 'v'" % i for i in range(200)) + "}"
+    r = ask(_lib("{weapons = {aaa = " + fat + ", zzz = '" + "s" * 20 + "'}}"), 1,
+            "macro", "engine", "m", "--contents")
+    cell = [f for f in r.fields if f.startswith("weapons=")][0]
+    assert "zzz=" + "s" * 20 in cell, cell[-160:]
+    assert "-more" in cell, "the fat table's own cut must still be announced"
+    assert len(cell) < 1200, len(cell)
+
+
 def test_recon_DEEP_descends_exactly_ONE_more_level(lua_factory):
     rt, oid = _contents_rt("{outer = 1, inner = {secret = 99, deeper = {gone = 1}}}")
     r = ask(rt, 2, "recon", oid, "--contents", "--deep")
