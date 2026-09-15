@@ -95,8 +95,10 @@
 - **`x4live query macro ... --contents` and `x4live query recon ... --contents --deep`.** A
   library entry's table-valued fields (a ship's `weapons` and `storagetags`) came back as a
   bare `<table>`, so they could never be compared. `macro --contents` renders them two levels
-  deep; `recon --deep` adds one level to `--contents`. Both are opt-in -- a reply without the
-  flag is byte-identical to before -- bounded per value (a cut says `+N-more`), depth-bounded so
+  deep; `recon --deep` adds one level to `--contents`. Both are opt-in -- a `macro` reply without the
+  flag is byte-identical to before, and so are recon's rows (its header gains `deep=no`) --
+  bounded per value (a cut says `+N-more`, a string is cut on a whole UTF-8 character, and nested
+  tables share what their scalar siblings leave, so one fat table cannot hide them), depth-bounded so
   a cyclic engine table cannot hang the game, and scrubbed per key and per string so a value
   cannot split the reply's fields. The helper mod's BUILD moves; a running game needs a reload
   to pick it up.
@@ -108,19 +110,23 @@
   macro the effective store does not hold (an invented name comes back ABSENT and reads as "the
   engine exposes nothing"). `--contents` sends the all-fields call with `--contents` and never
   the per-field calls. Every harvest file now records its list and mode in its header.
+  `--contents` against a helper build that predates the flag is refused rather than harvested
+  empty, a listed macro whose all-fields call answers ABSENT is named, and a duplicate line is
+  asked once.
 - **`x4live ffi-census` and the `ffisyms` verb: the engine surface `query globals` cannot see.**
   `globals` walks the lua global table, but vanilla's ui lua declares 2,066 C functions in
   `ffi.cdef` blocks (2,074 with the Ventures DLC) that never appear there, so a negative from
   `globals` covered about a third of the surface. `ffi-census` reads those names from your own
   game files -- literal `ffi.cdef` blocks only; any other `ffi.cdef` call is listed as unparsed --
-  and asks the running game about each one: `exported`, `notexported` (declared but not exported),
+  and asks the running game about each one: `exported` (resolvable in the game process), `notexported` (declared, not resolvable),
   `undeclared` (nothing loaded this session declares it), `other` (quoted), or `invalid`. The verb
   only looks symbols up: it never calls one, and never declares one, because a second declaration
   with a different signature is silently ignored by LuaJIT and could break the game's own later
   calls. Names go in small batches (`--batch-bytes`, default 1000): the game-side limit on a
   request's size is unmeasured, and an over-long request makes the read fail. A batch that is not
   answered, or whose rows do not line up name for name, is recorded as `errored` and the command
-  exits 3. Output is a `.tsv` with the declaring file(s) for every name. The helper mod's BUILD
+  exits 3, as does an invalid name, which is never sent. If the channel drops mid-run, the batches
+  already answered are kept. Output is a `.tsv` with the declaring file(s) for every name. The helper mod's BUILD
   moves; a running game needs a reload.
 
 ### Changed

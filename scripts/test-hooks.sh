@@ -381,7 +381,9 @@ echo "23660954" > "$TK/.claude/.reference-buildid"
 # The helper strips a trailing CR. Steam writes LF (measured 2026-09-14, 0 CRLF in 455
 # lines), but a manifest copied through a CRLF-converting tool would otherwise match no
 # brace line, never reach depth 1, and return nothing -- a silent non-answer.
-tr -d '\r' < "$_acf_real" | sed 's/$/\r/' > "$TMP/acf-crlf"
+# awk rather than `sed 's/$/\r/'`, whose `\r` is a GNU extension (review 2026-09-14);
+# BINMODE=3 so Git Bash's gawk writes the CR as given instead of translating line ends.
+awk -v BINMODE=3 '{ sub(/\r$/, ""); printf "%s\r\n", $0 }' "$_acf_real" > "$TMP/acf-crlf"
 [ "$( . "$HOOKS/_x4-env.sh"; x4_acf_buildid "$TMP/acf-crlf" 2>/dev/null )" = "23660954" ] \
   && ok "x4_acf_buildid reads a CRLF manifest too" \
   || no "x4_acf_buildid returned nothing for a CRLF manifest"
