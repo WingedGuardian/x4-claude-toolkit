@@ -35,6 +35,13 @@
   player's own pause was holding, and the rule left it alone. This also corrects the shipped
   hint that "a PAUSED game goes silent" and the `ping` comment that equal elapsed times mean
   paused: `getElapsedTime` is real time and keeps advancing while paused.
+  ⚠ **MEASURED in-game 2026-09-15 — a pausing MENU clears our pause; the player's survives it.**
+  X4 has two pause levels: the manual pause sets the engine's user-pause flag and survives opening
+  and closing a pause-on-open menu (Options), while `pause`'s bare `Pause()` is UNPAUSED by that
+  menu cycle (`true owner=us` → open+close Esc → `false owner=none`). So `x4live pause` is durable
+  only for a brief MENU-FREE window (pause → measure → unpause); a menu the player opens silently
+  drops it. Documented in the README, the x4-live skill, and KNOWLEDGEBASE.md. OPEN: whether `pause`
+  can set the user-pause flag to become menu-durable.
 - **`scripts/deploy-mod.py`** — a guarded deploy for the mods this repo ships. The public repo
   shipped the helper mod with no safe way to install it: the obvious `rm -rf && cp -r` is one
   empty variable away from deleting the wrong tree inside the game install. It refuses a mod

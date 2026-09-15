@@ -253,6 +253,16 @@ MEASURED 2026-09-13: `x4live pausestate` from a fresh process read `paused=true 
 The same session showed the player's pause key and this channel's pause acting as separate
 holds: with both held, `unpause` read back still-paused, gave up its claim, and did not retry.
 
+**A menu clears our pause — the player's survives.** MEASURED in-game 2026-09-15: X4 has two
+pause levels. The player's manual pause survives opening and closing a pause-on-open menu
+(Options); this channel's `pause` (a bare `Pause()`) is UNPAUSED by that same menu cycle
+(`true owner=us` → open+close Esc → `false owner=none`). The engine's menus gate their
+close-time `Unpause()` on the user-pause flag, which the manual pause sets and the raw call does
+not. So `x4live pause` is durable only for a brief **menu-free** window (pause → measure →
+unpause); if the player opens any pausing menu, our pause silently drops. `pausestate` cannot
+tell a player or menu pause from another — all read `owner=other`; only ours reads `owner=us`.
+See KNOWLEDGEBASE.md 2026-09-15.
+
 - **Ownership, not a toggle.** `unpause` undoes only a pause this channel made, and refuses
   the player's or another mod's — the discipline vanilla's own menus keep. A UI reload
   (alt-enter, loading a save) re-creates the mod's lua, which then cannot prove the pause is
