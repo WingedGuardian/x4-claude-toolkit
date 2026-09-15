@@ -120,6 +120,22 @@ STATUSES = ("OK", "ABSENT", "ERR")
 _BUF = 1024 * 1024
 
 
+#: The largest request we will WRITE, in bytes of the whole UTF-8 message (frame
+#: header included). CRASH CONTAINMENT, added 2026-09-14.
+#:
+#: MEASURED in P6 (request-size ramp against the running game): a request of 1997
+#: bytes round-tripped intact, and one of 3998 bytes TORE THE PIPE DOWN on the game's
+#: READ path -- `pipes.lua:698` hands an over-long read to `error()`, which reaches
+#: `Close_Pipe` and destroys the connection, ERRORing every pending read and write.
+#: The mod then re-arms, and that teardown/re-arm churn on the UI thread is implicated
+#: in a game crash the same session (minidump: a NULL-pointer dereference inside X4's
+#: own UI event-dispatch code, reached through `lua_pcall`, NOT in the pipe DLL or lua
+#: runtime). The teardown floor is therefore in (1997, 3998]; this stays safely below
+#: it. `ask()` is the ONE place a request is written, so enforcing here means no client
+#: path -- a query passthrough, ffi-census, the ramp -- can breach it.
+MAX_REQUEST_BYTES = 1900
+
+
 #: Appended to every "nothing connected" refusal. A future session reading one of
 #: these must be able to tell a RETRYABLE state from a broken one -- shrugging at a
 #: minimized game and reporting "failed" is exactly the outcome this text prevents.
@@ -171,6 +187,17 @@ class LiveQueryDegraded(Exception):
     Truncation, corruption, protocol skew and FIFO desync all land here. This is
     NOT exit 2: a mangled reply is evidence the channel is misbehaving, which is a
     louder fact than silence, not a quieter one.
+    """
+
+
+class LiveRequestTooLarge(ValueError):
+    """A caller tried to send a request over `MAX_REQUEST_BYTES`. Refused BEFORE the
+    write, because the write itself is what tears the pipe down (see MAX_REQUEST_BYTES).
+
+    A ValueError, not a LiveQuery* transport error, on purpose: this is a CLIENT bug --
+    a request that should have been split -- not a channel that misbehaved, so it must
+    NOT be caught by the `except LiveQueryDegraded/Unavailable` retry/re-arm paths and
+    silently swallowed. It surfaces loudly and the caller is fixed.
     """
 
 
@@ -575,8 +602,18 @@ class LivePipe:
             self.wait_for_game()
         self._seq += 1
         msg = encode_command(self._seq, verb, tuple(args))
+        encoded = msg.encode("utf-8")
+        # CRASH CONTAINMENT: refuse an over-long request BEFORE writing it. The write is
+        # what tears the pipe down (MAX_REQUEST_BYTES), so this must precede WriteFile.
+        if len(encoded) > MAX_REQUEST_BYTES:
+            raise LiveRequestTooLarge(
+                f"refusing to send a {len(encoded)}-byte request for verb {verb!r}: the "
+                f"request-size cap is {MAX_REQUEST_BYTES} bytes. A larger request tears the "
+                f"pipe down on the game side (MEASURED teardown in (1997, 3998]); split it "
+                f"into smaller calls."
+            )
         try:
-            win32file.WriteFile(self._h, msg.encode("utf-8"))
+            win32file.WriteFile(self._h, encoded)
         except Exception as exc:
             raise LiveQueryUnavailable(
                 f"could not write to {self.path}: {exc}. The game most likely "

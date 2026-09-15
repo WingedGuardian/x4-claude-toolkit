@@ -27,9 +27,10 @@ positional arguments:
                         only when the engine reads back running
     harvest             ask the RUNNING engine EVERYTHING we can think to ask, in ONE connection,
                         and write it down
-    ffi-census          ask the RUNNING engine, name by name, whether it exports each C function
-                        vanilla's ui lua declares in ffi.cdef -- the surface `query globals`
-                        cannot see. Indexes ffi.C only: nothing is called or declared
+    ffi-census          DISABLED BY DEFAULT (crash containment, F124): set X4_LIVE_ALLOW_FFI=1 to
+                        enable. Asks the RUNNING engine, name by name, whether it exports each C
+                        function vanilla's ui lua declares in ffi.cdef -- the surface `query
+                        globals` cannot see. Indexes ffi.C only: nothing is called or declared
     groundtruth         harvest the engine's DERIVED values live and WRITE THEM DOWN (the fixture
                         any future traversal must reproduce)
     ramp                MEASURE the message-size cap. An over-long message does NOT truncate -- it
@@ -212,8 +213,8 @@ options:
   --out OUT             output .tsv (default: $X4_MODS/_reports/ffi-census-*.tsv)
   --batch-bytes BATCH_BYTES
                         largest request, in bytes of names, per ffisyms call (default: 1000). The
-                        game-side REQUEST ceiling is unmeasured and an over-long request makes its
-                        read fail -- raise this only after measuring
+                        request ceiling is MEASURED: teardown in (1997, 3998] bytes, and
+                        `_livepipe` caps every request at 1900, so a batch is bounded regardless
 ```
 
 ## `x4live groundtruth`

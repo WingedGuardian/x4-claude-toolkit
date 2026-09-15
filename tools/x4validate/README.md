@@ -121,7 +121,7 @@ uv run x4live query macro shiptypes_s ship_arg_s_scout_01_a_macro hull
 uv run x4live query ext ws_2042901274      # is this extension loaded, per the engine
 uv run x4live ramp                         # MEASURE the message-size cap
 uv run x4live query macro shiptypes_s ship_arg_s_scout_01_a_macro --contents   # table fields, 2 levels
-uv run x4live ffi-census                   # which C functions vanilla declares does the engine EXPORT?
+uv run x4live ffi-census                   # DISABLED by default (F124); X4_LIVE_ALLOW_FFI=1 to enable
 uv run x4live groundtruth --macros list.tsv --contents   # harvest engine values for YOUR macro list
 
 # ---- the WRITE half: the only two verbs that change the running game.

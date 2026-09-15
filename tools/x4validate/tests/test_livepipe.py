@@ -429,6 +429,75 @@ def test_encode_command_refuses_an_argument_carrying_a_separator(bad):
 
 
 # --------------------------------------------------------------------------- #
+# the REQUEST-SIZE CAP (crash containment, 2026-09-14)
+#
+# MEASURED in P6: a request in (1997, 3998] bytes tears the pipe down on the
+# game's READ path (pipes.lua:698 -> Close_Pipe), and the resulting teardown/
+# re-arm churn on the UI thread is implicated in a game crash (minidump: a null
+# deref inside X4's own UI event dispatch, reached via lua_pcall). `ask()` is the
+# ONE place every client request is written, so the cap lives there and nothing
+# downstream -- ramp, ffi-census, a query passthrough -- can send an oversized
+# request from any path.
+# --------------------------------------------------------------------------- #
+
+class _RecordingWin32File:
+    """A win32file stand-in that RECORDS writes and answers reads with a fixed
+    reply. The point of recording is that the cap must refuse BEFORE the write --
+    a cap that raised only after WriteFile would still have torn the pipe down."""
+
+    def __init__(self, reply_bytes):
+        self.reply_bytes = reply_bytes
+        self.writes = []
+
+    def WriteFile(self, handle, data):
+        self.writes.append(data)
+        return 0, len(data)
+
+    def ReadFile(self, handle, size):
+        return 0, self.reply_bytes
+
+
+def _wired_pipe(monkeypatch, reply_payload="ok"):
+    fake = _RecordingWin32File(frame(seq=1, payload=reply_payload).encode("utf-8"))
+    monkeypatch.setattr(lp, "_win32", lambda: (None, fake, _FakeWinError))
+    pipe = lp.LivePipe.__new__(lp.LivePipe)
+    pipe._h = object()
+    pipe._connected = True
+    pipe._seq = 0
+    pipe.timeout = 1.0
+    pipe.path = r"\\.\pipe\x4live"
+    return pipe, fake
+
+
+def test_ask_REFUSES_a_request_over_the_cap_BEFORE_writing(monkeypatch):
+    """The load-bearing containment. An oversized request must never reach WriteFile,
+    because the write itself is what tears the pipe down. Asserting the write count is
+    zero -- not merely that ask() raised -- is what makes 'before' a real claim."""
+    pipe, fake = _wired_pipe(monkeypatch)
+    big = "X" * (lp.MAX_REQUEST_BYTES + 1)
+    with pytest.raises(lp.LiveRequestTooLarge, match="request-size cap"):
+        pipe.ask("echo", big)
+    assert fake.writes == [], "an oversized request reached WriteFile -- the cap is after the write"
+
+
+def test_ask_STILL_SENDS_a_request_under_the_cap(monkeypatch):
+    """The twin, per clause: the cap must not block ordinary traffic. Without it, a
+    guard that refused everything would pass the test above and silence the channel."""
+    pipe, fake = _wired_pipe(monkeypatch)
+    r = pipe.ask("echo", "hi")
+    assert r.ok and r.payload == "ok"
+    assert len(fake.writes) == 1, "an in-bounds request was not sent"
+
+
+def test_the_request_cap_sits_below_the_MEASURED_teardown_floor():
+    """Pin the VALUE against silent drift. 1997 bytes round-tripped intact in P6 and
+    3998 tore the pipe down, so the cap must stay strictly below 1997; a later edit that
+    raised it back toward the teardown band would re-open the crash path."""
+    assert lp.MAX_REQUEST_BYTES < 1997, (
+        "the cap must stay below the 1997-byte measured-OK ceiling (teardown in (1997, 3998])")
+
+
+# --------------------------------------------------------------------------- #
 # the NON-ANSWER floor: refusing must never look like a finding
 # --------------------------------------------------------------------------- #
 

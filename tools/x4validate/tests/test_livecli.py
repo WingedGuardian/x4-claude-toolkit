@@ -964,6 +964,51 @@ def test_missing_from_store_treats_a_SystemExit_from_the_store_as_UNASKABLE(tmp_
     assert _livecli._missing_from_store([("shiptypes_s", "x")]) is None
 
 
+# --- ffi-surface verbs are DISABLED by default (crash containment, 2026-09-14) ---- #
+
+def test_ffi_census_is_DISABLED_by_default_and_does_no_work(tmp_path, monkeypatch, capsys):
+    """Default-off. The refusal must come BEFORE parsing reference/ or opening the pipe:
+    a census that first read the corpus, then refused, would still pay the cost the gate
+    exists to avoid. census() and _live_open both raise if reached."""
+    import io
+    from x4validate import _ffinames, _livecli
+    monkeypatch.delenv("X4_LIVE_ALLOW_FFI", raising=False)
+
+    def must_not_parse(config):
+        raise AssertionError("parsed the ffi source while the verb was disabled")
+
+    monkeypatch.setattr(_ffinames, "census", must_not_parse)
+    _never_open(monkeypatch)
+    rc = _livecli.cmd_ffi_census(None, 1.0, out_file=str(tmp_path / "c.tsv"), out=io.StringIO())
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "DISABLED" in err and "X4_LIVE_ALLOW_FFI" in err
+
+
+def test_query_REFUSES_ffisyms_when_the_gate_is_unset(monkeypatch, capsys):
+    """`query ffisyms` is the other client path to the FFI-index verb; it is gated the
+    same way, and refuses before the pipe is opened."""
+    import io
+    from x4validate import _livecli
+    monkeypatch.delenv("X4_LIVE_ALLOW_FFI", raising=False)
+    _never_open(monkeypatch)
+    rc = _livecli.cmd_query("ffisyms", ["GetPlayerID"], None, 1.0, out=io.StringIO())
+    assert rc == 2
+    assert "X4_LIVE_ALLOW_FFI" in capsys.readouterr().err
+
+
+def test_query_still_answers_a_NON_ffi_verb_when_the_gate_is_unset(monkeypatch):
+    """The twin: the gate is scoped to `ffisyms` alone. Without this, a gate that
+    refused every query verb would pass the test above and silence the channel."""
+    import io
+    from x4validate import _livecli
+    monkeypatch.delenv("X4_LIVE_ALLOW_FFI", raising=False)
+    pipe = _SymPipe({"GetPlayerID": "exported|cdata"})
+    _open_with(monkeypatch, pipe)
+    rc = _livecli.cmd_query("ping", [], None, 1.0, out=io.StringIO())
+    assert rc == 0 and pipe.requests, "a non-ffi verb was refused by the ffi gate"
+
+
 # --- ffi-census: batch vanilla's declared C functions through `ffisyms` --------- #
 
 def _fake_census(names):
@@ -1013,6 +1058,9 @@ def _census_run(tmp_path, monkeypatch, names, pipe, **kw):
     import io
 
     from x4validate import _ffinames, _livecli
+    # ffi-census is gated OFF by default (crash containment); these tests exercise the
+    # batching/alignment LOGIC behind the gate, so they open it explicitly.
+    monkeypatch.setenv("X4_LIVE_ALLOW_FFI", "1")
     monkeypatch.setattr(_ffinames, "census", lambda config: _fake_census(names))
     _open_with(monkeypatch, pipe)
     buf = io.StringIO()
@@ -1076,6 +1124,7 @@ def test_ffi_census_with_NO_names_never_contacts_the_game(tmp_path, monkeypatch,
     import io
 
     from x4validate import _ffinames, _livecli
+    monkeypatch.setenv("X4_LIVE_ALLOW_FFI", "1")  # this test is about the 0-names path, not the gate
     monkeypatch.setattr(_ffinames, "census", lambda config: _fake_census([]))
     _never_open(monkeypatch)
     rc = _livecli.cmd_ffi_census(None, 1.0, out_file=str(tmp_path / "c.tsv"), out=io.StringIO())

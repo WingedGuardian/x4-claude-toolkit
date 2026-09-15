@@ -174,6 +174,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F121 | `x4effective who-sets` with no property answered with the ENTITY's origin while its properties had been changed, and could not see removals at all | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | asked who set `energycells` it said `base`; 33 of its 49 properties were last set by something else | origins and file-level removals now reported; `show` still lists no removals (OPEN) |
 | F122 | `ask.py xq` certified a negative over a query Git Bash had rewritten before Python saw it | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | `collection("x4raw")//ware` arrived as `.../ware`: `NEGATIVE CONFIRMED` rc 0, where PowerShell counted 14,068 | `--file`; under Git Bash an argument-query zero refuses (rc 4) and every result shows the query as received |
 | F123 | `bin/unpack-reference.sh` took the LAST `"buildid"` in the Steam manifest, which is a beta branch's, not the installed build | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | this machine's manifest: AppState 23660954, `public_beta` 23524486 -- the script's grep returned 23524486 | one depth-1 reader, `x4_acf_buildid`, for the script and the hook; a test bans a third hand-rolled grep |
+| F124 | a client request had NO size cap; a request over ~1997 bytes tears the game-side pipe read down, and the teardown was followed the same session by a game CRASH | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | P6 ramp: 1997 bytes round-tripped, 3998 tore the pipe down (`The pipe has been ended`); the game crashed on the next Esc | `ask()` refuses any request over `MAX_REQUEST_BYTES` (1900) before writing; `ffi-census` and `query ffisyms` gated off by default (`X4_LIVE_ALLOW_FFI`) |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -6719,3 +6720,60 @@ quoted key (the sentinel's unquoted read is a different file and is untouched).
    so the clause was exercisable on one platform only. The helper now runs awk with `BINMODE=3`
    (ignored by other awks), and all **5 of 5** mutants fail their named check: depth clause, key
    clause, CR strip, hook reverted to first-match, script reverted to last-match.
+
+---
+
+## F124 — a client pipe request had no size cap: an over-long request tears the channel down, and a game crash followed · **DEFECT (measured)** · confidence 90% · FIXED 2026-09-14
+
+**RE-DERIVED BY:** `tests/test_livepipe.py` (`test_ask_REFUSES_a_request_over_the_cap_BEFORE_writing` — asserts the write count is zero, so the refusal precedes `WriteFile`; `test_ask_STILL_SENDS_a_request_under_the_cap`, the over-cap twin; `test_the_request_cap_sits_below_the_MEASURED_teardown_floor`, pinning the value below 1997) and `tests/test_livecli.py` (`test_ffi_census_is_DISABLED_by_default_and_does_no_work`, `test_query_REFUSES_ffisyms_when_the_gate_is_unset`, and the twin `test_query_still_answers_a_NON_ffi_verb_when_the_gate_is_unset`).
+
+**What happened (MEASURED).** During a live-channel session (P6, 2026-09-14) a request-size ramp
+was driven against the running game. `ffisyms` requests grew with the number of names:
+
+| request (frame bytes) | result |
+|---|---|
+| 993 | OK |
+| 1997 | OK |
+| 3998 | **`LiveQueryDegraded: read failed: (109, 'ReadFile', 'The pipe has been ended.')`** |
+
+So the teardown floor is in **(1997, 3998]**. This is the send (game-READ) path, not the reply
+path: `named_pipes/pipes.lua:698` hands an over-long read to `error()`, which reaches `Close_Pipe`
+and destroys the connection, ERRORing every pending read and write. The mod then re-arms — the
+`debug.txt` sentinel shows `arm destroyed, re-arming` repeating up to the crash — and **the game
+crashed the moment the user next pressed Esc** to open the map/options menu.
+
+**The crash, from the minidump (MEASURED where; INFERRED why).** `Dr. MinGW`'s dump
+(`X4_900_2026_09_14_21_47_34.dmp`) was parsed offline:
+
+- `EXCEPTION_ACCESS_VIOLATION` (0xc0000005), a **read of address `0x30`** — a NULL-pointer
+  dereference (`cmp qword ptr [rbp+0x30], rbx` with `rbp = 0`).
+- **Inside X4.exe's own code, NOT `lua51_64.dll`, NOT the winpipe DLL, and NOT the FFI-restriction
+  check.** The faulting function and its callers are X4's UI event-registration/dispatch engine
+  (identified by its own strings: `self`, `__scriptIndex`, `Auto event ... registration is not
+  allowed`, `Attempt to unregister an unregistered event`, `Script index not found`), reached
+  through `lua_pcall`. The two `0xaf72xx` FFI-restriction addresses on the stack are stale deep-
+  stack bytes, not live frames.
+
+⚠ **INFERRED, not proven (this is why confidence is 90%, and the crash half lower):** that our
+continuously-armed pipe read + delayed-callback re-arm, stressed by the oversized-request
+teardowns, is what drove the engine into that null deref. The dump proves *where* (X4's UI event
+dispatch) and clears the pipe DLL, the lua runtime and the FFI path; it does not deductively prove
+our teardown was the trigger. n=1. Weighed against: the user vouches that Esc has never crashed the
+game without the toolkit, and no other installed activity touches this path.
+
+**The fix — a cap at the one chokepoint, plus a precautionary gate.**
+
+1. `LivePipe.ask()` is the ONLY place a request is written. `_livepipe.MAX_REQUEST_BYTES = 1900`
+   (safely below the 1997-byte measured-OK ceiling); a larger request raises `LiveRequestTooLarge`
+   **before** `WriteFile`. No client path — a `query` passthrough, `ffi-census`, the reply-path
+   ramp — can breach it. `LiveRequestTooLarge` is a `ValueError`, not a `LiveQuery*` transport
+   error, so the re-arm/retry `except` paths cannot silently swallow it.
+2. The FFI-surface verbs (`ffi-census`, and `ffisyms` via `query`) are **gated off by default**
+   (`X4_LIVE_ALLOW_FFI=1` re-enables). They index `ffi.C` for ~2074 declared names including ~160
+   the running VM never declared. The dump does **not** implicate them — this is precaution until
+   the crash is understood, and the cap protects the channel whether the gate is open or shut. The
+   batching/alignment logic and its ~15 tests are preserved behind the gate, not deleted.
+
+**Scope note.** The reply-path ramp (`x4live ramp`, `groundtruth --with-ramp`) sends `echo <n>`
+where the request is the *number* as text (tiny) and the game echoes back `n` bytes, so it measures
+OUR read buffer (`_BUF`), never the request cap — it is unaffected, and unrelated to this teardown.

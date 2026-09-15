@@ -905,6 +905,33 @@ def _live_open(pipe: str | None, timeout: float):
 #: tests/test_modlua_rearm.py fails if the two ever differ.
 WRITE_VERBS = ("pause", "unpause")
 
+
+#: FFI-surface verbs -- `ffi-census`, and `ffisyms` via `query` -- are DISABLED by
+#: default as of 2026-09-14, crash containment. They INDEX ffi.C for the names vanilla's
+#: ui lua declares (~2074, including ~160 the running VM never declared). A minidump the
+#: same session showed the crash was NOT in that path -- it was a null-pointer deref
+#: inside X4's own UI event dispatch, reached through lua_pcall -- and the request-size
+#: cap in `_livepipe` (MAX_REQUEST_BYTES) addresses the actual mechanism (an oversized
+#: request tearing the pipe down). So this gate is PRECAUTION, not a proven cause, and
+#: it is trivially reversible: set X4_LIVE_ALLOW_FFI=1. The cap protects the channel
+#: whether the gate is open or shut. See docs/BLIND-SPOTS.md.
+_FFI_DISABLED_MSG = (
+    "the FFI-surface verbs (ffi-census, and `ffisyms` via query) are DISABLED by "
+    "default since 2026-09-14 (crash containment). They are not implicated by the "
+    "crash dump, but are gated as a precaution until the crash is understood. Set "
+    "X4_LIVE_ALLOW_FFI=1 to re-enable; see docs/BLIND-SPOTS.md."
+)
+
+
+def _ffi_verbs_enabled() -> bool:
+    """True only when X4_LIVE_ALLOW_FFI resolves to a truthy value.
+
+    Resolved through `_paths.value()`, the one door for configuration, exactly as the
+    live channel resolves `X4_LIVE_PIPE` -- never a bare `os.environ`, which sees only
+    the environment layer (see tests/test_env_resolution_is_delegated.py)."""
+    from . import _paths
+    return (_paths.value("X4_LIVE_ALLOW_FFI") or "").strip().lower() in ("1", "true", "yes", "on")
+
 _BANNER = "!" * 78
 
 
@@ -1034,6 +1061,8 @@ def cmd_query(verb: str, args: list[str], pipe: str | None, timeout: float,
         return _fmt_rc(
             f"`{verb}` is a WRITE verb, and `query` only asks questions. Use "
             f"`x4live {verb}`, which announces the write before sending it.", 2)
+    if verb == "ffisyms" and not _ffi_verbs_enabled():
+        return _fmt_rc(_FFI_DISABLED_MSG, 2)
     from . import _livepipe
 
     with _live_open(pipe, timeout) as lp:
@@ -1669,6 +1698,9 @@ def cmd_ffi_census(pipe: str | None, timeout: float, out_file: str | None = None
     refused (those names are recorded `errored`, a NON-ANSWER, never dropped).
     """
     out = out or sys.stdout
+    # Crash containment: refuse BEFORE parsing reference/ or opening the pipe.
+    if not _ffi_verbs_enabled():
+        return _fmt_rc("ffi-census: " + _FFI_DISABLED_MSG, 2)
     from . import _ffinames, _livepipe, _merge
 
     src = _ffinames.census(_merge.Config())
@@ -2202,19 +2234,20 @@ def main(argv: list[str] | None = None) -> int:
                          "STATION id for the field sweep (default: argon)")
 
     pf = sub.add_parser("ffi-census",
-                        help="ask the RUNNING engine, name by name, whether it exports each C "
-                             "function vanilla's ui lua declares in ffi.cdef -- the surface "
-                             "`query globals` cannot see. Indexes ffi.C only: nothing is "
-                             "called or declared")
+                        help="DISABLED BY DEFAULT (crash containment, F124): set "
+                             "X4_LIVE_ALLOW_FFI=1 to enable. Asks the RUNNING engine, name by "
+                             "name, whether it exports each C function vanilla's ui lua declares "
+                             "in ffi.cdef -- the surface `query globals` cannot see. Indexes "
+                             "ffi.C only: nothing is called or declared")
     pf.add_argument("--pipe", help="pipe name (default: $X4_LIVE_PIPE or built-in)")
     pf.add_argument("--timeout", type=float, default=10.0,
                     help="seconds to wait for the game, and for each reply (default: %(default)s)")
     pf.add_argument("--out", help="output .tsv (default: $X4_MODS/_reports/ffi-census-*.tsv)")
     pf.add_argument("--batch-bytes", type=int, default=FFI_CENSUS_BATCH_BYTES,
                     help="largest request, in bytes of names, per ffisyms call (default: "
-                         "%(default)s). The game-side REQUEST ceiling is unmeasured and an "
-                         "over-long request makes its read fail -- raise this only after "
-                         "measuring")
+                         "%(default)s). The request ceiling is MEASURED: teardown in (1997, "
+                         "3998] bytes, and `_livepipe` caps every request at 1900, so a batch "
+                         "is bounded regardless")
     pg = sub.add_parser("groundtruth",
                         help="harvest the engine's DERIVED values live and WRITE THEM "
                              "DOWN (the fixture any future traversal must reproduce)")

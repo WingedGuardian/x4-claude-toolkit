@@ -4,6 +4,15 @@
 
 ### Added
 
+- **A hard request-size cap on the live channel (`_livepipe.MAX_REQUEST_BYTES`, 1900 bytes).**
+  `LivePipe.ask()` — the one place every client request is written — refuses any request over the
+  cap with `LiveRequestTooLarge` **before** the write, so no verb, passthrough or ramp can send an
+  over-long request from any path. MEASURED in a live session: a request over ~1997 bytes tears the
+  game-side pipe read down (`pipes.lua` hands an over-long read to `error()` → `Close_Pipe`), and
+  that teardown was followed by a game crash whose minidump faults in X4's own UI event dispatch.
+  The cap sits below the 1997-byte measured-OK ceiling; `LiveRequestTooLarge` is a `ValueError`,
+  not a transport error, so the re-arm/retry paths cannot swallow it silently. See F124.
+
 - **`x4live pause` / `x4live unpause` — the first WRITE verbs — and `x4live pausestate`,
   their read half.** A live measurement drifts while the game runs (a faction gains tens of
   objects a minute), so holding the simulation still is what makes two questions comparable.
@@ -122,12 +131,17 @@
   `undeclared` (nothing loaded this session declares it), `other` (quoted), or `invalid`. The verb
   only looks symbols up: it never calls one, and never declares one, because a second declaration
   with a different signature is silently ignored by LuaJIT and could break the game's own later
-  calls. Names go in small batches (`--batch-bytes`, default 1000): the game-side limit on a
-  request's size is unmeasured, and an over-long request makes the read fail. A batch that is not
+  calls. Names go in small batches (`--batch-bytes`, default 1000). A batch that is not
   answered, or whose rows do not line up name for name, is recorded as `errored` and the command
   exits 3, as does an invalid name, which is never sent. If the channel drops mid-run, the batches
   already answered are kept. Output is a `.tsv` with the declaring file(s) for every name. The helper mod's BUILD
   moves; a running game needs a reload.
+  **⚠ SHIPS DISABLED BY DEFAULT (crash containment, F124).** `ffi-census`, and `ffisyms` via
+  `query`, now refuse unless `X4_LIVE_ALLOW_FFI=1` is set. During this live session an over-long
+  request was MEASURED to tear the game-side pipe read down (teardown floor in (1997, 3998] bytes),
+  and a game crash followed the same session; the minidump put the fault in X4's own UI event
+  dispatch, NOT in this FFI-index path, so the gate is precaution rather than a proven cause, and
+  is trivially reversible. The batching/alignment logic is unchanged behind the gate.
 
 ### Changed
 
