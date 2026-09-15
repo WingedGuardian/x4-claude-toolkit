@@ -199,6 +199,12 @@
   count of files or entities -- and, when `--db` was omitted for `refs` or `attr`, that it searched `x4raw` (files as written)
   and to add `--db x4eff` for what the game actually loads. `--help` states the default. The count line
   itself and the default are unchanged. Both gaps were found by a cold, docs-only agent.
+- **CI's skip ceiling is tight again: 68 on ubuntu, 56 on windows (was 74 and 62).** The measured
+  skip floor had fallen to 65 and 53 -- the blind-spots register now ships, so 13 tests that skipped
+  for its absence run -- which left 9 skips of slack on each leg: room for tests to go silently
+  dormant without failing the build. Every one of the 65 skips was classified first (49 need an X4
+  install, reference tree, game root or registry the runner lacks; 12 are Windows-only or need a
+  case-insensitive filesystem; 4 need a tag the shallow checkout lacks), and the margin stays +3.
 
 ### Fixed
 

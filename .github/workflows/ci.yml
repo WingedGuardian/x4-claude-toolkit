@@ -570,7 +570,25 @@ jobs:
           #    ubuntu   71 + 3 = 74
           # Ubuntu is no longer inferred from windows. If either leg moves again, read
           # the per-JOB number and classify the skips before touching these.
-          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '74' || '62' }}
+          #
+          # ** LOWERED 2026-09-15, 74 -> 68 ubuntu and 62 -> 56 windows. ** The floor
+          # had FALLEN, so the old pair had grown 9 of slack on each leg -- room for
+          # tests to go dormant unseen, which is the one thing this ceiling is for.
+          # Read off run 34929189538 (ccd454f), per job: ubuntu 65, windows 53, and
+          # attributed PER FILE against run 34421093364, identically on both legs:
+          #    -13  test_blind_spots_ids 7, test_next_blind_spot_id 5,
+          #         test_effective_scope 1 -- docs/BLIND-SPOTS.md ships in this repo now
+          #     +8  conftest 3 (qa_sweep import), claude_md_budget 1, deploy_parity 1,
+          #         ffinames 1, recon_buckets_are_vanilla_attested 1 -- each a check
+          #         that needs a configured X4, reference tree or game root
+          # All 65 classified, buckets summing to 65 of 65:
+          #    49  no X4 install, reference tree, game root or registry on the runner
+          #    12  Windows-only behaviour or a case-insensitive filesystem (ubuntu only)
+          #     4  tag v3.0.0 absent from the depth-1 checkout (see the scrub job)
+          # Windows is the same 49 + 4 = 53. None is a test gone dormant.
+          #    windows  53 + 3 = 56
+          #    ubuntu   65 + 3 = 68
+          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '68' || '56' }}
           # No .pyc from CI: a stale cache cannot then masquerade as the source.
           PYTHONDONTWRITEBYTECODE: '1'
         run: uv run --frozen python -m pytest -q -rs
