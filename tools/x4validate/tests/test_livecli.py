@@ -850,8 +850,10 @@ class _MacroPipe:
 
     path = "macro-pipe"
 
-    def __init__(self, knows_contents=True, star_absent_for=()):
+    def __init__(self, knows_contents=True, star_absent_for=(), per_field_ok=False,
+                 degrade_plain=False):
         self.knows_contents, self.star_absent_for = knows_contents, set(star_absent_for)
+        self.per_field_ok, self.degrade_plain = per_field_ok, degrade_plain
         self.calls = []
 
     def ask(self, verb, *args, **k):
@@ -860,7 +862,13 @@ class _MacroPipe:
         ltype, macro, *rest = args
         absent = _livepipe.Reply(seq=1, status="ABSENT", payload=f"{ltype}\t{macro}")
         if rest and rest != ["--contents"]:
-            return absent                               # a per-field ask: a real absence
+            # A per-field ask. `per_field_ok` models the case review round 1 MEASURED: the
+            # derived fields answer, so the old code harvested values and exited 0.
+            if self.per_field_ok:
+                return _livepipe.Reply(seq=1, status="OK", payload="7")
+            return absent
+        if not rest and self.degrade_plain:
+            raise _livepipe.LiveQueryDegraded("simulated: the re-ask came back mangled")
         if rest == ["--contents"] and not self.knows_contents:
             return absent
         if macro in self.star_absent_for:
@@ -872,7 +880,9 @@ def test_groundtruth_CONTENTS_against_a_build_that_predates_it_is_REFUSED(tmp_pa
                                                                          capsys):
     """MEASURED by review: an old build answers ABSENT to `macro <lt> <m> --contents`, and the
     harvest counted every one as 'a real answer' -- rc 0, zero `*` rows, header contents=yes."""
-    pipe = _MacroPipe(knows_contents=False)
+    # per_field_ok: without it the OLD code also exited 2 ("NOTHING was harvested"), so the rc
+    # assertion could not tell old from new (review round 2).
+    pipe = _MacroPipe(knows_contents=False, per_field_ok=True)
     _open_with(monkeypatch, pipe)
     rc, out = _run_groundtruth(tmp_path, contents=True)
     assert rc == 2, out
@@ -901,6 +911,28 @@ def test_groundtruth_an_ABSENT_all_fields_answer_is_NAMED_not_just_counted(tmp_p
     rc, out = _run_groundtruth(tmp_path, macros_file=str(f))
     assert "ship_b_macro" in out and "ABSENT" in out, out
     assert "star_absent=1" in (tmp_path / "gt.tsv").read_text(encoding="utf-8")
+
+
+def test_groundtruth_a_DEGRADED_re_ask_does_not_relabel_a_real_ABSENT(tmp_path, monkeypatch):
+    """Review round 2: the --contents re-ask is a second request, and if IT comes back mangled
+    the genuine all-fields ABSENT was recorded as `!DEGRADED` -- the re-ask is only a probe for
+    an old build, so its failure must leave the first answer standing."""
+    pipe = _MacroPipe(star_absent_for={"ship_arg_s_scout_01_a_macro"}, degrade_plain=True)
+    _open_with(monkeypatch, pipe)
+    rc, out = _run_groundtruth(tmp_path, contents=True)
+    text = (tmp_path / "gt.tsv").read_text(encoding="utf-8")
+    assert "!DEGRADED" not in text, text[:400]
+    assert "shiptypes_s ship_arg_s_scout_01_a_macro" in out, out
+
+
+def test_missing_from_store_treats_a_CORRUPT_store_file_as_UNASKABLE(tmp_path, monkeypatch):
+    """Review round 2, MEASURED: `_connect` opens read-only LAZILY, so a garbage file passes it
+    and `sqlite3.DatabaseError: file is not a database` crashed the lookup instead."""
+    from x4validate import _effective, _livecli
+    db = tmp_path / "store.sqlite"
+    db.write_bytes(b"this is not an sqlite database, not even close" * 10)
+    monkeypatch.setattr(_effective, "effective_db", lambda *a, **k: db)
+    assert _livecli._missing_from_store([("shiptypes_s", "x")]) is None
 
 
 def test_groundtruth_a_DUPLICATE_macro_line_is_asked_ONCE_and_said(tmp_path, monkeypatch):
@@ -1110,7 +1142,7 @@ def test_ffi_census_every_TSV_row_keeps_FOUR_columns_whatever_the_error_text(tmp
     assert all(len(r.split("\t")) == 4 for r in rows), rows
 
 
-def test_ffi_census_a_channel_LOST_mid_run_KEEPS_what_was_answered(tmp_path, monkeypatch):
+def test_ffi_census_a_channel_LOST_mid_run_KEEPS_what_was_answered(tmp_path, monkeypatch, capsys):
     """MEASURED by review: a LiveQueryUnavailable on batch 2 raised out of the command, so no
     TSV was written and batch 1's answers were lost. The likely cause in practice is the one
     the batching exists for -- a request the game-side read could not take."""
@@ -1123,6 +1155,10 @@ def test_ffi_census_a_channel_LOST_mid_run_KEEPS_what_was_answered(tmp_path, mon
     assert "GetA\texported" in text, text
     assert "GetB\terrored" in text and "GetC\terrored" in text, text
     assert "channel lost" in text, text
+    # Review round 2: LiveQueryUnavailable also means "connected, then no reply" -- a minimized
+    # game -- and its message carries the fix. Before the catch it reached the terminal via
+    # main(); the diagnosis must still reach the terminal, not only a TSV cell.
+    assert "simulated: the pipe went away" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("row", ["<invalid>|exported|cdata", "GetA|invalid"])

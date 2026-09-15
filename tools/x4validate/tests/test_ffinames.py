@@ -120,6 +120,20 @@ def test_a_cdef_through_ANOTHER_receiver_is_counted():
     assert unparsed == 2
 
 
+def test_a_SPACED_ffi_receiver_is_counted():
+    """Review round 2, MEASURED: `ffi .cdef[[...]]` gave 0 and 0 -- the other-receiver pass
+    skipped receiver `ffi` assuming the ffi pass counted it, and that pass allowed no spaces."""
+    blocks, unparsed = F.cdef_blocks("ffi .cdef[[ int A(void); ]]\nffi. cdef([[ int B(void); ]])")
+    assert blocks == []
+    assert unparsed == 2
+
+
+def test_a_LONGER_receiver_ending_in_ffi_is_counted_ONCE_and_not_parsed():
+    """`myffi.cdef[[...]]` was read as a block AND counted unparsed (review round 2)."""
+    blocks, unparsed = F.cdef_blocks("myffi.cdef[[ int A(void); ]]")
+    assert (blocks, unparsed) == ([], 1)
+
+
 def test_two_blocks_in_one_file_are_both_read():
     assert names("ffi.cdef[[ int A(void); ]]\nx = 1\nffi.cdef[[ int B(void); ]]") == {"A", "B"}
 

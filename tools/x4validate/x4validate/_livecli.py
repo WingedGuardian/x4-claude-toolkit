@@ -1398,14 +1398,23 @@ def _missing_from_store(pairs: list[tuple[str, str]]) -> list[str] | None:
         # that the store could not be opened. SystemExit is how _connect reports an unusable
         # store, and it is a BaseException that `except Exception` does not catch (review).
         return None
+    import sqlite3
     try:
+        # The lookup FIRST. `_connect` opens read-only lazily, so a file that is not a database
+        # fails only here -- and checking freshness first printed a misleading "no fingerprint"
+        # banner and then crashed with DatabaseError (review round 2, MEASURED).
+        missing = [m for _, m in pairs if _store_props(con, m) is None]
         fresh = store_freshness(con)
         if not fresh.fresh:
             # Warned, not refused: a stale store can mislead only about macros added or
             # removed since it was built, and the engine's ABSENT still names any of those.
             print(fresh.banner("the effective store") + "\n  --macros names are checked "
                   "against it anyway.", file=sys.stderr)
-        return [m for _, m in pairs if _store_props(con, m) is None]
+        return missing
+    except sqlite3.DatabaseError:
+        # silent-ok: None IS the channel -- the only caller refuses (rc 2), naming a store that
+        # could not be read.
+        return None
     finally:
         con.close()
 
@@ -1522,8 +1531,14 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
                     # reading it as a PROPERTY name. MEASURED in review: that case harvested
                     # zero `*` rows and exited 0. Ask once more without the flag; if THAT
                     # answers, the running build cannot do what was asked.
-                    plain = lp.ask("macro", ltype, macro)
-                    if plain.status == "OK":
+                    try:
+                        plain = lp.ask("macro", ltype, macro)
+                    except _livepipe.LiveQueryDegraded:
+                        # silent-ok: the re-ask is only a PROBE for an old build. If it comes
+                        # back mangled, the first answer -- a genuine ABSENT -- stands, and is
+                        # counted and named below (review round 2).
+                        plain = None
+                    if plain is not None and plain.status == "OK":
                         return _fmt_rc(
                             "groundtruth --contents: the running helper build does not know "
                             "--contents -- it answered the all-fields call without the flag and "
@@ -1694,7 +1709,11 @@ def cmd_ffi_census(pipe: str | None, timeout: float, out_file: str | None = None
                 # this batch and every later one are a non-answer, and nothing more is sent.
                 # The likeliest cause is the one the byte bound exists for: a request the
                 # game-side read could not take.
-                lost = f"channel lost at batch {bi + 1} of {len(plan)}: {exc}"
+                lost = f"no reply or channel lost at batch {bi + 1} of {len(plan)}: {exc}"
+                # To the TERMINAL as well as the TSV. This exception also means "connected, then
+                # silent" -- a minimized game -- and its text carries the fix; before it was
+                # caught here, main() printed it (review round 2).
+                print(f"ffi-census: {lost}", file=sys.stderr)
                 for rest in plan[bi:]:
                     errored_batches += 1
                     for n in rest:

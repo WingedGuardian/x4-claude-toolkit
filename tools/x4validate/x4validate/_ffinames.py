@@ -24,7 +24,9 @@ vanilla today (reference/ uses only `ffi.cdef[[` blocks): `__attribute__((x)) in
 yields the name `__attribute__`; `void (*GetHandler(int))(int);` (a function returning a
 function pointer) is dropped; `int A(void), B(void);` loses `B`. These are declarator shapes
 inside a block the parser DID read, so they are not counted in `unparsed` -- which is why they
-are written down here instead.
+are written down here instead. Two RECEIVER shapes are not even counted (review round 2, also
+zero vanilla occurrences): `require"ffi".cdef[[...]]` (a quote-call receiver) and
+`ffi['cdef'][[...]]` (index syntax).
 
 SOURCE SET. Loose files come from `_effective.base_vpaths(config, "*.lua")`, the one sanctioned
 enumeration. Its PACKED pass lists XML only, so `.lua` inside a packed-only DLC catalog is read here
@@ -37,15 +39,20 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-_OPEN = re.compile(r"ffi\.cdef\s*(\()?\s*\[(=*)\[")
+#: `\b`: without it `myffi.cdef[[...]]` was read as an `ffi` block AND counted unparsed
+#: through its receiver (review round 2).
+_OPEN = re.compile(r"\bffi\.cdef\s*(\()?\s*\[(=*)\[")
 #: Every mention of `ffi.cdef`. Each one that is not the start of a literal block counts as
 #: unparsed -- `ffi.cdef(src)`, an alias `local c = ffi.cdef`, and `ffi.cdef"int A(void);"`
 #: (lua allows a string argument without parentheses) -- EXCEPT a mention quoted on BOTH
 #: sides, which is data: MEASURED 2026-09-14, the one vanilla instance is LuaJIT's own name
 #: table (`ui/core/lua/jit/vmdef.lua:352`, `"ffi.cdef",`). An exemption checking EITHER side
 #: swallowed the quote-call form (review 2026-09-14).
-_FFI_CDEF = re.compile(r"\bffi\.cdef\b")
-#: A `.cdef` CALL through any receiver other than the bare name `ffi` --
+#: Spaces around the dot are legal lua (`ffi . cdef[[...]]`); the other-receiver pass below skips
+#: receiver `ffi` on the understanding that THIS pass counts it, so this one must allow them
+#: (review round 2 MEASURED the spaced forms giving 0 blocks and 0 unparsed).
+_FFI_CDEF = re.compile(r"\bffi\s*\.\s*cdef\b")
+#: A `.cdef` CALL whose receiver ends in a name, `)` or `]`, other than the bare name `ffi` --
 #: `require("ffi").cdef[[...]]`, `mylib.cdef(...)`. It declares just the same, and a parser
 #: keyed on `ffi.cdef` cannot read it, so it is counted rather than invisible.
 _OTHER_CDEF = re.compile(r"([\w)\]]+)\s*\.\s*cdef\s*[\[(\"']")
