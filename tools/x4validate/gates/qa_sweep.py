@@ -178,7 +178,12 @@ def _newest_groundtruth() -> str:
     which is the defect check_coverage() exists to refuse.
     """
     try:
-        hits = sorted((_env.mods_dir() / "_reports").glob("groundtruth-*.tsv"))
+        # ONLY what `x4live groundtruth` writes: groundtruth-YYYYMMDD-HHMMSS.tsv. The bare glob
+        # also matched a macro LIST saved beside the fixtures (`groundtruth-macros-...tsv`),
+        # which sorted after every real fixture and turned the mappings cell RED (MEASURED
+        # 2026-09-14; tests/test_qa_sweep_newest_groundtruth.py).
+        hits = sorted(p for p in (_env.mods_dir() / "_reports").glob("groundtruth-*.tsv")
+                      if re.fullmatch(r"groundtruth-\d{8}-\d{6}\.tsv", p.name))
         if hits:
             return str(hits[-1])
     except (Exception, SystemExit):   # _env.* raises SystemExit, a BaseException
