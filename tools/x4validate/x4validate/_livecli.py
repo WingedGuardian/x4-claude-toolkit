@@ -1712,7 +1712,15 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
         d.mkdir(parents=True, exist_ok=True)
         dest = d / f"groundtruth-{datetime.datetime.now():%Y%m%d-%H%M%S}.tsv"
 
-    fields = sorted(_DERIVED)
+    # _DERIVED **and** _DERIVE. A field that gains a traversal moves from the first set
+    # to the second, and harvesting only _DERIVED then SILENTLY stopped asking for it:
+    # MEASURED 2026-09-20, `dps` and its four channels left _DERIVED, so a new harvest
+    # carries five fewer per-field rows per macro than the archived ones and nothing in
+    # the header records the field list. Diffing two harvests -- the stated reason this
+    # list is fixed rather than ad hoc -- then shows rows vanishing with no explanation.
+    # The values survived only inside the `*` row, which is the flattened form the
+    # per-field rows exist to disambiguate.
+    fields = sorted(set(_DERIVED) | set(_DERIVE))
     rows: list[tuple[str, str, str, str]] = []
     asked = absent = errored = 0
     #: Macros whose ALL-FIELDS call answered ABSENT, named rather than only counted.
