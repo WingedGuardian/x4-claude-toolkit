@@ -102,7 +102,7 @@ SHAPES: list[Shape] = [
           misses="cd x && uv run --frozen python -m pytest -q"),
     Shape("test-and-commit-in-one-command",
           "a check that runs in the same breath as the irreversible step cannot stop it",
-          re.compile(r"(?s)(?=.*\b(pytest|run-gates)\b)(?=.*\bgit commit\b)"),
+          re.compile(r"(?s)\A(?=.*\b(pytest|run-gates)\b)(?=.*\bgit commit\b)"),
           hits="uv run pytest -q; git commit -m x",
           misses="uv run pytest -q && echo done"),
     Shape("diff-r-as-a-port-proof",
@@ -113,7 +113,7 @@ SHAPES: list[Shape] = [
     Shape("diff-against-a-hand-rolled-baseline",
           "for a TRACKED file git IS the baseline; a scratchpad copy can silently be "
           "last week's",
-          re.compile(r"(?s)(?=.*(?<!git )\bdiff\b)(?=.*scratchpad)"),
+          re.compile(r"(?s)\A(?=.*(?<!git )\bdiff\b)(?=.*scratchpad)"),
           hits="diff /x/scratchpad/f.bak docs/f.md",
           misses="git diff HEAD --name-only"),
     Shape("writes-source-through-a-bash-heredoc",
@@ -217,11 +217,14 @@ def scan(tdir: Path) -> Census:
     return c
 
 
-def _baseline() -> dict:
+def _baseline() -> tuple[dict, dict]:
+    """(rates, the whole record). The record carries `commands`, which the verdict needs to
+    judge the INCREMENTAL rate rather than a lifetime average that dilutes it."""
     if not BASELINE.exists():
-        return {}
+        return {}, {}
     try:
-        return json.loads(BASELINE.read_text(encoding="utf-8"))["rates"]
+        rec = json.loads(BASELINE.read_text(encoding="utf-8"))
+        return rec["rates"], rec
     except (OSError, ValueError, KeyError) as exc:
         raise RuntimeError(f"{BASELINE} exists but cannot be read: {exc}") from exc
 
@@ -278,7 +281,7 @@ def main() -> int:
         print(f"recorded baseline -> {BASELINE.name}")
         return 0
 
-    base = _baseline()
+    base, base_meta = _baseline()
     if not base:
         print("")
         print("No baseline yet — run with --record. This run measures but cannot judge.")
@@ -287,12 +290,28 @@ def main() -> int:
         # (review, 2026-09-14; claude_md_budget and hook_false_positives already refuse).
         return 2
 
+    # INCREMENTAL, not cumulative. The corpus is append-only, so a lifetime average's
+    # sensitivity to the current period decays as 1/N: MEASURED 2026-09-20 over 22,288
+    # commands against a 10,767-command baseline, `$?`-after-a-pipe ran at 2.54% in the new
+    # period (baseline 1.74%) and test-and-commit at 0.885% (0.678%) -- both over this rule's
+    # own 1.25x threshold, both reported GREEN because the average was diluted by the older
+    # half. That is the per-item regression hidden by a total, with sessions as the items.
+    # Both operands are already stored, so this needs no new input; an older baseline without
+    # `commands` falls back to the cumulative compare and SAYS so.
+    base_n = base_meta.get("commands")
+    span = (c.commands - base_n) if isinstance(base_n, int) and c.commands > base_n else 0
+    if not span:
+        print("  NOTE  baseline carries no command count, so the compare below is the "
+              "LIFETIME average, which understates a recent regression.")
     worse, appeared = [], []
     for s in SHAPES:
         now, was = rates[s.key], base.get(s.key)
+        if span and was is not None:
+            # hits added since the baseline, over commands added since the baseline
+            now = max(0.0, (now * c.commands - was * base_n) / span)
         if was is None:
-            if now > 0:
-                appeared.append((s, now))
+            if rates[s.key] > 0:
+                appeared.append((s, rates[s.key]))
         elif now > was * 1.25 and now - was > 0.002:
             worse.append((s, was, now))
     if appeared or worse:

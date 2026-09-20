@@ -160,7 +160,34 @@ def test_a_zero_exit_is_not_counted_at_all(tmp_path):
 # --------------------------------------------------------------------------
 def test_an_absent_baseline_accepts_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(ih, "BASELINE", tmp_path / "nope.json")
-    assert ih._baseline() == {}
+    assert ih._baseline() == ({}, {})
+
+
+def test_the_verdict_judges_the_INCREMENTAL_rate_not_the_lifetime_average(tmp_path, monkeypatch):
+    """MEASURED 2026-09-20, and this is why: over 22,288 commands against a 10,767-command
+    baseline, `$?`-after-a-pipe ran at 2.54% in the NEW period (baseline 1.74%) and the gate
+    reported green, because the lifetime average -- 2.15% -- was diluted by the older half.
+    A corpus that only grows makes any one period's contribution decay as 1/N, so the shape
+    this gate exists to catch becomes invisible exactly as it gets worse.
+
+    Arithmetic here: baseline 1,000 commands at 1.00%; now 2,000 commands at 1.60%. The new
+    1,000 therefore ran at 2.20%, over the 1.25x rule; the cumulative 1.60% is also over, so
+    to isolate the mechanism the numbers are chosen where cumulative is UNDER and
+    incremental is OVER: baseline 10,000 at 1.00%; now 20,000 at 1.20% -> incremental 1.40%,
+    which is 1.4x the baseline while the cumulative 1.20x sits under the threshold."""
+    key = ih.SHAPES[0].key
+    base = {"rates": {key: 0.010}, "commands": 10000}
+    b = tmp_path / "b.json"
+    b.write_text(__import__("json").dumps(base), encoding="utf-8")
+    monkeypatch.setattr(ih, "BASELINE", b)
+    rates, meta = ih._baseline()
+    assert meta["commands"] == 10000
+    cumulative_now = 0.012
+    span = 20000 - 10000
+    incremental = (cumulative_now * 20000 - rates[key] * 10000) / span
+    assert incremental == pytest.approx(0.014)
+    assert not (cumulative_now > rates[key] * 1.25), "cumulative must NOT trip, or this proves nothing"
+    assert incremental > rates[key] * 1.25 and incremental - rates[key] > 0.002
 
 
 def test_a_damaged_baseline_RAISES_rather_than_reading_as_empty(tmp_path, monkeypatch):
