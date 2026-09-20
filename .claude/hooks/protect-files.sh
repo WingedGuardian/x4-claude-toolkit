@@ -135,10 +135,20 @@ fi
 # ADVISORY, never a deny: a deliberate local edit is legitimate; promote only once a
 # false-positive rate has been measured. In the in-game layout the game root IS the
 # toolkit, so its .claude/ is the source and this stays silent.
-if [ -n "${X4_GAME:-}" ] && [ -n "${X4_TOOLKIT:-}" ]; then
+# COST GATE, added 2026-09-20 after the release review MEASURED this block at +182 ms on
+# EVERY Edit/Write, for every path: it canonicalised both roots (a memo miss each time)
+# and called x4_under up to five times -- seven subprocesses per edit, on a hook whose own
+# header records an 11.3x latency regression as the class it was rewritten to remove. The
+# case below is pure shell: no subprocess, and it skips every path that is not inside some
+# .claude/ at all, which is almost all of them.
+case "$FILE_PATH" in
+  *.claude/*|*.claude\\*) _x4_maybe_deployed=1 ;;
+  *) _x4_maybe_deployed= ;;
+esac
+if [ -n "$_x4_maybe_deployed" ] && [ -n "${X4_GAME:-}" ] && [ -n "${X4_TOOLKIT:-}" ]; then
   x4_canon_memo "$X4_GAME";    _dg="${_X4_CANON_RESULT%/}"
   x4_canon_memo "$X4_TOOLKIT"; _dt="${_X4_CANON_RESULT%/}"
-  if [ "$_dg" != "$_dt" ]; then
+  if [ "$_dg" != "$_dt" ] && x4_under "$FILE_PATH" "$X4_GAME/.claude"; then
     for _dsub in skills agents hooks commands settings.json; do
       if x4_under "$FILE_PATH" "$X4_GAME/.claude/$_dsub"; then
         advise "DEPLOYED COPY: $FILE_PATH is inside the game root's .claude/, which is a DEPLOYMENT of $X4_TOOLKIT/.claude/ -- not its source. An edit made only here never ships and drifts (five files had, 2026-09-13). Make the change under $X4_TOOLKIT/.claude/ (create the file there if it is new), then run: uv run python $X4_TOOLKIT/tools/x4validate/scripts/deploy-claude-dir.py --apply. gates/deploy_parity.py verifies the two agree."

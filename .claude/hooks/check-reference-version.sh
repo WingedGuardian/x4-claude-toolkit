@@ -44,7 +44,16 @@ fi
 [ -f "$ACF" ] || exit 0
 
 CUR=$(x4_acf_buildid "$ACF")          # the INSTALLED build, never a beta branch's (_x4-env.sh)
-[ -z "$CUR" ] && exit 0
+# A manifest this parser cannot read is a NON-ANSWER, not a match. The parser needs a line
+# holding only `{` or `}` to track depth; a VDF written as `"AppState" {` returns nothing,
+# and exiting 0 here printed NOTHING -- byte-identical to "the builds agree", in the hook
+# whose whole job is to warn. Say which state it is. (Steam does not write that shape today:
+# MEASURED, the live manifest parses.)
+if [ -z "$CUR" ]; then
+  [ -f "$SENTINEL" ] || [ -f "$STORE" ] || exit 0
+  echo "[x4 stale-reference] CANNOT DETERMINE the installed build: $ACF is not in a shape x4_acf_buildid can read, so the reference/ freshness check did NOT run. Compare the buildid under AppState in that file with the one in reference/.unpacked-and-locked yourself before trusting line numbers."
+  exit 0
+fi
 STORED=""
 SRC=""
 if [ -f "$SENTINEL" ]; then
