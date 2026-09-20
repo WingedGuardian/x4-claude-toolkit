@@ -176,6 +176,12 @@
   weapon macros exact** at 1e-6 relative (beam 15/15, continuous 9/9, clip 14/15;
   `reloadrate` 39/39). Run through the real oracle, **195 fields move from "our store cannot
   produce these" into real comparisons and 194 of them agree.**
+  ⚠ **Provenance: the 45-macro and 55-macro harvests these figures were read from are
+  not archived anywhere in this repo or the reports directory** (the newest committed
+  fixture is an 18-macro harvest from 2026-09-13), so nobody can re-derive them. The
+  traversal itself IS reproducible: every dps-family field in that fixture agrees with
+  the store to 1e-6, re-measured 2026-09-20. Treat the two counts as recorded history,
+  not as something you can check.
   What had made DPS look weapon-type-dependent across six irreducible variants was **three
   missing inputs, not three physics**: `reload.time` is the reciprocal spelling of
   `reload.rate` (of 299 bullet macros, 174 carry one and 119 the other, 0 carry both — so
@@ -347,6 +353,30 @@
   keep their verdict (67 citing a check, 2 opted out, 8 the accepted backlog), and the gate
   reports no new findings. 4 mutants, one per clause and one per over-firing direction, each
   KILLED.
+
+- **The release review of `v3.1.1..master` found and fixed sixteen defects.** Every changed
+  file in the range was read in full by an independent reviewer per area, each finding blamed
+  in-arc or pre-arc, and each fix carries its own falsification twin. The ones a user can
+  see: `ask.py` read the MSYS markers for truthiness, so a defined-but-empty `MSYSTEM` turned
+  the Git Bash refusal off while the rewrite continued (F122 reopened) and an empty
+  `MSYS_NO_PATHCONV` refused a legal zero; the BaseX-error path printed no "as received"
+  line; `x4live oracle` reported a false disagreement because `explosiondamage` was mapped
+  as identity when the engine totals a SALVO (1680 = 8 × 210) — it exits 0 again;
+  `ffi-census --batch-bytes` above the pipe's cap died with a traceback and lost every
+  answered batch; `x4live groundtruth` had silently stopped harvesting five fields;
+  `x4modlist ingest --build` wrote a hard-coded build id into every registry as if measured;
+  and the deployed-`.claude/` advisory cost **+182 ms on every edit** (measured 1252 vs 1070
+  ms/call). Instruments: `instrument_hygiene` went from **13–15 minutes to 5 seconds** (two
+  unanchored lookaheads, O(n²) per command) and now judges the INCREMENTAL rate, which
+  surfaced two regressions a lifetime average had diluted away; `hook_false_positives`
+  reported green when baseline and run shared ZERO commands; `claude_md_budget --record`
+  overwrote floors without naming what it displaced; `x4live mappings` promised "one
+  disagreement disqualifies a candidate" and never recorded one; the acf hand-rolled-reader
+  pattern caught 2 of 6 realistic re-implementations; `uv.lock` was a third, unchecked copy
+  of the version; and 211 Lua tests — the only coverage of the write verbs — sat behind one
+  skip the ceiling absorbs. Stale figures corrected: the register is F125 (not F120), the CLI
+  reference carries 47 subcommands (not 43), `mutation_probe` has 54 mutants (not 48), and
+  `x4-xml-patching` pointed at a KNOWLEDGEBASE section the shipped file does not contain.
 
 ## v3.1.1 — 2026-09-09
 
