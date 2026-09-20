@@ -165,6 +165,23 @@ def main(record: bool = False) -> int:
     # work over a baseline that cannot be read or was counted another way (review of
     # the F120 follow-up, 2026-09-14: it refused with 're-record with --record').
     if record:
+        # NAME what is being displaced. Every baseline refusal tells the operator to
+        # "re-record with --record", and this wrote today's sizes over yesterday's with
+        # no before/after -- so a machine carrying an old baseline could accept thousands
+        # of characters of growth by doing exactly what the error message said, which is
+        # the one outcome this ratchet exists to prevent (review, 2026-09-20). An
+        # unreadable baseline still records: that is what keeps --record a usable remedy.
+        try:
+            previous = _load()
+        except Unmeasurable as exc:
+            previous = None
+            print(f"  the existing baseline could not be read ({exc}); recording over it.")
+        for _name, _size in sorted(measured.items()):
+            _was = (previous or {}).get(_name)
+            if _was is None:
+                print(f"  {_name}: new floor {_size}")
+            elif _was != _size:
+                print(f"  {_name}: floor {_was} -> {_size} ({_size - _was:+d})")
         BASELINE.write_bytes(
             (json.dumps({"_counting": COUNTING, **measured}, indent=2, sort_keys=True)
              + "\n").encode("utf-8"))

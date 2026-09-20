@@ -41,8 +41,8 @@ positional arguments:
 
 options:
   -h, --help    show this help message and exit
-  --tier {a,b}  x4validate tier for the prediction: a = base+DLC only, b = the installed modlist
-                in load order (default: b)
+  --tier {a,b}  x4validate tier for the prediction: a = base+DLC only, b = the ACTIVE modlist --
+                installed AND enabled -- in load order (default: b)
 ```
 
 ## `x4debug baseline`

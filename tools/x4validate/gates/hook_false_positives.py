@@ -673,6 +673,19 @@ def run(argv: list[str]) -> int:
         print("  moved (old rule -> new rule; '' = allow):")
         for (old, new), k in sorted(rep["moved"].items(), key=lambda kv: -kv[1]):
             print(f"    {k:5}  {old[:40] or '(allow)'!r} -> {new[:40] or '(allow)'!r}")
+    # A verdict over an EMPTY intersection is a non-answer. MEASURED by the review: a
+    # baseline and a current run sharing ZERO commands returns changed 0, drift False, and
+    # main() printed "no drift on shared commands" and returned 0 -- with every rule in
+    # protect-bash.sh free to have changed. Transcripts are per-machine, gitignored and
+    # rotate, so the intersection really does decay toward zero. The --rule branch already
+    # refuses its own version of this ("nothing guarded against a loosening"); this one did
+    # not. rc 2, because run-gates.sh buckets 0 as ok and discards stdout.
+    if not rep["shared"]:
+        print("REFUSING: the baseline and this run share NO commands, so "
+              "'no drift on shared commands' would be a claim about an empty set. "
+              "Re-record against the current transcripts (--record) or point --transcripts "
+              "at the corpus the baseline was drawn from.", file=sys.stderr)
+        return 2
     if rep["drift"]:
         if same_hook:
             print("\nDRIFT with an IDENTICAL hook: the verdicts are not deterministic, or the "

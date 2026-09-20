@@ -396,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     pc.add_argument("log", nargs="?", help="debug.txt (default: $X4_DEBUGLOG / $X4_PROFILE)")
     pc.add_argument("--tier", default="b", choices=["a", "b"],
                     help="x4validate tier for the prediction: a = base+DLC only, b = the "
-                         "installed modlist in load order (default: %(default)s)")
+                         "ACTIVE modlist -- installed AND enabled -- in load order (default: %(default)s)")
 
     pb = sub.add_parser("baseline", help="archive this log with a content fingerprint")
     pb.add_argument("log", nargs="?", help="debug.txt (default: $X4_DEBUGLOG / $X4_PROFILE)")
