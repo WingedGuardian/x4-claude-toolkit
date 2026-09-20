@@ -977,6 +977,14 @@ def cmd_mappings(path: str | None, out=None, groundtruth: str | None = None) -> 
 
     # (ltype, field) -> prop -> [agreed_bool...]  plus whether any was informative
     votes: dict[tuple[str, str], dict[str, list[bool]]] = {}
+    #: THE SOUNDNESS RULE, now implemented. This function's own docstring promises
+    #: that a candidate must agree on EVERY macro carrying both the field and the
+    #: prop, and that one disagreement disqualifies it -- but the loop below only ever
+    #: recorded agreement, so nothing was ever removed and the promise was prose.
+    #: MEASURED 2026-09-20: `missiletypes explosiondamage` survived as a candidate
+    #: while disagreeing on a salvo missile in the same file, and that unearned
+    #: warrant is what the adoption comments cite.
+    disqualified: dict[tuple[str, str], set[str]] = {}
     informative: dict[tuple[str, str], set[str]] = {}
     #: How many entities backed each candidate with a NON-DEGENERATE value.
     #: ⚠ The soundness rule ("agrees on EVERY macro carrying both") is trivially
@@ -1006,19 +1014,24 @@ def cmd_mappings(path: str | None, out=None, groundtruth: str | None = None) -> 
                         cooked = ev if tname == "identity" else None
                     if cooked is None:
                         continue
+                    slot = prop if tname == "identity" else f"{prop} [{tname}]"
                     if _agree(cooked, sv):
-                        slot = prop if tname == "identity" else f"{prop} [{tname}]"
                         votes.setdefault(key, {}).setdefault(slot, []).append(True)
                         if not _is_degenerate(ev, props):
                             informative.setdefault(key, set()).add(slot)
                             d = informative_n.setdefault(key, {})
                             d[slot] = d.get(slot, 0) + 1
+                    else:
+                        # The entity carries BOTH the field and the prop, and they do not
+                        # agree. That is the disqualification the docstring promises.
+                        disqualified.setdefault(key, set()).add(slot)
 
     proposed: list[tuple[str, str, str, int, int]] = []
     ambiguous: list[tuple[str, str, list[str]]] = []
     for key in sorted(votes):
         ltype, field = key
-        good = sorted(informative.get(key, ()))
+        # A slot that ever disagreed is out, however many times it agreed elsewhere.
+        good = sorted(informative.get(key, ()) - disqualified.get(key, set()))
         if not good:
             continue
         if len(good) == 1:

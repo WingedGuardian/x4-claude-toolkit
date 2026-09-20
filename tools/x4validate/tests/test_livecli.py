@@ -449,6 +449,49 @@ def _gt(tmp_path, rows):
     return p
 
 
+def _mappings_out(tmp_path, monkeypatch, rows, store):
+    """cmd_mappings over a groundtruth TSV and a stubbed store."""
+    import io
+
+    class _Con:
+        pass
+
+    monkeypatch.setattr(C, '_store_exists', lambda db=None: True, raising=False)
+    monkeypatch.setattr(C, '_connect', lambda db: _Con(), raising=False)
+    monkeypatch.setattr(C, 'store_freshness',
+                        lambda con: type('F', (), {'fresh': True, 'banner': lambda self, w: ''})(),
+                        raising=False)
+    monkeypatch.setattr(C, '_store_props', lambda con, macro: store.get(macro))
+    buf = io.StringIO()
+    rc = C.cmd_mappings(None, out=buf, groundtruth=str(_gt(tmp_path, rows)))
+    return rc, buf.getvalue()
+
+
+def test_a_candidate_that_DISAGREES_anywhere_is_not_proposed(tmp_path, monkeypatch):
+    """The soundness rule this function's docstring promises -- 'a candidate must agree on
+    EVERY macro carrying both the field and the prop; one disagreement disqualifies it
+    outright' -- was never implemented: the loop appended True on agreement and recorded
+    nothing on disagreement, so no candidate could ever be removed. MEASURED 2026-09-20:
+    `missiletypes explosiondamage` was still offered while disagreeing with the store on a
+    salvo missile in the same file, and that unearned warrant is what the adoption comments
+    cite for eight mappings."""
+    rows = ['t	m1	foo	100', 't	m2	foo	200']
+    store = {'m1': {'bar.value': '100'}, 'm2': {'bar.value': '999'}}
+    rc, out = _mappings_out(tmp_path, monkeypatch, rows, store)
+    assert rc == 0, out
+    assert 'bar.value' not in out, out
+
+
+def test_TWIN_a_candidate_that_agrees_EVERYWHERE_is_still_proposed(tmp_path, monkeypatch):
+    """The over-firing direction: the rule must not remove a sound candidate."""
+    rows = ['t	m1	foo	100', 't	m2	foo	200']
+    store = {'m1': {'bar.value': '100'}, 'm2': {'bar.value': '200'}}
+    rc, out = _mappings_out(tmp_path, monkeypatch, rows, store)
+    # rc 1 == 'there are proposals', which is the point here; rc 2 would be a refusal.
+    assert rc == 1, out
+    assert 'bar.value' in out, out
+
+
 def test_groundtruth_reader_takes_BOTH_row_shapes(tmp_path):
     """A per-field row carries one field; a `*` row carries the engine's ALL-FIELDS reply
     tab-joined inside column 4. A naive 4-way split drops every `*` row -- it dropped 15
