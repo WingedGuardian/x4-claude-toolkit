@@ -144,19 +144,6 @@ Before experimenting on a working state, snapshot it to `.claude\backups\known-g
 After confirming a state works in-game, snapshot it named for *what works*. Especially
 important for large files iterated many times.
 
-## Nexus Research (Standing Rule)
-
-**Always research a mod's Nexus page before editing it** — description, articles, changelogs,
-comments, bug reports. Most issues have been seen by others.
-
-### Nexus API (programmatic metadata)
-**API-FIRST: access Nexus ONLY via the API — never scrape Nexus pages** (they 403 automation).
-- Metadata by id: `GET https://api.nexusmods.com/v1/games/x4foundations/mods/{id}.json`, header `apikey`. `status` = `published`/`removed`/`hidden`.
-- Name→id search: `POST https://api.nexusmods.com/v2/graphql`, header `apikey` + a real `User-Agent` (Cloudflare 403s without it), filter `gameId:[{value:"2659"}], nameStemmed:[{value:"<name>"}]`.
-- Steam Workshop title (keyless): `POST https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/`.
-- **Each user supplies their OWN key** in the `X4_NEXUS_KEY` env var. Never bundle, commit, or log a key. Get one free at nexusmods.com → Site preferences → API Access.
-- Resolution cascade for a mod's identity/version: installed `content.xml` → mod README/changelog → Steam Workshop page → Nexus API (last resort / upstream-latest).
-
 ## Confidence Levels (Mandatory)
 
 Before proposing ANY change to mod files, game XML, or profile files:
@@ -205,16 +192,22 @@ technique (web + Nexus), confirm tool/API capabilities — *then* make the chang
 in-game test cycle costs the user real time; burn your own tokens on verification so theirs
 aren't wasted.
 
-## Core Principle: Vanilla X4 as Frame of Reference
+## Core Modding Principle: Copy a Working Example, and Use the Engine's Own Mechanisms
 
-Before implementing any change — even a novel one — find how the base game (in `reference\`)
-handles the closest equivalent and model the solution on that pattern. The unpacked base game
-is proof-of-concept. If vanilla doesn't do it that way, ask *why* before choosing your
-approach. Approaches disconnected from how the engine works lead to silent failures.
-1. Find the vanilla analogue (same action, macro, ware, cue type).
-2. Match its exact form — attributes, structure, values.
-3. Only diverge when the vanilla pattern genuinely cannot be adapted.
+**Before implementing any change — even a novel one — find how the base game (in `reference\`) or
+an installed mod already does the closest thing, and model yours on that.** The unpacked game is
+proof-of-concept; where vanilla does not do it that way, ask *why* first.
 
+★ **COPY IT. DO NOT COMPOSE FROM THE SCHEMA.** A schema says what is well-formed, never what is
+*wired up*: an MD harness composed from `md.xsd` validated clean and burned three play sessions.
+Paste a working example and change the values.
+
+**"Simple" means simple from the ENGINE's perspective, not fewest lines.** Prefer native MD actions
+and script properties, a `<diff>` over a rewritten file, and the game's own events over polling.
+Custom MD/Lua is a supplement, not a replacement.
+
+→ **the `x4-xml-patching` skill** carries the analogue procedure, the four schema traps that cost
+those sessions, and the packed-inclusive mod search that finds the modder-side analogue.
 ## Core Principle: Assume Existing Content Is REAL AND LIVE Until Proven Dead
 
 **Anything present in a mod or script is there because it worked.** The burden of proof is on
@@ -234,13 +227,6 @@ Before calling anything obsolete/removed/vestigial:
 explicit user approval**, a higher evidence bar than additive changes, and a snapshot first.
 **Prefer additive/restorative repairs**: restoring an orphaned index entry is reversible and
 provably scoped; deleting a reference is not.
-
-## Core Principle: Native Engine Solutions First
-
-Before a convoluted workaround, ask: "how does the engine already handle this?" "Simple"
-means simple from the engine's perspective, not fewest lines. Prefer native MD actions and
-script properties; a diff patch over rewriting a whole file; the game's own events/cues over
-polling. Custom MD/Lua is a supplement, not a replacement.
 
 ## Core Principle: Cognitive Co-Pilot, Not Order-Taker
 
@@ -539,8 +525,6 @@ register without negatives has no denominator either.
 | **"does a file with this NAME exist?"** | **Glob** | ✗ **Grep** — it searches *contents*; a file can exist without containing its own name |
 | "find this text, in one known area" | **Grep** tool (ripgrep) | ✗ `grep -r` via Bash |
 
-
-
 **★ A NEGATIVE FROM ONE INVOCATION MODE IS A CLAIM ABOUT THAT MODE, NOT ABOUT THE TOOL.** MEASURED
 2026-08-27: a falsification test proved `x4validate` reported OK on a schema-invalid MD file, and
 I filed *"it does not schema-validate MD"*. **It does — the pass is gated behind `--update`.**
@@ -576,44 +560,6 @@ x4validate remains the authority for correctness against the engine (oracle: 234
 not installed has no knowable load-order position, so Tier B assumes it loads LAST — the optimistic
 tree. Proven: `CapturableShipMod` (deployed) validates 0 errors while its byte-identical `_public`
 twin (dev-only) reports 3 false alarms.
-## Core Modding Principle: Vanilla X4 as Frame of Reference
-
-**Before implementing any change — even a novel one — identify how the base game (in `reference\`) handles the closest equivalent and model the solution on that pattern.**
-
-The unpacked base game is proof-of-concept. If vanilla X4 doesn't do it that way, ask *why* before choosing your approach. Approaches disconnected from how the engine actually works lead to silent failures — a diff patch whose `sel` matches nothing, a script property that no longer exists, an action missing a now-required attribute.
-
-**Practical process:**
-1. Find the vanilla analogue in `reference\` (the same action, macro, ware, or cue type).
-2. Match its exact form — attributes, structure, and values.
-3. Only diverge when the vanilla pattern genuinely cannot be adapted.
-
-**★ COPY IT. DO NOT COMPOSE FROM THE SCHEMA.** A schema tells you what is well-formed; it cannot
-tell you what is *wired up*. MEASURED 2026-08-27: an MD test harness composed from `md.xsd` passed
-`x4validate --update` clean and burned **three play sessions**. A ship spawned without `<pilot>` is
-INERT; `<event_game_loaded/>` never fires on a new game; a sub-cue's delay runs from script start,
-not from its parent finishing; and the `Attack` order takes `primarytarget`, not `target`. **Not one
-of those is expressible in a schema.** Paste a working example and change the values.
-
-**★ AND SEARCH THE INSTALLED MODS, NOT JUST `reference\`.** This is the tier that was missing:
-**mods solve MODDER problems vanilla never had** — spawn a test fight, force a loadout, drive an
-experiment. For anything vanilla does not itself need to do, an installed mod is the *closer*
-analogue, and it is proven in THIS game version with THIS modlist. MEASURED over 259 md documents in
-the installed set: three mods already spawn ships and assign control entities, three already issue
-`'Attack'` orders. Search with **`_scan.iter_mod_xml_bytes`** (packed-inclusive) — a loose-only
-grep misses most of the corpus. Ready-to-paste templates live in KNOWLEDGEBASE.md
-§ *COPY-PASTE MD TEMPLATES*.
-
-**Examples from this workspace:**
-- `<find_station>` now requires `space=` in 9.0 → used `space="player.galaxy"`, the exact form the base game uses for distance-sorted station finds.
-- The death cutscene must orbit a stable object → `player.container` (matching the cue's own valid fallback), not the destroyed ship.
-- A new ware is modelled field-for-field on an existing base-game `<ware>` node.
-## Core Modding Principle: Native Engine Solutions First
-
-**Before writing a convoluted workaround, ask: "How does the engine already handle this?"**
-
-"Simple" means simple from the engine's perspective — not fewest lines. A native MD action or a clean `<diff>` patch beats a fragile multi-step script hack, because the engine understands the native mechanism directly. Prefer: native MD actions and script properties; a diff patch over rewriting a whole file; the game's own events/cues over polling.
-
-**Rule:** Use the engine's own systems first. Custom MD/Lua is a supplement, not a replacement.
 ## Core Working Principle: Deductive Iteration — Work Backward from the Outcome
 
 When a fix or feature needs iteration, never iterate blind. Before the FIRST attempt:
@@ -667,8 +613,6 @@ defender's stock and change nothing. Combined with missile-defence turrets not b
 all, a missile fired **by a capital or a station** is out of sector an **undiminished alpha strike**,
 while in sector it is paid for twice. The axis is the **ATTACKER's** class, not the target's. Full
 table and code cites: KNOWLEDGEBASE.md § *2026-08-27c*.
-
-
 
 ### ★★ LABEL THE REGIME. EVERY combat claim states IS, OOS, or BOTH — no exceptions (user-set 2026-08-29)
 

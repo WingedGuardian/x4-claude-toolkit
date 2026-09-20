@@ -319,7 +319,8 @@ that is expressible in a schema. **Paste a working example and change the values
 never had — spawn a test fight, force a loadout, drive an experiment. For anything vanilla does
 not itself need to do, an installed mod is the *closer* analogue, proven in THIS game version
 with THIS modlist. Search with `_scan.iter_mod_xml_bytes` (packed-inclusive); a loose-only grep
-misses most of the corpus. Paste a working example from such a mod and change the values.
+misses most of the corpus. Paste a working example from such a mod and change the values. Ready-to-paste MD templates live in
+`KNOWLEDGEBASE.md` § *COPY-PASTE MD TEMPLATES*.
 
 **Native engine solutions first.** "Simple" means simple from the engine's perspective, not
 fewest lines. A native MD action or a clean `<diff>` beats a fragile multi-step script hack.
