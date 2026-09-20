@@ -413,6 +413,76 @@ def game_is_running() -> bool | None:
     return _livedump.game_is_running()
 
 
+#: How recently debug.txt must have been written for us to treat it as THIS run's log.
+#:
+#: debug.txt OUTLIVES the run that wrote it, so a marker in an old file proves the mod loaded in
+#: SOME session, not this one. There is no cheap, dependency-free way to read the game process's
+#: start time (`game_is_running` shells out to `tasklist`, which does not report it), so recency
+#: is the bound available. 300s is deliberately generous: the cost of it being too LONG is a
+#: wrong answer, the cost of too SHORT is only a refusal, so it is set where a quiet-but-live
+#: game still counts and a previous session almost never does.
+LOG_LIVE_WINDOW_S = 300.0
+
+#: The GENERIC suffix of the mod's load marker -- never the deployment-specific prefix. Spelling
+#: the full marker in a shipped file is what F73 was raised for (it put a personal identifier
+#: into the published package). MINIMIZED_HINT greps for this same substring.
+_LOAD_MARKER = "_LIVE loaded"
+
+
+def helper_loaded_this_session() -> bool | None:
+    """Did the helper mod log its load marker in a LIVE debug.txt? True / False / **None**.
+
+    None is returned whenever the question cannot be answered HONESTLY: no log path resolves,
+    the file cannot be read, or the log is older than `LOG_LIVE_WINDOW_S` and therefore cannot
+    be attributed to the current run. Staleness DOMINATES content in both directions -- a stale
+    log answers None whether or not it carries the marker -- because "the marker is in a file
+    from some earlier run" is a different claim from "the mod loaded this session".
+
+    ⚠ Like `game_is_running`, this only ever shapes a MESSAGE; it never decides an outcome. A
+    machine whose log is unreadable loses specificity and never gets a different verdict.
+    """
+    try:
+        p = _paths.debug_log()
+        if p is None:
+            return None
+        st = p.stat()
+        if (time.time() - st.st_mtime) > LOG_LIVE_WINDOW_S:
+            return None          # cannot be tied to this run -- refuse, do not guess
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return _LOAD_MARKER in text
+
+
+def _no_connection_reason(path: str, timeout: float, running: bool | None,
+                          loaded: bool | None) -> str:
+    """The refusal text for "nothing connected", built from what was MEASURED.
+
+    Pure and separate from the wait loop so every branch is testable without a pipe, a game, or
+    a clock. The branches are ordered by how much they narrow the user's next action.
+    """
+    if running is False:
+        return (f"X4 is NOT RUNNING, so nothing could connect to {path}. "
+                f"Launch the game -- a FRESH launch if the mod's lua changed, "
+                f"since a save/load is not verified to re-read it from disk.")
+    head = (f"X4 IS RUNNING but nothing connected to {path} within {timeout:.0f}s."
+            if running is True else
+            f"nothing connected to {path} within {timeout:.0f}s, and I could not "
+            f"determine whether X4 is running.")
+    if running is True and loaded is False:
+        # The narrowing this function exists for: do NOT send this user to the window.
+        return (head + " MEASURED: the mod did NOT log its load marker in a live debug.txt, so "
+                "it is most likely not installed or not enabled. Check the extension is in the "
+                "GAME-ROOT `extensions\\` folder (not the profile's), that it is enabled, and "
+                "that its named-pipe dependency (Mod Support APIs) is installed too. Only if all "
+                "three hold is this a frame-loop problem.")
+    if running is True and loaded is True:
+        return (head + " MEASURED: the mod DID load this session (its marker is in a live "
+                "debug.txt), so this is NOT a deployment problem -- the game is not EXECUTING "
+                "the poll." + MINIMIZED_HINT)
+    return head + MINIMIZED_HINT
+
+
 def pipe_name() -> str:
     return _paths.value("X4_LIVE_PIPE") or DEFAULT_PIPE
 
@@ -553,18 +623,12 @@ class LivePipe:
                 # comment said MEASURED where the hint said "INFERRED, not verified"
                 # -- on the same code path. One source of truth, or they drift again.
                 running = game_is_running()
-                if running is True:
-                    raise LiveQueryUnavailable(
-                        f"X4 IS RUNNING but nothing connected to {self.path} within "
-                        f"{self.timeout:.0f}s." + MINIMIZED_HINT)
-                if running is False:
-                    raise LiveQueryUnavailable(
-                        f"X4 is NOT RUNNING, so nothing could connect to {self.path}. "
-                        f"Launch the game -- a FRESH launch if the mod's lua changed, "
-                        f"since a save/load is not verified to re-read it from disk.")
+                # The load marker is only consulted when the game IS running -- on a closed
+                # game it could add nothing, and reading a log to describe a process that is
+                # not there is how a stale file gets quoted as current state.
+                loaded = helper_loaded_this_session() if running is True else None
                 raise LiveQueryUnavailable(
-                    f"nothing connected to {self.path} within {self.timeout:.0f}s, "
-                    f"and I could not determine whether X4 is running." + MINIMIZED_HINT)
+                    _no_connection_reason(self.path, self.timeout, running, loaded))
             time.sleep(0.05)
 
     # -- exchange ----------------------------------------------------------- #
