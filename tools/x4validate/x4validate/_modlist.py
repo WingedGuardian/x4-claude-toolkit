@@ -773,7 +773,8 @@ def main(argv: list[str] | None = None) -> int:
                     "(default: game-root extensions\\, profile extensions\\, Steam Workshop)")
     pi.add_argument("--installed-only", action="store_true", dest="installed_only",
                     help="skip the profile content.xml cross-check pass entirely")
-    pi.add_argument("--build", default="23660954", help="current game build id (default: a build id pinned in this release)")
+    pi.add_argument("--build", default=None,
+                    help="current game build id. Default: UNKNOWN -- the registry records None and the dashboard prints '?'. It used to default to a build id pinned in the source, which wrote a GUESS into every user's registry in the slot a measurement belongs in; `x4_acf_buildid` in .claude/hooks/_x4-env.sh reads the installed build from the Steam manifest (F123)")
     pi.add_argument("--all", action="store_true",
                     help="content.xml cross-check: include disabled extensions too")
     pi.set_defaults(func=cmd_ingest)

@@ -29,6 +29,20 @@ def test_package_version_matches_pyproject():
         % (x4validate.__version__, _pyproject_version()))
 
 
+def test_uv_lock_records_the_same_version():
+    """The lock is a THIRD copy, and `uv run --frozen` (which CI uses) reads it. It has
+    been forgotten twice already -- commits "uv.lock: follow the 2.8.0 version bump" and
+    "uv.lock: record version 2.1.1" -- because this test joined only pyproject and
+    __init__. A release that bumps the first two and not this one ships a lock that
+    disagrees with the package it locks."""
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    ours = [p for p in lock.get("package", []) if p.get("name") == "x4validate"]
+    assert len(ours) == 1, "expected exactly one x4validate package entry, got %d" % len(ours)
+    assert ours[0]["version"] == _pyproject_version(), (
+        "uv.lock says %s but pyproject.toml says %s -- run `uv lock` after a version bump"
+        % (ours[0]["version"], _pyproject_version()))
+
+
 def test_the_version_is_a_release_shaped_string():
     # Guards the failure mode where someone "fixes" the mismatch by blanking one.
     v = _pyproject_version()
