@@ -450,6 +450,10 @@ def helper_loaded_this_session() -> bool | None:
             return None          # cannot be tied to this run -- refuse, do not guess
         text = p.read_text(encoding="utf-8", errors="replace")
     except OSError:
+        # silent-ok: None IS the channel here -- the documented third state, identical to the
+        # one a stale log returns. Nothing is discarded silently: the caller renders "I could
+        # not determine" instead of a claim, and this never decides an outcome (it only shapes
+        # a message), so a log we cannot read costs specificity and never changes a verdict.
         return None
     return _LOAD_MARKER in text
 
