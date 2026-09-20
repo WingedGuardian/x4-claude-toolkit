@@ -78,10 +78,17 @@ _CLOSED = re.compile(r"FIXED|CLOSED")
 #: entry cites the file (the cited-file clause). MEASURED on the real register: pooling them
 #: resolved F46 on `test_unimportable_engine_reports_UNKNOWN_not_a_traceback`, which that
 #: entry names as a test the defect BROKE, not as the check that proves its fix.
+#: EXTENDED 2026-09-19: every path alternative now starts at a LEFT BOUNDARY. Without
+#: one the pattern matched a SUFFIX, so an entry citing `mytools/basex/test_ask.py` (no
+#: such file) resolved to `tools/basex/test_ask.py` (which exists) and read as covered by
+#: a file it never cited -- the F112 worst case this module's bare-name test names. The
+#: boundary forbids a preceding word character, dot or dash and ALLOWS `/`, which is what
+#: keeps real nested citations (`tools/x4validate/tests/test_x.py`) resolving at the
+#: package root. MEASURED on the real register: all 77 closed entries keep their verdict.
 _NAMES = re.compile(
-    r"(?:tests/|gates/)[A-Za-z0-9_./-]+\.py"
-    r"|(?:scripts/|\.claude/hooks/)[A-Za-z0-9_./-]+\.(?:sh|py)"
-    r"|tools/basex/test_[A-Za-z0-9_]+\.py"
+    r"(?<![A-Za-z0-9_.-])(?:tests/|gates/)[A-Za-z0-9_./-]+\.py"
+    r"|(?<![A-Za-z0-9_.-])(?:scripts/|\.claude/hooks/)[A-Za-z0-9_./-]+\.(?:sh|py)"
+    r"|(?<![A-Za-z0-9_.-])tools/basex/test_[A-Za-z0-9_]+\.py"
     r"|`(test_[A-Za-z0-9_]+)`|selftest")
 
 #: The explicit opt-out. An entry whose figure genuinely cannot be re-derived

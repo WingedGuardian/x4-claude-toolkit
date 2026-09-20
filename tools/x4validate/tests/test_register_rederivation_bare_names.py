@@ -148,3 +148,47 @@ def test_TWIN_a_MISSING_tools_basex_test_file_is_not_a_check(tmp_path, monkeypat
     root = _tree(tmp_path, {"tools/basex/test_other.py": "def test_x():\n    pass\n"})
     _only(monkeypatch, root)
     assert rr.names_a_check("see `tools/basex/test_nope.py`", root) is None
+
+
+# --- the LEFT boundary: a path citation must start where the path starts ----------
+
+#: A minimal test file. Built with chr(10) because a backslash does not survive the
+#: shell boundary this module was edited through (CLAUDE.md #22 corollary).
+_A_TEST = "def test_x():" + chr(10) + "    pass" + chr(10)
+
+
+def test_TWIN_a_path_with_a_NAME_GLUED_on_its_left_is_not_a_citation(tmp_path, monkeypatch):
+    """The pattern had no left boundary, so a citation of `mytools/basex/test_ask.py` --
+    a file that does not exist -- matched the SUFFIX `tools/basex/test_ask.py`, which
+    does. The entry then read as covered by a file it never cited: the F112 worst case
+    named in this module's docstring, a citation that resolves to a file while not
+    covering the claim."""
+    root = _tree(tmp_path, {"tools/basex/test_ask.py": _A_TEST})
+    _only(monkeypatch, root)
+    assert rr.names_a_check("fixed; see `mytools/basex/test_ask.py`", root) is None
+
+
+def test_TWIN_the_same_gluing_on_the_tests_alternative_is_not_a_citation(tmp_path, monkeypatch):
+    """One twin per alternative: `tests/` carries the same shape as `tools/basex/`."""
+    root = _tree(tmp_path, {"tests/test_x.py": _A_TEST})
+    _only(monkeypatch, root)
+    assert rr.names_a_check("fixed; see `mytests/test_x.py`", root) is None
+
+
+def test_a_NESTED_real_path_still_resolves(tmp_path, monkeypatch):
+    """The over-firing twin, and why a naive boundary was not taken: real citations are
+    written `tools/x4validate/tests/test_x.py` and match through their `tests/` part,
+    whose left neighbour is a legitimate `/`."""
+    root = _tree(tmp_path, {"tools/x4validate/tests/test_x.py": _A_TEST})
+    # BOTH roots, the way _roots() really works: the matched `tests/test_x.py` resolves
+    # at the PACKAGE root. Pinning one root made this test fail for its own setup.
+    monkeypatch.setattr(rr, "_roots", lambda _r: [root / "tools" / "x4validate", root])
+    assert rr.names_a_check("fixed; see `tools/x4validate/tests/test_x.py`",
+                            root) == "tests/test_x.py"
+
+
+def test_a_path_at_the_START_of_the_body_still_resolves(tmp_path, monkeypatch):
+    """A boundary must not require a character that may not be there at all."""
+    root = _tree(tmp_path, {"tests/test_x.py": _A_TEST})
+    _only(monkeypatch, root)
+    assert rr.names_a_check("tests/test_x.py proves it; FIXED", root) == "tests/test_x.py"

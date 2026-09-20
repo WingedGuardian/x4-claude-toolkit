@@ -271,6 +271,17 @@
   for a `collection(` literal refused `1+1`, which is legal and needs no database. QUERIES.md
   gains the gotcha. Found by a cold, docs-only agent.
 
+- **`gates/register_rederivation.py` matched a cited path's SUFFIX.** With no left boundary, an
+  entry citing `mytools/basex/test_ask.py` -- no such file -- resolved to the real
+  `tools/basex/test_ask.py` and read as covered by a file it never cited: the F112 worst case,
+  a citation that resolves while not covering the claim. Every path alternative now starts at a
+  boundary that forbids a preceding word character, dot or dash and allows `/`, which is what
+  keeps real nested citations (`tools/x4validate/tests/test_x.py`, matching through `tests/`)
+  resolving at the package root. MEASURED per entry on the real register: all 77 closed entries
+  keep their verdict (67 citing a check, 2 opted out, 8 the accepted backlog), and the gate
+  reports no new findings. 4 mutants, one per clause and one per over-firing direction, each
+  KILLED.
+
 ## v3.1.1 — 2026-09-09
 
 **CI was RED on the v3.1.0 tag, on both legs, and the release went out anyway.** One
