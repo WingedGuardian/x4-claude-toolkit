@@ -151,6 +151,12 @@ and a broken query look identical.
   them while debugging. The *manifests* always persist — a coverage report you
   can only run mid-build is one nobody runs.
 
+- **An `xq` query names its own database.** `count(//ware)` has no context to walk and BaseX
+  answers `[XPDY0002] .: Context value is undefined`; `--db` sets the coverage and freshness
+  denominator, not the input. Write `count(collection('x4eff')//ware)` and keep the two the
+  same -- naming a DIFFERENT database than `--db` is refused, because the answer would be
+  scored against the wrong world. `ask.py` says all of this when the error appears.
+
 ## What this still does NOT replace
 
 `x4validate` remains the authority for *correctness against the engine* — it has

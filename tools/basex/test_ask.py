@@ -215,6 +215,56 @@ def test_a_query_naming_the_SAME_collection_is_fine(monkeypatch, capsys):
     assert rc == 0
 
 
+def _basex_raises(monkeypatch, message: str):
+    """BaseX itself failing, the way the real jar reports it."""
+    def boom(_xquery):
+        raise RuntimeError(message)
+    monkeypatch.setattr(ask, "run_xq", boom)
+
+
+_CONTEXT_UNDEFINED = ("Stopped at /basex/, 1/8:" + chr(10)
+                      + "[XPDY0002] .: Context value is undefined.")
+
+
+def test_a_CONTEXT_UNDEFINED_error_names_the_cause_and_the_cure(monkeypatch, capsys):
+    """MEASURED 2026-09-19: `xq --file` with `count(//ware)` printed exactly this and
+    exit 2 -- true, and naming neither the cause (an xq query addresses its own
+    database; there is no implicit context node) nor the cure. A cold, docs-only agent
+    reached for `//ware` because CLAUDE.md sends you to ask.py without saying a query
+    names its own collection. Same shape as the unbuilt-DB translation already here:
+    BaseX's words are kept as evidence, ours add what to do."""
+    _basex_raises(monkeypatch, _CONTEXT_UNDEFINED)
+    rc = ask.main(["--db", "x4eff", "xq", "count(//ware)"])
+    text = "".join(capsys.readouterr())
+    assert rc == 2
+    assert "[XPDY0002]" in text, "BaseX's own words must survive as evidence"
+    assert "names no database" in text, text
+    assert "collection('x4eff')" in text, "the cure must name the --db collection"
+
+
+def test_TWIN_an_UNRELATED_BaseX_error_is_not_dressed_up_as_this_one(monkeypatch, capsys):
+    """The guard reads BaseX's verdict, so it must not answer for a different one."""
+    _basex_raises(monkeypatch, "Stopped at /basex/, 1/3:" + chr(10)
+                  + "[XPST0003] Unexpected end of query.")
+    rc = ask.main(["--db", "x4eff", "xq", "count(collection('x4eff')//ware"])
+    text = "".join(capsys.readouterr())
+    assert rc == 2
+    assert "XPST0003" in text
+    assert "names no database" not in text, text
+
+
+def test_TWIN_a_query_that_needs_NO_database_still_answers(monkeypatch, capsys):
+    """`1+1` is legal and names no database, and an earlier version of this fix refused
+    it by reading literals instead of BaseX's verdict -- 22 tests went red, which is how
+    the over-firing was caught. It must still answer."""
+    _fake_basex(monkeypatch, "2")
+    _stale(monkeypatch, fresh=True)
+    rc = ask.main(["--db", "x4eff", "xq", "1+1"])
+    text = "".join(capsys.readouterr())
+    assert rc == 0, text
+    assert "names no database" not in text
+
+
 # --- freshness that cannot be DETERMINED (distinct from stale) ----------------
 
 def _undeterminable(monkeypatch):

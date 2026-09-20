@@ -262,6 +262,15 @@
   `appmanifest_392160.acf`. If they differ only because of this, correct the number in that file
   rather than re-unpacking.
 
+- **BaseX `ask.py` explains the error a query with no database gets.** `count(//ware)` reached
+  BaseX's own `[XPDY0002] .: Context value is undefined` and exit 2 -- true, and naming
+  neither the cause (an `xq` query addresses its own database; `--db` sets the coverage
+  denominator, not the input) nor the cure. BaseX's words are kept as evidence and the
+  translation adds `collection('<db>')//ware`, the same service `preflight` already does for
+  an unbuilt database. Keyed to BaseX's verdict, never to the query text: reading the query
+  for a `collection(` literal refused `1+1`, which is legal and needs no database. QUERIES.md
+  gains the gotcha. Found by a cold, docs-only agent.
+
 ## v3.1.1 — 2026-09-09
 
 **CI was RED on the v3.1.0 tag, on both legs, and the release went out anyway.** One

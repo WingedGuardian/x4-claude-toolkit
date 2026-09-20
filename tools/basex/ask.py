@@ -337,6 +337,28 @@ def main(argv=None) -> int:
             print(preflight.render(problems), file=sys.stderr)
             return 2
         print(f"error: BaseX query failed: {exc}", file=sys.stderr)
+        # BaseX's own verdict stays above as the evidence; these lines add what it does
+        # not say. MEASURED 2026-09-19: `xq --file` with `count(//ware)` reports
+        # "[XPDY0002] .: Context value is undefined" -- true, and naming neither the
+        # cause (an xq query addresses its own database; there is no implicit context
+        # node) nor the cure. It is the same translation `preflight` already does for an
+        # unbuilt DB's "[FODC0002] Resource not found", which never mentions
+        # build-corpus.sh. Found by a cold, docs-only agent that reached for `//ware`
+        # because CLAUDE.md sends you here without saying a query names its collection,
+        # and the game-root file has 37 characters of budget left.
+        #
+        # Keyed to BaseX'S VERDICT, never to the query text. An earlier attempt read the
+        # query for a `collection(` literal and pre-empted the run: it refused `1+1` --
+        # legal, and needing no database -- plus every placeholder query in this module's
+        # own tests, 22 red at once. Only the engine knows whether a context was actually
+        # needed. Twins for both directions are in test_ask.py.
+        if "XPDY0002" in str(exc) or "Context value is undefined" in str(exc):
+            print("       That means the query names no database, so it had nothing "
+                  "to search.", file=sys.stderr)
+            print(f"       An xq query addresses its own: "
+                  f"collection('{args.db}')//ware, not //ware.", file=sys.stderr)
+            print(f"       --db {args.db} sets the coverage denominator, not the input.",
+                  file=sys.stderr)
         return 2
 
     lines = [ln for ln in out.splitlines() if ln.strip()]
