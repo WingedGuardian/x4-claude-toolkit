@@ -685,6 +685,56 @@ def test_a_UTF8_BOM_in_a_query_file_is_not_sent_to_BaseX(monkeypatch, capsys, tm
     assert seen and all("\ufeff" not in s for s in seen), seen
 
 
+def test_an_EMPTY_but_DEFINED_MSYSTEM_still_refuses(monkeypatch, capsys):
+    """MEASURED 2026-09-20 from Git Bash: with `MSYSTEM=` (defined, empty) the MSYS runtime STILL
+    rewrites argv -- `'//ware'` arrived as `/ware`. The guard read `env.get("MSYSTEM") or None`,
+    so an empty value folded to None and the refusal switched OFF while the rewrite continued:
+    a certified NEGATIVE CONFIRMED over a query nobody typed, which is F122 reopened. PRESENCE
+    is the signal, not truthiness."""
+    _fake_basex(monkeypatch, "0")
+    _stale(monkeypatch, fresh=True)
+    monkeypatch.setenv("MSYSTEM", "")
+    rc = ask.main(["--db", "x4raw", "xq", "count(collection('x4raw')//nothing)"])
+    text = "".join(capsys.readouterr())
+    assert rc == 4, text
+    assert "NEGATIVE CONFIRMED" not in text
+
+
+def test_TWIN_an_EMPTY_but_DEFINED_conversion_switch_turns_the_refusal_OFF(monkeypatch, capsys):
+    """The other direction, same semantics: MSYS treats MSYS_NO_PATHCONV as SET when merely
+    defined, so an empty value means conversion is OFF and a zero is a real negative. Reading it
+    with bool() called that "on" and refused a legal zero."""
+    _fake_basex(monkeypatch, "")
+    _stale(monkeypatch, fresh=True)
+    monkeypatch.setattr(ask, "load_coverage", lambda db: {
+        "db": db, "status": "complete", "supports_negative_claim": True,
+        "indexed": {"total": 100}, "expected": {"total": 100}, "unparseable": [],
+    })
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    monkeypatch.setenv("MSYS_NO_PATHCONV", "")
+    # NOT a count() query: a count()-shaped zero is refused on its own axis, whatever the shell.
+    rc = ask.main(["--db", "x4raw", "xq", "collection('x4raw')//nothing"])
+    text = "".join(capsys.readouterr())
+    assert rc == 0, text
+    assert "NEGATIVE CONFIRMED" in text
+
+
+def test_a_FAILED_argv_query_under_Git_Bash_still_shows_what_arrived(monkeypatch, capsys):
+    """The CHANGELOG promises "every argument-query result shows the query as received", but the
+    BaseX-ERROR path had no such line -- and a leading `/` rewritten to `C:/Program Files/Git/...`
+    is the MSYS outcome most likely to produce an error rather than a zero."""
+    def boom(_xquery):
+        raise RuntimeError("Stopped at /basex/, 1/3:" + chr(10)
+                           + "[XPST0003] Unexpected end of query: ':/Program Files'.")
+    monkeypatch.setattr(ask, "run_xq", boom)
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    rc = ask.main(["--db", "x4raw", "xq", "/ware"])
+    text = "".join(capsys.readouterr())
+    assert rc == 2
+    assert "as received" in text, text
+    assert "--file" in text, text
+
+
 def test_conversion_switched_OFF_turns_the_Git_Bash_refusal_off(monkeypatch, capsys):
     """MSYS_NO_PATHCONV, or MSYS2_ARG_CONV_EXCL=*, leaves `//` intact (measured), so an argument
     query is what was typed and its zero is a real negative."""

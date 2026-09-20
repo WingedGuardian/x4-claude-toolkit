@@ -202,8 +202,14 @@ def _git_bash_argv_state() -> tuple[str | None, bool]:
     # env-ok: reads the launching shell's own markers (MSYSTEM, MSYS_NO_PATHCONV,
     # MSYS2_ARG_CONV_EXCL) -- a fact about this process, not configuration.
     env = os.environ
-    msystem = env.get("MSYSTEM") or None
-    off = bool(env.get("MSYS_NO_PATHCONV")) or env.get("MSYS2_ARG_CONV_EXCL", "").strip() == "*"
+    # PRESENCE, not truthiness, on both -- MEASURED 2026-09-20 from Git Bash. With
+    # `MSYSTEM=` (defined, empty) the runtime STILL rewrote argv (`//ware` arrived as
+    # `/ware`), so `or None` switched this guard off while the rewrite continued: F122
+    # reopened. And MSYS treats MSYS_NO_PATHCONV as SET when merely defined, so an empty
+    # value means conversion is OFF and a zero is a REAL negative -- bool() read that as
+    # "on" and refused it. Twins for both directions are in test_ask.py.
+    msystem = env["MSYSTEM"] if "MSYSTEM" in env else None
+    off = "MSYS_NO_PATHCONV" in env or env.get("MSYS2_ARG_CONV_EXCL", "").strip() == "*"
     return msystem, off
 
 
@@ -337,6 +343,15 @@ def main(argv=None) -> int:
             print(preflight.render(problems), file=sys.stderr)
             return 2
         print(f"error: BaseX query failed: {exc}", file=sys.stderr)
+        # The CHANGELOG promises every argument-query result shows what ARRIVED, and this
+        # path owed it too: a leading `/` rewritten to `C:/Program Files/Git/...` is the
+        # MSYS outcome most likely to ERROR rather than return a zero, and the error then
+        # quotes the rewritten text without saying it was rewritten.
+        if argv_under_git_bash:
+            print(f"       query as received (Git Bash, MSYSTEM={msystem!r}): {query}",
+                  file=sys.stderr)
+            print("       Git Bash rewrites path-like parts of arguments; if that is not "
+                  "what you typed, re-run with --file.", file=sys.stderr)
         # BaseX's own verdict stays above as the evidence; these lines add what it does
         # not say. MEASURED 2026-09-19: `xq --file` with `count(//ware)` reports
         # "[XPDY0002] .: Context value is undefined" -- true, and naming neither the
