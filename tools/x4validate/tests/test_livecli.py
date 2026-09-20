@@ -456,11 +456,20 @@ def _mappings_out(tmp_path, monkeypatch, rows, store):
     class _Con:
         pass
 
-    monkeypatch.setattr(C, '_store_exists', lambda db=None: True, raising=False)
-    monkeypatch.setattr(C, '_connect', lambda db: _Con(), raising=False)
-    monkeypatch.setattr(C, 'store_freshness',
-                        lambda con: type('F', (), {'fresh': True, 'banner': lambda self, w: ''})(),
-                        raising=False)
+    # Stub the REAL preconditions, and with raising=True (the default) so a rename cannot
+    # make the patch a silent no-op. The first version used `_store_exists`, which does not
+    # exist, with raising=False: it passed here only because this machine HAS an effective
+    # store, and verify-cold caught it in a cold tree where cmd_mappings refused rc 2.
+    # cmd_mappings imports these INSIDE the function, so the patch has to land on
+    # _effective itself, not on the _livecli namespace.
+    from x4validate import _effective as E
+
+    store_path = tmp_path / 'effective.sqlite3'
+    store_path.write_bytes(b'')
+    monkeypatch.setattr(E, 'effective_db', lambda: store_path)
+    monkeypatch.setattr(E, '_connect', lambda db: _Con())
+    monkeypatch.setattr(E, 'store_freshness',
+                        lambda con: type('F', (), {'fresh': True, 'banner': lambda self, w: ''})())
     monkeypatch.setattr(C, '_store_props', lambda con, macro: store.get(macro))
     buf = io.StringIO()
     rc = C.cmd_mappings(None, out=buf, groundtruth=str(_gt(tmp_path, rows)))
