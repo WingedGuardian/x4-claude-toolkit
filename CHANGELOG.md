@@ -83,14 +83,15 @@
   is NOT being checked", never as a pass.
 - **`x4validate/_surface.py`** — the CLI/subcommand surface, asked of the programs via `--help`
   and argparse's invalid-choice listing rather than parsed from source. A static `add_parser`
-  scan finds 39 of the 43 real subcommands; names built in a loop are invisible to it. Raises
+  scan found 39 of the 43 real subcommands when this was measured (2026-09-12; the surface is
+  47 now); names built in a loop are invisible to it. Raises
   `SurfaceUnavailable` rather than `SystemExit`, so a fresh clone cannot abort pytest collection.
 - **`tests/test_no_stale_bytecode.py`** — refuses when cached bytecode disagrees with its source
   while CPython would still reuse it. A same-length mutant restored within one mtime *second*
   leaves its `.pyc` behind; the source then reads correct and the next import executes the
   mutant. Four mutation verdicts were reported before this was caught.
 - **`/x4-cli-reference` skill, GENERATED** — the exact subcommands, flags and defaults of all 11
-  CLIs (43 subcommands), written by `tools/x4validate/scripts/gen-cli-reference.py` from each
+  CLIs (47 subcommands), written by `tools/x4validate/scripts/gen-cli-reference.py` from each
   CLI's own argparse help; `tests/test_cli_reference.py` fails the suite when it is stale, missing
   a file, or carries a ghost. Chosen over an MCP server after measuring the case for one: 2
   malformed calls in 2,965 invocations, and MCP tool descriptions load name-only in Claude Code
@@ -113,7 +114,7 @@
   selector, merge-tree and load-order gotchas; installed-mod names generalised, gotcha numbers kept),
   **`/x4-live`**, and the newer **`/x4-probe`** with its "can it RECORD?" rung.
 - **The blind-spots register, the 2026-08 audit and their tooling now ship.** `docs/BLIND-SPOTS.md`
-  (F1 to F120), `AUDIT-2026-08.md`, `scripts/next-blind-spot-id.py`, and four gates:
+  (F1 to F125), `AUDIT-2026-08.md`, `scripts/next-blind-spot-id.py`, and four gates:
   `register_rederivation` (every FIXED entry must name a check that exists), and
   `toolkit_usage`, `instrument_hygiene` and `hook_false_positives`, which read this machine's
   session transcripts and refuse without them. They lived in a separate development repository,

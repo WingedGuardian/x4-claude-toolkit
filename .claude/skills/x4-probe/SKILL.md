@@ -201,7 +201,7 @@ check, not the last.
 | omitting a required attribute | `use="required"` fails the file exactly like a bad element name |
 | "it is conventional, I do not need to check" | Convention is where composed bugs live. The check is one grep. |
 | searching only the reference tree | Installed mods solve modder problems vanilla never had, and are proven in THIS version |
-| a cue at t=0 that touches the WORLD | `player.entity` and `player.sector` are NULL at t=0.00. Static macro reads are fine there; spawning is not. Wait on `md.Setup.Start` (93 of 371 vanilla md documents do) |
+| a cue at t=0 that touches the WORLD | `player.entity` and `player.sector` are NULL at t=0.00. Static macro reads are fine there; spawning is not. Wait on `md.Setup.Start` (98 of 382 vanilla md documents do, measured 2026-09-20 over base+DLC) |
 | composing the variable plumbing after copying the action | The action is what looks risky, so you check it. The plumbing looks routine, so you invent it - and it is what fails. Copy BOTH. |
 | treating a namespace declaration as an address | Declaring where variables live is not the same as naming that place. Check how the analogue you copied *reads its own variables back*, not just how it declares them. |
 | creating things before proving you can hold them | The failure lands after the side effects. Self-test the binding first (rung 3 above). |

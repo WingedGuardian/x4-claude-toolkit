@@ -17,8 +17,9 @@ OPERATING NOTES (were resident in CLAUDE.md until 2026-09-20; they belong with t
 - Identity/version resolution is LOCAL-FIRST, cheapest first: the installed `content.xml`,
   then the mod folder README/changelog, then the Steam Workshop page, and the Nexus API
   last -- it is the only source for what upstream currently ships.
-- The same host serves every game: the endpoints take a game_domain_name (`x4foundations`)
-  and a mod_id, so this module ports to another Nexus-modded game unchanged.
+- The same host serves every game: the endpoints take a game_domain_name and a mod_id, so the
+  SHAPE ports to another Nexus-modded game -- but this module does not, unchanged: the domain
+  is baked into NEXUS_REST and the numeric game id into X4_GAMEID.
 """
 
 from __future__ import annotations
