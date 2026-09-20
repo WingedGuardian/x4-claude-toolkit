@@ -597,7 +597,23 @@ def _fmt(v: float) -> str:
 
 
 def _derive_dps(con, props: dict[str, str]) -> str | None:
-    """Total DPS: the sum of every channel. See the block comment above for the evidence."""
+    """Total DPS: the sum of every channel. See the block comment above for the evidence.
+
+    REFUSES for a bullet carrying BOTH `damage.shield` and `damage.noshield`. The summing
+    rule is MEASURED over 38 of 39 weapon macros, and the 39th --
+    `weapon_cpsdo_s_phase_laser_01_mk4_macro`, the only one in the population carrying both
+    (60 and 150) -- disagrees: its four channels each match the engine exactly while the
+    engine TOTAL, 770.71, is hullshield + hullnoshield, OMITTING the shield-only channel the
+    other 38 include. n=1 draws no rule, so neither answer is earned: adopting the engine
+    behaviour would be a rule from one observation, and emitting our sum ships a number we
+    KNOW disagrees -- which is what teaches people to ignore the oracle. The refusal is the
+    third answer and the true one: this shape is UNMEASURED (KNOWLEDGEBASE.md 2026-09-19).
+    Confirming it needs more macros carrying both properties.
+    """
+    b = _bullet_of(con, props)
+    if b is not None and (_num(b, "damage.shield") is not None
+                          and _num(b, "damage.noshield") is not None):
+        return None
     chans = _dps_channels(con, props)
     return None if chans is None else _fmt(sum(chans.values()))
 

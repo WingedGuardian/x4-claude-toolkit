@@ -191,6 +191,41 @@ def test_dps_is_the_SUM_of_the_channels(store):
 
 # --- refusing ------------------------------------------------------------------ #
 
+def test_a_bullet_carrying_BOTH_shield_and_noshield_damage_REFUSES_the_total(store):
+    """The n=1 exception, and the only field in the release where our store and the engine
+    disagree. MEASURED on `weapon_cpsdo_s_phase_laser_01_mk4_macro`, the only macro in the
+    population carrying both `damage.shield` (60) and `damage.noshield` (150): its four
+    channels each match the engine exactly, while the engine TOTAL omits the shield-only
+    channel the other 38 macros include. One observation draws no rule, so emitting our sum
+    ships a number known to disagree and adopting the engine's behaviour invents a rule from
+    n=1. The refusal is the honest third answer."""
+    props = _weapon(store, {'reload.rate': '1', 'damage.value': '100',
+                            'damage.shield': '60', 'damage.noshield': '150'})
+    assert C._derive_dps(_Con(), props) is None
+
+
+def test_TWIN_the_CHANNELS_are_still_computed_for_that_same_bullet(store):
+    """Only the TOTAL is unearned. Each channel matched the engine exactly, so refusing
+    them too would throw away four correct comparisons to avoid one wrong one."""
+    props = _weapon(store, {'reload.rate': '1', 'damage.value': '100',
+                            'damage.shield': '60', 'damage.noshield': '150'})
+    chans = C._dps_channels(_Con(), props)
+    assert chans is not None
+    assert chans['shieldonlydps'] == pytest.approx(60.0)
+    assert chans['hullnoshielddps'] == pytest.approx(150.0)
+
+
+def test_TWIN_only_ONE_of_the_two_properties_still_totals(store):
+    """38 of 39 macros carry at most one, and they are the population the rule was
+    measured over -- the refusal must not reach them."""
+    shield_only = _weapon(store, {'reload.rate': '1', 'damage.value': '100',
+                                  'damage.shield': '60'}, name='w1', bullet='b1')
+    noshield_only = _weapon(store, {'reload.rate': '1', 'damage.value': '100',
+                                    'damage.noshield': '150'}, name='w2', bullet='b2')
+    assert C._derive_dps(_Con(), shield_only) is not None
+    assert C._derive_dps(_Con(), noshield_only) is not None
+
+
 def test_a_weapon_with_NO_bullet_class_REFUSES(store):
     """6 of the 45 harvested macros are decorative `*_video_macro` with no bullet at all."""
     store["w_macro"] = {"identification.name": "a video prop"}
