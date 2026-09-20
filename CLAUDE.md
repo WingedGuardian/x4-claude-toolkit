@@ -46,10 +46,10 @@ case, so either path style works. Keys: `X4_TOOLKIT`, `X4_GAME`, `X4_REFERENCE`,
 
 | Tool | Purpose |
 |------|---------|
-| **x4validate** ⭐ | Cross-file validator (`tools\x4validate\`, lxml). Checks every diff `sel=` resolves against the real base+DLC merged tree, that ware/macro/`{page,t}` references resolve, and completeness of new content vs a vanilla analogue. **Run on every mod before deploying.** `cd tools\x4validate && uv run x4validate <dev\mod>` |
-| **x4modlist** | Mod-registry triage via the Nexus API (version/status/changelog). Scans the ACTUALLY INSTALLED extension folders as the primary source of truth (content.xml is a secondary cross-check only). `uv run x4modlist <cmd>` |
-| **x4compat / x4xref / x4stats / x4similar** ⭐ | Cross-mod interaction suite (same package). **x4compat**: detects how installed mods collide over the effective tree (HARD node clashes, UNION-KEY same-id, FULL-OVERRIDE, benign SOFT) — reads packed mods too. **x4xref**: a who-calls/who-listens/cue index over all MD+aiscripts. **x4stats**: advisory ware/macro numeric comparison vs the effective tree (grounds a balance discussion, not a verdict). **x4similar**: fuzzy same-ship detection across mods (different id/name, near-identical stats), hard-filtered by ship class+purpose. `/x4-mod-interaction` skill, or `uv run x4compat check <mod>` |
-| **XRCatTool** (Egosoft) | Unpack base game CAT/DAT → `reference\`; pack `dev\` → distributable CAT/DAT. You supply this. |
+| **x4validate** ⭐ | Cross-file validator: every diff `sel=` resolves against the real base+DLC merged tree, ware/macro/`{page,t}` references resolve, and new content is complete against a vanilla analogue. **Run on every mod before deploying.** `cd tools\x4validate && uv run x4validate <dev\mod>` |
+| **x4modlist** | Mod-registry triage via the Nexus API. The INSTALLED extension folders are the primary source of truth; `content.xml` is a secondary cross-check. |
+| **x4compat / x4xref / x4stats / x4similar** ⭐ | Cross-mod suite, one package: collisions over the effective tree (packed mods included), a who-calls/who-listens index over MD+aiscripts, advisory numeric comparison, and fuzzy same-ship detection. → the `x4-mod-interaction` skill. |
+| **XRCatTool** (Egosoft) | Unpack base CAT/DAT → `reference\`; pack `dev\` for distribution. You supply it. |
 
 ## Mod Structure
 
@@ -148,26 +148,17 @@ Before proposing ANY change to mod files, game XML, or profile files:
 
 ## Core Principle: Tooling Comes FIRST — Everything Else Is Downstream
 
-**Never frame tool work as time taken away from "the real work."** Work produced on an
-untrusted instrument is not merely wasted — it is **negative**: it is confident, it
-compounds, and it gets written down where the next session reads it as truth. When a tool
-defect and downstream work compete, **the tool wins**, and that is stated as a reason, not
-an apology.
+**Never frame tool work as time taken away from "the real work."** Work produced on an untrusted
+instrument is not wasted, it is **negative**: it is confident, it compounds, and it gets written
+where the next session reads it as truth. When a tool defect and downstream work compete, **the
+tool wins** — stated as a reason, never as an apology.
 
-**Corollary — a tool that cannot distinguish a GUESS from a MEASUREMENT is a defect, not a
-limitation.** Provenance travels with the value: a guessed field must never occupy the same
-slot, in the same grammar, as a verified one, and nothing *derived* from a guess may be
-promoted into a confident state. This applies to your own output too — a report, a registry
-row and a knowledgebase line each carry their evidence tier or they do not ship.
-
-> **The two cases that produced this rule.** (1) The mod registry stored a **guessed** Nexus
-> id in the same field as a verified one, beside `settled: stable` — so "is my installed copy
-> the old version or the new one?" could not be answered from the registry at all, and anyone
-> trusting the row would have tracked an unrelated author's mod for updates indefinitely.
-> (2) An upstream bug report proved **file-path** resolution and then asserted an **in-game**
-> outcome from it. Wrong for two weeks, written into permanent record, and queued to be posted
-> publicly to the mod author — while the engine's own `debug.txt` had been contradicting it
-> dozens of times per session, unsearched.
+**A tool that cannot distinguish a GUESS from a MEASUREMENT is a defect, not a limitation.**
+Provenance travels with the value: a guessed field must never occupy the same slot, in the same
+grammar, as a verified one, and nothing derived from a guess may be promoted into a confident
+state. That applies to our own output too — a report, a registry row and a knowledgebase line
+each carry their tier or they do not ship. The registry once stored a GUESSED Nexus id beside
+`settled: stable`, so "is my copy the old version?" could not be answered from it at all.
 
 ## Core Principle: Do Your Homework (Due Diligence Before Acting)
 
@@ -198,22 +189,20 @@ those sessions, and the packed-inclusive mod search that finds the modder-side a
 ## Core Principle: Assume Existing Content Is REAL AND LIVE Until Proven Dead
 
 **Anything present in a mod or script is there because it worked.** The burden of proof is on
-"this is dead", never on "this is alive". The failure mode this prevents is pattern-matching a
-symptom onto a plausible story ("the new version removed this") and then *deleting working
-content* on that story — the one action whose damage is invisible in a clean validate run.
+"this is dead". The failure this prevents is pattern-matching a symptom onto a plausible story
+("the new version removed this") and then deleting working content on it — the one action whose
+damage is invisible in a clean validate run.
 
-Before calling anything obsolete/removed/vestigial:
-1. **Read the error literally** — it usually names the scope. `Order 'MiningRoutine': Parameter
-   'stayinspace' was not expected` scopes the problem to **one order**, not the parameter globally.
-   (`stayinspace` is still valid in 9.0 for `order.fight.patrol` and `move.seekenemies`.)
-2. **Grep `reference\` for live uses.** Any vanilla/DLC use means it is alive and your call is wrong.
-3. **Date the change** — a thing missing from an old file is usually old, not new.
-4. **Check who else references it** — content other installed mods use is not yours to remove.
+Before calling anything obsolete: **read the error literally** (it usually names the scope —
+`Order 'MiningRoutine': Parameter 'stayinspace' was not expected` scopes to ONE order, and that
+parameter is still valid in 9.0 elsewhere); **grep `reference\` for live uses** (any vanilla or
+DLC use means your call is wrong); **date the change** (a thing missing from an old file is
+usually old, not new); and **check who else references it**.
 
-**Destructive changes (`<remove>`, deleting files, stripping attributes, "cleanup") require
-explicit user approval**, a higher evidence bar than additive changes, and a snapshot first.
-**Prefer additive/restorative repairs**: restoring an orphaned index entry is reversible and
-provably scoped; deleting a reference is not.
+**Destructive changes — `<remove>`, deleting files, stripping attributes, "cleanup" — require
+explicit user approval**, a higher evidence bar than additive ones, and a snapshot first. Prefer
+additive repairs: restoring an orphaned index entry is reversible and provably scoped; deleting a
+reference is not.
 
 ## Core Principle: Cognitive Co-Pilot, Not Order-Taker
 
@@ -258,37 +247,28 @@ fetches; Steam pages are scrapeable, Nexus is not). Each user supplies their OWN
 
 ## Core Principle: PROVE IT RAN BEFORE DEBUGGING WHAT IT DID (Mandatory)
 
-**A change that produces no output has THREE indistinguishable causes, and they must be eliminated in
-order:** it did not load · it loaded but never triggered · it triggered and the logic failed.
-**Debugging the third while the first or second is true is unbounded** — every observation is
-consistent with every theory.
+**A change that produces no output has THREE indistinguishable causes, eliminated in this
+order:** it did not load · it loaded but never triggered · it triggered and the logic
+failed. Debugging the third while the first or second is true is unbounded, because every
+observation is consistent with every theory. One such harness cost **three play sessions**,
+none of them spent on the experiment.
 
-> **The case (2026-08-27).** A self-driving in-game test harness cost **THREE play sessions**, none
-> of them spent on the experiment. Session 1: three engine errors (a non-event `<check_value>`
-> condition, and an `Attack` order given `target` instead of the required `primarytarget`).
-> Session 2: the user quit 18 seconds before the cue fired, because my time estimate ignored ~4.5
-> minutes of pre-load startup. Session 3: **`<event_game_loaded/>` fires only on a SAVE LOAD and the
-> user started a NEW GAME** — silent, no error, no trace. Every session produced a log that looked
-> exactly like "the mod is broken".
-
-**The order, cheapest first:**
-1. **Did it LOAD?** A signature-verification line in `debug.txt` naming the file proves the engine
-   read it. Absent = the mod is not installed/enabled, and nothing else matters.
-2. **Did it TRIGGER?** Emit an unconditional marker as the FIRST action, before any logic. If the
-   marker is missing the trigger is wrong, not the logic. (X4 specifically: a top-level cue with **no
-   `<conditions>` at all** fires on new game AND save load; `event_game_loaded` fires on load ONLY.)
+1. **Did it LOAD?** A signature line in `debug.txt` naming the file. Absent = not installed
+   or not enabled, and nothing else matters.
+2. **Did it TRIGGER?** An unconditional marker as the FIRST action, before any logic. X4
+   specifically: a top-level cue with **no `<conditions>`** fires on new game AND save load,
+   while `event_game_loaded` fires on a SAVE LOAD only — which silently wasted one of
+   those three sessions.
 3. **Only then** debug what it did.
 
-**Corollaries paid for the hard way:**
-- **Static validation cannot see runtime wiring.** `x4validate --update` returned `OK: no issues
-  found` on a script the engine rejected three times — cue-trigger semantics and cross-file order
-  signatures are not expressible in a schema. **For a new script the engine log is the FIRST real
-  check, not the last.**
-- **Instrument the thing where the user is looking.** `debug.txt` is invisible during play. An
-  in-game harness must report via `<show_notification>` AND `<write_to_logbook>` (persistent) — a
-  missed popup is a wasted session.
-- **State elapsed time from a landmark the user can SEE** ("4m30s after the save finishes loading"),
-  never from process start, and never a figure you have not summed from the actual delays.
+⚠ **Static validation cannot see runtime wiring.** `x4validate --update` returned `OK: no
+issues found` on a script the engine rejected three times: cue-trigger semantics and order
+signatures (`Attack` takes `primarytarget`, not `target`) are not expressible in a schema.
+**For a new script the engine log is the FIRST real check, not the last.** And instrument
+where the USER is looking — `debug.txt` is invisible during play, so an in-game harness
+reports through `<show_notification>` AND `<write_to_logbook>`, and states elapsed time from
+a landmark they can SEE, never from process start.
+
 ## Core Principle: Evidence Must Match the Scope of the Claim (Mandatory)
 
 **The user must never have to ask "did you actually verify that?" If they have to ask, the process
@@ -302,99 +282,70 @@ already failed.** Two rules, both non-negotiable.
 | You read **one mod** | *"This mod does X."* |
 | You measured **the corpus, with a denominator** | *"X is how it works"* / *"N of M do X"* |
 
-**One file NEVER supports a statement about the engine, the schema, or "how it works now."**
-A real schema/engine change shows up across the whole corpus — and checking the corpus is one query,
-so there is no excuse for guessing. If a single file surprises you, the honest next sentence is
-*"that's unusual — let me check whether it's the rule or the exception,"* not a theory that explains it.
-
-> **The case that produced this rule (2026-08-08).** A ship mod's macro file had
-> `<explosiondamage value="10000"/>` with no `@shield`. From that one file I asserted *"9.0
-> consolidated `explosiondamage` to a single `@value`"* — and wrote it into KNOWLEDGEBASE.md and an
-> upstream report. **It was false.** Measured afterwards: 610 occurrences in vanilla, **488 still
-> carry `@shield`**; among ship macros, **183 of 185**. The truth was a mod-vs-mod convention
-> mismatch. The single query that would have prevented it took seconds.
-
-**Corollary — a surprising observation is a QUESTION, not an ANSWER.** The pull to explain an anomaly
-with a tidy story ("they must have changed it in 9.0") is exactly when to measure instead. See also
-"Assume Existing Content Is REAL AND LIVE Until Proven Dead" — same failure, different direction.
+**One file NEVER supports a statement about the engine, the schema, or "how it works now."** A
+real engine change shows up across the whole corpus, and checking the corpus is one query. From
+ONE macro file carrying `<explosiondamage value=...>` with no `@shield` I once asserted that 9.0
+had consolidated the attribute — into the knowledgebase and an upstream report. Measured
+afterwards: **488 of 610** occurrences still carry `@shield`, and **183 of 185** among ship
+macros. It was a mod-vs-mod convention mismatch, and the query that would have caught it took
+seconds. **A surprising observation is a QUESTION, not an ANSWER.**
 
 ### 1b. An AGGREGATE can hide the very thing you are measuring — compare PER ITEM
 
-> **The case that produced this rule (2026-08-09).** A performance differential over 115 mods showed
-> total wall-clock **594.4 s → 595.7 s = 1.00×**. Clean, by any reading. Per item, two mods had gone
-> **2.8 s → 112 s (39×)** and **2.4 s → 121 s (51×)** — hidden because a third mod happened to get
-> faster and cancelled them out.
-
-Whenever you compare two states — timings, counts, findings, collision rows — **diff the items, not
-the totals.** A sum, a mean, or a "0 net change" is the shape a real regression hides in. State the
-per-item deltas and the denominator; quote the aggregate only as context.
-
-Corollary: the same applies to a *count* of findings. "42 added, 0 removed" is only reassuring once
-every one of the 42 is attributed to an intended cause — which is what makes an unexplained delta
-visible instead of absorbed.
+A performance run over 115 mods totalled **594.4 s → 595.7 s = 1.00x**, clean by any reading,
+while two mods had gone **2.8 s → 112 s (39x)** and **2.4 s → 121 s (51x)** — hidden because a
+third got faster and cancelled them out. Whenever you compare two states — timings, counts,
+findings, collision rows — **diff the ITEMS, not the totals**, and quote the aggregate only as
+context. The same holds for a COUNT of findings: "42 added, 0 removed" is reassuring only once
+every one of the 42 is attributed to an intended cause.
 
 ### 2. Label the evidence tier — in prose and in permanent record
-
-Every factual claim carries one of these, and **the language must make it unmistakable which**:
 
 - **MEASURED** — "I ran X; 488 of 610." State the number and the denominator.
 - **READ** — "`reference\md\foo.xml:942` has this node." Cite file and line.
 - **INFERRED** — **must** be hedged out loud: *"I think"*, *"this looks like"*, *"unverified, but"*.
 - **ASSUMED** — say so, and say what would confirm it.
 
-**Never write an INFERRED claim into permanent record (KNOWLEDGEBASE.md, `dev\_registry\`, memory,
-reports) in the grammar of a fact.** Permanent record has no tone of voice: next session — or the
-next person — reads a confident sentence as measured truth and builds on it.
+**Never write an INFERRED claim into permanent record in the grammar of a fact.** Permanent record
+has no tone of voice: the next session reads a confident sentence as measured truth and builds on
+it. *"`hunterpack_small_turrets` is the foundation dependency of the hunterpack ship family"* was
+an inference written as a fact, then re-quoted as a fact later; measured, it defines 22 S-turret
+macros that the ships reference **zero** of. If verifying is too expensive right now, hedge it and
+flag it as open — what is never fine is an unverified claim wearing the grammar of a verified one.
 
-> **The case that produced this rule.** *"`hunterpack_small_turrets` is the foundation dependency of
-> the hunterpack ship family"* was an inference, written as a fact in a working assessment note, then
-> re-quoted as a fact by me in a later session. Measured: it defines 22 S-turret macros and the ships
-> reference **zero** of them, and declare no dependency. Wrong for weeks, and load-bearing in a plan.
-
-**If verifying is genuinely too expensive right now, that is fine — but then it must be hedged, and
-flagged as an open item. What is never fine is an unverified claim wearing the grammar of a verified
-one.** Hedged-and-honest beats confident-and-wrong every time; confident-and-wrong costs the user a
-test cycle and poisons the knowledgebase.
 ## Core Principle: A Step That Narrows Data MUST Announce It
 
-**Every tool defect found in this workspace has had one shape: a step that narrows the data and
-reports success anyway.** Not a scattered assortment of bugs — one class, and the enumeration variant
-alone was written **five times**:
+**Every tool defect found in this workspace has had one shape: a step that narrows the data
+and reports success anyway.** One class, not an assortment — and the enumeration variant
+alone was written **five times**. What the instances cost, MEASURED: a `continue` that dropped
+an op yet marked it applied (**858 ops**, so `x4effective` served vanilla values for real
+overrides); a walk that stopped descending (**9,197 of 13,291** ship attributes, the whole
+flight model, absent); a loose-only `rglob` or the wrong source list across **7 files**
+(x4xref returned **0 rows from 13 real files**); the wrong SET, on-disk where engine-loadable
+was meant, which let **Tier B resolve a selector against a DISABLED mod and report OK** —
+a false pass in the mode built to catch no-ops; a denominator taken from the artifact it
+audits (COVERAGE COMPLETE over a tree missing **119 documents**, which **0 of 210** failures
+could ever name); and `el.get("id")` skipping an absent attribute, which would have indexed
+**zero entities while reporting success**.
 
-| | The narrowing step | What it silently cost (MEASURED) |
-|---|---|---|
-| root-`<replace>` | a `continue` that dropped an op yet marked it applied | 858 ops; `x4effective` served vanilla values for real mod overrides |
-| nested-patch door | one of TWO code paths to the same document | Tier B and `x4effective` gave contradictory answers, both internally consistent |
-| depth-1 flatten | a walk that stopped descending | 9,197 of 13,291 ship attributes — the whole flight model — absent; `%drag%` = 0 rows |
-| enumeration missing content | loose-only `rglob`, or the wrong source list | `_input`, `_migration`, `_effective`, `_xref`, `_similarity`, `stage.py`, `build-effective.py` — **7 files**. Cost: 26 of 40 mini-DLC macros; x4xref **0 rows from 13 real files**; BaseX `x4eff` **23 of 142 mini-DLC docs (16%)** |
-| **the wrong SET, not the wrong files** | `scan_installed()` (on disk) where `active_mods()` (engine-loadable) was meant | ONE disabled mod put 3 macros into `x4eff` as live, named it in 4 x4compat collision rows, and made **Tier B able to resolve a selector against it and report OK** — a false pass in the mode built to catch no-ops |
-| **a denominator taken from the artifact it audits** | coverage compared "produced" vs "indexed", both written by the same build | printed COVERAGE COMPLETE over a tree missing **119 documents**; **0 of 210** failures could ever name them |
-| `el.get("id")` | a key lookup that skips when the attribute is absent | would have added 7 registries indexing **zero entities while reporting success** |
+**The rule: a tool that returns nothing must say whether that is an ABSENCE or a NON-ANSWER.**
+`tools/basex/ask.py` is the standard — it refuses to render a zero as a finding without a
+coverage denominator. Anything that cannot make that distinction is a defect, not a limitation.
 
-**The rule: a tool that returns nothing must be able to say whether that is an ABSENCE or a
-NON-ANSWER.** `tools/basex/ask.py` is the standard — it refuses to render a zero-result as a finding
-without a coverage denominator. Anything that cannot make that distinction is a defect, not a
-limitation.
+- **State the SCANNED SOURCE SET, not just the failed reads.** A blind spot is by definition
+  not among the files you tried and failed to parse: "base + **6** DLC + 71 mods" when 8 DLC
+  exist is self-evident on sight, and reporting only parse failures hid exactly that.
+- **One implementation, asked for by everyone else.** Two of those five files already carried a
+  comment explaining the bug, and it was written again anyway. Only a shared helper plus a test
+  banning the hand-rolled form stops the next one.
+- **The same wrong answer can have different causes.** A sibling gate carried the identical
+  hand-rolled walk and failed for an unrelated reason. Fix the occurrence on its own evidence.
 
-**Three corollaries, all learned the expensive way:**
-
-- **State the SCANNED SOURCE SET, not just the failed reads.** `x4xref` already carried the
-  denominator contract — and a blind spot still slipped through, because it reported *files it tried
-  and failed to parse*, never *sources it never looked at*. A blind spot is by definition not in the
-  first category. "base + **6** DLC + 71 mods" when 8 DLC exist would have been self-evident on sight.
-- **One implementation, asked for by everyone else.** Two of those five files *already carried
-  comments explaining the bug*, and it was written again anyway. A comment in one file does not stop
-  the next file — only a shared helper plus a test banning the hand-rolled form does.
-- **The same wrong answer can have different causes in different places.** `gates/similar_audit`
-  carried the identical hand-rolled walk but failed for another reason entirely (a source-LABEL
-  mismatch, while it read packed content correctly). Fix the occurrence in front of you on its own
-  evidence; do not assume it shares the cause of its twin.
-
-**When you find one: search for the shape, not the symptom.** Sweep the package for scope limits,
-depth limits, singular reads (`find` where the data repeats), silent skips, and two independent paths
-answering one question. Every occurrence gets a **measured denominator** and a row in a narrowing-point register
-— including the ones that turn out to be correct, because a
+**When you find one, search for the SHAPE, not the symptom** — scope limits, depth limits,
+singular reads, silent skips, two paths answering one question — and give every occurrence a
+measured denominator and a register row, **including the ones that turn out correct**: a
 register without negatives has no denominator either.
+
 ## Discovery vs. Proof (Standing Rule — which tool answers which question)
 
 **Route BEFORE you search.** Ask *"which tool answers THIS question?"* before typing a search
@@ -417,9 +368,9 @@ REACH FOR, not only about what you may claim. Exact flags and subcommands: the g
 | **"every XML a mod owns?"** | **`_scan.iter_mod_xml` / `iter_mod_xml_bytes`** (loose THEN packed) | ✗ **`_cat.mod_vfs`** — catalogs only; returns `{}` for a loose mod and says nothing. It now WARNS in that exact case; pass `packed_only=True` when you really mean catalogs |
 | **"which MODS count?"** | **`_registry.mods("active")`** = what the engine loads · **`_registry.mods("installed")`** = what is on disk. Scope is positional and REQUIRED | ✗ `_registry.scan_installed()` — that is only ever the on-disk answer, and reaching for it silently chooses it |
 | **"is this mod installed / active / banned?"** | **`_registry.mods("active"\|"installed")`** — and for a ban, grep the profile by **MANIFEST ID** (a workshop mod is `ws_<numeric id>`), never by name | ✗ reading the profile `content.xml` as an inventory — it is a DECISION LOG: **287 of 348 entries are fossils**, **54 of 115 installed mods are absent**, and a name-shaped search finding nothing is the WRONG QUERY, not evidence (#30) |
-| **"scan EVERY installed mod for X"** (an ad-hoc corpus sweep) | **`_scan.iter_corpus_xml(ext, report)`** + **`CorpusScan.verdict(hits, noun)`** — excludes `ego_dlc_*` by default, records unreadable files, and **RAISES rather than render a zero when nothing parsed** | ✗ a hand-rolled `for mod in extensions.iterdir()` loop. **MEASURED: the hand-rolled form has been written 7 times and been wrong at least 3 of them.** The last one called `etree.fromstring()` on already-parsed roots, threw on **all 4,391 files**, swallowed it in `except Exception: continue`, and reported *"0 dangling across 115 mods"* when the answer was 3. **State scanned/parsed/failed BEFORE the finding, always** |
+| **"scan EVERY installed mod for X"** (an ad-hoc corpus sweep) | **`_scan.iter_corpus_xml(ext, report)`** + **`CorpusScan.verdict(hits, noun)`** — it states the scanned set, so a zero is an ABSENCE and not a non-answer. | a hand-rolled loop over `extensions/` — loose-only, and silent about what it never opened |
 | **"every base+DLC vpath?"** | **`_effective.base_vpaths`** (loose THEN packed; `reference_vpaths` is its `assets/`-only filter) | ✗ `reference.rglob("*.xml")` — loose-only, so the two mini-DLC are invisible. Written **7 times**; now gated by `tests/test_no_loose_only_reference_walk.py` |
-| **"does this vpath exist in the LIVE tree, and WHO supplies it?"** | **`x4effective dump --chain <vpath>`** — rc 0 + `<!-- sources: ... -->`, rc 1 + *no effective content*. **`overhaul:full`** = that mod SUPPLIES the document; **`base, ego_dlc_x:diff`** = base supplies it and the DLC only PATCHES it. That full-vs-diff distinction is usually the thing you actually need | ✗ **`_effective.base_has`** — base+DLC ONLY, so a mod-supplied file reads as a confident *absent*. ✗ a hand-rolled base walk. **MEASURED 2026-08-26: this exact mistake labelled 65 of 241 vpaths "paths Egosoft renamed" — Egosoft renamed nothing, and every named example (`missile_cruise`, `missile_heavy`, `turret_multilauncher`) returns `overhaul:full`.** The direction is what makes it dangerous: "renamed" reads as INERT/deletable when those files actually **win** their vpaths. The capability existed, was correct and was in `--help` the whole time — nobody ran it (F58) |
+| **"does this vpath exist in the LIVE tree, and WHO supplies it?"** | **`x4effective dump --chain <vpath>`** — rc 0 names every source in order, rc 1 means absent. | `_effective.base_has` — base+DLC only, so a mod-supplied file reads as a confident ABSENT |
 | what is installed / what has updates / is this abandoned? | **x4modlist** | reading the profile `content.xml` as an inventory -- it is a DECISION LOG |
 | how do a mod's numbers compare to the live tree? | **x4stats** (advisory, never a verdict) | quoting a vanilla number as if it were effective |
 | what changed between two versions of a mod? | **x4diff** | eyeballing two folders, or `diff -rq` -- line endings swamp the real findings |
@@ -457,15 +408,19 @@ reports three false alarms.
 
 ## Core Working Principle: Deductive Iteration — Work Backward from the Outcome
 
-When a fix or feature needs iteration, never iterate blind. Before the FIRST attempt:
+Never iterate blind. Before the FIRST attempt: state the outcome as **observable acceptance
+criteria**; enumerate the **assumption chain** with a confidence **per link**, not one blended
+number that hides the weak one; design tests that each confirm or kill a specific link,
+cheapest-first and self-driven rather than by user playtesting; and **pre-commit a fallback for
+every shaky link**, so a failed test advances the plan instead of starting a new guess.
 
-1. **State the outcome as observable acceptance criteria** — what the user will see/hear/measure when it's right.
-2. **Enumerate the assumption chain** — every link that must hold for the approach to deliver that outcome — with a confidence level **per link**, not one blended number that hides the weak link.
-3. **Design decisive tests**: each test confirms or kills a specific link (or reproduces a specific symptom), cheapest-first, self-driven (DevBench, console, logs, save parsing) wherever possible rather than user playtesting. A test whose result wouldn't change the next action is not a test.
-4. **Pre-commit fallbacks** for every shaky link — know NOW what you'll do if it fails, so a failed test advances the plan instead of starting a new guess.
-5. **Batch verification to minimize user cycles** (restarts, headset sessions). When a symptom report contradicts the model, STOP and re-derive the model from evidence (logs/traces) — never re-tune parameters inside a broken model.
+**A test whose result would not change the next action is not a test.** Batch verification to
+minimise user cycles, and when a symptom report contradicts the model, STOP and re-derive the
+model from evidence — never re-tune parameters inside a broken model.
 
-**Anti-pattern this kills:** attempt N motivated only by the failure of attempt N−1 — parameter tweaks or mechanism swaps with no model of why THIS one reaches the outcome ("one foot in front of the other, eyes on the ground"). Iterate with eyes on the destination: fast because each step is load-bearing, safe because each step is verified — never slow for safety's sake, never fast by throwing caution to the wind.
+**The anti-pattern this kills:** attempt N motivated only by the failure of attempt N-1 —
+parameter tweaks with no model of why THIS one reaches the outcome.
+
 ## Core Balance Principle: Three Values, and IN-SECTOR vs OUT-OF-SECTOR (Mandatory)
 
 **Never quote a bare number.** For every value you propose changing state the **vanilla** value,
@@ -517,32 +472,23 @@ never a PASS, and the gate refuses to run against a stale store.
 Memory is a convenience index, and **the one artifact class with no freshness signal at all**,
 while being consulted FIRST: a line reading *"still X"*, *"not yet done"* or *"pending"* reports
 success indefinitely. The fingerprint above exists because an artifact can be fresh by its own
-lights and wrong about the world; memory has no axis at all, so it is fresh by its own lights
-permanently.
+lights and wrong about the world; memory has no axis at all, so it is fresh permanently.
 
 **A memory or plan claim about EXTERNAL state — a Nexus page, a remote repo, a public release,
-another session's tree — is a LEAD, NEVER A FACT.** External facts rot with nobody touching this
-machine, and the user acting outside the session is the NORMAL case. Re-query the authoritative
-source before asserting it, and **never put a decision to the user without first checking whether
-it is already made** — that spends their attention on something they have already settled. When
-you correct such a line, mark the old one **SUPERSEDED** rather than rewriting it: it was true
-when written, and that dated record is what lets the next session date the change.
+another session's tree — is a LEAD, NEVER A FACT**, because those rot with nobody touching this
+machine. Re-query the source before asserting it, and **never put a decision to the user without
+checking whether it is already made**. When you correct such a line, mark the old one
+**SUPERSEDED** rather than rewriting it: that dated record is what lets the next session date
+the change.
 
-★★ **And your loaded context is a snapshot of a file that has since moved.** The fingerprint
-guards an artifact, never your copy of it: on a long session with concurrent writers, `CLAUDE.md`,
-`MEMORY.md` and every memory file were read **once, at session start**. A peer once asserted a
-release was on hold while the record on disk already said SUPERSEDED — nothing was stale on disk,
-the READER was. Before asserting anything load-bearing from memory — especially a *hold*, a
-*decision*, or a *"not yet done"* — **re-read the file, not your recollection of it.**
-
-⚠ **This paragraph is subject to its own warning**, being itself loaded once at session start.
+★★ **And your loaded context is a snapshot of a file that has since moved.** On a long session
+with concurrent writers, `CLAUDE.md`, `MEMORY.md` and every memory file were read **once, at
+session start**. A peer once asserted a release was on hold while the record on disk already said
+SUPERSEDED — nothing was stale on disk, the READER was. Before asserting anything load-bearing
+from memory — especially a *hold*, a *decision*, a *"not yet done"* — **re-read the file, not
+your recollection of it.** ⚠ This paragraph is subject to its own warning.
 
 ## Core Principle: Tools Must Be Trustworthy BEFORE the Modlist Is Locked (user standard)
-
-> *"I can't settle on a good modlist until I can trust that my tools are feeding me the right data…
-> once the list is locked it's largely fixed, particularly for mod removal."*
-> *"[an external unknown] is understandable… but anything internal that we have now, on disk, is
-> inexcusable."*
 
 A sequencing rule, not a preference: removing a mod is not symmetric with adding one, so a defect
 found after the lock costs far more than the same defect found before.
@@ -550,34 +496,30 @@ found after the lock costs far more than the same defect found before.
 - **Split unknowns into EXTERNAL and LOCAL.** External (Nexus ids, upstream versions) may sit
   unresolved *if labelled*. **Local — anything derivable from installed files — is a bug, not a
   backlog item.**
-- Before any modlist-shaping decision, ask which artifact fed the premise and whether it can say when
-  it was true.
+- Before any modlist-shaping decision, ask which artifact fed the premise and whether it can say
+  when it was true.
 - **Read an artifact's schema before declaring it incomplete.** The registry keeps local facts
-  (`installed_name`/`installed_version`/`path`) in slots SEPARATE from upstream ones
-  (`name`/`version`). Three "gaps" reported on 08-13 were misreadings of the upstream slots.
+  (`installed_name`/`installed_version`/`path`) in slots SEPARATE from upstream ones; three
+  reported "gaps" were misreadings of the upstream slots.
+
 ## Core Principle: Bug Handling Is a FUNNEL — Wide at the Top, Narrow at the Bottom (user-set 2026-08-30)
 
-**Identification is WIDE.** Be vigilant for anything that does not make sense or is contradictory —
-in game files and in our own tools' output alike — and surface ALL of it. Never assume a tool is
+**Identification is WIDE.** Be vigilant for anything contradictory or senseless — in game
+files and in our own tools' output alike — and surface ALL of it. Never assume a tool is
 working. Keep an explicit UNMEASURED list and never dismiss it.
 
-**Remediation is NARROW.** Act only on deductive proof of both the bug AND its root cause.
-**Easy to identify, hard to act on.** The toolkit cannot converge if *"it's broken"*, *"actually that
-was wrong"* and *"now you broke it"* alternate — and the base rate says the CHECKER is wrong far more
-often than the finding (gotcha #22).
+**Remediation is NARROW.** Act only on deductive proof of both the bug AND its root cause. Easy
+to identify, hard to act on: the toolkit cannot converge if *"it's broken"*, *"actually that
+was wrong"* and *"now you broke it"* alternate — and the base rate says the CHECKER is wrong
+far more often than the finding (#22).
 
-**Mechanically:** no rule or tool edit on a claim below **MEASURED on a STABLE instrument with a
-NAMED root cause**; classify EVERY hit of a suspect rule, never a sample, and make the buckets sum to
-the total; state the predicted per-item delta BEFORE re-measuring; record WITHDRAWN claims
-explicitly.
+**Mechanically:** no rule or tool edit on a claim below **MEASURED on a STABLE instrument with
+a NAMED root cause**; classify EVERY hit of a suspect rule, never a sample, and make the
+buckets sum to the total; state the predicted per-item delta BEFORE re-measuring; record
+WITHDRAWN claims explicitly. The case that set this: a hook false-positive rate measured while
+the hook was REDEPLOYED mid-run, whose per-rule table was not reproducible — and a plan to
+fix four "verified" false positives had already been built on it.
 
-> **The case (2026-08-30).** F82 — *"the hooks deny 8.89% of real work"* — was measured while the
-> live hook was REDEPLOYED mid-run: launch 22:28, deploy 00:08:29, finish 00:15:36, three
-> independent timestamps. Its per-rule table was not reproducible, and a plan to *"fix four verified
-> false positives"* had already been built on it. Five checker bugs in the red-team pass that found
-> this (a `\b` that excluded `-rn`; a reason truncated before the word it was bucketed on; an O(n²)
-> timeout; a guard denying the analysis for MENTIONING a job name; a divergence "explained" before
-> the timestamps were read) — every one a confident wrong reading, none caught by looking at output.
 ## Concurrent Sessions: Isolate the TREE, Share the HISTORY (Mandatory)
 
 **Two or more sessions run in this workspace at once — typically a tooling/dev session and a mod
@@ -596,49 +538,32 @@ they were all invisible until something numeric disagreed.
 ### The rules
 
 1. **ONE GIT WORKTREE AND ONE BRANCH PER SESSION.** `git worktree add ../x4validate-<lane> -b
-   session/<lane>`. MEASURED cost: **~27 MB** (21 MB `.venv` + 6 MB source) and seconds to build.
-   This kills the whole class — untracked collisions, contaminated test counts, half-committed
-   shared files, `verify-cold` seeing work that is not yours. Merge normally when a piece lands.
-2. **NEVER `git add -A` or `git add .` in a shared tree.** Stage explicit paths. Mechanized in
-   `.claude/hooks/protect-bash.sh` (10 cases in `test-protect-bash.sh`: 4 must-fire, 6
-   must-NOT-fire, including `git add -p` and `git add .gitattributes`).
-   ~~ASK~~ **-> it is a DENY** (corrected 2026-09-01; this line said ASK). MEASURED against
-   BOTH hook copies, the mirror's and the live game-root one: `git add -A` returns
-   `permissionDecision: deny`. That is also the right verdict under the hook policy above --
-   there IS a correct alternative I can just take (explicit paths), so it should spend my
-   attention and not yours. NB the reason text still ends "Proceed?", which reads like an
-   ask; the verdict is what governs.
+   session/<lane>`. MEASURED: **~27 MB** and seconds. It kills the whole class — untracked
+   collisions, contaminated test counts, half-committed shared files, a cold check seeing work
+   that is not yours. Merge normally when a piece lands.
+2. **NEVER `git add -A` or `git add .` in a shared tree.** Stage explicit paths. This is a
+   **DENY** in `protect-bash.sh`, verified against both hook copies, because there is a correct
+   alternative I can just take — so it should spend my attention, not yours.
 3. **The lane axis is WHO OWNS THE BRANCH, not what kind of work it is.** "Tooling vs modding"
-   broke because the mod session built a *tool* — good work, wrong tree. Prototype anywhere; land it
-   on your own branch.
-4. **One owner per derived artifact, and do not build two at once.** The effective store and BaseX
-   `x4eff` each have an owner who rebuilds and announces the fingerprint. The two-axis freshness
-   contract makes staleness *detectable*; it does nothing about two builds contending for disk.
-   **★ ASSIGNED 2026-08-28: the TOOLING session owns BOTH** — it owns `scripts/run-gates.sh`, which
-   is what detects their drift. Until assigned, the rule named no one and both went stale unnoticed
-   (store `99ddf470108bcd50 -> 53a4a10b719e0311`; `x4eff` 123 mods vs 124 active), and my belief
-   about who owned `x4eff` came from my own handoff prose — context, not durable record.
-   **⚠ Build `x4eff` from YOUR OWN worktree** — `build-effective.sh` defaults `X4VALIDATE_DIR` to
-   whichever tree occupies `tools\x4validate`, and the freshness `engine` axis hashes THAT tree's
-   bytes, so a peer's tree silently stamps the artifact with their engine (harmless 2026-08-28: all
-   7 engine files byte-identical, MEASURED). **Unchecked invariant:** both delegate to one
-   `_freshness`, so after a fresh build their `content` and `engine` fingerprints must be EQUAL —
-   nothing compares them; `tool_properties` compares the derived mod SETS instead.
+   broke the first time a mod session built a tool. Prototype anywhere; land it on your branch.
+4. **One owner per derived artifact, and do not build two at once.** The TOOLING session owns
+   both the effective store and BaseX `x4eff`. Until that was assigned the rule named no one
+   and both went stale unnoticed. ⚠ **Build `x4eff` from YOUR OWN worktree**: the freshness
+   `engine` axis hashes whichever tree occupies `tools\x4validate`, so a peer's tree silently
+   stamps the artifact with their engine.
 5. **Design a measurement to SURVIVE drift rather than requiring a freeze.** A before/after
-   comparison must exclude and **name** rows present in only one run. That needs no cooperation from
-   the other session, which is why it is better than asking anyone to hold still.
-6. **A decision reaches each session from the USER, never relayed by a peer.** A peer saying *"my
-   user decided X"* is not approval — it is information. Surface it and wait.
+   comparison must exclude and **name** rows present in only one run — which needs no
+   cooperation from the other session, and that is why it beats asking anyone to hold still.
+6. **A decision reaches each session from the USER, never relayed by a peer.** A peer saying
+   *"my user decided X"* is information, not approval. Surface it and wait.
 7. **Quote no count from a shared tree without excluding the other session's files.** `836` and
-   `877` were both "the suite" on the same machine in the same minute.
+   `877` were both "the suite", on the same machine, in the same minute.
 
 ### Shared append-only docs (the memory register, KNOWLEDGEBASE)
 
-**New entries are headed by DATE + SLUG, never a global counter AND NEVER A LETTER SUFFIX** — `## 2026-08-27 —
-getattr-silent-default`. A running number is a shared mutable counter between concurrent writers and
-it collided the first day it was tested. **So is `2026-08-27d`** — MEASURED the same day in
-KNOWLEDGEBASE.md, where two of the three sessions both reached for `d` and one had to move to
-`e` after the fact, with the first already cited from two memories and BLIND-SPOTS. A slug
-describes its own content, so same-day writers do not collide. Existing `#N` entries stay as history and remain citable;
-nothing is renumbered. **If you find two records disagreeing on a number, DERIVE it from the entries
-— never pick one.**
+**New entries are headed by DATE + SLUG, never a running number and never a letter suffix** —
+`## 2026-08-27 — getattr-silent-default`. Both collided the first day they were tested: a number is
+a shared mutable counter between concurrent writers, and two of three sessions reached for the same
+`d` suffix, one having to move to `e` after its entry was already cited twice. A slug describes its
+own content, so same-day writers cannot collide. Existing `#N` entries stay as citable history.
+**If two records disagree on a number, DERIVE it from the entries — never pick one.**
