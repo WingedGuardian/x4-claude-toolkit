@@ -307,14 +307,32 @@ _BY_TYPE: dict[str, dict[str, tuple[str, str]]] = {
     "shiptypes_m": _SHIPLIKE_UNIT,
     "shiptypes_l": _SHIPLIKE_UNIT, "shiptypes_xl": _SHIPLIKE_UNIT,
     "satellites": _SHIPLIKE,
-    "enginetypes": _ENGINELIKE, "thrustertypes": _ENGINELIKE,
+    # enginetypes gets its OWN dict: the P7 fields below were MEASURED on enginetypes
+    # (2026-09-19 discriminating harvest) and are NOT added to the shared _ENGINELIKE,
+    # so thrustertypes is never asserted a mapping we did not measure for it.
+    "enginetypes": {
+        **_ENGINELIKE,
+        "hull": ("hull.max", "identity"),                     # n=3 nd=3; 4033/16180/25330
+        "thrust_forward": ("thrust.forward", "identity"),     # n=3 nd=3
+        "thrust_reverse": ("thrust.reverse", "identity"),     # n=3 nd=3
+        "boost_accfactor": ("boost.acceleration", "identity"),# n=2 nd=2
+    },
+    "thrustertypes": _ENGINELIKE,
     "shieldgentypes": {
         "shield": ("recharge.max", "identity"),                   # 2287
         "recharge": ("recharge.rate", "identity"),                # 20
         "rechargedelay": ("recharge.delay", "identity"),
+        # P7 2026-09-19: refutes the old "equipment hull is a flat 1000 matching nothing"
+        # claim -- engine hull VARIES (4033/16180/25330) and shield hull matches hull.max.
+        "hull": ("hull.max", "identity"),   # n=2 nd=2; both 25000 in-sample, unambiguous
     },
     "weapons_lasers": {
         "coolingrate": ("heat.coolrate", "identity"),             # 2000
+        # P7 2026-09-19 REJECTED coincidences -- a value collision, not a meaning: the
+        # tool proposed surfaceelementmultiplier -> heat.overheatcooldelay, and
+        # shielddisruption / shieldonlydamage / shieldonlydpshot -> rotationspeed.max, and
+        # chargetime -> a sound timeoffset. Each field NAME is unrelated to the prop it
+        # "matched"; same tell as the turret coolingrate rejection below. None adopted.
     },
     # --- adopted 2026-08-30 from `x4live mappings --from-groundtruth` ------------ #
     # Every one came back nd=1 (a single non-degenerate agreement), so the tool's own
@@ -324,14 +342,19 @@ _BY_TYPE: dict[str, dict[str, tuple[str, str]]] = {
     "missiletypes": {
         "hull": ("hull.max", "identity"),          # n=3 nd=1; 1/1/300 all agreed
         "locktime": ("lock.time", "identity"),     # n=1 nd=1; 2 == 2
+        # P7 2026-09-19 (discriminating harvest):
+        "explosiondamage": ("explosiondamage.value", "identity"),        # n=4 nd=4; 5000..18000
+        "shieldexplosiondamage": ("explosiondamage.shield", "identity"), # n=1 nd=1; name matches prop
     },
     "weapons_turrets": {
         # ⚠ `coolingrate` was ALSO proposed here, for this same prop, and is REJECTED.
         # MEASURED: on the one sampled turret engine coolingrate=200 and
         # rotationspeed.max=200 by coincidence, while the real prop `heat.coolrate` is
         # ABSENT so nothing else could match. Cooling rate is not a rotation speed. Two
-        # different engine fields claiming one prop is the tell.
+        # different engine fields claiming one prop is the tell. `shielddisruption` (P7
+        # 2026-09-19) collided with rotationspeed.max the same way and is likewise REJECTED.
         "rotation": ("rotationspeed.max", "identity"),   # n=1 nd=1; 199.99998 ~= 200
+        "hull": ("hull.max", "identity"),   # P7 2026-09-19; n=11 nd=11; 1000..36000, strongest of the batch
     },
 }
 

@@ -155,10 +155,35 @@ def test_a_field_name_does_not_determine_its_meaning():
     assert C._mapping_for("shieldgentypes", "shield") == ("recharge.max", "identity")
     assert C._mapping_for("shiptypes_s", "shield") is None, (
         "a ship's `shield` must NOT map to a generator's recharge.max")
-    # and `hull` is only ship-like; equipment reports a flat 1000 matching nothing
-    assert C._mapping_for("shiptypes_s", "hull") is not None
-    assert C._mapping_for("shieldgentypes", "hull") is None
-    assert C._mapping_for("enginetypes", "hull") is None
+    # `shield` above is the type-specificity example. `hull` is NOT one: MEASURED
+    # 2026-09-19 (P7 discriminating harvest), engines/shields/turrets/missiles all report a
+    # real hull that equals hull.max (engine hull VARIES 4033/16180/25330), which refutes
+    # the earlier "equipment hull is a flat 1000 matching nothing" note. So hull is
+    # type-UNIVERSAL, and a type with no hull mapping (weapons_lasers) still returns None.
+    assert C._mapping_for("shiptypes_s", "hull") == ("hull.max", "identity")
+    assert C._mapping_for("enginetypes", "hull") == ("hull.max", "identity")
+    assert C._mapping_for("shieldgentypes", "hull") == ("hull.max", "identity")
+    assert C._mapping_for("weapons_lasers", "hull") is None
+
+
+def test_P7_adopted_mappings_2026_09_19():
+    """The 2026-09-19 discriminating-harvest adoptions, each MEASURED unambiguous. Reject
+    rows are asserted ABSENT so a future re-adoption of a known coincidence fails here."""
+    adopted = {
+        ("weapons_turrets", "hull"): ("hull.max", "identity"),           # n=11 nd=11
+        ("missiletypes", "explosiondamage"): ("explosiondamage.value", "identity"),   # n=4
+        ("enginetypes", "thrust_forward"): ("thrust.forward", "identity"),            # n=3
+        ("enginetypes", "thrust_reverse"): ("thrust.reverse", "identity"),            # n=3
+        ("enginetypes", "boost_accfactor"): ("boost.acceleration", "identity"),       # n=2
+        ("missiletypes", "shieldexplosiondamage"): ("explosiondamage.shield", "identity"),  # n=1
+    }
+    for (lt, f), want in adopted.items():
+        assert C._mapping_for(lt, f) == want, f"{lt}.{f} not adopted as {want}"
+    # coincidence rejections (value collisions, field name unrelated to prop) stay OUT
+    for lt, f in [("weapons_turrets", "coolingrate"), ("weapons_turrets", "shielddisruption"),
+                  ("weapons_lasers", "shielddisruption"), ("weapons_lasers", "shieldonlydamage"),
+                  ("weapons_lasers", "surfaceelementmultiplier")]:
+        assert C._mapping_for(lt, f) is None, f"{lt}.{f} is a known coincidence -- must not map"
 
 
 def test_an_unknown_library_type_maps_nothing_rather_than_guessing():
