@@ -517,107 +517,27 @@ When a fix or feature needs iteration, never iterate blind. Before the FIRST att
 5. **Batch verification to minimize user cycles** (restarts, headset sessions). When a symptom report contradicts the model, STOP and re-derive the model from evidence (logs/traces) — never re-tune parameters inside a broken model.
 
 **Anti-pattern this kills:** attempt N motivated only by the failure of attempt N−1 — parameter tweaks or mechanism swaps with no model of why THIS one reaches the outcome ("one foot in front of the other, eyes on the ground"). Iterate with eyes on the destination: fast because each step is load-bearing, safe because each step is verified — never slow for safety's sake, never fast by throwing caution to the wind.
-## Core Balance Principle: IN-SECTOR vs OUT-OF-SECTOR (Mandatory, user-set 2026-08-26)
+## Core Balance Principle: Three Values, and IN-SECTOR vs OUT-OF-SECTOR (Mandatory)
 
-**Every combat or balance change MUST be checked for whether it lands disproportionately in-sector
-(IS) or out-of-sector (OOS). The goal is that the two feel as close to 1:1 as possible.** A change
-that is balanced in one and not the other is not a balance change, it is a divergence.
+**Never quote a bare number.** For every value you propose changing state the **vanilla** value,
+the **effective** one (what it is right now, with the winning mod NAMED, or "no override"), the
+**proposed** one, and the **in-game effect** in plain terms. A selector written against the
+*vanilla* value silently matches nothing when something else already changed it — the single
+most expensive bug class here. Get the effective value from `x4effective` or `x4validate --tier b`,
+never from `reference\` alone.
 
-**Why the two diverge by construction:**
+**Every combat or balance change is checked for whether it lands disproportionately in-sector (IS)
+or out-of-sector (OOS); the goal is that the two feel as close to 1:1 as possible.** They diverge by
+construction: OOS is pure arithmetic — a factor absent from the formula does not exist — while IS is
+physics, travel time, turret traverse, point-defence, terrain, RNG and the player. So the danger is a
+factor decisive IS and invisible OOS, or the reverse: when a change's cost is paid by a mechanic,
+ask what pays it OOS. Often nothing does. ⚠ **Never assume OOS models a mechanic because IS
+does** — verify against the OOS scripts; an assumed formula is an ASSUMED-tier claim.
 
-| | what decides the outcome |
-|---|---|
-| **OOS** | pure arithmetic — a simplified damage model. If a factor is not in the formula, it does not exist. |
-| **IS** | physics, projectile travel, turret traverse, point-defence intercepts, terrain, RNG, and the player. Most of it is not expressible as a number. |
+**Label every combat claim IS, OOS, BOTH or UNKNOWN, in the sentence that carries the number.**
 
-**So the danger is a factor that is decisive IS and invisible OOS — or the reverse.** The worked
-example that produced this rule: long-range heavy missiles. In-sector a Xenon capital's beam turrets
-shoot incoming cruise missiles down, so the missile's range advantage is paid for. Out-of-sector, if
-the model applies missile damage at range without modelling interception, the same missile becomes a
-free hit — and a faction that does not carry missiles is now losing a fight it would win IS.
-**Whenever a change's cost is paid by a mechanic (interception, dodging, positioning), ask what pays
-that cost OOS. Often nothing does.**
-
-**Practical requirements:**
-1. Name the mechanic that balances the change IS, then state whether OOS models it. If it does not,
-   the change is IS-only and must be compensated or scoped.
-2. Check **who does not have the thing**. A capability gap that is survivable IS (because tactics
-   compensate) can be decisive OOS (because arithmetic does not).
-3. **Crunch the OOS numbers — they are crunchable.** OOS is arithmetic, so it can be modelled
-   exactly. IS cannot, which is the argument for pinning OOS first and treating IS as the variable.
-4. A dedicated IS-vs-OOS reconciliation pass is a standing backlog item, worth doing **even against
-   pure vanilla** — Egosoft has been tuning this for years and it is never finished.
-
-⚠ **Never assume OOS models a mechanic because IS does.** Verify against the actual OOS scripts
-before reasoning from it — an assumed formula is an ASSUMED-tier claim, not a measured one.
-**★ MEASURED 2026-08-27 — the first worked answer, and it is an ASYMMETRY BY ATTACKER HULL CLASS.**
-Of the 5 aiscripts that fire missiles OOS, only **2** reduce damage for the target's countermeasures:
-`fight.attack.object.fighter` and `.bigtarget`, both run by an **S/M ship under a fight order**. The
-other three — `.capital`, `.medium`, `.station`, all run by the **defence NPC** — call
-`launch_countermeasures` *after* damage is computed and **discard the result**, so they deplete the
-defender's stock and change nothing. Combined with missile-defence turrets not being modelled OOS at
-all, a missile fired **by a capital or a station** is out of sector an **undiminished alpha strike**,
-while in sector it is paid for twice. The axis is the **ATTACKER's** class, not the target's. Full
-table and code cites: KNOWLEDGEBASE.md § *2026-08-27c*.
-
-### ★★ LABEL THE REGIME. EVERY combat claim states IS, OOS, or BOTH — no exceptions (user-set 2026-08-29)
-
-**A combat number without a regime label is not a finding, it is a half-finding wearing the grammar
-of a whole one.** State it in the sentence that carries the number, not in a caveat further down:
-
-| label | means |
-|---|---|
-| **IS** | verified for in-sector only. Physics, projectile travel, turret traverse, interception, RNG. |
-| **OOS** | verified for out-of-sector only. Arithmetic in `aiscripts/fight.attack.object.*`, inside `<attention min="unknown">`. |
-| **BOTH** | verified separately in each. Two measurements, not one assumed to generalise. |
-| **UNKNOWN** | say so. It is a valid and common answer. |
-
-**How to tell which you are looking at, mechanically:** in the attack aiscripts,
-`<attention min="visible">` is the IN-SECTOR branch and `<attention min="unknown">` is OUT OF SECTOR.
-A property read inside one of them is scoped to that regime and **nothing else**. Check the enclosing
-block before quoting any formula from those files.
-
-**A stat's VALUE is usually engine-wide; a stat's USE usually is not.** Those are different claims and
-they need separate labels. Measuring the number tells you nothing about which regime consumes it.
-
-> **The case (2026-08-29).** A full day established
-> `countermeasureresistance = 100 x resilience^10` to float precision, derived the spoof-chance
-> curve `(100 - resistance) * 0.7`, found it saturates below 0.63, and was on the point of re-cutting
-> 44 missiles against it. Then: *"is this how it all works both IS and OOS?"*
-> **MEASURED, packed-inclusive, 963 script documents: 17 reads of that property, ZERO inside
-> `attention min="visible"`.** The transform is engine-wide, but every formula built on it is
-> **OUT OF SECTOR ONLY**. In sector a flare is a physical decoy resolved in engine C++ and no script
-> reads the stat at all. The arithmetic was correct and governed half the game.
-
-**So: a missile tuned to a spoof percentage is tuned to its OOS behaviour.** That is a legitimate
-thing to do — but it must be written down as that, or the next session reads it as the whole truth.
-
-⚠ **Scope a corpus claim PACKED-INCLUSIVE before recording it.** The first version of that
-measurement said *"2 places across 399 vanilla documents"* — loose-vanilla only, which cannot see a
-packed mod reading the stat in sector. Re-run with `_scan.iter_mod_xml_bytes` gave **963 documents
-and found a third reader** (`combat_tactics_script`). The claim survived; it might not have.
-## Three Values Rule (Mandatory) — vanilla, effective, proposed
-
-**Never quote a bare number.** For every value you propose changing, state all three, plus what it does in-game:
-
-| | What to state |
-|---|---|
-| **Vanilla** | the base+DLC value, read from `reference\` |
-| **Effective** | what it is **right now** in the live modlist — the conflict winner, with the mod that won named. If nothing overrides it, say "no override, still vanilla". |
-| **Proposed** | the new value |
-| **In-game effect** | what the player will actually see/feel, in plain terms — direction, rough magnitude, and which systems it touches. Not "sets `coreboundaryzoneheight` to 300000" but "stations can spawn up to 300 km above/below the sector plane instead of 30 km — a visibly 3D sector, and more travel time to reach them." |
-
-**Why this is mandatory, not cosmetic:** a selector written against the *vanilla* value silently matches
-nothing when another mod already changed it — the single most expensive bug class in this workspace.
-Real case, measured in this workspace: one installed mod pins `safepos/@radius='3km'`, vanilla
-is `8km`, and a second mod loading later makes the EFFECTIVE value `21km`. A repair overlay
-pinning either `3km` or `8km` would be a silent no-op. The two mods are not named here on
-purpose: the lesson is the arithmetic.
-
-**How to get the effective value:** `x4effective` (per-attribute provenance) or build the Tier B merged
-tree (`_merge.Config(overlays=...)` / `x4validate --tier b`). Reading `reference\` alone gives vanilla
-only — that is never sufficient. Name the winner and flag the conflict; if load order decides it, say so,
-because load order is convention, not engine-verified.
+→ **the `x4-balance` skill** carries the regime table, the `<attention min=>` branch markers that
+say which regime a formula belongs to, and the packed-inclusive scoping rule.
 ## Core Principle: A Derived Artifact Must Declare WHEN It Was True (Mandatory)
 
 **Durability note: memory files are NOT durable. Anything essential goes in `CLAUDE.md` or

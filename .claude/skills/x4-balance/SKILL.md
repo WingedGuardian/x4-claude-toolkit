@@ -60,6 +60,37 @@ pays that cost OOS. Often nothing does, and the change is IS-only.
 Verify against the actual OOS scripts rather than reasoning from what IS does. An assumed
 formula is an ASSUMED-tier claim.
 
+## Label the regime — every combat claim says IS, OOS, or BOTH
+
+A combat number without a regime label is a half-finding wearing the grammar of a whole one.
+State the label in the sentence that carries the number.
+
+| label | means |
+|---|---|
+| **IS** | in-sector only: physics, projectile travel, turret traverse, interception, RNG. |
+| **OOS** | out-of-sector only: arithmetic in `aiscripts/fight.attack.object.*`. |
+| **BOTH** | verified separately in each — two measurements, never one generalised. |
+| **UNKNOWN** | say so. It is valid, and common. |
+
+**How to tell which you are reading, mechanically:** in the attack aiscripts `<attention min="visible">`
+is the IN-SECTOR branch and `<attention min="unknown">` is OUT OF SECTOR. A property read inside
+one is scoped to that regime and nothing else — check the enclosing block before quoting any
+formula from those files.
+
+**A stat's VALUE is usually engine-wide; its USE usually is not.** Different claims, separate
+labels: measuring the number tells you nothing about which regime consumes it. A day of work
+once derived a spoof curve to float precision before the question *"is this IS and OOS?"* found
+**17 reads, ZERO inside `attention min="visible"`** — the transform is engine-wide, every
+formula on it out-of-sector only.
+
+⚠ **Scope a corpus claim PACKED-INCLUSIVE before recording it.** That measurement first read
+*"2 places across 399 vanilla documents"* — loose-vanilla only, blind to a packed mod reading the
+stat in sector. Re-run over 963 documents it found a third reader (`combat_tactics_script`).
+
+**Two more requirements before the change:** check **who does not have the thing** (a gap tactics
+cover IS can be decisive OOS, where arithmetic does not), and **pin OOS first** — it is crunchable,
+IS is not, so treat IS as the variable.
+
 ## Before proposing
 
 - Check the design charter first — *"the game does X"* is **evidence, never justification**.
