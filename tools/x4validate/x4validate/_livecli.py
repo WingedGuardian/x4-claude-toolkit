@@ -1917,6 +1917,20 @@ def cmd_ffi_census(pipe: str | None, timeout: float, out_file: str | None = None
         d.mkdir(parents=True, exist_ok=True)
         dest = d / f"ffi-census-{datetime.datetime.now():%Y%m%d-%H%M%S}.tsv"
 
+    # REFUSE a --batch-bytes the pipe cannot carry, before opening it. `ask()` raises
+    # LiveRequestTooLarge -- a ValueError, deliberately, because it is a CLIENT bug -- and
+    # cmd_ffi_census caught only the LiveQuery* transport errors, so main() re-raised it:
+    # a traceback, exit 1 (which in this CLI means "a finding"), and NO TSV written, losing
+    # every batch already answered. That also contradicted this command's own promise that
+    # batches already answered are kept. The bound is a constant, so the honest place to
+    # say no is here, once, naming the cap -- not once per batch after the work is lost.
+    _room = _livepipe.MAX_REQUEST_BYTES - len("ffisyms") - 2
+    if batch_bytes > _room:
+        print(f"REFUSING: --batch-bytes {batch_bytes} exceeds what one request can carry: "
+              f"the pipe caps a request at {_livepipe.MAX_REQUEST_BYTES} bytes and the verb "
+              f"and separators take the rest, leaving {_room}. A larger request tears the "
+              f"pipe down on the game side.", file=sys.stderr)
+        return 2
     plan = list(_ffi_batches(valid, batch_bytes))
     batches = errored_batches = 0
     with _live_open(pipe, timeout) as lp:
@@ -1926,6 +1940,10 @@ def cmd_ffi_census(pipe: str | None, timeout: float, out_file: str | None = None
             why = ""
             try:
                 r = lp.ask("ffisyms", *batch)
+            except _livepipe.LiveRequestTooLarge as exc:
+                # Belt and braces behind the up-front refusal: a single batch that
+                # cannot be sent is THIS batch's non-answer, never the run's.
+                r, why = None, f"TOO LARGE {exc}"
             except _livepipe.LiveQueryDegraded as exc:
                 r, why = None, f"DEGRADED {exc}"
             except _livepipe.LiveQueryUnavailable as exc:

@@ -1214,10 +1214,31 @@ def test_ffi_census_with_NO_names_never_contacts_the_game(tmp_path, monkeypatch,
 # Twins: each clause below is otherwise SHADOWED by an earlier guard, so its mutant would
 # survive every test above (MEASURED by the hand-mutant run that added these).
 
+def test_TWIN_ffi_census_REFUSES_a_batch_size_the_pipe_cannot_carry(tmp_path, monkeypatch, capsys):
+    """`ask()` raises LiveRequestTooLarge -- a ValueError, because it is a client bug --
+    and cmd_ffi_census caught only the LiveQuery* transport errors, so main() re-raised it:
+    a traceback, exit 1, and NO TSV, losing every batch already answered. The bound is a
+    constant, so it is refused once, up front, naming the cap."""
+    names = ["F%03d" % i for i in range(10)]
+    pipe = _SymPipe({})
+    from x4validate import _livepipe
+    rc, out, _dest = _census_run(tmp_path, monkeypatch, names, pipe, batch_bytes=100000)
+    err = capsys.readouterr().err
+    assert rc == 2, out
+    assert "REFUSING" in err and str(_livepipe.MAX_REQUEST_BYTES) in err, err
+    assert not pipe.requests, "nothing may be sent once the size is known to be illegal"
+
+
 def test_ffi_census_BATCHES_within_the_NAME_bound_when_bytes_allow_more(tmp_path, monkeypatch):
     names = ["F%03d" % i for i in range(400)]
     pipe = _SymPipe({})
-    rc, out, _ = _census_run(tmp_path, monkeypatch, names, pipe, batch_bytes=100000)
+    # The LARGEST byte budget a request can actually carry. This used to pass 100_000,
+    # which no real pipe accepts -- so the byte bound was unreachable here and the test
+    # could not tell the two bounds apart. At the real ceiling the NAME bound still
+    # binds first (150 names of ~5 bytes is well under it), which is what this asserts.
+    from x4validate import _livepipe
+    room = _livepipe.MAX_REQUEST_BYTES - len('ffisyms') - 2
+    rc, out, _ = _census_run(tmp_path, monkeypatch, names, pipe, batch_bytes=room)
     assert rc == 0, out
     assert all(len(b) <= 150 for _, b in pipe.requests), [len(b) for _, b in pipe.requests]
     assert len(pipe.requests) >= 3
