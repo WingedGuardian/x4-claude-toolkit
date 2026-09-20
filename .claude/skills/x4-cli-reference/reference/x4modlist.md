@@ -43,7 +43,11 @@ options:
   --dirs DIRS        comma-separated extension dirs to scan (default: game-root extensions\,
                      profile extensions\, Steam Workshop)
   --installed-only   skip the profile content.xml cross-check pass entirely
-  --build BUILD      current game build id (default: a build id pinned in this release)
+  --build BUILD      current game build id. Default: UNKNOWN -- the registry records None and the
+                     dashboard prints '?'. It used to default to a build id pinned in the source,
+                     which wrote a GUESS into every user's registry in the slot a measurement
+                     belongs in; `x4_acf_buildid` in .claude/hooks/_x4-env.sh reads the installed
+                     build from the Steam manifest (F123)
   --all              content.xml cross-check: include disabled extensions too
 ```
 
