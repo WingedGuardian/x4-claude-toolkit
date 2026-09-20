@@ -397,14 +397,11 @@ answering one question. Every occurrence gets a **measured denominator** and a r
 register without negatives has no denominator either.
 ## Discovery vs. Proof (Standing Rule — which tool answers which question)
 
-> **Route BEFORE you search.** Ask *"which tool answers THIS question?"* — before typing a search
-> command, not after it returns something confusing. Reaching for `grep`/`find` by reflex when a
-> purpose-built tool exists is a recurring failure, and it is what the routing table below is for.
-> **Note the framing trap this table used to have:** it was written about *negatives*, so it read as
-> a rule about what you may **claim**. It is also a rule about which tool you **reach for** — for
-> positives, universals and existence checks alike.
->
-> **Exact flags and subcommands** for every tool below: the generated `x4-cli-reference` skill.
+**Route BEFORE you search.** Ask *"which tool answers THIS question?"* before typing a search
+command, not after it returns something confusing — reaching for `grep`/`find` by reflex when a
+purpose-built tool exists is a recurring, expensive failure. It is a rule about which tool you
+REACH FOR, not only about what you may claim. Exact flags and subcommands: the generated
+`x4-cli-reference` skill.
 
 | Question shape | Tool | Not this |
 |---|---|---|
@@ -432,41 +429,32 @@ register without negatives has no denominator either.
 | **"does a file with this NAME exist?"** | **Glob** | ✗ **Grep** — it searches *contents*; a file can exist without containing its own name |
 | "find this text, in one known area" | **Grep** tool (ripgrep) | ✗ `grep -r` via Bash |
 
-**★ A NEGATIVE FROM ONE INVOCATION MODE IS A CLAIM ABOUT THAT MODE, NOT ABOUT THE TOOL.** MEASURED
-2026-08-27: a falsification test proved `x4validate` reported OK on a schema-invalid MD file, and
-I filed *"it does not schema-validate MD"*. **It does — the pass is gated behind `--update`.**
-**"No such check exists" and "the check is gated" produce an IDENTICAL clean output**, so one
-invocation cannot separate them. The second differently-shaped search was `--help`. **Before
-filing "the tool does not do X", check whether X is behind a FLAG** — a tool's default mode is a
-configuration, not its capability. Gotcha #9 in a new costume.
-
-**Never state a negative ("nothing references X", "no mod overrides Y") from a tool that cannot see
-the whole picture.** Two different questions, two different tools, and conflating them is how a
-confident wrong answer gets made:
+★ **A negative from ONE invocation mode is a claim about that MODE, not about the tool.**
+MEASURED 2026-08-27: `x4validate` reported OK on a schema-invalid MD file and was filed as "it
+does not schema-validate MD". It does — the pass is gated behind `--update`, and **"no such
+check" and "the check is gated" produce an IDENTICAL clean output.** Before filing *"the tool
+does not do X"*, check whether X sits behind a FLAG; a default mode is a configuration, not a
+capability. **Never state a negative from a tool that cannot see the whole picture:**
 
 | Question | Tool | Why |
 |---|---|---|
 | *Discovery* — "where does this appear, what values exist, who mentions X?" | **BaseX** | Fast across many files, packed mods included; **but `x4raw` is files as-written, with no diff application or load order** (`x4eff` is the merged tree). |
 | *Proof* — "what does the game actually see / is this reference real?" | **x4validate / x4effective** | Reads packed `.cat` via `_cat`, applies diffs in load order, models the effective merged tree. |
 
-**Updated 2026-07-27 — a BaseX negative can now be admissible, but ONLY with a denominator.**
-Both gaps are closed: packed content is staged and indexed (`stage.py`), and a second DB `x4eff`
-holds the *effective* merged tree. The rule is now:
+**A BaseX negative is admissible — but only with a denominator.** Packed content is staged and
+indexed, and `x4eff` holds the effective merged tree, so: a **bare** "0 hits" is still only a
+lead; `tools\basex\ask.py` refuses to render a zero as a finding unless `coverage-<db>.json`
+says coverage is complete or accounted, printing *"NEGATIVE CONFIRMED over N of M documents"*
+with every exclusion named. Prefer **`--db x4eff`** for any claim about what is LIVE — `x4raw`
+is files as written and will quote a vanilla value the modlist overwrote. Load order is
+community convention, so an x4eff answer turning on *which mod won* is advisory. x4validate
+remains the authority for correctness against the engine.
 
-- A **bare** "0 hits" is still just a lead. Never quote one.
-- A negative from `tools\basex\ask.py` **is** admissible — it refuses to render a zero-result as a
-  finding unless `coverage-<db>.json` says coverage is complete/accounted, and prints
-  *"NEGATIVE CONFIRMED over N of M documents"* with every exclusion named.
-- Prefer **`--db x4eff`** for any claim about what is LIVE. `x4raw` is files as written and will
-  happily quote a vanilla value the modlist overwrote (`hullparts` 209 raw vs 240 effective).
-- Load order is community convention, so any x4eff answer turning on *which mod won* is advisory.
+**Validate the DEPLOYED copy, not the `dev\` copy, whenever load order could matter.** An
+uninstalled mod has no knowable load-order position, so Tier B assumes it loads LAST — the
+optimistic tree. Proven: one deployed mod validates clean while its byte-identical dev-only twin
+reports three false alarms.
 
-x4validate remains the authority for correctness against the engine (oracle: 234/234 ops, 0 false OK).
-
-**Validate the DEPLOYED copy, not the `dev\` copy, whenever load order could matter.** A mod that is
-not installed has no knowable load-order position, so Tier B assumes it loads LAST — the optimistic
-tree. Proven: `CapturableShipMod` (deployed) validates 0 errors while its byte-identical `_public`
-twin (dev-only) reports 3 false alarms.
 ## Core Working Principle: Deductive Iteration — Work Backward from the Outcome
 
 When a fix or feature needs iteration, never iterate blind. Before the FIRST attempt:
@@ -501,93 +489,54 @@ does** — verify against the OOS scripts; an assumed formula is an ASSUMED-tier
 say which regime a formula belongs to, and the packed-inclusive scoping rule.
 ## Core Principle: A Derived Artifact Must Declare WHEN It Was True (Mandatory)
 
-**Durability note: memory files are NOT durable. Anything essential goes in `CLAUDE.md` or
-`KNOWLEDGEBASE.md`.** Memory is a convenience index, not permanent record.
-
-**⚠ AND MEMORY IS THE ONE ARTIFACT CLASS WITH NO FRESHNESS SIGNAL AT ALL.** The two-axis fingerprint
-guards derived artifacts, `claims_audit` guards numbers, `ask.py` refuses a zero without a
-denominator — **memory and plan files have none of that, and they are consulted FIRST.** A line
-reading *"still X"*, *"not yet done"* or *"pending"* is an assertion about a world that moves without
-us, and it reports success indefinitely.
-
-**A memory or plan claim about EXTERNAL state — a Nexus page, a remote repo, a public release,
-another session's tree, anything the user can change outside this session — is a LEAD, NEVER A
-FACT.** Internal facts rot when we touch something; external ones rot with **nobody touching this
-machine**, and the user acting outside the session is the NORMAL case, not the exception.
-**Re-query the authoritative source before asserting it**, and **never put a decision to the user
-without first checking whether it is already made** — that is worse than a wrong number, because it
-spends their attention on a question they have already settled.
-
-> **The case (2026-08-26).** Memory said *"Nexus 2186 still serves 2.1.1; upload is MANUAL and NOT
-> done."* I asserted it twice in the grammar of a current fact — once asking the user to choose
-> whether to upload 2.7.0, **a decision they had already executed**, and once inside a durable hold
-> block **minutes after writing that block myself**. MEASURED by one documented API call:
-> `version=2.7.0`, `status=published`, file **14770** category MAIN, uploaded 21:03; 2.1.1 demoted to
-> OLD_VERSION. The authoritative source was one call away, is documented in this very file, and was
-> not consulted — because the record answered confidently and reading it felt like knowing. The
-> user's correction was *"Recheck your facts."*
-
-**When you correct such a line, mark the old one SUPERSEDED rather than rewriting it** — it was true
-when written, and that dated record is what lets the next session date the change.
-
-**This is the section's own lesson one level up.** The 08-02 effective store was *fresh by its own
-lights* — not one input file had changed — and wrong about the world anyway, which is exactly why
-the **engine** axis had to exist. **Memory has no axis at all, so it is fresh by its own lights
-permanently.** That is not a weaker version of the same problem; it is the same problem with the
-detector removed.
-
-**★★ AND ONE LEVEL FURTHER IN: YOUR LOADED CONTEXT IS A SNAPSHOT OF A FILE THAT HAS SINCE MOVED.**
-The freshness fingerprint guards an *artifact*. It cannot guard **your copy of it**. On a long
-session with concurrent writers, `CLAUDE.md`, `MEMORY.md` and every memory file were read **once, at
-session start** — so quoting them from context is asserting a point-in-time claim about a file
-another session may have corrected hours ago.
-
-> **The case (2026-08-28), and it is the cleanest specimen yet because the record was ALREADY
-> RIGHT.** A peer session asserted *"the release is ON HOLD by user instruction — no push, no tag"*.
-> Its memory FILE on disk said the opposite: `## ✅ v2.8.0 RELEASED — the HOLD below is SUPERSEDED`,
-> with the hold kept beneath as history, and the `MEMORY.md` index line rewritten to match — I had
-> corrected both earlier that same session. **The peer quoted the index from its loaded context and
-> never opened the record.** Nothing was stale on disk. The *reader* was stale.
-
-**So the rule "a memory claim about EXTERNAL state is a lead, never a fact" has a twin: a memory
-claim quoted from CONTEXT is a lead about the FILE too.** Before asserting anything load-bearing
-from memory in a long session — especially a *hold*, a *decision*, or a *"not yet done"* — **re-read
-the file, not your recollection of it.** `cat` costs nothing; the peer's assertion cost a
-cross-session correction round trip.
-
-⚠ **This paragraph is subject to its own warning.** It lives in `CLAUDE.md`, which is loaded once at
-session start, so a session that reads it may be reading a copy older than the file.
-
-Coverage answers *how much* was indexed. It does not answer *as of when*, and an artifact that no
-longer describes the world reports success indefinitely — a third state beside absence and
-non-answer: **an answer about a world that has moved on.**
-
-> **The case (2026-08-13).** BaseX `x4eff` was built 08-02. The merge engine was fixed 08-08
-> (root-`<replace>`: **858 ops dropped while reported applied**) and 08-11 (nested patches).
-> **Neither date changed one input file.** MEASURED on rebuild: **140 of 194 (72%)** engine thrust
-> rows changed — `engine_arg_l_allround_01_mk1_macro` **3900 → 5283** (vanilla 3900, OVERHAUL 5283).
-> A design decision recorded on 08-02 had written vanilla engine values down as OVERHAUL's.
+Coverage answers *how much* was indexed, never *as of when*, and an artifact that no longer
+describes the world reports success indefinitely — a third state beside absence and non-answer.
+MEASURED: a merge-engine fix changed **140 of 194 (72%)** engine thrust rows with **not one input
+file changed**, after a design decision had already been recorded off the stale numbers.
 
 **Every persisted artifact carries a two-axis fingerprint** (`x4validate/_freshness.py` — the single
 implementation; BaseX delegates to it):
 
 | axis | covers | why |
 |---|---|---|
-| `content` | installed extension set + each manifest mtime/size + a reference marker | mods added/removed/updated |
-| `engine` | hash of the **BYTES** of every file named in `_freshness.ENGINE_SOURCES` — **derive that list from the module, never retype it** (**8** as of 2026-09-07: `_cat`, `_diff`, `_effective`, `_loadorder`, `_merge`, `_registry`, `_scan`, `_xpath`). ⚠ THIS CELL HAS NOW BEEN WRONG TWICE, THE SAME WAY, IN THE SENTENCE TELLING YOU NOT TO RETYPE THE LIST. 2026-08-29 it said 5 and omitted `_effective`/`_registry`, and a comparison hand-typed from it came out clean either way — a check whose result was independent of its input. 2026-09-07 it said 7 and omitted `_loadorder`, which F69's remedy had lifted out of `_compat` in this very arc, so the change that made the doc stale was one of ours. Mechanized rather than corrected again: `tests/test_reference_fingerprint.py` now asserts this cell lists exactly what the module derives | a merge fix changes the answer for identical inputs; a commit hash does not move for a dirty tree |
+| `content` | installed extension set + each manifest mtime/size + a reference marker | mods added, removed or updated |
+| `engine` | hash of the **BYTES** of every file named in `_freshness.ENGINE_SOURCES` — **derive that list from the module, never retype it** (**8** as of 2026-09-07: `_cat`, `_diff`, `_effective`, `_loadorder`, `_merge`, `_registry`, `_scan`, `_xpath`). ⚠ This cell has been wrong TWICE, the same way, in the sentence telling you not to retype the list, so `tests/test_reference_fingerprint.py` now asserts it lists exactly what the module derives | a merge fix changes the answer for identical inputs; a commit hash does not move for a dirty tree |
 
-Artifacts: effective store (`meta`) · `md_xref.tsv` (sidecar) · BaseX `x4raw`/`x4eff`
-(`coverage-<db>.json`). **Absent fingerprint = UNKNOWN, never fresh.** Each CLI banners every run
-until rebuilt; `ask.py` and `gates/claims_audit.py` REFUSE a claim outright. `engine_dependent` is
-per-artifact — a raw file index is not a merge product, and flagging it anyway trains you to ignore
-the banner.
-
-Rebuild: `uv run x4effective build` · `uv run x4xref build` ·
-`cd tools/basex && bash build-corpus.sh && bash build-effective.sh`
+**Absent fingerprint = UNKNOWN, never fresh.** Each CLI banners every run until rebuilt; `ask.py`
+and `gates/claims_audit.py` REFUSE a claim outright. `engine_dependent` is per-artifact — a raw file
+index is not a merge product, and flagging it anyway trains you to ignore the banner. Rebuild:
+`uv run x4effective build` · `uv run x4xref build` · `cd tools/basex && bash build-corpus.sh && bash build-effective.sh`
 
 **Corollary — a design doc's numbers rot silently.** Prose cannot be tested, so numeric claims live
-in `dev\_registry\CLAIMS.tsv`, re-checked by `gates/claims_audit.py` against the store.
-UNRESOLVED is never a PASS, and the gate refuses to run against a stale store.
+in `dev\_registry\CLAIMS.tsv`, re-checked by `gates/claims_audit.py` against the store. UNRESOLVED is
+never a PASS, and the gate refuses to run against a stale store.
+
+### Memory and loaded context are LEADS, not facts
+
+**Memory files are NOT durable — anything essential goes in `CLAUDE.md` or `KNOWLEDGEBASE.md`.**
+Memory is a convenience index, and **the one artifact class with no freshness signal at all**,
+while being consulted FIRST: a line reading *"still X"*, *"not yet done"* or *"pending"* reports
+success indefinitely. The fingerprint above exists because an artifact can be fresh by its own
+lights and wrong about the world; memory has no axis at all, so it is fresh by its own lights
+permanently.
+
+**A memory or plan claim about EXTERNAL state — a Nexus page, a remote repo, a public release,
+another session's tree — is a LEAD, NEVER A FACT.** External facts rot with nobody touching this
+machine, and the user acting outside the session is the NORMAL case. Re-query the authoritative
+source before asserting it, and **never put a decision to the user without first checking whether
+it is already made** — that spends their attention on something they have already settled. When
+you correct such a line, mark the old one **SUPERSEDED** rather than rewriting it: it was true
+when written, and that dated record is what lets the next session date the change.
+
+★★ **And your loaded context is a snapshot of a file that has since moved.** The fingerprint
+guards an artifact, never your copy of it: on a long session with concurrent writers, `CLAUDE.md`,
+`MEMORY.md` and every memory file were read **once, at session start**. A peer once asserted a
+release was on hold while the record on disk already said SUPERSEDED — nothing was stale on disk,
+the READER was. Before asserting anything load-bearing from memory — especially a *hold*, a
+*decision*, or a *"not yet done"* — **re-read the file, not your recollection of it.**
+
+⚠ **This paragraph is subject to its own warning**, being itself loaded once at session start.
+
 ## Core Principle: Tools Must Be Trustworthy BEFORE the Modlist Is Locked (user standard)
 
 > *"I can't settle on a good modlist until I can trust that my tools are feeding me the right data…
