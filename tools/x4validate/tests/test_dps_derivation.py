@@ -227,3 +227,30 @@ def test_sustaineddps_is_STILL_an_unmodelled_gap():
     reproduce, so it stays named as a gap rather than being quietly included."""
     assert "sustaineddps" in C._DERIVED
     assert "sustaineddps" not in C._DERIVE
+
+
+# --- the SALVO transform: the engine totals a salvo, the store holds one warhead ----
+
+def test_per_salvo_divides_the_engine_total_by_the_missile_count():
+    """MEASURED 2026-09-20 on missile_gen_s_swarm_01_mk1_macro: the engine answers
+    explosiondamage 1680 while the store holds explosiondamage.value 210 and
+    missile.amount 8. Mapped as `identity`, the oracle reported a DISAGREEMENT against
+    our own store -- a false red, and the only one in the fixture, which was then
+    attributed in the release notes to the dps promotion instead."""
+    f = C._CONTEXT_TRANSFORMS["per_salvo"]
+    assert f(1680.0, {"missile.amount": "8", "explosiondamage.value": "210"}) == 210.0
+
+
+def test_TWIN_a_single_missile_is_left_alone():
+    """amount=1 is the common case and must pass through unchanged, or every non-salvo
+    missile would break instead."""
+    f = C._CONTEXT_TRANSFORMS["per_salvo"]
+    assert f(5000.0, {"missile.amount": "1"}) == 5000.0
+    assert f(5000.0, {}) == 5000.0, "a missing amount must not change the value"
+
+
+def test_TWIN_a_zero_or_unparsable_amount_does_not_raise():
+    """A refusal is an answer; a ZeroDivisionError inside the oracle is not."""
+    f = C._CONTEXT_TRANSFORMS["per_salvo"]
+    assert f(5000.0, {"missile.amount": "0"}) == 5000.0
+    assert f(5000.0, {"missile.amount": "not a number"}) == 5000.0

@@ -171,7 +171,10 @@ def test_P7_adopted_mappings_2026_09_19():
     rows are asserted ABSENT so a future re-adoption of a known coincidence fails here."""
     adopted = {
         ("weapons_turrets", "hull"): ("hull.max", "identity"),           # n=11 nd=11
-        ("missiletypes", "explosiondamage"): ("explosiondamage.value", "identity"),   # n=4
+        # CORRECTED 2026-09-20 (release review): the engine totals a SALVO while the
+        # store holds ONE warhead, so identity reported a false disagreement on the only
+        # amount>1 missile in the fixture -- engine 1680, store 210, missile.amount 8.
+        ("missiletypes", "explosiondamage"): ("explosiondamage.value", "per_salvo"),  # n=4
         ("enginetypes", "thrust_forward"): ("thrust.forward", "identity"),            # n=3
         ("enginetypes", "thrust_reverse"): ("thrust.reverse", "identity"),            # n=3
         ("enginetypes", "boost_accfactor"): ("boost.acceleration", "identity"),       # n=2

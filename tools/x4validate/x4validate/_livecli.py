@@ -220,6 +220,18 @@ _TRANSFORMS = {
     "degrees": lambda v: v * 180.0 / 3.141592653589793,
 }
 
+#: Transforms that need the ENTITY, not just the value. A value-only lambda cannot
+#: reach a sibling property, and one mapping needs exactly that: the engine reports a
+#: missile's explosiondamage for the whole SALVO while the store holds the per-missile
+#: warhead. MEASURED 2026-09-20 on `missile_gen_s_swarm_01_mk1_macro`: engine 1680,
+#: store explosiondamage.value 210, missile.amount 8 -- 8 x 210. The other four
+#: missiles in the fixture carry amount=1, which is why an identity mapping looked
+#: clean and shipped a FALSE disagreement against our own store. `_dps_channels`
+#: already multiplies by `bullet.amount` for the same reason.
+_CONTEXT_TRANSFORMS = {
+    "per_salvo": lambda v, props: v / (_num(props, "missile.amount", 1.0) or 1.0),
+}
+
 #: THE MAP IS KEYED BY LIBRARY TYPE, because a field NAME does not determine its
 #: meaning. `shield` on a shieldgentypes entry is that generator's own capacity
 #: (`recharge.max` = 2287); `shield` on a shiptypes_* entry is the ship's TOTAL
@@ -343,7 +355,7 @@ _BY_TYPE: dict[str, dict[str, tuple[str, str]]] = {
         "hull": ("hull.max", "identity"),          # n=3 nd=1; 1/1/300 all agreed
         "locktime": ("lock.time", "identity"),     # n=1 nd=1; 2 == 2
         # P7 2026-09-19 (discriminating harvest):
-        "explosiondamage": ("explosiondamage.value", "identity"),        # n=4 nd=4; 5000..18000
+        "explosiondamage": ("explosiondamage.value", "per_salvo"),       # n=4 nd=4; 5000..18000 (salvo total / missile.amount)
         "shieldexplosiondamage": ("explosiondamage.shield", "identity"), # n=1 nd=1; name matches prop
     },
     "weapons_turrets": {
@@ -723,7 +735,10 @@ def cmd_oracle(path: str | None, out=None, show_derived: bool = False,
                     unmapped += 1
                 continue
             try:
-                cooked = str(_TRANSFORMS[tname](float(ev)))
+                if tname in _CONTEXT_TRANSFORMS:
+                    cooked = str(_CONTEXT_TRANSFORMS[tname](float(ev), props))
+                else:
+                    cooked = str(_TRANSFORMS[tname](float(ev)))
             except (TypeError, ValueError):
                 cooked = ev
             if _agree(cooked, sv):
