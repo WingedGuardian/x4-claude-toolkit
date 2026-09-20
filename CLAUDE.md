@@ -87,26 +87,18 @@ load order, cat/dat, t-files, and the overlay decision table (which fix belongs 
 **`x4-update-mod`** carries the 7.x→9.0 migration, including the `space=` family that now refuses.
 ## Validation Convention (Standing Rule)
 
-Running `x4validate` is routine and non-optional — like checking `debug.txt`.
+**Running `x4validate` is routine and non-optional** — like checking `debug.txt`. Run it after
+editing any patch and BEFORE deploying for an in-game test, and again after a game update. It
+catches the two most expensive bugs statically: a `sel=` that silently matches nothing, and a
+file the change forgot. **A clean run is necessary, not sufficient** — still test in-game.
 
-- **When:** after editing any diff patch / adding content, BEFORE deploying for an in-game
-  test. Re-run after a game update (the merged tree changes).
-- **How:** `cd tools\x4validate && uv run x4validate <dev\mod_folder>` (non-zero exit on
-  errors → usable as a gate). Add `--entity <type>:<id> --like <type>:<vanilla>` to check
-  completeness of new content (`ware`/`ship`/`module`).
-- **Why:** the two most expensive X4 bugs are (1) a `sel=` that silently matches nothing and
-  (2) forgetting one of the many files a change must touch. x4validate catches both statically.
-- **Trust but verify:** a clean run is necessary, not sufficient — still test in-game and read
-  `debug.txt`.
-- **Cross-mod work → add `--tier b`.** Tier A (default) is base+DLC only: it cannot see a node
-  another mod adds (false alarm) *or* one another mod removed (false OK). Tier B merges the
-  installed set in load order. Ordering is community-convention → treat ordering-dependent
-  results as advisory.
-- **`if=`-guarded ops report INFO, not ERROR** — a false guard is a designed no-op. A guard that
-  PASSES while its `sel=` still misses is a real error.
-- **After ANY change to `.claude/hooks/`, run `bash scripts/test-hooks.sh`** (33 assertions over
-  both install layouts). The hooks are the safety net and nothing else exercises them — several
-  shipped silently inert because reading the code looked fine.
+**After ANY change to `.claude/hooks/`, run `bash scripts/test-hooks.sh`.** The hooks are the
+safety net and nothing else exercises them; several shipped silently inert because the code
+read fine.
+
+→ **the `x4-xml-patching` skill** has the flags: `--tier b` for cross-mod work, `--entity/--like`
+for completeness, and why an `if=`-guarded op reports INFO while a passing guard over a missing
+`sel=` is a real error.
 
 ## Dry-Run Convention
 
@@ -239,62 +231,31 @@ The environment gets smarter the more you use it.
 
 ## x4live is EXPERIMENTAL — say so before you use it
 
-**Before running any `x4live` command against the user's game, tell them it is
-experimental and recommend a throwaway save.** Do not wait to be asked. Most people
-will not have read the README section, and by the time it matters the mod is already
-loaded into whatever save they had open.
-
-Be accurate about the risk, or the warning gets ignored. Exactly two verbs write,
-`x4live pause` and `x4live unpause`, and **never run either unless the user asked**.
-Every other verb only reads, and `content.xml` declares `save="false"`. What is true:
-
-* the addon loads into a RUNNING game, and `engine_probe` runs automatically at load;
-* `engine_probe.lua:196` calls `C.SaveUIUserData()`, writing the profile's UI userdata;
-* **its answers have been wrong** — until 2026-09-02 `verbs.macro` reported a failed
-  engine call as `ABSENT`, i.e. "the engine has nothing here", and such answers feed
-  groundtruth fixtures. Report what it says as EVIDENCE, never as truth;
-* removing a mod from a save lets the engine silently delete that mod's content
-  (no dialog, usually no error line).
-
-So: recommend a scratch save, and never imply the tool is a settled instrument.
+**Before running any `x4live` command against the user's game, tell them it is experimental and
+recommend a throwaway save** — unprompted. Only `pause`/`unpause` write, and only when asked;
+its answers are EVIDENCE, not truth (they have been wrong). → the **`x4-live`** skill has the
+detail and the traps.
 
 ## Nexus Mod Research (Standing Rule)
 
-**Always search a mod's Nexus Mods page before investigating or editing it.** Check the description, articles, changelogs, comments, and bug reports before going in blind. This saves enormous time — most issues have been seen by other users.
+**Always search a mod's Nexus page before investigating or editing it** — description, articles,
+changelogs, comments, bug reports. Most issues have been seen by another user already.
 
-Nexus: https://www.nexusmods.com/x4foundations
+**★ API-FIRST: reach Nexus ONLY through the API, NEVER by scraping** (pages 403 automated
+fetches; Steam pages are scrapeable, Nexus is not). Each user supplies their OWN key in
+`X4_NEXUS_KEY` (or `.claude/x4-paths.env`): never bundle, commit or log one.
 
-### Nexus API (programmatic mod metadata)
-
-Nexus has a REST + GraphQL API ([api-docs.nexusmods.com](https://api-docs.nexusmods.com/)) exposing mod **version, updated-date, status, author, changelogs, file info** — useful for mod-update detection and lifecycle/triage work.
-
-**★ API-FIRST (standing rule): access Nexus ONLY via the API — NEVER scrape Nexus pages** (they 403 automated fetches). Web-search/scraping is a *last-resort fallback* and never against Nexus. (Steam pages *are* scrapeable; only Nexus blocks.)
-
-**Verified endpoints + gotchas (2026-06-22, used by `tools\x4validate\x4modlist`):**
-- Metadata by id: `GET https://api.nexusmods.com/v1/games/x4foundations/mods/{id}.json`, header `apikey`. `status` field = `published`/`removed`/`hidden` (last two = unavailable).
-- Name→id search: `POST https://api.nexusmods.com/v2/graphql`, header `apikey`, filter `gameId:[{value:"2659"}], nameStemmed:[{value:"<name>"}]`. **Must send a real `User-Agent` header** or the GraphQL endpoint 403s (Cloudflare). For folder-ids: humanize (split camelCase/underscores) and **drop the leading author token** (e.g. "authorname") if the first search is empty.
-- Steam ws_ title: `POST https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/` form `itemcount=1&publishedfileids[0]=<num>` — **keyless**.
-- Rate budget ~20k/day, ~2k/hr (check `X-RL-Daily-Remaining`).
-- **Get a key:** nexusmods.com → log in → Site preferences → **API Access** (`https://www.nexusmods.com/users/myaccount?tab=api`) → **Personal API Key** → Generate. Free, per-user.
-- **Storage:** env var **`X4_NEXUS_KEY`** (set via `setx`; read via `[Environment]::GetEnvironmentVariable('X4_NEXUS_KEY','User')` since the current process won't see a freshly-setx'd var). **Never commit or log it.**
-- **AUP:** a personal key is for personal/local use only; a public/community tool must have each user supply their OWN key (don't bundle).
-- **Cross-game:** the same nexusmods.com API serves all games — endpoints take a `game_domain_name` (`x4foundations`) + `mod_id`. (This note is portable to any Nexus-modded game's CLAUDE.md.)
-- **Resolution cascade for a mod's identity/version/changelog (local-first, cheapest-first):** installed `content.xml` → mod-folder README/changelog → Steam Workshop page → Nexus API (last resort / for upstream-latest).
+→ endpoints, the rate budget, the local-first resolution cascade and how to get a key live in
+`x4validate/_nexus.py`, next to the code that calls them; **`x4-modlist-review`** drives the triage.
 ## Modding Workflow (Per Change)
 
-### Phase 1 — Research (before touching any file)
-1. **Nexus Mods page first** — description, articles, changelogs, comments, known issues
-2. **Check for related mods/patches** — anything that touches the same files
-3. Locate relevant XML in `reference\` — understand full base game structure
-4. **Identify ALL files that need changes** — document the complete list before writing anything
-5. State confidence level; if below 90%, research more first
+1. **Research first:** the mod's Nexus page, any mod touching the same files, and the vanilla
+   structure in `reference\`. Name EVERY file the change must touch before writing one.
+2. **Implement:** a diff patch for existing content, a complete file only for new content,
+   mirroring the game's folder structure inside `dev\{mod_name}\`.
+3. **Validate, then test:** `x4validate` before any in-game cycle, deploy to the game-root
+   `extensions\`, then read `debug.txt`.
 
-### Phase 2 — Implement
-- Diff patch for existing content, complete file for new content
-- Mirror game folder structure inside `dev\{mod_name}\`
-- **Validate with x4validate (mandatory, before any in-game test)** — `cd tools\x4validate && uv run x4validate <dev\mod>`. Fix every error: a `sel=` that matches nothing, an unresolved ware/macro/`{page,t}` reference, or (for new content) a completeness gap vs the vanilla analogue (`--entity ship:x --like ship:y`). This catches the silent-no-op and forgotten-spot bugs *before* burning an in-game test cycle.
-- Test by copying to `{game root}\extensions\{mod_name}\` (game-root extensions, NEVER the profile — see **Deploy for testing** above) and launching game
-- Check `{user profile}\debug.txt` for errors
 ## Core Principle: PROVE IT RAN BEFORE DEBUGGING WHAT IT DID (Mandatory)
 
 **A change that produces no output has THREE indistinguishable causes, and they must be eliminated in

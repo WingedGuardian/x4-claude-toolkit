@@ -33,6 +33,24 @@ from the output.
    for a mistyped id once any real reload has happened. And an id refusal after a reload
    already NAMES the reload and both causes (alt-enter, save load) — read it first.
 
+## Say it is experimental before you run it
+
+**Before running any `x4live` command against the user's game, tell them it is experimental and
+recommend a throwaway save.** Do not wait to be asked: most people have not read the README
+section, and by the time it matters the addon is already loaded into whatever save was open.
+
+Be accurate about the risk or the warning gets ignored. Exactly two verbs write — `pause` and
+`unpause` — and neither runs unless the user asked. Every other verb reads, and
+`content.xml` declares `save="false"`. What is true:
+
+* the addon loads into a RUNNING game, and `engine_probe` runs automatically at load;
+* `engine_probe.lua` calls `C.SaveUIUserData()`, writing the profile's UI userdata;
+* **its answers have been wrong** — until 2026-09-02 `verbs.macro` reported a failed engine call
+  as `ABSENT`, i.e. "the engine has nothing here", and such answers feed groundtruth fixtures.
+  Report what it says as EVIDENCE, never as truth;
+* removing a mod from a save lets the engine silently delete that mod's content (no dialog,
+  usually no error line).
+
 ## The traps
 
 | trap | consequence |

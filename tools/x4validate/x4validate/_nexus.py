@@ -3,6 +3,22 @@
 - Nexus metadata by id : v1 REST   /v1/games/x4foundations/mods/{id}.json   (apikey header)
 - Nexus name -> id     : v2 GraphQL /v2/graphql  (nameStemmed filter, gameId 2659)
 - Steam ws_ title      : keyless ISteamRemoteStorage/GetPublishedFileDetails
+
+OPERATING NOTES (were resident in CLAUDE.md until 2026-09-20; they belong with the code).
+
+- `status` on the v1 payload is `published` / `removed` / `hidden`; the last two mean the
+  mod is unavailable, which is a finding about the mod, not an error to swallow.
+- Folder ids rarely match mod names. Humanize (split camelCase and underscores) and DROP a
+  leading author token when the first search comes back empty.
+- Rate budget ~20k/day and ~2k/hour; `X-RL-Daily-Remaining` carries what is left.
+- A key is per-user and free: nexusmods.com -> Site preferences -> API Access -> Personal
+  API Key. The AUP makes it PERSONAL: a public tool must have each user supply their own,
+  so never bundle, commit or log one.
+- Identity/version resolution is LOCAL-FIRST, cheapest first: the installed `content.xml`,
+  then the mod folder README/changelog, then the Steam Workshop page, and the Nexus API
+  last -- it is the only source for what upstream currently ships.
+- The same host serves every game: the endpoints take a game_domain_name (`x4foundations`)
+  and a mod_id, so this module ports to another Nexus-modded game unchanged.
 """
 
 from __future__ import annotations

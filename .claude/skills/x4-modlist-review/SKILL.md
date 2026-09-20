@@ -10,7 +10,7 @@ Triage the X4 modlist via the `x4modlist` CLI. **API-FIRST — never scrape Nexu
 
 Run commands via uv from the tool dir:
 `cd $CLAUDE_PROJECT_DIR/tools/x4validate && uv run --python 3.13 x4modlist <cmd>`
-Needs `X4_NEXUS_KEY` (user env). If a command errors "X4_NEXUS_KEY not set", the user must set it (see CLAUDE.md "Nexus API").
+Needs `X4_NEXUS_KEY` (user env). If a command errors "X4_NEXUS_KEY not set", the user must set it (endpoints, rate budget and how to get a key: `x4validate/_nexus.py`).
 
 ## Workflow
 1. **Ingest** — `x4modlist ingest` scans the installed folders (reading each mod's OWN `content.xml` for its real `id`/`name`/`version`/`author` — folder names can differ from the manifest `id`, e.g. folder `X4CapturableXenonXL` → id `X4_Capturable_Xenon XL PERSONAL`) and merges that as PRIMARY; the old profile content.xml is a secondary backfill pass so nothing tracked historically is silently dropped. `--installed-only` skips the content.xml pass; `--dirs a,b,c` overrides the scanned directories.
