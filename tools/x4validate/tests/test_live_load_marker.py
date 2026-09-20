@@ -143,18 +143,117 @@ def test_an_UNREADABLE_extensions_root_REFUSES(monkeypatch):
     assert lp.helper_is_deployed() is None
 
 
+# --- is the window MINIMIZED? ------------------------------------------------ #
+#
+# VERIFIED IN GAME 2026-09-20: the handle survives exclusive fullscreen AND alt-tab-away, so
+# IsIconic carries the diagnosis in both display modes. These tests stub the win32 calls --
+# what they guard is the REFUSAL discipline around them, which is where the mistakes live.
+
+class _FakeGui:
+    def __init__(self, windows):      # windows: [(hwnd, pid, visible, iconic)]
+        self._w = windows
+
+    def EnumWindows(self, cb, extra):
+        for hwnd, _pid, _vis, _ic in self._w:
+            cb(hwnd, extra)
+
+    def IsWindowVisible(self, hwnd):
+        return next(v for h, _p, v, _i in self._w if h == hwnd)
+
+    def IsIconic(self, hwnd):
+        return 1 if next(i for h, _p, _v, i in self._w if h == hwnd) else 0
+
+
+class _FakeProc:
+    def __init__(self, windows):
+        self._w = windows
+
+    def GetWindowThreadProcessId(self, hwnd):
+        return (0, next(p for h, p, _v, _i in self._w if h == hwnd))
+
+
+def _with_windows(monkeypatch, pids, windows):
+    import sys
+    from x4validate import _livedump
+    monkeypatch.setattr(_livedump, "game_pids", lambda: pids)
+    monkeypatch.setitem(sys.modules, "win32gui", _FakeGui(windows))
+    monkeypatch.setitem(sys.modules, "win32process", _FakeProc(windows))
+
+
+def test_a_MINIMIZED_window_of_the_game_process_reports_True(monkeypatch):
+    _with_windows(monkeypatch, [77], [(1, 77, True, True)])
+    assert lp.game_is_minimized() is True
+
+
+def test_a_RESTORED_window_reports_False(monkeypatch):
+    """The twin: without it, a function that always answered True would pass the test above."""
+    _with_windows(monkeypatch, [77], [(1, 77, True, False)])
+    assert lp.game_is_minimized() is False
+
+
+def test_ONE_non_iconic_window_REFUTES_minimized(monkeypatch):
+    """ALL, not ANY. X4 can own more than one visible top-level window, and the frame loop
+    stops only when the game itself is down -- so one restored window settles it."""
+    _with_windows(monkeypatch, [77], [(1, 77, True, True), (2, 77, True, False)])
+    assert lp.game_is_minimized() is False
+
+
+def test_windows_of_ANOTHER_process_are_not_evidence_about_X4(monkeypatch):
+    """A minimized window belonging to something else must not be reported as the game's.
+    With no window of OUR pid left, the honest answer is None, not False."""
+    _with_windows(monkeypatch, [77], [(1, 999, True, True)])
+    assert lp.game_is_minimized() is None
+
+
+def test_an_INVISIBLE_window_is_skipped(monkeypatch):
+    """X4 owns hidden helper windows whose iconic state says nothing about the game."""
+    _with_windows(monkeypatch, [77], [(1, 77, False, True)])
+    assert lp.game_is_minimized() is None
+
+
+def test_NO_WINDOW_FOUND_refuses_rather_than_reporting_NOT_minimized(monkeypatch):
+    """★ CLAUDE.md #34. "I found no window to ask about" is a fact about the SEARCH, not
+    about the window. Answering False here would put the second claim in the first's grammar
+    -- and False is an ACTIONABLE answer ("stop looking at the window"), so it would actively
+    mislead."""
+    _with_windows(monkeypatch, [77], [])
+    assert lp.game_is_minimized() is None
+
+
+def test_a_CLOSED_game_refuses(monkeypatch):
+    _with_windows(monkeypatch, [], [(1, 77, True, True)])
+    assert lp.game_is_minimized() is None
+
+
+def test_an_UNDETERMINED_process_list_refuses(monkeypatch):
+    """game_pids answers None when it could not ask. That must not become "no pids"."""
+    _with_windows(monkeypatch, None, [(1, 77, True, True)])
+    assert lp.game_is_minimized() is None
+
+
+def test_MISSING_pywin32_refuses_instead_of_raising(monkeypatch):
+    """pywin32 is a dev-only, Windows-only extra. Its absence costs this one diagnosis; it
+    must not cost the refusal message it is part of."""
+    import sys
+    from x4validate import _livedump
+    monkeypatch.setattr(_livedump, "game_pids", lambda: [77])
+    monkeypatch.setitem(sys.modules, "win32gui", None)      # import ... -> ImportError
+    monkeypatch.setitem(sys.modules, "win32process", None)
+    assert lp.game_is_minimized() is None
+
+
 # --- the message the user actually reads ------------------------------------ #
 
 def test_NOT_RUNNING_names_the_game_and_does_not_mention_the_mod():
     msg = lp._no_connection_reason(r"\\.\pipe\x4live", 10.0,
-                                   running=False, loaded=None, deployed=None)
+                                   running=False, loaded=None, deployed=None, minimized=None)
     assert "NOT RUNNING" in msg
     assert "minimi" not in msg.lower(), "a closed game must not get the minimized essay"
 
 
 def test_RUNNING_and_LOADED_points_at_the_frame_loop_not_the_deployment():
     msg = lp._no_connection_reason(r"\\.\pipe\x4live", 10.0,
-                                   running=True, loaded=True, deployed=True)
+                                   running=True, loaded=True, deployed=True, minimized=None)
     assert "DID load" in msg
     assert "MINIMIZE" in msg, "this is the case the minimized hint is for"
 
@@ -163,7 +262,7 @@ def test_NOT_DEPLOYED_points_at_the_install(tmp_path):
     """The narrowing the deployment read exists for: this user should be told to check the
     install, NOT to un-minimize a window."""
     msg = lp._no_connection_reason(r"\\.\pipe\x4live", 10.0,
-                                   running=True, loaded=False, deployed=False)
+                                   running=True, loaded=False, deployed=False, minimized=None)
     assert "NOT in the set the engine would load" in msg and "extensions" in msg
     assert "MINIMIZE" not in msg, (
         "a mod that never loaded is not a minimized-window problem; sending that user to the "
@@ -173,7 +272,7 @@ def test_NOT_DEPLOYED_points_at_the_install(tmp_path):
 def test_NOT_DEPLOYED_outranks_an_UNKNOWN_marker():
     """A log we could not read must not downgrade a deployment we COULD measure."""
     msg = lp._no_connection_reason(r"\\.\pipe\x4live", 10.0,
-                                   running=True, loaded=None, deployed=False)
+                                   running=True, loaded=None, deployed=False, minimized=None)
     assert "NOT in the set the engine would load" in msg
     assert "MINIMIZE" not in msg
 
@@ -183,7 +282,7 @@ def test_a_LOADED_marker_OUTRANKS_a_not_deployed_read():
     without being installed, so this combination means the mod set moved under the running
     game -- it is NOT evidence that the mod never loaded."""
     msg = lp._no_connection_reason(r"\\.\pipe\x4live", 10.0,
-                                   running=True, loaded=True, deployed=False)
+                                   running=True, loaded=True, deployed=False, minimized=None)
     assert "DID load" in msg and "NOT in the set the engine would load" not in msg
 
 
@@ -192,7 +291,7 @@ def test_MENU_no_save_loaded_does_NOT_say_not_installed():
     and enabled and its marker is legitimately absent, because it initialises on GAME LOAD. The
     old text concluded "most likely not installed" and sent the user to check their install."""
     msg = lp._no_connection_reason(r"\\.\pipe\x4live", 10.0,
-                                   running=True, loaded=False, deployed=True)
+                                   running=True, loaded=False, deployed=True, minimized=None)
     assert "IS installed and enabled" in msg
     assert "GAME LOAD" in msg and "save" in msg
     assert "not installed" not in msg, "the exact false positive this replaces"
@@ -203,14 +302,14 @@ def test_marker_absent_and_deployment_UNKNOWN_names_BOTH_causes():
     """With no deployment reading there is no evidence separating the two causes, so the
     message must name both. Picking one is what made the menu case wrong."""
     msg = lp._no_connection_reason(r"\\.\pipe\x4live", 10.0,
-                                   running=True, loaded=False, deployed=None)
+                                   running=True, loaded=False, deployed=None, minimized=None)
     assert "TWO possibilities" in msg
     assert "load a save" in msg.lower() and "extensions" in msg
 
 
 def test_RUNNING_but_marker_UNKNOWN_keeps_the_old_hedged_text():
     msg = lp._no_connection_reason(r"\\.\pipe\x4live", 10.0,
-                                   running=True, loaded=None, deployed=True)
+                                   running=True, loaded=None, deployed=True, minimized=None)
     assert "MINIMIZE" in msg and "did NOT log" not in msg
 
 
@@ -218,5 +317,5 @@ def test_RUNNING_but_marker_UNKNOWN_keeps_the_old_hedged_text():
 @pytest.mark.parametrize("deployed", [True, False, None])
 def test_every_message_names_the_pipe_and_the_timeout(loaded, deployed):
     msg = lp._no_connection_reason(r"\\.\pipe\x4live", 7.0,
-                                   running=True, loaded=loaded, deployed=deployed)
+                                   running=True, loaded=loaded, deployed=deployed, minimized=None)
     assert r"\\.\pipe\x4live" in msg and "7" in msg

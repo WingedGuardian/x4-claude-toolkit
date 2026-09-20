@@ -579,36 +579,55 @@ def test_the_hint_keeps_the_two_focus_measurements_SEPARATE():
     window: windowed UNFOCUSED is 32.98/32.98 and windowed FOCUSED is 32.24/32.24 --
     a ratio of **1.00 in both**. Windowed and unfocused, the frame loop runs at full rate.
 
-    The 13.6% figure is real but is a DIFFERENT condition (minimized in exclusive
-    fullscreen), is OLDER, has NOT been re-measured, and never separated minimized
-    from merely unfocused -- which is exactly how it came to be generalised.
+    ⚠ REWRITTEN 2026-09-20 with the essay. The old assertions pinned the 13.6%
+    exclusive-fullscreen figure and its age qualifier INSIDE the user-facing text, because
+    that text was the only place the evidence lived. It is no longer: minimized was measured
+    DIRECTLY in both display modes that day, so the hint states the rule instead of showing
+    its working, and the full provenance moved to the module comment above the constant --
+    which `test_the_hint_provenance_is_not_lost_from_the_source` checks is still there.
 
-    Two measurements of different ages must not be flattened into one claim. Telling a
-    windowed user to foreground the game costs them the real diagnosis, which is the
-    failure this message exists to prevent.
+    What must NEVER come back is the flattening itself: the over-strong claim, and a
+    foreground/background rule where the measured axis is MINIMIZED.
     """
     from x4validate._livepipe import MINIMIZED_HINT as h
 
-    assert "1.00" in h and "13.6%" in h, "one of the two measurements was dropped"
-    # ⚠ NOT `"older" in h`. That substring matches "f-OLDER" in "extensions folder",
-    # so the assertion could never fail while the text mentions a folder -- a green
-    # with no reachable red branch, in the very test written to enforce an evidence
-    # tier. Found by the mutant that strips the qualifier surviving. Match the phrase.
-    assert "OLDER figure" in h and "NOT re-measured" in h, (
-        "the 13.6% figure is presented without its age -- that is the flattening")
-    assert "DO NOT MINIMIZE" in h
+    assert "1.00" in h, "the unfocused-is-fine measurement was dropped"
+    assert "2026-08-30" in h and "2026-09-20" in h, (
+        "a claim in shipped text without its evidence date is the flattening again")
+    assert "MINIMIZED" in h and "UNFOCUSED does NOT" in h, (
+        "the hint must name the MEASURED axis (minimized), not focus")
     assert "STOPS EXECUTING WHEN IT IS NOT" not in h, (
         "the over-strong claim is back; windowed-unfocused measured 1.00")
 
 
-def test_the_hint_names_the_extension_and_its_dependency():
-    """A refusal that cannot tell the user WHAT to install is only half a refusal.
-    Two separate installs are involved and naming one is not enough."""
-    from x4validate._livepipe import MINIMIZED_HINT as h
+def test_the_hint_provenance_is_not_lost_from_the_source():
+    """The essay's evidence did not get deleted, it got MOVED -- out of every user-facing
+    refusal and into the comment above the constant. This is what stops "shorten the text"
+    from quietly becoming "drop the measurements", which is the failure the old assertions
+    were really guarding. Structural: it reads the module source, not the shipped string."""
+    import pathlib
 
-    assert "X4 Toolkit Helper" in h, "the refusal never names the extension"
-    assert "ws_2042901274" in h, "the refusal never names the pipe-api dependency"
-    assert "_LIVE loaded" in h, "no way for the user to check whether it loaded at all"
+    from x4validate import _livepipe
+
+    src = pathlib.Path(_livepipe.__file__).read_text(encoding="utf-8")
+    head = src[:src.index("MINIMIZED_HINT = (")]
+    for figure in ("32.98", "32.24", "13.6%", "574.76", "0.031", "0.016"):
+        assert figure in head, f"the provenance comment lost the {figure} measurement"
+    assert "never separated minimized from merely unfocused" in head, (
+        "the reason the OLD advice was wrong is the part most worth keeping")
+
+
+def test_the_deployment_branch_names_the_extension_and_its_dependency():
+    """A refusal that cannot tell the user WHAT to install is only half a refusal. Two
+    separate installs are involved and naming one is not enough.
+
+    ⚠ MOVED 2026-09-20: this used to be asserted of MINIMIZED_HINT, which appended the
+    install advice to EVERY refusal including ones where the install was measured fine. It
+    now belongs to the branch that actually measured a missing install."""
+    msg = lp._no_connection_reason(r"\\.\pipe\x4live", 10.0, running=True, loaded=False,
+                                   deployed=False, minimized=None)
+    assert "Mod Support APIs" in msg, "the refusal never names the pipe-api dependency"
+    assert "GAME-ROOT" in msg, "the refusal never says WHERE the extension goes"
 
 
 def test_the_hint_does_not_blame_a_PAUSED_game():
@@ -622,3 +641,32 @@ def test_the_hint_does_not_blame_a_PAUSED_game():
     assert "PAUSED game goes silent" not in h, "the withdrawn paused-silence claim is back"
     assert "unpause, and run it again" not in h, "the hint still tells the user to unpause"
     assert "MEASURED 2026-09-13" in h, "the correction must carry its evidence date"
+
+
+# --- the window state is MEASURED now, not surveyed --------------------------- #
+
+
+def test_the_measured_diagnosis_REPLACES_the_hint_when_minimized_is_known():
+    """★ The point of the whole change. A 1,798-character survey of every possible cause
+    was appended to every refusal because nothing could measure any of them. Once IsIconic
+    answers, the user gets ONE diagnosis -- and the survey must not tag along behind it."""
+    yes = lp._frame_loop_text(True)
+    no = lp._frame_loop_text(False)
+    unknown = lp._frame_loop_text(None)
+
+    assert "is MINIMIZED" in yes and "Restore the window" in yes
+    assert "NOT minimized" in no and "do not go and un-minimize" in no
+    assert unknown is lp.MINIMIZED_HINT
+    for measured in (yes, no):
+        assert "could NOT determine" not in measured, "the hedge survived a measurement"
+        assert len(measured) < len(unknown), (
+            "a measured diagnosis that is no shorter than the survey it replaces has not "
+            "replaced anything")
+
+
+def test_the_two_measured_diagnoses_disagree_about_what_to_do():
+    """The twin. Two texts that both said "restore the window" would make the measurement
+    decorative -- the whole value is that a NOT-minimized user is told to stop looking there."""
+    yes, no = lp._frame_loop_text(True), lp._frame_loop_text(False)
+    assert "Restore the window and run it again" in yes
+    assert "Restore the window and run it again" not in no

@@ -175,6 +175,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F122 | `ask.py xq` certified a negative over a query Git Bash had rewritten before Python saw it | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | `collection("x4raw")//ware` arrived as `.../ware`: `NEGATIVE CONFIRMED` rc 0, where PowerShell counted 14,068 | `--file`; under Git Bash an argument-query zero refuses (rc 4) and every result shows the query as received |
 | F123 | `bin/unpack-reference.sh` took the LAST `"buildid"` in the Steam manifest, which is a beta branch's, not the installed build | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | this machine's manifest: AppState 23660954, `public_beta` 23524486 -- the script's grep returned 23524486 | one depth-1 reader, `x4_acf_buildid`, for the script and the hook; a test bans a third hand-rolled grep |
 | F124 | a client request had NO size cap; a request over ~1997 bytes tears the game-side pipe read down, and the teardown was followed the same session by a game CRASH | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | P6 ramp: 1997 bytes round-tripped, 3998 tore the pipe down (`The pipe has been ended`); the game crashed on the next Esc | `ask()` refuses any request over `MAX_REQUEST_BYTES` (1900) before writing; `ffi-census` and `query ffisyms` gated off by default (`X4_LIVE_ALLOW_FFI`) |
+| F125 | a live refusal read the helper's ABSENT load marker as "most likely not installed" -- but the mod arms on GAME LOAD, so at the MAIN MENU the marker is legitimately absent and the install is fine | **DEFECT (measured)** · ✅ FIXED 2026-09-20 | in game 2026-09-20 at the main menu with no save loaded: marker absent, extension present and enabled, refusal said "not installed or not enabled" | the install is MEASURED directly (`helper_is_deployed()` over `mods("active")`) instead of inferred from the log; with deployment unknown the message names BOTH causes |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -6777,3 +6778,65 @@ game without the toolkit, and no other installed activity touches this path.
 **Scope note.** The reply-path ramp (`x4live ramp`, `groundtruth --with-ramp`) sends `echo <n>`
 where the request is the *number* as text (tiny) and the game echoes back `n` bytes, so it measures
 OUR read buffer (`_BUF`), never the request cap — it is unaffected, and unrelated to this teardown.
+
+
+## F125 — an absent load marker was read as a missing install, but the mod arms on GAME LOAD · **DEFECT (measured)** · confidence 95% · FIXED 2026-09-20
+
+**RE-DERIVED BY:** `tests/test_live_load_marker.py` (`test_MENU_no_save_loaded_does_NOT_say_not_installed` -- the case itself; `test_NOT_DEPLOYED_points_at_the_install` and `test_marker_absent_and_deployment_UNKNOWN_names_BOTH_causes`, its twins; `test_helper_is_deployed_asks_for_ACTIVE_not_INSTALLED`, pinning the scope; `test_an_UNCONFIGURED_toolkit_REFUSES_rather_than_claiming_NOT_deployed`).
+
+**What happened (MEASURED).** `helper_loaded_this_session()` shipped on 2026-09-20 to read the
+mod's load marker out of a live `debug.txt` so a refusal could say WHICH failure it was. In the
+in-game session the same day it produced a false positive in its own new branch:
+
+| game state | marker in live debug.txt | extension in `mods("active")` | what the refusal SAID |
+|---|---|---|---|
+| main menu, no save loaded | absent | **present and enabled** | *"most likely not installed or not enabled"* |
+| save loaded, windowed | present | present | correct |
+
+The helper initialises on **game load**, not at process start, so at the main menu the marker is
+legitimately absent. The refusal sent a user to check an install that was fine.
+
+**Why the check could not have been right.** The marker reports a CONSEQUENCE of the install, so
+its absence has two causes -- not installed, and not yet initialised -- and no amount of reading
+the log separates them. This is the "a set difference is a QUESTION, not an answer" shape
+(CLAUDE.md #34): what was measured is *"the marker did not appear"*; what was claimed is *"the
+extension is not there"*. The instrument had a scope (the mod's own initialisation) and the claim
+did not respect it.
+
+⚠ **The obvious repair was the wrong one.** The first idea was to find a game-start marker in
+`debug.txt` and require it before concluding "not installed". The only existing detector is
+`_debugcli._NEW_GAME_MARKER = "Universe generation begins"`.
+
+- **READ 2026-09-20**, in this machine's 15,447,025-byte `debug.txt` (the whole file, one run):
+  the marker appears **exactly once**, at line 12,316, and that run was a NEW game -- line 3,952
+  reads `pendingGameStart = new custom game start`. The helper's own load marker first appears at
+  line 14,104, *after* it, and at engine time 0.03 against the menu phase's 129.17, so the engine
+  clock restarts at game start and the helper arms only once a game exists. That is consistent
+  with the in-game measurement and is the same fact from a second instrument.
+- ⚠ **INFERRED, NOT MEASURED: that a save LOAD writes no counterpart.** It follows from
+  `_debugcli`'s own recorded note (*"A new game generates the galaxy; a save load does not"*) and
+  from the marker's absence anywhere else in the file -- but **this machine has exactly one
+  `debug.txt` and its run was a new game**, so no save-load log was available to check. What
+  would confirm it: one game session that LOADS a save, then a grep of the resulting log.
+
+So that route risked trading a false "not installed" for a false "no save loaded" on every loaded
+save, on a premise this session could not measure. It was not taken.
+
+**The fix.** Measure the install directly instead of inferring it: `helper_is_deployed()` asks
+`_registry.mods("active")` whether `x4_toolkit_helper` is in the set the ENGINE would load --
+never `"installed"` (CLAUDE.md #24), because a folder on disk the profile has switched off is not
+loaded, and calling it deployed would be the same false pass the scope argument exists to prevent.
+MEASURED on this machine: 125 active mods, the helper among them, in 0.013 s -- and it runs only
+on a refusal path. True / False / **None**, with None for an unconfigured toolkit, because *"I was
+never told where `extensions\` is"* is a claim about our configuration and must not be reported
+as a claim about the user's install.
+
+Branch order is deployment first (a direct measurement) EXCEPT that a marker reading LOADED
+outranks it, since a mod cannot log from a live run without being installed; that combination
+means the mod set moved under the running game. With deployment unknown the message names BOTH
+causes rather than picking one -- picking one is the defect.
+
+**Scope note: what is still NOT measured.** A HUNG game. `IsHungAppWindow` is not exported by this
+`pywin32` (VERIFIED 2026-09-20 and again on re-check) and a hang cannot be induced on demand, so
+that state is left unreported rather than guessed at. `game_is_minimized()` covers the common
+case in both display modes; hung remains the open axis, and is the least valuable of the four.

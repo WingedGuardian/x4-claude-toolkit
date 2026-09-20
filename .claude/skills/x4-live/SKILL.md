@@ -18,11 +18,17 @@ from the output.
 
 ## Preconditions, in this order
 
-1. **The game must be running.** Windowed-unfocused is fine; minimised in exclusive
-   fullscreen stops the update loop and therefore the channel. A stall is not a failure —
-   retry.
+1. **The game must be running, AND have a game loaded.** Windowed-unfocused is fine;
+   **minimised stops the update loop in EITHER display mode** (MEASURED 2026-09-20, both
+   windowed and exclusive fullscreen) and therefore the channel. A stall is not a failure —
+   retry. At the MAIN MENU the mod has not initialised: it arms on **game load**, so a
+   refusal there is expected and is not a deployment problem.
 2. **The game-side helper extension must be deployed** to the game-root `extensions\`, with
    the named-pipe support mod it depends on. Do not assume: `probe` answers it.
+   ⚠ **Read the refusal before acting on it.** Since 2026-09-20 a "nothing connected"
+   refusal MEASURES four things separately — process, deployment (`mods("active")`), load
+   marker in a *live* `debug.txt`, and `IsIconic` — and says which it could not determine.
+   It names the one cause it has evidence for instead of listing them all.
 3. **Run `probe` first, every session.** `build=` says whether the game is running the file
    currently on disk. `loaded_at=` says whether the chunk has been re-executed. Different
    questions — a reload keeps the same build.

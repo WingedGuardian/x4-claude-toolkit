@@ -39,6 +39,8 @@ fires first shadows the ones behind it (CLAUDE.md #26).
 """
 from __future__ import annotations
 
+import csv
+import io
 import re
 import subprocess
 from collections import Counter
@@ -123,6 +125,35 @@ def game_is_running() -> bool | None:
     if out.returncode != 0:
         return None
     return "X4.exe" in out.stdout
+
+
+def game_pids() -> list[int] | None:
+    """The pids of every running X4.exe, or **None when it could not be determined**.
+
+    The sibling of :func:`game_is_running`, kept here so process inspection has one home and
+    one subprocess idiom. An EMPTY LIST is a real answer ("the game is not running") and is
+    distinct from None ("I could not ask") -- collapsing them is the conflation this module
+    exists to refuse. `/FO CSV /NH` is parsed rather than the default table, whose columns are
+    whitespace-separated and therefore not parseable by anything (CLAUDE.md #22).
+
+    Like its sibling this only ever makes a message more specific; nothing decides an outcome
+    from it.
+    """
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq X4.exe", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        # silent-ok: the THIRD state is the channel, exactly as in `game_is_running` above.
+        return None
+    if out.returncode != 0:
+        return None
+    pids = []
+    for row in csv.reader(io.StringIO(out.stdout)):
+        # The no-match case is NOT an empty stdout -- tasklist prints an INFO line. A row that
+        # is not (image, pid, ...) with a numeric pid is that line, and means "none", not "bad".
+        if len(row) >= 2 and row[0].lower() == "x4.exe" and row[1].strip().isdigit():
+            pids.append(int(row[1].strip()))
+    return pids
 
 
 # --------------------------------------------------------------------- decoding

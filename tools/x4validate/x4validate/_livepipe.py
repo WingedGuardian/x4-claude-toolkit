@@ -136,39 +136,117 @@ _BUF = 1024 * 1024
 MAX_REQUEST_BYTES = 1900
 
 
-#: Appended to every "nothing connected" refusal. A future session reading one of
-#: these must be able to tell a RETRYABLE state from a broken one -- shrugging at a
-#: minimized game and reporting "failed" is exactly the outcome this text prevents.
+#: Appended to a "nothing connected" refusal ONLY when the window state could not be
+#: measured. A future session reading one of these must be able to tell a RETRYABLE state
+#: from a broken one -- shrugging at a minimized game and reporting "failed" is exactly the
+#: outcome this text prevents.
 #:
-#: NB the grep target below is deliberately the GENERIC suffix. The mod's marker
-#: carries a deployment-specific prefix, and spelling it here would put a personal
-#: identifier into a shipped file -- the exact defect F73 was raised for.
+#: ⚠ THIS USED TO BE A 1,798-CHARACTER ESSAY appended to EVERY refusal, because nothing
+#: could measure which cause applied and it hedged across all of them. `game_is_minimized`
+#: now measures the main one, so the essay is replaced by a one-line diagnosis where the
+#: answer is known and by this short residue where it is not. It also shed two things that
+#: had stopped being its job: "grep debug.txt for the load marker" (read for the user by
+#: `helper_loaded_this_session`) and "the mod is probably not installed" (measured directly
+#: by `helper_is_deployed`, which names the extension and its dependency in its own branch).
+#:
+#: THE FULL PROVENANCE of the three claims below, kept here rather than in user output
+#: because two measurements of different ages must not be flattened -- collapsing them is
+#: what made the pre-2026-08-31 advice ("X4 STOPS EXECUTING WHEN IT IS NOT IN THE
+#: FOREGROUND") wrong:
+#:   * UNFOCUSED IS FINE -- 2026-08-30, sampling the engine's own getElapsedTime() over a
+#:     30 s wall window: windowed unfocused 32.98 s engine / 32.98 s wall, windowed focused
+#:     32.24 / 32.24, a ratio of 1.00 in BOTH. A 370-query harvest completed unfocused.
+#:   * MINIMIZED STOPS IT -- originally one figure from exclusive fullscreen only (574.76 s
+#:     of engine time across 70.4 min of wall clock, 13.6%, and zero bytes to debug.txt for
+#:     5.5 min), which never separated minimized from merely unfocused and is how the old
+#:     generalisation arose. MEASURED 2026-09-20 in BOTH display modes and now direct:
+#:     windowed-minimized 0.031 CPU core-s/s and fullscreen-alt-tabbed 0.016, against
+#:     0.81-25.9 while active. So the rule is MINIMIZED, in either mode -- not "background".
+#:   * A PAUSED GAME IS NOT A CAUSE -- MEASURED 2026-09-13, a paused game kept answering on
+#:     an open connection and accepted a new one. The earlier "a PAUSED game goes silent"
+#:     was INFERRED from the api's MD heartbeat firing only on unpaused frames, and is
+#:     WITHDRAWN: the UI `onUpdate` half of the frame detector keeps polling regardless.
+#: MECHANISM, read from source: the pipe is polled by `Poll_For_Reads` via
+#: `Time.Register_NewFrame_Callback`, driven by `SetScript("onUpdate", ...)`.
 MINIMIZED_HINT = (
-    " DO NOT MINIMIZE THE GAME -- and note that merely UNFOCUSED is fine, which is "
-    "the opposite of what this text said until 2026-08-31. TWO MEASUREMENTS OF "
-    "DIFFERENT AGES, kept separate on purpose because collapsing them is what made "
-    "the old advice wrong: (1) WINDOWED, measured 2026-08-30 by sampling the engine's "
-    "own getElapsedTime() over a 30 s wall window -- unfocused 32.98 s engine / "
-    "32.98 s wall and focused 32.24 / 32.24, a ratio of 1.00 in BOTH. Windowed and "
-    "unfocused, the frame loop runs at full rate, and a 370-query harvest completed "
-    "cleanly that way. (2) MINIMIZED IN EXCLUSIVE FULLSCREEN, an OLDER figure and "
-    "NOT re-measured since: 574.76 s of engine time across 70.4 min of wall clock "
-    "(13.6%), and zero bytes written to debug.txt for 5.5 min. That case did not "
-    "separate minimized from merely unfocused, which is how it came to be "
-    "generalised to 'not in the foreground'. MECHANISM, read from source: the pipe "
-    "is polled by `Poll_For_Reads` via `Time.Register_NewFrame_Callback`, driven by "
-    "`SetScript(\"onUpdate\", ...)` plus an MD heartbeat that fires only on UNPAUSED "
-    "frames. A PAUSED game is NOT a cause: MEASURED 2026-09-13, a paused game kept "
-    "answering on an open connection and accepted a new one, because the onUpdate "
-    "half keeps polling. Either way this is RETRYABLE, not a failure: restore the "
-    "window and run it again. Retrying costs nothing, because the mod "
-    "re-arms itself every ~2s. IF THE GAME IS RUNNING AND VISIBLE and this still "
-    "fails, the mod is probably not installed: grep debug.txt for '_LIVE loaded'. "
-    "Absent means it never loaded -- a different problem with a different fix. The "
-    "channel needs the X4 Toolkit Helper extension in the game's extensions folder, "
-    "and its pipe half additionally needs Mod Support APIs (Steam Workshop "
-    "ws_2042901274), which is a separate install."
+    " The channel is polled from the FRAME LOOP, so a game that is not drawing frames "
+    "cannot answer, and I could NOT determine this window's state. MEASURED: being "
+    "MINIMIZED stops it, in windowed and exclusive fullscreen alike (2026-09-20); merely "
+    "UNFOCUSED does NOT (2026-08-30, a ratio of 1.00); a PAUSED game does NOT (MEASURED "
+    "2026-09-13, it kept answering). So restore the window if it is minimized and run it "
+    "again -- this is RETRYABLE, not a failure, and retrying costs nothing because the mod "
+    "re-arms itself every ~2s."
 )
+
+#: Said instead of the hint above once `game_is_minimized` has ANSWERED. One line each,
+#: because a measured state needs a diagnosis rather than a survey of the alternatives.
+MINIMIZED_DIAGNOSIS = (
+    " MEASURED: X4's window is MINIMIZED, and the frame loop stops when it is -- in "
+    "windowed and exclusive fullscreen alike (2026-09-20). The channel is polled from that "
+    "loop, so nothing could answer. Restore the window and run it again: this is RETRYABLE, "
+    "not a failure, and the mod re-arms itself every ~2s."
+)
+
+NOT_MINIMIZED_DIAGNOSIS = (
+    " MEASURED: X4's window is NOT minimized, so the frame loop should be running and this "
+    "is NOT the usual cause -- do not go and un-minimize anything. Merely UNFOCUSED is fine "
+    "(2026-08-30) and a PAUSED game still answers (2026-09-13). Retry once, since the mod "
+    "re-arms every ~2s; if it keeps failing, the game is hung or the pipe name differs."
+)
+
+
+def game_is_minimized() -> bool | None:
+    """Is X4's window MINIMIZED? True / False / **None when it could not be determined**.
+
+    This is the one health signal that separates the common retryable failure from a real
+    one, and it replaces an essay that had to hedge across every cause because nothing could
+    measure any of them.
+
+    ⚠ NO VISIBLE WINDOW IS **None**, NOT False. "I found no window to ask about" is a fact
+    about the search, not about the window -- answering False there would put the second
+    claim in the first one's grammar, which is CLAUDE.md #34 exactly.
+
+    VERIFIED IN GAME 2026-09-20, which was the open risk: the handle SURVIVES exclusive
+    fullscreen and alt-tab-away (same hwnd throughout, and across a display-mode change), so
+    `IsIconic` carries the diagnosis in BOTH display modes. Not covered: a HUNG game.
+    `IsHungAppWindow` is not exported by this pywin32 and a hang cannot be induced on demand,
+    so that state is deliberately left unmeasured rather than guessed at.
+    """
+    from . import _livedump          # deferred, like `game_is_running` below
+    pids = _livedump.game_pids()
+    if not pids:
+        return None
+    try:
+        import win32gui
+        import win32process
+    except ImportError:
+        # silent-ok: pywin32 is a DEV-ONLY, Windows-only extra (pyproject `dev` group). Its
+        # absence costs this one diagnosis and nothing else -- the caller falls back to the
+        # hint, which is what every refusal said before this function existed.
+        return None
+    wanted = set(pids)
+    states: list[bool] = []
+
+    def visit(hwnd, _):
+        if not win32gui.IsWindowVisible(hwnd):
+            return
+        try:
+            _tid, wpid = win32process.GetWindowThreadProcessId(hwnd)
+        except Exception:      # noqa: BLE001 - silent-ok: one unreadable hwnd out of many
+            return             # must not abort the sweep; it just is not evidence.
+        if wpid in wanted:
+            states.append(bool(win32gui.IsIconic(hwnd)))
+
+    try:
+        win32gui.EnumWindows(visit, None)
+    except Exception:          # noqa: BLE001
+        # silent-ok: the THIRD state again. A failed enumeration is "could not ask".
+        return None
+    if not states:
+        return None            # see the docstring: no window found is NOT "not minimized"
+    # ALL, not ANY: X4 can own more than one visible top-level window, and the frame loop
+    # stops only when the game itself is down. One non-iconic window is enough to refute it.
+    return all(states)
 
 
 class LiveQueryUnavailable(Exception):
@@ -495,15 +573,29 @@ def helper_is_deployed() -> bool | None:
         return None
 
 
+def _frame_loop_text(minimized: bool | None) -> str:
+    """The frame-loop half of a refusal: a DIAGNOSIS once measured, the hint when not.
+
+    One place, so the three call sites cannot drift apart again -- two of them already had.
+    """
+    if minimized is True:
+        return MINIMIZED_DIAGNOSIS
+    if minimized is False:
+        return NOT_MINIMIZED_DIAGNOSIS
+    return MINIMIZED_HINT
+
+
 def _no_connection_reason(path: str, timeout: float, running: bool | None,
-                          loaded: bool | None, deployed: bool | None) -> str:
+                          loaded: bool | None, deployed: bool | None,
+                          minimized: bool | None) -> str:
     """The refusal text for "nothing connected", built from what was MEASURED.
 
     Pure and separate from the wait loop so every branch is testable without a pipe, a game, or
     a clock. The branches are ordered by how much they narrow the user's next action.
 
-    *deployed* is required, not defaulted, for the reason `_registry.mods`' scope argument is:
-    a default would let a caller silently get one world's answer while meaning the other.
+    *deployed* and *minimized* are required, not defaulted, for the reason `_registry.mods`'
+    scope argument is: a default would let a caller silently get one world's answer while
+    meaning the other.
     """
     if running is False:
         return (f"X4 is NOT RUNNING, so nothing could connect to {path}. "
@@ -547,8 +639,8 @@ def _no_connection_reason(path: str, timeout: float, running: bool | None,
     if running is True and loaded is True:
         return (head + " MEASURED: the mod DID load this session (its marker is in a live "
                 "debug.txt), so this is NOT a deployment problem -- the game is not EXECUTING "
-                "the poll." + MINIMIZED_HINT)
-    return head + MINIMIZED_HINT
+                "the poll." + _frame_loop_text(minimized))
+    return head + _frame_loop_text(minimized)
 
 
 def pipe_name() -> str:
@@ -698,8 +790,12 @@ class LivePipe:
                 # Deployment is read on the same condition and for the same reason: describing
                 # an install is only useful while there is a process it could have answered on.
                 deployed = helper_is_deployed() if running is not False else None
+                # Same condition again: a window state is only worth reporting while there is
+                # a process that owns one.
+                minimized = game_is_minimized() if running is not False else None
                 raise LiveQueryUnavailable(
-                    _no_connection_reason(self.path, self.timeout, running, loaded, deployed))
+                    _no_connection_reason(self.path, self.timeout, running, loaded, deployed,
+                                          minimized))
             time.sleep(0.05)
 
     # -- exchange ----------------------------------------------------------- #
@@ -726,7 +822,7 @@ class LivePipe:
                     f"game not EXECUTING, not a deployment problem. It is minimized in "
                     f"exclusive fullscreen, or hung: the poller stops with the frame loop. "
                     f"A PAUSED game is not a cause -- MEASURED 2026-09-13, it still answers."
-                    + MINIMIZED_HINT
+                    + _frame_loop_text(game_is_minimized())
                 )
             time.sleep(0.02)
 

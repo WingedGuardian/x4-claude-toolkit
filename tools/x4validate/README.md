@@ -164,22 +164,36 @@ archives on disk.
 
 If a pipe verb cannot reach the game it refuses with **rc 2** and names what is missing,
 including both installs — a refusal that cannot tell you what to install is half a
-refusal.
+refusal. Since 2026-09-20 it **measures** rather than surveys: whether X4 is running
+(`tasklist`), whether the helper extension is in the set the engine would load
+(`mods("active")`), whether it logged its load marker in a *live* `debug.txt`, and whether
+its window is minimized (`IsIconic`). Each answers **true / false / could-not-determine**,
+and a refusal reports only the ones it actually measured.
 
-⚠ **Do not MINIMIZE the game. Merely unfocused is fine**, and those are two different
-measurements of different ages, kept apart on purpose:
+⚠ **Do not MINIMIZE the game. Merely unfocused is fine.** Three claims, each with its own
+evidence and date — they are kept apart because flattening them is what made the old
+advice ("X4 stops executing when it is not in the foreground") wrong:
 
-- **windowed**, measured 2026-08-30 by sampling the engine's own `getElapsedTime()` over
-  a 30 s wall window — unfocused **32.98 s / 32.98 s** and focused **32.24 / 32.24**, a
-  ratio of **1.00 in both**. A 370-query harvest completed cleanly while unfocused. That
-  clock is real time and keeps running while paused, so this shows the frame loop runs,
-  which is what the channel needs; it is not a measurement of simulation speed.
-- **minimized in exclusive fullscreen** — an **older** figure, **not re-measured**:
-  574.76 s of engine time across 70.4 min (**13.6%**). That case never separated
-  minimized from merely unfocused, which is how it came to be generalised to "not in the
-  foreground". Scope it to minimized.
+- **unfocused is fine** — measured 2026-08-30 by sampling the engine's own
+  `getElapsedTime()` over a 30 s wall window: unfocused **32.98 s / 32.98 s** and focused
+  **32.24 / 32.24**, a ratio of **1.00 in both**. A 370-query harvest completed cleanly
+  while unfocused. That clock is real time and keeps running while paused, so this shows
+  the frame loop runs, which is what the channel needs; it is not a measurement of
+  simulation speed.
+- **minimized stops it, in BOTH display modes** — originally one figure from exclusive
+  fullscreen only (574.76 s of engine time across 70.4 min, **13.6%**), which never
+  separated minimized from merely unfocused and is how the generalisation arose. Measured
+  directly 2026-09-20 in both modes: windowed-minimized **0.031** CPU core-s/s and
+  fullscreen-alt-tabbed **0.016**, against **0.81–25.9** while active. The window handle
+  survives a display-mode change and an alt-tab away, so `IsIconic` is a valid test in
+  either mode.
+- **a paused game is not a cause** — measured 2026-09-13: it kept answering on an open
+  connection and accepted a new one.
 
 Either way it is retryable, not a failure: the channel re-arms itself every ~2 s.
+
+**Not measured: a HUNG game.** `IsHungAppWindow` is not exported by this `pywin32`, and a
+hang cannot be induced on demand, so that state is left unreported rather than guessed at.
 
 **Message size**: replies are bounded before sending, because an over-long message does
 not truncate — it tears the pipe down. (That is the SEND direction, game to us. The READ
@@ -213,8 +227,10 @@ and the mod's own readme states no limit — so every reply carries its own **by
 and checksum**, and `ramp` measures the ceiling instead of assuming it.
 
 The three silence states are kept apart, never collapsed into one verdict: **never
-connected** (game not running, or the mod not deployed), **connected then silent** (the
-mod IS loaded, but the game is minimized in exclusive fullscreen, or hung), and answering.
+connected** (game not running, the mod not deployed, or no save loaded yet — the mod
+initialises on game load, so at the main menu it has legitimately not armed),
+**connected then silent** (the mod IS loaded, but the game is minimized, or hung), and
+answering.
 A PAUSED game is not silent: MEASURED 2026-09-13, it answers on an open connection and
 accepts a new one. A sibling project shipped a
 liveness probe that was wrong for three releases because it hung in exactly the case it

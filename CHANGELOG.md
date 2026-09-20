@@ -4,6 +4,22 @@
 
 ### Added
 
+- **A "nothing connected" refusal now MEASURES the cause instead of surveying them.** Three
+  probes, each answering **true / false / could-not-determine** and none of them deciding an
+  outcome — they only make the message specific:
+  `_livepipe.helper_is_deployed()` asks `_registry.mods("active")` whether the helper extension
+  is in the set the ENGINE would load (never `"installed"` — a profile-disabled folder on disk
+  is not loaded, CLAUDE.md #24); `helper_loaded_this_session()` reads the load marker from a
+  *live* `debug.txt`; and `game_is_minimized()` resolves X4's pids (`_livedump.game_pids()`,
+  `tasklist /FO CSV`) and asks `IsIconic` about its visible windows. **No visible window is
+  `None`, not False** — that is a fact about the search, not about the window.
+  ⚠ **The defect this fixes, found in game 2026-09-20 in code merged the same day:** the helper
+  initialises on GAME LOAD, so at the MAIN MENU its marker is legitimately absent — and the
+  refusal concluded *"most likely not installed or not enabled"*, sending users to check an
+  install that was fine. The marker alone cannot separate those two causes because it only
+  reports a consequence of the install; the deployment read measures it directly. With
+  deployment unknown the message now names BOTH causes rather than picking one.
+
 - **A hard request-size cap on the live channel (`_livepipe.MAX_REQUEST_BYTES`, 1900 bytes).**
   `LivePipe.ask()` — the one place every client request is written — refuses any request over the
   cap with `LiveRequestTooLarge` **before** the write, so no verb, passthrough or ramp can send an
@@ -151,6 +167,25 @@
   is trivially reversible. The batching/alignment logic is unchanged behind the gate.
 
 ### Changed
+
+- **The 1,798-character `MINIMIZED_HINT` essay appended to EVERY live refusal is replaced by a
+  one-line diagnosis.** It existed because nothing could measure which cause applied, so it
+  hedged across all of them on every failure. `game_is_minimized()` measures the main one, so a
+  refusal now says either *"X4's window is MINIMIZED … restore it and run it again"* or *"X4's
+  window is NOT minimized, so this is not the usual cause — do not go and un-minimize
+  anything"*, with the survey kept only for the could-not-determine case. It also sheds two
+  things that stopped being its job: *"grep debug.txt for the load marker"* (now read for the
+  user) and *"the mod is probably not installed"* (now measured, in its own branch, which is
+  where the extension and its `ws_2042901274` dependency are named). The full provenance of
+  every measurement moved into the module comment above the constant, out of user output —
+  `test_the_hint_provenance_is_not_lost_from_the_source` fails if a figure is dropped, so
+  "shorten the text" cannot quietly become "drop the evidence".
+  **MEASURED 2026-09-20, and it is a new engine fact:** minimized stops the frame loop in
+  *both* display modes (windowed-minimized 0.031 CPU core-s/s, fullscreen-alt-tabbed 0.016,
+  against 0.81–25.9 active) — the prior figure covered exclusive fullscreen only. The window
+  handle survives a display-mode change and an alt-tab away, which is what makes `IsIconic`
+  valid in either mode. A HUNG game stays unreported: `IsHungAppWindow` is not exported by this
+  `pywin32` and a hang cannot be induced on demand, so it is left unmeasured rather than guessed.
 
 - The X4 Toolkit Helper mod is version 101. Its `IsGamePaused` declaration is guarded
   separately from the shared ffi block, so a failure there disables only the pause verbs and
