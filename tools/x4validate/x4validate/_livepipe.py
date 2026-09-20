@@ -458,12 +458,52 @@ def helper_loaded_this_session() -> bool | None:
     return _LOAD_MARKER in text
 
 
+#: The helper extension's own manifest id, as shipped in this repo at
+#: `mods/x4_toolkit_helper/content.xml`. Not a deployment-specific detail and therefore not an
+#: F73 problem: we author the mod, so the id is ours and is identical in every install.
+HELPER_EXTENSION_ID = "x4_toolkit_helper"
+
+
+def helper_is_deployed() -> bool | None:
+    """Is the helper extension one the ENGINE WOULD LOAD? True / False / **None**.
+
+    The companion question to `helper_loaded_this_session`, and the one that disambiguates it.
+    An absent load marker has TWO causes -- the mod is not installed/enabled, or the game has
+    not loaded a game yet (the mod initialises on game load, so at the MAIN MENU the marker is
+    legitimately absent). The marker alone cannot separate them; this can, because it measures
+    the install directly instead of inferring it from a log.
+
+    Scope is `"active"`, never `"installed"` (CLAUDE.md #24): a folder on disk that the profile
+    has switched off is NOT something the engine loads, and calling it deployed would reproduce
+    the exact false pass that made the scope argument mandatory.
+
+    None when the question cannot be answered honestly -- an unconfigured toolkit, or an
+    extensions root that cannot be read. ⚠ One inherited soft edge, documented rather than
+    re-implemented: `_registry.mods` FAILS OPEN on an unreadable profile `content.xml`, so on
+    such a machine a profile-disabled helper reads True. Like every signal here this only ever
+    shapes a MESSAGE; it never decides an outcome.
+    """
+    try:
+        from . import _registry
+        return any(m.get("id") == HELPER_EXTENSION_ID
+                   for m in _registry.mods("active"))
+    except (_paths.Unconfigured, OSError):
+        # silent-ok: None IS the channel here -- the same documented third state the marker
+        # read uses. A toolkit that was never told where `extensions\` is cannot be allowed to
+        # report "the mod is not installed", which is a claim about the world rather than
+        # about our configuration. Costs specificity, never a verdict.
+        return None
+
+
 def _no_connection_reason(path: str, timeout: float, running: bool | None,
-                          loaded: bool | None) -> str:
+                          loaded: bool | None, deployed: bool | None) -> str:
     """The refusal text for "nothing connected", built from what was MEASURED.
 
     Pure and separate from the wait loop so every branch is testable without a pipe, a game, or
     a clock. The branches are ordered by how much they narrow the user's next action.
+
+    *deployed* is required, not defaulted, for the reason `_registry.mods`' scope argument is:
+    a default would let a caller silently get one world's answer while meaning the other.
     """
     if running is False:
         return (f"X4 is NOT RUNNING, so nothing could connect to {path}. "
@@ -473,13 +513,37 @@ def _no_connection_reason(path: str, timeout: float, running: bool | None,
             if running is True else
             f"nothing connected to {path} within {timeout:.0f}s, and I could not "
             f"determine whether X4 is running.")
+    # Deployment is read BEFORE the marker because it measures the install directly, while the
+    # marker only reports a consequence of it -- but a marker that says LOADED outranks it,
+    # since a mod cannot log from a live run without being installed. That combination means
+    # the mod set changed under the running game, not that it never loaded.
+    if deployed is False and loaded is not True:
+        return (head + " MEASURED: the helper extension is NOT in the set the engine would "
+                "load, so it could not have answered. Check the extension is in the GAME-ROOT "
+                "`extensions\\` folder (not the profile's), that its manifest and the profile "
+                "both have it enabled, and that its named-pipe dependency (Mod Support APIs) is "
+                "installed too. Only once all of those hold is this a frame-loop problem.")
     if running is True and loaded is False:
-        # The narrowing this function exists for: do NOT send this user to the window.
+        if deployed is True:
+            # THE NARROWING THIS BRANCH EXISTS FOR, and the defect it replaces. Until
+            # 2026-09-20 an absent marker was reported as "most likely not installed" -- which
+            # is wrong at the MAIN MENU, where the mod is installed and simply has not
+            # initialised yet. MEASURED in game that day: menu, no save loaded, marker absent,
+            # extension present and enabled.
+            return (head + " MEASURED: the helper extension IS installed and enabled, so this "
+                    "is NOT a deployment problem -- but it has not logged its load marker in a "
+                    "live debug.txt, and it initialises on GAME LOAD, not at the main menu. So "
+                    "the game has most likely not loaded a save yet (or is still loading one). "
+                    "Load a save and retry.")
+        # deployed is None: two live causes and no evidence that separates them. Name both,
+        # cheapest check first, rather than picking one -- picking one is the defect above.
         return (head + " MEASURED: the mod did NOT log its load marker in a live debug.txt, so "
-                "it is most likely not installed or not enabled. Check the extension is in the "
-                "GAME-ROOT `extensions\\` folder (not the profile's), that it is enabled, and "
-                "that its named-pipe dependency (Mod Support APIs) is installed too. Only if all "
-                "three hold is this a frame-loop problem.")
+                "it has not initialised -- and I could NOT determine whether it is installed, "
+                "so this is TWO possibilities, not one. (1) No game is loaded yet: the mod "
+                "initialises on game load, not at the main menu -- if you are at the menu, load "
+                "a save and retry. (2) It is not installed or not enabled: check the extension "
+                "is in the GAME-ROOT `extensions\\` folder (not the profile's), that it is "
+                "enabled, and that Mod Support APIs is installed too.")
     if running is True and loaded is True:
         return (head + " MEASURED: the mod DID load this session (its marker is in a live "
                 "debug.txt), so this is NOT a deployment problem -- the game is not EXECUTING "
@@ -631,8 +695,11 @@ class LivePipe:
                 # game it could add nothing, and reading a log to describe a process that is
                 # not there is how a stale file gets quoted as current state.
                 loaded = helper_loaded_this_session() if running is True else None
+                # Deployment is read on the same condition and for the same reason: describing
+                # an install is only useful while there is a process it could have answered on.
+                deployed = helper_is_deployed() if running is not False else None
                 raise LiveQueryUnavailable(
-                    _no_connection_reason(self.path, self.timeout, running, loaded))
+                    _no_connection_reason(self.path, self.timeout, running, loaded, deployed))
             time.sleep(0.05)
 
     # -- exchange ----------------------------------------------------------- #
