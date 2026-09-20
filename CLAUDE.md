@@ -70,26 +70,21 @@ extensions root, so a mod deployed to the profile makes X4 report every dependen
 declares as MISSING.
 **Distribute:** pack with XRCatTool → `ext_01.cat` + `ext_01.dat`.
 
-## XML Patching Rules
+## Silent No-Op Traps (Mandatory)
 
-**Default: XML diff patch.** Mods store only what changed.
+The failures that log nothing. These bite before any skill would fire, so they live here.
 
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<diff>
-  <replace sel="//ware[@id='ore']/@price_average">500</replace>
-  <add sel="//wares">
-    <ware id="my_new_ware" ... />
-  </add>
-</diff>
-```
+1. **A diff path must mirror the game path EXACTLY.** One wrong folder and the patch does nothing.
+2. **A `sel=` matching MULTIPLE nodes applies NOTHING.** RFC 5261 wants exactly one match; X4 logs
+   *"Multiple matching nodes ... Skipping node"*. Disambiguate with a content predicate, and run
+   `x4validate` — it flags this.
+3. **Patching another MOD uses a NESTED path**, `<your_mod>/extensions/<target>/<mirrored path>`.
+   The `<dependency id=>` is the target's `content.xml` **id**, which can differ from its folder.
+4. **`content.xml save="1"` bakes the mod into saves** — removing it later can corrupt them.
 
-**Exception — complete file** only when introducing a brand-new file that doesn't exist in
-the base game (a new script, a new ware group for a new faction).
-
-**File path mirroring is critical:** a diff patch's path inside the mod must EXACTLY mirror
-the base game path. One folder-name mismatch and the patch silently does nothing.
-
+→ **the `x4-xml-patching` skill** carries the rest: the diff idiom, merge and op-order semantics,
+load order, cat/dat, t-files, and the overlay decision table (which fix belongs in which overlay).
+**`x4-update-mod`** carries the 7.x→9.0 migration, including the `space=` family that now refuses.
 ## Validation Convention (Standing Rule)
 
 Running `x4validate` is routine and non-optional — like checking `debug.txt`.
@@ -242,20 +237,6 @@ cross-file dependency maps, the version migration map, and tool notes. **Consult
 making changes.** After every session, bug, or research task, extract new facts and add them.
 The environment gets smarter the more you use it.
 
-## Top XML Gotchas
-
-1. **Diff patch file paths must EXACTLY mirror game internal paths** — one folder mismatch = silent no-op.
-2. **CAT/DAT catalogs override in numeric order** — 09 > … > 01; DLC overrides base; user extensions override everything.
-3. **`t/` translation files and `index/` files are UNIONED, not overridden** — same-path files ADD entries across base + DLC + mods. A `{page,t}` may live in neutral `0001.xml` OR English `0001-l044.xml`; check both.
-4. **content.xml `save="1"`** — mod is baked into saves; removing it can corrupt them. Use `save="0"` for cosmetic/UI mods.
-5. **content.xml does NOT reflect what's installed** — it can list dead/unsubscribed entries the engine ignores. The `extensions\` folder is the source of truth.
-6. **9.0: `find_station` (and the whole `find_*`/`count_*`/`set_space_*` family) now REQUIRE `space=`** — a 7.x mod without it throws `Required attribute 'space' is missing` on load. Galaxy-wide = `space="player.galaxy"`.
-7. **A `sel=` matching MULTIPLE nodes is a SILENT NO-OP** — RFC 5261 requires exactly one match; X4 logs `Multiple matching nodes for path '<sel>' ... Skipping node` and applies **nothing**. The patch reads fine and does nothing. Disambiguate with a predicate (prefer a content predicate like `[material[@shader='x']]` over a positional index). Run `x4validate` — it flags this.
-8. **Patching ANOTHER mod uses a NESTED path** — `<your_mod>/extensions/<target_folder>/<mirrored path>`, not a bare mirrored path. The `<dependency id=>` you declare is the target's `content.xml` **id**, which can differ from its folder name.
-9. **A stale `<remove>` in an old mod can delete content the base game added LATER**, breaking every other mod that uses it. Diagnose *why* a remove exists (usually half of a stale remove/re-add pair) before assuming the author meant it.
-
-*Consult `KNOWLEDGEBASE.md` for the full list and the 7.x→9.0 migration map.*
-
 ## x4live is EXPERIMENTAL — say so before you use it
 
 **Before running any `x4live` command against the user's game, tell them it is
@@ -277,41 +258,6 @@ Every other verb only reads, and `content.xml` declares `save="false"`. What is 
 
 So: recommend a scratch save, and never imply the tool is a settled instrument.
 
-## Which Overlay Does a Fix Belong In? (Mandatory)
-
-Personal fixes live in load-last `zzz_yourname_*` overlays. Deciding **which** one is not about the
-file you patch — it is about **what happens to this fix when the mod it relates to is removed or
-updated.** Three outcomes; ask which one applies:
-
-| Outcome on removal | When | Where it goes |
-|---|---|---|
-| **Clean no-op** — the `sel=` stops matching | Target node lives in the other mod's file, or in a node that mod added | Its own overlay, **optional** dep (or general overlay + `if=` guard if the target is a vanilla file) |
-| **Dangling reference** — the op still applies and injects something that no longer exists | The **payload** names another mod's content: a variable it defines, a texture it ships, a library cue it owns | Its own overlay, **hard** `<dependency>` — `if=` does NOT protect this, it guards the selector, not the payload |
-| **Silent wrongness** — the op applies, is structurally valid, and is now semantically wrong | Vanilla node **and** vanilla payload, but the *reason for the value* was another mod | **This is the dangerous one — nothing detects it.** Prefer the mod-specific overlay so it leaves with its rationale. If it must stay general, state the coupling in `content.xml`'s description. |
-
-**The data axis matters more than the file axis.** Ask *where the meaning lives*, not just where
-the node lives:
-- **Vanilla field, vanilla meaning, patched inside a mod's file** (e.g. repairing `@shield` on a
-  mod's ship macro to a schema-valid value) → mod-specific. It dies with its target, and that is
-  correct.
-- **Vanilla field, vanilla meaning, but mod-motivated value** (e.g. `coreboundaryzoneheight=300000`
-  set only because a 3D-sector mod is installed) → silent-wrongness row. Removing that mod leaves
-  stations 300 km off-plane with nothing logging a complaint.
-
-**Other axes that force a split:**
-- **Repair vs preference.** Never mix them. A repair is shippable upstream or to the community; a
-  personal balance tweak is not. Bundled, you cannot revert one without losing the other.
-- **Re-verification cadence.** A fix must be re-validated on its *target's* release schedule. One
-  bundled overlay means every upstream update forces a re-validate of everything in it.
-- **Load-order coupling.** A declared dependency loads EARLIER, so optional deps are how you pin
-  order. A general overlay accumulates the load-order deps of every unrelated fix inside it.
-- **Interaction fixes** (only needed when mods X *and* Y are both present) → own overlay, optional
-  dep on both.
-- **Rollback granularity.** One mod = one version. Bundled fixes cannot be rolled back separately.
-
-**Quick test:** *"If I uninstalled the mod this relates to, would this file be meaningless — or
-worse, quietly wrong?"* Either answer → its own overlay. See KNOWLEDGEBASE "Overlay architecture"
-for the worked examples and the known violations.
 ## Nexus Mod Research (Standing Rule)
 
 **Always search a mod's Nexus Mods page before investigating or editing it.** Check the description, articles, changelogs, comments, and bug reports before going in blind. This saves enormous time — most issues have been seen by other users.

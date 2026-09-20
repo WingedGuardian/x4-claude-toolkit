@@ -111,6 +111,12 @@ worse, quietly wrong?"* Either answer → its own overlay.
 
 ## 4. Selector and merge semantics
 
+**A `sel=` matching MULTIPLE nodes is a SILENT NO-OP.** RFC 5261 requires exactly one
+match: X4 logs `Multiple matching nodes for path '<sel>' ... Skipping node` and applies
+**nothing**, so the patch reads fine and does nothing. Disambiguate with a CONTENT
+predicate (`[material[@shader='x']]`) over a positional index, and run `x4validate` — it
+flags this.
+
 **#17 — A diff's ops apply IN ORDER, to a tree the earlier ops have already changed.** Two
 shapes: a later op selecting into an earlier op's subtree (MEASURED: 2 into a `<remove>`, **458
 into an `<add>`** across 18 mods), and — dominant — a selector that predicates on a value an
