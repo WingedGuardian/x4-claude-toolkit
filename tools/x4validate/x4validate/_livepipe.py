@@ -555,22 +555,35 @@ def helper_is_deployed() -> bool | None:
     has switched off is NOT something the engine loads, and calling it deployed would reproduce
     the exact false pass that made the scope argument mandatory.
 
-    None when the question cannot be answered honestly -- an unconfigured toolkit, or an
-    extensions root that cannot be read. ⚠ One inherited soft edge, documented rather than
-    re-implemented: `_registry.mods` FAILS OPEN on an unreadable profile `content.xml`, so on
-    such a machine a profile-disabled helper reads True. Like every signal here this only ever
-    shapes a MESSAGE; it never decides an outcome.
+    None when the question cannot be answered honestly -- an unconfigured toolkit, an extensions
+    root that cannot be read, or **an EMPTY active set**. That last one is not a nicety: a
+    CONFIGURED BUT NONEXISTENT `extensions\\` root raises nothing at all. `_paths` resolves it
+    happily and `scan_installed` walks a directory that is not there, yielding 0 mods and 0
+    drops, in silence -- so `any()` over it answered False and this function reported "not
+    installed" about a machine it had never looked at. MEASURED 2026-09-20 against a deliberately
+    wrong config. An empty population cannot support a negative (CLAUDE.md #9).
+
+    ⚠ One inherited soft edge, documented rather than re-implemented: `_registry.mods` FAILS
+    OPEN on an unreadable profile `content.xml`, so on such a machine a profile-disabled helper
+    reads True. Like every signal here this only ever shapes a MESSAGE; it never decides an
+    outcome.
     """
     try:
         from . import _registry
-        return any(m.get("id") == HELPER_EXTENSION_ID
-                   for m in _registry.mods("active"))
+        active = _registry.mods("active")
     except (_paths.Unconfigured, OSError):
         # silent-ok: None IS the channel here -- the same documented third state the marker
         # read uses. A toolkit that was never told where `extensions\` is cannot be allowed to
         # report "the mod is not installed", which is a claim about the world rather than
         # about our configuration. Costs specificity, never a verdict.
         return None
+    if not active:
+        # The denominator IS the finding. Zero mods means the scan looked somewhere wrong far
+        # more often than it means a bare install, and only one of those two readings is safe
+        # to be wrong about. A genuinely vanilla install loses specificity and still gets a
+        # message naming both causes.
+        return None
+    return any(m.get("id") == HELPER_EXTENSION_ID for m in active)
 
 
 def _frame_loop_text(minimized: bool | None) -> str:

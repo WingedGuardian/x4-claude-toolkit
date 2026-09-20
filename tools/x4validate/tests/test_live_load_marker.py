@@ -112,14 +112,18 @@ def test_helper_is_deployed_asks_for_ACTIVE_not_INSTALLED(monkeypatch):
     loads; calling it deployed is the false pass that made the scope argument mandatory. The
     stub answers a DIFFERENT set per scope, so an `installed` caller would still read True."""
     scopes: list[str] = []
+    other = {"id": "ws_2042901274", "enabled": True}
 
     def per_scope(scope, *a, **kw):
         scopes.append(scope)
-        # on disk but profile-disabled: present under "installed", absent under "active"
-        return [] if scope == "active" else [{"id": lp.HELPER_EXTENSION_ID, "enabled": False}]
+        # The helper is on disk but profile-disabled: present under "installed", absent under
+        # "active". Both sets are NON-EMPTY on purpose -- an empty "active" now answers None
+        # (see the empty-set test below), which would make this pass for the wrong reason.
+        return [other] if scope == "active" else [other,
+                                                 {"id": lp.HELPER_EXTENSION_ID, "enabled": False}]
 
     monkeypatch.setattr("x4validate._registry.mods", per_scope)
-    assert lp.helper_is_deployed() is False
+    assert lp.helper_is_deployed() is False, "an 'installed' caller would have read True here"
     assert scopes == ["active"], f"scope must be 'active', got {scopes}"
 
 
@@ -141,6 +145,32 @@ def test_an_UNREADABLE_extensions_root_REFUSES(monkeypatch):
 
     monkeypatch.setattr("x4validate._registry.mods", boom)
     assert lp.helper_is_deployed() is None
+
+
+def test_an_EMPTY_mod_set_REFUSES_instead_of_reporting_NOT_deployed(monkeypatch):
+    """★ A DEFECT IN THE FIRST VERSION OF THIS FUNCTION, found 2026-09-20 by running it against
+    a deliberately-wrong config rather than a stub.
+
+    A CONFIGURED BUT NONEXISTENT `extensions\\` root raises nothing -- `_paths` resolves it
+    happily and `scan_installed` walks a directory that is not there, yielding 0 mods and 0
+    drops, in silence. `any()` over that answered **False**, so the refusal asserted "the helper
+    extension is NOT in the set the engine would load" when the truth was "I could not look".
+    MEASURED: 0 active mods, 0 dropped, no exception. The `except Unconfigured/OSError` guard
+    never fired, and every test here stubbed `mods` to RAISE, so none of them could see it.
+
+    An EMPTY population cannot support a negative (CLAUDE.md #9). The cost of None is
+    specificity on a genuinely vanilla install; the cost of False is a confident wrong claim
+    about someone's install. Refuse."""
+    monkeypatch.setattr("x4validate._registry.mods", lambda scope, *a, **kw: [])
+    assert lp.helper_is_deployed() is None
+
+
+def test_a_NON_EMPTY_mod_set_WITHOUT_the_helper_still_reports_FALSE(monkeypatch):
+    """The twin, and it is the whole point of the clause above: refusing on an empty set must
+    NOT become refusing whenever the helper is absent. A populated mod set that does not
+    contain it IS evidence, and that user still needs to be told to check their install."""
+    _with_active(monkeypatch, ["ws_2042901274", "something_else"])
+    assert lp.helper_is_deployed() is False
 
 
 # --- is the window MINIMIZED? ------------------------------------------------ #

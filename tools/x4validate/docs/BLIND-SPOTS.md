@@ -6836,6 +6836,25 @@ outranks it, since a mod cannot log from a live run without being installed; tha
 means the mod set moved under the running game. With deployment unknown the message names BOTH
 causes rather than picking one -- picking one is the defect.
 
+⚠ **AND THE FIX HAD THE SAME DEFECT ONE LAYER DOWN, found the same day by running it against a
+deliberately wrong config instead of a stub.** A **configured but NONEXISTENT** `extensions\`
+root raises nothing: `_paths` resolves it happily and `scan_installed` walks a directory that is
+not there. MEASURED: **0 active mods, 0 dropped, no exception** -- so the `except
+Unconfigured/OSError` guard never fired and `any()` over the empty list answered **False**,
+reporting *"the helper extension is NOT in the set the engine would load"* about a machine the
+tool had never looked at. Every test stubbed `_registry.mods` to RAISE, so none of them could
+see it; the real-config run is what did. `helper_is_deployed` now returns **None on an empty
+active set** -- an empty population cannot support a negative (CLAUDE.md #9), and a genuinely
+vanilla install loses specificity rather than being told something false. Guarded in both
+directions by `test_an_EMPTY_mod_set_REFUSES_instead_of_reporting_NOT_deployed` and its twin
+`test_a_NON_EMPTY_mod_set_WITHOUT_the_helper_still_reports_FALSE`, and by two mutants
+(`if False:` / `if True:`), each killed by the test written for it.
+
+★ **The transferable lesson: a stub that raises cannot test a path that returns quietly.** The
+whole point of this function is to refuse rather than guess, and the one way it failed to refuse
+was the one way no stub reproduced. Exercise a refusal path against a real wrong configuration
+at least once.
+
 **Scope note: what is still NOT measured.** A HUNG game. `IsHungAppWindow` is not exported by this
 `pywin32` (VERIFIED 2026-09-20 and again on re-check) and a hang cannot be induced on demand, so
 that state is left unreported rather than guessed at. `game_is_minimized()` covers the common
