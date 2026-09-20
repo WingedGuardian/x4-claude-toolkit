@@ -168,6 +168,36 @@
 
 ### Changed
 
+- **Weapon `dps` is now COMPUTED, not listed as an unmodelled gap.** `dps` and its four
+  per-channel siblings (`hullshielddps`, `shieldonlydps`, `hullnoshielddps`, `hullonlydps`)
+  move out of `_DERIVED` and into `_DERIVE` — the same move `storagecapacity` made in
+  2026-08-30, at a higher evidence bar. **MEASURED against a live engine harvest: 38 of 39
+  weapon macros exact** at 1e-6 relative (beam 15/15, continuous 9/9, clip 14/15;
+  `reloadrate` 39/39). Run through the real oracle, **195 fields move from "our store cannot
+  produce these" into real comparisons and 194 of them agree.**
+  What had made DPS look weapon-type-dependent across six irreducible variants was **three
+  missing inputs, not three physics**: `reload.time` is the reciprocal spelling of
+  `reload.rate` (of 299 bullet macros, 174 carry one and 119 the other, 0 carry both — so
+  reading a single spelling silently drops 40% of bullets); `bullet.chargetime` is part of
+  the firing period; and area damage folds into the *same* channel as its direct damage.
+  With all three it is one formula whose only branch is beam-vs-not.
+  ⚠ **That branch reads `bullet.attach`, never the engine's `isbeamweapon`.** `_DERIVE`
+  feeds the oracle that compares our value *against* the engine, so a model taking an engine
+  input would be circular — it would score well and prove nothing. `bullet.attach` is the
+  store-side discriminator, measured to agree with `isbeamweapon` **39 of 39**.
+  The single disagreement is reported, not suppressed: it is the only macro in the
+  population carrying both `damage.shield` and `damage.noshield`, and there the engine omits
+  the shield-only channel the other 38 include. **n=1 draws no rule.** `sustaineddps` stays
+  in `_DERIVED` — it folds in the heat model, which this formula does not reproduce.
+
+- **`x4live oracle` names a THIRD outcome: `derivation REFUSED`.** A traversal that looked
+  and declined is not "the engine derives this" and not "nobody has mapped it yet".
+  MEASURED while promoting `dps`: 30 rows — the six decorative `*_video_macro` entries,
+  which carry no bullet at all, × five channels — silently moved out of the *named* derived
+  bucket into the generic unmapped one, which is exactly the hiding `_DERIVED` exists to
+  prevent, arriving by the back door the moment a field was promoted. `not mapped yet` is
+  back to its pre-change 1484 and the buckets still sum to the population.
+
 - **The 1,798-character `MINIMIZED_HINT` essay appended to EVERY live refusal is replaced by a
   one-line diagnosis.** It existed because nothing could measure which cause applied, so it
   hedged across all of them on every failure. `game_is_minimized()` measures the main one, so a

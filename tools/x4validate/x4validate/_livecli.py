@@ -364,8 +364,14 @@ _BY_TYPE: dict[str, dict[str, tuple[str, str]]] = {
 #: Naming them separately keeps a known modelling gap from hiding inside a generic
 #: "unmapped" bucket, where it would look like a table that needs more entries.
 _DERIVED = {
-    "dps", "sustaineddps", "hullonlydps", "shieldonlydps", "hullnoshielddps",
-    "hullshielddps", "timetooverheat", "timetocool", "range", "shielddisruption",
+    # ⚠ `dps` and its four per-channel siblings WERE here and have been REMOVED,
+    # 2026-09-20, on the same warrant `storagecapacity` left on: a MEASURED traversal,
+    # 38 of 39 exact against a live engine harvest. What made them look underivable was
+    # three missing inputs, not three different physics -- the whole story is in the
+    # block comment above `_DPS_CHANNELS`. `sustaineddps` STAYS: it folds in the heat
+    # model (overheat, cooling, re-enable), which is a separate unmodelled traversal and
+    # is NOT reproduced by the shot-rate formula.
+    "sustaineddps", "timetooverheat", "timetocool", "range", "shielddisruption",
     # `storagecapacity` REMOVED 2026-08-30: it now has a measured traversal in
     # _DERIVE (sum cargo.max over connected macros), verified 5 of 5 exact across
     # the fixture. `shipstoragecapacity` stays -- see P5: the engine reports 0 for
@@ -476,6 +482,130 @@ def _derive_storagecapacity(con, props: dict[str, str]) -> str | None:
     return str(int(total)) if total == int(total) else str(total)
 
 
+# --------------------------------------------------------------------------- #
+# weapon DPS                                                                   #
+# --------------------------------------------------------------------------- #
+#
+# MEASURED 2026-09-20 against a live `groundtruth --contents` harvest of 45 weapon macros:
+# 39 resolvable (6 are decorative `*_video_macro` with no `bullet.class`), and 38 of those
+# reproduce the engine's `dps` and every per-channel `*dps` EXACTLY at 1e-6 relative.
+# Beam 15/15 · continuous 9/9 · clip 14/15 · `reloadrate` 39/39.
+#
+# ⚠ WHY THIS WAS BELIEVED IMPOSSIBLE UNTIL NOW. `dps` sat in `_DERIVED` under
+# "we do NOT reimplement X4's maths", on the finding that it was weapon-type-dependent
+# across six variants. That was THREE MISSING INPUTS, not three physics:
+#   * `reload.time` is the RECIPROCAL SPELLING of `reload.rate`. MEASURED over the whole
+#     corpus: of 299 bullet macros, 174 carry `reload.rate`, 119 carry `reload.time`, 0
+#     carry both, 6 carry neither. Reading only `reload.rate` silently drops 40% of bullets.
+#   * `bullet.chargetime` (> 0) is part of the firing PERIOD.
+#   * area damage folds into the SAME channel as its direct damage, not a separate one.
+# With all three it is one formula whose only branch is beam-vs-not.
+#
+# ⚠ AND THE BRANCH MUST NOT READ THE ENGINE. The obvious discriminator is the engine's
+# `isbeamweapon`, and using it here would be CIRCULAR: `_DERIVE` feeds the oracle that
+# compares our value AGAINST the engine, so a model taking an engine input proves nothing
+# about the store. MEASURED 2026-09-20: the store's `bullet.attach` agrees with
+# `isbeamweapon` on 39 of 39 (24 at 0, 15 at 1). That is the discriminator used below.
+
+#: Engine channel -> the bullet property feeding it. Each channel takes its DIRECT damage
+#: plus an `areadamage` of the same name; a flak shell's shockwave is more of the same
+#: channel, not a fifth one.
+_DPS_CHANNELS = (
+    ("hullshielddps", "value"),
+    ("shieldonlydps", "shield"),
+    ("hullnoshielddps", "noshield"),
+    ("hullonlydps", "hull"),
+)
+
+
+def _bullet_of(con, props: dict[str, str]) -> dict[str, str] | None:
+    """The store props of the bullet this weapon fires, or None.
+
+    ⚠ Follow `bullet.class` from the EFFECTIVE store, never from `reference\\`. VRO
+    replace-roots weapon macros and CHANGES WHICH BULLET THEY FIRE: vanilla
+    `weapon_arg_l_destroyer_01_mk1_macro` points at `bullet_arg_l_laser_01_mk1_macro`
+    (damage 1900) and the live modded game at `bullet_gen_l_laser_01_mk1_macro`
+    (damage 9350). Reading vanilla produces a 5x "discrepancy" that is entirely the
+    reader's -- it cost a session most of an hour before the store settled it.
+    """
+    ref = props.get("bullet.class")
+    return None if not ref else _store_props(con, ref)
+
+
+def _num(d: dict[str, str], key: str, default: float | None = None) -> float | None:
+    try:
+        return float(d[key])
+    except (KeyError, TypeError, ValueError):
+        return default
+
+
+def _firing_period(b: dict[str, str]) -> float | None:
+    """Seconds per shot, averaged over a clip, or None when the bullet does not say.
+
+    None rather than a guess: a bullet spelling neither `reload.rate` nor `reload.time`
+    (MEASURED: 6 of 299, the spacesuit/story/scenario bullets) has no rate to model, and a
+    fabricated one would be compared against the engine and called agreement.
+    """
+    rate = _num(b, "reload.rate")
+    base = (1.0 / rate) if rate else _num(b, "reload.time")
+    if not base or base <= 0:
+        return None
+    n, reload_s = _num(b, "ammunition.value"), _num(b, "ammunition.reload")
+    if n and n > 0 and reload_s is not None:
+        # A clip of n shots then a long reload; the engine reports the per-shot AVERAGE
+        # over that whole cycle, so n-1 inter-shot gaps plus one reload, divided by n.
+        base = ((n - 1) * base + reload_s) / n
+    charge = _num(b, "bullet.chargetime", 0.0) or 0.0
+    return base + (charge if charge > 0 else 0.0)      # -1 means "no charge", not -1s
+
+
+def _dps_channels(con, props: dict[str, str]) -> dict[str, float] | None:
+    """Every `*dps` channel for this weapon, or None if it cannot be modelled."""
+    b = _bullet_of(con, props)
+    if b is None:
+        return None
+    period = _firing_period(b)
+    if period is None:
+        return None
+    # A BEAM applies its damage for `lifetime` seconds of each period, so its factor is
+    # the DUTY CYCLE rather than the shot rate. That is the model's only branch.
+    beam = (_num(b, "bullet.attach", 0.0) or 0.0) == 1
+    life = _num(b, "bullet.lifetime", 0.0) or 0.0
+    factor = (life / period) if beam else (1.0 / period)
+    mult = (_num(b, "bullet.amount", 1.0) or 1.0) * (_num(b, "bullet.barrelamount", 1.0) or 1.0)
+    out = {}
+    for chan, suffix in _DPS_CHANNELS:
+        dmg = (_num(b, "damage." + suffix, 0.0) or 0.0) + (_num(b, "areadamage." + suffix, 0.0) or 0.0)
+        out[chan] = dmg * factor * mult
+    return out
+
+
+def _fmt(v: float) -> str:
+    return str(int(v)) if v == int(v) else str(v)
+
+
+def _derive_dps(con, props: dict[str, str]) -> str | None:
+    """Total DPS: the sum of every channel. See the block comment above for the evidence."""
+    chans = _dps_channels(con, props)
+    return None if chans is None else _fmt(sum(chans.values()))
+
+
+def _derive_channel(chan: str):
+    """One `*dps` channel, as its own derivation.
+
+    ⚠ A channel that computes to ZERO is returned as "0", not None -- unlike
+    `_derive_storagecapacity`, where a zero would be a fabrication. Here zero is the
+    engine's own answer for a weapon with no damage on that channel (MEASURED: the engine
+    reports `shieldonlydps=0` on 24 of 39), so suppressing it would turn a correct
+    agreement into an unmapped gap.
+    """
+    def derive(con, props: dict[str, str]) -> str | None:
+        chans = _dps_channels(con, props)
+        return None if chans is None else _fmt(chans[chan])
+    derive.__name__ = f"_derive_{chan}"
+    return derive
+
+
 #: Fields we can COMPUTE from the store by following refs, rather than read from one
 #: prop. Consulted after the direct map and before `_DERIVED`, so a field that gains a
 #: traversal stops being counted as an unmodelled gap.
@@ -487,6 +617,13 @@ def _derive_storagecapacity(con, props: dict[str, str]) -> str | None:
 #: picking one and calling it modelled.
 _DERIVE: dict[str, object] = {
     "storagecapacity": _derive_storagecapacity,
+    # 2026-09-20: weapon DPS, moved OUT of `_DERIVED` on a measured traversal -- the same
+    # move `storagecapacity` made on 2026-08-30, at a higher evidence bar (38 of 39 exact
+    # against the live engine, vs 5 of 5 then). A field cannot be both "we cannot compute
+    # this" and "here is how we compute it"; `test_derived_fields_are_named_not_folded_into_unmapped`
+    # is what keeps those two lists from both claiming it.
+    "dps": _derive_dps,
+    **{chan: _derive_channel(chan) for chan, _ in _DPS_CHANNELS},
 }
 
 def cmd_oracle(path: str | None, out=None, show_derived: bool = False,
@@ -539,9 +676,10 @@ def cmd_oracle(path: str | None, out=None, show_derived: bool = False,
               "describe the current world.", file=sys.stderr)
         return 3
 
-    match = differ = derived = unmapped = 0
+    match = differ = derived = unmapped = refused = 0
     diffs: list[tuple[str, str, str, str, str, bool]] = []
     derived_rows: list[tuple[str, str, str]] = []
+    refused_rows: list[tuple[str, str, str]] = []
     missing: list[str] = []
 
     for (ltype, macro), fields in sorted(entries.items()):
@@ -561,6 +699,19 @@ def cmd_oracle(path: str | None, out=None, show_derived: bool = False,
                 computed = _DERIVE[f](con, props)
                 if computed is not None:
                     prop, tname, sv = f"<derived:{f}>", "identity", computed
+                else:
+                    # THE TRAVERSAL LOOKED AND REFUSED, which is a third thing: not
+                    # "we cannot model this field" and not "nobody has mapped it yet".
+                    # MEASURED 2026-09-20 when `dps` gained a traversal: 30 rows -- the
+                    # six decorative `*_video_macro` entries, which carry no bullet at
+                    # all, x five channels -- dropped out of the NAMED derived bucket and
+                    # into the generic `unmapped` one. That is precisely the hiding
+                    # `_DERIVED`'s own docstring exists to prevent, arriving by the back
+                    # door the moment a field was promoted. A refusal is an answer and
+                    # gets its own name.
+                    refused += 1
+                    refused_rows.append((macro, f, ev))
+                    continue
             if sv is None:
                 # Split the old catch-all: a field the ENGINE derives is a known
                 # modelling gap (F72) and gets named; anything else is simply not
@@ -586,7 +737,7 @@ def cmd_oracle(path: str | None, out=None, show_derived: bool = False,
                 diffs.append((macro, f, ev, prop, sv, suspect))
 
     compared = sum(len(f) for (k, f) in entries.items() if k[1] not in missing)
-    accounted = match + differ + derived + unmapped
+    accounted = match + differ + derived + unmapped + refused
     print("engine values vs the effective store, PER FIELD", file=out)
     print(f"  entities in the dump      {len(entries)}", file=out)
     print(f"  not found in the store    {len(missing)}", file=out)
@@ -595,6 +746,9 @@ def cmd_oracle(path: str | None, out=None, show_derived: bool = False,
           f"({match} agree, {differ} DISAGREE)", file=out)
     print(f"    engine-DERIVED (F72)    {derived}  "
           f"(our store cannot produce these)", file=out)
+    if refused:
+        print(f"    derivation REFUSED      {refused}  "
+              f"(a traversal looked and declined -- NOT an unmapped field)", file=out)
     print(f"    not mapped yet          {unmapped}", file=out)
     if accounted != compared:
         print(f"  !! {compared - accounted} fields unaccounted for - "

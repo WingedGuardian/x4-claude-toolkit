@@ -6842,8 +6842,10 @@ root raises nothing: `_paths` resolves it happily and `scan_installed` walks a d
 not there. MEASURED: **0 active mods, 0 dropped, no exception** -- so the `except
 Unconfigured/OSError` guard never fired and `any()` over the empty list answered **False**,
 reporting *"the helper extension is NOT in the set the engine would load"* about a machine the
-tool had never looked at. Every test stubbed `_registry.mods` to RAISE, so none of them could
-see it; the real-config run is what did. `helper_is_deployed` now returns **None on an empty
+tool had never looked at. MEASURED from the file: of the five tests, TWO stubbed `_registry.mods` to RAISE and
+the other THREE returned a POPULATED list -- **not one returned an EMPTY one**, so every stub
+expressed either an exception or a result and the empty middle, the only shape that actually
+broke, was never expressed at all. The real-config run is what found it. `helper_is_deployed` now returns **None on an empty
 active set** -- an empty population cannot support a negative (CLAUDE.md #9), and a genuinely
 vanilla install loses specificity rather than being told something false. Guarded in both
 directions by `test_an_EMPTY_mod_set_REFUSES_instead_of_reporting_NOT_deployed` and its twin

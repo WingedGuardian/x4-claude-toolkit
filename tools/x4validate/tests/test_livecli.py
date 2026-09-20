@@ -206,12 +206,30 @@ def test_derived_fields_are_named_not_folded_into_unmapped():
     # traversal (_DERIVE, 5 of 5 exact across the fixture), so asserting it is
     # uncomputable would assert something false. `shipstoragecapacity` replaces it and
     # is still genuinely underived -- see P5.
-    for f in ("dps", "shipstoragecapacity", "docks_m", "launchtubes_s", "sustaineddps"):
+    #
+    # `dps` and its four per-channel siblings left the same way on 2026-09-20, on the
+    # same warrant and a higher bar: 38 of 39 exact against a live engine harvest. See
+    # tests/test_dps_derivation.py. `sustaineddps` STAYS -- it folds in the heat model,
+    # which the shot-rate formula does not reproduce, so it is still a real gap and is
+    # the example this test now leans on.
+    for f in ("shipstoragecapacity", "docks_m", "launchtubes_s", "sustaineddps"):
         assert f in C._DERIVED
     # and a derived field must never also carry a direct mapping
     for ltype, m in C._BY_TYPE.items():
         clash = set(m) & C._DERIVED
         assert not clash, f"{ltype} maps {clash}, which is also declared DERIVED"
+
+
+def test_a_field_is_never_claimed_by_BOTH_registries():
+    """The invariant behind both promotions, asserted once instead of per-field.
+
+    A field cannot be both "we cannot compute this" (`_DERIVED`) and "here is how we
+    compute it" (`_DERIVE`). Whichever list is consulted second would be dead, and which
+    one that is depends on `cmd_oracle`'s branch order rather than on anything declared --
+    so the contradiction would present as a silently wrong BUCKET, not as an error.
+    """
+    clash = set(C._DERIVE) & set(C._DERIVED)
+    assert not clash, f"{clash} is claimed by both _DERIVE and _DERIVED"
 
 
 @pytest.mark.parametrize("value, props, degenerate", [
@@ -279,8 +297,11 @@ def test_engine_DERIVED_fields_are_counted_and_listed_separately(capsys, monkeyp
     Folding them together makes a known modelling gap look like a lookup table
     that merely needs more entries -- which is how a real gap stays invisible.
     """
+    # ⚠ The example was `dps` until 2026-09-20, when `dps` GAINED a traversal and stopped
+    # being a gap. `sustaineddps` is the replacement: still genuinely underived, because
+    # it folds in the heat model.
     rows = [["HDR", "schema=2"],
-            ["LIB_ENTRY_VAL", "weapons_lasers", "w", "dps", "290.9"],
+            ["LIB_ENTRY_VAL", "weapons_lasers", "w", "sustaineddps", "290.9"],
             ["LIB_ENTRY_VAL", "weapons_lasers", "w", "zzz_not_a_field", "1"],
             ["END", "4"]]
     monkeypatch.setattr(C, "_load", lambda p: L.parse(uidata(rows)))
@@ -289,9 +310,39 @@ def test_engine_DERIVED_fields_are_counted_and_listed_separately(capsys, monkeyp
     rc = C.cmd_oracle(None, show_derived=True)
     out = capsys.readouterr().out
     assert rc == 0
-    assert "engine-DERIVED (F72)    1" in out, "dps must land in the DERIVED bucket"
+    assert "engine-DERIVED (F72)    1" in out, "sustaineddps must land in the DERIVED bucket"
     assert "not mapped yet          1" in out, "an unknown field is NOT 'derived'"
     assert "290.9" in out, "--show-derived must print the engine's ground-truth value"
+
+
+def test_a_traversal_that_REFUSES_gets_its_own_bucket_not_the_unmapped_one(capsys, monkeypatch):
+    """★ A THIRD STATE, added 2026-09-20 with the `dps` traversal and MEASURED on the real
+    harvest before it was written: promoting a field silently moved 30 rows -- the six
+    decorative `*_video_macro` entries, which carry no bullet at all, x five channels --
+    out of the NAMED derived bucket and into the generic `not mapped yet` one.
+
+    That is exactly the hiding `_DERIVED` exists to prevent, arriving by the back door the
+    moment a field was promoted: the rows looked like a lookup table needing more entries,
+    when in fact a traversal had looked at them and declined. "I could not compute this" is
+    not "nobody has mapped this".
+    """
+    rows = [["HDR", "schema=2"],
+            ["LIB_ENTRY_VAL", "weapons_lasers", "w", "dps", "290.9"],
+            ["LIB_ENTRY_VAL", "weapons_lasers", "w", "zzz_not_a_field", "1"],
+            ["END", "4"]]
+    monkeypatch.setattr(C, "_load", lambda p: L.parse(uidata(rows)))
+    # no `bullet.class`, so the dps traversal looks and refuses -- the video-macro shape
+    _fake_store(monkeypatch, {"heat.coolrate": "2000"})
+
+    rc = C.cmd_oracle(None)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "derivation REFUSED      1" in out, (
+        "a traversal that declined must be named, not folded into 'not mapped yet'")
+    assert "not mapped yet          1" in out, (
+        "and the genuinely unmapped field must STILL be counted there -- the twin that "
+        "stops the new bucket swallowing everything")
+    assert "engine-DERIVED (F72)    0" in out, "dps is no longer an unmodelled gap"
 
 
 def test_show_derived_is_off_by_default(capsys, monkeypatch):
