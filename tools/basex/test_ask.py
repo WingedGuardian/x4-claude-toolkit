@@ -725,7 +725,7 @@ def test_a_FAILED_argv_query_under_Git_Bash_still_shows_what_arrived(monkeypatch
     is the MSYS outcome most likely to produce an error rather than a zero."""
     def boom(_xquery):
         raise RuntimeError("Stopped at /basex/, 1/3:" + chr(10)
-                           + "[XPST0003] Unexpected end of query: ':/Program Files'.")
+                           + "[XPST0003] Unexpected end of query: '<a rewritten path>'.")
     monkeypatch.setattr(ask, "run_xq", boom)
     monkeypatch.setenv("MSYSTEM", "MINGW64")
     rc = ask.main(["--db", "x4raw", "xq", "/ware"])

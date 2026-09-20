@@ -452,7 +452,12 @@ def test_groundtruth_ACCOUNTS_for_every_cell_it_asked_about(tmp_path):
     # macros x (each derived field + ONE all-fields probe). The all-fields call is
     # what answers "does the engine expose <x> at all", which the named-field loop
     # structurally cannot -- so it is part of the arity, not an extra.
-    assert int(nums["asked"]) == len(C.GROUND_TRUTH_MACROS) * (len(C._DERIVED) + 1)
+    # The FIELD SET the harvest actually asks for, not one of the two sets it is built
+    # from: `dps` and its four channels moved from _DERIVED to _DERIVE in this arc, and a
+    # harvest that asks only _DERIVED silently stopped collecting them. Hard-coding either
+    # set makes this assertion agree with the bug.
+    harvested = len(set(C._DERIVED) | set(C._DERIVE))
+    assert int(nums["asked"]) == len(C.GROUND_TRUTH_MACROS) * (harvested + 1)
 
 
 def test_the_RAMP_runs_end_to_end_and_reports_a_bound():
