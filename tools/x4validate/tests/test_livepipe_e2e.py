@@ -301,9 +301,17 @@ def test_NEVER_CONNECTED_names_WHICH_of_three_states_it_is(monkeypatch, running,
 
 
 def test_the_retryable_states_SAY_they_are_retryable(monkeypatch):
-    """A message that diagnoses but does not prescribe still gets shrugged at."""
+    """A message that diagnoses but does not prescribe still gets shrugged at.
+
+    Patches all THREE live probes. It used to patch only `game_is_running`, so the branch
+    taken depended on whether X4 happened to be running on the machine: with the game up and
+    the mod loaded it reached NOT_MINIMIZED_DIAGNOSIS, which said 'Retry once' but had lost
+    the word RETRYABLE its two siblings carry. MEASURED 2026-09-20 -- the suite went red only
+    once a game was open, which is a test whose verdict is a fact about the room."""
     for running in (True, None):
         monkeypatch.setattr(lp, "game_is_running", lambda r=running: r)
+        monkeypatch.setattr(lp, "helper_loaded_this_session", lambda: True)
+        monkeypatch.setattr(lp, "game_is_minimized", lambda: False)
         pipe = lp.LivePipe(name=_unique("hint"), timeout=0.3)
         pipe.open()
         try:

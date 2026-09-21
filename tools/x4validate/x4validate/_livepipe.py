@@ -190,8 +190,9 @@ MINIMIZED_DIAGNOSIS = (
 NOT_MINIMIZED_DIAGNOSIS = (
     " MEASURED: X4's window is NOT minimized, so the frame loop should be running and this "
     "is NOT the usual cause -- do not go and un-minimize anything. Merely UNFOCUSED is fine "
-    "(2026-08-30) and a PAUSED game still answers (2026-09-13). Retry once, since the mod "
-    "re-arms every ~2s; if it keeps failing, the game is hung or the pipe name differs."
+    "(2026-08-30) and a PAUSED game still answers (2026-09-13). This is RETRYABLE, not a "
+    "failure: retry once, since the mod re-arms every ~2s. If it keeps failing, the game "
+    "is hung or the pipe name differs."
 )
 
 
