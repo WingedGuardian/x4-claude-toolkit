@@ -176,7 +176,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F123 | `bin/unpack-reference.sh` took the LAST `"buildid"` in the Steam manifest, which is a beta branch's, not the installed build | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | this machine's manifest: AppState 23660954, `public_beta` 23524486 -- the script's grep returned 23524486 | one depth-1 reader, `x4_acf_buildid`, for the script and the hook; a test bans a third hand-rolled grep |
 | F124 | a client request had NO size cap; a request over ~1997 bytes tears the game-side pipe read down, and the teardown was followed the same session by a game CRASH | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | P6 ramp: 1997 bytes round-tripped, 3998 tore the pipe down (`The pipe has been ended`); the game crashed on the next Esc | `ask()` refuses any request over `MAX_REQUEST_BYTES` (1900) before writing; `ffi-census` and `query ffisyms` gated off by default (`X4_LIVE_ALLOW_FFI`) |
 | F125 | a live refusal read the helper's ABSENT load marker as "most likely not installed" -- but the mod arms on GAME LOAD, so at the MAIN MENU the marker is legitimately absent and the install is fine | **DEFECT (measured)** · ✅ FIXED 2026-09-20 | in game 2026-09-20 at the main menu with no save loaded: marker absent, extension present and enabled, refusal said "not installed or not enabled" | the install is MEASURED directly (`helper_is_deployed()` over `mods("active")`) instead of inferred from the log; with deployment unknown the message names BOTH causes |
-| F126 | `build-effective.sh` rebuilt the x4eff DATABASE correctly but skipped the COVERAGE STAMP and still exited 0, so a freshly built index reported STALE indefinitely and refused to back any negative claim | **DEFECT (measured)** · ⏭ OPEN, n=1 | 2026-09-20: DB timestamp 02:15:41 with 10,970 documents, while `coverage-x4eff.json` kept mtime 00:22:03 and the PREVIOUS content fingerprint (`1f071ac8` vs the `39c7120a` stamped on `coverage-x4raw.json` minutes earlier); exit code 0 | not fixed. Cause identified -- a staging `rm` hit `_eff/tree/libraries/controlschemes_for_movie_capturing.xml` while BaseX still held it (`Device or resource busy`) and the stamp step never ran. A retry with the lock released stamped correctly, so it is NOT reproduced |
+| F126 | `build-effective.sh` rebuilt the x4eff DATABASE correctly but skipped the COVERAGE STAMP and still exited 0, so a freshly built index reported STALE indefinitely and refused to back any negative claim | **DEFECT (measured)** · ✅ FIXED 2026-09-20 | 2026-09-20: DB timestamp 02:15:41 with 10,970 documents, while `coverage-x4eff.json` kept mtime 00:22:03 and the PREVIOUS content fingerprint (`1f071ac8` vs the `39c7120a` stamped on `coverage-x4raw.json` minutes earlier); exit code 0 | not fixed. Cause identified -- a staging `rm` hit `_eff/tree/libraries/controlschemes_for_movie_capturing.xml` while BaseX still held it (`Device or resource busy`) and the stamp step never ran. A retry with the lock released stamped correctly, so it is NOT reproduced |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -6781,9 +6781,9 @@ where the request is the *number* as text (tiny) and the game echoes back `n` by
 OUR read buffer (`_BUF`), never the request cap — it is unaffected, and unrelated to this teardown.
 
 
-## F126 -- a fresh index that reports STALE, behind an exit code of 0
+## F126 — a fresh index that reports STALE, behind an exit code of 0 · **DEFECT (measured)** · FIXED 2026-09-20
 
-**DEFECT (measured) · ⏭ OPEN, n=1 · found 2026-09-20**
+**Found 2026-09-20 · n=1, not reproduced · fixed the same day.**
 
 **What happened.** `bash build-corpus.sh && bash build-effective.sh`, run to clear a stale
 `x4eff`. The corpus half worked and stamped `content=39c7120a9189db25`. The effective half
@@ -6814,15 +6814,32 @@ a plain flake.
    documented invocation in the freshness banner uses `&&`. Chain with `;` and check each rc,
    or treat 3 as success for this script.
 
-**Not yet established:** whether the stamp step is skipped because the failing `rm` aborts the
-tail of the script, or because it is ordered after cleanup and the script's last command
-returns 0 regardless. Reading `build-effective.sh` will settle it; that has not been done, and
-this entry does not guess. **The fix is presumably to stamp BEFORE cleanup and to fail loudly
-if the stamp does not land** -- but a defect whose mechanism is one read away should not be
-patched from a hypothesis.
+**MECHANISM, settled -- and it was NEITHER of the two I floated.** I wrote that the cause was
+either the failing `rm` aborting the tail or the stamp being ordered after cleanup, and said a
+read of the script would decide. It was a third thing: **`staleness.py --write` ran in a
+subshell whose rc was never captured**, so the stamp DID run, DID fail, and nobody looked.
+The script then exited on the coverage verdict alone. ★ Worth keeping as a lesson about
+lessons: the entry declined to guess, and both available guesses were wrong. A mechanism that
+feels one read away is still not known until someone does the read.
 
-**What would have caught it:** a post-build assertion that the stamped fingerprint equals the
-one the build just computed. The build already knows both numbers; nothing compares them.
+**FIXED 2026-09-20 (peer session, `4e21af4`).** Both scripts capture the rc and refuse,
+naming the re-stamp command -- **both**, because the identical unchecked call sat in each and
+fixing one would have left its twin. The `&&` chaining was fixed in every copy of the
+guidance (the banner in two places, plus the shipped `CLAUDE.md`).
+
+**RE-DERIVED BY:** `tests/test_build_scripts_check_their_stamp.py` --
+`test_the_stamp_call_CAPTURES_its_return_code[build-corpus.sh|build-effective.sh]` (the rc is
+captured), `test_a_FAILED_stamp_reaches_an_exit[...]` (and is acted on -- capturing without a
+branch would satisfy the first test while still exiting 0), and
+`test_the_two_builds_are_NOT_chained_with_and_in_any_guidance` (the `&&` half). All four
+mutation-checked: discarding the rc turns two red, and re-introducing `&&` in a markdown file
+turns the third red.
+
+⚠ **What those tests do NOT cover**, so the coverage is not overread: they assert the SHAPE
+of the shell source, not runtime behaviour. A stamp that SUCCEEDS while writing the wrong
+fingerprint would pass all of them. The stronger check -- compare the stamped fingerprint
+against the one the build just computed, both of which the build already knows -- remains
+unwritten.
 
 ## F125 — an absent load marker was read as a missing install, but the mod arms on GAME LOAD · **DEFECT (measured)** · confidence 95% · FIXED 2026-09-20
 
