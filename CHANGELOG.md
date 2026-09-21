@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A weapon's total `dps` is NOT the sum of its damage channels.** The rule is now
+  `hullshielddps + max(0, shieldonlydps, hullnoshielddps) + hullonlydps`, **MEASURED exact on
+  345 of 345** bulleted weapon/turret macros against the live engine; the summing rule it
+  replaces scored 338 of 345. Two distinct failures, both silent:
+  **(1)** a bullet carrying *both* `damage.shield` and `damage.noshield` — only the larger
+  channel counts, because a shot cannot hit a shielded and an unshielded target at once. The
+  two such macros omit **opposite** channels (`turret_xenon_xl_station_01_macro` engine
+  1866.6667 vs sum 2133.3334; `weapon_cpsdo_s_phase_laser_01_mk4_macro` engine 770.7129 vs sum
+  886.3198), which is why no single-omission rule could fit both.
+  **(2)** a **negative** channel — 5 macros with `shieldonlydps` from -80.0 to -621.43. The
+  engine never lets it reduce the total; the sum subtracted it. These never reached the old
+  refusal, which keyed on both properties being present.
+  The previous release **refused** this shape rather than guessing it (n=1 draws no rule); that
+  refusal is what kept the disagreement visible until the population could settle it, and it is
+  now retired.
+  ⚠ The `0` in the max is a **choice, not a measurement**: 0 of 345 macros have both specialised
+  channels negative, so the corpus does not distinguish `max(0,a,b)` from `max(a,b)`. A mutation
+  probe found the same gap in the tests — dropping the `0` left every test green — so one test
+  now pins the decision explicitly and is labelled as unverified.
+
 ### Added
 
 - **A "nothing connected" refusal now MEASURES the cause instead of surveying them.** Three

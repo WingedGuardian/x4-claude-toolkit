@@ -182,7 +182,12 @@ def test_a_ZERO_channel_is_reported_as_zero_not_as_a_gap(store):
     assert C._DERIVE["shieldonlydps"](_Con(), props) == str(0)
 
 
-def test_dps_is_the_SUM_of_the_channels(store):
+def test_dps_equals_the_SUM_when_only_ONE_specialised_channel_is_populated(store):
+    """The sum and the real rule AGREE here, and this is where 338 of 345 macros live.
+
+    Named for its scope on purpose: the old name said "dps is the SUM of the channels",
+    which is false in general and was the claim the n=345 sweep refuted.
+    """
     props = _weapon(store, {"reload.rate": "0.2142857", "damage.value": "9350",
                             "damage.shield": "4000", "bullet.attach": "0"})
     chans = C._dps_channels(_Con(), props)
@@ -191,17 +196,83 @@ def test_dps_is_the_SUM_of_the_channels(store):
 
 # --- refusing ------------------------------------------------------------------ #
 
-def test_a_bullet_carrying_BOTH_shield_and_noshield_damage_REFUSES_the_total(store):
-    """The n=1 exception, and the only field in the release where our store and the engine
-    disagree. MEASURED on `weapon_cpsdo_s_phase_laser_01_mk4_macro`, the only macro in the
-    population carrying both `damage.shield` (60) and `damage.noshield` (150): its four
-    channels each match the engine exactly, while the engine TOTAL omits the shield-only
-    channel the other 38 macros include. One observation draws no rule, so emitting our sum
-    ships a number known to disagree and adopting the engine's behaviour invents a rule from
-    n=1. The refusal is the honest third answer."""
+def test_BOTH_channels_populated_counts_only_the_LARGER(store):
+    """The refusal this replaces was correct at n=1; the sweep took the population to 345.
+
+    A shot cannot be against a shielded and an unshielded target at once, so the engine
+    counts whichever specialised channel is larger. Here noshield (150) beats shield (60):
+    100 + 150 + 0 = 250, and the plain sum's 310 is the number this test exists to reject.
+    Shaped after the real `weapon_cpsdo_s_phase_laser_01_mk4_macro`.
+    """
     props = _weapon(store, {'reload.rate': '1', 'damage.value': '100',
                             'damage.shield': '60', 'damage.noshield': '150'})
-    assert C._derive_dps(_Con(), props) is None
+    assert float(C._derive_dps(_Con(), props)) == pytest.approx(250.0)
+
+
+def test_TWIN_the_OPPOSITE_channel_wins_when_IT_is_larger(store):
+    """The falsification twin for the clause above, and the reason a single-omission rule
+    could not be fitted: the two real macros omit OPPOSITE channels. Here shield (60) beats
+    noshield (30), so the answer is 100 + 60 + 10 = 170, not 100 + 30 + 10 = 140.
+    Shaped after `turret_xenon_xl_station_01_macro`."""
+    props = _weapon(store, {'reload.rate': '1', 'damage.value': '100',
+                            'damage.shield': '60', 'damage.noshield': '30',
+                            'damage.hull': '10'})
+    assert float(C._derive_dps(_Con(), props)) == pytest.approx(170.0)
+
+
+def test_a_NEGATIVE_channel_never_REDUCES_the_total(store):
+    """5 of 345 macros, all cpsdo turrets: `shieldonlydps` from -80.0 to -621.43.
+
+    The engine reports dps == hullshielddps exactly for every one. The old summing rule
+    SUBTRACTED the negative and was silently wrong on all five -- they never tripped the
+    both-properties refusal, because `damage.noshield` is absent. 100 + max(0,-40,0) = 100,
+    and the sum's 60 is what this rejects."""
+    props = _weapon(store, {'reload.rate': '1', 'damage.value': '100',
+                            'damage.shield': '-40'})
+    assert float(C._derive_dps(_Con(), props)) == pytest.approx(100.0)
+
+
+def test_BOTH_channels_negative_pins_a_CHOICE_that_no_measurement_supports(store):
+    """⚠ This test pins a DECISION, not an observed engine behaviour. Read it as such.
+
+    The `0` in `max(0, shieldonly, hullnoshield)` can only change the answer when BOTH
+    specialised channels are negative, and that population is EMPTY in the live corpus
+    (0 of 345), so the sweep does NOT choose between `max(0,a,b)` and `max(a,b)`.
+
+    It exists because a mutation probe found the clamp was UNREACHABLE: dropping the `0`
+    left all 31 tests green, since every other case has the other channel at 0 and the two
+    forms coincide. An axis nothing can falsify is where the next defect lives (#35), so
+    the choice is written down here where a future change will trip it, rather than left
+    as an invisible constant. -40 and -10 clamp to 0 (total 100); the unclamped form would
+    add -10 and give 90. If the engine is ever measured on such a macro, THAT measurement
+    wins and this test should be rewritten to cite it."""
+    props = _weapon(store, {'reload.rate': '1', 'damage.value': '100',
+                            'damage.shield': '-40', 'damage.noshield': '-10'})
+    assert float(C._derive_dps(_Con(), props)) == pytest.approx(100.0)
+
+
+def test_the_rule_reproduces_the_two_REAL_ENGINE_totals(store):
+    """Pins the rule against the live engine, not against our own arithmetic.
+
+    Channel values and totals MEASURED 2026-09-20 over the named macros. Computed from the
+    recorded channels rather than from a fixture, so this fails if the RULE changes even
+    where the fixture builder does not."""
+    measured = [
+        # macro, hullshield, shieldonly, hullnoshield, hullonly, engine dps
+        ("turret_xenon_xl_station_01_macro",
+         1333.3333581686, 400.00000745058, 266.66667163372, 133.33333581686,
+         1866.666701436),
+        ("weapon_cpsdo_s_phase_laser_01_mk4_macro",
+         481.69556260109, 115.60693502426, 289.01733756065, 0.0, 770.71290016174),
+        ("turret_cpsdo_l_laser_01_mk4_macro",
+         1071.4285820723, -621.42857760191, 0.0, 0.0, 1071.4285820723),
+    ]
+    for name, hs, so, ns, ho, engine in measured:
+        got = hs + max(0.0, so, ns) + ho
+        assert got == pytest.approx(engine, rel=1e-9), name
+        # and the rule the sweep refuted must NOT reproduce these
+        if so > 0 and ns > 0 or so < 0:
+            assert hs + so + ns + ho != pytest.approx(engine, rel=1e-9), name
 
 
 def test_TWIN_the_CHANNELS_are_still_computed_for_that_same_bullet(store):

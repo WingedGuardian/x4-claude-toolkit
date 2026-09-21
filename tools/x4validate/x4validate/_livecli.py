@@ -597,25 +597,42 @@ def _fmt(v: float) -> str:
 
 
 def _derive_dps(con, props: dict[str, str]) -> str | None:
-    """Total DPS: the sum of every channel. See the block comment above for the evidence.
+    """Total DPS -- NOT the sum of every channel. MEASURED 2026-09-20 at n=345.
 
-    REFUSES for a bullet carrying BOTH `damage.shield` and `damage.noshield`. The summing
-    rule is MEASURED over 38 of 39 weapon macros, and the 39th --
-    `weapon_cpsdo_s_phase_laser_01_mk4_macro`, the only one in the population carrying both
-    (60 and 150) -- disagrees: its four channels each match the engine exactly while the
-    engine TOTAL, 770.71, is hullshield + hullnoshield, OMITTING the shield-only channel the
-    other 38 include. n=1 draws no rule, so neither answer is earned: adopting the engine
-    behaviour would be a rule from one observation, and emitting our sum ships a number we
-    KNOW disagrees -- which is what teaches people to ignore the oracle. The refusal is the
-    third answer and the true one: this shape is UNMEASURED (KNOWLEDGEBASE.md 2026-09-19).
-    Confirming it needs more macros carrying both properties.
+        dps = hullshielddps + max(0, shieldonlydps, hullnoshielddps) + hullonlydps
+
+    THE REFUSAL THIS REPLACES was right when it shipped: at n=1 neither the sum nor the
+    engine's answer was earned, so the shape was refused rather than guessed. The
+    population has now been re-derived and swept live -- every bulleted weapon/turret
+    macro in the store, 345 comparable -- and the rule above is exact on all 345, against
+    338 of 345 for the sum. Two distinct failures, both explained:
+
+    1. BOTH SPECIALISED CHANNELS POPULATED -- 2 macros. Only the LARGER counts: a shot
+       cannot be against a shielded and an unshielded target at once.
+       `turret_xenon_xl_station_01_macro` drops hullnoshield (sum 2133.3334, engine
+       1866.6667); `weapon_cpsdo_s_phase_laser_01_mk4_macro` drops shieldonly (sum
+       886.3198, engine 770.7129). OPPOSITE omissions -- which is exactly why the
+       single-omission hypothesis could not fit both, and why the three candidate
+       answers were pre-registered before the harvest existed rather than fitted after.
+    2. A NEGATIVE CHANNEL -- 5 macros, all cpsdo turrets, `shieldonlydps` between -80.0
+       and -621.43 (a weapon doing LESS damage to shields). The engine never lets it
+       reduce the total: dps equals hullshielddps exactly. The sum subtracted it, wrongly
+       and SILENTLY -- these 5 never tripped the old refusal, because that was keyed to
+       both properties being present, and here `damage.noshield` is absent.
+
+    ⚠ UNMEASURED AXIS: the `0` in the max is a CHOICE, not a measurement. It can only
+    matter when BOTH specialised channels are negative, and that population is EMPTY
+    (0 of 345), so this corpus does NOT distinguish `max(0, a, b)` from `max(a, b)`. The
+    clamped form is the conservative reading of failure 2. Do not record this as verified;
+    the deciding case is a macro with both channels below zero.
     """
-    b = _bullet_of(con, props)
-    if b is not None and (_num(b, "damage.shield") is not None
-                          and _num(b, "damage.noshield") is not None):
-        return None
     chans = _dps_channels(con, props)
-    return None if chans is None else _fmt(sum(chans.values()))
+    if chans is None:
+        return None
+    total = (chans["hullshielddps"]
+             + max(0.0, chans["shieldonlydps"], chans["hullnoshielddps"])
+             + chans["hullonlydps"])
+    return _fmt(total)
 
 
 def _derive_channel(chan: str):
