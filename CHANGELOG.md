@@ -349,6 +349,31 @@
 
 ### Fixed
 
+- **⚠ The guard allowed a recursive search rooted ABOVE the 60 GB `reference\` tree, and this
+  release is what broke it (F127).** Two rules cover recursive text searches: one fires when the
+  searched path IS `reference\`, the other when it is the toolkit or game root — both on an
+  EXACT path match, deliberately, so a search scoped *into* a big tree stays allowed. But
+  `reference\` sits inside `<...>/Desktop/Modding/X4`, and that parent **was** `X4_TOOLKIT`
+  until this arc retired the dev repo. The ancestor was therefore covered only **by
+  coincidence**, through the workspace rule; when `X4_TOOLKIT` moved, a recursive walk from the
+  parent — which necessarily traverses the whole 60 GB — matched no rule at all.
+  MEASURED through the deployed hook: rooted at that parent → **ALLOW**, while the same shape at
+  the toolkit root, at `reference\` itself and at the game root all denied. Three controls still
+  denying is what makes it a hole rather than a rule change.
+  **Why nothing caught it:** `test_hook_facts.py`'s fixture set the toolkit root to the parent of
+  `reference\`, so it encoded the very coincidence — no test there could vary the *relationship*
+  between two roots, only their values (CLAUDE.md #37). It was found by
+  `gates/hook_false_positives.py`, which replays every historical command through the real hook:
+  **146 of 17,133 shared commands moved**, and classifying the 38 that moved into `allow` per
+  item isolated it. ⚠ That gate had been red and unobserved — it is slow and was not in the
+  previous verification's four-gate sweep.
+  **Fix:** `contains_root()` treats a PROPER-ANCESTOR search as the same refusal, compared with a
+  trailing separator so `/a/bc` does not read as living under `/a/b`. 11 new tests including a
+  split-root fixture that breaks the coincidence, 3 of 3 clause mutants killed, and an 8-case
+  end-to-end probe on the deployed hook confirming the hole denies while every allowed control
+  still allows. A fourth clause was written and **deleted because its mutant survived** — it
+  could never change an answer, so it was decoration.
+
 - **A Windows clone checked the shipped mod's XML out as CRLF (F118).** `* text=auto` uses the
   platform's native line ending, so `mods/x4_toolkit_helper/*.xml` arrived CRLF while the
   committed and deployed copies are LF, and `scripts/deploy-mod.py` listed changes nobody made.

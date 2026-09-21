@@ -379,7 +379,9 @@ fi
 # root. rg and ag count with no flag at all: they recurse by default, which the
 # flag-gated bash version missed entirely.
 if on search_rooted_reference; then
-  deny "WRONG TOOL: recursive text search over the whole reference\\ tree (~60 GB).
+  deny "WRONG TOOL: recursive text search that traverses the whole reference\\ tree (~60 GB).
+This fires whether the search is rooted AT reference\\ or at any directory ABOVE it --
+an ancestor walk reaches the 60 GB and everything beside it, so it is the worse case.
 Route the question first (CLAUDE.md 'Discovery vs. Proof'):
   - 'what values does attribute X take / who references X?' -> BaseX: cd tools\\basex && python ask.py ...
     (fast, and gives a DENOMINATOR — which a bare grep count never does)

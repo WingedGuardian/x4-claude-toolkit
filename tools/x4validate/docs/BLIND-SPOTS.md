@@ -204,6 +204,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F123 | `bin/unpack-reference.sh` took the LAST `"buildid"` in the Steam manifest, which is a beta branch's, not the installed build | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | this machine's manifest: AppState 23660954, `public_beta` 23524486 -- the script's grep returned 23524486 | one depth-1 reader, `x4_acf_buildid`, for the script and the hook; a test bans a third hand-rolled grep |
 | F124 | a client request had NO size cap; a request over ~1997 bytes tears the game-side pipe read down, and the teardown was followed the same session by a game CRASH | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | P6 ramp: 1997 bytes round-tripped, 3998 tore the pipe down (`The pipe has been ended`); the game crashed on the next Esc | `ask()` refuses any request over `MAX_REQUEST_BYTES` (1900) before writing; `ffi-census` and `query ffisyms` gated off by default (`X4_LIVE_ALLOW_FFI`) |
 | F125 | a live refusal read the helper's ABSENT load marker as "most likely not installed" -- but the mod arms on GAME LOAD, so at the MAIN MENU the marker is legitimately absent and the install is fine | **DEFECT (measured)** · ✅ FIXED 2026-09-20 | in game 2026-09-20 at the main menu with no save loaded: marker absent, extension present and enabled, refusal said "not installed or not enabled" | the install is MEASURED directly (`helper_is_deployed()` over `mods("active")`) instead of inferred from the log; with deployment unknown the message names BOTH causes |
+| F127 | the guard's scope rules matched a search rooted AT a big tree and at the toolkit/game roots, never ABOVE one — so when the dev repo was retired and `X4_TOOLKIT` moved, the parent of the 60 GB `reference\` tree stopped being named by any root and a recursive search there became ALLOW. The ancestor was covered only BY COINCIDENCE | **DEFECT (measured)** · ✅ FIXED 2026-09-21 | 2026-09-21 through the DEPLOYED hook: `cd <parent-of-reference> && grep -rl x .` → ALLOW, while the same shape at the toolkit root, at `reference/` itself and at the game root all → deny. 3 controls denying is what made it a hole, not a rule change. Found by `hook_false_positives` going red (146 of 17,133 shared commands moved) | `contains_root()` makes a PROPER-ANCESTOR search fire the same rule; 11 tests incl. a split-root fixture, 3 of 3 clause mutants killed, 8-case end-to-end probe on the deployed hook |
 | F126 | `build-effective.sh` rebuilt the x4eff DATABASE correctly but skipped the COVERAGE STAMP and still exited 0, so a freshly built index reported STALE indefinitely and refused to back any negative claim | **DEFECT (measured)** · ✅ FIXED 2026-09-20 | 2026-09-20: DB timestamp 02:15:41 with 10,970 documents, while `coverage-x4eff.json` kept mtime 00:22:03 and the PREVIOUS content fingerprint (`1f071ac8` vs the `39c7120a` stamped on `coverage-x4raw.json` minutes earlier); exit code 0 | not fixed. Cause identified -- a staging `rm` hit `_eff/tree/libraries/controlschemes_for_movie_capturing.xml` while BaseX still held it (`Device or resource busy`) and the stamp step never ran. A retry with the lock released stamped correctly, so it is NOT reproduced |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
@@ -6808,6 +6809,39 @@ game without the toolkit, and no other installed activity touches this path.
 where the request is the *number* as text (tiny) and the game echoes back `n` bytes, so it measures
 OUR read buffer (`_BUF`), never the request cap — it is unaffected, and unrelated to this teardown.
 
+
+## F127 — a guard rule that covered the case above it only BY COINCIDENCE, until a path moved · **DEFECT (measured)** · confidence 96% · FIXED 2026-09-21
+
+**Found 2026-09-21 during the v3.2.0 release verification · reproduced through the deployed hook · fixed the same day.** The 4%: the hole, the fix and seven controls are all MEASURED on this machine through the shipped artifact, and the blast radius on OTHER machines is reasoned rather than measured — on a fresh install `X4_REFERENCE` is normally not nested under a directory that used to be `X4_TOOLKIT`, so the coincidence that broke here may never have existed there. I did not enumerate installed layouts to bound that.
+
+**What happened.** Two rules divide recursive text searches: `search_rooted_reference` fires when the searched path IS `reference\` (~60 GB), and `search_rooted_workspace` when it is the toolkit or game root. Both used `is_root()`, an EXACT normalised comparison, deliberately — a search scoped *into* a big tree is considered intentional and must stay allowed.
+
+`reference\` lives at `<...>/Desktop/Modding/X4/reference`, and its parent `<...>/Desktop/Modding/X4` **was** `X4_TOOLKIT` until the dev repo was retired in this very release arc. So a search rooted at that parent was caught by the *workspace* rule, for a reason that had nothing to do with the 60 GB underneath it. When `X4_TOOLKIT` moved to `Projects/x4-claude-toolkit`, the parent stopped being named by any root — and a recursive walk from it, which necessarily traverses the whole reference tree, matched nothing.
+
+MEASURED through the deployed `protect-bash.sh`:
+
+| probe | before the fix |
+|---|---|
+| `cd <parent-of-reference> && grep -rl "x" --include="*.md" .` | **ALLOW** ← the hole |
+| same shape rooted at the current toolkit root | deny (WRONG SCOPE) |
+| rooted at `reference/` itself | deny (WRONG TOOL) |
+| rooted at the game root | deny (WRONG SCOPE) |
+
+**Three controls that still denied are what make this a hole rather than a rule change** — the guard was working everywhere its authors had looked.
+
+**Why no test could fail.** `test_hook_facts.py`'s fixture sets `TOOLKIT = "C:/Users/tester/Desktop/Modding/X4"` and `REF = TOOLKIT + "/reference"`. The fixture *encoded the coincidence*: toolkit was the parent of reference, so the ancestor case was covered there too, permanently and invisibly. This is CLAUDE.md #37 exactly — an axis the instrument holds constant by design is unreachable by any amount of that instrument — and the axis here was *the relationship between two roots*, which no single-root probe can vary.
+
+**How it was found.** Not by the suite, which stayed green throughout. `gates/hook_false_positives.py` replays every historical Bash command through the real hook and diffs per rule against a baseline: **146 of 17,133 shared commands moved**, 38 of them into `allow`. Classifying that permissive direction per item — rather than reading the per-rule totals — isolated 6 candidates, of which 3 were commands under the retired tree (correctly allowed now, it is not an X4 directory any more) and 3 were this defect. ⚠ The gate had been red and **unobserved**: it is slow, it was not in the four-gate sweep the previous verification recorded, and an earlier run in this same session was killed for contending with the suite.
+
+**The fix.** `contains_root(path, root)` — true when `path` is a PROPER ancestor of `root`, compared on normalised paths with a trailing separator so `/a/bc` does not read as living under `/a/b`. `search_rooted_reference` becomes `rooted(reference) or above(reference)`. An ancestor search is strictly worse than the exact case the rule was written for, so it earns the same refusal, and the message now names both shapes.
+
+**RE-DERIVED BY:** `test_hook_facts.py::TestSearchRootedAboveReference` — `test_contains_root_is_true_for_a_proper_ancestor`, `test_contains_root_is_NOT_is_root`, `test_contains_root_respects_the_path_SEPARATOR`, `test_contains_root_is_false_for_a_DESCENDANT`, `test_search_rooted_above_reference_FIRES_when_the_toolkit_is_elsewhere`, `test_an_explicit_ancestor_path_fires_too`, `test_a_HIGHER_ancestor_fires`, `test_the_scoped_subdirectory_search_STILL_does_not_fire`, `test_a_SIBLING_of_the_parent_does_not_fire`, `test_an_unrelated_tree_does_not_fire`, `test_it_fires_under_the_OLD_coincidental_layout_too`. `SPLIT_ROOTS` deliberately breaks the fixture's coincidence so the regression is reachable at all.
+
+**Falsification twins, one per clause** (a compound condition needs one each, because each clause shadows the ones behind it): dropping the exact half kills `test_rg_without_a_flag_at_reference_fires` + `test_cd_then_dot_is_rooted`; dropping the ancestor half kills the three ancestor tests; dropping the path separator kills `test_contains_root_respects_the_path_SEPARATOR`. **3 of 3 killed**, tree restored byte-identical.
+
+★ **A fourth clause was written and then DELETED because its mutant SURVIVED.** An explicit `if p == r: return False` guard could never change an answer — `r.startswith(r + "/")` is already False — so it was decoration (CLAUDE.md #26), and the partition is pinned by behaviour instead. Worth recording that the mutant roster removed code rather than only confirming it.
+
+**The lesson that generalises past this rule.** Ask of every guard: *which two facts must stay in their current relationship for this to keep working?* Here it was "the parent of the big tree happens to be a named root". Nothing declared that dependency, nothing tested it, and the release that broke it is the release that renamed the root. A guard whose coverage rests on a coincidence has an **unowned axis**, and the tell is that its tests never vary the relationship — only the values.
 
 ## F126 — a fresh index that reports STALE, behind an exit code of 0 · **DEFECT (measured)** · confidence 97% · FIXED 2026-09-20
 

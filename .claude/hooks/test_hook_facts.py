@@ -616,6 +616,78 @@ class TestSearchPredicates(unittest.TestCase):
         self.assertTrue(F(cmd)["search_rooted_reference"])
 
 
+# A search rooted ABOVE reference\ -- the axis this fixture used to hold constant.
+#
+# ROOTS above sets TOOLKIT to the PARENT of REF, which is what the real machine looked
+# like until the dev repo was retired. So `search_rooted_workspace` covered the ancestor
+# BY COINCIDENCE and no test here could fail when that coincidence ended. SPLIT_ROOTS
+# reproduces the post-retirement layout, where the toolkit lives somewhere else entirely
+# and the parent of reference\ is named by no root at all.
+#
+# MEASURED 2026-09-21, on the real machine, before the fix:
+#   cd <parent-of-reference> && grep -rl x .   -> ALLOW      <-- the hole
+#   same shape at the toolkit root             -> deny (WRONG SCOPE)
+#   rooted at reference/ itself                -> deny (WRONG TOOL)
+#   rooted at the game root                    -> deny (WRONG SCOPE)
+# Three controls that still denied are what made it a hole and not a rule change.
+PARENT_OF_REF = "C:/Users/tester/Desktop/Modding/X4"
+SPLIT_ROOTS = dict(ROOTS, toolkit="C:/Users/tester/Projects/x4-claude-toolkit")
+
+
+class TestSearchRootedAboveReference(unittest.TestCase):
+    def test_contains_root_is_true_for_a_proper_ancestor(self):
+        self.assertTrue(H.contains_root(PARENT_OF_REF, REF))
+
+    def test_contains_root_is_NOT_is_root(self):
+        # The two predicates must partition, or the ancestor clause silently duplicates
+        # the exact one and its own twin cannot fail.
+        self.assertFalse(H.contains_root(REF, REF))
+        self.assertTrue(H.is_root(REF, REF))
+
+    def test_contains_root_respects_the_path_SEPARATOR(self):
+        # A prefix match without a separator would put /a/bc under /a/b.
+        self.assertFalse(H.contains_root("C:/a/b", "C:/a/bc/d"))
+        self.assertTrue(H.contains_root("C:/a/b", "C:/a/b/c"))
+
+    def test_contains_root_is_false_for_a_DESCENDANT(self):
+        # Direction matters: searching INSIDE reference is the scoped case that must
+        # stay allowed.
+        self.assertFalse(H.contains_root(REF + "/libraries", REF))
+
+    def test_search_rooted_above_reference_FIRES_when_the_toolkit_is_elsewhere(self):
+        # THE REGRESSION. Rooted at the parent of reference\, with no root naming it.
+        cmd = 'cd "' + PARENT_OF_REF + '" && grep -rl foo --include="*.md" .'
+        self.assertTrue(F(cmd, roots=SPLIT_ROOTS)["search_rooted_reference"])
+
+    def test_an_explicit_ancestor_path_fires_too(self):
+        cmd = 'grep -rn foo "' + PARENT_OF_REF + '"'
+        self.assertTrue(F(cmd, roots=SPLIT_ROOTS)["search_rooted_reference"])
+
+    def test_a_HIGHER_ancestor_fires(self):
+        # Every ancestor traverses the 60 GB, so each one is the rule's own case.
+        cmd = 'grep -rn foo "C:/Users/tester/Desktop"'
+        self.assertTrue(F(cmd, roots=SPLIT_ROOTS)["search_rooted_reference"])
+
+    def test_the_scoped_subdirectory_search_STILL_does_not_fire(self):
+        # The control that keeps the fix from becoming over-blocking, which this file
+        # calls the worse failure.
+        cmd = 'grep -rn foo "' + REF + '/libraries"'
+        self.assertFalse(F(cmd, roots=SPLIT_ROOTS)["search_rooted_reference"])
+
+    def test_a_SIBLING_of_the_parent_does_not_fire(self):
+        cmd = 'grep -rn foo "C:/Users/tester/Desktop/Modding/X4-notes"'
+        self.assertFalse(F(cmd, roots=SPLIT_ROOTS)["search_rooted_reference"])
+
+    def test_an_unrelated_tree_does_not_fire(self):
+        cmd = 'grep -rn foo "C:/Users/tester/Documents/other"'
+        self.assertFalse(F(cmd, roots=SPLIT_ROOTS)["search_rooted_reference"])
+
+    def test_it_fires_under_the_OLD_coincidental_layout_too(self):
+        # Belt and braces: the fix must not depend on the split layout either.
+        cmd = 'grep -rn foo "' + PARENT_OF_REF + '"'
+        self.assertTrue(F(cmd)["search_rooted_reference"])
+
+
 class TestMiscPredicates(unittest.TestCase):
     def test_git_add_all_fires(self):
         self.assertTrue(F("git add -A")["git_add_all"])

@@ -121,6 +121,39 @@ def is_root(path: str, root: str) -> bool:
     return bool(root) and bool(path) and norm(path) == norm(root)
 
 
+def contains_root(path: str, root: str) -> bool:
+    """True if `path` is a PROPER ANCESTOR of `root` -- i.e. a recursive walk from
+    `path` necessarily descends into `root`.
+
+    The mirror image of `is_root`, and the direction it cannot see. `is_root` is
+    deliberately exact so that a search scoped INTO a big tree stays allowed; but a
+    search rooted ABOVE one is strictly worse than a search rooted AT it, and matched
+    nothing.
+
+    MEASURED 2026-09-21, the case that found this: `reference\\` (~60 GB) sits at
+    `<...>/Desktop/Modding/X4/reference`, and its parent `<...>/Desktop/Modding/X4`
+    WAS `X4_TOOLKIT` until the dev repo was retired. So the ancestor was covered only
+    BY COINCIDENCE, through the toolkit root, and the retirement silently removed that
+    coverage: `cd <...>/Desktop/Modding/X4 && grep -rl x .` was ALLOWED while the same
+    shape at the toolkit root, at reference/ itself, and at the game root all denied.
+    A guard that depends on two paths happening to coincide is a guard with an
+    unowned axis (CLAUDE.md #37).
+
+    Compares NORMALISED paths with a trailing separator, so `/a/bc` is not treated as
+    living under `/a/b`.
+
+    PROPER ancestry (`path != root`) falls out of that separator and is NOT tested for
+    separately: an explicit `if p == r: return False` was written here first and a
+    mutant SURVIVED its removal, because `r.startswith(r + "/")` is already False. A
+    clause no twin can kill is decoration (CLAUDE.md #26), so it is gone and the
+    partition is pinned by `test_contains_root_is_NOT_is_root` on the behaviour instead.
+    """
+    if not path or not root:
+        return False
+    p, r = norm(path), norm(root)
+    return r.startswith(p.rstrip("/") + "/")
+
+
 def is_abs(p: str) -> bool:
     """Absolute after normalisation -- `C:/x` and `/c/x` are both absolute."""
     return norm(p).startswith("/")
@@ -2618,6 +2651,10 @@ def facts(payload: dict, roots: dict) -> dict:
     def rooted(root):
         return bool(root) and any(is_root(p, root) for p in search_roots)
 
+    def above(root):
+        """A searched path that CONTAINS `root`: the walk reaches it and then some."""
+        return bool(root) and any(contains_root(p, root) for p in search_roots)
+
     # `body` already has heredocs AND comments removed. Deriving these from the raw
     # command left the string-matching rules (git_add_all, sed -i, longjob, the profile
     # search) blind to anything after an apostrophe in a comment -- 1 of the 5 measured
@@ -2777,7 +2814,13 @@ def facts(payload: dict, roots: dict) -> dict:
             # reached no rule while the plain spelling denied.
             for sg, _c in seg_cwd),
 
-        "search_rooted_reference": rooted(roots.get("reference")),
+        # TWO CLAUSES, and each needs its own falsification twin: the search is rooted
+        # AT reference\, or ABOVE it. The second was added 2026-09-21 after the
+        # hook_false_positives gate went red -- see `contains_root` for the measurement.
+        # An ancestor search is strictly worse than the exact one this rule was written
+        # for, because it traverses the 60 GB AND everything beside it.
+        "search_rooted_reference": (rooted(roots.get("reference"))
+                                    or above(roots.get("reference"))),
         # `mods` was here and is deliberately NOT, from 2026-09-04. The rule's own
         # message cites 300 s and "GBs of binary database pages" -- true of the TOOLKIT
         # root, where tools/basex/basex/data lives, and false of the mod source tree.
