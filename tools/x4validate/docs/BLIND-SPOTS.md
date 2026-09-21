@@ -10,6 +10,34 @@ searchable property. This register is the result of searching for it directly, a
 narrowing point found — including the ones that turned out to be *correct*, because the value of the
 register is that each row has a **denominator**.
 
+## Writing an entry — the format is ENFORCED, and one check fails SILENTLY
+
+Three separate checks read these entries, and they read different parts of them. MEASURED
+2026-09-20 while adding F126: getting this wrong cost three round trips, and the first
+mistake produced no failure at all.
+
+1. **Claim the id with `scripts/next-blind-spot-id.py`** — never read one from memory or
+   from another entry. It consults every branch, because an id claimed in one tree is
+   invisible to the others.
+2. **Write the summary-table ROW first** (`| F126 | ... |`), then the section. The row is the
+   cheapest thing to push and it makes the claim visible to concurrent sessions.
+   `test_register_bookkeeping_has_not_drifted` fails on a row with no section.
+3. **Put the STATUS and a CONFIDENCE on the `## Fnnn` HEADING LINE**, not on the line below:
+
+   ```
+   ## F126 — <one-line summary> · **DEFECT (measured)** · confidence 97% · FIXED 2026-09-20
+   ```
+
+   ⚠ **`gates/register_rederivation.py` reads FIXED from the HEADING.** A status on the
+   next line does not fail — the entry is simply **omitted from the audit**, and the gate
+   still prints "No new findings". The only tell is the entry COUNT, which is why the run
+   is worth predicting before you look at it. `test_blind_spots_ids.py` separately requires
+   the literal word `confidence` on that line.
+4. **A FIXED entry must name what re-derives it** — a `**RE-DERIVED BY:**` line citing the
+   exact test functions, not "the suite". That is what `register_rederivation` audits.
+5. **State the confidence's residual in words.** A bare percentage in permanent record is a
+   number the next session cannot interrogate; say what the missing fraction IS.
+
 Original audit date: **2026-08-12**. Corpus then: `reference\` (vanilla + 6 unpacked DLC), 122
 installed extension dirs, 2 packed mini-DLC, store `dev\_registry\effective.sqlite` (rebuilt
 2026-08-11 post-nested-door).
