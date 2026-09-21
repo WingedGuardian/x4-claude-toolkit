@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## v3.2.0 — 2026-09-21
 
 ### Deliberately NOT shipped in this release
 
