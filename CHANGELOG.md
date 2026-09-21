@@ -52,6 +52,25 @@
   agree while carrying it), and neither does beam-vs-not (6 of 106 beams vs 14 of 239
   non-beams). Root cause not established, so nothing was changed.
 
+  Three further per-item facts, re-derived 2026-09-21 over the 340 macros the store and the
+  capture BOTH cover (a narrower population than the oracle's 345, which is why the shared
+  figure is the disagreement count of 20 and not the denominator):
+  - **9 of the 20 are off by exactly `bullet.barrelamount`** — the 8 shotguns *and*
+    `turret_cpsdo_l_mining_01_mk4_macro`, which the list above files under "unexplained". So the
+    multiplier, not the channel aggregation, is the live suspect for nearly half the gap.
+  - **The narrower predicate does correlate where the falsified one did not:** of the 9 macros
+    carrying `bullet.amount > 1` **and** `barrelamount > 1`, **8 disagree**, against **12 of the
+    remaining 331**. `barrelamount > 1` alone predicts nothing; both-at-once predicts strongly.
+    Not a root cause — `turret_par_l_tribeam_macro` carries `barrelamount=2` and is off by
+    1.0341×, which no multiplier explains.
+  - ⚠ **One is a fabricated zero, and it is the worst shape in the set:**
+    `weapon_kha_l_scenariobeam_01_mk1_macro` derives **0.0** where the engine reports
+    **30,315.79**. A zero is not a visibly wrong number, so had this field shipped it would have
+    read as "this weapon does no damage" rather than as a defect. Counting the whole set by
+    direction: **18 over-derive** (1.03× to 4.0×), **one under-derives**
+    (`turret_cpsdo_xl_ion_01_mk6_macro`, 0.8×), and **one is that zero** — so no single clamp or
+    scale factor fits, which is why the field is held out rather than corrected in place.
+
 ### Added
 
 - **A "nothing connected" refusal now MEASURES the cause instead of surveying them.** Three
