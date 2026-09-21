@@ -176,6 +176,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F123 | `bin/unpack-reference.sh` took the LAST `"buildid"` in the Steam manifest, which is a beta branch's, not the installed build | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | this machine's manifest: AppState 23660954, `public_beta` 23524486 -- the script's grep returned 23524486 | one depth-1 reader, `x4_acf_buildid`, for the script and the hook; a test bans a third hand-rolled grep |
 | F124 | a client request had NO size cap; a request over ~1997 bytes tears the game-side pipe read down, and the teardown was followed the same session by a game CRASH | **DEFECT (measured)** · ✅ FIXED 2026-09-14 | P6 ramp: 1997 bytes round-tripped, 3998 tore the pipe down (`The pipe has been ended`); the game crashed on the next Esc | `ask()` refuses any request over `MAX_REQUEST_BYTES` (1900) before writing; `ffi-census` and `query ffisyms` gated off by default (`X4_LIVE_ALLOW_FFI`) |
 | F125 | a live refusal read the helper's ABSENT load marker as "most likely not installed" -- but the mod arms on GAME LOAD, so at the MAIN MENU the marker is legitimately absent and the install is fine | **DEFECT (measured)** · ✅ FIXED 2026-09-20 | in game 2026-09-20 at the main menu with no save loaded: marker absent, extension present and enabled, refusal said "not installed or not enabled" | the install is MEASURED directly (`helper_is_deployed()` over `mods("active")`) instead of inferred from the log; with deployment unknown the message names BOTH causes |
+| F126 | `build-effective.sh` rebuilt the x4eff DATABASE correctly but skipped the COVERAGE STAMP and still exited 0, so a freshly built index reported STALE indefinitely and refused to back any negative claim | **DEFECT (measured)** · ⏭ OPEN, n=1 | 2026-09-20: DB timestamp 02:15:41 with 10,970 documents, while `coverage-x4eff.json` kept mtime 00:22:03 and the PREVIOUS content fingerprint (`1f071ac8` vs the `39c7120a` stamped on `coverage-x4raw.json` minutes earlier); exit code 0 | not fixed. Cause identified -- a staging `rm` hit `_eff/tree/libraries/controlschemes_for_movie_capturing.xml` while BaseX still held it (`Device or resource busy`) and the stamp step never ran. A retry with the lock released stamped correctly, so it is NOT reproduced |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -6779,6 +6780,49 @@ game without the toolkit, and no other installed activity touches this path.
 where the request is the *number* as text (tiny) and the game echoes back `n` bytes, so it measures
 OUR read buffer (`_BUF`), never the request cap — it is unaffected, and unrelated to this teardown.
 
+
+## F126 -- a fresh index that reports STALE, behind an exit code of 0
+
+**DEFECT (measured) · ⏭ OPEN, n=1 · found 2026-09-20**
+
+**What happened.** `bash build-corpus.sh && bash build-effective.sh`, run to clear a stale
+`x4eff`. The corpus half worked and stamped `content=39c7120a9189db25`. The effective half
+serialized the tree, built the BaseX database (10,970 documents, `TIMESTAMP
+2026-09-21T02:15:41Z`), then hit
+
+```
+rm: cannot remove '.../basex/_eff/tree/libraries/controlschemes_for_movie_capturing.xml': Device or resource busy
+```
+
+and **exited 0 without writing the coverage stamp**. `coverage-x4eff.json` kept its previous
+mtime (00:22:03) and its previous fingerprint (`1f071ac8...`). The database was CURRENT; the
+artifact describing it was not, so every consumer read STALE and `ask.py` refused to back a
+negative. A retry, once the lock had cleared, stamped `39c7120a9189db25` and the banner went.
+
+**Why it is worth a row despite n=1.** The shape is the one this register exists for: *a step
+that does not produce its artifact and reports success anyway.* Two details make it worse than
+a plain flake.
+
+1. **It fails in the safe direction, which is why it can persist.** The freshness contract
+   refused rather than over-claiming, so nothing wrong was ever asserted from it. That is the
+   design working -- and it also means the only symptom is a stale banner after a build that
+   said it succeeded. The natural response is to rebuild again, in a loop, which is exactly
+   what CLAUDE.md #22 warns against and what nearly happened here.
+2. **`&&` chaining hides it twice over.** `build-corpus.sh` legitimately exits **3** on
+   SKIPCORRUPT exclusions (11 malformed VRO/cpsdo files the engine cannot read either), so
+   `build-corpus.sh && build-effective.sh` silently skips the second script entirely. The
+   documented invocation in the freshness banner uses `&&`. Chain with `;` and check each rc,
+   or treat 3 as success for this script.
+
+**Not yet established:** whether the stamp step is skipped because the failing `rm` aborts the
+tail of the script, or because it is ordered after cleanup and the script's last command
+returns 0 regardless. Reading `build-effective.sh` will settle it; that has not been done, and
+this entry does not guess. **The fix is presumably to stamp BEFORE cleanup and to fail loudly
+if the stamp does not land** -- but a defect whose mechanism is one read away should not be
+patched from a hypothesis.
+
+**What would have caught it:** a post-build assertion that the stamped fingerprint equals the
+one the build just computed. The build already knows both numbers; nothing compares them.
 
 ## F125 — an absent load marker was read as a missing install, but the mod arms on GAME LOAD · **DEFECT (measured)** · confidence 95% · FIXED 2026-09-20
 
