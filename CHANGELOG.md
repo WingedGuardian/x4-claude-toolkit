@@ -5,9 +5,12 @@
 ### Fixed
 
 - **A weapon's total `dps` is NOT the sum of its damage channels.** The rule is now
-  `hullshielddps + max(0, shieldonlydps, hullnoshielddps) + hullonlydps`, **MEASURED exact on
-  345 of 345** bulleted weapon/turret macros against the live engine; the summing rule it
-  replaces scored 338 of 345. Two distinct failures, both silent:
+  `hullshielddps + max(0, shieldonlydps, hullnoshielddps) + hullonlydps`, **exact on 345 of 345**
+  bulleted weapon/turret macros; the summing rule it replaces scores 338 of 345.
+  ⚠ Scope, stated precisely: 345/345 is the **aggregation formula**, reproducing the engine's
+  `dps` from the engine's **own** channel values. Our store's *end-to-end* derived `dps` matches
+  the engine on **325 of 345** — the other 20 are a separate, still-open defect in the
+  per-channel derivation (see Known issues). Two distinct failures of the sum, both silent:
   **(1)** a bullet carrying *both* `damage.shield` and `damage.noshield` — only the larger
   channel counts, because a shot cannot hit a shielded and an unshielded target at once. The
   two such macros omit **opposite** channels (`turret_xenon_xl_station_01_macro` engine
@@ -23,6 +26,18 @@
   channels negative, so the corpus does not distinguish `max(0,a,b)` from `max(a,b)`. A mutation
   probe found the same gap in the tests — dropping the `0` left every test green — so one test
   now pins the decision explicitly and is labelled as unverified.
+
+### Known issues
+
+- **Per-channel DPS derivation disagrees with the engine on 20 of 345 weapon/turret macros**
+  (found 2026-09-20 by `x4live oracle` against a fresh 348-macro sweep; **not fixed**). All 20
+  fail on `hullshielddps` and therefore on `dps`. **8 are shotguns**
+  (`turret_{arg,par,spl,tel}_m_shotgun_0{1,2}_mk1_macro`), all carrying `bullet.amount=8` and
+  `barrelamount=2`, and all **exactly 2×** the engine. The other 12 (flak, ion, mining,
+  battleship, scenario/scimitar beam, tribeam) are unexplained. Two candidate causes were
+  tested and **falsified with denominators**: `barrelamount > 1` does not predict it (46 macros
+  agree while carrying it), and neither does beam-vs-not (6 of 106 beams vs 14 of 239
+  non-beams). Root cause not established, so nothing was changed.
 
 ### Added
 
