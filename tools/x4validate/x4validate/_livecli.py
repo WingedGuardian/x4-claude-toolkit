@@ -376,13 +376,24 @@ _BY_TYPE: dict[str, dict[str, tuple[str, str]]] = {
 #: Naming them separately keeps a known modelling gap from hiding inside a generic
 #: "unmapped" bucket, where it would look like a table that needs more entries.
 _DERIVED = {
-    # ⚠ `dps` and its four per-channel siblings WERE here and have been REMOVED,
-    # 2026-09-20, on the same warrant `storagecapacity` left on: a MEASURED traversal,
-    # 38 of 39 exact against a live engine harvest. What made them look underivable was
-    # three missing inputs, not three different physics -- the whole story is in the
-    # block comment above `_DPS_CHANNELS`. `sustaineddps` STAYS: it folds in the heat
-    # model (overheat, cooling, re-enable), which is a separate unmodelled traversal and
-    # is NOT reproduced by the shot-rate formula.
+    # ⚠ `dps` and its four per-channel siblings LEFT here on 2026-09-20 and were PUT BACK
+    # the same day, before ever shipping. The traversal is real and the aggregation rule is
+    # exact (see `_derive_dps`), but a live sweep of the WHOLE population -- 345 comparable
+    # weapon/turret macros, not the 39 the promotion was measured on -- found the
+    # PER-CHANNEL derivation disagreeing with the engine on 20 of 345: 8 shotguns at
+    # exactly 2x, plus flak, ion, mining, battleship and three beams.
+    #
+    # `dps` was an unmodelled gap in every SHIPPED release, so promoting it now would make
+    # v3.2.0 the first release to emit a weapon dps AND the first to emit a WRONG one -- an
+    # in-arc defect, and a guess wearing the grammar of a measurement, which is the one
+    # thing this table exists to prevent. Listing them here is not a claim that they are
+    # underivable; it is a claim that we cannot yet tell WHICH answer is right, and a field
+    # we cannot vouch for belongs in the honest bucket until we can. Root cause is OPEN --
+    # two candidates falsified with denominators, see KNOWLEDGEBASE.md 2026-09-20.
+    # RE-PROMOTE when the 20 are explained, not before.
+    "dps", "hullshielddps", "shieldonlydps", "hullnoshielddps", "hullonlydps",
+    # `sustaineddps` STAYS regardless: it folds in the heat model (overheat, cooling,
+    # re-enable), a separate unmodelled traversal the shot-rate formula never reproduced.
     "sustaineddps", "timetooverheat", "timetocool", "range", "shielddisruption",
     # `storagecapacity` REMOVED 2026-08-30: it now has a measured traversal in
     # _DERIVE (sum cargo.max over connected macros), verified 5 of 5 exact across
@@ -662,13 +673,17 @@ def _derive_channel(chan: str):
 #: picking one and calling it modelled.
 _DERIVE: dict[str, object] = {
     "storagecapacity": _derive_storagecapacity,
-    # 2026-09-20: weapon DPS, moved OUT of `_DERIVED` on a measured traversal -- the same
-    # move `storagecapacity` made on 2026-08-30, at a higher evidence bar (38 of 39 exact
-    # against the live engine, vs 5 of 5 then). A field cannot be both "we cannot compute
-    # this" and "here is how we compute it"; `test_derived_fields_are_named_not_folded_into_unmapped`
-    # is what keeps those two lists from both claiming it.
-    "dps": _derive_dps,
-    **{chan: _derive_channel(chan) for chan, _ in _DPS_CHANNELS},
+    # ⚠ `dps` and the four channels are NOT here, deliberately. They were promoted on
+    # 2026-09-20 against a 39-macro harvest and DEMOTED the same day, before shipping,
+    # when a 345-macro live sweep found the per-channel derivation wrong on 20 of them.
+    # `_derive_dps` and `_derive_channel` are KEPT and TESTED below -- the code is
+    # correct as far as it is measured, and deleting it would throw away the 345-macro
+    # result. They are simply not wired in, so the tool reports an honest gap instead of
+    # a number it cannot vouch for. Re-adding these two lines is the whole re-promotion:
+    #     "dps": _derive_dps,
+    #     **{chan: _derive_channel(chan) for chan, _ in _DPS_CHANNELS},
+    # Do it when the 20 are explained. `test_derived_fields_are_named_not_folded_into_unmapped`
+    # is what stops both tables claiming a field at once, so it must stay green either way.
 }
 
 def cmd_oracle(path: str | None, out=None, show_derived: bool = False,

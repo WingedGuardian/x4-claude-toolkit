@@ -179,7 +179,10 @@ def test_a_ZERO_channel_is_reported_as_zero_not_as_a_gap(store):
     OWN answer (it reports shieldonlydps=0 on 24 of 39). Returning None would turn a correct
     agreement into an unmapped field and make the oracle look worse than it is."""
     props = _weapon(store, {"reload.rate": "1", "damage.value": "100", "bullet.attach": "0"})
-    assert C._DERIVE["shieldonlydps"](_Con(), props) == str(0)
+    # Called DIRECTLY, not through `_DERIVE`: the channels are demoted for v3.2.0 (see the
+    # `_DERIVED` comment) and are no longer wired into that registry. The derivation itself
+    # is unchanged and still under test -- which is the point of keeping these.
+    assert C._derive_channel("shieldonlydps")(_Con(), props) == str(0)
 
 
 def test_dps_equals_the_SUM_when_only_ONE_specialised_channel_is_populated(store):
@@ -313,18 +316,30 @@ def test_an_UNMODELLABLE_bullet_REFUSES_rather_than_reporting_zero(store):
     and could be called agreement on a weapon that does plenty of damage."""
     props = _weapon(store, {"damage.value": "500", "bullet.attach": "0"})
     assert C._derive_dps(_Con(), props) is None
-    assert C._DERIVE["hullshielddps"](_Con(), props) is None
+    assert C._derive_channel("hullshielddps")(_Con(), props) is None
 
 
 # --- the registry itself ------------------------------------------------------- #
 
-def test_dps_is_no_longer_listed_as_an_unmodelled_gap():
-    """A field cannot be both "we cannot compute this" and "here is how we compute it".
-    `test_derived_fields_are_named_not_folded_into_unmapped` polices the other direction;
-    this pins the move itself, so a revert has to be deliberate."""
+def test_dps_is_HELD_OUT_of_the_derived_registry_for_v3_2_0():
+    """The promotion was made and then DEMOTED the same day, before shipping. This pins the
+    demotion so that re-promoting has to be deliberate -- it is the exact inverse of the
+    test that used to live here, and it is a release-scope decision, not a code opinion.
+
+    WHY: a 345-macro live sweep found the per-channel derivation disagreeing with the engine
+    on 20 macros. `dps` was an unmodelled gap in every SHIPPED release, so promoting it now
+    would make v3.2.0 the first to emit a weapon dps AND the first to emit a wrong one.
+    The traversal stays written and tested; it is just not wired in.
+
+    RE-PROMOTE when the 20 are explained: move these five back into `_DERIVE` and invert
+    this test again. `test_derived_fields_are_named_not_folded_into_unmapped` polices the
+    other direction and must stay green either way."""
     for f in ("dps", "hullshielddps", "shieldonlydps", "hullnoshielddps", "hullonlydps"):
-        assert f in C._DERIVE, f"{f} lost its traversal"
-        assert f not in C._DERIVED, f"{f} is claimed by BOTH registries"
+        assert f in C._DERIVED, f"{f} must be declared an honest gap while it is held out"
+        assert f not in C._DERIVE, f"{f} is claimed by BOTH registries"
+    # and the derivation is still THERE, so the demotion is a wiring change, not a deletion
+    assert callable(C._derive_dps)
+    assert callable(C._derive_channel("hullshielddps"))
 
 
 def test_sustaineddps_is_STILL_an_unmodelled_gap():

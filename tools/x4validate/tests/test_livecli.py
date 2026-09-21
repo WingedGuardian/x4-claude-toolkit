@@ -328,13 +328,20 @@ def test_a_traversal_that_REFUSES_gets_its_own_bucket_not_the_unmapped_one(capsy
     moment a field was promoted: the rows looked like a lookup table needing more entries,
     when in fact a traversal had looked at them and declined. "I could not compute this" is
     not "nobody has mapped this".
+
+    ⚠ RE-POINTED 2026-09-20 from `dps` to `storagecapacity`. `dps` was held out of
+    `_DERIVE` for v3.2.0 (see `test_dps_is_HELD_OUT_of_the_derived_registry_for_v3_2_0`),
+    so it no longer has a traversal that can decline. The BUCKET is what this test is
+    about, not which field happens to exercise it: `_derive_storagecapacity` refuses the
+    same way, returning None when it sees no connections. The rationale above is the
+    original one and still stands.
     """
     rows = [["HDR", "schema=2"],
-            ["LIB_ENTRY_VAL", "weapons_lasers", "w", "dps", "290.9"],
-            ["LIB_ENTRY_VAL", "weapons_lasers", "w", "zzz_not_a_field", "1"],
+            ["LIB_ENTRY_VAL", "shiptypes_s", "w", "storagecapacity", "540"],
+            ["LIB_ENTRY_VAL", "shiptypes_s", "w", "zzz_not_a_field", "1"],
             ["END", "4"]]
     monkeypatch.setattr(C, "_load", lambda p: L.parse(uidata(rows)))
-    # no `bullet.class`, so the dps traversal looks and refuses -- the video-macro shape
+    # no connections, so the storagecapacity traversal looks and refuses
     _fake_store(monkeypatch, {"heat.coolrate": "2000"})
 
     rc = C.cmd_oracle(None)
@@ -345,7 +352,6 @@ def test_a_traversal_that_REFUSES_gets_its_own_bucket_not_the_unmapped_one(capsy
     assert "not mapped yet          1" in out, (
         "and the genuinely unmapped field must STILL be counted there -- the twin that "
         "stops the new bucket swallowing everything")
-    assert "engine-DERIVED (F72)    0" in out, "dps is no longer an unmodelled gap"
 
 
 def test_show_derived_is_off_by_default(capsys, monkeypatch):

@@ -2,15 +2,26 @@
 
 ## [Unreleased]
 
-### Fixed
+### Deliberately NOT shipped in this release
 
-- **A weapon's total `dps` is NOT the sum of its damage channels.** The rule is now
+- **Weapon DPS stays an unmodelled gap.** It was promoted to a computed field during this
+  release cycle and **demoted again before shipping**. `dps` and its four per-channel siblings
+  remain in the `_DERIVED` (honest gap) registry, so the tool reports *"we cannot compute this"*
+  rather than a number it cannot vouch for. **No shipped release has ever emitted a weapon
+  `dps`, and this one does not either** — so nothing regresses for users.
+  **Why it was pulled:** a live sweep of the whole population (345 comparable weapon/turret
+  macros, against the 39 the promotion was measured on) found the per-channel derivation
+  disagreeing with the engine on **20 of 345**. Promoting it now would have made this the first
+  release to emit a weapon `dps` *and* the first to emit a wrong one — an in-arc defect, and a
+  guess wearing the grammar of a measurement.
+  **The work is kept, not reverted:** `_derive_dps` and `_derive_channel` remain in the source
+  and under test, including the aggregation rule below, which is exact. Re-promotion is two
+  lines in `_DERIVE` once the 20 are explained.
+  The aggregation rule itself was corrected and is worth recording:
   `hullshielddps + max(0, shieldonlydps, hullnoshielddps) + hullonlydps`, **exact on 345 of 345**
-  bulleted weapon/turret macros; the summing rule it replaces scores 338 of 345.
-  ⚠ Scope, stated precisely: 345/345 is the **aggregation formula**, reproducing the engine's
-  `dps` from the engine's **own** channel values. Our store's *end-to-end* derived `dps` matches
-  the engine on **325 of 345** — the other 20 are a separate, still-open defect in the
-  per-channel derivation (see Known issues). Two distinct failures of the sum, both silent:
+  against the engine's own channel values, where the summing rule it replaces scores 338 of 345.
+  ⚠ That 345/345 is the **aggregation formula**, not end-to-end agreement: our derived `dps`
+  would match the engine on **325 of 345**. Two distinct failures of the sum, both silent:
   **(1)** a bullet carrying *both* `damage.shield` and `damage.noshield` — only the larger
   channel counts, because a shot cannot hit a shielded and an unshielded target at once. The
   two such macros omit **opposite** channels (`turret_xenon_xl_station_01_macro` engine
@@ -30,7 +41,9 @@
 ### Known issues
 
 - **Per-channel DPS derivation disagrees with the engine on 20 of 345 weapon/turret macros**
-  (found 2026-09-20 by `x4live oracle` against a fresh 348-macro sweep; **not fixed**). All 20
+  (found 2026-09-20 by `x4live oracle` against a fresh 348-macro sweep). ⚠ **This does not
+  affect users of this release** — the field is held out (see above), so the tool reports a gap
+  rather than a wrong number. It is recorded here because it blocks re-promotion. All 20
   fail on `hullshielddps` and therefore on `dps`. **8 are shotguns**
   (`turret_{arg,par,spl,tel}_m_shotgun_0{1,2}_mk1_macro`), all carrying `bullet.amount=8` and
   `barrelamount=2`, and all **exactly 2×** the engine. The other 12 (flak, ion, mining,
