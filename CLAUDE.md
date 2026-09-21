@@ -460,7 +460,7 @@ implementation; BaseX delegates to it):
 **Absent fingerprint = UNKNOWN, never fresh.** Each CLI banners every run until rebuilt; `ask.py`
 and `gates/claims_audit.py` REFUSE a claim outright. `engine_dependent` is per-artifact — a raw file
 index is not a merge product, and flagging it anyway trains you to ignore the banner. Rebuild:
-`uv run x4effective build` · `uv run x4xref build` · `cd tools/basex && bash build-corpus.sh && bash build-effective.sh`
+`uv run x4effective build` · `uv run x4xref build` · `cd tools/basex; bash build-corpus.sh; bash build-effective.sh`
 
 **Corollary — a design doc's numbers rot silently.** Prose cannot be tested, so numeric claims live
 in `dev\_registry\CLAIMS.tsv`, re-checked by `gates/claims_audit.py` against the store. UNRESOLVED is

@@ -127,6 +127,21 @@ COVERAGE_RC=0
 # x4eff is ENGINE-dependent: it is a product of _merge, so a merge fix
 # invalidates it even when not one input file changed. That is exactly how this
 # DB went eleven days serving pre-fix values. Stamp both axes.
-(cd "$X4VALIDATE" && uv run python "$HERE/staleness.py" --write --db "$DB")
+# F126: capture the stamp rc. This ran in a subshell whose failure was IGNORED, so a
+# BUILT database could be left UNSTAMPED and every CLI would banner it as STALE forever,
+# while the script exited on the coverage verdict alone -- success reported for work it
+# did not do. MEASURED 2026-09-20: a staging `rm` lost a race with a BaseX file handle and
+# this is the state it left behind. An unstamped index is a FAILURE even though the
+# database itself is fine, because nothing downstream can tell the two apart.
+STAMP_RC=0
+(cd "$X4VALIDATE" && uv run python "$HERE/staleness.py" --write --db "$DB") || STAMP_RC=$?
+if [ "$STAMP_RC" -ne 0 ]; then
+  echo >&2
+  echo "ERROR: $DB was BUILT but its freshness stamp was NOT written (rc $STAMP_RC)." >&2
+  echo "       An unstamped index reads STALE forever and every CLI banners it, so this" >&2
+  echo "       is a failure even though the database is fine. Re-run just the stamp:" >&2
+  echo "         (cd \"$X4VALIDATE\" && uv run python \"$HERE/staleness.py\" --write --db $DB)" >&2
+  exit 1
+fi
 
 exit "$COVERAGE_RC"

@@ -105,7 +105,22 @@ COVERAGE_RC=0
 # Stamp WHEN this index was true, not just how much of it was indexed. Without
 # this, ask.py cannot tell a current answer from one about a superseded world —
 # x4eff served 858 wrong values for 11 days because nothing recorded it.
-(cd "$X4VALIDATE" && uv run python "$HERE/staleness.py" --write --db "$DB")
+# F126: capture the stamp rc. This ran in a subshell whose failure was IGNORED, so a
+# BUILT database could be left UNSTAMPED and every CLI would banner it as STALE forever,
+# while the script exited on the coverage verdict alone -- success reported for work it
+# did not do. MEASURED 2026-09-20: a staging `rm` lost a race with a BaseX file handle and
+# this is the state it left behind. An unstamped index is a FAILURE even though the
+# database itself is fine, because nothing downstream can tell the two apart.
+STAMP_RC=0
+(cd "$X4VALIDATE" && uv run python "$HERE/staleness.py" --write --db "$DB") || STAMP_RC=$?
+if [ "$STAMP_RC" -ne 0 ]; then
+  echo >&2
+  echo "ERROR: $DB was BUILT but its freshness stamp was NOT written (rc $STAMP_RC)." >&2
+  echo "       An unstamped index reads STALE forever and every CLI banners it, so this" >&2
+  echo "       is a failure even though the database is fine. Re-run just the stamp:" >&2
+  echo "         (cd \"$X4VALIDATE\" && uv run python \"$HERE/staleness.py\" --write --db $DB)" >&2
+  exit 1
+fi
 
 # Staging is transient by design — the index is the durable artifact. Keep it
 # only if KEEP_STAGE=1 (useful when debugging an extraction failure).

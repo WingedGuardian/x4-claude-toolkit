@@ -132,13 +132,13 @@ class Verdict:
                     + "\n!!   cd tools/x4validate && uv run python ../basex/ask.py ..."
                     + "\n!! If it is a MISSING, UNREADABLE or UNSTAMPED coverage report,"
                     + "\n!! the index has not been built or not been stamped:"
-                    + "\n!!   cd tools/basex && bash build-corpus.sh && bash build-effective.sh"
+                    + "\n!!   cd tools/basex && bash build-corpus.sh ; bash build-effective.sh   # ; not && : corpus exits 3 on accounted exclusions"
                     + "\n!! Until then this index cannot back a NEGATIVE claim.\n"
                     + "!" * 78 + "\n")
         return ("\n" + "!" * 78
                 + f"\n!! STALE INDEX — {self.db} no longer describes the current world.\n!!   "
                 + "\n!!   ".join(self.reasons)
-                + "\n!! Rebuild:  cd tools/basex && bash build-corpus.sh && bash build-effective.sh"
+                + "\n!! Rebuild:  cd tools/basex && bash build-corpus.sh ; bash build-effective.sh   # ; not && : corpus exits 3 on accounted exclusions"
                 + "\n!! Until then this index cannot back a NEGATIVE claim, and its\n"
                   "!! positive answers describe the world as of the build, not now.\n"
                 + "!" * 78 + "\n")
