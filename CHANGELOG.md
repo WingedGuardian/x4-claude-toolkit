@@ -367,6 +367,12 @@
   **146 of 17,133 shared commands moved**, and classifying the 38 that moved into `allow` per
   item isolated it. ⚠ That gate had been red and unobserved — it is slow and was not in the
   previous verification's four-gate sweep.
+  **The hole was twice the size the first pass reported:** re-running the comparison after the
+  fix and accounting for every departure showed **6 commands left `allow`, not 3, and 0 entered
+  it**. The three missed were ancestor walks whose text never contains the string `reference`, so
+  a text heuristic could not see them while a path predicate could. What made that safe is that
+  the fix was written to the *axis* (proper ancestry) rather than to the commands in hand — keyed
+  to the observed three, it would have shipped covering half the defect with a green gate.
   **Fix:** `contains_root()` treats a PROPER-ANCESTOR search as the same refusal, compared with a
   trailing separator so `/a/bc` does not read as living under `/a/b`. 11 new tests including a
   split-root fixture that breaks the coincidence, 3 of 3 clause mutants killed, and an 8-case
