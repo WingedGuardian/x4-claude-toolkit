@@ -6781,9 +6781,9 @@ where the request is the *number* as text (tiny) and the game echoes back `n` by
 OUR read buffer (`_BUF`), never the request cap — it is unaffected, and unrelated to this teardown.
 
 
-## F126 — a fresh index that reports STALE, behind an exit code of 0 · **DEFECT (measured)** · FIXED 2026-09-20
+## F126 — a fresh index that reports STALE, behind an exit code of 0 · **DEFECT (measured)** · confidence 97% · FIXED 2026-09-20
 
-**Found 2026-09-20 · n=1, not reproduced · fixed the same day.**
+**Found 2026-09-20 · n=1, not reproduced · fixed the same day.** The 3%: the symptom was read DIRECTLY off the artifacts (database timestamp, coverage mtime, both fingerprints, exit 0) and the mechanism is confirmed by the code that fixed it -- but the TRIGGER, a staging `rm` losing a race with a BaseX file handle, was never replayed. A different failure of the same unchecked call would look identical.
 
 **What happened.** `bash build-corpus.sh && bash build-effective.sh`, run to clear a stale
 `x4eff`. The corpus half worked and stamped `content=39c7120a9189db25`. The effective half
