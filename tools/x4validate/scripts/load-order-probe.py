@@ -4,6 +4,7 @@ r"""A deliberate experiment that makes the engine SHOW its extension load order.
     uv run python scripts/load-order-probe.py deploy  <dir> [--apply] # through deploy-mod.py's guards
     uv run python scripts/load-order-probe.py score   <dir> [debug.txt]
     uv run python scripts/load-order-probe.py remove  [--apply]       # only folders THIS tool wrote
+    uv run python scripts/load-order-probe.py profile-entries         # the 2 profile lines RG-6 needs
 
 Run from `tools/x4validate`. Launch X4 to the MAIN MENU between `deploy` and `score`, then
 quit -- no save is loaded, so nothing is baked into a savegame.
@@ -89,6 +90,12 @@ PROBES: dict[str, tuple[str, list[tuple[str, bool]], bool, str, str]] = {
                             "manifest enabled=0, no profile entry"),
     "lo_probe_d_disdep": ("lo_probe_d_disdep", [("lo_probe_d_disabled", False)], True,
                           _add("loddd"), "depends on a DISABLED mod"),
+    # --- who decides "enabled" (AUDIT RG-6). These two need PROFILE entries, which this
+    # tool never writes: `profile-entries` prints them for a human-confirmed edit. --------
+    "lo_probe_d_profon": ("lo_probe_d_profon", [], False, _add("lodpo"),
+                          "manifest enabled=0 but PROFILE enabled=true"),
+    "lo_probe_d_profnoattr": ("lo_probe_d_profnoattr", [], True, _add("lodpn"),
+                              "profile entry with NO enabled attribute"),
     # --- DLC position: sorts before every ego_dlc_* -------------------------------------
     "a_lo_probe_dlc": ("lo_probe_a_dlc", [], True,
                        f'<add sel="//ware[@id=\'{DLC_ONLY_WARE}\']" type="@lopdlc">1</add>',
@@ -109,6 +116,7 @@ def predict() -> dict:
     known = [f for f in PROBES if f not in {
         "lo_probe_d_reqmiss", "lo_probe_d_cyc1", "lo_probe_d_cyc2", "lo_probe_d_dup1",
         "lo_probe_d_dup2", "lo_probe_d_disabled", "lo_probe_d_disdep",
+        "lo_probe_d_profon", "lo_probe_d_profnoattr",
         "lo_probe_k_ßa", "lo_probe_k_sz"}]
     ids = {PROBES[f][0]: f for f in known}
     order, done = [], set()
@@ -138,6 +146,8 @@ def predict() -> dict:
             "duplicate_id": "both load OR only the first-sorting one",
             "lo_probe_d_disabled": "not loaded (manifest default) OR loaded",
             "lo_probe_d_disdep": "loaded OR not loaded",
+            "lo_probe_d_profon": "loaded (profile overrides manifest) OR not loaded",
+            "lo_probe_d_profnoattr": "loaded (missing attr = enabled) OR not loaded",
             "a_lo_probe_dlc": "OK (all DLC load before mods) OR NO_MATCH (DLC in the walk)",
         },
         "listdir_note": "record os.listdir order of the sharp-s pair at deploy time",
@@ -314,7 +324,8 @@ def score(src: Path, log: Path) -> int:
     print(f"  sharp s  : {'before' if ss is not None and sz is not None and ss < sz else 'after' if ss is not None and sz is not None else 'n/a'} "
           f"lo_probe_k_sz  (ßa pos {ss}, sz pos {sz})")
     for p in ("lo_probe_d_reqmiss", "lo_probe_d_optmiss", "lo_probe_d_cyc1", "lo_probe_d_cyc2",
-              "lo_probe_d_dup1", "lo_probe_d_dup2", "lo_probe_d_disabled", "lo_probe_d_disdep"):
+              "lo_probe_d_dup1", "lo_probe_d_dup2", "lo_probe_d_disabled", "lo_probe_d_disdep",
+              "lo_probe_d_profon", "lo_probe_d_profnoattr"):
         print(f"  {p:22s}: {'LOADED at ' + str(pos(p)) if pos(p) is not None else 'NOT loaded'}")
     dlc = "NO_MATCH" if errors.get("a_lo_probe_dlc") else (
         "OK" if "a_lo_probe_dlc" in loaded else "NOT LOADED")
@@ -337,6 +348,12 @@ def main(argv: list[str]) -> int:
         return deploy(Path(rest[0]), apply)
     if cmd == "remove":
         return remove(apply)
+    if cmd == "profile-entries":
+        # Printed, never written: the profile content.xml is the user's, and its edit is a
+        # confirmed, backed-up, hand-reverted step (CLAUDE.md "Requires user confirmation").
+        print('  <extension id="lo_probe_d_profon" enabled="true"/>')
+        print('  <extension id="lo_probe_d_profnoattr"/>')
+        return 0
     if cmd == "score" and rest:
         log = Path(rest[1]) if len(rest) > 1 else _paths.debug_log()
         if log is None or not log.is_file():

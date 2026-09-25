@@ -48,7 +48,8 @@ def test_prediction_is_derived_from_the_rule_not_from_a_result():
     assert order[-1] == "lo_probe_ce_dep"                                  # waits for pass 2
     assert order.index("a_lo_probe_dlc") == 0
     for unknown in ("lo_probe_d_reqmiss", "lo_probe_d_cyc1", "lo_probe_d_dup1",
-                    "lo_probe_d_disabled", "lo_probe_d_disdep", "lo_probe_k_ßa"):
+                    "lo_probe_d_disabled", "lo_probe_d_disdep", "lo_probe_d_profon",
+                    "lo_probe_d_profnoattr", "lo_probe_k_ßa"):
         assert unknown not in order, f"{unknown} was never measured; it must stay UNKNOWN"
 
 
