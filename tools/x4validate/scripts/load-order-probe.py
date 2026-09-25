@@ -1,0 +1,351 @@
+r"""A deliberate experiment that makes the engine SHOW its extension load order.
+
+    uv run python scripts/load-order-probe.py build   <dir>          # write probe mods + PREDICTION.json
+    uv run python scripts/load-order-probe.py deploy  <dir> [--apply] # through deploy-mod.py's guards
+    uv run python scripts/load-order-probe.py score   <dir> [debug.txt]
+    uv run python scripts/load-order-probe.py remove  [--apply]       # only folders THIS tool wrote
+
+Run from `tools/x4validate`. Launch X4 to the MAIN MENU between `deploy` and `score`, then
+quit -- no save is loaded, so nothing is baked into a savegame.
+
+WHY. The order of the engine's "Failed to verify the file signature" checks settled the
+common case (AUDIT-2026-09-24 LO-1: 372 file classes, 5,134 pairs, 0 inverted by the
+multi-pass rule). It cannot show shapes the installed modlist never exercises, and it is
+SIGNATURE order, not direct proof of the order patches APPLY in. Every probe here ships a
+`libraries/wares.xml` diff, so:
+
+  * ORDER  -- each loaded probe is signature-checked in load order (one class, one sequence);
+  * LOADED -- a probe that never appears was not loaded at all;
+  * APPLY  -- the collision probes write/read attributes on the `energycells` ware. A
+    `<replace>` of an attribute that an EARLIER mod added succeeds silently; one whose adder
+    loads LATER logs `No matching node ... in patch file 'extensions\<probe>\...'`.
+
+The PREDICTION is written by `build`, BEFORE the launch, from the rule measured on the log
+(held-out test: the rule was fitted on the same log it was first scored on). Cases the log
+could not reach are predicted UNKNOWN with the alternatives named; `score` records what the
+engine did. Nothing here assumes the answer it is trying to find.
+
+Exit: 0 every non-UNKNOWN prediction held · 1 a prediction failed · 2 cannot run.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from x4validate import _paths  # noqa: E402
+
+MARKER = ".x4-load-order-probe"          # every folder this tool writes carries it
+ID_PREFIX = "lo_probe"                   # every manifest id this tool writes starts with it
+WARE = "energycells"                     # base ware the probes annotate (no save is loaded)
+DLC_ONLY_WARE = "bofu"                   # defined only by ego_dlc_boron (0 hits in base wares.xml)
+
+
+def _add(attr: str) -> str:
+    return f'<add sel="//ware[@id=\'{WARE}\']" type="@{attr}">1</add>'
+
+
+def _use(attr: str) -> str:
+    return f'<replace sel="//ware[@id=\'{WARE}\']/@{attr}">2</replace>'
+
+
+# folder: (manifest id, dependencies [(id, optional)], enabled, wares.xml ops, what it tests)
+PROBES: dict[str, tuple[str, list[tuple[str, bool]], bool, str, str]] = {
+    # --- APPLY order: collisions on one attribute --------------------------------------
+    "lo_probe_ca_add": ("lo_probe_ca_add", [], True, _add("lopa"), "adds @lopa"),
+    "lo_probe_cb_use": ("lo_probe_cb_use", [], True, _use("lopa"),
+                        "replaces @lopa, added by an EARLIER-sorting mod"),
+    "lo_probe_cc_use": ("lo_probe_cc_use", [], True, _use("lopd"),
+                        "replaces @lopd, added by a LATER-sorting mod, no dependency"),
+    "lo_probe_cd_add": ("lo_probe_cd_add", [], True, _add("lopd"), "adds @lopd"),
+    "lo_probe_ce_dep": ("lo_probe_ce_dep", [("lo_probe_cf_add", False)], True, _use("lopf"),
+                        "replaces @lopf, added by a LATER-sorting mod it DEPENDS on"),
+    "lo_probe_cf_add": ("lo_probe_cf_add", [], True, _add("lopf"), "adds @lopf"),
+    # --- sort key ------------------------------------------------------------------------
+    "lo_probe_k_Zc": ("lo_probe_k_zc", [], True, _add("lokzc"), "mixed case"),
+    "lo_probe_k_ya": ("lo_probe_k_ya", [], True, _add("lokya"), "mixed-case control"),
+    "lo_probe_k_q_x": ("lo_probe_k_q_x", [], True, _add("lokqx"), "underscore vs letter"),
+    "lo_probe_k_qa": ("lo_probe_k_qa", [], True, _add("lokqa"), "underscore control"),
+    "lo_probe_k_ßa": ("lo_probe_k_ssa", [], True, _add("lokss"),
+                           "non-ASCII: sharp s (Python upper -> 'SS', ordinal upper keeps it)"),
+    "lo_probe_k_sz": ("lo_probe_k_sz", [], True, _add("loksz"), "non-ASCII control"),
+    # --- dependency shapes the installed modlist never exercises -----------------------
+    "lo_probe_d_reqmiss": ("lo_probe_d_reqmiss", [("lo_probe_nothere", False)], True,
+                           _add("lodrm"), "REQUIRED dependency that is not installed"),
+    "lo_probe_d_optmiss": ("lo_probe_d_optmiss", [("lo_probe_nothere", True)], True,
+                           _add("lodom"), "OPTIONAL dependency that is not installed"),
+    "lo_probe_d_cyc1": ("lo_probe_d_cyc1", [("lo_probe_d_cyc2", False)], True, _add("lodc1"),
+                        "dependency cycle (1 of 2)"),
+    "lo_probe_d_cyc2": ("lo_probe_d_cyc2", [("lo_probe_d_cyc1", False)], True, _add("lodc2"),
+                        "dependency cycle (2 of 2)"),
+    "lo_probe_d_dup1": ("lo_probe_d_dupid", [], True, _add("lodd1"), "duplicate id (1 of 2)"),
+    "lo_probe_d_dup2": ("lo_probe_d_dupid", [], True, _add("lodd2"), "duplicate id (2 of 2)"),
+    "lo_probe_d_disabled": ("lo_probe_d_disabled", [], False, _add("lodds"),
+                            "manifest enabled=0, no profile entry"),
+    "lo_probe_d_disdep": ("lo_probe_d_disdep", [("lo_probe_d_disabled", False)], True,
+                          _add("loddd"), "depends on a DISABLED mod"),
+    # --- DLC position: sorts before every ego_dlc_* -------------------------------------
+    "a_lo_probe_dlc": ("lo_probe_a_dlc", [], True,
+                       f'<add sel="//ware[@id=\'{DLC_ONLY_WARE}\']" type="@lopdlc">1</add>',
+                       "annotates a ware only ego_dlc_boron defines"),
+}
+
+
+# ------------------------------------------------------------------------ prediction
+def _rule_key(name: str) -> str:
+    """The MEASURED sort key: case-insensitive via per-character upper (not str.upper(),
+    which maps sharp s to 'SS' and so changes the LENGTH of the key)."""
+    return "".join(c.upper() if len(c.upper()) == 1 else c for c in name)
+
+
+def predict() -> dict:
+    """The prediction, derived ONLY from the rule measured on the real log. Shapes that log
+    could not reach are UNKNOWN, with the alternatives written down before the launch."""
+    known = [f for f in PROBES if f not in {
+        "lo_probe_d_reqmiss", "lo_probe_d_cyc1", "lo_probe_d_cyc2", "lo_probe_d_dup1",
+        "lo_probe_d_dup2", "lo_probe_d_disabled", "lo_probe_d_disdep",
+        "lo_probe_k_ßa", "lo_probe_k_sz"}]
+    ids = {PROBES[f][0]: f for f in known}
+    order, done = [], set()
+    names = sorted(known, key=_rule_key)
+    while len(order) < len(names):
+        before = len(order)
+        for n in names:
+            if n in done:
+                continue
+            need = {ids[d] for d, _opt in PROBES[n][1] if d in ids}
+            if need <= done:
+                order.append(n)
+                done.add(n)
+        if len(order) == before:
+            break
+    return {
+        "relative_order": order,
+        "applies": {
+            "lo_probe_cb_use": "OK", "lo_probe_cc_use": "NO_MATCH", "lo_probe_ce_dep": "OK",
+        },
+        "unknown": {
+            "sharp_s": "lo_probe_k_ßa before lo_probe_k_sz (Python str.upper -> 'SS') "
+                       "OR after (per-character / ordinal upper, NTFS-like)",
+            "lo_probe_d_reqmiss": "loaded OR not loaded",
+            "lo_probe_d_optmiss": "predicted LOADED (optional)",
+            "cycle": "both load (fallback) OR neither loads",
+            "duplicate_id": "both load OR only the first-sorting one",
+            "lo_probe_d_disabled": "not loaded (manifest default) OR loaded",
+            "lo_probe_d_disdep": "loaded OR not loaded",
+            "a_lo_probe_dlc": "OK (all DLC load before mods) OR NO_MATCH (DLC in the walk)",
+        },
+        "listdir_note": "record os.listdir order of the sharp-s pair at deploy time",
+    }
+
+
+# ------------------------------------------------------------------------ build / deploy
+def _manifest(folder: str) -> str:
+    mid, deps, enabled, _ops, what = PROBES[folder]
+    dep_xml = "".join(
+        f'\n  <dependency id="{d}"{" optional=\"true\"" if opt else ""} name="{d}"/>'
+        for d, opt in deps)
+    return (f'<?xml version="1.0" encoding="utf-8"?>\n'
+            f'<content id="{mid}" name="{folder}" version="100" '
+            f'enabled="{1 if enabled else 0}" save="0" '
+            f'description="Load-order probe: {what}. Remove after the test.">'
+            f'{dep_xml}\n</content>\n')
+
+
+def build(out: Path) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    for folder, (_mid, _deps, _en, ops, _what) in PROBES.items():
+        d = out / folder
+        (d / "libraries").mkdir(parents=True, exist_ok=True)
+        (d / "content.xml").write_bytes(_manifest(folder).encode("utf-8"))
+        (d / "libraries" / "wares.xml").write_bytes(
+            f'<?xml version="1.0" encoding="utf-8"?>\n<diff>\n  {ops}\n</diff>\n'.encode("utf-8"))
+        (d / MARKER).write_bytes(b"written by scripts/load-order-probe.py\n")
+    (out / "PREDICTION.json").write_bytes(
+        json.dumps(predict(), indent=2, ensure_ascii=False).encode("utf-8"))
+    print(f"built {len(PROBES)} probe mods + PREDICTION.json in {out}")
+
+
+def _deploy_module():
+    spec = importlib.util.spec_from_file_location("deploy_mod", HERE / "deploy-mod.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _ext_root() -> Path | None:
+    return _paths.game_extensions()
+
+
+def deploy(src: Path, apply: bool) -> int:
+    dm = _deploy_module()
+    ext = _ext_root()
+    names = sorted(PROBES)
+    missing = [n for n in names if not (src / n / MARKER).is_file()]
+    if missing:
+        print(f"refused: {src} is not a build of this tool (missing {missing[:3]}); "
+              "run `build` first", file=sys.stderr)
+        return 2
+    if ext is not None:
+        clash = [n for n in names if (ext / n).exists() and not (ext / n / MARKER).is_file()]
+        if clash:
+            print(f"refused: {clash} already exist in {ext} and were not written by this "
+                  "tool -- nothing is overwritten", file=sys.stderr)
+            return 2
+    try:
+        for n in names:                      # every guard before any write
+            dm.deploy(n, False, src_root=src, ext_root=ext, out=lambda *_: None)
+    except dm.Refused as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
+    ok = True
+    for n in names:
+        ok &= dm.deploy(n, apply, src_root=src, ext_root=ext)
+    if apply and ext is not None:
+        pair = [n for n in os.listdir(ext) if n in ("lo_probe_k_ßa", "lo_probe_k_sz")]
+        print(f"os.listdir order of the sharp-s pair: {pair}")
+    return 0 if ok else 1
+
+
+def remove(apply: bool) -> int:
+    """Remove ONLY folders carrying this tool's marker AND an lo_probe manifest id.
+    Files are unlinked one by one and directories removed only when EMPTY -- never a
+    recursive delete."""
+    ext = _ext_root()
+    if ext is None or not ext.is_dir():
+        print("cannot run: no game extensions folder configured", file=sys.stderr)
+        return 2
+    victims = []
+    for d in sorted(ext.iterdir()):
+        if not (d.is_dir() and not d.is_symlink() and (d / MARKER).is_file()):
+            continue
+        cx = (d / "content.xml").read_text(encoding="utf-8", errors="replace") \
+            if (d / "content.xml").is_file() else ""
+        m = re.search(r'<content\s+id="([^"]+)"', cx)
+        if not (m and m.group(1).startswith(ID_PREFIX)):
+            print(f"  SKIP {d.name}: marker present but manifest id is not {ID_PREFIX}*")
+            continue
+        victims.append(d)
+    print(f"{len(victims)} probe folder(s) in {ext}:")
+    for d in victims:
+        files = sorted(p for p in d.rglob("*") if p.is_file() and not p.is_symlink())
+        print(f"  {d.name}: {len(files)} file(s)")
+        if not apply:
+            continue
+        for f in files:
+            f.unlink()
+        for sub in sorted((p for p in d.rglob("*") if p.is_dir()), key=lambda p: -len(p.parts)):
+            sub.rmdir()                   # raises if not empty -- by design
+        d.rmdir()
+    if not apply:
+        print("(dry run -- nothing removed; add --apply)")
+    left = [d.name for d in victims if d.exists()] if apply else []
+    if left:
+        print(f"NOT removed: {left}", file=sys.stderr)
+        return 1
+    return 0
+
+
+# ------------------------------------------------------------------------ score
+BS = "\\"
+SIG = re.compile(r"Failed to verify the file signature for file '\.\\extensions\\([^\\']+)"
+                 r"\\libraries\\wares\.xml'", re.I)
+# The engine quotes the selector with ' and selectors themselves contain ' (MEASURED on
+# real lines: `'//sound[@id='wpn_HEPT_shoot']/sample'`), so the path is matched lazily up
+# to the patch-file clause. A `[^']*` here matched NOTHING and scored every NO_MATCH as OK
+# (caught by tests/test_load_order_probe.py before any launch).
+NOMATCH = re.compile(r"No matching node for path '.*?' in patch file "
+                     r"'extensions\\([^\\']+)\\libraries\\wares", re.I)
+
+
+def read_log(lines) -> tuple[list[str], dict[str, int]]:
+    """(probe folders in wares.xml signature order, {probe folder: No-matching-node count})."""
+    probes = {p.lower() for p in PROBES}
+    order, errors = [], {}
+    for line in lines:
+        m = SIG.search(line)
+        if m and m.group(1).lower() in probes and m.group(1).lower() not in order:
+            order.append(m.group(1).lower())
+        m = NOMATCH.search(line)
+        if m and m.group(1).lower() in probes:
+            errors[m.group(1).lower()] = errors.get(m.group(1).lower(), 0) + 1
+    return order, errors
+
+
+def score(src: Path, log: Path) -> int:
+    pred = json.loads((src / "PREDICTION.json").read_text(encoding="utf-8"))
+    with log.open(encoding="utf-8", errors="replace") as fh:
+        order, errors = read_log(fh)
+    if not order:
+        print(f"cannot score: no probe appears in {log} -- were they deployed and the game "
+              "launched after deploying?", file=sys.stderr)
+        return 2
+    loaded = set(order)
+    fails = 0
+    want = [p.lower() for p in pred["relative_order"]]
+    got = [p for p in order if p in want]
+    missing = [p for p in want if p not in loaded]
+    print(f"probes loaded: {len(order)} of {len(PROBES)}   log: {log}")
+    print(f"engine order : {order}")
+    if missing:
+        fails += 1
+        print(f"FAIL predicted-loaded probes absent: {missing}")
+    if got != [p for p in want if p in loaded]:
+        fails += 1
+        print(f"FAIL relative order\n  predicted: {want}\n  engine   : {got}")
+    else:
+        print(f"ok   relative order of {len(got)} predicted probes")
+    for probe, expect in pred["applies"].items():
+        actual = "NO_MATCH" if errors.get(probe.lower()) else (
+            "OK" if probe.lower() in loaded else "NOT LOADED")
+        mark = "ok  " if actual == expect else "FAIL"
+        fails += actual != expect
+        print(f"{mark} apply {probe}: predicted {expect}, engine {actual}")
+    print("\nRECORDED (were UNKNOWN before the launch):")
+
+    def pos(p):
+        return order.index(p.lower()) if p.lower() in loaded else None
+    ss, sz = pos("lo_probe_k_ßa"), pos("lo_probe_k_sz")
+    print(f"  sharp s  : {'before' if ss is not None and sz is not None and ss < sz else 'after' if ss is not None and sz is not None else 'n/a'} "
+          f"lo_probe_k_sz  (ßa pos {ss}, sz pos {sz})")
+    for p in ("lo_probe_d_reqmiss", "lo_probe_d_optmiss", "lo_probe_d_cyc1", "lo_probe_d_cyc2",
+              "lo_probe_d_dup1", "lo_probe_d_dup2", "lo_probe_d_disabled", "lo_probe_d_disdep"):
+        print(f"  {p:22s}: {'LOADED at ' + str(pos(p)) if pos(p) is not None else 'NOT loaded'}")
+    dlc = "NO_MATCH" if errors.get("a_lo_probe_dlc") else (
+        "OK" if "a_lo_probe_dlc" in loaded else "NOT LOADED")
+    print(f"  a_lo_probe_dlc (DLC before mods?): {dlc}")
+    print("\nPASS" if not fails else f"\n{fails} prediction(s) FAILED")
+    return 0 if not fails else 1
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    cmd, rest = argv[0], argv[1:]
+    apply = "--apply" in rest
+    rest = [a for a in rest if a != "--apply"]
+    if cmd == "build" and rest:
+        build(Path(rest[0]))
+        return 0
+    if cmd == "deploy" and rest:
+        return deploy(Path(rest[0]), apply)
+    if cmd == "remove":
+        return remove(apply)
+    if cmd == "score" and rest:
+        log = Path(rest[1]) if len(rest) > 1 else _paths.debug_log()
+        if log is None or not log.is_file():
+            print(f"cannot run: no debug log ({log})", file=sys.stderr)
+            return 2
+        return score(Path(rest[0]), log)
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
