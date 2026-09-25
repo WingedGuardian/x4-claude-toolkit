@@ -57,6 +57,7 @@ That is the argument for the runner in one line.
      and the roster as a wall of pipes. The other two tables in this file were fine. -->
 | Gate | Run | Bar |
 |---|---|---|
+| `load_order_oracle.py` | `uv run python gates/load_order_oracle.py` | **0 engine-ordered pairs inverted** by `compute_load_order`. For every file path shipped by two or more active mods, the order in which the engine signature-checked their copies (`Failed to verify the file signature` lines in `debug.txt`) is the order it walked them; the gate counts the pairs the computed order inverts. MEASURED 2026-09-24 over two launches two weeks apart: **372 file classes, 5,134 pairs** — the pre-fix code inverted **685** (AUDIT-2026-09-24 LO-1). Refuses (rc 2) when the log describes a different modlist than the active one (a manifest changed after it, or a logged folder is no longer active), because then an inversion may be the log's age, not the code. Uses `$X4_ORACLE_LOG` if set, else the live `debug.txt` — a fresh launch is the normal input here, since the order must be judged against the CURRENT modlist. |
 | `obtainability_audit.py` | `uv run python gates/obtainability_audit.py [--record]` | **No drift** in content the game DEFINES but cannot SELL, against a local baseline. Counts macros whose every supplier ware is tagged `deprecated`, plus LIVE macros whose ammunition is one of them. Baselined at **39 / 39 / 12 / 10** and 6 mods on the reference machine. The counts alone are near-worthless; what matters is when they MOVE — a game patch deprecating more, or a mod referencing it. Deliberately does NOT count macros with no ware at all: MEASURED **3,945 of 5,559 (71%)**, which is the normal state (bullet 170/170, scenery 89.5%) and would drown the signal. Baseline is gitignored — the counts depend on installed DLC and modlist. |
 | `oracle.py` | `uv run python gates/oracle.py` | **234/234 ops agree, 0 FALSE OK.** Replays every diff op the engine itself rejected (from a captured `debug.txt`) and requires x4validate to reject the same ones. `debug.txt` is ground truth; a drop here means the merge model moved. |
 | `oracle_index.py` | `uv run python gates/oracle_index.py` | **12/12 agree, 0 FALSE OK** over the index-lookup failures the engine logged. Note the structural limit stated in its own output: a failure-only log can prove FALSE OK but never completeness. |
@@ -123,7 +124,7 @@ env → `.claude/x4-paths.env` → fallback chain the CLI uses. Nothing is hardc
 |---|---|
 | installed extension set | `$X4_GAME` / `$X4_EXTENSIONS` |
 | mod source folders (`regress.py`) | `$X4_MODS` |
-| captured engine log (`oracle`, `oracle_index`, `oracle_reverse` — **three** gates, not two) | **`$X4_ORACLE_LOG`** |
+| captured engine log (`oracle`, `oracle_index`, `oracle_reverse`; `load_order_oracle` falls back to the live `debug.txt` when it is unset) | **`$X4_ORACLE_LOG`** |
 
 `$X4_ORACLE_LOG` must be a **capture, not the live `debug.txt`** — if the log moves
 between runs the denominator moves and 234/234 stops meaning anything. It is
