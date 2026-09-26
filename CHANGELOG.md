@@ -3,7 +3,7 @@
 ## Unreleased
 
 The remediation of the 2026-09-24 correctness audit. Every finding, its status and its commit
-are in `tools/x4validate/AUDIT-2026-09-24.md`; the defect classes are BLIND-SPOTS F128-F138.
+are in `tools/x4validate/AUDIT-2026-09-24.md`; the defect classes are BLIND-SPOTS F128-F140.
 Numbers below are taken from the commit that made the change.
 
 ### ⚠ Load order now follows the ENGINE — collision winners can change
@@ -178,12 +178,36 @@ Numbers below are taken from the commit that made the change.
   `db:get('x4eff','no/such/typo.xml')//ware` printed "NEGATIVE CONFIRMED over 10970 of 10970
   documents". A partial, foreign or non-literal database address is refused (rc 2); a query
   naming no database, or a lone `false`/`""`, is not a finding (rc 4).
+- **…including a scope narrowed OUTSIDE the call's arguments.**
+  `collection('x4eff')[matches(document-uri(.),'libraries/wares')]//…` addressed 9 documents
+  and printed "NEGATIVE CONFIRMED over 10970 of 10970", rc 0; so did a `where` on
+  `base-uri(…)` and a comparison on `db:path(…)`. Filtering on a document's identity in a
+  predicate, a `where` clause or a comparison is now refused (rc 2, naming the function it
+  saw). Returning one is not, and neither is a `:=` binding or an `=>` arrow.
 - A rebuild revokes the old `coverage-<db>.json` before dropping the database; "accounted" is
   judged per root.
 - `stage.py` no longer indexes both mini-DLC twice when every DLC is unpacked (142 duplicate
   documents in x4raw — rebuild x4raw to drop them); a failure to ask refuses rc 2.
 - BaseX staleness fingerprints every install root; an unreadable catalog in the x4eff build is
   recorded.
+
+### Test harness and scripts
+
+- **`scripts/test-hooks.sh` can no longer hang for hours on Windows** (BLIND-SPOTS F140). It
+  assigned its sandbox to `TMP`, which is exported on Windows, and a native Windows process
+  whose `TMP` is longer than 260 characters spins forever inside `CreateProcessW` the first
+  time it starts a child (MEASURED: 260 starts, 261 hangs). With a long `X4_TEST_SANDBOX` the
+  identifier scanner spun for 15 hours. The variable is renamed in `test-hooks.sh` and
+  `smoke-basex.sh`, a test bans assigning `TMP`/`TEMP`/`TMPDIR` in any shipped shell script,
+  and `scan-identifiers.py` refuses (rc 2) instead of hanging when `TMP` is too long.
+- A killed identifier scanner is no longer reported as "a personal identifier reached a
+  tracked file": a leak now needs the scanner's own `::error file=` line, not exit code 1.
+- `scripts/load-order-probe.py` round 2: an OPTIONAL dependency on a mod disabled in its
+  manifest or in the profile (with a required-dependency control), and a second extensions
+  root -- an apply chain that tells an interleaved walk from game-root-first or
+  profile-first by its No-matching-node lines alone, plus a required dependency across the
+  roots in each direction. Profile probes are written by a narrow writer (new marked folders
+  only, every file re-read) because `deploy-mod.py` refuses a profile root by design.
 
 ### Freshness
 

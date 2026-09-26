@@ -218,6 +218,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F137 | BaseX staging read an EMPTY packed-DLC answer as a failure and fell back to a hard-coded mini-DLC pair, indexing both mini-DLC twice | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | 142 documents (deep-equal duplicates at identical paths) indexed twice in x4raw | the answer is used as given; a failure to ask refuses rc 2. A database built before the fix keeps its duplicates until rebuilt |
 | F138 | `register_rederivation` credits an entry to ANY existing path it cites, including a path the entry quotes as EVIDENCE of the defect rather than as a check of the fix | **SCOPE (measured)** · ⏳ OPEN | 2 of the 6 entries reviewed for AUDIT DC-3 (F60, F73) were "covered" only by such a mention | open. The rest of the register's covered entries are NOT classified |
 | F139 | `mods("active")` records a mod it leaves out (a REQUIRED dependency missing, disabled or cyclic; an unreadable manifest) only into a `dropped=` list the CALLER must pass, and no active-scope caller passed one | **SCOPE (measured)** · ✅ FIXED 2026-09-26 | 0 of 125 installed mods excluded on this install (MEASURED 2026-09-26), so today's cost is zero -- the #23 shape; 16 of 20 active-scope call sites silent before `f634e30` | `mods()` always returns its exclusions (`ModList.dropped`); `dropped_note` is the one line; all 20 sites disclose, held by an AST ban with an EMPTY allowlist (`f634e30`). Also fixed: an engine-excluded nested-patch target was called "DISABLED" |
+| F140 | `scripts/test-hooks.sh` assigned its sandbox to `TMP`, which Windows exports, so every native child inherited it; a Windows process whose `TMP` exceeds 260 characters spins forever in `CreateProcessW` the first time it starts a child. And a KILLED identifier scanner (rc 1, no output) was reported as a leaked identifier | **DEFECT (measured)** · ✅ FIXED 2026-09-26 | 1 incident: 15.5 h / 13.75 h CPU, one scanner process, triggered by a long `X4_TEST_SANDBOX` (a default sandbox path is ~62 characters, well under) | `TMP` renamed in `test-hooks.sh` + `smoke-basex.sh` and banned by a test; `scan-identifiers.py` refuses rc 2 above 260; a leak needs the scanner's `::error file=` line (`9d16f2d`, `5609a14`, `3a44aa6`) |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -7399,3 +7400,40 @@ source, so this moves the freshness engine axis: stores built before it read STA
 four original
 `test_*_discloses_the_excluded_mod` tests and the Tier B twin.
 
+
+## F140 — a sandbox assigned to `TMP` hangs every native Windows child that starts a process · **DEFECT (measured)** · confidence 97% · ✅ FIXED 2026-09-26
+
+**Found 2026-09-26.** A `python scan-identifiers.py`, started by `scripts/test-hooks.sh` in a
+since-removed worktree, ran for 15.5 hours on 13.75 hours of CPU -- spinning, not blocked --
+until killed. The first theory (the worktree was deleted under it) was WRONG: a scanner
+started in a removed worktree exits rc 2 in 0.08 s.
+
+**Mechanism (MEASURED).** `test-hooks.sh:28` did `TMP="$(mktemp -d "$_SBX/hooks.XXXXXX")"`.
+On Windows `TMP` is an inherited, EXPORTED variable, so the assignment changed the temp
+directory of every native process the suite started. A native Windows process whose own
+`TMP` is longer than 260 characters spins inside `CreateProcessW` (stack-sampled:
+`CreateProcessInternalW -> BasepQueryAppCompat -> GetTempPathW`) the first time it starts a
+child -- and the identifier scanner is the first process in the suite that spawns one
+(`git`). Threshold: `TMP` of 260 characters starts a child in 0.05 s, 261 hangs (reproduced
+independently twice). The incident run used a deliberately long `X4_TEST_SANDBOX` (to
+reproduce an earlier long-path flake), which put `TMP` at 276 characters. A subprocess
+`timeout=` cannot help: the call never gets far enough to start the timer.
+
+**The second defect it exposed (MEASURED).** Killed with `taskkill /F`, the scanner exits 1
+with no output -- the same code it uses for "a personal identifier reached a tracked file" --
+and `test-hooks.sh` reported exactly that. rc alone cannot tell a finding from a kill.
+
+**Fix.** The variable is `SBX_TMP` in `test-hooks.sh` (57 uses) and `smoke-basex.sh`;
+`scan-identifiers.py` refuses rc 2 before spawning anything when `TMP`/`TEMP` exceeds 260
+characters on Windows; `scripts/_scan-classify.sh` calls a non-zero exit a leak only when the
+scanner printed an `::error file=` line, otherwise "could not confirm". E2E: a 297-character
+sandbox now completes (rc 0, 173 passed); a normal run is unchanged (rc 0, 173 passed).
+
+Scope: the default sandbox is `<repo>/.test-sandbox/hooks.XXXXXX`, about 62 characters here,
+so the hang needs a long `X4_TEST_SANDBOX` or a repo path near 233 characters. Linux CI is
+not affected. Session environments measured at `TMP` = 33 characters.
+
+**RE-DERIVED BY:** `tests/test_shell_scripts_never_reassign_tmp.py` (the ban; failed on
+`test-hooks.sh:28` and `smoke-basex.sh:22` before the fix); `tests/test_scan_classify.py`
+(a killed scanner is `unknown`, not `leak`; 3 of 6 failed with the guard removed);
+`tests/test_scan_identifiers_tmp_hang_guard.py` (the rc-2 refusal, 10 of 11 failed before).
