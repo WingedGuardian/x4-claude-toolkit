@@ -347,6 +347,8 @@ def _parse_date(value) -> date | None:
             return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
         return datetime.strptime(text, "%d %B %Y").date()
     except ValueError:
+        # silent-ok: None IS the channel -- the caller renders it as an `unknown`
+        # update verdict naming the missing date, never as "no update".
         return None
 
 
