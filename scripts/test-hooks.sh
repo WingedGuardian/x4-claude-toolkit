@@ -25,10 +25,10 @@ command -v jq >/dev/null 2>&1 || { echo "jq is required"; exit 2; }
 # harness was passing because of a gap in the rule it was standing next to.
 _SBX="${X4_TEST_SANDBOX:-$REPO/.test-sandbox}"
 mkdir -p "$_SBX" || { echo "cannot create sandbox base $_SBX"; exit 2; }
-TMP="$(mktemp -d "$_SBX/hooks.XXXXXX")"
+SBX_TMP="$(mktemp -d "$_SBX/hooks.XXXXXX")"
 # The sandbox itself is removed too, not just its child. Leaving it behind made the
 # hygiene check at the end of this file report the suite's OWN sandbox as a stray.
-trap 'rm -rf "$TMP"; rmdir "$_SBX" 2>/dev/null' EXIT
+trap 'rm -rf "$SBX_TMP"; rmdir "$_SBX" 2>/dev/null' EXIT
 
 # Snapshot the caller's directory AFTER the sandbox exists, so the check at the end
 # compares against a real baseline.
@@ -45,8 +45,8 @@ trap 'rm -rf "$TMP"; rmdir "$_SBX" 2>/dev/null' EXIT
 # path -- so it could never fire at all. Third time is the charm; both earlier failures
 # are recorded because the shape repeats.
 _CWD_BEFORE="$(ls -A 2>/dev/null | sort)"
-case "$TMP" in
-  /tmp/*|/var/tmp/*) echo "REFUSING: sandbox landed under /tmp ($TMP); the shared-/tmp rule
+case "$SBX_TMP" in
+  /tmp/*|/var/tmp/*) echo "REFUSING: sandbox landed under /tmp ($SBX_TMP); the shared-/tmp rule
        would fire on unrelated write probes and the failures would be misattributed."; exit 2 ;;
 esac
 pass=0; fail=0; skipped=0
@@ -89,15 +89,15 @@ pj(){ printf '{"tool_name":"Grep","tool_input":{"pattern":"x","path":%s}}' "$(pr
 run_layout(){ # run_layout <name> <toolkit> <game>
   local name="$1" TK="$2" GAME="$3"
   mkdir -p "$TK/.claude/hooks" "$TK/dev/mymod" "$TK/reference" "$GAME/extensions/deployed" \
-           "$TMP/profile" "$TMP/mods/other"
+           "$SBX_TMP/profile" "$SBX_TMP/mods/other"
   export X4_TOOLKIT="$TK" X4_GAME="$GAME" X4_REFERENCE="$TK/reference" \
-         X4_PROFILE="$TMP/profile" X4_MODS="$TMP/mods" X4_EXTENSIONS="$GAME/extensions" \
+         X4_PROFILE="$SBX_TMP/profile" X4_MODS="$SBX_TMP/mods" X4_EXTENSIONS="$GAME/extensions" \
          X4_CONFIG=/nonexistent CLAUDE_PROJECT_DIR="$TK" \
-         X4_SAVES="$TMP/profile/save" X4_DOCUMENTS="$TMP/docs"
-  mkdir -p "$TMP/profile/save" "$TMP/docs/My Games/SomeGame" "$TMP/docs/Other Game"
+         X4_SAVES="$SBX_TMP/profile/save" X4_DOCUMENTS="$SBX_TMP/docs"
+  mkdir -p "$SBX_TMP/profile/save" "$SBX_TMP/docs/My Games/SomeGame" "$SBX_TMP/docs/Other Game"
   echo; echo "=== protect-files.sh — $name layout ==="
   decide allow protect-files.sh "$(fj "$TK/dev/mymod/libraries/wares.xml")" "mod source in dev/"
-  decide allow protect-files.sh "$(fj "$TMP/mods/other/wares.xml")"         "mod source in \$X4_MODS"
+  decide allow protect-files.sh "$(fj "$SBX_TMP/mods/other/wares.xml")"         "mod source in \$X4_MODS"
   decide allow protect-files.sh "$(fj "$TK/.claude/hooks/x.sh")"            "toolkit .claude/"
   decide allow protect-files.sh "$(fj "$TK/CLAUDE.md")"                     "CLAUDE.md"
   decide deny  protect-files.sh "$(fj "$TK/reference/libraries/wares.xml")" "reference/ is read-only"
@@ -118,21 +118,21 @@ run_layout(){ # run_layout <name> <toolkit> <game>
   # Workshop toggle. Turning the manifest prompt into an advisory (2026-08-29)
   # nearly bypassed the profile confirmation for it: the advisory exits 0, so it
   # short-circuited a rule the user had explicitly kept. It must still ASK.
-  decide ask   protect-files.sh "$(fj "$TMP/profile/content.xml")"          "profile content.xml still confirms"
+  decide ask   protect-files.sh "$(fj "$SBX_TMP/profile/content.xml")"          "profile content.xml still confirms"
   # ...and a DEPLOYED mod's manifest must still reach the extensions rule below the
   # advisory. MEASURED 2026-08-30 (F84): an advisory that exits makes every rule under
   # it unreachable, so this manifest was advised and never confirmed.
   decide deny  protect-files.sh "$(fj "$GAME/extensions/deployed/content.xml")"  "a deployed mod manifest reaches the deployed-copy rule"
-  decide ask   protect-files.sh "$(fj "$TMP/profile/config.xml")"           "user profile file"
+  decide ask   protect-files.sh "$(fj "$SBX_TMP/profile/config.xml")"           "user profile file"
   # Saves, game settings and everything else under Documents (user request
   # 2026-08-30). MEASURED first: over 11,133 historical commands this fires on 7
   # MORE than the existing profile rules already did, and on zero more edits.
-  decide ask   protect-files.sh "$(fj "$TMP/profile/save/save_001.xml.gz")"  "a save game"
-  decide ask   protect-files.sh "$(fj "$TMP/docs/My Games/SomeGame/x.ini")"  "under My Games"
+  decide ask   protect-files.sh "$(fj "$SBX_TMP/profile/save/save_001.xml.gz")"  "a save game"
+  decide ask   protect-files.sh "$(fj "$SBX_TMP/docs/My Games/SomeGame/x.ini")"  "under My Games"
   # `.dat` is a GENERIC extension. The X4-archive rule denied another game's save
   # outright until it was scoped to X4 locations -- a guard blocking a file that was
   # never ours. It must ask here, and still deny inside the game folder.
-  decide ask   protect-files.sh "$(fj "$TMP/docs/Other Game/saved.dat")"     "another game's .dat is not an X4 archive"
+  decide ask   protect-files.sh "$(fj "$SBX_TMP/docs/Other Game/saved.dat")"     "another game's .dat is not an X4 archive"
   decide deny  protect-files.sh "$(fj "$GAME/01.dat")"                       ".dat INSIDE the game still denies"
   # X4_MODS is outside $GAME in both layouts, so the source lives elsewhere -> hard block.
   decide deny  protect-files.sh "$(fj "$GAME/extensions/deployed/x.xml")"   "deployed extensions/ (source elsewhere)"
@@ -151,15 +151,15 @@ run_layout(){ # run_layout <name> <toolkit> <game>
 
 # The in-game layout is the interesting one: toolkit IS the game folder, so mod sources sit
 # inside it and must not be caught by the game-installation block.
-run_layout "in-game"  "$TMP/game/X4 Foundations" "$TMP/game/X4 Foundations"
-run_layout "separate" "$TMP/sep/toolkit"         "$TMP/sep/X4 Foundations"
+run_layout "in-game"  "$SBX_TMP/game/X4 Foundations" "$SBX_TMP/game/X4 Foundations"
+run_layout "separate" "$SBX_TMP/sep/toolkit"         "$SBX_TMP/sep/X4 Foundations"
 
 # The OTHER branch of the same rule, and it must be exercised or the deny above is the
 # only reachable outcome and the ask is dead code. Mods living INSIDE the game folder is
 # the common single-location setup: there is no separate source, so denying would block
 # every normal edit.
 echo; echo "=== protect-files.sh -- deployed edit when mods live INSIDE the game ==="
-GAME="$TMP/game/X4 Foundations"
+GAME="$SBX_TMP/game/X4 Foundations"
 mkdir -p "$GAME/extensions/deployed"
 # The hook runs as a CHILD process, so a bare `VAR=x decide ...` prefix does not reach
 # it -- the values must be EXPORTED. That is why this saves and restores instead of
@@ -190,7 +190,7 @@ export X4_MODS="$_sm" X4_EXTENSIONS="$_se" X4_GAME="$_sg"
 # shape a complete answer would have. Measured on the reference machine: 54 of 133
 # installed mods ship BOTH, so the misleading case is the common one.
 echo; echo "=== search-scope.sh ==="
-GAME="$TMP/game/X4 Foundations"
+GAME="$SBX_TMP/game/X4 Foundations"
 # One line, deliberately. This held the two characters \n, which OUTSIDE QUOTES is a
 # literal 'n' -- so mkdir -p took it as an argument and created a directory called `n`
 # in the CALLER's cwd on every run. An empty directory is invisible to `git status`,
@@ -257,34 +257,34 @@ decide allow protect-bash.sh "$(cj "python - <<'PY'
 guard = 'grep -qiE content.xml against \$X4_PROFILE'
 PY")"   "a manifest search described inside a heredoc body is data"
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_REFERENCE'")" "rm reference/"
-decide ask   protect-bash.sh "$(cj "rm -f '$TMP/profile/save/save_001.xml.gz'")" "deleting a save game"
-decide ask   protect-bash.sh "$(cj "echo x > '$TMP/docs/notes.txt'")"            "writing into Documents"
+decide ask   protect-bash.sh "$(cj "rm -f '$SBX_TMP/profile/save/save_001.xml.gz'")" "deleting a save game"
+decide ask   protect-bash.sh "$(cj "echo x > '$SBX_TMP/docs/notes.txt'")"            "writing into Documents"
 # ...but only when Documents is the TARGET. MEASURED 2026-08-30: 193 of 196 hits
 # were a command that merely NAMED a path there -- `(rm|mv|cp|tee|>) anywhere` AND
 # `a Documents path anywhere`, two independent tests over the whole string. This is
 # the only rule left that spends the USER's attention on a false positive.
-decide allow protect-bash.sh "$(cj "P='$TMP/docs/Egosoft'; ls -la \"\$P\" 2>/dev/null")"   "reading a Documents path is not writing to it"
-decide allow protect-bash.sh "$(cj "cp '$TMP/docs/notes.txt' '$TMP/copy.txt'")"   "copying OUT of Documents"
-decide allow protect-bash.sh "$(cj "grep -n x '$TMP/docs/notes.txt' > '$TMP/out.txt'")"   "reading from Documents, writing elsewhere"
-decide ask   protect-bash.sh "$(cj "cp '$TMP/a.txt' '$TMP/docs/b.txt'")"   "copying INTO Documents"
-decide ask   protect-bash.sh "$(cj "rm -f '$TMP/docs/notes.txt'")"   "deleting inside Documents"
-decide ask   protect-bash.sh "$(cj "tee '$TMP/docs/log.txt' < '$TMP/a.txt'")"   "tee INTO Documents"
-decide ask   protect-bash.sh "$(cj "D='$TMP/docs'; echo x > \"\$D/n.txt\"")"   "a variable Documents destination still confirms"
+decide allow protect-bash.sh "$(cj "P='$SBX_TMP/docs/Egosoft'; ls -la \"\$P\" 2>/dev/null")"   "reading a Documents path is not writing to it"
+decide allow protect-bash.sh "$(cj "cp '$SBX_TMP/docs/notes.txt' '$SBX_TMP/copy.txt'")"   "copying OUT of Documents"
+decide allow protect-bash.sh "$(cj "grep -n x '$SBX_TMP/docs/notes.txt' > '$SBX_TMP/out.txt'")"   "reading from Documents, writing elsewhere"
+decide ask   protect-bash.sh "$(cj "cp '$SBX_TMP/a.txt' '$SBX_TMP/docs/b.txt'")"   "copying INTO Documents"
+decide ask   protect-bash.sh "$(cj "rm -f '$SBX_TMP/docs/notes.txt'")"   "deleting inside Documents"
+decide ask   protect-bash.sh "$(cj "tee '$SBX_TMP/docs/log.txt' < '$SBX_TMP/a.txt'")"   "tee INTO Documents"
+decide ask   protect-bash.sh "$(cj "D='$SBX_TMP/docs'; echo x > \"\$D/n.txt\"")"   "a variable Documents destination still confirms"
 decide ask   protect-bash.sh "$(cj "rm -rf '$X4_MODS/other'")" "rm inside mod sources"
 # --- rule 2: the redirect advisory must test the TARGET, not the whole string ----
 # MEASURED 2026-08-30: 1,269 of its 1,320 hits were `2>/dev/null` plus a game path
 # mentioned anywhere -- 13.4% of every command in the corpus carrying a spurious note.
 decide allow protect-bash.sh "$(cj "find '$X4_GAME/extensions' -maxdepth 2 -type d 2>/dev/null")"   "stderr suppression is not a write into the game"
-decide allow protect-bash.sh "$(cj "cat '$X4_GAME/CLAUDE.md' > '$TMP/copy.md'")"   "reading from the game, writing elsewhere"
+decide allow protect-bash.sh "$(cj "cat '$X4_GAME/CLAUDE.md' > '$SBX_TMP/copy.md'")"   "reading from the game, writing elsewhere"
 decide advise protect-bash.sh "$(cj "echo x > '$X4_GAME/notes.txt'")"   "a truncating write into the game still advises"
 decide allow protect-bash.sh "$(cj "echo x >> '$X4_GAME/notes.txt'")"   "an APPEND cannot truncate, so it does not advise"
 # --- rule 6: cp/mv must test the DESTINATION -----------------------------------
 # MEASURED: 49 of 86 hits were a copy OUT of the game, or a mention.
-decide advise protect-bash.sh "$(cj "cp -r '$TMP/mods/other' '$X4_GAME/extensions/other'")"   "a deploy INTO the game still advises"
-decide allow protect-bash.sh "$(cj "cp '$X4_GAME/CLAUDE.md' '$TMP/backup.md'")"   "copying OUT of the game is not a deploy"
+decide advise protect-bash.sh "$(cj "cp -r '$SBX_TMP/mods/other' '$X4_GAME/extensions/other'")"   "a deploy INTO the game still advises"
+decide allow protect-bash.sh "$(cj "cp '$X4_GAME/CLAUDE.md' '$SBX_TMP/backup.md'")"   "copying OUT of the game is not a deploy"
 # --- rule 7: the game-delete backstop must name the install ROOT ---------------
 # MEASURED: 7 of 8 hits were a .zip merely NAMED after the game, in another folder.
-decide allow protect-bash.sh "$(cj "rm -f '$TMP/X4 Foundations Toolkit v1.zip'")"   "a zip named after the game is a file, not the install"
+decide allow protect-bash.sh "$(cj "rm -f '$SBX_TMP/X4 Foundations Toolkit v1.zip'")"   "a zip named after the game is a file, not the install"
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_GAME'")"   "deleting the install itself still denies"
 # The BOUNDARY of the hard block, probed on both sides. It used to cover anything UNDER
 # the game folder. MEASURED 2026-08-31 over a 1,000-command replay of real history: all 4
@@ -366,20 +366,20 @@ else
   no "long-path source: no backup (or the hook asked): ${_lp_out:0:120}"
 fi
 # Must stay anchored to the toolkit even with CLAUDE_PROJECT_DIR unset.
-mkdir -p "$TMP/elsewhere"
-( unset CLAUDE_PROJECT_DIR X4_TOOLKIT; cd "$TMP/elsewhere" \
+mkdir -p "$SBX_TMP/elsewhere"
+( unset CLAUDE_PROJECT_DIR X4_TOOLKIT; cd "$SBX_TMP/elsewhere" \
   && printf '%s' "$(fj "$SUBJ")" | bash "$HOOKS/backup-before-edit.sh" >/dev/null 2>&1 )
-[ -d "$TMP/elsewhere/.claude/backups" ] \
+[ -d "$SBX_TMP/elsewhere/.claude/backups" ] \
   && no "backups scattered into the cwd when CLAUDE_PROJECT_DIR is unset" \
   || ok "backups stay anchored to the toolkit"
 
 echo; echo "=== check-reference-version.sh ==="
-printf '"AppState"\n{\n\t"buildid"\t\t"99999999"\n}\n' > "$TMP/acf"
+printf '"AppState"\n{\n\t"buildid"\t\t"99999999"\n}\n' > "$SBX_TMP/acf"
 echo "11111111" > "$TK/.claude/.reference-buildid"
-X4_APPMANIFEST="$TMP/acf" bash "$HOOKS/check-reference-version.sh" 2>/dev/null \
+X4_APPMANIFEST="$SBX_TMP/acf" bash "$HOOKS/check-reference-version.sh" 2>/dev/null \
   | grep -q "stale-reference" && ok "warns on build mismatch" || no "no stale-reference warning"
 echo "99999999" > "$TK/.claude/.reference-buildid"
-[ -z "$(X4_APPMANIFEST="$TMP/acf" bash "$HOOKS/check-reference-version.sh" 2>/dev/null)" ] \
+[ -z "$(X4_APPMANIFEST="$SBX_TMP/acf" bash "$HOOKS/check-reference-version.sh" 2>/dev/null)" ] \
   && ok "silent when builds match" || no "warned when builds match"
 # A real manifest carries MORE THAN ONE "buildid": the installed build directly under
 # AppState, and one per beta branch under PrivateDepots. MEASURED 2026-09-14 on this
@@ -388,7 +388,7 @@ echo "99999999" > "$TK/.claude/.reference-buildid"
 # took the FIRST, which is right only while Steam writes AppState's key above the
 # branches. The fixture above has one buildid, so neither could go red. Both now read
 # through x4_acf_buildid, which takes the key at depth 1 whatever the order.
-_acf_real="$TMP/acf-real"; _acf_hostile="$TMP/acf-hostile"
+_acf_real="$SBX_TMP/acf-real"; _acf_hostile="$SBX_TMP/acf-hostile"
 printf '"AppState"\n{\n\t"appid"\t\t"392160"\n\t"buildid"\t\t"23660954"\n\t"PrivateDepots"\n\t{\n\t\t"branches"\n\t\t{\n\t\t\t"public_beta"\n\t\t\t{\n\t\t\t\t"buildid"\t\t"23524486"\n\t\t\t}\n\t\t}\n\t}\n}\n' > "$_acf_real"
 printf '"AppState"\n{\n\t"PrivateDepots"\n\t{\n\t\t"branches"\n\t\t{\n\t\t\t"public_beta"\n\t\t\t{\n\t\t\t\t"buildid"\t\t"23524486"\n\t\t\t}\n\t\t}\n\t}\n\t"buildid"\t\t"23660954"\n}\n' > "$_acf_hostile"
 [ "$( . "$HOOKS/_x4-env.sh"; x4_acf_buildid "$_acf_real" 2>/dev/null )" = "23660954" ] \
@@ -406,8 +406,8 @@ echo "23660954" > "$TK/.claude/.reference-buildid"
 # brace line, never reach depth 1, and return nothing -- a silent non-answer.
 # awk rather than `sed 's/$/\r/'`, whose `\r` is a GNU extension (review 2026-09-14);
 # BINMODE=3 so Git Bash's gawk writes the CR as given instead of translating line ends.
-awk -v BINMODE=3 '{ sub(/\r$/, ""); printf "%s\r\n", $0 }' "$_acf_real" > "$TMP/acf-crlf"
-[ "$( . "$HOOKS/_x4-env.sh"; x4_acf_buildid "$TMP/acf-crlf" 2>/dev/null )" = "23660954" ] \
+awk -v BINMODE=3 '{ sub(/\r$/, ""); printf "%s\r\n", $0 }' "$_acf_real" > "$SBX_TMP/acf-crlf"
+[ "$( . "$HOOKS/_x4-env.sh"; x4_acf_buildid "$SBX_TMP/acf-crlf" 2>/dev/null )" = "23660954" ] \
   && ok "x4_acf_buildid reads a CRLF manifest too" \
   || no "x4_acf_buildid returned nothing for a CRLF manifest"
 
@@ -589,7 +589,7 @@ fi
 # The twins. A static grep that cannot be shown to FIRE is decoration, and the
 # negative twin alone proves nothing -- an ABSENT detector also matches nothing.
 _deadenv_fixture(){
-  _d="$TMP/deadenv_$1"; mkdir -p "$_d"; printf '%s\n' "$2" > "$_d/probe.sh"; printf '%s' "$_d"
+  _d="$SBX_TMP/deadenv_$1"; mkdir -p "$_d"; printf '%s\n' "$2" > "$_d/probe.sh"; printf '%s' "$_d"
 }
 _dp="$(_deadenv_fixture pos 'INPUT="$CLAUDE_TOOL_INPUT"')"
 if [ -n "$(_dead_input_reads "$_dp" 2>/dev/null)" ]; then
@@ -704,7 +704,7 @@ else no "protect-bash.sh -- with jq broken the deny came out as '$got'; silence 
 # X4_PYTHON points at a binary that does NOT run. Emptying PATH instead would break
 # `dirname` and `cat` as well, so the hook would fail before reaching the python check
 # and the probe would be testing nothing -- a green with no reachable failure branch.
-out=$(printf '%s' "$(cj 'git add -A')" | X4_PYTHON="$TMP/no_such_python" bash "$HOOKS/protect-bash.sh" 2>/dev/null)
+out=$(printf '%s' "$(cj 'git add -A')" | X4_PYTHON="$SBX_TMP/no_such_python" bash "$HOOKS/protect-bash.sh" 2>/dev/null)
 got=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null)
 [ -z "$got" ] && got="allow"
 if [ "$got" = "ask" ]; then ok "protect-bash.sh asks when no Python is available"
@@ -829,7 +829,7 @@ fi
 # Driven with a stub canary rather than the real one: the real repos are clean,
 # and a test that can only run when something is actually lost is a test that
 # never runs.
-_sc_tk="$TMP/sc_toolkit"; mkdir -p "$_sc_tk/scripts"
+_sc_tk="$SBX_TMP/sc_toolkit"; mkdir -p "$_sc_tk/scripts"
 cat > "$_sc_tk/scripts/x4canary.py" <<'CANARY_STUB'
 import sys
 sys.stderr.write("STUBHEAD\n")
@@ -865,7 +865,7 @@ _bnd(){ ( HOOK_DIR="$HOOKS"; . "$HOOKS/_x4-env.sh"; x4_bound "$1" ); }
 # status, so the length came back empty, x4_bound took its non-numeric guard and
 # passed the text through WHOLE -- the fail-open shape the function exists to
 # close, inside the function that closes it.
-_stub="$TMP/pystub"; mkdir -p "$_stub"
+_stub="$SBX_TMP/pystub"; mkdir -p "$_stub"
 printf '%s\n' '#!/bin/bash' 'exit 9' > "$_stub/python"; chmod +x "$_stub/python"
 _big="$(printf 'z%.0s' $(seq 1 25000))"
 _got="$( ( HOOK_DIR="$HOOKS"; . "$HOOKS/_x4-env.sh"; X4_PYTHON="$_stub/python" x4_bound "$_big" ) )"
@@ -900,7 +900,7 @@ fi
 # Uses the SUITE fixture root, not a real profile path: run_layout exports
 # X4_SAVES at a sandbox location, so a real path reaches no rule here and the
 # probe would refuse (correctly) instead of exercising the bound.
-_savep="${X4_SAVES:-$TMP/profile/save}/$(printf 'bbbbbbbbbb/%.0s' $(seq 1 900))x.xml.gz"
+_savep="${X4_SAVES:-$SBX_TMP/profile/save}/$(printf 'bbbbbbbbbb/%.0s' $(seq 1 900))x.xml.gz"
 _vr="$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(printf 'rm -f %s' "$_savep" | jq -Rs .)" \
        | bash "$HOOKS/protect-bash.sh" 2>/dev/null | jq -r '.hookSpecificOutput.permissionDecisionReason // ""')"
 if [ "${#_vr}" -lt 200 ]; then
@@ -920,7 +920,7 @@ fi
 # Probed by MARKER FILE rather than by timing: "did it spawn" is a fact, a
 # duration is a measurement, and a timing assertion in a suite is a flake waiting
 # to happen.
-_sp="$TMP/spawnprobe"; mkdir -p "$_sp"
+_sp="$SBX_TMP/spawnprobe"; mkdir -p "$_sp"
 printf '%s\n' '#!/bin/bash' "touch \"$_sp/SPAWNED\"" 'exit 0' > "$_sp/python"; chmod +x "$_sp/python"
 
 rm -f "$_sp/SPAWNED"
