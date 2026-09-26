@@ -223,8 +223,6 @@ def test_bx3_the_old_coverage_licence_is_revoked_before_the_db_is_dropped(script
 
 # ============================================================================ BX-4 (coverage.py)
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-4: coverage.py judges 'accounted' on "
-                   "the AGGREGATE deficit, so +5 base / -5 mods nets to 0 and licenses negatives")
 def test_bx4_offsetting_per_root_errors_do_not_license_a_negative(tmp_path, monkeypatch, capsys):
     # By FILE, never by the bare name: `coverage` is also the PyPI package, and a bare import
     # can hand back that one (test_coverage_reporting.py loads it the same way).
@@ -246,6 +244,45 @@ def test_bx4_offsetting_per_root_errors_do_not_license_a_negative(tmp_path, monk
     assert not data["supports_negative_claim"], (
         f"rc={rc} status={data['status']}: base is +5 EXTRA and mods -5 MISSING, and the "
         f"verdict came from their sum\n{capsys.readouterr().out}")
+
+
+@pytest.mark.parametrize("where,short,expect", [
+    ("ref", "base", "accounted"),        # the malformed file sits under the root that is short
+    ("ext", "mods", "accounted"),
+    ("packed-mods", "mods", "accounted"),
+    ("ext", "base", "unexplained"),      # right COUNT, wrong ROOT: the aggregate would pass it
+    ("packed-mods", "base", "unexplained"),
+])
+def test_bx4_TWIN_a_deficit_is_accounted_only_by_its_OWN_roots_malformed_files(
+        tmp_path, monkeypatch, capsys, where, short, expect):
+    if not (BASEX / "coverage.py").is_file():
+        pytest.skip(f"no BaseX tooling at {BASEX}")
+    spec = importlib.util.spec_from_file_location("basex_coverage_audit0924_twin", BASEX / "coverage.py")
+    cov = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cov)
+    ref, ext, stage = tmp_path / "ref", tmp_path / "ext", tmp_path / "stage"
+    for d in (ref, ext, stage):
+        d.mkdir()
+    manifest = {"sources": [], "unparseable": [], "totals": {}}
+    if where in ("ref", "ext"):
+        (tmp_path / where / "broken.xml").write_text("<a><b></a>", encoding="utf-8")
+    else:
+        manifest["sources"] = [{"name": "m", "root": "/mods", "unparseable": ["x.xml: bad"]}]
+        manifest["unparseable"] = ["m/x.xml: bad"]
+    man = tmp_path / "manifest.json"
+    man.write_text(json.dumps(manifest), encoding="utf-8")
+    counts = {str(ref): 50, str(ext): 50}
+    monkeypatch.setattr(cov, "count_disk_xml", lambda root: counts.get(str(root), 0))
+    idx = {"base": 50, "mods": 50}
+    idx[short] -= 1
+    monkeypatch.setattr(cov, "basex_query", lambda db, xq: (
+        f"total={idx['base'] + idx['mods']}\nbase={idx['base']}\nmods={idx['mods']}\n"))
+    out = tmp_path / "coverage-x4raw.json"
+    cov.main(["--db", "x4raw", "--stage", str(stage), "--manifest", str(man),
+              "--reference", str(ref), "--extensions", str(ext), "--out", str(out)])
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["status"] == expect, capsys.readouterr().out
+    assert data["supports_negative_claim"] is (expect == "accounted")
 
 
 # ============================================================================ GT-1 noop_audit

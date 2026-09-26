@@ -79,6 +79,34 @@ def find_unparseable(roots: list[Path]) -> list[str]:
     return bad
 
 
+def _unparseable_by_root(manifest: dict, reference: Path, extensions: Path) -> dict[str, list[str]]:
+    """Every malformed file, keyed by the BaseX root it would have been indexed under.
+
+    base = the reference tree (loose) + packed DLC staged into /base/extensions;
+    mods = the extensions tree (loose) + packed mods staged into /mods. A packed entry
+    is placed by its SOURCE's recorded root in the stage manifest; one the manifest
+    lists without a placeable source goes to `unattributed`, which the caller must
+    treat as unexplained rather than guess a root for it.
+    """
+    out: dict[str, list[str]] = {"base": [], "mods": [], "unattributed": []}
+    placed: list[str] = []
+    for src in manifest.get("sources", []) or []:
+        key = "mods" if src.get("root") == "/mods" else "base"
+        for u in src.get("unparseable", []) or []:
+            entry = f"{src.get('name')}/{u}"
+            out[key].append(f"[packed] {entry}")
+            placed.append(entry)
+    remaining = list(placed)
+    for entry in manifest.get("unparseable", []) or []:
+        if entry in remaining:
+            remaining.remove(entry)
+        else:
+            out["unattributed"].append(f"[packed] {entry}")
+    out["base"] += [f"[loose]  {u}" for u in find_unparseable([reference])]
+    out["mods"] += [f"[loose]  {u}" for u in find_unparseable([extensions])]
+    return out
+
+
 NEWLINE = chr(10)
 
 
@@ -327,12 +355,25 @@ def main(argv=None) -> int:
         print(f"\n  deficit of {deficit} document(s) — identifying which files "
               "SKIPCORRUPT dropped...")
         # Packed ones were recorded at staging time (staging itself is gone by now);
-        # loose ones we scan for here.
-        unparseable = [f"[packed] {u}" for u in manifest.get("unparseable", [])]
-        unparseable += [f"[loose]  {u}" for u in find_unparseable([reference, extensions])]
+        # loose ones we scan for here. Each is attributed to the ROOT it would have
+        # been indexed under, because the deficit is judged per root (below).
+        by_root = _unparseable_by_root(manifest, reference, extensions)
+        unparseable = by_root["base"] + by_root["mods"] + by_root["unattributed"]
         for u in unparseable:
             print(f"    - {u}")
-        if deficit == len(unparseable) and not extraction_failures:
+        # PER ROOT, never on the aggregate (AUDIT-2026-09-24 BX-4). The total used
+        # to be the only thing compared, so +5 EXTRA under /base and -5 MISSING
+        # under /mods netted to a deficit of 0, matched 0 malformed files, and was
+        # published as ACCOUNTED with supports_negative_claim=true -- a licence over
+        # an index missing five mod documents. An aggregate hides exactly the item
+        # it nets out, so every root must balance on its own: its deficit is its
+        # own malformed files, never a surplus somewhere else. A packed malformed
+        # file the manifest cannot place under a root cannot balance either.
+        per_root_ok = (not by_root["unattributed"]
+                       and indexed.get("total", 0) == sum(indexed.get(k, 0) for k in ("base", "mods"))
+                       and all(expected[k] - indexed.get(k, 0) == len(by_root[k])
+                               for k in ("base", "mods")))
+        if per_root_ok and deficit == len(unparseable) and not extraction_failures:
             status = "accounted"
             usable = indexed.get("total", 0)
             print(f"\n  COVERAGE ACCOUNTED — every missing document is explained above.")
@@ -341,8 +382,13 @@ def main(argv=None) -> int:
             print("  read either, so they hold no live content. Judge them by name.")
         else:
             status = "unexplained"
-            print(f"\n  ** UNEXPLAINED DEFICIT: {deficit} missing, only {len(unparseable)} "
-                  "malformed files found. **")
+            print(f"\n  ** UNEXPLAINED DEFICIT: {deficit} missing in total, "
+                  f"{len(unparseable)} malformed files found; per root: "
+                  + "; ".join(f"{k} {expected[k] - indexed.get(k, 0)} missing vs "
+                              f"{len(by_root[k])} malformed" for k in ("base", "mods"))
+                  + (f"; {len(by_root['unattributed'])} malformed packed file(s) with no "
+                     "root" if by_root["unattributed"] else "")
+                  + ". **")
             print("  Something is wrong with the BUILD, not just with a mod's XML.")
             print("  This index CANNOT support a negative claim until that is resolved.")
 
