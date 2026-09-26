@@ -3,7 +3,13 @@
 # Non-blocking — surfaces unmatched sel= findings as additionalContext. Never denies.
 JQ="${JQ:-jq}"
 UV="${UV:-uv}"
-HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Parameter expansion, not `$(cd "$(dirname "$0")" && pwd)`: that was a subshell AND
+# a dirname process on every call (AUDIT-2026-09-24 HK-4). The settings command passes
+# an absolute path, and a relative one still resolves: nothing here changes directory.
+# BOTH separators: a hook started as `bash C:\...\protect-bash.sh` has a $0 with no
+# forward slash at all, and reading it as "." sourced _x4-env.sh from the CALLER's
+# directory -- MEASURED: the guard then found no python and asked on every command.
+case "$0" in */*|*\\*) HOOK_DIR="${0%[/\\]*}" ;; *) HOOK_DIR=. ;; esac
 . "$HOOK_DIR/_x4-env.sh"
 X4V="${X4V:-$X4_TOOLKIT/tools/x4validate}"
 
@@ -24,6 +30,10 @@ INPUT=$(x4_hook_input)
 # the local loop silently fell through to python3 -- "a guard that runs under an
 # interpreter the operator did not choose is a guard nobody configured".
 FP=$(x4_field "$INPUT" tool_input.file_path)
+# NotebookEdit names its file `notebook_path` (AUDIT-2026-09-24 HK-1 re-review). Only
+# XML is validated below, so today this is a no-op for a notebook -- it is read so the
+# matcher and the reader agree, and a future non-.ipynb notebook path is not missed.
+[ -z "$FP" ] && FP=$(x4_field "$INPUT" tool_input.notebook_path)
 [ -z "$FP" ] && exit 0
 
 # Only XML files, and never the read-only reference tree.

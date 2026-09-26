@@ -66,8 +66,6 @@ def ask(monkeypatch):
     return mod
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-1: a zero from db:get(<db>, <typo'd path>) "
-                   "is certified NEGATIVE CONFIRMED over the WHOLE database's denominator")
 def test_bx1_a_zero_from_ONE_addressed_document_is_not_a_negative_over_the_database(ask, capsys):
     ask._fake([])
     rc = ask.main(["xq", "db:get('x4eff','no/such/typo.xml')//ware", "--db", "x4eff"])
@@ -77,8 +75,6 @@ def test_bx1_a_zero_from_ONE_addressed_document_is_not_a_negative_over_the_datab
         f"addressed (which does not exist)\n{out}")
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-1: two-arg db:get and a variable db name "
-                   "escape the foreign-database scope guard (ask.py regex requires `('name')`)")
 @pytest.mark.parametrize("query", [
     "db:get('x4eff','libraries/wares.xml')//nosuch",
     "let $d := 'x4eff' return collection($d)//nosuch",
@@ -92,24 +88,18 @@ def test_bx1_a_query_reaching_x4eff_is_not_scored_against_x4raw(ask, capsys, que
         f"x4raw's coverage and freshness\n{out}")
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-5: a boolean `false` result is counted "
-                   "as 1 item and printed as a positive answer, rc 0")
 def test_bx5_a_false_result_is_not_a_hit(ask, capsys):
     ask._fake(["false"])
     rc = ask.main(["xq", "exists(collection('x4raw')//nosuch)"])
     assert rc != 0, f"'false' read as one hit, rc {rc}:\n{capsys.readouterr().out}"
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-5: an empty-string result is counted as "
-                   "1 item and printed as a positive answer, rc 0")
 def test_bx5_an_empty_string_result_is_not_a_hit(ask, capsys):
     ask._fake([""])
     rc = ask.main(["xq", "string(collection('x4raw')//nosuch)"])
     assert rc != 0, f"'' read as one hit, rc {rc}:\n{capsys.readouterr().out}"
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-5: the scope refusal advises "
-                   "`--db x4eff/libraries`, which argparse's choices reject")
 def test_bx5_the_scope_refusal_only_advises_a_db_argparse_accepts(ask, capsys):
     ask._fake([])
     rc = ask.main(["xq", "collection('x4eff/libraries')//ware", "--db", "x4eff"])
@@ -120,10 +110,66 @@ def test_bx5_the_scope_refusal_only_advises_a_db_argparse_accepts(ask, capsys):
         f"advice names {advised}; following it is an argparse error\n{err}")
 
 
+# --- BX-1 / BX-5 falsification twins: every refusal above has a case it must NOT fire on,
+# --- and the refusal is pinned for each address shape, not only the two the audit named.
+
+@pytest.mark.parametrize("query,db", [
+    ("collection('x4raw')//nosuch", "x4raw"),
+    ("db:get('x4eff')//nosuch", "x4eff"),
+    ('fn:collection( "x4eff" )//nosuch', "x4eff"),
+    ("(: doc('x4eff/a.xml') :) collection('x4eff')//nosuch", "x4eff"),   # a comment is no address
+    ("collection('x4raw')//*[db:path(.) = 'x']", "x4raw"),               # db:path takes a NODE
+])
+def test_bx1_TWIN_a_whole_database_zero_is_still_confirmed(ask, capsys, query, db):
+    ask._fake([])
+    rc = ask.main(["xq", query, "--db", db])
+    out = capsys.readouterr().out
+    assert rc == 0 and "NEGATIVE CONFIRMED over 100 of 100" in out, out
+
+
+@pytest.mark.parametrize("query", [
+    "doc('x4eff/libraries/wares.xml')//nosuch",
+    "db:open('x4eff', 'libraries')//nosuch",
+    "collection('x4eff/libraries')//nosuch",
+    "collection('x4' || 'eff')//nosuch",
+    "db:get-id('x4eff', 5)",
+    "collection()//nosuch",
+])
+def test_bx1_every_partial_or_unreadable_address_is_refused(ask, capsys, query):
+    ask._fake([])
+    rc = ask.main(["xq", query, "--db", "x4eff"])
+    cap = capsys.readouterr()
+    assert rc == 2 and "NEGATIVE CONFIRMED" not in cap.out, (rc, cap)
+
+
+def test_bx1_a_zero_from_a_query_naming_NO_database_is_not_a_negative(ask, capsys):
+    """`()` searches nothing, and was certified over the whole --db denominator."""
+    ask._fake([])
+    rc = ask.main(["xq", "()"])
+    out = capsys.readouterr().out
+    assert rc == 4 and "NEGATIVE CONFIRMED" not in out and "names no database" in out, out
+
+
+def test_bx1_TWIN_a_POSITIVE_from_a_query_naming_no_database_still_answers(ask, capsys):
+    ask._fake(["2"])
+    assert ask.main(["xq", "1+1"]) == 0, capsys.readouterr()
+
+
+def test_bx5_a_database_argparse_rejects_is_never_advised(ask, capsys):
+    ask._fake([])
+    rc = ask.main(["xq", "collection('mydb')//x"])
+    err = capsys.readouterr().err
+    assert rc == 2 and "--db mydb" not in err and "x4raw and x4eff" in err, err
+
+
+@pytest.mark.parametrize("items", [["true"], ["a", "false"], ["0.5"]])
+def test_bx5_TWIN_other_single_values_and_mixed_results_are_still_hits(ask, capsys, items):
+    ask._fake(items)
+    assert ask.main(["xq", "collection('x4raw')//x"]) == 0, capsys.readouterr()
+
+
 # ============================================================================ BX-2 (stage.py)
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-2: stage.py:82 `names or (mini pair)` "
-                   "treats Config's correct EMPTY answer as a failure and stages both mini-DLC")
 def test_bx2_an_empty_packed_dlc_answer_is_honoured(monkeypatch):
     stage = _basex("stage")
     from x4validate import _merge
@@ -133,10 +179,53 @@ def test_bx2_an_empty_packed_dlc_answer_is_honoured(monkeypatch):
                        f"{got} would be staged into /base/extensions ON TOP of the reference copies")
 
 
+def test_bx2_TWIN_a_nonempty_answer_is_staged_as_given(monkeypatch):
+    stage = _basex("stage")
+    from x4validate import _merge
+    monkeypatch.setattr(_merge.Config, "packed_dlc_names",
+                        lambda self: {"ego_dlc_mini_02", "ego_dlc_mini_01"})
+    assert stage.packed_dlc_names() == ("ego_dlc_mini_01", "ego_dlc_mini_02")
+
+
+@pytest.mark.parametrize("exc", [ValueError("bad catalog"), KeyError("x"), RuntimeError("boom"),
+                                 UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")])
+def test_bx2_ANY_config_failure_is_a_refusal_not_a_traceback(monkeypatch, tmp_path, capsys, exc):
+    """Re-review: only four exception types were caught, so any other failure of the
+    packed-DLC query escaped at IMPORT as a raw traceback, rc 1 -- which in this toolkit
+    means "findings". It must be the same rc-2 refusal as the listed four."""
+    stage = _basex("stage")
+    from x4validate import _merge
+
+    def boom(self):
+        raise exc
+    monkeypatch.setattr(_merge.Config, "packed_dlc_names", boom)
+    with pytest.raises(stage.PackedDlcUnknown):
+        stage.packed_dlc_names()
+
+
+def test_bx2_a_config_FAILURE_refuses_instead_of_guessing(monkeypatch, tmp_path, capsys):
+    """The old fallback staged the historical pair on ANY failure; a guess is wrong one way
+    or the other (double-index an unpacked DLC, or omit a packed one), so main refuses."""
+    stage = _basex("stage")
+    from x4validate import _merge
+
+    def boom(self):
+        raise OSError("simulated: reference unreadable")
+    monkeypatch.setattr(_merge.Config, "packed_dlc_names", boom)
+    with pytest.raises(stage.PackedDlcUnknown):
+        stage.packed_dlc_names()
+    monkeypatch.setattr(stage, "MINI_DLC", None)
+    monkeypatch.setattr(stage, "MINI_DLC_ERROR", "OSError: simulated")
+    ext, out, man = tmp_path / "ext", tmp_path / "stage", tmp_path / "m.json"
+    ext.mkdir()
+    rc = stage.main(["--out", str(out), "--extensions", str(ext), "--manifest", str(man)])
+    err = capsys.readouterr().err
+    assert rc == 2 and not out.exists() and not man.exists(), err
+    assert "Refusing to guess" in err, err
+
+
 # ============================================================================ BX-3 (build scripts)
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-3: the build drops the DB before "
-                   "invalidating coverage-<db>.json, so a failed rebuild leaves the old licence")
 @pytest.mark.parametrize("script", ["build-corpus.sh", "build-effective.sh"])
 def test_bx3_the_old_coverage_licence_is_revoked_before_the_db_is_dropped(script):
     text = (BASEX / script).read_text(encoding="utf-8")
@@ -150,8 +239,6 @@ def test_bx3_the_old_coverage_licence_is_revoked_before_the_db_is_dropped(script
 
 # ============================================================================ BX-4 (coverage.py)
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-4: coverage.py judges 'accounted' on "
-                   "the AGGREGATE deficit, so +5 base / -5 mods nets to 0 and licenses negatives")
 def test_bx4_offsetting_per_root_errors_do_not_license_a_negative(tmp_path, monkeypatch, capsys):
     # By FILE, never by the bare name: `coverage` is also the PyPI package, and a bare import
     # can hand back that one (test_coverage_reporting.py loads it the same way).
@@ -173,6 +260,45 @@ def test_bx4_offsetting_per_root_errors_do_not_license_a_negative(tmp_path, monk
     assert not data["supports_negative_claim"], (
         f"rc={rc} status={data['status']}: base is +5 EXTRA and mods -5 MISSING, and the "
         f"verdict came from their sum\n{capsys.readouterr().out}")
+
+
+@pytest.mark.parametrize("where,short,expect", [
+    ("ref", "base", "accounted"),        # the malformed file sits under the root that is short
+    ("ext", "mods", "accounted"),
+    ("packed-mods", "mods", "accounted"),
+    ("ext", "base", "unexplained"),      # right COUNT, wrong ROOT: the aggregate would pass it
+    ("packed-mods", "base", "unexplained"),
+])
+def test_bx4_TWIN_a_deficit_is_accounted_only_by_its_OWN_roots_malformed_files(
+        tmp_path, monkeypatch, capsys, where, short, expect):
+    if not (BASEX / "coverage.py").is_file():
+        pytest.skip(f"no BaseX tooling at {BASEX}")
+    spec = importlib.util.spec_from_file_location("basex_coverage_audit0924_twin", BASEX / "coverage.py")
+    cov = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cov)
+    ref, ext, stage = tmp_path / "ref", tmp_path / "ext", tmp_path / "stage"
+    for d in (ref, ext, stage):
+        d.mkdir()
+    manifest = {"sources": [], "unparseable": [], "totals": {}}
+    if where in ("ref", "ext"):
+        (tmp_path / where / "broken.xml").write_text("<a><b></a>", encoding="utf-8")
+    else:
+        manifest["sources"] = [{"name": "m", "root": "/mods", "unparseable": ["x.xml: bad"]}]
+        manifest["unparseable"] = ["m/x.xml: bad"]
+    man = tmp_path / "manifest.json"
+    man.write_text(json.dumps(manifest), encoding="utf-8")
+    counts = {str(ref): 50, str(ext): 50}
+    monkeypatch.setattr(cov, "count_disk_xml", lambda root: counts.get(str(root), 0))
+    idx = {"base": 50, "mods": 50}
+    idx[short] -= 1
+    monkeypatch.setattr(cov, "basex_query", lambda db, xq: (
+        f"total={idx['base'] + idx['mods']}\nbase={idx['base']}\nmods={idx['mods']}\n"))
+    out = tmp_path / "coverage-x4raw.json"
+    cov.main(["--db", "x4raw", "--stage", str(stage), "--manifest", str(man),
+              "--reference", str(ref), "--extensions", str(ext), "--out", str(out)])
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["status"] == expect, capsys.readouterr().out
+    assert data["supports_negative_claim"] is (expect == "accounted")
 
 
 # ============================================================================ GT-1 noop_audit

@@ -22,8 +22,20 @@
 #     python .claude/hooks/test_hook_facts.py     (the unit tests)
 #     python scripts/verify-hook-tests.py         (mutations + predicate coverage)
 #     python scripts/fuzz-guard.py                (syntax-bypass fuzzing)
+#
+# TWO FRONT-ENDS, ONE RULE SET (AUDIT-2026-09-24 HK-1). This hook is also the PowerShell
+# tool's guard. hook_facts.py hands a PowerShell payload to ps_translate.ps1, which parses
+# it with PowerShell's own parser and returns the equivalent POSIX-shell command; every
+# rule below then judges that. A PowerShell command that cannot be translated is ASKED
+# (hook_facts rc 4), exactly as a Bash command `bash -n` rejects.
 JQ="${JQ:-jq}"
-HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Parameter expansion, not `$(cd "$(dirname "$0")" && pwd)`: that was a subshell AND
+# a dirname process on every call (AUDIT-2026-09-24 HK-4). The settings command passes
+# an absolute path, and a relative one still resolves: nothing here changes directory.
+# BOTH separators: a hook started as `bash C:\...\protect-bash.sh` has a $0 with no
+# forward slash at all, and reading it as "." sourced _x4-env.sh from the CALLER's
+# directory -- MEASURED: the guard then found no python and asked on every command.
+case "$0" in */*|*\\*) HOOK_DIR="${0%[/\\]*}" ;; *) HOOK_DIR=. ;; esac
 . "$HOOK_DIR/_x4-env.sh"
 
 INPUT=$(x4_hook_input)
@@ -52,7 +64,7 @@ x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it ch
 # and a filed reason is a preview of itself.
 emit() {
   set -- "$1" "$(x4_bound "$2")"
-  if [ "$JQ_OK" = 1 ]; then
+  if jq_works; then
     if [ "$1" = "advise" ]; then
       "$JQ" -n --arg r "$2" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'
     else
@@ -120,12 +132,23 @@ $1"; else ADVICE="$1"; fi; }
 # A guard that cannot see its input must not stay silent: silence IS allow, and that
 # is exactly how every hook here sat dead for five weeks. So a missing interpreter, a
 # crash, or an unparseable payload ASKS -- it never falls through.
-PY="$(x4_python)"   # shared with every other hook (see _x4-env.sh)
+x4_resolve_python; PY="$X4_PY"   # shared with every other hook (see _x4-env.sh)
 # Does jq actually WORK? Presence on PATH is not the question -- the probe that caught
-# this pointed JQ at a missing binary. Tested once, here, rather than discovered on the
-# verdict path where a failure is silent.
-JQ_OK=0
-printf '%s' '{}' | "$JQ" -e . >/dev/null 2>&1 && JQ_OK=1
+# this pointed JQ at a missing binary. Tested before any verdict is rendered, rather than
+# discovered on the verdict path where a failure is silent.
+#
+# LAZILY, on the first verdict (AUDIT-2026-09-24 HK-4). Only emit() consumes it, and most
+# calls are a silent allow that renders nothing -- so probing up front spent a jq process
+# on every call to answer a question almost none of them asked. A failing probe still
+# routes the verdict through python, exactly as before.
+JQ_OK=""
+jq_works() {
+  if [ -z "$JQ_OK" ]; then
+    JQ_OK=0
+    printf '%s' '{}' | "$JQ" -e . >/dev/null 2>&1 && JQ_OK=1
+  fi
+  [ "$JQ_OK" = 1 ]
+}
 
 if [ -z "$PY" ]; then
   printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"X4 GUARD INERT: no Python interpreter was found, so protect-bash.sh could not analyse this command and checked NOTHING. Set X4_PYTHON, or put python on PATH. Confirm only if you know why it is missing."}}'
@@ -158,6 +181,15 @@ emit_roots() {
 
 FACTS_RAW=$( { emit_roots; printf '%s' "$INPUT"; } | "$PY" "$HOOK_DIR/hook_facts.py" 2>/dev/null)
 PARSE_RC=$?
+# rc 4: a PowerShell TOOL command could not be translated (it does not parse as
+# PowerShell, or no PowerShell was found to parse it), and the reason is on stdout. ASK,
+# as an unparseable Bash command does below -- nothing was analysed, so this is neither
+# a clean pass nor evidence for a deny.
+if [ "$PARSE_RC" = 4 ]; then
+  VERDICT=ask
+  emit ask "X4 GUARD: this PowerShell command could not be analysed, so NO rule was evaluated against it: ${FACTS_RAW:-no reason given}. The guard reads PowerShell through PowerShell's own parser (pwsh, else powershell; X4_PWSH overrides). Fix the syntax, or confirm only if you know the command is safe."
+  exit 0
+fi
 if [ "$PARSE_RC" != 0 ]; then
   printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"X4 GUARD INERT: the command analyser exited non-zero, so this command was NOT checked. That is the stdin defect one layer in: allowing silently would look identical to deciding it is fine. Confirm only if you know why."}}'
   exit 0
@@ -167,9 +199,26 @@ fi
 # is emitted LAST and raw because it may be multi-line (heredocs are routine here) and
 # any escaping scheme would change what the messages below print.
 SENT=$'\n__X4_COMMAND__\n'
+# AN EMPTY COMMAND ENDS THE STREAM WITH THE SENTINEL, and `$( )` strips the newline after
+# it -- so the split below never matched, and COMMAND held the whole FACT DUMP, which
+# every rule that quotes the command then printed. Worse, the empty case is exactly a
+# PowerShell translation whose every part was UNRESOLVED (`iex $cmd`, `Remove-Item
+# @args`), and the `[ -z ]` allow below would have waved it through the moment the split
+# worked (AUDIT-2026-09-24 HK-1 re-review). So the empty case is decided here, explicitly.
+case "$FACTS_RAW" in
+  *$'\n__X4_COMMAND__') FACTS_RAW="$FACTS_RAW"$'\n' ;;
+esac
 FACT_LINES="${FACTS_RAW%%$SENT*}"
 COMMAND="${FACTS_RAW#*$SENT}"
-[ -z "$COMMAND" ] && exit 0
+if [ -z "$COMMAND" ]; then
+  case $'\n'"${FACT_LINES//$'\r'/}"$'\n' in
+    *$'\ncarrier_untranslated\t1\n'*)
+      VERDICT=ask
+      emit ask "X4 GUARD: nothing in this command could be translated into something the guard can check -- every write/delete in it names a target it cannot resolve (a splat that is not a literal hashtable, Invoke-Expression of computed text, a .Delete()-style method on an unidentified object), so it could not be analysed and NO rule was evaluated. Write the target literally, or confirm only if you know what it touches."
+      exit 0 ;;
+  esac
+  exit 0
+fi
 
 # Facts are matched against a NEWLINE-DELIMITED STRING, not an associative array.
 #
@@ -218,7 +267,27 @@ TIMEOUT_MS="${_t%%
 # and 6 FALSE NEGATIVES. Three parser defects shipped from hand-rolling shell
 # tokenisation in one release; this is the one place where the real parser is available
 # for the asking, so it is asked.
-if ! bash -n -c "$COMMAND" 2>/dev/null; then
+#
+# ONE SHORTCUT, and it cannot change a verdict (AUDIT-2026-09-24 HK-4): a command made of
+# plain words -- letters, digits and `_./:@%+=,-`, separated by blanks or newlines -- with
+# no reserved word among them has nothing that CAN fail to parse: no quote, bracket,
+# operator, expansion or compound command. `git status` and `uv run pytest -q` skip a
+# process; anything else still asks bash.
+#   (Whitespace other than blank/newline -- CR, VT, FF -- is an ordinary word character
+#   to bash's parser, so letting [[:space:]] through cannot hide a syntax error. The
+#   word loop cannot glob: no pattern character survives the first test.)
+_x4_plain=0
+_x4_rest="${COMMAND//[A-Za-z0-9_.\/:@%+=,-]/}"
+if [ -z "${_x4_rest//[[:space:]]/}" ]; then
+  _x4_plain=1
+  for _w in $COMMAND; do
+    case "$_w" in
+      if|then|else|elif|fi|case|esac|for|select|while|until|do|done|function|in|time|coproc)
+        _x4_plain=0; break ;;
+    esac
+  done
+fi
+if [ "$_x4_plain" != 1 ] && ! bash -n -c "$COMMAND" 2>/dev/null; then
   ask "This command does not PARSE (bash -n rejects it), so the guard could evaluate NO rule against it and cannot vouch for it. Check the quoting -- a Windows path ending in a backslash inside double quotes is the usual cause. Confirm only if you know the command is safe."
 fi
 
@@ -245,6 +314,22 @@ fi
 # in an argument.
 if on verb_unresolved; then
   deny "A command name here arrives through substitution (\$(...) or backticks), so the guard cannot tell what command this is and NO rule -- including the hard blocks on the game install -- was evaluated for it. Write the command name literally and re-run."
+fi
+
+# A POWERSHELL TOOL command reaches this file already TRANSLATED by PowerShell's own
+# parser into the equivalent POSIX-shell command (hook_facts.powershell_to_sh), so every
+# rule below judges it exactly as it judges Bash (AUDIT-2026-09-24 HK-1). The messages
+# quote the translation -- say so, or a reader sees `rm -rf` they never typed.
+if on from_powershell; then
+  COMMAND="[PowerShell, as the guard read it] $COMMAND"
+fi
+
+# A `cmd /c` or `powershell -c` carrier whose text could not be translated (HK-2), or a
+# PowerShell write/delete whose target the translator could not resolve (HK-1 follow-up):
+# that part reached no rule. Same verdict as an unparseable command -- and a deny
+# elsewhere in the command still wins, because `ask` accumulates.
+if on carrier_untranslated; then
+  ask "Part of this command could not be analysed, so it was NEVER checked against any rule: nested PowerShell that does not parse (or no PowerShell was found to parse it), or a PowerShell write/delete whose TARGET the guard cannot resolve -- a splat that is not a literal hashtable, a .Delete()/.MoveTo()-style method on an object it cannot identify, Invoke-Expression of computed text. Write the target literally, or confirm only if you know what it touches."
 fi
 
 if on carriers_truncated; then
@@ -319,8 +404,11 @@ on copy_into_game_or_profile \
 on redirect_truncate_into_game_or_profile \
   && advise "Redirecting output into a game or profile directory. Allowed, but a truncating > has no backup: if the target is a durable record, write to a temp file and move it into place."
 
-# === CONFIRM — sed -i on game or profile files ===
-on sed_i_in_game_or_profile && deny "In-place edit in game/profile directory — confirm: $COMMAND"
+# === DENY — sed -i on game or profile files ===
+# DENY is the verdict (user decision 2026-09-25, AUDIT-2026-09-24 HK-6); the reason used
+# to end "confirm: ...", which on a deny offers the reader nothing to confirm. There is a
+# correct alternative to take instead, so it names that.
+on sed_i_in_game_or_profile && deny "BLOCKED: in-place sed edit (sed -i) of a file in the game or profile directory. A Bash edit gets NO backup and bypasses the file-path guard. Use the Edit tool instead: it is backed up, checked by protect-files.sh, and fails loudly on a non-unique match. Command: $COMMAND"
 
 # === CONFIRM — direct reference to .cat/.dat archives ===
 # DROPPED 2026-08-29: this fired on any command whose TEXT mentioned a .cat -- including
@@ -485,7 +573,7 @@ fi
 # (corpus_sweep, a 19-gate loop, a 5-gate loop, perf_guard), every time from
 # passing a number that was assumed to raise the ceiling and never did.
 if on timeout_over_cap; then
-  deny "TIMEOUT ABOVE THE CAP: you passed ${TIMEOUT_MS}ms, but the Bash tool's maximum is 600000ms.
+  deny "TIMEOUT ABOVE THE CAP: you passed ${TIMEOUT_MS}ms, but the Bash and PowerShell tools' maximum is 600000ms.
 Larger values are silently clamped -- the command will be KILLED at exactly 10:00 (exit 143),
 which looks like a hang and is not one.
 Needing more than 10 minutes IS the signal to background it, not to raise the number:

@@ -3,7 +3,7 @@
 # SOURCE this (do not execute). Single source of truth for the configurable X4 locations
 # so nothing is hardcoded to one OS or one user's folder layout.
 #
-# Resolution order for each value:  .claude/x4-paths.env  >  existing env var  >  default.
+# Resolution order for each value:  existing env var  >  .claude/x4-paths.env  >  default.
 #
 # THE ENVIRONMENT WINS, matching CLAUDE.md ("env var > x4-paths.env > default") and
 # the Python half (`_paths._layers()` returns [env, file, fallback]).
@@ -68,12 +68,16 @@ if [ -f "$_x4_cfg" ]; then
   # A path never contains a newline, so one line per variable is a safe transport.
   # `IFS='=' read -r k v` puts everything after the FIRST `=` into v, so a value
   # containing `=` survives.
-  _x4_pre=$(for _k in $_X4_ENV_KEYS; do
-              # a DERIVED toolkit root must not outrank the config file (see above)
-              [ "$_k" = X4_TOOLKIT ] && [ "$_X4_TK_FROM_ENV" != 1 ] && continue
-              eval "_v=\${$_k:-}"
-              [ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v"
-            done)
+  # Built in THIS shell, not in a `$( )` subshell: this runs on every hook call, and a
+  # subshell is a process on Windows (AUDIT-2026-09-24 HK-4). Same lines, same order.
+  _x4_pre=""
+  for _k in $_X4_ENV_KEYS; do
+    # a DERIVED toolkit root must not outrank the config file (see above)
+    [ "$_k" = X4_TOOLKIT ] && [ "$_X4_TK_FROM_ENV" != 1 ] && continue
+    eval "_v=\${$_k:-}"
+    [ -n "$_v" ] && _x4_pre="$_x4_pre$_k=$_v
+"
+  done
   set -a; . "$_x4_cfg"; set +a
   if [ -n "$_x4_pre" ]; then
     while IFS='=' read -r _k _v; do
@@ -90,7 +94,13 @@ fi
 
 # Derive the Steam app manifest from the game dir when possible (…/steamapps/common/X4 Foundations).
 if [ -z "${X4_APPMANIFEST:-}" ] && [ -n "${X4_GAME:-}" ]; then
-  _sa="$(dirname "$(dirname "$X4_GAME")")"
+  # Two parent directories by parameter expansion: `dirname "$(dirname ...)"` cost two
+  # processes and two subshells on EVERY hook call (AUDIT-2026-09-24 HK-4). Backslashes
+  # are folded first, trailing separators dropped, so `C:\...\X4 Foundations\` and
+  # `/c/.../X4 Foundations` both land on steamapps/.
+  _sa="${X4_GAME//\\//}"
+  while [ "${_sa%/}" != "$_sa" ]; do _sa="${_sa%/}"; done
+  _sa="${_sa%/*}"; _sa="${_sa%/*}"
   [ -f "$_sa/appmanifest_392160.acf" ] && X4_APPMANIFEST="$_sa/appmanifest_392160.acf"
 fi
 
@@ -319,16 +329,22 @@ x4_hook_input() { cat; }
 # protect-files.sh and backup-before-edit.sh fell through to python3/python/py. They
 # also probed in opposite orders. A guard that runs under an interpreter the operator
 # did not choose is a guard nobody configured.
-x4_python() {
+#
+# x4_resolve_python sets X4_PY instead of printing, so a caller needs no `$( )` subshell
+# -- a process on Windows, on every hook call (AUDIT-2026-09-24 HK-4). x4_python is the
+# printing form of the SAME function, kept for callers that want a value.
+x4_resolve_python() {
+  X4_PY=""
   if [ -n "${X4_PYTHON:-}" ]; then
-    command -v "$X4_PYTHON" >/dev/null 2>&1 && printf '%s' "$X4_PYTHON"
-    return 0                      # set but unresolvable -> print NOTHING, deliberately
+    command -v "$X4_PYTHON" >/dev/null 2>&1 && X4_PY="$X4_PYTHON"
+    return 0                      # set but unresolvable -> NOTHING, deliberately
   fi
   for _c in python python3 py; do
-    if command -v "$_c" >/dev/null 2>&1; then printf '%s' "$_c"; return 0; fi
+    if command -v "$_c" >/dev/null 2>&1; then X4_PY="$_c"; return 0; fi
   done
   return 0
 }
+x4_python() { x4_resolve_python; printf '%s' "$X4_PY"; }
 
 # x4_field <payload> <dotted path, e.g. tool_input.path>
 # Read one field from a hook payload without depending on jq alone.
@@ -344,11 +360,17 @@ x4_python() {
 # (protect-files, backup-before-edit) deliberately keep their own readers, because they
 # must tell those two cases apart and ASK on the second.
 x4_field() {
-  if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then
-    printf '%s' "$1" | "${JQ:-jq}" -r ".$2 // empty" 2>/dev/null
+  # ONE jq process, not a health probe plus a read (AUDIT-2026-09-24 HK-4). A jq that is
+  # missing or broken exits non-zero, and so does one handed an unreadable payload; both
+  # fall through to python, which answers the same question -- so the result for every
+  # case is what the probe-first form returned.
+  local _jv
+  if _jv="$(printf '%s' "$1" | "${JQ:-jq}" -r ".$2 // empty" 2>/dev/null)"; then
+    printf '%s' "$_jv"
     return 0
   fi
-  local _py; _py="$(x4_python)"
+  x4_resolve_python
+  local _py="$X4_PY"
   [ -n "$_py" ] || return 0
   X4_IN="$1" X4_PATH="$2" "$_py" -c 'import json, os, sys
 cur = json.loads(os.environ["X4_IN"])
@@ -414,7 +436,7 @@ _X4_BOUND_RESERVE=300
 # because the first arm always claimed success. MEASURED with a stub exiting 9:
 # 25,000 characters in, 25,000 out.
 x4_len(){
-  _py="$(x4_python)"
+  x4_resolve_python; _py="$X4_PY"
   if [ -n "$_py" ]; then
     _n="$(X4_BND="$1" "$_py" -c 'import os,sys; sys.stdout.buffer.write(str(len(os.environ["X4_BND"])).encode())' 2>/dev/null)"
     case "$_n" in ''|*[!0-9]*) : ;; *) printf '%s' "$_n"; return 0 ;; esac
@@ -436,7 +458,7 @@ x4_len(){
 #
 # Each arm is CHECKED here too, for the same reason as x4_len above.
 x4_head(){
-  _py="$(x4_python)"
+  x4_resolve_python; _py="$X4_PY"
   if [ -n "$_py" ]; then
     if _o="$(X4_BND="$1" X4_BNDN="$2" "$_py" -c 'import os,sys; sys.stdout.buffer.write(os.environ["X4_BND"][:int(os.environ["X4_BNDN"])].encode("utf-8"))' 2>/dev/null)"; then
       printf '%s' "$_o"; return 0
@@ -493,7 +515,7 @@ x4_advise() {
       '{hookSpecificOutput:{hookEventName:$e,additionalContext:$r}}'
     return 0
   fi
-  local _py; _py="$(x4_python)"
+  x4_resolve_python; local _py="$X4_PY"
   if [ -n "$_py" ]; then
     X4_REASON="$1" X4_EVENT="${2:-PreToolUse}" "$_py" -c 'import json, os, sys
 sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": {

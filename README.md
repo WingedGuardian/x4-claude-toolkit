@@ -224,6 +224,9 @@ tiers behind each answer.
 ### Safety, built in
 - **Command + file guards** — block writes to `reference\` and direct `.cat`/`.dat` edits; confirm edits to profile files. A mod manifest is ADVISED rather than confirmed
   (a deliberate 2026-08-29 choice: the note is worth having, the interruption is not).
+  They cover every tool that can change a file: Bash, **PowerShell** (parsed by PowerShell's
+  own parser and judged by the same rules as Bash — it needs `pwsh` or Windows PowerShell,
+  and asks rather than guesses without one), Edit, Write and NotebookEdit.
 - **Auto-backup** — every edited file is copied to `.claude\backups\` with an audit log.
 - **Confidence system** — no guessing; Claude rates confidence and lists assumptions first.
 - **Baseline capture** — `scripts/generate-baseline.sh` records a known-good snapshot (game version, installed-mod hashes, a normalized debug.txt error fingerprint) to diff against later.

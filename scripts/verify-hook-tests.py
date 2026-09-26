@@ -41,7 +41,10 @@ NL = chr(10)
 
 REPO = Path(__file__).resolve().parent.parent
 HOOKS = REPO / ".claude" / "hooks"
-FILES = ("hook_facts.py", "test_hook_facts.py")
+# ps_translate.ps1 travels with them: hook_facts.powershell_to_sh runs it from its OWN
+# directory, so a copy without it makes every PowerShell test a refusal and the baseline
+# red for a reason that has nothing to do with the code under test.
+FILES = ("hook_facts.py", "test_hook_facts.py", "ps_translate.ps1")
 
 # (label, exact source text, replacement, the test that MUST go red)
 MUTANTS = [
@@ -175,9 +178,21 @@ MUTANTS = [
     ("find -delete is a delete", "    return find_deletes(seg)", "    return []",
      "test_find_delete_on_the_game_is_a_game_delete"),
     ("a FILTERED find is scoped, not a tree delete",
-     "    if any(_narrows(toks, i) for i, t in enumerate(toks) if t in _FIND_FILTERS):",
-     "    if False:",
+     "    filtered = any(_narrows(toks, i) for i, t in enumerate(toks) if t in _FIND_FILTERS)",
+     "    filtered = False",
      "test_a_FILTERED_find_is_scoped_and_does_not_fire"),
+    # AUDIT-2026-09-24 HK-2: a filtered find-delete is SCOPED, not exempt ...
+    ("a filtered find-delete still reaches the in-tree rules",
+     "        scoped_rm_t += prep(find_scoped_deletes(s), c_cwd)", "        pass",
+     "test_every_save_by_filter_asks"),
+    # ... except a regenerable-cache cleanup, which is why the exemption existed.
+    ("a cache-only filter stays exempt",
+     "    return [] if _only_regenerable(toks) else paths", "    return paths",
+     "test_TWIN_a_pycache_cleanup_is_still_silent_everywhere"),
+    ("truncate / dd of= are truncating writes",
+     "        redir_t += [(\"truncate\",) + o for o in prep(clobber_targets(s), c_cwd)]",
+     "        pass",
+     "test_truncate_into_reference"),
     ("a find WITHOUT -delete is not", 'deletes = "-delete" in toks', "deletes = True",
      "test_a_find_that_does_NOT_delete_is_not_a_delete"),
     ("a non-int timeout still counts", '"timeout_over_cap": _as_ms(timeout) > 600000,',

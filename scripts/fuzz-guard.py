@@ -907,6 +907,20 @@ def seeds(roots):
         # is the whole predicate, and the verb-keyed rules stay silent on it by
         # construction, which is the point.
         ("substituted verb at a root", "$(which " + d + ") -rf " + QU + g + QU),
+        # AUDIT-2026-09-24 HK-2: the shapes that walked past every rule before it, and
+        # the refusal added with it. The untranslatable carrier is the ONLY seed that
+        # starts a PowerShell (one per distinct mutant text); the translatable carrier
+        # is deliberately left to test_hook_facts.py so a fuzz run does not pay a
+        # PowerShell start per mutant of it.
+        ("filtered find-delete of saves",
+         "find " + QU + saves + QU + " -name " + AP + "*.gz" + AP + " -delete"),
+        ("truncate into reference", "truncate -s 0 " + QU + ref + "/f.xml" + QU),
+        ("cmd carrier at reference", "cmd //c rd /s /q " + QU + ref + QU),
+        # `if` alone: a PowerShell PARSE error with no bracket or quote in it. A payload
+        # with an unbalanced `(` also defeats the substitution/array walk for `bash -c`
+        # (pre-existing, and harmless: such a payload cannot run in either shell), so it
+        # would report parser limits rather than this rule's reach.
+        ("untranslatable PowerShell carrier", "powershell -c " + QU + "if" + QU),
     ]
 
 

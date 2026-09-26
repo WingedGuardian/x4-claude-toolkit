@@ -192,6 +192,70 @@ def _strip_xq_comments(text: str) -> str:
     return text
 
 
+#: The databases `--db` accepts, i.e. the only ones ask.py holds a coverage report for.
+DBS = ("x4raw", "x4eff")
+
+# --- what does the query ADDRESS? (AUDIT-2026-09-24 BX-1) ----------------------
+#
+# The coverage denominator describes a WHOLE database. A zero is a negative over that
+# denominator only if the query searched that whole database, so ask.py reads every
+# call that reaches a database and classifies it. MEASURED by the audit:
+# `db:get('x4eff','no/such/typo.xml')//ware` printed "NEGATIVE CONFIRMED over 10970 of
+# 10970 documents", rc 0 -- a zero over ONE path that does not exist, certified with the
+# whole database's count. The old guard matched only `name('<db>')` with nothing after
+# the literal, so a second argument, a variable db name and doc() all walked past it.
+#
+# Calls whose first argument names a database (BaseX's db module, and fn:collection /
+# fn:uri-collection / fn:doc whose argument is `<db>[/<path>]`):
+#: Always addresses a DOCUMENT or a node, never the whole database.
+_DOC_FNS = ("doc", "db:get-id", "db:get-pre", "db:open-id", "db:open-pre",
+            "db:get-value", "db:get-binary", "db:retrieve")
+#: Whole database with one argument; a SECOND argument is a path inside it.
+_PATH_ARG_FNS = ("db:get", "db:open", "db:list", "db:list-details", "db:dir", "db:exists")
+#: Whole database whatever follows (index lookups, metadata).
+_WHOLE_DB_FNS = ("db:text", "db:text-range", "db:attribute", "db:attribute-range",
+                 "db:token", "db:info", "db:property")
+#: `<db>` or `<db>/<path>` in the single literal argument.
+_URI_FNS = ("collection", "uri-collection")
+_REACH_FNS = _DOC_FNS + _PATH_ARG_FNS + _WHOLE_DB_FNS + _URI_FNS
+_REACH_CALL = re.compile(
+    r"(?<![\w:.\-])(?:fn:)?("
+    + "|".join(re.escape(f) for f in sorted(_REACH_FNS, key=len, reverse=True))
+    + r")\s*\(")
+_LITERAL_ARG = re.compile(r"\s*(['\"])((?:(?!\1).|\1\1)*)\1\s*([,)])", re.S)
+
+
+def _db_reaches(query: str) -> list[dict]:
+    """Every call in *query* (comments already stripped) that reaches a database.
+
+    Each is {"call", "db", "scoped"}: `db` is None when the name is not a string
+    literal (a variable, a concatenation, no argument) -- then nobody can say which
+    database was searched; `scoped` is True when the call addresses less than the
+    whole database (a document, a node, a path inside it).
+    """
+    reaches = []
+    for m in _REACH_CALL.finditer(query):
+        fn = m.group(1)
+        lit = _LITERAL_ARG.match(query, m.end())
+        if lit is None:
+            close = query.find(")", m.end())
+            reaches.append({"call": query[m.start():close + 1 if close >= 0 else m.end()],
+                            "db": None, "scoped": True})
+            continue
+        quote, after = lit.group(1), lit.group(3)
+        value = lit.group(2).replace(quote * 2, quote)       # XQuery escapes '' / ""
+        call = query[m.start():lit.end()] + ("" if after == ")" else "...)")
+        if fn in _URI_FNS or fn == "doc":
+            parts = [p for p in value.strip().split("/") if p]
+            db = parts[0] if parts else None
+            scoped = fn == "doc" or len(parts) > 1
+        else:
+            db = value.strip() or None
+            scoped = fn in _DOC_FNS or (fn in _PATH_ARG_FNS and after == ",")
+        reaches.append({"call": call, "db": db, "scoped": scoped or db is None})
+    return reaches
+
+
 def _git_bash_argv_state() -> tuple[str | None, bool]:
     """(MSYSTEM, conversion switched off) for THIS process; see `argv_under_git_bash` in main().
 
@@ -307,15 +371,44 @@ def main(argv=None) -> int:
     # query ran against x4eff while being scored against x4raw's coverage AND
     # x4raw's freshness. That is the very failure this block exists to stop,
     # reached through a different spelling of the same intent.
-    named = set(re.findall(
-        r"(?:collection|db:get|db:open)\(\s*['\"]([^'\"]+)['\"]\s*\)", query))
-    foreign = sorted(n for n in named if n != args.db)
-    if foreign:
-        print(f"error: the query searches {', '.join(foreign)} but --db is "
-              f"'{args.db}'.", file=sys.stderr)
-        print(f"       Coverage and staleness would be judged against "
-              f"'{args.db}', which is not what you queried.", file=sys.stderr)
-        print(f"       Re-run with --db {foreign[0]}.", file=sys.stderr)
+    #
+    # AUDIT-2026-09-24 BX-1 widened this from one regex to `_db_reaches`: a second
+    # argument (a path), a db name held in a variable, and doc() all escaped it. Three
+    # refusals, all rc 2 and all BEFORE the run, because each makes the per-database
+    # coverage and freshness the wrong yardstick for the answer, positive or zero.
+    reaches = _db_reaches(_strip_xq_comments(query))
+    unknown = [r["call"] for r in reaches if r["db"] is None]
+    foreign = sorted({r["db"] for r in reaches if r["db"] and r["db"] != args.db})
+    scoped = [r["call"] for r in reaches if r["db"] and r["scoped"]]
+    if unknown or foreign or scoped:
+        if unknown:
+            print(f"error: the query names its database through an expression ask.py "
+                  f"cannot read: {'; '.join(unknown)}", file=sys.stderr)
+            print("       Which database was searched decides which coverage and "
+                  "staleness apply, so it must be a string literal.", file=sys.stderr)
+        if foreign:
+            print(f"error: the query searches {', '.join(foreign)} but --db is "
+                  f"'{args.db}'.", file=sys.stderr)
+            print(f"       Coverage and staleness would be judged against "
+                  f"'{args.db}', which is not what you queried.", file=sys.stderr)
+        if scoped:
+            print(f"error: the query addresses PART of a database: {'; '.join(scoped)}",
+                  file=sys.stderr)
+            print("       The coverage denominator counts every document in the "
+                  "database; a zero over one path is not a zero over those, and a "
+                  "mistyped path matches nothing at all.", file=sys.stderr)
+            print("       Search the whole database instead -- a negative over all of "
+                  "it covers every path in it.", file=sys.stderr)
+        # Advise only what argparse will accept: `--db x4eff/libraries` was once
+        # printed here and following it was an argparse error (AUDIT-2026-09-24 BX-5).
+        targets = [d for d in foreign if d in DBS] or ([args.db] if not foreign else [])
+        bad = [d for d in foreign if d not in DBS]
+        if bad:
+            print(f"       ask.py holds coverage only for {' and '.join(DBS)}; it cannot "
+                  f"score a query over {', '.join(bad)}.", file=sys.stderr)
+        if len(targets) == 1 and len(set(foreign) - set(targets)) == 0:
+            print(f"       Re-run over collection('{targets[0]}') with --db {targets[0]}.",
+                  file=sys.stderr)
         return 2
 
     # Cheap preconditions first -- filesystem only, no JVM start. A missing jar or
@@ -392,6 +485,31 @@ def main(argv=None) -> int:
     stale = staleness_verdict(args.db)
     if not stale.fresh:
         print(stale.banner())
+
+    # A VALUE COMPUTED FROM NOTHING IS NOT A HIT (AUDIT-2026-09-24 BX-5). `false` from
+    # exists(...) and "" from string(...) over an empty sequence are one item each, and
+    # were printed as "1 item(s)", rc 0 -- a positive answer to a question whose answer
+    # was "none". Same family as the count()-of-nothing refusal below: one atomic value
+    # that says "nothing", and the empty-sequence guard never ran. Items that all
+    # serialize to nothing (n_items > 0, no output line) cannot be told apart from
+    # such values either, so they are not a hit -- and not a negative.
+    if n_items and not lines:
+        print(f"{n_items} item(s) in {args.db}, every one of them serializing to an "
+              f"empty string.")
+        print("\n  ** NOT A FINDING EITHER WAY. ** An empty string is a VALUE, not a")
+        print("  match: string(...) of nothing returns one. It is not an empty")
+        print("  sequence either, so the denominator guard did not run. Re-run returning")
+        print("  the nodes themselves for an answer with coverage behind it.")
+        return 4
+    if n_items == 1 and [ln.strip() for ln in lines] == ["false"]:
+        print("false")
+        print(f"\n1 item(s) in {args.db}.")
+        print("\n  ** NOT A NEGATIVE FINDING. ** That is one boolean, not one match:")
+        print("  exists(...)/boolean(...) return false when they found nothing, and the")
+        print("  denominator guard applies to an EMPTY SEQUENCE, so it did not run.")
+        print("  Re-run returning the nodes themselves -- drop the exists(...) wrapper --")
+        print("  for a claim with coverage behind it.")
+        return 4
 
     if hits:
         print("\n".join(lines))
@@ -518,6 +636,18 @@ def main(argv=None) -> int:
         print("  Rebuild the index (build-corpus.sh / build-effective.sh), and check")
         print("  that coverage.py's --reference and --extensions name directories")
         print("  that actually exist.")
+        return 4
+
+    # A QUERY THAT NAMES NO DATABASE SEARCHED NONE (AUDIT-2026-09-24 BX-1). `()` or
+    # `let $x := () return $x` returns an empty sequence without reading one document,
+    # and the denominator below describes a database it never touched. refs/attr always
+    # name --db; an xq query must name it itself (`collection('<db>')`). Checked LAST so
+    # every refusal above still speaks for its own reason.
+    if not reaches:
+        print("\n  ** NOT A NEGATIVE FINDING. ** The query names no database -- no")
+        print(f"  collection('{args.db}'), no db:get('{args.db}') -- so its empty result")
+        print(f"  is not a search of {args.db}, and {indexed} of {expected} documents is not")
+        print("  its denominator. Address the database in the query and re-run.")
         return 4
 
     missing = (expected or 0) - (indexed or 0)

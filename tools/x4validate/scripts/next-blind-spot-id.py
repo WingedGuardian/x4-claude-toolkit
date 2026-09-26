@@ -118,12 +118,19 @@ def scan_branches(pkg: Path = PKG) -> dict[str, set[int]]:
     # `<branch>:docs/BLIND-SPOTS.md` named a path that does not exist here and every
     # branch read as "no register" -- a refusal at best. Ask git for the prefix.
     prefix = _git(pkg, "rev-parse", "--show-prefix").strip()
-    # One name per LINE, from refs/heads only. `git branch` prints a detached HEAD as
+    # One name per LINE, from for-each-ref. `git branch` prints a detached HEAD as
     # "(HEAD detached at 1a2b3c)", and splitting that on whitespace consulted four
     # branches that do not exist (review, 2026-09-14). HEAD is consulted as well, so an
     # id claimed on a detached checkout is not invisible.
+    #
+    # REMOTE-TRACKING refs too (AUDIT-2026-09-24 HK-6). This read refs/heads only, so
+    # an id claimed on origin/<branch> by ANOTHER CLONE -- fetched, but never checked
+    # out here -- was invisible, and the "EVERY branch" promise in this module's first
+    # line held only for branches that happened to exist locally. What was fetched is
+    # the most this clone can know; an unfetched claim stays invisible, as it must.
     branches = [b.strip() for b in _git(pkg, "for-each-ref", "--format=%(refname:short)",
-                                        "refs/heads").splitlines() if b.strip()]
+                                        "refs/heads", "refs/remotes").splitlines()
+                if b.strip()]
     if not branches:
         raise CannotAnswer("no branches found — is this a git repository?")
     branches.append("HEAD")

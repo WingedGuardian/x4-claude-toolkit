@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build (or rebuild) the x4raw BaseX database from real X4 XML — base+DLC
 # reference, every INSTALLED extension's loose XML, and (since 2026-07-27) every
-# extension's PACKED XML plus the two mini-DLC, via stage.py. Internal dev tool,
+# extension's PACKED XML plus any DLC not unpacked into reference\ (asked of
+# Config -- none, when every DLC is unpacked), via stage.py. Internal dev tool,
 # not part of the public toolkit (BaseX needs a separate JVM install).
 #
 # PACKED CONTENT IS 62% OF ALL MOD XML (vro alone is 1,613 files). Before staging
@@ -68,6 +69,12 @@ echo "== staging packed content =="
 echo
 echo "== building $DB =="
 cd "$BASEX_DIR"
+# Revoke the previous build's licence FIRST (AUDIT-2026-09-24 BX-3). coverage-$DB.json
+# carries supports_negative_claim AND the freshness fingerprint of the database about to
+# be dropped; left in place, a build that dies from here on (BaseX rejecting an input
+# exits 1 below; an interrupt) leaves that licence beside a partial database, and ask.py
+# certifies negatives over it. Absent coverage means no negative is ever certified.
+rm -f "$BASEX_DIR/coverage-$DB.json"
 java -cp BaseX.jar org.basex.BaseX -c "DROP DB $DB" >/dev/null 2>&1 || true
 
 # BaseX exits 0 even when an ADD names a path it cannot find, so the exit code is

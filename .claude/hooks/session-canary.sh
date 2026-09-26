@@ -17,7 +17,13 @@
 # `x4canary` itself still exits 1 on a loss and 2 when it could not check, for callers
 # that want a gate (a subagent batch, CI).
 
-HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Parameter expansion, not `$(cd "$(dirname "$0")" && pwd)`: that was a subshell AND
+# a dirname process on every call (AUDIT-2026-09-24 HK-4). The settings command passes
+# an absolute path, and a relative one still resolves: nothing here changes directory.
+# BOTH separators: a hook started as `bash C:\...\protect-bash.sh` has a $0 with no
+# forward slash at all, and reading it as "." sourced _x4-env.sh from the CALLER's
+# directory -- MEASURED: the guard then found no python and asked on every command.
+case "$0" in */*|*\\*) HOOK_DIR="${0%[/\\]*}" ;; *) HOOK_DIR=. ;; esac
 . "$HOOK_DIR/_x4-env.sh"
 
 # The canary lives in the toolkit, not beside the hooks: it is a tool, and it needs the
@@ -33,9 +39,13 @@ if [ -z "$CANARY" ]; then
   exit 0
 fi
 
-PY="$(command -v python 2>/dev/null || command -v python3 2>/dev/null)"
+# The SHARED lookup (AUDIT-2026-09-24 HK-6). This hook resolved `python` itself, so it
+# was the one hook that ignored X4_PYTHON -- and, with X4_PYTHON set to something that
+# does not resolve, it quietly ran whatever python was on PATH where every other hook
+# refuses. x4_python prints nothing in that case, which is reported below.
+PY="$(x4_python)"
 if [ -z "$PY" ]; then
-  echo "[x4 canary] NOT RUN: no python on PATH. Irreplaceable files are UNCHECKED."
+  echo "[x4 canary] NOT RUN: no usable python (X4_PYTHON=${X4_PYTHON:-unset}; none on PATH otherwise). Irreplaceable files are UNCHECKED."
   exit 0
 fi
 
@@ -70,8 +80,12 @@ case $RC in
     # Only the NOT-CHECKED line is surfaced, and only when there is one: a clean
     # run over a fully resolved set stays silent, which is what keeps the session
     # start quiet.
+    #
+    # To STDOUT (AUDIT-2026-09-24 HK-6). It went to stderr, and SessionStart adds a
+    # hook's STDOUT to the session context -- so the one disclosure this branch exists
+    # to surface was printed where the model never reads it.
     printf '%s
-' "$OUT" | grep -F 'NOT CHECKED:' >&2 || :
+' "$OUT" | grep -F 'NOT CHECKED:' || :
     ;;
   1)
     x4_bound "$(

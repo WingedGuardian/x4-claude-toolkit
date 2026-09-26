@@ -112,14 +112,17 @@ For any bulk XML operation (mass stat changes, adding content to many files):
 ### Hard blocked
 - Writing to `reference\` (read-only base game data, ever)
 - Directly writing `.cat` / `.dat` files (use XRCatTool)
+- `sed -i` on a game or profile file (use the Edit tool, which is backed up)
 
 These are anchored on the project root (`$CLAUDE_PROJECT_DIR`); `.claude\`, `dev\`, `dist\`,
 and `tools\` under it are recognized as the editable workspace.
 
 ### Requires confirmation
-- Edits to any `content.xml` (mod manifests)
-- Edits to user-profile files (`Documents\Egosoft\X4\`)
-- Bash commands touching game or profile directories
+- Edits to user-profile files (`Documents\Egosoft\X4\`); a `content.xml` edit is only ADVISED
+- Deleting in an X4 directory (a save above all); `git clean`/`reset --hard` there
+
+Guarded tools: Bash, PowerShell (read by PowerShell's own parser into the Bash rule set),
+Edit, Write, NotebookEdit. Hook timeout 30 s; a timed-out hook does NOT block.
 
 ### General
 - One mod = one named folder, never a mega-file

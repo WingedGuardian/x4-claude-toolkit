@@ -2,7 +2,13 @@
 # Auto-backup any file before Claude edits it.
 # Saves to <toolkit>/.claude/backups/ with a timestamp and logs to an audit trail.
 JQ="${JQ:-jq}"
-HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Parameter expansion, not `$(cd "$(dirname "$0")" && pwd)`: that was a subshell AND
+# a dirname process on every call (AUDIT-2026-09-24 HK-4). The settings command passes
+# an absolute path, and a relative one still resolves: nothing here changes directory.
+# BOTH separators: a hook started as `bash C:\...\protect-bash.sh` has a $0 with no
+# forward slash at all, and reading it as "." sourced _x4-env.sh from the CALLER's
+# directory -- MEASURED: the guard then found no python and asked on every command.
+case "$0" in */*|*\\*) HOOK_DIR="${0%[/\\]*}" ;; *) HOOK_DIR=. ;; esac
 . "$HOOK_DIR/_x4-env.sh"
 
 INPUT=$(x4_hook_input)
@@ -14,7 +20,7 @@ x4_require_input "$INPUT" "X4 BACKUP INERT: this hook received NO INPUT, so NO B
 # JQ=no_such_binary: 0 backups, 0 audit lines, exit 0, no output. The two other guards
 # gained a Python fallback; this one -- the only hook standing between an edit and an
 # unrecoverable loss -- never did.
-PY="$(x4_python)"   # shared: refuses a misconfigured X4_PYTHON
+x4_resolve_python; PY="$X4_PY"   # shared: refuses a misconfigured X4_PYTHON
 _ask() {   # a backup that cannot be taken is the user's call, not ours to wave through
   if [ -n "$PY" ]; then
     X4_REASON="$1" "$PY" -c 'import json, os, sys
@@ -26,24 +32,23 @@ sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": {"hookEventName": "Pre
   exit 0
 }
 
-JQ_OK=0
-printf '%s' '{}' | "$JQ" -e . >/dev/null 2>&1 && JQ_OK=1
-if [ "$JQ_OK" = 1 ]; then
-  TOOL_NAME=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_name // "unknown"')
-  FILE_PATH=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.file_path // empty')
-  # An UNREADABLE payload is not an absent path. On a jq parse error both variables
-  # came back empty, the `[ -z "$FILE_PATH" ] && exit 0` below took it for "new file,
-  # nothing to back up", and the edit proceeded with NO BACKUP AND NO AUDIT LINE. The
-  # python branch beside this one already _ask()s for the same failure; the jq branch
-  # -- the one that actually runs -- did not.
-  if [ $? -ne 0 ]; then
-    _ask "X4 BACKUP: this payload could not be parsed, so NO BACKUP was taken and no audit line was written. Confirm only if you accept this edit being unrecoverable."
-  fi
+# ONE jq process for both fields, and no separate health probe (AUDIT-2026-09-24 HK-4:
+# that was three jq processes per Edit/Write). Two output lines; a path cannot contain
+# a newline. jq failing -- missing, broken, or an UNREADABLE payload -- falls through to
+# the python reader, which _ask()s on an unreadable payload exactly as before: the edit
+# must never proceed with NO BACKUP AND NO AUDIT LINE because a parse error read as
+# "new file, nothing to back up".
+if _x4_jq=$(printf '%s' "$INPUT" | "$JQ" -r '(.tool_name // "unknown"), (.tool_input.file_path // .tool_input.notebook_path // "")' 2>/dev/null); then
+  TOOL_NAME="${_x4_jq%%
+*}"
+  FILE_PATH="${_x4_jq#*
+}"
+  [ "$FILE_PATH" = "$_x4_jq" ] && FILE_PATH=""
 elif [ -n "$PY" ]; then
   TOOL_NAME=$(X4_IN="$INPUT" "$PY" -c 'import json, os, sys
 sys.stdout.write(json.loads(os.environ["X4_IN"]).get("tool_name") or "unknown")' 2>/dev/null) || TOOL_NAME=""
   FILE_PATH=$(X4_IN="$INPUT" "$PY" -c 'import json, os, sys
-sys.stdout.write((json.loads(os.environ["X4_IN"]).get("tool_input") or {}).get("file_path") or "")' 2>/dev/null) \
+sys.stdout.write((json.loads(os.environ["X4_IN"]).get("tool_input") or {}).get("file_path") or (json.loads(os.environ["X4_IN"]).get("tool_input") or {}).get("notebook_path") or "")' 2>/dev/null) \
     || _ask "X4 BACKUP: could not read this payload, so NO BACKUP was taken. Confirm only if you accept this edit being unrecoverable."
 else
   _ask "X4 BACKUP: neither jq nor python is available, so the file path could not be read and NO BACKUP was taken. Confirm only if you accept this edit being unrecoverable."
@@ -63,8 +68,20 @@ case "$SRC" in
 esac
 [ ! -f "$SRC" ] && exit 0
 
-# Skip transient workspace files (backups themselves, hooks, plans)
-echo "$FILE_PATH" | grep -qiE '(\.claude[/\\](backups|hooks|plans)[/\\])' && exit 0
+# Skip transient workspace files (backups themselves, hooks, plans) -- decided on the
+# path with `..` RESOLVED, never the raw text. AUDIT-2026-09-24 HK-3, MEASURED: the raw
+# test skipped `<game>/.claude/hooks/../../libraries/wares.xml`, so a base-game file
+# spelled through a skipped directory was edited with NO backup and NO audit line.
+# The raw test is only a cheap pre-filter; the normalised path decides, so the common
+# case (no `.claude/` in the path at all) still costs no subprocess.
+shopt -s nocasematch                 # bash 3.1+; `${v,,}` would need bash 4
+case "$FILE_PATH" in
+  *.claude[/\\]*)
+    case "$(x4_norm "$FILE_PATH")" in
+      *.claude/backups/*|*.claude/hooks/*|*.claude/plans/*) exit 0 ;;
+    esac ;;
+esac
+shopt -u nocasematch
 
 # Anchor to the toolkit, NOT the cwd. _x4-env.sh resolves X4_TOOLKIT from
 # $CLAUDE_PROJECT_DIR (or the hook's own location), so backups always land in one
@@ -84,6 +101,17 @@ fi
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # Flatten path for backup filename: replace / \ : with _
 SAFE_NAME=$(echo "$FILE_PATH" | sed 's|[/\\:]|_|g' | sed 's|^_*||')
+# BOUNDED (AUDIT-2026-09-24 HK-5). The flattened name is the whole path, and a filename
+# over 255 bytes cannot be created: MEASURED with a 308-character source path, cp failed,
+# the hook ASKED, and scripts/test-hooks.sh's "backup created" probe failed whenever the
+# sandbox itself sat under a long directory. A long name keeps its TAIL -- the file name
+# and the directories nearest it, which is what a person scans the trail for -- behind a
+# checksum of the full path, so two long paths sharing a tail cannot collide. The
+# checksum costs a process only in this branch.
+if [ "${#SAFE_NAME}" -gt 180 ]; then
+  _ck="$(printf '%s' "$FILE_PATH" | cksum)"; _ck="${_ck%% *}"
+  SAFE_NAME="${_ck}~${SAFE_NAME: -150}"
+fi
 BACKUP_PATH="$BACKUP_DIR/${TIMESTAMP}__${SAFE_NAME}"
 
 AUDIT_LOG="$BACKUP_DIR/AUDIT_LOG.txt"

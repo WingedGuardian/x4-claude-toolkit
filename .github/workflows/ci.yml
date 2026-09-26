@@ -152,6 +152,14 @@ jobs:
         shell: bash
         run: python .claude/hooks/test_hook_facts.py
 
+      # The AUDIT-2026-09-24 hook tests: settings.json matcher coverage for every
+      # file-changing tool, the stdin-from-a-FILE read path, and the PowerShell
+      # front-end END TO END (JSON piped into protect-bash.sh). The PowerShell classes
+      # need pwsh, which the hosted runners ship; without one they SKIP by name.
+      - name: Hook audit tests (matcher coverage, PowerShell front-end E2E)
+        shell: bash
+        run: python .claude/hooks/test_audit0924_hooks.py
+
       - name: Hook E2E probe suite
         shell: bash
         run: bash scripts/test-hooks.sh

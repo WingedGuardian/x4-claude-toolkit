@@ -123,7 +123,7 @@ def test_empty_sequence_still_reaches_the_coverage_guard(monkeypatch, capsys):
     # here on the real on-disk fingerprint. Pin it so this test keeps testing the
     # coverage guard rather than whatever the local databases happen to be.
     _stale(monkeypatch, fresh=True)
-    rc = ask.main(["xq", "//nothing"])
+    rc = ask.main(["xq", "collection('x4raw')//nothing"])
     text = capsys.readouterr().out
     assert rc == 0 and "NEGATIVE CONFIRMED over 100 of 100" in text
 
@@ -390,7 +390,7 @@ def test_the_floor_does_not_over_fire_on_a_REAL_denominator(monkeypatch, capsys)
         "indexed": {"total": 1}, "expected": {"total": 1}, "unparseable": [],
     })
     _stale(monkeypatch, fresh=True)
-    rc = ask.main(["xq", "//nothing"])
+    rc = ask.main(["xq", "collection('x4raw')//nothing"])
     text = capsys.readouterr().out
     assert rc == 0 and "NEGATIVE CONFIRMED over 1 of 1" in text
 
@@ -488,7 +488,7 @@ def test_a_negative_over_a_tree_with_SKIPPED_OVERLAYS_is_not_called_complete(mon
             "vpaths_without_effective_tree": 2, "unparseable_overlays": 1},
     })
     _stale(monkeypatch, fresh=True)
-    ask.main(["xq", "//nothing"])
+    ask.main(["xq", "collection('x4raw')//nothing"])
     text = capsys.readouterr().out
     assert "(complete)" not in text, (
         "a tree excluding 1 unparseable overlay and 2 unbuilt vpaths was reported as "
@@ -508,7 +508,7 @@ def test_a_genuinely_complete_tree_still_says_complete(monkeypatch, capsys):
             "vpaths_without_effective_tree": 0, "unparseable_overlays": 0},
     })
     _stale(monkeypatch, fresh=True)
-    ask.main(["xq", "//nothing"])
+    ask.main(["xq", "collection('x4raw')//nothing"])
     text = capsys.readouterr().out
     assert "(complete)" in text, (
         "a tree with nothing excluded must still support the negative claim:\n%s" % text)
@@ -596,7 +596,7 @@ def test_TWIN_the_same_zero_read_from_a_query_FILE_is_confirmed(monkeypatch, cap
     _complete_zero(monkeypatch)
     monkeypatch.setenv("MSYSTEM", "MINGW64")
     q = tmp_path / "q.xq"
-    q.write_text("//nothing", encoding="utf-8")
+    q.write_text("collection('x4raw')//nothing", encoding="utf-8")
     rc = ask.main(["xq", "--file", str(q)])
     out = capsys.readouterr().out
     assert rc == 0 and "NEGATIVE CONFIRMED over 100 of 100" in out, out
@@ -604,7 +604,7 @@ def test_TWIN_the_same_zero_read_from_a_query_FILE_is_confirmed(monkeypatch, cap
 
 def test_TWIN_the_same_argv_zero_outside_Git_Bash_is_confirmed(monkeypatch, capsys):
     _complete_zero(monkeypatch)
-    rc = ask.main(["xq", "//nothing"])
+    rc = ask.main(["xq", "collection('x4raw')//nothing"])
     out = capsys.readouterr().out
     assert rc == 0 and "NEGATIVE CONFIRMED over 100 of 100" in out, out
 
@@ -667,7 +667,7 @@ def test_a_BLANK_or_COMMENT_ONLY_query_is_refused_not_confirmed(monkeypatch, cap
 def test_TWIN_a_comment_beside_a_real_expression_still_runs(monkeypatch, capsys, tmp_path):
     _complete_zero(monkeypatch)
     q = tmp_path / "q.xq"
-    q.write_text("(: why this query exists :) //nothing", encoding="utf-8")
+    q.write_text("(: why this query exists :) collection('x4raw')//nothing", encoding="utf-8")
     rc = ask.main(["xq", "--file", str(q)])
     assert rc == 0 and "NEGATIVE CONFIRMED" in capsys.readouterr().out
 
@@ -680,7 +680,7 @@ def test_a_UTF8_BOM_in_a_query_file_is_not_sent_to_BaseX(monkeypatch, capsys, tm
     inner = ask.run_xq
     monkeypatch.setattr(ask, "run_xq", lambda q: (seen.append(q), inner(q))[1])
     q = tmp_path / "bom.xq"
-    q.write_bytes(b"\xef\xbb\xbf//nothing")
+    q.write_bytes(b"\xef\xbb\xbfcollection('x4raw')//nothing")
     assert ask.main(["xq", "--file", str(q)]) == 0
     assert seen and all("\ufeff" not in s for s in seen), seen
 
@@ -744,7 +744,7 @@ def test_conversion_switched_OFF_turns_the_Git_Bash_refusal_off(monkeypatch, cap
         monkeypatch.delenv("MSYS_NO_PATHCONV", raising=False)
         monkeypatch.delenv("MSYS2_ARG_CONV_EXCL", raising=False)
         monkeypatch.setenv(var, value)
-        rc = ask.main(["xq", "//nothing"])
+        rc = ask.main(["xq", "collection('x4raw')//nothing"])
         out = capsys.readouterr().out
         assert rc == 0 and "NEGATIVE CONFIRMED" in out, (var, out)
 
