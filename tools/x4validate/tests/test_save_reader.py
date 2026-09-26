@@ -90,7 +90,7 @@ def test_patch_lists_separates_current_from_history(tmp_path):
     assert cur == [("ego_dlc_split", "900")]
     assert ("ego_dlc_ventures", "127") in hist
     assert ("ego_dlc_ventures", "127") not in cur, (
-        "an extension in <history> but not <patches> is NOT loaded now")
+        "an extension in <history> but not <patches> is absent from the save-baked set")
 
 
 # --- a run that examined nothing must never exit 0 ------------------------------
@@ -135,3 +135,20 @@ def test_reference_spanning_a_chunk_boundary_is_still_found(tmp_path, monkeypatc
     monkeypatch.setattr(_savecli, "_CHUNK", 997)      # tiny, prime, forces many splits
     refs = _savecli.extract_refs(p)
     assert len(refs) == 5000, f"lost references at chunk boundaries: {len(refs)}"
+
+
+def test_info_lists_a_history_only_extension_but_not_an_UPDATED_one(tmp_path):
+    """RT-2's twin: comparing by NAME must still surface the history-only entry.
+    `ws_1` is current at v200 and in <history> at v100 (an update, not a removal);
+    `ws_2` is in <history> only. Only ws_2 belongs in the history-only section."""
+    import io
+    p = tmp_path / "s.xml.gz"
+    _write_save(p, "<component/>",
+                patches='<patch extension="ws_1" version="200" name="A"/>\n',
+                history='<patch extension="ws_1" version="100" name="A"/>\n'
+                        '<patch extension="ws_2" version="5" name="B"/>\n')
+    buf = io.StringIO()
+    assert _savecli.cmd_info(p, out=buf) == 0
+    section = buf.getvalue().split("IN <history> ONLY", 1)[1].split("! This is NOT")[0]
+    assert "ws_2" in section, buf.getvalue()
+    assert "ws_1" not in section, buf.getvalue()

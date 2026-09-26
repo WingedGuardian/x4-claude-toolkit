@@ -15,8 +15,8 @@ installed extensions, 11 qualify and 10 were recorded (the gap is ego_dlc_ventur
 an online DLC not loaded as a content patch); of the 118 declaring "0"/"false", zero
 appeared. For MODS that is 3 of 121 (2.5%). It is the SAVE-BAKED set -- the ones
 unsafe to remove -- and it is *less* complete than the profile content.xml, which is
-itself only a decision log. `info` prints the denominator, so the list cannot be
-misread as coverage.
+itself only a decision log. `info` states that rule on every run, so the list cannot
+be misread as coverage (the counts above are this machine's; `info` prints none).
 
 WHY `check` IS WORTH HAVING. Removing a mod does not leave dangling references: the
 engine SILENTLY DELETES the orphaned content. MEASURED by disabling one mod and
@@ -103,6 +103,12 @@ def extract_refs(path: Path) -> Counter:
                     break
                 buf = tail + chunk
                 for m in _REF_RE.finditer(buf):
+                    # A match that ENDS inside the carried tail lay wholly in the
+                    # previous buffer and was counted there; only a match reaching
+                    # into the new chunk is new. Without this every reference in
+                    # the last _TAIL bytes of a chunk was counted twice (RT-3).
+                    if m.end() <= len(tail):
+                        continue
                     found[m.group(2).decode("utf-8", "replace")] += 1
                 tail = buf[-_TAIL:]
     except (OSError, EOFError, gzip.BadGzipFile) as exc:
@@ -167,19 +173,31 @@ def cmd_info(path: Path, out=None) -> int:
     for ext, v in sorted(cur):
         print(f"    {ext:24s} v{v}", file=out)
 
-    gone = [e for e in hist if e not in cur]
+    # Compared by extension NAME. As (ext, version) tuples an extension that was merely
+    # UPDATED (v100 in <history>, v200 now) landed in this list (RT-2).
+    cur_names = {ext for ext, _ in cur}
+    gone = sorted({(e, v) for e, v in hist if e not in cur_names})
     if gone:
-        print(f"\n  IN <history>, NOT loaded now ({len(gone)}) -- present at some point,",
+        # Worded as what the SAVE records, never as a load state: <patches> is the
+        # save-baked set, not what loaded (module docstring), so a history-only entry
+        # does not establish that the extension is absent from the game now. The real
+        # trigger was ego_dlc_ventures -- installed, enabled, and history-only (RT-2).
+        print(f"\n  IN <history> ONLY ({len(gone)}) -- baked into this save at some point,",
               file=out)
-        print("  absent from the live set:", file=out)
-        for ext, v in sorted(gone):
+        print("  absent from its current <patches>. That says nothing about whether the",
+              file=out)
+        print("  extension is installed or loads today:", file=out)
+        for ext, v in gone:
             print(f"    {ext:24s} v{v}", file=out)
 
-    print("\n  ! This is NOT a list of what loaded. MEASURED on this machine: it covers",
+    # No counts here: the figures this used to print (3 of 121 mods, 118 of 129
+    # extensions) were ONE machine's measurement, printed to every user as if about
+    # theirs (RT-9). The rule they illustrate is general; the numbers are not.
+    print("\n  ! This is NOT a list of what loaded. An extension appears only if its",
           file=out)
-    print('    3 of 121 installed mods (2.5%). Mods declaring save="0"/"false" -- 118',
+    print('    content.xml declares save="1" or omits the attribute; one declaring',
           file=out)
-    print("    of 129 extensions -- never appear, however much they change the game.",
+    print('    save="0"/"false" never appears, however much it changes the game.',
           file=out)
     return 0
 

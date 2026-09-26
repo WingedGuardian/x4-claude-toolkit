@@ -115,8 +115,6 @@ def test_rt1_crosscheck_keeps_the_patch_file_in_the_key():
 
 # --------------------------------------------------------------------------- RT-2
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-2: <history> vs current compared as "
-                   "(ext, version) tuples, so an UPDATED extension is listed 'NOT loaded now'")
 def test_rt2_an_updated_extension_is_not_reported_as_not_loaded(tmp_path):
     save = _write_save(tmp_path / "s.xml.gz",
                        '<patch extension="ws_1" version="200" name="A"/>'
@@ -128,9 +126,6 @@ def test_rt2_an_updated_extension_is_not_reported_as_not_loaded(tmp_path):
     assert "ws_1" not in gone.split("! This is NOT")[0], out
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-2: a history-only extension (the "
-                   "real trigger: ego_dlc_ventures) is asserted 'NOT loaded now', which "
-                   "<patches> cannot establish")
 def test_rt2_history_only_extension_is_not_asserted_unloaded(tmp_path):
     # Shape of the real autosave_03 header: 10 current patches, and ego_dlc_ventures v127 in
     # <history> only, while that DLC is installed with enabled="1" save="1".
@@ -148,8 +143,6 @@ def test_rt2_history_only_extension_is_not_asserted_unloaded(tmp_path):
 
 # --------------------------------------------------------------------------- RT-3
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-3: a reference inside the 4 KiB tail "
-                   "carried across a 4 MiB read boundary is counted twice")
 def test_rt3_reference_near_a_chunk_boundary_is_counted_once(tmp_path):
     tag = b'<component macro="m_boundary_macro"/>'
     first = b" " * (_savecli._CHUNK - 200 - len(tag)) + tag + b" " * 200
@@ -307,8 +300,6 @@ def test_rt9_with_ramp_help_does_not_repeat_the_withdrawn_reconnect_claim(capsys
     assert "does not reconnect" not in helptext
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-9: `x4save info` prints one machine's "
-                   "measured counts (3 of 121 mods, 118 of 129) to every user as if about theirs")
 def test_rt9_save_info_prints_no_machine_specific_counts(tmp_path):
     save = _write_save(tmp_path / "s.xml.gz", '<patch extension="ws_1" version="1" name="A"/>')
     buf = io.StringIO()
