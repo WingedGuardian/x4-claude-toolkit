@@ -420,8 +420,6 @@ def test_gt4_toolkit_usage_refusal_is_rc_2(tmp_path, monkeypatch, capsys):
 
 # ============================================================================ GT-5 aggregate / file-wide
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-5: cross_tool compares the HARD winner "
-                   "against every origin in the FILE, not the collided attribute's origin")
 def test_gt5_cross_tool_hard_winner_is_checked_on_the_collided_attr(tmp_path, monkeypatch, capsys):
     ct = import_gate("cross_tool", module_level=False)
     from x4validate import _compat
@@ -436,10 +434,59 @@ def test_gt5_cross_tool_hard_winner_is_checked_on_the_collided_attr(tmp_path, mo
     monkeypatch.setattr(ct._env, "extensions", lambda: tmp_path)
     monkeypatch.setattr(ct._merge, "Config", lambda *a, **k: None)
     monkeypatch.setattr(ct._compat, "analyze", lambda *a, **k: types.SimpleNamespace(collisions=[c]))
+    # The synthetic store carries no fingerprint; since GT-6 that is a stale-store
+    # refusal, which would make this test pass or fail for a reason it is not about.
+    monkeypatch.setattr(ct._env, "stale_store_refusal", lambda db, who: None)
     ct.check_cross_tool_agreement()
     assert ct.failures, ("modA is the live winner on ship_a_macro hull.max, the store says modB "
                          "owns it, and the check agreed because modA owns SOMETHING in the file:\n"
                          + capsys.readouterr().out)
+
+
+def _cross_tool_with(monkeypatch, tmp_path, db, collisions, tree=None):
+    ct = import_gate("cross_tool", module_level=False)
+    monkeypatch.setattr(ct, "failures", [])
+    monkeypatch.setattr(ct, "cannot", [])
+    monkeypatch.setattr(ct._env, "effective_db", lambda: db)
+    monkeypatch.setattr(ct._env, "extensions", lambda: tmp_path)
+    monkeypatch.setattr(ct._env, "stale_store_refusal", lambda db, who: None)
+    monkeypatch.setattr(ct._merge, "Config", lambda *a, **k: None)
+    monkeypatch.setattr(ct._merge, "build_effective",
+                        lambda vp, cfg: types.SimpleNamespace(tree=tree))
+    monkeypatch.setattr(ct._compat, "analyze",
+                        lambda *a, **k: types.SimpleNamespace(collisions=collisions))
+    ct.check_cross_tool_agreement()
+    return ct
+
+
+def test_gt5_cross_tool_positional_hard_target_resolves_to_its_entity(tmp_path, monkeypatch):
+    """x4compat emits lxml getpath targets (`/wares/ware[2]`), not name predicates. The
+    position is resolved in the effective base tree to the ware it names, and only THAT
+    ware's attrs are compared -- both directions, so the check can go red and green."""
+    from lxml import etree
+    from x4validate import _compat
+    vp = "libraries/wares.xml"
+    tree = etree.fromstring(b'<wares><ware id="ore"><price max="1"/></ware>'
+                            b'<ware id="silicon"><price max="2"/></ware></wares>')
+    db = _store(tmp_path / "e.sqlite", [("ore", vp, "price.max", "1", "modA"),
+                                        ("silicon", vp, "price.max", "9", "modB")])
+    hard = lambda w: _compat.Collision(vpath=vp, kind="HARD", target="/wares/ware[2]",  # noqa: E731
+                                       mods=["modA", "modB"], winner=w)
+    ct = _cross_tool_with(monkeypatch, tmp_path, db, [hard("modB")], tree)
+    assert not ct.failures and not ct.cannot, (ct.failures, ct.cannot)
+    ct = _cross_tool_with(monkeypatch, tmp_path, db, [hard("modA")], tree)
+    assert ct.failures, "modA owns ore, not silicon (ware[2]); file-wide it would have agreed"
+
+
+def test_gt5_cross_tool_a_kind_with_every_row_absent_is_not_0_of_0(tmp_path, monkeypatch):
+    from x4validate import _compat
+    db = _store(tmp_path / "e.sqlite", [("ore", "libraries/wares.xml", "price.max", "1", "modA")])
+    c = _compat.Collision(vpath="md/some_script.xml", kind="HARD", target="/mdscript/cues/cue",
+                          mods=["modA", "modB"], winner="modB")
+    ct = _cross_tool_with(monkeypatch, tmp_path, db, [c])
+    assert not ct.failures
+    assert any(x.startswith("HARD:") for x in ct.cannot), (
+        f"1 HARD row, 0 checkable, and it passed as 0/0: cannot={ct.cannot}")
 
 
 @pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-5: update_corpus matches `wants` against "

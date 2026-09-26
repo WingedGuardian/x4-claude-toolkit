@@ -30,7 +30,9 @@ itself found three more issues. So: what has NOTHING checked yet?
      a "read-only" SQL surface actually gets subverted.
 
 Run:  uv run python gates/cross_tool.py
-Exit: 0 all checks hold, 1 any violation.
+Exit: 0 all checks hold, 1 any violation, 2 a section could not run (no/stale
+      store, or a collision kind whose every row was uncheckable -- 0 of N is a
+      non-answer, not agreement).
 """
 from __future__ import annotations
 
@@ -167,6 +169,102 @@ def _origins(con, vpath: str, column: str) -> set[str]:
     return set()
 
 
+_STEP = re.compile(r"^([^\[\]/@]+)((?:\[[^\]]*\])*)$")
+_KEYPRED = re.compile(r"""\[@(?:name|id)=['"]([^'"]+)['"]\]""")
+
+
+def _parse_target(target: str) -> tuple[list[tuple[str, str]], str | None] | None:
+    """`/a/b[2]/c[@name='x']/@attr` -> ([(tag, predicates), ...], attr), or None."""
+    parts = [p for p in target.split("/") if p]
+    attr = None
+    if parts and parts[-1].startswith("@"):
+        attr = parts.pop()[1:]
+    steps = []
+    for part in parts:
+        m = _STEP.match(part)
+        if not m:
+            return None
+        steps.append((m.group(1), m.group(2)))
+    return (steps, attr) if steps else None
+
+
+def _entity_names(con, vpath: str) -> tuple[str, set[str]] | None:
+    """(the vpath spelling the store uses, entity names stored at it), or None."""
+    for form in _vpath_forms(vpath):
+        names = {r[0] for r in con.execute(
+            "SELECT DISTINCT name FROM entities WHERE lower(vpath) = ?", (form,))}
+        if names:
+            return form, names
+    return None
+
+
+def _hard_scope(con, c, tree_for) -> tuple[str, str, str | None] | None:
+    """Map a HARD collision to (store vpath, entity name, prop prefix) -- the COLLIDED
+    node, not the file (AUDIT-2026-09-24 GT-5). prop prefix None = the whole entity.
+
+    The entity is the nearest step at or above the target whose @name/@id names an
+    entity the store holds at this vpath. Named in the target (`[@name='x']`) it is
+    read directly; a positional target (`/wares/ware[1691]`, the shape x4compat
+    actually emits -- lxml getpath) is resolved in the effective base tree from
+    `tree_for(vpath)`. None = not mappable, counted apart and never a pass: the
+    target is the document root, an element the store does not track (md,
+    aiscripts), or a position that no longer resolves.
+    """
+    parsed = _parse_target(c.target)
+    if parsed is None:
+        return None
+    steps, attr = parsed
+    stored = _entity_names(con, c.vpath)
+    if stored is None:
+        return None
+    form, names = stored
+
+    depth = entity = None
+    for i in range(len(steps) - 1, -1, -1):            # nearest named step wins
+        m = _KEYPRED.search(steps[i][1])
+        if m and m.group(1) in names:
+            depth, entity = i, m.group(1)
+            break
+    if entity is None:
+        tree = tree_for(c.vpath)
+        if tree is None:
+            return None
+        try:
+            hits = tree.xpath("/" + "/".join(t + p for t, p in steps))
+        except Exception:                               # silent-ok: counted unmapped
+            return None
+        if len(hits) != 1:
+            return None
+        node = hits[0]
+        chain = [node, *node.iterancestors()]           # target first, root last
+        for up, el in enumerate(chain):
+            key = el.get("id") if el.get("id") in names else el.get("name")
+            if key in names:
+                depth, entity = len(steps) - 1 - up, key
+                break
+        if entity is None:
+            return None
+    rel = [t for t, _ in steps[depth + 1:]]
+    if rel[:1] == ["properties"]:
+        rel = rel[1:]                                   # the store drops `properties.`
+    if attr is not None:
+        prop = ".".join(rel) + "." + attr if rel else "@" + attr
+    else:
+        prop = ".".join(rel) or None
+    return form, entity, prop
+
+
+def _scoped_origins(con, form: str, entity: str, prop: str | None) -> set[str]:
+    """Origins of the stored attrs of *entity* at *form* under *prop* (None = all)."""
+    rows = con.execute(
+        "SELECT a.prop, a.origin FROM attrs a JOIN entities e ON a.entity_id = e.id "
+        "WHERE lower(e.vpath) = ? AND e.name = ?", (form, entity)).fetchall()
+    if prop is None:
+        return {o for _, o in rows}
+    return {o for pr, o in rows
+            if pr == prop or pr.startswith(prop + ".") or pr.startswith(prop + "[")}
+
+
 def _subtree_scope(w0: str) -> tuple[str, str | None]:
     """Map a SUBTREE target to ('file'|'node'|'unmapped', prop_prefix).
 
@@ -234,6 +332,19 @@ def check_cross_tool_agreement() -> None:
         by_kind.setdefault(c.kind, []).append(c)
 
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    config = _merge.Config()
+    trees: dict[str, object] = {}
+
+    def tree_for(vpath: str):
+        """The effective base tree x4compat's positional targets index into, built
+        once per vpath and only when a target has no name predicate."""
+        if vpath not in trees:
+            try:
+                trees[vpath] = _merge.build_effective(vpath, config).tree
+            except Exception as exc:                    # counted unmapped, and said
+                print(f"          (could not build {vpath}: {exc!r})")
+                trees[vpath] = None
+        return trees[vpath]
 
     # --- kinds where the winner supplies the live value ----------------------
     for kind, column in (("FULL-OVERRIDE", "entities"),
@@ -253,19 +364,36 @@ def check_cross_tool_agreement() -> None:
             if owner is None:
                 absent += 1
                 continue
-            origins = _origins(con, c.vpath, column)
+            where = ""
+            if kind == "HARD":
+                # The COLLIDED node's origin, never "any origin in the file": the
+                # winner owning SOMETHING else in the document is not agreement
+                # (AUDIT-2026-09-24 GT-5).
+                scope = _hard_scope(con, c, tree_for)
+                if scope is None:
+                    absent += 1      # root / untracked element / unresolvable position
+                    continue
+                form, entity, prop = scope
+                origins = _scoped_origins(con, form, entity, prop)
+                where = f" {entity}:{prop or '*'}"
+            else:
+                origins = _origins(con, c.vpath, column)
             if not origins:
-                absent += 1          # file holds no store-tracked entity kind
+                absent += 1          # nothing store-tracked at the collided scope
                 continue
             checked += 1
             if owner not in origins:
                 disagree += 1
                 if disagree <= 3:
-                    print(f"          {c.vpath}: compat live owner={owner!r}, "
+                    print(f"          {c.vpath}{where}: compat live owner={owner!r}, "
                           f"{column} origin={sorted(origins)}")
-        note(disagree == 0, f"{kind}: compat winner is the store's origin",
-             f"{checked - disagree}/{checked} agree via {column}.origin "
-             f"({absent} of {len(rows)} hold no stored entity)")
+        detail = (f"{checked - disagree}/{checked} agree via {column}.origin "
+                  f"({absent} of {len(rows)} hold no stored entity at the collided scope)")
+        if not checked:
+            # 0 of N is a non-answer: every row was unmappable, so nothing agreed.
+            not_run(f"{kind}: compat winner is the store's origin", detail)
+            continue
+        note(disagree == 0, f"{kind}: compat winner is the store's origin", detail)
 
     # --- SUBTREE: the winner is the WIPER; the VICTIM must be gone -----------
     subs = by_kind.get("SUBTREE", [])
@@ -288,9 +416,13 @@ def check_cross_tool_agreement() -> None:
             else:
                 ok += 1
         # Every row is accounted for, and the residue prints even when it is 0.
-        note(viol == 0, "SUBTREE: the wiped mod owns nothing under the wiped node",
-             f"{ok}/{ok + viol} clean - {unmapped} unmapped w0 - {absent} no stored "
-             f"entity - accounted {ok + viol + unmapped + absent}/{len(subs)}")
+        detail = (f"{ok}/{ok + viol} clean - {unmapped} unmapped w0 - {absent} no stored "
+                  f"entity - accounted {ok + viol + unmapped + absent}/{len(subs)}")
+        if ok + viol == 0:
+            not_run("SUBTREE: the wiped mod owns nothing under the wiped node", detail)
+        else:
+            note(viol == 0, "SUBTREE: the wiped mod owns nothing under the wiped node",
+                 detail)
 
     # --- NAME-CLASH: winner is deliberately empty ---------------------------
     clashes = by_kind.get("NAME-CLASH", [])
