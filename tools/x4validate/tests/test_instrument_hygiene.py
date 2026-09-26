@@ -251,3 +251,16 @@ def test_the_span_NOTE_names_the_real_reason(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "carries no command count" not in out
     assert "no Bash command since the baseline" in out
+
+
+def test_a_HALF_WRITTEN_last_line_of_a_live_transcript_is_tolerated(tmp_path, monkeypatch, capsys):
+    """Review of 87ac461: the transcript of the session RUNNING this gate is being appended
+    to, so its last line can be half-written. That is not a hole in the denominator and must
+    not flip the gate to rc 2 -- it is counted separately and printed. A broken line anywhere
+    ELSE is still unreadable (pinned by test_an_UNREADABLE_input_is_not_a_clean_verdict)."""
+    _one_command_run(tmp_path, monkeypatch, extra_lines='{"message": {"content": [{"ty')
+    assert ih.main() == 0
+    out = capsys.readouterr().out
+    assert "partial last line" in out
+    c = ih.scan(tmp_path / "t")
+    assert c.unreadable == [] and c.partial_tail == ["s.jsonl"]

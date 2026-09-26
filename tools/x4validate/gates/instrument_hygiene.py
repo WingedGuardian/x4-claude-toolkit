@@ -162,6 +162,10 @@ class Census:
     commands: int = 0
     nonzero: int = 0
     unreadable: list[str] = field(default_factory=list)
+    #: Files whose LAST line was half-written (unparseable AND not newline-terminated):
+    #: the live transcript of a running session, mid-append. Counted apart from
+    #: `unreadable` -- it is not a hole in the denominator (review of 87ac461).
+    partial_tail: list[str] = field(default_factory=list)
     counts: dict = field(default_factory=dict)
     lost_side_effects: list = field(default_factory=list)
 
@@ -182,10 +186,17 @@ def scan(tdir: Path) -> Census:
         except OSError as exc:
             c.unreadable.append(f"{f.name}: {exc}")
             continue
-        for line in text.splitlines():
+        lines = text.splitlines()
+        unterminated = bool(text) and not text.endswith(("\n", "\r"))
+        for i, line in enumerate(lines):
             try:
                 rec = json.loads(line)
             except ValueError:
+                if i == len(lines) - 1 and unterminated:
+                    # A writer mid-append, not a damaged record: only the FINAL line,
+                    # and only when no newline has terminated it yet.
+                    c.partial_tail.append(f.name)
+                    continue
                 # Recorded, never swallowed: an unparseable transcript is a hole in
                 # the denominator, and a hole nobody states is this register's theme.
                 c.unreadable.append(f"{f.name}: unparseable line")
@@ -260,6 +271,9 @@ def main() -> int:
             print(f"      {u}")
         if len(c.unreadable) > 20:
             print(f"      ... and {len(c.unreadable) - 20} more")
+    if c.partial_tail:
+        print(f"  {len(c.partial_tail)} transcript(s) end in a partial last line (a live "
+              f"session mid-write; not counted, not a hole): {', '.join(c.partial_tail[:5])}")
     print("  LOWER BOUND: counts shapes a regex can see, never a wrong population,")
     print("  a vacuous comparison, or a number transcribed instead of derived.")
     print("")
