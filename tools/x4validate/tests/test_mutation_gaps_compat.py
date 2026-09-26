@@ -104,3 +104,53 @@ def test_an_op_dead_in_the_FINISHED_tree_is_not_named_as_an_order_miss(tmp_path)
     forms give one answer."""
     rep = _world(tmp_path, [("a_patch", _PATCH_Z), ("b_add", _ADD_Z), ("c_rm", _RM_Z)])
     assert rep.order_misses == []
+
+
+# --- lane K (2026-09-26): C5 / C8 / C9 -------------------------------------------------
+
+_REP_ORE_AND_EDIT_INSIDE = (
+    '<diff><replace sel="//ware[@id=\'ore\']"><ware id="ore"><price average="7"/></ware>'
+    '</replace><replace sel="//ware[@id=\'ore\']/price/@average">8</replace></diff>')
+_EDIT_ICE = '<diff><replace sel="//ware[@id=\'ice\']/price/@average">9</replace></diff>'
+
+
+def test_a_mod_never_subtree_clobbers_itself(tmp_path):
+    """C5: one mod replacing a node AND editing inside it is its own business -- the
+    SUBTREE pass pairs DIFFERENT mods only."""
+    rep = _world(tmp_path, [("a_self", _REP_ORE_AND_EDIT_INSIDE), ("b_ice", _EDIT_ICE)])
+    assert rep.by_kind("SUBTREE") == []
+
+
+def test_candidate_mode_drops_collisions_the_candidate_is_not_in(tmp_path):
+    """C8: a and b collide on ore; the candidate only touches ice in the same file.
+    Candidate-focused output must not report the a/b collision."""
+    ref = tmp_path / "reference"
+    _w(ref / "libraries/wares.xml",
+       '<wares><ware id="ore"><price average="100"/></ware>'
+       '<ware id="ice"><price average="50"/></ware></wares>')
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_rep", _REP_ORE)
+    _mod(ext, "b_rep", _REP_ORE)
+    cand = tmp_path / "staging" / "c_ice"
+    _w(cand / "content.xml", '<content id="c_ice" name="c_ice" version="1"/>')
+    _w(cand / "libraries/wares.xml", _EDIT_ICE)
+    control = _compat.analyze(ext, config=_merge.Config(reference=ref))
+    assert _hard_on(control, ["a_rep", "b_rep"]), "control: a/b must collide"
+    rep = _compat.analyze(ext, candidate=cand, config=_merge.Config(reference=ref))
+    assert rep.files_examined == 1
+    assert [c for c in rep.collisions if "c_ice" not in c.mods] == []
+
+
+def test_a_manifest_disabled_mod_is_not_a_collision_participant(tmp_path):
+    """C9: collisions are among ACTIVE mods. b is installed but disabled in its own
+    manifest, so a's replace of ore collides with nothing."""
+    ref = tmp_path / "reference"
+    _w(ref / "libraries/wares.xml", '<wares><ware id="ore"><price average="100"/></ware></wares>')
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_rep", _REP_ORE)
+    _w(ext / "b_off/content.xml",
+       '<content id="b_off" name="b_off" version="1" enabled="0"/>')
+    _w(ext / "b_off/libraries/wares.xml", _REP_ORE)
+    rep = _compat.analyze(ext, config=_merge.Config(reference=ref))
+    assert rep.mods_scanned == 1
+    assert rep.collisions == []
