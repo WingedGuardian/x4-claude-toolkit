@@ -84,8 +84,11 @@ def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> li
          dependencies have ALREADY loaded -- including ones loaded earlier in the SAME
          pass -- loads. A mod whose dependency sorts after it therefore waits for the
          next pass; it is NOT placed right after that dependency.
-      3. A dependency on an id that is not an installed mod (a DLC, or a mod you do not
-         have) does not hold the mod back.
+      3. A dependency on an id that is not an installed mod (a DLC, or an OPTIONAL
+         dependency you do not have) does not hold the mod back here. Whether the mod
+         loads AT ALL is not this function's question: `_registry.mods("active")`
+         already excludes a mod whose REQUIRED dependency is missing, disabled or
+         cyclic (MEASURED 2026-09-26, the load-order probe), and records why.
 
     Evidence: the "Failed to verify the file signature" sequence for every file path two
     or more mods ship. Fitted on the t-file class (72 extensions, 72/72 exact), then
@@ -94,10 +97,13 @@ def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> li
     community convention X4_Customizer also implements -- inverted 685 of them.
     `gates/load_order_oracle.py` re-checks this against every new log.
 
-    NOT yet measured (the load-order probe, scripts/load-order-probe.py, settles them):
-    a REQUIRED dependency that is missing, dependency cycles, duplicate ids, non-ASCII
-    names. Until then a cycle falls back to the sort order and is RECORDED, and a
-    duplicate id is RECORDED -- never silently resolved.
+    MEASURED 2026-09-26 by the in-game load-order probe (scripts/load-order-probe.py):
+    a missing REQUIRED dependency and a dependency CYCLE both mean the mod does not
+    load, and two folders sharing an id BOTH load. So an "active"-scope caller never
+    reaches the cycle branch below -- `_registry.mods("active")` has already removed
+    the cycle. It stays as a SAFETY NET for "installed"-scope callers (modelling a mod
+    before it is switched on): there the rest follow the sort order and the
+    assumption is RECORDED. A duplicate id is RECORDED too -- never silently resolved.
 
     *mods* are entries from `_registry.mods(...)`. Pass *dropped* to receive every
     manifest or shape that made the order an assumption rather than a measurement.
@@ -162,9 +168,11 @@ def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> li
             resolved.add(f)                  # visible to mods LATER in this same pass
             loaded_this_pass = True
         if not loaded_this_pass:
-            # A pass that loads nothing: the rest wait on each other (a cycle). How the
-            # engine resolves that is NOT yet measured, so the rest follow the sort
-            # order and the assumption is RECORDED -- it can change a collision winner.
+            # A pass that loads nothing: the rest wait on each other (a cycle). The
+            # ENGINE loads none of them (MEASURED 2026-09-26, load-order probe), and
+            # mods("active") has already dropped them; reaching here means an
+            # "installed"-scope caller. The rest follow the sort order and the
+            # assumption is RECORDED -- it can change a collision winner.
             rest = [f for f in walk if f not in resolved]
             if dropped is not None:
                 dropped.append(

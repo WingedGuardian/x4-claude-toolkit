@@ -318,6 +318,13 @@ def mods(scope: str, dirs: list[Path] | None = None,
     # criticals. MEASURED 2026-09-08: 0 of 125 installed mods drop today on both
     # scopes, so the cost is currently zero -- which is exactly where a wrong
     # denominator hides (CLAUDE.md #23). Registered as a blind spot with that number.
+    #
+    # The same channel now carries a second kind of exclusion: a mod the ENGINE will
+    # not load because a REQUIRED dependency is missing, disabled or cyclic (see
+    # `_active_filter`). That exclusion is correct, and it is exactly as silent as the
+    # parse drop at every "active" caller that passes no `dropped` -- MEASURED
+    # 2026-09-26: none of the 14 `mods("active")` call sites under x4validate/ and
+    # gates/ passes one, and 0 of 125 installed mods are excluded by the rule today.
     installed = scan_installed(dirs, dropped=dropped)
     if scope == "installed":
         return installed
