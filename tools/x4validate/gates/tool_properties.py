@@ -628,6 +628,25 @@ def check_store_key_uniqueness() -> None:
              f"{got} (pinned {want}){hint}")
 
 
+def _manifest_candidates() -> list[Path]:
+    """Where the BaseX x4eff effective-manifest.json may live, in preference order: the
+    tree holding this file, then $X4_TOOLKIT's. A function so a test can point the gate
+    at a stub without depending on whether THIS tree has built its databases."""
+    candidates = [
+        Path(__file__).resolve().parent.parent.parent / "basex" / "_eff"
+        / "effective-manifest.json",
+    ]
+    # `_paths.path_value`, NOT os.environ -- the config file is a LAYER, and
+    # tests/test_env_resolution_is_delegated.py enforces that every module goes
+    # through the same door. My first version read the environment directly and that
+    # test caught it, which is the point of having it.
+    tk = _paths.path_value("X4_TOOLKIT")
+    if tk:
+        candidates.append(Path(tk) / "tools" / "basex" / "_eff"
+                          / "effective-manifest.json")
+    return candidates
+
+
 def check_mod_scope_agreement() -> None:
     """The store and x4eff must model the SAME world, and say which world it is.
 
@@ -661,18 +680,7 @@ def check_mod_scope_agreement() -> None:
     # PRE-ARC (fe09e99, v2.4.0). Registered as BLIND-SPOTS F105's shape: when two
     # copies of one tool exist, a path derived from THIS file's location picks the
     # copy that happens to hold this file, which is not the copy that does the work.
-    candidates = [
-        Path(__file__).resolve().parent.parent.parent / "basex" / "_eff"
-        / "effective-manifest.json",
-    ]
-    # `_paths.path_value`, NOT os.environ -- the config file is a LAYER, and
-    # tests/test_env_resolution_is_delegated.py enforces that every module goes
-    # through the same door. My first version read the environment directly and that
-    # test caught it, which is the point of having it.
-    tk = _paths.path_value("X4_TOOLKIT")
-    if tk:
-        candidates.append(Path(tk) / "tools" / "basex" / "_eff"
-                          / "effective-manifest.json")
+    candidates = _manifest_candidates()
     manifest = next((c for c in candidates if c.is_file()), candidates[0])
 
     if store_path is None or not Path(store_path).is_file():

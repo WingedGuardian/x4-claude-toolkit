@@ -382,9 +382,9 @@ def test_F139_gate_tool_properties_discloses(gate_env, monkeypatch, capsys):
     man.parent.mkdir(parents=True)
     man.write_text(json.dumps({"overlays_in_load_order": ["AAA"]}), encoding="utf-8")
     monkeypatch.setattr(_effective, "DB_PATH", store)
-    monkeypatch.setattr(g._paths, "path_value", lambda k: str(tk) if k == "X4_TOOLKIT" else None)
-    shipped = GATES.parent.parent / "basex" / "_eff" / "effective-manifest.json"
-    assert not shipped.is_file(), "a built manifest in this tree would shadow the stub"
+    # Point the gate at the stub ONLY: the tree running this test may hold a real,
+    # built manifest (master does), which the gate would otherwise prefer.
+    monkeypatch.setattr(g, "_manifest_candidates", lambda: [man])
     g.check_mod_scope_agreement()
     assert _names_needy(_both(capsys))
 

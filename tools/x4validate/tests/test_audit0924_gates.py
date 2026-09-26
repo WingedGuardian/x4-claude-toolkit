@@ -118,7 +118,9 @@ def test_bx5_the_scope_refusal_only_advises_a_db_argparse_accepts(ask, capsys):
     ("db:get('x4eff')//nosuch", "x4eff"),
     ('fn:collection( "x4eff" )//nosuch', "x4eff"),
     ("(: doc('x4eff/a.xml') :) collection('x4eff')//nosuch", "x4eff"),   # a comment is no address
-    ("collection('x4raw')//*[db:path(.) = 'x']", "x4raw"),               # db:path takes a NODE
+    # db:path takes a NODE, so it is no database ADDRESS -- but COMPARED in a predicate it
+    # narrows the scope to one document, so that shape is now refused (below), 2026-09-26.
+    ("collection('x4raw')//*[@id = db:node-id(.)]", "x4raw"),
 ])
 def test_bx1_TWIN_a_whole_database_zero_is_still_confirmed(ask, capsys, query, db):
     ask._fake([])
@@ -134,6 +136,9 @@ def test_bx1_TWIN_a_whole_database_zero_is_still_confirmed(ask, capsys, query, d
     "collection('x4' || 'eff')//nosuch",
     "db:get-id('x4eff', 5)",
     "collection()//nosuch",
+    # was a whole-database TWIN until 2026-09-26: it addresses only the document at path
+    # 'x', and a zero over it certified "N of N" -- the overstated-denominator shape.
+    "collection('x4raw')//*[db:path(.) = 'x']",
 ])
 def test_bx1_every_partial_or_unreadable_address_is_refused(ask, capsys, query):
     ask._fake([])
