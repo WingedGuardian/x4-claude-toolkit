@@ -713,3 +713,66 @@ def test_an_earlier_remove_is_NAMED_as_what_is_live(tmp_path):
     hard = _compat.analyze(ext, config=cfg).by_kind("HARD")
     assert len(hard) == 1 and hard[0].live_value_owner() == "a_mod"
     assert "match nothing" in hard[0].detail and "'b_mod'" in hard[0].detail
+
+
+# --- AN-10: a selector that only a LATER mod's add can satisfy -----------------
+#
+# Every mod's sel= resolves against the UNPATCHED base, so a patch on a node that
+# another mod ADDS matched nothing there and contributed no target: x4compat said
+# "No collisions" while the engine -- which applies the patch BEFORE the later mod
+# adds the node -- skips it. It must be disclosed, never silent.
+
+_ADDS_ZWARE = ('<diff><add sel="/wares"><ware id="zware"><price average="100"/></ware>'
+               '</add></diff>')
+_PATCHES_ZWARE = ('<diff><replace sel="//ware[@id=\'zware\']/price/@average">5</replace>'
+                  '</diff>')
+
+
+def test_a_patch_on_a_node_a_LATER_mod_adds_is_disclosed(tmp_path, capsys):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_patcher", {"libraries/wares.xml": _PATCHES_ZWARE})
+    _mod(ext, "z_adder", {"libraries/wares.xml": _ADDS_ZWARE})
+    rep = _compat.analyze(ext, config=cfg)
+    assert [(m.mod, m.added_by) for m in rep.order_misses] == [("a_patcher", "z_adder")]
+    out = _compat.render(rep)
+    assert "a_patcher" in out and "z_adder" in out
+    assert not any(ln.startswith("No HARD") and "see" not in ln for ln in out.splitlines()), out
+
+
+def test_a_patch_on_a_node_an_EARLIER_mod_adds_is_not_a_miss(tmp_path):
+    """The twin: the engine has the node by then, so nothing is skipped."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_adder", {"libraries/wares.xml": _ADDS_ZWARE})
+    _mod(ext, "z_patcher", {"libraries/wares.xml": _PATCHES_ZWARE})
+    assert _compat.analyze(ext, config=cfg).order_misses == []
+
+
+def test_a_patch_on_a_node_its_OWN_mod_adds_is_not_a_miss(tmp_path):
+    """The other twin: a mod patching what it adds itself depends on no one."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_self", {"libraries/wares.xml":
+         _ADDS_ZWARE.replace("</diff>", "") + _PATCHES_ZWARE.replace("<diff>", "")})
+    _mod(ext, "z_other", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ore\']/price/@average">1</replace></diff>'})
+    assert _compat.analyze(ext, config=cfg).order_misses == []
+
+
+def test_the_adder_is_NAMED_among_several_later_mods(tmp_path):
+    """Exercises the bisection: the adder is neither the first nor the last later mod,
+    and the others on the file touch something else."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    other = '<diff><replace sel="//ware[@id=\'ice\']/price/@average">{v}</replace></diff>'
+    _mod(ext, "a_patcher", {"libraries/wares.xml": _PATCHES_ZWARE})
+    _mod(ext, "b_other", {"libraries/wares.xml": other.format(v=1)})
+    _mod(ext, "c_other", {"libraries/wares.xml": other.format(v=2)})
+    _mod(ext, "d_adder", {"libraries/wares.xml": _ADDS_ZWARE})
+    _mod(ext, "e_other", {"libraries/wares.xml": other.format(v=3)})
+    rep = _compat.analyze(ext, config=cfg)
+    assert [(m.mod, m.added_by) for m in rep.order_misses] == [("a_patcher", "d_adder")]
+    # candidate mode keeps it only when the candidate is one of the two mods
+    assert _compat.analyze(ext, candidate=ext / "d_adder", config=cfg).order_misses
+    assert not _compat.analyze(ext, candidate=ext / "c_other", config=cfg).order_misses

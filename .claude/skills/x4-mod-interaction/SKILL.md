@@ -23,7 +23,9 @@ Run tools via uv from the tool dir:
    `gates/load_order_oracle.py`). An existing folder PATH is the copy analysed -- a
    same-named enabled copy is left out, so a staged update is checked as itself -- while a
    bare NAME means the copy in the extensions dir; the output's `Candidate analysed:` line
-   names which. **Zero hard
+   names which. A separate section, PATCHES A NODE ONLY A LATER MOD ADDS, lists `<diff>` ops
+   whose target exists only once a mod loading AFTER them has run -- the engine skips those
+   ops, so the mod silently changes less than it says. **Zero hard
    collisions is common and means "no structural clash" — NOT "no interaction" (see step 2).**
 
 2. **Behavioral — `x4xref`** (build once with `x4xref build`, then query). The conflicts that
