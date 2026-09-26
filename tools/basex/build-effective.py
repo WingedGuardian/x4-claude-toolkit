@@ -39,10 +39,9 @@ from x4validate import _cat, _compat, _effective, _merge, _modfiles, _registry
 def installed_in_load_order() -> list[Path]:
     """Installed extension roots, in the order X4 applies them.
 
-    Uses _compat.compute_load_order (Kahn topological sort, dependencies forced
-    earlier, alphabetical tiebreak) rather than a plain sort — the same ordering
-    x4validate's Tier B uses. Community convention, not engine-verified: any
-    ordering-dependent result from x4eff is advisory to exactly that degree.
+    Uses _compat.compute_load_order -- the engine's MEASURED order (case-insensitive
+    folder order, dependencies in repeated passes), the same ordering x4validate's Tier B
+    uses and gates/load_order_oracle.py re-checks against the engine's own log.
     """
     # ACTIVE: x4eff answers "what does the ENGINE SEE". Built from the on-disk
     # set it carried a disabled mod's 19 files as live content -- and unlike a

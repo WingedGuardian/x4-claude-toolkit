@@ -155,7 +155,6 @@ def test_sibling_text_survives_remove_and_replace(op, want):
 
 # --- LO-6: DLC order ---------------------------------------------------------
 
-@_xf("LO-6", "dlc_dirs appends packed DLC after unpacked ones instead of one load-order sort")
 def test_dlc_dirs_orders_packed_and_unpacked_dlc_by_one_rule(tmp_path, monkeypatch):
     ref = tmp_path / "reference"
     (ref / "extensions" / "ego_dlc_zed").mkdir(parents=True)

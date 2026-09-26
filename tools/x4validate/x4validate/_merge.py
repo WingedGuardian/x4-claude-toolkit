@@ -24,7 +24,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _paths
+from x4validate import _cat, _loadorder, _paths
 from x4validate._provenance import Origin, Recorder
 
 # --- Workspace defaults (overridable via Config / --reference / $X4_REFERENCE) ---
@@ -180,10 +180,13 @@ class Config:
         game_ext = GAME_ROOT / "extensions"
         if not game_ext.is_dir():
             return dirs
-        packed = sorted(p for p in game_ext.iterdir()
-                        if p.is_dir() and p.name.startswith("ego_dlc_")
-                        and p.name.lower() not in have and _cat.is_packed(p))
-        return dirs + packed
+        packed = [p for p in game_ext.iterdir()
+                  if p.is_dir() and p.name.startswith("ego_dlc_")
+                  and p.name.lower() not in have and _cat.is_packed(p)]
+        # ONE order across both kinds (AUDIT-2026-09-24 LO-6): packed DLC used to be
+        # appended AFTER every unpacked one whatever their names, a second ordering rule
+        # beside the load order. The engine's folder key is used for both.
+        return sorted(dirs + packed, key=lambda p: _loadorder.sort_key(p.name))
 
     def packed_dlc_names(self) -> set[str]:
         """Lowercased names of DLC that exist only PACKED, outside reference/.

@@ -18,7 +18,9 @@ Run tools via uv from the tool dir:
    replaced/removed → one silently wins), UNION-KEY (two mods define the same ware/macro id),
    FULL-OVERRIDE (same asset file), SOFT (benign coexisting adds). Non-union file/node overlaps
    only; union dirs (t/, libraries/, index/) are handled semantically. Winner is by load order
-   (alphabetical + dependency-first; community-reported, note the caveat). **Zero hard
+   (case-insensitive folder order, `_` sorting after letters, dependencies loaded in repeated
+   passes -- MEASURED against the engine's own log, and re-checked by
+   `gates/load_order_oracle.py`). **Zero hard
    collisions is common and means "no structural clash" — NOT "no interaction" (see step 2).**
 
 2. **Behavioral — `x4xref`** (build once with `x4xref build`, then query). The conflicts that
@@ -64,7 +66,7 @@ sequences two same-tick reactions is a playtest. Cite `file:line` from x4xref/x4
 user can jump to the source.
 
 ## Honest limits
-- Load order among mutually-independent mods is alphabetical (community-reported, undocumented).
+- Load order is MEASURED for the shapes an installed modlist shows (case-insensitive folder order, `_` after letters, dependencies in repeated passes). Missing REQUIRED dependencies, cycles and non-ASCII folder names are still unmeasured; the tools record those as assumptions rather than resolving them silently.
 - Behavioral coverage is only as good as the hooks you feed x4xref — a mod can interact via Lua
   or engine features that leave no MD/aiscript token (e.g. a mod that disables an engine
   feature another depends on; the *effect* is inferable but the race is a playtest).

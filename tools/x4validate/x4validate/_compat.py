@@ -14,9 +14,9 @@ actual merge semantics:
   ``<add>``-ing under the same parent is SOFT (they coexist).
 - Two non-diff full files at the same non-union path FULL-OVERRIDE (later clobbers).
 
-Load order (who wins): X4 loads extensions alphabetically by folder, with a mod's
-declared ``content.xml`` dependencies forced earlier. That order is community-reported
-(not officially documented), so winners are stated with that caveat.
+Load order (who wins): the engine's MEASURED order -- case-insensitive folder order,
+dependencies loaded in repeated passes (see `_loadorder.compute_load_order` and
+`gates/load_order_oracle.py`). Later loads win.
 """
 
 from __future__ import annotations
@@ -741,7 +741,8 @@ _KIND_ORDER = ["HARD", "FULL-OVERRIDE", "SUBTREE", "NAME-CLASH", "UNION-KEY", "S
 def render(report: CompatReport, show_soft: bool = False) -> str:
     lines = [
         f"x4compat: {report.mods_scanned} mods, {report.files_examined} shared files examined.",
-        "Load order (winner = last): community-reported alphabetical + dependency-first.\n",
+        "Load order (winner = last): the engine's measured order (case-insensitive folders, "
+        "dependencies in passes).\n",
     ]
     shown_any = False
     for kind in _KIND_ORDER:

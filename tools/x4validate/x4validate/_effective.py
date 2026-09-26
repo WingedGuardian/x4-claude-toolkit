@@ -13,8 +13,9 @@ Design notes:
   overlay full-overrides when reference has no base), so one call path serves both.
 - ``touchers`` per vpath are precomputed once, so each merge is passed only the
   mods that actually carry the file (not all ~90) — same result, ~90x fewer stats.
-- Provenance is advisory: load order = _compat.compute_load_order (community-standard
-  topo sort, not engine-verified).
+- Provenance follows the engine's MEASURED load order (_compat.compute_load_order:
+  case-insensitive folder order, dependencies in repeated passes; checked against the
+  engine's own log by gates/load_order_oracle.py).
 """
 
 from __future__ import annotations
@@ -58,8 +59,8 @@ def effective_db() -> Path | None:
 DB_PATH: Path | None = effective_db()
 
 SCHEMA_VERSION = 1
-_ADVISORY = ("winner reflects community-standard load order "
-             "(alphabetical + dependency-first), not engine-verified")
+_ADVISORY = ("winner reflects the engine's measured load order (case-insensitive "
+             "folders, dependencies in passes); cycles and missing dependencies are assumptions")
 
 
 def _count_line(shown: int, total: int, noun: str) -> str:

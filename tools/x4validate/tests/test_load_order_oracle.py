@@ -99,14 +99,10 @@ def _order(tmp_path, spec):
     return _loadorder.compute_load_order(_mods(tmp_path, spec))
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 LO-1: engine compares folder "
-                   "names case-insensitively; the code sorts ASCII")
 def test_LO1_folder_names_compare_case_insensitively(tmp_path):
     assert _order(tmp_path, {"Zeta": [], "alpha": []}) == ["alpha", "Zeta"]
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 LO-1: engine sorts '_' AFTER "
-                   "letters (uppercase compare); the code sorts it before")
 def test_LO1_underscore_sorts_after_letters(tmp_path):
     assert _order(tmp_path, {"s_combat": [], "station": []}) == ["station", "s_combat"]
 
@@ -116,9 +112,6 @@ def test_LO1_space_sorts_before_underscore(tmp_path):
     assert _order(tmp_path, {"ship_v": [], "ship ai": []}) == ["ship ai", "ship_v"]
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 LO-1: a mod whose dependency "
-                   "sorts AFTER it waits for the NEXT pass; the code places it right "
-                   "after the dependency (Kahn)")
 def test_LO1_unmet_dependency_waits_for_the_next_pass(tmp_path):
     # pass 1: a skipped (c not loaded yet), b, c, d  -- pass 2: a
     assert _order(tmp_path, {"a": ["c"], "b": [], "c": [], "d": []}) == ["b", "c", "d", "a"]

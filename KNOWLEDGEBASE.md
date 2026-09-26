@@ -289,9 +289,16 @@ effective-tree diffing, or semantic comparison (survey 2026-07-05: closest is x4
   peer comparison. Weapon DPS spans weapon+bullet macro pair — reports one file + its
   `<bullet class=>` ref; chase the peer manually for full DPS.
 
-**Load order (who-wins) is derivable** (community-reported, not officially documented): X4 loads
-extensions **alphabetically by folder**, later overrides earlier, with `content.xml` `<dependency>`
-entries forced earlier. `_compat.compute_load_order` = Kahn topo-sort with alphabetical tiebreak.
+**Load order (who-wins) is MEASURED** (2026-09-24; no official spec exists -- Egosoft documents
+dependencies, not order, and community tools implement a guess): X4 walks extension folders in
+**case-insensitive UPPERCASE order** (`_` sorts AFTER letters, a space before `_`; lowercase order
+is wrong), in **repeated passes**: each pass loads every mod whose installed dependencies have
+already loaded, including ones loaded earlier in the same pass, so a mod whose dependency sorts
+after it waits for the NEXT pass. Later loads win. Evidence: the "Failed to verify the file
+signature" sequence per file path in `debug.txt` -- 372 file classes / 5,134 ordered pairs over
+two launches, 0 inverted by this rule; the previous "alphabetical + dependencies forced earlier"
+(Kahn) model inverted 685. `_loadorder.compute_load_order` implements it and
+`gates/load_order_oracle.py` re-checks it against every new log.
 
 - **`x4similar`** (`_similarity.py`) — advisory fuzzy same-ship detection. Extracts a numeric
   vector per ship macro (hull/crew/cargo/handling), hard-filters by macro `class` (`ship_xs/s/m/l/xl`)

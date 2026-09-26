@@ -431,8 +431,8 @@ def tier_b_trees(mod_dir: Path, report: Report | None = None) -> TierB:
     a dev folder is usually also deployed under extensions\\ and would otherwise
     be merged in twice (its own ops pre-applied, masking real misses).
 
-    Load order here is the community-reported convention (alphabetical,
-    dependencies first) — advisory, not engine-verified.
+    Load order here is the engine's MEASURED rule (`_loadorder.compute_load_order`:
+    case-insensitive folder order, dependencies in repeated passes).
     """
     notes: list[str] = []
 
@@ -465,6 +465,17 @@ def tier_b_trees(mod_dir: Path, report: Report | None = None) -> TierB:
 
     folder, mod_id = _mod_identity(mod_dir, report)
     by_folder = {m["folder"]: m for m in mods}
+    installed = any(m["folder"] == folder or (mod_id and m["id"] == mod_id) for m in mods)
+    if not installed and folder:
+        # NOT INSTALLED (a dev copy): place it where the engine WOULD load it -- by the
+        # same folder key and dependency passes as every installed mod, reading its own
+        # manifest's dependencies (AUDIT-2026-09-24 LO-6, the rule x4compat already
+        # applies to a candidate). It used to be assumed to load LAST: the optimistic
+        # tree, in which a selector aimed at a node a later-loading mod adds reads OK
+        # here and is SKIPPED by the engine.
+        mods = list(mods) + [{"folder": folder, "id": mod_id or folder,
+                              "path": str(mod_dir)}]
+        by_folder[folder] = mods[-1]
     order = _compat.compute_load_order(mods)
 
     dirs: list[Path] = []       # patch-time: up to the mod's own position
@@ -489,9 +500,15 @@ def tier_b_trees(mod_dir: Path, report: Report | None = None) -> TierB:
     if placed:
         notes.append(
             f"Tier B: merged {len(dirs)} extension(s) that load BEFORE this mod "
-            f"(of {len(order)} installed) — the tree its selectors actually see")
-        notes.append(f"Tier B: excluded the mod under test's installed copy '{skipped}' "
-                     "and everything loading after it")
+            f"(of {len(order) - (0 if installed else 1)} installed) — the tree its "
+            "selectors actually see")
+        if installed:
+            notes.append(f"Tier B: excluded the mod under test's installed copy '{skipped}' "
+                         "and everything loading after it")
+        else:
+            notes.append("Tier B: this mod is NOT installed; it was placed where the engine "
+                         "would load it (folder order + its manifest's dependencies) and "
+                         "everything loading after that position was excluded")
         if len(final_dirs) > len(dirs):
             notes.append(
                 f"Tier B: reference/connection checks additionally see the {len(final_dirs) - len(dirs)} "
@@ -504,8 +521,8 @@ def tier_b_trees(mod_dir: Path, report: Report | None = None) -> TierB:
             "installed, so its load-order position is unknown and it is assumed to load "
             "LAST. Ops targeting nodes added by a mod that really loads later would be "
             "reported OK here but SKIPPED by the engine; deploy it to place it exactly")
-    notes.append("Tier B: load order is the community-reported convention "
-                 "(dependencies first, then alphabetical) — advisory, not engine-verified")
+    notes.append("Tier B: load order follows the engine's MEASURED rule (case-insensitive "
+                 "folder order, dependencies in repeated passes; see gates/load_order_oracle.py)")
     return TierB(tuple(dirs), tuple(final_dirs), notes)
 
 

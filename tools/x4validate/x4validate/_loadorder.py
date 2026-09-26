@@ -55,15 +55,34 @@ def mod_deps(mod_path: Path, dropped: list[str] | None = None) -> tuple[str, lis
 
 
 def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> list[str]:
-    """Order mod FOLDERS as X4 loads them: alphabetical, dependencies forced earlier.
+    """Order mod FOLDERS as the X4 engine loads them. MEASURED, not assumed.
 
-    Kahn topological sort with an alphabetical tiebreak on the ready set, so the
-    result is deterministic and matches "alphabetical unless a dependency requires
-    otherwise". *mods* are entries from `_registry.scan_installed()`.
+    THE RULE (AUDIT-2026-09-24 LO-1, measured on the engine's own debug.txt):
 
-    Pass *dropped* to receive manifests whose dependencies could not be read --
-    those mods fall back to alphabetical placement, which can silently change who
-    wins a collision. See `mod_deps`.
+      1. Folders are walked in case-insensitive UPPERCASE order -- `_` sorts AFTER the
+         letters (it is 0x5F, above 'Z'), a space before `_`. Lowercase order is WRONG
+         (it would put `s_combat` before `station`).
+      2. Repeated passes over that order. In each pass every mod whose INSTALLED
+         dependencies have ALREADY loaded -- including ones loaded earlier in the SAME
+         pass -- loads. A mod whose dependency sorts after it therefore waits for the
+         next pass; it is NOT placed right after that dependency.
+      3. A dependency on an id that is not an installed mod (a DLC, or a mod you do not
+         have) does not hold the mod back.
+
+    Evidence: the "Failed to verify the file signature" sequence for every file path two
+    or more mods ship. Fitted on the t-file class (72 extensions, 72/72 exact), then
+    scored on 372 classes / 5,134 ordered pairs across two launches two weeks apart:
+    0 inverted. The previous algorithm -- an ASCII sort with Kahn placement, the
+    community convention X4_Customizer also implements -- inverted 685 of them.
+    `gates/load_order_oracle.py` re-checks this against every new log.
+
+    NOT yet measured (the load-order probe, scripts/load-order-probe.py, settles them):
+    a REQUIRED dependency that is missing, dependency cycles, duplicate ids, non-ASCII
+    names. Until then a cycle falls back to the sort order and is RECORDED, and a
+    duplicate id is RECORDED -- never silently resolved.
+
+    *mods* are entries from `_registry.mods(...)`. Pass *dropped* to receive every
+    manifest or shape that made the order an assumption rather than a measurement.
     """
     folders = [m["folder"] for m in mods]
     # A REPEATED FOLDER COLLAPSES SILENTLY, AND IT TAKES THE MOD WITH IT.
@@ -113,22 +132,38 @@ def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> li
             if dep_folder and dep_folder != folder:
                 incoming[folder].add(dep_folder)
 
+    walk = sorted(dict.fromkeys(folders), key=sort_key)
     ordered: list[str] = []
     resolved: set[str] = set()
-    remaining = set(folders)
-    while remaining:
-        ready = sorted(f for f in remaining if incoming[f] <= resolved)
-        if not ready:  # dependency cycle -- fall back to alphabetical for the rest
-            # RECORDED: the fallback silently changes who wins a collision. The
-            # docstring already says so; nothing said it at the moment it happened.
+    while len(ordered) < len(walk):
+        loaded_this_pass = False
+        for f in walk:
+            if f in resolved or not incoming[f] <= resolved:
+                continue
+            ordered.append(f)
+            resolved.add(f)                  # visible to mods LATER in this same pass
+            loaded_this_pass = True
+        if not loaded_this_pass:
+            # A pass that loads nothing: the rest wait on each other (a cycle). How the
+            # engine resolves that is NOT yet measured, so the rest follow the sort
+            # order and the assumption is RECORDED -- it can change a collision winner.
+            rest = [f for f in walk if f not in resolved]
             if dropped is not None:
                 dropped.append(
-                    "dependency cycle among %d mod(s) (%s); their load order falls "
-                    "back to ALPHABETICAL, which can change which mod wins a "
-                    "collision" % (len(remaining), ", ".join(sorted(remaining)[:5])))
-            ready = sorted(remaining)
-        nxt = ready[0]
-        ordered.append(nxt)
-        resolved.add(nxt)
-        remaining.discard(nxt)
+                    "dependency cycle among %d mod(s) (%s); their load order falls back "
+                    "to the folder sort order, an UNMEASURED assumption that can change "
+                    "which mod wins a collision" % (len(rest), ", ".join(rest[:5])))
+            ordered.extend(rest)
+            break
     return ordered
+
+
+def sort_key(folder: str) -> str:
+    """The engine's folder order: case-insensitive, compared in UPPERCASE.
+
+    Per CHARACTER, not `str.upper()` on the whole name: `str.upper()` maps a sharp s to
+    'SS' and so changes the key's length and order. Whether the engine keeps ß as one
+    character (as NTFS's own directory order does) is what the load-order probe's
+    non-ASCII case measures; on ASCII names the two agree.
+    """
+    return "".join(c.upper() if len(c.upper()) == 1 else c for c in folder)

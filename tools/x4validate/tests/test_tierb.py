@@ -208,9 +208,12 @@ def test_tier_b_truncates_at_mod_load_order_position(tmp_path, monkeypatch):
     assert any("load BEFORE this mod" in n for n in notes)
 
 
-def test_tier_b_uninstalled_mod_says_it_assumes_last(tmp_path, monkeypatch):
-    """A dev-only mod has no knowable position. Falling back to 'last' is the
-    optimistic tree, so the note must SAY so rather than imply the tree is exact."""
+def test_tier_b_uninstalled_mod_is_placed_where_the_engine_would_load_it(tmp_path, monkeypatch):
+    """AUDIT-2026-09-24 LO-6 (decision): a dev-only mod is placed by the MEASURED rule --
+    folder order + its own manifest's dependencies -- not assumed LAST. 'Last' was the
+    optimistic tree: a selector aimed at a node a later mod adds read OK and was skipped
+    by the engine. `never_deployed` sorts between the two, so only `aaa_earlier` is
+    visible to its selectors."""
     installed = tmp_path / "extensions"
     for name in ("aaa_earlier", "zzz_later"):
         _write(installed / name / "content.xml", f'<content id="{name}_id"/>')
@@ -220,8 +223,24 @@ def test_tier_b_uninstalled_mod_says_it_assumes_last(tmp_path, monkeypatch):
     monkeypatch.setattr("x4validate._registry.default_installed_dirs", lambda: [installed])
 
     overlays, notes = _check.tier_b_overlays(dev)
-    assert len(overlays) == 2, "unknown position -> assume last, merge everything"
-    assert any("NOT installed" in n and "assumed to load LAST" in n for n in notes)
+    assert [p.name for p in overlays] == ["aaa_earlier"]
+    assert any("NOT installed" in n and "where the engine would load it" in n for n in notes)
+
+
+def test_tier_b_uninstalled_mod_waits_for_a_dependency_that_sorts_later(tmp_path, monkeypatch):
+    """The twin: the same dev mod DEPENDING on `zzz_later` loads after it (next pass), so
+    both installed mods are visible to its selectors."""
+    installed = tmp_path / "extensions"
+    for name in ("aaa_earlier", "zzz_later"):
+        _write(installed / name / "content.xml", f'<content id="{name}_id"/>')
+    dev = tmp_path / "dev" / "never_deployed"
+    _write(dev / "content.xml",
+           '<content id="never_deployed_id"><dependency id="zzz_later_id"/></content>')
+
+    monkeypatch.setattr("x4validate._registry.default_installed_dirs", lambda: [installed])
+
+    overlays, _notes = _check.tier_b_overlays(dev)
+    assert [p.name for p in overlays] == ["aaa_earlier", "zzz_later"]
 
 
 def test_op_targeting_a_later_mods_node_fails_like_the_engine(tmp_path, monkeypatch):
