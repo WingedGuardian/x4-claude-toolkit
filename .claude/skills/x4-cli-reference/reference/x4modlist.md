@@ -13,8 +13,9 @@ positional arguments:
     ingest              scan installed extension folders (PRIMARY) into the registry, cross-
                         checked against the profile content.xml
     refresh             refresh upstream metadata via Nexus/Steam API, and say which mods have an
-                        update: upstream's newest MAIN file uploaded after the installed
-                        manifest's date (both dates printed)
+                        update: upstream's newest MAIN file uploaded more than 3 days after the
+                        installed manifest's date (both dates printed); an upload within that
+                        window reads same-release?, not available
     dashboard           regenerate WORKLIST.md from the registry
     needs-review        list entries needing a spot-check decision
     resolve             pin a mod's Nexus identity permanently (+fetch)
