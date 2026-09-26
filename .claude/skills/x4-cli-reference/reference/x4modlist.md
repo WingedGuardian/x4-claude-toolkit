@@ -58,7 +58,8 @@ usage: x4modlist refresh [-h] [--ids IDS] [--seeded] [--limit LIMIT] [--force] [
 
 options:
   -h, --help     show this help message and exit
-  --ids IDS      comma-separated content ids to refresh (default: all enabled)
+  --ids IDS      comma-separated content ids to refresh, installed or not (default: every
+                 INSTALLED mod, enabled or not)
   --seeded       only mods that already have a nexus_id
   --limit LIMIT  cap how many mods to process (API-call safety)
   --force        ignore the once-per-day TTL

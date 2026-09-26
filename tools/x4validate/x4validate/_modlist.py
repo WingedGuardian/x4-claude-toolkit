@@ -11,6 +11,8 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from lxml import etree
+
 from . import _nexus, _registry
 from x4validate import _paths, __version__
 
@@ -200,6 +202,8 @@ def _resolve_identity(content_id: str, auto) -> tuple[int | None, str]:
             if hits:
                 used_hint = hint
                 break
+    except _nexus.NexusFatal:
+        raise   # the whole run must stop (RG-2); "unsearched" is a per-mod answer
     except _nexus.NexusError:
         # silent-ok: an upstream-lookup failure is not a statement about the mod.
         # The caller leaves the field unset (never "no update available"), so the
@@ -263,7 +267,9 @@ def cmd_ingest(args) -> int:
         else:
             try:
                 ids = _registry.ingest_content_xml(content)
-            except OSError as exc:
+            except (OSError, etree.XMLSyntaxError) as exc:
+                # XMLSyntaxError is NOT an OSError: a malformed profile used to crash
+                # ingest with a traceback instead of this refusal (AUDIT-2026-09-24 RG-4).
                 print(f"error: cannot read profile content.xml: {exc}", file=sys.stderr)
                 print("       (pass --content, or --installed-only to skip the "
                       "cross-check)", file=sys.stderr)
@@ -326,9 +332,25 @@ def cmd_ingest(args) -> int:
 
 
 def cmd_refresh(args) -> int:
-    reg_path = Path(args.registry) if args.registry else None
+    """Fetch upstream metadata for the registry's mods, one row at a time.
+
+    Three properties, each the fix for a way a refresh used to LOSE work (AUDIT-2026-09-24):
+
+    * RG-4: a --registry path that is not a file is REFUSED. `load_registry` returns an
+      empty registry for a missing file, so a typo used to write a NEW, empty registry
+      there and report success.
+    * RG-1: the registry is saved even when the run ends early, so every row fetched
+      before a failure is kept. It used to be saved once, at the end, and one network
+      drop lost the whole run.
+    * RG-2: a failure that applies to the whole run -- no/invalid key, rate limit spent,
+      network down (`_nexus.NexusFatal`) -- STOPS it, leaves the rows it had not fetched
+      exactly as they were, and exits 2. It used to be recorded per row as `error`, which
+      overwrote every lane and kept calling the API with a key it knew was refused.
+    """
+    reg_path = _registry_path(args)
     reg = _registry.load_registry(reg_path)
     today = datetime.now(timezone.utc).date()
+    _nexus.reset_rate_limit()
     want = set(args.ids.split(",")) if args.ids else None
 
     if want:
@@ -342,6 +364,36 @@ def cmd_refresh(args) -> int:
     if args.limit:
         mods = mods[: args.limit]
 
+    resolved = fetched = errors = skipped = 0
+    fatal: _nexus.NexusFatal | None = None
+    try:
+        fatal, resolved, fetched, errors, skipped = _refresh_rows(
+            mods, args, today)
+    finally:
+        # Saved on EVERY exit, including an exception nobody anticipated: the rows
+        # fetched so far are real data and must not depend on the run finishing.
+        _registry.save_registry(reg, reg_path)
+        dash = _registry.write_dashboard(reg, _dash_path(reg_path))
+    unconfirmed = len(_registry.needs_review(reg))
+    print(f"refresh: {fetched} fetched, {resolved} newly id-resolved, {errors} errors, "
+          f"{skipped} off-nexus (not searched) ({len(mods)} processed)")
+    if unconfirmed:
+        # Never let a refresh read as "everything is up to date" while a chunk of
+        # what it just fetched was fetched against a guessed identity.
+        print(f"         {unconfirmed} active mod(s) still have an UNCONFIRMED identity — "
+              f"their upstream data may describe a different mod. Run `x4modlist verify`.")
+    print(f"dashboard: {dash}")
+    if fatal is not None:
+        print(f"refresh STOPPED: {fatal}", file=sys.stderr)
+        print("         every row not yet fetched was left exactly as it was; what was "
+              "fetched before the stop is saved. Re-run once the cause is fixed "
+              "(rows already checked today are skipped).", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _refresh_rows(mods, args, today) -> tuple:
+    """The per-row loop of `cmd_refresh`. Returns (fatal, resolved, fetched, errors, skipped)."""
     resolved = fetched = errors = skipped = 0
     for m in mods:
         a = m["auto"]
@@ -358,7 +410,10 @@ def cmd_refresh(args) -> int:
             skipped += 1
             continue
         if not nid and not args.no_resolve:
-            nid, state = _resolve_identity(m["id"], a)
+            try:
+                nid, state = _resolve_identity(m["id"], a)
+            except _nexus.NexusFatal as exc:
+                return exc, resolved, fetched, errors, skipped
             a["id_state"] = state
             if nid:
                 a["nexus_id"] = nid
@@ -374,11 +429,15 @@ def cmd_refresh(args) -> int:
         try:
             meta = _nexus.fetch_mod(nid)
             fmeta = _nexus.fetch_file(nid, fid) if fid else None
+        except _nexus.NexusFatal as exc:
+            # Not a fact about THIS mod: leave its row untouched and stop (RG-2).
+            return exc, resolved, fetched, errors, skipped
         except _nexus.NexusError as exc:
             a["classification"] = "error"
             a["error"] = str(exc)
             errors += 1
             continue
+        a.pop("error", None)   # a stale error from an earlier run no longer applies
 
         a["name"], a["author"] = meta.name, meta.author
         a["status"] = meta.status
@@ -399,19 +458,7 @@ def cmd_refresh(args) -> int:
                                  today, m["human"].get("custom_edited", False))
         a["classification"], a["settled"] = _registry.cap_classification(state, cls, settled)
         fetched += 1
-
-    _registry.save_registry(reg, reg_path)
-    dash = _registry.write_dashboard(reg, _dash_path(reg_path))
-    unconfirmed = len(_registry.needs_review(reg))
-    print(f"refresh: {fetched} fetched, {resolved} newly id-resolved, {errors} errors, "
-          f"{skipped} off-nexus (not searched) ({len(mods)} processed)")
-    if unconfirmed:
-        # Never let a refresh read as "everything is up to date" while a chunk of
-        # what it just fetched was fetched against a guessed identity.
-        print(f"         {unconfirmed} active mod(s) still have an UNCONFIRMED identity — "
-              f"their upstream data may describe a different mod. Run `x4modlist verify`.")
-    print(f"dashboard: {dash}")
-    return 0
+    return None, resolved, fetched, errors, skipped
 
 
 def cmd_dashboard(args) -> int:
@@ -599,10 +646,34 @@ def _rescore(reg) -> tuple[int, int]:
         if own and upstream and _squash(own) == _squash(upstream):
             a["id_state"] = "exact"
             a["resolve"] = "rescored (manifest name == upstream title)"
+            _reclassify_offline(m)
             promoted += 1
         else:
             left += 1
     return promoted, left
+
+
+def _reclassify_offline(m) -> None:
+    """Re-derive a row's lane from the upstream data it ALREADY holds, after its id_state
+    changed. No API call.
+
+    AUDIT-2026-09-24 RG-4: `verify --rescore` promoted a guess to `exact` but left the lane
+    that `cap_classification` had held at needs-confirmation, and a same-day refresh
+    skips the row (once-per-day TTL), so the promoted row stayed capped until tomorrow.
+    The lane is a function of (id_state, upstream data); when one changes, recompute it.
+    A row never fetched has no upstream data to classify and is left alone.
+    """
+    a = m["auto"]
+    if not a.get("checked_at"):
+        return
+    meta = _nexus.ModMeta(int(a.get("nexus_id") or 0), a.get("name") or "",
+                          str(a.get("version") or ""), str(a.get("updated") or ""),
+                          a.get("status") or "", a.get("author") or "")
+    _, _, state = _registry.identity(m)
+    cls, settled = _classify(meta, datetime.now(timezone.utc).date(),
+                             m["human"].get("custom_edited", False))
+    a["classification"], a["settled"] = _registry.cap_classification(state, cls, settled)
+    a["upstream_from"] = "exact" if state in _registry.TRUSTED_ID_STATES else state
 
 
 def cmd_tracked(args) -> int:
@@ -780,7 +851,8 @@ def main(argv: list[str] | None = None) -> int:
     pi.set_defaults(func=cmd_ingest)
 
     pr = sub.add_parser("refresh", help="refresh upstream metadata via Nexus/Steam API")
-    pr.add_argument("--ids", help="comma-separated content ids to refresh (default: all enabled)")
+    pr.add_argument("--ids", help="comma-separated content ids to refresh, installed or not "
+                    "(default: every INSTALLED mod, enabled or not)")
     pr.add_argument("--seeded", action="store_true", help="only mods that already have a nexus_id")
     pr.add_argument("--limit", type=int, help="cap how many mods to process (API-call safety)")
     pr.add_argument("--force", action="store_true", help="ignore the once-per-day TTL")

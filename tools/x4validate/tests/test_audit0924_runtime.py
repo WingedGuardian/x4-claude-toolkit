@@ -297,8 +297,6 @@ def test_rt9_save_info_prints_no_machine_specific_counts(tmp_path):
 # --------------------------------------------------------------------------- RG-1
 
 @pytest.mark.parametrize("failure", ["urlerror", "timeout", "not_json"])
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RG-1: _nexus catches only HTTPError, and "
-                   "refresh saves once at the end, so one network drop loses the whole run")
 def test_rg1_a_network_failure_mid_refresh_keeps_what_was_fetched(tmp_path, monkeypatch, failure):
     monkeypatch.setenv("X4_NEXUS_KEY", "test-key-not-real")
     regp = tmp_path / "r.yaml"
@@ -327,8 +325,6 @@ def test_rg1_a_network_failure_mid_refresh_keeps_what_was_fetched(tmp_path, monk
 
 # --------------------------------------------------------------------------- RG-2
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RG-2: an auth failure (401) is recorded "
-                   "per row as 'error', overwriting every lane, and the run keeps calling")
 def test_rg2_an_invalid_key_stops_the_run_and_keeps_every_lane(tmp_path, monkeypatch):
     monkeypatch.setenv("X4_NEXUS_KEY", "revoked-key-not-real")
     regp = tmp_path / "r.yaml"
@@ -352,8 +348,6 @@ def test_rg2_an_invalid_key_stops_the_run_and_keeps_every_lane(tmp_path, monkeyp
 
 # --------------------------------------------------------------------------- RG-4
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RG-4: refresh --registry <typo> writes a "
-                   "NEW empty registry there and reports success")
 def test_rg4_refresh_refuses_a_registry_path_that_does_not_exist(tmp_path, monkeypatch):
     monkeypatch.setattr(_nexus.urllib.request, "urlopen",
                         lambda *a, **k: pytest.fail("no network call expected"))
@@ -366,8 +360,6 @@ def test_rg4_refresh_refuses_a_registry_path_that_does_not_exist(tmp_path, monke
     assert rc not in (0, None)
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RG-4: a malformed profile content.xml "
-                   "crashes ingest (XMLSyntaxError is not OSError)")
 def test_rg4_ingest_reports_a_malformed_profile_instead_of_crashing(tmp_path):
     bad = tmp_path / "content.xml"
     bad.write_text("<content><extension id='a' enabled='true'></content", encoding="utf-8")
@@ -382,8 +374,6 @@ def test_rg4_ingest_reports_a_malformed_profile_instead_of_crashing(tmp_path):
     assert rc == 2
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RG-4: `verify --rescore` promotes a guess "
-                   "to exact, but a same-day refresh skips it (TTL) so the lane stays capped")
 def test_rg4_rescore_then_same_day_refresh_uncaps_the_lane(tmp_path, monkeypatch):
     monkeypatch.setenv("X4_NEXUS_KEY", "test-key-not-real")
     monkeypatch.setattr(_nexus.urllib.request, "urlopen",
@@ -406,8 +396,6 @@ def test_rg4_rescore_then_same_day_refresh_uncaps_the_lane(tmp_path, monkeypatch
 
 # --------------------------------------------------------------------------- RG-5
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RG-5: _unquote cuts a QUOTED value at the "
-                   "first ' #', leaving a dangling quote in the path")
 def test_rg5_a_quoted_value_containing_space_hash_is_kept_whole(tmp_path):
     env = tmp_path / "x4-paths.env"
     env.write_text('X4_MODS="C:/My Mods #2/x4"\n', encoding="utf-8")
