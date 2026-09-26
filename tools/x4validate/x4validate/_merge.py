@@ -454,6 +454,21 @@ def apply_diff(tree: etree._Element, diff_root: etree._Element,
                                      silent, ambiguous=True))
             continue
 
+        # A TEXT NODE target (`.../text()`). lxml returns it as a smart string that is
+        # neither an element nor an attribute, and every helper below assumed one or the
+        # other -- replace raised AttributeError, remove and add raised TypeError, as a
+        # raw traceback at rc 1 (AUDIT-2026-09-24 MG-1). RFC 5261 allows text targets, but
+        # how X4 applies them is unmeasured (0 of ~7.1k installed selectors use one), so
+        # this REFUSES with a reason rather than guessing a result. Comments and
+        # processing instructions are elements to lxml and are handled as before.
+        tgt = targets[0]
+        if not isinstance(tgt, etree._Element) and not _is_attr(tgt):
+            applied.append(AppliedOp(
+                op.tag, sel, line, False,
+                "sel selects a text node (text()); how the engine applies a patch to a "
+                "text node is not modelled, so the result is not predicted", silent))
+            continue
+
         # An <add type=...> we do not implement must not be reported as applied.
         # Anything other than RFC 5261's "@attr" form (e.g. a namespace add) would
         # silently change nothing here while the engine acts on it.
@@ -524,8 +539,25 @@ def _do_remove(targets, recorder: Recorder | None = None,
         if _is_attr(t):
             parent.attrib.pop(t.attrname, None)
         else:
+            _keep_tail(t)
             parent.remove(t)
     return None
+
+
+def _keep_tail(t) -> None:
+    """Hand *t*'s tail text to what precedes it, because lxml's `remove` drops the tail
+    WITH the element -- the text AFTER a removed or replaced node is not part of it
+    (AUDIT-2026-09-24 MG-5; whitespace-only in real data, but a text node the engine
+    keeps must not vanish from the effective tree)."""
+    if not t.tail:
+        return
+    prev = t.getprevious()
+    parent = t.getparent()
+    if prev is not None:
+        prev.tail = (prev.tail or "") + t.tail
+    elif parent is not None:
+        parent.text = (parent.text or "") + t.tail
+    t.tail = None
 
 
 def _do_replace(targets, op, recorder: Recorder | None = None,
@@ -575,9 +607,14 @@ def _do_replace(targets, op, recorder: Recorder | None = None,
                     recorder.full_override(Origin(origin.source, "replace-root", origin.line))
                 continue
             idx = parent.index(t)
+            tail = t.tail
             parent.remove(t)
             for off, child in enumerate(new_children):
                 new = copy.deepcopy(child)
+                if off == len(new_children) - 1:
+                    # The replaced node's tail belongs AFTER the replacement, not to the
+                    # payload's own formatting whitespace (MG-5).
+                    new.tail = tail
                 parent.insert(idx + off, new)
                 if recorder is not None:
                     if off == 0:  # first inserted child carries the replaced node's lineage
@@ -618,12 +655,47 @@ def _do_add(targets, op, recorder: Recorder | None = None,
         name = typ[1:]
         if not name:
             return "add type=\"@\" names no attribute"
+        if new_children:
+            # Mirrors `_do_replace`: an attribute holds text. With element children this
+            # set the attribute to `op.text or ""` -- BLANKING it -- dropped the payload
+            # and reported success (AUDIT-2026-09-24 MG-2).
+            return ("add type=\"@\" takes text, but the op carries "
+                    f"{len(new_children)} element(s)")
         for t in targets:
             if _is_attr(t):
                 return "cannot hang an attribute off an attribute"
             t.set(name, op.text or "")
             if recorder is not None and origin is not None:
                 recorder.attr_set(t, name, Origin(origin.source, "add-attr", origin.line))
+        return None
+
+    # A TEXT-ONLY payload (`<add sel="...">text</add>`) is an RFC 5261 text-node add. It
+    # changed nothing here while reporting success (AUDIT-2026-09-24 MG-2); 6 installed
+    # ops ship it. Modelled at the same positions an element would take. A payload with
+    # neither elements nor text (88 installed ops, plus 2 holding only comments) adds
+    # nothing -- in the engine too -- and stays an applied no-op.
+    text = op.text if (op.text or "").strip() else None
+    if text is not None and not new_children:
+        for t in targets:
+            if _is_attr(t):
+                return "add cannot target an attribute"
+            if pos in {"before", "after"} and t.getparent() is None:
+                return (f"add pos={pos!r} targets the document root, which has no "
+                        "siblings")
+            if pos == "prepend":
+                t.text = text + (t.text or "")
+            elif pos == "before":
+                prev = t.getprevious()
+                if prev is not None:
+                    prev.tail = (prev.tail or "") + text
+                else:
+                    t.getparent().text = (t.getparent().text or "") + text
+            elif pos == "after":
+                t.tail = text + (t.tail or "")
+            elif len(t):
+                t[-1].tail = (t[-1].tail or "") + text
+            else:
+                t.text = (t.text or "") + text
         return None
 
     for t in targets:

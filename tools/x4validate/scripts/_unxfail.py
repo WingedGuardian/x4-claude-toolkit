@@ -12,7 +12,9 @@ import re
 import sys
 from pathlib import Path
 
-XF = re.compile(r'^@pytest\.mark\.xfail\(strict=True, reason="AUDIT-2026-09-24 ')
+#: Both shapes the audit files use: the literal marker, and `tests/test_audit0924_merge.py`'s
+#: `@_xf("<ID>", "...")` helper (which expands to the same strict xfail).
+XF = re.compile(r'^(@pytest\.mark\.xfail\(strict=True, reason="AUDIT-2026-09-24 |@_xf\(")')
 
 
 def unxfail(text: str, names: list[str]) -> tuple[str, list[str]]:
@@ -24,18 +26,22 @@ def unxfail(text: str, names: list[str]) -> tuple[str, list[str]]:
         if idx is None:
             missing.append(f"{name}: no such test")
             continue
-        j = idx - 1
-        while j >= 0 and lines[j].startswith("@pytest.mark.parametrize"):
-            j -= 1
-        # walk up over the xfail decorator's continuation lines to its first line
-        k = j
-        while k >= 0 and not XF.match(lines[k]) and not lines[k].startswith("def ") \
-                and lines[k].strip() and not lines[k].startswith("@pytest.mark.parametrize"):
-            k -= 1
-        if k < 0 or not XF.match(lines[k]):
-            missing.append(f"{name}: no AUDIT-2026-09-24 xfail directly above it")
+        # The decorator BLOCK above the def: every line up to the previous blank line,
+        # def, or class. Decorators may span several lines (a multi-line parametrize).
+        top = idx
+        while top - 1 >= 0 and lines[top - 1].strip() \
+                and not lines[top - 1].startswith(("def ", "class ")):
+            top -= 1
+        block = range(top, idx)
+        starts = [i for i in block if lines[i].startswith("@")]
+        xf = [i for i in starts if XF.match(lines[i])]
+        if len(xf) != 1:
+            missing.append(f"{name}: expected exactly one AUDIT-2026-09-24 xfail in its "
+                           f"decorator block, found {len(xf)}")
             continue
-        del lines[k:j + 1]
+        k = xf[0]
+        nxt = min([i for i in starts if i > k] + [idx])   # next decorator, or the def
+        del lines[k:nxt]
     return "\n".join(lines), missing
 
 

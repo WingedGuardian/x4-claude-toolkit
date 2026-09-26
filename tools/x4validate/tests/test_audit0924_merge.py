@@ -60,7 +60,6 @@ def _write_cat(mod_dir: Path, cat_name: str, members) -> None:
 _TEXT_BASE = '<wares><ware id="a">hello<x/></ware></wares>'
 
 
-@_xf("MG-1", "a text() selector raises a raw traceback instead of an AppliedOp")
 @pytest.mark.parametrize("op", [
     "<replace sel=\"//ware[@id='a']/text()\">bye</replace>",
     "<remove sel=\"//ware[@id='a']/text()\"/>",
@@ -78,7 +77,6 @@ def test_text_node_selector_is_reported_not_raised(op):
 
 # --- MG-2: <add> payload shapes that change nothing ----------------------------
 
-@_xf("MG-2", "<add> with a text-only payload reports ok and changes nothing")
 def test_add_with_text_only_payload_is_not_a_silent_ok():
     base = '<wares><ware id="b"/></wares>'
     tree, ops = _apply(base, "<diff><add sel=\"//ware[@id='b']\">sometext</add></diff>")
@@ -87,7 +85,6 @@ def test_add_with_text_only_payload_is_not_a_silent_ok():
         "reported applied, yet the tree is byte-identical: " + ops[0].detail)
 
 
-@_xf("MG-2", "<add type='@q'> with an ELEMENT payload blanks @q and reports ok")
 def test_attribute_add_with_element_payload_is_refused_not_blanked():
     tree, ops = _apply('<wares><ware id="a" q="1"/></wares>',
                        "<diff><add sel=\"//ware[@id='a']\" type=\"@q\"><z/></add></diff>")
@@ -146,7 +143,6 @@ def test_mod_index_value_naming_another_mod_resolves_into_that_mod(tmp_path):
 
 # --- MG-5: tail text ---------------------------------------------------------
 
-@_xf("MG-5", "remove/replace drop the target element's tail text")
 @pytest.mark.parametrize("op,want", [
     ('<remove sel="//a"/>', b"<r>TAIL<b/></r>"),
     ('<replace sel="//a"><c/></replace>', b"<r><c/>TAIL<b/></r>"),
