@@ -28,7 +28,9 @@ half honestly needs a per-class expectation model.
 
   uv run python gates/obtainability_audit.py [--record]
 
-Exit: 0 unchanged (or recorded) · 1 drift · 2 cannot run (never a guess)
+Exit: 0 unchanged (or recorded) · 1 drift · 2 cannot run (never a guess), including a
+      baseline that predates a compared key -- "not comparable, re-record" is a
+      could-not-look, not a finding about content. Drift outranks it.
 """
 from __future__ import annotations
 
@@ -45,6 +47,26 @@ from x4validate import _effective, _merge, _refs, _registry, _scan
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / ".obtainability-baseline.json"
 RECORD = "--record" in sys.argv
+
+
+def scan_mods(mods, dead) -> tuple[dict[str, int], list[str]]:
+    """(folder -> references to deprecated-only content, unreadable mod files).
+
+    The unreadable list is the point (AUDIT-2026-09-24 GT-6): this loop passed an
+    inline `[]` to `iter_mod_xml` and discarded it, so a mod file that would not parse
+    contributed zero references and was never mentioned -- a mod could look clean
+    because the file that referenced deprecated content was the one nobody read.
+    """
+    per_mod: dict[str, int] = {}
+    unreadable: list[str] = []
+    for m in mods:
+        lost: list = []
+        n = sum(len(_refs.unobtainable_refs(root, dead))
+                for _v, root in _scan.iter_mod_xml(Path(m["path"]), lambda v: True, lost))
+        unreadable.extend(f"{m['folder']}/{u.vpath}: {u.why}" for u in lost)
+        if n:
+            per_mod[m["folder"]] = n
+    return per_mod, sorted(unreadable)
 
 
 def audit() -> dict:
@@ -86,12 +108,7 @@ def audit() -> dict:
                 if name in sold:
                     tainted_sold.append(name)
 
-    per_mod = {}
-    for m in _registry.mods("installed"):
-        n = sum(len(_refs.unobtainable_refs(root, dead))
-                for _v, root in _scan.iter_mod_xml(Path(m["path"]), lambda v: True, []))
-        if n:
-            per_mod[m["folder"]] = n
+    per_mod, mod_unreadable = scan_mods(_registry.mods("installed"), dead)
 
     return {
         "deprecated_only_macros_vanilla": len(dead),
@@ -100,6 +117,9 @@ def audit() -> dict:
         "of_those_sold_by_a_live_ware": len(tainted_sold),
         "base_macro_files_scanned": len(vpaths),
         "base_macro_files_unreadable": len(unreadable),
+        "mod_files_unreadable": len(mod_unreadable),
+        # NAMES, not only counts: a count says there is a hole, a name says where.
+        "unreadable_files": sorted(unreadable) + mod_unreadable,
         "mods_referencing_deprecated": per_mod,
     }
 
@@ -138,6 +158,9 @@ def main() -> int:
 
     was = json.loads(BASELINE.read_text(encoding="utf-8"))
     drift = []
+    #: Keys the baseline predates. rc 2, not 1 (review of 6e54ad5): it is a comparison
+    #: that could not happen, not a change in the corpus.
+    not_comparable = []
     #: The DENOMINATOR keys are compared first and deliberately. `audit()` has always
     #: recorded how many base macro files it read and how many it could not, and until
     #: 2026-09-02 neither was compared NOR printed -- so a coverage collapse could only
@@ -146,15 +169,28 @@ def main() -> int:
     #: catch, sitting inside the gate. See CLAUDE.md "A step that narrows data MUST
     #: announce it" and the sibling defect measured in control_bytes.py the same day.
     for key in ("base_macro_files_scanned", "base_macro_files_unreadable",
-                "deprecated_only_macros_vanilla", "deprecated_only_macros_effective",
+                "mod_files_unreadable", "deprecated_only_macros_vanilla", "deprecated_only_macros_effective",
                 "live_macros_with_deprecated_ammo", "of_those_sold_by_a_live_ware"):
         if key not in was:
             # An older baseline predates the key. NAMED, never silently skipped: a
             # missing key is "not comparable", which is not the same as "unchanged".
-            drift.append(f"{key}: baseline predates this key (now {now[key]}) "
-                         "-- re-record to make it comparable")
+            not_comparable.append(f"{key}: baseline predates this key (now {now[key]}) "
+                                  "-- re-record to make it comparable")
         elif was[key] != now[key]:
             drift.append(f"{key}: {was[key]} -> {now[key]}")
+
+    # Unreadable files BY NAME, not by count: one file becoming readable while another
+    # becomes unreadable leaves every count unchanged (review of 6e54ad5).
+    if "unreadable_files" not in was:
+        not_comparable.append("unreadable_files: baseline predates per-name unreadable "
+                              "files -- re-record to make it comparable")
+    else:
+        old_u = {u.split(": ", 1)[0] for u in was["unreadable_files"]}
+        new_u = {u.split(": ", 1)[0] for u in now["unreadable_files"]}
+        for name in sorted(new_u - old_u):
+            drift.append(f"newly unreadable: {name}")
+        for name in sorted(old_u - new_u):
+            drift.append(f"readable again: {name}")
 
     # PER ITEM, never the total: a mod losing 3 references while another gains 3 is
     # a net zero that hides both (CLAUDE.md 1b).
@@ -170,13 +206,24 @@ def main() -> int:
     if now["base_macro_files_unreadable"]:
         print(f"  {'base macro files UNREADABLE':<38} "
               f"{now['base_macro_files_unreadable']}   <- a hole in the denominator")
+    if now["mod_files_unreadable"]:
+        print(f"  {'mod XML files UNREADABLE':<38} "
+              f"{now['mod_files_unreadable']}   <- their references were NOT counted")
+    for name in now.get("unreadable_files", []):
+        print(f"      unreadable: {name}")
     for k in ("deprecated_only_macros_vanilla", "deprecated_only_macros_effective",
               "live_macros_with_deprecated_ammo", "of_those_sold_by_a_live_ware"):
         print(f"  {k:<38} {now[k]}")
     print(f"  {'mods referencing deprecated content':<38} {len(new_m)}")
-    if not drift:
+    for n in not_comparable:
+        print(f"  NOT COMPARABLE  {n}")
+    if not drift and not not_comparable:
         print("\nunchanged since the baseline.")
         return 0
+    if not drift:
+        print("\nThe baseline cannot answer for every key -- re-record it (--record). rc 2, "
+              "not a pass and not drift.")
+        return 2
     print(f"\nDRIFT ({len(drift)}):")
     for d in drift:
         print(f"  {d}")

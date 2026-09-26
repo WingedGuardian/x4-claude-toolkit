@@ -16,7 +16,11 @@ so those are excluded; only STRUCTURAL ops (element payloads, removes) are held
 to "must change something".
 
 Run:  uv run python gates/noop_audit.py [--limit=N] [--verbose]
-Exit: 0 clean, 1 any false OK / false alarm.
+Exit: 0 clean, 1 any false OK / false alarm, 2 could not look -- any mod XML or
+      catalog was UNREADABLE (its ops were never audited), or no op was checked at
+      all. Findings outrank the refusal: a real false OK is rc 1 even beside an
+      unreadable catalog. (AUDIT-2026-09-24 GT-1: the UNREADABLE list used to be
+      collected and never read, so an unreadable catalog audited as clean, rc 0.)
 """
 from __future__ import annotations
 
@@ -75,7 +79,7 @@ def mod_docs(mod: Path):
         try:
             yield os.path.relpath(p, mod).replace("\\", "/"), open(p, "rb").read()
         except Exception as exc:
-            print(f"  ! unreadable {mod.name}/{p}: {exc!r}")
+            UNREADABLE.append(f"{mod.name}/{p}: {exc!r}")
 
 
 def cross_mod_base(vpath: str, mods_by_name: dict) -> etree._Element | None:
@@ -212,7 +216,21 @@ def main() -> int:
             print(f"     {mod:<28} {vp}")
             print(f"        {why}")
 
-    return 1 if (false_ok or false_alarm) else 0
+    if UNREADABLE:
+        print(f"\n  UNREADABLE ({len(UNREADABLE)}) -- NONE of these were audited:")
+        for line in UNREADABLE:
+            print(f"     {line}")
+
+    if false_ok or false_alarm:
+        return 1
+    if UNREADABLE:
+        print(f"\nNOT A CLEAN AUDIT: {len(UNREADABLE)} catalog(s)/file(s) could not be read, "
+              "so their ops were never compared. rc 2 (could not look), not 0.",
+              file=sys.stderr)
+        return 2
+    if not stats["ops checked"]:
+        return _env.nothing_checked("noop_audit", "no diff op was applied and compared")
+    return 0
 
 
 def _wrap(op: etree._Element) -> etree._Element:

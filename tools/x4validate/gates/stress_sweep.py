@@ -18,8 +18,17 @@ Three axes, none covered elsewhere:
      enormous files, deep nesting, cyclic cross-mod patches, unicode, huge
      selectors, XXE, billion-laughs, zip-bomb-ish payloads.
 
+Every cell is judged against a per-case table of EXPECTED EXIT CODES, not only for
+tracebacks (AUDIT-2026-09-24 GT-4, design default): a billion-laughs file that
+exits 0 "clean" is as wrong as one that crashes. The table was MEASURED
+2026-09-25 (30 cells) and then judged; each set names what counts as an honest
+answer for that input. 0 = clean, 1 = findings, 2 = refused, 3 = DEGRADED.
+
 Run:  uv run python gates/stress_sweep.py --corpus=<dir> [--limit=N] [--verbose]
-Exit: 0 no crashes/hangs, 1 otherwise.
+Exit: 0 every cell exited within its expected set, 1 a crash, hang, or an exit
+      code outside the set, 2 `--corpus` was given but is not a directory or
+      holds no mod (the unseen-corpus axis was ASKED for and cannot run -- it is
+      named, never silently dropped).
 """
 from __future__ import annotations
 
@@ -45,7 +54,8 @@ def run(argv: list[str], timeout: int = 900, cwd: Path | None = None):
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
-def judge(label: str, argv: list[str], timeout: int = 900) -> tuple[str, str]:
+def judge(label: str, argv: list[str], expect: frozenset,
+          timeout: int = 900) -> tuple[str, str]:
     t0 = time.time()
     try:
         rc, out = run(argv, timeout)
@@ -55,7 +65,37 @@ def judge(label: str, argv: list[str], timeout: int = 900) -> tuple[str, str]:
     if "Traceback (most recent call last)" in out:
         tail = [ln for ln in out.strip().splitlines() if ln.strip()][-1:]
         return "FAIL", f"traceback: {tail[0][:100] if tail else '?'}"
+    if rc not in expect:
+        return "FAIL", f"exit {rc}, expected one of {sorted(expect)}, {len(out)}B, {dt:.0f}s"
     return "ok", f"exit {rc}, {len(out)}B, {dt:.0f}s"
+
+
+_f = frozenset
+#: Expected exit codes per pathological mod (both the tier-A and tier-B cell).
+#: Unparseable / hostile documents must be REPORTED (1) or DEGRADED (3) -- never a
+#: clean 0 over a file nobody could read, and never a refusal (2) of the whole mod.
+#: If a parser change makes deep nesting readable, 0 becomes right: change the
+#: table deliberately, do not widen it pre-emptively.
+PATHOLOGICAL_EXPECT = {
+    "path_billion_laughs": _f({1, 3}),
+    "path_xxe": _f({1, 3}),
+    "path_many_ops": _f({0}),
+    "path_deep_nesting": _f({1, 3}),
+    "path_evil_selector": _f({1}),            # matches nothing -> a reported error
+    "path_unicode": _f({0}),
+    "path_empty_file": _f({1, 3}),
+    "path_ws_only": _f({1, 3}),
+    # MEASURED 0 ("OK: no issues found") for a <diff> element added under <wares>.
+    # Not pinned to 1: whether the engine rejects it is unmeasured. Open question.
+    "path_nested_diff": _f({0, 1}),
+    # A patch at extensions/<not installed>/... is a designed no-op (INFO), clean.
+    "path_cycle_a": _f({0}),
+    "path_cycle_b": _f({0}),
+    "path_large (4x worst real)": _f({0}),
+}
+#: An unseen real mod: findings and degradation are the tool working; a refusal of a
+#: folder that has a content.xml is not.
+UNSEEN_EXPECT = _f({0, 1, 3})
 
 
 # --------------------------------------------------------------------------
@@ -156,9 +196,16 @@ def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="x4stress_"))
     try:
         # ---- 1. unseen corpus -------------------------------------------
-        if CORPUS and CORPUS.is_dir():
+        if CORPUS is not None:
             mods = [d for d in sorted(CORPUS.iterdir())
-                    if d.is_dir() and (d / "content.xml").is_file()]
+                    if d.is_dir() and (d / "content.xml").is_file()] if CORPUS.is_dir() else []
+            if not mods:
+                # Asked for and impossible: say so and stop, rather than running the
+                # other two axes and printing a result that never mentions axis 1.
+                why = "is not a directory" if not CORPUS.is_dir() else "holds no mod folder"
+                print(f"REFUSING: --corpus={CORPUS} {why} (a mod folder has a content.xml), "
+                      "so the UNSEEN-CORPUS axis you asked for cannot run.", file=sys.stderr)
+                return 2
             if LIMIT:
                 mods = mods[:LIMIT]
             print(f"UNSEEN CORPUS — {len(mods)} mods from {CORPUS}\n" + "=" * 84)
@@ -170,7 +217,7 @@ def main() -> int:
                     ("compat", ["x4compat", "check", str(m)]),
                 ):
                     cells += 1
-                    st, detail = judge(f"{m.name} {label}", argv)
+                    st, detail = judge(f"{m.name} {label}", argv, UNSEEN_EXPECT)
                     if st == "FAIL":
                         fails.append((f"{m.name} :: {label}", detail))
                         print(f"  FAIL {m.name:<38}{label:<12}{detail}")
@@ -184,7 +231,8 @@ def main() -> int:
             for label, argv in (("validate", ["x4validate", str(d)]),
                                 ("tier b", ["x4validate", str(d), "--tier", "b"])):
                 cells += 1
-                st, detail = judge(f"{name} {label}", argv, timeout=600)
+                st, detail = judge(f"{name} {label}", argv, PATHOLOGICAL_EXPECT[name],
+                                   timeout=600)
                 mark = "FAIL" if st == "FAIL" else "ok  "
                 if st == "FAIL":
                     fails.append((f"{name} :: {label}", detail))
@@ -194,24 +242,29 @@ def main() -> int:
         print("\nMULTI-HOP CHAINS\n" + "=" * 84)
         a = tmp / "path_cycle_a"
         b = tmp / "path_cycle_b"
+        # (label, argv, expected exit codes) -- MEASURED 2026-09-25, then judged.
         chains = [
             ("diff(unseen pair) -> validate",
-             ["x4diff", str(a), str(b)]),
+             ["x4diff", str(a), str(b)], _f({0, 1})),
+            # MEASURED 1 here, while the whole-mod run of the same file is 0 + INFO
+            # ("designed no-op"). The two disagree; recorded, not resolved here.
             ("validate --file on a pathological patch",
              ["x4validate", str(a), "--file",
-              str(a / "extensions/path_cycle_b/libraries/wares.xml")]),
+              str(a / "extensions/path_cycle_b/libraries/wares.xml")], _f({0, 1})),
             ("stats macro on a diff (wrong shape on purpose)",
-             ["x4stats", "macro", str(a / "extensions/path_cycle_b/libraries/wares.xml")]),
+             ["x4stats", "macro", str(a / "extensions/path_cycle_b/libraries/wares.xml")],
+             _f({1, 2})),
             ("similar over synthesized mods",
-             ["x4similar", "--ext-dir", str(tmp), "--threshold", "0.5"]),
+             ["x4similar", "--ext-dir", str(tmp), "--threshold", "0.5"], _f({0})),
+            # No candidate = the whole set (`--all` is being removed, AUDIT-2026-09-24 AN-7).
             ("compat over the synthesized set",
-             ["x4compat", "check", "--ext-dir", str(tmp)]),
+             ["x4compat", "check", "--ext-dir", str(tmp)], _f({0, 1})),
             ("xref who-calls after a foreign corpus",
-             ["x4xref", "who-calls", "find_station"]),
+             ["x4xref", "who-calls", "find_station"], _f({0})),
         ]
-        for label, argv in chains:
+        for label, argv, expect in chains:
             cells += 1
-            st, detail = judge(label, argv, timeout=900)
+            st, detail = judge(label, argv, expect, timeout=900)
             mark = "FAIL" if st == "FAIL" else "ok  "
             if st == "FAIL":
                 fails.append((label, detail))

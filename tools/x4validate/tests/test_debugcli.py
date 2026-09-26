@@ -140,8 +140,8 @@ def test_baseline_stamps_a_content_fingerprint_but_NOT_an_engine_one(
 
 
 class _F:
-    def __init__(self, category, message):
-        self.category, self.message = category, message
+    def __init__(self, category, message, vpath=""):
+        self.category, self.message, self.vpath = category, message, vpath
 
 
 class _R:
@@ -390,6 +390,11 @@ def test_a_capture_NEVER_records_a_fingerprint_that_depends_on_the_CWD(
 # --- crosscheck's own empty comparison (v3.1.0 release review, B2, PRE-ARC) --------
 
 
+#: The file SAMPLE's two E/F lines name. The validator always sets `Finding.vpath`;
+#: crosscheck keys on file + selector (AUDIT-2026-09-24 RT-1), so the fixture must too.
+_WARES = "libraries/wares.xml"
+
+
 def _cc(monkeypatch, tmp_path, log_text, findings, degraded=()):
     """Drive `crosscheck` over a synthetic log and a synthetic validator report."""
     log = tmp_path / "debug.txt"
@@ -424,8 +429,8 @@ def test_a_DEGRADED_prediction_set_cannot_produce_AGREEMENT(monkeypatch, tmp_pat
     have contributed the predictions that would fill OBSERVED ONLY -- the one
     bucket crosscheck exists for."""
     rc = _cc(monkeypatch, tmp_path, SAMPLE,
-             [_F("sel", "<replace> sel matched nothing: //wares/ware[@id='x']/owner/@faction"),
-              _F("sel", "<add> sel matched nothing: //wares/ware[@id='y']")],
+             [_F("sel", "<replace> sel matched nothing: //wares/ware[@id='x']/owner/@faction", vpath=_WARES),
+              _F("sel", "<add> sel matched nothing: //wares/ware[@id='y']", vpath=_WARES)],
              degraded=[_Skip("ware-reference checks", "an overlay would not parse")])
     assert rc == 3
     assert "DEGRADED" in capsys.readouterr().err
@@ -435,8 +440,8 @@ def test_a_REAL_agreement_over_a_COMPLETE_prediction_set_is_still_rc0(monkeypatc
                                                                       tmp_path):
     """The twin. Without it both tests above pass on a command that never returns 0."""
     rc = _cc(monkeypatch, tmp_path, SAMPLE,
-             [_F("sel", "<replace> sel matched nothing: //wares/ware[@id='x']/owner/@faction"),
-              _F("sel", "<add> sel matched nothing: //wares/ware[@id='y']")])
+             [_F("sel", "<replace> sel matched nothing: //wares/ware[@id='x']/owner/@faction", vpath=_WARES),
+              _F("sel", "<add> sel matched nothing: //wares/ware[@id='y']", vpath=_WARES)])
     assert rc == 0
 
 
@@ -445,3 +450,13 @@ def test_a_REAL_disagreement_still_fails(monkeypatch, tmp_path):
     rc = _cc(monkeypatch, tmp_path, SAMPLE,
              [_F("sel", "<add> sel matched nothing: /nowhere/at/all")])
     assert rc == 1
+
+
+def test_op_key_matches_the_engines_extensionless_path_to_the_validators_file():
+    """RT-1's twin: keying on the FILE must not break the agreement it exists to find.
+    The engine logs `libraries<backslash>wares` (no extension, any case); the
+    validator reports `libraries/wares.xml`. Both must produce one key -- and a
+    different file must not."""
+    sel = "//ware[@id='a']"
+    assert _debugcli.op_key("Libraries\\Wares", sel) == _debugcli.op_key("libraries/wares.xml", sel)
+    assert _debugcli.op_key("libraries/jobs.xml", sel) != _debugcli.op_key("libraries/wares", sel)

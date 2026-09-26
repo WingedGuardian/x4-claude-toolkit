@@ -103,7 +103,9 @@ def test_a_def_that_merely_MENTIONS_the_name_is_not_a_definition(tmp_path, monke
 def test_selftest_and_plain_file_citations_behave_as_before(tmp_path, monkeypatch):
     root = _tree(tmp_path, {"tests/test_real.py": ""})
     _only(monkeypatch, root)
-    assert rr.names_a_check("fixed; selftest", root) == "selftest"
+    # The bare word no longer counts (AUDIT-2026-09-24 GT-5): a selftest is cited by
+    # its script's path, which the path alternatives already resolve.
+    assert rr.names_a_check("fixed; selftest", root) is None
     assert rr.names_a_check("fixed; `tests/test_real.py`", root) == "tests/test_real.py"
     assert rr.names_a_check("fixed; `tests/test_absent.py`", root) is None
 

@@ -96,8 +96,6 @@ def _refresh_args(regp, **kw):
 
 # --------------------------------------------------------------------------- RT-1
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-1: crosscheck keys ops on the bare "
-                   "selector, so the same sel failing in two DIFFERENT files reads as agreement")
 def test_rt1_crosscheck_keeps_the_patch_file_in_the_key():
     sel = "//ware[@id='energycells']/price/@max"
     # The ENGINE skipped the op in libraries/wares ...
@@ -117,8 +115,6 @@ def test_rt1_crosscheck_keeps_the_patch_file_in_the_key():
 
 # --------------------------------------------------------------------------- RT-2
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-2: <history> vs current compared as "
-                   "(ext, version) tuples, so an UPDATED extension is listed 'NOT loaded now'")
 def test_rt2_an_updated_extension_is_not_reported_as_not_loaded(tmp_path):
     save = _write_save(tmp_path / "s.xml.gz",
                        '<patch extension="ws_1" version="200" name="A"/>'
@@ -126,13 +122,15 @@ def test_rt2_an_updated_extension_is_not_reported_as_not_loaded(tmp_path):
     buf = io.StringIO()
     assert _savecli.cmd_info(save, out=buf) == 0
     out = buf.getvalue()
-    gone = out.split("NOT loaded now", 1)[1] if "NOT loaded now" in out else ""
-    assert "ws_1" not in gone.split("! This is NOT")[0], out
+    # Split on "IN <history>", which heads the history section in BOTH the audited
+    # wording ("IN <history>, NOT loaded now") and the fixed one ("IN <history> ONLY"),
+    # so this goes red on the tuple comparison itself, not on a heading that was removed.
+    # (Proved: red against the audited _savecli.py, green after the fix.)
+    section = out.split("IN <history>", 1)[1].split("! This is NOT")[0] \
+        if "IN <history>" in out else ""
+    assert "ws_1" not in section, out
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-2: a history-only extension (the "
-                   "real trigger: ego_dlc_ventures) is asserted 'NOT loaded now', which "
-                   "<patches> cannot establish")
 def test_rt2_history_only_extension_is_not_asserted_unloaded(tmp_path):
     # Shape of the real autosave_03 header: 10 current patches, and ego_dlc_ventures v127 in
     # <history> only, while that DLC is installed with enabled="1" save="1".
@@ -150,8 +148,6 @@ def test_rt2_history_only_extension_is_not_asserted_unloaded(tmp_path):
 
 # --------------------------------------------------------------------------- RT-3
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-3: a reference inside the 4 KiB tail "
-                   "carried across a 4 MiB read boundary is counted twice")
 def test_rt3_reference_near_a_chunk_boundary_is_counted_once(tmp_path):
     tag = b'<component macro="m_boundary_macro"/>'
     first = b" " * (_savecli._CHUNK - 200 - len(tag)) + tag + b" " * 200
@@ -164,8 +160,6 @@ def test_rt3_reference_near_a_chunk_boundary_is_counted_once(tmp_path):
 
 # --------------------------------------------------------------------------- RT-4
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-4: harvest stops at 40 globals pages "
-                   "but reports the engine's claimed page total with no truncation notice")
 def test_rt4_harvest_states_when_the_globals_walk_was_capped(tmp_path, monkeypatch):
     def answer(verb, args, seq):
         if verb == "probe":
@@ -187,8 +181,6 @@ def test_rt4_harvest_states_when_the_globals_walk_was_capped(tmp_path, monkeypat
 
 # --------------------------------------------------------------------------- RT-5
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-5: the '*' row is split on the "
-                   "two-char escape BEFORE unescaping, so an escaped backslash + 't' cuts a value")
 def test_rt5_all_fields_value_with_backslash_t_survives(tmp_path):
     def esc(x):   # the writer's escaping, as `cmd_groundtruth._gesc` does it
         return x.replace(BS, BS * 2).replace(TAB, BS + "t").replace(chr(10), BS + "n")
@@ -206,8 +198,6 @@ def test_rt5_all_fields_value_with_backslash_t_survives(tmp_path):
 
 # --------------------------------------------------------------------------- RT-6
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-6: a MAPPED field whose store prop is "
-                   "absent is counted as 'not mapped yet', hiding a possible disagreement")
 def test_rt6_mapped_but_absent_is_not_counted_as_unmapped(tmp_path, monkeypatch):
     assert _livecli._mapping_for("shieldgentypes", "hull") == ("hull.max", "identity")
     con = sqlite3.connect(":memory:")
@@ -246,9 +236,6 @@ def _names_filling(total: int) -> list[str]:
     return out
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-7: the up-front --batch-bytes check "
-                   "reserves 9 bytes for a header that is 14+ bytes, so an ACCEPTED value "
-                   "produces requests the pipe refuses")
 def test_rt7_an_accepted_batch_bytes_never_produces_an_oversized_request(tmp_path, monkeypatch):
     monkeypatch.setenv("X4_LIVE_ALLOW_FFI", "1")
 
@@ -279,8 +266,6 @@ def test_rt7_an_accepted_batch_bytes_never_produces_an_oversized_request(tmp_pat
 
 # --------------------------------------------------------------------------- RT-8
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-8: _dps_channels multiplies amount x "
-                   "barrelamount; the 348-macro capture (KB 2026-09-20) measured max(amount, barrel)")
 def test_rt8_shot_multiplier_is_max_not_product(monkeypatch):
     store = {}
     monkeypatch.setattr(_livecli, "_store_props", lambda con, name: store.get(name))
@@ -300,8 +285,6 @@ def test_rt8_shot_multiplier_is_max_not_product(monkeypatch):
 
 # --------------------------------------------------------------------------- RT-9
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-9: `groundtruth --with-ramp` help says "
-                   "the lua client does not reconnect; the module's own MEASURED note says it does")
 def test_rt9_with_ramp_help_does_not_repeat_the_withdrawn_reconnect_claim(capsys):
     with pytest.raises(SystemExit):
         _livecli.main(["groundtruth", "--help"])
@@ -309,8 +292,6 @@ def test_rt9_with_ramp_help_does_not_repeat_the_withdrawn_reconnect_claim(capsys
     assert "does not reconnect" not in helptext
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-9: `x4save info` prints one machine's "
-                   "measured counts (3 of 121 mods, 118 of 129) to every user as if about theirs")
 def test_rt9_save_info_prints_no_machine_specific_counts(tmp_path):
     save = _write_save(tmp_path / "s.xml.gz", '<patch extension="ws_1" version="1" name="A"/>')
     buf = io.StringIO()
@@ -321,8 +302,6 @@ def test_rt9_save_info_prints_no_machine_specific_counts(tmp_path):
 # --------------------------------------------------------------------------- RG-1
 
 @pytest.mark.parametrize("failure", ["urlerror", "timeout", "not_json"])
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RG-1: _nexus catches only HTTPError, and "
-                   "refresh saves once at the end, so one network drop loses the whole run")
 def test_rg1_a_network_failure_mid_refresh_keeps_what_was_fetched(tmp_path, monkeypatch, failure):
     monkeypatch.setenv("X4_NEXUS_KEY", "test-key-not-real")
     regp = tmp_path / "r.yaml"
@@ -334,6 +313,10 @@ def test_rg1_a_network_failure_mid_refresh_keeps_what_was_fetched(tmp_path, monk
     def fake_urlopen(req, timeout=None):
         if "/1.json" in req.full_url:
             return _Resp(_meta_json())
+        # Row 1 is fully served, its file list included (refresh fetches files.json for
+        # the update verdict since RG-3), so the failure lands on row 2 as intended.
+        if "/1/files.json" in req.full_url:
+            return _Resp(b'{"files": []}')
         if failure == "urlerror":
             raise urllib.error.URLError("network is unreachable")
         if failure == "timeout":
@@ -351,8 +334,6 @@ def test_rg1_a_network_failure_mid_refresh_keeps_what_was_fetched(tmp_path, monk
 
 # --------------------------------------------------------------------------- RG-2
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RG-2: an auth failure (401) is recorded "
-                   "per row as 'error', overwriting every lane, and the run keeps calling")
 def test_rg2_an_invalid_key_stops_the_run_and_keeps_every_lane(tmp_path, monkeypatch):
     monkeypatch.setenv("X4_NEXUS_KEY", "revoked-key-not-real")
     regp = tmp_path / "r.yaml"
@@ -376,8 +357,6 @@ def test_rg2_an_invalid_key_stops_the_run_and_keeps_every_lane(tmp_path, monkeyp
 
 # --------------------------------------------------------------------------- RG-4
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RG-4: refresh --registry <typo> writes a "
-                   "NEW empty registry there and reports success")
 def test_rg4_refresh_refuses_a_registry_path_that_does_not_exist(tmp_path, monkeypatch):
     monkeypatch.setattr(_nexus.urllib.request, "urlopen",
                         lambda *a, **k: pytest.fail("no network call expected"))
@@ -390,8 +369,6 @@ def test_rg4_refresh_refuses_a_registry_path_that_does_not_exist(tmp_path, monke
     assert rc not in (0, None)
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RG-4: a malformed profile content.xml "
-                   "crashes ingest (XMLSyntaxError is not OSError)")
 def test_rg4_ingest_reports_a_malformed_profile_instead_of_crashing(tmp_path):
     bad = tmp_path / "content.xml"
     bad.write_text("<content><extension id='a' enabled='true'></content", encoding="utf-8")
@@ -406,8 +383,6 @@ def test_rg4_ingest_reports_a_malformed_profile_instead_of_crashing(tmp_path):
     assert rc == 2
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RG-4: `verify --rescore` promotes a guess "
-                   "to exact, but a same-day refresh skips it (TTL) so the lane stays capped")
 def test_rg4_rescore_then_same_day_refresh_uncaps_the_lane(tmp_path, monkeypatch):
     monkeypatch.setenv("X4_NEXUS_KEY", "test-key-not-real")
     monkeypatch.setattr(_nexus.urllib.request, "urlopen",
@@ -430,8 +405,6 @@ def test_rg4_rescore_then_same_day_refresh_uncaps_the_lane(tmp_path, monkeypatch
 
 # --------------------------------------------------------------------------- RG-5
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RG-5: _unquote cuts a QUOTED value at the "
-                   "first ' #', leaving a dangling quote in the path")
 def test_rg5_a_quoted_value_containing_space_hash_is_kept_whole(tmp_path):
     env = tmp_path / "x4-paths.env"
     env.write_text('X4_MODS="C:/My Mods #2/x4"\n', encoding="utf-8")

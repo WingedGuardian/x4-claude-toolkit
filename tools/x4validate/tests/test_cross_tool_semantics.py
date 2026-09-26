@@ -136,3 +136,34 @@ def test_a_removal_owned_row_is_checked_against_the_stores_REMOVALS():
                 "'a_mod', 1)")
     assert cross_tool._removal_sources(con, "libraries/wares.xml") == {"a_mod"}
     assert cross_tool._removal_sources(con, "libraries/jobs.xml") == set()
+
+
+def test_a_removal_owned_HARD_row_goes_red_and_green_against_store_removals(
+        tmp_path, monkeypatch):
+    """The merged check (lane E's per-node HARD scope + AN-5): a row whose live state
+    is a REMOVAL is compared against the store's `removed` sources -- agreeing when
+    the remover recorded the removal, failing when the store names someone else."""
+    import sqlite3
+    import types
+    from test_audit0924_gates import _cross_tool_with
+    from x4validate import _compat
+    vp = "libraries/wares.xml"
+    db = tmp_path / "e.sqlite"
+    con = sqlite3.connect(db)
+    con.execute("create table entities (id integer primary key, kind, name, klass, vpath, origin)")
+    con.execute("create table attrs (entity_id, prop, value, origin)")
+    con.execute("create table removed (vpath, node_path, source, op_line)")
+    con.execute("insert into entities values (1,'ware','ice','k',?, 'base')", (vp,))
+    con.execute("insert into attrs values (1,'price.max','1','base')")
+    con.execute("insert into removed values (?, '/wares/ware[1]', 'a_mod', 1)", (vp,))
+    con.commit()
+    con.close()
+
+    def row(remover):
+        return _compat.Collision(vpath=vp, kind="HARD", target="/wares/ware[1]",
+                                 mods=["a_mod", "b_mod"], winner=remover,
+                                 removed_by=remover)
+    ct = _cross_tool_with(monkeypatch, tmp_path, db, [row("a_mod")])
+    assert not ct.failures, ct.failures
+    ct = _cross_tool_with(monkeypatch, tmp_path, db, [row("b_mod")])
+    assert ct.failures, "the store records a_mod's removal; b_mod was claimed"

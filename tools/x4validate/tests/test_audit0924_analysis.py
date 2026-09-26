@@ -292,8 +292,6 @@ def _xref_tsv(tmp_path) -> Path:
     return _xref.write_tsv(rows, tmp_path / "x.tsv")
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-8: no command answers "
-                   "'where is signal_cue used'")
 def test_AN8_a_cue_edge_tag_is_queryable(tmp_path, capsys):
     tsv = _xref_tsv(tmp_path)
     _xref.main(["who-calls", "signal_cue", "--tsv", str(tsv)])
@@ -302,8 +300,6 @@ def test_AN8_a_cue_edge_tag_is_queryable(tmp_path, capsys):
     assert "occurrence(s) across" in out, out
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-8: the hint for `cue X` "
-                   "suggests `cue X` again")
 def test_AN8_the_hint_never_suggests_the_command_just_run(tmp_path, capsys):
     tsv = _xref_tsv(tmp_path)
     _xref.main(["cue", "signal_cue", "--tsv", str(tsv)])
@@ -312,8 +308,6 @@ def test_AN8_the_hint_never_suggests_the_command_just_run(tmp_path, capsys):
     assert "x4xref cue signal_cue" not in out, out
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-8: docstring says check_* "
-                   "is excluded; check_object is indexed")
 def test_AN8_docstring_exclusion_claim_matches_the_walker():
     rows: list = []
     _xref._walk(etree.fromstring(_MD), "base", "md/s.xml", rows)

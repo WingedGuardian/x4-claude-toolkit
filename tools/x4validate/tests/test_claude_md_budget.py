@@ -1,11 +1,13 @@
 """gates/claude_md_budget.py -- CLAUDE.md may not grow silently.
 
-WHY A RATCHET AND NOT A CEILING. "Under 40,000 chars" is a threshold that cannot go
+WHY A RECORDED PER-FILE SIZE AND NOT ONE CEILING. It is lowered only by `--record`
+(user decision 2026-09-25) -- NOT a self-tightening ratchet. "Under 40,000 chars" is a
+threshold that cannot go
 red in the way that matters: it reports PASS on a file full of content that has a
 better home. MEASURED 2026-09-12, the two CLAUDE.md files on this machine moved in
 OPPOSITE directions -- the game-root one 154,425 -> 38,056 (-75%), and the SHIPPED
 one 18,420 -> 70,118 in a single commit (`8289d5a`, +3.8x) which nothing announced.
-A ratchet would not have blocked that commit; it would have made it name what it
+A recorded size would not have blocked that commit; it would have made it name what it
 displaced.
 """
 
@@ -74,7 +76,7 @@ def test_an_unreadable_file_is_a_REFUSAL_not_a_pass(tmp_path):
 
 
 def test_resolving_no_files_at_all_exits_2(monkeypatch):
-    """A ratchet that passes when it measured nothing is the defect it exists to
+    """A budget that passes when it measured nothing is the defect it exists to
     prevent."""
     monkeypatch.setattr(b_, "budget_files", lambda: [])
     assert b_.main() == 2
@@ -90,7 +92,7 @@ def test_a_missing_baseline_says_drift_is_not_checked_and_never_passes_silently(
     cap = capsys.readouterr()
     out = cap.out + cap.err
     assert "NOT being checked" in out, out
-    assert rc == 2, "an unrecorded ratchet must REFUSE, not pass: rc %r" % rc
+    assert rc == 2, "an unrecorded budget must REFUSE, not pass: rc %r" % rc
 
 
 def test_record_then_check_is_green_and_the_baseline_round_trips(monkeypatch, tmp_path):

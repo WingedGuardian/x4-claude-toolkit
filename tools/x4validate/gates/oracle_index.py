@@ -61,7 +61,13 @@ def main():
     hits = Counter(e.lookup for e in entries)
     print(f"index-miss lines in log: {len(entries)} across {len(names)} distinct name(s)")
     if not entries:
-        raise SystemExit("no shape-G entries parsed — the oracle has no ground truth")
+        # CANNOT (rc 2), not FAIL: SystemExit(<str>) exits 1, which run-gates.sh read
+        # as a failed gate over a log that simply holds no index misses
+        # (AUDIT-2026-09-24 GT-4). No ground truth is a non-answer.
+        _env.skip("no shape-G entries parsed from %s -- the oracle has no ground truth"
+                  % LOG,
+                  "capture a debug.txt from a load that logged 'Cannot find XML file "
+                  "component macro' lines, and point $X4_ORACLE_LOG at it")
 
     # ACTIVE: the oracle is scored against the ENGINE's own debug.txt, so its
     # world model has to be the engine's world model.

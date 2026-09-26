@@ -108,8 +108,28 @@ _SEL_SHAPES = (
 )
 
 
+def op_key(vpath: str, sel: str) -> str:
+    """One op's comparison key: the patch FILE and the selector, never the selector alone.
+
+    The same selector legitimately appears in several files of one mod (17 such
+    collapses in one real mod, AUDIT-2026-09-24 RT-1), so keying on the bare `sel`
+    let an op the engine skipped in `libraries/wares` read as "agreed" with a
+    prediction about `libraries/jobs.xml`. The engine drops the `.xml` extension on
+    these lines (`_debuglog.xml_candidates`, quirk 1) and the validator keeps it, so
+    both sides are normalised the same way: posix separators, lower case, no `.xml`.
+
+    A finding with no file (only a hand-built one; the validator always sets it)
+    keys on the bare selector, so it can never be matched to an engine line in
+    some other file -- it lands in a one-sided bucket, where it is visible.
+    """
+    v = vpath.replace(chr(92), "/").strip().removeprefix("./").lstrip("/").lower()
+    if v.endswith(".xml"):
+        v = v[:-4]
+    return f"{v} :: {sel}" if v else sel
+
+
 def predicted_ops(report) -> list[str]:
-    """The selectors x4validate says are cardinality failures.
+    """The ops x4validate says are cardinality failures, keyed by `op_key`.
 
     Reads `Finding.sel` — the selector verbatim — and falls back to parsing the
     message only for findings that predate that field.
@@ -132,14 +152,15 @@ def predicted_ops(report) -> list[str]:
     for f in getattr(report, "findings", []):
         if f.category != "sel":
             continue
+        vpath = getattr(f, "vpath", "") or ""
         structured = getattr(f, "sel", "")
         if structured:
-            out.append(structured)
+            out.append(op_key(vpath, structured))
             continue
         for rx in _SEL_SHAPES:
             m = rx.search(f.message)
             if m:
-                out.append(m.group("sel"))
+                out.append(op_key(vpath, m.group("sel")))
                 break
         else:
             # Not every "sel"-category finding IS a cardinality failure — invalid
@@ -161,9 +182,9 @@ _NON_CARDINALITY = re.compile(
 
 
 def observed_ops(parsed: _debuglog.ParsedLog, folder: str) -> list[str]:
-    """The selectors the ENGINE skipped for one mod folder (shapes E/F)."""
+    """The ops the ENGINE skipped for one mod folder (shapes E/F), keyed by `op_key`."""
     low = folder.lower()
-    return [e.sel for e in parsed.entries
+    return [op_key(e.vpath, e.sel) for e in parsed.entries
             if e.cardinality and e.folder.lower() == low]
 
 

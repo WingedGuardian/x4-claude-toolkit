@@ -685,15 +685,18 @@ def _do_add(targets, op, recorder: Recorder | None = None,
             if pos in {"before", "after"} and t.getparent() is None:
                 return (f"add pos={pos!r} targets the document root, which has no "
                         "siblings")
-            if pos == "prepend":
+            # A separate name (`where`) on purpose: gates/mutation_probe.py anchors its
+            # prepend mutant on the ELEMENT path's exact source line, which must stay unique.
+            where = pos or "append"
+            if where == "prepend":
                 t.text = text + (t.text or "")
-            elif pos == "before":
+            elif where == "before":
                 prev = t.getprevious()
                 if prev is not None:
                     prev.tail = (prev.tail or "") + text
                 else:
                     t.getparent().text = (t.getparent().text or "") + text
-            elif pos == "after":
+            elif where == "after":
                 t.tail = text + (t.tail or "")
             elif len(t):
                 t[-1].tail = (t[-1].tail or "") + text

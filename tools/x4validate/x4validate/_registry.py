@@ -713,6 +713,30 @@ def generate_dashboard(reg: CommentedMap) -> str:
             lines.append(f"| `{m['id']}` | **{state}** | {cur} | {cands} |")
         lines.append("")
 
+    # UPDATES. "Available" = the upstream file (newest MAIN, or the pinned file) was
+    # UPLOADED AFTER the installed manifest's date -- both dates are printed, because
+    # version strings are not comparable across Nexus's shapes (AUDIT-2026-09-24 RG-3).
+    # The tally covers every active row, so "0 available" can be told from "never checked".
+    tally: dict[str, int] = {}
+    for m in mods:
+        v = m["auto"].get("update") or "not checked"
+        tally[v] = tally.get(v, 0) + 1
+    lines.append("**Updates** (upstream upload date after the installed manifest date; "
+                 "versions not compared): " +
+                 " · ".join(f"{n} {k}" for k, n in sorted(tally.items())) + "\n")
+    avail = [m for m in mods if m["auto"].get("update") == "available"]
+    if avail:
+        lines.append(f"## ⬆ UPDATE AVAILABLE  ({len(avail)})")
+        lines.append("| Mod | id | installed manifest date | upstream uploaded | upstream file |")
+        lines.append("|-----|----|-------------------------|-------------------|---------------|")
+        for m in sorted(avail, key=lambda x: x["id"]):
+            a = m["auto"]
+            lines.append(f"| {a.get('name') or a.get('installed_name') or '—'} | {m['id']} | "
+                         f"{a.get('installed_date') or '—'} | "
+                         f"{a.get('upstream_newest_uploaded') or '—'} | "
+                         f"{a.get('upstream_newest') or '—'} |")
+        lines.append("")
+
     by_class: dict[str, list] = {}
     for m in mods:
         by_class.setdefault(m["auto"].get("classification", "untriaged"), []).append(m)

@@ -164,7 +164,11 @@ def test_area_damage_ALONE_still_produces_a_channel(store):
 def test_bullet_amount_and_barrelamount_BOTH_multiply(store):
     """⚠ Left out of the first model because the first worked example had both at 1 --
     UNCONSTRAINED data read as "not in the formula". bullet_xen_l_waver_macro has
-    barrelamount 9 and the engine's dps is exactly 9x the single-barrel figure."""
+    barrelamount 9 and the engine's dps is exactly 9x the single-barrel figure.
+
+    With amount=1 the product and the max coincide, so this fixture cannot tell them
+    apart; the discriminating shotgun shape (8 x 2 -> 8, not 16) is pinned by
+    test_audit0924_runtime.py::test_rt8_shot_multiplier_is_max_not_product."""
     base = {"reload.rate": "0.035", "damage.value": "30500", "bullet.lifetime": "5",
             "bullet.attach": "1"}
     one = C._dps_channels(_Con(), _weapon(store, base, "w1", "b1"))["hullshielddps"]
