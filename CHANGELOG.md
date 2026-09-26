@@ -21,10 +21,27 @@ Numbers below are taken from the commit that made the change.
 - **Tier B places a mod that is not installed by the same rule** (its folder name + its own
   manifest's dependencies) instead of assuming it loads LAST, which hid ops the engine skips.
   Packed and unpacked DLC now sort by the same key.
-- **Limit, stated:** what is measured is signature-check order. That it is also the
-  patch-APPLY order is inferred, and shapes no installed modlist exercises (missing or
-  optional dependencies, cycles, duplicate ids, non-ASCII names) are unobserved. Results that
-  turn on which mod won stay advisory.
+- **Apply order is MEASURED too.** The in-game `scripts/load-order-probe.py` run (2026-09-26)
+  passed: signature order 12/12 as predicted, and **apply order 3/3** -- its collision pairs
+  `<replace>` an attribute another probe `<add>`s, and the replace succeeded exactly when the
+  adder loads earlier. A folder with `ß` loads after one with `sz`; all DLC load before
+  mods. Still unobserved: other install roots, non-NTFS filesystems.
+- **Which mods count as LOADED now follows the engine** (`mods("active")`, used by Tier B,
+  x4compat, x4stats, x4effective, BaseX `x4eff` and the gates), MEASURED by the same probe:
+  a mod whose **REQUIRED dependency is missing, disabled or part of a cycle is NOT loaded**
+  (an optional one never excludes; a `<dependency>` naming only a game version is ignored);
+  a profile entry **without an `enabled` attribute loads**; a manifest `enabled="0"` with a
+  profile entry `enabled="true"` **loads** (the profile decides, the manifest is only the
+  default); two folders sharing one id both load. Installed DLC count as dependency
+  providers, taken from the configured reference and the packed DLC of the install -- so
+  `--ext-dir <a folder holding no ego_dlc_*>` no longer silently drops every mod that needs
+  a DLC. Tier B, x4compat, `x4effective build` and BaseX build-effective NAME each mod left
+  out and why; the other active-scope callers do not yet (BLIND-SPOTS F139).
+- **Tier B, x4compat and x4stats place the mod under test by ONE rule**: the installed
+  copy's folder name when it matches by folder or id (case-insensitive), else its own folder
+  name; its dependencies from the copy under test; the installed copy left out. Tier B used
+  to match case-sensitively (a case-different dev copy validated against its own installed
+  copy) and to order by the installed manifest.
 - New: **`gates/load_order_oracle.py`** holds `compute_load_order` to the engine's order on
   every new log (rc 2 when the log describes another modlist). **`scripts/load-order-probe.py`**
   builds throwaway one-op mods with a PREDICTION written before launch, to settle the
@@ -94,6 +111,10 @@ Numbers below are taken from the commit that made the change.
   `analyze()` takes 30.7-32.7 s, against 11.5-12.6 s without this analysis.
 
 ### x4stats, x4effective, x4similar, x4xref
+
+- x4xref records the `--reference` it was built from and checks freshness against it (an
+  index built with another reference used to read STALE forever); x4similar orders DLC by
+  the engine's folder key.
 
 - `x4stats wares`: a ware the candidate REMOVES is reported (it printed "changes no wares");
   the candidate resolves against the mods loading BEFORE it, not the whole set.
@@ -180,6 +201,12 @@ Numbers below are taken from the commit that made the change.
   baseline (`--record`; until recorded it reads rc 2); `cross_tool` checks the HARD winner on
   the collided node; `update_corpus` credits a planted case only from its own file;
   `register_rederivation` names every dead citation on each run.
+- **Re-baselines, attributed per item.** `schema_sweep`: 71 -> **74** advisory, 41 -> **42**
+  mods flagged -- +3 in ONE mod, a real authoring defect (three text-only `<add>`s into
+  `<area>`) that the old merge silently dropped and the MG-2 merge fix now models; pairs,
+  gating, suppressed and NOT-checked unchanged. `obtainability_audit`: unreadable files are
+  compared by NAME, and a local baseline recorded before 2026-09-25 lacks those names, so it
+  reads rc 2 NOT COMPARABLE -- re-record it once with `--record`.
 - `claude_md_budget` is described as what it is — a recorded ceiling lowered only by
   `--record`, not a ratchet.
 

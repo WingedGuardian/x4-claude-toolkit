@@ -349,8 +349,8 @@ cd $CLAUDE_PROJECT_DIR/tools/x4validate && uv run x4validate <dev\mod_folder>
 - **Cross-mod: use `--tier b`.** Tier A builds base+DLC only, so a diff targeting another mod's
   content reports `no base game file` — expected, not a real error. Tier B merges the installed
   extension set in load order, and also catches the reverse failure Tier A passes silently:
-  content another mod has REMOVED. Ordering is the engine's measured signature-check order;
-  that it is also patch-APPLY order is inferred → treat ordering-dependent results as advisory.
+  content another mod has REMOVED. Ordering is the engine's MEASURED order -- signature-check
+  order from the log, and patch-APPLY order by the in-game load-order probe (2026-09-26).
 - **Schema validation is GATED behind `--update`.** Compiling `md.xsd` costs ~102 s so it does
   not run by default — a plain run reports `OK: no issues found` on a script it never
   schema-checked. `--xsd-fast` skips the compile but loses the "element not expected" class,

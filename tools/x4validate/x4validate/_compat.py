@@ -192,8 +192,9 @@ class CompatReport:
     @property
     def hard(self) -> list[Collision]:
         # SUBTREE counts as hard-ish by user decision (2026-08-02): a later mod
-        # provably wiping an earlier mod's applied change gates, with the
-        # load-order-is-convention caveat carried in every row's detail text.
+        # provably wiping an earlier mod's applied change gates. The order is the
+        # engine's MEASURED one (signature order from the log; apply order by the
+        # in-game load-order probe, 2026-09-26), no longer a convention.
         return (self.by_kind("HARD") + self.by_kind("FULL-OVERRIDE")
                 + self.by_kind("SUBTREE"))
 

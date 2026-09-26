@@ -189,9 +189,9 @@ def sort_key(folder: str) -> str:
     """The engine's folder order: case-insensitive, compared in UPPERCASE.
 
     Per CHARACTER, not `str.upper()` on the whole name: `str.upper()` maps a sharp s to
-    'SS' and so changes the key's length and order. Whether the engine keeps ß as one
-    character (as NTFS's own directory order does) is what the load-order probe's
-    non-ASCII case measures; on ASCII names the two agree.
+    'SS' and so changes the key's length and order. The engine keeps ß as one character
+    (as NTFS's own directory order does): MEASURED 2026-09-26 by the load-order probe's
+    non-ASCII case, a folder with ß loads AFTER one with sz. On ASCII names the two agree.
     """
     return "".join(c.upper() if len(c.upper()) == 1 else c for c in folder)
 

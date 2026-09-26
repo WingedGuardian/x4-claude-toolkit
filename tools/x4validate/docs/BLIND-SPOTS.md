@@ -206,7 +206,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F125 | a live refusal read the helper's ABSENT load marker as "most likely not installed" -- but the mod arms on GAME LOAD, so at the MAIN MENU the marker is legitimately absent and the install is fine | **DEFECT (measured)** · ✅ FIXED 2026-09-20 | in game 2026-09-20 at the main menu with no save loaded: marker absent, extension present and enabled, refusal said "not installed or not enabled" | the install is MEASURED directly (`helper_is_deployed()` over `mods("active")`) instead of inferred from the log; with deployment unknown the message names BOTH causes |
 | F127 | the guard's scope rules matched a search rooted AT a big tree and at the toolkit/game roots, never ABOVE one — so when the dev repo was retired and `X4_TOOLKIT` moved, the parent of the 60 GB `reference\` tree stopped being named by any root and a recursive search there became ALLOW. The ancestor was covered only BY COINCIDENCE | **DEFECT (measured)** · ✅ FIXED 2026-09-21 | 2026-09-21 through the DEPLOYED hook: `cd <parent-of-reference> && grep -rl x .` → ALLOW, while the same shape at the toolkit root, at `reference/` itself and at the game root all → deny. 3 controls denying is what made it a hole, not a rule change. Found by `hook_false_positives` going red (146 of 17,133 shared commands moved). **6 commands affected, not the 3 the first text-based classification found** — the other 3 never contain the string `reference` | `contains_root()` makes a PROPER-ANCESTOR search fire the same rule; 11 tests incl. a split-root fixture, 3 of 3 clause mutants killed, 8-case end-to-end probe on the deployed hook |
 | F126 | `build-effective.sh` rebuilt the x4eff DATABASE correctly but skipped the COVERAGE STAMP and still exited 0, so a freshly built index reported STALE indefinitely and refused to back any negative claim | **DEFECT (measured)** · ✅ FIXED 2026-09-20 | 2026-09-20: DB timestamp 02:15:41 with 10,970 documents, while `coverage-x4eff.json` kept mtime 00:22:03 and the PREVIOUS content fingerprint (`1f071ac8` vs the `39c7120a` stamped on `coverage-x4raw.json` minutes earlier); exit code 0 | not fixed. Cause identified -- a staging `rm` hit `_eff/tree/libraries/controlschemes_for_movie_capturing.xml` while BaseX still held it (`Device or resource busy`) and the stamp step never ran. A retry with the lock released stamped correctly, so it is NOT reproduced |
-| F128 | `compute_load_order` modelled the COMMUNITY rule (ASCII case-sensitive sort, each mod as early as its dependencies allow) and nothing ever compared it with the ENGINE -- it decides every collision winner | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | 685 of 5,134 ordered pairs inverted (372 file classes, two launches of the engine's own log); every existing winner test still passed | engine rule (case-insensitive UPPERCASE order, repeated passes) implemented: 0 of 5,134 inverted, held to every new log by `gates/load_order_oracle.py`. Signature order = apply order is INFERRED, not probed (AUDIT LO-2/LO-3 OPEN) |
+| F128 | `compute_load_order` modelled the COMMUNITY rule (ASCII case-sensitive sort, each mod as early as its dependencies allow) and nothing ever compared it with the ENGINE -- it decides every collision winner | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | 685 of 5,134 ordered pairs inverted (372 file classes, two launches of the engine's own log); every existing winner test still passed | engine rule (case-insensitive UPPERCASE order, repeated passes) implemented: 0 of 5,134 inverted, held to every new log by `gates/load_order_oracle.py`. Signature order = apply order is INFERRED, not probed (AUDIT LO-2/LO-3 OPEN). **2026-09-26: CLOSED** -- the in-game `scripts/load-order-probe.py` run PASSED (order 12/12, apply order 3/3 by its add/replace collision pairs, `ß` after `sz`, DLC before mods): apply order is now MEASURED (LO-2 FIXED); LO-3's dependency shapes FIXED `8f66d1c` |
 | F129 | the freshness fingerprint missed three ways an artifact goes stale: a mod MOVING between install roots, code that shapes the store but was not in `ENGINE_SOURCES`, and a reference (game) update, which it blamed on mods | **DEFECT (read)** · ✅ FIXED 2026-09-25 | `ENGINE_SOURCES` named 8 modules, 3 of them never on the store path, and missed 2 that are; x4xref stamped 1 of the 3 roots it indexes; BaseX staleness watched the game-root extensions only | root folded into the content axis; sources re-derived by tracing a build (7 now); reference is its own axis; every index stamps every root it reads |
 | F130 | x4diff compared ATTRIBUTES only: an edit whose value is element TEXT was invisible, and the three-way called such an author edit VERBATIM | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | `<replace sel=".../@min">5</replace>` → 999 read "changed files: 0", rc 0; ~48% of installed-mod ops carry their value in text | text keyed as a `text()` pseudo-attribute, positional across children; diff ops keyed by payload identity (839 of 7,022 ops shared tag + sel) |
 | F131 | `ask.py` scored a zero against the WHOLE database's denominator whatever the query actually addressed | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | `db:get('x4eff','no/such/typo.xml')//ware` → "NEGATIVE CONFIRMED over 10970 of 10970 documents", rc 0 | every call that reaches a database is classified; a partial, foreign or non-literal address is refused rc 2. Coverage licence revoked before DROP DB and judged per root (BX-3, BX-4) |
@@ -217,6 +217,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F136 | the per-edit hook's `x4validate --file` and the full run gave DIFFERENT verdicts on the same file, and `--file` silently dropped flags | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | a nested patch for an uninstalled target: ERROR rc 1 under `--file`, INFO rc 0 in the full run; `--file` printed "OK: no issues found" with no denominator | both paths share one sel check; `--file` states its denominator and lists every check it did not run; a dropped flag is a degraded skip (exit 3) |
 | F137 | BaseX staging read an EMPTY packed-DLC answer as a failure and fell back to a hard-coded mini-DLC pair, indexing both mini-DLC twice | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | 142 documents (deep-equal duplicates at identical paths) indexed twice in x4raw | the answer is used as given; a failure to ask refuses rc 2. A database built before the fix keeps its duplicates until rebuilt |
 | F138 | `register_rederivation` credits an entry to ANY existing path it cites, including a path the entry quotes as EVIDENCE of the defect rather than as a check of the fix | **SCOPE (measured)** · ⏳ OPEN | 2 of the 6 entries reviewed for AUDIT DC-3 (F60, F73) were "covered" only by such a mention | open. The rest of the register's covered entries are NOT classified |
+| F139 | `mods("active")` records a mod it leaves out (a REQUIRED dependency missing, disabled or cyclic; an unreadable manifest) only into a `dropped=` list the CALLER must pass, and no active-scope caller passed one | **SCOPE (measured)** · ◐ PARTLY FIXED 2026-09-26 | 0 of 125 installed mods excluded on this install (MEASURED 2026-09-26), so today's cost is zero -- the #23 shape | Tier B, x4compat, `x4effective build`, BaseX build-effective now disclose each exclusion; **16 of 20** active-scope call sites still do not (see the entry) |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -7061,6 +7062,15 @@ missing/optional/disabled dependencies, cycles, duplicate ids, non-ASCII names, 
 other install roots (LO-3). `scripts/load-order-probe.py` is built to settle both and has not
 been run in game yet.
 
+> **2026-09-26 -- the 3% is spent.** The probe was run in game and `score` PASSED: signature
+> order 12/12 as predicted; **apply order 3/3** -- each collision pair `<replace>`s an attribute
+> another probe `<add>`s, and the replace succeeded exactly when the adder loads earlier, so
+> signature order = apply order is now MEASURED, not inferred (AUDIT LO-2 FIXED); a folder with
+> `ß` loads after one with `sz` (`sort_key` keeps `ß` as one character); all DLC load before
+> mods. The dependency/enable shapes it measured are applied by `mods("active")` (LO-3,
+> `8f66d1c`). Still unobserved: other install roots, non-NTFS filesystems. The paragraph above
+> is kept as the state before the run.
+
 **What it did.** `_loadorder.compute_load_order` sorted folders ASCII (case-sensitive) and
 placed each mod as early as its dependencies allowed (Kahn). That is the community convention;
 no official source pins a rule (LO-4: Egosoft documents dependencies, not order, and the one
@@ -7327,3 +7337,27 @@ MENTION" only in the sense that the file must EXIST — existence is what it che
 
 Open: classify every covered entry's crediting path (check vs mention) before deciding whether
 the fix is a citation grammar (e.g. only paths on a `RE-DERIVED BY` line count) or a baseline.
+
+## F139 — the active mod set's exclusions are recorded only if the caller asks · **SCOPE (measured)** · confidence 95% · ◐ PARTLY FIXED 2026-09-26
+
+**Found 2026-09-26 (AUDIT-2026-09-24 final review).** `_registry.mods("active")` models the
+engine's load decision (MEASURED by the load-order probe): a mod whose REQUIRED dependency is
+missing, disabled or cyclic does not load, and neither does one whose manifest will not parse.
+Leaving it out is right. Saying nothing is not: each exclusion is appended to `dropped` only
+when the caller passes one, and `_registry` cannot print (it is an engine source,
+`tests/test_engine_sources_carry_no_cli.py`). MEASURED at the fix commit: **20** active-scope
+call sites across `x4validate/`, `gates/` and `tools/basex/` (the `_effective.active_mods`
+wrapper not counted); **0** passed `dropped`.
+
+**Fixed for 4:** Tier B (`_check.tier_b_trees`: a non-degraded NOT CHECKED skip + a note per
+mod), x4compat (`analyze`: NOT ANALYSED), `x4effective build` (a progress line) and BaseX
+`build-effective.py` (stderr). **Still silent (16):** `_check.py` (3 non-Tier-B lookups),
+`_effectivecli` dump, `_livecli`, `_livepipe`, `_savecli`, `_similarity`, `_stats`, and the
+gates `consistency_audit`, `load_order_oracle`, `obtainability_audit`, `oracle_index`,
+`oracle_reverse`, `similar_audit`, `tool_properties`. Cost today: 0 of 125 installed mods are
+excluded on this install (MEASURED 2026-09-26) -- which is exactly where a wrong denominator
+hides (CLAUDE.md #23), and it grows with every user's broken dependency.
+
+**RE-DERIVED BY:** `tests/test_active_exclusions_disclosed.py` (one excluded mod; each of the
+four surfaced callers must name it and its reason; a twin with nothing excluded says nothing).
+

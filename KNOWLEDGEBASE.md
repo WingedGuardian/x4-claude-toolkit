@@ -298,12 +298,17 @@ after it waits for the NEXT pass. Later loads win. Evidence: the "Failed to veri
 signature" sequence per file path in `debug.txt` -- 372 file classes / 5,134 ordered pairs over
 two launches, 0 inverted by this rule; the previous "alphabetical + dependencies forced earlier"
 (Kahn) model inverted 685. `_loadorder.compute_load_order` implements it and
-`gates/load_order_oracle.py` re-checks it against every new log. ⚠ What is measured is
-SIGNATURE-CHECK order; that it is also the patch-APPLY order (what decides winners) is
-INFERRED, and shapes the installed modlist never exercises -- non-ASCII names, DLC
-position -- are unobserved here (the dependency shapes are settled below).
-`tools/x4validate/scripts/load-order-probe.py` is the experiment built to settle both (throwaway
-one-op mods with a PREDICTION written before launch); not yet run in game as of 2026-09-26.
+`gates/load_order_oracle.py` re-checks it against every new log. That log shows
+SIGNATURE-CHECK order; that it is also the patch-APPLY order (what decides winners) was
+INFERRED until the in-game probe below.
+**MEASURED 2026-09-26** by `tools/x4validate/scripts/load-order-probe.py` (throwaway one-op mods,
+PREDICTION written before launch, launched to the main menu, `score` = PASS): signature order
+**12/12** as predicted; **apply order 3/3** -- the probe's collision pairs `<replace>` an attribute
+another probe `<add>`s, and the replace succeeded exactly when the adder loads earlier, so apply
+order is now MEASURED, not inferred; a folder with `ß` loads **after** one with `sz` (the engine keeps
+`ß` as one character above `Z`, not Python's `str.upper()` -> `SS`); all **DLC load before mods**. The
+dependency and enable rules it measured are the next paragraph. Still unobserved: other install
+roots, non-NTFS filesystems.
 
 **Which extensions LOAD at all is MEASURED** (2026-09-26, the load-order probe above: 23 throwaway
 mods launched to the main menu; a mod the engine loaded is signature-checked in `debug.txt`, one it
