@@ -34,7 +34,8 @@ runs is named too. The file is machine-local and gitignored -- it describes this
 install's modlist, like `.obtainability-baseline.json`.
 
 Run: `uv run python gates/schema_sweep.py [--record]`
-Exit: 0 totals, KNOWN_REAL and every per-mod row match
+Exit: 0 totals, KNOWN_REAL and every per-mod row match (with --record: they match and the
+        per-mod baseline was written; --record never writes over a failing run)
       1 any of them moved (a finding outranks everything below)
       2 no per-mod baseline, or one this version cannot read -- the per-item
         comparison did not happen, so a clean total is NOT a pass. `--record`
@@ -566,7 +567,13 @@ def main() -> int:
 
     # --- per-item: findings MOVING between mods cannot net to zero here ---------
     refuse = ""
-    if RECORD:
+    if RECORD and fail:
+        # Never record over a failing run: the totals / KNOWN_REAL checks above just
+        # said the check no longer matches its measurement, and writing today's rows
+        # would make that regression the per-mod "normal" (review of a202814).
+        print("\nNOT RECORDING the per-mod baseline: the totals/KNOWN_REAL checks failed "
+              "(below). Attribute and fix those first.", file=sys.stderr)
+    elif RECORD:
         blob = json.dumps({"_format": BASELINE_FORMAT, "mods": rows}, indent=1,
                           sort_keys=True) + "\n"
         BASELINE.write_bytes(blob.encode("utf-8"))

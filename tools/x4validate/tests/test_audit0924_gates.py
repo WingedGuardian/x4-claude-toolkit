@@ -824,3 +824,13 @@ def test_gt5_cross_tool_refuses_when_the_checker_cannot_place_its_population(
     assert any(x.startswith("HARD:") for x in ct.cannot), ct.cannot
     out = capsys.readouterr().out
     assert "checked 1 of 3 mappable" in out and "2 unmapped by the checker" in out
+
+
+def test_gt5_schema_sweep_record_refuses_when_totals_do_not_match(tmp_path, monkeypatch):
+    """Review of a202814: --record wrote the per-mod baseline even when the totals or
+    KNOWN_REAL had just failed, so a regression could be recorded as the new normal."""
+    sw = _schema_sweep(monkeypatch, tmp_path, {"moda": (3, 1), "modb": (1, 1)})
+    monkeypatch.setattr(sw, "EXPECT_ERR", 99)                # the totals check fails
+    monkeypatch.setattr(sw, "RECORD", True)
+    assert sw.main() == 1
+    assert not sw.BASELINE.exists(), "a per-mod baseline was recorded over a failing run"
