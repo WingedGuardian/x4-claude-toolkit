@@ -401,12 +401,21 @@ from x4validate import _check, _merge
 # denominator, exactly as forkmaterial's does.
 #
 # NOTHING IS UNATTRIBUTED IN THIS RE-BASELINE.
+#
+# RE-BASELINED 2026-09-26: advisory 71 -> 74, mods flagged 41 -> 42. MEASURED per item on
+# the same installed world with the pre-remediation code (4815310: 71 / 41, OK) and the
+# new code: the ONLY difference is +3 advisory in ONE mod, ebi_pirate_chaos_conflict --
+# three `Element 'area': Character content is not allowed` in libraries/mapdefaults.xml.
+# That mod ships `<add sel=".../properties/area">factionlogic=true</add>` three times (an
+# attribute add missing its `type="@..."`). The old merge dropped a text-only add, so the
+# schema never saw the text; AUDIT-2026-09-24 MG-2 models it, and the schema pass now
+# reports a real authoring defect. Pairs, errors, suppressed and NOT-checked unchanged.
 # ---------------------------------------------------------------------------
 EXPECT_PAIRS = 178
 EXPECT_ERR = 77
-EXPECT_INFO = 71
+EXPECT_INFO = 74
 EXPECT_SUPPRESSED = 3
-EXPECT_MODS_FLAGGED = 41
+EXPECT_MODS_FLAGGED = 42
 #: Files this sweep could NOT schema-check. Pinned from 2026-08-01, because the
 #: gate previously froze only what WAS checked — so 31 documents skipped with a
 #: false reason never moved a single number here. A rise means coverage was lost
