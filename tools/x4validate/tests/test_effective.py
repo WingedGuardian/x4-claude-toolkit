@@ -278,3 +278,28 @@ def test_who_sets_does_not_call_an_entity_all_base_when_a_mod_REMOVED_part_of_it
     out = capsys.readouterr().out
     assert "removal" in out and "ccc_remove" in out, out
     assert "every stored property is its base value" not in out, out
+
+
+# --- AN-3: "modified" = a MOD in the entity's, an attribute's, or a sole-entity
+#     file's removal provenance -- never a DLC, never a removal in a shared file ---
+
+def test_modified_sql_counts_a_sole_entity_removal_but_not_a_shared_file_one():
+    import sqlite3
+    from x4validate import _effectivecli
+    con = sqlite3.connect(":memory:")
+    con.executescript(_effective._SCHEMA)
+    con.execute("INSERT INTO mods VALUES('m', 'm', 'm', '1', 0, 1, 0)")
+    con.executemany("INSERT INTO entities VALUES(?,?,?,?,?,?,?)", [
+        (1, "macro", "solo_macro", "ship_s", "a/solo.xml", "base", None),
+        (2, "ware", "w1", "g", "libraries/wares.xml", "base", None),
+        (3, "ware", "w2", "g", "libraries/wares.xml", "base", None),
+        (4, "ware", "dlc", "g", "libraries/wares.xml", "ego_dlc_x",
+         '[["ego_dlc_x", "union-add", 0]]'),
+    ])
+    con.executemany("INSERT INTO removed VALUES(?,?,?,?)", [
+        ("a/solo.xml", "/macros/macro/properties/hull/@max", "m", 1),
+        ("libraries/wares.xml", "/wares/ware[1]/@tags", "m", 1),
+    ])
+    got = {r[0] for r in con.execute(
+        "SELECT name FROM entities WHERE " + _effectivecli._MODIFIED_SQL)}
+    assert got == {"solo_macro"}, got

@@ -42,7 +42,29 @@ from x4validate._effective import (
 )
 
 
-def _winner_not_origin_note(vpath: str, chain_json: str | None, cfg=None) -> str | None:
+def _base_defines_entity(cfg, kind: str, vpath: str, name: str) -> bool:
+    """Does the base+DLC tree at *vpath* (no mods) define the entity *kind*/*name*?
+
+    Registry kinds are matched on their key attribute (`LIBRARY_REGISTRIES`), macros
+    and components on `@name`. A kind this does not know is answered by file
+    existence alone -- the pre-AN-4 behaviour -- because guessing its identity rule
+    would be a second, unreviewed definition of the store's key.
+    """
+    tree = _merge.build_effective(vpath, _merge.replace(cfg, overlays=())).tree
+    if tree is None:
+        return False
+    if kind in LIBRARY_REGISTRIES:
+        _vp, child, _klass, key = LIBRARY_REGISTRIES[kind]
+        return any(el.get(key) == name for el in tree.findall(child))
+    if kind in ("macro", "component"):
+        els = [tree] if tree.tag == kind else tree.iter(kind)
+        return any(el.get("name") == name for el in els)
+    return True
+
+
+def _winner_not_origin_note(vpath: str, chain_json: str | None, cfg=None,
+                            kind: str | None = None,
+                            name: str | None = None) -> str | None:
     """Disclaimer for a chain that shows a WINNER and reads like an ORIGIN (F64).
 
     A root ``<replace sel="//macros">`` swaps the whole document, so base
@@ -82,6 +104,12 @@ def _winner_not_origin_note(vpath: str, chain_json: str | None, cfg=None) -> str
     try:
         cfg = cfg if cfg is not None else _merge.Config()
         if not _effective.base_has(cfg, vpath):
+            return None
+        # THE FILE IS NOT THE ENTITY (AUDIT-2026-09-24 AN-4). Base shipping
+        # libraries/wares.xml says nothing about a ware a mod ADDED to it, and the
+        # note then told the user a genuinely introduced ware had merely "won".
+        # Given the entity, ask whether base+DLC actually DEFINE it.
+        if kind and name and not _base_defines_entity(cfg, kind, vpath, name):
             return None
     except Exception:  # silent-ok: no resolvable reference tree means the question
         # 'does base ship this?' is UNANSWERABLE here, and an absent advisory note is a
@@ -133,7 +161,9 @@ def main(argv: list[str] | None = None) -> int:
                      help="only entities of this class (the store's class column)")
     lsp.add_argument("--filter", default=None, help="substring match on name")
     lsp.add_argument("--modified-only", action="store_true",
-                     help="only entities a mod changed; hide pure-vanilla rows")
+                     help="only entities a MOD changed -- the entity, any of its "
+                          "attributes, or a removal in its own file; base/DLC-only rows "
+                          "are hidden")
     lsp.add_argument("--limit", type=int, default=200,
                      help="rows to print; the total is still counted (default: %(default)s)")
 
@@ -318,10 +348,54 @@ def _prop_suggestions(con, kind: str, prop: str, limit: int = 3) -> list[str]:
     return out[:limit]
 
 
+#: SQL predicate: does the provenance chain in column *col* name a MOD? "A mod" is
+#: the store's own `mods` table -- the active extensions the build merged, which by
+#: construction never includes a DLC (`_registry.mods` skips them) -- never a folder-
+#: name prefix test. Base and DLC sources are therefore not "modified".
+def _chain_names_a_mod(col: str) -> str:
+    return (f"({col} IS NOT NULL AND EXISTS (SELECT 1 FROM json_each({col}) j "
+            f"WHERE json_extract(j.value, '$[0]') IN (SELECT folder FROM mods)))")
+
+
+#: An entity is MODIFIED when a mod appears in the provenance of the entity itself,
+#: of ANY of its attributes, or of a removal recorded against its file when that file
+#: holds only this entity (a removal in a shared file such as wares.xml cannot be
+#: tied to one entity from the store -- `_removal_note` says the same).
+#: AUDIT-2026-09-24 AN-3: this used to be `entities.chain IS NOT NULL`, which hid
+#: every attribute-only mod change (1,449 entities on the audit store) and listed
+#: every DLC-only entity as modified.
+_MODIFIED_SQL = (
+    "(" + _chain_names_a_mod("entities.chain")
+    + " OR EXISTS (SELECT 1 FROM attrs a WHERE a.entity_id = entities.id AND "
+    + _chain_names_a_mod("a.chain") + ")"
+    + " OR (EXISTS (SELECT 1 FROM removed r WHERE r.vpath = entities.vpath AND "
+      "r.source IN (SELECT folder FROM mods))"
+      " AND (SELECT count(*) FROM entities e2 WHERE e2.vpath = entities.vpath) = 1))")
+
+
+def _modifying_mods(con, ent_id: int, ent_chain: str | None, vpath: str) -> list[str]:
+    """The mods in one entity's provenance (entity, attributes, sole-entity removals),
+    the entity's own chain first, then by how many values each one last set."""
+    mods = {r[0] for r in con.execute("SELECT folder FROM mods")}
+    order: dict[str, int] = {}
+    for s, *_ in json.loads(ent_chain or "[]"):
+        if s in mods:
+            order.setdefault(s, 10 ** 9)
+    for (chain,) in con.execute("SELECT chain FROM attrs WHERE entity_id=? AND chain IS "
+                                "NOT NULL", (ent_id,)):
+        for s in {e[0] for e in json.loads(chain)} & mods:
+            order[s] = order.get(s, 0) + 1
+    if con.execute("SELECT count(*) FROM entities WHERE vpath=?", (vpath,)).fetchone()[0] == 1:
+        for (s,) in con.execute("SELECT DISTINCT source FROM removed WHERE vpath=?", (vpath,)):
+            if s in mods:
+                order.setdefault(s, 0)
+    return sorted(order, key=lambda s: (-order[s], s))
+
+
 def _cmd_ls(con, args) -> int:
     if _reject_unknown_kind(con, args.kind):
         return 2
-    q = "SELECT name, klass, origin, chain FROM entities WHERE kind=?"
+    q = "SELECT id, name, klass, vpath, origin, chain FROM entities WHERE kind=?"
     params: list = [args.kind]
     if args.klass:
         q += " AND klass=?"
@@ -330,14 +404,19 @@ def _cmd_ls(con, args) -> int:
         q += " AND name LIKE ?"
         params.append(f"%{args.filter}%")
     if args.modified_only:
-        q += " AND chain IS NOT NULL"
-    total = con.execute(q.replace("SELECT name, klass, origin, chain", "SELECT count(*)"),
-                        params).fetchone()[0]
+        q += " AND " + _MODIFIED_SQL
+    total = con.execute(q.replace("SELECT id, name, klass, vpath, origin, chain",
+                                  "SELECT count(*)"), params).fetchone()[0]
     q += " ORDER BY name LIMIT ?"
     params.append(args.limit)
     rows = con.execute(q, params).fetchall()
     for r in rows:
-        mod = "" if r["chain"] is None else f"  ← {r['origin']}"
+        # The marker names the MODS in this entity's provenance -- not the entity's
+        # own origin, which is `base` for an attribute-only change and a DLC for a
+        # DLC-only entity (AN-3). No marker = no mod touched it.
+        who = _modifying_mods(con, r["id"], r["chain"], r["vpath"])
+        mod = "" if not who else "  ← " + ", ".join(who[:3]) + (
+            f" +{len(who) - 3}" if len(who) > 3 else "")
         print(f"{r['name']:<44} {r['klass']:<16}{mod}")
     print(f"\n{_count_line(len(rows), total, f'{args.kind}(s)')}  ·  {_ADVISORY}")
     return 0
@@ -513,12 +592,14 @@ def _cmd_who_sets(con, args) -> int:
             print(f"no prop {args.prop!r} on {args.name}", file=sys.stderr)
             return 1
         print(f"{args.name}.{args.prop}: {_fmt_chain(r['chain'])}")
-        _note = _winner_not_origin_note(ent["vpath"], r["chain"])
+        _note = _winner_not_origin_note(ent["vpath"], r["chain"],
+                                        kind=args.kind, name=ent["name"])
         if _note:
             print(_note)
     else:
         print(f"{args.name} (entity): {_fmt_chain(ent['chain'])}")
-        _note = _winner_not_origin_note(ent["vpath"], ent["chain"])
+        _note = _winner_not_origin_note(ent["vpath"], ent["chain"],
+                                        kind=args.kind, name=ent["name"])
         if _note:
             print(_note)
         _print_changed_props(con, ent, args)

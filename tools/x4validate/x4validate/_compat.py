@@ -1,4 +1,4 @@
-r"""x4compat: detect how installed mods collide over the effective XML tree.
+r"""x4compat: detect how the ACTIVE (enabled) mods collide over the effective XML tree.
 
 Unlike a naive file-overlap check (which flags every mod that touches, say,
 ``t/0001-l007.xml`` — 15 of them, all harmlessly union-merged), this resolves each
@@ -55,13 +55,20 @@ class Collision:
     vpath: str
     kind: str            # HARD | UNION-KEY | FULL-OVERRIDE | SUBTREE | NAME-CLASH | SOFT
     target: str          # node identity / registry key / file path
-    mods: list[str]      # involved mod folders, in load order (winner last)
+    mods: list[str]      # involved mod folders, in load order
     winner: str          # the mod whose value is LIVE — empty for SUBTREE/NAME-CLASH
     detail: str = ""
     #: SUBTREE only: the mod that did the WIPING. It is not the owner of the final
     #: value — a third mod loading later can re-supply what was wiped — which is
     #: exactly why it is not called `winner`.
     wiped_by: str = ""
+    #: HARD only: set when the live state of the node is a REMOVAL -- the last mod
+    #: whose op still matches the node at its own load position removed it, so the
+    #: later mods' ops match nothing (AUDIT-2026-09-24 AN-5; a re-add by another mod
+    #: in between is seen, and then this stays empty). `winner` is this remover, and
+    #: the live state is the node's ABSENCE -- which a consumer comparing against
+    #: stored values must look for among removals, not among surviving values.
+    removed_by: str = ""
 
     def live_value_owner(self) -> str | None:
         """The mod whose value is live, or ``None`` when that is unknowable here.
@@ -70,7 +77,13 @@ class Collision:
         kind            meaning
         =============== ==========================================================
         FULL-OVERRIDE   the mod that clobbers — its file is the document
-        HARD            the mod that loads last at the clashing node
+        HARD            the mod that loads last at the clashing node. When an
+                    EARLIER mod removes the node (AUDIT-2026-09-24 AN-5): the
+                    last mod whose op on it still MATCHES at its own load
+                    position -- the remover itself if nothing re-supplies the
+                    node, a later writer if another mod re-adds it first.
+                    Covers the SAME node only; an edit INSIDE a node removed
+                    earlier is `CompatReport.removed_first`, not a row
         UNION-KEY       the mod that defines the surviving registry entry
         SUBTREE         ``None`` — `winner` was the WIPER, and a later mod may
                         have restored the values (MEASURED: 3 of 148, 2.0%)
@@ -103,6 +116,41 @@ class Skipped:
 
 
 @dataclass
+class OrderMiss:
+    """A `<diff>` op whose selector only a mod loading AFTER it can satisfy.
+
+    AUDIT-2026-09-24 AN-10. Every op is resolved against the UNPATCHED base, so an op
+    on a node another mod ADDS matched nothing there and contributed no target: the
+    run said "No collisions" while the engine -- which applies this mod's ops BEFORE
+    the later mod adds the node -- skips the op. Not a collision (nothing contends),
+    so it is not in `collisions`; it is DISCLOSED, as a change that does not happen.
+    """
+    vpath: str
+    mod: str        # the patching mod, which loads first
+    line: int       # the op's source line in that mod's file
+    sel: str
+    added_by: str   # the first later mod after whose ops the selector matches
+    #: How the op is GUARDED (`if=...` / `silent`), or "". A guarded op is the optional-
+    #: compat idiom -- apply if the other mod is there, stay quiet if not -- so its
+    #: skip is intentional, not a mistake; it is still disclosed (review of AN-10).
+    guard: str = ""
+
+
+@dataclass
+class RemovedFirst:
+    """A `<diff>` op on a node INSIDE one an EARLIER mod removed, still absent when the
+    op's own mod loads -- so the engine skips it (review of AN-5). The mirror image of
+    SUBTREE, where the wipe loads AFTER the edit; there the edit applied and was
+    wiped, here it never applied. Disclosed, not a collision."""
+    vpath: str
+    mod: str          # the mod whose op matches nothing at its own position
+    line: int
+    sel: str
+    removed_by: str   # the earlier mod that removed the node or its ancestor
+    guard: str = ""   # as `OrderMiss.guard`
+
+
+@dataclass
 class CompatReport:
     collisions: list[Collision] = field(default_factory=list)
     mods_scanned: int = 0
@@ -118,6 +166,16 @@ class CompatReport:
     #: so 140 of 523 examined files contributed zero collisions and rendered
     #: identically to "analysed, no conflicts". Same failure family as F4.
     skipped: list[Skipped] = field(default_factory=list)
+    #: Candidate mode only: the folder whose files were ANALYSED as the candidate,
+    #: and every enabled copy left out in its favour (AUDIT-2026-09-24 AN-1). Until
+    #: then a candidate path whose folder name was already enabled was silently
+    #: swapped for the enabled copy, so a staged update was never read at all.
+    candidate_path: str = ""
+    excluded_copies: list[str] = field(default_factory=list)
+    #: Ops that only a LATER-loading mod's content can satisfy -- see `OrderMiss`.
+    order_misses: list[OrderMiss] = field(default_factory=list)
+    #: Ops inside a node an EARLIER mod removed -- see `RemovedFirst`.
+    removed_first: list[RemovedFirst] = field(default_factory=list)
 
     def by_kind(self, kind: str) -> list[Collision]:
         """Collisions of *kind*, in a STABLE order.
@@ -295,7 +353,7 @@ def _no_base_reason(vpath: str, folder_to_path: dict[str, Path],
     owner_dir = next((p for f, p in folder_to_path.items() if f.lower() == owner.lower()),
                      None)
     if owner_dir is None:
-        return f"the owning mod '{owner}' is not installed"
+        return f"the owning mod '{owner}' is not an active mod (not installed, or disabled)"
     # Same rule: a malformed owner file must produce the EXPLANATION this function
     # exists to return, not an exception through a caller that only wanted a reason.
     try:
@@ -319,6 +377,7 @@ def _analyze_vpath(
     unresolvable: list[str] | None = None,
     per_mod_vpath: dict[str, str] | None = None,
     report: CompatReport | None = None,
+    cand_folder: str | None = None,
 ) -> list[Collision]:
     """Classify collisions among mods touching a single virtual path.
 
@@ -346,6 +405,9 @@ def _analyze_vpath(
     diff_add_doc_keys: dict[str, set[str]] = {}  # folder -> doc-wide added keys (F12)
     overriders: list[str] = []
     no_base_reported: set[str] = set()  # one skip per mod, not one per op
+    unmatched: dict[str, list[etree._Element]] = defaultdict(list)  # AN-10 candidates
+    ops_at: dict[str, dict[str, list[etree._Element]]] = defaultdict(
+        lambda: defaultdict(list))                    # folder -> {cid: [ops]} (AN-5)
 
     for folder in sorted(mod_folders, key=lambda f: rank[f]):
         mod_vpath = at.get(folder, vpath)
@@ -405,8 +467,11 @@ def _analyze_vpath(
                             f"{folder}/{vpath}:{op.sourceline or 0}: sel={sel!r} is not "
                             "valid XPath — this op was excluded from collision detection")
                     continue
+                if not cids:
+                    unmatched[folder].append(op)
                 for cid in cids:
                     node_map[cid].append(op.tag)
+                    ops_at[folder][cid].append(op)
                     if op.tag == "add":
                         child_map[cid].extend(_added_child_keys(op))
             if node_map:
@@ -435,6 +500,7 @@ def _analyze_vpath(
             overriders.append(folder)
 
     collisions: list[Collision] = []
+    contested: list[tuple[str, list[str], str, dict]] = []   # AN-5 rows, decided below
     # Keys pass 1 already reported as HARD duplicates, with the mods of that
     # row: a union-key row is folded only when it names NO mod the hard row
     # missed (icons: the full-file shippers of icon#upgrade_* are different
@@ -468,6 +534,13 @@ def _analyze_vpath(
                     "multiple mods <add> under the same node (usually coexist)"))
         else:
             ops_desc = "; ".join(f"{f}:{'/'.join(per_mod[f])}" for f in fs)
+            # AN EARLIER <remove> CAN END THE CONTEST (AUDIT-2026-09-24 AN-5): once a
+            # mod removes this node, a later op on it matches NOTHING and the engine
+            # skips it -- UNLESS some mod re-supplies the node in between. Which ops
+            # still match is decided below, per op AT ITS OWN LOAD POSITION.
+            if any("remove" in per_mod[f] for f in fs[:-1]):
+                contested.append((cid, fs, ops_desc, dict(per_mod)))
+                continue
             collisions.append(Collision(
                 vpath, "HARD", cid, fs, winner(fs),
                 f"{ops_desc} — '{winner(fs)}' loads last and wins"))
@@ -538,7 +611,330 @@ def _analyze_vpath(
                     "load order is community convention, so this is advisory",
                     wiped_by=a))
 
+    # 5. REMOVALS, decided per op at its own load position (AUDIT-2026-09-24 AN-5 and
+    # its review). (a) A HARD row where an earlier mod removes the node: its winner is
+    # the LAST mod whose op on the node still matches when that mod loads -- a re-add
+    # by another mod in between makes a later writer live again. (b) An op INSIDE a
+    # node an earlier mod removed (SUBTREE's mirror image): if it matches nothing at
+    # its position, the engine skips it, and that is disclosed.
+    inside: list[tuple[str, str, str]] = []          # (remover, editor, cid)
+    for a, amap in diff_targets.items():
+        for w in (c for c, tags in amap.items() if "remove" in tags and "/@" not in c):
+            for b, bmap in diff_targets.items():
+                if b != a and rank[b] > rank[a]:
+                    inside += [(a, b, cb) for cb in bmap if cb.startswith(w + "/")]
+    if (contested or inside) and base_tree is not None:
+        ordered = sorted(mod_folders, key=lambda f: rank[f])
+        queries = ([(f, op) for cid, fs, _d, _t in contested for f in fs
+                    for op in ops_at[f][cid]]
+                   + [(b, op) for _a, b, cb in inside for op in ops_at[b][cb]])
+        live = _matches_at_positions(vpath, ordered, queries, folder_to_path, config)
+        at_pos = {(f, id(op)): ok for (f, op), ok in zip(queries, live)}
+        for cid, fs, ops_desc, tags in contested:
+            alive = [f for f in fs if any(at_pos[(f, id(op))] for op in ops_at[f][cid])]
+            w = alive[-1] if alive else next(f for f in fs if "remove" in tags[f])
+            dead = [f for f in fs if f not in alive and rank[f] > rank[w]]
+            if "remove" in tags[w]:
+                collisions.append(Collision(
+                    vpath, "HARD", cid, fs, w,
+                    f"{ops_desc} — '{w}' REMOVES this node, and the later op(s) from "
+                    f"{', '.join(repr(f) for f in dead) or 'no mod'} match nothing when "
+                    "they load, so the engine skips them: the removal is what is live",
+                    removed_by=w))
+            else:
+                gone = [f for f in fs if rank[f] < rank[w] and "remove" in tags[f]]
+                collisions.append(Collision(
+                    vpath, "HARD", cid, fs, w,
+                    f"{ops_desc} — {', '.join(repr(f) for f in gone)} removes this node, "
+                    f"but it exists again when '{w}' loads (another mod re-supplies it), "
+                    f"so '{w}' applies and wins"
+                    + (f"; later op(s) from {', '.join(repr(f) for f in dead)} match "
+                       "nothing" if dead else "")))
+        if report is not None:
+            seen: set[tuple[str, int]] = set()
+            for a, b, cb in inside:
+                for op in ops_at[b][cb]:
+                    if at_pos[(b, id(op))] or (b, id(op)) in seen:
+                        continue
+                    seen.add((b, id(op)))
+                    report.removed_first.append(RemovedFirst(
+                        vpath, b, op.sourceline or 0, op.get("sel", ""), a, _guard(op)))
+
+    if report is not None and unmatched and base_tree is not None:
+        report.order_misses.extend(_order_misses(
+            vpath, sorted(mod_folders, key=lambda f: rank[f]), unmatched,
+            folder_to_path, config, only=cand_folder))
     return collisions
+
+
+def _matches(tree: etree._Element | None, sel: str) -> bool:
+    if tree is None:
+        return False
+    try:
+        res = _xpath.evaluate(tree, sel)
+    except etree.XPathEvalError:
+        return False       # silent-ok: already recorded in `unresolvable` by the caller
+    return isinstance(res, list) and bool(res)
+
+
+def _guard(op: etree._Element) -> str:
+    """`if=<expr>` and/or `silent`, as written on *op*; "" when it is unguarded."""
+    parts = []
+    if op.get("if"):
+        parts.append(f"if={op.get('if')}")
+    if (op.get("silent") or "").lower() in ("true", "1"):
+        parts.append("silent")
+    return " ".join(parts)
+
+
+def _xp_hit(tree: etree._Element | None, sel: str,
+            cache: dict[str, "etree.XPath | None"]) -> bool:
+    """Does *sel* select at least one node of *tree*? Compiled once per selector."""
+    if sel not in cache:
+        try:
+            cache[sel] = etree.XPath(sel)
+        except etree.XPathSyntaxError:
+            cache[sel] = None   # silent-ok: an invalid sel is recorded in `unresolvable`
+    xp = cache[sel]
+    if xp is None or tree is None:
+        return False
+    try:
+        res = xp(tree)
+    except etree.XPathEvalError:
+        return False            # silent-ok: same channel as above
+    return isinstance(res, list) and bool(res)
+
+
+def _walk_positions(vpath: str, ordered: list[str], folder_to_path: dict[str, Path],
+                    config: _merge.Config, visit,
+                    want: etree._Element | None = None) -> bool:
+    """ONE INCREMENTAL PASS over the mods on one file, calling
+    ``visit(pos, tree, applied)`` with the tree as it stands BEFORE (applied=False) and
+    AFTER (applied=True) ``ordered[pos]`` loads. N applies, not a rebuild per question.
+
+    The per-overlay step mirrors `_merge.build_effective`'s loop (inert bare-path diff
+    over a non-game base; nested `extensions/<owner>/` patches onto an earlier
+    full/union supplier) through `_merge`'s own `overlay_root` / `apply_overlay`. It is
+    CHECKED, not trusted: returns True only when the finished tree serializes exactly
+    as `build_effective` over the same mods (*want*, built here if not given). False --
+    unsupported shape (a nested, mod-owned vpath), unbuildable, or a drifted pass --
+    means every answer `visit` saw must be discarded and re-derived by rebuilding.
+    """
+    if (config.overlays
+            or _merge._nested_target(vpath, config.packed_dlc_names()) is not None):
+        return False
+    try:
+        start = _merge.build_effective(vpath, config)
+    except etree.LxmlError:
+        return False   # silent-ok: False IS the channel -- the caller rebuilds instead
+    tree, from_game = start.tree, start.base_from_game
+    owners: list[str] = []
+    for pos, folder in enumerate(ordered):
+        visit(pos, tree, False)
+        odir = folder_to_path[folder]
+        oroot = _merge.overlay_root(odir, vpath, [])
+        if oroot is not None and not (oroot.tag == "diff" and not from_game):
+            tree, mode = _merge.apply_overlay(tree, oroot, vpath, odir.name)
+            if mode in ("union", "full"):
+                owners.append(odir.name)
+        for owner in owners:
+            if odir.name.lower() == owner.lower():
+                continue
+            nroot = _merge.overlay_root(odir, f"extensions/{owner}/{vpath}", [])
+            if nroot is not None:
+                tree, _mode = _merge.apply_overlay(tree, nroot, vpath, odir.name)
+        visit(pos, tree, True)
+    if want is None:
+        try:
+            want = _merge.build_effective(
+                vpath, config, extra_overlays=[folder_to_path[f] for f in ordered]).tree
+        except etree.LxmlError:
+            return False   # silent-ok: False IS the channel -- the caller rebuilds
+    return (tree is not None and want is not None
+            and etree.tostring(tree) == etree.tostring(want))
+
+
+def _prefix_tree(vpath: str, folders: list[str], folder_to_path: dict[str, Path],
+                 config: _merge.Config) -> etree._Element | None:
+    """`build_effective` over base+DLC and *folders* -- the SLOW, authoritative form."""
+    owned = set(config.overlays)
+    dirs = [folder_to_path[f] for f in folders if folder_to_path[f] not in owned]
+    try:
+        return _merge.build_effective(vpath, config, extra_overlays=dirs).tree
+    except etree.LxmlError:
+        return None        # silent-ok: an unbuildable tree cannot CLAIM a match; the
+        # per-mod parse failures are already recorded as NOT ANALYSED rows
+
+
+def _matches_at_positions(vpath: str, ordered: list[str],
+                          queries: list[tuple[str, etree._Element]],
+                          folder_to_path: dict[str, Path],
+                          config: _merge.Config) -> list[bool]:
+    """For each (folder, op): does the op's selector match the tree as it stands when
+    that folder LOADS (every earlier mod applied, this one not yet)?"""
+    cache: dict = {}
+    by_pos: dict[int, list[int]] = defaultdict(list)
+    for q, (folder, _op) in enumerate(queries):
+        by_pos[ordered.index(folder)].append(q)
+    out = [False] * len(queries)
+
+    def visit(pos, tree, applied):
+        if not applied:
+            for q in by_pos.get(pos, ()):
+                out[q] = _xp_hit(tree, queries[q][1].get("sel", ""), cache)
+
+    if _walk_positions(vpath, ordered, folder_to_path, config, visit):
+        return out
+    for pos, qs in by_pos.items():                       # the rebuild form
+        tree = _prefix_tree(vpath, ordered[:pos], folder_to_path, config)
+        for q in qs:
+            out[q] = _xp_hit(tree, queries[q][1].get("sel", ""), cache)
+    return out
+
+
+def _order_misses(vpath: str, ordered: list[str],
+                  unmatched: dict[str, list[etree._Element]],
+                  folder_to_path: dict[str, Path],
+                  config: _merge.Config,
+                  only: str | None = None) -> list[OrderMiss]:
+    """Ops that match nothing in base but WOULD match once a LATER mod has loaded.
+
+    Answered in ONE incremental pass per file (`_walk_positions`). The rebuild form,
+    `_order_misses_rebuild`, re-merged the whole prefix for every probe: MEASURED on
+    this install, 145 mods, `analyze()` went ~11 s -> ~64 s, almost all of it
+    re-merging libraries/wares.xml, 57 mods. This form: ~31 s, same 39 findings --
+    about two full merges per file, one of them the self-check.
+
+    For an op of mod M at position i: a match BEFORE M applies means an earlier mod
+    supplies the node (the engine has it in time); a match right AFTER M applies
+    means M's own content supplies it; otherwise the first later position j at which
+    it matches names the adder, ordered[j]. Never matching = a dead selector, the
+    validator's finding, not this one. A pass that fails its self-check, or a nested
+    (mod-owned) vpath, is answered by the rebuild form instead. Stated limit: ops dead
+    in the FINISHED tree are dropped first, so a node a later mod adds and a
+    still-later one removes again is filtered as dead rather than named.
+    """
+    pending: list[tuple[int, etree._Element]] = []
+    for folder, ops in unmatched.items():
+        i = ordered.index(folder)
+        if i == len(ordered) - 1:
+            continue
+        if only is not None and folder != only and only not in ordered[i + 1:]:
+            continue
+        pending += [(i, op) for op in ops]
+    if not pending:
+        return []
+    want = _prefix_tree(vpath, ordered, folder_to_path, config)
+    if want is None or config.overlays or _merge._nested_target(
+            vpath, config.packed_dlc_names()) is not None:
+        return _order_misses_rebuild(vpath, ordered, unmatched, folder_to_path,
+                                     config, only)
+    cache: dict = {}
+    state = {"live": [(i, op) for i, op in pending
+                      if _xp_hit(want, op.get("sel", ""), cache)]}
+    out: list[OrderMiss] = []
+    if not state["live"]:
+        return out     # every pending op is dead: no claim to make, no pass to check
+
+    def visit(pos, tree, applied):
+        live = state["live"]
+        if not applied:
+            # Ops of THIS folder that already match are supplied by an earlier mod.
+            state["live"] = [(i, op) for i, op in live
+                             if not (i == pos and _xp_hit(tree, op.get("sel", ""), cache))]
+            return
+        keep = []
+        for i, op in live:
+            if i > pos:
+                keep.append((i, op))                   # its own position is ahead
+            elif _xp_hit(tree, op.get("sel", ""), cache):
+                if i < pos:                            # first match after a LATER mod
+                    out.append(OrderMiss(vpath, ordered[i], op.sourceline or 0,
+                                         op.get("sel", ""), ordered[pos], _guard(op)))
+                # i == pos: the mod's OWN content supplies the node -- not a miss
+            else:
+                keep.append((i, op))
+        state["live"] = keep
+
+    if not _walk_positions(vpath, ordered, folder_to_path, config, visit, want=want):
+        return _order_misses_rebuild(vpath, ordered, unmatched, folder_to_path,
+                                     config, only)
+    return out
+
+
+def _order_misses_rebuild(vpath: str, ordered: list[str],
+                  unmatched: dict[str, list[etree._Element]],
+                  folder_to_path: dict[str, Path],
+                  config: _merge.Config,
+                  only: str | None = None) -> list[OrderMiss]:
+    """Ops that match nothing in base but WOULD match once a LATER mod has loaded.
+
+    Trees are merged only when needed, cheapest filter first (a merge of a heavily
+    patched libraries/wares.xml costs seconds -- MEASURED ~3.7 s here): ONE tree of
+    every mod on this file (no match there = a dead selector, the validator's
+    finding, not this one); per surviving mod, the mods loading BEFORE it (a match
+    there = the engine has the node in time, nothing is skipped); then a bisection
+    over the later mods to NAME the first one after which it matches. The patching
+    mod is left out of those trees, so an op on a node its own mod adds never finds
+    a later "adder" and is never reported.
+
+    The SLOW form, kept as the fallback for a nested (mod-owned) vpath and for a file
+    whose incremental pass fails its self-check: on this install it cost ~64 s per
+    full run where `analyze()` alone is ~11 s.
+    """
+    owned = set(config.overlays)
+
+    def tree_of(folders: list[str]) -> etree._Element | None:
+        dirs = [folder_to_path[f] for f in folders if folder_to_path[f] not in owned]
+        try:
+            return _merge.build_effective(vpath, config, extra_overlays=dirs).tree
+        except etree.LxmlError:
+            return None    # silent-ok: an unbuildable tree cannot CLAIM a miss; the
+            # per-mod parse failures are already recorded as NOT ANALYSED rows
+
+    out: list[OrderMiss] = []
+    everyone: list[etree._Element | None] = []
+    for folder, ops in unmatched.items():
+        i = ordered.index(folder)
+        before, later = ordered[:i], ordered[i + 1:]
+        if not later:
+            continue
+        if only is not None and folder != only and only not in later:
+            continue          # candidate mode: a miss must involve the candidate
+        if not everyone:
+            everyone.append(tree_of(ordered))
+        live = [op for op in ops if _matches(everyone[0], op.get("sel", ""))]
+        if not live:
+            continue
+        head = tree_of(before)
+        live = [op for op in live if not _matches(head, op.get("sel", ""))]
+        if not live:
+            continue
+        # prefix[k] = before + later[:k] (this mod left out); prefix[0] is `head`.
+        # BISECT for the first k that matches -- log2(n) merges, not n -- then
+        # CONFIRM k matches and k-1 does not. An op only this mod's OWN content
+        # satisfies matches at no k, fails the confirmation and is never reported;
+        # a node added and removed again cannot name the wrong adder silently.
+        prefix: dict[int, etree._Element | None] = {0: head}
+
+        def at(k: int) -> etree._Element | None:
+            if k not in prefix:
+                prefix[k] = tree_of(before + later[:k])
+            return prefix[k]
+
+        for op in live:
+            sel = op.get("sel", "")
+            lo, hi = 0, len(later)          # invariant: no match at lo, match at hi
+            while hi - lo > 1:
+                mid = (lo + hi) // 2
+                if _matches(at(mid), sel):
+                    hi = mid
+                else:
+                    lo = mid
+            if _matches(at(hi), sel) and not _matches(at(hi - 1), sel):
+                out.append(OrderMiss(vpath, folder, op.sourceline or 0, sel,
+                                     later[hi - 1], _guard(op)))
+    return out
 
 
 def _dup_add_key(parent_id: str, folders: list[str],
@@ -660,10 +1056,15 @@ def analyze(
     candidate: Path | None = None,
     config: _merge.Config | None = None,
 ) -> CompatReport:
-    """Analyze collisions across installed mods (optionally focused on *candidate*).
+    """Analyze collisions across the ACTIVE (enabled) mods, optionally focused on
+    *candidate*.
 
     If *candidate* is given, only collisions that involve it are reported (the
-    "before I add this mod" mode); its folder is included in the scanned set.
+    "before I add this mod" mode). THE CANDIDATE IS THE COPY AT *candidate*
+    (AUDIT-2026-09-24 AN-1): an enabled mod with the same folder name or manifest id
+    is EXCLUDED so the two are never counted twice, and is recorded in
+    `CompatReport.excluded_copies`. The candidate is placed in the load order by the
+    engine's rule -- its folder name and its own manifest's dependencies.
     """
     config = config or _merge.Config()
     # ACTIVE: two mods only collide if the engine loads both. The on-disk set
@@ -671,16 +1072,32 @@ def analyze(
     # baseline. The "what if I added this" case is *candidate*, below -- an
     # explicit opt-in, not a side effect of how the world is enumerated.
     mods = _registry.mods("active", [ext_dir])
-    folder_to_path = {m["folder"]: Path(m["path"]) for m in mods}
 
     cand_folder = None
+    excluded: list[str] = []
     if candidate is not None:
         candidate = Path(candidate)
-        cand_folder = candidate.name
-        if cand_folder not in folder_to_path:
-            folder_to_path[cand_folder] = candidate
-            mods = mods + [{"folder": cand_folder, "path": str(candidate),
-                            "id": cand_folder}]
+        cand_folder = candidate.resolve().name
+        cand_id = _loadorder.mod_deps(candidate)[0] if (candidate / "content.xml"
+                                                        ).is_file() else ""
+        keep = []
+        cand_entry = {"folder": cand_folder, "path": str(candidate),
+                      "id": cand_id or cand_folder}
+        for m in mods:
+            same = (m["folder"].lower() == cand_folder.lower()
+                    or (cand_id and m.get("id") == cand_id))
+            if not same:
+                keep.append(m)
+            elif Path(m["path"]).resolve() == candidate.resolve():
+                cand_entry = m                  # the candidate IS the enabled copy
+                cand_folder = m["folder"]
+            else:
+                # A DIFFERENT copy of the candidate (a staged update, a dev folder):
+                # the path the user named wins, and the enabled copy is left out
+                # rather than counted as a second mod colliding with itself.
+                excluded.append(str(m["path"]))
+        mods = keep + [cand_entry]
+    folder_to_path = {m["folder"]: Path(m["path"]) for m in mods}
 
     order_dropped: list[str] = []
     order = compute_load_order(mods, order_dropped)
@@ -702,7 +1119,10 @@ def analyze(
             if not low.startswith("extensions/"):
                 inv[f"extensions/{folder.lower()}/{low}"][folder] = real
 
-    report = CompatReport(mods_scanned=len(mods), load_order=order)
+    report = CompatReport(mods_scanned=len(mods), load_order=order,
+                          candidate_path=(str(Path(candidate).absolute())
+                                          if candidate is not None else ""),
+                          excluded_copies=excluded)
     for msg in order_dropped:
         # degraded=True: an unreadable manifest costs this mod its dependency
         # edges, so its load-order position — and therefore every collision
@@ -722,10 +1142,16 @@ def analyze(
                           next(iter(per_mod.values())))
         found = _analyze_vpath(real_vpath, list(per_mod), folder_to_path, rank, config,
                                report.unresolvable, per_mod_vpath=per_mod,
-                               report=report)
+                               report=report, cand_folder=cand_folder)
         if cand_folder is not None:
             found = [c for c in found if cand_folder in c.mods]
         report.collisions.extend(found)
+
+    if cand_folder is not None:
+        report.order_misses = [m for m in report.order_misses
+                               if cand_folder in (m.mod, m.added_by)]
+        report.removed_first = [m for m in report.removed_first
+                                if cand_folder in (m.mod, m.removed_by)]
 
     # Entity-level pass: same macro NAME, different files. Structurally invisible
     # to the loop above, which keys on vpath.
@@ -742,8 +1168,15 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
     lines = [
         f"x4compat: {report.mods_scanned} mods, {report.files_examined} shared files examined.",
         "Load order (winner = last): the engine's measured order (case-insensitive folders, "
-        "dependencies in passes).\n",
+        "dependencies in passes).",
     ]
+    if report.candidate_path:
+        # Always name the copy: two copies of one mod (enabled + staged) are the
+        # normal case when checking an update, and the answer differs per copy.
+        lines.append(f"Candidate analysed: {report.candidate_path}")
+        for ex in report.excluded_copies:
+            lines.append(f"  excluded (same mod, a different copy): {ex}")
+    lines.append("")
     shown_any = False
     for kind in _KIND_ORDER:
         group = report.by_kind(kind)
@@ -765,10 +1198,45 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
             if c.wiped_by:
                 lines.append(f"     wiped by : {c.wiped_by}  (NOT the owner of the "
                              f"final value — a later mod may re-supply it)")
+            elif c.removed_by:
+                lines.append(f"     removed  : by {c.removed_by}, first -- the node is "
+                             f"ABSENT; later ops on it match nothing")
             else:
                 lines.append(f"     winner   : {c.winner}")
             if c.detail:
                 lines.append(f"     note     : {c.detail}")
+        lines.append("")
+    if report.removed_first:
+        shown_any = True
+        lines.append(f"=== EDITS INSIDE A NODE AN EARLIER MOD REMOVED  "
+                     f"({len(report.removed_first)}) ===")
+        lines.append("  Not a collision: when these ops' mod loads, the node (or an "
+                     "ancestor) they edit")
+        lines.append("  has already been removed by an earlier mod and nothing has "
+                     "re-added it. The engine skips them.")
+        for m in sorted(report.removed_first, key=lambda x: (x.vpath, x.mod, x.line)):
+            lines.append(f"  {m.vpath}")
+            lines.append(f"     mod      : {m.mod} (line {m.line})  sel={m.sel}")
+            if m.guard:
+                lines.append(f"     guarded  : {m.guard} -- optional compat by design, "
+                             "the skip is intended")
+            lines.append(f"     removed  : by {m.removed_by}, which loads before it")
+        lines.append("")
+    if report.order_misses:
+        shown_any = True
+        lines.append(f"=== PATCHES A NODE ONLY A LATER MOD ADDS  "
+                     f"({len(report.order_misses)}) ===")
+        lines.append("  Not a collision: these ops match nothing when their mod loads, "
+                     "because the node")
+        lines.append("  they target is added by a mod that loads AFTER it. The engine "
+                     "skips them.")
+        for m in sorted(report.order_misses, key=lambda x: (x.vpath, x.mod, x.line)):
+            lines.append(f"  {m.vpath}")
+            lines.append(f"     mod      : {m.mod} (line {m.line})  sel={m.sel}")
+            if m.guard:
+                lines.append(f"     guarded  : {m.guard} -- optional compat by design, "
+                             "the skip is intended")
+            lines.append(f"     needs    : {m.added_by}, which loads after it")
         lines.append("")
     hard = report.hard
     if not hard and not shown_any:
@@ -793,11 +1261,33 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
     lines.append(f"\nSummary: {len(report.hard)} hard-ish "
                  f"(HARD+FULL-OVERRIDE+SUBTREE), {len(report.by_kind('UNION-KEY'))} union-key, "
                  f"{len(report.by_kind('SOFT'))} soft, "
+                 f"{len(report.order_misses)} op(s) needing a later mod, "
+                 f"{len(report.removed_first)} op(s) inside an earlier removal, "
                  f"{len(report.degraded)} file(s) not analysed.")
     if report.degraded:
         lines.append("DEGRADED: some files yielded no comparison — see NOT ANALYSED "
                      "above. Exit 3.")
     return "\n".join(lines)
+
+
+def _resolve_candidate(arg: str, ext_dir: Path) -> Path:
+    """Which copy of the candidate `check <arg>` means (AUDIT-2026-09-24 AN-1).
+
+    An EXISTING path is that copy, even when a same-named mod sits in the extensions
+    dir -- that is the "check this staged update" case. Otherwise a BARE name (no
+    path separator) is looked up among the extensions dir's mod folders, so
+    `check some_mod` means the copy the game has. Anything else is returned as given
+    and refused by `_input.require_mod_dir` as a path that does not exist.
+    """
+    p = Path(arg)
+    if p.exists() or "/" in arg or "\\" in arg or p.is_absolute():
+        return p
+    # "installed", not "active": naming a disabled mod is the "what if I switch it
+    # on" question, and analyze() adds the candidate to the active set itself.
+    for m in _registry.mods("installed", [ext_dir]):
+        if m["folder"].lower() == arg.lower():
+            return Path(m["path"])
+    return p
 
 
 @_paths.refuses_unconfigured
@@ -813,14 +1303,19 @@ def main(argv: list[str] | None = None) -> int:
 
     p = argparse.ArgumentParser(
         prog="x4compat",
-        description="Detect how installed X4 mods collide over the effective XML tree.")
+        description="Detect how the ENABLED (active) X4 mods collide over the effective "
+                    "XML tree -- the set the engine loads: on disk, enabled in its "
+                    "manifest and in the profile.")
     p.add_argument("--version", action="version",
                    version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
-    pc = sub.add_parser("check", help="analyze collisions across the installed modlist")
+    pc = sub.add_parser("check", help="analyze collisions across the enabled (active) "
+                                      "modlist")
     pc.add_argument("candidate", nargs="?",
-                    help="a mod folder to focus on ('before I add this'); omit for --all")
-    pc.add_argument("--all", action="store_true", help="analyze the whole installed set")
+                    help="the mod to focus on ('before I add this'): an existing folder "
+                         "PATH is the copy analysed (a same-named copy in the extensions "
+                         "dir is then left out); a bare NAME means the copy in the "
+                         "extensions dir. Omit it to analyse every enabled mod")
     pc.add_argument("--ext-dir", help="extensions dir to scan "
                     "(default: game-root extensions\\ from _registry)")
     pc.add_argument("--reference", help="unpacked base+DLC reference tree ($X4_REFERENCE)")
@@ -836,7 +1331,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: extensions dir not found: {ext_dir}", file=sys.stderr)
         return 2
     config = _merge.Config(reference=Path(args.reference)) if args.reference else _merge.Config()
-    candidate = Path(args.candidate) if args.candidate else None
+    candidate = _resolve_candidate(args.candidate, ext_dir) if args.candidate else None
     if candidate is not None:
         _input.require_mod_dir(candidate, "candidate mod folder")
 
@@ -851,6 +1346,10 @@ def main(argv: list[str] | None = None) -> int:
             "load_order": report.load_order,
             "collisions": [dataclasses.asdict(c) for c in report.collisions],
             "skipped": [dataclasses.asdict(s) for s in report.skipped],
+            "order_misses": [dataclasses.asdict(m) for m in report.order_misses],
+            "removed_first": [dataclasses.asdict(m) for m in report.removed_first],
+            "candidate_path": report.candidate_path,
+            "excluded_copies": report.excluded_copies,
             "degraded": bool(report.degraded),
         }
         print(json.dumps(payload, indent=2))

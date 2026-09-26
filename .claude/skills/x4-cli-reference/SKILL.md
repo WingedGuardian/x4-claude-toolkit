@@ -15,8 +15,8 @@ Run a CLI from `$CLAUDE_PROJECT_DIR/tools/x4validate` as `uv run <cli> ...`. The
 
 | CLI | subcommand | what it does |
 |---|---|---|
-| **`x4compat`** | | Detect how installed X4 mods collide over the effective XML tree. |
-| | `check` | analyze collisions across the installed modlist |
+| **`x4compat`** | | Detect how the ENABLED (active) X4 mods collide over the effective XML tree -- the set the engine loads: on disk, enabled in its manifest and in the profile. |
+| | `check` | analyze collisions across the enabled (active) modlist |
 | **`x4debug`** | | Triage the engine's debug.txt, and compare it to what we predicted. |
 | | `triage` | bucket and attribute every [=ERROR=] line |
 | | `crosscheck` | per-item diff of engine-skipped ops vs x4validate's prediction |
@@ -63,7 +63,7 @@ Run a CLI from `$CLAUDE_PROJECT_DIR/tools/x4validate` as `uv run <cli> ...`. The
 | **`x4save`** | | Read an X4 savegame: what is baked into it, and what it references that the live tree no longer defines. |
 | | `info` | header: build, playtime, and the SAVE-BAKED extensions |
 | | `check` | macro references the live tree no longer defines |
-| **`x4similar`** | | Advisory fuzzy same-ship detection across base+DLC+installed mods. |
+| **`x4similar`** | | Advisory fuzzy same-ship detection across the ships base, DLC and installed mods define, scored at their EFFECTIVE values (base + DLC + the enabled mods in load order, so a <diff>-patched ship carries its patched numbers). |
 | **`x4stats`** | | Advisory numeric comparison of mod content vs the effective game. |
 | | `wares` | compare a candidate mod's wares to same-group peers |
 | | `macro` | flatten a macro file's numeric property vector |

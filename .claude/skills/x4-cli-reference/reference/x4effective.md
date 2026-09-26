@@ -57,7 +57,8 @@ options:
   -h, --help       show this help message and exit
   --class KLASS    only entities of this class (the store's class column)
   --filter FILTER  substring match on name
-  --modified-only  only entities a mod changed; hide pure-vanilla rows
+  --modified-only  only entities a MOD changed -- the entity, any of its attributes, or a removal
+                   in its own file; base/DLC-only rows are hidden
   --limit LIMIT    rows to print; the total is still counted (default: 200)
 ```
 

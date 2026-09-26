@@ -20,7 +20,12 @@ Run tools via uv from the tool dir:
    only; union dirs (t/, libraries/, index/) are handled semantically. Winner is by load order
    (case-insensitive folder order, `_` sorting after letters, dependencies loaded in repeated
    passes -- MEASURED against the engine's own log, and re-checked by
-   `gates/load_order_oracle.py`). **Zero hard
+   `gates/load_order_oracle.py`). An existing folder PATH is the copy analysed -- a
+   same-named enabled copy is left out, so a staged update is checked as itself -- while a
+   bare NAME means the copy in the extensions dir; the output's `Candidate analysed:` line
+   names which. A separate section, PATCHES A NODE ONLY A LATER MOD ADDS, lists `<diff>` ops
+   whose target exists only once a mod loading AFTER them has run -- the engine skips those
+   ops, so the mod silently changes less than it says. **Zero hard
    collisions is common and means "no structural clash" — NOT "no interaction" (see step 2).**
 
 2. **Behavioral — `x4xref`** (build once with `x4xref build`, then query). The conflicts that
@@ -43,8 +48,9 @@ Run tools via uv from the tool dir:
 
 4. **Redundancy (advisory) — `x4similar --candidate <mod-folder>`** for a mod adding ships.
    Flags fuzzy same-entity matches against base+DLC+every installed mod's ships (hull/crew/
-   cargo/handling stat similarity, hard-filtered by ship class+purpose so an S fighter never
-   matches an XL destroyer). A same-registry-KEY duplicate is x4compat's UNION-KEY, not this —
+   storage/handling stat similarity at the EFFECTIVE, patched values, hard-filtered by ship
+   class+purpose so an S fighter never matches an XL destroyer). Its header counts the ships
+   with too few scored stats to be paired at all -- a "no near-duplicate" does not cover them. A same-registry-KEY duplicate is x4compat's UNION-KEY, not this —
    this catches a DIFFERENT id/name describing essentially the same ship (the "an overhaul's ship vs an
    independently-named clone" case). Score is a distance metric over shared numeric stats, not
    a power model — always eyeball flagged pairs, and note how many stats were actually compared

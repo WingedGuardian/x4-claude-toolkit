@@ -508,3 +508,70 @@ def test_a_WELL_FORMED_overlay_is_unaffected(tmp_path):
     cand = _cand(tmp_path / "good", "a normal note")
     root = _merge.overlay_root(cand, "libraries/wares.xml")
     assert root is not None and root.tag == "diff"
+
+
+# --- AN-7 twin: the patch-time tree still SEES mods that load BEFORE the candidate --
+#
+# tests/test_audit0924_analysis.py pins the defect (a mod loading AFTER the candidate
+# must be invisible to its selectors). This is the other clause: truncating at the
+# candidate's position must keep everything before it, or a cross-mod patch on a node
+# an earlier mod adds would stop resolving -- the opposite false answer.
+
+
+def test_a_candidate_resolves_against_a_mod_that_loads_BEFORE_it(tmp_path, monkeypatch,
+                                                                  capsys):
+    from x4validate import _registry
+    monkeypatch.setattr(_registry, "ingest_content_xml", lambda *a, **k: [])
+    monkeypatch.setattr(_registry, "PROFILE_CONTENT", None)
+    ref = tmp_path / "reference"
+    _w(ref / "libraries" / "wares.xml",
+       '<wares><ware id="ore" group="minerals"><price min="1" average="100" max="200"/>'
+       '</ware></wares>')
+    ext = tmp_path / "extensions"
+    _w(ext / "a_adder" / "content.xml", '<content id="a_adder" name="a" version="1"/>')
+    _w(ext / "a_adder" / "libraries" / "wares.xml",
+       '<diff><add sel="/wares"><ware id="aware" group="minerals">'
+       '<price min="1" average="100" max="200"/></ware></add></diff>')
+    cand = ext / "z_cand"
+    _w(cand / "content.xml", '<content id="z_cand" name="z" version="1"/>')
+    _w(cand / "libraries" / "wares.xml",
+       '<diff><replace sel="//ware[@id=' + chr(39) + 'aware' + chr(39)
+       + ']/price/@average">5</replace></diff>')
+    _stats.main(["wares", str(cand), "--ext-dir", str(ext), "--reference", str(ref)])
+    out = capsys.readouterr().out
+    assert "aware" in out and "candidate avg price : 5 " in out, out
+
+
+# --- AN-2: a REMOVED ware is a change, and only a ware that is GONE counts ------
+
+_Q = chr(39)
+
+
+def test_removed_wares_names_a_whole_ware_remove(tmp_path):
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml",
+       '<diff><remove sel="//ware[@id=' + _Q + 'ore' + _Q + ']"/></diff>')
+    assert _stats.removed_wares(cand, _base_tree()) == ["ore"]
+    out = _stats.render_wares([], 0, ["ore"])
+    assert "REMOVED" in out and "ore" in out
+    assert "introduces/changes no wares" not in out
+
+
+def test_removing_INSIDE_a_ware_is_not_removing_the_ware(tmp_path):
+    """The twin: an attribute removal leaves the ware in the game, so it is a
+    change (candidate_wares reports it), never a removal."""
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml",
+       '<diff><remove sel="//ware[@id=' + _Q + 'ore' + _Q + ']/price/@average"/></diff>')
+    assert _stats.removed_wares(cand, _base_tree()) == []
+    assert "ore" in _stats.candidate_wares(cand, _base_tree())
+
+
+def test_a_ware_removed_then_re_added_is_not_reported_removed(tmp_path):
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml",
+       '<diff><remove sel="//ware[@id=' + _Q + 'ore' + _Q + ']"/>'
+       '<add sel="/wares"><ware id="ore" group="minerals"><price average="7"/></ware>'
+       '</add></diff>')
+    assert _stats.removed_wares(cand, _base_tree()) == []
+    assert _stats.candidate_wares(cand, _base_tree())["ore"].price_avg == 7.0

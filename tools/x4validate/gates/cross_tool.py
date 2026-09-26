@@ -169,6 +169,33 @@ def _origins(con, vpath: str, column: str) -> set[str]:
     return set()
 
 
+def _removal_sources(con, vpath: str, target: str | None = None) -> set[str]:
+    """Mods the store records as REMOVING something at *vpath* -- or, given *target*
+    (a compat getpath), only the removals of THAT node or of an ANCESTOR of it.
+
+    Per node, because "the named mod removed SOMETHING in this file" is not agreement
+    (AUDIT-2026-09-24 review of AN-5): wares.xml carries removals by many mods, and a
+    remover of a different ware would otherwise confirm any claim.
+    """
+    for form in _vpath_forms(vpath):
+        rows = con.execute("SELECT source, node_path FROM removed WHERE lower(vpath) = ?",
+                           (form,)).fetchall()
+        if rows:
+            if target is None:
+                return {src for src, _ in rows}
+            return {src for src, node in rows
+                    if node == target or target.startswith(node + "/")}
+    return set()
+
+
+def _file_is_tracked(con, vpath: str) -> bool:
+    """Does the store index ANY entity at *vpath*? The store merges (and so records
+    removals for) registry, macro and component files only; md/, aiscripts/, t/ and
+    index/ are never merged into it, so their removals are never recorded."""
+    return any(con.execute("SELECT 1 FROM entities WHERE lower(vpath) = ? LIMIT 1",
+                           (f,)).fetchone() for f in _vpath_forms(vpath))
+
+
 #: Why a HARD row could not be compared. The first two are EXPLAINED by what the file or
 #: the merge is, and leave the denominator; the rest are the CHECKER failing to map a row,
 #: and count against the coverage floor below.
@@ -430,7 +457,28 @@ def check_cross_tool_agreement() -> None:
                 absent += 1
                 continue
             where = ""
-            if kind == "HARD":
+            if kind == "HARD" and getattr(c, "removed_by", ""):
+                # A HARD row decided by an EARLIER REMOVAL (AUDIT-2026-09-24 AN-5) has
+                # no live value to own: the node is GONE, so there is no stored property
+                # to scope to. The remover must appear among the store's REMOVALS for
+                # the file. An empty set is NOT excused as absent: compat claims a
+                # removal is live and the store recorded none -- that is a disagreement.
+                if not _file_is_tracked(con, c.vpath):
+                    # The store never merged this file, so it CANNOT hold the removal:
+                    # explained, exactly as an ordinary HARD row on such a file is.
+                    absent += 1
+                    why[UNTRACKED_FILE] = why.get(UNTRACKED_FILE, 0) + 1
+                    continue
+                origins = _removal_sources(con, c.vpath, c.target)
+                where = f" (removal of {c.target})"
+                checked += 1
+                if owner not in origins:
+                    disagree += 1
+                    if disagree <= 3:
+                        print(f"          {c.vpath}{where}: compat says {owner!r} "
+                              f"removed the node; store removals={sorted(origins)}")
+                continue
+            elif kind == "HARD":
                 # The COLLIDED node's origin, never "any origin in the file": the
                 # winner owning SOMETHING else in the document is not agreement
                 # (AUDIT-2026-09-24 GT-5).

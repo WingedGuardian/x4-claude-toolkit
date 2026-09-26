@@ -256,7 +256,7 @@ def main() -> int:
              _f({1, 2})),
             ("similar over synthesized mods",
              ["x4similar", "--ext-dir", str(tmp), "--threshold", "0.5"], _f({0})),
-            # No candidate = the whole set (`--all` is being removed, AUDIT-2026-09-24 AN-7).
+            # No candidate = the whole set (`--all` was removed, AUDIT-2026-09-24 AN-7).
             ("compat over the synthesized set",
              ["x4compat", "check", "--ext-dir", str(tmp)], _f({0, 1})),
             ("xref who-calls after a foreign corpus",

@@ -120,3 +120,105 @@ def test_soft_has_no_winner_to_claim():
 def test_an_empty_winner_never_renders_as_a_mod_name():
     """Guards the failure this replaced: '' must not read as an answer."""
     assert _c("HARD", winner="").live_value_owner() is None
+
+
+# --- a HARD row decided by an earlier REMOVAL (AUDIT-2026-09-24 AN-5) ----------
+
+def test_a_removal_owned_row_is_checked_against_the_stores_REMOVALS():
+    """The remover owns no surviving value, so the gate must look for it among the
+    store's `removed` sources -- never among attribute origins, where it is absent
+    by construction and would read as a false disagreement."""
+    import sqlite3
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE removed(vpath TEXT, node_path TEXT, source TEXT, "
+                "op_line INTEGER)")
+    con.execute("INSERT INTO removed VALUES('libraries/wares.xml', '/wares/ware[1]', "
+                "'a_mod', 1)")
+    assert cross_tool._removal_sources(con, "libraries/wares.xml") == {"a_mod"}
+    assert cross_tool._removal_sources(con, "libraries/jobs.xml") == set()
+
+
+def test_a_removal_owned_HARD_row_goes_red_and_green_against_store_removals(
+        tmp_path, monkeypatch):
+    """The merged check (lane E's per-node HARD scope + AN-5): a row whose live state
+    is a REMOVAL is compared against the store's `removed` sources -- agreeing when
+    the remover recorded the removal, failing when the store names someone else."""
+    import sqlite3
+    import types
+    from test_audit0924_gates import _cross_tool_with
+    from x4validate import _compat
+    vp = "libraries/wares.xml"
+    db = tmp_path / "e.sqlite"
+    con = sqlite3.connect(db)
+    con.execute("create table entities (id integer primary key, kind, name, klass, vpath, origin)")
+    con.execute("create table attrs (entity_id, prop, value, origin)")
+    con.execute("create table removed (vpath, node_path, source, op_line)")
+    con.execute("insert into entities values (1,'ware','ice','k',?, 'base')", (vp,))
+    con.execute("insert into attrs values (1,'price.max','1','base')")
+    con.execute("insert into removed values (?, '/wares/ware[1]', 'a_mod', 1)", (vp,))
+    con.commit()
+    con.close()
+
+    def row(remover):
+        return _compat.Collision(vpath=vp, kind="HARD", target="/wares/ware[1]",
+                                 mods=["a_mod", "b_mod"], winner=remover,
+                                 removed_by=remover)
+    ct = _cross_tool_with(monkeypatch, tmp_path, db, [row("a_mod")])
+    assert not ct.failures, ct.failures
+    ct = _cross_tool_with(monkeypatch, tmp_path, db, [row("b_mod")])
+    assert ct.failures, "the store records a_mod's removal; b_mod was claimed"
+
+
+def _removal_store(tmp_path, removed_rows):
+    import sqlite3
+    vp = "libraries/wares.xml"
+    db = tmp_path / "e.sqlite"
+    con = sqlite3.connect(db)
+    con.execute("create table entities (id integer primary key, kind, name, klass, vpath, origin)")
+    con.execute("create table attrs (entity_id, prop, value, origin)")
+    con.execute("create table removed (vpath, node_path, source, op_line)")
+    con.execute("insert into entities values (1,'ware','ice','k',?, 'base')", (vp,))
+    con.execute("insert into attrs values (1,'price.max','1','base')")
+    for node, src in removed_rows:
+        con.execute("insert into removed values (?, ?, ?, 1)", (vp, node, src))
+    con.commit()
+    con.close()
+    return db
+
+
+def _removal_row(vpath, target, remover):
+    from x4validate import _compat
+    return _compat.Collision(vpath=vpath, kind="HARD", target=target,
+                             mods=[remover, "b_mod"], winner=remover, removed_by=remover)
+
+
+def test_a_remover_of_a_DIFFERENT_node_in_the_file_does_not_agree(tmp_path, monkeypatch):
+    """Review of AN-5: file-level `removed` sources confirmed any claim by any mod that
+    removed ANYTHING in wares.xml. The removal must be of the collided node."""
+    from test_audit0924_gates import _cross_tool_with
+    db = _removal_store(tmp_path, [("/wares/ware[7]", "a_mod")])
+    ct = _cross_tool_with(monkeypatch, tmp_path, db,
+                          [_removal_row("libraries/wares.xml", "/wares/ware[1]", "a_mod")])
+    assert ct.failures, "a_mod removed ware[7], not ware[1]; the check agreed"
+
+
+def test_a_removal_of_an_ANCESTOR_of_the_collided_node_agrees(tmp_path, monkeypatch):
+    from test_audit0924_gates import _cross_tool_with
+    db = _removal_store(tmp_path, [("/wares/ware[1]", "a_mod")])
+    ct = _cross_tool_with(monkeypatch, tmp_path, db,
+                          [_removal_row("libraries/wares.xml", "/wares/ware[1]/price/@max",
+                                        "a_mod")])
+    assert not ct.failures, ct.failures
+
+
+def test_a_removal_row_in_an_UNTRACKED_file_is_explained_not_a_disagreement(
+        tmp_path, monkeypatch, capsys):
+    """The store never merges md/ (or aiscripts/, t/, index/), so it can hold no
+    removal there: that is the explained UNTRACKED_FILE bucket, never a failure."""
+    from test_audit0924_gates import _cross_tool_with
+    db = _removal_store(tmp_path, [])
+    ct = _cross_tool_with(monkeypatch, tmp_path, db,
+                          [_removal_row("md/some_script.xml", "/mdscript/cues/cue[1]",
+                                        "a_mod")])
+    assert not ct.failures, ct.failures
+    assert "explained" in capsys.readouterr().out

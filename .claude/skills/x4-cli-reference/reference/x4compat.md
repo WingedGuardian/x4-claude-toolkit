@@ -5,11 +5,12 @@
 ```text
 usage: x4compat [-h] [--version] {check} ...
 
-Detect how installed X4 mods collide over the effective XML tree.
+Detect how the ENABLED (active) X4 mods collide over the effective XML tree -- the set the engine
+loads: on disk, enabled in its manifest and in the profile.
 
 positional arguments:
   {check}
-    check     analyze collisions across the installed modlist
+    check     analyze collisions across the enabled (active) modlist
 
 options:
   -h, --help  show this help message and exit
@@ -19,15 +20,17 @@ options:
 ## `x4compat check`
 
 ```text
-usage: x4compat check [-h] [--all] [--ext-dir EXT_DIR] [--reference REFERENCE] [--soft] [--json]
+usage: x4compat check [-h] [--ext-dir EXT_DIR] [--reference REFERENCE] [--soft] [--json]
                       [candidate]
 
 positional arguments:
-  candidate             a mod folder to focus on ('before I add this'); omit for --all
+  candidate             the mod to focus on ('before I add this'): an existing folder PATH is the
+                        copy analysed (a same-named copy in the extensions dir is then left out);
+                        a bare NAME means the copy in the extensions dir. Omit it to analyse every
+                        enabled mod
 
 options:
   -h, --help            show this help message and exit
-  --all                 analyze the whole installed set
   --ext-dir EXT_DIR     extensions dir to scan (default: game-root extensions\ from _registry)
   --reference REFERENCE
                         unpacked base+DLC reference tree ($X4_REFERENCE)

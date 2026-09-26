@@ -4,7 +4,11 @@ x4similar's output had NEVER been verified for truth (only monotonicity and
 no-crash). For each pair the tool reports at the default 0.85 threshold, this:
   1. locates BOTH macros itself (fresh scan of reference + DLC + mods, loose and
      packed — not the tool's own scanner),
-  2. re-extracts the stat vector with its own flattener,
+  2. re-extracts the stat vector with its own flattener -- from the EFFECTIVE
+     (merged) document, since x4similar scores patched ships at their patched
+     values (AUDIT-2026-09-24 AN-6). The merge engine is shared (it is tested on its
+     own); locating the definition, choosing the layers, flattening and scoring are
+     not,
   3. recomputes the documented score (1 - weighted mean relative diff, weights
      from the module head, class+purpose hard scope, >=4 shared keys),
   4. asserts the recomputed score clears the threshold and class/purpose match.
@@ -21,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _env  # noqa: E402
 from lxml import etree
 
-from x4validate import _cat, _merge
+from x4validate import _cat, _loadorder, _merge, _registry
 
 REF = _env.reference()
 EXT = _env.extensions()
@@ -29,7 +33,7 @@ THRESHOLD = 0.85
 
 WEIGHTS = {
     "hull.max": 2.0, "people.capacity": 1.5, "storage.missile": 0.5,
-    "storage.unit": 1.0, "cargo.max": 1.5, "rotationspeed.max": 0.75,
+    "storage.unit": 1.0, "rotationspeed.max": 0.75,
     "rotationacceleration.max": 0.5, "secrecy.level": 0.25,
 }
 
@@ -45,7 +49,7 @@ def all_ship_macros() -> dict[tuple, dict]:
     """
     out: dict[tuple, dict] = {}
 
-    def eat(root, source):
+    def eat(root, source, base, vpath):
         for m in root.iter("macro"):
             name, klass = m.get("name"), (m.get("class") or "")
             if not name or not klass.startswith("ship_"):
@@ -68,7 +72,8 @@ def all_ship_macros() -> dict[tuple, dict]:
                         pass  # silent-ok: non-numeric attr is not a stat; the
                         # tool's own vectors carry numerics only
             out.setdefault((name.lower(), source), {"class": klass, "purpose": purpose,
-                                                    "stats": stats})
+                                                    "stats": stats, "root": base,
+                                                    "vpath": vpath})
 
     roots = [("base", REF)]
     if (REF / "extensions").is_dir():
@@ -85,7 +90,8 @@ def all_ship_macros() -> dict[tuple, dict]:
     for source, base in roots:
         for f in base.rglob("*_macro.xml"):
             try:
-                eat(etree.parse(str(f)).getroot(), source)
+                eat(etree.parse(str(f)).getroot(), source, base,
+                    f.relative_to(base).as_posix())
             except (etree.XMLSyntaxError, OSError):
                 continue  # silent-ok: an unreadable macro shrinks MY scan, and any
                 # pair the tool reports from it then counts as UNRESOLVED (which
@@ -94,12 +100,76 @@ def all_ship_macros() -> dict[tuple, dict]:
             for v, mem in _cat.mod_vfs(base, packed_only=True).items():  # packed-ok: loose rglob above
                 if v.lower().endswith("_macro.xml"):
                     try:
-                        eat(etree.fromstring(_cat.read_member(mem)), source)
+                        eat(etree.fromstring(_cat.read_member(mem)), source, base, v)
                     except (etree.XMLSyntaxError, OSError, ValueError):
                         continue  # silent-ok: same as above — surfaces as UNRESOLVED
         except OSError:
             continue  # silent-ok: mod with no readable catalog; same UNRESOLVED backstop
     return out
+
+
+# ---- the EFFECTIVE values of a located definition -----------------------------
+
+#: The engine's layers, chosen HERE rather than borrowed from x4similar: every
+#: ACTIVE mod in load order. `build_effective` skips an overlay that does not ship the
+#: file and applies a nested mod-on-mod patch itself, so no touch map is needed.
+_ACTIVE = _registry.mods("active", [EXT])
+_ACTIVE_ORDER = [Path(m["path"]) for f in _loadorder.compute_load_order(_ACTIVE)
+                 for m in _ACTIVE if m["folder"] == f]
+_ACTIVE_NAMES = {p.name.lower() for p in _ACTIVE_ORDER}
+_MERGED: dict[tuple, dict | None] = {}
+
+
+def effective(entry: dict, name: str) -> dict | None:
+    """*entry* with its stats re-read from the merged document, or None if the merge
+    yields no such macro (counted UNRESOLVED by the caller, never excused)."""
+    base, vpath = entry["root"], entry["vpath"]
+    if base == REF:
+        mvpath, overlays = vpath, _ACTIVE_ORDER
+    elif base.name.lower().startswith("ego_dlc_"):
+        mvpath, overlays = f"extensions/{base.name}/{vpath}", _ACTIVE_ORDER
+    elif base.name.lower() in _ACTIVE_NAMES:
+        mvpath, overlays = vpath, _ACTIVE_ORDER
+    else:
+        mvpath, overlays = vpath, [base]      # disabled: scored as it would be alone
+    key = (mvpath.lower(), tuple(overlays))
+    if key not in _MERGED:
+        try:
+            tree = _merge.build_effective(mvpath, _merge.Config(),
+                                          extra_overlays=overlays).tree
+        except (etree.XMLSyntaxError, OSError):
+            tree = None  # silent-ok: the pair is then UNRESOLVED, which fails the gate
+        found: dict = {}
+        if tree is not None:
+            probe: dict = {}
+            _eat_into(tree, probe)
+            found = probe
+        _MERGED[key] = found
+    return _MERGED[key].get(name)
+
+
+def _eat_into(root, out: dict) -> None:
+    """Same flattening rule as `all_ship_macros.eat`, keyed by lowercased name."""
+    for m in root.iter("macro"):
+        name, klass = m.get("name"), (m.get("class") or "")
+        if not name or not klass.startswith("ship_"):
+            continue
+        props = m.find("properties")
+        if props is None:
+            continue
+        purpose = ""
+        stats: dict[str, float] = {}
+        for el in props:
+            if not isinstance(el.tag, str):
+                continue
+            for k, v in el.attrib.items():
+                if el.tag == "purpose" and k == "primary":
+                    purpose = v
+                try:
+                    stats[f"{el.tag}.{k}"] = float(v)
+                except ValueError:
+                    pass  # silent-ok: a non-numeric attr is not a stat
+        out.setdefault(name.lower(), {"class": klass, "purpose": purpose, "stats": stats})
 
 
 def score(a: dict, b: dict, keys: list[str]) -> float | None:
@@ -155,6 +225,8 @@ samples = []
 for pct, akey, bkey, klass, purpose, keys in pairs:
     an, bn = akey[0], bkey[0]
     a, b = ships.get(akey), ships.get(bkey)
+    a = effective(a, an) if a is not None else None
+    b = effective(b, bn) if b is not None else None
     if a is None or b is None:
         unresolved += 1
         continue

@@ -82,8 +82,6 @@ def _an1_world(tmp_path):
     return ref, ext, stage
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-1: an existing candidate "
-                   "path is replaced by the installed same-named copy")
 def test_AN1_an_existing_candidate_path_is_the_copy_analysed(tmp_path, hermetic):
     ref, ext, stage = _an1_world(tmp_path)
     rep = _compat.analyze(ext, candidate=stage, config=_cfg(ref))
@@ -93,8 +91,6 @@ def test_AN1_an_existing_candidate_path_is_the_copy_analysed(tmp_path, hermetic)
         f"installed copy instead found {[(c.kind, c.mods) for c in rep.collisions]}")
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-1: output does not name "
-                   "which copy of the candidate was analysed")
 def test_AN1_output_names_the_copy_analysed(tmp_path, hermetic, capsys):
     ref, ext, stage = _an1_world(tmp_path)
     _compat.main(["check", str(stage), "--ext-dir", str(ext), "--reference", str(ref)])
@@ -102,8 +98,6 @@ def test_AN1_output_names_the_copy_analysed(tmp_path, hermetic, capsys):
     assert str(stage) in out or str(stage.resolve()) in out, out
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-1: a bare installed name is "
-                   "refused instead of resolving to the installed copy")
 def test_AN1_a_bare_name_resolves_to_the_installed_copy(tmp_path, hermetic, capsys,
                                                         monkeypatch):
     ref, ext, _stage = _an1_world(tmp_path)
@@ -120,8 +114,6 @@ def test_AN1_a_bare_name_resolves_to_the_installed_copy(tmp_path, hermetic, caps
 # AN-2  x4stats wares on a mod that <remove>s a ware -> "changes no wares", rc 0
 # =============================================================================
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-2: a ware <remove> reports "
-                   "'introduces/changes no wares' at rc 0")
 def test_AN2_a_removed_ware_is_not_reported_as_no_change(tmp_path, hermetic, capsys):
     ref = _ref(tmp_path)
     ext = tmp_path / "extensions"
@@ -168,8 +160,6 @@ def _ls_names(capsys) -> set[str]:
             if ln.strip() and not ln.startswith(" ") and "ware(s)" not in ln}
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-3: --modified-only hides an "
-                   "entity a mod changed only an attribute of")
 def test_AN3_modified_only_lists_an_attribute_only_change(tmp_path, hermetic,
                                                           monkeypatch, capsys):
     db = _store(tmp_path, monkeypatch)
@@ -178,8 +168,6 @@ def test_AN3_modified_only_lists_an_attribute_only_change(tmp_path, hermetic,
     assert "ore" in _ls_names(capsys)
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-3: --modified-only lists a "
-                   "DLC-only entity no mod touched")
 def test_AN3_modified_only_does_not_list_a_DLC_only_entity(tmp_path, hermetic,
                                                           monkeypatch, capsys):
     db = _store(tmp_path, monkeypatch)
@@ -190,8 +178,6 @@ def test_AN3_modified_only_does_not_list_a_DLC_only_entity(tmp_path, hermetic,
     assert "spice" not in names, names
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-3: plain `ls` puts no mod "
-                   "marker on an attribute-only change")
 def test_AN3_plain_ls_marks_an_attribute_only_change(tmp_path, hermetic,
                                                      monkeypatch, capsys):
     db = _store(tmp_path, monkeypatch)
@@ -201,8 +187,6 @@ def test_AN3_plain_ls_marks_an_attribute_only_change(tmp_path, hermetic,
     assert len(ore) == 1 and "aaa_price" in ore[0], ore
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-4: 'WON, not introduced' "
-                   "fires on a registry entity the mod genuinely added")
 def test_AN4_who_sets_does_not_disclaim_a_genuinely_added_entity(tmp_path, hermetic,
                                                                  monkeypatch, capsys):
     db = _store(tmp_path, monkeypatch)
@@ -217,8 +201,6 @@ def test_AN4_who_sets_does_not_disclaim_a_genuinely_added_entity(tmp_path, herme
 # AN-5  x4compat: earlier mod REMOVES a node a later mod REPLACES
 # =============================================================================
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-5: the later replace is a "
-                   "no-op after the earlier remove, but is named the winner")
 def test_AN5_a_replace_after_a_remove_does_not_win(tmp_path, hermetic):
     ref = _ref(tmp_path)
     ext = tmp_path / "extensions"
@@ -249,8 +231,6 @@ _SHIP = ('<macros><macro name="ship_a_macro" class="ship_s"><properties>'
          '</properties></macro></macros>')
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-6: a <diff> ship patch is "
-                   "skipped; the ship scores at its vanilla value")
 def test_AN6_a_diff_patched_ship_is_scored_at_its_patched_value(tmp_path, hermetic):
     ref = tmp_path / "reference"
     _w(ref / "assets" / "units" / "size_s" / "macros" / "ship_a_macro.xml", _SHIP)
@@ -270,8 +250,6 @@ def test_AN6_a_diff_patched_ship_is_scored_at_its_patched_value(tmp_path, hermet
 #       candidate's selectors against mods that load AFTER it
 # =============================================================================
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-7: x4compat help promises "
-                   "the INSTALLED set; analyze() scans the ACTIVE set")
 def test_AN7_x4compat_help_names_the_scope_it_scans(capsys):
     texts = []
     for argv in (["-h"], ["check", "-h"]):
@@ -281,8 +259,6 @@ def test_AN7_x4compat_help_names_the_scope_it_scans(capsys):
     assert "installed" not in " ".join(texts).lower(), texts
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-7: x4stats resolves the "
-                   "candidate against mods that load after it")
 def test_AN7_x4stats_does_not_resolve_against_later_mods(tmp_path, hermetic, capsys):
     ref = _ref(tmp_path)
     ext = tmp_path / "extensions"

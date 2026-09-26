@@ -11,6 +11,11 @@ flag candidates for a human look, not to assert equivalence.
 Comparison is scoped HARD by macro ``class`` (ship_xs/s/m/l/xl) and ``purpose.primary``
 (fight/trade/mine/...) — an S fighter is never "similar" to an XL destroyer regardless
 of how the numbers line up, so cross-class/purpose pairs are never scored.
+
+Ships are scored at their EFFECTIVE values (base + DLC + the enabled mods in load
+order, via `_merge.build_effective`), so a `<diff>`-patched ship carries its patched
+numbers -- see `_collect_all` (AUDIT-2026-09-24 AN-6). Ships carrying fewer than
+`MIN_SHARED_KEYS` scored stats can never be paired and are COUNTED in the output.
 """
 
 from __future__ import annotations
@@ -25,13 +30,19 @@ from x4validate import _paths, _cat, _merge, _scan, _stats, _input
 from x4validate import __version__
 
 # Numeric keys compared, with weights (a rough "how much does this stat define the
-# ship's role/tier" prior) — hull/cargo/crew dominate; handling stats are secondary.
+# ship's role/tier" prior) — hull/crew dominate; handling stats are secondary.
+#
+# `cargo.max` was REMOVED (AUDIT-2026-09-24 AN-6): MEASURED 2026-09-25 on 0 of 358
+# base+DLC ship macros and 0 of 483 ship macros in the effective store -- a ship's
+# cargo lives on its storage component, not its macro. A weight applies only to keys
+# BOTH ships carry, so it never moved a real score; it only made the table claim a
+# scored axis that does not exist. The two rotation keys stay: 2 of 358 base ships
+# (ship_arg_s_fighter_01_a/_b) carry them, and they score only where both do.
 _WEIGHTS = {
     "hull.max": 2.0,
     "people.capacity": 1.5,
     "storage.missile": 0.5,
     "storage.unit": 1.0,
-    "cargo.max": 1.5,
     "rotationspeed.max": 0.75,
     "rotationacceleration.max": 0.5,
     "secrecy.level": 0.25,
@@ -53,6 +64,15 @@ class ShipVector:
     #: flight model (physics.drag.*, physics.inertia.*, jerk.*, steeringcurve.*),
     #: which was 0 rows anywhere until the depth-1 flatten was fixed 2026-08-12.
     all_stats: dict[str, float] = field(default_factory=dict)
+    #: EVERY source that ships this macro file whole (base, a DLC, each mod), in
+    #: precedence order; `source` is the last of them. The merged file is one
+    #: document, so it yields one vector -- but `--candidate` must still find a mod
+    #: whose full file a LATER mod also ships (review of AN-6), so membership is
+    #: asked of this, never of `source` alone. Empty = just `source`.
+    contributors: tuple[str, ...] = ()
+
+    def sources(self) -> tuple[str, ...]:
+        return self.contributors or (self.source,)
 
 
 @dataclass
@@ -150,6 +170,21 @@ def collect_ship_vectors(base: Path, source: str,
     return out
 
 
+#: A pair must share at least this many SCORED keys to be compared at all.
+MIN_SHARED_KEYS = 4
+
+
+def unscorable(vectors: list[ShipVector]) -> list[ShipVector]:
+    """Ships that can NEVER be scored: they carry fewer than `MIN_SHARED_KEYS`
+    scored keys, so no pair containing them reaches `similarity`'s floor.
+
+    Reported in the denominator (AUDIT-2026-09-24 AN-6): "no near-duplicates" over
+    a set a quarter of which could not be compared is a narrower answer than it
+    reads. MEASURED 2026-09-25: 96 of 358 base+DLC ship macros.
+    """
+    return [v for v in vectors if len(v.stats) < MIN_SHARED_KEYS]
+
+
 def similarity(a: ShipVector, b: ShipVector) -> SimilarPair | None:
     """Weighted normalized similarity in [0,1], or None if not comparable.
 
@@ -163,7 +198,7 @@ def similarity(a: ShipVector, b: ShipVector) -> SimilarPair | None:
     if a.ship_class != b.ship_class or a.purpose != b.purpose:
         return None
     shared = sorted(set(a.stats) & set(b.stats))
-    if len(shared) < 4:
+    if len(shared) < MIN_SHARED_KEYS:
         return None
     total_w = 0.0
     total_diff = 0.0
@@ -200,24 +235,116 @@ def find_similar(vectors: list[ShipVector], threshold: float = 0.85,
 
 # --- CLI ----------------------------------------------------------------------
 
+@dataclass
+class _FixedDlcConfig(_merge.Config):
+    """A Config whose DLC layers are exactly *fixed_dlc*: the merge must see the
+    same DLC set the definition scan was given, or a passed-in DLC (the packed
+    mini-DLC, a test fixture) would be enumerated but never merged."""
+    fixed_dlc: tuple = ()
+
+    def dlc_dirs(self) -> list[Path]:
+        return list(self.fixed_dlc)
+
+
 def _collect_all(reference: Path, ext_dir: Path,
                  unreadable: list | None = None,
                  dlc_dirs: list[Path] | None = None) -> list[ShipVector]:
-    from x4validate import _merge, _registry
-    vectors = collect_ship_vectors(reference, "base", unreadable)
-    # Ask Config rather than walking `reference / "extensions"`: the packed
-    # mini-DLC are not unpacked there, and skipping them hid 3 real ships --
-    # the Hyperion (ship_par_l_expeditionary_01_a_macro) and 2 Envoy corvettes --
-    # from a tool whose whole question is "is this a duplicate of one I own?".
+    """One vector per ship macro, scored at its EFFECTIVE (merged) values.
+
+    AUDIT-2026-09-24 AN-6. This used to read each definer's RAW file, and a raw
+    `<diff>` root is not a macro, so every patch to a ship -- VRO's `<replace
+    sel="//macros">` root-replace idiom and every `@max` tweak alike -- was
+    invisible: patched ships were scored at vanilla values.
+
+    WHO DEFINES a ship is still discovered exactly as before (a raw scan of base,
+    each DLC and every INSTALLED mod: "is this a duplicate of a ship I own?" is
+    about ownership, so a disabled ship pack still counts). Its VALUES now come from
+    `_merge.build_effective` over the ACTIVE mods in engine load order -- the
+    effective store's own touch map, so a nested mod-on-mod patch lands on its
+    owner's file. A vpath defined by several sources yields ONE vector (the
+    effective file is one document), labelled with the last full-file supplier:
+    base < DLC < active mods in load order. A ship only an installed-but-DISABLED mod
+    defines is merged from that mod alone -- scored as it would be if enabled.
+    """
+    from x4validate import _effective, _registry
     if dlc_dirs is None:
+        # Ask Config rather than walking `reference / "extensions"`: the packed
+        # mini-DLC are not unpacked there, and skipping them hid 3 real ships --
+        # the Hyperion (ship_par_l_expeditionary_01_a_macro) and 2 Envoy corvettes --
+        # from a tool whose whole question is "is this a duplicate of one I own?".
         dlc_dirs = _merge.Config(reference=reference).dlc_dirs()
-    for dlc in sorted(dlc_dirs, key=lambda p: p.name):
-        vectors += collect_ship_vectors(dlc, f"dlc:{dlc.name}", unreadable)
+    dlc_dirs = sorted(dlc_dirs, key=lambda p: p.name)
+    config = _FixedDlcConfig(reference=reference, fixed_dlc=tuple(dlc_dirs))
+
+    active = _effective.active_mods([ext_dir]) if ext_dir.is_dir() else []
+    ordered = _effective.ordered_overlays(active)
+    folder_to_path = {m["folder"]: p for m, p in ordered}
+    touch = _effective.build_touch_map(ordered)
+    # (folder, lower(real vpath)) -> lower(LOGICAL vpath): where the touch map filed it
+    logical_of = {(f, real.lower()): low for low, ts in touch.items() for f, real in ts}
+    rank = {m["folder"]: i for i, (m, _) in enumerate(ordered)}
+
+    # merge vpath (lower) -> {"vpath": real, "definers": [(precedence, label)],
+    #                         "inactive": [Path]}
+    groups: dict[str, dict] = {}
+
+    def define(low: str, real: str, prec: tuple, label: str, inactive: Path | None = None):
+        g = groups.setdefault(low, {"vpath": real, "definers": [], "inactive": []})
+        g["definers"].append((prec, label))
+        if inactive is not None:
+            g["inactive"].append(inactive)
+
+    for vpath, root in _iter_ship_macros(reference, "base", unreadable=unreadable):
+        if extract_ship_vector(root, "base", vpath) is not None:
+            define(vpath.lower(), vpath, (0, 0), "base")
+    for i, dlc in enumerate(dlc_dirs):
+        for vpath, root in _iter_ship_macros(dlc, dlc.name, unreadable=unreadable):
+            if extract_ship_vector(root, "", vpath) is not None:
+                v = f"extensions/{dlc.name}/{vpath}"
+                define(v.lower(), v, (1, i), f"dlc:{dlc.name}")
     if ext_dir.is_dir():
-        # INSTALLED: "is this ship a near-duplicate of one I own?" is about
-        # ownership, not load state -- a disabled ship pack is still a duplicate.
         for m in _registry.mods("installed", [ext_dir]):
-            vectors += collect_ship_vectors(Path(m["path"]), m["folder"], unreadable)
+            folder, path = m["folder"], Path(m["path"])
+            for vpath, root in _iter_ship_macros(path, folder, unreadable=unreadable):
+                if extract_ship_vector(root, folder, vpath) is None:
+                    continue          # a <diff> is a patch, not a definition
+                if folder in rank:
+                    low = logical_of.get((folder, vpath.lower()), vpath.lower())
+                    # The touch map files a nested mod-on-mod path under its owner's
+                    # <rel> by dropping `extensions/<owner>/`; keep the real casing.
+                    real = vpath if low == vpath.lower() else vpath.split("/", 2)[2]
+                    define(low, real, (2, rank[folder]), folder)
+                else:
+                    # Not in the ACTIVE set: its own group, never mixed into the
+                    # effective document the engine builds from the active mods.
+                    define(f"{folder.lower()}::{vpath.lower()}", vpath,
+                           (3, 0), folder, inactive=path)
+
+    vectors: list[ShipVector] = []
+    for low, g in sorted(groups.items()):
+        label = max(g["definers"])[1]
+        vpath = g["vpath"]
+        if g["inactive"]:
+            overlays = g["inactive"]                  # disabled: merged on its own
+        else:
+            overlays = _effective.touchers_for(low, touch, folder_to_path)
+        try:
+            res = _merge.build_effective(vpath, config, extra_overlays=overlays)
+        except (etree.XMLSyntaxError, OSError) as exc:
+            if unreadable is not None:
+                unreadable.append(_scan.Unreadable(vpath, f"merge failed: {exc}"))
+            continue
+        if unreadable is not None:
+            for s in res.skipped:
+                unreadable.append(_scan.Unreadable(vpath, f"left out of the merge: {s}"))
+        if res.tree is None:
+            if unreadable is not None:
+                unreadable.append(_scan.Unreadable(vpath, "the merge produced no tree"))
+            continue
+        v = extract_ship_vector(res.tree, label, vpath)
+        if v is not None:
+            v.contributors = tuple(lbl for _prec, lbl in sorted(g["definers"]))
+            vectors.append(v)
     return vectors
 
 
@@ -235,6 +362,12 @@ def render(pairs: list[SimilarPair]) -> str:
         # row and then reads the NEXT line for class/purpose/compared; appending
         # rather than altering keeps that exhaustive audit resolving every pair.
         lines.append("        " + summarise_profile(difference_profile(p.a, p.b)))
+        for v in (p.a, p.b):
+            if len(v.sources()) > 1:
+                # One merged file, several full-file suppliers: name them all, or a
+                # candidate overridden by a later mod reads as absent from the row.
+                lines.append(f"        {v.macro_name}'s file is shipped whole by "
+                             f"{', '.join(v.sources())} (last wins: {v.source})")
     return "\n".join(lines)
 
 
@@ -296,7 +429,10 @@ def main(argv: list[str] | None = None) -> int:
 
     p = argparse.ArgumentParser(
         prog="x4similar",
-        description="Advisory fuzzy same-ship detection across base+DLC+installed mods.")
+        description="Advisory fuzzy same-ship detection across the ships base, DLC and "
+                    "installed mods define, scored at their EFFECTIVE values (base + DLC + "
+                    "the enabled mods in load order, so a <diff>-patched ship carries its "
+                    "patched numbers).")
     p.add_argument("--version", action="version",
                    version=f"%(prog)s {__version__}")
     p.add_argument("--reference", help="unpacked base+DLC tree ($X4_REFERENCE)")
@@ -324,15 +460,19 @@ def main(argv: list[str] | None = None) -> int:
         # Accept a path too, and refuse to answer if it names nothing we scanned.
         cand = Path(args.candidate).name if ("/" in args.candidate or "\\" in args.candidate) \
             else args.candidate
-        sources = {v.source for v in vectors}
+        sources = {s for v in vectors for s in v.sources()}
         if cand not in sources:
             print(f"error: --candidate '{args.candidate}' matches none of the "
                   f"{len(sources)} scanned sources.", file=sys.stderr)
             print("       (a 'no near-duplicates' answer here would be about an "
                   "empty filter, not about your mod)", file=sys.stderr)
             return 2
-        pairs = [p for p in pairs if cand in (p.a.source, p.b.source)]
-    print(f"scanned {len(vectors)} ship macros.\n")
+        pairs = [p for p in pairs if cand in p.a.sources() + p.b.sources()]
+    cannot = unscorable(vectors)
+    print(f"scanned {len(vectors)} ship macros (effective values: base + DLC + the "
+          f"enabled mods in load order); {len(cannot)} of them carry fewer than "
+          f"{MIN_SHARED_KEYS} scored stats and can NEVER be paired, so a 'no "
+          f"near-duplicate' answer does not cover them.\n")
     print(render(pairs))
     if unreadable:
         # "No near-duplicates" is a negative, and a negative needs its denominator.

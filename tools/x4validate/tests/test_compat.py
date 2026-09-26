@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from x4validate import _compat, _merge
 
 
@@ -335,7 +337,7 @@ def test_cli_exits_3_when_degraded_without_hard_collisions(tmp_path, capsys):
         _mod(ext, p, {"extensions/ghost_mod/md/thing.xml":
              '<diff><replace sel="//cue/@name">' + p + '</replace></diff>'})
 
-    code = _compat.main(["check", "--all", "--ext-dir", str(ext),
+    code = _compat.main(["check", "--ext-dir", str(ext),
                          "--reference", str(cfg.reference)])
 
     assert code == 3, "a run that compared nothing must not exit 0"
@@ -681,3 +683,201 @@ def test_live_value_owner_DOES_name_one_when_it_can():
     above while destroying the answer for the three kinds that do have one."""
     for kind in ("FULL-OVERRIDE", "HARD", "UNION-KEY"):
         assert _collision(kind).live_value_owner() == "modB", kind
+
+
+# --- AN-5 twins: a REMOVE decides the node only when it loads FIRST -----------
+#
+# tests/test_audit0924_analysis.py pins the defect (an earlier remove, a later
+# replace named the winner). These pin the other clause of the new branch: a remove
+# that loads LAST is the ordinary "last loader wins", and the detail must say what
+# happened rather than "loads last and wins" when the removal decided it.
+
+
+def test_a_remove_that_loads_LAST_is_the_ordinary_last_loader(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_mod", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ore\']/price/@average">200</replace></diff>'})
+    _mod(ext, "b_mod", {"libraries/wares.xml":
+         '<diff><remove sel="//ware[@id=\'ore\']/price/@average"/></diff>'})
+    hard = _compat.analyze(ext, config=cfg).by_kind("HARD")
+    assert len(hard) == 1 and hard[0].winner == "b_mod"
+    assert "loads last and wins" in hard[0].detail
+
+
+def test_an_earlier_remove_is_NAMED_as_what_is_live(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_mod", {"libraries/wares.xml":
+         '<diff><remove sel="//ware[@id=\'ore\']/price/@average"/></diff>'})
+    _mod(ext, "b_mod", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ore\']/price/@average">300</replace></diff>'})
+    hard = _compat.analyze(ext, config=cfg).by_kind("HARD")
+    assert len(hard) == 1 and hard[0].live_value_owner() == "a_mod"
+    assert "match nothing" in hard[0].detail and "'b_mod'" in hard[0].detail
+
+
+# --- AN-10: a selector that only a LATER mod's add can satisfy -----------------
+#
+# Every mod's sel= resolves against the UNPATCHED base, so a patch on a node that
+# another mod ADDS matched nothing there and contributed no target: x4compat said
+# "No collisions" while the engine -- which applies the patch BEFORE the later mod
+# adds the node -- skips it. It must be disclosed, never silent.
+
+_ADDS_ZWARE = ('<diff><add sel="/wares"><ware id="zware"><price average="100"/></ware>'
+               '</add></diff>')
+_PATCHES_ZWARE = ('<diff><replace sel="//ware[@id=\'zware\']/price/@average">5</replace>'
+                  '</diff>')
+
+
+def test_a_patch_on_a_node_a_LATER_mod_adds_is_disclosed(tmp_path, capsys):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_patcher", {"libraries/wares.xml": _PATCHES_ZWARE})
+    _mod(ext, "z_adder", {"libraries/wares.xml": _ADDS_ZWARE})
+    rep = _compat.analyze(ext, config=cfg)
+    assert [(m.mod, m.added_by) for m in rep.order_misses] == [("a_patcher", "z_adder")]
+    out = _compat.render(rep)
+    assert "a_patcher" in out and "z_adder" in out
+    assert not any(ln.startswith("No HARD") and "see" not in ln for ln in out.splitlines()), out
+
+
+def test_a_patch_on_a_node_an_EARLIER_mod_adds_is_not_a_miss(tmp_path):
+    """The twin: the engine has the node by then, so nothing is skipped."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_adder", {"libraries/wares.xml": _ADDS_ZWARE})
+    _mod(ext, "z_patcher", {"libraries/wares.xml": _PATCHES_ZWARE})
+    assert _compat.analyze(ext, config=cfg).order_misses == []
+
+
+def test_a_patch_on_a_node_its_OWN_mod_adds_is_not_a_miss(tmp_path):
+    """The other twin: a mod patching what it adds itself depends on no one."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_self", {"libraries/wares.xml":
+         _ADDS_ZWARE.replace("</diff>", "") + _PATCHES_ZWARE.replace("<diff>", "")})
+    _mod(ext, "z_other", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ore\']/price/@average">1</replace></diff>'})
+    assert _compat.analyze(ext, config=cfg).order_misses == []
+
+
+def test_the_adder_is_NAMED_among_several_later_mods(tmp_path):
+    """Exercises the bisection: the adder is neither the first nor the last later mod,
+    and the others on the file touch something else."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    other = '<diff><replace sel="//ware[@id=\'ice\']/price/@average">{v}</replace></diff>'
+    _mod(ext, "a_patcher", {"libraries/wares.xml": _PATCHES_ZWARE})
+    _mod(ext, "b_other", {"libraries/wares.xml": other.format(v=1)})
+    _mod(ext, "c_other", {"libraries/wares.xml": other.format(v=2)})
+    _mod(ext, "d_adder", {"libraries/wares.xml": _ADDS_ZWARE})
+    _mod(ext, "e_other", {"libraries/wares.xml": other.format(v=3)})
+    rep = _compat.analyze(ext, config=cfg)
+    assert [(m.mod, m.added_by) for m in rep.order_misses] == [("a_patcher", "d_adder")]
+    # candidate mode keeps it only when the candidate is one of the two mods
+    assert _compat.analyze(ext, candidate=ext / "d_adder", config=cfg).order_misses
+    assert not _compat.analyze(ext, candidate=ext / "c_other", config=cfg).order_misses
+
+
+# --- AN-10 perf: the incremental pass is CHECKED against `_merge`, not trusted ----
+
+def _an10_world(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    other = '<diff><replace sel="//ware[@id=\'ice\']/price/@average">{v}</replace></diff>'
+    _mod(ext, "a_patcher", {"libraries/wares.xml": _PATCHES_ZWARE})
+    _mod(ext, "b_other", {"libraries/wares.xml": other.format(v=1)})
+    _mod(ext, "d_adder", {"libraries/wares.xml": _ADDS_ZWARE})
+    return cfg, ext
+
+
+def test_a_drifted_incremental_pass_falls_back_to_the_rebuild(tmp_path, monkeypatch):
+    """If the mirrored per-overlay loop ever disagrees with build_effective, the
+    self-check must notice and the rebuild form must answer -- same finding."""
+    import types
+    cfg, ext = _an10_world(tmp_path)
+    used = []
+    real_rebuild = _compat._order_misses_rebuild
+    monkeypatch.setattr(_compat, "_order_misses_rebuild",
+                        lambda *a, **k: used.append(1) or real_rebuild(*a, **k))
+    # A _merge whose apply_overlay silently does nothing -- ONLY as _compat sees it.
+    drifted = types.SimpleNamespace(**{k: getattr(_merge, k) for k in dir(_merge)
+                                       if not k.startswith("__")})
+    drifted.apply_overlay = lambda tree, *a, **k: (tree, "diff")
+    monkeypatch.setattr(_compat, "_merge", drifted)
+    rep = _compat.analyze(ext, config=cfg)
+    assert used, "the drifted pass was trusted: the self-check never fired"
+    assert [(m.mod, m.added_by) for m in rep.order_misses] == [("a_patcher", "d_adder")]
+
+
+def test_the_incremental_pass_needs_no_fallback_when_it_agrees(tmp_path, monkeypatch):
+    """The twin: on an ordinary file the fast path answers by itself."""
+    cfg, ext = _an10_world(tmp_path)
+    monkeypatch.setattr(_compat, "_order_misses_rebuild",
+                        lambda *a, **k: pytest.fail("fell back on an agreeing pass"))
+    rep = _compat.analyze(ext, config=cfg)
+    assert [(m.mod, m.added_by) for m in rep.order_misses] == [("a_patcher", "d_adder")]
+
+
+# --- review of AN-5: the removal is live only while NOTHING re-supplies the node ---
+
+_RM_ORE = '<diff><remove sel="//ware[@id=\'ore\']"/></diff>'
+_READD_ORE = ('<diff><add sel="/wares"><ware id="ore"><price average="55"/></ware>'
+              '</add></diff>')
+_REPLACE_ORE = ('<diff><replace sel="//ware[@id=\'ore\']"><ware id="ore">'
+                '<price average="7"/></ware></replace></diff>')
+_EDIT_IN_ORE = '<diff><replace sel="//ware[@id=\'ore\']/price/@average">9</replace></diff>'
+
+
+def test_a_node_RE_ADDED_after_its_removal_is_won_by_the_later_writer(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_rm", {"libraries/wares.xml": _RM_ORE})
+    _mod(ext, "b_readd", {"libraries/wares.xml": _READD_ORE})
+    _mod(ext, "c_replace", {"libraries/wares.xml": _REPLACE_ORE})
+    live = _merge.build_effective("libraries/wares.xml", _merge.replace(
+        cfg, overlays=(ext / "a_rm", ext / "b_readd", ext / "c_replace"))).tree
+    assert live.find("ware[@id='ore']/price").get("average") == "7"   # control
+    hard = [c for c in _compat.analyze(ext, config=cfg).by_kind("HARD")
+            if set(c.mods) == {"a_rm", "c_replace"}]
+    assert len(hard) == 1, hard
+    assert hard[0].live_value_owner() == "c_replace" and not hard[0].removed_by, hard[0]
+
+
+def test_an_edit_INSIDE_a_node_an_earlier_mod_removed_is_disclosed(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_rm", {"libraries/wares.xml": _RM_ORE})
+    _mod(ext, "b_edit", {"libraries/wares.xml": _EDIT_IN_ORE})
+    rep = _compat.analyze(ext, config=cfg)
+    assert [(m.mod, m.removed_by) for m in rep.removed_first] == [("b_edit", "a_rm")]
+    assert "b_edit" in _compat.render(rep) and "a_rm" in _compat.render(rep)
+
+
+def test_an_edit_inside_a_removed_node_that_was_RE_ADDED_is_not_disclosed(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_rm", {"libraries/wares.xml": _RM_ORE})
+    _mod(ext, "b_readd", {"libraries/wares.xml": _READD_ORE})
+    _mod(ext, "c_edit", {"libraries/wares.xml": _EDIT_IN_ORE})
+    assert _compat.analyze(ext, config=cfg).removed_first == []
+
+
+def test_a_GUARDED_order_miss_is_marked_as_intentional(tmp_path):
+    """`if=` / `silent` ops are the optional-compat idiom: disclosed as guarded, not
+    read as a mistake -- while the unguarded twin stays unmarked."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_patcher", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'zware\']/price/@average" silent="true">5'
+         '</replace><replace sel="//ware[@id=\'zware\']/@id" if="//ware[@id=\'zware\']">'
+         'zz</replace><remove sel="//ware[@id=\'zware\']/price/@min"/></diff>'})
+    _mod(ext, "z_adder", {"libraries/wares.xml":
+         '<diff><add sel="/wares"><ware id="zware"><price min="1" average="100"/></ware>'
+         '</add></diff>'})
+    rep = _compat.analyze(ext, config=cfg)
+    got = sorted((m.sel.rsplit("/", 1)[-1], bool(m.guard)) for m in rep.order_misses)
+    assert got == [("@average", True), ("@id", True), ("@min", False)], got
+    out = _compat.render(rep)
+    assert out.count("guarded") >= 2, out
