@@ -681,3 +681,35 @@ def test_live_value_owner_DOES_name_one_when_it_can():
     above while destroying the answer for the three kinds that do have one."""
     for kind in ("FULL-OVERRIDE", "HARD", "UNION-KEY"):
         assert _collision(kind).live_value_owner() == "modB", kind
+
+
+# --- AN-5 twins: a REMOVE decides the node only when it loads FIRST -----------
+#
+# tests/test_audit0924_analysis.py pins the defect (an earlier remove, a later
+# replace named the winner). These pin the other clause of the new branch: a remove
+# that loads LAST is the ordinary "last loader wins", and the detail must say what
+# happened rather than "loads last and wins" when the removal decided it.
+
+
+def test_a_remove_that_loads_LAST_is_the_ordinary_last_loader(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_mod", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ore\']/price/@average">200</replace></diff>'})
+    _mod(ext, "b_mod", {"libraries/wares.xml":
+         '<diff><remove sel="//ware[@id=\'ore\']/price/@average"/></diff>'})
+    hard = _compat.analyze(ext, config=cfg).by_kind("HARD")
+    assert len(hard) == 1 and hard[0].winner == "b_mod"
+    assert "loads last and wins" in hard[0].detail
+
+
+def test_an_earlier_remove_is_NAMED_as_what_is_live(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_mod", {"libraries/wares.xml":
+         '<diff><remove sel="//ware[@id=\'ore\']/price/@average"/></diff>'})
+    _mod(ext, "b_mod", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ore\']/price/@average">300</replace></diff>'})
+    hard = _compat.analyze(ext, config=cfg).by_kind("HARD")
+    assert len(hard) == 1 and hard[0].live_value_owner() == "a_mod"
+    assert "match nothing" in hard[0].detail and "'b_mod'" in hard[0].detail

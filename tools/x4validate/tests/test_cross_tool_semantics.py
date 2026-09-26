@@ -120,3 +120,19 @@ def test_soft_has_no_winner_to_claim():
 def test_an_empty_winner_never_renders_as_a_mod_name():
     """Guards the failure this replaced: '' must not read as an answer."""
     assert _c("HARD", winner="").live_value_owner() is None
+
+
+# --- a HARD row decided by an earlier REMOVAL (AUDIT-2026-09-24 AN-5) ----------
+
+def test_a_removal_owned_row_is_checked_against_the_stores_REMOVALS():
+    """The remover owns no surviving value, so the gate must look for it among the
+    store's `removed` sources -- never among attribute origins, where it is absent
+    by construction and would read as a false disagreement."""
+    import sqlite3
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE removed(vpath TEXT, node_path TEXT, source TEXT, "
+                "op_line INTEGER)")
+    con.execute("INSERT INTO removed VALUES('libraries/wares.xml', '/wares/ware[1]', "
+                "'a_mod', 1)")
+    assert cross_tool._removal_sources(con, "libraries/wares.xml") == {"a_mod"}
+    assert cross_tool._removal_sources(con, "libraries/jobs.xml") == set()

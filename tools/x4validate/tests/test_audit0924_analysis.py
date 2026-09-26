@@ -211,8 +211,6 @@ def test_AN4_who_sets_does_not_disclaim_a_genuinely_added_entity(tmp_path, herme
 # AN-5  x4compat: earlier mod REMOVES a node a later mod REPLACES
 # =============================================================================
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-5: the later replace is a "
-                   "no-op after the earlier remove, but is named the winner")
 def test_AN5_a_replace_after_a_remove_does_not_win(tmp_path, hermetic):
     ref = _ref(tmp_path)
     ext = tmp_path / "extensions"

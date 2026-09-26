@@ -167,6 +167,16 @@ def _origins(con, vpath: str, column: str) -> set[str]:
     return set()
 
 
+def _removal_sources(con, vpath: str) -> set[str]:
+    """Distinct mods the store records as REMOVING something at *vpath*."""
+    for form in _vpath_forms(vpath):
+        rows = con.execute("SELECT DISTINCT source FROM removed WHERE lower(vpath) = ?",
+                           (form,)).fetchall()
+        if rows:
+            return {r[0] for r in rows}
+    return set()
+
+
 def _subtree_scope(w0: str) -> tuple[str, str | None]:
     """Map a SUBTREE target to ('file'|'node'|'unmapped', prop_prefix).
 
@@ -253,7 +263,11 @@ def check_cross_tool_agreement() -> None:
             if owner is None:
                 absent += 1
                 continue
-            origins = _origins(con, c.vpath, column)
+            # A HARD row decided by an EARLIER REMOVAL (AUDIT-2026-09-24 AN-5) has no
+            # live value to own: the node is gone, so the remover shows up among the
+            # store's REMOVALS for the file, never among surviving attribute origins.
+            origins = (_removal_sources(con, c.vpath) if getattr(c, "removed_by", "")
+                       else _origins(con, c.vpath, column))
             if not origins:
                 absent += 1          # file holds no store-tracked entity kind
                 continue

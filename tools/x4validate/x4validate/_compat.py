@@ -55,13 +55,18 @@ class Collision:
     vpath: str
     kind: str            # HARD | UNION-KEY | FULL-OVERRIDE | SUBTREE | NAME-CLASH | SOFT
     target: str          # node identity / registry key / file path
-    mods: list[str]      # involved mod folders, in load order (winner last)
+    mods: list[str]      # involved mod folders, in load order
     winner: str          # the mod whose value is LIVE — empty for SUBTREE/NAME-CLASH
     detail: str = ""
     #: SUBTREE only: the mod that did the WIPING. It is not the owner of the final
     #: value — a third mod loading later can re-supply what was wiped — which is
     #: exactly why it is not called `winner`.
     wiped_by: str = ""
+    #: HARD only: set when an EARLIER mod removes the node, so the later mods' ops on
+    #: it match nothing (AUDIT-2026-09-24 AN-5). `winner` is then this remover, and
+    #: the live state is the node's ABSENCE -- which a consumer comparing against
+    #: stored values must look for among removals, not among surviving values.
+    removed_by: str = ""
 
     def live_value_owner(self) -> str | None:
         """The mod whose value is live, or ``None`` when that is unknowable here.
@@ -70,7 +75,9 @@ class Collision:
         kind            meaning
         =============== ==========================================================
         FULL-OVERRIDE   the mod that clobbers — its file is the document
-        HARD            the mod that loads last at the clashing node
+        HARD            the mod that loads last at the clashing node -- unless an
+                    earlier mod REMOVES the node: then that remover (later ops
+                    on the node match nothing; AUDIT-2026-09-24 AN-5)
         UNION-KEY       the mod that defines the surviving registry entry
         SUBTREE         ``None`` — `winner` was the WIPER, and a later mod may
                         have restored the values (MEASURED: 3 of 148, 2.0%)
@@ -474,6 +481,22 @@ def _analyze_vpath(
                     "multiple mods <add> under the same node (usually coexist)"))
         else:
             ops_desc = "; ".join(f"{f}:{'/'.join(per_mod[f])}" for f in fs)
+            # AN EARLIER <remove> ENDS THE CONTEST (AUDIT-2026-09-24 AN-5). Once a mod
+            # removes this node, every later mod's op on it matches NOTHING -- the
+            # engine skips it -- so the node's live state is the REMOVAL and the
+            # remover, not the last loader, is what `live_value_owner()` must name.
+            # Reporting the later mod as the winner claimed a value the game never has.
+            # The first remover counts: a second one later is itself a no-op.
+            remover = next((f for f in fs[:-1] if "remove" in per_mod[f]), None)
+            if remover is not None:
+                later = fs[fs.index(remover) + 1:]
+                collisions.append(Collision(
+                    vpath, "HARD", cid, fs, remover,
+                    f"{ops_desc} — '{remover}' REMOVES this node first, so the later "
+                    f"op(s) from {', '.join(repr(f) for f in later)} match nothing and "
+                    "the engine skips them: the removal is what is live",
+                    removed_by=remover))
+                continue
             collisions.append(Collision(
                 vpath, "HARD", cid, fs, winner(fs),
                 f"{ops_desc} — '{winner(fs)}' loads last and wins"))
@@ -802,6 +825,9 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
             if c.wiped_by:
                 lines.append(f"     wiped by : {c.wiped_by}  (NOT the owner of the "
                              f"final value — a later mod may re-supply it)")
+            elif c.removed_by:
+                lines.append(f"     removed  : by {c.removed_by}, first -- the node is "
+                             f"ABSENT; later ops on it match nothing")
             else:
                 lines.append(f"     winner   : {c.winner}")
             if c.detail:
