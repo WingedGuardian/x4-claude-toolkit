@@ -614,6 +614,134 @@ def _order_misses(vpath: str, ordered: list[str],
                   only: str | None = None) -> list[OrderMiss]:
     """Ops that match nothing in base but WOULD match once a LATER mod has loaded.
 
+    ONE INCREMENTAL PASS per file: base+DLC is built once, then the mods on this file
+    are applied one at a time in load order, and every pending selector is evaluated
+    against the tree as it stands after each position -- N applies, not a rebuild per
+    question. (The rebuild form, `_order_misses_rebuild`, re-merged the whole prefix
+    for every probe: MEASURED on this install, 145 mods, `analyze()` went ~11 s ->
+    ~64 s, almost all of it re-merging libraries/wares.xml, 57 mods. This form: ~31 s,
+    same 39 findings -- about two full merges per file, one of them the self-check.)
+
+    For an op of mod M at position i: a match BEFORE M applies means an earlier mod
+    supplies the node (the engine has it in time); a match right AFTER M applies
+    means M's own content supplies it; otherwise the first later position j at which
+    it matches names the adder, ordered[j-1]. Never matching = a dead selector, the
+    validator's finding, not this one.
+
+    The per-overlay step mirrors `_merge.build_effective`'s loop (inert bare-path
+    diff over a non-game base; nested `extensions/<owner>/` patches onto an earlier
+    full/union supplier) via `_merge`'s own `overlay_root` / `apply_overlay`. It is
+    CHECKED, not trusted: the finished tree must serialize identically to
+    `build_effective` over the same mods, or this file falls back to the rebuild
+    form. A nested (mod-owned) vpath always uses the rebuild form.
+    """
+    if (config.overlays
+            or _merge._nested_target(vpath, config.packed_dlc_names()) is not None):
+        return _order_misses_rebuild(vpath, ordered, unmatched, folder_to_path, config,
+                                     only)
+    # The questions, per op: (folder index, op). Candidate mode keeps only misses
+    # that can involve the candidate, exactly as the rebuild form does.
+    pending: list[tuple[int, etree._Element]] = []
+    for folder, ops in unmatched.items():
+        i = ordered.index(folder)
+        if i == len(ordered) - 1:
+            continue
+        if only is not None and folder != only and only not in ordered[i + 1:]:
+            continue
+        pending += [(i, op) for op in ops]
+    if not pending:
+        return []
+    try:
+        start = _merge.build_effective(vpath, config)
+    except etree.LxmlError:
+        return []    # silent-ok: an unbuildable base cannot CLAIM a miss; the per-mod
+        # parse failures are already recorded as NOT ANALYSED rows
+    tree, from_game = start.tree, start.base_from_game
+    owners: list[str] = []
+    compiled: dict[str, etree.XPath | None] = {}
+
+    def hit(sel: str, against: etree._Element | None = None) -> bool:
+        if sel not in compiled:
+            try:
+                compiled[sel] = etree.XPath(sel)
+            except etree.XPathSyntaxError:
+                compiled[sel] = None   # silent-ok: recorded in `unresolvable` upstream
+        xp = compiled[sel]
+        doc = tree if against is None else against
+        if xp is None or doc is None:
+            return False
+        try:
+            res = xp(doc)
+        except etree.XPathEvalError:
+            return False               # silent-ok: same channel as above
+        return isinstance(res, list) and bool(res)
+
+    # The FINISHED tree, built by `_merge` itself: the dead-selector filter (an op
+    # matching nothing even after every mod is the validator's finding, and would
+    # otherwise be re-evaluated at every position) AND the self-check below.
+    # Limit, stated: a node a later mod adds and a still-later mod removes again is
+    # absent here, so such an op is filtered as dead rather than named.
+    try:
+        want = _merge.build_effective(
+            vpath, config, extra_overlays=[folder_to_path[f] for f in ordered]).tree
+    except etree.LxmlError:
+        want = None
+    if want is None:
+        return _order_misses_rebuild(vpath, ordered, unmatched, folder_to_path,
+                                     config, only)
+    out: list[OrderMiss] = []
+    live = [(i, op) for i, op in pending if hit(op.get("sel", ""), want)]
+    if not live:
+        return out     # every pending op is dead: no claim to make, no pass to check
+    for pos, folder in enumerate(ordered):
+        # BEFORE `folder` applies: the tree is ordered[:pos]. Ops of THIS folder that
+        # already match are supplied by an earlier mod -- not misses.
+        live = [(i, op) for i, op in live
+                if not (i == pos and hit(op.get("sel", "")))]
+        odir = folder_to_path[folder]
+        oroot = _merge.overlay_root(odir, vpath, [])
+        if oroot is not None:
+            if oroot.tag == "diff" and not from_game:
+                pass                                   # inert bare-path diff
+            else:
+                tree, mode = _merge.apply_overlay(tree, oroot, vpath, odir.name)
+                if mode in ("union", "full"):
+                    owners.append(odir.name)
+        for owner in owners:
+            if odir.name.lower() == owner.lower():
+                continue
+            nroot = _merge.overlay_root(odir, f"extensions/{owner}/{vpath}", [])
+            if nroot is not None:
+                tree, _mode = _merge.apply_overlay(tree, nroot, vpath, odir.name)
+        # AFTER `folder` applied: the tree is ordered[:pos + 1].
+        keep = []
+        for i, op in live:
+            if i > pos:
+                keep.append((i, op))                   # its own position is ahead
+            elif hit(op.get("sel", "")):
+                if i < pos:                            # first match after a LATER mod
+                    out.append(OrderMiss(vpath, ordered[i], op.sourceline or 0,
+                                         op.get("sel", ""), folder))
+                # i == pos: the mod's OWN content supplies the node -- not a miss
+            else:
+                keep.append((i, op))
+        live = keep
+    # THE SELF-CHECK: the incremental tree, run to the END of the order, must equal
+    # `build_effective` over the same mods. A mismatch means the mirrored loop drifted
+    # from `_merge`'s, and the rebuild form answers instead.
+    if tree is None or etree.tostring(tree) != etree.tostring(want):
+        return _order_misses_rebuild(vpath, ordered, unmatched, folder_to_path,
+                                     config, only)
+    return out
+
+
+def _order_misses_rebuild(vpath: str, ordered: list[str],
+                  unmatched: dict[str, list[etree._Element]],
+                  folder_to_path: dict[str, Path],
+                  config: _merge.Config,
+                  only: str | None = None) -> list[OrderMiss]:
+    """Ops that match nothing in base but WOULD match once a LATER mod has loaded.
+
     Trees are merged only when needed, cheapest filter first (a merge of a heavily
     patched libraries/wares.xml costs seconds -- MEASURED ~3.7 s here): ONE tree of
     every mod on this file (no match there = a dead selector, the validator's
@@ -623,9 +751,9 @@ def _order_misses(vpath: str, ordered: list[str],
     mod is left out of those trees, so an op on a node its own mod adds never finds
     a later "adder" and is never reported.
 
-    COST, MEASURED on this install (145 mods): x4compat's full run went from ~11 s
-    to ~60-100 s under machine load, almost all of it libraries/wares.xml (57 mods,
-    ~1-6 s per merge). Candidate mode only examines misses involving the candidate.
+    The SLOW form, kept as the fallback for a nested (mod-owned) vpath and for a file
+    whose incremental pass fails its self-check: on this install it cost ~64 s per
+    full run where `analyze()` alone is ~11 s.
     """
     owned = set(config.overlays)
 

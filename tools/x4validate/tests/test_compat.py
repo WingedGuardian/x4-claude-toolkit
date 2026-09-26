@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from x4validate import _compat, _merge
 
 
@@ -776,3 +778,43 @@ def test_the_adder_is_NAMED_among_several_later_mods(tmp_path):
     # candidate mode keeps it only when the candidate is one of the two mods
     assert _compat.analyze(ext, candidate=ext / "d_adder", config=cfg).order_misses
     assert not _compat.analyze(ext, candidate=ext / "c_other", config=cfg).order_misses
+
+
+# --- AN-10 perf: the incremental pass is CHECKED against `_merge`, not trusted ----
+
+def _an10_world(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    other = '<diff><replace sel="//ware[@id=\'ice\']/price/@average">{v}</replace></diff>'
+    _mod(ext, "a_patcher", {"libraries/wares.xml": _PATCHES_ZWARE})
+    _mod(ext, "b_other", {"libraries/wares.xml": other.format(v=1)})
+    _mod(ext, "d_adder", {"libraries/wares.xml": _ADDS_ZWARE})
+    return cfg, ext
+
+
+def test_a_drifted_incremental_pass_falls_back_to_the_rebuild(tmp_path, monkeypatch):
+    """If the mirrored per-overlay loop ever disagrees with build_effective, the
+    self-check must notice and the rebuild form must answer -- same finding."""
+    import types
+    cfg, ext = _an10_world(tmp_path)
+    used = []
+    real_rebuild = _compat._order_misses_rebuild
+    monkeypatch.setattr(_compat, "_order_misses_rebuild",
+                        lambda *a, **k: used.append(1) or real_rebuild(*a, **k))
+    # A _merge whose apply_overlay silently does nothing -- ONLY as _compat sees it.
+    drifted = types.SimpleNamespace(**{k: getattr(_merge, k) for k in dir(_merge)
+                                       if not k.startswith("__")})
+    drifted.apply_overlay = lambda tree, *a, **k: (tree, "diff")
+    monkeypatch.setattr(_compat, "_merge", drifted)
+    rep = _compat.analyze(ext, config=cfg)
+    assert used, "the drifted pass was trusted: the self-check never fired"
+    assert [(m.mod, m.added_by) for m in rep.order_misses] == [("a_patcher", "d_adder")]
+
+
+def test_the_incremental_pass_needs_no_fallback_when_it_agrees(tmp_path, monkeypatch):
+    """The twin: on an ordinary file the fast path answers by itself."""
+    cfg, ext = _an10_world(tmp_path)
+    monkeypatch.setattr(_compat, "_order_misses_rebuild",
+                        lambda *a, **k: pytest.fail("fell back on an agreeing pass"))
+    rep = _compat.analyze(ext, config=cfg)
+    assert [(m.mod, m.added_by) for m in rep.order_misses] == [("a_patcher", "d_adder")]
