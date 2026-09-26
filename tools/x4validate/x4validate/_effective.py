@@ -852,7 +852,8 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
             if n % 500 == 0:
                 progress(f"  merged {n}/{len(mvpaths)} macro files, {len(entities)} entities")
 
-    # components (per-file, enumerated from index/components.xml)
+    # components (per-file, enumerated by `component_vpaths` from the asset files --
+    # NOT from index/components.xml, which misses 12% of them; see its docstring)
     if "component" in kinds:
         cvpaths = component_vpaths(config, touch)
         progress(f"component files to merge: {len(cvpaths)}")
