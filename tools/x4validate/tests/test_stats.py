@@ -508,3 +508,35 @@ def test_a_WELL_FORMED_overlay_is_unaffected(tmp_path):
     cand = _cand(tmp_path / "good", "a normal note")
     root = _merge.overlay_root(cand, "libraries/wares.xml")
     assert root is not None and root.tag == "diff"
+
+
+# --- AN-7 twin: the patch-time tree still SEES mods that load BEFORE the candidate --
+#
+# tests/test_audit0924_analysis.py pins the defect (a mod loading AFTER the candidate
+# must be invisible to its selectors). This is the other clause: truncating at the
+# candidate's position must keep everything before it, or a cross-mod patch on a node
+# an earlier mod adds would stop resolving -- the opposite false answer.
+
+
+def test_a_candidate_resolves_against_a_mod_that_loads_BEFORE_it(tmp_path, monkeypatch,
+                                                                  capsys):
+    from x4validate import _registry
+    monkeypatch.setattr(_registry, "ingest_content_xml", lambda *a, **k: [])
+    monkeypatch.setattr(_registry, "PROFILE_CONTENT", None)
+    ref = tmp_path / "reference"
+    _w(ref / "libraries" / "wares.xml",
+       '<wares><ware id="ore" group="minerals"><price min="1" average="100" max="200"/>'
+       '</ware></wares>')
+    ext = tmp_path / "extensions"
+    _w(ext / "a_adder" / "content.xml", '<content id="a_adder" name="a" version="1"/>')
+    _w(ext / "a_adder" / "libraries" / "wares.xml",
+       '<diff><add sel="/wares"><ware id="aware" group="minerals">'
+       '<price min="1" average="100" max="200"/></ware></add></diff>')
+    cand = ext / "z_cand"
+    _w(cand / "content.xml", '<content id="z_cand" name="z" version="1"/>')
+    _w(cand / "libraries" / "wares.xml",
+       '<diff><replace sel="//ware[@id=' + chr(39) + 'aware' + chr(39)
+       + ']/price/@average">5</replace></diff>')
+    _stats.main(["wares", str(cand), "--ext-dir", str(ext), "--reference", str(ref)])
+    out = capsys.readouterr().out
+    assert "aware" in out and "candidate avg price : 5 " in out, out

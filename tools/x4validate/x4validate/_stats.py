@@ -70,9 +70,16 @@ def _ware_from_el(el: etree._Element) -> Ware | None:
 
 
 def effective_wares(ext_dir: Path, config: _merge.Config,
-                    exclude: Path | None = None, scope: str = "installed"
+                    exclude: Path | None = None, scope: str = "installed",
+                    patch_time: bool = False,
                     ) -> "tuple[dict[str, Ware], etree._Element | None]":
-    """Every ware in the effective tree = base + DLC + all installed mods (load order).
+    """Every ware in the effective tree = base + DLC + the *scope* mods (load order).
+
+    With *exclude* AND *patch_time*, the tree is truncated at the excluded mod's own
+    load position (it is placed there by folder name + its manifest's dependencies,
+    whether or not it is installed): only mods loading BEFORE it are merged. That is
+    the tree the engine applies its ops to, and the one its selectors must resolve
+    against (AUDIT-2026-09-24 AN-7).
 
     Returns the TREE as well, because `candidate_wares` needs something to resolve a
     `sel=` against.
@@ -109,21 +116,31 @@ def effective_wares(ext_dir: Path, config: _merge.Config,
         mods = _registry.mods("active", [ext_dir])
     else:
         mods = _registry.mods("installed", [ext_dir])
-    order = _compat.compute_load_order(mods)
-    by_folder = {m["folder"]: Path(m["path"]) for m in mods}
+    drop_folder = drop_id = ""
     if exclude is not None:
         drop_folder = exclude.resolve().name
-        drop_id = ""
         cx = exclude / "content.xml"
         if cx.is_file():
             root = _merge.parse_file(cx)
             drop_id = (root.get("id") or "") if root is not None else ""
-        keep = {}
-        for m in mods:
-            if m["folder"] == drop_folder or (drop_id and m.get("id") == drop_id):
-                continue
-            keep[m["folder"]] = Path(m["path"])
-        by_folder = keep
+        mods = [m for m in mods
+                if not (m["folder"].lower() == drop_folder.lower()
+                        or (drop_id and m.get("id") == drop_id))]
+    if exclude is not None and patch_time:
+        # THE TREE AS OF THE CANDIDATE'S OWN LOAD POSITION (AUDIT-2026-09-24 AN-7),
+        # the same patch-time tree Tier B resolves `sel=` against (`_check.tier_b_trees`).
+        # The candidate is placed by the engine's rule -- its folder name and its own
+        # manifest's dependencies -- and only mods loading BEFORE it are merged. A mod
+        # loading AFTER it does not exist yet when the engine applies the candidate's
+        # ops, so a selector aimed at a node that later mod adds matches nothing in
+        # the game; resolving against the whole set reported that op as a change.
+        mods = mods + [{"folder": drop_folder, "path": str(exclude),
+                        "id": drop_id or drop_folder}]
+        order = _compat.compute_load_order(mods)
+        order = order[:order.index(drop_folder)]
+    else:
+        order = _compat.compute_load_order(mods)
+    by_folder = {m["folder"]: Path(m["path"]) for m in mods}
     overlays = [by_folder[f] for f in order if f in by_folder]
     tree = _merge.build_effective("libraries/wares.xml", config, extra_overlays=overlays).tree
     out: dict[str, Ware] = {}
@@ -537,7 +554,8 @@ def main(argv: list[str] | None = None) -> int:
     # selectors resolve against must NOT contain the candidate.
     eff, _ = effective_wares(ext_dir, config)                       # pool: installed
     _, eff_tree = effective_wares(ext_dir, config, exclude=candidate,
-                                  scope="active")                    # resolution: active
+                                  scope="active",
+                                  patch_time=True)   # resolution: active, as of its position
     # COULD-NOT-CHECK IS rc 2, NEVER A CONFIDENT ZERO AND NEVER A TRACEBACK.
     # `_merge.overlay_root` now RAISES on a malformed document when the caller passes
     # no `skipped` channel -- its own "NO CHANNEL, NO SWALLOW" rule, which its

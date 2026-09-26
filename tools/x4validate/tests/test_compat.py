@@ -335,7 +335,7 @@ def test_cli_exits_3_when_degraded_without_hard_collisions(tmp_path, capsys):
         _mod(ext, p, {"extensions/ghost_mod/md/thing.xml":
              '<diff><replace sel="//cue/@name">' + p + '</replace></diff>'})
 
-    code = _compat.main(["check", "--all", "--ext-dir", str(ext),
+    code = _compat.main(["check", "--ext-dir", str(ext),
                          "--reference", str(cfg.reference)])
 
     assert code == 3, "a run that compared nothing must not exit 0"

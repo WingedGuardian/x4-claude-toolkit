@@ -1,4 +1,4 @@
-r"""x4compat: detect how installed mods collide over the effective XML tree.
+r"""x4compat: detect how the ACTIVE (enabled) mods collide over the effective XML tree.
 
 Unlike a naive file-overlap check (which flags every mod that touches, say,
 ``t/0001-l007.xml`` — 15 of them, all harmlessly union-merged), this resolves each
@@ -308,7 +308,7 @@ def _no_base_reason(vpath: str, folder_to_path: dict[str, Path],
     owner_dir = next((p for f, p in folder_to_path.items() if f.lower() == owner.lower()),
                      None)
     if owner_dir is None:
-        return f"the owning mod '{owner}' is not installed"
+        return f"the owning mod '{owner}' is not an active mod (not installed, or disabled)"
     # Same rule: a malformed owner file must produce the EXPLANATION this function
     # exists to return, not an exception through a caller that only wanted a reason.
     try:
@@ -896,17 +896,19 @@ def main(argv: list[str] | None = None) -> int:
 
     p = argparse.ArgumentParser(
         prog="x4compat",
-        description="Detect how installed X4 mods collide over the effective XML tree.")
+        description="Detect how the ENABLED (active) X4 mods collide over the effective "
+                    "XML tree -- the set the engine loads: on disk, enabled in its "
+                    "manifest and in the profile.")
     p.add_argument("--version", action="version",
                    version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
-    pc = sub.add_parser("check", help="analyze collisions across the installed modlist")
+    pc = sub.add_parser("check", help="analyze collisions across the enabled (active) "
+                                      "modlist")
     pc.add_argument("candidate", nargs="?",
                     help="the mod to focus on ('before I add this'): an existing folder "
                          "PATH is the copy analysed (a same-named copy in the extensions "
                          "dir is then left out); a bare NAME means the copy in the "
-                         "extensions dir. Omit for --all")
-    pc.add_argument("--all", action="store_true", help="analyze the whole installed set")
+                         "extensions dir. Omit it to analyse every enabled mod")
     pc.add_argument("--ext-dir", help="extensions dir to scan "
                     "(default: game-root extensions\\ from _registry)")
     pc.add_argument("--reference", help="unpacked base+DLC reference tree ($X4_REFERENCE)")

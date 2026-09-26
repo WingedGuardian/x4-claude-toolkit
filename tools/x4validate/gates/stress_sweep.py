@@ -205,7 +205,7 @@ def main() -> int:
             ("similar over synthesized mods",
              ["x4similar", "--ext-dir", str(tmp), "--threshold", "0.5"]),
             ("compat over the synthesized set",
-             ["x4compat", "check", "--ext-dir", str(tmp), "--all"]),
+             ["x4compat", "check", "--ext-dir", str(tmp)]),
             ("xref who-calls after a foreign corpus",
              ["x4xref", "who-calls", "find_station"]),
         ]

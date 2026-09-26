@@ -46,7 +46,7 @@ def normalize(s: str) -> str:
 
 
 CASES = [
-    ("x4compat check --all", ["x4compat", "check", "--all"]),
+    ("x4compat check", ["x4compat", "check"]),
     ("x4similar sweep", ["x4similar", "--threshold", "0.9"]),
     ("x4xref who-calls", ["x4xref", "who-calls", "find_station"]),
     ("x4xref who-listens", ["x4xref", "who-listens", "event_player_ejected"]),

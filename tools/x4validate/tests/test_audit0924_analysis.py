@@ -262,8 +262,6 @@ def test_AN6_a_diff_patched_ship_is_scored_at_its_patched_value(tmp_path, hermet
 #       candidate's selectors against mods that load AFTER it
 # =============================================================================
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-7: x4compat help promises "
-                   "the INSTALLED set; analyze() scans the ACTIVE set")
 def test_AN7_x4compat_help_names_the_scope_it_scans(capsys):
     texts = []
     for argv in (["-h"], ["check", "-h"]):
@@ -273,8 +271,6 @@ def test_AN7_x4compat_help_names_the_scope_it_scans(capsys):
     assert "installed" not in " ".join(texts).lower(), texts
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-7: x4stats resolves the "
-                   "candidate against mods that load after it")
 def test_AN7_x4stats_does_not_resolve_against_later_mods(tmp_path, hermetic, capsys):
     ref = _ref(tmp_path)
     ext = tmp_path / "extensions"
