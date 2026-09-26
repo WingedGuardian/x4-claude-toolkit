@@ -120,11 +120,11 @@ distinction the `x4validate` CLIs make.
 | tool | code | meaning |
 |---|---|---|
 | **`ask.py`** | 0 | answered (a positive result, or a negative WITH a denominator) |
-| | 2 | not set up; the query and `--db` disagree about which database to search; a usage error (`xq` takes exactly one of a query or `--file`); a query that is empty or comment-only (argument or file); or a query file that is unreadable or not UTF-8 |
-| | 4 | **cannot back a negative** — zero hits, but coverage is missing/unexplained, or the index is stale, or the query was `count()`-shaped, or an `xq` query arrived as a Git Bash argument, where MSYS rewrites path-like parts before Python sees them (use `--file`; not refused when `MSYS_NO_PATHCONV` or `MSYS2_ARG_CONV_EXCL=*` is set) |
+| | 2 | not set up; the query and `--db` disagree about which database to search; the query addresses only PART of a database (`doc(...)`, `db:get('<db>', '<path>')`, `collection('<db>/<path>')`) or names its database through an expression rather than a string literal; a usage error (`xq` takes exactly one of a query or `--file`); a query that is empty or comment-only (argument or file); or a query file that is unreadable or not UTF-8 |
+| | 4 | **cannot back a negative** — zero hits, but coverage is missing/unexplained, or the index is stale, or the query names no database at all, or the query was `count()`-shaped or returned only `false` or empty strings, or an `xq` query arrived as a Git Bash argument, where MSYS rewrites path-like parts before Python sees them (use `--file`; not refused when `MSYS_NO_PATHCONV` or `MSYS2_ARG_CONV_EXCL=*` is set) |
 | **`coverage.py`** | 0 | complete |
 | | 2 | refused — a required root was not supplied (an empty root resolves to the *current directory*, which would publish a denominator measured over the wrong population) |
-| | 3 | **accounted** — a deficit exists but every missing document is named. Still supports a negative claim. *`x4raw` path only.* |
+| | 3 | **accounted** — a deficit exists but every missing document is named, root by root (`base`, `mods`: each root's shortfall equals its own malformed files). Still supports a negative claim. *`x4raw` path only.* |
 | | 4 | unexplained deficit — cannot support a negative claim |
 | **`staleness.py`** | 0 | fresh |
 | | 5 | stale |

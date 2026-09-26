@@ -14,8 +14,12 @@ cd ../x4validate && uv run python ../basex/ask.py refs <id> [--db x4eff]
 
 | DB | contents | answers |
 |---|---|---|
-| **`x4raw`** | every file as written, per mod (14,054 docs, as of 2026-09-14) | *who **wrote** this, in which mod* |
-| **`x4eff`** | `_merge.build_effective` per vpath (10,970 docs, as of 2026-09-14) | *what does the **engine** see* |
+| **`x4raw`** | every file as written, per mod | *who **wrote** this, in which mod* |
+| **`x4eff`** | `_merge.build_effective` per vpath | *what does the **engine** see* |
+
+Document counts are a fact about one install at one build, so none is quoted here: every
+zero-result `ask.py` prints the current denominator, and `coverage-<db>.json`
+(`indexed.total` / `expected.total`) holds it between runs.
 
 `ask.py` searches **`x4raw` unless you pass `--db`**, and for `refs` and `attr` says so under the
 result (an `xq` query names its own collection). **From Git Bash, give an `xq` query with
@@ -26,8 +30,10 @@ counts are XQuery items -- for `refs`, one matching element per line -- not file
 
 `x4raw` will happily tell you vanilla sets a value that no longer survives the
 modlist. For a claim about what is **live**, use `x4eff` — it applies diffs in
-load order and resolves conflict winners. Demonstrated: `hullparts` price is
-`209` in `x4raw` (vanilla) and `240` in `x4eff` (what actually loads).
+load order and resolves conflict winners. Demonstrated once on one modlist: `hullparts`'
+price read as the vanilla value in `x4raw` and as a mod's override in `x4eff`. The two values
+depend on the modlist, so re-derive them (`collection('<db>')//ware[@id='hullparts']/price`
+against each database, with the matching `--db`) rather than quote them.
 
 **Advisory limit:** inter-mod load order is community convention (dependencies
 first, then alphabetical), not documented by Egosoft. Any `x4eff` answer that
@@ -50,8 +56,15 @@ accounted, and prints the denominator when it does:
 
 ```
 0 items in x4eff.
-  NEGATIVE CONFIRMED over 10937 of 10937 documents (complete).
+  NEGATIVE CONFIRMED over N of N documents (complete).
 ```
+(`N` is the current `indexed.total`; the shape is illustrative, the number is whatever your
+build holds.) The denominator describes the WHOLE database, so it is only printed for a query
+that searched all of it: a query addressing a document or a path (`doc(...)`,
+`db:get('<db>', '<path>')`, `collection('<db>/<path>')`), naming its database through a
+variable, or naming a database other than `--db` is refused with rc 2, and a zero from a query
+that names no database at all is refused with rc 4. A negative over the whole database covers
+every path in it, so search the whole thing.
 
 ### Gap 4 — a fourth was found on 2026-08-01, and it was in the guard itself
 
@@ -86,12 +99,18 @@ though it meant something.
 carry a coverage-backed negative. `test_ask.py` pins both directions and needs
 neither BaseX nor a JVM.
 
-Coverage as of 2026-09-14 -- every run prints the current figures, and `coverage-<db>.json`
-holds them: **x4raw accounted** — 14,054 of 14,065; the 11 exclusions are
-malformed XML (10 packed in `vro/**/tmp|backup|md_debug`, 1 loose in
-`cpsdo_faction/t/0001-l088.xml`) that the *engine* cannot read either.
-**x4eff complete** — 10,970 of 10,970, with 212 vpaths that have no effective
-tree and 11 malformed overlays enumerated in `effective-manifest.json`.
+The same goes for other values computed from nothing: `exists(...)` returning `false` and
+`string(...)` of an empty sequence returning `""` are refused with rc 4, never counted as a hit.
+
+**Coverage figures are not quoted here** -- every run prints the current ones, and
+`coverage-<db>.json` holds them. To read them: `status`, `indexed.total` of `expected.total`,
+and for x4raw the named exclusions under `unparseable` (malformed XML the *engine* cannot read
+either); for x4eff `negative_claim_excludes` (vpaths with no effective tree, malformed
+overlays), enumerated in `effective-manifest.json`. x4raw is judged **per root** (`base`,
+`mods`): each root's shortfall must equal its own malformed files, so a surplus in one cannot
+offset a gap in another. ⚠ Figures recorded before the 2026-09-24 audit (BX-2) counted both
+mini-DLC twice in x4raw -- once from `reference\` and once staged from their archives -- so
+an older x4raw total is inflated by those duplicates.
 
 ### Why the deficit explainer matters — it caught a real bug
 
@@ -108,10 +127,9 @@ evidence that it is.**
 ```bash
 uv run python ../basex/ask.py refs turret_xen_m_beam_02_mk1_macro
 ```
-**217 hits**, overwhelmingly inside PACKED mods (`vro`, `xenon_backup`,
-`xspvro`) — every one invisible before staging. This is the macro `xspvro`
-removes from the index; the KB previously said "six other mods reference it",
-which we can now enumerate exactly.
+When first run (2026-07-27) this returned hits overwhelmingly inside PACKED mods -- every
+one invisible before staging -- where the KB had said only "six other mods reference it".
+The count depends on the installed modlist, so it is not quoted; run it for today's.
 
 ### Every value in use for an attribute, with counts
 ```bash
@@ -144,8 +162,12 @@ and a broken query look identical.
   wrapper fails here with `ClassNotFoundException`.
 - **Java is a native Windows process** and does not understand Git Bash's
   `/c/...` paths. Passing one made BaseX look for `C:/c/Users/...` — and it
-  still **exited 0**. The build scripts run paths through `cygpath -m` and grep
-  the output for `not found`, because BaseX's exit code is not a usable gate.
+  still **exited 0**. The build scripts convert only the paths they CREATE (the
+  staging tree, the serialized effective tree) with `cygpath -m`, and fall back to
+  the path unchanged where `cygpath` is absent; `$X4_REFERENCE` and `$X4_EXTENSIONS`
+  reach BaseX exactly as resolved, so set them in Windows form (`C:/...`). What
+  catches a wrong form is the grep of BaseX's output for `not found`, because
+  BaseX's exit code is not a usable gate.
 - **Staging and the serialized effective tree are transient** by design; the
   ~2.8 GB index is the durable artifact. `KEEP_STAGE=1` / `KEEP_EFF=1` to keep
   them while debugging. The *manifests* always persist — a coverage report you

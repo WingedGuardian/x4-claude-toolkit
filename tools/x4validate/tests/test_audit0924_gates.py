@@ -66,8 +66,6 @@ def ask(monkeypatch):
     return mod
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-1: a zero from db:get(<db>, <typo'd path>) "
-                   "is certified NEGATIVE CONFIRMED over the WHOLE database's denominator")
 def test_bx1_a_zero_from_ONE_addressed_document_is_not_a_negative_over_the_database(ask, capsys):
     ask._fake([])
     rc = ask.main(["xq", "db:get('x4eff','no/such/typo.xml')//ware", "--db", "x4eff"])
@@ -77,8 +75,6 @@ def test_bx1_a_zero_from_ONE_addressed_document_is_not_a_negative_over_the_datab
         f"addressed (which does not exist)\n{out}")
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-1: two-arg db:get and a variable db name "
-                   "escape the foreign-database scope guard (ask.py regex requires `('name')`)")
 @pytest.mark.parametrize("query", [
     "db:get('x4eff','libraries/wares.xml')//nosuch",
     "let $d := 'x4eff' return collection($d)//nosuch",
@@ -92,24 +88,18 @@ def test_bx1_a_query_reaching_x4eff_is_not_scored_against_x4raw(ask, capsys, que
         f"x4raw's coverage and freshness\n{out}")
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-5: a boolean `false` result is counted "
-                   "as 1 item and printed as a positive answer, rc 0")
 def test_bx5_a_false_result_is_not_a_hit(ask, capsys):
     ask._fake(["false"])
     rc = ask.main(["xq", "exists(collection('x4raw')//nosuch)"])
     assert rc != 0, f"'false' read as one hit, rc {rc}:\n{capsys.readouterr().out}"
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-5: an empty-string result is counted as "
-                   "1 item and printed as a positive answer, rc 0")
 def test_bx5_an_empty_string_result_is_not_a_hit(ask, capsys):
     ask._fake([""])
     rc = ask.main(["xq", "string(collection('x4raw')//nosuch)"])
     assert rc != 0, f"'' read as one hit, rc {rc}:\n{capsys.readouterr().out}"
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-5: the scope refusal advises "
-                   "`--db x4eff/libraries`, which argparse's choices reject")
 def test_bx5_the_scope_refusal_only_advises_a_db_argparse_accepts(ask, capsys):
     ask._fake([])
     rc = ask.main(["xq", "collection('x4eff/libraries')//ware", "--db", "x4eff"])
@@ -118,6 +108,64 @@ def test_bx5_the_scope_refusal_only_advises_a_db_argparse_accepts(ask, capsys):
     assert rc == 2 and advised, err
     assert all(a in ("x4raw", "x4eff") for a in advised), (
         f"advice names {advised}; following it is an argparse error\n{err}")
+
+
+# --- BX-1 / BX-5 falsification twins: every refusal above has a case it must NOT fire on,
+# --- and the refusal is pinned for each address shape, not only the two the audit named.
+
+@pytest.mark.parametrize("query,db", [
+    ("collection('x4raw')//nosuch", "x4raw"),
+    ("db:get('x4eff')//nosuch", "x4eff"),
+    ('fn:collection( "x4eff" )//nosuch', "x4eff"),
+    ("(: doc('x4eff/a.xml') :) collection('x4eff')//nosuch", "x4eff"),   # a comment is no address
+    ("collection('x4raw')//*[db:path(.) = 'x']", "x4raw"),               # db:path takes a NODE
+])
+def test_bx1_TWIN_a_whole_database_zero_is_still_confirmed(ask, capsys, query, db):
+    ask._fake([])
+    rc = ask.main(["xq", query, "--db", db])
+    out = capsys.readouterr().out
+    assert rc == 0 and "NEGATIVE CONFIRMED over 100 of 100" in out, out
+
+
+@pytest.mark.parametrize("query", [
+    "doc('x4eff/libraries/wares.xml')//nosuch",
+    "db:open('x4eff', 'libraries')//nosuch",
+    "collection('x4eff/libraries')//nosuch",
+    "collection('x4' || 'eff')//nosuch",
+    "db:get-id('x4eff', 5)",
+    "collection()//nosuch",
+])
+def test_bx1_every_partial_or_unreadable_address_is_refused(ask, capsys, query):
+    ask._fake([])
+    rc = ask.main(["xq", query, "--db", "x4eff"])
+    cap = capsys.readouterr()
+    assert rc == 2 and "NEGATIVE CONFIRMED" not in cap.out, (rc, cap)
+
+
+def test_bx1_a_zero_from_a_query_naming_NO_database_is_not_a_negative(ask, capsys):
+    """`()` searches nothing, and was certified over the whole --db denominator."""
+    ask._fake([])
+    rc = ask.main(["xq", "()"])
+    out = capsys.readouterr().out
+    assert rc == 4 and "NEGATIVE CONFIRMED" not in out and "names no database" in out, out
+
+
+def test_bx1_TWIN_a_POSITIVE_from_a_query_naming_no_database_still_answers(ask, capsys):
+    ask._fake(["2"])
+    assert ask.main(["xq", "1+1"]) == 0, capsys.readouterr()
+
+
+def test_bx5_a_database_argparse_rejects_is_never_advised(ask, capsys):
+    ask._fake([])
+    rc = ask.main(["xq", "collection('mydb')//x"])
+    err = capsys.readouterr().err
+    assert rc == 2 and "--db mydb" not in err and "x4raw and x4eff" in err, err
+
+
+@pytest.mark.parametrize("items", [["true"], ["a", "false"], ["0.5"]])
+def test_bx5_TWIN_other_single_values_and_mixed_results_are_still_hits(ask, capsys, items):
+    ask._fake(items)
+    assert ask.main(["xq", "collection('x4raw')//x"]) == 0, capsys.readouterr()
 
 
 # ============================================================================ BX-2 (stage.py)
