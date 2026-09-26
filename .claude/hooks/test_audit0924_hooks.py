@@ -37,7 +37,6 @@ def _pretool_matchers():
 
 
 class TestHK5MatcherCoverage(unittest.TestCase):
-    @unittest.expectedFailure
     def test_every_file_changing_tool_reaches_a_protect_guard(self):
         """AUDIT-2026-09-24 HK-5 (and the HK-1 gap it catches): no test pinned matcher
         coverage -- deleting the Edit|Write guard kept all three hook suites green. Fails
@@ -52,6 +51,56 @@ class TestHK5MatcherCoverage(unittest.TestCase):
                     guarded.add(tool)
         self.assertEqual(sorted(set(FILE_CHANGING_TOOLS) - guarded), [],
                          "file-changing tools with NO protect-* PreToolUse guard")
+
+
+class TestHK5ProductionReadPath(unittest.TestCase):
+    """AUDIT-2026-09-24 HK-5: every harness PIPES stdin, and "a test that pipes stdin
+    cannot reproduce the production condition" is how five hooks sat inert while their
+    suites passed (`cat /dev/stdin` read 0 bytes in the hook environment). These feed the
+    payload from a FILE, the other shape stdin arrives in, and each carries a pipe twin so
+    a difference between the two read paths is what fails -- not the rule."""
+
+    def _run(self, hook, payload, env, via_file):
+        if not via_file:
+            return subprocess.run([BASH, str(HOOKS / hook)], input=payload, capture_output=True,
+                                  text=True, env=env, timeout=120)
+        f = pathlib.Path(env["X4_TOOLKIT"]).parent / "payload.json"
+        f.write_text(payload, encoding="utf-8")
+        with open(f, "r", encoding="utf-8") as fh:
+            return subprocess.run([BASH, str(HOOKS / hook)], stdin=fh, capture_output=True,
+                                  text=True, env=env, timeout=120)
+
+    def _verdict(self, p):
+        if not p.stdout.strip():
+            return "allow"
+        return json.loads(p.stdout)["hookSpecificOutput"].get("permissionDecision", "advise")
+
+    def test_a_payload_read_from_a_FILE_is_seen(self):
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="hk5_"))
+        try:
+            ref = tmp / "ref"
+            (ref / "libraries").mkdir(parents=True)
+            env = dict(os.environ, X4_GAME=str(tmp / "game"), X4_TOOLKIT=str(tmp / "tk"),
+                       X4_REFERENCE=str(ref), X4_CONFIG=str(tmp / "none.env"))
+            target = (ref / "libraries" / "wares.xml").as_posix()
+            cases = [
+                ("protect-bash.sh",
+                 json.dumps({"tool_name": "Bash", "tool_input": {"command": "r" + "m -f " + target}}),
+                 "deny"),
+                ("protect-bash.sh",
+                 json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}}), "allow"),
+                ("protect-files.sh",
+                 json.dumps({"tool_name": "Edit", "tool_input": {"file_path": target}}), "deny"),
+                ("protect-files.sh",
+                 json.dumps({"tool_name": "NotebookEdit",
+                             "tool_input": {"notebook_path": target}}), "deny"),
+            ]
+            for hook, payload, want in cases:
+                for via_file in (True, False):
+                    got = self._verdict(self._run(hook, payload, env, via_file))
+                    self.assertEqual(got, want, (hook, payload[:90], "file" if via_file else "pipe"))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class TestHK6Minor(unittest.TestCase):

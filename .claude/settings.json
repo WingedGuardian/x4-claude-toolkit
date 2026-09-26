@@ -13,7 +13,18 @@
         ]
       },
       {
-        "matcher": "Edit|Write",
+        "matcher": "PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-bash.sh\"",
+            "timeout": 5,
+            "statusMessage": "Checking PowerShell command safety..."
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
         "hooks": [
           {
             "type": "command",

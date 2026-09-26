@@ -43,7 +43,7 @@ sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": h}).encode("utf-8"))'
 }
 
 if [ "$JQ_OK" = 1 ]; then
-  FILE_PATH=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.file_path // empty')
+  FILE_PATH=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.file_path // .tool_input.notebook_path // empty')
   # jq's STATUS, not a literal 1. `FP_OK=1` here meant an UNREADABLE payload was
   # indistinguishable from an empty path, so the refusal fifteen lines below -- whose
   # comment says exactly that -- was unreachable whenever jq worked. It existed only
@@ -56,7 +56,7 @@ if [ "$JQ_OK" = 1 ]; then
 elif [ -n "$PY" ]; then
   FILE_PATH=$(X4_IN="$INPUT" "$PY" -c 'import json, os, sys
 try:
-    sys.stdout.write((json.loads(os.environ["X4_IN"]).get("tool_input") or {}).get("file_path") or "")
+    sys.stdout.write((json.loads(os.environ["X4_IN"]).get("tool_input") or {}).get("file_path") or (json.loads(os.environ["X4_IN"]).get("tool_input") or {}).get("notebook_path") or "")
 except Exception:
     sys.exit(9)')
   FP_OK=$?

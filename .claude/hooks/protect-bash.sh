@@ -158,6 +158,15 @@ emit_roots() {
 
 FACTS_RAW=$( { emit_roots; printf '%s' "$INPUT"; } | "$PY" "$HOOK_DIR/hook_facts.py" 2>/dev/null)
 PARSE_RC=$?
+# rc 4: a PowerShell TOOL command could not be translated (it does not parse as
+# PowerShell, or no PowerShell was found to parse it), and the reason is on stdout. ASK,
+# as an unparseable Bash command does below -- nothing was analysed, so this is neither
+# a clean pass nor evidence for a deny.
+if [ "$PARSE_RC" = 4 ]; then
+  VERDICT=ask
+  emit ask "X4 GUARD: this PowerShell command could not be analysed, so NO rule was evaluated against it: ${FACTS_RAW:-no reason given}. The guard reads PowerShell through PowerShell's own parser (pwsh, else powershell; X4_PWSH overrides). Fix the syntax, or confirm only if you know the command is safe."
+  exit 0
+fi
 if [ "$PARSE_RC" != 0 ]; then
   printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"X4 GUARD INERT: the command analyser exited non-zero, so this command was NOT checked. That is the stdin defect one layer in: allowing silently would look identical to deciding it is fine. Confirm only if you know why."}}'
   exit 0
@@ -245,6 +254,20 @@ fi
 # in an argument.
 if on verb_unresolved; then
   deny "A command name here arrives through substitution (\$(...) or backticks), so the guard cannot tell what command this is and NO rule -- including the hard blocks on the game install -- was evaluated for it. Write the command name literally and re-run."
+fi
+
+# A POWERSHELL TOOL command reaches this file already TRANSLATED by PowerShell's own
+# parser into the equivalent POSIX-shell command (hook_facts.powershell_to_sh), so every
+# rule below judges it exactly as it judges Bash (AUDIT-2026-09-24 HK-1). The messages
+# quote the translation -- say so, or a reader sees `rm -rf` they never typed.
+if on from_powershell; then
+  COMMAND="[PowerShell, as the guard read it] $COMMAND"
+fi
+
+# A `cmd /c` or `powershell -c` carrier whose text could not be translated (HK-2): the
+# command it carries reached no rule. Same verdict as an unparseable command.
+if on carrier_untranslated; then
+  ask "This command runs PowerShell text the guard could not translate (it does not parse, or no PowerShell was found to parse it), so what it carries was NEVER checked against any rule. Confirm only if you know what the nested command does."
 fi
 
 if on carriers_truncated; then

@@ -30,7 +30,7 @@ JQ_OK=0
 printf '%s' '{}' | "$JQ" -e . >/dev/null 2>&1 && JQ_OK=1
 if [ "$JQ_OK" = 1 ]; then
   TOOL_NAME=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_name // "unknown"')
-  FILE_PATH=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.file_path // empty')
+  FILE_PATH=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.file_path // .tool_input.notebook_path // empty')
   # An UNREADABLE payload is not an absent path. On a jq parse error both variables
   # came back empty, the `[ -z "$FILE_PATH" ] && exit 0` below took it for "new file,
   # nothing to back up", and the edit proceeded with NO BACKUP AND NO AUDIT LINE. The
@@ -43,7 +43,7 @@ elif [ -n "$PY" ]; then
   TOOL_NAME=$(X4_IN="$INPUT" "$PY" -c 'import json, os, sys
 sys.stdout.write(json.loads(os.environ["X4_IN"]).get("tool_name") or "unknown")' 2>/dev/null) || TOOL_NAME=""
   FILE_PATH=$(X4_IN="$INPUT" "$PY" -c 'import json, os, sys
-sys.stdout.write((json.loads(os.environ["X4_IN"]).get("tool_input") or {}).get("file_path") or "")' 2>/dev/null) \
+sys.stdout.write((json.loads(os.environ["X4_IN"]).get("tool_input") or {}).get("file_path") or (json.loads(os.environ["X4_IN"]).get("tool_input") or {}).get("notebook_path") or "")' 2>/dev/null) \
     || _ask "X4 BACKUP: could not read this payload, so NO BACKUP was taken. Confirm only if you accept this edit being unrecoverable."
 else
   _ask "X4 BACKUP: neither jq nor python is available, so the file path could not be read and NO BACKUP was taken. Confirm only if you accept this edit being unrecoverable."

@@ -1151,7 +1151,14 @@ class TestFindDeletes(unittest.TestCase):
         self.assertFalse(F(cmd)["rm_in_x4_dir"])
 
     def test_a_filtered_find_under_the_GAME_is_also_scoped(self):
-        self.assertFalse(F('find "%s" -name x -delete' % GAME)["rm_hits_game"])
+        """SCOPED, not EXEMPT. A filter keeps a find-delete off the whole-install hard
+        block -- it removes entries inside the tree, not the tree -- but it is still a
+        delete in an X4 directory. This test used to assert only the first half, and the
+        code honoured it by returning NO delete at all, so every in-tree rule went blind
+        (AUDIT-2026-09-24 HK-2: `find <saves> -name '*.xml.gz' -delete` was ALLOW)."""
+        f = F('find "%s" -name x -delete' % GAME)
+        self.assertFalse(f["rm_hits_game"])
+        self.assertTrue(f["rm_in_x4_dir"])
 
     def test_a_find_delete_outside_every_root_is_untouched(self):
         self.assertFalse(F("find /c/tmp -delete")["rm_in_x4_dir"])
@@ -3047,6 +3054,212 @@ def test_F112_the_advisory_tree_keeps_the_wider_channel():
         "was narrowed to match the read-only tree, which inverts F112's fix")
     assert F("echo x > " + DQ + DOCS + "/x.txt" + DQ).get("writes_documents"), (
         "the advisory documents tree no longer sees a truncating write either")
+
+
+# ------------------------------------------------ AUDIT-2026-09-24 HK-2 (Bash holes)
+SAVES = PROF + "/save"
+
+
+class TestHK2FilteredFindIsScopedNotExempt(unittest.TestCase):
+    """A filtered find-delete used to reach NO rule: MEASURED, `find <saves> -name
+    '*.xml.gz' -delete` and `find <reference> -name '*.xml' -delete` were ALLOW."""
+
+    def test_every_save_by_filter_asks(self):
+        f = F("find " + DQ + SAVES + DQ + " -name " + Q + "*.xml.gz" + Q + " -delete")
+        self.assertTrue(f["rm_saves"])
+        self.assertFalse(f["rm_hits_game"])
+
+    def test_a_filtered_delete_in_reference_is_still_a_reference_delete(self):
+        f = F("find " + DQ + REF + DQ + " -name " + Q + "*.xml" + Q + " -delete")
+        self.assertTrue(f["rm_targets_reference"])
+
+    def test_exec_rm_with_a_filter_counts_too(self):
+        f = F("find " + DQ + REF + DQ + " -name x -exec " + D + " {} +")
+        self.assertTrue(f["rm_targets_reference"])
+
+    # ---- twins: the cleanup the exemption was written for ----------------------
+    def test_TWIN_a_pycache_cleanup_is_still_silent_everywhere(self):
+        for root in (GAME, REF, TOOLKIT):
+            f = F("find " + DQ + root + DQ + " -name __pycache__ -type d -exec "
+                  + D + " -rf {} +")
+            self.assertFalse(f["rm_in_x4_dir"] or f["rm_targets_reference"], root)
+
+    def test_TWIN_a_pyc_glob_is_regenerable_too(self):
+        f = F("find " + DQ + TOOLKIT + DQ + " -name " + Q + "*.pyc" + Q + " -delete")
+        self.assertFalse(f["rm_in_x4_dir"])
+
+    def test_TWIN_a_cache_name_does_not_launder_a_second_filter(self):
+        """`-path` beside a cache name is not a cache-only filter."""
+        f = F("find " + DQ + REF + DQ + " -path " + Q + "*/libraries/*" + Q
+              + " -o -name __pycache__ -delete")
+        self.assertTrue(f["rm_targets_reference"])
+
+
+class TestHK2InPlaceClobbers(unittest.TestCase):
+    """`truncate` and `dd of=` destroy content in place; they were ALLOW into reference/
+    while `> <reference>/f` hard-blocks. They are judged as a truncating redirect."""
+
+    def test_truncate_into_reference(self):
+        self.assertTrue(F("truncate -s 0 " + DQ + REF + "/libraries/wares.xml" + DQ)
+                        ["writes_reference"])
+
+    def test_truncate_long_option_value_is_not_the_target(self):
+        f = F("truncate --size 0 " + DQ + REF + "/a.xml" + DQ)
+        self.assertTrue(f["writes_reference"])
+
+    def test_dd_of_into_reference(self):
+        self.assertTrue(F("dd if=/dev/zero of=" + DQ + REF + "/a.xml" + DQ)
+                        ["writes_reference"])
+
+    def test_truncate_a_durable_record(self):
+        self.assertTrue(F("truncate -s 0 KNOWLEDGEBASE.md")["durable_truncating_redirect"])
+
+    def test_TWIN_dd_reading_FROM_reference_is_not_a_write(self):
+        f = F("dd if=" + DQ + REF + "/a.xml" + DQ + " of=./copy.bin")
+        self.assertFalse(f["writes_reference"])
+
+    def test_TWIN_truncate_reference_as_the_SIZE_SOURCE_is_not_a_write(self):
+        f = F("truncate -r " + DQ + REF + "/a.xml" + DQ + " ./mine.bin")
+        self.assertFalse(f["writes_reference"])
+
+
+class TestHK2DeleteVerbsStayCovered(unittest.TestCase):
+    """shred/unlink were in the audit's list; they were ALREADY delete verbs. Pinned so
+    they stay that way."""
+
+    def test_shred_and_unlink(self):
+        for v in ("shred -u", "unlink"):
+            self.assertTrue(F(v + " " + DQ + REF + "/a.xml" + DQ)["rm_targets_reference"], v)
+            self.assertTrue(F(v + " " + DQ + SAVES + "/a.xml.gz" + DQ)["rm_saves"], v)
+
+
+class TestHK2CmdCarrier(unittest.TestCase):
+    """`cmd //c` runs cmd.exe text; it reached no rule."""
+
+    def test_rd_under_cmd(self):
+        f = F("cmd //c rd /s /q " + DQ + REF + DQ)
+        self.assertTrue(f["rm_targets_reference"])
+
+    def test_single_slash_and_whole_payload_quoted(self):
+        f = F("cmd /c " + DQ + "del /q " + SAVES.replace("/", BS) + BS + "a.xml.gz & echo ok" + DQ)
+        self.assertTrue(f["rm_saves"])
+
+    def test_a_redirect_under_cmd(self):
+        f = F("cmd //c " + DQ + "echo x > " + REF + "/a.xml" + DQ)
+        self.assertTrue(f["writes_reference"])
+
+    def test_TWIN_a_harmless_cmd(self):
+        f = F("cmd //c dir " + DQ + REF + DQ)
+        self.assertFalse(f["rm_targets_reference"] or f["writes_reference"])
+
+    def test_translation_drops_switches_and_maps_verbs(self):
+        self.assertEqual(H.cmd_to_sh(["rd", "/s", "/q", "C:/x y"]), "rm -rf 'C:/x y'")
+        self.assertEqual(H.cmd_to_sh(["ren C:/a/b.txt c.txt"]), "mv C:/a/b.txt C:/a/c.txt")
+
+
+_PWSH = H._pwsh_exe()
+
+
+@unittest.skipUnless(_PWSH, "no PowerShell on this machine: the PowerShell front-end "
+                            "cannot be exercised here (it fails closed without one)")
+class TestHK1PowerShellFrontEnd(unittest.TestCase):
+    """AUDIT-2026-09-24 HK-1: the PowerShell tool had no guard. Its payload is parsed by
+    PowerShell's own parser and translated into the Bash vocabulary; the rules are the
+    same ones."""
+
+    def P(self, command):
+        return H.facts({"tool_name": "PowerShell", "tool_input": {"command": command}}, ROOTS)
+
+    def test_remove_item_recurse_reference_is_the_reference_block(self):
+        f = self.P("Remove-Item -Recurse " + Q + REF + Q)
+        self.assertTrue(f["rm_targets_reference"])
+        self.assertTrue(f["from_powershell"])
+
+    def test_an_alias_and_a_parameter_prefix_bind_as_powershell_binds_them(self):
+        self.assertTrue(self.P("ri -r -fo " + DQ + GAME + DQ)["rm_hits_game"])
+
+    def test_a_variable_resolves(self):
+        f = self.P("$p = " + Q + REF + Q + "; Remove-Item " + DQ + "$p/libraries" + DQ)
+        self.assertTrue(f["rm_targets_reference"])
+
+    def test_an_env_root_variable_names_its_root(self):
+        self.assertTrue(self.P("Remove-Item $env:X4_REFERENCE/x")["rm_targets_reference"])
+
+    def test_set_content_is_a_write(self):
+        self.assertTrue(self.P("Set-Content -Path " + Q + REF + "/a.xml" + Q + " -Value x")
+                        ["writes_reference"])
+
+    def test_a_redirect_is_a_write(self):
+        self.assertTrue(self.P(Q + "x" + Q + " > " + Q + REF + "/a.xml" + Q)
+                        ["writes_reference"])
+
+    def test_a_piped_filtered_delete_of_saves_asks(self):
+        f = self.P("Get-ChildItem " + Q + SAVES + Q + " -Filter *.gz | Remove-Item")
+        self.assertTrue(f["rm_saves"])
+        self.assertFalse(f["rm_hits_game"])
+
+    def test_a_dotnet_delete(self):
+        self.assertTrue(self.P("[IO.File]::Delete(" + Q + REF + "/a.xml" + Q + ")")
+                        ["rm_targets_reference"])
+
+    def test_invoke_expression_is_followed(self):
+        inner = "Remove-Item -Recurse " + REF
+        self.assertTrue(self.P("iex " + Q + inner + Q)["rm_targets_reference"])
+
+    def test_hygiene_rules_apply_too(self):
+        self.assertTrue(self.P("git add -A")["git_add_all"])
+
+    def test_nested_pwsh_in_bash(self):
+        f = F("pwsh -NoProfile -Command " + DQ + "Remove-Item -Recurse " + Q + REF + Q + DQ)
+        self.assertTrue(f["rm_targets_reference"])
+
+    def test_nested_encoded_command_in_bash(self):
+        import base64
+        enc = base64.b64encode(("Remove-Item -Recurse " + Q + REF + Q).encode("utf-16-le"))
+        self.assertTrue(F("powershell -EncodedCommand " + enc.decode())["rm_targets_reference"])
+
+    def test_an_unparseable_command_is_a_refusal_not_an_allow(self):
+        f = self.P("Remove-Item (")
+        self.assertIn("does not parse", f.get("powershell_error", ""))
+
+    def test_an_unparseable_NESTED_command_is_flagged(self):
+        self.assertTrue(F("powershell -c " + DQ + "Remove-Item (" + DQ)["carrier_untranslated"])
+
+    # ---- twins ---------------------------------------------------------------------
+    def test_TWIN_a_read_is_not_a_write(self):
+        f = self.P("Get-Content " + Q + REF + "/libraries/wares.xml" + Q)
+        self.assertFalse(any(v is True for k, v in f.items() if k != "from_powershell"), f)
+
+    def test_TWIN_a_nested_read(self):
+        f = F("powershell -c " + DQ + "Get-Content " + Q + REF + "/a.xml" + Q + DQ)
+        self.assertFalse(f["rm_targets_reference"] or f["writes_reference"])
+
+
+class TestHK1ABashCommandIsNotPowerShell(unittest.TestCase):
+    def test_a_bash_payload_is_not_marked_as_translated(self):
+        """from_powershell only relabels the command in messages; a Bash payload that
+        claimed it would misquote every reason."""
+        self.assertFalse(F("ls")["from_powershell"])
+        self.assertFalse(F("ls")["carrier_untranslated"])
+
+
+class TestHK1FailsClosedWithoutPowerShell(unittest.TestCase):
+    def test_no_powershell_is_a_refusal(self):
+        import os
+        saved = os.environ.get("X4_PWSH")
+        os.environ["X4_PWSH"] = "x4-no-such-powershell-binary"
+        H._PS_CACHE.clear()
+        try:
+            f = H.facts({"tool_name": "PowerShell", "tool_input": {"command": "Get-Date"}},
+                        ROOTS)
+            self.assertIn("no PowerShell", f.get("powershell_error", ""))
+            self.assertTrue(F("powershell -c Get-Date")["carrier_untranslated"])
+        finally:
+            H._PS_CACHE.clear()
+            if saved is None:
+                os.environ.pop("X4_PWSH", None)
+            else:
+                os.environ["X4_PWSH"] = saved
 
 
 def load_tests(loader, standard_tests, pattern):
