@@ -325,7 +325,8 @@ def mods(scope: str, dirs: list[Path] | None = None,
     # parse drop at every "active" caller that passes no `dropped` -- MEASURED
     # 2026-09-26: none of the 14 `mods("active")` call sites under x4validate/ and
     # gates/ passes one, and 0 of 125 installed mods are excluded by the rule today.
-    installed = scan_installed(dirs, dropped=dropped)
+    dlc: list[dict] = []
+    installed = scan_installed(dirs, dropped=dropped, dlc=dlc)
     if scope == "installed":
         return installed
     try:
@@ -336,11 +337,11 @@ def mods(scope: str, dirs: list[Path] | None = None,
         # the registry's documented "absent = enabled" convention and keeps this
         # from quietly EMPTYING the world model on a machine with no profile.
         prof = {}
-    return _active_filter(installed, prof, dirs, dropped)
+    return _active_filter(installed, prof, dlc, dropped)
 
 
 def _active_filter(installed: list[dict], prof: dict[str, bool],
-                   dirs: list[Path] | None, dropped: list[str] | None) -> list[dict]:
+                   dlc: list[dict], dropped: list[str] | None) -> list[dict]:
     """The engine's load decision, MEASURED 2026-09-26 by the in-game load-order probe
     (`scripts/load-order-probe.py`, 23 probe mods; AUDIT-2026-09-24 LO-3/RG-6):
 
@@ -375,7 +376,6 @@ def _active_filter(installed: list[dict], prof: dict[str, bool],
     if not any(required.values()):
         return enabled
 
-    dlc = _installed_dlc(dirs)
     provided = {d["id"] for d in dlc if prof.get(d["id"], d["enabled"])}
     loaded: list[dict] = []
     pending = list(enabled)
@@ -433,40 +433,22 @@ def _active_filter(installed: list[dict], prof: dict[str, bool],
     return [m for m in enabled if id(m) in keep]
 
 
-def _installed_dlc(dirs: list[Path] | None) -> list[dict]:
-    """`ego_dlc_*` folders in the scanned roots: {id, folder, enabled} per DLC.
-
-    Only a PROVIDER set for dependency checks -- `scan_installed` excludes the DLC
-    from every mod scope on purpose. A DLC's manifest id is its folder name
-    (READ 2026-09-26: all 8 installed `ego_dlc_*/content.xml`), read from the
-    manifest anyway. A DLC in a root that is not scanned is not seen, and a mod
-    requiring it is then reported in *dropped* by name, never removed silently.
-    """
-    out = []
-    for base in dirs or default_installed_dirs():
-        if not base.is_dir():
-            continue
-        for sub in sorted(base.iterdir()):
-            if not (sub.is_dir() and sub.name.startswith("ego_dlc_")):
-                continue
-            cxml = sub / "content.xml"
-            if not cxml.is_file():
-                continue
-            try:
-                root = etree.parse(str(cxml)).getroot()
-            except etree.XMLSyntaxError:
-                # silent-ok: an unreadable DLC manifest still names the DLC by its
-                # folder, which is its id; treating it as present fails OPEN.
-                out.append({"id": sub.name, "folder": sub.name, "enabled": True})
-                continue
-            out.append({"id": root.get("id") or sub.name, "folder": sub.name,
-                        "enabled": str(root.get("enabled", "")).strip().lower()
-                        not in ("false", "0")})
-    return out
+def _dlc_entry(sub: Path) -> dict:
+    """{id, folder, enabled} for one `ego_dlc_*` folder (see `scan_installed`)."""
+    cxml = sub / "content.xml"
+    try:
+        root = etree.parse(str(cxml)).getroot()
+    except (OSError, etree.XMLSyntaxError):
+        # silent-ok: a DLC folder with an unreadable manifest is still named by its
+        # folder, which is its id; counting it as a provider fails OPEN.
+        return {"id": sub.name, "folder": sub.name, "enabled": True}
+    return {"id": root.get("id") or sub.name, "folder": sub.name,
+            "enabled": str(root.get("enabled", "")).strip().lower() not in ("false", "0")}
 
 
 def scan_installed(dirs: list[Path] | None = None,
-                   dropped: list[str] | None = None) -> list[dict]:
+                   dropped: list[str] | None = None,
+                   dlc: list[dict] | None = None) -> list[dict]:
     """Scan extension folders for a content.xml and return each mod's OWN
     manifest identity — this is the PRIMARY source of truth (what the game
     actually loads). Skips `ego_dlc_*` (base-game DLC, not a mod to triage).
@@ -480,13 +462,24 @@ def scan_installed(dirs: list[Path] | None = None,
     model behind Tier B, x4compat, x4stats, x4similar and x4modlist, so a mod
     vanishing from it shrinks all five at once with nothing said. Report the
     exclusion; do not force the mod back in.
+
+    *dlc*, when given, receives {id, folder, enabled} for every `ego_dlc_*` folder the
+    same walk passes over: the PROVIDER set `mods("active")` needs to check a required
+    dependency on a DLC. Collected here rather than by a second walk, so there is one
+    enumeration of the install roots. A DLC's manifest id is its folder name (READ
+    2026-09-26: all 8 installed `ego_dlc_*/content.xml`, the packed mini-DLC included --
+    their manifests are loose), but it is read from the manifest anyway.
     """
     out = []
     for base in dirs or default_installed_dirs():
         if not base.is_dir():
             continue
         for sub in sorted(base.iterdir()):
-            if not sub.is_dir() or sub.name.startswith("ego_dlc_"):
+            if not sub.is_dir():
+                continue
+            if sub.name.startswith("ego_dlc_"):
+                if dlc is not None:
+                    dlc.append(_dlc_entry(sub))
                 continue
             cxml = sub / "content.xml"
             if not cxml.is_file():
