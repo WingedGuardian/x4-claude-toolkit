@@ -23,7 +23,9 @@ usage: x4compat check [-h] [--all] [--ext-dir EXT_DIR] [--reference REFERENCE] [
                       [candidate]
 
 positional arguments:
-  candidate             a mod folder to focus on ('before I add this'); omit for --all
+  candidate             the mod to focus on ('before I add this'): an existing folder PATH is the
+                        copy analysed (a same-named copy in the extensions dir is then left out);
+                        a bare NAME means the copy in the extensions dir. Omit for --all
 
 options:
   -h, --help            show this help message and exit

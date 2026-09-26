@@ -82,8 +82,6 @@ def _an1_world(tmp_path):
     return ref, ext, stage
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-1: an existing candidate "
-                   "path is replaced by the installed same-named copy")
 def test_AN1_an_existing_candidate_path_is_the_copy_analysed(tmp_path, hermetic):
     ref, ext, stage = _an1_world(tmp_path)
     rep = _compat.analyze(ext, candidate=stage, config=_cfg(ref))
@@ -93,8 +91,6 @@ def test_AN1_an_existing_candidate_path_is_the_copy_analysed(tmp_path, hermetic)
         f"installed copy instead found {[(c.kind, c.mods) for c in rep.collisions]}")
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-1: output does not name "
-                   "which copy of the candidate was analysed")
 def test_AN1_output_names_the_copy_analysed(tmp_path, hermetic, capsys):
     ref, ext, stage = _an1_world(tmp_path)
     _compat.main(["check", str(stage), "--ext-dir", str(ext), "--reference", str(ref)])
@@ -102,8 +98,6 @@ def test_AN1_output_names_the_copy_analysed(tmp_path, hermetic, capsys):
     assert str(stage) in out or str(stage.resolve()) in out, out
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-1: a bare installed name is "
-                   "refused instead of resolving to the installed copy")
 def test_AN1_a_bare_name_resolves_to_the_installed_copy(tmp_path, hermetic, capsys,
                                                         monkeypatch):
     ref, ext, _stage = _an1_world(tmp_path)

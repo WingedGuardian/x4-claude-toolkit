@@ -118,6 +118,12 @@ class CompatReport:
     #: so 140 of 523 examined files contributed zero collisions and rendered
     #: identically to "analysed, no conflicts". Same failure family as F4.
     skipped: list[Skipped] = field(default_factory=list)
+    #: Candidate mode only: the folder whose files were ANALYSED as the candidate,
+    #: and every enabled copy left out in its favour (AUDIT-2026-09-24 AN-1). Until
+    #: then a candidate path whose folder name was already enabled was silently
+    #: swapped for the enabled copy, so a staged update was never read at all.
+    candidate_path: str = ""
+    excluded_copies: list[str] = field(default_factory=list)
 
     def by_kind(self, kind: str) -> list[Collision]:
         """Collisions of *kind*, in a STABLE order.
@@ -660,10 +666,15 @@ def analyze(
     candidate: Path | None = None,
     config: _merge.Config | None = None,
 ) -> CompatReport:
-    """Analyze collisions across installed mods (optionally focused on *candidate*).
+    """Analyze collisions across the ACTIVE (enabled) mods, optionally focused on
+    *candidate*.
 
     If *candidate* is given, only collisions that involve it are reported (the
-    "before I add this mod" mode); its folder is included in the scanned set.
+    "before I add this mod" mode). THE CANDIDATE IS THE COPY AT *candidate*
+    (AUDIT-2026-09-24 AN-1): an enabled mod with the same folder name or manifest id
+    is EXCLUDED so the two are never counted twice, and is recorded in
+    `CompatReport.excluded_copies`. The candidate is placed in the load order by the
+    engine's rule -- its folder name and its own manifest's dependencies.
     """
     config = config or _merge.Config()
     # ACTIVE: two mods only collide if the engine loads both. The on-disk set
@@ -671,16 +682,32 @@ def analyze(
     # baseline. The "what if I added this" case is *candidate*, below -- an
     # explicit opt-in, not a side effect of how the world is enumerated.
     mods = _registry.mods("active", [ext_dir])
-    folder_to_path = {m["folder"]: Path(m["path"]) for m in mods}
 
     cand_folder = None
+    excluded: list[str] = []
     if candidate is not None:
         candidate = Path(candidate)
-        cand_folder = candidate.name
-        if cand_folder not in folder_to_path:
-            folder_to_path[cand_folder] = candidate
-            mods = mods + [{"folder": cand_folder, "path": str(candidate),
-                            "id": cand_folder}]
+        cand_folder = candidate.resolve().name
+        cand_id = _loadorder.mod_deps(candidate)[0] if (candidate / "content.xml"
+                                                        ).is_file() else ""
+        keep = []
+        cand_entry = {"folder": cand_folder, "path": str(candidate),
+                      "id": cand_id or cand_folder}
+        for m in mods:
+            same = (m["folder"].lower() == cand_folder.lower()
+                    or (cand_id and m.get("id") == cand_id))
+            if not same:
+                keep.append(m)
+            elif Path(m["path"]).resolve() == candidate.resolve():
+                cand_entry = m                  # the candidate IS the enabled copy
+                cand_folder = m["folder"]
+            else:
+                # A DIFFERENT copy of the candidate (a staged update, a dev folder):
+                # the path the user named wins, and the enabled copy is left out
+                # rather than counted as a second mod colliding with itself.
+                excluded.append(str(m["path"]))
+        mods = keep + [cand_entry]
+    folder_to_path = {m["folder"]: Path(m["path"]) for m in mods}
 
     order_dropped: list[str] = []
     order = compute_load_order(mods, order_dropped)
@@ -702,7 +729,10 @@ def analyze(
             if not low.startswith("extensions/"):
                 inv[f"extensions/{folder.lower()}/{low}"][folder] = real
 
-    report = CompatReport(mods_scanned=len(mods), load_order=order)
+    report = CompatReport(mods_scanned=len(mods), load_order=order,
+                          candidate_path=(str(Path(candidate).absolute())
+                                          if candidate is not None else ""),
+                          excluded_copies=excluded)
     for msg in order_dropped:
         # degraded=True: an unreadable manifest costs this mod its dependency
         # edges, so its load-order position — and therefore every collision
@@ -742,8 +772,15 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
     lines = [
         f"x4compat: {report.mods_scanned} mods, {report.files_examined} shared files examined.",
         "Load order (winner = last): the engine's measured order (case-insensitive folders, "
-        "dependencies in passes).\n",
+        "dependencies in passes).",
     ]
+    if report.candidate_path:
+        # Always name the copy: two copies of one mod (enabled + staged) are the
+        # normal case when checking an update, and the answer differs per copy.
+        lines.append(f"Candidate analysed: {report.candidate_path}")
+        for ex in report.excluded_copies:
+            lines.append(f"  excluded (same mod, a different copy): {ex}")
+    lines.append("")
     shown_any = False
     for kind in _KIND_ORDER:
         group = report.by_kind(kind)
@@ -800,6 +837,26 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
     return "\n".join(lines)
 
 
+def _resolve_candidate(arg: str, ext_dir: Path) -> Path:
+    """Which copy of the candidate `check <arg>` means (AUDIT-2026-09-24 AN-1).
+
+    An EXISTING path is that copy, even when a same-named mod sits in the extensions
+    dir -- that is the "check this staged update" case. Otherwise a BARE name (no
+    path separator) is looked up among the extensions dir's mod folders, so
+    `check some_mod` means the copy the game has. Anything else is returned as given
+    and refused by `_input.require_mod_dir` as a path that does not exist.
+    """
+    p = Path(arg)
+    if p.exists() or "/" in arg or "\\" in arg or p.is_absolute():
+        return p
+    # "installed", not "active": naming a disabled mod is the "what if I switch it
+    # on" question, and analyze() adds the candidate to the active set itself.
+    for m in _registry.mods("installed", [ext_dir]):
+        if m["folder"].lower() == arg.lower():
+            return Path(m["path"])
+    return p
+
+
 @_paths.refuses_unconfigured
 def main(argv: list[str] | None = None) -> int:
     import argparse
@@ -819,7 +876,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     pc = sub.add_parser("check", help="analyze collisions across the installed modlist")
     pc.add_argument("candidate", nargs="?",
-                    help="a mod folder to focus on ('before I add this'); omit for --all")
+                    help="the mod to focus on ('before I add this'): an existing folder "
+                         "PATH is the copy analysed (a same-named copy in the extensions "
+                         "dir is then left out); a bare NAME means the copy in the "
+                         "extensions dir. Omit for --all")
     pc.add_argument("--all", action="store_true", help="analyze the whole installed set")
     pc.add_argument("--ext-dir", help="extensions dir to scan "
                     "(default: game-root extensions\\ from _registry)")
@@ -836,7 +896,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: extensions dir not found: {ext_dir}", file=sys.stderr)
         return 2
     config = _merge.Config(reference=Path(args.reference)) if args.reference else _merge.Config()
-    candidate = Path(args.candidate) if args.candidate else None
+    candidate = _resolve_candidate(args.candidate, ext_dir) if args.candidate else None
     if candidate is not None:
         _input.require_mod_dir(candidate, "candidate mod folder")
 
@@ -851,6 +911,8 @@ def main(argv: list[str] | None = None) -> int:
             "load_order": report.load_order,
             "collisions": [dataclasses.asdict(c) for c in report.collisions],
             "skipped": [dataclasses.asdict(s) for s in report.skipped],
+            "candidate_path": report.candidate_path,
+            "excluded_copies": report.excluded_copies,
             "degraded": bool(report.degraded),
         }
         print(json.dumps(payload, indent=2))

@@ -20,7 +20,10 @@ Run tools via uv from the tool dir:
    only; union dirs (t/, libraries/, index/) are handled semantically. Winner is by load order
    (case-insensitive folder order, `_` sorting after letters, dependencies loaded in repeated
    passes -- MEASURED against the engine's own log, and re-checked by
-   `gates/load_order_oracle.py`). **Zero hard
+   `gates/load_order_oracle.py`). An existing folder PATH is the copy analysed -- a
+   same-named enabled copy is left out, so a staged update is checked as itself -- while a
+   bare NAME means the copy in the extensions dir; the output's `Candidate analysed:` line
+   names which. **Zero hard
    collisions is common and means "no structural clash" — NOT "no interaction" (see step 2).**
 
 2. **Behavioral — `x4xref`** (build once with `x4xref build`, then query). The conflicts that
