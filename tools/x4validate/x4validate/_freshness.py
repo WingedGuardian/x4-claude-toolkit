@@ -139,8 +139,19 @@ from pathlib import Path
 #: NOTE `_freshness.py` is deliberately NOT in this list. It does not decide what
 #: the tree contains, so widening the CONTENT axis here does not pretend the
 #: merge code changed -- that distinction is the whole of F53's complaint.
-ENGINE_SOURCES = ("_merge.py", "_diff.py", "_cat.py", "_xpath.py", "_scan.py",
-                  "_effective.py", "_registry.py", "_loadorder.py")
+ENGINE_SOURCES = ("_merge.py", "_cat.py", "_effective.py", "_registry.py",
+                  "_loadorder.py", "_provenance.py", "_modfiles.py")
+#: ⚠ RE-DERIVED 2026-09-24 BY TRACING A STORE BUILD (AUDIT-2026-09-24 FR-2), not by
+#: reading imports -- `tests/test_audit0924_analysis.py::test_FR2_*` pin it both ways:
+#:   * ADDED `_provenance.py` -- its `Recorder` decides the per-attribute chains the store
+#:     keeps; and `_modfiles.py`, which now holds `mod_xml_paths` (lifted out of the CLI
+#:     module `_compat`, where `_effective.build_touch_map` called it) and the x4eff
+#:     enumeration lifted out of `tools/basex/build-effective.py`. The rest of that script
+#:     is folded into x4eff's engine axis by `tools/basex/staleness.py::ENGINE_EXTRA`.
+#:   * REMOVED `_diff.py` (the x4diff mod-version differ; nothing on the store path imports
+#:     it), `_xpath.py` (imported only by `_compat`) and `_scan.py` (the store build reaches
+#:     it only for `count_line`, a display helper). Each listed but unused module made an
+#:     unrelated edit mark every artifact STALE -- the cry-wolf cost F69 measured.
 #: ⚠ THE LOAD-ORDER GAP IS CLOSED (2026-09-06). `compute_load_order` decides which
 #: mod wins every collision (CLAUDE.md gotcha #13: the same macro reads 0
 #: alphabetically and 200 in true load order), so editing it changes the merged
@@ -356,6 +367,15 @@ def _fold(detail: list[dict], reference: Path) -> str:
         h.update(b"<NO-EXTENSIONS-DIR>")
     for rec in detail:
         h.update(rec["folder"].lower().encode())
+        # The ROOT as well as the folder (AUDIT-2026-09-24 FR-1). Moving a mod from the
+        # game-root extensions folder to the profile's is exactly the mistake CLAUDE.md
+        # warns about -- dependencies then resolve as MISSING -- and it left the digest
+        # unchanged, so every artifact read FRESH while `diff_detail` over the same two
+        # vectors reported removed+added. Normalised (absolute, case-folded, one
+        # separator) so two callers spelling the same root differently do not cry wolf.
+        root = rec.get("root", "")
+        h.update(b"@" + os.path.normcase(os.path.abspath(root)).replace("\\", "/")
+                 .encode() if root else b"@")
         if rec["no_manifest"]:
             h.update(b"<NO-MANIFEST>")
         else:
@@ -364,6 +384,19 @@ def _fold(detail: list[dict], reference: Path) -> str:
         h.update(f":{rec['tree_sha']}:{int(rec['enabled_in_profile'])}".encode())
     h.update(_reference_survey(Path(reference)).encode())
     return h.hexdigest()[:16]
+
+
+def reference_digest(reference: Path) -> str:
+    """The REFERENCE side of the content axis on its own (AUDIT-2026-09-24 FR-4).
+
+    `_fold` mixes the per-mod records with the reference survey into one digest, so a
+    game update and a mod edit produced the same banner -- "a mod was added, removed,
+    updated..." -- and `x4modlist changed` then said "no change" for the move the banner
+    had sent you to find. Stamped alongside `content` so `compare` can say WHICH side
+    moved. Absent from stamps written before 2026-09-24; `compare` then falls back to the
+    undivided message rather than guessing.
+    """
+    return hashlib.sha256(_reference_survey(Path(reference)).encode()).hexdigest()[:16]
 
 
 #: How many directory levels of `reference/` the survey folds in. At each level the
@@ -672,7 +705,8 @@ def fingerprint(config, extensions=_UNSET, engine_dir: Path | None = None,
         ext = overlays[0].parent
     detail = content_detail(config.reference, ext, profile=profile)
     return {"content": _fold(detail, config.reference),
-            "engine": hash_engine(engine_dir), "detail": detail}
+            "engine": hash_engine(engine_dir), "detail": detail,
+            "reference": reference_digest(config.reference)}
 
 
 @dataclass
@@ -690,6 +724,20 @@ class Verdict:
                 + "\n!! Its answers describe the world as of the build, not now, and it\n"
                   "!! cannot back a NEGATIVE claim until rebuilt.\n"
                 + "!" * 78 + "\n")
+
+
+def _only_reference_moved(stored: dict, current: dict) -> bool:
+    """True only when both per-mod vectors are present and identical, so the content
+    move is FULLY explained by the reference side. Unknown is not "only the reference"."""
+    a, b = stored.get("detail"), current.get("detail")
+    if not a or not b:
+        return False
+    try:
+        return not diff_detail(a, b)
+    except NoBaseline:
+        # silent-ok: an unlocalisable vector is "cannot prove only the reference moved",
+        # and False makes `compare` name the MODS as well -- the conservative verdict.
+        return False
 
 
 def compare(stored: dict | None, current: dict, engine_dependent: bool) -> Verdict:
@@ -713,10 +761,20 @@ def compare(stored: dict | None, current: dict, engine_dependent: bool) -> Verdi
     # They are also what lets someone match the move against a commit. Raised by a
     # downstream session that hit this for real (F59).
     if stored.get("content") != current.get("content"):
-        reasons.append("content changed: a mod was added, removed, updated, "
-                       "toggled, or one of its files was edited "
-                       "(run `x4modlist changed` to see which) "
-                       f"[{stored.get('content')} -> {current.get('content')}]")
+        ref_then, ref_now = stored.get("reference"), current.get("reference")
+        split = ref_then is not None and ref_now is not None
+        if split and ref_then != ref_now:
+            reasons.append("reference changed: the unpacked base game (reference\\) moved "
+                           "-- a game update or a re-unpack "
+                           f"[{ref_then} -> {ref_now}]")
+        # Mods are named unless the split PROVES the whole move was the reference: with
+        # the reference unchanged, or with no reference digest to compare, the content
+        # move is attributed to the mods exactly as before.
+        if not (split and ref_then != ref_now and _only_reference_moved(stored, current)):
+            reasons.append("content changed: a mod was added, removed, updated, "
+                           "toggled, or one of its files was edited "
+                           "(run `x4modlist changed` to see which) "
+                           f"[{stored.get('content')} -> {current.get('content')}]")
     if engine_dependent and stored.get("engine") != current.get("engine"):
         reasons.append("engine changed: the merge code that produced this has been "
                        "edited, so the SAME inputs would now merge differently "
@@ -732,6 +790,9 @@ _KEYS = ("fingerprint_content", "fingerprint_engine")
 #: requiring this key would flip every artifact on disk to UNKNOWN at once, which
 #: is a far worse failure than not being able to localise.
 _DETAIL_KEY = "fingerprint_detail"
+#: Optional like `_DETAIL_KEY`, for the same reason: a stamp without it stays readable and
+#: keeps its FRESH/STALE verdict; only the reference-vs-mods split is unavailable.
+_REFERENCE_KEY = "fingerprint_reference"
 
 
 def stamp_sqlite(con, fp: dict) -> None:
@@ -742,6 +803,9 @@ def stamp_sqlite(con, fp: dict) -> None:
     if fp.get("detail") is not None:
         con.execute("insert or replace into meta (key, value) values (?, ?)",
                     (_DETAIL_KEY, json.dumps(fp["detail"], separators=(",", ":"))))
+    if fp.get("reference") is not None:
+        con.execute("insert or replace into meta (key, value) values (?, ?)",
+                    (_REFERENCE_KEY, fp["reference"]))
 
 
 def read_sqlite(con) -> dict | None:
@@ -753,7 +817,8 @@ def read_sqlite(con) -> dict | None:
     if not all(k in rows for k in _KEYS):
         return None
     out = {"content": rows["fingerprint_content"],
-           "engine": rows["fingerprint_engine"], "detail": None}
+           "engine": rows["fingerprint_engine"], "detail": None,
+           "reference": rows.get(_REFERENCE_KEY)}
     if _DETAIL_KEY in rows:
         try:
             out["detail"] = json.loads(rows[_DETAIL_KEY])

@@ -98,6 +98,30 @@ def _iter_mod_files(mod_dir: Path, unreadable: list | None = None):
     yield from _scan.iter_mod_xml(mod_dir, _scan.under(*_SCRIPT_DIRS), unreadable)
 
 
+def index_roots(ext_dir: Path) -> list[Path]:
+    """The install roots an index built from *ext_dir* covers: the named root first, then
+    every other configured root (profile extensions, Steam workshop).
+
+    ONE definition, used by `build_index` AND by the freshness stamp and check
+    (AUDIT-2026-09-24 FR-3). The index walked all of these while the stamp covered only
+    the named one, so a mod added or edited in the profile or workshop root left the
+    index FRESH -- and x4xref exists to make NEGATIVES admissible.
+    """
+    roots = [ext_dir]
+    try:
+        for extra in _registry.default_installed_dirs():
+            if extra not in roots:
+                roots.append(extra)
+    except Exception:  # silent-ok: a root set that cannot be derived must not
+        # empty the index. The NAMED root is still walked, and the caller's own
+        # `unreadable` channel still reports whatever that walk could not read -- so
+        # the failure mode is a NARROWER population, never a silent zero. Recording it
+        # here would fire on every machine with no profile extensions dir, which is
+        # the normal state.
+        pass
+    return roots
+
+
 def build_index(reference: Path, ext_dir: Path,
                 unreadable: list | None = None,
                 dlc_dirs: list[Path] | None = None) -> list[XrefRow]:
@@ -146,18 +170,7 @@ def build_index(reference: Path, ext_dir: Path,
     # IDENTICAL (the profile extensions dir is empty and no workshop dir exists), so
     # the index digest does not move here. That is the state in which such a gap
     # survives -- a recorded cost of zero is where a wrong denominator hides.
-    roots = [ext_dir]
-    try:
-        for extra in _registry.default_installed_dirs():
-            if extra not in roots:
-                roots.append(extra)
-    except Exception:  # silent-ok: a root set that cannot be derived must not
-        # empty the index. The NAMED root is still walked below, and the caller's own
-        # `unreadable` channel still reports whatever that walk could not read -- so
-        # the failure mode is a NARROWER population, never a silent zero. Recording it
-        # here would fire on every machine with no profile extensions dir, which is
-        # the normal state.
-        pass
+    roots = index_roots(ext_dir)
     scanned = [r for r in roots if r.is_dir()]
     # NO failure channel entry for an ABSENT candidate root. `default_installed_dirs`
     # returns CANDIDATES -- the profile's extensions dir and the Steam workshop dir
@@ -412,7 +425,12 @@ def main(argv: list[str] | None = None) -> int:
         # WHEN this index was true. Its whole purpose is to make "nobody calls X"
         # admissible, and a negative from a superseded world is not admissible.
         _mutation.refuse_if_mutating("build the md/aiscript xref index")
-        _freshness.stamp_sidecar(out, _freshness.fingerprint(_merge.Config(reference=ref), ext))
+        _fp = _freshness.fingerprint(_merge.Config(reference=ref), index_roots(ext))
+        # The roots are RECORDED so the check compares against the world this index was
+        # built over -- `build --ext-dir X` used to read STALE forever, because the query
+        # side always fingerprinted the game-root extensions instead (FR-3).
+        _fp["roots"] = [str(r) for r in index_roots(ext)]
+        _freshness.stamp_sidecar(out, _fp)
         from collections import Counter
         by = Counter(r.kind for r in rows)
         print(f"indexed {len(rows)} rows -> {out}")
@@ -433,10 +451,11 @@ def main(argv: list[str] | None = None) -> int:
     # Printed on EVERY query until rebuilt. x4xref exists to support NEGATIVES
     # ("nobody listens to this event"), which is precisely the claim a stale
     # index gets wrong -- a mod added since the build is simply not in it.
+    _stored = _freshness.read_sidecar(tsv)
+    _roots = ([Path(r) for r in _stored["roots"]] if _stored and _stored.get("roots")
+              else index_roots(_registry.GAME_EXTENSIONS))
     _stale = _freshness.compare(
-        _freshness.read_sidecar(tsv),
-        _freshness.fingerprint(_merge.Config(), _registry.GAME_EXTENSIONS),
-        engine_dependent=False)
+        _stored, _freshness.fingerprint(_merge.Config(), _roots), engine_dependent=False)
     if not _stale.fresh:
         print(_stale.banner("the x4xref index"), file=sys.stderr)
         print("!! Rebuild:  uv run x4xref build", file=sys.stderr)

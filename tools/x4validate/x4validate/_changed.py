@@ -109,7 +109,7 @@ def take_snapshot(label: str | None = None,
     return out
 
 
-def _from_store() -> tuple[list | None, str]:
+def _store_fp() -> tuple[dict | None, str]:
     from x4validate import _effective
     import sqlite3
     db = _effective.effective_db()
@@ -122,24 +122,41 @@ def _from_store() -> tuple[list | None, str]:
         con.close()
     if stored is None:
         return None, f"the effective store ({db}) — no fingerprint recorded"
-    return stored.get("detail"), f"the effective store ({db})"
+    return stored, f"the effective store ({db})"
 
 
-def _from_xref() -> tuple[list | None, str]:
+def _xref_fp() -> tuple[dict | None, str]:
     from x4validate import _xref
     tsv = _xref._default_tsv()
     stored = _freshness.read_sidecar(tsv)
     if stored is None:
         return None, f"the x4xref index ({tsv}) — no fingerprint recorded"
-    return stored.get("detail"), f"the x4xref index ({tsv})"
+    return stored, f"the x4xref index ({tsv})"
 
 
-def _from_snapshot(path: Path) -> tuple[list | None, str]:
+def _snapshot_fp(path: Path) -> tuple[dict | None, str]:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return None, f"snapshot {path} — unreadable ({exc})"
-    return data.get("detail"), f"snapshot {path.name}"
+    return data, f"snapshot {path.name}"
+
+
+def _vector(fp_desc: tuple[dict | None, str]) -> tuple[list | None, str]:
+    fp, desc = fp_desc
+    return (fp.get("detail") if fp else None), desc
+
+
+def _from_store() -> tuple[list | None, str]:
+    return _vector(_store_fp())
+
+
+def _from_xref() -> tuple[list | None, str]:
+    return _vector(_xref_fp())
+
+
+def _from_snapshot(path: Path) -> tuple[list | None, str]:
+    return _vector(_snapshot_fp(path))
 
 
 def load_baseline(spec: str,
@@ -165,6 +182,21 @@ def load_baseline(spec: str,
             return None, "the latest snapshot — none taken yet"
         return _from_snapshot(snaps[-1])
     return _from_snapshot(Path(spec))
+
+
+def baseline_fp(spec: str, registry: str | Path | None = None) -> dict | None:
+    """The FULL stamp behind ``--since`` -- `load_baseline` returns only its per-mod
+    vector, which cannot see the reference side (AUDIT-2026-09-24 FR-4)."""
+    if spec in ("store", "auto"):
+        return _store_fp()[0]
+    if spec == "xref":
+        return _xref_fp()[0]
+    if spec == "latest":
+        sd = snapshots_dir(registry)
+        snaps = sorted(sd.glob("snapshot-*.json"),
+                       key=lambda p: p.stat().st_mtime) if sd.is_dir() else []
+        return _snapshot_fp(snaps[-1])[0] if snaps else None
+    return _snapshot_fp(Path(spec))[0]
 
 
 # --- the advisory USN rung ----------------------------------------------------
@@ -340,8 +372,26 @@ def cmd_changed(args) -> int:
         print(f"cannot localise: {exc}", file=sys.stderr)
         return 3
 
+    # The REFERENCE side (FR-4). The per-mod vector cannot see a game update, so "no
+    # change: every installed mod matches" used to be the whole answer after one -- while
+    # the STALE banner that sent you here said something moved.
+    ref_then = (baseline_fp(args.since, getattr(args, "registry", None)) or {}).get("reference")
+    ref_now = _freshness.reference_digest(config.reference)
+    ref_moved = ref_then is not None and ref_then != ref_now
+    if ref_moved and not changes:
+        print(f"baseline: {desc}")
+        print("")
+        print("no MOD changed -- but the REFERENCE (the unpacked base game) moved since the "
+              f"baseline [{ref_then} -> {ref_now}]: a game update or a re-unpack. That is "
+              "what marked your artifacts stale; rebuild them.")
+        return 1
     for line in render(changes, desc, getattr(args, "files", False)):
         print(line)
+    if ref_moved:
+        print(f"  and the REFERENCE (the unpacked base game) also moved [{ref_then} -> {ref_now}]")
+    elif ref_then is None:
+        print("  (this baseline predates the reference digest, so a game update since it "
+              "cannot be told apart from 'no change' here)")
 
     if getattr(args, "usn", False):
         print("")

@@ -455,7 +455,7 @@ implementation; BaseX delegates to it):
 | axis | covers | why |
 |---|---|---|
 | `content` | installed extension set + each manifest mtime/size + a reference marker | mods added, removed or updated |
-| `engine` | hash of the **BYTES** of every file named in `_freshness.ENGINE_SOURCES` — **derive that list from the module, never retype it** (**8** as of 2026-09-07: `_cat`, `_diff`, `_effective`, `_loadorder`, `_merge`, `_registry`, `_scan`, `_xpath`). ⚠ This cell has been wrong TWICE, the same way, in the sentence telling you not to retype the list, so `tests/test_reference_fingerprint.py` now asserts it lists exactly what the module derives | a merge fix changes the answer for identical inputs; a commit hash does not move for a dirty tree |
+| `engine` | hash of the **BYTES** of every file named in `_freshness.ENGINE_SOURCES` — **derive that list from the module, never retype it** (**7** as of 2026-09-24: `_cat`, `_effective`, `_loadorder`, `_merge`, `_modfiles`, `_provenance`, `_registry`) -- re-derived by TRACING a store build; x4eff also folds `tools/basex/build-effective.py` in via `staleness.ENGINE_EXTRA`. ⚠ This cell has been wrong TWICE, the same way, in the sentence telling you not to retype the list, so `tests/test_reference_fingerprint.py` now asserts it lists exactly what the module derives | a merge fix changes the answer for identical inputs; a commit hash does not move for a dirty tree |
 
 **Absent fingerprint = UNKNOWN, never fresh.** Each CLI banners every run until rebuilt; `ask.py`
 and `gates/claims_audit.py` REFUSE a claim outright. `engine_dependent` is per-artifact — a raw file

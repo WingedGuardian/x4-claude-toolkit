@@ -79,7 +79,27 @@ def _hash_content(reference: Path, extensions: Path) -> str:
     return _core().hash_content(reference, extensions)
 
 
-def fingerprint(reference: Path, extensions: Path, engine_dir: Path) -> dict:
+#: Build code OUTSIDE the package that still shapes an engine-dependent database. The
+#: package's `ENGINE_SOURCES` cannot name it (it hashes package files), so before
+#: 2026-09-24 an edit to how `x4eff` writes or copies documents left x4eff FRESH
+#: (AUDIT-2026-09-24 FR-2). Folded into the engine axis for THAT database only: the
+#: sqlite store never runs this script, so its hash must not move when it changes.
+ENGINE_EXTRA = {"x4eff": (HERE / "build-effective.py",)}
+
+
+def _engine_for(engine_dir: Path, db: str) -> str:
+    base = _hash_engine(engine_dir)
+    extra = ENGINE_EXTRA.get(db, ())
+    if not extra:
+        return base
+    h = hashlib.sha256(base.encode())
+    for p in extra:
+        h.update(p.name.encode())
+        h.update(p.read_bytes() if p.is_file() else b"<ABSENT>")
+    return h.hexdigest()[:16]
+
+
+def fingerprint(reference: Path, extensions: Path, engine_dir: Path, db: str = "") -> dict:
     """The two axes, and DELIBERATELY not the per-folder vector.
 
     `_freshness.fingerprint` also carries `detail` — the 190 KB vector that lets
@@ -92,7 +112,7 @@ def fingerprint(reference: Path, extensions: Path, engine_dir: Path) -> dict:
     elsewhere.
     """
     return {"content": _hash_content(reference, extensions),
-            "engine": _hash_engine(engine_dir)}
+            "engine": _engine_for(engine_dir, db)}
 
 
 @dataclass
@@ -173,7 +193,7 @@ def check(coverage_path: Path, reference: Path, extensions: Path,
                        determinable=False)
 
     try:
-        now = fingerprint(reference, extensions, engine_dir)
+        now = fingerprint(reference, extensions, engine_dir, db)
     except (EngineUnavailable, ImportError):
         # NOT OURS TO CATCH. `main()` owns this one and turns it into rc 6 via
         # `_report_unknown`; swallowing it here returned a determinable=False
@@ -217,12 +237,13 @@ def write(coverage_path: Path, reference: Path, extensions: Path,
             data = json.loads(coverage_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             data = {}
-    data["fingerprint"] = fingerprint(reference, extensions, engine_dir)
+    db = coverage_path.stem.replace("coverage-", "")
+    data["fingerprint"] = fingerprint(reference, extensions, engine_dir, db)
     coverage_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return data["fingerprint"]
 
 
-def _defaults() -> tuple[Path, Path, Path]:
+def _defaults() -> tuple[Path, list[Path], Path]:
     """Resolve reference/extensions/engine, or RAISE.
 
     These used to fall back to one developer's absolute paths. On anyone else's
@@ -319,7 +340,20 @@ def _defaults() -> tuple[Path, Path, Path]:
             f"CONTAINING the x4validate package), not the package itself. Refusing to "
             f"guess: every missing tree hashes to the same constant, which reads as "
             f"FRESH forever.")
-    return reference, extensions, engine
+    # EVERY INSTALL ROOT, not just the game's (AUDIT-2026-09-24 FR-6). x4raw stages every
+    # INSTALLED mod and x4eff every ACTIVE one, both through `_registry`, which walks up to
+    # three roots (game-root extensions, the profile's, the Steam workshop dir) -- while
+    # this stamp covered only the first, so a mod added or edited in the other two left
+    # both databases FRESH. The same fix the sqlite store (`_effective._ext_root`) and
+    # x4xref (`_xref.index_roots`) carry. `hash_content` takes one root or many; an absent
+    # candidate root is skipped by `content_detail`, so a machine with only the game root
+    # fingerprints exactly as before.
+    from x4validate import _registry
+    roots = [Path(extensions)]
+    for extra in _registry.default_installed_dirs():
+        if Path(extra) not in roots:
+            roots.append(Path(extra))
+    return reference, roots, engine
 
 
 def _report_unknown(db: str, exc: Exception) -> int:

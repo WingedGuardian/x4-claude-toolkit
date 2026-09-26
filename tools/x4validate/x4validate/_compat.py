@@ -30,7 +30,7 @@ from pathlib import Path
 from lxml import etree
 
 from x4validate import (_paths, _cat, _merge, _registry, _scan, _xpath, _input,
-                        _loadorder)
+                        _loadorder, _modfiles)
 from x4validate import __version__
 
 #: `{page,text}` localized reference - display text, never a registry identity.
@@ -164,17 +164,10 @@ _mod_deps = _loadorder.mod_deps
 compute_load_order = _loadorder.compute_load_order
 
 
-def _mod_xml_paths(mod_path: Path) -> dict[str, str]:
-    """Return ``{lowercased_vpath: real_vpath}`` for a mod's XML (packed + loose)."""
-    out: dict[str, str] = {}
-    for vpath in _cat.mod_vfs(mod_path, packed_only=True):  # packed-ok: loose added below
-        out[vpath.lower()] = vpath
-    for f in mod_path.rglob("*.xml"):
-        if f.is_file():
-            vpath = f.relative_to(mod_path).as_posix()
-            out[vpath.lower()] = vpath
-    out.pop("content.xml", None)
-    return out
+#: Lifted into the CLI-free `_modfiles` so the engine freshness axis can watch it (it
+#: decides which vpaths `_effective.build_touch_map` attributes to each mod -- store
+#: provenance). Kept as an alias: every caller of `_compat._mod_xml_paths` is unchanged.
+_mod_xml_paths = _modfiles.mod_xml_paths
 
 
 # --- node-identity resolution -------------------------------------------------

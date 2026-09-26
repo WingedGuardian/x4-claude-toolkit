@@ -33,7 +33,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _cat, _compat, _effective, _merge, _registry
+from x4validate import _cat, _compat, _effective, _merge, _modfiles, _registry
 
 
 def installed_in_load_order() -> list[Path]:
@@ -56,41 +56,6 @@ def installed_in_load_order() -> list[Path]:
         if m and Path(m["path"]).is_dir():
             out.append(Path(m["path"]))
     return out
-
-
-def all_vpaths(config: _merge.Config,
-               overlays: list[Path]) -> tuple[set[str], set[str], dict[str, str]]:
-    """(contested, untouched, base) virtual paths.
-
-    contested = shipped by at least one overlay (so a merge is required)
-    untouched = base/DLC only (the base file already IS the effective file)
-
-    The base set comes from `_effective.base_vpaths`, NOT from a local
-    `reference.rglob`. The rglob form is loose-only, so it cannot see the two
-    mini-DLC (never unpacked; they live in ext_*.cat) -- MEASURED 2026-08-22,
-    that cost this index **119 of 142 mini-DLC documents (84%)**, and the 23 that
-    did get in arrived only incidentally, because two unrelated mods happen to
-    nest patches under `extensions/ego_dlc_mini_0X/`. See BLIND-SPOTS F34.
-    """
-    base = _effective.base_vpaths(config, "*.xml")
-
-    contested: set[str] = set()
-    for d in overlays:
-        vps = {p.relative_to(d).as_posix() for p in d.rglob("*.xml")}
-        try:
-            # packed-ok: the loose half is the rglob directly above. Without the
-            # acknowledgement this warned once per loose mod -- MEASURED 70+ lines on
-            # an ordinary build, at a call site where the warning can never be right.
-            vps |= {v for v in _cat.mod_vfs(d, packed_only=True)
-                    if v.lower().endswith(".xml")}
-        except Exception:  # noqa: BLE001 - a mod with no readable catalog contributes nothing
-            pass
-        for v in vps:
-            # Prefer the base tree's casing so both sides agree on one spelling.
-            contested.add(base.get(v.lower(), v))
-
-    untouched = {v for low, v in base.items() if v not in contested}
-    return contested, untouched, base
 
 
 def enumeration_report(config: _merge.Config, base: dict[str, str]) -> dict:
@@ -153,14 +118,17 @@ def main(argv=None) -> int:
     out.mkdir(parents=True)
 
     t0 = time.time()
-    contested, untouched, base = all_vpaths(config, overlays)
+    # Enumeration lives in the package (`_modfiles.overlay_vpaths`) so the engine
+    # freshness axis watches it (AUDIT-2026-09-24 FR-2); an overlay whose catalog
+    # cannot be read is now RECORDED in `failures` instead of dropped (BX-6).
+    failures: list[str] = []
+    contested, untouched, base = _modfiles.overlay_vpaths(config, overlays, failures)
     if args.limit:
         contested = set(sorted(contested)[:args.limit])
     print(f"vpaths: {len(contested)} contested (merge required), "
           f"{len(untouched)} base-only (copied verbatim)")
 
     written = 0
-    failures: list[str] = []
     merge_skips: list[str] = []
     for v in sorted(contested):
         try:

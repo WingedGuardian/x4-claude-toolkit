@@ -90,10 +90,25 @@ def test_check_reports_fresh_when_nothing_moved(tmp_path):
     ref, ext, engine = _fake_tree(tmp_path)
     cov = tmp_path / "coverage-x4eff.json"
     cov.write_text(json.dumps({"db": "x4eff",
-                               "fingerprint": staleness.fingerprint(ref, ext, engine)}))
+                               "fingerprint": staleness.fingerprint(ref, ext, engine, "x4eff")}))
     verdict = staleness.check(cov, ref, ext, engine)
     assert verdict.fresh
     assert verdict.reasons == []
+
+
+def test_the_x4eff_build_script_is_on_x4effs_engine_axis_only(tmp_path, monkeypatch):
+    """AUDIT-2026-09-24 FR-2: `build-effective.py` writes and copies every x4eff document
+    but lives outside the package, so no engine hash saw it. It is folded into x4eff's
+    engine axis -- and ONLY x4eff's: x4raw never runs it, so its stamp must not move."""
+    ref, ext, engine = _fake_tree(tmp_path)
+    script = tmp_path / "build-effective.py"
+    script.write_bytes(b"# v1\n")
+    monkeypatch.setitem(staleness.ENGINE_EXTRA, "x4eff", (script,))
+    eff = staleness.fingerprint(ref, ext, engine, "x4eff")["engine"]
+    raw = staleness.fingerprint(ref, ext, engine, "x4raw")["engine"]
+    script.write_bytes(b"# v2 -- writes documents differently\n")
+    assert staleness.fingerprint(ref, ext, engine, "x4eff")["engine"] != eff
+    assert staleness.fingerprint(ref, ext, engine, "x4raw")["engine"] == raw
 
 
 def test_check_names_WHAT_moved_not_just_that_something_did(tmp_path):
@@ -102,7 +117,7 @@ def test_check_names_WHAT_moved_not_just_that_something_did(tmp_path):
     ref, ext, engine = _fake_tree(tmp_path)
     cov = tmp_path / "coverage-x4eff.json"
     cov.write_text(json.dumps({"db": "x4eff",
-                               "fingerprint": staleness.fingerprint(ref, ext, engine)}))
+                               "fingerprint": staleness.fingerprint(ref, ext, engine, "x4eff")}))
     (ext / "mod_c").mkdir()
     (ext / "mod_c" / "content.xml").write_bytes(b'<content id="mod_c" version="100"/>')
     (engine / "_merge.py").write_bytes(b"# merge v2\n")
@@ -354,6 +369,8 @@ def test_an_EMPTY_extensions_directory_is_ACCEPTED(tmp_path, monkeypatch):
     ref, ext = _real_pair(tmp_path)
     monkeypatch.setenv("X4_REFERENCE", str(ref))
     monkeypatch.setenv("X4_EXTENSIONS", str(ext))
-    got_ref, got_ext, _engine = staleness._defaults()
+    got_ref, got_roots, _engine = staleness._defaults()
     assert Path(got_ref) == ref
-    assert Path(got_ext) == ext
+    # A LIST of install roots since AUDIT-2026-09-24 FR-6, the named one first; any other
+    # configured roots (profile, workshop) follow and are fingerprinted too.
+    assert got_roots[0] == ext

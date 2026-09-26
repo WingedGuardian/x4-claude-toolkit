@@ -350,8 +350,6 @@ def test_AN8_docstring_exclusion_claim_matches_the_walker():
 # FR-1  _fold hashes the folder NAME, not its install ROOT
 # =============================================================================
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 FR-1: moving a mod between "
-                   "install roots leaves the content digest unchanged")
 def test_FR1_moving_a_mod_between_roots_moves_the_content_digest(tmp_path):
     ref = _ref(tmp_path)
     game, prof = tmp_path / "game_ext", tmp_path / "profile_ext"
@@ -405,16 +403,12 @@ def _traced_store_build(tmp_path, monkeypatch) -> set[str]:
     return ran - _NOT_BYTES
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 FR-2: code that shapes the "
-                   "store runs outside ENGINE_SOURCES (_provenance, _compat)")
 def test_FR2_every_module_that_shapes_the_store_is_an_engine_source(
         tmp_path, hermetic, monkeypatch):
     ran = _traced_store_build(tmp_path, monkeypatch)
     assert ran <= set(_freshness.ENGINE_SOURCES), sorted(ran - set(_freshness.ENGINE_SOURCES))
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 FR-2: ENGINE_SOURCES names "
-                   "modules the store build never runs (_diff, _xpath, _scan)")
 def test_FR2_every_engine_source_runs_on_the_store_build(tmp_path, hermetic, monkeypatch):
     ran = _traced_store_build(tmp_path, monkeypatch)
     assert set(_freshness.ENGINE_SOURCES) <= ran, sorted(set(_freshness.ENGINE_SOURCES) - ran)
@@ -424,8 +418,6 @@ def test_FR2_every_engine_source_runs_on_the_store_build(tmp_path, hermetic, mon
 # FR-3  x4xref indexes every install root but stamps only one
 # =============================================================================
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 FR-3: a change in a root the "
-                   "index covers does not mark it STALE")
 def test_FR3_a_change_in_an_indexed_root_marks_the_index_stale(tmp_path, hermetic,
                                                                monkeypatch, capsys):
     ref = _ref(tmp_path)
@@ -462,16 +454,12 @@ def _fr4(tmp_path):
     return ref, ext, before, after
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 FR-4: a reference-only move is "
-                   "reported as a MOD change")
 def test_FR4_the_banner_attributes_a_reference_move_to_the_reference(tmp_path):
     _ref_, _ext, before, after = _fr4(tmp_path)
     reasons = " ".join(_freshness.compare(before, after, engine_dependent=False).reasons)
     assert "reference" in reasons.lower(), reasons
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 FR-4: `x4modlist changed` says "
-                   "'no change' for the move the banner sent you to it for")
 def test_FR4_changed_does_not_say_no_change_after_a_reference_move(tmp_path, hermetic,
                                                                    monkeypatch, capsys):
     ref, ext, before, _after = _fr4(tmp_path)

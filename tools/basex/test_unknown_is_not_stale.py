@@ -83,7 +83,7 @@ def test_a_REAL_content_change_is_STALE_and_stays_DETERMINABLE(tmp_path):
     ref, ext, engine = _fake_tree(tmp_path)
     cov = tmp_path / "coverage-x4eff.json"
     cov.write_text(json.dumps({"db": "x4eff",
-                               "fingerprint": staleness.fingerprint(ref, ext, engine)}),
+                               "fingerprint": staleness.fingerprint(ref, ext, engine, "x4eff")}),
                    encoding="utf-8")
     assert staleness.check(cov, ref, ext, engine).fresh
     (ext / "mod_b").mkdir()
@@ -151,7 +151,7 @@ def test_a_GENUINELY_STALE_index_still_exits_5(tmp_path, capsys):
     ref, ext, engine = _fake_tree(tmp_path)
     cov = tmp_path / "coverage-x4eff.json"
     cov.write_text(json.dumps({"db": "x4eff",
-                               "fingerprint": staleness.fingerprint(ref, ext, engine)}),
+                               "fingerprint": staleness.fingerprint(ref, ext, engine, "x4eff")}),
                    encoding="utf-8")
     (ext / "mod_b").mkdir()
     (ext / "mod_b" / "content.xml").write_bytes(b'<content id="mod_b" version="1"/>')
@@ -197,7 +197,7 @@ def test_a_WORKING_engine_still_produces_a_real_verdict(tmp_path, monkeypatch):
     ref, ext, engine = _fake_tree(tmp_path)
     (tmp_path / "coverage-x4eff.json").write_text(
         json.dumps({"db": "x4eff",
-                    "fingerprint": staleness.fingerprint(ref, ext, engine)}),
+                    "fingerprint": staleness.fingerprint(ref, ext, engine, "x4eff")}),
         encoding="utf-8")
     monkeypatch.setattr(staleness, "_defaults", lambda: (ref, ext, engine))
     v = ask.staleness_verdict("x4eff")
