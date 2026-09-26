@@ -465,9 +465,18 @@ def tier_b_trees(mod_dir: Path, report: Report | None = None) -> TierB:
         # on-disk set here made a selector that only matches inside a disabled
         # mod report OK -- a FALSE PASS, in the mode whose whole purpose is
         # catching silent no-ops.
-        mods = _registry.mods("active")
+        not_loaded: list[str] = []
+        mods = _registry.mods("active", dropped=not_loaded)
     except OSError as exc:
         return _fallback(f"could not scan installed mods ({exc})")
+    # DISCLOSED, never silent (AUDIT-2026-09-24 final review): a mod the engine will
+    # not load is correctly absent from both trees, but a selector that only resolves
+    # inside it would otherwise read "sel matched nothing" with no hint why. Not
+    # degraded -- the tree is the engine's tree -- but NAMED, mod and reason.
+    for msg in not_loaded:
+        notes.append(f"Tier B: left out of both trees -- {msg}")
+        if report is not None:
+            report.skip("Tier B world model: a mod the engine does not load", msg)
     if not mods:
         return _fallback("no installed extensions found")
 

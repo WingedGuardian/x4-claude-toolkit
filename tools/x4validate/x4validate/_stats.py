@@ -115,7 +115,7 @@ def effective_wares(ext_dir: Path, config: _merge.Config,
     # requires it and is right to: passing the scope through a variable is exactly how
     # "which mods count" stops being visible where it is chosen (CLAUDE.md #24).
     if scope == "active":
-        mods = _registry.mods("active", [ext_dir])
+        mods = _registry.mods("active", [ext_dir], dlc_config=config)
     else:
         mods = _registry.mods("installed", [ext_dir])
     if exclude is not None:

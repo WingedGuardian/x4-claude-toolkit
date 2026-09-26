@@ -1072,7 +1072,8 @@ def analyze(
     # named a disabled mod as a participant in 4 collision rows of the 2026-08-22
     # baseline. The "what if I added this" case is *candidate*, below -- an
     # explicit opt-in, not a side effect of how the world is enumerated.
-    mods = _registry.mods("active", [ext_dir])
+    not_loaded: list[str] = []
+    mods = _registry.mods("active", [ext_dir], dropped=not_loaded, dlc_config=config)
 
     cand_folder = None
     excluded: list[str] = []
@@ -1114,6 +1115,10 @@ def analyze(
                           candidate_path=(str(Path(candidate).absolute())
                                           if candidate is not None else ""),
                           excluded_copies=excluded)
+    for msg in not_loaded:
+        # Not degraded: the engine does not load this mod, so it collides with
+        # nothing -- but a collision it WOULD cause if fixed is not shown, so say so.
+        report.skip("not in the analysis: a mod the engine does not load", msg)
     for msg in order_dropped:
         # degraded=True: an unreadable manifest costs this mod its dependency
         # edges, so its load-order position — and therefore every collision

@@ -334,6 +334,12 @@ def mods(scope: str, dirs: list[Path] | None = None,
     # parse drop at every "active" caller that passes no `dropped` -- MEASURED
     # 2026-09-26: none of the 14 `mods("active")` call sites under x4validate/ and
     # gates/ passes one, and 0 of 125 installed mods are excluded by the rule today.
+    # PARTLY CLOSED 2026-09-26 (final review): Tier B (`_check.tier_b_trees`, as a
+    # NOT CHECKED skip), x4compat (`analyze`, NOT ANALYSED), `x4effective build` and
+    # BaseX build-effective (progress/stderr) now pass one and render it. MEASURED at
+    # that commit: 4 of 20 active-scope call sites (x4validate/, gates/, basex/; the
+    # `_effective.active_mods` wrapper not counted) disclose; the other 16 still do
+    # not -- BLIND-SPOTS names them.
     dlc: list[dict] = []
     installed = scan_installed(dirs, dropped=dropped, dlc=dlc)
     if scope == "installed":
