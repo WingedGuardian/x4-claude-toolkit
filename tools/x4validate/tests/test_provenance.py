@@ -178,3 +178,21 @@ def test_note_is_SILENT_when_the_chain_ALREADY_shows_base(monkeypatch):
     assert _effectivecli._winner_not_origin_note(
         "libraries/wares.xml",
         json.dumps([["base", "full", 0], ["vro", "replace", 7]]), cfg=object()) is None
+
+
+# --- AN-4: the note needs base to define the ENTITY, not merely ship the file ---
+
+def test_note_fires_only_for_an_entity_base_DEFINES(tmp_path):
+    from x4validate import _merge
+    ref = tmp_path / "reference"
+    (ref / "libraries").mkdir(parents=True)
+    (ref / "libraries" / "wares.xml").write_text(
+        '<wares><ware id="ore"/></wares>', encoding="utf-8")
+    cfg = _merge.Config(reference=ref, include_packed_dlc=False)
+    chain = json.dumps([["vro", "replace", 3]])
+    assert _effectivecli._winner_not_origin_note(
+        "libraries/wares.xml", chain, cfg=cfg, kind="ware", name="ore"), \
+        "base defines ore: the single-mod chain shows a WINNER, and must say so"
+    assert _effectivecli._winner_not_origin_note(
+        "libraries/wares.xml", chain, cfg=cfg, kind="ware", name="modware") is None, \
+        "base ships wares.xml but never defined modware: the mod INTRODUCED it"

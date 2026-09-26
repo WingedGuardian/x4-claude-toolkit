@@ -187,8 +187,6 @@ def test_AN3_plain_ls_marks_an_attribute_only_change(tmp_path, hermetic,
     assert len(ore) == 1 and "aaa_price" in ore[0], ore
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-4: 'WON, not introduced' "
-                   "fires on a registry entity the mod genuinely added")
 def test_AN4_who_sets_does_not_disclaim_a_genuinely_added_entity(tmp_path, hermetic,
                                                                  monkeypatch, capsys):
     db = _store(tmp_path, monkeypatch)
