@@ -475,8 +475,7 @@ def tier_b_trees(mod_dir: Path, report: Report | None = None) -> TierB:
     # degraded -- the tree is the engine's tree -- but NAMED, mod and reason.
     for msg in not_loaded:
         notes.append(f"Tier B: left out of both trees -- {msg}")
-        if report is not None:
-            report.skip("Tier B world model: a mod the engine does not load", msg)
+    note_not_loaded(mods, "Tier B world model: a mod the engine does not load", report)
     if not mods:
         return _fallback("no installed extensions found")
 
@@ -595,6 +594,28 @@ class Report:
 
     def skip(self, what: str, why: str, degraded: bool = False) -> None:
         self.skipped.append(Skipped(what, why, degraded))
+
+
+def note_not_loaded(mod_list, what: str, report: "Report | None") -> None:
+    """Wire a `_registry.mods()` result's exclusions into the report (BLIND-SPOTS F139).
+
+    One NOT CHECKED skip per mod the read left out -- a mod the engine will not load,
+    or one whose manifest will not parse -- naming it and why. NOT degraded: the tree
+    is the engine's own tree, so nothing the check premised on is missing; but a
+    selector or sibling that exists only inside that mod would otherwise read as
+    absent with no thread to pull.
+
+    Deduplicated on the record, across checks: Tier B, the variant check and the
+    nested-script scope all read the same active set in one run, and one cause
+    should read as one line. A `None` report drops it, as for `note_dropped_overlays`.
+    """
+    if report is None:
+        return
+    for folder, why in _registry.left_out(mod_list).items():
+        msg = f"{folder}: {why}"
+        if any(s.why == msg for s in report.skipped):
+            continue
+        report.skip(what, msg)
 
 
 def note_dropped_overlays(merged, what: str, report: "Report | None") -> None:
@@ -834,21 +855,34 @@ def _installed_folders() -> set[str] | None:
         return None
 
 
-def _disabled_folders() -> set[str] | None:
-    """Lowercased folder names of every extension that is INSTALLED but NOT
-    active (manifest- or profile-disabled), or None if unscannable.
+#: `_inactive_folders`' reason for a mod that is switched OFF (manifest or profile).
+DISABLED = "disabled"
 
-    Derived from ONE registry read of both scopes, so "disabled" is positive
+
+def _inactive_folders() -> dict[str, str] | None:
+    """{lowercased folder: why} for every extension that is INSTALLED but NOT
+    active, or None if unscannable.
+
+    Two different reasons, kept apart (BLIND-SPOTS F139): :data:`DISABLED` for a mod
+    switched off in its manifest or the profile, and the engine's own record
+    ("NOT LOADED by the engine -- required dependency ...") for an ENABLED mod the
+    engine leaves out. This used to be `installed - active` under the name
+    `_disabled_folders`, so the second kind was reported as "installed but
+    disabled" -- a claim about a switch the user never touched.
+
+    Derived from ONE registry read of both scopes, so "inactive" is positive
     knowledge about a real folder -- never "absent from the active set", which is
     also what an unknown folder looks like."""
     try:
         installed = {m["folder"].lower() for m in _registry.mods("installed")}
-        active = {m["folder"].lower() for m in _registry.mods("active")}
+        active_list = _registry.mods("active")
     except OSError:
         # silent-ok: None is the contract, as for `_installed_folders`; the one
-        # caller then declines to call the target disabled.
+        # caller then declines to call the target inactive.
         return None
-    return installed - active
+    active = {m["folder"].lower() for m in active_list}
+    excluded = {f.lower(): why for f, why in _registry.left_out(active_list).items()}
+    return {f: excluded.get(f, DISABLED) for f in installed - active}
 
 
 def _in_tree(target: str, config: _merge.Config) -> bool:
@@ -858,15 +892,28 @@ def _in_tree(target: str, config: _merge.Config) -> bool:
                for p in (*config.overlays, *config.final_overlays))
 
 
+def _target_inactive_why(target: str, config: _merge.Config) -> str | None:
+    """Why *target* is INSTALLED but NOT loaded (see `_inactive_folders`), or None
+    when it is loaded, merged here, not installed, or unknown."""
+    if _in_tree(target, config):
+        return None
+    inactive = _inactive_folders()
+    return None if inactive is None else inactive.get(target.lower())
+
+
 def _target_disabled(target: str, config: _merge.Config) -> bool:
-    """True only when *target* is INSTALLED, NOT active, and not merged here.
+    """True only when *target* is INSTALLED, NOT active, and not merged here --
+    switched off OR left out by the engine; `_target_inactive_why` says which.
 
     Every unknown answers False, so this can only ever excuse a patch whose
-    target is positively known to be switched off."""
-    if _in_tree(target, config):
-        return False
-    disabled = _disabled_folders()
-    return disabled is not None and target.lower() in disabled
+    target is positively known not to load."""
+    return _target_inactive_why(target, config) is not None
+
+
+def _inactive_phrase(target: str, config: _merge.Config) -> str:
+    """'DISABLED' or the engine's reason, for a target `_target_disabled` excused."""
+    why = _target_inactive_why(target, config)
+    return "DISABLED" if why in (None, DISABLED) else why
 
 
 def _inactive_target_reason(vpath: str, config: _merge.Config) -> str | None:
@@ -884,7 +931,9 @@ def _inactive_target_reason(vpath: str, config: _merge.Config) -> str | None:
     if nested[0].lower() not in installed:
         return f"'{nested[0]}' is not installed"
     if _target_disabled(nested[0], config):
-        return f"'{nested[0]}' is installed but disabled"
+        phrase = _inactive_phrase(nested[0], config)
+        return (f"'{nested[0]}' is installed but "
+                f"{'disabled' if phrase == 'DISABLED' else phrase}")
     return None
 
 
@@ -933,10 +982,13 @@ def _no_base_finding(vpath: str, config: _merge.Config) -> tuple[str, str, str]:
         # off is neither misspelled nor present in any tree, so it fell through to
         # "path mismatch" ERROR under Tier B (AUDIT-2026-09-24 VA-6).
         if _target_disabled(nested[0], config):
+            phrase = _inactive_phrase(nested[0], config)
+            state = ("DISABLED — the engine never loads this file while it is off"
+                     if phrase == "DISABLED" else
+                     f"{phrase} — so the engine never loads this file")
             return ("info", "inactive",
                     f"patch targets extension '{nested[0]}', which is installed but "
-                    "DISABLED — the engine never loads this file while it is off "
-                    "(designed no-op, not an error)")
+                    f"{state} (designed no-op, not an error)")
     parts = vpath.split("/")
     if len(parts) > 1 and parts[0] == "extensions" and parts[1].lower().startswith("ego_dlc_"):
         dlc = parts[1]
@@ -1779,8 +1831,13 @@ def check_variant_consistency(mod_dir: Path, config: _merge.Config, report: Repo
     # Resolved ONCE: `scan_installed()` inside the per-file loop made this O(n*m)
     # and cost 33 s across the installed set for a lookup that never changes.
     # ACTIVE: a "sibling variant" is one the engine will actually load alongside.
+    active = _registry.mods("active")
+    # A sibling that only a mod the engine leaves out ships is not in the pool --
+    # correct, and NAMED (F139), or "no siblings" would read as a fact about the ship.
+    note_not_loaded(active, "variant sibling check: a mod the engine does not load",
+                    report)
     installed = {m["folder"].lower(): Path(m["path"])
-                 for m in _registry.mods("active") if Path(m["path"]).is_dir()}
+                 for m in active if Path(m["path"]).is_dir()}
 
     unresolved: list[str] = []
     for low, real in variants:
@@ -2247,9 +2304,13 @@ def check_xsd(mod_dir: Path, config: _merge.Config, report: Report,
     # Scope "active" is a LITERAL, per CLAUDE.md #24: a target the engine will not
     # load cannot contribute to the document the engine builds, and `installed`
     # here would resolve a patch against a mod that is switched off.
+    active = _registry.mods("active")
+    # A nested patch whose target the engine leaves out resolves against nothing --
+    # correct, and NAMED (F139).
+    note_not_loaded(active, "nested script scope: a mod the engine does not load", report)
     nested = _xsd.validate_nested_scripts(
         mod_dir, config,
-        {m["folder"].lower(): Path(m["path"]) for m in _registry.mods("active")})
+        {m["folder"].lower(): Path(m["path"]) for m in active})
     findings = findings + nested.introduced
     checked += nested.checked
     for nvpath, why in nested.skips:

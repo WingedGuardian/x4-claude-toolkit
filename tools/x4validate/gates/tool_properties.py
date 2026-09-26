@@ -699,7 +699,13 @@ def check_mod_scope_agreement() -> None:
         db.close()
     eff_mods = {m.lower() for m in
                 json.loads(manifest.read_text(encoding="utf-8")).get("overlays_in_load_order", [])}
-    active = {m["folder"].lower() for m in _registry.mods("active")}
+    active_list = _registry.mods("active")
+    active = {m["folder"].lower() for m in active_list}
+    left_out = _registry.dropped_note(active_list)
+    if left_out:
+        # Absent from the ACTIVE side of the comparison below, correctly -- NAMED so an
+        # artifact that still carries it points at its cause (F139).
+        print(f"        NOT in the active set (the engine does not load it): {left_out}")
 
     only_store, only_eff = sorted(store_mods - eff_mods), sorted(eff_mods - store_mods)
     note(not only_store and not only_eff,

@@ -568,6 +568,19 @@ def helper_is_deployed() -> bool | None:
     OPEN on an unreadable profile `content.xml`, so on such a machine a profile-disabled helper
     reads True. Like every signal here this only ever shapes a MESSAGE; it never decides an
     outcome.
+
+    The verdict half of :func:`helper_deployment`, which also returns what the read left out.
+    """
+    return helper_deployment()[0]
+
+
+def helper_deployment() -> tuple[bool | None, str | None]:
+    """(:func:`helper_is_deployed`'s answer, the `_registry.dropped_note` of that read).
+
+    The note matters most when the answer is False: the helper is ENABLED but the engine will
+    not load it because its REQUIRED dependency (the named-pipe API mod) is missing or off, or
+    its manifest will not parse. "Not in the load set" without that reason sends the user to
+    check a switch that is already on (BLIND-SPOTS F139).
     """
     try:
         from . import _registry
@@ -577,14 +590,16 @@ def helper_is_deployed() -> bool | None:
         # read uses. A toolkit that was never told where `extensions\` is cannot be allowed to
         # report "the mod is not installed", which is a claim about the world rather than
         # about our configuration. Costs specificity, never a verdict.
-        return None
-    if not active:
+        return None, None
+    note = _registry.dropped_note(active)
+    if not active and note is None:
         # The denominator IS the finding. Zero mods means the scan looked somewhere wrong far
         # more often than it means a bare install, and only one of those two readings is safe
         # to be wrong about. A genuinely vanilla install loses specificity and still gets a
-        # message naming both causes.
-        return None
-    return any(m.get("id") == HELPER_EXTENSION_ID for m in active)
+        # message naming both causes. (Zero LOADED mods with some left out is not that case:
+        # the scan found mods, and the note says why none of them load.)
+        return None, None
+    return any(m.get("id") == HELPER_EXTENSION_ID for m in active), note
 
 
 def _frame_loop_text(minimized: bool | None) -> str:
@@ -601,7 +616,7 @@ def _frame_loop_text(minimized: bool | None) -> str:
 
 def _no_connection_reason(path: str, timeout: float, running: bool | None,
                           loaded: bool | None, deployed: bool | None,
-                          minimized: bool | None) -> str:
+                          minimized: bool | None, not_loaded: str | None = None) -> str:
     """The refusal text for "nothing connected", built from what was MEASURED.
 
     Pure and separate from the wait loop so every branch is testable without a pipe, a game, or
@@ -610,6 +625,10 @@ def _no_connection_reason(path: str, timeout: float, running: bool | None,
     *deployed* and *minimized* are required, not defaulted, for the reason `_registry.mods`'
     scope argument is: a default would let a caller silently get one world's answer while
     meaning the other.
+
+    *not_loaded* is the `_registry.dropped_note` of the read behind *deployed* -- the mods our
+    model says the engine leaves out, and why. Defaulted, unlike the two above, because it only
+    ADDS a reason to the not-deployed branch; it never selects one.
     """
     if running is False:
         return (f"X4 is NOT RUNNING, so nothing could connect to {path}. "
@@ -628,7 +647,9 @@ def _no_connection_reason(path: str, timeout: float, running: bool | None,
                 "load, so it could not have answered. Check the extension is in the GAME-ROOT "
                 "`extensions\\` folder (not the profile's), that its manifest and the profile "
                 "both have it enabled, and that its named-pipe dependency (Mod Support APIs) is "
-                "installed too. Only once all of those hold is this a frame-loop problem.")
+                "installed too. Only once all of those hold is this a frame-loop problem."
+                + (f" NOT LOADED by our model of the engine: {not_loaded}." if not_loaded
+                   else ""))
     if running is True and loaded is False:
         if deployed is True:
             # THE NARROWING THIS BRANCH EXISTS FOR, and the defect it replaces. Until
@@ -806,13 +827,14 @@ class LivePipe:
                 loaded = helper_loaded_this_session() if running is True else None
                 # Deployment is read on the same condition and for the same reason: describing
                 # an install is only useful while there is a process it could have answered on.
-                deployed = helper_is_deployed() if running is not False else None
+                deployed, not_loaded = (helper_deployment() if running is not False
+                                        else (None, None))
                 # Same condition again: a window state is only worth reporting while there is
                 # a process that owns one.
                 minimized = game_is_minimized() if running is not False else None
                 raise LiveQueryUnavailable(
                     _no_connection_reason(self.path, self.timeout, running, loaded, deployed,
-                                          minimized))
+                                          minimized, not_loaded=not_loaded))
             time.sleep(0.05)
 
     # -- exchange ----------------------------------------------------------- #
