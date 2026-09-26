@@ -26,7 +26,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _paths, _cat, _merge, _scan, _stats, _input
+from x4validate import _paths, _cat, _loadorder, _merge, _scan, _stats, _input
 from x4validate import __version__
 
 # Numeric keys compared, with weights (a rough "how much does this stat define the
@@ -273,7 +273,9 @@ def _collect_all(reference: Path, ext_dir: Path,
         # the Hyperion (ship_par_l_expeditionary_01_a_macro) and 2 Envoy corvettes --
         # from a tool whose whole question is "is this a duplicate of one I own?".
         dlc_dirs = _merge.Config(reference=reference).dlc_dirs()
-    dlc_dirs = sorted(dlc_dirs, key=lambda p: p.name)
+    # The ENGINE's folder key, the one `Config.dlc_dirs()` already uses -- a plain
+    # name sort puts `_` before the letters and so was a second ordering rule.
+    dlc_dirs = sorted(dlc_dirs, key=lambda p: _loadorder.sort_key(p.name))
     config = _FixedDlcConfig(reference=reference, fixed_dlc=tuple(dlc_dirs))
 
     active = _effective.active_mods([ext_dir]) if ext_dir.is_dir() else []
