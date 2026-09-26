@@ -47,10 +47,16 @@ from lxml import etree
 
 from x4validate import _cat, _paths, _registry
 
-# Mini-DLC ship only as .cat archives and are NOT unpacked into reference\, so
-# they are invisible to the reference tree exactly like a packed mod. _cat reads
-# them fine (55 + 104 XML members), so they need no XRCatTool step at all — they
-# stage into /base/extensions to mirror where the other DLC live.
+# Mini-DLC ship only as .cat archives and may NOT be unpacked into reference\; a
+# DLC that is not is invisible to the reference tree exactly like a packed mod. _cat
+# reads them fine, so they need no XRCatTool step at all -- they stage into
+# /base/extensions to mirror where the other DLC live. Which DLC that applies to is
+# a fact about THIS install, asked of Config: when every DLC is unpacked the answer
+# is EMPTY, and that is an answer, not a failure (AUDIT-2026-09-24 BX-2).
+class PackedDlcUnknown(RuntimeError):
+    """Config could not say which DLC are packed-only, so staging must not guess."""
+
+
 def packed_dlc_names() -> tuple[str, ...]:
     """DLC that ship only as .cat archives, asked of Config rather than hardcoded.
 
@@ -62,27 +68,33 @@ def packed_dlc_names() -> tuple[str, ...]:
     exactly why it survived: a hardcoded list is wrong only on the day a DLC is
     added, and on that day nothing here would say so.
 
-    Falls back to the historical pair if Config cannot be reached, so staging
-    never silently covers LESS than it used to.
+    AN EMPTY ANSWER IS HONOURED (AUDIT-2026-09-24 BX-2). This used to end
+    `return names or (<the historical pair>)`, which could not tell Config's
+    correct "nothing is packed-only" (every DLC unpacked into reference\\) from a
+    failure to ask. On an install with both mini-DLC unpacked it staged both from
+    their archives ON TOP of the reference copies: 142 documents indexed twice in
+    x4raw, at identical paths, and every count over them doubled.
 
-    `Unconfigured` is in that list deliberately (added 2026-08-24). This runs at
-    IMPORT time, so before the fix an unconfigured machine got a raw traceback and
-    **rc 1** — which in this toolkit means "the thing you asked about has
-    findings", the precise confusion F39 existed to remove — and it fired before
-    `main` could refuse cleanly, so no decorator on `main` could ever catch it.
-    Falling back is safe HERE and only here: this resolves a list of DLC NAMES,
-    not a location, so the fallback cannot silently point at the wrong disk. The
-    genuine refusal belongs to `main`, which names `$X4_EXTENSIONS` and exits 2.
+    A GENUINE failure (Config unreachable) raises `PackedDlcUnknown` instead of
+    guessing -- a guess is wrong in one direction or the other (stage an unpacked
+    DLC twice, or skip a packed one). It is caught at import below and `main`
+    refuses with rc 2, because this runs at IMPORT time: an exception escaping
+    here was once a raw traceback with rc 1 on an unconfigured machine, fired
+    before `main` could refuse cleanly (see BLIND-SPOTS "found by EXECUTION").
     """
     try:
         from x4validate import _merge
-        names = tuple(_merge.Config().packed_dlc_names())
-    except (ImportError, OSError, AttributeError, _paths.Unconfigured):
-        names = ()
-    return names or ("ego_dlc_mini_01", "ego_dlc_mini_02")
+        return tuple(sorted(_merge.Config().packed_dlc_names()))
+    except (ImportError, OSError, AttributeError, _paths.Unconfigured) as exc:
+        raise PackedDlcUnknown(f"{type(exc).__name__}: {exc}") from exc
 
 
-MINI_DLC = packed_dlc_names()
+# None = Config could not be asked; `main` refuses on it. Never replaced by a guess.
+MINI_DLC: tuple[str, ...] | None
+try:
+    MINI_DLC, MINI_DLC_ERROR = packed_dlc_names(), ""
+except PackedDlcUnknown as _exc:
+    MINI_DLC, MINI_DLC_ERROR = None, str(_exc)
 
 
 @dataclass
@@ -188,6 +200,12 @@ def main(argv=None) -> int:
               "indexes ZERO documents and still exits 0.", file=sys.stderr)
         return 2
     ext_dir = Path(resolved_ext)
+    if MINI_DLC is None:
+        print(f"error: cannot ask Config which DLC ship only packed ({MINI_DLC_ERROR}).\n"
+              "       Refusing to guess: staging a DLC that is already unpacked into "
+              "reference\\ indexes it twice, and skipping one that is packed leaves it "
+              "out of the index.", file=sys.stderr)
+        return 2
     if out.exists():
         shutil.rmtree(out)
     mods_out = out / "mods"

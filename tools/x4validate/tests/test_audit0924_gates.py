@@ -170,8 +170,6 @@ def test_bx5_TWIN_other_single_values_and_mixed_results_are_still_hits(ask, caps
 
 # ============================================================================ BX-2 (stage.py)
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-2: stage.py:82 `names or (mini pair)` "
-                   "treats Config's correct EMPTY answer as a failure and stages both mini-DLC")
 def test_bx2_an_empty_packed_dlc_answer_is_honoured(monkeypatch):
     stage = _basex("stage")
     from x4validate import _merge
@@ -179,6 +177,35 @@ def test_bx2_an_empty_packed_dlc_answer_is_honoured(monkeypatch):
     got = stage.packed_dlc_names()
     assert got == (), (f"Config said no DLC is packed-only (all unpacked into reference\\), yet "
                        f"{got} would be staged into /base/extensions ON TOP of the reference copies")
+
+
+def test_bx2_TWIN_a_nonempty_answer_is_staged_as_given(monkeypatch):
+    stage = _basex("stage")
+    from x4validate import _merge
+    monkeypatch.setattr(_merge.Config, "packed_dlc_names",
+                        lambda self: {"ego_dlc_mini_02", "ego_dlc_mini_01"})
+    assert stage.packed_dlc_names() == ("ego_dlc_mini_01", "ego_dlc_mini_02")
+
+
+def test_bx2_a_config_FAILURE_refuses_instead_of_guessing(monkeypatch, tmp_path, capsys):
+    """The old fallback staged the historical pair on ANY failure; a guess is wrong one way
+    or the other (double-index an unpacked DLC, or omit a packed one), so main refuses."""
+    stage = _basex("stage")
+    from x4validate import _merge
+
+    def boom(self):
+        raise OSError("simulated: reference unreadable")
+    monkeypatch.setattr(_merge.Config, "packed_dlc_names", boom)
+    with pytest.raises(stage.PackedDlcUnknown):
+        stage.packed_dlc_names()
+    monkeypatch.setattr(stage, "MINI_DLC", None)
+    monkeypatch.setattr(stage, "MINI_DLC_ERROR", "OSError: simulated")
+    ext, out, man = tmp_path / "ext", tmp_path / "stage", tmp_path / "m.json"
+    ext.mkdir()
+    rc = stage.main(["--out", str(out), "--extensions", str(ext), "--manifest", str(man)])
+    err = capsys.readouterr().err
+    assert rc == 2 and not out.exists() and not man.exists(), err
+    assert "Refusing to guess" in err, err
 
 
 # ============================================================================ BX-3 (build scripts)
