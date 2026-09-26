@@ -537,10 +537,6 @@ UNSWEPT: dict[tuple[str, str], str] = {
     # A note that describes a FUTURE action is a note nobody re-reads. If an entry
     # here is ever conditional on something changing, the condition belongs in a
     # test, not in prose.
-    ("x4live", "archive"):
-        "writes a durable archive under the registry dir; a cell would either write "
-        "into the user's tree or prove nothing. The read half (`extensions`, "
-        "`errors`, `oracle`, `mappings`) is swept.",
     # The two GAME-STATE writes. Their read half, `pausestate`, IS swept.
     ("x4live", "pause"):
         "a WRITE to the running game: with the game up a cell would pause the user's "
