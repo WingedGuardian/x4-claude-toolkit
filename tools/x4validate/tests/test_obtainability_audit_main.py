@@ -37,6 +37,8 @@ if str(GATES) not in sys.path:
 NOW = {
     "base_macro_files_scanned": 100,
     "base_macro_files_unreadable": 0,
+    "mod_files_unreadable": 0,
+    "unreadable_files": [],
     "deprecated_only_macros_vanilla": 3,
     "deprecated_only_macros_effective": 2,
     "live_macros_with_deprecated_ammo": 1,

@@ -701,3 +701,29 @@ def test_gt6_diff_truth_nothing_planted_is_not_exact(tmp_path, monkeypatch, caps
     for f in (tmp_path / "ext" / "_gone").iterdir():
         f.unlink()
     assert dt.main() == 2, "no candidate mod at all"
+
+
+def test_gt6_obtainability_audit_names_an_unreadable_mod_file(tmp_path, monkeypatch, capsys):
+    """The per-mod scan passed an inline `[]` as iter_mod_xml's unreadable list and threw
+    it away: a mod file that would not parse contributed 0 references, unmentioned."""
+    oa = import_gate("obtainability_audit", module_level=False)
+    mod = tmp_path / "somemod" / "assets"
+    mod.mkdir(parents=True)
+    (mod / "good_macro.xml").write_bytes(b'<macros><macro name="m"/></macros>')
+    (mod / "broken_macro.xml").write_bytes(b"<macros><macro name=")
+    per_mod, unreadable = oa.scan_mods([{"folder": "somemod", "path": str(tmp_path / "somemod")}],
+                                       dead={})
+    assert per_mod == {}
+    assert len(unreadable) == 1 and unreadable[0].startswith("somemod/assets/broken_macro.xml")
+    # ...and main() prints it by name.
+    now = {"base_macro_files_scanned": 1, "base_macro_files_unreadable": 0,
+           "mod_files_unreadable": 1, "unreadable_files": unreadable,
+           "deprecated_only_macros_vanilla": 0, "deprecated_only_macros_effective": 0,
+           "live_macros_with_deprecated_ammo": 0, "of_those_sold_by_a_live_ware": 0,
+           "mods_referencing_deprecated": {}}
+    monkeypatch.setattr(oa, "audit", lambda: dict(now))
+    monkeypatch.setattr(oa, "RECORD", False)
+    monkeypatch.setattr(oa, "BASELINE", tmp_path / "b.json")
+    (tmp_path / "b.json").write_text(json.dumps(now), encoding="utf-8")
+    assert oa.main() == 0
+    assert "unreadable: somemod/assets/broken_macro.xml" in capsys.readouterr().out

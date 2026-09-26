@@ -47,6 +47,26 @@ BASELINE = ROOT / ".obtainability-baseline.json"
 RECORD = "--record" in sys.argv
 
 
+def scan_mods(mods, dead) -> tuple[dict[str, int], list[str]]:
+    """(folder -> references to deprecated-only content, unreadable mod files).
+
+    The unreadable list is the point (AUDIT-2026-09-24 GT-6): this loop passed an
+    inline `[]` to `iter_mod_xml` and discarded it, so a mod file that would not parse
+    contributed zero references and was never mentioned -- a mod could look clean
+    because the file that referenced deprecated content was the one nobody read.
+    """
+    per_mod: dict[str, int] = {}
+    unreadable: list[str] = []
+    for m in mods:
+        lost: list = []
+        n = sum(len(_refs.unobtainable_refs(root, dead))
+                for _v, root in _scan.iter_mod_xml(Path(m["path"]), lambda v: True, lost))
+        unreadable.extend(f"{m['folder']}/{u.vpath}: {u.why}" for u in lost)
+        if n:
+            per_mod[m["folder"]] = n
+    return per_mod, sorted(unreadable)
+
+
 def audit() -> dict:
     cfg = _merge.Config()
 
@@ -86,12 +106,7 @@ def audit() -> dict:
                 if name in sold:
                     tainted_sold.append(name)
 
-    per_mod = {}
-    for m in _registry.mods("installed"):
-        n = sum(len(_refs.unobtainable_refs(root, dead))
-                for _v, root in _scan.iter_mod_xml(Path(m["path"]), lambda v: True, []))
-        if n:
-            per_mod[m["folder"]] = n
+    per_mod, mod_unreadable = scan_mods(_registry.mods("installed"), dead)
 
     return {
         "deprecated_only_macros_vanilla": len(dead),
@@ -100,6 +115,9 @@ def audit() -> dict:
         "of_those_sold_by_a_live_ware": len(tainted_sold),
         "base_macro_files_scanned": len(vpaths),
         "base_macro_files_unreadable": len(unreadable),
+        "mod_files_unreadable": len(mod_unreadable),
+        # NAMES, not only counts: a count says there is a hole, a name says where.
+        "unreadable_files": sorted(unreadable) + mod_unreadable,
         "mods_referencing_deprecated": per_mod,
     }
 
@@ -146,7 +164,7 @@ def main() -> int:
     #: catch, sitting inside the gate. See CLAUDE.md "A step that narrows data MUST
     #: announce it" and the sibling defect measured in control_bytes.py the same day.
     for key in ("base_macro_files_scanned", "base_macro_files_unreadable",
-                "deprecated_only_macros_vanilla", "deprecated_only_macros_effective",
+                "mod_files_unreadable", "deprecated_only_macros_vanilla", "deprecated_only_macros_effective",
                 "live_macros_with_deprecated_ammo", "of_those_sold_by_a_live_ware"):
         if key not in was:
             # An older baseline predates the key. NAMED, never silently skipped: a
@@ -170,6 +188,11 @@ def main() -> int:
     if now["base_macro_files_unreadable"]:
         print(f"  {'base macro files UNREADABLE':<38} "
               f"{now['base_macro_files_unreadable']}   <- a hole in the denominator")
+    if now["mod_files_unreadable"]:
+        print(f"  {'mod XML files UNREADABLE':<38} "
+              f"{now['mod_files_unreadable']}   <- their references were NOT counted")
+    for name in now.get("unreadable_files", []):
+        print(f"      unreadable: {name}")
     for k in ("deprecated_only_macros_vanilla", "deprecated_only_macros_effective",
               "live_macros_with_deprecated_ammo", "of_those_sold_by_a_live_ware"):
         print(f"  {k:<38} {now[k]}")
