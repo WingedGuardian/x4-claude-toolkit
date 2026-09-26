@@ -64,6 +64,15 @@ class ShipVector:
     #: flight model (physics.drag.*, physics.inertia.*, jerk.*, steeringcurve.*),
     #: which was 0 rows anywhere until the depth-1 flatten was fixed 2026-08-12.
     all_stats: dict[str, float] = field(default_factory=dict)
+    #: EVERY source that ships this macro file whole (base, a DLC, each mod), in
+    #: precedence order; `source` is the last of them. The merged file is one
+    #: document, so it yields one vector -- but `--candidate` must still find a mod
+    #: whose full file a LATER mod also ships (review of AN-6), so membership is
+    #: asked of this, never of `source` alone. Empty = just `source`.
+    contributors: tuple[str, ...] = ()
+
+    def sources(self) -> tuple[str, ...]:
+        return self.contributors or (self.source,)
 
 
 @dataclass
@@ -334,6 +343,7 @@ def _collect_all(reference: Path, ext_dir: Path,
             continue
         v = extract_ship_vector(res.tree, label, vpath)
         if v is not None:
+            v.contributors = tuple(lbl for _prec, lbl in sorted(g["definers"]))
             vectors.append(v)
     return vectors
 
@@ -352,6 +362,12 @@ def render(pairs: list[SimilarPair]) -> str:
         # row and then reads the NEXT line for class/purpose/compared; appending
         # rather than altering keeps that exhaustive audit resolving every pair.
         lines.append("        " + summarise_profile(difference_profile(p.a, p.b)))
+        for v in (p.a, p.b):
+            if len(v.sources()) > 1:
+                # One merged file, several full-file suppliers: name them all, or a
+                # candidate overridden by a later mod reads as absent from the row.
+                lines.append(f"        {v.macro_name}'s file is shipped whole by "
+                             f"{', '.join(v.sources())} (last wins: {v.source})")
     return "\n".join(lines)
 
 
@@ -444,14 +460,14 @@ def main(argv: list[str] | None = None) -> int:
         # Accept a path too, and refuse to answer if it names nothing we scanned.
         cand = Path(args.candidate).name if ("/" in args.candidate or "\\" in args.candidate) \
             else args.candidate
-        sources = {v.source for v in vectors}
+        sources = {s for v in vectors for s in v.sources()}
         if cand not in sources:
             print(f"error: --candidate '{args.candidate}' matches none of the "
                   f"{len(sources)} scanned sources.", file=sys.stderr)
             print("       (a 'no near-duplicates' answer here would be about an "
                   "empty filter, not about your mod)", file=sys.stderr)
             return 2
-        pairs = [p for p in pairs if cand in (p.a.source, p.b.source)]
+        pairs = [p for p in pairs if cand in p.a.sources() + p.b.sources()]
     cannot = unscorable(vectors)
     print(f"scanned {len(vectors)} ship macros (effective values: base + DLC + the "
           f"enabled mods in load order); {len(cannot)} of them carry fewer than "

@@ -167,3 +167,32 @@ def test_unscorable_ships_are_counted_not_dropped():
     enough = _similarity.ShipVector("y", "base", "v", "ship_s", "fight",
                                     stats={k: 1.0 for k in list(_similarity._WEIGHTS)[:4]})
     assert _similarity.unscorable([few, enough]) == [few]
+
+
+def test_a_candidate_whose_ship_file_a_LATER_mod_also_ships_stays_visible(
+        tmp_path, monkeypatch, capsys):
+    """Review of AN-6: one vector per merged file, labelled by the last full-file
+    supplier, made a candidate vanish from --candidate when a later mod ships the
+    same file. Every contributor is tracked, so the candidate's ship is still found."""
+    from x4validate import _registry
+    monkeypatch.setattr(_registry, "ingest_content_xml", lambda *a, **k: [])
+    monkeypatch.setattr(_registry, "PROFILE_CONTENT", None)
+    ref = tmp_path / "reference"
+    (ref / "assets" / "units").mkdir(parents=True)
+    peer = ref / "assets/units/size_s/macros/ship_peer_macro.xml"
+    peer.parent.mkdir(parents=True)
+    peer.write_text(_BASE_SHIP.replace("ship_a_macro", "ship_peer_macro"), encoding="utf-8")
+    ext = tmp_path / "extensions"
+    vp = "assets/units/size_s/macros/ship_new_macro.xml"
+    for folder in ("a_cand", "z_later"):
+        (ext / folder / vp).parent.mkdir(parents=True)
+        (ext / folder / "content.xml").write_text(
+            f'<content id="{folder}" name="{folder}" version="1"/>', encoding="utf-8")
+        (ext / folder / vp).write_text(_BASE_SHIP.replace("ship_a_macro", "ship_new_macro"),
+                                       encoding="utf-8")
+    rc = _similarity.main(["--reference", str(ref), "--ext-dir", str(ext),
+                           "--candidate", "a_cand"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "ship_new_macro" in out and "ship_peer_macro" in out, out
+    assert "a_cand, z_later" in out, out
