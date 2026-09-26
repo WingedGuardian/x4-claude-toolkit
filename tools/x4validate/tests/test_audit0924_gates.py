@@ -572,14 +572,31 @@ def test_gt5_the_word_selftest_in_prose_is_not_a_check(tmp_path):
     assert rr.names_a_check(body, tmp_path) is None
 
 
-def test_gt5_a_dead_path_citation_is_not_covered_by_a_live_one(tmp_path):
+def test_gt5_a_dead_path_citation_is_never_silent(tmp_path, monkeypatch, capsys):
+    """RULE REVISED by the review of 311a231 (orchestrator, 2026-09-25): the original
+    assertion here -- ANY dead cited path voids the entry -- flagged six real entries
+    (F60/F61/F73/F76/F78/F87) that cite a LIVE check and name a retired one as history,
+    and the register's wording does not reliably mark which is which. The GT-5 defect
+    was that a dead citation was IGNORED; it is now named on every run instead. An
+    entry whose ONLY cited checks are dead is still NOT covered."""
     rr = import_gate("register_rederivation", module_level=False)
     (tmp_path / "gates").mkdir()
     (tmp_path / "gates" / "unrelated.py").write_text("", encoding="utf-8")
     body = (" FIXED\n\nRe-derived by tests/test_deleted_long_ago.py; see also "
             "gates/unrelated.py for context.\n")
-    assert rr.names_a_check(body, tmp_path) is None, (
-        "the check that re-derives this fix was deleted, and the entry still reads as covered")
+    assert rr.dead_citations(body, tmp_path) == ["tests/test_deleted_long_ago.py"]
+    assert rr.names_a_check(body, tmp_path) == "gates/unrelated.py"
+    only_dead = " FIXED\n\nRe-derived by tests/test_deleted_long_ago.py.\n"
+    assert rr.names_a_check(only_dead, tmp_path) is None
+    # ...and main() prints the dead one as a NOTE.
+    reg = tmp_path / "BLIND-SPOTS.md"
+    reg.write_bytes(("## F1 -- x FIXED" + body).encode("utf-8"))
+    monkeypatch.setattr(rr, "REGISTER", reg)
+    monkeypatch.setattr(rr, "ROOT", tmp_path)
+    monkeypatch.setattr(rr, "BASELINE", tmp_path / "b.json")
+    monkeypatch.setattr(rr, "RECORD", False)
+    assert rr.main() == 0
+    assert "NOTE F1: cites 1 path(s) that no longer exist" in capsys.readouterr().out
 
 
 def test_gt5_a_quoted_exemption_marker_is_not_an_exemption(tmp_path):

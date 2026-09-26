@@ -174,9 +174,15 @@ def names_a_check(body: str, root: Path) -> str | None:
     not cite -- a cited-files-only rule would have flagged two true citations.
     Pinned clause by clause in `tests/test_register_rederivation_bare_names.py`.
 
-    CITED PATHS get the same rule (AUDIT-2026-09-24 GT-5): EVERY cited check path must
-    exist. It used to be first-live-wins, so an entry whose re-deriving test had been
-    deleted still read as covered because it also mentioned some other live file.
+    CITED PATHS (AUDIT-2026-09-24 GT-5, then the review of 311a231): an entry is covered
+    by a cited check path only when AT LEAST ONE cited path exists. A cited path that
+    exists nowhere is NOT a failure on its own -- the register legitimately names checks
+    that were later retired, as HISTORY (F60/F61/F73/F76/F78/F87 name
+    `scripts/verify-port.py`, retired with the dev repo, beside the live check that
+    replaced it), and the register's wording does not reliably mark which is which. It
+    is never SILENT either: `dead_citations()` lists it and `main()` prints it as a NOTE
+    on every run, so a deleted check stays visible. Making EVERY dead path a failure
+    (commit 311a231) flagged six entries that each cite a live check.
     """
     roots = _roots(root)
     first: str | None = None
@@ -198,8 +204,8 @@ def names_a_check(body: str, root: Path) -> str | None:
                 cited.append(base / s)
                 first = first or s
                 break
-        else:
-            return None             # a cited check that exists nowhere: NOT covered
+        # A cited path that exists nowhere does not cover the entry and does not void
+        # it: `dead_citations()` names it (see the docstring).
     if bare:
         defined: set[str] | None = None
         for name in bare:
@@ -214,6 +220,18 @@ def names_a_check(body: str, root: Path) -> str | None:
                 continue
             return None             # a named test that exists nowhere: NOT covered
     return first
+
+
+def dead_citations(body: str, root: Path) -> list[str]:
+    """Cited check PATHS that exist at neither root -- printed as NOTES, never dropped."""
+    roots = _roots(root)
+    dead: list[str] = []
+    for m in _NAMES.finditer(body):
+        s = m.group(0).strip("`")
+        if s.startswith(_PATH_PREFIXES) and not any((b / s).is_file() for b in roots) \
+                and s not in dead:
+            dead.append(s)
+    return dead
 
 
 def _roots(root: Path) -> list[Path]:
@@ -279,6 +297,14 @@ def main() -> int:
     print(f"REGISTER RE-DERIVATION — {total} entr(ies) marked FIXED/CLOSED")
     print(f"  name an existing check, or state why not: {len(ok)}")
     print(f"  name none:                               {len(missing)}")
+    # NOTES, not failures: an entry that also cites a live check is covered, but a cited
+    # path that no longer exists is printed every run so it cannot quietly rot.
+    ents = entries(text)
+    for fid in sorted(ok, key=lambda f: int(f[1:])):
+        dead = dead_citations(ents[fid], ROOT)
+        if dead:
+            print(f"  NOTE {fid}: cites {len(dead)} path(s) that no longer exist "
+                  f"(covered by a live citation): {', '.join(dead)}")
 
     if RECORD:
         BASELINE.write_text(json.dumps({"missing": sorted(missing)}, indent=2) + chr(10),
