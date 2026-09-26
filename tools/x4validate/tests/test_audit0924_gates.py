@@ -177,8 +177,6 @@ def test_bx4_offsetting_per_root_errors_do_not_license_a_negative(tmp_path, monk
 
 # ============================================================================ GT-1 noop_audit
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-1: noop_audit collects UNREADABLE and "
-                   "never reads it -- an unreadable catalog reads as a clean audit, rc 0")
 def test_gt1_an_unreadable_catalog_is_not_a_clean_noop_audit(tmp_path, monkeypatch, capsys):
     na = import_gate("noop_audit", module_level=False)
     ext, ref = tmp_path / "ext", tmp_path / "ref"
@@ -193,6 +191,45 @@ def test_gt1_an_unreadable_catalog_is_not_a_clean_noop_audit(tmp_path, monkeypat
     monkeypatch.setattr(na._cat, "mod_vfs", boom)
     rc = na.main()
     assert rc != 0, f"somemod was never audited, yet rc 0:\n{capsys.readouterr().out}"
+
+
+def test_gt1_unreadable_is_named_and_rc_2_and_a_false_ok_outranks_it(tmp_path, monkeypatch, capsys):
+    """The UNREADABLE list reaches the verdict: printed by name, rc 2 when nothing else was
+    found -- and a real FALSE OK beside it is still rc 1 (a finding outranks a refusal)."""
+    na = import_gate("noop_audit", module_level=False)
+    ext, ref = tmp_path / "ext", tmp_path / "ref"
+    (ext / "somemod").mkdir(parents=True)
+    ref.mkdir()
+    monkeypatch.setattr(na, "EXT", ext)
+    monkeypatch.setattr(na, "REF", ref)
+    monkeypatch.setattr(na, "UNREADABLE", [])
+
+    def boom(*a, **k):
+        raise OSError("simulated unreadable catalog")
+    monkeypatch.setattr(na._cat, "mod_vfs", boom)
+    assert na.main() == 2
+    assert "somemod: catalog unreadable" in capsys.readouterr().out
+
+    # A false OK in a readable mod beside the unreadable one: rc 1, not 2.
+    (ref / "libraries").mkdir()
+    (ref / "libraries" / "x.xml").write_bytes(b"<root><a/></root>")
+    (ext / "goodmod" / "libraries").mkdir(parents=True)
+    (ext / "goodmod" / "libraries" / "x.xml").write_bytes(
+        b'<diff><add sel="/root/a"><b/></add></diff>')
+    monkeypatch.setattr(na, "UNREADABLE", [])
+
+    def mod_vfs(mod, packed_only=True):
+        if mod.name == "somemod":
+            raise OSError("simulated unreadable catalog")
+        return {}
+    monkeypatch.setattr(na._cat, "mod_vfs", mod_vfs)
+    real_apply = na._merge.apply_diff
+
+    def lying_apply(tree, diff):                     # reports applied, changes nothing
+        import copy
+        return real_apply(copy.deepcopy(tree), diff)
+    monkeypatch.setattr(na._merge, "apply_diff", lying_apply)
+    assert na.main() == 1, capsys.readouterr().out
 
 
 # ============================================================================ GT-2 determinism_audit
