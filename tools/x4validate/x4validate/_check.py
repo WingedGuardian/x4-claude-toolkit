@@ -1377,7 +1377,9 @@ def check_page_collisions(mod_dir: Path, config: _merge.Config, report: Report) 
     FULL t-files count too (AUDIT-2026-09-24 VA-9). t-files are merged additively,
     so a complete `<language>` file redefining a base `{page,t}` clobbers it exactly
     as the `<diff>` form does -- but only `<diff>` files were walked, so the same
-    string was warned in one form and silent in the other.
+    string was warned in one form and silent in the other. A complete t-file is
+    reported ONCE per file with a count: INFO when it overrides base/DLC strings
+    (the normal rename idiom), WARN when it redefines another MOD's strings.
 
     The warning NAMES the definer (AUDIT-2026-09-24 VA-11f): under Tier B the
     earlier tree includes other mods, and "already defined in base/DLC" was printed
@@ -1402,14 +1404,41 @@ def check_page_collisions(mod_dir: Path, config: _merge.Config, report: Report) 
         if root.tag != "diff" and not T_FILE_RE.search(vpath):
             continue  # a complete NON-t-file defines no strings
         added: set[tuple[str, str]] = _refs.text_defs(root)
-        form = "add" if root.tag == "diff" else "complete t-file"
-        for page, t in sorted(added):
-            who = _definer((page, t))
-            if who is None:
-                continue
+        if root.tag == "diff":
+            for page, t in sorted(added):
+                who = _definer((page, t))
+                if who is None:
+                    continue
+                report.add("warn", "text",
+                           f"text {{{page},{t}}} already defined in {who} — your add "
+                           "clobbers it", vpath)
+            continue
+        # A COMPLETE t-file overriding strings is the normal rename idiom, not an
+        # accident: VRO's ships 304 {page,t} per language file, so one WARN per
+        # string took a real run from 3 WARNs to 307. ONE finding per file, with
+        # the count: INFO for base/DLC strings (the idiom), WARN only for strings
+        # another MOD defines -- two mods fighting over one string is the case
+        # someone has to decide.
+        over_base = sorted(k for k in added if k in base_defs)
+        over_mods: dict[str, list[tuple[str, str]]] = {}
+        for k in sorted(added - set(over_base)):
+            who = _definer(k)
+            if who is not None:
+                over_mods.setdefault(who, []).append(k)
+
+        def _ids(keys: list[tuple[str, str]]) -> str:
+            head = ", ".join(f"{{{p},{t}}}" for p, t in keys[:5])
+            return head + (f", ... (+{len(keys) - 5} more)" if len(keys) > 5 else "")
+
+        if over_base:
+            report.add("info", "text",
+                       f"complete t-file overrides {len(over_base)} base/DLC string(s) "
+                       f"({_ids(over_base)}) — the usual rename idiom; check it is "
+                       "intended", vpath)
+        for who, keys in over_mods.items():
             report.add("warn", "text",
-                       f"text {{{page},{t}}} already defined in {who} — your {form} "
-                       "clobbers it", vpath)
+                       f"complete t-file redefines {len(keys)} string(s) already defined "
+                       f"in {who} ({_ids(keys)}) — whichever loads later wins", vpath)
 
 
 def check_text_sanity(mod_dir: Path, config: _merge.Config, report: Report) -> None:

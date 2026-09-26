@@ -524,3 +524,41 @@ def test_va14_file_mode_prints_its_denominator_and_what_it_skipped(tmp_path, cap
     assert "libraries/wares.xml" in out, out
     assert "OK: no issues found" not in out, "only ONE check ran; that is not an unqualified OK"
     assert "NOT CHECKED" in out, out
+
+
+# ------------------------------------------------------ VA-9 review (flooding)
+
+def test_va9_a_complete_t_file_override_is_ONE_info_finding_per_file(tmp_path):
+    """A complete t-file overriding base strings is the normal rename idiom (VRO
+    ships one: 304 {page,t} per language file). One INFO per file with the count,
+    never one WARN per string."""
+    ref = _ref(tmp_path)
+    _w(ref / "t/0001-l044.xml",
+       '<language id="44"><page id="1001">'
+       + "".join(f'<t id="{i}">Base {i}</t>' for i in range(1, 51))
+       + "</page></language>")
+    mod = _mod(tmp_path, "fullmod", "fullmod")
+    _w(mod / "t/0001-l044.xml",
+       '<language id="44"><page id="1001">'
+       + "".join(f'<t id="{i}">Mine {i}</t>' for i in range(1, 51))
+       + "</page></language>")
+    rep = _check.Report()
+    _check.check_page_collisions(mod, _merge.Config(reference=ref), rep)
+    hits = [x for x in rep.findings if x.category == "text"]
+    assert len(hits) == 1, [(x.severity, x.message) for x in hits]
+    assert hits[0].severity == "info" and "50" in hits[0].message, hits[0].message
+
+
+def test_va9_a_complete_t_file_colliding_with_ANOTHER_MOD_still_warns(tmp_path):
+    ref = _ref(tmp_path)
+    other = tmp_path / "other_mod"
+    _w(other / "t/0001-l044.xml",
+       '<language id="44"><page id="77001"><t id="5">Other</t></page></language>')
+    mod = _mod(tmp_path)
+    _w(mod / "t/0001-l044.xml",
+       '<language id="44"><page id="77001"><t id="5">Mine</t></page></language>')
+    rep = _check.Report()
+    _check.check_page_collisions(mod, _merge.Config(reference=ref, overlays=(other,)), rep)
+    hits = [x for x in rep.findings if x.category == "text"]
+    assert [x.severity for x in hits] == ["warn"], [(x.severity, x.message) for x in hits]
+    assert "other_mod" in hits[0].message

@@ -34,9 +34,10 @@ v1.1 adds: **file-existence** (a `<component ref>` macro resolves through
 index→macro file→component→file), **connection-validation** (every `<loadout>`
 `path` matches a `<connection>` on the ship's component), **variant-set
 consistency** (patched `_a` but not its base `_b`/`_c` siblings → warn),
-**page-id collision** (a `{page,t}` the mod adds or redefines -- by `<diff>` or by a
-complete t-file -- that base/DLC or, under Tier B, an earlier mod already defines → warn,
-naming the definer), and a **`--file` fast mode** (sel-resolution for one edited file, for
+**page-id collision** (a `{page,t}` the mod adds by `<diff>` that base/DLC or, under Tier
+B, an earlier mod already defines → warn, naming the definer; a complete t-file is reported
+once per file with a count — INFO over base/DLC strings, the usual rename idiom, WARN over
+another mod's), and a **`--file` fast mode** (sel-resolution for one edited file, for
 the per-edit hook). `--file` and `--sel-only` (readability + sel-resolution over the whole
 mod) state their denominator, list every other check under NOT CHECKED, and exit 3 if a
 check you asked for (`--debug`, `--entity/--like`, `--update`) is one they do not run.
