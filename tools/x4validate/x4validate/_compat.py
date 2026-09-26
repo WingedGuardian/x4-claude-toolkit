@@ -62,8 +62,10 @@ class Collision:
     #: value — a third mod loading later can re-supply what was wiped — which is
     #: exactly why it is not called `winner`.
     wiped_by: str = ""
-    #: HARD only: set when an EARLIER mod removes the node, so the later mods' ops on
-    #: it match nothing (AUDIT-2026-09-24 AN-5). `winner` is then this remover, and
+    #: HARD only: set when the live state of the node is a REMOVAL -- the last mod
+    #: whose op still matches the node at its own load position removed it, so the
+    #: later mods' ops match nothing (AUDIT-2026-09-24 AN-5; a re-add by another mod
+    #: in between is seen, and then this stays empty). `winner` is this remover, and
     #: the live state is the node's ABSENCE -- which a consumer comparing against
     #: stored values must look for among removals, not among surviving values.
     removed_by: str = ""
@@ -75,9 +77,13 @@ class Collision:
         kind            meaning
         =============== ==========================================================
         FULL-OVERRIDE   the mod that clobbers — its file is the document
-        HARD            the mod that loads last at the clashing node -- unless an
-                    earlier mod REMOVES the node: then that remover (later ops
-                    on the node match nothing; AUDIT-2026-09-24 AN-5)
+        HARD            the mod that loads last at the clashing node. When an
+                    EARLIER mod removes the node (AUDIT-2026-09-24 AN-5): the
+                    last mod whose op on it still MATCHES at its own load
+                    position -- the remover itself if nothing re-supplies the
+                    node, a later writer if another mod re-adds it first.
+                    Covers the SAME node only; an edit INSIDE a node removed
+                    earlier is `CompatReport.removed_first`, not a row
         UNION-KEY       the mod that defines the surviving registry entry
         SUBTREE         ``None`` — `winner` was the WIPER, and a later mod may
                         have restored the values (MEASURED: 3 of 148, 2.0%)
@@ -127,6 +133,19 @@ class OrderMiss:
 
 
 @dataclass
+class RemovedFirst:
+    """A `<diff>` op on a node INSIDE one an EARLIER mod removed, still absent when the
+    op's own mod loads -- so the engine skips it (review of AN-5). The mirror image of
+    SUBTREE, where the wipe loads AFTER the edit; there the edit applied and was
+    wiped, here it never applied. Disclosed, not a collision."""
+    vpath: str
+    mod: str          # the mod whose op matches nothing at its own position
+    line: int
+    sel: str
+    removed_by: str   # the earlier mod that removed the node or its ancestor
+
+
+@dataclass
 class CompatReport:
     collisions: list[Collision] = field(default_factory=list)
     mods_scanned: int = 0
@@ -150,6 +169,8 @@ class CompatReport:
     excluded_copies: list[str] = field(default_factory=list)
     #: Ops that only a LATER-loading mod's content can satisfy -- see `OrderMiss`.
     order_misses: list[OrderMiss] = field(default_factory=list)
+    #: Ops inside a node an EARLIER mod removed -- see `RemovedFirst`.
+    removed_first: list[RemovedFirst] = field(default_factory=list)
 
     def by_kind(self, kind: str) -> list[Collision]:
         """Collisions of *kind*, in a STABLE order.
@@ -380,6 +401,8 @@ def _analyze_vpath(
     overriders: list[str] = []
     no_base_reported: set[str] = set()  # one skip per mod, not one per op
     unmatched: dict[str, list[etree._Element]] = defaultdict(list)  # AN-10 candidates
+    ops_at: dict[str, dict[str, list[etree._Element]]] = defaultdict(
+        lambda: defaultdict(list))                    # folder -> {cid: [ops]} (AN-5)
 
     for folder in sorted(mod_folders, key=lambda f: rank[f]):
         mod_vpath = at.get(folder, vpath)
@@ -443,6 +466,7 @@ def _analyze_vpath(
                     unmatched[folder].append(op)
                 for cid in cids:
                     node_map[cid].append(op.tag)
+                    ops_at[folder][cid].append(op)
                     if op.tag == "add":
                         child_map[cid].extend(_added_child_keys(op))
             if node_map:
@@ -471,6 +495,7 @@ def _analyze_vpath(
             overriders.append(folder)
 
     collisions: list[Collision] = []
+    contested: list[tuple[str, list[str], str, dict]] = []   # AN-5 rows, decided below
     # Keys pass 1 already reported as HARD duplicates, with the mods of that
     # row: a union-key row is folded only when it names NO mod the hard row
     # missed (icons: the full-file shippers of icon#upgrade_* are different
@@ -504,21 +529,12 @@ def _analyze_vpath(
                     "multiple mods <add> under the same node (usually coexist)"))
         else:
             ops_desc = "; ".join(f"{f}:{'/'.join(per_mod[f])}" for f in fs)
-            # AN EARLIER <remove> ENDS THE CONTEST (AUDIT-2026-09-24 AN-5). Once a mod
-            # removes this node, every later mod's op on it matches NOTHING -- the
-            # engine skips it -- so the node's live state is the REMOVAL and the
-            # remover, not the last loader, is what `live_value_owner()` must name.
-            # Reporting the later mod as the winner claimed a value the game never has.
-            # The first remover counts: a second one later is itself a no-op.
-            remover = next((f for f in fs[:-1] if "remove" in per_mod[f]), None)
-            if remover is not None:
-                later = fs[fs.index(remover) + 1:]
-                collisions.append(Collision(
-                    vpath, "HARD", cid, fs, remover,
-                    f"{ops_desc} — '{remover}' REMOVES this node first, so the later "
-                    f"op(s) from {', '.join(repr(f) for f in later)} match nothing and "
-                    "the engine skips them: the removal is what is live",
-                    removed_by=remover))
+            # AN EARLIER <remove> CAN END THE CONTEST (AUDIT-2026-09-24 AN-5): once a
+            # mod removes this node, a later op on it matches NOTHING and the engine
+            # skips it -- UNLESS some mod re-supplies the node in between. Which ops
+            # still match is decided below, per op AT ITS OWN LOAD POSITION.
+            if any("remove" in per_mod[f] for f in fs[:-1]):
+                contested.append((cid, fs, ops_desc, dict(per_mod)))
                 continue
             collisions.append(Collision(
                 vpath, "HARD", cid, fs, winner(fs),
@@ -590,6 +606,55 @@ def _analyze_vpath(
                     "load order is community convention, so this is advisory",
                     wiped_by=a))
 
+    # 5. REMOVALS, decided per op at its own load position (AUDIT-2026-09-24 AN-5 and
+    # its review). (a) A HARD row where an earlier mod removes the node: its winner is
+    # the LAST mod whose op on the node still matches when that mod loads -- a re-add
+    # by another mod in between makes a later writer live again. (b) An op INSIDE a
+    # node an earlier mod removed (SUBTREE's mirror image): if it matches nothing at
+    # its position, the engine skips it, and that is disclosed.
+    inside: list[tuple[str, str, str]] = []          # (remover, editor, cid)
+    for a, amap in diff_targets.items():
+        for w in (c for c, tags in amap.items() if "remove" in tags and "/@" not in c):
+            for b, bmap in diff_targets.items():
+                if b != a and rank[b] > rank[a]:
+                    inside += [(a, b, cb) for cb in bmap if cb.startswith(w + "/")]
+    if (contested or inside) and base_tree is not None:
+        ordered = sorted(mod_folders, key=lambda f: rank[f])
+        queries = ([(f, op) for cid, fs, _d, _t in contested for f in fs
+                    for op in ops_at[f][cid]]
+                   + [(b, op) for _a, b, cb in inside for op in ops_at[b][cb]])
+        live = _matches_at_positions(vpath, ordered, queries, folder_to_path, config)
+        at_pos = {(f, id(op)): ok for (f, op), ok in zip(queries, live)}
+        for cid, fs, ops_desc, tags in contested:
+            alive = [f for f in fs if any(at_pos[(f, id(op))] for op in ops_at[f][cid])]
+            w = alive[-1] if alive else next(f for f in fs if "remove" in tags[f])
+            dead = [f for f in fs if f not in alive and rank[f] > rank[w]]
+            if "remove" in tags[w]:
+                collisions.append(Collision(
+                    vpath, "HARD", cid, fs, w,
+                    f"{ops_desc} — '{w}' REMOVES this node, and the later op(s) from "
+                    f"{', '.join(repr(f) for f in dead) or 'no mod'} match nothing when "
+                    "they load, so the engine skips them: the removal is what is live",
+                    removed_by=w))
+            else:
+                gone = [f for f in fs if rank[f] < rank[w] and "remove" in tags[f]]
+                collisions.append(Collision(
+                    vpath, "HARD", cid, fs, w,
+                    f"{ops_desc} — {', '.join(repr(f) for f in gone)} removes this node, "
+                    f"but it exists again when '{w}' loads (another mod re-supplies it), "
+                    f"so '{w}' applies and wins"
+                    + (f"; later op(s) from {', '.join(repr(f) for f in dead)} match "
+                       "nothing" if dead else "")))
+        if report is not None:
+            seen: set[tuple[str, int]] = set()
+            for a, b, cb in inside:
+                for op in ops_at[b][cb]:
+                    if at_pos[(b, id(op))] or (b, id(op)) in seen:
+                        continue
+                    seen.add((b, id(op)))
+                    report.removed_first.append(RemovedFirst(
+                        vpath, b, op.sourceline or 0, op.get("sel", ""), a))
+
     if report is not None and unmatched and base_tree is not None:
         report.order_misses.extend(_order_misses(
             vpath, sorted(mod_folders, key=lambda f: rank[f]), unmatched,
@@ -607,6 +672,111 @@ def _matches(tree: etree._Element | None, sel: str) -> bool:
     return isinstance(res, list) and bool(res)
 
 
+def _xp_hit(tree: etree._Element | None, sel: str,
+            cache: dict[str, "etree.XPath | None"]) -> bool:
+    """Does *sel* select at least one node of *tree*? Compiled once per selector."""
+    if sel not in cache:
+        try:
+            cache[sel] = etree.XPath(sel)
+        except etree.XPathSyntaxError:
+            cache[sel] = None   # silent-ok: an invalid sel is recorded in `unresolvable`
+    xp = cache[sel]
+    if xp is None or tree is None:
+        return False
+    try:
+        res = xp(tree)
+    except etree.XPathEvalError:
+        return False            # silent-ok: same channel as above
+    return isinstance(res, list) and bool(res)
+
+
+def _walk_positions(vpath: str, ordered: list[str], folder_to_path: dict[str, Path],
+                    config: _merge.Config, visit,
+                    want: etree._Element | None = None) -> bool:
+    """ONE INCREMENTAL PASS over the mods on one file, calling
+    ``visit(pos, tree, applied)`` with the tree as it stands BEFORE (applied=False) and
+    AFTER (applied=True) ``ordered[pos]`` loads. N applies, not a rebuild per question.
+
+    The per-overlay step mirrors `_merge.build_effective`'s loop (inert bare-path diff
+    over a non-game base; nested `extensions/<owner>/` patches onto an earlier
+    full/union supplier) through `_merge`'s own `overlay_root` / `apply_overlay`. It is
+    CHECKED, not trusted: returns True only when the finished tree serializes exactly
+    as `build_effective` over the same mods (*want*, built here if not given). False --
+    unsupported shape (a nested, mod-owned vpath), unbuildable, or a drifted pass --
+    means every answer `visit` saw must be discarded and re-derived by rebuilding.
+    """
+    if (config.overlays
+            or _merge._nested_target(vpath, config.packed_dlc_names()) is not None):
+        return False
+    try:
+        start = _merge.build_effective(vpath, config)
+    except etree.LxmlError:
+        return False   # silent-ok: False IS the channel -- the caller rebuilds instead
+    tree, from_game = start.tree, start.base_from_game
+    owners: list[str] = []
+    for pos, folder in enumerate(ordered):
+        visit(pos, tree, False)
+        odir = folder_to_path[folder]
+        oroot = _merge.overlay_root(odir, vpath, [])
+        if oroot is not None and not (oroot.tag == "diff" and not from_game):
+            tree, mode = _merge.apply_overlay(tree, oroot, vpath, odir.name)
+            if mode in ("union", "full"):
+                owners.append(odir.name)
+        for owner in owners:
+            if odir.name.lower() == owner.lower():
+                continue
+            nroot = _merge.overlay_root(odir, f"extensions/{owner}/{vpath}", [])
+            if nroot is not None:
+                tree, _mode = _merge.apply_overlay(tree, nroot, vpath, odir.name)
+        visit(pos, tree, True)
+    if want is None:
+        try:
+            want = _merge.build_effective(
+                vpath, config, extra_overlays=[folder_to_path[f] for f in ordered]).tree
+        except etree.LxmlError:
+            return False   # silent-ok: False IS the channel -- the caller rebuilds
+    return (tree is not None and want is not None
+            and etree.tostring(tree) == etree.tostring(want))
+
+
+def _prefix_tree(vpath: str, folders: list[str], folder_to_path: dict[str, Path],
+                 config: _merge.Config) -> etree._Element | None:
+    """`build_effective` over base+DLC and *folders* -- the SLOW, authoritative form."""
+    owned = set(config.overlays)
+    dirs = [folder_to_path[f] for f in folders if folder_to_path[f] not in owned]
+    try:
+        return _merge.build_effective(vpath, config, extra_overlays=dirs).tree
+    except etree.LxmlError:
+        return None        # silent-ok: an unbuildable tree cannot CLAIM a match; the
+        # per-mod parse failures are already recorded as NOT ANALYSED rows
+
+
+def _matches_at_positions(vpath: str, ordered: list[str],
+                          queries: list[tuple[str, etree._Element]],
+                          folder_to_path: dict[str, Path],
+                          config: _merge.Config) -> list[bool]:
+    """For each (folder, op): does the op's selector match the tree as it stands when
+    that folder LOADS (every earlier mod applied, this one not yet)?"""
+    cache: dict = {}
+    by_pos: dict[int, list[int]] = defaultdict(list)
+    for q, (folder, _op) in enumerate(queries):
+        by_pos[ordered.index(folder)].append(q)
+    out = [False] * len(queries)
+
+    def visit(pos, tree, applied):
+        if not applied:
+            for q in by_pos.get(pos, ()):
+                out[q] = _xp_hit(tree, queries[q][1].get("sel", ""), cache)
+
+    if _walk_positions(vpath, ordered, folder_to_path, config, visit):
+        return out
+    for pos, qs in by_pos.items():                       # the rebuild form
+        tree = _prefix_tree(vpath, ordered[:pos], folder_to_path, config)
+        for q in qs:
+            out[q] = _xp_hit(tree, queries[q][1].get("sel", ""), cache)
+    return out
+
+
 def _order_misses(vpath: str, ordered: list[str],
                   unmatched: dict[str, list[etree._Element]],
                   folder_to_path: dict[str, Path],
@@ -614,33 +784,21 @@ def _order_misses(vpath: str, ordered: list[str],
                   only: str | None = None) -> list[OrderMiss]:
     """Ops that match nothing in base but WOULD match once a LATER mod has loaded.
 
-    ONE INCREMENTAL PASS per file: base+DLC is built once, then the mods on this file
-    are applied one at a time in load order, and every pending selector is evaluated
-    against the tree as it stands after each position -- N applies, not a rebuild per
-    question. (The rebuild form, `_order_misses_rebuild`, re-merged the whole prefix
-    for every probe: MEASURED on this install, 145 mods, `analyze()` went ~11 s ->
-    ~64 s, almost all of it re-merging libraries/wares.xml, 57 mods. This form: ~31 s,
-    same 39 findings -- about two full merges per file, one of them the self-check.)
+    Answered in ONE incremental pass per file (`_walk_positions`). The rebuild form,
+    `_order_misses_rebuild`, re-merged the whole prefix for every probe: MEASURED on
+    this install, 145 mods, `analyze()` went ~11 s -> ~64 s, almost all of it
+    re-merging libraries/wares.xml, 57 mods. This form: ~31 s, same 39 findings --
+    about two full merges per file, one of them the self-check.
 
     For an op of mod M at position i: a match BEFORE M applies means an earlier mod
     supplies the node (the engine has it in time); a match right AFTER M applies
     means M's own content supplies it; otherwise the first later position j at which
-    it matches names the adder, ordered[j-1]. Never matching = a dead selector, the
-    validator's finding, not this one.
-
-    The per-overlay step mirrors `_merge.build_effective`'s loop (inert bare-path
-    diff over a non-game base; nested `extensions/<owner>/` patches onto an earlier
-    full/union supplier) via `_merge`'s own `overlay_root` / `apply_overlay`. It is
-    CHECKED, not trusted: the finished tree must serialize identically to
-    `build_effective` over the same mods, or this file falls back to the rebuild
-    form. A nested (mod-owned) vpath always uses the rebuild form.
+    it matches names the adder, ordered[j]. Never matching = a dead selector, the
+    validator's finding, not this one. A pass that fails its self-check, or a nested
+    (mod-owned) vpath, is answered by the rebuild form instead. Stated limit: ops dead
+    in the FINISHED tree are dropped first, so a node a later mod adds and a
+    still-later one removes again is filtered as dead rather than named.
     """
-    if (config.overlays
-            or _merge._nested_target(vpath, config.packed_dlc_names()) is not None):
-        return _order_misses_rebuild(vpath, ordered, unmatched, folder_to_path, config,
-                                     only)
-    # The questions, per op: (folder index, op). Candidate mode keeps only misses
-    # that can involve the candidate, exactly as the rebuild form does.
     pending: list[tuple[int, etree._Element]] = []
     for folder, ops in unmatched.items():
         i = ordered.index(folder)
@@ -651,85 +809,39 @@ def _order_misses(vpath: str, ordered: list[str],
         pending += [(i, op) for op in ops]
     if not pending:
         return []
-    try:
-        start = _merge.build_effective(vpath, config)
-    except etree.LxmlError:
-        return []    # silent-ok: an unbuildable base cannot CLAIM a miss; the per-mod
-        # parse failures are already recorded as NOT ANALYSED rows
-    tree, from_game = start.tree, start.base_from_game
-    owners: list[str] = []
-    compiled: dict[str, etree.XPath | None] = {}
-
-    def hit(sel: str, against: etree._Element | None = None) -> bool:
-        if sel not in compiled:
-            try:
-                compiled[sel] = etree.XPath(sel)
-            except etree.XPathSyntaxError:
-                compiled[sel] = None   # silent-ok: recorded in `unresolvable` upstream
-        xp = compiled[sel]
-        doc = tree if against is None else against
-        if xp is None or doc is None:
-            return False
-        try:
-            res = xp(doc)
-        except etree.XPathEvalError:
-            return False               # silent-ok: same channel as above
-        return isinstance(res, list) and bool(res)
-
-    # The FINISHED tree, built by `_merge` itself: the dead-selector filter (an op
-    # matching nothing even after every mod is the validator's finding, and would
-    # otherwise be re-evaluated at every position) AND the self-check below.
-    # Limit, stated: a node a later mod adds and a still-later mod removes again is
-    # absent here, so such an op is filtered as dead rather than named.
-    try:
-        want = _merge.build_effective(
-            vpath, config, extra_overlays=[folder_to_path[f] for f in ordered]).tree
-    except etree.LxmlError:
-        want = None
-    if want is None:
+    want = _prefix_tree(vpath, ordered, folder_to_path, config)
+    if want is None or config.overlays or _merge._nested_target(
+            vpath, config.packed_dlc_names()) is not None:
         return _order_misses_rebuild(vpath, ordered, unmatched, folder_to_path,
                                      config, only)
+    cache: dict = {}
+    state = {"live": [(i, op) for i, op in pending
+                      if _xp_hit(want, op.get("sel", ""), cache)]}
     out: list[OrderMiss] = []
-    live = [(i, op) for i, op in pending if hit(op.get("sel", ""), want)]
-    if not live:
+    if not state["live"]:
         return out     # every pending op is dead: no claim to make, no pass to check
-    for pos, folder in enumerate(ordered):
-        # BEFORE `folder` applies: the tree is ordered[:pos]. Ops of THIS folder that
-        # already match are supplied by an earlier mod -- not misses.
-        live = [(i, op) for i, op in live
-                if not (i == pos and hit(op.get("sel", "")))]
-        odir = folder_to_path[folder]
-        oroot = _merge.overlay_root(odir, vpath, [])
-        if oroot is not None:
-            if oroot.tag == "diff" and not from_game:
-                pass                                   # inert bare-path diff
-            else:
-                tree, mode = _merge.apply_overlay(tree, oroot, vpath, odir.name)
-                if mode in ("union", "full"):
-                    owners.append(odir.name)
-        for owner in owners:
-            if odir.name.lower() == owner.lower():
-                continue
-            nroot = _merge.overlay_root(odir, f"extensions/{owner}/{vpath}", [])
-            if nroot is not None:
-                tree, _mode = _merge.apply_overlay(tree, nroot, vpath, odir.name)
-        # AFTER `folder` applied: the tree is ordered[:pos + 1].
+
+    def visit(pos, tree, applied):
+        live = state["live"]
+        if not applied:
+            # Ops of THIS folder that already match are supplied by an earlier mod.
+            state["live"] = [(i, op) for i, op in live
+                             if not (i == pos and _xp_hit(tree, op.get("sel", ""), cache))]
+            return
         keep = []
         for i, op in live:
             if i > pos:
                 keep.append((i, op))                   # its own position is ahead
-            elif hit(op.get("sel", "")):
+            elif _xp_hit(tree, op.get("sel", ""), cache):
                 if i < pos:                            # first match after a LATER mod
                     out.append(OrderMiss(vpath, ordered[i], op.sourceline or 0,
-                                         op.get("sel", ""), folder))
+                                         op.get("sel", ""), ordered[pos]))
                 # i == pos: the mod's OWN content supplies the node -- not a miss
             else:
                 keep.append((i, op))
-        live = keep
-    # THE SELF-CHECK: the incremental tree, run to the END of the order, must equal
-    # `build_effective` over the same mods. A mismatch means the mirrored loop drifted
-    # from `_merge`'s, and the rebuild form answers instead.
-    if tree is None or etree.tostring(tree) != etree.tostring(want):
+        state["live"] = keep
+
+    if not _walk_positions(vpath, ordered, folder_to_path, config, visit, want=want):
         return _order_misses_rebuild(vpath, ordered, unmatched, folder_to_path,
                                      config, only)
     return out
@@ -1023,6 +1135,8 @@ def analyze(
     if cand_folder is not None:
         report.order_misses = [m for m in report.order_misses
                                if cand_folder in (m.mod, m.added_by)]
+        report.removed_first = [m for m in report.removed_first
+                                if cand_folder in (m.mod, m.removed_by)]
 
     # Entity-level pass: same macro NAME, different files. Structurally invisible
     # to the loop above, which keys on vpath.
@@ -1077,6 +1191,19 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
             if c.detail:
                 lines.append(f"     note     : {c.detail}")
         lines.append("")
+    if report.removed_first:
+        shown_any = True
+        lines.append(f"=== EDITS INSIDE A NODE AN EARLIER MOD REMOVED  "
+                     f"({len(report.removed_first)}) ===")
+        lines.append("  Not a collision: when these ops' mod loads, the node (or an "
+                     "ancestor) they edit")
+        lines.append("  has already been removed by an earlier mod and nothing has "
+                     "re-added it. The engine skips them.")
+        for m in sorted(report.removed_first, key=lambda x: (x.vpath, x.mod, x.line)):
+            lines.append(f"  {m.vpath}")
+            lines.append(f"     mod      : {m.mod} (line {m.line})  sel={m.sel}")
+            lines.append(f"     removed  : by {m.removed_by}, which loads before it")
+        lines.append("")
     if report.order_misses:
         shown_any = True
         lines.append(f"=== PATCHES A NODE ONLY A LATER MOD ADDS  "
@@ -1114,6 +1241,7 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
                  f"(HARD+FULL-OVERRIDE+SUBTREE), {len(report.by_kind('UNION-KEY'))} union-key, "
                  f"{len(report.by_kind('SOFT'))} soft, "
                  f"{len(report.order_misses)} op(s) needing a later mod, "
+                 f"{len(report.removed_first)} op(s) inside an earlier removal, "
                  f"{len(report.degraded)} file(s) not analysed.")
     if report.degraded:
         lines.append("DEGRADED: some files yielded no comparison — see NOT ANALYSED "
@@ -1198,6 +1326,7 @@ def main(argv: list[str] | None = None) -> int:
             "collisions": [dataclasses.asdict(c) for c in report.collisions],
             "skipped": [dataclasses.asdict(s) for s in report.skipped],
             "order_misses": [dataclasses.asdict(m) for m in report.order_misses],
+            "removed_first": [dataclasses.asdict(m) for m in report.removed_first],
             "candidate_path": report.candidate_path,
             "excluded_copies": report.excluded_copies,
             "degraded": bool(report.degraded),

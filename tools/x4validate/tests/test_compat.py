@@ -818,3 +818,47 @@ def test_the_incremental_pass_needs_no_fallback_when_it_agrees(tmp_path, monkeyp
                         lambda *a, **k: pytest.fail("fell back on an agreeing pass"))
     rep = _compat.analyze(ext, config=cfg)
     assert [(m.mod, m.added_by) for m in rep.order_misses] == [("a_patcher", "d_adder")]
+
+
+# --- review of AN-5: the removal is live only while NOTHING re-supplies the node ---
+
+_RM_ORE = '<diff><remove sel="//ware[@id=\'ore\']"/></diff>'
+_READD_ORE = ('<diff><add sel="/wares"><ware id="ore"><price average="55"/></ware>'
+              '</add></diff>')
+_REPLACE_ORE = ('<diff><replace sel="//ware[@id=\'ore\']"><ware id="ore">'
+                '<price average="7"/></ware></replace></diff>')
+_EDIT_IN_ORE = '<diff><replace sel="//ware[@id=\'ore\']/price/@average">9</replace></diff>'
+
+
+def test_a_node_RE_ADDED_after_its_removal_is_won_by_the_later_writer(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_rm", {"libraries/wares.xml": _RM_ORE})
+    _mod(ext, "b_readd", {"libraries/wares.xml": _READD_ORE})
+    _mod(ext, "c_replace", {"libraries/wares.xml": _REPLACE_ORE})
+    live = _merge.build_effective("libraries/wares.xml", _merge.replace(
+        cfg, overlays=(ext / "a_rm", ext / "b_readd", ext / "c_replace"))).tree
+    assert live.find("ware[@id='ore']/price").get("average") == "7"   # control
+    hard = [c for c in _compat.analyze(ext, config=cfg).by_kind("HARD")
+            if set(c.mods) == {"a_rm", "c_replace"}]
+    assert len(hard) == 1, hard
+    assert hard[0].live_value_owner() == "c_replace" and not hard[0].removed_by, hard[0]
+
+
+def test_an_edit_INSIDE_a_node_an_earlier_mod_removed_is_disclosed(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_rm", {"libraries/wares.xml": _RM_ORE})
+    _mod(ext, "b_edit", {"libraries/wares.xml": _EDIT_IN_ORE})
+    rep = _compat.analyze(ext, config=cfg)
+    assert [(m.mod, m.removed_by) for m in rep.removed_first] == [("b_edit", "a_rm")]
+    assert "b_edit" in _compat.render(rep) and "a_rm" in _compat.render(rep)
+
+
+def test_an_edit_inside_a_removed_node_that_was_RE_ADDED_is_not_disclosed(tmp_path):
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_rm", {"libraries/wares.xml": _RM_ORE})
+    _mod(ext, "b_readd", {"libraries/wares.xml": _READD_ORE})
+    _mod(ext, "c_edit", {"libraries/wares.xml": _EDIT_IN_ORE})
+    assert _compat.analyze(ext, config=cfg).removed_first == []
