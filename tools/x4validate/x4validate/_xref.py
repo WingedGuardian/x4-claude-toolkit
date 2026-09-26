@@ -446,6 +446,10 @@ def main(argv: list[str] | None = None) -> int:
         # built over -- `build --ext-dir X` used to read STALE forever, because the query
         # side always fingerprinted the game-root extensions instead (FR-3).
         _fp["roots"] = [str(r) for r in index_roots(ext)]
+        # ...and the REFERENCE, for the same reason: `build --reference X` was checked
+        # against the CONFIGURED reference and read stale forever when they differ.
+        # (`reference` is taken -- it is the fingerprint's digest -- hence the name.)
+        _fp["reference_path"] = str(ref)
         _freshness.stamp_sidecar(out, _fp)
         from collections import Counter
         by = Counter(r.kind for r in rows)
@@ -479,8 +483,11 @@ def main(argv: list[str] | None = None) -> int:
     _stored = _freshness.read_sidecar(tsv)
     _roots = ([Path(r) for r in _stored["roots"]] if _stored and _stored.get("roots")
               else index_roots(_registry.GAME_EXTENSIONS))
+    _ref_then = (Path(_stored["reference_path"])
+                 if _stored and _stored.get("reference_path") else None)
     _stale = _freshness.compare(
-        _stored, _freshness.fingerprint(_merge.Config(), _roots), engine_dependent=False)
+        _stored, _freshness.fingerprint(_merge.Config(reference=_ref_then), _roots),
+        engine_dependent=False)
     if not _stale.fresh:
         print(_stale.banner("the x4xref index"), file=sys.stderr)
         print("!! Rebuild:  uv run x4xref build", file=sys.stderr)

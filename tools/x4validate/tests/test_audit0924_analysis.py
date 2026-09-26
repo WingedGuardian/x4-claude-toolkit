@@ -408,6 +408,32 @@ def test_FR3_a_change_in_an_indexed_root_marks_the_index_stale(tmp_path, hermeti
     assert "STALE" in capsys.readouterr().err
 
 
+def test_FR3_the_index_is_checked_against_the_REFERENCE_it_was_built_from(
+        tmp_path, hermetic, monkeypatch, capsys):
+    """Final review item 5: the sidecar recorded the build's `roots` but not its
+    `reference`, so an index built with `--reference X` was checked against the
+    CONFIGURED reference and read STALE forever when the two differ."""
+    ref = _ref(tmp_path)
+    other = tmp_path / "configured_reference"
+    _w(other / "libraries" / "wares.xml", "<wares><ware id='different'/></wares>")
+    game = tmp_path / "game_ext"
+    _mod(game, "g", {"md/g.xml": '<mdscript name="G"><cues><cue name="GC"/></cues></mdscript>'})
+    monkeypatch.setattr(_registry, "default_installed_dirs", lambda: [game])
+    monkeypatch.setattr(_registry, "GAME_EXTENSIONS", game)
+    monkeypatch.setattr(_merge, "REFERENCE", other)
+    monkeypatch.setattr(_merge.Config, "dlc_dirs", lambda self: [])
+    tsv = tmp_path / "xref.tsv"
+    assert _xref.main(["build", "--reference", str(ref), "--ext-dir", str(game),
+                       "--out", str(tsv)]) == 0
+    capsys.readouterr()
+    _xref.main(["cue", "GC", "--tsv", str(tsv)])
+    assert "STALE" not in capsys.readouterr().err
+    # twin: the build's OWN reference moving still reads stale
+    _w(ref / "newdir" / "x.xml", "<x/>")
+    _xref.main(["cue", "GC", "--tsv", str(tsv)])
+    assert "STALE" in capsys.readouterr().err
+
+
 # =============================================================================
 # FR-4  a reference (game) change is blamed on mods; `changed` says "no change"
 # =============================================================================
