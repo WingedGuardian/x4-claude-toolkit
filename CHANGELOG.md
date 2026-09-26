@@ -1,5 +1,188 @@
 # Changelog
 
+## Unreleased
+
+The remediation of the 2026-09-24 correctness audit. Every finding, its status and its commit
+are in `tools/x4validate/AUDIT-2026-09-24.md`; the defect classes are BLIND-SPOTS F128-F138.
+Numbers below are taken from the commit that made the change.
+
+### ⚠ Load order now follows the ENGINE — collision winners can change
+
+- **`compute_load_order` implements the order the engine actually uses**, and this changes
+  which mod wins a collision in `x4compat`, `x4effective`, the effective store, BaseX `x4eff`
+  and Tier B. The engine walks extension folders in **case-insensitive UPPERCASE order** (`_`
+  sorts after letters, a space before `_`) in **repeated passes**: each pass loads every mod
+  whose installed dependencies have already loaded, including earlier in the same pass. The
+  previous rule (ASCII case-sensitive sort, each mod as early as its dependencies allow) was
+  the community convention and had never been compared with the engine. Measured against the
+  engine's own `debug.txt` signature-check order over two launches: **372 file classes, 5,134
+  ordered pairs — the old rule inverted 685, the new one 0.** Every existing winner test passed
+  under both rules, so new tests pin the difference.
+- **Tier B places a mod that is not installed by the same rule** (its folder name + its own
+  manifest's dependencies) instead of assuming it loads LAST, which hid ops the engine skips.
+  Packed and unpacked DLC now sort by the same key.
+- **Limit, stated:** what is measured is signature-check order. That it is also the
+  patch-APPLY order is inferred, and shapes no installed modlist exercises (missing or
+  optional dependencies, cycles, duplicate ids, non-ASCII names) are unobserved. Results that
+  turn on which mod won stay advisory.
+- New: **`gates/load_order_oracle.py`** holds `compute_load_order` to the engine's order on
+  every new log (rc 2 when the log describes another modlist). **`scripts/load-order-probe.py`**
+  builds throwaway one-op mods with a PREDICTION written before launch, to settle the
+  unobserved shapes in game.
+- **Rebuild your persisted artifacts once after updating.** The merge engine and the
+  freshness fingerprint both changed, so every store and index reads STALE until rebuilt.
+
+### Safety hooks
+
+- **The PowerShell tool and NotebookEdit are guarded.** Before this, the hooks had no matcher
+  for either, so every guard could be bypassed by choosing PowerShell (MEASURED:
+  `Remove-Item -Recurse <reference>` ran unguarded). A PowerShell command is parsed with
+  PowerShell's own parser and translated onto the same rules Bash uses; a command that does
+  not parse, an unmodelled writing cmdlet, an unresolvable splat or `iex` text, or no
+  PowerShell on the machine ASKS rather than allows.
+- **Bash: a filtered `find -delete` is judged, not exempt** (`find <saves> -name '*.xml.gz'
+  -delete` was allowed); `truncate`, `dd of=`, and nested `cmd //c` / `powershell -c`
+  commands are judged too; a `find` behind a wrapper with flags (`stdbuf -o L find …`) now
+  has its path read. A filter naming only a regenerable cache stays exempt.
+- **Hook timeout 5 s → 30 s.** A hook that times out does not block, and the hooks measured
+  4.1-7.6 s under load. Per-call process spawns were cut (protect-bash 221-236 ms → 124-126 ms,
+  protect-files 726-810 ms → 279 ms); PowerShell translation shares one 15 s budget per call.
+- `protect-files` resolves `..` before its `.claude/` whitelist
+  (`<game>/.claude/hooks/../../libraries/wares.xml` was allowed); the backup hook handles
+  paths too long for a file name; `sed -i` on a game/profile file is a DENY whose message now
+  says so (it said "confirm"); `session-canary.sh` uses the shared Python lookup and prints its
+  NOT CHECKED line on stdout; the post-edit validator also sees NotebookEdit.
+
+### x4validate
+
+- **Exit code 3 (not "OK", rc 0)** for `--debug <missing file>`, and when `--file` /
+  `--sel-only` is given a flag it does not run (`--entity/--like/--update/--debug`) — disclosed
+  as a degraded skip, not silently dropped.
+- **`--file` (what the per-edit hook runs) now agrees with the full run**: it shares the full
+  run's sel check, states its denominator, and lists every check it did not run. It used to
+  report a nested patch for an uninstalled target as ERROR rc 1 where the full run said INFO.
+- **New ERROR, category `diff`:** a `<diff>` nested inside a complete file (the engine only
+  reads a patch at the document root, so those ops never apply). 0 of 7,516 installed files
+  carry one.
+- Tier B: a nested patch aimed at an uninstalled or installed-but-DISABLED mod is INFO
+  "inactive", and references inside it are INFO. Refs in patches on packed-only DLC gate again.
+- A complete t-file overriding strings gives ONE finding per file: INFO over base/DLC strings
+  (the rename idiom), WARN per defining mod over another mod's strings.
+- Unreadable overlay indexes and module groups that did not merge are degraded skips (exit 3)
+  instead of silent; unattributable engine lookup errors are disclosed, not dropped.
+
+### Merge engine (x4validate, x4effective, the store)
+
+- A `text()` selector is refused with a reason instead of a traceback; a text-only `<add>` is
+  modelled; `<add type="@q">` with element children is refused instead of blanking `q`; text
+  after a removed or replaced element is kept.
+- Mod index entries: `extensions/<X>/…` resolves inside mod `X` (it resolved in the
+  registering mod); packed-only DLC index files are read.
+
+### x4compat
+
+- **`--all` is removed** (omitting the candidate already means the whole ACTIVE set); help
+  says "active", not "installed".
+- `check <path>` analyses THAT copy (an enabled copy with the same folder name or id is
+  excluded and named); output starts with `Candidate analysed: <path>`.
+- When an earlier mod REMOVES a node a later mod replaces, the row now says `removed : by X`
+  (the node is absent) instead of naming the later mod as winner. New `--json` fields:
+  `removed_by`, `order_misses`, `removed_first`, `candidate_path`, `excluded_copies`, `guard`.
+- New sections: **PATCHES A NODE ONLY A LATER MOD ADDS** (an op the engine skips because the
+  node arrives later — 39 on the audit install) and **EDITS INSIDE A NODE AN EARLIER MOD
+  REMOVED**; `if=`/`silent` ops are marked as intended. Cost, measured on the audit install:
+  `analyze()` takes 30.7-32.7 s, against 11.5-12.6 s without this analysis.
+
+### x4stats, x4effective, x4similar, x4xref
+
+- `x4stats wares`: a ware the candidate REMOVES is reported (it printed "changes no wares");
+  the candidate resolves against the mods loading BEFORE it, not the whole set.
+- `x4effective ls --modified-only` and the `ls` marker mean "a MOD anywhere in the entity's
+  provenance" (attribute-only mod changes were hidden, DLC-only entities shown); `who-sets`
+  says "WON, not introduced" only when base/DLC define the entity.
+- `x4similar` scores ships at their EFFECTIVE (merged) values — `<diff>` ship patches were
+  skipped, so 300 of 472 vectors change their scored stats on the audit install; `cargo.max`
+  (carried by 0 ships) leaves the weights; unscorable ships are counted in the header.
+- `x4xref who-calls ''` is refused (rc 2); cue-edge actions (`signal_cue`, …) are searchable
+  by `who-calls`.
+
+### x4diff
+
+- **Element TEXT is compared** (as a `text()` pseudo-attribute): an edit whose value is text —
+  e.g. `<replace sel="…/@min">5</replace>` → 999 — read "changed files: 0". Re-indenting is
+  not an edit.
+- Diff ops are keyed by payload identity, so inserting one op no longer shows its siblings as
+  removed + added, and a selector-only edit is an `@sel` change.
+- A stack whose first supplier ships the file as a `<diff>` has a baseline (it read "would not
+  parse"); `--file <added file>` says ADDED/REMOVED; "total attr changes" counts attribute
+  changes only.
+
+### x4modlist
+
+- **`refresh` says which mods HAVE AN UPDATE:** upstream's newest MAIN file uploaded after the
+  installed manifest's date (version strings are not comparable — 77 rows had an upstream
+  version, 1 matched as a string). Verdicts: `available`, `same-release?` (uploaded within
+  **3 days** after the manifest date — authors often date a manifest before uploading; the
+  window's error rate is unmeasured), `none`, `unknown` (a date missing — never "no update"),
+  `unconfirmed` (guessed identity). Both dates are printed; a row pinned to a file follows
+  that file's successors; verdicts not re-checked this run are labelled carried-over. The
+  dashboard gets an Updates tally and an UPDATE AVAILABLE table.
+- **Network failures no longer lose a run:** every transport failure is mapped, the registry
+  is saved on any exit, and a run-wide failure (bad key, rate limit, network) stops with exit
+  2 and leaves unfetched rows untouched.
+- `--registry <typo>` is refused (it created an empty registry); a malformed profile
+  `content.xml` is reported (rc 2), not a crash; `verify --rescore` works offline.
+- `x4-paths.env`: a quoted value may contain `#`, and adjacent quoted/unquoted parts join as
+  in the shell.
+
+### x4debug, x4save, x4live
+
+- `x4debug crosscheck` keys each op on patch file + selector (the same selector failing in two
+  files collapsed into one; 17 collapses in one real mod).
+- `x4save info` compares history by extension name and no longer claims what loaded;
+  `x4save check` no longer double-counts references at 4 MiB read boundaries.
+- `x4live harvest` says "N of M fetched" and marks a capped walk INCOMPLETE; `groundtruth`
+  reads escaped values containing `\t`; `oracle` lists mapped fields absent from the store
+  separately; the shot multiplier in the (still held-out) dps derivation is
+  `max(amount, barrelamount)`; stale help text corrected.
+
+### BaseX
+
+- **`ask.py` scores a zero only against what the query addressed:**
+  `db:get('x4eff','no/such/typo.xml')//ware` printed "NEGATIVE CONFIRMED over 10970 of 10970
+  documents". A partial, foreign or non-literal database address is refused (rc 2); a query
+  naming no database, or a lone `false`/`""`, is not a finding (rc 4).
+- A rebuild revokes the old `coverage-<db>.json` before dropping the database; "accounted" is
+  judged per root.
+- `stage.py` no longer indexes both mini-DLC twice when every DLC is unpacked (142 duplicate
+  documents in x4raw — rebuild x4raw to drop them); a failure to ask refuses rc 2.
+- BaseX staleness fingerprints every install root; an unreadable catalog in the x4eff build is
+  recorded.
+
+### Freshness
+
+- An artifact goes STALE when a mod moves between install roots, when code that shapes the
+  store changes (`ENGINE_SOURCES` re-derived by tracing a build), and after a game update —
+  which the banner and `x4modlist changed` now name as a reference change instead of blaming
+  mods. x4xref stamps every root it indexes.
+
+### Gates
+
+- **A gate that examined nothing no longer passes.** Shared floors and a stale-store refusal
+  (rc 2 = could not judge; a real finding still outranks it, rc 1) in `similar_audit`,
+  `provenance_audit`, `registry_provenance`, `xsd_fast_parity`, `noop_audit`,
+  `consistency_audit`, `cross_tool`, `diff_truth` and `toolkit_usage`; `claims_audit` returns
+  2, not 5, on a stale store.
+- Exit codes are judged per case in `edge_sweep` (39 cells), `stress_sweep`,
+  `determinism_audit` (a crash repeated twice is not "stable"), `control_bytes`,
+  `oracle_index` and `hook_false_positives`.
+- Per-item comparison where totals hid movement: `schema_sweep` gains a local per-mod
+  baseline (`--record`; until recorded it reads rc 2); `cross_tool` checks the HARD winner on
+  the collided node; `update_corpus` credits a planted case only from its own file;
+  `register_rederivation` names every dead citation on each run.
+- `claude_md_budget` is described as what it is — a recorded ceiling lowered only by
+  `--record`, not a ratchet.
+
 ## v3.2.0 — 2026-09-21
 
 ### Deliberately NOT shipped in this release
