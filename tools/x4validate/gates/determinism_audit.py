@@ -61,8 +61,8 @@ def normalize(s: str) -> str:
 #: (label, argv, exit codes that mean the case ANSWERED). Anything else -- a refusal
 #: (2), a degraded run (3), a crash -- means the output compared was not an answer.
 #: x4compat: 1 = collisions found, which is an answer (see `_compat.main`).
-#: `x4compat check` with no candidate is the whole installed set (`--all` is being
-#: removed, AUDIT-2026-09-24 AN-7).
+#: `x4compat check` with no candidate is the whole ACTIVE set -- installed, enabled in
+#: its manifest and in the profile (`--all` was removed, AUDIT-2026-09-24 AN-7).
 CASES = [
     ("x4compat check (whole set)", ["x4compat", "check"], {0, 1}),
     ("x4similar sweep", ["x4similar", "--threshold", "0.9"], {0}),
