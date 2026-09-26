@@ -55,7 +55,6 @@ class TestHK5MatcherCoverage(unittest.TestCase):
 
 
 class TestHK6Minor(unittest.TestCase):
-    @unittest.expectedFailure
     def test_env_resolution_comment_states_the_real_precedence(self):
         """AUDIT-2026-09-24 HK-6: _x4-env.sh's header says `x4-paths.env > existing env var`
         while the code (and the paragraph right below it) make THE ENVIRONMENT WIN."""
@@ -64,14 +63,12 @@ class TestHK6Minor(unittest.TestCase):
         self.assertLess(line.find("env var"), line.find("x4-paths.env"),
                         "stated order puts the config file above the environment: " + line)
 
-    @unittest.expectedFailure
     def test_session_canary_uses_the_shared_python_lookup(self):
         """AUDIT-2026-09-24 HK-6: session-canary.sh resolves python itself (`command -v
         python`) instead of x4_python, so it ignores X4_PYTHON like no other hook does."""
         text = (HOOKS / "session-canary.sh").read_text(encoding="utf-8")
         self.assertIn("x4_python", text)
 
-    @unittest.expectedFailure
     def test_session_canary_not_checked_line_reaches_stdout(self):
         """AUDIT-2026-09-24 HK-6: the rc-0 NOT CHECKED disclosure is printed to STDERR,
         which a SessionStart hook does not put in the model's context (INFERRED from the
@@ -80,7 +77,6 @@ class TestHK6Minor(unittest.TestCase):
         line = next(ln for ln in text.splitlines() if "'NOT CHECKED:'" in ln)
         self.assertNotIn(">&2", line, line)
 
-    @unittest.expectedFailure
     def test_next_blind_spot_id_consults_remote_tracking_branches(self):
         """AUDIT-2026-09-24 HK-6: next-blind-spot-id.py promises 'EVERY branch' but lists
         refs/heads only, so an id claimed on origin/* by another clone is invisible."""
@@ -88,7 +84,6 @@ class TestHK6Minor(unittest.TestCase):
                 ).read_text(encoding="utf-8")
         self.assertIn("refs/remotes", text)
 
-    @unittest.expectedFailure
     def test_a_deny_does_not_tell_the_reader_to_confirm(self):
         """AUDIT-2026-09-24 HK-6: `sed -i` on a game file is DENIED with a reason reading
         'confirm: ...' -- there is nothing to confirm on a deny. Either the verdict (ask) or

@@ -33,9 +33,13 @@ if [ -z "$CANARY" ]; then
   exit 0
 fi
 
-PY="$(command -v python 2>/dev/null || command -v python3 2>/dev/null)"
+# The SHARED lookup (AUDIT-2026-09-24 HK-6). This hook resolved `python` itself, so it
+# was the one hook that ignored X4_PYTHON -- and, with X4_PYTHON set to something that
+# does not resolve, it quietly ran whatever python was on PATH where every other hook
+# refuses. x4_python prints nothing in that case, which is reported below.
+PY="$(x4_python)"
 if [ -z "$PY" ]; then
-  echo "[x4 canary] NOT RUN: no python on PATH. Irreplaceable files are UNCHECKED."
+  echo "[x4 canary] NOT RUN: no usable python (X4_PYTHON=${X4_PYTHON:-unset}; none on PATH otherwise). Irreplaceable files are UNCHECKED."
   exit 0
 fi
 
@@ -70,8 +74,12 @@ case $RC in
     # Only the NOT-CHECKED line is surfaced, and only when there is one: a clean
     # run over a fully resolved set stays silent, which is what keeps the session
     # start quiet.
+    #
+    # To STDOUT (AUDIT-2026-09-24 HK-6). It went to stderr, and SessionStart adds a
+    # hook's STDOUT to the session context -- so the one disclosure this branch exists
+    # to surface was printed where the model never reads it.
     printf '%s
-' "$OUT" | grep -F 'NOT CHECKED:' >&2 || :
+' "$OUT" | grep -F 'NOT CHECKED:' || :
     ;;
   1)
     x4_bound "$(

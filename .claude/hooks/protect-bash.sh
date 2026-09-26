@@ -319,8 +319,11 @@ on copy_into_game_or_profile \
 on redirect_truncate_into_game_or_profile \
   && advise "Redirecting output into a game or profile directory. Allowed, but a truncating > has no backup: if the target is a durable record, write to a temp file and move it into place."
 
-# === CONFIRM — sed -i on game or profile files ===
-on sed_i_in_game_or_profile && deny "In-place edit in game/profile directory — confirm: $COMMAND"
+# === DENY — sed -i on game or profile files ===
+# DENY is the verdict (user decision 2026-09-25, AUDIT-2026-09-24 HK-6); the reason used
+# to end "confirm: ...", which on a deny offers the reader nothing to confirm. There is a
+# correct alternative to take instead, so it names that.
+on sed_i_in_game_or_profile && deny "BLOCKED: in-place sed edit (sed -i) of a file in the game or profile directory. A Bash edit gets NO backup and bypasses the file-path guard. Use the Edit tool instead: it is backed up, checked by protect-files.sh, and fails loudly on a non-unique match. Command: $COMMAND"
 
 # === CONFIRM — direct reference to .cat/.dat archives ===
 # DROPPED 2026-08-29: this fired on any command whose TEXT mentioned a .cat -- including

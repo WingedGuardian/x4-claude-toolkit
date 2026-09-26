@@ -112,6 +112,7 @@ For any bulk XML operation (mass stat changes, adding content to many files):
 ### Hard blocked
 - Writing to `reference\` (read-only base game data, ever)
 - Directly writing `.cat` / `.dat` files (use XRCatTool)
+- `sed -i` on a game or profile file (use the Edit tool, which is backed up)
 
 These are anchored on the project root (`$CLAUDE_PROJECT_DIR`); `.claude\`, `dev\`, `dist\`,
 and `tools\` under it are recognized as the editable workspace.

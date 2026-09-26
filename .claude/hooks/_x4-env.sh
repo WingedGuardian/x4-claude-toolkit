@@ -3,7 +3,7 @@
 # SOURCE this (do not execute). Single source of truth for the configurable X4 locations
 # so nothing is hardcoded to one OS or one user's folder layout.
 #
-# Resolution order for each value:  .claude/x4-paths.env  >  existing env var  >  default.
+# Resolution order for each value:  existing env var  >  .claude/x4-paths.env  >  default.
 #
 # THE ENVIRONMENT WINS, matching CLAUDE.md ("env var > x4-paths.env > default") and
 # the Python half (`_paths._layers()` returns [env, file, fallback]).
