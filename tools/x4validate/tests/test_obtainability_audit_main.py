@@ -116,7 +116,9 @@ def test_a_baseline_predating_a_key_is_NOT_COMPARABLE_rather_than_unchanged(
     mod = _load(monkeypatch, tmp_path, record=False)
     was = {k: v for k, v in NOW.items() if k != "live_macros_with_deprecated_ammo"}
     mod.BASELINE.write_text(json.dumps(was), encoding="utf-8")
-    assert mod.main() == 1
+    # rc 2 since the review of 6e54ad5: a comparison that could not happen is a
+    # could-not-look (CANNOT), not a finding about content (was rc 1).
+    assert mod.main() == 2
     out = capsys.readouterr().out
     assert "predates this key" in out, out
 
@@ -150,3 +152,26 @@ def test_a_REAL_audit_still_records(monkeypatch, tmp_path):
     mod = _load(monkeypatch, tmp_path, record=True)
     assert mod.main() == 0
     assert mod.BASELINE.is_file()
+
+
+def test_unreadable_files_are_compared_by_NAME_not_count(monkeypatch, tmp_path, capsys):
+    """Review of 6e54ad5: one file becoming readable while ANOTHER becomes unreadable
+    keeps the count at 1 -- a per-name compare is the only one that sees it."""
+    mod = _load(monkeypatch, tmp_path, record=False)
+    was = dict(NOW, mod_files_unreadable=1, unreadable_files=["modx/a.xml: bad"])
+    mod.BASELINE.write_text(json.dumps(was), encoding="utf-8")
+    monkeypatch.setattr(mod, "audit", lambda: dict(NOW, mod_files_unreadable=1,
+                                                   unreadable_files=["mody/b.xml: bad"]))
+    assert mod.main() == 1
+    out = capsys.readouterr().out
+    assert "newly unreadable: mody/b.xml" in out and "readable again: modx/a.xml" in out, out
+
+
+def test_a_baseline_with_no_unreadable_names_is_NOT_COMPARABLE_rc2(monkeypatch, tmp_path, capsys):
+    """A pre-2026-09-25 baseline carries no unreadable-file names: rc 2 (re-record), never a
+    pass and never a finding about content."""
+    mod = _load(monkeypatch, tmp_path, record=False)
+    was = {k: v for k, v in NOW.items() if k not in ("mod_files_unreadable", "unreadable_files")}
+    mod.BASELINE.write_text(json.dumps(was), encoding="utf-8")
+    assert mod.main() == 2
+    assert "re-record" in capsys.readouterr().out

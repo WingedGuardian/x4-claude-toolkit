@@ -28,7 +28,9 @@ half honestly needs a per-class expectation model.
 
   uv run python gates/obtainability_audit.py [--record]
 
-Exit: 0 unchanged (or recorded) · 1 drift · 2 cannot run (never a guess)
+Exit: 0 unchanged (or recorded) · 1 drift · 2 cannot run (never a guess), including a
+      baseline that predates a compared key -- "not comparable, re-record" is a
+      could-not-look, not a finding about content. Drift outranks it.
 """
 from __future__ import annotations
 
@@ -156,6 +158,9 @@ def main() -> int:
 
     was = json.loads(BASELINE.read_text(encoding="utf-8"))
     drift = []
+    #: Keys the baseline predates. rc 2, not 1 (review of 6e54ad5): it is a comparison
+    #: that could not happen, not a change in the corpus.
+    not_comparable = []
     #: The DENOMINATOR keys are compared first and deliberately. `audit()` has always
     #: recorded how many base macro files it read and how many it could not, and until
     #: 2026-09-02 neither was compared NOR printed -- so a coverage collapse could only
@@ -169,10 +174,23 @@ def main() -> int:
         if key not in was:
             # An older baseline predates the key. NAMED, never silently skipped: a
             # missing key is "not comparable", which is not the same as "unchanged".
-            drift.append(f"{key}: baseline predates this key (now {now[key]}) "
-                         "-- re-record to make it comparable")
+            not_comparable.append(f"{key}: baseline predates this key (now {now[key]}) "
+                                  "-- re-record to make it comparable")
         elif was[key] != now[key]:
             drift.append(f"{key}: {was[key]} -> {now[key]}")
+
+    # Unreadable files BY NAME, not by count: one file becoming readable while another
+    # becomes unreadable leaves every count unchanged (review of 6e54ad5).
+    if "unreadable_files" not in was:
+        not_comparable.append("unreadable_files: baseline predates per-name unreadable "
+                              "files -- re-record to make it comparable")
+    else:
+        old_u = {u.split(": ", 1)[0] for u in was["unreadable_files"]}
+        new_u = {u.split(": ", 1)[0] for u in now["unreadable_files"]}
+        for name in sorted(new_u - old_u):
+            drift.append(f"newly unreadable: {name}")
+        for name in sorted(old_u - new_u):
+            drift.append(f"readable again: {name}")
 
     # PER ITEM, never the total: a mod losing 3 references while another gains 3 is
     # a net zero that hides both (CLAUDE.md 1b).
@@ -197,9 +215,15 @@ def main() -> int:
               "live_macros_with_deprecated_ammo", "of_those_sold_by_a_live_ware"):
         print(f"  {k:<38} {now[k]}")
     print(f"  {'mods referencing deprecated content':<38} {len(new_m)}")
-    if not drift:
+    for n in not_comparable:
+        print(f"  NOT COMPARABLE  {n}")
+    if not drift and not not_comparable:
         print("\nunchanged since the baseline.")
         return 0
+    if not drift:
+        print("\nThe baseline cannot answer for every key -- re-record it (--record). rc 2, "
+              "not a pass and not drift.")
+        return 2
     print(f"\nDRIFT ({len(drift)}):")
     for d in drift:
         print(f"  {d}")
