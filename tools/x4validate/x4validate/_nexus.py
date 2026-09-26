@@ -24,6 +24,7 @@ OPERATING NOTES (were resident in CLAUDE.md until 2026-09-20; they belong with t
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.parse
@@ -44,7 +45,103 @@ _APP = {"Application-Name": "x4modlist", "Application-Version": "0.1",
 
 
 class NexusError(Exception):
-    pass
+    """Any failed Nexus lookup. A lookup failure is a NON-ANSWER about the mod."""
+
+
+class NexusFatal(NexusError):
+    """A failure no later call in the same run can get past, so a batch must STOP.
+
+    AUDIT-2026-09-24 RG-2: a revoked key used to be recorded per row as `error`, so a
+    refresh overwrote EVERY row's lane and kept calling the API with a key it already
+    knew was refused. These are the causes that apply to the whole run, not one mod.
+    """
+
+
+class NexusAuthError(NexusFatal):
+    """No key, or the key was refused (HTTP 401/403)."""
+
+
+class NexusRateLimited(NexusFatal):
+    """HTTP 429, or the last response reported 0 requests remaining (X-RL-* headers)."""
+
+
+class NexusUnreachable(NexusFatal):
+    """The network failed: no route, DNS, refused, or timed out (URLError/OSError)."""
+
+
+#: The most recent `X-RL-*-Remaining` values seen, by header name. Module state on
+#: purpose: the budget is per KEY, not per call, so the next call must know what the last
+#: one was told. `reset_rate_limit()` clears it at the start of a run.
+_rate_remaining: dict[str, int] = {}
+_RL_HEADERS = ("X-RL-Hourly-Remaining", "X-RL-Daily-Remaining")
+
+#: Requests that SUCCEEDED since the last `reset_rate_limit()`. A 403 before any success
+#: is the key being refused; after one, the key has been accepted this run, so a 403 is
+#: about THAT request -- a hidden mod's file list, a Cloudflare block (see `_APP`) -- and
+#: must not stop the run (review of RG-2). Counted in `_mapped`, so a stubbed transport
+#: counts the same as the real one.
+_ok_this_run = [0]
+
+
+def reset_rate_limit() -> None:
+    """Start a run: forget the rate budget and the accepted-key evidence."""
+    _rate_remaining.clear()
+    _ok_this_run[0] = 0
+
+
+def _open_json(req: urllib.request.Request):
+    """Send *req*, record the rate budget it reports, and decode its JSON.
+
+    Raises the RAW transport/decode exception: `_mapped` is the single place those
+    become NexusErrors, so a caller (or a test) that stubs `_get_json`/`_post_json`
+    gets the same mapping as the real transport.
+    """
+    spent = [h for h, n in _rate_remaining.items() if n <= 0]
+    if spent:
+        raise NexusRateLimited(f"not sent -- the last response reported "
+                               f"{', '.join(spent)} = 0")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        headers = getattr(r, "headers", None)
+        body = r.read()
+    for h in _RL_HEADERS:
+        v = headers.get(h) if headers is not None else None
+        try:
+            if v is not None:
+                _rate_remaining[h] = int(v)
+        except (TypeError, ValueError):
+            pass  # silent-ok: an unparseable budget header is simply not a budget reading
+    return json.loads(body)
+
+
+def _mapped(what: str, fn, *args):
+    """Call a transport function, mapping EVERY failure to a NexusError.
+
+    AUDIT-2026-09-24 RG-1: only `HTTPError` was caught, so a `URLError`, a timeout or a
+    Cloudflare HTML page (not JSON) escaped as a raw exception and a `refresh` lost every
+    row it had already fetched. A run-wide cause raises a `NexusFatal` subclass (RG-2); a
+    per-request one (another HTTP status, a body that is not JSON) a plain NexusError.
+    """
+    try:
+        out = fn(*args)
+    except NexusError as exc:
+        raise type(exc)(f"{what}: {exc}") from exc
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401 or (exc.code == 403 and not _ok_this_run[0]):
+            raise NexusAuthError(f"{what}: HTTP {exc.code} -- the Nexus API key is missing, "
+                                 "invalid or revoked (check X4_NEXUS_KEY)") from exc
+        if exc.code == 429:
+            raise NexusRateLimited(f"{what}: HTTP 429 -- the Nexus rate limit is spent "
+                                   "(about 2,000/hour, 20,000/day per key)") from exc
+        raise NexusError(f"{what} HTTP {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
+        # http.client.HTTPException (IncompleteRead, BadStatusLine, ...) is neither a
+        # URLError nor an OSError, and escaped as a traceback (review of RG-1).
+        raise NexusUnreachable(
+            f"{what}: network failure ({type(exc).__name__}: {exc})") from exc
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise NexusError(f"{what}: the response is not JSON ({exc})") from exc
+    _ok_this_run[0] += 1
+    return out
 
 
 def nexus_key() -> str:
@@ -57,23 +154,20 @@ def nexus_key() -> str:
     """
     k = _paths.value("X4_NEXUS_KEY")
     if not k:
-        raise NexusError("X4_NEXUS_KEY not set (Nexus personal API key). Export it, "
+        raise NexusAuthError("X4_NEXUS_KEY not set (Nexus personal API key). Export it, "
                          "or add it to .claude/x4-paths.env.")
     return k
 
 
 def _get_json(url: str, headers: dict) -> dict:
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.load(r)
+    return _open_json(urllib.request.Request(url, headers=headers))
 
 
 def _post_json(url: str, body: dict, headers: dict) -> dict:
     data = json.dumps(body).encode()
     req = urllib.request.Request(url, data=data,
                                  headers={"Content-Type": "application/json", **headers}, method="POST")
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.load(r)
+    return _open_json(req)
 
 
 #: ACCOUNT-WIDE: every mod the key's account tracks, across every game. Filtering
@@ -118,7 +212,7 @@ def fetch_tracked(domain: str = "x4foundations") -> Tracked:
     A shape change upstream must be a NON-ANSWER; rendering it as "you track 0"
     is the absence-versus-non-answer confusion this toolkit exists to refuse.
     """
-    rows = _get_json(NEXUS_TRACKED, {"apikey": nexus_key(), **_APP})
+    rows = _mapped("fetch_tracked", _get_json, NEXUS_TRACKED, {"apikey": nexus_key(), **_APP})
     if not isinstance(rows, list):
         raise NexusError(
             f"unexpected payload from {NEXUS_TRACKED}: expected a list, got "
@@ -162,10 +256,9 @@ class ModMeta:
 def fetch_mod(nexus_id: int) -> ModMeta:
     """v1 REST metadata-by-id. Raises NexusError on HTTP failure."""
     h = {"apikey": nexus_key(), **_APP}
-    try:
-        m = _get_json(f"{NEXUS_REST}/{int(nexus_id)}.json", h)
-    except urllib.error.HTTPError as exc:
-        raise NexusError(f"fetch_mod({nexus_id}) HTTP {exc.code}") from exc
+    m = _mapped(f"fetch_mod({nexus_id})", _get_json, f"{NEXUS_REST}/{int(nexus_id)}.json", h)
+    if not isinstance(m, dict):
+        raise NexusError(f"fetch_mod({nexus_id}): expected an object, got {type(m).__name__}")
     ts = int(m.get("updated_timestamp") or 0)
     upd = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d") if ts else ""
     return ModMeta(int(nexus_id), m.get("name", ""), str(m.get("version", "")),
@@ -192,11 +285,28 @@ class FileMeta:
 
 def fetch_files(nexus_id: int) -> list[FileMeta]:
     """Every file on a mod page, newest-uploaded last (API order preserved)."""
+    return fetch_file_listing(nexus_id)[0]
+
+
+def fetch_file_listing(nexus_id: int) -> tuple[list[FileMeta], dict[int, int]]:
+    """(every file on the page, the page's `file_updates` as old_file_id -> new_file_id).
+
+    `file_updates` is how an author records that a file was superseded by another, so a
+    pin to one FILE can follow its successors instead of being judged against the
+    pinned file forever. A malformed update row is dropped like a malformed file row.
+    """
     h = {"apikey": nexus_key(), **_APP}
-    try:
-        d = _get_json(f"{NEXUS_REST}/{int(nexus_id)}/files.json", h)
-    except urllib.error.HTTPError as exc:
-        raise NexusError(f"fetch_files({nexus_id}) HTTP {exc.code}") from exc
+    d = _mapped(f"fetch_files({nexus_id})", _get_json,
+                f"{NEXUS_REST}/{int(nexus_id)}/files.json", h)
+    updates: dict[int, int] = {}
+    for u in (d or {}).get("file_updates") or []:
+        try:
+            updates[int(u["old_file_id"])] = int(u["new_file_id"])
+        except (KeyError, TypeError, ValueError):
+            # silent-ok: one malformed supersession row. Its only consumer follows a
+            # chain and falls back to the pinned file, which it names, when a link is
+            # missing -- a dropped row cannot turn into a false "up to date".
+            continue
     out = []
     for f in (d or {}).get("files") or []:
         try:
@@ -209,7 +319,7 @@ def fetch_files(nexus_id: int) -> list[FileMeta]:
             # SPECIFIC file use fetch_file(), which raises when its id is absent —
             # so a dropped row here can never render as "that file is gone".
             continue
-    return out
+    return out, updates
 
 
 def fetch_file(nexus_id: int, file_id: int) -> FileMeta:
@@ -232,10 +342,8 @@ def search_mods(name: str, count: int = 5) -> list[tuple[int, str]]:
     safe = json.dumps(name)  # JSON-quoted+escaped GraphQL string literal
     query = ('query { mods(filter: {gameId: [{value: "%s"}], nameStemmed: [{value: %s}]}, '
              'count: %d) { nodes { modId name } } }' % (X4_GAMEID, safe, count))
-    try:
-        res = _post_json(NEXUS_GQL, {"query": query}, {"apikey": nexus_key(), **_APP})
-    except urllib.error.HTTPError as exc:
-        raise NexusError(f"search_mods({name!r}) HTTP {exc.code}") from exc
+    res = _mapped(f"search_mods({name!r})", _post_json, NEXUS_GQL, {"query": query},
+                  {"apikey": nexus_key(), **_APP})
     nodes = (((res or {}).get("data") or {}).get("mods") or {}).get("nodes") or []
     out = []
     for n in nodes:
@@ -257,9 +365,11 @@ def steam_title(ws_number: str) -> tuple[str, str] | None:
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             d = json.load(r)
-    except urllib.error.HTTPError:
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         # silent-ok: None is the documented "no answer from Steam" sentinel and the
         # caller distinguishes it from a title of "". Network absence is not data.
+        # URLError (HTTPError's parent), timeouts and a non-JSON body are all that
+        # same absence; catching only HTTPError let them crash a refresh (RG-1).
         return None
     details = (((d or {}).get("response") or {}).get("publishedfiledetails") or [])
     if details and details[0].get("title"):

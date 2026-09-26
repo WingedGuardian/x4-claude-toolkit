@@ -236,8 +236,8 @@ options:
                      weapons, storagetags) render two levels deep instead of `<table>`. The
                      running helper must be a build that knows the flag: check `x4live query
                      probe` first
-  --with-ramp        run the size ramp FIRST, in the SAME connection -- the lua client does not
-                     reconnect after a disconnect, so a session's whole budget is one connection
+  --with-ramp        run the size ramp FIRST, in the SAME connection, so the user alt-tabs to the
+                     game once for both (the game executes only in the foreground)
 ```
 
 ## `x4live ramp`

@@ -11,6 +11,8 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from lxml import etree
+
 from . import _nexus, _registry
 from x4validate import _paths, __version__
 
@@ -200,6 +202,8 @@ def _resolve_identity(content_id: str, auto) -> tuple[int | None, str]:
             if hits:
                 used_hint = hint
                 break
+    except _nexus.NexusFatal:
+        raise   # the whole run must stop (RG-2); "unsearched" is a per-mod answer
     except _nexus.NexusError:
         # silent-ok: an upstream-lookup failure is not a statement about the mod.
         # The caller leaves the field unset (never "no update available"), so the
@@ -263,7 +267,9 @@ def cmd_ingest(args) -> int:
         else:
             try:
                 ids = _registry.ingest_content_xml(content)
-            except OSError as exc:
+            except (OSError, etree.XMLSyntaxError) as exc:
+                # XMLSyntaxError is NOT an OSError: a malformed profile used to crash
+                # ingest with a traceback instead of this refusal (AUDIT-2026-09-24 RG-4).
                 print(f"error: cannot read profile content.xml: {exc}", file=sys.stderr)
                 print("       (pass --content, or --installed-only to skip the "
                       "cross-check)", file=sys.stderr)
@@ -325,10 +331,125 @@ def cmd_ingest(args) -> int:
     return 0
 
 
+def _parse_date(value) -> date | None:
+    """A calendar date from a manifest or API date string, or None when it cannot say.
+
+    MEASURED 2026-09-25 over 156 installed manifests: 123 `YYYY-MM-DD`, 1 `YYYY-MM-D`,
+    1 `25 December 2024`, 31 with no `date` at all. Those shapes parse; anything else is
+    None -- an unknown, never a guessed date.
+    """
+    if not value:
+        return None
+    text = str(value).strip()
+    m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    try:
+        if m:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        return datetime.strptime(text, "%d %B %Y").date()
+    except ValueError:
+        # silent-ok: None IS the channel -- the caller renders it as an `unknown`
+        # update verdict naming the missing date, never as "no update".
+        return None
+
+
+def _upstream_newest(nid: int, fmeta) -> tuple[str | None, str]:
+    """(upload date, what it is) of the upstream file an update is judged against.
+
+    The newest MAIN file on the page (user decision 2026-09-25, AUDIT-2026-09-24 RG-3).
+    A row pinned to a FILE (`resolve --file`) is judged against that file's newest
+    SUCCESSOR instead: an add-on on someone else's page does not update when the page
+    owner uploads, but it does when its own file is superseded. The chain is the page's
+    `file_updates` (old -> new file id), followed to its end; a successor not listed on
+    the page ends the walk at the last listed one; no chain means the pinned file itself.
+    """
+    if fmeta is not None:
+        files, updates = _nexus.fetch_file_listing(nid)
+        by_id = {f.file_id: f for f in files}
+        cur, seen = fmeta, {fmeta.file_id}
+        while updates.get(cur.file_id) in by_id and updates[cur.file_id] not in seen:
+            cur = by_id[updates[cur.file_id]]
+            seen.add(cur.file_id)
+        how = ("pinned" if cur.file_id == fmeta.file_id
+               else f"successor of pinned file {fmeta.file_id}:")
+        return cur.uploaded or None, f"{how} file {cur.file_id} {cur.name!r} v{cur.version}"
+    files = _nexus.fetch_files(nid)
+    mains = [f for f in files if (f.category or "").upper() == "MAIN" and f.uploaded]
+    if not mains:
+        return None, f"no MAIN file with an upload date among {len(files)} on the page"
+    newest = max(mains, key=lambda f: f.uploaded)
+    return newest.uploaded, f"MAIN file {newest.file_id} {newest.name!r} v{newest.version}"
+
+
+def _update_verdict(installed_date, upstream_date, trusted: bool) -> tuple[str, str]:
+    """("available" | "none" | "unknown" | "unconfirmed", the basis, both dates printed).
+
+    "Has an update" means the upstream file was UPLOADED AFTER the installed copy's
+    manifest date. Version strings are not compared: 77 registry rows carried an
+    upstream version and 1 matched its installed one as a string, across 6 upstream
+    version shapes against integer manifest versions -- not comparable (RG-3).
+    """
+    basis = (f"upstream uploaded {upstream_date or '?'} vs installed manifest dated "
+             f"{installed_date or '?'}")
+    if not trusted:
+        return "unconfirmed", basis + " -- the identity is a guess, so the upstream may be another mod"
+    i, u = _parse_date(installed_date), _parse_date(upstream_date)
+    if i is None or u is None:
+        missing = ("the installed manifest has no usable date" if i is None
+                   else "no upstream upload date")
+        return "unknown", f"{basis} -- {missing}"
+    return ("available" if u > i else "none"), basis
+
+
+_UPDATE_FIELDS = ("update", "update_basis", "upstream_newest", "upstream_newest_uploaded")
+
+
+def _clear_update(a) -> None:
+    """Drop an update verdict that no longer describes this row.
+
+    A verdict belongs to the fetch that produced it. A row that now ends in `error`,
+    `untriaged` or `off-nexus`, or whose identity was re-pinned, has no fetch backing it,
+    and a stale `available` there read as a current finding (review of RG-3).
+    """
+    for k in _UPDATE_FIELDS:
+        a.pop(k, None)
+
+
+def _record_update(a, nid: int, fmeta, state: str):
+    """Store the update verdict on row *a*. Returns a NexusFatal to stop on, else None."""
+    fatal = None
+    try:
+        up, what = _upstream_newest(nid, fmeta)
+    except _nexus.NexusFatal as exc:
+        up, what, fatal = None, f"file list not fetched ({exc})", exc
+    except _nexus.NexusError as exc:
+        up, what = None, f"file list not fetched ({exc})"
+    verdict, basis = _update_verdict(a.get("installed_date"), up,
+                                     state in _registry.TRUSTED_ID_STATES)
+    a["update"], a["update_basis"] = verdict, basis
+    a["upstream_newest"], a["upstream_newest_uploaded"] = what, up
+    return fatal
+
+
 def cmd_refresh(args) -> int:
-    reg_path = Path(args.registry) if args.registry else None
+    """Fetch upstream metadata for the registry's mods, one row at a time.
+
+    Three properties, each the fix for a way a refresh used to LOSE work (AUDIT-2026-09-24):
+
+    * RG-4: a --registry path that is not a file is REFUSED. `load_registry` returns an
+      empty registry for a missing file, so a typo used to write a NEW, empty registry
+      there and report success.
+    * RG-1: the registry is saved even when the run ends early, so every row fetched
+      before a failure is kept. It used to be saved once, at the end, and one network
+      drop lost the whole run.
+    * RG-2: a failure that applies to the whole run -- no/invalid key, rate limit spent,
+      network down (`_nexus.NexusFatal`) -- STOPS it, leaves the rows it had not fetched
+      exactly as they were, and exits 2. It used to be recorded per row as `error`, which
+      overwrote every lane and kept calling the API with a key it knew was refused.
+    """
+    reg_path = _registry_path(args)
     reg = _registry.load_registry(reg_path)
     today = datetime.now(timezone.utc).date()
+    _nexus.reset_rate_limit()
     want = set(args.ids.split(",")) if args.ids else None
 
     if want:
@@ -343,6 +464,66 @@ def cmd_refresh(args) -> int:
         mods = mods[: args.limit]
 
     resolved = fetched = errors = skipped = 0
+    fatal: _nexus.NexusFatal | None = None
+    checked: set[str] = set()     # rows whose update verdict was produced THIS run
+    try:
+        fatal, resolved, fetched, errors, skipped = _refresh_rows(
+            mods, args, today, checked)
+    finally:
+        # Saved on EVERY exit, including an exception nobody anticipated: the rows
+        # fetched so far are real data and must not depend on the run finishing.
+        _registry.save_registry(reg, reg_path)
+        dash = _registry.write_dashboard(reg, _dash_path(reg_path))
+    unconfirmed = len(_registry.needs_review(reg))
+    print(f"refresh: {fetched} fetched, {resolved} newly id-resolved, {errors} errors, "
+          f"{skipped} off-nexus (not searched) ({len(mods)} processed)")
+    if unconfirmed:
+        # Never let a refresh read as "everything is up to date" while a chunk of
+        # what it just fetched was fetched against a guessed identity.
+        print(f"         {unconfirmed} active mod(s) still have an UNCONFIRMED identity — "
+              f"their upstream data may describe a different mod. Run `x4modlist verify`.")
+    _print_updates(mods, checked)
+    print(f"dashboard: {dash}")
+    if fatal is not None:
+        print(f"refresh STOPPED: {fatal}", file=sys.stderr)
+        print("         every row not yet fetched was left exactly as it was; what was "
+              "fetched before the stop is saved. Re-run once the cause is fixed "
+              "(rows already checked today are skipped).", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _print_updates(mods, checked: set[str]) -> None:
+    """The update verdicts over the rows in scope, both dates on every line.
+
+    A verdict this run did NOT produce (the row was skipped by the once-per-day TTL) is
+    counted and labelled CARRIED OVER with the date it was checked, never printed as
+    though it had just been checked (review of RG-3).
+    """
+    verdicts: dict[str, list] = {}
+    for m in mods:
+        v = m["auto"].get("update")
+        if v:
+            verdicts.setdefault(v, []).append(m)
+    if not verdicts:
+        return
+    counts = ", ".join(f"{len(verdicts[k])} {k}" for k in
+                       ("available", "none", "unknown", "unconfirmed") if k in verdicts)
+    carried = sum(1 for ms in verdicts.values() for m in ms if m["id"] not in checked)
+    print(f"updates: {counts}  (available = the upstream file was uploaded after the "
+          f"installed manifest's date; versions are NOT compared)"
+          + (f"; {carried} carried over from an earlier check, not re-checked now"
+             if carried else ""))
+    for m in sorted(verdicts.get("available", []), key=lambda x: x["id"]):
+        a = m["auto"]
+        tag = ("UPDATE " if m["id"] in checked
+               else f"UPDATE (carried over, checked {a.get('checked_at') or '?'})")
+        print(f"   {tag} {m['id']:40} {a.get('update_basis')}  [{a.get('upstream_newest')}]")
+
+
+def _refresh_rows(mods, args, today, checked: set[str]) -> tuple:
+    """The per-row loop of `cmd_refresh`. Returns (fatal, resolved, fetched, errors, skipped)."""
+    resolved = fetched = errors = skipped = 0
     for m in mods:
         a = m["auto"]
         if a.get("checked_at") == today.isoformat() and not args.force:
@@ -355,10 +536,14 @@ def cmd_refresh(args) -> int:
             # already overruled once.
             a["classification"] = "off-nexus"
             a["settled"] = "n/a — not distributed on Nexus"
+            _clear_update(a)
             skipped += 1
             continue
         if not nid and not args.no_resolve:
-            nid, state = _resolve_identity(m["id"], a)
+            try:
+                nid, state = _resolve_identity(m["id"], a)
+            except _nexus.NexusFatal as exc:
+                return exc, resolved, fetched, errors, skipped
             a["id_state"] = state
             if nid:
                 a["nexus_id"] = nid
@@ -369,16 +554,22 @@ def cmd_refresh(args) -> int:
             # indistinguishable from each other.
             a["classification"] = "untriaged"
             a["settled"] = f"identity {state}"
+            _clear_update(a)
             continue
 
         try:
             meta = _nexus.fetch_mod(nid)
             fmeta = _nexus.fetch_file(nid, fid) if fid else None
+        except _nexus.NexusFatal as exc:
+            # Not a fact about THIS mod: leave its row untouched and stop (RG-2).
+            return exc, resolved, fetched, errors, skipped
         except _nexus.NexusError as exc:
             a["classification"] = "error"
             a["error"] = str(exc)
+            _clear_update(a)
             errors += 1
             continue
+        a.pop("error", None)   # a stale error from an earlier run no longer applies
 
         a["name"], a["author"] = meta.name, meta.author
         a["status"] = meta.status
@@ -392,26 +583,22 @@ def cmd_refresh(args) -> int:
         else:
             a["version"], a["updated"] = meta.version, meta.updated
             a.pop("upstream_file", None)
-        a["checked_at"] = today.isoformat()
         a["upstream_from"] = "exact" if state in _registry.TRUSTED_ID_STATES else state
 
         cls, settled = _classify(meta if fmeta is None else _file_as_meta(meta, fmeta),
                                  today, m["human"].get("custom_edited", False))
         a["classification"], a["settled"] = _registry.cap_classification(state, cls, settled)
         fetched += 1
-
-    _registry.save_registry(reg, reg_path)
-    dash = _registry.write_dashboard(reg, _dash_path(reg_path))
-    unconfirmed = len(_registry.needs_review(reg))
-    print(f"refresh: {fetched} fetched, {resolved} newly id-resolved, {errors} errors, "
-          f"{skipped} off-nexus (not searched) ({len(mods)} processed)")
-    if unconfirmed:
-        # Never let a refresh read as "everything is up to date" while a chunk of
-        # what it just fetched was fetched against a guessed identity.
-        print(f"         {unconfirmed} active mod(s) still have an UNCONFIRMED identity — "
-              f"their upstream data may describe a different mod. Run `x4modlist verify`.")
-    print(f"dashboard: {dash}")
-    return 0
+        # After the row is recorded, so a stop here keeps what was already fetched.
+        fatal = _record_update(a, nid, fmeta, state)
+        checked.add(m["id"])
+        if fatal is not None:
+            # NOT stamped checked: the row is incomplete (no update verdict), and the
+            # once-per-day TTL would make the re-run this stop recommends skip it until
+            # tomorrow (review item 1). The fetched metadata above is still kept.
+            return fatal, resolved, fetched, errors, skipped
+        a["checked_at"] = today.isoformat()
+    return None, resolved, fetched, errors, skipped
 
 
 def cmd_dashboard(args) -> int:
@@ -514,6 +701,7 @@ def cmd_resolve(args) -> int:
     a["id_state"] = "pinned"
     a["resolve"] = "manual"
     a.pop("candidates", None)
+    _clear_update(a)        # judged against the OLD id; the next refresh recomputes it
 
     try:
         meta = _nexus.fetch_mod(nexus_id)
@@ -599,10 +787,34 @@ def _rescore(reg) -> tuple[int, int]:
         if own and upstream and _squash(own) == _squash(upstream):
             a["id_state"] = "exact"
             a["resolve"] = "rescored (manifest name == upstream title)"
+            _reclassify_offline(m)
             promoted += 1
         else:
             left += 1
     return promoted, left
+
+
+def _reclassify_offline(m) -> None:
+    """Re-derive a row's lane from the upstream data it ALREADY holds, after its id_state
+    changed. No API call.
+
+    AUDIT-2026-09-24 RG-4: `verify --rescore` promoted a guess to `exact` but left the lane
+    that `cap_classification` had held at needs-confirmation, and a same-day refresh
+    skips the row (once-per-day TTL), so the promoted row stayed capped until tomorrow.
+    The lane is a function of (id_state, upstream data); when one changes, recompute it.
+    A row never fetched has no upstream data to classify and is left alone.
+    """
+    a = m["auto"]
+    if not a.get("checked_at"):
+        return
+    meta = _nexus.ModMeta(int(a.get("nexus_id") or 0), a.get("name") or "",
+                          str(a.get("version") or ""), str(a.get("updated") or ""),
+                          a.get("status") or "", a.get("author") or "")
+    _, _, state = _registry.identity(m)
+    cls, settled = _classify(meta, datetime.now(timezone.utc).date(),
+                             m["human"].get("custom_edited", False))
+    a["classification"], a["settled"] = _registry.cap_classification(state, cls, settled)
+    a["upstream_from"] = "exact" if state in _registry.TRUSTED_ID_STATES else state
 
 
 def cmd_tracked(args) -> int:
@@ -779,8 +991,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="content.xml cross-check: include disabled extensions too")
     pi.set_defaults(func=cmd_ingest)
 
-    pr = sub.add_parser("refresh", help="refresh upstream metadata via Nexus/Steam API")
-    pr.add_argument("--ids", help="comma-separated content ids to refresh (default: all enabled)")
+    pr = sub.add_parser("refresh", help="refresh upstream metadata via Nexus/Steam API, and "
+                        "say which mods have an update: upstream's newest MAIN file uploaded "
+                        "after the installed manifest's date (both dates printed)")
+    pr.add_argument("--ids", help="comma-separated content ids to refresh, installed or not "
+                    "(default: every INSTALLED mod, enabled or not)")
     pr.add_argument("--seeded", action="store_true", help="only mods that already have a nexus_id")
     pr.add_argument("--limit", type=int, help="cap how many mods to process (API-call safety)")
     pr.add_argument("--force", action="store_true", help="ignore the once-per-day TTL")
@@ -797,8 +1012,9 @@ def main(argv: list[str] | None = None) -> int:
     prs.add_argument("id", help="content.xml extension id")
     prs.add_argument("nexus_id", help="the correct Nexus mod id, or 'none' if it has no page")
     prs.add_argument("--file", type=int, help="file id, when this mod ships as a FILE on that "
-                     "page (an add-on); update-detection then tracks the FILE's version, not "
-                     "the page's")
+                     "page (an add-on); the upstream version, and the update verdict (upload "
+                     "date vs the installed manifest date), then follow that FILE and its "
+                     "successors on the page (file_updates), not the page's newest MAIN file")
     prs.set_defaults(func=cmd_resolve)
 
     pso = sub.add_parser("source", help="record a non-Nexus origin (stops it being searched)")

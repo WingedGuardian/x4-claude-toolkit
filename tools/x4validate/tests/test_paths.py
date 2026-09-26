@@ -392,3 +392,24 @@ def test_the_other_derivations_still_follow_LAYER_ORDER(
         "%s() now prefers the explicit config setting over the env derivation. That "
         "may well be right -- but it is a DECISION about layer priority, and this "
         "test exists so it cannot be made by accident." % accessor)
+
+
+@pytest.mark.parametrize("line, want", [
+    ('X4_MODS=C:/mods # a trailing comment', "C:/mods"),            # unquoted: comment cut
+    ('X4_MODS="C:/mods" # a trailing comment', "C:/mods"),          # quoted, then a comment
+    ("X4_MODS='C:/My Mods #2/x4'", "C:/My Mods #2/x4"),             # single quotes too
+    ('X4_MODS="C:/My Mods #2/x4" # note', "C:/My Mods #2/x4"),      # both at once
+    # Review item 8: adjacent quoted/unquoted segments CONCATENATE, as in the shell
+    # that sources the same file. `"a"b` used to come back as `a`.
+    ('X4_MODS="a"b', "ab"),
+    ("X4_MODS='C:/x'\"/y\"z", "C:/x/yz"),
+    ('X4_MODS=pre"fix #1"post # c', "prefix #1post"),
+    ('X4_MODS="a "', "a "),                                          # quoted space is data
+    ('X4_MODS=a#b', "a#b"),                                          # `#` mid-word: data
+])
+def test_env_value_comment_and_quote_rules(tmp_path, line, want):
+    """RG-5's twins: honouring quotes must not stop an UNQUOTED value's comment being cut,
+    and a quoted value followed by a comment must keep the value and drop the comment."""
+    env = tmp_path / "x4-paths.env"
+    env.write_text(line + "\n", encoding="utf-8")
+    assert _paths.parse_env_file(env)["X4_MODS"] == want

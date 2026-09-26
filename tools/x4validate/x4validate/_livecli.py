@@ -388,9 +388,18 @@ _DERIVED = {
     # in-arc defect, and a guess wearing the grammar of a measurement, which is the one
     # thing this table exists to prevent. Listing them here is not a claim that they are
     # underivable; it is a claim that we cannot yet tell WHICH answer is right, and a field
-    # we cannot vouch for belongs in the honest bucket until we can. Root cause is OPEN --
-    # two candidates falsified with denominators, see KNOWLEDGEBASE.md 2026-09-20.
-    # RE-PROMOTE when the 20 are explained, not before.
+    # we cannot vouch for belongs in the honest bucket until we can.
+    #
+    # WHAT IS KNOWN (MEASURED 2026-09-20, same sweep; stated here because the maintainers'
+    # knowledge-base entry it came from does not ship -- AUDIT-2026-09-24 RT-10):
+    #   * the 8 SHOTGUNS (amount=8, barrelamount=2, exactly 2x) are the shot multiplier:
+    #     the engine uses max(amount, barrel), not the product. `_dps_channels` now does
+    #     (RT-8); that those 8 then agree is INFERRED from the ratio, not re-swept live.
+    #   * the other 12 are UNEXPLAINED, with heterogeneous ratios (0.0 to 4.0).
+    #   * two candidate causes were FALSIFIED: `barrelamount > 1` (46 macros carrying it
+    #     AGREE; 11 of 57 disagree vs 9 of 288 without) and beam-vs-not (6 of 106 beams
+    #     disagree vs 14 of 239 non-beams -- no enrichment).
+    # RE-PROMOTE when the remaining 12 are explained and a live re-sweep agrees, not before.
     "dps", "hullshielddps", "shieldonlydps", "hullnoshielddps", "hullonlydps",
     # `sustaineddps` STAYS regardless: it folds in the heat model (overheat, cooling,
     # re-enable), a separate unmodelled traversal the shot-rate formula never reproduced.
@@ -595,7 +604,13 @@ def _dps_channels(con, props: dict[str, str]) -> dict[str, float] | None:
     beam = (_num(b, "bullet.attach", 0.0) or 0.0) == 1
     life = _num(b, "bullet.lifetime", 0.0) or 0.0
     factor = (life / period) if beam else (1.0 / period)
-    mult = (_num(b, "bullet.amount", 1.0) or 1.0) * (_num(b, "bullet.barrelamount", 1.0) or 1.0)
+    # The shot multiplier is max(amount, barrelamount), NOT the product. MEASURED 2026-09-20
+    # (AUDIT-2026-09-24 RT-8): every shotgun row (amount=8, barrel=2; 24 rows, 8 macros) sat
+    # at exactly 2x the engine under the product, while the 46 macros carrying barrel=2 with
+    # amount=1 agree -- only `max` satisfies both populations. The two forms coincide
+    # whenever either factor is 1, so no previously-agreeing macro moves. NOT a universal
+    # fix: 12 other disagreeing macros have different, unexplained ratios.
+    mult = max(_num(b, "bullet.amount", 1.0) or 1.0, _num(b, "bullet.barrelamount", 1.0) or 1.0)
     out = {}
     for chan, suffix in _DPS_CHANNELS:
         dmg = (_num(b, "damage." + suffix, 0.0) or 0.0) + (_num(b, "areadamage." + suffix, 0.0) or 0.0)
@@ -736,8 +751,9 @@ def cmd_oracle(path: str | None, out=None, show_derived: bool = False,
               "describe the current world.", file=sys.stderr)
         return 3
 
-    match = differ = derived = unmapped = refused = 0
+    match = differ = derived = unmapped = refused = absent = 0
     diffs: list[tuple[str, str, str, str, str, bool]] = []
+    absent_rows: list[tuple[str, str, str, str]] = []
     derived_rows: list[tuple[str, str, str]] = []
     refused_rows: list[tuple[str, str, str]] = []
     missing: list[str] = []
@@ -779,6 +795,14 @@ def cmd_oracle(path: str | None, out=None, show_derived: bool = False,
                 if f in _DERIVED:
                     derived += 1
                     derived_rows.append((macro, f, ev))
+                elif mapped is not None:
+                    # MAPPED, but the store holds no value for the prop. That is not
+                    # "nobody has mapped it yet" -- the map exists and the ENGINE has a
+                    # value our store lacks, which may be a disagreement. Counting it as
+                    # unmapped hid exactly that (RT-6). Named and listed, not gated:
+                    # an absent prop can also be an engine default the store omits.
+                    absent += 1
+                    absent_rows.append((macro, f, ev, mapped[0]))
                 else:
                     unmapped += 1
                 continue
@@ -800,7 +824,7 @@ def cmd_oracle(path: str | None, out=None, show_derived: bool = False,
                 diffs.append((macro, f, ev, prop, sv, suspect))
 
     compared = sum(len(f) for (k, f) in entries.items() if k[1] not in missing)
-    accounted = match + differ + derived + unmapped + refused
+    accounted = match + differ + derived + unmapped + refused + absent
     print("engine values vs the effective store, PER FIELD", file=out)
     print(f"  entities in the dump      {len(entries)}", file=out)
     print(f"  not found in the store    {len(missing)}", file=out)
@@ -812,6 +836,9 @@ def cmd_oracle(path: str | None, out=None, show_derived: bool = False,
     if refused:
         print(f"    derivation REFUSED      {refused}  "
               f"(a traversal looked and declined -- NOT an unmapped field)", file=out)
+    print(f"    mapped, NOT in store    {absent}  "
+          f"(the map exists; the store has no value -- possibly a disagreement)",
+          file=out)
     print(f"    not mapped yet          {unmapped}", file=out)
     if accounted != compared:
         print(f"  !! {compared - accounted} fields unaccounted for - "
@@ -831,6 +858,12 @@ def cmd_oracle(path: str | None, out=None, show_derived: bool = False,
                   f"        store  {prop} = {sv}{note}", file=out)
     else:
         print("\n  no disagreement on any directly-comparable field.", file=out)
+    if absent_rows:
+        print("\n  MAPPED BUT ABSENT FROM THE STORE - the engine has a value, we have "
+              "none:", file=out)
+        for macro, f, ev, prop in absent_rows:
+            print(f"      {macro}\n        engine {f} = {ev}\n"
+                  f"        store  {prop} = <absent>", file=out)
 
     if show_derived and derived_rows:
         print(f"\n  ENGINE-DERIVED values our store does not model ({len(derived_rows)})"
@@ -926,25 +959,36 @@ def _entries_from_groundtruth(path: Path) -> tuple[dict[tuple[str, str], dict[st
         bucket = entries.setdefault((ltype, macro), {})
         if field == "*":
             stats["star_rows"] += 1
-            # ⚠ SPLIT ON THE ESCAPE, NOT ON A REAL TAB. The `*` payload is the
+            # ⚠ THE ESCAPED SEPARATORS MUST BE UNDONE BEFORE SPLITTING. The `*` payload is the
             # engine's all-fields reply, tab-joined INTERNALLY, and the writer's
             # escaping (added 2026-08-30) turns every one of those separators into a
-            # two-character `	`. Splitting on a real tab therefore found NONE and
+            # two-character backslash-t escape. Splitting on a real tab therefore found NONE and
             # parsed only the FIRST key=value -- MEASURED: it cut the scout from 37
             # fields to 10, losing hull, mass and all six drag and three inertia axes,
             # which are exactly the directly-comparable ones. The fixture then looked
             # merely "equipment-heavy" rather than gutted.
             # Pre-2026-08-30 fixtures carry REAL tabs and must still parse, so pick
             # the separator that is actually present rather than assuming a vintage.
-            esc_tab = chr(92) + "t"
-            sep = esc_tab if esc_tab in value else TAB
-            for kv in value.split(sep):
+            #
+            # ⚠ AND UNESCAPE BEFORE SPLITTING, NOT AFTER. Splitting the escaped text on
+            # the two-character escape also split inside an escaped BACKSLASH followed
+            # by a `t` -- a Windows path `C:<bs>temp` is written `C:<bs><bs>temp` and
+            # was cut at its second backslash (RT-5). One left-to-right unescape of the
+            # whole column restores the real tabs, which are then the only separators.
+            # A per-field value inside the `*` reply carries no escaping of its own
+            # (the writer's is the only layer), so nothing is unescaped twice.
+            if TAB in value:
+                # Pre-escaping vintage: real tabs, per-value unescape as it always was.
+                items = [(kv, True) for kv in value.split(TAB)]
+            else:
+                items = [(kv, False) for kv in _unescape(value).split(TAB)]
+            for kv, legacy in items:
                 if "=" in kv:
                     k, v = kv.split("=", 1)
                     # A per-field row is the more precise record of the same cell, so it
                     # WINS: the all-fields reply is one flattened string and a value
                     # containing "=" or a tab is ambiguous inside it.
-                    bucket.setdefault(k, _unescape(v))
+                    bucket.setdefault(k, _unescape(v) if legacy else v)
         else:
             stats["field_rows"] += 1
             bucket[field] = _unescape(value)
@@ -1352,9 +1396,9 @@ def cmd_query(verb: str, args: list[str], pipe: str | None, timeout: float,
 #: each, because a ramp that stops below the real ceiling reports the ramp's own
 #: limit as a finding.
 #:
-#: ⚠ THE TOP MUST STAY BELOW OUR OWN READ BUFFER. `_livepipe._BUF` is 64 KiB and the
-#: frame adds a ~24-byte header, so a 65536-byte payload is a 65560-byte MESSAGE that
-#: overflows the buffer on OUR side. MEASURED 2026-08-29 by the E2E ramp test against a
+#: ⚠ THE TOP MUST STAY BELOW OUR OWN READ BUFFER. `_livepipe._BUF` WAS 64 KiB (it is
+#: 1 MiB now) and the frame adds a ~24-byte header, so a 65536-byte payload was a
+#: 65560-byte MESSAGE that overflowed the buffer on OUR side. MEASURED 2026-08-29 by the E2E ramp test against a
 #: stand-in that truncates nothing: the ramp reported "the ceiling lies in (60000,
 #: 65536]" -- which is this module's buffer, not the game's transport, and it would have
 #: gone into F74 as an engine measurement. `test_the_ramp_cannot_probe_past_our_own_buffer`
@@ -1378,7 +1422,7 @@ def cmd_ramp(pipe: str | None, timeout: float, out=None) -> int:
     measuring where a message stops surviving, and an over-long one costs the whole
     connection rather than a few bytes off the end.
 
-    Python buffers 64 KB; an earlier session recorded 2047 bytes from the winpipe DLL
+    Our read buffer is `_livepipe._BUF` (1 MiB; it was 64 KB); an earlier session recorded 2047 bytes from the winpipe DLL
     with no traceable source (REFUTED in game 2026-08-29 -- 64,000 bytes round-trips);
     the mod's own readme documents no limit at all. Different layers, so this measures
     rather than picks.
@@ -1404,8 +1448,10 @@ def cmd_ramp(pipe: str | None, timeout: float, out=None) -> int:
 def _ramp_over(lp, out) -> int:
     """The ramp itself, against an ALREADY-OPEN pipe.
 
-    Split out because the lua client does not reconnect after a disconnect, so a
-    session's whole budget is one connection. One implementation, two callers.
+    Split out so `groundtruth --with-ramp` can run it inside its own connection: the game
+    executes only in the foreground, so one connection is one alt-tab. (It was once
+    believed the lua client does not reconnect; MEASURED since, it does -- see the note
+    in `cmd_groundtruth`.) One implementation, two callers.
     """
     from . import _livepipe
 
@@ -1929,6 +1975,20 @@ FFI_CENSUS_BATCH_BYTES = 1000
 _SYM_CLASSES = ("exported", "notexported", "undeclared", "other", "invalid")
 
 
+def _ffi_request_room() -> tuple[int, int]:
+    """(header bytes, bytes left for tab-joined names) in one `ffisyms` request.
+
+    The reserve is the WHOLE frame header, measured from the real encoder: tag, protocol,
+    sequence number, verb and every separator. It used to be `len("ffisyms") + 2` -- 9
+    bytes for a header that is 16+ -- so an ACCEPTED --batch-bytes produced batches the pipe
+    then refused one by one (AUDIT-2026-09-24 RT-7). The sequence number grows per request,
+    so it is reserved at 10 digits, far above any number of requests one connection sends.
+    """
+    from . import _livepipe
+    header = len(_livepipe.encode_command(9_999_999_999, "ffisyms", ("",)).encode("utf-8"))
+    return header, _livepipe.MAX_REQUEST_BYTES - header
+
+
 def _ffi_batches(names: list[str], batch_bytes: int):
     """Split *names* so each request holds <= FFI_CENSUS_MAX_NAMES names and <= *batch_bytes*
     bytes of tab-joined names. A single name longer than the byte bound travels alone."""
@@ -1993,12 +2053,13 @@ def cmd_ffi_census(pipe: str | None, timeout: float, out_file: str | None = None
     # every batch already answered. That also contradicted this command's own promise that
     # batches already answered are kept. The bound is a constant, so the honest place to
     # say no is here, once, naming the cap -- not once per batch after the work is lost.
-    _room = _livepipe.MAX_REQUEST_BYTES - len("ffisyms") - 2
+    _header, _room = _ffi_request_room()
     if batch_bytes > _room:
         print(f"REFUSING: --batch-bytes {batch_bytes} exceeds what one request can carry: "
-              f"the pipe caps a request at {_livepipe.MAX_REQUEST_BYTES} bytes and the verb "
-              f"and separators take the rest, leaving {_room}. A larger request tears the "
-              f"pipe down on the game side.", file=sys.stderr)
+              f"the pipe caps a request at {_livepipe.MAX_REQUEST_BYTES} bytes and the frame "
+              f"header (tag, protocol, sequence, verb, separators) takes up to {_header}, "
+              f"leaving {_room}. A larger request tears the pipe down on the game side.",
+              file=sys.stderr)
         return 2
     plan = list(_ffi_batches(valid, batch_bytes))
     batches = errored_batches = 0
@@ -2166,6 +2227,11 @@ COMPONENT_FIELDS: tuple[str, ...] = (
 )
 
 
+#: The most `globals` pages one harvest asks for. The engine may claim more; the harvest
+#: then says how many it fetched (see `cmd_harvest`), never just the claimed total.
+HARVEST_GLOBALS_MAX_PAGES = 40
+
+
 def _harvest_ask(lp, rows, counts, section, key, verb, *args):
     """One question, one accounted row. Never drops a cell.
 
@@ -2265,8 +2331,11 @@ def cmd_harvest(pipe: str | None, timeout: float, out_file: str | None = None,
 
         # 3. The _G inventory, every page. Paged because the reply cap is hard: an
         #    over-long message tears the pipe down rather than arriving short.
-        page, pages, ngl = 1, 1, 0
-        while page <= pages and page <= 40:
+        #    The walk is CAPPED, so it states how many pages it actually fetched: the
+        #    engine's `pages=` is what it CLAIMS, and printing that alone read as a
+        #    complete inventory when only the first 40 had been asked (RT-4).
+        page, pages, ngl, fetched = 1, 1, 0, 0
+        while page <= pages and page <= HARVEST_GLOBALS_MAX_PAGES:
             r = _harvest_ask(lp, rows, counts, "globals", f"page{page}",
                              "globals", "-", str(page))
             if r is None or not r.fields:
@@ -2274,8 +2343,19 @@ def cmd_harvest(pipe: str | None, timeout: float, out_file: str | None = None,
             h = dict(kv.split("=", 1) for kv in r.fields[0].split(" ") if "=" in kv)
             pages = int(h.get("pages", 1))
             ngl = int(h.get("matched", 0))
+            fetched += 1
             page += 1
-        print(f"  globals      {ngl} name(s) over {pages} page(s)", file=out)
+        if fetched < pages:
+            why = (f"capped at {HARVEST_GLOBALS_MAX_PAGES} pages"
+                   if fetched >= HARVEST_GLOBALS_MAX_PAGES else "a page did not answer")
+            globals_note = (f"globals INCOMPLETE: fetched {fetched} of {pages} page(s) "
+                            f"({why}); {ngl} is the engine's total, not what was recorded")
+        else:
+            globals_note = ""
+        print(f"  globals      {ngl} name(s) over {pages} page(s), "
+              f"{fetched} of {pages} fetched", file=out)
+        if globals_note:
+            print(f"  !            {globals_note}", file=out)
 
         # 4. Who and where we are. The sector token is per-session and must be read
         #    fresh: MEASURED, it changes every launch.
@@ -2343,6 +2423,7 @@ def cmd_harvest(pipe: str | None, timeout: float, out_file: str | None = None,
         f"# build={build} faction={faction} fields={len(COMPONENT_FIELDS)}",
         f"# asked={counts['asked']} present={counts['present']} "
         f"absent={counts['absent']} errored={counts['errored']}",
+        *([f"# {globals_note}"] if globals_note else []),
         "section\tkey\tvalue",
     ]
     # Tabs inside a payload are ROW separators (station rows, globals pages) and
@@ -2545,9 +2626,9 @@ def main(argv: list[str] | None = None) -> int:
                          "`<table>`. The running helper must be a build that knows the flag: "
                          "check `x4live query probe` first")
     pg.add_argument("--with-ramp", action="store_true",
-                    help="run the size ramp FIRST, in the SAME connection -- the lua "
-                         "client does not reconnect after a disconnect, so a session's "
-                         "whole budget is one connection")
+                    help="run the size ramp FIRST, in the SAME connection, so the user "
+                         "alt-tabs to the game once for both (the game executes only in "
+                         "the foreground)")
 
     pm = sub.add_parser("ramp",
                         help="MEASURE the message-size cap. An over-long message does "

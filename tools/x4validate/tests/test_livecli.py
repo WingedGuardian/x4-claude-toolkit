@@ -1294,8 +1294,9 @@ def test_ffi_census_BATCHES_within_the_NAME_bound_when_bytes_allow_more(tmp_path
     # which no real pipe accepts -- so the byte bound was unreachable here and the test
     # could not tell the two bounds apart. At the real ceiling the NAME bound still
     # binds first (150 names of ~5 bytes is well under it), which is what this asserts.
-    from x4validate import _livepipe
-    room = _livepipe.MAX_REQUEST_BYTES - len('ffisyms') - 2
+    # The room the command itself computes from the real frame header (RT-7: the old
+    # `MAX - len('ffisyms') - 2` reserved 9 bytes for a 16+-byte header).
+    room = C._ffi_request_room()[1]
     rc, out, _ = _census_run(tmp_path, monkeypatch, names, pipe, batch_bytes=room)
     assert rc == 0, out
     assert all(len(b) <= 150 for _, b in pipe.requests), [len(b) for _, b in pipe.requests]

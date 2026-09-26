@@ -7,13 +7,17 @@ concept (ATD suppresses ejection via ``set_emergency_eject_active`` +
 ``set_object_min_hull`` — neither contains "eject" or "death"). This index answers
 the three questions that actually matter for interaction analysis in one lookup:
 
-- ``who-calls <action>``  — every place an MD/aiscript action element appears
+- ``who-calls <action>``  — every place an MD/aiscript action element appears,
+  cue-edge actions (``signal_cue``, ``cancel_cue``, ...) included
 - ``who-listens <event>`` — every cue whose condition fires on an ``event_*``
 - ``cue <name>``          — where a cue is defined, signalled, and cancelled
 
 built over base + DLC + every installed mod (packed or loose). Structural containers,
-control flow (``do_*``/``check_*``), and variable/debug plumbing are excluded so the
-index stays about behavior, not bookkeeping.
+control flow (``do_if``/``do_else``/``do_elseif``/``do_all``/``do_while``/``do_for_each``
+and the generic ``check_all``/``check_any``/``check_value``/``check_age``), and
+variable/debug plumbing are excluded so the index stays about behavior, not
+bookkeeping -- the exact list is ``_SKIP_TAGS``. A SPECIFIC condition such as
+``check_object`` names what it tests, so it IS indexed, as an action.
 """
 
 from __future__ import annotations
@@ -254,7 +258,16 @@ def _fmt(r: XrefRow) -> str:
     return f"  {loc}{ctx}{tgt}"
 
 
-_KIND_CMD = {"action": "who-calls", "event": "who-listens", "cuedef": "cue", "signal": "cue"}
+#: Which command finds a row of each kind BY ITS NAME. A `signal` row's name is the
+#: cue-edge ACTION tag (`signal_cue`); its target cue is found by `cue <target>`, so a
+#: signal row is reached by name through `who-calls`, not `cue` -- mapping it to `cue`
+#: made `cue signal_cue` suggest `cue signal_cue` (AUDIT-2026-09-24 AN-8).
+_KIND_CMD = {"action": "who-calls", "event": "who-listens", "cuedef": "cue", "signal": "who-calls"}
+
+#: The row kinds each query command searches by name. `who-calls` covers the cue-edge
+#: actions too: they ARE action elements, indexed as `signal` only so their `cue=`
+#: target is kept, and no command answered "where is signal_cue used" (AN-8).
+_CMD_KINDS = {"who-calls": ("action", "signal"), "who-listens": ("event",)}
 
 
 def _sidecar(tsv: Path) -> Path:
@@ -307,8 +320,8 @@ def coverage_note(rows: list[XrefRow]) -> str:
     return note
 
 
-def _hint_other_kinds(rows: list[XrefRow], name: str, asked_kind: str,
-                      tsv: Path | None = None) -> None:
+def _hint_other_kinds(rows: list[XrefRow], name: str, asked_kind: "str | tuple[str, ...]",
+                      tsv: Path | None = None, ran: str = "") -> None:
     """When a name isn't found in the asked-for kind, say whether it exists at all.
 
     `who-calls event_player_ejected` used to print exactly the same line as
@@ -333,8 +346,9 @@ def _hint_other_kinds(rows: list[XrefRow], name: str, asked_kind: str,
     # CLAUDE.md #9: default to case-insensitive for X4 identifiers, because the
     # corpus genuinely mixes case.
     name_l = name.lower()
+    asked = (asked_kind,) if isinstance(asked_kind, str) else tuple(asked_kind)
     elsewhere = Counter(r.kind for r in rows
-                        if r.name.lower() == name_l and r.kind != asked_kind)
+                        if r.name.lower() == name_l and r.kind not in asked)
     if not elsewhere:
         print(f"  and '{name}' does not appear under ANY kind — "
               f"a real negative over {len(rows)} indexed rows"
@@ -343,7 +357,8 @@ def _hint_other_kinds(rows: list[XrefRow], name: str, asked_kind: str,
     print(f"  BUT '{name}' IS in the index under other kind(s):")
     for kind, n in elsewhere.most_common():
         cmd = _KIND_CMD.get(kind)
-        suffix = f"   -> try:  x4xref {cmd} {name}" if cmd else ""
+        # Never suggest the command that was just run: that hint is a loop.
+        suffix = f"   -> try:  x4xref {cmd} {name}" if cmd and cmd != ran else ""
         print(f"    {kind:8} {n:>5} occurrence(s){suffix}")
 
 
@@ -370,7 +385,8 @@ def main(argv: list[str] | None = None) -> int:
     pb.add_argument("--out", help="TSV output path (default: dev\\_registry\\md_xref.tsv)")
 
     for cmd, kind, help_ in [
-        ("who-calls", "action", "list every place an action element appears"),
+        ("who-calls", "action", "list every place an action element appears, cue-edge "
+                                "actions (signal_cue, cancel_cue, ...) included"),
         ("who-listens", "event", "list every cue reacting to an event_* condition"),
     ]:
         q = sub.add_parser(cmd, help=help_)
@@ -466,7 +482,7 @@ def main(argv: list[str] | None = None) -> int:
         edges = cue_edges(rows, args.name)
         if not edges:
             print(f"no references to cue '{args.name}'")
-            _hint_other_kinds(rows, args.name, "cue", tsv)
+            _hint_other_kinds(rows, args.name, "cue", tsv, ran="cue")
             return 0
         for group in ("defined", *sorted(k for k in edges if k != "defined")):
             if group in edges:
@@ -475,10 +491,11 @@ def main(argv: list[str] | None = None) -> int:
                     print(_fmt(r))
         return 0
 
-    hits = query(rows, args._kind, args.name)
+    kinds = _CMD_KINDS[args.cmd]
+    hits = [h for k in kinds for h in query(rows, k, args.name)]
     if not hits:
         print(f"no {args._kind} '{args.name}' found in the index.")
-        _hint_other_kinds(rows, args.name, args._kind, tsv)
+        _hint_other_kinds(rows, args.name, kinds, tsv, ran=args.cmd)
         return 0
     by_source: dict[str, list[XrefRow]] = defaultdict(list)
     for h in hits:

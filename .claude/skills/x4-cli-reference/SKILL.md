@@ -49,7 +49,7 @@ Run a CLI from `$CLAUDE_PROJECT_DIR/tools/x4validate` as `uv run <cli> ...`. The
 | | `ramp` | MEASURE the message-size cap. An over-long message does NOT truncate -- it TEARS THE PIPE DOWN, costing the whole connection (F74, corrected 2026-08-29). Bounded below at 64,000 bytes; the ceiling above that is unmeasured |
 | **`x4modlist`** | | X4 mod-registry triage tool (API-first). |
 | | `ingest` | scan installed extension folders (PRIMARY) into the registry, cross-checked against the profile content.xml |
-| | `refresh` | refresh upstream metadata via Nexus/Steam API |
+| | `refresh` | refresh upstream metadata via Nexus/Steam API, and say which mods have an update: upstream's newest MAIN file uploaded after the installed manifest's date (both dates printed) |
 | | `dashboard` | regenerate WORKLIST.md from the registry |
 | | `needs-review` | list entries needing a spot-check decision |
 | | `resolve` | pin a mod's Nexus identity permanently (+fetch) |
@@ -70,6 +70,6 @@ Run a CLI from `$CLAUDE_PROJECT_DIR/tools/x4validate` as `uv run <cli> ...`. The
 | **`x4validate`** | | Validate X4 mod diff patches against the effective merged game tree. |
 | **`x4xref`** | | Cross-index of MD/aiscript actions, events, and cue edges. |
 | | `build` | (re)build the index over base+DLC+installed mods |
-| | `who-calls` | list every place an action element appears |
+| | `who-calls` | list every place an action element appears, cue-edge actions (signal_cue, cancel_cue, ...) included |
 | | `who-listens` | list every cue reacting to an event_* condition |
 | | `cue` | where a cue is defined, signalled, cancelled |

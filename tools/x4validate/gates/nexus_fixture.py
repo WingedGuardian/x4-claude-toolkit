@@ -34,7 +34,7 @@ import json
 import shutil
 import sys
 import urllib.error
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -106,6 +106,14 @@ def record() -> int:
         for field in ("name", "version", "status", "updated_timestamp"):
             assert field in raw, f"live REST response lost field {field!r}"
         fixture["rest"][str(1000 + i)] = _anonymize_rest(raw, i)
+        # The file list feeds the update verdict (RG-3). Names anonymized; the fields the
+        # parser reads (version, upload time, category) kept as recorded.
+        rawf = _nexus._get_json(f"{_nexus.NEXUS_REST}/{nid}/files.json", headers)
+        fixture.setdefault("files", {})[str(1000 + i)] = {"files": [
+            {"file_id": j, "name": f"Example File {j}", "version": str(f.get("version", "")),
+             "uploaded_time": f.get("uploaded_time", ""),
+             "category_name": f.get("category_name", "")}
+            for j, f in enumerate((rawf or {}).get("files") or [], 1)]}
         print(f"  rest  id={nid} -> status={meta.status!r} version={meta.version!r} (anonymized)")
 
     # A real search, recorded under a neutral term.
@@ -148,6 +156,8 @@ class _Replay:
 
     def get_json(self, url: str, headers: dict) -> dict:
         self.calls.append(url)
+        if url.endswith("/files.json"):
+            return self._files(url)
         mod_id = url.rsplit("/", 1)[-1].removesuffix(".json")
         if mod_id == str(self.fx["missing_id"]):
             raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
@@ -155,6 +165,27 @@ class _Replay:
         if body is None:
             raise AssertionError(f"unrecorded REST call: {url}")
         return body
+
+    #: files.json replies DERIVED from the recorded REST body, served only when the
+    #: fixture predates files recording. Counted and printed, never silent: a derived
+    #: reply exercises the parser and the update verdict, not the live file-list shape.
+    derived_files = 0
+
+    def _files(self, url: str) -> dict:
+        mod_id = url.rsplit("/", 2)[-2]
+        if mod_id == str(self.fx["missing_id"]):
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+        recorded = (self.fx.get("files") or {}).get(mod_id)
+        if recorded is not None:
+            return recorded
+        body = self.fx["rest"].get(mod_id)
+        if body is None:
+            raise AssertionError(f"unrecorded REST call: {url}")
+        self.derived_files += 1
+        ts = int(body.get("updated_timestamp") or 0)
+        uploaded = datetime.fromtimestamp(ts, timezone.utc).isoformat() if ts else ""
+        return {"files": [{"file_id": 1, "name": "main", "version": body.get("version", ""),
+                           "uploaded_time": uploaded, "category_name": "MAIN"}]}
 
     def post_json(self, url: str, body: dict, headers: dict) -> dict:
         self.calls.append(url)
@@ -294,6 +325,9 @@ def replay() -> int:
 
         _check_refresh_end_to_end(fx, failures)
         print(f"\n  recorded calls served: {len(rp.calls)}  (network calls made: 0)")
+        if rp.derived_files:
+            print(f"  NOTE: {rp.derived_files} files.json repl(y/ies) DERIVED from the REST "
+                  "record -- this fixture predates file-list recording; re-run --record")
     finally:
         _nexus._get_json, _nexus._post_json = orig_get, orig_post
         _nexus.nexus_key = orig_key
