@@ -93,20 +93,27 @@ def collect_text_defs(config: _merge.Config, extra_overlays=None,
     sources = ([config.reference] + config.dlc_dirs()
                + list(config.overlays) + list(extra_overlays or []))
     for src in sources:
-        for rel in t_file_rels(src):
-            f = src / rel
-            try:
-                if f.is_file():
-                    defs |= _refs.text_defs(_merge.parse_file(f))
-                    continue
-                data = _cat.read_path(src, rel)  # packed: ext_01.cat/.dat
-                if data is not None:
-                    defs |= _refs.text_defs(_merge.parse_bytes(data))
-            except (etree.XMLSyntaxError, OSError) as exc:
-                if report is not None:
-                    report.skip("text-reference checks",
-                                f"{src.name}/{rel}: unreadable, its strings are missing "
-                                f"from the definition set ({exc})")
+        defs |= _source_text_defs(src, report)
+    return defs
+
+
+def _source_text_defs(src: Path, report: Report | None = None) -> set[tuple[str, str]]:
+    """(page,t) definitions from every t-file under ONE source root, loose or packed."""
+    defs: set[tuple[str, str]] = set()
+    for rel in t_file_rels(src):
+        f = src / rel
+        try:
+            if f.is_file():
+                defs |= _refs.text_defs(_merge.parse_file(f))
+                continue
+            data = _cat.read_path(src, rel)  # packed: ext_01.cat/.dat
+            if data is not None:
+                defs |= _refs.text_defs(_merge.parse_bytes(data))
+        except (etree.XMLSyntaxError, OSError) as exc:
+            if report is not None:
+                report.skip("text-reference checks",
+                            f"{src.name}/{rel}: unreadable, its strings are missing "
+                            f"from the definition set ({exc})")
     return defs
 
 
@@ -140,9 +147,10 @@ def collect_macro_defs(config: _merge.Config, extra_overlays=None,
     if merged.tree is None:
         _fail("no effective macro index (missing from base+DLC and every overlay)")
         return None
-    for s in merged.skipped:
-        if report is not None:
-            report.skip("macro index overlay", s)
+    # DEGRADED, through the one shared helper (AUDIT-2026-09-24 VA-10). This loop
+    # recorded a dropped overlay as a plain skip, so a macro index built without
+    # a mod's registrations exited 0/1 instead of 3.
+    note_dropped_overlays(merged, "macro-reference checks", report)
     return _refs.macro_names(merged.tree)
 
 
@@ -802,6 +810,60 @@ def _installed_folders() -> set[str] | None:
         return None
 
 
+def _disabled_folders() -> set[str] | None:
+    """Lowercased folder names of every extension that is INSTALLED but NOT
+    active (manifest- or profile-disabled), or None if unscannable.
+
+    Derived from ONE registry read of both scopes, so "disabled" is positive
+    knowledge about a real folder -- never "absent from the active set", which is
+    also what an unknown folder looks like."""
+    try:
+        installed = {m["folder"].lower() for m in _registry.mods("installed")}
+        active = {m["folder"].lower() for m in _registry.mods("active")}
+    except OSError:
+        # silent-ok: None is the contract, as for `_installed_folders`; the one
+        # caller then declines to call the target disabled.
+        return None
+    return installed - active
+
+
+def _in_tree(target: str, config: _merge.Config) -> bool:
+    """Is extension *target* one of the roots this run actually merges?"""
+    t = target.lower()
+    return any(p.name.lower() == t
+               for p in (*config.overlays, *config.final_overlays))
+
+
+def _target_disabled(target: str, config: _merge.Config) -> bool:
+    """True only when *target* is INSTALLED, NOT active, and not merged here.
+
+    Every unknown answers False, so this can only ever excuse a patch whose
+    target is positively known to be switched off."""
+    if _in_tree(target, config):
+        return False
+    disabled = _disabled_folders()
+    return disabled is not None and target.lower() in disabled
+
+
+def _inactive_target_reason(vpath: str, config: _merge.Config) -> str | None:
+    """Why *vpath*'s nested target is not loaded ("not installed" / "installed
+    but disabled"), or None if it is loaded, not nested, a DLC, or unknown."""
+    owned = config.packed_dlc_names()
+    nested = _merge._nested_target(vpath, owned)
+    if nested is None or nested[0].lower() in owned:
+        return None
+    if _in_tree(nested[0], config):
+        return None
+    installed = _installed_folders()
+    if installed is None:
+        return None
+    if nested[0].lower() not in installed:
+        return f"'{nested[0]}' is not installed"
+    if _target_disabled(nested[0], config):
+        return f"'{nested[0]}' is installed but disabled"
+    return None
+
+
 def _no_base_finding(vpath: str, config: _merge.Config) -> tuple[str, str, str]:
     """(severity, category, message) for a file whose base tree could not be built.
 
@@ -842,6 +904,15 @@ def _no_base_finding(vpath: str, config: _merge.Config) -> tuple[str, str, str]:
             return ("info", "inactive",
                     f"patch targets extension '{nested[0]}', which is not installed — "
                     "the engine never loads this file (designed no-op, not an error)")
+        # Installed is a fact about the DISK; whether the engine LOADS the target
+        # is a fact about the active set. A target that is on disk but switched
+        # off is neither misspelled nor present in any tree, so it fell through to
+        # "path mismatch" ERROR under Tier B (AUDIT-2026-09-24 VA-6).
+        if _target_disabled(nested[0], config):
+            return ("info", "inactive",
+                    f"patch targets extension '{nested[0]}', which is installed but "
+                    "DISABLED — the engine never loads this file while it is off "
+                    "(designed no-op, not an error)")
     parts = vpath.split("/")
     if len(parts) > 1 and parts[0] == "extensions" and parts[1].lower().startswith("ego_dlc_"):
         dlc = parts[1]
@@ -932,46 +1003,70 @@ def _warn_if_pathologically_large(diff_root, vpath: str, report: Report) -> None
                    vpath)
 
 
+def _sel_check_file(vpath: str, diff_root, config: _merge.Config, report: Report,
+                    seen_skips: set[str]) -> bool:
+    """Sel-resolution for ONE diff file. Returns True iff its ops were EVALUATED.
+
+    The ONE implementation behind both the full run and `--file`. They used to be
+    two, and the `--file` copy lacked the inactive-target and inert-bare-path
+    verdicts: the per-edit hook called a nested patch for an uninstalled target an
+    ERROR (the full run: INFO "inactive"), and let a bare-path patch over another
+    MOD's file through clean (the full run: ERROR) -- AUDIT-2026-09-24 VA-2.
+    """
+    _warn_if_pathologically_large(diff_root, vpath, report)
+    merged = _merge.build_effective(vpath, config)
+    # An overlay we could not parse was left out of this tree, so every verdict
+    # below is computed against an incomplete tree. That disables the check's
+    # premise, not one file — the Skipped docstring's definition of degraded.
+    for msg in merged.skipped:
+        if msg not in seen_skips:
+            seen_skips.add(msg)
+            report.skip(f"sel-resolution against a complete tree ({vpath})",
+                        f"an overlay could not be parsed, so the comparison tree is "
+                        f"incomplete: {msg}", degraded=True)
+    if merged.tree is None:
+        report.add(*_no_base_finding(vpath, config), vpath)
+        return False
+    if (not merged.base_from_game
+            and _merge._nested_target(vpath, config.packed_dlc_names()) is None):
+        # Some mod supplies this file, but the GAME does not — so a bare-path diff
+        # over it is inert. Deliberately no _check_ops: its verdict on a file the
+        # engine never opens is noise, and "sel resolves fine" on a dead patch is
+        # exactly the false reassurance this finding exists to kill.
+        report.add(*_inert_bare_path_finding(vpath, merged), vpath)
+        return False
+    _check_ops(diff_root, merged.tree, vpath, report)
+    return True
+
+
+def _sel_note(checked: int, found: int, payload: int | str) -> str:
+    """The denominator line. `checked` counts files whose ops were EVALUATED; a
+    diff with no base, an inactive target or an inert bare path is FOUND but not
+    checked (AUDIT-2026-09-24 VA-11a -- it used to be counted as checked)."""
+    note = (f"sel-resolution: {checked} diff file(s) checked "
+            f"across {payload} payload XML file(s)")
+    if found != checked:
+        note += (f"; {found - checked} more diff file(s) found whose ops were NOT "
+                 "evaluated (no base / inactive target / inert path -- see the findings)")
+    return note
+
+
 def check_sel_resolution(mod_dir: Path, config: _merge.Config, report: Report) -> None:
     """Flag any non-silent op whose sel= matches nothing in the merged base+DLC tree."""
-    checked = 0
+    checked = found = 0
     seen_skips: set[str] = set()
     for vpath, diff_root in iter_diff_files(mod_dir):
-        checked += 1
-        _warn_if_pathologically_large(diff_root, vpath, report)
-        merged = _merge.build_effective(vpath, config)
-        # An overlay we could not parse was left out of this tree, so every verdict
-        # below is computed against an incomplete tree. That disables the check's
-        # premise, not one file — the Skipped docstring's definition of degraded.
-        for msg in merged.skipped:
-            if msg not in seen_skips:
-                seen_skips.add(msg)
-                report.skip(f"sel-resolution against a complete tree ({vpath})",
-                            f"an overlay could not be parsed, so the comparison tree is "
-                            f"incomplete: {msg}", degraded=True)
-        if merged.tree is None:
-            report.add(*_no_base_finding(vpath, config), vpath)
-            continue
-        if (not merged.base_from_game
-                and _merge._nested_target(vpath, config.packed_dlc_names()) is None):
-            # Some mod supplies this file, but the GAME does not — so a bare-path diff
-            # over it is inert. Deliberately `continue` without _check_ops: its verdict
-            # on a file the engine never opens is noise, and "sel resolves fine" on a
-            # dead patch is exactly the false reassurance this finding exists to kill.
-            report.add(*_inert_bare_path_finding(vpath, merged), vpath)
-            continue
-        _check_ops(diff_root, merged.tree, vpath, report)
+        found += 1
+        checked += _sel_check_file(vpath, diff_root, config, report, seen_skips)
 
     # Always state the denominator. "OK: no issues found" over 14 files and over 1
     # file printed identically until 2026-08-01, for the tool's PRIMARY check.
     payload = [v for v, _ in iter_mod_xml_roots(mod_dir) if v.lower() != MANIFEST]
-    report.notes.append(
-        f"sel-resolution: {checked} diff file(s) checked "
-        f"across {len(payload)} payload XML file(s)")
+    report.notes.append(_sel_note(checked, found, len(payload)))
 
-    if checked:
+    if found:
         return
-    # Nothing was sel-checked. That has three causes with three different verdicts,
+    # No diff file at all. That has three causes with three different verdicts,
     # and until 2026-08-01 all three produced one warning asserting the third —
     # via report.add("warn", "skipped", ...), which LOOKS like the skip channel but
     # creates a Finding, so report.degraded stayed empty and the CLI exited 0.
@@ -1005,9 +1100,28 @@ def check_sel_resolution(mod_dir: Path, config: _merge.Config, report: Report) -
                     "no payload of any kind was found to check", degraded=True)
 
 
+def _file_vpath(file_path: Path, mod_dir: Path) -> str | None:
+    """*file_path*'s vpath inside *mod_dir*, or None if it is not inside it.
+
+    Both sides are RESOLVED first: a relative mod_dir with an absolute --file (or
+    the reverse) made `relative_to` raise, and the old fallback used the bare
+    FILENAME as the vpath -- `wares.xml` instead of `libraries/wares.xml` -- so a
+    clean patch read as "no base game file" (AUDIT-2026-09-24 VA-4)."""
+    try:
+        return file_path.resolve().relative_to(mod_dir.resolve()).as_posix()
+    except ValueError:
+        # silent-ok: None IS the channel -- the one caller records a DEGRADED skip
+        # naming the file, rather than guessing a vpath.
+        return None
+
+
 def check_sel_resolution_one(file_path: Path, mod_dir: Path,
                              config: _merge.Config, report: Report) -> None:
-    """Fast path: sel-resolution for ONE edited file (the auto-validate hook)."""
+    """Fast path: sel-resolution for ONE edited file (the auto-validate hook).
+
+    Shares `_sel_check_file` with the full run, so both give one verdict for one
+    file, and states its own denominator note (AUDIT-2026-09-24 VA-14: it printed
+    "OK: no issues found" with no notes at all)."""
     try:
         root = _merge.parse_file(file_path)
     except etree.XMLSyntaxError as exc:
@@ -1018,10 +1132,15 @@ def check_sel_resolution_one(file_path: Path, mod_dir: Path,
         # so the narrower catch above let a plain typo escape as a traceback.
         report.add("error", "path", f"cannot read file: {exc}", str(file_path))
         return
-    try:
-        vpath = file_path.relative_to(mod_dir).as_posix()
-    except ValueError:
-        vpath = file_path.name
+    vpath = _file_vpath(file_path, mod_dir)
+    if vpath is None:
+        # Guessing a vpath (the bare filename) produced false verdicts; refusing to
+        # guess is the honest answer. Degraded: the one check asked for did not run.
+        report.skip(f"sel-resolution ({file_path})",
+                    f"the file is not inside the mod folder '{mod_dir}', so its game "
+                    "path (vpath) is unknown and its selectors were not resolved",
+                    degraded=True)
+        return
     if root.tag != "diff":
         # NOT a silent return. This function only knows how to check a <diff>, and
         # `validate()` RETURNS immediately after calling it in --file mode -- so for
@@ -1037,22 +1156,10 @@ def check_sel_resolution_one(file_path: Path, mod_dir: Path,
         report.skip(f"sel-resolution ({vpath})",
                     f"<{root.tag}> is a complete file, not a <diff>, so it has no "
                     f"selectors to resolve -- and --file runs no other check")
+        report.notes.append(_sel_note(0, 0, f"1 (--file: {vpath})"))
         return
-    merged = _merge.build_effective(vpath, config)
-    # THE SAME DEGRADED SKIP THE FULL PATH RECORDS. An overlay that could not be
-    # parsed was left out of this tree, so the verdict below is computed against an
-    # incomplete one -- the check's premise is disabled, not one file. The full run
-    # names the dropped overlay and marks it degraded; this path erased it, so the
-    # identical bytes gave `skipped=[( ..., True)]` through `validate()` and
-    # `skipped=[]` through `--file`.
-    for msg in merged.skipped:
-        report.skip(f"sel-resolution against a complete tree ({vpath})",
-                    f"an overlay could not be parsed, so the comparison tree is "
-                    f"incomplete: {msg}", degraded=True)
-    if merged.tree is None:
-        report.add("error", "path", f"no base game file for '{vpath}'", vpath)
-        return
-    _check_ops(root, merged.tree, vpath, report)
+    checked = _sel_check_file(vpath, root, config, report, set())
+    report.notes.append(_sel_note(int(checked), 1, f"1 (--file: {vpath})"))
 
 
 def _added_subtrees(diff_root: etree._Element):
@@ -1082,11 +1189,22 @@ def _ref_severity(vpath: str, config: _merge.Config) -> tuple[str, str]:
     `bullet_cpsdo_l_ion_01_mk1` ARE defined -- in `cpsdo_zb_modpack`, the mod
     cpsdo_vro patches. Both findings sit at `extensions/cpsdo_zb_modpack/...`.
 
-    Under Tier B this returns `error` unconditionally: those overlays ARE merged,
-    so a reference that still dangles there really does dangle, and demoting it
-    would delete the one mode that can answer the question.
+    Under Tier B this returns `error` -- those overlays ARE merged, so a reference
+    that still dangles there really does dangle -- EXCEPT inside an INACTIVE
+    nested patch (target not installed, or installed but disabled). The same run
+    already calls that file a designed no-op the engine never loads, so a
+    reference inside it cannot be a gating defect (AUDIT-2026-09-24 VA-5). It is
+    still reported, as INFO naming why.
+
+    A patch on a PACKED-only DLC gates as `error` in both tiers: `dlc_dirs()`
+    merges packed DLC too, so Tier A CAN answer it (AUDIT-2026-09-24 VA-7 -- it
+    was demoted as "cross-mod").
     """
     if config.overlays:
+        inactive = _inactive_target_reason(vpath, config)
+        if inactive is not None:
+            return "info", (f" [inactive patch: {inactive}, so the engine never "
+                            "loads this file -- not a defect of this mod]")
         return "error", ""
     # `_merge._nested_target` is the ONE implementation of this question, and it
     # already draws the line in the right place: a DLC target returns None, because
@@ -1095,7 +1213,9 @@ def _ref_severity(vpath: str, config: _merge.Config) -> tuple[str, str]:
     # demoted `ebi_timelines_faction_use_ship`'s `ship_spl_xl_ark_01_c` -- which is
     # absent from Tier A's 4,721-name definition set, whole variant family included.
     # `_no_base_finding` asks the same question through the same helper.
-    if _merge._nested_target(vpath, config.packed_dlc_names()) is None:
+    owned = config.packed_dlc_names()
+    target = _merge._nested_target(vpath, owned)
+    if target is None or target[0].lower() in owned:
         return "error", ""
     return "info", (" [cross-mod: this file patches another MOD, which Tier A does "
                     "not merge -- re-check with `--tier b`]")
@@ -1161,6 +1281,15 @@ def check_references(mod_dir: Path, config: _merge.Config, report: Report) -> No
     # because the double-parse was the obvious suspect and measuring cleared it.
     diff_files = full_files = 0
     unobtainable = 0
+    # Once per FILE, not per dangling ref: the inactive-target question scans the
+    # extension set and reads the profile.
+    _sev_cache: dict[str, tuple[str, str]] = {}
+
+    def _sev_for(vpath: str) -> tuple[str, str]:
+        if vpath not in _sev_cache:
+            _sev_cache[vpath] = _ref_severity(vpath, config)
+        return _sev_cache[vpath]
+
     for vpath, root in iter_mod_xml_roots(mod_dir):
         if vpath.lower() == MANIFEST:
             continue
@@ -1183,7 +1312,7 @@ def check_references(mod_dir: Path, config: _merge.Config, report: Report) -> No
                 # index/components.xml. One question, one oracle, both scopes.
                 for d in _refs.find_dangling(holder, ware_def_set, text_def_set, entity_defs,
                                              where=vpath, expressions=expressions):
-                    sev, why = _ref_severity(vpath, config)
+                    sev, why = _sev_for(vpath)
                     report.add(sev, "ref",
                                f"introduced {d.kind} reference does not resolve: {d.ref}{why}",
                                vpath, d.line)
@@ -1191,7 +1320,7 @@ def check_references(mod_dir: Path, config: _merge.Config, report: Report) -> No
             full_files += 1
             for d in _refs.find_dangling(root, ware_def_set, text_def_set, entity_defs,
                                          where=vpath, expressions=expressions):
-                sev, why = _ref_severity(vpath, config)
+                sev, why = _sev_for(vpath)
                 report.add(sev, "ref",
                            f"{d.kind} reference does not resolve: {d.ref}{why}",
                            vpath, d.line)
@@ -1228,7 +1357,7 @@ def check_file_existence(mod_dir: Path, config: _merge.Config, report: Report) -
 
 
 def check_page_collisions(mod_dir: Path, config: _merge.Config, report: Report) -> None:
-    """Warn when the mod's added {page,t} pairs already exist in base/DLC (silent clobber).
+    """Warn when the mod's {page,t} pairs already exist earlier in the tree (silent clobber).
 
     ⚠ THE OP TREE, NOT `_added_subtrees`. That helper moves an `<add>`'s CHILDREN
     into a throwaway root, which DISCARDS the selector -- and for the into-page form
@@ -1245,18 +1374,42 @@ def check_page_collisions(mod_dir: Path, config: _merge.Config, report: Report) 
     root is the fix: the `//page[@id]` walk still finds every page-element form, and
     the selector branch now runs because the selectors still exist.
 
+    FULL t-files count too (AUDIT-2026-09-24 VA-9). t-files are merged additively,
+    so a complete `<language>` file redefining a base `{page,t}` clobbers it exactly
+    as the `<diff>` form does -- but only `<diff>` files were walked, so the same
+    string was warned in one form and silent in the other.
+
+    The warning NAMES the definer (AUDIT-2026-09-24 VA-11f): under Tier B the
+    earlier tree includes other mods, and "already defined in base/DLC" was printed
+    for a string only another MOD defines.
+
     The other two `_added_subtrees` callers are deliberately left alone -- they ask
     "what content does this mod INTRODUCE", where an `<add>` payload is the right
     population and a `<replace>` payload is a separate question with its own corpus
     cost. This call site asks "what does it OVERWRITE", which is the opposite one.
     """
-    existing = collect_text_defs(config, report=report)  # base + DLC only (NOT the mod)
-    for vpath, diff_root in iter_diff_files(mod_dir):
-        added: set[tuple[str, str]] = _refs.text_defs(diff_root)
-        for page, t in sorted(added & existing):
-            report.add("warn", "text",
-                       f"text {{{page},{t}}} already defined in base/DLC — your add clobbers it", vpath)
+    base_cfg = replace(config, overlays=(), final_overlays=())
+    base_defs = collect_text_defs(base_cfg, report=report)  # base + DLC only (NOT the mod)
+    mod_defs = [(ov.name, _source_text_defs(ov, report)) for ov in config.overlays]
 
+    def _definer(key: tuple[str, str]) -> str | None:
+        if key in base_defs:
+            return "base/DLC"
+        names = [name for name, defs in mod_defs if key in defs]
+        return f"mod {', '.join(repr(n) for n in names)}" if names else None
+
+    for vpath, root in iter_mod_xml_roots(mod_dir):
+        if root.tag != "diff" and not T_FILE_RE.search(vpath):
+            continue  # a complete NON-t-file defines no strings
+        added: set[tuple[str, str]] = _refs.text_defs(root)
+        form = "add" if root.tag == "diff" else "complete t-file"
+        for page, t in sorted(added):
+            who = _definer((page, t))
+            if who is None:
+                continue
+            report.add("warn", "text",
+                       f"text {{{page},{t}}} already defined in {who} — your {form} "
+                       "clobbers it", vpath)
 
 
 def check_text_sanity(mod_dir: Path, config: _merge.Config, report: Report) -> None:
@@ -1294,7 +1447,17 @@ def check_identity_values(mod_dir: Path, config: _merge.Config, report: Report) 
     """
     races = _race_defs(config, [mod_dir], report)
     if not races:
-        report.add("warn", "identity", f"could not resolve race definitions from {RACES_FILE}")
+        # A check that could not run is a SKIP, not a finding (AUDIT-2026-09-24
+        # VA-11e: it was a WARN, which reads as a verdict about the mod). Degraded
+        # only when the mod has a makerrace to check -- otherwise nothing was lost,
+        # and a permanent exit 3 on every mod without one would train you to
+        # ignore exit 3.
+        subjects = sum(len(root.xpath("//identification[@makerrace]"))
+                       for _, root in iter_mod_xml_roots(mod_dir))
+        report.skip("race (makerrace) identity checks",
+                    f"could not resolve race definitions from {RACES_FILE}; "
+                    f"{subjects} makerrace value(s) in this mod were not verified",
+                    degraded=bool(subjects))
         return
     for vpath, root in iter_mod_xml_roots(mod_dir):
         for ident in root.xpath("//identification[@makerrace]"):
@@ -1413,34 +1576,39 @@ def check_module_groups(mod_dir: Path, config: _merge.Config, report: Report) ->
     """
     merged = _merge.build_effective("libraries/modulegroups.xml", config,
                                     extra_overlays=[mod_dir])
+    # A dropped overlay is DEGRADED through the one shared helper (AUDIT-2026-09-24
+    # VA-10; it was a plain skip, so the incomplete tree exited 0/1, not 3).
+    note_dropped_overlays(merged, "module group checks", report)
+    subjects = [(vpath, el) for vpath, root in iter_mod_xml_roots(mod_dir)
+                if vpath.lower() != MANIFEST
+                for el in root.xpath("//module[@group]")]
+    # The whole check OFF is a DEGRADED skip when the mod has a `<module group=>`
+    # to verify (AUDIT-2026-09-24 VA-13, technical default). Without one nothing
+    # was lost, so it stays a disclosure rather than a permanent exit 3.
+    why_off = None
     if merged.tree is None:
+        why_off = "libraries/modulegroups.xml did not merge"
+    else:
+        defined = set(merged.tree.xpath("//group/@name"))
+        if not defined:
+            # An empty definition set would mark every reference dangling. That is
+            # a non-answer, not a finding — say so instead of a wall of errors.
+            why_off = "libraries/modulegroups.xml merged but defines no <group name=>"
+    if why_off is not None:
         report.skip("module group checks",
-                    "libraries/modulegroups.xml did not merge; <module group=> targets "
-                    "were not verified")
-        return
-    for s in merged.skipped:
-        report.skip("module group checks", s)
-    defined = set(merged.tree.xpath("//group/@name"))
-    if not defined:
-        # An empty definition set would mark every reference dangling. That is a
-        # non-answer, not a finding — say so instead of emitting a wall of errors.
-        report.skip("module group checks",
-                    "libraries/modulegroups.xml merged but defines no <group name=>; "
-                    "<module group=> targets were not verified")
+                    f"{why_off}; {len(subjects)} <module group=> target(s) in this mod "
+                    "were not verified", degraded=bool(subjects))
         return
 
     checked = 0
-    for vpath, root in iter_mod_xml_roots(mod_dir):
-        if vpath.lower() == MANIFEST:
-            continue
-        for el in root.xpath("//module[@group]"):
-            checked += 1
-            group = el.get("group")
-            if group not in defined:
-                report.add("error", "ref",
-                           f"module '{el.get('id')}' references station module group "
-                           f"'{group}', which no libraries/modulegroups.xml defines",
-                           vpath, el.sourceline)
+    for vpath, el in subjects:
+        checked += 1
+        group = el.get("group")
+        if group not in defined:
+            report.add("error", "ref",
+                       f"module '{el.get('id')}' references station module group "
+                       f"'{group}', which no libraries/modulegroups.xml defines",
+                       vpath, el.sourceline)
     if checked:
         report.notes.append(
             f"module groups: {checked} <module group=> reference(s) checked against "
@@ -1686,7 +1854,11 @@ def _script_name_map(mod_dir: Path) -> dict[str, str]:
 def _mod_ids(mod_dir: Path) -> set[str]:
     """Identity tokens this mod owns in an extensions\\<folder> path: its dev
     folder name plus its content.xml id (they can differ)."""
-    ids = {mod_dir.name.lower()}
+    # `.resolve()`: `Path(".").name` is "" (AUDIT-2026-09-24 VA-11c), so a mod
+    # validated from inside its own folder lost its folder identity and no engine
+    # line under `extensions\<folder>\` ever matched. `_mod_identity` already
+    # resolves; this is the same rule.
+    ids = {mod_dir.resolve().name.lower()}
     cx = mod_dir / "content.xml"
     if cx.is_file():
         try:
@@ -1708,6 +1880,16 @@ def check_debug_correlation(mod_dir: Path, config: _merge.Config, report: Report
     engine warnings advise. Staleness caveat: pass a debug.txt captured AFTER the
     latest edits — a gate on a stale log is a false failure."""
     parsed = _debuglog.parse_log(debug_path)
+    if parsed.unreadable is not None:
+        # The authoritative layer the caller ASKED for examined nothing. A missing
+        # or unreadable log used to parse as an empty one, so `--debug <typo>`
+        # printed "OK: no issues found" rc 0 (AUDIT-2026-09-24 VA-1). Degraded:
+        # the whole engine-correlation check is off, so a clean run proves nothing.
+        report.notes.append(parsed.coverage_note())
+        report.skip("engine debug.txt correlation",
+                    f"'{debug_path}' could not be read ({parsed.unreadable}) -- no "
+                    "engine error was examined", degraded=True)
+        return
     entries = [e for e in parsed.entries if e.ident_kind in ("path", "script", "lookup")]
     # The residue line goes in FIRST and unconditionally. Until 2026-08-13 this
     # function reported the count it had CLASSIFIED as the log's total, so a log
@@ -1729,6 +1911,20 @@ def check_debug_correlation(mod_dir: Path, config: _merge.Config, report: Report
     names = _script_name_map(mod_dir)
     matched = 0
     diffops = 0
+    # Shape G (index-lookup miss) names an ENTITY, not a file or script, so this
+    # function cannot attribute it: which mod references a missing macro is a
+    # search over the effective store (`x4debug triage`), not a lookup here. They
+    # used to be counted as "mod-identifying" and then fall through the script
+    # branch (`names.get("")`) and vanish (AUDIT-2026-09-24 VA-11b). Technical
+    # default: DISCLOSED as not attributed, never guessed at.
+    lookups = [e for e in entries if e.ident_kind == "lookup"]
+    entries = [e for e in entries if e.ident_kind != "lookup"]
+    if lookups:
+        report.notes.append(
+            f"debug: {len(lookups)} engine index-lookup error(s) (e.g. "
+            f"'{lookups[0].lookup}' in '{lookups[0].lookup_index}') name an entity, "
+            "not a file -- NOT attributed to this or any mod here. Check whether this "
+            "mod references them with `x4debug triage`")
     for e in entries:
         if e.ident_kind == "path":
             if e.folder.lower() not in ids:
@@ -1750,7 +1946,7 @@ def check_debug_correlation(mod_dir: Path, config: _merge.Config, report: Report
         report.add(e.severity, "debug", f"(engine) {e.message}", vpath, e.line)
     report.notes.append(
         f"debug: {matched} engine finding(s) matched this mod from '{debug_path}' "
-        f"(of {len(entries)} mod-identifying, {parsed.total} total in the log)"
+        f"(of {len(entries)} file/script-identifying, {parsed.total} total in the log)"
         + (f"; {diffops} are diff-op cardinality failures — the engine SKIPPED those "
            "ops, so those patches silently did nothing" if diffops else "")
         + ("" if matched else " — clean load for this mod, or a stale/other-mod log"))
@@ -2219,6 +2415,7 @@ def validate(
     debug: str | Path | None = None,
     tier: str = "a",
     xsd_fast: bool = False,
+    sel_only: bool = False,
 ) -> Report:
     config = config or _merge.Config()
     report = Report()
@@ -2229,9 +2426,35 @@ def validate(
         trees = tier_b_trees(mod_dir, report)
         config = replace(config, overlays=trees.patch_time, final_overlays=trees.final)
         report.notes.extend(trees.notes)
-    if only_file is not None:
-        # Fast path for the per-edit hook: sel-resolution for one file only.
-        check_sel_resolution_one(Path(only_file), mod_dir, config, report)
+    if only_file is not None or sel_only:
+        # Fast paths. `--file` (the per-edit hook): sel-resolution for ONE file.
+        # `--sel-only`: readability + sel-resolution for the whole mod -- it was
+        # parsed and never read, so every other check still ran and gated
+        # (AUDIT-2026-09-24 VA-8).
+        mode = "--file" if only_file is not None else "--sel-only"
+        # A check the caller ASKED for and this mode does not run is DEGRADED, never
+        # silently dropped: `--file` used to swallow --debug/--entity/--like/--update
+        # and print a clean result, rc 0 (AUDIT-2026-09-24 VA-3). Disclosing rather
+        # than refusing keeps the per-edit hook (`--file --tier --json` only) as is.
+        requested = []
+        if entity or like:
+            requested.append("completeness (--entity/--like)")
+        if update:
+            requested.append("9.0 mechanical-port checks (--update)")
+        if debug is not None:
+            requested.append("engine debug.txt correlation (--debug)")
+        for what in requested:
+            report.skip(what, f"{mode} runs sel-resolution only, so this REQUESTED check "
+                        f"did not run -- rerun without {mode}", degraded=True)
+        if only_file is not None:
+            check_sel_resolution_one(Path(only_file), mod_dir, config, report)
+        else:
+            check_readability(mod_dir, config, report)
+            check_sel_resolution(mod_dir, config, report)
+        report.skip(f"every other check ({mode})",
+                    "references, file existence, connections, module groups, text, "
+                    "identity values, variants, expression lint, required attributes "
+                    f"and schema were NOT run -- {mode} runs sel-resolution only")
         return report
     check_readability(mod_dir, config, report)  # first: names what every other check will miss
     # PATCH-TIME tree: a selector only sees what has loaded by this mod's turn.

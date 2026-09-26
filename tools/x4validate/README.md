@@ -34,8 +34,12 @@ v1.1 adds: **file-existence** (a `<component ref>` macro resolves through
 index→macro file→component→file), **connection-validation** (every `<loadout>`
 `path` matches a `<connection>` on the ship's component), **variant-set
 consistency** (patched `_a` but not its base `_b`/`_c` siblings → warn),
-**page-id collision** (added `{page,t}` already in base/DLC → warn), and a
-**`--file` fast mode** (sel-resolution for one edited file, for the per-edit hook).
+**page-id collision** (a `{page,t}` the mod adds or redefines -- by `<diff>` or by a
+complete t-file -- that base/DLC or, under Tier B, an earlier mod already defines → warn,
+naming the definer), and a **`--file` fast mode** (sel-resolution for one edited file, for
+the per-edit hook). `--file` and `--sel-only` (readability + sel-resolution over the whole
+mod) state their denominator, list every other check under NOT CHECKED, and exit 3 if a
+check you asked for (`--debug`, `--entity/--like`, `--update`) is one they do not run.
 
 v1.2 closes the **expression-grammar gap** — the XSDs validate XML *structure* but
 treat every attribute *value* as an opaque string, so a broken script expression
@@ -379,17 +383,19 @@ false-positive this package exists to refuse.
 **3 is separate from 1 on purpose:** a gate needs to tell "your mod is broken" from "the validator
 was blindfolded". Cases that reach it: no `content.xml` (X4 would never load the folder), a packed
 mod whose catalog will not open, an overlay that would not parse so the comparison tree is
-incomplete, or a `--like` analogue that does not exist.
+incomplete, a `--like` analogue that does not exist, a `--debug` log that cannot be read, or a
+check you asked for that `--file`/`--sel-only` does not run.
 
 A mod with **no `<diff>` files is not degraded** — additive-only and asset-only mods are normal and
 are reported as notes. Measured on a ~120-mod install: 16 additive-only, 1 asset-only, 0 unreadable.
 
 Every run states its denominator (`sel-resolution: N diff file(s) checked across M payload XML
 file(s)`), because "checked 14 files, all fine" and "checked 1 file, all fine" must not print the
-same way.
+same way. "Checked" means the ops were EVALUATED: a diff with no base, an inactive target (not
+installed, or installed but disabled) or an inert bare path is counted separately.
 
-Default merge tier is **A** (base + DLC, deterministic); `--tier b` also folds in enabled mods but
-warns, because X4's inter-mod load order is undocumented.
+Default merge tier is **A** (base + DLC, deterministic); `--tier b` also folds in the ACTIVE mods
+(installed and enabled) in the engine's measured load order.
 
 ## Configuration — where it looks for things
 

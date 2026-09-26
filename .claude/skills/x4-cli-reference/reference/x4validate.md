@@ -21,17 +21,21 @@ options:
   --reference REFERENCE
                         path to the unpacked base-game reference tree (default: $X4_REFERENCE /
                         .claude/x4-paths.env)
-  --tier {a,b}          a = base+DLC only (default, deterministic); b = also merge the INSTALLED
-                        extensions in load order, so cross-mod patches resolve and removed-by-
-                        another-mod content is caught (ordering is community-reported: advisory)
+  --tier {a,b}          a = base+DLC only (default, deterministic); b = also merge the ACTIVE
+                        extensions (installed AND enabled in the manifest and the profile) in the
+                        engine's measured load order, so cross-mod patches resolve and removed-by-
+                        another-mod content is caught
   --profile ID          user profile id (the numeric folder under the X4 profile dir) — only
                         needed to locate debug.txt when $X4_PROFILE / $X4_DEBUGLOG are unset
   --entity ENTITY       completeness target, e.g. ware:my_new_ware
   --like LIKE           vanilla analogue, e.g. ware:ore
   --json                emit findings as JSON
   --file FILE           fast mode: sel-resolution for this ONE file only (for the per-edit hook);
-                        mod_dir is its mod root
-  --sel-only            (implied by --file) run only sel-resolution, skip ref/completeness
+                        mod_dir is its mod root. Every other check is listed as NOT CHECKED; a
+                        requested --debug/--entity/--like/--update that it cannot run exits 3
+  --sel-only            (implied by --file) run only readability + sel-resolution over the whole
+                        mod; every other check is listed as NOT CHECKED, and a requested
+                        --debug/--entity/--like/--update exits 3
   --update              add 9.0 mechanical-port checks: XSD schema validation of MD/aiscript files
                         (~100s warmup) + the runtime-only migration-map heuristic
   --xsd-fast            with --update: skip the compiled-schema pass (~100-122s). The required-
