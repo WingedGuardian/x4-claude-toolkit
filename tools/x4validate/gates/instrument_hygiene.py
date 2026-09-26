@@ -39,7 +39,10 @@ never asserted in a doc that can rot.
 
     uv run python gates/instrument_hygiene.py [--record] [--transcripts DIR]
 
-Exit: 0 clean (or recorded) - 1 a shape got worse or appeared - 2 cannot run.
+Exit: 0 clean (or recorded) - 1 a shape got worse or appeared - 2 cannot run, or
+      nothing got worse but some transcript input was UNREADABLE (a clean verdict over
+      a denominator with a hole in it is not clean; AUDIT-2026-09-24 GT-6). A finding
+      outranks the refusal.
 """
 
 from __future__ import annotations
@@ -253,8 +256,10 @@ def main() -> int:
           f"a near-miss before counting")
     if c.unreadable:
         print(f"  ⚠ {len(c.unreadable)} unreadable input(s) — the denominator is incomplete:")
-        for u in c.unreadable[:5]:
+        for u in c.unreadable[:20]:
             print(f"      {u}")
+        if len(c.unreadable) > 20:
+            print(f"      ... and {len(c.unreadable) - 20} more")
     print("  LOWER BOUND: counts shapes a regex can see, never a wrong population,")
     print("  a vacuous comparison, or a number transcribed instead of derived.")
     print("")
@@ -300,9 +305,20 @@ def main() -> int:
     # `commands` falls back to the cumulative compare and SAYS so.
     base_n = base_meta.get("commands")
     span = (c.commands - base_n) if isinstance(base_n, int) and c.commands > base_n else 0
-    if not span:
+    # Say WHY the incremental compare is off. This NOTE used to claim "baseline carries
+    # no command count" for every span of 0 -- also when it DID carry one and simply no
+    # command was added since, or the corpus SHRANK (transcripts deleted), which is a
+    # different population, not an old baseline (AUDIT-2026-09-24 GT-6).
+    if not isinstance(base_n, int):
         print("  NOTE  baseline carries no command count, so the compare below is the "
               "LIFETIME average, which understates a recent regression.")
+    elif c.commands == base_n:
+        print(f"  NOTE  no Bash command since the baseline ({base_n}); comparing the "
+              "lifetime rates, which are the same population.")
+    elif c.commands < base_n:
+        print(f"  NOTE  the corpus SHRANK since the baseline ({base_n} -> {c.commands} "
+              "commands; transcripts were removed), so this is a different population and "
+              "the compare below is lifetime-vs-lifetime, not incremental.")
     worse, appeared = [], []
     for s in SHAPES:
         now, was = rates[s.key], base.get(s.key)
@@ -322,6 +338,11 @@ def main() -> int:
             print(f"WORSE      {s.key}  {was * 100:.2f}% -> {now * 100:.2f}%  — {s.why}")
         return 1
     print("")
+    if c.unreadable:
+        print(f"No shape got materially worse IN WHAT COULD BE READ -- but "
+              f"{len(c.unreadable)} input(s) were unreadable (listed above), so this is not "
+              "a clean verdict. rc 2.", file=sys.stderr)
+        return 2
     print("No shape got materially worse.")
     return 0
 

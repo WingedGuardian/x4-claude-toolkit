@@ -216,3 +216,38 @@ def test_a_run_with_NO_BASELINE_is_a_REFUSAL_rc2_never_a_pass(tmp_path, monkeypa
     monkeypatch.setattr(ih, "RECORD", False)
     assert ih.main() == 2
     assert "cannot judge" in capsys.readouterr().out
+
+
+def _one_command_run(tmp_path, monkeypatch, extra_lines: str = ""):
+    t = tmp_path / "t"
+    t.mkdir(parents=True)
+    (t / "s.jsonl").write_text(_rec("echo hi") + NL + _res("hi") + NL + extra_lines,
+                               encoding="utf-8")
+    b = tmp_path / "b.json"
+    b.write_text(json.dumps({"rates": {s.key: 0.0 for s in ih.SHAPES}, "commands": 1}),
+                 encoding="utf-8")
+    monkeypatch.setattr(ih, "transcript_dir", lambda: t)
+    monkeypatch.setattr(ih, "BASELINE", b)
+    monkeypatch.setattr(ih, "RECORD", False)
+
+
+def test_an_UNREADABLE_input_is_not_a_clean_verdict(tmp_path, monkeypatch, capsys):
+    """AUDIT-2026-09-24 GT-6: unreadable transcript lines were printed (the first 5) and then
+    ignored -- rc 0 over a denominator with a hole in it. A finding would still outrank it."""
+    _one_command_run(tmp_path, monkeypatch)
+    assert ih.main() == 0                                     # control: nothing unreadable
+    capsys.readouterr()
+    _one_command_run(tmp_path / "x", monkeypatch, extra_lines="{ this is not json" + NL)
+    assert ih.main() == 2
+    out = capsys.readouterr()
+    assert "unparseable line" in out.out and "not a clean verdict" in out.err
+
+
+def test_the_span_NOTE_names_the_real_reason(tmp_path, monkeypatch, capsys):
+    """AUDIT-2026-09-24 GT-6: the NOTE said 'baseline carries no command count' for EVERY
+    zero span -- also when the baseline had one and no command had been added since."""
+    _one_command_run(tmp_path, monkeypatch)                  # baseline commands == now == 1
+    ih.main()
+    out = capsys.readouterr().out
+    assert "carries no command count" not in out
+    assert "no Bash command since the baseline" in out
