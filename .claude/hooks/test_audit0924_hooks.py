@@ -326,5 +326,22 @@ class TestPS4ProviderAndPrefixedPaths(_PSE2E):
                      ("allow", "Get-Content '" + BS + BS + "?" + BS + self.R + BS + "a.xml'")])
 
 
+class TestPS5CmdPercentVariables(_PSE2E):
+    """`%VAR%` in a cmd.exe carrier was literal text, so `%X4_REFERENCE%` named no root.
+    Now it reaches the rules as `${VAR}` does in Bash: a root variable names its root,
+    any other is an unknown operand."""
+
+    def test_root_variables(self):
+        self.expect([
+            ("deny", 'cmd //c rd /s /q "%X4_REFERENCE%"'),
+            ("deny", 'cmd /c "rd /s /q %X4_REFERENCE%' + BS + 'libraries"'),
+            ("ask", 'cmd //c del /q "%X4_SAVES%' + BS + 'a.xml.gz"'),
+        ], tool="Bash")
+
+    def test_TWIN_an_unknown_variable_is_an_unknown_operand(self):
+        self.expect([("allow", 'cmd //c rd /s /q "%TEMP%' + BS + 'build"'),
+                     ("allow", 'cmd //c echo 100%% done')], tool="Bash")
+
+
 if __name__ == "__main__":
     unittest.main()

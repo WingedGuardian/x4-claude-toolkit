@@ -2523,6 +2523,31 @@ def _sh_quote(s: str) -> str:
     return "'" + s.replace("'", "'" + chr(92) + "''") + "'"
 
 
+#: cmd.exe's `%NAME%` expansion. `%%` is a literal percent.
+_CMD_VAR = re.compile(r"%%|%([A-Za-z_][A-Za-z0-9_]*)%")
+
+
+def _cmd_word(w: str) -> str:
+    """One cmd.exe word as a shell word, `%NAME%` becoming `"${NAME}"`.
+
+    AUDIT-2026-09-24 HK-1 review item 5: `%X4_REFERENCE%` stayed literal text, so
+    `cmd //c rd /s /q "%X4_REFERENCE%"` named no root. As a shell variable it reaches the
+    rules exactly as `$X4_REFERENCE` does: a root variable names its root, and any other
+    is an unresolved operand -- the Bash semantics, not a new rule. cmd's names are
+    case-insensitive; the root variables are upper case.
+    """
+    out, pos = [], 0
+    for m in _CMD_VAR.finditer(w):
+        if m.start() > pos:
+            out.append(_sh_quote(w[pos:m.start()]))
+        out.append(_sh_quote("%") if m.group(1) is None
+                   else '"${' + m.group(1).upper() + '}"')
+        pos = m.end()
+    if pos < len(w) or not out:
+        out.append(_sh_quote(w[pos:]))
+    return "".join(out)
+
+
 #: cmd.exe verbs, as the rule set already names them.
 _CMD_VERBS = {"del": "rm -f", "erase": "rm -f", "rd": "rm -rf", "rmdir": "rm -rf",
               "copy": "cp", "xcopy": "cp -r", "move": "mv", "ren": "mv", "rename": "mv",
@@ -2568,7 +2593,7 @@ def _cmd_line(ws: list) -> str:
         w = ws[i]
         if w in (">", ">>"):
             if i + 1 < len(ws) and ws[i + 1].lower() != "nul":
-                redir += " %s %s" % (w, _sh_quote(ws[i + 1]))
+                redir += " %s %s" % (w, _cmd_word(ws[i + 1]))
             i += 2
             continue
         if w == "<":
@@ -2585,7 +2610,7 @@ def _cmd_line(ws: list) -> str:
         head = _CMD_VERBS[v]
     else:
         head = _sh_quote(ws[0])
-    return " ".join([head] + [_sh_quote(a) for a in args]) + redir
+    return " ".join([head] + [_cmd_word(a) for a in args]) + redir
 
 
 def _windows_carrier(seg: str, cmd: str) -> list:

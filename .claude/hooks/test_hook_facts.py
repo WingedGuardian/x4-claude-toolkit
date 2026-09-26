@@ -3176,6 +3176,12 @@ class TestHK2CmdCarrier(unittest.TestCase):
         f = F("cmd //c dir " + DQ + REF + DQ)
         self.assertFalse(f["rm_targets_reference"] or f["writes_reference"])
 
+    def test_a_percent_variable_is_a_shell_variable(self):
+        self.assertEqual(H.cmd_to_sh(["rd", "/s", "%x4_reference%" + BS + "lib"]),
+                         'rm -rf "${X4_REFERENCE}"' + "'" + BS + "lib'")
+        self.assertTrue(F('cmd //c rd /s /q "%X4_REFERENCE%"')["rm_targets_reference"])
+        self.assertEqual(H.cmd_to_sh(["echo", "100%%"]), "echo 100%")
+
     def test_translation_drops_switches_and_maps_verbs(self):
         self.assertEqual(H.cmd_to_sh(["rd", "/s", "/q", "C:/x y"]), "rm -rf 'C:/x y'")
         self.assertEqual(H.cmd_to_sh(["ren C:/a/b.txt c.txt"]), "mv C:/a/b.txt C:/a/c.txt")
