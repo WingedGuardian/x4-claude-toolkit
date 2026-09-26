@@ -68,6 +68,16 @@ variable, or naming a database other than `--db` is refused with rc 2, and a zer
 that names no database at all is refused with rc 4. A negative over the whole database covers
 every path in it, so search the whole thing.
 
+**The scope can also be narrowed OUTSIDE a reach call's own argument list.**
+`collection('x4eff')[matches(document-uri(.),'libraries/wares')]//*[@id='x']` and `for $d in
+collection('x4eff') where contains(base-uri($d),'libraries/wares') return $d//*[@id='x']` both
+name the whole database in the call itself, then narrow it with a `document-uri`/`base-uri`/
+`db:path` test in a predicate or a `where` clause — MEASURED, reproduced by two people:
+"NEGATIVE CONFIRMED over 10970 of 10970 documents", rc 0, over a query that in fact addressed 9.
+Refused with rc 2, same wording, naming the function it saw. A call that only *returns*
+`document-uri` (`for $d in collection('x4eff') return document-uri($d)`, `//ware !
+document-uri(root(.))`) is not itself a test and answers normally.
+
 ### Gap 4 — a fourth was found on 2026-08-01, and it was in the guard itself
 
 The count printed as "hits" was `len(output_lines)`, not the number of matches.
