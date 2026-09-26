@@ -163,9 +163,18 @@ def test_strip_mod_index_prefix():
     # resolve relative to the mod root here -> the prefix must be stripped, else
     # the path doubles into a spurious 'file missing'.
     assert _resolve._strip_mod_index_prefix(
-        r"extensions\mymod\assets\props\x_macro") == "assets/props/x_macro"
+        r"extensions\mymod\assets\props\x_macro", "mymod") == "assets/props/x_macro"
+    # Case-insensitive, like the engine's folder lookup.
+    assert _resolve._strip_mod_index_prefix(
+        r"extensions\MyMod\assets\props\x_macro", "mymod") == "assets/props/x_macro"
     # No prefix -> unchanged (mod-relative style).
-    assert _resolve._strip_mod_index_prefix(r"assets\props\x_macro") == r"assets\props\x_macro"
+    assert _resolve._strip_mod_index_prefix(
+        r"assets\props\x_macro", "mymod") == r"assets\props\x_macro"
+    # ANOTHER folder's prefix is NOT stripped (AUDIT-2026-09-24 MG-4): it points into
+    # that folder, and stripping it resolved the path inside the registering mod.
+    assert _resolve._strip_mod_index_prefix(
+        r"extensions\othermod\assets\props\x_macro", "mymod") == \
+        r"extensions\othermod\assets\props\x_macro"
 
 
 # --- RFC 5261 attribute-add ---------------------------------------------------

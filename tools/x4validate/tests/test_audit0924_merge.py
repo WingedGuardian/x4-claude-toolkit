@@ -94,7 +94,6 @@ def test_attribute_add_with_element_payload_is_refused_not_blanked():
 
 # --- MG-3: packed-only DLC index ----------------------------------------------
 
-@_xf("MG-3", "build_index reads base/DLC indexes loose-only; a packed-only DLC registers nothing")
 def test_packed_only_dlc_index_entries_are_registered_and_readable(tmp_path, monkeypatch):
     ref = tmp_path / "reference"
     _write(ref / "index" / "macros.xml", "<index/>")
@@ -119,7 +118,6 @@ def test_packed_only_dlc_index_entries_are_registered_and_readable(tmp_path, mon
 
 # --- MG-4: foreign extensions/<X>/ prefix ------------------------------------
 
-@_xf("MG-4", "_strip_mod_index_prefix strips ANOTHER mod's extensions/<X>/ prefix")
 def test_mod_index_value_naming_another_mod_resolves_into_that_mod(tmp_path):
     ref = tmp_path / "reference"
     _write(ref / "index" / "macros.xml", "<index/>")
@@ -139,6 +137,43 @@ def test_mod_index_value_naming_another_mod_resolves_into_that_mod(tmp_path):
     index = _resolve.build_index(cfg, [mine], _resolve.MACRO_INDEX)
     located = _resolve.read_indexed(index, "m")
     assert located is not None and located.data == theirs
+
+
+def test_mod_index_value_naming_a_dlc_resolves_into_that_dlc(tmp_path):
+    """The live case (cpsdo_faction -> ego_dlc_terran): the DLC file is read, not a
+    same-path file in the registering mod."""
+    ref = tmp_path / "reference"
+    _write(ref / "index" / "macros.xml", "<index/>")
+    dlc_bytes = b"<macros><macro name='z' owner='dlc'/></macros>"
+    _write(ref / "extensions" / "ego_dlc_terran" / "maps" / "zones.xml", dlc_bytes.decode())
+    cfg = _merge.Config(reference=ref, include_packed_dlc=False)
+    mine = _mod(tmp_path / "extensions", "mine", {
+        "index/macros.xml":
+            '<index><entry name="z" value="extensions\\ego_dlc_terran\\maps\\zones"/></index>',
+        "maps/zones.xml": "<macros><macro name='z' owner='mine'/></macros>",
+    })
+    located = _resolve.read_indexed(_resolve.build_index(cfg, [mine], _resolve.MACRO_INDEX), "z")
+    assert located is not None and located.data == dlc_bytes
+
+
+def test_mod_index_value_naming_an_absent_mod_is_recorded_not_read_from_the_registrant(
+        tmp_path, monkeypatch):
+    from x4validate import _check
+    monkeypatch.setattr(_merge, "GAME_ROOT", tmp_path / "no_game")
+    ref = tmp_path / "reference"
+    _write(ref / "index" / "macros.xml", "<index/>")
+    cfg = _merge.Config(reference=ref)
+    mine = _mod(tmp_path / "extensions", "mine", {
+        "index/macros.xml":
+            '<index><entry name="m" value="extensions\\ghost_mod\\assets\\ship"/></index>',
+        "assets/ship.xml": "<macros><macro name='m'/></macros>",
+    })
+    rep = _check.Report()
+    index = _resolve.build_index(cfg, [mine], _resolve.MACRO_INDEX, rep)
+    assert "m" in index, "the entry IS registered -- the engine sees it"
+    assert _resolve.read_indexed(index, "m") is None, "must not read mine/assets/ship.xml"
+    assert any("ghost_mod" in s.why for s in rep.skipped), rep.skipped
+    assert _resolve.macro_component_links("m", index, {}), "reported as missing"
 
 
 # --- MG-5: tail text ---------------------------------------------------------

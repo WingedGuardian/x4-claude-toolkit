@@ -6,12 +6,12 @@ Powers two v1.1 checks:
   - connection-validation: a <loadout> entry `path="../con_engine_01"` must match a
     <connection name="con_engine_01"> in the ship's component.
 
-Index `value` is a path WITHOUT `.xml`, backslash-separated, relative to the
-SOURCE ROOT that defined the entry (base/DLC entries -> reference root, since DLC
-values carry the `extensions\\ego_dlc_x\\` prefix; mod entries -> the mod root).
-Mods conventionally write values game-root-relative too (`extensions\\<mod>\\assets\\...`,
-matching the engine), so for mod entries that leading `extensions\\<mod>\\` is stripped
-before resolving against the mod root (else the path doubles -> spurious 'file missing').
+Index `value` is a path WITHOUT `.xml`, backslash-separated. A value written
+game-root-relative as `extensions\\<X>\\<rest>` (DLC always, mods conventionally —
+matching the engine) resolves as <rest> inside folder X: the registering DLC/mod's
+own root when X is its own folder, otherwise the DLC or sibling mod named X (see
+`_Roots`). Other values resolve against the reference root (base/DLC entries) or
+the mod root (mod entries). Both index and payload reads are packed-aware.
 Wildcard entries (`character_*`) are skipped — they're patterns, not files.
 """
 
@@ -37,14 +37,87 @@ def _index_entries(root: etree._Element):
         yield name, value
 
 
-def _strip_mod_index_prefix(value: str) -> str:
-    """Drop a leading `extensions/<mod>/` from a MOD index value so it resolves
-    relative to the mod root (the engine resolves these game-root-relative; here
-    the mod root already IS that `extensions/<mod>/` dir)."""
+def _extension_prefix(value: str) -> tuple[str, str] | None:
+    """(folder, rest) for a value written `extensions/<folder>/<rest>`, else None."""
     parts = value.replace("\\", "/").lstrip("/").split("/")
     if len(parts) > 2 and parts[0].lower() == "extensions":
-        return "/".join(parts[2:])
+        return parts[1], "/".join(parts[2:])
+    return None
+
+
+def _strip_mod_index_prefix(value: str, own_folder: str) -> str:
+    """Drop a leading `extensions/<own_folder>/` from a MOD index value so it
+    resolves relative to the mod root (the engine resolves these game-root-relative;
+    here the mod root already IS that `extensions/<mod>/` dir).
+
+    ONLY the registering mod's OWN folder is stripped (case-insensitive, as the
+    engine's folder lookup is). A value naming ANOTHER folder points into that
+    folder, and stripping it anyway resolved the path inside the REGISTERING mod —
+    reading the wrong mod's file whenever it happened to have one at the same
+    relative path (AUDIT-2026-09-24 MG-4). Such values are resolved by
+    `_index_target`, never here.
+    """
+    split = _extension_prefix(value)
+    if split is not None and split[0].lower() == own_folder.lower():
+        return split[1]
     return value
+
+
+class _Roots:
+    """Where an `extensions/<X>/` index value lands: the DLC or mod folder X.
+
+    Looked up case-insensitively among the DLC roots (`Config.dlc_dirs()`, packed
+    and unpacked alike), every overlay the config names, then the folder beside the
+    registering mod and the live install's `extensions/`. An X found nowhere is
+    RECORDED on the report (once) and resolved to where the engine would look, so
+    the file checks report it missing — never silently read from the registering
+    mod.
+    """
+
+    def __init__(self, config: _merge.Config, extra_overlays, report, index_rel: str):
+        self.config, self.report, self.index_rel = config, report, index_rel
+        self.dlc = {p.name.lower(): p for p in config.dlc_dirs()}
+        self.mods: dict[str, Path] = {}
+        for ov in (list(config.overlays) + list(config.final_overlays)
+                   + list(extra_overlays or [])):
+            self.mods.setdefault(ov.name.lower(), ov)
+
+    def folder(self, name: str, beside: Path) -> Path | None:
+        key = name.lower()
+        if key.startswith("ego_dlc_"):
+            return self.dlc.get(key)
+        if key in self.mods:
+            return self.mods[key]
+        for cand in (beside.parent / name, _merge.GAME_ROOT / "extensions" / name):
+            if cand.is_dir():
+                return cand
+        return None
+
+    def target(self, value: str, own_root: Path, default_root: Path) -> tuple[Path, str]:
+        """(resolution_root, value) for an entry registered by *own_root*.
+
+        A value without an `extensions/<X>/` prefix resolves against *default_root*
+        (the reference tree for base/DLC entries, the mod itself for a mod's)."""
+        split = _extension_prefix(value)
+        if split is None:
+            return default_root, value
+        own = _strip_mod_index_prefix(value, own_root.name)
+        if own is not value:
+            return own_root, own
+        folder, rest = split
+        found = self.folder(folder, own_root)
+        if found is not None:
+            return found, rest
+        where = (self.config.reference / "extensions" / folder
+                 if folder.lower().startswith("ego_dlc_")
+                 else _merge.GAME_ROOT / "extensions" / folder)
+        if self.report is not None:
+            what = f"{self.index_rel} resolution"
+            why = (f"{own_root.name}: registers entries in extensions/{folder}/, which is "
+                   "not installed — those entries resolve to files that do not exist")
+            if not any(s.what == what and s.why == why for s in self.report.skipped):
+                self.report.skip(what, why)
+        return where, rest
 
 
 def _read_source(root: Path, rel: str) -> etree._Element | None:
@@ -73,18 +146,25 @@ def build_index(config: _merge.Config, extra_overlays, index_rel: str,
     turning a missed check into a FALSE 'registered but file missing' error.
     """
     index: dict[str, tuple[Path, str]] = {}
-    # base + DLC: values are resolved relative to the reference root.
+    roots = _Roots(config, extra_overlays, report, index_rel)
+    # base + DLC. Read PACKED-AWARE (AUDIT-2026-09-24 MG-3): a DLC that exists only
+    # as `ext_*.cat` in the live install (Config.dlc_dirs() includes those) has no
+    # loose index, and a `.is_file()`-only read registered nothing from it. Its
+    # values carry `extensions\\<dlc>\\`, so they resolve inside that DLC's OWN root
+    # — pinning them to `config.reference` pointed at a tree that does not hold them.
     for src in [config.reference] + config.dlc_dirs():
-        f = src / index_rel
-        if f.is_file():
-            try:
-                for name, value in _index_entries(_merge.parse_file(f)):
-                    index[name] = (config.reference, value)
-            except etree.XMLSyntaxError as exc:
-                if report is not None:
-                    report.skip(f"{index_rel} resolution",
-                                f"base/DLC index {f} is unparseable ({exc}) — the entries it "
-                                "defines were not registered", degraded=True)
+        try:
+            root = _read_source(src, index_rel)
+        except (etree.XMLSyntaxError, OSError) as exc:
+            if report is not None:
+                report.skip(f"{index_rel} resolution",
+                            f"base/DLC index {src / index_rel} is unreadable ({exc}) — the "
+                            "entries it defines were not registered", degraded=True)
+            continue
+        if root is None:
+            continue
+        for name, value in _index_entries(root):
+            index[name] = roots.target(value, src, config.reference)
     # mod overlays: values are resolved relative to the mod root.
     for ov in list(config.overlays) + list(extra_overlays or []):
         try:
@@ -104,7 +184,7 @@ def build_index(config: _merge.Config, extra_overlays, index_rel: str,
         if root is None:
             continue
         for name, value in _index_entries(root):
-            index[name] = (ov, _strip_mod_index_prefix(value))
+            index[name] = roots.target(value, ov, ov)
     return index
 
 
