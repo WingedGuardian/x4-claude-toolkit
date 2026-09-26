@@ -274,5 +274,29 @@ class TestPS2MethodCalls(_PSE2E):
         ])
 
 
+class TestPS3InvokeExpression(_PSE2E):
+    """iex of text the translator cannot read, or nested past its depth limit, was DROPPED:
+    the command it runs reached no rule. Bash's `eval "$X"` is the model -- except that a
+    carrier the walk could not open is reported, never passed."""
+
+    def test_computed_text_asks(self):
+        self.expect([("ask", "iex $cmd"),
+                     ("ask", "Invoke-Expression -Command (Get-Content .\\x.ps1 -Raw)"),
+                     ("ask", "$c = 'Remove-' + $n; iex $c")])
+
+    def test_past_the_depth_limit_asks(self):
+        inner = "Get-Date"
+        for _ in range(6):
+            inner = "iex '" + inner.replace("'", "''") + "'"
+        self.assertEqual(self.verdict(inner), "ask", inner)
+
+    def test_resolvable_text_is_still_judged(self):
+        self.expect([("deny", "iex 'Remove-Item -Recurse " + self.R + "'"),
+                     ("deny", "$c = 'Remove-Item -Recurse " + self.R + "'; iex $c")])
+
+    def test_TWIN_harmless_iex(self):
+        self.expect([("allow", "iex 'Get-Date'"), ("allow", "iex \"Get-ChildItem .\"")])
+
+
 if __name__ == "__main__":
     unittest.main()

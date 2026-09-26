@@ -421,7 +421,21 @@ function Translate-Command([CommandAst]$c) {
         }
         'invoke-expression' {
             $txt = @(BVals $binding @('Command')) | Select-Object -First 1
-            if ($txt -and $txt -notmatch "[$SOH$STX]" -and $script:Depth -lt 4) {
+            # Text we cannot read (a variable set at runtime, piped input, an expression)
+            # or nesting past the limit is UNKNOWN -- it used to be dropped, so the command
+            # it runs reached no rule (AUDIT-2026-09-24 HK-1 review item 3).
+            # Only TEXT counts as readable: a literal, an expandable string, a variable, a
+            # concatenation. A command's output -- `(Get-Content x.ps1 -Raw)` -- flattens
+            # to its constants (".\x.ps1"), which is not the program it produces.
+            $cb = Bound $binding @('Command')
+            $textual = $null -ne $cb -and $null -ne $cb.Value -and (
+                $cb.Value -is [StringConstantExpressionAst] -or $cb.Value -is [ExpandableStringExpressionAst] -or
+                $cb.Value -is [VariableExpressionAst] -or $cb.Value -is [BinaryExpressionAst])
+            if (-not $textual -or -not $txt -or $txt -match "[$SOH$STX]") {
+                Unknown "Invoke-Expression of text the guard cannot read: $($c.Extent.Text)"
+            } elseif ($script:Depth -ge 4) {
+                Unknown "Invoke-Expression nested past the guard's depth limit (4)"
+            } else {
                 $script:Depth++
                 try { foreach ($l in (Translate-Text $txt)) { $lines.Add($l) } } finally { $script:Depth-- }
             }
