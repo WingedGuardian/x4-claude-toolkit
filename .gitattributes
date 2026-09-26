@@ -11,6 +11,9 @@ bin/xrcat text eol=lf
 # every file in `_freshness.ENGINE_SOURCES` -- EIGHT as of 2026-09-07: _cat.py,
 # _diff.py, _effective.py, _loadorder.py, _merge.py, _registry.py, _scan.py and
 # _xpath.py. Line endings are bytes.
+# (2026-09-26: that roster is HISTORY. AUDIT-2026-09-24 FR-2 re-derived the list by
+# tracing a store build: seven today -- _cat, _effective, _loadorder, _merge, _modfiles,
+# _provenance, _registry. Derive it from the module; this count will rot too.)
 #
 # (This roster said SEVEN and omitted _loadorder.py until 2026-09-07 -- the same
 # staleness aa1c67d fixed in CLAUDE.md, one file over, found by the round-2
