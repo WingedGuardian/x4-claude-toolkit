@@ -70,6 +70,6 @@ Run a CLI from `$CLAUDE_PROJECT_DIR/tools/x4validate` as `uv run <cli> ...`. The
 | **`x4validate`** | | Validate X4 mod diff patches against the effective merged game tree. |
 | **`x4xref`** | | Cross-index of MD/aiscript actions, events, and cue edges. |
 | | `build` | (re)build the index over base+DLC+installed mods |
-| | `who-calls` | list every place an action element appears |
+| | `who-calls` | list every place an action element appears, cue-edge actions (signal_cue, cancel_cue, ...) included |
 | | `who-listens` | list every cue reacting to an event_* condition |
 | | `cue` | where a cue is defined, signalled, cancelled |
