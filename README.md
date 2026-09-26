@@ -85,7 +85,7 @@ query directly. `show` gives the full record view, `attr` reads one column acros
 mod wins, and `dump` prints the live merged XML for any path.
 
 **`x4diff`** does a semantic XML diff between two versions of a mod, with multi-baseline support —
-built for separating *your* edits from the author's when recovering personal modifications.
+comparing attributes and element text (shown as `@text()`, pretty-print whitespace ignored), built for separating *your* edits from the author's when recovering personal modifications.
 
 Give it `--base` and it becomes a **three-way** diff, which answers the question a two-way one
 cannot: *of these changes, which are the author's and which are drift that upstream has made since?*

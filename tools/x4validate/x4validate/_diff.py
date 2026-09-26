@@ -7,10 +7,22 @@ side via _merge.overlay_root. Powers the personal-edit recovery: pristine -> edi
 
 Change model per common file: element identity = its tag-path with id/name/ref
 disambiguation; report added / removed / changed attributes and added/removed nodes.
+
+Element TEXT is compared too, as the reserved pseudo-attribute ``text()`` (an XML
+attribute name cannot contain parentheses, so it can never collide with a real
+one). ~48% of installed-mod ops carry their value in text --
+``<replace sel=".../@min">999</replace>``, a t-file ``<t id="1">...</t>`` -- and
+comparing attributes alone read a 5 -> 999 edit as "changed files: 0"
+(AUDIT-2026-09-24 DF-1). Whitespace-only text (pretty-print indentation) is not
+content and is not keyed; real text is compared with its leading/trailing
+whitespace stripped, so re-indenting a document changes nothing while any change
+to the words does. Non-whitespace TAIL text of child elements (mixed content)
+is folded into the parent's value, so it is not silently outside the comparison.
 """
 
 from __future__ import annotations
 
+import copy
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,9 +65,24 @@ def read_merged(dirs: list[Path], vpath: str,
         if oroot is None:
             continue
         if tree is None:
-            tree = oroot if oroot.tag != "diff" else None
+            # The first layer that supplies the document IS the baseline, whatever
+            # its shape. A `<diff>` here used to be discarded, so a stack whose
+            # first supplier patches the file (the normal shape for a mod: its own
+            # files are diffs against vanilla) returned None and the caller
+            # reported "the OLD copy would not parse" about a well-formed file
+            # (AUDIT-2026-09-24 DF-2). The single-layer path (`read_vpath`)
+            # already compares a diff document as a diff document; this matches it.
+            tree = oroot
+        elif tree.tag == "diff":
+            # No layer supplied a base document, so the baseline so far is a
+            # PATCH SET. A further diff layer extends it -- ops apply in load
+            # order, which is document order here -- and a full document from a
+            # later layer supersedes the patches (there is no base in this stack
+            # for them to have applied to).
             if oroot.tag == "diff":
-                continue
+                tree.extend(copy.deepcopy(op) for op in oroot)
+            else:
+                tree = oroot
         else:
             tree, _ = _merge.apply_overlay(tree, oroot, vpath, d.name)
     return tree
@@ -68,20 +95,55 @@ def merged_vpaths(dirs: list[Path]) -> dict[str, str]:
     return out
 
 
+#: Identity attributes, most-discriminating FIRST. `id` leads because it is what
+#: X4 keys entities on; `name` came first before AUDIT-2026-09-24 DF-3, and
+#: vanilla `wares.xml` carries 101 wares in 49 duplicated-name groups (name is
+#: often a t-file reference like "{20201,301}"), so the positional suffix those
+#: groups needed made ONE inserted ware shift the key of every untouched sibling
+#: and read as phantom attribute edits. `sel` identifies a diff op.
+_KEY_ATTRS = ("id", "name", "ref", "macro", "sel", "method", "ware", "class")
+
+#: Reserved pseudo-attribute carrying an element's text (see the module docstring).
+TEXT_ATTR = "text()"
+
+
 def _node_key(el: etree._Element) -> str:
-    """Stable-ish identity: tag plus a disambiguating id/name/ref/macro attr."""
-    for a in ("name", "id", "ref", "macro", "method", "ware", "class"):
+    """Stable identity: tag plus the first discriminating attribute present.
+
+    Only an element with NONE of `_KEY_ATTRS` falls back to a positional key
+    (assigned by `_index`), as do genuine duplicates of one key."""
+    for a in _KEY_ATTRS:
         v = el.get(a)
         if v is not None:
             return f"{el.tag}[@{a}={v}]"
     return el.tag
 
 
+def _text_value(el: etree._Element) -> str | None:
+    """The element's own text content, pretty-print whitespace removed.
+
+    Returns None when the element carries no non-whitespace text, so indentation
+    never becomes a key. Child TAIL text (mixed content) is included, because a
+    change there is a change to this element's content."""
+    parts = [el.text] + [c.tail for c in el]
+    kept = [t.strip() for t in parts if t is not None and t.strip()]
+    return " ".join(kept) if kept else None
+
+
+def _values(el: etree._Element) -> dict[str, str]:
+    """Attributes plus the `text()` pseudo-attribute when the element has text."""
+    out = dict(el.attrib)
+    txt = _text_value(el)
+    if txt is not None:
+        out[TEXT_ATTR] = txt
+    return out
+
+
 def _index(root: etree._Element) -> dict[str, dict[str, str]]:
     """Canonical path -> {attr: value} for every element in the tree.
 
-    Sibling duplicates with identical keys get a positional suffix so they stay
-    distinct."""
+    The value map includes the `text()` pseudo-attribute. Sibling duplicates with
+    identical keys get a positional suffix so they stay distinct."""
     out: dict[str, dict[str, str]] = {}
 
     def walk(el, prefix):
@@ -100,10 +162,10 @@ def _index(root: etree._Element) -> dict[str, dict[str, str]]:
                 seen[key] = seen.get(key, -1) + 1
                 key = f"{key}#{seen[key]}"
             path = f"{prefix}/{key}"
-            out[path] = dict(child.attrib)
+            out[path] = _values(child)
             walk(child, path)
 
-    out["/" + _node_key(root)] = dict(root.attrib)
+    out["/" + _node_key(root)] = _values(root)
     walk(root, "/" + _node_key(root))
     return out
 
@@ -112,7 +174,8 @@ def _index(root: etree._Element) -> dict[str, dict[str, str]]:
 class FileDiff:
     vpath: str
     status: str                       # added | removed | changed
-    attr_changes: list[tuple[str, str, str, str]] = field(default_factory=list)  # path, attr, old, new
+    #: (path, attr, old, new); attr may be the `text()` pseudo-attribute.
+    attr_changes: list[tuple[str, str, str, str]] = field(default_factory=list)
     nodes_added: list[str] = field(default_factory=list)
     nodes_removed: list[str] = field(default_factory=list)
 

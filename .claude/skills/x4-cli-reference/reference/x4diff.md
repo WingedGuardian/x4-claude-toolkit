@@ -18,7 +18,7 @@ options:
   --version          show program's version number and exit
   --overlay OVERLAY  extra baseline dir merged onto OLD (repeatable; e.g. a submod that patches
                      the mod being compared)
-  --detail           list every attr change
+  --detail           list every attr change (element text shows as @text())
   --file FILE        detail one vpath only
   --top TOP          show N heaviest changed files (default: 30)
   --base BASE        COMMON ANCESTOR of OLD and NEW: makes this a THREE-WAY diff separating the

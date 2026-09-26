@@ -177,7 +177,6 @@ def test_dlc_dirs_orders_packed_and_unpacked_dlc_by_one_rule(tmp_path, monkeypat
 
 # --- DF-1: text-valued ops ----------------------------------------------------
 
-@_xf("DF-1", "_diff._index compares attributes only; an op's TEXT value change is invisible")
 def test_a_changed_op_text_value_is_a_changed_file(tmp_path):
     sel = "//ware[@id='x']/price/@min"
     a = _mod(tmp_path, "a", {"libraries/wares.xml": f'<diff><replace sel="{sel}">5</replace></diff>'})
@@ -189,7 +188,6 @@ def test_a_changed_op_text_value_is_a_changed_file(tmp_path):
 
 # --- DF-2: stacked baseline over diff documents --------------------------------
 
-@_xf("DF-2", "read_merged returns None when the first supplying layer ships a <diff>")
 def test_stacked_baseline_compares_a_file_the_core_ships_as_a_diff(tmp_path):
     core = _mod(tmp_path, "core", {
         "libraries/wares.xml": "<diff><add sel=\"/wares\"><ware id=\"q\"/></add></diff>"})
@@ -206,7 +204,6 @@ def test_stacked_baseline_compares_a_file_the_core_ships_as_a_diff(tmp_path):
 
 # --- DF-3: node identity -------------------------------------------------------
 
-@_xf("DF-3", "name-before-id keys + positional suffix: one inserted ware rewrites untouched ones")
 def test_inserting_one_ware_changes_no_untouched_ware(tmp_path):
     # Vanilla wares.xml: 1,397 wares, every one carries @name, 101 of them in 49
     # duplicated-name groups (MEASURED 2026-09-24) -- so this is the real shape.
@@ -231,7 +228,6 @@ def _df4_mods(tmp_path):
     return old, new
 
 
-@_xf("DF-4", "--file on an ADDED file prints nothing about that file")
 def test_file_flag_on_an_added_file_says_it_was_added(tmp_path, capsys):
     old, new = _df4_mods(tmp_path)
     _diffcli.main([str(old), str(new), "--file", "libraries/added.xml"])
@@ -240,7 +236,6 @@ def test_file_flag_on_an_added_file_says_it_was_added(tmp_path, capsys):
     assert lines and any("add" in ln.lower() for ln in lines), out
 
 
-@_xf("DF-4", "'total attr changes' also counts node adds/removes")
 def test_attr_change_total_does_not_count_node_additions(tmp_path, capsys):
     old, new = _df4_mods(tmp_path)
     _diffcli.main([str(old), str(new)])
