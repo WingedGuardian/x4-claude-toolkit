@@ -374,6 +374,12 @@ _ALL_CELLS: list[Cell] = [
     # cannot mask a non-answer: the no-dump and no-store paths return 3 and 2 from
     # early guards, long before anything could be proposed.
     Cell("x4live", "mappings", ["mappings"], expect=(0, 1, 2, 3), findings_ok=True),
+    # `archive` copies the game's uidata.xml out before X4 overwrites it; offline it either
+    # archives an existing dump (0) or refuses because there is none (2). Written into the
+    # sweep's throwaway dir, never the user's $X4_MODS/_reports. (`pause`/`unpause` need a
+    # RUNNING game and stay accepted gaps in toolkit_usage's baseline.)
+    Cell("x4live", "archive", ["archive", "--out", str(_sandbox_dir() / "archive")],
+         expect=(0, 2), findings_ok=True),
 
     # ---- the F75 backlog: capabilities the sweep did not exercise --------
     # Every WRITING x4modlist cell points at the throwaway registry, so a sweep
