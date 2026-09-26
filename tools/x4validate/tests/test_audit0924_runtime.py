@@ -96,8 +96,6 @@ def _refresh_args(regp, **kw):
 
 # --------------------------------------------------------------------------- RT-1
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-1: crosscheck keys ops on the bare "
-                   "selector, so the same sel failing in two DIFFERENT files reads as agreement")
 def test_rt1_crosscheck_keeps_the_patch_file_in_the_key():
     sel = "//ware[@id='energycells']/price/@max"
     # The ENGINE skipped the op in libraries/wares ...
