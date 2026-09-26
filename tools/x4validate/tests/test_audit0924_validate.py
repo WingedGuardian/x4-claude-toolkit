@@ -562,3 +562,51 @@ def test_va9_a_complete_t_file_colliding_with_ANOTHER_MOD_still_warns(tmp_path):
     hits = [x for x in rep.findings if x.category == "text"]
     assert [x.severity for x in hits] == ["warn"], [(x.severity, x.message) for x in hits]
     assert "other_mod" in hits[0].message
+
+
+# ---------------------------------------------------------------------- VA-15
+
+_NESTED = ("<wares><ware id=\"mine\" price=\"1\"/>"
+           "<diff><replace sel=\"//ware[@id='ore']/@price\">5</replace></diff></wares>")
+
+
+def test_va15_a_diff_nested_in_a_full_file_is_an_error(tmp_path, capsys):
+    """The engine applies a <diff> only as a document ROOT; one pasted inside a
+    complete file is never applied, and the run said "OK: no issues found"."""
+    ref = _ref(tmp_path)
+    mod = _mod(tmp_path)
+    _w(mod / "libraries/wares.xml", _NESTED)
+
+    rc, out = _run_cli([mod, "--reference", ref], capsys)
+
+    assert rc == 1, out
+    assert "OK: no issues found" not in out
+    rep = _check.validate(mod, _merge.Config(reference=ref))
+    hits = [x for x in rep.errors if "<diff>" in x.message]
+    assert len(hits) == 1 and hits[0].vpath == "libraries/wares.xml", \
+        [(x.severity, x.category, x.message) for x in rep.findings]
+
+
+def test_va15_deeply_nested_and_file_mode(tmp_path):
+    """ANY element named `diff` below the root -- and the per-edit `--file` hook
+    sees it too, since that mode runs sel-resolution only."""
+    ref = _ref(tmp_path)
+    mod = _mod(tmp_path)
+    f = _w(mod / "libraries/wares.xml",
+           "<wares><ware id=\"mine\"><owner><diff><remove sel=\"//x\"/></diff></owner>"
+           "</ware></wares>")
+    cfg = _merge.Config(reference=ref)
+    for rep in (_check.validate(mod, cfg), _check.validate(mod, cfg, only_file=f),
+                _check.validate(mod, cfg, sel_only=True)):
+        assert [x for x in rep.errors if "<diff>" in x.message], \
+            [(x.severity, x.category, x.message) for x in rep.findings]
+
+
+def test_va15_twin_a_root_diff_and_a_plain_full_file_raise_nothing(tmp_path):
+    ref = _ref(tmp_path)
+    mod = _mod(tmp_path)
+    _w(mod / "libraries/wares.xml", _CLEAN_WARES_DIFF)
+    _w(mod / "libraries/races.xml", '<races><race id="mine"/></races>')
+    rep = _check.validate(mod, _merge.Config(reference=ref))
+    assert not [x for x in rep.findings if "<diff>" in x.message], \
+        [(x.severity, x.category, x.message) for x in rep.findings]

@@ -537,7 +537,7 @@ def tier_b_trees(mod_dir: Path, report: Report | None = None) -> TierB:
 @dataclass
 class Finding:
     severity: str   # "error" | "warn" | "info"
-    category: str   # "sel" | "ref" | "completeness" | "path"
+    category: str   # "sel" | "ref" | "completeness" | "path" | "diff" | ...
     message: str
     vpath: str = ""
     line: int = 0
@@ -1068,17 +1068,53 @@ def _sel_note(checked: int, found: int, payload: int | str) -> str:
     return note
 
 
+def check_nested_diff(vpath: str, root: etree._Element, report: Report) -> None:
+    """ERROR for every `<diff>` element BELOW the root of a complete (non-diff) file.
+
+    The engine treats a file as a patch only when `<diff>` IS the document root (the X4
+    diff format; the audit row states the engine applies no nested one); one
+    nested inside a complete file (`<wares>...<diff>...</diff></wares>` -- a patch
+    pasted into the wrong kind of file) is never applied, and the run printed "OK: no
+    issues found" (AUDIT-2026-09-24 VA-15). ERROR, not WARN: it is the same class as
+    every other never-applied patch here (an op whose sel matches nothing) -- the
+    author wrote edits that do not happen, with no engine message. MEASURED
+    2026-09-26 before gating: 0 of 7,516 parsed XML files across 156 installed
+    extension folders carry one, so this cannot flood.
+
+    A `<diff>` ROOT is excluded: the name is the patch format itself there, and a
+    `<diff>` nested inside a patch's payload is a different question.
+    """
+    if root.tag == "diff":
+        return
+    for el in root.iter("diff"):
+        if el is root:
+            continue
+        report.add("error", "diff",
+                   f"<diff> nested inside a complete <{root.tag}> file is never applied: "
+                   "the engine reads a patch only when <diff> is the document root -- "
+                   "move these ops into their own <diff> file at this path",
+                   vpath, el.sourceline or 0)
+
+
 def check_sel_resolution(mod_dir: Path, config: _merge.Config, report: Report) -> None:
-    """Flag any non-silent op whose sel= matches nothing in the merged base+DLC tree."""
+    """Flag any non-silent op whose sel= matches nothing in the merged base+DLC tree.
+
+    Also flags a `<diff>` nested inside a complete file (`check_nested_diff`): it is
+    a patch that never applies, so it belongs with the selector verdicts and runs in
+    every mode that runs them (full, `--sel-only`, `--file`)."""
     checked = found = 0
     seen_skips: set[str] = set()
+    payload = []  # one parse pass serves both the nested-diff check and the denominator
+    for vpath, root in iter_mod_xml_roots(mod_dir):
+        check_nested_diff(vpath, root, report)
+        if vpath.lower() != MANIFEST:
+            payload.append(vpath)
     for vpath, diff_root in iter_diff_files(mod_dir):
         found += 1
         checked += _sel_check_file(vpath, diff_root, config, report, seen_skips)
 
     # Always state the denominator. "OK: no issues found" over 14 files and over 1
     # file printed identically until 2026-08-01, for the tool's PRIMARY check.
-    payload = [v for v, _ in iter_mod_xml_roots(mod_dir) if v.lower() != MANIFEST]
     report.notes.append(_sel_note(checked, found, len(payload)))
 
     if found:
@@ -1158,6 +1194,7 @@ def check_sel_resolution_one(file_path: Path, mod_dir: Path,
                     "path (vpath) is unknown and its selectors were not resolved",
                     degraded=True)
         return
+    check_nested_diff(vpath, root, report)
     if root.tag != "diff":
         # NOT a silent return. This function only knows how to check a <diff>, and
         # `validate()` RETURNS immediately after calling it in --file mode -- so for
