@@ -764,9 +764,12 @@ class LivePipe:
     def wait_for_game(self, timeout: float | None = None) -> None:
         """Block until the game connects, or refuse with a NON-ANSWER.
 
-        A timeout here means the mod is not loaded (or the game is not running).
-        That is a DIFFERENT state from "connected but silent", which `ask` reports,
-        and the two must never be merged.
+        A timeout here means nothing CONNECTED -- the game is not running, the helper is
+        not deployed or not yet initialised (it starts on game load, not at the menu), or
+        the game is running but not executing its frame loop. `_no_connection_reason`
+        tells those apart from what it can measure; do not collapse them to "the mod is
+        not loaded". It is a DIFFERENT state from "connected but silent", which `ask`
+        reports, and the two must never be merged.
         """
         win32pipe, _win32file, winerror = _win32()
         deadline = time.monotonic() + (self.timeout if timeout is None else timeout)

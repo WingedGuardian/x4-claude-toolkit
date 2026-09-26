@@ -155,8 +155,6 @@ def test_rt3_reference_near_a_chunk_boundary_is_counted_once(tmp_path):
 
 # --------------------------------------------------------------------------- RT-4
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-4: harvest stops at 40 globals pages "
-                   "but reports the engine's claimed page total with no truncation notice")
 def test_rt4_harvest_states_when_the_globals_walk_was_capped(tmp_path, monkeypatch):
     def answer(verb, args, seq):
         if verb == "probe":
@@ -178,8 +176,6 @@ def test_rt4_harvest_states_when_the_globals_walk_was_capped(tmp_path, monkeypat
 
 # --------------------------------------------------------------------------- RT-5
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-5: the '*' row is split on the "
-                   "two-char escape BEFORE unescaping, so an escaped backslash + 't' cuts a value")
 def test_rt5_all_fields_value_with_backslash_t_survives(tmp_path):
     def esc(x):   # the writer's escaping, as `cmd_groundtruth._gesc` does it
         return x.replace(BS, BS * 2).replace(TAB, BS + "t").replace(chr(10), BS + "n")
@@ -197,8 +193,6 @@ def test_rt5_all_fields_value_with_backslash_t_survives(tmp_path):
 
 # --------------------------------------------------------------------------- RT-6
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-6: a MAPPED field whose store prop is "
-                   "absent is counted as 'not mapped yet', hiding a possible disagreement")
 def test_rt6_mapped_but_absent_is_not_counted_as_unmapped(tmp_path, monkeypatch):
     assert _livecli._mapping_for("shieldgentypes", "hull") == ("hull.max", "identity")
     con = sqlite3.connect(":memory:")
@@ -237,9 +231,6 @@ def _names_filling(total: int) -> list[str]:
     return out
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-7: the up-front --batch-bytes check "
-                   "reserves 9 bytes for a header that is 14+ bytes, so an ACCEPTED value "
-                   "produces requests the pipe refuses")
 def test_rt7_an_accepted_batch_bytes_never_produces_an_oversized_request(tmp_path, monkeypatch):
     monkeypatch.setenv("X4_LIVE_ALLOW_FFI", "1")
 
@@ -270,8 +261,6 @@ def test_rt7_an_accepted_batch_bytes_never_produces_an_oversized_request(tmp_pat
 
 # --------------------------------------------------------------------------- RT-8
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-8: _dps_channels multiplies amount x "
-                   "barrelamount; the 348-macro capture (KB 2026-09-20) measured max(amount, barrel)")
 def test_rt8_shot_multiplier_is_max_not_product(monkeypatch):
     store = {}
     monkeypatch.setattr(_livecli, "_store_props", lambda con, name: store.get(name))
@@ -291,8 +280,6 @@ def test_rt8_shot_multiplier_is_max_not_product(monkeypatch):
 
 # --------------------------------------------------------------------------- RT-9
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 RT-9: `groundtruth --with-ramp` help says "
-                   "the lua client does not reconnect; the module's own MEASURED note says it does")
 def test_rt9_with_ramp_help_does_not_repeat_the_withdrawn_reconnect_claim(capsys):
     with pytest.raises(SystemExit):
         _livecli.main(["groundtruth", "--help"])

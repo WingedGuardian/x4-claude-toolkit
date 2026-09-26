@@ -273,7 +273,10 @@ _SUBSYSTEM_SHAPES = (
      re.compile(r"(?P<entity>)GetNPCBlackboard\(\): Component \d+ does not exist")),
     ("sectioncurve", "",
      re.compile(r"(?P<entity>)\[SectionCurve::Import\]")),
-    # No entity at all — matched last, so a row above always wins if it applies.
+    # Matched last, so a row above always wins if it applies. The text inside
+    # `aicontext<...>` IS captured as the entity (an earlier comment here said "no
+    # entity at all"), with NO entity_kind: what kind of id it holds is unmeasured, so
+    # the row claims none and nothing may treat it as a searchable definition id.
     ("aicontext", "",
      re.compile(r"^aicontext<(?P<entity>[^>]*)>")),
 )

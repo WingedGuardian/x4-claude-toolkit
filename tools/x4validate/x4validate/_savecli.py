@@ -1,8 +1,8 @@
 """Read an X4 savegame: what is baked into it, and what it references that is gone.
 
 A save is the only artifact the ENGINE wrote. It answers two questions no manifest
-can, and both were measured in-game on 2026-08-26 (KNOWLEDGEBASE 2026-08-26k,
-CLAUDE.md #33).
+can, and both were measured in-game on 2026-08-26 (the measurements are summarised
+below; the maintainers' knowledge-base entry they came from does not ship).
 
 WHY THIS IS NOT EXPENSIVE. The scary number is the decompressed size -- the largest
 save here is 140 MB compressed and 1.28 GB expanded. That is a wall for a DOM and for
