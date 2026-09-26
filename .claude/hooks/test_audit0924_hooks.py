@@ -225,6 +225,13 @@ class TestPS1Splatting(_PSE2E):
         self.expect([("ask", "Remove-Item @args"),
                      ("ask", "$p = Get-Params; Remove-Item @p")])
 
+    def test_an_unresolvable_splat_BESIDE_a_given_path_still_asks(self):
+        """Re-review 2: with a path present, the "no target path" report cannot fire, so
+        only the splat report stands between these and an allow -- the splat may carry
+        -Destination (or -Path) pointing anywhere."""
+        self.expect([("ask", "$p = Get-Params; Move-Item ." + BS + "a @p"),
+                     ("ask", "Copy-Item ." + BS + "a @args")])
+
     def test_TWIN_harmless_splats(self):
         self.expect([("allow", "$p=@{Path='.' + '" + BS + "x.txt'}; Remove-Item @p"),
                      ("allow", "$o=@{Object='x'}; Write-Output @o"),
