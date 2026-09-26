@@ -156,5 +156,80 @@ class TestHK6Minor(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ------------------------------------------------------------------------------------------
+# AUDIT-2026-09-24 HK-1 review follow-up: gaps in the PowerShell FRONT-END, pinned END TO END
+# (the payload is piped into protect-bash.sh as JSON, as Claude Code sends it). The hook only
+# DECIDES; nothing here executes the commands it is shown.
+import sys as _sys
+_sys.path.insert(0, str(HOOKS))
+import hook_facts as _H  # noqa: E402
+
+BS = chr(92)
+
+
+@unittest.skipUnless(_H._pwsh_exe(), "no PowerShell here: the front-end cannot be exercised "
+                                     "(without one it ASKS on every PowerShell command)")
+class _PSE2E(unittest.TestCase):
+    """Fixture roots in a throwaway directory, Windows-spelled (backslashes), because that is
+    how a PowerShell user writes them."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = pathlib.Path(tempfile.mkdtemp(prefix="psfe_"))
+        t = cls.tmp
+        cls.game, cls.ref, cls.tk = t / "X4 Foundations", t / "reference", t / "tk"
+        cls.docs = t / "Documents"
+        cls.prof = cls.docs / "Egosoft" / "X4" / "123"
+        for d in (cls.game / "libraries", cls.ref / "libraries", cls.tk, cls.prof / "save"):
+            d.mkdir(parents=True)
+        cls.env = dict(os.environ, X4_GAME=str(cls.game), X4_REFERENCE=str(cls.ref),
+                       X4_TOOLKIT=str(cls.tk), X4_PROFILE=str(cls.prof),
+                       X4_DOCUMENTS=str(cls.docs), X4_MODS=str(cls.tk / "dev"),
+                       X4_CONFIG=str(t / "none.env"))
+        cls.env.pop("CLAUDE_PROJECT_DIR", None)
+        # Windows spellings of the roots, for PowerShell text
+        cls.R = str(cls.ref).replace("/", BS)
+        cls.G = str(cls.game).replace("/", BS)
+        cls.S = str(cls.prof / "save").replace("/", BS)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def verdict(self, command, tool="PowerShell"):
+        payload = json.dumps({"tool_name": tool, "tool_input": {"command": command}})
+        p = subprocess.run([BASH, str(HOOKS / "protect-bash.sh")], input=payload,
+                           capture_output=True, text=True, env=self.env, timeout=120)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        if not p.stdout.strip():
+            return "allow"
+        return json.loads(p.stdout)["hookSpecificOutput"].get("permissionDecision", "advise")
+
+    def expect(self, cases, tool="PowerShell"):
+        for want, command in cases:
+            self.assertEqual(self.verdict(command, tool), want, command)
+
+
+class TestPS1Splatting(_PSE2E):
+    """StaticParameterBinder cannot see a splat, so `Remove-Item @p` bound NO path and the
+    delete reached no rule."""
+
+    def test_a_literal_hashtable_splat_is_resolved(self):
+        self.expect([
+            ("deny", "$p=@{Path='" + self.R + BS + "libraries'; Recurse=$true}; Remove-Item @p"),
+            ("ask", "$p=@{LiteralPath='" + self.S + BS + "a.xml.gz'}; Remove-Item @p"),
+            ("deny", "$q=@{Path='" + self.R + BS + "a.xml'; Value='x'}; Set-Content @q"),
+        ])
+
+    def test_an_unresolvable_splat_on_a_writing_cmdlet_asks(self):
+        self.expect([("ask", "Remove-Item @args"),
+                     ("ask", "$p = Get-Params; Remove-Item @p")])
+
+    def test_TWIN_harmless_splats(self):
+        self.expect([("allow", "$p=@{Path='.' + '" + BS + "x.txt'}; Remove-Item @p"),
+                     ("allow", "$o=@{Object='x'}; Write-Output @o"),
+                     ("allow", "$o = Get-Stuff; Write-Output @o")])
+
+
 if __name__ == "__main__":
     unittest.main()

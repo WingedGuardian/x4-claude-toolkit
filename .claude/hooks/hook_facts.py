@@ -2410,7 +2410,12 @@ def _pwsh_exe():
 
 
 def powershell_to_sh(text: str) -> tuple:
-    """(an equivalent POSIX-shell command, "") or (None, why it could not be made).
+    """(sh, unknown, "") or (None, [], why it could not be made).
+
+    `unknown` lists the parts of a TRANSLATED command whose write/delete target could not
+    be resolved -- an unresolvable splat, a method on an unknown object, Invoke-Expression
+    of computed text. The caller treats each as untranslated (ASK); the rest of the command
+    is still judged, so a deny elsewhere in it still wins.
 
     PowerShell's OWN parser does the work (ps_translate.ps1: Parser::ParseInput and
     StaticParameterBinder), so aliases, parameter prefixes and positional binding
@@ -2427,12 +2432,12 @@ def powershell_to_sh(text: str) -> tuple:
 def _translate_ps(text: str) -> tuple:
     exe = _pwsh_exe()
     if not exe:
-        return None, ("no PowerShell was found to parse it (pwsh, or powershell"
+        return None, [], ("no PowerShell was found to parse it (pwsh, or powershell"
                       + (", or X4_PWSH=" + os.environ["X4_PWSH"] if os.environ.get("X4_PWSH")
                          else "") + ")")
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ps_translate.ps1")
     if not os.path.isfile(script):
-        return None, "ps_translate.ps1 is missing beside hook_facts.py"
+        return None, [], "ps_translate.ps1 is missing beside hook_facts.py"
     try:
         p = subprocess.run(
             [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
@@ -2440,18 +2445,21 @@ def _translate_ps(text: str) -> tuple:
             input=text.encode("utf-8"), capture_output=True, timeout=20,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError) as exc:
-        return None, "PowerShell could not be run (%s)" % type(exc).__name__
+        return None, [], "PowerShell could not be run (%s)" % type(exc).__name__
     try:
         res = json.loads(p.stdout.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        return None, ("the PowerShell translator returned no verdict (exit %d)"
+        return None, [], ("the PowerShell translator returned no verdict (exit %d)"
                       % p.returncode)
     if not isinstance(res, dict) or not res.get("ok"):
-        return None, str((res or {}).get("reason") or "not translated")
+        return None, [], str((res or {}).get("reason") or "not translated")
     sh = res.get("command")
     if not isinstance(sh, str):
-        return None, "the PowerShell translator returned no command"
-    return sh, ""
+        return None, [], "the PowerShell translator returned no command"
+    unknown = res.get("unknown") or []
+    if not isinstance(unknown, list):
+        unknown = [str(unknown)]
+    return sh, [str(u) for u in unknown], ""
 
 
 _PS_EXES = ("powershell", "pwsh")
@@ -2612,10 +2620,11 @@ def _windows_carrier(seg: str, cmd: str) -> list:
         return []
     else:
         return []
-    sh, why = powershell_to_sh(text)
+    sh, unknown, why = powershell_to_sh(text)
     if sh is None:
         _UNTRANSLATED.append(why)
         return []
+    _UNTRANSLATED.extend(unknown)
     return [sh]
 
 
@@ -2802,9 +2811,10 @@ def facts(payload: dict, roots: dict) -> dict:
     # as `powershell_error`, and main() turns that into a refusal, never an allow.
     from_powershell = payload.get("tool_name") == "PowerShell"
     if from_powershell:
-        sh, why = powershell_to_sh(cmd)
+        sh, unknown, why = powershell_to_sh(cmd)
         if sh is None:
             return {"command": cmd, "powershell_error": why or "not translated"}
+        _UNTRANSLATED.extend(unknown)
         cmd = sh
 
     # PARSE THE COMMANDS, NOT THE PROSE. Heredoc bodies are data (a body line reading

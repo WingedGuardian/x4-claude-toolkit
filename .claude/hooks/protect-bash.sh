@@ -307,10 +307,12 @@ if on from_powershell; then
   COMMAND="[PowerShell, as the guard read it] $COMMAND"
 fi
 
-# A `cmd /c` or `powershell -c` carrier whose text could not be translated (HK-2): the
-# command it carries reached no rule. Same verdict as an unparseable command.
+# A `cmd /c` or `powershell -c` carrier whose text could not be translated (HK-2), or a
+# PowerShell write/delete whose target the translator could not resolve (HK-1 follow-up):
+# that part reached no rule. Same verdict as an unparseable command -- and a deny
+# elsewhere in the command still wins, because `ask` accumulates.
 if on carrier_untranslated; then
-  ask "This command runs PowerShell text the guard could not translate (it does not parse, or no PowerShell was found to parse it), so what it carries was NEVER checked against any rule. Confirm only if you know what the nested command does."
+  ask "Part of this command could not be analysed, so it was NEVER checked against any rule: nested PowerShell that does not parse (or no PowerShell was found to parse it), or a PowerShell write/delete whose TARGET the guard cannot resolve -- a splat that is not a literal hashtable, a .Delete()/.MoveTo()-style method on an object it cannot identify, Invoke-Expression of computed text. Write the target literally, or confirm only if you know what it touches."
 fi
 
 if on carriers_truncated; then

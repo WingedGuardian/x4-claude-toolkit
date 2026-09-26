@@ -92,6 +92,15 @@ function Q([string]$s) {
 
 # ------------------------------------------------------------------ values
 $script:Assign = @{}      # variable name (lower) -> string[] ; $null = ambiguous
+$script:Tables = @{}      # variable name (lower) -> literal hashtable (key -> value AST); $null = ambiguous
+
+# WHAT COULD NOT BE RESOLVED. A write or delete whose TARGET this script cannot name --
+# an unresolvable splat, a method on an unknown object, Invoke-Expression of computed
+# text -- is reported here rather than dropped, and the hook ASKS on it. Dropping it was
+# the review finding: a construct the translator did not model reached NO rule, which is
+# a narrowing step reporting success (AUDIT-2026-09-24 HK-1 follow-up).
+$script:Unknown = New-Object Collections.Generic.List[string]
+function Unknown([string]$why) { if (-not $script:Unknown.Contains($why)) { $script:Unknown.Add($why) } }
 $script:Depth = 0
 
 function Flatten($ast) {
@@ -171,10 +180,28 @@ function Canon([string]$name) {
     return $n
 }
 
+# A SPLAT (`Remove-Item @p`) is invisible to StaticParameterBinder: it binds nothing, so the
+# delete had no path and reached no rule. A literal hashtable assigned in the same command
+# is read here as if its keys were written as parameters. $script:SplatFor pins the table
+# to the binding of the command that carries the splat, so an upstream Get-ChildItem bound
+# in Scan-Upstream never reads the downstream command's splat.
+$script:SplatNow = @{}
+$script:SplatFor = $null
+$SPLAT_ALIASES = @{ 'pspath' = 'literalpath'; 'lp' = 'literalpath'; 'fullname' = 'literalpath' }
 function Bound($binding, [string[]]$names) {
-    if ($null -eq $binding) { return $null }
-    foreach ($n in $names) {
-        if ($binding.BoundParameters.ContainsKey($n)) { return $binding.BoundParameters[$n] }
+    if ($null -ne $binding) {
+        foreach ($n in $names) {
+            if ($binding.BoundParameters.ContainsKey($n)) { return $binding.BoundParameters[$n] }
+        }
+    }
+    if ($null -ne $script:SplatFor -and [object]::ReferenceEquals($binding, $script:SplatFor)) {
+        foreach ($n in $names) {
+            $want = $n.ToLowerInvariant()
+            foreach ($k in $script:SplatNow.Keys) {
+                $kk = if ($SPLAT_ALIASES.ContainsKey($k)) { $SPLAT_ALIASES[$k] } else { $k }
+                if ($kk -eq $want) { return [pscustomobject]@{ Value = $script:SplatNow[$k]; ConstantValue = $null } }
+            }
+        }
     }
     return $null
 }
@@ -189,6 +216,7 @@ function IsSet($binding, [string]$name) {
     $b = Bound $binding @($name)
     if ($null -eq $b) { return $false }
     if ($b.ConstantValue -is [bool]) { return $b.ConstantValue }
+    if ($b.Value -is [VariableExpressionAst] -and $b.Value.VariablePath.UserPath -eq 'false') { return $false }
     return $true
 }
 
@@ -252,7 +280,12 @@ function Targets([CommandAst]$c, $binding, [string[]]$names) {
     $viaItem = ($null -ne $b) -and (IsPipelineItem $b.Value)
     if ($null -ne $b -and -not $viaItem) { return @{ paths = @(BVals $binding $names); scoped = $false } }
     $up = Upstream $c
-    if ($null -eq $up) { return @{ paths = @(); scoped = $false } }
+    if ($null -eq $up) {
+        # A writing cmdlet with NO resolvable target is not a no-op to the guard: it is
+        # an UNKNOWN target (a splat, a runtime-only value), and the hook asks.
+        Unknown "$($c.GetCommandName()): no target path could be resolved"
+        return @{ paths = @(); scoped = $false }
+    }
     if (-not $up.known) { return @{ paths = @(UVar 'PS_PIPELINE_INPUT'); scoped = $false } }
     $pat = $up.filter
     if (-not $pat -and $up.narrowed) { $pat = 'PS_FILTERED' }
@@ -281,6 +314,9 @@ function Redirs([CommandBaseAst]$c) {
     return $r
 }
 
+$WRITERS = @('remove-item', 'move-item', 'copy-item', 'rename-item', 'set-content', 'out-file',
+             'export-csv', 'export-clixml', 'tee-object', 'add-content', 'clear-content', 'new-item')
+
 function Translate-Command([CommandAst]$c) {
     $lines = New-Object Collections.Generic.List[string]
     $raw = $c.GetCommandName()
@@ -292,7 +328,23 @@ function Translate-Command([CommandAst]$c) {
     $name = Canon $raw
     $binding = $null
     try { $binding = [StaticParameterBinder]::BindCommand($c, $true) } catch { $binding = $null }
+    if ($null -eq $binding) { $binding = [pscustomobject]@{ BoundParameters = @{} } }
     $red = Redirs $c
+    # Splats on this command: a literal hashtable is resolved; anything else leaves the
+    # parameters UNKNOWN.
+    $script:SplatNow = @{}; $script:SplatFor = $binding
+    $splatUnknown = ''
+    foreach ($e in $c.CommandElements) {
+        if ($e -is [VariableExpressionAst] -and $e.Splatted) {
+            $key = $e.VariablePath.UserPath.ToLowerInvariant()
+            if ($script:Tables.ContainsKey($key) -and $null -ne $script:Tables[$key]) {
+                foreach ($k in $script:Tables[$key].Keys) { $script:SplatNow[$k] = $script:Tables[$key][$k] }
+            } else { $splatUnknown = $e.VariablePath.UserPath }
+        }
+    }
+    if ($WRITERS -contains $name) {
+        if ($splatUnknown) { Unknown "$raw @${splatUnknown}: splatted parameters that cannot be resolved" }
+    }
     switch ($name) {
         'remove-item' {
             $t = Targets $c $binding @('Path', 'LiteralPath')
@@ -428,6 +480,22 @@ function Collect-Assignments($ast) {
         $key = $as.Left.VariablePath.UserPath.ToLowerInvariant()
         $val = $null
         if ($as.Right -is [CommandExpressionAst]) { $val = @(Vals $as.Right.Expression) }
+        # A literal hashtable, for splatting: key -> value AST. Anything else assigned to
+        # the same name makes it ambiguous ($null), never "the last one wins".
+        $tbl = $null
+        if ($as.Right -is [CommandExpressionAst] -and $as.Right.Expression -is [HashtableAst]) {
+            $tbl = @{}
+            foreach ($kv in $as.Right.Expression.KeyValuePairs) {
+                $kn = @(Vals $kv.Item1) | Select-Object -First 1
+                $v = $kv.Item2
+                if ($v -is [PipelineAst] -and $v.PipelineElements.Count -eq 1 -and $v.PipelineElements[0] -is [CommandExpressionAst]) {
+                    $v = $v.PipelineElements[0].Expression
+                }
+                if ($kn) { $tbl[$kn.ToLowerInvariant()] = $v }
+            }
+        }
+        if ($script:Tables.ContainsKey($key)) { $script:Tables[$key] = $null }
+        else { $script:Tables[$key] = $tbl }
         if ($script:Assign.ContainsKey($key)) {
             $old = $script:Assign[$key]
             if ($null -eq $old -or $null -eq $val -or (($old -join "`n") -ne ($val -join "`n"))) { $script:Assign[$key] = $null }
@@ -464,7 +532,7 @@ try {
     $src = [Text.Encoding]::UTF8.GetString($ms.ToArray())
     if ($src.Length -gt 0 -and $src[0] -eq [char]0xFEFF) { $src = $src.Substring(1) }
     $lines = Translate-Text $src
-    Out-Json @{ ok = $true; command = ($lines -join "`n") }
+    Out-Json @{ ok = $true; command = ($lines -join "`n"); unknown = @($script:Unknown) }
 } catch [FormatException] {
     Out-Json @{ ok = $false; reason = $_.Exception.Message }
 } catch {
