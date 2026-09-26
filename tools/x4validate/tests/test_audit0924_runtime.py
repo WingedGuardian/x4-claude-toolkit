@@ -308,6 +308,10 @@ def test_rg1_a_network_failure_mid_refresh_keeps_what_was_fetched(tmp_path, monk
     def fake_urlopen(req, timeout=None):
         if "/1.json" in req.full_url:
             return _Resp(_meta_json())
+        # Row 1 is fully served, its file list included (refresh fetches files.json for
+        # the update verdict since RG-3), so the failure lands on row 2 as intended.
+        if "/1/files.json" in req.full_url:
+            return _Resp(b'{"files": []}')
         if failure == "urlerror":
             raise urllib.error.URLError("network is unreachable")
         if failure == "timeout":

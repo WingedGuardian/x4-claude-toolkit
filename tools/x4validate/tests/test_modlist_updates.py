@@ -126,3 +126,42 @@ def test_refresh_records_and_prints_the_update_with_both_dates(tmp_path, monkeyp
     assert "UPDATE  cool_mod" in out and "2026-06-01" in out and "2026-07-01" in out, out
     dash = (tmp_path / "WORKLIST.md").read_text(encoding="utf-8")
     assert "UPDATE AVAILABLE  (1)" in dash and "2026-06-01" in dash, dash
+
+
+def _one_pinned_row(tmp_path, installed_date="2026-06-01"):
+    regp = tmp_path / "r.yaml"
+    reg = _registry._new_registry()
+    e = _registry._new_entry("cool_mod", True)
+    e["auto"].update(installed=True, installed_date=installed_date, installed_name="Cool Mod")
+    e["human"]["nexus_id"] = 7
+    reg["mods"].append(e)
+    _registry.save_registry(reg, regp)
+    return regp
+
+
+def _refresh(regp, force=True):
+    return _modlist.cmd_refresh(types.SimpleNamespace(
+        registry=str(regp), ids=None, seeded=False, limit=None, force=force, no_resolve=True))
+
+
+_META_BODY = {"name": "Cool Mod", "version": "2.0", "updated_timestamp": 1782900000,
+              "status": "published", "author": "a"}
+
+
+def test_a_fatal_stop_while_judging_the_update_leaves_the_row_UNCHECKED(tmp_path, monkeypatch):
+    """Review item 1: checked_at was written before the update verdict, so a fatal stop
+    fetching files.json saved the row as checked today with `update: unknown`, and the
+    re-run the tool itself recommends skipped it all day (TTL)."""
+    monkeypatch.setenv("X4_NEXUS_KEY", "test-key-not-real")
+    import urllib.error
+
+    def urlopen(req, timeout=None):
+        if req.full_url.endswith("/files.json"):
+            raise urllib.error.URLError("network is unreachable")
+        return _Resp(json.dumps(_META_BODY).encode())
+    monkeypatch.setattr(_nexus.urllib.request, "urlopen", urlopen)
+    regp = _one_pinned_row(tmp_path)
+    assert _refresh(regp) == 2
+    a = _registry.load_registry(regp)["mods"][0]["auto"]
+    assert a["name"] == "Cool Mod", "what WAS fetched must be kept"
+    assert a.get("checked_at") != datetime.now(timezone.utc).date().isoformat(), dict(a)

@@ -544,7 +544,6 @@ def _refresh_rows(mods, args, today) -> tuple:
         else:
             a["version"], a["updated"] = meta.version, meta.updated
             a.pop("upstream_file", None)
-        a["checked_at"] = today.isoformat()
         a["upstream_from"] = "exact" if state in _registry.TRUSTED_ID_STATES else state
 
         cls, settled = _classify(meta if fmeta is None else _file_as_meta(meta, fmeta),
@@ -554,7 +553,11 @@ def _refresh_rows(mods, args, today) -> tuple:
         # After the row is recorded, so a stop here keeps what was already fetched.
         fatal = _record_update(a, nid, fmeta, state)
         if fatal is not None:
+            # NOT stamped checked: the row is incomplete (no update verdict), and the
+            # once-per-day TTL would make the re-run this stop recommends skip it until
+            # tomorrow (review item 1). The fetched metadata above is still kept.
             return fatal, resolved, fetched, errors, skipped
+        a["checked_at"] = today.isoformat()
     return None, resolved, fetched, errors, skipped
 
 
