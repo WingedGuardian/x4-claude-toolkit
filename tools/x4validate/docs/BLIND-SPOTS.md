@@ -2808,6 +2808,18 @@ rather than assert it. A result can now be qualified after the fact, not merely 
 
 ## F60 — a file-by-file port SPLIT a commit and shipped half of it · **DEFECT** · confidence 99% · ✅ FIXED 2026-08-26
 
+> **2026-09-26 (AUDIT-2026-09-24 DC-3) — the check this entry cites is RETIRED; the text
+> below is history.** `verify-port.py` was retired with the dev repository on 2026-09-13
+> (source in that repository's archive bundle). **Nothing re-derives this entry now, and
+> nothing needs to:** the defect is a split between TWO repositories, and since 2026-09-14
+> there is one, so a file-by-file port no longer exists to split a commit. ⚠
+> `gates/register_rederivation.py` still counts this entry as covered, by
+> `tests/test_freshness.py` — but that path is quoted in the table below as EVIDENCE of the
+> split, not as a check of the fix. A mention satisfies that gate's existence rule.
+
+**NO RE-DERIVATION (2026-09-26):** the population the fix guarded (a dev → mirror port) no
+longer exists; see the note above.
+
 **The shape.** Porting dev → public mirror one file at a time has no notion of a commit, so a
 change set that spans five files can cross over in part. `f5c976d` (F56/F57/F43) touched
 `_freshness.py`, `_effective.py`, `_modlist.py`, `_check.py` and added `_changed.py`. **Two crossed
@@ -2861,6 +2873,17 @@ procedure also pins the source SHA and re-checks it before committing the mirror
 ---
 
 ## F61 — the identifier scrub has no dev-side control, so it regressed in 25 hours · **PROCESS** · confidence 97% · ✅ FIXED 2026-08-26
+
+> **2026-09-26 (AUDIT-2026-09-24 DC-3) — the check this entry's fix cites is RETIRED; the
+> text below is history.** `verify-port.py` was retired with the dev repository on
+> 2026-09-13, and with one repository there is no "dev side" left. **What covers the class
+> now:** `scripts/scan-identifiers.py` itself, run LOCALLY by `scripts/test-hooks.sh` (its
+> `--selftest` first, then the tree scan; rc 1 fails the suite) and in CI (the tree scan,
+> plus `--history` over the push range, pinned by `tests/test_scan_identifiers_history.py`).
+> ⚠ The local run still depends on someone running `scripts/test-hooks.sh`: MEASURED
+> 2026-09-26, no git `pre-push` hook is installed in this clone and `core.hooksPath` is
+> unset. That is this entry's shape — a control that fires only after the push — reduced,
+> not removed.
 
 `2b2b89a` (2026-08-25 15:36) genericised three personal overlay folder names out of
 `gates/schema_sweep.py`, because that file is mirrored and the names embed a username. **MEASURED
@@ -4332,6 +4355,15 @@ the instrument built to find F92.
 
 ## F73 — the pre-push identifier guard could not see the file a port EDITS BY HAND · **DEFECT** · confidence 98% · ✅ FIXED 2026-08-28
 
+> **2026-09-26 (AUDIT-2026-09-24 DC-3) — the guard this entry describes is RETIRED; the text
+> below is history.** `verify-port.py` was retired with the dev repository on 2026-09-13.
+> With one repository no file is "edited by hand during a port": every published file lives
+> in the tree that `scripts/scan-identifiers.py` scans, tracked AND untracked (its
+> `population()`; the untracked half is pinned by its own `--selftest`), run locally by
+> `scripts/test-hooks.sh` and in CI. ⚠ `gates/register_rederivation.py` credits this entry
+> to `gates/schema_sweep.py`, which the table below quotes as a place an identifier once sat
+> — a mention, not a check of this fix.
+
 **Found by shipping it.** During the v2.9.0 release `scripts/verify-port.py` reported the port
 *faithful* with a clean identifier scan; the push went out; CI's personal-data job then failed on
 `CHANGELOG.md:56`, a personal overlay name inside the F71 example output. **A personal identifier
@@ -4504,6 +4536,12 @@ carrying an accepted list.
 
 ## F76 — every identifier guard scanned the INDEX, so the newest file was outside the population · **DEFECT** · confidence 97% · ✅ FIXED 2026-08-29
 
+> **2026-09-26 (AUDIT-2026-09-24 DC-3) — half of this fix was RETIRED; the text below is
+> history.** The `verify-port.py` half went with the dev repository on 2026-09-13. The
+> `scripts/scan-identifiers.py` half is live: READ 2026-09-26, `population()` still returns
+> tracked + untracked files, and `scripts/scan-identifiers.py --selftest` asserts that an
+> untracked file is scanned ("an UNTRACKED file is scanned too -- the whole point").
+
 `git ls-files` reports what git has been **told about**. A file you created ten seconds ago and have
 not staged is not in it, by construction — and that file is, by construction, the one most likely to
 carry something you have not yet thought about.
@@ -4596,6 +4634,10 @@ worth more than the tests I wrote for it.
 > `published_surface_drift.py`, deliberately without its accept-baseline. That gate does NOT
 > cover `tools/basex`; that surface is closed by removing its second copy instead, which is
 > part of the same retirement.
+>
+> **2026-09-26 (AUDIT-2026-09-24 DC-3):** the note above was re-checked — `gates/deploy_parity.py`
+> and `tests/test_deploy_parity.py` exist. The first `RE-DERIVED BY` line and every
+> `verify-port.py` mention below are history.
 
 `scripts/verify-port.py` proves the dev package matches the public mirror. Its population is
 `git ls-files` of one repository, scoped to `tools/x4validate`. Three things we ship are not in it:
@@ -4934,6 +4976,9 @@ the CLI's committed `DEFAULT_VAR` in one command, rather than checking each side
 > **2026-09-13: `scripts/verify-port.py` was RETIRED with the dev repository** -- with one
 > repository there is no port left for it to check. The one-command committed-blob comparison
 > this entry calls for is `gates/lockstep.py`, pinned by `tests/test_lockstep_gate.py`.
+>
+> **2026-09-26 (AUDIT-2026-09-24 DC-3):** the note above was re-checked — both files exist.
+> Every `verify-port.py` mention below is history.
 
 The `x4live` channel decodes a TSV payload out of a lua global. The mod's `<savedvariable>` name and
 the CLI's `DEFAULT_VAR` must be identical or the CLI reads **zero of everything** — a NON-ANSWER, not
