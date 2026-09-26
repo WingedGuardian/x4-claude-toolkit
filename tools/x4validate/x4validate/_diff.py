@@ -18,12 +18,16 @@ content and is not keyed; real text is compared with its leading/trailing
 whitespace stripped, so re-indenting a document changes nothing while any change
 to the words does. Non-whitespace TAIL text of child elements (mixed content)
 is folded into the parent's value, so it is not silently outside the comparison.
+
+The top-level ops of a `<diff>` are keyed by what they install (their first
+payload child's id/name/macro/ref), else by `sel`; see `_op_key`.
 """
 
 from __future__ import annotations
 
 import copy
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -100,12 +104,16 @@ def merged_vpaths(dirs: list[Path]) -> dict[str, str]:
 #: vanilla `wares.xml` carries 101 wares in 49 duplicated-name groups (name is
 #: often a t-file reference like "{20201,301}"), so the positional suffix those
 #: groups needed made ONE inserted ware shift the key of every untouched sibling
-#: and read as phantom attribute edits. `sel` identifies a diff op.
-_KEY_ATTRS = ("id", "name", "ref", "macro", "sel", "method", "ware", "class")
+#: and read as phantom attribute edits. Diff ops are keyed separately (`_op_key`).
+_KEY_ATTRS = ("id", "name", "ref", "macro", "method", "ware", "class")
+
+#: What identifies a diff op's PAYLOAD (its first element child).
+_PAYLOAD_KEY_ATTRS = ("id", "name", "macro", "ref")
+
+_OP_TAGS = frozenset({"add", "replace", "remove"})
 
 #: Reserved pseudo-attribute carrying an element's text (see the module docstring).
 TEXT_ATTR = "text()"
-
 
 def _node_key(el: etree._Element) -> str:
     """Stable identity: tag plus the first discriminating attribute present.
@@ -117,6 +125,36 @@ def _node_key(el: etree._Element) -> str:
         if v is not None:
             return f"{el.tag}[@{a}={v}]"
     return el.tag
+
+
+def _payload_key(op: etree._Element) -> str | None:
+    """`<ware@id=x>` for an op whose first element child carries an identity."""
+    for child in op:
+        if isinstance(child.tag, str):
+            for a in _PAYLOAD_KEY_ATTRS:
+                v = child.get(a)
+                if v is not None:
+                    return f"{child.tag}@{a}={v}"
+            return None
+    return None
+
+
+def _op_key(op: etree._Element) -> str:
+    """Identity of a top-level diff op: its tag plus WHAT it installs, else WHERE.
+
+    Keyed on (tag, sel) alone, 839 of 7,022 installed ops (12%) sat in groups that
+    share both -- several `<add sel="/wares">` -- and fell to a positional suffix,
+    so inserting one op re-keyed its untouched siblings as removed + added. The
+    payload's identity tells them apart. It also keeps the op's identity across a
+    selector-only edit, so a changed `sel` reads as an `@sel` change the three-way
+    can classify, not a node removal plus an addition it cannot. An op with no
+    identifiable payload (a `<remove>`, a text-valued `<replace>`) is keyed by its
+    `sel`; `_index` adds `sel`, then position, only to break a remaining tie."""
+    pk = _payload_key(op)
+    if pk is not None:
+        return f"{op.tag}[{pk}]"
+    sel = op.get("sel")
+    return f"{op.tag}[@sel={sel}]" if sel is not None else op.tag
 
 
 def _text_value(el: etree._Element) -> str | None:
@@ -142,31 +180,38 @@ def _values(el: etree._Element) -> dict[str, str]:
 def _index(root: etree._Element) -> dict[str, dict[str, str]]:
     """Canonical path -> {attr: value} for every element in the tree.
 
-    The value map includes the `text()` pseudo-attribute. Sibling duplicates with
-    identical keys get a positional suffix so they stay distinct."""
+    The value map includes the `text()` pseudo-attribute. The top-level ops of a
+    `<diff>` document are keyed by `_op_key`; everything else by `_node_key`.
+    Remaining ties get `[@sel=...]` (ops only) and then a positional suffix."""
     out: dict[str, dict[str, str]] = {}
 
-    def walk(el, prefix):
-        counts: dict[str, int] = {}
-        for child in el:
-            if not isinstance(child.tag, str):
-                continue
-            key = _node_key(child)
-            counts[key] = counts.get(key, -1) + 1
+    def keys_for(el, ops: bool) -> list[tuple[etree._Element, str]]:
+        kids = [c for c in el if isinstance(c.tag, str)]
+        keys = [(_op_key(c) if ops and c.tag in _OP_TAGS else _node_key(c)) for c in kids]
+        if ops:
+            tally = Counter(keys)
+            dup = {k for k, n in tally.items() if n > 1}
+            keys = [(f"{k}[@sel={c.get('sel')}]"
+                     if k in dup and c.get("sel") is not None and "[@sel=" not in k
+                     else k) for c, k in zip(kids, keys)]
+        counts = Counter(keys)
         seen: dict[str, int] = {}
-        for child in el:
-            if not isinstance(child.tag, str):
-                continue
-            key = _node_key(child)
-            if counts[key] > 0:
-                seen[key] = seen.get(key, -1) + 1
-                key = f"{key}#{seen[key]}"
+        final = []
+        for c, k in zip(kids, keys):
+            if counts[k] > 1:
+                seen[k] = seen.get(k, -1) + 1
+                k = f"{k}#{seen[k]}"
+            final.append((c, k))
+        return final
+
+    def walk(el, prefix, ops=False):
+        for child, key in keys_for(el, ops):
             path = f"{prefix}/{key}"
             out[path] = _values(child)
             walk(child, path)
 
     out["/" + _node_key(root)] = _values(root)
-    walk(root, "/" + _node_key(root))
+    walk(root, "/" + _node_key(root), ops=root.tag == "diff")
     return out
 
 

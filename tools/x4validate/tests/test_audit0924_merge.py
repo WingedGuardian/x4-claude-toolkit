@@ -243,3 +243,38 @@ def test_attr_change_total_does_not_count_node_additions(tmp_path, capsys):
     # The only change to a.xml is one added NODE; no attribute changed.
     m = re.search(r"total attr changes:\s*(\d+)", out)
     assert m is None or m.group(1) == "0", out
+
+
+# --- review of DF-1..3 (2026-09-25) --------------------------------------------
+
+def _one_file_diff(tmp_path, old_text: str, new_text: str, vpath="libraries/wares.xml"):
+    old = _mod(tmp_path, "o", {vpath: old_text})
+    new = _mod(tmp_path, "n", {vpath: new_text})
+    md = _diff.diff_mods(old, new)
+    assert not md.unreadable
+    return md
+
+
+def test_ops_sharing_tag_and_sel_are_keyed_by_payload_not_position(tmp_path):
+    """839 of 7,022 installed ops share (tag, sel) -- several `<add sel="/wares">`.
+    Inserting one must not read as untouched wares removed and re-added."""
+    a = '<add sel="/wares"><ware id="a" p="1"/></add>'
+    b = '<add sel="/wares"><ware id="b" p="2"/></add>'
+    z = '<add sel="/wares"><ware id="z" p="9"/></add>'
+    md = _one_file_diff(tmp_path, f"<diff>{a}{b}</diff>", f"<diff>{z}{a}{b}</diff>")
+    (fd,) = md.changed()
+    assert fd.attr_changes == [], fd.attr_changes
+    assert fd.nodes_removed == [], fd.nodes_removed
+    assert len([p for p in fd.nodes_added if p.count("/") == 2]) == 1, fd.nodes_added
+
+
+def test_a_selector_only_edit_is_a_sel_change_not_remove_plus_add(tmp_path):
+    """Same op identity (tag + payload key), new sel -> an `@sel` change, which the
+    three-way can classify; remove+add at node level it cannot."""
+    md = _one_file_diff(
+        tmp_path,
+        '<diff><add sel="/wares"><ware id="a"/></add></diff>',
+        '<diff><add sel="//wares"><ware id="a"/></add></diff>')
+    (fd,) = md.changed()
+    assert not fd.nodes_added and not fd.nodes_removed, (fd.nodes_added, fd.nodes_removed)
+    assert [(c[1], c[2], c[3]) for c in fd.attr_changes] == [("sel", "/wares", "//wares")]
