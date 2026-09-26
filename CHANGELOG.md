@@ -56,6 +56,13 @@ Numbers below are taken from the commit that made the change.
 
 ### Safety hooks
 
+- **Bare system `python` on toolkit code is denied**, with the `uv run` form to use instead.
+  On a machine whose `python` has none of the toolkit's dependencies it fails with
+  ModuleNotFoundError or SyntaxError, which reads exactly like a real test failure.
+  Scoped to `tools/x4validate/` code, `-m pytest` and `-m x4validate`; `-c`, stdin, flag-only
+  calls, stdlib-only `scripts/` and `.claude/hooks/` are untouched. MEASURED over 23,267
+  historical commands: fires on 123 (0.53%), about 100 of them true positives and 23
+  stdlib-only scripts under `tools/x4validate/` that run bare but are covered by one habit.
 - **The PowerShell tool and NotebookEdit are guarded.** Before this, the hooks had no matcher
   for either, so every guard could be bypassed by choosing PowerShell (MEASURED:
   `Remove-Item -Recurse <reference>` ran unguarded). A PowerShell command is parsed with
