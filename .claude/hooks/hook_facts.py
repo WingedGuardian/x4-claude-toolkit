@@ -1409,6 +1409,176 @@ def _operands(seg: str) -> list[str]:
     return out
 
 
+#: instrument_hygiene.py's own shape `bare-python-on-project-code`: MEASURED at
+#: 0.63% of ~23,000 historical Bash commands (up from 0.03%), and that gate rates
+#: it "viable as a PreToolUse rule" itself. On this machine bare `python`/`python3`/
+#: `py` IS the system Python 3.10, with none of the project's dependencies
+#: installed and a syntax it does not even parse (nested f-strings) -- so it fails
+#: with ModuleNotFoundError or SyntaxError, which reads exactly like a genuine test
+#: failure rather than a wrong interpreter.
+#:
+#: DIFFERS from instrument_hygiene's own regex in several MEASURED respects,
+#: stated rather than left to be discovered:
+#:   * SEGMENT- AND VERB-SCOPED, not pure text: instrument_hygiene's pattern is
+#:     "no `uv run` ANYWHERE earlier in the command". This predicate uses the
+#:     same discipline every other rule in this file uses, so a `uv run`
+#:     mentioned in an unrelated earlier segment, a comment, or a quoted string
+#:     cannot immunise (or fake-trigger) a real bare invocation.
+#:   * WIDER on the INTERPRETER and the SHAPE: `py` counts too (instrument_hygiene
+#:     names only `python3?`), and it is not limited to `-m pytest` -- `-m
+#:     x4validate` and a script path under toolkit code count too.
+#:   * NARROWER on WHAT COUNTS AS "toolkit code" than CLAUDE.md's own routing
+#:     table wording ("tools/, scripts/, gates/, .claude/hooks/") -- see
+#:     `_PROJECT_DIR` below for the measurement that cut it down to
+#:     `tools/x4validate/` + `gates/`. Classifying every historical hit (not a
+#:     sample) found the wider wording flagged files that genuinely run fine
+#:     under this machine's real bare Python 3.10: `.claude/hooks/*.py` is
+#:     invoked bare BY THE HOOK INFRASTRUCTURE ITSELF, and the toolkit-root
+#:     `scripts/*.py` files (x4lock.py, x4canary.py, scan-identifiers.py, ...)
+#:     import stdlib only. A rule is not "viable as a PreToolUse rule" (this
+#:     gate's own words) if a third of its fires are advice against something
+#:     that already works.
+#: `python2`/`pypy`/`pypy3` (unlike `_PYTHONS` above) are DELIBERATELY EXCLUDED:
+#: this rule is about the one spelling this workspace actually types by reflex,
+#: not every Python-family executable.
+_BARE_PY_WORD = re.compile(r"^(?:python3?|py)(?:\.exe)?$", re.IGNORECASE)
+
+
+def _is_bare_python_word(tok: str) -> bool:
+    """True only for the literal WORD `python`/`python3`/`py` -- never a path.
+
+    A `/` or a backslash means this names a FILE, not a bare command word: an
+    absolute interpreter (`/usr/bin/python3`) or a venv spelling
+    (`.venv/Scripts/python`) is exactly what this predicate must NOT catch. That is
+    why it checks the RAW verb token rather than `_verb_name`'s basename-folded
+    one -- folding first would make a venv path and the bare word compare equal.
+    """
+    if not tok or "/" in tok or chr(92) in tok:
+        return False
+    return bool(_BARE_PY_WORD.match(tok))
+
+
+#: Directory components that make an argument TOOLKIT CODE -- i.e. that it needs
+#: the `tools/x4validate` venv (third-party deps, or the `x4validate` package
+#: itself) to run at all. NARROWER than the CLAUDE.md routing table's own
+#: "tools/, scripts/, gates/, .claude/hooks/" wording, and MEASURED, not guessed:
+#: classifying every historical hit (23,216 commands; see the commit that added
+#: this rule) found bare `python`/`python3`/`py` on `.claude/hooks/*.py` and on the
+#: toolkit-ROOT `scripts/*.py` (`x4lock.py`, `x4canary.py`, `scan-identifiers.py`,
+#: `verify-hook-tests.py`, `fuzz-guard.py`, `audit-coverage.py`, ...) genuinely
+#: WORKS on this machine's real bare Python 3.10 -- every one of those imports
+#: stdlib only (or a local sibling module), and `.claude/hooks/` is invoked bare
+#: BY THE HOOK INFRASTRUCTURE ITSELF (protect-bash.sh's own `"$PY" "$HOOK_DIR/
+#: hook_facts.py"`, never `uv run`), so denying it would be advising against the
+#: one thing the toolkit's own machinery does on purpose. `tools/basex/*.py` is
+#: the same story (`ask.py`/`staleness.py` import only a local sibling module).
+#: That is 963+ of the pre-fix corpus's 1,788 hits accounted for as measured false
+#: positives, not a sample -- so this predicate covers only what is LEFT: the
+#: `tools/x4validate` subtree (its own package, gates, tests and nested scripts/
+#: all share ONE venv and ONE documented invocation, "uv run --frozen python from
+#: tools/x4validate") plus a bare `gates` component, kept because it is the one
+#: directory name that exists nowhere else in this repository (measured: a single
+#: `gates/` folder, under `tools/x4validate/`), so a relative `gates/x.py` is
+#: unambiguous even with no cwd evidence at all.
+_PROJECT_DIR = re.compile(r"(^|/)tools/x4validate(/|$)|(^|/)gates(/|$)")
+
+#: `-m pytest` / `-m x4validate` are toolkit code by NAME, regardless of where the
+#: module happens to resolve from -- the two shapes instrument_hygiene's own
+#: docstring names.
+_PROJECT_MODULES = {"pytest", "x4validate"}
+
+
+#: A redirect operator, alone or glued to its target/fd (`2>&1`, `>>out.txt`,
+#: `<<PYEOF`). MEASURED: without this, `python - <<PYEOF ... PYEOF` -- reading a
+#: heredoc-fed script from stdin, a routine idiom for a throwaway edit -- had its
+#: HEREDOC MARKER (`<<PYEOF`, `<<EOF`, bare `<<`...) read as if it were the script
+#: PATH, and over half of every historical hit (963 of 1,788) was exactly this:
+#: a marker text that happened to resolve to nothing in particular, saved only by
+#: the shell's own cwd already being under toolkit code. Never a script.
+_REDIR_TOKEN = re.compile(r"^\d*(<<<|<<|<|>>|>\|?|&>)")
+
+
+def _python_script_target(rest: list):
+    """(`"module"`|`"file"`, value) for the first thing a python invocation would
+    actually EXECUTE, given the tokens AFTER its verb -- or None when nothing runs
+    at all: a flag-only call (`--version`), `-c` whose payload is inline text, or
+    bare `-`/no operand at all -- python's own "read the script from stdin" idiom,
+    almost always paired with a heredoc. Neither `-c` nor `-` names a file on disk,
+    so `python --version` and `python - <<PYEOF ... PYEOF` must stay allowed even
+    from inside tools/x4validate: they run no PROJECT FILE at all, whatever the
+    heredoc body imports (which this predicate cannot see, any more than it can
+    see the guts of a `-c` string).
+
+    A redirect token (or its target, when the two are separate words) is skipped
+    outright, never mistaken for the positional script argument.
+    """
+    i = 0
+    while i < len(rest):
+        t = rest[i]
+        m = _REDIR_TOKEN.match(t)
+        if m:
+            # A BARE operator (`<<` on its own) still has its target as the NEXT
+            # token (`<< PYEOF`, spelled with a space); a GLUED one (`<<PYEOF`,
+            # `2>&1`) is already whole and consumes nothing further.
+            i += 2 if m.end() == len(t) else 1
+            continue
+        if t == "-m":
+            return ("module", rest[i + 1]) if i + 1 < len(rest) else None
+        if t in ("-c", "-"):
+            return None
+        if t.startswith("-"):
+            i += 1
+            continue
+        return ("file", t)
+    return None
+
+
+def _bare_python_targets_project_code(sg: str, c_cwd: str, assigns: dict) -> bool:
+    """True when segment `sg`'s own verb is a bare `python`/`python3`/`py` AND what
+    it runs is toolkit code: `-m pytest`/`-m x4validate`, a script path that is
+    (or resolves, joined against the shell's OWN `c_cwd` from cwd_track) under
+    tools/x4validate/ or a bare `gates/` reference.
+
+    JOINS with cwd rather than treating cwd as an independent yes/no signal --
+    MEASURED, and it is the fix for the false positives that shape produced: a
+    scratch script's path (`"$S/xedit.py"`, `$(cygpath -w .../scratchpad/x.py)`,
+    an absolute `/tmp/...`) does not turn into toolkit code merely because the
+    shell happened to `cd tools/x4validate` first for an unrelated later command
+    in the same chain -- `join_cwd` already returns the path UNCHANGED for an
+    absolute operand and "" (unknowable, so no match) for a relative one with no
+    known cwd, which is exactly the discipline every other rule in this file uses
+    (see `prep()`). An operand this hook cannot resolve at all (a live `$(...)` or
+    an unassigned `$VAR`) is left alone rather than guessed at -- conservative,
+    per "err toward fewer denies".
+
+    Does not re-derive verb resolution: `sg` already comes out of `resolve_verb`
+    (see facts()), so a variable-spelled verb (`PY=python; $PY -m pytest`) is seen
+    exactly as the plain spelling is -- the same F111 guarantee `durable_python_open_w`
+    relies on.
+    """
+    verb_tok = _verb_token(sg)
+    if not _is_bare_python_word(verb_tok):
+        return False
+    toks = tokens_of(sg)
+    try:
+        idx = toks.index(verb_tok)
+    except ValueError:
+        return False
+    got = _python_script_target(toks[idx + 1:])
+    if got is None:
+        return False
+    kind, val = got
+    if kind == "module":
+        return val in _PROJECT_MODULES
+    resolved = resolve(val, assigns)
+    if has_unresolved(resolved):
+        return False
+    if _PROJECT_DIR.search(norm(resolved)):
+        return True
+    full = join_cwd(c_cwd, resolved)
+    return bool(full) and bool(_PROJECT_DIR.search(norm(full)))
+
+
 COPY_VERBS = {"cp", "mv", "move", "copy", "tee", "install", "rsync"}
 
 
@@ -3267,6 +3437,20 @@ def facts(payload: dict, roots: dict) -> dict:
             # walked segments(c) raw, so `PY=python; $PY -c "open(...,'w')"`
             # reached no rule while the plain spelling denied.
             for sg, _c in seg_cwd),
+
+        # instrument_hygiene.py's own shape `bare-python-on-project-code`: bare
+        # `python`/`python3`/`py` invoking TOOLKIT code reports ModuleNotFoundError
+        # or SyntaxError from the system interpreter, which reads exactly like a
+        # real test failure. `uv run ... python`, an absolute interpreter, and a
+        # .venv spelling are unaffected (_is_bare_python_word checks the RAW verb
+        # token, never the basename-folded one); a flag-only call or an inline
+        # `-c` payload runs no FILE at all and is unaffected too
+        # (_python_script_target). See the commit that added this rule for the
+        # measured fire rate and the false-positive classification over the
+        # historical corpus.
+        "bare_python_on_project_code": any(
+            _bare_python_targets_project_code(sg, c_cwd, assigns)
+            for sg, c_cwd in seg_cwd),
 
         # TWO CLAUSES, and each needs its own falsification twin: the search is rooted
         # AT reference\, or ABOVE it. The second was added 2026-09-21 after the

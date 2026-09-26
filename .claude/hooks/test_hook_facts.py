@@ -852,6 +852,152 @@ class TestPreviouslyUnprobedRules(unittest.TestCase):
         self.assertFalse(F('ls "' + REF + '"')["rm_targets_reference"])
 
 
+class TestBareSystemPythonOnToolkitCode(unittest.TestCase):
+    """instrument_hygiene.py's shape `bare-python-on-project-code`, now a PreToolUse
+    rule. Positives (must DENY) and near-misses (must NOT), per its own definition:
+    the command WORD is `python`/`python3`/`py`, and the thing it runs needs the
+    `tools/x4validate` venv -- `-m pytest`/`-m x4validate`, a path under
+    tools/x4validate/ (including one resolved by JOINING a relative operand
+    against the shell's OWN cwd), or a bare `gates/...` reference.
+
+    NARROWER than CLAUDE.md's routing-table wording ("tools/, scripts/, gates/,
+    .claude/hooks/") on purpose -- see hook_facts.py's `_PROJECT_DIR` comment.
+    Classifying every historical hit found `.claude/hooks/*.py` and the
+    toolkit-ROOT `scripts/*.py` genuinely run fine under this machine's real bare
+    Python 3.10 (stdlib only, or `.claude/hooks/` invoked bare BY THE HOOK
+    INFRASTRUCTURE ITSELF), so this predicate does not cover them; several tests
+    below pin that as a MEASURED near-miss, not an oversight.
+    """
+
+    # --- must DENY -----------------------------------------------------------
+    def test_bare_python_dash_m_pytest_fires(self):
+        self.assertTrue(F("python -m pytest -q tests/")["bare_python_on_project_code"])
+
+    def test_bare_python_dash_m_x4validate_fires(self):
+        self.assertTrue(F("python -m x4validate --paths")["bare_python_on_project_code"])
+
+    def test_bare_python3_a_gates_script_fires(self):
+        self.assertTrue(F("python3 gates/claims_audit.py")["bare_python_on_project_code"])
+
+    def test_bare_py_a_tools_x4validate_path_fires(self):
+        self.assertTrue(
+            F("py tools/x4validate/gates/claims_audit.py")["bare_python_on_project_code"])
+
+    def test_bare_python_a_bare_relative_name_with_toolkit_cwd_fires(self):
+        cmd = "cd " + TOOLKIT + "/tools/x4validate && python local_helper.py"
+        self.assertTrue(F(cmd)["bare_python_on_project_code"])
+
+    def test_a_relative_package_path_joins_against_the_toolkit_cwd(self):
+        # "x4validate/_livecli.py" alone names nothing project-shaped -- it is
+        # only toolkit code once joined against a cwd already inside
+        # tools/x4validate/, exactly as `tools/x4validate/x4validate/_livecli.py`
+        # is laid out on disk. A real historical shape (xedit.py mutation probes).
+        cmd = "cd " + TOOLKIT + "/tools/x4validate && python x4validate/_livecli.py"
+        self.assertTrue(F(cmd)["bare_python_on_project_code"])
+
+    def test_a_quoted_verb_still_fires(self):
+        self.assertTrue(F('"python" gates/claims_audit.py')["bare_python_on_project_code"])
+
+    def test_a_variable_spelled_verb_still_fires(self):
+        # The F111 guarantee: resolve_verb splices the assignment BEFORE this rule
+        # ever sees the segment, so the plain and variable spellings must agree.
+        self.assertTrue(F("PY=python; $PY -m pytest -q")["bare_python_on_project_code"])
+
+    def test_a_wrapper_does_not_get_you_out_of_it(self):
+        # Consistent with every other verb-keyed rule in this file: `nice`/`env`/
+        # `timeout` step OVER the verb, they do not hide it.
+        self.assertTrue(
+            F("nice -n 5 python gates/claims_audit.py")["bare_python_on_project_code"])
+
+    # --- must NOT fire (the important half) -----------------------------------
+    def test_uv_run_frozen_python_dash_m_pytest_does_not_fire(self):
+        self.assertFalse(
+            F("uv run --frozen python -m pytest -q")["bare_python_on_project_code"])
+
+    def test_uv_run_python_a_gates_script_does_not_fire(self):
+        self.assertFalse(
+            F("uv run python gates/claims_audit.py")["bare_python_on_project_code"])
+
+    def test_an_absolute_interpreter_path_does_not_fire(self):
+        self.assertFalse(
+            F("/usr/bin/python3 gates/claims_audit.py")["bare_python_on_project_code"])
+
+    def test_a_venv_interpreter_path_does_not_fire(self):
+        self.assertFalse(
+            F(".venv/Scripts/python gates/claims_audit.py")["bare_python_on_project_code"])
+
+    def test_an_unresolved_x4_python_variable_does_not_fire(self):
+        self.assertFalse(
+            F("$X4_PYTHON -m pytest -q")["bare_python_on_project_code"])
+
+    def test_bare_python_version_does_not_fire(self):
+        self.assertFalse(F("python --version")["bare_python_on_project_code"])
+
+    def test_bare_python_dash_c_on_nothing_project_related_does_not_fire(self):
+        self.assertFalse(F('python -c "print(1)"')["bare_python_on_project_code"])
+
+    def test_bare_python_dash_c_from_a_toolkit_cwd_still_does_not_fire(self):
+        # The cwd branch exists for a resolvable SCRIPT PATH, not for inline -c
+        # code -- `-c`'s payload is not "toolkit code" merely for sitting in that
+        # directory.
+        cmd = "cd " + TOOLKIT + '/tools/x4validate && python -c "print(1)"'
+        self.assertFalse(F(cmd)["bare_python_on_project_code"])
+
+    def test_heredoc_fed_stdin_from_a_toolkit_cwd_does_not_fire(self):
+        # MEASURED: `python - <<PYEOF ... PYEOF` -- python's own "read the script
+        # from stdin" idiom -- had its HEREDOC MARKER misread as the script path
+        # before this was fixed; 963 of 1,788 pre-fix hits were exactly this
+        # shape. Neither the marker nor a toolkit cwd makes the piped-in text a
+        # PROJECT FILE.
+        cmd = ("cd " + TOOLKIT + "/tools/x4validate && python - <<PYEOF" + chr(10)
+               + "print(1)" + chr(10) + "PYEOF")
+        self.assertFalse(F(cmd)["bare_python_on_project_code"])
+
+    def test_a_scratch_script_does_not_fire_despite_a_toolkit_cwd(self):
+        # MEASURED false-positive shape: `S=<scratchpad>; cd tools/x4validate &&
+        # python "$S/xedit.py" ...` -- a real recurring pattern (25 hits
+        # pre-fix). The SCRIPT being run resolves to an absolute scratch path;
+        # the shell merely being inside tools/x4validate for an unrelated later
+        # command in the same chain must not make that script toolkit code.
+        cmd = ('S="/c/scratch/fu-hook"; cd ' + TOOLKIT
+               + '/tools/x4validate && python "$S/xedit.py" a b')
+        self.assertFalse(F(cmd)["bare_python_on_project_code"])
+
+    def test_a_standalone_scratch_script_does_not_fire(self):
+        self.assertFalse(
+            F("python /c/scratch/fu-hook/probe.py")["bare_python_on_project_code"])
+
+    def test_inside_a_heredoc_body_is_DATA_not_a_command(self):
+        cmd = "cat > notes.md <<X" + chr(10) + "python gates/claims_audit.py" + chr(10) + "X"
+        self.assertFalse(F(cmd)["bare_python_on_project_code"])
+
+    # --- MEASURED near-misses: these genuinely run fine bare on this machine ---
+    def test_dot_claude_hooks_does_not_fire(self):
+        # protect-bash.sh itself invokes hook_facts.py through a bare `$PY`, never
+        # `uv run` -- denying this would be advice against the hook infrastructure's
+        # own intended invocation. Stdlib only; MEASURED to actually work (ran this
+        # very file's suite under the real system Python 3.10 while building this
+        # rule).
+        self.assertFalse(
+            F("python .claude/hooks/test_hook_facts.py")["bare_python_on_project_code"])
+
+    def test_toolkit_root_scripts_do_not_fire(self):
+        # scripts/x4lock.py imports stdlib only (os, stat, argparse, pathlib) --
+        # MEASURED across the historical corpus's most frequent hits before this
+        # predicate was scoped down (x4lock.py, x4canary.py, scan-identifiers.py,
+        # verify-hook-tests.py, fuzz-guard.py, audit-coverage.py: 616 hits between
+        # them, none a real ModuleNotFoundError risk).
+        cmd = "cd " + TOOLKIT + " && python scripts/x4lock.py status"
+        self.assertFalse(F(cmd)["bare_python_on_project_code"])
+
+    def test_tools_basex_does_not_fire(self):
+        # ask.py/staleness.py import a local sibling module, not a project
+        # dependency -- a different venv-less corner of the toolkit from
+        # tools/x4validate.
+        cmd = "cd " + TOOLKIT + "/tools/basex && python staleness.py --check"
+        self.assertFalse(F(cmd)["bare_python_on_project_code"])
+
+
 class TestWrappedCommands(unittest.TestCase):
     """`bash -c "<command>"` hid everything inside it from every rule. Pre-existing, and
     segment-splitting made the pipeline form structural -- so the parse pass descends."""
@@ -3238,6 +3384,17 @@ class TestHK1PowerShellFrontEnd(unittest.TestCase):
 
     def test_hygiene_rules_apply_too(self):
         self.assertTrue(self.P("git add -A")["git_add_all"])
+
+    def test_bare_python_on_toolkit_code_fires_through_powershell(self):
+        # A native program (not a cmdlet) goes through WORD FOR WORD (see
+        # ps_translate.ps1's Translate-Command), so this is the SAME rule, not a
+        # second implementation.
+        self.assertTrue(
+            self.P("python gates/claims_audit.py")["bare_python_on_project_code"])
+
+    def test_uv_run_python_does_not_fire_through_powershell(self):
+        self.assertFalse(
+            self.P("uv run python gates/claims_audit.py")["bare_python_on_project_code"])
 
     def test_nested_pwsh_in_bash(self):
         f = F("pwsh -NoProfile -Command " + DQ + "Remove-Item -Recurse " + Q + REF + Q + DQ)

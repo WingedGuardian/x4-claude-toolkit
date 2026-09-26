@@ -150,6 +150,25 @@ probe allow "git-add-dotfile"    'git add .gitattributes'
 probe allow "git-add-dotdir"     'git add .claude/hooks/protect-bash.sh'
 probe allow "not-git-add"        'uv add --dev pytest'
 
+echo
+echo "--- bare system python on toolkit code (must DENY) ---"
+probe deny "bare-python-dash-m-pytest"   'python -m pytest -q tests/'
+probe deny "bare-python3-gates-script"   'python3 gates/claims_audit.py'
+probe deny "bare-py-tools-x4validate"    'py tools/x4validate/gates/claims_audit.py'
+
+echo "--- ...but these must NOT fire (the important half) ---"
+probe allow "uv-run-frozen-pytest"       'uv run --frozen python -m pytest -q'
+probe allow "uv-run-python-gates"        'uv run python gates/claims_audit.py'
+probe allow "venv-python-gates"          '.venv/Scripts/python gates/claims_audit.py'
+probe allow "bare-python-version"        'python --version'
+probe allow "bare-python-dash-c"         'python -c "print(1)"'
+probe allow "bare-python-scratch-script" 'python /c/scratch/fu-hook/probe.py'
+# MEASURED near-misses, not oversights -- see hook_facts.py's _PROJECT_DIR comment.
+# Both genuinely run fine under this machine's real bare Python 3.10 (stdlib
+# only, or -- for .claude/hooks/ -- invoked bare BY THE HOOK INFRASTRUCTURE ITSELF).
+probe allow "toolkit-root-script-x4lock" 'cd /c/toolkit && python scripts/x4lock.py status'
+probe allow "dot-claude-hooks-test-file" 'python .claude/hooks/test_hook_facts.py'
+
 echo "--- profile content.xml searched by NAME (must ASK) ---"
 need "$X4_PROFILE" "profile-grep-by-name" X4_PROFILE && probe deny   "profile-grep-by-name"   "grep -i somemod \"$X4_PROFILE/content.xml\""
 need "$X4_PROFILE" "profile-rg-by-name" X4_PROFILE && probe deny   "profile-rg-by-name"     "rg somemod \"$X4_PROFILE/content.xml\""

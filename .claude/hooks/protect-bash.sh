@@ -460,6 +460,34 @@ Prefer the Edit/Write tools (backed up), or write to a temp and rename. If you p
 Command: $COMMAND"
 fi
 
+# === DENY — bare system python invoking TOOLKIT code ===
+# instrument_hygiene.py's own shape `bare-python-on-project-code`: MEASURED at
+# 0.63% of ~23,000 historical Bash commands (up from 0.03%), and that gate itself
+# rates it "viable as a PreToolUse rule". On this machine bare `python`/`python3`/
+# `py` IS the system Python 3.10, with none of the project's dependencies
+# installed and a syntax it does not even parse (nested f-strings) -- so it fails
+# with ModuleNotFoundError or SyntaxError, which reads exactly like a real test
+# failure, not a wrong interpreter. `uv run ... python`, an absolute interpreter
+# path, a .venv spelling, and a flag-only or `-c`-inline invocation are all
+# UNAFFECTED -- see hook_facts.py's _is_bare_python_word / _python_script_target.
+#
+# SCOPED NARROWER than the routing table's own "tools/, scripts/, gates/,
+# .claude/hooks/" wording -- MEASURED, not guessed: classifying every historical
+# hit (not a sample) found bare python on `.claude/hooks/*.py` and the
+# toolkit-ROOT `scripts/*.py` genuinely works on this machine's real bare
+# Python 3.10, because both are stdlib-only by convention (and `.claude/hooks/`
+# is invoked bare BY THE HOOK INFRASTRUCTURE ITSELF). Fixing that cut the fire
+# rate from 7.70% to 0.53% of the same corpus. See hook_facts.py's `_PROJECT_DIR`
+# for exactly what counts now, and the commit that added this rule for the full
+# TP/FP classification.
+if on bare_python_on_project_code; then
+  deny "BARE PYTHON ON TOOLKIT CODE: the system interpreter has no project dependencies, so this reports ModuleNotFoundError / SyntaxError -- which reads exactly like a real test failure, not a wrong interpreter.
+Use instead:
+  cd tools/x4validate && uv run --frozen python <script.py | -m pytest | -m x4validate>
+  uv run --no-project python <path>          # a standalone script with no project deps
+Command: $COMMAND"
+fi
+
 # === TOOL ROUTING — block recursive text search over the 60 GB reference tree ===
 # Purpose-built tools answer these far faster and with a denominator. See CLAUDE.md
 # "Discovery vs. Proof" routing table. This blocks the reflex, not the capability:
