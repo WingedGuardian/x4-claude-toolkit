@@ -206,6 +206,17 @@ memory or from another session -- a remembered id was stale within a day here.
 | F125 | a live refusal read the helper's ABSENT load marker as "most likely not installed" -- but the mod arms on GAME LOAD, so at the MAIN MENU the marker is legitimately absent and the install is fine | **DEFECT (measured)** · ✅ FIXED 2026-09-20 | in game 2026-09-20 at the main menu with no save loaded: marker absent, extension present and enabled, refusal said "not installed or not enabled" | the install is MEASURED directly (`helper_is_deployed()` over `mods("active")`) instead of inferred from the log; with deployment unknown the message names BOTH causes |
 | F127 | the guard's scope rules matched a search rooted AT a big tree and at the toolkit/game roots, never ABOVE one — so when the dev repo was retired and `X4_TOOLKIT` moved, the parent of the 60 GB `reference\` tree stopped being named by any root and a recursive search there became ALLOW. The ancestor was covered only BY COINCIDENCE | **DEFECT (measured)** · ✅ FIXED 2026-09-21 | 2026-09-21 through the DEPLOYED hook: `cd <parent-of-reference> && grep -rl x .` → ALLOW, while the same shape at the toolkit root, at `reference/` itself and at the game root all → deny. 3 controls denying is what made it a hole, not a rule change. Found by `hook_false_positives` going red (146 of 17,133 shared commands moved). **6 commands affected, not the 3 the first text-based classification found** — the other 3 never contain the string `reference` | `contains_root()` makes a PROPER-ANCESTOR search fire the same rule; 11 tests incl. a split-root fixture, 3 of 3 clause mutants killed, 8-case end-to-end probe on the deployed hook |
 | F126 | `build-effective.sh` rebuilt the x4eff DATABASE correctly but skipped the COVERAGE STAMP and still exited 0, so a freshly built index reported STALE indefinitely and refused to back any negative claim | **DEFECT (measured)** · ✅ FIXED 2026-09-20 | 2026-09-20: DB timestamp 02:15:41 with 10,970 documents, while `coverage-x4eff.json` kept mtime 00:22:03 and the PREVIOUS content fingerprint (`1f071ac8` vs the `39c7120a` stamped on `coverage-x4raw.json` minutes earlier); exit code 0 | not fixed. Cause identified -- a staging `rm` hit `_eff/tree/libraries/controlschemes_for_movie_capturing.xml` while BaseX still held it (`Device or resource busy`) and the stamp step never ran. A retry with the lock released stamped correctly, so it is NOT reproduced |
+| F128 | `compute_load_order` modelled the COMMUNITY rule (ASCII case-sensitive sort, each mod as early as its dependencies allow) and nothing ever compared it with the ENGINE -- it decides every collision winner | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | 685 of 5,134 ordered pairs inverted (372 file classes, two launches of the engine's own log); every existing winner test still passed | engine rule (case-insensitive UPPERCASE order, repeated passes) implemented: 0 of 5,134 inverted, held to every new log by `gates/load_order_oracle.py`. Signature order = apply order is INFERRED, not probed (AUDIT LO-2/LO-3 OPEN) |
+| F129 | the freshness fingerprint missed three ways an artifact goes stale: a mod MOVING between install roots, code that shapes the store but was not in `ENGINE_SOURCES`, and a reference (game) update, which it blamed on mods | **DEFECT (read)** · ✅ FIXED 2026-09-25 | `ENGINE_SOURCES` named 8 modules, 3 of them never on the store path, and missed 2 that are; x4xref stamped 1 of the 3 roots it indexes; BaseX staleness watched the game-root extensions only | root folded into the content axis; sources re-derived by tracing a build (7 now); reference is its own axis; every index stamps every root it reads |
+| F130 | x4diff compared ATTRIBUTES only: an edit whose value is element TEXT was invisible, and the three-way called such an author edit VERBATIM | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | `<replace sel=".../@min">5</replace>` → 999 read "changed files: 0", rc 0; ~48% of installed-mod ops carry their value in text | text keyed as a `text()` pseudo-attribute, positional across children; diff ops keyed by payload identity (839 of 7,022 ops shared tag + sel) |
+| F131 | `ask.py` scored a zero against the WHOLE database's denominator whatever the query actually addressed | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | `db:get('x4eff','no/such/typo.xml')//ware` → "NEGATIVE CONFIRMED over 10970 of 10970 documents", rc 0 | every call that reaches a database is classified; a partial, foreign or non-literal address is refused rc 2. Coverage licence revoked before DROP DB and judged per root (BX-3, BX-4) |
+| F132 | the safety hooks guarded Bash, Edit and Write but had NO matcher for the PowerShell tool or NotebookEdit, so every guard was one tool choice away from not existing | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | `Remove-Item -Recurse <reference>` through the PowerShell tool ran unguarded; deleting the Edit/Write guard kept all 3 hook suites green | PowerShell parsed by its own AST and translated onto the ONE Bash rule set; unparseable or unmodelled writing commands ASK; a test pins that every file-changing tool reaches a guard |
+| F133 | a FILTERED `find -delete` was EXEMPT from the delete rules rather than scoped by them, and `truncate`, `dd of=` and nested `cmd`/`powershell` carriers had no rule | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | `find <saves> -name '*.xml.gz' -delete` and `find <reference> -name '*.xml' -delete` both ALLOW; a test ASSERTED the hole | filtered finds feed the in-tree rules (a cache-name-only filter stays exempt); truncate/dd judged as clobbers; carriers walked. Fuzz then found `stdbuf -o L find <game> -delete` ALLOW (paths read from token 1), also fixed |
+| F134 | a PreToolUse hook that TIMES OUT does not block, and the hooks ran with a 5 s timeout at up to 7.6 s under load | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | 1.6-3.8 s idle, 4.1-7.6 s under load, ~0.05 s of it analysis; later, five wedged PowerShell carriers committed 100 s against the 30 s timeout | timeout 30 s; per-call process spawns removed (protect-bash 221-236 → 124-126 ms, protect-files 726-810 → 279 ms); one 15 s translation budget per hook call. The 30 s value itself is pinned by no test |
+| F135 | gates that examined NOTHING reported a pass: 0 checked, 0 planted, an unreadable input or a crash repeated twice all read as green | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | `diff_truth` planted 0, found 0 and printed "RESULT: exact" rc 0; `toolkit_usage` rc 0 with no baseline; `provenance_audit`, `consistency_audit` and `cross_tool` audited a STALE store as current, and `claims_audit` refused it with rc 5, which `run-gates.sh` counts as FAIL | a shared floor (`_env.nothing_checked`) and stale-store refusal (`_env.stale_store_refusal`), rc 2 = could not judge; findings outrank refusals |
+| F136 | the per-edit hook's `x4validate --file` and the full run gave DIFFERENT verdicts on the same file, and `--file` silently dropped flags | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | a nested patch for an uninstalled target: ERROR rc 1 under `--file`, INFO rc 0 in the full run; `--file` printed "OK: no issues found" with no denominator | both paths share one sel check; `--file` states its denominator and lists every check it did not run; a dropped flag is a degraded skip (exit 3) |
+| F137 | BaseX staging read an EMPTY packed-DLC answer as a failure and fell back to a hard-coded mini-DLC pair, indexing both mini-DLC twice | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | 142 documents (deep-equal duplicates at identical paths) indexed twice in x4raw | the answer is used as given; a failure to ask refuses rc 2. A database built before the fix keeps its duplicates until rebuilt |
+| F138 | `register_rederivation` credits an entry to ANY existing path it cites, including a path the entry quotes as EVIDENCE of the defect rather than as a check of the fix | **SCOPE (measured)** · ⏳ OPEN | 2 of the 6 entries reviewed for AUDIT DC-3 (F60, F73) were "covered" only by such a mention | open. The rest of the register's covered entries are NOT classified |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -7033,3 +7044,286 @@ at least once.
 `pywin32` (VERIFIED 2026-09-20 and again on re-check) and a hang cannot be induced on demand, so
 that state is left unreported rather than guessed at. `game_is_minimized()` covers the common
 case in both display modes; hung remains the open axis, and is the least valuable of the four.
+
+---
+
+**F128-F138 come from the 2026-09-24 correctness audit** (`AUDIT-2026-09-24.md`, which holds
+every finding row by row with its commit). The register records one entry per TOOL defect
+CLASS, not per finding; the audit row IDs are cited so either can be reached from the other.
+
+## F128 — the load order modelled the community rule, and nothing compared it with the engine · **DEFECT (measured)** · confidence 97% · ✅ FIXED 2026-09-25
+
+**Found 2026-09-24 (AUDIT LO-1) · fixed in `1cb00bf`.** The 3%: what is measured is the
+engine's SIGNATURE-CHECK order. That it is also the PATCH-APPLY order — the order that decides
+winners — is INFERRED from the multi-pass pattern (the check runs inside the dependency-aware
+walk), not probed (LO-2), and shapes the installed modlist never exercises are unobserved:
+missing/optional/disabled dependencies, cycles, duplicate ids, non-ASCII names, DLC position,
+other install roots (LO-3). `scripts/load-order-probe.py` is built to settle both and has not
+been run in game yet.
+
+**What it did.** `_loadorder.compute_load_order` sorted folders ASCII (case-sensitive) and
+placed each mod as early as its dependencies allowed (Kahn). That is the community convention;
+no official source pins a rule (LO-4: Egosoft documents dependencies, not order, and the one
+community tool that implements an order says in its own TODO that it is unverified).
+
+**What the engine does.** It signature-checks every unsigned extension file as it reads it, so
+for any path two mods ship, the order of those `debug.txt` lines is the order it walked them.
+MEASURED over two launches two weeks apart: **372 file classes, 5,134 ordered pairs**. The old
+code inverted **685**. The engine's rule — folders in case-insensitive UPPERCASE order (`_`
+after letters, a space before `_`), walked in repeated passes, each pass loading every mod
+whose installed dependencies have already loaded (including earlier in the same pass) —
+inverts **0**. Refuted with the same data: lowercase order, the profile `content.xml` entry
+order, and sorting by manifest `id` (51 of 72 logged mods have id ≠ folder, so that test
+discriminates).
+
+**Why no test could fail.** Every winner test passed before and after the fix: their fixtures
+never put two folders where the two rules disagree. The mutation audit found this; the LO-1
+tests below are the ones that DO discriminate.
+
+**Also fixed with it (LO-6).** `Config.dlc_dirs` appended packed DLC after unpacked; it now
+uses the same key for both. Tier B assumed an UNINSTALLED dev mod loads LAST (the optimistic
+tree, which hides ops the engine skips); it now places the mod by the rule from its own
+manifest.
+
+**RE-DERIVED BY:** `tests/test_load_order_oracle.py` — `test_LO1_folder_names_compare_case_insensitively`,
+`test_LO1_underscore_sorts_after_letters`, `test_LO1_space_sorts_before_underscore`,
+`test_LO1_unmet_dependency_waits_for_the_next_pass`,
+`test_LO1_dependency_loaded_earlier_in_the_same_pass_counts`,
+`test_LO1_uninstalled_dependency_does_not_hold_a_mod_back`; `tests/test_tierb.py` —
+`test_tier_b_uninstalled_mod_is_placed_where_the_engine_would_load_it`,
+`test_tier_b_uninstalled_mod_waits_for_a_dependency_that_sorts_later`; and
+`gates/load_order_oracle.py` against every new `debug.txt` (it refuses rc 2 when the log
+describes another modlist rather than convict the code).
+
+## F129 — freshness missed a mod MOVING, code outside its source list, and a GAME update · **DEFECT (read)** · confidence 93% · ✅ FIXED 2026-09-25
+
+**Found 2026-09-24 (AUDIT FR-1..FR-4, FR-6) · fixed in `488a5a5`.** The 7%: the defects were
+READ at the code and pinned by tests, not reproduced on a real rebuild; and FR-6 is pinned only
+as far as the root list — no test moves a profile-root mod and asserts STALE (READ 2026-09-26).
+
+Four ways an artifact stayed FRESH while its answer moved:
+
+- **FR-1** `_freshness._fold` hashed each mod's folder NAME, not its install ROOT: moving a mod
+  from the game root to the profile left every artifact FRESH, while `diff_detail` over the
+  same vectors reported it removed and added — two answers from one input.
+- **FR-2** `ENGINE_SOURCES` named 8 modules. Tracing a store build showed 3 of them never run
+  on it (`_diff`, `_xpath`, `_scan` — their edits cried wolf) and 2 that do were missing
+  (`_provenance`, and the `mod_xml_paths` enumeration then living in the CLI module `_compat`,
+  now `_modfiles`). The list is 7 today — derive it from the module, never retype it.
+  `tools/basex/build-effective.py`, outside the package, is folded into x4eff's engine axis
+  only.
+- **FR-3** x4xref indexed every install root and stamped one.
+- **FR-4** after a game update the banner blamed MODS and `x4modlist changed` said "no change";
+  the reference side is now its own axis, named in the banner.
+- **FR-6** (found while fixing) BaseX staleness fingerprinted the game-root extensions only,
+  while x4raw/x4eff are built over every root.
+
+**RE-DERIVED BY:** `tests/test_audit0924_analysis.py` —
+`test_FR1_moving_a_mod_between_roots_moves_the_content_digest`,
+`test_FR2_every_module_that_shapes_the_store_is_an_engine_source`,
+`test_FR2_every_engine_source_runs_on_the_store_build`,
+`test_FR3_a_change_in_an_indexed_root_marks_the_index_stale`,
+`test_FR4_the_banner_attributes_a_reference_move_to_the_reference`,
+`test_FR4_changed_does_not_say_no_change_after_a_reference_move`; `tools/basex/test_staleness.py`
+— `test_the_x4eff_build_script_is_on_x4effs_engine_axis_only`.
+
+## F130 — x4diff compared attributes only, so an edit held in element TEXT did not exist · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-09-25
+
+**Found 2026-09-24 (AUDIT DF-1..DF-4) · fixed in `9151a4e`, `cd877a5`, `8d0066f`, `2d883aa`.**
+The 5%: the fixed text model (whitespace collapsed per segment, segments positional across
+children) is a design choice checked against the cases below, not against every installed op.
+
+`_diff._index` mapped each node to its attributes. A `<replace sel=".../@min">5</replace>` →
+`999` edit read **"changed files: 0", rc 0** (ORCH-M), and `_threeway` counted a text-only
+author edit as VERBATIM. The audit put the exposure at ~48% of installed-mod ops, which carry
+their value in text, as does every t-file string.
+
+The same class, three more ways: diff ops were keyed on (tag, sel), and **839 of 7,022**
+installed ops (12%, the reviewer's measurement) share both, so inserting one op reported its
+untouched siblings as removed + added and a selector-only edit as remove + add (DF-3); a
+stack whose first supplier ships the file as a `<diff>` returned no baseline at all, "the OLD
+copy would not parse" (DF-2); `--file <added file>` printed nothing about it (DF-4).
+
+**RE-DERIVED BY:** `tests/test_threeway.py` — `test_a_TEXT_only_author_edit_is_NOT_reported_verbatim`,
+`test_REINDENTING_a_document_is_not_an_edit`; `tests/test_audit0924_merge.py` —
+`test_text_on_either_side_of_a_child_is_positional`,
+`test_reindenting_a_multi_line_string_is_not_an_edit`,
+`test_ops_sharing_tag_and_sel_are_keyed_by_payload_not_position`,
+`test_a_selector_only_edit_is_a_sel_change_not_remove_plus_add`.
+
+## F131 — `ask.py` certified a negative over what the query never addressed · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-09-25
+
+**Found 2026-09-24 (AUDIT BX-1, BX-3, BX-4, BX-5) · fixed in `eecec0e`, `6fb768a`, `0df00f8`.**
+The 5%: the classifier covers the database-reaching calls it names (db module,
+`collection`/`uri-collection`/`doc`); I did not enumerate XQuery's other document-reaching
+forms against it.
+
+The foreign-database guard matched `name('<db>')` with nothing after the literal, so
+`db:get('x4eff','no/such/typo.xml')//ware` printed **"NEGATIVE CONFIRMED over 10970 of 10970
+documents", rc 0** (ORCH-M): a zero over ONE, nonexistent, document scored against the whole
+database. Two-argument `db:get`, a db name in a variable, `doc()` and cross-db calls all walked
+past it. Three siblings in the same licence: a failed rebuild left the previous
+`coverage-<db>.json` beside a partial database (BX-3); "accounted" was judged on the aggregate,
+so +5 under one root and −5 under another netted to zero (BX-4); a lone `false` or `""` was
+printed as a hit (BX-5).
+
+**RE-DERIVED BY:** `tests/test_audit0924_gates.py` —
+`test_bx1_a_zero_from_ONE_addressed_document_is_not_a_negative_over_the_database`,
+`test_bx1_every_partial_or_unreadable_address_is_refused`,
+`test_bx1_TWIN_a_whole_database_zero_is_still_confirmed`,
+`test_bx1_a_zero_from_a_query_naming_NO_database_is_not_a_negative`,
+`test_bx3_the_old_coverage_licence_is_revoked_before_the_db_is_dropped`,
+`test_bx4_offsetting_per_root_errors_do_not_license_a_negative`,
+`test_bx5_a_database_argparse_rejects_is_never_advised`.
+
+## F132 — the PowerShell tool reached no guard at all · **DEFECT (measured)** · confidence 94% · ✅ FIXED 2026-09-25
+
+**Found 2026-09-24 (AUDIT HK-1, HK-5) · fixed in `3b9562f`, then seven review items
+(`faf9099` … `c39d9a1`), `44a2439`, `e588de4`, `79b037a`.** The 6%: the translator maps the
+PowerShell it models; the fail-closed paths (unparseable, unmodelled writing cmdlet, unresolved
+splat or `iex` text, no `pwsh` on the machine) ASK rather than allow, which bounds a miss but
+does not make one impossible.
+
+`.claude/settings.json` had PreToolUse matchers for Bash, Edit and Write only. MEASURED:
+`Remove-Item -Recurse <reference>` through the PowerShell tool ran with no guard. NotebookEdit
+likewise. No test noticed: deleting the Edit/Write guard kept all three hook suites green (the
+audit's mutation lane), because nothing asserted matcher COVERAGE.
+
+**The fix is one rule set with two front-ends** (user decision). `ps_translate.ps1` parses the
+command with PowerShell's own parser, binds parameters as PowerShell binds them, and emits the
+equivalent POSIX command, which the unchanged Bash analysis judges. The seven review rounds
+each found a real hole in the translator (splats, file-system METHODS, `iex` of unreadable
+text, provider-qualified paths, cmd `%VAR%`, unmapped writing cmdlets, an unbounded
+translation time) — see the commits. Friction replay: 23,064 historical Bash + 531 PowerShell
+commands through the new hook; 37 Bash verdicts moved allow → ask, all 37 traced to two
+causes and fixed (0 remaining). `scripts/fuzz-guard.py`: 0 bypasses over 3,103 mutants.
+
+**RE-DERIVED BY:** `.claude/hooks/test_audit0924_hooks.py` —
+`test_every_file_changing_tool_reaches_a_protect_guard`,
+`test_the_post_edit_validator_sees_every_file_editing_tool`,
+`test_a_payload_read_from_a_FILE_is_seen`; `.claude/hooks/test_hook_facts.py` —
+`test_remove_item_recurse_reference_is_the_reference_block`,
+`test_no_powershell_is_a_refusal`.
+
+## F133 — a filtered `find -delete` was exempt from the delete rules, not scoped by them · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-09-25
+
+**Found 2026-09-24 (AUDIT HK-2) · fixed in `3b9562f`, `44a2439`.** The 5%: the in-place
+writers named here are the ones found; the fuzzer covers the grammar it seeds.
+
+`find_deletes` returned `[]` for any filtered find, so every rule read "no delete": `find
+<saves> -name '*.xml.gz' -delete` and `find <reference> -name '*.xml' -delete` were ALLOW
+(ORCH-M), and `test_a_filtered_find_under_the_GAME_is_also_scoped` ASSERTED the hole (it
+checked only the whole-install block). `truncate` and `dd of=` had no rule; `cmd //c` and
+`powershell -c` were not walked as carriers. A filter naming only a regenerable cache
+(`__pycache__`, `*.pyc`) stays exempt — the cleanup the exemption was written for.
+
+**Found by the fuzzer the fix seeded:** find's paths were read from token 1, so a wrapper with
+a flag (`nice -n 5 find`, `stdbuf -o L find <game> -delete`) yielded NO path — the last was
+ALLOW before this work too. Paths are now read from the verb token.
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` — `test_every_save_by_filter_asks`,
+`test_a_filtered_delete_in_reference_is_still_a_reference_delete`,
+`test_TWIN_a_pycache_cleanup_is_still_silent_everywhere`, `test_truncate_into_reference`,
+`test_dd_of_into_reference`.
+
+## F134 — a hook that times out does not block, and the timeout was shorter than the hook · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-09-25
+
+**Found 2026-09-24 (AUDIT HK-4) · fixed in `8efa95a`, `b48b188`.** The 10%: "a timed-out hook
+does not block" is the Claude Code documentation's statement, not reproduced here; and the 30 s
+value in `.claude/settings.json` is asserted by no test (my search of the hook and package
+tests for an assertion on it found none), so a regression to a short timeout would stay green.
+
+Every PreToolUse hook carried `"timeout": 5`. MEASURED: 1.6-3.8 s idle, 4.1-7.6 s under load,
+~0.2 s per process spawn and ~0.05 s of actual analysis — so under load a guard could run out
+of time and let the command through. Fix (user decision): 30 s, and the spawns cut
+(protect-bash 221-236 ms → 124-126 ms; protect-files 726-810 ms → 279 ms, median of 5).
+The PowerShell front-end then reopened the same class: each translation had its own 20 s
+timeout, so five distinct carriers in one Bash command committed 100 s against the 30 s hook
+timeout (MEASURED with a stubbed wedged `pwsh`). Now one 15 s budget per hook call; past it,
+further PowerShell text is refused as untranslated → ask.
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` — `test_the_budget_is_per_call`.
+
+## F135 — a gate that examined nothing reported a pass · **DEFECT (measured)** · confidence 93% · ✅ FIXED 2026-09-25
+
+**Found 2026-09-24 (AUDIT GT-1..GT-4, GT-6, GT-7, GT-8) · fixed in `aa88db3`, `7de1142`,
+`69ff68f`, `2fd8b2b`, `4296c64`, `d303e32` and the review commits.** The 7%: floors were added
+to the gates the audit named; the other gates were not re-walked for the same shape here.
+
+The shape, gate by gate: `similar_audit`, `provenance_audit` and `registry_provenance` passed
+over zero items, and `xsd_fast_parity` counted files the schema path never validated as
+parity (GT-3); `noop_audit` collected unreadable catalogs and never read the list (GT-1);
+`determinism_audit` dropped the return code, so a crash repeated twice was "stable" (GT-2);
+`edge_sweep` and `stress_sweep` judged only tracebacks, so a wrong exit 0 passed (GT-4);
+`diff_truth` planted 0, found 0 and printed "RESULT: exact" rc 0 (GT-6); `toolkit_usage`
+returned 0 with no baseline (GT-8); `provenance_audit`, `consistency_audit` and `cross_tool`
+audited a stale store as current, and `claims_audit` refused it with rc 5, which
+`run-gates.sh` counts as FAIL rather than CANNOT (GT-6, GT-7).
+
+**The fix is two shared helpers, not a comment per gate:** `_env.nothing_checked` (rc 2) and
+`_env.stale_store_refusal` (rc 2). A real finding still outranks a refusal (rc 1).
+Verified end to end on this machine at the time: the real store was stale and
+`provenance_audit` and `claims_audit` both refused with rc 2.
+
+**RE-DERIVED BY:** `tests/test_audit0924_gates.py` —
+`test_gt1_an_unreadable_catalog_is_not_a_clean_noop_audit`,
+`test_gt2_a_command_that_fails_twice_is_not_deterministic_output`,
+`test_gt3_similar_audit_over_zero_pairs_is_not_a_pass`,
+`test_gt3_provenance_audit_over_an_empty_store_is_not_a_pass`,
+`test_gt3_registry_provenance_over_zero_rows_is_not_a_pass`,
+`test_gt3_xsd_parity_over_files_with_no_schema_is_not_parity`,
+`test_gt4_edge_sweep_does_not_pass_hostile_inputs_that_all_exit_0`,
+`test_gt6_diff_truth_nothing_planted_is_not_exact`,
+`test_gt6_provenance_audit_refuses_a_stale_store`,
+`test_gt8_toolkit_usage_with_no_baseline_is_not_a_pass`.
+
+## F136 — the per-edit hook's `--file` run and the full run disagreed on the same file · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-09-25
+
+**Found 2026-09-24 (AUDIT VA-2, VA-3, VA-4, VA-8, VA-14) · fixed in `fa73f53`.** The 5%:
+agreement is pinned for the shapes below; the two paths now share `_sel_check_file`, so a new
+divergence would have to come from outside it.
+
+`x4validate --file` — what the per-edit hook runs — had its own sel path, lacking the
+inactive-target and inert-bare-path verdicts. MEASURED: a nested patch for an uninstalled
+target was ERROR rc 1 under `--file` and INFO rc 0 in the full run. `--file` also guessed the
+vpath as the bare filename when a relative/absolute path mix made `relative_to` raise (VA-4),
+silently dropped `--entity/--like/--update/--debug` (VA-3), and printed "OK: no issues found"
+with no denominator (VA-14); `--sel-only` was parsed and never read (VA-8).
+
+**RE-DERIVED BY:** `tests/test_audit0924_validate.py` —
+`test_va2_file_mode_agrees_with_full_run_on_an_inactive_nested_patch`,
+`test_va2_file_mode_reports_an_inert_bare_path_patch`,
+`test_va14_file_mode_prints_its_denominator_and_what_it_skipped`.
+
+## F137 — an EMPTY packed-DLC answer was read as a failure, so both mini-DLC were indexed twice · **DEFECT (measured)** · confidence 96% · ✅ FIXED 2026-09-25
+
+**Found 2026-09-24 (AUDIT BX-2) · fixed in `1c73f71`, `e4f8d69`.** The 4%: an x4raw built
+before the fix still holds the duplicates until it is rebuilt — this fixes the staging, not
+an existing database.
+
+`stage.py` returned `names or ("ego_dlc_mini_01", "ego_dlc_mini_02")`, which cannot tell
+Config's correct "nothing is packed-only" (every DLC unpacked into `reference/`) from a failure
+to ask. Both mini-DLC were staged from their archives on top of the reference copies: **142
+documents**, verified deep-equal duplicates at identical paths, indexed twice in x4raw. Now the
+answer is used as given, and ANY failure to ask — not only the four exception types first
+caught — refuses rc 2.
+
+**RE-DERIVED BY:** `tests/test_audit0924_gates.py` — `test_bx2_an_empty_packed_dlc_answer_is_honoured`,
+`test_bx2_TWIN_a_nonempty_answer_is_staged_as_given`,
+`test_bx2_ANY_config_failure_is_a_refusal_not_a_traceback`.
+
+## F138 — the re-derivation gate credits a path the entry cites as EVIDENCE, not as a check · **SCOPE (measured)** · confidence 90% · ⏳ OPEN
+
+**Found 2026-09-26 while writing the AUDIT DC-3 notes on F60/F61/F73/F76/F78/F87.** The 10%:
+the rate is measured on those 6 entries only; the other covered entries are not classified.
+
+`gates/register_rederivation.py` covers an entry when at least one path it cites exists. It
+cannot tell a path cited as the check of a fix from a path quoted as where the defect was seen.
+Of the 6 entries reviewed, **2** were "covered" only that way: F60 by `tests/test_freshness.py`
+(quoted as an absent file in the split it describes) and F73 by `gates/schema_sweep.py` (quoted
+as a place an identifier once sat). F60 now declares NO RE-DERIVATION; F73's crediting path is
+unchanged. The gate's own docstring already records that widening "cannot admit a mere
+MENTION" only in the sense that the file must EXIST — existence is what it checks, not role.
+
+Open: classify every covered entry's crediting path (check vs mention) before deciding whether
+the fix is a citation grammar (e.g. only paths on a `RE-DERIVED BY` line count) or a baseline.
