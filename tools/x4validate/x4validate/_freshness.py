@@ -252,9 +252,13 @@ def _profile_decisions(profile) -> dict[str, bool]:
         # contributes one bit per mod, and a machine with no profile simply has
         # a constant for it.
         return {}
+    # ONE parser for the value, shared with `_registry.ingest_content_xml`: an entry
+    # with no `enabled` attribute LOADS (MEASURED 2026-09-26, load-order probe case b)
+    # and used to be read as disabled here.
+    from x4validate._registry import profile_flag
     out: dict[str, bool] = {}
     for ext in root.xpath("//extension[@id]"):
-        out[ext.get("id")] = str(ext.get("enabled", "false")).lower() == "true"
+        out[ext.get("id")] = profile_flag(ext.get("enabled"))
     return out
 
 
@@ -272,12 +276,14 @@ def _read_manifest(manifest: Path) -> dict:
                 "manifest_sha": None, "manifest_mtime": None,
                 "manifest_size": None, "no_manifest": True}
     mid = ver = None
+    enabled = True
     try:
         from lxml import etree
         root = etree.fromstring(
             body, parser=etree.XMLParser(recover=True, resolve_entities=False))
         if root is not None:
             mid, ver = root.get("id"), root.get("version")
+            enabled = str(root.get("enabled", "")).strip().lower() not in ("false", "0")
     except Exception:
         # silent-ok: id/version are CONVENIENCES for localisation, not inputs to
         # the digest. A malformed manifest still contributes its bytes via
@@ -288,7 +294,7 @@ def _read_manifest(manifest: Path) -> dict:
         # hypothetical. Raising here would let one broken manifest take the
         # whole fingerprint down.
         pass
-    return {"manifest_id": mid, "manifest_version": ver,
+    return {"manifest_id": mid, "manifest_version": ver, "manifest_enabled": enabled,
             "manifest_sha": hashlib.sha256(body).hexdigest()[:12],
             "manifest_mtime": int(st.st_mtime), "manifest_size": st.st_size,
             "no_manifest": False}
@@ -346,7 +352,14 @@ def content_detail(reference: Path, dirs, profile=_UNSET) -> list[dict]:
             rec["files"] = len(entries)
             rec["unreadable"] = unreadable
             rec["tree_sha"] = hashlib.sha256(payload.encode()).hexdigest()[:12]
-            rec["enabled_in_profile"] = decisions.get(rec["manifest_id"], True)
+            # The EFFECTIVE decision despite the key's name (kept: persisted baselines
+            # carry it). The profile decides when it has an entry; otherwise the
+            # manifest's own `enabled` is the default (MEASURED 2026-09-26, load-order
+            # probe case a). Defaulting an absent entry to True hashed "no entry" and
+            # "enabled=true" identically for a manifest-disabled mod -- which the engine
+            # does NOT load in the first case and DOES in the second.
+            rec["enabled_in_profile"] = decisions.get(rec["manifest_id"],
+                                                      rec.get("manifest_enabled", True))
             rec["entries"] = entries
             out.append(rec)
     out.sort(key=lambda r: (r["folder"].lower(), r["root"]))

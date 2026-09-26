@@ -236,16 +236,30 @@ def ingest_content_xml(path: Path | None = None) -> list[tuple[str, bool]]:
     root = etree.parse(str(path)).getroot()
     out = []
     for ext in root.xpath("//extension[@id]"):
-        out.append((ext.get("id"), str(ext.get("enabled", "false")).lower() == "true"))
+        out.append((ext.get("id"), profile_flag(ext.get("enabled"))))
     return out
+
+
+def profile_flag(value: str | None) -> bool:
+    """One profile `<extension enabled=…>` value -> enabled?
+
+    MEASURED 2026-09-26 (load-order probe, case b): an entry with NO `enabled`
+    attribute LOADS -- it used to be read as disabled here and in `_freshness`.
+    "false"/"0" (any case, trimmed) disable; absent or anything else enables, the
+    same convention `scan_installed` applies to a manifest. The ONE parser for
+    this value: `_freshness._profile_decisions` calls it too.
+    """
+    return value is None or str(value).strip().lower() not in ("false", "0")
 
 
 #: The two questions people ask about "the mod list", which are NOT the same
 #: question. Nothing in the code used to say which one a caller wanted, so it was
 #: decided by whichever helper the author happened to import.
 #:
-#:   "active"    — what the ENGINE WILL LOAD: installed, enabled in its own
-#:                 manifest, and enabled in the profile content.xml.
+#:   "active"    — what the ENGINE WILL LOAD: installed; enabled by the profile
+#:                 content.xml, or -- when the profile has no entry for it -- by
+#:                 its own manifest; and every REQUIRED dependency provided by a
+#:                 mod or DLC that itself loads (see `_active_filter`).
 #:   "installed" — what is ON DISK, enabled or not. The right answer when you are
 #:                 inventorying, or evaluating a mod before switching it on.
 #:
@@ -315,7 +329,133 @@ def mods(scope: str, dirs: list[Path] | None = None,
         # the registry's documented "absent = enabled" convention and keeps this
         # from quietly EMPTYING the world model on a machine with no profile.
         prof = {}
-    return [m for m in installed if m["enabled"] and prof.get(m["id"], True)]
+    return _active_filter(installed, prof, dirs, dropped)
+
+
+def _active_filter(installed: list[dict], prof: dict[str, bool],
+                   dirs: list[Path] | None, dropped: list[str] | None) -> list[dict]:
+    """The engine's load decision, MEASURED 2026-09-26 by the in-game load-order probe
+    (`scripts/load-order-probe.py`, 23 probe mods; AUDIT-2026-09-24 LO-3/RG-6):
+
+      1. ENABLED: the profile entry decides when there is one (an entry with no
+         `enabled` attribute counts as enabled); otherwise the manifest's own
+         `enabled` is the default. So manifest enabled="0" + profile "true" LOADS.
+      2. REQUIRED dependencies (`optional` not true): every one must name an id
+         provided by a mod or an installed DLC that ITSELF loads. Missing, disabled,
+         or excluded-by-this-rule all exclude the mod -- applied to a fixpoint, so a
+         dependency CYCLE loads neither side. Optional dependencies never exclude.
+         A `<dependency>` naming only a version is a game requirement, ignored here.
+      3. Two folders sharing a manifest id BOTH load (the clash is recorded by
+         `_loadorder.compute_load_order`, not here).
+
+    Every mod excluded by rule 2 is appended to *dropped* with its reason. The
+    exclusion is the engine's behaviour, but a mod leaving the world model with
+    nothing said is the silent-narrowing shape this module exists to prevent.
+    """
+    from x4validate._loadorder import mod_dependencies
+
+    enabled = [m for m in installed if prof.get(m["id"], m["enabled"])]
+
+    def _deps(m: dict) -> list[str]:
+        path = m.get("path")
+        if not path:
+            return []
+        _id, deps = mod_dependencies(Path(path))   # parse failures: scan_installed's
+        return [d for d, optional in deps           # channel already reported them
+                if not optional and d != m["id"]]
+
+    required = {id(m): _deps(m) for m in enabled}
+    if not any(required.values()):
+        return enabled
+
+    dlc = _installed_dlc(dirs)
+    provided = {d["id"] for d in dlc if prof.get(d["id"], d["enabled"])}
+    loaded: list[dict] = []
+    pending = list(enabled)
+    progress = True
+    while pending and progress:
+        progress = False
+        rest = []
+        for m in pending:
+            if all(d in provided for d in required[id(m)]):
+                loaded.append(m)
+                provided.add(m["id"])
+                progress = True
+            else:
+                rest.append(m)
+        pending = rest
+    if not pending:
+        return enabled          # nothing excluded; keep the caller's order
+
+    if dropped is not None:
+        installed_ids = {m["id"] for m in installed} | {d["id"] for d in dlc}
+        stuck_ids = {m["id"] for m in pending}
+        stuck_by_id: dict[str, list[dict]] = {}
+        for m in pending:
+            stuck_by_id.setdefault(m["id"], []).append(m)
+
+        def _in_cycle(start: dict) -> bool:
+            seen: set[str] = set()
+            todo = [d for d in required[id(start)] if d in stuck_ids]
+            while todo:
+                nxt = todo.pop()
+                if nxt == start["id"]:
+                    return True
+                if nxt in seen:
+                    continue
+                seen.add(nxt)
+                for other in stuck_by_id.get(nxt, []):
+                    todo.extend(d for d in required[id(other)] if d in stuck_ids)
+            return False
+
+        for m in pending:
+            unmet = [d for d in required[id(m)] if d not in provided]
+            why = []
+            for d in unmet:
+                if d not in installed_ids:
+                    why.append(f"required dependency {d!r} is not installed")
+                elif d not in stuck_ids:
+                    why.append(f"required dependency {d!r} is installed but disabled")
+                else:
+                    why.append(f"required dependency {d!r} does not load itself")
+            cyc = (" -- part of a dependency cycle, so neither side loads"
+                   if _in_cycle(m) else "")
+            dropped.append(f"{m['folder']}: NOT LOADED by the engine -- "
+                           f"{'; '.join(why)}{cyc}")
+    keep = {id(m) for m in loaded}
+    return [m for m in enabled if id(m) in keep]
+
+
+def _installed_dlc(dirs: list[Path] | None) -> list[dict]:
+    """`ego_dlc_*` folders in the scanned roots: {id, folder, enabled} per DLC.
+
+    Only a PROVIDER set for dependency checks -- `scan_installed` excludes the DLC
+    from every mod scope on purpose. A DLC's manifest id is its folder name
+    (READ 2026-09-26: all 8 installed `ego_dlc_*/content.xml`), read from the
+    manifest anyway. A DLC in a root that is not scanned is not seen, and a mod
+    requiring it is then reported in *dropped* by name, never removed silently.
+    """
+    out = []
+    for base in dirs or default_installed_dirs():
+        if not base.is_dir():
+            continue
+        for sub in sorted(base.iterdir()):
+            if not (sub.is_dir() and sub.name.startswith("ego_dlc_")):
+                continue
+            cxml = sub / "content.xml"
+            if not cxml.is_file():
+                continue
+            try:
+                root = etree.parse(str(cxml)).getroot()
+            except etree.XMLSyntaxError:
+                # silent-ok: an unreadable DLC manifest still names the DLC by its
+                # folder, which is its id; treating it as present fails OPEN.
+                out.append({"id": sub.name, "folder": sub.name, "enabled": True})
+                continue
+            out.append({"id": root.get("id") or sub.name, "folder": sub.name,
+                        "enabled": str(root.get("enabled", "")).strip().lower()
+                        not in ("false", "0")})
+    return out
 
 
 def scan_installed(dirs: list[Path] | None = None,

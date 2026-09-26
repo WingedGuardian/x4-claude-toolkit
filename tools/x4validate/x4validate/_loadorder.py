@@ -29,6 +29,10 @@ from lxml import etree
 def mod_deps(mod_path: Path, dropped: list[str] | None = None) -> tuple[str, list[str]]:
     """Return (mod_id, [dependency_ids]) from a mod's content.xml.
 
+    Ids only, optional and required alike -- for LOAD ORDER both kinds place the
+    dependency first. Whether a dependency is REQUIRED decides whether the mod loads
+    at all; that question is :func:`mod_dependencies`'.
+
     A manifest that will not parse yields ZERO dependencies, and dependencies are
     what force a mod to load EARLIER -- so silently swallowing the failure changes
     the computed load order, which decides every collision winner. Report it through
@@ -36,6 +40,18 @@ def mod_deps(mod_path: Path, dropped: list[str] | None = None) -> tuple[str, lis
     this case correctly). MEASURED 2026-08-12: 0 of 122 installed manifests are
     malformed, so this is a latent defect -- the cost is zero today and unbounded
     the day it isn't.
+    """
+    mod_id, deps = mod_dependencies(mod_path, dropped)
+    return mod_id, [d for d, _optional in deps]
+
+
+def mod_dependencies(mod_path: Path, dropped: list[str] | None = None
+                     ) -> tuple[str, list[tuple[str, bool]]]:
+    """Return (mod_id, [(dependency_id, optional)]) from a mod's content.xml.
+
+    `optional="true"` (or "1", any case) marks an optional dependency. A
+    `<dependency>` with no `id` names only a GAME VERSION and is not a mod
+    dependency, so it is not returned. Failure handling as :func:`mod_deps`.
     """
     cx = mod_path / "content.xml"
     if not cx.is_file():
@@ -50,7 +66,9 @@ def mod_deps(mod_path: Path, dropped: list[str] | None = None) -> tuple[str, lis
                            "load-order position from its folder name alone")
         return mod_path.name, []
     mod_id = root.get("id") or mod_path.name
-    deps = [d.get("id") for d in root.findall(".//dependency") if d.get("id")]
+    deps = [(d.get("id"),
+             str(d.get("optional", "")).strip().lower() in ("true", "1"))
+            for d in root.findall(".//dependency") if d.get("id")]
     return mod_id, deps
 
 
