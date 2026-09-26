@@ -80,6 +80,12 @@ EFF_WIN="$(winpath "$EFF/tree")"
 echo
 echo "== building $DB =="
 cd "$BASEX_DIR"
+# Revoke the previous build's licence FIRST (AUDIT-2026-09-24 BX-3). coverage-$DB.json
+# carries supports_negative_claim AND the freshness fingerprint of the database about to
+# be dropped; left in place, a build that dies from here on (BaseX rejecting an input
+# exits 1 below; an interrupt) leaves that licence beside a partial database, and ask.py
+# certifies negatives over it. Absent coverage means no negative is ever certified.
+rm -f "$BASEX_DIR/coverage-$DB.json"
 java -cp BaseX.jar org.basex.BaseX -c "DROP DB $DB" >/dev/null 2>&1 || true
 
 BUILD_LOG="$(mktemp)"

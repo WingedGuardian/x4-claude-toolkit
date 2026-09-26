@@ -210,8 +210,6 @@ def test_bx2_a_config_FAILURE_refuses_instead_of_guessing(monkeypatch, tmp_path,
 
 # ============================================================================ BX-3 (build scripts)
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 BX-3: the build drops the DB before "
-                   "invalidating coverage-<db>.json, so a failed rebuild leaves the old licence")
 @pytest.mark.parametrize("script", ["build-corpus.sh", "build-effective.sh"])
 def test_bx3_the_old_coverage_licence_is_revoked_before_the_db_is_dropped(script):
     text = (BASEX / script).read_text(encoding="utf-8")
