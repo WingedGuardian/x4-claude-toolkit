@@ -8,7 +8,9 @@ VISIBLE so Claude (and you) can reason over real numbers instead of guessing:
 
 - ``wares`` — each ware a candidate mod adds/changes, shown against the distribution
   of same-``group`` wares in the EFFECTIVE tree (base+DLC+all installed mods, so
-  VRO's rescaled prices are the baseline you're actually compared against).
+  VRO's rescaled prices are the baseline you're actually compared against). Wares the
+  candidate REMOVES are listed separately (they have no price to compare). The
+  candidate's selectors resolve against the tree as of its OWN load position.
 - ``macro`` — the flattened numeric property vector of a single macro file, so a
   candidate weapon/ship can be lined up against a named vanilla/VRO peer.
 
@@ -291,6 +293,32 @@ def candidate_wares(candidate: Path,
     return out
 
 
+def removed_wares(candidate: Path,
+                  base_tree: "etree._Element | None" = None) -> list[str]:
+    """Ware ids the candidate's <diff> REMOVES from *base_tree*, sorted.
+
+    AUDIT-2026-09-24 AN-2. `candidate_wares` reads wares back out of the post-state
+    tree, and a removed ware is by definition not in it -- so a mod that only
+    `<remove>`s wares printed "candidate introduces/changes no wares." at rc 0,
+    the ABSENCE sentence over a real change. A ware counts as removed when a
+    `<remove>` the engine would apply (ok, single target) resolved to it or inside
+    it and it is ABSENT once every op has run -- so a ware removed and then re-added
+    is a change (reported by `candidate_wares`), never a removal. Without a
+    *base_tree* nothing can be resolved and this returns [] (those ops are then
+    counted by `unattributed_ware_ops`, not lost).
+    """
+    root = _merge.overlay_root(candidate, "libraries/wares.xml")
+    if root is None or root.tag != "diff" or base_tree is None:
+        return []
+    work = copy.deepcopy(base_tree)
+    removed: set[str] = set()
+    for op in _merge.apply_diff(work, root, want_targets=True):
+        if op.ok and op.tag == "remove":
+            removed.update(ident for tag, ident in op.target_keys if tag == "ware")
+    present = {el.get("id") for el in work.findall("ware")}
+    return sorted(removed - present)
+
+
 # --- comparison ---------------------------------------------------------------
 
 @dataclass
@@ -458,7 +486,8 @@ def _fmt_price(v: float) -> str:
     return f"{v:,.0f}"
 
 
-def render_wares(comparisons: list[WareComparison], unattributed: int = 0) -> str:
+def render_wares(comparisons: list[WareComparison], unattributed: int = 0,
+                 removed: "list[str] | tuple[str, ...]" = ()) -> str:
     # AN ABSENCE AND A NON-ANSWER MUST NOT PRINT THE SAME SENTENCE.
     #
     # ⚠ THE DISCLOSURE IS NO LONGER GATED ON AN EMPTY COMPARISON, and that gate is
@@ -481,9 +510,18 @@ def render_wares(comparisons: list[WareComparison], unattributed: int = 0) -> st
             "NOT\n"
             "  'no wares changed', and must not be read as one." % unattributed)
 
+    # A REMOVAL IS A CHANGE (AUDIT-2026-09-24 AN-2): it has no price to place in a
+    # peer group, so it is listed rather than compared -- but never omitted.
+    gone = ""
+    if removed:
+        gone = (f"REMOVED by the candidate ({len(removed)} ware(s)) -- absent from the "
+                f"game once it loads, so there is no price to compare:\n  "
+                + ", ".join(removed))
+
     if not comparisons:
-        if note:
-            return note
+        parts = [x for x in (gone, note) if x]
+        if parts:
+            return "\n\n".join(parts)
         return "candidate introduces/changes no wares."
     lines = ["ADVISORY ware comparison (candidate vs effective same-group peers):",
              "  — grounds a balance discussion; NOT a verdict. Peers include VRO's "
@@ -500,9 +538,10 @@ def render_wares(comparisons: list[WareComparison], unattributed: int = 0) -> st
                          f"median {_fmt_price(c.peer_price_median)} / "
                          f"max {_fmt_price(c.peer_price_max)}")
         lines.append(f"     -> {c.note}")
-    if note:
-        lines.append("")
-        lines.append(note)
+    for extra in (gone, note):
+        if extra:
+            lines.append("")
+            lines.append(extra)
     return "\n".join(lines)
 
 
@@ -571,6 +610,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cand = candidate_wares(candidate, eff_tree)
         rows = unattributed_ware_ops(candidate, eff_tree)
+        gone = removed_wares(candidate, eff_tree)
     except etree.XMLSyntaxError as exc:
         print(f"REFUSING: {candidate.name} has a malformed XML document, so this "
               f"run cannot say what it changes.", file=sys.stderr)
@@ -578,5 +618,5 @@ def main(argv: list[str] | None = None) -> int:
         print("  The engine cannot read it either -- fix the document, then re-run.",
               file=sys.stderr)
         return 2
-    print(render_wares(compare_wares(cand, eff), rows))
+    print(render_wares(compare_wares(cand, eff), rows, gone))
     return 0

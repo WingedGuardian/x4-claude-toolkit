@@ -114,8 +114,6 @@ def test_AN1_a_bare_name_resolves_to_the_installed_copy(tmp_path, hermetic, caps
 # AN-2  x4stats wares on a mod that <remove>s a ware -> "changes no wares", rc 0
 # =============================================================================
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-2: a ware <remove> reports "
-                   "'introduces/changes no wares' at rc 0")
 def test_AN2_a_removed_ware_is_not_reported_as_no_change(tmp_path, hermetic, capsys):
     ref = _ref(tmp_path)
     ext = tmp_path / "extensions"

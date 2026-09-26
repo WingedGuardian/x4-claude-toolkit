@@ -540,3 +540,38 @@ def test_a_candidate_resolves_against_a_mod_that_loads_BEFORE_it(tmp_path, monke
     _stats.main(["wares", str(cand), "--ext-dir", str(ext), "--reference", str(ref)])
     out = capsys.readouterr().out
     assert "aware" in out and "candidate avg price : 5 " in out, out
+
+
+# --- AN-2: a REMOVED ware is a change, and only a ware that is GONE counts ------
+
+_Q = chr(39)
+
+
+def test_removed_wares_names_a_whole_ware_remove(tmp_path):
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml",
+       '<diff><remove sel="//ware[@id=' + _Q + 'ore' + _Q + ']"/></diff>')
+    assert _stats.removed_wares(cand, _base_tree()) == ["ore"]
+    out = _stats.render_wares([], 0, ["ore"])
+    assert "REMOVED" in out and "ore" in out
+    assert "introduces/changes no wares" not in out
+
+
+def test_removing_INSIDE_a_ware_is_not_removing_the_ware(tmp_path):
+    """The twin: an attribute removal leaves the ware in the game, so it is a
+    change (candidate_wares reports it), never a removal."""
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml",
+       '<diff><remove sel="//ware[@id=' + _Q + 'ore' + _Q + ']/price/@average"/></diff>')
+    assert _stats.removed_wares(cand, _base_tree()) == []
+    assert "ore" in _stats.candidate_wares(cand, _base_tree())
+
+
+def test_a_ware_removed_then_re_added_is_not_reported_removed(tmp_path):
+    cand = tmp_path / "mod"
+    _w(cand / "libraries" / "wares.xml",
+       '<diff><remove sel="//ware[@id=' + _Q + 'ore' + _Q + ']"/>'
+       '<add sel="/wares"><ware id="ore" group="minerals"><price average="7"/></ware>'
+       '</add></diff>')
+    assert _stats.removed_wares(cand, _base_tree()) == []
+    assert _stats.candidate_wares(cand, _base_tree())["ore"].price_avg == 7.0
