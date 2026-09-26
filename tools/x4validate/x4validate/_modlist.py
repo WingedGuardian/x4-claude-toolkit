@@ -331,6 +331,78 @@ def cmd_ingest(args) -> int:
     return 0
 
 
+def _parse_date(value) -> date | None:
+    """A calendar date from a manifest or API date string, or None when it cannot say.
+
+    MEASURED 2026-09-25 over 156 installed manifests: 123 `YYYY-MM-DD`, 1 `YYYY-MM-D`,
+    1 `25 December 2024`, 31 with no `date` at all. Those shapes parse; anything else is
+    None -- an unknown, never a guessed date.
+    """
+    if not value:
+        return None
+    text = str(value).strip()
+    m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    try:
+        if m:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        return datetime.strptime(text, "%d %B %Y").date()
+    except ValueError:
+        return None
+
+
+def _upstream_newest(nid: int, fmeta) -> tuple[str | None, str]:
+    """(upload date, what it is) of the upstream file an update is judged against.
+
+    The newest MAIN file on the page (user decision 2026-09-25, AUDIT-2026-09-24 RG-3).
+    A row pinned to a FILE (`resolve --file`) is judged against that file instead: an
+    add-on on someone else's page does not update when the page owner uploads.
+    """
+    if fmeta is not None:
+        return fmeta.uploaded or None, f"pinned file {fmeta.file_id} {fmeta.name!r} v{fmeta.version}"
+    files = _nexus.fetch_files(nid)
+    mains = [f for f in files if (f.category or "").upper() == "MAIN" and f.uploaded]
+    if not mains:
+        return None, f"no MAIN file with an upload date among {len(files)} on the page"
+    newest = max(mains, key=lambda f: f.uploaded)
+    return newest.uploaded, f"MAIN file {newest.file_id} {newest.name!r} v{newest.version}"
+
+
+def _update_verdict(installed_date, upstream_date, trusted: bool) -> tuple[str, str]:
+    """("available" | "none" | "unknown" | "unconfirmed", the basis, both dates printed).
+
+    "Has an update" means the upstream file was UPLOADED AFTER the installed copy's
+    manifest date. Version strings are not compared: 77 registry rows carried an
+    upstream version and 1 matched its installed one as a string, across 6 upstream
+    version shapes against integer manifest versions -- not comparable (RG-3).
+    """
+    basis = (f"upstream uploaded {upstream_date or '?'} vs installed manifest dated "
+             f"{installed_date or '?'}")
+    if not trusted:
+        return "unconfirmed", basis + " -- the identity is a guess, so the upstream may be another mod"
+    i, u = _parse_date(installed_date), _parse_date(upstream_date)
+    if i is None or u is None:
+        missing = ("the installed manifest has no usable date" if i is None
+                   else "no upstream upload date")
+        return "unknown", f"{basis} -- {missing}"
+    return ("available" if u > i else "none"), basis
+
+
+def _record_update(a, nid: int, fmeta, state: str):
+    """Store the update verdict on row *a*. Returns a NexusFatal to stop on, else None."""
+    fatal = None
+    try:
+        up, what = _upstream_newest(nid, fmeta)
+    except _nexus.NexusFatal as exc:
+        up, what, fatal = None, f"file list not fetched ({exc})", exc
+    except _nexus.NexusError as exc:
+        up, what = None, f"file list not fetched ({exc})"
+    verdict, basis = _update_verdict(a.get("installed_date"), up,
+                                     state in _registry.TRUSTED_ID_STATES)
+    a["update"], a["update_basis"] = verdict, basis
+    a["upstream_newest"], a["upstream_newest_uploaded"] = what, up
+    return fatal
+
+
 def cmd_refresh(args) -> int:
     """Fetch upstream metadata for the registry's mods, one row at a time.
 
@@ -382,6 +454,7 @@ def cmd_refresh(args) -> int:
         # what it just fetched was fetched against a guessed identity.
         print(f"         {unconfirmed} active mod(s) still have an UNCONFIRMED identity — "
               f"their upstream data may describe a different mod. Run `x4modlist verify`.")
+    _print_updates(mods)
     print(f"dashboard: {dash}")
     if fatal is not None:
         print(f"refresh STOPPED: {fatal}", file=sys.stderr)
@@ -390,6 +463,24 @@ def cmd_refresh(args) -> int:
               "(rows already checked today are skipped).", file=sys.stderr)
         return 2
     return 0
+
+
+def _print_updates(mods) -> None:
+    """The update verdicts over the rows this run processed, both dates on every line."""
+    verdicts: dict[str, list] = {}
+    for m in mods:
+        v = m["auto"].get("update")
+        if v:
+            verdicts.setdefault(v, []).append(m)
+    if not verdicts:
+        return
+    counts = ", ".join(f"{len(verdicts[k])} {k}" for k in
+                       ("available", "none", "unknown", "unconfirmed") if k in verdicts)
+    print(f"updates: {counts}  (available = the upstream file was uploaded after the "
+          f"installed manifest's date; versions are NOT compared)")
+    for m in sorted(verdicts.get("available", []), key=lambda x: x["id"]):
+        a = m["auto"]
+        print(f"   UPDATE  {m['id']:40} {a.get('update_basis')}  [{a.get('upstream_newest')}]")
 
 
 def _refresh_rows(mods, args, today) -> tuple:
@@ -458,6 +549,10 @@ def _refresh_rows(mods, args, today) -> tuple:
                                  today, m["human"].get("custom_edited", False))
         a["classification"], a["settled"] = _registry.cap_classification(state, cls, settled)
         fetched += 1
+        # After the row is recorded, so a stop here keeps what was already fetched.
+        fatal = _record_update(a, nid, fmeta, state)
+        if fatal is not None:
+            return fatal, resolved, fetched, errors, skipped
     return None, resolved, fetched, errors, skipped
 
 
@@ -561,6 +656,8 @@ def cmd_resolve(args) -> int:
     a["id_state"] = "pinned"
     a["resolve"] = "manual"
     a.pop("candidates", None)
+    for k in ("update", "update_basis", "upstream_newest", "upstream_newest_uploaded"):
+        a.pop(k, None)      # judged against the OLD id; the next refresh recomputes it
 
     try:
         meta = _nexus.fetch_mod(nexus_id)
@@ -850,7 +947,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="content.xml cross-check: include disabled extensions too")
     pi.set_defaults(func=cmd_ingest)
 
-    pr = sub.add_parser("refresh", help="refresh upstream metadata via Nexus/Steam API")
+    pr = sub.add_parser("refresh", help="refresh upstream metadata via Nexus/Steam API, and "
+                        "say which mods have an update: upstream's newest MAIN file uploaded "
+                        "after the installed manifest's date (both dates printed)")
     pr.add_argument("--ids", help="comma-separated content ids to refresh, installed or not "
                     "(default: every INSTALLED mod, enabled or not)")
     pr.add_argument("--seeded", action="store_true", help="only mods that already have a nexus_id")
@@ -869,8 +968,9 @@ def main(argv: list[str] | None = None) -> int:
     prs.add_argument("id", help="content.xml extension id")
     prs.add_argument("nexus_id", help="the correct Nexus mod id, or 'none' if it has no page")
     prs.add_argument("--file", type=int, help="file id, when this mod ships as a FILE on that "
-                     "page (an add-on); update-detection then tracks the FILE's version, not "
-                     "the page's")
+                     "page (an add-on); the upstream version, and the update verdict (upload "
+                     "date vs the installed manifest date), then follow that FILE, not the "
+                     "page's newest MAIN file")
     prs.set_defaults(func=cmd_resolve)
 
     pso = sub.add_parser("source", help="record a non-Nexus origin (stops it being searched)")

@@ -12,7 +12,9 @@ positional arguments:
   {ingest,refresh,dashboard,needs-review,resolve,source,verify,tracked,ignore,mark,changed,snapshot}
     ingest              scan installed extension folders (PRIMARY) into the registry, cross-
                         checked against the profile content.xml
-    refresh             refresh upstream metadata via Nexus/Steam API
+    refresh             refresh upstream metadata via Nexus/Steam API, and say which mods have an
+                        update: upstream's newest MAIN file uploaded after the installed
+                        manifest's date (both dates printed)
     dashboard           regenerate WORKLIST.md from the registry
     needs-review        list entries needing a spot-check decision
     resolve             pin a mod's Nexus identity permanently (+fetch)
@@ -95,8 +97,9 @@ positional arguments:
 
 options:
   -h, --help   show this help message and exit
-  --file FILE  file id, when this mod ships as a FILE on that page (an add-on); update-detection
-               then tracks the FILE's version, not the page's
+  --file FILE  file id, when this mod ships as a FILE on that page (an add-on); the upstream
+               version, and the update verdict (upload date vs the installed manifest date), then
+               follow that FILE, not the page's newest MAIN file
 ```
 
 ## `x4modlist source`
