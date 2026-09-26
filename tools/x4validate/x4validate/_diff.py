@@ -13,11 +13,12 @@ attribute name cannot contain parentheses, so it can never collide with a real
 one). ~48% of installed-mod ops carry their value in text --
 ``<replace sel=".../@min">999</replace>``, a t-file ``<t id="1">...</t>`` -- and
 comparing attributes alone read a 5 -> 999 edit as "changed files: 0"
-(AUDIT-2026-09-24 DF-1). Whitespace-only text (pretty-print indentation) is not
-content and is not keyed; real text is compared with its leading/trailing
-whitespace stripped, so re-indenting a document changes nothing while any change
-to the words does. Non-whitespace TAIL text of child elements (mixed content)
-is folded into the parent's value, so it is not silently outside the comparison.
+(AUDIT-2026-09-24 DF-1). Text is compared with every whitespace run collapsed to
+one space and the ends stripped, so re-indenting a document -- a multi-line
+string included -- changes nothing while any change to the words does. Mixed
+content stays POSITIONAL: the text on either side of each child (element or
+comment) is its own segment, so moving text across a child is a change. An
+element with no non-whitespace text has no `text()` at all.
 
 The top-level ops of a `<diff>` are keyed by what they install (their first
 payload child's id/name/macro/ref), else by `sel`; see `_op_key`.
@@ -115,6 +116,10 @@ _OP_TAGS = frozenset({"add", "replace", "remove"})
 #: Reserved pseudo-attribute carrying an element's text (see the module docstring).
 TEXT_ATTR = "text()"
 
+#: Marks a child-element boundary inside a `text()` value (mixed content).
+_SEGMENT_SEP = " ‖ "
+
+
 def _node_key(el: etree._Element) -> str:
     """Stable identity: tag plus the first discriminating attribute present.
 
@@ -157,15 +162,25 @@ def _op_key(op: etree._Element) -> str:
     return f"{op.tag}[@sel={sel}]" if sel is not None else op.tag
 
 
-def _text_value(el: etree._Element) -> str | None:
-    """The element's own text content, pretty-print whitespace removed.
+def _norm(text: str | None) -> str:
+    """Whitespace runs collapsed to one space, ends stripped: re-indenting a
+    multi-line string changes nothing, changing a word does."""
+    return " ".join((text or "").split())
 
-    Returns None when the element carries no non-whitespace text, so indentation
-    never becomes a key. Child TAIL text (mixed content) is included, because a
-    change there is a change to this element's content."""
-    parts = [el.text] + [c.tail for c in el]
-    kept = [t.strip() for t in parts if t is not None and t.strip()]
-    return " ".join(kept) if kept else None
+
+def _text_value(el: etree._Element) -> str | None:
+    """The element's text content, or None when it has none.
+
+    POSITIONAL across children: the text before the first child and after each
+    child (element, comment or PI) is a separate segment, joined with
+    `_SEGMENT_SEP`. Folding them together hid real changes -- `a b<br/>` equalled
+    `a<br/> b`, and `a<!--c-->b` equalled `a b`. Each segment is `_norm`-alised;
+    trailing empty segments (the pretty-print tail after the last child) are
+    dropped, and an element whose every segment is empty has no text at all."""
+    segs = [_norm(el.text)] + [_norm(c.tail) for c in el]
+    while segs and not segs[-1]:
+        segs.pop()
+    return _SEGMENT_SEP.join(segs) if segs else None
 
 
 def _values(el: etree._Element) -> dict[str, str]:

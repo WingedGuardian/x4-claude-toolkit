@@ -278,3 +278,23 @@ def test_a_selector_only_edit_is_a_sel_change_not_remove_plus_add(tmp_path):
     (fd,) = md.changed()
     assert not fd.nodes_added and not fd.nodes_removed, (fd.nodes_added, fd.nodes_removed)
     assert [(c[1], c[2], c[3]) for c in fd.attr_changes] == [("sel", "/wares", "//wares")]
+
+
+@pytest.mark.parametrize("old,new", [
+    ("<t id='1'>a b<br/></t>", "<t id='1'>a<br/> b</t>"),
+    ("<t id='1'>a<!--c-->b</t>", "<t id='1'>a b</t>"),
+], ids=["text-moves-across-child", "comment-split"])
+def test_text_on_either_side_of_a_child_is_positional(tmp_path, old, new):
+    md = _one_file_diff(tmp_path, f"<language><page id='1'>{old}</page></language>",
+                        f"<language><page id='1'>{new}</page></language>",
+                        vpath="t/0001-l044.xml")
+    assert md.changed(), "a real text change was hidden by folding mixed content"
+
+
+def test_reindenting_a_multi_line_string_is_not_an_edit(tmp_path):
+    md = _one_file_diff(
+        tmp_path,
+        "<language><page id='1'><t id='1'>line one\n  line two</t></page></language>",
+        "<language><page id='1'><t id='1'>line one\n        line two</t></page></language>",
+        vpath="t/0001-l044.xml")
+    assert not md.changed(), [f.attr_changes for f in md.changed()]
