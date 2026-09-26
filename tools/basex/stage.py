@@ -85,7 +85,11 @@ def packed_dlc_names() -> tuple[str, ...]:
     try:
         from x4validate import _merge
         return tuple(sorted(_merge.Config().packed_dlc_names()))
-    except (ImportError, OSError, AttributeError, _paths.Unconfigured) as exc:
+    # ANY failure, not a list of four. This runs at IMPORT time, so an exception type the
+    # list did not name (a ValueError from a malformed catalog, a KeyError, a decode error)
+    # escaped as a raw traceback with rc 1 -- which in this toolkit means "findings" --
+    # before main() could refuse. Every one is the same fact: Config could not be asked.
+    except Exception as exc:  # noqa: BLE001 -- converted into a refusal, never swallowed
         raise PackedDlcUnknown(f"{type(exc).__name__}: {exc}") from exc
 
 

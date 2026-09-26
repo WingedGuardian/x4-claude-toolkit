@@ -187,6 +187,22 @@ def test_bx2_TWIN_a_nonempty_answer_is_staged_as_given(monkeypatch):
     assert stage.packed_dlc_names() == ("ego_dlc_mini_01", "ego_dlc_mini_02")
 
 
+@pytest.mark.parametrize("exc", [ValueError("bad catalog"), KeyError("x"), RuntimeError("boom"),
+                                 UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")])
+def test_bx2_ANY_config_failure_is_a_refusal_not_a_traceback(monkeypatch, tmp_path, capsys, exc):
+    """Re-review: only four exception types were caught, so any other failure of the
+    packed-DLC query escaped at IMPORT as a raw traceback, rc 1 -- which in this toolkit
+    means "findings". It must be the same rc-2 refusal as the listed four."""
+    stage = _basex("stage")
+    from x4validate import _merge
+
+    def boom(self):
+        raise exc
+    monkeypatch.setattr(_merge.Config, "packed_dlc_names", boom)
+    with pytest.raises(stage.PackedDlcUnknown):
+        stage.packed_dlc_names()
+
+
 def test_bx2_a_config_FAILURE_refuses_instead_of_guessing(monkeypatch, tmp_path, capsys):
     """The old fallback staged the historical pair on ANY failure; a guess is wrong one way
     or the other (double-index an unpacked DLC, or omit a packed one), so main refuses."""
