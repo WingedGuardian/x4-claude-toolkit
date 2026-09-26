@@ -9,8 +9,8 @@ from pathlib import Path
 
 from lxml import etree
 
-from . import (_cat, _compat, _debuglog, _effective, _exprlint, _merge, _migration,
-               _refs, _registry, _resolve, _scan, _xref, _xsd)
+from . import (_cat, _compat, _debuglog, _effective, _exprlint, _loadorder, _merge,
+               _migration, _refs, _registry, _resolve, _scan, _xref, _xsd)
 
 # A ship variant macro file: <base>_<a|b|c|...>_macro.xml
 VARIANT_RE = re.compile(r"^(?P<base>.+)_(?P<v>[a-z0-9])_macro\.xml$")
@@ -472,32 +472,30 @@ def tier_b_trees(mod_dir: Path, report: Report | None = None) -> TierB:
         return _fallback("no installed extensions found")
 
     folder, mod_id = _mod_identity(mod_dir, report)
+    # ONE placement rule with x4compat and x4stats (`_loadorder.place_candidate`):
+    # key = the installed copy's folder when it matches by folder or id (either case),
+    # else the dev copy's own folder; dependencies from THIS copy's manifest -- the
+    # version under test. It used to match case-SENSITIVELY (so a case-different dev
+    # copy merged its own installed copy as a third party) and to order by the
+    # INSTALLED manifest (so a dependency new in the dev copy was ignored).
+    placement = _loadorder.place_candidate(mods, mod_dir, cand_id=mod_id)
+    installed = bool(placement.excluded)
+    mods = placement.mods
     by_folder = {m["folder"]: m for m in mods}
-    installed = any(m["folder"] == folder or (mod_id and m["id"] == mod_id) for m in mods)
-    if not installed and folder:
-        # NOT INSTALLED (a dev copy): place it where the engine WOULD load it -- by the
-        # same folder key and dependency passes as every installed mod, reading its own
-        # manifest's dependencies (AUDIT-2026-09-24 LO-6, the rule x4compat already
-        # applies to a candidate). It used to be assumed to load LAST: the optimistic
-        # tree, in which a selector aimed at a node a later-loading mod adds reads OK
-        # here and is SKIPPED by the engine.
-        mods = list(mods) + [{"folder": folder, "id": mod_id or folder,
-                              "path": str(mod_dir)}]
-        by_folder[folder] = mods[-1]
     order = _compat.compute_load_order(mods)
 
     dirs: list[Path] = []       # patch-time: up to the mod's own position
     final_dirs: list[Path] = []  # runtime: every other installed extension
-    skipped = ""
+    skipped = ", ".join(m["folder"] for m in placement.excluded)
     placed = False
     for name in order:
         m = by_folder.get(name)
         if m is None:
             continue
-        if m["folder"] == folder or (mod_id and m["id"] == mod_id):
+        if m is placement.entry:
             # The mod under test is excluded from BOTH trees — merging its own copy
             # would pre-apply its ops and mask exactly the misses we look for.
-            skipped, placed = m["folder"], True
+            placed = True
             continue  # keep walking: later mods are invisible to selectors, but REAL at runtime
         p = Path(m["path"])
         if p.is_dir():
@@ -508,7 +506,7 @@ def tier_b_trees(mod_dir: Path, report: Report | None = None) -> TierB:
     if placed:
         notes.append(
             f"Tier B: merged {len(dirs)} extension(s) that load BEFORE this mod "
-            f"(of {len(order) - (0 if installed else 1)} installed) — the tree its "
+            f"(of {len(order) - 1 + len(placement.excluded)} installed) — the tree its "
             "selectors actually see")
         if installed:
             notes.append(f"Tier B: excluded the mod under test's installed copy '{skipped}' "

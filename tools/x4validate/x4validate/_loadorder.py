@@ -21,6 +21,7 @@ checks by construction rather than by exemption.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from lxml import etree
@@ -193,3 +194,46 @@ def sort_key(folder: str) -> str:
     non-ASCII case measures; on ASCII names the two agree.
     """
     return "".join(c.upper() if len(c.upper()) == 1 else c for c in folder)
+
+
+@dataclass
+class Placement:
+    """Where the mod under test sits in the tree -- see :func:`place_candidate`."""
+    #: the mod set with the candidate IN it (as `entry`) and its installed copy OUT
+    mods: list
+    #: the candidate's entry: {"folder": position key, "id", "path": the candidate}
+    entry: dict
+    #: installed entries that are the same mod (same folder or id), left out
+    excluded: list
+
+
+def place_candidate(mods: list[dict], candidate: Path, cand_id: str | None = None,
+                    dropped: list[str] | None = None) -> Placement:
+    """Place the mod under test in *mods* -- THE one rule Tier B, x4compat and x4stats
+    share (AUDIT-2026-09-24 final review; each used to hand-roll its own).
+
+      * POSITION KEY: when the candidate matches an entry of *mods* by folder name or
+        manifest id (both CASE-INSENSITIVE), that INSTALLED copy's folder name -- the
+        name the engine walks; else the candidate's own folder name.
+      * DEPENDENCIES: the CANDIDATE's manifest (the entry's `path` is the candidate),
+        because it is the version under test; the installed manifest may be older.
+      * Every matching installed entry is EXCLUDED, so the mod is never counted twice
+        or merged as a third party into its own tree.
+
+    *cand_id* skips re-reading the manifest when the caller already has it.
+    """
+    candidate = Path(candidate)
+    own_folder = candidate.resolve().name
+    if cand_id is None:
+        cand_id = (mod_dependencies(candidate, dropped)[0]
+                   if (candidate / "content.xml").is_file() else "")
+    low_folder, low_id = own_folder.lower(), (cand_id or "").lower()
+    by_folder = [m for m in mods if m["folder"].lower() == low_folder]
+    by_id = [m for m in mods if low_id and str(m.get("id", "")).lower() == low_id]
+    match = (by_folder or by_id or [None])[0]
+    excluded = [m for m in mods if m in by_folder or m in by_id]
+    entry = {"folder": match["folder"] if match is not None else own_folder,
+             "id": cand_id or own_folder, "path": str(candidate)}
+    kept = [m for m in mods if not any(m is x for x in excluded)]
+    return Placement(mods=kept + [entry], entry=entry, excluded=excluded)
+

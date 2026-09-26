@@ -1078,26 +1078,16 @@ def analyze(
     excluded: list[str] = []
     if candidate is not None:
         candidate = Path(candidate)
-        cand_folder = candidate.resolve().name
-        cand_id = _loadorder.mod_deps(candidate)[0] if (candidate / "content.xml"
-                                                        ).is_file() else ""
-        keep = []
-        cand_entry = {"folder": cand_folder, "path": str(candidate),
-                      "id": cand_id or cand_folder}
-        for m in mods:
-            same = (m["folder"].lower() == cand_folder.lower()
-                    or (cand_id and m.get("id") == cand_id))
-            if not same:
-                keep.append(m)
-            elif Path(m["path"]).resolve() == candidate.resolve():
-                cand_entry = m                  # the candidate IS the enabled copy
-                cand_folder = m["folder"]
-            else:
-                # A DIFFERENT copy of the candidate (a staged update, a dev folder):
-                # the path the user named wins, and the enabled copy is left out
-                # rather than counted as a second mod colliding with itself.
-                excluded.append(str(m["path"]))
-        mods = keep + [cand_entry]
+        # ONE placement rule with Tier B and x4stats (`_loadorder.place_candidate`):
+        # key = the installed copy's folder when it matches by folder or id (either
+        # case), dependencies from the CANDIDATE's manifest. A DIFFERENT enabled copy
+        # (a staged update, a dev folder) is left out rather than counted as a second
+        # mod colliding with itself; the path the user named wins.
+        placement = _loadorder.place_candidate(mods, candidate)
+        cand_folder = placement.entry["folder"]
+        excluded = [str(m["path"]) for m in placement.excluded
+                    if Path(m["path"]).resolve() != candidate.resolve()]
+        mods = placement.mods
     folder_to_path = {m["folder"]: Path(m["path"]) for m in mods}
 
     order_dropped: list[str] = []
