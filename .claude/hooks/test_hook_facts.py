@@ -3272,6 +3272,44 @@ class TestHK1PowerShellFrontEnd(unittest.TestCase):
         self.assertFalse(f["rm_targets_reference"] or f["writes_reference"])
 
 
+class TestHK1TranslationBudget(unittest.TestCase):
+    """Review item 7: every translation had its own 20 s timeout, so five carriers could
+    commit 100 s against a 30 s hook timeout -- and a timed-out hook does not block.
+    Stubbed: each translation takes its FULL timeout (a wedged PowerShell)."""
+
+    def setUp(self):
+        import subprocess as sp
+        import types
+        self.clock, self.calls = [0.0], []
+
+        def fake_run(args, **kw):
+            self.calls.append(kw["timeout"])
+            self.clock[0] += kw["timeout"]
+            raise sp.TimeoutExpired(args, kw["timeout"])
+        self.saved = (H.subprocess, H._clock)
+        H.subprocess = types.SimpleNamespace(run=fake_run, TimeoutExpired=sp.TimeoutExpired,
+                                             SubprocessError=sp.SubprocessError)
+        H._clock = lambda: self.clock[0]
+        H._PS_CACHE.clear()
+
+    def tearDown(self):
+        H.subprocess, H._clock = self.saved
+        H._PS_CACHE.clear()
+
+    def test_the_total_is_bounded_well_under_the_hook_timeout(self):
+        cmd = " && ".join('pwsh -c "Get-Date %d"' % i for i in range(5))
+        f = F(cmd)
+        self.assertTrue(f["carrier_untranslated"])
+        self.assertLessEqual(sum(self.calls), H._PS_BUDGET_S)
+        self.assertLess(H._PS_BUDGET_S, 25)
+        self.assertTrue(any("budget" in r for r in H._UNTRANSLATED), H._UNTRANSLATED)
+
+    def test_the_budget_is_per_call(self):
+        F('pwsh -c "Get-Date 1"')
+        F('pwsh -c "Get-Date 2"')
+        self.assertEqual(self.calls, [H._PS_CALL_CAP_S, H._PS_CALL_CAP_S])
+
+
 class TestHK1UnknownCmdletMarker(unittest.TestCase):
     """ps_translate.ps1 hands an unmodelled, possibly-writing cmdlet to this side as
     `x4-unknown-cmdlet <Name> <args>`; only here are the roots known (review item 6)."""

@@ -2403,6 +2403,19 @@ _UNTRANSLATED: list = []
 #: carrier walk revisits strings, and each translation is a PowerShell start.
 _PS_CACHE: dict = {}
 
+#: THE TOTAL PowerShell budget for ONE hook call, in seconds (AUDIT-2026-09-24 HK-1
+#: review item 7). Each translation had its own 20 s timeout, so five distinct `pwsh -c`
+#: carriers in one Bash command could commit 100 s -- MEASURED with a stubbed wedged
+#: pwsh -- against a 30 s hook timeout, and a hook that times out does NOT block: the
+#: call would proceed unchecked. The budget is spent across every translation in the
+#: call and sits well under the hook timeout (a translation takes ~0.4-1 s); once it is
+#: spent, further PowerShell text is REFUSED (ask), never waited for.
+_PS_BUDGET_S = 15.0
+#: No single translation may take longer than this, even with budget left.
+_PS_CALL_CAP_S = 10.0
+_ps_spent = [0.0]
+_clock = __import__("time").monotonic
+
 
 def _pwsh_exe():
     """The PowerShell to parse with: $X4_PWSH if set (and then ONLY it -- a configured
@@ -2433,12 +2446,20 @@ def powershell_to_sh(text: str) -> tuple:
     """
     if text in _PS_CACHE:
         return _PS_CACHE[text]
-    got = _translate_ps(text)
+    remaining = _PS_BUDGET_S - _ps_spent[0]
+    if remaining < 0.5:
+        return None, [], ("the PowerShell translation budget for one command (%.0f s) is "
+                          "spent, so this part was not analysed" % _PS_BUDGET_S)
+    t0 = _clock()
+    try:
+        got = _translate_ps(text, min(_PS_CALL_CAP_S, remaining))
+    finally:
+        _ps_spent[0] += max(0.0, _clock() - t0)
     _PS_CACHE[text] = got
     return got
 
 
-def _translate_ps(text: str) -> tuple:
+def _translate_ps(text: str, timeout: float = _PS_CALL_CAP_S) -> tuple:
     exe = _pwsh_exe()
     if not exe:
         return None, [], ("no PowerShell was found to parse it (pwsh, or powershell"
@@ -2451,7 +2472,7 @@ def _translate_ps(text: str) -> tuple:
         p = subprocess.run(
             [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-File", script],
-            input=text.encode("utf-8"), capture_output=True, timeout=20,
+            input=text.encode("utf-8"), capture_output=True, timeout=timeout,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError) as exc:
         return None, [], "PowerShell could not be run (%s)" % type(exc).__name__
@@ -2836,6 +2857,7 @@ def facts(payload: dict, roots: dict) -> dict:
     timeout = inp.get("timeout", 0)
     background = inp.get("run_in_background", False)
     del _UNTRANSLATED[:]
+    _ps_spent[0] = 0.0                  # the translation budget is per hook call
 
     # THE POWERSHELL TOOL (AUDIT-2026-09-24 HK-1). It had no PreToolUse guard at all, so
     # every rule below was one tool choice away from not existing. Its command is
