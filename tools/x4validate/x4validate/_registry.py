@@ -714,15 +714,26 @@ def generate_dashboard(reg: CommentedMap) -> str:
         lines.append("")
 
     # UPDATES. "Available" = the upstream file (newest MAIN, or the pinned file) was
-    # UPLOADED AFTER the installed manifest's date -- both dates are printed, because
-    # version strings are not comparable across Nexus's shapes (AUDIT-2026-09-24 RG-3).
+    # UPLOADED more than a grace window AFTER the installed manifest's date -- both
+    # dates are printed, because version strings are not comparable across Nexus's
+    # shapes (AUDIT-2026-09-24 RG-3). An upload within the grace window reads
+    # `same-release?` instead (RG-3 refinement, user decision 2026-09-26): authors
+    # often date the manifest before they finish uploading, so a gap that small is
+    # very often the SAME release landing, not a new one -- it is counted in the
+    # tally below but EXCLUDED from the UPDATE AVAILABLE table so it never reads as
+    # a confirmed update. The window's length is `_modlist.UPDATE_GRACE_DAYS` --
+    # imported lazily here (not at module scope) because `_modlist` imports THIS
+    # module, and a top-level import the other way would cycle.
     # The tally covers every active row, so "0 available" can be told from "never checked".
+    from x4validate._modlist import UPDATE_GRACE_DAYS
     tally: dict[str, int] = {}
     for m in mods:
         v = m["auto"].get("update") or "not checked"
         tally[v] = tally.get(v, 0) + 1
-    lines.append("**Updates** (upstream upload date after the installed manifest date; "
-                 "versions not compared): " +
+    lines.append(f"**Updates** (upstream upload date more than {UPDATE_GRACE_DAYS} days "
+                 "after the installed manifest date; same-release? = uploaded within that "
+                 "window, likely the same release, not counted as available; versions not "
+                 "compared): " +
                  " · ".join(f"{n} {k}" for k, n in sorted(tally.items())) + "\n")
     avail = [m for m in mods if m["auto"].get("update") == "available"]
     if avail:

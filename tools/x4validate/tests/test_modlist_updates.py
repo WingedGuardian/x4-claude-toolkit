@@ -32,6 +32,29 @@ def test_an_upload_on_or_before_the_manifest_date_is_not_an_update(upstream):
     assert _modlist._update_verdict("2026-06-01", upstream, trusted=True)[0] == "none"
 
 
+# --- RG-3 refinement: the grace window (user decision 2026-09-26) ----------------------
+
+@pytest.mark.parametrize("upstream, days", [
+    ("2026-06-02", 1),   # 1 day after: within the grace window
+    ("2026-06-04", 3),   # exactly 3 days after: still within the window
+])
+def test_an_upload_within_the_grace_window_is_same_release_not_available(upstream, days):
+    v, basis = _modlist._update_verdict("2026-06-01", upstream, trusted=True)
+    assert v == "same-release?", (days, v, basis)
+    assert "same" in basis.lower() and "3 day" in basis
+    assert "2026-06-01" in basis and upstream in basis
+
+
+def test_an_upload_more_than_the_grace_window_after_is_available():
+    v, basis = _modlist._update_verdict("2026-06-01", "2026-06-05", trusted=True)  # 4 days
+    assert v == "available", (v, basis)
+
+
+@pytest.mark.parametrize("upstream", ["2026-06-01", "2026-05-01"])
+def test_an_upload_on_or_before_the_manifest_date_is_still_none_not_same_release(upstream):
+    assert _modlist._update_verdict("2026-06-01", upstream, trusted=True)[0] == "none"
+
+
 @pytest.mark.parametrize("installed, upstream", [(None, "2026-07-01"), ("2026-06-01", None),
                                                  ("sometime", "2026-07-01")])
 def test_a_missing_or_unparseable_date_is_UNKNOWN_never_no_update(installed, upstream):
@@ -248,3 +271,32 @@ def test_a_pinned_file_is_judged_against_its_newest_successor(monkeypatch, updat
     pinned = _nexus.FileMeta(5, 7, "f5", "5", "2026-05-01", "OPTIONAL")
     up, what = _modlist._upstream_newest(7, pinned)
     assert up == want_date and f"file {want_id} " in what, (up, what)
+
+
+# --- the dashboard excludes same-release? from UPDATE AVAILABLE (RG-3 refinement) ------
+
+def _installed_entry(mod_id, **auto_overrides):
+    e = _registry._new_entry(mod_id, True)
+    e["auto"]["installed"] = True
+    e["auto"].update(auto_overrides)
+    return e
+
+
+def test_dashboard_update_available_table_excludes_same_release():
+    reg = _registry._new_registry()
+    reg["mods"].append(_installed_entry(
+        "avail_mod", name="Really Updated", classification="ready",
+        installed_date="2026-06-01", update="available",
+        upstream_newest_uploaded="2026-06-10"))
+    reg["mods"].append(_installed_entry(
+        "same_mod", name="Same Release", classification="ready",
+        installed_date="2026-06-01", update="same-release?",
+        upstream_newest_uploaded="2026-06-02"))
+    out = _registry.generate_dashboard(reg)
+    assert "UPDATE AVAILABLE  (1)" in out
+    assert "Really Updated" in out
+    # the same-release? row must not appear in the UPDATE AVAILABLE table
+    avail_block = out.split("## ⬆ UPDATE AVAILABLE")[1].split("## ")[0]
+    assert "Same Release" not in avail_block
+    # but it is still counted in the tally, so it isn't invisible
+    assert "same-release?" in out

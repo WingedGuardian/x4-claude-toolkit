@@ -19,6 +19,17 @@ from x4validate import _paths, __version__
 NINE_ZERO = date(2026, 6, 10)  # X4 9.00 release
 CHURN_DAYS = 14
 
+# RG-3 refinement (user decision 2026-09-26): authors routinely date a manifest BEFORE
+# they finish uploading it, so an upstream upload a day or two after the installed
+# manifest's date is very often the SAME release, not a new one -- the raw "uploaded
+# after" rule (RG-3) flagged those as `available` on every such mod. A window of this
+# many days AFTER the manifest date reads as `same-release?` instead of `available`;
+# strictly beyond it still reads `available`. The true false-positive rate this trades
+# against a false-negative rate (a real update landing inside the window would be missed)
+# is UNMEASURED until the next online refresh confirms some of these by hand -- say so
+# in the basis text, don't just silently reclassify.
+UPDATE_GRACE_DAYS = 3
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
@@ -381,12 +392,21 @@ def _upstream_newest(nid: int, fmeta) -> tuple[str | None, str]:
 
 
 def _update_verdict(installed_date, upstream_date, trusted: bool) -> tuple[str, str]:
-    """("available" | "none" | "unknown" | "unconfirmed", the basis, both dates printed).
+    """("available" | "same-release?" | "none" | "unknown" | "unconfirmed", the basis,
+    both dates printed).
 
-    "Has an update" means the upstream file was UPLOADED AFTER the installed copy's
-    manifest date. Version strings are not compared: 77 registry rows carried an
-    upstream version and 1 matched its installed one as a string, across 6 upstream
-    version shapes against integer manifest versions -- not comparable (RG-3).
+    "Has an update" means the upstream file was UPLOADED more than `UPDATE_GRACE_DAYS`
+    days AFTER the installed copy's manifest date. Version strings are not compared: 77
+    registry rows carried an upstream version and 1 matched its installed one as a
+    string, across 6 upstream version shapes against integer manifest versions -- not
+    comparable (RG-3).
+
+    An upload within the grace window (0..UPDATE_GRACE_DAYS days after the manifest
+    date) reads `same-release?` instead: authors commonly date the manifest before they
+    finish uploading it, so a gap that small is very often the same release landing,
+    not a new one (RG-3 refinement, user decision 2026-09-26). Strictly BEFORE or equal
+    to the manifest date is still `none` -- the window only widens the grace given to an
+    upload that came AFTER.
     """
     basis = (f"upstream uploaded {upstream_date or '?'} vs installed manifest dated "
              f"{installed_date or '?'}")
@@ -397,7 +417,13 @@ def _update_verdict(installed_date, upstream_date, trusted: bool) -> tuple[str, 
         missing = ("the installed manifest has no usable date" if i is None
                    else "no upstream upload date")
         return "unknown", f"{basis} -- {missing}"
-    return ("available" if u > i else "none"), basis
+    delta = (u - i).days
+    if delta <= 0:
+        return "none", basis
+    if delta <= UPDATE_GRACE_DAYS:
+        return "same-release?", (f"{basis} -- likely the same release: uploaded within "
+                                  f"{UPDATE_GRACE_DAYS} days of the manifest date")
+    return "available", basis
 
 
 _UPDATE_FIELDS = ("update", "update_basis", "upstream_newest", "upstream_newest_uploaded")
@@ -508,16 +534,24 @@ def _print_updates(mods, checked: set[str]) -> None:
     if not verdicts:
         return
     counts = ", ".join(f"{len(verdicts[k])} {k}" for k in
-                       ("available", "none", "unknown", "unconfirmed") if k in verdicts)
+                       ("available", "same-release?", "none", "unknown", "unconfirmed")
+                       if k in verdicts)
     carried = sum(1 for ms in verdicts.values() for m in ms if m["id"] not in checked)
-    print(f"updates: {counts}  (available = the upstream file was uploaded after the "
-          f"installed manifest's date; versions are NOT compared)"
+    print(f"updates: {counts}  (available = the upstream file was uploaded more than "
+          f"{UPDATE_GRACE_DAYS} days after the installed manifest's date; same-release? = "
+          f"uploaded within {UPDATE_GRACE_DAYS} days of it, likely the same release, NOT "
+          f"counted as available; versions are NOT compared)"
           + (f"; {carried} carried over from an earlier check, not re-checked now"
              if carried else ""))
     for m in sorted(verdicts.get("available", []), key=lambda x: x["id"]):
         a = m["auto"]
         tag = ("UPDATE " if m["id"] in checked
                else f"UPDATE (carried over, checked {a.get('checked_at') or '?'})")
+        print(f"   {tag} {m['id']:40} {a.get('update_basis')}  [{a.get('upstream_newest')}]")
+    for m in sorted(verdicts.get("same-release?", []), key=lambda x: x["id"]):
+        a = m["auto"]
+        tag = ("SAME-RELEASE? " if m["id"] in checked
+               else f"SAME-RELEASE? (carried over, checked {a.get('checked_at') or '?'})")
         print(f"   {tag} {m['id']:40} {a.get('update_basis')}  [{a.get('upstream_newest')}]")
 
 
@@ -993,7 +1027,9 @@ def main(argv: list[str] | None = None) -> int:
 
     pr = sub.add_parser("refresh", help="refresh upstream metadata via Nexus/Steam API, and "
                         "say which mods have an update: upstream's newest MAIN file uploaded "
-                        "after the installed manifest's date (both dates printed)")
+                        f"more than {UPDATE_GRACE_DAYS} days after the installed manifest's "
+                        "date (both dates printed); an upload within that window reads "
+                        "same-release?, not available")
     pr.add_argument("--ids", help="comma-separated content ids to refresh, installed or not "
                     "(default: every INSTALLED mod, enabled or not)")
     pr.add_argument("--seeded", action="store_true", help="only mods that already have a nexus_id")
