@@ -298,7 +298,12 @@ after it waits for the NEXT pass. Later loads win. Evidence: the "Failed to veri
 signature" sequence per file path in `debug.txt` -- 372 file classes / 5,134 ordered pairs over
 two launches, 0 inverted by this rule; the previous "alphabetical + dependencies forced earlier"
 (Kahn) model inverted 685. `_loadorder.compute_load_order` implements it and
-`gates/load_order_oracle.py` re-checks it against every new log.
+`gates/load_order_oracle.py` re-checks it against every new log. ⚠ What is measured is
+SIGNATURE-CHECK order; that it is also the patch-APPLY order (what decides winners) is
+INFERRED, and shapes the installed modlist never exercises -- missing/optional/disabled
+dependencies, cycles, duplicate ids, non-ASCII names, DLC position -- are unobserved.
+`tools/x4validate/scripts/load-order-probe.py` is the experiment built to settle both (throwaway
+one-op mods with a PREDICTION written before launch); not yet run in game as of 2026-09-26.
 
 - **`x4similar`** (`_similarity.py`) — advisory fuzzy same-ship detection. Extracts a numeric
   vector per ship macro (hull/crew/cargo/handling), hard-filters by macro `class` (`ship_xs/s/m/l/xl`)

@@ -35,9 +35,11 @@ price read as the vanilla value in `x4raw` and as a mod's override in `x4eff`. T
 depend on the modlist, so re-derive them (`collection('<db>')//ware[@id='hullparts']/price`
 against each database, with the matching `--db`) rather than quote them.
 
-**Advisory limit:** inter-mod load order is community convention (dependencies
-first, then alphabetical), not documented by Egosoft. Any `x4eff` answer that
-turns on *which* mod won is advisory to exactly that degree.
+**Advisory limit:** inter-mod load order is the engine's MEASURED signature-check
+order (case-insensitive folder order in repeated dependency passes; see
+`tools/x4validate/docs/BLIND-SPOTS.md` F128), not documented by Egosoft, and that it
+is also the patch-apply order is inferred. Any `x4eff` answer that turns on *which*
+mod won is advisory to exactly that degree.
 
 ## A negative claim needs a denominator (this is the point)
 

@@ -47,7 +47,7 @@ def mod_deps(mod_path: Path, dropped: list[str] | None = None) -> tuple[str, lis
     except etree.XMLSyntaxError as exc:
         if dropped is not None:
             dropped.append(f"{mod_path.name}: content.xml will not parse ({exc}) -- "
-                           "load-order position assumed alphabetical")
+                           "load-order position from its folder name alone")
         return mod_path.name, []
     mod_id = root.get("id") or mod_path.name
     deps = [d.get("id") for d in root.findall(".//dependency") if d.get("id")]

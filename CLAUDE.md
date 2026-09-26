@@ -400,14 +400,13 @@ indexed, and `x4eff` holds the effective merged tree, so: a **bare** "0 hits" is
 lead; `tools\basex\ask.py` refuses to render a zero as a finding unless `coverage-<db>.json`
 says coverage is complete or accounted, printing *"NEGATIVE CONFIRMED over N of M documents"*
 with every exclusion named. Prefer **`--db x4eff`** for any claim about what is LIVE — `x4raw`
-is files as written and will quote a vanilla value the modlist overwrote. Load order is
-community convention, so an x4eff answer turning on *which mod won* is advisory. x4validate
-remains the authority for correctness against the engine.
+is files as written and will quote a vanilla value the modlist overwrote. Load order is the
+engine's MEASURED signature-check order (apply order inferred; BLIND-SPOTS F128), so an answer
+turning on *which mod won* is advisory to that degree. x4validate is the authority.
 
-**Validate the DEPLOYED copy, not the `dev\` copy, whenever load order could matter.** An
-uninstalled mod has no knowable load-order position, so Tier B assumes it loads LAST — the
-optimistic tree. Proven: one deployed mod validates clean while its byte-identical dev-only twin
-reports three false alarms.
+**Validate the DEPLOYED copy whenever load order could matter.** Tier B places an uninstalled
+copy by the engine rule, keyed on its folder NAME, so a differently named dev folder lands
+elsewhere. (Until 2026-09-25 it assumed LAST, the optimistic tree.)
 
 ## Core Working Principle: Deductive Iteration — Work Backward from the Outcome
 
