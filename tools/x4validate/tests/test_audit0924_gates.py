@@ -349,8 +349,6 @@ def test_gt3_xsd_parity_over_files_with_no_schema_is_not_parity(tmp_path, monkey
 
 # ============================================================================ GT-4 rc handling
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-4: edge_sweep judges only tracebacks; rc 0 "
-                   "on a missing dir / bad tier / unconfigured run is scored ok")
 def test_gt4_edge_sweep_does_not_pass_hostile_inputs_that_all_exit_0(monkeypatch, capsys):
     es = import_gate("edge_sweep", module_level=False)
     monkeypatch.setattr(es, "run", lambda argv, env=None, timeout=900, cwd=None:
@@ -360,8 +358,6 @@ def test_gt4_edge_sweep_does_not_pass_hostile_inputs_that_all_exit_0(monkeypatch
                      "answer the docstring promises to catch:\n" + capsys.readouterr().out[-800:])
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-4: stress_sweep --corpus=<not a dir> "
-                   "silently drops the whole unseen-corpus axis")
 def test_gt4_stress_sweep_names_a_corpus_it_could_not_read(tmp_path, monkeypatch, capsys):
     ss = import_gate("stress_sweep", module_level=False)
     missing = tmp_path / "no_such_corpus"
@@ -373,8 +369,6 @@ def test_gt4_stress_sweep_names_a_corpus_it_could_not_read(tmp_path, monkeypatch
         f"rc={rc}: axis 1 was asked for and skipped without a word")
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-4: control_bytes returns 2 (CANNOT) over "
-                   "real hits when any path is unreadable -- the refusal outranks the finding")
 def test_gt4_control_bytes_hits_outrank_an_unreadable_path(tmp_path, monkeypatch):
     cb = import_gate("control_bytes", module_level=False)
     monkeypatch.setattr(cb, "tracked_text_files", lambda: [])
@@ -384,8 +378,6 @@ def test_gt4_control_bytes_hits_outrank_an_unreadable_path(tmp_path, monkeypatch
     assert rc == 1, f"a live 0x08 was found and run-gates.sh would bucket rc {rc} as CANNOT"
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-4: oracle_index exits via SystemExit(str) "
-                   "= rc 1 (FAIL) when the log has no ground truth, which is a CANNOT (2)")
 def test_gt4_oracle_index_without_ground_truth_is_cannot_not_fail(tmp_path, monkeypatch):
     _env = import_gate("_env", module_level=False)
     log = tmp_path / "debug.txt"
@@ -402,8 +394,6 @@ def test_gt4_oracle_index_without_ground_truth_is_cannot_not_fail(tmp_path, monk
     assert rc == 2, f"no ground truth read as a FAILED gate (rc {rc}): {code!r}"
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-4: toolkit_usage turns its own REFUSAL "
-                   "(qa_sweep not evaluable) into a finding, rc 1, where its docstring says 2")
 def test_gt4_toolkit_usage_refusal_is_rc_2(tmp_path, monkeypatch, capsys):
     tu = import_gate("toolkit_usage", module_level=False)
     cap = {"cli": "x4validate", "sub": "", "invoked": 3, "named": 3,
@@ -416,6 +406,28 @@ def test_gt4_toolkit_usage_refusal_is_rc_2(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(tu, "BASELINE", tmp_path / "no-baseline.json")
     rc = tu.main()
     assert rc == 2, f"'could not evaluate' was reported as a finding, rc {rc}"
+    # ...and a real finding beside the refusal still outranks it.
+    monkeypatch.setattr(tu, "audit", lambda: {"caps": {"x4validate": cap},
+                                              "unenumerable": ["x4live: --help timed out"],
+                                              "subs_by_cli": {"x4validate": []}})
+    assert tu.main() == 1
+
+
+def test_gt4_stress_sweep_judges_each_cell_against_its_expected_rc(tmp_path, monkeypatch):
+    ss = import_gate("stress_sweep", module_level=False)
+    # The table names every pathological mod the sweep builds -- a missing key would
+    # be a KeyError mid-run, an extra one a cell that never runs.
+    assert {n for n, _ in ss.build_pathological(tmp_path)} == set(ss.PATHOLOGICAL_EXPECT)
+    monkeypatch.setattr(ss, "run", lambda argv, timeout=900, cwd=None: (0, "OK\n"))
+    assert ss.judge("billion laughs", ["x4validate"], ss.PATHOLOGICAL_EXPECT[
+        "path_billion_laughs"])[0] == "FAIL", "an entity bomb read as a clean 0"
+    monkeypatch.setattr(ss, "run", lambda argv, timeout=900, cwd=None: (3, "degraded\n"))
+    assert ss.judge("billion laughs", ["x4validate"], ss.PATHOLOGICAL_EXPECT[
+        "path_billion_laughs"])[0] == "ok"
+    # A whole run where every tool exits 0 is not a pass: the hostile cells expect 1/3.
+    monkeypatch.setattr(ss, "CORPUS", None)
+    monkeypatch.setattr(ss, "run", lambda argv, timeout=900, cwd=None: (0, "OK\n"))
+    assert ss.main() == 1
 
 
 # ============================================================================ GT-5 aggregate / file-wide

@@ -11,8 +11,9 @@ Run:  uv run python gates/control_bytes.py [extra paths...]
       Scans every git-tracked text file in this repo (by extension) plus any
       extra paths given -- pass the game root's CLAUDE.md / KNOWLEDGEBASE.md and
       the memory directory to cover permanent record outside the repo.
-Exit: 0 clean / 1 control bytes found / 2 nothing scanned (a sweep over zero
-      files is not a clean sweep).
+Exit: 0 clean / 1 control bytes found (outranks everything below: a hit is a
+      finding even beside an unreadable path) / 2 nothing scanned, or no hits but
+      some path unreadable (a sweep over zero files, or with a hole, is not clean).
 """
 
 from __future__ import annotations
@@ -155,6 +156,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  UNREADABLE (not scanned): {u}")
     for h in rep["hits"]:
         print(f"  {h['path']} @{h['offset']} 0x{h['byte']:02x} (was {h['escape']}): ...{h['context']}...")
+    # A HIT outranks every refusal (AUDIT-2026-09-24 GT-4): a live control byte is a
+    # finding whatever else could not be read, and returning 2 here made run-gates.sh
+    # bucket a real defect as could-not-run. The unreadable paths are still printed.
+    if rep["hits"]:
+        if rep["unreadable"]:
+            print(f"NOTE: {len(rep['unreadable'])} path(s) could not be read as well -- "
+                  "the hit count is a lower bound.", file=sys.stderr)
+        return 1
     if rep["scanned"] == 0:
         print("REFUSING: nothing was scanned, so this is not a clean sweep. (Outside a "
               "git checkout, pass the paths to scan explicitly.)", file=sys.stderr)
