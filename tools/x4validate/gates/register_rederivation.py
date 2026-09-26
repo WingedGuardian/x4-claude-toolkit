@@ -52,8 +52,11 @@ RECORD = "--record" in sys.argv
 _CLOSED = re.compile(r"FIXED|CLOSED")
 
 #: What counts as naming a check: a repo-relative test/gate path, a SHELL suite
-#: under scripts/ or .claude/hooks/, a bare `test_name` in backticks, or the word
-#: selftest (several tools carry one).
+#: under scripts/ or .claude/hooks/, or a bare `test_name` in backticks.
+#:
+#: The bare WORD `selftest` used to count too (AUDIT-2026-09-24 GT-5), so "there is no
+#: selftest for this" named a check. A tool's selftest is cited by its PATH
+#: (`scripts/scan-identifiers.py --selftest`), which the path alternatives already see.
 #:
 #: The shell forms were added 2026-08-29, on this gate's first serious use: F79's
 #: re-derivation is `scripts/test-hooks.sh` and `.claude/hooks/test-protect-bash.sh`,
@@ -89,11 +92,15 @@ _NAMES = re.compile(
     r"(?<![A-Za-z0-9_.-])(?:tests/|gates/)[A-Za-z0-9_./-]+\.py"
     r"|(?<![A-Za-z0-9_.-])(?:scripts/|\.claude/hooks/)[A-Za-z0-9_./-]+\.(?:sh|py)"
     r"|(?<![A-Za-z0-9_.-])tools/basex/test_[A-Za-z0-9_]+\.py"
-    r"|`(test_[A-Za-z0-9_]+)`|selftest")
+    r"|`(test_[A-Za-z0-9_]+)`")
 
 #: The explicit opt-out. An entry whose figure genuinely cannot be re-derived
 #: says so IN THE ENTRY -- that is a statement a reader can weigh, unlike silence.
+#: It is a DECLARATION at the start of a line (`**NO RE-DERIVATION ...**`, the form
+#: every real exemption uses), never a mention: a substring test exempted an entry
+#: that QUOTED the marker while saying the check was still owed (GT-5).
 _EXEMPT = "NO RE-DERIVATION"
+_EXEMPT_DECL = re.compile(r"(?m)^[ \t]*(?:\*\*|__)?NO RE-DERIVATION\b")
 
 
 def entries(text: str) -> dict[str, str]:
@@ -166,6 +173,10 @@ def names_a_check(body: str, root: Path) -> str | None:
     not only the cited files, because F40 and F74 name tests defined in files they do
     not cite -- a cited-files-only rule would have flagged two true citations.
     Pinned clause by clause in `tests/test_register_rederivation_bare_names.py`.
+
+    CITED PATHS get the same rule (AUDIT-2026-09-24 GT-5): EVERY cited check path must
+    exist. It used to be first-live-wins, so an entry whose re-deriving test had been
+    deleted still read as covered because it also mentioned some other live file.
     """
     roots = _roots(root)
     first: str | None = None
@@ -187,6 +198,8 @@ def names_a_check(body: str, root: Path) -> str | None:
                 cited.append(base / s)
                 first = first or s
                 break
+        else:
+            return None             # a cited check that exists nowhere: NOT covered
     if bare:
         defined: set[str] | None = None
         for name in bare:
@@ -232,7 +245,7 @@ def audit(text: str, root: Path) -> tuple[list[str], list[str]]:
         head = body.split(chr(10))[0]
         if not _CLOSED.search(head):
             continue
-        if _EXEMPT in body or names_a_check(body, root):
+        if _EXEMPT_DECL.search(body) or names_a_check(body, root):
             ok.append(fid)
         else:
             missing.append(fid)
@@ -288,8 +301,8 @@ def main() -> int:
         for f in new:
             print(f"    {f}")
         print("")
-        print("  Name the test or gate that re-derives it, or state "
-              f"'{_EXEMPT}' in the entry with the reason.")
+        print("  Name the test or gate that re-derives it (every cited check path must "
+              f"exist), or open a line of the entry with '**{_EXEMPT}: <the reason>**'.")
         return 1
     print("")
     print("No new findings.")

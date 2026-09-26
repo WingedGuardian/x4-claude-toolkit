@@ -501,8 +501,6 @@ def test_gt5_cross_tool_a_kind_with_every_row_absent_is_not_0_of_0(tmp_path, mon
         f"1 HARD row, 0 checkable, and it passed as 0/0: cannot={ct.cannot}")
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-5: update_corpus matches `wants` against "
-                   "ANY finding of the category, not one in the case's own file")
 def test_gt5_update_corpus_credits_a_detection_only_to_its_own_file(tmp_path, monkeypatch):
     uc = import_gate("update_corpus", module_level=False)
     from x4validate import _check
@@ -519,16 +517,34 @@ def test_gt5_update_corpus_credits_a_detection_only_to_its_own_file(tmp_path, mo
                       "across 8 files")
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-5: register_rederivation accepts the bare "
-                   "WORD 'selftest' anywhere in an entry as a named check")
+def test_gt5_update_corpus_credits_every_case_found_in_its_own_file(tmp_path, monkeypatch):
+    """The other direction: one finding per planted case, each in the case's own file
+    (the shape MEASURED on the real run, loose and packed), is a full detection."""
+    uc = import_gate("update_corpus", module_level=False)
+    from x4validate import _check
+    per_case = [_check.Finding("warn", c.category, f"...{c.wants}...", vpath=c.vpath)
+                for c in uc.CASES]
+    monkeypatch.setattr(uc._check, "validate",
+                        lambda *a, **k: types.SimpleNamespace(findings=per_case))
+    failures: list[str] = []
+    uc.check("LOOSE  mod", tmp_path, failures)
+    assert failures == []
+    # ...and moving ONE case's finding to a sibling file loses exactly that case.
+    moved = [*per_case[1:], _check.Finding("warn", uc.CASES[0].category,
+                                           f"...{uc.CASES[0].wants}...",
+                                           vpath=uc.CASES[1].vpath)]
+    monkeypatch.setattr(uc._check, "validate",
+                        lambda *a, **k: types.SimpleNamespace(findings=moved))
+    uc.check("LOOSE  mod", tmp_path, failures)
+    assert len(failures) == 1 and uc.CASES[0].case_id in failures[0], failures
+
+
 def test_gt5_the_word_selftest_in_prose_is_not_a_check(tmp_path):
     rr = import_gate("register_rederivation", module_level=False)
     body = " FIXED 2026-09-01\n\nThere is no selftest for this, and no test either.\n"
     assert rr.names_a_check(body, tmp_path) is None
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-5: register_rederivation ignores a cited "
-                   "check FILE that does not exist when another cited file does (dead citation)")
 def test_gt5_a_dead_path_citation_is_not_covered_by_a_live_one(tmp_path):
     rr = import_gate("register_rederivation", module_level=False)
     (tmp_path / "gates").mkdir()
@@ -539,8 +555,6 @@ def test_gt5_a_dead_path_citation_is_not_covered_by_a_live_one(tmp_path):
         "the check that re-derives this fix was deleted, and the entry still reads as covered")
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-5: register_rederivation exempts any entry "
-                   "that merely QUOTES the 'NO RE-DERIVATION' marker")
 def test_gt5_a_quoted_exemption_marker_is_not_an_exemption(tmp_path):
     rr = import_gate("register_rederivation", module_level=False)
     text = ('## F999 -- something FIXED\n\nWe chose not to write "NO RE-DERIVATION" here; '

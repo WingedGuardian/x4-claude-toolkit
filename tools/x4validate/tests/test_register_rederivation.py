@@ -61,12 +61,20 @@ def test_an_explicit_NO_RE_DERIVATION_is_accepted(tmp_path):
     assert ok == ["F1"] and missing == []
 
 
-def test_the_word_selftest_counts(tmp_path):
-    """Several tools carry their own `--selftest` rather than a pytest file."""
+def test_a_selftest_counts_when_its_script_is_cited_not_as_a_bare_word(tmp_path):
+    """Several tools carry their own `--selftest` rather than a pytest file. That is a
+    check -- cited by the script's PATH, which must exist. The bare WORD used to count
+    on its own, so "there is no selftest" named a check (AUDIT-2026-09-24 GT-5)."""
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "scan.py").write_text("", encoding="utf-8")
     ok, _ = rr.audit(
         _doc("## F1 — a thing · **DEFECT** · ✅ FIXED 2026-01-01",
-             "proven by its selftest, 14/14"), tmp_path)
+             "proven by `scripts/scan.py --selftest`, 14/14"), tmp_path)
     assert ok == ["F1"]
+    _, missing = rr.audit(
+        _doc("## F1 — a thing · **DEFECT** · ✅ FIXED 2026-01-01",
+             "proven by its selftest, 14/14"), tmp_path)
+    assert missing == ["F1"]
 
 
 def test_a_gates_path_counts_as_well_as_a_tests_path(tmp_path):
