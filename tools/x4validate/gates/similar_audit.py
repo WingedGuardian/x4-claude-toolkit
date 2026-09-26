@@ -126,6 +126,14 @@ proc = subprocess.run(["uv", "run", "x4similar", "--threshold", str(THRESHOLD)],
                       capture_output=True, text=True, encoding="utf-8",
                       errors="replace", timeout=1800)
 lines = (proc.stdout or "").splitlines()
+# THE TOOL'S EXIT CODE IS EVIDENCE. Before 2026-09-24 a crashed or refusing
+# x4similar printed nothing, 0 pairs parsed, and the audit exited 0
+# (AUDIT-2026-09-24 GT-3). 0 = pairs reported, anything else is not a report.
+if proc.returncode != 0:
+    print(f"REFUSING: x4similar exited {proc.returncode}, so there is no report to "
+          "audit:", file=sys.stderr)
+    print((proc.stderr or proc.stdout or "").strip()[-600:], file=sys.stderr)
+    sys.exit(2)
 
 pairs = []
 for i, ln in enumerate(lines):
@@ -172,6 +180,10 @@ for pct, akey, bkey, klass, purpose, keys in pairs:
             samples.append(f"{an} <-> {bn}: " + "; ".join(problems))
 
 print(f"pairs verified       : {checked}")
+if not checked and not bad and not unresolved:
+    # A FLOOR: zero pairs parsed is a report that could not be read (a changed row
+    # format parses to nothing), not a tool with no defects.
+    sys.exit(_env.nothing_checked("similar_audit", "no x4similar pair was parsed"))
 print(f"VIOLATIONS           : {bad}")
 for s in samples:
     print(f"   {s}")

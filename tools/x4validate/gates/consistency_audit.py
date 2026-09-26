@@ -161,19 +161,28 @@ def eq(a, b) -> bool:
 
 
 def main() -> int:
+    # A STALE store disagrees with today's merge for reasons that are not defects, and a
+    # fresh-looking agreement over an old store proves nothing about today's engine
+    # (AUDIT-2026-09-24 GT-6). Refuse first.
+    refused = _env.stale_store_refusal(DB, "consistency_audit")
+    if refused is not None:
+        return refused
     rows = store_rows()
     print("=" * 96)
     print(f"CONSISTENCY AUDIT — store vs build_effective vs `dump`, {len(rows)} sampled values")
     print("=" * 96)
     bad = []
     checked = 0
+    no_vpath = no_merged = 0
     dump_checked = dump_degraded = dump_unusable = 0
     dump_cache: dict[tuple[str, str, str], str | None] = {}
     for name, vpath, prop, value, origin in rows:
         if not vpath:
+            no_vpath += 1
             continue
         merged = from_merge(vpath, name, prop)
         if merged is None:
+            no_merged += 1
             continue
         checked += 1
         if not eq(merged, value):
@@ -197,7 +206,9 @@ def main() -> int:
     # disagreements is not agreement, it is a run that examined nothing --
     # reachable with --samples=0, or whenever every sampled value has no
     # merged counterpart (`if merged is None: continue`, which has no counter).
-    print(f"  values cross-checked : {checked}")
+    print(f"  values cross-checked : {checked}"
+          + (f"   (not checkable: {no_vpath} without a vpath, {no_merged} with no merged "
+             f"counterpart -- of {len(rows)} sampled)" if (no_vpath or no_merged) else ""))
     if not checked:
         print("REFUSING: 0 values were cross-checked, so there is nothing to "
               "agree about. A NON-ANSWER, not a clean run.", file=sys.stderr)

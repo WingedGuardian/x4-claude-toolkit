@@ -123,7 +123,9 @@ def _newest_manifest(mods: list[dict]) -> tuple[float, str]:
         try:
             t = cx.stat().st_mtime
         except OSError:
-            continue
+            # FAIL CLOSED: a manifest whose age cannot be read cannot be shown to predate
+            # the log, so treat it as newer -- the gate then refuses to convict the code.
+            return float("inf"), f"{m['folder']} (manifest unreadable)"
         if t > newest:
             newest, who = t, m["folder"]
     return newest, who

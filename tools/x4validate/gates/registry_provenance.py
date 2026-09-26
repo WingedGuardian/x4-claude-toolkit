@@ -100,6 +100,10 @@ def main() -> int:
         for v in violations:
             print(f"   {v}")
         return 1
+    if not active:
+        # A FLOOR (AUDIT-2026-09-24 GT-3): `mods: []` printed "OK — 0 active rows" and
+        # exited 0, which point E of this module's own docstring says is not a result.
+        return _env.nothing_checked("registry_provenance", "the registry has no active rows")
     print(f"OK — {len(active)} active rows, no guessed identity reached a confident lane, "
           f"every stored id carries a known provenance, round-trip stable.")
     if trusted < len(active):

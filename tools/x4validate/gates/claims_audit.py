@@ -29,6 +29,7 @@ Four outcomes, and the last is the point:
   FAIL        the tier disagrees -- the doc is wrong, or the world moved
   UNRESOLVED  the entity/prop is absent, or the row cannot be read
 """
+import math
 import sqlite3
 import sys
 from pathlib import Path
@@ -107,6 +108,13 @@ def rows():
             yield (n, kind, entity, prop, expected, None, source, tier,
                    f"tolerance {tol!r} is not numeric")
             continue
+        # `float()` accepts 'inf' and 'nan' and negatives. An infinite tolerance PASSES
+        # every value, a NaN or negative one FAILS every value -- a claim that cannot
+        # distinguish right from wrong is unresolved, not checked (AUDIT-2026-09-24 GT-6).
+        if not math.isfinite(tolf) or tolf < 0:
+            yield (n, kind, entity, prop, expected, None, source, tier,
+                   f"tolerance {tol!r} must be a finite number >= 0")
+            continue
         yield n, kind, entity, prop, expected, tolf, source, tier, None
 
 
@@ -163,7 +171,9 @@ def main() -> int:
     if not stale.fresh:
         print(stale.banner("the effective store"), file=sys.stderr)
         print("REFUSING to verify claims against a stale store.", file=sys.stderr)
-        return 5
+        # rc 2 (could not run), not 5: run-gates.sh counts anything but 0 and 2 as
+        # FAIL, so a stale store read as a failed claim (AUDIT-2026-09-24 GT-7).
+        return 2
 
     npass = nfail = nunres = 0
     per_tier = {"vanilla": [0, 0, 0], "effective": [0, 0, 0]}  # pass, fail, unresolved

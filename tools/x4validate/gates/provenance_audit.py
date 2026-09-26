@@ -9,7 +9,11 @@ Signature hunted: the effective value differs from the vanilla file's value, yet
 the store attributes it to `base`. That combination is always a provenance bug.
 
 Run:  uv run python gates/provenance_audit.py
-Exit: 0 clean, 1 any mis-attribution.
+Exit: 0 clean, 1 any mis-attribution, 2 could not judge (no store, a STALE store, or
+nothing comparable).
+
+SCOPE: it catches a changed value still attributed to `base`. It does NOT catch a changed
+value attributed to the WRONG mod -- that needs a per-mod oracle this gate does not have.
 """
 from __future__ import annotations
 
@@ -42,8 +46,13 @@ PROPS = {
 
 def main() -> int:
     if not DB.exists():
-        print(f"no store at {DB} — run `x4effective build` first")
-        return 1
+        # rc 2, not 1: a missing store is a gate that could not run, and run-gates.sh
+        # reads 1 as "found a defect" (AUDIT-2026-09-24 GT-7).
+        print(f"no store at {DB} — run `x4effective build` first", file=sys.stderr)
+        return 2
+    refused = _env.stale_store_refusal(DB, "provenance_audit")
+    if refused is not None:
+        return refused
     con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     cur = con.cursor()
 
@@ -99,6 +108,12 @@ def main() -> int:
     print("=" * 92)
     for k, v in stats.most_common():
         print(f"  {k:<32}{v}")
+    compared = stats["changed by a mod"] + stats["unchanged from vanilla"]
+    if not compared:
+        # A FLOOR. Before 2026-09-24 an empty store, or one whose every row fell into
+        # an uncompared bucket, printed "MIS-ATTRIBUTED: 0" and exited 0 (GT-3).
+        return _env.nothing_checked("provenance_audit",
+                                    "no stored value could be compared with vanilla")
     print(f"\n  MIS-ATTRIBUTED (value != vanilla, yet origin='base'): {len(offenders)}")
     for name, prop, van, eff, vpath in offenders[:30]:
         print(f"     {name}  {prop}: vanilla={van} effective={eff}")

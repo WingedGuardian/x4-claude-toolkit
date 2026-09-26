@@ -21,7 +21,7 @@ that is the price of proving the fast path, and it is paid here rather than by
 the user on every run.
 
 Run:  uv run python gates/xsd_fast_parity.py [--limit N]
-Exit: 0 exact parity, 1 any difference.
+Exit: 0 exact parity, 1 any difference, 2 nothing was compared.
 """
 from __future__ import annotations
 
@@ -71,20 +71,34 @@ def main() -> int:
                   f"(intersection applied)")
 
     files = 0
+    uncompared: list[tuple[str, str, str]] = []
     false_pos, missed = [], []
     for mod in mods:
         for display, root in script_docs(mod):
-            files += 1
             fast = {(f.line, f.message) for f in
                     _xsd.required_attr_findings(root, display, lib)}
-            fnds, _reason = _xsd._validate_doc(etree.ElementTree(root), display, lib)
+            fnds, reason = _xsd._validate_doc(etree.ElementTree(root), display, lib)
+            if reason is not None:
+                # The FULL path did not validate this file (e.g. no bundled schema), so
+                # an empty `full` set is a non-answer. Counting it as agreement made
+                # every unschema'd file read as exact parity (AUDIT-2026-09-24 GT-3).
+                uncompared.append((mod.name, display, str(reason)))
+                continue
+            files += 1
             full = {(f.line, f.message) for f in fnds if REQ in f.message}
             for row in sorted(fast - full):
                 false_pos.append((mod.name, display, row))
             for row in sorted(full - fast):
                 missed.append((mod.name, display, row))
 
-    print(f"\n  script files compared : {files}")
+    print(f"\n  script files compared : {files}"
+          + (f"   (NOT compared -- full validation skipped: {len(uncompared)})"
+             if uncompared else ""))
+    for m, d, why in uncompared[:5]:
+        print(f"     {m}  {d}  {why[:90]}")
+    if not files:
+        return _env.nothing_checked("xsd_fast_parity",
+                                    "no script file was validated by the full schema path")
     print(f"  FALSE POSITIVES (fast says required-missing, schema does not): {len(false_pos)}")
     for m, d, (line, msg) in false_pos[:10]:
         print(f"     {m}  {d}:{line}  {msg[:90]}")

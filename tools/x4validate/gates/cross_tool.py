@@ -56,12 +56,20 @@ from x4validate import _compat, _merge  # noqa: E402
 # real use now calls _env.extensions() where it is needed.
 
 failures: list[str] = []
+#: sections that could not RUN -- a missing or stale store. Kept apart from `failures`:
+#: a section that examined nothing has found no defect, and must not pass either.
+cannot: list[str] = []
 
 
 def note(ok: bool, label: str, detail: str = "") -> None:
     print(f"  {'  ok ' if ok else ' FAIL'}  {label}{('  ' + detail) if detail else ''}")
     if not ok:
         failures.append(f"{label}: {detail}")
+
+
+def not_run(label: str, detail: str) -> None:
+    print(f"  CANNOT {label}  {detail}")
+    cannot.append(f"{label}: {detail}")
 
 
 def run(tool: str, *argv: str) -> tuple[int, str]:
@@ -209,7 +217,13 @@ def check_cross_tool_agreement() -> None:
     try:
         db = _env.effective_db()
     except SystemExit:
-        note(False, "effective store available", "not built")
+        not_run("cross-tool agreement", "no effective store (run `x4effective build`)")
+        return
+    # A STALE store answers for an older engine or modlist, so agreement with it proves
+    # nothing about today's x4compat, and disagreement is not a defect (AUDIT-2026-09-24
+    # GT-6). The refusal text goes to stderr; this line is what the summary counts.
+    if _env.stale_store_refusal(db, "cross_tool") is not None:
+        not_run("cross-tool agreement", "the effective store is stale -- rebuild and re-run")
         return
     report = _compat.analyze(_env.extensions(), config=_merge.Config())
     if not report.collisions:
@@ -420,7 +434,14 @@ def main() -> int:
         print(f"VIOLATIONS: {len(failures)}")
         for f in failures:
             print(f"  - {f}")
+        if cannot:
+            print(f"(and {len(cannot)} section(s) could not run: {'; '.join(cannot)})")
         return 1
+    if cannot:
+        print(f"Every section that RAN holds, but {len(cannot)} could not run:")
+        for c in cannot:
+            print(f"  - {c}")
+        return 2
     print("All cross-tool checks hold.")
     return 0
 

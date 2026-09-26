@@ -210,8 +210,6 @@ def test_gt2_a_command_that_fails_twice_is_not_deterministic_output(monkeypatch,
 
 # ============================================================================ GT-3 floors
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-3: similar_audit has no floor -- 0 pairs "
-                   "parsed (tool printed nothing, rc ignored) exits 0")
 def test_gt3_similar_audit_over_zero_pairs_is_not_a_pass(tmp_path, monkeypatch, capsys):
     _env = import_gate("_env", module_level=False)
     (tmp_path / "ref").mkdir()
@@ -240,8 +238,6 @@ def _store(path: Path, rows: list[tuple] = ()) -> Path:
     return path
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-3: provenance_audit has no floor -- an "
-                   "empty store (0 rows checked) exits 0")
 def test_gt3_provenance_audit_over_an_empty_store_is_not_a_pass(tmp_path, monkeypatch, capsys):
     pa = import_gate("provenance_audit", module_level=False)
     monkeypatch.setattr(pa, "DB", _store(tmp_path / "e.sqlite"))
@@ -250,8 +246,6 @@ def test_gt3_provenance_audit_over_an_empty_store_is_not_a_pass(tmp_path, monkey
     assert rc != 0, f"0 values compared, rc 0:\n{capsys.readouterr().out}"
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-3: registry_provenance has no floor -- "
-                   "0 active rows prints OK and exits 0")
 def test_gt3_registry_provenance_over_zero_rows_is_not_a_pass(tmp_path, monkeypatch, capsys):
     rp = import_gate("registry_provenance", module_level=False)
     live = tmp_path / "modlist.yaml"
@@ -264,8 +258,6 @@ def test_gt3_registry_provenance_over_zero_rows_is_not_a_pass(tmp_path, monkeypa
     assert rc != 0, f"0 active rows audited, rc 0:\n{capsys.readouterr().out}"
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-3: xsd_fast_parity drops _validate_doc's "
-                   "skip reason, so files with NO schema count as exact parity")
 def test_gt3_xsd_parity_over_files_with_no_schema_is_not_parity(tmp_path, monkeypatch, capsys):
     xfp = import_gate("xsd_fast_parity", module_level=False)
     ext, ref = tmp_path / "ext", tmp_path / "ref"
@@ -278,8 +270,11 @@ def test_gt3_xsd_parity_over_files_with_no_schema_is_not_parity(tmp_path, monkey
     monkeypatch.setattr(xfp._merge, "Config", lambda *a, **k: types.SimpleNamespace(reference=ref))
     rc = xfp.main()
     out = capsys.readouterr().out
-    assert "script files compared : 1" in out, f"fixture premise moved:\n{out}"
-    assert rc != 0, f"the only file had no schema to compare against, and it read as parity:\n{out}"
+    # The premise is that the ONE file reached the gate and had no schema. Before the fix
+    # it was counted as "compared : 1"; a file the full path never validated is not a
+    # comparison, so it is now reported as skipped and the denominator is 0.
+    assert "full validation skipped: 1" in out, f"fixture premise moved:\n{out}"
+    assert rc == 2, f"the only file had no schema to compare against, and it read as parity:\n{out}"
 
 
 # ============================================================================ GT-4 rc handling
@@ -427,8 +422,6 @@ def test_gt5_a_quoted_exemption_marker_is_not_an_exemption(tmp_path):
 
 # ============================================================================ GT-6
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-6: provenance_audit never asks whether the "
-                   "store is fresh, and audits a STALE one as current (rc 0)")
 def test_gt6_provenance_audit_refuses_a_stale_store(tmp_path, monkeypatch, capsys):
     pa = import_gate("provenance_audit", module_level=False)
     from x4validate import _effective
@@ -445,8 +438,6 @@ def test_gt6_provenance_audit_refuses_a_stale_store(tmp_path, monkeypatch, capsy
     assert rc == 2, f"a STALE store was audited as current, rc {rc}:\n{capsys.readouterr().out}"
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-6: cross_tool never asks whether the store "
-                   "is fresh before scoring x4compat against it")
 def test_gt6_cross_tool_refuses_a_stale_store(tmp_path, monkeypatch, capsys):
     ct = import_gate("cross_tool", module_level=False)
     from x4validate import _compat, _effective
@@ -467,8 +458,6 @@ def test_gt6_cross_tool_refuses_a_stale_store(tmp_path, monkeypatch, capsys):
     assert ct.failures or "stale" in out.lower(), f"scored against a STALE store as if current:\n{out}"
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-6: claims_audit accepts tolerance `inf` "
-                   "(every value passes) and a negative tolerance (every value fails)")
 @pytest.mark.parametrize("tol", ["inf", "-1"])
 def test_gt6_claims_audit_rejects_a_meaningless_tolerance(tmp_path, monkeypatch, tol):
     ca = import_gate("claims_audit", module_level=False)

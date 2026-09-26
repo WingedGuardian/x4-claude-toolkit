@@ -106,6 +106,47 @@ def effective_db() -> Path:
     return Path(path)
 
 
+def stale_store_refusal(db: Path, who: str) -> int | None:
+    """rc 2 (CANNOT) when the effective store no longer describes the installed world,
+    else None. ONE implementation, because four gates audited whatever older engine or
+    modlist built the store and reported the result as current (AUDIT-2026-09-24 GT-6):
+    a regression in the merge stayed invisible until someone happened to rebuild, and a
+    stale store's disagreements read as tool defects. `claims_audit` already refused; it
+    returned 5, which run-gates.sh counts as FAIL rather than could-not-run (GT-7).
+
+    UNKNOWN freshness (no fingerprint) refuses too -- absent is never fresh.
+    """
+    import sqlite3
+
+    from x4validate import _effective
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        print(f"REFUSING ({who}): could not open the effective store {db}: {exc}",
+              file=sys.stderr)
+        return 2
+    try:
+        verdict = _effective.store_freshness(con)
+    finally:
+        con.close()
+    if verdict.fresh:
+        return None
+    print(verdict.banner("the effective store"), file=sys.stderr)
+    print(f"REFUSING ({who}): the store describes a world that has moved on, so any "
+          "result here would describe that world, not this one. Rebuild it "
+          "(`x4effective build`) and re-run.", file=sys.stderr)
+    return 2
+
+
+def nothing_checked(who: str, what: str) -> int:
+    """rc 2 for a run whose denominator is ZERO. Several gates printed a table of zeroes
+    and exited 0 -- 0 examined and 0 wrong is not agreement, it is a non-answer
+    (AUDIT-2026-09-24 GT-3). Returned, not raised, so callers keep their own flow."""
+    print(f"REFUSING ({who}): {what} -- 0 items were examined, so there is nothing to "
+          "pass. A NON-ANSWER, not a clean run.", file=sys.stderr)
+    return 2
+
+
 def oracle_log() -> Path:
     """A pinned debug.txt capture. Never committed — see the module docstring.
 

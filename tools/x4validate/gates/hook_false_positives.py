@@ -552,11 +552,15 @@ def run(argv: list[str]) -> int:
                   "nothing guarded against a loosening.", file=sys.stderr)
             return 2
         if moved_control:
-            print("REFUSING: a fix that turns an ALLOW into anything is a regression, not a "
+            # rc 1, not 2. This is a FINDING -- the gate's own words call it a
+            # regression -- and run-gates.sh reads 2 as "could not run", so a real
+            # loosening/tightening regression was being filed as an instrument
+            # problem (AUDIT-2026-09-24 GT-4).
+            print("FAIL: a fix that turns an ALLOW into anything is a regression, not a "
                   "delta. Moved:", file=sys.stderr)
             for h in moved_control[:5]:
                 print(f"    {now[h][0]}  {now[h][1][:70]}", file=sys.stderr)
-            return 2
+            return 1
         return 0
 
     uniq = collect_corpus()

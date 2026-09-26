@@ -19,6 +19,7 @@ import pathlib
 import re
 
 import pytest
+from conftest import import_gate
 
 GATES = pathlib.Path(__file__).resolve().parents[1] / "gates"
 
@@ -213,7 +214,23 @@ def test_consistency_audit_REFUSES_when_it_cross_checked_NOTHING():
         pytest.skip("the gate refused earlier for want of a configured store; the rc "
                     "and crash checks above still ran")
     assert r.returncode == 2, (r.returncode, r.stdout[-400:])
-    assert "cross-checked" in (r.stdout + r.stderr)
+    # A STALE store is refused BEFORE sampling (AUDIT-2026-09-24 GT-6) -- also rc 2, a
+    # non-answer. Which refusal fired depends on this machine's store, so the floor
+    # itself is pinned hermetically by the twin below, never by skipping here.
+    assert "cross-checked" in (r.stdout + r.stderr) or "STALE" in r.stderr, r.stderr[-400:]
+
+
+def test_consistency_audit_samples_floor_is_reachable_with_a_fresh_store(monkeypatch, capsys):
+    """The twin: freshness forced to pass and zero rows sampled, in-process, so the
+    0-cross-checked floor is exercised on EVERY machine rather than only where the real
+    store happens to be fresh."""
+    ca = import_gate("consistency_audit", module_level=False)
+    monkeypatch.setattr(ca._env, "stale_store_refusal", lambda db, who: None)
+    monkeypatch.setattr(ca, "store_rows", lambda: [])
+    assert ca.main() == 2
+    captured = capsys.readouterr()
+    assert "values cross-checked : 0" in captured.out
+    assert "REFUSING" in captured.err
 
 
 def test_the_four_floors_are_REACHABLE_not_just_present():
