@@ -45,3 +45,7 @@ tests/corpus/
 # Per-shape rates of gates/instrument_hygiene.py over THIS machine's session transcripts;
 # another clone has other transcripts, so a committed baseline would be wrong there.
 .instrument-hygiene-baseline.json
+
+# gates/schema_sweep.py per-mod rows (AUDIT-2026-09-24 GT-5): they describe THIS
+# install's modlist, so a committed baseline would be wrong for every other clone.
+.schema-sweep-baseline.json

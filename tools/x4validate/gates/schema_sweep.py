@@ -23,12 +23,30 @@ change that silences a real finding and adds a spurious one. These are the ones
 with independent evidence behind them, so silencing any of them is a regression
 no matter what the totals say.
 
-Run: `uv run python gates/schema_sweep.py`
+PER-MOD BASELINE (AUDIT-2026-09-24 GT-5, design default, added 2026-09-25). The
+totals above can hold while findings MOVE between mods -- one mod gains three
+gating findings as another loses three, and every pinned number reads UNCHANGED.
+That happened for real on 2026-09-06 (`mods flagged` and `pairs` unchanged while one
+mod left and another arrived), and only a hand diff of the per-mod table caught it.
+So every mod's (gating, advisory, suppressed, pairs, NOT checked) row is recorded
+in a LOCAL baseline and compared PER ITEM; a mod present in only one of the two
+runs is named too. The file is machine-local and gitignored -- it describes this
+install's modlist, like `.obtainability-baseline.json`.
+
+Run: `uv run python gates/schema_sweep.py [--record]`
+Exit: 0 totals, KNOWN_REAL and every per-mod row match
+      1 any of them moved (a finding outranks everything below)
+      2 no per-mod baseline, or one this version cannot read -- the per-item
+        comparison did not happen, so a clean total is NOT a pass. `--record`
+        writes it (after you have attributed the current per-mod table).
 """
 
 from __future__ import annotations
 
+import json
 import re
+import sys
+from pathlib import Path
 
 import _env
 
@@ -440,6 +458,45 @@ KNOWN_REAL = {
 
 _RE_SUP = re.compile(r"; (\d+) enumeration failure")
 
+RECORD = "--record" in sys.argv
+BASELINE = Path(__file__).resolve().parent.parent / ".schema-sweep-baseline.json"
+#: Bump when the row shape changes. A baseline of another format is REFUSED (rc 2),
+#: never read with guessed fields.
+BASELINE_FORMAT = 1
+FIELDS = ("gating", "advisory", "suppressed", "pairs", "not_checked")
+
+
+def load_baseline() -> tuple[dict[str, dict[str, int]] | None, str]:
+    """(per-mod rows, "") or (None, why the comparison cannot run)."""
+    if not BASELINE.is_file():
+        return None, f"no per-mod baseline at {BASELINE.name}"
+    try:
+        data = json.loads(BASELINE.read_bytes().decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        return None, f"{BASELINE.name} exists but cannot be read ({exc})"
+    if not isinstance(data, dict) or data.get("_format") != BASELINE_FORMAT \
+            or not isinstance(data.get("mods"), dict):
+        return None, (f"{BASELINE.name} is not a format-{BASELINE_FORMAT} per-mod baseline "
+                      f"(found _format={data.get('_format') if isinstance(data, dict) else '?'})")
+    return data["mods"], ""
+
+
+def compare_per_mod(base: dict[str, dict[str, int]],
+                    now: dict[str, dict[str, int]]) -> list[str]:
+    """Every per-mod difference, named. Items, never totals."""
+    out = []
+    for name in sorted(set(base) | set(now)):
+        b, n = base.get(name), now.get(name)
+        if b is None:
+            out.append(f"{name}: not in the baseline (new since it was recorded): {n}")
+        elif n is None:
+            out.append(f"{name}: in the baseline, absent now (was {b})")
+        else:
+            moved = [f"{f} {b.get(f)} -> {n.get(f)}" for f in FIELDS if b.get(f) != n.get(f)]
+            if moved:
+                out.append(f"{name}: " + ", ".join(moved))
+    return out
+
 
 def main() -> int:
     ext = _env.extensions()
@@ -450,6 +507,7 @@ def main() -> int:
     pairs = err = info = sup = skipped = 0
     skip_why: dict[str, int] = {}
     per_mod: dict[str, tuple[int, int]] = {}
+    rows: dict[str, dict[str, int]] = {}          # EVERY mod, for the per-item baseline
     for d in mods:
         report = _check.Report()
         _check.check_effective_schema(d, cfg, report)
@@ -461,16 +519,21 @@ def main() -> int:
             skip_why[s.why.split(":")[0][:60]] = skip_why.get(s.why.split(":")[0][:60], 0) + 1
         e = sum(1 for f in report.findings if f.severity == "error")
         i = sum(1 for f in report.findings if f.severity == "info")
+        mp = ms = 0
         for note in report.notes:
             if note.startswith("effective-schema:"):
-                pairs += int(note.split()[1])
+                mp += int(note.split()[1])
             m = _RE_SUP.search(note)
             if m:
-                sup += int(m.group(1))
+                ms += int(m.group(1))
+        pairs += mp
+        sup += ms
         err += e
         info += i
         if e or i:
             per_mod[d.name] = (e, i)
+        rows[d.name] = {"gating": e, "advisory": i, "suppressed": ms, "pairs": mp,
+                        "not_checked": len(report.skipped)}
 
     print(f"{len(mods)} non-DLC mods | {pairs} (mod,file) pairs validated "
           f"| {skipped} NOT checked")
@@ -501,6 +564,25 @@ def main() -> int:
         elif got != (we, wi):
             fail.append(f"{name}: {got[0]} gating/{got[1]} advisory, expected {we}/{wi} ({why})")
 
+    # --- per-item: findings MOVING between mods cannot net to zero here ---------
+    refuse = ""
+    if RECORD:
+        blob = json.dumps({"_format": BASELINE_FORMAT, "mods": rows}, indent=1,
+                          sort_keys=True) + "\n"
+        BASELINE.write_bytes(blob.encode("utf-8"))
+        print(f"\nrecorded per-mod baseline -> {BASELINE.name} ({len(rows)} mods)")
+    else:
+        base, why = load_baseline()
+        if base is None:
+            refuse = why
+        else:
+            drift = compare_per_mod(base, rows)
+            print(f"\nper-mod vs {BASELINE.name}: {len(drift)} row(s) moved "
+                  f"(of {len(set(base) | set(rows))} mods in either run)")
+            for line in drift:
+                print(f"   ~ {line}")
+            fail.extend(f"per-mod: {line}" for line in drift)
+
     print()
     if fail:
         print("FAIL — the check no longer matches its own measurement:")
@@ -514,9 +596,14 @@ def main() -> int:
               "PER-MOD table above, not the totals: on 2026-09-06 both `mods flagged` and "
               "`pairs` read UNCHANGED while one mod left the install and another arrived.")
         return 1
+    if refuse:
+        print(f"NOT CHECKED PER MOD: {refuse}. The totals and KNOWN_REAL match, but totals "
+              "can hold while findings move between mods, so this is not a pass. Attribute "
+              "the per-mod table above, then run with --record.", file=sys.stderr)
+        return 2
     print("OK — matches the recorded baseline exactly (see the re-measurement table "
-          "above the constants), and all %d independently-evidenced defects are "
-          "still reported." % len(KNOWN_REAL))
+          "above the constants), every per-mod row matches, and all %d "
+          "independently-evidenced defects are still reported." % len(KNOWN_REAL))
     return 0
 
 

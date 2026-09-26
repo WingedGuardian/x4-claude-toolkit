@@ -563,6 +563,59 @@ def test_gt5_a_quoted_exemption_marker_is_not_an_exemption(tmp_path):
     assert "F999" in missing, f"ok={ok} missing={missing}"
 
 
+def _schema_sweep(monkeypatch, tmp_path, per_mod: dict[str, tuple[int, int]]):
+    """schema_sweep over synthetic mods: name -> (gating, advisory). The totals and
+    KNOWN_REAL are pinned to whatever these rows sum to, so ONLY the per-mod
+    comparison can tell two runs apart."""
+    sw = import_gate("schema_sweep", module_level=False)
+    from x4validate import _check
+    ext = tmp_path / "ext"
+    for name in per_mod:
+        (ext / name).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(sw._env, "extensions", lambda: ext)
+    monkeypatch.setattr(sw._merge, "Config", lambda *a, **k: None)
+
+    def fake(mod, cfg, report):
+        e, i = per_mod[mod.name]
+        report.findings += [_check.Finding("error", "xsd", "e")] * e
+        report.findings += [_check.Finding("info", "xsd", "i")] * i
+        report.notes.append("effective-schema: 1 pair(s)")
+    monkeypatch.setattr(sw._check, "check_effective_schema", fake)
+    monkeypatch.setattr(sw, "EXPECT_PAIRS", len(per_mod))
+    monkeypatch.setattr(sw, "EXPECT_ERR", sum(e for e, _ in per_mod.values()))
+    monkeypatch.setattr(sw, "EXPECT_INFO", sum(i for _, i in per_mod.values()))
+    monkeypatch.setattr(sw, "EXPECT_SUPPRESSED", 0)
+    monkeypatch.setattr(sw, "EXPECT_SKIPPED", 0)
+    monkeypatch.setattr(sw, "EXPECT_MODS_FLAGGED", sum(1 for r in per_mod.values() if any(r)))
+    monkeypatch.setattr(sw, "KNOWN_REAL", {})
+    monkeypatch.setattr(sw, "BASELINE", tmp_path / "schema-baseline.json")
+    return sw
+
+
+def test_gt5_schema_sweep_findings_moving_between_mods_do_not_net_to_zero(tmp_path, monkeypatch):
+    sw = _schema_sweep(monkeypatch, tmp_path, {"moda": (3, 1), "modb": (1, 1)})
+    monkeypatch.setattr(sw, "RECORD", True)
+    assert sw.main() == 0
+    monkeypatch.setattr(sw, "RECORD", False)
+    assert sw.main() == 0, "an unchanged per-mod table must pass"
+    # Same totals (4 gating, 2 advisory, 2 flagged), two findings moved from moda to modb.
+    sw = _schema_sweep(monkeypatch, tmp_path, {"moda": (1, 1), "modb": (3, 1)})
+    monkeypatch.setattr(sw, "RECORD", False)
+    assert sw.main() == 1, "every total held while two gating findings changed mods"
+
+
+@pytest.mark.parametrize("content", [None, b"{ not json", b'{"mods": {}}',
+                                     b'{"_format": 99, "mods": {}}'])
+def test_gt5_schema_sweep_without_a_readable_per_mod_baseline_is_not_a_pass(
+        tmp_path, monkeypatch, capsys, content):
+    sw = _schema_sweep(monkeypatch, tmp_path, {"moda": (3, 1)})
+    monkeypatch.setattr(sw, "RECORD", False)
+    if content is not None:
+        sw.BASELINE.write_bytes(content)
+    assert sw.main() == 2
+    assert "--record" in capsys.readouterr().err
+
+
 # ============================================================================ GT-6
 
 def test_gt6_provenance_audit_refuses_a_stale_store(tmp_path, monkeypatch, capsys):
