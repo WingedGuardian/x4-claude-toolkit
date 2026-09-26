@@ -74,6 +74,7 @@ def _ware_from_el(el: etree._Element) -> Ware | None:
 def effective_wares(ext_dir: Path, config: _merge.Config,
                     exclude: Path | None = None, scope: str = "installed",
                     patch_time: bool = False,
+                    notes: list[str] | None = None,
                     ) -> "tuple[dict[str, Ware], etree._Element | None]":
     """Every ware in the effective tree = base + DLC + the *scope* mods (load order).
 
@@ -116,6 +117,13 @@ def effective_wares(ext_dir: Path, config: _merge.Config,
     # "which mods count" stops being visible where it is chosen (CLAUDE.md #24).
     if scope == "active":
         mods = _registry.mods("active", [ext_dir], dlc_config=config)
+        # *notes* receives what the engine leaves out of the resolution tree: a
+        # selector aimed at a node only that mod adds reads "matched nothing"
+        # below, which is right for the engine and must not be unexplained (F139).
+        left_out = _registry.dropped_note(mods)
+        if left_out and notes is not None:
+            notes.append(f"NOT in the resolution tree (the engine does not load it): "
+                         f"{left_out}")
     else:
         mods = _registry.mods("installed", [ext_dir])
     if exclude is not None:
@@ -587,9 +595,13 @@ def main(argv: list[str] | None = None) -> int:
     # The comparison POOL is everything installed; the tree the candidate's
     # selectors resolve against must NOT contain the candidate.
     eff, _ = effective_wares(ext_dir, config)                       # pool: installed
+    notes: list[str] = []
     _, eff_tree = effective_wares(ext_dir, config, exclude=candidate,
                                   scope="active",
-                                  patch_time=True)   # resolution: active, as of its position
+                                  patch_time=True,   # resolution: active, as of its position
+                                  notes=notes)
+    for n in notes:
+        print(n, file=sys.stderr)
     # COULD-NOT-CHECK IS rc 2, NEVER A CONFIDENT ZERO AND NEVER A TRACEBACK.
     # `_merge.overlay_root` now RAISES on a malformed document when the caller passes
     # no `skipped` channel -- its own "NO CHANNEL, NO SWALLOW" rule, which its

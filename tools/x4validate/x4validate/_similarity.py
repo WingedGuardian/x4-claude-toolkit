@@ -248,7 +248,8 @@ class _FixedDlcConfig(_merge.Config):
 
 def _collect_all(reference: Path, ext_dir: Path,
                  unreadable: list | None = None,
-                 dlc_dirs: list[Path] | None = None) -> list[ShipVector]:
+                 dlc_dirs: list[Path] | None = None,
+                 notes: list[str] | None = None) -> list[ShipVector]:
     """One vector per ship macro, scored at its EFFECTIVE (merged) values.
 
     AUDIT-2026-09-24 AN-6. This used to read each definer's RAW file, and a raw
@@ -265,6 +266,10 @@ def _collect_all(reference: Path, ext_dir: Path,
     effective file is one document), labelled with the last full-file supplier:
     base < DLC < active mods in load order. A ship only an installed-but-DISABLED mod
     defines is merged from that mod alone -- scored as it would be if enabled.
+
+    *notes* receives the `_registry.dropped_note` of the ACTIVE read: a mod the engine
+    leaves out (a required dependency missing, say) does not layer onto anyone's ship
+    values, and that must be said, not silently absorbed (BLIND-SPOTS F139).
     """
     from x4validate import _effective, _registry
     if dlc_dirs is None:
@@ -279,6 +284,9 @@ def _collect_all(reference: Path, ext_dir: Path,
     config = _FixedDlcConfig(reference=reference, fixed_dlc=tuple(dlc_dirs))
 
     active = _effective.active_mods([ext_dir]) if ext_dir.is_dir() else []
+    left_out = _registry.dropped_note(active)
+    if left_out and notes is not None:
+        notes.append(f"NOT layered onto any ship (the engine does not load it): {left_out}")
     ordered = _effective.ordered_overlays(active)
     folder_to_path = {m["folder"]: p for m, p in ordered}
     touch = _effective.build_touch_map(ordered)
@@ -452,7 +460,10 @@ def main(argv: list[str] | None = None) -> int:
         "set X4_GAME (or X4_EXTENSIONS), or pass --ext-dir")
 
     unreadable: list = []
-    vectors = _collect_all(ref, ext, unreadable)
+    notes: list[str] = []
+    vectors = _collect_all(ref, ext, unreadable, notes=notes)
+    for n in notes:
+        print(n, file=sys.stderr)
     pairs = find_similar(vectors, threshold=args.threshold,
                          exclude_same_source=args.cross_mod_only)
     if args.candidate:

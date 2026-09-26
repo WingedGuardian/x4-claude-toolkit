@@ -217,7 +217,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F136 | the per-edit hook's `x4validate --file` and the full run gave DIFFERENT verdicts on the same file, and `--file` silently dropped flags | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | a nested patch for an uninstalled target: ERROR rc 1 under `--file`, INFO rc 0 in the full run; `--file` printed "OK: no issues found" with no denominator | both paths share one sel check; `--file` states its denominator and lists every check it did not run; a dropped flag is a degraded skip (exit 3) |
 | F137 | BaseX staging read an EMPTY packed-DLC answer as a failure and fell back to a hard-coded mini-DLC pair, indexing both mini-DLC twice | **DEFECT (measured)** · ✅ FIXED 2026-09-25 | 142 documents (deep-equal duplicates at identical paths) indexed twice in x4raw | the answer is used as given; a failure to ask refuses rc 2. A database built before the fix keeps its duplicates until rebuilt |
 | F138 | `register_rederivation` credits an entry to ANY existing path it cites, including a path the entry quotes as EVIDENCE of the defect rather than as a check of the fix | **SCOPE (measured)** · ⏳ OPEN | 2 of the 6 entries reviewed for AUDIT DC-3 (F60, F73) were "covered" only by such a mention | open. The rest of the register's covered entries are NOT classified |
-| F139 | `mods("active")` records a mod it leaves out (a REQUIRED dependency missing, disabled or cyclic; an unreadable manifest) only into a `dropped=` list the CALLER must pass, and no active-scope caller passed one | **SCOPE (measured)** · ◐ PARTLY FIXED 2026-09-26 | 0 of 125 installed mods excluded on this install (MEASURED 2026-09-26), so today's cost is zero -- the #23 shape | Tier B, x4compat, `x4effective build`, BaseX build-effective now disclose each exclusion; **16 of 20** active-scope call sites still do not (see the entry) |
+| F139 | `mods("active")` records a mod it leaves out (a REQUIRED dependency missing, disabled or cyclic; an unreadable manifest) only into a `dropped=` list the CALLER must pass, and no active-scope caller passed one | **SCOPE (measured)** · ✅ FIXED 2026-09-26 | 0 of 125 installed mods excluded on this install (MEASURED 2026-09-26), so today's cost is zero -- the #23 shape; 16 of 20 active-scope call sites silent before `f634e30` | `mods()` always returns its exclusions (`ModList.dropped`); `dropped_note` is the one line; all 20 sites disclose, held by an AST ban with an EMPTY allowlist (`f634e30`). Also fixed: an engine-excluded nested-patch target was called "DISABLED" |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -7338,7 +7338,7 @@ MENTION" only in the sense that the file must EXIST — existence is what it che
 Open: classify every covered entry's crediting path (check vs mention) before deciding whether
 the fix is a citation grammar (e.g. only paths on a `RE-DERIVED BY` line count) or a baseline.
 
-## F139 — the active mod set's exclusions are recorded only if the caller asks · **SCOPE (measured)** · confidence 95% · ◐ PARTLY FIXED 2026-09-26
+## F139 — the active mod set's exclusions are recorded only if the caller asks · **SCOPE (measured)** · confidence 95% · ✅ FIXED 2026-09-26
 
 **Found 2026-09-26 (AUDIT-2026-09-24 final review).** `_registry.mods("active")` models the
 engine's load decision (MEASURED by the load-order probe): a mod whose REQUIRED dependency is
@@ -7358,6 +7358,44 @@ gates `consistency_audit`, `load_order_oracle`, `obtainability_audit`, `oracle_i
 excluded on this install (MEASURED 2026-09-26) -- which is exactly where a wrong denominator
 hides (CLAUDE.md #23), and it grows with every user's broken dependency.
 
-**RE-DERIVED BY:** `tests/test_active_exclusions_disclosed.py` (one excluded mod; each of the
-four surfaced callers must name it and its reason; a twin with nothing excluded says nothing).
+**FIXED 2026-09-26 in `f634e30`** (the entry above is the PARTLY FIXED state, kept as
+history). `mods()` now ALWAYS collects its exclusions and returns them on the result, a
+`ModList` (a `list` subclass) carrying `.dropped`; `dropped=` still receives the same records.
+`_registry` still prints nothing. One pure formatter, `_registry.dropped_note()`, and
+`left_out()` (folder -> reason) for a caller that must classify; `_check.note_not_loaded()`
+is the Report sink, deduplicated across checks so one cause reads as one line. Each of the 16
+routes it to the sink it already had: a NOT CHECKED skip (`_check` variant sibling check and
+nested-script scope, `_savecli`), stderr (`_effectivecli` dump, `_similarity`, `_stats`,
+`consistency_audit`, `obtainability_audit`, `oracle_reverse`, `similar_audit`), stdout
+(`_livecli`, `load_order_oracle`, `oracle_index`, `tool_properties`), and the x4live
+no-connection refusal via the new `_livepipe.helper_deployment()`. The two lazy gate caches
+say it once, when the cache is built.
+
+**A second defect found doing it:** `_check._disabled_folders` was `installed - active`, so a
+nested patch aimed at an ENABLED mod the engine leaves out read "installed but DISABLED" -- a
+claim about a switch nobody touched. `_inactive_folders()` keeps the two reasons apart and the
+message now names the dependency. And `helper_deployment()` answers False with the reason, not
+the "could not look" None, when mods were found but none of them load.
+
+MEASURED: re-derived population by AST (`_registry.mods` with literal `"active"`,
+`active_mods`) over `x4validate/`, `gates/`, `tools/basex/`: 21 calls = 20 sites + the
+`_effective.active_mods` wrapper, exactly the 16 silent sites named above. New tests: 22 of 29
+in the file failed before the fix, 29 of 29 pass after. E2E on a scratch install
+(`better_trade_hub` requiring an absent `sn_mod_support_apis`): `x4validate --tier b`,
+`x4stats wares`, `x4effective dump` and `x4similar` each print the line naming the mod and the
+dependency; the twin with the dependency installed prints none (x4stats and x4effective
+dump re-run: 0 matching lines in each).
+
+The 5%: the AST ban proves each function REACHES the channel, not that what it reaches is
+printed -- that half rests on the one behavioural test per site. `_registry.py` is an engine
+source, so this moves the freshness engine axis: stores built before it read STALE.
+
+**RE-DERIVED BY:** `tests/test_active_exclusions_disclosed.py` --
+`test_every_active_scope_caller_discloses` (the AST ban, EMPTY allowlist) and
+`test_the_ban_can_fail`; `test_mods_ALWAYS_carries_its_exclusions_without_being_asked`,
+`test_dropped_note_is_None_when_nothing_was_left_out`;
+`test_F139_an_engine_excluded_target_is_NOT_called_disabled` and its twin (the
+`_inactive_folders` site); 15 `test_F139_*_discloses`, one per other former silent site; the
+four original
+`test_*_discloses_the_excluded_mod` tests and the Tier B twin.
 

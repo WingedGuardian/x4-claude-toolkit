@@ -129,9 +129,15 @@ def cmd_extensions(path: str | None, scope: str, out=None) -> int:
     # The whole defect behind CLAUDE.md #24 was that a caller never had to say which
     # world it meant, so a reader could not tell either -- and comparing the engine's
     # inventory against the wrong population is exactly this tool's failure mode.
+    left_out = None
     if scope == "active":
-        ours = {m["id"]: m for m in _registry.mods("active")}
+        active = _registry.mods("active")
+        ours = {m["id"]: m for m in active}
         theirs = {e["id"]: e for e in enabled}
+        # An ENABLED mod our model says the engine will not load shows up below as
+        # "the engine listed, our registry did not" -- the engine's list is an
+        # inventory with an enabled flag, not the load set. Say why (F139).
+        left_out = _registry.dropped_note(active)
     else:
         ours = {m["id"]: m for m in _registry.mods("installed")}
         theirs = {e["id"]: e for e in mods}
@@ -148,6 +154,8 @@ def cmd_extensions(path: str | None, scope: str, out=None) -> int:
               file=out)
         for i in only_engine:
             print(f"      + {i}", file=out)
+    if left_out:
+        print(f"\n    NOT LOADED by our model of the engine: {left_out}", file=out)
     if only_ours:
         print(f"\n    our registry listed, the engine did not ({len(only_ours)}):",
               file=out)

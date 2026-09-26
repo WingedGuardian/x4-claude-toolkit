@@ -114,6 +114,11 @@ def all_ship_macros() -> dict[tuple, dict]:
 #: ACTIVE mod in load order. `build_effective` skips an overlay that does not ship the
 #: file and applies a nested mod-on-mod patch itself, so no touch map is needed.
 _ACTIVE = _registry.mods("active", [EXT])
+if _registry.dropped_note(_ACTIVE):
+    # A ship only that mod patches is scored unpatched here, as in the engine -- NAMED
+    # so a disagreement with x4similar has a thread to pull (F139).
+    print(f"NOT layered (our model: the engine does not load it): "
+          f"{_registry.dropped_note(_ACTIVE)}", file=sys.stderr)
 _ACTIVE_ORDER = [Path(m["path"]) for f in _loadorder.compute_load_order(_ACTIVE)
                  for m in _ACTIVE if m["folder"] == f]
 _ACTIVE_NAMES = {p.name.lower() for p in _ACTIVE_ORDER}

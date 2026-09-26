@@ -35,8 +35,13 @@ Numbers below are taken from the commit that made the change.
   default); two folders sharing one id both load. Installed DLC count as dependency
   providers, taken from the configured reference and the packed DLC of the install -- so
   `--ext-dir <a folder holding no ego_dlc_*>` no longer silently drops every mod that needs
-  a DLC. Tier B, x4compat, `x4effective build` and BaseX build-effective NAME each mod left
-  out and why; the other active-scope callers do not yet (BLIND-SPOTS F139).
+  a DLC. **Every tool and gate that uses this set now NAMES each mod left out and why**
+  (BLIND-SPOTS F139): Tier B, x4compat and the variant / nested-script checks as a NOT
+  CHECKED line, x4save check likewise, `x4effective build`/`dump`, x4similar, x4stats and
+  BaseX build-effective on stderr, `x4live extensions` and the x4live no-connection refusal
+  in their output, and the seven gates that read it. Previously 16 of the 20 call sites said
+  nothing. A nested patch aimed at a mod the engine leaves out for a missing dependency is
+  no longer described as aimed at a "DISABLED" mod -- it names the dependency.
 - **Tier B, x4compat and x4stats place the mod under test by ONE rule**: the installed
   copy's folder name when it matches by folder or id (case-insensitive), else its own folder
   name; its dependencies from the copy under test; the installed copy left out. Tier B used

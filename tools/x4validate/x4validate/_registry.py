@@ -277,8 +277,57 @@ def profile_flag(value: str | None) -> bool:
 MOD_SCOPES = ("active", "installed")
 
 
+class ModList(list):
+    """What :func:`mods` returns: the mod dicts, PLUS every mod the read left out.
+
+    ``.dropped`` holds one record per exclusion, ``"<folder>: <why>"`` -- a manifest
+    that will not parse, or (scope "active") a mod the ENGINE will not load because a
+    REQUIRED dependency is missing, disabled or cyclic. It rides on the result so a
+    caller cannot receive the narrowed set without its exclusions (BLIND-SPOTS F139:
+    when they travelled only through an opt-in ``dropped=`` list, 16 of 20
+    active-scope callers never asked). Render it with :func:`dropped_note`, or
+    :func:`left_out` where a caller must classify per folder.
+
+    A plain ``list`` subclass, so every existing consumer (iteration, ``len``,
+    comprehension, JSON) is unchanged; a slice or comprehension is a plain list and
+    drops the attribute, which is why callers read it off the value `mods()` returned.
+    """
+
+    def __init__(self, items=(), dropped=()):
+        super().__init__(items)
+        self.dropped: list[str] = list(dropped)
+
+
+def left_out(mod_list) -> dict[str, str]:
+    """``{folder: why}`` for every mod *mod_list* (a :func:`mods` result) left out.
+
+    Works on any list: one without ``.dropped`` (a test stub, a filtered copy) has
+    left nothing out that it can say, so the answer is ``{}``. A Windows folder name
+    cannot contain ``:``, so the first ``": "`` always ends the folder.
+    """
+    out: dict[str, str] = {}
+    for rec in getattr(mod_list, "dropped", ()) or ():
+        folder, _, why = rec.partition(": ")
+        out[folder] = why
+    return out
+
+
+def dropped_note(mod_list) -> str | None:
+    """The ONE-LINE disclosure of what *mod_list* left out, or None if nothing.
+
+    Pure -- this module is an engine source and carries no CLI output
+    (`tests/test_engine_sources_carry_no_cli.py`); every caller routes the line to
+    the sink it already has (stderr, a gate note, a Report skip).
+    """
+    recs = list(getattr(mod_list, "dropped", ()) or ())
+    if not recs:
+        return None
+    return (f"{len(recs)} installed mod(s) left out of the mod set this run models "
+            f"-- {'; '.join(recs)}")
+
+
 def mods(scope: str, dirs: list[Path] | None = None,
-         dropped: list[str] | None = None, *, dlc_config=None) -> list[dict]:
+         dropped: list[str] | None = None, *, dlc_config=None) -> ModList:
     """The mod set, for an EXPLICITLY NAMED *scope* — see :data:`MOD_SCOPES`.
 
     *scope* is positional and required on purpose. A default would just recreate
@@ -287,6 +336,10 @@ def mods(scope: str, dirs: list[Path] | None = None,
 
     Prefer this over calling :func:`scan_installed` directly; that is the raw
     disk reader and `tests/test_mod_scope_is_explicit.py` enforces the boundary.
+
+    Returns a :class:`ModList`: the mods, plus ``.dropped`` -- every mod this read
+    left out and why. A caller that renders anything must disclose it
+    (:func:`dropped_note`); *dropped*, if passed, receives the same records.
 
     ⚠ NEITHER scope includes the DLC. `ego_dlc_*` is skipped as base-game
     content, not a mod to triage (see :func:`scan_installed`), and enumerating it
@@ -311,39 +364,27 @@ def mods(scope: str, dirs: list[Path] | None = None,
         raise ValueError(
             f"mod scope must be one of {MOD_SCOPES}, got {scope!r}. "
             f"'active' = what the engine will load; 'installed' = what is on disk.")
-    # ⚠ A DROP HERE IS STILL SILENT AT 17 OF 19 CALL SITES, and that is recorded
-    # rather than fixed. A mod whose content.xml will not parse is dropped, and only
-    # `_modlist` and `_scan` pass a `dropped` list -- so elsewhere "125 mods" reads
-    # the same as "126 mods, one of which I could not read".
+    # EVERY EXCLUSION TRAVELS WITH THE RESULT (BLIND-SPOTS F139, closed 2026-09-26).
+    # A mod whose content.xml will not parse, and -- scope "active" -- a mod the ENGINE
+    # will not load (a REQUIRED dependency missing, disabled or cyclic; see
+    # `_active_filter`), are left out. Leaving them out is right; saying nothing is not.
+    # They used to be recorded only into an opt-in `dropped=` list, and MEASURED
+    # 2026-09-26 16 of the 20 active-scope call sites never passed one. So they are
+    # now ALWAYS collected and returned as `ModList.dropped`; `dropped=` still receives
+    # the same records for the callers that pass it.
     #
-    # I tried announcing it HERE, which covers every caller at once, and
-    # tests/test_engine_sources_carry_no_cli.py correctly refused it: this module is
-    # in _freshness.ENGINE_SOURCES, and an engine source does not carry CLI output.
-    # That guard is right and the convenience is not worth eroding it.
-    #
-    # The real fix is to thread `dropped=` through the remaining call sites and render
-    # it, which ripples into each of their outputs -- deliberately NOT done during a
-    # release close-out, where a wide refactor is how the previous rounds introduced
-    # criticals. MEASURED 2026-09-08: 0 of 125 installed mods drop today on both
-    # scopes, so the cost is currently zero -- which is exactly where a wrong
-    # denominator hides (CLAUDE.md #23). Registered as a blind spot with that number.
-    #
-    # The same channel now carries a second kind of exclusion: a mod the ENGINE will
-    # not load because a REQUIRED dependency is missing, disabled or cyclic (see
-    # `_active_filter`). That exclusion is correct, and it is exactly as silent as the
-    # parse drop at every "active" caller that passes no `dropped` -- MEASURED
-    # 2026-09-26: none of the 14 `mods("active")` call sites under x4validate/ and
-    # gates/ passes one, and 0 of 125 installed mods are excluded by the rule today.
-    # PARTLY CLOSED 2026-09-26 (final review): Tier B (`_check.tier_b_trees`, as a
-    # NOT CHECKED skip), x4compat (`analyze`, NOT ANALYSED), `x4effective build` and
-    # BaseX build-effective (progress/stderr) now pass one and render it. MEASURED at
-    # that commit: 4 of 20 active-scope call sites (x4validate/, gates/, basex/; the
-    # `_effective.active_mods` wrapper not counted) disclose; the other 16 still do
-    # not -- BLIND-SPOTS names them.
+    # Nothing is PRINTED here, deliberately: this module is in
+    # _freshness.ENGINE_SOURCES and tests/test_engine_sources_carry_no_cli.py forbids
+    # CLI output in it. `dropped_note` is the pure one-line formatter; each caller
+    # routes it to its own sink, and tests/test_active_exclusions_disclosed.py bans an
+    # active-scope call in any function that never reaches the channel.
+    sink: list[str] = []
     dlc: list[dict] = []
-    installed = scan_installed(dirs, dropped=dropped, dlc=dlc)
+    installed = scan_installed(dirs, dropped=sink, dlc=dlc)
     if scope == "installed":
-        return installed
+        if dropped is not None:
+            dropped.extend(sink)
+        return ModList(installed, sink)
     try:
         prof = dict(ingest_content_xml())
     except (OSError, etree.XMLSyntaxError):
@@ -358,7 +399,10 @@ def mods(scope: str, dirs: list[Path] | None = None,
         if entry["id"].lower() not in seen:
             seen.add(entry["id"].lower())
             dlc.append(entry)
-    return _active_filter(installed, prof, dlc, dropped)
+    active = _active_filter(installed, prof, dlc, sink)
+    if dropped is not None:
+        dropped.extend(sink)
+    return ModList(active, sink)
 
 
 def _reference_dlc_dirs(config=None) -> list[Path]:

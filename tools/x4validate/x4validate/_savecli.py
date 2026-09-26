@@ -213,6 +213,9 @@ def cmd_check(path: Path, limit: int = 40, out=None) -> int:
                     "that is a NON-ANSWER, not a clean save", degraded=True)
 
     mods = _registry.mods("active")
+    # A macro only a mod the engine leaves out defines reads UNRESOLVED below -- right
+    # for the engine, and NAMED here so it is not mistaken for a missing mod (F139).
+    _check.note_not_loaded(mods, "definition set: a mod the engine does not load", report)
     cfg = _merge.Config(overlays=[p for _, p in _effective.ordered_overlays(mods)])
     defs = _check.EntityDefs(cfg)
     print(f"building the definition set over base + {len(cfg.dlc_dirs())} DLC + "

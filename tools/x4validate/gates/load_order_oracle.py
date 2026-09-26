@@ -139,6 +139,12 @@ def main() -> int:
               file=sys.stderr)
         return 2
     mods = _registry.mods("active")
+    left_out = _registry.dropped_note(mods)
+    if left_out:
+        # A mod the engine leaves out is in no computed order; if the log shows it
+        # anyway, that is a finding about OUR exclusion rule, so name it (F139).
+        print(f"NOT in the computed order (our model: the engine does not load it): "
+              f"{left_out}")
     if not mods:
         print("SKIP: the active mod set is empty -- nothing to order", file=sys.stderr)
         return 2

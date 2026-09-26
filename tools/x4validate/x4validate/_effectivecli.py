@@ -770,6 +770,12 @@ def logical_vpath(vpath: str, mod_folders: set[str],
 def _cmd_dump(args) -> int:
     cfg = _merge.Config(reference=Path(args.reference))
     mods = active_mods()
+    # Not in the tree below, correctly -- and NAMED, or a value only that mod sets
+    # would read as vanilla with nothing said (F139).
+    left_out = _registry.dropped_note(mods)
+    if left_out:
+        print(f"NOT in this tree (the engine does not load it): {left_out}",
+              file=sys.stderr)
     ordered = ordered_overlays(mods)
     folder_to_path = {m["folder"]: p for m, p in ordered}
     touch = build_touch_map(ordered)

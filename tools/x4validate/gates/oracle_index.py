@@ -72,6 +72,11 @@ def main():
     # ACTIVE: the oracle is scored against the ENGINE's own debug.txt, so its
     # world model has to be the engine's world model.
     mods = _registry.mods("active")
+    left_out = _registry.dropped_note(mods)
+    if left_out:
+        # A name only that mod registers reads "unregistered" here -- which agrees with
+        # an engine that did not load it, and must say so rather than look like luck (F139).
+        print(f"NOT in either tree (our model: the engine does not load it): {left_out}")
     order = _compat.compute_load_order(mods)
     by_folder = {m["folder"]: m for m in mods}
     all_dirs = tuple(Path(by_folder[n]["path"]) for n in order

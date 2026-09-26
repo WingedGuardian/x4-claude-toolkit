@@ -39,7 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _env  # noqa: E402
-from x4validate import _effective, _merge  # noqa: E402
+from x4validate import _effective, _merge, _registry  # noqa: E402
 
 RE_TEXT = re.compile(r"GetText\(pageid=(\d+),\s*textid=(\d+)\)\s*TextID not found")
 RE_PART = re.compile(r"Cannot find referenced part template XML file from index '([^']+)'")
@@ -51,7 +51,13 @@ _F2P: dict = {}
 def overlays_for(vpath: str):
     global _TOUCH
     if _TOUCH is None:
-        ordered = _effective.ordered_overlays(_effective.active_mods(None))
+        active = _effective.active_mods(None)
+        # Said once, when the cache is built: what the tree leaves out (F139).
+        left_out = _registry.dropped_note(active)
+        if left_out:
+            print(f"NOT in the effective tree (the engine does not load it): {left_out}",
+                  file=sys.stderr)
+        ordered = _effective.ordered_overlays(active)
         _F2P.update({m["folder"]: p for m, p in ordered})
         _TOUCH = _effective.build_touch_map(ordered)
     return _effective.touchers_for(vpath, _TOUCH, _F2P)

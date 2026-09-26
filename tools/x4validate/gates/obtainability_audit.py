@@ -77,7 +77,14 @@ def audit() -> dict:
         _env.skip("vanilla libraries/wares.xml", "merged to nothing")
     dead = _refs.deprecated_only_macros(vanilla)
 
-    overlays = [p for _m, p in _effective.ordered_overlays(_effective.active_mods())]
+    active = _effective.active_mods()
+    left_out = _registry.dropped_note(active)
+    if left_out:
+        # Not in the effective tree, correctly -- and NAMED, so a macro only that mod
+        # sells does not read as unobtainable for no stated reason (F139).
+        print(f"NOT in the effective tree (the engine does not load it): {left_out}",
+              file=sys.stderr)
+    overlays = [p for _m, p in _effective.ordered_overlays(active)]
     eff = _merge.build_effective("libraries/wares.xml", cfg, extra_overlays=overlays).tree
     dead_eff = _refs.deprecated_only_macros(eff) if eff is not None else {}
 
