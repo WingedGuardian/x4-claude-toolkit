@@ -1,9 +1,9 @@
-"""AUDIT-2026-09-24 -- merge / resolve / diff findings, pinned as strict xfails.
+"""AUDIT-2026-09-24 -- merge / resolve / diff findings, as regression tests.
 
 Every test here asserts the CORRECT behaviour and runs the real subject on a
-tmp_path fixture. Each is `xfail(strict=True)`: it must fail today, and the day a
-fix lands it XPASSes, which strict mode turns into a failure -- so whoever fixes
-the finding must also delete the marker, and cannot do so silently.
+tmp_path fixture. They were written as `xfail(strict=True)` against the audited
+code; every finding has since been fixed and its marker removed with the fix, so
+they are now plain REGRESSION tests that must pass.
 
 IDs and verdicts live in `AUDIT-2026-09-24.md`. MG-6 was WITHDRAWN and has no
 test; the Tier-B "uninstalled mod loads LAST" half of LO-6 is NEEDS-DESIGN and has
@@ -20,10 +20,6 @@ import pytest
 from lxml import etree
 
 from x4validate import _diff, _diffcli, _merge, _resolve
-
-
-def _xf(id_: str, why: str):
-    return pytest.mark.xfail(strict=True, reason=f"AUDIT-2026-09-24 {id_}: {why}")
 
 
 def _apply(base: str, diff: str):

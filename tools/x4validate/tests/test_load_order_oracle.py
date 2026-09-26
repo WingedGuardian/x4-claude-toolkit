@@ -12,8 +12,8 @@ Two halves:
       a space before `_`);
     - repeated passes; in each pass every mod whose INSTALLED dependencies are already
       loaded -- including ones loaded earlier in the SAME pass -- loads.
-  Those cases are xfail(strict) until the fix lands, so the fix is forced to prove
-  itself and the marker cannot be forgotten.
+  Those cases were xfail(strict) until the fix landed; they are now plain regression
+  tests of the fixed rule.
 """
 from __future__ import annotations
 

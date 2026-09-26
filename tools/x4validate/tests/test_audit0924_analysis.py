@@ -1,10 +1,9 @@
 """AUDIT-2026-09-24 Phase 1 -- analysis CLIs (AN-*) and freshness (FR-*).
 
-Every test marked ``xfail(strict=True)`` reproduces a VERIFIED finding against the
-code as it stood at the audit, through the REAL function or CLI on a minimal
-hermetic fixture. When a fix lands, its test XPASSes, strict turns that into a
-failure, and the fixer removes the marker -- so a fix cannot land silently and a
-test cannot rot into decoration.
+Each test reproduces a VERIFIED finding through the REAL function or CLI on a
+minimal hermetic fixture. They were written as ``xfail(strict=True)`` against the
+code as it stood at the audit; every finding has since been fixed and its marker
+removed with the fix, so they are now plain REGRESSION tests that must pass.
 
 FR-5 is the exception, stated rather than hidden: its defect is a MISSING TEST
 (two case-folds survive mutation), so its tests PASS on current code and exist to

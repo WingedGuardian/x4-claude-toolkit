@@ -1,8 +1,8 @@
 """AUDIT-2026-09-24 Phase 1 -- BaseX (BX-*) and gates (GT-*).
 
-Every test here is `xfail(strict=True)`: it FAILS on the audited code for the reason named in
-its `reason=`, and turns into an XPASS -> hard failure the moment a fix lands, so the marker
-must be removed together with the fix.
+Each test was written as `xfail(strict=True)`, failing on the audited code; every finding has
+since been fixed and its marker removed with the fix, so these are now plain REGRESSION tests
+that must pass.
 
 Only DEPENDENCIES are stubbed: BaseX (`run_xq` / `basex_query`), subprocess launches of the
 CLIs, the effective store (a synthetic sqlite of the real two-table schema), the registry
