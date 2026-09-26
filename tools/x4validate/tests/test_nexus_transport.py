@@ -9,6 +9,7 @@ transport. No network: `urlopen` is stubbed throughout.
 """
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import urllib.error
@@ -118,6 +119,17 @@ def test_a_401_is_fatal_even_after_a_successful_call(monkeypatch):
     _nexus.fetch_mod(1)
     with pytest.raises(_nexus.NexusAuthError):
         _nexus.fetch_mod(2)
+
+
+@pytest.mark.parametrize("exc", [http.client.IncompleteRead(b"par"),
+                                 http.client.BadStatusLine("garbage")])
+def test_http_client_protocol_errors_are_mapped_not_tracebacks(monkeypatch, exc):
+    """Review item 4: http.client.HTTPException is neither URLError nor OSError."""
+    def urlopen(req, timeout=None):
+        raise exc
+    monkeypatch.setattr(_nexus.urllib.request, "urlopen", urlopen)
+    with pytest.raises(_nexus.NexusUnreachable):
+        _nexus.fetch_mod(1)
 
 
 def test_only_run_wide_causes_are_fatal():

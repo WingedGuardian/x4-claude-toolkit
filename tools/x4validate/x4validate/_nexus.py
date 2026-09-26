@@ -24,6 +24,7 @@ OPERATING NOTES (were resident in CLAUDE.md until 2026-09-20; they belong with t
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.parse
@@ -132,8 +133,11 @@ def _mapped(what: str, fn, *args):
             raise NexusRateLimited(f"{what}: HTTP 429 -- the Nexus rate limit is spent "
                                    "(about 2,000/hour, 20,000/day per key)") from exc
         raise NexusError(f"{what} HTTP {exc.code}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise NexusUnreachable(f"{what}: network failure ({exc})") from exc
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
+        # http.client.HTTPException (IncompleteRead, BadStatusLine, ...) is neither a
+        # URLError nor an OSError, and escaped as a traceback (review of RG-1).
+        raise NexusUnreachable(
+            f"{what}: network failure ({type(exc).__name__}: {exc})") from exc
     except (ValueError, UnicodeDecodeError) as exc:
         raise NexusError(f"{what}: the response is not JSON ({exc})") from exc
     _ok_this_run[0] += 1
