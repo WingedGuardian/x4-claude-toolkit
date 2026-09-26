@@ -139,7 +139,8 @@ the macro-only check produced 1,792 misses. `standardzone`/`standardregion` are 
 
 **#13 — `_merge.Config(overlays=sorted(mods))` is NOT the effective tree** — it is *alphabetical*.
 The real tree uses the computed load order (`_effective.ordered_overlays` →
-`_compat.compute_load_order`, dependencies first). Same macro, two orders:
+`_loadorder.compute_load_order`: the engine's MEASURED rule, case-insensitive UPPERCASE folder
+order walked in repeated dependency passes — BLIND-SPOTS F128). Same macro, two orders:
 `ship_kha_xl_battleship_01_a_macro` `people.capacity` reads **0** alphabetically and **200** in
 true load order. Use `x4effective`, or build overlays via `ordered_overlays`.
 
@@ -228,7 +229,7 @@ disabled by it. Three consequences:
 
 - Signature-failure lines are a **SAMPLE**, not a mod list — they name whatever files a session
   happened to touch. **The real enumerator is the load-time t-file block**: at timestamp 0.00
-  the engine opens every extension's `t/0001*.xml` in one contiguous alphabetical run.
+  the engine opens every extension's `t/0001*.xml` in one contiguous run, in load order (#13).
 - The skip vocabulary names an INCONSISTENT object. `Skipping node.` names the **patching**
   mod's file; `Skipping file.` names the merge **TARGET**. Never infer what was discarded from
   what the message names.
@@ -348,18 +349,19 @@ cd $CLAUDE_PROJECT_DIR/tools/x4validate && uv run x4validate <dev\mod_folder>
 - **Cross-mod: use `--tier b`.** Tier A builds base+DLC only, so a diff targeting another mod's
   content reports `no base game file` — expected, not a real error. Tier B merges the installed
   extension set in load order, and also catches the reverse failure Tier A passes silently:
-  content another mod has REMOVED. Ordering is community convention → treat ordering-dependent
-  results as advisory.
+  content another mod has REMOVED. Ordering is the engine's measured signature-check order;
+  that it is also patch-APPLY order is inferred → treat ordering-dependent results as advisory.
 - **Schema validation is GATED behind `--update`.** Compiling `md.xsd` costs ~102 s so it does
   not run by default — a plain run reports `OK: no issues found` on a script it never
   schema-checked. `--xsd-fast` skips the compile but loses the "element not expected" class,
   which is where element-ORDERING errors live.
 - **`if=`-guarded ops report INFO, not ERROR.** A guarded op whose guard is false is a designed
   no-op. A guard that PASSES but whose `sel=` still misses is a real error.
-- **Validate the DEPLOYED copy, not the `dev\` copy, whenever load order could matter.** A mod
-  that is not installed has no knowable load-order position, so Tier B assumes it loads LAST —
-  the optimistic tree. Proven: a deployed mod validates 0 errors while its byte-identical
-  dev-only twin reports 3 false alarms.
+- **Validate the DEPLOYED copy whenever load order could matter.** Tier B places a mod that is
+  not installed by the engine rule, keyed on its folder NAME and its own manifest's
+  dependencies — so a dev folder named differently from its deployed copy lands elsewhere.
+  (Until 2026-09-25 it assumed LAST, the optimistic tree: a dev-only twin then reported 3
+  false alarms its deployed copy did not.)
 
 **A clean x4validate is necessary, not sufficient.** Static validation cannot see runtime
 wiring — cue-trigger semantics and cross-file order signatures are not expressible in a schema.

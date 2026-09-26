@@ -1,7 +1,8 @@
 """Is a mutating gate breaking this tree RIGHT NOW?
 
-`gates/mutation_probe.py` edits `_merge.py`, `_registry.py` and `_compat.py` in
-place while it runs, so during that window every tool built on them answers from
+`gates/mutation_probe.py` edits every module named in its `TARGETS` table in place
+while it runs (nine `x4validate/_*.py` files as of 2026-09-26, `_merge.py`, `_registry.py`
+and `_compat.py` among them -- read the table, not this count), so during that window every tool built on them answers from
 deliberately-broken code. The tree looks completely normal, because the mutated
 file is a TRACKED file — that is gotcha #27's actual lesson, and it is how v2.5.0
 once shipped with its ambiguous-`sel` guard silently disabled.

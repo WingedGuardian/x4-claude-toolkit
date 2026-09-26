@@ -50,7 +50,9 @@ class Change:
     attr: str
     base: str
     value: str
-    kind: str                      # "author-edit" | "upstream-drift" | "converged"
+    # "author-edit" | "author-addition" | "author-removal" | "upstream-drift" |
+    # "upstream-addition" | "upstream-removal" (from `_kind`) | "converged"
+    kind: str
 
 
 @dataclass(frozen=True)

@@ -294,6 +294,9 @@ def overlay_root(odir: Path, vpath: str,
         #
         # (The comment below says FIVE callers; measured, it is six — `_stats` has two
         # call sites, 172 and 228. A denominator in prose, counted once and not again.)
+        # (RE-COUNTED 2026-09-26: SEVEN call sites pass no `skipped` -- `_compat` x2,
+        # `_diff` x2, `_stats` x3. Both counts above were history by then; grep
+        # `overlay_root(` rather than trusting any of the three.)
         if skipped is None:
             raise
         skipped.append(f"{odir.name}/{vpath}: malformed XML, overlay skipped ({exc})")
@@ -853,8 +856,8 @@ def apply_overlay(
 ) -> tuple[etree._Element | None, str]:
     """Apply one overlay root onto *tree*; returns (new tree, mode).
 
-    Mode is one of "diff", "diff(no-base!)", "union", "full" — mirrors the
-    source-tag suffixes recorded by build_effective. Extracted so callers other
+    Mode is one of "diff", "diff(no-base!)", "union", "script(inert)", "full" —
+    mirrors the source-tag suffixes recorded by build_effective. Extracted so callers other
     than build_effective (e.g. x4effective's mod-owned-base path) reuse the exact
     dispatch semantics."""
     if oroot.tag == "diff":

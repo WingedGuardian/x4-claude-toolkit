@@ -2,7 +2,9 @@
 
 Distilled from a campaign that took this toolkit from "works when I use it" to
 17 findings fixed, 24 gates, and a 379-test suite — with every late-stage bug
-found by QA instead of by a user. Follow this for any new tool (or any major
+found by QA instead of by a user. (Those are the campaign's figures, kept as history.
+Re-derived 2026-09-26: 37 gates — `gates/*.py` less `__init__` and `_env` — and 2,583
+tests collected by `uv run pytest --collect-only` in `tools/x4validate`.) Follow this for any new tool (or any major
 feature on an existing one) **before** it is considered releasable.
 
 The one-line summary: **a corpus pass proves robustness; only generative,

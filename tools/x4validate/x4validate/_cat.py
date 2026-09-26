@@ -41,7 +41,8 @@ logger = logging.getLogger(__name__)
 _MD5_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 # Plain mod catalogs we read: ext_01.cat, subst_02.cat, ...
 _PLAIN_CAT_RE = re.compile(r"^(ext|subst)_(\d+)\.cat$", re.IGNORECASE)
-# Version/diff catalogs we deliberately skip (DLC-only; not seen in mods).
+# Version/diff catalogs we deliberately skip. Mods DO ship them (see the module
+# docstring); each skip is logged with its owning folder.
 _VERSION_CAT_RE = re.compile(r"^(ext|subst)_.*v\d+\.cat$", re.IGNORECASE)
 # Member extensions worth extracting (everything our analysis parses is XML/XSD).
 _XML_SUFFIXES = (".xml", ".xsd")

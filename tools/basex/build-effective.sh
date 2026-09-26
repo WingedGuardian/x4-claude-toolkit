@@ -7,9 +7,10 @@
 # Both are wanted; x4eff is the one a negative claim should be made against,
 # because it applies diffs in load order and resolves conflict winners.
 #
-# ADVISORY LIMIT: inter-mod load order is community convention (dependencies
-# first, then alphabetical), not documented by Egosoft. Any x4eff answer that
-# depends on WHICH mod won is advisory to exactly that degree.
+# ADVISORY LIMIT: inter-mod load order is the engine's MEASURED signature-check
+# order (BLIND-SPOTS F128), not documented by Egosoft; that it is also the
+# patch-apply order is inferred. Any x4eff answer that depends on WHICH mod won
+# is advisory to exactly that degree.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

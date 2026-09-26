@@ -477,8 +477,9 @@ handled here — it is a secret, not a path, and must never be written to a file
   result. Six independent guard clauses, each with its own fixture and mutant.
 - `x4validate/_livepipe.py` — the live query channel: named-pipe transport plus an
   eight-clause frame contract (truncation, corruption, protocol skew, FIFO desync).
-- `x4validate/_livecli.py` — `x4live`: dump / extensions / errors / oracle / mappings /
-  query / ramp. The only
+- `x4validate/_livecli.py` — `x4live`: dump / extensions / errors / oracle / archive /
+  mappings / query / pausestate / pause / unpause / harvest / ffi-census / groundtruth /
+  ramp (the 14 subcommands of `x4live --help`, 2026-09-26). The only
   tool that compares our model against the ENGINE rather than against more files.
 - `x4validate/_freshness.py` — the two-axis fingerprint every persisted artifact carries, and
   the per-folder **content vector** it is folded from. Deliberately NOT in `ENGINE_SOURCES`:
@@ -493,7 +494,7 @@ handled here — it is a secret, not a path, and must never be written to a file
   gates: `oracle.py` (diff layer, 0 FALSE OK), `oracle_index.py` (index layer),
   `regress.py` (per-mod Tier A/B sweep), `schema_sweep.py` (effective-schema
   composition), plus `oracle_reverse.py` (the direction the first two cannot test:
-  the engine complained — do we notice?). Plus nine corpus audits added in v2.1.0 —
+  the engine complained — do we notice?). Plus eleven corpus audits added in v2.1.0 —
   `noop_audit.py` (reported ≡ actual, per op), `provenance_audit.py` (a changed value
   names its mod), `consistency_audit.py` (store ≡ merge ≡ dump), `corpus_sweep.py`
   (every installed mod, both tiers), `qa_sweep.py` (every CLI × subcommand),

@@ -157,7 +157,8 @@ finding without a denominator — that guard is the reason this tool is quotable
 all. Prefer `--db x4eff` for any claim about what is live: `x4raw` holds files *as
 written* and will happily quote a vanilla value your modlist overwrote.
 
-**Load order is community convention**, not documented by Egosoft. Any `x4eff`
+**Load order is MEASURED from the engine's log, not documented by Egosoft** (signature-check
+order; that it is also apply order is inferred -- BLIND-SPOTS F128). Any `x4eff`
 answer that turns on *which mod won* is advisory to exactly that degree.
 
 ## Housekeeping
