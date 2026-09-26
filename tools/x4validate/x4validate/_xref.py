@@ -460,6 +460,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"   - {u}", file=sys.stderr)
         return 0
 
+    # An EMPTY or blank name is not a question. It used to reach the search, match
+    # nothing, and be certified "a real negative over N indexed rows" at rc 0
+    # (AUDIT-2026-09-24 AN-11, pinned by gates/edge_sweep.py) -- the confident wrong
+    # answer this tool exists to refuse.
+    if not (getattr(args, "name", "x") or "").strip():
+        print("refusing: an empty name matches nothing by definition, so it is not a "
+              "negative about anything. Pass the action/event/cue name to look up.",
+              file=sys.stderr)
+        return 2
     tsv = Path(args.tsv) if getattr(args, "tsv", None) else _default_tsv()
     if not tsv.is_file():
         print(f"index not found: {tsv}\nrun `x4xref build` first.", file=sys.stderr)
