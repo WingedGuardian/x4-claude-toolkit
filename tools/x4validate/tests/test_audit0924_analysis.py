@@ -160,8 +160,6 @@ def _ls_names(capsys) -> set[str]:
             if ln.strip() and not ln.startswith(" ") and "ware(s)" not in ln}
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-3: --modified-only hides an "
-                   "entity a mod changed only an attribute of")
 def test_AN3_modified_only_lists_an_attribute_only_change(tmp_path, hermetic,
                                                           monkeypatch, capsys):
     db = _store(tmp_path, monkeypatch)
@@ -170,8 +168,6 @@ def test_AN3_modified_only_lists_an_attribute_only_change(tmp_path, hermetic,
     assert "ore" in _ls_names(capsys)
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-3: --modified-only lists a "
-                   "DLC-only entity no mod touched")
 def test_AN3_modified_only_does_not_list_a_DLC_only_entity(tmp_path, hermetic,
                                                           monkeypatch, capsys):
     db = _store(tmp_path, monkeypatch)
@@ -182,8 +178,6 @@ def test_AN3_modified_only_does_not_list_a_DLC_only_entity(tmp_path, hermetic,
     assert "spice" not in names, names
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-3: plain `ls` puts no mod "
-                   "marker on an attribute-only change")
 def test_AN3_plain_ls_marks_an_attribute_only_change(tmp_path, hermetic,
                                                      monkeypatch, capsys):
     db = _store(tmp_path, monkeypatch)
