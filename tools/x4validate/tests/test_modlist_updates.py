@@ -78,9 +78,10 @@ def test_no_MAIN_file_is_unknown_with_the_denominator(monkeypatch):
     assert up is None and "among 1" in what
 
 
-def test_a_row_pinned_to_a_FILE_is_judged_against_that_file(monkeypatch):
-    monkeypatch.setattr(_nexus, "fetch_files", lambda nid: pytest.fail("no file list needed"))
+def test_a_row_pinned_to_a_FILE_is_judged_against_that_file_not_the_MAIN(monkeypatch):
     f = _files(("addon", "3", "2026-07-02", "OPTIONAL"))[0]
+    newer_main = _nexus.FileMeta(2, 7, "main", "9", "2026-09-01", "MAIN")
+    monkeypatch.setattr(_nexus, "fetch_file_listing", lambda nid: ([f, newer_main], {}))
     assert _modlist._upstream_newest(7, f)[0] == "2026-07-02"
 
 
@@ -216,3 +217,34 @@ def test_a_verdict_NOT_rechecked_this_run_is_labelled_carried_over(tmp_path, mon
     out = capsys.readouterr().out
     line = next(ln for ln in out.splitlines() if "cool_mod" in ln)
     assert "carried over" in line, out
+
+
+# --- a pinned FILE follows its successors (review item 3) --------------------------------
+
+def _listing(files, updates):
+    return {"files": [{"file_id": i, "name": f"f{i}", "version": str(i),
+                       "uploaded_time": up + "T00:00:00.000+00:00", "category_name": cat}
+                      for i, up, cat in files],
+            "file_updates": [{"old_file_id": o, "new_file_id": n} for o, n in updates]}
+
+
+@pytest.mark.parametrize("updates, want_id, want_date", [
+    ([], 5, "2026-05-01"),                          # no chain: the pinned file itself
+    ([(5, 6)], 6, "2026-06-01"),                    # one successor
+    ([(5, 6), (6, 8)], 8, "2026-08-01"),            # followed to the END of the chain
+    ([(5, 6), (6, 5)], 6, "2026-06-01"),            # a cycle terminates
+    ([(5, 6), (6, 99)], 6, "2026-06-01"),           # successor not listed: last listed one
+    ([(1, 2)], 5, "2026-05-01"),                    # a chain for ANOTHER file is ignored
+])
+def test_a_pinned_file_is_judged_against_its_newest_successor(monkeypatch, updates, want_id,
+                                                              want_date):
+    """A pin to file 5 used to be judged against file 5 forever. The page's
+    `file_updates` records old -> new file ids; the pinned file's successor chain is
+    followed to its end, falling back to the pinned file when there is none."""
+    listing = _listing([(5, "2026-05-01", "OPTIONAL"), (6, "2026-06-01", "OPTIONAL"),
+                        (8, "2026-08-01", "OPTIONAL"), (9, "2026-09-09", "MAIN")], updates)
+    monkeypatch.setenv("X4_NEXUS_KEY", "test-key-not-real")
+    monkeypatch.setattr(_nexus, "_get_json", lambda url, headers: listing)
+    pinned = _nexus.FileMeta(5, 7, "f5", "5", "2026-05-01", "OPTIONAL")
+    up, what = _modlist._upstream_newest(7, pinned)
+    assert up == want_date and f"file {want_id} " in what, (up, what)

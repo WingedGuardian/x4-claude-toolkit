@@ -356,11 +356,22 @@ def _upstream_newest(nid: int, fmeta) -> tuple[str | None, str]:
     """(upload date, what it is) of the upstream file an update is judged against.
 
     The newest MAIN file on the page (user decision 2026-09-25, AUDIT-2026-09-24 RG-3).
-    A row pinned to a FILE (`resolve --file`) is judged against that file instead: an
-    add-on on someone else's page does not update when the page owner uploads.
+    A row pinned to a FILE (`resolve --file`) is judged against that file's newest
+    SUCCESSOR instead: an add-on on someone else's page does not update when the page
+    owner uploads, but it does when its own file is superseded. The chain is the page's
+    `file_updates` (old -> new file id), followed to its end; a successor not listed on
+    the page ends the walk at the last listed one; no chain means the pinned file itself.
     """
     if fmeta is not None:
-        return fmeta.uploaded or None, f"pinned file {fmeta.file_id} {fmeta.name!r} v{fmeta.version}"
+        files, updates = _nexus.fetch_file_listing(nid)
+        by_id = {f.file_id: f for f in files}
+        cur, seen = fmeta, {fmeta.file_id}
+        while updates.get(cur.file_id) in by_id and updates[cur.file_id] not in seen:
+            cur = by_id[updates[cur.file_id]]
+            seen.add(cur.file_id)
+        how = ("pinned" if cur.file_id == fmeta.file_id
+               else f"successor of pinned file {fmeta.file_id}:")
+        return cur.uploaded or None, f"{how} file {cur.file_id} {cur.name!r} v{cur.version}"
     files = _nexus.fetch_files(nid)
     mains = [f for f in files if (f.category or "").upper() == "MAIN" and f.uploaded]
     if not mains:
@@ -1002,8 +1013,8 @@ def main(argv: list[str] | None = None) -> int:
     prs.add_argument("nexus_id", help="the correct Nexus mod id, or 'none' if it has no page")
     prs.add_argument("--file", type=int, help="file id, when this mod ships as a FILE on that "
                      "page (an add-on); the upstream version, and the update verdict (upload "
-                     "date vs the installed manifest date), then follow that FILE, not the "
-                     "page's newest MAIN file")
+                     "date vs the installed manifest date), then follow that FILE and its "
+                     "successors on the page (file_updates), not the page's newest MAIN file")
     prs.set_defaults(func=cmd_resolve)
 
     pso = sub.add_parser("source", help="record a non-Nexus origin (stops it being searched)")

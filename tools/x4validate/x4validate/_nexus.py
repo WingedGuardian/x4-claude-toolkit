@@ -285,9 +285,28 @@ class FileMeta:
 
 def fetch_files(nexus_id: int) -> list[FileMeta]:
     """Every file on a mod page, newest-uploaded last (API order preserved)."""
+    return fetch_file_listing(nexus_id)[0]
+
+
+def fetch_file_listing(nexus_id: int) -> tuple[list[FileMeta], dict[int, int]]:
+    """(every file on the page, the page's `file_updates` as old_file_id -> new_file_id).
+
+    `file_updates` is how an author records that a file was superseded by another, so a
+    pin to one FILE can follow its successors instead of being judged against the
+    pinned file forever. A malformed update row is dropped like a malformed file row.
+    """
     h = {"apikey": nexus_key(), **_APP}
     d = _mapped(f"fetch_files({nexus_id})", _get_json,
                 f"{NEXUS_REST}/{int(nexus_id)}/files.json", h)
+    updates: dict[int, int] = {}
+    for u in (d or {}).get("file_updates") or []:
+        try:
+            updates[int(u["old_file_id"])] = int(u["new_file_id"])
+        except (KeyError, TypeError, ValueError):
+            # silent-ok: one malformed supersession row. Its only consumer follows a
+            # chain and falls back to the pinned file, which it names, when a link is
+            # missing -- a dropped row cannot turn into a false "up to date".
+            continue
     out = []
     for f in (d or {}).get("files") or []:
         try:
@@ -300,7 +319,7 @@ def fetch_files(nexus_id: int) -> list[FileMeta]:
             # SPECIFIC file use fetch_file(), which raises when its id is absent —
             # so a dropped row here can never render as "that file is gone".
             continue
-    return out
+    return out, updates
 
 
 def fetch_file(nexus_id: int, file_id: int) -> FileMeta:
