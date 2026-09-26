@@ -393,5 +393,71 @@ class TestPS6OtherWritingCmdlets(_PSE2E):
         ])
 
 
+class TestPSEmptyTranslation(_PSE2E):
+    """Re-review item 1: a translation can be EMPTY (everything in it was unresolved, or it
+    did nothing). protect-bash.sh's `[ -z "$COMMAND" ] && exit 0` would ALLOW the first
+    kind; it asked only because `$(...)` stripped the newline after the sentinel, the split
+    failed, and COMMAND held the raw fact dump -- which the ask then quoted."""
+
+    def reason(self, command):
+        payload = json.dumps({"tool_name": "PowerShell", "tool_input": {"command": command}})
+        p = subprocess.run([BASH, str(HOOKS / "protect-bash.sh")], input=payload,
+                           capture_output=True, text=True, env=self.env, timeout=120)
+        if not p.stdout.strip():
+            return "allow", ""
+        h = json.loads(p.stdout)["hookSpecificOutput"]
+        return h.get("permissionDecision", "advise"), h.get("permissionDecisionReason", "")
+
+    def test_empty_with_unresolved_parts_asks_with_a_real_reason(self):
+        for cmd in ("iex $cmd", "Remove-Item @args"):
+            v, r = self.reason(cmd)
+            self.assertEqual(v, "ask", cmd)
+            self.assertNotIn("__X4_COMMAND__", r, cmd)
+            self.assertNotIn("carrier_untranslated" + chr(9), r, cmd)
+            self.assertIn("could not be analysed", r, cmd)
+
+    def test_TWIN_empty_with_nothing_unresolved_allows(self):
+        for cmd in ("# only a comment", "$x = 1"):
+            self.assertEqual(self.reason(cmd)[0], "allow", cmd)
+
+
+class TestEmptyCommandSplit(unittest.TestCase):
+    """The same defect at the seam, with the analyser STUBBED so the fact stream is exact.
+    hook_facts ends its output with `<NL>__X4_COMMAND__<NL><command>`; for an empty command
+    `$(...)` strips the final newline, the split fails, and COMMAND became the fact dump --
+    every rule that quotes the command then quoted the dump. Runnable without PowerShell."""
+
+    def run_stub(self, facts):
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="split_"))
+        try:
+            for f in ("protect-bash.sh", "_x4-env.sh"):
+                shutil.copy(HOOKS / f, tmp / f)
+            lines = "".join("%s%s%s%s" % (k, chr(9), v, chr(10)) for k, v in facts.items())
+            (tmp / "hook_facts.py").write_text(
+                "import sys\nsys.stdin.read()\nsys.stdout.buffer.write(%r.encode())\n"
+                % (lines + "__X4_COMMAND__" + chr(10)), encoding="utf-8")
+            env = dict(os.environ, X4_CONFIG=str(tmp / "none.env"), X4_TOOLKIT=str(tmp))
+            p = subprocess.run([BASH, str(tmp / "protect-bash.sh")],
+                               input='{"tool_name":"PowerShell","tool_input":{"command":"x"}}',
+                               capture_output=True, text=True, env=env, timeout=60)
+            if not p.stdout.strip():
+                return "allow", ""
+            h = json.loads(p.stdout)["hookSpecificOutput"]
+            return h.get("permissionDecision", "advise"), h.get("permissionDecisionReason", "")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_empty_command_with_an_unresolved_part_asks_without_the_dump(self):
+        v, r = self.run_stub({"carrier_untranslated": 1, "from_powershell": 1,
+                              "rm_in_x4_dir": 1})
+        self.assertEqual(v, "ask")
+        self.assertNotIn("carrier_untranslated" + chr(9), r)
+        self.assertNotIn("__X4_COMMAND__", r)
+
+    def test_TWIN_empty_command_with_nothing_unresolved_allows(self):
+        self.assertEqual(self.run_stub({"carrier_untranslated": 0, "from_powershell": 1})[0],
+                         "allow")
+
+
 if __name__ == "__main__":
     unittest.main()

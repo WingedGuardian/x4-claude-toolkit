@@ -199,9 +199,26 @@ fi
 # is emitted LAST and raw because it may be multi-line (heredocs are routine here) and
 # any escaping scheme would change what the messages below print.
 SENT=$'\n__X4_COMMAND__\n'
+# AN EMPTY COMMAND ENDS THE STREAM WITH THE SENTINEL, and `$( )` strips the newline after
+# it -- so the split below never matched, and COMMAND held the whole FACT DUMP, which
+# every rule that quotes the command then printed. Worse, the empty case is exactly a
+# PowerShell translation whose every part was UNRESOLVED (`iex $cmd`, `Remove-Item
+# @args`), and the `[ -z ]` allow below would have waved it through the moment the split
+# worked (AUDIT-2026-09-24 HK-1 re-review). So the empty case is decided here, explicitly.
+case "$FACTS_RAW" in
+  *$'\n__X4_COMMAND__') FACTS_RAW="$FACTS_RAW"$'\n' ;;
+esac
 FACT_LINES="${FACTS_RAW%%$SENT*}"
 COMMAND="${FACTS_RAW#*$SENT}"
-[ -z "$COMMAND" ] && exit 0
+if [ -z "$COMMAND" ]; then
+  case $'\n'"${FACT_LINES//$'\r'/}"$'\n' in
+    *$'\ncarrier_untranslated\t1\n'*)
+      VERDICT=ask
+      emit ask "X4 GUARD: nothing in this command could be translated into something the guard can check -- every write/delete in it names a target it cannot resolve (a splat that is not a literal hashtable, Invoke-Expression of computed text, a .Delete()-style method on an unidentified object), so it could not be analysed and NO rule was evaluated. Write the target literally, or confirm only if you know what it touches."
+      exit 0 ;;
+  esac
+  exit 0
+fi
 
 # Facts are matched against a NEWLINE-DELIMITED STRING, not an associative array.
 #
