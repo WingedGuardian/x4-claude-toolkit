@@ -669,3 +669,35 @@ def test_gt6_claims_audit_rejects_a_meaningless_tolerance(tmp_path, monkeypatch,
 # decision (2026-09-25): the budget stays a manual-`--record` ceiling, so an automatic
 # floor-lowering is not the intended behaviour. The docs that called it a ratchet were
 # corrected instead (gates/claude_md_budget.py, gates/README.md, CHANGELOG.md).
+
+
+# GT-6 diff_truth -- was a module-level script (untestable without a real install);
+# these pin the two verdicts that used to be missing.
+
+def _diff_headline(changed: int, attrs: int) -> str:
+    return (f"changed files: {changed}   added: 0   removed: 0\n"
+            f"total attr changes: {attrs}\n")
+
+
+def test_gt6_diff_truth_changed_files_mismatch_fails_not_notes():
+    dt = import_gate("diff_truth", module_level=False)
+    planted = {("a.xml", "max", "1", "7332.5")}
+    detail = "a.xml  max  1 -> 7332.5\n"
+    assert dt.judge(_diff_headline(1, 1) + detail, planted, 1) is True     # control
+    assert dt.judge(_diff_headline(2, 1) + detail, planted, 1) is False, (
+        "x4diff reported 2 changed files for 1 mutated file -- that was only a NOTE")
+
+
+def test_gt6_diff_truth_nothing_planted_is_not_exact(tmp_path, monkeypatch, capsys):
+    dt = import_gate("diff_truth", module_level=False)
+    mod = tmp_path / "ext" / "textonly"
+    mod.mkdir(parents=True)
+    for i in range(5):                                   # 5 XML files, no numeric attribute
+        (mod / f"f{i}.xml").write_bytes(b'<root><a kind="text"/></root>')
+    monkeypatch.setattr(dt._env, "extensions", lambda: tmp_path / "ext")
+    monkeypatch.setattr(dt, "run_x4diff", lambda a, b: _diff_headline(0, 0))
+    assert dt.main() == 2, f"0 planted, 0 found read as exact:\n{capsys.readouterr().out}"
+    (tmp_path / "ext" / "textonly").rename(tmp_path / "ext" / "_gone")
+    for f in (tmp_path / "ext" / "_gone").iterdir():
+        f.unlink()
+    assert dt.main() == 2, "no candidate mod at all"
