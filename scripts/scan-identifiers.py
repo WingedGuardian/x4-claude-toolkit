@@ -304,6 +304,36 @@ def selftest() -> int:
     return 1 if bad else 0
 
 
+#: The measured threshold, from the fu-hang investigation: a Windows native process
+#: whose TMP/TEMP env var is this long (and exists) spins forever inside
+#: CreateProcessW (-> BasepQueryAppCompat -> GetTempPathW) the first time it starts a
+#: child of its own -- 260 characters was fine, 261 hung. This scanner's own `git`
+#: children can do exactly that, so a long-TMP environment is a real hang risk here,
+#: not a hypothetical one: it is what made this exact script spin for 15 hours in one
+#: real run.
+TMP_HANG_THRESHOLD = 260
+
+
+def _tmp_hang_risk(environ: "os._Environ[str] | dict", is_windows: bool):
+    """(var, length) of a TMP/TEMP long enough to trigger the Windows CreateProcessW
+    hang this scanner was itself caught by, or None. Pure and parameterised on
+    *environ*/*is_windows* rather than reading `os.environ`/`os.name` directly, so a
+    test can drive both branches without needing an actual 261-character path AND
+    without needing to run this on a real Windows machine to prove the branch fires.
+
+    TMPDIR is deliberately NOT checked here: it is the POSIX name, irrelevant to the
+    Windows-only hang this guards against, and checking it would risk a false
+    refusal on a machine where it happens to be set to something long and harmless.
+    """
+    if not is_windows:
+        return None
+    for var in ("TMP", "TEMP"):
+        val = environ.get(var)
+        if val and len(val) > TMP_HANG_THRESHOLD:
+            return var, len(val)
+    return None
+
+
 #: The scan is anchored to THIS FILE's repository, never to the caller's directory.
 #:
 #: MEASURED 2026-09-01, the same script from three places:
@@ -449,6 +479,22 @@ def scan_history(rng: str, banned: list[str]) -> int:
 
 
 def main() -> int:
+    # Refuse rather than hang. This scanner is about to spawn `git`, and `git`
+    # itself can spawn a child of its own -- exactly the shape that hung for 15
+    # hours in one real run. Checked before ANYTHING else, including --selftest:
+    # a subprocess.run() timeout does not help here (CreateProcessW never
+    # returns, so the child is never even reported started), so the only
+    # correct move is to never spawn in the first place.
+    risk = _tmp_hang_risk(os.environ, os.name == "nt")
+    if risk:
+        var, length = risk
+        print(f"::error::${var} is {length} characters long, above the measured "
+              f"{TMP_HANG_THRESHOLD}-character threshold that hangs a Windows "
+              f"process inside CreateProcessW the first time it starts a child "
+              f"of its own -- and this scanner is about to spawn `git`. Refusing "
+              f"to run rather than hang. Shorten ${var} (e.g. a shorter "
+              f"X4_TEST_SANDBOX, or unset it) before invoking the identifier scan.")
+        return 2
     _anchor_to_repo_root()
     if "--selftest" in sys.argv:
         return selftest()
