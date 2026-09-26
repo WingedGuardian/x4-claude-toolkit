@@ -61,6 +61,18 @@ _REF = re.compile(r"\$\{(?P<b>[A-Z0-9_]+)\}|\$(?P<p>[A-Z0-9_]+)")
 
 
 def _unquote(v: str) -> str:
+    """A shell-style value: a QUOTED value runs to its closing quote, whatever it holds;
+    an unquoted one ends at a ` #` comment.
+
+    The comment was cut first, for both, so `X4_MODS="C:/My Mods #2/x4"` became
+    `"C:/My Mods` with a dangling quote (AUDIT-2026-09-24 RG-5). Inside quotes a `#` is
+    data, exactly as when the shell sources the same file.
+    """
+    s = v.strip()
+    if s and s[0] in "\"'":
+        end = s.find(s[0], 1)
+        if end > 0:
+            return s[1:end]
     v = v.split(" #", 1)[0].strip()
     if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
         return v[1:-1]
