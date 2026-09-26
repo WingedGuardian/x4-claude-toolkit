@@ -151,21 +151,33 @@ def build(tmp: Path) -> tuple[Path, Path, Path]:
     return loose, packed, control
 
 
-def findings_for(mod: Path) -> list[tuple[str, str]]:
-    """(category, message) for every finding `--update` produces on *mod*."""
+def findings_for(mod: Path) -> list[tuple[str, str, str]]:
+    """(category, message, vpath) for every finding `--update` produces on *mod*."""
     report = _check.validate(mod, _merge.Config(), update=True)
-    return [(f.category, f.message) for f in report.findings]
+    return [(f.category, f.message, _norm(f.vpath)) for f in report.findings]
+
+
+def _norm(vpath: str) -> str:
+    return (vpath or "").replace(chr(92), "/").lstrip("/").lower()
 
 
 def check(label: str, mod: Path, failures: list[str]) -> None:
     found = findings_for(mod)
     print(f"\n{label}  ({len(found)} findings)")
     for c in CASES:
-        hit = [m for cat, m in found if cat == c.category and c.wants in m]
+        # Credit a detection ONLY in the planted case's own file (AUDIT-2026-09-24
+        # GT-5). Matching `wants` against any finding of the category let one file's
+        # finding vouch for another case: `.keys.list` in probe_lua's message credited
+        # keys_list_clone, whose own file could have gone completely undetected.
+        # MEASURED 2026-09-25: every one of the 8 planted findings carries its case's
+        # vpath, loose and packed alike.
+        own = _norm(c.vpath)
+        mine = [(cat, m) for cat, m, vp in found if vp == own]
+        hit = [m for cat, m in mine if cat == c.category and c.wants in m]
         # An xsd finding may be categorized strict/advisory; accept either, since
         # this gate is about DETECTION, not about which bucket it lands in.
         if not hit and c.category == "xsd":
-            hit = [m for cat, m in found if cat.startswith("xsd") and c.wants in m]
+            hit = [m for cat, m in mine if cat.startswith("xsd") and c.wants in m]
         mark = "  ok " if hit else " MISS"
         print(f"  {mark}  {c.case_id:<22} [{c.category}] wants {c.wants!r}")
         if not hit:
@@ -186,7 +198,7 @@ def main() -> int:
         check("PACKED mod (inside ext_01.cat)", packed, failures)
 
         ctrl = findings_for(control)
-        noisy = [(c, m) for c, m in ctrl
+        noisy = [(c, m) for c, m, _vp in ctrl
                  if c in {"migration", "exprlint"} or c.startswith("xsd")]
         print(f"\nCLEAN control  ({len(ctrl)} findings, "
               f"{len(noisy)} in migration/exprlint/xsd)")

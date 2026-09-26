@@ -1,4 +1,8 @@
-"""Regression sweep: Tier A + Tier B error/degraded counts per mod.
+"""Regression sweep -- ADVISORY: Tier A + Tier B error/degraded counts per mod.
+
+A REPORT, not a regression bar: there is no baseline, so it never fails on what it
+finds (rc 0), and its only non-zero exit is rc 2 for examining zero mods. gates/README
+said otherwise by implication until 2026-09-25 (AUDIT-2026-09-24 GT-6).
 
 Sweeps every mod source folder under `$X4_MODS`, plus any INSTALLED extension
 named on the command line (the deployed copy of a mod validates differently from

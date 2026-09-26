@@ -54,7 +54,11 @@ artifact: only per-capability counts and dates leave this gate.
 
   uv run python gates/toolkit_usage.py [--record] [--transcripts DIR]
 
-Exit: 0 clean (or recorded) - 1 findings - 2 cannot run (never a guess)
+Exit: 0 clean (or recorded) - 1 findings - 2 cannot run (never a guess): the
+      roster could not be read, or qa_sweep's coverage could not be evaluated and
+      nothing else was found. A finding outranks a refusal. (AUDIT-2026-09-24 GT-4:
+      the qa_sweep refusal used to be appended to the findings, so "could not look"
+      exited 1 as though coverage had regressed.)
 """
 from __future__ import annotations
 
@@ -424,6 +428,7 @@ def main() -> int:
     unenumerable: list[str] = result["unenumerable"]
 
     findings: list[str] = []
+    refusals: list[str] = []           # could-not-look, kept apart from findings
 
     print()
     print("=" * 78)
@@ -468,7 +473,7 @@ def main() -> int:
     covered, note = qa_sweep_coverage(result.get("subs_by_cli") or {})
     if covered is None:
         print(f"  REFUSED  qa_sweep coverage: {note}")
-        findings.append(f"qa_sweep coverage not evaluable -- {note}")
+        refusals.append(f"qa_sweep coverage not evaluable -- {note}")
         # keep whatever was already accepted; a refusal must not wipe the baseline
         result["missing"] = _baseline_missing()
     else:
@@ -535,11 +540,18 @@ def main() -> int:
 
     print()
     print("=" * 78)
+    for r in refusals:
+        print(f"  NOT EVALUATED: {r}")
     if findings:
         print(f"FINDINGS: {len(findings)}")
         for f in findings:
             print(f"  - {f}")
         return 1
+    if refusals:
+        print(f"REFUSING: {len(refusals)} part(s) of this gate could not be evaluated, so "
+              "'no findings' would be a guess. rc 2, not a finding and not a pass.",
+              file=sys.stderr)
+        return 2
     print("No findings.")
     return 0
 

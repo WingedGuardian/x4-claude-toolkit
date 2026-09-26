@@ -52,8 +52,11 @@ RECORD = "--record" in sys.argv
 _CLOSED = re.compile(r"FIXED|CLOSED")
 
 #: What counts as naming a check: a repo-relative test/gate path, a SHELL suite
-#: under scripts/ or .claude/hooks/, a bare `test_name` in backticks, or the word
-#: selftest (several tools carry one).
+#: under scripts/ or .claude/hooks/, or a bare `test_name` in backticks.
+#:
+#: The bare WORD `selftest` used to count too (AUDIT-2026-09-24 GT-5), so "there is no
+#: selftest for this" named a check. A tool's selftest is cited by its PATH
+#: (`scripts/scan-identifiers.py --selftest`), which the path alternatives already see.
 #:
 #: The shell forms were added 2026-08-29, on this gate's first serious use: F79's
 #: re-derivation is `scripts/test-hooks.sh` and `.claude/hooks/test-protect-bash.sh`,
@@ -89,11 +92,15 @@ _NAMES = re.compile(
     r"(?<![A-Za-z0-9_.-])(?:tests/|gates/)[A-Za-z0-9_./-]+\.py"
     r"|(?<![A-Za-z0-9_.-])(?:scripts/|\.claude/hooks/)[A-Za-z0-9_./-]+\.(?:sh|py)"
     r"|(?<![A-Za-z0-9_.-])tools/basex/test_[A-Za-z0-9_]+\.py"
-    r"|`(test_[A-Za-z0-9_]+)`|selftest")
+    r"|`(test_[A-Za-z0-9_]+)`")
 
 #: The explicit opt-out. An entry whose figure genuinely cannot be re-derived
 #: says so IN THE ENTRY -- that is a statement a reader can weigh, unlike silence.
+#: It is a DECLARATION at the start of a line (`**NO RE-DERIVATION ...**`, the form
+#: every real exemption uses), never a mention: a substring test exempted an entry
+#: that QUOTED the marker while saying the check was still owed (GT-5).
 _EXEMPT = "NO RE-DERIVATION"
+_EXEMPT_DECL = re.compile(r"(?m)^[ \t]*(?:\*\*|__)?NO RE-DERIVATION\b")
 
 
 def entries(text: str) -> dict[str, str]:
@@ -166,6 +173,16 @@ def names_a_check(body: str, root: Path) -> str | None:
     not only the cited files, because F40 and F74 name tests defined in files they do
     not cite -- a cited-files-only rule would have flagged two true citations.
     Pinned clause by clause in `tests/test_register_rederivation_bare_names.py`.
+
+    CITED PATHS (AUDIT-2026-09-24 GT-5, then the review of 311a231): an entry is covered
+    by a cited check path only when AT LEAST ONE cited path exists. A cited path that
+    exists nowhere is NOT a failure on its own -- the register legitimately names checks
+    that were later retired, as HISTORY (F60/F61/F73/F76/F78/F87 name
+    `scripts/verify-port.py`, retired with the dev repo, beside the live check that
+    replaced it), and the register's wording does not reliably mark which is which. It
+    is never SILENT either: `dead_citations()` lists it and `main()` prints it as a NOTE
+    on every run, so a deleted check stays visible. Making EVERY dead path a failure
+    (commit 311a231) flagged six entries that each cite a live check.
     """
     roots = _roots(root)
     first: str | None = None
@@ -187,6 +204,8 @@ def names_a_check(body: str, root: Path) -> str | None:
                 cited.append(base / s)
                 first = first or s
                 break
+        # A cited path that exists nowhere does not cover the entry and does not void
+        # it: `dead_citations()` names it (see the docstring).
     if bare:
         defined: set[str] | None = None
         for name in bare:
@@ -201,6 +220,18 @@ def names_a_check(body: str, root: Path) -> str | None:
                 continue
             return None             # a named test that exists nowhere: NOT covered
     return first
+
+
+def dead_citations(body: str, root: Path) -> list[str]:
+    """Cited check PATHS that exist at neither root -- printed as NOTES, never dropped."""
+    roots = _roots(root)
+    dead: list[str] = []
+    for m in _NAMES.finditer(body):
+        s = m.group(0).strip("`")
+        if s.startswith(_PATH_PREFIXES) and not any((b / s).is_file() for b in roots) \
+                and s not in dead:
+            dead.append(s)
+    return dead
 
 
 def _roots(root: Path) -> list[Path]:
@@ -232,7 +263,7 @@ def audit(text: str, root: Path) -> tuple[list[str], list[str]]:
         head = body.split(chr(10))[0]
         if not _CLOSED.search(head):
             continue
-        if _EXEMPT in body or names_a_check(body, root):
+        if _EXEMPT_DECL.search(body) or names_a_check(body, root):
             ok.append(fid)
         else:
             missing.append(fid)
@@ -266,6 +297,14 @@ def main() -> int:
     print(f"REGISTER RE-DERIVATION — {total} entr(ies) marked FIXED/CLOSED")
     print(f"  name an existing check, or state why not: {len(ok)}")
     print(f"  name none:                               {len(missing)}")
+    # NOTES, not failures: an entry that also cites a live check is covered, but a cited
+    # path that no longer exists is printed every run so it cannot quietly rot.
+    ents = entries(text)
+    for fid in sorted(ok, key=lambda f: int(f[1:])):
+        dead = dead_citations(ents[fid], ROOT)
+        if dead:
+            print(f"  NOTE {fid}: cites {len(dead)} path(s) that no longer exist "
+                  f"(covered by a live citation): {', '.join(dead)}")
 
     if RECORD:
         BASELINE.write_text(json.dumps({"missing": sorted(missing)}, indent=2) + chr(10),
@@ -288,8 +327,8 @@ def main() -> int:
         for f in new:
             print(f"    {f}")
         print("")
-        print("  Name the test or gate that re-derives it, or state "
-              f"'{_EXEMPT}' in the entry with the reason.")
+        print("  Name the test or gate that re-derives it (every cited check path must "
+              f"exist), or open a line of the entry with '**{_EXEMPT}: <the reason>**'.")
         return 1
     print("")
     print("No new findings.")
