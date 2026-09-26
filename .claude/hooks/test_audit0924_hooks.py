@@ -53,6 +53,22 @@ class TestHK5MatcherCoverage(unittest.TestCase):
                          "file-changing tools with NO protect-* PreToolUse guard")
 
 
+    def test_the_post_edit_validator_sees_every_file_editing_tool(self):
+        """Re-review 3: NotebookEdit reached the PreToolUse guards but not the PostToolUse
+        x4validate advisory, and the advisory read `file_path` only."""
+        import re
+        settings = json.loads((REPO / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        covered = set()
+        for entry in settings.get("hooks", {}).get("PostToolUse", []):
+            cmds = " ".join(h.get("command", "") for h in entry.get("hooks", []))
+            if "x4validate-on-edit" in cmds:
+                covered |= {t for t in ("Edit", "Write", "NotebookEdit")
+                            if re.fullmatch(entry.get("matcher") or "", t)}
+        self.assertEqual(covered, {"Edit", "Write", "NotebookEdit"})
+        self.assertIn("notebook_path",
+                      (HOOKS / "x4validate-on-edit.sh").read_text(encoding="utf-8"))
+
+
 class TestHK5ProductionReadPath(unittest.TestCase):
     """AUDIT-2026-09-24 HK-5: every harness PIPES stdin, and "a test that pipes stdin
     cannot reproduce the production condition" is how five hooks sat inert while their

@@ -30,6 +30,10 @@ INPUT=$(x4_hook_input)
 # the local loop silently fell through to python3 -- "a guard that runs under an
 # interpreter the operator did not choose is a guard nobody configured".
 FP=$(x4_field "$INPUT" tool_input.file_path)
+# NotebookEdit names its file `notebook_path` (AUDIT-2026-09-24 HK-1 re-review). Only
+# XML is validated below, so today this is a no-op for a notebook -- it is read so the
+# matcher and the reader agree, and a future non-.ipynb notebook path is not missed.
+[ -z "$FP" ] && FP=$(x4_field "$INPUT" tool_input.notebook_path)
 [ -z "$FP" ] && exit 0
 
 # Only XML files, and never the read-only reference tree.
