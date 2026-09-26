@@ -63,8 +63,20 @@ case "$SRC" in
 esac
 [ ! -f "$SRC" ] && exit 0
 
-# Skip transient workspace files (backups themselves, hooks, plans)
-echo "$FILE_PATH" | grep -qiE '(\.claude[/\\](backups|hooks|plans)[/\\])' && exit 0
+# Skip transient workspace files (backups themselves, hooks, plans) -- decided on the
+# path with `..` RESOLVED, never the raw text. AUDIT-2026-09-24 HK-3, MEASURED: the raw
+# test skipped `<game>/.claude/hooks/../../libraries/wares.xml`, so a base-game file
+# spelled through a skipped directory was edited with NO backup and NO audit line.
+# The raw test is only a cheap pre-filter; the normalised path decides, so the common
+# case (no `.claude/` in the path at all) still costs no subprocess.
+shopt -s nocasematch                 # bash 3.1+; `${v,,}` would need bash 4
+case "$FILE_PATH" in
+  *.claude[/\\]*)
+    case "$(x4_norm "$FILE_PATH")" in
+      *.claude/backups/*|*.claude/hooks/*|*.claude/plans/*) exit 0 ;;
+    esac ;;
+esac
+shopt -u nocasematch
 
 # Anchor to the toolkit, NOT the cwd. _x4-env.sh resolves X4_TOOLKIT from
 # $CLAUDE_PROJECT_DIR (or the hook's own location), so backups always land in one

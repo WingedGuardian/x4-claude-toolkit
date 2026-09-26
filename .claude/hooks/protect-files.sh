@@ -159,7 +159,14 @@ if [ -n "$_x4_maybe_deployed" ] && [ -n "${X4_GAME:-}" ] && [ -n "${X4_TOOLKIT:-
 fi
 
 # === WHITELIST — the toolkit's own working dirs & docs (editable in every install mode) ===
-case "$(x4_norm "$FILE_PATH")" in */claude.md|*/knowledgebase.md) exit 0;; esac
+# Every NAME test below reads the NORMALISED path (lowercase, forward slashes, `..`
+# RESOLVED), never the raw one. AUDIT-2026-09-24 HK-3, MEASURED: the `.claude/hooks/`
+# name whitelist read the RAW path, so `<game>/.claude/hooks/../../libraries/wares.xml`
+# -- a base-game file -- matched the whitelist and exited 0 before the game-install HARD
+# BLOCK was reached. A whitelist decided on text the filesystem does not resolve that
+# way is a whitelist for a different file.
+_NP="$(x4_norm "$FILE_PATH")"
+case "$_NP" in */claude.md|*/knowledgebase.md) exit 0;; esac
 # dev/ and dist/ are the documented mod workspace; they MUST be whitelisted before the
 # game-install block below, because in the "in-game" install method X4_TOOLKIT *is* the game
 # folder — without this, editing your own mod source is hard-denied in the default layout.
@@ -168,7 +175,10 @@ for sub in .claude/hooks .claude/skills .claude/agents .claude/commands .claude/
 done
 # Mod sources may live outside the toolkit entirely (X4_MODS); same reasoning.
 x4_under "$FILE_PATH" "${X4_MODS:-}" && exit 0
-echo "$FILE_PATH" | grep -qiE '\.claude[/\\](hooks|skills|agents|commands|plans|backups|memory|projects)[/\\]' && exit 0
+case "$_NP" in
+  *.claude/hooks/*|*.claude/skills/*|*.claude/agents/*|*.claude/commands/*|\
+  *.claude/plans/*|*.claude/backups/*|*.claude/memory/*|*.claude/projects/*) exit 0 ;;
+esac
 
 # NOTE: the "ask" rules below run BEFORE the game-install block, so the deploy target
 # (extensions/), mod manifests and the profile get a confirmation even when they live inside

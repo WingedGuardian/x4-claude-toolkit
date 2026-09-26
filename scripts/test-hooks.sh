@@ -109,6 +109,10 @@ run_layout(){ # run_layout <name> <toolkit> <game>
   decide deny  protect-files.sh "$(fj "$GAME/01.cat")"                      ".cat archive"
   decide deny  protect-files.sh "$(fj "$GAME/01.dat")"                      ".dat archive"
   decide deny  protect-files.sh "$(fj "$GAME/libraries/wares.xml")"         "base game file"
+  # AUDIT-2026-09-24 HK-3: the `.claude/hooks/` NAME whitelist read the raw path, so a
+  # `..` walking back out of it reached the base game with an ALLOW.
+  decide deny  protect-files.sh "$(fj "$GAME/.claude/hooks/../../libraries/wares.xml")" \
+    "a .. out of a whitelisted .claude/hooks/ still reaches the game block"
   decide advise protect-files.sh "$(fj "$TK/dev/mymod/content.xml")"        "content.xml manifest"
   # The PROFILE's own content.xml is the mod enable/disable list and the Steam
   # Workshop toggle. Turning the manifest prompt into an advisory (2026-08-29)
@@ -342,6 +346,14 @@ printf '%s' "$(fj "$SUBJ")" | bash "$HOOKS/backup-before-edit.sh" >/dev/null 2>&
   && ok "backup created" || no "no backup created"
 grep -q "wares.xml" "$TK/.claude/backups/AUDIT_LOG.txt" 2>/dev/null \
   && ok "audit log appended" || no "no audit log entry"
+# AUDIT-2026-09-24 HK-3: the skip for .claude/hooks/ read the RAW path, so a file
+# spelled through it with `..` was edited with no backup. Named via the skipped dir.
+SUBJ3="$TK/dev/mymod/libraries/hk3dotdot.xml"; echo '<diff/>' > "$SUBJ3"
+printf '%s' "$(fj "$TK/.claude/hooks/../../dev/mymod/libraries/hk3dotdot.xml")" \
+  | bash "$HOOKS/backup-before-edit.sh" >/dev/null 2>&1
+[ "$(ls "$TK/.claude/backups/" 2>/dev/null | grep -c 'hk3dotdot.xml')" -ge 1 ] \
+  && ok "a .. through .claude/hooks/ is still backed up" \
+  || no "a file named through .claude/hooks/.. was NOT backed up"
 # Must stay anchored to the toolkit even with CLAUDE_PROJECT_DIR unset.
 mkdir -p "$TMP/elsewhere"
 ( unset CLAUDE_PROJECT_DIR X4_TOOLKIT; cd "$TMP/elsewhere" \
@@ -434,7 +446,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=169
+EXPECT=172
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
