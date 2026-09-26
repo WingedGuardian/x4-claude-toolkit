@@ -122,8 +122,13 @@ def test_rt2_an_updated_extension_is_not_reported_as_not_loaded(tmp_path):
     buf = io.StringIO()
     assert _savecli.cmd_info(save, out=buf) == 0
     out = buf.getvalue()
-    gone = out.split("NOT loaded now", 1)[1] if "NOT loaded now" in out else ""
-    assert "ws_1" not in gone.split("! This is NOT")[0], out
+    # Split on "IN <history>", which heads the history section in BOTH the audited
+    # wording ("IN <history>, NOT loaded now") and the fixed one ("IN <history> ONLY"),
+    # so this goes red on the tuple comparison itself, not on a heading that was removed.
+    # (Proved: red against the audited _savecli.py, green after the fix.)
+    section = out.split("IN <history>", 1)[1].split("! This is NOT")[0] \
+        if "IN <history>" in out else ""
+    assert "ws_1" not in section, out
 
 
 def test_rt2_history_only_extension_is_not_asserted_unloaded(tmp_path):
