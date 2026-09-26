@@ -93,6 +93,7 @@ function Q([string]$s) {
 # ------------------------------------------------------------------ values
 $script:Assign = @{}      # variable name (lower) -> string[] ; $null = ambiguous
 $script:Tables = @{}      # variable name (lower) -> literal hashtable (key -> value AST); $null = ambiguous
+$script:AssignAst = @{}   # variable name (lower) -> the one assigned AST; $null = ambiguous
 
 # WHAT COULD NOT BE RESOLVED. A write or delete whose TARGET this script cannot name --
 # an unresolvable splat, a method on an unknown object, Invoke-Expression of computed
@@ -457,19 +458,216 @@ function Translate-Command([CommandAst]$c) {
     return $lines
 }
 
-$FILE_TYPES = @('system.io.file', 'io.file', 'system.io.directory', 'io.directory')
+# ------------------------------------------------------------------ methods
+# File-system METHODS, static and instance (AUDIT-2026-09-24 HK-1 review item 2). Only
+# [IO.File]/[IO.Directory] statics were mapped, so `(Get-Item <p>).Delete()`, a
+# `$_.Delete()` over gci output, [FileInfo]/[DirectoryInfo] instances, `[Directory]` under
+# `using namespace System.IO` and VisualBasic's FileSystem reached no rule.
+#
+# Types are matched on the LAST segment of their name, so a `using namespace` spelling and
+# the full one agree. A static on any OTHER type is not a file operation -- `[string]::Copy`
+# and `[array]::Copy` are ordinary.
+$FILE_STATIC_TAILS = @('file', 'directory', 'filesystem')
+$FILE_OBJECT_TAILS = @('fileinfo', 'directoryinfo', 'filesysteminfo')
+#: Instance members that are a file operation on ANY receiver we cannot identify: an
+#: unresolved receiver with one of these is UNKNOWN (ask), never "not a file".
+$STRONG_MEMBERS = @('delete', 'moveto', 'encrypt', 'decrypt', 'create', 'createtext',
+                    'appendtext', 'openwrite', 'createsubdirectory', 'setaccesscontrol')
+#: Members that are ALSO ordinary on strings/arrays/streams ('abc'.Replace, $a.CopyTo):
+#: a file operation only when the receiver is identified as a file object.
+$AMBIG_MEMBERS = @('copyto', 'replace', 'open')
+
+function TypeTail($typeName) {
+    $n = [string]$typeName
+    return $n.Split('.')[-1].ToLowerInvariant()
+}
+
+function MemberName($m) { return ($m.Member.Extent.Text).Trim("'", '"').ToLowerInvariant() }
+
+function FirstVal($ast) { return @(Vals $ast) | Select-Object -First 1 }
+
+function IsResolved([string]$v) { return ($null -ne $v) -and ($v -notmatch "[$SOH$STX]") }
+
+# What a receiver IS: @{ kind = 'file'; paths; filter } | @{ kind = 'notfile' } |
+# @{ kind = 'unknown' }.
+function Resolve-FileObject($e, [int]$depth = 0) {
+    if ($depth -gt 6 -or $null -eq $e) { return @{ kind = 'unknown' } }
+    if ($e -is [StringConstantExpressionAst] -or $e -is [ExpandableStringExpressionAst] -or
+        $e -is [ConstantExpressionAst] -or $e -is [ArrayLiteralAst] -or $e -is [HashtableAst]) {
+        return @{ kind = 'notfile' }
+    }
+    if ($e -is [ParenExpressionAst] -or $e -is [SubExpressionAst]) {
+        $p = if ($e -is [ParenExpressionAst]) { $e.Pipeline } else { $e.SubExpression }
+        if ($p -is [StatementBlockAst] -and $p.Statements.Count -eq 1) { $p = $p.Statements[0] }
+        if ($p -is [PipelineAst] -and $p.PipelineElements.Count -ge 1) {
+            $last = $p.PipelineElements[$p.PipelineElements.Count - 1]
+            if ($last -is [CommandExpressionAst] -and $p.PipelineElements.Count -eq 1) {
+                return Resolve-FileObject $last.Expression ($depth + 1)
+            }
+            if ($last -is [CommandAst]) { return Resolve-Producer $last $p ($depth + 1) }
+        }
+        return @{ kind = 'unknown' }
+    }
+    if ($e -is [ConvertExpressionAst]) {
+        if ($FILE_OBJECT_TAILS -contains (TypeTail $e.Type.TypeName.FullName)) {
+            $v = FirstVal $e.Child
+            return @{ kind = 'file'; paths = @($v) }
+        }
+        return Resolve-FileObject $e.Child ($depth + 1)
+    }
+    if ($e -is [InvokeMemberExpressionAst] -and $e.Static -and $e.Expression -is [TypeExpressionAst] -and
+        (MemberName $e) -eq 'new' -and $FILE_OBJECT_TAILS -contains (TypeTail $e.Expression.TypeName.FullName)) {
+        if ($e.Arguments.Count -ge 1) { return @{ kind = 'file'; paths = @(FirstVal $e.Arguments[0]) } }
+        return @{ kind = 'unknown' }
+    }
+    if ($e -is [VariableExpressionAst]) {
+        $n = $e.VariablePath.UserPath.ToLowerInvariant()
+        if ($n -eq '_' -or $n -eq 'psitem') {
+            # The pipeline item of the ForEach-Object/Where-Object this sits in.
+            $outer = $e.Parent
+            while ($null -ne $outer -and $outer -isnot [CommandAst]) { $outer = $outer.Parent }
+            if ($null -eq $outer) { return @{ kind = 'unknown' } }
+            $up = Upstream $outer
+            if ($null -eq $up) {
+                $pipe = $outer.Parent
+                if ($pipe -is [PipelineAst]) {
+                    $idx = [array]::IndexOf(@($pipe.PipelineElements), $outer)
+                    if ($idx -gt 0) { $up = Scan-Upstream $pipe $idx }
+                }
+            }
+            if ($null -eq $up -or -not $up.known) { return @{ kind = 'unknown' } }
+            return (FromSource $up)
+        }
+        if ($script:AssignAst.ContainsKey($n) -and $null -ne $script:AssignAst[$n]) {
+            return Resolve-FileObject $script:AssignAst[$n] ($depth + 1)
+        }
+        return @{ kind = 'unknown' }
+    }
+    if ($e -is [CommandExpressionAst]) { return Resolve-FileObject $e.Expression ($depth + 1) }
+    if ($e -is [PipelineAst]) {
+        $last = $e.PipelineElements[$e.PipelineElements.Count - 1]
+        if ($last -is [CommandAst]) { return Resolve-Producer $last $e ($depth + 1) }
+        if ($last -is [CommandExpressionAst]) { return Resolve-FileObject $last.Expression ($depth + 1) }
+    }
+    return @{ kind = 'unknown' }
+}
+
+# The objects a Get-Item/Get-ChildItem/New-Object at the end of a pipeline produce.
+function Resolve-Producer([CommandAst]$cmd, $pipe, [int]$depth) {
+    $cn = Canon $cmd.GetCommandName()
+    $b = $null
+    try { $b = [StaticParameterBinder]::BindCommand($cmd, $true) } catch { $b = $null }
+    if ($SOURCES -contains $cn) {
+        if ($null -eq $b) { return @{ kind = 'unknown' } }
+        $p = @(BVals $b @('Path', 'LiteralPath'))
+        if ($p.Count -eq 0) { $p = @('.') }
+        $f = @(BVals $b @('Filter', 'Include')) | Select-Object -First 1
+        return (FromSource @{ known = $true; paths = $p; filter = $f; children = ($cn -eq 'get-childitem') })
+    }
+    if ($NARROWERS -contains $cn -or $cn -eq 'sort-object') {
+        $idx = [array]::IndexOf(@($pipe.PipelineElements), $cmd)
+        if ($idx -gt 0) {
+            $up = Scan-Upstream $pipe $idx
+            if ($null -ne $up -and $up.known) {
+                $r = FromSource $up
+                if (-not $r.filter) { $r.filter = 'PS_FILTERED' }
+                return $r
+            }
+        }
+        return @{ kind = 'unknown' }
+    }
+    if ($cn -eq 'new-object' -and $null -ne $b) {
+        $t = @(BVals $b @('TypeName')) | Select-Object -First 1
+        if ($t -and $FILE_OBJECT_TAILS -contains (TypeTail $t)) {
+            $al = @(BVals $b @('ArgumentList'))
+            if ($al.Count -ge 1) { return @{ kind = 'file'; paths = @($al[0]) } }
+            return @{ kind = 'unknown' }
+        }
+        if ($t) { return @{ kind = 'notfile' } }
+    }
+    return @{ kind = 'unknown' }
+}
+
+function FromSource($up) {
+    $paths = $up.paths
+    $filter = $up.filter
+    if (-not $filter -and $up.narrowed) { $filter = 'PS_FILTERED' }
+    if (-not $filter -and $up.children) {
+        $paths = @($paths | ForEach-Object { $_.TrimEnd('/', '\') + '/' + (UVar 'PS_CHILD') })
+    }
+    return @{ kind = 'file'; paths = $paths; filter = $filter }
+}
+
+function MemberLines([string]$member, $paths, [string]$filter, $args2) {
+    $out = @()
+    foreach ($p in $paths) {
+        if (-not (IsResolved $p) -and $p -notmatch 'PS_CHILD') {
+            Unknown ".${member}() on an object whose path cannot be resolved"
+            continue
+        }
+        switch -regex ($member) {
+            '^delete$' {
+                if ($filter) { $out += "find $(Q $p) -name $(Q $filter) -delete" } else { $out += "rm -rf $(Q $p)" }
+            }
+            '^(moveto|replace)$' {
+                $d = $args2 | Select-Object -First 1
+                if (IsResolved $d) { $out += "mv $(Q $p) $(Q $d)" } else { Unknown ".${member}() to a destination that cannot be resolved" }
+            }
+            '^copyto$' {
+                $d = $args2 | Select-Object -First 1
+                if (IsResolved $d) { $out += "cp -r $(Q $p) $(Q $d)" } else { Unknown ".${member}() to a destination that cannot be resolved" }
+            }
+            '^(create|createtext|openwrite|open)$' { $out += ": > $(Q $p)" }
+            '^(appendtext|encrypt|decrypt|setaccesscontrol)$' { $out += ": >> $(Q $p)" }
+            '^createsubdirectory$' {
+                $d = $args2 | Select-Object -First 1
+                $out += ": >> $(Q ($p.TrimEnd('/', '\') + '/' + $d))"
+            }
+        }
+    }
+    return $out
+}
+
 function Translate-Member([InvokeMemberExpressionAst]$m) {
-    if (-not $m.Static -or $m.Expression -isnot [TypeExpressionAst]) { return @() }
-    if ($FILE_TYPES -notcontains $m.Expression.TypeName.FullName.ToLowerInvariant()) { return @() }
-    $member = ($m.Member.Extent.Text).Trim("'", '"').ToLowerInvariant()
-    $a = @(); foreach ($x in $m.Arguments) { $a += @(Vals $x) | Select-Object -First 1 }
-    if ($a.Count -eq 0) { return @() }
-    switch -regex ($member) {
-        '^delete$'                    { return @("rm -rf $(Q $a[0])") }
-        '^(write|create|openwrite)'   { return @(": > $(Q $a[0])") }
-        '^append'                     { return @(": >> $(Q $a[0])") }
-        '^(move|replace)$'            { if ($a.Count -ge 2) { return @("mv $(Q $a[0]) $(Q $a[1])") } }
-        '^copy$'                      { if ($a.Count -ge 2) { return @("cp -r $(Q $a[0]) $(Q $a[1])") } }
+    $member = MemberName $m
+    $a = @(); foreach ($x in $m.Arguments) { $a += FirstVal $x }
+    if ($m.Static) {
+        if ($m.Expression -isnot [TypeExpressionAst]) { return @() }
+        if ($FILE_STATIC_TAILS -notcontains (TypeTail $m.Expression.TypeName.FullName)) { return @() }
+        $kind = switch -regex ($member) {
+            '^(delete|deletefile|deletedirectory)$' { 'rm' ; break }
+            '^(write|create|openwrite)'              { 'trunc' ; break }
+            '^append'                                { 'append' ; break }
+            '^(encrypt|decrypt|setattributes|setlastwritetime|setcreationtime|setlastaccesstime|setaccesscontrol)' { 'append' ; break }
+            '^(move|movefile|movedirectory)$'        { 'mv' ; break }
+            '^replace$'                              { 'replace' ; break }
+            '^(copy|copyfile|copydirectory)$'        { 'cp' ; break }
+            default                                  { '' }
+        }
+        if (-not $kind) { return @() }
+        $need = if ($kind -in 'mv', 'cp', 'replace') { 2 } else { 1 }
+        if ($a.Count -lt $need -or -not (IsResolved $a[0]) -or ($need -eq 2 -and -not (IsResolved $a[1]))) {
+            Unknown "[$($m.Expression.TypeName.FullName)]::$($m.Member.Extent.Text)() on a path that cannot be resolved"
+            return @()
+        }
+        switch ($kind) {
+            'rm'      { return @("rm -rf $(Q $a[0])") }
+            'trunc'   { return @(": > $(Q $a[0])") }
+            'append'  { return @(": >> $(Q $a[0])") }
+            'mv'      { return @("mv $(Q $a[0]) $(Q $a[1])") }
+            'cp'      { return @("cp -r $(Q $a[0]) $(Q $a[1])") }
+            # File.Replace(source, destination, backup): destination is overwritten by source
+            'replace' { return @("mv $(Q $a[0]) $(Q $a[1])") }
+        }
+        return @()
+    }
+    $strong = $STRONG_MEMBERS -contains $member
+    $ambig = $AMBIG_MEMBERS -contains $member
+    if (-not ($strong -or $ambig)) { return @() }
+    $obj = Resolve-FileObject $m.Expression
+    if ($obj.kind -eq 'file') { return @(MemberLines $member $obj.paths $obj.filter $a) }
+    if ($obj.kind -eq 'unknown' -and $strong) {
+        Unknown "$($m.Extent.Text): a file-system method on an object the guard cannot identify"
     }
     return @()
 }
@@ -494,6 +692,8 @@ function Collect-Assignments($ast) {
                 if ($kn) { $tbl[$kn.ToLowerInvariant()] = $v }
             }
         }
+        if ($script:AssignAst.ContainsKey($key)) { $script:AssignAst[$key] = $null }
+        else { $script:AssignAst[$key] = $as.Right }
         if ($script:Tables.ContainsKey($key)) { $script:Tables[$key] = $null }
         else { $script:Tables[$key] = $tbl }
         if ($script:Assign.ContainsKey($key)) {

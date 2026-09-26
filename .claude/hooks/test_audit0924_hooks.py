@@ -231,5 +231,48 @@ class TestPS1Splatting(_PSE2E):
                      ("allow", "$o = Get-Stuff; Write-Output @o")])
 
 
+class TestPS2MethodCalls(_PSE2E):
+    """Instance and type-qualified file methods reached no rule: only [IO.File]/[IO.Directory]
+    static calls were mapped."""
+
+    def test_instance_deletes_on_an_identified_object(self):
+        R = self.R
+        self.expect([
+            ("deny", "(Get-Item '" + R + BS + "a.xml').Delete()"),
+            ("deny", "gci '" + R + "' | % { $_.Delete() }"),
+            ("deny", "[System.IO.FileInfo]::new('" + R + BS + "a.xml').Delete()"),
+            ("deny", "(New-Object System.IO.DirectoryInfo '" + R + "').Delete($true)"),
+            ("deny", "([IO.FileInfo]'" + R + BS + "a.xml').MoveTo('C:" + BS + "x.xml')"),
+            ("deny", "$f = Get-Item '" + R + BS + "a.xml'; $f.Delete()"),
+        ])
+
+    def test_type_qualified_statics(self):
+        R = self.R
+        self.expect([
+            ("deny", "using namespace System.IO" + chr(10) + "[Directory]::Delete('" + R + "', $true)"),
+            ("deny", "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory('" + R
+             + "', 'DeleteAllContents')"),
+            ("deny", "[System.IO.File]::Replace('C:" + BS + "n.xml', '" + R + BS + "a.xml', $null)"),
+            ("deny", "[IO.File]::Encrypt('" + R + BS + "a.xml')"),
+        ])
+
+    def test_an_unresolvable_target_asks(self):
+        self.expect([
+            ("ask", "$f.Delete()"),
+            ("ask", "[IO.File]::WriteAllText($x, 'y')"),
+            ("ask", "$d.MoveTo('C:" + BS + "y')"),
+            ("ask", "Get-Things | % { $_.Delete() }"),
+        ])
+
+    def test_TWIN_harmless_methods(self):
+        self.expect([
+            ("allow", "'abc'.Replace('a','b')"),
+            ("allow", "$s.Replace('a','b'); $list.CopyTo($arr, 0)"),
+            ("allow", "(Get-Item ." + BS + "x.txt).Delete()"),
+            ("allow", "[IO.Path]::Combine('a','b'); [string]::Copy('x')"),
+            ("allow", "[IO.File]::ReadAllText('" + self.R + BS + "a.xml')"),
+        ])
+
+
 if __name__ == "__main__":
     unittest.main()
