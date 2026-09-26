@@ -74,9 +74,18 @@ class NexusUnreachable(NexusFatal):
 _rate_remaining: dict[str, int] = {}
 _RL_HEADERS = ("X-RL-Hourly-Remaining", "X-RL-Daily-Remaining")
 
+#: Requests that SUCCEEDED since the last `reset_rate_limit()`. A 403 before any success
+#: is the key being refused; after one, the key has been accepted this run, so a 403 is
+#: about THAT request -- a hidden mod's file list, a Cloudflare block (see `_APP`) -- and
+#: must not stop the run (review of RG-2). Counted in `_mapped`, so a stubbed transport
+#: counts the same as the real one.
+_ok_this_run = [0]
+
 
 def reset_rate_limit() -> None:
+    """Start a run: forget the rate budget and the accepted-key evidence."""
     _rate_remaining.clear()
+    _ok_this_run[0] = 0
 
 
 def _open_json(req: urllib.request.Request):
@@ -112,11 +121,11 @@ def _mapped(what: str, fn, *args):
     per-request one (another HTTP status, a body that is not JSON) a plain NexusError.
     """
     try:
-        return fn(*args)
+        out = fn(*args)
     except NexusError as exc:
         raise type(exc)(f"{what}: {exc}") from exc
     except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
+        if exc.code == 401 or (exc.code == 403 and not _ok_this_run[0]):
             raise NexusAuthError(f"{what}: HTTP {exc.code} -- the Nexus API key is missing, "
                                  "invalid or revoked (check X4_NEXUS_KEY)") from exc
         if exc.code == 429:
@@ -127,6 +136,8 @@ def _mapped(what: str, fn, *args):
         raise NexusUnreachable(f"{what}: network failure ({exc})") from exc
     except (ValueError, UnicodeDecodeError) as exc:
         raise NexusError(f"{what}: the response is not JSON ({exc})") from exc
+    _ok_this_run[0] += 1
+    return out
 
 
 def nexus_key() -> str:

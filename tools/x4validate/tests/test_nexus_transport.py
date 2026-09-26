@@ -87,6 +87,39 @@ def test_a_stubbed_transport_gets_the_same_mapping(monkeypatch, exc, kind):
         _nexus.fetch_mod(1)
 
 
+def test_a_403_on_the_FIRST_call_of_a_run_is_a_key_failure(monkeypatch):
+    monkeypatch.setattr(_nexus, "_get_json", lambda url, headers: (_ for _ in ()).throw(
+        urllib.error.HTTPError(url, 403, "Forbidden", {}, None)))
+    with pytest.raises(_nexus.NexusAuthError):
+        _nexus.fetch_mod(1)
+
+
+def test_a_403_AFTER_a_successful_call_is_per_request_not_fatal(monkeypatch):
+    """Review item 2: the key has already been accepted this run, so a later 403 is about
+    THAT request (a hidden mod's files.json, a Cloudflare block), and must not stop the
+    run. No network call is made to find out."""
+    def get(url, headers):
+        if url.endswith("/2.json"):
+            raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
+        return json.loads(_META)
+    monkeypatch.setattr(_nexus, "_get_json", get)
+    assert _nexus.fetch_mod(1).name == "M"
+    with pytest.raises(_nexus.NexusError) as exc:
+        _nexus.fetch_mod(2)
+    assert not isinstance(exc.value, _nexus.NexusFatal), type(exc.value)
+
+
+def test_a_401_is_fatal_even_after_a_successful_call(monkeypatch):
+    def get(url, headers):
+        if url.endswith("/2.json"):
+            raise urllib.error.HTTPError(url, 401, "Unauthorized", {}, None)
+        return json.loads(_META)
+    monkeypatch.setattr(_nexus, "_get_json", get)
+    _nexus.fetch_mod(1)
+    with pytest.raises(_nexus.NexusAuthError):
+        _nexus.fetch_mod(2)
+
+
 def test_only_run_wide_causes_are_fatal():
     assert issubclass(_nexus.NexusAuthError, _nexus.NexusFatal)
     assert issubclass(_nexus.NexusRateLimited, _nexus.NexusFatal)
