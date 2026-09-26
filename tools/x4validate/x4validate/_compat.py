@@ -192,8 +192,9 @@ class CompatReport:
     @property
     def hard(self) -> list[Collision]:
         # SUBTREE counts as hard-ish by user decision (2026-08-02): a later mod
-        # provably wiping an earlier mod's applied change gates, with the
-        # load-order-is-convention caveat carried in every row's detail text.
+        # provably wiping an earlier mod's applied change gates. The order is the
+        # engine's MEASURED one (signature order from the log; apply order by the
+        # in-game load-order probe, 2026-09-26), no longer a convention.
         return (self.by_kind("HARD") + self.by_kind("FULL-OVERRIDE")
                 + self.by_kind("SUBTREE"))
 
@@ -1072,32 +1073,23 @@ def analyze(
     # named a disabled mod as a participant in 4 collision rows of the 2026-08-22
     # baseline. The "what if I added this" case is *candidate*, below -- an
     # explicit opt-in, not a side effect of how the world is enumerated.
-    mods = _registry.mods("active", [ext_dir])
+    not_loaded: list[str] = []
+    mods = _registry.mods("active", [ext_dir], dropped=not_loaded, dlc_config=config)
 
     cand_folder = None
     excluded: list[str] = []
     if candidate is not None:
         candidate = Path(candidate)
-        cand_folder = candidate.resolve().name
-        cand_id = _loadorder.mod_deps(candidate)[0] if (candidate / "content.xml"
-                                                        ).is_file() else ""
-        keep = []
-        cand_entry = {"folder": cand_folder, "path": str(candidate),
-                      "id": cand_id or cand_folder}
-        for m in mods:
-            same = (m["folder"].lower() == cand_folder.lower()
-                    or (cand_id and m.get("id") == cand_id))
-            if not same:
-                keep.append(m)
-            elif Path(m["path"]).resolve() == candidate.resolve():
-                cand_entry = m                  # the candidate IS the enabled copy
-                cand_folder = m["folder"]
-            else:
-                # A DIFFERENT copy of the candidate (a staged update, a dev folder):
-                # the path the user named wins, and the enabled copy is left out
-                # rather than counted as a second mod colliding with itself.
-                excluded.append(str(m["path"]))
-        mods = keep + [cand_entry]
+        # ONE placement rule with Tier B and x4stats (`_loadorder.place_candidate`):
+        # key = the installed copy's folder when it matches by folder or id (either
+        # case), dependencies from the CANDIDATE's manifest. A DIFFERENT enabled copy
+        # (a staged update, a dev folder) is left out rather than counted as a second
+        # mod colliding with itself; the path the user named wins.
+        placement = _loadorder.place_candidate(mods, candidate)
+        cand_folder = placement.entry["folder"]
+        excluded = [str(m["path"]) for m in placement.excluded
+                    if Path(m["path"]).resolve() != candidate.resolve()]
+        mods = placement.mods
     folder_to_path = {m["folder"]: Path(m["path"]) for m in mods}
 
     order_dropped: list[str] = []
@@ -1124,6 +1116,10 @@ def analyze(
                           candidate_path=(str(Path(candidate).absolute())
                                           if candidate is not None else ""),
                           excluded_copies=excluded)
+    for msg in not_loaded:
+        # Not degraded: the engine does not load this mod, so it collides with
+        # nothing -- but a collision it WOULD cause if fixed is not shown, so say so.
+        report.skip("not in the analysis: a mod the engine does not load", msg)
     for msg in order_dropped:
         # degraded=True: an unreadable manifest costs this mod its dependency
         # edges, so its load-order position — and therefore every collision

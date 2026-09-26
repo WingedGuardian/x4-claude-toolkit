@@ -1,8 +1,8 @@
 """AUDIT-2026-09-24 Phase 1 -- runtime tools (RT-*) and registry/paths (RG-*).
 
-Every test here is `xfail(strict=True)`: it FAILS on the audited code for the reason named in
-its `reason=`, and turns into an XPASS -> hard failure the moment a fix lands, so the marker
-must be removed together with the fix.
+Each test was written as `xfail(strict=True)`, failing on the audited code; every finding has
+since been fixed and its marker removed with the fix, so these are now plain REGRESSION tests
+that must pass.
 
 Transport is the only thing stubbed: the live pipe (`_livecli._live_open`) and
 `urllib.request.urlopen` in `_nexus`. No test here touches the game, the profile, or the

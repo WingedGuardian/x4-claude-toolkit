@@ -99,10 +99,10 @@ fooled by our assumptions.
 ## Where you cannot trust it (stated, not hidden)
 
 - **Load order between mods is MEASURED, not documented.** It is the engine's own
-  signature-check order (0 of 5,134 ordered pairs inverted, BLIND-SPOTS F128); that it is
-  also the patch-APPLY order is inferred, and shapes no installed modlist exercises
-  (dependency cycles, missing dependencies, non-ASCII names) are unobserved. Any result that
-  turns on *which mod won* is advisory and says so.
+  signature-check order (0 of 5,134 ordered pairs inverted, BLIND-SPOTS F128), and the
+  in-game load-order probe (2026-09-26) MEASURED that it is also the patch-APPLY order and
+  settled cycles, missing dependencies, non-ASCII names and DLC position. Other install roots
+  and non-NTFS filesystems are unobserved.
 - **Every finding is recorded individually** — the register runs past F100 (F138 as of 2026-09-26), each with a measured cost, and
   where a limit was accepted rather than fixed, the reason it was accepted. The
   per-finding register (`docs/BLIND-SPOTS.md`) ships with the package since 2026-09-13;

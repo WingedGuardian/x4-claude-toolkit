@@ -79,12 +79,13 @@ def _count_line(shown: int, total: int, noun: str) -> str:
 
 # --- active mod set + load order ---------------------------------------------
 
-def active_mods(dirs: list[Path] | None = None) -> list[dict]:
-    """Installed ∩ manifest-enabled ∩ profile content.xml enabled.
+def active_mods(dirs: list[Path] | None = None, dropped: list[str] | None = None,
+                config: "_merge.Config | None" = None) -> list[dict]:
+    """What the engine loads -- `_registry.mods("active")`, whose docstring has the rule.
 
-    A mod id absent from the profile content.xml is treated as enabled
-    (matches the registry's "absent = enabled" convention)."""
-    return _registry.mods("active", dirs)
+    *dropped* receives every mod left out and why; *config* supplies the DLC that
+    count as dependency providers (default: the configured reference)."""
+    return _registry.mods("active", dirs, dropped, dlc_config=config)
 
 
 def ordered_overlays(mods: list[dict]) -> list[tuple[dict, Path]]:
@@ -777,7 +778,10 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
     db_path = db_path or _registry.require(
         effective_db(), "the effective-store location",
         "set X4_EFFECTIVE_DB or X4_MODS (or X4_REGISTRY), or pass --db")
-    mods = active_mods(dirs)
+    not_loaded: list[str] = []
+    mods = active_mods(dirs, not_loaded, config)
+    for msg in not_loaded:
+        progress(f"NOT in the store (the engine does not load it): {msg}")
     ordered = ordered_overlays(mods)
     folder_to_path = {m["folder"]: p for m, p in ordered}
     overlay_paths = [p for _, p in ordered]

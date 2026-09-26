@@ -1,10 +1,9 @@
 """AUDIT-2026-09-24, VA lane: x4validate findings reproduced as failing tests.
 
-Every test here asserts the CORRECT behaviour and is marked
-``xfail(strict=True)`` because the current code does not have it. When a fix
-lands, the matching test XPASSes, strict mode turns that into a failure, and the
-marker must be removed in the same commit as the fix -- so a fix cannot land
-without its test going live.
+Every test here asserts the CORRECT behaviour. They were written as
+``xfail(strict=True)`` against the audited code; every finding has since been
+fixed and its marker removed in the same commit as the fix, so they are now
+plain REGRESSION tests that must pass.
 
 Each test runs the REAL validator (``_check.validate`` / ``_cli.main`` / the
 named check function) against tiny fixture trees in ``tmp_path``. The only

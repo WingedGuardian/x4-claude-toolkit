@@ -1,10 +1,9 @@
 """AUDIT-2026-09-24 Phase 1 -- analysis CLIs (AN-*) and freshness (FR-*).
 
-Every test marked ``xfail(strict=True)`` reproduces a VERIFIED finding against the
-code as it stood at the audit, through the REAL function or CLI on a minimal
-hermetic fixture. When a fix lands, its test XPASSes, strict turns that into a
-failure, and the fixer removes the marker -- so a fix cannot land silently and a
-test cannot rot into decoration.
+Each test reproduces a VERIFIED finding through the REAL function or CLI on a
+minimal hermetic fixture. They were written as ``xfail(strict=True)`` against the
+code as it stood at the audit; every finding has since been fixed and its marker
+removed with the fix, so they are now plain REGRESSION tests that must pass.
 
 FR-5 is the exception, stated rather than hidden: its defect is a MISSING TEST
 (two case-folds survive mutation), so its tests PASS on current code and exist to
@@ -405,6 +404,32 @@ def test_FR3_a_change_in_an_indexed_root_marks_the_index_stale(tmp_path, hermeti
     capsys.readouterr()
     _mod(prof, "p2", {"md/p2.xml": '<mdscript name="P2"><cues/></mdscript>'})
     _xref.main(["cue", "PC", "--tsv", str(tsv)])
+    assert "STALE" in capsys.readouterr().err
+
+
+def test_FR3_the_index_is_checked_against_the_REFERENCE_it_was_built_from(
+        tmp_path, hermetic, monkeypatch, capsys):
+    """Final review item 5: the sidecar recorded the build's `roots` but not its
+    `reference`, so an index built with `--reference X` was checked against the
+    CONFIGURED reference and read STALE forever when the two differ."""
+    ref = _ref(tmp_path)
+    other = tmp_path / "configured_reference"
+    _w(other / "libraries" / "wares.xml", "<wares><ware id='different'/></wares>")
+    game = tmp_path / "game_ext"
+    _mod(game, "g", {"md/g.xml": '<mdscript name="G"><cues><cue name="GC"/></cues></mdscript>'})
+    monkeypatch.setattr(_registry, "default_installed_dirs", lambda: [game])
+    monkeypatch.setattr(_registry, "GAME_EXTENSIONS", game)
+    monkeypatch.setattr(_merge, "REFERENCE", other)
+    monkeypatch.setattr(_merge.Config, "dlc_dirs", lambda self: [])
+    tsv = tmp_path / "xref.tsv"
+    assert _xref.main(["build", "--reference", str(ref), "--ext-dir", str(game),
+                       "--out", str(tsv)]) == 0
+    capsys.readouterr()
+    _xref.main(["cue", "GC", "--tsv", str(tsv)])
+    assert "STALE" not in capsys.readouterr().err
+    # twin: the build's OWN reference moving still reads stale
+    _w(ref / "newdir" / "x.xml", "<x/>")
+    _xref.main(["cue", "GC", "--tsv", str(tsv)])
     assert "STALE" in capsys.readouterr().err
 
 

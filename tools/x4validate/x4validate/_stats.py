@@ -29,7 +29,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from x4validate import _paths, _cat, _compat, _merge, _registry, _input, _effective
+from x4validate import _paths, _cat, _compat, _loadorder, _merge, _registry, _input, _effective
 from x4validate import __version__
 
 
@@ -115,32 +115,27 @@ def effective_wares(ext_dir: Path, config: _merge.Config,
     # requires it and is right to: passing the scope through a variable is exactly how
     # "which mods count" stops being visible where it is chosen (CLAUDE.md #24).
     if scope == "active":
-        mods = _registry.mods("active", [ext_dir])
+        mods = _registry.mods("active", [ext_dir], dlc_config=config)
     else:
         mods = _registry.mods("installed", [ext_dir])
-    drop_folder = drop_id = ""
     if exclude is not None:
-        drop_folder = exclude.resolve().name
-        cx = exclude / "content.xml"
-        if cx.is_file():
-            root = _merge.parse_file(cx)
-            drop_id = (root.get("id") or "") if root is not None else ""
-        mods = [m for m in mods
-                if not (m["folder"].lower() == drop_folder.lower()
-                        or (drop_id and m.get("id") == drop_id))]
+        # ONE placement rule with Tier B and x4compat (`_loadorder.place_candidate`):
+        # the installed copy (same folder or id, either case) is dropped, and the
+        # candidate takes ITS position key with the candidate's own dependencies.
+        placement = _loadorder.place_candidate(mods, exclude)
+        mods = placement.mods
     if exclude is not None and patch_time:
         # THE TREE AS OF THE CANDIDATE'S OWN LOAD POSITION (AUDIT-2026-09-24 AN-7),
         # the same patch-time tree Tier B resolves `sel=` against (`_check.tier_b_trees`).
-        # The candidate is placed by the engine's rule -- its folder name and its own
-        # manifest's dependencies -- and only mods loading BEFORE it are merged. A mod
-        # loading AFTER it does not exist yet when the engine applies the candidate's
-        # ops, so a selector aimed at a node that later mod adds matches nothing in
-        # the game; resolving against the whole set reported that op as a change.
-        mods = mods + [{"folder": drop_folder, "path": str(exclude),
-                        "id": drop_id or drop_folder}]
+        # Only mods loading BEFORE it are merged. A mod loading AFTER it does not exist
+        # yet when the engine applies the candidate's ops, so a selector aimed at a node
+        # that later mod adds matches nothing in the game; resolving against the whole
+        # set reported that op as a change.
         order = _compat.compute_load_order(mods)
-        order = order[:order.index(drop_folder)]
+        order = order[:order.index(placement.entry["folder"])]
     else:
+        if exclude is not None:
+            mods = [m for m in mods if m is not placement.entry]
         order = _compat.compute_load_order(mods)
     by_folder = {m["folder"]: Path(m["path"]) for m in mods}
     overlays = [by_folder[f] for f in order if f in by_folder]

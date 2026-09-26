@@ -47,6 +47,8 @@ def world(tmp_path, monkeypatch):
     prof = tmp_path / "profile_content.xml"
     prof.write_text("<content/>", encoding="utf-8")
     monkeypatch.setattr(_registry, "PROFILE_CONTENT", prof)
+    # hermetic: the machine's reference/packed DLC must not act as providers here
+    monkeypatch.setattr(_registry, "_reference_dlc_dirs", lambda config=None: [])
 
     def profile(entries: str) -> None:
         prof.write_text(f"<content>{entries}</content>", encoding="utf-8")
@@ -187,3 +189,57 @@ def test_a_the_freshness_fingerprint_sees_the_profile_enable_a_manifest_disabled
     before = _freshness.hash_content(ref, [ext], profile=prof)
     prof.write_text('<content><extension id="m" enabled="true"/></content>', encoding="utf-8")
     assert _freshness.hash_content(ref, [ext], profile=prof) != before
+
+
+# --- the DLC provider set is the REFERENCE/GAME DLC, not what the scanned dirs hold ---
+# AUDIT final review item 1: with `--ext-dir <a folder that holds no ego_dlc_*>` every
+# mod requiring a DLC was silently NOT LOADED, because the only providers counted were
+# DLC folders found in the SCANNED dirs.
+
+def test_d_a_reference_DLC_satisfies_a_dependency_the_scanned_dir_lacks(tmp_path, monkeypatch):
+    from x4validate import _merge
+    ext = tmp_path / "not_the_game" / "extensions"
+    ext.mkdir(parents=True)
+    prof = tmp_path / "profile_content.xml"
+    prof.write_text("<content/>", encoding="utf-8")
+    monkeypatch.setattr(_registry, "PROFILE_CONTENT", prof)
+    ref = tmp_path / "reference"
+    (ref / "extensions" / "ego_dlc_boron").mkdir(parents=True)
+    _manifest(ext, "needs_dlc", deps=[("ego_dlc_boron", False)])
+    dropped: list[str] = []
+    got = _registry.mods("active", [ext], dropped=dropped,
+                         dlc_config=_merge.Config(reference=ref))
+    assert {m["folder"] for m in got} == {"needs_dlc"}, dropped
+    assert dropped == []
+
+
+def test_d_twin_a_DLC_neither_scanned_nor_in_the_reference_still_excludes(tmp_path, monkeypatch):
+    from x4validate import _merge
+    ext = tmp_path / "extensions"
+    ext.mkdir()
+    prof = tmp_path / "profile_content.xml"
+    prof.write_text("<content/>", encoding="utf-8")
+    monkeypatch.setattr(_registry, "PROFILE_CONTENT", prof)
+    ref = tmp_path / "reference"
+    (ref / "extensions" / "ego_dlc_split").mkdir(parents=True)
+    _manifest(ext, "needs_dlc", deps=[("ego_dlc_boron", False)])
+    dropped: list[str] = []
+    got = _registry.mods("active", [ext], dropped=dropped,
+                         dlc_config=_merge.Config(reference=ref))
+    assert got == []
+    assert any("ego_dlc_boron" in d for d in dropped), dropped
+
+
+def test_d_the_profile_can_still_disable_a_reference_DLC(tmp_path, monkeypatch):
+    from x4validate import _merge
+    ext = tmp_path / "extensions"
+    ext.mkdir()
+    prof = tmp_path / "profile_content.xml"
+    prof.write_text('<content><extension id="ego_dlc_boron" enabled="false"/></content>',
+                    encoding="utf-8")
+    monkeypatch.setattr(_registry, "PROFILE_CONTENT", prof)
+    ref = tmp_path / "reference"
+    (ref / "extensions" / "ego_dlc_boron").mkdir(parents=True)
+    _manifest(ext, "needs_dlc", deps=[("ego_dlc_boron", False)])
+    got = _registry.mods("active", [ext], dlc_config=_merge.Config(reference=ref))
+    assert got == []

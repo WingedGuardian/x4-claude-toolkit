@@ -36,7 +36,7 @@ from lxml import etree
 from x4validate import _cat, _compat, _effective, _merge, _modfiles, _registry
 
 
-def installed_in_load_order() -> list[Path]:
+def installed_in_load_order(config: "_merge.Config | None" = None) -> list[Path]:
     """Installed extension roots, in the order X4 applies them.
 
     Uses _compat.compute_load_order -- the engine's MEASURED order (case-insensitive
@@ -47,7 +47,12 @@ def installed_in_load_order() -> list[Path]:
     # set it carried a disabled mod's 19 files as live content -- and unlike a
     # missing document, surplus content corrupts POSITIVE answers, which nothing
     # else guards. (x4raw is the other question and correctly uses "installed".)
-    mods = _registry.mods("active")
+    not_loaded: list[str] = []
+    mods = _registry.mods("active", dropped=not_loaded, dlc_config=config)
+    for msg in not_loaded:
+        # Disclosed: absent from x4eff because the engine does not load it -- a
+        # query that finds nothing of this mod must not read as "it adds nothing".
+        print(f"NOT in x4eff (the engine does not load it): {msg}", file=sys.stderr)
     by_folder = {m["folder"]: m for m in mods}
     out = []
     for folder in _compat.compute_load_order(mods):
@@ -108,7 +113,7 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
 
     config = _merge.Config(reference=Path(args.reference)) if args.reference else _merge.Config()
-    overlays = installed_in_load_order()
+    overlays = installed_in_load_order(config)
     config = _merge.Config(reference=config.reference, overlays=tuple(overlays))
 
     out = Path(args.out)
