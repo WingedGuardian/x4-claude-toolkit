@@ -264,6 +264,14 @@ class TestPS2MethodCalls(_PSE2E):
             ("ask", "Get-Things | % { $_.Delete() }"),
         ])
 
+    def test_a_root_variable_target_still_denies(self):
+        """Unresolved is ASK -- but a target naming a root through its variable must still
+        reach the root rule, where the deny outranks the ask (as for Remove-Item)."""
+        self.expect([
+            ("deny", '[IO.File]::Delete("$env:X4_REFERENCE' + BS + 'a.xml")'),
+            ("deny", '(Get-Item "$env:X4_REFERENCE").Delete()'),
+        ])
+
     def test_TWIN_harmless_methods(self):
         self.expect([
             ("allow", "'abc'.Replace('a','b')"),

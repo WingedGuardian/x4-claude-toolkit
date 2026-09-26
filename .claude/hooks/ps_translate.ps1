@@ -711,7 +711,6 @@ function MemberLines([string]$member, $paths, [string]$filter, $args2) {
     foreach ($p in $paths) {
         if (-not (IsResolved $p) -and $p -notmatch 'PS_CHILD') {
             Unknown ".${member}() on an object whose path cannot be resolved"
-            continue
         }
         switch -regex ($member) {
             '^delete$' {
@@ -754,9 +753,15 @@ function Translate-Member([InvokeMemberExpressionAst]$m) {
         }
         if (-not $kind) { return @() }
         $need = if ($kind -in 'mv', 'cp', 'replace') { 2 } else { 1 }
-        if ($a.Count -lt $need -or -not (IsResolved $a[0]) -or ($need -eq 2 -and -not (IsResolved $a[1]))) {
-            Unknown "[$($m.Expression.TypeName.FullName)]::$($m.Member.Extent.Text)() on a path that cannot be resolved"
+        if ($a.Count -lt $need) {
+            Unknown "[$($m.Expression.TypeName.FullName)]::$($m.Member.Extent.Text)() with no path the guard can read"
             return @()
+        }
+        # Unresolved is UNKNOWN (ask) -- and the line is still emitted, so a path that
+        # names a root through its variable (`"$env:X4_REFERENCE/a"`) still reaches the
+        # root rules and a deny still wins, exactly as it does for Remove-Item.
+        if (-not (IsResolved $a[0]) -or ($need -eq 2 -and -not (IsResolved $a[1]))) {
+            Unknown "[$($m.Expression.TypeName.FullName)]::$($m.Member.Extent.Text)() on a path that cannot be resolved"
         }
         switch ($kind) {
             'rm'      { return @("rm -rf $(Q $a[0])") }
