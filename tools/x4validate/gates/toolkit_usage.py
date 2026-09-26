@@ -521,6 +521,9 @@ def main() -> int:
     elif not BASELINE.exists():
         print(f"no baseline at {BASELINE.name} -- run with --record to create one. "
               "Drift is NOT being checked.")
+        # A REFUSAL, not a pass (AUDIT-2026-09-24 GT-8): half of this gate did not run,
+        # and its siblings return 2 in exactly this state.
+        refusals.append(f"drift: no baseline at {BASELINE.name} (run with --record)")
     else:
         old = json.loads(BASELINE.read_text(encoding="utf-8"))["caps"]
         drift: list[str] = []                 # counted, never grepped back out of

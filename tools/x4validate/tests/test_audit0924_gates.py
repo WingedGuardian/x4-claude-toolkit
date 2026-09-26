@@ -834,3 +834,20 @@ def test_gt5_schema_sweep_record_refuses_when_totals_do_not_match(tmp_path, monk
     monkeypatch.setattr(sw, "RECORD", True)
     assert sw.main() == 1
     assert not sw.BASELINE.exists(), "a per-mod baseline was recorded over a failing run"
+
+
+def test_gt8_toolkit_usage_with_no_baseline_is_not_a_pass(tmp_path, monkeypatch, capsys):
+    """AUDIT-2026-09-24 GT-8: no baseline means drift was NOT checked; its siblings return 2
+    in this state, and so must it (it returned 0)."""
+    tu = import_gate("toolkit_usage", module_level=False)
+    cap = {"cli": "x4validate", "sub": "", "invoked": 3, "named": 3,
+           "first": "2026-09-01", "last": "2026-09-20", "last_named": "2026-09-20"}
+    monkeypatch.setattr(tu, "audit", lambda: {"caps": {"x4validate": cap}, "unenumerable": [],
+                                              "subs_by_cli": {"x4validate": []}})
+    # Coverage fully evaluable and complete, so the ONLY unevaluated part is drift.
+    cov = types.SimpleNamespace(undecidable=[], covers=lambda cli, sub: True)
+    monkeypatch.setattr(tu, "qa_sweep_coverage", lambda subs: (cov, None))
+    monkeypatch.setattr(tu, "RECORD", False)
+    monkeypatch.setattr(tu, "BASELINE", tmp_path / "no-baseline.json")
+    assert tu.main() == 2
+    assert "no baseline" in capsys.readouterr().out
