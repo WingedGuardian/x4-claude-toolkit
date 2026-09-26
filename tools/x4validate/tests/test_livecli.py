@@ -507,6 +507,20 @@ def test_TWIN_a_candidate_that_agrees_EVERYWHERE_is_still_proposed(tmp_path, mon
     assert 'bar.value' in out, out
 
 
+def test_a_field_whose_EVERY_candidate_disagrees_does_not_crash(tmp_path, monkeypatch):
+    """A key DISQUALIFIED with nothing informative: the default for a missing informative
+    entry was a tuple, and `tuple - set` raised TypeError. Latent since before 2026-09-24;
+    gates/qa_sweep's `x4live mappings` cell hit it on the real groundtruth once RT-5 parsed
+    its rows correctly."""
+    # The key is only iterated when SOMETHING agreed (it has votes). The crash needs that
+    # agreement to be DEGENERATE (a 0 -- not informative) while another prop DISAGREES.
+    rows = ['t	m1	foo	0']
+    store = {'m1': {'bar.value': '0', 'baz.value': '5'}}
+    rc, out = _mappings_out(tmp_path, monkeypatch, rows, store)
+    assert rc in (0, 1), out
+    assert 'baz.value' not in out, out
+
+
 def test_groundtruth_reader_takes_BOTH_row_shapes(tmp_path):
     """A per-field row carries one field; a `*` row carries the engine's ALL-FIELDS reply
     tab-joined inside column 4. A naive 4-way split drops every `*` row -- it dropped 15

@@ -1123,7 +1123,10 @@ def cmd_mappings(path: str | None, out=None, groundtruth: str | None = None) -> 
     for key in sorted(votes):
         ltype, field = key
         # A slot that ever disagreed is out, however many times it agreed elsewhere.
-        good = sorted(informative.get(key, ()) - disqualified.get(key, set()))
+        # A key can be DISQUALIFIED with nothing informative (every slot disagreed): the
+        # default must be a SET, or the subtraction raises TypeError (tuple - set) -- latent
+        # since before 2026-09-24, reached once RT-5 parsed real groundtruth rows correctly.
+        good = sorted(informative.get(key, set()) - disqualified.get(key, set()))
         if not good:
             continue
         if len(good) == 1:
