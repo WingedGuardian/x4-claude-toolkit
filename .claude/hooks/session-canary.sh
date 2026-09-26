@@ -17,7 +17,13 @@
 # `x4canary` itself still exits 1 on a loss and 2 when it could not check, for callers
 # that want a gate (a subagent batch, CI).
 
-HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Parameter expansion, not `$(cd "$(dirname "$0")" && pwd)`: that was a subshell AND
+# a dirname process on every call (AUDIT-2026-09-24 HK-4). The settings command passes
+# an absolute path, and a relative one still resolves: nothing here changes directory.
+# BOTH separators: a hook started as `bash C:\...\protect-bash.sh` has a $0 with no
+# forward slash at all, and reading it as "." sourced _x4-env.sh from the CALLER's
+# directory -- MEASURED: the guard then found no python and asked on every command.
+case "$0" in */*|*\\*) HOOK_DIR="${0%[/\\]*}" ;; *) HOOK_DIR=. ;; esac
 . "$HOOK_DIR/_x4-env.sh"
 
 # The canary lives in the toolkit, not beside the hooks: it is a tool, and it needs the

@@ -1,7 +1,13 @@
 #!/bin/bash
 # SessionStart: warn if the game build differs from the build reference/ was unpacked from.
 # Plain stdout becomes session context for SessionStart hooks. Cross-platform Steam detection.
-HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Parameter expansion, not `$(cd "$(dirname "$0")" && pwd)`: that was a subshell AND
+# a dirname process on every call (AUDIT-2026-09-24 HK-4). The settings command passes
+# an absolute path, and a relative one still resolves: nothing here changes directory.
+# BOTH separators: a hook started as `bash C:\...\protect-bash.sh` has a $0 with no
+# forward slash at all, and reading it as "." sourced _x4-env.sh from the CALLER's
+# directory -- MEASURED: the guard then found no python and asked on every command.
+case "$0" in */*|*\\*) HOOK_DIR="${0%[/\\]*}" ;; *) HOOK_DIR=. ;; esac
 . "$HOOK_DIR/_x4-env.sh"
 
 # WHICH marker is authoritative, and it is not the obvious one.

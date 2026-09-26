@@ -23,7 +23,13 @@
 #     python scripts/verify-hook-tests.py         (mutations + predicate coverage)
 #     python scripts/fuzz-guard.py                (syntax-bypass fuzzing)
 JQ="${JQ:-jq}"
-HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Parameter expansion, not `$(cd "$(dirname "$0")" && pwd)`: that was a subshell AND
+# a dirname process on every call (AUDIT-2026-09-24 HK-4). The settings command passes
+# an absolute path, and a relative one still resolves: nothing here changes directory.
+# BOTH separators: a hook started as `bash C:\...\protect-bash.sh` has a $0 with no
+# forward slash at all, and reading it as "." sourced _x4-env.sh from the CALLER's
+# directory -- MEASURED: the guard then found no python and asked on every command.
+case "$0" in */*|*\\*) HOOK_DIR="${0%[/\\]*}" ;; *) HOOK_DIR=. ;; esac
 . "$HOOK_DIR/_x4-env.sh"
 
 INPUT=$(x4_hook_input)
@@ -52,7 +58,7 @@ x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it ch
 # and a filed reason is a preview of itself.
 emit() {
   set -- "$1" "$(x4_bound "$2")"
-  if [ "$JQ_OK" = 1 ]; then
+  if jq_works; then
     if [ "$1" = "advise" ]; then
       "$JQ" -n --arg r "$2" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'
     else
@@ -120,12 +126,23 @@ $1"; else ADVICE="$1"; fi; }
 # A guard that cannot see its input must not stay silent: silence IS allow, and that
 # is exactly how every hook here sat dead for five weeks. So a missing interpreter, a
 # crash, or an unparseable payload ASKS -- it never falls through.
-PY="$(x4_python)"   # shared with every other hook (see _x4-env.sh)
+x4_resolve_python; PY="$X4_PY"   # shared with every other hook (see _x4-env.sh)
 # Does jq actually WORK? Presence on PATH is not the question -- the probe that caught
-# this pointed JQ at a missing binary. Tested once, here, rather than discovered on the
-# verdict path where a failure is silent.
-JQ_OK=0
-printf '%s' '{}' | "$JQ" -e . >/dev/null 2>&1 && JQ_OK=1
+# this pointed JQ at a missing binary. Tested before any verdict is rendered, rather than
+# discovered on the verdict path where a failure is silent.
+#
+# LAZILY, on the first verdict (AUDIT-2026-09-24 HK-4). Only emit() consumes it, and most
+# calls are a silent allow that renders nothing -- so probing up front spent a jq process
+# on every call to answer a question almost none of them asked. A failing probe still
+# routes the verdict through python, exactly as before.
+JQ_OK=""
+jq_works() {
+  if [ -z "$JQ_OK" ]; then
+    JQ_OK=0
+    printf '%s' '{}' | "$JQ" -e . >/dev/null 2>&1 && JQ_OK=1
+  fi
+  [ "$JQ_OK" = 1 ]
+}
 
 if [ -z "$PY" ]; then
   printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"X4 GUARD INERT: no Python interpreter was found, so protect-bash.sh could not analyse this command and checked NOTHING. Set X4_PYTHON, or put python on PATH. Confirm only if you know why it is missing."}}'
@@ -227,7 +244,27 @@ TIMEOUT_MS="${_t%%
 # and 6 FALSE NEGATIVES. Three parser defects shipped from hand-rolling shell
 # tokenisation in one release; this is the one place where the real parser is available
 # for the asking, so it is asked.
-if ! bash -n -c "$COMMAND" 2>/dev/null; then
+#
+# ONE SHORTCUT, and it cannot change a verdict (AUDIT-2026-09-24 HK-4): a command made of
+# plain words -- letters, digits and `_./:@%+=,-`, separated by blanks or newlines -- with
+# no reserved word among them has nothing that CAN fail to parse: no quote, bracket,
+# operator, expansion or compound command. `git status` and `uv run pytest -q` skip a
+# process; anything else still asks bash.
+#   (Whitespace other than blank/newline -- CR, VT, FF -- is an ordinary word character
+#   to bash's parser, so letting [[:space:]] through cannot hide a syntax error. The
+#   word loop cannot glob: no pattern character survives the first test.)
+_x4_plain=0
+_x4_rest="${COMMAND//[A-Za-z0-9_.\/:@%+=,-]/}"
+if [ -z "${_x4_rest//[[:space:]]/}" ]; then
+  _x4_plain=1
+  for _w in $COMMAND; do
+    case "$_w" in
+      if|then|else|elif|fi|case|esac|for|select|while|until|do|done|function|in|time|coproc)
+        _x4_plain=0; break ;;
+    esac
+  done
+fi
+if [ "$_x4_plain" != 1 ] && ! bash -n -c "$COMMAND" 2>/dev/null; then
   ask "This command does not PARSE (bash -n rejects it), so the guard could evaluate NO rule against it and cannot vouch for it. Check the quoting -- a Windows path ending in a backslash inside double quotes is the usual cause. Confirm only if you know the command is safe."
 fi
 

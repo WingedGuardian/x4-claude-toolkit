@@ -6,7 +6,13 @@
 # - Confirmation: user profile, live extensions/ (deploy target)
 # - Advisory only: content.xml (manifests) -- the user turned the prompt off 2026-08-29
 JQ="${JQ:-jq}"
-HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Parameter expansion, not `$(cd "$(dirname "$0")" && pwd)`: that was a subshell AND
+# a dirname process on every call (AUDIT-2026-09-24 HK-4). The settings command passes
+# an absolute path, and a relative one still resolves: nothing here changes directory.
+# BOTH separators: a hook started as `bash C:\...\protect-bash.sh` has a $0 with no
+# forward slash at all, and reading it as "." sourced _x4-env.sh from the CALLER's
+# directory -- MEASURED: the guard then found no python and asked on every command.
+case "$0" in */*|*\\*) HOOK_DIR="${0%[/\\]*}" ;; *) HOOK_DIR=. ;; esac
 . "$HOOK_DIR/_x4-env.sh"
 
 INPUT=$(x4_hook_input)
@@ -15,9 +21,7 @@ x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it ch
 # Is jq actually usable? A BROKEN jq made every verdict below print nothing, and empty
 # stdout from a hook means ALLOW -- so the guard failed open, silently, exactly like
 # F79. protect-bash.sh gained this fallback in bccffc1; this file never did.
-PY="$(x4_python)"   # shared: refuses a misconfigured X4_PYTHON
-JQ_OK=0
-printf '%s' '{}' | "$JQ" -e . >/dev/null 2>&1 && JQ_OK=1
+x4_resolve_python; PY="$X4_PY"   # shared: refuses a misconfigured X4_PYTHON
 
 emit() {   # emit <deny|ask|advise> <reason>
   if [ "$JQ_OK" = 1 ]; then
@@ -42,17 +46,15 @@ sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": h}).encode("utf-8"))'
   fi
 }
 
-if [ "$JQ_OK" = 1 ]; then
-  FILE_PATH=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.file_path // .tool_input.notebook_path // empty')
-  # jq's STATUS, not a literal 1. `FP_OK=1` here meant an UNREADABLE payload was
-  # indistinguishable from an empty path, so the refusal fifteen lines below -- whose
-  # comment says exactly that -- was unreachable whenever jq worked. It existed only
-  # on the python fallback. MEASURED 2026-09-05 with truncated JSON: protect-bash.sh
-  # asks (328 bytes), this hook emitted 0 bytes and ALLOWED. jq exits non-zero on a
-  # parse error and prints nothing, so the two cases are distinguishable here.
-  # NB $? after this assignment is the command substitution's status, which is jq's:
-  # jq is the last element of the pipeline, and it is the one meant.
-  if [ $? -eq 0 ]; then FP_OK=1; else FP_OK=0; fi
+# ONE jq process: the read itself is the health check (AUDIT-2026-09-24 HK-4). A
+# separate `jq -e .` probe first was a second process on every Edit/Write. jq exits
+# non-zero when it is missing, broken, OR handed an unreadable payload -- and in every
+# one of those cases the python reader below runs and tells the last two apart, so an
+# UNREADABLE payload still reaches the refusal (MEASURED 2026-09-05: it once did not).
+# JQ_OK records whether jq worked, for emit().
+JQ_OK=0
+if FILE_PATH=$(printf '%s' "$INPUT" | "$JQ" -r '.tool_input.file_path // .tool_input.notebook_path // empty' 2>/dev/null); then
+  JQ_OK=1; FP_OK=1
 elif [ -n "$PY" ]; then
   FILE_PATH=$(X4_IN="$INPUT" "$PY" -c 'import json, os, sys
 try:
@@ -170,8 +172,20 @@ case "$_NP" in */claude.md|*/knowledgebase.md) exit 0;; esac
 # dev/ and dist/ are the documented mod workspace; they MUST be whitelisted before the
 # game-install block below, because in the "in-game" install method X4_TOOLKIT *is* the game
 # folder — without this, editing your own mod source is hard-denied in the default layout.
+#
+# The toolkit root is canonicalised ONCE and each subdirectory appended to it, instead of
+# canonicalising all 13 `<toolkit>/<sub>` roots separately -- that was a sed (and a
+# subshell) per root on every Edit/Write, most of this hook's latency (AUDIT-2026-09-24
+# HK-4). The two agree unless a subdirectory is itself a SYMLINK, which realpath would
+# resolve elsewhere; for that one case the full x4_under still runs.
+x4_canon_memo "$X4_TOOLKIT"; _tkc="${_X4_CANON_RESULT%/}"
+x4_canon_memo "$FILE_PATH";  _fpc="$_X4_CANON_RESULT"
 for sub in .claude/hooks .claude/skills .claude/agents .claude/commands .claude/plans .claude/backups .claude/memory .claude/projects tools bin scripts dev dist; do
-  x4_under "$FILE_PATH" "$X4_TOOLKIT/$sub" && exit 0
+  if [ -L "$X4_TOOLKIT/${sub%%/*}" ] || [ -L "$X4_TOOLKIT/$sub" ]; then
+    x4_under "$FILE_PATH" "$X4_TOOLKIT/$sub" && exit 0
+    continue
+  fi
+  case "$_fpc" in "$_tkc/$sub"|"$_tkc/$sub"/*) exit 0 ;; esac
 done
 # Mod sources may live outside the toolkit entirely (X4_MODS); same reasoning.
 x4_under "$FILE_PATH" "${X4_MODS:-}" && exit 0

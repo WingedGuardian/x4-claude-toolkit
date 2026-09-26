@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-bash.sh\"",
-            "timeout": 5,
+            "timeout": 30,
             "statusMessage": "Checking command safety..."
           }
         ]
@@ -18,7 +18,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-bash.sh\"",
-            "timeout": 5,
+            "timeout": 30,
             "statusMessage": "Checking PowerShell command safety..."
           }
         ]
@@ -29,13 +29,13 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-files.sh\"",
-            "timeout": 5,
+            "timeout": 30,
             "statusMessage": "Checking file protection..."
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/backup-before-edit.sh\"",
-            "timeout": 5,
+            "timeout": 30,
             "statusMessage": "Backing up file..."
           }
         ]
@@ -46,7 +46,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/search-scope.sh\"",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       }
