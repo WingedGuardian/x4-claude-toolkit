@@ -67,12 +67,37 @@ def _unquote(v: str) -> str:
     The comment was cut first, for both, so `X4_MODS="C:/My Mods #2/x4"` became
     `"C:/My Mods` with a dangling quote (AUDIT-2026-09-24 RG-5). Inside quotes a `#` is
     data, exactly as when the shell sources the same file.
+
+    Adjacent segments CONCATENATE, as in the shell: `"a"b` is `ab` and `'C:/x'"/y"` is
+    `C:/x/y` (a first version returned only the first quoted segment -- review of RG-5).
+    An unquoted `#` starts a comment only after whitespace; mid-word it is data. Unquoted
+    whitespace is kept inside the value (lenient, as before -- a shell would split
+    there) and trimmed at the ends. An UNTERMINATED quote falls back to the older
+    whole-value reading below rather than guessing where the value ends.
     """
     s = v.strip()
-    if s and s[0] in "\"'":
-        end = s.find(s[0], 1)
-        if end > 0:
-            return s[1:end]
+    parts: list[tuple[str, bool]] = []          # (text, quoted)
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c in "\"'":
+            end = s.find(c, i + 1)
+            if end < 0:
+                return _unquote_legacy(v)
+            parts.append((s[i + 1:end], True))
+            i = end + 1
+        elif c == "#" and i > 0 and s[i - 1].isspace():
+            break                                # a comment: the value ended before it
+        else:
+            parts.append((c, False))
+            i += 1
+    while parts and not parts[-1][1] and parts[-1][0].isspace():
+        parts.pop()                              # unquoted whitespace before a comment
+    return "".join(t for t, _ in parts)
+
+
+def _unquote_legacy(v: str) -> str:
+    """The pre-concatenation reading, kept ONLY for a value with an unterminated quote."""
     v = v.split(" #", 1)[0].strip()
     if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
         return v[1:-1]
