@@ -256,6 +256,197 @@ def _db_reaches(query: str) -> list[dict]:
     return reaches
 
 
+# --- scope narrowed OUTSIDE the reach call's argument list (fu-ask, 2026-09-26) ---
+#
+# `_db_reaches` above only ever looks INSIDE a reach call's own parentheses --
+# `doc(...)`, `db:get('<db>', '<path>')`, `collection('<db>/<path>')`. A query can
+# narrow its scope just as effectively OUTSIDE that argument list, by testing a
+# document-identity function in a predicate, a `where` clause, or a comparison:
+#
+#   collection('x4eff')[matches(document-uri(.),'libraries/wares')]//*[@id='x']
+#   for $d in collection('x4eff') where contains(base-uri($d),'libraries/wares')
+#       return $d//*[@id='x']
+#
+# MEASURED (two people): both printed "NEGATIVE CONFIRMED over 10970 of 10970
+# documents", rc 0, over a query that in fact addressed 9 of them.
+#
+# Design choice, agreed rather than discovered: do not parse XQuery. Instead, name
+# the functions whose result IDENTIFIES a document (or a node/path inside one) and
+# refuse whenever one is used to TEST something -- inside a predicate `[...]`, a
+# `where` clause, or as an operand of matches/contains/starts-with/ends-with or a
+# comparison. A call that only APPEARS in the query (a `return`, an argument to an
+# unrelated function, a simple-map `!` that merely emits it) is not itself a test
+# and is left alone -- refusing those would refuse `for $d in collection('x4eff')
+# return document-uri($d)`, which addresses the whole database and answers fine.
+#
+# `db:node-pre` / `db:node-id` are deliberately NOT in this set: they return a pre
+# or id VALUE, not a document identity by themselves, and whether a given use of
+# one narrows the scope needs judgement a text scan cannot make safely. Left as a
+# named residual (see the fix's commit message), not silently "handled".
+_IDENTITY_FNS = ("document-uri", "base-uri", "db:path")
+_IDENTITY_CALL = re.compile(
+    r"(?<![\w:.\-])(?:fn:)?(" + "|".join(re.escape(f) for f in _IDENTITY_FNS) + r")\s*\(")
+
+#: A call whose argument being an identity call is itself the filtering test,
+#: wherever it sits -- `matches(document-uri(.), 'x')` narrows the scope whether or
+#: not it also sits inside a `[...]` predicate or a `where` clause.
+_TEST_FNS = frozenset({"matches", "contains", "starts-with", "ends-with"})
+
+#: Comparison operators/keywords: an identity call standing next to one of these is
+#: being tested against a value, the same filtering shape as a `[...]` predicate.
+_CMP_AFTER = re.compile(r"\s*(?:!=|<=|>=|=|<|>|eq\b|ne\b|lt\b|gt\b|le\b|ge\b)")
+_CMP_BEFORE = re.compile(
+    r"(?:!=|<=|>=|=|<|>|(?<![\w:.\-])(?:eq|ne|lt|gt|le|ge))\s*\Z")
+
+#: The identifier immediately before a `(`, if there is one -- used to name the
+#: call whose argument list a position falls inside.
+_CALL_OPEN = re.compile(r"([A-Za-z_][\w:.\-]*)\s*\(\Z")
+
+#: A string literal's CONTENTS, single- or double-quoted, `''`/`""` doubling as the
+#: XQuery escape for a literal quote char.
+_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"", re.S)
+
+
+def _blank_strings(text: str) -> str:
+    """*text* with every string literal's CONTENTS replaced by 'x', same length,
+    quotes kept in place -- so a literal that happens to spell a function name
+    (`'see document-uri() in the docs'`) can neither trigger this scan nor a
+    literal that hides a real one defeat it. Length and every other character's
+    position are unchanged, so an offset into the result also indexes the
+    original (comment-stripped) text.
+    """
+    return _STRING_LITERAL.sub(
+        lambda m: m.group(0)[0] + "x" * (len(m.group(0)) - 2) + m.group(0)[-1], text)
+
+
+def _matching_close(text: str, open_pos: int) -> int:
+    """Index of the ')' matching the '(' at *open_pos*, or len(text) if unmatched."""
+    depth = 0
+    for i in range(open_pos, len(text)):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return len(text)
+
+
+def _predicate_mask(text: str) -> list[bool]:
+    """True at every position at depth > 0 inside a `[ ... ]`.
+
+    That is a predicate almost always, and an array constructor (same bracket)
+    occasionally -- over-included on purpose, since this scan prefers refusing a
+    query that turns out to be safe over missing one that is not.
+    """
+    mask = [False] * len(text)
+    depth = 0
+    for i, ch in enumerate(text):
+        if ch == "[":
+            depth += 1
+            mask[i] = True
+        elif ch == "]":
+            mask[i] = depth > 0
+            depth = max(0, depth - 1)
+        else:
+            mask[i] = depth > 0
+    return mask
+
+
+def _where_clause_spans(text: str) -> list[tuple[int, int]]:
+    """[start, end) of every FLWOR `where` clause's condition.
+
+    Found by tracking bracket/paren/brace depth from each `where` keyword forward
+    to the next clause keyword (`return`, `for`, `let`, `where`, `order by`,
+    `group by`, `count`, `window`) seen at the SAME depth -- enough to tell a
+    `where` from a nested FLWOR's own `return` inside it, without parsing XQuery.
+    """
+    spans = []
+    for m in re.finditer(r"(?<![\w:.\-])where(?![\w:.\-])", text):
+        start = m.end()
+        depth = 0
+        end = len(text)
+        i = start
+        while i < len(text):
+            ch = text[i]
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                if depth == 0:
+                    end = i
+                    break
+                depth -= 1
+            elif depth == 0:
+                km = re.match(r"(?:return|for|let|where|order\s+by|group\s+by|count|window)"
+                              r"(?![\w:.\-])", text[i:])
+                if km:
+                    end = i
+                    break
+            i += 1
+        spans.append((start, end))
+    return spans
+
+
+def _enclosing_call_names(text: str, positions: set[int]) -> dict[int, frozenset[str]]:
+    """For each position of interest, the set of function names whose argument
+    list encloses it -- one forward pass tracking '(' / ')' nesting. A '(' with no
+    identifier immediately before it (a bare grouping paren, `if (`, `return (`)
+    contributes an empty name and is otherwise harmless: nothing here tests for it.
+    """
+    found: dict[int, frozenset[str]] = {}
+    stack: list[str] = []
+    for i, ch in enumerate(text):
+        if i in positions:
+            found[i] = frozenset(stack)
+        if ch == "(":
+            m = _CALL_OPEN.search(text[:i + 1])
+            stack.append(m.group(1) if m else "")
+        elif ch == ")":
+            if stack:
+                stack.pop()
+    return found
+
+
+def _identity_narrowing(stripped_query: str) -> list[str]:
+    """Every identity-function call in *stripped_query* (comments already gone)
+    that narrows the scope OUTSIDE a reach call's own argument list: one used
+    inside a predicate, a `where` clause, or a direct comparison / matches /
+    contains / starts-with / ends-with test. One description per call found,
+    naming the function, the snippet, and why it was flagged -- never why some
+    OTHER call was not; a call this scan does not flag is simply not reported,
+    which is not the same as proving it safe.
+    """
+    scan = _blank_strings(stripped_query)
+    calls = list(_IDENTITY_CALL.finditer(scan))
+    if not calls:
+        return []
+    pred_mask = _predicate_mask(scan)
+    where_spans = _where_clause_spans(scan)
+    starts = {m.start() for m in calls}
+    enclosing = _enclosing_call_names(scan, starts)
+
+    findings = []
+    for m in calls:
+        start = m.start()
+        open_paren = m.end() - 1
+        close_paren = _matching_close(scan, open_paren)
+        reasons = []
+        if pred_mask[start]:
+            reasons.append("in a predicate")
+        if any(s <= start < e for s, e in where_spans):
+            reasons.append("in a where clause")
+        test_fns = enclosing.get(start, frozenset()) & _TEST_FNS
+        if test_fns:
+            reasons.append("argument to " + "/".join(sorted(test_fns)))
+        after = close_paren + 1
+        if _CMP_AFTER.match(scan, after) or _CMP_BEFORE.search(scan[:start]):
+            reasons.append("compared")
+        if reasons:
+            snippet = stripped_query[start:close_paren + 1]
+            findings.append(f"{snippet} ({', '.join(reasons)})")
+    return findings
+
+
 def _git_bash_argv_state() -> tuple[str | None, bool]:
     """(MSYSTEM, conversion switched off) for THIS process; see `argv_under_git_bash` in main().
 
@@ -376,11 +567,20 @@ def main(argv=None) -> int:
     # argument (a path), a db name held in a variable, and doc() all escaped it. Three
     # refusals, all rc 2 and all BEFORE the run, because each makes the per-database
     # coverage and freshness the wrong yardstick for the answer, positive or zero.
-    reaches = _db_reaches(_strip_xq_comments(query))
+    #
+    # fu-ask, 2026-09-26: `_db_reaches` only ever looks INSIDE a reach call's own
+    # argument list. A query can narrow its scope just as effectively OUTSIDE it --
+    # `collection('x4eff')[matches(document-uri(.),'libraries/wares')]` -- and MEASURED
+    # (two people) printed a whole-database denominator over 9 of 10970 documents, rc 0.
+    # `_identity_narrowing` catches that shape; see its docstring for what it does and
+    # does not flag.
+    stripped_query = _strip_xq_comments(query)
+    reaches = _db_reaches(stripped_query)
     unknown = [r["call"] for r in reaches if r["db"] is None]
     foreign = sorted({r["db"] for r in reaches if r["db"] and r["db"] != args.db})
     scoped = [r["call"] for r in reaches if r["db"] and r["scoped"]]
-    if unknown or foreign or scoped:
+    narrowing = _identity_narrowing(stripped_query)
+    if unknown or foreign or scoped or narrowing:
         if unknown:
             print(f"error: the query names its database through an expression ask.py "
                   f"cannot read: {'; '.join(unknown)}", file=sys.stderr)
@@ -391,12 +591,17 @@ def main(argv=None) -> int:
                   f"'{args.db}'.", file=sys.stderr)
             print(f"       Coverage and staleness would be judged against "
                   f"'{args.db}', which is not what you queried.", file=sys.stderr)
-        if scoped:
-            print(f"error: the query addresses PART of a database: {'; '.join(scoped)}",
-                  file=sys.stderr)
+        if scoped or narrowing:
+            print(f"error: the query addresses PART of a database: "
+                  f"{'; '.join(scoped + narrowing)}", file=sys.stderr)
             print("       The coverage denominator counts every document in the "
                   "database; a zero over one path is not a zero over those, and a "
                   "mistyped path matches nothing at all.", file=sys.stderr)
+            if narrowing:
+                print("       A document-identity function tested in a predicate, a "
+                      "where clause, or a comparison narrows the scope the same way, "
+                      "even though it never appears inside the reach call's own "
+                      "argument list.", file=sys.stderr)
             print("       Search the whole database instead -- a negative over all of "
                   "it covers every path in it.", file=sys.stderr)
         # Advise only what argparse will accept: `--db x4eff/libraries` was once
