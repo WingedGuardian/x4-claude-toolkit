@@ -234,8 +234,6 @@ def test_gt1_unreadable_is_named_and_rc_2_and_a_false_ok_outranks_it(tmp_path, m
 
 # ============================================================================ GT-2 determinism_audit
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-2: determinism_audit.run drops the "
-                   "returncode, so a tool that refuses/crashes identically twice is 'stable'")
 def test_gt2_a_command_that_fails_twice_is_not_deterministic_output(monkeypatch, capsys):
     da = import_gate("determinism_audit", module_level=False)
     monkeypatch.setattr(da, "WITH_BUILD", False)
@@ -243,6 +241,41 @@ def test_gt2_a_command_that_fails_twice_is_not_deterministic_output(monkeypatch,
         returncode=2, stdout="error: cannot resolve the game's extensions directory\n", stderr=""))
     rc = da.main()
     assert rc != 0, f"every CASE exited 2 and was scored stable:\n{capsys.readouterr().out}"
+
+
+def _fake_runs(seq):
+    """subprocess.run stand-in returning (rc, stdout) from `seq(argv, call_no)`."""
+    calls = {"n": 0}
+
+    def fake(argv, *a, **k):
+        calls["n"] += 1
+        rc, out = seq(argv, calls["n"])
+        return types.SimpleNamespace(returncode=rc, stdout=out, stderr="")
+    return fake
+
+
+def test_gt2_rc_is_compared_per_run_and_collisions_rc_1_is_an_answer(monkeypatch, capsys):
+    da = import_gate("determinism_audit", module_level=False)
+    monkeypatch.setattr(da, "WITH_BUILD", False)
+    # Same text, every case answers with its own allowed rc: 0 -- x4compat's rc 1 counts.
+    monkeypatch.setattr(da.subprocess, "run", _fake_runs(
+        lambda argv, n: (1 if "x4compat" in argv else 0, "same\n")))
+    assert da.main() == 0, capsys.readouterr().out
+    # Same text, exit code differs between the two runs of one case: VARY, rc 1.
+    monkeypatch.setattr(da.subprocess, "run", _fake_runs(
+        lambda argv, n: ((n % 2) if "x4similar" in argv else 0, "same\n")))
+    assert da.main() == 1, capsys.readouterr().out
+
+
+def test_gt2_with_build_a_failed_build_is_a_failure(monkeypatch, capsys):
+    da = import_gate("determinism_audit", module_level=False)
+    monkeypatch.setattr(da, "WITH_BUILD", True)
+    monkeypatch.setattr(da, "store_fingerprint", lambda: "abc")   # the OLD store, unchanged
+    monkeypatch.setattr(da.subprocess, "run", _fake_runs(
+        lambda argv, n: (2 if "build" in argv else (1 if "x4compat" in argv else 0), "same\n")))
+    rc = da.main()
+    assert rc == 1, f"both builds failed and the old store was scored idempotent, rc {rc}"
+    assert "FAIL  x4effective build" in capsys.readouterr().out
 
 
 # ============================================================================ GT-3 floors
