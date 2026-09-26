@@ -51,7 +51,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("new", help="edited/newer mod dir")
     p.add_argument("--overlay", action="append", default=[],
                    help="extra baseline dir merged onto OLD (repeatable; e.g. a submod "
-                        "that patches the mod being compared)")
+                        "that patches the mod being compared). For a file EVERY layer "
+                        "ships as a <diff>, the baseline is the layers' ops concatenated "
+                        "in order: it models NEW as ONE merged core+submod patch. If NEW "
+                        "is the core alone, the submod's ops show as REMOVED nodes")
     p.add_argument("--detail", action="store_true",
                    help="list every attr change (element text shows as @text())")
     p.add_argument("--file", help="detail one vpath only")

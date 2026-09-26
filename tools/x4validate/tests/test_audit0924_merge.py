@@ -298,3 +298,19 @@ def test_reindenting_a_multi_line_string_is_not_an_edit(tmp_path):
         "<language><page id='1'><t id='1'>line one\n        line two</t></page></language>",
         vpath="t/0001-l044.xml")
     assert not md.changed(), [f.attr_changes for f in md.changed()]
+
+
+def test_an_all_diff_stack_models_NEW_as_the_merged_core_plus_submod_patch(tmp_path):
+    """What `--overlay` help promises for a stack where every layer ships a <diff>:
+    the baseline is the layers' ops in order. NEW = core+submod merged -> no change;
+    NEW = core alone -> the submod's op reads as a REMOVED node."""
+    core_op = "<add sel=\"/wares\"><ware id=\"q\"/></add>"
+    sub_op = "<add sel=\"/wares\"><ware id=\"s\"/></add>"
+    core = _mod(tmp_path, "core", {"libraries/wares.xml": f"<diff>{core_op}</diff>"})
+    sub = _mod(tmp_path, "sub", {"libraries/wares.xml": f"<diff>{sub_op}</diff>"})
+    merged = _mod(tmp_path, "merged", {"libraries/wares.xml": f"<diff>{core_op}{sub_op}</diff>"})
+    core_only = _mod(tmp_path, "core_only", {"libraries/wares.xml": f"<diff>{core_op}</diff>"})
+
+    assert _diff.diff_mods([core, sub], merged).changed() == []
+    (fd,) = _diff.diff_mods([core, sub], core_only).changed()
+    assert not fd.nodes_added and any("ware@id=s" in p for p in fd.nodes_removed), fd
