@@ -343,5 +343,47 @@ class TestPS5CmdPercentVariables(_PSE2E):
                      ("allow", 'cmd //c echo 100%% done')], tool="Bash")
 
 
+class TestPS6OtherWritingCmdlets(_PSE2E):
+    """Cmdlets outside the translator's switch passed through word for word, so their
+    writes reached no rule."""
+
+    def test_mapped_writers(self):
+        R = self.R
+        f = "'" + R + BS + "a.xml'"
+        self.expect([
+            ("deny", "Clear-Item " + f),
+            ("deny", "Set-ItemProperty " + f + " -Name IsReadOnly -Value $false"),
+            ("deny", "Remove-ItemProperty -Path " + f + " -Name x"),
+            ("deny", "Copy-ItemProperty -Path ." + BS + "x -Destination " + f + " -Name y"),
+            ("deny", "Expand-Archive ." + BS + "x.zip -DestinationPath '" + R + "'"),
+            ("deny", "Compress-Archive -Path ." + BS + "x -DestinationPath '" + R + BS + "a.zip'"),
+            ("deny", "Get-Process | Export-Csv -Path '" + R + BS + "a.csv'"),
+            ("deny", "Get-Process | Export-Json -Path '" + R + BS + "a.json'"),
+            ("deny", "'x' | Tee-Object -FilePath '" + R + BS + "a.txt'"),
+            ("deny", "Invoke-WebRequest https://example.invalid -OutFile '" + R + BS + "a'"),
+            ("deny", "Start-Transcript -Path '" + R + BS + "t.txt'"),
+            ("deny", "New-Item " + f + " -Force"),
+            ("deny", "Set-Acl " + f + " -AclObject $a"),
+            ("deny", "Start-Process git -RedirectStandardOutput '" + R + BS + "o.txt'"),
+        ])
+
+    def test_an_unknown_mutating_cmdlet_on_a_protected_path_asks(self):
+        self.expect([("ask", "Frob-Thing '" + self.R + BS + "a.xml'"),
+                     ("ask", "Update-Widget -Target '" + self.S + BS + "x'"),
+                     ("ask", "Set-Item '" + self.G + BS + "libraries" + BS + "w.xml' -Value x")])
+
+    def test_TWIN_harmless(self):
+        R = self.R
+        self.expect([
+            ("allow", "Get-FileHash '" + R + BS + "a.xml'; Test-Path '" + R + "'"),
+            ("allow", "Frob-Thing ." + BS + "x"),
+            ("allow", "Expand-Archive x.zip -DestinationPath ." + BS + "out"),
+            ("allow", "Import-Csv '" + R + BS + "a.csv' | Select-Object -First 1"),
+            ("allow", "Select-String -Path '" + R + BS + "md" + BS + "x.xml' -Pattern y"),
+            ("allow", "Write-Host '" + R + "'; 'x' | Tee-Object -Variable v"),
+            ("allow", "Export-ModuleMember -Function f"),
+        ])
+
+
 if __name__ == "__main__":
     unittest.main()

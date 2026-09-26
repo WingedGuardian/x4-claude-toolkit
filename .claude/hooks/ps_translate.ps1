@@ -168,6 +168,9 @@ $ALIASES = @{
     'md' = 'new-item'; 'mkdir' = 'new-item'
     'cd' = 'set-location'; 'sl' = 'set-location'; 'chdir' = 'set-location'; 'pushd' = 'push-location'
     'gci' = 'get-childitem'; 'ls' = 'get-childitem'; 'dir' = 'get-childitem'; 'gi' = 'get-item'
+    'iwr' = 'invoke-webrequest'; 'irm' = 'invoke-restmethod'; 'cli' = 'clear-item'
+    'sp' = 'set-itemproperty'; 'rp' = 'remove-itemproperty'; 'cpp' = 'copy-itemproperty'; 'mp' = 'move-itemproperty'
+    'si' = 'set-item'
     'sls' = 'select-string'; 'iex' = 'invoke-expression'; 'saps' = 'start-process'; 'start' = 'start-process'
     'tee' = 'tee-object'; 'where' = 'where-object'; '?' = 'where-object'; '%' = 'foreach-object'
     'foreach' = 'foreach-object'; 'select' = 'select-object'; 'sort' = 'sort-object'
@@ -316,7 +319,22 @@ function Redirs([CommandBaseAst]$c) {
 }
 
 $WRITERS = @('remove-item', 'move-item', 'copy-item', 'rename-item', 'set-content', 'out-file',
-             'export-csv', 'export-clixml', 'tee-object', 'add-content', 'clear-content', 'new-item')
+             'add-content', 'clear-content', 'new-item', 'clear-item', 'set-itemproperty',
+             'remove-itemproperty', 'clear-itemproperty', 'new-itemproperty', 'rename-itemproperty',
+             'set-acl', 'copy-itemproperty', 'move-itemproperty', 'expand-archive', 'compress-archive')
+
+#: Verbs whose cmdlets do not write files (reading, formatting, stream output, flow). An
+#: UNKNOWN cmdlet with any OTHER verb that names a protected path is reported (the hook
+#: checks the path against its roots and asks): the translator cannot know every module's
+#: cmdlets, and a write it does not model must not read as no write (review item 6).
+#: The write-capable cmdlets that DO carry one of these verbs are mapped explicitly
+#: above the default: Out-File, Add-Content, New-Item(Property), Start-Transcript,
+#: Start-Process -Redirect*, Invoke-WebRequest/RestMethod -OutFile, Add-Type -OutputAssembly.
+$SAFE_VERBS = @('get', 'test', 'select', 'format', 'measure', 'join', 'split', 'resolve',
+                'convertto', 'convertfrom', 'compare', 'find', 'group', 'sort', 'where', 'foreach',
+                'wait', 'show', 'read', 'write', 'trace', 'import', 'out', 'start', 'stop', 'push',
+                'pop', 'enter', 'exit', 'debug', 'receive', 'invoke', 'new', 'add', 'use', 'tee',
+                'suspend', 'resume', 'confirm', 'approve', 'search', 'watch', 'ping', 'step')
 
 function Translate-Command([CommandAst]$c) {
     $lines = New-Object Collections.Generic.List[string]
@@ -378,10 +396,68 @@ function Translate-Command([CommandAst]$c) {
             }
             return $lines
         }
-        { $_ -in 'set-content', 'out-file', 'export-csv', 'export-clixml', 'tee-object', 'add-content' } {
+        { $_ -in 'set-content', 'out-file', 'add-content' } {
             $t = Targets $c $binding @('Path', 'LiteralPath', 'FilePath')
             $op = if ($name -eq 'add-content' -or (IsSet $binding 'Append')) { '>>' } else { '>' }
             foreach ($p in $t.paths) { $lines.Add(": $op $(Q $p)$red") }
+            return $lines
+        }
+        # Export-* and Tee-Object write a file only when given one: Export-ModuleMember and
+        # `Tee-Object -Variable` take none, and must not read as a write with no target.
+        { $_ -like 'export-*' -or $_ -eq 'tee-object' } {
+            $ps = @(BVals $binding @('Path', 'LiteralPath', 'FilePath'))
+            if ($ps.Count -eq 0) { break }
+            $op = if (IsSet $binding 'Append') { '>>' } else { '>' }
+            foreach ($p in $ps) { $lines.Add(": $op $(Q $p)$red") }
+            return $lines
+        }
+        'clear-item' {
+            $t = Targets $c $binding @('Path', 'LiteralPath')
+            foreach ($p in $t.paths) { $lines.Add("truncate -s 0 $(Q $p)$red") }
+            return $lines
+        }
+        # Properties and ACLs of a FILE: a modification that truncates nothing.
+        { $_ -in 'set-itemproperty', 'remove-itemproperty', 'clear-itemproperty', 'new-itemproperty',
+                 'rename-itemproperty', 'set-acl' } {
+            $t = Targets $c $binding @('Path', 'LiteralPath')
+            foreach ($p in $t.paths) { $lines.Add(": >> $(Q $p)$red") }
+            return $lines
+        }
+        { $_ -in 'copy-itemproperty', 'move-itemproperty' } {
+            $d = @(BVals $binding @('Destination')) | Select-Object -First 1
+            if (IsResolved $d) { $lines.Add(": >> $(Q $d)$red") } else { Unknown "$raw to a destination that cannot be resolved" }
+            if ($name -eq 'move-itemproperty') {
+                $t = Targets $c $binding @('Path', 'LiteralPath')
+                foreach ($p in $t.paths) { $lines.Add(": >> $(Q $p)$red") }
+            }
+            return $lines
+        }
+        'expand-archive' {
+            $t = Targets $c $binding @('Path', 'LiteralPath')
+            $d = @(BVals $binding @('DestinationPath')) | Select-Object -First 1
+            if (-not $d) { $d = '.' }
+            $lines.Add("cp -r $(Words $t.paths) $(Q $d)$red")
+            return $lines
+        }
+        'compress-archive' {
+            $d = @(BVals $binding @('DestinationPath')) | Select-Object -First 1
+            if (-not $d) { Unknown "Compress-Archive with no resolvable -DestinationPath"; return $lines }
+            $op = if (IsSet $binding 'Update') { '>>' } else { '>' }
+            $lines.Add(": $op $(Q $d)$red")
+            return $lines
+        }
+        { $_ -in 'invoke-webrequest', 'invoke-restmethod' } {
+            foreach ($p in @(BVals $binding @('OutFile'))) { $lines.Add(": > $(Q $p)$red") }
+            return $lines
+        }
+        'start-transcript' {
+            $ps = @(BVals $binding @('Path', 'LiteralPath', 'OutputDirectory'))
+            $op = if (IsSet $binding 'Append') { '>>' } else { '>' }
+            foreach ($p in $ps) { $lines.Add(": $op $(Q $p)$red") }
+            return $lines
+        }
+        'add-type' {
+            foreach ($p in @(BVals $binding @('OutputAssembly'))) { $lines.Add(": > $(Q $p)$red") }
             return $lines
         }
         'clear-content' {
@@ -450,8 +526,26 @@ function Translate-Command([CommandAst]$c) {
                 $words += if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
             }
             if ($fp) { $lines.Add((Words $words) + $red) }
+            foreach ($p in @(BVals $binding @('RedirectStandardOutput', 'RedirectStandardError'))) {
+                $lines.Add(": > $(Q $p)")
+            }
             return $lines
         }
+    }
+    # An UNKNOWN cmdlet with a verb that may write: every argument goes to the hook under
+    # a marker verb, and the hook -- which holds the roots -- asks if one names a
+    # protected tree (see $SAFE_VERBS).
+    $vn = [IO.Path]::GetFileName($raw.Replace('\', '/'))
+    if ($vn -match '^([A-Za-z]+)-[A-Za-z]' -and $vn -notmatch '[./\\]' -and
+        $SAFE_VERBS -notcontains $Matches[1].ToLowerInvariant()) {
+        $uw = @('x4-unknown-cmdlet', $vn)
+        for ($i = 1; $i -lt $c.CommandElements.Count; $i++) {
+            $e = $c.CommandElements[$i]
+            if ($e -is [CommandParameterAst]) {
+                if ($null -ne $e.Argument) { $uw += @(Vals $e.Argument) }
+            } else { $uw += @(Vals $e) }
+        }
+        $lines.Add((Words $uw))
     }
     # Anything else -- a native program (git, python, bash -c, cmd /c, pwsh -c) or a
     # harmless cmdlet -- goes through WORD FOR WORD, so the Bash rule set sees it exactly

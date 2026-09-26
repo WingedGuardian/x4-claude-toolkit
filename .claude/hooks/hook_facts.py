@@ -2984,6 +2984,21 @@ def facts(payload: dict, roots: dict) -> dict:
                 return True
         return False
 
+    # AN UNKNOWN POWERSHELL CMDLET THAT MAY WRITE (review item 6). ps_translate.ps1 cannot
+    # know every module's cmdlets, so a cmdlet outside its map whose verb is not a
+    # read-only one arrives as `x4-unknown-cmdlet <Name> <args...>`. Only this side holds
+    # the roots: if an argument names a PROTECTED tree, that write reached no rule, and
+    # the part is reported untranslated -> ask. The workspaces (toolkit, mods) are not
+    # protected trees, so ordinary module commands there stay silent.
+    for s, c_cwd in seg_cwd:
+        if verb(s) == "x4-unknown-cmdlet":
+            ops = prep(_operands(s), c_cwd)
+            if any(hit(ops, k, conservative=True)
+                   for k in ("game", "reference", "profile", "saves", "documents")):
+                name = (_operands(s) or ["?"])[0]
+                _UNTRANSLATED.append("the cmdlet %s, which the guard does not model, is "
+                                     "given a protected path" % name)
+
     redir_t_all = [(p, u, r) for _m, p, u, r in redir_t]
     writes_any = copy_t + rm_t + scoped_rm_t + [(p, u, r) for _, p, u, r in redir_t]
     trunc_redirect = [(p, u, r) for m, p, u, r in redir_t if m == "truncate"]

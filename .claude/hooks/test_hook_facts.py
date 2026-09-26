@@ -3272,6 +3272,22 @@ class TestHK1PowerShellFrontEnd(unittest.TestCase):
         self.assertFalse(f["rm_targets_reference"] or f["writes_reference"])
 
 
+class TestHK1UnknownCmdletMarker(unittest.TestCase):
+    """ps_translate.ps1 hands an unmodelled, possibly-writing cmdlet to this side as
+    `x4-unknown-cmdlet <Name> <args>`; only here are the roots known (review item 6)."""
+
+    def test_a_protected_path_is_untranslated(self):
+        self.assertTrue(F("x4-unknown-cmdlet Frob-Thing " + DQ + REF + "/a.xml" + DQ)
+                        ["carrier_untranslated"])
+        self.assertTrue(F("x4-unknown-cmdlet Set-Item " + DQ + SAVES + "/a" + DQ)
+                        ["carrier_untranslated"])
+
+    def test_TWIN_a_workspace_path_is_not(self):
+        self.assertFalse(F("x4-unknown-cmdlet Frob-Thing " + DQ + TOOLKIT + "/x" + DQ)
+                         ["carrier_untranslated"])
+        self.assertFalse(F("Frob-Thing " + DQ + REF + "/a.xml" + DQ)["carrier_untranslated"])
+
+
 class TestHK1ABashCommandIsNotPowerShell(unittest.TestCase):
     def test_a_bash_payload_is_not_marked_as_translated(self):
         """from_powershell only relabels the command in messages; a Bash payload that
