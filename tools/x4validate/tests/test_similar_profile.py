@@ -29,11 +29,11 @@ def _macro(name, **props):
         f'<purpose primary="fight"/>{body}</properties></macro></macros>'.encode())
 
 
-A = _macro("ship_a", **{"hull.max": 1000, "people.capacity": 2, "cargo.max": 100,
+A = _macro("ship_a", **{"hull.max": 1000, "people.capacity": 2, "secrecy.level": 1,
                         "storage.unit": 5, "physics.mass": 8.0, "drag.forward": 2.0})
-B_same = _macro("ship_b", **{"hull.max": 1000, "people.capacity": 2, "cargo.max": 100,
+B_same = _macro("ship_b", **{"hull.max": 1000, "people.capacity": 2, "secrecy.level": 1,
                              "storage.unit": 5, "physics.mass": 8.0, "drag.forward": 2.0})
-B_handling = _macro("ship_c", **{"hull.max": 1000, "people.capacity": 2, "cargo.max": 100,
+B_handling = _macro("ship_c", **{"hull.max": 1000, "people.capacity": 2, "secrecy.level": 1,
                                  "storage.unit": 5, "physics.mass": 16.0, "drag.forward": 2.0})
 
 
@@ -75,14 +75,14 @@ def test_axes_present_on_only_one_ship_are_reported_not_dropped():
     """An axis one ship has and the other lacks IS a difference. Silently
     intersecting the key sets would be the narrowing shape all over again."""
     lean = _macro("ship_lean", **{"hull.max": 1000, "people.capacity": 2,
-                                  "cargo.max": 100, "storage.unit": 5})
+                                  "secrecy.level": 1, "storage.unit": 5})
     prof = _similarity.difference_profile(_vec(A, "a"), _vec(lean, "b"))
     assert "physics.mass" in prof.only_in_a
     assert prof.only_in_b == []
 
 
 def test_differences_are_sorted_largest_first():
-    far = _macro("ship_far", **{"hull.max": 1000, "people.capacity": 2, "cargo.max": 100,
+    far = _macro("ship_far", **{"hull.max": 1000, "people.capacity": 2, "secrecy.level": 1,
                                 "storage.unit": 5, "physics.mass": 9.0, "drag.forward": 20.0})
     prof = _similarity.difference_profile(_vec(A, "a"), _vec(far, "b"))
     rel = [d.rel_diff for d in prof.differing]
@@ -103,7 +103,7 @@ def test_a_sub_one_percent_difference_is_not_printed_as_zero():
     """Real case from the live output: `physics.mass 205.27->204.245 (0%)` on a
     line that says "differs on 4". A finding that contradicts itself teaches the
     reader to ignore the whole line."""
-    near = _macro("ship_near", **{"hull.max": 1000, "people.capacity": 2, "cargo.max": 100,
+    near = _macro("ship_near", **{"hull.max": 1000, "people.capacity": 2, "secrecy.level": 1,
                                   "storage.unit": 5, "physics.mass": 8.04,
                                   "drag.forward": 2.0})
     prof = _similarity.difference_profile(_vec(A, "a"), _vec(near, "b"))

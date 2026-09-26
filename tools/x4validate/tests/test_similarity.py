@@ -113,3 +113,57 @@ def test_threshold_rejects_values_outside_0_1():
             _similarity._threshold(bad)
     for good in ("0", "0.85", "1"):
         assert 0.0 <= _similarity._threshold(good) <= 1.0
+
+
+# --- AN-6: ships are scored at their EFFECTIVE values ---------------------------
+
+_BASE_SHIP = ('<macros><macro name="ship_a_macro" class="ship_s"><properties>'
+              '<purpose primary="fight"/><hull max="1000"/><people capacity="2"/>'
+              '<storage missile="10" unit="0"/><secrecy level="1"/>'
+              '</properties></macro></macros>')
+_SHIP_VPATH = "assets/units/size_s/macros/ship_a_macro.xml"
+
+
+def _an6_world(tmp_path, monkeypatch, patch: str, enabled: bool = True):
+    from x4validate import _registry
+    prof = tmp_path / "profile_content.xml"
+    prof.write_text('<content><extension id="patch_mod" enabled="%s"/></content>'
+                    % ("true" if enabled else "false"), encoding="utf-8")
+    monkeypatch.setattr(_registry, "PROFILE_CONTENT", prof)
+    ref = tmp_path / "reference"
+    (ref / _SHIP_VPATH).parent.mkdir(parents=True)
+    (ref / _SHIP_VPATH).write_text(_BASE_SHIP, encoding="utf-8")
+    ext = tmp_path / "extensions"
+    mod = ext / "patch_mod"
+    (mod / _SHIP_VPATH).parent.mkdir(parents=True)
+    (mod / "content.xml").write_text('<content id="patch_mod" name="p" version="1"/>',
+                                     encoding="utf-8")
+    (mod / _SHIP_VPATH).write_text(patch, encoding="utf-8")
+    return [v for v in _similarity._collect_all(ref, ext, [], dlc_dirs=[])
+            if v.macro_name == "ship_a_macro"]
+
+
+def test_a_root_replace_patch_is_scored_at_its_replacement(tmp_path, monkeypatch):
+    """VRO's idiom (CLAUDE.md #10): `<replace sel="//macros">` with a whole new
+    document. The raw reader saw a <diff> root and scored vanilla."""
+    vecs = _an6_world(tmp_path, monkeypatch,
+                      '<diff><replace sel="//macros">'
+                      + _BASE_SHIP.replace('max="1000"', 'max="7777"') + '</replace></diff>')
+    assert [(v.source, v.stats.get("hull.max")) for v in vecs] == [("base", 7777.0)]
+
+
+def test_a_patch_in_a_DISABLED_mod_does_not_change_the_score(tmp_path, monkeypatch):
+    """The twin: the effective tree is the ENGINE's, so a disabled mod's patch is
+    not applied (and the ship is still reported once, as base)."""
+    vecs = _an6_world(tmp_path, monkeypatch,
+                      '<diff><replace sel="//macro/properties/hull/@max">5000</replace>'
+                      '</diff>', enabled=False)
+    assert [(v.source, v.stats.get("hull.max")) for v in vecs] == [("base", 1000.0)]
+
+
+def test_unscorable_ships_are_counted_not_dropped():
+    few = _similarity.ShipVector("x", "base", "v", "ship_s", "fight",
+                                 stats={"hull.max": 1.0, "secrecy.level": 1.0})
+    enough = _similarity.ShipVector("y", "base", "v", "ship_s", "fight",
+                                    stats={k: 1.0 for k in list(_similarity._WEIGHTS)[:4]})
+    assert _similarity.unscorable([few, enough]) == [few]

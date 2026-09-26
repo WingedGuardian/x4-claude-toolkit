@@ -46,8 +46,9 @@ Run tools via uv from the tool dir:
 
 4. **Redundancy (advisory) — `x4similar --candidate <mod-folder>`** for a mod adding ships.
    Flags fuzzy same-entity matches against base+DLC+every installed mod's ships (hull/crew/
-   cargo/handling stat similarity, hard-filtered by ship class+purpose so an S fighter never
-   matches an XL destroyer). A same-registry-KEY duplicate is x4compat's UNION-KEY, not this —
+   storage/handling stat similarity at the EFFECTIVE, patched values, hard-filtered by ship
+   class+purpose so an S fighter never matches an XL destroyer). Its header counts the ships
+   with too few scored stats to be paired at all -- a "no near-duplicate" does not cover them. A same-registry-KEY duplicate is x4compat's UNION-KEY, not this —
    this catches a DIFFERENT id/name describing essentially the same ship (the "an overhaul's ship vs an
    independently-named clone" case). Score is a distance metric over shared numeric stats, not
    a power model — always eyeball flagged pairs, and note how many stats were actually compared

@@ -6,7 +6,9 @@
 usage: x4similar [-h] [--version] [--reference REFERENCE] [--ext-dir EXT_DIR]
                  [--threshold THRESHOLD] [--cross-mod-only] [--candidate CANDIDATE]
 
-Advisory fuzzy same-ship detection across base+DLC+installed mods.
+Advisory fuzzy same-ship detection across the ships base, DLC and installed mods define, scored at
+their EFFECTIVE values (base + DLC + the enabled mods in load order, so a <diff>-patched ship
+carries its patched numbers).
 
 options:
   -h, --help            show this help message and exit

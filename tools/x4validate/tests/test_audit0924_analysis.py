@@ -231,8 +231,6 @@ _SHIP = ('<macros><macro name="ship_a_macro" class="ship_s"><properties>'
          '</properties></macro></macros>')
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 AN-6: a <diff> ship patch is "
-                   "skipped; the ship scores at its vanilla value")
 def test_AN6_a_diff_patched_ship_is_scored_at_its_patched_value(tmp_path, hermetic):
     ref = tmp_path / "reference"
     _w(ref / "assets" / "units" / "size_s" / "macros" / "ship_a_macro.xml", _SHIP)
