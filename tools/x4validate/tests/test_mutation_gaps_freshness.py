@@ -72,3 +72,24 @@ def test_fold_normalises_two_spellings_of_one_root(tmp_path):
     assert _freshness._fold([a], ref) == _freshness._fold([b], ref)
     c = dict(_rec(), root=str(tmp_path / "other"))
     assert _freshness._fold([a], ref) != _freshness._fold([c], ref)   # control: root counts
+
+
+def test_fold_ignores_folder_CASE_but_not_manifest_bytes(tmp_path):
+    """F1 (folder case folded -- Windows resolves either spelling to one folder) and
+    F3 (the manifest's sha is part of the digest: same size and mtime, different
+    bytes, is a different world)."""
+    ref = tmp_path / "reference"
+    ref.mkdir()
+    a = _rec(folder="ModA")
+    assert _freshness._fold([a], ref) == _freshness._fold([dict(a, folder="moda")], ref)
+    assert _freshness._fold([a], ref) != _freshness._fold([dict(a, manifest_sha="t")], ref)
+
+
+def test_an_unknown_content_axis_on_EITHER_side_is_reported_as_unknown():
+    """F4 (stored side) and F5 (current side): absent is UNKNOWN, and says so --
+    never reported as an ordinary 'content changed'."""
+    for stored, current in ((None, "c2"), ("c1", None)):
+        v = _freshness.compare(_stamp(stored, "R", [_rec()]), _stamp(current, "R", [_rec()]),
+                               False)
+        assert not v.fresh
+        assert _kinds(v) == ["content axis UNKNOWN"], (stored, current, v.reasons)
