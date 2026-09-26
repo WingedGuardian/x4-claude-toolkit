@@ -164,9 +164,9 @@ def main() -> int:
                                          f({1, 2})),
             ("x4effective dump traversal", ["x4effective", "dump", "../../etc/passwd"], None, None,
                                             f({1, 2})),
-            # MEASURED 2026-09-25: exits 0 and calls '' "a real negative over 150683
-            # indexed rows" -- a confident answer to a question nobody asked. Pinned to
-            # the refusal it should be, so this cell is RED until x4xref refuses it.
+            # An empty name is a question nobody asked: refuse it. (Before the audit
+            # fix that makes x4xref refuse empty names, it exited 0 and called '' "a
+            # real negative over 150683 indexed rows" -- MEASURED 2026-09-25.)
             ("x4xref who-calls empty",   ["x4xref", "who-calls", ""], None, None, REFUSE),
             ("x4similar bad threshold",  ["x4similar", "--threshold", "9"], None, None, REFUSE),
             ("x4similar neg threshold",  ["x4similar", "--threshold", "-1"], None, None, REFUSE),
