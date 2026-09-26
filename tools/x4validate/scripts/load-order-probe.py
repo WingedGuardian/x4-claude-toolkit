@@ -100,7 +100,44 @@ PROBES: dict[str, tuple[str, list[tuple[str, bool]], bool, str, str]] = {
     "a_lo_probe_dlc": ("lo_probe_a_dlc", [], True,
                        f'<add sel="//ware[@id=\'{DLC_ONLY_WARE}\']" type="@lopdlc">1</add>',
                        "annotates a ware only ego_dlc_boron defines"),
+    # --- ROUND 2 (2026-09-26): an OPTIONAL dependency on a DISABLED mod ------------------
+    # Round 1 measured a REQUIRED dependency on a disabled mod (dependent NOT loaded). The
+    # optional case decides whether "declare optional deps to load after X" is safe when X
+    # is later switched off. Both ways a mod is disabled: its manifest, and the profile
+    # (what the in-game Extensions menu writes). The required twin is the control.
+    "lo_probe_d_optdis": ("lo_probe_d_optdis", [("lo_probe_d_disabled", True)], True,
+                          _add("lodod"), "OPTIONAL dependency on a manifest-DISABLED mod"),
+    "lo_probe_d_profoff": ("lo_probe_d_profoff", [], True, _add("lodpf"),
+                           "manifest enabled=1 but PROFILE enabled=false"),
+    "lo_probe_d_optprofoff": ("lo_probe_d_optprofoff", [("lo_probe_d_profoff", True)], True,
+                              _add("lodop"), "OPTIONAL dependency on a PROFILE-disabled mod"),
+    "lo_probe_d_reqprofoff": ("lo_probe_d_reqprofoff", [("lo_probe_d_profoff", False)], True,
+                              _add("lodrp"), "REQUIRED dependency on a PROFILE-disabled mod"),
+    # --- ROUND 2: a SECOND extensions root (the user profile's extensions/) -------------
+    # An apply chain alternating game root (a, c) and profile root (b, d). Each probe
+    # replaces the attribute the previous one added, so the No-matching-node pattern alone
+    # tells three layouts apart (see classify_roots) -- even if profile files never log a
+    # signature line. e/f test a REQUIRED dependency across the roots, both directions.
+    "lo_probe_x_a": ("lo_probe_x_a", [], True, _add("loxa"), "game root, chain 1 of 4"),
+    "lo_probe_x_b": ("lo_probe_x_b", [], True, _use("loxa") + _add("loxb"),
+                     "PROFILE root, chain 2 of 4"),
+    "lo_probe_x_c": ("lo_probe_x_c", [], True, _use("loxb") + _add("loxc"),
+                     "game root, chain 3 of 4"),
+    "lo_probe_x_d": ("lo_probe_x_d", [], True, _use("loxc"), "PROFILE root, chain 4 of 4"),
+    "lo_probe_x_e": ("lo_probe_x_e", [("lo_probe_x_a", False)], True, _add("loxe"),
+                     "PROFILE root, REQUIRED dependency on a GAME-root mod"),
+    "lo_probe_x_f": ("lo_probe_x_f", [("lo_probe_x_d", False)], True, _add("loxf"),
+                     "game root, REQUIRED dependency on a PROFILE-root mod"),
 }
+PROFILE_ROOT = {"lo_probe_x_b", "lo_probe_x_d", "lo_probe_x_e"}
+
+
+def root_of(folder: str) -> str:
+    return "profile" if folder in PROFILE_ROOT else "game"
+
+
+class ProbeRefused(Exception):
+    pass
 
 
 # ------------------------------------------------------------------------ prediction
@@ -117,7 +154,10 @@ def predict() -> dict:
         "lo_probe_d_reqmiss", "lo_probe_d_cyc1", "lo_probe_d_cyc2", "lo_probe_d_dup1",
         "lo_probe_d_dup2", "lo_probe_d_disabled", "lo_probe_d_disdep",
         "lo_probe_d_profon", "lo_probe_d_profnoattr",
-        "lo_probe_k_ßa", "lo_probe_k_sz"}]
+        "lo_probe_k_ßa", "lo_probe_k_sz",
+        # round 2: never measured, and anything in or depending on the profile root
+        "lo_probe_d_optdis", "lo_probe_d_profoff", "lo_probe_d_optprofoff",
+        "lo_probe_d_reqprofoff", "lo_probe_x_f", *PROFILE_ROOT}]
     ids = {PROBES[f][0]: f for f in known}
     order, done = [], set()
     names = sorted(known, key=_rule_key)
@@ -149,6 +189,15 @@ def predict() -> dict:
             "lo_probe_d_profon": "loaded (profile overrides manifest) OR not loaded",
             "lo_probe_d_profnoattr": "loaded (missing attr = enabled) OR not loaded",
             "a_lo_probe_dlc": "OK (all DLC load before mods) OR NO_MATCH (DLC in the walk)",
+            "lo_probe_d_optdis": "loaded (optional never blocks) OR not loaded (like required)",
+            "lo_probe_d_profoff": "predicted NOT loaded (profile false; round 1 showed the "
+                                  "profile overrides the manifest)",
+            "lo_probe_d_optprofoff": "loaded OR not loaded -- the case the overlays rely on",
+            "lo_probe_d_reqprofoff": "predicted NOT loaded (control: round 1 required-on-"
+                                     "disabled)",
+            "cross_root": "INTERLEAVED (one walk by name) OR GAME_ROOT_FIRST OR PROFILE_FIRST",
+            "lo_probe_x_e": "loaded OR not loaded (does a dependency resolve across roots?)",
+            "lo_probe_x_f": "loaded OR not loaded (the other direction)",
         },
         "listdir_note": "record os.listdir order of the sharp-s pair at deploy time",
     }
@@ -192,14 +241,53 @@ def _ext_root() -> Path | None:
     return _paths.game_extensions()
 
 
+def _profile_root() -> Path | None:
+    return _paths.profile_extensions()
+
+
+def write_profile_probes(src: Path, dst_root: Path, apply: bool) -> None:
+    """Write the PROFILE-root probes into *dst_root*. Deliberately NOT deploy-mod.py: that
+    script refuses a profile root by design (real mods belong in the game root), and this
+    experiment exists to measure exactly what happens there.
+
+    Narrow by construction: only the probes named in PROFILE_ROOT, only into folders that do
+    NOT exist yet (nothing is ever overwritten), every guard before any write, and every
+    written file re-read and compared byte for byte."""
+    names = sorted(PROFILE_ROOT)
+    if not dst_root.is_dir():
+        raise ProbeRefused(f"the profile extensions folder {dst_root} does not exist")
+    for n in names:
+        if not (src / n / MARKER).is_file():
+            raise ProbeRefused(f"{src / n} is not a build of this tool; run `build` first")
+        if (dst_root / n).exists():
+            raise ProbeRefused(f"{dst_root / n} already exists -- nothing is overwritten; "
+                               "run `remove --apply` first if it is a stale probe")
+    for n in names:
+        files = sorted(f for f in (src / n).rglob("*") if f.is_file())
+        print(f"  {'write' if apply else 'would write'} {dst_root / n} ({len(files)} files)")
+        if not apply:
+            continue
+        for f in files:
+            t = dst_root / n / f.relative_to(src / n)
+            t.parent.mkdir(parents=True, exist_ok=True)
+            data = f.read_bytes()
+            t.write_bytes(data)
+            if t.read_bytes() != data:
+                raise ProbeRefused(f"re-read of {t} differs from what was written")
+
+
 def deploy(src: Path, apply: bool) -> int:
     dm = _deploy_module()
-    ext = _ext_root()
-    names = sorted(PROBES)
-    missing = [n for n in names if not (src / n / MARKER).is_file()]
+    ext, prof = _ext_root(), _profile_root()
+    names = sorted(p for p in PROBES if root_of(p) == "game")
+    missing = [n for n in PROBES if not (src / n / MARKER).is_file()]
     if missing:
         print(f"refused: {src} is not a build of this tool (missing {missing[:3]}); "
               "run `build` first", file=sys.stderr)
+        return 2
+    if prof is None:
+        print("refused: no profile extensions folder is configured (X4_PROFILE), and the "
+              "round-2 probes need one", file=sys.stderr)
         return 2
     if ext is not None:
         clash = [n for n in names if (ext / n).exists() and not (ext / n / MARKER).is_file()]
@@ -210,12 +298,19 @@ def deploy(src: Path, apply: bool) -> int:
     try:
         for n in names:                      # every guard before any write
             dm.deploy(n, False, src_root=src, ext_root=ext, out=lambda *_: None)
-    except dm.Refused as exc:
+        if apply:
+            prof.mkdir(exist_ok=True)        # X4 creates it only once a mod lives there
+        if prof.is_dir():
+            write_profile_probes(src, prof, apply=False)   # its guards, no write
+    except (dm.Refused, ProbeRefused) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
     ok = True
     for n in names:
         ok &= dm.deploy(n, apply, src_root=src, ext_root=ext)
+    print(f"profile root: {prof}")
+    if apply:
+        write_profile_probes(src, prof, apply=True)
     if apply and ext is not None:
         pair = [n for n in os.listdir(ext) if n in ("lo_probe_k_ßa", "lo_probe_k_sz")]
         print(f"os.listdir order of the sharp-s pair: {pair}")
@@ -223,15 +318,17 @@ def deploy(src: Path, apply: bool) -> int:
 
 
 def remove(apply: bool) -> int:
-    """Remove ONLY folders carrying this tool's marker AND an lo_probe manifest id.
-    Files are unlinked one by one and directories removed only when EMPTY -- never a
-    recursive delete."""
+    """Remove ONLY folders carrying this tool's marker AND an lo_probe manifest id, from the
+    game root AND the profile root. Files are unlinked one by one and directories removed
+    only when EMPTY -- never a recursive delete."""
     ext = _ext_root()
     if ext is None or not ext.is_dir():
         print("cannot run: no game extensions folder configured", file=sys.stderr)
         return 2
+    prof = _profile_root()
+    roots = [ext] + ([prof] if prof is not None and prof.is_dir() else [])
     victims = []
-    for d in sorted(ext.iterdir()):
+    for d in sorted(x for r in roots for x in r.iterdir()):
         if not (d.is_dir() and not d.is_symlink() and (d / MARKER).is_file()):
             continue
         cx = (d / "content.xml").read_text(encoding="utf-8", errors="replace") \
@@ -241,7 +338,7 @@ def remove(apply: bool) -> int:
             print(f"  SKIP {d.name}: marker present but manifest id is not {ID_PREFIX}*")
             continue
         victims.append(d)
-    print(f"{len(victims)} probe folder(s) in {ext}:")
+    print(f"{len(victims)} probe folder(s) in {' and '.join(map(str, roots))}:")
     for d in victims:
         files = sorted(p for p in d.rglob("*") if p.is_file() and not p.is_symlink())
         print(f"  {d.name}: {len(files)} file(s)")
@@ -263,14 +360,38 @@ def remove(apply: bool) -> int:
 
 # ------------------------------------------------------------------------ score
 BS = "\\"
-SIG = re.compile(r"Failed to verify the file signature for file '\.\\extensions\\([^\\']+)"
+# Root-agnostic (round 2): a game-root file logs as '.\extensions\<folder>\...'; how a
+# PROFILE-root file logs is exactly what is unmeasured, so any path ending in
+# extensions\<folder>\libraries\wares.xml is accepted, and `score` also prints every probe
+# line neither pattern recognised, so an unexpected shape is read, never silently dropped.
+SIG = re.compile(r"Failed to verify the file signature for file '[^']*?extensions\\([^\\']+)"
                  r"\\libraries\\wares\.xml'", re.I)
 # The engine quotes the selector with ' and selectors themselves contain ' (MEASURED on
 # real lines: `'//sound[@id='wpn_HEPT_shoot']/sample'`), so the path is matched lazily up
 # to the patch-file clause. A `[^']*` here matched NOTHING and scored every NO_MATCH as OK
 # (caught by tests/test_load_order_probe.py before any launch).
 NOMATCH = re.compile(r"No matching node for path '.*?' in patch file "
-                     r"'extensions\\([^\\']+)\\libraries\\wares", re.I)
+                     r"'[^']*?extensions\\([^\\']+)\\libraries\\wares", re.I)
+CHAIN = ("lo_probe_x_a", "lo_probe_x_b", "lo_probe_x_c", "lo_probe_x_d")
+
+
+def classify_roots(loaded: set[str], errors: dict[str, int]) -> str:
+    """Which layout explains the cross-root apply chain? Each chain probe (b, c, d) replaces
+    the attribute its predecessor added, so it logs No-matching-node exactly when it loaded
+    BEFORE that predecessor. Predicted NO_MATCH sets per layout:
+
+      INTERLEAVED      one walk by name over both roots: a b c d       -> {}
+      GAME_ROOT_FIRST  a c | b d                                        -> {c}
+      PROFILE_FIRST    b d | a c                                        -> {b, d}
+
+    A chain probe that never loaded writes NO error line, which would read as "OK" -- so an
+    incomplete chain is CANNOT_TELL, never a layout."""
+    if not set(CHAIN) <= loaded:
+        return "CANNOT_TELL"
+    seen = frozenset(p for p in CHAIN if errors.get(p))
+    return {frozenset(): "INTERLEAVED",
+            frozenset({"lo_probe_x_c"}): "GAME_ROOT_FIRST",
+            frozenset({"lo_probe_x_b", "lo_probe_x_d"}): "PROFILE_FIRST"}.get(seen, "INCONSISTENT")
 
 
 def read_log(lines) -> tuple[list[str], dict[str, int]]:
@@ -325,11 +446,23 @@ def score(src: Path, log: Path) -> int:
           f"lo_probe_k_sz  (ßa pos {ss}, sz pos {sz})")
     for p in ("lo_probe_d_reqmiss", "lo_probe_d_optmiss", "lo_probe_d_cyc1", "lo_probe_d_cyc2",
               "lo_probe_d_dup1", "lo_probe_d_dup2", "lo_probe_d_disabled", "lo_probe_d_disdep",
-              "lo_probe_d_profon", "lo_probe_d_profnoattr"):
-        print(f"  {p:22s}: {'LOADED at ' + str(pos(p)) if pos(p) is not None else 'NOT loaded'}")
+              "lo_probe_d_profon", "lo_probe_d_profnoattr",
+              "lo_probe_d_optdis", "lo_probe_d_profoff", "lo_probe_d_optprofoff",
+              "lo_probe_d_reqprofoff", *CHAIN, "lo_probe_x_e", "lo_probe_x_f"):
+        where = f" [{root_of(p)} root]" if p.startswith("lo_probe_x_") else ""
+        print(f"  {p:22s}: {'LOADED at ' + str(pos(p)) if pos(p) is not None else 'NOT loaded'}"
+              f"{where}")
     dlc = "NO_MATCH" if errors.get("a_lo_probe_dlc") else (
         "OK" if "a_lo_probe_dlc" in loaded else "NOT LOADED")
     print(f"  a_lo_probe_dlc (DLC before mods?): {dlc}")
+    print(f"  cross-root layout: {classify_roots(loaded, errors)}   "
+          f"(chain NO_MATCH: {[p for p in CHAIN if errors.get(p)]})")
+    with log.open(encoding="utf-8", errors="replace") as fh:
+        odd = [ln.rstrip() for ln in fh if "lo_probe" in ln.lower()
+               and not SIG.search(ln) and not NOMATCH.search(ln)]
+    print(f"  probe lines neither pattern recognised: {len(odd)}")
+    for ln in odd[:15]:
+        print(f"    {ln[:220]}")
     print("\nPASS" if not fails else f"\n{fails} prediction(s) FAILED")
     return 0 if not fails else 1
 
@@ -353,6 +486,7 @@ def main(argv: list[str]) -> int:
         # confirmed, backed-up, hand-reverted step (CLAUDE.md "Requires user confirmation").
         print('  <extension id="lo_probe_d_profon" enabled="true"/>')
         print('  <extension id="lo_probe_d_profnoattr"/>')
+        print('  <extension id="lo_probe_d_profoff" enabled="false"/>')
         return 0
     if cmd == "score" and rest:
         log = Path(rest[1]) if len(rest) > 1 else _paths.debug_log()

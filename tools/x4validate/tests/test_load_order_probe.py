@@ -94,3 +94,113 @@ def test_build_writes_marker_and_prediction(tmp_path):
         assert (tmp_path / folder / lop.MARKER).is_file()
         assert (tmp_path / folder / "libraries" / "wares.xml").is_file()
     assert json.loads((tmp_path / "PREDICTION.json").read_text(encoding="utf-8"))["applies"]
+
+
+# --- round 2 (2026-09-26): optional dependency on a DISABLED mod, and a second root -------
+
+PROFILE_PROBES = ("lo_probe_x_b", "lo_probe_x_d", "lo_probe_x_e")
+
+
+def _sig_abs(folder):
+    # A profile-root file cannot be './extensions/...'; its logged form is unmeasured, so
+    # the reader must accept any path that ends in extensions/<folder>/libraries/wares.xml.
+    return (f"[FileIO ] 0.00 File I/O: Failed to verify the file signature for file "
+            f"'C:{BS}Users{BS}u{BS}Documents{BS}Egosoft{BS}X4{BS}1{BS}extensions{BS}{folder}"
+            f"{BS}libraries{BS}wares.xml' (error: 14)\n")
+
+
+def _nomatch_abs(folder):
+    return (f"[=ERROR=] 0.00 No matching node for path '//ware[@id='energycells']/@x' in "
+            f"patch file 'C:{BS}Users{BS}u{BS}Documents{BS}Egosoft{BS}X4{BS}1{BS}extensions"
+            f"{BS}{folder}{BS}libraries{BS}wares'. Skipping node.\n")
+
+
+def test_round2_probes_exist_with_their_roots():
+    for p in ("lo_probe_d_optdis", "lo_probe_d_profoff", "lo_probe_d_optprofoff",
+              "lo_probe_d_reqprofoff", "lo_probe_x_a", "lo_probe_x_c", "lo_probe_x_f",
+              *PROFILE_PROBES):
+        assert p in lop.PROBES, p
+    assert {p for p in lop.PROBES if lop.root_of(p) == "profile"} == set(PROFILE_PROBES)
+    # the optional-on-disabled probes really declare OPTIONAL deps; the control a REQUIRED one
+    assert lop.PROBES["lo_probe_d_optdis"][1] == [("lo_probe_d_disabled", True)]
+    assert lop.PROBES["lo_probe_d_optprofoff"][1] == [("lo_probe_d_profoff", True)]
+    assert lop.PROBES["lo_probe_d_reqprofoff"][1] == [("lo_probe_d_profoff", False)]
+
+
+def test_read_log_accepts_a_profile_root_path():
+    order, errors = lop.read_log([_sig_abs("lo_probe_x_b"), _nomatch_abs("lo_probe_x_d")])
+    assert order == ["lo_probe_x_b"]
+    assert errors == {"lo_probe_x_d": 1}
+
+
+def test_round2_unknowns_stay_out_of_the_prediction():
+    order = lop.predict()["relative_order"]
+    for unknown in ("lo_probe_d_optdis", "lo_probe_d_profoff", "lo_probe_d_optprofoff",
+                    "lo_probe_d_reqprofoff", "lo_probe_x_f", *PROFILE_PROBES):
+        assert unknown not in order, f"{unknown} was never measured; it must stay UNKNOWN"
+    assert order.index("lo_probe_x_a") < order.index("lo_probe_x_c")
+
+
+@pytest.mark.parametrize("nomatch,expect", [
+    ((), "INTERLEAVED"),                                   # one walk over both roots, by name
+    (("lo_probe_x_c",), "GAME_ROOT_FIRST"),                # a, c, then b, d
+    (("lo_probe_x_b", "lo_probe_x_d"), "PROFILE_FIRST"),   # b, d, then a, c
+    (("lo_probe_x_b",), "INCONSISTENT"),                   # no single layout explains it
+])
+def test_cross_root_layout_is_classified_from_the_apply_chain(nomatch, expect):
+    loaded = {"lo_probe_x_a", "lo_probe_x_b", "lo_probe_x_c", "lo_probe_x_d"}
+    assert lop.classify_roots(loaded, {p: 1 for p in nomatch}) == expect
+
+
+def test_cross_root_layout_refuses_when_a_chain_probe_did_not_load():
+    # a profile probe that never loaded makes NO error line -- that must not read as "OK"
+    assert lop.classify_roots({"lo_probe_x_a", "lo_probe_x_c"}, {}) == "CANNOT_TELL"
+
+
+def test_profile_writer_creates_only_new_marked_folders(tmp_path):
+    src, dst = tmp_path / "src", tmp_path / "Egosoft" / "X4" / "1" / "extensions"
+    lop.build(src)
+    dst.mkdir(parents=True)
+    (dst / "lo_probe_x_b").mkdir()                          # someone else's folder, same name
+    with pytest.raises(lop.ProbeRefused):
+        lop.write_profile_probes(src, dst, apply=True)
+    assert not any((dst / p).exists() for p in ("lo_probe_x_d", "lo_probe_x_e")), \
+        "every guard must run before any write"
+    (dst / "lo_probe_x_b").rmdir()
+    lop.write_profile_probes(src, dst, apply=True)
+    for p in PROFILE_PROBES:
+        for f in (src / p).rglob("*"):
+            if f.is_file():
+                assert (dst / p / f.relative_to(src / p)).read_bytes() == f.read_bytes()
+    assert sorted(d.name for d in dst.iterdir()) == sorted(PROFILE_PROBES)
+
+
+def test_profile_writer_dry_run_writes_nothing(tmp_path):
+    src, dst = tmp_path / "src", tmp_path / "ext"
+    lop.build(src)
+    dst.mkdir()
+    lop.write_profile_probes(src, dst, apply=False)
+    assert list(dst.iterdir()) == []
+
+
+def test_remove_covers_the_profile_root_and_only_probe_folders(tmp_path, monkeypatch):
+    src, game, prof = tmp_path / "src", tmp_path / "game", tmp_path / "prof"
+    lop.build(src)
+    game.mkdir()
+    prof.mkdir()
+    lop.write_profile_probes(src, prof, apply=True)
+    keep = prof / "real_mod"
+    keep.mkdir()
+    (keep / lop.MARKER).write_bytes(b"x")                  # marker but NOT an lo_probe id
+    (keep / "content.xml").write_text('<content id="real_mod"/>', encoding="utf-8")
+    monkeypatch.setattr(lop, "_ext_root", lambda: game)
+    monkeypatch.setattr(lop, "_profile_root", lambda: prof)
+    assert lop.remove(apply=True) == 0
+    assert sorted(d.name for d in prof.iterdir()) == ["real_mod"]
+
+
+def test_profile_entries_include_the_profile_disabled_probe(capsys):
+    lop.main(["profile-entries"])
+    out = capsys.readouterr().out
+    assert '<extension id="lo_probe_d_profoff" enabled="false"/>' in out
+    assert '<extension id="lo_probe_d_profon" enabled="true"/>' in out
