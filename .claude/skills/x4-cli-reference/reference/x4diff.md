@@ -17,8 +17,11 @@ options:
   -h, --help         show this help message and exit
   --version          show program's version number and exit
   --overlay OVERLAY  extra baseline dir merged onto OLD (repeatable; e.g. a submod that patches
-                     the mod being compared)
-  --detail           list every attr change
+                     the mod being compared). For a file EVERY layer ships as a <diff>, the
+                     baseline is the layers' ops concatenated in order: it models NEW as ONE
+                     merged core+submod patch. If NEW is the core alone, the submod's ops show as
+                     REMOVED nodes
+  --detail           list every attr change (element text shows as @text())
   --file FILE        detail one vpath only
   --top TOP          show N heaviest changed files (default: 30)
   --base BASE        COMMON ANCESTOR of OLD and NEW: makes this a THREE-WAY diff separating the

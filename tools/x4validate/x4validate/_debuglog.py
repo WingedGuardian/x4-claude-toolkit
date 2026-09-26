@@ -294,6 +294,11 @@ class ParsedLog:
     total: int
     entries: list["DebugError"]          # classified + unclassified, in log order
     unclassified: list["DebugError"]     # subset of `entries`, for the residue count
+    #: Why the log could not be read, or None. A missing/unreadable log is a
+    #: NON-ANSWER, and `total == 0` alone is also what a CLEAN log looks like --
+    #: so without this field `x4validate --debug <typo>` printed "OK: no issues
+    #: found" rc 0 (AUDIT-2026-09-24 VA-1). Consumers must refuse on it.
+    unreadable: str | None = None
 
     @property
     def classified(self) -> list["DebugError"]:
@@ -302,6 +307,8 @@ class ParsedLog:
     def coverage_note(self) -> str:
         """The line every consumer prints. Names the residue rather than hiding it."""
         n = len(self.unclassified)
+        if self.unreadable is not None:
+            return f"debug: the log could NOT be read ({self.unreadable}) -- nothing was examined"
         if not self.total:
             return "debug: no [=ERROR=] lines in the log"
         pct = 100.0 * (self.total - n) / self.total
@@ -392,10 +399,11 @@ def parse_log_text(text: str) -> ParsedLog:
 def parse_log(path: str | Path) -> ParsedLog:
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        # An unreadable log is a NON-ANSWER, not an empty one. total=0 with no
-        # entries is the honest rendering; the caller's coverage_note() says so.
-        return ParsedLog(total=0, entries=[], unclassified=[])
+    except OSError as exc:
+        # An unreadable log is a NON-ANSWER, not an empty one -- so it says so in
+        # `unreadable`, which coverage_note() renders and consumers refuse on.
+        return ParsedLog(total=0, entries=[], unclassified=[],
+                         unreadable=f"{type(exc).__name__}: {exc}")
     return parse_log_text(text)
 
 

@@ -22,7 +22,14 @@ def _fmt_summary(md: ModDiff) -> str:
     ch, ad, rm = md.changed(), md.added(), md.removed()
     lines = [f"# diff  {Path(md.old).name}  ->  {Path(md.new).name}",
              f"  changed files: {len(ch)}   added: {len(ad)}   removed: {len(rm)}",
-             f"  total attr changes: {sum(f.weight for f in ch)}"]
+             # Attribute (and `text()`) changes ONLY. This line used to sum
+             # `FileDiff.weight`, which also counts node adds/removes, so one
+             # inserted node read as an attribute change (AUDIT-2026-09-24 DF-4).
+             # gates/diff_truth.py and gates/cross_tool.py parse this line and
+             # plant attribute edits only, so their expected counts are unchanged.
+             f"  total attr changes: {sum(len(f.attr_changes) for f in ch)}"
+             f"   nodes added: {sum(len(f.nodes_added) for f in ch)}"
+             f"   nodes removed: {sum(len(f.nodes_removed) for f in ch)}"]
     if md.unreadable:
         lines.append(f"  NOT COMPARED: {len(md.unreadable)} file(s) — see the list below; "
                      "they are absent from every section, not 'unchanged'")
@@ -44,8 +51,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("new", help="edited/newer mod dir")
     p.add_argument("--overlay", action="append", default=[],
                    help="extra baseline dir merged onto OLD (repeatable; e.g. a submod "
-                        "that patches the mod being compared)")
-    p.add_argument("--detail", action="store_true", help="list every attr change")
+                        "that patches the mod being compared). For a file EVERY layer "
+                        "ships as a <diff>, the baseline is the layers' ops concatenated "
+                        "in order: it models NEW as ONE merged core+submod patch. If NEW "
+                        "is the core alone, the submod's ops show as REMOVED nodes")
+    p.add_argument("--detail", action="store_true",
+                   help="list every attr change (element text shows as @text())")
     p.add_argument("--file", help="detail one vpath only")
     p.add_argument("--top", type=int, default=30, help="show N heaviest changed files (default: %(default)s)")
     p.add_argument("--base", action="append", default=[],
@@ -124,6 +135,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _print_file(fd: FileDiff, indent: str = "  ") -> None:
+    # A whole-file add/remove carries no attr/node rows, so `--file` on one used
+    # to print NOTHING about it (AUDIT-2026-09-24 DF-4). Say what it is.
+    if fd.status == "added":
+        print(f"{indent}{fd.vpath}: ADDED (present only in NEW)")
+    elif fd.status == "removed":
+        print(f"{indent}{fd.vpath}: REMOVED (present only in OLD)")
     for path, attr, ov, nv in fd.attr_changes:
         print(f"{indent}{path} @{attr}: {ov} -> {nv}")
     for path in fd.nodes_added:

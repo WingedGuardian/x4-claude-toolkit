@@ -516,3 +516,43 @@ def test_file_flag_on_a_genuinely_unchanged_file_IS_no_differences(tmp_path, cap
     out = capsys.readouterr().out
     assert rc == 0
     assert "no differences" in out, out
+
+
+def _text_mod(root: Path, name: str, body: str) -> Path:
+    """A mod whose t-file carries *body* verbatim (text-valued content)."""
+    d = root / name
+    (d / "t").mkdir(parents=True)
+    (d / "t" / "0001-l044.xml").write_text(
+        f"<?xml version='1.0' encoding='utf-8'?><language id='44'>{body}</language>",
+        encoding="utf-8")
+    (d / "content.xml").write_text(
+        f"<?xml version='1.0' encoding='utf-8'?><content id='{name}' version='100'/>",
+        encoding="utf-8")
+    return d
+
+
+def test_a_TEXT_only_author_edit_is_NOT_reported_verbatim(tmp_path):
+    """AUDIT-2026-09-24 DF-1: `_diff` compared attributes only, so an author who
+    changed nothing but element text -- a t-file string, a `<replace>` op's value --
+    was counted VERBATIM, the headline that drives "take upstream wholesale"."""
+    page = '<page id="1"><t id="1">{}</t><t id="2">keep</t></page>'
+    base = _text_mod(tmp_path, "base", page.format("Old name"))
+    arch = _text_mod(tmp_path, "arch", page.format("Author name"))
+    cur = _text_mod(tmp_path, "cur", page.format("Old name"))
+    r = _threeway.three_way(base, arch, cur)
+    assert r.documents_compared == 1
+    assert r.verbatim == 0, "a text edit is an edit"
+    assert [(c.attr, c.base, c.value) for c in r.author_edits] == [
+        ("text()", "Old name", "Author name")], r.author_edits
+
+
+def test_REINDENTING_a_document_is_not_an_edit(tmp_path):
+    """The twin: pretty-print whitespace is not content. Keying it would flood every
+    re-indented file with phantom text changes."""
+    base = _text_mod(tmp_path, "base", '<page id="1"><t id="1">Same</t></page>')
+    arch = _text_mod(tmp_path, "arch",
+                     '\n  <page id="1">\n    <t id="1">  Same\n    </t>\n  </page>\n')
+    cur = _text_mod(tmp_path, "cur", '<page id="1"><t id="1">Same</t></page>')
+    r = _threeway.three_way(base, arch, cur)
+    assert r.documents_compared == 1
+    assert r.verbatim == 1 and r.attributes_classified == 0, (r.author_edits, r.upstream_drift)

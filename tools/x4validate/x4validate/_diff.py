@@ -7,11 +7,28 @@ side via _merge.overlay_root. Powers the personal-edit recovery: pristine -> edi
 
 Change model per common file: element identity = its tag-path with id/name/ref
 disambiguation; report added / removed / changed attributes and added/removed nodes.
+
+Element TEXT is compared too, as the reserved pseudo-attribute ``text()`` (an XML
+attribute name cannot contain parentheses, so it can never collide with a real
+one). ~48% of installed-mod ops carry their value in text --
+``<replace sel=".../@min">999</replace>``, a t-file ``<t id="1">...</t>`` -- and
+comparing attributes alone read a 5 -> 999 edit as "changed files: 0"
+(AUDIT-2026-09-24 DF-1). Text is compared with every whitespace run collapsed to
+one space and the ends stripped, so re-indenting a document -- a multi-line
+string included -- changes nothing while any change to the words does. Mixed
+content stays POSITIONAL: the text on either side of each child (element or
+comment) is its own segment, so moving text across a child is a change. An
+element with no non-whitespace text has no `text()` at all.
+
+The top-level ops of a `<diff>` are keyed by what they install (their first
+payload child's id/name/macro/ref), else by `sel`; see `_op_key`.
 """
 
 from __future__ import annotations
 
+import copy
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,9 +70,24 @@ def read_merged(dirs: list[Path], vpath: str,
         if oroot is None:
             continue
         if tree is None:
-            tree = oroot if oroot.tag != "diff" else None
+            # The first layer that supplies the document IS the baseline, whatever
+            # its shape. A `<diff>` here used to be discarded, so a stack whose
+            # first supplier patches the file (the normal shape for a mod: its own
+            # files are diffs against vanilla) returned None and the caller
+            # reported "the OLD copy would not parse" about a well-formed file
+            # (AUDIT-2026-09-24 DF-2). The single-layer path (`read_vpath`)
+            # already compares a diff document as a diff document; this matches it.
+            tree = oroot
+        elif tree.tag == "diff":
+            # No layer supplied a base document, so the baseline so far is a
+            # PATCH SET. A further diff layer extends it -- ops apply in load
+            # order, which is document order here -- and a full document from a
+            # later layer supersedes the patches (there is no base in this stack
+            # for them to have applied to).
             if oroot.tag == "diff":
-                continue
+                tree.extend(copy.deepcopy(op) for op in oroot)
+            else:
+                tree = oroot
         else:
             tree, _ = _merge.apply_overlay(tree, oroot, vpath, d.name)
     return tree
@@ -68,43 +100,133 @@ def merged_vpaths(dirs: list[Path]) -> dict[str, str]:
     return out
 
 
+#: Identity attributes, most-discriminating FIRST. `id` leads because it is what
+#: X4 keys entities on; `name` came first before AUDIT-2026-09-24 DF-3, and
+#: vanilla `wares.xml` carries 101 wares in 49 duplicated-name groups (name is
+#: often a t-file reference like "{20201,301}"), so the positional suffix those
+#: groups needed made ONE inserted ware shift the key of every untouched sibling
+#: and read as phantom attribute edits. Diff ops are keyed separately (`_op_key`).
+_KEY_ATTRS = ("id", "name", "ref", "macro", "method", "ware", "class")
+
+#: What identifies a diff op's PAYLOAD (its first element child).
+_PAYLOAD_KEY_ATTRS = ("id", "name", "macro", "ref")
+
+_OP_TAGS = frozenset({"add", "replace", "remove"})
+
+#: Reserved pseudo-attribute carrying an element's text (see the module docstring).
+TEXT_ATTR = "text()"
+
+#: Marks a child-element boundary inside a `text()` value (mixed content).
+_SEGMENT_SEP = " ‖ "
+
+
 def _node_key(el: etree._Element) -> str:
-    """Stable-ish identity: tag plus a disambiguating id/name/ref/macro attr."""
-    for a in ("name", "id", "ref", "macro", "method", "ware", "class"):
+    """Stable identity: tag plus the first discriminating attribute present.
+
+    Only an element with NONE of `_KEY_ATTRS` falls back to a positional key
+    (assigned by `_index`), as do genuine duplicates of one key."""
+    for a in _KEY_ATTRS:
         v = el.get(a)
         if v is not None:
             return f"{el.tag}[@{a}={v}]"
     return el.tag
 
 
+def _payload_key(op: etree._Element) -> str | None:
+    """`<ware@id=x>` for an op whose first element child carries an identity."""
+    for child in op:
+        if isinstance(child.tag, str):
+            for a in _PAYLOAD_KEY_ATTRS:
+                v = child.get(a)
+                if v is not None:
+                    return f"{child.tag}@{a}={v}"
+            return None
+    return None
+
+
+def _op_key(op: etree._Element) -> str:
+    """Identity of a top-level diff op: its tag plus WHAT it installs, else WHERE.
+
+    Keyed on (tag, sel) alone, 839 of 7,022 installed ops (12%) sat in groups that
+    share both -- several `<add sel="/wares">` -- and fell to a positional suffix,
+    so inserting one op re-keyed its untouched siblings as removed + added. The
+    payload's identity tells them apart. It also keeps the op's identity across a
+    selector-only edit, so a changed `sel` reads as an `@sel` change the three-way
+    can classify, not a node removal plus an addition it cannot. An op with no
+    identifiable payload (a `<remove>`, a text-valued `<replace>`) is keyed by its
+    `sel`; `_index` adds `sel`, then position, only to break a remaining tie."""
+    pk = _payload_key(op)
+    if pk is not None:
+        return f"{op.tag}[{pk}]"
+    sel = op.get("sel")
+    return f"{op.tag}[@sel={sel}]" if sel is not None else op.tag
+
+
+def _norm(text: str | None) -> str:
+    """Whitespace runs collapsed to one space, ends stripped: re-indenting a
+    multi-line string changes nothing, changing a word does."""
+    return " ".join((text or "").split())
+
+
+def _text_value(el: etree._Element) -> str | None:
+    """The element's text content, or None when it has none.
+
+    POSITIONAL across children: the text before the first child and after each
+    child (element, comment or PI) is a separate segment, joined with
+    `_SEGMENT_SEP`. Folding them together hid real changes -- `a b<br/>` equalled
+    `a<br/> b`, and `a<!--c-->b` equalled `a b`. Each segment is `_norm`-alised;
+    trailing empty segments (the pretty-print tail after the last child) are
+    dropped, and an element whose every segment is empty has no text at all."""
+    segs = [_norm(el.text)] + [_norm(c.tail) for c in el]
+    while segs and not segs[-1]:
+        segs.pop()
+    return _SEGMENT_SEP.join(segs) if segs else None
+
+
+def _values(el: etree._Element) -> dict[str, str]:
+    """Attributes plus the `text()` pseudo-attribute when the element has text."""
+    out = dict(el.attrib)
+    txt = _text_value(el)
+    if txt is not None:
+        out[TEXT_ATTR] = txt
+    return out
+
+
 def _index(root: etree._Element) -> dict[str, dict[str, str]]:
     """Canonical path -> {attr: value} for every element in the tree.
 
-    Sibling duplicates with identical keys get a positional suffix so they stay
-    distinct."""
+    The value map includes the `text()` pseudo-attribute. The top-level ops of a
+    `<diff>` document are keyed by `_op_key`; everything else by `_node_key`.
+    Remaining ties get `[@sel=...]` (ops only) and then a positional suffix."""
     out: dict[str, dict[str, str]] = {}
 
-    def walk(el, prefix):
-        counts: dict[str, int] = {}
-        for child in el:
-            if not isinstance(child.tag, str):
-                continue
-            key = _node_key(child)
-            counts[key] = counts.get(key, -1) + 1
+    def keys_for(el, ops: bool) -> list[tuple[etree._Element, str]]:
+        kids = [c for c in el if isinstance(c.tag, str)]
+        keys = [(_op_key(c) if ops and c.tag in _OP_TAGS else _node_key(c)) for c in kids]
+        if ops:
+            tally = Counter(keys)
+            dup = {k for k, n in tally.items() if n > 1}
+            keys = [(f"{k}[@sel={c.get('sel')}]"
+                     if k in dup and c.get("sel") is not None and "[@sel=" not in k
+                     else k) for c, k in zip(kids, keys)]
+        counts = Counter(keys)
         seen: dict[str, int] = {}
-        for child in el:
-            if not isinstance(child.tag, str):
-                continue
-            key = _node_key(child)
-            if counts[key] > 0:
-                seen[key] = seen.get(key, -1) + 1
-                key = f"{key}#{seen[key]}"
+        final = []
+        for c, k in zip(kids, keys):
+            if counts[k] > 1:
+                seen[k] = seen.get(k, -1) + 1
+                k = f"{k}#{seen[k]}"
+            final.append((c, k))
+        return final
+
+    def walk(el, prefix, ops=False):
+        for child, key in keys_for(el, ops):
             path = f"{prefix}/{key}"
-            out[path] = dict(child.attrib)
+            out[path] = _values(child)
             walk(child, path)
 
-    out["/" + _node_key(root)] = dict(root.attrib)
-    walk(root, "/" + _node_key(root))
+    out["/" + _node_key(root)] = _values(root)
+    walk(root, "/" + _node_key(root), ops=root.tag == "diff")
     return out
 
 
@@ -112,7 +234,8 @@ def _index(root: etree._Element) -> dict[str, dict[str, str]]:
 class FileDiff:
     vpath: str
     status: str                       # added | removed | changed
-    attr_changes: list[tuple[str, str, str, str]] = field(default_factory=list)  # path, attr, old, new
+    #: (path, attr, old, new); attr may be the `text()` pseudo-attribute.
+    attr_changes: list[tuple[str, str, str, str]] = field(default_factory=list)
     nodes_added: list[str] = field(default_factory=list)
     nodes_removed: list[str] = field(default_factory=list)
 

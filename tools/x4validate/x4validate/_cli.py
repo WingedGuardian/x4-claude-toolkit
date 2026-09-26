@@ -55,9 +55,10 @@ def main(argv: list[str] | None = None) -> int:
                         "(default: $X4_REFERENCE / .claude/x4-paths.env)")
     p.add_argument("--tier", choices=["a", "b"], default="a",
                    help="a = base+DLC only (default, deterministic); "
-                        "b = also merge the INSTALLED extensions in load order, so cross-mod "
-                        "patches resolve and removed-by-another-mod content is caught "
-                        "(ordering is community-reported: advisory)")
+                        "b = also merge the ACTIVE extensions (installed AND enabled in the "
+                        "manifest and the profile) in the engine's measured load order, so "
+                        "cross-mod patches resolve and removed-by-another-mod content is "
+                        "caught")
     p.add_argument("--profile", metavar="ID",
                    help="user profile id (the numeric folder under the X4 profile dir) — only "
                         "needed to locate debug.txt when $X4_PROFILE / $X4_DEBUGLOG are unset")
@@ -65,9 +66,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--like", help="vanilla analogue, e.g. ware:ore")
     p.add_argument("--json", action="store_true", help="emit findings as JSON")
     p.add_argument("--file", help="fast mode: sel-resolution for this ONE file only "
-                   "(for the per-edit hook); mod_dir is its mod root")
+                   "(for the per-edit hook); mod_dir is its mod root. Every other check is "
+                   "listed as NOT CHECKED; a requested --debug/--entity/--like/--update "
+                   "that it cannot run exits 3")
     p.add_argument("--sel-only", action="store_true",
-                   help="(implied by --file) run only sel-resolution, skip ref/completeness")
+                   help="(implied by --file) run only readability + sel-resolution over the "
+                   "whole mod; every other check is listed as NOT CHECKED, and a requested "
+                   "--debug/--entity/--like/--update exits 3")
     p.add_argument("--update", action="store_true",
                    help="add 9.0 mechanical-port checks: XSD schema validation of MD/aiscript "
                    "files (~100s warmup) + the runtime-only migration-map heuristic")
@@ -107,9 +112,9 @@ def main(argv: list[str] | None = None) -> int:
 
     config = _merge.Config(reference=Path(args.reference) if args.reference else None)
     if args.tier == "b":
-        print("note: Tier B merges the INSTALLED extension set in load order so cross-mod "
-              "patches resolve. Inter-mod load order is community-reported, not documented "
-              "by Egosoft — treat ordering-dependent results as advisory.", file=sys.stderr)
+        print("note: Tier B merges the ACTIVE extension set (installed and enabled) in the "
+              "engine's measured load order (case-insensitive folder order, dependencies in "
+              "repeated passes) so cross-mod patches resolve.", file=sys.stderr)
 
     debug_path = args.debug
     if debug_path == "\0":  # bare --debug -> the active profile's debug.txt
@@ -129,7 +134,8 @@ def main(argv: list[str] | None = None) -> int:
 
     report = _check.validate(mod_dir, config, entity=args.entity, like=args.like,
                              only_file=args.file, update=args.update, debug=debug_path,
-                             tier=args.tier, xsd_fast=args.xsd_fast)
+                             tier=args.tier, xsd_fast=args.xsd_fast,
+                             sel_only=args.sel_only)
 
     if args.json:
         print(json.dumps({

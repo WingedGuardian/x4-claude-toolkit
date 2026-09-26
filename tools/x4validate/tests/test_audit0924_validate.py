@@ -95,8 +95,6 @@ ABSENT = "zz_audit0924_absent_target"
 
 # ----------------------------------------------------------------------- VA-1
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-1: --debug <missing file> "
-                   "reads as a clean engine log -> 'OK: no issues found', rc 0")
 def test_va1_missing_debug_log_is_not_a_clean_pass(tmp_path, capsys):
     ref = _ref(tmp_path)
     mod = _mod(tmp_path)
@@ -113,8 +111,6 @@ def test_va1_missing_debug_log_is_not_a_clean_pass(tmp_path, capsys):
 
 # ----------------------------------------------------------------------- VA-2
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-2: --file reports a nested patch "
-                   "for an uninstalled target as ERROR; the full run says INFO 'inactive'")
 def test_va2_file_mode_agrees_with_full_run_on_an_inactive_nested_patch(tmp_path):
     ref = _ref(tmp_path)
     mod = _mod(tmp_path)
@@ -134,9 +130,6 @@ def test_va2_file_mode_agrees_with_full_run_on_an_inactive_nested_patch(tmp_path
     assert not one.errors, [(x.severity, x.category, x.message) for x in one.errors]
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-2 (second branch): --file skips "
-                   "the inert-bare-path check, so a bare-path diff over another MOD's file "
-                   "is an ERROR in the full Tier B run and clean in --file")
 def test_va2_file_mode_reports_an_inert_bare_path_patch(tmp_path):
     ref = _ref(tmp_path)
     other = tmp_path / "other_mod"
@@ -156,8 +149,6 @@ def test_va2_file_mode_reports_an_inert_bare_path_patch(tmp_path):
 
 # ----------------------------------------------------------------------- VA-3
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-3: --file silently drops "
-                   "--debug; an engine error for this mod is never reported, rc 0")
 def test_va3_file_mode_does_not_silently_drop_debug(tmp_path, capsys):
     ref = _ref(tmp_path)
     mod = _mod(tmp_path)
@@ -175,8 +166,6 @@ def test_va3_file_mode_does_not_silently_drop_debug(tmp_path, capsys):
     assert rc != 0 or payload["skipped"], out
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-3: --file silently drops "
-                   "--entity/--like and --update")
 @pytest.mark.parametrize("extra", [
     ["--entity", "ware:ore", "--like", "ware:ore"],
     ["--update"],
@@ -193,8 +182,6 @@ def test_va3_file_mode_does_not_silently_drop_other_requests(tmp_path, capsys, e
 
 # ----------------------------------------------------------------------- VA-4
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-4: relative mod_dir + absolute "
-                   "--file -> vpath truncated to the bare filename -> false 'no base game file'")
 def test_va4_relative_mod_dir_with_absolute_file(tmp_path, monkeypatch):
     ref = _ref(tmp_path)
     _mod(tmp_path)
@@ -209,8 +196,6 @@ def test_va4_relative_mod_dir_with_absolute_file(tmp_path, monkeypatch):
 
 # ----------------------------------------------------------------------- VA-5
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-5: under Tier B, dangling refs "
-                   "inside an INACTIVE nested patch (target not installed) gate as ERROR")
 def test_va5_refs_in_an_inactive_patch_do_not_gate_under_tier_b(tmp_path):
     ref = _ref(tmp_path)
     other = tmp_path / "other_mod"
@@ -233,8 +218,6 @@ def test_va5_refs_in_an_inactive_patch_do_not_gate_under_tier_b(tmp_path):
 
 # ----------------------------------------------------------------------- VA-6
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-6: a nested patch aimed at an "
-                   "installed-but-DISABLED mod reads as 'path mismatch' ERROR under Tier B")
 def test_va6_nested_patch_for_a_disabled_target_is_not_a_path_mismatch(tmp_path, monkeypatch):
     ref = _ref(tmp_path)
     exts = _isolated_registry(monkeypatch, tmp_path,
@@ -268,8 +251,6 @@ def _write_cat(mod_dir: Path, cat_name: str, members):
     cat.with_suffix(".dat").write_bytes(bytes(blob))
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-7: Tier A merges packed-only DLC, "
-                   "yet a dangling ref in a patch on one is demoted to INFO as 'cross-mod'")
 def test_va7_dangling_ref_in_a_packed_dlc_patch_still_gates(tmp_path, monkeypatch):
     ref = _ref(tmp_path)
     game = tmp_path / "game"
@@ -296,8 +277,6 @@ def test_va7_dangling_ref_in_a_packed_dlc_patch_still_gates(tmp_path, monkeypatc
 
 # ----------------------------------------------------------------------- VA-8
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-8: --sel-only is parsed and never "
-                   "read; reference checks still run and gate")
 def test_va8_sel_only_runs_only_sel_resolution(tmp_path, capsys):
     ref = _ref(tmp_path)
     mod = _mod(tmp_path)
@@ -317,8 +296,6 @@ def test_va8_sel_only_runs_only_sel_resolution(tmp_path, capsys):
 
 # ----------------------------------------------------------------------- VA-9
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-9: a FULL t-file redefining a "
-                   "base {page,t} is never flagged; the same string via <diff> <add> is")
 def test_va9_full_t_file_redefining_a_base_string_is_flagged(tmp_path):
     ref = _ref(tmp_path)
     cfg = _merge.Config(reference=ref)
@@ -346,8 +323,6 @@ def _broken_overlay(tmp_path: Path, rel: str) -> Path:
     return ov
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-10: a dropped (malformed) overlay "
-                   "in the macro-index build is recorded as a NON-degraded skip")
 def test_va10_dropped_macro_index_overlay_is_degraded(tmp_path):
     ref = _ref(tmp_path)
     ov = _broken_overlay(tmp_path, "index/macros.xml")
@@ -359,8 +334,6 @@ def test_va10_dropped_macro_index_overlay_is_degraded(tmp_path):
     assert all(s.degraded for s in rep.skipped), [(s.what, s.degraded) for s in rep.skipped]
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-10: a dropped (malformed) overlay "
-                   "in the module-group build is recorded as a NON-degraded skip")
 def test_va10_dropped_modulegroups_overlay_is_degraded(tmp_path):
     ref = _ref(tmp_path)
     ov = tmp_path / "ov_broken"
@@ -376,8 +349,6 @@ def test_va10_dropped_modulegroups_overlay_is_degraded(tmp_path):
 
 # ---------------------------------------------------------------------- VA-11
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-11a: 'N diff file(s) checked' "
-                   "counts files whose ops were never evaluated")
 def test_va11a_checked_count_excludes_unexamined_files(tmp_path):
     ref = _ref(tmp_path)
     mod = _mod(tmp_path)
@@ -392,8 +363,6 @@ def test_va11a_checked_count_excludes_unexamined_files(tmp_path):
     assert int(m[0].group(1)) == 0, rep.notes  # the only diff was inactive: 0 ops examined
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-11b: engine index-lookup errors "
-                   "are counted as mod-identifying and then silently dropped")
 def test_va11b_lookup_errors_are_attributed_or_disclosed(tmp_path):
     mod = _mod(tmp_path)
     _w(mod / "libraries/wares.xml",
@@ -413,8 +382,6 @@ def test_va11b_lookup_errors_are_attributed_or_disclosed(tmp_path):
     assert dbg or any("lookup" in n.lower() for n in notes), notes
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-11c: mod_dir='.' loses the folder "
-                   "name, so engine errors under extensions\\<folder>\\ are not matched")
 def test_va11c_dot_mod_dir_keeps_its_folder_identity(tmp_path, monkeypatch):
     ref = _ref(tmp_path)
     mod = _mod(tmp_path, name="folder_name", mod_id="different_id")
@@ -431,8 +398,6 @@ def test_va11c_dot_mod_dir_keeps_its_folder_identity(tmp_path, monkeypatch):
     assert by_dot.errors, by_dot.notes
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-11d: --tier help says Tier B merges "
-                   "the INSTALLED set; tier_b_trees uses mods('active')")
 def test_va11d_tier_help_names_the_active_set(capsys):
     with pytest.raises(SystemExit):
         _cli.main(["--help"])
@@ -443,8 +408,6 @@ def test_va11d_tier_help_names_the_active_set(capsys):
     assert "INSTALLED extensions" not in tier, tier
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-11e: an unresolvable race table is "
-                   "a WARN finding, not a NOT CHECKED skip")
 def test_va11e_race_table_failure_is_a_skip(tmp_path):
     ref = _ref(tmp_path)
     (ref / "libraries/races.xml").unlink()
@@ -458,8 +421,6 @@ def test_va11e_race_table_failure_is_a_skip(tmp_path):
     assert any("race" in (s.what + s.why).lower() for s in rep.skipped), rep.skipped
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 VA-11f: under Tier B the page-collision "
-                   "warning says 'base/DLC' for a string another MOD defined")
 def test_va11f_page_collision_names_the_real_definer(tmp_path):
     ref = _ref(tmp_path)
     other = tmp_path / "other_mod"
@@ -475,3 +436,129 @@ def test_va11f_page_collision_names_the_real_definer(tmp_path):
     hits = [x for x in rep.findings if x.category == "text"]
     assert hits, "control: the collision is found"
     assert all("base/DLC" not in x.message for x in hits), [x.message for x in hits]
+
+
+# ---------------------------------------------------------------------- VA-12
+
+def test_va12_unreadable_overlay_index_is_a_degraded_skip(tmp_path):
+    """An overlay's index/macros.xml that will not parse leaves the registry
+    incomplete, so every "registered but missing" / connection verdict built on it
+    is computed against a partial index. It was recorded as a NON-degraded skip
+    (fired twice in a real run), so the run exited 0/1 instead of 3."""
+    from x4validate import _resolve
+    ref = _ref(tmp_path)
+    ov = _broken_overlay(tmp_path, "index/macros.xml")
+    rep = _check.Report()
+
+    _resolve.build_index(_merge.Config(reference=ref, overlays=(ov,)), [],
+                         _resolve.MACRO_INDEX, rep)
+    _resolve.build_index(_merge.Config(reference=ref, overlays=(ov,)), [],
+                         _resolve.MACRO_INDEX, rep)
+
+    assert rep.skipped, "control: the unreadable index is recorded at all"
+    assert all(s.degraded for s in rep.skipped), [(s.what, s.degraded) for s in rep.skipped]
+    assert len(rep.skipped) == 1, "one cause, one line -- not one per build"
+
+
+def test_va12_a_readable_overlay_index_records_nothing(tmp_path):
+    """The twin: a well-formed overlay index is not a skip at all."""
+    from x4validate import _resolve
+    ref = _ref(tmp_path)
+    ov = tmp_path / "ov_ok"
+    _w(ov / "index/macros.xml", "<index><entry name='a' value='b'/></index>")
+    rep = _check.Report()
+    idx = _resolve.build_index(_merge.Config(reference=ref, overlays=(ov,)), [],
+                               _resolve.MACRO_INDEX, rep)
+    assert "a" in idx and not rep.skipped
+
+
+# ---------------------------------------------------------------------- VA-13
+
+def _va13_ref_without_modulegroups(tmp_path: Path) -> Path:
+    ref = _ref(tmp_path)
+    (ref / "libraries/modulegroups.xml").unlink()
+    return ref
+
+
+def test_va13_module_groups_that_did_not_merge_are_degraded(tmp_path):
+    """The whole check OFF, for a mod that HAS a `<module group=>` to verify, is a
+    non-answer -- technical default: a DEGRADED skip (exit 3), not a disclosure."""
+    ref = _va13_ref_without_modulegroups(tmp_path)
+    mod = _mod(tmp_path)
+    _w(mod / "libraries/constructionplans.xml",
+       '<plans><plan id="p"><entry><module id="m" group="zz_nosuch"/></entry></plan></plans>')
+    rep = _check.Report()
+
+    _check.check_module_groups(mod, _merge.Config(reference=ref), rep)
+
+    mg = [s for s in rep.skipped if s.what == "module group checks"]
+    assert mg and all(s.degraded for s in mg), [(s.what, s.why, s.degraded) for s in rep.skipped]
+
+
+def test_va13_nothing_to_verify_is_not_degraded(tmp_path):
+    """The twin: with no `<module group=>` in the mod nothing was lost, so the same
+    missing file must not become a permanent exit 3 on every mod."""
+    ref = _va13_ref_without_modulegroups(tmp_path)
+    mod = _mod(tmp_path)
+    _w(mod / "libraries/wares.xml", _CLEAN_WARES_DIFF)
+    rep = _check.Report()
+
+    _check.check_module_groups(mod, _merge.Config(reference=ref), rep)
+
+    assert rep.skipped and not rep.degraded, [(s.what, s.degraded) for s in rep.skipped]
+
+
+# ---------------------------------------------------------------------- VA-14
+
+def test_va14_file_mode_prints_its_denominator_and_what_it_skipped(tmp_path, capsys):
+    """`--file` printed "OK: no issues found" with no notes at all -- not even the
+    sel-resolution count -- so one checked file and zero read the same."""
+    ref = _ref(tmp_path)
+    mod = _mod(tmp_path)
+    f = _w(mod / "libraries/wares.xml", _CLEAN_WARES_DIFF)
+
+    rc, out = _run_cli([mod, "--reference", ref, "--file", f], capsys)
+
+    assert rc == 0, out
+    assert re.search(r"sel-resolution: 1 diff file\(s\) checked", out), out
+    assert "libraries/wares.xml" in out, out
+    assert "OK: no issues found" not in out, "only ONE check ran; that is not an unqualified OK"
+    assert "NOT CHECKED" in out, out
+
+
+# ------------------------------------------------------ VA-9 review (flooding)
+
+def test_va9_a_complete_t_file_override_is_ONE_info_finding_per_file(tmp_path):
+    """A complete t-file overriding base strings is the normal rename idiom (VRO
+    ships one: 304 {page,t} per language file). One INFO per file with the count,
+    never one WARN per string."""
+    ref = _ref(tmp_path)
+    _w(ref / "t/0001-l044.xml",
+       '<language id="44"><page id="1001">'
+       + "".join(f'<t id="{i}">Base {i}</t>' for i in range(1, 51))
+       + "</page></language>")
+    mod = _mod(tmp_path, "fullmod", "fullmod")
+    _w(mod / "t/0001-l044.xml",
+       '<language id="44"><page id="1001">'
+       + "".join(f'<t id="{i}">Mine {i}</t>' for i in range(1, 51))
+       + "</page></language>")
+    rep = _check.Report()
+    _check.check_page_collisions(mod, _merge.Config(reference=ref), rep)
+    hits = [x for x in rep.findings if x.category == "text"]
+    assert len(hits) == 1, [(x.severity, x.message) for x in hits]
+    assert hits[0].severity == "info" and "50" in hits[0].message, hits[0].message
+
+
+def test_va9_a_complete_t_file_colliding_with_ANOTHER_MOD_still_warns(tmp_path):
+    ref = _ref(tmp_path)
+    other = tmp_path / "other_mod"
+    _w(other / "t/0001-l044.xml",
+       '<language id="44"><page id="77001"><t id="5">Other</t></page></language>')
+    mod = _mod(tmp_path)
+    _w(mod / "t/0001-l044.xml",
+       '<language id="44"><page id="77001"><t id="5">Mine</t></page></language>')
+    rep = _check.Report()
+    _check.check_page_collisions(mod, _merge.Config(reference=ref, overlays=(other,)), rep)
+    hits = [x for x in rep.findings if x.category == "text"]
+    assert [x.severity for x in hits] == ["warn"], [(x.severity, x.message) for x in hits]
+    assert "other_mod" in hits[0].message

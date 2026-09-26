@@ -979,8 +979,12 @@ def test_a_cross_DLC_reference_still_ERRORS(tmp_path):
 
 def test_a_cross_mod_reference_ERRORS_again_under_tier_B(tmp_path):
     """Tier B DOES merge the other mods, so a reference that still dangles there
-    really does dangle -- demoting it would delete the one mode that can answer."""
-    other = tmp_path / "other"
+    really does dangle -- demoting it would delete the one mode that can answer.
+
+    The overlay IS the target (same folder name). It used to be an unrelated
+    `other` overlay while the target was merged nowhere and installed nowhere --
+    i.e. an INACTIVE patch, which AUDIT-2026-09-24 VA-5 decided must not gate."""
+    other = tmp_path / "overlays" / "some_other_mod"
     _write(other / "content.xml", '<content id="o" version="1"/>')
     report = _nested_fixture(tmp_path, "some_other_mod", overlays=(other,))
     refs = [f for f in report.findings if f.category == "ref"]

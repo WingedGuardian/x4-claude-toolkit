@@ -172,7 +172,6 @@ def test_dlc_dirs_orders_packed_and_unpacked_dlc_by_one_rule(tmp_path, monkeypat
 
 # --- DF-1: text-valued ops ----------------------------------------------------
 
-@_xf("DF-1", "_diff._index compares attributes only; an op's TEXT value change is invisible")
 def test_a_changed_op_text_value_is_a_changed_file(tmp_path):
     sel = "//ware[@id='x']/price/@min"
     a = _mod(tmp_path, "a", {"libraries/wares.xml": f'<diff><replace sel="{sel}">5</replace></diff>'})
@@ -184,7 +183,6 @@ def test_a_changed_op_text_value_is_a_changed_file(tmp_path):
 
 # --- DF-2: stacked baseline over diff documents --------------------------------
 
-@_xf("DF-2", "read_merged returns None when the first supplying layer ships a <diff>")
 def test_stacked_baseline_compares_a_file_the_core_ships_as_a_diff(tmp_path):
     core = _mod(tmp_path, "core", {
         "libraries/wares.xml": "<diff><add sel=\"/wares\"><ware id=\"q\"/></add></diff>"})
@@ -201,7 +199,6 @@ def test_stacked_baseline_compares_a_file_the_core_ships_as_a_diff(tmp_path):
 
 # --- DF-3: node identity -------------------------------------------------------
 
-@_xf("DF-3", "name-before-id keys + positional suffix: one inserted ware rewrites untouched ones")
 def test_inserting_one_ware_changes_no_untouched_ware(tmp_path):
     # Vanilla wares.xml: 1,397 wares, every one carries @name, 101 of them in 49
     # duplicated-name groups (MEASURED 2026-09-24) -- so this is the real shape.
@@ -226,7 +223,6 @@ def _df4_mods(tmp_path):
     return old, new
 
 
-@_xf("DF-4", "--file on an ADDED file prints nothing about that file")
 def test_file_flag_on_an_added_file_says_it_was_added(tmp_path, capsys):
     old, new = _df4_mods(tmp_path)
     _diffcli.main([str(old), str(new), "--file", "libraries/added.xml"])
@@ -235,7 +231,6 @@ def test_file_flag_on_an_added_file_says_it_was_added(tmp_path, capsys):
     assert lines and any("add" in ln.lower() for ln in lines), out
 
 
-@_xf("DF-4", "'total attr changes' also counts node adds/removes")
 def test_attr_change_total_does_not_count_node_additions(tmp_path, capsys):
     old, new = _df4_mods(tmp_path)
     _diffcli.main([str(old), str(new)])
@@ -243,3 +238,74 @@ def test_attr_change_total_does_not_count_node_additions(tmp_path, capsys):
     # The only change to a.xml is one added NODE; no attribute changed.
     m = re.search(r"total attr changes:\s*(\d+)", out)
     assert m is None or m.group(1) == "0", out
+
+
+# --- review of DF-1..3 (2026-09-25) --------------------------------------------
+
+def _one_file_diff(tmp_path, old_text: str, new_text: str, vpath="libraries/wares.xml"):
+    old = _mod(tmp_path, "o", {vpath: old_text})
+    new = _mod(tmp_path, "n", {vpath: new_text})
+    md = _diff.diff_mods(old, new)
+    assert not md.unreadable
+    return md
+
+
+def test_ops_sharing_tag_and_sel_are_keyed_by_payload_not_position(tmp_path):
+    """839 of 7,022 installed ops share (tag, sel) -- several `<add sel="/wares">`.
+    Inserting one must not read as untouched wares removed and re-added."""
+    a = '<add sel="/wares"><ware id="a" p="1"/></add>'
+    b = '<add sel="/wares"><ware id="b" p="2"/></add>'
+    z = '<add sel="/wares"><ware id="z" p="9"/></add>'
+    md = _one_file_diff(tmp_path, f"<diff>{a}{b}</diff>", f"<diff>{z}{a}{b}</diff>")
+    (fd,) = md.changed()
+    assert fd.attr_changes == [], fd.attr_changes
+    assert fd.nodes_removed == [], fd.nodes_removed
+    assert len([p for p in fd.nodes_added if p.count("/") == 2]) == 1, fd.nodes_added
+
+
+def test_a_selector_only_edit_is_a_sel_change_not_remove_plus_add(tmp_path):
+    """Same op identity (tag + payload key), new sel -> an `@sel` change, which the
+    three-way can classify; remove+add at node level it cannot."""
+    md = _one_file_diff(
+        tmp_path,
+        '<diff><add sel="/wares"><ware id="a"/></add></diff>',
+        '<diff><add sel="//wares"><ware id="a"/></add></diff>')
+    (fd,) = md.changed()
+    assert not fd.nodes_added and not fd.nodes_removed, (fd.nodes_added, fd.nodes_removed)
+    assert [(c[1], c[2], c[3]) for c in fd.attr_changes] == [("sel", "/wares", "//wares")]
+
+
+@pytest.mark.parametrize("old,new", [
+    ("<t id='1'>a b<br/></t>", "<t id='1'>a<br/> b</t>"),
+    ("<t id='1'>a<!--c-->b</t>", "<t id='1'>a b</t>"),
+], ids=["text-moves-across-child", "comment-split"])
+def test_text_on_either_side_of_a_child_is_positional(tmp_path, old, new):
+    md = _one_file_diff(tmp_path, f"<language><page id='1'>{old}</page></language>",
+                        f"<language><page id='1'>{new}</page></language>",
+                        vpath="t/0001-l044.xml")
+    assert md.changed(), "a real text change was hidden by folding mixed content"
+
+
+def test_reindenting_a_multi_line_string_is_not_an_edit(tmp_path):
+    md = _one_file_diff(
+        tmp_path,
+        "<language><page id='1'><t id='1'>line one\n  line two</t></page></language>",
+        "<language><page id='1'><t id='1'>line one\n        line two</t></page></language>",
+        vpath="t/0001-l044.xml")
+    assert not md.changed(), [f.attr_changes for f in md.changed()]
+
+
+def test_an_all_diff_stack_models_NEW_as_the_merged_core_plus_submod_patch(tmp_path):
+    """What `--overlay` help promises for a stack where every layer ships a <diff>:
+    the baseline is the layers' ops in order. NEW = core+submod merged -> no change;
+    NEW = core alone -> the submod's op reads as a REMOVED node."""
+    core_op = "<add sel=\"/wares\"><ware id=\"q\"/></add>"
+    sub_op = "<add sel=\"/wares\"><ware id=\"s\"/></add>"
+    core = _mod(tmp_path, "core", {"libraries/wares.xml": f"<diff>{core_op}</diff>"})
+    sub = _mod(tmp_path, "sub", {"libraries/wares.xml": f"<diff>{sub_op}</diff>"})
+    merged = _mod(tmp_path, "merged", {"libraries/wares.xml": f"<diff>{core_op}{sub_op}</diff>"})
+    core_only = _mod(tmp_path, "core_only", {"libraries/wares.xml": f"<diff>{core_op}</diff>"})
+
+    assert _diff.diff_mods([core, sub], merged).changed() == []
+    (fd,) = _diff.diff_mods([core, sub], core_only).changed()
+    assert not fd.nodes_added and any("ware@id=s" in p for p in fd.nodes_removed), fd

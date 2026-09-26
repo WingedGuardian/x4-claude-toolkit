@@ -90,10 +90,16 @@ def build_index(config: _merge.Config, extra_overlays, index_rel: str,
         try:
             root = _read_source(ov, index_rel)
         except (etree.XMLSyntaxError, OSError) as exc:
+            # DEGRADED, like the base/DLC branch above (AUDIT-2026-09-24 VA-12): the
+            # index is incomplete, so every "registered but missing" / connection
+            # verdict below is computed against a partial registry. Deduplicated
+            # because each check builds this index, and one cause reads as one line.
             if report is not None:
-                report.skip(f"{index_rel} resolution",
-                            f"{ov.name}: index unreadable ({exc}) — macros it registers will "
-                            "read as unregistered")
+                what = f"{index_rel} resolution"
+                why = (f"{ov.name}: index unreadable ({exc}) — macros it registers will "
+                       "read as unregistered")
+                if not any(s.what == what and s.why == why for s in report.skipped):
+                    report.skip(what, why, degraded=True)
             continue
         if root is None:
             continue
