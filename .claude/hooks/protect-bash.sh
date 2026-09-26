@@ -22,6 +22,12 @@
 #     python .claude/hooks/test_hook_facts.py     (the unit tests)
 #     python scripts/verify-hook-tests.py         (mutations + predicate coverage)
 #     python scripts/fuzz-guard.py                (syntax-bypass fuzzing)
+#
+# TWO FRONT-ENDS, ONE RULE SET (AUDIT-2026-09-24 HK-1). This hook is also the PowerShell
+# tool's guard. hook_facts.py hands a PowerShell payload to ps_translate.ps1, which parses
+# it with PowerShell's own parser and returns the equivalent POSIX-shell command; every
+# rule below then judges that. A PowerShell command that cannot be translated is ASKED
+# (hook_facts rc 4), exactly as a Bash command `bash -n` rejects.
 JQ="${JQ:-jq}"
 # Parameter expansion, not `$(cd "$(dirname "$0")" && pwd)`: that was a subshell AND
 # a dirname process on every call (AUDIT-2026-09-24 HK-4). The settings command passes
@@ -548,7 +554,7 @@ fi
 # (corpus_sweep, a 19-gate loop, a 5-gate loop, perf_guard), every time from
 # passing a number that was assumed to raise the ceiling and never did.
 if on timeout_over_cap; then
-  deny "TIMEOUT ABOVE THE CAP: you passed ${TIMEOUT_MS}ms, but the Bash tool's maximum is 600000ms.
+  deny "TIMEOUT ABOVE THE CAP: you passed ${TIMEOUT_MS}ms, but the Bash and PowerShell tools' maximum is 600000ms.
 Larger values are silently clamped -- the command will be KILLED at exactly 10:00 (exit 143),
 which looks like a hang and is not one.
 Needing more than 10 minutes IS the signal to background it, not to raise the number:

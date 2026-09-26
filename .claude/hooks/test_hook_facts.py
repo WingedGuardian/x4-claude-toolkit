@@ -3073,6 +3073,14 @@ class TestHK2FilteredFindIsScopedNotExempt(unittest.TestCase):
         f = F("find " + DQ + REF + DQ + " -name " + Q + "*.xml" + Q + " -delete")
         self.assertTrue(f["rm_targets_reference"])
 
+    def test_a_wrapper_with_a_flag_does_not_hide_finds_paths(self):
+        """fuzz-guard, on this class's seed: find's paths were read from token 1, so
+        `nice -n 5 find ...` stopped at the wrapper's `-n` and found none."""
+        for w in ("nice -n 5 ", "sudo -u " + DQ + "root" + DQ + " ", "timeout -s KILL 5 "):
+            f = F(w + "find " + DQ + SAVES + DQ + " -name x -delete")
+            self.assertTrue(f["rm_saves"], w)
+        self.assertTrue(F("stdbuf -o L find " + DQ + GAME + DQ + " -delete")["rm_hits_game"])
+
     def test_exec_rm_with_a_filter_counts_too(self):
         f = F("find " + DQ + REF + DQ + " -name x -exec " + D + " {} +")
         self.assertTrue(f["rm_targets_reference"])
@@ -3087,6 +3095,14 @@ class TestHK2FilteredFindIsScopedNotExempt(unittest.TestCase):
     def test_TWIN_a_pyc_glob_is_regenerable_too(self):
         f = F("find " + DQ + TOOLKIT + DQ + " -name " + Q + "*.pyc" + Q + " -delete")
         self.assertFalse(f["rm_in_x4_dir"])
+
+    def test_TWIN_an_extra_AND_filter_keeps_a_cache_cleanup_exempt(self):
+        """Friction replay, 36 historical commands: `-not -path` / `-path` beside a
+        cache name only SHRINKS the set (find ANDs its tests)."""
+        for extra in (" -not -path " + DQ + "./.venv/*" + DQ, " -path " + DQ + "*/gates/*" + DQ):
+            f = F("find " + DQ + TOOLKIT + DQ + " -name " + DQ + "__pycache__" + DQ
+                  + " -type d" + extra + " -exec " + D + " -rf {} + 2>/dev/null")
+            self.assertFalse(f["rm_in_x4_dir"], extra)
 
     def test_TWIN_a_cache_name_does_not_launder_a_second_filter(self):
         """`-path` beside a cache name is not a cache-only filter."""
@@ -3229,6 +3245,13 @@ class TestHK1PowerShellFrontEnd(unittest.TestCase):
     def test_TWIN_a_read_is_not_a_write(self):
         f = self.P("Get-Content " + Q + REF + "/libraries/wares.xml" + Q)
         self.assertFalse(any(v is True for k, v in f.items() if k != "from_powershell"), f)
+
+    def test_the_OUTER_shells_redirect_is_not_part_of_the_payload(self):
+        """Friction replay: `powershell -Command "...; java -version 2>&1" 2>&1 | head`
+        joined bash's own `2>&1` into the payload, PowerShell rejected it, and it ASKED."""
+        f = F("powershell -NoProfile -Command " + DQ + "java -version 2>&1" + DQ
+              + " 2>&1 | head -6")
+        self.assertFalse(f["carrier_untranslated"])
 
     def test_TWIN_a_nested_read(self):
         f = F("powershell -c " + DQ + "Get-Content " + Q + REF + "/a.xml" + Q + DQ)

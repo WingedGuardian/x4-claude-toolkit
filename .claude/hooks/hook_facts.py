@@ -1449,12 +1449,21 @@ def _narrows(toks: list, i: int) -> bool:
     return arg not in _UNIVERSAL
 
 
+#: find operators that make the expression an OR, so one test no longer bounds the set.
+_FIND_OR = {"-o", "-or", ","}
+
+
 def _only_regenerable(toks: list) -> bool:
-    """Every narrowing filter is a -name/-iname naming a regenerable cache."""
-    narrowing = [i for i, t in enumerate(toks) if t in _FIND_FILTERS and _narrows(toks, i)]
-    return bool(narrowing) and all(
-        toks[i] in ("-name", "-iname") and toks[i + 1] in _REGENERABLE
-        for i in narrowing)
+    """The find can only match a regenerable cache: some -name/-iname names one, and the
+    expression has no OR. find's tests are ANDed by default, so every OTHER filter --
+    `-not -path './.venv/*'`, `-path '*/gates/*'`, `-type d` -- can only SHRINK the set
+    further. MEASURED in the friction replay (AUDIT-2026-09-24 HK-2): requiring EVERY
+    filter to be a cache name asked on 36 historical `find . -name __pycache__ -type d
+    -not -path ... -exec rm -rf {} +` cleanups, all false positives."""
+    if any(t in _FIND_OR for t in toks):
+        return False
+    return any(t in ("-name", "-iname") and i + 1 < len(toks) and toks[i + 1] in _REGENERABLE
+               for i, t in enumerate(toks))
 
 
 #: find actions that RUN a command per match. `-execdir`/`-okdir` differ from
@@ -1536,9 +1545,17 @@ def _find_delete(seg: str) -> tuple:
                         break
     if not deletes:
         return [], filtered
-    # find's PATHS are the operands before the first predicate (a `-flag`).
+    # find's PATHS are the operands before the first predicate (a `-flag`) -- counted
+    # from the VERB, not from token 0. `tokens(seg)[1:]` assumed `find` was the first
+    # word, so behind a wrapper with a flag (`nice -n 5 find <saves> ... -delete`,
+    # `sudo -u root find ...`) the walk stopped at the wrapper's own `-n` and returned
+    # NO path. Found by scripts/fuzz-guard.py on the HK-2 seed (AUDIT-2026-09-24): 9
+    # wrapper spellings, ask -> allow.
+    toks_q = tokens(seg)
+    vt = _verb_token(seg)
+    start = next((i + 1 for i, (t, _q) in enumerate(toks_q) if t == vt), 1)
     out = []
-    for t, quoted in tokens(seg)[1:]:
+    for t, quoted in toks_q[start:]:
         if not quoted and t.startswith("-"):
             break
         out.append(t)
@@ -2556,7 +2573,20 @@ def _cmd_line(ws: list) -> str:
 
 def _windows_carrier(seg: str, cmd: str) -> list:
     """The command text a `cmd /c` or a PowerShell host in `seg` runs, translated."""
-    toks = [t for t, _q in tokens(seg)]
+    # The OUTER shell's redirects (`... 2>&1 | head`) are not part of the carried text:
+    # joined into it, `2>&1` twice made PowerShell reject the payload, and an untranslated
+    # payload ASKS (MEASURED in the friction replay). Only UNQUOTED redirect tokens are
+    # dropped, so a `>` inside the quoted payload is still the payload's own.
+    raw = tokens(seg)
+    toks, i = [], 0
+    while i < len(raw):
+        t, q = raw[i]
+        if not q and _drop_redirects([t]) == [] :
+            core = t.lstrip("0123456789")
+            i += 2 if core in _REDIR_WORD else 1
+            continue
+        toks.append(t)
+        i += 1
     k = next((i for i, t in enumerate(toks)
               if _verb_name(t) in ("cmd",) + _PS_EXES), None)
     if k is None:

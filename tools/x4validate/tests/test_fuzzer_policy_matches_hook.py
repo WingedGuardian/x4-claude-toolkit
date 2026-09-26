@@ -45,7 +45,9 @@ def test_no_predicate_is_silently_unfuzzed():
     m = _fz()
     names = _names(m)
     policy = m.policy_map(names)
-    METADATA = {"command", "cwd", "timeout", "background"}
+    # `from_powershell` is a LABEL, not a rule: protect-bash.sh uses it to say the quoted
+    # command is a translation of the PowerShell the caller typed (AUDIT-2026-09-24 HK-1).
+    METADATA = {"command", "cwd", "timeout", "background", "from_powershell"}
     unmapped = sorted(names - set(policy) - METADATA)
     assert not unmapped, (
         "these facts are computed but carry no verdict, so the fuzzer cannot test them "
