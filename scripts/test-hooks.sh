@@ -665,12 +665,19 @@ else no "scan-identifiers.py --selftest FAILED; its verdict on the tree means no
 # 2026-09-01: in a `git archive` extract there is no .git, the scanner correctly returns
 # 2 -- "cannot run the identifier scan" -- and this probe announced "a personal
 # identifier reached a tracked file". Exactly the verify-a-release-tarball case.
-python "$REPO/scripts/scan-identifiers.py" >/dev/null 2>&1
+# The classification lives in one shared helper (scripts/_scan-classify.sh) so
+# this call site and its test cannot silently disagree. rc 1 alone is NOT proof of
+# a leak: a hung scan-identifiers.py (the TMP-length bug SBX_TMP above works
+# around) killed with taskkill also exits 1 with no output at all, and that must
+# not read as "a personal identifier reached a tracked file". See the helper's
+# header for the measured taskkill case.
+_scan_out="$(python "$REPO/scripts/scan-identifiers.py" 2>&1)"
 _scan_rc=$?
-case "$_scan_rc" in
-  0) ok "no personal identifier in any tracked file" ;;
-  1) no "a personal identifier reached a tracked file -- run scripts/scan-identifiers.py" ;;
-  *) skip "the identifier scan could not run here (rc $_scan_rc, e.g. no .git in a tarball) -- not a clean result, but not a finding either" ;;
+. "$REPO/scripts/_scan-classify.sh"
+case "$(classify_scan_result "$_scan_rc" "$_scan_out")" in
+  clean) ok "no personal identifier in any tracked file" ;;
+  leak)  no "a personal identifier reached a tracked file -- run scripts/scan-identifiers.py" ;;
+  *) skip "the identifier scan did not confirm a finding (rc $_scan_rc, e.g. no .git in a tarball, a scanner crash, or a killed/hung process) -- not a clean result, but not a finding either" ;;
 esac
 
 # --- STATIC: no hook may use a bash-4-only feature ---------------------------
