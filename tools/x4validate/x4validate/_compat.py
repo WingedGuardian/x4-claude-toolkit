@@ -130,6 +130,10 @@ class OrderMiss:
     line: int       # the op's source line in that mod's file
     sel: str
     added_by: str   # the first later mod after whose ops the selector matches
+    #: How the op is GUARDED (`if=...` / `silent`), or "". A guarded op is the optional-
+    #: compat idiom -- apply if the other mod is there, stay quiet if not -- so its
+    #: skip is intentional, not a mistake; it is still disclosed (review of AN-10).
+    guard: str = ""
 
 
 @dataclass
@@ -143,6 +147,7 @@ class RemovedFirst:
     line: int
     sel: str
     removed_by: str   # the earlier mod that removed the node or its ancestor
+    guard: str = ""   # as `OrderMiss.guard`
 
 
 @dataclass
@@ -653,7 +658,7 @@ def _analyze_vpath(
                         continue
                     seen.add((b, id(op)))
                     report.removed_first.append(RemovedFirst(
-                        vpath, b, op.sourceline or 0, op.get("sel", ""), a))
+                        vpath, b, op.sourceline or 0, op.get("sel", ""), a, _guard(op)))
 
     if report is not None and unmatched and base_tree is not None:
         report.order_misses.extend(_order_misses(
@@ -670,6 +675,16 @@ def _matches(tree: etree._Element | None, sel: str) -> bool:
     except etree.XPathEvalError:
         return False       # silent-ok: already recorded in `unresolvable` by the caller
     return isinstance(res, list) and bool(res)
+
+
+def _guard(op: etree._Element) -> str:
+    """`if=<expr>` and/or `silent`, as written on *op*; "" when it is unguarded."""
+    parts = []
+    if op.get("if"):
+        parts.append(f"if={op.get('if')}")
+    if (op.get("silent") or "").lower() in ("true", "1"):
+        parts.append("silent")
+    return " ".join(parts)
 
 
 def _xp_hit(tree: etree._Element | None, sel: str,
@@ -835,7 +850,7 @@ def _order_misses(vpath: str, ordered: list[str],
             elif _xp_hit(tree, op.get("sel", ""), cache):
                 if i < pos:                            # first match after a LATER mod
                     out.append(OrderMiss(vpath, ordered[i], op.sourceline or 0,
-                                         op.get("sel", ""), ordered[pos]))
+                                         op.get("sel", ""), ordered[pos], _guard(op)))
                 # i == pos: the mod's OWN content supplies the node -- not a miss
             else:
                 keep.append((i, op))
@@ -918,7 +933,7 @@ def _order_misses_rebuild(vpath: str, ordered: list[str],
                     lo = mid
             if _matches(at(hi), sel) and not _matches(at(hi - 1), sel):
                 out.append(OrderMiss(vpath, folder, op.sourceline or 0, sel,
-                                     later[hi - 1]))
+                                     later[hi - 1], _guard(op)))
     return out
 
 
@@ -1202,6 +1217,9 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
         for m in sorted(report.removed_first, key=lambda x: (x.vpath, x.mod, x.line)):
             lines.append(f"  {m.vpath}")
             lines.append(f"     mod      : {m.mod} (line {m.line})  sel={m.sel}")
+            if m.guard:
+                lines.append(f"     guarded  : {m.guard} -- optional compat by design, "
+                             "the skip is intended")
             lines.append(f"     removed  : by {m.removed_by}, which loads before it")
         lines.append("")
     if report.order_misses:
@@ -1215,6 +1233,9 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
         for m in sorted(report.order_misses, key=lambda x: (x.vpath, x.mod, x.line)):
             lines.append(f"  {m.vpath}")
             lines.append(f"     mod      : {m.mod} (line {m.line})  sel={m.sel}")
+            if m.guard:
+                lines.append(f"     guarded  : {m.guard} -- optional compat by design, "
+                             "the skip is intended")
             lines.append(f"     needs    : {m.added_by}, which loads after it")
         lines.append("")
     hard = report.hard

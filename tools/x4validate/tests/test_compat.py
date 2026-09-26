@@ -862,3 +862,22 @@ def test_an_edit_inside_a_removed_node_that_was_RE_ADDED_is_not_disclosed(tmp_pa
     _mod(ext, "b_readd", {"libraries/wares.xml": _READD_ORE})
     _mod(ext, "c_edit", {"libraries/wares.xml": _EDIT_IN_ORE})
     assert _compat.analyze(ext, config=cfg).removed_first == []
+
+
+def test_a_GUARDED_order_miss_is_marked_as_intentional(tmp_path):
+    """`if=` / `silent` ops are the optional-compat idiom: disclosed as guarded, not
+    read as a mistake -- while the unguarded twin stays unmarked."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_patcher", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'zware\']/price/@average" silent="true">5'
+         '</replace><replace sel="//ware[@id=\'zware\']/@id" if="//ware[@id=\'zware\']">'
+         'zz</replace><remove sel="//ware[@id=\'zware\']/price/@min"/></diff>'})
+    _mod(ext, "z_adder", {"libraries/wares.xml":
+         '<diff><add sel="/wares"><ware id="zware"><price min="1" average="100"/></ware>'
+         '</add></diff>'})
+    rep = _compat.analyze(ext, config=cfg)
+    got = sorted((m.sel.rsplit("/", 1)[-1], bool(m.guard)) for m in rep.order_misses)
+    assert got == [("@average", True), ("@id", True), ("@min", False)], got
+    out = _compat.render(rep)
+    assert out.count("guarded") >= 2, out
