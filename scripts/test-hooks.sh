@@ -354,6 +354,17 @@ printf '%s' "$(fj "$TK/.claude/hooks/../../dev/mymod/libraries/hk3dotdot.xml")" 
 [ "$(ls "$TK/.claude/backups/" 2>/dev/null | grep -c 'hk3dotdot.xml')" -ge 1 ] \
   && ok "a .. through .claude/hooks/ is still backed up" \
   || no "a file named through .claude/hooks/.. was NOT backed up"
+# AUDIT-2026-09-24 HK-5: a source path longer than a filename may be flattened into a
+# name cp cannot create. Deep ON PURPOSE, so this probe does not depend on how long the
+# sandbox path happens to be -- that dependence is what made "backup created" a flake.
+_LP="$TK/dev/$(printf 'm%.0s' $(seq 1 90))/$(printf 'n%.0s' $(seq 1 90))"
+mkdir -p "$_LP" && echo '<diff/>' > "$_LP/hk5longpath.xml"
+_lp_out="$(printf '%s' "$(fj "$_LP/hk5longpath.xml")" | bash "$HOOKS/backup-before-edit.sh" 2>/dev/null)"
+if [ -z "$_lp_out" ] && [ "$(ls "$TK/.claude/backups/" 2>/dev/null | grep -c 'hk5longpath.xml')" -ge 1 ]; then
+  ok "a path too long to flatten into one filename is still backed up"
+else
+  no "long-path source: no backup (or the hook asked): ${_lp_out:0:120}"
+fi
 # Must stay anchored to the toolkit even with CLAUDE_PROJECT_DIR unset.
 mkdir -p "$TMP/elsewhere"
 ( unset CLAUDE_PROJECT_DIR X4_TOOLKIT; cd "$TMP/elsewhere" \
@@ -446,7 +457,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=172
+EXPECT=173
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written

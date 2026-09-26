@@ -101,6 +101,17 @@ fi
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # Flatten path for backup filename: replace / \ : with _
 SAFE_NAME=$(echo "$FILE_PATH" | sed 's|[/\\:]|_|g' | sed 's|^_*||')
+# BOUNDED (AUDIT-2026-09-24 HK-5). The flattened name is the whole path, and a filename
+# over 255 bytes cannot be created: MEASURED with a 308-character source path, cp failed,
+# the hook ASKED, and scripts/test-hooks.sh's "backup created" probe failed whenever the
+# sandbox itself sat under a long directory. A long name keeps its TAIL -- the file name
+# and the directories nearest it, which is what a person scans the trail for -- behind a
+# checksum of the full path, so two long paths sharing a tail cannot collide. The
+# checksum costs a process only in this branch.
+if [ "${#SAFE_NAME}" -gt 180 ]; then
+  _ck="$(printf '%s' "$FILE_PATH" | cksum)"; _ck="${_ck%% *}"
+  SAFE_NAME="${_ck}~${SAFE_NAME: -150}"
+fi
 BACKUP_PATH="$BACKUP_DIR/${TIMESTAMP}__${SAFE_NAME}"
 
 AUDIT_LOG="$BACKUP_DIR/AUDIT_LOG.txt"
