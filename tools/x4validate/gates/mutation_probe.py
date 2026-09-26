@@ -138,14 +138,20 @@ MUTANTS = [
 
     # --- _registry.py: which mods count (CLAUDE.md #24, #30a) ------------------
     Mutant("_registry.py", "profile default inverted (absent means disabled)",
-           'return [m for m in installed if m["enabled"] and prof.get(m["id"], True)]',
-           'return [m for m in installed if m["enabled"] and prof.get(m["id"], False)]',
+           'enabled = [m for m in installed if prof.get(m["id"], m["enabled"])]',
+           'enabled = [m for m in installed if prof.get(m["id"], False)]',
            "MEASURED #30a: 54 of 115 installed mods silently vanish from Tier B, "
            "x4compat, x4effective and x4eff at once, and nothing raises"),
     Mutant("_registry.py", "manifest-disabled mods treated as active",
-           'return [m for m in installed if m["enabled"] and prof.get(m["id"], True)]',
-           'return [m for m in installed if prof.get(m["id"], True)]',
-           "a mod disabled in its OWN manifest would be modelled as loaded"),
+           'enabled = [m for m in installed if prof.get(m["id"], m["enabled"])]',
+           'enabled = [m for m in installed if prof.get(m["id"], True)]',
+           "a mod disabled in its OWN manifest, with no profile entry, would be "
+           "modelled as loaded (load-order probe 2026-09-26, case c)"),
+    Mutant("_registry.py", "a missing REQUIRED dependency no longer excludes",
+           'if not optional and d != m["id"]]',
+           'if False]',
+           "the engine does not load a mod whose required dependency is missing, "
+           "disabled or cyclic (load-order probe 2026-09-26, cases d/f/g)"),
     Mutant("_registry.py", "scope validation removed",
            "if scope not in MOD_SCOPES:",
            "if scope not in MOD_SCOPES and False:",

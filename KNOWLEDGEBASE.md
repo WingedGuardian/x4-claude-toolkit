@@ -300,10 +300,27 @@ two launches, 0 inverted by this rule; the previous "alphabetical + dependencies
 (Kahn) model inverted 685. `_loadorder.compute_load_order` implements it and
 `gates/load_order_oracle.py` re-checks it against every new log. ⚠ What is measured is
 SIGNATURE-CHECK order; that it is also the patch-APPLY order (what decides winners) is
-INFERRED, and shapes the installed modlist never exercises -- missing/optional/disabled
-dependencies, cycles, duplicate ids, non-ASCII names, DLC position -- are unobserved.
+INFERRED, and shapes the installed modlist never exercises -- non-ASCII names, DLC
+position -- are unobserved here (the dependency shapes are settled below).
 `tools/x4validate/scripts/load-order-probe.py` is the experiment built to settle both (throwaway
 one-op mods with a PREDICTION written before launch); not yet run in game as of 2026-09-26.
+
+**Which extensions LOAD at all is MEASURED** (2026-09-26, the load-order probe above: 23 throwaway
+mods launched to the main menu; a mod the engine loaded is signature-checked in `debug.txt`, one it
+did not load never appears). (a) The **profile decides, the manifest is only the default**: manifest
+`enabled="0"` + profile `<extension enabled="true">` LOADS. (b) A profile entry with **no `enabled`
+attribute LOADS**. (c) Manifest `enabled="0"` with no profile entry does not. (d) A **REQUIRED**
+`<dependency id=>` (no `optional="true"`) that no loaded extension provides -- installed DLC count,
+their id is the folder name (`ego_dlc_boron`) -- means the mod does **not load**; (e) a missing
+OPTIONAL one does not matter. (f) A dependency on a mod that is installed but not loaded excludes it
+too, to a fixpoint, so (g) a dependency **cycle loads neither side**. (h) Two folders with the SAME
+manifest id **both load**. A `<dependency>` naming only a `version` is a game-version requirement.
+`_registry.mods("active")` implements all eight. Out-of-sample on the real install (125 mods, same
+day): the rule excludes 0 of them, and every one of the 100 installed folders the log signature-checks
+is active. The 25 active mods the log never mentions ship only `md/`, `aiscripts/`, `jobs.xml`
+(0 lines from ANY mod), nested patches, or content packed in `.cat` -- I think none of those classes
+is signature-checked at the main menu (INFERRED for `.cat`: 7 mods with no loose XML log 0 lines), so
+their absence is not evidence either way about loading.
 
 - **`x4similar`** (`_similarity.py`) — advisory fuzzy same-ship detection. Extracts a numeric
   vector per ship macro (hull/crew/cargo/handling), hard-filters by macro `class` (`ship_xs/s/m/l/xl`)
