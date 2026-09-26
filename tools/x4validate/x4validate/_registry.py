@@ -278,7 +278,7 @@ MOD_SCOPES = ("active", "installed")
 
 
 def mods(scope: str, dirs: list[Path] | None = None,
-         dropped: list[str] | None = None) -> list[dict]:
+         dropped: list[str] | None = None, *, dlc_config=None) -> list[dict]:
     """The mod set, for an EXPLICITLY NAMED *scope* — see :data:`MOD_SCOPES`.
 
     *scope* is positional and required on purpose. A default would just recreate
@@ -297,6 +297,15 @@ def mods(scope: str, dirs: list[Path] | None = None,
     check asked `mods("installed")` whether the Terran DLC was present and was
     told NO. For that question use `_merge.Config().dlc_dirs()` (8 here) or
     `.packed_dlc_names()` (the two mini-DLC, which are never unpacked).
+
+    For "active", the DLC that count as dependency PROVIDERS come from
+    *dlc_config*`.dlc_dirs()` (default: `_merge.Config()`, i.e. the configured
+    reference plus the packed-only DLC of the live install), UNIONED with any
+    `ego_dlc_*` folder in the scanned *dirs*. They used to come from the scanned
+    dirs alone, so `--ext-dir <a folder that is not the game's extensions>` made
+    every mod requiring a DLC silently NOT LOADED (AUDIT-2026-09-24 final review).
+    With no configured reference the scanned dirs are the only source (fail open to
+    what was there before, never to "no DLC at all" being claimed).
     """
     if scope not in MOD_SCOPES:
         raise ValueError(
@@ -337,7 +346,32 @@ def mods(scope: str, dirs: list[Path] | None = None,
         # the registry's documented "absent = enabled" convention and keeps this
         # from quietly EMPTYING the world model on a machine with no profile.
         prof = {}
+    seen = {d["id"].lower() for d in dlc}
+    for sub in _reference_dlc_dirs(dlc_config):
+        entry = _dlc_entry(sub)
+        if entry["id"].lower() not in seen:
+            seen.add(entry["id"].lower())
+            dlc.append(entry)
     return _active_filter(installed, prof, dlc, dropped)
+
+
+def _reference_dlc_dirs(config=None) -> list[Path]:
+    """Every DLC root the configured game has -- unpacked in reference/ and packed
+    in the install -- via `_merge.Config().dlc_dirs()`, the one DLC enumeration.
+
+    An UNCONFIGURED reference yields [] rather than raising: `mods()` is called by
+    inventory tools that must work without a reference, and the scanned dirs are
+    still consulted for `ego_dlc_*` folders, so this narrows back to the old
+    behaviour instead of emptying the provider set.
+    """
+    from x4validate import _merge
+    try:
+        cfg = config if config is not None else _merge.Config()
+        return list(cfg.dlc_dirs())
+    except (_paths.Unconfigured, OSError):
+        # silent-ok: fail open to the scanned-dirs providers (see docstring); the
+        # reference being unconfigured is reported by every tool that NEEDS it.
+        return []
 
 
 def _active_filter(installed: list[dict], prof: dict[str, bool],
