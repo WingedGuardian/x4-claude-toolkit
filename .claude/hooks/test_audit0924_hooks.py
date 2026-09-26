@@ -298,5 +298,33 @@ class TestPS3InvokeExpression(_PSE2E):
         self.expect([("allow", "iex 'Get-Date'"), ("allow", "iex \"Get-ChildItem .\"")])
 
 
+class TestPS4ProviderAndPrefixedPaths(_PSE2E):
+    """A provider-qualified or extended-length spelling names the same file, and compared
+    equal to no root."""
+
+    def spellings(self, p):
+        return ["Microsoft.PowerShell.Core" + BS + "FileSystem::" + p, "FileSystem::" + p,
+                BS + BS + "?" + BS + p, BS + BS + "." + BS + p]
+
+    def test_reference_game_profile(self):
+        cases = []
+        for sp in self.spellings(self.R):
+            cases.append(("deny", "Remove-Item -Recurse -LiteralPath '" + sp + "'"))
+            cases.append(("deny", "Set-Content -LiteralPath '" + sp + BS + "a.xml' -Value x"))
+        for sp in self.spellings(self.G):
+            cases.append(("deny", "Remove-Item -Recurse -Force '" + sp + "'"))
+        for sp in self.spellings(self.S):
+            cases.append(("ask", "Remove-Item -LiteralPath '" + sp + BS + "a.xml.gz'"))
+        self.expect(cases)
+
+    def test_in_a_nested_bash_carrier_too(self):
+        sp = "FileSystem::" + self.R
+        self.expect([("deny", 'powershell -c "Remove-Item -Recurse \'' + sp + '\'"')], tool="Bash")
+
+    def test_TWIN_reads_stay_allowed(self):
+        self.expect([("allow", "Get-ChildItem 'FileSystem::" + self.R + "'"),
+                     ("allow", "Get-Content '" + BS + BS + "?" + BS + self.R + BS + "a.xml'")])
+
+
 if __name__ == "__main__":
     unittest.main()

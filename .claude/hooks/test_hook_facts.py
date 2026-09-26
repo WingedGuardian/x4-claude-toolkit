@@ -62,6 +62,14 @@ class TestNorm(unittest.TestCase):
     def test_does_not_eat_a_url_scheme(self):
         self.assertEqual(H.norm("https://a/b"), "https://a/b")
 
+    def test_strips_a_powershell_provider_qualifier(self):
+        """AUDIT-2026-09-24 HK-1 review item 4: `FileSystem::C:\\x` is `C:\\x`."""
+        plain = H.norm("C:" + BS + "R" + BS + "x")
+        for pre in ("FileSystem::", "Microsoft.PowerShell.Core" + BS + "FileSystem::",
+                    "FileSystem::" + BS + BS + "?" + BS):
+            self.assertEqual(H.norm(pre + "C:" + BS + "R" + BS + "x"), plain, pre)
+        self.assertTrue(F("rm -rf 'FileSystem::" + REF + "'")["rm_targets_reference"])
+
     def test_canonicalises_dot_segments(self):
         self.assertEqual(H.norm("/a/./b"), "/a/b")
         self.assertEqual(H.norm("/a/x/../b"), "/a/b")

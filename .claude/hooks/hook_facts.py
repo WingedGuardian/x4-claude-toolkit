@@ -58,6 +58,9 @@ _WIN_PREFIX = re.compile(r"^/{1,2}[?]/(unc/)?|^//[.]/(unc/)?")
 #: `?` is not legal in a Windows path component, so it has no such reading.
 
 
+#: A PowerShell provider qualifier, lowercased and slash-folded. Leading only.
+_PROVIDER = re.compile(r"^(microsoft[.]powershell[.]core/)?filesystem::")
+
 #: Two or more separators in a row. See norm() for why the leading pair survives.
 _SLASHES = re.compile(r"/{2,}")
 
@@ -72,6 +75,12 @@ def norm(p: str) -> str:
     if not p:
         return ""
     s = p.replace(chr(92), "/").lower()
+    # A PowerShell PROVIDER qualifier names the same file: `FileSystem::C:\x` and
+    # `Microsoft.PowerShell.Core\FileSystem::C:\x` are `C:\x`. Unstripped, they compared
+    # equal to no root, so a PowerShell delete of reference/ spelled that way was ALLOW
+    # (AUDIT-2026-09-24 HK-1 review item 4). Stripped BEFORE the extended-length prefix,
+    # because the two combine: `FileSystem::\\?\C:\x`.
+    s = _PROVIDER.sub("", s)
     # The EXTENDED-LENGTH prefix goes FIRST, and the order is the fix rather than a
     # detail: applied after the drive rule below it turns `//?/c:/users` into
     # `//?//c/users`, which still matches nothing.
