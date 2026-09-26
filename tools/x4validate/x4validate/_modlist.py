@@ -389,6 +389,20 @@ def _update_verdict(installed_date, upstream_date, trusted: bool) -> tuple[str, 
     return ("available" if u > i else "none"), basis
 
 
+_UPDATE_FIELDS = ("update", "update_basis", "upstream_newest", "upstream_newest_uploaded")
+
+
+def _clear_update(a) -> None:
+    """Drop an update verdict that no longer describes this row.
+
+    A verdict belongs to the fetch that produced it. A row that now ends in `error`,
+    `untriaged` or `off-nexus`, or whose identity was re-pinned, has no fetch backing it,
+    and a stale `available` there read as a current finding (review of RG-3).
+    """
+    for k in _UPDATE_FIELDS:
+        a.pop(k, None)
+
+
 def _record_update(a, nid: int, fmeta, state: str):
     """Store the update verdict on row *a*. Returns a NexusFatal to stop on, else None."""
     fatal = None
@@ -440,9 +454,10 @@ def cmd_refresh(args) -> int:
 
     resolved = fetched = errors = skipped = 0
     fatal: _nexus.NexusFatal | None = None
+    checked: set[str] = set()     # rows whose update verdict was produced THIS run
     try:
         fatal, resolved, fetched, errors, skipped = _refresh_rows(
-            mods, args, today)
+            mods, args, today, checked)
     finally:
         # Saved on EVERY exit, including an exception nobody anticipated: the rows
         # fetched so far are real data and must not depend on the run finishing.
@@ -456,7 +471,7 @@ def cmd_refresh(args) -> int:
         # what it just fetched was fetched against a guessed identity.
         print(f"         {unconfirmed} active mod(s) still have an UNCONFIRMED identity — "
               f"their upstream data may describe a different mod. Run `x4modlist verify`.")
-    _print_updates(mods)
+    _print_updates(mods, checked)
     print(f"dashboard: {dash}")
     if fatal is not None:
         print(f"refresh STOPPED: {fatal}", file=sys.stderr)
@@ -467,8 +482,13 @@ def cmd_refresh(args) -> int:
     return 0
 
 
-def _print_updates(mods) -> None:
-    """The update verdicts over the rows this run processed, both dates on every line."""
+def _print_updates(mods, checked: set[str]) -> None:
+    """The update verdicts over the rows in scope, both dates on every line.
+
+    A verdict this run did NOT produce (the row was skipped by the once-per-day TTL) is
+    counted and labelled CARRIED OVER with the date it was checked, never printed as
+    though it had just been checked (review of RG-3).
+    """
     verdicts: dict[str, list] = {}
     for m in mods:
         v = m["auto"].get("update")
@@ -478,14 +498,19 @@ def _print_updates(mods) -> None:
         return
     counts = ", ".join(f"{len(verdicts[k])} {k}" for k in
                        ("available", "none", "unknown", "unconfirmed") if k in verdicts)
+    carried = sum(1 for ms in verdicts.values() for m in ms if m["id"] not in checked)
     print(f"updates: {counts}  (available = the upstream file was uploaded after the "
-          f"installed manifest's date; versions are NOT compared)")
+          f"installed manifest's date; versions are NOT compared)"
+          + (f"; {carried} carried over from an earlier check, not re-checked now"
+             if carried else ""))
     for m in sorted(verdicts.get("available", []), key=lambda x: x["id"]):
         a = m["auto"]
-        print(f"   UPDATE  {m['id']:40} {a.get('update_basis')}  [{a.get('upstream_newest')}]")
+        tag = ("UPDATE " if m["id"] in checked
+               else f"UPDATE (carried over, checked {a.get('checked_at') or '?'})")
+        print(f"   {tag} {m['id']:40} {a.get('update_basis')}  [{a.get('upstream_newest')}]")
 
 
-def _refresh_rows(mods, args, today) -> tuple:
+def _refresh_rows(mods, args, today, checked: set[str]) -> tuple:
     """The per-row loop of `cmd_refresh`. Returns (fatal, resolved, fetched, errors, skipped)."""
     resolved = fetched = errors = skipped = 0
     for m in mods:
@@ -500,6 +525,7 @@ def _refresh_rows(mods, args, today) -> tuple:
             # already overruled once.
             a["classification"] = "off-nexus"
             a["settled"] = "n/a — not distributed on Nexus"
+            _clear_update(a)
             skipped += 1
             continue
         if not nid and not args.no_resolve:
@@ -517,6 +543,7 @@ def _refresh_rows(mods, args, today) -> tuple:
             # indistinguishable from each other.
             a["classification"] = "untriaged"
             a["settled"] = f"identity {state}"
+            _clear_update(a)
             continue
 
         try:
@@ -528,6 +555,7 @@ def _refresh_rows(mods, args, today) -> tuple:
         except _nexus.NexusError as exc:
             a["classification"] = "error"
             a["error"] = str(exc)
+            _clear_update(a)
             errors += 1
             continue
         a.pop("error", None)   # a stale error from an earlier run no longer applies
@@ -552,6 +580,7 @@ def _refresh_rows(mods, args, today) -> tuple:
         fetched += 1
         # After the row is recorded, so a stop here keeps what was already fetched.
         fatal = _record_update(a, nid, fmeta, state)
+        checked.add(m["id"])
         if fatal is not None:
             # NOT stamped checked: the row is incomplete (no update verdict), and the
             # once-per-day TTL would make the re-run this stop recommends skip it until
@@ -661,8 +690,7 @@ def cmd_resolve(args) -> int:
     a["id_state"] = "pinned"
     a["resolve"] = "manual"
     a.pop("candidates", None)
-    for k in ("update", "update_basis", "upstream_newest", "upstream_newest_uploaded"):
-        a.pop(k, None)      # judged against the OLD id; the next refresh recomputes it
+    _clear_update(a)        # judged against the OLD id; the next refresh recomputes it
 
     try:
         meta = _nexus.fetch_mod(nexus_id)

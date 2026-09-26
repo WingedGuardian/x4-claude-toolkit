@@ -165,3 +165,54 @@ def test_a_fatal_stop_while_judging_the_update_leaves_the_row_UNCHECKED(tmp_path
     a = _registry.load_registry(regp)["mods"][0]["auto"]
     assert a["name"] == "Cool Mod", "what WAS fetched must be kept"
     assert a.get("checked_at") != datetime.now(timezone.utc).date().isoformat(), dict(a)
+
+
+def _stale_available(regp, **auto):
+    reg = _registry.load_registry(regp)
+    a = reg["mods"][0]["auto"]
+    a.update(update="available", update_basis="upstream uploaded 2026-07-01 vs installed "
+             "manifest dated 2026-06-01", upstream_newest="MAIN file 1",
+             upstream_newest_uploaded="2026-07-01", **auto)
+    _registry.save_registry(reg, regp)
+
+
+def test_a_row_that_ends_in_ERROR_does_not_keep_a_stale_update_verdict(tmp_path, monkeypatch):
+    """Review item 5: the verdict belongs to the fetch that produced it."""
+    monkeypatch.setenv("X4_NEXUS_KEY", "test-key-not-real")
+    import urllib.error
+
+    def urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+    monkeypatch.setattr(_nexus.urllib.request, "urlopen", urlopen)
+    regp = _one_pinned_row(tmp_path)
+    _stale_available(regp)
+    _refresh(regp)
+    a = _registry.load_registry(regp)["mods"][0]["auto"]
+    assert a["classification"] == "error"
+    assert a.get("update") != "available", dict(a)
+
+
+def test_a_row_that_ends_UNTRIAGED_does_not_keep_a_stale_update_verdict(tmp_path):
+    regp = tmp_path / "r.yaml"
+    reg = _registry._new_registry()
+    e = _registry._new_entry("no_id_mod", True)
+    e["auto"].update(installed=True, update="available")
+    reg["mods"].append(e)
+    _registry.save_registry(reg, regp)
+    _refresh(regp)                                   # no id, --no-resolve: untriaged
+    a = _registry.load_registry(regp)["mods"][0]["auto"]
+    assert a["classification"] == "untriaged"
+    assert a.get("update") != "available", dict(a)
+
+
+def test_a_verdict_NOT_rechecked_this_run_is_labelled_carried_over(tmp_path, monkeypatch, capsys):
+    """A TTL-skipped row's verdict is from an earlier run; printing it as a plain UPDATE
+    line read as 'just checked'."""
+    monkeypatch.setattr(_nexus.urllib.request, "urlopen",
+                        lambda *a, **k: pytest.fail("a TTL-skipped row makes no call"))
+    regp = _one_pinned_row(tmp_path)
+    _stale_available(regp, checked_at=datetime.now(timezone.utc).date().isoformat())
+    assert _refresh(regp, force=False) == 0
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if "cool_mod" in ln)
+    assert "carried over" in line, out
