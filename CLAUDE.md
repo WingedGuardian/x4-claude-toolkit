@@ -121,8 +121,8 @@ and `tools\` under it are recognized as the editable workspace.
 - Edits to user-profile files (`Documents\Egosoft\X4\`); a `content.xml` edit is only ADVISED
 - Deleting in an X4 directory (a save above all); `git clean`/`reset --hard` there
 
-Guarded tools: Bash, PowerShell (read by PowerShell's own parser into the Bash rule set),
-Edit, Write, NotebookEdit. Hook timeout 30 s; a timed-out hook does NOT block.
+Guarded: Bash, PowerShell (own parser, same rules), Edit, Write, NotebookEdit. A timed-out
+hook (30 s) does NOT block.
 
 ### General
 - One mod = one named folder, never a mega-file
@@ -400,13 +400,11 @@ indexed, and `x4eff` holds the effective merged tree, so: a **bare** "0 hits" is
 lead; `tools\basex\ask.py` refuses to render a zero as a finding unless `coverage-<db>.json`
 says coverage is complete or accounted, printing *"NEGATIVE CONFIRMED over N of M documents"*
 with every exclusion named. Prefer **`--db x4eff`** for any claim about what is LIVE — `x4raw`
-is files as written and will quote a vanilla value the modlist overwrote. Load order is the
-engine's MEASURED signature-check order (apply order inferred; BLIND-SPOTS F128), so an answer
-turning on *which mod won* is advisory to that degree. x4validate is the authority.
+is files as written and will quote a vanilla value the modlist overwrote. Load order is
+MEASURED against the engine (F128). x4validate is the authority.
 
 **Validate the DEPLOYED copy whenever load order could matter.** Tier B places an uninstalled
-copy by the engine rule, keyed on its folder NAME, so a differently named dev folder lands
-elsewhere. (Until 2026-09-25 it assumed LAST, the optimistic tree.)
+copy by its folder NAME, so a differently named dev folder lands elsewhere.
 
 ## Core Working Principle: Deductive Iteration — Work Backward from the Outcome
 
@@ -457,7 +455,7 @@ implementation; BaseX delegates to it):
 | axis | covers | why |
 |---|---|---|
 | `content` | installed extension set + each manifest mtime/size + a reference marker | mods added, removed or updated |
-| `engine` | hash of the **BYTES** of every file named in `_freshness.ENGINE_SOURCES` — **derive that list from the module, never retype it** (**7** as of 2026-09-24: `_cat`, `_effective`, `_loadorder`, `_merge`, `_modfiles`, `_provenance`, `_registry`) -- re-derived by TRACING a store build; x4eff also folds `tools/basex/build-effective.py` in via `staleness.ENGINE_EXTRA`. ⚠ This cell has been wrong TWICE, the same way, in the sentence telling you not to retype the list, so `tests/test_reference_fingerprint.py` now asserts it lists exactly what the module derives | a merge fix changes the answer for identical inputs; a commit hash does not move for a dirty tree |
+| `engine` | hash of the **BYTES** of every file named in `_freshness.ENGINE_SOURCES` — **derive that list from the module, never retype it** (**7** as of 2026-09-24: `_cat`, `_effective`, `_loadorder`, `_merge`, `_modfiles`, `_provenance`, `_registry`); x4eff adds `build-effective.py`. ⚠ This cell has been wrong TWICE, the same way, in the sentence telling you not to retype the list, so `tests/test_reference_fingerprint.py` now asserts it lists exactly what the module derives | a merge fix changes the answer for identical inputs; a commit hash does not move for a dirty tree |
 
 **Absent fingerprint = UNKNOWN, never fresh.** Each CLI banners every run until rebuilt; `ask.py`
 and `gates/claims_audit.py` REFUSE a claim outright. `engine_dependent` is per-artifact — a raw file
