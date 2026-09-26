@@ -449,10 +449,37 @@ def test_gt5_cross_tool_hard_winner_is_checked_on_the_collided_attr(tmp_path, mo
     # The synthetic store carries no fingerprint; since GT-6 that is a stale-store
     # refusal, which would make this test pass or fail for a reason it is not about.
     monkeypatch.setattr(ct._env, "stale_store_refusal", lambda db, who: None)
+    # Every target is resolved in the effective base tree (review of fe8065b), so the
+    # setup supplies one; the assertion is unchanged.
+    from lxml import etree
+    tree = etree.fromstring(b'<macros><macro name="ship_a_macro"><properties><hull max="1"/>'
+                            b'</properties></macro><macro name="ship_b_macro"><properties>'
+                            b'<hull max="1"/></properties></macro></macros>')
+    monkeypatch.setattr(ct._merge, "build_effective",
+                        lambda vp, cfg: types.SimpleNamespace(tree=tree))
     ct.check_cross_tool_agreement()
     assert ct.failures, ("modA is the live winner on ship_a_macro hull.max, the store says modB "
                          "owns it, and the check agreed because modA owns SOMETHING in the file:\n"
                          + capsys.readouterr().out)
+
+
+def _store_k(path: Path, rows: list[tuple]) -> Path:
+    """Like `_store`, with the entity KIND: (kind, name, vpath, prop, value, origin).
+    Rows sharing (kind, name, vpath) are ONE entity, as in the real store."""
+    con = sqlite3.connect(path)
+    con.execute("create table entities (id integer primary key, kind, name, klass, vpath, origin)")
+    con.execute("create table attrs (entity_id, prop, value, origin)")
+    ids: dict[tuple, int] = {}
+    for kind, name, vpath, prop, value, origin in rows:
+        k = (kind, name, vpath)
+        if k not in ids:
+            ids[k] = len(ids) + 1
+            con.execute("insert into entities values (?,?,?,?,?,?)",
+                        (ids[k], kind, name, "k", vpath, "base"))
+        con.execute("insert into attrs values (?,?,?,?)", (ids[k], prop, value, origin))
+    con.commit()
+    con.close()
+    return path
 
 
 def _cross_tool_with(monkeypatch, tmp_path, db, collisions, tree=None):
@@ -480,8 +507,8 @@ def test_gt5_cross_tool_positional_hard_target_resolves_to_its_entity(tmp_path, 
     vp = "libraries/wares.xml"
     tree = etree.fromstring(b'<wares><ware id="ore"><price max="1"/></ware>'
                             b'<ware id="silicon"><price max="2"/></ware></wares>')
-    db = _store(tmp_path / "e.sqlite", [("ore", vp, "price.max", "1", "modA"),
-                                        ("silicon", vp, "price.max", "9", "modB")])
+    db = _store_k(tmp_path / "e.sqlite", [("ware", "ore", vp, "price.max", "1", "modA"),
+                                          ("ware", "silicon", vp, "price.max", "9", "modB")])
     hard = lambda w: _compat.Collision(vpath=vp, kind="HARD", target="/wares/ware[2]",  # noqa: E731
                                        mods=["modA", "modB"], winner=w)
     ct = _cross_tool_with(monkeypatch, tmp_path, db, [hard("modB")], tree)
@@ -727,3 +754,56 @@ def test_gt6_obtainability_audit_names_an_unreadable_mod_file(tmp_path, monkeypa
     (tmp_path / "b.json").write_text(json.dumps(now), encoding="utf-8")
     assert oa.main() == 0
     assert "unreadable: somemod/assets/broken_macro.xml" in capsys.readouterr().out
+
+
+# --- review of fe8065b: the POSITION of every step matters, not only the entity ----------
+
+_WARE_TREE = (b'<wares><ware id="ore"><production method="default" time="10"/>'
+              b'<production method="alt" time="20"/></ware></wares>')
+
+
+def _ware_store(tmp_path):
+    vp = "libraries/wares.xml"
+    return vp, _store_k(tmp_path / "e.sqlite", [
+        ("ware", "ore", vp, "@id", "ore", "base"),
+        ("ware", "ore", vp, "production[default].time", "10", "modA"),
+        ("ware", "ore", vp, "production[alt].time", "20", "modB")])
+
+
+@pytest.mark.parametrize("target", ["/wares/ware[1]/production[2]",
+                                    "/wares/ware[1]/production[2]/@time"])
+def test_gt5_cross_tool_a_sibling_position_is_not_dropped(tmp_path, monkeypatch, target):
+    """REPRODUCED in review: production[2] became the prefix `production`, matched BOTH
+    siblings, and the wrong winner (modA owns production[1]) agreed; the @time form
+    became `production.time`, matched nothing, and was silently counted absent."""
+    from lxml import etree
+    from x4validate import _compat
+    vp, db = _ware_store(tmp_path)
+    tree = etree.fromstring(_WARE_TREE)
+    hard = lambda w: _compat.Collision(vpath=vp, kind="HARD", target=target,  # noqa: E731
+                                       mods=["modA", "modB"], winner=w)
+    ct = _cross_tool_with(monkeypatch, tmp_path, db, [hard("modB")], tree)
+    assert not ct.failures and not ct.cannot, (ct.failures, ct.cannot)     # control
+    ct = _cross_tool_with(monkeypatch, tmp_path, db, [hard("modA")], tree)
+    assert ct.failures, "modA owns production[default], not production[2] (alt)"
+
+
+def test_gt5_cross_tool_refuses_when_the_checker_cannot_place_its_population(
+        tmp_path, monkeypatch, capsys):
+    """Coverage floor: rows in a store-tracked file that the CHECKER cannot map (not the
+    explained kinds: untracked file, document-level target, removed entity) may be at
+    most MAX_UNEXPLAINED_SHARE of the mappable rows -- over it the section is CANNOT, even
+    though every row it did map agreed."""
+    from lxml import etree
+    from x4validate import _compat
+    vp, db = _ware_store(tmp_path)
+    tree = etree.fromstring(_WARE_TREE)
+    good = _compat.Collision(vpath=vp, kind="HARD", target="/wares/ware[1]/production[2]",
+                             mods=["modA", "modB"], winner="modB")
+    lost = [_compat.Collision(vpath=vp, kind="HARD", target=f"/wares/ware[{9 + i}]",
+                              mods=["modA", "modB"], winner="modB") for i in range(2)]
+    ct = _cross_tool_with(monkeypatch, tmp_path, db, [good, *lost], tree)
+    assert not ct.failures
+    assert any(x.startswith("HARD:") for x in ct.cannot), ct.cannot
+    out = capsys.readouterr().out
+    assert "checked 1 of 3 mappable" in out and "2 unmapped by the checker" in out
