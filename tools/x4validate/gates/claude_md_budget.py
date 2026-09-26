@@ -1,7 +1,15 @@
 #!/usr/bin/env python
-"""CLAUDE.md may not grow silently. A RATCHET, not a ceiling.
+"""CLAUDE.md may not grow silently. A per-file RECORDED CEILING, lowered only by hand.
 
-WHY A RATCHET. `CLAUDE.md` is loaded into every session, so making it smaller is a
+WHAT IT IS, AND WHAT IT IS NOT. Each file's size is recorded with `--record`, and a
+run fails when a file exceeds ITS recorded size. It is NOT a ratchet: it never
+tightens by itself. Shrink a file and it may regrow up to the recorded size unseen
+until someone re-records -- so after a deliberate shrink, run `--record` to lock the
+smaller size in. (USER DECISION 2026-09-25, AUDIT-2026-09-24 GT-6: it stays a
+manual-`--record` ceiling; the docs that called it a self-tightening ratchet were
+wrong and are corrected here.)
+
+WHY RECORDED PER FILE, NOT ONE NUMBER. `CLAUDE.md` is loaded into every session, so making it smaller is a
 standing objective rather than a one-time cleanup (user-set 2026-09-12). "Under
 40,000 characters" is a threshold that **cannot go red in the way that matters**:
 it reports PASS on a file full of content that has a better home, and being under
@@ -22,7 +30,7 @@ made it name what it displaced.** That is the whole design.
 Both halves were paid for. Mixing conventions is lax by the LINE COUNT: a baseline
 taken from a CRLF file and a measurement through `read_text()` differ by exactly the
 file's CRLF pairs (38,056 vs 37,460 on the real file, its 596). The first fix counted
-the raw CR instead, and MEASURED 2026-09-13 that flipped the ratchet on a checkout: a
+the raw CR instead, and MEASURED 2026-09-13 that flipped the verdict on a checkout: a
 fast-forward rewrote the shipped CLAUDE.md as CRLF and this gate reported GREW +872,
 on a file whose committed content was 52 characters SMALLER than its baseline --
 924 lines, 924 CRs, one phantom finding (F120). How a checkout stores a newline is
@@ -40,7 +48,7 @@ never as a pass.
 
 Run:  uv run python gates/claude_md_budget.py [--record]
 Exit: 0 within baseline - 1 a file grew, named with its overage - 2 nothing could
-      be measured (a ratchet that passes having measured nothing is the defect).
+      be measured (a budget that passes having measured nothing is the defect).
 """
 
 from __future__ import annotations
@@ -65,7 +73,7 @@ BASELINE = TOOL_ROOT / ".claude-md-budget-baseline.json"
 #: and would let that much growth through, silently (review, 2026-09-14).
 COUNTING = "content: each CRLF counts as one newline (F120)"
 
-#: A backstop only. The RATCHET is the operative check -- see the docstring.
+#: A backstop only. The RECORDED per-file size is the operative check -- see the docstring.
 #: chr() rather than escapes: this file's history includes a heredoc eating a backslash.
 _CRLF, _LF = chr(13) + chr(10), chr(10)
 HARD_CEILING = 40_000
@@ -143,13 +151,14 @@ def main(record: bool = False) -> int:
     record = record or "--record" in sys.argv
     files = budget_files()
     if not files:
-        print("REFUSING: no CLAUDE.md resolved, so there is nothing to ratchet\n"
+        print("REFUSING: no CLAUDE.md resolved, so there is nothing to measure\n"
               "      expected one at the repo root and/or via the configured game "
               "root ($X4_GAME)", file=sys.stderr)
         return 2
 
     measured: dict[str, int] = {}
-    print("CLAUDE.md BUDGET -- ratchet (the 40,000 ceiling is a backstop, not the check)")
+    print("CLAUDE.md BUDGET -- recorded per-file size, lowered only by --record "
+          "(the 40,000 ceiling is a backstop, not the check)")
     try:
         for name, path in files:
             chars = char_count(path)
@@ -169,7 +178,7 @@ def main(record: bool = False) -> int:
         # "re-record with --record", and this wrote today's sizes over yesterday's with
         # no before/after -- so a machine carrying an old baseline could accept thousands
         # of characters of growth by doing exactly what the error message said, which is
-        # the one outcome this ratchet exists to prevent (review, 2026-09-20). An
+        # the one outcome this budget exists to prevent (review, 2026-09-20). An
         # unreadable baseline still records: that is what keeps --record a usable remedy.
         try:
             previous = _load()
@@ -196,7 +205,7 @@ def main(record: bool = False) -> int:
 
     if baseline is None:
         # rc 2, never 0: run-gates.sh buckets 0 as `ok` and discards stdout, so a
-        # ratchet that has measured nothing would read as a passing one in the summary
+        # budget that has measured nothing would read as a passing one in the summary
         # on every fresh clone forever. perf_guard returns 2 in the same state.
         print(f"  no baseline at {BASELINE.name} -- run with --record to create one.")
         print("  drift is NOT being checked.", file=sys.stderr)
@@ -207,7 +216,7 @@ def main(record: bool = False) -> int:
     # X4_GAME unset, or a baseline recorded for different files, it passed having compared
     # nothing (review, 2026-09-13).
     for n in sorted(set(measured) - set(baseline)):
-        print(f"  NOT CHECKED  {n}: no baseline entry (run --record to start ratcheting it)")
+        print(f"  NOT CHECKED  {n}: no baseline entry (run --record to start checking it)")
     for n in sorted(set(baseline) - set(measured)):
         print(f"  NOT RESOLVED {n}: in the baseline but not found on this machine now")
     if not set(measured) & set(baseline):

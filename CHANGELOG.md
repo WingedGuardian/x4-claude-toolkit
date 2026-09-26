@@ -145,8 +145,10 @@
   had been hand-edited while the shipped one stayed 5-unrouted (review, 2026-09-13). The
   pre-landing file is a committed fixture, so the "it goes red" test runs on every clone
   instead of skipping everywhere but one machine.
-- **`gates/claude_md_budget.py`** — a ratchet, not a ceiling: no CLAUDE.md may exceed its
-  recorded floor, and growth must name what it displaces. MEASURED: the two CLAUDE.md files on
+- **`gates/claude_md_budget.py`** — a per-file recorded ceiling: no CLAUDE.md may exceed its
+  recorded size, and growth must name what it displaces. *(Corrected 2026-09-25: this line
+  first called it "a ratchet". It does not tighten by itself -- the size is lowered only by a
+  deliberate `--record`, by user decision; AUDIT-2026-09-24 GT-6.)* MEASURED: the two CLAUDE.md files on
   the author's machine moved in opposite directions, one shrinking 75% while the other grew 3.8x
   in a single unannounced commit. Baseline is local and gitignored; absent is reported as "drift
   is NOT being checked", never as a pass.

@@ -665,18 +665,7 @@ def test_gt6_claims_audit_rejects_a_meaningless_tolerance(tmp_path, monkeypatch,
     assert row[-1] is not None, f"tolerance {tol!r} parsed as {row[5]!r} with no error"
 
 
-@pytest.mark.xfail(strict=True, reason="AUDIT-2026-09-24 GT-6: claude_md_budget never lowers its floor, "
-                   "so shrink-then-regrow is invisible (a ceiling, not a ratchet)")
-def test_gt6_claude_md_budget_ratchet_tightens(tmp_path, monkeypatch, capsys):
-    cmb = import_gate("claude_md_budget", module_level=False)
-    md = tmp_path / "CLAUDE.md"
-    base = tmp_path / "baseline.json"
-    base.write_bytes(json.dumps({"_counting": cmb.COUNTING, "shipped": 1000}).encode("utf-8"))
-    monkeypatch.setattr(cmb, "BASELINE", base)
-    monkeypatch.setattr(cmb, "budget_files", lambda: [("shipped", md)])
-    md.write_bytes(b"x" * 900)
-    assert cmb.main() == 0
-    md.write_bytes(b"x" * 950)                              # +50 over what the file just was
-    rc = cmb.main()
-    assert rc == 1, (f"the file shrank to 900 and grew back to 950 with rc {rc}; the floor "
-                     f"stayed at 1000\n{capsys.readouterr().err}")
+# GT-6 claude_md_budget: `test_gt6_claude_md_budget_ratchet_tightens` is RETIRED by user
+# decision (2026-09-25): the budget stays a manual-`--record` ceiling, so an automatic
+# floor-lowering is not the intended behaviour. The docs that called it a ratchet were
+# corrected instead (gates/claude_md_budget.py, gates/README.md, CHANGELOG.md).
