@@ -294,9 +294,11 @@ _TEST_FNS = frozenset({"matches", "contains", "starts-with", "ends-with"})
 
 #: Comparison operators/keywords: an identity call standing next to one of these is
 #: being tested against a value, the same filtering shape as a `[...]` predicate.
-_CMP_AFTER = re.compile(r"\s*(?:!=|<=|>=|=|<|>|eq\b|ne\b|lt\b|gt\b|le\b|ge\b)")
+# `=` never as part of `=>` (the arrow operator) or `:=` (a let / group-by binding):
+# neither compares, and both used to refuse a query that narrows nothing.
+_CMP_AFTER = re.compile(r"\s*(?:!=|<=|>=|=(?!>)|<|>|eq\b|ne\b|lt\b|gt\b|le\b|ge\b)")
 _CMP_BEFORE = re.compile(
-    r"(?:!=|<=|>=|=|<|>|(?<![\w:.\-])(?:eq|ne|lt|gt|le|ge))\s*\Z")
+    r"(?:!=|<=|>=|(?<!:)=|<|>|(?<![\w:.\-])(?:eq|ne|lt|gt|le|ge))\s*\Z")
 
 #: The identifier immediately before a `(`, if there is one -- used to name the
 #: call whose argument list a position falls inside.

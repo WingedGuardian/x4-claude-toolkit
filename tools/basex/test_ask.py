@@ -915,3 +915,23 @@ def test_TWIN_document_uri_inside_a_COMMENT_is_not_refused(monkeypatch, capsys):
     text = "".join(capsys.readouterr())
     assert rc == 0, text
     assert "addresses PART of a database" not in text, text
+
+
+# A binding or an arrow is not a comparison: `:=` ends in `=`, and `=>` starts with it.
+# Both were read as "compared" and refused a query that narrows nothing (review, 2026-09-26).
+@pytest.mark.parametrize("q", [
+    "for $w in collection('x4eff')//ware group by $u := document-uri(root($w)) return $u",
+    "for $w in collection('x4eff')//ware let $u := base-uri($w) return $u",
+    "collection('x4eff')//ware ! document-uri(root(.)) => string-join(',')",
+])
+def test_TWIN_a_binding_or_arrow_is_not_a_comparison(q):
+    assert ask._identity_narrowing(ask._strip_xq_comments(q)) == []
+
+
+@pytest.mark.parametrize("q", [
+    "collection('x4eff')[document-uri(.) = '/x4eff/libraries/wares.xml']//ware",
+    "collection('x4eff')['/x4eff/libraries/wares.xml' = document-uri(.)]//ware",
+    "collection('x4eff')[document-uri(.) != '/x']//ware",
+])
+def test_a_real_comparison_either_side_is_still_refused(q):
+    assert ask._identity_narrowing(ask._strip_xq_comments(q)) != []
