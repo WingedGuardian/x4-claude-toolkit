@@ -3,8 +3,9 @@
 ## Unreleased
 
 The remediation of the 2026-09-24 correctness audit. Every finding, its status and its commit
-are in `tools/x4validate/AUDIT-2026-09-24.md`; the defect classes are BLIND-SPOTS F128-F141.
-Numbers below are taken from the commit that made the change.
+are in `tools/x4validate/AUDIT-2026-09-24.md`; the defect classes are BLIND-SPOTS F128-F144
+(F141's addendum and F142-F144 come from this release's own pre-release review, summarised
+in the same file). Numbers below are taken from the commit that made the change.
 
 ### ⚠ Load order now follows the ENGINE — collision winners can change
 
@@ -25,7 +26,8 @@ Numbers below are taken from the commit that made the change.
   passed: signature order 12/12 as predicted, and **apply order 3/3** -- its collision pairs
   `<replace>` an attribute another probe `<add>`s, and the replace succeeded exactly when the
   adder loads earlier. A folder with `ß` loads after one with `sz`; all DLC load before
-  mods. Still unobserved: other install roots, non-NTFS filesystems.
+  mods. The profile's `extensions\` root is measured too (below). Still unobserved: the
+  Steam Workshop root, non-NTFS filesystems.
 - **Which mods count as LOADED now follows the engine** (`mods("active")`, used by Tier B,
   x4compat, x4stats, x4effective, BaseX `x4eff` and the gates), MEASURED by the same probe:
   a mod whose **REQUIRED dependency is missing, disabled or part of a cycle is NOT loaded**
@@ -54,15 +56,35 @@ Numbers below are taken from the commit that made the change.
 - **Rebuild your persisted artifacts once after updating.** The merge engine and the
   freshness fingerprint both changed, so every store and index reads STALE until rebuilt.
 
-- **Two extensions roots are modelled as the engine treats them** (BLIND-SPOTS F141, measured
-  by probe rounds 2-3): mods in the profile's `extensions\` apply AFTER every game-root mod,
-  and a required dependency never resolves across roots (the engine refuses it in both
-  directions; the model used to count it as satisfied). Where a game-root mod that waits a
-  dependency pass falls relative to profile-root mods is unmeasured and is disclosed when it
-  applies. No change for a single-root install.
+- **The game root and the profile root are modelled as the engine treats them** (BLIND-SPOTS
+  F141, measured by probe rounds 2-3): mods in the profile's `extensions\` apply AFTER every
+  game-root mod, and a required dependency never resolves between the game root and the
+  profile root (the engine refuses it in both directions; the model used to count it as
+  satisfied). That rule applies ONLY between those two roots: nothing about the Steam
+  Workshop root was measured, so Workshop mods keep the earlier pooled model -- dependencies
+  resolve to and from them in both directions -- and a run with a Workshop mod present says
+  the model is UNMEASURED there. Where a game-root mod that waits a dependency pass falls
+  relative to profile-root mods is unmeasured and is disclosed when it applies. No change
+  for a single-root install.
+- **A dependency id that differs only in CASE is treated as satisfied**, with a note naming
+  both spellings (whether the engine compares ids case-sensitively is unmeasured); it used to
+  leave the mod out.
+- **Load-order notes reach every tool that orders the mod set.** Unmeasured cross-root
+  placement, duplicate ids or folders, dependency cycles, a Workshop-root mod and a case-only
+  match are shown by Tier B, `x4effective build`/`dump`, BaseX build-effective, x4stats and
+  x4similar (x4compat already did), not by x4compat alone.
+- **x4compat, x4stats and x4similar scan every configured extensions root by default.** They
+  scanned only the game root, so a profile-root mod -- which the engine loads -- was silently
+  absent. `--ext-dir` now scans that folder ONLY and says so.
+- Help text: an extension is active when its PROFILE entry says so; the manifest's `enabled`
+  is only the default (x4compat, `x4validate --tier b`). The x4effective and x4compat
+  advisory lines name what is really unmeasured (the Workshop root, case-only ids, a
+  later-pass game-root mod beside profile-root mods) instead of calling the measured apply
+  order and dependency rules "inferred" or "assumptions".
 
 ### Safety hooks
 
+<!-- rr-hooks entry: coordinator adds -->
 - **Bare system `python` on toolkit code is denied**, with the `uv run` form to use instead.
   On a machine whose `python` has none of the toolkit's dependencies it fails with
   ModuleNotFoundError or SyntaxError, which reads exactly like a real test failure.
@@ -102,6 +124,10 @@ Numbers below are taken from the commit that made the change.
   carry one.
 - Tier B: a nested patch aimed at an uninstalled or installed-but-DISABLED mod is INFO
   "inactive", and references inside it are INFO. Refs in patches on packed-only DLC gate again.
+- Tier B: a nested patch on an ACTIVE mod that ships the file but loads LATER is a WARN
+  (category `load-order`) naming that mod, saying the engine behaviour is unmeasured and
+  advising an optional `<dependency>` on it -- not a "no base game file" path ERROR. The
+  Tier B note counts "of N other active" mods (it said "installed").
 - A complete t-file overriding strings gives ONE finding per file: INFO over base/DLC strings
   (the rename idiom), WARN per defining mod over another mod's strings.
 - Unreadable overlay indexes and module groups that did not merge are degraded skips (exit 3)
@@ -127,7 +153,14 @@ Numbers below are taken from the commit that made the change.
 - New sections: **PATCHES A NODE ONLY A LATER MOD ADDS** (an op the engine skips because the
   node arrives later — 39 on the audit install) and **EDITS INSIDE A NODE AN EARLIER MOD
   REMOVED**; `if=`/`silent` ops are marked as intended. Cost, measured on the audit install:
-  `analyze()` takes 30.7-32.7 s, against 11.5-12.6 s without this analysis.
+  `analyze()` takes 30.7-32.7 s, against 11.5-12.6 s without this analysis. The order-miss
+  detector no longer masks a node one mod adds and a later one removes as a dead selector
+  (the bisecting fallback for nested paths keeps that limit, disclosed in its docstring).
+- `check <name>`: a bare name always means the installed copy. A path is recognised by its
+  shape (a separator, a leading `.`, or absolute), not by whether it exists in the current
+  directory.
+- `--json` includes `unresolvable` -- the ops whose `sel=` could not be evaluated (the NOT
+  CHECKED section the text output already printed).
 
 ### x4stats, x4effective, x4similar, x4xref
 
@@ -145,6 +178,8 @@ Numbers below are taken from the commit that made the change.
   (carried by 0 ships) leaves the weights; unscorable ships are counted in the header.
 - `x4xref who-calls ''` is refused (rc 2); cue-edge actions (`signal_cue`, …) are searchable
   by `who-calls`.
+- `x4effective ls/attr/diff-mod --limit 0` means unlimited, as the truncation message
+  advises (it returned zero rows).
 
 ### x4diff
 
@@ -156,6 +191,10 @@ Numbers below are taken from the commit that made the change.
 - A stack whose first supplier ships the file as a `<diff>` has a baseline (it read "would not
   parse"); `--file <added file>` says ADDED/REMOVED; "total attr changes" counts attribute
   changes only.
+- Text comparison keeps NBSP, ideographic space and other non-ASCII whitespace distinct from
+  formatting whitespace, and a single-line value's leading/trailing space is an edit (only a
+  segment containing a newline has its ends trimmed); a comment or processing instruction inside text
+  no longer splits it into a phantom change.
 
 ### x4modlist
 
@@ -174,17 +213,22 @@ Numbers below are taken from the commit that made the change.
   `content.xml` is reported (rc 2), not a crash; `verify --rescore` works offline.
 - `x4-paths.env`: a quoted value may contain `#`, and adjacent quoted/unquoted parts join as
   in the shell.
+- A Steam outage while resolving a Workshop mod's identity no longer overwrites the row's
+  existing verdict with "unmatched"; the outage is counted in the run's errors.
+  `x4modlist tracked` reports a Nexus failure (rc 2) instead of a traceback.
 
 ### x4debug, x4save, x4live
 
 - `x4debug crosscheck` keys each op on patch file + selector (the same selector failing in two
-  files collapsed into one; 17 collapses in one real mod).
+  files collapsed into one; 17 collapses in one real mod), and refuses (rc 2) naming the
+  read error when the log is unreadable.
 - `x4save info` compares history by extension name and no longer claims what loaded;
   `x4save check` no longer double-counts references at 4 MiB read boundaries.
 - `x4live harvest` says "N of M fetched" and marks a capped walk INCOMPLETE; `groundtruth`
   reads escaped values containing `\t`; `oracle` lists mapped fields absent from the store
   separately; the shot multiplier in the (still held-out) dps derivation is
-  `max(amount, barrelamount)`; stale help text corrected.
+  `max(amount, barrelamount)`; stale help text corrected -- including `--with-ramp`, which
+  said the game runs only in the foreground (measured: only MINIMIZING the window stops it).
 
 ### BaseX
 
@@ -192,12 +236,20 @@ Numbers below are taken from the commit that made the change.
   `db:get('x4eff','no/such/typo.xml')//ware` printed "NEGATIVE CONFIRMED over 10970 of 10970
   documents". A partial, foreign or non-literal database address is refused (rc 2); a query
   naming no database, or a lone `false`/`""`, is not a finding (rc 4).
-- **…including a scope narrowed OUTSIDE the call's arguments.**
+- **…including a scope narrowed INSIDE the query** (BLIND-SPOTS F142).
   `collection('x4eff')[matches(document-uri(.),'libraries/wares')]//…` addressed 9 documents
-  and printed "NEGATIVE CONFIRMED over 10970 of 10970", rc 0; so did a `where` on
-  `base-uri(…)` and a comparison on `db:path(…)`. Filtering on a document's identity in a
-  predicate, a `where` clause or a comparison is now refused (rc 2, naming the function it
-  saw). Returning one is not, and neither is a `:=` binding or an `=>` arrow.
+  and printed "NEGATIVE CONFIRMED over 10970 of 10970", rc 0. A first fix listed the
+  narrowing shapes it had seen, and the pre-release review walked 11 of 12 rewrites past that
+  list (`[position() le 9]`, `subsequence()`, a `let` then a `where`, `collection#1(...)`,
+  ...), each "NEGATIVE CONFIRMED" over the whole database. Now any `xq` query containing a
+  token that can select documents by identity, position, node order or an unreadable route
+  (`document-uri`, `position()`, a numeric predicate such as `[1]`, `#`, `Q{...}`, ...) still
+  runs and reports its hits, but its zero is withheld (rc 4, naming the token). Selecting by
+  content is unaffected. `$d => document-uri()` is no longer refused. The rule over-withholds
+  on purpose: `//ware[1]` loses its certificate too.
+- **`coverage.py`: an overlay catalog that cannot be read makes `x4eff` coverage
+  `unexplained`** (it was counted as one missing vpath and the coverage stayed `complete`);
+  `unreadable_catalogs` names it and `ask.py`'s refusal says so.
 - A rebuild revokes the old `coverage-<db>.json` before dropping the database; "accounted" is
   judged per root.
 - `stage.py` no longer indexes both mini-DLC twice when every DLC is unpacked (142 duplicate
@@ -222,6 +274,18 @@ Numbers below are taken from the commit that made the change.
   profile-first by its No-matching-node lines alone, plus a required dependency across the
   roots in each direction. Profile probes are written by a narrow writer (new marked folders
   only, every file re-read) because `deploy-mod.py` refuses a profile root by design.
+  `remove` no longer crashes when the profile and game roots are the same folder; `deploy`'s
+  dry run lists the profile writes even before that folder exists; `deploy --apply` writes
+  no profile probe after a game-root deploy fails to verify (rc 1).
+- **Installing from a git checkout copies only the files git tracks** (BLIND-SPOTS F144).
+  The installers' prune lists had drifted from `.gitignore`, so built BaseX databases,
+  caches and scratch output travelled too (one checkout carried 33 untracked files, 2.3 GB).
+  A release-zip install is unchanged. BaseX build products are never copied in and never
+  deleted from the destination.
+- `verify-nexus-pack.py`: a blank-only changelog FAILS instead of crashing; a wrong argument
+  count prints the Usage line (it printed a blank line).
+- `test-hooks.sh`: a scanner selftest that could not run (e.g. refused over a long `TMP`) is
+  reported as a SKIP with the scanner's reason, not "selftest FAILED".
 
 ### Freshness
 
@@ -252,6 +316,20 @@ Numbers below are taken from the commit that made the change.
   reads rc 2 NOT COMPARABLE -- re-record it once with `--record`.
 - `claude_md_budget` is described as what it is — a recorded ceiling lowered only by
   `--record`, not a ratchet.
+- **A finding outranks a refusal in `cross_tool` and `consistency_audit` too:** a HARD
+  disagreement is a FAIL even when the coverage floor refuses, and store-vs-merge
+  disagreements print (rc 1) before the dump-channel refusal. `cross_tool` checks
+  `ENTITY_REMOVED` rows against the store's removals by replaying them in order, because a
+  removal is recorded at its path at that instant, not its base-tree position (BLIND-SPOTS
+  F143; HARD rows checked 32 -> 37 on the audit install, all agreeing).
+- `load_order_oracle` decides whether the log describes the current modlist BEFORE any
+  verdict (a mismatched log with 0 inversions used to PASS), and a mod we exclude that the
+  engine logged is a finding (rc 1).
+- `nexus_fixture` asserts the update verdict; `instrument_hygiene` excuses a half-written
+  last line only in a transcript written in the last 10 minutes; `oracle_index` returns rc 2
+  for a broken attribution scan; `diff_truth` counts planted changes as a multiset;
+  `claims_audit` and `tool_properties` honour `$X4_EFFECTIVE_DB`; `stress_sweep` says the
+  unseen-corpus axis was NOT CHECKED and proves the XXE entity was not expanded.
 
 ## v3.2.0 — 2026-09-21
 
