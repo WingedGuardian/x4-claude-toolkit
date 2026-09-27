@@ -109,9 +109,13 @@ def main():
     print(f"attribution scan: {scanned} XML documents across {len(all_dirs)} mods, "
           f"{len(unreadable)} unreadable")
     if not any(refs.values()):
-        raise SystemExit(
-            "attribution found no reference to ANY missing name across "
-            f"{scanned} documents — that is not credible; the scan is broken")
+        # CANNOT (rc 2), like the no-ground-truth branch above: a broken instrument is a
+        # non-answer, and SystemExit(<str>) exits 1, which reads as a failed gate
+        # (release review 2026-09-26).
+        _env.skip("attribution found no reference to ANY missing name across "
+                  f"{scanned} documents -- that is not credible; the scan is broken",
+                  "check the mod set this run scanned (printed above) and the unreadable "
+                  "count; a scan that reads nothing finds nothing")
 
     # --- the measurement -------------------------------------------------------
     tot = Counter()
