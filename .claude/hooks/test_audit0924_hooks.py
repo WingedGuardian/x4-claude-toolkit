@@ -635,6 +635,11 @@ class TestRR3CmdCarrier(_RR):
             # quoted inside the payload; the reference root has no space.
             ("deny", 'cmd //c "r^d /s /q \\"' + G + '\\""'),
             ("deny", 'cmd //c "r^d /s /q ' + self.R + '"'),
+            # coordinator verification: the game root (it has a SPACE) left unquoted
+            # inside the payload -- cmd splits it, the guard still reads the root
+            ("deny", 'cmd //c "r^d /s /q ' + G + '"'),
+            ("deny", 'cmd //c "rd /s /q ' + G + '"'),
+            ("deny", 'cmd //c "r^d /s /q ' + G + '\\extensions"'),
             ("deny", 'cmd //c "^r^m^d^i^r /s /q ' + self.R + '"'),
             ("deny", 'cmd //c "cd /d ' + G + ' && rd /s /q extensions"'),
             ("deny", 'cmd //c "pushd ' + G + ' && rd /s /q extensions"'),

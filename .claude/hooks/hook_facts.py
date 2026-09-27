@@ -3165,6 +3165,14 @@ def _cmd_line(ws: list) -> str:
         i += 1
     if v in _CMD_VERBS:
         args = [a for a in args if not _CMD_SWITCH.match(a)]
+        # An UNQUOTED spaced path: cmd splits `rd /s /q C:\...\X4 Foundations` into two
+        # operands, so what it deletes is not the root -- but the text plainly names it,
+        # and a guard that reads it as two harmless names is one quoting slip from the
+        # real thing. A delete also judges every contiguous span of its operands rejoined
+        # with a space (coordinator verification, v3.3.0 hooks lane). Bounded: 12 words.
+        if _CMD_VERBS[v].startswith("rm") and 1 < len(args) <= 12:
+            args = args + [" ".join(args[i:j]) for i in range(len(args))
+                           for j in range(i + 2, len(args) + 1)]
         if v in ("ren", "rename") and len(args) >= 2 and not re.search(r"[/\\]", args[1]):
             src = args[0].replace(chr(92), "/")
             cut = src.rfind("/")

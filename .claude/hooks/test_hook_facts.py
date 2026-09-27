@@ -3403,6 +3403,25 @@ class TestRRCmdCarrier(unittest.TestCase):
         # inside double quotes a caret is literal
         self.assertEqual(H.cmd_to_sh(['echo "a^b"']), "echo 'a^b'")
 
+    def test_an_unquoted_spaced_root_in_a_cmd_delete_is_still_that_root(self):
+        """Coordinator verification: cmd splits an unquoted `...\\X4 Foundations` into two
+        operands, so none matched the root and the delete ALLOWED. GAME has a space."""
+        g = GAME.replace("/", BS)
+        for payload in ("r^d /s /q " + g, "rd /s /q " + g, "rmdir /s /q " + g + BS + "extensions"):
+            with self.subTest(payload=payload):
+                self.assertTrue(F("cmd //c " + DQ + payload + DQ)["rm_hits_game"])
+        self.assertTrue(F("cmd //c " + DQ + "del /q " + g + BS + "a.txt" + DQ)["rm_in_x4_dir"])
+        # the spans are for DELETES, and only rejoin what is really there
+        self.assertEqual(H.cmd_to_sh(["copy a b"]), "cp a b")
+        self.assertEqual(H.cmd_to_sh(["rd /s /q a b"]), "rm -rf a b 'a b'")
+        self.assertFalse(F("cmd //c " + DQ + "rd /s /q build dist" + DQ)["rm_in_x4_dir"])
+
+    def test_TWIN_bash_eats_unquoted_backslashes_before_cmd_sees_them(self):
+        """`cmd //c rd /s /q C:\\a\\b` UNQUOTED in Bash: bash turns `\\a` into `a`, so cmd
+        receives `C:ab` -- not the root. The guard reads what Bash hands over, and so
+        does not invent a match (NOT a defect: the command genuinely deletes elsewhere)."""
+        self.assertEqual(H.tokens("cmd //c rd /s /q C:" + BS + "t" + BS + "X4")[-1][0], "C:tX4")
+
     def test_slash_r_is_slash_c(self):
         f = F("cmd //r rd /s /q " + DQ + REF + DQ)
         self.assertTrue(f["rm_targets_reference"])
