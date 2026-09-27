@@ -75,7 +75,17 @@ def _claims() -> Path:
 
 
 def _store() -> Path:
-    return _registry_dir() / "effective.sqlite"
+    """The effective store, through the ONE door every tool and gate uses
+    (`_effective.effective_db()`: `$X4_EFFECTIVE_DB`, else beside the registry). It was
+    `_registry_dir() / "effective.sqlite"`, which ignored `$X4_EFFECTIVE_DB`, so with the
+    store configured elsewhere this gate audited another file, or none (release review
+    2026-09-26)."""
+    p = _effective.effective_db()
+    if p is None:
+        raise _paths.Unconfigured(
+            "no effective store is configured. Set $X4_EFFECTIVE_DB, $X4_REGISTRY or "
+            "$X4_MODS, or see .claude/x4-paths.env.")
+    return Path(p)
 
 TIERS = {"vanilla", "effective"}
 #: Kinds the vanilla path can rebuild. Anything else is declared UNRESOLVED with a

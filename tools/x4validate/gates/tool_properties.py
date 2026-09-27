@@ -594,13 +594,16 @@ def check_store_key_uniqueness() -> None:
     """
     import sqlite3
 
-    from x4validate import _effective, _registry
+    from x4validate import _effective
 
     print("")
     print("store key uniqueness (F33) -- attr axis FIXED (pinned 0); entity axis OPEN")
-    store = Path(_registry.DEFAULT_REGISTRY).parent / "effective.sqlite"
-    if not store.is_file():
-        skip("store key uniqueness", "no effective.sqlite — not checked")
+    # The ONE door (`$X4_EFFECTIVE_DB`, else beside the registry) -- not a re-derived
+    # `DEFAULT_REGISTRY.parent`, which ignored the setting (release review 2026-09-26).
+    store = _effective.effective_db()
+    if store is None or not Path(store).is_file():
+        skip("store key uniqueness",
+             f"no effective store (resolved to {store or 'nothing'}) — not checked")
         return
     con = sqlite3.connect(f"file:{store}?mode=ro", uri=True)
     try:
@@ -669,7 +672,8 @@ def check_mod_scope_agreement() -> None:
     print("")
     print("mod-scope agreement — the store vs BaseX x4eff")
 
-    store_path = _effective.DB_PATH
+    store_path = _effective.effective_db()     # the ONE door, resolved now (not DB_PATH,
+    #                                              an import-time snapshot)
 
     # TWO BASEX TREES EXIST, and this looked in the wrong one. The self-relative path
     # resolves to <repo>/tools/basex/_eff/, which is the SHIPPING copy -- it never
