@@ -51,7 +51,8 @@ class Check:
 
 def main(argv: list[str]) -> int:
     if len(argv) != 1:
-        print(__doc__.strip().splitlines()[-3], file=sys.stderr)
+        # FOUND, not indexed: [-3] was the blank line above it, so this printed nothing.
+        print(next(l for l in __doc__.splitlines() if l.startswith("Usage")), file=sys.stderr)
         return 2
     pack = Path(argv[0])
     if not pack.is_dir():
@@ -109,7 +110,7 @@ def main(argv: list[str]) -> int:
         check(bool(lines), "non-empty", "%d lines" % len(lines))
         check(not over, "every line <= %d chars" % LINE_LIMIT,
               ("over: %s" % over[:6]) if over
-              else "longest %d" % max(len(l) for l in lines))
+              else "longest %d" % max((len(l) for l in lines), default=0))
         check(not multi, "one sentence per line",
               ("lines %s carry more than one" % multi[:8]) if multi else "")
 
