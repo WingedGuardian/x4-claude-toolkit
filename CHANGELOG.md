@@ -3,7 +3,7 @@
 ## Unreleased
 
 The remediation of the 2026-09-24 correctness audit. Every finding, its status and its commit
-are in `tools/x4validate/AUDIT-2026-09-24.md`; the defect classes are BLIND-SPOTS F128-F140.
+are in `tools/x4validate/AUDIT-2026-09-24.md`; the defect classes are BLIND-SPOTS F128-F141.
 Numbers below are taken from the commit that made the change.
 
 ### ⚠ Load order now follows the ENGINE — collision winners can change
@@ -53,6 +53,13 @@ Numbers below are taken from the commit that made the change.
   unobserved shapes in game.
 - **Rebuild your persisted artifacts once after updating.** The merge engine and the
   freshness fingerprint both changed, so every store and index reads STALE until rebuilt.
+
+- **Two extensions roots are modelled as the engine treats them** (BLIND-SPOTS F141, measured
+  by probe rounds 2-3): mods in the profile's `extensions\` apply AFTER every game-root mod,
+  and a required dependency never resolves across roots (the engine refuses it in both
+  directions; the model used to count it as satisfied). Where a game-root mod that waits a
+  dependency pass falls relative to profile-root mods is unmeasured and is disclosed when it
+  applies. No change for a single-root install.
 
 ### Safety hooks
 
