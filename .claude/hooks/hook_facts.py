@@ -3581,14 +3581,10 @@ def facts(payload: dict, roots: dict) -> dict:
         pre-arc note never concerned -- so it was scoped out, not shipped."""
         out = []
         for p in paths:
-            if not expand:
-                # Resolved exactly as before this lane: loop words and `$(...)` values
-                # are not substituted, so such an operand stays unresolved.
-                r = resolve(p, plain_assigns)
-                unres = has_unresolved(r)
-                out.append((r if unres else join_cwd(c_cwd, r), unres, r))
-                continue
-            for r in resolve_all(p, assigns):
+            # expand=False: resolved exactly as before this lane -- loop words and
+            # `$(...)` values are not substituted, so such an operand stays unresolved.
+            rs = resolve_all(p, assigns) if expand else [resolve(p, plain_assigns)]
+            for r in rs:
                 unres = has_unresolved(r)
                 out.append((r if unres else join_cwd(c_cwd, r), unres, r))
         return out

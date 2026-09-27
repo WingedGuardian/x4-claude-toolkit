@@ -190,7 +190,7 @@ MUTANTS = [
      "    return [] if _only_regenerable(toks) else paths", "    return paths",
      "test_TWIN_a_pycache_cleanup_is_still_silent_everywhere"),
     ("truncate / dd of= are truncating writes",
-     "        redir_t += [(\"truncate\",) + o for o in prep(clobber_targets(s), c_cwd)]",
+     "        redir_t += [(\"truncate\",) + o for o in prep(clobber_targets(s), c_cwd, False)]",
      "        pass",
      "test_truncate_into_reference"),
     ("a find WITHOUT -delete is not", 'deletes = "-delete" in toks', "deletes = True",
