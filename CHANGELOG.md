@@ -1,9 +1,9 @@
 # Changelog
 
-## Unreleased
+## v3.3.0 — 2026-09-27
 
 The remediation of the 2026-09-24 correctness audit. Every finding, its status and its commit
-are in `tools/x4validate/AUDIT-2026-09-24.md`; the defect classes are BLIND-SPOTS F128-F144
+are in `tools/x4validate/AUDIT-2026-09-24.md`; the defect classes are BLIND-SPOTS F128-F145
 (F141's addendum and F142-F144 come from this release's own pre-release review, summarised
 in the same file). Numbers below are taken from the commit that made the change.
 
@@ -84,14 +84,30 @@ in the same file). Numbers below are taken from the commit that made the change.
 
 ### Safety hooks
 
-<!-- rr-hooks entry: coordinator adds -->
+- **PowerShell and cmd.exe carriers closed** (found by the release review; v3.2.0 had no
+  PowerShell guard at all). A delete reached through a pipeline, a variable, a loop variable,
+  `$_`, `.FullName`, or command output (`Join-Path`, `Get-Item`, `gci`, `Resolve-Path`) now
+  DENIES exactly like the literal form, and ASKS when its target cannot be resolved (it used to
+  ALLOW). `gci <root> | Remove-Item` denies like `rm -rf <root>/*`. .NET writers
+  (`StreamWriter`, `FileStream`, `File.Open` by mode) are modelled, and scriptblock text
+  (`[scriptblock]::Create`, `InvokeScript`) is translated like `iex`. `pwsh -cwa`, `-File -`
+  and a program piped or here-stringed into pwsh/powershell are translated as PowerShell.
+  cmd.exe `/R`, `^`-escaped verbs, `cd /d`/`pushd`, and an UNQUOTED path containing spaces
+  (`cmd //c "rd /s /q C:\...\X4 Foundations"`) are handled. A PowerShell command that does not
+  parse is a DENY naming the parser error, not a prompt. Bash `xargs`, for-loops, `$(realpath
+  ...)` targets, `rsync --delete`, `robocopy /MIR`, and `touch`/`chmod`/`ln` into `reference/` are
+  guarded. MEASURED over 50,061 historical commands before shipping: 273 verdicts change, every
+  one classified -- 254 are false-positive bare-python denies REMOVED, the rest intended or true
+  positives; failing closed on unresolvable WRITE targets was measured (+28 false asks, 0 catches)
+  and NOT shipped -- a write target is judged by its text, as Bash's is (BLIND-SPOTS F145).
 - **Bare system `python` on toolkit code is denied**, with the `uv run` form to use instead.
   On a machine whose `python` has none of the toolkit's dependencies it fails with
   ModuleNotFoundError or SyntaxError, which reads exactly like a real test failure.
-  Scoped to `tools/x4validate/` code, `-m pytest` and `-m x4validate`; `-c`, stdin, flag-only
-  calls, stdlib-only `scripts/` and `.claude/hooks/` are untouched. MEASURED over 23,267
-  historical commands: fires on 123 (0.53%), about 100 of them true positives and 23
-  stdlib-only scripts under `tools/x4validate/` that run bare but are covered by one habit.
+  Scoped to `tools/x4validate/` code, and to `-m pytest` / `-m x4validate` run from a directory
+  under `tools/x4validate/` (never another project); `python`, `python3`, `python3.X`, `py`, and an
+  ABSOLUTE path to a non-virtual-environment interpreter all count, a venv's interpreter
+  (`pyvenv.cfg` beside it) does not. `-c`, stdin, flag-only calls, stdlib-only `scripts/` and
+  `.claude/hooks/` are untouched.
 - **The PowerShell tool and NotebookEdit are guarded.** Before this, the hooks had no matcher
   for either, so every guard could be bypassed by choosing PowerShell (MEASURED:
   `Remove-Item -Recurse <reference>` ran unguarded). A PowerShell command is parsed with
