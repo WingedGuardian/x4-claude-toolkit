@@ -27,7 +27,8 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  --ext-dir EXT_DIR     extensions dir (default: game-root from _registry)
+  --ext-dir EXT_DIR     scan ONLY this extensions dir (default: every configured root -- game
+                        root, profile, Steam Workshop -- from _registry)
   --reference REFERENCE
                         unpacked base+DLC tree ($X4_REFERENCE)
 ```

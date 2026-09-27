@@ -31,7 +31,9 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  --ext-dir EXT_DIR     extensions dir to scan (default: game-root extensions\ from _registry)
+  --ext-dir EXT_DIR     scan ONLY this extensions dir (default: every configured root -- game-root
+                        extensions\, the profile's extensions\ and the Steam Workshop folder, from
+                        _registry)
   --reference REFERENCE
                         unpacked base+DLC reference tree ($X4_REFERENCE)
   --soft                also list benign SOFT overlaps
