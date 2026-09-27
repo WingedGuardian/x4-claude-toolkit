@@ -59,8 +59,11 @@ def effective_db() -> Path | None:
 DB_PATH: Path | None = effective_db()
 
 SCHEMA_VERSION = 1
-_ADVISORY = ("winner reflects the engine's measured load order (case-insensitive "
-             "folders, dependencies in passes); cycles and missing dependencies are assumptions")
+_ADVISORY = ("winner reflects the engine's MEASURED load order (case-insensitive folders, "
+             "dependencies in passes, game root before profile root); UNMEASURED and "
+             "modelled: Steam Workshop mods' placement and dependencies, dependency ids "
+             "differing only in case, and a game-root mod that waits a pass while "
+             "profile-root mods are present")
 
 
 def _count_line(shown: int, total: int, noun: str) -> str:

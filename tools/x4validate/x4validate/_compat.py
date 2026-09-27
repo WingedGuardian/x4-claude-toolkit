@@ -609,8 +609,8 @@ def _analyze_vpath(
                     vpath, "SUBTREE", w0, [b, a], "",
                     f"'{a}' loads after '{b}' and replace/removes {w0}, wiping "
                     f"{len(hits)} of '{b}'s change(s) inside it (e.g. {cb0}) — "
-                    "load order is measured signature-check order (apply order "
-                    "inferred), so this is advisory",
+                    "load order is the engine's measured order; advisory where this "
+                    "run's load-order notes name an UNMEASURED assumption",
                     wiped_by=a))
 
     # 5. REMOVALS, decided per op at its own load position (AUDIT-2026-09-24 AN-5 and
