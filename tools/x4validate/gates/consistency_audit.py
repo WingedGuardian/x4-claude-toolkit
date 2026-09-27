@@ -231,13 +231,19 @@ def main() -> int:
         print("DEGRADED: this audit claims THREE channels and the `dump` channel "
               "contributed nothing, so what ran was a two-way comparison.",
               file=sys.stderr)
-        return 3
+    # The disagreements are printed BEFORE the degraded verdict is returned: a
+    # store-vs-merge disagreement is a finding, and a finding outranks a refusal
+    # (release review 2026-09-26 -- the rc 3 used to return first and hide it).
     print(f"  DISAGREEMENTS        : {len(bad)}")
     for kind, name, prop, a, b, origin, vpath in bad[:25]:
         print(f"\n  {kind}  {name}  {prop}   (origin={origin})")
         print(f"     store={a!r}   other={b!r}")
         print(f"     {vpath}")
-    return 1 if bad else 0
+    if bad:
+        return 1
+    if not dump_checked:
+        return 3
+    return 0
 
 
 if __name__ == "__main__":
