@@ -154,7 +154,7 @@ MISSING=""
 #: .gitignore entry says MACHINE-LOCAL by design because wall-clock differs per
 #: machine, and which the installer then copied to another machine for
 #: perf_guard to compare against a stranger's timings.
-X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/x4validate/.mutation-probe-pristine .claude/hooks/__pycache__ .claude/hooks/.pytest_cache scripts/__pycache__ tools/.pytest_cache tools/basex/__pycache__ tools/basex/basex/.basex tools/x4validate/.perf-baseline.json tools/x4validate/.obtainability-baseline.json tools/x4validate/.claude-md-budget-baseline.json tools/x4validate/.toolkit-usage-baseline.json tools/x4validate/.hook-false-positive-baseline.json tools/x4validate/.instrument-hygiene-baseline.json tools/x4validate/.schema-sweep-baseline.json tools/x4validate/gates/__pycache__ tools/x4validate/scripts/__pycache__ tools/x4validate/tests/__pycache__ tools/x4validate/x4validate/__pycache__"
+X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/basex/.pytest_cache tools/x4validate/.mutation-probe-pristine .claude/hooks/__pycache__ .claude/hooks/.pytest_cache scripts/__pycache__ tools/.pytest_cache tools/basex/__pycache__ tools/basex/basex/.basex tools/x4validate/.perf-baseline.json tools/x4validate/.obtainability-baseline.json tools/x4validate/.claude-md-budget-baseline.json tools/x4validate/.toolkit-usage-baseline.json tools/x4validate/.hook-false-positive-baseline.json tools/x4validate/.instrument-hygiene-baseline.json tools/x4validate/.schema-sweep-baseline.json tools/x4validate/gates/__pycache__ tools/x4validate/scripts/__pycache__ tools/x4validate/tests/__pycache__ tools/x4validate/x4validate/__pycache__"
 
 #: Per-machine files that must NEVER travel from the source: they hold THIS
 #: machine paths and secrets, and the destination copy is the user own.
@@ -171,7 +171,88 @@ X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/x4val
 #: denied` on item 1 of 16), and its restore sat 53 lines after its backup with
 #: no trap between them, so any failure in the copy loop skipped the restore and
 #: left an orphaned .bak. Not copying a file cannot fail to restore it.
-X4_KEEP_LOCAL=".claude/x4-paths.env .claude/settings.local.json .claude/backups"
+#:
+#: The BaseX build products share these semantics exactly -- this machine's, the
+#: destination's own, never copied in and NEVER deleted out -- so they live here and
+#: not in X4_COPY_PRUNE, whose second meaning is `rm -rf` in the destination. Filed
+#: there, an upgrade would erase the user's 2+ GB of built databases, the same
+#: dual-meaning trap `.claude/backups` fell into. A checkout accumulates them (release
+#: review 2026-09-26: data/ alone was 2.3 GB) and a git source never copies them
+#: anyway (see _tracked_copy_set); this is the walk's defence in depth.
+X4_KEEP_LOCAL=".claude/x4-paths.env .claude/settings.local.json .claude/backups tools/basex/basex/data tools/basex/basex/coverage-x4raw.json tools/basex/basex/coverage-x4eff.json tools/basex/_eff tools/basex/stage-manifest.json"
+
+#: THE TRACKED SET, when the source is a git checkout.
+#:
+#: The two lists above are a hand-kept second copy of `.gitignore`, and they drift:
+#: installing from a maintainer checkout carried 33 files git does not track,
+#: 2.3 GB of them BaseX databases. `.gitignore` IS the enumeration of what must not
+#: leave the machine, so when the source is a work tree the copy set is
+#: `git ls-files` -- filtered through the same two lists, so a tracked template
+#: still ships and nothing keep-local travels even if someone tracks it.
+#:
+#: TWO clauses, each with its own falsification twin in the installer suite
+#: (and each mutated away separately there, because either one alone shadows the
+#: other on the obvious fixtures):
+#:   * $SRC is the TOP of its work tree. A toolkit sitting inside SOMEONE ELSE's
+#:     repo -- a zip extracted into a game root that is itself a repo -- is
+#:     governed by that repo's idea of what is tracked, not the toolkit's.
+#:   * the tracked set COVERS every copy item present on disk. A repo that
+#:     tracks CLAUDE.md and .claude/ but not tools/ -- the shape of a game-root
+#:     repo -- would otherwise install no tools at all, silently. This also
+#:     covers `git init` with nothing added.
+#: Anything else walks the disk exactly as before -- a release zip holds only tracked
+#: files anyway -- and X4_TRACKED_WHY says why, for a source that IS a checkout.
+#: Fills X4_TRACKED (relative paths) and X4_TRACKED_ABSENT (tracked but deleted from
+#: the working tree); cached, because three callers need it.
+X4_TRACKED_STATE=""; X4_TRACKED=(); X4_TRACKED_ABSENT=0; X4_TRACKED_WHY=""
+_tracked_copy_set() {
+  [ -n "$X4_TRACKED_STATE" ] && { [ "$X4_TRACKED_STATE" = yes ]; return; }
+  X4_TRACKED_STATE=no
+  command -v git >/dev/null 2>&1 || return 1
+  local top p junk skip item first all=() heads=" "
+  top="$(git -C "$SRC" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  if [ -z "$top" ] || ! same_dir "$top" "$SRC"; then
+    X4_TRACKED_WHY="the source sits inside another repository ($top)"
+    return 1
+  fi
+  while IFS= read -r -d '' p; do all+=("$p"); heads="$heads${p%%/*} "; done < <(git -C "$SRC" ls-files -z 2>/dev/null)
+  for item in $X4_COPY_ITEMS; do
+    [ -e "$SRC/$item" ] || continue
+    case "$heads" in *" $item "*) : ;; *)
+      X4_TRACKED_WHY="git tracks nothing under '$item', which is on disk"
+      return 1 ;;
+    esac
+  done
+  for p in "${all[@]}"; do
+    first="${p%%/*}"; skip=1
+    for item in $X4_COPY_ITEMS; do [ "$item" = "$first" ] && skip=0; done
+    for junk in $X4_COPY_PRUNE $X4_KEEP_LOCAL; do
+      case "$p" in "$junk"|"$junk"/*) skip=1 ;; esac
+    done
+    for junk in $X4_KEEP_LOCAL; do
+      case "$p" in "$junk".example) : ;; "$junk".*) skip=1 ;; esac
+    done
+    [ "$skip" = 1 ] && continue
+    if [ -f "$SRC/$p" ]; then X4_TRACKED+=("$p"); else X4_TRACKED_ABSENT=$((X4_TRACKED_ABSENT + 1)); fi
+  done
+  X4_TRACKED_STATE=yes
+  return 0
+}
+
+#: Copy the tracked set into DEST, one `cp` per run of files sharing a directory:
+#: a cp per file costs a process each, which is seconds under Git Bash.
+copy_tracked_set() {   # copy_tracked_set DEST
+  local dest="$1" p dir cur="" batch=()
+  for p in "${X4_TRACKED[@]}"; do
+    dir="."; case "$p" in */*) dir="${p%/*}" ;; esac
+    if [ "$dir" != "$cur" ] && [ "${#batch[@]}" -gt 0 ]; then
+      mkdir -p "$dest/$cur"; cp -- "${batch[@]}" "$dest/$cur/"; batch=()
+    fi
+    cur="$dir"; batch+=("$SRC/$p")
+  done
+  if [ "${#batch[@]}" -gt 0 ]; then mkdir -p "$dest/$cur"; cp -- "${batch[@]}" "$dest/$cur/"; fi
+  return 0
+}
 
 #: Copy $SRC/REL to DEST/REL, never descending into a pruned relative path.
 #:
@@ -264,12 +345,25 @@ copy_toolkit() {
   for junk in $X4_COPY_PRUNE; do
     rm -rf "$dest/$junk" 2>/dev/null || true
   done
+  local tracked=0
+  _tracked_copy_set && tracked=1
+  if [ "$tracked" = 1 ]; then
+    # ANNOUNCED: a step that narrows the data says so.
+    echo "  source is a git checkout: copying the ${#X4_TRACKED[@]} file(s) git tracks in the copy set;"
+    echo "  untracked and ignored files (built databases, caches, scratch output) stay behind."
+  elif [ -n "$X4_TRACKED_WHY" ]; then
+    echo "  [note] not copying git's tracked set: $X4_TRACKED_WHY -- copying what is on disk."
+    if [ "$X4_TRACKED_ABSENT" -gt 0 ]; then
+      echo "  [note] $X4_TRACKED_ABSENT tracked file(s) are deleted in the source working tree, so not copied"
+    fi
+  fi
   for item in $X4_COPY_ITEMS; do
     # NAMED, never silently skipped -- that silence is how the absent mods/ folder
     # survived a whole release.
     [ -e "$SRC/$item" ] || { MISSING="$MISSING $item"; continue; }
-    copy_item "$item" "$dest"
+    [ "$tracked" = 1 ] || copy_item "$item" "$dest"
   done
+  if [ "$tracked" = 1 ]; then copy_tracked_set "$dest"; fi
   # A VIRTUALENV MUST NOT TRAVEL. uv hardlinks package files from a shared cache,
   # so once the source and the destination have each been synced the same file has
   # the SAME INODE in both -- and `cp -r` then fails with "are the same file", 1,334
@@ -424,6 +518,16 @@ X4_COPY_ITEMS=".claude tools bin scripts mods CLAUDE.md KNOWLEDGEBASE.md README.
 #: either writes anything is the only answer that is right for both.
 _locked_targets() {   # _locked_targets DEST  -> prints blocked destination paths
   local dest="$1" item rel f junk skip
+  # THE SAME SET THE COPY WRITES. From a git checkout that is the tracked set; a
+  # locked destination file standing where an UNTRACKED source file sits is never
+  # written, and refusing over it would block an install for nothing.
+  if _tracked_copy_set; then
+    for rel in "${X4_TRACKED[@]}"; do
+      f="$dest/$rel"
+      if [ -e "$f" ] && [ ! -w "$f" ]; then printf '%s\n' "$f"; fi
+    done
+    return 0
+  fi
   for item in $X4_COPY_ITEMS; do
     [ -e "$SRC/$item" ] || continue
     if [ -d "$SRC/$item" ]; then
@@ -943,6 +1047,9 @@ announce_copy_plan() {
   for item in $X4_COPY_ITEMS; do
     [ -e "$SRC/$item" ] && echo "      $item"
   done
+  if _tracked_copy_set; then
+    echo "  (the source is a git checkout: only the ${#X4_TRACKED[@]} file(s) git tracks would be copied)"
+  fi
   echo
   echo "=== dry run complete: nothing was changed ==="
   exit 0

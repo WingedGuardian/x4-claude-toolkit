@@ -131,6 +131,7 @@ function Detect-XRCat {
 # Mirrors X4_COPY_PRUNE in install.sh -- machine-local paths that must not travel.
 $X4CopyPrune = @('tools\x4validate\.venv',
                  'tools\x4validate\.pytest_cache',
+                 'tools\basex\.pytest_cache',
                  'tools\x4validate\.mutation-probe-pristine',
                  '.claude\hooks\__pycache__',
                  '.claude\hooks\.pytest_cache',
@@ -164,7 +165,92 @@ $X4CopyPrune = @('tools\x4validate\.venv',
 #: $X4KeepLocal in install.sh, and deliberately SEPARATE from $X4CopyPrune: a
 #: pruned path is also DELETED from the destination, which is right for a stale
 #: .venv and catastrophic for a config.
-$X4KeepLocal = @('.claude\x4-paths.env','.claude\settings.local.json','.claude\backups')
+#: The BaseX build products share these semantics exactly (this machine's, the
+#: destination's own, never copied in and never deleted out), so they live HERE and
+#: not in $X4CopyPrune, whose second meaning would erase a user's built databases
+#: on every upgrade. See X4_KEEP_LOCAL in install.sh.
+$X4KeepLocal = @('.claude\x4-paths.env','.claude\settings.local.json','.claude\backups',
+                 'tools\basex\basex\data','tools\basex\basex\coverage-x4raw.json',
+                 'tools\basex\basex\coverage-x4eff.json','tools\basex\_eff',
+                 'tools\basex\stage-manifest.json')
+
+#: THE TRACKED SET, when the source is a git checkout -- the mirror of
+#: _tracked_copy_set in install.sh, same two clauses: $SRC is the TOP of its work
+#: tree (a toolkit inside SOMEONE ELSE's repo is governed by that repo), and the
+#: tracked set COVERS every copy item present on disk (a repo tracking .claude but
+#: not tools would otherwise install no tools, silently). Otherwise $false, the copy
+#: walks the disk exactly as before, and $script:X4TrackedWhy says why. Paths come
+#: back with backslashes, filtered through the same two lists as the walk. Cached.
+$script:X4TrackedState = ''
+$script:X4TrackedWhy = ''
+$script:X4Tracked = @()
+$script:X4TrackedAbsent = 0
+function Get-TrackedCopySet {
+  if ($script:X4TrackedState) { return ($script:X4TrackedState -eq 'yes') }
+  $script:X4TrackedState = 'no'
+  $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $git) { return $false }
+  $prevEAP = $ErrorActionPreference
+  $prevEnc = $null
+  # UTF-8, or a non-ASCII tracked name decodes to a path that does not exist and
+  # is silently counted as absent.
+  try { $prevEnc = [Console]::OutputEncoding; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { $prevEnc = $null }
+  $ErrorActionPreference = 'Continue'
+  try {
+    $top = & $git.Source -C $SRC rev-parse --show-toplevel 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $top) { return $false }
+    if (-not (Test-SameDir ([string]$top).Trim() $SRC)) {
+      $script:X4TrackedWhy = "the source sits inside another repository ($top)"
+      return $false
+    }
+    $raw = (& $git.Source -C $SRC ls-files -z 2>$null) -join "`n"
+    if ($LASTEXITCODE -ne 0) { return $false }
+  } finally {
+    $ErrorActionPreference = $prevEAP
+    if ($prevEnc) { try { [Console]::OutputEncoding = $prevEnc } catch { } }
+  }
+  $all = @($raw.Split([char]0) | Where-Object { $_ })
+  $heads = @{}
+  foreach ($p in $all) { $heads[($p -split '/', 2)[0]] = $true }
+  foreach ($i in $X4CopyItems) {
+    if (-not (Test-Path -LiteralPath (Join-Path $SRC $i))) { continue }
+    if (-not $heads.ContainsKey($i)) {
+      $script:X4TrackedWhy = "git tracks nothing under '$i', which is on disk"
+      return $false
+    }
+  }
+  $files = New-Object System.Collections.Generic.List[string]
+  $absent = 0
+  foreach ($p in $all) {
+    $rel = $p.Replace([char]47, [char]92)
+    $first = ($rel -split '\\', 2)[0]
+    $skip = -not ($X4CopyItems -contains $first)
+    foreach ($junk in ($X4CopyPrune + $X4KeepLocal)) {
+      if ($rel -ieq $junk -or $rel -like ($junk + [char]92 + '*')) { $skip = $true }
+    }
+    foreach ($junk in $X4KeepLocal) {
+      if ($rel -ieq ($junk + '.example')) { continue }
+      if ($rel -like ($junk + '.*')) { $skip = $true }
+    }
+    if ($skip) { continue }
+    if (Test-Path -LiteralPath (Join-Path $SRC $rel) -PathType Leaf) { $files.Add($rel) } else { $absent++ }
+  }
+  $script:X4Tracked = $files.ToArray()
+  $script:X4TrackedAbsent = $absent
+  $script:X4TrackedState = 'yes'
+  return $true
+}
+
+#: Copy the tracked set into $dest. Copy-Item runs in-process, so one call per
+#: file is cheap here (install.sh batches by directory instead).
+function Copy-TrackedSet($dest) {
+  foreach ($rel in $script:X4Tracked) {
+    $target = Join-Path $dest $rel
+    $parent = Split-Path -Parent $target
+    if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+    Copy-Item -Force -LiteralPath (Join-Path $SRC $rel) -Destination $target
+  }
+}
 
 #: The key=value lines Write-PathsEnv OWNS, as it would write them now. Factored
 #: out so the precondition and the writer cannot disagree about what "would
@@ -239,6 +325,17 @@ $X4CopyItems = @('.claude','tools','bin','scripts','mods','CLAUDE.md','KNOWLEDGE
 #: answer correct for both.
 function Get-LockedTargets($dest) {
   $blocked = @()
+  # THE SAME SET THE COPY WRITES. From a git checkout that is the tracked set; a
+  # locked destination file where an UNTRACKED source file sits is never written.
+  if (Get-TrackedCopySet) {
+    foreach ($rel in $script:X4Tracked) {
+      $t = Join-Path $dest $rel
+      if (Test-Path -LiteralPath $t) {
+        try { if ((Get-Item -LiteralPath $t -Force).IsReadOnly) { $blocked += $t } } catch { }
+      }
+    }
+    return ,$blocked
+  }
   foreach ($item in $X4CopyItems) {
     $from = Join-Path $SRC $item
     if (-not (Test-Path -LiteralPath $from)) { continue }
@@ -398,17 +495,29 @@ function Copy-Toolkit($dest) {
     if (Test-Path -LiteralPath $p) { Remove-Item -Recurse -Force -LiteralPath $p -ErrorAction SilentlyContinue }
   }
 
+  $tracked = Get-TrackedCopySet
+  if ($tracked) {
+    # ANNOUNCED: a step that narrows the data says so.
+    Write-Host ("  source is a git checkout: copying the " + $script:X4Tracked.Count + " file(s) git tracks in the copy set;")
+    Write-Host "  untracked and ignored files (built databases, caches, scratch output) stay behind."
+  } elseif ($script:X4TrackedWhy) {
+    Write-Host ("  [note] not copying git's tracked set: " + $script:X4TrackedWhy + " -- copying what is on disk.")
+    if ($script:X4TrackedAbsent -gt 0) {
+      Write-Host ("  [note] " + $script:X4TrackedAbsent + " tracked file(s) are deleted in the source working tree, so not copied")
+    }
+  }
   $missing = @()
   foreach ($i in $items) {
     $s = Join-Path $SRC $i
     if (Test-Path -LiteralPath $s) {
-      Copy-Excluding $i $dest
+      if (-not $tracked) { Copy-Excluding $i $dest }
     } else {
       # NAMED, never silently skipped: that silence is how the absent mods/ folder
       # survived a whole release.
       $missing += $i
     }
   }
+  if ($tracked) { Copy-TrackedSet $dest }
   if ($missing.Count) {
     Write-Host ("  [note] not in the source, so not copied: " + ($missing -join ", "))
   }
@@ -748,6 +857,9 @@ function Show-CopyPlan {
     Write-Host "  -DryRun: nothing will be written. Items that would be copied:"
     foreach ($i in $X4CopyItems) {
       if (Test-Path -LiteralPath (Join-Path $SRC $i)) { Write-Host "      $i" }
+    }
+    if (Get-TrackedCopySet) {
+      Write-Host ("  (the source is a git checkout: only the " + $script:X4Tracked.Count + " file(s) git tracks would be copied)")
     }
     Write-Host ""
     Write-Host "=== dry run complete: nothing was changed ==="
