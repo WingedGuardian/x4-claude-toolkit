@@ -23,14 +23,23 @@ SCOPE, stated so a pass is not read as more than it is:
   * Only the relative order of mods that SHARE a file class is tested; two mods that
     never ship the same path are never compared. The denominator (pairs, classes,
     mods covered) is printed on every run.
-  * The log describes the modlist AT THAT LAUNCH. If a mod was added, removed or had its
-    dependencies changed since, an inversion may be the log's age rather than the code;
-    the gate then refuses (rc 2) instead of blaming the code.
+  * The log describes the modlist AT THAT LAUNCH. Whether it still describes the current
+    one is decided BEFORE any verdict, so a stale log can neither convict nor clear the
+    code: the gate refuses (rc 2, naming the cause) when a mod manifest or the profile
+    content.xml changed after the log was written, when a logged folder is no longer
+    installed (e.g. a removed probe mod), or when an active game-root mod ships a file
+    class the engine logged for other mods but never for it (it was not in that launch).
+  * A mod that IS installed but that our active rule EXCLUDES, yet the engine logged, is
+    a FINDING (rc 1): our model of what loads disagrees with the engine. It is judged
+    only on a log no older than the manifests and profile and naming no removed folder
+    (a dependency removed since the launch would explain the exclusion); otherwise it is
+    listed in the refusal.
 
 INPUT: `$X4_ORACLE_LOG` (a pinned capture) if set, else the live profile debug.txt.
 
-Exit: 0 no inversions over >= 1 comparable class · 1 inversions · 2 cannot judge
-(no log, nothing comparable, or a log older than the modlist it would be judged against).
+Exit: 0 no inversions over >= 1 comparable class, on a log of the current modlist ·
+1 inversions, or a logged mod our active rule excludes · 2 cannot judge (no log, nothing
+comparable, or a log that does not describe the current modlist).
 """
 from __future__ import annotations
 
@@ -131,6 +140,46 @@ def _newest_manifest(mods: list[dict]) -> tuple[float, str]:
     return newest, who
 
 
+def _profile_content() -> Path | None:
+    """The profile content.xml -- the enable/disable decisions -- or None."""
+    return _paths.profile_content()
+
+
+def _mtime(p: Path | None) -> float | None:
+    try:
+        return p.stat().st_mtime if p is not None else None
+    except OSError:
+        # silent-ok: no profile content.xml (none configured, or absent) = no profile
+        # signal; the other three modlist signals still decide, and the header names the log.
+        return None
+
+
+def _evidence_unlogged(mods: list[dict], logged: set[str],
+                       classes: set[str]) -> dict[str, str]:
+    """{folder: one file class it ships} for every GAME-ROOT active mod the log never
+    names although it ships a file the log shows the engine checking for other mods.
+
+    That is EVIDENCE the logged launch did not have this mod (the engine checks every
+    copy of a file class it reads), as opposed to plain absence: a mod shipping no
+    logged class is never checked, so its absence says nothing. Game root only: the
+    signature line names the folder under PREFIX, the game root; a mod in another
+    extensions root is not read out of it here, so it is not held against the log.
+    """
+    out: dict[str, str] = {}
+    for m in mods:
+        folder = m["folder"].lower()
+        if folder in logged or m.get("root_rank", 0) != 0 or not m.get("path"):
+            continue
+        root = Path(m["path"])
+        for p in root.rglob("*"):
+            if p.is_file():
+                rel = p.relative_to(root).as_posix().lower()
+                if rel in classes:
+                    out[folder] = rel
+                    break
+    return out
+
+
 def main() -> int:
     log = _log_path()
     if log is None or not log.is_file():
@@ -142,7 +191,7 @@ def main() -> int:
     left_out = _registry.dropped_note(mods)
     if left_out:
         # A mod the engine leaves out is in no computed order; if the log shows it
-        # anyway, that is a finding about OUR exclusion rule, so name it (F139).
+        # anyway, that is a finding about OUR exclusion rule -- judged below (F139).
         print(f"NOT in the computed order (our model: the engine does not load it): "
               f"{left_out}")
     if not mods:
@@ -158,36 +207,75 @@ def main() -> int:
           f"(+{len(s.unknown_folders)} logged folder(s) not in the active set)")
     print(f"file classes compared: {s.classes}   ordered pairs: {s.pairs}   "
           f"inverted by compute_load_order: {s.inversions}")
+    for rel, n, inv, seq in s.bad[:10]:
+        print(f"  {rel}  mods={n}  inverted pairs={inv}  engine order: {', '.join(seq[:8])}"
+              + (" ..." if len(seq) > 8 else ""))
+
+    # DOES THE LOG DESCRIBE THE CURRENT MODLIST? Decided BEFORE any verdict: a log of a
+    # different modlist can neither convict the code nor clear it (release review
+    # 2026-09-26 -- this used to be asked only after an inversion, so a mismatched log
+    # with 0 inversions PASSED). Four signals, because each alone misses a case: a
+    # manifest mtime is preserved when a mod is copied in; the profile's enable/disable
+    # decisions live in its own content.xml; a removed folder shows only as a logged
+    # name; an added one only as a class it ships that the engine never checked for it.
+    t_log = log.stat().st_mtime
+    logged = {f for seq in seqs.values() for f in seq}
+    active = {f.lower() for f in order}
+    installed = {m["folder"].lower(): m for m in _registry.mods("installed")
+                 if m.get("root_rank", 0) == 0}
+    newest, who = _newest_manifest(mods)
+    t_prof = _mtime(_profile_content())
+    excluded = sorted(f for f in logged - active if f in installed)
+    gone = sorted(f for f in logged - active if f not in installed)
+    unlogged = _evidence_unlogged(mods, logged, set(seqs))
+    aged = []
+    if newest > t_log:
+        aged.append(f"a manifest changed after the log was written ({who})")
+    if t_prof is not None and t_prof > t_log:
+        aged.append("the profile content.xml (the enable/disable decisions) changed after "
+                    "the log was written")
+    mismatch = list(aged)
+    if gone:
+        mismatch.append(f"{len(gone)} logged folder(s) are not installed now: "
+                        f"{', '.join(gone)}")
+    if unlogged:
+        mismatch.append(f"{len(unlogged)} active mod(s) ship a file the engine checked for "
+                        "other mods but never for them: "
+                        + ", ".join(f"{f} ({rel})" for f, rel in sorted(unlogged.items())))
+
+    # A mod WE exclude that the engine LOGGED is our active rule disagreeing with the
+    # engine -- a FINDING (rc 1), distinct from a folder that is simply gone. It needs a
+    # log that is not older than the decisions (manifests, profile) and names no removed
+    # folder, since a dependency removed since the launch would explain the exclusion.
+    if excluded:
+        why = _registry.left_out(mods)
+        detail = "; ".join(f"{f} ({why.get(installed[f]['folder'], 'disabled by the '
+                                            'profile or its manifest')})" for f in excluded)
+        if not aged and not gone:
+            print(f"FAIL: the engine signature-checked {len(excluded)} installed mod(s) our "
+                  f"active rule EXCLUDES -- our model of what loads disagrees with the "
+                  f"engine: {detail}")
+            return 1
+        mismatch.append(f"{len(excluded)} logged mod(s) our active rule excludes: {detail} "
+                        "(a finding only against a log of the current modlist)")
+    if mismatch:
+        print("CANNOT JUDGE: the log does not describe the current modlist -- "
+              + "; ".join(mismatch)
+              + ". Launch the game once with the current modlist (or point $X4_ORACLE_LOG "
+              "at a log that does) and re-run.", file=sys.stderr)
+        return 2
     if s.classes == 0:
         print("SKIP: no file class is shipped by two or more active mods in this log, so "
               "nothing about the order can be judged", file=sys.stderr)
         return 2
+    silent = sorted(active - logged)
+    if silent:
+        print(f"note: {len(silent)} active mod(s) never appear in the log and ship no file "
+              "class it logged (nothing unsigned was checked for them); they are simply "
+              "not compared")
     if s.inversions == 0:
         print("PASS: the computed order agrees with every engine-checked pair above")
         return 0
-    for rel, n, inv, seq in s.bad[:10]:
-        print(f"  {rel}  mods={n}  inverted pairs={inv}  engine order: {', '.join(seq[:8])}"
-              + (" ..." if len(seq) > 8 else ""))
-    # A log that describes a DIFFERENT modlist cannot convict the code. Two signals,
-    # because either alone misses a case: a manifest mtime is preserved when a mod is
-    # copied in, so a mod added after the launch can look older than the log; and the
-    # membership difference misses a dependency edit inside an unchanged folder set.
-    newest, who = _newest_manifest(mods)
-    logged = {f for seq in seqs.values() for f in seq}
-    active = {f.lower() for f in order}
-    drift = sorted(logged - active) + sorted(active - logged)
-    if newest > log.stat().st_mtime or s.unknown_folders:
-        why = (f"a manifest changed after the log was written ({who})"
-               if newest > log.stat().st_mtime else
-               f"{len(s.unknown_folders)} logged folder(s) are not active now "
-               f"(e.g. {', '.join(sorted(s.unknown_folders)[:3])})")
-        print(f"CANNOT JUDGE: {why}, so these inversions may be the log's age, not the "
-              "code. Launch the game once with the current modlist and re-run.",
-              file=sys.stderr)
-        return 2
-    if drift:
-        print(f"note: {len(active - logged)} active mod(s) never appear in the log "
-              "(nothing unsigned was checked for them); they are simply not compared")
     print(f"FAIL: {s.inversions} of {s.pairs} engine-ordered pairs are inverted by "
           "compute_load_order -- every collision winner between those mods is suspect")
     return 1

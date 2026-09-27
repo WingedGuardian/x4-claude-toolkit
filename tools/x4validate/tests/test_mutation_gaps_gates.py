@@ -52,6 +52,7 @@ def _setup(tmp_path, monkeypatch, folders, log_lines, log_older_than_manifests):
     os.utime(log, (t_log, t_log))
     monkeypatch.setattr(g, "_log_path", lambda: log)
     monkeypatch.setattr(g._registry, "mods", lambda scope, *a, **k: list(mods))
+    monkeypatch.setattr(g, "_profile_content", lambda: None)
     return mods
 
 

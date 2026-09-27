@@ -97,3 +97,31 @@ def test_the_dump_channel_has_its_own_counter(ca):
     assert floors, (
         "no branch tests dump_checked and returns 3 -- the third channel can still "
         "contribute nothing while the gate reports a clean three-way agreement")
+
+
+# --- release review 2026-09-26 (pre-arc): a FINDING outranks the dump-channel refusal ----
+
+def _one_row(ca, monkeypatch, merged):
+    monkeypatch.setattr(ca._env, "stale_store_refusal", lambda db, who: None)
+    monkeypatch.setattr(ca, "store_rows",
+                        lambda *a, **k: [("ship_a_macro", "assets/x.xml", "hull.max", "100",
+                                          "modA")])
+    monkeypatch.setattr(ca, "from_merge", lambda vpath, name, prop: merged)
+    monkeypatch.setattr(ca, "from_dump", lambda vpath, name, prop: None)   # dump unusable
+
+
+def test_a_store_vs_merge_disagreement_is_rc1_even_when_dump_contributed_nothing(
+        ca, monkeypatch, capsys):
+    """The rc-3 branch returned BEFORE the disagreements were printed, so a real
+    store-vs-merge disagreement read as 'dump degraded' whenever the dump channel was
+    down."""
+    _one_row(ca, monkeypatch, merged="999")
+    assert ca.main() == 1
+    got = capsys.readouterr()
+    assert "store vs merge" in got.out and "ship_a_macro" in got.out
+    assert "DEGRADED" in got.err                    # the refusal is still stated
+
+
+def test_TWIN_no_disagreement_and_no_dump_is_still_rc3(ca, monkeypatch, capsys):
+    _one_row(ca, monkeypatch, merged="100")
+    assert ca.main() == 3

@@ -190,9 +190,6 @@ def names_a_check(body: str, root: Path) -> str | None:
     bare: list[str] = []
     for m in _NAMES.finditer(body):
         s = m.group(0).strip("`")
-        if s == "selftest":
-            first = first or "selftest"
-            continue
         if not s.startswith(_PATH_PREFIXES):
             bare.append(s)
             continue
@@ -327,8 +324,9 @@ def main() -> int:
         for f in new:
             print(f"    {f}")
         print("")
-        print("  Name the test or gate that re-derives it (every cited check path must "
-              f"exist), or open a line of the entry with '**{_EXEMPT}: <the reason>**'.")
+        print("  Name the test or gate that re-derives it (at least one cited check must "
+              "exist; a cited path that no longer exists is only a NOTE), or open a line "
+              f"of the entry with '**{_EXEMPT}: <the reason>**'.")
         return 1
     print("")
     print("No new findings.")

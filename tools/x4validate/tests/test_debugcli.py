@@ -51,10 +51,19 @@ def test_triage_prints_the_residue_row_even_when_it_is_ZERO(tmp_path, capsys):
     """A row that appears only when non-zero trains the reader to read its absence
     as 'not measured'. It has to be present either way."""
     text = "\n".join(SAMPLE.splitlines()[:-1])  # drop the novel shape
-    _debugcli.main(["triage", str(_write(tmp_path, text))])
+    rc = _debugcli.main(["triage", str(_write(tmp_path, text))])
     out = capsys.readouterr().out
-    assert "unclassified" in out.lower()
-    assert "0" in out
+    # AUDIT TS-2 (release review 2026-09-26): this asserted only `"0" in out` -- which
+    # the capture DATE satisfies -- and never looked at the rc. The row is asserted
+    # exactly: its label, a count of ZERO in its column, and its explanation; the FLOOR
+    # warning that belongs to a non-zero residue must be absent; the rows still sum.
+    assert rc == 0, out
+    import re
+    rows = re.findall(r"(?m)^  UNCLASSIFIED +(\d+)   \(a shape this parser does not know\)$",
+                      out)
+    assert rows == ["0"], out
+    assert "FLOOR, not a total" not in out, out
+    assert "rows 3 == lines read 3: OK" in out, out
 
 
 def test_triage_states_the_logs_age_and_whether_it_is_a_new_game(tmp_path, capsys):

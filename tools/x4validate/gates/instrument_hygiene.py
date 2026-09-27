@@ -50,6 +50,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -60,6 +61,13 @@ from toolkit_usage import transcript_dir  # noqa: E402  (ONE implementation of t
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / ".instrument-hygiene-baseline.json"
 RECORD = "--record" in sys.argv
+
+#: How recently a transcript must have been written for a half-written LAST line to be
+#: read as a writer mid-append (release review 2026-09-26). A session appends whole JSON
+#: lines, so a live partial line is milliseconds old; one older than this is a transcript
+#: a crash truncated, and it counts as unreadable. Ten minutes: generous against a slow
+#: disk or a paused writer, and far below the age of any truncated-by-crash leftover.
+LIVE_APPEND_WINDOW_S = 600
 
 #: Above this share of all commands a rule cannot be a PreToolUse guard: it would
 #: fire so often the prompt becomes noise. MEASURED against the corpus, not chosen.
@@ -164,7 +172,8 @@ class Census:
     unreadable: list[str] = field(default_factory=list)
     #: Files whose LAST line was half-written (unparseable AND not newline-terminated):
     #: the live transcript of a running session, mid-append. Counted apart from
-    #: `unreadable` -- it is not a hole in the denominator (review of 87ac461).
+    #: `unreadable` -- it is not a hole in the denominator (review of 87ac461) -- but
+    #: only for a file written within LIVE_APPEND_WINDOW_S; an older one is unreadable.
     partial_tail: list[str] = field(default_factory=list)
     counts: dict = field(default_factory=dict)
     lost_side_effects: list = field(default_factory=list)
@@ -188,13 +197,18 @@ def scan(tdir: Path) -> Census:
             continue
         lines = text.splitlines()
         unterminated = bool(text) and not text.endswith(("\n", "\r"))
+        try:
+            live = time.time() - f.stat().st_mtime <= LIVE_APPEND_WINDOW_S
+        except OSError:
+            live = False                    # cannot show it is live: not excused
         for i, line in enumerate(lines):
             try:
                 rec = json.loads(line)
             except ValueError:
-                if i == len(lines) - 1 and unterminated:
+                if i == len(lines) - 1 and unterminated and live:
                     # A writer mid-append, not a damaged record: only the FINAL line,
-                    # and only when no newline has terminated it yet.
+                    # only when no newline has terminated it yet, and only in a file
+                    # written within LIVE_APPEND_WINDOW_S -- an old one was truncated.
                     c.partial_tail.append(f.name)
                     continue
                 # Recorded, never swallowed: an unparseable transcript is a hole in

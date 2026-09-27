@@ -128,3 +128,126 @@ def test_LO1_uninstalled_dependency_does_not_hold_a_mod_back(tmp_path):
     the MEASURED order places them as if those were satisfied. Missing REQUIRED
     dependencies are an open question for the probe (LO-3), not asserted here."""
     assert _order(tmp_path, {"a": ["ego_dlc_boron"], "b": []}) == ["a", "b"]
+
+
+# ------------------------------------------------ release review 2026-09-26: modlist match
+# The docs said the gate refuses (rc 2) when the log describes a different modlist; the
+# code only checked that AFTER finding inversions, so a mismatched log with 0 inversions
+# PASSED. And a mod WE exclude that the engine LOGS -- our active rule disagreeing with
+# the engine -- landed among the unknown folders (rc 2, or PASS), never as a finding.
+import os  # noqa: E402
+
+
+def _world(tmp_path, monkeypatch, *, active, excluded=(), log_lines, files=None,
+           log_age=+1000, profile_age=None, dropped=()):
+    """active/excluded: installed game-root folders; only *active* are in the active set.
+    files: {folder: [relative paths it ships]} (each mod always ships content.xml).
+    log_age: log mtime relative to the manifests (+ newer, - older).
+    profile_age: profile content.xml mtime relative to the LOG (None = no profile)."""
+    files = files or {}
+    mods = {}
+    for f in [*active, *excluded]:
+        d = tmp_path / "ext" / f
+        d.mkdir(parents=True)
+        (d / "content.xml").write_text(f'<content id="{f}" version="1"/>', encoding="utf-8")
+        for rel in files.get(f, []):
+            p = d / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("<x/>", encoding="utf-8")
+        mods[f] = {"folder": f, "path": str(d), "root_rank": 0, "id": f}
+    t_manifest = max(os.stat(m["path"] + "/content.xml").st_mtime for m in mods.values())
+    log = tmp_path / "debug.txt"
+    log.write_text("".join(log_lines), encoding="utf-8")
+    t_log = t_manifest + log_age
+    os.utime(log, (t_log, t_log))
+    prof = None
+    if profile_age is not None:
+        prof = tmp_path / "content.xml"
+        prof.write_text("<content/>", encoding="utf-8")
+        os.utime(prof, (t_log + profile_age, t_log + profile_age))
+
+    def fake_mods(scope, *a, **k):
+        from x4validate import _registry
+        if scope == "active":
+            return _registry.ModList([mods[f] for f in active], dropped)
+        return _registry.ModList(list(mods.values()))
+    monkeypatch.setattr(g, "_log_path", lambda: log)
+    monkeypatch.setattr(g, "_profile_content", lambda: prof)
+    monkeypatch.setattr(g._registry, "mods", fake_mods)
+
+
+_AGREE = [_line("a", "x.xml"), _line("b", "x.xml")]
+
+
+def _rc(capsys):
+    got = capsys.readouterr()
+    return got.out + got.err
+
+
+def test_a_current_log_with_no_inversions_passes(tmp_path, monkeypatch, capsys):
+    """The CONTROL every refusal below is a twin of."""
+    _world(tmp_path, monkeypatch, active=["a", "b"], log_lines=_AGREE,
+           files={"a": ["x.xml"], "b": ["x.xml"]})
+    assert g.main() == 0, _rc(capsys)
+
+
+def test_a_logged_folder_that_is_not_installed_refuses_even_with_0_inversions(
+        tmp_path, monkeypatch, capsys):
+    _world(tmp_path, monkeypatch, active=["a", "b"],
+           log_lines=[*_AGREE, _line("removed_probe", "x.xml")])
+    assert g.main() == 2
+    assert "removed_probe" in _rc(capsys)
+
+
+def test_a_manifest_newer_than_the_log_refuses_even_with_0_inversions(
+        tmp_path, monkeypatch, capsys):
+    _world(tmp_path, monkeypatch, active=["a", "b"], log_lines=_AGREE, log_age=-1000)
+    assert g.main() == 2
+    assert "manifest" in _rc(capsys)
+
+
+def test_a_profile_content_xml_newer_than_the_log_refuses(tmp_path, monkeypatch, capsys):
+    _world(tmp_path, monkeypatch, active=["a", "b"], log_lines=_AGREE, profile_age=+1000)
+    assert g.main() == 2
+    assert "profile" in _rc(capsys)
+
+
+def test_a_profile_content_xml_older_than_the_log_does_not_refuse(tmp_path, monkeypatch,
+                                                                   capsys):
+    _world(tmp_path, monkeypatch, active=["a", "b"], log_lines=_AGREE, profile_age=-1000)
+    assert g.main() == 0, _rc(capsys)
+
+
+def test_an_active_mod_missing_from_a_class_it_ships_refuses(tmp_path, monkeypatch, capsys):
+    """c ships x.xml, the engine logged x.xml for a and b but never c: the log was not
+    written by a launch that had c -- evidence, not mere absence."""
+    _world(tmp_path, monkeypatch, active=["a", "b", "c"], log_lines=_AGREE,
+           files={"c": ["x.xml"]})
+    assert g.main() == 2
+    assert "c" in _rc(capsys)
+
+
+def test_an_active_mod_that_ships_no_logged_class_is_only_a_note(tmp_path, monkeypatch,
+                                                                  capsys):
+    """Twin: c ships only y.xml, which nothing logged -- no evidence it was left out."""
+    _world(tmp_path, monkeypatch, active=["a", "b", "c"], log_lines=_AGREE,
+           files={"c": ["y.xml"]})
+    assert g.main() == 0, _rc(capsys)
+
+
+def test_a_mod_we_EXCLUDE_that_the_engine_LOGGED_is_a_finding(tmp_path, monkeypatch, capsys):
+    """Our active rule leaves e out; the engine signature-checked its files at a launch
+    the log shows is current. That is our rule disagreeing with the engine: rc 1."""
+    _world(tmp_path, monkeypatch, active=["a", "b"], excluded=["e"],
+           log_lines=[*_AGREE, _line("e", "x.xml")],
+           dropped=["e: NOT LOADED by the engine -- required dependency 'z' is not installed"])
+    assert g.main() == 1
+    out = _rc(capsys)
+    assert "e" in out and "NOT LOADED" in out
+
+
+def test_an_excluded_mod_in_a_STALE_log_is_not_convicted(tmp_path, monkeypatch, capsys):
+    """Twin: the same log, older than a manifest -- the exclusion may postdate it."""
+    _world(tmp_path, monkeypatch, active=["a", "b"], excluded=["e"],
+           log_lines=[*_AGREE, _line("e", "x.xml")], log_age=-1000)
+    assert g.main() == 2
