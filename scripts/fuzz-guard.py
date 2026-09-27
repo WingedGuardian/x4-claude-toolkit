@@ -921,6 +921,9 @@ def seeds(roots):
         # (pre-existing, and harmless: such a payload cannot run in either shell), so it
         # would report parser limits rather than this rule's reach.
         ("untranslatable PowerShell carrier", "powershell -c " + QU + "if" + QU),
+        # 2026-09-26: the bare-python guard shipped without a seed; the coverage floor
+        # above caught it in the first full suite after the merge, as designed.
+        ("bare python on toolkit code", "cd tools/x4validate && python -m pytest -q"),
     ]
 
 

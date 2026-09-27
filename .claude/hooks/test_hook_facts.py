@@ -13,6 +13,7 @@ Dangerous tokens are BUILT FROM PARTS. A literal here is read by the live hook w
 this file is written, and a guard blocking the work of fixing guards has already
 happened four times.
 """
+import os
 import pathlib
 import sys
 import unittest
@@ -918,9 +919,31 @@ class TestBareSystemPythonOnToolkitCode(unittest.TestCase):
         self.assertFalse(
             F("uv run python gates/claims_audit.py")["bare_python_on_project_code"])
 
-    def test_an_absolute_interpreter_path_does_not_fire(self):
-        self.assertFalse(
-            F("/usr/bin/python3 gates/claims_audit.py")["bare_python_on_project_code"])
+    # 2026-09-26, fuzz-guard: spelling the SYSTEM interpreter by its absolute path
+    # walked past the rule ("VERB absolute path" / "VERB windows path" mutators).
+    # The harm is the interpreter, not the spelling: absolute = bare unless it is a
+    # virtual environment's (a pyvenv.cfg beside its bin/Scripts, or a .venv/venv dir).
+    def test_an_absolute_SYSTEM_interpreter_path_fires(self):
+        for verb in ("/usr/bin/python3", '"C:' + BS + "tools" + BS + 'python.exe"',
+                     "C:/Users/user/AppData/Local/Programs/Python/Python310/python.exe"):
+            with self.subTest(verb=verb):
+                self.assertTrue(F(verb + " -m pytest -q")["bare_python_on_project_code"])
+
+    def test_an_absolute_VENV_interpreter_path_does_not_fire(self):
+        for verb in ("/c/proj/tools/x4validate/.venv/Scripts/python.exe",
+                     "/home/user/proj/venv/bin/python3"):
+            with self.subTest(verb=verb):
+                self.assertFalse(F(verb + " -m pytest -q")["bare_python_on_project_code"])
+
+    def test_an_absolute_interpreter_beside_a_real_pyvenv_cfg_does_not_fire(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            env = os.path.join(d, "myenv")
+            os.makedirs(os.path.join(env, "Scripts"))
+            with open(os.path.join(env, "pyvenv.cfg"), "w", encoding="utf-8") as fh:
+                fh.write("home = x\n")
+            exe = os.path.join(env, "Scripts", "python.exe").replace(BS, "/")
+            self.assertFalse(F(exe + " -m pytest -q")["bare_python_on_project_code"])
 
     def test_a_venv_interpreter_path_does_not_fire(self):
         self.assertFalse(

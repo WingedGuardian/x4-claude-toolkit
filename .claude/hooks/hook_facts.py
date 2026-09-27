@@ -1444,18 +1444,44 @@ def _operands(seg: str) -> list[str]:
 _BARE_PY_WORD = re.compile(r"^(?:python3?|py)(?:\.exe)?$", re.IGNORECASE)
 
 
-def _is_bare_python_word(tok: str) -> bool:
-    """True only for the literal WORD `python`/`python3`/`py` -- never a path.
+_VENV_DIR = re.compile(r"(^|/)\.?venv(/|$)", re.IGNORECASE)
 
-    A `/` or a backslash means this names a FILE, not a bare command word: an
-    absolute interpreter (`/usr/bin/python3`) or a venv spelling
-    (`.venv/Scripts/python`) is exactly what this predicate must NOT catch. That is
-    why it checks the RAW verb token rather than `_verb_name`'s basename-folded
-    one -- folding first would make a venv path and the bare word compare equal.
-    """
-    if not tok or "/" in tok or chr(92) in tok:
+
+def _is_venv_interpreter(path: str) -> bool:
+    """A virtual environment's interpreter: `pyvenv.cfg` sits one level above its
+    `bin/`/`Scripts/` (true of every venv, `uv`'s included, and of no system
+    install), or -- for a path this machine cannot stat -- a `.venv`/`venv` dir."""
+    p = path.replace(chr(92), "/")
+    if _VENV_DIR.search(p):
+        return True
+    try:
+        return os.path.isfile(os.path.join(os.path.dirname(os.path.dirname(p)),
+                                           "pyvenv.cfg"))
+    except (OSError, ValueError):
         return False
-    return bool(_BARE_PY_WORD.match(tok))
+
+
+def _is_bare_python_word(tok: str) -> bool:
+    """True for the word `python`/`python3`/`py`, or an ABSOLUTE path to such an
+    interpreter that is not a virtual environment's.
+
+    The harm is the INTERPRETER, not the spelling. 2026-09-26, fuzz-guard: the first
+    version treated every path as "not bare", so `/usr/bin/python3 -m pytest` and
+    `"C:\\...\\Python310\\python.exe" -m pytest` -- the very system interpreter this rule
+    exists for -- walked past it. A RELATIVE path (`.venv/Scripts/python`) stays
+    allowed: the hook cannot resolve it against the command's own cwd reliably. This
+    checks the RAW verb token, not `_verb_name`'s basename-folded one, so a venv path
+    and the bare word never compare equal.
+    """
+    if not tok:
+        return False
+    if "/" not in tok and chr(92) not in tok:
+        return bool(_BARE_PY_WORD.match(tok))
+    p = tok.replace(chr(92), "/")
+    absolute = p.startswith("/") or bool(re.match(r"^[A-Za-z]:/", p))
+    if not absolute or not _BARE_PY_WORD.match(p.rsplit("/", 1)[-1]):
+        return False
+    return not _is_venv_interpreter(p)
 
 
 #: Directory components that make an argument TOOLKIT CODE -- i.e. that it needs
