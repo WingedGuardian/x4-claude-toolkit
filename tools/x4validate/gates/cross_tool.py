@@ -188,6 +188,84 @@ def _removal_sources(con, vpath: str, target: str | None = None) -> set[str]:
     return set()
 
 
+def _replayed_removers(con, vpath: str, tree, target: str) -> set[str] | None:
+    """Mods whose REMOVAL took out the node x4compat's *target* names (or an ancestor
+    of it), found by REPLAYING the store's removal records over the base tree.
+
+    Why not `_removal_sources(target=...)`: the store records each removal at the path
+    the node had AT THAT INSTANT (`_merge._path_of`), after every earlier removal had
+    already shifted its later siblings; x4compat's targets are positions in the
+    UNMODIFIED base tree. MEASURED 2026-09-26 on the real install: one mod's five
+    ware removals were recorded as ware[1703], [1704], [1695], [1696], [1697] --
+    base wares 1703, 1705, 1695, 1697, 1699 -- so an exact-path lookup mis-attributed
+    two of five. Replaying the records in application order (the store's row order)
+    over a copy of the base tree turns each instant path back into a base node.
+
+    Stated limits: records sourced by a DLC (`ego_dlc_*`) are skipped, because the
+    tree here is base + DLC already; an INSERT by a mod into the middle of a sibling
+    list is not in the table, so a later removal's position among those siblings is
+    replayed without that shift. None = *target* does not resolve to exactly one
+    element (or one attribute of one) in *tree*.
+    """
+    import copy
+
+    if tree is None:
+        return None
+    root = tree.getroot() if hasattr(tree, "getroot") and not hasattr(tree, "tag") \
+        else tree
+    want_attr = None
+    head, sep, last = target.rpartition("/")
+    path = target
+    if sep and last.startswith("@"):
+        path, want_attr = head, last[1:]
+    try:
+        hits = root.getroottree().xpath(path)
+    except Exception:                                       # silent-ok: None = unresolved
+        return None
+    if not isinstance(hits, list) or len(hits) != 1 or not isinstance(
+            getattr(hits[0], "tag", None), str):
+        return None
+    node = hits[0]
+    work = copy.deepcopy(root)
+    # lxml hands out a proxy per C node and reuses it only while one is alive, so every
+    # proxy of the copy is HELD for the replay -- otherwise id() keys go stale.
+    keep_alive = list(work.iter())
+    orig_of = {id(w): o for o, w in zip(root.iter(), keep_alive)}
+    rows = []
+    for form in _vpath_forms(vpath):
+        rows = con.execute("SELECT node_path, source FROM removed WHERE lower(vpath) = ? "
+                           "ORDER BY rowid", (form,)).fetchall()
+        if rows:
+            break
+    removers: set[str] = set()
+    for node_path, source in rows:
+        if str(source).lower().startswith("ego_dlc"):
+            continue
+        rpath, rattr = node_path, None
+        h, s, lst = node_path.rpartition("/")
+        if s and lst.startswith("@"):
+            rpath, rattr = h, lst[1:]
+        try:
+            got = work.getroottree().xpath(rpath)
+        except Exception:                                   # silent-ok: not replayable
+            continue
+        if not isinstance(got, list) or len(got) != 1 or not isinstance(
+                getattr(got[0], "tag", None), str):
+            continue
+        orig = orig_of.get(id(got[0]))
+        if rattr is not None:
+            got[0].attrib.pop(rattr, None)
+            if orig is node and rattr == want_attr:
+                removers.add(source)
+            continue
+        if got[0].getparent() is not None:
+            got[0].getparent().remove(got[0])
+        if orig is not None and (orig is node or any(a is orig for a in node.iterancestors())):
+            removers.add(source)
+    del keep_alive
+    return removers
+
+
 def _file_is_tracked(con, vpath: str) -> bool:
     """Does the store index ANY entity at *vpath*? The store merges (and so records
     removals for) registry, macro and component files only; md/, aiscripts/, t/ and
@@ -196,9 +274,10 @@ def _file_is_tracked(con, vpath: str) -> bool:
                            (f,)).fetchone() for f in _vpath_forms(vpath))
 
 
-#: Why a HARD row could not be compared. The first two are EXPLAINED by what the file or
-#: the merge is, and leave the denominator; the rest are the CHECKER failing to map a row,
-#: and count against the coverage floor below.
+#: Why a HARD row could not be compared. UNTRACKED_FILE and WHOLE_DOCUMENT are EXPLAINED
+#: by what the file is, and leave the denominator; the rest are the CHECKER failing to map
+#: a row, and count against the coverage floor below. ENTITY_REMOVED is not a miss at all:
+#: such a row IS compared, against the store's removals (`_replayed_removers`).
 UNTRACKED_FILE = "file holds no store entity (md/aiscripts/t/index...)"
 WHOLE_DOCUMENT = "target is above every entity (a document-level node)"
 ENTITY_REMOVED = "entity exists in the base tree but not in the store (removed by the merge)"
@@ -206,7 +285,7 @@ UNRESOLVED = "target did not resolve to exactly one node in the base tree"
 UNMAPPED_KIND = "entity kind has no known flattening (not macro / registry)"
 NO_STORE_KEY = "node resolved, but the store keys no property for it"
 PROP_NOT_STORED = "store keys the node, but holds no attribute under it"
-EXPLAINED = (UNTRACKED_FILE, WHOLE_DOCUMENT, ENTITY_REMOVED)
+EXPLAINED = (UNTRACKED_FILE, WHOLE_DOCUMENT)
 
 #: THE COVERAGE FLOOR for HARD rows: unexplained (checker-side) misses may be at most this
 #: share of the rows the checker was supposed to be able to map. Principle: a check that
@@ -469,7 +548,9 @@ def check_cross_tool_agreement() -> None:
                     absent += 1
                     why[UNTRACKED_FILE] = why.get(UNTRACKED_FILE, 0) + 1
                     continue
-                origins = _removal_sources(con, c.vpath, c.target)
+                origins = _replayed_removers(con, c.vpath, tree_for(c.vpath), c.target)
+                if origins is None:                     # target unresolved in the base
+                    origins = _removal_sources(con, c.vpath, c.target)
                 where = f" (removal of {c.target})"
                 checked += 1
                 if owner not in origins:
@@ -483,6 +564,20 @@ def check_cross_tool_agreement() -> None:
                 # winner owning SOMETHING else in the document is not agreement
                 # (AUDIT-2026-09-24 GT-5).
                 scope = _hard_scope(con, c, tree_for)
+                if scope == ENTITY_REMOVED:
+                    # The entity is in the base tree and gone from the store: the merge
+                    # REMOVED it, so compat's live owner must be the mod that removed it
+                    # (release review 2026-09-26: these rows used to leave the
+                    # denominator as "explained" with the owner never checked).
+                    origins = _replayed_removers(con, c.vpath, tree_for(c.vpath), c.target)
+                    where = f" (entity removed at {c.target})"
+                    checked += 1
+                    if owner not in (origins or set()):
+                        disagree += 1
+                        if disagree <= 3:
+                            print(f"          {c.vpath}{where}: compat live owner={owner!r}; "
+                                  f"store removals of it={sorted(origins or ())}")
+                    continue
                 if isinstance(scope, str):
                     absent += 1
                     why[scope] = why.get(scope, 0) + 1
