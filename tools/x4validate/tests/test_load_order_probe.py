@@ -257,3 +257,79 @@ def test_build_only_writes_the_selected_subset_and_its_prediction(tmp_path):
     pred = json.loads((tmp_path / "PREDICTION.json").read_text(encoding="utf-8"))
     assert set(pred["relative_order"]) <= set(built)
     assert lop.built_probes(tmp_path) == built
+
+
+# --- release review 2026-09-26: remove/deploy edge cases -------------------------------------
+
+def test_remove_survives_the_profile_and_game_roots_being_the_SAME_folder(tmp_path, monkeypatch):
+    """Misconfigured so both roots resolve to one folder, every probe was listed twice and the
+    second unlink raised FileNotFoundError part way through the removal."""
+    src, game = tmp_path / "src", tmp_path / "game"
+    lop.build(src)
+    game.mkdir()
+    (game / "x").mkdir()
+    lop.write_profile_probes(src, game, apply=True)
+    monkeypatch.setattr(lop, "_ext_root", lambda: game)
+    monkeypatch.setattr(lop, "_profile_root", lambda: game / "x" / "..")   # same folder, other spelling
+    assert lop.remove(apply=True) == 0
+    assert sorted(d.name for d in game.iterdir()) == ["x"]
+
+
+class _StubDM:
+    """deploy-mod.py stand-in: records calls, returns a chosen VERIFIED verdict per probe."""
+
+    class Refused(Exception):
+        pass
+
+    def __init__(self, fail=()):
+        self.fail, self.calls = set(fail), []
+
+    def deploy(self, name, apply, src_root=None, ext_root=None, out=print):
+        self.calls.append((name, apply))
+        return name not in self.fail
+
+
+def _deploy_env(tmp_path, monkeypatch, dm, prof_exists):
+    src, ext = tmp_path / "src", tmp_path / "game" / "extensions"
+    prof = tmp_path / "profile" / "extensions"
+    lop.build(src)
+    ext.mkdir(parents=True)
+    prof.parent.mkdir(parents=True)
+    if prof_exists:
+        prof.mkdir()
+    monkeypatch.setattr(lop, "_deploy_module", lambda: dm)
+    monkeypatch.setattr(lop, "_ext_root", lambda: ext)
+    monkeypatch.setattr(lop, "_profile_root", lambda: prof)
+    return src, prof
+
+
+@pytest.mark.parametrize("prof_exists", [False, True])
+def test_a_DRY_RUN_deploy_previews_the_profile_writes_even_before_the_folder_exists(
+        tmp_path, monkeypatch, capsys, prof_exists):
+    """The preview must not understate --apply: with no profile extensions/ folder yet,
+    the profile guards and every 'would write' line were skipped. True is the twin."""
+    src, prof = _deploy_env(tmp_path, monkeypatch, _StubDM(), prof_exists)
+    assert lop.deploy(src, apply=False) == 0
+    out = capsys.readouterr().out
+    for p in PROFILE_PROBES:
+        assert f"would write {prof / p}" in out, out
+    assert ("would create" in out) is (not prof_exists), out
+    assert prof.is_dir() is prof_exists, "a dry run created the profile folder"
+
+
+@pytest.mark.parametrize("fail", [("lo_probe_ca_add",), ()])
+def test_APPLY_writes_no_profile_probe_when_a_game_root_deploy_did_not_verify(
+        tmp_path, monkeypatch, capsys, fail):
+    """() is the twin: every game-root deploy verified, so the profile write proceeds."""
+    dm = _StubDM(fail)
+    src, prof = _deploy_env(tmp_path, monkeypatch, dm, prof_exists=False)
+    rc = lop.deploy(src, apply=True)
+    assert ("lo_probe_ca_add", True) in dm.calls, "the game-root deploy never ran"
+    written = sorted(d.name for d in prof.iterdir()) if prof.is_dir() else []
+    if fail:
+        assert rc == 1
+        assert written == [], "profile probes were written after a game-root deploy failed"
+        assert "NOT written" in capsys.readouterr().err
+    else:
+        assert rc == 0
+        assert written == sorted(PROFILE_PROBES)

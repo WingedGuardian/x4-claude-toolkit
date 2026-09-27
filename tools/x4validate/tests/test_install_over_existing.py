@@ -1314,3 +1314,181 @@ def test_install_ps1_path_helpers_do_not_dereference_a_null_windows_variable(tmp
     assert len(ok) == len(_PATH_HELPERS), (
         "expected %d helpers to be exercised, got %d. Full output:\n%s"
         % (len(_PATH_HELPERS), len(ok), out[-1500:]))
+
+
+# --- a git CHECKOUT as the source copies what git TRACKS, not what is on disk ---------
+#
+# Release review 2026-09-26: installing from a maintainer checkout copied 33 files
+# `git ls-files` does not know -- tools/basex/basex/data/ alone was 2.3 GB of BaseX
+# databases, plus _eff/, stage-manifest.json, the coverage manifests and a
+# .pytest_cache. The prune list is a hand-kept second copy of .gitignore and had
+# drifted from it; `.gitignore` itself is the one correct enumeration. So a source
+# that IS a git work tree copies its tracked set, and anything else (a release zip,
+# which holds only tracked files anyway) keeps the walk -- with the derived paths
+# added to its lists as defence in depth.
+
+#: Derived BaseX products a checkout accumulates. All gitignored upstream.
+_DERIVED = ("tools/basex/basex/data/x4raw/tbl.basex",
+            "tools/basex/_eff/effective-manifest.json",
+            "tools/basex/stage-manifest.json",
+            "tools/basex/basex/coverage-x4raw.json",
+            "tools/basex/.pytest_cache/v/cache/nodeids")
+#: Untracked and named in NO list: only the tracked-set rule can keep it out.
+_UNTRACKED = "tools/scratch-output/result.json"
+_TRACKED = "tools/tracked-dir/kept.txt"
+#: Tracked, then deleted from the working tree: must not crash the copy.
+_TRACKED_GONE = "tools/tracked-dir/gone.txt"
+
+
+def _git(repo: pathlib.Path, *args: str) -> None:
+    hooks = repo.parent / "no-hooks"
+    hooks.mkdir(exist_ok=True)
+    subprocess.run(["git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                    "-c", "commit.gpgsign=false", "-c", "core.hooksPath=" + hooks.as_posix(),
+                    "-C", str(repo), *args], check=True, capture_output=True, text=True)
+
+
+def _derived_source(tmp_path: pathlib.Path, git: str | None) -> pathlib.Path:
+    """A toolkit source holding derived + untracked files beside tracked ones.
+
+    git=None     -- a plain folder (the release-zip shape)
+    git="top"    -- the source IS the top of a work tree, tracked set committed
+    git="empty"  -- `git init` in the source, nothing tracked
+    git="partial" -- the source is the top of a repo tracking the installers but
+                    NOT tools/ (the shape of a game-root repo)   [coverage clause]
+    git="outer"  -- the source sits UNTRACKED inside an unrelated repo (a zip
+                    extracted inside a game root that is itself a repo)
+    git="outer-tracked" -- inside another repo that tracks every copy item the
+                    source holds, so ONLY the top-of-work-tree clause can say
+                    "not the toolkit's own repo"                  [top clause]
+    """
+    if git is not None and shutil.which("git") is None:
+        pytest.skip("no git on this machine")
+    outer = tmp_path / "outer"
+    src = (outer / "src") if git in ("outer", "outer-tracked") else (tmp_path / "src")
+    src.mkdir(parents=True)
+    for name in ("install.sh", "install.ps1", "setup.sh"):
+        shutil.copy2(ROOT / name, src / name)
+    for rel in (_TRACKED, _TRACKED_GONE):
+        (src / rel).parent.mkdir(parents=True, exist_ok=True)
+        (src / rel).write_text("TRACKED", encoding="utf-8")
+    if git == "top":
+        _git(src, "init", "-q")
+        _git(src, "add", "--", "install.sh", "install.ps1", "setup.sh", _TRACKED, _TRACKED_GONE)
+        _git(src, "commit", "-q", "-m", "fixture")
+        (src / _TRACKED_GONE).unlink()
+    elif git == "empty":
+        _git(src, "init", "-q")
+    elif git == "partial":
+        _git(src, "init", "-q")
+        _git(src, "add", "--", "install.sh", "install.ps1", "setup.sh")
+        _git(src, "commit", "-q", "-m", "fixture")
+    elif git == "outer-tracked":
+        _git(outer, "init", "-q")
+        _git(outer, "add", "--", *("src/" + n for n in ("install.sh", "install.ps1", "setup.sh",
+                                                        _TRACKED, _TRACKED_GONE)))
+        _git(outer, "commit", "-q", "-m", "fixture")
+    elif git == "outer":
+        (outer / "unrelated.txt").write_text("x", encoding="utf-8")
+        _git(outer, "init", "-q")
+        _git(outer, "add", "--", "unrelated.txt")
+        _git(outer, "commit", "-q", "-m", "fixture")
+    for rel in _DERIVED + (_UNTRACKED,):
+        (src / rel).parent.mkdir(parents=True, exist_ok=True)
+        (src / rel).write_text("DERIVED-OR-UNTRACKED", encoding="utf-8")
+    return src
+
+
+def _copied(dest: pathlib.Path) -> set[str]:
+    return {p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_GIT_CHECKOUT_source_copies_only_its_TRACKED_files(installer, tmp_path):
+    src = _derived_source(tmp_path, "top")
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src)
+    out = r.stdout + r.stderr
+    got = _copied(dest)
+    # DENOMINATOR: the tracked file arrived, and so did an item copied AFTER tools/,
+    # so the walk neither skipped the tree nor died on the deleted tracked file.
+    assert _TRACKED in got, "the TRACKED file did not travel:\n%s" % out[-1500:]
+    assert "install.ps1" in got, "the copy stopped part way:\n%s" % out[-1500:]
+    leaked = sorted(set(_DERIVED + (_UNTRACKED,)) & got)
+    assert not leaked, "untracked/derived files travelled from a git source: %s" % leaked
+    assert _TRACKED_GONE not in got
+    assert "tracked" in out.lower(), (
+        "the narrowing to the tracked set was not ANNOUNCED:\n%s" % out[-1500:])
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_PLAIN_FOLDER_source_still_copies_what_is_on_disk_minus_the_derived_paths(
+        installer, tmp_path):
+    """The release-zip shape: behaviour unchanged, plus the derived-path lists."""
+    src = _derived_source(tmp_path, None)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src)
+    got = _copied(dest)
+    assert _TRACKED in got and _TRACKED_GONE in got and _UNTRACKED in got, (
+        "a non-git source no longer copies what is on disk:\n%s"
+        % (r.stdout + r.stderr)[-1500:])
+    leaked = sorted(set(_DERIVED) & got)
+    assert not leaked, "derived BaseX products travelled from a plain source: %s" % leaked
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("shape", ["empty", "partial", "outer", "outer-tracked"])
+def test_TWIN_a_source_that_is_not_the_TOP_of_a_populated_work_tree_keeps_the_walk(
+        installer, shape, tmp_path):
+    """One twin PER CLAUSE, each able to fail alone: `partial` (the source is the
+    top of a repo that does not track tools/) is the coverage clause's; and
+    `outer-tracked` (another repo tracks everything the source holds) is the
+    top-of-work-tree clause's. `empty` and `outer` are the obvious shapes -- but
+    each is caught by BOTH clauses, so neither can tell a missing one. MEASURED:
+    with only those two, deleting either clause left this test green."""
+    src = _derived_source(tmp_path, shape)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src)
+    got = _copied(dest)
+    assert _TRACKED in got and _UNTRACKED in got, (
+        "a %s source fell into tracked-set mode:\n%s" % (shape, (r.stdout + r.stderr)[-1500:]))
+    assert not sorted(set(_DERIVED) & got)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_DESTINATIONS_own_BaseX_databases_survive_an_upgrade(installer, tmp_path):
+    """The derived paths are SKIP-ON-THE-WAY-IN, never delete-from-the-destination.
+    X4_COPY_PRUNE is also `rm -rf`'d from the destination, twice; filing data/ there
+    would erase a user's 2+ GB of built databases on every upgrade."""
+    src = _derived_source(tmp_path, "top")
+    dest = _fresh(tmp_path)
+    mine = dest / "tools" / "basex" / "basex" / "data" / "x4raw" / "tbl.basex"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("MY-DATABASE", encoding="utf-8")
+    manifest = dest / "tools" / "basex" / "stage-manifest.json"
+    manifest.write_text("MY-MANIFEST", encoding="utf-8")
+    r = _install(installer, tmp_path, dest, source=src)
+    assert (dest / _TRACKED).is_file(), "the copy did not run:\n%s" % (r.stdout + r.stderr)[-1500:]
+    assert mine.read_text(encoding="utf-8") == "MY-DATABASE"
+    assert manifest.read_text(encoding="utf-8") == "MY-MANIFEST"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_LOCKED_destination_file_the_copy_would_NOT_write_does_not_refuse(
+        installer, tmp_path):
+    """The locked-target precheck enumerates the SAME set the copy writes. A
+    read-only file standing where an UNTRACKED source file sits is never written,
+    so refusing over it would block an install for nothing."""
+    src = _derived_source(tmp_path, "top")
+    dest = _fresh(tmp_path)
+    f = dest / _UNTRACKED
+    f.parent.mkdir(parents=True)
+    f.write_text("MINE", encoding="utf-8")
+    os.chmod(f, stat.S_IREAD)
+    try:
+        r = _install(installer, tmp_path, dest, source=src)
+    finally:
+        os.chmod(f, stat.S_IREAD | stat.S_IWRITE)
+    out = r.stdout + r.stderr
+    assert "REFUSING" not in out, out[-1500:]
+    assert (dest / _TRACKED).is_file(), out[-1500:]
