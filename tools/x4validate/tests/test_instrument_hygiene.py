@@ -264,3 +264,20 @@ def test_a_HALF_WRITTEN_last_line_of_a_live_transcript_is_tolerated(tmp_path, mo
     assert "partial last line" in out
     c = ih.scan(tmp_path / "t")
     assert c.unreadable == [] and c.partial_tail == ["s.jsonl"]
+
+
+def test_a_half_written_last_line_in_an_OLD_transcript_is_unreadable(tmp_path, monkeypatch,
+                                                                     capsys):
+    """Release review 2026-09-26: ANY unterminated unparseable last line was excused as a
+    live append -- including a transcript a crash truncated long ago, which is a real
+    hole in the denominator. Only a transcript written within LIVE_APPEND_WINDOW_S is a
+    writer mid-append; the twin above (a fresh file) is still tolerated."""
+    import os
+    import time
+    _one_command_run(tmp_path, monkeypatch, extra_lines='{"message": {"content": [{"ty')
+    f = tmp_path / "t" / "s.jsonl"
+    old = time.time() - 86400
+    os.utime(f, (old, old))
+    assert ih.main() == 2
+    c = ih.scan(tmp_path / "t")
+    assert c.partial_tail == [] and c.unreadable, (c.partial_tail, c.unreadable)
