@@ -645,9 +645,10 @@ def _no_connection_reason(path: str, timeout: float, running: bool | None,
     if deployed is False and loaded is not True:
         return (head + " MEASURED: the helper extension is NOT in the set the engine would "
                 "load, so it could not have answered. Check the extension is in the GAME-ROOT "
-                "`extensions\\` folder (not the profile's), that its manifest and the profile "
-                "both have it enabled, and that its named-pipe dependency (Mod Support APIs) is "
-                "installed too. Only once all of those hold is this a frame-loop problem."
+                "`extensions\\` folder (not the profile's), that it is enabled -- the profile's "
+                "entry decides; with no entry, the manifest's own `enabled` is the default -- "
+                "and that its named-pipe dependency (Mod Support APIs) is installed in the game "
+                "root too. Only once all of those hold is this a frame-loop problem."
                 + (f" NOT LOADED by our model of the engine: {not_loaded}." if not_loaded
                    else ""))
     if running is True and loaded is False:
