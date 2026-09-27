@@ -283,7 +283,12 @@ def write_profile_probes(src: Path, dst_root: Path, apply: bool) -> None:
     if not names:
         raise ProbeRefused(f"{src} holds no profile-root probe; run `build` first")
     if not dst_root.is_dir():
-        raise ProbeRefused(f"the profile extensions folder {dst_root} does not exist")
+        if apply:
+            raise ProbeRefused(f"the profile extensions folder {dst_root} does not exist")
+        # A PREVIEW still runs every guard and names every write: skipping them here made
+        # the dry run understate what --apply does (release review 2026-09-26).
+        print(f"  would create {dst_root} (it does not exist yet; X4 creates it only once a "
+              "mod lives there)")
     for n in names:
         if not (src / n / MARKER).is_file():
             raise ProbeRefused(f"{src / n} is not a build of this tool; run `build` first")
@@ -327,10 +332,10 @@ def deploy(src: Path, apply: bool) -> int:
     try:
         for n in names:                      # every guard before any write
             dm.deploy(n, False, src_root=src, ext_root=ext, out=lambda *_: None)
-        if apply and needs_profile:
-            prof.mkdir(exist_ok=True)        # X4 creates it only once a mod lives there
-        if needs_profile and prof.is_dir():
-            write_profile_probes(src, prof, apply=False)   # its guards, no write
+        if needs_profile:
+            # its guards, no write -- and in a dry run ALSO when the folder does not exist
+            # yet, so the preview names every write --apply would make.
+            write_profile_probes(src, prof, apply=False)
     except (dm.Refused, ProbeRefused) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
@@ -339,6 +344,14 @@ def deploy(src: Path, apply: bool) -> int:
         ok &= dm.deploy(n, apply, src_root=src, ext_root=ext)
     print(f"profile root: {prof}")
     if apply and needs_profile:
+        if not ok:
+            # A game-root probe that did not verify makes the round's evidence unreadable;
+            # writing the profile half anyway only adds folders to clean up.
+            print("refused: a game-root probe did not VERIFY, so the profile-root probes were "
+                  "NOT written; fix the game-root deploy (or `remove --apply`) and re-run",
+                  file=sys.stderr)
+            return 1
+        prof.mkdir(exist_ok=True)            # X4 creates it only once a mod lives there
         write_profile_probes(src, prof, apply=True)
     if apply and ext is not None:
         pair = [n for n in os.listdir(ext) if n in ("lo_probe_k_ßa", "lo_probe_k_sz")]
@@ -356,6 +369,10 @@ def remove(apply: bool) -> int:
         return 2
     prof = _profile_root()
     roots = [ext] + ([prof] if prof is not None and prof.is_dir() else [])
+    # DEDUPED BY RESOLVED PATH. Misconfigured so both resolve to one folder, every probe
+    # was listed twice and the second unlink raised FileNotFoundError part way through.
+    seen: set[Path] = set()
+    roots = [r for r in roots if not (r.resolve() in seen or seen.add(r.resolve()))]
     victims = []
     for d in sorted(x for r in roots for x in r.iterdir()):
         if not (d.is_dir() and not d.is_symlink() and (d / MARKER).is_file()):
