@@ -568,3 +568,25 @@ def test_tracked_render_ANNOUNCES_rows_that_name_no_game(monkeypatch, capsys):
         argparse.Namespace(domain="x4foundations", registry=None, limit=10)) == 0
     txt = capsys.readouterr().out
     assert "2 row(s) name NO game at all" in txt, txt
+
+
+def test_tracked_catches_a_nexus_error_cleanly_never_a_traceback(monkeypatch, capsys):
+    """Finding 6: `cmd_tracked`'s own `fetch_tracked()` call was not caught
+    anywhere, so a Nexus outage (or an auth failure) crashed the whole command with
+    a traceback instead of reporting cleanly -- and whatever IS printed must never
+    contain the real API key."""
+    monkeypatch.setenv("X4_NEXUS_KEY", "top-secret-key-do-not-print")
+
+    def boom(domain):
+        raise _nexus.NexusAuthError(
+            "HTTP 401 -- the Nexus API key is missing, invalid or revoked "
+            "(check X4_NEXUS_KEY)")
+    monkeypatch.setattr(_nexus, "fetch_tracked", boom)
+    monkeypatch.setattr(_modlist._registry, "load_registry", lambda p: {"mods": []})
+    rc = _modlist.cmd_tracked(
+        argparse.Namespace(domain="x4foundations", registry=None, limit=10))
+    out = capsys.readouterr()
+    assert rc != 0, "a Nexus failure must not report success"
+    combined = out.out + out.err
+    assert "top-secret-key-do-not-print" not in combined, combined
+    assert "Traceback" not in combined, combined

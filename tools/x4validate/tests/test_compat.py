@@ -346,6 +346,29 @@ def test_cli_exits_3_when_degraded_without_hard_collisions(tmp_path, capsys):
     assert "DEGRADED" in out
 
 
+def test_json_output_includes_unresolvable_ops(tmp_path, capsys):
+    """Finding 6: a malformed sel= makes a mod's op contribute NOTHING to collision
+    detection (`unresolvable`, the text render's own NOT CHECKED disclosure). The
+    --json payload must carry the same fact, not report a clean-looking run that
+    silently checked less than it claims."""
+    import json
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    # A file only ONE mod touches is never examined at all (nothing to collide
+    # with), so a second, ordinary mod on the same file is needed to reach the
+    # sel-resolution pass that records `unresolvable`.
+    _mod(ext, "a_bad", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=">bad</replace></diff>'})
+    _mod(ext, "z_other", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ice\']/price/@average">7</replace></diff>'})
+    code = _compat.main(["check", "--ext-dir", str(ext),
+                         "--reference", str(cfg.reference), "--json"])
+    assert code in (0, 1, 3), code
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["unresolvable"], payload
+    assert any("a_bad" in u for u in payload["unresolvable"]), payload["unresolvable"]
+
+
 # --------------------------------------------------------------------------
 # F12 (2026-08-02): registry uniqueness is per-DOCUMENT, and identity is @id.
 # Both engine-confirmed duplicates (WareDB shield_xen_xl_standard_02_mk1,

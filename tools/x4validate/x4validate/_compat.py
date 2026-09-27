@@ -1367,6 +1367,11 @@ def main(argv: list[str] | None = None) -> int:
             "skipped": [dataclasses.asdict(s) for s in report.skipped],
             "order_misses": [dataclasses.asdict(m) for m in report.order_misses],
             "removed_first": [dataclasses.asdict(m) for m in report.removed_first],
+            # NOT CHECKED (the text render's own section, above): an op whose sel=
+            # could not be evaluated contributed no target and cannot participate in
+            # collision detection -- omitting it here made a JSON consumer read
+            # "clean" when the run had silently checked less than it claims.
+            "unresolvable": report.unresolvable,
             "candidate_path": report.candidate_path,
             "excluded_copies": report.excluded_copies,
             "degraded": bool(report.degraded),

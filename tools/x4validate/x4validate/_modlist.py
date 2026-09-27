@@ -874,7 +874,15 @@ def cmd_tracked(args) -> int:
     endpoint returned 1,616 rows across 9 games for 413 x4foundations ones, so a
     bare "413 tracked" would hide three quarters of the payload.
     """
-    t = _nexus.fetch_tracked(args.domain)
+    try:
+        t = _nexus.fetch_tracked(args.domain)
+    except _nexus.NexusError as exc:
+        # Uncaught, this crashed the whole command on any Nexus outage or auth
+        # failure. `str(exc)` never carries the key itself (only "check
+        # X4_NEXUS_KEY", the env var NAME) -- same guarantee every other Nexus
+        # catch in this module relies on.
+        print(f"x4modlist: could not fetch the tracked list ({exc})", file=sys.stderr)
+        return 2
     # The parts must SUM TO THE DENOMINATOR, and they did not: `others` was
     # `total - kept`, but `kept` counts UNIQUE IDS while `total` counts ROWS, so
     # every duplicate row of THIS domain was reported as belonging to another
