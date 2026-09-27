@@ -149,6 +149,8 @@ def _mtime(p: Path | None) -> float | None:
     try:
         return p.stat().st_mtime if p is not None else None
     except OSError:
+        # silent-ok: no profile content.xml (none configured, or absent) = no profile
+        # signal; the other three modlist signals still decide, and the header names the log.
         return None
 
 
