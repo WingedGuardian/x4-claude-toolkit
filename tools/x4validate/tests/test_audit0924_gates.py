@@ -982,3 +982,33 @@ def test_gt8_toolkit_usage_with_no_baseline_is_not_a_pass(tmp_path, monkeypatch,
     monkeypatch.setattr(tu, "BASELINE", tmp_path / "no-baseline.json")
     assert tu.main() == 2
     assert "no baseline" in capsys.readouterr().out
+
+
+# --- release review 2026-09-26 (pre-arc): the planted set is a MULTISET -----------------
+
+def test_diff_truth_counts_identical_planted_changes_as_a_multiset(tmp_path, monkeypatch):
+    """Two sibling elements with the same attr and value, both mutated: the planted SET
+    collapsed them to one row, so the count check went red against a tool that correctly
+    reported 2 attr changes -- a failure with nothing wrong."""
+    import random
+    dt = import_gate("diff_truth", module_level=False)
+    f = tmp_path / "a.xml"
+    f.write_bytes(b'<r><a max="1"/><a max="1"/></r>')
+    monkeypatch.setattr(dt, "N_MUTATIONS", 2)
+    planted, by_tree = dt.plant(tmp_path, random.Random(1))
+    assert len(planted) == 2, planted
+    row = "a.xml  max  1 -> 7332.5\n"
+    assert dt.judge(_diff_headline(1, 2) + row + row, planted, 1) is True
+
+
+def test_TWIN_diff_truth_still_fails_when_one_of_two_identical_changes_is_missing(tmp_path,
+                                                                                    monkeypatch):
+    import random
+    dt = import_gate("diff_truth", module_level=False)
+    f = tmp_path / "a.xml"
+    f.write_bytes(b'<r><a max="1"/><a max="1"/></r>')
+    monkeypatch.setattr(dt, "N_MUTATIONS", 2)
+    planted, _ = dt.plant(tmp_path, random.Random(1))
+    row = "a.xml  max  1 -> 7332.5\n"
+    assert dt.judge(_diff_headline(1, 2) + row, planted, 1) is False, (
+        "the detail shows ONE of the two planted changes")

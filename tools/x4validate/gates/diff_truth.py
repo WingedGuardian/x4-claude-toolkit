@@ -17,6 +17,7 @@ Exit: 0 exact -- every planted change found, nothing invented, and the changed-
       1 MISMATCH (or x4diff's output could not be read)
       2 nothing could be planted -- no candidate mod, or 0 numeric slots
 """
+import collections
 import random
 import re
 import shutil
@@ -45,8 +46,13 @@ def pick_source(ext: Path) -> Path | None:
     return max(candidates, key=lambda d: len(list(d.rglob("*.xml"))))
 
 
-def plant(b: Path, rng: random.Random) -> tuple[set, dict]:
-    """Mutate up to N numeric attributes under *b*. (planted rows, {path: tree})."""
+def plant(b: Path, rng: random.Random) -> tuple[list, dict]:
+    """Mutate up to N numeric attributes under *b*. (planted rows, {path: tree}).
+
+    The planted rows are a LIST -- a multiset. Two sibling elements carrying the same
+    attr and value produce IDENTICAL (rel, attr, old, new) rows; a set collapsed them,
+    and the count check then went red against a tool that correctly reported both
+    (release review 2026-09-26)."""
     slots = []                                # (file, element, attr, old, tree)
     for f in sorted(b.rglob("*.xml")):
         try:
@@ -75,21 +81,22 @@ def plant(b: Path, rng: random.Random) -> tuple[set, dict]:
         print(f"only {len(slots)} numeric slots; reducing mutations")
     chosen = rng.sample(slots, min(N_MUTATIONS, len(slots)))
 
-    planted = set()                           # (relpath, attr, old, new)
+    planted = []                              # (relpath, attr, old, new), repeats kept
     by_tree = {}
     for f, el, k, old, tree in chosen:
         new = str(float(old) + 7331.5)        # unmistakable, never a no-op
         el.set(k, new)
         rel = f.relative_to(b).as_posix()
-        planted.add((rel, k, old, new))
+        planted.append((rel, k, old, new))
         by_tree[str(f)] = tree
     for path, tree in by_tree.items():
         tree.write(path, encoding="utf-8", xml_declaration=True)
     return planted, by_tree
 
 
-def judge(out: str, planted: set, files_mutated: int) -> bool:
-    """Compare x4diff's --detail output against the planted set. True = exact."""
+def judge(out: str, planted, files_mutated: int) -> bool:
+    """Compare x4diff's --detail output against the planted rows (a multiset: an
+    identical row planted twice must appear twice). True = exact."""
     m = re.search(r"changed files:\s*(\d+)\s+added:\s*(\d+)\s+removed:\s*(\d+)", out)
     n = re.search(r"total attr changes:\s*(\d+)", out)
     if m is None or n is None:
@@ -109,16 +116,18 @@ def judge(out: str, planted: set, files_mutated: int) -> bool:
         print(f"FAIL: changed files {m.group(1)} vs mutated files {files_mutated}")
         ok = False
 
-    # every planted (attr old->new) must appear in the detail; count detail rows
+    # every planted (attr old->new) must appear in the detail AS OFTEN AS IT WAS PLANTED;
+    # the detail is matched per LINE, so two identical rows need two matching lines.
     found = 0
     missing = []
-    for rel, k, old, new in sorted(planted):
+    need = collections.Counter((k, old, new) for _rel, k, old, new in planted)
+    lines = out.splitlines()
+    for (k, old, new), times in sorted(need.items()):
         # detail rows carry attr and values; accept any whitespace/arrow format
-        pat = re.compile(re.escape(k) + r"[^\n]*" + re.escape(old) + r"[^\n]*" + re.escape(new))
-        if pat.search(out):
-            found += 1
-        else:
-            missing.append((rel, k, old, new))
+        pat = re.compile(re.escape(k) + r".*" + re.escape(old) + r".*" + re.escape(new))
+        hits = sum(1 for ln in lines if pat.search(ln))
+        found += min(hits, times)
+        missing += [row for row in planted if row[1:] == (k, old, new)][:max(0, times - hits)]
     print(f"planted changes found in --detail: {found}/{len(planted)}")
     for rel, k, old, new in missing[:5]:
         print(f"   MISSING {rel} {k}: {old} -> {new}")
