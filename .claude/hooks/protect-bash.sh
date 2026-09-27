@@ -26,8 +26,9 @@
 # TWO FRONT-ENDS, ONE RULE SET (AUDIT-2026-09-24 HK-1). This hook is also the PowerShell
 # tool's guard. hook_facts.py hands a PowerShell payload to ps_translate.ps1, which parses
 # it with PowerShell's own parser and returns the equivalent POSIX-shell command; every
-# rule below then judges that. A PowerShell command that cannot be translated is ASKED
-# (hook_facts rc 4), exactly as a Bash command `bash -n` rejects.
+# rule below then judges that. A PowerShell command that does not PARSE is DENIED with the
+# parser's message (hook_facts rc 5); one that cannot be translated for any other reason --
+# no PowerShell, a failure, the budget -- is ASKED (rc 4).
 JQ="${JQ:-jq}"
 # Parameter expansion, not `$(cd "$(dirname "$0")" && pwd)`: that was a subshell AND
 # a dirname process on every call (AUDIT-2026-09-24 HK-4). The settings command passes
@@ -181,8 +182,15 @@ emit_roots() {
 
 FACTS_RAW=$( { emit_roots; printf '%s' "$INPUT"; } | "$PY" "$HOOK_DIR/hook_facts.py" 2>/dev/null)
 PARSE_RC=$?
-# rc 4: a PowerShell TOOL command could not be translated (it does not parse as
-# PowerShell, or no PowerShell was found to parse it), and the reason is on stdout. ASK,
+# rc 5: the PowerShell TOOL command does not PARSE as PowerShell. That is a syntax error in
+# the command I wrote, with the parser's own message to act on -- hygiene, so a DENY with
+# an actionable reason rather than a prompt spent on the user (v3.3.0 release review,
+# finding 7). A command that parses but cannot be RESOLVED still asks (below).
+if [ "$PARSE_RC" = 5 ]; then
+  deny "This PowerShell command does not parse, so the guard could evaluate NO rule against it -- and PowerShell would reject it too: ${FACTS_RAW:-no reason given}. Fix the syntax and re-run."
+fi
+# rc 4: a PowerShell TOOL command could not be translated (no PowerShell was found to
+# parse it, it failed, or the budget ran out), and the reason is on stdout. ASK,
 # as an unparseable Bash command does below -- nothing was analysed, so this is neither
 # a clean pass nor evidence for a deny.
 if [ "$PARSE_RC" = 4 ]; then
