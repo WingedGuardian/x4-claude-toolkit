@@ -392,6 +392,18 @@ def _modifying_mods(con, ent_id: int, ent_chain: str | None, vpath: str) -> list
     return sorted(order, key=lambda s: (-order[s], s))
 
 
+def _sql_limit(limit: int) -> int:
+    """`--limit` as a SQLite `LIMIT ?` parameter.
+
+    `_count_line`'s own TRUNCATED message tells the user "use --limit N (or 0) for
+    all" -- but SQLite's `LIMIT 0` returns ZERO rows, not unlimited. SQLite treats a
+    NEGATIVE limit as "no limit" (this is a bound parameter, not literal SQL text,
+    so -1 is safe to pass straight through), so 0 is translated to -1 here and
+    every other value passes through unchanged.
+    """
+    return -1 if limit == 0 else limit
+
+
 def _cmd_ls(con, args) -> int:
     if _reject_unknown_kind(con, args.kind):
         return 2
@@ -408,7 +420,7 @@ def _cmd_ls(con, args) -> int:
     total = con.execute(q.replace("SELECT id, name, klass, vpath, origin, chain",
                                   "SELECT count(*)"), params).fetchone()[0]
     q += " ORDER BY name LIMIT ?"
-    params.append(args.limit)
+    params.append(_sql_limit(args.limit))
     rows = con.execute(q, params).fetchall()
     for r in rows:
         # The marker names the MODS in this entity's provenance -- not the entity's
@@ -569,7 +581,7 @@ def _cmd_attr(con, args) -> int:
                   "SELECT count(*)"), params).fetchone()[0]
     order = "a.value_num" if args.sort == "num" else "e.name"
     q += f" ORDER BY {order} LIMIT ?"
-    params.append(args.limit)
+    params.append(_sql_limit(args.limit))
     rows = con.execute(q, params).fetchall()
     for r in rows:
         mod = "" if r["chain"] is None else f"  ← {r['origin']}"
@@ -702,7 +714,7 @@ def _cmd_diff_mod(con, args) -> int:
     rows = con.execute(
         "SELECT e.kind, e.name, a.prop, a.value FROM attrs a "
         "JOIN entities e ON e.id=a.entity_id WHERE a.origin=? "
-        "ORDER BY e.kind, e.name, a.prop LIMIT ?", (args.folder, args.limit)).fetchall()
+        "ORDER BY e.kind, e.name, a.prop LIMIT ?", (args.folder, _sql_limit(args.limit))).fetchall()
     for r in rows:
         print(f"{r['kind']:<6} {r['name']:<40} {r['prop']:<28} = {r['value']}")
     # "N value(s) won by X" is the headline number a balance discussion turns on;
