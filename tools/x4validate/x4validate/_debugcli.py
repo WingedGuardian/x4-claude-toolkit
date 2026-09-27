@@ -478,6 +478,14 @@ def _crosscheck_cmd(args, log: Path) -> int:
         return 2
 
     parsed = _debuglog.parse_log(log)
+    if parsed.unreadable is not None:
+        # ParsedLog's own contract (_debuglog.py): "Consumers must refuse on it."
+        # Reading straight into observed_ops made an unreadable log produce ZERO
+        # observed ops, which prints exactly like a mod the engine and the
+        # validator agree on -- rc 0 on a run that examined nothing.
+        print(f"x4debug: {log} is unreadable ({parsed.unreadable}) -- nothing was "
+              "examined, so crosscheck has nothing to compare.", file=sys.stderr)
+        return 2
     observed = observed_ops(parsed, mod.name)
 
     config = _merge.Config()
