@@ -27,6 +27,7 @@ payload child's id/name/macro/ref), else by `sel`; see `_op_key`.
 from __future__ import annotations
 
 import copy
+import re
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
@@ -162,10 +163,31 @@ def _op_key(op: etree._Element) -> str:
     return f"{op.tag}[@sel={sel}]" if sel is not None else op.tag
 
 
+#: ASCII formatting whitespace only -- the characters a pretty-printer inserts for
+#: indentation. `str.split()` (what this used to use) treats ANY Unicode whitespace
+#: the same way, including U+00A0 (NBSP) and U+3000 (ideographic space): an edit
+#: that swapped one of those for a real space, or removed it, read as VERBATIM.
+_ASCII_WS = " \t\n\r\f\v"
+_ASCII_WS_RUN = re.compile(f"[{_ASCII_WS}]+")
+
+
 def _norm(text: str | None) -> str:
-    """Whitespace runs collapsed to one space, ends stripped: re-indenting a
-    multi-line string changes nothing, changing a word does."""
-    return " ".join((text or "").split())
+    """ASCII whitespace runs collapsed to one space; ends stripped ONLY for a
+    multi-line segment.
+
+    Re-indenting a multi-line string (real newlines, real pretty-print indentation)
+    must still change nothing -- that is what this exists to prevent flooding every
+    re-indented file with phantom text changes. But a leading/trailing space on an
+    otherwise SINGLE-LINE value is not indentation, it is content (a padding-
+    sensitive string, or simply someone's edit), and must not be silently dropped.
+    Non-ASCII whitespace (NBSP, U+3000, ...) is never touched either way -- it is an
+    ordinary character here, never interchangeable with a real space.
+    """
+    t = text or ""
+    collapsed = _ASCII_WS_RUN.sub(" ", t)
+    if "\n" in t or "\r" in t:
+        return collapsed.strip(_ASCII_WS)
+    return collapsed
 
 
 def _text_value(el: etree._Element) -> str | None:
