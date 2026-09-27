@@ -9,8 +9,9 @@
 #
 # ADVISORY LIMIT: inter-mod load order is the engine's MEASURED signature-check
 # order (BLIND-SPOTS F128), not documented by Egosoft; that it is also the
-# patch-apply order is inferred. Any x4eff answer that depends on WHICH mod won
-# is advisory to exactly that degree.
+# patch-apply order was MEASURED by the in-game load-order probe (2026-09-26,
+# AUDIT LO-2). Other install roots are unobserved, so an x4eff answer that
+# depends on WHICH mod won is advisory to that degree.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
