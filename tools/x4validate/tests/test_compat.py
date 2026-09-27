@@ -881,3 +881,38 @@ def test_a_GUARDED_order_miss_is_marked_as_intentional(tmp_path):
     assert got == [("@average", True), ("@id", True), ("@min", False)], got
     out = _compat.render(rep)
     assert out.count("guarded") >= 2, out
+
+
+# --- _resolve_candidate: a bare NAME always means the installed copy (finding 2) ------
+
+def test_bare_name_resolves_to_the_INSTALLED_copy_even_when_cwd_has_a_same_named_dir(
+        tmp_path, monkeypatch):
+    """AN-1's own docstring promises 'a bare NAME means the copy in the extensions
+    dir'. p.exists() used to be tried BEFORE that lookup, so a bare name that also
+    happened to exist relative to cwd silently resolved to that OTHER copy instead."""
+    ext = tmp_path / "extensions"
+    _mod(ext, "m_cand", {"libraries/wares.xml": "<diff/>"})
+    staging = tmp_path / "staging"
+    _mod(staging, "m_cand", {"libraries/wares.xml": "<diff/>"})
+    monkeypatch.chdir(staging)
+    resolved = _compat._resolve_candidate("m_cand", ext)
+    assert resolved.resolve() == (ext / "m_cand").resolve(), resolved
+
+
+def test_an_explicit_relative_path_STILL_wins_over_the_installed_copy(tmp_path, monkeypatch):
+    """Twin: naming the staged copy explicitly (a real path, not a bare name) must
+    still mean that copy -- the fix must not make every candidate mean 'installed'."""
+    ext = tmp_path / "extensions"
+    _mod(ext, "m_cand", {"libraries/wares.xml": "<diff/>"})
+    staging = tmp_path / "staging"
+    _mod(staging, "m_cand", {"libraries/wares.xml": "<diff/>"})
+    monkeypatch.chdir(staging)
+    resolved = _compat._resolve_candidate("./m_cand", ext)
+    assert resolved.resolve() == (staging / "m_cand").resolve(), resolved
+
+
+def test_bare_name_lookup_is_still_case_insensitive(tmp_path):
+    ext = tmp_path / "extensions"
+    _mod(ext, "m_cand", {"libraries/wares.xml": "<diff/>"})
+    resolved = _compat._resolve_candidate("M_CAND", ext)
+    assert resolved.resolve() == (ext / "m_cand").resolve(), resolved

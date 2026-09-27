@@ -1270,14 +1270,20 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
 def _resolve_candidate(arg: str, ext_dir: Path) -> Path:
     """Which copy of the candidate `check <arg>` means (AUDIT-2026-09-24 AN-1).
 
-    An EXISTING path is that copy, even when a same-named mod sits in the extensions
-    dir -- that is the "check this staged update" case. Otherwise a BARE name (no
-    path separator) is looked up among the extensions dir's mod folders, so
-    `check some_mod` means the copy the game has. Anything else is returned as given
-    and refused by `_input.require_mod_dir` as a path that does not exist.
+    An argument containing a path separator, an absolute path, or one starting with
+    "." is a PATH and means exactly that copy, even when a same-named mod sits in
+    the extensions dir -- that is the "check this staged update" case. A BARE name
+    (none of the above) ALWAYS means the copy in the extensions dir, looked up among
+    its mod folders, so `check some_mod` means the copy the game has -- even when a
+    same-named directory happens to exist relative to the current working directory.
+    Formerly a bare name was tested with `p.exists()` FIRST, so running from inside a
+    directory that itself held a same-named copy silently resolved to THAT copy
+    instead, contradicting this exact promise (AN-1). Anything that resolves to
+    neither is returned as given and refused by `_input.require_mod_dir` as a path
+    that does not exist.
     """
     p = Path(arg)
-    if p.exists() or "/" in arg or "\\" in arg or p.is_absolute():
+    if "/" in arg or "\\" in arg or arg.startswith(".") or p.is_absolute():
         return p
     # "installed", not "active": naming a disabled mod is the "what if I switch it
     # on" question, and analyze() adds the candidate to the active set itself.
