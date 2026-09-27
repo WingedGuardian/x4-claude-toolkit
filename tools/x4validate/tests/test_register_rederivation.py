@@ -278,3 +278,22 @@ def test_TWIN_a_package_that_is_not_nested_gets_no_second_root(tmp_path):
     flat = tmp_path / "pkg"
     flat.mkdir()
     assert rr._roots(flat) == [flat]
+
+
+def test_the_remedy_text_agrees_with_the_rule_a_dead_path_is_only_a_note(
+        tmp_path, monkeypatch, capsys):
+    """Release review 2026-09-26: the failure's remedy said "every cited check path must
+    exist", contradicting the rule this gate enforces (and its docstring and README): ONE
+    existing cited check covers an entry, and a dead path beside it is only a NOTE."""
+    reg = tmp_path / "BLIND-SPOTS.md"
+    reg.write_text(_doc("## F1 — a thing · **DEFECT** · ✅ FIXED 2026-01-01",
+                        "prose only, no check named"),
+                   encoding="utf-8")
+    monkeypatch.setattr(rr, "REGISTER", reg)
+    monkeypatch.setattr(rr, "ROOT", tmp_path)
+    monkeypatch.setattr(rr, "BASELINE", tmp_path / "none.json")
+    monkeypatch.setattr(rr, "RECORD", False)
+    assert rr.main() == 1
+    out = capsys.readouterr().out
+    assert "every cited check path must exist" not in out
+    assert "at least one cited check" in out
