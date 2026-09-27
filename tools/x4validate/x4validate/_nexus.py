@@ -69,6 +69,16 @@ class NexusUnreachable(NexusFatal):
     """The network failed: no route, DNS, refused, or timed out (URLError/OSError)."""
 
 
+class SteamUnavailable(Exception):
+    """Steam could not be asked at all: network failure, timeout, or a non-JSON body.
+
+    Deliberately NOT a NexusError/NexusFatal -- Steam being unreachable says nothing
+    about whether Nexus is. Distinguished from `steam_title` returning None (Steam
+    answered and the item genuinely has no title) so a transport outage can never be
+    read as the identity answer "unmatched" (a real prior verdict was being overwritten
+    by a Steam hiccup, rc 0, with no mention of the outage)."""
+
+
 #: The most recent `X-RL-*-Remaining` values seen, by header name. Module state on
 #: purpose: the budget is per KEY, not per call, so the next call must know what the last
 #: one was told. `reset_rate_limit()` clears it at the start of a run.
@@ -358,19 +368,27 @@ def search_mods(name: str, count: int = 5) -> list[tuple[int, str]]:
 
 
 def steam_title(ws_number: str) -> tuple[str, str] | None:
-    """Keyless Steam Workshop title lookup. Returns (title, creator_steamid) or None."""
+    """Keyless Steam Workshop title lookup.
+
+    Returns (title, creator_steamid) when Steam answers with one, or None when Steam
+    answered and the item genuinely has no title (a real "not found"/removed result).
+    Raises SteamUnavailable when Steam could not be asked at all -- network failure,
+    timeout, or a non-JSON body -- which is a transport outage, not a fact about the
+    mod, and must never be conflated with the real "no title" answer above (the two
+    used to share one None, and a caller took the outage as "unmatched").
+    """
     ws_number = str(ws_number).removeprefix("ws_")
     form = urllib.parse.urlencode({"itemcount": "1", "publishedfileids[0]": ws_number}).encode()
     req = urllib.request.Request(STEAM_GPFD, data=form, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             d = json.load(r)
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-        # silent-ok: None is the documented "no answer from Steam" sentinel and the
-        # caller distinguishes it from a title of "". Network absence is not data.
-        # URLError (HTTPError's parent), timeouts and a non-JSON body are all that
-        # same absence; catching only HTTPError let them crash a refresh (RG-1).
-        return None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        # URLError (HTTPError's parent), timeouts, other OSErrors and a non-JSON body
+        # (json.load raising ValueError) are all "could not ask", never "asked, no
+        # title" -- catching only HTTPError previously let some of these crash a
+        # refresh (RG-1) while others silently impersonated a real answer.
+        raise SteamUnavailable(f"Steam GetPublishedFileDetails unreachable: {exc}") from exc
     details = (((d or {}).get("response") or {}).get("publishedfiledetails") or [])
     if details and details[0].get("title"):
         return details[0]["title"], str(details[0].get("creator", ""))

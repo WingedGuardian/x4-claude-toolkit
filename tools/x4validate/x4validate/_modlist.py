@@ -578,6 +578,14 @@ def _refresh_rows(mods, args, today, checked: set[str]) -> tuple:
                 nid, state = _resolve_identity(m["id"], a)
             except _nexus.NexusFatal as exc:
                 return exc, resolved, fetched, errors, skipped
+            except _nexus.SteamUnavailable as exc:
+                # A transport failure is not a fact about this mod: overwriting
+                # id_state/resolve with "unmatched" would read as a real identity
+                # verdict. Leave the existing row exactly as it was, just report the
+                # outage (and count it, so it is not indistinguishable from "clean").
+                a["error"] = str(exc)
+                errors += 1
+                continue
             a["id_state"] = state
             if nid:
                 a["nexus_id"] = nid

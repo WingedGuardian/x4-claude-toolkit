@@ -137,4 +137,31 @@ def test_only_run_wide_causes_are_fatal():
     assert issubclass(_nexus.NexusRateLimited, _nexus.NexusFatal)
     assert issubclass(_nexus.NexusUnreachable, _nexus.NexusFatal)
     assert not issubclass(_nexus.NexusFatal, _nexus.NexusAuthError)
+
+
+# --- steam_title: "could not ask" vs "asked, no title" (finding 1) ---------------------
+
+@pytest.mark.parametrize("exc", [
+    urllib.error.URLError("no route"),
+    TimeoutError("timed out"),
+    OSError("connection reset"),
+    ValueError("not json"),  # json.load on a non-JSON body
+])
+def test_steam_title_RAISES_on_a_transport_failure_not_returns_none(monkeypatch, exc):
+    """A transport failure is not the same fact as 'Steam has no title for this item' --
+    the caller must be able to tell them apart (AUDIT: a Steam outage was recording
+    `unmatched` over a real prior identity verdict)."""
+    def urlopen(req, timeout=None):
+        raise exc
+    monkeypatch.setattr(_nexus.urllib.request, "urlopen", urlopen)
+    with pytest.raises(_nexus.SteamUnavailable):
+        _nexus.steam_title("ws_1")
+
+
+def test_steam_title_still_returns_none_on_a_REAL_no_title_answer(monkeypatch):
+    """Twin: Steam answering successfully with nothing found is unaffected."""
+    def urlopen(req, timeout=None):
+        return _Resp(json.dumps({"response": {"publishedfiledetails": [{"result": 9}]}}).encode())
+    monkeypatch.setattr(_nexus.urllib.request, "urlopen", urlopen)
+    assert _nexus.steam_title("ws_1") is None
     assert issubclass(_nexus.NexusFatal, _nexus.NexusError)   # old `except NexusError` still catches
