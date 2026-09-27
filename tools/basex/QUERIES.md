@@ -39,7 +39,8 @@ against each database, with the matching `--db`) rather than quote them.
 order (case-insensitive folder order in repeated dependency passes; see
 `tools/x4validate/docs/BLIND-SPOTS.md` F128), not documented by Egosoft; that it is
 also the patch-apply order was MEASURED by the in-game load-order probe (2026-09-26).
-Other install roots are unobserved.
+The profile's `extensions\` root was MEASURED too (it applies after the game root, and a
+dependency does not cross between the two; F141); the Steam Workshop root is unobserved.
 
 ## A negative claim needs a denominator (this is the point)
 

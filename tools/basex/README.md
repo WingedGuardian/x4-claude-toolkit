@@ -159,7 +159,9 @@ written* and will happily quote a vanilla value your modlist overwrote.
 
 **Load order is MEASURED from the engine, not documented by Egosoft** (signature-check
 order from the log; that it is also apply order was measured by the in-game load-order probe
-2026-09-26 -- BLIND-SPOTS F128). Other install roots are unobserved.
+2026-09-26 -- BLIND-SPOTS F128). The profile's `extensions\` root is measured too (it applies
+after the game root; a dependency does not cross between them -- F141); the Steam Workshop
+root is unobserved.
 
 ## Housekeeping
 
