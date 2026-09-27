@@ -234,7 +234,7 @@ Location: `tools\x4validate\` (lxml-based; runs via the bundled uv + Python 3.13
 2. **Reference integrity** — ware / macro (`<component ref>`) / `{page,t}` references the mod *introduces* must resolve to a real definition (defs unioned across base+DLC+mod).
 3. **Completeness** — `--entity <type>:<id> --like <type>:<vanilla>` models a new entity's footprint on a vanilla analogue and lists missing pieces. Types: `ware`, `ship`, `module` (all are `<ware>` entries; the analogue decides which footprint kinds matter: definition, name_string, description_string, price, production, component, owner, restriction).
 
-**Usage:** `cd tools\x4validate && uv run x4validate <dev\mod>` ( `--json` for machine output; `--tier b` folds in enabled mods but warns — inter-mod order is undocumented).
+**Usage:** `cd tools\x4validate && uv run x4validate <dev\mod>` ( `--json` for machine output; `--tier b` folds in enabled mods but warns — inter-mod order is undocumented). *SUPERSEDED 2026-09-26: `--tier b` merges the ACTIVE set in the engine's MEASURED load order -- see "Load order (who-wins) is MEASURED" under x4compat below.*
 
 **Verified 2026-06-22:** 30 unit tests pass (incl. the x4cat spike cases); a real third-party mod validates clean; deliberately-broken `sel=` flagged; incomplete new ware/ship correctly report missing pieces (e.g. a bare ship flags missing `component`/`production`/`owner`/`restriction`). **Limits:** reference catalog = ware + macro + text (extend in `_refs.py`); completeness recipes = ware/ship/module; Tier B not wired; no MCP wrapper yet. **Cross-mod patch blind spot:** a diff targeting ANOTHER mod's file (not base/DLC) reports "no base game file" and its `sel=` goes unchecked — verify those directly with lxml (`etree.parse(target).xpath(sel)` == 1 node; done 2026-07-06 for the `ejection_router`→TargetMod patch). A clean run is necessary, not sufficient — still test in-game + read debug.txt.
 
@@ -307,8 +307,8 @@ PREDICTION written before launch, launched to the main menu, `score` = PASS): si
 another probe `<add>`s, and the replace succeeded exactly when the adder loads earlier, so apply
 order is now MEASURED, not inferred; a folder with `ß` loads **after** one with `sz` (the engine keeps
 `ß` as one character above `Z`, not Python's `str.upper()` -> `SS`); all **DLC load before mods**. The
-dependency and enable rules it measured are the next paragraph. Still unobserved: other install
-roots, non-NTFS filesystems.
+dependency and enable rules it measured are the next paragraph, and the profile root the one after.
+Still unobserved: the Steam Workshop root, non-NTFS filesystems.
 
 **Which extensions LOAD at all is MEASURED** (2026-09-26, the load-order probe above: 23 throwaway
 mods launched to the main menu; a mod the engine loaded is signature-checked in `debug.txt`, one it
@@ -326,6 +326,18 @@ is active. The 25 active mods the log never mentions ship only `md/`, `aiscripts
 (0 lines from ANY mod), nested patches, or content packed in `.cat` -- I think none of those classes
 is signature-checked at the main menu (INFERRED for `.cat`: 7 mods with no loose XML log 0 lines), so
 their absence is not evidence either way about loading.
+
+**A second extensions root -- the profile's `Documents\Egosoft\X4\<id>\extensions\` -- is MEASURED
+too** (2026-09-26, probe rounds 2-3). The engine READS it: its Extensions dialog lists the mods placed
+there. Their patches APPLY, and AFTER every game-root mod's: each probe carried a patch that can never
+match, so the engine logged a line for it iff it was applied -- game a, game c, THEN profile b,
+profile d (names interleaved on purpose; one walk by name would give a, b, c, d). Profile-root mods
+never get a signature line, so only an apply-time line can show them. A **REQUIRED dependency does
+not resolve between the game root and the profile root**, in either direction (both probes red in the
+dialog, never applied). Still UNMEASURED: every round-3 probe loaded in the first pass, so where a
+game-root mod that WAITS a pass falls relative to profile-root mods is not known; the Steam Workshop
+root was not tested (the toolkit models it as before and says so); whether dependency ids compare
+case-sensitively. Practical rule unchanged: deploy to the game-root `extensions\`.
 
 - **`x4similar`** (`_similarity.py`) — advisory fuzzy same-ship detection. Extracts a numeric
   vector per ship macro (hull/crew/cargo/handling), hard-filters by macro `class` (`ship_xs/s/m/l/xl`)
@@ -550,7 +562,7 @@ Reproducing the game's *effective* XML for a file = base + DLC + enabled-mod ove
   - **`index/macros.xml` (and `index/components.xml`) are UNIONED** across base + every DLC + every mod — each extension registers its own `<entry name="X_macro" value="path"/>` mappings. A macro "exists" if its name appears in the merged index. x4validate's `collect_macro_defs` unions these (4663 macros in base+DLC). Mods register new ship/module macros via `<add sel="/index">`.
   - The three game-root mods (`mod_support_apis`, `ui_extensions_mod`, `target_mod`) all use `<diff>` for game XML; `mod_support_apis` ships no game-XML patches (pure Lua/API).
 - **Diff ops (`reference\libraries\diff.xsd`):** `add` (attrs `sel`, optional `pos`=before|after|prepend [default append], `type`, `if`, `silent`), `replace` (`sel` incl. `/@attr`, `if`, `silent`), `remove` (`sel`, `if`, `silent`). `if=` is evaluated against the *current* merged state; a false `if` silently skips. `silent="true"` makes a non-matching `sel` non-fatal. Diffs apply sequentially — a later diff sees earlier diffs' results.
-- **Load order is NOT encoded in `content.xml`** (it lists `id` + `enabled` only). Tiering: base → every installed DLC → enabled mods. **Inter-mod order is undocumented** — any tool wanting bit-exact multi-mod fidelity must confirm empirically (dump the game's merged XML). DLC diffs use defensive `if="not(...)"` guards, implying DLC-applied-before-mods and order-independence within DLC.
+- **Load order is NOT encoded in `content.xml`** (it lists `id` + `enabled` only). Tiering: base → every installed DLC → enabled mods. **Inter-mod order is undocumented** — any tool wanting bit-exact multi-mod fidelity must confirm empirically (dump the game's merged XML). *SUPERSEDED 2026-09-26: still undocumented by Egosoft, but MEASURED -- signature and apply order, which mods load, and the profile root; see "Load order (who-wins) is MEASURED" under x4compat above.* DLC diffs use defensive `if="not(...)"` guards, implying DLC-applied-before-mods and order-independence within DLC.
 - **The user profile lives at `Documents\Egosoft\X4\<profile-id>\`**, and that id is the Steam3 account id -- treat it as personal data and keep it out of anything you publish. `content.xml` there is the enabled-mod DECISION LOG, not an inventory. With the in-game Steam Workshop download option ON, subscribed mods land directly in the game-root `extensions\` folder; X4 has no `steamapps/workshop` directory of its own, so the absence of one says nothing about what is subscribed.
 
 ### Signature System
