@@ -219,7 +219,10 @@ memory or from another session -- a remembered id was stale within a day here.
 | F138 | `register_rederivation` credits an entry to ANY existing path it cites, including a path the entry quotes as EVIDENCE of the defect rather than as a check of the fix | **SCOPE (measured)** · ⏳ OPEN | 2 of the 6 entries reviewed for AUDIT DC-3 (F60, F73) were "covered" only by such a mention | open. The rest of the register's covered entries are NOT classified |
 | F139 | `mods("active")` records a mod it leaves out (a REQUIRED dependency missing, disabled or cyclic; an unreadable manifest) only into a `dropped=` list the CALLER must pass, and no active-scope caller passed one | **SCOPE (measured)** · ✅ FIXED 2026-09-26 | 0 of 125 installed mods excluded on this install (MEASURED 2026-09-26), so today's cost is zero -- the #23 shape; 16 of 20 active-scope call sites silent before `f634e30` | `mods()` always returns its exclusions (`ModList.dropped`); `dropped_note` is the one line; all 20 sites disclose, held by an AST ban with an EMPTY allowlist (`f634e30`). Also fixed: an engine-excluded nested-patch target was called "DISABLED" |
 | F140 | `scripts/test-hooks.sh` assigned its sandbox to `TMP`, which Windows exports, so every native child inherited it; a Windows process whose `TMP` exceeds 260 characters spins forever in `CreateProcessW` the first time it starts a child. And a KILLED identifier scanner (rc 1, no output) was reported as a leaked identifier | **DEFECT (measured)** · ✅ FIXED 2026-09-26 | 1 incident: 15.5 h / 13.75 h CPU, one scanner process, triggered by a long `X4_TEST_SANDBOX` (a default sandbox path is ~62 characters, well under) | `TMP` renamed in `test-hooks.sh` + `smoke-basex.sh` and banned by a test; `scan-identifiers.py` refuses rc 2 above 260; a leak needs the scanner's `::error file=` line (`9d16f2d`, `5609a14`, `3a44aa6`) |
-| F141 | `_registry._active_filter` counts a REQUIRED dependency as satisfied by an enabled mod in ANY extensions root; the engine resolves a dependency only within its own root (a cross-root required dependency is refused in BOTH directions) | **DEFECT (measured)** · ✅ FIXED 2026-09-26 | 0 on this install (the profile `extensions\` is empty); any user with mods in two roots got a mod modelled as LOADED that the engine refuses | per-root dependency resolution and a game-root-first walk (`45aa07b`), from probe round 3; a later-pass mod beside another root is disclosed UNMEASURED |
+| F141 | `_registry._active_filter` counts a REQUIRED dependency as satisfied by an enabled mod in ANY extensions root; the engine resolves a dependency only within its own root (a cross-root required dependency is refused in BOTH directions) | **DEFECT (measured)** · ✅ FIXED 2026-09-26 | 0 on this install (the profile `extensions\` is empty); any user with mods in two roots got a mod modelled as LOADED that the engine refuses | per-root dependency resolution and a game-root-first walk (`a20e859`), from probe round 3; a later-pass mod beside another root is disclosed UNMEASURED. **ADDENDUM 2026-09-27:** that fix keyed isolation by root POSITION and applied it to the Workshop root too (never measured); now keyed by root KIND and limited to game<->profile (`c45a54d`). Still UNMEASURED and disclosed: the Workshop root, case-only dependency ids, a later-pass game-root mod vs profile-root mods, a nested patch on a later-loading mod |
+| F142 | `ask.py`'s guard against a query narrowing its own documents ENUMERATED narrowing shapes, so any unlisted rewrite still printed "NEGATIVE CONFIRMED" over the whole database; and `coverage.py` licensed a negative over an overlay catalog it could not read | **DEFECT (measured)** · ✅ FIXED 2026-09-26 | 11 of 12 release-reviewer rewrites (`[position() le 9]`, `subsequence()`, a `let` then a `where`, `collection#1(...)`, ...) certified a zero, rc 0; an unreadable catalog read `complete`, "NEGATIVE CONFIRMED over 10000 of 10000" | a TOKEN rule: any identity / position / node-order / module / indirect token anywhere in the query withholds the zero (rc 4, naming it); hits still stand (`692203f`). An unreadable catalog makes coverage `unexplained` and is named in `unreadable_catalogs` (`803ea90`) |
+| F143 | the store's removal table records each removed node at its path AT THE INSTANT of removal, after earlier removals shifted its siblings, and `cross_tool` compared those paths with x4compat's BASE-tree targets | **DEFECT (measured)** · ✅ FIXED 2026-09-26 | one mod's 5 ware removals on the real install: 3 of 5 records carry a shifted path, 2 of them naming base wares the mod never removed | `cross_tool` replays the removals in application order over a copy of the base tree (`39ff4a3`); HARD rows checked 32/32 -> 37/37. Not modelled: a mod INSERT mid-sibling-list; other consumers of `removed` not checked (OPEN lead) |
+| F144 | the installers' prune lists were a hand-kept copy of `.gitignore` and had drifted, so an install from a git checkout copied untracked derived files | **DEFECT (measured)** · ✅ FIXED 2026-09-27 (git sources) | 33 untracked files, 2.3 GB (BaseX databases, `_eff/`, coverage manifests, a `.pytest_cache`) reached the destination from one checkout | a checkout source copies `git ls-files`, filtered by the same lists (`c3f8e47`); derived BaseX paths are KEEP_LOCAL (never copied in, never deleted out). A non-git source still depends on the hand-kept lists |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -7462,7 +7465,7 @@ The 10%: the dialog's red is read as "the cross-root dependency is unresolved" b
 probe's only dependency loaded (x_a) or was listed error-free (x_d); the dialog's own reason
 text for those two rows was not captured.
 
-**FIXED 2026-09-26 (`45aa07b`), from probe round 3.** Each cross-root probe carried a patch
+**FIXED 2026-09-26 (`a20e859`), from probe round 3.** Each cross-root probe carried a patch
 that can never match, so the engine logged it iff applied: apply order game a, game c,
 profile b, profile d -- profile-root mods APPLY, after every game-root mod; the chain's one
 miss was the game-root mod reading a profile-root attribute. `scan_installed` records
@@ -7474,6 +7477,145 @@ UNMEASURED and DISCLOSED in `dropped`: where a game-root mod that waits a pass f
 to profile-root mods (round 3's probes all loaded in pass one). Real install unchanged (one
 root; order hash identical); oracle on the round-3 launch log: 0 of 4,634 pairs inverted.
 
-**RE-DERIVED BY:** `tests/test_extension_roots.py` (10 tests; each of the four clauses mutated
-separately is killed) and `tests/test_load_order_probe.py`
-(`test_round2_probes_exist_with_their_roots`, `test_every_chain_probe_carries_a_proof_op`).
+**ADDENDUM 2026-09-27 (v3.3.0 release review) -- the fix over-reached.** `a20e859` keyed the
+isolation by root POSITION and applied it to EVERY root, the Steam Workshop root included,
+though only game<->profile was measured: a game-root mod requiring a Workshop mod was dropped
+as "NOT LOADED by the engine", stated as fact, and an optional edge to a Workshop mod was
+silently cut from the order. And a dependency id differing only in CASE dropped the mod, a
+behaviour nobody observed. FIXED in `c45a54d`: `scan_installed` records `root_kind`
+(game/profile/workshop by comparison with the configured roots, anything else `custom`); a
+dependency is refused, and an edge cut, ONLY between the game and profile roots
+(`_loadorder.crosses_isolated_roots`); Workshop and custom roots keep the pre-F141 pooled
+model and are disclosed as UNMEASURED (`_registry._root_notes`); a case-only id match is
+SATISFIED with a note. The records ride on `ModList.notes` and reach every caller that orders
+the set (`c45c46c`). Still UNMEASURED, each disclosed where it applies: anything about the
+Workshop root; whether the engine compares dependency ids case-sensitively; where a game-root
+mod that waits a pass falls relative to profile-root mods; what the engine does with a nested
+patch on an active mod that loads LATER (Tier B now WARNs instead of a path ERROR, `17e8346`).
+
+**RE-DERIVED BY:** `tests/test_extension_roots.py` (each of the four original clauses mutated
+separately is killed; the Workshop and case rules by
+`test_a_required_dependency_on_a_WORKSHOP_mod_resolves`,
+`test_a_WORKSHOP_mod_requiring_a_game_or_profile_mod_resolves`,
+`test_an_optional_edge_to_a_WORKSHOP_mod_still_orders`,
+`test_the_rule_follows_the_KIND_not_the_position`,
+`test_a_case_only_dependency_mismatch_is_SATISFIED_and_noted`,
+`test_a_case_only_match_across_game_and_profile_is_still_refused`),
+`tests/test_load_order_notes_reach_users.py`, `tests/test_tierb_nested_later_target.py`
+(`test_a_nested_patch_on_a_LATER_loading_active_mod_is_a_WARN_naming_it` and its twins) and
+`tests/test_load_order_probe.py` (`test_round2_probes_exist_with_their_roots`,
+`test_every_chain_probe_carries_a_proof_op`).
+
+
+## F142 — a zero certified by a blocklist of narrowing SHAPES, and a negative licensed over an unreadable catalog · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-09-26
+
+**Found 2026-09-26 by the v3.3.0 release review.** `tools/basex/ask.py` prints "NEGATIVE
+CONFIRMED over N of M documents" only when the query addressed every document it scores the
+zero against. The 2026-09-25/26 fixes (`d1d92b3`, `bafce2d`) refused a scope narrowed outside
+the call's arguments by listing the SHAPES of narrowing it had seen: a predicate, a `where`
+or a comparison on `document-uri`/`base-uri`/`db:path`. The reviewer walked **11 of 12**
+rewrites past that list -- `[position() le 9]`, `subsequence()`, a `let` then a `where` on
+the variable, an arrow into `contains()`, `tokenize(...)[3]`, `switch`, a `filter()`
+callback, `db:node-pre`, `collection#1(...)`, `string-length(...) < 30` -- and each printed
+NEGATIVE CONFIRMED over the whole database, rc 0. A list of shapes cannot converge: every way
+of USING a value is a new shape.
+
+**Fix (`692203f`).** The rule is about TOKENS. The query, with comments removed and string
+literal contents blanked in one lexing pass, is searched anywhere for a token that can select
+documents by where they are rather than what they contain: identity (`document-uri`,
+`base-uri`, `path`, `node-pre`, `node-id`, `generate-id`), position (`position`, `last`,
+`subsequence`, `head`/`tail`, the XQuery 4 callbacks, numeric predicates such as `[1]`, FLWOR
+`at`/`count`/`window`), node order (`<<`, `>>`, `is`), the `util:`/`hof:`/`array:`/`map:`/
+`random:` modules, and indirect routes (`#` function references, `Q{...}` EQNames, string
+evaluation). If one is present the query still RUNS and its hits stand; only a zero is
+withheld (rc 4, naming the token). Selecting by content is unaffected. The old pre-run
+refusal is gone, so `$d => document-uri()` runs and reports its hits.
+
+**Residual limits, stated in `ask.py`.** A quote in a direct element constructor's TEXT
+content can desynchronise the string blanking; a user-defined function in a prolog is not
+followed (a prolog already makes the count wrapper fail, and that zero is refused on its
+own); and the rule over-withholds on purpose -- `//ware[1]` loses its certificate, because a
+text scan cannot tell a positional predicate on documents from one on elements.
+
+**The same review found F35's shape in `coverage.py` (`803ea90`).** `_modfiles.overlay_vpaths`
+records an overlay whose packed catalog cannot be read as ONE failure, and
+`coverage_effective` counted it as one "vpath with no effective tree" -- a disclosed absence
+that still licenses a negative. MEASURED by the reviewer: status `complete`,
+`supports_negative_claim` true, "NEGATIVE CONFIRMED over 10000 of 10000 documents", while
+every packed member of that catalog was never enumerated. Now coverage is `unexplained`,
+`coverage-x4eff.json` names the catalog in `unreadable_catalogs`, and `ask.py`'s refusal
+names it.
+
+The 10%: the token set is a closed list too, of NAMES rather than shapes; a document-selecting
+route that spells none of them (a new BaseX module, say) would be certified. The indirect
+class (`#`, `Q{`, evaluation) closes the known ways of spelling a listed name differently.
+
+**RE-DERIVED BY:** `tools/basex/test_ask.py` --
+`test_a_ZERO_from_a_query_that_can_narrow_by_address_is_NOT_certified`,
+`test_the_uncertified_zero_NAMES_the_token_it_saw`,
+`test_TWIN_a_whole_database_content_query_is_still_certified`,
+`test_TWIN_the_same_queries_RUN_and_their_hits_are_reported`,
+`test_an_unreadable_CATALOG_is_named_in_the_refusal`; `tools/basex/test_coverage.py` --
+`test_an_UNREADABLE_CATALOG_does_not_support_a_negative` and its two twins;
+`tests/test_audit0924_gates.py` --
+`test_bx1_a_zero_from_a_query_that_can_narrow_its_documents_is_not_a_negative`.
+
+
+## F143 — the removal table records a node's path at the instant it was removed, not its base-tree position · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-09-26
+
+**Found 2026-09-26 by the v3.3.0 release review (gates lane).** The effective store's
+removal records (`removed.node_path`) carry the path the node had AT THE INSTANT of removal
+(`_merge._path_of`), after every earlier removal had already shifted its later siblings.
+x4compat's targets are positions in the UNMODIFIED base tree. `gates/cross_tool.py` bucketed
+an `ENTITY_REMOVED` HARD row (the entity is in the base tree, gone from the store) as
+explained and never checked compat's winner against who removed it; matching it by exact
+path would blame the wrong node. MEASURED on the real install: one mod's five ware removals
+were recorded as `ware[1703]`, `[1704]`, `[1695]`, `[1696]`, `[1697]` for base wares 1703,
+1705, 1695, 1697 and 1699 -- **3 of 5 records carry a shifted path; two of them (1704, 1696)
+name base wares the mod never removed, and two removed wares (1705, 1699) sit at no recorded
+path.**
+
+**Fix (`39ff4a3`).** `_replayed_removers` replays the records in application order over a
+copy of the base tree (DLC-sourced records skipped, the tree already has them) and turns
+each instant path back into a base node; the `removed_by` branch uses the same replay,
+falling back to the exact lookup only when the target does not resolve in the base tree.
+Real install: HARD rows checked 32/32 -> 37/37, the 5 formerly-bucketed rows all agreeing,
+0 failures.
+
+**Not modelled:** a mod INSERTING into the middle of a sibling list is not in the removal
+table, so a later removal among those siblings is replayed without that shift. **OPEN
+lead:** other consumers of `removed` (x4effective's provenance, the other gates) were not
+checked for the same exact-path assumption. The 10% is that lead.
+
+**RE-DERIVED BY:** `tests/test_cross_tool_semantics.py` --
+`test_an_ENTITY_REMOVED_row_whose_owner_did_not_remove_it_is_a_FAILURE`,
+`test_an_ENTITY_REMOVED_row_agrees_through_SHIFTED_removal_paths`,
+`test_a_removal_at_the_SAME_instant_path_but_a_different_base_node_does_not_agree`,
+`test_the_replay_skips_DLC_removals_already_in_the_base_tree`.
+
+
+## F144 — the installers' prune lists were a hand-kept copy of `.gitignore`, and drifted · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-09-27 (git sources)
+
+**Found 2026-09-26 by the v3.3.0 release review (scripts lane).** `install.sh` and
+`install.ps1` walked the source folder and skipped what their prune lists named. Those lists
+restated `.gitignore` by hand and had drifted from it: an install from a git checkout copied
+**33 untracked files, 2.3 GB** -- the BaseX databases (`tools/basex/basex/data`), `_eff/`,
+`stage-manifest.json`, the coverage manifests and a `.pytest_cache`. A release zip holds only
+tracked files, so a zip install was unaffected.
+
+**Fix (`c3f8e47`).** When the source is a git work tree, both installers copy `git ls-files`,
+filtered through the same prune and keep-local lists, under two clauses each with its own
+falsification twin: the source is the TOP of its work tree, and the tracked set covers every
+copy item present on disk. Otherwise the disk walk runs as before, with a note saying why
+when the source is a checkout. The derived BaseX paths are in KEEP_LOCAL (never copied in,
+never deleted out) -- not the prune list, whose second meaning is a delete in the
+destination and would erase a user's built databases on every upgrade.
+
+**Still open:** a NON-git source (an unpacked folder that is not a zip and not a checkout)
+still depends on the hand-kept lists. The 5%: that path.
+
+**RE-DERIVED BY:** `tests/test_install_over_existing.py` --
+`test_a_GIT_CHECKOUT_source_copies_only_its_TRACKED_files`,
+`test_a_PLAIN_FOLDER_source_still_copies_what_is_on_disk_minus_the_derived_paths`,
+`test_TWIN_a_source_that_is_not_the_TOP_of_a_populated_work_tree_keeps_the_walk`,
+`test_the_DESTINATIONS_own_BaseX_databases_survive_an_upgrade`.
