@@ -1575,3 +1575,17 @@ def test_an_INTERRUPTED_wait_after_sending_says_the_write_MAY_HAVE_LANDED(monkey
     with pytest.raises(KeyboardInterrupt):
         C.main(["pause"])
     assert "may already have" in capsys.readouterr().err.lower()
+
+
+# --- finding 9: the "foreground only" claim was superseded by measurement -------------
+
+def test_with_ramp_help_no_longer_claims_the_game_runs_ONLY_in_the_foreground(capsys):
+    """README (2026-08-30/09-20, MEASURED): unfocused/alt-tabbed-away costs nothing --
+    only MINIMIZING the window stops the engine. `--with-ramp`'s own help still said
+    "the game executes only in the foreground", which is the superseded claim."""
+    with pytest.raises(SystemExit) as exc:
+        C.main(["groundtruth", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "only in the foreground" not in out, out
+    assert "MINIMIZ" in out.upper(), out

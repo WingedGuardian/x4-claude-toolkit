@@ -816,9 +816,18 @@ def _order_misses(vpath: str, ordered: list[str],
     means M's own content supplies it; otherwise the first later position j at which
     it matches names the adder, ordered[j]. Never matching = a dead selector, the
     validator's finding, not this one. A pass that fails its self-check, or a nested
-    (mod-owned) vpath, is answered by the rebuild form instead. Stated limit: ops dead
-    in the FINISHED tree are dropped first, so a node a later mod adds and a
-    still-later one removes again is filtered as dead rather than named.
+    (mod-owned) vpath, is answered by the rebuild form instead.
+
+    Every pending op rides the SAME incremental pass (`_walk_positions` visits every
+    position regardless of how many ops are still live), so there is no tree-building
+    cost to save by filtering ops out beforehand -- only a handful of extra XPath
+    evaluations against trees already built. A prior version filtered pending ops
+    against the FINISHED tree first as exactly that (unmeasured) optimisation, which
+    made a node a later mod adds and a still-later one removes again read as a dead
+    selector and drop silently -- it matched for real, briefly, between the add and
+    the remove, and the engine sees that too. MEASURED (150 mods, one third of them
+    carrying a genuinely dead selector): dropping the pre-filter cost no observable
+    time (a difference smaller than run-to-run noise).
     """
     pending: list[tuple[int, etree._Element]] = []
     for folder, ops in unmatched.items():
@@ -836,11 +845,8 @@ def _order_misses(vpath: str, ordered: list[str],
         return _order_misses_rebuild(vpath, ordered, unmatched, folder_to_path,
                                      config, only)
     cache: dict = {}
-    state = {"live": [(i, op) for i, op in pending
-                      if _xp_hit(want, op.get("sel", ""), cache)]}
+    state = {"live": list(pending)}
     out: list[OrderMiss] = []
-    if not state["live"]:
-        return out     # every pending op is dead: no claim to make, no pass to check
 
     def visit(pos, tree, applied):
         live = state["live"]
@@ -887,6 +893,16 @@ def _order_misses_rebuild(vpath: str, ordered: list[str],
     The SLOW form, kept as the fallback for a nested (mod-owned) vpath and for a file
     whose incremental pass fails its self-check: on this install it cost ~64 s per
     full run where `analyze()` alone is ~11 s.
+
+    DISCLOSED, unlike `_order_misses`'s twin gap (finding 3): the initial "one tree
+    of every mod" filter here still reads a node a later mod adds and a still-later
+    one removes again as a dead selector, and this form's bisection assumes a
+    selector's match state is MONOTONIC in the later mods (never fixed to true,
+    never true again) -- exactly what a later removal breaks. Rebinding it to a
+    linear scan is a materially different, riskier change to a path only reached on
+    a self-check failure or a nested vpath; out of scope here. Proven, not merely
+    asserted: `test_the_rebuild_FALLBACK_still_shares_the_masking_limit` in
+    test_compat.py forces this path and pins the gap.
     """
     owned = set(config.overlays)
 
@@ -1306,14 +1322,20 @@ def ext_dir_only_note(ext_dir: Path | None) -> str:
 def _resolve_candidate(arg: str, ext_dir: Path | None) -> Path:
     """Which copy of the candidate `check <arg>` means (AUDIT-2026-09-24 AN-1).
 
-    An EXISTING path is that copy, even when a same-named mod sits in the extensions
-    dir -- that is the "check this staged update" case. Otherwise a BARE name (no
-    path separator) is looked up among the extensions dir's mod folders, so
-    `check some_mod` means the copy the game has. Anything else is returned as given
-    and refused by `_input.require_mod_dir` as a path that does not exist.
+    An argument containing a path separator, an absolute path, or one starting with
+    "." is a PATH and means exactly that copy, even when a same-named mod sits in
+    the extensions dir -- that is the "check this staged update" case. A BARE name
+    (none of the above) ALWAYS means the copy in the extensions dir, looked up among
+    its mod folders, so `check some_mod` means the copy the game has -- even when a
+    same-named directory happens to exist relative to the current working directory.
+    Formerly a bare name was tested with `p.exists()` FIRST, so running from inside a
+    directory that itself held a same-named copy silently resolved to THAT copy
+    instead, contradicting this exact promise (AN-1). Anything that resolves to
+    neither is returned as given and refused by `_input.require_mod_dir` as a path
+    that does not exist.
     """
     p = Path(arg)
-    if p.exists() or "/" in arg or "\\" in arg or p.is_absolute():
+    if "/" in arg or "\\" in arg or arg.startswith(".") or p.is_absolute():
         return p
     # "installed", not "active": naming a disabled mod is the "what if I switch it
     # on" question, and analyze() adds the candidate to the active set itself.
@@ -1387,6 +1409,11 @@ def main(argv: list[str] | None = None) -> int:
             "skipped": [dataclasses.asdict(s) for s in report.skipped],
             "order_misses": [dataclasses.asdict(m) for m in report.order_misses],
             "removed_first": [dataclasses.asdict(m) for m in report.removed_first],
+            # NOT CHECKED (the text render's own section, above): an op whose sel=
+            # could not be evaluated contributed no target and cannot participate in
+            # collision detection -- omitting it here made a JSON consumer read
+            # "clean" when the run had silently checked less than it claims.
+            "unresolvable": report.unresolvable,
             "candidate_path": report.candidate_path,
             "excluded_copies": report.excluded_copies,
             "scope_note": report.scope_note,

@@ -1459,10 +1459,14 @@ def cmd_ramp(pipe: str | None, timeout: float, out=None) -> int:
 def _ramp_over(lp, out) -> int:
     """The ramp itself, against an ALREADY-OPEN pipe.
 
-    Split out so `groundtruth --with-ramp` can run it inside its own connection: the game
-    executes only in the foreground, so one connection is one alt-tab. (It was once
-    believed the lua client does not reconnect; MEASURED since, it does -- see the note
-    in `cmd_groundtruth`.) One implementation, two callers.
+    Split out so `groundtruth --with-ramp` can run it inside its own connection:
+    sharing one connection means the user only has to leave the game's window as it
+    is ONCE for both, rather than once per call -- merely unfocused/alt-tabbed-away
+    costs nothing (MEASURED 2026-08-30: a 1.00 ratio of engine time, focused vs
+    unfocused), only MINIMIZING the window stops the engine (MEASURED 2026-09-20;
+    see README, "Do not MINIMIZE the game"). (It was once believed the lua client
+    does not reconnect; MEASURED since, it does -- see the note in
+    `cmd_groundtruth`.) One implementation, two callers.
     """
     from . import _livepipe
 
@@ -1847,9 +1851,11 @@ def cmd_groundtruth(pipe: str | None, timeout: float, out_file: str | None = Non
         # 24s apart, each opening its own pipe, both 22,733 bytes.
         #
         # So the single-connection shape below is no longer REQUIRED. It is kept
-        # because it is still the right shape for a different reason: the game only
-        # executes while it is in the foreground, so one connection means the user
-        # alt-tabs ONCE per harvest instead of once per query.
+        # because it is still the right shape for a different reason: sharing one
+        # connection means the user only has to leave the game's window as it is
+        # ONCE per harvest instead of once per query -- merely unfocused/alt-tabbed-
+        # away costs nothing (MEASURED), only MINIMIZING the window stops the
+        # engine (see README, "Do not MINIMIZE the game").
         if with_ramp:
             _ramp_over(lp, out)
             print("", file=out)
@@ -2638,8 +2644,9 @@ def main(argv: list[str] | None = None) -> int:
                          "check `x4live query probe` first")
     pg.add_argument("--with-ramp", action="store_true",
                     help="run the size ramp FIRST, in the SAME connection, so the user "
-                         "alt-tabs to the game once for both (the game executes only in "
-                         "the foreground)")
+                         "only has to leave the game's window as it is once for both "
+                         "(merely unfocused/alt-tabbed-away is fine -- only MINIMIZING "
+                         "the window stops the engine, MEASURED)")
 
     pm = sub.add_parser("ramp",
                         help="MEASURE the message-size cap. An over-long message does "

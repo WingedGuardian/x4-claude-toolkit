@@ -346,6 +346,29 @@ def test_cli_exits_3_when_degraded_without_hard_collisions(tmp_path, capsys):
     assert "DEGRADED" in out
 
 
+def test_json_output_includes_unresolvable_ops(tmp_path, capsys):
+    """Finding 6: a malformed sel= makes a mod's op contribute NOTHING to collision
+    detection (`unresolvable`, the text render's own NOT CHECKED disclosure). The
+    --json payload must carry the same fact, not report a clean-looking run that
+    silently checked less than it claims."""
+    import json
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    # A file only ONE mod touches is never examined at all (nothing to collide
+    # with), so a second, ordinary mod on the same file is needed to reach the
+    # sel-resolution pass that records `unresolvable`.
+    _mod(ext, "a_bad", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=">bad</replace></diff>'})
+    _mod(ext, "z_other", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ice\']/price/@average">7</replace></diff>'})
+    code = _compat.main(["check", "--ext-dir", str(ext),
+                         "--reference", str(cfg.reference), "--json"])
+    assert code in (0, 1, 3), code
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["unresolvable"], payload
+    assert any("a_bad" in u for u in payload["unresolvable"]), payload["unresolvable"]
+
+
 # --------------------------------------------------------------------------
 # F12 (2026-08-02): registry uniqueness is per-DOCUMENT, and identity is @id.
 # Both engine-confirmed duplicates (WareDB shield_xen_xl_standard_02_mk1,
@@ -762,6 +785,62 @@ def test_a_patch_on_a_node_its_OWN_mod_adds_is_not_a_miss(tmp_path):
     assert _compat.analyze(ext, config=cfg).order_misses == []
 
 
+_REMOVES_ZWARE = '<diff><remove sel="//ware[@id=\'zware\']"/></diff>'
+
+
+def test_an_added_then_REMOVED_node_still_names_the_order_miss(tmp_path):
+    """Finding 3: `_order_misses` filtered pending ops against the FINISHED tree
+    first. A node a later mod adds and a still-later one removes again is absent
+    from that finished tree, so the op read as a dead selector and the order miss
+    was dropped silently -- even though the op matched for real, briefly, between
+    the add and the remove, exactly as the engine would apply it. Load order is
+    forced with dependencies -- the engine-measured order is not alphabetical."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_patcher", {"libraries/wares.xml": _PATCHES_ZWARE})
+    _mod(ext, "z_adder", {"libraries/wares.xml": _ADDS_ZWARE}, deps=["a_patcher"])
+    _mod(ext, "zz_remover", {"libraries/wares.xml": _REMOVES_ZWARE}, deps=["z_adder"])
+    rep = _compat.analyze(ext, config=cfg)
+    assert rep.load_order == ["a_patcher", "z_adder", "zz_remover"], rep.load_order
+    assert [(m.mod, m.added_by) for m in rep.order_misses] == [("a_patcher", "z_adder")], \
+        rep.order_misses
+
+
+def test_the_rebuild_FALLBACK_still_shares_the_masking_limit(tmp_path, monkeypatch):
+    """Disclosed, not fixed: `_order_misses_rebuild`'s own initial filter (one tree
+    of every mod, i.e. the finished tree) has the identical shape and was not
+    touched by finding 3's fix, which is scoped to the fast pass only -- rebinding
+    the bisection to a non-monotonic predicate (a match can go away again) is a
+    materially different, riskier change to a fallback path this finding did not
+    name. Forced onto the fallback the same way
+    test_a_drifted_incremental_pass_falls_back_to_the_rebuild does, so this is a
+    PROVEN gap, not an assumed one."""
+    import types
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_patcher", {"libraries/wares.xml": _PATCHES_ZWARE})
+    _mod(ext, "z_adder", {"libraries/wares.xml": _ADDS_ZWARE}, deps=["a_patcher"])
+    # An unrelated edit so the drifted (no-op apply_overlay) tree and the real
+    # merged tree diverge regardless of zware's fate -- in THIS fixture alone,
+    # zware ends up absent both when never added (drifted) and when added then
+    # removed (real), which would make the self-check pass by coincidence.
+    _mod(ext, "y_other", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ice\']/price/@average">42</replace></diff>'},
+         deps=["z_adder"])
+    _mod(ext, "zz_remover", {"libraries/wares.xml": _REMOVES_ZWARE}, deps=["y_other"])
+    used = []
+    real_rebuild = _compat._order_misses_rebuild
+    monkeypatch.setattr(_compat, "_order_misses_rebuild",
+                        lambda *a, **k: used.append(1) or real_rebuild(*a, **k))
+    drifted = types.SimpleNamespace(**{k: getattr(_merge, k) for k in dir(_merge)
+                                       if not k.startswith("__")})
+    drifted.apply_overlay = lambda tree, *a, **k: (tree, "diff")
+    monkeypatch.setattr(_compat, "_merge", drifted)
+    rep = _compat.analyze(ext, config=cfg)
+    assert used, "the drifted pass was trusted: the self-check never fired"
+    assert rep.order_misses == [], rep.order_misses  # the fallback's known, disclosed gap
+
+
 def test_the_adder_is_NAMED_among_several_later_mods(tmp_path):
     """Exercises the bisection: the adder is neither the first nor the last later mod,
     and the others on the file touch something else."""
@@ -881,3 +960,38 @@ def test_a_GUARDED_order_miss_is_marked_as_intentional(tmp_path):
     assert got == [("@average", True), ("@id", True), ("@min", False)], got
     out = _compat.render(rep)
     assert out.count("guarded") >= 2, out
+
+
+# --- _resolve_candidate: a bare NAME always means the installed copy (finding 2) ------
+
+def test_bare_name_resolves_to_the_INSTALLED_copy_even_when_cwd_has_a_same_named_dir(
+        tmp_path, monkeypatch):
+    """AN-1's own docstring promises 'a bare NAME means the copy in the extensions
+    dir'. p.exists() used to be tried BEFORE that lookup, so a bare name that also
+    happened to exist relative to cwd silently resolved to that OTHER copy instead."""
+    ext = tmp_path / "extensions"
+    _mod(ext, "m_cand", {"libraries/wares.xml": "<diff/>"})
+    staging = tmp_path / "staging"
+    _mod(staging, "m_cand", {"libraries/wares.xml": "<diff/>"})
+    monkeypatch.chdir(staging)
+    resolved = _compat._resolve_candidate("m_cand", ext)
+    assert resolved.resolve() == (ext / "m_cand").resolve(), resolved
+
+
+def test_an_explicit_relative_path_STILL_wins_over_the_installed_copy(tmp_path, monkeypatch):
+    """Twin: naming the staged copy explicitly (a real path, not a bare name) must
+    still mean that copy -- the fix must not make every candidate mean 'installed'."""
+    ext = tmp_path / "extensions"
+    _mod(ext, "m_cand", {"libraries/wares.xml": "<diff/>"})
+    staging = tmp_path / "staging"
+    _mod(staging, "m_cand", {"libraries/wares.xml": "<diff/>"})
+    monkeypatch.chdir(staging)
+    resolved = _compat._resolve_candidate("./m_cand", ext)
+    assert resolved.resolve() == (staging / "m_cand").resolve(), resolved
+
+
+def test_bare_name_lookup_is_still_case_insensitive(tmp_path):
+    ext = tmp_path / "extensions"
+    _mod(ext, "m_cand", {"libraries/wares.xml": "<diff/>"})
+    resolved = _compat._resolve_candidate("M_CAND", ext)
+    assert resolved.resolve() == (ext / "m_cand").resolve(), resolved

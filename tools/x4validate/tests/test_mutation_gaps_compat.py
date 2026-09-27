@@ -98,12 +98,18 @@ def test_a_remove_of_a_node_an_EARLIER_mod_added_is_not_an_order_miss(tmp_path):
     assert rep.order_misses == []
 
 
-def test_an_op_dead_in_the_FINISHED_tree_is_not_named_as_an_order_miss(tmp_path):
-    """CA16: the fast pass's stated limit, shared with the rebuild form -- a node a
-    later mod adds and a still-later mod removes again is filtered as dead, so both
-    forms give one answer."""
+def test_an_op_dead_in_the_FINISHED_tree_is_STILL_named_via_the_fast_pass(tmp_path):
+    """CA16, corrected (finding 3, AUDIT release-review v3.3.0): a node a later mod
+    adds and a still-later mod removes again used to be filtered as dead by the fast
+    pass's finished-tree pre-filter. That pre-filter saved no measurable time (the
+    incremental walk visits every position regardless of how many ops are still
+    live) and cost exactly this false negative, so it is gone -- the op matched for
+    real, briefly, between the add and the remove, and is now named. The rebuild
+    FALLBACK still shares the old limit (a materially different, riskier fix, out
+    of this finding's scope) -- see
+    test_the_rebuild_FALLBACK_still_shares_the_masking_limit in test_compat.py."""
     rep = _world(tmp_path, [("a_patch", _PATCH_Z), ("b_add", _ADD_Z), ("c_rm", _RM_Z)])
-    assert rep.order_misses == []
+    assert [(m.mod, m.added_by) for m in rep.order_misses] == [("a_patch", "b_add")]
 
 
 # --- lane K (2026-09-26): C5 / C8 / C9 -------------------------------------------------

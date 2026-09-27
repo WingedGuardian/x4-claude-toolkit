@@ -236,8 +236,9 @@ options:
                      weapons, storagetags) render two levels deep instead of `<table>`. The
                      running helper must be a build that knows the flag: check `x4live query
                      probe` first
-  --with-ramp        run the size ramp FIRST, in the SAME connection, so the user alt-tabs to the
-                     game once for both (the game executes only in the foreground)
+  --with-ramp        run the size ramp FIRST, in the SAME connection, so the user only has to
+                     leave the game's window as it is once for both (merely unfocused/alt-tabbed-
+                     away is fine -- only MINIMIZING the window stops the engine, MEASURED)
 ```
 
 ## `x4live ramp`

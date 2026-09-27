@@ -578,6 +578,14 @@ def _refresh_rows(mods, args, today, checked: set[str]) -> tuple:
                 nid, state = _resolve_identity(m["id"], a)
             except _nexus.NexusFatal as exc:
                 return exc, resolved, fetched, errors, skipped
+            except _nexus.SteamUnavailable as exc:
+                # A transport failure is not a fact about this mod: overwriting
+                # id_state/resolve with "unmatched" would read as a real identity
+                # verdict. Leave the existing row exactly as it was, just report the
+                # outage (and count it, so it is not indistinguishable from "clean").
+                a["error"] = str(exc)
+                errors += 1
+                continue
             a["id_state"] = state
             if nid:
                 a["nexus_id"] = nid
@@ -866,7 +874,15 @@ def cmd_tracked(args) -> int:
     endpoint returned 1,616 rows across 9 games for 413 x4foundations ones, so a
     bare "413 tracked" would hide three quarters of the payload.
     """
-    t = _nexus.fetch_tracked(args.domain)
+    try:
+        t = _nexus.fetch_tracked(args.domain)
+    except _nexus.NexusError as exc:
+        # Uncaught, this crashed the whole command on any Nexus outage or auth
+        # failure. `str(exc)` never carries the key itself (only "check
+        # X4_NEXUS_KEY", the env var NAME) -- same guarantee every other Nexus
+        # catch in this module relies on.
+        print(f"x4modlist: could not fetch the tracked list ({exc})", file=sys.stderr)
+        return 2
     # The parts must SUM TO THE DENOMINATOR, and they did not: `others` was
     # `total - kept`, but `kept` counts UNIQUE IDS while `total` counts ROWS, so
     # every duplicate row of THIS domain was reported as belonging to another

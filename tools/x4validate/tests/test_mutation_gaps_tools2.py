@@ -198,6 +198,14 @@ def test_a_FAILED_op_does_not_count_its_target_as_touched(tmp_path):
 def _store(tmp_path, monkeypatch):
     import test_effective as te
     ref, exts = te._world(tmp_path)
+    # aaa_thrust owns a SECOND value too (not just thrust.forward), so a --limit
+    # smaller than its total can actually truncate it (finding 4's twin: --limit 0
+    # now means unlimited, so truncation must be tested with a real positive limit).
+    (exts / "aaa_thrust" / "assets" / "props" / "engines" / "macros"
+     / "engine_arg_s_01_macro.xml").write_bytes(
+        b'<diff><replace sel="//macro[@name=\'engine_arg_s_01_macro\']/properties/thrust/@forward">'
+        b'250</replace><replace sel="//macro[@name=\'engine_arg_s_01_macro\']/properties/thrust/@reverse">'
+        b'77</replace></diff>')
     z = exts / "ccc_z" / "assets" / "props" / "engines" / "macros"
     z.mkdir(parents=True)
     (z / "zzz_last_macro.xml").write_bytes(
@@ -222,12 +230,15 @@ def test_attr_sort_num_orders_by_value(tmp_path, monkeypatch, capsys):
 
 
 def test_diff_mod_count_line_states_the_TOTAL_not_the_shown_rows(tmp_path, monkeypatch, capsys):
-    """EC4: under --limit the headline must still carry the real total."""
+    """EC4: under --limit the headline must still carry the real total. (--limit 0
+    is exercised separately in test_effective.py: finding 4 made it mean unlimited,
+    not zero rows, so a real truncation here needs a positive limit under the
+    total.)"""
     db = _store(tmp_path, monkeypatch)
     capsys.readouterr()
-    assert _effectivecli.main(["--db", str(db), "diff-mod", "aaa_thrust", "--limit", "0"]) == 0
+    assert _effectivecli.main(["--db", str(db), "diff-mod", "aaa_thrust", "--limit", "1"]) == 0
     out = capsys.readouterr().out
-    assert _effective._count_line(0, 1, "value(s) won by aaa_thrust") in out
+    assert _effective._count_line(1, 2, "value(s) won by aaa_thrust") in out
 
 
 def test_diff_mod_refuses_a_name_that_is_no_stored_origin(tmp_path, monkeypatch, capsys):

@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import types
+import urllib.error
 from datetime import date, datetime, timezone
 
 import pytest
@@ -150,6 +151,64 @@ def test_refresh_records_and_prints_the_update_with_both_dates(tmp_path, monkeyp
     assert "UPDATE  cool_mod" in out and "2026-06-01" in out and "2026-07-01" in out, out
     dash = (tmp_path / "WORKLIST.md").read_text(encoding="utf-8")
     assert "UPDATE AVAILABLE  (1)" in dash and "2026-06-01" in dash, dash
+
+
+# --- a Steam outage must never overwrite an existing identity verdict (finding 1) ------
+
+def test_a_steam_outage_leaves_the_existing_id_state_UNCHANGED_and_is_counted(
+        tmp_path, monkeypatch):
+    """Reviewer probe: a ws_ row that already carries a real 'ambiguous' verdict must
+    not come out of a refresh reading 'unmatched' just because Steam timed out --
+    that silently discards a stronger answer for a weaker one and says nothing."""
+    monkeypatch.setenv("X4_NEXUS_KEY", "test-key-not-real")
+
+    def urlopen(req, timeout=None):
+        raise urllib.error.URLError("steam down")
+    monkeypatch.setattr(_nexus.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(_modlist, "_search_with_fallback", lambda hint: (_ for _ in ()).throw(
+        AssertionError("must not search while the Steam title is unknown due to an outage")))
+
+    regp = tmp_path / "r.yaml"
+    reg = _registry._new_registry()
+    e = _registry._new_entry("ws_3691358137", True)
+    e["auto"].update(installed=True, id_state="ambiguous",
+                     resolve="ambiguous (2 strong matches)")
+    reg["mods"].append(e)
+    _registry.save_registry(reg, regp)
+
+    rc = _modlist.cmd_refresh(types.SimpleNamespace(
+        registry=str(regp), ids=None, seeded=False, limit=None, force=True, no_resolve=False))
+    assert rc == 0
+    a = _registry.load_registry(regp)["mods"][0]["auto"]
+    assert a["id_state"] == "ambiguous", a          # unchanged, not "unmatched"
+    assert a["resolve"] == "ambiguous (2 strong matches)", a
+    assert "error" in a and "unreachable" in a["error"].lower(), a
+
+
+def test_a_real_steam_404_STILL_records_unmatched(tmp_path, monkeypatch):
+    """Twin: Steam answering with a real 'no title' result is unaffected -- only the
+    transport-failure path must be silent about identity."""
+    monkeypatch.setenv("X4_NEXUS_KEY", "test-key-not-real")
+
+    def urlopen(req, timeout=None):
+        return _Resp(json.dumps({"response": {"publishedfiledetails": [{"result": 9}]}}
+                                ).encode())
+    monkeypatch.setattr(_nexus.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(_modlist, "_search_with_fallback", lambda hint: [])
+
+    regp = tmp_path / "r.yaml"
+    reg = _registry._new_registry()
+    e = _registry._new_entry("ws_3691358137", True)
+    e["auto"].update(installed=True, id_state="ambiguous",
+                     resolve="ambiguous (2 strong matches)")
+    reg["mods"].append(e)
+    _registry.save_registry(reg, regp)
+
+    rc = _modlist.cmd_refresh(types.SimpleNamespace(
+        registry=str(regp), ids=None, seeded=False, limit=None, force=True, no_resolve=False))
+    assert rc == 0
+    a = _registry.load_registry(regp)["mods"][0]["auto"]
+    assert a["id_state"] == "unmatched", a
 
 
 def _one_pinned_row(tmp_path, installed_date="2026-06-01"):

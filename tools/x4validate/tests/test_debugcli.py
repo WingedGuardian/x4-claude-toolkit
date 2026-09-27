@@ -156,6 +156,7 @@ class _F:
 class _R:
     def __init__(self, findings):
         self.findings = findings
+        self.degraded = []
 
 
 def test_predicted_ops_reads_BOTH_cardinality_shapes():
@@ -469,3 +470,43 @@ def test_op_key_matches_the_engines_extensionless_path_to_the_validators_file():
     sel = "//ware[@id='a']"
     assert _debugcli.op_key("Libraries\\Wares", sel) == _debugcli.op_key("libraries/wares.xml", sel)
     assert _debugcli.op_key("libraries/jobs.xml", sel) != _debugcli.op_key("libraries/wares", sel)
+
+
+# --- finding 5: crosscheck must refuse on an UNREADABLE log, not read it as clean ------
+#
+# ParsedLog's own contract (_debuglog.py): "Consumers must refuse on it." triage()
+# already does (test_a_missing_log_is_a_NON_ANSWER_not_a_clean_one, above); crosscheck
+# read `parsed` straight into `observed_ops` without ever checking `.unreadable`, so an
+# unreadable log produced ZERO observed ops -- which prints exactly like a mod the
+# engine and the validator agree on, rc 0.
+
+def test_crosscheck_refuses_on_an_UNREADABLE_log_rather_than_reporting_agreement(
+        monkeypatch, tmp_path, capsys):
+    mod = tmp_path / "modA"
+    mod.mkdir()
+    (mod / "content.xml").write_text('<content id="modA" version="100"/>', encoding="utf-8")
+    from x4validate import _check, _debuglog
+    monkeypatch.setattr(_check, "validate", lambda *a, **k: _R([]))
+    # A genuinely readable FILE (so the earlier "does this look like a log?" check
+    # in _resolve_log passes and this reaches _crosscheck_cmd), but parse_log itself
+    # reports the read as having failed -- e.g. a decode error _resolve_log cannot
+    # see from is_file() alone.
+    log = tmp_path / "debug.txt"
+    log.write_text("irrelevant\n", encoding="utf-8")
+    monkeypatch.setattr(_debuglog, "parse_log", lambda path: _debuglog.ParsedLog(
+        total=0, entries=[], unclassified=[], unreadable="OSError: simulated"))
+    rc = _debugcli.main(["crosscheck", str(mod), str(log)])
+    err = capsys.readouterr().err
+    assert rc == 2, (rc, err)
+    assert "unreadable" in err.lower() or "could not" in err.lower(), err
+    assert str(log) in err, err
+
+
+def test_crosscheck_still_compares_normally_when_the_log_IS_readable(monkeypatch, tmp_path,
+                                                                      capsys):
+    """Twin: the new refusal is keyed on .unreadable specifically -- a readable log
+    with zero observed ops still hits the PRE-EXISTING 'NOTHING COMPARED' refusal
+    (both rc 2, different reasons), never the new unreadable-log message."""
+    rc = _cc(monkeypatch, tmp_path, "nothing about modA in here\n", [])
+    err = capsys.readouterr().err
+    assert rc == 2 and "REFUSING" in err and "unreadable" not in err.lower(), err

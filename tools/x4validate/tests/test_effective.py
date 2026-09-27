@@ -303,3 +303,52 @@ def test_modified_sql_counts_a_sole_entity_removal_but_not_a_shared_file_one():
     got = {r[0] for r in con.execute(
         "SELECT name FROM entities WHERE " + _effectivecli._MODIFIED_SQL)}
     assert got == {"solo_macro"}, got
+
+
+# --- finding 4: `--limit 0` must mean unlimited, matching the tool's own advice ------
+#
+# `_count_line`'s TRUNCATED message literally says "use --limit N (or 0) for all", but
+# `args.limit` was passed straight through as a SQL `LIMIT ?` parameter, where 0 means
+# LIMIT 0 -- zero rows. Following the tool's own advice used to produce nothing.
+
+def test_ls_limit_0_means_unlimited_not_zero_rows(tmp_path, monkeypatch, capsys):
+    db = _build(tmp_path, monkeypatch)
+    monkeypatch.setattr(_effective._registry, "ingest_content_xml", lambda *a, **k: [])
+    assert _effectivecli.main(["--db", str(db), "ls", "macro", "--limit", "0"]) == 0
+    out = capsys.readouterr().out
+    assert "engine_arg_s_01_macro" in out and "engine_new_01_macro" in out, out
+    assert "TRUNCATED" not in out, out
+
+
+def test_attr_limit_0_means_unlimited_not_zero_rows(tmp_path, monkeypatch, capsys):
+    db = _build(tmp_path, monkeypatch)
+    monkeypatch.setattr(_effective._registry, "ingest_content_xml", lambda *a, **k: [])
+    assert _effectivecli.main(
+        ["--db", str(db), "attr", "macro", "thrust.forward", "--limit", "0"]) == 0
+    out = capsys.readouterr().out
+    assert "engine_arg_s_01_macro" in out and "engine_new_01_macro" in out, out
+    assert "TRUNCATED" not in out, out
+
+
+def test_diff_mod_limit_0_means_unlimited_not_zero_rows(tmp_path, monkeypatch, capsys):
+    db = _build(tmp_path, monkeypatch)
+    monkeypatch.setattr(_effective._registry, "ingest_content_xml", lambda *a, **k: [])
+    assert _effectivecli.main(["--db", str(db), "diff-mod", "aaa_thrust", "--limit", "0"]) == 0
+    out = capsys.readouterr().out
+    assert "thrust.forward" in out, out
+    assert "TRUNCATED" not in out, out
+
+
+@pytest.mark.parametrize("cmd", [
+    ["ls", "macro", "--limit", "1"],
+    ["attr", "macro", "thrust.forward", "--limit", "1"],
+])
+def test_a_real_positive_limit_still_truncates(tmp_path, monkeypatch, capsys, cmd):
+    """Twin: `--limit 0` is special-cased, but an ordinary positive limit must still
+    behave exactly as before. (diff-mod isn't exercised here: this fixture's
+    aaa_thrust owns only one value, so --limit 1 would never truncate it either way.)"""
+    db = _build(tmp_path, monkeypatch)
+    monkeypatch.setattr(_effective._registry, "ingest_content_xml", lambda *a, **k: [])
+    assert _effectivecli.main(["--db", str(db)] + cmd) == 0
+    out = capsys.readouterr().out
+    assert "1 of" in out and "TRUNCATED" in out, out
