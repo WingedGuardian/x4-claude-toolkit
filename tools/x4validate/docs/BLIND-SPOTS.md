@@ -223,6 +223,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F142 | `ask.py`'s guard against a query narrowing its own documents ENUMERATED narrowing shapes, so any unlisted rewrite still printed "NEGATIVE CONFIRMED" over the whole database; and `coverage.py` licensed a negative over an overlay catalog it could not read | **DEFECT (measured)** · ✅ FIXED 2026-09-26 | 11 of 12 release-reviewer rewrites (`[position() le 9]`, `subsequence()`, a `let` then a `where`, `collection#1(...)`, ...) certified a zero, rc 0; an unreadable catalog read `complete`, "NEGATIVE CONFIRMED over 10000 of 10000" | a TOKEN rule: any identity / position / node-order / module / indirect token anywhere in the query withholds the zero (rc 4, naming it); hits still stand (`692203f`). An unreadable catalog makes coverage `unexplained` and is named in `unreadable_catalogs` (`803ea90`) |
 | F143 | the store's removal table records each removed node at its path AT THE INSTANT of removal, after earlier removals shifted its siblings, and `cross_tool` compared those paths with x4compat's BASE-tree targets | **DEFECT (measured)** · ✅ FIXED 2026-09-26 | one mod's 5 ware removals on the real install: 3 of 5 records carry a shifted path, 2 of them naming base wares the mod never removed | `cross_tool` replays the removals in application order over a copy of the base tree (`39ff4a3`); HARD rows checked 32/32 -> 37/37. Not modelled: a mod INSERT mid-sibling-list; other consumers of `removed` not checked (OPEN lead) |
 | F144 | the installers' prune lists were a hand-kept copy of `.gitignore` and had drifted, so an install from a git checkout copied untracked derived files | **DEFECT (measured)** · ✅ FIXED 2026-09-27 (git sources) | 33 untracked files, 2.3 GB (BaseX databases, `_eff/`, coverage manifests, a `.pytest_cache`) reached the destination from one checkout | a checkout source copies `git ls-files`, filtered by the same lists (`c3f8e47`); derived BaseX paths are KEEP_LOCAL (never copied in, never deleted out). A non-git source still depends on the hand-kept lists |
+| F145 | The PowerShell/cmd guard judges an UNRESOLVABLE PowerShell WRITE target by its text (as Bash writes are), not fail-closed; a delete whose target is computed (a list read with Get-Content, an indexed nested array) ASKS; writer methods on unknown objects (`$xml.Save(path)`) are not modelled; a cmd.exe delete of an unquoted spaced path is judged on rejoined operand spans (at most 12 words) | **SCOPE (measured)** · ✅ FIXED 2026-09-27 (the gaps the release review found; these residuals stated) | failing closed on writes MEASURED at +28 false-positive asks and 0 catches over 50,061 historical commands; computed delete targets: 2 of 1,524 historical PowerShell commands | release review hooks lane `5f6f414` `60ff523` `a30d401` `a399e3c` `6d7e702` |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -7619,3 +7620,42 @@ still depends on the hand-kept lists. The 5%: that path.
 `test_a_PLAIN_FOLDER_source_still_copies_what_is_on_disk_minus_the_derived_paths`,
 `test_TWIN_a_source_that_is_not_the_TOP_of_a_populated_work_tree_keeps_the_walk`,
 `test_the_DESTINATIONS_own_BaseX_databases_survive_an_upgrade`.
+
+
+## F145 — the PowerShell/cmd guard's stated residuals after the v3.3.0 release review · **SCOPE (measured)** · confidence 90% · ✅ FIXED 2026-09-27
+
+**Found 2026-09-26/27 by the v3.3.0 release review** (hooks reviewer: 1 CRITICAL, 3 IMPORTANT,
+all in the PowerShell front-end and cmd/PowerShell carrier handling this release added). The
+CRITICAL: a PowerShell delete whose target reached `Remove-Item` through the pipeline or a
+variable holding command output (`Join-Path`, `Get-Item`, `gci`, `Resolve-Path`) became an
+unresolved placeholder with nothing marked unknown, so the rules ALLOWED it -- against the
+translator's own contract that an unresolvable write target asks. The IMPORTANTs: PowerShell
+hosts fed by `-CommandWithArgs`, `-File -` or stdin; cmd.exe `/R`, `^`-escaped verbs and
+`cd /d`; and unmodelled .NET writers / scriptblock execution.
+
+**Fixed** (hooks lane, test-first): one resolver for delete targets (literals, variables holding
+command output, loop variables, `$_`, `.FullName`), which DENY like the literal form and ASK when
+unresolvable; host payloads translated; cmd carriers un-escaped and `cd /d`-aware; .NET writers
+and scriptblocks modelled. Coordinator verification then found one more: a cmd.exe delete of an
+UNQUOTED path containing a space (`cmd //c "rd /s /q C:\...\X4 Foundations"`) split into two
+operands that matched no root -> fixed by judging rejoined operand spans (`6d7e702`).
+
+**Residuals, by measurement not by guess:**
+- An unresolvable PowerShell WRITE target is judged by its TEXT (fires only if it names a
+  protected root), exactly like Bash writes. Failing closed on it was MEASURED over 50,061
+  historical commands (48,439 Bash, 1,524 PowerShell): +28 asks, every one a false positive,
+  0 catches -- so it was not shipped.
+- A delete whose target is COMPUTED (a list read with `Get-Content`, an indexed nested array)
+  ASKS: 2 of 1,524 historical PowerShell commands, both outside X4.
+- Writer methods on unknown objects (`$xml.Save(path)`) are not modelled.
+- A cmd.exe delete of an unquoted spaced path is judged on rejoined operand spans of at most 12
+  words; the carrier's cmd payload under Bash-syntax mutation is unit-tested, not fuzzed.
+
+History replay, old vs new rules over those 50,061 commands: 273 verdicts change, all classified
+(254 false-positive bare-python denies REMOVED; 8 PowerShell syntax errors ask->deny, intended;
+the rest intended or true positives, 1 false positive in a hook-probe script that quotes
+delete commands). fuzz-guard 0 bypasses; verify-hook-tests 0 of 85 mutants uncaught.
+
+**RE-DERIVED BY:** `.claude/hooks/test_audit0924_hooks.py` (the `TestRR*` classes, end to end on
+fake roots) and `.claude/hooks/test_hook_facts.py` (`TestRRCmdCarrier`, `TestRRPreArcBash` and
+the bare-python unit tests).
