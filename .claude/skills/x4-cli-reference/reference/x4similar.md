@@ -15,7 +15,8 @@ options:
   --version             show program's version number and exit
   --reference REFERENCE
                         unpacked base+DLC tree ($X4_REFERENCE)
-  --ext-dir EXT_DIR     extensions dir (default: game-root from _registry)
+  --ext-dir EXT_DIR     scan ONLY this extensions dir (default: every configured root -- game
+                        root, profile, Steam Workshop -- from _registry)
   --threshold THRESHOLD
                         minimum similarity 0-1 to report (default 0.85)
   --cross-mod-only      only report pairs from DIFFERENT sources (skip a mod's own paint variants)

@@ -15,7 +15,7 @@ Run a CLI from `$CLAUDE_PROJECT_DIR/tools/x4validate` as `uv run <cli> ...`. The
 
 | CLI | subcommand | what it does |
 |---|---|---|
-| **`x4compat`** | | Detect how the ENABLED (active) X4 mods collide over the effective XML tree -- the set the engine loads: on disk, enabled in its manifest and in the profile. |
+| **`x4compat`** | | Detect how the ENABLED (active) X4 mods collide over the effective XML tree -- the set the engine loads: on disk in any configured extensions root and enabled (the profile entry decides; the manifest's enabled= is only the default when the profile has none), with every required dependency loading. |
 | | `check` | analyze collisions across the enabled (active) modlist |
 | **`x4debug`** | | Triage the engine's debug.txt, and compare it to what we predicted. |
 | | `triage` | bucket and attribute every [=ERROR=] line |

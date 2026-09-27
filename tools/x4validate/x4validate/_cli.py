@@ -55,10 +55,11 @@ def main(argv: list[str] | None = None) -> int:
                         "(default: $X4_REFERENCE / .claude/x4-paths.env)")
     p.add_argument("--tier", choices=["a", "b"], default="a",
                    help="a = base+DLC only (default, deterministic); "
-                        "b = also merge the ACTIVE extensions (installed AND enabled in the "
-                        "manifest and the profile) in the engine's measured load order, so "
-                        "cross-mod patches resolve and removed-by-another-mod content is "
-                        "caught")
+                        "b = also merge the ACTIVE extensions (installed and enabled -- the "
+                        "profile entry decides, the manifest's enabled= is only the default "
+                        "when the profile has none -- with every required dependency loading) "
+                        "in the engine's measured load order, so cross-mod patches resolve "
+                        "and removed-by-another-mod content is caught")
     p.add_argument("--profile", metavar="ID",
                    help="user profile id (the numeric folder under the X4 profile dir) — only "
                         "needed to locate debug.txt when $X4_PROFILE / $X4_DEBUGLOG are unset")

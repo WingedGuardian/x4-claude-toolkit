@@ -491,6 +491,12 @@ def tier_b_trees(mod_dir: Path, report: Report | None = None) -> TierB:
     mods = placement.mods
     by_folder = {m["folder"]: m for m in mods}
     order = _compat.compute_load_order(mods)
+    # What the order and the set ASSUME (an unmeasured root, a case-only dependency
+    # match, a duplicate id, ...) rides on the placed list; rendered AFTER ordering so
+    # the order's own records are in it (release review, finding 3).
+    model = _registry.model_note(mods)
+    if model:
+        notes.append(f"Tier B: load-order model -- {model}")
 
     dirs: list[Path] = []       # patch-time: up to the mod's own position
     final_dirs: list[Path] = []  # runtime: every other installed extension
@@ -511,30 +517,28 @@ def tier_b_trees(mod_dir: Path, report: Report | None = None) -> TierB:
             if not placed:  # everything after the mod loads LATER — not visible to our selectors
                 dirs.append(p)
 
-    if placed:
-        notes.append(
-            f"Tier B: merged {len(dirs)} extension(s) that load BEFORE this mod "
-            f"(of {len(order) - 1 + len(placement.excluded)} installed) — the tree its "
-            "selectors actually see")
-        if installed:
-            notes.append(f"Tier B: excluded the mod under test's installed copy '{skipped}' "
-                         "and everything loading after it")
-        else:
-            notes.append("Tier B: this mod is NOT installed; it was placed where the engine "
-                         "would load it (folder order + its manifest's dependencies) and "
-                         "everything loading after that position was excluded")
-        if len(final_dirs) > len(dirs):
-            notes.append(
-                f"Tier B: reference/connection checks additionally see the {len(final_dirs) - len(dirs)} "
-                "extension(s) loading AFTER it — those are invisible to selectors but real at runtime")
+    # `placed` is ALWAYS True: `place_candidate` puts the candidate's entry in the set
+    # and `compute_load_order` returns every folder it is given. The old `else` branch
+    # ("assumed to load LAST") was unreachable since LO-6 placed dev-only mods; it is
+    # gone, and tests/test_tierb_nested_later_target.py pins the invariant.
+    if not placed:  # pragma: no cover - structural invariant, refuse rather than guess
+        return _fallback("the mod under test is missing from the computed load order")
+    # ACTIVE, not installed (release review, finding 7): `order` is the active set with
+    # the candidate in it, so the other mods number len(order) - 1.
+    notes.append(
+        f"Tier B: merged {len(dirs)} extension(s) that load BEFORE this mod "
+        f"(of {len(order) - 1} other active) — the tree its selectors actually see")
+    if installed:
+        notes.append(f"Tier B: excluded the mod under test's installed copy '{skipped}' "
+                     "and everything loading after it")
     else:
-        # Not installed (dev-only): we cannot place it, so assume it loads last —
-        # the optimistic tree. Say so, because that is exactly the FALSE-OK shape.
+        notes.append("Tier B: this mod is NOT installed; it was placed where the engine "
+                     "would load it (folder order + its manifest's dependencies) and "
+                     "everything loading after that position was excluded")
+    if len(final_dirs) > len(dirs):
         notes.append(
-            f"Tier B: merged all {len(dirs)} installed extension(s) — this mod is NOT "
-            "installed, so its load-order position is unknown and it is assumed to load "
-            "LAST. Ops targeting nodes added by a mod that really loads later would be "
-            "reported OK here but SKIPPED by the engine; deploy it to place it exactly")
+            f"Tier B: reference/connection checks additionally see the {len(final_dirs) - len(dirs)} "
+            "extension(s) loading AFTER it — those are invisible to selectors but real at runtime")
     notes.append("Tier B: load order follows the engine's MEASURED rule (case-insensitive "
                  "folder order, dependencies in repeated passes; see gates/load_order_oracle.py)")
     return TierB(tuple(dirs), tuple(final_dirs), notes)
@@ -937,6 +941,25 @@ def _inactive_target_reason(vpath: str, config: _merge.Config) -> str | None:
     return None
 
 
+def _later_loading_owner(nested: tuple[str, str], config: _merge.Config) -> Path | None:
+    """The root of nested target T when T is in the RUNTIME tree but not the
+    PATCH-TIME one (active, loading after the mod under test) AND ships the file;
+    else None. Tier A has no runtime tree, so this is None there.
+
+    Both clauses are required: a T that loads earlier is in `config.overlays` and its
+    miss is a genuine path error, and so is a later T that does not ship the file."""
+    target = nested[0].lower()
+    if any(p.name.lower() == target for p in config.overlays):
+        return None
+    owner = next((p for p in config.final_overlays if p.name.lower() == target), None)
+    if owner is None:
+        return None
+    unreadable: list[str] = []
+    if _merge.overlay_root(owner, nested[1], unreadable) is None and not unreadable:
+        return None             # T does not ship it: a real path mismatch
+    return owner
+
+
 def _no_base_finding(vpath: str, config: _merge.Config) -> tuple[str, str, str]:
     """(severity, category, message) for a file whose base tree could not be built.
 
@@ -989,6 +1012,21 @@ def _no_base_finding(vpath: str, config: _merge.Config) -> tuple[str, str, str]:
             return ("info", "inactive",
                     f"patch targets extension '{nested[0]}', which is installed but "
                     f"{state} (designed no-op, not an error)")
+        owner = _later_loading_owner(nested, config)
+        if owner is not None:
+            # ACTIVE, SHIPS the file, but loads AFTER this mod (release review, finding
+            # 6): the path is right and the ORDER is the question -- "path mismatch" was
+            # the wrong diagnosis. WARN, not ERROR: whether the engine applies a nested
+            # patch to a mod that loads later is UNMEASURED, so neither verdict is known.
+            owner_id = _loadorder.mod_dependencies(owner)[0] or owner.name
+            return ("warn", "load-order",
+                    f"patch targets extension '{owner.name}', which is ACTIVE and ships "
+                    f"'{nested[1]}' but loads AFTER this mod, so that file is not in the "
+                    "tree yet at this mod's load position. Whether the engine applies a "
+                    "nested patch to a mod that loads later is UNMEASURED, and its ops "
+                    "were not evaluated. To make the order certain, add "
+                    f"<dependency id=\"{owner_id}\" optional=\"true\"/> to this mod's "
+                    f"content.xml, which loads '{owner.name}' first")
     parts = vpath.split("/")
     if len(parts) > 1 and parts[0] == "extensions" and parts[1].lower().startswith("ego_dlc_"):
         dlc = parts[1]
@@ -1123,7 +1161,8 @@ def _sel_note(checked: int, found: int, payload: int | str) -> str:
             f"across {payload} payload XML file(s)")
     if found != checked:
         note += (f"; {found - checked} more diff file(s) found whose ops were NOT "
-                 "evaluated (no base / inactive target / inert path -- see the findings)")
+                 "evaluated (no base / inactive or later-loading target / inert path -- see "
+                 "the findings)")
     return note
 
 

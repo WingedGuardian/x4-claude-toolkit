@@ -59,8 +59,11 @@ def effective_db() -> Path | None:
 DB_PATH: Path | None = effective_db()
 
 SCHEMA_VERSION = 1
-_ADVISORY = ("winner reflects the engine's measured load order (case-insensitive "
-             "folders, dependencies in passes); cycles and missing dependencies are assumptions")
+_ADVISORY = ("winner reflects the engine's MEASURED load order (case-insensitive folders, "
+             "dependencies in passes, game root before profile root); UNMEASURED and "
+             "modelled: Steam Workshop mods' placement and dependencies, dependency ids "
+             "differing only in case, and a game-root mod that waits a pass while "
+             "profile-root mods are present")
 
 
 def _count_line(shown: int, total: int, noun: str) -> str:
@@ -783,6 +786,10 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
     for msg in not_loaded:
         progress(f"NOT in the store (the engine does not load it): {msg}")
     ordered = ordered_overlays(mods)
+    # AFTER ordering: the order's own records ride on `mods` (release review, finding 3).
+    model = _registry.model_note(mods)
+    if model:
+        progress(f"load-order model: {model}")
     folder_to_path = {m["folder"]: p for m, p in ordered}
     overlay_paths = [p for _, p in ordered]
     order_rank = {m["folder"]: i for i, (m, _) in enumerate(ordered)}

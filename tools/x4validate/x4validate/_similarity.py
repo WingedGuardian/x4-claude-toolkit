@@ -246,7 +246,7 @@ class _FixedDlcConfig(_merge.Config):
         return list(self.fixed_dlc)
 
 
-def _collect_all(reference: Path, ext_dir: Path,
+def _collect_all(reference: Path, ext_dir: Path | None,
                  unreadable: list | None = None,
                  dlc_dirs: list[Path] | None = None,
                  notes: list[str] | None = None) -> list[ShipVector]:
@@ -267,6 +267,9 @@ def _collect_all(reference: Path, ext_dir: Path,
     base < DLC < active mods in load order. A ship only an installed-but-DISABLED mod
     defines is merged from that mod alone -- scored as it would be if enabled.
 
+    *ext_dir* None = every configured extensions root (game, profile, Steam Workshop)
+    -- the set the engine loads; a folder = that folder ONLY (release review, finding 5).
+
     *notes* receives the `_registry.dropped_note` of the ACTIVE read: a mod the engine
     leaves out (a required dependency missing, say) does not layer onto anyone's ship
     values, and that must be said, not silently absorbed (BLIND-SPOTS F139).
@@ -283,11 +286,18 @@ def _collect_all(reference: Path, ext_dir: Path,
     dlc_dirs = sorted(dlc_dirs, key=lambda p: _loadorder.sort_key(p.name))
     config = _FixedDlcConfig(reference=reference, fixed_dlc=tuple(dlc_dirs))
 
-    active = _effective.active_mods([ext_dir]) if ext_dir.is_dir() else []
+    from x4validate import _compat
+    scan = _compat._scan_dirs(ext_dir)
+    readable = ext_dir is None or ext_dir.is_dir()
+    active = _effective.active_mods(scan) if readable else []
     left_out = _registry.dropped_note(active)
     if left_out and notes is not None:
         notes.append(f"NOT layered onto any ship (the engine does not load it): {left_out}")
     ordered = _effective.ordered_overlays(active)
+    # AFTER ordering: what the order and the set assume rides on `active`.
+    model = _registry.model_note(active)
+    if model and notes is not None:
+        notes.append(f"load-order model of the ship values: {model}")
     folder_to_path = {m["folder"]: p for m, p in ordered}
     touch = _effective.build_touch_map(ordered)
     # (folder, lower(real vpath)) -> lower(LOGICAL vpath): where the touch map filed it
@@ -312,8 +322,8 @@ def _collect_all(reference: Path, ext_dir: Path,
             if extract_ship_vector(root, "", vpath) is not None:
                 v = f"extensions/{dlc.name}/{vpath}"
                 define(v.lower(), v, (1, i), f"dlc:{dlc.name}")
-    if ext_dir.is_dir():
-        for m in _registry.mods("installed", [ext_dir]):
+    if readable:
+        for m in _registry.mods("installed", scan):
             folder, path = m["folder"], Path(m["path"])
             for vpath, root in _iter_ship_macros(path, folder, unreadable=unreadable):
                 if extract_ship_vector(root, folder, vpath) is None:
@@ -446,7 +456,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--version", action="version",
                    version=f"%(prog)s {__version__}")
     p.add_argument("--reference", help="unpacked base+DLC tree ($X4_REFERENCE)")
-    p.add_argument("--ext-dir", help="extensions dir (default: game-root from _registry)")
+    p.add_argument("--ext-dir", help="scan ONLY this extensions dir (default: every "
+                   "configured root -- game root, profile, Steam Workshop -- from _registry)")
     p.add_argument("--threshold", type=_threshold, default=0.85,
                   help="minimum similarity 0-1 to report (default 0.85)")
     p.add_argument("--cross-mod-only", action="store_true",
@@ -455,9 +466,15 @@ def main(argv: list[str] | None = None) -> int:
 
     args = p.parse_args(argv)
     ref = Path(args.reference) if args.reference else _merge.Config().reference
-    ext = Path(args.ext_dir) if args.ext_dir else _registry.require(
-        _registry.GAME_EXTENSIONS, "the game extensions dir",
-        "set X4_GAME (or X4_EXTENSIONS), or pass --ext-dir")
+    # No --ext-dir: EVERY configured root (the set the engine loads); the game root
+    # must still be configured -- without it there is no install to model.
+    ext = Path(args.ext_dir) if args.ext_dir else None
+    if ext is None:
+        _registry.require(_registry.GAME_EXTENSIONS, "the game extensions dir",
+                          "set X4_GAME (or X4_EXTENSIONS), or pass --ext-dir")
+    else:
+        from x4validate import _compat
+        print(_compat.ext_dir_only_note(ext), file=sys.stderr)
 
     unreadable: list = []
     notes: list[str] = []

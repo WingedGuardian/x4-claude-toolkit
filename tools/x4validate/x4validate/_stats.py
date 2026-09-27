@@ -71,7 +71,7 @@ def _ware_from_el(el: etree._Element) -> Ware | None:
     )
 
 
-def effective_wares(ext_dir: Path, config: _merge.Config,
+def effective_wares(ext_dir: Path | None, config: _merge.Config,
                     exclude: Path | None = None, scope: str = "installed",
                     patch_time: bool = False,
                     notes: list[str] | None = None,
@@ -86,6 +86,11 @@ def effective_wares(ext_dir: Path, config: _merge.Config,
 
     Returns the TREE as well, because `candidate_wares` needs something to resolve a
     `sel=` against.
+
+    *ext_dir* None = every configured extensions root (game, profile, Steam Workshop)
+    -- the set the engine loads; a folder = that folder ONLY (release review, finding
+    5: the game root alone used to be the default, silently leaving out profile-root
+    mods).
 
     ⚠ The caller DOES build two trees, and that is not the waste it looks like: the
     comparison pool must CONTAIN the candidate and the resolution tree must EXCLUDE
@@ -116,7 +121,7 @@ def effective_wares(ext_dir: Path, config: _merge.Config,
     # requires it and is right to: passing the scope through a variable is exactly how
     # "which mods count" stops being visible where it is chosen (CLAUDE.md #24).
     if scope == "active":
-        mods = _registry.mods("active", [ext_dir], dlc_config=config)
+        mods = _registry.mods("active", _compat._scan_dirs(ext_dir), dlc_config=config)
         # *notes* receives what the engine leaves out of the resolution tree: a
         # selector aimed at a node only that mod adds reads "matched nothing"
         # below, which is right for the engine and must not be unexplained (F139).
@@ -125,13 +130,14 @@ def effective_wares(ext_dir: Path, config: _merge.Config,
             notes.append(f"NOT in the resolution tree (the engine does not load it): "
                          f"{left_out}")
     else:
-        mods = _registry.mods("installed", [ext_dir])
+        mods = _registry.mods("installed", _compat._scan_dirs(ext_dir))
     if exclude is not None:
         # ONE placement rule with Tier B and x4compat (`_loadorder.place_candidate`):
         # the installed copy (same folder or id, either case) is dropped, and the
         # candidate takes ITS position key with the candidate's own dependencies.
         placement = _loadorder.place_candidate(mods, exclude)
         mods = placement.mods
+    channel = mods     # a ModList: the one channel this read's records ride on
     if exclude is not None and patch_time:
         # THE TREE AS OF THE CANDIDATE'S OWN LOAD POSITION (AUDIT-2026-09-24 AN-7),
         # the same patch-time tree Tier B resolves `sel=` against (`_check.tier_b_trees`).
@@ -143,8 +149,14 @@ def effective_wares(ext_dir: Path, config: _merge.Config,
         order = order[:order.index(placement.entry["folder"])]
     else:
         if exclude is not None:
-            mods = [m for m in mods if m is not placement.entry]
+            # still a ModList SHARING the channel, so ordering it records onto it
+            mods = _registry.ModList([m for m in mods if m is not placement.entry])
+            mods.dropped, mods.notes = channel.dropped, channel.notes
         order = _compat.compute_load_order(mods)
+    # AFTER ordering: what the order and the set assume (release review, finding 3).
+    model = _registry.model_note(channel)
+    if model and notes is not None:
+        notes.append(f"load-order model of the {scope} set: {model}")
     by_folder = {m["folder"]: Path(m["path"]) for m in mods}
     overlays = [by_folder[f] for f in order if f in by_folder]
     tree = _merge.build_effective("libraries/wares.xml", config, extra_overlays=overlays).tree
@@ -567,7 +579,8 @@ def main(argv: list[str] | None = None) -> int:
 
     pw = sub.add_parser("wares", help="compare a candidate mod's wares to same-group peers")
     pw.add_argument("candidate", help="candidate mod folder")
-    pw.add_argument("--ext-dir", help="extensions dir (default: game-root from _registry)")
+    pw.add_argument("--ext-dir", help="scan ONLY this extensions dir (default: every "
+                    "configured root -- game root, profile, Steam Workshop -- from _registry)")
     pw.add_argument("--reference", help="unpacked base+DLC tree ($X4_REFERENCE)")
 
     pm = sub.add_parser("macro", help="flatten a macro file's numeric property vector")
@@ -586,9 +599,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {k} = {stats[k]}")
         return 0
 
-    ext_dir = Path(args.ext_dir) if args.ext_dir else _registry.require(
-        _registry.GAME_EXTENSIONS, "the game extensions dir",
-        "set X4_GAME (or X4_EXTENSIONS), or pass --ext-dir")
+    # No --ext-dir: EVERY configured root (the set the engine loads); the game root
+    # must still be configured -- without it there is no install to model.
+    ext_dir = Path(args.ext_dir) if args.ext_dir else None
+    if ext_dir is None:
+        _registry.require(_registry.GAME_EXTENSIONS, "the game extensions dir",
+                          "set X4_GAME (or X4_EXTENSIONS), or pass --ext-dir")
+    else:
+        print(_compat.ext_dir_only_note(ext_dir), file=sys.stderr)
     config = _merge.Config(reference=Path(args.reference)) if args.reference else _merge.Config()
     candidate = Path(args.candidate)
     _input.require_mod_dir(candidate, "candidate mod folder")

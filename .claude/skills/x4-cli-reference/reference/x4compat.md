@@ -6,7 +6,9 @@
 usage: x4compat [-h] [--version] {check} ...
 
 Detect how the ENABLED (active) X4 mods collide over the effective XML tree -- the set the engine
-loads: on disk, enabled in its manifest and in the profile.
+loads: on disk in any configured extensions root and enabled (the profile entry decides; the
+manifest's enabled= is only the default when the profile has none), with every required dependency
+loading.
 
 positional arguments:
   {check}
@@ -31,7 +33,9 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  --ext-dir EXT_DIR     extensions dir to scan (default: game-root extensions\ from _registry)
+  --ext-dir EXT_DIR     scan ONLY this extensions dir (default: every configured root -- game-root
+                        extensions\, the profile's extensions\ and the Steam Workshop folder, from
+                        _registry)
   --reference REFERENCE
                         unpacked base+DLC reference tree ($X4_REFERENCE)
   --soft                also list benign SOFT overlaps

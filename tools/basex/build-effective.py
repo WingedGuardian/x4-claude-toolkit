@@ -59,6 +59,10 @@ def installed_in_load_order(config: "_merge.Config | None" = None) -> list[Path]
         m = by_folder.get(folder)
         if m and Path(m["path"]).is_dir():
             out.append(Path(m["path"]))
+    # AFTER ordering: what the order and the set assume rides on `mods`.
+    model = _registry.model_note(mods)
+    if model:
+        print(f"x4eff load-order model: {model}", file=sys.stderr)
     return out
 
 

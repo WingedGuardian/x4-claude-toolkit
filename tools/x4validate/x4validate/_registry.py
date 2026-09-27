@@ -288,14 +288,23 @@ class ModList(list):
     active-scope callers never asked). Render it with :func:`dropped_note`, or
     :func:`left_out` where a caller must classify per folder.
 
+    ``.notes`` holds what is NOT an exclusion but still makes the modelled set or
+    order an assumption: an UNMEASURED root (the Steam Workshop root, or an
+    unconfigured folder beside another root), a dependency id matched only ignoring
+    case, and -- appended by `_loadorder.compute_load_order` when it orders this list
+    -- a duplicate id or folder, a dependency cycle, an unmeasured cross-root pass.
+    Kept apart from ``.dropped`` because :func:`left_out` reads every ``.dropped``
+    record as "this folder was left out"; :func:`model_note` renders them.
+
     A plain ``list`` subclass, so every existing consumer (iteration, ``len``,
     comprehension, JSON) is unchanged; a slice or comprehension is a plain list and
     drops the attribute, which is why callers read it off the value `mods()` returned.
     """
 
-    def __init__(self, items=(), dropped=()):
+    def __init__(self, items=(), dropped=(), notes=()):
         super().__init__(items)
         self.dropped: list[str] = list(dropped)
+        self.notes: list[str] = list(notes)
 
 
 def left_out(mod_list) -> dict[str, str]:
@@ -315,6 +324,11 @@ def left_out(mod_list) -> dict[str, str]:
 def dropped_note(mod_list) -> str | None:
     """The ONE-LINE disclosure of what *mod_list* left out, or None if nothing.
 
+    Exclusions ONLY. Every caller prefixes this line with its own "NOT in <tree>
+    (the engine does not load it)", so a record that excludes nothing -- an
+    unmeasured root, a case-only dependency match, a load-order record -- goes
+    through :func:`model_note` instead, which would make none of those lines false.
+
     Pure -- this module is an engine source and carries no CLI output
     (`tests/test_engine_sources_carry_no_cli.py`); every caller routes the line to
     the sink it already has (stderr, a gate note, a Report skip).
@@ -324,6 +338,22 @@ def dropped_note(mod_list) -> str | None:
         return None
     return (f"{len(recs)} installed mod(s) left out of the mod set this run models "
             f"-- {'; '.join(recs)}")
+
+
+def model_note(mod_list) -> str | None:
+    """The ONE-LINE disclosure of *mod_list*'s ``.notes``, or None if there are none:
+    every assumption the modelled set or its load order rests on that was NOT
+    measured, and every record `_loadorder.compute_load_order` made while ordering
+    it (duplicate id or folder, cycle, unmeasured cross-root pass).
+
+    A caller that orders the list renders this AFTER ordering it, or the order's own
+    records are not in it yet. Pure, as :func:`dropped_note`.
+    """
+    notes = list(getattr(mod_list, "notes", ()) or ())
+    if not notes:
+        return None
+    return (f"{len(notes)} note(s) on the modelled mod set and its load order "
+            f"-- {'; '.join(notes)}")
 
 
 def mods(scope: str, dirs: list[Path] | None = None,
@@ -384,7 +414,7 @@ def mods(scope: str, dirs: list[Path] | None = None,
     if scope == "installed":
         if dropped is not None:
             dropped.extend(sink)
-        return ModList(installed, sink)
+        return ModList(installed, sink, _root_notes(installed))
     try:
         prof = dict(ingest_content_xml())
     except (OSError, etree.XMLSyntaxError):
@@ -399,10 +429,41 @@ def mods(scope: str, dirs: list[Path] | None = None,
         if entry["id"].lower() not in seen:
             seen.add(entry["id"].lower())
             dlc.append(entry)
-    active = _active_filter(installed, prof, dlc, sink)
+    notes: list[str] = []
+    active = _active_filter(installed, prof, dlc, sink, notes)
     if dropped is not None:
         dropped.extend(sink)
-    return ModList(active, sink)
+    return ModList(active, sink, _root_notes(active) + notes)
+
+
+def _root_notes(mod_set: list[dict]) -> list[str]:
+    """Disclose every root in *mod_set* whose behaviour the model does not measure.
+
+    MEASURED (F141): the game root, then the profile root, and no dependency between
+    them. NOT measured: anything about the Steam Workshop root, and -- for a folder
+    that is not a configured root (a custom `dirs` list) -- which root it stands for.
+    Both are modelled as before F141 (walked after the roots listed ahead of them,
+    dependencies resolving across them); that is a guess and is said to be one."""
+    out = []
+    ws = sorted(m["folder"] for m in mod_set if m.get("root_kind") == "workshop")
+    if ws:
+        out.append(
+            f"Steam Workshop root: {len(ws)} mod(s) ({', '.join(ws[:5])}"
+            f"{', ...' if len(ws) > 5 else ''}); where the engine places them relative "
+            "to game-root and profile-root mods, and whether a dependency resolves "
+            "between them, are UNMEASURED -- modelled as loading after both, with "
+            "dependencies resolving across the Workshop root")
+    ranks = {m.get("root_rank", 0) for m in mod_set}
+    custom = sorted({str(Path(m["path"]).parent)
+                     for m in mod_set if m.get("root_kind") == "custom"})
+    if custom and len(ranks) > 1:
+        out.append(
+            f"{len(custom)} scanned folder(s) are not a configured extensions root "
+            f"({'; '.join(custom[:3])}), so which root each stands for is unknown; "
+            "placement and dependencies between them and the other scanned roots are "
+            "UNMEASURED -- modelled as walked in the order given, with dependencies "
+            "resolving across them")
+    return out
 
 
 def _reference_dlc_dirs(config=None) -> list[Path]:
@@ -425,7 +486,8 @@ def _reference_dlc_dirs(config=None) -> list[Path]:
 
 
 def _active_filter(installed: list[dict], prof: dict[str, bool],
-                   dlc: list[dict], dropped: list[str] | None) -> list[dict]:
+                   dlc: list[dict], dropped: list[str] | None,
+                   notes: list[str] | None = None) -> list[dict]:
     """The engine's load decision, MEASURED 2026-09-26 by the in-game load-order probe
     (`scripts/load-order-probe.py`, 23 probe mods; AUDIT-2026-09-24 LO-3/RG-6):
 
@@ -437,11 +499,16 @@ def _active_filter(installed: list[dict], prof: dict[str, bool],
          or excluded-by-this-rule all exclude the mod -- applied to a fixpoint, so a
          dependency CYCLE loads neither side. Optional dependencies never exclude.
          A `<dependency>` naming only a version is a game requirement, ignored here.
-         A dependency resolves only within the mod's OWN extensions root (game root,
-         profile root, ...): MEASURED 2026-09-26, probe rounds 2-3 -- a cross-root
-         required dependency is refused in BOTH directions (BLIND-SPOTS F141). An
-         installed DLC counts for every root (UNMEASURED for a non-game root: no probe
-         put a DLC-dependent mod in the profile root).
+         A dependency does NOT resolve between the GAME root and the PROFILE root:
+         MEASURED 2026-09-26, probe rounds 2-3 -- refused in BOTH directions
+         (BLIND-SPOTS F141). Nothing about the Steam Workshop root (or a scanned folder
+         that is not a configured root) was measured, so a dependency to or from one
+         RESOLVES, as it did before F141, and `_root_notes` says the model is a guess
+         there. An installed DLC counts for every root (UNMEASURED for a non-game
+         root: no probe put a DLC-dependent mod in the profile root).
+         A dependency id that matches only IGNORING CASE is SATISFIED and recorded in
+         *notes* (whether the engine compares ids case-sensitively is UNMEASURED, and
+         excluding a mod over a spelling would assert a behaviour nobody observed).
       3. Two folders sharing a manifest id BOTH load (the clash is recorded by
          `_loadorder.compute_load_order`, not here).
 
@@ -449,7 +516,8 @@ def _active_filter(installed: list[dict], prof: dict[str, bool],
     exclusion is the engine's behaviour, but a mod leaving the world model with
     nothing said is the silent-narrowing shape this module exists to prevent.
     """
-    from x4validate._loadorder import mod_dependencies
+    from x4validate._loadorder import (case_only_note, crosses_isolated_roots,
+                                       mod_dependencies, root_kind)
 
     enabled = [m for m in installed if prof.get(m["id"], m["enabled"])]
 
@@ -466,8 +534,27 @@ def _active_filter(installed: list[dict], prof: dict[str, bool],
         return enabled
 
     dlc_ids = {d["id"] for d in dlc if prof.get(d["id"], d["enabled"])}
-    ranks = {m.get("root_rank", 0) for m in enabled}
-    provided_in = {r: set(dlc_ids) for r in ranks}      # per extensions root (F141)
+    # Every provider that has LOADED so far: exact id -> the root kinds providing it.
+    # A DLC provides for every root (kind None).
+    provided: dict[str, set] = {d: {None} for d in dlc_ids}
+    by_lower: dict[str, set[str]] = {}
+    for d in dlc_ids:
+        by_lower.setdefault(d.lower(), set()).add(d)
+
+    def _reaches(ident: str, kind: str) -> bool:
+        return any(k is None or not crosses_isolated_roots(k, kind)
+                   for k in provided.get(ident, ()))
+
+    def _match(dep: str, kind: str) -> str | None:
+        """The loaded id that satisfies *dep* for a mod in a *kind* root, or None.
+        The exact spelling first; a case-only match second (see rule 2)."""
+        if _reaches(dep, kind):
+            return dep
+        for actual in sorted(by_lower.get(dep.lower(), ())):
+            if actual != dep and _reaches(actual, kind):
+                return actual
+        return None
+
     loaded: list[dict] = []
     pending = list(enabled)
     progress = True
@@ -475,9 +562,16 @@ def _active_filter(installed: list[dict], prof: dict[str, bool],
         progress = False
         rest = []
         for m in pending:
-            if all(d in provided_in[m.get("root_rank", 0)] for d in required[id(m)]):
+            kind = root_kind(m)
+            hits = [(d, _match(d, kind)) for d in required[id(m)]]
+            if all(actual is not None for _d, actual in hits):
                 loaded.append(m)
-                provided_in[m.get("root_rank", 0)].add(m["id"])
+                provided.setdefault(m["id"], set()).add(kind)
+                by_lower.setdefault(m["id"].lower(), set()).add(m["id"])
+                for d, actual in hits:
+                    msg = case_only_note(m["folder"], d, actual)
+                    if actual != d and notes is not None and msg not in notes:
+                        notes.append(msg)
                 progress = True
             else:
                 rest.append(m)
@@ -486,38 +580,40 @@ def _active_filter(installed: list[dict], prof: dict[str, bool],
         return enabled          # nothing excluded; keep the caller's order
 
     if dropped is not None:
-        installed_ids = {m["id"] for m in installed} | {d["id"] for d in dlc}
-        stuck_ids = {m["id"] for m in pending}
+        # Compared IGNORING CASE throughout, to agree with `_match` above.
+        installed_ids = ({m["id"].lower() for m in installed}
+                         | {d["id"].lower() for d in dlc})
+        stuck_ids = {m["id"].lower() for m in pending}
         stuck_by_id: dict[str, list[dict]] = {}
         for m in pending:
-            stuck_by_id.setdefault(m["id"], []).append(m)
+            stuck_by_id.setdefault(m["id"].lower(), []).append(m)
 
         def _in_cycle(start: dict) -> bool:
             seen: set[str] = set()
-            todo = [d for d in required[id(start)] if d in stuck_ids]
+            todo = [d.lower() for d in required[id(start)] if d.lower() in stuck_ids]
             while todo:
                 nxt = todo.pop()
-                if nxt == start["id"]:
+                if nxt == start["id"].lower():
                     return True
                 if nxt in seen:
                     continue
                 seen.add(nxt)
                 for other in stuck_by_id.get(nxt, []):
-                    todo.extend(d for d in required[id(other)] if d in stuck_ids)
+                    todo.extend(d.lower() for d in required[id(other)]
+                                if d.lower() in stuck_ids)
             return False
 
-        loaded_anywhere = set().union(*provided_in.values())
         for m in pending:
-            unmet = [d for d in required[id(m)] if d not in provided_in[m.get("root_rank", 0)]]
+            unmet = [d for d in required[id(m)] if _match(d, root_kind(m)) is None]
             why = []
             for d in unmet:
-                if d in loaded_anywhere:
+                if by_lower.get(d.lower()):
                     why.append(f"required dependency {d!r} is in a DIFFERENT extensions "
-                               "root -- the engine resolves a dependency only within its "
-                               "own root")
-                elif d not in installed_ids:
+                               "root -- the engine does not resolve a dependency between "
+                               "the game root and the profile root")
+                elif d.lower() not in installed_ids:
                     why.append(f"required dependency {d!r} is not installed")
-                elif d not in stuck_ids:
+                elif d.lower() not in stuck_ids:
                     why.append(f"required dependency {d!r} is installed but disabled")
                 else:
                     why.append(f"required dependency {d!r} does not load itself")
@@ -567,12 +663,16 @@ def scan_installed(dirs: list[Path] | None = None,
     their manifests are loose), but it is read from the manifest anyway.
     """
     out = []
-    # root_rank: the position of the root this mod was found in. The engine applies the
-    # game root's mods before the profile root's (MEASURED 2026-09-26, probe round 3), and
-    # a dependency resolves only within one root (F141); both read this field.
+    # root_rank: the position of the root this mod was found in -- the WALK order. The
+    # engine applies the game root's mods before the profile root's (MEASURED 2026-09-26,
+    # probe round 3). root_kind: WHICH root it is -- decided by comparing the folder to
+    # the configured roots, never by position (with the profile root unconfigured, the
+    # Workshop root is second in the list). A dependency does not resolve between the
+    # game and profile roots (F141); every other pairing is unmeasured (`_root_notes`).
     for rank, base in enumerate(dirs or default_installed_dirs()):
         if not base.is_dir():
             continue
+        kind = _root_kind(base)
         for sub in sorted(base.iterdir()):
             if not sub.is_dir():
                 continue
@@ -596,9 +696,32 @@ def scan_installed(dirs: list[Path] | None = None,
                 "id": mod_id, "folder": sub.name, "path": str(sub),
                 "name": root.get("name") or "", "version": root.get("version") or "",
                 "date": root.get("date") or "", "author": root.get("author") or "",
-                "enabled": enabled, "root_rank": rank,
+                "enabled": enabled, "root_rank": rank, "root_kind": kind,
             })
     return out
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return os.path.normcase(str(a.resolve())) == os.path.normcase(str(b.resolve()))
+    except OSError:
+        # silent-ok: an unresolvable path compares by its spelling; a miss makes the
+        # root "custom", which is disclosed by `_root_notes`, never silently isolated.
+        return os.path.normcase(str(a)) == os.path.normcase(str(b))
+
+
+def _root_kind(base: Path) -> str:
+    """"game" / "profile" / "workshop" for a CONFIGURED root, else "custom".
+
+    Read at call time from the module constants, which tests and the CLI's --dirs
+    monkeypatch. A "custom" folder (an --ext-dir, a fixture) is not isolated from
+    anything: which root it stands for is unknown, so the pre-F141 model applies and
+    `_root_notes` discloses it whenever another root is present too."""
+    for kind, root in (("game", GAME_EXTENSIONS), ("profile", PROFILE_EXTENSIONS),
+                       ("workshop", WORKSHOP_CONTENT)):
+        if root is not None and _same_dir(Path(root), base):
+            return kind
+    return "custom"
 
 
 def _source_of(mod_id: str) -> str:

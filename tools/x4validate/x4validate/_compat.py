@@ -176,6 +176,10 @@ class CompatReport:
     order_misses: list[OrderMiss] = field(default_factory=list)
     #: Ops inside a node an EARLIER mod removed -- see `RemovedFirst`.
     removed_first: list[RemovedFirst] = field(default_factory=list)
+    #: WHICH roots were scanned, in words -- "" means every configured extensions root
+    #: (the set the engine loads). An --ext-dir run scans that folder ONLY and says so
+    #: here, because a mod in another root is then absent with nothing else to show it.
+    scope_note: str = ""
 
     def by_kind(self, kind: str) -> list[Collision]:
         """Collisions of *kind*, in a STABLE order.
@@ -609,8 +613,8 @@ def _analyze_vpath(
                     vpath, "SUBTREE", w0, [b, a], "",
                     f"'{a}' loads after '{b}' and replace/removes {w0}, wiping "
                     f"{len(hits)} of '{b}'s change(s) inside it (e.g. {cb0}) — "
-                    "load order is measured signature-check order (apply order "
-                    "inferred), so this is advisory",
+                    "load order is the engine's measured order; advisory where this "
+                    "run's load-order notes name an UNMEASURED assumption",
                     wiped_by=a))
 
     # 5. REMOVALS, decided per op at its own load position (AUDIT-2026-09-24 AN-5 and
@@ -1054,12 +1058,17 @@ def _name_clashes(mods: list[dict], rank: dict[str, int],
 
 
 def analyze(
-    ext_dir: Path,
+    ext_dir: Path | None,
     candidate: Path | None = None,
     config: _merge.Config | None = None,
 ) -> CompatReport:
     """Analyze collisions across the ACTIVE (enabled) mods, optionally focused on
     *candidate*.
+
+    *ext_dir* None = every configured extensions root (game root, profile root,
+    Steam Workshop), which is the set the engine loads; a folder = that folder ONLY,
+    recorded in `CompatReport.scope_note` (release review, finding 5: this used to
+    scan the game root alone, so a profile-root mod was silently absent).
 
     If *candidate* is given, only collisions that involve it are reported (the
     "before I add this mod" mode). THE CANDIDATE IS THE COPY AT *candidate*
@@ -1074,7 +1083,8 @@ def analyze(
     # baseline. The "what if I added this" case is *candidate*, below -- an
     # explicit opt-in, not a side effect of how the world is enumerated.
     not_loaded: list[str] = []
-    mods = _registry.mods("active", [ext_dir], dropped=not_loaded, dlc_config=config)
+    mods = _registry.mods("active", _scan_dirs(ext_dir), dropped=not_loaded,
+                          dlc_config=config)
 
     cand_folder = None
     excluded: list[str] = []
@@ -1115,7 +1125,8 @@ def analyze(
     report = CompatReport(mods_scanned=len(mods), load_order=order,
                           candidate_path=(str(Path(candidate).absolute())
                                           if candidate is not None else ""),
-                          excluded_copies=excluded)
+                          excluded_copies=excluded,
+                          scope_note=ext_dir_only_note(ext_dir))
     for msg in not_loaded:
         # Not degraded: the engine does not load this mod, so it collides with
         # nothing -- but a collision it WOULD cause if fixed is not shown, so say so.
@@ -1126,6 +1137,12 @@ def analyze(
         # winner involving it — is a guess. The clean rows prove nothing about it.
         report.skip(msg, "load order degraded to folder order alone for this mod",
                     degraded=True)
+    for msg in getattr(mods, "notes", ()):
+        # What the mod SET assumes (a Workshop-root mod present, a case-only
+        # dependency match) rides on the ModList, not on the order's records above.
+        # Not degraded: nothing was skipped; the model's guess is NAMED.
+        if msg not in order_dropped:
+            report.skip("load-order model", msg)
     for low, per_mod in inv.items():
         if len(per_mod) < 2:
             continue
@@ -1167,6 +1184,8 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
         "Load order (winner = last): the engine's measured order (case-insensitive folders, "
         "dependencies in passes).",
     ]
+    if report.scope_note:
+        lines.append(f"Scope: {report.scope_note}")
     if report.candidate_path:
         # Always name the copy: two copies of one mod (enabled + staged) are the
         # normal case when checking an update, and the answer differs per copy.
@@ -1267,7 +1286,24 @@ def render(report: CompatReport, show_soft: bool = False) -> str:
     return "\n".join(lines)
 
 
-def _resolve_candidate(arg: str, ext_dir: Path) -> Path:
+def _scan_dirs(ext_dir: Path | None) -> list[Path] | None:
+    """The `dirs` for a `_registry.mods` read: None (every configured root) unless an
+    --ext-dir narrowed the run to one folder."""
+    return None if ext_dir is None else [ext_dir]
+
+
+def ext_dir_only_note(ext_dir: Path | None) -> str:
+    """The disclosure an --ext-dir run owes: it scanned that folder ONLY.
+
+    Shared by x4compat, x4stats and x4similar (release review, finding 5)."""
+    if ext_dir is None:
+        return ""
+    return (f"scanned ONLY --ext-dir {ext_dir}; mods in any other extensions root "
+            "(the profile's extensions folder, the Steam Workshop) are not in this run -- "
+            "omit --ext-dir to scan every configured root, the set the engine loads")
+
+
+def _resolve_candidate(arg: str, ext_dir: Path | None) -> Path:
     """Which copy of the candidate `check <arg>` means (AUDIT-2026-09-24 AN-1).
 
     An EXISTING path is that copy, even when a same-named mod sits in the extensions
@@ -1281,7 +1317,7 @@ def _resolve_candidate(arg: str, ext_dir: Path) -> Path:
         return p
     # "installed", not "active": naming a disabled mod is the "what if I switch it
     # on" question, and analyze() adds the candidate to the active set itself.
-    for m in _registry.mods("installed", [ext_dir]):
+    for m in _registry.mods("installed", _scan_dirs(ext_dir)):
         if m["folder"].lower() == arg.lower():
             return Path(m["path"])
     return p
@@ -1301,8 +1337,10 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="x4compat",
         description="Detect how the ENABLED (active) X4 mods collide over the effective "
-                    "XML tree -- the set the engine loads: on disk, enabled in its "
-                    "manifest and in the profile.")
+                    "XML tree -- the set the engine loads: on disk in any configured "
+                    "extensions root and enabled (the profile entry decides; the manifest's "
+                    "enabled= is only the default when the profile has none), with every "
+                    "required dependency loading.")
     p.add_argument("--version", action="version",
                    version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1313,19 +1351,23 @@ def main(argv: list[str] | None = None) -> int:
                          "PATH is the copy analysed (a same-named copy in the extensions "
                          "dir is then left out); a bare NAME means the copy in the "
                          "extensions dir. Omit it to analyse every enabled mod")
-    pc.add_argument("--ext-dir", help="extensions dir to scan "
-                    "(default: game-root extensions\\ from _registry)")
+    pc.add_argument("--ext-dir", help="scan ONLY this extensions dir (default: every "
+                    "configured root -- game-root extensions\\, the profile's extensions\\ "
+                    "and the Steam Workshop folder, from _registry)")
     pc.add_argument("--reference", help="unpacked base+DLC reference tree ($X4_REFERENCE)")
     pc.add_argument("--soft", action="store_true", help="also list benign SOFT overlaps")
     pc.add_argument("--json", action="store_true", help="machine-readable output")
 
     args = p.parse_args(argv)
 
-    ext_dir = Path(args.ext_dir) if args.ext_dir else _registry.require(
+    # No --ext-dir: EVERY configured root (the set the engine loads). The game root
+    # must still be configured -- without it there is no install to model.
+    ext_dir = Path(args.ext_dir) if args.ext_dir else None
+    check_dir = ext_dir if ext_dir is not None else _registry.require(
         _registry.GAME_EXTENSIONS, "the game extensions dir",
         "set X4_GAME (or X4_EXTENSIONS), or pass --ext-dir")
-    if not ext_dir.is_dir():
-        print(f"error: extensions dir not found: {ext_dir}", file=sys.stderr)
+    if not check_dir.is_dir():
+        print(f"error: extensions dir not found: {check_dir}", file=sys.stderr)
         return 2
     config = _merge.Config(reference=Path(args.reference)) if args.reference else _merge.Config()
     candidate = _resolve_candidate(args.candidate, ext_dir) if args.candidate else None
@@ -1347,6 +1389,7 @@ def main(argv: list[str] | None = None) -> int:
             "removed_first": [dataclasses.asdict(m) for m in report.removed_first],
             "candidate_path": report.candidate_path,
             "excluded_copies": report.excluded_copies,
+            "scope_note": report.scope_note,
             "degraded": bool(report.degraded),
         }
         print(json.dumps(payload, indent=2))
