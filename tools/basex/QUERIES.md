@@ -68,15 +68,31 @@ variable, or naming a database other than `--db` is refused with rc 2, and a zer
 that names no database at all is refused with rc 4. A negative over the whole database covers
 every path in it, so search the whole thing.
 
-**The scope can also be narrowed OUTSIDE a reach call's own argument list.**
-`collection('x4eff')[matches(document-uri(.),'libraries/wares')]//*[@id='x']` and `for $d in
-collection('x4eff') where contains(base-uri($d),'libraries/wares') return $d//*[@id='x']` both
-name the whole database in the call itself, then narrow it with a `document-uri`/`base-uri`/
-`db:path` test in a predicate or a `where` clause — MEASURED, reproduced by two people:
-"NEGATIVE CONFIRMED over 10970 of 10970 documents", rc 0, over a query that in fact addressed 9.
-Refused with rc 2, same wording, naming the function it saw. A call that only *returns*
-`document-uri` (`for $d in collection('x4eff') return document-uri($d)`, `//ware !
-document-uri(root(.))`) is not itself a test and answers normally.
+**The scope can also be narrowed OUTSIDE a reach call's own argument list** -- by a document's
+identity (`collection('x4eff')[matches(document-uri(.),'libraries/wares')]`), by position
+(`collection('x4eff')[position() le 9]`, `subsequence(collection('x4eff'), 1, 9)`), or through
+a route no text scan can read (`collection#1('x4eff/libraries')`). MEASURED: each printed
+"NEGATIVE CONFIRMED over 10970 of 10970 documents", rc 0, over a query that addressed a
+subset. A list of narrowing *shapes* could not keep up (a release review walked 11 of 12
+rewrites past one), so the rule is about *tokens*: the query, with comments removed and
+string-literal contents blanked, is searched anywhere for
+
+| class | tokens |
+|---|---|
+| identity | `document-uri` `base-uri` `path` (`db:path`, `fn:path`) `node-pre` `node-id` `generate-id` |
+| position | `position()` `last()` `head` `tail` `foot` `trunk` `subsequence` `slice` `items-*` `take-while` `remove` `index-of` `index-where` `partition`; `filter` `for-each` `for-each-pair` `fold-left` `fold-right` (XQuery 4 callbacks receive the position); FLWOR `at $i`, `count $c`, `window`; a numeric predicate (`[1]`, `[$n]`, `[count(.//x)]`) anywhere |
+| order | `<<` `>>` `is` |
+| modules | `util:` `hof:` `array:` `map:` `random:`, `array {`, a `?1` lookup |
+| indirect | a `#` function reference, a `Q{...}` EQName, `xquery:` `function-lookup` `load-xquery-module` `transform` `eval` |
+
+If one is present the query **still runs and its hits are reported**; only a zero is withheld
+(rc 4), with a line naming the token. Selecting by **content** is not narrowing -- every
+document was read and judged by what it holds -- so `collection('x4eff')[.//ware]//x` and
+`collection('x4eff')//ware[@id='x']` are still certified, and so is a token spelled inside a
+string literal or a comment. The rule over-reports on purpose: `//ware[1]` loses its
+certificate too, because once a sequence is bound or parenthesised a text scan cannot tell
+documents from elements. `refs` and `attr` are ask.py's own whole-database queries and are
+not scanned (`refs` returns `document-uri` to name each hit's file).
 
 ### Gap 4 — a fourth was found on 2026-08-01, and it was in the guard itself
 

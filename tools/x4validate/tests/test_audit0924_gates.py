@@ -118,9 +118,10 @@ def test_bx5_the_scope_refusal_only_advises_a_db_argparse_accepts(ask, capsys):
     ("db:get('x4eff')//nosuch", "x4eff"),
     ('fn:collection( "x4eff" )//nosuch', "x4eff"),
     ("(: doc('x4eff/a.xml') :) collection('x4eff')//nosuch", "x4eff"),   # a comment is no address
-    # db:path takes a NODE, so it is no database ADDRESS -- but COMPARED in a predicate it
-    # narrows the scope to one document, so that shape is now refused (below), 2026-09-26.
-    ("collection('x4raw')//*[@id = db:node-id(.)]", "x4raw"),
+    # `collection('x4raw')//*[@id = db:node-id(.)]` was a twin here until the v3.3.0 review:
+    # db:node-id is now a scope token (a zero is not certified wherever one appears), so it
+    # moved to the rc-4 list below. Its replacement keeps a content predicate in the twin.
+    ("collection('x4raw')//*[@id = 'x']", "x4raw"),
 ])
 def test_bx1_TWIN_a_whole_database_zero_is_still_confirmed(ask, capsys, query, db):
     ask._fake([])
@@ -136,15 +137,28 @@ def test_bx1_TWIN_a_whole_database_zero_is_still_confirmed(ask, capsys, query, d
     "collection('x4' || 'eff')//nosuch",
     "db:get-id('x4eff', 5)",
     "collection()//nosuch",
-    # was a whole-database TWIN until 2026-09-26: it addresses only the document at path
-    # 'x', and a zero over it certified "N of N" -- the overstated-denominator shape.
-    "collection('x4raw')//*[db:path(.) = 'x']",
 ])
 def test_bx1_every_partial_or_unreadable_address_is_refused(ask, capsys, query):
     ask._fake([])
     rc = ask.main(["xq", query, "--db", "x4eff"])
     cap = capsys.readouterr()
     assert rc == 2 and "NEGATIVE CONFIRMED" not in cap.out, (rc, cap)
+
+
+# A scope narrowed OUTSIDE a reach call's arguments RUNS, and only its zero is withheld (rc 4),
+# since the v3.3.0 review replaced the list of narrowing shapes with a token rule.
+# `collection('x4raw')//*[db:path(.) = 'x']` sat in the rc-2 list above, run with --db x4eff:
+# it was refused as a FOREIGN database, so it never tested the narrowing it was there for.
+# It is here now with the matching --db, together with the old db:node-id twin.
+@pytest.mark.parametrize("query", [
+    "collection('x4raw')//*[db:path(.) = 'x']",
+    "collection('x4raw')//*[@id = db:node-id(.)]",
+])
+def test_bx1_a_zero_from_a_query_that_can_narrow_its_documents_is_not_a_negative(ask, capsys, query):
+    ask._fake([])
+    rc = ask.main(["xq", query, "--db", "x4raw"])
+    out = capsys.readouterr().out
+    assert rc == 4 and "NEGATIVE CONFIRMED" not in out and "can narrow" in out, (rc, out)
 
 
 def test_bx1_a_zero_from_a_query_naming_NO_database_is_not_a_negative(ask, capsys):

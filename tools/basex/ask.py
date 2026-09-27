@@ -21,6 +21,25 @@ So this REFUSES to render a zero-result as a negative finding unless coverage.js
 says the index is complete or fully accounted. A positive result needs no such
 guard — one hit is one hit regardless of what else was missed.
 
+The denominator counts every document in the database, so a zero is certified only for a
+query that searched all of them:
+
+  * A query addressing PART of a database inside a reach call's own arguments --
+    doc(...), db:get('<db>', '<path>'), collection('<db>/<path>') -- or naming its
+    database through a non-literal, or naming a database other than --db, is refused
+    before it runs (rc 2).
+  * An xq query is then scanned (comments removed, string-literal contents blanked) for
+    TOKENS that can select documents by where they are rather than what they contain:
+    document identity (document-uri, base-uri, db:path/fn:path, db:node-pre, db:node-id,
+    generate-id), position (position, last, head, tail, subsequence, filter, for-each,
+    fold-left and kin, a numeric predicate such as [1] or [$n], FLWOR `at $i` / `count $c`
+    / windows), node order (<<, >>, is), the util:/hof:/array:/map:/random: modules, and
+    anything ask.py cannot read through (a `#` function reference, a Q{...} EQName, query
+    text evaluated from a string). If one is present the query still RUNS and its hits
+    are reported, but a zero is NOT a negative (rc 4), and the line says which token.
+    Selecting by CONTENT (`collection('x4eff')[.//ware]//x`) is not narrowing: every
+    document was read. refs/attr are ask.py's own queries and are not scanned.
+
 Which DB
 --------
   --db x4raw  (default)  files as written  -> "who WROTE this, in which mod"
@@ -181,15 +200,14 @@ def _xq_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-_XQ_COMMENT = re.compile(r"\(:(?:(?!\(:|:\)).)*:\)", re.S)
-
-
 def _strip_xq_comments(text: str) -> str:
-    """The query with its XQuery comments removed. They nest, so the innermost go first."""
-    prev = None
-    while prev != text:
-        prev, text = text, _XQ_COMMENT.sub("", text)
-    return text
+    """The query with each XQuery comment (they nest) replaced by one space.
+
+    Lexed in ONE pass with string literals (`_xq_lex`): a regex over the raw text used to
+    read `'(:' || ... || ':)'` -- two string literals -- as a comment and delete the code
+    between them, so `_db_reaches` and the token scan never saw it.
+    """
+    return _xq_lex(text, blank_strings=False)
 
 
 #: The databases `--db` accepts, i.e. the only ones ask.py holds a coverage report for.
@@ -256,197 +274,203 @@ def _db_reaches(query: str) -> list[dict]:
     return reaches
 
 
-# --- scope narrowed OUTSIDE the reach call's argument list (fu-ask, 2026-09-26) ---
+# --- can the query narrow WHICH documents it addresses? (v3.3.0 release review) ------
 #
-# `_db_reaches` above only ever looks INSIDE a reach call's own parentheses --
-# `doc(...)`, `db:get('<db>', '<path>')`, `collection('<db>/<path>')`. A query can
-# narrow its scope just as effectively OUTSIDE that argument list, by testing a
-# document-identity function in a predicate, a `where` clause, or a comparison:
+# `_db_reaches` above reads INSIDE a reach call's own argument list. A query can narrow its
+# scope just as well OUTSIDE it, and fu-ask (2026-09-26) answered with a list of narrowing
+# SHAPES: an identity function tested in a predicate, a `where` clause or a comparison.
+# MEASURED by the v3.3.0 release reviewer: 11 of 12 rewrites walked past that list -- a `let`
+# then a `where` on the variable, an arrow into contains(), tokenize(...)[3], a switch, a
+# filter() callback, subsequence(), `[position() le 9]`, db:node-pre, `collection#1(...)` --
+# each printing "NEGATIVE CONFIRMED over the whole database", rc 0. A blocklist of SHAPES
+# cannot converge: every way of USING a value is a new shape.
 #
-#   collection('x4eff')[matches(document-uri(.),'libraries/wares')]//*[@id='x']
-#   for $d in collection('x4eff') where contains(base-uri($d),'libraries/wares')
-#       return $d//*[@id='x']
+# So the rule is about TOKENS, not shapes. The query (comments removed, string-literal
+# contents blanked) is searched ANYWHERE for a small set of things that can select documents
+# by WHERE THEY ARE rather than by WHAT THEY CONTAIN. If one is present the query still runs
+# and every hit is reported; only a ZERO loses its certificate (rc 4, "not a finding"). The
+# asymmetry is deliberate: a token present in an innocent query costs one uncertified zero,
+# printed with its reason; a token missed costs a false negative quoted as proof.
 #
-# MEASURED (two people): both printed "NEGATIVE CONFIRMED over 10970 of 10970
-# documents", rc 0, over a query that in fact addressed 9 of them.
+# Selecting by CONTENT -- `collection('x4eff')[.//ware]//x` -- is NOT in the set: every
+# document was read and judged by what it holds, so the zero is a negative over all of them.
 #
-# Design choice, agreed rather than discovered: do not parse XQuery. Instead, name
-# the functions whose result IDENTIFIES a document (or a node/path inside one) and
-# refuse whenever one is used to TEST something -- inside a predicate `[...]`, a
-# `where` clause, or as an operand of matches/contains/starts-with/ends-with or a
-# comparison. A call that only APPEARS in the query (a `return`, an argument to an
-# unrelated function, a simple-map `!` that merely emits it) is not itself a test
-# and is left alone -- refusing those would refuse `for $d in collection('x4eff')
-# return document-uri($d)`, which addresses the whole database and answers fine.
+# Each class, and why it is in:
+#   identity  document-uri base-uri path node-pre node-id generate-id -- a value that names a
+#             document (or a node's place in one) instead of its content. `path` covers both
+#             db:path and fn:path; fn:path encodes sibling POSITIONS, which is the next class.
+#   position  position last subsequence(-where) head tail foot trunk slice items-at/-before/
+#             -after/-starting-where/-ending-where take-while remove index-of index-where
+#             partition, plus filter for-each for-each-pair fold-left fold-right: BaseX 12
+#             implements XQuery 4, whose callbacks receive the item's POSITION as a second
+#             argument, so a callback can select by position without spelling position().
+#             Also the FLWOR `at $i` and `count $c` clauses and tumbling/sliding `window`.
+#   numeric   a predicate that is a number, a variable, arithmetic over those, or a numeric
+#   predicate function with no comparison in it (`[1]`, `[$n]`, `[count(.//x)]`) -- a
+#             positional predicate. Anywhere, not only directly on a collection() call: once
+#             a sequence is bound to a variable or parenthesised, a text scan cannot tell
+#             documents from elements. `//ware[1]` therefore also loses its certificate.
+#   order     `<<` `>>` `is` -- node identity and document order.
+#   modules   util: hof: array: map: (positional and collision-deduplicating helpers; a map
+#             keeps ONE value per key), random: (selection by chance), and `array {` / a
+#             `?1` lookup (positional access into an array built from the documents).
+#   indirect  `#` (a function reference: `collection#1('x4eff/libraries')` reaches a path
+#             `_db_reaches` never sees), `Q{` (an EQName spells any function under its
+#             namespace URI, past every name above), and evaluation of query TEXT held in a
+#             string -- xquery:, function-lookup, load-xquery-module, transform, eval.
 #
-# `db:node-pre` / `db:node-id` are deliberately NOT in this set: they return a pre
-# or id VALUE, not a document identity by themselves, and whether a given use of
-# one narrows the scope needs judgement a text scan cannot make safely. Left as a
-# named residual (see the fix's commit message), not silently "handled".
-_IDENTITY_FNS = ("document-uri", "base-uri", "db:path")
-_IDENTITY_CALL = re.compile(
-    r"(?<![\w:.\-])(?:fn:)?(" + "|".join(re.escape(f) for f in _IDENTITY_FNS) + r")\s*\(")
+# NOT scanned: the queries ask.py builds itself (`refs`, `attr`). `q_refs` returns
+# document-uri(root($n)) to NAME each hit's file, it addresses every document, and scanning
+# it would withdraw the certificate from the tool's most-used negative.
+#
+# Named residuals (a text scan's limits, not handled): a quote character in a direct element
+# constructor's TEXT content (`<r>say 'hi</r>`) can desynchronise the string blanking; a
+# user-defined function in a prolog is not followed -- but a prolog already makes the count
+# wrapper fail to compile, and that zero is refused on its own (n_items is None).
 
-#: A call whose argument being an identity call is itself the filtering test,
-#: wherever it sits -- `matches(document-uri(.), 'x')` narrows the scope whether or
-#: not it also sits inside a `[...]` predicate or a `where` clause.
-_TEST_FNS = frozenset({"matches", "contains", "starts-with", "ends-with"})
+_TOKEN_FNS = {
+    "identity": ("document-uri", "base-uri", "path", "node-pre", "node-id", "generate-id"),
+    "position": ("position", "last", "subsequence", "subsequence-where", "head", "tail",
+                 "foot", "trunk", "slice", "items-at", "items-before", "items-after",
+                 "items-starting-where", "items-ending-where", "take-while", "remove",
+                 "index-of", "index-where", "partition", "filter", "for-each",
+                 "for-each-pair", "fold-left", "fold-right"),
+    "indirect": ("function-lookup", "load-xquery-module", "transform", "eval",
+                 "random-number-generator"),
+}
+_NAME_START = r"(?<![\w.\-$])"          # not the tail of a longer name, not a $variable
+_TOKEN_FN = re.compile(
+    _NAME_START + r"(?:[A-Za-z_][\w.\-]*:)?(?:"
+    + "|".join(re.escape(f) for f in sorted(
+        {f for fs in _TOKEN_FNS.values() for f in fs}, key=len, reverse=True))
+    + r")\s*[(#]")
+_TOKEN_MODULE = re.compile(_NAME_START + r"(?:util|hof|array|map|xquery|random):"
+                                         r"[A-Za-z_][\w.\-]*\s*[(#]")
+_TOKEN_OTHER = re.compile(
+    _NAME_START + r"(?:at|count)\s+\$"                         # FLWOR positional / count
+    + r"|" + _NAME_START + r"(?:tumbling|sliding)\s+window(?![\w.\-])"
+    + r"|<<|>>"                                                # document order
+    + r"|(?<![\w.\-$@/:])is(?![\w.\-:])"                       # node identity
+    + r"|" + _NAME_START + r"array\s*\{"                       # curly array constructor
+    + r"|\?\s*[\d$(]"                                          # positional lookup
+    + r"|[\w.\-:]*#"                                           # function reference / pragma
+    + r"|Q\{")                                                 # EQName
+_VAR = r"\$[A-Za-z_][\w.\-]*(?::[A-Za-z_][\w.\-]*)?"
+_NUM = r"(?:\d+(?:\.\d*)?(?:[eE][-+]?\d+)?|\.\d+)"
+_NUMERIC_PRED = re.compile(
+    rf"[-+]?\s*(?:{_NUM}|{_VAR})(?:\s*(?:[-+*]|div|idiv|mod)\s*[-+]?\s*(?:{_NUM}|{_VAR}))*")
+_NUMERIC_FN_PRED = re.compile(
+    r"(?:[A-Za-z_][\w.\-]*:)?(?:number|round|round-half-to-even|floor|ceiling|abs|count|sum"
+    r"|avg|min|max|string-length|integer|int|decimal|double|float|long|short|byte)\s*\(")
+_BOOLEANISH = re.compile(r"=|<|>|(?<![\w.\-$])(?:eq|ne|lt|le|gt|ge|and|or)(?![\w.\-])")
 
-#: Comparison operators/keywords: an identity call standing next to one of these is
-#: being tested against a value, the same filtering shape as a `[...]` predicate.
-# `=` never as part of `=>` (the arrow operator) or `:=` (a let / group-by binding):
-# neither compares, and both used to refuse a query that narrows nothing.
-_CMP_AFTER = re.compile(r"\s*(?:!=|<=|>=|=(?!>)|<|>|eq\b|ne\b|lt\b|gt\b|le\b|ge\b)")
-_CMP_BEFORE = re.compile(
-    r"(?:!=|<=|>=|(?<!:)=|<|>|(?<![\w:.\-])(?:eq|ne|lt|gt|le|ge))\s*\Z")
 
-#: The identifier immediately before a `(`, if there is one -- used to name the
-#: call whose argument list a position falls inside.
-_CALL_OPEN = re.compile(r"([A-Za-z_][\w:.\-]*)\s*\(\Z")
+def _xq_lex(text: str, *, blank_strings: bool) -> str:
+    """One left-to-right pass over XQuery text, so a comment and a string literal are each
+    recognised only where the OTHER is not open.
 
-#: A string literal's CONTENTS, single- or double-quoted, `''`/`""` doubling as the
-#: XQuery escape for a literal quote char.
-_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"", re.S)
+    Every comment (they nest) becomes one space. With *blank_strings*, a string literal keeps
+    its quotes but its contents become 'x' -- EXCEPT inside `{...}`, which in a direct
+    constructor's attribute value is an enclosed EXPRESSION (`<e a='{document-uri($d)}'/>`),
+    i.e. code; `{{`/`}}` are literal braces. Keeping braces in an ordinary string only ever
+    over-reports.
 
+    A quote directly after a word character is not taken to open a string: in code a literal
+    never touches a name, while in a constructor's text content (`<r>it's</r>`) the apostrophe
+    would otherwise swallow the query up to the next quote. Declining to open one only ever
+    leaves MORE text visible to the scan.
 
-def _blank_strings(text: str) -> str:
-    """*text* with every string literal's CONTENTS replaced by 'x', same length,
-    quotes kept in place -- so a literal that happens to spell a function name
-    (`'see document-uri() in the docs'`) can neither trigger this scan nor a
-    literal that hides a real one defeat it. Length and every other character's
-    position are unchanged, so an offset into the result also indexes the
-    original (comment-stripped) text.
+    Why one pass: stripping comments by regex first saw `'(:' = ':)'` -- two STRING literals --
+    as a comment and deleted everything between them, a token included.
     """
-    return _STRING_LITERAL.sub(
-        lambda m: m.group(0)[0] + "x" * (len(m.group(0)) - 2) + m.group(0)[-1], text)
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        if text.startswith("(:", i):
+            depth = 0
+            while i < n:
+                if text.startswith("(:", i):
+                    depth += 1
+                    i += 2
+                elif text.startswith(":)", i):
+                    depth -= 1
+                    i += 2
+                    if depth == 0:
+                        break
+                else:
+                    i += 1
+            out.append(" ")
+            continue
+        ch = text[i]
+        if ch in "'\"" and not (i and (text[i - 1].isalnum() or text[i - 1] == "_")):
+            j, depth = i + 1, 0
+            body: list[str] = []
+            while j < n:
+                c = text[j]
+                if c == ch:
+                    if text.startswith(ch * 2, j):          # '' / "" is an escaped quote
+                        body.append(ch * 2 if (depth or not blank_strings) else "xx")
+                        j += 2
+                        continue
+                    break
+                if c in "{}" and text.startswith(c * 2, j) and not depth:
+                    body.append(c * 2 if not blank_strings else "xx")
+                    j += 2
+                    continue
+                if c == "{":
+                    depth += 1
+                elif c == "}" and depth:
+                    depth -= 1
+                    body.append(c)
+                    j += 1
+                    continue
+                if depth and c in "'\"":                    # a nested literal inside {...}
+                    k = text.find(c, j + 1)
+                    k = n - 1 if k < 0 else k
+                    seg = text[j:k + 1]
+                    body.append(seg[0] + "x" * (len(seg) - 2) + seg[-1]
+                                if blank_strings and len(seg) >= 2 else seg)
+                    j = k + 1
+                    continue
+                body.append(c if (depth or not blank_strings or c == "{") else "x")
+                j += 1
+            out.append(ch + "".join(body) + (ch if j < n else ""))
+            i = j + 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
-def _matching_close(text: str, open_pos: int) -> int:
-    """Index of the ')' matching the '(' at *open_pos*, or len(text) if unmatched."""
-    depth = 0
-    for i in range(open_pos, len(text)):
-        if text[i] == "(":
-            depth += 1
-        elif text[i] == ")":
-            depth -= 1
-            if depth == 0:
-                return i
-    return len(text)
-
-
-def _predicate_mask(text: str) -> list[bool]:
-    """True at every position at depth > 0 inside a `[ ... ]`.
-
-    That is a predicate almost always, and an array constructor (same bracket)
-    occasionally -- over-included on purpose, since this scan prefers refusing a
-    query that turns out to be safe over missing one that is not.
-    """
-    mask = [False] * len(text)
-    depth = 0
+def _predicates(text: str) -> list[str]:
+    """The contents of every `[...]` in *text* (strings already blanked), innermost too."""
+    found, stack = [], []
     for i, ch in enumerate(text):
         if ch == "[":
-            depth += 1
-            mask[i] = True
-        elif ch == "]":
-            mask[i] = depth > 0
-            depth = max(0, depth - 1)
-        else:
-            mask[i] = depth > 0
-    return mask
-
-
-def _where_clause_spans(text: str) -> list[tuple[int, int]]:
-    """[start, end) of every FLWOR `where` clause's condition.
-
-    Found by tracking bracket/paren/brace depth from each `where` keyword forward
-    to the next clause keyword (`return`, `for`, `let`, `where`, `order by`,
-    `group by`, `count`, `window`) seen at the SAME depth -- enough to tell a
-    `where` from a nested FLWOR's own `return` inside it, without parsing XQuery.
-    """
-    spans = []
-    for m in re.finditer(r"(?<![\w:.\-])where(?![\w:.\-])", text):
-        start = m.end()
-        depth = 0
-        end = len(text)
-        i = start
-        while i < len(text):
-            ch = text[i]
-            if ch in "([{":
-                depth += 1
-            elif ch in ")]}":
-                if depth == 0:
-                    end = i
-                    break
-                depth -= 1
-            elif depth == 0:
-                km = re.match(r"(?:return|for|let|where|order\s+by|group\s+by|count|window)"
-                              r"(?![\w:.\-])", text[i:])
-                if km:
-                    end = i
-                    break
-            i += 1
-        spans.append((start, end))
-    return spans
-
-
-def _enclosing_call_names(text: str, positions: set[int]) -> dict[int, frozenset[str]]:
-    """For each position of interest, the set of function names whose argument
-    list encloses it -- one forward pass tracking '(' / ')' nesting. A '(' with no
-    identifier immediately before it (a bare grouping paren, `if (`, `return (`)
-    contributes an empty name and is otherwise harmless: nothing here tests for it.
-    """
-    found: dict[int, frozenset[str]] = {}
-    stack: list[str] = []
-    for i, ch in enumerate(text):
-        if i in positions:
-            found[i] = frozenset(stack)
-        if ch == "(":
-            m = _CALL_OPEN.search(text[:i + 1])
-            stack.append(m.group(1) if m else "")
-        elif ch == ")":
-            if stack:
-                stack.pop()
+            stack.append(i)
+        elif ch == "]" and stack:
+            found.append(text[stack.pop() + 1:i])
     return found
 
 
-def _identity_narrowing(stripped_query: str) -> list[str]:
-    """Every identity-function call in *stripped_query* (comments already gone)
-    that narrows the scope OUTSIDE a reach call's own argument list: one used
-    inside a predicate, a `where` clause, or a direct comparison / matches /
-    contains / starts-with / ends-with test. One description per call found,
-    naming the function, the snippet, and why it was flagged -- never why some
-    OTHER call was not; a call this scan does not flag is simply not reported,
-    which is not the same as proving it safe.
-    """
-    scan = _blank_strings(stripped_query)
-    calls = list(_IDENTITY_CALL.finditer(scan))
-    if not calls:
-        return []
-    pred_mask = _predicate_mask(scan)
-    where_spans = _where_clause_spans(scan)
-    starts = {m.start() for m in calls}
-    enclosing = _enclosing_call_names(scan, starts)
-
-    findings = []
-    for m in calls:
-        start = m.start()
-        open_paren = m.end() - 1
-        close_paren = _matching_close(scan, open_paren)
-        reasons = []
-        if pred_mask[start]:
-            reasons.append("in a predicate")
-        if any(s <= start < e for s, e in where_spans):
-            reasons.append("in a where clause")
-        test_fns = enclosing.get(start, frozenset()) & _TEST_FNS
-        if test_fns:
-            reasons.append("argument to " + "/".join(sorted(test_fns)))
-        after = close_paren + 1
-        if _CMP_AFTER.match(scan, after) or _CMP_BEFORE.search(scan[:start]):
-            reasons.append("compared")
-        if reasons:
-            snippet = stripped_query[start:close_paren + 1]
-            findings.append(f"{snippet} ({', '.join(reasons)})")
-    return findings
+def _scope_tokens(query: str) -> list[str]:
+    """Every token in *query* that can narrow which documents it addresses, in order of
+    appearance, deduplicated -- [] means a zero from it may be certified. See the block
+    comment above for each class and why it is in."""
+    scan = _xq_lex(query, blank_strings=True)
+    hits: list[tuple[int, str]] = []
+    for rx in (_TOKEN_FN, _TOKEN_MODULE, _TOKEN_OTHER):
+        hits += [(m.start(), re.sub(r"\s+", " ", m.group(0).strip())) for m in rx.finditer(scan)]
+    for body in _predicates(scan):
+        b = body.strip()
+        if _NUMERIC_PRED.fullmatch(b) or (_NUMERIC_FN_PRED.match(b) and not _BOOLEANISH.search(b)):
+            hits.append((scan.find("[" + body + "]"), "[" + re.sub(r"\s+", " ", b)[:40] + "]"))
+    seen, out = set(), []
+    for _pos, label in sorted(hits):
+        if label not in seen:
+            seen.add(label)
+            out.append(label)
+    return out
 
 
 def _git_bash_argv_state() -> tuple[str | None, bool]:
@@ -570,19 +594,14 @@ def main(argv=None) -> int:
     # refusals, all rc 2 and all BEFORE the run, because each makes the per-database
     # coverage and freshness the wrong yardstick for the answer, positive or zero.
     #
-    # fu-ask, 2026-09-26: `_db_reaches` only ever looks INSIDE a reach call's own
-    # argument list. A query can narrow its scope just as effectively OUTSIDE it --
-    # `collection('x4eff')[matches(document-uri(.),'libraries/wares')]` -- and MEASURED
-    # (two people) printed a whole-database denominator over 9 of 10970 documents, rc 0.
-    # `_identity_narrowing` catches that shape; see its docstring for what it does and
-    # does not flag.
+    # Scope narrowed OUTSIDE a reach call's arguments is NOT refused here: it is read by
+    # `_scope_tokens` and withholds only the zero's certificate, after the run (below).
     stripped_query = _strip_xq_comments(query)
     reaches = _db_reaches(stripped_query)
     unknown = [r["call"] for r in reaches if r["db"] is None]
     foreign = sorted({r["db"] for r in reaches if r["db"] and r["db"] != args.db})
     scoped = [r["call"] for r in reaches if r["db"] and r["scoped"]]
-    narrowing = _identity_narrowing(stripped_query)
-    if unknown or foreign or scoped or narrowing:
+    if unknown or foreign or scoped:
         if unknown:
             print(f"error: the query names its database through an expression ask.py "
                   f"cannot read: {'; '.join(unknown)}", file=sys.stderr)
@@ -593,17 +612,12 @@ def main(argv=None) -> int:
                   f"'{args.db}'.", file=sys.stderr)
             print(f"       Coverage and staleness would be judged against "
                   f"'{args.db}', which is not what you queried.", file=sys.stderr)
-        if scoped or narrowing:
+        if scoped:
             print(f"error: the query addresses PART of a database: "
-                  f"{'; '.join(scoped + narrowing)}", file=sys.stderr)
+                  f"{'; '.join(scoped)}", file=sys.stderr)
             print("       The coverage denominator counts every document in the "
                   "database; a zero over one path is not a zero over those, and a "
                   "mistyped path matches nothing at all.", file=sys.stderr)
-            if narrowing:
-                print("       A document-identity function tested in a predicate, a "
-                      "where clause, or a comparison narrows the scope the same way, "
-                      "even though it never appears inside the reach call's own "
-                      "argument list.", file=sys.stderr)
             print("       Search the whole database instead -- a negative over all of "
                   "it covers every path in it.", file=sys.stderr)
         # Advise only what argparse will accept: `--db x4eff/libraries` was once
@@ -855,6 +869,20 @@ def main(argv=None) -> int:
         print(f"  collection('{args.db}'), no db:get('{args.db}') -- so its empty result")
         print(f"  is not a search of {args.db}, and {indexed} of {expected} documents is not")
         print("  its denominator. Address the database in the query and re-run.")
+        return 4
+
+    # A QUERY THAT CAN NARROW WHICH DOCUMENTS IT ADDRESSES is not scored against all of them
+    # (v3.3.0 release review; see `_scope_tokens`). Only `xq`: refs/attr are ask.py's own
+    # queries, which address every document. Checked after "names no database", whose reason
+    # is the more basic one.
+    scope_tokens = _scope_tokens(stripped_query) if args.mode == "xq" else []
+    if scope_tokens:
+        print(f"\n  ** NOT A NEGATIVE FINDING. ** The query uses {', '.join(scope_tokens)},")
+        print("  which can narrow the documents it addresses -- by a document's identity,")
+        print("  its position, or a route ask.py cannot read -- so the zero is not a negative")
+        print(f"  over the {indexed} of {expected} documents in {args.db}. Its hits, had there been")
+        print("  any, would stand. For a negative over the whole database, re-run selecting")
+        print("  by CONTENT only (element names, attributes, values), without these.")
         return 4
 
     missing = (expected or 0) - (indexed or 0)

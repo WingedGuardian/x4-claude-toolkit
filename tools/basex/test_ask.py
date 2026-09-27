@@ -772,166 +772,187 @@ def test_TWIN_no_as_received_notice_for_an_argv_query_outside_Git_Bash(monkeypat
     assert "as received" not in capsys.readouterr().out
 
 
-# --- scope narrowed OUTSIDE the reach call's argument list (fu-ask, 2026-09-26) -------------
+# --- a zero is certified only when NOTHING in the query can narrow the documents -------------
 #
-# `_db_reaches` above only ever reads INSIDE a reach call's own argument list -- `doc(...)`,
-# `db:get('<db>', '<path>')`, `collection('<db>/<path>')`. A query narrows its scope just as
-# effectively OUTSIDE it, by testing a document-identity function (`document-uri`, `base-uri`,
-# `db:path`) in a predicate, a `where` clause, or a comparison. MEASURED, reproduced by two
-# people: `collection('x4eff')[matches(document-uri(.),'libraries/wares')]//*[@id='x']` printed
-# "NEGATIVE CONFIRMED over 10970 of 10970 documents", rc 0 -- true addressed: 9.
-#
-# Four grammar classes below (predicate, where, let-then-filter, a nested/bare comparison),
-# each a DIFFERENT shape than a wrapper call sitting directly next to the reach call -- and then
-# the falsification twins: a call that only RETURNS or is merely spelled inside a string/comment
-# must answer, not refuse.
+# History. fu-ask (2026-09-26) refused a query that tested a document-identity function in a
+# predicate, a `where` clause or a comparison -- a list of narrowing SHAPES. The v3.3.0 release
+# review then walked 12 rewrites past it (a `let` then a `where` on the variable, an arrow into
+# contains(), tokenize(...)[3], string-length(...) < 30, filter() with a callback, switch,
+# db:node-pre, a positional predicate, subsequence(), a `collection#1` function reference, an
+# EQName spelling); 11 printed "NEGATIVE CONFIRMED over the whole database", rc 0. A list of
+# shapes cannot converge. The rule is now about TOKENS: if the query (comments removed, string
+# literal contents blanked) contains anything that can select documents by WHERE they are --
+# identity, position, node order, a function reference, an EQName, query text evaluated from a
+# string -- the query still RUNS and its hits are reported, but a zero is not certified (rc 4).
+# Selecting by CONTENT (`collection('x4eff')[.//ware]`) is not narrowing by address: every
+# document was examined, so that zero stays certified.
 
-def test_SHAPE_A_predicate_with_matches_on_document_uri_is_refused(monkeypatch, capsys):
-    _fake_basex(monkeypatch, "5")
-    _stale(monkeypatch, fresh=True)
-    rc = ask.main(["--db", "x4eff", "xq",
-                  "collection('x4eff')[matches(document-uri(.),'libraries/wares')]"
-                  "//*[@id='zzqqxx_nohit']"])
-    text = "".join(capsys.readouterr())
-    assert rc == 2, text
-    assert "addresses PART of a database" in text and "document-uri(.)" in text, text
+#: The release reviewer's 12 bypasses, verbatim (scratchpad relreview/r6-live-basex/probe_ask.py).
+REVIEWER_BYPASSES = [
+    "for $d in collection('x4eff') let $u := document-uri($d) where contains($u,'libraries/wares') return $d//ware[@id='zz']",
+    "for $d in collection('x4eff') return if (document-uri($d) => contains('libraries/wares')) then $d//ware[@id='zz'] else ()",
+    "for $d in collection('x4eff') return if (tokenize(document-uri($d),'/')[3] = 'libraries') then $d//ware[@id='zz'] else ()",
+    "filter(collection('x4eff'), function($d){ substring(base-uri($d),8,9) eq 'libraries' })//ware[@id='zz']",
+    "collection('x4eff') ! (let $u := base-uri(.) return .[$u = '/x4eff/libraries/wares.xml'])//ware[@id='zz']",
+    "for $d in collection('x4eff') return switch (document-uri($d)) case '/x4eff/libraries/wares.xml' return $d//ware[@id='zz'] default return ()",
+    "collection('x4eff')[position() le 9]//ware[@id='zz']",
+    "subsequence(collection('x4eff'), 1, 9)//ware[@id='zz']",
+    "for $d in collection('x4eff') where db:node-pre($d) lt 100 return $d//ware[@id='zz']",
+    "let $c := collection('x4eff') return collection#1('x4eff/libraries')//ware[@id='zz']",
+    "for $d in collection('x4eff') return if (string-length(document-uri($d)) < 30) then $d//ware else ()",
+    "collection('x4eff')[Q{http://www.w3.org/2005/xpath-functions}document-uri(.) = '/x4eff/libraries/wares.xml']//ware",
+]
 
-
-def test_SHAPE_B_where_clause_with_contains_on_base_uri_is_refused(monkeypatch, capsys):
-    _fake_basex(monkeypatch, "5")
-    _stale(monkeypatch, fresh=True)
-    rc = ask.main(["--db", "x4eff", "xq",
-                  "for $d in collection('x4eff') "
-                  "where contains(base-uri($d),'libraries/wares') "
-                  "return $d//*[@id='zzqqxx_nohit']"])
-    text = "".join(capsys.readouterr())
-    assert rc == 2, text
-    assert "addresses PART of a database" in text and "base-uri($d)" in text, text
-
-
-def test_SHAPE_F_db_get_with_a_predicate_on_document_uri_is_refused(monkeypatch, capsys):
-    _fake_basex(monkeypatch, "5")
-    _stale(monkeypatch, fresh=True)
-    rc = ask.main(["--db", "x4eff", "xq",
-                  "db:get('x4eff')[matches(document-uri(.),'libraries/wares')]"
-                  "//*[@id='zzqqxx_nohit']"])
-    text = "".join(capsys.readouterr())
-    assert rc == 2, text
-    assert "addresses PART of a database" in text and "document-uri(.)" in text, text
-
-
-def test_SHAPE_G_predicate_with_starts_with_on_document_uri_is_refused(monkeypatch, capsys):
-    _fake_basex(monkeypatch, "5")
-    _stale(monkeypatch, fresh=True)
-    rc = ask.main(["--db", "x4eff", "xq",
-                  "collection('x4eff')[starts-with(document-uri(.),'/x4eff/libraries/')]"
-                  "//*[@id='zzqqxx_nohit']"])
-    text = "".join(capsys.readouterr())
-    assert rc == 2, text
-    assert "addresses PART of a database" in text and "document-uri(.)" in text, text
-
-
-def test_let_then_filter_narrowing_is_refused(monkeypatch, capsys):
-    """The grammar class where the predicate sits on a VARIABLE bound to the reach call, not
-    on the call itself -- `_db_reaches` never even looks at `$w`, so a fix scoped to that
-    function alone cannot see this one."""
-    _fake_basex(monkeypatch, "5")
-    _stale(monkeypatch, fresh=True)
-    rc = ask.main(["--db", "x4eff", "xq",
-                  "let $w := collection('x4eff') return $w[contains(base-uri(.), 'x')]"])
-    text = "".join(capsys.readouterr())
-    assert rc == 2, text
-    assert "addresses PART of a database" in text and "base-uri(.)" in text, text
-
-
-def test_a_bare_comparison_two_predicates_deep_is_refused(monkeypatch, capsys):
-    """No matches()/contains() wrapper -- a raw `= 'foo'` comparison, nested two predicates
-    deep, so a fix that only looked at the outermost `[...]` would miss it."""
-    _fake_basex(monkeypatch, "5")
-    _stale(monkeypatch, fresh=True)
-    rc = ask.main(["--db", "x4eff", "xq",
-                  "collection('x4eff')//ware[range[document-uri(.) = 'foo']]"])
-    text = "".join(capsys.readouterr())
-    assert rc == 2, text
-    assert "addresses PART of a database" in text and "document-uri(.)" in text, text
-
-
-def test_the_refusal_NAMES_the_function_it_saw(monkeypatch, capsys):
-    """The instruction was to extend the existing wording to name the function, not just to
-    refuse -- pin that the snippet actually appears, not merely that some refusal fired."""
-    _fake_basex(monkeypatch, "5")
-    _stale(monkeypatch, fresh=True)
-    rc = ask.main(["--db", "x4eff", "xq",
-                  "collection('x4eff')[matches(document-uri(.),'libraries/wares')]//ware"])
-    text = "".join(capsys.readouterr())
-    assert rc == 2
-    assert "document-uri(.)" in text, text
-
-
-# --- falsification twins: none of these may be refused -------------------------------------
-
-def test_TWIN_return_only_document_uri_is_not_refused(monkeypatch, capsys):
-    """`document-uri` merely APPEARING in the output -- never tested against anything --
-    addresses the whole database and must answer."""
-    _fake_basex(monkeypatch, "libraries/wares.xml")
-    _stale(monkeypatch, fresh=True)
-    rc = ask.main(["--db", "x4eff", "xq",
-                  "for $d in collection('x4eff') return document-uri($d)"])
-    text = "".join(capsys.readouterr())
-    assert rc == 0, text
-    assert "addresses PART of a database" not in text, text
-
-
-def test_TWIN_simple_map_return_only_document_uri_is_not_refused(monkeypatch, capsys):
-    """The simple-map (`!`) grammar class: it EMITS document-uri per item, it does not test
-    it against anything, so it must not be refused either."""
-    _fake_basex(monkeypatch, "libraries/wares.xml")
-    _stale(monkeypatch, fresh=True)
-    rc = ask.main(["--db", "x4eff", "xq", "collection('x4eff')//ware ! document-uri(root(.))"])
-    text = "".join(capsys.readouterr())
-    assert rc == 0, text
-    assert "addresses PART of a database" not in text, text
-
-
-def test_TWIN_document_uri_inside_a_STRING_LITERAL_is_not_refused(monkeypatch, capsys):
-    """A literal that happens to spell the function name must not trigger this -- the scan
-    blanks string literal CONTENTS before looking for it."""
-    _fake_basex(monkeypatch, "5")
-    _stale(monkeypatch, fresh=True)
-    rc = ask.main(["--db", "x4eff", "xq",
-                  "count(collection('x4eff')[@note = 'calls document-uri(.) = x'])"])
-    text = "".join(capsys.readouterr())
-    assert rc == 0, text
-    assert "addresses PART of a database" not in text, text
-
-
-def test_TWIN_document_uri_inside_a_COMMENT_is_not_refused(monkeypatch, capsys):
-    """Comments are stripped before this scan ever runs (same pass `_db_reaches` already
-    relies on), so one cannot trigger a refusal -- or hide a real one."""
-    _fake_basex(monkeypatch, "5")
-    _stale(monkeypatch, fresh=True)
-    rc = ask.main(["--db", "x4eff", "xq",
-                  "(: document-uri(.) = 'x' :) count(collection('x4eff')//ware)"])
-    text = "".join(capsys.readouterr())
-    assert rc == 0, text
-    assert "addresses PART of a database" not in text, text
-
-
-# A binding or an arrow is not a comparison: `:=` ends in `=`, and `=>` starts with it.
-# Both were read as "compared" and refused a query that narrows nothing (review, 2026-09-26).
-@pytest.mark.parametrize("q", [
-    "for $w in collection('x4eff')//ware group by $u := document-uri(root($w)) return $u",
-    "for $w in collection('x4eff')//ware let $u := base-uri($w) return $u",
-    "collection('x4eff')//ware ! document-uri(root(.)) => string-join(',')",
-])
-def test_TWIN_a_binding_or_arrow_is_not_a_comparison(q):
-    assert ask._identity_narrowing(ask._strip_xq_comments(q)) == []
-
-
-@pytest.mark.parametrize("q", [
-    "collection('x4eff')[document-uri(.) = '/x4eff/libraries/wares.xml']//ware",
+#: The shapes fu-ask already refused (pre-run, rc 2). Under the token rule they RUN and their
+#: zero is not certified -- still never a NEGATIVE CONFIRMED.
+FU_ASK_SHAPES = [
+    "collection('x4eff')[matches(document-uri(.),'libraries/wares')]//*[@id='zzqqxx_nohit']",
+    "for $d in collection('x4eff') where contains(base-uri($d),'libraries/wares') return $d//*[@id='zzqqxx_nohit']",
+    "db:get('x4eff')[matches(document-uri(.),'libraries/wares')]//*[@id='zzqqxx_nohit']",
+    "collection('x4eff')[starts-with(document-uri(.),'/x4eff/libraries/')]//*[@id='zzqqxx_nohit']",
+    "let $w := collection('x4eff') return $w[contains(base-uri(.), 'x')]",
+    "collection('x4eff')//ware[range[document-uri(.) = 'foo']]",
     "collection('x4eff')['/x4eff/libraries/wares.xml' = document-uri(.)]//ware",
-    "collection('x4eff')[document-uri(.) != '/x']//ware",
+]
+
+#: Further shapes the token classes cover, one per class the reviewer did not reach, so each
+#: class is pinned by at least one query of its own.
+OTHER_CLASSES = [
+    ("collection('x4eff')[last()]//ware", "last("),
+    ("head(collection('x4eff'))//ware", "head("),
+    ("tail(collection('x4eff'))//ware", "tail("),
+    ("remove(collection('x4eff'), 1)//ware", "remove("),
+    ("for-each(collection('x4eff'), function($d) { $d })//ware", "for-each("),
+    ("fold-left(collection('x4eff'), (), function($a, $d) { ($a, $d) })//ware", "fold-left("),
+    ("for $d at $i in collection('x4eff') where $i lt 10 return $d//ware", "at $"),
+    ("for $d in collection('x4eff') count $c where $c lt 10 return $d//ware", "count $"),
+    ("for tumbling window $w in collection('x4eff') start when true() return $w//ware", "window"),
+    ("collection('x4eff')[1]//ware", "[1]"),
+    ("let $n := 3 return collection('x4eff')[$n]//ware", "[$n]"),
+    ("collection('x4eff')[count(.//ware)]//ware", "[count("),
+    ("for $d in collection('x4eff') where db:node-id($d) lt 9 return $d//ware", "node-id("),
+    ("for $d in collection('x4eff') where db:path($d) = 'x' return $d//ware", "path("),
+    ("collection('x4eff')[generate-id(.) = 'x']//ware", "generate-id("),
+    ("collection('x4eff')[. << collection('x4eff')[9]]//ware", "<<"),
+    ("let $f := collection('x4eff')[9] return collection('x4eff')[. is $f]//ware", " is "),
+    ("util:item(collection('x4eff'), 2)//ware", "util:"),
+    ("array { collection('x4eff') }?3//ware", "array {"),
+    ("(collection('x4eff'), xquery:eval('()'))//ware", "xquery:"),
+    ("function-lookup(xs:QName('fn:head'), 1)(collection('x4eff'))//ware", "function-lookup("),
+    ("collection('x4eff')[random:double() lt 0.5]//ware", "random:"),
+    ("map:merge(collection('x4eff') ! map { 'k': . })?k//ware", "map:"),
+    # an attribute value template is an EXPRESSION inside quotes -- blanking string contents
+    # must not hide it
+    ("for $d in collection('x4eff') let $e := <e a='{document-uri($d)}'/> where contains($e/@a, 'l') return $d//ware", "document-uri("),
+    # a comment opener INSIDE a string literal is not a comment -- stripping it as one used to
+    # swallow everything up to the next ':)', token and all
+    ("collection('x4eff')[('(:', document-uri(.), ':)') = '/x4eff/a.xml']//ware", "document-uri("),
+    # a `}` inside a nested literal within an enclosed expression does not close it
+    ("for $d in collection('x4eff') let $e := <e a='{concat(\"}\", document-uri($d))}'/> "
+     "where contains($e/@a, 'l') return $d//ware", "document-uri("),
+    # an apostrophe in a constructor's TEXT content does not open a string literal
+    ("(<r>it's</r>, collection('x4eff')[position() lt 9])//ware", "position("),
+]
+
+ALL_UNCERTIFIABLE = REVIEWER_BYPASSES + FU_ASK_SHAPES + [q for q, _ in OTHER_CLASSES]
+
+#: Must still certify: whole-database, content-only queries -- including ones that SPELL a
+#: token inside a string literal or a comment, or use a word that merely contains one.
+MUST_CERTIFY = [
+    "collection('x4eff')//ware[@id='x']",
+    "collection('x4eff')[.//ware]//x",
+    "collection('x4eff')[@note = 'calls document-uri(.) = x']//ware",
+    "collection('x4eff')//ware[@note = 'position() last() head( subsequence( #1 Q{x}']",
+    "(: document-uri(.) = 'x', position() le 9, collection#1 :) collection('x4eff')//ware",
+    "collection('x4eff')//lastname/position",           # names that CONTAIN a token word
+    "collection('x4eff')//ware[@position = 'head']",
+    "for $head in collection('x4eff')//ware[@id='x'] return $head",
+    "for $w in collection('x4eff')//ware where count($w/price) = 0 return $w",
+    "collection('x4eff')//ware[@id = '1']",             # a STRING '1' is not a position
+    "db:get('x4eff')//ware[@id='x']",
+]
+
+
+@pytest.mark.parametrize("q", ALL_UNCERTIFIABLE)
+def test_a_ZERO_from_a_query_that_can_narrow_by_address_is_NOT_certified(monkeypatch, capsys, q):
+    _complete_zero(monkeypatch)
+    rc = ask.main(["--db", "x4eff", "xq", q])
+    cap = capsys.readouterr()
+    assert rc == 4, (rc, cap)
+    assert "NEGATIVE CONFIRMED" not in cap.out, cap.out
+    assert "NOT A NEGATIVE FINDING" in cap.out and "can narrow" in cap.out, cap.out
+
+
+@pytest.mark.parametrize("q", ALL_UNCERTIFIABLE)
+def test_TWIN_the_same_queries_RUN_and_their_hits_are_reported(monkeypatch, capsys, q):
+    """The token rule withholds CERTIFICATION, never the answer: a hit is a hit."""
+    _fake_basex(monkeypatch, "<ware id='zz'/>")
+    _stale(monkeypatch, fresh=True)
+    rc = ask.main(["--db", "x4eff", "xq", q])
+    cap = capsys.readouterr()
+    assert rc == 0, (rc, cap)
+    assert "1 item(s) in x4eff" in cap.out and "addresses PART" not in cap.err, cap
+
+
+@pytest.mark.parametrize("q,token", OTHER_CLASSES)
+def test_the_uncertified_zero_NAMES_the_token_it_saw(monkeypatch, capsys, q, token):
+    _complete_zero(monkeypatch)
+    assert ask.main(["--db", "x4eff", "xq", q]) == 4
+    out = capsys.readouterr().out
+    named = ask._scope_tokens(q)
+    assert any(token.strip() in n for n in named), (token, named)
+    assert all(n in out for n in named), (named, out)
+
+
+@pytest.mark.parametrize("q", MUST_CERTIFY)
+def test_TWIN_a_whole_database_content_query_is_still_certified(monkeypatch, capsys, q):
+    _complete_zero(monkeypatch)
+    rc = ask.main(["--db", "x4eff", "xq", q])
+    out = capsys.readouterr().out
+    assert rc == 0 and "NEGATIVE CONFIRMED over 100 of 100" in out, (ask._scope_tokens(q), out)
+
+
+def test_refs_is_certified_though_its_own_query_RETURNS_document_uri(monkeypatch, capsys):
+    """`q_refs` returns `document-uri(root($n))` to NAME the file of each hit. ask.py wrote that
+    query itself and it addresses every document, so the token scan must not apply to it --
+    otherwise every `refs` negative, the tool's most-used claim, would stop being certified."""
+    assert ask._scope_tokens(ask.q_refs("x4eff", "zz")), "premise: the refs query spells a token"
+    _complete_zero(monkeypatch)
+    rc = ask.main(["refs", "zz_no_such_id", "--db", "x4eff"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "NEGATIVE CONFIRMED over 100 of 100" in out, out
+
+
+# Finding 2 of the v3.3.0 review: `$d => document-uri()` was refused rc 2 as "compared" --
+# the `>` of the arrow `=>` read as a comparison. A query that merely RETURNS a document's URI
+# must run and report its hits.
+@pytest.mark.parametrize("q", [
+    "for $d in collection('x4eff') return $d => document-uri()",
+    "for $d in collection('x4eff') return $d => base-uri()",
+    "for $d in collection('x4eff') return document-uri($d)",
+    "collection('x4eff')//ware ! document-uri(root(.))",
+    "collection('x4eff')//ware ! [document-uri(root(.)), string(@id)]",
 ])
-def test_a_real_comparison_either_side_is_still_refused(q):
-    assert ask._identity_narrowing(ask._strip_xq_comments(q)) != []
+def test_a_query_RETURNING_a_document_uri_runs_and_reports_its_hits(monkeypatch, capsys, q):
+    _fake_basex(monkeypatch, "/x4eff/libraries/wares.xml")
+    _stale(monkeypatch, fresh=True)
+    rc = ask.main(["--db", "x4eff", "xq", q])
+    cap = capsys.readouterr()
+    assert rc == 0 and "/x4eff/libraries/wares.xml" in cap.out, cap
+
+
+def test_the_scope_note_comes_AFTER_the_database_checks(monkeypatch, capsys):
+    """A query that names no database at all keeps ITS reason: the token note is not the
+    first thing a reader needs when there was no search in the first place."""
+    _complete_zero(monkeypatch)
+    rc = ask.main(["--db", "x4eff", "xq", "(1, 2, 3)[position() > 5]"])
+    out = capsys.readouterr().out
+    assert rc == 4 and "names no database" in out, out
+
+
+def test_the_pre_run_address_refusal_is_UNCHANGED(monkeypatch, capsys):
+    """`_db_reaches` still refuses scope narrowed inside a reach call's own arguments BEFORE
+    the run (rc 2) -- the token rule is additive, it replaced only the shape list."""
+    _complete_zero(monkeypatch)
+    rc = ask.main(["--db", "x4eff", "xq", "collection('x4eff/libraries')//ware"])
+    assert rc == 2 and "addresses PART of a database" in capsys.readouterr().err
