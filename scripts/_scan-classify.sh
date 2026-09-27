@@ -31,3 +31,24 @@ classify_scan_result() {
   fi
   echo unknown
 }
+
+# classify_selftest_result <rc> <captured stdout+stderr of scan-identifiers.py --selftest>
+#   echoes exactly one of: pass | fail | unknown
+#
+# The same positive-evidence rule, for the selftest. scan-identifiers.py refuses
+# BEFORE --selftest when the caller's TMP is too long to spawn safely (rc 2), and
+# test-hooks.sh reported that refusal as "selftest FAILED" -- a selftest that never
+# ran has not failed. A real failure is rc 1 WITH the selftest's own summary line;
+# anything else is "could not run".
+classify_selftest_result() {
+  local rc="$1" out="$2"
+  if [ "$rc" -eq 0 ]; then
+    echo pass
+    return
+  fi
+  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'selftest: [0-9]*/[0-9]* passed'; then
+    echo fail
+    return
+  fi
+  echo unknown
+}

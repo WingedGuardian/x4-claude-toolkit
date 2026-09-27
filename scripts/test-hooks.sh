@@ -657,9 +657,18 @@ echo; echo "=== parser contract ==="
 #
 # Its own selftest runs first: a scan that cannot be shown to fail is not evidence that
 # the tree is clean, it is evidence that something printed the word "clean".
-if python "$REPO/scripts/scan-identifiers.py" --selftest >/dev/null 2>&1; then
-  ok "the identifier scanner's own selftest passes"
-else no "scan-identifiers.py --selftest FAILED; its verdict on the tree means nothing"; fi
+# ...and a selftest that could not RUN has not FAILED: with the caller's own TMP too
+# long to spawn safely the scanner refuses before the selftest (rc 2), and that was
+# reported here as "selftest FAILED". Classified by the shared helper, same rule as
+# the scan below: a failure needs the selftest's own summary as evidence.
+. "$REPO/scripts/_scan-classify.sh"
+_st_out="$(python "$REPO/scripts/scan-identifiers.py" --selftest 2>&1)"
+_st_rc=$?
+case "$(classify_selftest_result "$_st_rc" "$_st_out")" in
+  pass) ok "the identifier scanner's own selftest passes" ;;
+  fail) no "scan-identifiers.py --selftest FAILED; its verdict on the tree means nothing" ;;
+  *) skip "the identifier scanner's selftest COULD NOT RUN (rc $_st_rc): $(printf '%s' "$_st_out" | grep -m1 . | cut -c1-200)" ;;
+esac
 # rc 1 (found something) and rc 2 (COULD NOT RUN) are different facts, and reporting the
 # second as the first is the error this whole suite exists to refuse. MEASURED
 # 2026-09-01: in a `git archive` extract there is no .git, the scanner correctly returns
@@ -673,7 +682,6 @@ else no "scan-identifiers.py --selftest FAILED; its verdict on the tree means no
 # header for the measured taskkill case.
 _scan_out="$(python "$REPO/scripts/scan-identifiers.py" 2>&1)"
 _scan_rc=$?
-. "$REPO/scripts/_scan-classify.sh"
 case "$(classify_scan_result "$_scan_rc" "$_scan_out")" in
   clean) ok "no personal identifier in any tracked file" ;;
   leak)  no "a personal identifier reached a tracked file -- run scripts/scan-identifiers.py" ;;

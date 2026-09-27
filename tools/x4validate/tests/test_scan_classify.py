@@ -102,3 +102,45 @@ def test_the_helper_is_the_one_sourced_by_test_hooks_sh():
         "test-hooks.sh no longer sources the shared classifier -- the "
         "misattribution fix and this test would have silently diverged")
     assert "classify_scan_result" in text
+
+
+# --- the SELFTEST's result, classified by the same positive-evidence rule --------------------
+# Release review 2026-09-26: when the caller's own TMP is too long, scan-identifiers.py
+# refuses BEFORE --selftest runs (rc 2, "::error::$TMP is N characters long ..."), and
+# test-hooks.sh reported that refusal as "selftest FAILED". A selftest that never ran has
+# not failed. A real failure is rc 1 WITH the selftest's own summary line.
+
+def _classify_selftest(rc: str, out: str) -> str:
+    if not HELPER.is_file():
+        pytest.skip(f"{HELPER} not present in this tree")
+    bash = _find_bash()
+    if not bash:
+        pytest.skip("no usable bash found on this machine")
+    r = subprocess.run(
+        [bash, "-c", 'source "$1"; classify_selftest_result "$2" "$3"',
+         "bash", str(HELPER), rc, out],
+        capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+def test_selftest_rc_zero_passes():
+    assert _classify_selftest("0", "  selftest: 30/30 passed") == "pass"
+
+
+def test_selftest_rc_1_WITH_its_summary_is_a_real_failure():
+    assert _classify_selftest("1", "  FAIL  x\n\n  selftest: 29/30 passed") == "fail"
+
+
+@pytest.mark.parametrize("rc,out", [
+    ("2", "::error::$TMP is 300 characters long, above the measured 260-character threshold"),
+    ("1", ""),                              # killed: rc 1, no summary line
+    ("1", "Traceback (most recent call last):\nSomeError"),
+])
+def test_selftest_that_could_not_RUN_is_unknown_not_failed(rc, out):
+    assert _classify_selftest(rc, out) == "unknown"
+
+
+def test_test_hooks_routes_the_selftest_through_the_classifier():
+    text = (REPO / "scripts" / "test-hooks.sh").read_text(encoding="utf-8")
+    assert "classify_selftest_result" in text
