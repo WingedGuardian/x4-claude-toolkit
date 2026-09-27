@@ -204,3 +204,56 @@ def test_profile_entries_include_the_profile_disabled_probe(capsys):
     out = capsys.readouterr().out
     assert '<extension id="lo_probe_d_profoff" enabled="false"/>' in out
     assert '<extension id="lo_probe_d_profon" enabled="true"/>' in out
+
+
+# --- round 3 (2026-09-26): prove a profile-root file was APPLIED, and read the apply order ---
+# Round 2 showed the engine LISTS profile-root mods (Extensions dialog) but the log never names
+# that folder, so "not in the signature sequence" could not tell "not applied" from "applied,
+# unsigned-and-unlogged". Every chain probe now carries a patch that can NEVER match: if its
+# file is applied at all, the engine logs No-matching-node naming it, in apply order.
+
+def _proof_line(folder, root="profile"):
+    base = (f"C:{BS}Users{BS}user{BS}Documents{BS}Egosoft{BS}X4{BS}1{BS}extensions"
+            if root == "profile" else "extensions")
+    tag = folder.rsplit("_", 1)[-1]
+    return (f"[=ERROR=] 0.00 No matching node for path '//ware[@id='energycells']/@loproof_{tag}'"
+            f" in patch file '{base}{BS}{folder}{BS}libraries{BS}wares'. Skipping node." + chr(10))
+
+
+def test_every_chain_probe_carries_a_proof_op():
+    for p in lop.CHAIN:
+        assert "@loproof_" in lop.PROBES[p][3], p
+
+
+def test_a_proof_line_is_evidence_of_application_not_a_chain_error():
+    lines = [_proof_line("lo_probe_x_b"), _nomatch_abs("lo_probe_x_d"), _proof_line("lo_probe_x_d")]
+    _order, errors = lop.read_log(lines)
+    assert errors == {"lo_probe_x_d": 1}, "a proof line must never read as a chain miss"
+    assert lop.read_proofs(lines) == ["lo_probe_x_b", "lo_probe_x_d"]   # apply order, deduped
+
+
+def test_proofs_make_the_chain_classifiable_without_signature_lines(tmp_path):
+    lop.build(tmp_path / "b", only="lo_probe_x_")
+    lines = [_sig(p) for p in ("lo_probe_x_a", "lo_probe_x_c")]
+    lines += [_proof_line(p, "game") for p in ("lo_probe_x_a", "lo_probe_x_c")]
+    lines += [_nomatch("lo_probe_x_c")]
+    lines += [_proof_line(p) for p in ("lo_probe_x_b", "lo_probe_x_d")]
+    log = tmp_path / "debug.txt"
+    log.write_text("".join(lines), encoding="utf-8")
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = lop.score(tmp_path / "b", log)
+    out = buf.getvalue()
+    assert "cross-root layout: GAME_ROOT_FIRST" in out, out
+    assert "apply order (proof lines): lo_probe_x_a, lo_probe_x_c, lo_probe_x_b, lo_probe_x_d" in out, out
+    assert rc == 0, out
+
+
+def test_build_only_writes_the_selected_subset_and_its_prediction(tmp_path):
+    lop.build(tmp_path, only="lo_probe_x_")
+    built = sorted(d.name for d in tmp_path.iterdir() if d.is_dir())
+    assert built == sorted(p for p in lop.PROBES if p.startswith("lo_probe_x_"))
+    pred = json.loads((tmp_path / "PREDICTION.json").read_text(encoding="utf-8"))
+    assert set(pred["relative_order"]) <= set(built)
+    assert lop.built_probes(tmp_path) == built

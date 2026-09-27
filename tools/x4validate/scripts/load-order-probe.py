@@ -1,6 +1,6 @@
 r"""A deliberate experiment that makes the engine SHOW its extension load order.
 
-    uv run python scripts/load-order-probe.py build   <dir>          # write probe mods + PREDICTION.json
+    uv run python scripts/load-order-probe.py build   <dir> [--only <prefix>]  # probe mods + PREDICTION.json
     uv run python scripts/load-order-probe.py deploy  <dir> [--apply] # through deploy-mod.py's guards
     uv run python scripts/load-order-probe.py score   <dir> [debug.txt]
     uv run python scripts/load-order-probe.py remove  [--apply]       # only folders THIS tool wrote
@@ -53,6 +53,16 @@ def _add(attr: str) -> str:
 
 def _use(attr: str) -> str:
     return f'<replace sel="//ware[@id=\'{WARE}\']/@{attr}">2</replace>'
+
+
+PROOF_ATTR = "loproof_"
+
+
+def _proof(tag: str) -> str:
+    """A replace that can NEVER match (no mod adds @loproof_*): the engine logs
+    No-matching-node for it exactly when this file is APPLIED, so the line proves
+    application even where no signature line is ever written (the profile root)."""
+    return f'<replace sel="//ware[@id=\'{WARE}\']/@{PROOF_ATTR}{tag}">1</replace>'
 
 
 # folder: (manifest id, dependencies [(id, optional)], enabled, wares.xml ops, what it tests)
@@ -118,12 +128,16 @@ PROBES: dict[str, tuple[str, list[tuple[str, bool]], bool, str, str]] = {
     # replaces the attribute the previous one added, so the No-matching-node pattern alone
     # tells three layouts apart (see classify_roots) -- even if profile files never log a
     # signature line. e/f test a REQUIRED dependency across the roots, both directions.
-    "lo_probe_x_a": ("lo_probe_x_a", [], True, _add("loxa"), "game root, chain 1 of 4"),
-    "lo_probe_x_b": ("lo_probe_x_b", [], True, _use("loxa") + _add("loxb"),
+    # ROUND 3: each also carries a PROOF op (`_proof`) that can never match, so its file
+    # logs No-matching-node iff it was APPLIED -- and those lines come out in apply order.
+    "lo_probe_x_a": ("lo_probe_x_a", [], True, _add("loxa") + _proof("a"),
+                     "game root, chain 1 of 4"),
+    "lo_probe_x_b": ("lo_probe_x_b", [], True, _use("loxa") + _add("loxb") + _proof("b"),
                      "PROFILE root, chain 2 of 4"),
-    "lo_probe_x_c": ("lo_probe_x_c", [], True, _use("loxb") + _add("loxc"),
+    "lo_probe_x_c": ("lo_probe_x_c", [], True, _use("loxb") + _add("loxc") + _proof("c"),
                      "game root, chain 3 of 4"),
-    "lo_probe_x_d": ("lo_probe_x_d", [], True, _use("loxc"), "PROFILE root, chain 4 of 4"),
+    "lo_probe_x_d": ("lo_probe_x_d", [], True, _use("loxc") + _proof("d"),
+                     "PROFILE root, chain 4 of 4"),
     "lo_probe_x_e": ("lo_probe_x_e", [("lo_probe_x_a", False)], True, _add("loxe"),
                      "PROFILE root, REQUIRED dependency on a GAME-root mod"),
     "lo_probe_x_f": ("lo_probe_x_f", [("lo_probe_x_d", False)], True, _add("loxf"),
@@ -147,7 +161,7 @@ def _rule_key(name: str) -> str:
     return "".join(c.upper() if len(c.upper()) == 1 else c for c in name)
 
 
-def predict() -> dict:
+def predict(only: str | None = None) -> dict:
     """The prediction, derived ONLY from the rule measured on the real log. Shapes that log
     could not reach are UNKNOWN, with the alternatives written down before the launch."""
     known = [f for f in PROBES if f not in {
@@ -157,7 +171,8 @@ def predict() -> dict:
         "lo_probe_k_ßa", "lo_probe_k_sz",
         # round 2: never measured, and anything in or depending on the profile root
         "lo_probe_d_optdis", "lo_probe_d_profoff", "lo_probe_d_optprofoff",
-        "lo_probe_d_reqprofoff", "lo_probe_x_f", *PROFILE_ROOT}]
+        "lo_probe_d_reqprofoff", "lo_probe_x_f", *PROFILE_ROOT}
+        and (only is None or f.startswith(only))]
     ids = {PROBES[f][0]: f for f in known}
     order, done = [], set()
     names = sorted(known, key=_rule_key)
@@ -174,9 +189,9 @@ def predict() -> dict:
             break
     return {
         "relative_order": order,
-        "applies": {
+        "applies": {p: v for p, v in {
             "lo_probe_cb_use": "OK", "lo_probe_cc_use": "NO_MATCH", "lo_probe_ce_dep": "OK",
-        },
+        }.items() if only is None or p.startswith(only)},
         "unknown": {
             "sharp_s": "lo_probe_k_ßa before lo_probe_k_sz (Python str.upper -> 'SS') "
                        "OR after (per-character / ordinal upper, NTFS-like)",
@@ -216,9 +231,15 @@ def _manifest(folder: str) -> str:
             f'{dep_xml}\n</content>\n')
 
 
-def build(out: Path) -> None:
+def build(out: Path, only: str | None = None) -> None:
+    """Write the probes (all, or those whose folder starts with *only*) + PREDICTION.json.
+    A subset build predicts only its own probes, and deploy/score work from what was
+    BUILT (`built_probes`), so a focused re-run never drags the full set along."""
     out.mkdir(parents=True, exist_ok=True)
-    for folder, (_mid, _deps, _en, ops, _what) in PROBES.items():
+    chosen = {f: v for f, v in PROBES.items() if only is None or f.startswith(only)}
+    if not chosen:
+        raise ProbeRefused(f"--only {only!r} selects no probe")
+    for folder, (_mid, _deps, _en, ops, _what) in chosen.items():
         d = out / folder
         (d / "libraries").mkdir(parents=True, exist_ok=True)
         (d / "content.xml").write_bytes(_manifest(folder).encode("utf-8"))
@@ -226,8 +247,13 @@ def build(out: Path) -> None:
             f'<?xml version="1.0" encoding="utf-8"?>\n<diff>\n  {ops}\n</diff>\n'.encode("utf-8"))
         (d / MARKER).write_bytes(b"written by scripts/load-order-probe.py\n")
     (out / "PREDICTION.json").write_bytes(
-        json.dumps(predict(), indent=2, ensure_ascii=False).encode("utf-8"))
-    print(f"built {len(PROBES)} probe mods + PREDICTION.json in {out}")
+        json.dumps(predict(only), indent=2, ensure_ascii=False).encode("utf-8"))
+    print(f"built {len(chosen)} probe mods + PREDICTION.json in {out}")
+
+
+def built_probes(src: Path) -> list[str]:
+    """The probe folders a `build` actually wrote into *src* (marker present), sorted."""
+    return sorted(p for p in PROBES if (src / p / MARKER).is_file())
 
 
 def _deploy_module():
@@ -253,7 +279,9 @@ def write_profile_probes(src: Path, dst_root: Path, apply: bool) -> None:
     Narrow by construction: only the probes named in PROFILE_ROOT, only into folders that do
     NOT exist yet (nothing is ever overwritten), every guard before any write, and every
     written file re-read and compared byte for byte."""
-    names = sorted(PROFILE_ROOT)
+    names = sorted(p for p in PROFILE_ROOT if (src / p / MARKER).is_file())
+    if not names:
+        raise ProbeRefused(f"{src} holds no profile-root probe; run `build` first")
     if not dst_root.is_dir():
         raise ProbeRefused(f"the profile extensions folder {dst_root} does not exist")
     for n in names:
@@ -279,13 +307,14 @@ def write_profile_probes(src: Path, dst_root: Path, apply: bool) -> None:
 def deploy(src: Path, apply: bool) -> int:
     dm = _deploy_module()
     ext, prof = _ext_root(), _profile_root()
-    names = sorted(p for p in PROBES if root_of(p) == "game")
-    missing = [n for n in PROBES if not (src / n / MARKER).is_file()]
-    if missing:
-        print(f"refused: {src} is not a build of this tool (missing {missing[:3]}); "
+    built = built_probes(src)
+    if not built:
+        print(f"refused: {src} is not a build of this tool (no probe folder in it); "
               "run `build` first", file=sys.stderr)
         return 2
-    if prof is None:
+    names = [p for p in built if root_of(p) == "game"]
+    needs_profile = any(root_of(p) == "profile" for p in built)
+    if prof is None and needs_profile:
         print("refused: no profile extensions folder is configured (X4_PROFILE), and the "
               "round-2 probes need one", file=sys.stderr)
         return 2
@@ -298,9 +327,9 @@ def deploy(src: Path, apply: bool) -> int:
     try:
         for n in names:                      # every guard before any write
             dm.deploy(n, False, src_root=src, ext_root=ext, out=lambda *_: None)
-        if apply:
+        if apply and needs_profile:
             prof.mkdir(exist_ok=True)        # X4 creates it only once a mod lives there
-        if prof.is_dir():
+        if needs_profile and prof.is_dir():
             write_profile_probes(src, prof, apply=False)   # its guards, no write
     except (dm.Refused, ProbeRefused) as exc:
         print(f"refused: {exc}", file=sys.stderr)
@@ -309,7 +338,7 @@ def deploy(src: Path, apply: bool) -> int:
     for n in names:
         ok &= dm.deploy(n, apply, src_root=src, ext_root=ext)
     print(f"profile root: {prof}")
-    if apply:
+    if apply and needs_profile:
         write_profile_probes(src, prof, apply=True)
     if apply and ext is not None:
         pair = [n for n in os.listdir(ext) if n in ("lo_probe_k_ßa", "lo_probe_k_sz")]
@@ -403,26 +432,46 @@ def read_log(lines) -> tuple[list[str], dict[str, int]]:
         if m and m.group(1).lower() in probes and m.group(1).lower() not in order:
             order.append(m.group(1).lower())
         m = NOMATCH.search(line)
-        if m and m.group(1).lower() in probes:
+        if m and m.group(1).lower() in probes and "@" + PROOF_ATTR not in line:
             errors[m.group(1).lower()] = errors.get(m.group(1).lower(), 0) + 1
     return order, errors
+
+
+def read_proofs(lines) -> list[str]:
+    """Probe folders whose PROOF op logged No-matching-node, in log (= apply) order, each
+    once. A folder here was APPLIED; a proof line is never a chain miss (read_log)."""
+    probes = {p.lower() for p in PROBES}
+    seen: list[str] = []
+    for line in lines:
+        if "@" + PROOF_ATTR not in line:
+            continue
+        m = NOMATCH.search(line)
+        if m and m.group(1).lower() in probes and m.group(1).lower() not in seen:
+            seen.append(m.group(1).lower())
+    return seen
 
 
 def score(src: Path, log: Path) -> int:
     pred = json.loads((src / "PREDICTION.json").read_text(encoding="utf-8"))
     with log.open(encoding="utf-8", errors="replace") as fh:
         order, errors = read_log(fh)
-    if not order:
+    with log.open(encoding="utf-8", errors="replace") as fh:
+        proofs = read_proofs(fh)
+    built = [p.lower() for p in built_probes(src)] or [p.lower() for p in PROBES]
+    if not order and not proofs:
         print(f"cannot score: no probe appears in {log} -- were they deployed and the game "
               "launched after deploying?", file=sys.stderr)
         return 2
-    loaded = set(order)
+    # LOADED = signature-checked OR proven applied. A profile-root file never gets a
+    # signature line (round 2), so without the proof op it could only ever read "absent".
+    loaded = set(order) | set(proofs)
     fails = 0
     want = [p.lower() for p in pred["relative_order"]]
     got = [p for p in order if p in want]
     missing = [p for p in want if p not in loaded]
-    print(f"probes loaded: {len(order)} of {len(PROBES)}   log: {log}")
+    print(f"probes loaded: {len(loaded & set(built))} of {len(built)} built   log: {log}")
     print(f"engine order : {order}")
+    print(f"apply order (proof lines): {', '.join(proofs) if proofs else '(none)'}")
     if missing:
         fails += 1
         print(f"FAIL predicted-loaded probes absent: {missing}")
@@ -440,7 +489,14 @@ def score(src: Path, log: Path) -> int:
     print("\nRECORDED (were UNKNOWN before the launch):")
 
     def pos(p):
-        return order.index(p.lower()) if p.lower() in loaded else None
+        return order.index(p.lower()) if p.lower() in order else None
+
+    def state(p):
+        if p.lower() in order:
+            return f"LOADED at {order.index(p.lower())}"
+        if p.lower() in proofs:
+            return f"APPLIED (proof #{proofs.index(p.lower())}, no signature line)"
+        return "NOT loaded"
     ss, sz = pos("lo_probe_k_ßa"), pos("lo_probe_k_sz")
     print(f"  sharp s  : {'before' if ss is not None and sz is not None and ss < sz else 'after' if ss is not None and sz is not None else 'n/a'} "
           f"lo_probe_k_sz  (ßa pos {ss}, sz pos {sz})")
@@ -449,9 +505,10 @@ def score(src: Path, log: Path) -> int:
               "lo_probe_d_profon", "lo_probe_d_profnoattr",
               "lo_probe_d_optdis", "lo_probe_d_profoff", "lo_probe_d_optprofoff",
               "lo_probe_d_reqprofoff", *CHAIN, "lo_probe_x_e", "lo_probe_x_f"):
+        if p.lower() not in built:
+            continue
         where = f" [{root_of(p)} root]" if p.startswith("lo_probe_x_") else ""
-        print(f"  {p:22s}: {'LOADED at ' + str(pos(p)) if pos(p) is not None else 'NOT loaded'}"
-              f"{where}")
+        print(f"  {p:22s}: {state(p)}{where}")
     dlc = "NO_MATCH" if errors.get("a_lo_probe_dlc") else (
         "OK" if "a_lo_probe_dlc" in loaded else "NOT LOADED")
     print(f"  a_lo_probe_dlc (DLC before mods?): {dlc}")
@@ -474,8 +531,20 @@ def main(argv: list[str]) -> int:
     cmd, rest = argv[0], argv[1:]
     apply = "--apply" in rest
     rest = [a for a in rest if a != "--apply"]
+    only = None
+    if "--only" in rest:
+        k = rest.index("--only")
+        if k + 1 >= len(rest):
+            print("--only needs a folder prefix, e.g. --only lo_probe_x_", file=sys.stderr)
+            return 2
+        only = rest[k + 1]
+        rest = rest[:k] + rest[k + 2:]
     if cmd == "build" and rest:
-        build(Path(rest[0]))
+        try:
+            build(Path(rest[0]), only)
+        except ProbeRefused as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 2
         return 0
     if cmd == "deploy" and rest:
         return deploy(Path(rest[0]), apply)
