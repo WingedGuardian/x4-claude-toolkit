@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -109,6 +110,11 @@ def _unparseable_by_root(manifest: dict, reference: Path, extensions: Path) -> d
 
 NEWLINE = chr(10)
 
+#: The form `_modfiles.overlay_vpaths` writes for an unreadable catalog: an overlay FOLDER
+#: name (no `/`, unlike every vpath entry), then the fixed words. test_coverage.py feeds this
+#: the real function's output, so a change of wording there fails here.
+_UNREADABLE_CATALOG = re.compile(r"[^/:]+: catalog unreadable \(")
+
 
 def coverage_effective(db: str, eff_manifest: Path, out_path: Path) -> int:
     """Reconcile the x4eff DB against what build-effective.py said it produced.
@@ -129,7 +135,16 @@ def coverage_effective(db: str, eff_manifest: Path, out_path: Path) -> int:
         return 2
     indexed_total = int(raw.strip() or 0)
 
-    unbuilt = man.get("failures", [])
+    failures = man.get("failures", [])
+    # AN UNREADABLE CATALOG IS NOT ONE MISSING VPATH (v3.3.0 release review). The build
+    # records an overlay whose packed catalog could not be read as ONE `failures` entry
+    # (`_modfiles.overlay_vpaths`: "<mod>: catalog unreadable (...)"), and this counted it
+    # as one "vpath with no effective tree" -- a legitimate, licensed absence -- while every
+    # packed member of that catalog, a number nobody has, was never enumerated. MEASURED:
+    # status complete, supports_negative_claim true, "NEGATIVE CONFIRMED over 10000 of
+    # 10000". It is F35's shape (a source the enumeration never reached), so F35's verdict.
+    catalogs = [f for f in failures if _UNREADABLE_CATALOG.match(f)]
+    unbuilt = [f for f in failures if f not in catalogs]
     merge_skips = man.get("merge_skips", [])
     deficit = expected_total - indexed_total
     status = "complete" if deficit == 0 else "unexplained"
@@ -153,6 +168,12 @@ def coverage_effective(db: str, eff_manifest: Path, out_path: Path) -> int:
                      + ", ".join(enum["sources_contributing_nothing"]))
     else:
         enum_note = ""
+    if catalogs:
+        status = "unexplained"
+        enum_note = ((enum_note + "; ") if enum_note else "") + (
+            f"{len(catalogs)} overlay catalog(s) could not be read, so their packed "
+            "members were never enumerated and no count of them exists: "
+            + "; ".join(catalogs))
 
     print(f"  {'root':<8}  {'produced':>9}  {'indexed':>9}  {'delta':>7}")
     print(f"  {'x4eff':<8}  {expected_total:>9}  {indexed_total:>9}  {indexed_total-expected_total:>+7}"
@@ -205,6 +226,8 @@ def coverage_effective(db: str, eff_manifest: Path, out_path: Path) -> int:
         "status": status,
         "unparseable": merge_skips[:50],
         "vpaths_without_effective_tree": len(unbuilt),
+        # Named in full: a count of the members they hold does not exist.
+        "unreadable_catalogs": catalogs,
         # Carried through so a caller can RENDER the caveat instead of reading a
         # bare boolean: a negative over x4eff is a claim about the tree MINUS
         # these. The human output always said so; nothing machine-readable did.

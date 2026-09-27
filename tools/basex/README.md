@@ -125,7 +125,7 @@ distinction the `x4validate` CLIs make.
 | **`coverage.py`** | 0 | complete |
 | | 2 | refused — a required root was not supplied (an empty root resolves to the *current directory*, which would publish a denominator measured over the wrong population) |
 | | 3 | **accounted** — a deficit exists but every missing document is named, root by root (`base`, `mods`: each root's shortfall equals its own malformed files). Still supports a negative claim. *`x4raw` path only.* |
-| | 4 | unexplained deficit — cannot support a negative claim |
+| | 4 | unexplained deficit, or (`x4eff` path) an overlay catalog that could not be read — its packed members were never enumerated, so no count of them exists; named in `coverage-x4eff.json` → `unreadable_catalogs` — cannot support a negative claim |
 | **`staleness.py`** | 0 | fresh |
 | | 5 | stale |
 | | 6 | freshness undeterminable |

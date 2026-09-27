@@ -817,6 +817,14 @@ def main(argv=None) -> int:
         print(f"  {indexed} of {expected} documents indexed, and the shortfall is")
         print("  UNEXPLAINED — something is wrong with the build, so 'zero hits' here")
         print("  cannot be distinguished from 'we never looked'.")
+        # An indexed count that matches the expected one says nothing is missing; an
+        # unreadable CATALOG is missing from BOTH sides, so name it (v3.3.0 review).
+        catalogs = cov.get("unreadable_catalogs") or []
+        if catalogs:
+            print(f"  {len(catalogs)} overlay catalog(s) could not be read; their packed members")
+            print("  were never enumerated, so they are absent from both counts above:")
+            for c in catalogs[:15]:
+                print(f"    - {c}")
         return 4
 
     # Coverage is satisfied — the build indexed what it claimed. Currency is a

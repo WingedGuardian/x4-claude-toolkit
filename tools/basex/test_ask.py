@@ -956,3 +956,31 @@ def test_the_pre_run_address_refusal_is_UNCHANGED(monkeypatch, capsys):
     _complete_zero(monkeypatch)
     rc = ask.main(["--db", "x4eff", "xq", "collection('x4eff/libraries')//ware"])
     assert rc == 2 and "addresses PART of a database" in capsys.readouterr().err
+
+
+# --- an unreadable CATALOG is named, not counted as one vpath (v3.3.0 review, finding 3) ----
+
+def _unexplained_with_catalog(monkeypatch, catalogs):
+    _fake_basex(monkeypatch, "")
+    monkeypatch.setattr(ask, "load_coverage", lambda db: {
+        "db": db, "status": "unexplained", "supports_negative_claim": False,
+        "indexed": {"total": 100}, "expected": {"total": 100}, "unparseable": [],
+        "unreadable_catalogs": catalogs})
+    _stale(monkeypatch, fresh=True)
+
+
+def test_an_unreadable_CATALOG_is_named_in_the_refusal(monkeypatch, capsys):
+    """100 of 100 indexed reads as nothing missing; the refusal must say WHAT is missing --
+    a catalog whose packed members were never enumerated, so no count of them exists."""
+    fail = "somemod: catalog unreadable (ValueError: bad cat) -- only its LOOSE files were enumerated"
+    _unexplained_with_catalog(monkeypatch, [fail])
+    rc = ask.main(["--db", "x4eff", "xq", "collection('x4eff')//ware[@id='zz']"])
+    out = capsys.readouterr().out
+    assert rc == 4 and "NEGATIVE CONFIRMED" not in out, out
+    assert fail in out and "never enumerated" in out, out
+
+
+def test_TWIN_no_catalog_line_when_none_is_unreadable(monkeypatch, capsys):
+    _unexplained_with_catalog(monkeypatch, [])
+    assert ask.main(["--db", "x4eff", "xq", "collection('x4eff')//ware[@id='zz']"]) == 4
+    assert "never enumerated" not in capsys.readouterr().out

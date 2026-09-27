@@ -169,3 +169,84 @@ def test_a_REAL_denominator_still_supports_a_negative(tmp_path, monkeypatch):
     d = json.loads(out.read_text(encoding="utf-8"))
     assert d["status"] == "complete"
     assert d["supports_negative_claim"] is True
+
+
+# ------------------------------------------------------------------------------
+# An UNREADABLE CATALOG is not one missing vpath (v3.3.0 release review, finding 3).
+#
+# `_modfiles.overlay_vpaths` records an overlay whose packed catalog cannot be read as ONE
+# entry in `failures` -- "<mod>: catalog unreadable (...) -- only its LOOSE files were
+# enumerated" -- and coverage_effective counted every `failures` entry as one "vpath with no
+# effective tree": a LEGITIMATE absence it discloses and still licenses. MEASURED by the
+# reviewer: status complete, supports_negative_claim true, and ask.py printed "NEGATIVE
+# CONFIRMED over 10000 of 10000 documents ... 1 vpath(s) with no effective tree" while
+# every packed member of that catalog -- a count nobody knows -- was never enumerated.
+#
+# That is F35's shape (a source the enumeration never reached is absent from the produced
+# count, the failure list and the deficit alike), so it gets F35's verdict: unexplained.
+
+
+def _real_catalog_failure(monkeypatch, tmp_path) -> str:
+    """The failure string exactly as the build writes it -- produced by the real
+    `_modfiles.overlay_vpaths` over a catalog reader that raises, never retyped here."""
+    from x4validate import _effective, _modfiles
+    monkeypatch.setattr(_effective, "base_vpaths", lambda config, pattern: {})
+    def unreadable(d, packed_only=True):
+        raise ValueError("bad cat")
+    monkeypatch.setattr(_modfiles._cat, "mod_vfs", unreadable)
+    ov = tmp_path / "somemod"
+    ov.mkdir()
+    failures: list[str] = []
+    _modfiles.overlay_vpaths(None, [ov], failures)
+    assert len(failures) == 1, failures
+    return failures[0]
+
+
+def _manifest_with(tmp_path, failures, **extra):
+    man = tmp_path / "eff-manifest.json"
+    man.write_text(json.dumps({
+        "counts": {"documents_total": 1234},
+        "enumeration": {"sources_configured": 2, "documents_enumerated": 5000,
+                        "sources": {"reference": {"count": 5000, "read": "loose"}},
+                        "sources_contributing_nothing": []},
+        "failures": failures, "merge_skips": [], "out": str(tmp_path), **extra}),
+        encoding="utf-8")
+    return man
+
+
+def test_an_UNREADABLE_CATALOG_does_not_support_a_negative(tmp_path, monkeypatch):
+    fail = _real_catalog_failure(monkeypatch, tmp_path)
+    monkeypatch.setattr(coverage, "basex_query", lambda *a, **k: "1234")
+    out = tmp_path / "coverage-x4eff.json"
+    rc = coverage.coverage_effective("x4eff", _manifest_with(tmp_path, [fail]), out)
+    d = json.loads(out.read_text(encoding="utf-8"))
+    assert rc == 4 and d["status"] == "unexplained", d
+    assert d["supports_negative_claim"] is False
+    assert d["unreadable_catalogs"] == [fail]
+    # it is not ALSO counted as a vpath without an effective tree: it is not one
+    assert d["negative_claim_excludes"]["vpaths_without_effective_tree"] == 0
+
+
+def test_TWIN_an_ordinary_vpath_failure_still_supports_a_negative(tmp_path, monkeypatch):
+    """The refusal is about a CATALOG, not about any failure: a vpath with no effective
+    tree is a legitimate absence (the engine does nothing there either) and stays licensed,
+    disclosed through negative_claim_excludes as before."""
+    monkeypatch.setattr(coverage, "basex_query", lambda *a, **k: "1234")
+    out = tmp_path / "coverage-x4eff.json"
+    rc = coverage.coverage_effective("x4eff", _manifest_with(
+        tmp_path, ["md/x.xml: no effective tree (base absent and no overlay parsed)"]), out)
+    d = json.loads(out.read_text(encoding="utf-8"))
+    assert rc == 0 and d["status"] == "complete" and d["supports_negative_claim"] is True, d
+    assert d["unreadable_catalogs"] == []
+    assert d["negative_claim_excludes"]["vpaths_without_effective_tree"] == 1
+
+
+def test_TWIN_a_vpath_whose_NAME_mentions_a_catalog_is_not_one(tmp_path, monkeypatch):
+    """Matched on the `<mod>: catalog unreadable (` form the build writes, not on the words
+    appearing anywhere in a line."""
+    monkeypatch.setattr(coverage, "basex_query", lambda *a, **k: "1234")
+    out = tmp_path / "coverage-x4eff.json"
+    rc = coverage.coverage_effective("x4eff", _manifest_with(
+        tmp_path, ["md/catalog unreadable.xml: write failed (disk full)"]), out)
+    d = json.loads(out.read_text(encoding="utf-8"))
+    assert rc == 0 and d["unreadable_catalogs"] == [], d
