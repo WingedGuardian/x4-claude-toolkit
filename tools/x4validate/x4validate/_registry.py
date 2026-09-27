@@ -437,6 +437,11 @@ def _active_filter(installed: list[dict], prof: dict[str, bool],
          or excluded-by-this-rule all exclude the mod -- applied to a fixpoint, so a
          dependency CYCLE loads neither side. Optional dependencies never exclude.
          A `<dependency>` naming only a version is a game requirement, ignored here.
+         A dependency resolves only within the mod's OWN extensions root (game root,
+         profile root, ...): MEASURED 2026-09-26, probe rounds 2-3 -- a cross-root
+         required dependency is refused in BOTH directions (BLIND-SPOTS F141). An
+         installed DLC counts for every root (UNMEASURED for a non-game root: no probe
+         put a DLC-dependent mod in the profile root).
       3. Two folders sharing a manifest id BOTH load (the clash is recorded by
          `_loadorder.compute_load_order`, not here).
 
@@ -460,7 +465,9 @@ def _active_filter(installed: list[dict], prof: dict[str, bool],
     if not any(required.values()):
         return enabled
 
-    provided = {d["id"] for d in dlc if prof.get(d["id"], d["enabled"])}
+    dlc_ids = {d["id"] for d in dlc if prof.get(d["id"], d["enabled"])}
+    ranks = {m.get("root_rank", 0) for m in enabled}
+    provided_in = {r: set(dlc_ids) for r in ranks}      # per extensions root (F141)
     loaded: list[dict] = []
     pending = list(enabled)
     progress = True
@@ -468,9 +475,9 @@ def _active_filter(installed: list[dict], prof: dict[str, bool],
         progress = False
         rest = []
         for m in pending:
-            if all(d in provided for d in required[id(m)]):
+            if all(d in provided_in[m.get("root_rank", 0)] for d in required[id(m)]):
                 loaded.append(m)
-                provided.add(m["id"])
+                provided_in[m.get("root_rank", 0)].add(m["id"])
                 progress = True
             else:
                 rest.append(m)
@@ -499,11 +506,16 @@ def _active_filter(installed: list[dict], prof: dict[str, bool],
                     todo.extend(d for d in required[id(other)] if d in stuck_ids)
             return False
 
+        loaded_anywhere = set().union(*provided_in.values())
         for m in pending:
-            unmet = [d for d in required[id(m)] if d not in provided]
+            unmet = [d for d in required[id(m)] if d not in provided_in[m.get("root_rank", 0)]]
             why = []
             for d in unmet:
-                if d not in installed_ids:
+                if d in loaded_anywhere:
+                    why.append(f"required dependency {d!r} is in a DIFFERENT extensions "
+                               "root -- the engine resolves a dependency only within its "
+                               "own root")
+                elif d not in installed_ids:
                     why.append(f"required dependency {d!r} is not installed")
                 elif d not in stuck_ids:
                     why.append(f"required dependency {d!r} is installed but disabled")
@@ -555,7 +567,10 @@ def scan_installed(dirs: list[Path] | None = None,
     their manifests are loose), but it is read from the manifest anyway.
     """
     out = []
-    for base in dirs or default_installed_dirs():
+    # root_rank: the position of the root this mod was found in. The engine applies the
+    # game root's mods before the profile root's (MEASURED 2026-09-26, probe round 3), and
+    # a dependency resolves only within one root (F141); both read this field.
+    for rank, base in enumerate(dirs or default_installed_dirs()):
         if not base.is_dir():
             continue
         for sub in sorted(base.iterdir()):
@@ -581,7 +596,7 @@ def scan_installed(dirs: list[Path] | None = None,
                 "id": mod_id, "folder": sub.name, "path": str(sub),
                 "name": root.get("name") or "", "version": root.get("version") or "",
                 "date": root.get("date") or "", "author": root.get("author") or "",
-                "enabled": enabled,
+                "enabled": enabled, "root_rank": rank,
             })
     return out
 

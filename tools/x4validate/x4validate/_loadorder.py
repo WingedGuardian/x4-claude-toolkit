@@ -110,6 +110,12 @@ def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> li
     manifest or shape that made the order an assumption rather than a measurement.
     """
     folders = [m["folder"] for m in mods]
+    # EXTENSIONS ROOTS (MEASURED 2026-09-26, probe rounds 2-3; BLIND-SPOTS F141): every
+    # game-root mod applies before every profile-root mod, and a dependency does not
+    # cross roots. `root_rank` comes from `_registry.scan_installed` (0 = first
+    # configured root, the game root); an entry without one (a candidate placed from a
+    # dev folder, a test fixture) is modelled in the GAME root, where mods are deployed.
+    rank_of = {m["folder"]: m.get("root_rank", 0) for m in mods}
     # A REPEATED FOLDER COLLAPSES SILENTLY, AND IT TAKES THE MOD WITH IT.
     # `incoming` below is keyed by folder, so two entries with the same folder
     # become ONE node: the mod disappears from the load order, from the effective
@@ -154,20 +160,37 @@ def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> li
     for folder, dep_ids in deps_by_folder.items():
         for dep_id in dep_ids:
             dep_folder = id_to_folder.get(dep_id)
-            if dep_folder and dep_folder != folder:
+            if (dep_folder and dep_folder != folder
+                    and rank_of[dep_folder] == rank_of[folder]):   # never across roots
                 incoming[folder].add(dep_folder)
 
-    walk = sorted(dict.fromkeys(folders), key=sort_key)
+    walk = sorted(dict.fromkeys(folders), key=lambda f: (rank_of[f], sort_key(f)))
     ordered: list[str] = []
     resolved: set[str] = set()
+    passes = 0                          # completed passes before the current one
+    last_rank = max(rank_of.values(), default=0)
+    _noted_roots = False
     while len(ordered) < len(walk):
         loaded_this_pass = False
         for f in walk:
             if f in resolved or not incoming[f] <= resolved:
                 continue
+            if (passes > 0 and rank_of[f] < last_rank and dropped is not None
+                    and not _noted_roots):
+                # UNMEASURED: round 3's probes all loaded in the FIRST pass, so whether a
+                # game-root mod that WAITS a pass falls before or after the profile-root
+                # mods is not known. The model keeps one walk (game root, then profile
+                # root) in repeated passes; say so rather than let it read as measured.
+                dropped.append(
+                    "%s: loads in a later dependency pass while mods in another extensions "
+                    "root are present; its position relative to that root's mods is "
+                    "UNMEASURED (the model walks game root, then profile root, in repeated "
+                    "passes)" % f)
+                _noted_roots = True
             ordered.append(f)
             resolved.add(f)                  # visible to mods LATER in this same pass
             loaded_this_pass = True
+        passes += 1
         if not loaded_this_pass:
             # A pass that loads nothing: the rest wait on each other (a cycle). The
             # ENGINE loads none of them (MEASURED 2026-09-26, load-order probe), and
@@ -232,8 +255,11 @@ def place_candidate(mods: list[dict], candidate: Path, cand_id: str | None = Non
     by_id = [m for m in mods if low_id and str(m.get("id", "")).lower() == low_id]
     match = (by_folder or by_id or [None])[0]
     excluded = [m for m in mods if m in by_folder or m in by_id]
+    # ROOT: the installed copy's extensions root (it is the slot being replaced); a mod
+    # not installed anywhere is modelled in the GAME root (rank 0), where mods deploy.
     entry = {"folder": match["folder"] if match is not None else own_folder,
-             "id": cand_id or own_folder, "path": str(candidate)}
+             "id": cand_id or own_folder, "path": str(candidate),
+             "root_rank": match.get("root_rank", 0) if match is not None else 0}
     kept = [m for m in mods if not any(m is x for x in excluded)]
     return Placement(mods=kept + [entry], entry=entry, excluded=excluded)
 
