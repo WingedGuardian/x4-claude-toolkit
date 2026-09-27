@@ -491,6 +491,12 @@ def tier_b_trees(mod_dir: Path, report: Report | None = None) -> TierB:
     mods = placement.mods
     by_folder = {m["folder"]: m for m in mods}
     order = _compat.compute_load_order(mods)
+    # What the order and the set ASSUME (an unmeasured root, a case-only dependency
+    # match, a duplicate id, ...) rides on the placed list; rendered AFTER ordering so
+    # the order's own records are in it (release review, finding 3).
+    model = _registry.model_note(mods)
+    if model:
+        notes.append(f"Tier B: load-order model -- {model}")
 
     dirs: list[Path] = []       # patch-time: up to the mod's own position
     final_dirs: list[Path] = []  # runtime: every other installed extension

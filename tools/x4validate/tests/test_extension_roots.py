@@ -222,9 +222,10 @@ def test_a_WORKSHOP_mod_present_is_disclosed_as_UNMEASURED(roots):
     _ws_manifest(ws, "111")
     got = _registry.mods("active", [game, prof, ws])
     assert any("Workshop" in n and "UNMEASURED" in n for n in got.notes), got.notes
-    note = _registry.dropped_note(got)
+    note = _registry.model_note(got)
     assert note and "Workshop" in note and "UNMEASURED" in note, note
     assert _registry.left_out(got) == {}, "a disclosure is not an exclusion"
+    assert _registry.dropped_note(got) is None, "nor is it rendered as one"
 
 
 def test_TWIN_no_workshop_mod_no_workshop_disclosure(roots):
@@ -232,7 +233,7 @@ def test_TWIN_no_workshop_mod_no_workshop_disclosure(roots):
     ws = _ws(game)                               # configured and scanned, but empty
     _manifest(game, "g_mod")
     got = _registry.mods("active", [game, prof, ws])
-    assert got.notes == [] and _registry.dropped_note(got) is None
+    assert got.notes == [] and _registry.model_note(got) is None
 
 
 def test_the_rule_follows_the_KIND_not_the_position(roots, monkeypatch):
@@ -335,12 +336,13 @@ def test_load_order_records_ride_on_the_ModList(roots):
     _id_manifest(game, "b_one", "shared")
     _id_manifest(game, "d_two", "shared")
     got = _registry.mods("active", [game, prof])
-    assert _registry.dropped_note(got) is None
+    assert _registry.model_note(got) is None
     _loadorder.compute_load_order(got)
     _loadorder.compute_load_order(got)                  # twice: recorded ONCE
     clash = [n for n in got.notes if "claimed by both" in n]
     assert len(clash) == 1, got.notes
-    assert "claimed by both" in (_registry.dropped_note(got) or "")
+    assert "claimed by both" in (_registry.model_note(got) or "")
+    assert _registry.dropped_note(got) is None
     assert _registry.left_out(got) == {}, "a load-order record is not an exclusion"
 
 

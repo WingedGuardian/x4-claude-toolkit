@@ -777,6 +777,9 @@ def _cmd_dump(args) -> int:
         print(f"NOT in this tree (the engine does not load it): {left_out}",
               file=sys.stderr)
     ordered = ordered_overlays(mods)
+    model = _registry.model_note(mods)          # AFTER ordering: its records ride on mods
+    if model:
+        print(f"load-order model of this tree: {model}", file=sys.stderr)
     folder_to_path = {m["folder"]: p for m, p in ordered}
     touch = build_touch_map(ordered)
     ov = touchers_for(args.vpath, touch, folder_to_path)

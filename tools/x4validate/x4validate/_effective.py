@@ -783,6 +783,10 @@ def build(config: _merge.Config | None = None, db_path: Path | None = None,
     for msg in not_loaded:
         progress(f"NOT in the store (the engine does not load it): {msg}")
     ordered = ordered_overlays(mods)
+    # AFTER ordering: the order's own records ride on `mods` (release review, finding 3).
+    model = _registry.model_note(mods)
+    if model:
+        progress(f"load-order model: {model}")
     folder_to_path = {m["folder"]: p for m, p in ordered}
     overlay_paths = [p for _, p in ordered]
     order_rank = {m["folder"]: i for i, (m, _) in enumerate(ordered)}

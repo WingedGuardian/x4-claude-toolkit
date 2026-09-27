@@ -294,7 +294,7 @@ class ModList(list):
     case, and -- appended by `_loadorder.compute_load_order` when it orders this list
     -- a duplicate id or folder, a dependency cycle, an unmeasured cross-root pass.
     Kept apart from ``.dropped`` because :func:`left_out` reads every ``.dropped``
-    record as "this folder was left out". :func:`dropped_note` renders both.
+    record as "this folder was left out"; :func:`model_note` renders them.
 
     A plain ``list`` subclass, so every existing consumer (iteration, ``len``,
     comprehension, JSON) is unchanged; a slice or comprehension is a plain list and
@@ -322,26 +322,38 @@ def left_out(mod_list) -> dict[str, str]:
 
 
 def dropped_note(mod_list) -> str | None:
-    """The ONE-LINE disclosure of what *mod_list* left out -- and of every
-    ``.notes`` record (an unmeasured assumption in the set or its load order) --
-    or None if there is neither.
+    """The ONE-LINE disclosure of what *mod_list* left out, or None if nothing.
+
+    Exclusions ONLY. Every caller prefixes this line with its own "NOT in <tree>
+    (the engine does not load it)", so a record that excludes nothing -- an
+    unmeasured root, a case-only dependency match, a load-order record -- goes
+    through :func:`model_note` instead, which would make none of those lines false.
 
     Pure -- this module is an engine source and carries no CLI output
     (`tests/test_engine_sources_carry_no_cli.py`); every caller routes the line to
-    the sink it already has (stderr, a gate note, a Report skip). A caller that
-    orders the list with `_loadorder.compute_load_order` renders this AFTER doing
-    so, or the order's own records are not in it yet.
+    the sink it already has (stderr, a gate note, a Report skip).
     """
     recs = list(getattr(mod_list, "dropped", ()) or ())
+    if not recs:
+        return None
+    return (f"{len(recs)} installed mod(s) left out of the mod set this run models "
+            f"-- {'; '.join(recs)}")
+
+
+def model_note(mod_list) -> str | None:
+    """The ONE-LINE disclosure of *mod_list*'s ``.notes``, or None if there are none:
+    every assumption the modelled set or its load order rests on that was NOT
+    measured, and every record `_loadorder.compute_load_order` made while ordering
+    it (duplicate id or folder, cycle, unmeasured cross-root pass).
+
+    A caller that orders the list renders this AFTER ordering it, or the order's own
+    records are not in it yet. Pure, as :func:`dropped_note`.
+    """
     notes = list(getattr(mod_list, "notes", ()) or ())
-    parts = []
-    if recs:
-        parts.append(f"{len(recs)} installed mod(s) left out of the mod set this run "
-                     f"models -- {'; '.join(recs)}")
-    if notes:
-        parts.append(f"{len(notes)} note(s) on the modelled mod set and load order "
-                     f"-- {'; '.join(notes)}")
-    return " || ".join(parts) or None
+    if not notes:
+        return None
+    return (f"{len(notes)} note(s) on the modelled mod set and its load order "
+            f"-- {'; '.join(notes)}")
 
 
 def mods(scope: str, dirs: list[Path] | None = None,

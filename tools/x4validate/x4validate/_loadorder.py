@@ -110,7 +110,7 @@ def _record(msg: str, mods, dropped: list[str] | None) -> None:
     """Send one load-order record to *dropped* and to the mod list's own channel.
 
     A `_registry.ModList` carries ``.notes``; a record appended there reaches every
-    caller that renders `_registry.dropped_note`, whether or not it passed *dropped*
+    caller that renders `_registry.model_note`, whether or not it passed *dropped*
     (the release review found the records reached x4compat only). Duck-typed on
     purpose: this module imports nothing from `_registry`. Deduplicated on the list,
     because one mod list is often ordered more than once in a run."""
@@ -157,7 +157,7 @@ def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> li
     *mods* are entries from `_registry.mods(...)`. Pass *dropped* to receive every
     manifest or shape that made the order an assumption rather than a measurement.
     When *mods* is a `_registry.ModList` the same records are ALSO appended (once
-    each) to its ``.notes``, so every caller that renders `_registry.dropped_note`
+    each) to its ``.notes``, so every caller that renders `_registry.model_note`
     discloses them without passing *dropped* -- before this, only x4compat did.
     """
     folders = [m["folder"] for m in mods]

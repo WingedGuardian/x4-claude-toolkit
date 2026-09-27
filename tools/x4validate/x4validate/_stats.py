@@ -132,6 +132,7 @@ def effective_wares(ext_dir: Path, config: _merge.Config,
         # candidate takes ITS position key with the candidate's own dependencies.
         placement = _loadorder.place_candidate(mods, exclude)
         mods = placement.mods
+    channel = mods     # a ModList: the one channel this read's records ride on
     if exclude is not None and patch_time:
         # THE TREE AS OF THE CANDIDATE'S OWN LOAD POSITION (AUDIT-2026-09-24 AN-7),
         # the same patch-time tree Tier B resolves `sel=` against (`_check.tier_b_trees`).
@@ -143,8 +144,14 @@ def effective_wares(ext_dir: Path, config: _merge.Config,
         order = order[:order.index(placement.entry["folder"])]
     else:
         if exclude is not None:
-            mods = [m for m in mods if m is not placement.entry]
+            # still a ModList SHARING the channel, so ordering it records onto it
+            mods = _registry.ModList([m for m in mods if m is not placement.entry])
+            mods.dropped, mods.notes = channel.dropped, channel.notes
         order = _compat.compute_load_order(mods)
+    # AFTER ordering: what the order and the set assume (release review, finding 3).
+    model = _registry.model_note(channel)
+    if model and notes is not None:
+        notes.append(f"load-order model of the {scope} set: {model}")
     by_folder = {m["folder"]: Path(m["path"]) for m in mods}
     overlays = [by_folder[f] for f in order if f in by_folder]
     tree = _merge.build_effective("libraries/wares.xml", config, extra_overlays=overlays).tree

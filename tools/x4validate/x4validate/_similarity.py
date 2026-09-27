@@ -288,6 +288,10 @@ def _collect_all(reference: Path, ext_dir: Path,
     if left_out and notes is not None:
         notes.append(f"NOT layered onto any ship (the engine does not load it): {left_out}")
     ordered = _effective.ordered_overlays(active)
+    # AFTER ordering: what the order and the set assume rides on `active`.
+    model = _registry.model_note(active)
+    if model and notes is not None:
+        notes.append(f"load-order model of the ship values: {model}")
     folder_to_path = {m["folder"]: p for m, p in ordered}
     touch = _effective.build_touch_map(ordered)
     # (folder, lower(real vpath)) -> lower(LOGICAL vpath): where the touch map filed it
