@@ -19,8 +19,11 @@ Two modes:
              and it was still verified against reality at the moment it was made.
 
   (default)  Replay the fixture with no network at all, exercising fetch_mod,
-             search_mods, steam_title, the classifier, and the failure paths
-             (HTTP 404, empty search, malformed node).
+             search_mods, steam_title, the classifier, the failure paths
+             (HTTP 404, empty search, malformed node), and the UPDATE VERDICT
+             `refresh` derives from files.json -- asserted both ways ("available"
+             and "none"), judged against the newest MAIN file even when a newer
+             OPTIONAL upload is listed.
 
 The key is read only via `_nexus.nexus_key()` and is NEVER written to the
 fixture, printed, or logged.
@@ -203,17 +206,43 @@ def _check(label: str, got, want, failures: list[str]) -> None:
         failures.append(f"{label}: got {got!r}, want {want!r}")
 
 
+#: Installed-manifest dates for the two update-verdict rows (see `_sandbox_registry`).
+#: OLD predates every upload in the fixture by years; CURRENT is set to the second mod's
+#: newest MAIN upload day by `_sandbox_registry`, so its verdict is "none".
+_INSTALLED_OLD = "2000-01-01"
+
+
+def _newest_main(fx: dict, mod_id: str) -> str | None:
+    """The upload DATE of the newest MAIN file the fixture lists for *mod_id* --
+    computed from the fixture, independently of `_modlist._upstream_newest`."""
+    files = ((fx.get("files") or {}).get(mod_id) or {}).get("files") or []
+    days = [str(f.get("uploaded_time", ""))[:10] for f in files
+            if str(f.get("category_name", "")).upper() == "MAIN" and f.get("uploaded_time")]
+    if days:
+        return max(days)
+    ts = int(fx["rest"][mod_id].get("updated_timestamp") or 0)   # a derived reply
+    return datetime.fromtimestamp(ts, timezone.utc).date().isoformat() if ts else None
+
+
 def _sandbox_registry(tmp: Path, fx: dict) -> Path:
-    """A throwaway registry with one seeded mod and one whose id 404s.
+    """A throwaway registry: one seeded mod, one whose id 404s, and two TRUSTED rows
+    whose update verdicts are known in advance -- one installed long before its newest
+    MAIN upload ("available"), one dated that very upload day ("none").
 
     Never the real registry: `cmd_refresh` WRITES (registry + dashboard), and a
     gate must not mutate the user's triage state to test itself.
     """
-    good = sorted(fx["rest"])[0]
+    good, second = sorted(fx["rest"])[0], sorted(fx["rest"])[1]
     reg = {
         "meta": {"generated": "gate"},
         "mods": [
-            {"id": "gate_good", "auto": {"installed": True, "nexus_id": int(good)},
+            {"id": "gate_good", "auto": {"installed": True, "nexus_id": int(good),
+                                         "id_state": "exact",
+                                         "installed_date": _INSTALLED_OLD},
+             "human": {"custom_edited": False}},
+            {"id": "gate_current", "auto": {"installed": True, "nexus_id": int(second),
+                                            "id_state": "exact",
+                                            "installed_date": _newest_main(fx, second)},
              "human": {"custom_edited": False}},
             {"id": "gate_404", "auto": {"installed": True, "nexus_id": fx["missing_id"]},
              "human": {"custom_edited": False}},
@@ -249,6 +278,17 @@ def _check_refresh_end_to_end(fx: dict, failures: list[str]) -> None:
                by_id["gate_404"].get("classification"), "error", failures)
         _check("refresh recorded the check date",
                bool(by_id["gate_good"].get("checked_at")), True, failures)
+        # The UPDATE VERDICT, the one thing refresh computes from files.json (RG-3):
+        # judged against the newest MAIN upload -- never a newer OPTIONAL one -- and
+        # both directions, so a verdict stuck on one answer cannot replay green.
+        good, second = sorted(fx["rest"])[0], sorted(fx["rest"])[1]
+        _check("update verdict: installed long before the newest MAIN upload",
+               by_id["gate_good"].get("update"), "available", failures)
+        _check("update verdict judged against the newest MAIN file (not a newer OPTIONAL)",
+               by_id["gate_good"].get("upstream_newest_uploaded"), _newest_main(fx, good),
+               failures)
+        _check("update verdict: installed on the newest MAIN upload day",
+               by_id["gate_current"].get("update"), "none", failures)
 
         # TTL: a second run must fetch nothing, --force must fetch again.
         import contextlib
