@@ -520,7 +520,11 @@ def check_cross_tool_agreement() -> None:
                   f"by the checker; floor: unmapped <= {MAX_UNEXPLAINED_SHARE:.0%})")
             if mappable and unexplained > MAX_UNEXPLAINED_SHARE * mappable:
                 # The checker could not place its own population -- a non-answer, and
-                # a pass over the rest would read as covering them.
+                # a pass over the rest would read as covering them. But a disagreement
+                # it DID find is a finding, and a finding outranks a refusal: record the
+                # FAIL first, then the floor refusal beside it (release review 2026-09-26).
+                if disagree:
+                    note(False, "HARD: compat winner is the store's origin", detail)
                 not_run("HARD: compat winner is the store's origin",
                         f"{detail}; {unexplained} of {mappable} mappable rows unmapped by the "
                         f"checker, over the {MAX_UNEXPLAINED_SHARE:.0%} floor")

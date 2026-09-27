@@ -222,3 +222,27 @@ def test_a_removal_row_in_an_UNTRACKED_file_is_explained_not_a_disagreement(
                                         "a_mod")])
     assert not ct.failures, ct.failures
     assert "explained" in capsys.readouterr().out
+
+
+# --- release review 2026-09-26: a FINDING outranks the coverage-floor REFUSAL -------
+
+def test_a_HARD_disagreement_is_a_FAILURE_even_over_the_coverage_floor(
+        tmp_path, monkeypatch, capsys):
+    """The floor branch used to `not_run(...); continue` BEFORE the disagreement was
+    noted, so a real HARD disagreement was filed as CANNOT (rc 2) whenever more than
+    10% of rows were unmapped. The disagreement must be recorded as a FAIL; the floor
+    refusal is still recorded beside it."""
+    from lxml import etree
+    from test_audit0924_gates import _WARE_TREE, _ware_store, _cross_tool_with
+    from x4validate import _compat
+    vp, db = _ware_store(tmp_path)
+    tree = etree.fromstring(_WARE_TREE)
+    # modA owns production[default]; production[2] (alt) is modB's -> a DISAGREEMENT.
+    bad = _compat.Collision(vpath=vp, kind="HARD", target="/wares/ware[1]/production[2]",
+                            mods=["modA", "modB"], winner="modA")
+    lost = [_compat.Collision(vpath=vp, kind="HARD", target=f"/wares/ware[{9 + i}]",
+                              mods=["modA", "modB"], winner="modB") for i in range(2)]
+    ct = _cross_tool_with(monkeypatch, tmp_path, db, [bad, *lost], tree)
+    assert any(x.startswith("HARD:") for x in ct.failures), (ct.failures, ct.cannot)
+    assert any(x.startswith("HARD:") for x in ct.cannot), ct.cannot
+    assert "2 unmapped by the checker" in capsys.readouterr().out
