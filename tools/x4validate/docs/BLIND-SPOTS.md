@@ -219,6 +219,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F138 | `register_rederivation` credits an entry to ANY existing path it cites, including a path the entry quotes as EVIDENCE of the defect rather than as a check of the fix | **SCOPE (measured)** · ⏳ OPEN | 2 of the 6 entries reviewed for AUDIT DC-3 (F60, F73) were "covered" only by such a mention | open. The rest of the register's covered entries are NOT classified |
 | F139 | `mods("active")` records a mod it leaves out (a REQUIRED dependency missing, disabled or cyclic; an unreadable manifest) only into a `dropped=` list the CALLER must pass, and no active-scope caller passed one | **SCOPE (measured)** · ✅ FIXED 2026-09-26 | 0 of 125 installed mods excluded on this install (MEASURED 2026-09-26), so today's cost is zero -- the #23 shape; 16 of 20 active-scope call sites silent before `f634e30` | `mods()` always returns its exclusions (`ModList.dropped`); `dropped_note` is the one line; all 20 sites disclose, held by an AST ban with an EMPTY allowlist (`f634e30`). Also fixed: an engine-excluded nested-patch target was called "DISABLED" |
 | F140 | `scripts/test-hooks.sh` assigned its sandbox to `TMP`, which Windows exports, so every native child inherited it; a Windows process whose `TMP` exceeds 260 characters spins forever in `CreateProcessW` the first time it starts a child. And a KILLED identifier scanner (rc 1, no output) was reported as a leaked identifier | **DEFECT (measured)** · ✅ FIXED 2026-09-26 | 1 incident: 15.5 h / 13.75 h CPU, one scanner process, triggered by a long `X4_TEST_SANDBOX` (a default sandbox path is ~62 characters, well under) | `TMP` renamed in `test-hooks.sh` + `smoke-basex.sh` and banned by a test; `scan-identifiers.py` refuses rc 2 above 260; a leak needs the scanner's `::error file=` line (`9d16f2d`, `5609a14`, `3a44aa6`) |
+| F141 | `_registry._active_filter` counts a REQUIRED dependency as satisfied by an enabled mod in ANY extensions root; the engine resolves a dependency only within its own root (a cross-root required dependency is refused in BOTH directions) | **DEFECT (measured)** · ⏳ OPEN | 0 on this install (the profile `extensions\` is empty); any user with mods in two roots gets a mod modelled as LOADED that the engine refuses | fix pending the round-3 probe (does a profile-root mod APPLY, and where in the order) so the cross-root rule is changed once, not twice |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -7437,3 +7438,29 @@ not affected. Session environments measured at `TMP` = 33 characters.
 `test-hooks.sh:28` and `smoke-basex.sh:22` before the fix); `tests/test_scan_classify.py`
 (a killed scanner is `unknown`, not `leak`; 3 of 6 failed with the guard removed);
 `tests/test_scan_identifiers_tmp_hang_guard.py` (the rc-2 refusal, 10 of 11 failed before).
+
+
+## F141 — a required dependency is counted as satisfied across extensions roots · **DEFECT (measured)** · confidence 90% · ⏳ OPEN
+
+**Found 2026-09-26, load-order probe round 2.** The engine READS the profile's
+`extensions\` folder (its Extensions dialog lists all three probe mods placed there), but a
+REQUIRED dependency does not cross roots: a profile-root mod requiring a game-root mod and a
+game-root mod requiring a profile-root mod were BOTH shown red in that dialog and neither
+appears in the log. `_registry._active_filter` (READ, `x4validate/_registry.py` ~L463-471)
+builds one `provided` set from every enabled mod of every root, so it models both as loaded.
+
+Scope: 0 on this install (the profile root is empty, the Workshop root absent); a real error
+for a user with mods in two roots, in every tool that models the running game (Tier B,
+x4compat, x4effective, the stores, the oracles).
+
+Why OPEN: whether an error-free profile-root mod's patches APPLY, and where they fall in the
+order, is unmeasured (round 2's log never names that folder). Round 3 of
+`scripts/load-order-probe.py` gives each cross-root probe a patch that can never match, so the
+engine logs a line for it iff it was applied, in apply order. The dependency rule and the
+cross-root ORDER are fixed together from that result, rather than one now and one later.
+The 10%: the dialog's red is read as "the cross-root dependency is unresolved" because each red
+probe's only dependency loaded (x_a) or was listed error-free (x_d); the dialog's own reason
+text for those two rows was not captured.
+
+**RE-DERIVED BY:** `tests/test_load_order_probe.py` (the probe's cross-root cases:
+`test_round2_probes_exist_with_their_roots`, `test_every_chain_probe_carries_a_proof_op`).
