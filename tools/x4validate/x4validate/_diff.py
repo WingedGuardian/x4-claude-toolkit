@@ -193,13 +193,27 @@ def _norm(text: str | None) -> str:
 def _text_value(el: etree._Element) -> str | None:
     """The element's text content, or None when it has none.
 
-    POSITIONAL across children: the text before the first child and after each
-    child (element, comment or PI) is a separate segment, joined with
-    `_SEGMENT_SEP`. Folding them together hid real changes -- `a b<br/>` equalled
-    `a<br/> b`, and `a<!--c-->b` equalled `a b`. Each segment is `_norm`-alised;
-    trailing empty segments (the pretty-print tail after the last child) are
-    dropped, and an element whose every segment is empty has no text at all."""
-    segs = [_norm(el.text)] + [_norm(c.tail) for c in el]
+    POSITIONAL across REAL child ELEMENTS: the text before the first one and after
+    each one is a separate segment, joined with `_SEGMENT_SEP`. Folding them
+    together hid real changes -- `a b<br/>` equalled `a<br/> b`. A comment or PI
+    child is NOT a boundary -- `.tag` is not a `str` for either (the same test
+    `_OPS` filtering already uses) -- so its own tail text is folded into the
+    segment already running instead of starting a new one; otherwise merely
+    inserting a comment before unchanged text split it into a leading empty
+    segment plus the text, producing a phantom `text()` change ("5" -> " ‖ 5",
+    with the separator itself now inside the reported value). Each segment is
+    `_norm`-alised; trailing empty segments (the pretty-print tail after the last
+    child) are dropped, and an element whose every segment is empty has no text at
+    all."""
+    segs: list[str] = []
+    current = el.text or ""
+    for c in el:
+        if not isinstance(c.tag, str):
+            current += c.tail or ""
+            continue
+        segs.append(_norm(current))
+        current = c.tail or ""
+    segs.append(_norm(current))
     while segs and not segs[-1]:
         segs.pop()
     return _SEGMENT_SEP.join(segs) if segs else None

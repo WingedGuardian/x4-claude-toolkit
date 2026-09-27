@@ -49,10 +49,35 @@ def test_payload_key_reads_only_the_FIRST_payload_element():
 
 
 def test_text_after_a_comment_is_its_own_segment():
-    """DN16: a comment is a segment boundary; the text after it is compared, so
-    changing it is a change."""
+    """DN16, corrected by finding 8 (release-review v3.3.0): a comment is NO LONGER
+    a segment boundary (its tail folds into the text already running, so "a" +
+    "b" around it reads as one segment "ab"), but the text is still compared as
+    ordinary content either way -- "ab" -> "az" is still a change."""
     fd = _fd("<r><t>a<!--c-->b</t></r>", "<r><t>a<!--c-->z</t></r>")
     assert [(p, a) for p, a, _o, _n in fd.attr_changes] == [("/r/t", "text()")]
+
+
+def test_inserting_a_comment_before_unchanged_text_is_NOT_a_phantom_change():
+    """Finding 8: a comment WAS a segment boundary, so inserting one before
+    unchanged text split "5" into a leading empty segment plus "5" -- a phantom
+    text() change ("5" -> " <SEP> 5") with the segment separator itself now inside
+    the reported value, purely from the comment's presence. No content changed."""
+    fd = _fd("<r><t>5</t></r>", "<r><t><!--c-->5</t></r>")
+    assert fd.attr_changes == [], fd.attr_changes
+
+
+def test_a_PI_before_unchanged_text_is_also_NOT_a_phantom_change():
+    """Twin: a processing instruction is the other non-str-tag shape `_text_value`
+    must treat the same way as a comment."""
+    fd = _fd("<r><t>5</t></r>", "<r><t><?pi data?>5</t></r>")
+    assert fd.attr_changes == [], fd.attr_changes
+
+
+def test_a_comment_inserted_between_two_REAL_elements_is_still_invisible():
+    """Twin: a comment between two ordinary child elements must fold into
+    whichever segment it sits in, never manufacture an extra one of its own."""
+    fd = _fd("<r><t><a/>x<b/></t></r>", "<r><t><a/>x<!--c--><b/></t></r>")
+    assert fd.attr_changes == [], fd.attr_changes
 
 
 def test_a_later_full_document_supersedes_a_diff_only_baseline(tmp_path: Path):
