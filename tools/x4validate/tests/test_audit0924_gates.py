@@ -1012,3 +1012,70 @@ def test_TWIN_diff_truth_still_fails_when_one_of_two_identical_changes_is_missin
     row = "a.xml  max  1 -> 7332.5\n"
     assert dt.judge(_diff_headline(1, 2) + row, planted, 1) is False, (
         "the detail shows ONE of the two planted changes")
+
+
+# --- release review 2026-09-26 (pre-arc): stress_sweep states what it skipped, and the
+# XXE cell proves the entity was NOT expanded rather than accepting any rc 1 -----------
+
+def _fast_sweep(ss, monkeypatch, rc_for):
+    """Every tool call answers instantly; *rc_for(argv)* picks the exit code."""
+    monkeypatch.setattr(ss, "run", lambda argv, timeout=900, cwd=None: (rc_for(argv), "x\n"))
+
+
+def _pathological_rc(argv):
+    return 3 if any("path_" in a and not a.endswith(("path_many_ops", "path_unicode",
+                                                      "path_cycle_a", "path_cycle_b",
+                                                      "path_large", "path_nested_diff"))
+                    for a in argv) else 0
+
+
+def test_stress_sweep_without_a_corpus_says_the_unseen_axis_was_NOT_CHECKED(
+        monkeypatch, capsys):
+    ss = import_gate("stress_sweep", module_level=False)
+    monkeypatch.setattr(ss, "CORPUS", None)
+    _fast_sweep(ss, monkeypatch, _pathological_rc)
+    ss.main()
+    out = capsys.readouterr().out
+    assert "NOT CHECKED" in out and "--corpus" in out, out[-1500:]
+
+
+def test_TWIN_stress_sweep_with_a_corpus_does_not_say_NOT_CHECKED(tmp_path, monkeypatch,
+                                                                   capsys):
+    ss = import_gate("stress_sweep", module_level=False)
+    corpus = tmp_path / "corpus"
+    (corpus / "a_mod").mkdir(parents=True)
+    (corpus / "a_mod" / "content.xml").write_text('<content id="a"/>', encoding="utf-8")
+    monkeypatch.setattr(ss, "CORPUS", corpus)
+    _fast_sweep(ss, monkeypatch, _pathological_rc)
+    ss.main()
+    assert "NOT CHECKED" not in capsys.readouterr().out
+
+
+def test_stress_sweep_XXE_cell_goes_red_when_the_marker_reaches_the_output(monkeypatch):
+    """rc 1 (or 3) was accepted with nothing checking that the external entity stayed
+    UNexpanded. The entity now points at a sentinel file; its marker in any output is an
+    expansion, whatever the exit code."""
+    ss = import_gate("stress_sweep", module_level=False)
+    monkeypatch.setattr(ss, "run", lambda argv, timeout=900, cwd=None:
+                        (1, f"ware x name={ss.XXE_MARKER}\n"))
+    st, detail = ss.judge("xxe", ["x4validate"], ss.PATHOLOGICAL_EXPECT["path_xxe"],
+                          forbid=ss.XXE_MARKER)
+    assert st == "FAIL" and "EXPANDED" in detail, detail
+    monkeypatch.setattr(ss, "run", lambda argv, timeout=900, cwd=None: (1, "refused\n"))
+    assert ss.judge("xxe", ["x4validate"], ss.PATHOLOGICAL_EXPECT["path_xxe"],
+                    forbid=ss.XXE_MARKER)[0] == "ok"
+
+
+def test_stress_sweep_XXE_in_process_check_catches_a_parser_that_expands(tmp_path,
+                                                                        monkeypatch):
+    """The toolkit's parsers are asked directly: a parser that resolves external entities
+    puts the sentinel's marker into the tree, and the check names it."""
+    from lxml import etree
+    ss = import_gate("stress_sweep", module_level=False)
+    made = dict(ss.build_pathological(tmp_path))
+    files = sorted((made["path_xxe"] / "libraries").glob("*.xml"))
+    assert ss.xxe_expanded(files) == [], "control: the real parsers must not expand"
+    resolving = etree.XMLParser(resolve_entities=True, load_dtd=True, no_network=True)
+    monkeypatch.setattr(ss._merge, "parse_file",
+                        lambda p: etree.parse(str(p), resolving).getroot())
+    assert ss.xxe_expanded(files), "a parser that EXPANDS the entity went unnoticed"

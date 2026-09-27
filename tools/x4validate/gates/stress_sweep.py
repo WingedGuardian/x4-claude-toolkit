@@ -28,7 +28,8 @@ Run:  uv run python gates/stress_sweep.py --corpus=<dir> [--limit=N] [--verbose]
 Exit: 0 every cell exited within its expected set, 1 a crash, hang, or an exit
       code outside the set, 2 `--corpus` was given but is not a directory or
       holds no mod (the unseen-corpus axis was ASKED for and cannot run -- it is
-      named, never silently dropped).
+      named, never silently dropped). Without --corpus that axis is printed as
+      NOT CHECKED; the exit code covers the axes that ran.
 """
 from __future__ import annotations
 
@@ -40,7 +41,11 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lxml import etree  # noqa: E402
+
+from x4validate import _merge  # noqa: E402
 
 VERBOSE = "--verbose" in sys.argv
 LIMIT = next((int(a.split("=")[1]) for a in sys.argv if a.startswith("--limit=")), 0)
@@ -54,14 +59,23 @@ def run(argv: list[str], timeout: int = 900, cwd: Path | None = None):
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
+#: The content of the XXE cell's sentinel file. The external entity points at that file,
+#: so this string appearing ANYWHERE -- a tool's output, a parsed tree -- is the entity
+#: EXPANDED. An exit code alone cannot say that (release review 2026-09-26: the cell
+#: accepted rc 1 with nothing checking non-expansion).
+XXE_MARKER = "X4STRESS_XXE_SENTINEL_5c1e0b"
+
+
 def judge(label: str, argv: list[str], expect: frozenset,
-          timeout: int = 900) -> tuple[str, str]:
+          timeout: int = 900, forbid: str | None = None) -> tuple[str, str]:
     t0 = time.time()
     try:
         rc, out = run(argv, timeout)
     except subprocess.TimeoutExpired:
         return "FAIL", f"HANG (>{timeout}s)"
     dt = time.time() - t0
+    if forbid and forbid in out:
+        return "FAIL", f"entity EXPANDED: the sentinel's content reached the output (exit {rc})"
     if "Traceback (most recent call last)" in out:
         tail = [ln for ln in out.strip().splitlines() if ln.strip()][-1:]
         return "FAIL", f"traceback: {tail[0][:100] if tail else '?'}"
@@ -124,10 +138,19 @@ def build_pathological(tmp: Path) -> list[tuple[str, Path]]:
         + "".join(f'<!ENTITY lol{i} "&lol{i-1};&lol{i-1};&lol{i-1};">' for i in range(1, 10))
         + ']><diff><add sel="//wares">&lol9;</add></diff>'})
 
-    # XXE — external entity pointing at a local file
-    mod("path_xxe", {"libraries/wares.xml":
-        '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///c:/windows/win.ini">]>'
-        '<diff><add sel="//wares"><ware id="x" name="&xxe;"/></add></diff>'})
+    # XXE -- an external entity pointing at a local SENTINEL file whose content is
+    # XXE_MARKER, so expansion is detectable. Two placements: in an attribute (which XML
+    # forbids for an external entity, so the file cannot parse either way) and in
+    # element text (legal: a parser that resolves external entities inlines the marker).
+    sentinel = tmp / "xxe_sentinel.txt"
+    sentinel.write_text(XXE_MARKER, encoding="utf-8")
+    doctype = f'<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "{sentinel.as_uri()}">]>'
+    mod("path_xxe", {
+        "libraries/wares.xml":
+            doctype + '<diff><add sel="//wares"><ware id="x" name="&xxe;"/></add></diff>',
+        "libraries/jobs.xml":
+            doctype + '<diff><add sel="/jobs"><job id="xxe_probe"><t>&xxe;</t></job>'
+                      '</add></diff>'})
 
     # 5k sibling ops in one file
     mod("path_many_ops", {"libraries/wares.xml":
@@ -191,6 +214,28 @@ def build_pathological(tmp: Path) -> list[tuple[str, Path]]:
     return made
 
 
+def xxe_expanded(files: list[Path]) -> list[str]:
+    """Which of the toolkit's XML parsers EXPANDS the XXE cell's external entity.
+
+    Asked in-process, because the CLI cells see only an exit code and whatever the tool
+    chose to print: `_merge.parse_file` (every merge and validation of a mod file) and
+    lxml's default parser (what `_xsd`, `_registry` and `_loadorder` call). A parser that
+    refuses the file has expanded nothing; one that returns a tree must not hold the
+    marker. Returns "<parser>(<file>)" per expansion -- empty is the only pass."""
+    parsers = (("_merge.parse_file", _merge.parse_file),
+               ("lxml default parser", lambda f: etree.parse(str(f)).getroot()))
+    hits = []
+    for f in files:
+        for name, parse in parsers:
+            try:
+                root = parse(f)
+            except etree.XMLSyntaxError:
+                continue            # silent-ok: refused to parse = nothing expanded
+            if XXE_MARKER in etree.tostring(root, encoding="unicode"):
+                hits.append(f"{name}({f.name})")
+    return hits
+
+
 def main() -> int:
     fails, cells = [], 0
     tmp = Path(tempfile.mkdtemp(prefix="x4stress_"))
@@ -224,19 +269,34 @@ def main() -> int:
                     elif VERBOSE:
                         print(f"  ok   {m.name:<38}{label:<12}{detail}")
             print(f"  ...{cells} cells, {len(fails)} failures\n")
+        else:
+            # Axis 1 needs a corpus the toolkit has never processed; without one it did
+            # not run, and a result that never mentions it reads as covering it.
+            print("NOT CHECKED: the UNSEEN-CORPUS axis -- no --corpus=<dir> was given, so "
+                  "no never-processed mod was run through the tools\n")
 
         # ---- 3. pathological --------------------------------------------
         print("PATHOLOGICAL INPUTS\n" + "=" * 84)
-        for name, d in build_pathological(tmp):
+        built = build_pathological(tmp)
+        for name, d in built:
             for label, argv in (("validate", ["x4validate", str(d)]),
                                 ("tier b", ["x4validate", str(d), "--tier", "b"])):
                 cells += 1
                 st, detail = judge(f"{name} {label}", argv, PATHOLOGICAL_EXPECT[name],
-                                   timeout=600)
+                                   timeout=600,
+                                   forbid=XXE_MARKER if name == "path_xxe" else None)
                 mark = "FAIL" if st == "FAIL" else "ok  "
                 if st == "FAIL":
                     fails.append((f"{name} :: {label}", detail))
                 print(f"  {mark} {name:<26}{label:<10}{detail}")
+        cells += 1
+        xxe_dir = dict(built)["path_xxe"]
+        expanded = xxe_expanded(sorted((xxe_dir / "libraries").glob("*.xml")))
+        if expanded:
+            fails.append(("path_xxe :: in-process parsers", f"EXPANDED by {expanded}"))
+        print(f"  {'FAIL' if expanded else 'ok  '} {'path_xxe':<26}{'parsers':<10}"
+              + (f"entity EXPANDED by {', '.join(expanded)}" if expanded
+                 else "no toolkit parser expands the external entity"))
 
         # ---- 2. multi-hop ------------------------------------------------
         print("\nMULTI-HOP CHAINS\n" + "=" * 84)
@@ -271,7 +331,8 @@ def main() -> int:
             print(f"  {mark} {label:<48}{detail}")
 
         print("=" * 84)
-        print(f"{cells} cells   FAILURES: {len(fails)}")
+        print(f"{cells} cells   FAILURES: {len(fails)}"
+              + ("" if CORPUS is not None else "   (unseen-corpus axis NOT CHECKED)"))
         for label, detail in fails:
             print(f"\n  FAIL {label}\n       {detail}")
         return 1 if fails else 0
