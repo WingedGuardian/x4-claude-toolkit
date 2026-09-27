@@ -22,12 +22,12 @@ makes a misroute visible in the conversation instead of buried in a tool result.
 
 | the question you are actually asking | reach for | what a ZERO / empty result means |
 |---|---|---|
-| what does the game **currently** use for this value? | `x4effective show <kind> <id>` · `x4effective attr <kind> <id> <prop>` | the entity is not in the effective tree — check the kind, then whether anything supplies it |
+| what does the game **currently** use for this value? | `x4effective show <kind> <id>` · `x4effective attr <kind> <prop>` (that prop across every entity of the kind) | the entity is not in the effective tree — check the kind, then whether anything supplies it |
 | **who set it**, and did a mod win? | `x4effective who-sets <kind> <id> <prop>` | nothing overrides it; the value is vanilla |
 | what does **vanilla** ship, independent of the modlist? | `x4effective` built with no overlays, or read the base file | a claim about vanilla is NOT refuted by the effective tree disagreeing — different tiers |
-| how does this value sit against **comparable content**? | `x4stats wares <mod>` · `x4stats macro <id>` | ⚠ advisory, never a verdict — it grounds the discussion, it does not settle it |
+| how does this value sit against **comparable content**? | `x4stats wares <mod>` · `x4stats macro <path/to/*_macro.xml>` | ⚠ advisory, never a verdict — it grounds the discussion, it does not settle it |
 | is this entity a **near-duplicate** of one already installed? | `x4similar --candidate <mod>` | no near-duplicate found *within its class+purpose filter* — not "nothing similar exists" |
-| does the change **collide** with the installed set? | `x4compat check <mod>` | no collision over the effective tree; load order is the engine's MEASURED rule (signature and apply order, in-game probe 2026-09-26) -- other install roots are unobserved |
+| does the change **collide** with the installed set? | `x4compat check <mod>` | no collision over the effective tree; load order is the engine's MEASURED rule (signature and apply order, in-game probe 2026-09-26; the profile root applies after the game root, and a dependency does not cross between them) -- the Steam Workshop root is unmeasured |
 | do the selectors actually **resolve**? | `x4validate <mod>` (add `--tier b` if it touches another mod) | run it — a `sel=` that matches nothing is the cheapest and most expensive bug here |
 | what **values exist across the corpus** for this attribute? | BaseX `ask.py --db x4eff` | a bare zero is a lead; only `ask.py` with a coverage denominator makes it a finding |
 

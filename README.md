@@ -64,7 +64,7 @@ misconfiguration is this tool's worst failure mode, because "found nothing" and 
 wrong place" otherwise print the same way. Full configuration model:
 [`tools/x4validate/README.md`](tools/x4validate/README.md#configuration--where-it-looks-for-things).
 
-**`--tier b`** merges your *installed* extension set in load order, so cross-mod patches resolve
+**`--tier b`** merges your *active* extension set (what the engine loads) in load order, so cross-mod patches resolve
 for real — and it catches the failure that looks like success: content **another mod removed**.
 (Dogfooding case: one mod `<remove>`s a vanilla macro from `index/macros.xml` and never re-adds
 it, orphaning it for six other mods — 415 engine errors that base+DLC validation reports as fine.)

@@ -72,7 +72,7 @@ sequences two same-tick reactions is a playtest. Cite `file:line` from x4xref/x4
 user can jump to the source.
 
 ## Honest limits
-- Load order is MEASURED for the shapes an installed modlist shows (case-insensitive folder order, `_` after letters, dependencies in repeated passes). Missing REQUIRED dependencies, cycles and non-ASCII folder names are still unmeasured; the tools record those as assumptions rather than resolving them silently.
+- Load order is MEASURED (case-insensitive folder order, `_` after letters, dependencies in repeated passes; in-game probe 2026-09-26), and so are non-ASCII folder names (`ß` sorts after `sz`) and missing REQUIRED dependencies and cycles: `mods("active")` leaves such a mod out, as the engine does, and every tool names it and why. Still unmeasured, and disclosed as a note when it applies: the Steam Workshop root, dependency ids that differ only in case, and where a game-root mod that waits a dependency pass falls relative to profile-root mods.
 - Behavioral coverage is only as good as the hooks you feed x4xref — a mod can interact via Lua
   or engine features that leave no MD/aiscript token (e.g. a mod that disables an engine
   feature another depends on; the *effect* is inferable but the race is a playtest).

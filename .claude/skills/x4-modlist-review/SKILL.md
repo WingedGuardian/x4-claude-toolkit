@@ -6,7 +6,7 @@ allowed-tools: Bash, Read
 
 Triage the X4 modlist via the `x4modlist` CLI. **API-FIRST — never scrape Nexus.** Registry: `$X4_MODS/_registry/modlist.yaml` (or `$X4_REGISTRY` if set — the tool resolves it; `x4validate --paths` shows where); human dashboard: `WORKLIST.md` next to it.
 
-**★ SOURCE OF TRUTH: the physically INSTALLED extension folders are PRIMARY** — game-root `extensions\`, profile `extensions\` (if present), Steam Workshop `content\392160\` (if present). That's what the game actually loads. The profile's `content.xml` enabled-list is a **SECONDARY cross-check only** ("did I forget to re-acquire something from my old modlist?") — it does NOT determine what's active. A mod tracked historically but not found on disk shows up in a separate "OLD MODLIST — NOT CURRENTLY INSTALLED" dashboard section, not in the active lanes.
+**★ SOURCE OF TRUTH: the physically INSTALLED extension folders are PRIMARY** — game-root `extensions\`, profile `extensions\` (if present), Steam Workshop `content\392160\` (if present). That's what the game actually loads. For the INVENTORY, the profile's `content.xml` enabled-list is a **SECONDARY cross-check only** ("did I forget to re-acquire something from my old modlist?") — it keeps entries for mods long gone from disk. For what is ACTIVE it does decide: an installed mod's profile entry overrides its manifest's `enabled`, and a mod with no entry falls back to its manifest (enabled unless the manifest says `enabled="0"`). A mod tracked historically but not found on disk shows up in a separate "OLD MODLIST — NOT CURRENTLY INSTALLED" dashboard section, not in the active lanes.
 
 Run commands via uv from the tool dir:
 `cd $CLAUDE_PROJECT_DIR/tools/x4validate && uv run --python 3.13 x4modlist <cmd>`

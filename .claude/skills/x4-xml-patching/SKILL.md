@@ -216,8 +216,10 @@ MANIFEST ID.** MEASURED: 348 entries, **287 fossils (82.5%)** with no folder on 
 disabled by it. Three consequences:
 
 - **ABSENT ≠ DISABLED.** X4 adds an unseen folder as ENABLED, so `mods("active")` reads
-  `prof.get(id, True)`. Invert that default and 54 of 115 mods silently vanish from Tier B,
-  x4compat, x4effective and `x4eff` at once, with nothing raising.
+  `prof.get(id, <the manifest's enabled>)` -- the profile entry decides, and with no entry
+  the manifest's own `enabled` (true unless it says `"0"`/`"false"`) is the default. Default
+  an absent entry to DISABLED and 54 of 115 mods silently vanish from Tier B, x4compat,
+  x4effective and `x4eff` at once, with nothing raising.
 - **Never query it by mod NAME** — only by manifest id, or via `_registry.mods(...)`. Of 123
   on-disk mods, 60 match by manifest id and only **9** by folder name. a grep for a Workshop
   mod's NAME returns nothing because its entry is keyed `ws_<number>`; that zero is the WRONG QUERY, not evidence.
@@ -347,8 +349,8 @@ cd $CLAUDE_PROJECT_DIR/tools/x4validate && uv run x4validate <dev\mod_folder>
   test. Re-run after a game update — the merged tree changes.
 - **Completeness:** add `--entity <type>:<id> --like <type>:<vanilla>` (`ware`/`ship`/`module`).
 - **Cross-mod: use `--tier b`.** Tier A builds base+DLC only, so a diff targeting another mod's
-  content reports `no base game file` — expected, not a real error. Tier B merges the installed
-  extension set in load order, and also catches the reverse failure Tier A passes silently:
+  content reports `no base game file` — expected, not a real error. Tier B merges the ACTIVE
+  extension set (what the engine loads) in load order, and also catches the reverse failure Tier A passes silently:
   content another mod has REMOVED. Ordering is the engine's MEASURED order -- signature-check
   order from the log, and patch-APPLY order by the in-game load-order probe (2026-09-26).
 - **Schema validation is GATED behind `--update`.** Compiling `md.xsd` costs ~102 s so it does
