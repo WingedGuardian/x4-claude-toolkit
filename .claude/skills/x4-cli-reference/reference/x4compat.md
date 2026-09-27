@@ -6,7 +6,9 @@
 usage: x4compat [-h] [--version] {check} ...
 
 Detect how the ENABLED (active) X4 mods collide over the effective XML tree -- the set the engine
-loads: on disk, enabled in its manifest and in the profile.
+loads: on disk in any configured extensions root and enabled (the profile entry decides; the
+manifest's enabled= is only the default when the profile has none), with every required dependency
+loading.
 
 positional arguments:
   {check}

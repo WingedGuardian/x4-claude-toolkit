@@ -22,9 +22,10 @@ options:
                         path to the unpacked base-game reference tree (default: $X4_REFERENCE /
                         .claude/x4-paths.env)
   --tier {a,b}          a = base+DLC only (default, deterministic); b = also merge the ACTIVE
-                        extensions (installed AND enabled in the manifest and the profile) in the
-                        engine's measured load order, so cross-mod patches resolve and removed-by-
-                        another-mod content is caught
+                        extensions (installed and enabled -- the profile entry decides, the
+                        manifest's enabled= is only the default when the profile has none -- with
+                        every required dependency loading) in the engine's measured load order, so
+                        cross-mod patches resolve and removed-by-another-mod content is caught
   --profile ID          user profile id (the numeric folder under the X4 profile dir) — only
                         needed to locate debug.txt when $X4_PROFILE / $X4_DEBUGLOG are unset
   --entity ENTITY       completeness target, e.g. ware:my_new_ware

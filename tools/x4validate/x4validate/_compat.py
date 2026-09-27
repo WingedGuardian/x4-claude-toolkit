@@ -1337,8 +1337,10 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="x4compat",
         description="Detect how the ENABLED (active) X4 mods collide over the effective "
-                    "XML tree -- the set the engine loads: on disk, enabled in its "
-                    "manifest and in the profile.")
+                    "XML tree -- the set the engine loads: on disk in any configured "
+                    "extensions root and enabled (the profile entry decides; the manifest's "
+                    "enabled= is only the default when the profile has none), with every "
+                    "required dependency loading.")
     p.add_argument("--version", action="version",
                    version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)

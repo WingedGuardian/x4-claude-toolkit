@@ -52,3 +52,31 @@ def _subtree_detail(tmp_path: Path) -> str:
 def test_x4compat_subtree_row_does_not_call_the_measured_order_inferred(tmp_path):
     detail = _subtree_detail(tmp_path)
     assert not any(s in detail for s in STALE), detail
+
+
+# --- finding 8: "active" is NOT "enabled in the manifest AND in the profile" ----------
+# MEASURED 2026-09-26 (load-order probe, `_registry._active_filter` rule 1): the
+# profile entry DECIDES; the manifest's enabled= is only the default when the profile
+# has no entry (manifest enabled="0" + profile "true" LOADS).
+
+WRONG_RULE = ("manifest and the profile", "manifest and in the profile")
+
+
+def _help(main, argv, capsys) -> str:
+    import pytest
+    with pytest.raises(SystemExit):
+        main(argv)
+    return " ".join(capsys.readouterr().out.split())
+
+
+def test_x4validate_tier_b_help_states_the_measured_rule(capsys):
+    from x4validate import _cli
+    text = _help(_cli.main, ["--help"], capsys)
+    assert not any(w in text for w in WRONG_RULE), text
+    assert "profile entry decides" in text, text
+
+
+def test_x4compat_help_states_the_measured_rule(capsys):
+    text = _help(_compat.main, ["--help"], capsys)
+    assert not any(w in text for w in WRONG_RULE), text
+    assert "profile entry decides" in text, text
