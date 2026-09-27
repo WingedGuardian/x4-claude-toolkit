@@ -762,6 +762,62 @@ def test_a_patch_on_a_node_its_OWN_mod_adds_is_not_a_miss(tmp_path):
     assert _compat.analyze(ext, config=cfg).order_misses == []
 
 
+_REMOVES_ZWARE = '<diff><remove sel="//ware[@id=\'zware\']"/></diff>'
+
+
+def test_an_added_then_REMOVED_node_still_names_the_order_miss(tmp_path):
+    """Finding 3: `_order_misses` filtered pending ops against the FINISHED tree
+    first. A node a later mod adds and a still-later one removes again is absent
+    from that finished tree, so the op read as a dead selector and the order miss
+    was dropped silently -- even though the op matched for real, briefly, between
+    the add and the remove, exactly as the engine would apply it. Load order is
+    forced with dependencies -- the engine-measured order is not alphabetical."""
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_patcher", {"libraries/wares.xml": _PATCHES_ZWARE})
+    _mod(ext, "z_adder", {"libraries/wares.xml": _ADDS_ZWARE}, deps=["a_patcher"])
+    _mod(ext, "zz_remover", {"libraries/wares.xml": _REMOVES_ZWARE}, deps=["z_adder"])
+    rep = _compat.analyze(ext, config=cfg)
+    assert rep.load_order == ["a_patcher", "z_adder", "zz_remover"], rep.load_order
+    assert [(m.mod, m.added_by) for m in rep.order_misses] == [("a_patcher", "z_adder")], \
+        rep.order_misses
+
+
+def test_the_rebuild_FALLBACK_still_shares_the_masking_limit(tmp_path, monkeypatch):
+    """Disclosed, not fixed: `_order_misses_rebuild`'s own initial filter (one tree
+    of every mod, i.e. the finished tree) has the identical shape and was not
+    touched by finding 3's fix, which is scoped to the fast pass only -- rebinding
+    the bisection to a non-monotonic predicate (a match can go away again) is a
+    materially different, riskier change to a fallback path this finding did not
+    name. Forced onto the fallback the same way
+    test_a_drifted_incremental_pass_falls_back_to_the_rebuild does, so this is a
+    PROVEN gap, not an assumed one."""
+    import types
+    cfg = _setup_ref(tmp_path)
+    ext = tmp_path / "extensions"
+    _mod(ext, "a_patcher", {"libraries/wares.xml": _PATCHES_ZWARE})
+    _mod(ext, "z_adder", {"libraries/wares.xml": _ADDS_ZWARE}, deps=["a_patcher"])
+    # An unrelated edit so the drifted (no-op apply_overlay) tree and the real
+    # merged tree diverge regardless of zware's fate -- in THIS fixture alone,
+    # zware ends up absent both when never added (drifted) and when added then
+    # removed (real), which would make the self-check pass by coincidence.
+    _mod(ext, "y_other", {"libraries/wares.xml":
+         '<diff><replace sel="//ware[@id=\'ice\']/price/@average">42</replace></diff>'},
+         deps=["z_adder"])
+    _mod(ext, "zz_remover", {"libraries/wares.xml": _REMOVES_ZWARE}, deps=["y_other"])
+    used = []
+    real_rebuild = _compat._order_misses_rebuild
+    monkeypatch.setattr(_compat, "_order_misses_rebuild",
+                        lambda *a, **k: used.append(1) or real_rebuild(*a, **k))
+    drifted = types.SimpleNamespace(**{k: getattr(_merge, k) for k in dir(_merge)
+                                       if not k.startswith("__")})
+    drifted.apply_overlay = lambda tree, *a, **k: (tree, "diff")
+    monkeypatch.setattr(_compat, "_merge", drifted)
+    rep = _compat.analyze(ext, config=cfg)
+    assert used, "the drifted pass was trusted: the self-check never fired"
+    assert rep.order_misses == [], rep.order_misses  # the fallback's known, disclosed gap
+
+
 def test_the_adder_is_NAMED_among_several_later_mods(tmp_path):
     """Exercises the bisection: the adder is neither the first nor the last later mod,
     and the others on the file touch something else."""

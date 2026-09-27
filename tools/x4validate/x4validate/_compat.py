@@ -812,9 +812,18 @@ def _order_misses(vpath: str, ordered: list[str],
     means M's own content supplies it; otherwise the first later position j at which
     it matches names the adder, ordered[j]. Never matching = a dead selector, the
     validator's finding, not this one. A pass that fails its self-check, or a nested
-    (mod-owned) vpath, is answered by the rebuild form instead. Stated limit: ops dead
-    in the FINISHED tree are dropped first, so a node a later mod adds and a
-    still-later one removes again is filtered as dead rather than named.
+    (mod-owned) vpath, is answered by the rebuild form instead.
+
+    Every pending op rides the SAME incremental pass (`_walk_positions` visits every
+    position regardless of how many ops are still live), so there is no tree-building
+    cost to save by filtering ops out beforehand -- only a handful of extra XPath
+    evaluations against trees already built. A prior version filtered pending ops
+    against the FINISHED tree first as exactly that (unmeasured) optimisation, which
+    made a node a later mod adds and a still-later one removes again read as a dead
+    selector and drop silently -- it matched for real, briefly, between the add and
+    the remove, and the engine sees that too. MEASURED (150 mods, one third of them
+    carrying a genuinely dead selector): dropping the pre-filter cost no observable
+    time (a difference smaller than run-to-run noise).
     """
     pending: list[tuple[int, etree._Element]] = []
     for folder, ops in unmatched.items():
@@ -832,11 +841,8 @@ def _order_misses(vpath: str, ordered: list[str],
         return _order_misses_rebuild(vpath, ordered, unmatched, folder_to_path,
                                      config, only)
     cache: dict = {}
-    state = {"live": [(i, op) for i, op in pending
-                      if _xp_hit(want, op.get("sel", ""), cache)]}
+    state = {"live": list(pending)}
     out: list[OrderMiss] = []
-    if not state["live"]:
-        return out     # every pending op is dead: no claim to make, no pass to check
 
     def visit(pos, tree, applied):
         live = state["live"]
@@ -883,6 +889,16 @@ def _order_misses_rebuild(vpath: str, ordered: list[str],
     The SLOW form, kept as the fallback for a nested (mod-owned) vpath and for a file
     whose incremental pass fails its self-check: on this install it cost ~64 s per
     full run where `analyze()` alone is ~11 s.
+
+    DISCLOSED, unlike `_order_misses`'s twin gap (finding 3): the initial "one tree
+    of every mod" filter here still reads a node a later mod adds and a still-later
+    one removes again as a dead selector, and this form's bisection assumes a
+    selector's match state is MONOTONIC in the later mods (never fixed to true,
+    never true again) -- exactly what a later removal breaks. Rebinding it to a
+    linear scan is a materially different, riskier change to a path only reached on
+    a self-check failure or a nested vpath; out of scope here. Proven, not merely
+    asserted: `test_the_rebuild_FALLBACK_still_shares_the_masking_limit` in
+    test_compat.py forces this path and pins the gap.
     """
     owned = set(config.overlays)
 
