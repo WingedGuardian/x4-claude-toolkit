@@ -170,9 +170,12 @@ class Config:
         """
         ext = self.reference / "extensions"
         # Deterministic order; inter-DLC order is order-independent in practice
-        # (DLC diffs guard with if="not(...)").
-        dirs = (sorted(p for p in ext.iterdir()
-                       if p.is_dir() and p.name.startswith("ego_dlc_"))
+        # (DLC diffs guard with if="not(...)"). The ENGINE's folder key on every return
+        # path: the two early returns below used a plain sort, which puts `_` before the
+        # letters (release review, finding 9).
+        dirs = (sorted((p for p in ext.iterdir()
+                        if p.is_dir() and p.name.startswith("ego_dlc_")),
+                       key=lambda p: _loadorder.sort_key(p.name))
                 if ext.is_dir() else [])
         if not self.include_packed_dlc or not is_configured_reference(self.reference):
             return dirs
