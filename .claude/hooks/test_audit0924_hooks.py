@@ -482,5 +482,331 @@ class TestEmptyCommandSplit(unittest.TestCase):
                          "allow")
 
 
+# ------------------------------------------------------------------------------------------
+# v3.3.0 release review (hooks lane). Every finding was reproduced E2E on fake roots before
+# its fix; each class names the finding it pins. The hook only DECIDES; nothing here runs.
+class _RR(_PSE2E):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.Rf = str(cls.ref).replace(BS, "/")
+        cls.Gf = str(cls.game).replace(BS, "/")
+        cls.Sf = str(cls.prof / "save").replace(BS, "/")
+
+    def expect(self, cases, tool="PowerShell"):
+        """Every case is run and every mismatch reported, not just the first."""
+        bad = []
+        for want, command in cases:
+            got = self.verdict_with(command, tool)[0]
+            if got != want:
+                bad.append("%s (want %s): %s" % (got, want, command))
+        self.assertEqual(bad, [])
+
+    def verdict_with(self, command, tool="PowerShell", **extra):
+        """`extra` goes at the payload's TOP level, where Claude Code puts `cwd`."""
+        payload = json.dumps({"tool_name": tool, "tool_input": {"command": command}, **extra})
+        p = subprocess.run([BASH, str(HOOKS / "protect-bash.sh")], input=payload,
+                           capture_output=True, text=True, env=self.env, timeout=120)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        if not p.stdout.strip():
+            return "allow", ""
+        h = json.loads(p.stdout)["hookSpecificOutput"]
+        return (h.get("permissionDecision", "advise"),
+                h.get("permissionDecisionReason") or h.get("additionalContext") or "")
+
+
+class TestRR1PipelineAndVariableTargets(_RR):
+    """CRITICAL: a delete target reaching Remove-Item through the PIPELINE, or through a
+    variable holding command output, became `"${PS_PIPELINE_INPUT}"` / `"${t}"` with no
+    unknown entry -- an unresolved operand naming no root, so ALLOW. The translator's own
+    contract says an unresolvable write target ASKS; a resolvable one must deny exactly
+    like the literal form."""
+
+    def test_resolvable_pipeline_and_variable_targets_deny_like_the_literal(self):
+        R, G = self.R, self.G
+        self.expect([
+            ("deny", "'" + R + "' | Remove-Item -Recurse -Force"),
+            ("deny", "$x = '" + R + "'; $x | Remove-Item -Recurse -Force"),
+            ("deny", "Write-Output '" + R + "' | Remove-Item -Recurse -Force"),
+            ("deny", "'" + G + "' | ForEach-Object { Remove-Item $_ -Recurse -Force }"),
+            ("deny", "$t = Join-Path '" + R + "' 'libraries'; Remove-Item $t -Recurse -Force"),
+            ("deny", "$t = Join-Path $env:X4_REFERENCE 'libraries'; Remove-Item $t -Recurse"),
+            ("deny", "$d = Get-Item '" + R + "'; Remove-Item $d -Recurse -Force"),
+            ("deny", "$d = Get-Item '" + R + "'; $d | Remove-Item -Recurse -Force"),
+            ("deny", "Join-Path '" + R + "' 'libraries' | Remove-Item -Recurse"),
+            ("deny", "$t = Resolve-Path '" + G + "'; Remove-Item $t -Recurse -Force"),
+            ("deny", "$t = Join-Path '" + R + "' 'a.xml'; Set-Content -Path $t -Value x"),
+            ("deny", "$d = '" + R + "'; Copy-Item .\\a.xml -Destination $d"),
+        ])
+
+    def test_resolvable_targets_inside_saves_ask(self):
+        S = self.S
+        self.expect([
+            ("ask", "$t = Resolve-Path '" + S + "'; Remove-Item $t -Recurse"),
+            ("ask", "$items = Get-ChildItem '" + S + "'; $items | Remove-Item"),
+        ])
+
+    def test_an_unresolvable_DELETE_target_asks(self):
+        self.expect([
+            ("ask", "$t = Get-Target; Remove-Item $t -Recurse"),
+            ("ask", "Get-Targets | Remove-Item -Recurse"),
+            ("ask", "$t | Remove-Item"),
+            ("ask", "Remove-Item (Get-Target) -Recurse"),
+            ("ask", "Get-Targets | Move-Item -Destination .\\x"),
+            ("ask", "Rename-Item $t -NewName x"),
+        ])
+
+    def test_an_unresolvable_WRITE_target_follows_the_bash_write_convention(self):
+        """Scoped by MEASUREMENT: failing closed on write targets too added 28 asks over
+        1,524 historical PowerShell commands, all routine. A write target is judged by its
+        text, as `cp x "$T"` is in Bash -- it still denies when that text names a root."""
+        self.expect([
+            ("allow", "Copy-Item .\\a -Destination $d"),
+            ("allow", "Set-Content -Path $p -Value x"),
+            ("deny", "Set-Content -Path \"" + self.R + "\\$p\" -Value x"),
+            ("deny", "Copy-Item .\\a -Destination (Join-Path '" + self.R + "' $n)"),
+        ])
+
+    def test_TWIN_resolvable_harmless_targets_allow(self):
+        self.expect([
+            ("allow", "$t = Join-Path '.' 'build'; Remove-Item $t -Recurse"),
+            ("allow", "'.\\build' | Remove-Item -Recurse"),
+            ("allow", "$x = '.\\build'; $x | Remove-Item -Recurse"),
+            ("allow", "Get-ChildItem . -Filter *.pyc | Remove-Item"),
+            ("allow", "Get-ChildItem .\\build | Remove-Item -Recurse"),
+            ("allow", "$d = Get-Item .\\build; Remove-Item $d -Recurse"),
+            # An ENVIRONMENT variable is judged as `$X` is in Bash: a root variable
+            # names its root (above), any other is an unknown operand -- not a new ask.
+            ("allow", "Remove-Item \"$env:TEMP\\x4build\" -Recurse"),
+            ("allow", "Get-Process | Stop-Process -WhatIf"),
+            ("allow", "Get-Content a.txt | Set-Content .\\b.txt"),
+            # a non-filesystem provider path is not a file (replay FP, this lane)
+            ("allow", "foreach ($v in 'X4_GAME','X4_TOOLKIT') { Remove-Item (\"Env:\" + $v) }"),
+            ("allow", "Remove-Item Env:X4_REFERENCE"),
+            # a variable assigned twice is the union of both values (replay FP, this lane)
+            ("allow", "$s = Join-Path '.' 'a'; Move-Item $s .\\x; $s = Join-Path '.' 'b'; Move-Item $s .\\y"),
+            ("allow", "'x' | Out-File .\\o.txt"),
+        ])
+
+
+class TestRR2PowerShellHostForms(_RR):
+    """IMPORTANT: a PowerShell host taking its program from -CommandWithArgs/-cwa, from
+    `-File -`, or from stdin passed silently: the payload reached no rule."""
+
+    def test_host_payload_forms_are_translated(self):
+        rm = "Remove-Item -Recurse -Force '" + self.G + "'"
+        self.expect([
+            ("deny", 'pwsh -NoProfile -CommandWithArgs "' + rm + '"'),
+            ("deny", 'pwsh -cwa "' + rm + '"'),
+            ("deny", 'echo "' + rm + '" | pwsh -NoProfile -File -'),
+            ("deny", 'echo "' + rm + '" | pwsh -NoProfile'),
+            ("deny", 'echo "' + rm + '" | powershell -NoProfile'),
+            ("deny", 'echo "' + rm + '" | pwsh -NoProfile -Command -'),
+            ("deny", "pwsh -NoProfile -Command - <<< \"" + rm + "\""),
+        ], tool="Bash")
+
+    def test_an_unreadable_stdin_program_asks(self):
+        self.expect([
+            ("ask", "cat x.ps1 | pwsh -NoProfile"),
+            ("ask", "git show HEAD:x.ps1 | pwsh -NoProfile -Command -"),
+            ("ask", "pwsh -NoProfile -File - < x.ps1"),
+        ], tool="Bash")
+
+    def test_TWIN_hosts_with_their_own_program(self):
+        self.expect([
+            ("allow", "pwsh -NoProfile -File script.ps1"),
+            ("allow", 'echo hi | pwsh -NoProfile -Command "Get-Date"'),
+            ("allow", 'echo "Get-Date" | pwsh -NoProfile -Command -'),
+            ("allow", 'pwsh -NoProfile -cwa "Get-Date"'),
+            ("allow", "pwsh -NoProfile -Version"),
+        ], tool="Bash")
+
+
+class TestRR3CmdCarrier(_RR):
+    """IMPORTANT: the cmd.exe carrier lost the directory of `cd /d X` (so a relative delete
+    escaped), did not know `/R` (a synonym of /C), and read a caret-escaped verb (`r^d`)
+    as an unknown command."""
+
+    def test_cd_d_R_and_caret(self):
+        G, Gf = self.G, self.Gf
+        self.expect([
+            ("deny", 'cmd //r rd /s /q "' + Gf + '"'),
+            # cmd splits an UNQUOTED spaced path into two operands, so the game root is
+            # quoted inside the payload; the reference root has no space.
+            ("deny", 'cmd //c "r^d /s /q \\"' + G + '\\""'),
+            ("deny", 'cmd //c "r^d /s /q ' + self.R + '"'),
+            ("deny", 'cmd //c "^r^m^d^i^r /s /q ' + self.R + '"'),
+            ("deny", 'cmd //c "cd /d ' + G + ' && rd /s /q extensions"'),
+            ("deny", 'cmd //c "pushd ' + G + ' && rd /s /q extensions"'),
+        ], tool="Bash")
+        self.expect([
+            ("deny", "cmd /c 'cd /d \"" + G + "\" && rd /s /q extensions'"),
+            ("deny", 'cmd /c "cd /d ' + G + ' && rd /s /q extensions"'),
+            ("deny", "cmd /r rd /s /q '" + G + "'"),
+        ])
+
+    def test_TWIN_cmd_carriers_that_touch_nothing_protected(self):
+        self.expect([
+            ("allow", 'cmd //c "cd /d C:\\work\\x && rd /s /q build"'),
+            ("allow", "cmd //c echo a^&b"),
+            ("allow", 'cmd //r "dir /b"'),
+        ], tool="Bash")
+
+
+class TestRR4DotNetWritersAndScriptBlocks(_RR):
+    """IMPORTANT: .NET file writers and code-runners were unmodelled, so they allowed."""
+
+    def test_writers_deny_on_a_protected_path(self):
+        f = "'" + self.R + BS + "libraries" + BS + "w.xml'"
+        self.expect([
+            ("deny", "$w = [IO.StreamWriter]::new(" + f + "); $w.Write(1); $w.Close()"),
+            ("deny", "$w = New-Object IO.StreamWriter " + f + "; $w.Close()"),
+            ("deny", "$w = New-Object -TypeName System.IO.StreamWriter -ArgumentList " + f),
+            ("deny", "[IO.File]::Open(" + f + ", 'Truncate').Close()"),
+            ("deny", "[System.IO.FileStream]::new(" + f + ", 'Create')"),
+        ])
+
+    def test_scriptblock_text_is_translated_like_iex(self):
+        R, G = self.R, self.G
+        self.expect([
+            ("deny", "[scriptblock]::Create('Remove-Item -Recurse -Force ''" + R + "''').Invoke()"),
+            ("deny", "& ([scriptblock]::Create('Remove-Item -Recurse -Force ''" + G + "'''))"),
+            ("deny", "$ExecutionContext.InvokeCommand.InvokeScript('Remove-Item -Recurse -Force ''"
+             + G + "''')"),
+            ("deny", "$ExecutionContext.InvokeCommand.NewScriptBlock('Remove-Item -Recurse ''"
+             + G + "''')"),
+        ])
+
+    def test_unreadable_text_or_target_asks(self):
+        self.expect([
+            ("ask", "[scriptblock]::Create($s).Invoke()"),
+            ("ask", "$ExecutionContext.InvokeCommand.InvokeScript($s)"),
+            ("ask", "[System.IO.Compression.ZipFile]::ExtractToDirectory('a.zip', '" + self.R + "')"),
+        ])
+
+    def test_TWIN_readers_and_harmless_calls(self):
+        R = self.R
+        self.expect([
+            ("allow", "[IO.File]::Open('" + R + BS + "a.xml', 'Open', 'Read').Close()"),
+            ("allow", "$r = [IO.StreamReader]::new('" + R + BS + "a.xml'); $r.ReadToEnd()"),
+            ("allow", "[IO.Path]::Combine('" + R + "', 'a')"),
+            ("allow", "[scriptblock]::Create('Get-Date').Invoke()"),
+            ("allow", "$w = [IO.StreamWriter]::new('.\\out.txt'); $w.Close()"),
+            ("allow", "$w = [IO.StreamWriter]::new($p)"),
+            ("allow", "$s = [IO.File]::Open('.\\o', 'Create'); $w = New-Object IO.StreamWriter($s, $e)"),
+            ("allow", "[System.IO.Compression.ZipFile]::ExtractToDirectory('a.zip', '.\\out')"),
+        ])
+
+
+class TestRR5ChildrenOfARootDenyLikeTheGlob(_RR):
+    """MINOR: `gci <G> | Remove-Item` became `rm -rf <G>/${PS_CHILD}` -> ASK, while Bash
+    `rm -rf <G>/*` hard-DENIES through glob_covers. The same delete, two verdicts."""
+
+    def test_children_of_the_game_root_deny(self):
+        G = self.G
+        self.expect([
+            ("deny", "Get-ChildItem '" + G + "' | Remove-Item -Recurse -Force"),
+            ("deny", "gci '" + G + BS + "extensions' | Remove-Item -Recurse -Force"),
+            ("deny", "gci '" + G + "' | % { $_.Delete($true) }"),
+        ])
+
+    def test_TWIN_children_inside_one_mod_still_ask(self):
+        self.expect([("ask", "gci '" + self.G + BS + "extensions" + BS + "amod' | Remove-Item -Recurse")])
+
+
+class TestRR6BarePythonScope(_RR):
+    """MINOR: the bare-python deny fired on `python -m pytest` in ANY directory, and
+    `python3.10`/`python3.12` walked past it."""
+
+    def test_versioned_interpreters_are_bare_too(self):
+        self.expect([
+            ("deny", "cd tools/x4validate && python3.10 -m pytest -q"),
+            ("deny", "python3.12 tools/x4validate/gates/x.py"),
+            ("deny", "cd tools/x4validate && python -m pytest -q"),
+        ], tool="Bash")
+
+    def test_the_session_cwd_counts_as_the_shell_directory(self):
+        cwd = str(self.tk / "tools" / "x4validate")
+        self.assertEqual(self.verdict_with("python -m pytest -q", tool="Bash", cwd=cwd)[0], "deny")
+
+    def test_TWIN_pytest_elsewhere_is_not_toolkit_code(self):
+        self.expect([
+            ("allow", "cd /c/work/myproject && python -m pytest -q"),
+            ("allow", "python -m pytest tests/"),
+            ("allow", "python3.10 -c 'print(1)'"),
+        ], tool="Bash")
+        self.assertEqual(self.verdict_with("python -m pytest -q", tool="Bash",
+                                           cwd="C:/work/other")[0], "allow")
+
+
+class TestRR7UnparseablePowerShellDenies(_RR):
+    """MINOR: a PowerShell command that does not PARSE was an ASK -- the user was
+    prompted for Claude's own syntax error. Hygiene is a DENY with an actionable reason."""
+
+    def test_a_syntax_error_denies_with_a_reason(self):
+        v, r = self.verdict_with("if ($x) { Write-Host 'ok' ")
+        self.assertEqual(v, "deny")
+        self.assertIn("does not parse", r)
+
+    def test_TWIN_no_powershell_to_parse_with_still_asks(self):
+        old = self.env
+        self.env = dict(old, X4_PWSH=str(self.tmp / "no-such-pwsh.exe"))
+        try:
+            self.assertEqual(self.verdict_with("Get-Date")[0], "ask")
+        finally:
+            self.env = old
+
+
+class TestRRPreArcBash(_RR):
+    """Reviewer's PRE-ARC notes: the same fail-closed principle in the Bash half. A delete
+    or write target that is resolvable DENIES like the literal form; one that is not, but
+    sits against a protected root, ASKS."""
+
+    def test_xargs_for_and_realpath(self):
+        Rf, Gf = self.Rf, self.Gf
+        self.expect([
+            ("deny", "echo '" + Rf + "' | xargs rm -rf"),
+            ("deny", "printf '%s' '" + Gf + "' | xargs -0 rm -rf"),
+            ("ask", "find '" + Gf + "/extensions' -name '*.bak' | xargs rm -f"),
+            ("deny", "for f in '" + Rf + "'/*; do rm -rf \"$f\"; done"),
+            ("deny", "for d in build '" + Gf + "'; do rm -rf \"$d\"; done"),
+            ("deny", "t=$(realpath -m '" + Rf + "/libraries'); rm -rf \"$t\""),
+            ("deny", "t=$(cygpath -u '" + Gf + "'); rm -rf \"$t\""),
+        ], tool="Bash")
+
+    def test_rsync_delete_ln_touch_chmod_robocopy(self):
+        Rf, Gf, G = self.Rf, self.Gf, self.G
+        self.expect([
+            ("deny", "rsync -a --delete empty/ '" + Gf + "/'"),
+            ("ask", "rsync -a --delete ./mod/ '" + Gf + "/extensions/amod/'"),
+            ("deny", "ln -sf /dev/null '" + Rf + "/libraries/w.xml'"),
+            ("deny", "touch '" + Rf + "/libraries/w.xml'"),
+            ("deny", "chmod 000 '" + Rf + "/libraries'"),
+            ("deny", "robocopy C:/empty '" + Gf + "' //MIR"),
+            ("ask", "robocopy ./mod '" + Gf + "/extensions/amod' /MIR"),
+        ], tool="Bash")
+        self.expect([
+            ("deny", "robocopy C:\\empty '" + G + "' /MIR"),
+            ("ask", "foreach ($f in Get-ChildItem '" + self.S + "') { Remove-Item $f.FullName }"),
+            ("deny", "foreach ($f in gci '" + self.R + "') { Remove-Item $f.FullName -Recurse }"),
+        ])
+
+    def test_TWIN_ordinary_work_is_untouched(self):
+        Rf = self.Rf
+        self.expect([
+            ("allow", "find . -name '*.pyc' | xargs rm -f"),
+            ("allow", "echo a.txt b.txt | xargs rm -f"),
+            ("allow", "for f in *.tmp; do rm -f \"$f\"; done"),
+            ("allow", "t=$(realpath -m ./build); rm -rf \"$t\""),
+            ("allow", "t=$(mktemp -d); rm -rf \"$t\""),
+            ("allow", "rsync -a --delete ./a/ ./b/"),
+            ("allow", "touch ./x.txt && chmod +x ./s.sh"),
+            ("allow", "ln -s '" + Rf + "/libraries' ./lib"),
+            ("allow", "robocopy ./a ./b //MIR"),
+            ("advise", "rsync -a ./mod/ '" + self.Gf + "/extensions/amod/'"),
+        ], tool="Bash")
+        self.expect([("allow", "foreach ($f in gci .\\build) { Remove-Item $f.FullName }")])
+
+
 if __name__ == "__main__":
     unittest.main()

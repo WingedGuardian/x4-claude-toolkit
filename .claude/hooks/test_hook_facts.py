@@ -871,11 +871,38 @@ class TestBareSystemPythonOnToolkitCode(unittest.TestCase):
     """
 
     # --- must DENY -----------------------------------------------------------
+    # `-m pytest` / `-m x4validate` count WHERE the toolkit is -- a cwd under
+    # tools/x4validate, or an explicit path there (v3.3.0 release review, finding 6).
     def test_bare_python_dash_m_pytest_fires(self):
-        self.assertTrue(F("python -m pytest -q tests/")["bare_python_on_project_code"])
+        self.assertTrue(F("cd tools/x4validate && python -m pytest -q tests/")
+                        ["bare_python_on_project_code"])
+        self.assertTrue(F("python -m pytest -q tools/x4validate/tests")
+                        ["bare_python_on_project_code"])
 
     def test_bare_python_dash_m_x4validate_fires(self):
-        self.assertTrue(F("python -m x4validate --paths")["bare_python_on_project_code"])
+        self.assertTrue(F("cd tools/x4validate && python -m x4validate --paths")
+                        ["bare_python_on_project_code"])
+
+    def test_the_payload_cwd_is_where_the_shell_starts(self):
+        def f(cwd):
+            return H.facts({"tool_input": {"command": "python -m pytest -q"}, "cwd": cwd},
+                           ROOTS)["bare_python_on_project_code"]
+        self.assertTrue(f(TOOLKIT + "/tools/x4validate"))
+        self.assertTrue(f("C:" + BS + "tk" + BS + "tools" + BS + "x4validate" + BS + "tests"))
+        self.assertFalse(f("/c/work/other-project"))
+
+    def test_versioned_interpreter_names_are_bare_too(self):
+        for v in ("python3.10", "python3.12", "python3.10.exe"):
+            with self.subTest(v=v):
+                self.assertTrue(F(v + " gates/claims_audit.py")["bare_python_on_project_code"])
+        self.assertFalse(F("python2.7 gates/claims_audit.py")["bare_python_on_project_code"])
+        self.assertFalse(F("python3.10-config --libs")["bare_python_on_project_code"])
+
+    def test_TWIN_dash_m_pytest_outside_the_toolkit_does_not_fire(self):
+        for cmd in ("python -m pytest -q", "cd /c/work/myproject && python -m pytest -q",
+                    "python -m x4validate --paths", "python -m pytest tests/ -k tools"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(F(cmd)["bare_python_on_project_code"])
 
     def test_bare_python3_a_gates_script_fires(self):
         self.assertTrue(F("python3 gates/claims_audit.py")["bare_python_on_project_code"])
@@ -902,7 +929,8 @@ class TestBareSystemPythonOnToolkitCode(unittest.TestCase):
     def test_a_variable_spelled_verb_still_fires(self):
         # The F111 guarantee: resolve_verb splices the assignment BEFORE this rule
         # ever sees the segment, so the plain and variable spellings must agree.
-        self.assertTrue(F("PY=python; $PY -m pytest -q")["bare_python_on_project_code"])
+        self.assertTrue(F("cd tools/x4validate && PY=python; $PY -m pytest -q")
+                        ["bare_python_on_project_code"])
 
     def test_a_wrapper_does_not_get_you_out_of_it(self):
         # Consistent with every other verb-keyed rule in this file: `nice`/`env`/
@@ -927,7 +955,8 @@ class TestBareSystemPythonOnToolkitCode(unittest.TestCase):
         for verb in ("/usr/bin/python3", '"C:' + BS + "tools" + BS + 'python.exe"',
                      "C:/Users/user/AppData/Local/Programs/Python/Python310/python.exe"):
             with self.subTest(verb=verb):
-                self.assertTrue(F(verb + " -m pytest -q")["bare_python_on_project_code"])
+                self.assertTrue(F("cd tools/x4validate && " + verb + " -m pytest -q")
+                                ["bare_python_on_project_code"])
 
     def test_an_absolute_VENV_interpreter_path_does_not_fire(self):
         for verb in ("/c/proj/tools/x4validate/.venv/Scripts/python.exe",
@@ -3354,6 +3383,191 @@ class TestHK2CmdCarrier(unittest.TestCase):
     def test_translation_drops_switches_and_maps_verbs(self):
         self.assertEqual(H.cmd_to_sh(["rd", "/s", "/q", "C:/x y"]), "rm -rf 'C:/x y'")
         self.assertEqual(H.cmd_to_sh(["ren C:/a/b.txt c.txt"]), "mv C:/a/b.txt C:/a/c.txt")
+
+
+class TestRRCmdCarrier(unittest.TestCase):
+    """v3.3.0 release review, finding 3: `cd /d X` lost the directory, `/R` was not /C,
+    and a caret-escaped verb was an unknown command."""
+
+    def test_cd_d_keeps_the_directory_and_joins_a_spaced_path(self):
+        self.assertEqual(H.cmd_to_sh(["cd /d C:/x y && rd /s /q ext"]),
+                         "cd 'C:/x y'" + chr(10) + "rm -rf ext")
+        self.assertEqual(H.cmd_to_sh(["pushd", "C:/x"]), "pushd C:/x")
+        self.assertEqual(H.cmd_to_sh(["chdir /D C:/x"]), "cd C:/x")
+
+    def test_carets_are_escapes_outside_quotes(self):
+        self.assertEqual(H.cmd_to_sh(["r^d /s /q C:/r"]), "rm -rf C:/r")
+        self.assertEqual(H.cmd_to_sh(["^d^e^l C:/r/a"]), "rm -f C:/r/a")
+        # an ESCAPED separator is a character, not a second command
+        self.assertEqual(H.cmd_to_sh(["echo a^&b"]), "echo 'a&b'")
+        # inside double quotes a caret is literal
+        self.assertEqual(H.cmd_to_sh(['echo "a^b"']), "echo 'a^b'")
+
+    def test_slash_r_is_slash_c(self):
+        f = F("cmd //r rd /s /q " + DQ + REF + DQ)
+        self.assertTrue(f["rm_targets_reference"])
+        self.assertTrue(F("cmd /R del /q " + DQ + REF + "/a.xml" + DQ)["rm_targets_reference"])
+
+    def test_a_relative_delete_after_cd_d_is_judged_where_it_runs(self):
+        self.assertTrue(F("cmd //c " + DQ + "cd /d " + GAME + " && rd /s /q extensions" + DQ)
+                        ["rm_hits_game"])
+
+    def test_TWIN_harmless(self):
+        self.assertFalse(F("cmd //c " + DQ + "cd /d C:/work && rd /s /q build" + DQ)["rm_in_x4_dir"])
+        self.assertFalse(F("cmd //r dir /b")["carrier_untranslated"])
+
+
+class TestRRPowerShellHostPayload(unittest.TestCase):
+    """Finding 2: -CommandWithArgs / -cwa and `-File -` were not payload forms."""
+
+    def test_forms(self):
+        P = H._ps_host_payload
+        self.assertEqual(P(["pwsh", "-cwa", "Get-Date", "x"]), ("cmd", "Get-Date"))
+        self.assertEqual(P(["pwsh", "-NoProfile", "-CommandWithArgs", "Get-Date"]), ("cmd", "Get-Date"))
+        self.assertEqual(P(["pwsh", "-File", "-"]), ("stdin", ""))
+        self.assertEqual(P(["pwsh", "-Command", "-"]), ("stdin", ""))
+        self.assertEqual(P(["pwsh", "-NoProfile"]), ("none", ""))
+        self.assertEqual(P(["pwsh", "-File", "x.ps1"]), ("file", ""))
+        self.assertEqual(P(["pwsh", "-Command", "Get-Date"]), ("cmd", "Get-Date"))
+
+    def test_stdin_program(self):
+        S = H._ps_stdin_program
+        self.assertEqual(S("pwsh -NoProfile", "echo " + DQ + "Get-Date" + DQ), (["Get-Date"], False))
+        self.assertEqual(S("pwsh", "printf '%s' 'Get-Date'"), (["Get-Date"], False))
+        self.assertEqual(S("pwsh -Command - <<< 'Get-Date'", None), (["Get-Date"], False))
+        self.assertEqual(S("pwsh -NoProfile", "cat x.ps1"), ([], True))
+        self.assertEqual(S("pwsh -File - < x.ps1", None), ([], True))
+        self.assertEqual(S("pwsh -NoProfile", None), ([], False))
+
+    def test_only_a_PIPE_feeds_stdin(self):
+        self.assertEqual(H.piped_in("a | b; c && d | e"), [False, True, False, False, True])
+        self.assertEqual(H.piped_in("echo 'a | b' | c"), [False, True])
+        self.assertEqual(H.piped_in("a 2>&1 | b"), [False, True])
+        self.assertEqual(len(H.piped_in("x; ; y")), len(H.segments("x; ; y")))
+        # replay FPs: a lookup of the host, or a host after an unrelated command, asked
+        for cmd in ("command -v powershell.exe; command -v pwsh.exe", "which pwsh; pwsh -v",
+                    "ls x; pwsh -NoProfile"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(F(cmd)["carrier_untranslated"])
+        self.assertTrue(F("cat x.ps1 | pwsh -NoProfile")["carrier_untranslated"])
+
+    def test_ps_reads_stdin(self):
+        self.assertTrue(H._ps_reads_stdin("pwsh -NoProfile <<'EOF'"))
+        self.assertTrue(H._ps_reads_stdin("pwsh -Command - <<EOF"))
+        self.assertFalse(H._ps_reads_stdin("pwsh -File x.ps1 <<EOF"))
+        self.assertFalse(H._ps_reads_stdin("bash <<EOF"))
+
+
+class TestRRPreArcBash(unittest.TestCase):
+    """The reviewer's pre-arc notes, unit level (E2E in test_audit0924_hooks.py)."""
+
+    def test_xargs_feed(self):
+        self.assertEqual(H.xargs_feed("xargs rm -rf", "echo " + Q + REF + Q), [REF])
+        self.assertEqual(H.xargs_feed("xargs -0 rm -rf", "printf '%s' " + Q + REF + Q), [REF])
+        self.assertEqual(H.xargs_feed("xargs rm -f", "find " + Q + REF + Q + " -name x"),
+                         [REF + "/${XARGS_ITEM}"])
+        self.assertEqual(H.xargs_feed("xargs rm -f", "ls " + Q + REF + Q), [REF + "/${XARGS_ITEM}"])
+        # the cache cleanup find-delete already exempts, spelled through xargs
+        self.assertEqual(H.xargs_feed("xargs -r rm -rf", "find " + Q + TOOLKIT + Q
+                                      + " -name __pycache__ -o -name '*.pyc'"), [])
+        self.assertNotEqual(H.xargs_feed("xargs rm -rf", "find " + Q + TOOLKIT + Q
+                                         + " -name __pycache__ -o -name '*.xml'"), [])
+        self.assertEqual(H.xargs_feed("rm -rf x", "echo " + REF), [])        # no xargs
+        self.assertEqual(H.xargs_feed("xargs grep x", "echo " + REF), [])    # not a delete
+        self.assertEqual(H.xargs_feed("xargs rm -rf", None), [])
+
+    def test_xargs_facts(self):
+        self.assertTrue(F("echo " + Q + REF + Q + " | xargs rm -rf")["rm_targets_reference"])
+        self.assertTrue(F("printf '%s' " + Q + GAME + Q + " | xargs -0 rm -rf")["rm_hits_game"])
+        f = F("find " + Q + GAME + "/extensions" + Q + " -name '*.bak' | xargs rm -f")
+        self.assertTrue(f["rm_in_x4_dir"])
+        self.assertFalse(f["rm_hits_game"])
+        self.assertFalse(F("find . -name '*.pyc' | xargs rm -f")["rm_in_x4_dir"])
+
+    def test_for_loop_and_arrays_expand_every_element(self):
+        self.assertEqual(H.assignments("for f in a 'b c' d; do echo; done")["f"], "(a 'b c' d)")
+        self.assertEqual(H.resolve_all("$f", {"f": "(a 'b c')"}), ["a", "b c"])
+        self.assertEqual(H.resolve_all("${A[@]}", {"A": "(x y)"}), ["x", "y"])
+        self.assertEqual(H.resolve_all("$f/sub", {"f": "(a b)"}), ["a/sub", "b/sub"])
+        self.assertEqual(H.resolve_all("${f}x", {"f": "(a b)", "fx": "no"}), ["ax", "bx"])
+        self.assertEqual(H.resolve_all("$fx", {"f": "(a b)", "fx": "no"}), ["no"])
+        self.assertTrue(F("for g in x " + Q + GAME + Q + "; do rm -rf " + DQ + "$g/extensions"
+                          + DQ + "; done")["rm_hits_game"])
+        self.assertTrue(F("for f in " + Q + REF + Q + "/*; do rm -rf " + DQ + "$f" + DQ + "; done")
+                        ["rm_targets_reference"])
+        self.assertTrue(F("for d in build " + Q + GAME + Q + "; do rm -rf " + DQ + "$d" + DQ
+                          + "; done")["rm_hits_game"])
+        self.assertFalse(F("for f in *.tmp; do rm -f " + DQ + "$f" + DQ + "; done")["rm_in_x4_dir"])
+        # quoted prose is not a loop
+        self.assertNotIn("f", H.assignments("echo 'for f in x y'"))
+
+    def test_substitution_assignments_and_identity(self):
+        self.assertEqual(H.assignments("t=$(realpath -m 'a b/c'); rm -rf x")["t"],
+                         "$(realpath -m 'a b/c')")
+        self.assertEqual(H.assignments('t="$(ls x | wc -l)"')["t"], "$(ls x | wc -l)")
+        self.assertEqual(H.identity_subst("$(realpath -m 'a b/c')"), "a b/c")
+        self.assertEqual(H.identity_subst("$(cygpath -u C:/x)"), "C:/x")
+        self.assertEqual(H.identity_subst("$(readlink -f x)"), "x")
+        self.assertEqual(H.identity_subst("$(readlink x)"), "$(readlink x)")
+        self.assertEqual(H.identity_subst("$(realpath a b)"), "$(realpath a b)")
+        self.assertEqual(H.identity_subst("$(echo x | tr a b)"), "$(echo x | tr a b)")
+        self.assertEqual(H.identity_subst("$(mktemp -d)"), "$(mktemp -d)")
+        self.assertTrue(F("t=$(realpath -m " + Q + REF + "/libraries" + Q + "); rm -rf "
+                          + DQ + "$t" + DQ)["rm_targets_reference"])
+        self.assertTrue(F("t=$(cygpath -u " + Q + GAME + Q + "); rm -rf " + DQ + "$t" + DQ)
+                        ["rm_hits_game"])
+        # not an identity, but its text names the root: the conservative branch
+        self.assertTrue(F("t=$(ls " + Q + GAME + Q + " | head -1); rm -rf " + DQ + "$t" + DQ)
+                        ["rm_in_x4_dir"])
+        self.assertFalse(F("t=$(mktemp -d); rm -rf " + DQ + "$t" + DQ)["rm_in_x4_dir"])
+        # a case arm's `)` and a carrier's own assignments (fuzz-guard, this lane)
+        self.assertTrue(F("case $x in *)t=$(realpath -m " + Q + REF + Q + "); rm -rf "
+                          + DQ + "$t" + DQ + " ;; esac")["rm_targets_reference"])
+        self.assertTrue(F("bash -c " + Q + "t=$(realpath -m " + DQ + REF + DQ + "); rm -rf "
+                          + DQ + "$t" + DQ + Q)["rm_targets_reference"])
+        self.assertTrue(F("bash -c " + Q + "for f in " + DQ + GAME + DQ + "; do rm -rf "
+                          + DQ + "$f" + DQ + "; done" + Q)["rm_hits_game"])
+        self.assertTrue(F("Z=" + DQ + "$f" + DQ + "; for f in " + Q + GAME + Q + "; do rm -rf "
+                          + DQ + "$Z" + DQ + "; done")["rm_hits_game"])
+
+    def test_rsync_delete(self):
+        self.assertEqual(H.rsync_deletes("rsync -a --delete e/ " + Q + GAME + "/" + Q), [GAME + "/*"])
+        self.assertEqual(H.rsync_deletes("rsync -a e/ x/"), [])
+        self.assertEqual(H.rsync_deletes("rsync -a --delete-after e/ x/"), ["x/*"])
+        self.assertTrue(F("rsync -a --delete empty/ " + Q + GAME + "/" + Q)["rm_hits_game"])
+        f = F("rsync -a --delete ./m/ " + Q + GAME + "/extensions/amod/" + Q)
+        self.assertTrue(f["rm_in_x4_dir"])
+        self.assertFalse(f["rm_hits_game"])
+        self.assertFalse(F("rsync -a --delete ./a/ ./b/")["rm_in_x4_dir"])
+
+    def test_robocopy(self):
+        self.assertEqual(H.robocopy_effects("robocopy C:/e " + Q + GAME + Q + " //MIR"),
+                         ([GAME], [GAME + "/*"], []))
+        self.assertEqual(H.robocopy_effects("robocopy a b /E /R:2"), (["b"], [], []))
+        self.assertEqual(H.robocopy_effects("robocopy a b *.xml /MOV"), (["b"], [], ["a"]))
+        self.assertEqual(H.robocopy_effects("robocopy /c/a /c/b /PURGE"), (["/c/b"], ["/c/b/*"], []))
+        self.assertTrue(F("robocopy C:/empty " + Q + GAME + Q + " /MIR")["rm_hits_game"])
+        f = F("robocopy ./m " + Q + GAME + "/extensions/amod" + Q + " /E")
+        self.assertTrue(f["copy_into_game_or_profile"])
+        self.assertFalse(f["rm_in_x4_dir"])
+        self.assertTrue(F("robocopy " + Q + REF + Q + " C:/x /MOVE")["rm_targets_reference"])
+
+    def test_modify_targets(self):
+        M = H.modify_targets
+        self.assertEqual(M("touch -d yesterday a b"), ["a", "b"])
+        self.assertEqual(M("chmod -R 000 a"), ["a"])
+        self.assertEqual(M("chown u:g a"), ["a"])
+        self.assertEqual(M("ln -sf /dev/null a"), ["a"])
+        self.assertEqual(M("ln -s x"), [])
+        self.assertEqual(M("ln -s -t d a b"), ["d"])
+        self.assertEqual(M("cat a"), [])
+        for cmd in ("touch " + Q + REF + "/a.xml" + Q, "chmod 000 " + Q + REF + "/libraries" + Q,
+                    "ln -sf /dev/null " + Q + REF + "/a.xml" + Q):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(F(cmd)["writes_reference"])
+        for cmd in ("touch ./x", "chmod +x ./s.sh", "ln -s " + Q + REF + "/libraries" + Q + " ./lib"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(F(cmd)["writes_reference"])
 
 
 _PWSH = H._pwsh_exe()

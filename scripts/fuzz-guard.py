@@ -924,6 +924,23 @@ def seeds(roots):
         # 2026-09-26: the bare-python guard shipped without a seed; the coverage floor
         # above caught it in the first full suite after the merge, as designed.
         ("bare python on toolkit code", "cd tools/x4validate && python -m pytest -q"),
+        # v3.3.0 release review (hooks lane): the shapes that reached no rule before, one
+        # seed each so a mutant that walks past the new model is reported. None starts a
+        # PowerShell (the host forms are pinned in test_audit0924_hooks.py instead).
+        ("xargs fed a root", "echo " + QU + ref + QU + " | xargs " + d + " -rf"),
+        ("for-loop over a root", "for f in " + QU + g + QU + "; do " + d + " -rf "
+         + QU + "$f" + QU + "; done"),
+        ("realpath substitution", "t=$(realpath -m " + QU + ref + QU + "); " + d + " -rf "
+         + QU + "$t" + QU),
+        ("rsync --delete into the game", "rsync -a --delete empty/ " + QU + g + "/" + QU),
+        ("robocopy /MIR into the game", "robocopy C:/empty " + QU + g + QU + " /MIR"),
+        ("touch into reference", "touch " + QU + ref + "/f.xml" + QU),
+        ("cmd /r carrier at reference", "cmd //r rd /s /q " + QU + ref + QU),
+        # NOT seeded: `cmd //c "cd /d <game> && rd /s /q extensions"`. Its dangerous part
+        # is cmd.exe text inside one quoted word, and every mutator here rewrites BASH
+        # syntax -- `timeout -s KILL 5 rd` or `$'rd'` inside that word is a different cmd
+        # command (Windows' own timeout.exe), not a disguised delete. Pinned by
+        # test_hook_facts.TestRRCmdCarrier and test_audit0924_hooks.TestRR3CmdCarrier.
     ]
 
 
