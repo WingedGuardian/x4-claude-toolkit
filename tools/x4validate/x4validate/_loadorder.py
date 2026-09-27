@@ -73,6 +73,54 @@ def mod_dependencies(mod_path: Path, dropped: list[str] | None = None
     return mod_id, deps
 
 
+#: The extensions-root KINDS between which a dependency is MEASURED not to resolve
+#: (2026-09-26, probe rounds 2-3, BLIND-SPOTS F141: game <-> profile, both directions).
+#: Nothing about any other root was measured -- the Steam Workshop root in particular --
+#: so a root of any other kind keeps the pre-F141 model (dependencies resolve across it)
+#: and `_registry.mods` DISCLOSES that as unmeasured. `root_kind` comes from
+#: `_registry.scan_installed`; an entry without one is modelled in the game root.
+ISOLATED_ROOT_KINDS = frozenset({"game", "profile"})
+
+
+def crosses_isolated_roots(kind_a: str, kind_b: str) -> bool:
+    """True when a dependency between roots of these kinds is MEASURED to not resolve."""
+    return (kind_a != kind_b and kind_a in ISOLATED_ROOT_KINDS
+            and kind_b in ISOLATED_ROOT_KINDS)
+
+
+def root_kind(m: dict) -> str:
+    """A mod entry's extensions-root kind; no field = the game root, where mods deploy."""
+    return m.get("root_kind") or "game"
+
+
+def case_only_note(folder: str, wanted: str, actual: str) -> str:
+    """THE record for a dependency id that matches an installed id only ignoring case.
+
+    Whether the engine compares dependency ids case-sensitively is UNMEASURED. Excluding
+    the mod on a spelling difference would assert a behaviour nobody observed, so the
+    model treats the dependency as SATISFIED (and as a load-order edge) and says so.
+    One implementation, so `_registry` and this module record the SAME string and a
+    shared channel keeps one copy."""
+    return (f"{folder}: dependency {wanted!r} matches the installed id {actual!r} only "
+            "ignoring case; modelled as SATISFIED and as a load-order edge -- whether the "
+            "engine matches dependency ids case-sensitively is UNMEASURED")
+
+
+def _record(msg: str, mods, dropped: list[str] | None) -> None:
+    """Send one load-order record to *dropped* and to the mod list's own channel.
+
+    A `_registry.ModList` carries ``.notes``; a record appended there reaches every
+    caller that renders `_registry.dropped_note`, whether or not it passed *dropped*
+    (the release review found the records reached x4compat only). Duck-typed on
+    purpose: this module imports nothing from `_registry`. Deduplicated on the list,
+    because one mod list is often ordered more than once in a run."""
+    if dropped is not None:
+        dropped.append(msg)
+    notes = getattr(mods, "notes", None)
+    if notes is not None and msg not in notes:
+        notes.append(msg)
+
+
 def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> list[str]:
     """Order mod FOLDERS as the X4 engine loads them. MEASURED, not assumed.
 
@@ -108,14 +156,21 @@ def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> li
 
     *mods* are entries from `_registry.mods(...)`. Pass *dropped* to receive every
     manifest or shape that made the order an assumption rather than a measurement.
+    When *mods* is a `_registry.ModList` the same records are ALSO appended (once
+    each) to its ``.notes``, so every caller that renders `_registry.dropped_note`
+    discloses them without passing *dropped* -- before this, only x4compat did.
     """
     folders = [m["folder"] for m in mods]
     # EXTENSIONS ROOTS (MEASURED 2026-09-26, probe rounds 2-3; BLIND-SPOTS F141): every
     # game-root mod applies before every profile-root mod, and a dependency does not
-    # cross roots. `root_rank` comes from `_registry.scan_installed` (0 = first
-    # configured root, the game root); an entry without one (a candidate placed from a
-    # dev folder, a test fixture) is modelled in the GAME root, where mods are deployed.
+    # cross between THOSE TWO roots. `root_rank` (position of the configured root, the
+    # walk order) and `root_kind` (game / profile / workshop / custom -- which rule
+    # applies) come from `_registry.scan_installed`; an entry without them (a candidate
+    # placed from a dev folder, a test fixture) is modelled in the GAME root, where mods
+    # are deployed. Only game <-> profile edges are cut: nothing about the Workshop root
+    # (or an unconfigured one) was measured, so its edges are kept, as before F141.
     rank_of = {m["folder"]: m.get("root_rank", 0) for m in mods}
+    kind_of = {m["folder"]: root_kind(m) for m in mods}
     # A REPEATED FOLDER COLLAPSES SILENTLY, AND IT TAKES THE MOD WITH IT.
     # `incoming` below is keyed by folder, so two entries with the same folder
     # become ONE node: the mod disappears from the load order, from the effective
@@ -133,13 +188,16 @@ def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> li
     id_to_folder: dict[str, str] = {}
     deps_by_folder: dict[str, list[str]] = {}
     for m in mods:
-        if m["folder"] in _seen_folder and dropped is not None:
-            dropped.append(
+        if m["folder"] in _seen_folder:
+            _record(
                 "%s: folder appears more than once in the mod set, so one entry "
                 "collapses onto the other and vanishes from the load order, the "
-                "effective tree and every provenance answer" % m["folder"])
+                "effective tree and every provenance answer" % m["folder"], mods, dropped)
         _seen_folder.add(m["folder"])
-        mod_id, deps = mod_deps(Path(m["path"]), dropped)
+        _parse: list[str] = []
+        mod_id, deps = mod_deps(Path(m["path"]), _parse)
+        for msg in _parse:
+            _record(msg, mods, dropped)
         # `mod_id` truthy FIRST: `mod_deps` returns "" for a mod with no
         # content.xml, and an ABSENT id is not a claimed one. Without this the
         # record fires for every second manifest-less mod -- caught by the twin,
@@ -147,21 +205,32 @@ def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> li
         _clash = (mod_id
                   and mod_id in id_to_folder
                   and id_to_folder[mod_id] != m["folder"])
-        if _clash and dropped is not None:
-            dropped.append(
+        if _clash:
+            _record(
                 "manifest id %r is claimed by both %r and %r; the later one wins "
                 "the id, so a dependency naming it resolves to only one of them"
-                % (mod_id, id_to_folder[mod_id], m["folder"]))
+                % (mod_id, id_to_folder[mod_id], m["folder"]), mods, dropped)
         id_to_folder[mod_id] = m["folder"]
         deps_by_folder[m["folder"]] = deps
 
     # Edges: dep_folder -> folder (dependency loads first). Ignore uninstalled deps.
+    # An id that matches only IGNORING CASE is an edge too, and recorded (engine
+    # behaviour UNMEASURED; see `case_only_note`).
+    id_by_lower: dict[str, str] = {}
+    for mod_id in id_to_folder:
+        id_by_lower.setdefault(mod_id.lower(), mod_id)
     incoming: dict[str, set[str]] = {f: set() for f in folders}
     for folder, dep_ids in deps_by_folder.items():
         for dep_id in dep_ids:
             dep_folder = id_to_folder.get(dep_id)
+            if dep_folder is None:
+                actual = id_by_lower.get(dep_id.lower())
+                if actual is not None:
+                    dep_folder = id_to_folder[actual]
+                    if dep_folder != folder:
+                        _record(case_only_note(folder, dep_id, actual), mods, dropped)
             if (dep_folder and dep_folder != folder
-                    and rank_of[dep_folder] == rank_of[folder]):   # never across roots
+                    and not crosses_isolated_roots(kind_of[dep_folder], kind_of[folder])):
                 incoming[folder].add(dep_folder)
 
     walk = sorted(dict.fromkeys(folders), key=lambda f: (rank_of[f], sort_key(f)))
@@ -175,17 +244,16 @@ def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> li
         for f in walk:
             if f in resolved or not incoming[f] <= resolved:
                 continue
-            if (passes > 0 and rank_of[f] < last_rank and dropped is not None
-                    and not _noted_roots):
+            if passes > 0 and rank_of[f] < last_rank and not _noted_roots:
                 # UNMEASURED: round 3's probes all loaded in the FIRST pass, so whether a
                 # game-root mod that WAITS a pass falls before or after the profile-root
                 # mods is not known. The model keeps one walk (game root, then profile
                 # root) in repeated passes; say so rather than let it read as measured.
-                dropped.append(
+                _record(
                     "%s: loads in a later dependency pass while mods in another extensions "
                     "root are present; its position relative to that root's mods is "
                     "UNMEASURED (the model walks game root, then profile root, in repeated "
-                    "passes)" % f)
+                    "passes)" % f, mods, dropped)
                 _noted_roots = True
             ordered.append(f)
             resolved.add(f)                  # visible to mods LATER in this same pass
@@ -198,11 +266,11 @@ def compute_load_order(mods: list[dict], dropped: list[str] | None = None) -> li
             # "installed"-scope caller. The rest follow the sort order and the
             # assumption is RECORDED -- it can change a collision winner.
             rest = [f for f in walk if f not in resolved]
-            if dropped is not None:
-                dropped.append(
-                    "dependency cycle among %d mod(s) (%s); their load order falls back "
-                    "to the folder sort order, an UNMEASURED assumption that can change "
-                    "which mod wins a collision" % (len(rest), ", ".join(rest[:5])))
+            _record(
+                "dependency cycle among %d mod(s) (%s); their load order falls back "
+                "to the folder sort order, an UNMEASURED assumption that can change "
+                "which mod wins a collision" % (len(rest), ", ".join(rest[:5])),
+                mods, dropped)
             ordered.extend(rest)
             break
     return ordered
@@ -259,7 +327,15 @@ def place_candidate(mods: list[dict], candidate: Path, cand_id: str | None = Non
     # not installed anywhere is modelled in the GAME root (rank 0), where mods deploy.
     entry = {"folder": match["folder"] if match is not None else own_folder,
              "id": cand_id or own_folder, "path": str(candidate),
-             "root_rank": match.get("root_rank", 0) if match is not None else 0}
+             "root_rank": match.get("root_rank", 0) if match is not None else 0,
+             "root_kind": root_kind(match) if match is not None else "game"}
     kept = [m for m in mods if not any(m is x for x in excluded)]
-    return Placement(mods=kept + [entry], entry=entry, excluded=excluded)
+    placed = kept + [entry]
+    if hasattr(mods, "notes") and hasattr(mods, "dropped"):
+        # A `_registry.ModList` in, a ModList out, SHARING its channels: a record the
+        # later `compute_load_order` makes over the placed set lands on the list the
+        # caller already discloses from (release review, finding 3).
+        placed = type(mods)(placed)
+        placed.dropped, placed.notes = mods.dropped, mods.notes
+    return Placement(mods=placed, entry=entry, excluded=excluded)
 
