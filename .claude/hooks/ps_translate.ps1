@@ -35,8 +35,10 @@
 # rules exactly as an unresolvable `$X` in a Bash command does: an unknown operand is
 # not proof of safety for a delete, and `$env:X4_REFERENCE` still names its root.
 #
-# FAILS CLOSED: a command that does not PARSE is not translated ({"ok": false}), and the
-# caller asks -- the same verdict protect-bash.sh gives a Bash command `bash -n` rejects.
+# FAILS CLOSED: a command that does not PARSE is not translated ({"ok": false}); the
+# caller DENIES it with the parser's message -- a syntax error is fixed, not confirmed.
+# The reason's prefix "does not parse as PowerShell" is how hook_facts.py tells a parse
+# failure from a missing PowerShell (PS_PARSE_ERROR there): keep them in step.
 using namespace System.Management.Automation.Language
 
 $ErrorActionPreference = 'Stop'
@@ -52,12 +54,31 @@ function Out-Json($obj) {
 # the output. Control bytes cannot occur in a path.
 $SOH = [char]1
 $STX = [char]2
-function UVar([string]$name) {
+# OPAQUE vs NAMED unresolved values (v3.3.0 release review, finding 1). An ENVIRONMENT
+# variable reaches the rules as `$X` does in Bash -- a root variable names its root, any
+# other is an operand the Bash half already has a convention for. A PowerShell-LOCAL value
+# the translator could not resolve (command output, `$_` from an unknown producer, an
+# expression) has no such convention: it is a value nobody can name, so a write or delete
+# aimed at one is reported UNKNOWN and the hook asks. Recorded by marker name.
+$script:Opaque = New-Object 'Collections.Generic.HashSet[string]'
+function UVar([string]$name, [bool]$opaque = $true) {
     $n = $name -replace '^env:', ''
     if ($n -eq '_' -or $n -eq 'PSItem') { $n = 'PS_PIPELINE_ITEM' }
     $n = $n -replace '[^A-Za-z0-9_]', '_'
     if ($n -notmatch '^[A-Za-z_]') { $n = 'PS_' + $n }
+    if ($opaque) { [void]$script:Opaque.Add($n) }
     return "$SOH$n$STX"
+}
+function IsOpaque([string]$v) {
+    if ($null -eq $v) { return $true }
+    foreach ($m in [regex]::Matches($v, "$SOH([^$STX]*)$STX")) {
+        if ($script:Opaque.Contains($m.Groups[1].Value)) { return $true }
+    }
+    return $false
+}
+function AnyOpaque($vals) {
+    foreach ($v in @($vals)) { if (IsOpaque ([string]$v)) { return $true } }
+    return $false
 }
 
 # Bash-quote one word, rendering unresolved parts as "${NAME}".
@@ -94,6 +115,7 @@ function Q([string]$s) {
 $script:Assign = @{}      # variable name (lower) -> string[] ; $null = ambiguous
 $script:Tables = @{}      # variable name (lower) -> literal hashtable (key -> value AST); $null = ambiguous
 $script:AssignAst = @{}   # variable name (lower) -> the one assigned AST; $null = ambiguous
+$script:AssignAll = @{}   # variable name (lower) -> EVERY assigned AST (for target resolution)
 
 # WHAT COULD NOT BE RESOLVED. A write or delete whose TARGET this script cannot name --
 # an unresolvable splat, a method on an unknown object, Invoke-Expression of computed
@@ -121,9 +143,19 @@ function Flatten($ast) {
 function VarValue([VariableExpressionAst]$v) {
     $name = $v.VariablePath.UserPath
     $key = $name.ToLowerInvariant()
-    if ($key -eq 'home') { return @(UVar 'HOME') }
+    if ($key -eq 'home') { return @(UVar 'HOME' $false) }
+    if ($key -like 'env:*') { return @(UVar $name $false) }
+    if ($key -eq 'pwd') { return @('.') }
     if ($key -eq 'null' -or $key -eq 'true' -or $key -eq 'false') { return @('') }
     if ($script:Assign.ContainsKey($key) -and $null -ne $script:Assign[$key]) { return $script:Assign[$key] }
+    # A variable holding COMMAND OUTPUT (`$t = Join-Path ...`, `$d = Get-Item ...`, a
+    # foreach loop variable) or the pipeline item: resolved to the paths it holds when
+    # they can be read statically, so it denies exactly as the literal spelling does.
+    if ($script:AssignAll.ContainsKey($key) -or
+        $key -eq '_' -or $key -eq 'psitem') {
+        $r = Finalize (Resolve-Target $v)
+        if ($r.known -and -not $r.filter -and @($r.paths).Count -ge 1) { return @($r.paths) }
+    }
     return @(UVar $name)
 }
 
@@ -135,7 +167,8 @@ function Vals($ast) {
     if ($ast -is [ExpandableStringExpressionAst]) {
         $s = $ast.Value
         foreach ($n in $ast.NestedExpressions) {
-            $rep = if ($n -is [VariableExpressionAst]) { (VarValue $n) | Select-Object -First 1 } else { (Flatten $n) | Select-Object -First 1 }
+            $rep = if ($n -is [VariableExpressionAst]) { (VarValue $n) | Select-Object -First 1 }
+                   else { @((Finalize (Resolve-Target $n)).paths) | Select-Object -First 1 }
             # NestedExpressions carry their own source text; the Value holds it verbatim.
             $s = $s.Replace($n.Extent.Text, [string]$rep)
         }
@@ -145,6 +178,9 @@ function Vals($ast) {
     if ($ast -is [CommandExpressionAst]) { return Vals $ast.Expression }
     if ($ast -is [ParenExpressionAst] -or $ast -is [ArrayExpressionAst]) {
         $inner = if ($ast -is [ParenExpressionAst]) { $ast.Pipeline } else { $ast.SubExpression }
+        # `@('a','b')` holds a STATEMENT BLOCK: read its one statement, or the elements
+        # were flattened into the single path 'a/b' (found by this lane's replay).
+        if ($inner -is [StatementBlockAst] -and $inner.Statements.Count -eq 1) { $inner = $inner.Statements[0] }
         if ($inner -is [PipelineAst] -and $inner.PipelineElements.Count -eq 1 -and $inner.PipelineElements[0] -is [CommandExpressionAst]) {
             return Vals $inner.PipelineElements[0].Expression
         }
@@ -227,8 +263,257 @@ function IsSet($binding, [string]$name) {
 $SOURCES = @('get-childitem', 'get-item')
 $NARROWERS = @('where-object', 'select-object', 'select-string')
 
+# ------------------------------------------------------------------ targets
+# WHAT A VALUE NAMES AS A PATH (v3.3.0 release review, finding 1 -- CRITICAL). A delete
+# target reaching Remove-Item through the PIPELINE, or through a variable holding command
+# output, became `"${PS_PIPELINE_INPUT}"` / `"${t}"` -- an unresolved operand naming no
+# root, so the delete ALLOWED while the literal spelling hard-denied. One mechanism now
+# answers "which paths does this AST hold" for every writer: literals, variables assigned
+# a literal OR command output earlier in the same command, foreach loop variables, `$_`,
+# `.FullName`-style members, `(Join-Path ...)`, and the producers Get-Item /
+# Get-ChildItem / Resolve-Path / Convert-Path / Join-Path / Write-Output. What it cannot
+# read comes back known=$false, and a writer given such a target reports it UNKNOWN (ask).
+#
+# Result: @{ known; paths; filter; children; recurse }. `children` = the entries UNDER each
+# path (Get-ChildItem), expanded by Finalize into `<p>/*` -- the spelling the Bash rules
+# judge with glob_covers, so `gci <game> | Remove-Item` denies as `rm -rf <game>/*` does
+# (finding 5).
+$script:RDepth = 0
+function RT([bool]$known, $paths, $filter = $null, [bool]$children = $false, [bool]$recurse = $false) {
+    return @{ known = $known; paths = @($paths); filter = $filter; children = $children; recurse = $recurse }
+}
+function Unres($ast) { return (RT $false @(Flatten $ast)) }
+$PATH_MEMBERS = @('fullname', 'pspath', 'path', 'providerpath', 'literalpath', 'fullpath')
+
+function Finalize($r) {
+    if ($null -eq $r) { return (RT $false @(UVar 'PS_EXPR')) }
+    if ($r.children -and -not $r.filter) {
+        $kids = @($r.paths | ForEach-Object { ([string]$_).TrimEnd('/', '\') + '/*' })
+        return (RT $r.known $kids $null $false $r.recurse)
+    }
+    return $r
+}
+
+function Resolve-Target($e) {
+    if ($null -eq $e -or $script:RDepth -gt 12) { return (RT $false @(UVar 'PS_EXPR')) }
+    $script:RDepth++
+    try { return (Resolve-Target1 $e) } finally { $script:RDepth-- }
+}
+
+function Resolve-Target1($e) {
+    if ($e -is [StringConstantExpressionAst] -or $e -is [ConstantExpressionAst] -or
+        $e -is [ExpandableStringExpressionAst] -or $e -is [BinaryExpressionAst]) {
+        $v = @(Vals $e)
+        return (RT (-not (AnyOpaque $v)) $v)
+    }
+    if ($e -is [ArrayLiteralAst]) {
+        $known = $true; $ps = @()
+        foreach ($x in $e.Elements) { $r = Finalize (Resolve-Target $x); $known = $known -and $r.known; $ps += $r.paths }
+        return (RT $known $ps)
+    }
+    if ($e -is [CommandExpressionAst]) { return (Resolve-Target $e.Expression) }
+    if ($e -is [ParenExpressionAst]) { return (Resolve-Output $e.Pipeline) }
+    if ($e -is [SubExpressionAst] -or $e -is [ArrayExpressionAst]) {
+        $sb = $e.SubExpression
+        if ($sb.Statements.Count -eq 1) { return (Resolve-Output $sb.Statements[0]) }
+        return (Unres $e)
+    }
+    if ($e -is [PipelineAst] -or $e -is [StatementBlockAst]) { return (Resolve-Output $e) }
+    if ($e -is [ConvertExpressionAst]) { return (Resolve-Target $e.Child) }
+    if ($e -is [VariableExpressionAst]) {
+        $name = $e.VariablePath.UserPath
+        $k = $name.ToLowerInvariant()
+        if ($k -like 'env:*' -or $k -eq 'home' -or $k -eq 'pwd' -or $k -eq 'null') { return (RT $true @(VarValue $e)) }
+        if ($k -eq '_' -or $k -eq 'psitem') {
+            $up = ItemSource $e
+            if ($null -ne $up -and $up.known) { return $up }
+            return (RT $false @(UVar 'PS_PIPELINE_ITEM'))
+        }
+        if ($script:Assign.ContainsKey($k) -and $null -ne $script:Assign[$k]) {
+            $v = @($script:Assign[$k]); return (RT (-not (AnyOpaque $v)) $v)
+        }
+        # Assigned more than once (a loop body, an if/else): the UNION of every value --
+        # known only when all of them are. Reading one would under-report the targets.
+        if ($script:AssignAll.ContainsKey($k) -and $script:AssignAll[$k].Count -eq 1) {
+            return (Resolve-Target $script:AssignAll[$k][0])     # keeps a gci's filter
+        }
+        if ($script:AssignAll.ContainsKey($k)) {
+            $known = $true; $ps = @()
+            foreach ($a in $script:AssignAll[$k]) {
+                $r = Finalize (Resolve-Target $a)
+                $known = $known -and $r.known -and -not $r.filter
+                $ps += @($r.paths)
+            }
+            return (RT $known $ps)
+        }
+        return (RT $false @(UVar $name))
+    }
+    if ($e -is [InvokeMemberExpressionAst]) {
+        if ($e.Static -and $e.Expression -is [TypeExpressionAst]) {
+            $tail = TypeTail $e.Expression.TypeName.FullName
+            $mn = MemberName $e
+            if ($tail -eq 'path' -and $mn -in 'combine', 'join') {
+                $known = $true; $bits = @()
+                foreach ($x in $e.Arguments) {
+                    $r = Finalize (Resolve-Target $x)
+                    if (@($r.paths).Count -ne 1) { $known = $false }
+                    $known = $known -and $r.known
+                    $bits += @($r.paths)[0]
+                }
+                return (RT $known @(($bits | ForEach-Object { ([string]$_).TrimEnd('/', '\') }) -join '/'))
+            }
+            if (($tail -eq 'path' -and $mn -eq 'getfullpath') -or
+                ($mn -eq 'new' -and $FILE_OBJECT_TAILS -contains $tail)) {
+                if ($e.Arguments.Count -ge 1) { return (Resolve-Target $e.Arguments[0]) }
+            }
+        }
+        return (Unres $e)
+    }
+    if ($e -is [MemberExpressionAst]) {
+        $mn = MemberName $e
+        if (-not $e.Static -and $PATH_MEMBERS -contains $mn) { return (Resolve-Target $e.Expression) }
+        # `.Name` of a file object is its LEAF: `Join-Path $dst $_.Name` over gci output.
+        if (-not $e.Static -and $mn -eq 'name') {
+            $r = Finalize (Resolve-Target $e.Expression)
+            return (RT $r.known @($r.paths | ForEach-Object { LeafOf $_ }))
+        }
+        return (Unres $e)
+    }
+    return (Unres $e)
+}
+
+# The objects a pipeline (or a single statement) OUTPUTS, as paths.
+function Resolve-Output($p) {
+    if ($p -is [StatementBlockAst]) {
+        if ($p.Statements.Count -eq 1) { return (Resolve-Output $p.Statements[0]) }
+        return (RT $false @(UVar 'PS_EXPR'))
+    }
+    if ($p -isnot [PipelineAst]) { return (Unres $p) }
+    $els = @($p.PipelineElements)
+    $last = $els[$els.Count - 1]
+    if ($last -is [CommandExpressionAst]) {
+        if ($els.Count -eq 1) { return (Resolve-Target $last.Expression) }
+        return (Unres $p)
+    }
+    if ($last -is [CommandAst]) { return (Resolve-Produced $last $p) }
+    return (Unres $p)
+}
+
+# The paths a bound parameter holds, or $null when it is not bound.
+function BTarget($binding, [string[]]$names) {
+    $b = Bound $binding $names
+    if ($null -eq $b) { return $null }
+    if ($null -ne $b.Value) { return (Resolve-Target $b.Value) }
+    if ($null -ne $b.ConstantValue) { return (RT $true @([string]$b.ConstantValue)) }
+    return $null
+}
+
+$PATH_PRODUCERS = @('get-item', 'resolve-path', 'convert-path', 'get-itemproperty')
+$NON_FS_PROVIDER = '(?i)^(env|variable|function|alias|hklm|hkcu|hkcr|hku|hkcc|registry|cert|wsman)(::|:)'
+function LeafOf([string]$p) {
+    $t = $p.TrimEnd('/', '\')
+    $cut = [Math]::Max($t.LastIndexOf('/'), $t.LastIndexOf('\'))
+    if ($cut -ge 0) { return $t.Substring($cut + 1) }
+    return $t
+}
+function ParentOf([string]$p) {
+    $t = $p.TrimEnd('/', '\')
+    $cut = [Math]::Max($t.LastIndexOf('/'), $t.LastIndexOf('\'))
+    if ($cut -gt 0) { return $t.Substring(0, $cut) }
+    return '.'
+}
+# What ONE command at the end of a pipeline outputs, as paths.
+function Resolve-Produced([CommandAst]$cmd, $pipe) {
+    $cn = Canon $cmd.GetCommandName()
+    $b = $null
+    try { $b = [StaticParameterBinder]::BindCommand($cmd, $true) } catch { $b = $null }
+    $idx = if ($pipe -is [PipelineAst]) { [array]::IndexOf(@($pipe.PipelineElements), $cmd) } else { -1 }
+    $fed = { if ($idx -gt 0) { Scan-Upstream $pipe $idx } else { $null } }
+    if ($cn -eq 'join-path') {
+        $base = BTarget $b @('Path')
+        if ($null -eq $base) { $base = & $fed }
+        $child = BTarget $b @('ChildPath')
+        if ($null -eq $base -or $null -eq $child) { return (Unres $cmd) }
+        $base = Finalize $base; $child = Finalize $child
+        # Every base with every child: a loop variable over a literal list is several.
+        $known = $base.known -and $child.known
+        $tails = @($child.paths)
+        $extra = Bound $b @('AdditionalChildPath')
+        if ($null -ne $extra) {
+            $ex = Finalize (Resolve-Target $extra.Value)
+            $known = $known -and $ex.known
+            $tails = @($tails | ForEach-Object { $_ + '/' + (@($ex.paths) -join '/') })
+        }
+        $out = @()
+        foreach ($bp in @($base.paths)) { foreach ($tp in $tails) { $out += ([string]$bp).TrimEnd('/', '\') + '/' + $tp } }
+        return (RT $known $out)
+    }
+    if ($cn -eq 'split-path') {
+        $base = BTarget $b @('Path', 'LiteralPath')
+        if ($null -eq $base) { $base = & $fed }
+        if ($null -eq $base) { return (Unres $cmd) }
+        $base = Finalize $base
+        $leaf = IsSet $b 'Leaf'
+        return (RT $base.known @($base.paths | ForEach-Object { if ($leaf) { LeafOf $_ } else { ParentOf $_ } }))
+    }
+    if ($PATH_PRODUCERS -contains $cn -or $SOURCES -contains $cn) {
+        $base = BTarget $b @('Path', 'LiteralPath')
+        if ($null -eq $base) { $base = & $fed }
+        if ($null -eq $base) { $base = RT $true @('.') }
+        $base = Finalize $base
+        if ($cn -ne 'get-childitem') { return $base }
+        $f = @(BVals $b @('Filter', 'Include')) | Select-Object -First 1
+        return (RT $base.known $base.paths $f $true (IsSet $b 'Recurse'))
+    }
+    if ($cn -in 'write-output', 'echo') {
+        $v = BTarget $b @('InputObject')
+        if ($null -eq $v) { $v = & $fed }
+        if ($null -ne $v) { return $v }
+        return (Unres $cmd)
+    }
+    if ($NARROWERS -contains $cn -or $cn -eq 'sort-object' -or $cn -eq 'foreach-object') {
+        $up = & $fed
+        if ($null -ne $up) { return $up }
+        return (Unres $cmd)
+    }
+    if ($cn -eq 'new-object' -and $null -ne $b) {
+        $t = @(BVals $b @('TypeName')) | Select-Object -First 1
+        if ($t -and $FILE_OBJECT_TAILS -contains (TypeTail $t)) {
+            $al = Bound $b @('ArgumentList')
+            if ($null -ne $al -and $null -ne $al.Value) {
+                $v = $al.Value
+                if ($v -is [ArrayLiteralAst]) { $v = $v.Elements[0] }
+                return (Resolve-Target $v)
+            }
+        }
+    }
+    return (Unres $cmd)
+}
+
+# `$_` / `$PSItem`: the item of the ForEach-Object / Where-Object whose script block it sits
+# in, i.e. whatever feeds THAT command.
+function ItemSource([VariableExpressionAst]$v) {
+    $n = $v.Parent
+    while ($null -ne $n) {
+        if ($n -is [ScriptBlockExpressionAst]) {
+            $cmd = $n.Parent
+            if ($cmd -is [CommandParameterAst]) { $cmd = $cmd.Parent }
+            if ($cmd -is [CommandAst] -and (Canon $cmd.GetCommandName()) -in 'foreach-object', 'where-object') {
+                $pipe = $cmd.Parent
+                if ($pipe -is [PipelineAst]) {
+                    $idx = [array]::IndexOf(@($pipe.PipelineElements), $cmd)
+                    if ($idx -gt 0) { return (Finalize (Scan-Upstream $pipe $idx)) }
+                }
+            }
+            return $null
+        }
+        $n = $n.Parent
+    }
+    return $null
+}
+
 # What arrives on this command's pipeline input: $null (nothing), or
-# @{known; paths; filter; recurse; narrowed; children}.
+# @{known; paths; filter; recurse; children}.
 function Upstream([CommandAst]$c) {
     $node = $c
     while ($true) {
@@ -247,60 +532,72 @@ function Upstream([CommandAst]$c) {
     }
 }
 
+# The objects arriving at element $idx of $pipe, walking back over pass-through commands.
+# NOT finalized: a Get-ChildItem source keeps `children`, so a narrower downstream can
+# still scope it to a filtered find.
 function Scan-Upstream([PipelineAst]$pipe, [int]$idx) {
     $narrowed = $false
+    $r = $null
     for ($i = $idx - 1; $i -ge 0; $i--) {
         $e = $pipe.PipelineElements[$i]
+        if ($e -is [CommandExpressionAst]) { $r = Resolve-Target $e.Expression; break }
         if ($e -isnot [CommandAst]) { break }
         $cn = Canon $e.GetCommandName()
         if ($NARROWERS -contains $cn) { $narrowed = $true; continue }
         if ($cn -eq 'sort-object' -or $cn -eq 'foreach-object') { continue }
-        if ($SOURCES -contains $cn) {
-            $b = $null
-            try { $b = [StaticParameterBinder]::BindCommand($e, $true) } catch { $b = $null }
-            $p = @(BVals $b @('Path', 'LiteralPath'))
-            if ($p.Count -eq 0) { $p = @('.') }
-            $f = @(BVals $b @('Filter', 'Include')) | Select-Object -First 1
-            return @{ known = $true; paths = $p; filter = $f; narrowed = $narrowed
-                      recurse = (IsSet $b 'Recurse'); children = ($cn -eq 'get-childitem') }
-        }
+        $r = Resolve-Produced $e $pipe
         break
     }
-    return @{ known = $false }
-}
-
-function IsPipelineItem($ast) {
-    if ($null -eq $ast) { return $false }
-    foreach ($v in $ast.FindAll({ param($x) $x -is [VariableExpressionAst] }, $true)) {
-        if (@('_', 'psitem') -contains $v.VariablePath.UserPath.ToLowerInvariant()) { return $true }
+    if ($null -eq $r) { return (RT $false @(UVar 'PS_PIPELINE_INPUT')) }
+    if ($narrowed -and -not $r.filter) {
+        $r = RT $r.known $r.paths 'PS_FILTERED' $false $r.recurse
     }
-    return $false
+    return $r
 }
 
 # The paths a destructive cmdlet acts on, seeing through the pipeline where it must.
 # Returns @{paths; scoped} -- `scoped` = only SOME entries under each path (a filter).
-function Targets([CommandAst]$c, $binding, [string[]]$names) {
-    $b = Bound $binding $names
-    $viaItem = ($null -ne $b) -and (IsPipelineItem $b.Value)
-    if ($null -ne $b -and -not $viaItem) { return @{ paths = @(BVals $binding $names); scoped = $false } }
-    $up = Upstream $c
-    if ($null -eq $up) {
-        # A writing cmdlet with NO resolvable target is not a no-op to the guard: it is
-        # an UNKNOWN target (a splat, a runtime-only value), and the hook asks.
-        Unknown "$($c.GetCommandName()): no target path could be resolved"
-        return @{ paths = @(); scoped = $false }
+#
+# A DELETE target ($delete: Remove-Item, a Move-Item/Rename-Item SOURCE) that cannot be
+# resolved is reported UNKNOWN (ask), never passed as a path that merely names nothing
+# (finding 1, CRITICAL): deletes are the one channel with nothing behind them, which is
+# also why the Bash half judges an unresolved delete operand conservatively.
+#
+# A WRITE target that cannot be resolved is NOT: it goes to the rules as its text, which
+# is the Bash half's standing write convention (an unresolved operand fires only when it
+# names a root or a root variable). MEASURED before scoping it this way, over the 1,524
+# historical PowerShell commands: failing closed on writes too added 28 asks on routine
+# work (Copy-Item/Set-Content/New-Item into scratch dirs through loop variables), every
+# one a false positive -- friction that could not be scoped away, so it was not shipped.
+function Targets([CommandAst]$c, $binding, [string[]]$names, [bool]$delete = $false) {
+    $r = BTarget $binding $names
+    if ($null -eq $r) {
+        $r = Upstream $c
+        if ($null -eq $r) {
+            # A writing cmdlet with NO resolvable target is not a no-op to the guard: it is
+            # an UNKNOWN target (a splat, a runtime-only value), and the hook asks.
+            Unknown "$($c.GetCommandName()): no target path could be resolved"
+            return @{ paths = @(); scoped = $false }
+        }
     }
-    if (-not $up.known) { return @{ paths = @(UVar 'PS_PIPELINE_INPUT'); scoped = $false } }
-    $pat = $up.filter
-    if (-not $pat -and $up.narrowed) { $pat = 'PS_FILTERED' }
-    $paths = $up.paths
-    # Get-ChildItem yields the entries UNDER each path, never the path itself, so an
-    # unfiltered `gci <p> | Remove-Item` is `rm -rf <p>/<each child>` -- judged the way
-    # the Bash rules already judge a delete of something inside <p>.
-    if (-not $pat -and $up.children) {
-        $paths = @($paths | ForEach-Object { $_.TrimEnd('/', '\') + '/' + (UVar 'PS_CHILD') })
+    $r = Finalize $r
+    # A NON-FILESYSTEM provider path is not a file: `Remove-Item Env:X4_GAME` unsets a
+    # variable. Read as a path it named the root its variable name spells (MEASURED in
+    # this lane's replay: an ask on clearing X4_* variables before an installer test).
+    $r = RT $r.known @($r.paths | Where-Object { [string]$_ -notmatch $NON_FS_PROVIDER }) $r.filter $false $r.recurse
+    if ($delete -and (-not $r.known -or (AnyOpaque $r.paths))) {
+        Unknown "$($c.GetCommandName()): a delete target the guard cannot resolve: $($c.Extent.Text)"
     }
-    return @{ paths = $paths; scoped = [bool]$pat; filter = $pat; recurse = $up.recurse }
+    return @{ paths = @($r.paths); scoped = [bool]$r.filter; filter = $r.filter; recurse = $r.recurse }
+}
+
+# A write DESTINATION (`-Destination`, `-DestinationPath`, `-OutFile` ...): the paths it
+# resolves to (a variable holding Join-Path/Get-Item output included), or its text. The
+# write convention above: no UNKNOWN. $null when not given at all.
+function WriteDest($binding, [string[]]$names, [string]$what) {
+    $r = BTarget $binding $names
+    if ($null -eq $r) { return $null }
+    return @((Finalize $r).paths)
 }
 
 function Words([string[]]$ws) { return (($ws | ForEach-Object { Q $_ }) -join ' ') }
@@ -366,7 +663,7 @@ function Translate-Command([CommandAst]$c) {
     }
     switch ($name) {
         'remove-item' {
-            $t = Targets $c $binding @('Path', 'LiteralPath')
+            $t = Targets $c $binding @('Path', 'LiteralPath') $true
             $pat = @(BVals $binding @('Filter', 'Include')) | Select-Object -First 1
             if ($pat -and $pat -ne '*' -and $pat -ne '*.*') { $t.scoped = $true; $t.filter = $pat }
             foreach ($p in $t.paths) {
@@ -376,15 +673,15 @@ function Translate-Command([CommandAst]$c) {
             return $lines
         }
         { $_ -in 'move-item', 'copy-item' } {
-            $t = Targets $c $binding @('Path', 'LiteralPath')
-            $dst = @(BVals $binding @('Destination')) | Select-Object -First 1
+            $t = Targets $c $binding @('Path', 'LiteralPath') ($name -eq 'move-item')
+            $dst = @(WriteDest $binding @('Destination') $raw) | Select-Object -First 1
             if (-not $dst) { $dst = '.' }
             $verb = if ($name -eq 'move-item') { 'mv' } else { 'cp -r' }
             if ($t.paths.Count) { $lines.Add("$verb $(Words $t.paths) $(Q $dst)$red") }
             return $lines
         }
         'rename-item' {
-            $t = Targets $c $binding @('Path', 'LiteralPath')
+            $t = Targets $c $binding @('Path', 'LiteralPath') $true
             $nn = @(BVals $binding @('NewName')) | Select-Object -First 1
             foreach ($p in $t.paths) {
                 $dst = $nn
@@ -405,7 +702,7 @@ function Translate-Command([CommandAst]$c) {
         # Export-* and Tee-Object write a file only when given one: Export-ModuleMember and
         # `Tee-Object -Variable` take none, and must not read as a write with no target.
         { $_ -like 'export-*' -or $_ -eq 'tee-object' } {
-            $ps = @(BVals $binding @('Path', 'LiteralPath', 'FilePath'))
+            $ps = @(WriteDest $binding @('Path', 'LiteralPath', 'FilePath') $raw)
             if ($ps.Count -eq 0) { break }
             $op = if (IsSet $binding 'Append') { '>>' } else { '>' }
             foreach ($p in $ps) { $lines.Add(": $op $(Q $p)$red") }
@@ -424,7 +721,7 @@ function Translate-Command([CommandAst]$c) {
             return $lines
         }
         { $_ -in 'copy-itemproperty', 'move-itemproperty' } {
-            $d = @(BVals $binding @('Destination')) | Select-Object -First 1
+            $d = @(WriteDest $binding @('Destination') $raw) | Select-Object -First 1
             if (IsResolved $d) { $lines.Add(": >> $(Q $d)$red") } else { Unknown "$raw to a destination that cannot be resolved" }
             if ($name -eq 'move-itemproperty') {
                 $t = Targets $c $binding @('Path', 'LiteralPath')
@@ -434,30 +731,30 @@ function Translate-Command([CommandAst]$c) {
         }
         'expand-archive' {
             $t = Targets $c $binding @('Path', 'LiteralPath')
-            $d = @(BVals $binding @('DestinationPath')) | Select-Object -First 1
+            $d = @(WriteDest $binding @('DestinationPath') $raw) | Select-Object -First 1
             if (-not $d) { $d = '.' }
             $lines.Add("cp -r $(Words $t.paths) $(Q $d)$red")
             return $lines
         }
         'compress-archive' {
-            $d = @(BVals $binding @('DestinationPath')) | Select-Object -First 1
+            $d = @(WriteDest $binding @('DestinationPath') $raw) | Select-Object -First 1
             if (-not $d) { Unknown "Compress-Archive with no resolvable -DestinationPath"; return $lines }
             $op = if (IsSet $binding 'Update') { '>>' } else { '>' }
             $lines.Add(": $op $(Q $d)$red")
             return $lines
         }
         { $_ -in 'invoke-webrequest', 'invoke-restmethod' } {
-            foreach ($p in @(BVals $binding @('OutFile'))) { $lines.Add(": > $(Q $p)$red") }
+            foreach ($p in @(WriteDest $binding @('OutFile') $raw)) { $lines.Add(": > $(Q $p)$red") }
             return $lines
         }
         'start-transcript' {
-            $ps = @(BVals $binding @('Path', 'LiteralPath', 'OutputDirectory'))
+            $ps = @(WriteDest $binding @('Path', 'LiteralPath', 'OutputDirectory') $raw)
             $op = if (IsSet $binding 'Append') { '>>' } else { '>' }
             foreach ($p in $ps) { $lines.Add(": $op $(Q $p)$red") }
             return $lines
         }
         'add-type' {
-            foreach ($p in @(BVals $binding @('OutputAssembly'))) { $lines.Add(": > $(Q $p)$red") }
+            foreach ($p in @(WriteDest $binding @('OutputAssembly') $raw)) { $lines.Add(": > $(Q $p)$red") }
             return $lines
         }
         'clear-content' {
@@ -466,7 +763,7 @@ function Translate-Command([CommandAst]$c) {
             return $lines
         }
         'new-item' {
-            $paths = @(BVals $binding @('Path'))
+            $paths = @(WriteDest $binding @('Path') $raw)
             if ($paths.Count -eq 0) { $paths = @('.') }
             $nm = @(BVals $binding @('Name')) | Select-Object -First 1
             $type = (@(BVals $binding @('ItemType')) | Select-Object -First 1)
@@ -496,25 +793,27 @@ function Translate-Command([CommandAst]$c) {
             return $lines
         }
         'invoke-expression' {
-            $txt = @(BVals $binding @('Command')) | Select-Object -First 1
-            # Text we cannot read (a variable set at runtime, piped input, an expression)
-            # or nesting past the limit is UNKNOWN -- it used to be dropped, so the command
-            # it runs reached no rule (AUDIT-2026-09-24 HK-1 review item 3).
-            # Only TEXT counts as readable: a literal, an expandable string, a variable, a
-            # concatenation. A command's output -- `(Get-Content x.ps1 -Raw)` -- flattens
-            # to its constants (".\x.ps1"), which is not the program it produces.
             $cb = Bound $binding @('Command')
-            $textual = $null -ne $cb -and $null -ne $cb.Value -and (
-                $cb.Value -is [StringConstantExpressionAst] -or $cb.Value -is [ExpandableStringExpressionAst] -or
-                $cb.Value -is [VariableExpressionAst] -or $cb.Value -is [BinaryExpressionAst])
-            if (-not $textual -or -not $txt -or $txt -match "[$SOH$STX]") {
-                Unknown "Invoke-Expression of text the guard cannot read: $($c.Extent.Text)"
-            } elseif ($script:Depth -ge 4) {
-                Unknown "Invoke-Expression nested past the guard's depth limit (4)"
-            } else {
-                $script:Depth++
-                try { foreach ($l in (Translate-Text $txt)) { $lines.Add($l) } } finally { $script:Depth-- }
+            $ast = if ($null -ne $cb) { $cb.Value } else { $null }
+            foreach ($l in (Translate-Code $ast "Invoke-Expression" $c.Extent.Text)) { $lines.Add($l) }
+            return $lines
+        }
+        # .NET file WRITERS built with New-Object (finding 4): `New-Object IO.StreamWriter
+        # <p>` truncates <p> exactly as [IO.StreamWriter]::new(<p>) does.
+        'new-object' {
+            $tn = @(BVals $binding @('TypeName')) | Select-Object -First 1
+            $al = Bound $binding @('ArgumentList')
+            $args2 = @()
+            if ($null -ne $al -and $null -ne $al.Value) {
+                $v = $al.Value
+                # `New-Object T($a, $b)` binds the PARENTHESISED list as one argument.
+                if ($v -is [ParenExpressionAst] -and $v.Pipeline -is [PipelineAst] -and
+                    $v.Pipeline.PipelineElements.Count -eq 1 -and $v.Pipeline.PipelineElements[0] -is [CommandExpressionAst]) {
+                    $v = $v.Pipeline.PipelineElements[0].Expression
+                }
+                $args2 = if ($v -is [ArrayLiteralAst]) { @($v.Elements) } else { @($v) }
             }
+            if ($tn) { foreach ($l in (DotNet-Call $tn 'new' $args2 $c.Extent.Text)) { $lines.Add($l) } }
             return $lines
         }
         'start-process' {
@@ -670,16 +969,15 @@ function Resolve-Producer([CommandAst]$cmd, $pipe, [int]$depth) {
         $p = @(BVals $b @('Path', 'LiteralPath'))
         if ($p.Count -eq 0) { $p = @('.') }
         $f = @(BVals $b @('Filter', 'Include')) | Select-Object -First 1
-        return (FromSource @{ known = $true; paths = $p; filter = $f; children = ($cn -eq 'get-childitem') })
+        return (FromSource (RT $true $p $f ($cn -eq 'get-childitem')))
     }
     if ($NARROWERS -contains $cn -or $cn -eq 'sort-object') {
         $idx = [array]::IndexOf(@($pipe.PipelineElements), $cmd)
         if ($idx -gt 0) {
             $up = Scan-Upstream $pipe $idx
             if ($null -ne $up -and $up.known) {
-                $r = FromSource $up
-                if (-not $r.filter) { $r.filter = 'PS_FILTERED' }
-                return $r
+                if (-not $up.filter) { $up = RT $true $up.paths 'PS_FILTERED' }
+                return (FromSource $up)
             }
         }
         return @{ kind = 'unknown' }
@@ -697,19 +995,16 @@ function Resolve-Producer([CommandAst]$cmd, $pipe, [int]$depth) {
 }
 
 function FromSource($up) {
-    $paths = $up.paths
-    $filter = $up.filter
-    if (-not $filter -and $up.narrowed) { $filter = 'PS_FILTERED' }
-    if (-not $filter -and $up.children) {
-        $paths = @($paths | ForEach-Object { $_.TrimEnd('/', '\') + '/' + (UVar 'PS_CHILD') })
-    }
-    return @{ kind = 'file'; paths = $paths; filter = $filter }
+    # Get-ChildItem's entries become `<p>/*` (Finalize) -- a glob the Bash rules judge with
+    # glob_covers, as they judge `rm -rf <p>/*` (finding 5).
+    $r = Finalize $up
+    return @{ kind = 'file'; paths = @($r.paths); filter = $r.filter }
 }
 
 function MemberLines([string]$member, $paths, [string]$filter, $args2) {
     $out = @()
     foreach ($p in $paths) {
-        if (-not (IsResolved $p) -and $p -notmatch 'PS_CHILD') {
+        if (-not (IsResolved $p)) {
             Unknown ".${member}() on an object whose path cannot be resolved"
         }
         switch -regex ($member) {
@@ -735,12 +1030,115 @@ function MemberLines([string]$member, $paths, [string]$filter, $args2) {
     return $out
 }
 
+# Text that is RUN as PowerShell -- Invoke-Expression, [scriptblock]::Create,
+# $ExecutionContext.InvokeCommand.InvokeScript/NewScriptBlock, [powershell]::AddScript
+# (finding 4: only iex was modelled). Readable text is translated in turn; anything else,
+# or nesting past the limit, or text that does not parse, is UNKNOWN (ask).
+# Only TEXT counts as readable: a literal, an expandable string, a variable, a
+# concatenation. A command's output -- `(Get-Content x.ps1 -Raw)` -- flattens to its
+# constants (".\x.ps1"), which is not the program it produces.
+function Translate-Code($ast, [string]$what, [string]$label) {
+    $textual = $null -ne $ast -and (
+        $ast -is [StringConstantExpressionAst] -or $ast -is [ExpandableStringExpressionAst] -or
+        $ast -is [VariableExpressionAst] -or $ast -is [BinaryExpressionAst])
+    $txt = if ($textual) { FirstVal $ast } else { $null }
+    if (-not $textual -or -not $txt -or $txt -match "[$SOH$STX]") {
+        Unknown "$what of text the guard cannot read: $label"
+        return @()
+    }
+    if ($script:Depth -ge 4) {
+        Unknown "$what nested past the guard's depth limit (4)"
+        return @()
+    }
+    $script:Depth++
+    try { return @(Translate-Text $txt) }
+    catch [FormatException] { Unknown "$what of text that does not parse as PowerShell: $label"; return @() }
+    finally { $script:Depth-- }
+}
+
+# .NET types in System.IO that write nothing by being constructed or called, or whose
+# writes are modelled elsewhere (File/Directory statics, FileInfo/DirectoryInfo methods,
+# StreamWriter/FileStream below). Any OTHER System.IO type is unmodelled: its arguments go
+# to the hook, which asks when one names a protected tree (finding 4).
+$SAFE_IO_TAILS = @('path', 'file', 'directory', 'fileinfo', 'directoryinfo', 'filesysteminfo',
+                   'streamreader', 'stringreader', 'stringwriter', 'memorystream', 'binaryreader',
+                   'binarywriter', 'textreader', 'textwriter', 'driveinfo', 'searchoption',
+                   'fileattributes', 'filemode', 'fileaccess', 'fileshare', 'seekorigin',
+                   'fileoptions', 'enumerationoptions', 'ioexception', 'filenotfoundexception',
+                   'directorynotfoundexception', 'streamwriter', 'filestream', 'bufferedstream',
+                   'unmanagedmemorystream', 'filesystemwatcher', 'notifyfilters',
+                   'compressionlevel', 'compressionmode', 'unixfilemode', 'matchtype', 'matchcasing')
+
+# A FileMode (and FileAccess) as the redirect it amounts to: '>' truncates, '>>' writes
+# without truncating, '' only reads. An unreadable mode is a write.
+function FileModeOp($mode, $access) {
+    $m = [string]$mode; $a = [string]$access
+    if ($m -match '(?i)truncate|create' -or $m -in '1', '2', '5') { return '>' }
+    if ($m -match '(?i)append|openorcreate' -or $m -in '4', '6') { return '>>' }
+    if ($m -match '(?i)open' -or $m -eq '3') { if ($a -match '(?i)write' -or $a -in '2', '3') { return '>>' }; return '' }
+    if (-not $m) { return '' }
+    return '>>'
+}
+
+# A value that is a STREAM rather than a path (`[IO.StreamWriter]::new($fs)` where $fs was
+# opened just before): its write is modelled where the stream was opened.
+function IsStreamValue($ast) {
+    $src = $ast
+    if ($ast -is [VariableExpressionAst]) {
+        $k = $ast.VariablePath.UserPath.ToLowerInvariant()
+        if ($script:AssignAst.ContainsKey($k) -and $null -ne $script:AssignAst[$k]) { $src = $script:AssignAst[$k] }
+    }
+    if ($null -eq $src -or $src -is [StringConstantExpressionAst] -or $src -is [ExpandableStringExpressionAst]) { return $false }
+    return ($src.Extent.Text -match '(?i)stream\]::new|new-object\s+(-typename\s+)?(system\.)?io\.\w*stream\b|::open\w*\s*\(|\.open\w*\s*\(|::create\w*\s*\(')
+}
+
+function DotNet-Call([string]$typeName, [string]$member, $argAsts, [string]$label) {
+    $tail = TypeTail $typeName
+    $member = $member.ToLowerInvariant()
+    $argAsts = @($argAsts | Where-Object { $null -ne $_ })
+    if ($tail -eq 'scriptblock' -and $member -eq 'create') {
+        return @(Translate-Code $argAsts[0] '[scriptblock]::Create' $label)
+    }
+    $op = $null
+    if ($tail -eq 'streamwriter' -and $member -eq 'new' -and $argAsts.Count -ge 1) {
+        if (IsStreamValue $argAsts[0]) { return @() }
+        $app = $argAsts.Count -ge 2 -and $argAsts[1] -is [VariableExpressionAst] -and
+               $argAsts[1].VariablePath.UserPath -eq 'true'
+        $op = if ($app) { '>>' } else { '>' }
+    } elseif ((($tail -eq 'filestream' -and $member -eq 'new') -or ($tail -eq 'file' -and $member -eq 'open')) -and
+              $argAsts.Count -ge 1) {
+        $mode = if ($argAsts.Count -ge 2) { FirstVal $argAsts[1] } else { '' }
+        $acc = if ($argAsts.Count -ge 3) { FirstVal $argAsts[2] } else { '' }
+        $op = FileModeOp $mode $acc
+    }
+    if ($null -ne $op) {
+        if (-not $op) { return @() }
+        $r = Finalize (Resolve-Target $argAsts[0])
+        return @($r.paths | ForEach-Object { ": $op $(Q $_)" })
+    }
+    # A READ on an unmodelled System.IO type writes nothing (ZipFile::OpenRead, ...).
+    if ($member -match '^(openread|opentext|read|get|exists|enumerate|test)') { return @() }
+    if ($typeName -match '(?i)^(system\.)?io\.' -and $SAFE_IO_TAILS -notcontains $tail -and $argAsts.Count -ge 1) {
+        $uw = @('x4-unknown-cmdlet', "[$typeName]::$member")
+        foreach ($x in $argAsts) {
+            $r = Finalize (Resolve-Target $x)
+            $uw += @($r.paths)
+        }
+        return @(Words $uw)
+    }
+    return @()
+}
+
 function Translate-Member([InvokeMemberExpressionAst]$m) {
     $member = MemberName $m
     $a = @(); foreach ($x in $m.Arguments) { $a += FirstVal $x }
     if ($m.Static) {
         if ($m.Expression -isnot [TypeExpressionAst]) { return @() }
-        if ($FILE_STATIC_TAILS -notcontains (TypeTail $m.Expression.TypeName.FullName)) { return @() }
+        $tn = $m.Expression.TypeName.FullName
+        $tt = TypeTail $tn
+        if ($FILE_STATIC_TAILS -notcontains $tt -or ($tt -eq 'file' -and $member -eq 'open')) {
+            return @(DotNet-Call $tn $member @($m.Arguments) $m.Extent.Text)
+        }
         $kind = switch -regex ($member) {
             '^(delete|deletefile|deletedirectory)$' { 'rm' ; break }
             '^(write|create|openwrite)'              { 'trunc' ; break }
@@ -774,6 +1172,9 @@ function Translate-Member([InvokeMemberExpressionAst]$m) {
         }
         return @()
     }
+    if ($member -in 'invokescript', 'newscriptblock', 'addscript') {
+        return @(Translate-Code (@($m.Arguments)[0]) ".$member()" $m.Extent.Text)
+    }
     $strong = $STRONG_MEMBERS -contains $member
     $ambig = $AMBIG_MEMBERS -contains $member
     if (-not ($strong -or $ambig)) { return @() }
@@ -786,6 +1187,20 @@ function Translate-Member([InvokeMemberExpressionAst]$m) {
 }
 
 function Collect-Assignments($ast) {
+    # A `foreach ($f in <collection>)` loop variable holds each item of <collection>:
+    # `foreach ($f in gci <S>) { Remove-Item $f.FullName }` deletes <S>'s entries, and read
+    # as an unassigned `$f` it named nothing (the reviewer's pre-arc note). FIRST, because an
+    # assignment's value is read eagerly below: `$cfg = "$SP\$eng-x"` inside
+    # `foreach ($eng in 'a','b')` must see $eng's collection (measured in the replay).
+    foreach ($fe in $ast.FindAll({ param($x) $x -is [ForEachStatementAst] }, $true)) {
+        $key = $fe.Variable.VariablePath.UserPath.ToLowerInvariant()
+        if ($script:AssignAst.ContainsKey($key)) { $script:AssignAst[$key] = $null }
+        else { $script:AssignAst[$key] = $fe.Condition }
+        if (-not $script:AssignAll.ContainsKey($key)) { $script:AssignAll[$key] = New-Object Collections.ArrayList }
+        [void]$script:AssignAll[$key].Add($fe.Condition)
+        $script:Assign[$key] = $null
+        $script:Tables[$key] = $null
+    }
     foreach ($as in $ast.FindAll({ param($x) $x -is [AssignmentStatementAst] }, $true)) {
         if ($as.Left -isnot [VariableExpressionAst] -or $as.Operator -ne [TokenKind]::Equals) { continue }
         $key = $as.Left.VariablePath.UserPath.ToLowerInvariant()
@@ -807,6 +1222,8 @@ function Collect-Assignments($ast) {
         }
         if ($script:AssignAst.ContainsKey($key)) { $script:AssignAst[$key] = $null }
         else { $script:AssignAst[$key] = $as.Right }
+        if (-not $script:AssignAll.ContainsKey($key)) { $script:AssignAll[$key] = New-Object Collections.ArrayList }
+        [void]$script:AssignAll[$key].Add($as.Right)
         if ($script:Tables.ContainsKey($key)) { $script:Tables[$key] = $null }
         else { $script:Tables[$key] = $tbl }
         if ($script:Assign.ContainsKey($key)) {
