@@ -190,7 +190,7 @@ MUTANTS = [
      "    return [] if _only_regenerable(toks) else paths", "    return paths",
      "test_TWIN_a_pycache_cleanup_is_still_silent_everywhere"),
     ("truncate / dd of= are truncating writes",
-     "        redir_t += [(\"truncate\",) + o for o in prep(clobber_targets(s), c_cwd)]",
+     "        redir_t += [(\"truncate\",) + o for o in prep(clobber_targets(s), c_cwd, False)]",
      "        pass",
      "test_truncate_into_reference"),
     ("a find WITHOUT -delete is not", 'deletes = "-delete" in toks', "deletes = True",
@@ -229,8 +229,10 @@ MUTANTS = [
     # The parseability check moved OUT of hook_facts into protect-bash.sh, which asks
     # `bash -n`. It is covered E2E in scripts/test-hooks.sh -- a mutation of the real
     # shell parser is not something this gate can plant.
+    # Re-anchored v3.3.0 (hooks lane): the heredoc list is now built as `extra`, so the
+    # PowerShell-fed heredocs can join it. Same subject: the RAW command is walked.
     ("a heredoc BODY is data for the operand rules too",
-     '    all_cmds, carriers_truncated = carried_commands(\n        body, [strip_comments(h) for h in heredoc_bodies(spliced)])',
+     "    all_cmds, carriers_truncated = carried_commands(body, extra)",
      "    all_cmds, carriers_truncated = carried_commands(cmd, [])",
      "test_a_delete_inside_a_heredoc_body_is_not_a_delete"),
     ("a comment keeps its newline, which is a separator",
@@ -285,7 +287,7 @@ MUTANTS = [
      "                if False:\n                    return True",
      "test_delete_of_a_root_env_var_by_name"),
     ("bash -c is parsed too",
-     '    all_cmds, carriers_truncated = carried_commands(\n        body, [strip_comments(h) for h in heredoc_bodies(spliced)])',
+     "    all_cmds, carriers_truncated = carried_commands(body, extra)",
      "    all_cmds, carriers_truncated = [body], False",
      "test_delete_inside_bash_c_is_seen"),
 
@@ -323,8 +325,8 @@ MUTANTS = [
      "            k = 0",
      "test_a_wrapper_may_precede_eval"),
     ("only a SHELL runs its heredoc body",
-     "                if any(verb(_unwrap(sg)) in _SHELL_SINKS for sg in segments(opener)):",
-     "                if True:",
+     "            return verb(_unwrap(sg)) in _SHELL_SINKS",
+     "            return True",
      "test_a_python_heredoc_does_NOT"),
     # ---- round 3: a command reaches the shell without being seen -------------
     ("a line continuation is spliced, not treated as a separator",
@@ -417,12 +419,12 @@ MUTANTS = [
      '"dollarq_after_pipe": dollarq_after_pipe(cmd),',
      "test_a_comment_mentioning_the_trap_is_not_a_hit"),
     ("a WRITE into reference/ is a rule at all",
-     '"writes_reference": hit(copy_t + [(pp, uu, rr) for _m, pp, uu, rr in redir_t]\n                                + sed_t + out_t, "reference"),',
+     '"writes_reference": hit(copy_t + [(pp, uu, rr) for _m, pp, uu, rr in redir_t]\n                                + sed_t + out_t + mod_t, "reference"),',
      '"writes_reference": False,',
      "test_a_truncating_redirect_into_reference_fires"),
     ("a verb carried in a variable is resolved before the rules see it",
-     "    seg_cwd = [(resolve_verb(s, assigns), c)",
-     "    seg_cwd = [(s, c)",
+     "        seg_cwd += [(resolve_verb(s, assigns), d) for s, d in tracked]",
+     "        seg_cwd += [(s, d) for s, d in tracked]",
      "test_rm_through_a_variable_still_hits_the_game_root"),
     ("carriers are followed more than one level",
      "    for _ in range(_MAX_CARRIER_DEPTH):", "    for _ in range(0):",

@@ -152,7 +152,7 @@ probe allow "not-git-add"        'uv add --dev pytest'
 
 echo
 echo "--- bare system python on toolkit code (must DENY) ---"
-probe deny "bare-python-dash-m-pytest"   'python -m pytest -q tests/'
+probe deny "bare-python-dash-m-pytest"   'cd tools/x4validate && python -m pytest -q tests/'
 probe deny "bare-python3-gates-script"   'python3 gates/claims_audit.py'
 probe deny "bare-py-tools-x4validate"    'py tools/x4validate/gates/claims_audit.py'
 
@@ -161,6 +161,7 @@ probe allow "uv-run-frozen-pytest"       'uv run --frozen python -m pytest -q'
 probe allow "uv-run-python-gates"        'uv run python gates/claims_audit.py'
 probe allow "venv-python-gates"          '.venv/Scripts/python gates/claims_audit.py'
 probe allow "bare-python-version"        'python --version'
+probe allow "bare-python-pytest-elsewhere" 'cd /c/work/otherproject && python -m pytest -q'
 probe allow "bare-python-dash-c"         'python -c "print(1)"'
 probe allow "bare-python-scratch-script" 'python /c/scratch/fu-hook/probe.py'
 # MEASURED near-misses, not oversights -- see hook_facts.py's _PROJECT_DIR comment.

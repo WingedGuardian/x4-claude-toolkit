@@ -418,6 +418,53 @@ def segments(cmd: str) -> list[str]:
     return [_unwrap(p) for p in parts if p.strip()]
 
 
+def piped_in(cmd: str) -> list:
+    """For each segment segments(cmd) returns, in order: is it fed by a PIPE (`|`)?
+
+    The same walk as segments(), recording which operator ENDED the previous part. A
+    program read from STDIN only exists when something is piped in: `ls; pwsh -NoProfile`
+    reads the tool's own (empty) stdin, not ls's output (v3.3.0 release review, found by
+    this lane's history replay -- pairing on ANY separator asked on `command -v pwsh`).
+    """
+    out, buf, chars, sep = [], [], list(_scan(cmd)), ""
+    i = 0
+
+    def close(next_sep):
+        nonlocal buf, sep
+        part = "".join(buf)
+        if part.strip():
+            out.append(sep == "|")
+        buf = []
+        sep = next_sep
+    while i < len(chars):
+        c, inq = chars[i]
+        if not inq:
+            j = i
+            if c == "&" and i + 1 < len(chars) and not chars[i + 1][1] \
+                    and chars[i + 1][0] == ">":
+                j = i + 1
+            if chars[j][0] in "<>":
+                k = j + 1
+                while k < len(chars) and not chars[k][1] and chars[k][0] in "<>|&":
+                    k += 1
+                buf.extend(chars[m][0] for m in range(i, k))
+                i = k
+                continue
+            two = c + (chars[i + 1][0] if i + 1 < len(chars) and not chars[i + 1][1] else "")
+            if two in ("&&", "||"):
+                close(two)
+                i += 2
+                continue
+            if c in ";|&\n":
+                close(c)
+                i += 1
+                continue
+        buf.append(c)
+        i += 1
+    close("")
+    return out
+
+
 #: Shell RESERVED WORDS that can stand immediately before a simple command inside one
 #: `;`-delimited segment. MEASURED 2026-09-01 by the syntax-class fuzzer: because the
 #: splitter cuts on `;` and `&&`, `if true; then rm -rf <game>; fi` yields the segment
@@ -699,7 +746,65 @@ def assignments(cmd: str) -> dict[str, str]:
             close = _match_paren(seg, m.end() - 1)
             if close > 0:
                 found[m.group(1)] = seg[m.end() - 1:close + 1]
+    # Read from the RAW command, because segments() splits inside `$( )` and strips the
+    # `for` keyword (v3.3.0 release review, pre-arc notes).
+    mask = _quote_mask(cmd)
+    # NAME=$(...) / NAME="$(...)": the WHOLE substitution, not tokens()'s `$(realpath`.
+    # Still unresolvable (has_unresolved) unless identity_subst can read it -- but a delete
+    # through it now reaches the conservative branch with the text that names its root.
+    for m in _ASSIGN_SUBST.finditer(cmd):
+        if mask[m.start(1)]:
+            continue
+        open_ = m.end() - 1
+        close = _match_paren(cmd, open_)
+        if close > 0:
+            found[m.group(1)] = "$" + cmd[open_:close + 1]
+    # `for NAME in WORDS; do ...` -- NAME takes each word. Stored as an ARRAY so a whole
+    # `"$NAME"` operand expands to EVERY word (resolve_all), not to the first alone.
+    for m in _FOR_IN.finditer(cmd):
+        if mask[m.start(1)]:
+            continue
+        rest = cmd[m.end():]
+        end = len(rest)
+        for i, (ch, inq) in enumerate(_scan(rest)):
+            if not inq and ch in ";&|)" + chr(10):
+                end = i
+                break
+        items = rest[:end].strip()
+        if items:
+            found[m.group(1)] = "(" + items + ")"
     return found
+
+
+_ASSIGN_SUBST = re.compile(r"(?:^|[\s;&|()])([A-Za-z_][A-Za-z0-9_]*)=\"?\$\(")
+_FOR_IN = re.compile(r"(?:^|[\s;&|()])for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s")
+
+
+def resolve_all(tok: str, assigns: dict) -> list:
+    """Every value a WHOLE-token reference can take: each element of an array (`"$f"` for
+    a for-loop variable, `"${A[@]}"`), else the one resolve() gives -- read through
+    identity_subst, so `$(realpath X)` is X."""
+    m = re.fullmatch(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)(\[[@*]\])?\}?", tok)
+    if m and (m.group(0).startswith("${") == m.group(0).endswith("}")):
+        elems = _array_elements(assigns.get(m.group(1), ""))
+        if elems:
+            return [identity_subst(resolve(e, assigns)) for e in elems]
+    # `"$f/extensions"` inside `for f in A B`: one path PER element. Plain resolve()
+    # substitutes the whole `(A B)` text, which is no path at all.
+    arrays = {n for n in (a or b for a, b in _VAR.findall(tok))
+              if _array_elements(assigns.get(n, ""))}
+    if len(arrays) == 1:
+        name = arrays.pop()
+        ref = re.compile(r"\$\{" + name + r"\}|\$" + name + r"(?![A-Za-z0-9_])")
+        return [identity_subst(resolve(ref.sub(lambda _m, e=e: e, tok), assigns))
+                for e in _array_elements(assigns[name])][:64]
+    one = resolve(tok, assigns)
+    # ...and a value that resolves, through other assignments, TO an array's text
+    # (`Z="$f"; rm -rf "$Z"`) is that array's elements, not its literal `(a b)`.
+    elems = _array_elements(one)
+    if elems and not _array_elements(tok):
+        return [identity_subst(resolve(e, assigns)) for e in elems][:64]
+    return [identity_subst(one)]
 
 
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
@@ -1074,7 +1179,23 @@ def _blank_arith(line: str, mask: list) -> str:
     return "".join(out)
 
 
-def heredoc_bodies(cmd: str) -> list[str]:
+def _ps_reads_stdin(sg: str) -> bool:
+    """A PowerShell host whose program comes from stdin (`-Command -`, `-File -`, or no
+    program argument at all)."""
+    toks = _drop_redirects(words(sg))
+    k = next((i for i, t in enumerate(toks) if _verb_name(t) in _PS_EXES), None)
+    return k is not None and _ps_host_payload(toks[k:])[0] in ("stdin", "none")
+
+
+def ps_heredoc_bodies(cmd: str) -> list[str]:
+    """Heredoc bodies fed to a PowerShell host that reads its program from stdin
+    (finding 2). PowerShell text: the caller TRANSLATES them, never hands them to the Bash
+    rules as they stand."""
+    return heredoc_bodies(cmd, sink=lambda sg: _verb_name(verb(_unwrap(sg))) in _PS_EXES
+                          and _ps_reads_stdin(_unwrap(sg)))
+
+
+def heredoc_bodies(cmd: str, sink=None) -> list[str]:
     """Bodies whose OPENING LINE runs a SHELL, because a shell executes its heredoc.
 
     `bash <<SH ... SH` is a command carrier exactly like `bash -c`, and stripping the
@@ -1089,6 +1210,9 @@ def heredoc_bodies(cmd: str) -> list[str]:
         name would parse as a delete verb under a shell tokeniser, so routing it would
         invent deletes out of assignments. Python writes have their own rule already.
     """
+    if sink is None:
+        def sink(sg):
+            return verb(_unwrap(sg)) in _SHELL_SINKS
     out, cur, term, opener = [], None, None, ""
     for line in cmd.split(chr(10)):
         if cur is not None:
@@ -1097,7 +1221,7 @@ def heredoc_bodies(cmd: str) -> list[str]:
                 # pipeline: for `cat <<EOF | bash` the first verb is `cat`, so asking
                 # only that one stripped the body as file payload and the shell on the
                 # other end of the pipe ran it unseen.
-                if any(verb(_unwrap(sg)) in _SHELL_SINKS for sg in segments(opener)):
+                if any(sink(sg) for sg in segments(opener)):
                     out.append(chr(10).join(cur))
                 cur, term, opener = None, None, ""
             else:
@@ -1106,8 +1230,7 @@ def heredoc_bodies(cmd: str) -> list[str]:
         t = heredoc_marker(line)
         if t:
             term, cur, opener = t, [], line
-    if cur is not None and any(verb(_unwrap(sg)) in _SHELL_SINKS
-                              for sg in segments(opener)):
+    if cur is not None and any(sink(sg) for sg in segments(opener)):
         out.append(chr(10).join(cur))   # unterminated: still what the shell would run
     return out
 
@@ -1441,7 +1564,9 @@ def _operands(seg: str) -> list[str]:
 #: `python2`/`pypy`/`pypy3` (unlike `_PYTHONS` above) are DELIBERATELY EXCLUDED:
 #: this rule is about the one spelling this workspace actually types by reflex,
 #: not every Python-family executable.
-_BARE_PY_WORD = re.compile(r"^(?:python3?|py)(?:\.exe)?$", re.IGNORECASE)
+#: `python3.10` / `python3.12` are the same system interpreter under a versioned name, and
+#: walked past the bare word (v3.3.0 release review, finding 6).
+_BARE_PY_WORD = re.compile(r"^(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?$", re.IGNORECASE)
 
 
 _VENV_DIR = re.compile(r"(^|/)\.?venv(/|$)", re.IGNORECASE)
@@ -1508,10 +1633,17 @@ def _is_bare_python_word(tok: str) -> bool:
 #: unambiguous even with no cwd evidence at all.
 _PROJECT_DIR = re.compile(r"(^|/)tools/x4validate(/|$)|(^|/)gates(/|$)")
 
-#: `-m pytest` / `-m x4validate` are toolkit code by NAME, regardless of where the
-#: module happens to resolve from -- the two shapes instrument_hygiene's own
-#: docstring names.
+#: `-m pytest` / `-m x4validate` -- the two shapes instrument_hygiene's own docstring
+#: names. They are toolkit code only WHERE the toolkit is: run from a directory under
+#: tools/x4validate, or pointed at a path there. By NAME alone the deny fired on
+#: `python -m pytest` in any unrelated project (v3.3.0 release review, finding 6).
 _PROJECT_MODULES = {"pytest", "x4validate"}
+
+#: Stands in for the shell's starting directory when the payload does not carry one, so a
+#: RELATIVE `cd tools/x4validate` is still visible to the bare-python rule (join_cwd needs
+#: an absolute base). Used by that rule ONLY: every other rule keeps "unknowable -> no
+#: match", which is the safety property join_cwd documents.
+_UNKNOWN_CWD = "/x4-unknown-cwd"
 
 
 #: A redirect operator, alone or glued to its target/fd (`2>&1`, `>>out.txt`,
@@ -1595,7 +1727,14 @@ def _bare_python_targets_project_code(sg: str, c_cwd: str, assigns: dict) -> boo
         return False
     kind, val = got
     if kind == "module":
-        return val in _PROJECT_MODULES
+        if val not in _PROJECT_MODULES:
+            return False
+        if c_cwd and _PROJECT_DIR.search(norm(c_cwd)):
+            return True
+        # ...or pointed at toolkit code explicitly: `python -m pytest tools/x4validate/tests`.
+        rest = toks[toks.index(val, idx + 1) + 1:] if val in toks[idx + 1:] else []
+        return any(_PROJECT_DIR.search(norm(resolve(t, assigns))) for t in rest
+                   if not t.startswith("-"))
     resolved = resolve(val, assigns)
     if has_unresolved(resolved):
         return False
@@ -1629,6 +1768,159 @@ def copy_dests(seg: str) -> list[str]:
 
 
 DELETE_VERBS = {"rm", "rmdir", "unlink", "shred"}
+
+
+# ---------------------------------------------- v3.3.0 release review: pre-arc gaps
+# One principle, applied where the Bash half had no model at all: a delete or write target
+# the text makes RESOLVABLE is judged exactly like the literal spelling (so a hard block
+# still denies), and one it does not -- but that sits against a protected root -- reaches
+# the conservative branch (ask). Each shape below was ALLOW, reproduced E2E on fake roots.
+
+#: rsync flags that DELETE in the destination: every entry there that the source lacks.
+_RSYNC_DELETE = re.compile(r"^--(delete|delete-before|delete-during|delete-delay|"
+                           r"delete-after|delete-excluded|del)$")
+
+
+def rsync_deletes(seg: str) -> list[str]:
+    """`rsync --delete SRC DST` removes DST's contents that SRC lacks -- with an empty
+    SRC, all of them. Reported as `<DST>/*`, which the rules judge as `rm -rf <DST>/*`."""
+    if verb(seg) != "rsync" or not any(_RSYNC_DELETE.match(t) for t in tokens_of(seg)):
+        return []
+    return [d.rstrip("/" + chr(92)) + "/*" for d in copy_dests(seg)]
+
+
+#: A robocopy switch: `/MIR`, `/XD`, `/R:3` -- and Git Bash's `//MIR`. A path such as
+#: `/c/Users/x` has further slashes, so it is not one.
+_ROBO_SWITCH = re.compile(r"^/{1,2}[A-Za-z]+(:[^/]*)?$")
+
+
+def robocopy_effects(seg: str) -> tuple:
+    """(copy destinations, deleted-content targets, moved sources) of a robocopy.
+    `robocopy SRC DST /MIR` (or /PURGE) deletes what DST has and SRC lacks -- with an
+    empty SRC, everything; /MOV and /MOVE take the source away."""
+    if verb(seg) != "robocopy":
+        return [], [], []
+    toks = tokens_of(seg)
+    vt = _verb_token(seg)
+    k = next((i for i, t in enumerate(toks) if t == vt), 0)
+    sw = [t.lstrip("/").split(":", 1)[0].lower() for t in toks[k + 1:] if _ROBO_SWITCH.match(t)]
+    ops = [t for t in toks[k + 1:] if not _ROBO_SWITCH.match(t)
+           and not t.startswith(("<", ">")) and not re.match(r"^\d+>", t)]
+    if len(ops) < 2:
+        return [], [], []
+    src, dst = ops[0], ops[1]
+    dels = [dst.rstrip("/" + chr(92)) + "/*"] if ("mir" in sw or "purge" in sw) else []
+    moved = [src] if ("mov" in sw or "move" in sw) else []
+    return [dst], dels, moved
+
+
+#: Verbs that MODIFY a file in place without writing its content: its timestamps, mode,
+#: owner, or (ln -f) the directory entry itself. Judged as writes, so reference/'s hard
+#: block covers them as it covers `>` (reviewer's pre-arc note: all three were ALLOW).
+_TOUCH_VALUE_OPTS = {"-d", "--date", "-r", "--reference", "-t"}
+
+
+def modify_targets(seg: str) -> list[str]:
+    v = verb(seg)
+    if v not in ("touch", "chmod", "chown", "chgrp", "ln"):
+        return []
+    toks = tokens(seg)
+    vt = _verb_token(seg)
+    k = next((i for i, (t, _q) in enumerate(toks) if t == vt), 0)
+    ops, skip, target_dir = [], False, None
+    for i, (t, q) in enumerate(toks[k + 1:], k + 1):
+        if skip:
+            skip = False
+            continue
+        if not q and v == "touch" and t in _TOUCH_VALUE_OPTS:
+            skip = True
+            continue
+        if not q and v == "ln" and t in ("-t", "--target-directory"):
+            target_dir = toks[i + 1][0] if i + 1 < len(toks) else None
+            skip = True
+            continue
+        if not q and t.startswith("--reference="):
+            continue
+        if not q and (t.startswith("-") or t.startswith(("<", ">")) or re.match(r"^\d+>", t)):
+            continue
+        ops.append(t)
+    if v == "touch":
+        return ops
+    if v == "ln":
+        if target_dir:
+            return [target_dir]
+        return [ops[-1]] if len(ops) >= 2 else []
+    return ops[1:]                              # chmod/chown/chgrp: MODE/OWNER first
+
+
+def xargs_feed(seg: str, prev) -> list[str]:
+    """Delete operands an `xargs <delete verb>` receives on STDIN from `prev`.
+
+    `echo <R> | xargs rm -rf` deletes <R>, and rm_paths() saw an rm with no operand. The
+    words of an echo/printf are the operands themselves (resolvable: judged like the
+    literal). Any other producer yields names the guard cannot read, so each of ITS
+    operands becomes `<operand>/${XARGS_ITEM}` -- an unresolved path that still names
+    the tree it came from, which is exactly what the conservative delete branch reads.
+    """
+    toks = tokens_of(seg)
+    vt = _verb_token(seg)
+    if prev is None or verb(seg) not in DELETE_VERBS or vt not in toks:
+        return []
+    if not any(_verb_name(t) == "xargs" for t in toks[:toks.index(vt)]):
+        return []
+    pv = verb(prev)
+    if pv in ("echo", "printf"):
+        pt = tokens(prev)
+        pvt = _verb_token(prev)
+        k = next((i for i, (t, _q) in enumerate(pt) if t == pvt), 0)
+        words_ = [t for t, q in pt[k + 1:] if q or not t.startswith("-")]
+        if pv == "printf" and words_ and "%" in words_[0]:
+            words_ = words_[1:]
+        return words_
+    if pv == "find":
+        # The cache cleanup the find-delete rules already exempt (_REGENERABLE), spelled
+        # through xargs: every name the find can match is a regenerated cache, `-o` or not
+        # (MEASURED in this lane's replay: `find <toolkit>/x4validate -name __pycache__ -o
+        # -name "*.pyc" | xargs -r rm -rf` asked).
+        ft = tokens_of(prev)
+        names = [ft[i + 1] for i, t in enumerate(ft[:-1]) if t in ("-name", "-iname")]
+        if names and all(n in _REGENERABLE for n in names):
+            return []
+        # find's PATHS only -- its predicates' values are not places.
+        return [o.rstrip("/" + chr(92)) + "/${XARGS_ITEM}" for o in _find_roots(prev)]
+    return [o.rstrip("/" + chr(92)) + "/${XARGS_ITEM}" for o in _operands(prev)]
+
+
+def _find_roots(seg: str) -> list:
+    """The starting points of a find: operands after the verb, before the first `-flag`."""
+    toks_q = tokens(seg)
+    vt = _verb_token(seg)
+    start = next((i + 1 for i, (t, _q) in enumerate(toks_q) if t == vt), 1)
+    out = []
+    for t, quoted in toks_q[start:]:
+        if not quoted and t.startswith(("-", "(", "!")):
+            break
+        out.append(t)
+    return out
+
+
+#: `$(realpath X)`, `$(readlink -f X)`, `$(cygpath -u X)`, `$(echo X)`: a substitution
+#: whose output IS its one operand, spelled differently. Resolved to that operand so a
+#: delete through it is judged as the literal is (the reviewer's pre-arc note:
+#: `t=$(realpath <R>/x); rm -rf "$t"` was ALLOW).
+_IDENTITY_SUBST = re.compile(r"^\$\((realpath|readlink|cygpath|echo)\s(.*)\)$", re.S)
+
+
+def identity_subst(tok: str) -> str:
+    m = _IDENTITY_SUBST.match(tok.strip())
+    if not m or _SUBST.search(m.group(2)) or re.search(r"[|;&<>]", blank_quoted(m.group(2))):
+        return tok
+    inner = tokens(m.group(2))
+    flags = [t for t, q in inner if not q and t.startswith("-")]
+    ops = [t for t, q in inner if q or not t.startswith("-")]
+    if m.group(1) == "readlink" and not any(set(f[1:]) & set("fem") for f in flags):
+        return tok                               # plain readlink returns the LINK TARGET
+    return ops[0] if len(ops) == 1 else tok
 
 
 #: A find carrying any of these is SCOPED to matching entries, not the whole tree.
@@ -2699,7 +2991,11 @@ _PS_VALUE_ALIASES = {"ep", "ex", "w", "wd", "o", "of", "if", "v", "config"}
 
 def _ps_host_payload(toks: list) -> tuple:
     """For `powershell|pwsh <args>`: ("cmd", text) / ("encoded", b64) / ("file", "") /
-    ("stdin", "") / ("none", "")."""
+    ("stdin", "") / ("none", "").
+
+    ("none", "") -- no -Command, no -File, no bare script -- means the host reads its
+    program from STDIN when stdin is redirected (`echo '<ps>' | pwsh`), so the caller
+    treats it exactly like `-Command -` (v3.3.0 release review, finding 2)."""
     exe = _verb_name(toks[0])
     i = 1
     while i < len(toks):
@@ -2708,6 +3004,11 @@ def _ps_host_payload(toks: list) -> tuple:
             name = t[1:].lower()
             if name == "-":
                 break
+            # -CommandWithArgs (pwsh 7.4+): the NEXT word is the program, the rest are its
+            # $args. Its prefix `-c...` spelling is not a -Command prefix, so it read as a
+            # switch and the program walked past every rule (finding 2).
+            if name == "cwa" or (len(name) >= 8 and "commandwithargs".startswith(name)):
+                return "cmd", (toks[i + 1] if i + 1 < len(toks) else "")
             if re.fullmatch(r"c(o(m(m(a(n(d)?)?)?)?)?)?", name):
                 rest = toks[i + 1:]
                 if rest[:1] == ["-"]:
@@ -2716,6 +3017,9 @@ def _ps_host_payload(toks: list) -> tuple:
             if name == "ec" or "encodedcommand".startswith(name):
                 return "encoded", (toks[i + 1] if i + 1 < len(toks) else "")
             if name in ("f", "file") or (len(name) >= 2 and "file".startswith(name)):
+                # `-File -` is the program on stdin, exactly as `-Command -` is.
+                if toks[i + 1:i + 2] == ["-"]:
+                    return "stdin", ""
                 return "file", ""
             if name in _PS_VALUE_ALIASES or (len(name) >= 3 and any(
                     full.startswith(name) for full in _PS_VALUE_PARAMS)):
@@ -2773,6 +3077,34 @@ _CMD_TOKEN = re.compile(r'"([^"]*)"|(&&|\|\||>>|[&|<>]|[^\s"&|<>]+)')
 _CMD_SWITCH = re.compile(r"^/[A-Za-z0-9?-]{1,3}(:.*)?$")
 
 
+#: cmd.exe's CARET escape (v3.3.0 release review, finding 3). Outside double quotes `^X`
+#: is the literal X: `r^d` is `rd`, and `^&` is an ampersand, not a separator. An escaped
+#: metacharacter travels as a placeholder through the tokeniser and is restored after, so
+#: it can neither split a command nor vanish.
+_CMD_ESC = {"&": chr(16), "|": chr(17), "<": chr(18), ">": chr(19), "^": chr(20)}
+_CMD_UNESC = {v: k for k, v in _CMD_ESC.items()}
+
+
+def _cmd_uncaret(s: str) -> str:
+    out, q, i = [], False, 0
+    while i < len(s):
+        c = s[i]
+        if c == '"':
+            q = not q
+        elif c == "^" and not q and i + 1 < len(s):
+            i += 1
+            out.append(_CMD_ESC.get(s[i], s[i]))
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _cmd_restore(w: str) -> str:
+    return "".join(_CMD_UNESC.get(c, c) for c in w)
+
+
 def _cmd_words(rest: list) -> list:
     """cmd.exe words. A token that arrived QUOTED with spaces in it is one word -- unless
     it is the whole payload (`cmd //c "rd /s /q X & del Y"`), which cmd re-reads."""
@@ -2785,7 +3117,9 @@ def _cmd_words(rest: list) -> list:
         if len(src) > 1 and " " in piece:
             out.append(piece)
             continue
-        for m in _CMD_TOKEN.finditer(piece):
+        # Placeholders stay in until cmd_to_sh has split on the REAL operators; _cmd_line
+        # restores them, so an escaped `^&` is an ampersand in a word, never a separator.
+        for m in _CMD_TOKEN.finditer(_cmd_uncaret(piece)):
             out.append(m.group(1) if m.group(1) is not None else m.group(2))
     return out
 
@@ -2803,8 +3137,19 @@ def cmd_to_sh(rest: list) -> str:
     return "\n".join(ln for ln in lines if ln)
 
 
+#: cmd.exe's directory changers. `cd /d X` changes drive AND directory; read as `cd` with
+#: the operand `/d`, the directory was lost and a relative delete after it escaped every
+#: root rule (finding 3). cmd does not need quotes around a spaced path here: everything
+#: after the switch is the directory.
+_CMD_CD = {"cd", "chdir", "pushd"}
+
+
 def _cmd_line(ws: list) -> str:
+    ws = [_cmd_restore(w) for w in ws]
     v = _verb_name(ws[0])
+    if v in _CMD_CD:
+        rest = [w for w in ws[1:] if w.lower() != "/d"]
+        return ("pushd " if v == "pushd" else "cd ") + _cmd_word(" ".join(rest)) if rest else ""
     args, redir, i = [], "", 1
     while i < len(ws):
         w = ws[i]
@@ -2820,6 +3165,14 @@ def _cmd_line(ws: list) -> str:
         i += 1
     if v in _CMD_VERBS:
         args = [a for a in args if not _CMD_SWITCH.match(a)]
+        # An UNQUOTED spaced path: cmd splits `rd /s /q C:\...\X4 Foundations` into two
+        # operands, so what it deletes is not the root -- but the text plainly names it,
+        # and a guard that reads it as two harmless names is one quoting slip from the
+        # real thing. A delete also judges every contiguous span of its operands rejoined
+        # with a space (coordinator verification, v3.3.0 hooks lane). Bounded: 12 words.
+        if _CMD_VERBS[v].startswith("rm") and 1 < len(args) <= 12:
+            args = args + [" ".join(args[i:j]) for i in range(len(args))
+                           for j in range(i + 2, len(args) + 1)]
         if v in ("ren", "rename") and len(args) >= 2 and not re.search(r"[/\\]", args[1]):
             src = args[0].replace(chr(92), "/")
             cut = src.rfind("/")
@@ -2830,8 +3183,58 @@ def _cmd_line(ws: list) -> str:
     return " ".join([head] + [_cmd_word(a) for a in args]) + redir
 
 
-def _windows_carrier(seg: str, cmd: str) -> list:
-    """The command text a `cmd /c` or a PowerShell host in `seg` runs, translated."""
+def _ps_stdin_program(seg: str, prev) -> tuple:
+    """(texts, unreadable) -- the program a PowerShell host reads from STDIN.
+
+    Readable when it is visible in the command text: a here-string, or an echo/printf of
+    literal words just before it (the Bash-shell form `echo '<cmd>' | bash` already uses
+    that pairing). An input redirect from a file, or any other producer feeding it, is a
+    program the guard cannot read -- UNREADABLE, so the caller asks. Nothing before it and
+    nothing redirected: the host has no program at all (texts == [], not unreadable).
+
+    PowerShell text is TRANSLATED as PowerShell, which is why the hosts are not simply
+    added to _SHELL_SINKS: that set's pairing hands the text to the Bash rules verbatim.
+    """
+    hs = _here_string(seg)
+    if hs:
+        return [hs], False
+    for t, q in tokens(seg):
+        if not q and t.lstrip("0123456789").startswith("<") and not t.startswith("<<"):
+            return [], True
+    if prev is None:
+        return [], False
+    v = verb(prev)
+    if v in ("echo", "printf"):
+        toks = tokens(prev)
+        vt = _verb_token(prev)
+        k = next((i for i, (t, _q) in enumerate(toks) if t == vt), 0)
+        words = [t for t, q in toks[k + 1:] if q or not t.startswith("-")]
+        if v == "printf" and words and "%" in words[0]:
+            words = words[1:]                  # the format string
+        return ([" ".join(words)] if words else []), False
+    return [], True
+
+
+def _text_assignments(cmd: str) -> dict:
+    """assignments(cmd) minus the two kinds this lane added -- a whole `$(...)` and a
+    for-loop's word list. Both are BASH text: spliced into a cmd.exe or PowerShell payload
+    they make it unparseable, so the carrier ASKED where it used to translate (MEASURED in
+    this lane's history replay: 3 commands). Those variables stay unresolved there, as
+    they always were."""
+    return plain_assignments(assignments(cmd), [cmd])
+
+
+def plain_assignments(assigns: dict, texts: list) -> dict:
+    """`assigns` without a whole-`$(...)` value or a for-loop word list -- the table as
+    it read before this lane. A genuine `A=(x y)` array stays: `${A[0]}` resolved before
+    and must still (fuzz-guard's array-index mutator, which the first cut of this broke)."""
+    loops = {m.group(1) for t in texts for m in _FOR_IN.finditer(t)}
+    return {k: v for k, v in assigns.items() if k not in loops and not v.startswith("$(")}
+
+
+def _windows_carrier(seg: str, cmd: str, prev=None) -> list:
+    """The command text a `cmd /c` or a PowerShell host in `seg` runs, translated.
+    `prev` is the segment before it, which may be feeding its stdin."""
     # The OUTER shell's redirects (`... 2>&1 | head`) are not part of the carried text:
     # joined into it, `2>&1` twice made PowerShell reject the payload, and an untranslated
     # payload ASKS (MEASURED in the friction replay). Only UNQUOTED redirect tokens are
@@ -2853,22 +3256,33 @@ def _windows_carrier(seg: str, cmd: str) -> list:
     toks = toks[k:]
     if _verb_name(toks[0]) == "cmd":
         for i, t in enumerate(toks[1:], 1):
-            if re.fullmatch(r"/{1,2}[cCkK]", t):
-                rest = [resolve(x, assignments(cmd)) for x in toks[i + 1:]]
+            # /R is cmd's older synonym of /C (finding 3).
+            if re.fullmatch(r"/{1,2}[cCkKrR]", t):
+                rest = [resolve(x, _text_assignments(cmd)) for x in toks[i + 1:]]
                 return [cmd_to_sh(rest)] if rest else []
         return []
     kind, payload = _ps_host_payload(toks)
     if kind == "cmd":
-        text = resolve(payload, assignments(cmd))
+        text = resolve(payload, _text_assignments(cmd))
     elif kind == "encoded":
         try:
             text = base64.b64decode(payload, validate=True).decode("utf-16-le")
         except (ValueError, UnicodeDecodeError):
             _UNTRANSLATED.append("an -EncodedCommand that does not decode")
             return []
-    elif kind == "stdin":
-        _UNTRANSLATED.append("a PowerShell reading its program from stdin (-Command -)")
-        return []
+    elif kind in ("stdin", "none"):
+        # The program arrives on STDIN (finding 2): translate it when the command text
+        # shows it, ask when something the guard cannot read is feeding it.
+        texts, unreadable = _ps_stdin_program(seg, prev)
+        # A heredoc body is carried separately (ps_heredoc_bodies), so it is not missing.
+        heredoc = re.search(r"<<(?!<)", seg) is not None
+        if unreadable or (kind == "stdin" and not texts and prev is None and not heredoc):
+            _UNTRANSLATED.append("a PowerShell reading its program from stdin, fed by "
+                                 "something the guard cannot read")
+            return []
+        if not texts:
+            return []
+        text = chr(10).join(texts)
     else:
         return []
     sh, unknown, why = powershell_to_sh(text)
@@ -2889,9 +3303,12 @@ def _inner_commands(cmd: str) -> list[str]:
     """
     out = []
     segs = segments(cmd)
+    pipes = piped_in(cmd)
+    if len(pipes) != len(segs):          # never guess the pairing short: assume piped
+        pipes = [True] * len(segs)
     for n, seg in enumerate(segs):
         if _verb_name(verb(seg)) in ("cmd",) + _PS_EXES:
-            out.extend(_windows_carrier(seg, cmd))
+            out.extend(_windows_carrier(seg, cmd, segs[n - 1] if n and pipes[n] else None))
         # `echo '<cmd>' | bash` and `printf '%s' '<cmd>' | sh`. The consumer must have
         # NO script operand (see _reads_stdin_program) and the producer must be an echo
         # or printf of a literal, so an ordinary `echo ... > file && bash script.sh`
@@ -3078,9 +3495,28 @@ def facts(payload: dict, roots: dict) -> dict:
     body = strip_comments(strip_heredocs(spliced))
     # Heredoc bodies come from the RAW command: strip_heredocs has already removed
     # them from `body`, and only the ones opened by a shell are commands at all.
-    all_cmds, carriers_truncated = carried_commands(
-        body, [strip_comments(h) for h in heredoc_bodies(spliced)])
+    extra = [strip_comments(h) for h in heredoc_bodies(spliced)]
+    # A heredoc fed to a PowerShell host is a PowerShell PROGRAM (finding 2): translated,
+    # or reported untranslated -- never dropped as file payload.
+    for h in ps_heredoc_bodies(spliced):
+        sh_, unknown_, why_ = powershell_to_sh(h)
+        if sh_ is None:
+            _UNTRANSLATED.append(why_)
+        else:
+            _UNTRANSLATED.extend(unknown_)
+            extra.append(sh_)
+    all_cmds, carriers_truncated = carried_commands(body, extra)
     assigns = assignments(body)
+    # Assignments made INSIDE a carrier (`bash -c 'D=<root>; rm -rf "$D"'`, a heredoc fed
+    # to a shell, eval) are the carried command's own; the top level's win on a clash.
+    # MEASURED by fuzz-guard's new seeds (v3.3.0 release review): a for-loop or a
+    # realpath assignment inside any carrier reached no rule.
+    for c_ in all_cmds[1:]:
+        for k_, v_ in assignments(c_).items():
+            assigns.setdefault(k_, v_)
+    # The table as it was before this lane (no `$(...)` values, no loop word lists), for
+    # the targets whose rules were deliberately NOT widened -- see prep(expand=False).
+    plain_assigns = plain_assignments(assigns, all_cmds)
     ncmd = norm(cmd)
 
     # Every operand is classified WHERE IT RUNS. `cwd_track` was the missing link: the
@@ -3089,8 +3525,12 @@ def facts(payload: dict, roots: dict) -> dict:
     # resolve_verb runs HERE, once per segment, with the assignment table already
     # computed above: a command name arriving through a variable (`RM=rm; $RM -rf ...`)
     # otherwise reaches no verb-keyed rule at all, hard blocks included.
-    seg_cwd = [(resolve_verb(s, assigns), c)
-               for c in all_cmds for s, c in cwd_track(c)]
+    seg_cwd, seg_prev = [], []
+    for c in all_cmds:
+        tracked = cwd_track(c)
+        seg_cwd += [(resolve_verb(s, assigns), d) for s, d in tracked]
+        # The segment BEFORE each one in the same carried command: what feeds an xargs.
+        seg_prev += [None] + [s for s, _d in tracked][:-1] if tracked else []
     # A SUBSTITUTED COMMAND NAME REACHES NO RULE AT ALL. An unknown OPERAND still
     # reaches the conservative branch; an unknown VERB reaches nothing, so it takes
     # all three hard blocks with it. MEASURED 2026-09-08 against the live hook:
@@ -3136,38 +3576,57 @@ def facts(payload: dict, roots: dict) -> dict:
     segs = [s for s, _ in seg_cwd]
     cwd = seg_cwd[-1][1] if seg_cwd else ""
 
-    def prep(paths, c_cwd):
-        """(path resolved where it runs, unresolvable?, the token as written)."""
+    def prep(paths, c_cwd, expand=True):
+        """(path resolved where it runs, unresolvable?, the token as written). A whole
+        array reference -- a for-loop variable, `"${A[@]}"` -- yields one entry PER
+        element (resolve_all).
+
+        `expand=False` for REDIRECT / output-flag targets: an operand naming an array
+        (for-loop) variable stays UNRESOLVED there, as it was before loops were modelled.
+        MEASURED in this lane's history replay: expanding them turned 37 historical
+        commands from allow into a DENY on the /tmp and durable-record hygiene rules
+        (`for g in ...; do ... > /tmp/g_$g.txt`), which is friction on rules the
+        pre-arc note never concerned -- so it was scoped out, not shipped."""
         out = []
         for p in paths:
-            r = resolve(p, assigns)
-            unres = has_unresolved(r)
-            out.append((r if unres else join_cwd(c_cwd, r), unres, r))
+            # expand=False: resolved exactly as before this lane -- loop words and
+            # `$(...)` values are not substituted, so such an operand stays unresolved.
+            rs = resolve_all(p, assigns) if expand else [resolve(p, plain_assigns)]
+            for r in rs:
+                unres = has_unresolved(r)
+                out.append((r if unres else join_cwd(c_cwd, r), unres, r))
         return out
 
     rm_t, copy_t, redir_t, mv_src = [], [], [], []
     sed_t, out_t, search_files = [], [], []
     gitwipe_t, gitdiscard_t = [], []
-    scoped_rm_t = []
+    scoped_rm_t, mod_t = [], []
     search_seg, git_all = False, False
-    for s, c_cwd in seg_cwd:
+    for (s, c_cwd), prev in zip(seg_cwd, seg_prev):
         rm_t += prep(rm_paths(s), c_cwd)
+        rm_t += prep(xargs_feed(s, prev), c_cwd)
+        rm_t += prep(rsync_deletes(s), c_cwd)
+        robo_copy, robo_del, robo_mv = robocopy_effects(s)
+        copy_t += prep(robo_copy, c_cwd)
+        rm_t += prep(robo_del, c_cwd)
+        mv_src += prep(robo_mv, c_cwd)
+        mod_t += prep(modify_targets(s), c_cwd)
         # A FILTERED find-delete removes entries INSIDE its tree: it feeds every in-tree
         # delete rule, and never the whole-install hard block (see find_scoped_deletes).
         scoped_rm_t += prep(find_scoped_deletes(s), c_cwd)
         # truncate / dd of= are truncating writes, judged as `>` is (see clobber_targets).
-        redir_t += [("truncate",) + o for o in prep(clobber_targets(s), c_cwd)]
+        redir_t += [("truncate",) + o for o in prep(clobber_targets(s), c_cwd, False)]
         mv_src += prep(move_sources(s), c_cwd)
         copy_t += prep(copy_dests(s), c_cwd)
         sed_t += prep(sed_in_place_targets(s), c_cwd)
-        out_t += prep(output_targets(s), c_cwd)
+        out_t += prep(output_targets(s), c_cwd, False)
         search_files += prep(search_paths(s, require_recursive=False), c_cwd)
         gitwipe_t += prep(git_wipes_worktree_targets(s), c_cwd)
         gitdiscard_t += prep(git_discards_named_files(s), c_cwd)
         search_seg = search_seg or searches(s)
         git_all = git_all or git_adds_everything(s)
         for mode, tgt in redirects(s):
-            redir_t += [(mode,) + o for o in prep([tgt], c_cwd)]
+            redir_t += [(mode,) + o for o in prep([tgt], c_cwd, False)]
 
     def hit(ops, key, conservative=False):
         """`conservative` is the delete-only rule (user decision 2026-09-01): an
@@ -3218,7 +3677,7 @@ def facts(payload: dict, roots: dict) -> dict:
                                      "given a protected path" % name)
 
     redir_t_all = [(p, u, r) for _m, p, u, r in redir_t]
-    writes_any = copy_t + rm_t + scoped_rm_t + [(p, u, r) for _, p, u, r in redir_t]
+    writes_any = copy_t + rm_t + scoped_rm_t + mod_t + [(p, u, r) for _, p, u, r in redir_t]
     trunc_redirect = [(p, u, r) for m, p, u, r in redir_t if m == "truncate"]
 
     # The game-delete HARD BLOCK is scoped to what is actually catastrophic: the install
@@ -3370,7 +3829,7 @@ def facts(payload: dict, roots: dict) -> dict:
         # beside it already uses the WIDER writes_any -- so the less valuable
         # tree had the wider channel and the hard-blocked one the narrower.
         "writes_reference": hit(copy_t + [(pp, uu, rr) for _m, pp, uu, rr in redir_t]
-                                + sed_t + out_t, "reference"),
+                                + sed_t + out_t + mod_t, "reference"),
         "rm_in_x4_dir": any(hit(rm_t + mv_src + scoped_rm_t, k, conservative=True) for k in
                             ("game", "profile", "mods", "toolkit")) or rm_named_game,
         "rm_saves": hit(rm_t + mv_src + scoped_rm_t, "saves", conservative=True),
@@ -3474,9 +3933,15 @@ def facts(payload: dict, roots: dict) -> dict:
         # (_python_script_target). See the commit that added this rule for the
         # measured fire rate and the false-positive classification over the
         # historical corpus.
+        #
+        # Judged against the SESSION's directory (the payload's `cwd`, which Claude Code
+        # sends with every call) or a stand-in for it, so `cd tools/x4validate && python -m
+        # pytest` counts and `python -m pytest` in an unrelated project does not
+        # (finding 6). Same segments as seg_cwd, in the same order.
         "bare_python_on_project_code": any(
-            _bare_python_targets_project_code(sg, c_cwd, assigns)
-            for sg, c_cwd in seg_cwd),
+            _bare_python_targets_project_code(resolve_verb(sg, assigns), py_cwd, assigns)
+            for c in all_cmds
+            for sg, py_cwd in cwd_track(c, str(payload.get("cwd") or "") or _UNKNOWN_CWD)),
 
         # TWO CLAUSES, and each needs its own falsification twin: the search is rooted
         # AT reference\, or ABOVE it. The second was added 2026-09-21 after the
@@ -3559,6 +4024,10 @@ SENTINEL = "__X4_COMMAND__"
 
 ROOT_SEP = "--X4-ROOTS-END--"
 
+#: The prefix ps_translate.ps1 gives a PARSE failure (its Translate-Text), as distinct from
+#: a PowerShell that could not be found or run. Pinned by a test on both sides.
+PS_PARSE_ERROR = "does not parse as PowerShell"
+
 
 def main() -> int:
     import json
@@ -3589,9 +4058,14 @@ def main() -> int:
     if f.get("powershell_error"):
         # rc 4 + the reason on stdout: the caller ASKS with it. Nothing was analysed, so
         # no fact line may be emitted -- a partial stream would read as a clean pass.
-        sys.stdout.buffer.write(str(f["powershell_error"]).encode("utf-8", "replace"))
+        # rc 5 when the reason is that the command DOES NOT PARSE as PowerShell: that is
+        # the caller's own syntax error, which the caller DENIES with the parser's message
+        # so it is fixed and re-run -- hygiene spends Claude's attention, never the user's
+        # (v3.3.0 release review, finding 7). Only a missing/failing PowerShell still asks.
+        why = str(f["powershell_error"])
+        sys.stdout.buffer.write(why.encode("utf-8", "replace"))
         sys.stdout.buffer.flush()
-        return 4
+        return 5 if why.startswith(PS_PARSE_ERROR) else 4
     cmd = f.pop("command", "")
     f.pop("cwd", None)
     out = []
