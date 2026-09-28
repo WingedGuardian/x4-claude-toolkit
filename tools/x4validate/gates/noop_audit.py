@@ -128,6 +128,34 @@ def is_structural(op: etree._Element) -> bool:
     return False
 
 
+def _canon(e: etree._Element):
+    """Content identity of an element: tag, attributes, stripped text, element children.
+    Whitespace-only text and tails are formatting, not content."""
+    return (e.tag, tuple(sorted(e.attrib.items())), (e.text or "").strip(),
+            tuple(_canon(c) for c in e if isinstance(c.tag, str)))
+
+
+def is_idempotent_replace(op: etree._Element, base: etree._Element) -> bool:
+    """True when a <replace> with ONE element payload targets only nodes whose content
+    already EQUALS that payload -- applied, and correctly changes nothing.
+
+    MEASURED 2026-09-28 (v3.3.0 release gate run): 6 of noop_audit's 8 "FALSE OK" rows were
+    the Boron/Terran DLC replacing `<loadout/>` with an identical `<loadout/>`. Anything this
+    cannot decide (not a replace, several payload children, a selector lxml cannot evaluate,
+    no target) is NOT excused: the row stays a FALSE OK."""
+    if op.tag != "replace":
+        return False
+    kids = [c for c in op if isinstance(c.tag, str)]
+    if len(kids) != 1:
+        return False
+    try:
+        targets = base.xpath(op.get("sel") or "")
+    except etree.XPathError:
+        return False
+    targets = [t for t in targets if isinstance(t, etree._Element)] if isinstance(targets, list) else []
+    return bool(targets) and all(_canon(t) == _canon(kids[0]) for t in targets)
+
+
 def main() -> int:
     van = vanilla_index()
     false_ok, false_alarm, unparseable = [], [], []
@@ -190,7 +218,10 @@ def main() -> int:
                 if getattr(rec, "skipped_if", False):
                     stats["if= guard skipped (by design)"] += 1
                 elif rec.ok and not changed and is_structural(op):
-                    false_ok.append((mod.name, vp, op.get("sel"), rec.detail))
+                    if is_idempotent_replace(op, base):
+                        stats["replace with an identical payload (by design)"] += 1
+                    else:
+                        false_ok.append((mod.name, vp, op.get("sel"), rec.detail))
                 elif not rec.ok and changed:
                     false_alarm.append((mod.name, vp, op.get("sel"), rec.detail))
 
