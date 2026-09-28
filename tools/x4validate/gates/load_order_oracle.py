@@ -171,6 +171,9 @@ def _evidence_unlogged(mods: list[dict], logged: set[str],
         if folder in logged or m.get("root_rank", 0) != 0 or not m.get("path"):
             continue
         root = Path(m["path"])
+        # reference-scope-ok: a MOD folder, not the reference tree, and loose-only on purpose:
+        # this collects EVIDENCE against the log, so a class the mod ships only packed is
+        # simply not counted -- a packed-only mod is never held against the log (conservative).
         for p in root.rglob("*"):
             if p.is_file():
                 rel = p.relative_to(root).as_posix().lower()
