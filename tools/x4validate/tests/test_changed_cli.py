@@ -51,6 +51,9 @@ def test_a_vectorless_baseline_is_a_NON_ANSWER_with_its_own_exit_code(capsys, mo
 def test_no_change_and_changes_found_have_DIFFERENT_exit_codes(capsys, monkeypatch):
     same = _detail(mod_a=(1, "sha1", "100"))
     monkeypatch.setattr(_changed, "_dirs", lambda: [])
+    # baseline_fp (FR-4) reads the snapshot dir from the registry: unstubbed it refused
+    # (rc 2) on any machine with no registry configured -- the cold-clone run caught it.
+    monkeypatch.setattr(_changed, "baseline_fp", lambda spec, registry=None: None)
     monkeypatch.setattr(_changed, "load_baseline", lambda spec, registry=None: (same, "snap"))
     monkeypatch.setattr(_freshness, "content_detail", lambda *a, **k: same)
     args = types.SimpleNamespace(since="latest", files=False, usn=False)

@@ -56,6 +56,12 @@ def _tracked_sh(roots=ROOTS) -> list[Path]:
     out = subprocess.run(
         ["git", "ls-files", *(f"{r}/*.sh" for r in roots)],
         cwd=REPO, capture_output=True, text=True, check=False)
+    inside = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=REPO,
+                            capture_output=True, text=True, check=False)
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        # NOT a git checkout: the release bundle, or the cold-clone verification's
+        # extract. Every file in it IS the shipped set, so the walk is the tracked set.
+        return sorted(p for r in roots for p in (REPO / r).rglob("*.sh") if p.is_file())
     return [REPO / n for n in out.stdout.split() if n]
 
 

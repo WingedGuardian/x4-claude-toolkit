@@ -50,6 +50,10 @@ def _refresh_one(monkeypatch, auto, page_updated, file_uploaded=None, file_id=No
     monkeypatch.setattr(_modlist._nexus, "fetch_file",
                         lambda nid, fid: FileMeta(fid, nid, "Addon", "2.0", file_uploaded,
                                                   "MAIN"))
+    # The update-detection calls added later (RG-3) are stubbed too: unstubbed, they
+    # needed a REAL X4_NEXUS_KEY, so these tests passed only on a machine that had one.
+    monkeypatch.setattr(_modlist._nexus, "fetch_files", lambda nid: [])
+    monkeypatch.setattr(_modlist._nexus, "fetch_file_listing", lambda nid: ([], {}))
     m = _registry._new_entry("x", True)
     m["auto"].update(auto)
     if file_id is not None:

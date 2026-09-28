@@ -382,6 +382,10 @@ def test_F139_gate_tool_properties_discloses(gate_env, monkeypatch, capsys):
     man.parent.mkdir(parents=True)
     man.write_text(json.dumps({"overlays_in_load_order": ["AAA"]}), encoding="utf-8")
     monkeypatch.setattr(_effective, "DB_PATH", store)
+    # The gate reads the store through the one door (`_effective.effective_db()`), not the
+    # import-time DB_PATH snapshot: without this the test passed only on a machine that has
+    # a real store, and the cold-clone run caught it.
+    monkeypatch.setattr(_effective, "effective_db", lambda *a, **k: store)
     # Point the gate at the stub ONLY: the tree running this test may hold a real,
     # built manifest (master does), which the gate would otherwise prefer.
     monkeypatch.setattr(g, "_manifest_candidates", lambda: [man])
