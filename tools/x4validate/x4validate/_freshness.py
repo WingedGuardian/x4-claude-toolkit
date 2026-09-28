@@ -222,7 +222,9 @@ def _as_dirs(dirs) -> list[Path]:
         return []
     if isinstance(dirs, (str, os.PathLike)):
         return [Path(dirs)]
-    return [Path(d) for d in dirs]
+    # A None ENTRY is an unconfigured root (no X4 on this machine), not a directory:
+    # Path(None) raised TypeError from every CLI that stamps freshness on a fresh clone.
+    return [Path(d) for d in dirs if d is not None]
 
 
 def _profile_decisions(profile) -> dict[str, bool]:

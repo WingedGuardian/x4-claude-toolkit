@@ -111,7 +111,9 @@ def index_roots(ext_dir: Path) -> list[Path]:
     the named one, so a mod added or edited in the profile or workshop root left the
     index FRESH -- and x4xref exists to make NEGATIVES admissible.
     """
-    roots = [ext_dir]
+    # An UNCONFIGURED root (None on a machine with no X4) is not a root: including it made
+    # every freshness stamp and check call Path(None) and crash (the cold-clone run caught it).
+    roots = [ext_dir] if ext_dir is not None else []
     try:
         for extra in _registry.default_installed_dirs():
             if extra not in roots:
