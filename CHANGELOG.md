@@ -1,5 +1,24 @@
 # Changelog
 
+## v3.3.1 — 2026-09-29
+
+A CI-and-tests release: **no tool changes behaviour.** v3.3.0's own CI went red on three
+jobs, none of them a defect in a tool, all of them in how the release was tested:
+
+- **The history identifier scan checked nothing on a tagged release commit.** Its base was
+  `git describe --tags`, which on the release commit IS the new tag, so the range was empty
+  and the scan refused to certify it. The base is now the last tag before HEAD.
+- **16 new tests of gate logic never ran on a machine with no X4.** They imported a gate that
+  refuses at import without an install, so on CI they SKIPPED -- the job went over its skip
+  ceiling (69 > 56), which exists to catch exactly that. They now run against a hermetic
+  fake install (`conftest.gate_install` / `hermetic_gate`); v3.3.0's Windows CI skipped 69,
+  this release's skips 50. The fake install no longer leaks into the rest of the session.
+- Two tests assumed Windows: one expected `Set-Acl` (a Windows-only cmdlet) to be denied on
+  Linux, where the guard fails closed to ASK because the cmdlet cannot be bound; one faked
+  `os.name = "nt"` process-wide, which crashed pathlib on Linux.
+- A provenance-floor test could never reach the floor it names (a stale-store refusal fired
+  first); it now does, and a mutant disabling the floor goes red.
+
 ## v3.3.0 — 2026-09-27
 
 The remediation of the 2026-09-24 correctness audit. Every finding, its status and its commit
