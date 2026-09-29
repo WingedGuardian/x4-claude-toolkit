@@ -305,6 +305,11 @@ in the same file). Numbers below are taken from the commit that made the change.
 
 ### Freshness
 
+- **A machine with no X4 configured no longer crashes `x4xref`.** An unconfigured
+  extensions root became `Path(None)` inside the freshness stamp (`TypeError` from
+  `x4xref who-calls`); an unconfigured root is now simply not a root. Found by the
+  release's cold-clone verification.
+
 - An artifact goes STALE when a mod moves between install roots, when code that shapes the
   store changes (`ENGINE_SOURCES` re-derived by tracing a build), and after a game update —
   which the banner and `x4modlist changed` now name as a reference change instead of blaming
