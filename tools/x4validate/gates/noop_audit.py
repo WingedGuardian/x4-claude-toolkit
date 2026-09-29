@@ -150,7 +150,7 @@ def is_idempotent_replace(op: etree._Element, base: etree._Element) -> bool:
         return False
     try:
         targets = base.xpath(op.get("sel") or "")
-    except etree.XPathError:
+    except etree.XPathError:  # silent-ok: not excused -> the row STAYS a reported FALSE OK
         return False
     targets = [t for t in targets if isinstance(t, etree._Element)] if isinstance(targets, list) else []
     return bool(targets) and all(_canon(t) == _canon(kids[0]) for t in targets)
