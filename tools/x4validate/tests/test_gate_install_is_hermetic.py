@@ -21,8 +21,8 @@ def test_a_gate_loaded_by_gate_install_resolves_the_FAKE_roots(gate_install):
 
 
 def test_the_fake_reaches_a_resolution_made_at_CALL_time_too(gate_install):
-    import _env                                   # on sys.path once a gate is loaded
     gate_install.load("provenance_audit")
+    import _env                                   # on sys.path once a gate is loaded
     assert Path(_env.effective_db()) == gate_install.db
     assert Path(_env.oracle_log()) == gate_install.log
     assert Path(_env.mods_dir()) == gate_install.mods

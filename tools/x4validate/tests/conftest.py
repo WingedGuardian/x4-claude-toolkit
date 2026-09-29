@@ -167,14 +167,29 @@ def hermetic_gate(name: str):
     never reads them, and one that did would fail loudly rather than read a real install.
     A test that runs a gate's `main()` wants the `gate_install` fixture instead.
     """
+    import importlib
     import tempfile
+    # NO LEAK INTO THE SESSION (v3.3.1 release review, MEASURED): this runs at COLLECTION.
+    # A package module first imported inside the fake window snapshots the fake roots at
+    # import (`_merge.REFERENCE` stuck at a deleted dir), and 5 unrelated tests then failed
+    # when this file was collected first. So the modules that snapshot paths are imported
+    # BEFORE the fake env is set, and any x4validate module first imported inside the window
+    # is dropped afterwards, so a later import re-reads the real configuration.
+    for m in ("x4validate._paths", "x4validate._registry", "x4validate._merge",
+              "x4validate._effective", "x4validate._freshness"):
+        importlib.import_module(m)
+    before = set(sys.modules)
     with tempfile.TemporaryDirectory(prefix="x4-fake-install-") as d, \
             pytest.MonkeyPatch.context() as mp:
         inst = make_fake_install(Path(d))
         for k, v in inst.env.items():
             mp.setenv(k, v)
-        return _exec_gate(name, f"hermetic_gate_{name}",
-                          lambda k, m: sys.modules.__setitem__(k, m))
+        mod = _exec_gate(name, f"hermetic_gate_{name}",
+                         lambda k, m: sys.modules.__setitem__(k, m))
+    for k in set(sys.modules) - before:
+        if k.startswith("x4validate"):
+            del sys.modules[k]
+    return mod
 
 
 @pytest.fixture

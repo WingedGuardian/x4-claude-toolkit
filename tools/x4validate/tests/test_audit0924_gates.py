@@ -457,8 +457,13 @@ def test_gt3_provenance_audit_over_an_empty_store_is_not_a_pass(gate_install, tm
     pa = gate_install.load("provenance_audit")
     monkeypatch.setattr(pa, "DB", _store(tmp_path / "e.sqlite"))
     monkeypatch.setattr(pa, "REF", tmp_path)
+    # The synthetic store has no fingerprint, so the stale-store refusal (rc 2) fired
+    # FIRST and this test never reached the floor it names: a mutant that disabled the
+    # floor stayed green (v3.3.1 release review). Treat the store as fresh.
+    monkeypatch.setattr(pa._env, "stale_store_refusal", lambda *a, **k: None)
     rc = pa.main()
-    assert rc != 0, f"0 values compared, rc 0:\n{capsys.readouterr().out}"
+    err = capsys.readouterr().err
+    assert rc == 2 and "0 items were examined" in err, (rc, err)
 
 
 def test_gt3_registry_provenance_over_zero_rows_is_not_a_pass(tmp_path, monkeypatch, capsys):
