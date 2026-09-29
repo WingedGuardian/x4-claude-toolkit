@@ -12,8 +12,6 @@ non-zero rc, so my fix silently narrowed this gate's third channel.
 """
 from __future__ import annotations
 
-import importlib
-import sys
 from pathlib import Path
 
 import pytest
@@ -22,16 +20,11 @@ GATES = Path(__file__).resolve().parents[1] / "gates"
 
 
 @pytest.fixture()
-def ca():
-    sys.path.insert(0, str(GATES))
-    try:
-        import consistency_audit as mod
-        importlib.reload(mod)
-    except SystemExit as exc:
-        pytest.skip("gates/_env refused to resolve: %s" % exc)
-    finally:
-        sys.path.remove(str(GATES))
-    return mod
+def ca(gate_install):
+    """A FRESH copy of the gate, imported against conftest's fake install. It used to
+    import against the real one and SKIP without it, so on a machine with no X4 (CI)
+    none of these ran -- the gate's logic under test needs no install at all."""
+    return gate_install.load("consistency_audit")
 
 
 def test_a_DEGRADED_dump_is_distinguished_from_an_UNUSABLE_one(ca):

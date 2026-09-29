@@ -95,6 +95,102 @@ def import_gate(name: str, *, module_level: bool = True):
         pytest.skip(reason)
 
 
+# ------------------------------------------------------ gates against a FAKE install
+#
+# `import_gate` SKIPS on a machine with no X4. That is right for a test that needs the
+# real corpus, and WRONG for a test of a gate's own decision logic: that logic runs the
+# same on every machine, and the only thing stopping it is the gate resolving its paths
+# at IMPORT. MEASURED 2026-09-28 (v3.3.0 windows CI): 16 of 69 skips were such tests,
+# every one new in that release, and together they pushed the job over X4_MAX_SKIPS.
+# A skip is a test that did not run -- CI never executed that logic once.
+#
+# `hermetic_gate` / the `gate_install` fixture give the gate a CONFIGURED install that is
+# fake: empty tmp roots, handed over through the ENVIRONMENT layer of `_paths`, so the
+# gate's REAL `_env` resolution runs (nothing inside `_env` is stubbed). The env layer
+# outranks `.claude/x4-paths.env`, so a configured machine resolves to the same fake
+# roots and the test means the same thing cold and warm. The gate is loaded from
+# source under a PRIVATE module name, never the cached `import_gate` copy, which on a
+# configured machine was imported against the REAL install.
+
+#: The locations gates/_env.py resolves through `_paths` at CALL time, each given a fake.
+#: NOT covered: `_env.registry_file()`, which reads `_registry.DEFAULT_REGISTRY` -- a
+#: snapshot taken when `_registry` was first imported, so no environment set now can
+#: reach it. A test that needs the registry patches that attribute itself (as
+#: test_gates_store_one_door.py's `elsewhere` does).
+_FAKE_INSTALL_ENV = ("X4_GAME", "X4_EXTENSIONS", "X4_REFERENCE", "X4_MODS",
+                     "X4_REGISTRY", "X4_EFFECTIVE_DB", "X4_ORACLE_LOG")
+
+
+def make_fake_install(root: Path):
+    """Build empty-but-valid roots under *root*: each passes `_env`'s own existence check
+    (a dir is a dir, a file is a file) and contains nothing. Returns a namespace of the
+    paths plus `env`, the variables that point `_paths` at them."""
+    import types
+    game = root / "game"
+    ext = game / "extensions"
+    ref = root / "reference"
+    mods = root / "mods"
+    for d in (ext, ref, mods):
+        d.mkdir(parents=True, exist_ok=True)
+    reg = mods / "modlist.yaml"
+    reg.write_text("mods: []\n", encoding="utf-8")
+    db = root / "effective.sqlite"
+    db.write_bytes(b"")
+    log = root / "debug.txt"
+    log.write_text("", encoding="utf-8")
+    env = {"X4_GAME": game, "X4_EXTENSIONS": ext, "X4_REFERENCE": ref, "X4_MODS": mods,
+           "X4_REGISTRY": reg, "X4_EFFECTIVE_DB": db, "X4_ORACLE_LOG": log}
+    assert set(env) == set(_FAKE_INSTALL_ENV)
+    return types.SimpleNamespace(root=root, game=game, ext=ext, ref=ref, mods=mods,
+                                 registry=reg, db=db, log=log,
+                                 env={k: str(v) for k, v in env.items()})
+
+
+def _exec_gate(name: str, key: str, register):
+    """Execute gates/<name>.py as a NEW module called *key*. `register(key, mod)` puts it
+    in sys.modules first (a dataclass needs its module there while it executes)."""
+    import importlib.util
+    if str(GATES) not in sys.path:
+        sys.path.insert(0, str(GATES))     # the gate does `import _env`, as import_gate allows
+    spec = importlib.util.spec_from_file_location(key, GATES / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    register(key, mod)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def hermetic_gate(name: str):
+    """Import a gate at MODULE scope against a fake install, for tests of PURE functions.
+
+    The fake roots exist only while the gate imports and are deleted straight after, so
+    its module-level paths (`EXT`, `REF`, ...) point at nothing: a pure-function test
+    never reads them, and one that did would fail loudly rather than read a real install.
+    A test that runs a gate's `main()` wants the `gate_install` fixture instead.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="x4-fake-install-") as d, \
+            pytest.MonkeyPatch.context() as mp:
+        inst = make_fake_install(Path(d))
+        for k, v in inst.env.items():
+            mp.setenv(k, v)
+        return _exec_gate(name, f"hermetic_gate_{name}",
+                          lambda k, m: sys.modules.__setitem__(k, m))
+
+
+@pytest.fixture
+def gate_install(tmp_path, monkeypatch):
+    """A fake configured install for the whole test, plus `.load(name)` to import a gate
+    against it. The environment stays set until teardown, so a gate function that
+    resolves through `_env` at CALL time also sees the fake, never the real install.
+    Each `.load` is a fresh module, unregistered at teardown."""
+    inst = make_fake_install(tmp_path / "fake-install")
+    for k, v in inst.env.items():
+        monkeypatch.setenv(k, v)
+    inst.load = lambda name: _exec_gate(
+        name, f"gate_install_{name}", lambda k, m: monkeypatch.setitem(sys.modules, k, m))
+    return inst
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _reference_for_unit_tests(tmp_path_factory):
     """Give `_merge` an empty reference directory when the machine has no X4.

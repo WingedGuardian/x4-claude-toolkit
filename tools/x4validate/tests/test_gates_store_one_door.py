@@ -44,28 +44,18 @@ def test_TWIN_claims_audit_refuses_when_no_store_is_configured(monkeypatch):
         ca._store()
 
 
-def _tool_properties():
-    import importlib.util
-    import sys
-    from pathlib import Path
-    gates = Path(__file__).resolve().parents[1] / "gates"
-    sys.path.insert(0, str(gates))
-    try:
-        spec = importlib.util.spec_from_file_location("tool_properties_one_door",
-                                                      gates / "tool_properties.py")
-        mod = importlib.util.module_from_spec(spec)
-        try:
-            spec.loader.exec_module(mod)
-        except SystemExit as exc:
-            pytest.skip(f"gates/_env refused to resolve: {exc}")
-    finally:
-        sys.path.remove(str(gates))
+def _tool_properties(gate_install):
+    """A fresh copy of the gate, imported against conftest's fake install: its import-time
+    `_env.extensions()` / `_env.reference()` need SOME install, and these tests are about
+    which STORE it opens, which `elsewhere` configures separately. Without the fake, a
+    machine with no X4 (CI) skipped all three."""
+    mod = gate_install.load("tool_properties")
     mod.failures.clear()
     mod.skips.clear()
     return mod
 
 
-def test_tool_properties_reads_the_CONFIGURED_store(elsewhere, monkeypatch):
+def test_tool_properties_reads_the_CONFIGURED_store(elsewhere, gate_install, monkeypatch):
     """The configured store EXISTS (and is stale); the registry directory holds none. The
     old lookup skipped 'no effective.sqlite' -- it never saw the configured file."""
     from x4validate import _effective
@@ -73,22 +63,23 @@ def test_tool_properties_reads_the_CONFIGURED_store(elsewhere, monkeypatch):
     sqlite3.connect(store).close()
     monkeypatch.setattr(_effective, "store_freshness",
                         lambda con, config=None: types.SimpleNamespace(fresh=False))
-    tp = _tool_properties()
+    tp = _tool_properties(gate_install)
     tp.check_store_key_uniqueness()
     assert len(tp.skips) == 1 and "STALE" in tp.skips[0], tp.skips
 
 
-def test_TWIN_tool_properties_skips_when_the_configured_store_is_absent(elsewhere):
-    tp = _tool_properties()
+def test_TWIN_tool_properties_skips_when_the_configured_store_is_absent(elsewhere, gate_install):
+    tp = _tool_properties(gate_install)
     tp.check_store_key_uniqueness()
     assert len(tp.skips) == 1 and "STALE" not in tp.skips[0], tp.skips
     assert not tp.failures
 
 
-def test_tool_properties_mod_scope_check_uses_the_door_not_the_import_snapshot(elsewhere):
+def test_tool_properties_mod_scope_check_uses_the_door_not_the_import_snapshot(
+        elsewhere, gate_install):
     """`check_mod_scope_agreement` read `_effective.DB_PATH`, a snapshot taken at import:
     a store configured afterwards (or a test's) was invisible. The configured store here
     does not exist, so the check must say so -- whatever DB_PATH happened to hold."""
-    tp = _tool_properties()
+    tp = _tool_properties(gate_install)
     tp.check_mod_scope_agreement()
     assert any("no effective store" in s for s in tp.skips), (tp.skips, tp.failures)

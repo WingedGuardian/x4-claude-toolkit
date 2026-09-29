@@ -322,8 +322,8 @@ def test_bx4_TWIN_a_deficit_is_accounted_only_by_its_OWN_roots_malformed_files(
 
 # ============================================================================ GT-1 noop_audit
 
-def test_gt1_an_unreadable_catalog_is_not_a_clean_noop_audit(tmp_path, monkeypatch, capsys):
-    na = import_gate("noop_audit", module_level=False)
+def test_gt1_an_unreadable_catalog_is_not_a_clean_noop_audit(gate_install, tmp_path, monkeypatch, capsys):
+    na = gate_install.load("noop_audit")
     ext, ref = tmp_path / "ext", tmp_path / "ref"
     (ext / "somemod").mkdir(parents=True)
     ref.mkdir()
@@ -338,10 +338,10 @@ def test_gt1_an_unreadable_catalog_is_not_a_clean_noop_audit(tmp_path, monkeypat
     assert rc != 0, f"somemod was never audited, yet rc 0:\n{capsys.readouterr().out}"
 
 
-def test_gt1_unreadable_is_named_and_rc_2_and_a_false_ok_outranks_it(tmp_path, monkeypatch, capsys):
+def test_gt1_unreadable_is_named_and_rc_2_and_a_false_ok_outranks_it(gate_install, tmp_path, monkeypatch, capsys):
     """The UNREADABLE list reaches the verdict: printed by name, rc 2 when nothing else was
     found -- and a real FALSE OK beside it is still rc 1 (a finding outranks a refusal)."""
-    na = import_gate("noop_audit", module_level=False)
+    na = gate_install.load("noop_audit")
     ext, ref = tmp_path / "ext", tmp_path / "ref"
     (ext / "somemod").mkdir(parents=True)
     ref.mkdir()
@@ -379,8 +379,8 @@ def test_gt1_unreadable_is_named_and_rc_2_and_a_false_ok_outranks_it(tmp_path, m
 
 # ============================================================================ GT-2 determinism_audit
 
-def test_gt2_a_command_that_fails_twice_is_not_deterministic_output(monkeypatch, capsys):
-    da = import_gate("determinism_audit", module_level=False)
+def test_gt2_a_command_that_fails_twice_is_not_deterministic_output(gate_install, monkeypatch, capsys):
+    da = gate_install.load("determinism_audit")
     monkeypatch.setattr(da, "WITH_BUILD", False)
     monkeypatch.setattr(da.subprocess, "run", lambda *a, **k: types.SimpleNamespace(
         returncode=2, stdout="error: cannot resolve the game's extensions directory\n", stderr=""))
@@ -399,8 +399,8 @@ def _fake_runs(seq):
     return fake
 
 
-def test_gt2_rc_is_compared_per_run_and_collisions_rc_1_is_an_answer(monkeypatch, capsys):
-    da = import_gate("determinism_audit", module_level=False)
+def test_gt2_rc_is_compared_per_run_and_collisions_rc_1_is_an_answer(gate_install, monkeypatch, capsys):
+    da = gate_install.load("determinism_audit")
     monkeypatch.setattr(da, "WITH_BUILD", False)
     # Same text, every case answers with its own allowed rc: 0 -- x4compat's rc 1 counts.
     monkeypatch.setattr(da.subprocess, "run", _fake_runs(
@@ -412,8 +412,8 @@ def test_gt2_rc_is_compared_per_run_and_collisions_rc_1_is_an_answer(monkeypatch
     assert da.main() == 1, capsys.readouterr().out
 
 
-def test_gt2_with_build_a_failed_build_is_a_failure(monkeypatch, capsys):
-    da = import_gate("determinism_audit", module_level=False)
+def test_gt2_with_build_a_failed_build_is_a_failure(gate_install, monkeypatch, capsys):
+    da = gate_install.load("determinism_audit")
     monkeypatch.setattr(da, "WITH_BUILD", True)
     monkeypatch.setattr(da, "store_fingerprint", lambda: "abc")   # the OLD store, unchanged
     monkeypatch.setattr(da.subprocess, "run", _fake_runs(
@@ -453,8 +453,8 @@ def _store(path: Path, rows: list[tuple] = ()) -> Path:
     return path
 
 
-def test_gt3_provenance_audit_over_an_empty_store_is_not_a_pass(tmp_path, monkeypatch, capsys):
-    pa = import_gate("provenance_audit", module_level=False)
+def test_gt3_provenance_audit_over_an_empty_store_is_not_a_pass(gate_install, tmp_path, monkeypatch, capsys):
+    pa = gate_install.load("provenance_audit")
     monkeypatch.setattr(pa, "DB", _store(tmp_path / "e.sqlite"))
     monkeypatch.setattr(pa, "REF", tmp_path)
     rc = pa.main()
@@ -473,8 +473,8 @@ def test_gt3_registry_provenance_over_zero_rows_is_not_a_pass(tmp_path, monkeypa
     assert rc != 0, f"0 active rows audited, rc 0:\n{capsys.readouterr().out}"
 
 
-def test_gt3_xsd_parity_over_files_with_no_schema_is_not_parity(tmp_path, monkeypatch, capsys):
-    xfp = import_gate("xsd_fast_parity", module_level=False)
+def test_gt3_xsd_parity_over_files_with_no_schema_is_not_parity(gate_install, tmp_path, monkeypatch, capsys):
+    xfp = gate_install.load("xsd_fast_parity")
     ext, ref = tmp_path / "ext", tmp_path / "ref"
     (ext / "m" / "md").mkdir(parents=True)
     (ext / "m" / "md" / "probe.xml").write_text('<mdscript name="p"><cues/></mdscript>',
@@ -523,17 +523,15 @@ def test_gt4_control_bytes_hits_outrank_an_unreadable_path(tmp_path, monkeypatch
     assert rc == 1, f"a live 0x08 was found and run-gates.sh would bucket rc {rc} as CANNOT"
 
 
-def test_gt4_oracle_index_without_ground_truth_is_cannot_not_fail(tmp_path, monkeypatch):
+def test_gt4_oracle_index_without_ground_truth_is_cannot_not_fail(gate_install, tmp_path, monkeypatch):
     _env = import_gate("_env", module_level=False)
     log = tmp_path / "debug.txt"
     log.write_text("", encoding="utf-8")
     monkeypatch.setattr(_env, "oracle_log", lambda: log)
-    sys.modules.pop("oracle_index", None)
-    oi = import_gate("oracle_index", module_level=False)
+    oi = gate_install.load("oracle_index")
     monkeypatch.setattr(oi._debuglog, "parse_debug", lambda p: [])
     with pytest.raises(SystemExit) as exc:
         oi.main()
-    sys.modules.pop("oracle_index", None)
     code = exc.value.code
     rc = code if isinstance(code, int) else 1                # what the interpreter would exit with
     assert rc == 2, f"no ground truth read as a FAILED gate (rc {rc}): {code!r}"
@@ -807,8 +805,8 @@ def test_gt5_schema_sweep_without_a_readable_per_mod_baseline_is_not_a_pass(
 
 # ============================================================================ GT-6
 
-def test_gt6_provenance_audit_refuses_a_stale_store(tmp_path, monkeypatch, capsys):
-    pa = import_gate("provenance_audit", module_level=False)
+def test_gt6_provenance_audit_refuses_a_stale_store(gate_install, tmp_path, monkeypatch, capsys):
+    pa = gate_install.load("provenance_audit")
     from x4validate import _effective
     vp = "assets/x_macro.xml"
     (tmp_path / "assets").mkdir()

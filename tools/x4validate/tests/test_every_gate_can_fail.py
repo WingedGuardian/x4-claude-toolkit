@@ -19,7 +19,6 @@ import pathlib
 import re
 
 import pytest
-from conftest import import_gate
 
 GATES = pathlib.Path(__file__).resolve().parents[1] / "gates"
 
@@ -220,11 +219,11 @@ def test_consistency_audit_REFUSES_when_it_cross_checked_NOTHING():
     assert "cross-checked" in (r.stdout + r.stderr) or "STALE" in r.stderr, r.stderr[-400:]
 
 
-def test_consistency_audit_samples_floor_is_reachable_with_a_fresh_store(monkeypatch, capsys):
+def test_consistency_audit_samples_floor_is_reachable_with_a_fresh_store(gate_install, monkeypatch, capsys):
     """The twin: freshness forced to pass and zero rows sampled, in-process, so the
     0-cross-checked floor is exercised on EVERY machine rather than only where the real
     store happens to be fresh."""
-    ca = import_gate("consistency_audit", module_level=False)
+    ca = gate_install.load("consistency_audit")
     monkeypatch.setattr(ca._env, "stale_store_refusal", lambda db, who: None)
     monkeypatch.setattr(ca, "store_rows", lambda: [])
     assert ca.main() == 2

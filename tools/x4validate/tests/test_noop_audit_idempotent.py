@@ -11,9 +11,10 @@ from __future__ import annotations
 
 from lxml import etree
 
-from conftest import import_gate
+from conftest import hermetic_gate
 
-noop_audit = import_gate("noop_audit")
+# Pure functions: the fake install only lets the gate IMPORT on a machine with no X4.
+noop_audit = hermetic_gate("noop_audit")
 
 
 def _op(xml: str) -> etree._Element:
