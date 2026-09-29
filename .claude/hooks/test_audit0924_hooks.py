@@ -394,7 +394,10 @@ class TestPS6OtherWritingCmdlets(_PSE2E):
             ("deny", "Invoke-WebRequest https://example.invalid -OutFile '" + R + BS + "a'"),
             ("deny", "Start-Transcript -Path '" + R + BS + "t.txt'"),
             ("deny", "New-Item " + f + " -Force"),
-            ("deny", "Set-Acl " + f + " -AclObject $a"),
+            # Set-Acl exists only in Windows PowerShell's security module: elsewhere the
+            # static binder cannot bind its positional path, and the translator fails CLOSED
+            # (ask) -- on a platform where the cmdlet cannot run at all (CI ubuntu, v3.3.0).
+            ("deny" if os.name == "nt" else "ask", "Set-Acl " + f + " -AclObject $a"),
             ("deny", "Start-Process git -RedirectStandardOutput '" + R + BS + "o.txt'"),
         ])
 
