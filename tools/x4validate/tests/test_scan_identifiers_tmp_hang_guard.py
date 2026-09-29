@@ -133,9 +133,12 @@ def test_main_refuses_even_in_selftest_mode(monkeypatch, capsys):
 
 
 def test_main_does_not_refuse_on_a_normal_environment(monkeypatch):
-    """Falsification twin: a real, short TMP must not be caught in the net."""
-    monkeypatch.setattr(si.os, "name", "nt")
+    """Falsification twin: a real, short TMP must not be caught in the net.
+
+    The guard is asked as WINDOWS directly. Faking `os.name = "nt"` process-wide (the first
+    version) made pathlib build a WindowsPath on Linux and crash -- CI ubuntu, v3.3.0."""
     monkeypatch.setenv("TMP", "C:/Users/x/AppData/Local/Temp")
+    assert si._tmp_hang_risk({"TMP": "C:/Users/x/AppData/Local/Temp"}, True) is None
     monkeypatch.setattr(sys, "argv", ["scan-identifiers.py", "--selftest"])
     rc = si.main()
     assert rc == 0, "a short, ordinary TMP must not trip the hang guard"
