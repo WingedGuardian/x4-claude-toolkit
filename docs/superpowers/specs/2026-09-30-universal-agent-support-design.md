@@ -259,3 +259,53 @@ otherwise follow `ADAPTING.md`.
 - **A self-ported adapter can be wrong about its own agent**: it cannot claim protection without
   conformance + canary, and Layer 2 protects the critical paths regardless.
 - **Windows sandbox bugs in Codex** (issues #23552, #18558, titles only): Layer 2 does not depend on them.
+
+## 13. Addendum 2026-09-30 (late): two findings, and decisions pending the spike
+
+**Status change:** the spec is **ON HOLD for revision** until a measurement spike runs. Plan 1 was
+drafted and NOT approved; it will be rewritten from the spike's results.
+
+### Finding A: Layer 2 (§3) was overstated. The repo had already measured it.
+`scripts/x4lock.py` (docstring) measured on Windows 11 with controls: the read-only attribute blocks
+**11 of 14** write primitives (9 of 14 on Linux). **`rm -f`, `Remove-Item -Force` and
+`Copy-Item -Force` are NOT blocked.** A deny ACL (`icacls /deny <user>:(W,D,WDAC,WO)`) was tried and
+**withdrawn**: `W` includes SYNCHRONIZE, so it denied reads, and `WDAC` made it unremovable without an
+administrator under Program Files. §3's "every agent keeps file protection" is therefore wrong as
+written. The measured truth is that unknown agents are protected against **accidental overwrites**,
+the class of all four incidents on record, and **not against deliberate deletes**. Plan 1's M7
+step 3 (try an icacls deny) would have repeated the withdrawn experiment. It is struck.
+
+### Finding B: on Codex an "ask" is silently an allow (READ, primary doc, 2026-09-30).
+learn.chatgpt.com/docs/hooks: *"permissionDecision: 'ask' ... [is] parsed but not supported yet.
+Codex marks the hook run as failed, reports the error, and continues the tool call."*
+- Only `deny` or exit code 2 block.
+- Behaviour on a hook **crash, timeout, malformed JSON, or a command that cannot start is
+  UNDOCUMENTED**. If those also continue, Codex hooks fail OPEN, which contradicts §5.4.
+- `PermissionRequest` hooks can allow or deny *Codex's own* approval prompts; whether any route
+  makes Codex ask the user on a hook's behalf is unmeasured.
+
+### Decisions (user, 2026-09-30)
+| # | Decision |
+|---|---|
+| D9 | **Spike first, then revise** this spec and Plan 1 from its results. No refactor before. |
+| D10 | Guard engine (a Python port per §5, or wrap the existing hardened bash guards behind thin per-agent translation): **decided after the spike**. |
+| D11 | On an agent without ask (Codex, unless the spike finds a route): today's ASK cases become **deny, with instructions to the model to ask the user**; the user approves by running the command themselves or relaunching with the switch-off. |
+| D12 | Layer 2: **investigate stronger OS-level delete protection** that avoids the withdrawn ACL's failure modes, before settling the public promise. |
+
+### The spike (replaces Plan 1 Phase 1)
+1. Codex upgraded to latest stable, the version recorded, and the scratch project trusted by the user in the TUI.
+2. **Failure semantics:** a PreToolUse hook that exits 1, times out, prints malformed JSON, prints
+   `ask`, or names a missing command. For each: proceeds or blocked? Control: `deny` and exit 2 must
+   block.
+3. **Routes to "ask":** `PermissionRequest` hook, `.rules` `prompt` decision, sandbox escalation for a
+   write outside the workspace.
+4. **Real payloads** (Bash, apply_patch add/update/delete/multi-file, SessionStart), scrubbed into fixtures.
+5. **Windows execution:** `command` vs `commandWindows`, and whether bash-based hooks run.
+6. **Output compatibility:** does Codex accept the EXACT JSON the current bash guards print (jq
+   pretty-printed and python-compact forms)? This settles D10.
+7. **Delete protection (D12), scratch only and never on a real path:** candidate mechanisms, each
+   with a removal check that must pass before the next one is tried. A narrow deny of `DELETE` /
+   `DELETE_CHILD` only, with no `W` and no `WDAC`, applied to a user-owned scratch copy and to an
+   Administrators-owned copy made elevated by the user if they choose. Stakes per path also go in
+   the record: `reference\` can be re-unpacked and the game install can be restored by Steam
+   verify, while dev mods and the profile are not recoverable that way (git covers them).
