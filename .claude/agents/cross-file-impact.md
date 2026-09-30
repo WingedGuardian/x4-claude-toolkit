@@ -14,7 +14,7 @@ Use:
 
 Return: an ordered checklist of every file to create/edit, the id references that must tie them together, and explicit flags for easy-to-miss spots (t-file strings, production modules, index registration, faction/licence, variant siblings, loadout connections).
 
-This is STRUCTURAL ("what files must change"). Gameplay/balance ripple is OUT of scope — that's the gameplay-impact advisor.
+This is STRUCTURAL ("what files must change"). Gameplay/balance ripple is out of scope — that belongs to the `x4-balance` and `x4-mod-interaction` skills.
 
 Run the validator with:
 `cd "$CLAUDE_PROJECT_DIR/tools/x4validate" && uv run --python 3.13 x4validate <mod-dir>`

@@ -27,4 +27,4 @@ Steps:
    macro interior and mesh/asset files are ALWAYS manual — say so explicitly rather
    than letting a clean completeness result imply the work is done.
 
-Honor CLAUDE.md: confirm before writing `content.xml`; review the full change list first.
+Edits to `content.xml` are advisory, not confirmed: check the diff yourself (a wrong `id` makes every dependant report MISSING; `save="1"` bakes the mod into saves). Review the full change list first.
