@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **The file guard allowed `CLAUDE.md` in the game root but denied `AGENTS.md`**, the same file
+  for another agent (Codex). `protect-files.sh` now treats `AGENTS.md` like `CLAUDE.md`, matched on
+  the exact file name; a twin test keeps `notagents.md` denied.
+- The `cross-file-impact` subagent pointed at a "gameplay-impact advisor" that does not exist; it
+  now names the `x4-balance` and `x4-mod-interaction` skills. Both subagents run on `sonnet`.
+- `x4-scaffold` treats `content.xml` edits as advisory, matching `CLAUDE.md`.
+
 ## v3.3.1 — 2026-09-29
 
 A CI-and-tests release: **no tool changes behaviour.** v3.3.0's own CI went red on three

@@ -100,6 +100,11 @@ run_layout(){ # run_layout <name> <toolkit> <game>
   decide allow protect-files.sh "$(fj "$SBX_TMP/mods/other/wares.xml")"         "mod source in \$X4_MODS"
   decide allow protect-files.sh "$(fj "$TK/.claude/hooks/x.sh")"            "toolkit .claude/"
   decide allow protect-files.sh "$(fj "$TK/CLAUDE.md")"                     "CLAUDE.md"
+  # AGENTS.md is Codex's CLAUDE.md, and sits beside it in the game root. It was denied as
+  # a game-install file (2026-09-30) while CLAUDE.md was allowed. The twin keeps the
+  # exception to the exact NAME: a looser `*agents.md` pattern would let this one through.
+  decide allow protect-files.sh "$(fj "$GAME/AGENTS.md")"                   "AGENTS.md in the game root"
+  decide deny  protect-files.sh "$(fj "$GAME/notagents.md")"                "a NAME merely ending in agents.md is still a game file"
   decide deny  protect-files.sh "$(fj "$TK/reference/libraries/wares.xml")" "reference/ is read-only"
   # A BACKSLASH path, which the harness could not carry until 2026-08-30: fj
   # interpolated raw, so a Windows path was invalid JSON (\U is not a valid
@@ -457,7 +462,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=173
+EXPECT=177
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written

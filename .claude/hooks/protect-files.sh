@@ -168,7 +168,8 @@ fi
 # BLOCK was reached. A whitelist decided on text the filesystem does not resolve that
 # way is a whitelist for a different file.
 _NP="$(x4_norm "$FILE_PATH")"
-case "$_NP" in */claude.md|*/knowledgebase.md) exit 0;; esac
+# AGENTS.md is Codex's instruction file, the CLAUDE.md of another agent (2026-09-30).
+case "$_NP" in */claude.md|*/agents.md|*/knowledgebase.md) exit 0;; esac
 # dev/ and dist/ are the documented mod workspace; they MUST be whitelisted before the
 # game-install block below, because in the "in-game" install method X4_TOOLKIT *is* the game
 # folder — without this, editing your own mod source is hard-denied in the default layout.
