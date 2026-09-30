@@ -362,8 +362,6 @@ cd $CLAUDE_PROJECT_DIR/tools/x4validate && uv run x4validate <dev\mod_folder>
 - **Validate the DEPLOYED copy whenever load order could matter.** Tier B places a mod that is
   not installed by the engine rule, keyed on its folder NAME and its own manifest's
   dependencies — so a dev folder named differently from its deployed copy lands elsewhere.
-  (Until 2026-09-25 it assumed LAST, the optimistic tree: a dev-only twin then reported 3
-  false alarms its deployed copy did not.)
 
 **A clean x4validate is necessary, not sufficient.** Static validation cannot see runtime
 wiring — cue-trigger semantics and cross-file order signatures are not expressible in a schema.

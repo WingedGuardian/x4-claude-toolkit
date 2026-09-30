@@ -25,8 +25,8 @@ from the output.
    refusal there is expected and is not a deployment problem.
 2. **The game-side helper extension must be deployed** to the game-root `extensions\`, with
    the named-pipe support mod it depends on. Do not assume: `probe` answers it.
-   ⚠ **Read the refusal before acting on it.** Since 2026-09-20 a "nothing connected"
-   refusal MEASURES four things separately — process, deployment (`mods("active")`), load
+   ⚠ **Read the refusal before acting on it.** A "nothing connected" refusal MEASURES
+   four things separately — process, deployment (`mods("active")`), load
    marker in a *live* `debug.txt`, and `IsIconic` — and says which it could not determine.
    It names the one cause it has evidence for instead of listing them all.
 3. **Run `probe` first, every session.** `build=` says whether the game is running the file
@@ -76,7 +76,7 @@ Be accurate about the risk or the warning gets ignored. Exactly two verbs write 
 | **A write whose reply was lost may still have landed** | the command is sent before the reply is read and is never resent. Run `pausestate` before anything else, never a second `pause` |
 | **`query globals` sees only the lua global table** | vanilla's ui lua declares thousands of C functions in `ffi.cdef` that never appear there, so a `globals` negative covers a fraction of the engine surface. `ffi-census` covers the C side but is DISABLED by default (see below) |
 | **`ffi-census` and `query ffisyms` are DISABLED by default (crash containment, F124)** | set `X4_LIVE_ALLOW_FFI=1` to enable. A live session tore the pipe down with an over-long request and a game crash followed (the dump faulted in X4's own UI event dispatch, not this FFI path, so the gate is precaution). `undeclared` means no lua loaded this session declared the name; `exported`/`notexported` answer about the game PROCESS (on Windows LuaJIT also searches the libraries the executable loaded) |
-| **A request can be too long, not just a reply** | an over-long request TEARS THE PIPE DOWN on the game's read; the teardown floor is MEASURED at (1997, 3998] bytes, and `ask()` now caps every request at 1900 bytes (`MAX_REQUEST_BYTES`) before writing, so no verb can breach it |
+| **A request can be too long, not just a reply** | an over-long request TEARS THE PIPE DOWN on the game's read; the teardown floor is MEASURED at (1997, 3998] bytes; `ask()` caps every request at 1900 bytes (`MAX_REQUEST_BYTES`) before writing, so no verb can breach it |
 | **`macro` answers `<table>` for a table-valued field by default** | pass `--contents` to render it two levels deep. Harvests store the default reply, so keep a fixture's mode in its header (`groundtruth` writes it) |
 
 ## Read the header, not the rows
