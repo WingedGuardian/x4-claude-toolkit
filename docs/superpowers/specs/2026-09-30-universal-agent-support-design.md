@@ -309,3 +309,23 @@ Codex marks the hook run as failed, reports the error, and continues the tool ca
    Administrators-owned copy made elevated by the user if they choose. Stakes per path also go in
    the record: `reference\` can be re-unpacked and the game install can be restored by Steam
    verify, while dev mods and the profile are not recoverable that way (git covers them).
+
+## 14. Addendum 2026-09-30 (spike results): decisions
+
+Evidence: `docs/superpowers/measurements/2026-09-30-codex-spike.md` (Codex 0.159.2).
+
+| # | Decision (user, 2026-09-30) |
+|---|---|
+| D13 | **D2 is replaced** for Codex by THREE LAYERS PLUS DISCLOSURE. Codex support ships only when: (1) our guard code never fails, so any internal error emits an explicit `deny`; (2) `.rules` `forbidden` backs up the worst prefix-matchable cases; (3) `reference` carries the OS deny-delete (D14); (4) `x4doctor` detects unreviewed or changed hooks from outside, by reading `[hooks.state]` in `~/.codex/config.toml`. The README states plainly that Codex itself lets a call run when a hook cannot run. Claude Code keeps D2 as written. |
+| D14 | **D12 settled:** the inherited `(OI)(CI)(DE,DC)` deny-delete applies to **`reference` only**. The re-unpack path lifts it first. The game install stays Steam-managed (INFERRED: a deny would break Steam updates). Git-tracked trees keep git plus `x4canary`. |
+
+Recommended by the spike, to be confirmed when the spec is revised:
+- **D10: wrap, don't rewrite.** The existing `protect-bash.sh` blocked a live overwrite once the adapter
+  routed Codex's shell calls as PowerShell. The adapter also splits `apply_patch` into paths for
+  `protect-files.sh`.
+- **D11:** Codex's "ask" comes from `.rules` `prompt` where the case is prefix-expressible. Everything
+  else falls back to deny with instructions.
+
+Design rule from R4/R5: **hook DEFINITIONS must stay stable across releases**, with behaviour living in
+the scripts they call. Any definition change silently disables a Codex user's guards until they
+re-review it.
