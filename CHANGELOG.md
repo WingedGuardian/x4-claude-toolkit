@@ -8,6 +8,13 @@
 - The `cross-file-impact` subagent pointed at a "gameplay-impact advisor" that does not exist; it
   now names the `x4-balance` and `x4-mod-interaction` skills. Both subagents run on `sonnet`.
 - `x4-scaffold` treats `content.xml` edits as advisory, matching `CLAUDE.md`.
+- **Agent-facing files are now generated from a neutral source tree, `agent/`.** That covers
+  `CLAUDE.md`, `.claude/agents/`, `.claude/skills/` and `.claude/settings.json`. Edit `agent/`,
+  then run `tools/x4validate/scripts/gen-agent-trees.py`. Each generated file differs from before
+  only by a `GENERATED` banner line, and a test fails if one drifts from its source. The
+  generator never deletes: a file it did not produce is reported, and the run refuses.
+- `.gitignore` no longer swallows a skill's `reference/` folder under `agent/skills/`. The game-data
+  rule matched it there too, as it once did under `.claude/skills/`.
 
 ## v3.3.1 — 2026-09-29
 
