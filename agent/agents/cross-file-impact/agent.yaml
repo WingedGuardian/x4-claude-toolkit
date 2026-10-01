@@ -1,0 +1,6 @@
+name: cross-file-impact
+description: "Use BEFORE implementing a multi-file X4 change. Traces ALL files that must change for an intended change (the cross-file dependency fan-out) so nothing is forgotten. The structural complement to x4validate. Use proactively when adding/editing content that spans files (a ware, ship, station, faction, mechanic)."
+tier: balanced
+read_only: true
+claude:
+  tools: [Glob, Grep, Read, Bash]

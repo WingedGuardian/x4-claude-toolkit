@@ -1,7 +1,5 @@
 # CLAUDE.md — X4 Foundations Modding (Claude Code Toolkit)
 
-<!-- GENERATED from agent/ -->
-
 Guidance for Claude Code when working in an X4: Foundations modding environment.
 This file is loaded automatically every session.
 
