@@ -1,82 +1,102 @@
-# Universal agent support — design
+# Universal agent support — design (v2)
 
-**Date:** 2026-09-30 · **Status:** DRAFT, awaiting user review · **Target release:** v4.0.0
+**Date:** 2026-09-30 · **Status:** v2 DRAFT, awaiting user review · **Target release:** v4.0.0
+**Evidence:** `docs/superpowers/measurements/2026-09-30-codex-spike.md` (Codex CLI 0.159.2, Windows 11).
+v1 and its two addenda are summarised in §13; v2 supersedes them.
 
 ## 1. Goal
 
-Make the toolkit as functional under OpenAI Codex CLI as under Claude Code, **in the public
-release**, and as portable as possible to agents we do not know in advance — including by
-letting an unsupported agent adapt the toolkit to itself.
+Make the toolkit work under OpenAI Codex CLI as well as Codex itself allows, **in the public release**.
+Make it portable to agents we do not know in advance, including by letting an unsupported agent adapt
+the toolkit to itself. "As well as Codex allows" is deliberate: the spike measured that Codex hooks
+fail open (§2), so parity is defined per agent (D2, D13).
 
-### Decisions already made (user, 2026-09-30)
+### Decisions (user, 2026-09-30)
 
 | # | Decision |
 |---|---|
-| D1 | Scope is the **public release** (installers, README, CI, Nexus), not only the author's machine. |
-| D2 | **Blocking guards need strict, tested parity** on every named agent; if parity cannot be proven, that agent's support does not ship. **Advisory** features may be weaker, with every gap documented in the README. |
-| D3 | The toolkit is **renamed in the same release** to **"X4 AI Assistant Toolkit"**, repo `x4-ai-assistant-toolkit`. "Assistant" avoids reading as a toolkit for X4's own `aiscripts`/ship AI; the name drops "modding" because the toolkit serves players (modlist triage, debug triage, saves, live queries, compatibility) as much as modders. Tagline: "for players and modders — with Claude Code, Codex, or any coding agent". |
-| D4 | Architecture **A: one neutral source, generated per-agent trees** (not Claude-as-source, not hand-kept twins). |
-| D5 | **Layered portability model** (§3). Named agents get all layers with tested parity; unknown agents get Layers 0–2 and a documented gap list. |
-| D6 | **OpenCode:** the adapter interface is designed for it now; it ships once a live test passes (this release if in time, else the next). |
-| D7 | **Self-adaptation:** ship `ADAPTING.md`, `x4guard conformance`, and one universal setup prompt, so a future agent can port the toolkit to itself. |
-| D8 | **Escape hatches** (§5.4): a failing guard ASKS (never silently passes); only the user can switch guards off; every hatch is visible. |
+| D1 | Scope is the **public release**: installers, README, CI, Nexus. |
+| D2 | **Claude Code:** blocking guards keep strict, tested parity, exactly as today. |
+| D13 | **Codex:** D2 cannot hold, because Codex runs the command whenever a hook cannot run. Codex support ships with **three enforcement layers plus disclosure**: (1) our hook code never fails silently, and any internal error emits an explicit `deny`; (2) generated `.rules` block the prefix-expressible worst cases, fail-closed and independent of hooks; (3) `reference\` carries the OS deny-delete (D14); and `x4doctor` detects unreviewed or changed hooks from outside. The README states plainly what Codex itself lets through. |
+| D3 | Renamed in the same release to **"X4 AI Assistant Toolkit"**, repo `x4-ai-assistant-toolkit`. Tagline: "for players and modders — with Claude Code, Codex, or any coding agent". |
+| D4 | **One neutral source, generated per-agent trees.** |
+| D5 | **Layered portability model** (§3). |
+| D6 | **OpenCode:** the adapter interface allows for it; it ships after its own live measurement (M8). |
+| D7 | **Self-adaptation:** `ADAPTING.md`, `x4guard conformance`, one universal setup prompt. |
+| D8 | **Escape hatches:** only the user can switch guards off, and every hatch is visible. A failing guard ASKS on agents that can ask (Claude) and DENIES on agents that cannot (Codex). |
+| D10 | **Wrap, don't rewrite.** The existing, hardened guards stay the engine. Per-agent adapters only translate. |
+| D11 | **Codex "ask":** a generated `.rules` `prompt` where the case is prefix-expressible. Everything else that asks under Claude becomes **deny with instructions** on Codex. |
+| D14 | **OS deny-delete on `reference\` only.** Not on the game install, which is Steam-managed, and not on git-tracked trees. |
 
 ### Non-goals
 
-- An MCP server (previously deferred on measurements; it cannot stop an agent bypassing it through its
-  own shell, so it is not a safety layer). Revisit separately.
-- Rewriting the ~500 `CLAUDE.md #NN` rule citations in code comments — the generated `CLAUDE.md` keeps the
-  numbered rules, so they still resolve.
-- The author's own game-root `CLAUDE.md` (a personal workspace file, not the shipped one). What to do with
-  it is a separate decision; it also settles prompt-audit findings 1–5 and 13 for that workspace.
+- An MCP server. It cannot stop an agent bypassing it through its own shell, so it is not a safety layer.
+- Porting the guards to a new engine (D10).
+- Rewriting the ~500 `CLAUDE.md #NN` citations in code comments; the generated `CLAUDE.md` keeps the
+  numbered rules.
+- The author's personal game-root `CLAUDE.md`.
 
-## 2. Evidence this design rests on
+## 2. Evidence
 
-Tier labels per the project's evidence rules. Everything marked READ-DOCS came from official docs as
-summarised by a research subagent on 2026-09-30 — **strong leads, not measurements**. §9 lists the live
-measurements that must confirm them before the dependent phase starts.
+**MEASURED** = on this machine, with controls; see the measurements doc.
 
-| Fact | Tier | Source |
-|---|---|---|
-| Codex has `PreToolUse`/`PostToolUse`/`SessionStart`/`UserPromptSubmit` hooks, stable since v0.124; stdin carries `tool_name`/`tool_input`; deny via `permissionDecision:"deny"` or exit 2; context via `additionalContext` | READ-DOCS | learn.chatgpt.com/docs/hooks |
-| Codex edits arrive as `apply_patch` (paths inside the patch text); no Grep/Glob tools | READ-DOCS | same |
-| Codex project hooks, rules and config load **only in a trusted project** | READ-DOCS | learn.chatgpt.com/docs/config-file/config-basic |
-| Codex `AGENTS.md` cap `project_doc_max_bytes` = 32 KiB default; behaviour past the cap unknown | READ-DOCS / UNMEASURED | agents-md, config-reference |
-| Codex skills: `SKILL.md` standard, discovered in `.agents/skills/` (not `.claude/skills/`); `allowed-tools` not honoured | READ-DOCS | build-skills |
-| Codex subagents: TOML in `.codex/agents/`, `model` field, no per-agent tool allowlist | READ-DOCS | subagents |
-| Codex `.rules` (`prefix_rule` allow/prompt/forbidden) in `.codex/rules/` | READ-DOCS | rules |
-| OpenCode reads `AGENTS.md` (CLAUDE.md fallback), skills in `.agents/skills` **and** `.claude/skills`; native `permission` config with allow/ask/deny by path glob; plugins (`tool.execute.before`, throw to block) | READ-DOCS | opencode.ai/docs |
-| OpenCode risks: plugin hooks on subagent calls unconfirmed; `tool.execute.after` had a never-fired report; reason visibility to the model unconfirmed; WSL recommended on Windows | READ-DOCS (issues, titles only) | anomalyco/opencode issues |
-| Toolkit CLIs are agent-neutral; Claude coupling is comments, messages, and the `.claude/x4-paths.env` location | READ (repo inventory) | tools/x4validate |
-| Guard logic: `hook_facts.py` (4,087 lines) + `ps_translate.ps1` are generic; verdict policy and protocol I/O live in `protect-bash.sh`, `protect-files.sh`, `search-scope.sh`, `backup-before-edit.sh` | READ | .claude/hooks |
-| Today a guard that cannot analyse (no input, no Python, unparseable PowerShell, unresolvable target) returns **ask**, not deny | READ | protect-bash.sh:43,155,198,225,340 |
-| Shipped `CLAUDE.md` = **40,887 bytes (39.9 KiB)**; the maintainer-only sections total ~11.9 KB | MEASURED 2026-09-30 | §6 |
+| Fact | Tier |
+|---|---|
+| Codex PreToolUse: only a JSON `permissionDecision:"deny"` blocks. `exit 2` (contradicting the docs), `exit 1`, malformed JSON, `ask`, a timeout and a missing hook script all mark the hook `Failed`, and **the command runs**. | MEASURED (0.154 and 0.159.2) |
+| Codex hooks run only after the user reviews them. Approval is stored per hook in `~/.codex/config.toml` as `[hooks.state.'<abs hooks.json>:<event>:<i>:<j>'] trusted_hash`. The hash covers the hook **definition**, not the script it calls. Unreviewed or changed definitions are **silently inert**, with no warning. | MEASURED |
+| Codex `.rules`: `forbidden` blocks even with unreviewed hooks. `prompt` asks the user interactively and is rejected non-interactively (approval `never`). Rules match the command inside Codex's `pwsh -Command` wrapper. Prefix-only. | MEASURED |
+| Codex on Windows sends shell calls as `tool_name:"Bash"` but runs them in PowerShell 7. The payload does not name the shell. | MEASURED |
+| Codex file edits: `tool_name:"apply_patch"`, the patch text in `tool_input.command` (`*** Add/Update/Delete File:` lines). | MEASURED |
+| Codex: PreToolUse `additionalContext` and SessionStart stdout reach the model. Bash-invoked hooks run under Git Bash. | MEASURED |
+| The existing `protect-bash.sh`, unmodified as a Codex hook, **allowed** a PowerShell overwrite of a decoy `reference\` file. Routed as `tool_name:"PowerShell"`, it **blocked** it. | MEASURED (live, decoy) |
+| A launch-time `X4_GUARD=off` is what hooks see, under both Codex and Claude Code, even after the agent sets it to `on` in-session. | MEASURED |
+| Codex silently truncates `AGENTS.md` at 32 KiB. `project_doc_max_bytes` in a project `.codex/config.toml` raises the cap. | MEASURED |
+| Codex reads skills from `.agents/skills/` and ignores unknown frontmatter keys. | MEASURED (Skyrim session, 0.154) |
+| Read-only attribute: blocks 11 of 14 write primitives on Windows, but not `rm -f`, `Remove-Item -Force` or `Copy-Item -Force`. A deny ACL `(W,D,WDAC,WO)` was withdrawn earlier because it blocked reads and could not be removed. | MEASURED earlier (`scripts/x4lock.py`) |
+| An inherited `icacls <root> /deny <user>:(OI)(CI)(DE,DC)` blocked **8 of 8** delete primitives; reads, in-place writes and new files still worked; it carries no Synchronize right and is removable unelevated. DE on the file alone does not hold. | MEASURED (scratch tree, user-owned) |
+| The game root, `01.cat`, `reference\` and `dev\` are owned by the user, not Administrators. | MEASURED (`Get-Acl`) |
+| Codex's built-in policy rejects `Remove-Item -Force` under approval `never` ("blocked by policy"). | MEASURED (incidental; not relied on) |
+| OpenCode: reads `AGENTS.md`; skills in `.agents/skills`; `permission` config; plugins that can block. | READ-DOCS only (M8) |
+| Shipped `CLAUDE.md` is 40,887 bytes; the maintainer-only sections total about 11.9 KB. | MEASURED |
 
 ## 3. The layered portability model
 
-Each guarantee lives at the lowest layer that can hold it.
-
 | Layer | Reaches | What lives there |
 |---|---|---|
-| **0 — CLIs** | any agent that runs shell commands | the 11 existing CLIs, plus **`x4guard`** (the guard engine as a command) and **`x4doctor`** (which layers are live) |
-| **1 — Plain-text knowledge** | any agent that reads files | generated `AGENTS.md` / `CLAUDE.md`, skills (`SKILL.md` open standard) in `.agents/skills/` and `.claude/skills/`, `ADAPTING.md` |
-| **2 — Enforcement below the agent** | every agent, known or not | OS-level protection of `reference\`, `.cat`/`.dat`, the game install (read-only attribute or deny-delete ACL — chosen by measurement, §9); `deploy.py` as the only deploy path; git + `x4canary` as recovery |
-| **3 — In-loop hooks** | named agents only | per-agent adapters around `x4guard`: pre-tool block/ask, post-edit validator feedback, session-start checks |
+| **0 — CLIs** | any agent that can run a shell | the 11 CLIs, plus `x4guard check` (one front door to the guards) and `x4doctor` (which layers are live) |
+| **1 — Plain-text knowledge** | any agent that reads files | generated `AGENTS.md` / `CLAUDE.md`, skills in `.agents/skills/` and `.claude/skills/`, `ADAPTING.md` |
+| **2 — Below the agent** | every agent | `reference\`: read-only attribute **plus** inherited deny-delete (D14). The irreplaceable files: x4lock's read-only attribute (blocks accidental overwrites, 11 of 14). `deploy.py` as the only deploy path; git and `x4canary` for recovery. |
+| **3a — Agent-native policy** | agents that have one | Codex `.rules` (`forbidden` / `prompt`), generated. Fail-closed; does not depend on hooks. |
+| **3b — In-loop hooks** | named agents | the existing guards behind per-agent adapters |
 
-What an **unknown** agent lacks (documented in the README): ask-before-editing profile files, blocking
-destructive commands on paths the OS does not protect, and automatic post-edit validator feedback.
+**What each class of agent gets** (this table goes in the README):
+
+| | Claude Code | Codex | Unknown agent |
+|---|---|---|---|
+| Deletes in `reference\` | blocked (hook + OS) | blocked (OS; and hook when live) | blocked (OS) |
+| Overwrites in `reference\` | blocked (hook + read-only) | blocked when the hook is live; read-only stops accidental ones | read-only stops accidental ones |
+| Destructive shell commands elsewhere | blocked or asked (hook) | blocked when the hook is live; the worst prefix cases by rules regardless | not blocked |
+| Ask before editing profile files | yes | **deny with instructions** (path-based; rules cannot express it) | no |
+| A guard that crashes | asks | **denies** (our wrapper), unless the interpreter cannot start: then **Codex runs the command** | — |
+| Hooks not reviewed or changed | n/a | **guards off, silently**: `x4doctor` and the session instructions flag it | — |
+| Post-edit validator feedback | yes | yes (when the hook is live) | no |
 
 ## 4. Source layout and generation
 
 ```
 agent/
-  instructions/core.md        both agents; hard cap (§6)
+  instructions/core.md        both agents; ≤ 32 KiB budget (§6)
   instructions/claude.md      Claude addendum
   instructions/codex.md       Codex addendum
   skills/<name>/SKILL.md      the skills (moved from .claude/skills; format unchanged)
   agents/<name>.yaml          name, description, instructions, tier: fast|balanced|deep, read_only
-  guards/                     x4guard engine + adapters/<agent>/
-scripts/gen-agent-trees.py    writes every per-agent file
+  guards/                     the EXISTING hook scripts, moved as-is, plus:
+    entry.sh                  the one stable hook entry point per agent+event (§5.4)
+    adapters/claude.py        identity translation (payload already in the guard's shape)
+    adapters/codex.py         shell routing + apply_patch split + verdict rendering
+    x4guard                   Layer 0 front door (§5.6)
+  rules/codex.rules.tmpl      the prefix rules (§5.5)
+tools/x4validate/scripts/gen-agent-trees.py   writes every per-agent file
 ```
 
 | | Claude Code | Codex | Generic |
@@ -84,248 +104,249 @@ scripts/gen-agent-trees.py    writes every per-agent file
 | instructions | `CLAUDE.md` = core + claude addendum | `AGENTS.md` = core + codex addendum | `AGENTS.md` |
 | skills | `.claude/skills/` | `.agents/skills/` | `.agents/skills/` |
 | subagents | `.claude/agents/*.md` (tier → haiku/sonnet/opus) | `.codex/agents/*.toml` (tier → one editable model table) | — |
-| guards | `.claude/settings.json` | `.codex/hooks.json` + `.codex/rules/*.rules` | Layer 2 only |
+| guards | `.claude/settings.json` → `.claude/hooks/` | `.codex/hooks.json` + `.codex/rules/x4.rules` → the same guard scripts | Layer 2 only |
 
-- **Generated files are committed**, each with a `GENERATED — edit agent/...` header. A CI gate regenerates
-  and fails on any difference, so a hand edit cannot survive.
-- **Skills use `$X4_TOOLKIT`** everywhere; the `$CLAUDE_PROJECT_DIR` → `$X4_TOOLKIT` `sed` rewrite in both
-  installers and the deploy script is removed.
-- **`deploy-claude-dir.py` becomes one deploy script for all agent trees**, keeping refuse-on-drift and
-  never-delete.
-- OpenCode (when it ships) is a third generator target: `opencode.json` permissions + a `.opencode/plugins/`
-  shim; it reads the generated `AGENTS.md` and skills as-is.
+- **Generated files are committed**, each with a `GENERATED` banner. A CI gate regenerates them and
+  fails on any difference.
+- **Skills use `$X4_TOOLKIT`**. The installers' `$CLAUDE_PROJECT_DIR` rewrite is removed when the
+  installers change (phase 7). Until then the Claude rendering keeps today's bytes.
+- **One deploy script for every agent tree**, keeping refuse-on-drift and never-delete.
 
-## 5. Guard engine and adapter contract
+## 5. Guards: the existing engine, thin adapters
 
-### 5.1 One engine
+### 5.1 The engine is unchanged
 
-All verdict policy and side effects move into `x4guard` (Python): the rules in the four bash hooks, the
-pre-edit backup, post-edit validation, session-start checks (reference version, `x4canary`). Adapters only
-translate.
+The engine is `protect-bash.sh` + `hook_facts.py` + `ps_translate.ps1`, `protect-files.sh`,
+`backup-before-edit.sh`, `search-scope.sh`, `x4validate-on-edit.sh` and the two session scripts. All
+of them, with their tests, mutants, fuzzer and the 23,490-command replay gate, keep their behaviour.
+Their input is the **Claude-shaped payload** they already read
+(`{tool_name, tool_input:{command|file_path|path, timeout, run_in_background}}`). That shape is the
+internal contract every adapter translates to.
 
-### 5.2 Contract (versioned; JSON on stdin, JSON on stdout)
+### 5.2 Adapter duties, and nothing else
 
-```
-request: {v:1, agent, event: pre_tool|post_tool|session_start,
-          kind: shell|write|read|search, shell: bash|powershell|null,
-          command, paths[], cwd}
-verdict: {v:1, decision: allow|ask|deny, reason, context}
-```
+- **Translate the native payload into the guard's shape:**
+  - **Claude:** identity.
+  - **Codex shell call:** `tool_name` becomes `PowerShell` on Windows (MEASURED). On Linux/macOS it
+    stays `Bash` (INFERRED; measured before Codex ships there, M9).
+  - **Codex `apply_patch`:** split into one `Write`-shaped payload per `*** Add/Update File:` path, and
+    a `Write`-shaped payload for every `*** Delete File:` path too. `protect-files.sh` has no delete
+    mode, and any change to a protected path, deletion included, must get the verdict a write would get.
+    One shared helper parses patch paths for every adapter.
+- **Run the guards it would run under Claude:** shell → `protect-bash.sh`; each file path →
+  `protect-files.sh` + `backup-before-edit.sh`. Aggregate: deny beats ask beats advise.
+- **Render the verdict for the agent:**
+  - **Claude:** unchanged.
+  - **Codex:** deny → the JSON deny; ask → JSON deny whose reason starts "NEEDS YOUR APPROVAL:" and tells
+    the model to ask the user (D11); advise → `additionalContext`. **Never `exit 2`** (MEASURED fail-open).
+- **Fit each agent's context cap.** Claude: 10,000 characters (`X4_HOOK_MAX_CHARS`). Codex: unmeasured,
+  so the 10,000-character bound is kept until measured (M10).
 
-### 5.3 Adapter duties, and nothing else
+### 5.3 Codex fail-closed wrapper
 
-- native payload → request. Path extraction: Claude `tool_input.file_path`; Codex/OpenCode `apply_patch`
-  patch text (`*** Add/Update/Delete File:` lines) via **one shared core helper**, not per-adapter code.
-- verdict → native reply (Claude `permissionDecision`; Codex deny JSON / exit 2; OpenCode throw).
-- declare the agent's context cap; the core orders output directive-first (#38) and fits it
-  (Claude 10,000 chars via `X4_HOOK_MAX_CHARS`; Codex ~2,500 tokens per docs — confirm, §9).
+The Codex hook entry is a bash script whose every failure path prints the JSON deny before exiting 0:
+a trap on ERR and EXIT, a missing or non-zero adapter, empty or unparseable output, and a timeout
+enforced by the wrapper itself **below** the hook timeout Codex is configured with. Residual, disclosed
+in the README: if Codex cannot start `bash` at all, it runs the command.
 
-### 5.4 Failure handling and escape hatches
+### 5.4 Stable hook definitions (from R4/R5)
 
-- **Guard failure** (no input, no Python, malformed engine output, unanalysable command): verdict **ask**
-  with the failure named — today's behaviour, preserved. On an agent that cannot ask, **deny** with the
-  failure named. Never a silent allow.
-- **User switch-off:** launch the agent with `X4_GUARD=off` → guards downgrade to advisories for that
-  session. Launch-time env, not a workspace file, because an agent can create a file but (INFERRED, verify
-  per agent, §9) cannot change the environment its hooks inherit. While active: a GUARDS OFF banner at
-  session start, every overridden call logged, `x4doctor` reports it.
-- **Last resort:** each agent's own hook switch (`/hooks` in Claude Code, `[features] hooks = false` in
-  Codex), documented.
-- **False positive:** the user runs the command themselves (e.g. `!` in Claude); the case joins the corpus
-  so the false-positive gate prevents recurrence.
-- **Rules:** the agent can never unlock anything alone; no hatch is silent.
+Each agent+event has exactly ONE hook definition, pointing at `agent/guards/entry.sh <agent> <event>`
+with a fixed timeout. **Definitions are frozen across releases.** A test pins the generated
+`.codex/hooks.json` byte for byte. Changing it is a deliberate act: a CHANGELOG line headed "Codex users
+must re-review hooks", and `x4doctor` detects the stale approval. Behaviour changes go in scripts,
+which keep their approval.
 
-### 5.5 Order of work inside the guards
+### 5.5 Codex rules (D11, D13 layer 2)
 
-A **Claude-only, zero-behaviour-change refactor comes first** (§8 phase 2), gated by per-item verdict
-equivalence (§7.2). Codex adapter work starts only after it passes.
+Every rule in `protect-bash.sh` (17 deny, 6 ask, 3 advise, plus the non-fact rules) is classified
+**prefix-expressible or not**. The buckets must sum to the total. Prefix-expressible denies become
+`forbidden`, prefix-expressible asks become `prompt`, and the rest stay hook-only. The template lists
+each rule's source. `codex execpolicy check` tests every generated rule in CI, and each rule has a
+must-match and a must-not-match command.
+
+### 5.6 Layer 0 front door
+
+`x4guard check --agent <name> --kind shell|write|delete --shell bash|powershell (--command C | --path P)`
+builds the guard-shaped payload, runs the same guards, and prints a neutral verdict JSON:
+`{"v":1,"decision":"allow|advise|ask|deny","reason":…,"context":…}`. Unknown agents call it, and so do
+`ADAPTING.md` adapters and the conformance suite.
+
+### 5.7 Escape hatches (D8)
+
+- A launch-time `X4_GUARD=off` (MEASURED, effective under both agents) turns the hook verdicts into
+  advisories for that session. While it is active the session-start output carries a GUARDS OFF banner,
+  every overridden call is logged, and `x4doctor` reports it. Codex `.rules` and the OS deny-delete do not
+  read the variable. They are switched off by the user explicitly (approving a `prompt`, or lifting the
+  deny), never by the agent.
+- Each agent's own hook switch is the last resort and is documented.
+- A false positive becomes a corpus case, and the existing false-positive gate stops it recurring.
+
+### 5.8 `x4doctor`
+
+Per agent, it reports **live / not live / unknown**, and never blank:
+- **Claude:** hooks wired in `settings.json`.
+- **Codex:** the project is trusted; a `[hooks.state]` entry exists for every current definition; its
+  `trusted_hash` matches (the hash scheme is reverse-engineered, or compared live, M11); the rules file is
+  present and parses.
+- **Layer 2:** the deny entry is present on `reference\`; x4lock status.
+- **`X4_GUARD`** state.
+
+The Codex addendum tells the model to run `x4doctor` at session start. That is prose, because an
+unreviewed hook cannot report itself.
 
 ## 6. Instruction split
 
-- Measured: shipped `CLAUDE.md` 40,887 bytes; Codex default cap 32,768 bytes; the Codex addendum is
-  estimated at ~1.5 KB, so the core must shed ~9.5 KB.
-- **Core keeps** what a player or modder needs every session: key paths, silent no-op traps, validation,
-  dry-run, safety, confidence, copy-don't-compose, assume-live, Nexus research, prove-it-ran, evidence
-  scope, Three Values + IS/OOS, knowledgebase, workflow, and the routing table (7,070 bytes; stays because
-  it is needed before any skill triggers).
-- **Moves to a new `x4-toolkit-dev` skill** (maintainer guidance, relocated not deleted): Derived Artifact
-  Must Declare WHEN (3,659), Concurrent Sessions (3,693), A Step That Narrows Data (2,465), Bug Funnel
-  (1,227), Tools Trustworthy Before Lock (850) — ~11.9 KB, leaving the core ≈ 29 KB.
-- **Core is agent-neutral:** "the guards", `$X4_TOOLKIT`; agent specifics only in addenda.
-- **Instruction files are never hand-edited.** Paths come from `x4-paths.env`. User content goes in a
-  user-owned **`X4-NOTES.md`**, which the core tells every agent to read if present (no reliance on
-  `@import`, which Codex does not expand). Installers never overwrite it.
-- **Gates:** generated `AGENTS.md` ≤ 32,768 **bytes**; `CLAUDE.md` keeps its existing budget; a
-  neutrality gate fails if the core names a Claude-only tool or variable.
+- Measured: the shipped `CLAUDE.md` is 40,887 bytes against Codex's 32,768-byte default cap. The core
+  sheds about 11.9 KB of maintainer guidance into a new `x4-toolkit-dev` skill (Derived Artifact, Concurrent
+  Sessions, Narrowing Data, Bug Funnel, Trustworthy-before-Lock); text is relocated, never deleted. The
+  core lands at about 29 KB.
+- The core keeps what players and modders need every session, including the routing table.
+- The core is agent-neutral; agent specifics live only in the addenda.
+- Instruction files are generated and never hand-edited. User content goes in a user-owned
+  **`X4-NOTES.md`** that every agent is told to read. Installers never overwrite it.
+- **Gates:** generated `AGENTS.md` ≤ 32,768 **bytes** (MEASURED silent truncation past it). `CLAUDE.md`
+  keeps its budget gate. A neutrality gate fails if the core names a Claude-only tool or variable.
 
 ## 7. Testing and CI
 
-1. **Shared guard corpus**: agent-neutral requests + expected verdicts, seeded from
-   `test-protect-bash.sh`, `test_hook_facts.py`, `test_audit0924_hooks.py`, the fuzzer, and the
-   false-positive gate. Every future false positive or miss becomes a case.
-2. **Refactor equivalence gate (one-time)**: old bash hooks vs `x4guard` + Claude adapter over the corpus
-   and real recorded payloads, diffed **per item**; every row where the old hook was stricter is read by
-   hand (#36). Zero unexplained differences.
-3. **Conformance per adapter** in each agent's native payload shape. **Native fixtures are captured from
-   real sessions** by a logging hook, never hand-written from docs (shapes #14/#16).
-4. **Adapter mutants** (drop paths, invert deny→allow, swallow engine error) must each turn conformance
-   red (#26).
-5. **Live E2E per agent (release gate, run locally, not CI)** via `claude -p` / `codex exec` (later
-   `opencode run`), under Git Bash and PowerShell: a write to a **decoy** protected path and a forbidden
-   command are blocked with the reason visible to the model; a diff-XML edit returns validator context;
-   session-start checks appear; `x4doctor` reports all layers live.
-6. **Layer 2 measured**: `rm -rf` (Git Bash), `Remove-Item -Force`, `del` against a locked decoy; one-off
-   Steam "verify files" measurement. Read-only attribute vs deny-delete ACL chosen from the result.
-7. **CI additions** (existing three platforms): generator drift gate, conformance for all adapters,
-   `AGENTS.md` byte budget, core neutrality, both installers per `--agent`, cold install and
-   upgrade-from-3.3.1.
-8. **`ADAPTING.md` tests itself**: a toy agent with an invented hook format, whose adapter is written only
-   from `ADAPTING.md`, must pass conformance in CI. Before release, a cold docs-only subagent follows the
-   Codex install and the adaptation path (red-team of the install flow).
-9. **Release**: the `release-review` skill over the full range; a clean review is necessary, not sufficient.
+1. **Every existing guard suite stays green and unchanged in meaning:** `test-protect-bash.sh`,
+   `test_hook_facts.py`, `test_audit0924_hooks.py`, `scripts/test-hooks.sh`, the fuzzer, the mutants and
+   the replay gate.
+2. **Adapter conformance:**
+   - Every case in the guard corpus is replayed **through each adapter in that agent's native shape**,
+     and the adapter's verdict must equal the guard's verdict on the Claude-shaped case.
+   - Codex fixtures are the payload shapes captured in the spike, never hand-written from docs.
+   - Required cases: PowerShell-as-Bash, multi-file `apply_patch`, `*** Delete File:`, paths with
+     spaces and drive dialects.
+3. **Adapter mutants, each of which must turn conformance red:**
+   - shell routing dropped;
+   - `apply_patch` paths dropped;
+   - deny rendered as `exit 2`;
+   - ask rendered as `ask`;
+   - a wrapper error swallowed to allow.
+4. **Fail-closed wrapper tests:** a missing adapter, a missing guard script, an adapter that crashes,
+   hangs or prints garbage. Each must yield the JSON deny.
+5. **Rules tests:** `codex execpolicy check` must-match and must-not-match per rule; bucket counts sum to
+   the rule total.
+6. **Hook-definition pin:** the generated `.codex/hooks.json` bytes are pinned (§5.4).
+7. **Layer 2 tests (scratch tree, Windows CI):**
+   - the deny-delete blocks all 8 primitives and leaves read and write working;
+   - it is removable;
+   - the unpack path lifts it and restores it.
+   - Control: the same primitives succeed without the deny.
+8. **Live E2E, a release gate run locally:**
+   - **Claude:** `claude -p`.
+   - **Codex:** `codex exec` against a decoy tree, with the hooks reviewed once (definitions frozen).
+   - **Expected outcomes:**
+     - a shell write into a decoy `reference\` is blocked, and the model sees the reason;
+     - an `apply_patch` into it is blocked;
+     - a delete is blocked by the OS even with the hook unreviewed;
+     - a forbidden-rule command is blocked;
+     - a diff-XML edit returns validator context;
+     - `x4doctor` reports every layer correctly, including "hooks not reviewed" when they are not.
+9. **CI additions:**
+   - the generator drift gate;
+   - conformance, mutants and wrapper tests;
+   - the `AGENTS.md` byte budget;
+   - core neutrality;
+   - both installers per `--agent`;
+   - cold install, and upgrade from 3.3.1.
+10. **`ADAPTING.md` tests itself:** a toy agent whose adapter is written only from `ADAPTING.md` must pass
+    conformance. Before release, a cold docs-only subagent follows the Codex install.
+11. **Release:** the `release-review` skill over the full range. Full E2E functionality test before and
+    after code review.
 
 ## 8. Installers, rename, migration
 
-- **`--agent claude|codex|opencode|generic|auto`** alongside `--method in-game|separate|global`; `auto`
-  installs for every agent found on PATH. `install.sh` and `install.ps1` must agree per agent.
-- **`X4_TOOLKIT` is set at OS user level** (Windows user environment / shell-profile snippet). The Claude
-  `settings.json` env merge stays for existing installs but is no longer the source.
-- **The installer never marks a project trusted** in `~/.codex/config.toml`; it prints the step, and
-  `x4doctor` reports "Codex hooks not loaded (project untrusted)" until done.
-- **Global installs stay hook-free** (skills, agents, env only) for every agent.
-- **`x4-paths.env` moves to the toolkit root**; the old `.claude/` location is still read with a
-  deprecation notice; the config-precedence test gains the case.
-- **Rename** (D3): GitHub repo `x4-claude-toolkit` → `x4-ai-assistant-toolkit` (redirects keep old links);
-  zips `X4.Foundations.AI.Assistant.Toolkit-vX.zip`;
-  Nexus title/description updated on page 2186 (upload remains the user's manual step). Local clone folder
-  need not change.
-- **v4.0.0** (generated instruction files, `X4-NOTES.md`, moved config).
-- **Upgrade from 3.x:** an installed `CLAUDE.md` that matches no shipped version's hash is copied to
-  `X4-NOTES.pre-4.0.md` before regeneration, with instructions to move personal content into
-  `X4-NOTES.md`; never deleted, never guessed. Requires a hash list of every shipped `CLAUDE.md`.
-  `settings.local.json`, backups and the `reference\` lock are untouched.
+- `--agent claude|codex|opencode|generic|auto` alongside `--method`. `install.sh` and `install.ps1`
+  must agree per agent.
+- `X4_TOOLKIT` is set at OS user level.
+- **Codex:** the installer never trusts a project and never approves hooks; it prints the exact steps.
+  `x4doctor` reports until they are done. It writes `project_doc_max_bytes` only if the user opts in.
+- The deny-delete on `reference\` is applied by the existing unpack/lock flow (x4lock), and lifted
+  before any re-unpack.
+- Global installs stay hook-free.
+- `x4-paths.env` moves to the toolkit root; the old location is read with a deprecation notice.
+- Rename (D3): repo, zips (`X4.Foundations.AI.Assistant.Toolkit-vX.zip`), Nexus page 2186 text. The
+  upload stays the user's manual step.
+- **v4.0.0.** An upgrade from 3.x preserves a personalised `CLAUDE.md` as `X4-NOTES.pre-4.0.md`, found
+  by matching against the hashes of every shipped version.
 
-## 9. Measurements before the dependent phase (each can change the design)
+## 9. Open measurements (each blocks the phase named)
 
-| # | Question | Blocks phase | If it fails |
-|---|---|---|---|
-| M1 | Capture real Codex hook payloads (Bash, `apply_patch` add/update/delete, SessionStart) on this machine | 5 | adapter built from captures, not docs |
-| M2 | Can a Codex `PreToolUse` hook return **ask**? | 5 | profile-edit ask via `PermissionRequest` or a `prompt` rule — chosen by test |
-| M3 | Codex hooks under Windows: Git Bash vs PowerShell (`commandWindows`) | 5 | per-shell command lines |
-| M4 | Untrusted project: are hooks silently absent, and can `x4doctor` detect it? | 5 | a SessionStart canary + doctor probe |
-| M5 | Codex behaviour past 32 KiB `AGENTS.md` | 4 | budget gate stays hard regardless |
-| M6 | Do hooks inherit launch env, and can an in-session `export` reach them? (per agent) | 3 | switch-off mechanism redesigned |
-| M7 | Layer 2: do Git Bash `rm`, `Remove-Item -Force`, `del` fail on a locked decoy? Does Steam verify strip locks? | 6 | ACL-based locking |
-| M8 | OpenCode: block a shell call, block a subagent's call, reason visible, `tool.execute.after` fires | OpenCode | OpenCode deferred to next release |
+| # | Question | Blocks |
+|---|---|---|
+| M9 | Codex on Linux/macOS: which shell runs `tool_name:"Bash"` calls? | Codex support on Linux/macOS (Windows ships first if needed) |
+| M10 | Codex context cap for `additionalContext` (it spills to disk past some size) | phase 4 output bounding |
+| M11 | The `trusted_hash` scheme, or a reliable live check for `x4doctor` | phase 5 doctor |
+| M12 | Deny-delete on the REAL `reference\` (user-owned): applies, blocks, lifts, and survives the unpack flow | phase 5 |
+| M13 | Hook latency of the wrapped guards under Codex (the Skyrim session measured a bash+jq guard at 300–670 ms p95) | phase 4 (perf budget) |
+| M8 | OpenCode live: block, subagent block, reason visible, after-hook fires | OpenCode |
+
+M1–M7 are done (§2).
 
 ## 10. Phases
 
-1. **Measurements M1–M7** (M8 when OpenCode starts).
-2. **Neutral source + generator, Claude target only** — generated `.claude/` byte-identical to today's
-   (modulo headers and the `$X4_TOOLKIT` change).
-3. **`x4guard` refactor + Claude adapter**, equivalence gate (§7.2).
-4. **Instruction split** + `x4-toolkit-dev` skill + `X4-NOTES.md`.
-5. **Codex adapter + generated Codex tree**, conformance, mutants, live E2E.
-6. **Layer 2 locks + `x4doctor`.**
-7. **`ADAPTING.md`, toy-agent test, universal setup prompt** (replaces `SETUP_PROMPT.txt`).
-8. **Installers `--agent`, migration, rename, README/CHANGELOG, v4.0.0** via `release-review` + `releasing`.
-9. *(Follow-up)* **OpenCode** once M8 passes.
+1. **Neutral source + generator, Claude only, zero change.**
+2. **Guards move into `agent/guards/` as-is**, plus `entry.sh` and the Claude identity adapter, plus
+   `x4guard check`. Gate: every existing suite and the replay gate unchanged.
+3. **Instruction split**, the `x4-toolkit-dev` skill, `X4-NOTES.md`.
+4. **Codex:**
+   - the adapter, wrapper and rules;
+   - generated `.codex/` + `.agents/skills` + `AGENTS.md`;
+   - conformance, mutants and wrapper tests;
+   - live E2E (needs M10, M13).
+5. **Layer 2** deny-delete on `reference\` with x4lock integration, and `x4doctor` (needs M11, M12).
+6. **`ADAPTING.md`**, the toy-agent test, the universal setup prompt.
+7. **Installers**, migration, rename, README/CHANGELOG, v4.0.0 via `release-review` + `releasing`.
+8. *(Follow-up)* OpenCode after M8. Codex on Linux/macOS after M9.
 
-Each phase lands as small commits on master with its gates green before the next starts.
+Each phase lands as small commits on master, with its gates green and a functionality check before
+the next one starts. **Any finding that materially changes the design stops the work for a
+decision.**
 
-## 11. `ADAPTING.md` contents (D7)
+## 11. `ADAPTING.md` (D7)
 
 Written to the agent: *"you are an agent this toolkit does not support yet."*
-1. Self-assessment checklist → a capability report in a fixed format (instruction file + cap, skills +
-   paths, subagents, pre-tool hook + can it block/ask, post-tool, session start, permission/sandbox config).
-2. The §5.2 contract.
-3. The Claude, Codex (and later OpenCode) adapters as commented worked examples — copy, don't compose.
-4. Where the adapter goes (`agent/adapters/<name>/`) and how to register a generator target.
-5. **Required proof before any claim:** `x4guard conformance --adapter <cmd>` passes; a live canary (a
-   harmless forbidden action on a decoy path) is blocked; `x4doctor` shows the layer live. Until both pass,
-   the status is "partially supported, with these gaps".
-6. Porting rules: never edit the corpus or the engine to pass; adapters only translate; report every gap.
-7. Upstream submission template.
+1. **Self-assessment** in a fixed capability-report format. It now includes: **does your hook system
+   fail open or closed?** (measure it the way the spike did: a deny control, then exit 2, a crash and a
+   timeout).
+2. **The contract:** translate to the guard's Claude-shaped payload, call `x4guard check` or the
+   guards, and render the verdict natively. Never rely on an exit code your agent has not been
+   measured to honour.
+3. **Worked examples:** the Claude and Codex adapters.
+4. **Where the adapter goes**, and how to register a generator target.
+5. **Required proof before any claim:** conformance passes; a live canary on a decoy path is blocked;
+   `x4doctor` shows the layer live. Until then: "partially supported, with these gaps".
+6. **Rules:** never edit the corpus or the guards to pass; adapters only translate; report every gap.
+7. **Upstream submission template.**
 
-The **universal setup prompt** (paste into any agent): if a native adapter exists for you, install it;
-otherwise follow `ADAPTING.md`.
+**Universal setup prompt:** if an adapter exists for you, install it; otherwise follow `ADAPTING.md`.
 
 ## 12. Risks
 
-- **The guard refactor is the riskiest step**: mitigated by doing it alone, Claude-only, behind a per-item
-  equivalence gate.
-- **Codex and OpenCode move fast** (weekly releases): conformance fixtures are captured, so a protocol
-  change turns CI red; the live E2E is re-run each release.
-- **A self-ported adapter can be wrong about its own agent**: it cannot claim protection without
-  conformance + canary, and Layer 2 protects the critical paths regardless.
-- **Windows sandbox bugs in Codex** (issues #23552, #18558, titles only): Layer 2 does not depend on them.
+- **Codex fail-open is permanent until OpenAI changes it.** Mitigated by D13's layers and disclosure,
+  not eliminated.
+- **Silent hook de-approval** on any definition change: definitions are frozen (§5.4), with detection in
+  `x4doctor`.
+- **Codex release cadence:** the captured fixtures and the live E2E are re-run each release, and a
+  protocol change turns conformance red.
+- **Shell routing on non-Windows Codex** is unmeasured (M9).
+- **Latency:** wrapped bash guards may be slow under Codex (M13).
+- **A self-ported adapter can be wrong about its own agent:** it cannot claim protection without proof,
+  and Layer 2 holds regardless.
 
-## 13. Addendum 2026-09-30 (late): two findings, and decisions pending the spike
+## 13. Revision history
 
-**Status change:** the spec is **ON HOLD for revision** until a measurement spike runs. Plan 1 was
-drafted and NOT approved; it will be rewritten from the spike's results.
-
-### Finding A: Layer 2 (§3) was overstated. The repo had already measured it.
-`scripts/x4lock.py` (docstring) measured on Windows 11 with controls: the read-only attribute blocks
-**11 of 14** write primitives (9 of 14 on Linux). **`rm -f`, `Remove-Item -Force` and
-`Copy-Item -Force` are NOT blocked.** A deny ACL (`icacls /deny <user>:(W,D,WDAC,WO)`) was tried and
-**withdrawn**: `W` includes SYNCHRONIZE, so it denied reads, and `WDAC` made it unremovable without an
-administrator under Program Files. §3's "every agent keeps file protection" is therefore wrong as
-written. The measured truth is that unknown agents are protected against **accidental overwrites**,
-the class of all four incidents on record, and **not against deliberate deletes**. Plan 1's M7
-step 3 (try an icacls deny) would have repeated the withdrawn experiment. It is struck.
-
-### Finding B: on Codex an "ask" is silently an allow (READ, primary doc, 2026-09-30).
-learn.chatgpt.com/docs/hooks: *"permissionDecision: 'ask' ... [is] parsed but not supported yet.
-Codex marks the hook run as failed, reports the error, and continues the tool call."*
-- Only `deny` or exit code 2 block.
-- Behaviour on a hook **crash, timeout, malformed JSON, or a command that cannot start is
-  UNDOCUMENTED**. If those also continue, Codex hooks fail OPEN, which contradicts §5.4.
-- `PermissionRequest` hooks can allow or deny *Codex's own* approval prompts; whether any route
-  makes Codex ask the user on a hook's behalf is unmeasured.
-
-### Decisions (user, 2026-09-30)
-| # | Decision |
-|---|---|
-| D9 | **Spike first, then revise** this spec and Plan 1 from its results. No refactor before. |
-| D10 | Guard engine (a Python port per §5, or wrap the existing hardened bash guards behind thin per-agent translation): **decided after the spike**. |
-| D11 | On an agent without ask (Codex, unless the spike finds a route): today's ASK cases become **deny, with instructions to the model to ask the user**; the user approves by running the command themselves or relaunching with the switch-off. |
-| D12 | Layer 2: **investigate stronger OS-level delete protection** that avoids the withdrawn ACL's failure modes, before settling the public promise. |
-
-### The spike (replaces Plan 1 Phase 1)
-1. Codex upgraded to latest stable, the version recorded, and the scratch project trusted by the user in the TUI.
-2. **Failure semantics:** a PreToolUse hook that exits 1, times out, prints malformed JSON, prints
-   `ask`, or names a missing command. For each: proceeds or blocked? Control: `deny` and exit 2 must
-   block.
-3. **Routes to "ask":** `PermissionRequest` hook, `.rules` `prompt` decision, sandbox escalation for a
-   write outside the workspace.
-4. **Real payloads** (Bash, apply_patch add/update/delete/multi-file, SessionStart), scrubbed into fixtures.
-5. **Windows execution:** `command` vs `commandWindows`, and whether bash-based hooks run.
-6. **Output compatibility:** does Codex accept the EXACT JSON the current bash guards print (jq
-   pretty-printed and python-compact forms)? This settles D10.
-7. **Delete protection (D12), scratch only and never on a real path:** candidate mechanisms, each
-   with a removal check that must pass before the next one is tried. A narrow deny of `DELETE` /
-   `DELETE_CHILD` only, with no `W` and no `WDAC`, applied to a user-owned scratch copy and to an
-   Administrators-owned copy made elevated by the user if they choose. Stakes per path also go in
-   the record: `reference\` can be re-unpacked and the game install can be restored by Steam
-   verify, while dev mods and the profile are not recoverable that way (git covers them).
-
-## 14. Addendum 2026-09-30 (spike results): decisions
-
-Evidence: `docs/superpowers/measurements/2026-09-30-codex-spike.md` (Codex 0.159.2).
-
-| # | Decision (user, 2026-09-30) |
-|---|---|
-| D13 | **D2 is replaced** for Codex by THREE LAYERS PLUS DISCLOSURE. Codex support ships only when: (1) our guard code never fails, so any internal error emits an explicit `deny`; (2) `.rules` `forbidden` backs up the worst prefix-matchable cases; (3) `reference` carries the OS deny-delete (D14); (4) `x4doctor` detects unreviewed or changed hooks from outside, by reading `[hooks.state]` in `~/.codex/config.toml`. The README states plainly that Codex itself lets a call run when a hook cannot run. Claude Code keeps D2 as written. |
-| D14 | **D12 settled:** the inherited `(OI)(CI)(DE,DC)` deny-delete applies to **`reference` only**. The re-unpack path lifts it first. The game install stays Steam-managed (INFERRED: a deny would break Steam updates). Git-tracked trees keep git plus `x4canary`. |
-
-Recommended by the spike, to be confirmed when the spec is revised:
-- **D10: wrap, don't rewrite.** The existing `protect-bash.sh` blocked a live overwrite once the adapter
-  routed Codex's shell calls as PowerShell. The adapter also splits `apply_patch` into paths for
-  `protect-files.sh`.
-- **D11:** Codex's "ask" comes from `.rules` `prompt` where the case is prefix-expressible. Everything
-  else falls back to deny with instructions.
-
-Design rule from R4/R5: **hook DEFINITIONS must stay stable across releases**, with behaviour living in
-the scripts they call. Any definition change silently disables a Codex user's guards until they
-re-review it.
+- **v1 (2026-09-30)** proposed a Python rewrite of the guards (`x4guard` engine), Layer 2 as
+  OS-locked game install + archives + `reference\` for every agent, and strict parity for every named
+  agent. All three were withdrawn on evidence:
+  - the repo had already measured that the read-only attribute misses deletes, and had withdrawn a deny
+    ACL (x4lock);
+  - the spike measured Codex fail-open, and that the existing guard works under Codex once the shell
+    is routed (so wrap, D10).
+- **Addendum §13 (late 2026-09-30)** put the spec on hold and decided D9 (spike first) and D10–D12
+  (pending).
+- **Addendum §14** decided D13 and D14 after the spike.
+- **v2** folds all of the above into the body.
