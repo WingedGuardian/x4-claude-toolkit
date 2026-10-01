@@ -90,6 +90,16 @@ def load():
     return m
 
 
+@pytest.fixture(autouse=True)
+def _source_checkout(request):
+    # An installed copy has no agent/ (installers do not ship it): the freshness tests have
+    # nothing to compare there. The tmp-tree tests do not need it, so they opt out by name.
+    if "fresh_copy" in request.fixturenames or request.node.name.startswith("test_missing_source"):
+        return
+    if not (REPO / "agent").is_dir():
+        pytest.skip("not a source checkout (no agent/) -- generated-file freshness NOT checked here")
+
+
 def test_generation_has_a_denominator():
     out = load().generate(REPO)
     assert "CLAUDE.md" in out
@@ -157,6 +167,17 @@ def test_TWIN_a_deleted_file_is_MISSING(fresh_copy):
     assert g.problems(exp, root) == ["MISSING  .claude/agents/mod-research.md"]
 
 
+def test_gitignored_files_are_never_ghosts(fresh_copy):
+    g, exp, root = fresh_copy
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / ".gitignore").write_bytes(b".pytest_cache/\n")
+    cache = root / ".claude/agents/.pytest_cache/x"
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(b"x\n")
+    assert g.problems(exp, root) == []          # ignored by git -> not a ghost
+
+
 def test_crlf_checkout_is_not_stale(fresh_copy):
     g, exp, root = fresh_copy
     p = root / "CLAUDE.md"
@@ -182,6 +203,7 @@ generate() is pure and never returns a partial result.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
@@ -263,15 +285,32 @@ def generate(repo: Path) -> dict[str, str]:
     return dict(sorted(out.items()))
 
 
+def _git_visible(root: Path) -> set[str] | None:
+    """Tracked + untracked-but-not-ignored files, or None when root is not a git work tree.
+    A file .gitignore excludes (.pytest_cache/, __pycache__/) is never a GHOST."""
+    try:
+        r = subprocess.run(["git", "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z"],
+                           capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    return {p for p in r.stdout.decode("utf-8").split("\0") if p}
+
+
 def _owned_files(root: Path) -> set[str]:
+    visible = _git_visible(root)
     found: set[str] = set()
     for prefix in OWNED:
         p = root / prefix
         if prefix.endswith("/"):
             if p.is_dir():
                 for f in p.rglob("*"):
-                    if f.is_file() and not any(part in _IGNORED_PARTS for part in f.parts):
-                        found.add(f.relative_to(root).as_posix())
+                    rel = f.relative_to(root).as_posix()
+                    if not f.is_file() or any(part in _IGNORED_PARTS for part in f.parts):
+                        continue
+                    if visible is None or rel in visible:
+                        found.add(rel)
         elif p.is_file():
             found.add(prefix)
     return found
@@ -309,10 +348,14 @@ def main(argv=None) -> int:
         p.parent.mkdir(parents=True, exist_ok=True)
         data = text.encode("utf-8")            # encode FIRST: a failed encode cannot truncate
         p.write_bytes(data)
-    for line in found:
-        if line.startswith("GHOST"):
-            (REPO / line.split(None, 1)[1]).unlink()
     print(f"wrote {len(expected)} file(s)")
+    ghosts = [line for line in found if line.startswith("GHOST")]
+    if ghosts:                                 # NEVER delete (user decision 2026-10-01): report and refuse
+        for line in ghosts:
+            print(line, file=sys.stderr)
+        print(f"REFUSING to finish: {len(ghosts)} file(s) in generated folders are not generated. "
+              "Move them into agent/ or delete them yourself, then re-run.", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -345,7 +388,7 @@ if __name__ == "__main__":
 - Create: `agent/targets/claude/settings.json` (verbatim copy of `.claude/settings.json`), `agent/targets/claude/README.md` (one line: "Copied verbatim into `.claude/settings.json` by gen-agent-trees.py.")
 - Modify: `PKG/scripts/gen-agent-trees.py`: set `OWNED = ("CLAUDE.md", ".claude/agents/", ".claude/skills/", ".claude/settings.json")`, and add skill and settings rendering
 - Modify: `PKG/scripts/gen-cli-reference.py`: line 54 `SKILL_DIR` → `REPO / "agent" / "skills" / "x4-cli-reference"`; emit `{{TOOLKIT}}` wherever it currently emits `$CLAUDE_PROJECT_DIR`
-- Modify: `PKG/tests/test_gen_agent_trees.py`, `PKG/tests/test_cli_reference.py` (path expectations only)
+- Modify: `PKG/tests/test_gen_agent_trees.py`, `PKG/tests/test_cli_reference.py` (path expectations, plus the same "not a source checkout (no agent/)" skip on its freshness and committability tests, since `SKILL_DIR` now lives under `agent/`, which installers do not ship)
 
 **Interfaces:**
 - Consumes `generate`, `problems`, `OWNED`, `TOKEN`, `BANNER_MD` and `_with_banner_after_frontmatter` from Task 1.
@@ -419,7 +462,7 @@ def test_TWIN_a_hand_edited_skill_is_STALE(fresh_copy):
 ## Task 4: Guards move under the generator, byte-identical
 
 **Files:**
-- Move: `.claude/hooks/*` → `agent/guards/claude-hooks/` (`git mv` every tracked file; `git ls-files .claude/hooks` gives the list, 15 files as of `2f8e913`)
+- Move: `.claude/hooks/*` → `agent/guards/claude-hooks/` (`git mv` every tracked file; `git ls-files .claude/hooks` gives the list, 13 files as of `2f8e913`)
 - Modify: `PKG/scripts/gen-agent-trees.py`: add `.claude/hooks/` to `OWNED`, and add `render_hooks(src) -> dict[str, str]`, which copies every file **verbatim** with no banner and no token replacement. Bytes are decoded as UTF-8 and compared LF-normalised. `.sh` and `.py` are `eol=lf` in `.gitattributes` anyway.
 - Modify: `PKG/tests/test_gen_agent_trees.py`
 
@@ -436,7 +479,7 @@ def test_hooks_are_generated_byte_identical():
     srcs = sorted(f.relative_to(src).as_posix() for f in src.rglob("*")
                   if f.is_file() and "__pycache__" not in f.parts)
     gen = sorted(p[len(".claude/hooks/"):] for p in out if p.startswith(".claude/hooks/"))
-    assert gen == srcs and len(gen) >= 15
+    assert gen == srcs and len(gen) >= 13      # MEASURED: 13 tracked hook files at 2f8e913
     for name in srcs:
         assert out[".claude/hooks/" + name] == (src / name).read_bytes().decode("utf-8").replace("\r\n", "\n")
 
