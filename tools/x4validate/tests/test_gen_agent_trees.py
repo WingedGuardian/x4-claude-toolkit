@@ -63,6 +63,24 @@ def test_agent_frontmatter_matches_the_claude_contract():
     assert head[2].startswith("description: Use BEFORE implementing a multi-file X4 change.")
 
 
+def test_every_skill_and_settings_is_generated():
+    out = load().generate(REPO)
+    skills = sorted(p for p in out if p.startswith(".claude/skills/") and p.endswith("/SKILL.md"))
+    assert len(skills) == 10, skills
+    assert ".claude/settings.json" in out
+    assert sum(p.startswith(".claude/skills/x4-cli-reference/reference/") for p in out) == 11
+
+
+def test_tokens_are_rendered_everywhere():
+    leaks = [rel for rel, text in load().generate(REPO).items() if "{{" in text]
+    assert leaks == []
+
+
+def test_no_double_banner_on_the_cli_reference():
+    text = load().generate(REPO)[".claude/skills/x4-cli-reference/SKILL.md"]
+    assert text.count("<!-- GENERATED") == 1
+
+
 def test_missing_source_refuses_rather_than_skipping(tmp_path):
     g = load()
     with pytest.raises(g.GenerationError):
@@ -96,6 +114,13 @@ def test_TWIN_a_deleted_file_is_MISSING(fresh_copy):
     g, exp, root = fresh_copy
     (root / ".claude/agents/mod-research.md").unlink()
     assert g.problems(exp, root) == ["MISSING  .claude/agents/mod-research.md"]
+
+
+def test_TWIN_a_hand_edited_skill_is_STALE(fresh_copy):
+    g, exp, root = fresh_copy
+    p = root / ".claude/skills/x4-debug/SKILL.md"
+    p.write_bytes(p.read_bytes() + b"\nextra\n")
+    assert g.problems(exp, root) == ["STALE    .claude/skills/x4-debug/SKILL.md"]
 
 
 def test_gitignored_files_are_never_ghosts(fresh_copy):

@@ -48,7 +48,7 @@ from pathlib import Path
 
 PKG = Path(__file__).resolve().parents[1]          # tools/x4validate
 REPO = PKG.parents[1]                              # repository root
-SKILL_DIR = REPO / ".claude" / "skills" / "x4-cli-reference"
+SKILL_DIR = REPO / "agent" / "skills" / "x4-cli-reference"   # the SOURCE; gen-agent-trees.py renders .claude/
 COLUMNS = "100"
 
 sys.path.insert(0, str(PKG))
@@ -178,7 +178,7 @@ def generate(pkg: Path = PKG) -> dict[str, str]:
              "The exact surface of every toolkit CLI, generated from its own argparse help so "
              "it cannot drift from the code. **Which tool answers which question** is "
              "CLAUDE.md's routing table, not this file.", "",
-             "Run a CLI from `$CLAUDE_PROJECT_DIR/tools/x4validate` as `uv run <cli> ...`. The full `--help` of a "
+             "Run a CLI from `{{TOOLKIT}}/tools/x4validate` as `uv run <cli> ...`. The full `--help` of a "
              "CLI and of each of its subcommands is in `reference/<cli>.md` -- read it before "
              "composing a command line.", "",
              f"{len(eps)} CLIs, {sum(1 for r in rows if r.startswith('| | '))} subcommands.", "",

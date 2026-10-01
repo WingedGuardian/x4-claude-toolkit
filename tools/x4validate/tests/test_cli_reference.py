@@ -48,6 +48,8 @@ def test_the_generation_has_a_denominator(expected):
 
 
 def test_the_committed_skill_is_fresh(expected):
+    if not (PKG.parents[1] / "agent").is_dir():
+        pytest.skip("not a source checkout (no agent/) -- generated-skill freshness NOT checked here")
     found = gen.problems(expected)
     assert found == [], (
         "the generated CLI reference is out of date -- run "
@@ -70,13 +72,14 @@ def test_every_generated_file_is_COMMITTABLE(expected):
     if top.returncode != 0 or Path(top.stdout.strip()).resolve() != root.resolve():
         pytest.skip("not this toolkit's own git checkout -- ignore rules NOT CHECKED")
     ignored = []
+    # Both copies must be committable: the source under agent/ and the rendering under .claude/.
     for rel in expected:
-        path = f".claude/skills/x4-cli-reference/{rel}"
-        r = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "--no-index", path])
-        if r.returncode == 0:
-            ignored.append(path)
-        elif r.returncode != 1:
-            pytest.fail(f"git check-ignore could not answer for {path} (rc {r.returncode})")
+        for path in (f"agent/skills/x4-cli-reference/{rel}", f".claude/skills/x4-cli-reference/{rel}"):
+            r = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "--no-index", path])
+            if r.returncode == 0:
+                ignored.append(path)
+            elif r.returncode != 1:
+                pytest.fail(f"git check-ignore could not answer for {path} (rc {r.returncode})")
     assert ignored == [], f".gitignore swallows generated file(s): {ignored}"
 
 
@@ -185,7 +188,6 @@ def test_the_check_mode_exits_0_on_a_fresh_tree(monkeypatch, fresh_copy):
 
 
 def test_the_generator_writes_into_the_repos_skills_dir():
-    """The skill is under the REPO's .claude/skills, not the package's -- that is the
-    directory both installers copy from."""
-    assert gen.SKILL_DIR == PKG.parents[1] / ".claude" / "skills" / "x4-cli-reference"
-    assert (PKG.parents[1] / ".claude" / "skills").is_dir()
+    """The skill's SOURCE is the repo's agent/skills (gen-agent-trees.py then renders it into
+    .claude/skills, the directory both installers copy from), never the package's."""
+    assert gen.SKILL_DIR == PKG.parents[1] / "agent" / "skills" / "x4-cli-reference"
