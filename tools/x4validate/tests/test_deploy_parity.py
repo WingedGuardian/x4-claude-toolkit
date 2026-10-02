@@ -176,3 +176,44 @@ def test_the_real_trees(capsys):
     rc = dp.main()
     out = capsys.readouterr()
     assert rc == 0, out.out + out.err
+
+
+# --- one TargetSpec per agent tree (lane C, Plan 2) ----------------------------------- #
+# x4doctor and the Codex tree reuse this comparer; claude's population must not move.
+
+def test_TARGETS_has_claude_with_todays_population():
+    t = dp.TARGETS["claude"]
+    assert t.root_rel == ".claude"
+    assert t.top_files == ("settings.json", "settings.local.json.example", "x4-paths.env.example")
+    assert t.subtrees == ("hooks", "skills", "agents", "commands")
+    assert t.rewrite_scope == ("skills/", "agents/")
+    assert t.rewrite_from == b"$CLAUDE_PROJECT_DIR" and t.rewrite_to == (b"$X4_TOOLKIT",)
+
+
+def test_population_with_an_explicit_spec_reads_only_that_spec(tmp_path):
+    spec = dp.TargetSpec("toy", ".toy", ("a.json",), ("sub",), ())
+    (tmp_path / "a.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "x.md").write_text("x", encoding="utf-8")
+    (tmp_path / "settings.json").write_text("{}", encoding="utf-8")   # a CLAUDE file: must NOT count
+    assert dp.population(tmp_path, spec) == {"a.json", "sub/x.md"}
+
+
+def test_TWIN_default_population_is_still_claudes(tmp_path):
+    (tmp_path / "settings.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "a.json").write_text("{}", encoding="utf-8")
+    assert dp.population(tmp_path) == {"settings.json"}
+
+
+def test_a_spec_rewrite_accepts_EACH_of_its_renderings_and_nothing_else(tmp_path):
+    """The Codex skills carry a token the installer renders per OS ($env:X4_TOOLKIT from
+    install.ps1, $X4_TOOLKIT from install.sh): either rendering is the same file."""
+    spec = dp.TargetSpec("toy", ".toy", (), ("skills",), ("skills/",),
+                         b"{{TOOLKIT}}", (b"$env:X4_TOOLKIT", b"$X4_TOOLKIT"))
+    src = "cd {{TOOLKIT}}/tools\n"
+    for rendered, ok in (("cd $env:X4_TOOLKIT/tools\n", True), ("cd $X4_TOOLKIT/tools\n", True),
+                         ("cd $HOME/tools\n", False)):
+        r, g = (_tree(tmp_path / k / ".toy", {"skills/a/SKILL.md": c})
+                for k, c in (("r" + str(ok) + rendered[3:6], src), ("g" + str(ok) + rendered[3:6], rendered)))
+        rows = dp.compare_trees(r, g, spec)
+        assert rows[0].at_parity is ok, (rendered, rows)
