@@ -87,7 +87,7 @@ def test_no_tracked_script_reassigns_tmp_temp_or_tmpdir():
         offenders.extend(f"{rel}:{n}" for n in hits)
 
     # A root contributing zero files is a silently narrowed population, exactly
-    # the shape CLAUDE.md's "a step that narrows data must announce it" bans --
+    # the shape the x4-toolkit-dev skill's "a step that narrows data must announce it" bans --
     # a rename or an empty directory must be loud, not quietly pass.
     empty = sorted(r for r, c in per_root.items() if c == 0)
     assert not empty, (
