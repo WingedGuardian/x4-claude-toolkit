@@ -70,6 +70,35 @@
   background call is uncapped.
 - `.gitignore` no longer swallows a skill's `reference/` folder under `agent/skills/`. The game-data
   rule matched it there too, as it once did under `.claude/skills/`.
+- **The installers ship each agent's own files: `--agent claude|codex|generic|all`, default
+  `all`** (framework audit F8). They used to copy `CLAUDE.md` and `.claude/` only, and no
+  `AGENTS.md` at all; this supersedes "the installers do not ship it yet" above.
+  - Each agent's items are named once per installer, and a test requires both installers
+    to hold the same sets.
+  - `agent/` is never installed: an installed toolkit is runtime-only.
+  - `opencode` is refused (spec M8), and so is `--method global` with a non-Claude agent.
+  - Codex's `.codex/hooks.json` is rendered for the destination's absolute folder. The
+    installer never trusts a folder or approves a hook; it prints the `/hooks` review steps.
+  - The `{{TOOLKIT}}` token in `.agents/skills` is rendered per OS: `$env:X4_TOOLKIT` on
+    Windows, where Codex runs PowerShell, and `$X4_TOOLKIT` elsewhere.
+  - `bin/unpack-reference.sh` now finds `_x4-env.sh` in `.codex/hooks/` too, so `--unpack`
+    works in a Codex-only install.
+- **An `AGENTS.md` the toolkit did not write is moved aside, never overwritten.** If it differs
+  from the shipped file, it is kept as `AGENTS.pre-4.0.md`, and the installer names it. No
+  release before 4.0 shipped an `AGENTS.md` (0 of 23 tags), so any existing one is yours.
+  ⚠ Before 4.0 ships, this rule needs the hashes of every shipped `AGENTS.md`. Without them,
+  each upgrade moves the previous release's file aside.
+- **x4lock protects `AGENTS.md`, the Codex tree and `.agents/skills`** when present (framework
+  audit F9). Each agent's files are demanded only where that agent is installed, which is
+  marked by its guard directory. So a Claude-only root never reports `AGENTS.md` missing, and a
+  Codex-only root never reports `CLAUDE.md` missing.
+- **New: `scripts/x4doctor.py`, a read-only check of whether the guards are live here,** per
+  agent target (see README). Measured while building it: with `X4_TOOLKIT` unset, the guards in a
+  game root that has no `x4-paths.env` fall back to `<game>/reference`, and they ALLOWED a
+  write and a delete into the configured reference tree (4 of 4 deny controls, check-only).
+  `x4doctor` reports that state as `roots.config` FAIL.
+- `gates/deploy_parity.py` describes each agent tree with a `TargetSpec`. Claude's population is
+  unchanged.
 
 ## v3.3.1 — 2026-09-29
 

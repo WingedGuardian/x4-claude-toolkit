@@ -271,6 +271,22 @@ in an agent host. On Windows set `X4_BASH` to Git Bash when PATH resolves to WSL
 The current wrapper resolves relative file paths from the caller's working directory before
 checking them. It applies a separate timeout to each guard; a delete check can run two guards.
 
+**`python scripts/x4doctor.py [--root DIR] [--agent NAME] [--json]` -- are the guards live
+here?** A read-only health check, per installed agent target. It runs on Python 3.10 with no
+dependencies, so a broken `uv` cannot take it down. It reports:
+- the bash, python and jq the guards actually resolve, each one executed;
+- the reference and game roots the guards see, compared with the ones the tools see;
+- deployed-vs-source parity;
+- a self-test through `x4guard check`, with controls that must deny and controls that must
+  allow, so a guard that denies everything cannot pass;
+- Claude's hook wiring and `disableAllHooks`;
+- Codex's project trust and per-hook review state;
+- `X4_GUARD`, the OS-level `reference\` protection and the x4lock state.
+
+Every row is OK, FAIL, UNKNOWN or N/A, and a check that cannot answer says UNKNOWN. Exit codes:
+0 all OK; 1 any FAIL; 3 UNKNOWN without FAIL; 2 nothing checked. A run that checked nothing
+never exits 0.
+
 These hooks inspect known command forms; they do not sandbox arbitrary interpreter programs.
 The loss canary detects file loss, not historical guard evaluation health. Persistent guard
 telemetry and independent filesystem protection remain separate roadmap work.
@@ -389,6 +405,45 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Method global
 ```
 > Windows note: the hooks/scripts are bash, so running the toolkit needs **Git Bash**
 > (the PowerShell installer just does the setup).
+
+#### Which agent: `--agent claude | codex | generic | all` (default `all`)
+
+The installer ships each agent's own files and nothing else (`-Agent` on PowerShell):
+
+| `--agent` | Instructions | Guards | Skills |
+|---|---|---|---|
+| `claude` | `CLAUDE.md` | `.claude/` hooks, registered in `.claude/settings.json` | `.claude/skills/` |
+| `codex` | `AGENTS.md` | `.codex/hooks.json` + a guard copy in `.codex/hooks/`; execpolicy rules in `.codex/rules/` | `.agents/skills/` |
+| `generic` | `AGENTS.md` | none -- a generic agent runs no hooks | `.agents/skills/` |
+| `all` | all of the above | | |
+
+- **Codex runs no hook you have not reviewed, and says nothing when it skips one.** After a
+  Codex install: run `codex` in the folder, trust it, open `/hooks` and approve each X4 hook,
+  then run `python scripts/x4doctor.py`. The installer never trusts a folder or approves a
+  hook for you, and it prints these steps.
+- **An `AGENTS.md` you wrote is never overwritten.** If the destination already has one that
+  differs from the shipped file, it is moved aside to `AGENTS.pre-4.0.md` (or a dated name,
+  if that exists) and the installer says so. `--dry-run` names the move without making it.
+- `--method global` is a Claude-only layout: `--agent codex` or `generic` there is refused,
+  and the default installs the Claude target only.
+- An installed toolkit is runtime-only: the `agent/` source the generator reads is not
+  copied (the release zip still carries it).
+- Skills for Codex and generic agents name the toolkit as `{{TOOLKIT}}`; the installer
+  renders that as `$env:X4_TOOLKIT` on Windows (Codex runs PowerShell there) and as
+  `$X4_TOOLKIT` elsewhere. Linux/macOS support for the Codex target is best effort and
+  not device-tested.
+
+**What each class of agent gets:**
+
+| | Claude Code | Codex | Unknown agent |
+|---|---|---|---|
+| Deletes in `reference\` | blocked (hook + OS) | blocked (OS; and hook when live) | blocked (OS) |
+| Overwrites in `reference\` | blocked (hook + read-only) | blocked when the hook is live; read-only stops accidental ones | read-only stops accidental ones |
+| Destructive shell commands elsewhere | blocked or asked (hook) | blocked when the hook is live; the worst prefix cases by rules regardless | not blocked |
+| Ask before editing profile files | yes | **deny with instructions** (path-based; rules cannot express it) | no |
+| A guard that crashes | asks | **denies** (our wrapper), unless the interpreter cannot start: then **Codex runs the command** | -- |
+| Hooks not reviewed or changed | n/a | **guards off, silently**: `x4doctor` and the session instructions flag it | -- |
+| Post-edit validator feedback | yes | yes (when the hook is live) | no |
 
 > **`global` installs no guards.** The command guard, the file guard and the automatic
 > backup described under *Safety, built in* are registered in a project's
