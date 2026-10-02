@@ -12,11 +12,14 @@ generated folder that the generator did not produce is reported as a GHOST and t
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 PKG = Path(__file__).resolve().parents[1]
 REPO = PKG.parents[1]
@@ -34,6 +37,9 @@ OWNED: tuple[str, ...] = ("CLAUDE.md", "AGENTS.md", ".claude/agents/", ".claude/
 #: Codex silently drops AGENTS.md text past this many BYTES (MEASURED 2026-09-30).
 AGENTS_MD_MAX_BYTES = 32768
 _IGNORED_PARTS = ("__pycache__",)
+#: Claude Code agent names are lowercase letters, digits and hyphens; anything else could also
+#: steer the output path (MEASURED: '../../escaped' rendered outside .claude/agents/).
+_AGENT_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
 class GenerationError(Exception):
@@ -43,11 +49,38 @@ class GenerationError(Exception):
 def _read(p: Path) -> str:
     if not p.is_file():
         raise GenerationError(f"missing source file: {p}")
-    return p.read_bytes().decode("utf-8").replace("\r\n", "\n")
+    try:
+        return p.read_bytes().decode("utf-8").replace("\r\n", "\n")
+    except UnicodeDecodeError as e:
+        raise GenerationError(f"{p}: not UTF-8 (byte 0x{e.object[e.start]:02x} at offset {e.start})") from e
 
 
-def _norm(b: bytes) -> str:
-    return b.decode("utf-8").replace("\r\n", "\n")
+def _norm(b: bytes) -> str | None:
+    """A generated file's text, or None when it is not UTF-8 -- which problems() reports as
+    STALE (None never equals the expected text) instead of crashing --check."""
+    try:
+        return b.decode("utf-8").replace("\r\n", "\n")
+    except UnicodeDecodeError:
+        return None
+
+
+def _load_yaml(p: Path):
+    """A YAML source, or GenerationError naming the file (DuplicateKeyError is a YAMLError too)."""
+    try:
+        return YAML(typ="safe").load(_read(p))
+    except YAMLError as e:
+        raise GenerationError(f"{p}: not valid YAML: {str(e).splitlines()[0]}") from e
+
+
+def _yaml_scalar(s: str) -> str:
+    """s as a YAML value: plain when YAML reads it back unchanged (every real description today,
+    MEASURED), else a JSON string, which is a valid YAML double-quoted scalar."""
+    try:
+        if YAML(typ="safe").load("k: " + s) == {"k": s}:
+            return s
+    except YAMLError:
+        pass
+    return json.dumps(s, ensure_ascii=False)
 
 
 def _with_banner_after_first_line(text: str, banner: str) -> str:
@@ -55,10 +88,11 @@ def _with_banner_after_first_line(text: str, banner: str) -> str:
     return f"{first}\n\n{banner}\n{rest}"
 
 
-def _with_banner_after_frontmatter(text: str) -> str:
-    if not text.startswith("---\n"):
-        raise GenerationError("expected YAML frontmatter at the top")
-    end = text.index("\n---\n", 4) + len("\n---\n")
+def _with_banner_after_frontmatter(text: str, where: object) -> str:
+    end = text.find("\n---\n", 4)
+    if not text.startswith("---\n") or end < 0:
+        raise GenerationError(f"{where}: YAML frontmatter must open and close with '---' lines")
+    end += len("\n---\n")
     return f"{text[:end]}\n{BANNER_MD}\n{text[end:]}"
 
 
@@ -85,22 +119,48 @@ def render_agents_md(src: Path) -> str:
 
 
 def render_agent_md(agent_dir: Path) -> tuple[str, str]:
-    meta = YAML(typ="safe").load(_read(agent_dir / "agent.yaml"))
+    """agent.yaml contract: name matches _AGENT_NAME; description a non-empty string (emitted
+    plain when YAML round-trips it, else JSON-quoted); tier in TIER_MODEL; claude, if present, a
+    mapping; claude.tools, if present, a YAML LIST of tool names. MEASURED before this: a tools
+    STRING rendered as 'G, l, o, b', a ': ' in a description produced frontmatter that does not
+    parse, and a name of '../../escaped' rendered outside .claude/agents/."""
+    p = agent_dir / "agent.yaml"
+    meta = _load_yaml(p)
     if not isinstance(meta, dict):
-        raise GenerationError(f"{agent_dir}/agent.yaml: not a mapping")
+        raise GenerationError(f"{p}: not a mapping")
     for key in ("name", "description", "tier"):
         if not meta.get(key):
-            raise GenerationError(f"{agent_dir}/agent.yaml: missing {key}")
+            raise GenerationError(f"{p}: missing {key}")
+        if not isinstance(meta[key], str) or not meta[key].strip():
+            raise GenerationError(f"{p}: {key} must be a non-empty string")
+    if not _AGENT_NAME.match(meta["name"]):
+        raise GenerationError(f"{p}: name {meta['name']!r} must match {_AGENT_NAME.pattern}")
     if meta["tier"] not in TIER_MODEL:
-        raise GenerationError(f"{agent_dir}/agent.yaml: unknown tier {meta['tier']!r}")
-    tools = (meta.get("claude") or {}).get("tools") or []
+        raise GenerationError(f"{p}: unknown tier {meta['tier']!r}")
+    claude = meta.get("claude") or {}
+    if not isinstance(claude, dict):
+        raise GenerationError(f"{p}: claude must be a mapping")
+    tools = claude.get("tools") or []
+    if not isinstance(tools, list) or not all(
+            isinstance(t, str) and t.strip() and "," not in t and "\n" not in t for t in tools):
+        raise GenerationError(f"{p}: claude.tools must be a YAML list of tool names, e.g. [Read, Grep]")
     body = _read(agent_dir / "instructions.md").replace(TOKEN, CLAUDE_TOOLKIT)
-    lines = ["---", f"name: {meta['name']}", f"description: {meta['description']}"]
+    model = TIER_MODEL[meta["tier"]]
+    lines = ["---", f"name: {meta['name']}", f"description: {_yaml_scalar(meta['description'])}"]
     if tools:
         lines.append("tools: " + ", ".join(tools))
-    lines += [f"model: {TIER_MODEL[meta['tier']]}", "---", ""]
+    lines += [f"model: {model}", "---", ""]
+    # Belt and braces (#36): re-read what was rendered, so a value class not foreseen above
+    # refuses here instead of shipping a frontmatter Claude Code would misread.
+    try:
+        back = YAML(typ="safe").load("\n".join(lines[1:-2]))
+    except YAMLError as e:
+        raise GenerationError(f"{p}: rendered frontmatter does not parse: {str(e).splitlines()[0]}") from e
+    if not isinstance(back, dict) or (back.get("name"), back.get("description"), back.get("model")) != (
+            meta["name"], meta["description"], model):
+        raise GenerationError(f"{p}: rendered frontmatter does not read back as its source")
     text = "\n".join(lines) + "\n" + body
-    return f".claude/agents/{meta['name']}.md", _with_banner_after_frontmatter(text)
+    return f".claude/agents/{meta['name']}.md", _with_banner_after_frontmatter(text, p)
 
 
 def render_skills(src: Path) -> dict[str, str]:
@@ -120,7 +180,7 @@ def render_skills(src: Path) -> dict[str, str]:
                 continue
             text = _read(f).replace(TOKEN, CLAUDE_TOOLKIT)
             if f.name == "SKILL.md" and "<!-- GENERATED" not in text:
-                text = _with_banner_after_frontmatter(text)
+                text = _with_banner_after_frontmatter(text, f)
             out[".claude/skills/" + f.relative_to(root).as_posix()] = text
     return out
 
@@ -151,8 +211,12 @@ def generate(repo: Path) -> dict[str, str]:
     agent_dirs = sorted(p for p in agents.iterdir() if p.is_dir()) if agents.is_dir() else []
     if not agent_dirs:
         raise GenerationError("agent/agents/ holds no agent")
+    seen: dict[str, Path] = {}
     for d in agent_dirs:
         rel, text = render_agent_md(d)
+        if rel in seen:                 # MEASURED before: the second silently replaced the first
+            raise GenerationError(f"agent name {Path(rel).stem!r} is used by both {seen[rel]} and {d}")
+        seen[rel] = d
         out[rel] = text
     out.update(render_skills(src))
     out.update(render_hooks(src))
