@@ -216,6 +216,9 @@ tiers behind each answer.
 - `/x4-probe` — build a temporary in-game instrument (a test harness or diagnostic mod), and
   work out which of "did not load / never fired / logic failed" produced a silent result.
 - `/x4-scaffold` — scaffold the full cross-file footprint for new content from a vanilla analogue.
+- `/x4-toolkit-dev` — for working ON the toolkit itself (its code, gates, hooks, generator or
+  `agent/` source): derived-artifact freshness, narrowing steps, the bug funnel, concurrent
+  sessions. A player or modder using the tools does not need it.
 - `/x4-update-mod` — port a mod to a newer game version (mechanical checks + design brief).
 - `/x4-xml-patching` — the selector, merge-tree and load-order gotchas that make an X4 patch
   silently no-op, where a fix belongs, and how to validate it; invoke before the first XML edit.
