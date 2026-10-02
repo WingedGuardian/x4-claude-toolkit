@@ -3833,6 +3833,9 @@ def facts(payload: dict, roots: dict) -> dict:
         "rm_in_x4_dir": any(hit(rm_t + mv_src + scoped_rm_t, k, conservative=True) for k in
                             ("game", "profile", "mods", "toolkit")) or rm_named_game,
         "rm_saves": hit(rm_t + mv_src + scoped_rm_t, "saves", conservative=True),
+        # The PROFILE keeps a confirmation when rm_in_x4_dir became an advisory (user,
+        # 2026-10-02): a bad content.xml or save="1" can damage saves.
+        "rm_in_profile": hit(rm_t + mv_src + scoped_rm_t, "profile", conservative=True),
 
         # git IGNORES the read-only attribute (MEASURED 2026-09-04: `git checkout`
         # overwrote a locked file and left it unlocked; `git clean -fdx` deleted one),
@@ -3847,6 +3850,7 @@ def facts(payload: dict, roots: dict) -> dict:
             for k in ("game", "profile", "mods", "toolkit", "reference")),
 
         "writes_documents": hit(writes_any, "documents"),
+        "writes_profile": hit(writes_any, "profile"),
         "copy_into_game_or_profile": bool(copy_t) and (
             hit(copy_t, "game") or hit(copy_t, "profile")),
         "redirect_truncate_into_game_or_profile": (

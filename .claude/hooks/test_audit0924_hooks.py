@@ -718,8 +718,10 @@ class TestRR5ChildrenOfARootDenyLikeTheGlob(_RR):
             ("deny", "gci '" + G + "' | % { $_.Delete($true) }"),
         ])
 
-    def test_TWIN_children_inside_one_mod_still_ask(self):
-        self.expect([("ask", "gci '" + self.G + BS + "extensions" + BS + "amod' | Remove-Item -Recurse")])
+    def test_TWIN_children_inside_one_mod_advise_not_deny(self):
+        # ask -> advise 2026-10-02 (user: X4-folder deletes are advisories; 0 of 14 prompts refused).
+        # The twin still holds its point: one mod's children never reach the root's HARD deny.
+        self.expect([("advise", "gci '" + self.G + BS + "extensions" + BS + "amod' | Remove-Item -Recurse")])
 
 
 class TestRR6BarePythonScope(_RR):
@@ -765,6 +767,42 @@ class TestRR7UnparseablePowerShellDenies(_RR):
             self.env = old
 
 
+class TestHygieneDeniesInBash(_RR):
+    """2026-10-02, user: "what's the point of an ask hook on me if all I'm ever going to do
+    is hit approve". A Bash command that does not PARSE, or nests past the expansion bound,
+    is Claude's own hygiene -- the same call TestRR7 made for PowerShell. DENY with a reason
+    Claude can act on; never a prompt. (bash -n rejecting it means bash would not run it.)"""
+
+    def _deep(self):
+        def build(depth, n, tag="q"):
+            if depth == 0:
+                return "echo " + tag
+            return " ".join("$(" + build(depth - 1, n, tag + chr(97 + i)) + ")" for i in range(n))
+        return "echo " + build(8, 3)
+
+    def test_an_unparseable_bash_command_denies_with_a_reason(self):
+        v, r = self.verdict_with("echo 'unterminated", tool="Bash")
+        self.assertEqual(v, "deny")
+        self.assertIn("does not PARSE", r)
+
+    def test_nesting_past_the_bound_denies_with_a_reason(self):
+        v, r = self.verdict_with(self._deep(), tool="Bash")
+        self.assertEqual(v, "deny")
+        self.assertIn("stopped expanding", r)
+
+    def test_TWIN_a_parseable_shallow_command_is_still_allowed(self):
+        self.assertEqual(self.verdict_with("echo 'balanced'", tool="Bash")[0], "allow")
+
+    def test_TWIN_under_X4_GUARD_CHECK_both_still_signal_checked_nothing(self):
+        """x4guard reads exit 2 as "could not evaluate" (inert). The deny must not hide it."""
+        env = dict(self.env, X4_GUARD_CHECK="1")
+        for cmd in ("echo 'unterminated", self._deep()):
+            payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
+            p = subprocess.run([BASH, str(HOOKS / "protect-bash.sh")], input=payload,
+                               capture_output=True, text=True, env=env, timeout=120)
+            self.assertEqual(p.returncode, 2, cmd[:60])
+
+
 class TestRRPreArcBash(_RR):
     """Reviewer's PRE-ARC notes: the same fail-closed principle in the Bash half. A delete
     or write target that is resolvable DENIES like the literal form; one that is not, but
@@ -775,7 +813,7 @@ class TestRRPreArcBash(_RR):
         self.expect([
             ("deny", "echo '" + Rf + "' | xargs rm -rf"),
             ("deny", "printf '%s' '" + Gf + "' | xargs -0 rm -rf"),
-            ("ask", "find '" + Gf + "/extensions' -name '*.bak' | xargs rm -f"),
+            ("advise", "find '" + Gf + "/extensions' -name '*.bak' | xargs rm -f"),
             ("deny", "for f in '" + Rf + "'/*; do rm -rf \"$f\"; done"),
             ("deny", "for d in build '" + Gf + "'; do rm -rf \"$d\"; done"),
             ("deny", "t=$(realpath -m '" + Rf + "/libraries'); rm -rf \"$t\""),
@@ -786,12 +824,12 @@ class TestRRPreArcBash(_RR):
         Rf, Gf, G = self.Rf, self.Gf, self.G
         self.expect([
             ("deny", "rsync -a --delete empty/ '" + Gf + "/'"),
-            ("ask", "rsync -a --delete ./mod/ '" + Gf + "/extensions/amod/'"),
+            ("advise", "rsync -a --delete ./mod/ '" + Gf + "/extensions/amod/'"),
             ("deny", "ln -sf /dev/null '" + Rf + "/libraries/w.xml'"),
             ("deny", "touch '" + Rf + "/libraries/w.xml'"),
             ("deny", "chmod 000 '" + Rf + "/libraries'"),
             ("deny", "robocopy C:/empty '" + Gf + "' //MIR"),
-            ("ask", "robocopy ./mod '" + Gf + "/extensions/amod' /MIR"),
+            ("advise", "robocopy ./mod '" + Gf + "/extensions/amod' /MIR"),
         ], tool="Bash")
         self.expect([
             ("deny", "robocopy C:\\empty '" + G + "' /MIR"),

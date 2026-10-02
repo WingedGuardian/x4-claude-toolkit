@@ -724,6 +724,20 @@ class TestMiscPredicates(unittest.TestCase):
     def test_dollarq_after_a_process_substitution_does_not_fire(self):
         self.assertFalse(F("diff <(a | sort) <(b | sort); echo $?")["dollarq_after_pipe"])
 
+    # 2026-10-02: X4-folder deletes and Documents writes became advisories; the PROFILE keeps
+    # its confirmation through these two facts. Each is pinned both ways.
+    def test_rm_in_profile_fires_on_a_profile_delete(self):
+        self.assertTrue(F('rm -f "' + PROF + '/config.xml"')["rm_in_profile"])
+
+    def test_TWIN_rm_in_profile_is_silent_for_a_mod_delete(self):
+        self.assertFalse(F('rm -f "' + TOOLKIT + '/dev/m/x.xml"')["rm_in_profile"])
+
+    def test_writes_profile_fires_on_a_profile_write(self):
+        self.assertTrue(F('echo x > "' + PROF + '/config.xml"')["writes_profile"])
+
+    def test_TWIN_writes_profile_is_silent_for_a_documents_write(self):
+        self.assertFalse(F('echo x > "' + DOCS + '/notes.txt"')["writes_profile"])
+
     def test_timeout_over_cap_fires(self):
         self.assertTrue(F("sleep 1", timeout=900000)["timeout_over_cap"])
 

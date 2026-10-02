@@ -35,7 +35,9 @@ probe() {  # want_decision  label  command
   if [ -z "$out" ]; then
     dec="allow"          # no output == no decision == the tool proceeds
   else
-    dec=$(printf '%s' "$out" | "$JQ" -r '.hookSpecificOutput.permissionDecision // "MALFORMED"' 2>/dev/null) \
+    # An advisory carries additionalContext and NO permissionDecision (2026-10-02: X4-folder
+    # deletes became advisories); only output with neither is MALFORMED.
+    dec=$(printf '%s' "$out" | "$JQ" -r '.hookSpecificOutput | if .permissionDecision then .permissionDecision elif .additionalContext then "advise" else "MALFORMED" end' 2>/dev/null) \
       || dec="PARSE_ERROR"
   fi
   if [ "$dec" = "$want" ] && [ "$rc" = "0" ]; then
@@ -103,7 +105,7 @@ need "$X4_REFERENCE" "ref-recursive-grep" X4_REFERENCE && probe deny "ref-recurs
 # that discussed one. Writing a .cat is covered by protect-files.sh, which
 # checks the TARGET PATH. Probe kept and inverted so a re-add is not silent.
 probe allow  "cat-dat-reference"    'XRCatTool -in 01.cat -out ref'
-need "$X4_MODS" "rm-in-modding" X4_MODS && probe ask  "rm-in-modding"        "rm -rf \"$X4_MODS/dev/foo\""
+need "$X4_MODS" "rm-in-modding" X4_MODS && probe advise "rm-in-modding"        "rm -rf \"$X4_MODS/dev/foo\""
 
 # --- runtime rules: the harness caps a foreground call at 600000 ms ---------
 # Four separate 10-minute losses in one session came from passing a LARGER value

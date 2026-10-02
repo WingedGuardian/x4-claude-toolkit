@@ -48,6 +48,14 @@
   - A delete is judged as the stricter of a write and an `rm` of that path.
   - Each of these is an inert deny, never an allow: a guard that cannot run, a guard that
     reports it checked nothing, and a copy outside `.claude/hooks` with `X4_TOOLKIT` unset.
+- **Fewer approval prompts: the guards ask only what is genuinely yours.** Measured over 793
+  transcripts: 54 hook prompts in 5 weeks, all 54 approved, 0 refused -- an ask that is always
+  approved protects nothing.
+  - A command `bash -n` rejects, or one nested past the guard's expansion bound, is now a DENY with
+    a reason the agent can act on (bash would not run it either). Was a prompt.
+  - Deletes in X4 folders and writes under Documents are now ADVISORIES. Was a prompt.
+  - Still asks: the X4 profile (mod list, config), save games, a guard that cannot run, a failed
+    backup. Still hard-blocked: the game install and `reference/`.
 - **A Grep over a git-ignored folder is now denied** (`search-scope.sh`, BLIND-SPOTS F146).
   Grep and Glob honour `.gitignore`. A game root kept under git with a whitelist `.gitignore`
   hid all 133 installed mods' manifests from Grep, which answered "No files found". The

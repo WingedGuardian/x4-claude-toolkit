@@ -300,8 +300,12 @@ if [ -z "${_x4_rest//[[:space:]]/}" ]; then
   done
 fi
 if [ "$_x4_plain" != 1 ] && ! bash -n -c "$COMMAND" 2>/dev/null; then
-  ask "This command does not PARSE (bash -n rejects it), so the guard could evaluate NO rule against it and cannot vouch for it. Check the quoting -- a Windows path ending in a backslash inside double quotes is the usual cause. Confirm only if you know the command is safe."
+  # DENY, not ask (user, 2026-10-02: an ask they always approve protects nothing). This is
+  # Claude's own syntax error -- bash -n rejecting it means bash would not run it either --
+  # so the reason must be something Claude can act on. Check-mode signal FIRST: under
+  # X4_GUARD_CHECK this still exits 2 ("checked nothing"), which x4guard reports as inert.
   x4_guard_check_inert
+  deny "This command does not PARSE (bash -n rejects it), so bash would not run it and the guard could evaluate NO rule against it. Fix the quoting and re-run -- a Windows path ending in a backslash inside double quotes, or a heredoc whose body contains its own terminator line, are the usual causes."
 fi
 
 # === CONFIRMATION — the analysis could not be completed ===
@@ -347,8 +351,9 @@ if on carrier_untranslated; then
 fi
 
 if on carriers_truncated; then
-  ask "This command nests so many substitutions/wrappers that the guard stopped expanding them, so part of it was NEVER checked against any rule. That is not a clean pass. Simplify it, or confirm only if you know what every nested command does."
+  # DENY, not ask (2026-10-02, same reasoning as the parse failure above): Claude can split it.
   x4_guard_check_inert
+  deny "This command nests so many substitutions/wrappers that the guard stopped expanding them, so part of it was NEVER checked against any rule. Split it into simpler commands (or a script file) and re-run."
 fi
 
 # === HARD BLOCK — delete the game installation ===
@@ -377,7 +382,11 @@ if on xrcat_reunpack && [ -f "$X4_REFERENCE/.unpacked-and-locked" ]; then
 fi
 
 # === CONFIRM — rm targeting the game, profile, reference, mods, or toolkit ===
-on rm_in_x4_dir && ask "Deleting files in an X4 directory — confirm: $COMMAND"
+# ADVISORY since 2026-10-02 (user): 54 hook prompts in 5 weeks, 54 approved, 0 refused --
+# an ask that is always approved protects nothing and trains approval. The game install
+# and reference/ are HARD blocks above; saves and the X4 PROFILE still ask below.
+on rm_in_profile && ask "DELETING IN YOUR X4 PROFILE (mod list, config, saves) -- not reproducible. Confirm: $COMMAND"
+on rm_in_x4_dir && advise "This deletes files in an X4 directory (game extensions, mod sources or the toolkit). Make sure it is what you meant -- check git status afterwards, and redeploy if you removed a deployed mod by mistake."
 
 # === CONFIRM — destructive git inside an X4 directory ===
 # git IGNORES the read-only attribute. MEASURED 2026-09-04: `git checkout HEAD~1 -- f`
@@ -402,7 +411,9 @@ on rm_saves && ask "DELETING A SAVE GAME. Saves are not reproducible and nothing
 # MEASURED 2026-08-30: 193 of 196 hits were a command that merely NAMED a path there.
 # This was the only rule left spending the USER's attention on a false positive, so it
 # tests the write TARGET, not the whole string.
-on writes_documents && ask "WRITING OR DELETING UNDER YOUR DOCUMENTS FOLDER: this is outside the toolkit and the game. Confirm: $COMMAND"
+# ADVISORY since 2026-10-02 (user; 13 prompts, 0 refused). The X4 PROFILE keeps asking.
+on writes_profile && ask "WRITING OR DELETING IN YOUR X4 PROFILE (mod list, config, saves): a bad content.xml or save=\"1\" can damage saves. Confirm: $COMMAND"
+on writes_documents && advise "This writes or deletes under the Documents folder -- outside the toolkit and the game (game settings, other games, personal files). Keep it to what the task needs."
 
 # === CONFIRM — mv/cp into the game or profile dirs ===
 # MEASURED: 49 of 86 hits were a copy OUT of the game, or a mention. The DESTINATION

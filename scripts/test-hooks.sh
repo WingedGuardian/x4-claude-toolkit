@@ -133,11 +133,11 @@ run_layout(){ # run_layout <name> <toolkit> <game>
   # 2026-08-30). MEASURED first: over 11,133 historical commands this fires on 7
   # MORE than the existing profile rules already did, and on zero more edits.
   decide ask   protect-files.sh "$(fj "$SBX_TMP/profile/save/save_001.xml.gz")"  "a save game"
-  decide ask   protect-files.sh "$(fj "$SBX_TMP/docs/My Games/SomeGame/x.ini")"  "under My Games"
+  decide advise protect-files.sh "$(fj "$SBX_TMP/docs/My Games/SomeGame/x.ini")"  "under My Games"
   # `.dat` is a GENERIC extension. The X4-archive rule denied another game's save
   # outright until it was scoped to X4 locations -- a guard blocking a file that was
   # never ours. It must ask here, and still deny inside the game folder.
-  decide ask   protect-files.sh "$(fj "$SBX_TMP/docs/Other Game/saved.dat")"     "another game's .dat is not an X4 archive"
+  decide advise protect-files.sh "$(fj "$SBX_TMP/docs/Other Game/saved.dat")"     "another game's .dat is not an X4 archive"
   decide deny  protect-files.sh "$(fj "$GAME/01.dat")"                       ".dat INSIDE the game still denies"
   # X4_MODS is outside $GAME in both layouts, so the source lives elsewhere -> hard block.
   decide deny  protect-files.sh "$(fj "$GAME/extensions/deployed/x.xml")"   "deployed extensions/ (source elsewhere)"
@@ -297,7 +297,7 @@ guard = 'grep -qiE content.xml against \$X4_PROFILE'
 PY")"   "a manifest search described inside a heredoc body is data"
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_REFERENCE'")" "rm reference/"
 decide ask   protect-bash.sh "$(cj "rm -f '$SBX_TMP/profile/save/save_001.xml.gz'")" "deleting a save game"
-decide ask   protect-bash.sh "$(cj "echo x > '$SBX_TMP/docs/notes.txt'")"            "writing into Documents"
+decide advise protect-bash.sh "$(cj "echo x > '$SBX_TMP/docs/notes.txt'")"            "writing into Documents"
 # ...but only when Documents is the TARGET. MEASURED 2026-08-30: 193 of 196 hits
 # were a command that merely NAMED a path there -- `(rm|mv|cp|tee|>) anywhere` AND
 # `a Documents path anywhere`, two independent tests over the whole string. This is
@@ -305,11 +305,17 @@ decide ask   protect-bash.sh "$(cj "echo x > '$SBX_TMP/docs/notes.txt'")"       
 decide allow protect-bash.sh "$(cj "P='$SBX_TMP/docs/Egosoft'; ls -la \"\$P\" 2>/dev/null")"   "reading a Documents path is not writing to it"
 decide allow protect-bash.sh "$(cj "cp '$SBX_TMP/docs/notes.txt' '$SBX_TMP/copy.txt'")"   "copying OUT of Documents"
 decide allow protect-bash.sh "$(cj "grep -n x '$SBX_TMP/docs/notes.txt' > '$SBX_TMP/out.txt'")"   "reading from Documents, writing elsewhere"
-decide ask   protect-bash.sh "$(cj "cp '$SBX_TMP/a.txt' '$SBX_TMP/docs/b.txt'")"   "copying INTO Documents"
-decide ask   protect-bash.sh "$(cj "rm -f '$SBX_TMP/docs/notes.txt'")"   "deleting inside Documents"
-decide ask   protect-bash.sh "$(cj "tee '$SBX_TMP/docs/log.txt' < '$SBX_TMP/a.txt'")"   "tee INTO Documents"
-decide ask   protect-bash.sh "$(cj "D='$SBX_TMP/docs'; echo x > \"\$D/n.txt\"")"   "a variable Documents destination still confirms"
-decide ask   protect-bash.sh "$(cj "rm -rf '$X4_MODS/other'")" "rm inside mod sources"
+decide advise protect-bash.sh "$(cj "cp '$SBX_TMP/a.txt' '$SBX_TMP/docs/b.txt'")"   "copying INTO Documents"
+decide advise protect-bash.sh "$(cj "rm -f '$SBX_TMP/docs/notes.txt'")"   "deleting inside Documents"
+decide advise protect-bash.sh "$(cj "tee '$SBX_TMP/docs/log.txt' < '$SBX_TMP/a.txt'")"   "tee INTO Documents"
+decide advise protect-bash.sh "$(cj "D='$SBX_TMP/docs'; echo x > \"\$D/n.txt\"")"   "a variable Documents destination still confirms"
+decide advise protect-bash.sh "$(cj "rm -rf '$X4_MODS/other'")" "rm inside mod sources"
+# 2026-10-02 (user): 54 hook prompts in 5 weeks, 0 refused -- X4-folder deletes and
+# Documents writes became ADVISORIES. The X4 PROFILE keeps asking (standing rule: a bad
+# content.xml or save="1" can damage saves); saves keep asking; game/reference stay hard.
+decide ask   protect-bash.sh "$(cj "echo x > '$SBX_TMP/profile/config.xml'")"   "writing into the X4 PROFILE still confirms"
+decide ask   protect-bash.sh "$(cj "rm -f '$SBX_TMP/profile/config.xml'")"   "deleting in the X4 PROFILE still confirms"
+decide ask   protect-bash.sh "$(cj "cp '$SBX_TMP/a.txt' '$SBX_TMP/profile/b.xml'")"   "copying INTO the X4 profile still confirms"
 # --- rule 2: the redirect advisory must test the TARGET, not the whole string ----
 # MEASURED 2026-08-30: 1,269 of its 1,320 hits were `2>/dev/null` plus a game path
 # mentioned anywhere -- 13.4% of every command in the corpus carrying a spurious note.
@@ -336,11 +342,11 @@ decide deny  protect-bash.sh "$(cj "rm -rf '$X4_GAME'")"   "deleting the install
 # Only a path INSIDE it falls to the confirm, which is the verdict CLAUDE.md assigns to
 # deleting in an X4 directory, and it is recoverable by redeploying from dev/.
 decide deny  protect-bash.sh "$(cj "rm -rf '$X4_GAME/extensions'")"   "extensions/ WHOLESALE is still a hard block"
-decide ask   protect-bash.sh "$(cj "rm -rf '$X4_GAME/extensions/deployed'")"   "ONE deployed mod confirms, it is not a hard block"
-decide ask   protect-bash.sh "$(cj "rm -f '$X4_GAME/extensions/deployed/ext_01.cat'")"   "one file inside a deployed mod confirms"
+decide advise protect-bash.sh "$(cj "rm -rf '$X4_GAME/extensions/deployed'")"   "ONE deployed mod confirms, it is not a hard block"
+decide advise protect-bash.sh "$(cj "rm -f '$X4_GAME/extensions/deployed/ext_01.cat'")"   "one file inside a deployed mod confirms"
 # ...and with the destination in a VARIABLE, which is the form that exposed this and the
 # form no probe used before.
-decide ask   protect-bash.sh "$(cj "DST='$X4_GAME/extensions/deployed'; rm -rf \"\$DST\"")"   "a variable deploy destination confirms, not blocks"
+decide advise protect-bash.sh "$(cj "DST='$X4_GAME/extensions/deployed'; rm -rf \"\$DST\"")"   "a variable deploy destination confirms, not blocks"
 # --- rule 3: the long-job rule must see an INVOCATION, not a mention -----------
 # MEASURED 2026-08-30: 125 of its 144 hits merely NAMED a job. It denied this session's
 # own analysis script (the name sat in a regex literal) and the write of the PLAN that
@@ -496,7 +502,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=184
+EXPECT=187
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -511,10 +517,10 @@ EXPECT=184
 echo; echo "=== path dialect ==="
 _sd="$X4_DOCUMENTS"; _sr="$X4_REFERENCE"
 export X4_DOCUMENTS="C:/fixture/Documents"
-decide ask   protect-bash.sh "$(cj 'echo x > "C:/fixture/Documents/n.txt"')"   "Documents write, root Windows / command Windows"
-decide ask   protect-bash.sh "$(cj 'echo x > "/c/fixture/Documents/n.txt"')"   "Documents write, root Windows / command MSYS"
+decide advise protect-bash.sh "$(cj 'echo x > "C:/fixture/Documents/n.txt"')"   "Documents write, root Windows / command Windows"
+decide advise protect-bash.sh "$(cj 'echo x > "/c/fixture/Documents/n.txt"')"   "Documents write, root Windows / command MSYS"
 export X4_DOCUMENTS="/c/fixture/Documents"
-decide ask   protect-bash.sh "$(cj 'echo x > "C:/fixture/Documents/n.txt"')"   "Documents write, root MSYS / command Windows"
+decide advise protect-bash.sh "$(cj 'echo x > "C:/fixture/Documents/n.txt"')"   "Documents write, root MSYS / command Windows"
 decide allow protect-bash.sh "$(cj 'echo x > "C:/elsewhere/n.txt"')"   "an unrelated path is still allowed in either dialect"
 export X4_DOCUMENTS="$_sd"
 export X4_REFERENCE="C:/fixture/reference"
@@ -676,8 +682,8 @@ decide allow protect-bash.sh "$(cj "cat > f <<${AP}X${AP}
 it${AP}s data
 X")"                                                                   "an apostrophe in a HEREDOC BODY is prose"
 decide allow protect-bash.sh "$(cj "echo ${Q}a \$(grep -o ${AP}x|y${AP} f) b${Q}")"   "nested quotes inside \$( ) still parse"
-decide ask   protect-bash.sh "$(cj "echo ${AP}unterminated")"          "a genuinely unbalanced quote is REFUSED, not ignored"
-decide ask   protect-bash.sh "$(cj "ls ${Q}C:${BSL}Users${BSL}x${BSL}${Q} 2>/dev/null")"  "a Windows path ending in a backslash is REFUSED"
+decide deny  protect-bash.sh "$(cj "echo ${AP}unterminated")"          "a genuinely unbalanced quote is REFUSED, not ignored"
+decide deny  protect-bash.sh "$(cj "ls ${Q}C:${BSL}Users${BSL}x${BSL}${Q} 2>/dev/null")"  "a Windows path ending in a backslash is REFUSED"
 
 # The most natural way a Windows user writes a path must still reach every rule: inside
 # double quotes bash keeps a backslash literal unless it precedes $ ` " \ or newline.

@@ -206,10 +206,13 @@ esac
 x4_under "$FILE_PATH" "$X4_PROFILE" && ask "EDITING USER PROFILE FILE: $FILE_PATH — changes affect live game config/saves. Confirm?"
 # Saves first: the message must name what is actually at risk.
 x4_under "$FILE_PATH" "${X4_SAVES:-}" && ask "EDITING A SAVE GAME: $FILE_PATH -- saves are not reproducible and there is no undo. Confirm?"
-# ...and the rest of Documents: game settings, other games, personal files.
-# Not ours, not reproducible, and nothing else here guards them.
-x4_under "$FILE_PATH" "${X4_DOCUMENTS:-}" && ask "EDITING A FILE IN YOUR DOCUMENTS FOLDER: $FILE_PATH -- this is outside the toolkit and the game. Confirm?"
+# A profile path the X4_PROFILE variable does not name still confirms -- BEFORE the
+# Documents advisory below, or it would only be advised (the profile lives in Documents).
 echo "$FILE_PATH" | grep -qiE 'Egosoft[/\\]X4[/\\]' && ask "EDITING USER PROFILE FILE: $FILE_PATH — changes affect live game config/saves. Confirm?"
+# ...and the rest of Documents: game settings, other games, personal files. ADVISORY since
+# 2026-10-02 (user: an ask that is always approved protects nothing). advise() accumulates
+# and never exits, so every rule below still applies.
+x4_under "$FILE_PATH" "${X4_DOCUMENTS:-}" && advise "EDITING A FILE IN YOUR DOCUMENTS FOLDER: $FILE_PATH -- outside the toolkit and the game. Keep it to what the task needs."
 
 # === CONFIRMATION — live extensions/ (deploy target, overwritten on every deploy) ===
 # This is mod territory, NOT base-game content — so it's an "ask", even though it usually sits
