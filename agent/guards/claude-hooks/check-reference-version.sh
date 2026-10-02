@@ -72,6 +72,6 @@ if [ -z "$STORED" ] && [ -f "$STORE" ]; then
   [ -n "$STORED" ] && SRC=".claude/.reference-buildid"
 fi
 if [ -n "$STORED" ] && [ "$STORED" != "$CUR" ]; then
-  echo "[x4 stale-reference] reference/ was unpacked from build $STORED (per $SRC) but the game is now build $CUR. Re-unpack (remove reference/.unpacked-and-locked, then run bin/unpack-reference.sh) before trusting line numbers in deep fixes; update .claude/.reference-buildid afterward so the detached copy stops disagreeing."
+  echo "[x4 stale-reference] reference/ was unpacked from build $STORED (per $SRC) but the game is now build $CUR. Re-unpack (the USER lifts the OS protection with python scripts/x4refguard.py remove, removes reference/.unpacked-and-locked, then runs bin/unpack-reference.sh) before trusting line numbers in deep fixes; update .claude/.reference-buildid afterward so the detached copy stops disagreeing."
 fi
 exit 0
