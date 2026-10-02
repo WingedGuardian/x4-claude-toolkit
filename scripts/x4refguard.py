@@ -257,8 +257,471 @@ def resolve_target(path, action: str) -> Path:
 
 def _carries_our_protection(p: Path) -> bool:
     """Does `p` carry exactly what THIS tool applies? Used only to let `remove --path`
-    lift a root that is no longer configured, never an arbitrary directory."""
-    return False          # mechanisms land in the next commit
+    lift a root that is no longer configured, never an arbitrary directory.
+
+    Windows: exactly one explicit deny for the user, of EXPECTED_MASK, inheritable.
+    POSIX: an immutable or write-less root that ALSO holds the sentinel -- a read-only
+    directory alone is too common a shape to be this tool's signature."""
+    try:
+        if _platform() == "windows":
+            item = _acl([p])[1][0]
+            return (_explicit_denies(p, item) == [EXPECTED_MASK]
+                    and _ours_in(item))
+        if not (p / SENTINEL).is_file():
+            return False
+        return _posix_mark(p) is not None
+    except AclError:
+        return False
+
+
+# ============================================================ Windows mechanism
+
+class AclError(RuntimeError):
+    """The ACL could not be READ. Becomes state `error`, never `absent`."""
+
+
+#: One PowerShell process per batch. Paths arrive on STDIN (UTF-8), never interpolated
+#: into the command, and never through an env var (a 32,767-character limit). Output is
+#: numeric -- rights masks and SIDs -- so nothing depends on the display language.
+_PS_ACL = r"""
+$ErrorActionPreference='Stop'
+$enc = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $enc
+[Console]::InputEncoding = $enc
+$raw = [Console]::In.ReadToEnd()
+$sidT = [System.Security.Principal.SecurityIdentifier]
+$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$items = @()
+foreach ($p in ($raw -split "`n")) {
+  $p = $p.TrimEnd("`r")
+  if (-not $p) { continue }
+  try {
+    $a = Get-Acl -LiteralPath $p
+    $rules = @($a.GetAccessRules($true, $true, $sidT) | ForEach-Object {
+      [ordered]@{sid=$_.IdentityReference.Value; type=[int]$_.AccessControlType;
+        rights=[int64]$_.FileSystemRights; inherited=[bool]$_.IsInherited;
+        inh=[int]$_.InheritanceFlags; prop=[int]$_.PropagationFlags} })
+    $items += ,([ordered]@{path=$p; owner=$a.GetOwner($sidT).Value; rules=$rules; error=$null})
+  } catch {
+    $items += ,([ordered]@{path=$p; owner=$null; rules=@(); error=$_.Exception.Message})
+  }
+}
+ConvertTo-Json -Depth 6 -Compress -InputObject ([ordered]@{user=$user; items=$items})
+"""
+_PS_BATCH = 2000
+_USER_SID: str | None = None
+
+
+def _as_list(v):
+    if v is None:
+        return []
+    return v if isinstance(v, list) else [v]
+
+
+def _acl(paths) -> tuple[str, list[dict]]:
+    """(user SID, one item per path, in order). Raises AclError on ANY doubt."""
+    global _USER_SID
+    paths = [str(p) for p in paths]
+    user, out = None, []
+    for i in range(0, max(len(paths), 1), _PS_BATCH):
+        chunk = paths[i:i + _PS_BATCH]
+        try:
+            r = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _PS_ACL],
+                input="\n".join(chunk).encode("utf-8"), capture_output=True)
+        except OSError as exc:
+            raise AclError("powershell.exe could not be started: %s" % exc) from exc
+        text = r.stdout.decode("utf-8", errors="replace").strip()
+        if r.returncode != 0 or not text:
+            raise AclError("Get-Acl failed (rc %d): %s" % (
+                r.returncode, r.stderr.decode("utf-8", errors="replace")[:300]))
+        try:
+            data = json.loads(text)
+        except ValueError as exc:
+            raise AclError("Get-Acl output was not JSON: %r" % text[:200]) from exc
+        items = _as_list(data.get("items"))
+        if len(items) != len(chunk):
+            raise AclError("Get-Acl returned %d item(s) for %d path(s)" % (len(items), len(chunk)))
+        for it in items:
+            it["rules"] = _as_list(it.get("rules"))
+        user = data.get("user") or user
+        out.extend(items)
+    if not user or not str(user).startswith("S-1-"):
+        raise AclError("could not determine the current user's SID (got %r)" % user)
+    _USER_SID = user
+    return user, out
+
+
+def _user_sid() -> str:
+    if _USER_SID is None:
+        _acl([])
+    return _USER_SID
+
+
+def _item(p, item=None) -> dict:
+    if item is not None:
+        return item
+    _, items = _acl([p])
+    if items[0].get("error"):
+        raise AclError("Get-Acl %s: %s" % (p, items[0]["error"]))
+    return items[0]
+
+
+def _deny_rules(item: dict, explicit_only: bool) -> list[dict]:
+    sid = _user_sid()
+    return [r for r in item["rules"] if r.get("sid") == sid and r.get("type") == 1
+            and (not explicit_only or not r.get("inherited"))]
+
+
+def _explicit_denies(p, item=None) -> list[int]:
+    """Masks of the NON-inherited deny ACEs for the current user on `p`."""
+    return [int(r["rights"]) for r in _deny_rules(_item(p, item), explicit_only=True)]
+
+
+def _deny_masks(p, item=None) -> list[int]:
+    """Masks of EVERY deny ACE for the current user on `p`, explicit and inherited."""
+    return [int(r["rights"]) for r in _deny_rules(_item(p, item), explicit_only=False)]
+
+
+def _ours_in(item: dict) -> bool:
+    """The exact explicit ACE this tool writes: our mask, OI|CI, no propagation flags."""
+    return any(int(r["rights"]) == EXPECTED_MASK and int(r.get("inh", 0)) == _INHERIT_BOTH
+               and int(r.get("prop", 0)) == 0
+               for r in _deny_rules(item, explicit_only=True))
+
+
+def _owner_is_user(p) -> bool:
+    if _platform() == "windows":
+        return _item(p).get("owner") == _user_sid()
+    try:
+        euid = _geteuid()
+        return euid == 0 or os.stat(p).st_uid == euid
+    except OSError:
+        return False
+
+
+def _child_ok(item: dict) -> bool:
+    """A non-root object is protected when a deny for the user covers the whole mask AND
+    no explicit allow on the object itself overrides an inherited deny (canonical ACE
+    order puts explicit ACEs first). Conservative: an explicit allow of ANY SID that
+    grants a denied bit counts, since group membership is not evaluated here."""
+    if item.get("error"):
+        return False
+    denies = _deny_rules(item, explicit_only=False)
+    if not any(int(r["rights"]) & EXPECTED_MASK == EXPECTED_MASK for r in denies):
+        return False
+    if any(not r.get("inherited") for r in denies
+           if int(r["rights"]) & EXPECTED_MASK == EXPECTED_MASK):
+        return True
+    return not any(r.get("type") == 0 and not r.get("inherited")
+                   and int(r["rights"]) & EXPECTED_MASK for r in item["rules"])
+
+
+_WIN_STOPS = ["delete or rename of any file or directory inside the root",
+              "overwrite, truncate or append (WriteData, AppendData)",
+              "creating new files or directories inside the root"]
+_WIN_GAPS = ["renaming the root itself (its PARENT grants that)",
+             "the same user lifting it (WRITE_DAC is deliberately not denied)",
+             "an Administrator"]
+
+
+def _win_report(root: Path, full: bool) -> dict:
+    r = _blank("error", root)
+    objs = _objects(root, full)
+    try:
+        user, items = _acl(objs)
+    except AclError as exc:
+        r["detail"] = "could not read the ACL: %s" % exc
+        return r
+    head = items[0]
+    if head.get("error"):
+        r["detail"] = "could not read the root's ACL: %s" % head["error"]
+        return r
+    r["owner_is_user"] = head.get("owner") == user
+    explicit = _explicit_denies(root, head)
+    r["mask"] = explicit[0] if len(explicit) == 1 else (explicit or None)
+    if not explicit:
+        r.update(state="absent", sampled=len(items),
+                 detail="LAYER 2 OFF: reference/ has no deny-delete")
+        return r
+    if explicit != [EXPECTED_MASK] or not _ours_in(head):
+        r.update(state="foreign", sampled=len(items),
+                 detail="a deny ACE for your SID exists on the root that this tool did "
+                        "not write (masks %s, expected exactly [%d] with (OI)(CI)); it is "
+                        "left alone" % (explicit, EXPECTED_MASK))
+        return r
+    ok = 1 + sum(1 for it in items[1:] if _child_ok(it))
+    r.update(mechanism="icacls-deny %s" % ICACLS_SPEC, sampled=len(items), sample_ok=ok,
+             stops=list(_WIN_STOPS), does_not_stop=list(_WIN_GAPS))
+    if ok == len(items):
+        r.update(state="protected", detail="deny ACE %d on the root, inherited by %d of %d "
+                 "sampled object(s)" % (EXPECTED_MASK, ok - 1, len(items) - 1))
+    else:
+        bad = [it["path"] for it in items[1:] if not _child_ok(it)]
+        r.update(state="partial", detail="the root carries the deny but %d of %d sampled "
+                 "object(s) do not (inheritance cut, or an explicit allow), e.g. %s" % (
+                     len(bad), len(items), bad[0]))
+    return r
+
+
+def _win_apply(root: Path) -> int:
+    before = _win_report(root, False)
+    if before["state"] in ("error", "foreign"):
+        print("REFUSED: %s" % before["detail"], file=sys.stderr)
+        return 2
+    if not _owner_is_user(root):
+        print("REFUSED: %s is not owned by you. A deny on a tree you do not own may not "
+              "be removable unelevated (x4lock's lockout history); not applying." % root,
+              file=sys.stderr)
+        return 2
+    if before["state"] == "protected":
+        print("already protected: %s (%s)" % (root, before["detail"]))
+        return 0
+    res = _mutate_run(["icacls", root, "/deny", "*%s:%s" % (_user_sid(), ICACLS_SPEC),
+                       "/C", "/Q"], root)
+    after = _win_report(root, False)
+    if after["state"] == "protected":
+        print("Layer 2 applied: %s -- %s" % (root, after["detail"]))
+        return 0
+    print("FAILED VERIFICATION: icacls returned %d but the re-read says %s: %s. The tree "
+          "may be PARTIALLY protected.\n  icacls: %s %s" % (
+              res.returncode, after["state"], after["detail"], res.stdout.strip()[:300],
+              res.stderr.strip()[:300]), file=sys.stderr)
+    return 1
+
+
+def _win_remove(root: Path) -> int:
+    item = _item(root)
+    explicit = _explicit_denies(root, item)
+    if explicit and (explicit != [EXPECTED_MASK] or not _ours_in(item)):
+        print("REFUSED: %s carries a deny for your SID that this tool did not write "
+              "(masks %s). `icacls /remove:d` would remove it too; lift it yourself if "
+              "you mean to." % (root, explicit), file=sys.stderr)
+        return 2
+    if not explicit:
+        print("nothing to remove: %s carries no deny for your SID" % root)
+        return 0
+    res = _mutate_run(["icacls", root, "/remove:d", "*%s" % _user_sid(), "/C", "/Q"], root)
+    left = _explicit_denies(root)
+    if not left:
+        print("Layer 2 lifted: %s" % root)
+        return 0
+    print("FAILED VERIFICATION: icacls returned %d but the root still carries deny "
+          "mask(s) %s.\n  icacls: %s %s" % (res.returncode, left, res.stdout.strip()[:300],
+                                            res.stderr.strip()[:300]), file=sys.stderr)
+    return 1
+
+
+# ============================================================== POSIX mechanism
+#
+# BEST EFFORT, NOT DEVICE-TESTED (decision #15). The chmod fallback runs for real on the
+# CI ubuntu leg; chattr and chflags are exercised only through fakes.
+
+def _mode(p) -> int:
+    return os.lstat(p).st_mode
+
+
+def _flags(paths) -> dict:
+    """{path: True/False/None} -- is the object immutable? None = could not tell."""
+    out = {str(p): None for p in paths}
+    if _platform() == "darwin":
+        for p in paths:
+            try:
+                out[str(p)] = bool(getattr(os.lstat(p), "st_flags", 0) & stat.UF_IMMUTABLE)
+            except OSError:
+                pass
+        return out
+    lsattr = _which("lsattr")
+    if not lsattr:
+        return out
+    paths = [str(p) for p in paths]
+    for i in range(0, len(paths), 500):
+        chunk = paths[i:i + 500]
+        r = subprocess.run([lsattr, "-d", *chunk], capture_output=True, text=True,
+                           errors="replace")
+        for line in r.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2 and parts[1] in out:
+                out[parts[1]] = "i" in parts[0]
+    return out
+
+
+def _readonly(p) -> bool:
+    try:
+        return (_mode(p) & 0o222) == 0
+    except OSError:
+        return False
+
+
+def _posix_mark(root: Path):
+    """Which mechanism the ROOT carries: 'immutable', 'readonly', or None."""
+    if _flags([root]).get(str(root)):
+        return "immutable"
+    if _readonly(root):
+        return "readonly"
+    return None
+
+
+def _posix_mechanism_name(mark: str) -> str:
+    if mark == "immutable":
+        return "chflags uchg" if _platform() == "darwin" else "chattr +i"
+    return "chmod a-w (dirs and files)"
+
+
+_POSIX_STOPS = {
+    "immutable": ["delete, rename or create inside the root", "overwrite, truncate or append",
+                  "a chmod of the protected objects"],
+    "readonly": ["delete, rename or create inside the root (directory write bit)",
+                 "overwrite or truncate of a file (file write bit)"],
+}
+_POSIX_GAPS = {
+    "immutable": ["renaming the root itself (INFERRED: its parent is writable)",
+                  "root (chattr -i / chflags nouchg)", "NOT device-tested (best effort)"],
+    "readonly": ["root or any process with CAP_DAC_OVERRIDE",
+                 "the owner running chmod u+w", "renaming the root itself (its parent is "
+                 "writable)", "NOT device-tested (best effort)"],
+}
+
+
+def _posix_report(root: Path, full: bool) -> dict:
+    r = _blank("absent", root)
+    objs = _objects(root, full)
+    r["owner_is_user"] = _owner_is_user(root)
+    mark = _posix_mark(root)
+    r["sampled"] = len(objs)
+    if mark is None:
+        r["detail"] = "LAYER 2 OFF: reference/ is neither immutable nor write-protected"
+        return r
+    if mark == "immutable":
+        flags = _flags(objs)
+        ok = sum(1 for p in objs if flags.get(str(p)))
+    else:
+        ok = sum(1 for p in objs if _readonly(p))
+    r.update(mechanism=_posix_mechanism_name(mark), sample_ok=ok,
+             stops=list(_POSIX_STOPS[mark]), does_not_stop=list(_POSIX_GAPS[mark]))
+    if ok == len(objs):
+        r.update(state="protected", detail="%s on %d of %d sampled object(s)" % (
+            r["mechanism"], ok, len(objs)))
+    else:
+        r.update(state="partial", detail="%s on the root but only %d of %d sampled "
+                 "object(s)" % (r["mechanism"], ok, len(objs)))
+    return r
+
+
+def _chmod_tree(root: Path, writable: bool) -> int:
+    """Clear (or restore the OWNER's) write bits on every dir and file. Symlinks are
+    never followed. Returns the number of objects that could not be changed."""
+    failed = 0
+    for p in _walk(root):
+        try:
+            m = stat.S_IMODE(_mode(p))
+            _mutate_chmod(p, (m | stat.S_IWUSR) if writable else (m & ~0o222))
+        except OSError:
+            failed += 1
+    return failed
+
+
+def _posix_apply(root: Path) -> int:
+    before = _posix_report(root, False)
+    if not _owner_is_user(root):
+        print("REFUSED: %s is not owned by you; not applying." % root, file=sys.stderr)
+        return 2
+    if before["state"] == "protected":
+        print("already protected: %s (%s)" % (root, before["detail"]))
+        return 0
+    plat, note = _platform(), ""
+    if plat == "linux" and _geteuid() == 0 and _which("chattr"):
+        res = _mutate_run([_which("chattr"), "-R", "+i", root], root)
+        note = "chattr rc %d %s" % (res.returncode, res.stderr.strip()[:200])
+    elif plat == "darwin" and _which("chflags"):
+        res = _mutate_run([_which("chflags"), "-R", "uchg", root], root)
+        note = "chflags rc %d %s" % (res.returncode, res.stderr.strip()[:200])
+    else:
+        failed = _chmod_tree(root, writable=False)
+        note = "chmod a-w: %d object(s) could not be changed" % failed
+        if plat == "linux":
+            note += " (chattr +i needs root; using the chmod fallback)"
+    after = _posix_report(root, False)
+    if after["state"] == "protected":
+        print("Layer 2 applied (best effort, not device-tested): %s -- %s" % (
+            root, after["detail"]))
+        return 0
+    print("FAILED VERIFICATION: the re-read says %s: %s. The tree may be PARTIALLY "
+          "protected. (%s)" % (after["state"], after["detail"], note), file=sys.stderr)
+    return 1
+
+
+def _posix_remove(root: Path) -> int:
+    mark = _posix_mark(root)
+    if mark is None:
+        print("nothing to remove: %s carries no protection this tool recognises" % root)
+        return 0
+    plat = _platform()
+    if mark == "immutable":
+        if plat == "linux":
+            if _geteuid() != 0 or not _which("chattr"):
+                print("REFUSED: %s is immutable (chattr +i) and only root can clear that: "
+                      "sudo chattr -R -i \"%s\"" % (root, root), file=sys.stderr)
+                return 2
+            _mutate_run([_which("chattr"), "-R", "-i", root], root)
+        elif _which("chflags"):
+            _mutate_run([_which("chflags"), "-R", "nouchg", root], root)
+        else:
+            print("REFUSED: %s is immutable and chflags is not available" % root,
+                  file=sys.stderr)
+            return 2
+    if _readonly(root) or mark == "readonly":
+        _chmod_tree(root, writable=True)
+    left = _posix_mark(root)
+    if left is None:
+        print("Layer 2 lifted: %s (owner write restored; group/other write bits are not "
+              "restored)" % root)
+        return 0
+    print("FAILED VERIFICATION: %s still reads as %s" % (root, left), file=sys.stderr)
+    return 1
+
+
+# =============================================================== shared walking
+
+def _walk(root: Path):
+    """Every directory and file under root, root first, symlinks never followed."""
+    yield root
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames.sort()
+        for n in dirnames:
+            p = Path(dirpath) / n
+            if not p.is_symlink():
+                yield p
+        for n in sorted(filenames):
+            p = Path(dirpath) / n
+            if not p.is_symlink():
+                yield p
+
+
+def _first_file(d: Path):
+    for dirpath, dirnames, filenames in os.walk(d, followlinks=False):
+        dirnames.sort()
+        for n in sorted(filenames):
+            return Path(dirpath) / n
+    return None
+
+
+def _objects(root: Path, full: bool) -> list:
+    """The SAMPLE (see SAMPLE_SCOPE), or every object with --full. Root first."""
+    if full:
+        return list(_walk(root))
+    out = [root]
+    if (root / SENTINEL).is_file():
+        out.append(root / SENTINEL)
+    try:
+        tops = [e for e in os.scandir(root) if e.is_dir(follow_symlinks=False)]
+    except OSError:
+        tops = []
+    for e in sorted(tops, key=lambda e: e.name):
+        f = _first_file(Path(e.path))
+        if f is not None:
+            out.append(f)
+    return out
 
 
 # ------------------------------------------------------------------ report
@@ -291,7 +754,10 @@ def report(full: bool = False, path=None) -> dict:
     if not root.is_dir():
         return _blank("unconfigured", root, "the configured reference root %s does not "
                       "exist (renamed or moved?)" % root)
-    return _blank("error", root.resolve(), "mechanism not implemented yet")
+    root = root.resolve()
+    if plat == "windows":
+        return _win_report(root, full)
+    return _posix_report(root, full)
 
 
 _EXIT = {"protected": 0, "absent": 1, "partial": 1, "foreign": 2, "unconfigured": 2,
@@ -329,8 +795,14 @@ def _act(args, action: str) -> int:
         print("REFUSED: %s" % exc, file=sys.stderr)
         print(ESCAPE_HATCH, file=sys.stderr)
         return 2
-    print("ERROR: mechanism not implemented yet for %s" % root, file=sys.stderr)
-    return 2
+    try:
+        if _platform() == "windows":
+            return _win_apply(root) if action == "apply" else _win_remove(root)
+        return _posix_apply(root) if action == "apply" else _posix_remove(root)
+    except AclError as exc:
+        print("ERROR: could not read the ACL, so nothing can be verified: %s" % exc,
+              file=sys.stderr)
+        return 2
 
 
 def main(argv=None) -> int:

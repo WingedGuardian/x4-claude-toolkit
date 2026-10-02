@@ -208,3 +208,348 @@ def test_status_json_is_ONE_object_even_when_refusing(monkeypatch, capsys):
                 "sampled", "sample_ok", "sample_scope", "detail", "mechanism",
                 "stops", "does_not_stop"):
         assert key in obj, key
+
+
+# ------------------------------------------------- Task 3: the Windows mechanism
+
+import subprocess  # noqa: E402
+
+win = pytest.mark.skipif(os.name != "nt", reason="NTFS ACLs: the Windows mechanism")
+posix = pytest.mark.skipif(os.name == "nt", reason="real chmod semantics: POSIX only")
+
+
+def scratch_icacls(tmp_path, target, *args):
+    """A TEST's own icacls call (setup/teardown). Asserted under the temp dir AND routed
+    through x4refguard's sandboxed choke point -- two independent checks."""
+    assert _under_temp(target) and str(Path(target).resolve()).lower().startswith(
+        str(tmp_path.resolve()).lower()), "test icacls aimed outside the scratch tree: %s" % target
+    return x4refguard._mutate_run(["icacls", target, *args], target)
+
+
+def scratch_unprotect(tmp_path, root):
+    """Never leave an undeletable directory in the temp dir, whatever the test did."""
+    if os.name == "nt":
+        scratch_icacls(tmp_path, root, "/reset", "/T", "/C", "/Q")
+    else:
+        for p in [root, *Path(root).rglob("*")]:
+            if not p.is_symlink():
+                try:
+                    x4refguard._mutate_chmod(p, (p.stat().st_mode & 0o7777) | 0o200)
+                except OSError:
+                    pass
+
+
+@pytest.fixture
+def tripwire(monkeypatch, tmp_path):
+    """Fail the test if ANY icacls call names a path outside tmp_path. Independent of
+    the in-module sandbox: it wraps subprocess.run itself."""
+    real = subprocess.run
+    seen = []
+
+    def guarded(argv, *a, **k):
+        if isinstance(argv, (list, tuple)) and argv and Path(str(argv[0])).stem.lower() == "icacls":
+            target = Path(argv[1]).resolve()
+            assert str(target).lower().startswith(str(tmp_path.resolve()).lower()), \
+                "icacls aimed OUTSIDE the scratch tree: %s" % target
+            seen.append(list(argv))
+        return real(argv, *a, **k)
+    monkeypatch.setattr(x4refguard.subprocess, "run", guarded)
+    return seen
+
+
+@pytest.fixture
+def protected_cleanup(ref, tmp_path):
+    yield ref
+    scratch_unprotect(tmp_path, ref)
+
+
+def test_SANDBOX_refuses_a_mutation_outside_it(tmp_path):         # falsification twin
+    with pytest.raises(x4refguard.SandboxViolation):
+        x4refguard._mutate_run(["icacls", Path.home(), "/?"], Path.home())
+    with pytest.raises(x4refguard.SandboxViolation):
+        x4refguard._mutate_chmod(Path.home(), 0o755)
+    with pytest.raises(x4refguard.SandboxViolation):       # the sandbox itself is not "under" it
+        x4refguard._mutate_chmod(tmp_path, 0o755)
+
+
+def test_SANDBOX_is_not_an_Exception_so_nothing_swallows_it():
+    assert not issubclass(x4refguard.SandboxViolation, Exception)
+
+
+@win
+def test_TRIPWIRE_fires_on_an_outside_path(tripwire):              # falsification twin
+    with pytest.raises(AssertionError, match="OUTSIDE"):
+        x4refguard.subprocess.run(["icacls", str(Path.home()), "/?"], capture_output=True)
+
+
+def test_EXPECTED_MASK_is_delete_plus_write_and_nothing_else():
+    # DE 0x10000 + DC 0x40 + WD 0x2 + AD 0x4. Never SYNCHRONIZE (0x100000), WRITE_DAC
+    # (0x40000) or WRITE_OWNER (0x80000): those denied reads / made the deny unremovable.
+    assert x4refguard.EXPECTED_MASK == 65606
+    assert x4refguard.EXPECTED_MASK & (0x100000 | 0x40000 | 0x80000) == 0
+    assert x4refguard.ICACLS_SPEC == "(OI)(CI)(DE,DC,WD,AD)"
+
+
+@win
+def test_status_before_apply_is_ABSENT_exit_1(ref, tripwire):
+    r = x4refguard.report()
+    assert r["state"] == "absent" and r["owner_is_user"] is True and r["sentinel"] is True
+    assert x4refguard.main(["status"]) == 1
+    assert not tripwire, "status made an icacls call"
+
+
+@win
+def test_apply_then_status_is_PROTECTED_with_the_exact_mask(protected_cleanup, tripwire):
+    assert x4refguard.main(["apply"]) == 0
+    r = x4refguard.report()
+    assert r["state"] == "protected"
+    assert r["mask"] == x4refguard.EXPECTED_MASK == 65606
+    assert r["sample_ok"] == r["sampled"] >= 3              # root + sentinel + libraries/wares.xml
+    assert r["stops"] and r["does_not_stop"]
+    assert tripwire, "apply made no icacls call -- it cannot have applied anything"
+    assert x4refguard.main(["status"]) == 0
+
+
+@win
+def test_apply_is_IDEMPOTENT_one_ace_no_second_write(protected_cleanup, tripwire):
+    assert x4refguard.main(["apply"]) == 0
+    n = len(tripwire)
+    assert x4refguard.main(["apply"]) == 0
+    assert len(tripwire) == n, "a second apply re-ran icacls"
+    assert x4refguard._explicit_denies(protected_cleanup) == [x4refguard.EXPECTED_MASK]
+
+
+@win
+def test_remove_leaves_ZERO_deny_entries_anywhere(protected_cleanup, tripwire):
+    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["remove"]) == 0
+    assert x4refguard.report(full=True)["state"] == "absent"
+    objs = [protected_cleanup, *protected_cleanup.rglob("*")]
+    _, items = x4refguard._acl(objs)
+    assert len(items) == len(objs) >= 4
+    for p, it in zip(objs, items):
+        assert x4refguard._deny_masks(p, it) == [], p          # explicit AND inherited
+
+
+@win
+def test_remove_when_nothing_is_applied_is_a_verified_noop(ref, tripwire):
+    assert x4refguard.main(["remove"]) == 0
+    assert not tripwire
+
+
+@win
+def test_a_FOREIGN_deny_is_refused_and_left_alone(protected_cleanup, tripwire, tmp_path):
+    sid = x4refguard._user_sid()
+    scratch_icacls(tmp_path, protected_cleanup, "/deny", "*%s:(WEA)" % sid)
+    assert x4refguard.main(["apply"]) == 2
+    assert x4refguard.main(["remove"]) == 2
+    assert x4refguard.report()["state"] == "foreign"
+    assert 16 in x4refguard._explicit_denies(protected_cleanup)    # WriteExtendedAttributes untouched
+
+
+@win
+def test_apply_REFUSES_a_root_the_user_does_not_own(protected_cleanup, tripwire, monkeypatch):
+    monkeypatch.setattr(x4refguard, "_owner_is_user", lambda p: False)
+    assert x4refguard.main(["apply"]) == 2                  # the lockout precondition (x4lock history)
+    assert not tripwire
+
+
+@win
+def test_an_APPLY_verification_mismatch_is_exit_1_never_0(protected_cleanup, tripwire, monkeypatch):
+    monkeypatch.setattr(x4refguard, "_explicit_denies", lambda *a, **k: [])   # icacls "succeeded", ACL disagrees
+    assert x4refguard.main(["apply"]) == 1
+    assert tripwire
+
+
+@win
+def test_a_REMOVE_verification_mismatch_is_exit_1_never_0(protected_cleanup, tripwire, monkeypatch):
+    assert x4refguard.main(["apply"]) == 0
+    monkeypatch.setattr(x4refguard, "_explicit_denies",
+                        lambda *a, **k: [x4refguard.EXPECTED_MASK])        # the deny "survives"
+    assert x4refguard.main(["remove"]) == 1
+
+
+@win
+def test_remove_on_an_OLD_root_needs_our_exact_ace(protected_cleanup, tripwire, tmp_path, monkeypatch):
+    assert x4refguard.main(["apply"]) == 0
+    new = tmp_path / "newref"
+    new.mkdir()
+    monkeypatch.setenv("X4_REFERENCE", str(new))
+    _paths.reload()
+    assert x4refguard.main(["remove", "--path", str(protected_cleanup)]) == 0   # carries our ACE
+    other = tmp_path / "other"
+    other.mkdir()
+    assert x4refguard.main(["remove", "--path", str(other)]) == 2               # carries none
+
+
+@win
+def test_PARTIAL_is_named_when_a_child_has_inheritance_cut(protected_cleanup, tripwire, tmp_path):
+    assert x4refguard.main(["apply"]) == 0
+    child = protected_cleanup / "libraries" / "wares.xml"
+    scratch_icacls(tmp_path, child, "/inheritance:r", "/grant", "*%s:F" % x4refguard._user_sid())
+    r = x4refguard.report(full=True)
+    assert r["state"] == "partial" and r["sample_ok"] < r["sampled"]
+    assert x4refguard.main(["status"]) == 1
+    assert x4refguard.main(["apply"]) == 1          # re-applying cannot fix a cut child: never 0
+
+
+@win
+def test_status_with_an_UNREADABLE_acl_is_error_never_absent(ref, monkeypatch):
+    def broken(paths):
+        raise x4refguard.AclError("simulated")
+    monkeypatch.setattr(x4refguard, "_acl", broken)
+    r = x4refguard.report()
+    assert r["state"] == "error"
+    assert x4refguard.main(["status"]) == 2
+    assert x4refguard.main(["apply"]) == 2
+
+
+# --------------------------------------------- Task 3: the POSIX mechanism (#15)
+
+@posix
+def test_POSIX_chmod_apply_status_remove_round_trip(protected_cleanup, monkeypatch):
+    monkeypatch.setattr(x4refguard, "_geteuid", lambda: 12345)       # force the chmod branch
+    monkeypatch.setattr(x4refguard, "_owner_is_user", lambda p: True)
+    assert x4refguard.report()["state"] == "absent"
+    assert x4refguard.main(["apply"]) == 0
+    r = x4refguard.report(full=True)
+    assert r["state"] == "protected" and r["mechanism"].startswith("chmod")
+    assert r["sample_ok"] == r["sampled"] >= 4
+    assert any("root" in g for g in r["does_not_stop"])
+    assert x4refguard.main(["remove"]) == 0
+    assert x4refguard.report()["state"] == "absent"
+    (protected_cleanup / "libraries" / "wares.xml").write_text("ok")   # writable again
+
+
+@posix
+def test_POSIX_chmod_actually_stops_delete_and_write(protected_cleanup, monkeypatch):
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses permission bits (a disclosed gap, not a test failure)")
+    monkeypatch.setattr(x4refguard, "_geteuid", lambda: 12345)
+    monkeypatch.setattr(x4refguard, "_owner_is_user", lambda p: True)
+    assert x4refguard.main(["apply"]) == 0
+    f = protected_cleanup / "libraries" / "wares.xml"
+
+    def _try(fn):
+        try:
+            fn()
+        except OSError:
+            pass
+    _try(lambda: os.remove(f))
+    _try(lambda: open(f, "w").write("x"))
+    _try(lambda: (protected_cleanup / "new.xml").write_text("x"))
+    _try(lambda: os.rename(f, f.with_name("moved.xml")))
+    # judged by the DISK, never by whether a call raised
+    assert f.read_text() == "<wares/>" and not (protected_cleanup / "new.xml").exists()
+    assert not f.with_name("moved.xml").exists()
+
+
+@posix
+def test_POSIX_CONTROL_the_same_primitives_work_unprotected(tmp_path):
+    root = tmp_path / "plain"
+    (root / "libraries").mkdir(parents=True)
+    f = root / "libraries" / "wares.xml"
+    f.write_text("<wares/>")
+    open(f, "w").write("x")
+    (root / "new.xml").write_text("x")
+    os.rename(f, f.with_name("moved.xml"))
+    os.remove(f.with_name("moved.xml"))
+    assert (root / "new.xml").exists() and not f.exists()
+
+
+class _FakeFS:
+    """Fakes for the chattr/chflags/chmod branches, so they run on every OS."""
+
+    def __init__(self, monkeypatch, plat, euid, tools):
+        self.calls, self.immutable, self.ro = [], set(), set()
+        self.honour = True
+        monkeypatch.setattr(x4refguard, "_platform", lambda: plat)
+        monkeypatch.setattr(x4refguard, "_geteuid", lambda: euid)
+        monkeypatch.setattr(x4refguard, "_owner_is_user", lambda p: True)
+        monkeypatch.setattr(x4refguard, "_which", lambda n: ("/usr/bin/" + n) if n in tools else None)
+        monkeypatch.setattr(x4refguard, "_flags",
+                            lambda paths: {str(p): str(p) in self.immutable for p in paths})
+        monkeypatch.setattr(x4refguard, "_mode",
+                            lambda p: 0o40555 if str(p) in self.ro else 0o40755)
+
+        def run(argv, target):
+            x4refguard._sandbox_check(target)
+            self.calls.append([str(a) for a in argv])
+            if self.honour:
+                objs = [str(p) for p in x4refguard._walk(Path(target))]
+                if "+i" in argv or "uchg" in argv:
+                    self.immutable.update(objs)
+                if "-i" in argv or "nouchg" in argv:
+                    self.immutable.difference_update(objs)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        def chmod(p, mode):
+            x4refguard._sandbox_check(p)
+            self.calls.append(["chmod", oct(mode), str(p)])
+            if self.honour:
+                (self.ro.add if not mode & 0o222 else self.ro.discard)(str(p))
+        monkeypatch.setattr(x4refguard, "_mutate_run", run)
+        monkeypatch.setattr(x4refguard, "_mutate_chmod", chmod)
+
+
+def test_FAKE_linux_as_root_uses_chattr_and_verifies(ref, monkeypatch):
+    fs = _FakeFS(monkeypatch, "linux", 0, {"chattr", "lsattr"})
+    assert x4refguard.main(["apply"]) == 0
+    assert fs.calls[0][1:] == ["-R", "+i", str(ref.resolve())]
+    r = x4refguard.report()
+    assert r["state"] == "protected" and r["mechanism"] == "chattr +i"
+    assert x4refguard.main(["remove"]) == 0
+    assert fs.calls[-1][1:] == ["-R", "-i", str(ref.resolve())]
+
+
+def test_FAKE_linux_unprivileged_falls_back_to_chmod_on_dirs_AND_files(ref, monkeypatch):
+    fs = _FakeFS(monkeypatch, "linux", 1000, {"chattr", "lsattr"})
+    assert x4refguard.main(["apply"]) == 0
+    chmodded = {c[2] for c in fs.calls if c[0] == "chmod"}
+    assert str(ref.resolve()) in chmodded                                   # a directory
+    assert str(ref.resolve() / "libraries" / "wares.xml") in chmodded       # a file
+    assert not any("chattr" in c[0] for c in fs.calls)
+    assert x4refguard.report()["mechanism"].startswith("chmod")
+
+
+def test_FAKE_linux_immutable_tree_cannot_be_lifted_unprivileged(ref, monkeypatch):
+    _FakeFS(monkeypatch, "linux", 0, {"chattr", "lsattr"})
+    assert x4refguard.main(["apply"]) == 0
+    monkeypatch.setattr(x4refguard, "_geteuid", lambda: 1000)
+    assert x4refguard.main(["remove"]) == 2        # names `sudo chattr -R -i`, changes nothing
+    assert x4refguard.report()["state"] == "protected"
+
+
+def test_FAKE_macos_uses_chflags_uchg(ref, monkeypatch):
+    fs = _FakeFS(monkeypatch, "darwin", 501, {"chflags"})
+    assert x4refguard.main(["apply"]) == 0
+    assert fs.calls[0][1:] == ["-R", "uchg", str(ref.resolve())]
+    assert x4refguard.report()["mechanism"] == "chflags uchg"
+    assert x4refguard.main(["remove"]) == 0
+    assert fs.calls[-1][1:] == ["-R", "nouchg", str(ref.resolve())]
+
+
+def test_FAKE_macos_without_chflags_falls_back_to_chmod(ref, monkeypatch):
+    fs = _FakeFS(monkeypatch, "darwin", 501, set())
+    assert x4refguard.main(["apply"]) == 0
+    assert fs.calls and all(c[0] == "chmod" for c in fs.calls)
+
+
+@pytest.mark.parametrize("plat,euid,tools", [("linux", 0, {"chattr", "lsattr"}),
+                                             ("linux", 1000, set()),
+                                             ("darwin", 501, {"chflags"})])
+def test_FAKE_a_mechanism_that_does_not_take_is_exit_1_never_0(ref, monkeypatch, plat, euid, tools):
+    fs = _FakeFS(monkeypatch, plat, euid, tools)
+    fs.honour = False                                   # the tool "ran", the filesystem ignored it
+    assert x4refguard.main(["apply"]) == 1
+    assert fs.calls
+    assert x4refguard.report()["state"] == "absent"
+
+
+def test_FAKE_a_partly_applied_tree_is_PARTIAL(ref, monkeypatch):
+    fs = _FakeFS(monkeypatch, "linux", 1000, set())
+    assert x4refguard.main(["apply"]) == 0
+    fs.ro.discard(str(ref.resolve() / "libraries" / "wares.xml"))
+    r = x4refguard.report()
+    assert r["state"] == "partial" and r["sample_ok"] == r["sampled"] - 1
+    assert x4refguard.main(["status"]) == 1
