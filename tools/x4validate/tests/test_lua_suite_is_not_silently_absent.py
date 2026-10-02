@@ -5,7 +5,7 @@
 genuinely cannot build it -- but it puts **211 tests** behind ONE skip entry.
 
 MEASURED 2026-09-20 with a 5-test probe: a module-level `importorskip` registers exactly
-one entry in `terminalreporter.stats["skipped"]`. `X4_MAX_SKIPS` (68 ubuntu / 56 windows)
+one entry in `terminalreporter.stats["skipped"]`. `X4_MAX_SKIPS` (per OS, set in `ci.yml`)
 therefore absorbs the entire file going dormant, and `ci.yml` deliberately pins no pass
 count, so nothing else would notice. Among those 211 are the only tests of the release's
 first WRITE verbs -- `pause` / `unpause`, which mutate a running game: ownership,

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **`reference/` is now protected at the OS level (Layer 2).** The new
+  `scripts/x4refguard.py status | apply | remove` covers it on Windows with one inherited
+  deny for your own account, `(OI)(CI)(DE,DC,WD,AD)`. That blocks deleting, renaming,
+  overwriting and creating anything inside the tree. Reads still work, and you can lift
+  it yourself without elevation. Linux and macOS get `chattr +i` / `chflags uchg`, or a
+  `chmod a-w` fallback: best effort, not device-tested. `bin/unpack-reference.sh` applies
+  it after a verified unpack. It refuses a forced re-unpack while the protection is on,
+  and every recovery message now names the lift (`x4refguard.py remove`) before the `rm`.
+  `x4lock status` prints one informational line for it.
+
 - Individual-tool audit fixes: BaseX validates attribute QNames and certifies raw
   zeros only for a restricted whole-database content-search grammar. Other raw
   queries still report positives; unrecognized zeros return 4.

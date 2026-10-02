@@ -65,7 +65,7 @@ fail open (§2), so parity is defined per agent (D2, D13).
 |---|---|---|
 | **0 — CLIs** | any agent that can run a shell | the 11 CLIs, plus `x4guard check` (one front door to the guards) and `x4doctor` (which layers are live) |
 | **1 — Plain-text knowledge** | any agent that reads files | generated `AGENTS.md` / `CLAUDE.md`, skills in `.agents/skills/` and `.claude/skills/`, `ADAPTING.md` |
-| **2 — Below the agent** | every agent | `reference\`: read-only attribute **plus** inherited deny-delete (D14). The irreplaceable files: x4lock's read-only attribute (blocks accidental overwrites, 11 of 14). `deploy.py` as the only deploy path; git and `x4canary` for recovery. |
+| **2 — Below the agent** | every agent | `reference\`: ~~read-only attribute **plus** inherited deny-delete (D14)~~ *(SUPERSEDED 2026-10-02: the read-only attribute is not applied to `reference\`, MEASURED 0 of 3,429 sampled files)* inherited delete+write deny `(OI)(CI)(DE,DC,WD,AD)`, mask 65606 (D14, decision #14; `scripts/x4refguard.py`), plus the `.unpacked-and-locked` sentinel; Linux/macOS best effort (`chattr +i` / `chflags uchg` / `chmod a-w`). The irreplaceable files: x4lock's read-only attribute (blocks accidental overwrites, 11 of 14). `deploy.py` as the only deploy path; git and `x4canary` for recovery. |
 | **3a — Agent-native policy** | agents that have one | Codex `.rules` (`forbidden` / `prompt`), generated. Fail-closed; does not depend on hooks. |
 | **3b — In-loop hooks** | named agents | the existing guards behind per-agent adapters |
 

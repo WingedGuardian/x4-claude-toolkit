@@ -463,3 +463,60 @@ def test_a_GARBLED_commondir_fails_closed_without_raising(tmp_path, monkeypatch)
     root = _worktree_with_commondir(tmp_path, b"\xff\xfe\x00\x81")
     monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
     assert _named(x4lock.missing(), _local_env(root))
+
+
+# --------------------------------------------- Layer 2 (x4refguard), informational only
+
+@pytest.fixture(autouse=True)
+def _no_real_layer2(monkeypatch, request):
+    """`status` would otherwise read the CONFIGURED reference tree's ACL (one PowerShell
+    call) in every test above. Read-only, but slow and machine-dependent -- so stubbed,
+    except where a test asks for the real wiring."""
+    if "REAL_layer2" not in request.node.name:
+        monkeypatch.setattr(x4lock, "_layer2",
+                            lambda: {"state": "stubbed", "detail": "test stub"}, raising=False)
+
+
+def test_status_REPORTS_layer2_and_does_not_change_its_exit_code(tmp_path, monkeypatch, capsys):
+    p = _fresh(tmp_path / "a.md")
+    monkeypatch.setenv("X4_PROTECTED", str(p))
+    x4lock._apply(p, True)
+    try:
+        monkeypatch.setattr(x4lock, "_layer2", lambda: {"state": "protected", "detail": "ok"})
+        rc_on = x4lock.main(["status"])
+        monkeypatch.setattr(x4lock, "_layer2", lambda: {"state": "absent", "detail": "LAYER 2 OFF"})
+        rc_off = x4lock.main(["status"])
+        out = capsys.readouterr()
+        assert "reference deny-delete: absent" in (out.out + out.err)
+        assert "reference deny-delete: protected" in (out.out + out.err)
+        # informational: x4doctor is the verdict surface, x4lock's own contract is unchanged
+        assert rc_on == rc_off
+    finally:
+        x4lock._apply(p, False)
+
+
+def test_status_says_UNKNOWN_never_absent_when_layer2_cannot_be_read(tmp_path, monkeypatch, capsys):
+    p = _fresh(tmp_path / "a.md")
+    monkeypatch.setenv("X4_PROTECTED", str(p))
+
+    def boom():
+        raise RuntimeError("powershell missing")
+    monkeypatch.setattr(x4lock, "_layer2", boom)
+    x4lock.main(["status"])
+    out = capsys.readouterr()
+    text = out.out + out.err
+    assert "reference deny-delete: UNKNOWN (RuntimeError: powershell missing)" in text
+    assert "reference deny-delete: absent" not in text
+
+
+def test_REAL_layer2_DELEGATES_to_x4refguard_report(monkeypatch):
+    called = {}
+
+    def fake_report(full=False, path=None):
+        called["full"] = full
+        return {"state": "partial", "detail": "x"}
+    x4lock._layer2_module = None
+    real = x4lock._load_refguard()
+    monkeypatch.setattr(real, "report", fake_report)
+    assert x4lock._layer2() == {"state": "partial", "detail": "x"}
+    assert called == {"full": False}

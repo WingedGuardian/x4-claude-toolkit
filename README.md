@@ -251,6 +251,31 @@ tiers behind each answer.
   > an installer from any other process. An upgrade that does not need to change a
   > locked file does not touch it, so this only comes up when something you locked
   > has genuinely changed upstream.
+- **Reference lock (Layer 2)** — `python scripts/x4refguard.py status [--json] [--full] | apply | remove`
+  protects the unpacked `reference/` tree at the OS level, so it holds against every
+  process, hooks or no hooks. `bin/unpack-reference.sh` applies it after a verified unpack.
+  - **Windows:** one inherited deny for your own account,
+    `(OI)(CI)(DE,DC,WD,AD)` (mask 65606). It blocks deleting, renaming, overwriting,
+    appending and creating anything inside the tree. Reads and copies OUT of it still
+    work. Measured on scratch trees: 15 of 15 delete/rename and 20 of 20 write
+    primitives blocked, 12 of 12 reads unaffected, about 8 s per 100,000 files.
+  - **Linux/macOS: best effort, not device-tested.** Linux uses `chattr +i` when run as
+    root, otherwise `chmod a-w` on every directory and file. macOS uses `chflags uchg`,
+    otherwise the same `chmod`. `status` names the mechanism it found, what it stops and
+    what it does not. It never reports "protected" for something it could not confirm.
+  - **What it does not stop:** renaming the `reference/` folder itself (its parent allows
+    that, and `status` then reports the root missing); you lifting it on purpose; an
+    Administrator or root.
+  - **To re-unpack after a game update**, lift it first. Each step is yours to take; an agent should not take it on its own:
+    1. `python scripts/x4refguard.py remove`
+    2. root moved since? `python scripts/x4refguard.py remove --path <old root>` (only
+       accepted on a folder that carries this tool's exact protection)
+    3. tool broken? from **cmd.exe**: `icacls "<root>" /remove:d *<your SID>`
+       (`whoami /user` prints the SID); Linux `sudo chattr -R -i` / `chmod -R u+w`;
+       macOS `chflags -R nouchg`
+    4. last resort, elevated: `icacls "<root>" /reset /T /C`
+
+    Then `rm reference/.unpacked-and-locked` and run `bin/unpack-reference.sh`.
 - **Recovery** — `bash scripts/restore-from-backup.sh` LISTS the timestamped
   auto-backup trail above; restoring is a second, deliberate step:
   `RESTORE=1 bash scripts/restore-from-backup.sh <backup-filename> <dest-path>`.

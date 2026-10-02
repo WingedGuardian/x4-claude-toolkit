@@ -337,6 +337,40 @@ def _apply(p: Path, locked: bool) -> tuple[bool, str]:
     return True, ""
 
 
+# ------------------------------------------------- Layer 2 (reference/, informational)
+
+_layer2_module = None
+
+
+def _load_refguard():
+    """scripts/x4refguard.py, loaded from THIS file's directory (not `_HERE`, which tests
+    repoint at fake checkouts)."""
+    global _layer2_module
+    if _layer2_module is None:
+        import importlib.util
+        path = Path(__file__).resolve().parent / "x4refguard.py"
+        spec = importlib.util.spec_from_file_location("x4refguard", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _layer2_module = mod
+    return _layer2_module
+
+
+def _layer2() -> dict:
+    """The reference/ OS-protection state (x4refguard's report). May raise."""
+    return _load_refguard().report(full=False)
+
+
+def _print_layer2() -> None:
+    """ONE informational line. It never changes x4lock's exit code -- x4doctor is the
+    verdict surface for Layer 2 -- and a failure to read it is UNKNOWN, never `absent`."""
+    try:
+        r = _layer2()
+        print("  reference deny-delete: %s -- %s" % (r.get("state"), r.get("detail", "")))
+    except Exception as exc:                # noqa: BLE001 - informational line only
+        print("  reference deny-delete: UNKNOWN (%s: %s)" % (type(exc).__name__, exc))
+
+
 # ------------------------------------------------------------------------ commands
 
 def cmd_status(_args) -> int:
@@ -356,6 +390,7 @@ def cmd_status(_args) -> int:
     print()
     print("%d protected file(s): %s" % (
         len(items), ", ".join("%s %s" % (v, k) for k, v in sorted(counts.items()))))
+    _print_layer2()
     waived = _local_env_waived()
     if waived is not None:
         # ANNOUNCED, never silent: a narrowed check says what it narrowed, and names what
