@@ -599,7 +599,17 @@ jobs:
           # Windows is the same 49 + 4 = 53. None is a test gone dormant.
           #    windows  53 + 3 = 56
           #    ubuntu   65 + 3 = 68
-          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '68' || '56' }}
+          #
+          # ** RAISED 2026-10-02 (lane D, Layer 2 on reference/), 68 -> 122 ubuntu and
+          # 56 -> 59 windows. ** One new bucket per leg, counted by COLLECTION of the three
+          # new files (each test id's skipif reason), not yet read off a CI run -- re-read
+          # the per-job -rs output on the first run and correct these if they differ:
+          #    54  NTFS deny (x4refguard): Windows-only mechanism -- ubuntu only
+          #        (test_x4refguard 13, test_x4refguard_behaviour 38, test_unpack_reference_layer2 3)
+          #     3  real chmod semantics of the POSIX branch -- windows only (test_x4refguard)
+          #    windows  56 + 3 = 59
+          #    ubuntu   68 + 54 = 122
+          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '122' || '59' }}
           # No .pyc from CI: a stale cache cannot then masquerade as the source.
           PYTHONDONTWRITEBYTECODE: '1'
         run: uv run --frozen python -m pytest -q -rs
