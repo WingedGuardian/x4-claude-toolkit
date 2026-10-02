@@ -448,11 +448,12 @@ def test_E3_TWIN_a_failing_guard_without_a_verdict_names_its_stderr(sandbox, tmp
 
 
 def test_E4_the_delete_probe_is_a_recursive_rm(sandbox):
-    """The ask reason echoes the probe command (MEASURED: 'confirm: rm -f ...')."""
+    """The rm rule's message echoes the probe command (MEASURED: 'confirm: rm -f ...'). Since
+    2026-10-02 an X4-folder delete is an ADVISORY (user decision), so it is in the context."""
     _, tk, env = sandbox
     v = _check_in(env, tk, "--kind", "delete", "--path", str(tk / "dev" / "mymod"))
-    assert v["decision"] == "ask" and not v["inert"], v
-    assert "rm -rf -- '" in v["reason"], v["reason"]
+    assert v["decision"] == "advise" and not v["inert"], v
+    assert "rm -rf -- '" in v["context"], v["context"]
 
 
 def test_E4_TWIN_a_quote_and_a_space_in_the_path_still_reach_the_rm_rule(sandbox):
@@ -461,20 +462,21 @@ def test_E4_TWIN_a_quote_and_a_space_in_the_path_still_reach_the_rm_rule(sandbox
     p = tk / "dev" / "mymod" / "it's here.xml"
     p.write_text("x\n", encoding="utf-8")
     v = _check_in(env, tk, "--kind", "delete", "--path", str(p))
-    assert v["decision"] == "ask" and not v["inert"], v
-    assert v["reason"].startswith("Deleting files in an X4 directory"), v["reason"]
+    assert v["decision"] == "advise" and not v["inert"], v
+    assert "deletes files in an X4 directory" in v["context"], v["context"]
     assert p.exists()
 
 
 def test_E5_a_delete_keeps_the_file_guards_advisory(sandbox):
-    """MEASURED: the delete ASKs (protect-bash) and the manifest advisory from protect-files
-    was dropped -- context null."""
+    """MEASURED: the delete's verdict came from protect-bash and the manifest advisory from
+    protect-files was dropped -- context null. (Since 2026-10-02 that delete ADVISES too.)"""
     _, tk, env = sandbox
     target = tk / "dev" / "mymod" / "content.xml"
     w = _check_in(env, tk, "--kind", "write", "--path", str(target))
     d = _check_in(env, tk, "--kind", "delete", "--path", str(target))
     assert w["decision"] == "advise" and w["context"], w
-    assert d["decision"] == "ask" and d["context"] and w["context"] in d["context"], d
+    assert d["decision"] == "advise" and d["context"] and w["context"] in d["context"], d
+    assert "deletes files in an X4 directory" in d["context"], d
 
 
 def test_E5_TWIN_contexts_join_in_guard_order_whoever_wins(monkeypatch):

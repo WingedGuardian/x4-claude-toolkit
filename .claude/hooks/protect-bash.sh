@@ -398,7 +398,7 @@ on lifts_reference_deny && ask "This LIFTS the OS delete/write protection on ref
 # an ask that is always approved protects nothing and trains approval. The game install
 # and reference/ are HARD blocks above; saves and the X4 PROFILE still ask below.
 on rm_in_profile && ask "DELETING IN YOUR X4 PROFILE (mod list, config, saves) -- not reproducible. Confirm: $COMMAND"
-on rm_in_x4_dir && advise "This deletes files in an X4 directory (game extensions, mod sources or the toolkit). Make sure it is what you meant -- check git status afterwards, and redeploy if you removed a deployed mod by mistake."
+on rm_in_x4_dir && advise "This deletes files in an X4 directory (game extensions, mod sources or the toolkit). Make sure it is what you meant -- check git status afterwards, and redeploy if you removed a deployed mod by mistake. Command: $COMMAND"
 
 # === CONFIRM — destructive git inside an X4 directory ===
 # git IGNORES the read-only attribute. MEASURED 2026-09-04: `git checkout HEAD~1 -- f`
