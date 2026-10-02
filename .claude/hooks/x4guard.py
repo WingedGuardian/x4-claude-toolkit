@@ -225,7 +225,10 @@ def run_guard(script: str, payload: dict, deadline: float | None = None) -> dict
 
 def verdict_for(kind: str, shell: str | None, command: str | None, path: str | None) -> dict:
     """A relative path is resolved from the CALLER's working directory (Codex apply_patch paths
-    are relative). A delete is judged as the stricter of a write and an `rm -f` of that path."""
+    are relative). A delete is judged as the stricter of a write and an `rm -rf --` of that path:
+    recursive, because the path may be a directory. No protect-bash rule distinguishes it from
+    `rm -f` today (MEASURED 9/9 paths identical); the probe says what a delete IS, for any
+    future rule keyed on recursion."""
     deadline = _clock() + TIMEOUT_S if TIMEOUT_S else None
     if kind == "shell":
         return run_guard("protect-bash.sh", guard_payload(kind, shell, command, None), deadline)
@@ -233,7 +236,7 @@ def verdict_for(kind: str, shell: str | None, command: str | None, path: str | N
     parts = [run_guard("protect-files.sh", guard_payload("write", None, None, path), deadline)]
     if kind == "delete":
         quoted = path.replace("\\", "/").replace("'", "'\"'\"'")    # close, "'", reopen
-        rm = "rm -f '" + quoted + "'"
+        rm = "rm -rf -- '" + quoted + "'"
         parts.append(run_guard("protect-bash.sh", guard_payload("shell", "bash", rm, None), deadline))
     worst = max(parts, key=lambda v: (v["inert"], RANK[v["decision"]]))
     worst = dict(worst)

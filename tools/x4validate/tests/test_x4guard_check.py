@@ -207,7 +207,8 @@ def test_I4_a_delete_is_at_least_as_strict_as_rm(sandbox):
     d = _check_in(env, tk, "--kind", "delete", "--path", str(target))
     w = _check_in(env, tk, "--kind", "write", "--path", str(target))
     s = _check_in(env, tk, "--kind", "shell", "--shell", "bash", "--command", f"rm -f '{target.as_posix()}'")
-    assert rank[d["decision"]] == max(rank[w["decision"]], rank[s["decision"]]), (d, w, s)
+    s2 = _check_in(env, tk, "--kind", "shell", "--shell", "bash", "--command", f"rm -rf -- '{target.as_posix()}'")
+    assert rank[d["decision"]] == max(rank[w["decision"]], rank[s["decision"]], rank[s2["decision"]]), (d, w, s, s2)
     assert d["guards"] == ["protect-files.sh", "protect-bash.sh"]
     assert target.exists()                      # verdict only: nothing executed
 
@@ -444,6 +445,25 @@ def test_E3_TWIN_a_failing_guard_without_a_verdict_names_its_stderr(sandbox, tmp
                   script=hooks / "x4guard.py")
     assert v["decision"] == "deny" and v["inert"], v
     assert "exited 1" in v["reason"] and "boom: jq missing" in v["reason"], v["reason"]
+
+
+def test_E4_the_delete_probe_is_a_recursive_rm(sandbox):
+    """The ask reason echoes the probe command (MEASURED: 'confirm: rm -f ...')."""
+    _, tk, env = sandbox
+    v = _check_in(env, tk, "--kind", "delete", "--path", str(tk / "dev" / "mymod"))
+    assert v["decision"] == "ask" and not v["inert"], v
+    assert "rm -rf -- '" in v["reason"], v["reason"]
+
+
+def test_E4_TWIN_a_quote_and_a_space_in_the_path_still_reach_the_rm_rule(sandbox):
+    """Quoting clause: a broken quote would come back as the 'does not PARSE' ask instead."""
+    _, tk, env = sandbox
+    p = tk / "dev" / "mymod" / "it's here.xml"
+    p.write_text("x\n", encoding="utf-8")
+    v = _check_in(env, tk, "--kind", "delete", "--path", str(p))
+    assert v["decision"] == "ask" and not v["inert"], v
+    assert v["reason"].startswith("Deleting files in an X4 directory"), v["reason"]
+    assert p.exists()
 
 
 def test_E2_TWIN_a_valid_budget_setting_is_honoured(sandbox):
