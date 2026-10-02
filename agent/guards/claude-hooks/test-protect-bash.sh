@@ -110,6 +110,7 @@ need "$X4_MODS" "rm-in-modding" X4_MODS && probe ask  "rm-in-modding"        "rm
 # and assuming it raised the ceiling. It never did; the job was killed at 10:00.
 probe_rt deny  "timeout-over-cap"      'echo hi' 900000 false
 probe_rt deny  "timeout-just-over"     'echo hi' 600001 false
+probe_rt deny  "timeout-bg-over-2h"    'echo hi' 7200001 true
 probe_rt deny   "longjob-foreground"    'uv run python gates/corpus_sweep.py' 0 false
 probe_rt deny   "longjob-x4eff-build"   'uv run x4effective build' 0 false
 
@@ -131,6 +132,10 @@ probe allow "git-status"          'git status --porcelain'
 probe allow "empty-command"       ''
 probe_rt allow "timeout-at-cap"        'echo hi' 600000 false
 probe_rt allow "timeout-normal"        'echo hi' 120000 false
+# A BACKGROUND call's cap is 7200000 ms (the Bash tool's own description, READ 2026-10-02).
+# This denied a 25-minute background job with the foreground cap's message.
+probe_rt allow "timeout-bg-25min"      'echo hi' 1500000 true
+probe_rt allow "timeout-bg-at-2h"      'echo hi' 7200000 true
 probe_rt allow "longjob-backgrounded"  'uv run python gates/corpus_sweep.py' 0 true
 probe_rt allow "longjob-name-mentioned" 'grep -n corpus_sweep gates/README.md' 0 false
 probe_rt allow "longjob-cat-the-file"  'cat gates/perf_guard.py' 0 false

@@ -195,9 +195,16 @@ MUTANTS = [
      "test_truncate_into_reference"),
     ("a find WITHOUT -delete is not", 'deletes = "-delete" in toks', "deletes = True",
      "test_a_find_that_does_NOT_delete_is_not_a_delete"),
-    ("a non-int timeout still counts", '"timeout_over_cap": _as_ms(timeout) > 600000,',
-     '"timeout_over_cap": isinstance(timeout, int) and timeout > 600000,',
+    ("a non-int timeout still counts",
+     '"timeout_over_cap": _as_ms(timeout) > (7200000 if background is True else 600000),',
+     '"timeout_over_cap": isinstance(timeout, int) and timeout > (7200000 if background is True else 600000),',
      "test_a_float_over_the_cap_fires"),
+    # 2026-10-02: a background call has its own 2 h cap. The mutant drops it, so the
+    # foreground cap judges background calls again -- the false deny that was fixed.
+    ("a background call has the background cap",
+     '"timeout_over_cap": _as_ms(timeout) > (7200000 if background is True else 600000),',
+     '"timeout_over_cap": _as_ms(timeout) > 600000,',
+     "test_a_BACKGROUND_call_has_the_background_cap"),
     # NOT MUTATED: the bool guard in _as_ms is BEHAVIOURALLY EQUIVALENT today --
     # float(True) is 1.0, which is under the cap either way, so removing it cannot
     # change a verdict. Kept as a guard because Python treats True as an int and a

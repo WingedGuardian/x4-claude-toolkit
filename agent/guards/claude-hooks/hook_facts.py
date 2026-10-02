@@ -3987,7 +3987,10 @@ def facts(payload: dict, roots: dict) -> dict:
         # wrong direction for a cap. MEASURED: 0 of 13,277 historical calls used
         # anything but int, so this is robustness, not an observed bug.
         # `bool` is excluded deliberately: in Python True is an int.
-        "timeout_over_cap": _as_ms(timeout) > 600000,
+        # A BACKGROUND call has its own cap: 7200000 ms (READ: the Bash tool description,
+        # 2026-10-02). Judged by the foreground cap, a 25-minute background job was denied
+        # by a message telling it to run in the background. `is True`, as for longjob below.
+        "timeout_over_cap": _as_ms(timeout) > (7200000 if background is True else 600000),
         "longjob_foreground": longjob and background is not True,
         # THE LAST WHOLE-COMMAND AND-OF-INDEPENDENT-PREDICATES RULE IN THIS FILE,
         # and it hard-denied PROSE. It tested `cmd`/`ncmd` -- the RAW text rather

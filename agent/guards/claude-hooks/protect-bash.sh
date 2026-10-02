@@ -616,12 +616,13 @@ fi
 # (corpus_sweep, a 19-gate loop, a 5-gate loop, perf_guard), every time from
 # passing a number that was assumed to raise the ceiling and never did.
 if on timeout_over_cap; then
-  deny "TIMEOUT ABOVE THE CAP: you passed ${TIMEOUT_MS}ms, but the Bash and PowerShell tools' maximum is 600000ms.
-Larger values are silently clamped -- the command will be KILLED at exactly 10:00 (exit 143),
+  deny "TIMEOUT ABOVE THE CAP: you passed ${TIMEOUT_MS}ms. The Bash and PowerShell tools cap a
+foreground call at 600000ms (10 min) and a background one at 7200000ms (2 h).
+A larger value is clamped -- a foreground command is KILLED at exactly 10:00 (exit 143),
 which looks like a hang and is not one.
 Needing more than 10 minutes IS the signal to background it, not to raise the number:
-  run_in_background: true      <- no cap; you are re-invoked when it finishes (do NOT poll)
-Or split the work so no single foreground call approaches the cap."
+  run_in_background: true      <- up to 2 h (default 30 min); you are re-invoked when it finishes (do NOT poll)
+Beyond that, split the work."
 fi
 
 # --- a known LONG job in the foreground ------------------------------------
@@ -637,7 +638,7 @@ if on longjob_foreground; then
   deny "LONG JOB IN THE FOREGROUND — this is a known multi-minute command and the Bash
 tool hard-caps a foreground call at 600000ms (10 min).
 MEASURED: corpus_sweep ~2100s · perf_guard ~600s+ · build-effective.sh ~100-200s.
-Prefer  run_in_background: true  — it has no cap and re-invokes you on completion.
+Prefer  run_in_background: true  — up to 2 h (default 30 min), and it re-invokes you on completion.
 Proceed in the foreground only if you have scoped it down (e.g. --limit=N).
 Command: $COMMAND"
 fi

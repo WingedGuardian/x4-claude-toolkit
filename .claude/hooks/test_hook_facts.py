@@ -730,6 +730,17 @@ class TestMiscPredicates(unittest.TestCase):
     def test_timeout_at_cap_does_not_fire(self):
         self.assertFalse(F("sleep 1", timeout=600000)["timeout_over_cap"])
 
+    def test_a_BACKGROUND_call_has_the_background_cap(self):
+        """Background calls cap at 7200000 ms, not 600000 (READ: the Bash tool description,
+        2026-10-02). The foreground cap denied a 25-minute background job."""
+        self.assertFalse(F("sleep 1", timeout=1500000, background=True)["timeout_over_cap"])
+        self.assertFalse(F("sleep 1", timeout=7200000, background=True)["timeout_over_cap"])
+
+    def test_TWIN_a_background_call_over_ITS_cap_still_fires(self):
+        self.assertTrue(F("sleep 1", timeout=7200001, background=True)["timeout_over_cap"])
+        self.assertTrue(F("sleep 1", timeout=900000, background=False)["timeout_over_cap"])
+        self.assertTrue(F("sleep 1", timeout=900000, background="true")["timeout_over_cap"])
+
     def test_longjob_invocation_fires(self):
         self.assertTrue(F("uv run python gates/corpus_sweep.py")["longjob_foreground"])
 
