@@ -403,6 +403,13 @@ with every exclusion named. Prefer **`--db x4eff`** for any claim about what is 
 is files as written and will quote a vanilla value the modlist overwrote. Load order is
 MEASURED against the engine (F128). x4validate is the authority.
 
+For certified raw-query zeros, use the restricted content-search grammar in
+`tools/basex/QUERIES.md`, or use `refs`/`attr`. Other raw queries still report
+positives, but unrecognized zeros return 4. Optional `--limit`/`--offset` page
+whole items; totals and negative checks use the full query, and omitted flags
+retain unlimited output. The query recognizer is not an execution sandbox:
+only run read-only XQuery during research.
+
 **Validate the DEPLOYED copy whenever load order could matter.** Tier B places an uninstalled
 copy by its folder NAME, so a differently named dev folder lands elsewhere.
 
