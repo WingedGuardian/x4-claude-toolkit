@@ -101,3 +101,7 @@ dist/
 # 2 failures indefinitely. User decision 2026-09-13; enforced by
 # tools/x4validate/tests/test_nexus_packs_are_never_tracked.py.
 release/nexus/
+
+# Local audit evidence contains machine paths, copied logs and game/save data.
+# Keep the portable audit scripts tracked; never ship their raw output.
+/audit-output/
