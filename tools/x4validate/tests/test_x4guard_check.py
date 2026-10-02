@@ -466,6 +466,29 @@ def test_E4_TWIN_a_quote_and_a_space_in_the_path_still_reach_the_rm_rule(sandbox
     assert p.exists()
 
 
+def test_E5_a_delete_keeps_the_file_guards_advisory(sandbox):
+    """MEASURED: the delete ASKs (protect-bash) and the manifest advisory from protect-files
+    was dropped -- context null."""
+    _, tk, env = sandbox
+    target = tk / "dev" / "mymod" / "content.xml"
+    w = _check_in(env, tk, "--kind", "write", "--path", str(target))
+    d = _check_in(env, tk, "--kind", "delete", "--path", str(target))
+    assert w["decision"] == "advise" and w["context"], w
+    assert d["decision"] == "ask" and d["context"] and w["context"] in d["context"], d
+
+
+def test_E5_TWIN_contexts_join_in_guard_order_whoever_wins(monkeypatch):
+    g = _load(X4GUARD)
+    vs = iter([{"v": 1, "decision": "advise", "reason": None, "context": "A", "inert": False,
+                "guards": ["protect-files.sh"]},
+               {"v": 1, "decision": "advise", "reason": None, "context": "B", "inert": False,
+                "guards": ["protect-bash.sh"]}])
+    monkeypatch.setattr(g, "run_guard", lambda *a, **k: next(vs))
+    v = g.verdict_for("delete", None, None, "x")
+    assert v["decision"] == "advise" and v["context"] == "A\n\nB", v
+    assert v["guards"] == ["protect-files.sh", "protect-bash.sh"]
+
+
 def test_E2_TWIN_a_valid_budget_setting_is_honoured(sandbox):
     _, _, env = sandbox
     _, v, _ = check(dict(env, X4_GUARD_TIMEOUT_S="30.5"), "--kind", "shell", "--shell", "bash",

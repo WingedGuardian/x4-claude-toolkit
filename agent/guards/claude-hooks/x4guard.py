@@ -241,6 +241,10 @@ def verdict_for(kind: str, shell: str | None, command: str | None, path: str | N
     worst = max(parts, key=lambda v: (v["inert"], RANK[v["decision"]]))
     worst = dict(worst)
     worst["guards"] = [g for v in parts for g in v["guards"]]
+    # EVERY guard's advisory, in guard order, whoever wins: a delete that ASKs (protect-bash)
+    # used to drop protect-files' manifest advisory entirely (MEASURED 2026-10-02).
+    ctx = [v["context"] for v in parts if v.get("context")]
+    worst["context"] = "\n\n".join(ctx) or None
     return worst
 
 
