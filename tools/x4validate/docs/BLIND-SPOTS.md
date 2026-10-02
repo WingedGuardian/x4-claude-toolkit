@@ -224,6 +224,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F143 | the store's removal table records each removed node at its path AT THE INSTANT of removal, after earlier removals shifted its siblings, and `cross_tool` compared those paths with x4compat's BASE-tree targets | **DEFECT (measured)** · ✅ FIXED 2026-09-26 | one mod's 5 ware removals on the real install: 3 of 5 records carry a shifted path, 2 of them naming base wares the mod never removed | `cross_tool` replays the removals in application order over a copy of the base tree (`39ff4a3`); HARD rows checked 32/32 -> 37/37. Not modelled: a mod INSERT mid-sibling-list; other consumers of `removed` not checked (OPEN lead) |
 | F144 | the installers' prune lists were a hand-kept copy of `.gitignore` and had drifted, so an install from a git checkout copied untracked derived files | **DEFECT (measured)** · ✅ FIXED 2026-09-27 (git sources) | 33 untracked files, 2.3 GB (BaseX databases, `_eff/`, coverage manifests, a `.pytest_cache`) reached the destination from one checkout | a checkout source copies `git ls-files`, filtered by the same lists (`c3f8e47`); derived BaseX paths are KEEP_LOCAL (never copied in, never deleted out). A non-git source still depends on the hand-kept lists |
 | F145 | The PowerShell/cmd guard judges an UNRESOLVABLE PowerShell WRITE target by its text (as Bash writes are), not fail-closed; a delete whose target is computed (a list read with Get-Content, an indexed nested array) ASKS; writer methods on unknown objects (`$xml.Save(path)`) are not modelled; a cmd.exe delete of an unquoted spaced path is judged on rejoined operand spans (at most 12 words) | **SCOPE (measured)** · ✅ FIXED 2026-09-27 (the gaps the release review found; these residuals stated) | failing closed on writes MEASURED at +28 false-positive asks and 0 catches over 50,061 historical commands; computed delete targets: 2 of 1,524 historical PowerShell commands | release review hooks lane `5f6f414` `60ff523` `a30d401` `a399e3c` `6d7e702` |
+| F146 | Grep and Glob honour `.gitignore`, so a search rooted in a git-ignored folder (a game root kept under git with a whitelist `.gitignore`) sees nothing, and the packed-archive advisory explained the zero as packing | **DEFECT (measured)** · ✅ FIXED 2026-10-02 (hook + agent text) | Grep: 0 of 133 installed manifests (rg --no-ignore: 133); a subagent reported them absent | `search-scope.sh` runs `git check-ignore` on the root: Grep there DENIED with `rg --no-ignore` as the way out, Glob advised, the above-root advisory names `.gitignore`. Open: `.ignore`/`.rgignore` files are not read |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -7688,3 +7689,37 @@ delete commands). fuzz-guard 0 bypasses; verify-hook-tests 0 of 85 mutants uncau
 **RE-DERIVED BY:** `.claude/hooks/test_audit0924_hooks.py` (the `TestRR*` classes, end to end on
 fake roots) and `.claude/hooks/test_hook_facts.py` (`TestRRCmdCarrier`, `TestRRPreArcBash` and
 the bare-python unit tests).
+
+
+## F146 — Grep and Glob honour `.gitignore`, so a git-ignored search root is INVISIBLE, and the packed-archive advisory explained the zero wrongly · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-02 (hook + agent text)
+
+**Found 2026-10-02 by a fresh-session E2E check.** The `mod-research` agent reported "no
+`content.xml` under `extensions\`" while 133 were there. It then explained the zero as "the mod
+is packed" -- the explanation `search-scope.sh` had just offered it -- although a mod's
+`content.xml` is always a loose file.
+
+**Root cause (MEASURED on the reference machine).** The game root is a git repo whose
+`.gitignore` is a whitelist (`*`), and Claude Code's Grep and Glob honour `.gitignore`:
+- `rg --files` rooted in `extensions/`: 0 of 133 manifests; with `--no-ignore`: 133.
+- Grep: 0 results in all 4 folder-rooted forms tried (no path; the game root with a glob;
+  `extensions/`; one mod folder). Naming a single FILE works.
+- Glob is inconsistent: `*/content.xml` rooted at `extensions/` -> "No files found";
+  `**/content.xml` and `extensions/*/content.xml` from the game root -> found.
+- A first theory -- the parentheses in `Program Files (x86)` -- was FALSIFIED: `*/f.txt` worked
+  under folders named `paren(x)`, `with space` and `both (x)`. `reference\` is not in a git repo
+  and is fully visible (510,710 of 510,710 files).
+
+**Fix.** `search-scope.sh` runs `git check-ignore` on the search root (the `path`, else the
+payload's `cwd`; ~20 ms): a Grep rooted in an ignored folder is DENIED with the way out
+(`rg --no-ignore`, or a single file); a Glob there gets an UNRELIABLE-ZERO advisory; a Grep
+rooted ABOVE an ignored `extensions/` leads its advisory with that cause instead of blaming
+packing. `mod-research` and `cross-file-impact` now say how to search installed mods.
+
+**Still open:** ripgrep also honours `.ignore`/`.rgignore` files, which `git check-ignore` does
+not read; and why Glob finds ignored files for some patterns is an observation, not a
+documented contract. The 5%: those.
+
+**RE-DERIVED BY:** `scripts/test-hooks.sh` -- the GIT-IGNORED ROOT block (a fixture game with
+a whitelist `.gitignore`: Grep in an ignored folder denies, no-path with an ignored cwd denies,
+Glob advises, an un-ignored folder of the same repo is allowed, the above-root advisory names
+`.gitignore`).

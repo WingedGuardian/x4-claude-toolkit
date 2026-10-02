@@ -195,6 +195,11 @@ export X4_MODS="$_sm" X4_EXTENSIONS="$_se" X4_GAME="$_sg"
 # shape a complete answer would have. Measured on the reference machine: 54 of 133
 # installed mods ship BOTH, so the misleading case is the common one.
 echo; echo "=== search-scope.sh ==="
+# The sandbox lives in $REPO/.test-sandbox, which THIS repo's .gitignore excludes -- and
+# search-scope.sh now denies a Grep rooted in a git-ignored folder (correctly: Grep could
+# see nothing there). Stop git's repo discovery at the sandbox base so each fixture is
+# judged on its OWN repo (the igame fixture below has one; the plain game has none).
+_sgc="${GIT_CEILING_DIRECTORIES-}"; export GIT_CEILING_DIRECTORIES="$_SBX"
 GAME="$SBX_TMP/game/X4 Foundations"
 # One line, deliberately. This held the two characters \n, which OUTSIDE QUOTES is a
 # literal 'n' -- so mkdir -p took it as an argument and created a directory called `n`
@@ -234,6 +239,35 @@ mkdir -p "$GAME/extensions/MixedCasePacked" "$GAME/extensions/MixedCaseLoose/md"
 : > "$GAME/extensions/MixedCaseLoose/md/a.xml"
 decide advise search-scope.sh "$(pj "$GAME/extensions/MixedCasePacked")" "mixed-case .cat mod is still found"
 decide allow  search-scope.sh "$(pj "$GAME/extensions/MixedCaseLoose")"  "mixed-case LOOSE mod must NOT advise"
+# GIT-IGNORED ROOT. Grep and Glob honour .gitignore, so a root git ignores is INVISIBLE to
+# them -- and the reference machine's game root carries a whitelist .gitignore (`*`).
+# MEASURED 2026-10-02: Grep rooted anywhere in extensions/ found 0 of 133 manifests
+# (rg --no-ignore: 133), and the packed-archive advisory supplied the WRONG explanation.
+# The plain game above is NOT a git repo, which is why its probes are unaffected.
+IGAME="$SBX_TMP/igame/X4 Foundations"
+mkdir -p "$IGAME/extensions/loosemod/md" "$IGAME/tracked"
+: > "$IGAME/extensions/loosemod/md/a.xml"; : > "$IGAME/tracked/a.md"
+printf '%s\n' '*' '!.gitignore' '!tracked/' '!tracked/**' > "$IGAME/.gitignore"
+git -C "$IGAME" init -q
+_se3="$X4_EXTENSIONS"; _sg3="$X4_GAME"
+export X4_EXTENSIONS="$IGAME/extensions" X4_GAME="$IGAME"
+gj(){ printf '{"tool_name":"Glob","tool_input":{"pattern":"*/a.xml","path":%s}}' "$(printf '%s' "$1" | jq -Rs .)"; }
+nj(){ printf '{"tool_name":"Grep","tool_input":{"pattern":"x"},"cwd":%s}' "$(printf '%s' "$1" | jq -Rs .)"; }
+decide deny   search-scope.sh "$(pj "$IGAME/extensions/loosemod")" "Grep rooted in a git-IGNORED folder sees nothing"
+decide deny   search-scope.sh "$(pj "$IGAME/extensions")"          "Grep rooted at an ignored extensions/ sees nothing"
+decide deny   search-scope.sh "$(nj "$IGAME/extensions/loosemod")" "no path: the CWD is the root, and it is ignored"
+decide advise search-scope.sh "$(gj "$IGAME/extensions/loosemod")" "Glob in an ignored folder: a zero is unreliable"
+decide allow  search-scope.sh "$(pj "$IGAME/tracked")"             "an UN-ignored folder of the same repo is visible"
+decide allow  search-scope.sh "$(pj "$IGAME/extensions/loosemod/md/a.xml")" "a single FILE in an ignored folder IS readable (Grep reads a named file)"
+# Rooted ABOVE an ignored extensions/: still an advisory (tracked files there are visible),
+# but it must name the real cause. `decide` sees only the category, so read the reason.
+_out=$(pj "$IGAME" | bash "$HOOKS/search-scope.sh" 2>/dev/null)
+case "$_out" in
+  *git-ignored*) ok "rooted above an ignored extensions/: the advisory names .gitignore" ;;
+  *)             no "rooted above an ignored extensions/: the advisory blames packing, not .gitignore" ;;
+esac
+export X4_EXTENSIONS="$_se3" X4_GAME="$_sg3"
+if [ -n "$_sgc" ]; then export GIT_CEILING_DIRECTORIES="$_sgc"; else unset GIT_CEILING_DIRECTORIES; fi
 # (the unparseable-payload case is NOT a probe here: this harness refuses a probe
 #  whose payload is not valid JSON, and it is right to -- such a probe would
 #  exercise the harness rather than the hook. Measured directly instead:
@@ -462,7 +496,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=177
+EXPECT=184
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written

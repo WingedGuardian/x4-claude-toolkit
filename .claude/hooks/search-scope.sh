@@ -48,12 +48,57 @@ fi
 # a field that is always present separates them. MEASURED 2026-09-05: a truncated
 # payload produced 0 bytes and silence, where an EMPTY one produced 288 bytes of INERT.
 # Same condition, opposite reporting.
-if [ -z "$(x4_field "$INPUT" 'tool_name')" ]; then
+TOOL="$(x4_field "$INPUT" 'tool_name')"
+if [ -z "$TOOL" ]; then
   x4_advise "X4 SEARCH-SCOPE INERT: this payload could not be parsed, so the hook checked NOTHING. Your search may be reading a partial picture (packed mods are invisible to a text search). Nothing is blocked."
   exit 0
 fi
 FP=$(x4_field "$INPUT" 'tool_input.path')   # shared reader: survives a missing jq
+
+# A literal backslash cannot be written safely through every layer that touches this
+# file, so it is built from its byte value. MEASURED 2026-08-29: writing it as an
+# escaped pair collapsed to a single backslash, turning this substitution into
+# "delete every forward slash" -- the path became C:Program Files... and the hook
+# silently never fired. Every must-fire probe went red and every must-NOT-fire probe
+# went green, which is what an inert guard looks like.
+BS=$(printf '\134')
+
+# A GIT-IGNORED ROOT IS INVISIBLE, not partial (2026-10-02). Grep and Glob honour .gitignore,
+# and the game root's .gitignore is a whitelist (`*`). MEASURED: Grep rooted anywhere in
+# extensions/ found 0 of 133 manifests (rg --no-ignore: 133), and the packed-archive advisory
+# below then supplied a WRONG explanation for the zero. Grep there cannot succeed, so it is a
+# deny with the way out. Glob is only an advisory: it skipped ignored files for a `*/x`
+# pattern but found them for `**/x` (MEASURED, same root), so it can succeed. A root outside
+# any git work tree makes check-ignore exit 128, which is "not ignored". ~20 ms, one process.
+# `-d` skips that process for a single FILE (Grep reads a named file even when it is ignored).
+# It is a cost guard, not the correctness one: `git -C <file>` fails too (MEASURED by a twin).
+ROOT="$FP"; [ -z "$ROOT" ] && ROOT="$(x4_field "$INPUT" 'cwd')"
+R="${ROOT//"$BS"//}"
+if [ -n "$R" ] && [ -d "$R" ] && git -C "$R" check-ignore -q -- "$R" 2>/dev/null; then
+  if [ "$TOOL" = "Grep" ]; then
+    _why="BLOCKED: $ROOT is git-ignored, and Grep honours .gitignore -- it cannot see ONE file under this root and would answer 'No files found' whatever is there. Search with Bash instead: rg --no-ignore <pattern> '<root>' (add -uu to include hidden files), or give Grep a single FILE as path."
+    if "${JQ:-jq}" -n --arg r "$_why" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null; then exit 0; fi
+    x4_resolve_python
+    if [ -n "$X4_PY" ]; then
+      X4_REASON="$_why" "$X4_PY" -c 'import json, os, sys
+sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": os.environ["X4_REASON"]}}))'
+      exit 0
+    fi
+    printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"BLOCKED: this Grep root is git-ignored, so Grep cannot see any file under it. Use Bash: rg --no-ignore."}}'
+    exit 0
+  fi
+  advise "UNRELIABLE ZERO: $ROOT is git-ignored, and Glob honours .gitignore. MEASURED: here a '*/name' pattern returned 'No files found' while '**/name' found the files. Never read a zero from this search as absence; confirm with ls, or Bash: rg --no-ignore --files '<root>'."
+fi
 [ -z "${X4_EXTENSIONS:-}" ] && exit 0
+
+# Above extensions/: when extensions/ itself is git-ignored, Grep sees NONE of it -- loose
+# mods included -- so the advisory leads with that cause. Probed only on these two branches.
+ign_note() {
+  local _e="${X4_EXTENSIONS//"$BS"//}"
+  [ "$TOOL" = Grep ] && [ -d "$_e" ] && git -C "$_e" check-ignore -q -- "$_e" 2>/dev/null &&
+    printf '%s' "Grep CANNOT SEE extensions/ AT ALL here: it is git-ignored and Grep honours .gitignore, so every mod file is invisible, loose or packed -- search mod files with Bash: rg --no-ignore. "
+  return 0
+}
 
 # NO PATH AT ALL is the BROADEST search, not the narrowest. Grep/Glob without `path`
 # search the cwd -- and the cwd for this project IS the game root, a strict superset
@@ -62,7 +107,7 @@ FP=$(x4_field "$INPUT" 'tool_input.path')   # shared reader: survives a missing 
 # 26 transcripts / 397 Grep+Glob calls: 6 no-path and 4 above-extensions, all
 # unguarded, against 15 that fired.
 if [ -z "$FP" ]; then
-  advise "PARTIAL ANSWER: this search names no path, so it runs from the working directory -- which here contains the whole extensions/ folder. A text search reads LOOSE files only, so mods shipping .cat archives are invisible and a 'no matches' means 'not found in the loose subset', NOT 'absent'. Use _scan.iter_corpus_xml (packed-inclusive) for a corpus sweep, or confirm you want the loose-only view."
+  advise "$(ign_note)PARTIAL ANSWER: this search names no path, so it runs from the working directory -- which here contains the whole extensions/ folder. A text search reads LOOSE files only, so mods shipping .cat archives are invisible and a 'no matches' means 'not found in the loose subset', NOT 'absent'. Use _scan.iter_corpus_xml (packed-inclusive) for a corpus sweep, or confirm you want the loose-only view."
 fi
 
 # Pure-string prefilter first: the overwhelming majority of searches are nowhere near the
@@ -74,7 +119,7 @@ nEXT="$(x4_norm "$X4_EXTENSIONS")"; nEXT="${nEXT%/}"
 # while the subset advised.
 case "$nEXT" in
   "$nFP"/*)
-    advise "PARTIAL ANSWER: this search is rooted ABOVE the extensions/ folder, so it covers every installed mod -- and a text search reads LOOSE files only. Mods shipping .cat archives are invisible to it, so a 'no matches' here means 'not found in the loose subset', NOT 'absent'. Use _scan.iter_corpus_xml (packed-inclusive) for a corpus sweep, or confirm you want the loose-only view."
+    advise "$(ign_note)PARTIAL ANSWER: this search is rooted ABOVE the extensions/ folder, so it covers every installed mod -- and a text search reads LOOSE files only. Mods shipping .cat archives are invisible to it, so a 'no matches' here means 'not found in the loose subset', NOT 'absent'. Use _scan.iter_corpus_xml (packed-inclusive) for a corpus sweep, or confirm you want the loose-only view."
     ;;
 esac
 case "$nFP" in
@@ -82,13 +127,6 @@ case "$nFP" in
   *) exit 0 ;;
 esac
 
-# A literal backslash cannot be written safely through every layer that touches this
-# file, so it is built from its byte value. MEASURED 2026-08-29: writing it as an
-# escaped pair collapsed to a single backslash, turning this substitution into
-# "delete every forward slash" -- the path became C:Program Files... and the hook
-# silently never fired. Every must-fire probe went red and every must-NOT-fire probe
-# went green, which is what an inert guard looks like.
-BS=$(printf '\134')
 F="${FP//"$BS"//}"
 [ -d "$F" ] || exit 0            # a single file is not a survey
 

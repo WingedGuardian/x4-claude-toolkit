@@ -18,4 +18,6 @@ Steps:
 2. **Reference mapping** — locate the files the mod touches under the unpacked base-game `reference\` tree and summarize the relevant base-game structure.
 3. **Cross-check** `KNOWLEDGEBASE.md` (game root) for known quirks and the Version Migration Map.
 
+**Searching installed mods (`extensions\`).** Grep and Glob honour `.gitignore`, and a game root kept under git with a whitelist `.gitignore` hides every mod file from them, loose or packed. A Grep over a mod folder there is denied, and a Glob such as `*/content.xml` can return "No files found" for files that exist. Use Glob with a `**/` pattern (e.g. `extensions/<mod>/**/*.xml`, which finds them) or Read the exact path; to read text, Read the files Glob found. A search that found nothing is a lead, never a fact: say "my search found nothing", and never explain the zero with a theory (a mod's `content.xml` is always a loose file, so "it is packed" cannot explain a missing manifest).
+
 Return a distilled brief: mod summary, 9.0-compat status, dependencies, known issues/bugs, the files/systems it touches, and red flags. Cite Nexus URLs. Keep raw page-scrapes OUT of your final answer — return only the distilled brief.

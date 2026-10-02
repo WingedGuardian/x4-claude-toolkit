@@ -48,6 +48,13 @@
   - A delete is judged as the stricter of a write and an `rm` of that path.
   - Each of these is an inert deny, never an allow: a guard that cannot run, a guard that
     reports it checked nothing, and a copy outside `.claude/hooks` with `X4_TOOLKIT` unset.
+- **A Grep over a git-ignored folder is now denied** (`search-scope.sh`, BLIND-SPOTS F146).
+  Grep and Glob honour `.gitignore`. A game root kept under git with a whitelist `.gitignore`
+  hid all 133 installed mods' manifests from Grep, which answered "No files found". The
+  packed-archive advisory then explained the zero wrongly.
+  - The deny names the alternative: `rg --no-ignore`, or a single file.
+  - A Glob there gets an "unreliable zero" advisory instead.
+  - The `mod-research` and `cross-file-impact` subagents now say how to search installed mods.
 - `.gitignore` no longer swallows a skill's `reference/` folder under `agent/skills/`. The game-data
   rule matched it there too, as it once did under `.claude/skills/`.
 
