@@ -505,3 +505,283 @@ def test_a_codex_guard_copy_is_tested_with_its_OWN_x4guard(sandbox):
     rows = {r.id: r for r in doc.check_guards(sandbox.ctx())}
     assert "guards.selftest.codex" in rows
     assert ".codex" in rows["guards.selftest.codex"].detail.replace(chr(92), "/")
+
+
+# --- Task 9: per-agent liveness ------------------------------------------------------- #
+
+_HOOKS_JSON = {"hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "timeout": 30, "command": "bash s.sh"}]}],
+    "PreToolUse": [{"matcher": ".*", "hooks": [{"type": "command", "timeout": 60, "command": "bash p.sh",
+                                                "commandWindows": "pwsh -File p.ps1"}]}],
+}}
+
+
+@pytest.fixture
+def codex_root(tmp_path, monkeypatch):
+    for name in _LEAKY:
+        monkeypatch.delenv(name, raising=False)
+    root = tmp_path / "proj"
+    (root / ".codex" / "hooks").mkdir(parents=True)
+    (root / ".codex" / "rules").mkdir()
+    (root / ".codex" / "rules" / "x4.rules").write_text("# rules\n", encoding="utf-8")
+    (root / ".codex" / "hooks.json").write_text(json.dumps(_HOOKS_JSON), encoding="utf-8")
+    (root / "AGENTS.md").write_text(GEN_BANNER + "\n", encoding="utf-8")
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setattr(doc, "_codex_cmd", lambda: None)
+    return root
+
+
+def _codex(root):
+    return {r.id: r for r in doc.check_codex(doc.Ctx(root=root))}
+
+
+def _cfg(root: Path, *, trusted=True, entries=None, extra="") -> None:
+    exp = doc.expected_hooks(root / ".codex" / "hooks.json")
+    lines = []
+    if trusted:
+        lines += ["[projects.'%s']" % str(root.resolve()).lower(), 'trust_level = "trusted"', ""]
+    for key, val in (entries if entries is not None else exp).items():
+        lines += ["[hooks.state.'%s']" % key]
+        if val == "disabled":
+            lines += ['trusted_hash = "%s"' % exp[key], "enabled = false"]
+        else:
+            lines += ['trusted_hash = "%s"' % val]
+        lines += [""]
+    home = Path(os.environ["CODEX_HOME"])
+    (home / "config.toml").write_text("\n".join(lines) + extra, encoding="utf-8")
+
+
+def test_no_codex_config_is_UNKNOWN_never_ok(codex_root):
+    rows = _codex(codex_root)
+    assert rows["codex.config"].status == doc.UNKNOWN
+    assert rows["codex.trusted"].status == doc.UNKNOWN and rows["codex.reviewed"].status == doc.UNKNOWN
+
+
+def test_untrusted_project_is_FAIL(codex_root):
+    _cfg(codex_root, trusted=False)
+    assert _codex(codex_root)["codex.trusted"].status == doc.FAIL
+
+
+def test_TWIN_trusted_lowercased_key_is_OK(codex_root):
+    _cfg(codex_root)
+    assert _codex(codex_root)["codex.trusted"].status == doc.OK
+
+
+def test_trust_inherited_from_an_ANCESTOR_is_UNKNOWN(codex_root):
+    home = Path(os.environ["CODEX_HOME"])
+    (home / "config.toml").write_text(
+        "[projects.'%s']\ntrust_level = \"trusted\"\n" % str(codex_root.parent.resolve()).lower(), encoding="utf-8")
+    assert _codex(codex_root)["codex.trusted"].status == doc.UNKNOWN
+
+
+def test_all_hooks_reviewed_is_OK(codex_root):
+    _cfg(codex_root)
+    r = _codex(codex_root)["codex.reviewed"]
+    assert r.status == doc.OK and "2 of 2" in r.detail, r
+
+
+def test_an_UNREVIEWED_hook_is_FAIL_naming_the_silent_skip(codex_root):
+    exp = doc.expected_hooks(codex_root / ".codex" / "hooks.json")
+    first = sorted(exp)[0]
+    _cfg(codex_root, entries={first: exp[first]})
+    r = _codex(codex_root)["codex.reviewed"]
+    assert r.status == doc.FAIL and "SILENTLY" in r.detail and "/hooks" in r.detail, r
+
+
+def test_a_DISABLED_hook_is_FAIL(codex_root):
+    exp = doc.expected_hooks(codex_root / ".codex" / "hooks.json")
+    k = sorted(exp)
+    _cfg(codex_root, entries={k[0]: exp[k[0]], k[1]: "disabled"})
+    r = _codex(codex_root)["codex.reviewed"]
+    assert r.status == doc.FAIL and "disabled" in r.detail, r
+
+
+def test_a_definition_CHANGED_since_review_is_FAIL_when_the_scheme_is_confirmed(codex_root):
+    exp = doc.expected_hooks(codex_root / ".codex" / "hooks.json")
+    k = sorted(exp)
+    _cfg(codex_root, entries={k[0]: exp[k[0]], k[1]: "sha256:" + "0" * 64})
+    r = _codex(codex_root)["codex.reviewed"]
+    assert r.status == doc.FAIL and "changed" in r.detail, r
+
+
+def test_hash_unverifiable_is_UNKNOWN_not_OK_nor_FAIL(codex_root):
+    """No entry matches our hash at all: the likelier story is a Codex that changed its
+    scheme, not every definition changing at once -- so UNKNOWN, never 'modified'."""
+    exp = doc.expected_hooks(codex_root / ".codex" / "hooks.json")
+    _cfg(codex_root, entries={k: "sha256:" + "1" * 64 for k in exp})
+    r = _codex(codex_root)["codex.reviewed"]
+    assert r.status == doc.UNKNOWN and "scheme" in r.detail, r
+
+
+def test_the_hash_moves_with_every_field_codex_hashes():
+    base = {"type": "command", "command": "bash x.sh", "timeout": 30}
+    h0 = doc.codex_hook_hash("pre_tool_use", {"matcher": ".*"}, base, windows=False)
+    for k, v in (("command", "bash y.sh"), ("timeout", 31), ("async", True), ("statusMessage", "s"),
+                 ("additionalContextLimit", 100)):
+        assert doc.codex_hook_hash("pre_tool_use", {"matcher": ".*"}, dict(base, **{k: v}), windows=False) != h0, k
+    assert doc.codex_hook_hash("pre_tool_use", {"matcher": "Bash"}, base, windows=False) != h0
+    assert doc.codex_hook_hash("post_tool_use", {"matcher": ".*"}, base, windows=False) != h0
+    # normalised defaults do NOT move it
+    assert doc.codex_hook_hash("pre_tool_use", {"matcher": ".*"}, dict(base, timeout=None), windows=False) == \
+        doc.codex_hook_hash("pre_tool_use", {"matcher": ".*"}, dict(base, timeout=600), windows=False)
+    assert doc.codex_hook_hash("pre_tool_use", {"matcher": ".*"}, dict(base, additionalContextLimit=2500),
+                               windows=False) == h0
+    # Windows hashes commandWindows when present
+    w = dict(base, commandWindows="pwsh -File x.ps1")
+    assert doc.codex_hook_hash("pre_tool_use", {"matcher": ".*"}, w, windows=True) != \
+        doc.codex_hook_hash("pre_tool_use", {"matcher": ".*"}, w, windows=False)
+
+
+def test_the_310_reader_and_tomllib_AGREE(codex_root, monkeypatch):
+    pytest.importorskip("tomllib")
+    _cfg(codex_root, extra='\n[plugins."x@y"]\nenabled = true\n[features]\nfoo = 1\n')
+    text = (Path(os.environ["CODEX_HOME"]) / "config.toml").read_text(encoding="utf-8")
+    full = doc._toml_tables(text)
+    monkeypatch.setitem(sys.modules, "tomllib", None)
+    narrow = doc._toml_tables(text)
+    assert full == narrow and len(narrow) == 3, (full, narrow)
+
+
+def test_the_310_reader_REFUSES_a_line_it_does_not_understand(monkeypatch):
+    monkeypatch.setitem(sys.modules, "tomllib", None)
+    with pytest.raises(doc.TomlUnreadable):
+        doc._toml_tables("[hooks.state.'k']\ntrusted_hash = \"sha256:1\"\nweird = [1, 2]\n")
+
+
+def test_a_codex_target_with_NO_hooks_json_is_FAIL(codex_root):
+    (codex_root / ".codex" / "hooks.json").unlink()
+    _cfg_path = Path(os.environ["CODEX_HOME"]) / "config.toml"
+    _cfg_path.write_text("", encoding="utf-8")
+    r = _codex(codex_root)["codex.hooks"]
+    assert r.status == doc.FAIL and "hooks.json" in r.detail
+
+
+def test_codex_rules_that_FAIL_to_parse_are_FAIL(codex_root, monkeypatch, tmp_path):
+    fake = tmp_path / "fake_codex.py"
+    fake.write_text("import sys\nprint('failed to parse policy', file=sys.stderr)\nsys.exit(1)\n", encoding="utf-8")
+    monkeypatch.setattr(doc, "_codex_cmd", lambda: [sys.executable, str(fake)])
+    assert _codex(codex_root)["codex.rules"].status == doc.FAIL
+
+
+def test_TWIN_codex_rules_that_parse_are_OK(codex_root, monkeypatch, tmp_path):
+    fake = tmp_path / "fake_codex.py"
+    fake.write_text("print('{\"decision\": \"allow\"}')\n", encoding="utf-8")
+    monkeypatch.setattr(doc, "_codex_cmd", lambda: [sys.executable, str(fake)])
+    assert _codex(codex_root)["codex.rules"].status == doc.OK
+
+
+def test_codex_rules_without_codex_on_PATH_are_UNKNOWN(codex_root):
+    assert _codex(codex_root)["codex.rules"].status == doc.UNKNOWN
+
+
+def test_the_codex_rows_are_NA_when_codex_is_not_installed(sandbox):
+    assert {r.status for r in doc.check_codex(sandbox.ctx())} == {doc.NA}
+
+
+# claude
+def test_TWIN_the_shipped_claude_wiring_is_OK(sandbox):
+    rows = {r.id: r for r in doc.check_claude(sandbox.ctx())}
+    assert rows["claude.wiring"].status == doc.OK, rows["claude.wiring"]
+    assert rows["claude.enabled"].status == doc.OK, rows["claude.enabled"]
+
+
+def test_a_missing_PowerShell_matcher_is_FAIL(sandbox):
+    p = sandbox.root / ".claude" / "settings.json"
+    s = json.loads(p.read_text(encoding="utf-8"))
+    s["hooks"]["PreToolUse"] = [g for g in s["hooks"]["PreToolUse"] if g.get("matcher") != "PowerShell"]
+    p.write_text(json.dumps(s), encoding="utf-8")
+    r = {r.id: r for r in doc.check_claude(sandbox.ctx())}["claude.wiring"]
+    assert r.status == doc.FAIL and "PowerShell" in r.detail, r
+
+
+def test_a_wired_script_that_is_MISSING_is_FAIL(sandbox):
+    (sandbox.root / ".claude" / "hooks" / "protect-files.sh").unlink()
+    r = {r.id: r for r in doc.check_claude(sandbox.ctx())}["claude.wiring"]
+    assert r.status == doc.FAIL and "protect-files.sh" in r.detail, r
+
+
+def test_disableAllHooks_in_the_LOCAL_settings_is_FAIL(sandbox):
+    """READ (code.claude.com hooks-guide): `"disableAllHooks": true` switches every hook off,
+    in user, project, local or managed settings."""
+    (sandbox.root / ".claude" / "settings.local.json").write_text('{"disableAllHooks": true}', encoding="utf-8")
+    r = {r.id: r for r in doc.check_claude(sandbox.ctx())}["claude.enabled"]
+    assert r.status == doc.FAIL and "disableAllHooks" in r.detail, r
+
+
+def test_disableAllHooks_in_the_USER_settings_is_FAIL(sandbox, tmp_path, monkeypatch):
+    home = tmp_path / "claude-home"
+    home.mkdir()
+    (home / "settings.json").write_text('{"disableAllHooks": true}', encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    r = {r.id: r for r in doc.check_claude(sandbox.ctx())}["claude.enabled"]
+    assert r.status == doc.FAIL, r
+
+
+def test_TWIN_a_project_false_OVERRIDES_a_user_true(sandbox, tmp_path, monkeypatch):
+    home = tmp_path / "claude-home"
+    home.mkdir()
+    (home / "settings.json").write_text('{"disableAllHooks": true}', encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    (sandbox.root / ".claude" / "settings.local.json").write_text('{"disableAllHooks": false}', encoding="utf-8")
+    r = {r.id: r for r in doc.check_claude(sandbox.ctx())}["claude.enabled"]
+    assert r.status == doc.OK, r
+
+
+# all targets
+def test_X4_GUARD_off_is_FAIL(sandbox, monkeypatch):
+    monkeypatch.setenv("X4_GUARD", "off")
+    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["guard.escape"]
+    assert r.status == doc.FAIL and "OFF" in r.detail, r
+
+
+def test_TWIN_X4_GUARD_unset_is_OK(sandbox):
+    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["guard.escape"]
+    assert r.status == doc.OK, r
+
+
+def test_layer2_without_the_query_is_UNKNOWN(sandbox, monkeypatch):
+    monkeypatch.setattr(doc, "_x4lock_module", lambda ctx: type("M", (), {})())
+    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
+    assert r.status == doc.UNKNOWN, r
+
+
+@pytest.mark.parametrize("state,codex,want", [("present", False, "OK"), ("absent", False, "OK"),
+                                              ("absent", True, "FAIL"), ("unknown", True, "UNKNOWN"),
+                                              ("present", True, "OK")])
+def test_layer2_states(sandbox, monkeypatch, state, codex, want):
+    mod = type("M", (), {"deny_delete_state": staticmethod(lambda p: state)})()
+    monkeypatch.setattr(doc, "_x4lock_module", lambda ctx: mod)
+    if codex:
+        shutil.copytree(sandbox.root / ".claude" / "hooks", sandbox.root / ".codex" / "hooks")
+    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
+    assert r.status == want, r
+
+
+def test_x4lock_unlocked_files_are_UNKNOWN_informational_not_FAIL(sandbox, monkeypatch, tmp_path):
+    f = tmp_path / "f.md"
+    f.write_text("x", encoding="utf-8")
+    mod = type("M", (), {"manifest": staticmethod(lambda: [f]), "missing": staticmethod(lambda: []),
+                         "state": staticmethod(lambda p: "unlocked"), "Unresolvable": RuntimeError})()
+    monkeypatch.setattr(doc, "_x4lock_module", lambda ctx: mod)
+    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["x4lock"]
+    assert r.status == doc.UNKNOWN and "1 unlocked" in r.detail, r
+
+
+def test_TWIN_x4lock_all_locked_is_OK(sandbox, monkeypatch, tmp_path):
+    f = tmp_path / "f.md"
+    f.write_text("x", encoding="utf-8")
+    mod = type("M", (), {"manifest": staticmethod(lambda: [f]), "missing": staticmethod(lambda: []),
+                         "state": staticmethod(lambda p: "locked"), "Unresolvable": RuntimeError})()
+    monkeypatch.setattr(doc, "_x4lock_module", lambda ctx: mod)
+    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["x4lock"]
+    assert r.status == doc.OK, r
+
+
+def test_the_doctor_never_WRITES_the_codex_config(codex_root):
+    _cfg(codex_root)
+    p = Path(os.environ["CODEX_HOME"]) / "config.toml"
+    before = (p.read_bytes(), p.stat().st_mtime_ns)
+    doc.collect(doc.Ctx(root=codex_root))
+    assert (p.read_bytes(), p.stat().st_mtime_ns) == before

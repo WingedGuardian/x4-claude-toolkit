@@ -568,6 +568,383 @@ def check_guards(ctx: Ctx) -> list[Check]:
     return rows
 
 
+# ----------------------------------------------------------------- Codex trust model
+#
+# Codex runs a project hook only if `[hooks.state.'<key>']` in its config.toml holds a
+# `trusted_hash` equal to the definition's CURRENT hash (and `enabled` is not false).
+# Anything else is skipped SILENTLY (MEASURED, spike 2026-09-30). The scheme below is lane
+# B's reproduction of Codex 0.160.0's `hook_hash` (READ: codex-rs hooks/src/engine/
+# discovery.rs + config/src/fingerprint.rs), which matched 4 of 4 hashes Codex itself
+# stored in the spike (MEASURED by lane B; re-measured by lane C, see the commit). Lane B
+# ships the same model as `.codex/hooks/codex_trust.py`; a test pins the two together once
+# it lands. A future Codex may change the scheme: when NO entry matches, the verdict is
+# UNKNOWN ("scheme unconfirmed on this Codex"), never "modified".
+
+def _snake(event: str) -> str:
+    out = []
+    for i, ch in enumerate(event):
+        if ch.isupper() and i:
+            out.append("_")
+        out.append(ch.lower())
+    return "".join(out)
+
+
+def codex_hook_hash(event_key: str, group: dict, handler: dict, windows: bool | None = None) -> str:
+    """sha256 over canonical JSON {"event_name", "matcher"?, "hooks": [handler]}: keys
+    sorted, compact separators, None omitted; timeout defaults to 600, async to false,
+    additionalContextLimit omitted when unset or 2500; on Windows commandWindows wins."""
+    import hashlib
+    if windows is None:
+        windows = _on_windows()
+    cmd = handler.get("commandWindows") if windows and handler.get("commandWindows") is not None \
+        else handler.get("command")
+    h = {"type": handler.get("type", "command"), "command": cmd,
+         "timeout": 600 if handler.get("timeout") is None else handler["timeout"],
+         "async": bool(handler.get("async", False))}
+    if handler.get("statusMessage") is not None:
+        h["statusMessage"] = handler["statusMessage"]
+    acl = handler.get("additionalContextLimit")
+    if acl is not None and acl != 2500:
+        h["additionalContextLimit"] = acl
+    ident = {"event_name": event_key, "hooks": [h]}
+    if group.get("matcher") is not None:
+        ident["matcher"] = group["matcher"]
+    s = json.dumps(ident, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def expected_hooks(hooks_json: Path, windows: bool | None = None) -> dict[str, str]:
+    """{state key: expected hash} for every handler in a hooks.json, keyed the way Codex
+    keys them: `<absolute hooks.json path>:<snake_case event>:<group>:<handler>`."""
+    data = json.loads(hooks_json.read_text(encoding="utf-8"))
+    base = str(hooks_json.resolve())
+    out = {}
+    for event, groups in (data.get("hooks") or {}).items():
+        ek = _snake(event)
+        for i, g in enumerate(groups or []):
+            for j, h in enumerate(g.get("hooks") or []):
+                out["%s:%s:%d:%d" % (base, ek, i, j)] = codex_hook_hash(ek, g, h, windows)
+    return out
+
+
+class TomlUnreadable(ValueError):
+    """A line inside a table x4doctor reads could not be parsed: the answer is UNKNOWN."""
+
+
+def _toml_tables(text: str) -> dict[str, dict]:
+    """The `[projects.'...']` and `[hooks.state.'...']` tables of a Codex config.toml.
+
+    tomllib where it exists (Python >= 3.11). On 3.10 a deliberately NARROW reader: it
+    understands only those two table shapes and the three keys read from them
+    (trust_level, trusted_hash, enabled); any other line INSIDE one of them raises
+    TomlUnreadable rather than being guessed at. Every other table is skipped whole.
+    """
+    try:
+        import tomllib  # type: ignore[import-not-found]
+    except ModuleNotFoundError:
+        tomllib = None
+    if tomllib is not None:
+        try:
+            doc_ = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as e:
+            raise TomlUnreadable(str(e)) from e
+        out = {}
+        for k, v in (doc_.get("projects") or {}).items():
+            out["projects:" + k] = v
+        for k, v in ((doc_.get("hooks") or {}).get("state") or {}).items():
+            out["hooks.state:" + k] = v
+        return out
+    import re
+    head = re.compile(r"""^\[(projects|hooks\.state)\.(?:'([^']*)'|"((?:[^"\\]|\\.)*)")\]\s*(?:#.*)?$""")
+    kv = re.compile(r"""^(trust_level|trusted_hash|enabled)\s*=\s*(?:"([^"\\]*)"|'([^']*)'|(true|false))\s*(?:#.*)?$""")
+    out, cur = {}, None
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("["):
+            m = head.match(line)
+            if m:
+                key = m.group(2) if m.group(2) is not None else bytes(m.group(3), "utf-8").decode("unicode_escape")
+                cur = out.setdefault("%s:%s" % (m.group(1), key), {})
+            else:
+                cur = None
+            continue
+        if cur is None:
+            continue
+        m = kv.match(line)
+        if not m:
+            raise TomlUnreadable("config.toml line %d is not understood by the 3.10 reader: %r" % (n, raw[:80]))
+        val = m.group(2) if m.group(2) is not None else m.group(3) if m.group(3) is not None else (m.group(4) == "true")
+        cur[m.group(1)] = val
+    return out
+
+
+def codex_home(ctx: Ctx) -> Path:
+    """$CODEX_HOME, else ~/.codex (Codex's documented default)."""
+    return Path(ctx.env["CODEX_HOME"]) if ctx.env.get("CODEX_HOME") else Path.home() / ".codex"
+
+
+def trust_report(hooks_json: Path, config: Path, root: Path, windows: bool | None = None) -> dict:
+    """{"project": trusted|ancestor|untrusted, "hooks": [{key, status}], "scheme": ...}.
+    Raises TomlUnreadable / OSError / ValueError when it cannot tell -- the caller turns
+    that into UNKNOWN, never into a verdict."""
+    tables = _toml_tables(config.read_text(encoding="utf-8"))
+    rkey = str(Path(root).resolve()).lower()
+    project = "untrusted"
+    for k, v in tables.items():
+        if not k.startswith("projects:") or not isinstance(v, dict) or v.get("trust_level") != "trusted":
+            continue
+        p = k[len("projects:"):].lower().rstrip("\\/")
+        if p == rkey.rstrip("\\/"):
+            project = "trusted"
+            break
+        if rkey.startswith(p + os.sep) or rkey.startswith(p + "/"):
+            project = "ancestor"
+    state = {k[len("hooks.state:"):]: v for k, v in tables.items()
+             if k.startswith("hooks.state:") and isinstance(v, dict)}
+    folded = {k.lower(): v for k, v in state.items()}
+    hooks = []
+    for key, want in sorted(expected_hooks(hooks_json, windows).items()):
+        ent = state.get(key) or folded.get(key.lower())
+        if ent is None:
+            st = "untrusted"
+        elif ent.get("enabled") is False:
+            st = "disabled"
+        elif ent.get("trusted_hash") == want:
+            st = "trusted"
+        else:
+            st = "mismatch"
+        hooks.append({"key": key, "status": st})
+    matched = any(h["status"] in ("trusted", "disabled") for h in hooks)
+    return {"project": project, "hooks": hooks,
+            "scheme": "confirmed" if matched else "unconfirmed"}
+
+
+# ----------------------------------------------------------------- Task 9: liveness
+
+def _codex_cmd() -> list[str] | None:
+    import shutil
+    exe = shutil.which("codex")
+    return [exe] if exe else None
+
+
+@group
+def check_codex(ctx: Ctx) -> list[Check]:
+    ids = ("codex.hooks", "codex.config", "codex.trusted", "codex.reviewed", "codex.rules")
+    if not ctx.targets.get("codex"):
+        return [Check(i, "codex", NA, "the codex target is not installed here") for i in ids]
+    hj = ctx.root / ".codex" / "hooks.json"
+    cfg = codex_home(ctx) / "config.toml"
+    box: dict = {}
+
+    def report():
+        if "r" not in box:
+            box["r"] = trust_report(hj, cfg, ctx.root)
+        return box["r"]
+
+    def _hooks(_):
+        if not hj.is_file():
+            return FAIL, ("no .codex/hooks.json: Codex runs NO X4 hook here. Re-run the installer, "
+                          "which renders it for this folder")
+        n = len(expected_hooks(hj))
+        return (OK, "%d hook definition(s) in %s" % (n, hj)) if n else \
+            (FAIL, "%s defines no hooks" % hj)
+
+    def _config(_):
+        if not cfg.is_file():
+            return UNKNOWN, ("no Codex config at %s: Codex has never run here, or CODEX_HOME points "
+                             "elsewhere -- trust and review cannot be read" % cfg)
+        _toml_tables(cfg.read_text(encoding="utf-8"))          # raises -> UNKNOWN
+        return OK, "read %s" % cfg
+
+    def _trusted(_):
+        if not cfg.is_file() or not hj.is_file():
+            return UNKNOWN, "needs both .codex/hooks.json and %s" % cfg
+        p = report()["project"]
+        if p == "trusted":
+            return OK, "Codex trusts %s" % ctx.root
+        if p == "ancestor":
+            return UNKNOWN, ("only an ANCESTOR folder is trusted; whether Codex extends that trust to "
+                             "%s is unverified" % ctx.root)
+        return FAIL, ("project NOT trusted: Codex will not load .codex/ here. Run `codex` in %s and "
+                      "trust the folder" % ctx.root)
+
+    def _reviewed(_):
+        if not cfg.is_file() or not hj.is_file():
+            return UNKNOWN, "needs both .codex/hooks.json and %s" % cfg
+        rep = report()
+        hooks = rep["hooks"]
+        if not hooks:
+            return FAIL, "no hook definitions to review"
+        bad = {s: [h["key"].rsplit(":", 3)[1] for h in hooks if h["status"] == s]
+               for s in ("untrusted", "disabled", "mismatch")}
+        n_ok = sum(h["status"] == "trusted" for h in hooks)
+        if bad["untrusted"]:
+            return FAIL, ("%d hook(s) NOT REVIEWED (%s): Codex skips them SILENTLY. Open /hooks in "
+                          "Codex here and approve them" % (len(bad["untrusted"]), ", ".join(bad["untrusted"])))
+        if bad["disabled"]:
+            return FAIL, "%d hook(s) disabled in Codex's config (%s): they never run" % (
+                len(bad["disabled"]), ", ".join(bad["disabled"]))
+        if bad["mismatch"]:
+            if rep["scheme"] == "unconfirmed":
+                return UNKNOWN, ("no reviewed hook matches x4doctor's hash: the trust-hash scheme is "
+                                 "unconfirmed on this Codex version (reproduced on 0.159.2 spike data), "
+                                 "so changed-vs-reviewed cannot be told")
+            return FAIL, ("%d hook definition(s) changed since they were reviewed (%s): Codex treats "
+                          "them as untrusted. Re-approve them in /hooks" % (len(bad["mismatch"]),
+                                                                          ", ".join(bad["mismatch"])))
+        return OK, "%d of %d hook(s) reviewed, hashes current" % (n_ok, len(hooks))
+
+    def _rules(_):
+        files = sorted((ctx.root / ".codex" / "rules").glob("*.rules"))
+        if not files:
+            return FAIL, "no .codex/rules/*.rules: the execpolicy layer is absent"
+        cmd = _codex_cmd()
+        if cmd is None:
+            return UNKNOWN, ("%d rules file(s) present; not parse-checked (codex is not on PATH)" % len(files))
+        bad = []
+        for f in files:
+            r = _run(cmd + ["execpolicy", "check", "--rules", str(f), "git", "status"], timeout=60)
+            if r.returncode != 0:
+                bad.append("%s: %s" % (f.name, (r.stderr or r.stdout).strip()[:160]))
+        if bad:
+            return FAIL, ("Codex REJECTS the rules (an unparseable policy is no policy): %s" % "; ".join(bad))
+        return OK, "%d rules file(s) parse under `codex execpolicy check`" % len(files)
+
+    return [run_check("codex.hooks", "codex", _hooks, ctx),
+            run_check("codex.config", "codex", _config, ctx),
+            run_check("codex.trusted", "codex", _trusted, ctx),
+            run_check("codex.reviewed", "codex", _reviewed, ctx),
+            run_check("codex.rules", "codex", _rules, ctx)]
+
+
+#: PreToolUse matchers the shipped settings.json registers (READ 2026-10-02). Each must be
+#: present, and each wired script must exist.
+CLAUDE_MATCHERS = ("Bash", "PowerShell", "Edit|Write|NotebookEdit")
+
+
+def _read_json(p: Path):
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+
+
+@group
+def check_claude(ctx: Ctx) -> list[Check]:
+    if not ctx.targets.get("claude"):
+        return [Check(i, "claude", NA, "the claude target is not installed here")
+                for i in ("claude.wiring", "claude.enabled")]
+
+    def _wiring(_):
+        import re
+        s = _read_json(ctx.root / ".claude" / "settings.json") or {}
+        pre = (s.get("hooks") or {}).get("PreToolUse") or []
+        have = {g.get("matcher"): g for g in pre}
+        missing = [m for m in CLAUDE_MATCHERS if m not in have]
+        absent = []
+        n = 0
+        for g in pre:
+            for h in g.get("hooks") or []:
+                cmd = (h.get("command") or "").replace("$CLAUDE_PROJECT_DIR", str(ctx.root))
+                m = re.search(r'"([^"]+\.(?:sh|py))"', cmd)
+                if m:
+                    n += 1
+                    if not Path(m.group(1)).is_file():
+                        absent.append(Path(m.group(1)).name)
+        if missing:
+            return FAIL, "PreToolUse has no matcher for %s: those tools run UNGUARDED" % ", ".join(missing)
+        if absent:
+            return FAIL, "wired hook script(s) missing: %s -- the hook fails, and Claude runs the tool" % ", ".join(absent)
+        return OK, "%d PreToolUse matcher(s), %d wired script(s) present" % (len(pre), n)
+
+    def _enabled(_):
+        """`disableAllHooks` (READ: code.claude.com hooks-guide) -- precedence local >
+        project > user; managed settings are not read here, and say so."""
+        home = Path(ctx.env["CLAUDE_CONFIG_DIR"]) if ctx.env.get("CLAUDE_CONFIG_DIR") else Path.home() / ".claude"
+        layers = [("project local", ctx.root / ".claude" / "settings.local.json"),
+                  ("project", ctx.root / ".claude" / "settings.json"),
+                  ("user", home / "settings.json")]
+        for name, p in layers:
+            d = _read_json(p)
+            if isinstance(d, dict) and "disableAllHooks" in d:
+                if d["disableAllHooks"] is True:
+                    return FAIL, "disableAllHooks is true in the %s settings (%s): EVERY hook is off" % (name, p)
+                return OK, "disableAllHooks is %r in the %s settings (managed settings not read)" % (
+                    d["disableAllHooks"], name)
+        return OK, "no disableAllHooks in local/project/user settings (managed settings not read)"
+
+    return [run_check("claude.wiring", "claude", _wiring, ctx),
+            run_check("claude.enabled", "claude", _enabled, ctx)]
+
+
+def _x4lock_module(ctx: Ctx):
+    for base in (ctx.root, ctx.toolkit, HERE.parent):
+        p = Path(base) / "scripts" / "x4lock.py" if base else None
+        if p and p.is_file():
+            return _load("x4doctor_x4lock", p)
+    return None
+
+
+@group
+def check_common(ctx: Ctx) -> list[Check]:
+    def _escape(_):
+        v = (ctx.env.get("X4_GUARD") or "").strip().lower()
+        readers = 0
+        for _t, hooks in guard_dirs(ctx):
+            for f in hooks.glob("*.sh"):
+                try:
+                    readers += "X4_GUARD:" in f.read_text(encoding="utf-8", errors="replace") or \
+                        '"$X4_GUARD"' in f.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    pass
+        note = "" if readers else " (note: no guard here reads X4_GUARD yet)"
+        if v == "off":
+            return FAIL, "X4_GUARD=off: GUARDS OFF for every session launched from this environment" + note
+        return OK, "X4_GUARD is %s%s" % (repr(v) if v else "unset", note)
+
+    def _layer2(_):
+        m = _x4lock_module(ctx)
+        fn = getattr(m, "deny_delete_state", None) if m is not None else None
+        if fn is None:
+            return UNKNOWN, ("the OS-level delete protection on reference/ cannot be queried here "
+                             "(x4lock has no deny_delete_state)")
+        vals, why = guard_probe(ctx) if guard_dirs(ctx) else (None, "no guard copy")
+        ref = (vals or {}).get("REFERENCE")
+        if not ref:
+            return UNKNOWN, "no reference root resolved: " + why
+        st = fn(Path(ref))
+        hookless = ctx.targets.get("codex") or ctx.targets.get("generic")
+        if st == "present":
+            return OK, "reference/ carries the OS-level delete protection"
+        if st == "absent":
+            if hookless:
+                return FAIL, ("reference/ has NO OS-level delete protection, and a Codex or generic "
+                              "agent here has no hook-level delete guard to fall back on")
+            return OK, "no OS-level delete protection on reference/; the Claude hooks cover deletes"
+        return UNKNOWN, "the OS-level protection state of reference/ is %r" % st
+
+    def _lock(_):
+        m = _x4lock_module(ctx)
+        if m is None:
+            return UNKNOWN, "no scripts/x4lock.py to ask"
+        items, gone = m.manifest(), m.missing()
+        counts: dict = {}
+        for p in items:
+            s = m.state(p)
+            counts[s] = counts.get(s, 0) + 1
+        detail = "%d protected: %s; %d missing" % (len(items), ", ".join(
+            "%d %s" % (v, k) for k, v in sorted(counts.items())) or "none", len(gone))
+        if counts.get("unlocked") or gone:
+            return UNKNOWN, detail + " (informational: locking is your choice -- python scripts/x4lock.py lock)"
+        return OK, detail
+
+    return [run_check("guard.escape", "all", _escape, ctx),
+            run_check("layer2.reference", "all", _layer2, ctx),
+            run_check("x4lock", "all", _lock, ctx)]
+
+
 # ----------------------------------------------------------------- Task 7: parity
 
 #: The first line of every generated instruction file carries this (gen-agent-trees.py's
@@ -713,8 +1090,11 @@ def render_text(ctx: Ctx, rows: list[Check], code: int, elapsed: float) -> str:
            "  targets: %s" % (", ".join(present) or "NONE (no .claude/settings.json, .codex/hooks or .agents/skills here)"),
            "  checked: %d row(s) in %.1fs -- %s" % (
                len(rows), elapsed,
-               ", ".join("%d %s" % (sum(r.status == s for r in rows), s) for s in STATUSES)),
-           ""]
+               ", ".join("%d %s" % (sum(r.status == s for r in rows), s) for s in STATUSES))]
+    if ctx.targets.get("generic"):
+        out.append("  note:    a GENERIC agent runs no hooks here (by design, spec D13): nothing enforces "
+                   "the guards for it; only x4lock and the OS-level reference protection apply")
+    out.append("")
     w = max([len(r.id) for r in rows] + [10])
     for r in rows:
         out.append("  %-7s %-8s %-*s %s" % (r.status, r.target, w, r.id, r.detail))
