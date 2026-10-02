@@ -207,9 +207,15 @@ def test_CLAUDE_md_lists_exactly_the_ENGINE_SOURCES_the_module_derives():
     who had just read that instruction.
     """
     from x4validate import _freshness
-    doc = REPO / "CLAUDE.md"
+    # Plan 2 lane A: the freshness cell moved, with its section, from CLAUDE.md into the
+    # x4-toolkit-dev skill. It must live in ONE place: a second copy would rot unchecked.
+    doc = REPO / ".claude" / "skills" / "x4-toolkit-dev" / "SKILL.md"
     if not doc.is_file():
-        pytest.skip("no CLAUDE.md beside the toolkit (not the shipped layout)")
+        pytest.skip("no x4-toolkit-dev skill beside the toolkit (not the shipped layout)")
+    for entry in ("CLAUDE.md", "AGENTS.md"):
+        if (REPO / entry).is_file():
+            assert "_freshness.ENGINE_SOURCES" not in (REPO / entry).read_text(encoding="utf-8"), (
+                f"the freshness cell must live in ONE place; a second copy in {entry} would rot unchecked")
     rows = [l for l in doc.read_text(encoding="utf-8").splitlines()
             if "_freshness.ENGINE_SOURCES" in l]
     assert len(rows) == 1, "expected exactly one freshness cell, got %d" % len(rows)

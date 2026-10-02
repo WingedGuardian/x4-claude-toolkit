@@ -70,7 +70,8 @@ def test_agent_frontmatter_matches_the_claude_contract():
 def test_every_skill_and_settings_is_generated():
     out = load().generate(REPO)
     skills = sorted(p for p in out if p.startswith(".claude/skills/") and p.endswith("/SKILL.md"))
-    assert len(skills) == 10, skills
+    assert len(skills) == 11, skills
+    assert ".claude/skills/x4-toolkit-dev/SKILL.md" in skills
     assert ".claude/settings.json" in out
     assert sum(p.startswith(".claude/skills/x4-cli-reference/reference/") for p in out) == 11
 
@@ -267,8 +268,9 @@ def test_TWIN_addendum_without_an_h1_title_refuses(tmp_path, addendum):
 def test_TWIN_an_oversized_claude_md_refuses(tmp_path):
     g = load()
     src = _agent_copy(tmp_path)
+    over = g.CLAUDE_MD_MAX_CHARS - len(g.render_entry(src, "claude")) + 100   # relative to today's size
     p = src / "instructions/core.md"
-    p.write_bytes(p.read_bytes() + ("\u2605" * 400 + "\n").encode() * 30)  # +12,030 CHARS
+    p.write_bytes(p.read_bytes() + ("\u2605" * over + "\n").encode())
     with pytest.raises(g.GenerationError, match="40000 characters|40,000 characters"):
         g.generate(tmp_path)
 
@@ -303,3 +305,45 @@ def test_size_report_names_both_entry_files_with_their_units():
     lines = g.size_report(g.generate(REPO))
     assert any(l.startswith("CLAUDE.md ") and "/40,000 chars" in l for l in lines), lines
     assert any(l.startswith("AGENTS.md ") and "/32,768 bytes" in l for l in lines), lines
+
+
+# --- Plan 2 lane A, Task 4: maintainer guidance lives in the x4-toolkit-dev skill, verbatim.
+
+MOVED_HEADINGS = ("A Step That Narrows Data MUST Announce It", "A Derived Artifact Must Declare WHEN",
+                  "Tools Must Be Trustworthy BEFORE the Modlist", "Bug Handling Is a FUNNEL",
+                  "Concurrent Sessions: Isolate the TREE", "Memory and loaded context are LEADS")
+#: Python-internal / maintainer-gate routing rows (option B, DECISIONS #1). The CLI row
+#: `x4effective dump --chain` is NOT among them: it stays in the entry files.
+MOVED_ROWS = ("`_scan.iter_mod_xml`", "`_registry.scan_installed()`", "**MANIFEST ID**",
+              "`_scan.iter_corpus_xml(ext, report)`", "`_effective.base_vpaths`",
+              "`gates/mutation_probe.py`")
+
+
+@pytest.mark.parametrize("heading", MOVED_HEADINGS)
+def test_maintainer_section_lives_in_exactly_one_place(heading):
+    out = load().generate(REPO)
+    skill = out[".claude/skills/x4-toolkit-dev/SKILL.md"]
+    assert heading in skill, f"{heading!r} missing from the x4-toolkit-dev skill (relocated, never deleted)"
+    assert heading not in out["CLAUDE.md"] and heading not in out["AGENTS.md"], f"{heading!r} still in an entry file"
+
+
+@pytest.mark.parametrize("row", MOVED_ROWS)
+def test_maintainer_routing_row_lives_in_exactly_one_place(row):
+    out = load().generate(REPO)
+    assert row in out[".claude/skills/x4-toolkit-dev/SKILL.md"], row
+    assert row not in out["CLAUDE.md"] and row not in out["AGENTS.md"], row
+
+
+def test_the_cli_chain_row_stays_in_the_entry_file():
+    assert "`x4effective dump --chain <vpath>`" in load().generate(REPO)["CLAUDE.md"]
+
+
+def test_entry_files_point_to_the_dev_skill_and_x4_notes():
+    out = load().generate(REPO)
+    for f in ("CLAUDE.md",):            # AGENTS.md joins in Task 6
+        assert "x4-toolkit-dev" in out[f] and "X4-NOTES.md" in out[f]
+
+
+def test_the_generator_never_owns_x4_notes():
+    g = load()
+    assert not any("X4-NOTES" in p for p in g.OWNED) and not any("X4-NOTES" in p for p in g.generate(REPO))

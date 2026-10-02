@@ -126,9 +126,11 @@ def test_the_two_builds_are_NOT_chained_with_and_in_any_guidance():
         if root.is_dir():
             for ext in ("*.sh", "*.py", "*.md"):
                 candidates.extend(root.rglob(ext))
-    shipped_claude_md = repo / "CLAUDE.md"
-    if shipped_claude_md.is_file():
-        candidates.append(shipped_claude_md)
+    for shipped in ("CLAUDE.md", "AGENTS.md"):
+        if (repo / shipped).is_file():
+            candidates.append(repo / shipped)
+    # Plan 2 lane A: the rebuild line moved with its section into the x4-toolkit-dev skill.
+    candidates.extend(sorted((repo / "agent" / "skills").glob("*/SKILL.md")))
 
     checked, offenders = 0, []
     for p in candidates:
