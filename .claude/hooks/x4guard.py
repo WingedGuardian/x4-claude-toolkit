@@ -25,8 +25,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -36,6 +38,59 @@ RANK = {"allow": 0, "advise": 1, "ask": 2, "deny": 3}
 #: agent would put to its user as an ordinary confirmation; here it is an inert deny instead.
 NOT_CHECKED = re.compile(r"X4 GUARD INERT|NO rule (?:below )?was evaluated|NEVER checked against any rule"
                          r"|could not be translated|could not be analysed")
+#: After a timeout: how long taskkill may take, and how long to wait for the pipes to close once
+#: the tree is dead. A check's wall clock is bounded by TIMEOUT_S + KILL_WAIT_S + DRAIN_GRACE_S
+#: even if the kill fails, because the drain is never unbounded.
+KILL_WAIT_S = 5
+DRAIN_GRACE_S = 3
+_TASKKILL = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32", "taskkill.exe")
+
+
+def _clock() -> float:
+    return time.monotonic()
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill the guard AND its descendants. On Windows a killed bash.exe leaves its children
+    running and holding the pipes (MEASURED 2026-10-02, 3 of 3 process shapes), so the tree is
+    killed while the root is still known: taskkill /T walks parent PIDs from it. The PID cannot
+    be reused meanwhile -- Popen holds a handle to the process. On POSIX the guard leads its own
+    process group (start_new_session), so killpg reaches every descendant that did not leave it."""
+    if os.name == "nt":
+        try:
+            subprocess.run([_TASKKILL, "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=KILL_WAIT_S)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _run_bounded(argv: list, payload: bytes, env: dict, timeout: float):
+    """(returncode, stdout, stderr), or (None, b"", b"") on timeout. Never `subprocess.run`:
+    on Windows its timeout path ends in an UNBOUNDED communicate() that waits for every pipe
+    holder, so a guard's grandchild stretched a 2 s budget to 10.9 s (MEASURED). Not
+    `with Popen(...)` either: its __exit__ waits."""
+    extra = {} if os.name == "nt" else {"start_new_session": True}
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, env=env, **extra)
+    try:
+        out, err = proc.communicate(payload, timeout=timeout)
+        return proc.returncode, out, err
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:
+            proc.communicate(timeout=DRAIN_GRACE_S)
+        except subprocess.TimeoutExpired:
+            pass        # abandon: the reader threads are daemons and die with this process
+        return None, b"", b""
 
 
 def resolve_bash() -> tuple[str | None, str | None]:
@@ -101,19 +156,18 @@ def run_guard(script: str, payload: dict) -> dict:
     try:
         # X4_GUARD_CHECK=1: the guards' internal check protocol. Every "checked nothing" path exits
         # 2 instead of asking (a no-op for Claude Code's hooks, where the variable is unset).
-        r = subprocess.run([bash, str(target)], input=json.dumps(payload).encode("utf-8"),
-                           capture_output=True, timeout=TIMEOUT_S,
-                           env=dict(os.environ, X4_GUARD_CHECK="1"))
-    except subprocess.TimeoutExpired:
-        return _inert(f"{script} timed out after {TIMEOUT_S}s", guards)
+        rc, out, err = _run_bounded([bash, str(target)], json.dumps(payload).encode("utf-8"),
+                                    dict(os.environ, X4_GUARD_CHECK="1"), TIMEOUT_S)
     except OSError as e:
         return _inert(f"{script} could not start: {e}", guards)
-    if r.returncode == 2:
+    if rc is None:
+        return _inert(f"{script} timed out after {TIMEOUT_S}s", guards)
+    if rc == 2:
         return _inert(f"{script} reported it could not evaluate this (exit 2, X4_GUARD_CHECK)", guards)
-    if r.returncode != 0:
-        return _inert(f"{script} exited {r.returncode}", guards)
+    if rc != 0:
+        return _inert(f"{script} exited {rc}", guards)
     try:
-        decision, reason, context = parse_hook_output(r.stdout.decode("utf-8", "replace"))
+        decision, reason, context = parse_hook_output(out.decode("utf-8", "replace"))
     except ValueError as e:
         return _inert(str(e), guards)
     if decision in ("ask", "deny") and reason and NOT_CHECKED.search(reason):

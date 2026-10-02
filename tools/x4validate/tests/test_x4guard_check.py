@@ -2,11 +2,15 @@
 
 A guard that cannot run must never read as allow -- it is an inert deny with the cause named.
 """
+import ctypes
+import importlib.util
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -232,3 +236,108 @@ def test_guard_signals_not_checked_with_exit_2_only_under_X4_GUARD_CHECK(sandbox
                            env=dict(env, X4_GUARD_CHECK="1"))
     assert plain.returncode == 0 and b'"ask"' in plain.stdout.replace(b" ", b"")
     assert check.returncode == 2
+
+
+# ---------------------------------------------------------------- lane E (Plan 2) helpers
+
+def _alive(pid: int) -> bool:
+    """Is this PID a live process? Windows: STILL_ACTIVE exit code. POSIX: kill(pid, 0)."""
+    if os.name == "nt":
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, pid)            # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        k.GetExitCodeProcess(h, ctypes.byref(code))
+        k.CloseHandle(h)
+        return code.value == 259                           # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_dead(pid: int, within: float = 5.0) -> bool:
+    end = time.monotonic() + within
+    while _alive(pid) and time.monotonic() < end:
+        time.sleep(0.2)
+    return not _alive(pid)
+
+
+def _reap(pid: int | None) -> None:
+    if pid and _alive(pid):
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+        else:
+            os.kill(pid, signal.SIGKILL)
+
+
+def _stub_hooks(tmp_path, bodies: dict) -> Path:
+    """A deployed-looking .claude/hooks holding this x4guard.py and the given stub guards."""
+    hooks = tmp_path / "stub" / ".claude" / "hooks"
+    hooks.mkdir(parents=True)
+    shutil.copy2(X4GUARD, hooks / "x4guard.py")
+    for name, body in bodies.items():
+        (hooks / name).write_bytes(body.encode("utf-8"))
+    return hooks
+
+
+def _grandchild(pidfile: Path, seconds: int = 60) -> str:
+    """A guard whose CHILD inherits the pipes, records its own PID, and outlives any budget."""
+    py = Path(sys.executable).as_posix()
+    return (f"cat >/dev/null\n'{py}' -c \"import os,time;open(r'{pidfile.as_posix()}','w')"
+            f".write(str(os.getpid()));time.sleep({seconds})\"\n")
+
+
+def _load(script: Path):
+    spec = importlib.util.spec_from_file_location(f"x4guard_under_test_{abs(hash(str(script)))}", script)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_E1_a_timeout_is_bounded_and_kills_the_guards_descendants(sandbox, tmp_path):
+    """MEASURED 2026-10-02: a guard's grandchild held the pipes and subprocess.run(timeout=)
+    waited for it (sleep 8 under a 2 s budget took 10.9 s). The grandchild here sleeps 60 s."""
+    _, tk, env = sandbox
+    pidfile = tmp_path / "grandchild.pid"
+    hooks = _stub_hooks(tmp_path, {"protect-bash.sh": _grandchild(pidfile)})
+    t0 = time.monotonic()
+    v = _check_in(dict(env, X4_GUARD_TIMEOUT_S="3"), tk, "--kind", "shell", "--shell", "bash",
+                  "--command", "echo hi", script=hooks / "x4guard.py")
+    wall = time.monotonic() - t0
+    assert pidfile.exists(), "the grandchild never started -- this test proved nothing"
+    pid = int(pidfile.read_text())
+    try:
+        assert v["decision"] == "deny" and v["inert"] and "timed out" in v["reason"], v
+        assert wall < 20, f"{wall:.1f}s: a 3 s budget did not bound the check"
+        assert _wait_dead(pid), "the guard's grandchild survived the timeout"
+    finally:
+        _reap(pid)
+
+
+def test_E1_TWIN_the_bound_holds_even_when_the_tree_kill_does_not(sandbox, tmp_path, monkeypatch):
+    """Twin for the DRAIN clause: with the tree kill reduced to killing the root only, the
+    grandchild keeps the pipes open -- and the check must STILL return on time."""
+    _, tk, env = sandbox
+    pidfile = tmp_path / "grandchild.pid"
+    hooks = _stub_hooks(tmp_path, {"protect-bash.sh": _grandchild(pidfile)})
+    for k, val in env.items():
+        monkeypatch.setenv(k, val)
+    g = _load(hooks / "x4guard.py")
+    monkeypatch.setattr(g, "TIMEOUT_S", 3.0)
+    monkeypatch.setattr(g, "_kill_tree", lambda proc: proc.kill())
+    t0 = time.monotonic()
+    v = g.verdict_for("shell", "bash", "echo hi", None)
+    wall = time.monotonic() - t0
+    pid = int(pidfile.read_text()) if pidfile.exists() else None
+    try:
+        assert pid, "the grandchild never started -- this test proved nothing"
+        assert v["decision"] == "deny" and v["inert"], v
+        assert wall < 3 + g.DRAIN_GRACE_S + 6, f"{wall:.1f}s: the drain is not bounded"
+        assert _alive(pid), "control: the tree kill was meant to be OFF here"
+    finally:
+        _reap(pid)
