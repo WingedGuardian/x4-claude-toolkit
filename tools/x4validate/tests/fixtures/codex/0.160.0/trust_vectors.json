@@ -1,0 +1,92 @@
+[
+  {
+    "label": "pre .* bash entry, timeout 60",
+    "event_key": "pre_tool_use",
+    "group": {
+      "matcher": ".*"
+    },
+    "handler": {
+      "type": "command",
+      "command": "bash \"/x4/hooks/codex-entry.sh\" pre_tool_use",
+      "timeout": 60
+    },
+    "windows": true,
+    "codex_hash": "sha256:130af21cf8b7577feb6945560ca86371bc8c17494b7c98bb13dcce8c536ba17b",
+    "oracle": "codex-cli 0.160.0 app-server hooks/list currentHash, 2026-10-02"
+  },
+  {
+    "label": "pre Bash, statusMessage, timeout 30",
+    "event_key": "pre_tool_use",
+    "group": {
+      "matcher": "Bash"
+    },
+    "handler": {
+      "type": "command",
+      "command": "bash /x4/hooks/a.sh",
+      "timeout": 30,
+      "statusMessage": "checking"
+    },
+    "windows": true,
+    "codex_hash": "sha256:847228a95d825632d8cecb6a6280e7d5d8c0b15704062c8747ef47f1da7ced7f",
+    "oracle": "codex-cli 0.160.0 app-server hooks/list currentHash, 2026-10-02"
+  },
+  {
+    "label": "post apply_patch, commandWindows wins, default timeout",
+    "event_key": "post_tool_use",
+    "group": {
+      "matcher": "apply_patch"
+    },
+    "handler": {
+      "type": "command",
+      "command": "bash /x4/hooks/b.sh",
+      "commandWindows": "pwsh -NoProfile -File \"C:\\x4 root\\b.ps1\" post_tool_use"
+    },
+    "windows": true,
+    "codex_hash": "sha256:71548003d961f9c342bae176e2fa49f6d89f7c4eeac863e806b8708a28acfdca",
+    "oracle": "codex-cli 0.160.0 app-server hooks/list currentHash, 2026-10-02"
+  },
+  {
+    "label": "session_start no matcher, async",
+    "event_key": "session_start",
+    "group": {},
+    "handler": {
+      "type": "command",
+      "command": "bash /x4/hooks/c.sh",
+      "timeout": 30,
+      "async": true
+    },
+    "windows": true,
+    "codex_hash": "sha256:ab3fd13e718c17541a94095f2dbdc13bbde1faf22d9afd625e087cf5fbbf3136",
+    "oracle": "codex-cli 0.160.0 app-server hooks/list currentHash, 2026-10-02"
+  },
+  {
+    "label": "session_start additionalContextLimit 0 (kept)",
+    "event_key": "session_start",
+    "group": {},
+    "handler": {
+      "type": "command",
+      "command": "bash /x4/hooks/d.sh",
+      "timeout": 10,
+      "additionalContextLimit": 0
+    },
+    "windows": true,
+    "codex_hash": "sha256:55111c14573b29cd5f3bebc1a76aadcc38dc311f53ae7343b911a6d54a19e1e0",
+    "oracle": "codex-cli 0.160.0 app-server hooks/list currentHash, 2026-10-02"
+  },
+  {
+    "label": "pre additionalContextLimit 2500 (normalised away)",
+    "event_key": "pre_tool_use",
+    "group": {
+      "matcher": "apply_patch"
+    },
+    "handler": {
+      "type": "command",
+      "command": "bash /x4/hooks/e.sh",
+      "timeout": 60,
+      "additionalContextLimit": 2500
+    },
+    "windows": true,
+    "codex_hash": "sha256:4dcedd3d36ab5f6b4d9e2542afb59aa7595459b33f8d5a195639c6c892868aaa",
+    "oracle": "codex-cli 0.160.0 app-server hooks/list currentHash, 2026-10-02"
+  }
+]
