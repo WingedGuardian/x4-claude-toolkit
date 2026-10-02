@@ -148,6 +148,316 @@ def collect(ctx: Ctx, only: str | None = None) -> list[Check]:
     return rows
 
 
+# ----------------------------------------------------------------- shared helpers
+
+def _on_windows() -> bool:
+    return os.name == "nt"
+
+
+def _norm_path(p) -> str:
+    """One spelling per directory, for COMPARING what two resolvers said: MSYS `/c/x` and
+    `C:\\x` and `C:/x/` are one folder. Never used to open anything."""
+    if p is None:
+        return ""
+    s = str(p).strip().replace("\\", "/")
+    if _on_windows():
+        if len(s) >= 3 and s[0] == "/" and s[2] == "/" and s[1].isalpha():
+            s = s[1].upper() + ":" + s[2:]
+        s = s.lower()
+    return s.rstrip("/") if len(s) > 1 else s
+
+
+def _is_stub(path: str | None) -> bool:
+    """The Windows bash stubs: WSL's System32/SysWOW64 launcher and the Store alias. They
+    RESOLVE, and cannot run a Windows-path script -- a guard started through one fails
+    open (MEASURED 2026-09-04, x4lock's docstring)."""
+    if not path:
+        return False
+    s = path.replace("/", "\\").lower()
+    return any(k in s for k in ("\\system32\\", "\\syswow64\\", "\\windowsapps\\"))
+
+
+def same_bash(a: str | None, b: str | None) -> bool:
+    """One bash, possibly spelled two ways: Git for Windows ships `<Git>/bin/bash.exe` as a
+    launcher for `<Git>/usr/bin/bash.exe`. Anything else is compared as a path."""
+    if not a or not b:
+        return False
+    na, nb = _norm_path(a), _norm_path(b)
+    if na == nb:
+        return True
+
+    def git_root(p: str) -> str | None:
+        for tail in ("/usr/bin/bash.exe", "/bin/bash.exe", "/usr/bin/bash", "/bin/bash"):
+            if p.endswith(tail):
+                return p[: -len(tail)]
+        return None
+    ra, rb = git_root(na), git_root(nb)
+    return _on_windows() and ra is not None and ra == rb
+
+
+def _load(name: str, path: Path):
+    """Import one file as a module, never caching it under a shared name."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _run(cmd, *, env=None, cwd=None, timeout=60, stdin=None):
+    import subprocess
+    return subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=cwd,
+                          timeout=timeout, input=stdin, encoding="utf-8", errors="replace")
+
+
+def guard_dirs(ctx: Ctx) -> list[tuple[str, Path]]:
+    """The installed guard copies, (target, hooks dir), Claude first."""
+    out = []
+    if ctx.targets.get("claude") and (ctx.root / ".claude" / "hooks" / "_x4-env.sh").is_file():
+        out.append(("claude", ctx.root / ".claude" / "hooks"))
+    if ctx.targets.get("codex") and (ctx.root / ".codex" / "hooks" / "_x4-env.sh").is_file():
+        out.append(("codex", ctx.root / ".codex" / "hooks"))
+    return out
+
+
+def _hook_env(ctx: Ctx, target: str, hooks: Path) -> dict:
+    """The environment a hook of `target` would see. Claude Code sets CLAUDE_PROJECT_DIR to
+    the project it runs in; Codex sets nothing of the kind."""
+    env = dict(ctx.env)
+    env["HOOK_DIR"] = hooks.as_posix()
+    if target == "claude":
+        env["CLAUDE_PROJECT_DIR"] = str(ctx.root)
+    return env
+
+
+def guard_bash(ctx: Ctx) -> tuple[str | None, str]:
+    """The bash the deployed x4guard.py would use -- asked of x4guard itself."""
+    dirs = guard_dirs(ctx)
+    if not dirs:
+        return None, "no guard copy installed here"
+    xg = dirs[0][1] / "x4guard.py"
+    if not xg.is_file():
+        return None, "%s is missing" % xg
+    saved = dict(os.environ)
+    try:
+        os.environ.clear()
+        os.environ.update(ctx.env)
+        bash, why = _load("x4doctor_x4guard", xg).resolve_bash()
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+    return bash, (why or "")
+
+
+#: Sourced through the guards' bash: the values the guards see, one KEY=VALUE per line.
+_PROBE = r'''
+. "$HOOK_DIR/_x4-env.sh" >/dev/null 2>&1
+printf 'TOOLKIT=%s\nGAME=%s\nREFERENCE=%s\nPROFILE=%s\nMODS=%s\nCFG=%s\n' \
+  "${X4_TOOLKIT:-}" "${X4_GAME:-}" "${X4_REFERENCE:-}" "${X4_PROFILE:-}" "${X4_MODS:-}" "${_x4_cfg:-}"
+x4_resolve_python
+printf 'PY=%s\n' "$X4_PY"
+if [ -n "$X4_PY" ]; then
+  _v="$("$X4_PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)"
+  printf 'PYRC=%s\nPYVER=%s\n' "$?" "$_v"
+fi
+if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then echo JQ=ok; else echo JQ=missing; fi
+'''
+
+
+def guard_probe(ctx: Ctx) -> tuple[dict | None, str]:
+    """Run _PROBE through the guards' own bash with the first guard copy's environment.
+    Cached per Ctx: four groups read it."""
+    cached = getattr(ctx, "_probe", None)
+    if cached is not None:
+        return cached
+    bash, why = guard_bash(ctx)
+    if not bash:
+        res = (None, "no bash the guards would run: " + why)
+    else:
+        target, hooks = guard_dirs(ctx)[0]
+        r = _run([bash, "-c", _PROBE], env=_hook_env(ctx, target, hooks), cwd=str(ctx.root))
+        vals = dict(line.split("=", 1) for line in r.stdout.splitlines() if "=" in line)
+        res = (vals, "") if "PY" in vals else (None, "the probe printed nothing usable (rc %s): %s"
+                                               % (r.returncode, (r.stderr or r.stdout)[-300:]))
+    ctx._probe = res
+    return res
+
+
+# ----------------------------------------------------------------- Task 6: toolchain
+
+@group
+def check_toolchain(ctx: Ctx) -> list[Check]:
+    dirs = guard_dirs(ctx)
+    if not dirs:
+        why = "no guard target is installed here (a generic agent runs no guards)"
+        return [Check(i, "all", NA, why) for i in ("bash.guards", "bash.path", "bash.agree",
+                                                    "python.guards", "jq")]
+    rows = []
+    bash, why = guard_bash(ctx)
+
+    def _bash_guards(_):
+        if not bash:
+            return FAIL, "x4guard resolves NO usable bash: " + why
+        if _is_stub(bash):
+            return FAIL, "x4guard would run the guards with a STUB bash (%s): it cannot run them" % bash
+        r = _run([bash, "-c", "echo ok"])
+        if r.returncode != 0 or r.stdout.strip() != "ok":
+            return FAIL, "%s resolves but does not run (rc %s)" % (bash, r.returncode)
+        return OK, bash
+    rows.append(run_check("bash.guards", "all", _bash_guards, ctx))
+
+    def _bash_path(_):
+        if not _on_windows():
+            return NA, "the bash-stub trap is Windows-only"
+        import shutil
+        first = shutil.which("bash", path=ctx.env.get("PATH"))
+        if not first:
+            return UNKNOWN, "no bash on PATH at all"
+        if _is_stub(first):
+            return FAIL, ("the first bash on PATH is a STUB (%s). A host that starts a hook as "
+                          "`bash ...` gets it, and the hook fails OPEN. Put Git's bin first on PATH."
+                          % first)
+        return OK, first
+    rows.append(run_check("bash.path", "all", _bash_path, ctx))
+
+    def _bash_agree(_):
+        gb = None
+        for base in (ctx.root, ctx.toolkit):
+            if base and (Path(base) / "scripts" / "gitbash.py").is_file():
+                gb = Path(base) / "scripts" / "gitbash.py"
+                break
+        if gb is None:
+            return UNKNOWN, "scripts/gitbash.py not found, so the toolkit's own resolver cannot be asked"
+        theirs = _load("x4doctor_gitbash", gb).find_bash()
+        if not bash or not theirs:
+            return UNKNOWN, "x4guard: %s; scripts/gitbash.py: %s" % (bash or "none", theirs or "none")
+        if _norm_path(bash) == _norm_path(theirs):
+            return OK, "x4guard and scripts/gitbash.py both resolve %s" % bash
+        if same_bash(bash, theirs):
+            return OK, ("one Git install, two spellings -- x4guard: %s ; scripts/gitbash.py: %s"
+                        % (bash, theirs))
+        return UNKNOWN, ("the resolvers DISAGREE -- x4guard: %s ; scripts/gitbash.py: %s. Both run, "
+                         "but a fix applied to one is not applied to the other" % (bash, theirs))
+    rows.append(run_check("bash.agree", "all", _bash_agree, ctx))
+
+    def _python(_):
+        vals, why2 = guard_probe(ctx)
+        if vals is None:
+            return UNKNOWN, why2
+        py = vals.get("PY", "")
+        if not py:
+            if ctx.env.get("X4_PYTHON"):
+                return FAIL, ("X4_PYTHON=%s does not resolve, and the guards REFUSE to fall back "
+                              "to another interpreter" % ctx.env["X4_PYTHON"])
+            return FAIL, "the guards find no python/python3/py: protect-bash cannot analyse commands"
+        if vals.get("PYRC") != "0" or not vals.get("PYVER"):
+            return FAIL, ("%s resolves but does not run (rc %s) -- a Store stub, or a broken "
+                          "install" % (py, vals.get("PYRC")))
+        major, minor = (int(x) for x in vals["PYVER"].split("."))
+        if (major, minor) < (3, 10):
+            return FAIL, "%s is Python %s; the guards need >= 3.10" % (py, vals["PYVER"])
+        return OK, "%s -> Python %s" % (py, vals["PYVER"])
+    rows.append(run_check("python.guards", "all", _python, ctx))
+
+    def _jq(_):
+        vals, why2 = guard_probe(ctx)
+        if vals is None:
+            return UNKNOWN, why2
+        if vals.get("JQ") == "ok":
+            return OK, "jq runs"
+        if vals.get("PYRC") == "0" and vals.get("PYVER"):
+            return OK, "jq absent; the guards fall back to python (degraded, as setup.sh warns)"
+        return FAIL, "neither jq nor a working python: the guards cannot render a verdict"
+    rows.append(run_check("jq", "all", _jq, ctx))
+    return rows
+
+
+# ----------------------------------------------------------------- Task 6: roots
+
+#: Asked of the TOOLS' resolver, run from the root the way an agent would run a tool.
+_PY_ROOTS = r'''
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from x4validate import _paths
+out = {}
+for k in ("game_root", "reference", "profile", "_find_env_file"):
+    try:
+        v = getattr(_paths, k)()
+        out[k] = None if v is None else str(v)
+    except Exception as e:
+        out[k] = None
+        out[k + "_error"] = "%s: %s" % (type(e).__name__, e)
+print(json.dumps(out))
+'''
+
+
+def tools_roots(ctx: Ctx) -> tuple[dict | None, str]:
+    """The tools' answer. The resolver CODE comes from X4_TOOLKIT, else the root, else the
+    toolkit this doctor ships in; the CONFIG it finds is decided by env and cwd alone, as
+    for any tool an agent runs from the root."""
+    for base in (ctx.toolkit, ctx.root, HERE.parent):
+        if base and (Path(base) / "tools" / "x4validate" / "x4validate" / "_paths.py").is_file():
+            pkg = Path(base) / "tools" / "x4validate"
+            r = _run([sys.executable, "-c", _PY_ROOTS, str(pkg)], env=dict(ctx.env), cwd=str(ctx.root))
+            try:
+                return json.loads(r.stdout.strip().splitlines()[-1]), str(pkg)
+            except (ValueError, IndexError):
+                return None, "the tools' resolver failed (rc %s): %s" % (r.returncode, r.stderr[-300:])
+    return None, "no tools/x4validate under X4_TOOLKIT or the root, so the tools' view cannot be asked"
+
+
+@group
+def check_roots(ctx: Ctx) -> list[Check]:
+    if not guard_dirs(ctx):
+        why = "no guard target is installed here"
+        return [Check(i, "all", NA, why) for i in ("roots.reference", "roots.game", "roots.agree")]
+    vals, why = guard_probe(ctx)
+
+    def _ref(_):
+        if vals is None:
+            return UNKNOWN, why
+        ref = vals.get("REFERENCE", "")
+        if not ref:
+            return FAIL, "the guards resolve NO reference root: nothing under it is protected"
+        if not Path(ref).is_dir():
+            return UNKNOWN, ("the guards protect %s, which does not exist yet (not unpacked?); "
+                             "nothing is there to damage" % ref)
+        return OK, ref
+
+    def _game(_):
+        if vals is None:
+            return UNKNOWN, why
+        game = vals.get("GAME", "")
+        if not game:
+            return FAIL, "X4_GAME is unset for the guards: the game install is NOT protected"
+        if not Path(game).is_dir():
+            return FAIL, "the guards' X4_GAME names a folder that does not exist: %s" % game
+        return OK, game
+
+    def _agree(_):
+        if vals is None:
+            return UNKNOWN, why
+        tools, where = tools_roots(ctx)
+        if tools is None:
+            return UNKNOWN, where
+        cfg_g = vals.get("CFG") or "(none)"
+        cfg_t = tools.get("_find_env_file") or "(none found)"
+        diffs = []
+        for label, gkey, tkey in (("reference", "REFERENCE", "reference"), ("game", "GAME", "game_root")):
+            gv, tv = vals.get(gkey, ""), tools.get(tkey)
+            if _norm_path(gv) != _norm_path(tv):
+                diffs.append("%s: guards %s vs tools %s" % (label, gv or "(unset)", tv or "(unset)"))
+        detail = "guards read %s; tools read %s" % (cfg_g, cfg_t)
+        if diffs:
+            return FAIL, ("the guards and the tools see DIFFERENT trees -- they protect one and "
+                          "read another. %s. (%s)" % ("; ".join(diffs), detail))
+        return OK, "the guards and the tools agree on reference and game; " + detail
+
+    return [run_check("roots.reference", "all", _ref, ctx),
+            run_check("roots.game", "all", _game, ctx),
+            run_check("roots.agree", "all", _agree, ctx)]
+
+
 def _verdict(code: int) -> str:
     return {0: "OK -- every applicable check passed",
             1: "FAIL -- at least one guard is NOT live (see FAIL rows)",
