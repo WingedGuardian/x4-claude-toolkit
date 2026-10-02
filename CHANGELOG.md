@@ -22,6 +22,9 @@
 
   It is a stopgap until the shared instructions fit Codex's 32 KiB limit. The generator refuses
   to write it any larger, because Codex silently drops text past that size.
+- **`x4guard check`** (`.claude/hooks/x4guard.py`): ask the guards for a verdict from any agent,
+  with no side effects. `--shell` names the shell that will EXECUTE the command, because Codex
+  labels PowerShell "Bash". A guard that cannot run is reported as an inert deny, never an allow.
 - `.gitignore` no longer swallows a skill's `reference/` folder under `agent/skills/`. The game-data
   rule matched it there too, as it once did under `.claude/skills/`.
 

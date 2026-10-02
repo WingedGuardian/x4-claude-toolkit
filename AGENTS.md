@@ -46,8 +46,14 @@ anyway, and unreviewed hooks do not run at all. So keep these rules by your own 
 - never delete inside an X4 directory, the user profile or saves without the user's explicit
   go-ahead.
 
-To ask the guards for a verdict before acting, run `python .claude/hooks/x4guard.py check ...`
-once it lands on master.
+To ask the guards for a verdict before acting (nothing is executed, nothing is written):
+
+    python .claude/hooks/x4guard.py check --kind shell --shell powershell --command "<cmd>"
+    python .claude/hooks/x4guard.py check --kind write --path "<file>"
+
+On Windows, Codex runs its shell commands in **PowerShell**, so pass `--shell powershell`.
+Judged as bash, a PowerShell write into `reference/` was measured to pass. Treat `deny` and
+`ask` as a stop: ask the user. Treat `inert: true` as "nothing was checked", never as a pass.
 
 ## 4. Git
 
