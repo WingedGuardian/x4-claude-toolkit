@@ -29,6 +29,11 @@ SBX_TMP="$(mktemp -d "$_SBX/hooks.XXXXXX")"
 # The sandbox itself is removed too, not just its child. Leaving it behind made the
 # hygiene check at the end of this file report the suite's OWN sandbox as a stray.
 trap 'rm -rf "$SBX_TMP"; rmdir "$_SBX" 2>/dev/null' EXIT
+# X4_DECIDE_DUMP=<file> (lane B conformance): append one JSONL record per decide() -- the
+# payload, the hook, the env it ran under, the live verdict -- and KEEP the sandbox, so
+# tests/test_codex_conformance.py can replay every case through the Codex adapter against
+# the same roots. Unset (the default), nothing below changes.
+[ -n "${X4_DECIDE_DUMP:-}" ] && trap 'printf "%s\n" "$SBX_TMP" > "$X4_DECIDE_DUMP.sandbox"' EXIT
 
 # Snapshot the caller's directory AFTER the sandbox exists, so the check at the end
 # compares against a real baseline.
@@ -76,6 +81,12 @@ decide(){
       got="advise"
     fi
   fi
+  [ -n "${X4_DECIDE_DUMP:-}" ] && jq -cn --arg e "$exp" --arg g "$got" --arg h "$hook" --argjson j "$json" \
+      --arg l "$label" --arg cwd "$(pwd)" --arg out "$out" \
+      '{exp:$e,got:$g,hook:$h,payload:$j,label:$l,cwd:$cwd,out:$out,
+        env:(env|with_entries(select((.key|test("^(X4_|CLAUDE_PROJECT_DIR$|GIT_CEILING_DIRECTORIES$)"))
+                                     and (.key|test("KEY|TOKEN|SECRET|PASS")|not))))}' \
+      >> "$X4_DECIDE_DUMP" 2>/dev/null
   [ "$got" = "$exp" ] && ok "$label ($got)" || no "$label — expected $exp, got $got"
 }
 fj(){ printf '{"tool_name":"Edit","tool_input":{"file_path":%s}}' "$(printf '%s' "$1" | jq -Rs .)"; }

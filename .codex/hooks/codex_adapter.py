@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -85,7 +86,15 @@ def inert(reason: str, label: str = "") -> dict:
 
 # ------------------------------------------------------------------ translate ---------- #
 
+_MSYS_DRIVE = re.compile(r"^/([A-Za-z])(?:/|$)")
+
+
 def _abspath(p: str, base: str) -> str:
+    """Absolute path as the guards must see it. On Windows a Git Bash drive path `/c/x` means
+    `C:/x`; os.path.abspath would make it `<cwd drive>:\\c\\x`, a path outside every protected
+    root (MEASURED by the conformance suite: an Update File of /c/.../reference/... was ALLOWED)."""
+    if sys.platform == "win32":
+        p = _MSYS_DRIVE.sub(lambda m: m.group(1).upper() + ":/", p)
     return os.path.abspath(os.path.join(base, p)) if not os.path.isabs(p) else os.path.abspath(p)
 
 
