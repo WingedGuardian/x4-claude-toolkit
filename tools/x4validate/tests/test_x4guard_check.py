@@ -32,7 +32,12 @@ def sandbox(tmp_path):
                X4_PROFILE=str(tmp_path / "profile"), X4_MODS=str(tmp_path / "mods"),
                X4_EXTENSIONS=str(game / "extensions"), X4_SAVES=str(tmp_path / "profile" / "save"),
                X4_DOCUMENTS=str(tmp_path / "docs"), X4_BACKUPS=str(tmp_path / "backups"),
-               X4_CONFIG="/nonexistent")
+               X4_CONFIG="/nonexistent",
+               # These tests judge VERDICTS, not speed. X4_GUARD_TIMEOUT_S is one budget per CHECK
+               # (lane E), and a real delete check took 22-24 s of the default 25 under load
+               # (MEASURED 2026-10-02), so the default made verdict tests flake inert. The budget
+               # tests set their own value.
+               X4_GUARD_TIMEOUT_S="120")
     env.pop("X4_BASH", None)
     return tmp_path, tk, env
 
@@ -190,7 +195,7 @@ def test_I3_a_guard_that_checked_nothing_is_inert_not_a_plain_ask(sandbox):
     env = dict(env, X4_PWSH=str(tk / "no-such-pwsh.exe"))
     v = _check_in(env, tk, "--kind", "shell", "--shell", "powershell", "--command",
                   f"Remove-Item -Force '{tk / 'reference' / 'libraries' / 'wares.xml'}'")
-    assert v["decision"] == "deny" and v["inert"], v
+    assert v["decision"] == "deny" and v["inert"] and "could not be analysed" in v["reason"], v
 
 
 def test_I4_a_delete_is_at_least_as_strict_as_rm(sandbox):
@@ -202,7 +207,7 @@ def test_I4_a_delete_is_at_least_as_strict_as_rm(sandbox):
     d = _check_in(env, tk, "--kind", "delete", "--path", str(target))
     w = _check_in(env, tk, "--kind", "write", "--path", str(target))
     s = _check_in(env, tk, "--kind", "shell", "--shell", "bash", "--command", f"rm -f '{target.as_posix()}'")
-    assert rank[d["decision"]] == max(rank[w["decision"]], rank[s["decision"]])
+    assert rank[d["decision"]] == max(rank[w["decision"]], rank[s["decision"]]), (d, w, s)
     assert d["guards"] == ["protect-files.sh", "protect-bash.sh"]
     assert target.exists()                      # verdict only: nothing executed
 
@@ -412,6 +417,33 @@ def test_E2_a_bad_budget_setting_is_an_inert_deny(sandbox, raw):
     # The VALUE is named, not just the variable: a 0 budget would otherwise pass via the
     # "budget already spent" path and hide a missing `t <= 0` clause (one twin per clause).
     assert v["decision"] == "deny" and v["inert"] and f"X4_GUARD_TIMEOUT_S={raw!r}" in v["reason"], v
+
+
+_ASK_THEN_EXIT = ("cat >/dev/null\nprintf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\","
+                  "\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"WHY-IT-FAILED\"}}'\nexit CODE\n")
+
+
+@pytest.mark.parametrize("code", [2, 3])
+def test_E3_a_failing_guard_names_its_own_reason(sandbox, tmp_path, code):
+    _, tk, env = sandbox
+    hooks = _stub_hooks(tmp_path, {"protect-bash.sh": _ASK_THEN_EXIT.replace("CODE", str(code))})
+    v = _check_in(env, tk, "--kind", "shell", "--shell", "bash", "--command", "echo hi",
+                  script=hooks / "x4guard.py")
+    assert v["decision"] == "deny" and v["inert"], v
+    assert "WHY-IT-FAILED" in v["reason"], v["reason"]          # dropped before lane E (MEASURED)
+    assert f"exit {code}" in v["reason"] or f"exited {code}" in v["reason"], v["reason"]
+
+
+def test_E3_TWIN_a_failing_guard_without_a_verdict_names_its_stderr(sandbox, tmp_path):
+    """The unparseable-stdout clause: no hook JSON, so the cause comes from stderr -- and a
+    parse failure must not escape as an exception or turn into anything but an inert deny."""
+    _, tk, env = sandbox
+    hooks = _stub_hooks(tmp_path, {"protect-bash.sh":
+                                   "cat >/dev/null\nprintf 'not json'\necho 'boom: jq missing' >&2\nexit 1\n"})
+    v = _check_in(env, tk, "--kind", "shell", "--shell", "bash", "--command", "echo hi",
+                  script=hooks / "x4guard.py")
+    assert v["decision"] == "deny" and v["inert"], v
+    assert "exited 1" in v["reason"] and "boom: jq missing" in v["reason"], v["reason"]
 
 
 def test_E2_TWIN_a_valid_budget_setting_is_honoured(sandbox):

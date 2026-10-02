@@ -159,6 +159,20 @@ def _inert(reason: str, guards: list[str]) -> dict:
                       "not a verdict on the command."}
 
 
+def _failure_detail(out: bytes, err: bytes) -> str | None:
+    """The guard's own reason when it printed a hook verdict before failing (every X4_GUARD_CHECK
+    exit 2 does: the verdict is printed BEFORE x4_guard_check_inert exits), else the last 300
+    characters of its stderr. Without this the cause was only "exited N" (MEASURED 2026-10-02)."""
+    try:
+        _, reason, context = parse_hook_output(out.decode("utf-8", "replace"))
+        if reason or context:
+            return reason or context
+    except ValueError:
+        pass
+    tail = err.decode("utf-8", "replace").strip()[-300:]
+    return tail or None
+
+
 def _deployed() -> bool:
     return HERE.name == "hooks" and HERE.parent.name == ".claude"
 
@@ -194,10 +208,11 @@ def run_guard(script: str, payload: dict, deadline: float | None = None) -> dict
     if rc is None:
         return _inert(f"{script} timed out: this check's {TIMEOUT_S:g}s budget "
                       f"(X4_GUARD_TIMEOUT_S) ran out", guards)
-    if rc == 2:
-        return _inert(f"{script} reported it could not evaluate this (exit 2, X4_GUARD_CHECK)", guards)
     if rc != 0:
-        return _inert(f"{script} exited {rc}", guards)
+        why = _failure_detail(out, err)
+        head = (f"{script} reported it could not evaluate this (exit 2, X4_GUARD_CHECK)" if rc == 2
+                else f"{script} exited {rc}")
+        return _inert(head + (f": {why}" if why else ""), guards)
     try:
         decision, reason, context = parse_hook_output(out.decode("utf-8", "replace"))
     except ValueError as e:
