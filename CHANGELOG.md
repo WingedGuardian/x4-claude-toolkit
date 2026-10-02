@@ -24,6 +24,21 @@
   it after a verified unpack. It refuses a forced re-unpack while the protection is on,
   and every recovery message now names the lift (`x4refguard.py remove`) before the `rm`.
   `x4lock status` prints one informational line for it.
+- **Codex users must re-review hooks** (first Codex hook definitions, template v1).
+  codex-hooks-template: d6fef82e09d3f54afbda775d1646bd8968a02b2893de8c867476aca17eef4d19
+  Codex runs a project hook only after you review it, and silently skips one whose definition
+  changed. After installing or updating, open Codex in the game folder, review the X4 hooks
+  (`/hooks`), and check that each session starts with `X4 GUARDS LIVE (codex hooks v1)`.
+- **Codex adapter (Plan 2 lane B).** `.codex/hooks/` carries every guard byte for byte plus
+  `codex_adapter.py`, which translates Codex hook payloads to the same guards Claude Code runs:
+  shell commands are judged as the shell that runs them (PowerShell on Windows, where Codex
+  labels them "Bash"), `apply_patch` (also when run through the shell) by every file it adds,
+  updates, deletes or moves, relative to the session folder. Only a JSON deny blocks in Codex
+  (measured: a crash or `exit 2` lets the command run), so the PowerShell/bash entry wrappers turn
+  every failure into a deny. `codex_trust.py report` tells whether Codex is actually running the
+  hooks (trusted / untrusted / modified / disabled); `.codex/rules/x4.rules` blocks `git add -A`
+  even when the hooks are not running. A conformance suite replays every Claude hook case
+  through the Codex chain and requires equal verdicts.
 
 - Individual-tool audit fixes: BaseX validates attribute QNames and certifies raw
   zeros only for a restricted whole-database content-search grammar. Other raw
