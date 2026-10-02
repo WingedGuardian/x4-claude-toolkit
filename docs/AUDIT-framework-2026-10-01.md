@@ -100,6 +100,81 @@ Persistent failure telemetry and host enforcement remain separate requirements.
 
 ## Safety and process observations
 
+### Follow-up: install artifacts and protection coverage
+
+**F7 — relative file paths bypass the front door's reference check (95% confidence).**
+The measured example and scope correction are recorded below. This remains open on this
+branch; the parallel master's uncommitted path-resolution change is not certified here.
+
+**F8 — installers omit the new agent instructions and neutral sources (98% confidence).**
+Both copy lists omit `AGENTS.md` and `agent/`. Two disposable, real installer runs (Bash and
+PowerShell) each exited 0 and copied the `CLAUDE.md` control, but neither copied the
+`AGENTS.md` control or `agent/README.md` control. Setup was replaced only in the temporary
+fixture with a no-op, so these probes did not install dependencies or run real setup.
+This is an integration gap in the current source migration, not a claim that the published
+v3.3.1 release promised universal-agent support. Decide whether installed toolkits are
+editable sources or runtime-only distributions; instruction loading and maintenance guidance
+must match that decision. At minimum, deliver the appropriate agent's instructions.
+
+**F9 — the default lock manifest omits AGENTS.md (98% confidence).**
+In one disposable configured game root containing both instruction files, `manifest()`
+included `CLAUDE.md` and excluded `AGENTS.md`. No attributes were changed. `_GAME_RELATIVE`
+names the Claude instructions but not the new agent instructions. Users can explicitly add
+paths through `X4_PROTECTED`; the default migration has not incorporated this file.
+Review instruction and source ownership when defining the protected set; do not blanket-lock
+all generated folders or normal runtime state.
+
+**Guard-health history remains absent (99% confidence in this boundary).**
+A missing-interpreter check returned an inert denial; immediately afterward the real canary
+returned 0 and `canary: 1 repository checked, no tracked file lost.` The fixture's tracked file
+was intact. This is correct behavior for the loss canary, not a false result from that tool.
+It proves the canary cannot establish that guards successfully evaluated payloads. A separate
+health monitor must distinguish evaluation failures, successful evaluations, and no calls;
+it must record failures before dependency parsing can fail. Retain the existing loss check.
+
+Supporting existing tests: installer agreement, generator and canary **67 passed**, zero
+skipped; lock tests **41 passed**, zero skipped. The additional artifact probes found F8/F9
+despite those green suites. The agreement test checks both lists agree and pins `mods/`,
+but does not require these newly introduced artifacts. No production files or live protections
+were changed in this follow-up; only this report and project memory were updated.
+
+### Assessment and proposed roadmap — no implementation authorized
+
+The strongest parts are reproducible release archives, independent installer refusal checks,
+failure controls in the test suites, and documented limits of the read-only lock. Both CI
+platforms currently have `experimental: false`; older comments describing Ubuntu as merely
+informational are stale, not evidence of a currently unenforced job.
+
+The safety policy deliberately spends some convenience to protect shared records: it denies
+broad staging even in a private repository and writes even to a unique `/tmp` subdirectory.
+Those verified restrictions may be excessive for isolated work, but safe exceptions need
+evidence of isolation and explicit ownership. The lock's documented force-delete gaps are
+also real and tested; replacing it with broad ACL denies would repeat a documented read-access
+and recovery failure. No blanket interpreter ban or ACL change is recommended without a
+separate design and scratch-tree proof.
+
+| Area | Current evidence | Proposed next work |
+| --- | --- | --- |
+| Neutral sources and Claude generation | Implemented and checked; core still contains Claude-specific operating assumptions | Keep one source and add explicit target rendering/conformance |
+| Front door | F5/F6 fixed and tested on this branch; relative-path finding remains | Resolve remaining path/root contracts before adapters rely on verdicts |
+| Installed instruction discovery | Repository AGENTS.md exists; installers omit it | Test each installed layout's actual instruction discovery and ownership |
+| Dependency and validation resilience | jq has a Python fallback; F2/F3/F4 remain open | Review unique backups, explicit incomplete validation, lock freshness and test tripwires together |
+| Health monitoring | File-loss canary works; no evaluation history | Add a separate persistent guard-health contract and outage/recovery probes |
+| Host enforcement | Script verdicts measured; a passing front-door call installs no host enforcement | Replay native payloads and prove deny/crash/timeout behavior in each host |
+| Independent protection | Read-only lock has measured Windows/POSIX and force-operation limits | Decide the boundary for opaque programs; test any stronger layer's recovery first |
+| Portable onboarding | No ADAPTING.md, x4doctor or Codex target artifact found in this snapshot | Provide setup, capability limits, shell routing, confirmation handling, backups, validation and verification guidance for other hosts |
+
+The portability design already proposes most of this work. Its proposals are not shipped
+capabilities. The current stopgap asks Codex to read the oversized CLAUDE.md manually; a true
+shared core still needs the planned instruction split and host-specific addenda. Preserve
+the distinction between instructions an agent reads, checks it may call, and decisions its
+host actually enforces.
+
+The optional mutation harness also has a process concern: it runs the full parser suite for
+every mutant/predicate variant, including live PowerShell tests, without a subprocess timeout.
+The interrupted local run cannot be counted as passing. Improving targeted execution and a
+bounded failure result is proposed work; retaining native PowerShell coverage is essential.
+
 - Missing jq is handled better than in the reported Skyrim incident: the actual file
   guard still denied the disposable reference write with JQ pointing to a missing binary.
 - Missing Python produced an explicit `ask` verdict naming GUARD INERT. That is disclosure,

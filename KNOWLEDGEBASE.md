@@ -1133,3 +1133,13 @@ their measured audit findings remain open. No relative-path production fix was a
 a relative `reference/...` write checked from the toolkit root returned allow while its
 absolute-path equivalent denied. The parallel session has a pending fix; it is not verified
 or integrated here. Arbitrary script writes and guard-health telemetry also remain unresolved.
+
+### 2026-10-01 — audit-only migration integration probes
+
+MEASURED with both real installers in disposable destinations and a stubbed setup: each
+returned 0 and copied CLAUDE.md, but omitted AGENTS.md and the neutral agent/ tree. Copy-list
+agreement tests pass because neither list requires those new artifacts. In a disposable
+configured game root, x4lock's default manifest included CLAUDE.md but omitted AGENTS.md;
+no lock attributes were changed. A guard inert denial followed by a clean file-loss canary
+is expected: the canary monitors tracked file loss, not guard-evaluation history. These are
+audit findings only, not additional fixes. See F8/F9 and the roadmap in the framework report.
