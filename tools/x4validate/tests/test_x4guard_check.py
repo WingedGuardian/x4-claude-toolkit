@@ -162,6 +162,21 @@ def test_I1_relative_path_is_resolved_from_the_callers_cwd(sandbox):
     assert v["decision"] == "deny" and not v["inert"]
 
 
+def test_F_a_relative_shell_command_is_judged_from_the_callers_cwd(sandbox):
+    """Lane F: the shell check sent no `cwd`, so `rm -f reference/...` from the folder holding
+    reference/ was ALLOWED while the absolute spelling denied. The caller's cwd is the payload's."""
+    _, tk, env = sandbox
+    v = _check_in(env, tk, "--kind", "shell", "--shell", "bash", "--command", "rm -f reference/libraries/wares.xml")
+    assert v["decision"] == "deny" and not v["inert"]
+
+
+def test_F_TWIN_the_same_relative_command_from_an_unrelated_cwd_allows(sandbox):
+    tmp, _, env = sandbox
+    v = _check_in(env, tmp, "--kind", "shell", "--shell", "bash", "--command",   # under no root
+                  "rm -f reference/libraries/wares.xml")
+    assert v["decision"] == "allow" and not v["inert"]
+
+
 def _hooks_copy(dst):
     shutil.copytree(X4GUARD.parent, dst, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
     return dst / "x4guard.py"
