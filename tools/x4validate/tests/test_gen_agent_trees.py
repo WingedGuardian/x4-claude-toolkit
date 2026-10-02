@@ -347,3 +347,63 @@ def test_entry_files_point_to_the_dev_skill_and_x4_notes():
 def test_the_generator_never_owns_x4_notes():
     g = load()
     assert not any("X4-NOTES" in p for p in g.OWNED) and not any("X4-NOTES" in p for p in g.generate(REPO))
+
+
+# --- Plan 2 lane A, Task 5: the core is agent-neutral; Claude facts live in the claude addendum.
+#: One sample per NEUTRALITY_BANNED clause (#26: a falsification twin per clause).
+BANNED_SAMPLES = ["$CLAUDE_PROJECT_DIR", "Claude Code", "see CLAUDE.md", "MEMORY.md", "NotebookEdit",
+                  "settings.json", ".claude/hooks/x", ".claude\\settings", "use **Glob**", "the **Grep** tool"]
+
+
+@pytest.mark.parametrize("sample", BANNED_SAMPLES)
+def test_TWIN_core_naming_a_claude_only_mechanism_refuses(tmp_path, sample):
+    g = load()
+    src = _agent_copy(tmp_path)
+    p = src / "instructions/core.md"
+    p.write_bytes(p.read_bytes() + f"\nleak: {sample}\n".encode())
+    with pytest.raises(g.GenerationError, match="neutral"):
+        g.generate(tmp_path)
+
+
+@pytest.mark.parametrize("allowed", [".claude\\backups\\known-good-x\\", ".claude/backups/x",
+                                     ".claude/x4-paths.env", ".claude/x4-paths.env.example"])
+def test_allowlisted_toolkit_paths_do_not_refuse(tmp_path, allowed):
+    g = load()
+    src = _agent_copy(tmp_path)
+    p = src / "instructions/core.md"
+    p.write_bytes(p.read_bytes() + f"\nok: {allowed}\n".encode())
+    g.generate(tmp_path)              # must not raise
+
+
+def test_TWIN_an_allowlisted_path_does_not_hide_a_banned_one_on_the_same_line(tmp_path):
+    g = load()
+    src = _agent_copy(tmp_path)
+    p = src / "instructions/core.md"
+    p.write_bytes(p.read_bytes() + b"\nok .claude/x4-paths.env but .claude/settings.json\n")
+    with pytest.raises(g.GenerationError, match="neutral"):
+        g.generate(tmp_path)
+
+
+def test_neutrality_refusal_names_the_line_number(tmp_path):
+    g = load()
+    with pytest.raises(g.GenerationError, match=r"line 3\b"):
+        g.check_neutral("one\ntwo\nthree NotebookEdit\n")
+
+
+def test_the_committed_core_is_neutral():
+    load().check_neutral((REPO / "agent/instructions/core.md").read_bytes().decode("utf-8"))
+
+
+def test_TWIN_an_empty_addendum_body_refuses(tmp_path):
+    g = load()
+    src = _agent_copy(tmp_path)
+    (src / "instructions/claude.md").write_bytes(b"# Title only\n")
+    with pytest.raises(g.GenerationError, match="addendum"):
+        g.render_entry(src, "claude")
+
+
+def test_claude_md_still_carries_its_hook_facts():
+    text = load().generate(REPO)["CLAUDE.md"]
+    for must in ("NotebookEdit", "timed-out hook", "CLAUDE_PROJECT_DIR", "env var > `x4-paths.env` > default",
+                 "**Glob**", "**Grep**"):
+        assert must in text, must

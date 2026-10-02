@@ -80,16 +80,50 @@ AGENTS_MD_WARN_HEADROOM = 2_048
 TARGETS: dict[str, dict] = {
     "claude": {"entry": "CLAUDE.md", "addendum": "claude.md", "skills": ".claude/skills/",
                "tokens": {"{{TOOLKIT}}": "$CLAUDE_PROJECT_DIR",
-                          "{{PROJECT_DIR}}": "$CLAUDE_PROJECT_DIR"}},
+                          "{{PROJECT_DIR}}": "`$CLAUDE_PROJECT_DIR`"}},
     "codex": {"entry": "AGENTS.md", "addendum": "codex.md", "skills": ".agents/skills/",
               # Plan 2 DECISIONS #2: the generated Codex tree carries `$X4_TOOLKIT` (right in
               # bash/zsh); install.ps1 rewrites it to `$env:X4_TOOLKIT`, install.sh leaves it.
               # The in-repo copy cannot know the OS, so AGENTS.md tells Codex-on-Windows to write
               # `$env:X4_TOOLKIT` (MEASURED: in pwsh `$X4_TOOLKIT` expands to EMPTY).
               "tokens": {"{{TOOLKIT}}": "$X4_TOOLKIT",
-                         "{{PROJECT_DIR}}": "the project root (the folder the agent was started in)"}},
+                         "{{PROJECT_DIR}}": "the folder the agent was started in"}},
 }
 _LEFTOVER_TOKEN = re.compile(r"\{\{[A-Z_]+\}\}")
+
+#: The core reaches EVERY agent, so it may not name a Claude-only mechanism. Each (regex, reason)
+#: is one clause, with one falsification twin per clause in test_gen_agent_trees.py. The remedy
+#: for a hit is the agent's addendum (agent/instructions/<agent>.md), never this list.
+NEUTRALITY_BANNED: tuple[tuple[str, str], ...] = (
+    (r"CLAUDE_PROJECT_DIR", "Claude Code's project variable: write {{PROJECT_DIR}}"),
+    (r"\bClaude\b", "names Claude (incl. 'Claude Code'): say 'the agent', or move it to claude.md"),
+    (r"CLAUDE\.md", "Claude's entry file: say 'your project instructions'"),
+    (r"MEMORY\.md", "Claude Code's auto-memory index"),
+    (r"NotebookEdit", "a Claude Code tool name"),
+    (r"settings\.json", "Claude Code's hook/settings file"),
+    (r"\.claude[/\\]", "a .claude/ path (Claude-only tree)"),
+    (r"\*\*Glob\*\*", "the Claude Code Glob tool"),
+    (r"\*\*Grep\*\*", "the Claude Code Grep tool"),
+)
+#: Exact substrings exempted from NEUTRALITY_BANNED. Blanked to equal-length spaces BEFORE
+#: matching, so line numbers and the rest of the line are still checked.
+NEUTRALITY_ALLOWED: tuple[str, ...] = (
+    ".claude\\backups\\",     # the toolkit's backup dir: every agent's backup hook writes it
+    ".claude/backups/",       # same, POSIX spelling
+    ".claude/x4-paths.env",   # the toolkit's path config until lane C moves it (phase 7)
+)
+
+
+def check_neutral(core: str) -> None:
+    """Refuse a core that names a Claude-only mechanism, naming the line and the reason."""
+    for n, line in enumerate(core.replace("\r\n", "\n").split("\n"), 1):
+        for allowed in NEUTRALITY_ALLOWED:
+            line = line.replace(allowed, " " * len(allowed))
+        for pattern, reason in NEUTRALITY_BANNED:
+            m = re.search(pattern, line)
+            if m:
+                raise GenerationError(f"agent/instructions/core.md is not agent-neutral: line {n}: "
+                                      f"{m.group(0)!r} -- {reason}")
 
 
 def _generated_files_phrase() -> str:
@@ -121,6 +155,9 @@ def render_entry(src: Path, agent: str) -> str:
         raise GenerationError(f"{add_name}: line 1 must be the entry file's H1 title ('# ...'), "
                               f"got {title[:60]!r}")
     add_body = add_body.strip("\n")
+    if not add_body.strip():
+        raise GenerationError(f"{add_name}: the addendum has a title but no body -- every agent's "
+                              f"entry file carries agent-specific rules")
     core = _read(src / "instructions" / "core.md")
     count = core.split("\n").count(ADDENDUM_MARKER)
     if count != 1:
@@ -240,6 +277,7 @@ def generate(repo: Path) -> dict[str, str]:
     src = repo / "agent"
     if not src.is_dir():
         raise GenerationError(f"no neutral source tree at {src}")
+    check_neutral(_read(src / "instructions" / "core.md"))
     out: dict[str, str] = {"CLAUDE.md": render_claude_md(src), "AGENTS.md": render_agents_md(src)}
     agents = src / "agents"
     agent_dirs = sorted(p for p in agents.iterdir() if p.is_dir()) if agents.is_dir() else []

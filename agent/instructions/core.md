@@ -1,17 +1,17 @@
 
-Guidance for Claude Code when working in an X4: Foundations modding environment.
+Guidance for the AI coding agent working in an X4: Foundations modding environment.
 This file is loaded automatically every session.
 
 ## What This Is
 
 An AI-assisted X4 (v7.x–v9.x) modding workspace. The goal is coordinated multi-file XML
 editing — adding and modifying wares, ships, stations, and balance values consistently
-across every file a feature touches. Claude's role is to handle the tedious, error-prone
+across every file a feature touches. The agent's role is to handle the tedious, error-prone
 cross-file work and catch the silent-failure bugs before an in-game test cycle is wasted.
 
 ## Key Paths (personalize during setup)
 
-The toolkit/project root (`$CLAUDE_PROJECT_DIR` — wherever you put this folder) holds the
+The toolkit/project root ({{PROJECT_DIR}} — wherever you put this folder) holds the
 working dirs `reference\`, `dev\`, `dist\`, and `tools\`. The safety hooks anchor on it, so
 nothing here hardcodes a user path — `setup.sh` and the environment variables below personalize
 the rest.
@@ -102,27 +102,22 @@ For any bulk XML operation (mass stat changes, adding content to many files):
 2. **User reviews** the proposed changes.
 3. **Write pass** — only after approval.
 
-## Safety Rules (enforced by hooks in `.claude/settings.json`)
+## Safety Rules
+
+{{AGENT_ADDENDUM}}
 
 ### Hard blocked
 - Writing to `reference\` (read-only base game data, ever)
 - Directly writing `.cat` / `.dat` files (use XRCatTool)
-- `sed -i` on a game or profile file (use Edit; it backs up)
-
-These are anchored on the project root (`$CLAUDE_PROJECT_DIR`); `.claude\`, `dev\`, `dist\`,
-and `tools\` under it are recognized as the editable workspace.
+- `sed -i` on a game or profile file (edit through your file-edit tool, which is backed up first)
 
 ### Requires confirmation
 - Edits to user-profile files (`Documents\Egosoft\X4\`); a `content.xml` edit is only ADVISED
 - Deleting in an X4 directory (a save above all); `git clean`/`reset --hard` there
 
-Guarded: Bash, PowerShell (same rules), Edit, Write, NotebookEdit. A timed-out hook
-(30 s) does NOT block.
-
 ### General
 - One mod = one named folder, never a mega-file
 - `reference\` is never edited — it is source-of-truth for base game XML
-- Existing Edit/Write/NotebookEdit targets get a uniquely named backup first
 
 ### Iteration snapshots (standing process)
 Before experimenting on a working state, snapshot it to `.claude\backups\known-good-<name>\`.
@@ -336,8 +331,8 @@ REACH FOR, not only about what you may claim. Exact flags and subcommands: the g
 | what changed between two versions of a mod? | **x4diff** | eyeballing two folders, or `diff -rq` -- line endings swamp the real findings |
 | what is baked into a savegame, and what does it reference? | **x4save** | assuming a removed mod leaves dangling refs -- the engine deletes them silently |
 | what is the RUNNING game's state right now? | **x4live** (needs the game running) | inferring live state from files on disk |
-| **"does a file with this NAME exist?"** | **Glob** | ✗ **Grep** — it searches *contents*; a file can exist without containing its own name |
-| "find this text, in one known area" | **Grep** tool (ripgrep) | ✗ `grep -r` via Bash |
+| **"does a file with this NAME exist?"** | a file-NAME search (your agent's glob/find tool) | ✗ a CONTENT search — it searches *contents*; a file can exist without containing its own name |
+| "find this text, in one known area" | a CONTENT search (ripgrep) | ✗ `grep -r` via the shell |
 
 ★ **A negative from ONE invocation mode is a claim about that MODE, not about the tool.**
 MEASURED 2026-08-27: `x4validate` reported OK on a schema-invalid MD file and was filed as "it
@@ -406,4 +401,3 @@ say which regime a formula belongs to, and the packed-inclusive scoping rule.
 
 **Your own notes go in `X4-NOTES.md`** in the project root. Read it at session start if it exists. The toolkit never writes or overwrites it. Never edit {{GENERATED_FILES}}: they are regenerated and your edit is lost.
 
-{{AGENT_ADDENDUM}}
