@@ -1092,7 +1092,25 @@ def store_freshness(con, config=None):
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     if not db_path.is_file():
-        raise SystemExit(f"no store at {db_path} — run `x4effective build` first")
-    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        raise ValueError(f"no store at {db_path} — run `x4effective build` first")
+    # Escape URI-significant characters (#, ?, %) before adding read-only mode.
+    con = sqlite3.connect(db_path.resolve().as_uri() + '?mode=ro', uri=True)
     con.row_factory = sqlite3.Row
+    try:
+        version = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        if not version or version[0] != str(SCHEMA_VERSION):
+            raise ValueError(f'incompatible effective-store schema: {version[0] if version else "unknown"}; '
+                             f'expected {SCHEMA_VERSION}')
+        # Minimum read contract, no full integrity scan on every CLI invocation.
+        for table, columns in {
+            'meta': 'key,value',
+            'mods': 'folder,mod_id,name,version,rank,enabled,packed',
+            'entities': 'id,kind,name,klass,vpath,origin,chain',
+            'attrs': 'entity_id,prop,value,value_num,origin,chain',
+            'removed': 'vpath,node_path,source,op_line',
+        }.items():
+            con.execute(f'SELECT {columns} FROM {table} LIMIT 0')
+    except Exception:
+        con.close()
+        raise
     return con

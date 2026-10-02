@@ -15,6 +15,23 @@ import pytest
 from x4validate import _savecli
 
 
+@pytest.mark.parametrize('command', ['info', 'check'])
+def test_invalid_deflate_is_an_unreadable_save(tmp_path, capsys, command):
+    path = tmp_path/'broken.xml.gz'
+    path.write_bytes(bytes.fromhex('1f8b0800000000000003070000000000000000'))
+    assert _savecli.main([command, str(path)]) == 2
+    assert str(path) in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('reader', [_savecli.read_header, _savecli.extract_refs])
+def test_corrupt_gzip_paths_translate_to_save_unreadable(tmp_path, reader):
+    for data in (b'not gzip', gzip.compress(b'<savegame/>')[:-5],
+                 bytes.fromhex('1f8b0800000000000003070000000000000000')):
+        path = tmp_path/'bad.xml.gz'; path.write_bytes(data)
+        with pytest.raises(_savecli.SaveUnreadable):
+            reader(path)
+
+
 def _write_save(path, body: str, patches: str = "", history: str = "") -> None:
     """A minimal but STRUCTURALLY REAL save: gzip, <info>, <patches>, <history>."""
     doc = (

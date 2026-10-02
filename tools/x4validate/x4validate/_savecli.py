@@ -46,6 +46,7 @@ from __future__ import annotations
 import gzip
 import re
 import sys
+import zlib
 from collections import Counter
 from pathlib import Path
 
@@ -81,7 +82,7 @@ def read_header(path: Path, limit: int = 4_000_000) -> str:
                 if not chunk:
                     break
                 raw += chunk
-    except (OSError, EOFError, gzip.BadGzipFile) as exc:
+    except (OSError, EOFError, gzip.BadGzipFile, zlib.error) as exc:
         raise SaveUnreadable(f"{path}: not readable as gzip ({exc})") from exc
     text = raw.decode("utf-8", "replace")
     end = text.find("</info>")
@@ -111,7 +112,7 @@ def extract_refs(path: Path) -> Counter:
                         continue
                     found[m.group(2).decode("utf-8", "replace")] += 1
                 tail = buf[-_TAIL:]
-    except (OSError, EOFError, gzip.BadGzipFile) as exc:
+    except (OSError, EOFError, gzip.BadGzipFile, zlib.error) as exc:
         raise SaveUnreadable(f"{path}: decompression failed ({exc})") from exc
     return found
 

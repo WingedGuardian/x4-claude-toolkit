@@ -224,7 +224,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "dump":
         return _cmd_dump(args)
 
-    con = _connect(db)
+    con = None
+    try:
+        con = _connect(db)
+        return _read_store(con, args)
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        print(f'effective store unreadable or incompatible: {db}: {exc}\n'
+              'Rebuild: uv run x4effective build', file=sys.stderr)
+        return 2
+    finally:
+        if con is not None:
+            con.close()
+
+
+def _read_store(con, args) -> int:
     # Printed on EVERY read command until the store is rebuilt. A stale store is
     # not an absence and not a non-answer -- it is an answer about a world that
     # has moved on, and these are the commands a modlist decision leans on.
@@ -732,6 +745,10 @@ def _cmd_sql(con, args) -> int:
     try:
         rows = con.execute(q).fetchall()
     except sqlite3.Error as exc:
+        if getattr(exc, 'sqlite_errorcode', 0) & 255 in (
+                sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB,
+                sqlite3.SQLITE_IOERR, sqlite3.SQLITE_CANTOPEN):
+            raise
         print(f"sql error: {exc}", file=sys.stderr)
         return 1
     for r in rows:

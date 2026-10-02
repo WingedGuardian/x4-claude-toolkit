@@ -99,6 +99,9 @@ uv run x4debug baseline                    # archive the log with a content fing
 
 ### `x4save` — what a savegame bakes in, and what it would silently lose
 
+Unreadable gzip saves, including invalid DEFLATE data, return **2** with the
+path and reason. This is a non-answer; no save is modified.
+
 ```bash
 uv run x4save info                         # header + the SAVE-BAKED extensions
 uv run x4save check <save>                 # macro refs the live tree no longer defines
@@ -331,6 +334,21 @@ false positives, 0 misses) and a measured cost of ~0.1s on the heaviest script m
 install. What still needs `--update` is the `element not expected` class, where element-ordering
 errors live, plus the schema-strict advisories — and a default run now says so by name rather than
 reporting a bare "OK".
+
+### Index and store integrity
+
+`x4xref build` now records SHA-256 digests for the TSV and its exclusion list
+in the freshness sidecar. Lookups validate the exact header and every row before
+answering; malformed rows are never silently dropped. Damaged or digest-mismatched
+artifacts return **2** with rebuild guidance. Valid older unsigned indexes can
+still return positive results with an integrity warning; absence requires valid
+digests and current source freshness, otherwise **2**. Rebuild explicitly with
+`uv run x4xref build`; queries never rebuild automatically.
+
+`x4effective` opens stores read-only and checks the schema version and required
+table/column structure. Missing, corrupt or incompatible stores return **2** with
+the path and rebuild guidance. Ordinary invalid SELECT queries retain **1**;
+disallowed writes remain refused. Queries never repair or rebuild stores.
 
 ### `x4modlist changed` — which mod moved, when a fingerprint does
 
