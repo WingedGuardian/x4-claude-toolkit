@@ -310,3 +310,120 @@ def test_the_global_claude_dir_is_resolved_in_ONE_place():
     assert ps.count("$env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR }") == 1, (
         "install.ps1 resolves the global Claude config directory in more than one "
         "place; use Get-GlobalClaudeDir")
+
+
+# --- per-agent targets (Plan 2 lane C; audit F8) -------------------------------------- #
+#
+# Each agent's files are named ONCE per installer, in an agent set, and both installers
+# must hold the same sets. Parsed from both files, never restated here.
+
+def sh_agent_items() -> dict[str, list[str]]:
+    text = SH.read_text(encoding="utf-8")
+    got = {m.group(1): sorted(m.group(2).split())
+           for m in re.finditer(r'^X4_AGENT_ITEMS_(\w+)="([^"]*)"', text, re.M)}
+    assert got, "no X4_AGENT_ITEMS_* in install.sh"
+    return got
+
+
+def ps1_agent_items() -> dict[str, list[str]]:
+    text = PS1.read_text(encoding="utf-8")
+    m = re.search(r"^\$X4AgentItems\s*=\s*@\{(.*?)^\}", text, re.S | re.M)
+    assert m, "no $X4AgentItems in install.ps1"
+    got = {k: sorted(re.findall(r"'([^']+)'", v))
+           for k, v in re.findall(r"(\w+)\s*=\s*@\(([^)]*)\)", m.group(1))}
+    assert got, "the $X4AgentItems block parsed to nothing"
+    return got
+
+
+def test_both_installers_define_the_SAME_agent_sets():
+    sh, ps = sh_agent_items(), ps1_agent_items()
+    assert set(sh) == set(ps) >= {"claude", "codex", "generic"}, (sorted(sh), sorted(ps))
+    for k in sh:
+        assert sh[k] == ps[k], f"agent {k}: install.sh {sh[k]} vs install.ps1 {ps[k]}"
+
+
+def test_F8_codex_and_generic_ship_AGENTS_md_and_claude_ships_CLAUDE_md():
+    a = sh_agent_items()
+    assert "AGENTS.md" in a["codex"] and "AGENTS.md" in a["generic"]
+    assert ".agents" in a["codex"] and ".agents" in a["generic"]
+    assert ".codex" in a["codex"] and ".codex" not in a["generic"]
+    assert "CLAUDE.md" in a["claude"] and ".claude" in a["claude"]
+    assert "CLAUDE.md" not in sh_items() and ".claude" not in sh_items(), (
+        "agent-specific items must live in exactly one place: the agent set")
+
+
+def test_the_neutral_source_tree_is_in_NO_installed_set():
+    """User decision #9 (2026-10-02): an installed toolkit is runtime-only."""
+    every = set(sh_items()).union(*sh_agent_items().values())
+    assert "agent" not in every
+    every_ps = set(ps1_items()).union(*ps1_agent_items().values())
+    assert "agent" not in every_ps
+
+
+def test_no_item_is_both_common_and_agent_specific():
+    common = set(sh_items())
+    for k, v in sh_agent_items().items():
+        assert not common & set(v), f"{k}: {sorted(common & set(v))} is in both lists"
+
+
+def test_both_installers_refuse_opencode_naming_M8():
+    for p in (SH, PS1):
+        text = p.read_text(encoding="utf-8")
+        assert "opencode" in text and "M8" in text, p.name
+
+
+def _sh_assign(name: str) -> str:
+    m = re.search(r"^%s='([^']*)'" % re.escape(name), SH.read_text(encoding="utf-8"), re.M)
+    assert m, f"no {name}='...' in install.sh"
+    return m.group(1)
+
+
+def _ps1_render_table() -> dict[str, str]:
+    text = PS1.read_text(encoding="utf-8")
+    m = re.search(r"^\$X4ToolkitRender\s*=\s*@\{(.*?)\}", text, re.S | re.M)
+    assert m, "no $X4ToolkitRender in install.ps1"
+    return dict(re.findall(r"(\w+)\s*=\s*'([^']*)'", m.group(1)))
+
+
+def test_both_installers_render_the_skill_token_the_SAME_way_per_OS():
+    """User decision #2 (2026-10-02): the generated Codex/generic skills keep the
+    `{{TOOLKIT}}` token and the INSTALLER renders it. Codex runs PowerShell on Windows,
+    where `$X4_TOOLKIT` expands to EMPTY (MEASURED, lane A) -- so the rendering follows
+    the OS, and both installers must hold the same two renderings."""
+    sh = {"windows": _sh_assign("X4_TOOLKIT_RENDER_windows"),
+          "posix": _sh_assign("X4_TOOLKIT_RENDER_posix")}
+    ps = _ps1_render_table()
+    assert sh == ps, (sh, ps)
+    assert sh == {"windows": "$env:X4_TOOLKIT", "posix": "$X4_TOOLKIT"}
+
+
+def test_the_installers_render_the_token_the_GENERATOR_writes():
+    gen = (ROOT / "tools" / "x4validate" / "scripts" / "gen-agent-trees.py").read_text(encoding="utf-8")
+    m = re.search(r'^TOKEN\s*=\s*"([^"]+)"', gen, re.M)
+    assert m, "gen-agent-trees.py no longer names its TOKEN"
+    assert _sh_assign("X4_TOOLKIT_TOKEN") == m.group(1)
+    ps = re.search(r"^\$X4ToolkitToken\s*=\s*'([^']+)'", PS1.read_text(encoding="utf-8"), re.M)
+    assert ps and ps.group(1) == m.group(1)
+
+
+def test_a_rendered_codex_hooks_json_never_TRAVELS_from_the_source():
+    """`.codex/hooks.json` holds the absolute root it was rendered for (lane B, C14): it
+    is per-machine config, rendered by the installer for ITS destination."""
+    assert ".codex/hooks.json" in re.search(
+        r'^X4_KEEP_LOCAL="([^"]*)"', SH.read_text(encoding="utf-8"), re.M).group(1).split()
+    keep = re.search(r"\$X4KeepLocal\s*=\s*@\((.*?)\)", PS1.read_text(encoding="utf-8"), re.S)
+    assert keep and ".codex" + chr(92) + "hooks.json" in re.findall(r"'([^']+)'", keep.group(1))
+
+
+def test_the_repo_ships_exactly_ONE_AGENTS_md():
+    """Codex reads the root AGENTS.md and every nested one into ONE 32,768-byte budget
+    (MEASURED, lane A, 2/2), so a second AGENTS.md anywhere in the copy set would eat the
+    root file's budget and cut its tail silently."""
+    import subprocess
+    r = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True)
+    if r.returncode != 0:
+        import pytest
+        pytest.skip("not a git checkout: the tracked set cannot be read")
+    names = [p for p in r.stdout.decode("utf-8").split("\0")
+             if p and p.rsplit("/", 1)[-1].lower() == "agents.md"]
+    assert names == ["AGENTS.md"], names

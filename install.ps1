@@ -22,6 +22,9 @@ param(
   [ValidateSet('in-game','separate','global')] [string]$Method,
   [string]$Game, [string]$Profile, [string]$Toolkit, [string]$Mods,
   [string]$Reference, [string]$Extensions, [string]$XRCatTool,
+  # claude | codex | generic | all (user decision #10, 2026-10-02: default all). Validated
+  # by hand below, not by ValidateSet, so `opencode` can be refused naming spec M8.
+  [string]$Agent = 'all',
   [switch]$Unpack, [switch]$Yes, [switch]$OverExisting, [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
@@ -169,7 +172,7 @@ $X4CopyPrune = @('tools\x4validate\.venv',
 #: destination's own, never copied in and never deleted out), so they live HERE and
 #: not in $X4CopyPrune, whose second meaning would erase a user's built databases
 #: on every upgrade. See X4_KEEP_LOCAL in install.sh.
-$X4KeepLocal = @('.claude\x4-paths.env','.claude\settings.local.json','.claude\backups',
+$X4KeepLocal = @('.claude\x4-paths.env','.claude\settings.local.json','.claude\backups','.codex\hooks.json',
                  'tools\basex\basex\data','tools\basex\basex\coverage-x4raw.json',
                  'tools\basex\basex\coverage-x4eff.json','tools\basex\_eff',
                  'tools\basex\stage-manifest.json')
@@ -212,7 +215,7 @@ function Get-TrackedCopySet {
   $all = @($raw.Split([char]0) | Where-Object { $_ })
   $heads = @{}
   foreach ($p in $all) { $heads[($p -split '/', 2)[0]] = $true }
-  foreach ($i in $X4CopyItems) {
+  foreach ($i in $X4Items) {
     if (-not (Test-Path -LiteralPath (Join-Path $SRC $i))) { continue }
     if (-not $heads.ContainsKey($i)) {
       $script:X4TrackedWhy = "git tracks nothing under '$i', which is on disk"
@@ -224,7 +227,7 @@ function Get-TrackedCopySet {
   foreach ($p in $all) {
     $rel = $p.Replace([char]47, [char]92)
     $first = ($rel -split '\\', 2)[0]
-    $skip = -not ($X4CopyItems -contains $first)
+    $skip = -not ($X4Items -contains $first)
     foreach ($junk in ($X4CopyPrune + $X4KeepLocal)) {
       if ($rel -ieq $junk -or $rel -like ($junk + [char]92 + '*')) { $skip = $true }
     }
@@ -311,9 +314,221 @@ function Get-OwnedEnvLinesFromFile($f) {
 #: THE COPY SET, named ONCE -- the mirror of $X4_COPY_ITEMS in install.sh. It was
 #: written out twice here as well (the copy and the dry-run listing), and the
 #: locked-target precheck below is a third caller.
-$X4CopyItems = @('.claude','tools','bin','scripts','mods','CLAUDE.md','KNOWLEDGEBASE.md','README.md',
+#:
+#: COMMON to every agent target; each agent's own files live in $X4AgentItems only.
+$X4CopyItems = @('tools','bin','scripts','mods','KNOWLEDGEBASE.md','README.md',
                  'CHANGELOG.md','LICENSE','setup.sh','install.sh','install.ps1','SETUP_PROMPT.txt',
                  '.gitignore','.gitattributes')
+
+#: PER-AGENT sets -- the mirror of X4_AGENT_ITEMS_* in install.sh (audit F8). `agent\`,
+#: the neutral source, is in NO set: an installed toolkit is runtime-only (decision #9).
+$X4AgentItems = @{
+  claude  = @('.claude','CLAUDE.md')
+  codex   = @('AGENTS.md','.codex','.agents')
+  generic = @('AGENTS.md','.agents')
+}
+$X4AgentNames = @('claude','codex','generic')
+
+#: The skill token and its rendering PER OS, as in install.sh: Codex runs PowerShell on
+#: Windows, where `$X4_TOOLKIT` is an EMPTY variable (MEASURED, lane A).
+$X4ToolkitToken = '{{TOOLKIT}}'
+$X4ToolkitRender = @{ windows = '$env:X4_TOOLKIT'; posix = '$X4_TOOLKIT' }
+$X4TokenDirs = @('.agents')
+#: Windows PowerShell 5.1 has no $IsWindows and only runs on Windows.
+$X4OnWindows = ($PSVersionTable.PSEdition -ne 'Core') -or $IsWindows
+$X4CodexHooksTmpl = 'agent/targets/codex/hooks.json.tmpl'
+
+# --- resolve -Agent, BEFORE anything is written --------------------------------------
+if ($Agent -ceq 'all') { $X4Agents = $X4AgentNames }
+elseif ($X4AgentNames -ccontains $Agent) { $X4Agents = @($Agent) }
+elseif ($Agent -ceq 'opencode') {
+  Write-Host 'REFUSING: -Agent opencode is not yet supported (spec M8). Nothing has been changed.' -ForegroundColor Red
+  Write-Host ('  Supported: ' + ($X4AgentNames -join ' ') + ' all') -ForegroundColor Red
+  exit 2
+} else {
+  Write-Host ("REFUSING: unknown -Agent '" + $Agent + "'. Supported: " + ($X4AgentNames -join ' ') + ' all. Nothing has been changed.') -ForegroundColor Red
+  exit 2
+}
+#: THE RESOLVED COPY SET -- common items plus each selected agent's, once each. Every
+#: consumer reads this, so the copy, the listing and the prechecks cannot disagree.
+$X4Items = @($X4CopyItems)
+foreach ($a0 in $X4Agents) { foreach ($i0 in $X4AgentItems[$a0]) { if ($X4Items -notcontains $i0) { $X4Items += $i0 } } }
+
+#: Failures that make the install INCOMPLETE. Defined HERE, above every writer that
+#: records into it (the Codex writers run inside the dispatch).
+$script:failed = @()
+$script:X4CodexHooksWritten = $false
+
+function Test-ItemSelected($i) { return ($X4Items -contains $i) }
+
+function Get-AgentsLanded {
+  $out = @()
+  foreach ($a in $X4Agents) {
+    $ok = $true
+    foreach ($i in $X4AgentItems[$a]) { if (-not (Test-Path -LiteralPath (Join-Path $SRC $i))) { $ok = $false } }
+    if ($ok) { $out += $a }
+  }
+  return ($out -join ', ')
+}
+
+#: Text with CR removed and trailing newlines trimmed -- the comparison install.sh makes
+#: with `$(tr -d '\r' < f)`. CASE-SENSITIVE (-ceq) at every use, as bash's is.
+function Get-NormText($p) { return ([IO.File]::ReadAllText($p)).Replace("`r", '').TrimEnd("`n") }
+
+# --- AGENTS.md: never overwrite one the toolkit did not write -------------------------
+# 0 of 23 tagged releases before 4.0 shipped AGENTS.md (MEASURED 2026-10-02), so one in a
+# destination today is its user's, and "differs from ours" is exactly "not ours".
+# WARNING: WHEN 4.0 SHIPS this rule must gain the hash list of every AGENTS.md a release
+# shipped (see install.sh).
+function Get-AgentsMdMoveTarget($dest) {
+  if (-not (Test-ItemSelected 'AGENTS.md')) { return $null }
+  $s = Join-Path $SRC 'AGENTS.md'
+  $d = Join-Path $dest 'AGENTS.md'
+  if (-not (Test-Path -LiteralPath $s -PathType Leaf) -or -not (Test-Path -LiteralPath $d -PathType Leaf)) { return $null }
+  if ((Get-NormText $s) -ceq (Get-NormText $d)) { return $null }
+  $n = 'AGENTS.pre-4.0.md'
+  if (-not (Test-Path -LiteralPath (Join-Path $dest $n))) { return $n }
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $n = "AGENTS.pre-4.0.$stamp.md"
+  $k = 0
+  while (Test-Path -LiteralPath (Join-Path $dest $n)) { $k++; $n = "AGENTS.pre-4.0.$stamp-$k.md" }
+  return $n
+}
+
+function Save-UserAgentsMd($dest) {
+  $to = Get-AgentsMdMoveTarget $dest
+  if (-not $to) { return }
+  Refuse-IfDryRun 'moving your AGENTS.md aside in' $dest
+  try {
+    Move-Item -LiteralPath (Join-Path $dest 'AGENTS.md') -Destination (Join-Path $dest $to) -ErrorAction Stop
+  } catch {
+    Write-Host ("ERROR: could not move AGENTS.md aside to " + $to + ": " + $_.Exception.Message) -ForegroundColor Red
+    Write-Host '       Nothing else has been changed.' -ForegroundColor Red
+    exit 1
+  }
+  Write-Host '  [note] your AGENTS.md differs from the one this toolkit ships, so it was KEPT as:'
+  Write-Host ('           ' + (Join-Path $dest $to))
+}
+
+# --- {{TOOLKIT}} in the Codex / generic skills ----------------------------------------
+function Get-ToolkitRenderValue { if ($X4OnWindows) { $X4ToolkitRender['windows'] } else { $X4ToolkitRender['posix'] } }
+
+#: Rewrite the token in the files THIS install copied -- enumerated from the SOURCE,
+#: never from a destination glob -- and verify each file afterwards.
+function Invoke-ToolkitTokenRender($dest) {
+  Refuse-IfDryRun 'rendering the skill token in' $dest
+  $to = Get-ToolkitRenderValue
+  $n = 0
+  foreach ($d in $X4TokenDirs) {
+    if (-not (Test-ItemSelected $d)) { continue }
+    $from = Join-Path $SRC $d
+    if (-not (Test-Path -LiteralPath $from -PathType Container)) { continue }
+    $fromFull = (Get-Item -LiteralPath $from -Force).FullName
+    foreach ($f in (Get-ChildItem -LiteralPath $from -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+      $rel = $f.FullName.Substring($fromFull.Length).TrimStart([char]92, [char]47)
+      $t = Join-Path (Join-Path $dest $d) $rel
+      if (-not (Test-Path -LiteralPath $t -PathType Leaf)) { continue }
+      $c = [IO.File]::ReadAllText($t)
+      if (-not $c.Contains($X4ToolkitToken)) { continue }
+      try { Write-Utf8NoBom $t ($c.Replace($X4ToolkitToken, $to)) } catch { }
+      if ([IO.File]::ReadAllText($t).Contains($X4ToolkitToken)) {
+        $script:failed += ($d + '/' + $rel + ' (the ' + $X4ToolkitToken + ' token could not be rendered)')
+      } else { $n++ }
+    }
+  }
+  if ($n -gt 0) { Write-Host ('  rendered ' + $X4ToolkitToken + ' as ' + $to + ' in ' + $n + ' skill file(s)') }
+}
+
+#: In place nothing is copied and nothing is rendered (a toolkit checkout holds the
+#: generator's output). Said, never silent.
+function Show-InPlaceTokenNote {
+  foreach ($d in $X4TokenDirs) {
+    if (-not (Test-ItemSelected $d)) { continue }
+    $from = Join-Path $SRC $d
+    if (-not (Test-Path -LiteralPath $from -PathType Container)) { continue }
+    $hit = Get-ChildItem -LiteralPath $from -Recurse -File -Force -ErrorAction SilentlyContinue |
+           Where-Object { ([IO.File]::ReadAllText($_.FullName)).Contains($X4ToolkitToken) } | Select-Object -First 1
+    if ($hit) {
+      Write-Host ('  [note] installing in place: ' + $d + '/ keeps the ' + $X4ToolkitToken + ' token unrendered.')
+      Write-Host ('         An agent reading those skills should read it as ' + (Get-ToolkitRenderValue) + '.')
+    }
+  }
+}
+
+# --- the Codex hook definitions -------------------------------------------------------
+function Test-CodexSelected { return ((Test-ItemSelected '.codex') -and (Test-Path -LiteralPath (Join-Path $SRC '.codex') -PathType Container)) }
+function Get-CodexTemplatePath { return (Join-Path $SRC $X4CodexHooksTmpl) }
+function Get-CodexHooksJsonPath($dest) { return (Join-Path (Join-Path $dest '.codex') 'hooks.json') }
+
+#: The template with {{ROOT}} (forward slashes) and {{ROOT_WIN}} (backslashes) filled,
+#: each JSON-escaped -- lane B's render_codex_hooks_json contract, re-implemented because
+#: an installer cannot import the generator. $null when it cannot be rendered.
+function Get-CodexHooksJson($dest) {
+  try { $root = (Resolve-Path -LiteralPath $dest -ErrorAction Stop).ProviderPath } catch { return $null }
+  if ($root.Contains('"') -or $root.Contains("`n") -or $root.Contains("`r")) { return $null }
+  $bs = [string][char]92
+  $root = $root.TrimEnd([char]92, [char]47)
+  $posix = $root.Replace($bs, '/')
+  $win = $posix.Replace('/', $bs)
+  try { $t = [IO.File]::ReadAllText((Get-CodexTemplatePath)) } catch { return $null }
+  $t = $t.Replace("`r", '').TrimEnd("`n")
+  $t = $t.Replace('{{ROOT_WIN}}', $win.Replace($bs, $bs + $bs)).Replace('{{ROOT}}', $posix.Replace($bs, $bs + $bs))
+  if ($t.Contains('{{ROOT')) { return $null }
+  return $t
+}
+
+#: PRECONDITION before any write: a READ-ONLY hooks.json this install would CHANGE.
+function Test-CodexHooksPrecheck($dest) {
+  if (-not (Test-CodexSelected)) { return }
+  $f = Get-CodexHooksJsonPath $dest
+  if (-not (Test-Path -LiteralPath $f)) { return }
+  $ro = $false
+  try { $ro = (Get-Item -LiteralPath $f -Force).IsReadOnly } catch { $ro = $false }
+  if (-not $ro) { return }
+  if (-not (Test-Path -LiteralPath (Get-CodexTemplatePath))) { return }
+  $new = Get-CodexHooksJson $dest
+  if ($null -eq $new) { return }
+  if ((Get-NormText $f) -ceq $new) { return }
+  Write-Host ''
+  Write-Host 'REFUSING: the Codex hook definitions must change, and the file is READ-ONLY.'
+  Write-Host "      $f"
+  Write-Host '  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:'
+  Write-Host "      python scripts/x4lock.py unlock `"$f`""
+  Write-Host '      <re-run this command>'
+  Write-Host '      python scripts/x4lock.py lock'
+  exit 1
+}
+
+function Write-CodexHooksJson($dest) {
+  if (-not (Test-CodexSelected)) { return }
+  $f = Get-CodexHooksJsonPath $dest
+  Refuse-IfDryRun 'rendering the Codex hook definitions into' $f
+  if (-not (Test-Path -LiteralPath (Get-CodexTemplatePath))) {
+    $script:failed += ('.codex/hooks.json (the source has no ' + $X4CodexHooksTmpl + ", so Codex's hooks were NOT installed)")
+    return
+  }
+  $new = Get-CodexHooksJson $dest
+  if ($null -eq $new) {
+    $script:failed += ('.codex/hooks.json (could not render it for ' + $dest + ': a path containing a quote or a newline cannot be written into it)')
+    return
+  }
+  if ((Test-Path -LiteralPath $f) -and ((Get-NormText $f) -ceq $new)) {
+    Write-Host "  [note] $f already matches; left untouched, so its Codex review still holds"
+    return
+  }
+  New-Item -ItemType Directory -Force -Path (Join-Path $dest '.codex') | Out-Null
+  $tmp = "$f.tmp$PID"
+  try {
+    Write-Utf8NoBom $tmp ($new + "`n")
+    Move-Item -Force -LiteralPath $tmp -Destination $f -ErrorAction Stop
+  } catch {
+    Remove-Item -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
+    $script:failed += ('.codex/hooks.json (could not write ' + $f + ': ' + $_.Exception.Message + ')')
+    return
+  }
+  $script:X4CodexHooksWritten = $true
+  Write-Host "  wrote $f"
+}
 
 #: Destination files the copy would overwrite that CANNOT be written.
 #:
@@ -336,7 +551,7 @@ function Get-LockedTargets($dest) {
     }
     return ,$blocked
   }
-  foreach ($item in $X4CopyItems) {
+  foreach ($item in $X4Items) {
     $from = Join-Path $SRC $item
     if (-not (Test-Path -LiteralPath $from)) { continue }
     if (Test-Path -LiteralPath $from -PathType Container) {
@@ -477,7 +692,7 @@ function Copy-Toolkit($dest) {
   # 'mods' carries the game extension x4live needs (README: "copy that folder into
   # {game}/extensions/"). Omitting it shipped a documented instruction pointing at a
   # directory the installer never created.
-  $items = $X4CopyItems
+  $items = $X4Items
   # -LiteralPath throughout. Without it PowerShell treats [ and ] as WILDCARDS, so a
   # source folder named e.g. "x4-claude-toolkit [v3.0.0]" -- the shape a download gives
   # you -- matches nothing. MEASURED 2026-09-01: bare Test-Path returned False and bare
@@ -852,15 +1067,19 @@ function Show-Target($dest) {
 
 # The dry-run listing, for the arms where a COPY would actually happen. The gate
 # itself is Refuse-IfDryRun, which sits inside all three writers.
-function Show-CopyPlan {
+function Show-CopyPlan($dest) {
   if ($DryRun) {
     Write-Host "  -DryRun: nothing will be written. Items that would be copied:"
-    foreach ($i in $X4CopyItems) {
+    foreach ($i in $X4Items) {
       if (Test-Path -LiteralPath (Join-Path $SRC $i)) { Write-Host "      $i" }
     }
     if (Get-TrackedCopySet) {
       Write-Host ("  (the source is a git checkout: only the " + $script:X4Tracked.Count + " file(s) git tracks would be copied)")
     }
+    Write-Host ('  agents that would be installed: ' + (Get-AgentsLanded))
+    # SAID in the dry run exactly as the real run would do it: one function decides both.
+    $to = Get-AgentsMdMoveTarget $dest
+    if ($to) { Write-Host ('  your AGENTS.md differs from the shipped one: it would be KEPT as ' + $to + ', not overwritten') }
     Write-Host ""
     Write-Host "=== dry run complete: nothing was changed ==="
     exit 0
@@ -1183,8 +1402,18 @@ switch ($Method) {
     # occurrence of the class on this file pair, bash -> ps1 this time.
     if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $GameNamed }
     Test-ConfigPrecheck $Toolkit
-    if (-not (Test-SameDir $SRC $Toolkit)) { Test-LockedTargetsPrecheck $Toolkit; Show-CopyPlan; Copy-Toolkit $Toolkit }
+    Test-CodexHooksPrecheck $Toolkit   # written on BOTH branches, so OUTSIDE the guard
+    if (-not (Test-SameDir $SRC $Toolkit)) {
+      Test-LockedTargetsPrecheck $Toolkit
+      Show-CopyPlan $Toolkit
+      Save-UserAgentsMd $Toolkit        # after every precheck, before the copy
+      Copy-Toolkit $Toolkit
+      Invoke-ToolkitTokenRender $Toolkit
+    } else {
+      Show-InPlaceTokenNote
+    }
     Write-PathsEnv $Toolkit
+    Write-CodexHooksJson $Toolkit
   }
   'separate' {
     if (-not $Toolkit) { $Toolkit = $SRC }
@@ -1201,10 +1430,33 @@ switch ($Method) {
     # occurrence of the class on this file pair, bash -> ps1 this time.
     if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $ToolkitNamed }
     Test-ConfigPrecheck $Toolkit
-    if (-not (Test-SameDir $SRC $Toolkit)) { Test-LockedTargetsPrecheck $Toolkit; Show-CopyPlan; Copy-Toolkit $Toolkit }
+    Test-CodexHooksPrecheck $Toolkit   # written on BOTH branches, so OUTSIDE the guard
+    if (-not (Test-SameDir $SRC $Toolkit)) {
+      Test-LockedTargetsPrecheck $Toolkit
+      Show-CopyPlan $Toolkit
+      Save-UserAgentsMd $Toolkit        # after every precheck, before the copy
+      Copy-Toolkit $Toolkit
+      Invoke-ToolkitTokenRender $Toolkit
+    } else {
+      Show-InPlaceTokenNote
+    }
     Write-PathsEnv $Toolkit
+    Write-CodexHooksJson $Toolkit
   }
   'global'   {
+    # THE GLOBAL LAYOUT IS CLAUDE-ONLY (see install.sh): an explicit non-Claude target is
+    # REFUSED rather than half installed; the default proceeds and says what it leaves out.
+    if ($Agent -ceq 'codex' -or $Agent -ceq 'generic') {
+      Write-Host "REFUSING: -Method global is a Claude-only layout; it cannot install -Agent $Agent." -ForegroundColor Red
+      Write-Host '  Use -Method in-game or -Method separate for Codex and generic agents.' -ForegroundColor Red
+      Write-Host '  Nothing has been changed.' -ForegroundColor Red
+      exit 2
+    }
+    if ($Agent -ceq 'all') {
+      Write-Host '  [note] -Method global is a Claude-only layout: only the Claude target is installed.'
+      Write-Host '         Codex and generic agents need -Method in-game or -Method separate.'
+    }
+    $X4Agents = @('claude')
     if (-not $Toolkit) { $Toolkit = $SRC }
     Show-Target $Toolkit
     # Ahead of every write, exactly where install.sh gates its own global arm.
@@ -1230,7 +1482,8 @@ switch ($Method) {
 # So: prefer a real Git Bash, and refuse the known stubs by path.
 
 $bash = Find-GitBash
-$failed = @()
+# ($failed is defined above the dispatch, beside -Agent's resolution: the Codex writers
+#  inside the dispatch record into it.)
 if ($bash) {
   Push-Location -LiteralPath $Toolkit
   # CLAUDE_PROJECT_DIR must be set explicitly: setup.sh falls back to $(pwd), and
@@ -1284,7 +1537,18 @@ if ($failed.Count) {
 
 Write-Host "`n=== install complete ($Method) ==="
 Write-Host "Toolkit: $Toolkit"
+Write-Host ('Agents:  ' + (Get-AgentsLanded))
 Write-Host "Config:  $Toolkit\.claude\x4-paths.env  (edit any path here)"
+# CODEX RUNS NO HOOK IT HAS NOT REVIEWED, silently (MEASURED, spike 2026-09-30), and the
+# installer must never approve hooks or trust the project for the user (spec section 8).
+if ($Method -ne 'global' -and (Test-CodexSelected)) {
+  Write-Host ''
+  Write-Host 'Codex:   the guards in .codex/hooks.json are INERT until you review them in Codex.'
+  Write-Host "         1. run  codex  in $Toolkit  and trust the folder when asked"
+  Write-Host '         2. type  /hooks  and approve each X4 hook'
+  Write-Host "         3. verify:  python scripts/x4doctor.py --root `"$Toolkit`""
+  if ($script:X4CodexHooksWritten) { Write-Host '         (the definitions were just (re)written: any earlier review no longer holds)' }
+}
 if ($Method -eq 'global') { Write-Host "Global:  skills/agents + X4_* env added to your ~/.claude - works from any mod repo." }
 Write-Host ""
 Write-Host "IMPORTANT - set X4_TOOLKIT in your user environment so the tools find the config"

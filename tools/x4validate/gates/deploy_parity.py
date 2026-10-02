@@ -78,8 +78,33 @@ REWRITE_TO = b"$X4_TOOLKIT"
 REWRITE_SCOPE = ("skills/", "agents/")
 
 
-def in_rewrite_scope(name: str) -> bool:
-    return name.startswith(REWRITE_SCOPE)
+
+@dataclass(frozen=True)
+class TargetSpec:
+    """One agent's deployed tree: where it lives under a root, what its population is,
+    and which subtrees the installer rewrites (from one token to any of its renderings).
+
+    `claude` is defined here; the Codex tree's entry is appended by the Codex adapter
+    lane. x4doctor reads the same table, so the gate and the doctor cannot disagree on
+    what a deployment contains.
+    """
+    name: str
+    root_rel: str
+    top_files: tuple[str, ...]
+    subtrees: tuple[str, ...]
+    rewrite_scope: tuple[str, ...]
+    rewrite_from: bytes = REWRITE_FROM
+    rewrite_to: tuple[bytes, ...] = (REWRITE_TO,)
+
+
+TARGETS: dict[str, TargetSpec] = {
+    "claude": TargetSpec("claude", ".claude", TOP_FILES, SUBTREES, REWRITE_SCOPE),
+}
+CLAUDE = TARGETS["claude"]
+
+
+def in_rewrite_scope(name: str, spec: TargetSpec = CLAUDE) -> bool:
+    return bool(spec.rewrite_scope) and name.startswith(spec.rewrite_scope)
 
 IDENTICAL = "identical"
 IDENTICAL_REWRITTEN = "identical (after the installer rewrite)"
@@ -116,13 +141,14 @@ def _norm(b: bytes) -> bytes:
     return b.replace(b"\r\n", b"\n")
 
 
-def population(claude: Path) -> set[str]:
-    """Deployment-relative posix paths that exist under one `.claude/` directory."""
+def population(claude: Path, spec: TargetSpec = CLAUDE) -> set[str]:
+    """Deployment-relative posix paths that exist under one deployed agent directory
+    (`.claude/` unless `spec` names another target)."""
     out: set[str] = set()
-    for name in TOP_FILES:
+    for name in spec.top_files:
         if (claude / name).is_file():
             out.add(name)
-    for sub in SUBTREES:
+    for sub in spec.subtrees:
         base = claude / sub
         if not base.is_dir():
             continue
@@ -138,7 +164,8 @@ def population(claude: Path) -> set[str]:
     return out
 
 
-def compare_file(repo_file: Path, game_file: Path, name: str) -> Row:
+def compare_file(repo_file: Path, game_file: Path, name: str,
+                 spec: TargetSpec = CLAUDE) -> Row:
     if not game_file.is_file():
         return Row(name, ONLY_REPO)
     if not repo_file.is_file():
@@ -146,7 +173,8 @@ def compare_file(repo_file: Path, game_file: Path, name: str) -> Row:
     repo, game = _norm(repo_file.read_bytes()), _norm(game_file.read_bytes())
     if repo == game:
         return Row(name, IDENTICAL)
-    if in_rewrite_scope(name) and repo.replace(REWRITE_FROM, REWRITE_TO) == game:
+    if in_rewrite_scope(name, spec) and any(
+            repo.replace(spec.rewrite_from, to) == game for to in spec.rewrite_to):
         return Row(name, IDENTICAL_REWRITTEN)
     r = repo.decode("utf-8", "replace").split("\n")
     g = game.decode("utf-8", "replace").split("\n")
@@ -156,9 +184,10 @@ def compare_file(repo_file: Path, game_file: Path, name: str) -> Row:
     return Row(name, DRIFT, game_only, repo_only)
 
 
-def compare_trees(repo_claude: Path, game_claude: Path) -> list[Row]:
-    names = sorted(population(repo_claude) | population(game_claude))
-    return [compare_file(repo_claude / n, game_claude / n, n) for n in names]
+def compare_trees(repo_claude: Path, game_claude: Path,
+                  spec: TargetSpec = CLAUDE) -> list[Row]:
+    names = sorted(population(repo_claude, spec) | population(game_claude, spec))
+    return [compare_file(repo_claude / n, game_claude / n, n, spec) for n in names]
 
 
 def describe(row: Row) -> str:

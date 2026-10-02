@@ -25,6 +25,7 @@ users paths would pass the first and be worse than the failure.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import pathlib
 import stat
@@ -142,6 +143,8 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     for a in it:
         if a == "--game":
             common["game"] = next(it)
+        elif a == "--agent":
+            common["agent"] = next(it)
         elif a == "--dry-run":
             flags.append("dry-run")
         else:
@@ -173,6 +176,10 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     # ever drives that arm without --dry-run.
     env = dict(os.environ)
     env["CLAUDE_CONFIG_DIR"] = fake_home.as_posix()
+    # Codex's own config lives in $CODEX_HOME (default ~/.codex). The installer must
+    # never write there -- trusting a project or approving its hooks is the USER's act
+    # (spec section 8) -- so it is pinned into the sandbox, where a test can see a write.
+    env["CODEX_HOME"] = (tmp_path / "fake-codex-home").as_posix()
     env["HOME"] = tmp_path.as_posix()
     env["USERPROFILE"] = tmp_path.as_posix()
     # `scrub` REMOVES variables, so a Windows box can reproduce a POSIX
@@ -1492,3 +1499,361 @@ def test_a_LOCKED_destination_file_the_copy_would_NOT_write_does_not_refuse(
     out = r.stdout + r.stderr
     assert "REFUSING" not in out, out[-1500:]
     assert (dest / _TRACKED).is_file(), out[-1500:]
+
+
+# --- per-agent targets: --agent claude|codex|generic|all (Plan 2 lane C; audit F8) ---- #
+#
+# A SYNTHETIC source, so the Codex rows run today -- before the generated .codex/ and
+# .agents/ trees land in the repo -- and with a stub setup.sh, so the exit code means
+# something. The real-repo rows below cover the shipped tree and skip (counted) while
+# a tree they need is absent.
+
+BS = chr(92)
+
+#: The shape of the frozen Codex hook template (lane B, Task 7): `{{ROOT}}` forward-slash
+#: in `command`, `{{ROOT_WIN}}` backslash in `commandWindows`, JSON-escaped in the file.
+_TEMPLATE = (
+    '{\n  "hooks": {\n    "PreToolUse": [{"matcher": ".*", "hooks": [{"type": "command", '
+    '"timeout": 60,\n      "command": "bash \\"{{ROOT}}/.codex/hooks/codex-entry.sh\\" pre_tool_use",\n'
+    '      "commandWindows": "pwsh -NoProfile -File \\"{{ROOT_WIN}}' + BS * 2 + '.codex'
+    + BS * 2 + 'hooks' + BS * 2 + 'codex-entry.ps1\\" pre_tool_use"}]}]\n  }\n}\n')
+
+_SKILL = "Run:\n\n    cd {{TOOLKIT}}/tools/x4validate && uv run x4validate --paths\n"
+_SHIPPED_AGENTS_MD = "# AGENTS.md -- shipped by the toolkit\n"
+
+
+def _agent_source(tmp_path: pathlib.Path, *, codex: bool = True, template: bool = True) -> pathlib.Path:
+    src = tmp_path / "src"
+    src.mkdir()
+    for name in ("install.sh", "install.ps1"):
+        shutil.copy2(ROOT / name, src / name)
+    files = {
+        "setup.sh": "#!/bin/bash\necho stub-setup\nexit 0\n",
+        "CLAUDE.md": "# CLAUDE.md -- shipped\n",
+        "AGENTS.md": _SHIPPED_AGENTS_MD,
+        "KNOWLEDGEBASE.md": "kb\n",
+        "README.md": "readme\n",
+        ".claude/settings.json": "{}\n",
+        ".claude/hooks/protect-bash.sh": "#\n",
+        ".agents/skills/x4-demo/SKILL.md": _SKILL,
+        ".agents/skills/x4-demo/reference/x4demo.md": "plain\n",
+        "agent/README.md": "the neutral source -- never installed\n",
+        "tools/x4validate/README.md": "t\n",
+        "scripts/x4lock.py": "# stub\n",
+    }
+    if codex:
+        files[".codex/hooks/codex-entry.sh"] = "#!/bin/bash\n"
+        files[".codex/hooks/codex-entry.ps1"] = "#\n"
+        files[".codex/rules/x4.rules"] = "# rules\n"
+    if template:
+        files["agent/targets/codex/hooks.json.tmpl"] = _TEMPLATE
+    for rel, text in files.items():
+        p = src / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(text.encode("utf-8"))
+    return src
+
+
+def _ok(r) -> str:
+    return "rc=%s\n%s\n%s" % (r.returncode, r.stdout[-2500:], r.stderr[-2500:])
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("agent,present,absent", [
+    ("claude", ["CLAUDE.md", ".claude/settings.json"], ["AGENTS.md", ".codex", ".agents"]),
+    ("codex", ["AGENTS.md", ".codex/hooks.json", ".codex/rules/x4.rules", ".agents/skills/x4-demo/SKILL.md"],
+     ["CLAUDE.md", ".claude/settings.json", ".claude/hooks"]),
+    ("generic", ["AGENTS.md", ".agents/skills/x4-demo/SKILL.md"], ["CLAUDE.md", ".codex", ".claude/hooks"]),
+    ("all", ["CLAUDE.md", ".claude/settings.json", "AGENTS.md", ".codex/hooks.json",
+             ".agents/skills/x4-demo/SKILL.md"], []),
+])
+def test_F8_each_agent_installs_its_own_files_and_nothing_else(installer, agent, present, absent, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", agent, source=src)
+    assert r.returncode == 0, _ok(r)
+    for rel in present:
+        assert (dest / rel).exists(), "--agent %s did not install %s\n%s" % (agent, rel, _ok(r))
+    for rel in absent + ["agent"]:
+        assert not (dest / rel).exists(), "--agent %s installed %s, which it must not" % (agent, rel)
+    # the common set still travels, whatever the agent
+    assert (dest / "KNOWLEDGEBASE.md").is_file() and (dest / "tools").is_dir()
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_DEFAULT_agent_is_all(installer, tmp_path):
+    """User decision #10 (2026-10-02)."""
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src)
+    assert r.returncode == 0, _ok(r)
+    for rel in ("CLAUDE.md", ".claude/settings.json", "AGENTS.md", ".codex/hooks.json", ".agents"):
+        assert (dest / rel).exists(), rel
+    assert "claude, codex, generic" in r.stdout, "the summary does not say which agents landed\n" + _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("agent,word", [("opencode", "M8"), ("nonsense", "nonsense")])
+def test_an_unknown_or_unsupported_agent_REFUSES_before_writing(installer, agent, word, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", agent, source=src)
+    assert r.returncode == 2, _ok(r)
+    assert word in r.stdout + r.stderr, _ok(r)
+    assert not any(dest.iterdir()), "a refused install wrote something: %s" % sorted(
+        p.name for p in dest.iterdir())
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_codex_hooks_json_is_RENDERED_for_the_destination(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 0, _ok(r)
+    raw = (dest / ".codex" / "hooks.json").read_text(encoding="utf-8")
+    assert "{{" not in raw, raw
+    h = json.loads(raw)["hooks"]["PreToolUse"][0]["hooks"][0]
+    root = dest.resolve()
+    want_posix = root.as_posix() + "/.codex/hooks/codex-entry.sh"
+    want_win = str(root).replace("/", BS) + BS + ".codex" + BS + "hooks" + BS + "codex-entry.ps1"
+    norm = os.path.normcase
+    assert norm(want_posix) in norm(h["command"]), (h["command"], want_posix)
+    if os.name == "nt":
+        assert norm(want_win) in norm(h["commandWindows"]), (h["commandWindows"], want_win)
+    # never the SOURCE's root: the definition is per-install (lane B, C14)
+    assert norm(src.resolve().as_posix()) not in norm(raw)
+    # the review is the USER's: the installer says so and never touches Codex's config
+    assert "/hooks" in r.stdout, "the install does not tell the user to review the hooks\n" + _ok(r)
+    assert not (tmp_path / "fake-codex-home").exists() and not (tmp_path / ".codex").exists()
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_codex_source_with_NO_template_is_an_INCOMPLETE_install(installer, tmp_path):
+    """Hooks that were never rendered are guards that never run: that is a failure to
+    report, never a quiet success."""
+    src = _agent_source(tmp_path, template=False)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 1 and "INCOMPLETE" in r.stdout, _ok(r)
+    assert "hooks.json" in r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_source_with_no_codex_tree_skips_codex_SAYING_so(installer, tmp_path):
+    src = _agent_source(tmp_path, codex=False, template=False)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "all", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert not (dest / ".codex").exists()
+    assert ".codex" in r.stdout, "the missing Codex tree was not NAMED\n" + _ok(r)
+    assert "claude, generic" in r.stdout and "codex" not in r.stdout.split("Agents:")[-1].splitlines()[0]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_skill_token_is_rendered_for_THIS_os(installer, tmp_path):
+    """User decision #2: the installer renders `{{TOOLKIT}}` per OS. Codex runs PowerShell
+    on Windows, where `$X4_TOOLKIT` is an EMPTY variable (MEASURED, lane A)."""
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 0, _ok(r)
+    got = (dest / ".agents/skills/x4-demo/SKILL.md").read_text(encoding="utf-8")
+    want = "$env:X4_TOOLKIT" if os.name == "nt" else "$X4_TOOLKIT"
+    assert "cd %s/tools/x4validate" % want in got, got
+    assert "{{TOOLKIT}}" not in got
+    # a file WITHOUT the token is left byte-identical
+    assert (dest / ".agents/skills/x4-demo/reference/x4demo.md").read_text(encoding="utf-8") == "plain\n"
+    # and the SOURCE is never rewritten
+    assert "{{TOOLKIT}}" in (src / ".agents/skills/x4-demo/SKILL.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_global_layout_REFUSES_an_explicit_codex_target(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src, method="global")
+    assert r.returncode == 2 and "Claude-only" in r.stdout + r.stderr, _ok(r)
+    assert not (tmp_path / "fake-claude-home").exists()
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_the_global_layout_with_the_DEFAULT_agent_still_runs_and_SAYS_codex_is_skipped(
+        installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--dry-run", source=src, method="global")
+    assert r.returncode == 0, _ok(r)
+    assert "Claude-only" in r.stdout, _ok(r)
+
+
+# --- Task 4: an AGENTS.md the toolkit did not write is moved aside, never overwritten -- #
+#
+# 0 of 23 tagged releases before 4.0 shipped AGENTS.md (MEASURED 2026-10-02), so any
+# AGENTS.md in a destination today was written by its user.
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_USER_AGENTS_md_is_moved_aside_never_overwritten(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / "AGENTS.md").write_bytes(b"# my own codex notes\n")
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "AGENTS.pre-4.0.md").read_bytes() == b"# my own codex notes\n"
+    assert "AGENTS.pre-4.0.md" in r.stdout + r.stderr, "moved, but not SAID"
+    assert (dest / "AGENTS.md").read_text(encoding="utf-8") == _SHIPPED_AGENTS_MD
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_an_AGENTS_md_identical_to_the_shipped_one_is_not_moved(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    # CRLF-only difference: the same file as far as anyone reading it is concerned
+    (dest / "AGENTS.md").write_bytes(_SHIPPED_AGENTS_MD.replace("\n", "\r\n").encode("utf-8"))
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert not list(dest.glob("AGENTS.pre-4.0*.md")), "an identical AGENTS.md was moved aside"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_claude_only_install_leaves_a_user_AGENTS_md_ALONE(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / "AGENTS.md").write_bytes(b"mine\n")
+    r = _install(installer, tmp_path, dest, "--agent", "claude", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "AGENTS.md").read_bytes() == b"mine\n"
+    assert not list(dest.glob("AGENTS.pre-4.0*.md"))
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_second_preserved_copy_never_overwrites_the_first(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / "AGENTS.pre-4.0.md").write_bytes(b"older\n")
+    (dest / "AGENTS.md").write_bytes(b"newer\n")
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "AGENTS.pre-4.0.md").read_bytes() == b"older\n"
+    assert [p.read_bytes() for p in dest.glob("AGENTS.pre-4.0.*.md")] == [b"newer\n"]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_DRY_RUN_moves_nothing_and_says_what_it_would_move(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / "AGENTS.md").write_bytes(b"mine\n")
+    r = _install(installer, tmp_path, dest, "--agent", "codex", "--dry-run", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "AGENTS.md").read_bytes() == b"mine\n"
+    assert not list(dest.glob("AGENTS.pre-4.0*.md"))
+    assert "AGENTS.pre-4.0.md" in r.stdout + r.stderr, _ok(r)
+    assert sorted(p.name for p in dest.iterdir()) == ["AGENTS.md"], "the dry run wrote something"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_LOCKED_user_AGENTS_md_refuses_up_front_NAMING_it(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    mine = dest / "AGENTS.md"
+    mine.write_bytes(b"mine\n")
+    mine.chmod(mine.stat().st_mode & ~stat.S_IWRITE)
+    try:
+        r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+        assert r.returncode == 1, _ok(r)
+        assert "AGENTS.md" in r.stdout + r.stderr and "x4lock" in r.stdout + r.stderr, _ok(r)
+        assert mine.read_bytes() == b"mine\n" and not list(dest.glob("AGENTS.pre-4.0*.md"))
+    finally:
+        mine.chmod(mine.stat().st_mode | stat.S_IWRITE)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_LOCKED_hooks_json_that_must_CHANGE_refuses_up_front(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    hj = dest / ".codex" / "hooks.json"
+    hj.parent.mkdir(parents=True)
+    hj.write_bytes(b'{"hooks": {}}\n')
+    hj.chmod(hj.stat().st_mode & ~stat.S_IWRITE)
+    try:
+        r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+        assert r.returncode == 1 and "hooks.json" in r.stdout + r.stderr, _ok(r)
+        assert hj.read_bytes() == b'{"hooks": {}}\n'
+        assert not (dest / "AGENTS.md").exists(), "the refusal came AFTER a write"
+    finally:
+        hj.chmod(hj.stat().st_mode | stat.S_IWRITE)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_LOCKED_hooks_json_that_is_UNCHANGED_does_not_refuse(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 0, _ok(r)
+    hj = dest / ".codex" / "hooks.json"
+    before = hj.read_bytes()
+    hj.chmod(hj.stat().st_mode & ~stat.S_IWRITE)
+    try:
+        r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+        assert r.returncode == 0, _ok(r)
+        assert hj.read_bytes() == before
+    finally:
+        hj.chmod(hj.stat().st_mode | stat.S_IWRITE)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_both_installers_render_the_SAME_hooks_json(installer, tmp_path):
+    """Parsed-JSON equality across the two installers: Codex hashes the parsed
+    definition, so two renderings of one install must never differ in a value."""
+    src = _agent_source(tmp_path)
+    dests = {}
+    for which in ("sh", "ps1"):
+        d = tmp_path / ("t-" + which)
+        d.mkdir()
+        for sub in ("game", "profile", "mods"):
+            (tmp_path / sub).mkdir(exist_ok=True)
+        r = _install(which, tmp_path, d, "--agent", "codex", source=src)
+        assert r.returncode == 0, _ok(r)
+        dests[which] = json.loads((d / ".codex/hooks.json").read_text(encoding="utf-8"))
+    norm = lambda d, w: json.dumps(d).replace(str((tmp_path / ("t-" + w)).resolve()).replace(BS, BS * 2), "<ROOT_WIN>") \
+        .replace((tmp_path / ("t-" + w)).resolve().as_posix(), "<ROOT>")
+    assert norm(dests["sh"], "sh") == norm(dests["ps1"], "ps1")
+
+
+# --- the REAL repository's tree (skips, counted, while a generated tree is absent) ---- #
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_real_repo_installs_ONE_AGENTS_md_and_no_agent_source(installer, tmp_path):
+    if not (ROOT / "AGENTS.md").is_file():
+        pytest.skip("the repo has no AGENTS.md")
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "all")
+    assert r.returncode == 0, _ok(r)
+    found = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*")
+                   if p.is_file() and p.name.lower() == "agents.md")
+    assert found == ["AGENTS.md"], found
+    assert not (dest / "agent").exists()
+    assert (dest / "CLAUDE.md").is_file(), "the Claude target is installed, so CLAUDE.md must be"
+
+
+def test_the_installers_render_hooks_json_exactly_as_the_GENERATOR_does(tmp_path):
+    """Lane B owns `render_codex_hooks_json`; both installers re-implement it natively,
+    because a bare installer cannot import the generator (it needs ruamel.yaml). This
+    pins the three renderings to one answer once the template exists."""
+    tmpl = ROOT / "agent" / "targets" / "codex" / "hooks.json.tmpl"
+    if not tmpl.is_file():
+        pytest.skip("lane B's Codex hook template has not landed")
+    spec = importlib.util.spec_from_file_location(
+        "gen_agent_trees_for_installer", ROOT / "tools/x4validate/scripts/gen-agent-trees.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    if not hasattr(gen, "render_codex_hooks_json"):
+        pytest.skip("the generator has no render_codex_hooks_json yet")
+    for which in ("sh", "ps1"):
+        d = tmp_path / ("t-" + which)
+        d.mkdir()
+        for sub in ("game", "profile", "mods"):
+            (tmp_path / sub).mkdir(exist_ok=True)
+        r = _install(which, tmp_path, d, "--agent", "codex")
+        assert r.returncode == 0, _ok(r)
+        got = json.loads((d / ".codex/hooks.json").read_text(encoding="utf-8"))
+        assert got == json.loads(gen.render_codex_hooks_json(d.resolve())), which

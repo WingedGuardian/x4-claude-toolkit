@@ -99,10 +99,22 @@ except ImportError:                     # pragma: no cover - packaging accident
 #: files are written during normal operation, and a lock that breaks routine work gets
 #: switched off -- which protects nothing.
 _GAME_RELATIVE = (
-    "CLAUDE.md",
     "KNOWLEDGEBASE.md",
-    ".claude/settings.json",
 )
+
+#: Files DEMANDED only when their agent target is installed (reported MISSING if absent).
+#: The marker is the target's own GUARD directory, so a Claude-only root is never reported
+#: as missing a Codex file -- 0 of 23 releases before 4.0 shipped AGENTS.md -- and an
+#: `install --agent codex` root is never reported as missing CLAUDE.md. Not the bare
+#: `.claude/` or `.codex/`: every install writes its path config to `.claude/x4-paths.env`,
+#: and Codex itself reads a project `.codex/config.toml`, so either directory can exist
+#: with that target absent. A root with NO marker keeps the pre-4.0 Claude demand (see
+#: `_demanded_targets`), so deleting `.claude/` wholesale never makes CLAUDE.md's absence
+#: silent.
+_TARGET_DEMANDS = {
+    ".claude/hooks": ("CLAUDE.md", ".claude/settings.json"),
+    ".codex/hooks": ("AGENTS.md", ".codex/hooks.json"),
+}
 
 #: The guards themselves. A protection that can silently disable itself is not one.
 #: These are edited rarely and deliberately, so the unlock step costs nothing.
@@ -114,6 +126,19 @@ _GAME_GLOBS = (
     # per-CLI help in reference/*.md, and those were deployable but unlockable (2026-09-13).
     ".claude/skills/*/reference/*.md",
     ".claude/agents/*.md",
+    # Lock-if-present: AGENTS.md is user content in every pre-4.0 root, and is demanded
+    # only where `.codex/` is installed (_TARGET_DEMANDS).
+    "AGENTS.md",
+    # The Codex target is a full guard copy (user decision #4) plus its frozen hook
+    # definitions and execpolicy rules: the same reasoning as `.claude/hooks/`.
+    ".codex/hooks.json",
+    ".codex/rules/*.rules",
+    ".codex/hooks/*.sh",
+    ".codex/hooks/*.py",
+    ".codex/hooks/*.ps1",
+    # Skills for Codex and generic agents, locked exactly like Claude's (decision #11).
+    ".agents/skills/*/SKILL.md",
+    ".agents/skills/*/reference/*.md",
 )
 
 
@@ -248,6 +273,8 @@ def _candidates() -> list[Path]:
         game = Path(game)
         for rel in _GAME_RELATIVE:
             out.append(game / rel)
+        for marker in _demanded_targets(game):
+            out.extend(game / rel for rel in _TARGET_DEMANDS[marker])
         for pat in _GAME_GLOBS:
             out.extend(sorted(game.glob(pat)))
 
@@ -276,6 +303,18 @@ def _candidates() -> list[Path]:
             out.append(Path(extra.strip()))
 
     return out
+
+
+def _demanded_targets(game: Path) -> list[str]:
+    """The agent-target markers whose files `game` must have.
+
+    Every marker directory that exists. With none present, `.claude/hooks` -- the only layout
+    any release before 4.0 installed -- so a root that lost `.claude/` entirely still
+    reports CLAUDE.md MISSING rather than demanding nothing. A false MISSING is visible;
+    a false waiver is silent.
+    """
+    present = [m for m in _TARGET_DEMANDS if (game / m).is_dir()]
+    return present or [".claude/hooks"]
 
 
 def _dedup(paths, want_file: bool) -> list[Path]:
