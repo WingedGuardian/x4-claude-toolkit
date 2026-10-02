@@ -7,6 +7,7 @@ The design is `docs/superpowers/specs/2026-09-30-universal-agent-support-design.
 ## The guards
 
 `agent/guards/claude-hooks/` holds the hook scripts. `gen-agent-trees.py` copies them
-**byte-identical** (modes included) into `.claude/hooks/`, which is now generated: an edit made
+**byte-identical** into `.claude/hooks/` (executable bits are pinned by a test against git's
+index; the generator itself does not set modes), which is now generated: an edit made
 there fails `tests/test_gen_agent_trees.py` and is overwritten by the next regeneration. Edit
 the files here, regenerate, then deploy with `deploy-claude-dir.py --apply`.

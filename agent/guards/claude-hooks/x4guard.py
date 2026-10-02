@@ -23,13 +23,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-TIMEOUT_S = 25
+TIMEOUT_S = int(os.environ.get("X4_GUARD_TIMEOUT_S") or 25)
+RANK = {"allow": 0, "advise": 1, "ask": 2, "deny": 3}
+#: How the guards say "I checked nothing" (or only part). They ASK in those states, which an
+#: agent would put to its user as an ordinary confirmation; here it is an inert deny instead.
+NOT_CHECKED = re.compile(r"X4 GUARD INERT|NO rule (?:below )?was evaluated|NEVER checked against any rule"
+                         r"|could not be translated|could not be analysed")
 
 
 def resolve_bash() -> tuple[str | None, str | None]:
@@ -76,30 +82,61 @@ def _inert(reason: str, guards: list[str]) -> dict:
                       "not a verdict on the command."}
 
 
-def verdict_for(kind: str, shell: str | None, command: str | None, path: str | None) -> dict:
-    script = "protect-bash.sh" if kind == "shell" else "protect-files.sh"
+def _deployed() -> bool:
+    return HERE.name == "hooks" and HERE.parent.name == ".claude"
+
+
+def run_guard(script: str, payload: dict) -> dict:
+    """One guard, one verdict dict. Anything that keeps it from producing a real verdict is inert."""
     guards = [script]
     target = HERE / script
     if not target.is_file():
         return _inert(f"guard script missing: {script}", guards)
+    if not _deployed() and not os.environ.get("X4_TOOLKIT"):
+        return _inert(f"this copy is not under .claude/hooks and X4_TOOLKIT is unset, so the guard "
+                      f"cannot find the configured roots; run the deployed .claude/hooks/x4guard.py", guards)
     bash, why = resolve_bash()
     if not bash:
         return _inert(why, guards)
-    payload = json.dumps(guard_payload(kind, shell, command, path)).encode("utf-8")
     try:
-        r = subprocess.run([bash, str(target)], input=payload, capture_output=True, timeout=TIMEOUT_S)
+        # X4_GUARD_CHECK=1: the guards' internal check protocol. Every "checked nothing" path exits
+        # 2 instead of asking (a no-op for Claude Code's hooks, where the variable is unset).
+        r = subprocess.run([bash, str(target)], input=json.dumps(payload).encode("utf-8"),
+                           capture_output=True, timeout=TIMEOUT_S,
+                           env=dict(os.environ, X4_GUARD_CHECK="1"))
     except subprocess.TimeoutExpired:
         return _inert(f"{script} timed out after {TIMEOUT_S}s", guards)
     except OSError as e:
         return _inert(f"{script} could not start: {e}", guards)
+    if r.returncode == 2:
+        return _inert(f"{script} reported it could not evaluate this (exit 2, X4_GUARD_CHECK)", guards)
     if r.returncode != 0:
         return _inert(f"{script} exited {r.returncode}", guards)
     try:
         decision, reason, context = parse_hook_output(r.stdout.decode("utf-8", "replace"))
     except ValueError as e:
         return _inert(str(e), guards)
+    if decision in ("ask", "deny") and reason and NOT_CHECKED.search(reason):
+        return _inert(f"{script} could not check all or part of this: {reason}", guards)
     return {"v": 1, "decision": decision, "reason": reason, "context": context,
             "inert": False, "guards": guards}
+
+
+def verdict_for(kind: str, shell: str | None, command: str | None, path: str | None) -> dict:
+    """A relative path is resolved from the CALLER's working directory (Codex apply_patch paths
+    are relative). A delete is judged as the stricter of a write and an `rm -f` of that path."""
+    if kind == "shell":
+        return run_guard("protect-bash.sh", guard_payload(kind, shell, command, None))
+    path = os.path.abspath(path)
+    parts = [run_guard("protect-files.sh", guard_payload("write", None, None, path))]
+    if kind == "delete":
+        quoted = path.replace("\\", "/").replace("'", "'\"'\"'")    # close, "'", reopen
+        rm = "rm -f '" + quoted + "'"
+        parts.append(run_guard("protect-bash.sh", guard_payload("shell", "bash", rm, None)))
+    worst = max(parts, key=lambda v: (v["inert"], RANK[v["decision"]]))
+    worst = dict(worst)
+    worst["guards"] = [g for v in parts for g in v["guards"]]
+    return worst
 
 
 def main(argv=None) -> int:

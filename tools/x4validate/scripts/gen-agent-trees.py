@@ -218,12 +218,18 @@ def main(argv=None) -> int:
         for line in found:
             print(line, file=sys.stderr)
         return 1 if found else 0
-    for rel, text in expected.items():
+    # Write ONLY what is missing or stale, and name every stale file overwritten: a hand edit to a
+    # generated file (a tool writing settings.json, another session's work) must not vanish unseen.
+    to_write = [line.split(None, 1)[1] for line in found if line.startswith(("MISSING", "STALE"))]
+    for line in found:
+        if line.startswith("STALE"):
+            print(f"{line}  (overwritten from agent/ -- move a wanted edit into agent/ and regenerate)")
+    for rel in to_write:
         p = REPO / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        data = text.encode("utf-8")            # encode FIRST: a failed encode cannot truncate
+        data = expected[rel].encode("utf-8")   # encode FIRST: a failed encode cannot truncate
         p.write_bytes(data)
-    print(f"wrote {len(expected)} file(s)")
+    print(f"wrote {len(to_write)} of {len(expected)} file(s); {len(expected) - len(to_write)} already fresh")
     ghosts = [line for line in found if line.startswith("GHOST")]
     if ghosts:                                 # NEVER delete (user decision 2026-10-01): report and refuse
         for line in ghosts:

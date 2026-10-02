@@ -66,7 +66,9 @@ def test_shell_echo_allows(sandbox):
 def test_write_and_delete_into_reference_deny(sandbox, kind):
     _, tk, env = sandbox
     rc, v, _ = check(env, "--kind", kind, "--path", str(tk / "reference" / "libraries" / "wares.xml"))
-    assert rc == 0 and v["decision"] == "deny" and v["guards"] == ["protect-files.sh"]
+    assert rc == 0 and v["decision"] == "deny"
+    # a delete is judged by protect-files AND an rm through protect-bash (final-review ruling I4)
+    assert v["guards"] == (["protect-files.sh"] if kind == "write" else ["protect-files.sh", "protect-bash.sh"])
 
 
 def test_write_path_with_spaces_and_backslashes(sandbox):
@@ -134,3 +136,99 @@ def test_usage_error_is_rc2(sandbox):
     _, _, env = sandbox
     rc, _, err = check(env, "--kind", "shell", "--shell", "bash")
     assert rc == 2 and "--command" in err
+
+
+# ---------------------------------------------------------------- final-review fixes (I1-I5)
+
+def _check_in(env, cwd, *args, script=X4GUARD):
+    r = subprocess.run([sys.executable, str(script), "check", *args], capture_output=True, env=env,
+                       timeout=120, cwd=str(cwd))
+    return json.loads(r.stdout)
+
+
+def test_I1_relative_path_is_resolved_from_the_callers_cwd(sandbox):
+    """Codex apply_patch paths are relative; judged unresolved, a reference/ write was ALLOWED."""
+    _, tk, env = sandbox
+    v = _check_in(env, tk, "--kind", "write", "--path", "reference/libraries/wares.xml")
+    assert v["decision"] == "deny" and not v["inert"]
+
+
+def _hooks_copy(dst):
+    shutil.copytree(X4GUARD.parent, dst, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    return dst / "x4guard.py"
+
+
+def test_I2_a_copy_outside_claude_hooks_refuses_without_X4_TOOLKIT(sandbox, tmp_path):
+    """The SOURCE copy (agent/guards/claude-hooks) derives the toolkit root from its own folder
+    and so never finds the configured roots: it allowed a hard-blocked write. It must refuse."""
+    _, tk, env = sandbox
+    script = _hooks_copy(tmp_path / "agent" / "guards" / "claude-hooks")
+    env = {k: v for k, v in env.items() if k not in ("X4_TOOLKIT", "CLAUDE_PROJECT_DIR")}
+    v = _check_in(env, tmp_path, "--kind", "write", "--path", str(tk / "reference" / "libraries" / "wares.xml"),
+                  script=script)
+    assert v["decision"] == "deny" and v["inert"] and ".claude/hooks" in v["reason"]
+
+
+def test_I2_TWIN_a_deployed_claude_hooks_copy_is_not_refused_for_location(tmp_path):
+    """The twin of the location clause only. Root RESOLUTION is not asserted here: under %TEMP%
+    Git Bash spells the tree /tmp/..., the payload spells C:/.../Temp/..., and they never match
+    (MEASURED 2026-10-01), so a tmp tree cannot show a real install's verdict."""
+    root = tmp_path / "tk2"
+    script = _hooks_copy(root / ".claude" / "hooks")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("X4_") and k != "CLAUDE_PROJECT_DIR"}
+    env["X4_CONFIG"] = "/nonexistent"
+    v = _check_in(env, root, "--kind", "write", "--path", str(root / "x.txt"), script=script)
+    assert not v["inert"], v
+
+@pytest.mark.skipif(not HAS_PWSH, reason="no PowerShell -- the untranslatable path is NOT checked here")
+def test_I3_a_guard_that_checked_nothing_is_inert_not_a_plain_ask(sandbox):
+    _, tk, env = sandbox
+    env = dict(env, X4_PWSH=str(tk / "no-such-pwsh.exe"))
+    v = _check_in(env, tk, "--kind", "shell", "--shell", "powershell", "--command",
+                  f"Remove-Item -Force '{tk / 'reference' / 'libraries' / 'wares.xml'}'")
+    assert v["decision"] == "deny" and v["inert"], v
+
+
+def test_I4_a_delete_is_at_least_as_strict_as_rm(sandbox):
+    tmp, tk, env = sandbox
+    target = tmp / "profile" / "save" / "quick.xml.gz"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"x")
+    rank = {"allow": 0, "advise": 1, "ask": 2, "deny": 3}
+    d = _check_in(env, tk, "--kind", "delete", "--path", str(target))
+    w = _check_in(env, tk, "--kind", "write", "--path", str(target))
+    s = _check_in(env, tk, "--kind", "shell", "--shell", "bash", "--command", f"rm -f '{target.as_posix()}'")
+    assert rank[d["decision"]] == max(rank[w["decision"]], rank[s["decision"]])
+    assert d["guards"] == ["protect-files.sh", "protect-bash.sh"]
+    assert target.exists()                      # verdict only: nothing executed
+
+
+@pytest.mark.parametrize("body", ["exit 1", "printf 'not json'", "sleep 6"])
+def test_I5_a_guard_that_fails_is_an_inert_deny(sandbox, tmp_path, body):
+    _, tk, env = sandbox
+    hooks = tmp_path / "stub" / ".claude" / "hooks"
+    hooks.mkdir(parents=True)
+    shutil.copy2(X4GUARD, hooks / "x4guard.py")
+    (hooks / "protect-bash.sh").write_text(f"cat >/dev/null\n{body}\n", encoding="utf-8")
+    env = dict(env, X4_GUARD_TIMEOUT_S="2")
+    v = _check_in(env, tk, "--kind", "shell", "--shell", "bash", "--command", "echo hi",
+                  script=hooks / "x4guard.py")
+    assert v["decision"] == "deny" and v["inert"], v
+
+
+@pytest.mark.skipif(not HAS_PWSH, reason="no PowerShell -- the untranslatable path is NOT checked here")
+def test_guard_signals_not_checked_with_exit_2_only_under_X4_GUARD_CHECK(sandbox):
+    """Structured 'could not evaluate' signal (ported from the Codex audit session's game-root
+    edit): with X4_GUARD_CHECK=1 a not-checked state exits 2; without it the hook ASKS exactly
+    as before, so Claude Code's behaviour does not change."""
+    _, tk, env = sandbox
+    env = dict(env, X4_PWSH=str(tk / "no-such-pwsh.exe"))
+    payload = json.dumps({"tool_name": "PowerShell", "tool_input": {"command":
+              f"Remove-Item -Force '{tk / 'reference' / 'libraries' / 'wares.xml'}'"}}).encode()
+    bash = shutil.which("bash.exe") or shutil.which("bash")
+    hook = str(X4GUARD.parent / "protect-bash.sh")
+    plain = subprocess.run([bash, hook], input=payload, capture_output=True, env=env, timeout=120)
+    check = subprocess.run([bash, hook], input=payload, capture_output=True, timeout=120,
+                           env=dict(env, X4_GUARD_CHECK="1"))
+    assert plain.returncode == 0 and b'"ask"' in plain.stdout.replace(b" ", b"")
+    assert check.returncode == 2

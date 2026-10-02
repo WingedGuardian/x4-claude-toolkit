@@ -528,10 +528,19 @@ sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": {
   printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"X4 ADVISORY LOST: this hook had something to tell you but neither jq nor python is available to render it. Install jq, or set X4_PYTHON."}}'
 }
 
+x4_guard_check_inert() {
+  # Machine-readable failure signal only for x4guard checks. Ordinary hooks keep
+  # their existing verdicts and exit codes; check callers must not interpret an
+  # inability to evaluate as a completed policy decision.
+  [ "${X4_GUARD_CHECK:-}" = 1 ] && exit 2
+  return 0
+}
+
 x4_require_input() {
   [ -n "$1" ] && return 0
   "${JQ:-jq}" -n --arg r "$2" --arg e "${3:-PreToolUse}" \
     '{hookSpecificOutput:{hookEventName:$e,permissionDecision:"ask",permissionDecisionReason:$r}}' 2>/dev/null \
   || printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"X4 GUARD INERT: this hook received NO INPUT and could not run jq to report it, so it checked nothing. Confirm only if you know why both are missing."}}'
+  x4_guard_check_inert
   exit 0
 }

@@ -153,6 +153,7 @@ jq_works() {
 
 if [ -z "$PY" ]; then
   printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"X4 GUARD INERT: no Python interpreter was found, so protect-bash.sh could not analyse this command and checked NOTHING. Set X4_PYTHON, or put python on PATH. Confirm only if you know why it is missing."}}'
+  x4_guard_check_inert
   exit 0
 fi
 
@@ -196,10 +197,12 @@ fi
 if [ "$PARSE_RC" = 4 ]; then
   VERDICT=ask
   emit ask "X4 GUARD: this PowerShell command could not be analysed, so NO rule was evaluated against it: ${FACTS_RAW:-no reason given}. The guard reads PowerShell through PowerShell's own parser (pwsh, else powershell; X4_PWSH overrides). Fix the syntax, or confirm only if you know the command is safe."
+  x4_guard_check_inert
   exit 0
 fi
 if [ "$PARSE_RC" != 0 ]; then
   printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"X4 GUARD INERT: the command analyser exited non-zero, so this command was NOT checked. That is the stdin defect one layer in: allowing silently would look identical to deciding it is fine. Confirm only if you know why."}}'
+  x4_guard_check_inert
   exit 0
 fi
 
@@ -223,6 +226,7 @@ if [ -z "$COMMAND" ]; then
     *$'\ncarrier_untranslated\t1\n'*)
       VERDICT=ask
       emit ask "X4 GUARD: nothing in this command could be translated into something the guard can check -- every write/delete in it names a target it cannot resolve (a splat that is not a literal hashtable, Invoke-Expression of computed text, a .Delete()-style method on an unidentified object), so it could not be analysed and NO rule was evaluated. Write the target literally, or confirm only if you know what it touches."
+      x4_guard_check_inert
       exit 0 ;;
   esac
   exit 0
@@ -297,6 +301,7 @@ if [ -z "${_x4_rest//[[:space:]]/}" ]; then
 fi
 if [ "$_x4_plain" != 1 ] && ! bash -n -c "$COMMAND" 2>/dev/null; then
   ask "This command does not PARSE (bash -n rejects it), so the guard could evaluate NO rule against it and cannot vouch for it. Check the quoting -- a Windows path ending in a backslash inside double quotes is the usual cause. Confirm only if you know the command is safe."
+  x4_guard_check_inert
 fi
 
 # === CONFIRMATION — the analysis could not be completed ===
@@ -338,10 +343,12 @@ fi
 # elsewhere in the command still wins, because `ask` accumulates.
 if on carrier_untranslated; then
   ask "Part of this command could not be analysed, so it was NEVER checked against any rule: nested PowerShell that does not parse (or no PowerShell was found to parse it), or a PowerShell write/delete whose TARGET the guard cannot resolve -- a splat that is not a literal hashtable, a .Delete()/.MoveTo()-style method on an object it cannot identify, Invoke-Expression of computed text. Write the target literally, or confirm only if you know what it touches."
+  x4_guard_check_inert
 fi
 
 if on carriers_truncated; then
   ask "This command nests so many substitutions/wrappers that the guard stopped expanding them, so part of it was NEVER checked against any rule. That is not a clean pass. Simplify it, or confirm only if you know what every nested command does."
+  x4_guard_check_inert
 fi
 
 # === HARD BLOCK — delete the game installation ===

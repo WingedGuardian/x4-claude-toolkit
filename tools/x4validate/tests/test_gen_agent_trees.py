@@ -202,3 +202,26 @@ def test_crlf_checkout_is_not_stale(fresh_copy):
     p = root / "CLAUDE.md"
     p.write_bytes(p.read_bytes().replace(b"\n", b"\r\n"))
     assert g.problems(exp, root) == []
+
+
+def test_I6_write_mode_rewrites_only_stale_files_and_names_them(tmp_path, monkeypatch, capsys):
+    """A hand edit to a generated file (e.g. a tool writing .claude/settings.json) must not be
+    lost UNSEEN: write mode names each STALE file it overwrites and leaves fresh files untouched."""
+    import os
+    import shutil
+    g = load()
+    shutil.copytree(REPO / "agent", tmp_path / "agent")
+    for rel, text in g.generate(REPO).items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(text.encode("utf-8"))
+    fresh = tmp_path / ".claude/agents/mod-research.md"
+    os.utime(fresh, (1_000_000_000, 1_000_000_000))
+    edited = tmp_path / ".claude/settings.json"
+    edited.write_bytes(b'{"hand": "edit"}\n')
+    monkeypatch.setattr(g, "REPO", tmp_path)
+    assert g.main([]) == 0
+    out = capsys.readouterr()
+    assert "STALE    .claude/settings.json" in out.out + out.err
+    assert fresh.stat().st_mtime == 1_000_000_000          # untouched
+    assert b"hand" not in edited.read_bytes()               # restored from agent/

@@ -9,12 +9,16 @@
   now names the `x4-balance` and `x4-mod-interaction` skills. Both subagents run on `sonnet`.
 - `x4-scaffold` treats `content.xml` edits as advisory, matching `CLAUDE.md`.
 - **Agent-facing files are now generated from a neutral source tree, `agent/`.** That covers
-  `CLAUDE.md`, `.claude/agents/`, `.claude/skills/` and `.claude/settings.json`. Edit `agent/`,
-  then run `tools/x4validate/scripts/gen-agent-trees.py`. Each generated file differs from before
-  only by a `GENERATED` banner line, and a test fails if one drifts from its source. The
-  generator never deletes: a file it did not produce is reported, and the run refuses.
-- **A generated `AGENTS.md`** (from `agent/instructions/codex.md`) gives Codex and other agents
-  the rules they could not otherwise see:
+  `CLAUDE.md`, `.claude/agents/`, `.claude/skills/`, `.claude/settings.json` and `.claude/hooks/`.
+  Edit `agent/`, then run `tools/x4validate/scripts/gen-agent-trees.py`.
+  - The markdown files differ from before only by a `GENERATED` banner line. `settings.json`
+    and the hook scripts are byte-identical copies.
+  - A test fails if any of them drifts from its source.
+  - The generator rewrites only stale files, and names each one it overwrites.
+  - It never deletes: a file it did not produce is reported, and the run refuses.
+- **A generated `AGENTS.md`** in the toolkit repo (from `agent/instructions/codex.md`; the
+  installers do not ship it yet) gives Codex and other agents the rules they could not otherwise
+  see:
   - read `CLAUDE.md` in full;
   - edit `agent/`, not generated files;
   - the guards do not protect you under Codex (its hooks fail open, measured);
@@ -24,7 +28,11 @@
   to write it any larger, because Codex silently drops text past that size.
 - **`x4guard check`** (`.claude/hooks/x4guard.py`): ask the guards for a verdict from any agent,
   with no side effects. `--shell` names the shell that will EXECUTE the command, because Codex
-  labels PowerShell "Bash". A guard that cannot run is reported as an inert deny, never an allow.
+  labels PowerShell "Bash".
+  - A relative `--path` is resolved from the caller's working directory.
+  - A delete is judged as the stricter of a write and an `rm` of that path.
+  - Each of these is an inert deny, never an allow: a guard that cannot run, a guard that
+    reports it checked nothing, and a copy outside `.claude/hooks` with `X4_TOOLKIT` unset.
 - `.gitignore` no longer swallows a skill's `reference/` folder under `agent/skills/`. The game-data
   rule matched it there too, as it once did under `.claude/skills/`.
 

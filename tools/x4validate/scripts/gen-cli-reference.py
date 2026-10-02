@@ -48,7 +48,9 @@ from pathlib import Path
 
 PKG = Path(__file__).resolve().parents[1]          # tools/x4validate
 REPO = PKG.parents[1]                              # repository root
-SKILL_DIR = REPO / "agent" / "skills" / "x4-cli-reference"   # the SOURCE; gen-agent-trees.py renders .claude/
+# This writes the SOURCE under agent/skills/. Run scripts/gen-agent-trees.py afterwards: it renders
+# the copy under .claude/skills/ that agents and the installers read.
+SKILL_DIR = REPO / "agent" / "skills" / "x4-cli-reference"
 COLUMNS = "100"
 
 sys.path.insert(0, str(PKG))

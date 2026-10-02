@@ -16,8 +16,8 @@ the rule's intent with the tools you have.
 
 ## 2. Edit `agent/`, never the generated files
 
-`CLAUDE.md`, `AGENTS.md` and everything under `.claude/` (agents, skills, `settings.json`,
-hooks) are **generated** from `agent/`:
+`CLAUDE.md`, `AGENTS.md` and `.claude/` (agents, skills, `settings.json`, hooks; not the
+per-machine `x4-paths.env*`, `settings.local.json` or `backups/`) are **generated** from `agent/`:
 
 - hook scripts: `agent/guards/claude-hooks/`
 - skills: `agent/skills/<name>/` (skill bodies name the toolkit root through a `TOOLKIT`

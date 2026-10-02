@@ -72,6 +72,7 @@ fi
 if [ "$FP_OK" != 1 ]; then
   VERDICT=1
   emit ask "X4 GUARD: could not read the file path from this payload (no working jq or python), so NO rule below was evaluated. This is not a clean pass. Confirm only if you know the edit is safe."
+  x4_guard_check_inert
   exit 0
 fi
 [ -z "$FILE_PATH" ] && exit 0
