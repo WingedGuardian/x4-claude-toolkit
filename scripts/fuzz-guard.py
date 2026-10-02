@@ -898,6 +898,9 @@ def seeds(roots):
         ("git clean wipes an x4 dir", "git -C " + QU + g + QU + " clean -fdx"),
         ("recursive search at the workspace", "grep -rn foo " + QU + tk + QU),
         ("xrcat re-unpack", "XRCatTool.exe -in 01.cat -out " + QU + ref + QU),
+        # Plan 2 lane E: lifting the OS deny on reference/ is the user's step (ASK).
+        ("icacls lifts the reference deny", "icacls " + QU + ref + QU + " /reset /T /C"),
+        ("x4refguard lifts the reference deny", "python scripts/x4refguard.py remove"),
         # 2026-09-09: `verb_unresolved` shipped in v3.1.0 with NO seed. It is the rule
         # that catches a command whose NAME arrives through substitution -- the defect
         # that walked past all three hard blocks -- so the one rule added to close a

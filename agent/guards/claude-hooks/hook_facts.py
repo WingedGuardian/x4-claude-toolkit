@@ -1509,6 +1509,36 @@ def tokens_of(seg: str) -> list[str]:
     return [t for t, _q in tokens(seg)]
 
 
+#: Verbs that can RUN x4refguard.py: an interpreter or launcher, or the script itself.
+_REFGUARD_RUNNERS = ("python", "py", "uv", "uvx", "x4refguard")
+
+
+def _lifts_reference_deny(seg: str, assigns: dict, ref: str) -> bool:
+    """Does this segment lift the OS deny-delete/write on reference/? Two shapes:
+    `x4refguard.py remove` RUN by an interpreter (not merely named, e.g. by echo), whatever
+    root is configured -- its --path form reaches an old root; and a raw `icacls` with
+    /remove or /reset whose OWN operand is the reference root or inside it, or -- with /T --
+    an ancestor that a recursive reset walks into. Applying the deny (/deny) or reading
+    the ACL is not a lift."""
+    toks = [t.lower() for t in tokens_of(seg)]
+    v = _verb_name(verb(seg)).lower()
+    if v.startswith(_REFGUARD_RUNNERS):
+        for i, t in enumerate(toks):
+            if t.replace(chr(92), "/").rsplit("/", 1)[-1] in ("x4refguard.py", "x4refguard") \
+                    and "remove" in toks[i + 1:]:
+                return True
+    if "icacls" not in v:                # an unset ref: under()/contains_root() are False for ""
+        return False
+    if not any(t.startswith(("/remove", "/reset")) for t in toks):
+        return False
+    recursive = "/t" in toks
+    for o_ in _operands(seg):
+        r = resolve(o_, assigns)
+        if under(r, ref) or (recursive and contains_root(r, ref)):
+            return True
+    return False
+
+
 def _operands(seg: str) -> list[str]:
     """Non-flag, non-redirect operands after the verb."""
     out, seen_verb, skip = [], False, False
@@ -4014,6 +4044,10 @@ def facts(payload: dict, roots: dict) -> dict:
             and any(is_root(resolve(o_, assigns), roots["reference"])
                     for o_ in _operands(sg))
             for sg, _c in seg_cwd),
+        # Lifting the OS deny on reference/ (Plan 2 lane D). D8: only the USER lifts a
+        # protection, so an agent's lift is an ASK. Segment-scoped like xrcat_reunpack.
+        "lifts_reference_deny": any(_lifts_reference_deny(sg, assigns, roots.get("reference") or "")
+                                    for sg, _c in seg_cwd),
         "cwd": cwd,
     }
 

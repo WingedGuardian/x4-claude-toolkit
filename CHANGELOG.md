@@ -48,6 +48,28 @@
   - A delete is judged as the stricter of a write and an `rm` of that path.
   - Each of these is an inert deny, never an allow: a guard that cannot run, a guard that
     reports it checked nothing, and a copy outside `.claude/hooks` with `X4_TOOLKIT` unset.
+  - A guard that hangs is bounded: its whole process tree is killed (Windows `taskkill /T`,
+    POSIX process group), and `check` returns within `X4_GUARD_TIMEOUT_S` + 8 s even when the
+    kill fails. Before this, a guard's child process held the pipes open and stretched a 2 s
+    budget to 10.9 s.
+  - `X4_GUARD_TIMEOUT_S` (default 25) is now ONE budget per check: a delete's two guards share
+    it. An invalid value is an inert deny naming it, not a traceback.
+  - An inert verdict names the failing guard's own reason (or its stderr). A delete keeps every
+    guard's advisory. The delete probe is `rm -rf --`; that changes no verdict today.
+- **`X4_GUARD=off`**, the launch-time escape hatch the design describes, now exists. With the
+  variable set to exactly `off` (any other value leaves the guards on), `protect-bash.sh` and
+  `protect-files.sh` turn a deny or an ask into an advisory that names what it would have been,
+  every override is logged to `GUARDS-OFF.log` beside the backups, the session starts with a
+  GUARDS OFF banner, and `x4guard check` reports GUARDS OFF on every verdict instead of an
+  allow. A guard that could not check still asks.
+- **Lifting the OS protection on `reference/` asks first.** `x4refguard.py remove`, and a raw
+  `icacls ... /remove` or `/reset` aimed at the reference root (or, with `/T`, a folder above
+  it), now ask for confirmation: lifting a protection is the user's step. The locked-reference
+  refusal now says to lift that protection before removing the sentinel.
+- `gen-agent-trees.py` refuses (rc 2) on a malformed `agent/` source: a non-UTF-8 file, invalid
+  YAML, an unclosed frontmatter, `tools` that is not a list, or an agent name that is not plain
+  or is duplicated. A description that YAML would misread is emitted quoted. A non-UTF-8
+  generated file is reported STALE instead of crashing `--check`.
 - **Fewer approval prompts: the guards ask only what is genuinely yours.** Measured over 793
   transcripts: 54 hook prompts in 5 weeks, all 54 approved, 0 refused -- an ask that is always
   approved protects nothing.

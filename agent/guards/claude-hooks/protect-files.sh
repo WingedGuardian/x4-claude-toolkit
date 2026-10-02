@@ -24,6 +24,11 @@ x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it ch
 x4_resolve_python; PY="$X4_PY"   # shared: refuses a misconfigured X4_PYTHON
 
 emit() {   # emit <deny|ask|advise> <reason>
+  # X4_GUARD=off (spec 5.7): a deny or an ask becomes an advisory that names what it would
+  # have been, and is logged. See x4_guard_overridden in _x4-env.sh.
+  if [ "$1" != advise ] && x4_guards_off; then
+    set -- advise "$(x4_guard_overridden protect-files.sh "$1" "$2")"
+  fi
   if [ "$JQ_OK" = 1 ]; then
     if [ "$1" = "advise" ]; then
       "$JQ" -n --arg r "$2" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'

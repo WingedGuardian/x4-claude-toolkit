@@ -1,6 +1,8 @@
 """gen-agent-trees.py: every agent-facing file is generated from agent/ and must stay fresh."""
 import importlib.util
+import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -225,3 +227,152 @@ def test_I6_write_mode_rewrites_only_stale_files_and_names_them(tmp_path, monkey
     assert "STALE    .claude/settings.json" in out.out + out.err
     assert fresh.stat().st_mtime == 1_000_000_000          # untouched
     assert b"hand" not in edited.read_bytes()               # restored from agent/
+
+
+# ---------------------------------------------------------------- lane E (Plan 2): E6 agent.yaml
+
+CFI = "agent/agents/cross-file-impact/agent.yaml"
+MR = "agent/agents/mod-research/agent.yaml"
+
+
+def _agent_copy(tmp_path):
+    shutil.copytree(REPO / "agent", tmp_path / "agent", ignore=shutil.ignore_patterns("__pycache__"))
+    return tmp_path
+
+
+def _edit(root, rel, old, new):
+    p = root / rel
+    t = p.read_bytes().decode("utf-8").replace("\r\n", "\n")
+    assert old in t, f"fixture drifted: {old!r} is not in {rel}"
+    p.write_bytes(t.replace(old, new, 1).encode("utf-8"))
+
+
+def _frontmatter(text):
+    from ruamel.yaml import YAML
+    assert text.startswith("---\n")
+    return YAML(typ="safe").load(text[4:text.index("\n---\n", 4)])
+
+
+@pytest.mark.parametrize("tools", ["tools: Glob, Grep, Read, Bash",      # MEASURED: became G, l, o, b, ...
+                                   "tools: Read",            # a string with no ',' or ' ': only the list clause sees it
+                                   'tools: [Glob, "Read, Grep"]',
+                                   "tools: [Glob, 7]",
+                                   'tools: [Glob, ""]'])
+def test_E6_tools_that_are_not_a_list_of_names_refuse(tmp_path, tools):
+    g = load()
+    root = _agent_copy(tmp_path)
+    _edit(root, CFI, "tools: [Glob, Grep, Read, Bash]", tools)
+    with pytest.raises(g.GenerationError, match="tools"):
+        g.generate(root)
+
+
+@pytest.mark.parametrize("desc", ["Note: use BEFORE editing", "Line one\\nLine two", "a #hash", "[bracketed]"])
+def test_E6_any_description_survives_into_parseable_frontmatter(tmp_path, desc):
+    """MEASURED: ': ' and a newline produced frontmatter that does not parse."""
+    g = load()
+    root = _agent_copy(tmp_path)
+    _edit(root, CFI, 'description: "Use BEFORE', f'description: "{desc} -- Use BEFORE')
+    fm = _frontmatter(g.generate(root)[".claude/agents/cross-file-impact.md"])
+    assert fm["description"].startswith(desc.replace("\\n", "\n") + " -- Use BEFORE"), fm
+    assert fm["name"] == "cross-file-impact" and fm["model"] == "sonnet"
+
+
+@pytest.mark.parametrize("desc", ["Note: x",      # the render does not parse at all
+                                  "a #hash"])     # it parses, but reads back as 'a'
+def test_E6_TWIN_the_readback_refuses_a_render_that_does_not_parse_back(tmp_path, monkeypatch, desc):
+    """The belt-and-braces clause on its own: with the quoting step broken, the re-read of the
+    rendered frontmatter must refuse rather than emit a frontmatter Claude Code would misread.
+    One param per clause of the re-read (parse error / value mismatch)."""
+    g = load()
+    root = _agent_copy(tmp_path)
+    _edit(root, CFI, 'description: "Use BEFORE', f'description: "{desc} -- Use BEFORE')
+    monkeypatch.setattr(g, "_yaml_scalar", lambda s: s)
+    with pytest.raises(g.GenerationError, match="rendered frontmatter"):
+        g.generate(root)
+
+
+def test_E6_generated_frontmatter_parses_back_to_its_source():
+    """Regression pin over the real agents: name/description/tools/model round-trip."""
+    from ruamel.yaml import YAML
+    out = load().generate(REPO)
+    for name in ("cross-file-impact", "mod-research"):
+        src = YAML(typ="safe").load((REPO / "agent" / "agents" / name / "agent.yaml").read_bytes())
+        fm = _frontmatter(out[f".claude/agents/{name}.md"])
+        assert fm["name"] == src["name"] and fm["description"] == src["description"]
+        assert fm["tools"] == ", ".join(src["claude"]["tools"])
+
+
+def test_E6_duplicate_agent_names_refuse(tmp_path):
+    """MEASURED: one of the two agents was silently dropped."""
+    g = load()
+    root = _agent_copy(tmp_path)
+    _edit(root, MR, "name: mod-research", "name: cross-file-impact")
+    with pytest.raises(g.GenerationError, match="cross-file-impact"):
+        g.generate(root)
+
+
+@pytest.mark.parametrize("raw", ['"../../escaped"', '"sub/dir"', r"'sub\dir'", '"Upper-Case"',
+                                 '"has space"', "123", '"-leading"', '""'])
+def test_E6_a_name_that_is_not_a_plain_agent_name_refuses(tmp_path, raw):
+    """MEASURED: '../../escaped' became .claude/agents/../../escaped.md -- outside .claude/."""
+    g = load()
+    root = _agent_copy(tmp_path)
+    _edit(root, CFI, "name: cross-file-impact", f"name: {raw}")
+    with pytest.raises(g.GenerationError, match="name"):
+        g.generate(root)
+
+
+def test_E6_TWIN_a_plain_new_name_still_generates(tmp_path):
+    g = load()
+    root = _agent_copy(tmp_path)
+    _edit(root, CFI, "name: cross-file-impact", "name: impact-2")
+    assert ".claude/agents/impact-2.md" in g.generate(root)
+
+
+def test_E6_a_claude_block_that_is_not_a_mapping_refuses(tmp_path):
+    g = load()
+    root = _agent_copy(tmp_path)
+    _edit(root, CFI, "claude:\n  tools: [Glob, Grep, Read, Bash]", "claude: [Glob]")
+    with pytest.raises(g.GenerationError, match="claude"):
+        g.generate(root)
+
+
+# ---------------------------------------------------------------- lane E (Plan 2): E7 refusals
+
+SK = "agent/skills/x4-debug/SKILL.md"
+
+
+@pytest.mark.parametrize("label", ["never-closed frontmatter", "non-UTF-8 skill", "non-UTF-8 agent.yaml",
+                                   "YAML syntax error", "duplicate YAML key"])
+def test_E7_a_malformed_source_refuses_with_rc2(tmp_path, monkeypatch, capsys, label):
+    """MEASURED: each of these escaped as a traceback (rc 1), not a refusal (rc 2)."""
+    g = load()
+    root = _agent_copy(tmp_path)
+    if label == "never-closed frontmatter":
+        (root / SK).write_bytes(b"---\nname: x4-debug\ndescription: d\nno closing fence\n")
+    elif label == "non-UTF-8 skill":
+        (root / SK).write_bytes((root / SK).read_bytes() + b"\xff\n")
+    elif label == "non-UTF-8 agent.yaml":
+        (root / CFI).write_bytes((root / CFI).read_bytes() + b"# \xff\n")
+    elif label == "YAML syntax error":
+        _edit(root, CFI, "tier: balanced", "tier: [balanced")
+    else:
+        _edit(root, CFI, "tier: balanced", "tier: balanced\ntier: deep")
+    monkeypatch.setattr(g, "REPO", root)
+    assert g.main(["--check"]) == 2, label
+    err = capsys.readouterr().err
+    assert err.startswith("REFUSING:") and ("SKILL.md" in err or "agent.yaml" in err), err
+
+
+def test_E7_TWIN_an_unmodified_copy_is_not_refused(tmp_path, monkeypatch, capsys):
+    g = load()
+    root = _agent_copy(tmp_path)
+    monkeypatch.setattr(g, "REPO", root)
+    assert g.main(["--check"]) == 1          # a bare copy has no generated files: MISSING, not REFUSING
+    assert "REFUSING" not in capsys.readouterr().err
+
+
+def test_E7_a_non_utf8_generated_file_is_STALE_not_a_crash(fresh_copy):
+    g, exp, root = fresh_copy
+    (root / "CLAUDE.md").write_bytes(b"\xff\xfe broken\n")
+    assert g.problems(exp, root) == ["STALE    CLAUDE.md"]

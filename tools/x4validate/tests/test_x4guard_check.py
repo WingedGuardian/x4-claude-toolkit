@@ -2,11 +2,15 @@
 
 A guard that cannot run must never read as allow -- it is an inert deny with the cause named.
 """
+import ctypes
+import importlib.util
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -28,7 +32,12 @@ def sandbox(tmp_path):
                X4_PROFILE=str(tmp_path / "profile"), X4_MODS=str(tmp_path / "mods"),
                X4_EXTENSIONS=str(game / "extensions"), X4_SAVES=str(tmp_path / "profile" / "save"),
                X4_DOCUMENTS=str(tmp_path / "docs"), X4_BACKUPS=str(tmp_path / "backups"),
-               X4_CONFIG="/nonexistent")
+               X4_CONFIG="/nonexistent",
+               # These tests judge VERDICTS, not speed. X4_GUARD_TIMEOUT_S is one budget per CHECK
+               # (lane E), and a real delete check took 22-24 s of the default 25 under load
+               # (MEASURED 2026-10-02), so the default made verdict tests flake inert. The budget
+               # tests set their own value.
+               X4_GUARD_TIMEOUT_S="120")
     env.pop("X4_BASH", None)
     return tmp_path, tk, env
 
@@ -186,7 +195,7 @@ def test_I3_a_guard_that_checked_nothing_is_inert_not_a_plain_ask(sandbox):
     env = dict(env, X4_PWSH=str(tk / "no-such-pwsh.exe"))
     v = _check_in(env, tk, "--kind", "shell", "--shell", "powershell", "--command",
                   f"Remove-Item -Force '{tk / 'reference' / 'libraries' / 'wares.xml'}'")
-    assert v["decision"] == "deny" and v["inert"], v
+    assert v["decision"] == "deny" and v["inert"] and "could not be analysed" in v["reason"], v
 
 
 def test_I4_a_delete_is_at_least_as_strict_as_rm(sandbox):
@@ -198,7 +207,8 @@ def test_I4_a_delete_is_at_least_as_strict_as_rm(sandbox):
     d = _check_in(env, tk, "--kind", "delete", "--path", str(target))
     w = _check_in(env, tk, "--kind", "write", "--path", str(target))
     s = _check_in(env, tk, "--kind", "shell", "--shell", "bash", "--command", f"rm -f '{target.as_posix()}'")
-    assert rank[d["decision"]] == max(rank[w["decision"]], rank[s["decision"]])
+    s2 = _check_in(env, tk, "--kind", "shell", "--shell", "bash", "--command", f"rm -rf -- '{target.as_posix()}'")
+    assert rank[d["decision"]] == max(rank[w["decision"]], rank[s["decision"]], rank[s2["decision"]]), (d, w, s, s2)
     assert d["guards"] == ["protect-files.sh", "protect-bash.sh"]
     assert target.exists()                      # verdict only: nothing executed
 
@@ -232,3 +242,337 @@ def test_guard_signals_not_checked_with_exit_2_only_under_X4_GUARD_CHECK(sandbox
                            env=dict(env, X4_GUARD_CHECK="1"))
     assert plain.returncode == 0 and b'"ask"' in plain.stdout.replace(b" ", b"")
     assert check.returncode == 2
+
+
+# ---------------------------------------------------------------- lane E (Plan 2) helpers
+
+def _alive(pid: int) -> bool:
+    """Is this PID a live process? Windows: STILL_ACTIVE exit code. POSIX: kill(pid, 0)."""
+    if os.name == "nt":
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, pid)            # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        k.GetExitCodeProcess(h, ctypes.byref(code))
+        k.CloseHandle(h)
+        return code.value == 259                           # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_dead(pid: int, within: float = 5.0) -> bool:
+    end = time.monotonic() + within
+    while _alive(pid) and time.monotonic() < end:
+        time.sleep(0.2)
+    return not _alive(pid)
+
+
+def _reap(pid: int | None) -> None:
+    if pid and _alive(pid):
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+        else:
+            os.kill(pid, signal.SIGKILL)
+
+
+def _stub_hooks(tmp_path, bodies: dict) -> Path:
+    """A deployed-looking .claude/hooks holding this x4guard.py and the given stub guards."""
+    hooks = tmp_path / "stub" / ".claude" / "hooks"
+    hooks.mkdir(parents=True)
+    shutil.copy2(X4GUARD, hooks / "x4guard.py")
+    for name, body in bodies.items():
+        (hooks / name).write_bytes(body.encode("utf-8"))
+    return hooks
+
+
+def _grandchild(pidfile: Path, seconds: int = 60) -> str:
+    """A guard whose CHILD inherits the pipes, records its own PID, and outlives any budget."""
+    py = Path(sys.executable).as_posix()
+    return (f"cat >/dev/null\n'{py}' -c \"import os,time;open(r'{pidfile.as_posix()}','w')"
+            f".write(str(os.getpid()));time.sleep({seconds})\"\n")
+
+
+def _load(script: Path):
+    spec = importlib.util.spec_from_file_location(f"x4guard_under_test_{abs(hash(str(script)))}", script)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_E1_a_timeout_is_bounded_and_kills_the_guards_descendants(sandbox, tmp_path):
+    """MEASURED 2026-10-02: a guard's grandchild held the pipes and subprocess.run(timeout=)
+    waited for it (sleep 8 under a 2 s budget took 10.9 s). The grandchild here sleeps 60 s."""
+    _, tk, env = sandbox
+    pidfile = tmp_path / "grandchild.pid"
+    hooks = _stub_hooks(tmp_path, {"protect-bash.sh": _grandchild(pidfile)})
+    t0 = time.monotonic()
+    v = _check_in(dict(env, X4_GUARD_TIMEOUT_S="3"), tk, "--kind", "shell", "--shell", "bash",
+                  "--command", "echo hi", script=hooks / "x4guard.py")
+    wall = time.monotonic() - t0
+    assert pidfile.exists(), "the grandchild never started -- this test proved nothing"
+    pid = int(pidfile.read_text())
+    try:
+        assert v["decision"] == "deny" and v["inert"] and "timed out" in v["reason"], v
+        assert wall < 20, f"{wall:.1f}s: a 3 s budget did not bound the check"
+        assert _wait_dead(pid), "the guard's grandchild survived the timeout"
+    finally:
+        _reap(pid)
+
+
+def test_E1_TWIN_the_bound_holds_even_when_the_tree_kill_does_not(sandbox, tmp_path, monkeypatch):
+    """Twin for the DRAIN clause: with the tree kill reduced to killing the root only, the
+    grandchild keeps the pipes open -- and the check must STILL return on time."""
+    _, tk, env = sandbox
+    pidfile = tmp_path / "grandchild.pid"
+    hooks = _stub_hooks(tmp_path, {"protect-bash.sh": _grandchild(pidfile)})
+    for k, val in env.items():
+        monkeypatch.setenv(k, val)
+    g = _load(hooks / "x4guard.py")
+    monkeypatch.setattr(g, "TIMEOUT_S", 3.0)
+    monkeypatch.setattr(g, "_kill_tree", lambda proc: proc.kill())
+    t0 = time.monotonic()
+    v = g.verdict_for("shell", "bash", "echo hi", None)
+    wall = time.monotonic() - t0
+    pid = int(pidfile.read_text()) if pidfile.exists() else None
+    try:
+        assert pid, "the grandchild never started -- this test proved nothing"
+        assert v["decision"] == "deny" and v["inert"], v
+        assert wall < 3 + g.DRAIN_GRACE_S + 6, f"{wall:.1f}s: the drain is not bounded"
+        assert _alive(pid), "control: the tree kill was meant to be OFF here"
+    finally:
+        _reap(pid)
+
+
+def _fake_runner(g, monkeypatch, costs: dict):
+    """Replace the subprocess layer with a clock: each guard 'takes' costs[script] seconds and
+    times out if that exceeds the timeout it was GIVEN. Records (script, timeout given)."""
+    clock, seen = [1000.0], []
+    monkeypatch.setattr(g, "_clock", lambda: clock[0])
+    monkeypatch.setattr(g, "resolve_bash", lambda: ("bash", None))
+
+    def run(argv, payload, env, timeout):
+        name = Path(argv[1]).name
+        seen.append((name, round(timeout, 3)))
+        clock[0] += min(costs[name], timeout)
+        return (None, b"", b"") if costs[name] >= timeout else (0, b"", b"")
+    monkeypatch.setattr(g, "_run_bounded", run)
+    return seen
+
+
+def test_E2_the_second_delete_guard_gets_only_what_is_left(sandbox, monkeypatch):
+    _, tk, env = sandbox
+    for k, val in env.items():
+        monkeypatch.setenv(k, val)
+    g = _load(X4GUARD)
+    monkeypatch.setattr(g, "TIMEOUT_S", 4.0)
+    seen = _fake_runner(g, monkeypatch, {"protect-files.sh": 1.0, "protect-bash.sh": 0.5})
+    v = g.verdict_for("delete", None, None, str(tk / "x.txt"))
+    assert seen == [("protect-files.sh", 4.0), ("protect-bash.sh", 3.0)], seen
+    assert not v["inert"], v
+
+
+def test_E2_a_spent_budget_runs_no_further_guard_and_is_inert(sandbox, monkeypatch):
+    _, tk, env = sandbox
+    for k, val in env.items():
+        monkeypatch.setenv(k, val)
+    g = _load(X4GUARD)
+    monkeypatch.setattr(g, "TIMEOUT_S", 4.0)
+    seen = _fake_runner(g, monkeypatch, {"protect-files.sh": 99.0, "protect-bash.sh": 0.5})
+    v = g.verdict_for("delete", None, None, str(tk / "x.txt"))
+    assert seen == [("protect-files.sh", 4.0)], seen
+    assert v["decision"] == "deny" and v["inert"], v
+    assert v["guards"] == ["protect-files.sh", "protect-bash.sh"]
+    assert "X4_GUARD_TIMEOUT_S" in v["reason"], v["reason"]
+
+
+def test_E2_a_delete_with_both_guards_hung_spends_one_budget(sandbox, tmp_path):
+    """Real processes: MEASURED 17.6 s for two hung guards under a 2 s budget before this lane."""
+    _, tk, env = sandbox
+    pids = [tmp_path / "a.pid", tmp_path / "b.pid"]
+    hooks = _stub_hooks(tmp_path, {"protect-files.sh": _grandchild(pids[0]),
+                                   "protect-bash.sh": _grandchild(pids[1])})
+    t0 = time.monotonic()
+    v = _check_in(dict(env, X4_GUARD_TIMEOUT_S="5"), tk, "--kind", "delete", "--path",
+                  str(tmp_path / "x.txt"), script=hooks / "x4guard.py")
+    wall = time.monotonic() - t0
+    try:
+        assert v["decision"] == "deny" and v["inert"], v
+        assert wall < 9.5, f"{wall:.1f}s: two budgets were spent (one is ~5.5 s, two ~11 s)"
+    finally:
+        for p in pids:
+            _reap(int(p.read_text()) if p.exists() else None)
+
+
+@pytest.mark.parametrize("raw", ["abc", "0", "-3", "nan", "inf"])
+def test_E2_a_bad_budget_setting_is_an_inert_deny(sandbox, raw):
+    _, _, env = sandbox
+    rc, v, err = check(dict(env, X4_GUARD_TIMEOUT_S=raw), "--kind", "shell", "--shell", "bash",
+                       "--command", "echo hi")
+    assert rc == 0, err                       # "abc" was a traceback, rc 1, no JSON (MEASURED)
+    # The VALUE is named, not just the variable: a 0 budget would otherwise pass via the
+    # "budget already spent" path and hide a missing `t <= 0` clause (one twin per clause).
+    assert v["decision"] == "deny" and v["inert"] and f"X4_GUARD_TIMEOUT_S={raw!r}" in v["reason"], v
+
+
+_ASK_THEN_EXIT = ("cat >/dev/null\nprintf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\","
+                  "\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"WHY-IT-FAILED\"}}'\nexit CODE\n")
+
+
+@pytest.mark.parametrize("code", [2, 3])
+def test_E3_a_failing_guard_names_its_own_reason(sandbox, tmp_path, code):
+    _, tk, env = sandbox
+    hooks = _stub_hooks(tmp_path, {"protect-bash.sh": _ASK_THEN_EXIT.replace("CODE", str(code))})
+    v = _check_in(env, tk, "--kind", "shell", "--shell", "bash", "--command", "echo hi",
+                  script=hooks / "x4guard.py")
+    assert v["decision"] == "deny" and v["inert"], v
+    assert "WHY-IT-FAILED" in v["reason"], v["reason"]          # dropped before lane E (MEASURED)
+    assert f"exit {code}" in v["reason"] or f"exited {code}" in v["reason"], v["reason"]
+
+
+def test_E3_TWIN_a_failing_guard_without_a_verdict_names_its_stderr(sandbox, tmp_path):
+    """The unparseable-stdout clause: no hook JSON, so the cause comes from stderr -- and a
+    parse failure must not escape as an exception or turn into anything but an inert deny."""
+    _, tk, env = sandbox
+    hooks = _stub_hooks(tmp_path, {"protect-bash.sh":
+                                   "cat >/dev/null\nprintf 'not json'\necho 'boom: jq missing' >&2\nexit 1\n"})
+    v = _check_in(env, tk, "--kind", "shell", "--shell", "bash", "--command", "echo hi",
+                  script=hooks / "x4guard.py")
+    assert v["decision"] == "deny" and v["inert"], v
+    assert "exited 1" in v["reason"] and "boom: jq missing" in v["reason"], v["reason"]
+
+
+def test_E4_the_delete_probe_is_a_recursive_rm(sandbox):
+    """The ask reason echoes the probe command (MEASURED: 'confirm: rm -f ...')."""
+    _, tk, env = sandbox
+    v = _check_in(env, tk, "--kind", "delete", "--path", str(tk / "dev" / "mymod"))
+    assert v["decision"] == "ask" and not v["inert"], v
+    assert "rm -rf -- '" in v["reason"], v["reason"]
+
+
+def test_E4_TWIN_a_quote_and_a_space_in_the_path_still_reach_the_rm_rule(sandbox):
+    """Quoting clause: a broken quote would come back as the 'does not PARSE' ask instead."""
+    _, tk, env = sandbox
+    p = tk / "dev" / "mymod" / "it's here.xml"
+    p.write_text("x\n", encoding="utf-8")
+    v = _check_in(env, tk, "--kind", "delete", "--path", str(p))
+    assert v["decision"] == "ask" and not v["inert"], v
+    assert v["reason"].startswith("Deleting files in an X4 directory"), v["reason"]
+    assert p.exists()
+
+
+def test_E5_a_delete_keeps_the_file_guards_advisory(sandbox):
+    """MEASURED: the delete ASKs (protect-bash) and the manifest advisory from protect-files
+    was dropped -- context null."""
+    _, tk, env = sandbox
+    target = tk / "dev" / "mymod" / "content.xml"
+    w = _check_in(env, tk, "--kind", "write", "--path", str(target))
+    d = _check_in(env, tk, "--kind", "delete", "--path", str(target))
+    assert w["decision"] == "advise" and w["context"], w
+    assert d["decision"] == "ask" and d["context"] and w["context"] in d["context"], d
+
+
+def test_E5_TWIN_contexts_join_in_guard_order_whoever_wins(monkeypatch):
+    g = _load(X4GUARD)
+    vs = iter([{"v": 1, "decision": "advise", "reason": None, "context": "A", "inert": False,
+                "guards": ["protect-files.sh"]},
+               {"v": 1, "decision": "advise", "reason": None, "context": "B", "inert": False,
+                "guards": ["protect-bash.sh"]}])
+    monkeypatch.setattr(g, "run_guard", lambda *a, **k: next(vs))
+    v = g.verdict_for("delete", None, None, "x")
+    assert v["decision"] == "advise" and v["context"] == "A\n\nB", v
+    assert v["guards"] == ["protect-files.sh", "protect-bash.sh"]
+
+
+def test_E2_TWIN_a_valid_budget_setting_is_honoured(sandbox):
+    _, _, env = sandbox
+    _, v, _ = check(dict(env, X4_GUARD_TIMEOUT_S="30.5"), "--kind", "shell", "--shell", "bash",
+                    "--command", "echo hi")
+    assert v["decision"] == "allow" and not v["inert"], v
+
+
+# ---------------------------------------------------------------- lane E: X4_GUARD=off (decision #19)
+
+def _hook(env, script, payload: dict):
+    """Run one deployed guard the way Claude Code does (no X4_GUARD_CHECK). -> (rc, hookSpecificOutput)"""
+    bash = shutil.which("bash.exe") or shutil.which("bash")
+    r = subprocess.run([bash, str(X4GUARD.parent / script)], input=json.dumps(payload).encode("utf-8"),
+                       capture_output=True, env=env, timeout=120)
+    out = r.stdout.decode("utf-8", "replace").strip()
+    return r.returncode, (json.loads(out)["hookSpecificOutput"] if out else None)
+
+
+def _ref_write(tk):
+    return {"tool_name": "Write", "tool_input": {"file_path": str(tk / "reference" / "libraries" / "wares.xml"),
+                                                 "content": "x"}}
+
+
+def _ref_rm(tk):
+    return {"tool_name": "Bash", "tool_input": {"command": f"rm -rf '{(tk / 'reference' / 'libraries').as_posix()}'"}}
+
+
+@pytest.mark.parametrize("script,payload", [("protect-files.sh", _ref_write), ("protect-bash.sh", _ref_rm)])
+def test_X4_GUARD_off_turns_a_hard_block_into_a_logged_advisory(sandbox, script, payload):
+    """Spec 5.7: a LAUNCH-time X4_GUARD=off turns the hook verdicts into advisories, and every
+    overridden call is logged. Before lane E no guard read the variable (0 readers, MEASURED)."""
+    tmp, tk, env = sandbox
+    rc, hso = _hook(dict(env, X4_GUARD="off"), script, payload(tk))
+    assert rc == 0 and hso is not None, "guards off must still SAY something, never a silent allow"
+    assert "permissionDecision" not in hso, hso
+    ctx = hso["additionalContext"]
+    assert "X4 GUARDS OFF" in ctx and "DENIED" in ctx and "reference" in ctx, ctx
+    log = tmp / "backups" / "GUARDS-OFF.log"
+    assert log.is_file() and script in log.read_text(encoding="utf-8"), "the override was not logged"
+
+
+@pytest.mark.parametrize("value", [None, "on", "OFF", "Off", "0", "false", " off", ""])
+def test_X4_GUARD_TWIN_any_other_value_leaves_the_guards_on(sandbox, value):
+    """Exactly 'off' and nothing else: a typo must never disable protection."""
+    tmp, tk, env = sandbox
+    env = {k: v for k, v in env.items() if k != "X4_GUARD"}
+    if value is not None:
+        env["X4_GUARD"] = value
+    for script, payload in (("protect-files.sh", _ref_write), ("protect-bash.sh", _ref_rm)):
+        _, hso = _hook(env, script, payload(tk))
+        assert hso and hso.get("permissionDecision") == "deny", (script, value, hso)
+    assert not (tmp / "backups" / "GUARDS-OFF.log").exists()
+
+
+def test_X4_GUARD_off_check_reports_it_and_is_never_a_plain_allow(sandbox):
+    """x4guard check reports GUARDS OFF explicitly -- for a would-be deny AND for a would-be allow --
+    and, being a check, logs nothing (no side effects)."""
+    tmp, tk, env = sandbox
+    env = dict(env, X4_GUARD="off")
+    _, w, _ = check(env, "--kind", "write", "--path", str(tk / "reference" / "libraries" / "wares.xml"))
+    _, e, _ = check(env, "--kind", "shell", "--shell", "bash", "--command", "echo hi")
+    for v in (w, e):
+        assert v["decision"] == "advise" and not v["inert"], v
+        assert v["context"].startswith("X4 GUARDS OFF"), v
+    assert "DENIED" in w["context"] and "reference" in w["context"], w
+    assert list((tmp / "backups").iterdir()) == []
+
+
+def test_X4_GUARD_TWIN_check_with_the_guards_on_still_denies(sandbox):
+    _, tk, env = sandbox
+    _, v, _ = check(dict(env, X4_GUARD="on"), "--kind", "write", "--path",
+                    str(tk / "reference" / "libraries" / "wares.xml"))
+    assert v["decision"] == "deny" and not v["inert"] and "GUARDS OFF" not in json.dumps(v), v
+
+
+@pytest.mark.parametrize("value,banner", [("off", True), ("on", False), (None, False)])
+def test_X4_GUARD_off_puts_a_banner_on_session_start(sandbox, value, banner):
+    _, tk, env = sandbox
+    env = {k: v for k, v in env.items() if k != "X4_GUARD"}
+    if value is not None:
+        env["X4_GUARD"] = value
+    bash = shutil.which("bash.exe") or shutil.which("bash")
+    r = subprocess.run([bash, str(X4GUARD.parent / "session-canary.sh")], input=b"{}", capture_output=True,
+                       env=env, timeout=120)
+    out = r.stdout.decode("utf-8", "replace")
+    assert r.returncode == 0
+    assert ("GUARDS OFF" in out) is banner, out

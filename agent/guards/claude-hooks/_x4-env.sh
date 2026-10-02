@@ -536,6 +536,27 @@ x4_guard_check_inert() {
   return 0
 }
 
+# X4_GUARD=off -- the user's LAUNCH-time escape hatch (spec 5.7, user decision #19). Exactly
+# "off": any other value (OFF, 0, false, " off") leaves every guard ON, because a typo must
+# never be what disables protection. Only a VERDICT is relaxed: a guard that could not check
+# still says so, and Codex .rules and the OS deny on reference\ do not read this at all.
+x4_guards_off() { [ "${X4_GUARD:-}" = off ]; }
+
+# x4_guard_overridden <hook> <deny|ask> <reason> -- print the advisory that replaces a deny or
+# an ask while the guards are off, and append the override to GUARDS-OFF.log beside the
+# backups. A check (X4_GUARD_CHECK=1) logs nothing: x4guard check promises no side effects.
+x4_guard_overridden() {
+  case "$2" in deny) _x4_was="DENIED" ;; *) _x4_was="ASKED the user about" ;; esac
+  if [ "${X4_GUARD_CHECK:-}" != 1 ]; then
+    _x4_log="${X4_BACKUPS:-$X4_TOOLKIT/.claude/backups}/GUARDS-OFF.log"
+    { mkdir -p "${_x4_log%/*}" &&
+      printf '[%s] %s would have %s: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$_x4_was" \
+        "$(printf '%s' "$3" | tr '\r\n' '  ' | cut -c1-300)" >> "$_x4_log"; } 2>/dev/null || :
+  fi
+  printf 'X4 GUARDS OFF (X4_GUARD=off at launch): %s would have %s this call; it was NOT enforced. Its reason: %s' \
+    "$1" "$_x4_was" "$3"
+}
+
 x4_require_input() {
   [ -n "$1" ] && return 0
   "${JQ:-jq}" -n --arg r "$2" --arg e "${3:-PreToolUse}" \

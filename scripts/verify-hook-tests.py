@@ -451,6 +451,27 @@ MUTANTS = [
      "    rm_named_game = any(GAME_ROOTISH.search(norm(p or raw)) for p, _u, raw in rm_t)",
      "    rm_named_game = any(GAME_ROOTISH.search(norm(p)) for p, _u, raw in rm_t)",
      "test_a_named_operand_after_a_RELATIVE_cd_fires"),
+    # --- lifting the OS deny on reference/ (Plan 2 lane E), one mutant per clause ----
+    ("x4refguard REMOVE is a lift",
+     '                    and "remove" in toks[i + 1:]:', "                    and False:",
+     "test_x4refguard_remove_fires"),
+    ("only a RUN x4refguard counts, not a mention",
+     "    if v.startswith(_REFGUARD_RUNNERS):", "    if True:",
+     "test_x4refguard_status_or_apply_does_not_fire"),
+    ("an icacls lift needs /remove or /reset",
+     '    if not any(t.startswith(("/remove", "/reset")) for t in toks):', "    if False:",
+     "test_icacls_reading_applying_or_elsewhere_does_not_fire"),
+    ("an icacls ancestor counts only with /T",
+     '    recursive = "/t" in toks', "    recursive = True",
+     "test_icacls_reading_applying_or_elsewhere_does_not_fire"),
+    ("an icacls ancestor with /T counts",
+     "        if under(r, ref) or (recursive and contains_root(r, ref)):",
+     "        if under(r, ref):",
+     "test_icacls_reset_recursive_from_an_ANCESTOR_of_reference_fires"),
+    ("an icacls lift INSIDE reference counts",
+     "        if under(r, ref) or (recursive and contains_root(r, ref)):",
+     "        if is_root(r, ref) or (recursive and contains_root(r, ref)):",
+     "test_icacls_remove_or_reset_on_reference_fires"),
 ]
 
 SHIM = '''
