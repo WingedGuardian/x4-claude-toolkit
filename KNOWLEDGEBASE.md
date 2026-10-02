@@ -1143,3 +1143,13 @@ configured game root, x4lock's default manifest included CLAUDE.md but omitted A
 no lock attributes were changed. A guard inert denial followed by a clean file-loss canary
 is expected: the canary monitors tracked file loss, not guard-evaluation history. These are
 audit findings only, not additional fixes. See F8/F9 and the roadmap in the framework report.
+
+### 2026-10-02 - framework-audit rebase reconciliation
+
+Master `74b38fe` incorporates F5/F6 and native caller-relative file-path resolution (F7).
+The audit branch now retains master's wrapper and tests; its former shared delete timeout
+is superseded by a per-guard timeout. No additional fixes or deployment were performed.
+Master documents AGENTS.md as toolkit-repository instructions, so the measured installer
+and lock omissions (F8/F9) need the portability ownership decision before a remedy.
+Historical verification counts still apply only to their named baselines; current rebase
+verification is recorded in `docs/AUDIT-framework-2026-10-01.md`.

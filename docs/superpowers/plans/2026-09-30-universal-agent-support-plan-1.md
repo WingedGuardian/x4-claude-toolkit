@@ -842,8 +842,9 @@ reviewed guard fixes. The framework audit subsequently found that delete checks 
 approval policy and exit-zero inert guards looked successfully evaluated. The front door now
 composes both policies for deletion and sets `X4_GUARD_CHECK=1` only in child guard environments.
 Guards use exit 2 for evaluation failure in that mode; ordinary native Claude approvals retain
-their existing exit-zero JSON. Both checks share one timeout budget. This does not provide
-process-tree termination or host enforcement. See `docs/AUDIT-framework-2026-10-01.md` for
+their existing exit-zero JSON. The authoritative wrapper at `74b38fe` applies a separate
+`X4_GUARD_TIMEOUT_S` budget to each guard, superseding this session's shared-budget wrapper.
+This does not provide process-tree termination or host enforcement. See `docs/AUDIT-framework-2026-10-01.md` for
 regressions, review, and remaining boundaries.
 
 Recommended: **subagent-driven**, meaning a fresh implementer and a fresh reviewer per task. There are 6 tasks; Tasks 1→2→4→5 chain through the generator's interface, and a mistake in Task 4 or 5 sits directly on the guard layer that protects the user's install. Task 3 and Task 6's live steps need the main session, because they need a fresh Claude Code session in the game root.

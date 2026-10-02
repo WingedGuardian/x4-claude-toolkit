@@ -268,8 +268,8 @@ or `--kind write|delete --path ...`. A delete check applies both file protection
 confirmation; the stricter verdict wins. An evaluation failure is `deny` with `inert: true`.
 An ordinary `ask` requires approval. Neither exit 0 nor a passing check installs enforcement
 in an agent host. On Windows set `X4_BASH` to Git Bash when PATH resolves to WSL.
-Use absolute file paths: the audit found relative protected paths can incorrectly allow;
-that finding remains open in this branch.
+The current wrapper resolves relative file paths from the caller's working directory before
+checking them. It applies a separate timeout to each guard; a delete check can run two guards.
 
 These hooks inspect known command forms; they do not sandbox arbitrary interpreter programs.
 The loss canary detects file loss, not historical guard evaluation health. Persistent guard

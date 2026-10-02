@@ -18,6 +18,48 @@ reference or system-software files and no safety behavior. The later implementat
 deployment, including the scope correction, are recorded below. Hook edits belong in
 `agent/guards/claude-hooks/`, followed by regeneration; never edit generated hooks directly.
 
+## Reconciliation with master — 2026-10-02
+
+The audit branch was rebased onto `74b38fe`. Master's wrapper, neutral guard sources,
+generated guards, instruction entry point, generators and tests are retained unchanged.
+The original pre-rebase branch is preserved as
+`session/framework-audit-pre-rebase-20261002`. The game-root deployment at `a643472`
+is owned by the parallel session; this rebase performs no deployment or new fixes.
+
+Master incorporates F5/F6 and resolves relative native file paths from the caller's current
+directory (F7). It supersedes this session's wrapper: timeouts are per guard, not a shared
+budget for composed delete checks. The historical test counts below certify their named
+baselines, not this rebase. New verification results are recorded separately below.
+
+Master also clarifies that the current AGENTS.md is a toolkit-repository entry point, not
+a game-root template. F8/F9 remain measured omissions, but their remedy belongs to the
+portability deployment design; they do not prove installers violate a promised runtime
+contract. Installed-source ownership and instruction discovery still need that decision.
+F1–F4 and guard-health history remain deferred findings.
+
+### Rebase verification
+
+- Independent read-only review: no Critical or Important issues; zero net production-code,
+  guard, wrapper, generator, test, installer/CI or AGENTS.md changes versus `74b38fe`.
+- Focused wrapper, generator, CLI-reference and deployment-parity tests: **79 passed,
+  zero skipped, exit 0**, 98.54 seconds.
+- Regeneration: **0 written, all 40 already fresh**; subsequent generator `--check`: exit 0.
+- After review, `bash scripts/test-hooks.sh`: **177 passed, zero failed, zero skipped**, exit 0.
+- After review, full regression suite: **3,011 passed, three skipped, exit 0**, 1,556.56 seconds.
+  The skips are the same Windows file-symlink privilege checks in `test_deploy_mod.py`;
+  those three protections were not exercised. The command used the toolkit's existing
+  Python 3.13 virtual environment, Git Bash first on PATH, and no pytest cache writes.
+- The initial focused command named a nonexistent CLI-reference test file and collected
+  no tests; its corrected run is the 79-pass result above. A subsequent user-interrupted
+  invocation has no captured result and is not counted as verification.
+
+This run was slower than the historical baseline. Installer integration and Git-history
+identifier scanning were observed during long stretches; the cause of the timing difference
+was not isolated, so no performance regression is claimed. These results certify script and
+integration behavior, not enforcement inside a live agent session. No game deployment,
+profile/reference changes, new safety behavior or host package installation was performed
+by this reconciliation.
+
 ## Interpretation
 
 The toolkit has substantial regression, mutation and installation verification, and its
@@ -103,8 +145,9 @@ Persistent failure telemetry and host enforcement remain separate requirements.
 ### Follow-up: install artifacts and protection coverage
 
 **F7 — relative file paths bypass the front door's reference check (95% confidence).**
-The measured example and scope correction are recorded below. This remains open on this
-branch; the parallel master's uncommitted path-resolution change is not certified here.
+The measured example and scope correction are recorded below. This was open at the audit
+baseline; master `74b38fe` subsequently added caller-relative native path resolution and its
+regression tests. The rebased branch retains that implementation; see reconciliation above.
 
 **F8 — installers omit the new agent instructions and neutral sources (98% confidence).**
 Both copy lists omit `AGENTS.md` and `agent/`. Two disposable, real installer runs (Bash and
@@ -156,7 +199,7 @@ separate design and scratch-tree proof.
 | Area | Current evidence | Proposed next work |
 | --- | --- | --- |
 | Neutral sources and Claude generation | Implemented and checked; core still contains Claude-specific operating assumptions | Keep one source and add explicit target rendering/conformance |
-| Front door | F5/F6 fixed and tested on this branch; relative-path finding remains | Resolve remaining path/root contracts before adapters rely on verdicts |
+| Front door | F5/F6 and native relative-path handling now come from master `74b38fe` | Verify remaining path/root contracts before adapters rely on verdicts |
 | Installed instruction discovery | Repository AGENTS.md exists; installers omit it | Test each installed layout's actual instruction discovery and ownership |
 | Dependency and validation resilience | jq has a Python fallback; F2/F3/F4 remain open | Review unique backups, explicit incomplete validation, lock freshness and test tripwires together |
 | Health monitoring | File-loss canary works; no evaluation history | Add a separate persistent guard-health contract and outage/recovery probes |
@@ -278,9 +321,10 @@ live agent-host enforcement also remain separate work. This patch does not certi
 
 Additional measured finding, not fixed here: from the toolkit root, the deployed front door
 allowed `--kind write --path reference/__guard_verification_only__.xml`, while the absolute
-path equivalent denied. No write occurred. The parallel session has an uncommitted relative-path
-resolution change; that change is neither integrated nor certified by this audit. The attempted
-new regression test was discarded after the user clarified scope.
+path equivalent denied. No write occurred. At that point the parallel session's relative-path
+resolution change was uncommitted and not certified by this audit. Master `74b38fe` subsequently
+committed it with regression tests; this rebase retains those tests and implementation. The
+attempted additional regression test was discarded after the user clarified scope.
 
 1. **Completed:** resolve F5 and F6 in the front door before adapter integration. These are material contract
    findings: pause implementation for a design checkpoint, rather than claiming the
