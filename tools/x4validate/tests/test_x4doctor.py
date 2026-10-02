@@ -785,3 +785,39 @@ def test_the_doctor_never_WRITES_the_codex_config(codex_root):
     before = (p.read_bytes(), p.stat().st_mtime_ns)
     doc.collect(doc.Ctx(root=codex_root))
     assert (p.read_bytes(), p.stat().st_mtime_ns) == before
+
+
+# --- one trust model: the doctor's must equal lane B's and Codex's own ------------------ #
+
+_HASH_CASES = [
+    ("pre_tool_use", {"matcher": ".*"}, {"type": "command", "command": "bash a.sh", "timeout": 60}),
+    ("pre_tool_use", {"matcher": ".*"}, {"type": "command", "command": "bash a.sh", "timeout": 60,
+                                         "commandWindows": "pwsh -File a.ps1"}),
+    ("session_start", {}, {"type": "command", "command": "bash s.sh", "timeout": 30}),
+    ("post_tool_use", {"matcher": "apply_patch"}, {"type": "command", "command": "bash p.sh"}),
+]
+
+
+def test_the_doctor_and_lane_Bs_codex_trust_compute_the_SAME_hash():
+    src = REPO / "agent" / "guards" / "adapters" / "codex_trust.py"
+    if not src.is_file():
+        pytest.skip("lane B's codex_trust.py has not landed")
+    spec = importlib.util.spec_from_file_location("codex_trust_for_doctor", src)
+    ct = importlib.util.module_from_spec(spec)
+    sys.modules["codex_trust_for_doctor"] = ct
+    spec.loader.exec_module(ct)
+    for event, group, handler in _HASH_CASES:
+        assert doc.codex_hook_hash(event, group, handler) == ct.hook_hash(event, group, handler), (event, handler)
+
+
+def test_the_doctor_reproduces_CODEXS_OWN_hash_vectors():
+    """The oracle is Codex (lane B Task 3 records `hooks/list` current_hash values for
+    neutral definitions), never another reimplementation (#14)."""
+    vec = Path(__file__).parent / "fixtures" / "codex" / "0.160.0" / "trust_vectors.json"
+    if not vec.is_file():
+        pytest.skip("lane B's Codex-produced trust vectors have not landed")
+    vectors = json.loads(vec.read_text(encoding="utf-8"))
+    assert len(vectors) >= 4
+    for v in vectors:
+        assert doc.codex_hook_hash(v["event_key"], v["group"], v["handler"],
+                                   windows=v.get("windows")) == v["codex_hash"], v.get("label")
