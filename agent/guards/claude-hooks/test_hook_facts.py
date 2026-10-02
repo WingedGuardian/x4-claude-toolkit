@@ -782,6 +782,40 @@ class TestPreviouslyUnprobedRules(unittest.TestCase):
     def test_xrcat_unpacking_elsewhere_does_not_fire(self):
         self.assertFalse(F("XRCatTool.exe -in 01.cat -out /c/tmp/out")["xrcat_reunpack"])
 
+    # --- lifting the OS deny on reference/ (Plan 2 lanes D+E; D8: only the user lifts it)
+    def test_icacls_remove_or_reset_on_reference_fires(self):
+        for cmd in ('icacls "' + REF + '" /remove:d *S-1-5-21-1',
+                    'icacls "' + REF + '" /reset /T /C',
+                    'icacls "' + REF + '/libraries" /reset',
+                    'icacls "' + REF.replace("/", BS) + '" /REMOVE:d *S-1-5-21-1'):
+            self.assertTrue(F(cmd)["lifts_reference_deny"], cmd)
+
+    def test_icacls_reset_recursive_from_an_ANCESTOR_of_reference_fires(self):
+        self.assertTrue(F('icacls "C:/Users/tester/Desktop" /reset /T /C')["lifts_reference_deny"])
+
+    def test_x4refguard_remove_fires(self):
+        for cmd in ("python scripts/x4refguard.py remove",
+                    'uv run --no-project python "' + TOOLKIT + '/scripts/x4refguard.py" remove --path "' + REF + '"',
+                    "py -3 " + Q + "scripts" + BS + "x4refguard.py" + Q + " remove"):
+            self.assertTrue(F(cmd)["lifts_reference_deny"], cmd)
+
+    def test_icacls_reading_applying_or_elsewhere_does_not_fire(self):
+        for cmd in ('icacls "' + REF + '"',                                       # read only
+                    'icacls "' + REF + '" /deny *S-1-5-21-1:(OI)(CI)(DE,DC)',     # APPLYING it
+                    'icacls "C:/tmp/x" /reset /T',                                # elsewhere
+                    'icacls "C:/Users/tester/Desktop" /reset',                    # ancestor, NOT recursive
+                    "echo icacls " + REF + " /reset"):                            # a mention
+            self.assertFalse(F(cmd)["lifts_reference_deny"], cmd)
+
+    def test_x4refguard_status_or_apply_does_not_fire(self):
+        for cmd in ("python scripts/x4refguard.py status", "python scripts/x4refguard.py apply",
+                    "echo x4refguard.py remove is the user's step"):
+            self.assertFalse(F(cmd)["lifts_reference_deny"], cmd)
+
+    def test_lifting_with_no_reference_root_configured_does_not_fire(self):
+        roots = dict(ROOTS, reference="")
+        self.assertFalse(F('icacls "' + REF + '" /reset /T', roots=roots)["lifts_reference_deny"])
+
     # --- durable records
     def test_truncating_redirect_onto_a_durable_record_fires(self):
         self.assertTrue(F("echo x > KNOWLEDGEBASE.md")["durable_truncating_redirect"])

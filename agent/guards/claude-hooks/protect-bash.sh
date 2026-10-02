@@ -378,8 +378,15 @@ on writes_reference && deny "BLOCKED: reference/ is the read-only unpacked base 
 # Sentinel-gated: once reference/.unpacked-and-locked exists, block accidental re-unpacks.
 # The FILESYSTEM test stays here; the parse pass never touches the disk.
 if on xrcat_reunpack && [ -f "$X4_REFERENCE/.unpacked-and-locked" ]; then
-  deny "BLOCKED: reference/ is locked (reference/.unpacked-and-locked exists). Re-unpacking would overwrite the read-only base. Remove the sentinel first if you really mean to re-unpack."
+  deny "BLOCKED: reference/ is locked (reference/.unpacked-and-locked exists). Re-unpacking would overwrite the read-only base. If you really mean to re-unpack: lift the OS deny first (python scripts/x4refguard.py remove -- the user's step), then remove the sentinel."
 fi
+
+# === CONFIRM — lifting the OS deny on reference/ ===
+# reference/ carries an inherited delete+write DENY (Plan 2 lane D). D8: only the USER lifts
+# a protection, so `x4refguard.py remove` and a raw `icacls /remove|/reset` aimed at the
+# reference root ASK. Accepted residual (lane D Q3): an opaque interpreter (`python -c`
+# calling icacls) is not seen -- this stops accidents, not intent.
+on lifts_reference_deny && ask "This LIFTS the OS delete/write protection on reference/ (the read-only unpacked base game). Lifting a protection is the user's step -- confirm only if they asked for it: $COMMAND"
 
 # === CONFIRM — rm targeting the game, profile, reference, mods, or toolkit ===
 on rm_in_x4_dir && ask "Deleting files in an X4 directory — confirm: $COMMAND"
