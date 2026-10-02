@@ -104,3 +104,26 @@ def test_a_CLI_name_inside_a_PATH_is_not_a_route():
 def test_a_bold_or_backticked_tool_name_still_routes():
     t = TABLE + "| a? | **`x4save info`** | x |\n| b? | `x4diff` and x4stats | y |\n"
     assert {"x4save", "x4diff", "x4stats"} <= rc_.routed_clis(t)
+
+
+# --- Plan 2 lane A, Task 6: AGENTS.md carries the same shared core, so it is in the population.
+
+def test_the_shipped_AGENTS_md_is_in_the_population():
+    labels = {label for label, _ in rc_.claude_md_paths()}
+    if not (rc_.REPO_ROOT / "AGENTS.md").is_file():
+        pytest.skip("no AGENTS.md at the repo root (not the shipped layout)")
+    assert "shipped AGENTS.md" in labels, labels
+
+
+def test_TWIN_an_AGENTS_md_missing_a_row_turns_the_gate_red(tmp_path, monkeypatch, capsys):
+    """Twin of the live run: CLAUDE.md fully routed, AGENTS.md lacking x4live -> rc 1 naming it."""
+    full = (rc_.REPO_ROOT / "CLAUDE.md").read_bytes()
+    good = tmp_path / "CLAUDE.md"
+    good.write_bytes(full)
+    bad = tmp_path / "AGENTS.md"
+    bad.write_bytes(b"\n".join(l for l in full.split(b"\n") if b"**x4live**" not in l))
+    monkeypatch.setattr(rc_, "claude_md_paths",
+                        lambda: [("shipped (repo root)", good), ("shipped AGENTS.md", bad)])
+    assert rc_.main() == 1
+    err = capsys.readouterr().err
+    assert "UNROUTED in shipped AGENTS.md" in err and "x4live" in err, err

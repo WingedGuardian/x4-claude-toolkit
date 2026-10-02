@@ -201,17 +201,14 @@ def render_claude_md(src: Path) -> str:
 
 
 def render_agents_md(src: Path) -> str:
-    """AGENTS.md (Codex and other agents). STOPGAP: the Codex addendum alone, until the phase-3
-    split brings the shared core under AGENTS_MD_MAX_BYTES. Refuses rather than emitting a
-    file Codex would silently truncate."""
-    text = _read(src / "instructions" / "codex.md")
-    if not text.strip():
-        raise GenerationError("agent/instructions/codex.md is empty -- AGENTS.md would say nothing")
-    out = _with_banner_after_first_line(text, BANNER_CLAUDE_MD)
+    """AGENTS.md (Codex and other agents) = the shared core + the Codex addendum. Refuses rather
+    than emitting a file Codex would silently truncate (counted in BYTES: Codex cuts at exactly
+    32,768, MEASURED 2026-10-02 on 0.160.0, and a nested AGENTS.md shares the same budget)."""
+    out = render_entry(src, "codex")
     size = len(out.encode("utf-8"))
     if size > AGENTS_MD_MAX_BYTES:
         raise GenerationError(f"AGENTS.md would be {size} bytes; Codex silently drops text past "
-                              f"{AGENTS_MD_MAX_BYTES}")
+                              f"{AGENTS_MD_MAX_BYTES}; largest sections: {_largest_sections(out)}")
     return out
 
 

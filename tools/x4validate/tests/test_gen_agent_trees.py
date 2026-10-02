@@ -121,29 +121,75 @@ def test_hooks_get_no_banner_and_no_token_rewrite():
     assert "CLAUDE_PROJECT_DIR" in out[".claude/hooks/_x4-env.sh"]   # its fallback root stays literal
 
 
-def test_agents_md_is_generated_within_codex_limit():
-    """Stopgap AGENTS.md (until the phase-3 split): Codex silently drops AGENTS.md text past
-    32,768 BYTES (MEASURED 2026-09-30, codex-spike doc), so the budget is in bytes."""
+def test_agents_md_is_core_plus_codex_addendum_within_the_byte_limit():
+    """Codex silently drops AGENTS.md text past 32,768 BYTES (MEASURED 2026-09-30, and the
+    exact cut re-measured 2026-10-02 on Codex 0.160.0: plan-2 measure-A M-A2)."""
+    out = load().generate(REPO)
+    a, c = out["AGENTS.md"], out["CLAUDE.md"]
+    assert a.startswith("# AGENTS.md") and "<!-- GENERATED from agent/ -->" in a
+    assert len(a.encode("utf-8")) <= 32768
+    # the shared core reaches both: the routing table and the evidence rules are in each
+    for must in ("Route BEFORE you search", "Label the evidence tier", "x4-toolkit-dev", "X4-NOTES.md"):
+        assert must in a and must in c, must
+
+
+def test_agents_md_carries_what_codex_cannot_get_from_hooks():
     text = load().generate(REPO)["AGENTS.md"]
-    assert len(text.encode("utf-8")) <= 32768
-    assert text.startswith("# ") and "<!-- GENERATED from agent/ -->" in text
+    for must in ("fail OPEN", "x4guard.py check", "--shell powershell", "inert: true", "reference",
+                 ".agents/skills", "git add -A", "$env:X4_TOOLKIT", "Codex only"):
+        assert must in text, must
+    for banned in ("NotebookEdit", "CLAUDE_PROJECT_DIR", "timed-out hook (30 s)"):
+        assert banned not in text, banned            # Claude facts must not leak into AGENTS.md
 
 
 def test_TWIN_an_oversized_agents_md_refuses(tmp_path):
-    import shutil
     g = load()
-    shutil.copytree(REPO / "agent", tmp_path / "agent")
-    p = tmp_path / "agent" / "instructions" / "codex.md"
-    p.write_bytes(p.read_bytes() + b"filler line for the size limit\n" * 1200)   # ~37 KB
+    src = _agent_copy(tmp_path)
+    over = 32768 - len(g.render_entry(src, "codex").encode("utf-8")) + 200   # relative to today
+    p = src / "instructions/core.md"
+    p.write_bytes(p.read_bytes() + b"filler line for the size limit\n" * (over // 31 + 1))
     with pytest.raises(g.GenerationError, match="silently drops"):
         g.generate(tmp_path)
 
 
-def test_agents_md_carries_the_rules_codex_cannot_get_elsewhere():
+def test_agents_md_limit_is_BYTES_not_chars(tmp_path):
+    # twin: under 32,768 chars but over 32,768 bytes must refuse
+    g = load()
+    src = _agent_copy(tmp_path)
+    room_chars = 32768 - len(g.render_entry(src, "codex")) - 10
+    p = src / "instructions/codex.md"
+    p.write_bytes(p.read_bytes() + ("★" * room_chars + "\n").encode())
+    assert len(g.render_entry(src, "codex")) < 32768                 # chars: under
+    with pytest.raises(g.GenerationError, match="silently drops"):
+        g.generate(tmp_path)
+
+
+def test_every_x4guard_line_in_agents_md_parses_and_answers():
+    """The addendum quotes command lines; if the guard CLI changes its flags, this goes red."""
+    import json
+    import shlex
+    import sys
     text = load().generate(REPO)["AGENTS.md"]
-    for must in ("CLAUDE.md", "agent/", "gen-agent-trees.py", "fail open", "reference/",
-                 ".cat", "git add -A"):
-        assert must in text, must
+    lines = [l.strip() for l in text.splitlines() if "x4guard.py check" in l and l.strip().startswith("python ")]
+    assert len(lines) >= 3, lines
+    for l in lines:
+        argv = shlex.split(l.replace('"<cmd>"', '"echo hi"').replace('"<file>"', '"dev/probe/x.xml"'))[1:]
+        r = subprocess.run([sys.executable, str(REPO / argv[0]), *argv[1:]], capture_output=True,
+                           text=True, timeout=120, cwd=str(REPO))
+        assert json.loads(r.stdout)["decision"] in {"allow", "advise", "ask", "deny"}, (l, r.stdout, r.stderr)
+
+
+def test_the_repo_ships_no_second_agents_md():
+    """MEASURED 2026-10-02 (Codex 0.160.0, measure-A M-A2): a root AGENTS.md and a nested one
+    SHARE one 32,768-byte budget. A second AGENTS.md anywhere in the tree would silently cut
+    the generated one. Tracked files only (git ls-files), the population that ships."""
+    r = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z"], capture_output=True)
+    if r.returncode != 0:
+        pytest.skip("not a git checkout -- the shipped-file population is unknown here")
+    files = [p for p in r.stdout.decode("utf-8").split("\0") if p]
+    assert len(files) > 100, len(files)                 # a real population, not an empty listing
+    agents = [p for p in files if p.rsplit("/", 1)[-1].lower() == "agents.md"]
+    assert agents == ["AGENTS.md"], agents
 
 
 def test_missing_source_refuses_rather_than_skipping(tmp_path):
@@ -340,7 +386,7 @@ def test_the_cli_chain_row_stays_in_the_entry_file():
 
 def test_entry_files_point_to_the_dev_skill_and_x4_notes():
     out = load().generate(REPO)
-    for f in ("CLAUDE.md",):            # AGENTS.md joins in Task 6
+    for f in ("CLAUDE.md", "AGENTS.md"):
         assert "x4-toolkit-dev" in out[f] and "X4-NOTES.md" in out[f]
 
 

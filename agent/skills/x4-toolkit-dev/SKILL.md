@@ -216,3 +216,9 @@ A direct edit to a generated file is overwritten by the next regeneration, and
     cd tools/x4validate && uv run --frozen python -m pytest -q -rs
 
 Bare `python` on the author's machine is 3.10; the toolkit needs 3.13 through `uv`.
+
+## Where the design lives
+
+- `docs/superpowers/specs/2026-09-30-universal-agent-support-design.md` (why this file exists,
+  and what replaces it)
+- `docs/superpowers/measurements/2026-09-30-codex-spike.md` (what Codex was measured to do)
