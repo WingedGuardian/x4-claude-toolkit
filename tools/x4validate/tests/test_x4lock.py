@@ -463,3 +463,108 @@ def test_a_GARBLED_commondir_fails_closed_without_raising(tmp_path, monkeypatch)
     root = _worktree_with_commondir(tmp_path, b"\xff\xfe\x00\x81")
     monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
     assert _named(x4lock.missing(), _local_env(root))
+
+
+# --- F9: AGENTS.md and the Codex / .agents trees -------------------------------------- #
+#
+# `_GAME_RELATIVE` entries are DEMANDED unconditionally, so adding AGENTS.md there would
+# report every Claude-only root (and every v3.x install) as damaged. 0 of 23 tagged
+# releases ever shipped AGENTS.md (MEASURED 2026-10-02). Each agent's files are demanded
+# only when that agent's own directory marks it as installed.
+
+def _game(tmp_path, monkeypatch, claude=True):
+    game = tmp_path / "game"
+    game.mkdir(parents=True, exist_ok=True)
+    if claude:
+        (game / ".claude").mkdir()
+        (game / "CLAUDE.md").write_text("c\n", encoding="utf-8")
+    real = x4lock._cfg
+    monkeypatch.setattr(x4lock, "_cfg", lambda n: game if n == "game_root" else real(n))
+    return game
+
+
+def _in(paths, game: Path, rel: str) -> bool:
+    want = str((game / rel).resolve()).lower()
+    return any(str(p.resolve()).lower() == want for p in paths)
+
+
+def test_F9_a_present_AGENTS_md_is_in_the_manifest(tmp_path, monkeypatch):
+    game = _game(tmp_path, monkeypatch)
+    (game / "AGENTS.md").write_text("a\n", encoding="utf-8")
+    assert _in(x4lock.manifest(), game, "AGENTS.md")
+
+
+def test_F9_TWIN_a_claude_only_root_does_NOT_report_AGENTS_md_missing(tmp_path, monkeypatch):
+    """The trap: _GAME_RELATIVE entries are demanded unconditionally. Every v3.x and
+    Claude-only install would read as damaged."""
+    game = _game(tmp_path, monkeypatch)
+    gone = x4lock.missing()
+    assert not _in(gone, game, "AGENTS.md")
+    assert not _in(gone, game, ".codex/hooks.json")
+
+
+def test_F9_a_codex_root_DEMANDS_AGENTS_md_and_hooks_json(tmp_path, monkeypatch):
+    game = _game(tmp_path, monkeypatch)
+    (game / ".codex").mkdir()
+    gone = x4lock.missing()
+    assert _in(gone, game, "AGENTS.md")
+    assert _in(gone, game, ".codex/hooks.json")
+
+
+def test_F9_codex_rules_hooks_and_guards_are_locked_when_present(tmp_path, monkeypatch):
+    game = _game(tmp_path, monkeypatch)
+    (game / ".codex" / "rules").mkdir(parents=True)
+    (game / ".codex" / "hooks").mkdir(parents=True)
+    for rel in (".codex/hooks.json", ".codex/rules/x4.rules", ".codex/hooks/codex-entry.ps1",
+                ".codex/hooks/codex-entry.sh", ".codex/hooks/x4guard.py"):
+        (game / rel).write_text("#\n", encoding="utf-8")
+    got = x4lock.manifest()
+    for rel in (".codex/hooks.json", ".codex/rules/x4.rules", ".codex/hooks/codex-entry.ps1",
+                ".codex/hooks/codex-entry.sh", ".codex/hooks/x4guard.py"):
+        assert _in(got, game, rel), rel
+
+
+def test_F9_agents_skills_are_locked_like_claude_skills(tmp_path, monkeypatch):
+    """User decision #11 (2026-10-02): the rule must not differ per agent."""
+    game = _game(tmp_path, monkeypatch)
+    sk = game / ".agents" / "skills" / "x4-cli-reference"
+    (sk / "reference").mkdir(parents=True)
+    (sk / "SKILL.md").write_text("s\n", encoding="utf-8")
+    (sk / "reference" / "x4save.md").write_text("r\n", encoding="utf-8")
+    got = x4lock.manifest()
+    assert _in(got, game, ".agents/skills/x4-cli-reference/SKILL.md")
+    assert _in(got, game, ".agents/skills/x4-cli-reference/reference/x4save.md")
+
+
+def test_F9_a_CODEX_ONLY_root_does_not_report_CLAUDE_md_missing(tmp_path, monkeypatch):
+    """`install --agent codex` installs no CLAUDE.md and no .claude/. Demanding them there
+    is the same false-MISSING as demanding AGENTS.md on a Claude-only root."""
+    game = _game(tmp_path, monkeypatch, claude=False)
+    (game / ".codex").mkdir()
+    gone = x4lock.missing()
+    assert not _in(gone, game, "CLAUDE.md")
+    assert not _in(gone, game, ".claude/settings.json")
+
+
+def test_F9_TWIN_a_claude_root_still_demands_CLAUDE_md(tmp_path, monkeypatch):
+    game = _game(tmp_path, monkeypatch)
+    (game / "CLAUDE.md").unlink()
+    gone = x4lock.missing()
+    assert _in(gone, game, "CLAUDE.md")
+    assert _in(gone, game, ".claude/settings.json")
+
+
+def test_F9_TWIN_a_root_with_NO_agent_marker_still_demands_CLAUDE_md(tmp_path, monkeypatch):
+    """Deleting .claude/ wholesale must not make CLAUDE.md's absence silent: with no
+    target marker at all, the pre-4.0 (Claude) demand stands."""
+    game = _game(tmp_path, monkeypatch, claude=False)
+    gone = x4lock.missing()
+    assert _in(gone, game, "CLAUDE.md")
+
+
+def test_F9_a_root_with_BOTH_targets_demands_both(tmp_path, monkeypatch):
+    game = _game(tmp_path, monkeypatch)
+    (game / ".codex").mkdir()
+    (game / "CLAUDE.md").unlink()
+    gone = x4lock.missing()
+    assert _in(gone, game, "CLAUDE.md") and _in(gone, game, "AGENTS.md")
