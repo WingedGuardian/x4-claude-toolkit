@@ -97,11 +97,9 @@ Three verdicts, and the third is the one that matters:
   STALE would be asserting something nobody established. It is reported as
   undeterminable, and an absent fingerprint counts as UNKNOWN — never as fresh.
 
-⚠ **One measured hole, stated rather than left to be found.** The content axis reads
-each installed mod's own manifest but **not** the profile manifest recording which
-mods are *enabled*. Installing or removing a mod moves the fingerprint; **toggling
-one on or off does not.** If you have enabled or disabled a mod since your last
-build, rebuild rather than trusting the banner.
+The shared freshness implementation includes profile enable decisions in the
+content axis. Rebuild after installing, removing, updating, enabling or disabling
+mods; a fingerprint is not a full byte hash of every game/archive file.
 
 Rebuild with `build-corpus.sh` / `build-effective.sh`; inspect without rebuilding:
 
@@ -120,8 +118,8 @@ distinction the `x4validate` CLIs make.
 | tool | code | meaning |
 |---|---|---|
 | **`ask.py`** | 0 | answered (a positive result, or a negative WITH a denominator) |
-| | 2 | not set up; the query and `--db` disagree about which database to search; the query addresses only PART of a database inside a reach call's own arguments (`doc(...)`, `db:get('<db>', '<path>')`, `collection('<db>/<path>')`) or names its database through an expression rather than a string literal; a usage error (`xq` takes exactly one of a query or `--file`); a query that is empty or comment-only (argument or file); or a query file that is unreadable or not UTF-8 |
-| | 4 | **cannot back a negative** — zero hits, but coverage is missing/unexplained, or the index is stale, or the query names no database at all, or an `xq` query contains a **scope token** — anything that can select documents by where they are rather than what they contain: document identity (`document-uri`, `base-uri`, `db:path`/`fn:path`, `db:node-pre`, `db:node-id`, `generate-id`), position (`position()`, `last()`, `head`/`tail`/`subsequence`/`filter`/`for-each`/`fold-left` and kin, a numeric predicate such as `[1]` or `[$n]`, FLWOR `at $i`/`count $c`/windows), node order (`<<`, `>>`, `is`), the `util:`/`hof:`/`array:`/`map:`/`random:` modules, a `#` function reference, a `Q{…}` EQName, or query text evaluated from a string (such a query still RUNS and its hits stand; only its zero is withheld, naming the token), or the query was `count()`-shaped or returned only `false` or empty strings, or an `xq` query arrived as a Git Bash argument, where MSYS rewrites path-like parts before Python sees them (use `--file`; not refused when `MSYS_NO_PATHCONV` or `MSYS2_ARG_CONV_EXCL=*` is set) |
+| | 2 | environment, usage or query error; invalid attribute QName; database mismatch or scoped/nonliteral reach; unreadable/empty query file; negative/noninteger paging argument; or requested paging that cannot be safely counted (omit flags to run unlimited) |
+| | 4 | **cannot back a finding** — a zero lacks valid coverage/freshness or a whole-database content-search proof; raw-query syntax is outside the restricted grammar; result is only `0`, `false`, or empty serialization; or Git Bash may have rewritten an argument query (use `--file`) |
 | **`coverage.py`** | 0 | complete |
 | | 2 | refused — a required root was not supplied (an empty root resolves to the *current directory*, which would publish a denominator measured over the wrong population) |
 | | 3 | **accounted** — a deficit exists but every missing document is named, root by root (`base`, `mods`: each root's shortfall equals its own malformed files). Still supports a negative claim. *`x4raw` path only.* |
@@ -144,6 +142,21 @@ a negative claim"* — not "the build failed".
 ---
 
 ## Discovery vs proof
+
+### Optional result paging
+
+`ask.py refs ore --limit 50 --offset 50` displays at most 50 whole result items
+after skipping 50. The same flags work for `attr` and `xq`. Omitted flags retain
+unlimited output; `--limit 0` is unlimited and offset defaults to zero. The total
+and zero-result checks always cover the full query, not the page. An offset past
+the last item reports zero displayed with the positive total. Paging does not
+promise faster query evaluation. Raw queries with unsupported count wrappers
+(including prologs) refuse requested paging with rc 2, without unbounded fallback.
+
+Raw zeros are certified only for the [documented grammar](QUERIES.md), even when
+an unrecognized query happens to search all documents. Positive queries still run.
+`attr` requires a lexical QName such as `name` or `xml:lang`; undeclared prefixes
+remain BaseX query errors. Predicates and XPath expressions are invalid input.
 
 | question | tool |
 |---|---|

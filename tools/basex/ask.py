@@ -28,17 +28,13 @@ query that searched all of them:
     doc(...), db:get('<db>', '<path>'), collection('<db>/<path>') -- or naming its
     database through a non-literal, or naming a database other than --db, is refused
     before it runs (rc 2).
-  * An xq query is then scanned (comments removed, string-literal contents blanked) for
-    TOKENS that can select documents by where they are rather than what they contain:
-    document identity (document-uri, base-uri, db:path/fn:path, db:node-pre, db:node-id,
-    generate-id), position (position, last, head, tail, subsequence, filter, for-each,
-    fold-left and kin, a numeric predicate such as [1] or [$n], FLWOR `at $i` / `count $c`
-    / windows), node order (<<, >>, is), the util:/hof:/array:/map:/random: modules, and
-    anything ask.py cannot read through (a `#` function reference, a Q{...} EQName, query
-    text evaluated from a string). If one is present the query still RUNS and its hits
-    are reported, but a zero is NOT a negative (rc 4), and the line says which token.
-    Selecting by CONTENT (`collection('x4eff')[.//ware]//x`) is not narrowing: every
-    document was read. refs/attr are ask.py's own queries and are not scanned.
+  * Raw xq zeros require the restricted whole-database content-search grammar:
+    a literal collection/db:get/db:open root, child/descendant/attribute paths,
+    relative content predicates, comparisons to literals, and/or, exists/empty/not.
+    Unrecognized expressions still RUN and report positive results; their zeros
+    are non-answers (rc 4). Variables, FLWOR, numeric predicates and conditional
+    expressions are not certified. Token scans supply diagnostics only.
+    refs/attr use internal whole-database queries; attr accepts lexical QNames only.
 
 Which DB
 --------
@@ -53,6 +49,13 @@ Usage
   uv run python ask.py attr <attribute-name>
   uv run python ask.py xq   '<raw xquery>'
   uv run python ask.py xq   --file <query.xq>
+  uv run python ask.py attr name --limit 50 --offset 50
+
+Paging is optional; omitted/--limit 0 means unlimited, offset defaults to 0.
+Limits display whole result items while totals and semantic checks cover the full
+query. Unsupported requested paging (for example, a prolog) refuses with rc 2;
+omit paging flags to use the existing unlimited fallback. Paging bounds output,
+not query work. See QUERIES.md for the exact certification subset.
 
 From Git Bash, pass an xq query with --file: MSYS rewrites path-like parts of command-line
 arguments before Python sees them (`//` becomes `/`; a leading `/ware` becomes
@@ -67,9 +70,11 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import preflight
+from content_query import certification_issue, is_qname
 
 HERE = Path(__file__).resolve().parent
 BASEX_DIR = HERE / "basex"
@@ -119,6 +124,51 @@ def run_counted(xquery: str) -> tuple[str, int | None]:
         return body.lstrip("\n"), int(head.strip())
     except ValueError:
         return raw, None
+
+
+@dataclass(frozen=True)
+class Page:
+    output: str
+    total: int
+    shown: int
+    meaning: str
+
+
+def run_page(xquery: str, limit: int, offset: int) -> Page:
+    """Measure the FULL sequence once, then display whole items; never fall back."""
+    selected = (f'subsequence($__ask, {offset+1}, {limit})' if limit
+                else f'subsequence($__ask, {offset+1})')
+    wrapped = f'''let $__ask := ( {xquery} )
+let $__total := count($__ask)
+let $__page := {selected}
+let $__meaning :=
+  if ($__total = 0) then "empty"
+  else if (every $__item in $__ask satisfies normalize-space(serialize($__item)) = "")
+       then "empty-serialization"
+  else if ($__total = 1 and normalize-space(serialize($__ask)) = "false") then "false"
+  else if ($__total = 1 and normalize-space(serialize($__ask)) = "0") then "zero"
+  else "positive"
+return (concat($__total, ":", count($__page), ":", $__meaning), "{_SEP}", $__page)'''
+    try:
+        raw = run_xq(wrapped)
+        head, separator, body = raw.partition(_SEP)
+        total, shown, meaning = head.strip().split(':')
+        if not separator or meaning not in ('empty', 'empty-serialization', 'false', 'zero', 'positive'):
+            raise ValueError('missing or invalid page metadata')
+        return Page(body.lstrip('\n'), int(total), int(shown), meaning)
+    except (RuntimeError, ValueError) as exc:
+        raise RuntimeError('cannot safely count and page this query; omit --limit/--offset '
+                           f'to run unlimited. No unlimited fallback was executed. {exc}') from exc
+
+
+def _nonnegative(value: str) -> int:
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError('expected a nonnegative integer') from None
+    if n < 0:
+        raise argparse.ArgumentTypeError('expected a nonnegative integer')
+    return n
 
 
 def _looks_like_zero_count(lines: list[str]) -> bool:
@@ -328,6 +378,8 @@ def _db_reaches(query: str) -> list[dict]:
 # user-defined function in a prolog is not followed -- but a prolog already makes the count
 # wrapper fail to compile, and that zero is refused on its own (n_items is None).
 
+# Historical blacklist retained only for explanatory diagnostics and regression
+# coverage. Only content_query.certification_issue can authorize raw-query zeros.
 _TOKEN_FNS = {
     "identity": ("document-uri", "base-uri", "path", "node-pre", "node-id", "generate-id"),
     "position": ("position", "last", "subsequence", "subsequence-where", "head", "tail",
@@ -528,6 +580,11 @@ def main(argv=None) -> int:
                    help="default: x4raw, the files AS WRITTEN (who wrote this, in which mod). "
                         "x4eff is the effective merged tree the engine sees: use it for any "
                         "claim about what is live")
+    p.add_argument('--limit', type=_nonnegative, default=0,
+                   help='optional maximum whole result items to display; omitted/0 means unlimited. '
+                        'The total and negative checks still use the full query')
+    p.add_argument('--offset', type=_nonnegative, default=0,
+                   help='optional number of result items to skip (default: 0); requires a safely countable query')
     args = p.parse_args(argv)
     # Resolved HERE, from an explicit None, so the output can say when the as-written
     # database was searched only because nobody chose one (cold E2E agent, 2026-09-14).
@@ -543,6 +600,10 @@ def main(argv=None) -> int:
             p.error(f"--file is for xq only; {args.mode} takes its value as an argument")
         if args.arg is None or not args.arg.strip():
             p.error(f"{args.mode} needs a non-empty argument")
+    if args.mode == 'attr' and not is_qname(args.arg):
+        print('error: attribute must be a lexical XML QName (name or prefix:name), '
+              'without XPath syntax.', file=sys.stderr)
+        return 2
     query_text = args.arg
     if args.file is not None:
         try:
@@ -643,8 +704,13 @@ def main(argv=None) -> int:
         print(preflight.render(problems), file=sys.stderr)
         return 2
 
+    page = None
     try:
-        out, n_items = run_counted(query)
+        if args.limit or args.offset:
+            page = run_page(query, args.limit, args.offset)
+            out, n_items = page.output, page.total
+        else:
+            out, n_items = run_counted(query)
     except (RuntimeError, FileNotFoundError) as exc:
         # Before quoting BaseX's own error, ask whether the ENVIRONMENT explains
         # it. MEASURED 2026-08-24 with java off PATH: this printed "error: BaseX
@@ -714,7 +780,7 @@ def main(argv=None) -> int:
     # that says "nothing", and the empty-sequence guard never ran. Items that all
     # serialize to nothing (n_items > 0, no output line) cannot be told apart from
     # such values either, so they are not a hit -- and not a negative.
-    if n_items and not lines:
+    if (page.meaning == 'empty-serialization' if page else n_items and not lines):
         print(f"{n_items} item(s) in {args.db}, every one of them serializing to an "
               f"empty string.")
         print("\n  ** NOT A FINDING EITHER WAY. ** An empty string is a VALUE, not a")
@@ -722,7 +788,7 @@ def main(argv=None) -> int:
         print("  sequence either, so the denominator guard did not run. Re-run returning")
         print("  the nodes themselves for an answer with coverage behind it.")
         return 4
-    if n_items == 1 and [ln.strip() for ln in lines] == ["false"]:
+    if (page.meaning == 'false' if page else n_items == 1 and [ln.strip() for ln in lines] == ["false"]):
         print("false")
         print(f"\n1 item(s) in {args.db}.")
         print("\n  ** NOT A NEGATIVE FINDING. ** That is one boolean, not one match:")
@@ -735,6 +801,9 @@ def main(argv=None) -> int:
     if hits:
         print("\n".join(lines))
         print(f"\n{hits} {unit} in {args.db}.")
+        if page:
+            print(f'  {page.shown} displayed of {page.total} total item(s) '
+                  f'(offset {args.offset}; limit {args.limit or "unlimited"}).')
         # What the number counts. A docs-only agent read "3541 item(s) in x4eff." as wares
         # or files; it is XQuery items -- for `refs`, one matching element per line.
         if n_items is not None:
@@ -755,7 +824,7 @@ def main(argv=None) -> int:
         # counted nothing. Before 2026-08-01 that printed "1 hit(s)" and skipped
         # the guard below entirely, which is the exact false positive this whole
         # tool exists to prevent, reached through its most natural phrasing.
-        if n_items == 1 and lines and _looks_like_zero_count(lines):
+        if (page.meaning == 'zero' if page else n_items == 1 and lines and _looks_like_zero_count(lines)):
             print("\n  ** NOT A NEGATIVE FINDING. ** That is one atomic value, not one")
             print("  match: a count()-shaped query returns a number even when it counted")
             print("  nothing. The denominator guard applies to an EMPTY SEQUENCE, so it")
@@ -884,13 +953,15 @@ def main(argv=None) -> int:
     # queries, which address every document. Checked after "names no database", whose reason
     # is the more basic one.
     scope_tokens = _scope_tokens(stripped_query) if args.mode == "xq" else []
-    if scope_tokens:
-        print(f"\n  ** NOT A NEGATIVE FINDING. ** The query uses {', '.join(scope_tokens)},")
-        print("  which can narrow the documents it addresses -- by a document's identity,")
-        print("  its position, or a route ask.py cannot read -- so the zero is not a negative")
-        print(f"  over the {indexed} of {expected} documents in {args.db}. Its hits, had there been")
-        print("  any, would stand. For a negative over the whole database, re-run selecting")
-        print("  by CONTENT only (element names, attributes, values), without these.")
+    issue = certification_issue(query, args.db) if args.mode == 'xq' else None
+    if issue:
+        print('\n  ** NOT A NEGATIVE FINDING. ** The query is outside the restricted')
+        print('  whole-database content-search grammar; unsupported expressions can narrow')
+        print('  the documents searched. This is a non-answer, not confirmed absence.')
+        print(f'  Reason: {issue}')
+        if scope_tokens:
+            print(f"  Diagnostic tokens: {', '.join(scope_tokens)}")
+        print('  Use refs/attr, or a literal whole-database path with content predicates.')
         return 4
 
     missing = (expected or 0) - (indexed or 0)

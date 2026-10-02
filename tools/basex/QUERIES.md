@@ -69,31 +69,38 @@ variable, or naming a database other than `--db` is refused with rc 2, and a zer
 that names no database at all is refused with rc 4. A negative over the whole database covers
 every path in it, so search the whole thing.
 
-**The scope can also be narrowed OUTSIDE a reach call's own argument list** -- by a document's
-identity (`collection('x4eff')[matches(document-uri(.),'libraries/wares')]`), by position
-(`collection('x4eff')[position() le 9]`, `subsequence(collection('x4eff'), 1, 9)`), or through
-a route no text scan can read (`collection#1('x4eff/libraries')`). MEASURED: each printed
-"NEGATIVE CONFIRMED over 10970 of 10970 documents", rc 0, over a query that addressed a
-subset. A list of narrowing *shapes* could not keep up (a release review walked 11 of 12
-rewrites past one), so the rule is about *tokens*: the query, with comments removed and
-string-literal contents blanked, is searched anywhere for
+### Restricted grammar for raw-query zero certification
 
-| class | tokens |
-|---|---|
-| identity | `document-uri` `base-uri` `path` (`db:path`, `fn:path`) `node-pre` `node-id` `generate-id` |
-| position | `position()` `last()` `head` `tail` `foot` `trunk` `subsequence` `slice` `items-*` `take-while` `remove` `index-of` `index-where` `partition`; `filter` `for-each` `for-each-pair` `fold-left` `fold-right` (XQuery 4 callbacks receive the position); FLWOR `at $i`, `count $c`, `window`; a numeric predicate (`[1]`, `[$n]`, `[count(.//x)]`) anywhere |
-| order | `<<` `>>` `is` |
-| modules | `util:` `hof:` `array:` `map:` `random:`, `array {`, a `?1` lookup |
-| indirect | a `#` function reference, a `Q{...}` EQName, `xquery:` `function-lookup` `load-xquery-module` `transform` `eval` |
+The old token blacklist missed conditional numeric predicates. Certification now
+requires parsing the entire query as this deliberately small subset:
 
-If one is present the query **still runs and its hits are reported**; only a zero is withheld
-(rc 4), with a line naming the token. Selecting by **content** is not narrowing -- every
-document was read and judged by what it holds -- so `collection('x4eff')[.//ware]//x` and
-`collection('x4eff')//ware[@id='x']` are still certified, and so is a token spelled inside a
-string literal or a comment. The rule over-reports on purpose: `//ware[1]` loses its
-certificate too, because once a sequence is bound or parenthesised a text scan cannot tell
-documents from elements. `refs` and `attr` are ask.py's own whole-database queries and are
-not scanned (`refs` returns `document-uri` to name each hit's file).
+- One literal `collection('x4eff')`, `fn:collection('x4eff')`, `db:get('x4eff')`,
+  or `db:open('x4eff')` root matching `--db`; root parentheses are allowed.
+- `/` and `//` child/descendant paths, lexical QName or `*` steps, `@` attribute
+  steps, and `.`. No axes, parent steps, or absolute paths inside predicates.
+- Predicates consisting of relative node paths, paths compared to string/numeric
+  literals (`= != < <= > >= eq ne lt le gt ge`), boolean `and`/`or`/parentheses,
+  `exists(path)`, `empty(path)`, or `not(boolean-expression)`, optionally `fn:`.
+- Quoted strings with doubled-quote escapes and nested XQuery comments.
+
+For example, `collection('x4eff')[.//ware]//x` and
+`collection('x4eff')//ware[@id='x']` qualify. Variables, FLWOR, constructors,
+prologs, numeric predicates (`[1]`, `[if (...) then 1 else 2]`), positional or
+identity functions, dynamic evaluation, and other unrecognized syntax do not.
+Even an innocent FLWOR zero is now **rc 4**. Unrecognized queries still execute;
+positive results stand. Diagnostics explain the restriction; a token scan never
+authorizes a certificate. `refs`/`attr` use internal whole-database searches;
+`attr` validates its input as a lexical QName before generating query syntax.
+
+### Optional paging
+
+Add `--limit N` and/or `--offset N` to any mode. Defaults are unlimited output
+(`--limit 0`) and zero offset. Counts and semantic/negative guards apply to the
+full sequence before selecting whole result items for display, so multiline XML
+is never cut into partial lines and an empty page is not mistaken for absence.
+Unsupported requested paging returns rc 2 with instructions to omit the flags;
+unlimited raw prolog queries retain their existing count-unavailable fallback.
+Paging limits displayed output, not the cost of evaluating the full query.
 
 ### Gap 4 — a fourth was found on 2026-08-01, and it was in the guard itself
 

@@ -19,6 +19,43 @@ import pytest
 import ask
 
 
+@pytest.mark.parametrize('attr', ['name[false()]', 'name | //*', 'a/b', 'a::b', 'a:b:c', ' x', 'Q{urn:x}a'])
+def test_attribute_syntax_is_refused_before_query(monkeypatch, capsys, attr):
+    # A malformed attribute used to become executable XQuery and certify a zero.
+    _complete_zero(monkeypatch)
+    assert ask.main(['attr', attr]) == 2
+    assert 'attribute' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('attr', ['name', 'xml:lang', 'énergie', 'foo-bar_2'])
+def test_valid_attribute_names_still_execute(monkeypatch, attr):
+    _positive(monkeypatch)
+    assert ask.main(['attr', attr]) == 0
+
+
+@pytest.mark.parametrize('predicate', [
+    'if (true()) then 1 else 2', 'switch (1) case 1 return 1 default return 2',
+    '1 + 0', '(1)', 'count(.//ware)', 'xs:integer(1)',
+])
+def test_numeric_predicate_zero_never_certified(monkeypatch, capsys, predicate):
+    _complete_zero(monkeypatch)
+    q = f"collection('x4raw')[{predicate}]//cue[@name='AuditCue']"
+    assert ask.main(['xq', q]) == 4
+    assert 'NEGATIVE CONFIRMED' not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('q', [
+    "collection('x4raw')//ware[@id='it''s']",
+    "(db:get('x4raw'))[exists(.//ware) and not(empty(.//cue))]//ware[@n >= -1]",
+    "(: outer (: nested :) :) fn:collection('x4raw')//ware[@x = '(: string :)']",
+    "collection('x4raw')//ware[(@x='a' or @x='b') and .//price]",
+])
+def test_restricted_content_grammar_positive_controls(monkeypatch, capsys, q):
+    _complete_zero(monkeypatch)
+    assert ask.main(['xq', q]) == 0
+    assert 'NEGATIVE CONFIRMED' in capsys.readouterr().out
+
+
 @pytest.fixture(autouse=True)
 def _preflight_is_satisfied(monkeypatch):
     """Neutralise the environment preflight for every test in this module.
@@ -866,11 +903,20 @@ MUST_CERTIFY = [
     "(: document-uri(.) = 'x', position() le 9, collection#1 :) collection('x4eff')//ware",
     "collection('x4eff')//lastname/position",           # names that CONTAIN a token word
     "collection('x4eff')//ware[@position = 'head']",
-    "for $head in collection('x4eff')//ware[@id='x'] return $head",
-    "for $w in collection('x4eff')//ware where count($w/price) = 0 return $w",
     "collection('x4eff')//ware[@id = '1']",             # a STRING '1' is not a position
     "db:get('x4eff')//ware[@id='x']",
 ]
+
+# Deliberate compatibility boundary: FLWOR is still executable, but the
+# restricted recognizer does not prove its enumeration or predicate types.
+@pytest.mark.parametrize('q', [
+    "for $head in collection('x4eff')//ware[@id='x'] return $head",
+    "for $w in collection('x4eff')//ware where count($w/price) = 0 return $w",
+])
+def test_flwor_zero_is_now_uncertified(monkeypatch, capsys, q):
+    _complete_zero(monkeypatch)
+    assert ask.main(['xq', q, '--db', 'x4eff']) == 4
+    assert 'restricted' in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("q", ALL_UNCERTIFIABLE)
