@@ -105,14 +105,16 @@ def run_check(cid: str, target: str, fn, ctx) -> Check:
 
 
 def detect_targets(root: Path) -> dict[str, bool]:
-    """Which agent targets are installed at `root`. Keyed on each target's GUARDS, not a
-    bare folder: every install writes `.claude/x4-paths.env` (a Codex-only one included),
-    and Codex reads a project `.codex/config.toml` of its own."""
+    """Which agent targets are installed at `root`. Keyed on each target's own PAYLOAD,
+    never a bare folder or a shared file: every install writes `.claude/x4-paths.env` (a
+    Codex-only one included), Codex reads a project `.codex/config.toml` of its own, and a
+    hand-written AGENTS.md is not the toolkit's generic target (MEASURED on the author's
+    game root). The instruction files are reported by the instructions rows instead."""
     root = Path(root)
     return {
         "claude": (root / ".claude" / "settings.json").is_file(),
         "codex": (root / ".codex" / "hooks").is_dir() or (root / ".codex" / "hooks.json").is_file(),
-        "generic": (root / "AGENTS.md").is_file(),
+        "generic": (root / ".agents" / "skills").is_dir(),
     }
 
 
@@ -196,11 +198,17 @@ def same_bash(a: str | None, b: str | None) -> bool:
 
 
 def _load(name: str, path: Path):
-    """Import one file as a module, never caching it under a shared name."""
+    """Import one file as a module under a doctor-private name. Registered in sys.modules
+    while it executes, because @dataclass looks its own module up there."""
     import importlib.util
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    sys.modules[name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
     return mod
 
 
@@ -458,9 +466,140 @@ def check_roots(ctx: Ctx) -> list[Check]:
             run_check("roots.agree", "all", _agree, ctx)]
 
 
+# ----------------------------------------------------------------- Task 7: parity
+
+#: The first line of every generated instruction file carries this (gen-agent-trees.py's
+#: BANNER_CLAUDE_MD / BANNER_MD both begin with it).
+GENERATED_MARK = "<!-- GENERATED"
+INSTRUCTION_FILE = {"claude": "CLAUDE.md", "codex": "AGENTS.md", "generic": "AGENTS.md"}
+
+
+def _parity_module(ctx: Ctx):
+    """deploy_parity.py -- from the source toolkit if its comparer knows TargetSpecs, else
+    the one this doctor ships with. One comparer for the gate and the doctor, so they
+    cannot disagree; the SOURCE tree compared is X4_TOOLKIT's either way."""
+    for i, base in enumerate((ctx.toolkit, HERE.parent)):
+        p = Path(base) / "tools" / "x4validate" / "gates" / "deploy_parity.py" if base else None
+        if p and p.is_file():
+            try:
+                m = _load("x4doctor_deploy_parity_%d" % i, p)
+            except Exception:  # noqa: BLE001 -- an unloadable gate is tried past, not trusted
+                continue
+            if _parity_targets(m):
+                return m
+    return None
+
+
+def _parity_targets(mod) -> dict:
+    return dict(getattr(mod, "TARGETS", {}) or {})
+
+
+def _venv_python(tk: Path) -> Path | None:
+    for rel in (("Scripts", "python.exe"), ("bin", "python")):
+        p = tk / "tools" / "x4validate" / ".venv" / Path(*rel)
+        if p.is_file():
+            return p
+    return None
+
+
+def _has_banner(p: Path) -> bool:
+    try:
+        with open(p, "rb") as fh:
+            return GENERATED_MARK.encode() in fh.read(2048)
+    except OSError:
+        return False
+
+
+@group
+def check_parity(ctx: Ctx) -> list[Check]:
+    rows: list[Check] = []
+    mod_box: dict = {}
+
+    def mod():
+        if "m" not in mod_box:
+            mod_box["m"] = _parity_module(ctx)
+        return mod_box["m"]
+
+    for target in ("claude", "codex"):
+        cid = "parity." + target
+        if not ctx.targets.get(target):
+            rows.append(Check(cid, target, NA, "the %s target is not installed here" % target))
+            continue
+
+        def _one(_, target=target):
+            if ctx.toolkit is None:
+                return UNKNOWN, ("X4_TOOLKIT is unset, so there is no SOURCE to compare against "
+                                 "(never this doctor's own folder: an installed copy would compare "
+                                 "to itself)")
+            src = Path(ctx.toolkit)
+            m = mod()
+            if m is None:
+                return UNKNOWN, "no gates/deploy_parity.py to compare with"
+            spec = _parity_targets(m).get(target)
+            if spec is None:
+                return UNKNOWN, ("deploy_parity has no TargetSpec for %r yet, so the %s tree "
+                                 "cannot be compared" % (target, target))
+            if src.resolve() == ctx.root.resolve():
+                gen = src / "tools" / "x4validate" / "scripts" / "gen-agent-trees.py"
+                py = _venv_python(src)
+                if not (src / "agent").is_dir() or not gen.is_file():
+                    return UNKNOWN, ("this root IS the toolkit and has no agent/ source, so parity "
+                                     "cannot be checked here (an installed toolkit is runtime-only)")
+                if py is None:
+                    return UNKNOWN, ("this root is the toolkit; its generator needs the venv "
+                                     "(tools/x4validate/.venv), which is absent -- run setup.sh")
+                r = _run([str(py), str(gen), "--check"], cwd=str(gen.parent.parent), timeout=300)
+                if r.returncode == 0:
+                    return OK, "the generated trees match agent/ (gen-agent-trees.py --check)"
+                return FAIL, ("gen-agent-trees.py --check rc %s: %s"
+                              % (r.returncode, (r.stdout + r.stderr).strip()[-400:]))
+            a, b = src / spec.root_rel, ctx.root / spec.root_rel
+            rws = m.compare_trees(a, b, spec)
+            if not rws:
+                return UNKNOWN, "nothing to compare: both %s populations are empty" % spec.root_rel
+            off = [r for r in rws if not r.at_parity]
+            if off:
+                shown = "; ".join(m.describe(r) for r in off[:10])
+                more = " ... and %d more NOT LISTED" % (len(off) - 10) if len(off) > 10 else ""
+                return FAIL, "%d of %d file(s) differ from %s: %s%s" % (len(off), len(rws), src, shown, more)
+            rew = sum(1 for r in rws if r.state != m.IDENTICAL)
+            return OK, "%d file(s) at parity with %s (%d via the installer rewrite)" % (len(rws), src, rew)
+        rows.append(run_check(cid, target, _one, ctx))
+
+    # The instruction files are in no deploy population (READ): reported here instead.
+    for target in ("claude", "codex", "generic"):
+        cid = "instructions." + target
+        if not ctx.targets.get(target):
+            rows.append(Check(cid, target, NA, "the %s target is not installed here" % target))
+            continue
+
+        def _instr(_, target=target):
+            name = INSTRUCTION_FILE[target]
+            p = ctx.root / name
+            if not p.is_file():
+                return FAIL, ("no %s here: the %s target runs without the toolkit's instructions"
+                              % (name, target))
+            if _has_banner(p):
+                return OK, "%s is the toolkit's generated file" % name
+            if target == "claude":
+                return OK, "%s has no GENERATED banner (hand-written or pre-4.0)" % name
+            return FAIL, ("%s has no GENERATED banner: %s reads THIS file, and it is not the "
+                          "toolkit's -- re-run the installer, which keeps yours as AGENTS.pre-4.0.md"
+                          % (name, "Codex" if target == "codex" else "a generic agent"))
+        rows.append(run_check(cid, target, _instr, ctx))
+
+    agents = ctx.root / "AGENTS.md"
+    if agents.is_file() and not (ctx.targets.get("codex") or ctx.targets.get("generic")):
+        kind = "the toolkit's generated file" if _has_banner(agents) else "a hand-written file"
+        rows.append(Check("instructions.agents_md", "all", OK,
+                          "NOTE: %s is %s; no Codex/generic target is installed, but any Codex "
+                          "session started here reads it" % (agents.name, kind)))
+    return rows
+
+
 def _verdict(code: int) -> str:
     return {0: "OK -- every applicable check passed",
-            1: "FAIL -- at least one guard is NOT live (see FAIL rows)",
+            1: "FAIL -- at least one check failed: the guards here are not fully live or not current (see FAIL rows)",
             3: "UNKNOWN -- nothing failed, but some checks could not answer (see UNKNOWN rows)",
             2: "COULD NOT RUN -- nothing was checked; this is not a pass"}[code]
 
@@ -469,7 +608,7 @@ def render_text(ctx: Ctx, rows: list[Check], code: int, elapsed: float) -> str:
     present = [t for t in TARGETS if ctx.targets.get(t)]
     out = ["x4doctor: %s" % _verdict(code),
            "  root:    %s" % ctx.root,
-           "  targets: %s" % (", ".join(present) or "NONE (no .claude/settings.json, .codex/hooks or AGENTS.md here)"),
+           "  targets: %s" % (", ".join(present) or "NONE (no .claude/settings.json, .codex/hooks or .agents/skills here)"),
            "  checked: %d row(s) in %.1fs -- %s" % (
                len(rows), elapsed,
                ", ".join("%d %s" % (sum(r.status == s for r in rows), s) for s in STATUSES)),

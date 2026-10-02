@@ -89,8 +89,16 @@ def test_detect_targets(tmp_path):
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
     (tmp_path / ".codex" / "hooks").mkdir(parents=True)
-    (tmp_path / "AGENTS.md").write_text("a", encoding="utf-8")
+    (tmp_path / ".agents" / "skills").mkdir(parents=True)
     assert doc.detect_targets(tmp_path) == {"claude": True, "codex": True, "generic": True}
+
+
+def test_TWIN_a_users_own_AGENTS_md_alone_is_NOT_the_generic_target(tmp_path):
+    """MEASURED on the author's game root: a hand-written AGENTS.md read as 'generic
+    installed'. The toolkit's generic target is its skills payload; the file is reported
+    by the instructions row instead."""
+    (tmp_path / "AGENTS.md").write_text("my notes\n", encoding="utf-8")
+    assert doc.detect_targets(tmp_path)["generic"] is False
 
 
 def test_TWIN_a_bare_claude_dir_holding_only_the_path_config_is_NOT_the_claude_target(tmp_path):
@@ -282,7 +290,7 @@ def test_the_guards_config_variable_still_exists():
 def test_a_GENERIC_only_root_has_no_guard_toolchain_and_says_so(tmp_path, monkeypatch):
     for name in _LEAKY:
         monkeypatch.delenv(name, raising=False)
-    (tmp_path / "AGENTS.md").write_text("a\n", encoding="utf-8")
+    (tmp_path / ".agents" / "skills").mkdir(parents=True)
     rows = {r.id: r for r in doc.check_toolchain(doc.Ctx(root=tmp_path))}
     assert {r.status for r in rows.values()} == {doc.NA}, rows
 
@@ -297,3 +305,124 @@ def test_two_spellings_of_ONE_git_install_agree():
 def test_TWIN_two_DIFFERENT_git_installs_do_not_agree():
     assert not doc.same_bash("C:/Program Files/Git/usr/bin/bash.exe", "D:/PortableGit/bin/bash.exe")
     assert not doc.same_bash("/usr/bin/bash", "/opt/homebrew/bin/bash")
+
+
+# --- Task 7: deployed-vs-source parity per agent target ------------------------------- #
+
+GEN_BANNER = "<!-- GENERATED from agent/ -->"
+
+
+def _tree(base: Path, files: dict) -> Path:
+    for rel, content in files.items():
+        p = base / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
+    return base
+
+
+def _pair(tmp_path, monkeypatch, src: dict, dst: dict) -> doc.Ctx:
+    for name in _LEAKY:
+        monkeypatch.delenv(name, raising=False)
+    tk = _tree(tmp_path / "tk", src)
+    root = _tree(tmp_path / "root", dst)
+    monkeypatch.setenv("X4_TOOLKIT", str(tk))
+    return doc.Ctx(root=root)
+
+
+_CLAUDE = {".claude/settings.json": "{}\n", ".claude/hooks/a.sh": "echo a\n",
+           "CLAUDE.md": "# C\n" + GEN_BANNER + "\n"}
+
+
+def _prow(ctx, cid):
+    rows = {r.id: r for r in doc.check_parity(ctx)}
+    return rows[cid]
+
+
+def test_parity_identical_is_OK_with_a_count(tmp_path, monkeypatch):
+    r = _prow(_pair(tmp_path, monkeypatch, _CLAUDE, _CLAUDE), "parity.claude")
+    assert r.status == doc.OK and "2 file" in r.detail, r
+
+
+def test_parity_DRIFT_is_FAIL_naming_the_file(tmp_path, monkeypatch):
+    dst = dict(_CLAUDE, **{".claude/hooks/a.sh": "echo EDITED\n"})
+    r = _prow(_pair(tmp_path, monkeypatch, _CLAUDE, dst), "parity.claude")
+    assert r.status == doc.FAIL and "hooks/a.sh" in r.detail, r
+
+
+def test_parity_a_CRLF_only_difference_is_not_drift(tmp_path, monkeypatch):
+    dst = dict(_CLAUDE, **{".claude/hooks/a.sh": b"echo a\r\n"})
+    r = _prow(_pair(tmp_path, monkeypatch, _CLAUDE, dst), "parity.claude")
+    assert r.status == doc.OK, r
+
+
+def test_parity_with_NO_source_is_UNKNOWN(tmp_path, monkeypatch):
+    ctx = _pair(tmp_path, monkeypatch, _CLAUDE, _CLAUDE)
+    monkeypatch.delenv("X4_TOOLKIT")
+    ctx = doc.Ctx(root=ctx.root)
+    r = _prow(ctx, "parity.claude")
+    assert r.status == doc.UNKNOWN and "X4_TOOLKIT" in r.detail, r
+
+
+def test_same_tree_without_source_is_UNKNOWN_not_OK(tmp_path, monkeypatch):
+    """An in-game install IS the toolkit, and runtime-only (decision #9): no agent/ source
+    to regenerate from, so parity cannot be checked there -- and must say so."""
+    ctx = _pair(tmp_path, monkeypatch, _CLAUDE, _CLAUDE)
+    monkeypatch.setenv("X4_TOOLKIT", str(ctx.root))
+    r = _prow(doc.Ctx(root=ctx.root), "parity.claude")
+    assert r.status == doc.UNKNOWN and "agent/" in r.detail, r
+
+
+def test_a_target_with_no_TargetSpec_is_UNKNOWN_never_NA(tmp_path, monkeypatch):
+    files = dict(_CLAUDE, **{".codex/hooks/x.sh": "#\n", "AGENTS.md": GEN_BANNER + "\n"})
+    ctx = _pair(tmp_path, monkeypatch, files, files)
+    monkeypatch.setattr(doc, "_parity_targets", lambda mod: {"claude": mod.TARGETS["claude"]})
+    r = _prow(ctx, "parity.codex")
+    assert r.status == doc.UNKNOWN and "TargetSpec" in r.detail, r
+
+
+def test_an_absent_target_is_NA(tmp_path, monkeypatch):
+    r = _prow(_pair(tmp_path, monkeypatch, _CLAUDE, _CLAUDE), "parity.codex")
+    assert r.status == doc.NA, r
+
+
+def test_a_claude_target_WITHOUT_CLAUDE_md_is_FAIL(tmp_path, monkeypatch):
+    """Claude Code reads AGENTS.md only when there is no CLAUDE.md (MEASURED, lane A):
+    the Claude target without its file runs on the wrong instructions."""
+    dst = {k: v for k, v in _CLAUDE.items() if k != "CLAUDE.md"}
+    r = _prow(_pair(tmp_path, monkeypatch, _CLAUDE, dst), "instructions.claude")
+    assert r.status == doc.FAIL, r
+
+
+def test_TWIN_a_claude_target_WITH_CLAUDE_md_is_OK(tmp_path, monkeypatch):
+    r = _prow(_pair(tmp_path, monkeypatch, _CLAUDE, _CLAUDE), "instructions.claude")
+    assert r.status == doc.OK, r
+
+
+def test_a_codex_target_reading_a_HAND_WRITTEN_AGENTS_md_is_FAIL(tmp_path, monkeypatch):
+    files = dict(_CLAUDE, **{".codex/hooks/x.sh": "#\n", "AGENTS.md": "# my own notes\n"})
+    r = _prow(_pair(tmp_path, monkeypatch, files, files), "instructions.codex")
+    assert r.status == doc.FAIL and "GENERATED" in r.detail, r
+
+
+def test_TWIN_a_codex_target_reading_the_GENERATED_AGENTS_md_is_OK(tmp_path, monkeypatch):
+    files = dict(_CLAUDE, **{".codex/hooks/x.sh": "#\n", "AGENTS.md": "# A\n" + GEN_BANNER + "\n"})
+    r = _prow(_pair(tmp_path, monkeypatch, files, files), "instructions.codex")
+    assert r.status == doc.OK, r
+
+
+def test_a_hand_written_AGENTS_md_with_NO_codex_target_is_NOTED_not_failed(tmp_path, monkeypatch):
+    """The author's game root today: a personal AGENTS.md, Codex not installed. Any Codex
+    session there reads it, so it is NAMED -- but it is the user's file, not a failure."""
+    dst = dict(_CLAUDE, **{"AGENTS.md": "# my own notes\n"})
+    r = _prow(_pair(tmp_path, monkeypatch, _CLAUDE, dst), "instructions.agents_md")
+    assert r.status == doc.OK and "hand-written" in r.detail, r
+
+
+def test_a_source_whose_comparer_PREDATES_TargetSpec_falls_back_to_the_doctors_own(tmp_path, monkeypatch):
+    """MEASURED 2026-10-02: X4_TOOLKIT named a checkout whose deploy_parity.py had no
+    TARGETS yet, and every row read 'no TargetSpec for claude' -- true of that file, false
+    of the question. The comparer is code; the SOURCE tree is still X4_TOOLKIT's."""
+    files = dict(_CLAUDE, **{"tools/x4validate/gates/deploy_parity.py": "# an old gate, no TARGETS\n"})
+    ctx = _pair(tmp_path, monkeypatch, files, _CLAUDE)
+    r = _prow(ctx, "parity.claude")
+    assert r.status == doc.OK and "2 file" in r.detail, r
