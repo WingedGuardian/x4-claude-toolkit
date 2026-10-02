@@ -14,8 +14,11 @@ FIX = Path(__file__).parent / "fixtures" / "codex" / "0.160.0"
 PERSONAL = re.compile(r"\b[A-Za-z]:[\\/]|/home/|/Users/|\b\d{8}\b")
 
 
+NOT_PAYLOADS = {"trust_vectors.json"}       # Codex-produced hash vectors (test_codex_trust.py)
+
+
 def payloads():
-    return sorted(p for p in FIX.glob("*.json"))
+    return sorted(p for p in FIX.glob("*.json") if p.name not in NOT_PAYLOADS)
 
 
 def _strings(node):
