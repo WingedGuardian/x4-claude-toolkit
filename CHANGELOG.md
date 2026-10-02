@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Individual-tool audit fixes: BaseX validates attribute QNames and certifies raw
+  zeros only for a restricted whole-database content-search grammar. Other raw
+  queries still report positives; unrecognized zeros return 4.
+- BaseX `refs`, `attr` and `xq` accept optional `--limit`/`--offset` over whole
+  items, retaining unlimited defaults and full-result totals/negative checks.
+  Unsupported requested paging returns 2 without unbounded fallback.
+- Xref validates every TSV row and binds newly built indexes and exclusions to
+  SHA-256 digests. Unsigned legacy positives warn; uncertifiable absence returns 2.
+- Invalid DEFLATE saves and corrupt/incompatible effective SQLite stores return
+  2 without tracebacks. SQLite filenames escape URI characters and remain read-only.
+  Malformed effective-store freshness vectors that fail comparison also return 2;
+  valid stale-store reads and ordinary SQL error semantics are preserved.
+  Effective-store reader changes invalidate existing engine freshness fingerprints;
+  rebuild artifacts explicitly before making fresh claims.
+
 - **The file guard allowed `CLAUDE.md` in the game root but denied `AGENTS.md`**, the same file
   for another agent (Codex). `protect-files.sh` now treats `AGENTS.md` like `CLAUDE.md`, matched on
   the exact file name; a twin test keeps `notagents.md` denied.

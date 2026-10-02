@@ -7622,6 +7622,35 @@ still depends on the hand-kept lists. The 5%: that path.
 `test_the_DESTINATIONS_own_BaseX_databases_survive_an_upgrade`.
 
 
+## AUDIT-2026-10-01-TOOLS — false negatives and unreadable input boundaries · FIXED (reviewed, E2E)
+
+Independent hands-on audit on `aa57efc`; no implementation fixes. Full evidence,
+controls, confidence, and limitations are in
+[the audit report](../../../docs/audits/2026-10-01-tools.md).
+
+- BaseX interpolates `attr` input as query syntax without name validation;
+  `name[false()]` receives a complete-database negative certificate (TA-01).
+- BaseX's numeric-predicate scan misses `if/then/else` returning a position;
+  a known cue disappears when only the first document is searched, yet the
+  complete-database certificate is printed (TA-02).
+- Xref silently ignores a shortened TSV row, then describes the remaining
+  rows as a real negative; non-numeric line fields instead crash (TA-03).
+- Invalid DEFLATE saves and corrupt SQLite stores escape the expected
+  unreadable-input handlers (TA-04/05).
+- Outside-repository older tools: empty-template scaffold success and legacy
+  deploy `-O` / junction guard failures (TA-06/07/08).
+
+All findings have positive or refusal controls. Raw evidence stays in the
+untracked audit worktree. The existing unit suite passing is not coverage for
+these newly exercised adversarial inputs. Do not mark these fixed without new
+regression tests, review, and fresh CLI verification.
+
+2026-10-02 follow-up: regression-backed repairs are installed in toolkit/dev/x4cat
+after review and E2E (toolkit 2914 passed / 49 skipped). Existing production
+artifacts require explicit rebuild for fresh negative claims. See
+[repair status and compatibility changes](../../../docs/audits/2026-10-02-tool-fixes.md).
+The findings above describe the audited baseline, not the patched behavior.
+
 ## F145 — the PowerShell/cmd guard's stated residuals after the v3.3.0 release review · **SCOPE (measured)** · confidence 90% · ✅ FIXED 2026-09-27
 
 **Found 2026-09-26/27 by the v3.3.0 release review** (hooks reviewer: 1 CRITICAL, 3 IMPORTANT,
