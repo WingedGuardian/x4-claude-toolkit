@@ -103,14 +103,17 @@ _GAME_RELATIVE = (
 )
 
 #: Files DEMANDED only when their agent target is installed (reported MISSING if absent).
-#: The marker is the target's own directory, so a Claude-only root is never reported as
-#: missing a Codex file -- 0 of 23 releases before 4.0 shipped AGENTS.md -- and an
-#: `install --agent codex` root is never reported as missing CLAUDE.md. A root with NO
-#: marker at all keeps the pre-4.0 Claude demand (see `_demanded_targets`), so deleting
-#: `.claude/` wholesale can never make CLAUDE.md's absence silent.
+#: The marker is the target's own GUARD directory, so a Claude-only root is never reported
+#: as missing a Codex file -- 0 of 23 releases before 4.0 shipped AGENTS.md -- and an
+#: `install --agent codex` root is never reported as missing CLAUDE.md. Not the bare
+#: `.claude/` or `.codex/`: every install writes its path config to `.claude/x4-paths.env`,
+#: and Codex itself reads a project `.codex/config.toml`, so either directory can exist
+#: with that target absent. A root with NO marker keeps the pre-4.0 Claude demand (see
+#: `_demanded_targets`), so deleting `.claude/` wholesale never makes CLAUDE.md's absence
+#: silent.
 _TARGET_DEMANDS = {
-    ".claude": ("CLAUDE.md", ".claude/settings.json"),
-    ".codex": ("AGENTS.md", ".codex/hooks.json"),
+    ".claude/hooks": ("CLAUDE.md", ".claude/settings.json"),
+    ".codex/hooks": ("AGENTS.md", ".codex/hooks.json"),
 }
 
 #: The guards themselves. A protection that can silently disable itself is not one.
@@ -305,13 +308,13 @@ def _candidates() -> list[Path]:
 def _demanded_targets(game: Path) -> list[str]:
     """The agent-target markers whose files `game` must have.
 
-    Every marker directory that exists. With none present, `.claude` -- the only layout
+    Every marker directory that exists. With none present, `.claude/hooks` -- the only layout
     any release before 4.0 installed -- so a root that lost `.claude/` entirely still
     reports CLAUDE.md MISSING rather than demanding nothing. A false MISSING is visible;
     a false waiver is silent.
     """
     present = [m for m in _TARGET_DEMANDS if (game / m).is_dir()]
-    return present or [".claude"]
+    return present or [".claude/hooks"]
 
 
 def _dedup(paths, want_file: bool) -> list[Path]:

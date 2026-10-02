@@ -476,7 +476,7 @@ def _game(tmp_path, monkeypatch, claude=True):
     game = tmp_path / "game"
     game.mkdir(parents=True, exist_ok=True)
     if claude:
-        (game / ".claude").mkdir()
+        (game / ".claude" / "hooks").mkdir(parents=True)
         (game / "CLAUDE.md").write_text("c\n", encoding="utf-8")
     real = x4lock._cfg
     monkeypatch.setattr(x4lock, "_cfg", lambda n: game if n == "game_root" else real(n))
@@ -505,10 +505,19 @@ def test_F9_TWIN_a_claude_only_root_does_NOT_report_AGENTS_md_missing(tmp_path, 
 
 def test_F9_a_codex_root_DEMANDS_AGENTS_md_and_hooks_json(tmp_path, monkeypatch):
     game = _game(tmp_path, monkeypatch)
-    (game / ".codex").mkdir()
+    (game / ".codex" / "hooks").mkdir(parents=True)
     gone = x4lock.missing()
     assert _in(gone, game, "AGENTS.md")
     assert _in(gone, game, ".codex/hooks.json")
+
+
+def test_F9_TWIN_a_users_OWN_codex_config_dir_demands_nothing(tmp_path, monkeypatch):
+    """Codex itself reads a project `.codex/config.toml`, so a bare `.codex/` is not
+    proof the toolkit's Codex target is installed; its guard copy is."""
+    game = _game(tmp_path, monkeypatch)
+    (game / ".codex").mkdir()
+    (game / ".codex" / "config.toml").write_text("#\n", encoding="utf-8")
+    assert not _in(x4lock.missing(), game, "AGENTS.md")
 
 
 def test_F9_codex_rules_hooks_and_guards_are_locked_when_present(tmp_path, monkeypatch):
@@ -540,7 +549,11 @@ def test_F9_a_CODEX_ONLY_root_does_not_report_CLAUDE_md_missing(tmp_path, monkey
     """`install --agent codex` installs no CLAUDE.md and no .claude/. Demanding them there
     is the same false-MISSING as demanding AGENTS.md on a Claude-only root."""
     game = _game(tmp_path, monkeypatch, claude=False)
-    (game / ".codex").mkdir()
+    (game / ".codex" / "hooks").mkdir(parents=True)
+    # every install writes its path config to .claude/x4-paths.env, so a Codex-only
+    # root HAS a .claude/ directory -- that alone must not mean "Claude installed"
+    (game / ".claude").mkdir()
+    (game / ".claude" / "x4-paths.env").write_text("X4_TOOLKIT=x\n", encoding="utf-8")
     gone = x4lock.missing()
     assert not _in(gone, game, "CLAUDE.md")
     assert not _in(gone, game, ".claude/settings.json")
@@ -564,7 +577,7 @@ def test_F9_TWIN_a_root_with_NO_agent_marker_still_demands_CLAUDE_md(tmp_path, m
 
 def test_F9_a_root_with_BOTH_targets_demands_both(tmp_path, monkeypatch):
     game = _game(tmp_path, monkeypatch)
-    (game / ".codex").mkdir()
+    (game / ".codex" / "hooks").mkdir(parents=True)
     (game / "CLAUDE.md").unlink()
     gone = x4lock.missing()
     assert _in(gone, game, "CLAUDE.md") and _in(gone, game, "AGENTS.md")
