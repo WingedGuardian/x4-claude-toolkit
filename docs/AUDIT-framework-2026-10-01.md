@@ -174,16 +174,31 @@ all 40 managed deployed files then matched. Hooks were edited in the neutral sou
 Post-review parser/integration checks: 610 passed plus 111 subtests. End-to-end script smoke:
 177 passed, zero failed or skipped. The first full run had 3,028 passes, three Windows
 symlink-privilege skips, and one expected deployment-parity failure because it ran before
-deployment. A fresh full run follows deployment; its result is recorded below when complete.
+deployment. The fresh post-deployment full run passed: **3,029 passed, three skipped,
+exit 0, 420.83 seconds**. The three skips remain the Windows file-symlink privilege checks.
+The final smoke rerun again passed all 177 checks. Lock freshness and generator freshness
+checks returned 0. The shipped instructions stay below the existing 39,999-character
+baseline (39,975); the worktree itself has no local budget baseline, so its budget gate
+refuses rather than claiming to check historical growth.
+
+Deployed front-door controls returned deny for a reference write, ask for a development-tree
+deletion, and inert deny with a missing interpreter. These are actual script subprocesses,
+not evidence that a live agent host enforces the results. No probe performed those writes.
+The differential fuzzer passed 3,959 mutants over 24 of 26 policy rules; the remaining two
+are structurally outside this fuzzer and are unit-tested. Its broken-scanner control
+rediscovered 182 bypasses. The optional full mutation/predicate harness was stopped before
+completion: it repeats the full live PowerShell parser suite per mutant, with observed
+child runs taking minutes. Its result is **NOT VERIFIED** here. Optimize that harness
+separately without removing native PowerShell coverage. The parser itself is unchanged.
 
 F1 remains: arbitrary program writes are outside the parser's reliable enforcement boundary.
 Persistent guard-evaluation telemetry, process-tree termination on wrapper timeout, and
 live agent-host enforcement also remain separate work. This patch does not certify them.
 
-1. Resolve F5 and F6 in the front door before adapter integration. These are material contract
+1. **Completed:** resolve F5 and F6 in the front door before adapter integration. These are material contract
    findings: pause implementation for a design checkpoint, rather than claiming the
    passing targeted suite proves equivalent protection.
-2. Make backup allocation, validation failure disclosure and lock freshness separate,
+2. **Completed:** make backup allocation, validation failure disclosure and lock freshness separate,
    narrowly tested hardening changes. State confidence and assumptions before implementation.
 3. Define persistent hook-health telemetry and its distinction from the existing loss canary.
 4. Resolve the opaque-program boundary before claiming equivalent protection across agents;
