@@ -1132,6 +1132,51 @@ script paths. Do not query a scratch BaseX database while it is rebuilding.
 *Add brief per-session notes here — what was investigated, what was learned. Starts empty in
 a fresh install; grows as you and Claude work together.*
 
+### 2026-10-01 — framework-protection-boundaries
+
+MEASURED against `aa57efc`: a Bash-carried Python write to a disposable reference path
+received no refusal, although direct Write and shell redirection were denied. Two backup
+calls within one second overwrote the first snapshot. A missing UV executable left the
+post-edit validator silent; a synthetic finding control did emit an advisory. In a disposable
+project, `uv sync --frozen` accepted a stale lockfile while `uv lock --check` rejected it.
+These findings survive passing regression suites; command inspection is not filesystem
+enforcement. Details and test limits: `docs/AUDIT-framework-2026-10-01.md`.
+
+MEASURED at `7bd554f`: x4guard's delete-path endpoint allowed a disposable mod-file
+deletion that its shell endpoint required confirmation for. A missing Python interpreter
+returned ask with inert false despite the underlying guard reporting GUARD INERT. Both
+reproduced after all 34 front-door/generator tests passed; keep API operation semantics
+and successful payload parsing distinct from successful guard evaluation.
+
+IMPLEMENTED after review: delete checks compose file protection with shell deletion policy;
+check-only guard failures return inert deny while native Claude approval behavior stays intact.
+Scope correction: only those two front-door fixes were authorized. Additional backup,
+validator, lock-check and package-manager-tripwire implementations were rolled back;
+their measured audit findings remain open. No relative-path production fix was applied:
+a relative `reference/...` write checked from the toolkit root returned allow while its
+absolute-path equivalent denied. The parallel session has a pending fix; it is not verified
+or integrated here. Arbitrary script writes and guard-health telemetry also remain unresolved.
+
+### 2026-10-01 — audit-only migration integration probes
+
+MEASURED with both real installers in disposable destinations and a stubbed setup: each
+returned 0 and copied CLAUDE.md, but omitted AGENTS.md and the neutral agent/ tree. Copy-list
+agreement tests pass because neither list requires those new artifacts. In a disposable
+configured game root, x4lock's default manifest included CLAUDE.md but omitted AGENTS.md;
+no lock attributes were changed. A guard inert denial followed by a clean file-loss canary
+is expected: the canary monitors tracked file loss, not guard-evaluation history. These are
+audit findings only, not additional fixes. See F8/F9 and the roadmap in the framework report.
+
+### 2026-10-02 - framework-audit rebase reconciliation
+
+Master `74b38fe` incorporates F5/F6 and native caller-relative file-path resolution (F7).
+The audit branch now retains master's wrapper and tests; its former shared delete timeout
+is superseded by a per-guard timeout. No additional fixes or deployment were performed.
+Master documents AGENTS.md as toolkit-repository instructions, so the measured installer
+and lock omissions (F8/F9) need the portability ownership decision before a remedy.
+Historical verification counts still apply only to their named baselines; current rebase
+verification is recorded in `docs/AUDIT-framework-2026-10-01.md`.
+
 ### 2026-10-02 — individual-tool repair contract
 
 READ/MEASURED in isolated repair checkouts: BaseX attribute arguments are lexical

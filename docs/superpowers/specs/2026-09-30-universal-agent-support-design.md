@@ -130,8 +130,10 @@ internal contract every adapter translates to.
   - **Codex shell call:** `tool_name` becomes `PowerShell` on Windows (MEASURED). On Linux/macOS it
     stays `Bash` (INFERRED; measured before Codex ships there, M9).
   - **Codex `apply_patch`:** split into one `Write`-shaped payload per `*** Add/Update File:` path, and
-    a `Write`-shaped payload for every `*** Delete File:` path too. `protect-files.sh` has no delete
-    mode, and any change to a protected path, deletion included, must get the verdict a write would get.
+    a delete check for every `*** Delete File:` path. Delete checks retain the `Write`-shaped
+    protection and also inspect a quoted synthetic removal through `protect-bash.sh`; the
+    stricter verdict wins. The removal is never executed. This supersedes the write-only
+    deletion mapping after the verified 2026-10-01 front-door audit.
     One shared helper parses patch paths for every adapter.
 - **Run the guards it would run under Claude:** shell → `protect-bash.sh`; each file path →
   `protect-files.sh` + `backup-before-edit.sh`. Aggregate: deny beats ask beats advise.
@@ -171,6 +173,14 @@ must-match and a must-not-match command.
 builds the guard-shaped payload, runs the same guards, and prints a neutral verdict JSON:
 `{"v":1,"decision":"allow|advise|ask|deny","reason":…,"context":…}`. Unknown agents call it, and so do
 `ADAPTING.md` adapters and the conformance suite.
+
+Implemented follow-up (2026-10-01): delete checks compose file hard-block policy with shell
+deletion approval policy, using a synthetic quoted command that is inspected, never executed.
+The wrapper sets `X4_GUARD_CHECK=1` in child environments; guards signal evaluation failures
+with exit 2 in that mode, producing `decision: deny, inert: true`. Native Claude approval
+JSON stays unchanged. The authoritative wrapper at `74b38fe` applies a separate timeout
+budget to each guard, so a composed delete check can consume two budgets. Descendant process
+termination and agent-host enforcement require separate verification.
 
 ### 5.7 Escape hatches (D8)
 

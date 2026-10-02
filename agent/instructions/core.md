@@ -92,9 +92,8 @@ editing any patch and BEFORE deploying for an in-game test, and again after a ga
 catches the two most expensive bugs statically: a `sel=` that silently matches nothing, and a
 file the change forgot. **A clean run is necessary, not sufficient** — still test in-game.
 
-**After ANY change to `.claude/hooks/`, run `bash scripts/test-hooks.sh`.** The hooks are the
-safety net and nothing else exercises them; several shipped silently inert because the code
-read fine.
+**Edit hooks in `agent/guards/claude-hooks/`, regenerate, then run
+`bash scripts/test-hooks.sh`.** `.claude/hooks/` is generated. Tests do not prove host enforcement.
 
 → **the `x4-xml-patching` skill** has the flags: `--tier b` for cross-mod work, `--entity/--like`
 for completeness, and why an `if=`-guarded op reports INFO while a passing guard over a missing
@@ -127,7 +126,7 @@ Guarded: Bash, PowerShell (same rules), Edit, Write, NotebookEdit. A timed-out h
 ### General
 - One mod = one named folder, never a mega-file
 - `reference\` is never edited — it is source-of-truth for base game XML
-- Every file edit is auto-backed-up to `.claude\backups\` with an audit log
+- Existing Edit/Write/NotebookEdit targets get backups; same-second snapshots can collide
 
 ### Iteration snapshots (standing process)
 Before experimenting on a working state, snapshot it to `.claude\backups\known-good-<name>\`.
@@ -395,20 +394,13 @@ capability. **Never state a negative from a tool that cannot see the whole pictu
 | *Discovery* — "where does this appear, what values exist, who mentions X?" | **BaseX** | Fast across many files, packed mods included; **but `x4raw` is files as-written, with no diff application or load order** (`x4eff` is the merged tree). |
 | *Proof* — "what does the game actually see / is this reference real?" | **x4validate / x4effective** | Reads packed `.cat` via `_cat`, applies diffs in load order, models the effective merged tree. |
 
-**A BaseX negative is admissible — but only with a denominator.** Packed content is staged and
-indexed, and `x4eff` holds the effective merged tree, so: a **bare** "0 hits" is still only a
+**A BaseX negative is admissible — but only with a denominator.** A **bare** "0 hits" is only a
 lead; `tools\basex\ask.py` refuses to render a zero as a finding unless `coverage-<db>.json`
 says coverage is complete or accounted, printing *"NEGATIVE CONFIRMED over N of M documents"*
-with every exclusion named. Prefer **`--db x4eff`** for any claim about what is LIVE — `x4raw`
-is files as written and will quote a vanilla value the modlist overwrote. Load order is
-MEASURED against the engine (F128). x4validate is the authority.
-
-For certified raw-query zeros, use the restricted content-search grammar in
-`tools/basex/QUERIES.md`, or use `refs`/`attr`. Other raw queries still report
-positives, but unrecognized zeros return 4. Optional `--limit`/`--offset` page
-whole items; totals and negative checks use the full query, and omitted flags
-retain unlimited output. The query recognizer is not an execution sandbox:
-only run read-only XQuery during research.
+with every exclusion named. Prefer **`--db x4eff`** for any claim about what is LIVE. Load
+order is MEASURED against the engine (F128). x4validate is the authority. A raw-query zero is
+certified only in the grammar of `tools/basex/QUERIES.md` (or via `refs`/`attr`); others
+return 4. That recognizer is no sandbox: run read-only XQuery only.
 
 **Validate the DEPLOYED copy whenever load order could matter.** Tier B places an uninstalled
 copy by its folder NAME, so a differently named dev folder lands elsewhere.
