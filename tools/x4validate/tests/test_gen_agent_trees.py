@@ -453,3 +453,52 @@ def test_claude_md_still_carries_its_hook_facts():
     for must in ("NotebookEdit", "timed-out hook", "CLAUDE_PROJECT_DIR", "env var > `x4-paths.env` > default",
                  "**Glob**", "**Grep**"):
         assert must in text, must
+
+
+# --- Plan 2 lane A, Task 7: the same skill sources reach Codex and generic agents (.agents/skills/).
+
+def _token_skills():
+    """Skills whose SOURCE carries the toolkit token: derived, never retyped (MEASURED 7 on
+    2026-10-02), so the per-target counts below cannot pass on an empty population."""
+    n = sum("{{TOOLKIT}}" in p.read_bytes().decode("utf-8")
+            for p in (REPO / "agent" / "skills").glob("*/SKILL.md"))
+    assert n >= 7, n
+    return n
+
+
+def test_codex_skills_mirror_the_claude_skills_one_to_one():
+    out = load().generate(REPO)
+    cl = sorted(p[len(".claude/skills/"):] for p in out if p.startswith(".claude/skills/"))
+    cx = sorted(p[len(".agents/skills/"):] for p in out if p.startswith(".agents/skills/"))
+    assert cl == cx and len(cx) >= 22          # 11 SKILL.md + 11 cli reference files
+
+
+def test_codex_skills_render_the_toolkit_token_for_codex():
+    # DECISIONS #2: the generated Codex tree carries `$X4_TOOLKIT`; install.ps1 rewrites it to
+    # `$env:X4_TOOLKIT`, install.sh keeps it. The in-repo copy cannot know the OS.
+    out = load().generate(REPO)
+    cx = {p: t for p, t in out.items() if p.startswith(".agents/skills/")}
+    assert not any("CLAUDE_PROJECT_DIR" in t or "{{" in t for t in cx.values())
+    assert sum("$X4_TOOLKIT/tools/x4validate" in t for t in cx.values()) == _token_skills()
+
+
+def test_claude_skills_are_unchanged_by_the_codex_target():
+    # the claude rendering keeps $CLAUDE_PROJECT_DIR until phase 7 (spec section 4)
+    out = load().generate(REPO)
+    assert sum("$CLAUDE_PROJECT_DIR/tools/x4validate" in t for p, t in out.items()
+               if p.startswith(".claude/skills/")) == _token_skills()
+    assert not any("$X4_TOOLKIT/tools" in t for p, t in out.items() if p.startswith(".claude/skills/"))
+
+
+def test_TWIN_a_stray_codex_skill_is_a_GHOST(fresh_copy):
+    g, exp, root = fresh_copy
+    (root / ".agents/skills/stray").mkdir(parents=True)
+    (root / ".agents/skills/stray/SKILL.md").write_bytes(b"x\n")
+    assert g.problems(exp, root) == ["GHOST    .agents/skills/stray/SKILL.md"]
+
+
+def test_TWIN_a_hand_edited_codex_skill_is_STALE(fresh_copy):
+    g, exp, root = fresh_copy
+    p = root / ".agents/skills/x4-debug/SKILL.md"
+    p.write_bytes(p.read_bytes() + b"\nextra\n")
+    assert g.problems(exp, root) == ["STALE    .agents/skills/x4-debug/SKILL.md"]

@@ -420,5 +420,5 @@ say which regime a formula belongs to, and the packed-inclusive scoping rule.
 
 **A CLI banner saying UNKNOWN or STALE means the artifact may not describe your files: rebuild** (`uv run x4effective build` · `uv run x4xref build` · `cd tools/basex; bash build-corpus.sh; bash build-effective.sh`) before you trust a number from it. An absent fingerprint is UNKNOWN, never fresh.
 
-**Your own notes go in `X4-NOTES.md`** in the project root. Read it at session start if it exists. The toolkit never writes or overwrites it. Never edit `CLAUDE.md`, `AGENTS.md`, `.claude/agents/`, `.claude/skills/`, `.claude/settings.json`, `.claude/hooks/`: they are regenerated and your edit is lost.
+**Your own notes go in `X4-NOTES.md`** in the project root. Read it at session start if it exists. The toolkit never writes or overwrites it. Never edit `CLAUDE.md`, `AGENTS.md`, `.claude/agents/`, `.claude/skills/`, `.claude/settings.json`, `.claude/hooks/`, `.agents/skills/`: they are regenerated and your edit is lost.
 
