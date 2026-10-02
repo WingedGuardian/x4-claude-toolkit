@@ -854,5 +854,52 @@ class TestRRPreArcBash(_RR):
         self.expect([("allow", "foreach ($f in gci .\\build) { Remove-Item $f.FullName }")])
 
 
+class TestLaneFRelativePathsUseThePayloadCwd(_RR):
+    """Lane F (2026-10-02): a relative operand is judged where the shell STARTS -- the
+    payload's top-level `cwd`. MEASURED on the deployed guard with cwd = the folder holding
+    reference/: rows 1-2 were ALLOW, rows 3-4 deny. Here the fixture's tmp folder holds
+    reference/, as Desktop/Modding/X4 does on the reference machine."""
+
+    def _v(self, command, cwd, tool="Bash"):
+        extra = {} if cwd is None else {"cwd": cwd}
+        return self.verdict_with(command, tool, **extra)[0]
+
+    def test_the_four_row_table(self):
+        mod = self.tmp.as_posix()
+        rel = "reference/libraries/__p.xml"
+        rows = [
+            ("deny", "r" + "m -f " + rel),
+            ("deny", "echo x > " + rel),
+            ("deny", "r" + "m -f " + mod + "/" + rel),
+            ("deny", "cd " + mod + " && r" + "m -f " + rel),
+        ]
+        bad = [(c, self._v(c, mod)) for want, c in rows if self._v(c, mod) != want]
+        self.assertEqual(bad, [])
+        # Windows-spelled cwd, as Claude Code sends it on Windows.
+        self.assertEqual(self._v(rows[0][1], str(self.tmp).replace("/", BS)), "deny")
+
+    def test_powershell_relative_paths_resolve_too(self):
+        mod = str(self.tmp)
+        self.assertEqual(self._v("Remove-Item reference" + BS + "libraries" + BS + "__p.xml", mod,
+                                 tool="PowerShell"), "deny")
+        self.assertEqual(self._v("Set-Content -Path reference" + BS + "libraries" + BS + "__p.xml"
+                                 " -Value x", mod, tool="PowerShell"), "deny")
+
+    def test_TWIN_powershell_from_an_unrelated_cwd_allows(self):
+        other = self.tmp / "elsewhere"
+        other.mkdir(exist_ok=True)
+        self.assertEqual(self._v("Remove-Item reference" + BS + "libraries" + BS + "__p.xml",
+                                 str(other), tool="PowerShell"), "allow")
+
+    def test_TWINS_unrelated_missing_and_garbage_cwd_and_a_cd_that_wins(self):
+        rel_del = "r" + "m -f reference/libraries/__p.xml"
+        other = (self.tmp / "elsewhere").as_posix()
+        self.assertEqual(self._v(rel_del, other), "allow")
+        self.assertEqual(self._v(rel_del, None), "allow")
+        self.assertEqual(self._v(rel_del, "Modding/X4"), "allow")
+        self.assertEqual(self._v(rel_del, "::garbage::"), "allow")
+        self.assertEqual(self._v("cd " + other + " && " + rel_del, self.tmp.as_posix()), "allow")
+
+
 if __name__ == "__main__":
     unittest.main()
