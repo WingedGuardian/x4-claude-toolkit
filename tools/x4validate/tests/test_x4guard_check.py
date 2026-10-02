@@ -341,3 +341,81 @@ def test_E1_TWIN_the_bound_holds_even_when_the_tree_kill_does_not(sandbox, tmp_p
         assert _alive(pid), "control: the tree kill was meant to be OFF here"
     finally:
         _reap(pid)
+
+
+def _fake_runner(g, monkeypatch, costs: dict):
+    """Replace the subprocess layer with a clock: each guard 'takes' costs[script] seconds and
+    times out if that exceeds the timeout it was GIVEN. Records (script, timeout given)."""
+    clock, seen = [1000.0], []
+    monkeypatch.setattr(g, "_clock", lambda: clock[0])
+    monkeypatch.setattr(g, "resolve_bash", lambda: ("bash", None))
+
+    def run(argv, payload, env, timeout):
+        name = Path(argv[1]).name
+        seen.append((name, round(timeout, 3)))
+        clock[0] += min(costs[name], timeout)
+        return (None, b"", b"") if costs[name] >= timeout else (0, b"", b"")
+    monkeypatch.setattr(g, "_run_bounded", run)
+    return seen
+
+
+def test_E2_the_second_delete_guard_gets_only_what_is_left(sandbox, monkeypatch):
+    _, tk, env = sandbox
+    for k, val in env.items():
+        monkeypatch.setenv(k, val)
+    g = _load(X4GUARD)
+    monkeypatch.setattr(g, "TIMEOUT_S", 4.0)
+    seen = _fake_runner(g, monkeypatch, {"protect-files.sh": 1.0, "protect-bash.sh": 0.5})
+    v = g.verdict_for("delete", None, None, str(tk / "x.txt"))
+    assert seen == [("protect-files.sh", 4.0), ("protect-bash.sh", 3.0)], seen
+    assert not v["inert"], v
+
+
+def test_E2_a_spent_budget_runs_no_further_guard_and_is_inert(sandbox, monkeypatch):
+    _, tk, env = sandbox
+    for k, val in env.items():
+        monkeypatch.setenv(k, val)
+    g = _load(X4GUARD)
+    monkeypatch.setattr(g, "TIMEOUT_S", 4.0)
+    seen = _fake_runner(g, monkeypatch, {"protect-files.sh": 99.0, "protect-bash.sh": 0.5})
+    v = g.verdict_for("delete", None, None, str(tk / "x.txt"))
+    assert seen == [("protect-files.sh", 4.0)], seen
+    assert v["decision"] == "deny" and v["inert"], v
+    assert v["guards"] == ["protect-files.sh", "protect-bash.sh"]
+    assert "X4_GUARD_TIMEOUT_S" in v["reason"], v["reason"]
+
+
+def test_E2_a_delete_with_both_guards_hung_spends_one_budget(sandbox, tmp_path):
+    """Real processes: MEASURED 17.6 s for two hung guards under a 2 s budget before this lane."""
+    _, tk, env = sandbox
+    pids = [tmp_path / "a.pid", tmp_path / "b.pid"]
+    hooks = _stub_hooks(tmp_path, {"protect-files.sh": _grandchild(pids[0]),
+                                   "protect-bash.sh": _grandchild(pids[1])})
+    t0 = time.monotonic()
+    v = _check_in(dict(env, X4_GUARD_TIMEOUT_S="5"), tk, "--kind", "delete", "--path",
+                  str(tmp_path / "x.txt"), script=hooks / "x4guard.py")
+    wall = time.monotonic() - t0
+    try:
+        assert v["decision"] == "deny" and v["inert"], v
+        assert wall < 9.5, f"{wall:.1f}s: two budgets were spent (one is ~5.5 s, two ~11 s)"
+    finally:
+        for p in pids:
+            _reap(int(p.read_text()) if p.exists() else None)
+
+
+@pytest.mark.parametrize("raw", ["abc", "0", "-3", "nan", "inf"])
+def test_E2_a_bad_budget_setting_is_an_inert_deny(sandbox, raw):
+    _, _, env = sandbox
+    rc, v, err = check(dict(env, X4_GUARD_TIMEOUT_S=raw), "--kind", "shell", "--shell", "bash",
+                       "--command", "echo hi")
+    assert rc == 0, err                       # "abc" was a traceback, rc 1, no JSON (MEASURED)
+    # The VALUE is named, not just the variable: a 0 budget would otherwise pass via the
+    # "budget already spent" path and hide a missing `t <= 0` clause (one twin per clause).
+    assert v["decision"] == "deny" and v["inert"] and f"X4_GUARD_TIMEOUT_S={raw!r}" in v["reason"], v
+
+
+def test_E2_TWIN_a_valid_budget_setting_is_honoured(sandbox):
+    _, _, env = sandbox
+    _, v, _ = check(dict(env, X4_GUARD_TIMEOUT_S="30.5"), "--kind", "shell", "--shell", "bash",
+                    "--command", "echo hi")
+    assert v["decision"] == "allow" and not v["inert"], v

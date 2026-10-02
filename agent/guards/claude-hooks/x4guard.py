@@ -14,14 +14,19 @@ one, labels PowerShell commands "Bash" (MEASURED 2026-09-30); judged as bash, a 
 write into reference/ was allowed.
 
 A guard that could not run is never an allow: missing script, no bash, the WSL bash stub, a
-timeout, a non-zero exit or unreadable output all return decision "deny" with inert=true and
-the cause named. An agent that can ask its user may present an inert deny as a question; it may
+timeout, a non-zero exit, unreadable output or an invalid X4_GUARD_TIMEOUT_S all return
+decision "deny" with inert=true and the cause named.
+
+X4_GUARD_TIMEOUT_S (default 25, a positive number of seconds) is the budget for the WHOLE
+check: a delete's two guards share it. On a timeout the guard's whole process tree is killed,
+and the worst-case wall clock is that budget plus KILL_WAIT_S + DRAIN_GRACE_S. An agent that can ask its user may present an inert deny as a question; it may
 not present it as an allow. Stdlib only; Python >= 3.10.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -32,7 +37,24 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-TIMEOUT_S = int(os.environ.get("X4_GUARD_TIMEOUT_S") or 25)
+
+
+def _timeout_setting() -> tuple:
+    """X4_GUARD_TIMEOUT_S: ONE budget for the whole check (both guards of a delete share it).
+    A bad value is a configuration error: an inert deny naming it, never a traceback."""
+    raw = os.environ.get("X4_GUARD_TIMEOUT_S")
+    if raw is None or not raw.strip():
+        return 25.0, None
+    try:
+        t = float(raw)
+    except ValueError:
+        t = math.nan
+    if not math.isfinite(t) or t <= 0:
+        return None, f"X4_GUARD_TIMEOUT_S={raw!r} is not a positive number of seconds"
+    return t, None
+
+
+TIMEOUT_S, TIMEOUT_ERROR = _timeout_setting()
 RANK = {"allow": 0, "advise": 1, "ask": 2, "deny": 3}
 #: How the guards say "I checked nothing" (or only part). They ASK in those states, which an
 #: agent would put to its user as an ordinary confirmation; here it is an inert deny instead.
@@ -141,9 +163,12 @@ def _deployed() -> bool:
     return HERE.name == "hooks" and HERE.parent.name == ".claude"
 
 
-def run_guard(script: str, payload: dict) -> dict:
-    """One guard, one verdict dict. Anything that keeps it from producing a real verdict is inert."""
+def run_guard(script: str, payload: dict, deadline: float | None = None) -> dict:
+    """One guard, one verdict dict. Anything that keeps it from producing a real verdict is inert.
+    `deadline` (a _clock() value) is the CHECK's deadline: a second guard gets only what is left."""
     guards = [script]
+    if TIMEOUT_ERROR:
+        return _inert(TIMEOUT_ERROR, guards)
     target = HERE / script
     if not target.is_file():
         return _inert(f"guard script missing: {script}", guards)
@@ -153,15 +178,22 @@ def run_guard(script: str, payload: dict) -> dict:
     bash, why = resolve_bash()
     if not bash:
         return _inert(why, guards)
+    if deadline is None:
+        deadline = _clock() + TIMEOUT_S
+    remaining = deadline - _clock()
+    if remaining <= 0:
+        return _inert(f"{script} was not run: this check's {TIMEOUT_S:g}s budget "
+                      f"(X4_GUARD_TIMEOUT_S) was already spent", guards)
     try:
         # X4_GUARD_CHECK=1: the guards' internal check protocol. Every "checked nothing" path exits
         # 2 instead of asking (a no-op for Claude Code's hooks, where the variable is unset).
         rc, out, err = _run_bounded([bash, str(target)], json.dumps(payload).encode("utf-8"),
-                                    dict(os.environ, X4_GUARD_CHECK="1"), TIMEOUT_S)
+                                    dict(os.environ, X4_GUARD_CHECK="1"), remaining)
     except OSError as e:
         return _inert(f"{script} could not start: {e}", guards)
     if rc is None:
-        return _inert(f"{script} timed out after {TIMEOUT_S}s", guards)
+        return _inert(f"{script} timed out: this check's {TIMEOUT_S:g}s budget "
+                      f"(X4_GUARD_TIMEOUT_S) ran out", guards)
     if rc == 2:
         return _inert(f"{script} reported it could not evaluate this (exit 2, X4_GUARD_CHECK)", guards)
     if rc != 0:
@@ -179,14 +211,15 @@ def run_guard(script: str, payload: dict) -> dict:
 def verdict_for(kind: str, shell: str | None, command: str | None, path: str | None) -> dict:
     """A relative path is resolved from the CALLER's working directory (Codex apply_patch paths
     are relative). A delete is judged as the stricter of a write and an `rm -f` of that path."""
+    deadline = _clock() + TIMEOUT_S if TIMEOUT_S else None
     if kind == "shell":
-        return run_guard("protect-bash.sh", guard_payload(kind, shell, command, None))
+        return run_guard("protect-bash.sh", guard_payload(kind, shell, command, None), deadline)
     path = os.path.abspath(path)
-    parts = [run_guard("protect-files.sh", guard_payload("write", None, None, path))]
+    parts = [run_guard("protect-files.sh", guard_payload("write", None, None, path), deadline)]
     if kind == "delete":
         quoted = path.replace("\\", "/").replace("'", "'\"'\"'")    # close, "'", reopen
         rm = "rm -f '" + quoted + "'"
-        parts.append(run_guard("protect-bash.sh", guard_payload("shell", "bash", rm, None)))
+        parts.append(run_guard("protect-bash.sh", guard_payload("shell", "bash", rm, None), deadline))
     worst = max(parts, key=lambda v: (v["inert"], RANK[v["decision"]]))
     worst = dict(worst)
     worst["guards"] = [g for v in parts for g in v["guards"]]
