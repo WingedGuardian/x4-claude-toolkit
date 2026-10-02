@@ -1,0 +1,72 @@
+# Codex `.rules` classification of EVERY verdict site in agent/guards/claude-hooks/protect-bash.sh
+# (lane B Task 8). gen-agent-trees.py renders the forbidden/prompt rows to .codex/rules/x4.rules.
+#
+# The rule: a row becomes a Codex prefix_rule ONLY if every command matching its prefix gets AT
+# LEAST that verdict from the hook -- a rule may never be stricter than the guard it mirrors.
+# forbidden needs a hook DENY for every match example, prompt at least an ASK, under both shells
+# (tests/test_codex_rules.py proves it against the live guard). Everything path-scoped,
+# state-gated or parse-dependent is hook_only, with the reason.
+#
+# A row is keyed by `anchor` -- a distinctive substring of the site's line -- not by line number,
+# so unrelated guard edits do not churn it. `optional: true` marks a site that may not exist in
+# this tree yet (the 2026-10-02 profile split lands separately); every other row must match a
+# site, and every site must match exactly one row (tests/test_codex_rules.py).
+#
+# Why so few prefix rules: Codex .rules see only argv prefixes (no paths, no state, no parse),
+# and almost every guard rule depends on one of those. The rules are a second layer for the
+# case where the hooks are not running (unreviewed or disabled hooks are silent -- spec 5.8);
+# the hooks remain the guard.
+
+- id: git-add-all
+  source: protect-bash.sh
+  anchor: "GIT ADD -A / . IN A SHARED WORKSPACE"
+  fact: git_add_all
+  verdict: deny
+  bucket: forbidden
+  reason: "stages every untracked file, including another session's work; prefix-exact"
+  justification: "git add -A / --all / . stages EVERY untracked file, including another session's work-in-progress. Stage explicit paths (git add <file> ...)."
+  pattern: ["git", "add", ["-A", "--all", "."]]
+  match: [["git", "add", "-A"], ["git", "add", "--all"], ["git", "add", "."]]
+  not_match: [["git", "add", "notes.md"], ["git", "status"], ["git", "add", "-p"]]
+
+- {id: ps-unparseable, source: protect-bash.sh, anchor: "This PowerShell command does not parse", verdict: deny, bucket: hook_only, reason: "depends on parsing the whole command"}
+- {id: bash-unparseable, source: protect-bash.sh, anchor: "This command does not PARSE", bucket: hook_only, reason: "depends on parsing the whole command (verdict changed ask->deny on 2026-10-02)"}
+- {id: substituted-command-name, source: protect-bash.sh, anchor: "A command name here arrives through substitution", verdict: deny, bucket: hook_only, reason: "depends on parsing substitutions"}
+- {id: part-not-analysed, source: protect-bash.sh, anchor: "Part of this command could not be analysed", verdict: ask, bucket: hook_only, reason: "depends on parsing nested PowerShell"}
+- {id: over-nested, source: protect-bash.sh, anchor: "This command nests so many substitutions", bucket: hook_only, reason: "depends on expansion depth (verdict changed ask->deny on 2026-10-02)"}
+- {id: rm-game, source: protect-bash.sh, anchor: "on rm_hits_game", fact: rm_hits_game, verdict: deny, bucket: hook_only, reason: "path-scoped: the configured game root"}
+- {id: rm-reference, source: protect-bash.sh, anchor: "on rm_targets_reference", fact: rm_targets_reference, verdict: deny, bucket: hook_only, reason: "path-scoped: the configured reference root"}
+- {id: write-reference, source: protect-bash.sh, anchor: "on writes_reference", fact: writes_reference, verdict: deny, bucket: hook_only, reason: "path-scoped: the configured reference root"}
+- id: lift-reference-deny
+  source: protect-bash.sh
+  anchor: "on lifts_reference_deny"
+  fact: lifts_reference_deny
+  verdict: ask
+  bucket: prompt
+  reason: "DECISIONS #16: lifting the reference/ OS protection is the user's step. The prefix covers `x4refguard.py remove`, which the hook asks on unconditionally; a raw `icacls /remove|/reset` asks only when aimed at the reference root (path-scoped), so that half stays hook-only"
+  justification: "This lifts the OS delete/write protection on reference/ -- the user's step. Confirm only if they asked for it."
+  pattern: [["python", "python3", "py"], "scripts/x4refguard.py", "remove"]
+  match: [["python", "scripts/x4refguard.py", "remove"], ["python3", "scripts/x4refguard.py", "remove"]]
+  not_match: [["python", "scripts/x4refguard.py", "status"], ["python", "scripts/x4refguard.py", "apply"]]
+
+- {id: reunpack-locked, source: protect-bash.sh, anchor: "BLOCKED: reference/ is locked", verdict: deny, bucket: hook_only, reason: "sentinel-gated: only while reference/.unpacked-and-locked exists"}
+- {id: rm-in-x4-dir, source: protect-bash.sh, anchor: "on rm_in_x4_dir", fact: rm_in_x4_dir, bucket: hook_only, reason: "path-scoped (verdict changed ask->advise on 2026-10-02)"}
+- {id: rm-in-profile, source: protect-bash.sh, anchor: "on rm_in_profile", fact: rm_in_profile, verdict: ask, bucket: hook_only, optional: true, reason: "path-scoped: the X4 profile"}
+- {id: git-wipes-x4-dir, source: protect-bash.sh, anchor: "on git_wipes_x4_dir", fact: git_wipes_x4_dir, verdict: ask, bucket: hook_only, reason: "path-scoped: only inside an X4 directory"}
+- {id: git-discards-x4-files, source: protect-bash.sh, anchor: "on git_discards_x4_files", fact: git_discards_x4_files, verdict: advise, bucket: hook_only, reason: "path-scoped; an advisory has no Codex rule form"}
+- {id: rm-saves, source: protect-bash.sh, anchor: "on rm_saves", fact: rm_saves, verdict: ask, bucket: hook_only, reason: "path-scoped: the saves folder"}
+- {id: writes-profile, source: protect-bash.sh, anchor: "on writes_profile", fact: writes_profile, verdict: ask, bucket: hook_only, optional: true, reason: "path-scoped: the X4 profile"}
+- {id: writes-documents, source: protect-bash.sh, anchor: "on writes_documents", fact: writes_documents, bucket: hook_only, reason: "path-scoped (verdict changed ask->advise on 2026-10-02)"}
+- {id: copy-into-game, source: protect-bash.sh, anchor: "Copying into a game or profile directory", verdict: advise, bucket: hook_only, reason: "path-scoped; an advisory has no Codex rule form"}
+- {id: redirect-into-game, source: protect-bash.sh, anchor: "Redirecting output into a game or profile directory", verdict: advise, bucket: hook_only, reason: "path-scoped; an advisory has no Codex rule form"}
+- {id: sed-i-game, source: protect-bash.sh, anchor: "on sed_i_in_game_or_profile", fact: sed_i_in_game_or_profile, verdict: deny, bucket: hook_only, reason: "path-scoped: game or profile files"}
+- {id: truncate-durable-record, source: protect-bash.sh, anchor: "BLOCKED: truncating redirect onto a durable record", verdict: deny, bucket: hook_only, reason: "depends on the redirect target's name"}
+- {id: python-open-durable-record, source: protect-bash.sh, anchor: "in a command that names a durable record", verdict: deny, bucket: hook_only, reason: "depends on the command's content"}
+- {id: bare-python-toolkit, source: protect-bash.sh, anchor: "BARE PYTHON ON TOOLKIT CODE", verdict: deny, bucket: hook_only, reason: "depends on which script runs (toolkit code only)"}
+- {id: recursive-grep-reference, source: protect-bash.sh, anchor: "WRONG TOOL: recursive text search that traverses", verdict: deny, bucket: hook_only, reason: "path-scoped: the reference root"}
+- {id: profile-search-by-name, source: protect-bash.sh, anchor: "CHECK THE INSTRUMENT: the profile content.xml", verdict: deny, bucket: hook_only, reason: "depends on the search target and pattern"}
+- {id: dollarq-after-pipe, source: protect-bash.sh, anchor: "AFTER A PIPELINE reports the LAST", verdict: deny, bucket: hook_only, reason: "a shape of the whole command, not a prefix"}
+- {id: measurement-to-tmp, source: protect-bash.sh, anchor: "WRITING MEASUREMENT OUTPUT TO /tmp", verdict: deny, bucket: hook_only, reason: "depends on the redirect target"}
+- {id: recursive-grep-workspace, source: protect-bash.sh, anchor: "WRONG SCOPE: recursive text search rooted", verdict: deny, bucket: hook_only, reason: "path-scoped: the workspace or game root"}
+- {id: timeout-above-cap, source: protect-bash.sh, anchor: "TIMEOUT ABOVE THE CAP", verdict: deny, bucket: hook_only, reason: "reads a Claude Code tool parameter; no Codex analogue"}
+- {id: long-job-foreground, source: protect-bash.sh, anchor: "LONG JOB IN THE FOREGROUND", verdict: deny, bucket: hook_only, reason: "reads a Claude Code tool parameter (run_in_background); no Codex analogue"}

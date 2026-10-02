@@ -1,0 +1,14 @@
+{
+  "session_id": "<SESSION_ID>",
+  "turn_id": "<TURN_ID>",
+  "transcript_path": "<TRANSCRIPT>",
+  "cwd": "<CWD>",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: viashell.txt\n+viashell\n*** End Patch\nPATCH"
+  },
+  "tool_use_id": "<TOOL_USE_ID>"
+}

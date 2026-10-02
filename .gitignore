@@ -108,3 +108,8 @@ release/nexus/
 # Local audit evidence contains machine paths, copied logs and game/save data.
 # Keep the portable audit scripts tracked; never ship their raw output.
 /audit-output/
+
+# Codex (lane B): hooks.json carries the ABSOLUTE project root (part of Codex's trust hash),
+# so deploy and the installers render it per install; the adapter's unknown-tool log is local.
+/.codex/hooks.json
+/.codex/x4-unknown-tools.log

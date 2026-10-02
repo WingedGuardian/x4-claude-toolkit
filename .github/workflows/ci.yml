@@ -458,6 +458,13 @@ jobs:
         working-directory: tools/x4validate
         run: uv run --frozen python scripts/stamp-mod-build.py --check
 
+      # Codex's OWN policy checker proves .codex/rules/x4.rules parses and that every rule's
+      # match/not_match examples hold (tests/test_codex_rules.py). Pinned: the measurements
+      # behind the Codex adapter are for 0.160.0, and a new Codex must not move them unseen.
+      # Without it those tests SKIP (counted), which would be a dormant check on CI.
+      - name: Install the Codex CLI (pinned) for the .rules checks
+        run: npm i -g @openai/codex@0.160.0
+
       - name: Run the suite with NO game installed
         working-directory: tools/x4validate
         # X4_MAX_SKIPS turns the skip COUNT into a failure instead of a number nobody

@@ -1,0 +1,122 @@
+"""gen-agent-trees.py, Codex target (lane B Task 7): .codex/hooks carries every guard byte for
+byte plus the adapter, and hooks.json comes from ONE frozen template.
+
+Kept apart from test_gen_agent_trees.py so lanes A, B and E can change their own tests freely.
+"""
+import hashlib
+import importlib.util
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+PKG = Path(__file__).resolve().parents[1]
+REPO = PKG.parents[1]
+SRC = PKG / "scripts" / "gen-agent-trees.py"
+TEMPLATE = REPO / "agent" / "targets" / "codex" / "hooks.json.tmpl"
+
+#: Changing a Codex hook DEFINITION silently switches every user's guards off until they
+#: re-review it (spike R5; Codex keys trust on the definition's hash). Changing this pin needs a
+#: CHANGELOG entry headed "Codex users must re-review hooks" carrying the new value
+#: (test_codex_disclosure.py checks that).
+TEMPLATE_SHA256 = "d6fef82e09d3f54afbda775d1646bd8968a02b2893de8c867476aca17eef4d19"
+
+
+def load():
+    spec = importlib.util.spec_from_file_location("gen_agent_trees_codex_under_test", SRC)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+@pytest.fixture(autouse=True)
+def _source_checkout():
+    if not (REPO / "agent").is_dir():
+        pytest.skip("not a source checkout (no agent/) -- Codex generation NOT checked here")
+
+
+def test_codex_hooks_template_is_frozen():
+    b = TEMPLATE.read_bytes().replace(b"\r\n", b"\n")
+    assert hashlib.sha256(b).hexdigest() == TEMPLATE_SHA256
+
+
+def test_rendered_hooks_json_is_valid_and_uses_wrappers(tmp_path):
+    root = tmp_path / "X4 Foundations"
+    d = json.loads(load().render_codex_hooks_json(root))
+    assert set(d["hooks"]) == {"SessionStart", "PreToolUse", "PostToolUse"}
+    pre = d["hooks"]["PreToolUse"][0]
+    assert pre["matcher"] == ".*" and pre["hooks"][0]["timeout"] == 60
+    assert d["hooks"]["PostToolUse"][0]["matcher"] == "apply_patch"
+    for groups in d["hooks"].values():
+        for h in groups[0]["hooks"]:
+            win, posix = h["commandWindows"], h["command"]
+            assert str(root).replace("/", "\\") + "\\.codex\\hooks\\codex-entry.ps1" in win
+            assert str(root).replace("\\", "/") + "/.codex/hooks/codex-entry.sh" in posix
+            # MEASURED: a hook command that STARTS with a double quote never runs (0/3) -- fails open
+            assert not win.startswith('"') and not posix.startswith('"')
+            # MEASURED: pwsh first, Windows PowerShell as the fallback when pwsh is absent
+            assert win.startswith("pwsh ") and " || powershell " in win
+            assert "-File" in win and "ExecutionPolicy Bypass" in win
+
+
+@pytest.mark.parametrize("bad", ['C:/a"b', "C:/a\nb", "C:/a%USERNAME%b", "C:/a\rb"])
+def test_render_refuses_unsafe_root(bad):
+    g = load()
+    with pytest.raises(g.GenerationError):
+        g.render_codex_hooks_json(Path(bad))
+
+
+def test_TWIN_a_spaced_parenthesised_root_is_fine():
+    d = json.loads(load().render_codex_hooks_json(Path("C:/Program Files (x86)/Steam/steamapps/common/X4 Foundations")))
+    assert "Program Files (x86)" in d["hooks"]["PreToolUse"][0]["hooks"][0]["commandWindows"]
+
+
+def test_codex_hooks_carry_the_guards_byte_identical():
+    exp = load().generate(REPO)
+    claude = {rel[len(".claude/hooks/"):]: t for rel, t in exp.items() if rel.startswith(".claude/hooks/")}
+    codex = {rel[len(".codex/hooks/"):]: t for rel, t in exp.items() if rel.startswith(".codex/hooks/")}
+    assert claude and all(codex.get(n) == t for n, t in claude.items())
+    adapters = set(codex) - set(claude)
+    assert adapters == {"codex_adapter.py", "patch_paths.py", "codex_trust.py", "codex-entry.ps1", "codex-entry.sh"}
+
+
+def test_codex_tree_is_fresh_in_the_checkout():
+    g = load()
+    stale = [p for p in g.problems(g.generate(REPO), REPO) if ".codex/" in p]
+    assert stale == [], "run: uv run python scripts/gen-agent-trees.py"
+
+
+def test_codex_hook_modes_match_the_claude_copy():
+    """Byte identity includes the executable bit (git's index is the only record on Windows)."""
+    r = subprocess.run(["git", "-C", str(REPO), "ls-files", "-s", "--", ".claude/hooks", ".codex/hooks"],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or ".codex/hooks/" not in r.stdout:
+        pytest.skip("the Codex hooks are not tracked here -- modes NOT checked")
+    modes = {}
+    for line in r.stdout.splitlines():
+        meta, path = line.split("\t", 1)
+        modes[path] = meta.split()[0]
+    pairs = {p[len(".codex/hooks/"):]: m for p, m in modes.items() if p.startswith(".codex/hooks/")}
+    diff = {n: (modes.get(".claude/hooks/" + n), m) for n, m in pairs.items()
+            if ".claude/hooks/" + n in modes and modes[".claude/hooks/" + n] != m}
+    assert diff == {}
+    assert pairs.get("codex-entry.sh") == "100755"
+
+
+def test_TWIN_ghost_in_codex_hooks_is_reported(tmp_path):
+    g = load()
+    exp = g.generate(REPO)
+    for rel, text in exp.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(text.encode("utf-8"))
+    (tmp_path / ".codex/hooks/stray.sh").write_bytes(b"x\n")
+    assert g.problems(exp, tmp_path) == ["GHOST    .codex/hooks/stray.sh"]
+
+
+def test_hooks_json_is_not_a_generated_file():
+    """It holds an absolute path (per install): rendered by deploy/installers, never committed."""
+    assert ".codex/hooks.json" not in load().generate(REPO)
+    r = subprocess.run(["git", "-C", str(REPO), "check-ignore", "-q", ".codex/hooks.json"])
+    assert r.returncode == 0, ".codex/hooks.json must be git-ignored"

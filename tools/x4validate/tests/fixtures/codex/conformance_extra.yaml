@@ -1,0 +1,117 @@
+# Codex-specific conformance cases (spec 7.2) that scripts/test-hooks.sh cannot express: the
+# native Codex shapes. Each runs through the full Codex chain (wrapper -> adapter -> guards) AND
+# through the Claude hooks named in `claude` (their worst verdict, the composition spec 5.2
+# defines: a delete = max(Write of the path, `rm -f` of the path)); both must be EQUAL, and equal
+# `expect` where a case states one (omitted where the guard policy itself is in flux).
+#
+# Tokens: {TK} sandbox toolkit root (native separators), {TKP} its forward-slash form,
+# {TKMSYS} its Git Bash form (/c/...), {TMP} the sandbox parent. `files` are created first.
+
+- id: powershell-as-bash-set-content-into-reference
+  fixture: bash_powershell
+  shell: powershell
+  command: "Set-Content -Path '{TK}\\reference\\libraries\\wares.xml' -Value 'x'"
+  claude: [{tool: PowerShell, command: "Set-Content -Path '{TK}\\reference\\libraries\\wares.xml' -Value 'x'"}]
+  expect: deny
+
+- id: powershell-as-bash-harmless
+  fixture: bash_powershell
+  shell: powershell
+  command: "Get-ChildItem dev"
+  claude: [{tool: PowerShell, command: "Get-ChildItem dev"}]
+  expect: allow
+
+- id: multi-file-patch-add-dev-delete-reference
+  fixture: apply_patch_multi
+  command: "*** Begin Patch\n*** Add File: dev/mymod/a.xml\n+<a/>\n*** Delete File: reference/libraries/wares.xml\n*** End Patch"
+  claude:
+    - {path: "{TK}/dev/mymod/a.xml"}
+    - {path: "{TK}/reference/libraries/wares.xml"}
+    - {command: "rm -f '{TKP}/reference/libraries/wares.xml'"}
+  expect: deny
+
+- id: delete-file-in-dev
+  fixture: apply_patch_delete
+  files: ["{TK}/dev/mymod/old.xml"]
+  command: "*** Begin Patch\n*** Delete File: dev/mymod/old.xml\n*** End Patch"
+  claude:
+    - {path: "{TK}/dev/mymod/old.xml"}
+    - {command: "rm -f '{TKP}/dev/mymod/old.xml'"}
+  # no expect: an rm in an X4 directory is policy in flux (ask -> advise, 2026-10-02); only equality is asserted
+
+- id: delete-file-in-reference
+  fixture: apply_patch_delete
+  command: "*** Begin Patch\n*** Delete File: reference/libraries/wares.xml\n*** End Patch"
+  claude:
+    - {path: "{TK}/reference/libraries/wares.xml"}
+    - {command: "rm -f '{TKP}/reference/libraries/wares.xml'"}
+  expect: deny
+
+- id: move-out-of-reference
+  fixture: apply_patch_move
+  command: "*** Begin Patch\n*** Update File: reference/libraries/wares.xml\n*** Move to: dev/mymod/w.xml\n@@\n-ref\n+x\n*** End Patch"
+  claude:
+    - {path: "{TK}/reference/libraries/wares.xml"}
+    - {command: "rm -f '{TKP}/reference/libraries/wares.xml'"}
+    - {path: "{TK}/dev/mymod/w.xml"}
+  expect: deny
+
+- id: move-within-dev
+  fixture: apply_patch_move
+  files: ["{TK}/dev/mymod/w.xml"]
+  command: "*** Begin Patch\n*** Update File: dev/mymod/w.xml\n*** Move to: dev/mymod/w2.xml\n@@\n-x\n+y\n*** End Patch"
+  claude:
+    - {path: "{TK}/dev/mymod/w.xml"}
+    - {command: "rm -f '{TKP}/dev/mymod/w.xml'"}
+    - {path: "{TK}/dev/mymod/w2.xml"}
+  # no expect: an rm in an X4 directory is policy in flux (ask -> advise, 2026-10-02); only equality is asserted
+
+- id: path-with-spaces-base-game-file
+  fixture: apply_patch_update
+  command: "*** Begin Patch\n*** Update File: {TMP}/X4 Foundations/libraries/wares.xml\n@@\n-a\n+b\n*** End Patch"
+  claude: [{path: "{TMP}/X4 Foundations/libraries/wares.xml"}]
+  expect: deny
+
+- id: drive-dialect-backslash
+  fixture: apply_patch_update
+  command: "*** Begin Patch\n*** Update File: {TK}\\reference\\libraries\\wares.xml\n@@\n-ref\n+x\n*** End Patch"
+  claude: [{path: "{TK}\\reference\\libraries\\wares.xml"}]
+  expect: deny
+
+- id: drive-dialect-forward-slash
+  fixture: apply_patch_update
+  command: "*** Begin Patch\n*** Update File: {TKP}/reference/libraries/wares.xml\n@@\n-ref\n+x\n*** End Patch"
+  claude: [{path: "{TKP}/reference/libraries/wares.xml"}]
+  expect: deny
+
+- id: drive-dialect-msys
+  fixture: apply_patch_update
+  command: "*** Begin Patch\n*** Update File: {TKMSYS}/reference/libraries/wares.xml\n@@\n-ref\n+x\n*** End Patch"
+  claude: [{path: "{TKMSYS}/reference/libraries/wares.xml"}]
+  expect: deny
+
+- id: relative-path-against-cwd
+  fixture: apply_patch_update
+  cwd: "{TK}/reference"
+  command: "*** Begin Patch\n*** Update File: libraries/wares.xml\n@@\n-ref\n+x\n*** End Patch"
+  claude: [{path: "{TK}/reference/libraries/wares.xml"}]
+  expect: deny
+
+- id: relative-path-twin-in-dev
+  fixture: apply_patch_add
+  cwd: "{TK}/dev"
+  command: "*** Begin Patch\n*** Add File: mymod/libraries/wares.xml\n+<diff/>\n*** End Patch"
+  claude: [{path: "{TK}/dev/mymod/libraries/wares.xml"}]
+  expect: allow
+
+- id: shell-heredoc-patch-into-reference
+  fixture: bash_shell_heredoc_patch
+  command: "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: reference/libraries/x.xml\n+<a/>\n*** End Patch\nPATCH"
+  claude: [{path: "{TK}/reference/libraries/x.xml"}]
+  expect: deny
+
+- id: profile-manifest-asks
+  fixture: apply_patch_update
+  command: "*** Begin Patch\n*** Update File: {TMP}/profile/content.xml\n@@\n-a\n+b\n*** End Patch"
+  claude: [{path: "{TMP}/profile/content.xml"}]
+  expect: ask
