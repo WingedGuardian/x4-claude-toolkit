@@ -55,7 +55,7 @@ def test_no_personal_path_reaches_generated_output():
     # carry generic path fixtures (/Users/tester, /home/user) and Steam build ids; they are
     # covered by scan-identifiers.py, which knows placeholders from real identifiers.
     hits = [rel for rel, text in load().generate(REPO).items()
-            if not rel.startswith(".claude/hooks/") and pat.search(text)]
+            if not rel.startswith((".claude/hooks/", ".codex/hooks/")) and pat.search(text)]
     assert hits == []
 
 

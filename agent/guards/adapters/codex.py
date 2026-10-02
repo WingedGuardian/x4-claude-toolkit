@@ -142,21 +142,41 @@ def record_unknown(tool) -> None:
 
 # ------------------------------------------------------------------ judge -------------- #
 
+#: Path checks of one patch run concurrently: M13 (2026-10-02) measured a 3-file patch at
+#: p95 5.8 s through the whole chain when the checks ran one after another.
+PARALLEL = 4
+
+
+def _one(call: tuple) -> dict:
+    kind, sh, cmd, path, label = call
+    try:
+        v = dict(x4guard.verdict_for(kind, sh, cmd, path))
+    except Exception as e:                # a guard that raised checked nothing
+        v = inert(f"the guard raised {type(e).__name__}: {e}", label)
+    v["label"] = label
+    return v
+
+
 def judge(calls: list[tuple], deadline: float) -> list[dict]:
-    out = []
-    for kind, sh, cmd, path, label in calls:
+    """Verdicts in call order. The shell check (if any) runs first; a real deny there ends it.
+    Every guard shares the remaining budget: x4guard.TIMEOUT_S is set from it before each batch."""
+    from concurrent.futures import ThreadPoolExecutor
+    out: list[dict] = []
+    shell = [c for c in calls if c[0] == "shell"]
+    paths = [c for c in calls if c[0] != "shell"]
+    for batch in ([[c] for c in shell] + ([paths] if paths else [])):
         remaining = deadline - time.monotonic()
         if remaining < 1:
-            out.append(inert("the adapter's time budget ran out before this check", label))
+            out += [inert("the adapter's time budget ran out before this check", c[4]) for c in batch]
             continue
         x4guard.TIMEOUT_S = max(1, int(remaining))
-        try:
-            v = dict(x4guard.verdict_for(kind, sh, cmd, path))
-        except Exception as e:            # a guard that raised checked nothing
-            v = inert(f"the guard raised {type(e).__name__}: {e}", label)
-        v["label"] = label
-        out.append(v)
-        if v["decision"] == "deny" and not v.get("inert"):
+        if len(batch) == 1:
+            got = [_one(batch[0])]
+        else:
+            with ThreadPoolExecutor(min(PARALLEL, len(batch))) as ex:
+                got = list(ex.map(_one, batch))
+        out += got
+        if any(v["decision"] == "deny" and not v.get("inert") for v in got):
             break                         # the call is refused; later checks cannot change that
     return out
 
