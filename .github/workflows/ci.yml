@@ -125,9 +125,12 @@ jobs:
         shell: bash
         run: bash tools/basex/smoke-basex.sh
 
-      # --frozen fails if uv.lock has drifted from pyproject.toml instead of silently
-      # resolving something newer. A CI run that quietly installs different versions than
-      # a user gets is not testing what ships.
+      # Frozen installation consumes the lock without checking freshness. Check
+      # separately so stale metadata cannot pass merely because installation worked.
+      - name: Check dependency lock freshness
+        working-directory: tools/x4validate
+        run: uv lock --check
+
       # The hook regression suite. A PreToolUse hook sits in front of every Bash
       # call, so its two failure modes are both expensive: over-block makes
       # legitimate work impossible, under-block makes the guard decorative while

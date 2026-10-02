@@ -18,6 +18,16 @@ reference or system-software files and no safety behavior. The later implementat
 deployment, including the scope correction, are recorded below. Hook edits belong in
 `agent/guards/claude-hooks/`, followed by regeneration; never edit generated hooks directly.
 
+## Status — 2026-10-02 (master)
+
+- **F2, F3, F4 FIXED** on master, test-first (`tests/test_framework_hardening.py`), ported from
+  the rolled-back `78841ba` with one change: F3's "VALIDATION PARTIAL" advisory on any skip was
+  dropped, because MEASURED over 50 real edits in 23 dev mods, 50 of 50 carry a routine `--file`
+  skip. F4 is fixed in CI only. The user decided (2026-10-02) that end-user setup does NOT refuse
+  a stale lock: CI catches it before release, and setup keeps resolving.
+- **Still open:** F1 (opaque interpreter writes), F8/F9 (installers and x4lock omit `AGENTS.md`
+  and `agent/`), guard-health telemetry. These go to Plan 2.
+
 ## Reconciliation with master — 2026-10-02
 
 The audit branch was rebased onto `74b38fe`. Master's wrapper, neutral guard sources,

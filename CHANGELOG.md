@@ -55,6 +55,19 @@
   - The deny names the alternative: `rg --no-ignore`, or a single file.
   - A Glob there gets an "unreliable zero" advisory instead.
   - The `mod-research` and `cross-file-impact` subagents now say how to search installed mods.
+- **Backups no longer overwrite each other** (framework audit F2). Two edits in the same second
+  shared one backup name, so the second snapshot replaced the first and the original text was
+  lost. Each backup now reserves a unique file (`<timestamp>__<name>.XXXXXX`); older names still
+  restore.
+- **The post-edit validator says when it could not validate** (framework audit F3). A missing
+  or crashing `uv`, unreadable output, or a DEGRADED result used to be silent, which read as
+  "no findings". It now advises "VALIDATION NOT COMPLETED". A routine `--file` skip stays
+  silent: it is on every edit (50 of 50 measured).
+- **CI checks that `uv.lock` matches `pyproject.toml`** (framework audit F4). `uv sync --frozen`
+  installs from a stale lock without complaint.
+- **The timeout guard no longer denies a background command for exceeding the foreground cap.**
+  Background calls are judged against their own 2-hour cap, and the messages no longer claim a
+  background call is uncapped.
 - `.gitignore` no longer swallows a skill's `reference/` folder under `agent/skills/`. The game-data
   rule matched it there too, as it once did under `.claude/skills/`.
 

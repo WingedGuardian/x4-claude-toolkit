@@ -128,7 +128,7 @@ Guarded: Bash, PowerShell (same rules), Edit, Write, NotebookEdit. A timed-out h
 ### General
 - One mod = one named folder, never a mega-file
 - `reference\` is never edited — it is source-of-truth for base game XML
-- Existing Edit/Write/NotebookEdit targets get backups; same-second snapshots can collide
+- Existing Edit/Write/NotebookEdit targets get a uniquely named backup first
 
 ### Iteration snapshots (standing process)
 Before experimenting on a working state, snapshot it to `.claude\backups\known-good-<name>\`.
