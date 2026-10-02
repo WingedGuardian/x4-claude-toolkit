@@ -8,7 +8,17 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-. "$HERE/../.claude/hooks/_x4-env.sh"        # X4_GAME, X4_REFERENCE, X4_TOOLKIT
+# X4_GAME, X4_REFERENCE, X4_TOOLKIT -- from whichever guard copy is installed. An
+# `install --agent codex` has .codex/hooks/ and no .claude/hooks/ (a byte-identical copy
+# of the same file), so naming one location killed --unpack in every Codex-only install.
+if [ -f "$HERE/../.claude/hooks/_x4-env.sh" ]; then
+  . "$HERE/../.claude/hooks/_x4-env.sh"
+elif [ -f "$HERE/../.codex/hooks/_x4-env.sh" ]; then
+  . "$HERE/../.codex/hooks/_x4-env.sh"
+else
+  echo "ERROR: no _x4-env.sh in .claude/hooks/ or .codex/hooks/ beside $HERE -- re-run the installer." >&2
+  exit 2
+fi
 
 XRCAT="$HERE/xrcat"
 INCLUDE='\.(xml|xsd|lua|xpl)$'               # text/markup only — keeps the tree small

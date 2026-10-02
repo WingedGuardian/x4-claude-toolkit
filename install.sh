@@ -16,6 +16,9 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # repo / toolkit source
 
 # --- defaults (overridable by flags / env) ---------------------------------
 METHOD=""; ASSUME_YES=0; DO_UNPACK=0; OVER_EXISTING=0; DRY_RUN=0
+#: Which agent targets to install (user decision #10, 2026-10-02: default `all`). The
+#: Codex files are inert without Codex, and x4doctor reports which targets are live.
+AGENT="all"
 #: Did a HUMAN name the destination, or did we find it by scanning? Recorded at
 #: parse time: an env var is a deliberate act, a Steam-folder scan is not.
 GAME_NAMED=$([ -n "${X4_GAME:-}" ] && echo named || echo detected)
@@ -38,7 +41,9 @@ Usage: bash install.sh --method in-game|separate|global [options]
   --reference DIR    unpacked base game (default <toolkit>/reference)
   --extensions DIR   live deploy target (default <game>/extensions)
   --xrcattool PATH   XRCatTool.exe location
-  --unpack           also unpack reference/ now (needs --game + XRCatTool [+wine])
+  --agent NAME       claude | codex | generic | all              [all]
+                     which agent's instructions, guards and skills to install
+  --unpack          also unpack reference/ now (needs --game + XRCatTool [+wine])
   --over-existing    REQUIRED to install over an existing installation
   --dry-run          print the destination and the item list; write nothing
   --yes              don't prompt; accept detected/blank values (never a
@@ -64,6 +69,7 @@ while [ $# -gt 0 ]; do
     --reference) need2 "$1" $#; REFERENCE="$2"; shift 2;;
     --extensions) need2 "$1" $#; EXTENSIONS="$2"; shift 2;;
     --xrcattool) need2 "$1" $#; XRCAT="$2"; shift 2;;
+    --agent) need2 "$1" $#; AGENT="$2"; shift 2;;
     --over-existing) OVER_EXISTING=1; shift;;
     --dry-run) DRY_RUN=1; shift;;
     --unpack) DO_UNPACK=1; shift;;
@@ -179,7 +185,7 @@ X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/basex
 #: dual-meaning trap `.claude/backups` fell into. A checkout accumulates them (release
 #: review 2026-09-26: data/ alone was 2.3 GB) and a git source never copies them
 #: anyway (see _tracked_copy_set); this is the walk's defence in depth.
-X4_KEEP_LOCAL=".claude/x4-paths.env .claude/settings.local.json .claude/backups tools/basex/basex/data tools/basex/basex/coverage-x4raw.json tools/basex/basex/coverage-x4eff.json tools/basex/_eff tools/basex/stage-manifest.json"
+X4_KEEP_LOCAL=".claude/x4-paths.env .claude/settings.local.json .claude/backups .codex/hooks.json tools/basex/basex/data tools/basex/basex/coverage-x4raw.json tools/basex/basex/coverage-x4eff.json tools/basex/_eff tools/basex/stage-manifest.json"
 
 #: THE TRACKED SET, when the source is a git checkout.
 #:
@@ -216,7 +222,7 @@ _tracked_copy_set() {
     return 1
   fi
   while IFS= read -r -d '' p; do all+=("$p"); heads="$heads${p%%/*} "; done < <(git -C "$SRC" ls-files -z 2>/dev/null)
-  for item in $X4_COPY_ITEMS; do
+  for item in $X4_ITEMS; do
     [ -e "$SRC/$item" ] || continue
     case "$heads" in *" $item "*) : ;; *)
       X4_TRACKED_WHY="git tracks nothing under '$item', which is on disk"
@@ -225,7 +231,7 @@ _tracked_copy_set() {
   done
   for p in "${all[@]}"; do
     first="${p%%/*}"; skip=1
-    for item in $X4_COPY_ITEMS; do [ "$item" = "$first" ] && skip=0; done
+    for item in $X4_ITEMS; do [ "$item" = "$first" ] && skip=0; done
     for junk in $X4_COPY_PRUNE $X4_KEEP_LOCAL; do
       case "$p" in "$junk"|"$junk"/*) skip=1 ;; esac
     done
@@ -357,7 +363,7 @@ copy_toolkit() {
       echo "  [note] $X4_TRACKED_ABSENT tracked file(s) are deleted in the source working tree, so not copied"
     fi
   fi
-  for item in $X4_COPY_ITEMS; do
+  for item in $X4_ITEMS; do
     # NAMED, never silently skipped -- that silence is how the absent mods/ folder
     # survived a whole release.
     [ -e "$SRC/$item" ] || { MISSING="$MISSING $item"; continue; }
@@ -500,7 +506,261 @@ _owned_lines_old() {   # _owned_lines_old CONFIG_FILE
 #: precheck below). Two statements of one list is the shape this file already
 #: warns about elsewhere; three would be asking for the listing and the copy to
 #: disagree about what an install actually writes.
-X4_COPY_ITEMS=".claude tools bin scripts mods CLAUDE.md KNOWLEDGEBASE.md README.md CHANGELOG.md LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt .gitignore .gitattributes"
+#:
+#: COMMON to every agent target. Each agent's own files are named once more, in its
+#: X4_AGENT_ITEMS_<name> set below, and never here: an item in both lists is an item
+#: two answers can disagree about.
+X4_COPY_ITEMS="tools bin scripts mods KNOWLEDGEBASE.md README.md CHANGELOG.md LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt .gitignore .gitattributes"
+
+#: PER-AGENT sets (audit F8: the installers shipped no AGENTS.md at all). `agent/` -- the
+#: neutral source the generator reads -- is in NO set: an installed toolkit is
+#: runtime-only (user decision #9), and the release zip still carries it for anyone who
+#: wants to regenerate. install.ps1 holds the same sets as $X4AgentItems, and
+#: test_installers_agree parses both.
+X4_AGENT_ITEMS_claude=".claude CLAUDE.md"
+X4_AGENT_ITEMS_codex="AGENTS.md .codex .agents"
+X4_AGENT_ITEMS_generic="AGENTS.md .agents"
+X4_AGENT_NAMES="claude codex generic"
+
+#: The token the generated Codex/generic skills carry (gen-agent-trees.py's TOKEN), and
+#: what it is rendered to in the copy THIS install writes (user decision #2). Per OS, not
+#: per installer: Codex runs its shell commands through PowerShell on Windows, where
+#: `$X4_TOOLKIT` expands to an EMPTY string (MEASURED, lane A) -- so install.sh under Git
+#: Bash on Windows renders the PowerShell form too.
+X4_TOOLKIT_TOKEN='{{TOOLKIT}}'
+X4_TOOLKIT_RENDER_windows='$env:X4_TOOLKIT'
+X4_TOOLKIT_RENDER_posix='$X4_TOOLKIT'
+X4_TOKEN_DIRS=".agents"
+
+#: The frozen Codex hook definitions (lane B), rendered for THIS destination's absolute
+#: root. The result is per-machine config (X4_KEEP_LOCAL): it never travels.
+X4_CODEX_HOOKS_TMPL="agent/targets/codex/hooks.json.tmpl"
+
+# --- resolve --agent, BEFORE anything is written ------------------------------------
+case "$AGENT" in
+  all) X4_AGENTS="$X4_AGENT_NAMES" ;;
+  claude|codex|generic) X4_AGENTS="$AGENT" ;;
+  opencode)
+    echo "REFUSING: --agent opencode is not yet supported (spec M8). Nothing has been changed." >&2
+    echo "  Supported: $X4_AGENT_NAMES all" >&2
+    exit 2 ;;
+  *)
+    echo "REFUSING: unknown --agent '$AGENT'. Supported: $X4_AGENT_NAMES all. Nothing has been changed." >&2
+    exit 2 ;;
+esac
+#: THE RESOLVED COPY SET: common items plus each selected agent's, once each. Every
+#: consumer -- the copy, the tracked-set filter, the dry-run listing and the locked-target
+#: precheck -- reads THIS, so they cannot disagree about what an install writes.
+X4_ITEMS="$X4_COPY_ITEMS"
+for _a in $X4_AGENTS; do
+  eval "_set=\$X4_AGENT_ITEMS_$_a"
+  for _i in $_set; do
+    case " $X4_ITEMS " in *" $_i "*) ;; *) X4_ITEMS="$X4_ITEMS $_i" ;; esac
+  done
+done
+
+#: Failures that make the install INCOMPLETE, accumulated and reported at the end.
+#: Defined HERE, above every writer that records into it.
+FAILED=""
+add_failed() { FAILED="$FAILED${FAILED:+, }$1"; }
+
+_item_selected() { case " $X4_ITEMS " in *" $1 "*) return 0 ;; esac; return 1; }
+
+#: The selected agents whose every item is present in the source -- what can actually
+#: land. A source without the generated Codex tree installs no Codex target, and the
+#: summary must not claim one.
+_agents_landed() {
+  local a i ok out="" _set
+  for a in $X4_AGENTS; do
+    ok=1
+    eval "_set=\$X4_AGENT_ITEMS_$a"
+    for i in $_set; do [ -e "$SRC/$i" ] || ok=0; done
+    [ "$ok" = 1 ] && out="$out${out:+, }$a"
+  done
+  printf '%s' "$out"
+}
+
+# --- AGENTS.md: never overwrite one the toolkit did not write ------------------------
+#
+# 0 of 23 tagged releases before 4.0 shipped AGENTS.md (MEASURED 2026-10-02, per tag),
+# so an AGENTS.md in a destination today was written by its user, and "differs from the
+# one we ship" is exactly "not ours". It is MOVED ASIDE, never overwritten.
+# ⚠ WHEN 4.0 SHIPS this rule must gain the list of hashes of every AGENTS.md a release
+# shipped, or every upgrade will move the previous release's file aside as if it were
+# the user's -- safe (nothing is lost), but noisy and wrongly worded.
+_same_text() {   # _same_text A B -- equal once CRLF is ignored
+  [ "$(tr -d '\r' < "$1")" = "$(tr -d '\r' < "$2")" ]
+}
+
+_agents_md_aside_name() {   # DEST -> the first name that does not exist yet
+  local d="$1" n="AGENTS.pre-4.0.md" stamp i=0
+  [ -e "$d/$n" ] || { printf '%s' "$n"; return 0; }
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  n="AGENTS.pre-4.0.$stamp.md"
+  while [ -e "$d/$n" ]; do i=$((i + 1)); n="AGENTS.pre-4.0.$stamp-$i.md"; done
+  printf '%s' "$n"
+}
+
+#: Prints the name the destination's AGENTS.md would be moved to, or fails when no
+#: move is needed. Shared by the dry-run listing and the mover, so they cannot differ.
+_agents_md_move_target() {   # DEST
+  local dest="$1"
+  _item_selected AGENTS.md || return 1
+  [ -f "$SRC/AGENTS.md" ] && [ -f "$dest/AGENTS.md" ] || return 1
+  _same_text "$dest/AGENTS.md" "$SRC/AGENTS.md" && return 1
+  _agents_md_aside_name "$dest"
+}
+
+preserve_user_agents_md() {   # DEST -- AFTER the locked-target precheck, BEFORE the copy
+  local dest="$1" to
+  to="$(_agents_md_move_target "$dest")" || return 0
+  refuse_if_dry_run "moving your AGENTS.md aside in" "$dest"
+  if ! mv -- "$dest/AGENTS.md" "$dest/$to"; then
+    echo "ERROR: could not move $dest/AGENTS.md aside to $to. Nothing else has been changed." >&2
+    exit 1
+  fi
+  echo "  [note] your AGENTS.md differs from the one this toolkit ships, so it was KEPT as:"
+  echo "           $dest/$to"
+}
+
+# --- {{TOOLKIT}} in the Codex / generic skills ----------------------------------------
+_toolkit_render_value() {
+  if [ "$OS" = windows ]; then printf '%s' "$X4_TOOLKIT_RENDER_windows"
+  else printf '%s' "$X4_TOOLKIT_RENDER_posix"; fi
+}
+
+#: Rewrite the token in the files THIS install copied -- derived from the SOURCE, never
+#: from a destination glob, so a user's own file under .agents/ is never touched (the
+#: rule install_global_claude learned the hard way). Verified per file afterwards.
+render_toolkit_token() {   # DEST
+  local dest="$1" d f rel to n=0
+  refuse_if_dry_run "rendering the skill token in" "$dest"
+  to="$(_toolkit_render_value)"
+  for d in $X4_TOKEN_DIRS; do
+    _item_selected "$d" || continue
+    [ -d "$SRC/$d" ] || continue
+    while IFS= read -r f; do
+      rel="${f#"$SRC/"}"
+      [ -f "$dest/$rel" ] || continue
+      grep -qF "$X4_TOOLKIT_TOKEN" "$dest/$rel" 2>/dev/null || continue
+      sed -i.x4tok "s#$X4_TOOLKIT_TOKEN#$to#g" "$dest/$rel" && rm -f "$dest/$rel.x4tok"
+      if grep -qF "$X4_TOOLKIT_TOKEN" "$dest/$rel" 2>/dev/null; then
+        add_failed "$rel (the $X4_TOOLKIT_TOKEN token could not be rendered)"
+      else
+        n=$((n + 1))
+      fi
+    done < <(find "$SRC/$d" -type f 2>/dev/null)
+  done
+  [ "$n" -gt 0 ] && echo "  rendered $X4_TOOLKIT_TOKEN as $to in $n skill file(s)"
+  return 0
+}
+
+#: In place (the source IS the destination) nothing is copied, so nothing is rendered:
+#: a toolkit checkout holds the generator's output, and rewriting it would make
+#: `gen-agent-trees.py --check` fail there. Said, never silent.
+note_in_place_token() {
+  local d
+  for d in $X4_TOKEN_DIRS; do
+    _item_selected "$d" || continue
+    if [ -d "$SRC/$d" ] && grep -rqF "$X4_TOOLKIT_TOKEN" "$SRC/$d" 2>/dev/null; then
+      echo "  [note] installing in place: $d/ keeps the $X4_TOOLKIT_TOKEN token unrendered."
+      echo "         An agent reading those skills should read it as $(_toolkit_render_value)."
+    fi
+  done
+  return 0
+}
+
+# --- the Codex hook definitions ------------------------------------------------------
+#: Literal replace-all. Not ${s//pat/rep}: under bash 5.2's patsub_replacement an `&`
+#: in a path becomes the matched text, and backslash handling in the replacement
+#: differs between the bash 3.2 macOS ships and 5.x. Prefix/suffix removal has neither.
+_replace_all() {   # TEXT TOKEN VALUE -> stdout
+  local s="$1" tok="$2" val="$3" out=""
+  while :; do
+    case "$s" in
+      *"$tok"*) out="$out${s%%"$tok"*}$val"; s="${s#*"$tok"}" ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "$out$s"
+}
+
+_abs_dir() {   # an EXISTING dir -> absolute, forward slashes (C:/... on Windows)
+  local d
+  d="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+  if [ "$OS" = windows ] && command -v cygpath >/dev/null 2>&1; then d="$(cygpath -m "$d")"; fi
+  printf '%s' "$d"
+}
+
+#: The template with {{ROOT}} (forward slashes) and {{ROOT_WIN}} (backslashes) filled,
+#: each JSON-escaped -- the contract of lane B's render_codex_hooks_json, which the
+#: installer cannot import (the generator needs ruamel.yaml) and so re-implements.
+#: test_install_over_existing pins all three renderings to one parsed answer.
+render_codex_hooks_json() {   # DEST -> stdout (no trailing newline)
+  local root win t bs
+  bs="$(printf '%b' '\134')"
+  root="$(_abs_dir "$1")" || return 1
+  case "$root" in *'"'*|*"$CR"*|*'
+'*) return 1 ;; esac
+  t="$(tr -d '\r' < "$SRC/$X4_CODEX_HOOKS_TMPL")" || return 1
+  win="$(_replace_all "$root" / "$bs")"
+  root="$(_replace_all "$root" "$bs" "$bs$bs")"
+  win="$(_replace_all "$win" "$bs" "$bs$bs")"
+  t="$(_replace_all "$t" '{{ROOT_WIN}}' "$win")"
+  t="$(_replace_all "$t" '{{ROOT}}' "$root")"
+  case "$t" in *'{{ROOT'*) return 1 ;; esac
+  printf '%s' "$t"
+}
+
+_codex_selected() { _item_selected .codex && [ -d "$SRC/.codex" ]; }
+
+#: PRECONDITION, before any write: a READ-ONLY hooks.json (x4lock protects it) that this
+#: install would CHANGE refuses up front. Unchanged, the lock never applies.
+precheck_codex_hooks_json() {   # DEST
+  local dest="$1" f="$1/.codex/hooks.json" new
+  _codex_selected || return 0
+  [ -e "$f" ] || return 0
+  [ -w "$f" ] && return 0
+  [ -f "$SRC/$X4_CODEX_HOOKS_TMPL" ] || return 0     # the writer reports INCOMPLETE
+  new="$(render_codex_hooks_json "$dest")" || return 0
+  [ "$(tr -d '\r' < "$f")" = "$new" ] && return 0
+  echo                                                                          >&2
+  echo "REFUSING: the Codex hook definitions must change, and the file is READ-ONLY." >&2
+  echo "      $f"                                                               >&2
+  echo "  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:" >&2
+  echo "      python scripts/x4lock.py unlock \"$f\""                           >&2
+  echo "      <re-run this command>"                                            >&2
+  echo "      python scripts/x4lock.py lock"                                    >&2
+  exit 1
+}
+
+X4_CODEX_HOOKS_WRITTEN=0
+write_codex_hooks_json() {   # DEST
+  local dest="$1" f="$1/.codex/hooks.json" new tmp
+  _codex_selected || return 0
+  refuse_if_dry_run "rendering the Codex hook definitions into" "$f"
+  if [ ! -f "$SRC/$X4_CODEX_HOOKS_TMPL" ]; then
+    add_failed ".codex/hooks.json (the source has no $X4_CODEX_HOOKS_TMPL, so Codex's hooks were NOT installed)"
+    return 0
+  fi
+  if ! new="$(render_codex_hooks_json "$dest")"; then
+    add_failed ".codex/hooks.json (could not render it for $dest: a path containing a quote or a newline cannot be written into it)"
+    return 0
+  fi
+  if [ -f "$f" ] && [ "$(tr -d '\r' < "$f")" = "$new" ]; then
+    echo "  [note] $f already matches; left untouched, so its Codex review still holds"
+    return 0
+  fi
+  mkdir -p "$dest/.codex"
+  tmp="$f.tmp$$"
+  if ! { printf '%s\n' "$new" > "$tmp" && mv -f "$tmp" "$f"; }; then
+    rm -f "$tmp"
+    add_failed ".codex/hooks.json (could not write $f)"
+    return 0
+  fi
+  X4_CODEX_HOOKS_WRITTEN=1
+  echo "  wrote $f"
+}
 
 #: Destination files the copy would overwrite that CANNOT be written.
 #:
@@ -528,7 +788,7 @@ _locked_targets() {   # _locked_targets DEST  -> prints blocked destination path
     done
     return 0
   fi
-  for item in $X4_COPY_ITEMS; do
+  for item in $X4_ITEMS; do
     [ -e "$SRC/$item" ] || continue
     if [ -d "$SRC/$item" ]; then
       ( cd "$SRC/$item" 2>/dev/null && find . -type f -print 2>/dev/null ) | while IFS= read -r rel; do
@@ -1043,12 +1303,18 @@ announce_target() {
 announce_copy_plan() {
   [ "$DRY_RUN" = 1 ] || return 0
   echo "  --dry-run: nothing will be written. Items that would be copied:"
-  local item
-  for item in $X4_COPY_ITEMS; do
+  local item to
+  for item in $X4_ITEMS; do
     [ -e "$SRC/$item" ] && echo "      $item"
   done
   if _tracked_copy_set; then
     echo "  (the source is a git checkout: only the ${#X4_TRACKED[@]} file(s) git tracks would be copied)"
+  fi
+  echo "  agents that would be installed: $(_agents_landed)"
+  # SAID, in the dry run, exactly as the real run would do it: the mover and this line
+  # read one function, so the preview cannot name a different file.
+  if to="$(_agents_md_move_target "$1")"; then
+    echo "  your AGENTS.md differs from the shipped one: it would be KEPT as $to, not overwritten"
   fi
   echo
   echo "=== dry run complete: nothing was changed ==="
@@ -1145,12 +1411,18 @@ case "$METHOD" in
       require_direction "$TOOLKIT" "$GAME_NAMED"
     fi
     precheck_config "$TOOLKIT"
+    precheck_codex_hooks_json "$TOOLKIT"   # written on BOTH branches, so OUTSIDE the guard
     if ! same_dir "$SRC" "$TOOLKIT"; then
       precheck_locked_targets "$TOOLKIT"
-      announce_copy_plan
+      announce_copy_plan "$TOOLKIT"
+      preserve_user_agents_md "$TOOLKIT"   # after every precheck, before the copy
       copy_toolkit "$TOOLKIT"
+      render_toolkit_token "$TOOLKIT"
+    else
+      note_in_place_token
     fi
     write_paths_env "$TOOLKIT"
+    write_codex_hooks_json "$TOOLKIT"
     ;;
   separate)
     [ -n "$TOOLKIT" ] || TOOLKIT="$SRC"
@@ -1176,14 +1448,36 @@ case "$METHOD" in
       require_direction "$TOOLKIT" "$TOOLKIT_NAMED"
     fi
     precheck_config "$TOOLKIT"
+    precheck_codex_hooks_json "$TOOLKIT"   # written on BOTH branches, so OUTSIDE the guard
     if ! same_dir "$SRC" "$TOOLKIT"; then
       precheck_locked_targets "$TOOLKIT"
-      announce_copy_plan
+      announce_copy_plan "$TOOLKIT"
+      preserve_user_agents_md "$TOOLKIT"   # after every precheck, before the copy
       copy_toolkit "$TOOLKIT"
+      render_toolkit_token "$TOOLKIT"
+    else
+      note_in_place_token
     fi
     write_paths_env "$TOOLKIT"
+    write_codex_hooks_json "$TOOLKIT"
     ;;
   global)
+    # THE GLOBAL LAYOUT IS CLAUDE-ONLY: it installs skills and agents into the Claude
+    # home and nothing else. An explicit non-Claude target is REFUSED rather than half
+    # installed; the default (`all`) proceeds and says what it leaves out. Codex's own
+    # global skills are a follow-up, not a layout to fake.
+    case "$AGENT" in
+      codex|generic)
+        echo "REFUSING: --method global is a Claude-only layout; it cannot install --agent $AGENT." >&2
+        echo "  Use --method in-game or --method separate for Codex and generic agents." >&2
+        echo "  Nothing has been changed." >&2
+        exit 2 ;;
+    esac
+    if [ "$AGENT" = all ]; then
+      echo "  [note] --method global is a Claude-only layout: only the Claude target is installed."
+      echo "         Codex and generic agents need --method in-game or --method separate."
+    fi
+    X4_AGENTS="claude"
     [ -n "$TOOLKIT" ] || TOOLKIT="$SRC"
     announce_target "$TOOLKIT"
     # THE GLOBAL DESTINATION WAS NEVER GATED. `require_direction` is called for
@@ -1259,8 +1553,8 @@ esac
 # below was outside the accounting entirely: under `set -e` a failing unpack killed the
 # script with NO summary -- neither banner, no `failed:` line, no next steps.
 # install.ps1 has used an array with three contributors for a while; this is parity.
-FAILED=""
-add_failed() { FAILED="$FAILED${FAILED:+, }$1"; }
+# (FAILED and add_failed are defined above the dispatch: the Codex writers inside it
+#  record into the same accounting.)
 
 # A BACKSTOP, and today it is UNREACHED -- stated rather than implied. Every
 # dispatch arm ends in a writer whose first statement is `refuse_if_dry_run`,
@@ -1304,7 +1598,21 @@ fi
 
 echo "=== install complete ($METHOD) ==="
 echo "Toolkit:   $TOOLKIT"
+echo "Agents:    $(_agents_landed)"
 echo "Config:    $TOOLKIT/.claude/x4-paths.env  (edit any path here)"
+# CODEX RUNS NO HOOK IT HAS NOT REVIEWED, and it says nothing when it skips one
+# (MEASURED, spike 2026-09-30). The installer must never approve hooks or trust the
+# project on the user's behalf (spec section 8), so it says what to do instead.
+if [ "$METHOD" != global ] && _codex_selected; then
+  echo
+  echo "Codex:     the guards in .codex/hooks.json are INERT until you review them in Codex."
+  echo "           1. run  codex  in $TOOLKIT  and trust the folder when asked"
+  echo "           2. type  /hooks  and approve each X4 hook"
+  echo "           3. verify:  python scripts/x4doctor.py --root \"$TOOLKIT\""
+  if [ "$X4_CODEX_HOOKS_WRITTEN" = 1 ]; then
+    echo "           (the definitions were just (re)written: any earlier review no longer holds)"
+  fi
+fi
 [ "$METHOD" = global ] && echo "Global:    skills/agents + X4_* env added to your ~/.claude — works from any mod repo."
 echo "Next:      set X4_GAME if blank, then  (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/."
 echo
