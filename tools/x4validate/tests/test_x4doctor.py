@@ -821,3 +821,17 @@ def test_the_doctor_reproduces_CODEXS_OWN_hash_vectors():
     for v in vectors:
         assert doc.codex_hook_hash(v["event_key"], v["group"], v["handler"],
                                    windows=v.get("windows")) == v["codex_hash"], v.get("label")
+
+
+def test_a_TARGET_whose_guard_copy_is_MISSING_is_FAIL_not_NA(codex_root):
+    """MEASURED on the review scratch project: hooks.json present, .codex/hooks/ absent --
+    the self-test read N/A 'not installed'. Hooks that point at absent scripts fail, and
+    Codex then runs the command."""
+    rows = {r.id: r for r in doc.check_guards(doc.Ctx(root=codex_root))}
+    assert rows["guards.selftest.codex"].status == doc.FAIL, rows["guards.selftest.codex"]
+    assert rows["guards.selftest.claude"].status == doc.NA
+
+
+def test_TWIN_a_target_that_is_not_installed_is_NA(sandbox):
+    rows = {r.id: r for r in doc.check_guards(sandbox.ctx())}
+    assert rows["guards.selftest.codex"].status == doc.NA

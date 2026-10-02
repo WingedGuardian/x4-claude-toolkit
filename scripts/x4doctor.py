@@ -297,7 +297,7 @@ def guard_probe(ctx: Ctx) -> tuple[dict | None, str]:
 def check_toolchain(ctx: Ctx) -> list[Check]:
     dirs = guard_dirs(ctx)
     if not dirs:
-        why = "no guard target is installed here (a generic agent runs no guards)"
+        why = "no guard copy is installed here (.claude/hooks or .codex/hooks)"
         return [Check(i, "all", NA, why) for i in ("bash.guards", "bash.path", "bash.agree",
                                                     "python.guards", "jq")]
     rows = []
@@ -528,9 +528,17 @@ def check_guards(ctx: Ctx) -> list[Check]:
     dirs = guard_dirs(ctx)
     rows = []
     for target in ("claude", "codex"):
-        if not any(t == target for t, _ in dirs):
+        if any(t == target for t, _ in dirs):
+            continue
+        if ctx.targets.get(target):
+            hooks = ctx.root / (".claude" if target == "claude" else ".codex") / "hooks"
+            rows.append(Check("guards.selftest." + target, target, FAIL,
+                              "the %s target is installed but its guard copy is not (%s has no "
+                              "_x4-env.sh): its hooks point at scripts that are absent, and a hook "
+                              "that cannot run lets the tool run. Re-run the installer" % (target, hooks)))
+        else:
             rows.append(Check("guards.selftest." + target, target, NA,
-                              "the %s guard copy is not installed here" % target))
+                              "the %s target is not installed here" % target))
     for target, hooks in dirs:
         def _selftest(_, target=target, hooks=hooks):
             from concurrent.futures import ThreadPoolExecutor
