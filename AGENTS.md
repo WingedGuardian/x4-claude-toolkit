@@ -1,5 +1,7 @@
 # AGENTS.md — X4 AI Assistant Toolkit (instructions for Codex and other agents)
 
+<!-- GENERATED from agent/ -->
+
 This is a stopgap. The full instructions will be generated here once the shared core fits
 Codex's 32 KiB limit (see the spec named at the end). Until then, these rules are the minimum.
 Each one exists because breaking it has cost real work in this repo.

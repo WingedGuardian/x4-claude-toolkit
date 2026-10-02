@@ -120,6 +120,31 @@ def test_hooks_get_no_banner_and_no_token_rewrite():
     assert "CLAUDE_PROJECT_DIR" in out[".claude/hooks/_x4-env.sh"]   # its fallback root stays literal
 
 
+def test_agents_md_is_generated_within_codex_limit():
+    """Stopgap AGENTS.md (until the phase-3 split): Codex silently drops AGENTS.md text past
+    32,768 BYTES (MEASURED 2026-09-30, codex-spike doc), so the budget is in bytes."""
+    text = load().generate(REPO)["AGENTS.md"]
+    assert len(text.encode("utf-8")) <= 32768
+    assert text.startswith("# ") and "<!-- GENERATED from agent/ -->" in text
+
+
+def test_TWIN_an_oversized_agents_md_refuses(tmp_path):
+    import shutil
+    g = load()
+    shutil.copytree(REPO / "agent", tmp_path / "agent")
+    p = tmp_path / "agent" / "instructions" / "codex.md"
+    p.write_bytes(p.read_bytes() + b"filler line for the size limit\n" * 1200)   # ~37 KB
+    with pytest.raises(g.GenerationError, match="silently drops"):
+        g.generate(tmp_path)
+
+
+def test_agents_md_carries_the_rules_codex_cannot_get_elsewhere():
+    text = load().generate(REPO)["AGENTS.md"]
+    for must in ("CLAUDE.md", "agent/", "gen-agent-trees.py", "fail open", "reference/",
+                 ".cat", "git add -A"):
+        assert must in text, must
+
+
 def test_missing_source_refuses_rather_than_skipping(tmp_path):
     g = load()
     with pytest.raises(g.GenerationError):

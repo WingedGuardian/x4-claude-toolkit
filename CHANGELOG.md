@@ -13,6 +13,15 @@
   then run `tools/x4validate/scripts/gen-agent-trees.py`. Each generated file differs from before
   only by a `GENERATED` banner line, and a test fails if one drifts from its source. The
   generator never deletes: a file it did not produce is reported, and the run refuses.
+- **A generated `AGENTS.md`** (from `agent/instructions/codex.md`) gives Codex and other agents
+  the rules they could not otherwise see:
+  - read `CLAUDE.md` in full;
+  - edit `agent/`, not generated files;
+  - the guards do not protect you under Codex (its hooks fail open, measured);
+  - git hygiene.
+
+  It is a stopgap until the shared instructions fit Codex's 32 KiB limit. The generator refuses
+  to write it any larger, because Codex silently drops text past that size.
 - `.gitignore` no longer swallows a skill's `reference/` folder under `agent/skills/`. The game-data
   rule matched it there too, as it once did under `.claude/skills/`.
 

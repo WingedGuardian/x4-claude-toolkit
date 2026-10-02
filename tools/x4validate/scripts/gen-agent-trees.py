@@ -29,8 +29,10 @@ BANNER_CLAUDE_MD = "<!-- GENERATED from agent/ -->"
 TOKEN = "{{TOOLKIT}}"
 CLAUDE_TOOLKIT = "$CLAUDE_PROJECT_DIR"
 TIER_MODEL = {"fast": "haiku", "balanced": "sonnet", "deep": "opus"}
-OWNED: tuple[str, ...] = ("CLAUDE.md", ".claude/agents/", ".claude/skills/", ".claude/settings.json",
-                          ".claude/hooks/")
+OWNED: tuple[str, ...] = ("CLAUDE.md", "AGENTS.md", ".claude/agents/", ".claude/skills/",
+                          ".claude/settings.json", ".claude/hooks/")
+#: Codex silently drops AGENTS.md text past this many BYTES (MEASURED 2026-09-30).
+AGENTS_MD_MAX_BYTES = 32768
 _IGNORED_PARTS = ("__pycache__",)
 
 
@@ -65,6 +67,21 @@ def render_claude_md(src: Path) -> str:
     addendum = _read(src / "instructions" / "claude.md")
     out = _with_banner_after_first_line(core, BANNER_CLAUDE_MD)
     return out if not addendum.strip() else out.rstrip("\n") + "\n\n" + addendum
+
+
+def render_agents_md(src: Path) -> str:
+    """AGENTS.md (Codex and other agents). STOPGAP: the Codex addendum alone, until the phase-3
+    split brings the shared core under AGENTS_MD_MAX_BYTES. Refuses rather than emitting a
+    file Codex would silently truncate."""
+    text = _read(src / "instructions" / "codex.md")
+    if not text.strip():
+        raise GenerationError("agent/instructions/codex.md is empty -- AGENTS.md would say nothing")
+    out = _with_banner_after_first_line(text, BANNER_CLAUDE_MD)
+    size = len(out.encode("utf-8"))
+    if size > AGENTS_MD_MAX_BYTES:
+        raise GenerationError(f"AGENTS.md would be {size} bytes; Codex silently drops text past "
+                              f"{AGENTS_MD_MAX_BYTES}")
+    return out
 
 
 def render_agent_md(agent_dir: Path) -> tuple[str, str]:
@@ -129,7 +146,7 @@ def generate(repo: Path) -> dict[str, str]:
     src = repo / "agent"
     if not src.is_dir():
         raise GenerationError(f"no neutral source tree at {src}")
-    out: dict[str, str] = {"CLAUDE.md": render_claude_md(src)}
+    out: dict[str, str] = {"CLAUDE.md": render_claude_md(src), "AGENTS.md": render_agents_md(src)}
     agents = src / "agents"
     agent_dirs = sorted(p for p in agents.iterdir() if p.is_dir()) if agents.is_dir() else []
     if not agent_dirs:
