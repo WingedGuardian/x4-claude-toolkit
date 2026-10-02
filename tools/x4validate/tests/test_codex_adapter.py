@@ -193,3 +193,14 @@ def test_deadline_exhausted_is_inert(sandbox):
     tmp, tk, env = sandbox
     env = dict(env, X4_CODEX_BUDGET_S="0")
     assert run(env, native("bash_powershell", tmp, command="echo hi"), shell="bash")[0] == "inert"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Git Bash drive paths (/c/...) exist on Windows only")
+def test_msys_drive_path_is_the_windows_path(sandbox):
+    """Found by the conformance suite: abspath('/c/...') on Windows is '<drive>:/c/...', outside
+    every protected root, so an Update File of the reference via /c/... was ALLOWED."""
+    tmp, tk, env = sandbox
+    p = tk.as_posix()
+    msys = "/" + p[0].lower() + p[2:] + "/reference/libraries/wares.xml"
+    patch = f"*** Begin Patch\n*** Update File: {msys}\n@@\n-ref\n+x\n*** End Patch"
+    assert run(env, native("apply_patch_update", tk, command=patch))[0] == "deny"
