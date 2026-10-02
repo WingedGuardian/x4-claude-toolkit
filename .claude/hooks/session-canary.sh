@@ -26,6 +26,16 @@
 case "$0" in */*|*\\*) HOOK_DIR="${0%[/\\]*}" ;; *) HOOK_DIR=. ;; esac
 . "$HOOK_DIR/_x4-env.sh"
 
+# X4_GUARD=off (spec 5.7): FIRST, before the canary, because a session whose guards are off
+# must be unmissable -- and the preview keeps the head.
+if x4_guards_off; then
+  echo "[x4 guards] *** GUARDS OFF (X4_GUARD=off at launch) *** Every guard verdict this session"
+  echo "            is an ADVISORY: hard blocks (reference/, game files, saves) are NOT enforced"
+  echo "            by the hooks. Each overridden call is logged to"
+  echo "            ${X4_BACKUPS:-$X4_TOOLKIT/.claude/backups}/GUARDS-OFF.log."
+  echo "            Unset X4_GUARD and restart the session to turn them back on."
+fi
+
 # The canary lives in the toolkit, not beside the hooks: it is a tool, and it needs the
 # x4validate package to resolve roots. If the toolkit is not configured there is nothing
 # to say -- but say THAT, rather than printing a reassuring nothing.

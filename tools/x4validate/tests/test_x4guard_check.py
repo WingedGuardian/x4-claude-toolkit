@@ -494,3 +494,85 @@ def test_E2_TWIN_a_valid_budget_setting_is_honoured(sandbox):
     _, v, _ = check(dict(env, X4_GUARD_TIMEOUT_S="30.5"), "--kind", "shell", "--shell", "bash",
                     "--command", "echo hi")
     assert v["decision"] == "allow" and not v["inert"], v
+
+
+# ---------------------------------------------------------------- lane E: X4_GUARD=off (decision #19)
+
+def _hook(env, script, payload: dict):
+    """Run one deployed guard the way Claude Code does (no X4_GUARD_CHECK). -> (rc, hookSpecificOutput)"""
+    bash = shutil.which("bash.exe") or shutil.which("bash")
+    r = subprocess.run([bash, str(X4GUARD.parent / script)], input=json.dumps(payload).encode("utf-8"),
+                       capture_output=True, env=env, timeout=120)
+    out = r.stdout.decode("utf-8", "replace").strip()
+    return r.returncode, (json.loads(out)["hookSpecificOutput"] if out else None)
+
+
+def _ref_write(tk):
+    return {"tool_name": "Write", "tool_input": {"file_path": str(tk / "reference" / "libraries" / "wares.xml"),
+                                                 "content": "x"}}
+
+
+def _ref_rm(tk):
+    return {"tool_name": "Bash", "tool_input": {"command": f"rm -rf '{(tk / 'reference' / 'libraries').as_posix()}'"}}
+
+
+@pytest.mark.parametrize("script,payload", [("protect-files.sh", _ref_write), ("protect-bash.sh", _ref_rm)])
+def test_X4_GUARD_off_turns_a_hard_block_into_a_logged_advisory(sandbox, script, payload):
+    """Spec 5.7: a LAUNCH-time X4_GUARD=off turns the hook verdicts into advisories, and every
+    overridden call is logged. Before lane E no guard read the variable (0 readers, MEASURED)."""
+    tmp, tk, env = sandbox
+    rc, hso = _hook(dict(env, X4_GUARD="off"), script, payload(tk))
+    assert rc == 0 and hso is not None, "guards off must still SAY something, never a silent allow"
+    assert "permissionDecision" not in hso, hso
+    ctx = hso["additionalContext"]
+    assert "X4 GUARDS OFF" in ctx and "DENIED" in ctx and "reference" in ctx, ctx
+    log = tmp / "backups" / "GUARDS-OFF.log"
+    assert log.is_file() and script in log.read_text(encoding="utf-8"), "the override was not logged"
+
+
+@pytest.mark.parametrize("value", [None, "on", "OFF", "Off", "0", "false", " off", ""])
+def test_X4_GUARD_TWIN_any_other_value_leaves_the_guards_on(sandbox, value):
+    """Exactly 'off' and nothing else: a typo must never disable protection."""
+    tmp, tk, env = sandbox
+    env = {k: v for k, v in env.items() if k != "X4_GUARD"}
+    if value is not None:
+        env["X4_GUARD"] = value
+    for script, payload in (("protect-files.sh", _ref_write), ("protect-bash.sh", _ref_rm)):
+        _, hso = _hook(env, script, payload(tk))
+        assert hso and hso.get("permissionDecision") == "deny", (script, value, hso)
+    assert not (tmp / "backups" / "GUARDS-OFF.log").exists()
+
+
+def test_X4_GUARD_off_check_reports_it_and_is_never_a_plain_allow(sandbox):
+    """x4guard check reports GUARDS OFF explicitly -- for a would-be deny AND for a would-be allow --
+    and, being a check, logs nothing (no side effects)."""
+    tmp, tk, env = sandbox
+    env = dict(env, X4_GUARD="off")
+    _, w, _ = check(env, "--kind", "write", "--path", str(tk / "reference" / "libraries" / "wares.xml"))
+    _, e, _ = check(env, "--kind", "shell", "--shell", "bash", "--command", "echo hi")
+    for v in (w, e):
+        assert v["decision"] == "advise" and not v["inert"], v
+        assert v["context"].startswith("X4 GUARDS OFF"), v
+    assert "DENIED" in w["context"] and "reference" in w["context"], w
+    assert list((tmp / "backups").iterdir()) == []
+
+
+def test_X4_GUARD_TWIN_check_with_the_guards_on_still_denies(sandbox):
+    _, tk, env = sandbox
+    _, v, _ = check(dict(env, X4_GUARD="on"), "--kind", "write", "--path",
+                    str(tk / "reference" / "libraries" / "wares.xml"))
+    assert v["decision"] == "deny" and not v["inert"] and "GUARDS OFF" not in json.dumps(v), v
+
+
+@pytest.mark.parametrize("value,banner", [("off", True), ("on", False), (None, False)])
+def test_X4_GUARD_off_puts_a_banner_on_session_start(sandbox, value, banner):
+    _, tk, env = sandbox
+    env = {k: v for k, v in env.items() if k != "X4_GUARD"}
+    if value is not None:
+        env["X4_GUARD"] = value
+    bash = shutil.which("bash.exe") or shutil.which("bash")
+    r = subprocess.run([bash, str(X4GUARD.parent / "session-canary.sh")], input=b"{}", capture_output=True,
+                       env=env, timeout=120)
+    out = r.stdout.decode("utf-8", "replace")
+    assert r.returncode == 0
+    assert ("GUARDS OFF" in out) is banner, out

@@ -64,6 +64,11 @@ x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it ch
 # at 200,000). What was at risk is the reason, which is the part that says WHY --
 # and a filed reason is a preview of itself.
 emit() {
+  # X4_GUARD=off (spec 5.7): a deny or an ask becomes an advisory that names what it would
+  # have been, and is logged. See x4_guard_overridden in _x4-env.sh.
+  if [ "$1" != advise ] && x4_guards_off; then
+    set -- advise "$(x4_guard_overridden protect-bash.sh "$1" "$2")"
+  fi
   set -- "$1" "$(x4_bound "$2")"
   if jq_works; then
     if [ "$1" = "advise" ]; then

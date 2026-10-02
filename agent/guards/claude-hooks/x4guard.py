@@ -223,7 +223,27 @@ def run_guard(script: str, payload: dict, deadline: float | None = None) -> dict
             "inert": False, "guards": guards}
 
 
+#: Leads every non-inert verdict while X4_GUARD=off, so it can never read as a plain allow.
+GUARDS_OFF_NOTE = ("X4 GUARDS OFF (X4_GUARD=off at launch): every guard verdict is an advisory this "
+                   "session and nothing here was enforced.")
+
+
 def verdict_for(kind: str, shell: str | None, command: str | None, path: str | None) -> dict:
+    """The verdict, plus spec 5.7's escape hatch: with X4_GUARD exactly "off" the guards turn a
+    deny/ask into an advisory naming what it would have been (they read the variable
+    themselves), and this says GUARDS OFF on every verdict -- a would-be allow included. An inert
+    verdict stays an inert deny: a guard that could not run judged nothing to relax."""
+    v = _verdict(kind, shell, command, path)
+    if os.environ.get("X4_GUARD") != "off" or v["inert"]:
+        return v
+    v = dict(v)
+    if RANK[v["decision"]] < RANK["advise"]:
+        v["decision"] = "advise"
+    v["context"] = GUARDS_OFF_NOTE + ("\n\n" + v["context"] if v.get("context") else "")
+    return v
+
+
+def _verdict(kind: str, shell: str | None, command: str | None, path: str | None) -> dict:
     """A relative path is resolved from the CALLER's working directory (Codex apply_patch paths
     are relative). A delete is judged as the stricter of a write and an `rm -rf --` of that path:
     recursive, because the path may be a directory. No protect-bash rule distinguishes it from
