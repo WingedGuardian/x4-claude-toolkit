@@ -29,7 +29,8 @@ BANNER_CLAUDE_MD = "<!-- GENERATED from agent/ -->"
 TOKEN = "{{TOOLKIT}}"
 CLAUDE_TOOLKIT = "$CLAUDE_PROJECT_DIR"
 TIER_MODEL = {"fast": "haiku", "balanced": "sonnet", "deep": "opus"}
-OWNED: tuple[str, ...] = ("CLAUDE.md", ".claude/agents/", ".claude/skills/", ".claude/settings.json")
+OWNED: tuple[str, ...] = ("CLAUDE.md", ".claude/agents/", ".claude/skills/", ".claude/settings.json",
+                          ".claude/hooks/")
 _IGNORED_PARTS = ("__pycache__",)
 
 
@@ -107,6 +108,23 @@ def render_skills(src: Path) -> dict[str, str]:
     return out
 
 
+def render_hooks(src: Path) -> dict[str, str]:
+    """The guards, copied VERBATIM into .claude/hooks/: no banner (a comment line would move every
+    line number the guard tests and mutants anchor on) and no token rewrite (_x4-env.sh uses
+    $CLAUDE_PROJECT_DIR as a literal fallback root). Behaviour must not change by a byte."""
+    root = src / "guards" / "claude-hooks"
+    if not root.is_dir():
+        raise GenerationError(f"no guard source at {root}")
+    out: dict[str, str] = {}
+    for f in sorted(root.rglob("*")):
+        if not f.is_file() or any(part in _IGNORED_PARTS + (".pytest_cache",) for part in f.parts):
+            continue
+        out[".claude/hooks/" + f.relative_to(root).as_posix()] = _read(f)
+    if not out:
+        raise GenerationError(f"{root} holds no guard")
+    return out
+
+
 def generate(repo: Path) -> dict[str, str]:
     src = repo / "agent"
     if not src.is_dir():
@@ -120,6 +138,7 @@ def generate(repo: Path) -> dict[str, str]:
         rel, text = render_agent_md(d)
         out[rel] = text
     out.update(render_skills(src))
+    out.update(render_hooks(src))
     out[".claude/settings.json"] = _read(src / "targets" / "claude" / "settings.json")
     return dict(sorted(out.items()))
 

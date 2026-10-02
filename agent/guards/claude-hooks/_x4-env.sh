@@ -1,0 +1,537 @@
+#!/bin/bash
+# Shared, cross-platform path/config resolver for the X4 toolkit hooks & scripts.
+# SOURCE this (do not execute). Single source of truth for the configurable X4 locations
+# so nothing is hardcoded to one OS or one user's folder layout.
+#
+# Resolution order for each value:  existing env var  >  .claude/x4-paths.env  >  default.
+#
+# THE ENVIRONMENT WINS, matching CLAUDE.md ("env var > x4-paths.env > default") and
+# the Python half (`_paths._layers()` returns [env, file, fallback]).
+#
+# It did not, until 2026-09-03. install.sh writes bare KEY="value" lines and this
+# file sourced them with `set -a`, so a plain assignment overwrote whatever had been
+# exported -- and the note here was rewritten to match that rather than to fix it.
+# A comment corrected to agree with a defect is not a decision.
+#
+# The divergence was the dangerous half: both halves resolve paths for the SAME
+# machine, so exporting X4_GAME pointed x4validate at one install while the guards
+# protecting the game folder read another. Protection and work aimed at different
+# trees, silently.
+# All locations are overridable; see .claude/x4-paths.env.example for the keys.
+
+# Toolkit root (where this toolkit lives).
+# Prefer $CLAUDE_PROJECT_DIR; otherwise derive it from the hook's OWN location
+# (<toolkit>/.claude/hooks/ -> <toolkit>), because falling back to $(pwd) makes every
+# path resolve against whatever directory the shell happened to be in — which silently
+# scattered auto-backups outside the toolkit whenever the var was unset.
+# WAS IT REALLY IN THE ENVIRONMENT? The block below DERIVES a value when it is not,
+# and the snapshot/restore further down exists so a real environment variable outranks
+# the config file. A derived fallback is not an environment variable -- but it is
+# indistinguishable from one by the time the snapshot is taken, so the config file's
+# own X4_TOOLKIT was ALWAYS discarded.
+#
+# MEASURED 2026-09-05 with a config saying X4_TOOLKIT=<tkA> and no X4_* exported:
+#     python  _paths.reference()  ->  <tkA>/reference   (honours the file)
+#     bash    X4_REFERENCE        ->  <tkB>/reference   (ignored it)
+# and a Write into <tkA>/reference was a SILENT ALLOW past the reference/ HARD BLOCK,
+# while <tkB>/reference denied. X4_TOOLKIT is the key every other path derives from,
+# and install.sh writes it into that file on every method -- so the guards were reading
+# a different tree from the validator. That is the exact split this file's header says
+# it exists to prevent.
+_X4_TK_FROM_ENV=0
+[ -n "${X4_TOOLKIT:-}" ] && _X4_TK_FROM_ENV=1
+if [ -z "${X4_TOOLKIT:-}" ]; then
+  if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
+    X4_TOOLKIT="$CLAUDE_PROJECT_DIR"
+  elif [ -n "${HOOK_DIR:-}" ] && [ -d "$HOOK_DIR/../.." ]; then
+    X4_TOOLKIT="$(cd "$HOOK_DIR/../.." && pwd)"
+  else
+    X4_TOOLKIT="$(pwd)"
+  fi
+fi
+
+#: The keys whose precedence this file guarantees. Named explicitly rather than
+#: derived from the environment: a `X4_*` glob would also capture whatever a test
+#: harness happens to set, and the guarantee is about the CONFIGURATION, not about
+#: every variable that shares the prefix.
+_X4_ENV_KEYS="X4_TOOLKIT X4_GAME X4_REFERENCE X4_PROFILE X4_DEBUGLOG X4_MODS \
+X4_EXTENSIONS X4_SAVES X4_DOCUMENTS X4_APPMANIFEST X4_NEXUS_KEY XRCATTOOL"
+
+# Load the user's path config if present (KEY=VALUE lines).
+_x4_cfg="${X4_CONFIG:-$X4_TOOLKIT/.claude/x4-paths.env}"
+if [ -f "$_x4_cfg" ]; then
+  # SNAPSHOT, SOURCE, RESTORE. Re-implementing the parser was the alternative and it
+  # is the riskier one: this file is sourced by every hook on every tool call, and
+  # sourcing keeps quoting, escapes, comments and continuations behaving exactly as
+  # they always have. Only the precedence changes.
+  #
+  # A path never contains a newline, so one line per variable is a safe transport.
+  # `IFS='=' read -r k v` puts everything after the FIRST `=` into v, so a value
+  # containing `=` survives.
+  # Built in THIS shell, not in a `$( )` subshell: this runs on every hook call, and a
+  # subshell is a process on Windows (AUDIT-2026-09-24 HK-4). Same lines, same order.
+  _x4_pre=""
+  for _k in $_X4_ENV_KEYS; do
+    # a DERIVED toolkit root must not outrank the config file (see above)
+    [ "$_k" = X4_TOOLKIT ] && [ "$_X4_TK_FROM_ENV" != 1 ] && continue
+    eval "_v=\${$_k:-}"
+    [ -n "$_v" ] && _x4_pre="$_x4_pre$_k=$_v
+"
+  done
+  set -a; . "$_x4_cfg"; set +a
+  if [ -n "$_x4_pre" ]; then
+    while IFS='=' read -r _k _v; do
+      [ -n "$_k" ] && export "$_k=$_v"
+    done <<EOF
+$_x4_pre
+EOF
+  fi
+  unset _x4_pre _k _v
+fi
+
+# Fill only what config/env did not set. (Game/profile/mods/etc. have no safe default — may be empty.)
+: "${X4_REFERENCE:=$X4_TOOLKIT/reference}"
+
+# Derive the Steam app manifest from the game dir when possible (…/steamapps/common/X4 Foundations).
+if [ -z "${X4_APPMANIFEST:-}" ] && [ -n "${X4_GAME:-}" ]; then
+  # Two parent directories by parameter expansion: `dirname "$(dirname ...)"` cost two
+  # processes and two subshells on EVERY hook call (AUDIT-2026-09-24 HK-4). Backslashes
+  # are folded first, trailing separators dropped, so `C:\...\X4 Foundations\` and
+  # `/c/.../X4 Foundations` both land on steamapps/.
+  _sa="${X4_GAME//\\//}"
+  while [ "${_sa%/}" != "$_sa" ]; do _sa="${_sa%/}"; done
+  _sa="${_sa%/*}"; _sa="${_sa%/*}"
+  [ -f "$_sa/appmanifest_392160.acf" ] && X4_APPMANIFEST="$_sa/appmanifest_392160.acf"
+fi
+
+# x4_acf_buildid FILE -> the INSTALLED build id from a Steam app manifest; prints nothing
+# and returns 1 when there is none. THE ONE READER -- tests/test_acf_buildid_has_one_parser.py.
+#
+# A real manifest carries more than one "buildid": the installed build directly under
+# AppState, plus one per beta branch under PrivateDepots/branches. MEASURED 2026-09-14 on
+# the reference machine: AppState 23660954, public_beta 23524486. A plain grep answers
+# with whichever comes first or last. bin/unpack-reference.sh took the LAST, so a
+# re-unpack would have stamped the beta's build into the lock sentinel and the
+# SessionStart hook would then have called a current reference/ stale. So: the key at
+# brace depth 1, whatever order Steam writes the keys in.
+x4_acf_buildid() {
+  [ -f "${1:-}" ] || return 1
+  # BINMODE=3: Git Bash's gawk strips CR on input by default and Linux/macOS awk does not
+  # (MEASURED: a CRLF line reads length 1 vs 2), so without it the CR handling below would
+  # be exercised on one platform only. Other awks ignore the unused variable.
+  awk -v BINMODE=3 '
+    { line = $0; sub(/\r$/, "", line) }
+    line ~ /^[ \t]*\{[ \t]*$/ { depth++; next }
+    line ~ /^[ \t]*\}[ \t]*$/ { depth--; next }
+    depth == 1 && tolower(line) ~ /^[ \t]*"buildid"[ \t]+"[0-9]+"[ \t]*$/ {
+      n = line; gsub(/[^0-9]/, "", n); print n; found = 1; exit
+    }
+    END { exit found ? 0 : 1 }
+  ' "$1"
+}
+
+# --- path helpers: case-insensitive + backslash-insensitive (Windows/Git-Bash/macOS/Linux) ---
+# x4_norm PATH_OR_COMMAND -> lowercase, backslashes to slashes, and the DRIVE DIALECT
+# unified. MEASURED 2026-08-30: without the last step, Git Bash's "/c/Users/..." and
+# Windows' "C:/Users/..." never compare equal, so any guard rooted purely on a
+# configured PATH missed one of the two dialects -- the same Documents write asked in
+# one form and was ALLOWED in the other. 2,553 historical commands use the MSYS form,
+# and no probe in the suite had ever used a drive-lettered root, so nothing could have
+# caught it. Rules carrying a NAME backstop (the game, the profile) were unaffected.
+#
+# Windows-to-MSYS is the safe direction: "c:/" is unambiguous, since a colon is illegal
+# elsewhere in a Windows path, whereas "/c/" also occurs mid-path. The guard on the
+# preceding character is what keeps "https://" from matching as a drive named "s".
+#
+# ONE subprocess, not two: sed's `y` transliterates, which is all `tr` was doing. This
+# helper is the hot path of protect-files.sh -- MEASURED 2026-08-31 at 145 ms per call
+# and ~22 calls per Edit/Write, i.e. ~6 s on every file edit, because x4_under
+# canonicalises BOTH of its arguments on all 11 of its call sites. Process spawn is the
+# whole cost on Windows; halving the spawns halves the bill.
+#
+# Behaviour is UNCHANGED and that was proven, not assumed: 43 of 43 path shapes agree
+# with the two-process form, including the live configured roots, and the differential
+# harness was shown able to detect a deliberately-wrong implementation. x4_norm is shared
+# by every guard, and F93 is the entry about a shared helper quietly re-scoping the rules
+# above it -- so this may cost less, and must not decide differently.
+x4_norm() {
+  # Lowercase, backslash -> slash, drive dialect unified, repeated separators
+  # collapsed, THEN dot segments resolved.
+  #
+  # The separator pass is the twin of the dot pass below and was added for the same
+  # reason: `<root>//reference/x` names the same file as `<root>/reference/x` on
+  # both POSIX and Windows, but compared equal to nothing and walked past the
+  # reference/ HARD BLOCK. MEASURED 2026-09-03 in BOTH channels. A LEADING `//`
+  # survives -- that is a UNC share, a different location -- which is what the
+  # `(.)` guard in the rule is for.
+  #
+  # The dot-segment pass is not cosmetic. x4_canon only feeds POSIX-absolute paths to
+  # realpath, so a WINDOWS-dialect path kept its `..` and compared unequal to the root:
+  # MEASURED 2026-09-01, C:/<toolkit>/other/../reference/libraries/w.xml was NOT under
+  # reference/, and protect-files.sh returned EMPTY -- a silent allow past a HARD BLOCK
+  # -- while the identical /c/... form was correctly caught. hook_facts.norm() has
+  # always collapsed them (posixpath.normpath); this is the same rule on the bash side,
+  # so two implementations of one path fact stop disagreeing.
+  #
+  # Still ONE subprocess: the loops live inside the same sed program.
+  #
+  # The EXTENDED-LENGTH prefix goes first, and the order is the fix rather than a
+  # detail. Windows accepts \\?\C:\... (and the \\.\ device form) for any path, the
+  # Write tool passes it through, and Python opens it -- but it normalises to
+  # //?/c:/... which is under no configured root, so the reference HARD BLOCK simply
+  # did not fire. Stripping it AFTER the drive-dialect rule below would not help:
+  # that rule rewrites <sep>c:/ to <sep>/c/, turning //?/c:/users into //?//c/users,
+  # which still matches nothing.
+  #
+  # \\?\UNC\server\share is the same prefix over a network path and unwraps to
+  # //server/share.
+  printf '%s' "$1" | sed -E 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ\\/abcdefghijklmnopqrstuvwxyz\//
+s#^//[?.]/unc/#//#
+s#^//[?.]/##
+s#(^|[^a-z0-9])([a-z]):/#\1/\2/#g
+:slash
+s#(.)//+#\1/#g
+tslash
+:dot
+s#/[.]/#/#g
+tdot
+s#/[.]$#/#
+:dotdot
+s#/[^/]+/[.][.](/|$)#/#
+tdotdot
+s#(.)/$#\1#'
+}
+# x4_canon PATH -> resolve symlinks + .. (so e.g. a game-dir 'extensions' symlink and its real
+# target compare equal). Uses realpath -m when available (no need for the file to exist);
+# falls back to the raw path otherwise. Then normalized for case/slash-insensitive compare.
+x4_canon() {
+  local p="$1"
+  # STRIPPED BEFORE realpath, not after. `realpath -m` rewrites `//./X` to `//X`, which
+  # x4_norm then renders `///c/...` -- under no root -- so the ordering fix written
+  # inside x4_norm was defeated by its only caller. MEASURED 2026-09-02:
+  #
+  #   IN  //./C:/X/ref/a.xml    x4_norm  /c/x/ref/a.xml
+  #                             x4_canon ///c/x/ref/a.xml
+  #
+  # The `//?/` form survived only because realpath happens to leave it alone.
+  case "$p" in
+    //[?.]/[Uu][Nn][Cc]/*) p="//${p#//?/???/}" ;;
+    //[?.]/*)              p="${p#//?/}" ;;
+  esac
+  # Only canonicalize POSIX-absolute paths (Linux/macOS, and Git-Bash "/c/..."). A Windows
+  # "C:\..." path must NOT be fed to realpath (no leading "/" -> treated as relative -> mangled);
+  # it falls through to pure string normalization instead.
+  # $p, NOT $1. Reading the original here discarded the strip above -- the branch tested
+  # the unstripped path and realpath was handed it too, so the device form still came out
+  # as ///c/... and a write into reference/ was still allowed.
+  case "$p" in
+    /*) command -v realpath >/dev/null 2>&1 && p="$(realpath -m -- "$p" 2>/dev/null || printf '%s' "$p")" ;;
+  esac
+  x4_norm "$p"
+}
+# x4_under FILE DIR -> 0 (true) if FILE is inside DIR or equals it; false if DIR empty.
+#
+# The FIRST argument is memoised. protect-files.sh calls this 11 times and passes the
+# SAME file path every time, so the identical canonicalisation was recomputed 10 times
+# for nothing -- a subprocess each. A one-entry cache is enough precisely because the
+# repetition is in argument one; the roots differ per call and caching them would buy
+# little and cost correctness questions.
+#
+# Cache CORRECTNESS: keyed on the exact input string, and x4_canon is a pure function of
+# it (realpath is read-only and the filesystem does not move mid-hook), so a hit returns
+# what a recomputation would. Plain variables, not an associative array -- macOS ships
+# bash 3.2, where `declare -A` fails silently and takes the guard with it.
+#
+# Returns through a GLOBAL, not stdout. A memo read with `x="$(memo ...)"` caches
+# NOTHING: command substitution forks a subshell, the array writes land in the child and
+# die with it. MEASURED 2026-08-31 -- 0 cache entries after two calls -- and the first
+# version of this cost MORE than no cache at all, because every call was a miss plus a
+# scan of a permanently empty array. The interleaved benchmark showed the memo slower
+# than the un-memoised form, which read as noise and was not.
+#
+# Indexed arrays, not `declare -A`: macOS ships bash 3.2, where the associative form
+# fails and takes the guard with it.
+_X4_CK=()                 # cache keys
+_X4_CV=()                 # cache values
+_X4_CANON_RESULT=""       # the out-parameter
+x4_canon_memo() {
+  local i=0 n=${#_X4_CK[@]}
+  while [ "$i" -lt "$n" ]; do
+    if [ "${_X4_CK[$i]}" = "$1" ]; then _X4_CANON_RESULT="${_X4_CV[$i]}"; return 0; fi
+    i=$((i+1))
+  done
+  _X4_CANON_RESULT="$(x4_canon "$1")"
+  _X4_CK[$n]="$1"; _X4_CV[$n]="$_X4_CANON_RESULT"
+}
+x4_under() {
+  [ -n "$2" ] || return 1
+  local f d
+  x4_canon_memo "$1"; f="$_X4_CANON_RESULT"
+  x4_canon_memo "$2"; d="${_X4_CANON_RESULT%/}"
+  case "$f" in "$d"/*|"$d") return 0;; *) return 1;; esac
+}
+
+# --- user documents ----------------------------------------------------------
+# Everything a person keeps outside the toolkit: game settings, saves, other games'
+# data. On the reference machine Documents holds Elder Scrolls Online, Paradox
+# Interactive, My Games and a backup archive alongside the X4 profile -- none of it
+# reproducible, none of it ours.
+#
+# MEASURED 2026-08-29 before adding the rules that use this: over 11,133 historical
+# commands, guarding all of Documents fires on 7 MORE commands (0.06%) than the
+# existing X4-profile rules already did, and on ZERO more Edit/Write calls. Cheap.
+#
+# Empty when it cannot be resolved, and every rule below is guarded on non-empty --
+# so an unconfigured machine gets no rule rather than a rule against "".
+if [ -z "${X4_DOCUMENTS:-}" ]; then
+  for _d in "${USERPROFILE:-}/Documents" "$HOME/Documents" "$HOME/My Documents"; do
+    [ -n "${_d#/Documents}" ] && [ -d "$_d" ] && { X4_DOCUMENTS="$_d"; break; }
+  done
+fi
+# The save folder, named separately because deleting one is unrecoverable and the
+# message should say so rather than talking about "an X4 directory".
+: "${X4_SAVES:=${X4_PROFILE:+$X4_PROFILE/save}}"
+
+# --- hook payload -------------------------------------------------------------
+# Read the hook's JSON payload from stdin.
+#
+# ⚠ MEASURED 2026-08-29, and it had made EVERY HOOK HERE INERT: `cat /dev/stdin`
+# returns ZERO BYTES in the Claude Code hook environment, while a bare `cat`
+# returns the payload. Seven consecutive probes: 0 bytes via /dev/stdin,
+# 641-2840 bytes via bare cat, PreToolUse and PostToolUse alike.
+#
+# All five hooks used the former. The failure is invisible by construction: a hook
+# that reads nothing falls through its first guard clause and exits 0, which is
+# byte-identical to deciding "this is fine". Independent confirmation: no
+# AUDIT_LOG.txt existed anywhere, and the only one that did contained 17 entries,
+# all of them the test suite's synthetic /tmp fixture -- not one real edit in five
+# weeks, while CLAUDE.md stated every edit was backed up.
+#
+# The suites passed throughout, because a suite pipes stdin explicitly and
+# /dev/stdin resolves fine there. Green in the harness, dead in production.
+x4_hook_input() { cat; }
+
+# x4_require_input <payload> <reason> [event]
+# A guard that cannot see its input cannot vouch for it, so it must not stay
+# silent -- silence IS allow, and that is exactly how the defect above survived.
+#
+# The refusal must not depend on the tool that may have failed. MEASURED
+# 2026-08-30: this emitted its `ask` THROUGH jq, so with jq unavailable an empty
+# payload was reported by nothing at all -- allow again, one layer in. If jq
+# cannot render the reason, a static literal goes out instead (no interpolation:
+# a reason with a quote in it would need escaping we no longer have).
+# x4_python -> print the interpreter to use, or nothing.
+#
+# ONE implementation. The three hooks that need Python each grew their own, and they
+# DISAGREED on the case that matters: with X4_PYTHON set to something that does not
+# resolve, protect-bash.sh refused (correctly -- an explicitly configured interpreter
+# that is missing is an error, not a cue to quietly pick a different one), while
+# protect-files.sh and backup-before-edit.sh fell through to python3/python/py. They
+# also probed in opposite orders. A guard that runs under an interpreter the operator
+# did not choose is a guard nobody configured.
+#
+# x4_resolve_python sets X4_PY instead of printing, so a caller needs no `$( )` subshell
+# -- a process on Windows, on every hook call (AUDIT-2026-09-24 HK-4). x4_python is the
+# printing form of the SAME function, kept for callers that want a value.
+x4_resolve_python() {
+  X4_PY=""
+  if [ -n "${X4_PYTHON:-}" ]; then
+    command -v "$X4_PYTHON" >/dev/null 2>&1 && X4_PY="$X4_PYTHON"
+    return 0                      # set but unresolvable -> NOTHING, deliberately
+  fi
+  for _c in python python3 py; do
+    if command -v "$_c" >/dev/null 2>&1; then X4_PY="$_c"; return 0; fi
+  done
+  return 0
+}
+x4_python() { x4_resolve_python; printf '%s' "$X4_PY"; }
+
+# x4_field <payload> <dotted path, e.g. tool_input.path>
+# Read one field from a hook payload without depending on jq alone.
+#
+# Fixing only the EMIT was a half fix: search-scope.sh READS its path with jq too, so
+# with jq missing the read returned empty, the next line exited 0, and the shared
+# emitter was never reached. MEASURED 2026-09-01 -- working jq: 420 bytes of advisory;
+# broken jq: 0 bytes, still silent, after the emitter had supposedly been fixed. Teach
+# EVERY step of the chain, not the last one.
+#
+# Returns empty for "absent" AND for "unreadable" -- fine for the ADVISORY hooks that
+# use it, which have nothing to say either way. The two hooks that emit VERDICTS
+# (protect-files, backup-before-edit) deliberately keep their own readers, because they
+# must tell those two cases apart and ASK on the second.
+x4_field() {
+  # ONE jq process, not a health probe plus a read (AUDIT-2026-09-24 HK-4). A jq that is
+  # missing or broken exits non-zero, and so does one handed an unreadable payload; both
+  # fall through to python, which answers the same question -- so the result for every
+  # case is what the probe-first form returned.
+  local _jv
+  if _jv="$(printf '%s' "$1" | "${JQ:-jq}" -r ".$2 // empty" 2>/dev/null)"; then
+    printf '%s' "$_jv"
+    return 0
+  fi
+  x4_resolve_python
+  local _py="$X4_PY"
+  [ -n "$_py" ] || return 0
+  X4_IN="$1" X4_PATH="$2" "$_py" -c 'import json, os, sys
+cur = json.loads(os.environ["X4_IN"])
+for k in os.environ["X4_PATH"].split("."):
+    if not isinstance(cur, dict):
+        cur = None
+        break
+    cur = cur.get(k)
+sys.stdout.write("" if cur is None else str(cur))' 2>/dev/null
+}
+
+# x4_advise <reason> [event]
+# Emit an ADVISORY (an allow that carries a note to the model) without depending on jq
+# alone. MEASURED 2026-09-01: search-scope.sh and x4validate-on-edit.sh emitted straight
+# through `"$JQ"`, so with jq unavailable they produced 0 bytes and the advisory was
+# simply lost -- silently, since 0 bytes is also how "nothing to say" looks. The cost is
+# a lost note rather than a lost refusal, which is exactly why it could sit unnoticed.
+#
+# ONE implementation, so a third advisory hook cannot reintroduce the gap: the two
+# guards that emit VERDICTS carry their own emitter because they also need deny/ask.
+# x4_bound <text>  -- cap model-facing text, and SAY SO when it bites.
+#
+# MEASURED 2026-09-07, CC 2.1.263, this machine: Claude Code FILES a hook's
+# model-facing output above 10,000 CHARACTERS and shows the model a ~2 KB
+# preview. No error, exit code unchanged -- the failure is indistinguishable
+# from success, which is the whole reason this exists. Four arms per channel,
+# head+tail sentinel, discriminating on whether the TAIL survives:
+#
+#   bare stdout        500 BOTH · 10,000 BOTH · 10,001 HEAD · 30,000 HEAD
+#   additionalContext  500 BOTH ·  9,950 BOTH · 10,001 HEAD · 30,000 HEAD
+#
+# The 9,950 arm is load-bearing: its raw stdout was 10,032 characters and it
+# still arrived whole. So the cap is on the CONTENT the model receives and the
+# JSON envelope does NOT count -- budget the reason at 10,000 flat, never
+# "10,000 minus envelope".
+#
+# ⚠ THE NUMBER MOVES BETWEEN CC VERSIONS (high-20s K on 2.1.218 -> 10,000 on
+# 2.1.246 -> still 10,000 on 2.1.263). Re-derive it on a CC bump with the probe
+# above, keeping a small-size control arm so a broken probe cannot read as a
+# clean pass. This is the ONLY place the number is written down; a second copy
+# would drift, and a wrong constant here fails silently in the safe-looking
+# direction.
+#
+# ONE bound, applied BEFORE either renderer runs. Doing it inside jq and again
+# inside the python fallback would be two implementations of one rule, and the
+# fallback is what runs on a machine with no jq -- exactly when nobody is
+# looking. Renderer parity is then structural, not a coincidence two code paths
+# have to keep re-earning.
+X4_HOOK_MAX_CHARS="${X4_HOOK_MAX_CHARS:-10000}"
+#: Room for the notice itself, so the bounded text INCLUDING its disclosure
+#: still fits under the cap. A cap that overflows by the width of its own
+#: warning is the joke version of this function. MEASURED: the notice is
+#: 200 characters at 5-digit totals, so 300 leaves headroom for wider
+#: numbers; the suite asserts the bounded result is <= the cap regardless.
+_X4_BOUND_RESERVE=300
+
+# Each arm is CHECKED, and a failing arm falls through to the next. x4_len used
+# to `return 0` after the python arm whatever that arm did, so a python that
+# RESOLVES but FAILS (a Windows Store stub, an X4_PYTHON pointing at a wrapper
+# that errors) printed nothing, the length came back empty, and x4_bound took its
+# non-numeric guard and passed the text through WHOLE. A fail-open inside the
+# function written to close a fail-open, with the jq and bash arms unreachable
+# because the first arm always claimed success. MEASURED with a stub exiting 9:
+# 25,000 characters in, 25,000 out.
+x4_len(){
+  x4_resolve_python; _py="$X4_PY"
+  if [ -n "$_py" ]; then
+    _n="$(X4_BND="$1" "$_py" -c 'import os,sys; sys.stdout.buffer.write(str(len(os.environ["X4_BND"])).encode())' 2>/dev/null)"
+    case "$_n" in ''|*[!0-9]*) : ;; *) printf '%s' "$_n"; return 0 ;; esac
+  fi
+  if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then
+    _n="$("${JQ:-jq}" -rn --arg s "$1" '$s|length' 2>/dev/null)"
+    case "$_n" in ''|*[!0-9]*) : ;; *) printf '%s' "$_n"; return 0 ;; esac
+  fi
+  printf '%s' "${#1}"          # bytes in the C locale; last resort, and it undercounts nothing
+}
+
+# sys.stdout.BUFFER, not sys.stdout. On Windows the text-mode stdout re-translates
+# LF into CRLF on the way out, so a payload that already carried CRLF came back as
+# CR CR LF and the slice GREW by one character per line AFTER the bound had been
+# computed: 9,700 characters in, 9,807 out, capped result 10,007 against a 10,000
+# ceiling. The suite caught it and my own spot-check did NOT, because text-mode
+# open() collapses CRLF on the way back in and reported an honest-looking 9,900.
+# Read bytes, write bytes.
+#
+# Each arm is CHECKED here too, for the same reason as x4_len above.
+x4_head(){
+  x4_resolve_python; _py="$X4_PY"
+  if [ -n "$_py" ]; then
+    if _o="$(X4_BND="$1" X4_BNDN="$2" "$_py" -c 'import os,sys; sys.stdout.buffer.write(os.environ["X4_BND"][:int(os.environ["X4_BNDN"])].encode("utf-8"))' 2>/dev/null)"; then
+      printf '%s' "$_o"; return 0
+    fi
+  fi
+  if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then
+    if _o="$("${JQ:-jq}" -rn --arg s "$1" --argjson n "$2" '$s[0:$n]' 2>/dev/null)"; then
+      printf '%s' "$_o"; return 0
+    fi
+  fi
+  printf '%s' "${1:0:$2}"
+}
+
+x4_bound(){
+  # FAST PATH. MEASURED by review: spawning an interpreter unconditionally cost
+  # +117 ms per verdict (+32%) even for a 57-character reason -- a smaller
+  # instance of the 11.3x latency regression this file's header records as the
+  # class it was rewritten to remove, reintroduced by the fix for it.
+  #
+  # ${#1} is BYTES in the C locale and CHARACTERS in a UTF-8 one. Both are >= the
+  # codepoint count, so a payload whose ${#1} already fits is under the cap on
+  # either reading and the exact count is not needed. The skip can therefore only
+  # err toward MEASURING, never toward letting something through unbounded --
+  # which is the only direction that would matter.
+  [ "${#1}" -le "$X4_HOOK_MAX_CHARS" ] && { printf '%s' "$1"; return 0; }
+  _t="$(x4_len "$1")"
+  # An unreadable length is NOT a licence to pass the text through: every arm of
+  # x4_len is checked now, so reaching here means all three failed, and the
+  # honest response is to bound blind rather than emit unbounded.
+  case "$_t" in ''|*[!0-9]*) _t="" ;; esac
+  if [ -n "$_t" ] && [ "$_t" -le "$X4_HOOK_MAX_CHARS" ]; then printf '%s' "$1"; return 0; fi
+  _keep=$((X4_HOOK_MAX_CHARS - _X4_BOUND_RESERVE))
+  if [ "$_keep" -lt 1 ]; then
+    # A cap SMALLER than the notice made _keep negative, and a negative slice
+    # keeps almost everything -- so the "bounded" result came back LARGER than
+    # the cap it was asked for. MEASURED at X4_HOOK_MAX_CHARS=200 on a 5,000
+    # character payload: 5,097 characters out, 25x the cap. The knob is
+    # documented as overridable and the constant is expected to be re-derived on
+    # a CC bump, so a lower ceiling is the realistic way in. Below the notice
+    # width the notice itself has to shrink.
+    _keep=$((X4_HOOK_MAX_CHARS / 2))
+    [ "$_keep" -lt 1 ] && _keep=1
+    printf '%s\n[TRUNCATED %s/%s]' "$(x4_head "$1" "$_keep")" "$_keep" "${_t:-?}"
+    return 0
+  fi
+  printf '%s\n[TRUNCATED: showing %s of %s characters. Claude Code files hook output above %s and shows the model only a preview, so the rest is dropped HERE, deliberately, rather than vanishing silently.]' \
+    "$(x4_head "$1" "$_keep")" "$_keep" "${_t:-an unreadable number of}" "$X4_HOOK_MAX_CHARS"
+}
+
+x4_advise() {
+  set -- "$(x4_bound "$1")" "${2:-PreToolUse}"     # ONE bound, before either renderer
+  if printf '%s' '{}' | "${JQ:-jq}" -e . >/dev/null 2>&1; then
+    "${JQ:-jq}" -n --arg r "$1" --arg e "${2:-PreToolUse}" \
+      '{hookSpecificOutput:{hookEventName:$e,additionalContext:$r}}'
+    return 0
+  fi
+  x4_resolve_python; local _py="$X4_PY"
+  if [ -n "$_py" ]; then
+    X4_REASON="$1" X4_EVENT="${2:-PreToolUse}" "$_py" -c 'import json, os, sys
+sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": {
+  "hookEventName": os.environ.get("X4_EVENT") or "PreToolUse",
+  "additionalContext": os.environ["X4_REASON"]}}).encode("utf-8"))'
+    return 0
+  fi
+  # Neither renderer. An advisory is a note, not a decision, so a static literal that
+  # says the note was lost beats emitting nothing and pretending there was none.
+  printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"X4 ADVISORY LOST: this hook had something to tell you but neither jq nor python is available to render it. Install jq, or set X4_PYTHON."}}'
+}
+
+x4_require_input() {
+  [ -n "$1" ] && return 0
+  "${JQ:-jq}" -n --arg r "$2" --arg e "${3:-PreToolUse}" \
+    '{hookSpecificOutput:{hookEventName:$e,permissionDecision:"ask",permissionDecisionReason:$r}}' 2>/dev/null \
+  || printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"X4 GUARD INERT: this hook received NO INPUT and could not run jq to report it, so it checked nothing. Confirm only if you know why both are missing."}}'
+  exit 0
+}

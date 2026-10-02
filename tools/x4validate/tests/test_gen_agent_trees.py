@@ -51,7 +51,11 @@ def test_no_personal_path_reaches_generated_output():
     # is NOT personal (CLAUDE.md explains Wine's `Z:\`); scan-identifiers.py stays the
     # authoritative check on contributor identifiers.
     pat = re.compile(r"[\\/]Users[\\/]|/home/|\b\d{8}\b")
-    hits = [rel for rel, text in load().generate(REPO).items() if pat.search(text)]
+    # Rendered prose only. The guards under .claude/hooks/ are copied verbatim and legitimately
+    # carry generic path fixtures (/Users/tester, /home/user) and Steam build ids; they are
+    # covered by scan-identifiers.py, which knows placeholders from real identifiers.
+    hits = [rel for rel, text in load().generate(REPO).items()
+            if not rel.startswith(".claude/hooks/") and pat.search(text)]
     assert hits == []
 
 
@@ -79,6 +83,41 @@ def test_tokens_are_rendered_everywhere():
 def test_no_double_banner_on_the_cli_reference():
     text = load().generate(REPO)[".claude/skills/x4-cli-reference/SKILL.md"]
     assert text.count("<!-- GENERATED") == 1
+
+
+def test_hooks_are_generated_byte_identical():
+    out = load().generate(REPO)
+    src = REPO / "agent" / "guards" / "claude-hooks"
+    srcs = sorted(f.relative_to(src).as_posix() for f in src.rglob("*")
+                  if f.is_file() and "__pycache__" not in f.parts and ".pytest_cache" not in f.parts)
+    gen = sorted(p[len(".claude/hooks/"):] for p in out if p.startswith(".claude/hooks/"))
+    assert gen == srcs and len(gen) >= 13      # MEASURED: 13 tracked hook files at 2f8e913
+    for name in srcs:
+        assert out[".claude/hooks/" + name] == (src / name).read_bytes().decode("utf-8").replace("\r\n", "\n")
+
+
+def test_hook_modes_match_their_source():
+    """Byte identity includes the executable bit. On Windows (core.filemode=false) a regenerated
+    file re-added to the index defaults to 100644 -- MEASURED when the hooks moved: 5 scripts
+    lost 100755. Compared in git's index, the only place Windows records the bit."""
+    r = subprocess.run(["git", "-C", str(REPO), "ls-files", "-s", "--", ".claude/hooks", "agent/guards/claude-hooks"],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip():
+        pytest.skip("not a git checkout with tracked hooks -- modes NOT checked here")
+    modes = {}
+    for line in r.stdout.splitlines():
+        meta, path = line.split("\t", 1)
+        modes[path] = meta.split()[0]
+    gen = {p[len(".claude/hooks/"):]: m for p, m in modes.items() if p.startswith(".claude/hooks/")}
+    src = {p[len("agent/guards/claude-hooks/"):]: m for p, m in modes.items() if p.startswith("agent/guards/")}
+    assert gen and src
+    assert {n: (src.get(n), m) for n, m in gen.items() if src.get(n) != m} == {}
+
+
+def test_hooks_get_no_banner_and_no_token_rewrite():
+    out = load().generate(REPO)
+    assert not any("<!-- GENERATED" in t for p, t in out.items() if p.startswith(".claude/hooks/"))
+    assert "CLAUDE_PROJECT_DIR" in out[".claude/hooks/_x4-env.sh"]   # its fallback root stays literal
 
 
 def test_missing_source_refuses_rather_than_skipping(tmp_path):
