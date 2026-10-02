@@ -178,9 +178,10 @@ Implemented follow-up (2026-10-01): delete checks compose file hard-block policy
 deletion approval policy, using a synthetic quoted command that is inspected, never executed.
 The wrapper sets `X4_GUARD_CHECK=1` in child environments; guards signal evaluation failures
 with exit 2 in that mode, producing `decision: deny, inert: true`. Native Claude approval
-JSON stays unchanged. The authoritative wrapper at `74b38fe` applies a separate timeout
-budget to each guard, so a composed delete check can consume two budgets. Descendant process
-termination and agent-host enforcement require separate verification.
+JSON stays unchanged. Plan 2 lane E (2026-10-02): one budget per check, shared by both delete
+guards; the guard's process tree is killed on timeout (Windows MEASURED, POSIX via process
+group: see CI); worst-case wall clock = `X4_GUARD_TIMEOUT_S` + 8 s. Agent-host enforcement
+still requires separate verification.
 
 ### 5.7 Escape hatches (D8)
 
