@@ -73,9 +73,8 @@ echo
 echo "2) Setting up bundled x4validate..."
 X4V="$ROOT/tools/x4validate"
 if [ -d "$X4V" ] && command -v uv >/dev/null 2>&1; then
-  ( cd "$X4V" && uv lock --check >/dev/null 2>&1 && uv sync --frozen >/dev/null 2>&1 ) \
-    && ok "x4validate dependencies synced from the checked lockfile (uv)" \
-    || fail "lockfile check or frozen sync failed — x4validate is not ready. Inspect: cd tools/x4validate && uv lock --check && uv sync --frozen. Setup does not update uv.lock."
+  ( cd "$X4V" && uv sync >/dev/null 2>&1 ) && ok "x4validate dependencies synced (uv)" \
+    || fail "uv sync failed — x4validate will not run. Try it manually:  cd tools/x4validate && uv sync"
   echo "     test it:  cd tools/x4validate && uv run pytest -q"
   echo "     run it:   cd tools/x4validate && uv run x4validate <your_mod>"
 else

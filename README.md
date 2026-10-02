@@ -268,17 +268,8 @@ or `--kind write|delete --path ...`. A delete check applies both file protection
 confirmation; the stricter verdict wins. An evaluation failure is `deny` with `inert: true`.
 An ordinary `ask` requires approval. Neither exit 0 nor a passing check installs enforcement
 in an agent host. On Windows set `X4_BASH` to Git Bash when PATH resolves to WSL.
-
-Backups reserve unique names atomically, including simultaneous calls within one second.
-The audit log names the exact snapshot to restore. Post-edit validation stays advisory,
-but reports unavailable, invalid, degraded and partially examined results explicitly.
-
-Setup checks `uv.lock` freshness before `uv sync --frozen`; it does not update the shipped
-lockfile. Maintainers deliberately changing dependencies must update and review the lockfile.
-CI checks freshness separately: frozen installation alone does not detect drift.
-The test suite intercepts PATH-based winget, choco, scoop and npm calls and fails on recorded
-invocations, including ignored failures. This tripwire cannot intercept an absolute executable
-path and does not replace OS isolation.
+Use absolute file paths: the audit found relative protected paths can incorrectly allow;
+that finding remains open in this branch.
 
 These hooks inspect known command forms; they do not sandbox arbitrary interpreter programs.
 The loss canary detects file loss, not historical guard evaluation health. Persistent guard

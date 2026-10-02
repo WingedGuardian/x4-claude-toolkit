@@ -12,9 +12,10 @@ Scope: instructions, generation, hooks, recovery, installation, CI and agent por
 Individual tool algorithms are outside this review. Their regression suite is run as an
 integration safeguard, not claimed as an algorithm audit.
 
-Verification used a separate detached worktree, temporary installer destinations, and
-disposable hook targets. No game, profile, reference or system-software changes were made.
-No safety behavior was changed. Follow-up hook edits belong in
+Initial read-only verification used a separate detached worktree, temporary installer
+destinations and disposable hook targets. That initial phase changed no game, profile,
+reference or system-software files and no safety behavior. The later implementation and
+deployment, including the scope correction, are recorded below. Hook edits belong in
 `agent/guards/claude-hooks/`, followed by regeneration; never edit generated hooks directly.
 
 ## Interpretation
@@ -24,7 +25,7 @@ neutral-source extraction preserves the existing Claude hook contract. It is a c
 foundation for other agents, but command inspection is not a filesystem security boundary.
 Passing the existing suites does not establish that every mutation route is protected.
 
-## Verified remaining findings
+## Verified baseline findings (F5/F6 subsequently fixed)
 
 ### F1 — interpreter writes bypass the reference write guard
 
@@ -117,7 +118,7 @@ Persistent failure telemetry and host enforcement remain separate requirements.
   shared-workspace reason. A write to a unique subdirectory under `/tmp` was also denied.
   These are verified conservative policy choices; narrowing them requires a reliable
   definition of isolated work, not merely trusting a caller's claim.
-- README currently tells maintainers to run checks after changes to `.claude/hooks/`.
+- The initial-baseline README told maintainers to run checks after changes to `.claude/hooks/`.
   Update maintainer guidance to name `agent/guards/claude-hooks/` as the editing location.
   The migration README and changelog already document the new source layout.
 - **SUPERSEDED at `367cf2e`:** there was no toolkit AGENTS.md at the full-suite baseline.
@@ -158,27 +159,32 @@ output. The clean worktree run passed. Neither failure is reported as a guard re
 
 ### Implementation status (2026-10-01)
 
-The user authorized the narrow remediation after confidence was stated at 93–95%.
-F2–F6 now have regression coverage and fixes: unique atomic backup allocation, explicit
-failed/degraded/partial validator advisories that retain findings and skipped-check reasons,
-lock freshness checks before frozen synchronization, composed deletion policies, and an
-explicit check-only inert-deny protocol. Tests intercept PATH package-manager calls in both
-shells and fail on recorded invocation. This is a tripwire, not an OS sandbox.
+The user's clarification limits authorization to F5 and F6: composed deletion policies
+and explicit check-only inert denials. The agent exceeded that scope by also implementing
+F2–F4 and package-manager tripwires. Those additional implementations and their two deployed
+hooks were rolled back; the audit findings remain open. History preserves the overbroad
+commits and their verification, rather than silently erasing what happened.
 
-Tests reproduced the original failures before the fixes. A reviewer found degraded validator
-results can exit 1 rather than 3; the correction reads the JSON coverage status and was
-re-reviewed with no remaining Critical or Important findings. Six generated hook updates
-were deployed with rollback copies under `.claude/backups/known-good-2026-10-01-framework-hardening/`;
-all 40 managed deployed files then matched. Hooks were edited in the neutral source tree.
+Tests reproduced the original failures before the fixes. A reviewer re-reviewed the changes
+with no remaining Critical or Important findings. Six generated hook updates were initially
+deployed with rollback copies under `.claude/backups/known-good-2026-10-01-framework-hardening/`.
+Only the four files supporting F5/F6 remain changed after scope correction. Hooks were edited
+in the neutral source tree. Master has active parallel work and was not changed by this session.
+
+Final corrected-scope verification: **3,010 passed, three skipped, exit 0, 401.20 seconds**.
+The skips are the same Windows file-symlink privilege checks. All 177 end-to-end smoke checks
+passed. Generator freshness passed, all 40 managed deployed files are at parity, and the two
+restored deployed hooks match their saved pre-change rollback copies. A follow-up reviewer
+confirmed that only F5/F6 production changes remain, with no Critical or Important findings.
 
 Post-review parser/integration checks: 610 passed plus 111 subtests. End-to-end script smoke:
 177 passed, zero failed or skipped. The first full run had 3,028 passes, three Windows
 symlink-privilege skips, and one expected deployment-parity failure because it ran before
-deployment. The fresh post-deployment full run passed: **3,029 passed, three skipped,
+deployment. The overbroad post-deployment full run passed: **3,029 passed, three skipped,
 exit 0, 420.83 seconds**. The three skips remain the Windows file-symlink privilege checks.
 The final smoke rerun again passed all 177 checks. Lock freshness and generator freshness
-checks returned 0. The shipped instructions stay below the existing 39,999-character
-baseline (39,975); the worktree itself has no local budget baseline, so its budget gate
+checks returned 0. The shipped instructions stayed below the existing 39,999-character
+baseline (39,975); the worktree itself had no local budget baseline, so its budget gate
 refuses rather than claiming to check historical growth.
 
 Deployed front-door controls returned deny for a reference write, ask for a development-tree
@@ -195,10 +201,16 @@ F1 remains: arbitrary program writes are outside the parser's reliable enforceme
 Persistent guard-evaluation telemetry, process-tree termination on wrapper timeout, and
 live agent-host enforcement also remain separate work. This patch does not certify them.
 
+Additional measured finding, not fixed here: from the toolkit root, the deployed front door
+allowed `--kind write --path reference/__guard_verification_only__.xml`, while the absolute
+path equivalent denied. No write occurred. The parallel session has an uncommitted relative-path
+resolution change; that change is neither integrated nor certified by this audit. The attempted
+new regression test was discarded after the user clarified scope.
+
 1. **Completed:** resolve F5 and F6 in the front door before adapter integration. These are material contract
    findings: pause implementation for a design checkpoint, rather than claiming the
    passing targeted suite proves equivalent protection.
-2. **Completed:** make backup allocation, validation failure disclosure and lock freshness separate,
+2. **Open, implementation rolled back:** make backup allocation, validation failure disclosure and lock freshness separate,
    narrowly tested hardening changes. State confidence and assumptions before implementation.
 3. Define persistent hook-health telemetry and its distinction from the existing loss canary.
 4. Resolve the opaque-program boundary before claiming equivalent protection across agents;

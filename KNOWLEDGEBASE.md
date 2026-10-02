@@ -1127,7 +1127,9 @@ and successful payload parsing distinct from successful guard evaluation.
 
 IMPLEMENTED after review: delete checks compose file protection with shell deletion policy;
 check-only guard failures return inert deny while native Claude approval behavior stays intact.
-Backups reserve unique names atomically. Post-edit validation reports failed, degraded and partial
-coverage, preserving findings and skipped-check reasons. Setup/CI explicitly check lock freshness;
-tests intercept package-manager commands on PATH in Bash and PowerShell. The tripwire is not an
-OS sandbox, and arbitrary script writes and persistent guard-health telemetry remain unresolved.
+Scope correction: only those two front-door fixes were authorized. Additional backup,
+validator, lock-check and package-manager-tripwire implementations were rolled back;
+their measured audit findings remain open. No relative-path production fix was applied:
+a relative `reference/...` write checked from the toolkit root returned allow while its
+absolute-path equivalent denied. The parallel session has a pending fix; it is not verified
+or integrated here. Arbitrary script writes and guard-health telemetry also remain unresolved.

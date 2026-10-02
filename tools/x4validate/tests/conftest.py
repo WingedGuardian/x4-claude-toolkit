@@ -20,7 +20,6 @@ real install. Only a genuinely clean machine (CI) could surface it.
 from __future__ import annotations
 
 import importlib
-import os
 import sys
 from pathlib import Path
 
@@ -47,38 +46,6 @@ import pytest
 #: run-gates.sh, verify-cold.sh and ci.yml; this line is belt-and-braces for the
 #: in-process case only.
 sys.dont_write_bytecode = True
-
-
-def package_manager_tripwire(root):
-    """PATH tripwires for system installers, for Bash and native Windows shells.
-
-    This is test isolation, not an OS sandbox: absolute executable paths can bypass PATH.
-    Record even swallowed invocations so an installer cannot ignore the stub's refusal.
-    """
-    root.mkdir(parents=True, exist_ok=True)
-    log = root / "invocations.log"
-    for name in ("winget", "choco", "scoop", "npm"):
-        script = root / name
-        script.write_text('#!/bin/sh\nprintf "%s\\n" "' + name +
-                          '" >> "$X4_PACKAGE_MANAGER_LOG"\nexit 97\n', encoding="utf-8")
-        script.chmod(0o755)
-        (root / (name + ".cmd")).write_bytes(
-            ('@echo off\r\necho ' + name + '>>"%X4_PACKAGE_MANAGER_LOG%"\r\nexit /b 97\r\n').encode())
-    return {"PATH": str(root) + os.pathsep + os.environ["PATH"],
-            "X4_PACKAGE_MANAGER_LOG": str(log)}
-
-
-@pytest.fixture(scope="session", autouse=True)
-def no_system_package_managers(tmp_path_factory):
-    root = tmp_path_factory.mktemp("system-installer-tripwires")
-    env = package_manager_tripwire(root)
-    with pytest.MonkeyPatch.context() as patch:
-        for key, value in env.items():
-            patch.setenv(key, value)
-        yield
-    log = root / "invocations.log"
-    if log.exists():
-        pytest.fail("Tests invoked a system package manager: " + log.read_text())
 
 GATES = Path(__file__).resolve().parent.parent / "gates"
 
