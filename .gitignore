@@ -40,6 +40,9 @@ reference/
 # The skills' SOURCE moved to agent/skills/ (gen-agent-trees.py renders .claude/skills from it),
 # and the same bare rule matched it there too. Pinned by the same COMMITTABLE test.
 !agent/skills/*/reference/
+# Codex and generic agents get the same skills under .agents/skills/ (Plan 2); MEASURED 2026-10-02
+# the bare rule matched there too. Pinned by the same COMMITTABLE test.
+!.agents/skills/*/reference/
 extensions/
 *.cat
 *.dat

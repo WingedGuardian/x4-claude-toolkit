@@ -173,7 +173,7 @@ def main() -> int:
     #: 2026-09-02 neither was compared NOR printed -- so a coverage collapse could only
     #: ever surface disguised as a change in the findings, attributed to content. A
     #: denominator that is measured and then discarded is the shape this gate exists to
-    #: catch, sitting inside the gate. See CLAUDE.md "A step that narrows data MUST
+    #: catch, sitting inside the gate. See the x4-toolkit-dev skill, "A step that narrows data MUST
     #: announce it" and the sibling defect measured in control_bytes.py the same day.
     for key in ("base_macro_files_scanned", "base_macro_files_unreadable",
                 "mod_files_unreadable", "deprecated_only_macros_vanilla", "deprecated_only_macros_effective",

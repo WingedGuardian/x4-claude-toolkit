@@ -72,9 +72,11 @@ def test_every_generated_file_is_COMMITTABLE(expected):
     if top.returncode != 0 or Path(top.stdout.strip()).resolve() != root.resolve():
         pytest.skip("not this toolkit's own git checkout -- ignore rules NOT CHECKED")
     ignored = []
-    # Both copies must be committable: the source under agent/ and the rendering under .claude/.
+    # Every copy must be committable: the source under agent/ and the renderings under .claude/
+    # and .agents/ (Plan 2: MEASURED 2026-10-02, the bare `reference/` rule matched .agents/ too).
     for rel in expected:
-        for path in (f"agent/skills/x4-cli-reference/{rel}", f".claude/skills/x4-cli-reference/{rel}"):
+        for path in (f"agent/skills/x4-cli-reference/{rel}", f".claude/skills/x4-cli-reference/{rel}",
+                     f".agents/skills/x4-cli-reference/{rel}"):
             r = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "--no-index", path])
             if r.returncode == 0:
                 ignored.append(path)

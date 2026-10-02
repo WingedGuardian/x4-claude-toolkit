@@ -74,10 +74,14 @@ def test_the_python_half_puts_the_environment_FIRST():
 def test_the_documented_order_still_says_the_environment_wins():
     """If someone changes the promise, this test is where they find out that two
     implementations are pinned to it."""
-    text = CLAUDE_MD.read_text(encoding="utf-8", errors="replace")
-    assert "env var > `x4-paths.env` > default" in text, (
-        "CLAUDE.md no longer documents env > file > default; the two implementations "
-        "below are pinned to that order")
+    # Plan 2: AGENTS.md carries the same shared core, so it makes the same promise.
+    docs = [p for p in (CLAUDE_MD, ROOT / "AGENTS.md") if p.is_file()]
+    assert CLAUDE_MD in docs, "no CLAUDE.md at the repo root"
+    for doc in docs:
+        text = doc.read_text(encoding="utf-8", errors="replace")
+        assert "env var > `x4-paths.env` > default" in text, (
+            f"{doc.name} no longer documents env > file > default; the two implementations "
+            "below are pinned to that order")
 
 
 def test_the_bash_half_lets_the_environment_win():

@@ -179,7 +179,7 @@ def generate(pkg: Path = PKG) -> dict[str, str]:
     skill = [FRONTMATTER.rstrip("\n"), "", BANNER, "", "# X4 toolkit CLI reference", "",
              "The exact surface of every toolkit CLI, generated from its own argparse help so "
              "it cannot drift from the code. **Which tool answers which question** is "
-             "CLAUDE.md's routing table, not this file.", "",
+             "the routing table in CLAUDE.md / AGENTS.md, not this file.", "",
              "Run a CLI from `{{TOOLKIT}}/tools/x4validate` as `uv run <cli> ...`. The full `--help` of a "
              "CLI and of each of its subcommands is in `reference/<cli>.md` -- read it before "
              "composing a command line.", "",

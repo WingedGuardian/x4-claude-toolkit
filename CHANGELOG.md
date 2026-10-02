@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **`AGENTS.md` now carries the full shared instructions** (Codex and other agents), not a
+  stopgap pointing at `CLAUDE.md`. Both files are generated from one agent-neutral core
+  (`agent/instructions/core.md`) plus a per-agent addendum (`claude.md`, `codex.md`):
+  - the generator refuses, never truncates: `AGENTS.md` over 32,768 bytes (Codex's measured cut),
+    `CLAUDE.md` over 40,000 characters, a core naming a Claude-only mechanism, or a leftover
+    `{{TOKEN}}`. Every run prints both sizes;
+  - maintainer-only guidance (derived-artifact freshness, narrowing steps, the bug funnel,
+    concurrent sessions, trusting tools before a modlist lock, and the Python-internal routing
+    rows) moved verbatim into a new **`x4-toolkit-dev`** skill;
+  - your own notes go in `X4-NOTES.md`, which the toolkit never writes.
+- **Skills for Codex and generic agents** are generated under `.agents/skills/` (the same 11
+  skills; the toolkit root is written `$X4_TOOLKIT`, which `$env:X4_TOOLKIT` replaces in
+  PowerShell).
+
 - Individual-tool audit fixes: BaseX validates attribute QNames and certifies raw
   zeros only for a restricted whole-database content-search grammar. Other raw
   queries still report positives; unrecognized zeros return 4.

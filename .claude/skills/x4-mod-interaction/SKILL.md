@@ -61,7 +61,7 @@ Run tools via uv from the tool dir:
 5. **Context — read the mod's README FIRST**, then targeted cue reads of ONLY the colliding
    files x4compat/x4xref named (not the whole mod). READMEs are the highest-value artifact —
    authors often state compatibility and mechanism in plain English. Then the Nexus API
-   (description/changelog) per the CLAUDE.md API-first rule — never scrape Nexus pages.
+   (description/changelog) per the Nexus API-first rule in your project instructions — never scrape Nexus pages.
 
 ## The interaction brief (what to hand the user)
 

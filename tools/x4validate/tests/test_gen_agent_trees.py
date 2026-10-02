@@ -72,7 +72,8 @@ def test_agent_frontmatter_matches_the_claude_contract():
 def test_every_skill_and_settings_is_generated():
     out = load().generate(REPO)
     skills = sorted(p for p in out if p.startswith(".claude/skills/") and p.endswith("/SKILL.md"))
-    assert len(skills) == 10, skills
+    assert len(skills) == 11, skills
+    assert ".claude/skills/x4-toolkit-dev/SKILL.md" in skills
     assert ".claude/settings.json" in out
     assert sum(p.startswith(".claude/skills/x4-cli-reference/reference/") for p in out) == 11
 
@@ -122,29 +123,75 @@ def test_hooks_get_no_banner_and_no_token_rewrite():
     assert "CLAUDE_PROJECT_DIR" in out[".claude/hooks/_x4-env.sh"]   # its fallback root stays literal
 
 
-def test_agents_md_is_generated_within_codex_limit():
-    """Stopgap AGENTS.md (until the phase-3 split): Codex silently drops AGENTS.md text past
-    32,768 BYTES (MEASURED 2026-09-30, codex-spike doc), so the budget is in bytes."""
+def test_agents_md_is_core_plus_codex_addendum_within_the_byte_limit():
+    """Codex silently drops AGENTS.md text past 32,768 BYTES (MEASURED 2026-09-30, and the
+    exact cut re-measured 2026-10-02 on Codex 0.160.0: plan-2 measure-A M-A2)."""
+    out = load().generate(REPO)
+    a, c = out["AGENTS.md"], out["CLAUDE.md"]
+    assert a.startswith("# AGENTS.md") and "<!-- GENERATED from agent/ -->" in a
+    assert len(a.encode("utf-8")) <= 32768
+    # the shared core reaches both: the routing table and the evidence rules are in each
+    for must in ("Route BEFORE you search", "Label the evidence tier", "x4-toolkit-dev", "X4-NOTES.md"):
+        assert must in a and must in c, must
+
+
+def test_agents_md_carries_what_codex_cannot_get_from_hooks():
     text = load().generate(REPO)["AGENTS.md"]
-    assert len(text.encode("utf-8")) <= 32768
-    assert text.startswith("# ") and "<!-- GENERATED from agent/ -->" in text
+    for must in ("fail OPEN", "x4guard.py check", "--shell powershell", "inert: true", "reference",
+                 ".agents/skills", "git add -A", "$env:X4_TOOLKIT", "Codex only"):
+        assert must in text, must
+    for banned in ("NotebookEdit", "CLAUDE_PROJECT_DIR", "timed-out hook (30 s)"):
+        assert banned not in text, banned            # Claude facts must not leak into AGENTS.md
 
 
 def test_TWIN_an_oversized_agents_md_refuses(tmp_path):
-    import shutil
     g = load()
-    shutil.copytree(REPO / "agent", tmp_path / "agent")
-    p = tmp_path / "agent" / "instructions" / "codex.md"
-    p.write_bytes(p.read_bytes() + b"filler line for the size limit\n" * 1200)   # ~37 KB
+    src = _agent_src_copy(tmp_path)
+    over = 32768 - len(g.render_entry(src, "codex").encode("utf-8")) + 200   # relative to today
+    p = src / "instructions/core.md"
+    p.write_bytes(p.read_bytes() + b"filler line for the size limit\n" * (over // 31 + 1))
     with pytest.raises(g.GenerationError, match="silently drops"):
         g.generate(tmp_path)
 
 
-def test_agents_md_carries_the_rules_codex_cannot_get_elsewhere():
+def test_agents_md_limit_is_BYTES_not_chars(tmp_path):
+    # twin: under 32,768 chars but over 32,768 bytes must refuse
+    g = load()
+    src = _agent_src_copy(tmp_path)
+    room_chars = 32768 - len(g.render_entry(src, "codex")) - 10
+    p = src / "instructions/codex.md"
+    p.write_bytes(p.read_bytes() + ("★" * room_chars + "\n").encode())
+    assert len(g.render_entry(src, "codex")) < 32768                 # chars: under
+    with pytest.raises(g.GenerationError, match="silently drops"):
+        g.generate(tmp_path)
+
+
+def test_every_x4guard_line_in_agents_md_parses_and_answers():
+    """The addendum quotes command lines; if the guard CLI changes its flags, this goes red."""
+    import json
+    import shlex
+    import sys
     text = load().generate(REPO)["AGENTS.md"]
-    for must in ("CLAUDE.md", "agent/", "gen-agent-trees.py", "fail open", "reference/",
-                 ".cat", "git add -A"):
-        assert must in text, must
+    lines = [l.strip() for l in text.splitlines() if "x4guard.py check" in l and l.strip().startswith("python ")]
+    assert len(lines) >= 3, lines
+    for l in lines:
+        argv = shlex.split(l.replace('"<cmd>"', '"echo hi"').replace('"<file>"', '"dev/probe/x.xml"'))[1:]
+        r = subprocess.run([sys.executable, str(REPO / argv[0]), *argv[1:]], capture_output=True,
+                           text=True, timeout=120, cwd=str(REPO))
+        assert json.loads(r.stdout)["decision"] in {"allow", "advise", "ask", "deny"}, (l, r.stdout, r.stderr)
+
+
+def test_the_repo_ships_no_second_agents_md():
+    """MEASURED 2026-10-02 (Codex 0.160.0, measure-A M-A2): a root AGENTS.md and a nested one
+    SHARE one 32,768-byte budget. A second AGENTS.md anywhere in the tree would silently cut
+    the generated one. Tracked files only (git ls-files), the population that ships."""
+    r = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z"], capture_output=True)
+    if r.returncode != 0:
+        pytest.skip("not a git checkout -- the shipped-file population is unknown here")
+    files = [p for p in r.stdout.decode("utf-8").split("\0") if p]
+    assert len(files) > 100, len(files)                 # a real population, not an empty listing
+    agents = [p for p in files if p.rsplit("/", 1)[-1].lower() == "agents.md"]
+    assert agents == ["AGENTS.md"], agents
 
 
 def test_missing_source_refuses_rather_than_skipping(tmp_path):
@@ -376,3 +423,231 @@ def test_E7_a_non_utf8_generated_file_is_STALE_not_a_crash(fresh_copy):
     g, exp, root = fresh_copy
     (root / "CLAUDE.md").write_bytes(b"\xff\xfe broken\n")
     assert g.problems(exp, root) == ["STALE    CLAUDE.md"]
+# --- Plan 2 lane A, Task 3: entry files = addendum title + banner + core with the addendum body
+# --- at ONE marker; CLAUDE.md refused above 40,000 CHARACTERS; leftover tokens refused.
+
+def _agent_src_copy(tmp_path):
+    import shutil
+    shutil.copytree(REPO / "agent", tmp_path / "agent")
+    return tmp_path / "agent"
+
+
+def test_claude_md_is_title_banner_core_with_addendum_at_the_marker(tmp_path):
+    g = load()
+    src = _agent_src_copy(tmp_path)
+    (src / "instructions/core.md").write_bytes(b"intro\n\n{{AGENT_ADDENDUM}}\n\noutro\n")
+    (src / "instructions/claude.md").write_bytes(b"# T\n\nADD\n")
+    out = g.render_entry(src, "claude")
+    assert out == "# T\n\n<!-- GENERATED from agent/ -->\nintro\n\nADD\n\noutro\n"
+
+
+@pytest.mark.parametrize("core", [b"no marker\n", b"{{AGENT_ADDENDUM}}\n{{AGENT_ADDENDUM}}\n"],
+                         ids=["zero", "two"])
+def test_TWIN_marker_count_other_than_one_refuses(tmp_path, core):
+    g = load()
+    src = _agent_src_copy(tmp_path)
+    (src / "instructions/core.md").write_bytes(core)
+    with pytest.raises(g.GenerationError, match="AGENT_ADDENDUM"):
+        g.render_entry(src, "claude")
+
+
+@pytest.mark.parametrize("addendum", [b"", b"no title\nbody\n"], ids=["empty", "no-h1"])
+def test_TWIN_addendum_without_an_h1_title_refuses(tmp_path, addendum):
+    g = load()
+    src = _agent_src_copy(tmp_path)
+    (src / "instructions/claude.md").write_bytes(addendum)
+    with pytest.raises(g.GenerationError, match="title"):
+        g.render_entry(src, "claude")
+
+
+def test_TWIN_an_oversized_claude_md_refuses(tmp_path):
+    g = load()
+    src = _agent_src_copy(tmp_path)
+    over = g.CLAUDE_MD_MAX_CHARS - len(g.render_entry(src, "claude")) + 100   # relative to today's size
+    p = src / "instructions/core.md"
+    p.write_bytes(p.read_bytes() + ("\u2605" * over + "\n").encode())
+    with pytest.raises(g.GenerationError, match="40000 characters|40,000 characters"):
+        g.generate(tmp_path)
+
+
+def test_claude_md_limit_is_counted_in_CHARACTERS_not_bytes(tmp_path):
+    # twin of the above: multi-byte text under 40,000 chars but over 40,000 BYTES must PASS
+    g = load()
+    src = _agent_src_copy(tmp_path)
+    room = g.CLAUDE_MD_MAX_CHARS - len(g.render_entry(src, "claude")) - 10
+    p = src / "instructions/claude.md"
+    p.write_bytes(p.read_bytes() + ("\u2605" * room + "\n").encode())       # 3 bytes each
+    out = g.generate(tmp_path)["CLAUDE.md"]                                # must not raise
+    assert len(out) <= g.CLAUDE_MD_MAX_CHARS < len(out.encode("utf-8"))
+
+
+def test_claude_md_ceiling_is_the_budget_gates_ceiling():
+    from conftest import import_gate
+    assert load().CLAUDE_MD_MAX_CHARS == import_gate("claude_md_budget", module_level=False).HARD_CEILING
+
+
+def test_TWIN_an_unknown_token_left_after_rendering_refuses(tmp_path):
+    g = load()
+    src = _agent_src_copy(tmp_path)
+    p = src / "instructions/core.md"
+    p.write_bytes(p.read_bytes() + b"\n{{NOT_A_TOKEN}}\n")
+    with pytest.raises(g.GenerationError, match="NOT_A_TOKEN"):
+        g.generate(tmp_path)
+
+
+def test_size_report_names_both_entry_files_with_their_units():
+    g = load()
+    lines = g.size_report(g.generate(REPO))
+    assert any(l.startswith("CLAUDE.md ") and "/40,000 chars" in l for l in lines), lines
+    assert any(l.startswith("AGENTS.md ") and "/32,768 bytes" in l for l in lines), lines
+
+
+# --- Plan 2 lane A, Task 4: maintainer guidance lives in the x4-toolkit-dev skill, verbatim.
+
+MOVED_HEADINGS = ("A Step That Narrows Data MUST Announce It", "A Derived Artifact Must Declare WHEN",
+                  "Tools Must Be Trustworthy BEFORE the Modlist", "Bug Handling Is a FUNNEL",
+                  "Concurrent Sessions: Isolate the TREE", "Memory and loaded context are LEADS")
+#: Python-internal / maintainer-gate routing rows (option B, DECISIONS #1). The CLI row
+#: `x4effective dump --chain` is NOT among them: it stays in the entry files.
+MOVED_ROWS = ("`_scan.iter_mod_xml`", "`_registry.scan_installed()`", "**MANIFEST ID**",
+              "`_scan.iter_corpus_xml(ext, report)`", "`_effective.base_vpaths`",
+              "`gates/mutation_probe.py`")
+
+
+@pytest.mark.parametrize("heading", MOVED_HEADINGS)
+def test_maintainer_section_lives_in_exactly_one_place(heading):
+    out = load().generate(REPO)
+    skill = out[".claude/skills/x4-toolkit-dev/SKILL.md"]
+    assert heading in skill, f"{heading!r} missing from the x4-toolkit-dev skill (relocated, never deleted)"
+    assert heading not in out["CLAUDE.md"] and heading not in out["AGENTS.md"], f"{heading!r} still in an entry file"
+
+
+@pytest.mark.parametrize("row", MOVED_ROWS)
+def test_maintainer_routing_row_lives_in_exactly_one_place(row):
+    out = load().generate(REPO)
+    assert row in out[".claude/skills/x4-toolkit-dev/SKILL.md"], row
+    assert row not in out["CLAUDE.md"] and row not in out["AGENTS.md"], row
+
+
+def test_the_cli_chain_row_stays_in_the_entry_file():
+    assert "`x4effective dump --chain <vpath>`" in load().generate(REPO)["CLAUDE.md"]
+
+
+def test_entry_files_point_to_the_dev_skill_and_x4_notes():
+    out = load().generate(REPO)
+    for f in ("CLAUDE.md", "AGENTS.md"):
+        assert "x4-toolkit-dev" in out[f] and "X4-NOTES.md" in out[f]
+
+
+def test_the_generator_never_owns_x4_notes():
+    g = load()
+    assert not any("X4-NOTES" in p for p in g.OWNED) and not any("X4-NOTES" in p for p in g.generate(REPO))
+
+
+# --- Plan 2 lane A, Task 5: the core is agent-neutral; Claude facts live in the claude addendum.
+#: One sample per NEUTRALITY_BANNED clause (#26: a falsification twin per clause).
+BANNED_SAMPLES = ["$CLAUDE_PROJECT_DIR", "Claude Code", "see CLAUDE.md", "MEMORY.md", "NotebookEdit",
+                  "settings.json", ".claude/hooks/x", ".claude\\settings", "use **Glob**", "the **Grep** tool"]
+
+
+@pytest.mark.parametrize("sample", BANNED_SAMPLES)
+def test_TWIN_core_naming_a_claude_only_mechanism_refuses(tmp_path, sample):
+    g = load()
+    src = _agent_src_copy(tmp_path)
+    p = src / "instructions/core.md"
+    p.write_bytes(p.read_bytes() + f"\nleak: {sample}\n".encode())
+    with pytest.raises(g.GenerationError, match="neutral"):
+        g.generate(tmp_path)
+
+
+@pytest.mark.parametrize("allowed", [".claude\\backups\\known-good-x\\", ".claude/backups/x",
+                                     ".claude/x4-paths.env", ".claude/x4-paths.env.example"])
+def test_allowlisted_toolkit_paths_do_not_refuse(tmp_path, allowed):
+    g = load()
+    src = _agent_src_copy(tmp_path)
+    p = src / "instructions/core.md"
+    p.write_bytes(p.read_bytes() + f"\nok: {allowed}\n".encode())
+    g.generate(tmp_path)              # must not raise
+
+
+def test_TWIN_an_allowlisted_path_does_not_hide_a_banned_one_on_the_same_line(tmp_path):
+    g = load()
+    src = _agent_src_copy(tmp_path)
+    p = src / "instructions/core.md"
+    p.write_bytes(p.read_bytes() + b"\nok .claude/x4-paths.env but .claude/settings.json\n")
+    with pytest.raises(g.GenerationError, match="neutral"):
+        g.generate(tmp_path)
+
+
+def test_neutrality_refusal_names_the_line_number(tmp_path):
+    g = load()
+    with pytest.raises(g.GenerationError, match=r"line 3\b"):
+        g.check_neutral("one\ntwo\nthree NotebookEdit\n")
+
+
+def test_the_committed_core_is_neutral():
+    load().check_neutral((REPO / "agent/instructions/core.md").read_bytes().decode("utf-8"))
+
+
+def test_TWIN_an_empty_addendum_body_refuses(tmp_path):
+    g = load()
+    src = _agent_src_copy(tmp_path)
+    (src / "instructions/claude.md").write_bytes(b"# Title only\n")
+    with pytest.raises(g.GenerationError, match="addendum"):
+        g.render_entry(src, "claude")
+
+
+def test_claude_md_still_carries_its_hook_facts():
+    text = load().generate(REPO)["CLAUDE.md"]
+    for must in ("NotebookEdit", "timed-out hook", "CLAUDE_PROJECT_DIR", "env var > `x4-paths.env` > default",
+                 "**Glob**", "**Grep**"):
+        assert must in text, must
+
+
+# --- Plan 2 lane A, Task 7: the same skill sources reach Codex and generic agents (.agents/skills/).
+
+def _token_skills():
+    """Skills whose SOURCE carries the toolkit token: derived, never retyped (MEASURED 7 on
+    2026-10-02), so the per-target counts below cannot pass on an empty population."""
+    n = sum("{{TOOLKIT}}" in p.read_bytes().decode("utf-8")
+            for p in (REPO / "agent" / "skills").glob("*/SKILL.md"))
+    assert n >= 7, n
+    return n
+
+
+def test_codex_skills_mirror_the_claude_skills_one_to_one():
+    out = load().generate(REPO)
+    cl = sorted(p[len(".claude/skills/"):] for p in out if p.startswith(".claude/skills/"))
+    cx = sorted(p[len(".agents/skills/"):] for p in out if p.startswith(".agents/skills/"))
+    assert cl == cx and len(cx) >= 22          # 11 SKILL.md + 11 cli reference files
+
+
+def test_codex_skills_render_the_toolkit_token_for_codex():
+    # DECISIONS #2: the generated Codex tree carries `$X4_TOOLKIT`; install.ps1 rewrites it to
+    # `$env:X4_TOOLKIT`, install.sh keeps it. The in-repo copy cannot know the OS.
+    out = load().generate(REPO)
+    cx = {p: t for p, t in out.items() if p.startswith(".agents/skills/")}
+    assert not any("CLAUDE_PROJECT_DIR" in t or "{{" in t for t in cx.values())
+    assert sum("$X4_TOOLKIT/tools/x4validate" in t for t in cx.values()) == _token_skills()
+
+
+def test_claude_skills_are_unchanged_by_the_codex_target():
+    # the claude rendering keeps $CLAUDE_PROJECT_DIR until phase 7 (spec section 4)
+    out = load().generate(REPO)
+    assert sum("$CLAUDE_PROJECT_DIR/tools/x4validate" in t for p, t in out.items()
+               if p.startswith(".claude/skills/")) == _token_skills()
+    assert not any("$X4_TOOLKIT/tools" in t for p, t in out.items() if p.startswith(".claude/skills/"))
+
+
+def test_TWIN_a_stray_codex_skill_is_a_GHOST(fresh_copy):
+    g, exp, root = fresh_copy
+    (root / ".agents/skills/stray").mkdir(parents=True)
+    (root / ".agents/skills/stray/SKILL.md").write_bytes(b"x\n")
+    assert g.problems(exp, root) == ["GHOST    .agents/skills/stray/SKILL.md"]
+
+
+def test_TWIN_a_hand_edited_codex_skill_is_STALE(fresh_copy):
+    g, exp, root = fresh_copy
+    p = root / ".agents/skills/x4-debug/SKILL.md"
+    p.write_bytes(p.read_bytes() + b"\nextra\n")
+    assert g.problems(exp, root) == ["STALE    .agents/skills/x4-debug/SKILL.md"]

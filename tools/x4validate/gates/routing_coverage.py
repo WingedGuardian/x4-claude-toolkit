@@ -128,6 +128,11 @@ def claude_md_paths() -> list[tuple[str, Path]]:
     shipped = REPO_ROOT / "CLAUDE.md"
     if shipped.is_file():
         out.append(("shipped (repo root)", shipped))
+    # Plan 2: AGENTS.md is generated from the SAME shared core (+ the Codex addendum), so a
+    # routing row lost there strands every non-Claude agent.
+    agents = REPO_ROOT / "AGENTS.md"
+    if agents.is_file():
+        out.append(("shipped AGENTS.md", agents))
     root = _paths.game_root()
     if root is not None:
         gm = Path(root) / "CLAUDE.md"
