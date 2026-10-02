@@ -1,4 +1,3 @@
-# CLAUDE.md — X4 Foundations Modding (Claude Code Toolkit)
 
 Guidance for Claude Code when working in an X4: Foundations modding environment.
 This file is loaded automatically every session.
@@ -566,3 +565,4 @@ a shared mutable counter between concurrent writers, and two of three sessions r
 `d` suffix, one having to move to `e` after its entry was already cited twice. A slug describes its
 own content, so same-day writers cannot collide. Existing `#N` entries stay as citable history.
 **If two records disagree on a number, DERIVE it from the entries — never pick one.**
+{{AGENT_ADDENDUM}}

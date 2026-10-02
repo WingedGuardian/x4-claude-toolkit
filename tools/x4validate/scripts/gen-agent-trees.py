@@ -12,6 +12,7 @@ generated folder that the generator did not produce is reported as a GHOST and t
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -62,11 +63,104 @@ def _with_banner_after_frontmatter(text: str) -> str:
     return f"{text[:end]}\n{BANNER_MD}\n{text[end:]}"
 
 
-def render_claude_md(src: Path) -> str:
+# --- Entry files (CLAUDE.md, AGENTS.md): Plan 2 lane A ------------------------------------------
+# One agent-neutral core (agent/instructions/core.md) plus a per-agent addendum
+# (agent/instructions/<agent>.md). The addendum's line 1 is an H1 that becomes the entry file's
+# title; its body (lines 2+) replaces the ONE `{{AGENT_ADDENDUM}}` line in core. Every size or
+# shape failure is a GenerationError (rc 2): refuse, never truncate.
+
+ADDENDUM_MARKER = "{{AGENT_ADDENDUM}}"
+#: == gates/claude_md_budget.HARD_CEILING (pinned by a test). Counted in CHARACTERS after CRLF->LF,
+#: the way the gate's char_count counts them.
+CLAUDE_MD_MAX_CHARS = 40_000
+#: Below this many bytes of AGENTS.md headroom the generator prints an advisory line; never a refusal.
+AGENTS_MD_WARN_HEADROOM = 2_048
+#: Per-agent rendering. `tokens` are applied to the assembled entry file; `{{GENERATED_FILES}}`
+#: is rendered from OWNED for every agent (one source of truth).
+TARGETS: dict[str, dict] = {
+    "claude": {"entry": "CLAUDE.md", "addendum": "claude.md", "skills": ".claude/skills/",
+               "tokens": {"{{TOOLKIT}}": "$CLAUDE_PROJECT_DIR",
+                          "{{PROJECT_DIR}}": "$CLAUDE_PROJECT_DIR"}},
+    "codex": {"entry": "AGENTS.md", "addendum": "codex.md", "skills": ".agents/skills/",
+              # Plan 2 DECISIONS #2: the generated Codex tree carries `$X4_TOOLKIT` (right in
+              # bash/zsh); install.ps1 rewrites it to `$env:X4_TOOLKIT`, install.sh leaves it.
+              # The in-repo copy cannot know the OS, so AGENTS.md tells Codex-on-Windows to write
+              # `$env:X4_TOOLKIT` (MEASURED: in pwsh `$X4_TOOLKIT` expands to EMPTY).
+              "tokens": {"{{TOOLKIT}}": "$X4_TOOLKIT",
+                         "{{PROJECT_DIR}}": "the project root (the folder the agent was started in)"}},
+}
+_LEFTOVER_TOKEN = re.compile(r"\{\{[A-Z_]+\}\}")
+
+
+def _generated_files_phrase() -> str:
+    return ", ".join(f"`{p}`" for p in OWNED)
+
+
+def _largest_sections(text: str, n: int = 5) -> str:
+    """The n largest `## ` sections with their sizes, so a refusal says where to cut."""
+    sizes: list[tuple[int, str]] = []
+    head, buf = "(preamble)", []
+    for line in text.split("\n") + ["## (end)"]:
+        if line.startswith("## "):
+            chunk = "\n".join(buf) + "\n"
+            sizes.append((len(chunk.encode("utf-8")), head))
+            head, buf = line[3:].strip(), [line]
+        else:
+            buf.append(line)
+    sizes.sort(reverse=True)
+    return "; ".join(f"{h[:60]!r} {b:,} B" for b, h in sizes[:n])
+
+
+def render_entry(src: Path, agent: str) -> str:
+    """Title (addendum line 1) + banner + core, with the addendum body at the marker."""
+    target = TARGETS[agent]
+    add_name = f"agent/instructions/{target['addendum']}"
+    addendum = _read(src / "instructions" / target["addendum"])
+    title, _, add_body = addendum.partition("\n")
+    if not title.startswith("# "):
+        raise GenerationError(f"{add_name}: line 1 must be the entry file's H1 title ('# ...'), "
+                              f"got {title[:60]!r}")
+    add_body = add_body.strip("\n")
     core = _read(src / "instructions" / "core.md")
-    addendum = _read(src / "instructions" / "claude.md")
-    out = _with_banner_after_first_line(core, BANNER_CLAUDE_MD)
-    return out if not addendum.strip() else out.rstrip("\n") + "\n\n" + addendum
+    count = core.split("\n").count(ADDENDUM_MARKER)
+    if count != 1:
+        raise GenerationError(f"agent/instructions/core.md must hold exactly ONE {ADDENDUM_MARKER} "
+                              f"line, found {count}")
+    lines = core.split("\n")
+    i = lines.index(ADDENDUM_MARKER)
+    lines[i:i + 1] = add_body.split("\n") if add_body else []
+    body = "\n".join(lines)
+    for token, value in {**target["tokens"], "{{GENERATED_FILES}}": _generated_files_phrase()}.items():
+        body = body.replace(token, value)
+    left = sorted(set(_LEFTOVER_TOKEN.findall(body)))
+    if left:
+        raise GenerationError(f"{target['entry']}: unknown token(s) left after rendering: "
+                              f"{', '.join(left)}")
+    return f"{title}\n\n{BANNER_CLAUDE_MD}\n{body}"
+
+
+def size_report(out: dict[str, str]) -> list[str]:
+    """Advisory sizes of the entry files, in the unit each consumer limits."""
+    lines = []
+    if "CLAUDE.md" in out:
+        lines.append(f"CLAUDE.md {len(out['CLAUDE.md']):,}/{CLAUDE_MD_MAX_CHARS:,} chars")
+    if "AGENTS.md" in out:
+        size = len(out["AGENTS.md"].encode("utf-8"))
+        line = f"AGENTS.md {size:,}/{AGENTS_MD_MAX_BYTES:,} bytes"
+        if AGENTS_MD_MAX_BYTES - size < AGENTS_MD_WARN_HEADROOM:
+            line += (f"  ADVISORY: only {AGENTS_MD_MAX_BYTES - size:,} bytes of headroom "
+                     f"(< {AGENTS_MD_WARN_HEADROOM:,})")
+        lines.append(line)
+    return lines
+
+
+def render_claude_md(src: Path) -> str:
+    out = render_entry(src, "claude")
+    if len(out) > CLAUDE_MD_MAX_CHARS:
+        raise GenerationError(f"CLAUDE.md would be {len(out):,} characters, over the "
+                              f"{CLAUDE_MD_MAX_CHARS} characters ceiling; largest sections: "
+                              f"{_largest_sections(out)}")
+    return out
 
 
 def render_agents_md(src: Path) -> str:
@@ -214,6 +308,8 @@ def main(argv=None) -> int:
         print(f"REFUSING: {e}", file=sys.stderr)
         return 2
     found = problems(expected, REPO)
+    for line in size_report(expected):         # advisory, stdout, every run
+        print(line)
     if args.check:
         for line in found:
             print(line, file=sys.stderr)

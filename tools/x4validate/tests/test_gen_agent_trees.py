@@ -225,3 +225,81 @@ def test_I6_write_mode_rewrites_only_stale_files_and_names_them(tmp_path, monkey
     assert "STALE    .claude/settings.json" in out.out + out.err
     assert fresh.stat().st_mtime == 1_000_000_000          # untouched
     assert b"hand" not in edited.read_bytes()               # restored from agent/
+
+
+# --- Plan 2 lane A, Task 3: entry files = addendum title + banner + core with the addendum body
+# --- at ONE marker; CLAUDE.md refused above 40,000 CHARACTERS; leftover tokens refused.
+
+def _agent_copy(tmp_path):
+    import shutil
+    shutil.copytree(REPO / "agent", tmp_path / "agent")
+    return tmp_path / "agent"
+
+
+def test_claude_md_is_title_banner_core_with_addendum_at_the_marker(tmp_path):
+    g = load()
+    src = _agent_copy(tmp_path)
+    (src / "instructions/core.md").write_bytes(b"intro\n\n{{AGENT_ADDENDUM}}\n\noutro\n")
+    (src / "instructions/claude.md").write_bytes(b"# T\n\nADD\n")
+    out = g.render_entry(src, "claude")
+    assert out == "# T\n\n<!-- GENERATED from agent/ -->\nintro\n\nADD\n\noutro\n"
+
+
+@pytest.mark.parametrize("core", [b"no marker\n", b"{{AGENT_ADDENDUM}}\n{{AGENT_ADDENDUM}}\n"],
+                         ids=["zero", "two"])
+def test_TWIN_marker_count_other_than_one_refuses(tmp_path, core):
+    g = load()
+    src = _agent_copy(tmp_path)
+    (src / "instructions/core.md").write_bytes(core)
+    with pytest.raises(g.GenerationError, match="AGENT_ADDENDUM"):
+        g.render_entry(src, "claude")
+
+
+@pytest.mark.parametrize("addendum", [b"", b"no title\nbody\n"], ids=["empty", "no-h1"])
+def test_TWIN_addendum_without_an_h1_title_refuses(tmp_path, addendum):
+    g = load()
+    src = _agent_copy(tmp_path)
+    (src / "instructions/claude.md").write_bytes(addendum)
+    with pytest.raises(g.GenerationError, match="title"):
+        g.render_entry(src, "claude")
+
+
+def test_TWIN_an_oversized_claude_md_refuses(tmp_path):
+    g = load()
+    src = _agent_copy(tmp_path)
+    p = src / "instructions/core.md"
+    p.write_bytes(p.read_bytes() + ("\u2605" * 400 + "\n").encode() * 30)  # +12,030 CHARS
+    with pytest.raises(g.GenerationError, match="40000 characters|40,000 characters"):
+        g.generate(tmp_path)
+
+
+def test_claude_md_limit_is_counted_in_CHARACTERS_not_bytes(tmp_path):
+    # twin of the above: multi-byte text under 40,000 chars but over 40,000 BYTES must PASS
+    g = load()
+    src = _agent_copy(tmp_path)
+    room = g.CLAUDE_MD_MAX_CHARS - len(g.render_entry(src, "claude")) - 10
+    p = src / "instructions/claude.md"
+    p.write_bytes(p.read_bytes() + ("\u2605" * room + "\n").encode())       # 3 bytes each
+    out = g.generate(tmp_path)["CLAUDE.md"]                                # must not raise
+    assert len(out) <= g.CLAUDE_MD_MAX_CHARS < len(out.encode("utf-8"))
+
+
+def test_claude_md_ceiling_is_the_budget_gates_ceiling():
+    from conftest import import_gate
+    assert load().CLAUDE_MD_MAX_CHARS == import_gate("claude_md_budget", module_level=False).HARD_CEILING
+
+
+def test_TWIN_an_unknown_token_left_after_rendering_refuses(tmp_path):
+    g = load()
+    src = _agent_copy(tmp_path)
+    p = src / "instructions/core.md"
+    p.write_bytes(p.read_bytes() + b"\n{{NOT_A_TOKEN}}\n")
+    with pytest.raises(g.GenerationError, match="NOT_A_TOKEN"):
+        g.generate(tmp_path)
+
+
+def test_size_report_names_both_entry_files_with_their_units():
+    g = load()
+    lines = g.size_report(g.generate(REPO))
+    assert any(l.startswith("CLAUDE.md ") and "/40,000 chars" in l for l in lines), lines
+    assert any(l.startswith("AGENTS.md ") and "/32,768 bytes" in l for l in lines), lines
