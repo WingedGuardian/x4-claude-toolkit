@@ -65,29 +65,75 @@ case "$REL" in
 esac
 
 OUT=$(cd "$X4V" && "$UV" run --python 3.13 x4validate "$ROOT" --file "$F" $TIER --json 2>/dev/null)
-[ -z "$OUT" ] && exit 0
+VALIDATE_RC=$?
+not_completed() {
+  x4_advise "VALIDATION NOT COMPLETED: $1. This edit has not been validated; run x4validate manually." PostToolUse
+  exit 0
+}
+case "$VALIDATE_RC" in
+  0|1|3) ;;  # JSON completeness matters too: errors can mask degraded exit 3
+  *) not_completed "validator could not run (exit $VALIDATE_RC)" ;;
+esac
+[ -n "$OUT" ] || not_completed "validator returned no result"
 # Both the PARSE and the EMIT need a renderer. With jq missing this block used to go
 # quiet -- ERRS came back empty, `${ERRS:-0}` made it 0, and a real validation failure
 # produced no advisory at all. Python is already a hard prerequisite here (the line above
 # runs x4validate through uv), so it is always the right fallback.
 if printf '%s' '{}' | "$JQ" -e . >/dev/null 2>&1; then
+  printf '%s' "$OUT" | "$JQ" -e 'type == "object" and
+    (.error_count | type == "number") and (.error_count >= 0) and
+    (.error_count == (.error_count | floor)) and
+    (.degraded == null or (.degraded | type == "boolean")) and
+    (.skipped == null or ((.skipped | type == "array") and (.skipped | all(type == "object" and
+      (.what | type == "string") and (.why | type == "string"))))) and
+    (.findings | type == "array") and (.findings | all(type == "object" and
+      (.severity | type == "string") and (.message | type == "string") and
+      (.vpath | type == "string") and (.line | type == "number") and (.line == (.line | floor))))' >/dev/null 2>&1 \
+    || not_completed "validator returned unreadable or incomplete JSON"
   ERRS=$(printf '%s' "$OUT" | "$JQ" -r '.error_count // 0' 2>/dev/null)
+  DEGRADED=$(printf '%s' "$OUT" | "$JQ" -r '.degraded // false' 2>/dev/null)
+  SKIP_MSG=$(printf '%s' "$OUT" | "$JQ" -r '(.skipped // [])[] | "  [not checked] \(.what): \(.why)"' 2>/dev/null)
   MSG=$(printf '%s' "$OUT" | "$JQ" -r '.findings[] | "  [\(.severity)] \(.message) (\(.vpath):\(.line))"' 2>/dev/null)
 else
   PY="$(x4_python)"      # ONE implementation, shared with every other hook
   if [ -n "$PY" ]; then
     ERRS=$(X4_OUT="$OUT" "$PY" -c 'import json, os, sys
-try: sys.stdout.write(str(json.loads(os.environ["X4_OUT"]).get("error_count") or 0))
-except Exception: sys.stdout.write("0")' 2>/dev/null)
+try:
+    d = json.loads(os.environ["X4_OUT"])
+    assert isinstance(d, dict)
+    n = d["error_count"]; f = d["findings"]
+    assert type(n) is int and n >= 0 and isinstance(f, list) and all(isinstance(x, dict) for x in f)
+    assert type(d.get("degraded", False)) is bool
+    skipped = d.get("skipped", [])
+    assert isinstance(skipped, list) and all(isinstance(x, dict) and isinstance(x.get("what"), str) and
+                                          isinstance(x.get("why"), str) for x in skipped)
+    assert all(isinstance(x.get("severity"), str) and isinstance(x.get("message"), str) and
+               isinstance(x.get("vpath"), str) and type(x.get("line")) is int for x in f)
+    sys.stdout.write(str(n))
+except Exception: sys.exit(9)' 2>/dev/null) || not_completed "validator returned unreadable or incomplete JSON"
+    DEGRADED=$(X4_OUT="$OUT" "$PY" -c 'import json, os
+print("true" if json.loads(os.environ["X4_OUT"]).get("degraded", False) else "false")' 2>/dev/null)
+    SKIP_MSG=$(X4_OUT="$OUT" "$PY" -c 'import json, os
+print("\n".join("  [not checked] %s: %s" % (x["what"], x["why"]) for x in
+                json.loads(os.environ["X4_OUT"]).get("skipped", [])))' 2>/dev/null)
     MSG=$(X4_OUT="$OUT" "$PY" -c 'import json, os, sys
 try: f = json.loads(os.environ["X4_OUT"]).get("findings") or []
 except Exception: f = []
 sys.stdout.write("\n".join("  [%s] %s (%s:%s)" % (x.get("severity"), x.get("message"), x.get("vpath"), x.get("line")) for x in f))' 2>/dev/null)
   else
-    ERRS=0; MSG=""
+    not_completed "neither jq nor Python could read the validator result"
   fi
 fi
-if [ "${ERRS:-0}" -gt 0 ]; then
+if [ "${DEGRADED:-false}" = true ] || [ "$VALIDATE_RC" = 3 ]; then
+  x4_advise "VALIDATION NOT COMPLETED: one or more requested checks could not run. Findings collected so far:
+$MSG
+$SKIP_MSG
+Run x4validate manually to inspect the skipped checks." PostToolUse
+elif [ -n "$SKIP_MSG" ]; then
+  x4_advise "VALIDATION PARTIAL: some inputs/checks were not examined.
+$SKIP_MSG
+$MSG" PostToolUse
+elif [ "${ERRS:-0}" -gt 0 ]; then
   x4_advise "x4validate (advisory${TIER:+, tier B}) flagged this edit:
 $MSG" PostToolUse
 fi

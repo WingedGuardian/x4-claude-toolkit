@@ -92,9 +92,8 @@ editing any patch and BEFORE deploying for an in-game test, and again after a ga
 catches the two most expensive bugs statically: a `sel=` that silently matches nothing, and a
 file the change forgot. **A clean run is necessary, not sufficient** — still test in-game.
 
-**After ANY change to `.claude/hooks/`, run `bash scripts/test-hooks.sh`.** The hooks are the
-safety net and nothing else exercises them; several shipped silently inert because the code
-read fine.
+**Edit hooks in `agent/guards/claude-hooks/`, regenerate, then run
+`bash scripts/test-hooks.sh`.** `.claude/hooks/` is generated. Tests do not prove host enforcement.
 
 → **the `x4-xml-patching` skill** has the flags: `--tier b` for cross-mod work, `--entity/--like`
 for completeness, and why an `if=`-guarded op reports INFO while a passing guard over a missing
@@ -127,7 +126,7 @@ Guarded: Bash, PowerShell (same rules), Edit, Write, NotebookEdit. A timed-out h
 ### General
 - One mod = one named folder, never a mega-file
 - `reference\` is never edited — it is source-of-truth for base game XML
-- Every file edit is auto-backed-up to `.claude\backups\` with an audit log
+- Existing Edit/Write/NotebookEdit targets get unique backups; shell edits do not
 
 ### Iteration snapshots (standing process)
 Before experimenting on a working state, snapshot it to `.claude\backups\known-good-<name>\`.

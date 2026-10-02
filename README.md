@@ -254,7 +254,35 @@ tiers behind each answer.
 - **Recovery** — `bash scripts/restore-from-backup.sh` LISTS the timestamped
   auto-backup trail above; restoring is a second, deliberate step:
   `RESTORE=1 bash scripts/restore-from-backup.sh <backup-filename> <dest-path>`.
-- **The guards are tested** — `bash scripts/test-hooks.sh` feeds every hook synthetic tool-call JSON and asserts the decision it returns, across both the in-game and separate layouts. `python .claude/hooks/test_hook_facts.py` adds unit tests over the command parser in well under a second. Run both after any change to `.claude/hooks/`. This exists because a silent guard is worse than no guard: several hooks were inert for entire releases and code review never caught it. Coverage is *verified* rather than claimed: `python scripts/verify-hook-tests.py` plants a specific defect and requires the **named** test for it to go red, then pins each rule true and false in turn and requires a must-fire / must-not-fire test to break each way. A suite that cannot go red is decoration, and several guards here were inert for entire releases while their suite was green.
+- **The guards are tested** — `bash scripts/test-hooks.sh` feeds every hook synthetic tool-call JSON and asserts the decision it returns, across both the in-game and separate layouts. `python .claude/hooks/test_hook_facts.py` adds unit tests over the command parser in well under a second. Edit `agent/guards/claude-hooks/`, regenerate, then run both checks. This exists because a silent guard is worse than no guard: several hooks were inert for entire releases and code review never caught it. Coverage is *verified* rather than claimed: `python scripts/verify-hook-tests.py` plants a specific defect and requires the **named** test for it to go red, then pins each rule true and false in turn and requires a must-fire / must-not-fire test to break each way. A suite that cannot go red is decoration, and several guards here were inert for entire releases while their suite was green.
+
+### Framework checks and maintenance
+
+Edit hook sources in `agent/guards/claude-hooks/`, then regenerate from `tools/x4validate`
+with `uv run python scripts/gen-agent-trees.py`. Run the hook suites against the generated
+copy. Do not edit `.claude/hooks/` directly.
+
+`python .claude/hooks/x4guard.py check` lets another agent request a verdict without taking
+backups or executing its command. Supply `--kind shell --shell bash|powershell --command ...`
+or `--kind write|delete --path ...`. A delete check applies both file protection and deletion
+confirmation; the stricter verdict wins. An evaluation failure is `deny` with `inert: true`.
+An ordinary `ask` requires approval. Neither exit 0 nor a passing check installs enforcement
+in an agent host. On Windows set `X4_BASH` to Git Bash when PATH resolves to WSL.
+
+Backups reserve unique names atomically, including simultaneous calls within one second.
+The audit log names the exact snapshot to restore. Post-edit validation stays advisory,
+but reports unavailable, invalid, degraded and partially examined results explicitly.
+
+Setup checks `uv.lock` freshness before `uv sync --frozen`; it does not update the shipped
+lockfile. Maintainers deliberately changing dependencies must update and review the lockfile.
+CI checks freshness separately: frozen installation alone does not detect drift.
+The test suite intercepts PATH-based winget, choco, scoop and npm calls and fails on recorded
+invocations, including ignored failures. This tripwire cannot intercept an absolute executable
+path and does not replace OS isolation.
+
+These hooks inspect known command forms; they do not sandbox arbitrary interpreter programs.
+The loss canary detects file loss, not historical guard evaluation health. Persistent guard
+telemetry and independent filesystem protection remain separate roadmap work.
 
 > The rest of `scripts/` is maintainer tooling that ships because the bundle is the
 > repository: `fuzz-guard.py` and `verify-hook-tests.py` prove the guards can fail,

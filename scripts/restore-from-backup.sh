@@ -1,6 +1,7 @@
 #!/bin/bash
 # Restore a file that Claude auto-backed-up before editing.
-# Backups live in .claude/backups/ as  <timestamp>__<flattened-path>  with an AUDIT_LOG.txt.
+# Backups live in .claude/backups/ as <timestamp>__<flattened-path>.<unique-suffix>.
+# AUDIT_LOG.txt names each snapshot; older unsuffixed backups can still be restored.
 #
 # Usage:
 #   bash scripts/restore-from-backup.sh            # list recent backups

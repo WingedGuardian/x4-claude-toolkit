@@ -112,9 +112,14 @@ if [ "${#SAFE_NAME}" -gt 180 ]; then
   _ck="$(printf '%s' "$FILE_PATH" | cksum)"; _ck="${_ck%% *}"
   SAFE_NAME="${_ck}~${SAFE_NAME: -150}"
 fi
-BACKUP_PATH="$BACKUP_DIR/${TIMESTAMP}__${SAFE_NAME}"
-
 AUDIT_LOG="$BACKUP_DIR/AUDIT_LOG.txt"
+# Reserve a unique file atomically: seconds-resolution names collided during rapid
+# edits and parallel hook calls. mktemp creates the destination, rather than testing
+# for absence and racing another writer. The bounded name still fits a path component.
+if ! BACKUP_PATH=$(mktemp "$BACKUP_DIR/${TIMESTAMP}__${SAFE_NAME}.XXXXXX" 2>/dev/null); then
+  echo "[$TIMESTAMP] $TOOL_NAME → $FILE_PATH (BACKUP FAILED — could not reserve a unique file)" >> "$AUDIT_LOG"
+  _ask "X4 BACKUP FAILED for $FILE_PATH: could not reserve a unique backup file. No snapshot was taken."
+fi
 
 # The cp result is CHECKED, and the audit line records what actually happened.
 # Before this, `cp ... 2>/dev/null` was unchecked and the audit line was appended
@@ -124,9 +129,10 @@ AUDIT_LOG="$BACKUP_DIR/AUDIT_LOG.txt"
 # one, exit 0, stderr swallowed. An audit trail that can lie is worse than none, because
 # it is consulted precisely when something has gone wrong.
 if cp "$SRC" "$BACKUP_PATH" 2>/dev/null && [ -f "$BACKUP_PATH" ]; then
-  echo "[$TIMESTAMP] $TOOL_NAME → $FILE_PATH (backup: ${TIMESTAMP}__${SAFE_NAME})" >> "$AUDIT_LOG"
+  echo "[$TIMESTAMP] $TOOL_NAME → $FILE_PATH (backup: ${BACKUP_PATH##*/})" >> "$AUDIT_LOG"
   exit 0
 fi
 
+rm -f -- "$BACKUP_PATH"    # only the empty/partial reservation owned by this call
 echo "[$TIMESTAMP] $TOOL_NAME → $FILE_PATH (BACKUP FAILED — no copy was made)" >> "$AUDIT_LOG"
 _ask "X4 BACKUP FAILED for $FILE_PATH — the copy into $BACKUP_DIR did not succeed (commonly a path-length limit on the flattened backup name). This edit would NOT be recoverable from the backup trail. Confirm only if you accept that."

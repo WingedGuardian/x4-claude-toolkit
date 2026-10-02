@@ -1108,3 +1108,26 @@ reliably detectable from text. The durable mitigation there is behavioural and a
 
 *Add brief per-session notes here — what was investigated, what was learned. Starts empty in
 a fresh install; grows as you and Claude work together.*
+
+### 2026-10-01 — framework-protection-boundaries
+
+MEASURED against `aa57efc`: a Bash-carried Python write to a disposable reference path
+received no refusal, although direct Write and shell redirection were denied. Two backup
+calls within one second overwrote the first snapshot. A missing UV executable left the
+post-edit validator silent; a synthetic finding control did emit an advisory. In a disposable
+project, `uv sync --frozen` accepted a stale lockfile while `uv lock --check` rejected it.
+These findings survive passing regression suites; command inspection is not filesystem
+enforcement. Details and test limits: `docs/AUDIT-framework-2026-10-01.md`.
+
+MEASURED at `7bd554f`: x4guard's delete-path endpoint allowed a disposable mod-file
+deletion that its shell endpoint required confirmation for. A missing Python interpreter
+returned ask with inert false despite the underlying guard reporting GUARD INERT. Both
+reproduced after all 34 front-door/generator tests passed; keep API operation semantics
+and successful payload parsing distinct from successful guard evaluation.
+
+IMPLEMENTED after review: delete checks compose file protection with shell deletion policy;
+check-only guard failures return inert deny while native Claude approval behavior stays intact.
+Backups reserve unique names atomically. Post-edit validation reports failed, degraded and partial
+coverage, preserving findings and skipped-check reasons. Setup/CI explicitly check lock freshness;
+tests intercept package-manager commands on PATH in Bash and PowerShell. The tripwire is not an
+OS sandbox, and arbitrary script writes and persistent guard-health telemetry remain unresolved.

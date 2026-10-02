@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Framework hardening:** `x4guard` delete checks retain file hard blocks and add shell
+  deletion confirmation. Guard evaluation failures use a check-only exit-status protocol
+  and become inert denials; ordinary Claude verdicts are preserved. Delete checks share a
+  timeout budget across both guards.
+- Backups reserve unique filenames atomically, preserving snapshots from rapid and
+  concurrent edits. Post-edit validation reports infrastructure/JSON failures and
+  degraded or partial coverage while retaining findings; it remains advisory.
+- Setup and CI explicitly check lock freshness before frozen dependency installation.
+  Pytest intercepts PATH-based system package managers and fails on recorded invocations.
+  Documentation now names neutral hook sources and separates script verdicts from host
+  enforcement. Regression tests reproduce each repaired failure before the fix.
+
 - **The file guard allowed `CLAUDE.md` in the game root but denied `AGENTS.md`**, the same file
   for another agent (Codex). `protect-files.sh` now treats `AGENTS.md` like `CLAUDE.md`, matched on
   the exact file name; a twin test keeps `notagents.md` denied.
