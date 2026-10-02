@@ -92,11 +92,17 @@ def test_wrong_kind_points_at_the_right_command(capsys):
 
 
 def test_truly_absent_name_is_reported_as_a_real_negative(capsys):
-    _xref._hint_other_kinds(_rows(), "no_such_thing_anywhere", "action")
+    _xref._hint_other_kinds(_rows(), "no_such_thing_anywhere", "action", certified=True)
     out = capsys.readouterr().out
     assert "does not appear under ANY kind" in out
     assert "real negative" in out
     assert "other kind" not in out
+
+
+def test_hint_without_integrity_context_cannot_claim_real_negative(capsys):
+    _xref._hint_other_kinds(_rows(), 'no_such_thing_anywhere', 'action')
+    out = capsys.readouterr().out
+    assert 'real negative' not in out and 'unverified absence' in out
 
 
 # --- x4effective: a capped count must not read as a total ---------------------

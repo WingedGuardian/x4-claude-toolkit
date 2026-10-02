@@ -23,6 +23,8 @@ bookkeeping -- the exact list is ``_SKIP_TAGS``. A SPECIFIC condition such as
 from __future__ import annotations
 
 import csv
+import hashlib
+import io
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
@@ -212,16 +214,36 @@ def write_tsv(rows: list[XrefRow], path: Path) -> Path:
     return path
 
 
-def read_tsv(path: Path) -> list[XrefRow]:
+class IndexUnreadable(ValueError):
+    """A damaged index is a non-answer, not a smaller denominator."""
+
+
+def _parse_tsv(body: bytes, path: Path) -> list[XrefRow]:
     rows: list[XrefRow] = []
-    with open(path, encoding="utf-8", newline="") as f:
-        r = csv.reader(f, delimiter="\t")
-        next(r, None)  # header
+    line = 1
+    try:
+        r = csv.reader(io.StringIO(body.decode('utf-8-sig'), newline=''),
+                       delimiter='\t', strict=True)
+        if next(r, None) != _HEADER:
+            raise ValueError('missing or incorrect header')
         for row in r:
-            if len(row) == 7:
-                rows.append(XrefRow(row[0], row[1], row[2], row[3], row[4],
-                                    int(row[5] or 0), row[6]))
+            line = r.line_num
+            if len(row) != 7:
+                raise ValueError(f'expected 7 fields, got {len(row)}')
+            if row[0] not in ('event', 'signal', 'cuedef', 'action'):
+                raise ValueError(f'unsupported kind {row[0]!r}')
+            if not all(row[i].strip() for i in (1, 2, 3)):
+                raise ValueError('name, source and file must be nonempty')
+            if not row[5].isascii() or not row[5].isdigit():
+                raise ValueError('line must be a nonnegative integer')
+            rows.append(XrefRow(*row[:5], int(row[5]), row[6]))
+    except (ValueError, csv.Error) as exc:
+        raise IndexUnreadable(f'{path}: row {line}: {exc}; rebuild the xref index') from exc
     return rows
+
+
+def read_tsv(path: Path) -> list[XrefRow]:
+    return _parse_tsv(path.read_bytes(), path)
 
 
 def query(rows: list[XrefRow], kind: str, name: str) -> list[XrefRow]:
@@ -323,7 +345,7 @@ def coverage_note(rows: list[XrefRow]) -> str:
 
 
 def _hint_other_kinds(rows: list[XrefRow], name: str, asked_kind: "str | tuple[str, ...]",
-                      tsv: Path | None = None, ran: str = "") -> None:
+                      tsv: Path | None = None, ran: str = "", *, certified: bool = False) -> None:
     """When a name isn't found in the asked-for kind, say whether it exists at all.
 
     `who-calls event_player_ejected` used to print exactly the same line as
@@ -353,7 +375,9 @@ def _hint_other_kinds(rows: list[XrefRow], name: str, asked_kind: "str | tuple[s
                         if r.name.lower() == name_l and r.kind not in asked)
     if not elsewhere:
         print(f"  and '{name}' does not appear under ANY kind — "
-              f"a real negative over {len(rows)} indexed rows"
+              + (f"a real negative over {len(rows)} indexed rows" if certified else
+                 f"an unverified absence over {len(rows)} indexed rows")
+              +
               f"{coverage_note(rows)}{_exclusions(tsv)}.")
         return
     print(f"  BUT '{name}' IS in the index under other kind(s):")
@@ -452,6 +476,8 @@ def main(argv: list[str] | None = None) -> int:
         # against the CONFIGURED reference and read stale forever when they differ.
         # (`reference` is taken -- it is the fingerprint's digest -- hence the name.)
         _fp["reference_path"] = str(ref)
+        _fp['artifact_sha256'] = hashlib.sha256(out.read_bytes()).hexdigest()
+        _fp['exclusions_sha256'] = hashlib.sha256(_sidecar(out).read_bytes()).hexdigest()
         _freshness.stamp_sidecar(out, _fp)
         from collections import Counter
         by = Counter(r.kind for r in rows)
@@ -482,26 +508,62 @@ def main(argv: list[str] | None = None) -> int:
     # Printed on EVERY query until rebuilt. x4xref exists to support NEGATIVES
     # ("nobody listens to this event"), which is precisely the claim a stale
     # index gets wrong -- a mod added since the build is simply not in it.
-    _stored = _freshness.read_sidecar(tsv)
-    _roots = ([Path(r) for r in _stored["roots"]] if _stored and _stored.get("roots")
-              else index_roots(_registry.GAME_EXTENSIONS))
-    _ref_then = (Path(_stored["reference_path"])
-                 if _stored and _stored.get("reference_path") else None)
-    _stale = _freshness.compare(
-        _stored, _freshness.fingerprint(_merge.Config(reference=_ref_then), _roots),
-        engine_dependent=False)
+    try:
+        body = tsv.read_bytes()
+        rows = _parse_tsv(body, tsv)
+        _stored = _freshness.read_sidecar(tsv)
+        signed = bool(_stored and _stored.get('artifact_sha256'))
+        if signed and _stored['artifact_sha256'] != hashlib.sha256(body).hexdigest():
+            raise IndexUnreadable(f'{tsv}: artifact integrity mismatch; rebuild the xref index')
+        exclusions_signed = bool(_stored and _stored.get('exclusions_sha256'))
+        if exclusions_signed and _stored['exclusions_sha256'] != hashlib.sha256(_sidecar(tsv).read_bytes()).hexdigest():
+            raise IndexUnreadable(f'{tsv}: exclusions integrity mismatch; rebuild the xref index')
+        if _stored and ('roots' in _stored and (not isinstance(_stored['roots'], list)
+                or not all(isinstance(r, str) for r in _stored['roots']))):
+            raise IndexUnreadable(f'{tsv}: invalid roots in freshness sidecar; rebuild the xref index')
+        if _stored:
+            for field in ('reference_path', 'content', 'engine', 'reference',
+                          'artifact_sha256', 'exclusions_sha256'):
+                value = _stored.get(field)
+                if value is not None and not isinstance(value, str):
+                    raise IndexUnreadable(f'{tsv}: invalid {field} in freshness sidecar; rebuild the xref index')
+            detail = _stored.get('detail')
+            if detail is not None and (not isinstance(detail, list)
+                    or not all(isinstance(r, dict) and isinstance(r.get('folder'), str)
+                               and isinstance(r.get('root', ''), str) for r in detail)):
+                raise IndexUnreadable(f'{tsv}: invalid detail in freshness sidecar; rebuild the xref index')
+        _roots = ([Path(r) for r in _stored["roots"]] if _stored and _stored.get("roots")
+                  else index_roots(_registry.GAME_EXTENSIONS))
+        _ref_then = (Path(_stored["reference_path"])
+                     if _stored and _stored.get("reference_path") else None)
+        _stale = _freshness.compare(
+            _stored, _freshness.fingerprint(_merge.Config(reference=_ref_then), _roots),
+            engine_dependent=False)
+    except (OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        print(f'index unreadable: {tsv}: {exc}; rebuild with uv run x4xref build', file=sys.stderr)
+        return 2
+    if not signed or not exclusions_signed:
+        print(f'!! Index integrity unavailable for {tsv}; positive lookups remain usable, '
+              'but absence cannot be certified. Rebuild: uv run x4xref build', file=sys.stderr)
     if not _stale.fresh:
         print(_stale.banner("the x4xref index"), file=sys.stderr)
         print("!! Rebuild:  uv run x4xref build", file=sys.stderr)
 
-    rows = read_tsv(tsv)
+    certified = signed and exclusions_signed and _stale.fresh
+
+    def absence():
+        if certified:
+            return 0
+        print('NOT A NEGATIVE FINDING: index integrity or source freshness is unavailable; '
+              'rebuild with uv run x4xref build.', file=sys.stderr)
+        return 2
 
     if args.cmd == "cue":
         edges = cue_edges(rows, args.name)
         if not edges:
             print(f"no references to cue '{args.name}'")
-            _hint_other_kinds(rows, args.name, "cue", tsv, ran="cue")
-            return 0
+            _hint_other_kinds(rows, args.name, "cue", tsv, ran="cue", certified=certified)
+            return absence()
         for group in ("defined", *sorted(k for k in edges if k != "defined")):
             if group in edges:
                 print(f"{group} ({len(edges[group])}):")
@@ -513,8 +575,8 @@ def main(argv: list[str] | None = None) -> int:
     hits = [h for k in kinds for h in query(rows, k, args.name)]
     if not hits:
         print(f"no {args._kind} '{args.name}' found in the index.")
-        _hint_other_kinds(rows, args.name, kinds, tsv, ran=args.cmd)
-        return 0
+        _hint_other_kinds(rows, args.name, kinds, tsv, ran=args.cmd, certified=certified)
+        return absence()
     by_source: dict[str, list[XrefRow]] = defaultdict(list)
     for h in hits:
         by_source[h.source].append(h)
