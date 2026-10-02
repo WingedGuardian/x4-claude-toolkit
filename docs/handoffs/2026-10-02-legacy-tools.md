@@ -32,3 +32,7 @@ the game-root harness directly or recreate a duplicate external suite.
 
 Reviewed revisions, installed status and E2E evidence belong in the
 [repair report](../audits/2026-10-02-tool-fixes.md). No retirement performed here.
+
+Installed local revisions: dev helper `9c23b2d`, x4cat `6807545`. The installed
+helper passed all 18 tests; x4cat passed 279 tests with 10 disclosed skips, plus
+16 real-game schema tests without skips. Template pin and local lockfile preserved.

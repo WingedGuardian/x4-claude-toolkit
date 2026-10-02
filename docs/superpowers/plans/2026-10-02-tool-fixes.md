@@ -52,3 +52,12 @@ pinned scaffold. Final corpus compares per-mod reports (existing mod errors rema
 Disclose skips/limitations; no live game or production deployment. Update README,
 CLI/query guides, generated reference, KB, blind spots, audit status, changelogs and
 legacy handoff. Back up installed tool-code files before installing reviewed fixes.
+
+## Completion
+
+Tasks 1–6 completed and installed locally on 2026-10-02. Independent final review
+corrections passed red/green tests; later metadata-boundary E2E correction was
+reviewed locally and included in the final 2914-passed / 49-skipped toolkit suite.
+Installed launchers, external suites, scratch workflows and the unchanged
+250-report corpus are documented in the [repair report](../../audits/2026-10-02-tool-fixes.md).
+No push or production artifact rebuild. Evidence/worktrees are retained.
