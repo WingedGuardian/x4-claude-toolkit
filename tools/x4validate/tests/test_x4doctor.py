@@ -426,3 +426,82 @@ def test_a_source_whose_comparer_PREDATES_TargetSpec_falls_back_to_the_doctors_o
     ctx = _pair(tmp_path, monkeypatch, files, _CLAUDE)
     r = _prow(ctx, "parity.claude")
     assert r.status == doc.OK and "2 file" in r.detail, r
+
+
+# --- roots.config: the guards read NO config file -------------------------------------- #
+
+def test_the_guards_reading_NO_config_file_is_FAIL(sandbox):
+    """MEASURED 2026-10-02 on the author's machine, check-only: with X4_TOOLKIT unset, the
+    game root's guards derive the toolkit from CLAUDE_PROJECT_DIR, find no x4-paths.env
+    there, default the reference to <game>/reference -- and ALLOW a write and a delete
+    into the configured reference (4 of 4 deny controls became allow)."""
+    (sandbox.root / ".claude" / "x4-paths.env").unlink()
+    rows = sandbox.rows(doc.check_roots)
+    assert rows["roots.config"].status == doc.FAIL, rows["roots.config"]
+    assert "x4-paths.env" in rows["roots.config"].detail
+
+
+def test_TWIN_the_guards_reading_their_config_is_OK(sandbox):
+    rows = sandbox.rows(doc.check_roots)
+    assert rows["roots.config"].status == doc.OK, rows["roots.config"]
+
+
+# --- Task 8: guard self-test -- controls that MUST deny and controls that MUST allow -- #
+
+def _sel(sandbox, target="claude"):
+    rows = {r.id: r for r in doc.check_guards(sandbox.ctx())}
+    return rows["guards.selftest." + target]
+
+
+def _replace_guard(sandbox, name: str, body: str) -> None:
+    (sandbox.root / ".claude" / "hooks" / name).write_bytes(body.encode("utf-8"))
+
+
+def test_selftest_all_controls_hold_is_OK(sandbox):
+    r = _sel(sandbox)
+    assert r.status == doc.OK, r
+    assert "6 control" in r.detail
+
+
+def test_a_guard_that_ALLOWS_the_reference_write_is_FAIL(sandbox):
+    _replace_guard(sandbox, "protect-files.sh", "#!/bin/bash\nexit 0\n")      # allows everything
+    r = _sel(sandbox)
+    assert r.status == doc.FAIL and "deny.write.ref" in r.detail, r
+    assert "LET THROUGH" in r.detail
+
+
+def test_a_guard_that_DENIES_everything_is_FAIL(sandbox):
+    _replace_guard(sandbox, "protect-bash.sh",
+                   "#!/bin/bash\nprintf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\","
+                   "\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"x\"}}'\n")
+    r = _sel(sandbox)
+    assert r.status == doc.FAIL and "allow.bash.echo" in r.detail, r
+
+
+def test_an_INERT_guard_is_FAIL_not_ok(sandbox, monkeypatch, tmp_path):
+    monkeypatch.setenv("X4_PYTHON", (tmp_path / "no-such-python").as_posix())
+    r = _sel(sandbox)
+    assert r.status == doc.FAIL and "inert" in r.detail.lower(), r
+
+
+def test_no_reference_resolved_makes_the_deny_controls_UNKNOWN(sandbox, monkeypatch):
+    real = doc.guard_probe
+
+    def no_ref(ctx):
+        vals, why = real(ctx)
+        return (dict(vals, REFERENCE=""), why) if vals else (vals, why)
+    monkeypatch.setattr(doc, "guard_probe", no_ref)
+    r = _sel(sandbox)
+    assert r.status == doc.UNKNOWN and "deny" in r.detail, r
+
+
+def test_the_selftest_never_CREATES_the_probe_path(sandbox):
+    _sel(sandbox)
+    assert not (sandbox.ref / doc.PROBE_NAME).exists()
+
+
+def test_a_codex_guard_copy_is_tested_with_its_OWN_x4guard(sandbox):
+    shutil.copytree(sandbox.root / ".claude" / "hooks", sandbox.root / ".codex" / "hooks")
+    rows = {r.id: r for r in doc.check_guards(sandbox.ctx())}
+    assert "guards.selftest.codex" in rows
+    assert ".codex" in rows["guards.selftest.codex"].detail.replace(chr(92), "/")

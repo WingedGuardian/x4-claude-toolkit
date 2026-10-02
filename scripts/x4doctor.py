@@ -418,7 +418,8 @@ def tools_roots(ctx: Ctx) -> tuple[dict | None, str]:
 def check_roots(ctx: Ctx) -> list[Check]:
     if not guard_dirs(ctx):
         why = "no guard target is installed here"
-        return [Check(i, "all", NA, why) for i in ("roots.reference", "roots.game", "roots.agree")]
+        return [Check(i, "all", NA, why) for i in ("roots.config", "roots.reference", "roots.game",
+                                                    "roots.agree")]
     vals, why = guard_probe(ctx)
 
     def _ref(_):
@@ -461,9 +462,110 @@ def check_roots(ctx: Ctx) -> list[Check]:
                           "read another. %s. (%s)" % ("; ".join(diffs), detail))
         return OK, "the guards and the tools agree on reference and game; " + detail
 
-    return [run_check("roots.reference", "all", _ref, ctx),
+    def _config(_):
+        if vals is None:
+            return UNKNOWN, why
+        cfg = vals.get("CFG", "")
+        if not cfg:
+            return UNKNOWN, "the guards did not report which config they read (_x4_cfg is empty)"
+        if not Path(cfg).is_file():
+            return FAIL, ("the guards read NO path config: %s does not exist, so every root they "
+                          "protect is a default guess (the reference falls back to <toolkit>/reference). "
+                          "Set X4_TOOLKIT in your user environment to the toolkit holding .claude/x4-paths.env"
+                          % cfg)
+        return OK, "the guards read %s" % cfg
+
+    return [run_check("roots.config", "all", _config, ctx),
+            run_check("roots.reference", "all", _ref, ctx),
             run_check("roots.game", "all", _game, ctx),
             run_check("roots.agree", "all", _agree, ctx)]
+
+
+# ----------------------------------------------------------------- Task 8: self-test
+
+#: The probe path. It must NOT exist: nothing to damage even if a future x4guard regressed
+#: into executing what it judges.
+PROBE_NAME = "__x4doctor_probe__.xml"
+
+
+def _controls(ref: str | None) -> list[tuple[str, str, list[str]]]:
+    """(id, must, x4guard check args). MEASURED 2026-10-02 against the deployed and the repo
+    copies, X4_TOOLKIT set: every deny control denied, both allow controls allowed."""
+    out = []
+    if ref:
+        r = ref.replace("\\", "/").rstrip("/")
+        p = r + "/" + PROBE_NAME
+        out += [
+            ("deny.write.ref", "deny", ["--kind", "write", "--path", p]),
+            ("deny.delete.ref", "deny", ["--kind", "delete", "--path", p]),
+            ("deny.pwsh.ref", "deny", ["--kind", "shell", "--shell", "powershell", "--command",
+                                       "Set-Content -Path '%s' -Value x" % p]),
+            ("deny.bash.rmref", "deny", ["--kind", "shell", "--shell", "bash", "--command",
+                                         "rm -rf '%s'" % r]),
+        ]
+    out += [
+        ("allow.bash.echo", "allow", ["--kind", "shell", "--shell", "bash", "--command", "echo x4doctor"]),
+        ("allow.pwsh.echo", "allow", ["--kind", "shell", "--shell", "powershell", "--command",
+                                      "Write-Output x4doctor"]),
+    ]
+    return out
+
+
+def _ask_guard(xg: Path, args: list[str], env: dict, cwd: str) -> dict:
+    """One `x4guard.py check`. Run with THIS interpreter (x4guard is stdlib, >= 3.10); the
+    guard scripts it starts resolve their own python exactly as in a session."""
+    r = _run([sys.executable, str(xg), "check", *args], env=env, cwd=cwd, timeout=120)
+    try:
+        v = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {"decision": "?", "inert": True,
+                "reason": "x4guard printed no verdict (rc %s): %s" % (r.returncode, r.stderr[-200:])}
+    return v
+
+
+@group
+def check_guards(ctx: Ctx) -> list[Check]:
+    dirs = guard_dirs(ctx)
+    rows = []
+    for target in ("claude", "codex"):
+        if not any(t == target for t, _ in dirs):
+            rows.append(Check("guards.selftest." + target, target, NA,
+                              "the %s guard copy is not installed here" % target))
+    for target, hooks in dirs:
+        def _selftest(_, target=target, hooks=hooks):
+            from concurrent.futures import ThreadPoolExecutor
+            xg = hooks / "x4guard.py"
+            if not xg.is_file():
+                return FAIL, "%s is missing: nothing can ask these guards for a verdict" % xg
+            vals, why = guard_probe(ctx)
+            ref = (vals or {}).get("REFERENCE") or None
+            controls = _controls(ref)
+            env = _hook_env(ctx, target, hooks)
+            t0 = time.monotonic()
+            # 3 workers: 6 sequential checks took 29-36 s on a loaded machine (MEASURED).
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                got = list(pool.map(lambda c: (c, _ask_guard(xg, c[2], env, str(ctx.root))), controls))
+            dt = time.monotonic() - t0
+            inert = [(c[0], v.get("reason", "")) for c, v in got if v.get("inert")]
+            leaked = [c[0] for c, v in got if not v.get("inert") and c[1] == "deny" and v.get("decision") != "deny"]
+            blocked = [c[0] for c, v in got if not v.get("inert") and c[1] == "allow"
+                       and v.get("decision") not in ("allow", "advise")]
+            where = "%s (%d control(s), %.1fs)" % (xg, len(controls), dt)
+            if inert:
+                return FAIL, ("guards INERT -- they cannot evaluate: %s. %s"
+                              % ("; ".join("%s: %s" % (i, r[:160]) for i, r in inert[:3]), where))
+            if leaked:
+                return FAIL, ("the guard LET THROUGH what it must deny (%s): a write or delete into "
+                              "reference/ was not refused. %s" % (", ".join(leaked), where))
+            if blocked:
+                return FAIL, ("the guards deny what they must allow (%s): a guard that denies "
+                              "everything is not a working guard. %s" % (", ".join(blocked), where))
+            if not ref:
+                return UNKNOWN, ("the allow controls passed, but no reference root resolved, so the "
+                                 "deny controls could not run (%s). %s" % (why or "empty X4_REFERENCE", where))
+            return OK, "every control held: %s" % where
+        rows.append(run_check("guards.selftest." + target, target, _selftest, ctx))
+    return rows
 
 
 # ----------------------------------------------------------------- Task 7: parity
