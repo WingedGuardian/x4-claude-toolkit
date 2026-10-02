@@ -1,0 +1,16 @@
+{
+  "session_id": "<SESSION_ID>",
+  "turn_id": "<TURN_ID>",
+  "agent_id": "<AGENT_ID>",
+  "agent_type": "default",
+  "transcript_path": "<TRANSCRIPT>",
+  "cwd": "<CWD>",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "Get-Content notes.txt"
+  },
+  "tool_use_id": "<TOOL_USE_ID>"
+}
