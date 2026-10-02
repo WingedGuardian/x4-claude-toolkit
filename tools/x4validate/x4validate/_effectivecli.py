@@ -241,7 +241,13 @@ def _read_store(con, args) -> int:
     # Printed on EVERY read command until the store is rebuilt. A stale store is
     # not an absence and not a non-answer -- it is an answer about a world that
     # has moved on, and these are the commands a modlist decision leans on.
-    _stale = store_freshness(con)
+    try:
+        _stale = store_freshness(con)
+    except (TypeError, AttributeError, KeyError) as exc:
+        # A SQLite file may have a valid schema but damaged JSON freshness data.
+        # Convert only this metadata boundary; SQL/user-command errors keep their
+        # existing contracts in the dispatcher below.
+        raise ValueError(f'invalid freshness metadata: {exc}') from exc
     if not _stale.fresh:
         print(_stale.banner("the effective store"), file=sys.stderr)
         print("!! Rebuild:  uv run x4effective build", file=sys.stderr)

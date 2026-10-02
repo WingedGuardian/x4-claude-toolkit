@@ -347,7 +347,9 @@ digests and current source freshness, otherwise **2**. Rebuild explicitly with
 
 `x4effective` opens stores read-only and checks the schema version and required
 table/column structure. Missing, corrupt or incompatible stores return **2** with
-the path and rebuild guidance. Ordinary invalid SELECT queries retain **1**;
+the path and rebuild guidance. Malformed freshness vectors that fail comparison
+also return **2**; valid stale stores remain readable with their warning.
+Ordinary invalid SELECT queries retain **1**;
 disallowed writes remain refused. Queries never repair or rebuild stores.
 
 ### `x4modlist changed` — which mod moved, when a fingerprint does
