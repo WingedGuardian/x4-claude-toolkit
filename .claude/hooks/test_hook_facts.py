@@ -3951,6 +3951,67 @@ class TestTheSeedIsNarrowedWhereTheReplayFoundFalsePositives(unittest.TestCase):
                         ["carrier_untranslated"])
 
 
+
+class TestJQ1BareGitWipeFromAnX4SessionDirIsADeny(unittest.TestCase):
+    """Plan 3 decision J-Q1 (2026-10-02): a bare `git clean` with -x/-X/-d, or `git reset
+    --hard`, whose SESSION cwd is the game folder or another X4 dir is a DENY with a reason,
+    never a prompt. The game-root repo ignores everything but its own files (`.gitignore` = `*`),
+    so `git clean -fdx` there deletes the installation's untracked files. Lane F left it
+    UNSEEDED (an ask would be a new prompt); a deny reaches the agent, not the user.
+    The explicit-folder forms (`cd <root> &&`, `git -C <root>`) keep their ASK."""
+    FACT = "git_wipe_from_session_dir"
+
+    def test_bare_clean_with_x_or_d_or_X_from_the_game_root_fires(self):
+        for c in ("git clean -fdx", "git clean -fx", "git clean -fd", "git clean -fX",
+                  "git clean -f -x", "git clean --force -d"):
+            with self.subTest(c=c):
+                self.assertTrue(FC(c, GAME)[self.FACT], c)
+
+    def test_bare_reset_hard_from_the_game_root_fires(self):
+        self.assertTrue(FC("git reset --hard", GAME)[self.FACT])
+        self.assertTrue(FC("git reset --hard HEAD~1", GAME)[self.FACT])
+
+    def test_every_x4_dir_counts_not_only_the_game(self):
+        for d in (PROF, REF, TOOLKIT, TOOLKIT + "/dev/mymod"):
+            with self.subTest(d=d):
+                self.assertTrue(FC("git clean -fdx", d)[self.FACT], d)
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_a_cwd_outside_every_x4_dir_does_not_fire(self):
+        self.assertFalse(FC("git clean -fdx", _ELSEWHERE)[self.FACT])
+        self.assertFalse(FC("git reset --hard", _ELSEWHERE)[self.FACT])
+
+    def test_TWIN_no_cwd_in_the_payload_does_not_fire(self):
+        self.assertFalse(FC("git clean -fdx", _NO_CWD)[self.FACT])
+
+    def test_TWIN_clean_without_x_X_or_d_does_not_fire(self):
+        """`git clean -f` removes untracked, NOT-ignored files; in a whitelist repo there are
+        none. The decision names -x/-d (and -X removes only the ignored ones: all of them)."""
+        self.assertFalse(FC("git clean -f", GAME)[self.FACT])
+
+    def test_TWIN_a_dry_run_or_an_unforced_clean_does_not_fire(self):
+        self.assertFalse(FC("git clean -n -dx", GAME)[self.FACT])
+        self.assertFalse(FC("git clean --dry-run -fdx", GAME)[self.FACT])
+        self.assertFalse(FC("git clean -dx", GAME)[self.FACT])
+
+    def test_TWIN_a_soft_or_mixed_reset_does_not_fire(self):
+        self.assertFalse(FC("git reset --soft HEAD~1", GAME)[self.FACT])
+        self.assertFalse(FC("git reset HEAD~1", GAME)[self.FACT])
+
+    def test_TWIN_the_explicit_folder_form_still_ASKS_and_is_not_this_deny(self):
+        cmd = "cd " + DQ + GAME + DQ + " && git clean -fdx"
+        for cwd in (_ELSEWHERE, GAME):
+            with self.subTest(cwd=cwd):
+                f = FC(cmd, cwd)
+                self.assertTrue(f["git_wipes_x4_dir"], cwd)
+                self.assertFalse(f[self.FACT], cwd)
+        f = FC("git -C " + DQ + GAME + DQ + " clean -fdx", GAME)
+        self.assertTrue(f["git_wipes_x4_dir"])
+        self.assertFalse(f[self.FACT])
+
+    def test_TWIN_a_cd_AWAY_from_the_x4_session_dir_does_not_fire(self):
+        self.assertFalse(FC("cd " + DQ + _ELSEWHERE + DQ + " && git clean -fdx", GAME)[self.FACT])
+
 def load_tests(loader, standard_tests, pattern):
     """unittest.main() collects TestCase SUBCLASSES ONLY, so every module-level
     `def test_*` in this file was invisible to it.

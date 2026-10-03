@@ -199,6 +199,13 @@
   adapter passes its own deadline (`X4_CODEX_BUDGET_S`), but the message always blamed
   `X4_GUARD_TIMEOUT_S`, a setting that played no part there. It now says "the caller's
   deadline" in that case and keeps naming `X4_GUARD_TIMEOUT_S` for a direct `x4guard check`.
+- **A bare `git clean -fdx` (or `-x`, `-X`, `-d`) or `git reset --hard` run from the game folder
+  or another X4 folder is now blocked.** It used to be allowed when the command named no folder.
+  The game folder's git repo ignores every file except its own, so `git clean -fdx` there would
+  delete the installation's untracked files. This is a block with a reason for the agent, not
+  a prompt for you. Naming the folder explicitly (`git -C "<folder>" clean ...` or
+  `cd "<folder>" && ...`) still asks, as before. Under Codex the hook applies; a Codex prefix
+  rule cannot see the folder.
 
 ## v3.3.1 — 2026-09-29
 
