@@ -216,6 +216,9 @@ def main(argv=None) -> int:
         print(f"{CONFIG_REL} is {'missing' if cur is None else 'stale'}: run "
               f"python .opencode/hooks/opencode_config.py write --root .", file=sys.stderr)
         return 1
+    if cur == text:                          # unchanged: never rewritten (a locked file survives)
+        print(f"{CONFIG_REL} is already fresh; left untouched")
+        return 0
     if cur is not None and not cur.startswith(BANNER_PREFIX):
         print(f"REFUSING: {root / CONFIG_REL} exists and is not ours (no banner); it is left as it is. "
               "Merge the rules from `render` into it by hand.", file=sys.stderr)

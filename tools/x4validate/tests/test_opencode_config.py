@@ -221,6 +221,20 @@ def test_write_then_check_is_fresh_and_rewrite_is_allowed(box):
     assert run(env, "write", root)[0] == 0          # our own banner: overwritten
 
 
+def test_a_fresh_config_is_not_rewritten_so_a_LOCKED_one_survives_an_upgrade(box):
+    """x4lock makes the file read-only; an install that changes nothing must not fail on it."""
+    import stat
+    root, ref, game, env = box
+    assert run(env, "write", root)[0] == 0
+    f = root / ".opencode" / "opencode.jsonc"
+    os.chmod(f, stat.S_IREAD)
+    try:
+        rc, out, err = run(env, "write", root)
+    finally:
+        os.chmod(f, stat.S_IREAD | stat.S_IWRITE)
+    assert rc == 0 and "fresh" in out, (rc, out, err)
+
+
 def test_write_never_overwrites_a_file_without_our_banner(box):
     root, ref, game, env = box
     mine = root / ".opencode" / "opencode.jsonc"

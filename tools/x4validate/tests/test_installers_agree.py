@@ -366,10 +366,45 @@ def test_no_item_is_both_common_and_agent_specific():
         assert not common & set(v), f"{k}: {sorted(common & set(v))} is in both lists"
 
 
-def test_both_installers_refuse_opencode_naming_M8():
+def test_both_installers_offer_opencode_as_best_effort():
+    """Plan 3 lane L REPLACES the old M8 refusal: --agent opencode installs a best-effort
+    OpenCode target, and both installers say so."""
     for p in (SH, PS1):
         text = p.read_text(encoding="utf-8")
-        assert "opencode" in text and "M8" in text, p.name
+        assert "opencode" in text and "BEST EFFORT" in text and "desktop app" in text, p.name
+        assert "M8" not in text, p.name
+
+
+def _sh_list(name: str) -> list[str]:
+    m = re.search(r'^%s="([^"]*)"' % re.escape(name), SH.read_text(encoding="utf-8"), re.M)
+    assert m, f'no {name}="..." in install.sh'
+    return m.group(1).split()
+
+
+def _ps1_list(name: str) -> list[str]:
+    m = re.search(r"^\$%s\s*=\s*@\(([^)]*)\)" % re.escape(name), PS1.read_text(encoding="utf-8"), re.M)
+    assert m, f"no ${name} = @(...) in install.ps1"
+    return re.findall(r"'([^']+)'", m.group(1))
+
+
+def test_ALL_includes_opencode_in_both_installers():
+    """User decision L-Q1 (2026-10-02): `--agent all` INCLUDES OpenCode (and so does the
+    default, which is `all`)."""
+    sh, ps = _sh_list("X4_AGENT_NAMES"), _ps1_list("X4AgentNames")
+    assert sh == ps, (sh, ps)
+    assert set(sh) == {"claude", "codex", "generic", "opencode"}
+    assert sorted(sh_agent_items()["opencode"]) == [".opencode", "AGENTS.md"]
+
+
+def test_both_installers_render_the_token_in_the_SAME_skill_dirs():
+    assert _sh_list("X4_TOKEN_DIRS") == _ps1_list("X4TokenDirs") == [".agents", ".opencode"]
+
+
+def test_the_rendered_opencode_config_never_TRAVELS_from_the_source():
+    """`.opencode/opencode.jsonc` names this machine's absolute roots: rendered per install."""
+    assert ".opencode/opencode.jsonc" in _sh_list("X4_KEEP_LOCAL")
+    keep = re.search(r"\$X4KeepLocal\s*=\s*@\((.*?)\)", PS1.read_text(encoding="utf-8"), re.S)
+    assert keep and ".opencode" + chr(92) + "opencode.jsonc" in re.findall(r"'([^']+)'", keep.group(1))
 
 
 def _sh_assign(name: str) -> str:

@@ -28,6 +28,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import stat
 import shutil
 import subprocess
@@ -1522,9 +1523,18 @@ _SKILL = "Run:\n\n    cd {{TOOLKIT}}/tools/x4validate && uv run x4validate --pat
 _SHIPPED_AGENTS_MD = "# AGENTS.md -- shipped by the toolkit\n"
 
 
-def _agent_source(tmp_path: pathlib.Path, *, codex: bool = True, template: bool = True) -> pathlib.Path:
+def _agent_source(tmp_path: pathlib.Path, *, codex: bool = True, template: bool = True,
+                  opencode: bool = True) -> pathlib.Path:
     src = tmp_path / "src"
     src.mkdir()
+    if opencode:
+        # The REAL generated OpenCode tree: the installer runs its config renderer, which
+        # sources the guards' own loader, so a stub would test nothing (lane L).
+        for sub in ("hooks", "plugins"):
+            shutil.copytree(ROOT / ".opencode" / sub, src / ".opencode" / sub,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+        # a config IN the source never travels (KEEP_LOCAL): the destination's is rendered
+        (src / ".opencode" / "opencode.jsonc").write_bytes(b"// SOURCE COPY -- must never be installed\n")
     for name in ("install.sh", "install.ps1"):
         shutil.copy2(ROOT / name, src / name)
     files = {
@@ -1560,12 +1570,14 @@ def _ok(r) -> str:
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
 @pytest.mark.parametrize("agent,present,absent", [
-    ("claude", ["CLAUDE.md", ".claude/settings.json"], ["AGENTS.md", ".codex", ".agents"]),
+    ("claude", ["CLAUDE.md", ".claude/settings.json"], ["AGENTS.md", ".codex", ".agents", ".opencode"]),
     ("codex", ["AGENTS.md", ".codex/hooks.json", ".codex/rules/x4.rules", ".agents/skills/x4-demo/SKILL.md"],
-     ["CLAUDE.md", ".claude/settings.json", ".claude/hooks"]),
-    ("generic", ["AGENTS.md", ".agents/skills/x4-demo/SKILL.md"], ["CLAUDE.md", ".codex", ".claude/hooks"]),
+     ["CLAUDE.md", ".claude/settings.json", ".claude/hooks", ".opencode"]),
+    ("generic", ["AGENTS.md", ".agents/skills/x4-demo/SKILL.md"], ["CLAUDE.md", ".codex", ".claude/hooks", ".opencode"]),
+    ("opencode", ["AGENTS.md", ".opencode/plugins/x4guard.js", ".opencode/hooks/opencode_adapter.py",
+                  ".opencode/opencode.jsonc"], ["CLAUDE.md", ".codex", ".claude/hooks", ".agents"]),
     ("all", ["CLAUDE.md", ".claude/settings.json", "AGENTS.md", ".codex/hooks.json",
-             ".agents/skills/x4-demo/SKILL.md"], []),
+             ".agents/skills/x4-demo/SKILL.md", ".opencode/plugins/x4guard.js", ".opencode/opencode.jsonc"], []),
 ])
 def test_F8_each_agent_installs_its_own_files_and_nothing_else(installer, agent, present, absent, tmp_path):
     src = _agent_source(tmp_path)
@@ -1589,11 +1601,13 @@ def test_the_DEFAULT_agent_is_all(installer, tmp_path):
     assert r.returncode == 0, _ok(r)
     for rel in ("CLAUDE.md", ".claude/settings.json", "AGENTS.md", ".codex/hooks.json", ".agents"):
         assert (dest / rel).exists(), rel
-    assert "claude, codex, generic" in r.stdout, "the summary does not say which agents landed\n" + _ok(r)
+    # decision L-Q1: `all` (the default) INCLUDES OpenCode
+    assert (dest / ".opencode/plugins/x4guard.js").is_file() and (dest / ".opencode/opencode.jsonc").is_file()
+    assert "claude, codex, generic, opencode" in r.stdout, "the summary does not say which agents landed\n" + _ok(r)
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
-@pytest.mark.parametrize("agent,word", [("opencode", "M8"), ("nonsense", "nonsense")])
+@pytest.mark.parametrize("agent,word", [("nonsense", "nonsense"), ("OpenCode", "OpenCode")])
 def test_an_unknown_or_unsupported_agent_REFUSES_before_writing(installer, agent, word, tmp_path):
     src = _agent_source(tmp_path)
     dest = _fresh(tmp_path)
@@ -1674,6 +1688,82 @@ def test_the_global_layout_REFUSES_an_explicit_codex_target(installer, tmp_path)
     r = _install(installer, tmp_path, dest, "--agent", "codex", source=src, method="global")
     assert r.returncode == 2 and "Claude-only" in r.stdout + r.stderr, _ok(r)
     assert not (tmp_path / "fake-claude-home").exists()
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_global_layout_REFUSES_an_explicit_opencode_target(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "opencode", source=src, method="global")
+    assert r.returncode == 2 and "Claude-only" in r.stdout + r.stderr, _ok(r)
+    assert not (tmp_path / "fake-claude-home").exists()
+
+
+# --- OpenCode, best effort (Plan 3 lane L) --------------------------------------------- #
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_agent_opencode_installs_the_opencode_tree_and_renders_its_config(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "opencode", source=src)
+    assert r.returncode == 0, _ok(r)
+    for rel in ("AGENTS.md", ".opencode/plugins/x4guard.js", ".opencode/hooks/opencode_adapter.py"):
+        assert (dest / rel).exists(), rel
+    assert not (dest / "CLAUDE.md").exists() and not (dest / ".codex").exists()
+    assert "BEST EFFORT" in r.stdout and "desktop app" in r.stdout.lower(), _ok(r)
+    cfg = (dest / ".opencode/opencode.jsonc").read_text(encoding="utf-8")
+    # rendered for THIS destination, never the source's copy (KEEP_LOCAL)
+    assert cfg.startswith("// GENERATED by .opencode/hooks/opencode_config.py for "), cfg[:200]
+    assert "SOURCE COPY" not in cfg
+    tail = re.sub(r"^[A-Za-z]:", "", (dest / "reference").as_posix()).lstrip("/")
+    assert '"*' + tail + '/*": "deny"' in cfg, cfg
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_existing_user_opencode_jsonc_is_never_overwritten(installer, tmp_path):
+    """No banner = the user's own file: left as it is, and the install says the deny layer
+    is NOT in place (INCOMPLETE), never silently."""
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / ".opencode").mkdir()
+    (dest / ".opencode/opencode.jsonc").write_bytes(b'{"permission": {"edit": "ask"}}\n')
+    r = _install(installer, tmp_path, dest, "--agent", "opencode", source=src)
+    assert r.returncode == 1 and "INCOMPLETE" in r.stdout, _ok(r)
+    assert ".opencode/opencode.jsonc" in r.stdout, _ok(r)
+    assert (dest / ".opencode/opencode.jsonc").read_bytes() == b'{"permission": {"edit": "ask"}}\n'
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_no_python_for_the_opencode_config_is_an_INCOMPLETE_install(installer, tmp_path, monkeypatch):
+    """The deny layer that was never rendered is a guard that never runs: named, never quiet."""
+    monkeypatch.setenv("X4_PYTHON", (tmp_path / "no-python.exe").as_posix())
+    monkeypatch.setenv("X4_NO_PYTHON_FALLBACK", "1")
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "opencode", source=src)
+    assert r.returncode == 1 and "INCOMPLETE" in r.stdout, _ok(r)
+    assert ".opencode/opencode.jsonc" in r.stdout and "Python" in r.stdout, _ok(r)
+    assert not (dest / ".opencode/opencode.jsonc").exists()
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_source_with_no_opencode_tree_skips_opencode_SAYING_so(installer, tmp_path):
+    src = _agent_source(tmp_path, opencode=False)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "all", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert not (dest / ".opencode").exists()
+    assert ".opencode" in r.stdout, "the missing OpenCode tree was not NAMED\n" + _ok(r)
+    assert "opencode" not in r.stdout.split("Agents:")[-1].splitlines()[0]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_opencode_dry_run_writes_no_config(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "opencode", "--dry-run", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert not (dest / ".opencode").exists(), sorted(p.name for p in dest.iterdir())
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
