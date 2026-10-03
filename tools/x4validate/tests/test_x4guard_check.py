@@ -636,7 +636,7 @@ def test_J3_TWIN_x4guards_OWN_spent_budget_still_names_X4_GUARD_TIMEOUT_S(sandbo
 
 # --- Plan 3 decision J-Q1: a bare destructive git clean from the game folder is a DENY ------- #
 
-def _check_in(env, cwd, *args):
+def _jq1_check_in(env, cwd, *args):
     r = subprocess.run([sys.executable, str(X4GUARD), "check", *args], capture_output=True,
                        env=env, cwd=cwd, timeout=120)
     assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
@@ -646,7 +646,7 @@ def _check_in(env, cwd, *args):
 def test_JQ1_bare_git_clean_fdx_FROM_the_game_folder_is_denied_end_to_end(sandbox):
     """Through the real protect-bash.sh: the cwd x4guard sends is the game folder."""
     tmp, _, env = sandbox
-    v = _check_in(env, tmp / "X4 Foundations", "--kind", "shell", "--shell", "bash",
+    v = _jq1_check_in(env, tmp / "X4 Foundations", "--kind", "shell", "--shell", "bash",
                   "--command", "git clean -fdx")
     assert v["decision"] == "deny" and not v["inert"], v
     assert "git -C" in v["reason"], v["reason"]
@@ -655,6 +655,6 @@ def test_JQ1_bare_git_clean_fdx_FROM_the_game_folder_is_denied_end_to_end(sandbo
 def test_JQ1_TWIN_the_same_command_from_an_unrelated_folder_is_allowed(sandbox):
     tmp, _, env = sandbox
     (tmp / "elsewhere").mkdir()
-    v = _check_in(env, tmp / "elsewhere", "--kind", "shell", "--shell", "bash",
+    v = _jq1_check_in(env, tmp / "elsewhere", "--kind", "shell", "--shell", "bash",
                   "--command", "git clean -fdx")
     assert v["decision"] == "allow" and not v["inert"], v
