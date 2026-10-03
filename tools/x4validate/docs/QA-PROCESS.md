@@ -151,7 +151,7 @@ three consecutive CI failures on the v2.4.0 push, each time because the local
 
 **Unsetting `$X4_REFERENCE` / `$X4_EXTENSIONS` is NOT enough.** `_paths` resolves
 through three layers, and the one that keeps finding a real install is
-`$X4_TOOLKIT` -> `<toolkit>/.claude/x4-paths.env`. Leave that set and every path
+`$X4_TOOLKIT` -> `<toolkit>/x4-paths.env`. Leave that set and every path
 resolves no matter what else you clear.
 
 The recipe that actually reproduces a clean machine:

@@ -32,8 +32,8 @@ the rest.
 
 ### Cross-platform & configurable paths
 Works on **Linux, macOS, and Windows (Git Bash)**. None of the paths above are hardcoded — they
-are read from `.claude/x4-paths.env` (copy from `.claude/x4-paths.env.example`) or matching env
-vars, in this order: **env var > `x4-paths.env` > default**. The hooks normalize `\` vs `/` and
+are read from `x4-paths.env` in the toolkit root (copy from `x4-paths.env.example`; the 3.x
+location is still read, deprecated) or matching env vars, in this order: **env var > `x4-paths.env` > default**. The hooks normalize `\` vs `/` and
 case, so either path style works. Keys: `X4_TOOLKIT`, `X4_GAME`, `X4_REFERENCE`, `X4_PROFILE`,
 `X4_DEBUGLOG`, `X4_MODS`, `X4_EXTENSIONS`, `XRCATTOOL`, `X4_APPMANIFEST`, `X4_NEXUS_KEY`.
 - **XRCatTool runs through `bin/xrcat`** — directly on Windows, via **Wine** on Linux/macOS (it
@@ -226,7 +226,7 @@ changelogs, comments, bug reports. Most issues have been seen by another user al
 
 **★ API-FIRST: reach Nexus ONLY through the API, NEVER by scraping** (pages 403 automated
 fetches; Steam pages are scrapeable, Nexus is not). Each user supplies their OWN key in
-`X4_NEXUS_KEY` (or `.claude/x4-paths.env`): never bundle, commit or log one.
+`X4_NEXUS_KEY` (or `x4-paths.env`): never bundle, commit or log one.
 
 → endpoints, the rate budget, the local-first resolution cascade and how to get a key live in
 `x4validate/_nexus.py`, next to the code that calls them; **`x4-modlist-review`** drives the triage.

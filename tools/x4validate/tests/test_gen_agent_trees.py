@@ -566,8 +566,7 @@ def test_TWIN_core_naming_a_claude_only_mechanism_refuses(tmp_path, sample):
         g.generate(tmp_path)
 
 
-@pytest.mark.parametrize("allowed", [".claude\\backups\\known-good-x\\", ".claude/backups/x",
-                                     ".claude/x4-paths.env", ".claude/x4-paths.env.example"])
+@pytest.mark.parametrize("allowed", [".claude\\backups\\known-good-x\\", ".claude/backups/x"])
 def test_allowlisted_toolkit_paths_do_not_refuse(tmp_path, allowed):
     g = load()
     src = _agent_src_copy(tmp_path)
@@ -580,7 +579,18 @@ def test_TWIN_an_allowlisted_path_does_not_hide_a_banned_one_on_the_same_line(tm
     g = load()
     src = _agent_src_copy(tmp_path)
     p = src / "instructions/core.md"
-    p.write_bytes(p.read_bytes() + b"\nok .claude/x4-paths.env but .claude/settings.json\n")
+    p.write_bytes(p.read_bytes() + b"\nok .claude/backups/x but .claude/settings.json\n")
+    with pytest.raises(g.GenerationError, match="neutral"):
+        g.generate(tmp_path)
+
+
+def test_core_naming_the_3x_config_location_is_now_REFUSED(tmp_path):
+    """Plan 3 lane I moved the path config to the toolkit root, so the allowance that let the
+    core name `.claude/x4-paths.env` is gone: naming it again is a Claude-tree path."""
+    g = load()
+    src = _agent_src_copy(tmp_path)
+    p = src / "instructions/core.md"
+    p.write_bytes(p.read_bytes() + b"\nconfig: .claude/x4-paths.env\n")
     with pytest.raises(g.GenerationError, match="neutral"):
         g.generate(tmp_path)
 

@@ -152,7 +152,6 @@ NEUTRALITY_BANNED: tuple[tuple[str, str], ...] = (
 NEUTRALITY_ALLOWED: tuple[str, ...] = (
     ".claude\\backups\\",     # the toolkit's backup dir: every agent's backup hook writes it
     ".claude/backups/",       # same, POSIX spelling
-    ".claude/x4-paths.env",   # the toolkit's path config until lane C moves it (phase 7)
 )
 
 

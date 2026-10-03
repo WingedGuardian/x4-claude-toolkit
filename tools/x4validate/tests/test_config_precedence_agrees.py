@@ -84,6 +84,16 @@ def test_the_documented_order_still_says_the_environment_wins():
             "below are pinned to that order")
 
 
+def test_the_instructions_name_the_ROOT_config_and_not_the_3x_one():
+    """Plan 3 lane I: every agent's instructions name `x4-paths.env` at the toolkit root."""
+    docs = [p for p in (CLAUDE_MD, ROOT / "AGENTS.md") if p.is_file()]
+    assert CLAUDE_MD in docs
+    for doc in docs:
+        text = doc.read_text(encoding="utf-8", errors="replace")
+        assert "x4-paths.env" in text, doc.name
+        assert ".claude/x4-paths.env" not in text and ".claude" + chr(92) + "x4-paths.env" not in text, doc.name
+
+
 def test_the_bash_half_lets_the_environment_win():
     """Runs the real `_x4-env.sh`, because the defect was in what it DID, not in what
     it said -- its own header described the inverted behaviour accurately."""
