@@ -25,7 +25,7 @@ param(
   # claude | codex | generic | all (user decision #10, 2026-10-02: default all). Validated
   # by hand below, not by ValidateSet, so `opencode` can be refused naming spec M8.
   [string]$Agent = 'all',
-  [switch]$Unpack, [switch]$Yes, [switch]$OverExisting, [switch]$DryRun
+  [switch]$Unpack, [switch]$Yes, [switch]$OverExisting, [switch]$DryRun, [switch]$NoEnv
 )
 $ErrorActionPreference = 'Stop'
 $SRC = Split-Path -Parent $MyInvocation.MyCommand.Path

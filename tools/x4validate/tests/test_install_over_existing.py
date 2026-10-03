@@ -31,6 +31,8 @@ import pathlib
 import stat
 import shutil
 import subprocess
+import sys
+import uuid
 
 import pytest
 
@@ -101,6 +103,43 @@ def _refuse_unless_sandboxed(tmp_path: pathlib.Path, *paths: pathlib.Path) -> No
                     "installation (matched %r), even though it is under the "
                     "sandbox root." % (rp, bad))
 
+#: The ONLY registry root an installer run from this suite may be pointed at, via the
+#: installers' test seam X4_INSTALL_ENV_REGKEY. Production writes HKCU\Environment, and
+#: that is the developer's real environment: one forgotten flag would repoint their
+#: X4_TOOLKIT. Every key handed out is recorded, and deleted at module teardown.
+_TEST_REGROOT = "HKCU\\Software\\X4ToolkitTests\\"
+_REGKEYS_HANDED_OUT: list[str] = []
+
+
+def _new_regkey(tmp_path: pathlib.Path) -> str:
+    key = "%s%s-%s" % (_TEST_REGROOT, tmp_path.name, uuid.uuid4().hex[:8])
+    _REGKEYS_HANDED_OUT.append(key)
+    return key
+
+
+def _reg_exists(key: str) -> bool:
+    return subprocess.run(["reg", "query", key], capture_output=True, text=True).returncode == 0
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _regkey_cleanup():
+    """Delete every test registry key this module handed out -- ONLY those, never the
+    whole X4ToolkitTests root, which a concurrent run in another worktree may be using --
+    and assert each delete worked, so a leak is a failure rather than residue."""
+    yield
+    if os.name != "nt":
+        return
+    leaked = []
+    for key in _REGKEYS_HANDED_OUT:
+        if not _reg_exists(key):
+            continue
+        subprocess.run(["reg", "delete", key, "/f"], capture_output=True, text=True)
+        if _reg_exists(key):
+            leaked.append(key)
+    _REGKEYS_HANDED_OUT.clear()
+    assert not leaked, "test registry keys survived teardown: %s" % leaked
+
+
 def _fresh(tmp_path: pathlib.Path) -> pathlib.Path:
     """An empty destination plus the directories the installer is pointed at."""
     dest = tmp_path / "toolkit"
@@ -112,7 +151,8 @@ def _fresh(tmp_path: pathlib.Path) -> pathlib.Path:
 def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra: str,
              method: str = "separate", from_dest: bool = False,
              source: pathlib.Path | None = None, over_existing: bool = True,
-             scrub: tuple = ()):
+             scrub: tuple = (), env_write: bool = False, regkey: str | None = None,
+             detect_path: pathlib.Path | None = None, shell: str = "/bin/bash"):
     """Run ONE of the two installers with identical intent.
 
     Parameterised rather than duplicated, because the point is that both reach the
@@ -120,10 +160,30 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     would pass on two installers that agree about item lists and disagree about
     whether they clean up -- which is exactly what was true here: install.ps1 had
     `finally` where install.sh had none, and both still failed this path.
+
+    THE USER ENVIRONMENT IS SANDBOXED HERE, for every run (Plan 3 lane H). The
+    installers now set X4_TOOLKIT at OS level, so an unsandboxed run would write the
+    developer's real HKCU\\Environment or ~/.bashrc. `--no-env` is passed unless the
+    test asks for the write (`env_write=True`), and even then the write lands in a
+    throwaway registry key (`regkey`, under `_TEST_REGROOT`) or a profile file under
+    tmp_path (HOME, ZDOTDIR). Agent detection walks `detect_path` (an empty directory
+    by default), never the developer's PATH.
     """
     fake_home = tmp_path / "fake-claude-home"
     _refuse_unless_sandboxed(tmp_path, dest, tmp_path / "game",
                              tmp_path / "profile", tmp_path / "mods", fake_home)
+    if regkey is None:
+        regkey = _new_regkey(tmp_path)
+    if not regkey.startswith(_TEST_REGROOT) or len(regkey) <= len(_TEST_REGROOT):
+        raise AssertionError(
+            "REFUSING to run the installer: registry key %r is not under %r. The "
+            "production key is the developer's real environment." % (regkey, _TEST_REGROOT))
+    if detect_path is None:
+        detect_path = tmp_path / "no-agents"
+        detect_path.mkdir(exist_ok=True)
+    zdot = tmp_path / "zdot"
+    zdot.mkdir(exist_ok=True)
+    _refuse_unless_sandboxed(tmp_path, detect_path, zdot)
     common = {
         "method": method,
         "toolkit": dest.as_posix(),
@@ -147,9 +207,14 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
             common["agent"] = next(it)
         elif a == "--dry-run":
             flags.append("dry-run")
+        elif a == "--codex-doc-max-bytes":
+            common["codex-doc-max-bytes"] = next(it)
         else:
             raise AssertionError("unmapped flag: %s" % a)
+    if not env_write:
+        flags.append("no-env")
 
+    _ps_names = {"dry-run": "DryRun", "no-env": "NoEnv", "codex-doc-max-bytes": "CodexDocMaxBytes"}
     if installer == "sh":
         exe = _bash()
         if exe is None:
@@ -167,9 +232,9 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
         script = (dest / "install.ps1") if from_dest else (source / "install.ps1" if source else INSTALL_PS1)
         cmd = [exe, "-NoProfile", "-File", script.as_posix()]
         for k, v in common.items():
-            cmd += ["-" + k[:1].upper() + k[1:], v]
+            cmd += ["-" + _ps_names.get(k, k[:1].upper() + k[1:]), v]
         cmd += (["-OverExisting"] if over_existing else []) + ["-Yes"]
-        cmd += ["-DryRun" if f == "dry-run" else "-" + f for f in flags]
+        cmd += ["-" + _ps_names[f] for f in flags]
     cwd = dest.as_posix() if from_dest else (source.as_posix() if source else ROOT.as_posix())
     # The global arm writes to <claude-dir>, which is NOT one of the six path
     # flags. Pin it into the sandbox for every run rather than hoping no test
@@ -182,6 +247,14 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     env["CODEX_HOME"] = (tmp_path / "fake-codex-home").as_posix()
     env["HOME"] = tmp_path.as_posix()
     env["USERPROFILE"] = tmp_path.as_posix()
+    # THE USER ENVIRONMENT, sandboxed (see the docstring). The developer's own
+    # X4_TOOLKIT is removed too: an inherited value is a NAMED destination to both
+    # installers, and a "different existing value" to the env writer.
+    env.pop("X4_TOOLKIT", None)
+    env["X4_INSTALL_ENV_REGKEY"] = regkey
+    env["X4_INSTALL_DETECT_PATH"] = str(detect_path)
+    env["ZDOTDIR"] = zdot.as_posix()
+    env["SHELL"] = shell
     # `scrub` REMOVES variables, so a Windows box can reproduce a POSIX
     # environment. Every name passed there is Windows-only, i.e. exactly
     # $null under PowerShell on Linux and macOS.
@@ -198,6 +271,40 @@ def test_the_harness_can_install_at_all(installer, tmp_path):
     r = _install(installer, tmp_path, dest)
     assert r.returncode == 0, "unlocked install failed, so the harness proves nothing:\n%s\n%s" % (r.stdout[-2000:], r.stderr[-2000:])
     assert (dest / "scripts").is_dir(), "the installer reported success and copied no scripts/"
+
+
+def test_the_harness_NEVER_lets_an_installer_reach_the_real_user_env(tmp_path, monkeypatch):
+    """Every installer run gets a sandboxed registry key, HOME, ZDOTDIR, SHELL and detect
+    PATH, and --no-env unless the test asks for the env write. A test that forgot cannot
+    reach HKCU\\Environment, the developer's ~/.zshenv or ~/.bashrc, or their real PATH."""
+    captured = {}
+    real_run = subprocess.run
+
+    def spy(cmd, **kw):
+        captured["cmd"], captured["env"] = cmd, kw["env"]
+        return real_run([sys.executable, "-c", "pass"], capture_output=True, text=True)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    monkeypatch.setattr(sys.modules[__name__], "_bash", lambda: "bash")   # never skip
+    monkeypatch.setenv("ZDOTDIR", "/sandbox/home/.config/zsh")
+    monkeypatch.setenv("X4_TOOLKIT", "/the/real/toolkit")
+    monkeypatch.setenv("X4_INSTALL_ENV_REGKEY", "HKCU\\Environment")
+    dest = _fresh(tmp_path)
+    _install("sh", tmp_path, dest)
+    env, cmd = captured["env"], captured["cmd"]
+    assert env["X4_INSTALL_ENV_REGKEY"].startswith("HKCU\\Software\\X4ToolkitTests\\"), env.get(
+        "X4_INSTALL_ENV_REGKEY")
+    assert pathlib.Path(env["ZDOTDIR"]).resolve().is_relative_to(tmp_path.resolve())
+    assert pathlib.Path(env["X4_INSTALL_DETECT_PATH"]).resolve().is_relative_to(tmp_path.resolve())
+    assert env["SHELL"] == "/bin/bash"
+    assert "X4_TOOLKIT" not in env, "the developer's own X4_TOOLKIT reached the installer"
+    assert "--no-env" in cmd                                   # the default
+    _install("sh", tmp_path, dest, env_write=True)
+    assert "--no-env" not in captured["cmd"]                   # twin: the opt-in reaches the CLI
+    _install("ps1", tmp_path, dest)
+    assert "-NoEnv" in captured["cmd"]                         # the PowerShell spelling
+    with pytest.raises(AssertionError, match="REFUSING"):
+        _install("sh", tmp_path, dest, env_write=True, regkey="HKCU\\Environment")
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])

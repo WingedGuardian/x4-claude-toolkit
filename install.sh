@@ -15,7 +15,7 @@ set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # repo / toolkit source
 
 # --- defaults (overridable by flags / env) ---------------------------------
-METHOD=""; ASSUME_YES=0; DO_UNPACK=0; OVER_EXISTING=0; DRY_RUN=0
+METHOD=""; ASSUME_YES=0; DO_UNPACK=0; OVER_EXISTING=0; DRY_RUN=0; NO_ENV=0
 #: Which agent targets to install (user decision #10, 2026-10-02: default `all`). The
 #: Codex files are inert without Codex, and x4doctor reports which targets are live.
 AGENT="all"
@@ -72,6 +72,7 @@ while [ $# -gt 0 ]; do
     --agent) need2 "$1" $#; AGENT="$2"; shift 2;;
     --over-existing) OVER_EXISTING=1; shift;;
     --dry-run) DRY_RUN=1; shift;;
+    --no-env) NO_ENV=1; shift;;
     --unpack) DO_UNPACK=1; shift;;
     --yes|-y) ASSUME_YES=1; shift;;
     -h|--help) usage; exit 0;;
