@@ -79,7 +79,11 @@ def test_every_skill_and_settings_is_generated():
 
 
 def test_tokens_are_rendered_everywhere():
-    leaks = [rel for rel, text in load().generate(REPO).items() if "{{" in text]
+    # ONE exemption (Plan 3 lane J): `{{TOOLKIT}}` in `.agents/skills/` is left for the
+    # INSTALLER to render per OS. Anything else with `{{` -- any other token, or that token
+    # anywhere else -- is a leak.
+    leaks = [rel for rel, text in load().generate(REPO).items()
+             if "{{" in (text.replace("{{TOOLKIT}}", "") if rel.startswith(".agents/skills/") else text)]
     assert leaks == []
 
 
@@ -622,13 +626,19 @@ def test_codex_skills_mirror_the_claude_skills_one_to_one():
     assert cl == cx and len(cx) >= 22          # 11 SKILL.md + 11 cli reference files
 
 
-def test_codex_skills_render_the_toolkit_token_for_codex():
-    # DECISIONS #2: the generated Codex tree carries `$X4_TOOLKIT`; install.ps1 rewrites it to
-    # `$env:X4_TOOLKIT`, install.sh keeps it. The in-repo copy cannot know the OS.
+def test_codex_skills_KEEP_the_toolkit_token_for_the_installer():
+    # Plan 2 user decision #2: the generated Codex/generic skills keep `{{TOOLKIT}}` and the
+    # INSTALLER renders it per OS (`$env:X4_TOOLKIT` on Windows, `$X4_TOOLKIT` elsewhere). The
+    # in-repo copy cannot know the OS. Lane J (Plan 3): the generator used to render it to
+    # `$X4_TOOLKIT` itself, so both installers' rewrite found no token and never fired.
     out = load().generate(REPO)
     cx = {p: t for p, t in out.items() if p.startswith(".agents/skills/")}
-    assert not any("CLAUDE_PROJECT_DIR" in t or "{{" in t for t in cx.values())
-    assert sum("$X4_TOOLKIT/tools/x4validate" in t for t in cx.values()) == _token_skills()
+    assert not any("CLAUDE_PROJECT_DIR" in t for t in cx.values())
+    assert not any("$X4_TOOLKIT" in t for t in cx.values()), \
+        [p for p, t in cx.items() if "$X4_TOOLKIT" in t]
+    assert sum("{{TOOLKIT}}/tools/x4validate" in t for t in cx.values()) == _token_skills()
+    # the only placeholder a Codex skill may carry is the one the installers render
+    assert {m for t in cx.values() for m in re.findall(r"\{\{[A-Z_]+\}\}", t)} == {"{{TOOLKIT}}"}
 
 
 def test_claude_skills_are_unchanged_by_the_codex_target():

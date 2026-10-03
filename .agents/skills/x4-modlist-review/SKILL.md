@@ -11,7 +11,7 @@ Triage the X4 modlist via the `x4modlist` CLI. **API-FIRST — never scrape Nexu
 **★ SOURCE OF TRUTH: the physically INSTALLED extension folders are PRIMARY** — game-root `extensions\`, profile `extensions\` (if present), Steam Workshop `content\392160\` (if present). That's what the game actually loads. For the INVENTORY, the profile's `content.xml` enabled-list is a **SECONDARY cross-check only** ("did I forget to re-acquire something from my old modlist?") — it keeps entries for mods long gone from disk. For what is ACTIVE it does decide: an installed mod's profile entry overrides its manifest's `enabled`, and a mod with no entry falls back to its manifest (enabled unless the manifest says `enabled="0"`). A mod tracked historically but not found on disk shows up in a separate "OLD MODLIST — NOT CURRENTLY INSTALLED" dashboard section, not in the active lanes.
 
 Run commands via uv from the tool dir:
-`cd $X4_TOOLKIT/tools/x4validate && uv run --python 3.13 x4modlist <cmd>`
+`cd {{TOOLKIT}}/tools/x4validate && uv run --python 3.13 x4modlist <cmd>`
 Needs `X4_NEXUS_KEY` (user env). If a command errors "X4_NEXUS_KEY not set", the user must set it (endpoints, rate budget and how to get a key: `x4validate/_nexus.py`).
 
 ## Workflow

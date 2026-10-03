@@ -179,6 +179,12 @@
   reference file cannot be decoded, in both `--check` and regenerate mode, and writes nothing.
   It used to die with a traceback, which read as "stale" and also blocked the regenerate that
   would have repaired it.
+- **Fixed: Codex on Windows saw an empty toolkit path in every skill.** The generator wrote
+  `$X4_TOOLKIT` into `.agents/skills/` itself, so the installers' per-OS rewrite found no
+  `{{TOOLKIT}}` token and never ran, and in PowerShell `$X4_TOOLKIT` expands to nothing. The
+  generated skills now keep the token and the installer renders it (`$env:X4_TOOLKIT` on
+  Windows, `$X4_TOOLKIT` elsewhere), as the entry above describes. An installer test now
+  installs the real generated tree instead of a hand-made one.
 
 ## v3.3.1 — 2026-09-29
 

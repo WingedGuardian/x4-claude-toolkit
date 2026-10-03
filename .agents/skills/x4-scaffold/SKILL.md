@@ -17,7 +17,7 @@ Steps:
    - `t/0001.xml` — `<add sel="/language">` a new `<page>` (pick a high unique id ≥ 20000 to avoid collisions) with name + description `<t>` entries.
    - For `ship`/`module`: wire `<component ref="..._macro">` and note the macro/component/index files the user must provide. DO NOT fabricate meshes — flag those as manual steps.
 3. **Validate completeness:**
-   `cd $X4_TOOLKIT/tools/x4validate && uv run --python 3.13 x4validate <mod-dir> --entity <type>:<id> --like <type>:<analogue>`
+   `cd {{TOOLKIT}}/tools/x4validate && uv run --python 3.13 x4validate <mod-dir> --entity <type>:<id> --like <type>:<analogue>`
 
    ⚠ **This compares `<ware>`-WRAPPER fields only** — definition, name/description
    strings, price, production, `<component ref>`, owner, restriction. For a ship or
