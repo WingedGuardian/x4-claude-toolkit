@@ -230,12 +230,13 @@ GUARDS_OFF_NOTE = ("X4 GUARDS OFF (X4_GUARD=off at launch): every guard verdict 
                    "session and nothing here was enforced.")
 
 
-def verdict_for(kind: str, shell: str | None, command: str | None, path: str | None) -> dict:
+def verdict_for(kind: str, shell: str | None, command: str | None, path: str | None,
+                deadline: float | None = None) -> dict:
     """The verdict, plus spec 5.7's escape hatch: with X4_GUARD exactly "off" the guards turn a
     deny/ask into an advisory naming what it would have been (they read the variable
     themselves), and this says GUARDS OFF on every verdict -- a would-be allow included. An inert
     verdict stays an inert deny: a guard that could not run judged nothing to relax."""
-    v = _verdict(kind, shell, command, path)
+    v = _verdict(kind, shell, command, path, deadline)
     if os.environ.get("X4_GUARD") != "off" or v["inert"]:
         return v
     v = dict(v)
@@ -245,13 +246,17 @@ def verdict_for(kind: str, shell: str | None, command: str | None, path: str | N
     return v
 
 
-def _verdict(kind: str, shell: str | None, command: str | None, path: str | None) -> dict:
+def _verdict(kind: str, shell: str | None, command: str | None, path: str | None,
+             deadline: float | None = None) -> dict:
     """A relative path is resolved from the CALLER's working directory (Codex apply_patch paths
     are relative). A delete is judged as the stricter of a write and an `rm -rf --` of that path:
     recursive, because the path may be a directory. No protect-bash rule distinguishes it from
     `rm -f` today (MEASURED 9/9 paths identical); the probe says what a delete IS, for any
     future rule keyed on recursion."""
-    deadline = _clock() + TIMEOUT_S if TIMEOUT_S else None
+    # A caller that judges MANY checks under one budget (the Codex adapter's apply_patch batch)
+    # passes its own absolute deadline; otherwise each check gets TIMEOUT_S of its own.
+    if deadline is None:
+        deadline = _clock() + TIMEOUT_S if TIMEOUT_S else None
     if kind == "shell":
         return run_guard("protect-bash.sh", guard_payload(kind, shell, command, None), deadline)
     path = os.path.abspath(path)

@@ -156,10 +156,13 @@ def record_unknown(tool) -> None:
 PARALLEL = 4
 
 
-def _one(call: tuple) -> dict:
+def _one(call: tuple, deadline: float | None = None) -> dict:
     kind, sh, cmd, path, label = call
+    # ONE deadline for the whole batch (MEASURED after merging lanes B+E: 400 deletes under a 45 s
+    # budget ran past 180 s, because each check started its own fresh x4guard deadline). x4guard
+    # refuses to START a guard once it has passed, and bounds one already running.
     try:
-        v = dict(x4guard.verdict_for(kind, sh, cmd, path))
+        v = dict(x4guard.verdict_for(kind, sh, cmd, path, deadline=deadline))
     except Exception as e:                # a guard that raised checked nothing
         v = inert(f"the guard raised {type(e).__name__}: {e}", label)
     v["label"] = label
@@ -168,7 +171,7 @@ def _one(call: tuple) -> dict:
 
 def judge(calls: list[tuple], deadline: float) -> list[dict]:
     """Verdicts in call order. The shell check (if any) runs first; a real deny there ends it.
-    Every guard shares the remaining budget: x4guard.TIMEOUT_S is set from it before each batch."""
+    Every guard shares ONE deadline: it is passed into each x4guard check (see _one)."""
     from concurrent.futures import ThreadPoolExecutor
     out: list[dict] = []
     shell = [c for c in calls if c[0] == "shell"]
@@ -178,12 +181,11 @@ def judge(calls: list[tuple], deadline: float) -> list[dict]:
         if remaining < 1:
             out += [inert("the adapter's time budget ran out before this check", c[4]) for c in batch]
             continue
-        x4guard.TIMEOUT_S = max(1, int(remaining))
         if len(batch) == 1:
-            got = [_one(batch[0])]
+            got = [_one(batch[0], deadline)]
         else:
             with ThreadPoolExecutor(min(PARALLEL, len(batch))) as ex:
-                got = list(ex.map(_one, batch))
+                got = list(ex.map(lambda c: _one(c, deadline), batch))
         out += got
         if any(v["decision"] == "deny" and not v.get("inert") for v in got):
             break                         # the call is refused; later checks cannot change that
