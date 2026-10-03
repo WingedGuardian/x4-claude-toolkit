@@ -185,9 +185,20 @@ def _deployed() -> bool:
     return HERE.name == "hooks" and HERE.parent.name in (".claude", ".codex", ".opencode")
 
 
-def run_guard(script: str, payload: dict, deadline: float | None = None) -> dict:
+#: Which budget a timeout message names (lane J, Plan 3): x4guard's own, or the CALLER's (the
+#: Codex adapter passes its own deadline, X4_CODEX_BUDGET_S, so X4_GUARD_TIMEOUT_S played no part).
+CALLER_BUDGET = "the caller's deadline (the Codex adapter's X4_CODEX_BUDGET_S)"
+
+
+def _own_budget() -> str:
+    return f"this check's {TIMEOUT_S:g}s budget (X4_GUARD_TIMEOUT_S)"
+
+
+def run_guard(script: str, payload: dict, deadline: float | None = None,
+              budget: str | None = None) -> dict:
     """One guard, one verdict dict. Anything that keeps it from producing a real verdict is inert.
-    `deadline` (a _clock() value) is the CHECK's deadline: a second guard gets only what is left."""
+    `deadline` (a _clock() value) is the CHECK's deadline: a second guard gets only what is left.
+    `budget` names whose deadline it is in a timeout message (default: x4guard's own)."""
     guards = [script]
     if TIMEOUT_ERROR:
         return _inert(TIMEOUT_ERROR, guards)
@@ -204,8 +215,7 @@ def run_guard(script: str, payload: dict, deadline: float | None = None) -> dict
         deadline = _clock() + TIMEOUT_S
     remaining = deadline - _clock()
     if remaining <= 0:
-        return _inert(f"{script} was not run: this check's {TIMEOUT_S:g}s budget "
-                      f"(X4_GUARD_TIMEOUT_S) was already spent", guards)
+        return _inert(f"{script} was not run: {budget or _own_budget()} was already spent", guards)
     try:
         # X4_GUARD_CHECK=1: the guards' internal check protocol. Every "checked nothing" path exits
         # 2 instead of asking (a no-op for Claude Code's hooks, where the variable is unset).
@@ -214,8 +224,7 @@ def run_guard(script: str, payload: dict, deadline: float | None = None) -> dict
     except OSError as e:
         return _inert(f"{script} could not start: {e}", guards)
     if rc is None:
-        return _inert(f"{script} timed out: this check's {TIMEOUT_S:g}s budget "
-                      f"(X4_GUARD_TIMEOUT_S) ran out", guards)
+        return _inert(f"{script} timed out: {budget or _own_budget()} ran out", guards)
     if rc != 0:
         why = _failure_detail(out, err)
         head = (f"{script} reported it could not evaluate this (exit 2, X4_GUARD_CHECK)" if rc == 2
@@ -261,16 +270,17 @@ def _verdict(kind: str, shell: str | None, command: str | None, path: str | None
     future rule keyed on recursion."""
     # A caller that judges MANY checks under one budget (the Codex adapter's apply_patch batch)
     # passes its own absolute deadline; otherwise each check gets TIMEOUT_S of its own.
+    budget = None if deadline is None else CALLER_BUDGET
     if deadline is None:
         deadline = _clock() + TIMEOUT_S if TIMEOUT_S else None
     if kind == "shell":
-        return run_guard("protect-bash.sh", guard_payload(kind, shell, command, None), deadline)
+        return run_guard("protect-bash.sh", guard_payload(kind, shell, command, None), deadline, budget)
     path = os.path.abspath(path)
-    parts = [run_guard("protect-files.sh", guard_payload("write", None, None, path), deadline)]
+    parts = [run_guard("protect-files.sh", guard_payload("write", None, None, path), deadline, budget)]
     if kind == "delete":
         quoted = path.replace("\\", "/").replace("'", "'\"'\"'")    # close, "'", reopen
         rm = "rm -rf -- '" + quoted + "'"
-        parts.append(run_guard("protect-bash.sh", guard_payload("shell", "bash", rm, None), deadline))
+        parts.append(run_guard("protect-bash.sh", guard_payload("shell", "bash", rm, None), deadline, budget))
     worst = max(parts, key=lambda v: (v["inert"], RANK[v["decision"]]))
     worst = dict(worst)
     worst["guards"] = [g for v in parts for g in v["guards"]]

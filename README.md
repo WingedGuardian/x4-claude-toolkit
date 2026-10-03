@@ -297,7 +297,9 @@ confirmation; the stricter verdict wins. An evaluation failure is `deny` with `i
 An ordinary `ask` requires approval. Neither exit 0 nor a passing check installs enforcement
 in an agent host. On Windows set `X4_BASH` to Git Bash when PATH resolves to WSL.
 The current wrapper resolves relative file paths from the caller's working directory before
-checking them. It applies a separate timeout to each guard; a delete check can run two guards.
+checking them. One time budget covers the whole check (`X4_GUARD_TIMEOUT_S`, default 25 s),
+shared by a delete's two guards; a check that runs out is an inert deny. The Codex hook path
+uses its own budget instead (`X4_CODEX_BUDGET_S`, 45 s).
 
 **`python scripts/x4doctor.py [--root DIR] [--agent NAME] [--json]` -- are the guards live
 here?** A read-only health check, per installed agent target. It runs on Python 3.10 with no
@@ -516,6 +518,30 @@ The installer ships each agent's own files and nothing else (`-Agent` on PowerSh
 | A guard that crashes | asks | **denies** (our wrapper), unless the interpreter cannot start: then **Codex runs the command** | -- |
 | Hooks not reviewed or changed | n/a | **guards off, silently**: `x4doctor` and the session instructions flag it | -- |
 | Post-edit validator feedback | yes | yes (when the hook is live) | no |
+
+**What the Codex hooks cannot see.** Each of these was measured on Codex 0.160 unless it says
+otherwise:
+
+1. **A shell `workdir`.** Codex can run a command in another folder without telling the hook
+   which one, so a relative path is judged against the session folder. Use absolute paths
+   for anything under `reference\` or the game folder.
+2. **Typing into a running shell (`write_stdin`).** A shell or REPL started with a harmless
+   command can then be sent any command, and those lines reach no guard (0 hook events for
+   2 calls; a direct call is untested). This is disclosed, not blocked.
+3. **Bare `git clean` / `git reset --hard` (both agents).** These name no folder. From the
+   game folder or another X4 folder, `git clean` with `-x`, `-X` or `-d` and
+   `git reset --hard` are denied with a reason. Naming the folder (`git -C "<folder>" ...`)
+   asks you first.
+4. **New tools, MCP tools and subagent controls are allowed.** Their names are logged to
+   `.codex/x4-unknown-tools.log`. A subagent's own shell commands are still checked.
+5. **The `.codex/rules` fallback is narrow.** It matches command prefixes only, so it
+   repeats just two of the command guard's rules: `git add -A` / `--all` / `.` (blocked) and
+   `x4refguard.py remove` (asks). Whether Codex loads it in a project you have not trusted is
+   untested.
+6. **Moving the folder turns the hooks off** until you review them again in `/hooks`, because
+   the hook definitions contain the folder's absolute path.
+7. **A patch applied through the shell gets no validator feedback.** It is checked before
+   it runs, but the post-edit validator runs for `apply_patch` only.
 
 > **`global` installs no guards.** The command guard, the file guard and the automatic
 > backup described under *Safety, built in* are registered in a project's

@@ -593,3 +593,68 @@ def test_X4_GUARD_off_puts_a_banner_on_session_start(sandbox, value, banner):
     out = r.stdout.decode("utf-8", "replace")
     assert r.returncode == 0
     assert ("GUARDS OFF" in out) is banner, out
+
+
+# --- Plan 3 lane J, J3: a timeout names the budget that actually ran out -------------------- #
+# The Codex adapter passes its OWN deadline (X4_CODEX_BUDGET_S) into every check; a reason that
+# names X4_GUARD_TIMEOUT_S there sends the user to a knob that played no part.
+
+def test_J3_a_CALLERS_spent_deadline_does_not_blame_X4_GUARD_TIMEOUT_S(sandbox, monkeypatch):
+    _, tk, env = sandbox
+    for k, val in env.items():
+        monkeypatch.setenv(k, val)
+    g = _load(X4GUARD)
+    v = g.verdict_for("write", None, None, str(tk / "x.txt"), deadline=g._clock() - 1)
+    assert v["decision"] == "deny" and v["inert"], v
+    assert "X4_GUARD_TIMEOUT_S" not in v["reason"] and "caller" in v["reason"], v["reason"]
+
+
+def test_J3_TWIN_a_caller_deadline_that_RUNS_OUT_mid_guard_blames_the_caller(sandbox, monkeypatch):
+    _, tk, env = sandbox
+    for k, val in env.items():
+        monkeypatch.setenv(k, val)
+    g = _load(X4GUARD)
+    _fake_runner(g, monkeypatch, {"protect-files.sh": 99.0})
+    v = g.verdict_for("write", None, None, str(tk / "x.txt"), deadline=g._clock() + 2.0)
+    assert v["inert"] and "timed out" in v["reason"], v
+    assert "X4_GUARD_TIMEOUT_S" not in v["reason"] and "caller" in v["reason"], v["reason"]
+
+
+def test_J3_TWIN_x4guards_OWN_spent_budget_still_names_X4_GUARD_TIMEOUT_S(sandbox, monkeypatch):
+    """The 'was already spent' message with x4guard's own budget (run_guard called without a
+    caller label) -- the E2 test above pins only the 'timed out' message for the own budget."""
+    _, tk, env = sandbox
+    for k, val in env.items():
+        monkeypatch.setenv(k, val)
+    g = _load(X4GUARD)
+    v = g.run_guard("protect-files.sh", g.guard_payload("write", None, None, str(tk / "x.txt")),
+                    g._clock() - 1)
+    assert v["inert"] and "already spent" in v["reason"], v
+    assert "X4_GUARD_TIMEOUT_S" in v["reason"] and "caller" not in v["reason"], v["reason"]
+
+
+
+# --- Plan 3 decision J-Q1: a bare destructive git clean from the game folder is a DENY ------- #
+
+def _jq1_check_in(env, cwd, *args):
+    r = subprocess.run([sys.executable, str(X4GUARD), "check", *args], capture_output=True,
+                       env=env, cwd=cwd, timeout=120)
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
+    return json.loads(r.stdout)
+
+
+def test_JQ1_bare_git_clean_fdx_FROM_the_game_folder_is_denied_end_to_end(sandbox):
+    """Through the real protect-bash.sh: the cwd x4guard sends is the game folder."""
+    tmp, _, env = sandbox
+    v = _jq1_check_in(env, tmp / "X4 Foundations", "--kind", "shell", "--shell", "bash",
+                  "--command", "git clean -fdx")
+    assert v["decision"] == "deny" and not v["inert"], v
+    assert "git -C" in v["reason"], v["reason"]
+
+
+def test_JQ1_TWIN_the_same_command_from_an_unrelated_folder_is_allowed(sandbox):
+    tmp, _, env = sandbox
+    (tmp / "elsewhere").mkdir()
+    v = _jq1_check_in(env, tmp / "elsewhere", "--kind", "shell", "--shell", "bash",
+                  "--command", "git clean -fdx")
+    assert v["decision"] == "allow" and not v["inert"], v

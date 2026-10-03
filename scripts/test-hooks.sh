@@ -64,13 +64,16 @@ no(){ fail=$((fail+1)); printf '  FAIL %s\n' "$1"; }
 
 # decide <expected> <hook> <json> <label>
 decide(){
-  local exp="$1" hook="$2" json="$3" label="$4" out got
+  local exp="$1" hook="$2" json="$3" label="$4" out got rc errf="$SBX_TMP/decide.stderr"
   if ! printf '%s' "$json" | jq -e . >/dev/null 2>&1; then
     no "$label -- MALFORMED PROBE PAYLOAD: not valid JSON, so this probe exercises the
         parser-contract guard rather than its own rule"
     return
   fi
-  out=$(printf '%s' "$json" | bash "$HOOKS/$hook" 2>/dev/null)
+  # rc and stderr are DIAGNOSTIC ONLY (lane J, Plan 3 flake hunt): they go on a FAIL line and
+  # change no verdict, count or dump record. An empty stdout still reads as allow, so a hook
+  # that CRASHED looks like one that allowed -- the bracket on the FAIL line tells them apart.
+  out=$(printf '%s' "$json" | bash "$HOOKS/$hook" 2>"$errf"); rc=$?
   if [ -z "$out" ]; then got="allow"
   else
     got=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null)
@@ -87,7 +90,8 @@ decide(){
         env:(env|with_entries(select((.key|test("^(X4_|CLAUDE_PROJECT_DIR$|GIT_CEILING_DIRECTORIES$)"))
                                      and (.key|test("KEY|TOKEN|SECRET|PASS")|not))))}' \
       >> "$X4_DECIDE_DUMP" 2>/dev/null
-  [ "$got" = "$exp" ] && ok "$label ($got)" || no "$label — expected $exp, got $got"
+  [ "$got" = "$exp" ] && ok "$label ($got)" \
+    || no "$label — expected $exp, got $got [hook rc=$rc; stderr: $(head -c 300 "$errf" 2>/dev/null | tr '\n' ' ')]"
 }
 fj(){ printf '{"tool_name":"Edit","tool_input":{"file_path":%s}}' "$(printf '%s' "$1" | jq -Rs .)"; }
 # jq -Rs does the JSON escaping. The first version interpolated the command RAW,

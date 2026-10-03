@@ -8,7 +8,7 @@ allowed-tools: Bash, Read, Glob, Grep
 
 Port ONE mod to the current game version. **Mechanical work is automated + validated; design/gameplay decisions are surfaced to the USER — never auto-decided** (the two-layer rule).
 
-Tool: `cd $X4_TOOLKIT/tools/x4validate && uv run --python 3.13 x4validate <dev\mod> --update`
+Tool: `cd {{TOOLKIT}}/tools/x4validate && uv run --python 3.13 x4validate <dev\mod> --update`
 
 ## Phases
 1. **Research (API-FIRST)** — dispatch the `mod-research` agent: game changelog (Egosoft patch notes), the mod's Nexus changelog/version/9.0-status, whether an updated upstream exists, known issues. Cross-check `KNOWLEDGEBASE.md` "Version Migration Map".

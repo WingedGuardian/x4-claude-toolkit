@@ -201,6 +201,49 @@
   `x4doctor` reports that state as `roots.config` FAIL.
 - `gates/deploy_parity.py` describes each agent tree with a `TargetSpec`. Claude's population is
   unchanged.
+- `gen-cli-reference.py` refuses (rc 2, `REFUSING: <file> is not UTF-8 ...`) when a committed
+  reference file cannot be decoded, in both `--check` and regenerate mode, and writes nothing.
+  It used to die with a traceback, which read as "stale" and also blocked the regenerate that
+  would have repaired it.
+- **Fixed: Codex on Windows saw an empty toolkit path in every skill.** The generator wrote
+  `$X4_TOOLKIT` into `.agents/skills/` itself, so the installers' per-OS rewrite found no
+  `{{TOOLKIT}}` token and never ran, and in PowerShell `$X4_TOOLKIT` expands to nothing. The
+  generated skills now keep the token and the installer renders it (`$env:X4_TOOLKIT` on
+  Windows, `$X4_TOOLKIT` elsewhere), as the entry above describes. An installer test now
+  installs the real generated tree instead of a hand-made one.
+- **`AGENTS.md` tells Codex to look for the hooks banner** (`X4 GUARDS LIVE (codex hooks v1)`)
+  and, if it is missing, to warn the user before any write or delete and suggest
+  `x4doctor.py --agent codex`. Its guard commands now name `.codex/hooks/x4guard.py`: a
+  Codex-only install has no `.claude/` folder, so the `.claude/hooks/x4guard.py` it named before
+  did not exist there.
+- The Codex session banner no longer claims that every shell command is checked. It now reads
+  `X4 GUARDS LIVE (codex hooks v1) — shell commands and apply_patch are checked (input typed
+  into a running shell is not).` The text lives in the adapter script; the frozen hook
+  definitions are unchanged, so no new hook review is expected (not yet confirmed with
+  `codex_trust.py report` on a deployed copy).
+- An `x4guard` timeout now names the budget that actually ran out. Under the Codex hooks the
+  adapter passes its own deadline (`X4_CODEX_BUDGET_S`), but the message always blamed
+  `X4_GUARD_TIMEOUT_S`, a setting that played no part there. It now says "the caller's
+  deadline" in that case and keeps naming `X4_GUARD_TIMEOUT_S` for a direct `x4guard check`.
+- **A bare `git clean -fdx` (or `-x`, `-X`, `-d`) or `git reset --hard` run from the game folder
+  or another X4 folder is now blocked.** It used to be allowed when the command named no folder.
+  The game folder's git repo ignores every file except its own, so `git clean -fdx` there would
+  delete the installation's untracked files. This is a block with a reason for the agent, not
+  a prompt for you. Naming the folder explicitly (`git -C "<folder>" clean ...` or
+  `cd "<folder>" && ...`) still asks, as before. Under Codex the hook applies; a Codex prefix
+  rule cannot see the folder.
+- **Fixed: `x4refguard.py` failed when started from PowerShell 7** (a pwsh terminal, Codex on
+  Windows, or the CI shell). PowerShell 7 passes its own module path to the Windows PowerShell
+  5.1 process that reads the folder permissions, which then could not load `Get-Acl`. So
+  `status` and `apply` refused, and an unpack could not finish protecting `reference/`. The
+  child process now starts without that inherited module path.
+- `run-gates.sh` keeps each gate's full output (GitHub issue #3). Every attempted gate's
+  complete stdout and stderr are saved to `<logdir>/<gate>.log`. Free memory, load and CPU
+  count are written to `<logdir>/system.txt` at the start and at each failure, and the run
+  prints where `<logdir>` is. It defaults to a fresh temp folder; set `X4_GATE_LOG_DIR` to
+  choose one, and a folder inside `X4_GAME` or `X4_REFERENCE` is refused. The console summary
+  is unchanged and still shows a short tail. Before this, a failure that never recurred left
+  nothing to read.
 
 ## v3.3.1 — 2026-09-29
 

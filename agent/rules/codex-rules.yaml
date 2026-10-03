@@ -52,6 +52,7 @@
 - {id: reunpack-locked, source: protect-bash.sh, anchor: "BLOCKED: reference/ is locked", verdict: deny, bucket: hook_only, reason: "sentinel-gated: only while reference/.unpacked-and-locked exists"}
 - {id: rm-in-x4-dir, source: protect-bash.sh, anchor: "on rm_in_x4_dir", fact: rm_in_x4_dir, bucket: hook_only, reason: "path-scoped (verdict changed ask->advise on 2026-10-02)"}
 - {id: rm-in-profile, source: protect-bash.sh, anchor: "on rm_in_profile", fact: rm_in_profile, verdict: ask, bucket: hook_only, optional: true, reason: "path-scoped: the X4 profile"}
+- {id: git-wipe-from-session-dir, source: protect-bash.sh, anchor: "on git_wipe_from_session_dir", fact: git_wipe_from_session_dir, verdict: deny, bucket: hook_only, reason: "cwd-scoped: only when the session runs in an X4 directory, which a Codex prefix rule cannot see"}
 - {id: git-wipes-x4-dir, source: protect-bash.sh, anchor: "on git_wipes_x4_dir", fact: git_wipes_x4_dir, verdict: ask, bucket: hook_only, reason: "path-scoped: only inside an X4 directory"}
 - {id: git-discards-x4-files, source: protect-bash.sh, anchor: "on git_discards_x4_files", fact: git_discards_x4_files, verdict: advise, bucket: hook_only, reason: "path-scoped; an advisory has no Codex rule form"}
 - {id: rm-saves, source: protect-bash.sh, anchor: "on rm_saves", fact: rm_saves, verdict: ask, bucket: hook_only, reason: "path-scoped: the saves folder"}

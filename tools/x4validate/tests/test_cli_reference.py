@@ -193,3 +193,36 @@ def test_the_generator_writes_into_the_repos_skills_dir():
     """The skill's SOURCE is the repo's agent/skills (gen-agent-trees.py then renders it into
     .claude/skills, the directory both installers copy from), never the package's."""
     assert gen.SKILL_DIR == PKG.parents[1] / "agent" / "skills" / "x4-cli-reference"
+
+
+# --- Lane J (Plan 3) J1: an undecodable committed file refuses (rc 2), in both modes ---
+
+def test_TWIN_a_non_utf8_committed_file_REFUSES_in_check_mode(monkeypatch, fresh_copy, capsys):
+    """An undecodable file is not 'stale' or 'fresh' -- the check could not read it. It must
+    say so (rc 2), never die with a traceback (rc 1, which reads as 'stale')."""
+    (fresh_copy / "reference" / "x4save.md").write_bytes(b"\xff\xfe not utf-8\n")
+    monkeypatch.setattr(gen, "SKILL_DIR", fresh_copy)
+    assert gen.main(["--check"]) == 2
+    err = capsys.readouterr().err
+    assert "REFUSING" in err and "reference/x4save.md" in err and "UTF-8" in err, err
+
+
+def test_TWIN_a_non_utf8_committed_file_REFUSES_in_write_mode_and_writes_nothing(monkeypatch, fresh_copy):
+    bad = fresh_copy / "reference" / "x4save.md"
+    bad.write_bytes(b"\xff\xfe not utf-8\n")
+    before = {p: p.read_bytes() for p in fresh_copy.rglob("*") if p.is_file()}
+    monkeypatch.setattr(gen, "SKILL_DIR", fresh_copy)
+    assert gen.main([]) == 2
+    assert {p: p.read_bytes() for p in fresh_copy.rglob("*") if p.is_file()} == before
+
+
+def test_problems_raises_GenerationError_on_an_undecodable_file(fresh_copy, expected):
+    (fresh_copy / "SKILL.md").write_bytes(b"\x80")
+    with pytest.raises(gen.GenerationError, match=r"SKILL\.md.*not UTF-8"):
+        gen.problems(expected, fresh_copy)
+
+
+def test_TWIN_a_non_utf8_GHOST_is_still_just_a_ghost(fresh_copy, expected):
+    """Only EXPECTED files are decoded; a stray binary file is a GHOST, not a refusal."""
+    (fresh_copy / "reference" / "x4junk.bin").write_bytes(b"\xff\xfe")
+    assert gen.problems(expected, fresh_copy) == ["GHOST    reference/x4junk.bin"]

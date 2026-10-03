@@ -1904,9 +1904,17 @@ def test_both_installers_render_the_SAME_hooks_json(installer, tmp_path):
         r = _install(which, tmp_path, d, "--agent", "codex", source=src)
         assert r.returncode == 0, _ok(r)
         dests[which] = json.loads((d / ".codex/hooks.json").read_text(encoding="utf-8"))
-    norm = lambda d, w: json.dumps(d).replace(str((tmp_path / ("t-" + w)).resolve()).replace(BS, BS * 2), "<ROOT_WIN>") \
-        .replace((tmp_path / ("t-" + w)).resolve().as_posix(), "<ROOT>")
-    assert norm(dests["sh"], "sh") == norm(dests["ps1"], "ps1")
+    # `{{ROOT_WIN}}` is the root with every `/` turned into `\` -- on Linux too, where
+    # str(path) has no backslash at all. Normalising with str(path) left the Linux root in
+    # commandWindows un-replaced, so the two installers differed by their own dir names
+    # (CI ubuntu, run 37091872873). Build the backslash form from as_posix() on every OS.
+    def norm(d, w):
+        root = (tmp_path / ("t-" + w)).resolve().as_posix()
+        return (json.dumps(d).replace(root.replace("/", BS).replace(BS, BS * 2), "<ROOT_WIN>")
+                .replace(root, "<ROOT>"))
+    got = {w: norm(dests[w], w) for w in ("sh", "ps1")}
+    assert "<ROOT_WIN>" in got["sh"] and "<ROOT>" in got["sh"], got["sh"]   # the norm DID apply
+    assert got["sh"] == got["ps1"]
 
 
 # --- the REAL repository's tree (skips, counted, while a generated tree is absent) ---- #
@@ -1923,6 +1931,32 @@ def test_the_real_repo_installs_ONE_AGENTS_md_and_no_agent_source(installer, tmp
     assert found == ["AGENTS.md"], found
     assert not (dest / "agent").exists()
     assert (dest / "CLAUDE.md").is_file(), "the Claude target is installed, so CLAUDE.md must be"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_J_the_REAL_codex_skills_get_the_token_rendered_for_THIS_os(installer, tmp_path):
+    """Lane J (Plan 3), orchestrator finding 2026-10-02: the generator rendered the token
+    to `$X4_TOOLKIT` itself, so the installers' per-OS rewrite never fired and Codex on
+    Windows (PowerShell) saw an EMPTY variable. The synthetic-source row above could not
+    see it -- it plants the token by hand. This row installs the COMMITTED generated tree."""
+    if not (ROOT / ".agents" / "skills").is_dir():
+        pytest.skip("the repo has no generated .agents/skills tree")
+    n_src = sum("{{TOOLKIT}}" in p.read_bytes().decode("utf-8")
+                for p in (ROOT / "agent" / "skills").glob("*/SKILL.md"))
+    assert n_src >= 7, n_src          # derived, never retyped: an empty population cannot pass
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "codex")
+    assert r.returncode == 0, _ok(r)
+    want = "$env:X4_TOOLKIT" if os.name == "nt" else "$X4_TOOLKIT"
+    assert "rendered {{TOOLKIT}} as %s in" % want in r.stdout, (
+        "the installer rendered nothing -- the tree it copied carries no token\n" + _ok(r))
+    got = {p.relative_to(dest).as_posix(): p.read_bytes().decode("utf-8")
+           for p in (dest / ".agents" / "skills").rglob("*") if p.is_file()}
+    assert not [k for k, t in got.items() if "{{TOOLKIT}}" in t]
+    assert sum("%s/tools/x4validate" % want in t for k, t in got.items()
+               if k.endswith("/SKILL.md")) == n_src, sorted(got)
+    if os.name == "nt":   # the bash spelling expands to EMPTY in PowerShell
+        assert not [k for k, t in got.items() if re.search(r"(?<!env:)\$X4_TOOLKIT\b", t)]
 
 
 def test_the_installers_render_hooks_json_exactly_as_the_GENERATOR_does(tmp_path):

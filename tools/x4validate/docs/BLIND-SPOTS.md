@@ -226,6 +226,8 @@ memory or from another session -- a remembered id was stale within a day here.
 | F145 | The PowerShell/cmd guard judges an UNRESOLVABLE PowerShell WRITE target by its text (as Bash writes are), not fail-closed; a delete whose target is computed (a list read with Get-Content, an indexed nested array) ASKS; writer methods on unknown objects (`$xml.Save(path)`) are not modelled; a cmd.exe delete of an unquoted spaced path is judged on rejoined operand spans (at most 12 words) | **SCOPE (measured)** · ✅ FIXED 2026-09-27 (the gaps the release review found; these residuals stated) | failing closed on writes MEASURED at +28 false-positive asks and 0 catches over 50,061 historical commands; computed delete targets: 2 of 1,524 historical PowerShell commands | release review hooks lane `5f6f414` `60ff523` `a30d401` `a399e3c` `6d7e702` |
 | F146 | Grep and Glob honour `.gitignore`, so a search rooted in a git-ignored folder (a game root kept under git with a whitelist `.gitignore`) sees nothing, and the packed-archive advisory explained the zero as packing | **DEFECT (measured)** · ✅ FIXED 2026-10-02 (hook + agent text) | Grep: 0 of 133 installed manifests (rg --no-ignore: 133); a subagent reported them absent | `search-scope.sh` runs `git check-ignore` on the root: Grep there DENIED with `rg --no-ignore` as the way out, Glob advised, the above-root advisory names `.gitignore`. Open: `.ignore`/`.rgignore` files are not read |
 | F147 | A RELATIVE shell operand with no preceding `cd` reached NO path rule: the guard never used the payload's `cwd`, so `rm -f reference/...` from the folder holding reference/ was allowed while the absolute spelling denied | **DEFECT (measured)** · ✅ FIXED 2026-10-02 (Plan 2 lane F) | 4-row probe on the deployed guard: rows 1-2 ALLOW, 3-4 deny; a live Codex run overwrote the file (lane B) | `hook_facts.facts()` seeds `cwd_track` with the payload `cwd`, narrowed by a 53,828-command OLD-vs-NEW replay to 0 new asks and 0 new denies; `x4guard check` sends the caller's cwd. Open: the Codex shell `workdir` is invisible; `git clean`/unknown cmdlets stay unseeded |
+| F148 | A bare `git clean -fdx` / `-x` / `-X` / `-d` or `git reset --hard` run FROM the game folder (or another X4 folder) with no folder named reached no rule (F147's open item): the game-root repo's `.gitignore` is `*`, so `-x` there removes the installation's untracked files | **DEFECT (measured)** · ✅ FIXED 2026-10-03 (Plan 3 lane J, decision J-Q1) | the deployed `x4guard check` from the game cwd: `git clean -fdx` -> allow; master's x4guard in a sandbox game cwd -> allow, this tree -> deny | new fact `git_wipe_from_session_dir` (seeded cwd, -x/-X/-d or reset --hard, exclusive of the explicit-folder ASK) -> DENY with a reason, never a prompt |
+| F149 | `scripts/test-hooks.sh` 1/187 flake (seen twice under load, probe never recorded): NOT REPRODUCED, 0 of 16 runs under 24 CPU burners plus 3 other lanes | **SCOPE (measured, open)** | 16 runs (4 lanes x 4), 711-1187 s each; every run 186/1, the 1 being the pre-existing identifier finding in Plan 3 docs | a failing `decide()` probe now prints `[hook rc=N; stderr: ...]`, so the next occurrence names itself; open until it does |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -7772,3 +7774,55 @@ OLD was stricter: 0. New asks: 0. New denies: 0. Detail: Plan 2 `measure-F.md`.
 per clause. Also `.claude/hooks/test_audit0924_hooks.py` `TestLaneFRelativePathsUseThePayloadCwd` (the 4-row
 table E2E), `tools/x4validate/tests/test_x4guard_check.py` `test_F_*`, and the conformance extras
 `*relative-delete*`.
+
+## F148 — a bare destructive `git clean` / `reset --hard` from an X4 session folder reached no rule · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-03 (Plan 3 lane J, decision J-Q1)
+
+**What.** F147 seeded relative operands with the payload's `cwd`, but deliberately left
+`git clean -f` and `git reset --hard` UNSEEDED. Their rule ASKS, and the user had ruled out new
+prompts. So `git clean -fdx`, run with the game folder as the session folder, was ALLOWED
+(MEASURED with the deployed `x4guard check`, cwd = the game root). The game-root repo's
+`.gitignore` is a whitelist (`*`), so every untracked file there is ignored, and `-x` would remove
+them (INFERRED from the `.gitignore`; never run).
+
+**Fix (user decision J-Q1: a DENY, never a prompt).** `git_wipes_ignored_targets` is the same
+destructive-git parse as `git_wipes_worktree_targets`, limited to `clean` with `-x`, `-X` or
+`-d`, and `reset --hard`. It is judged from the SEEDED cwd, and `git_wipe_from_session_dir` is
+true only when the explicit-folder fact `git_wipes_x4_dir` is false, so `cd <root> && ...` and
+`git -C <root> ...` keep their ASK. `protect-bash.sh` denies it with a reason that names
+`git -C` as the way to state intent.
+
+**Scope left open.** A plain `git clean -f` (no -x/-X/-d) from an X4 folder still reaches no rule:
+it removes untracked, non-ignored files, of which a whitelist repo has none. Codex prefix rules
+cannot see the cwd, so the rule lives only in the hook (codex-rules.yaml row
+`git-wipe-from-session-dir`, hook_only).
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` `TestJQ1BareGitWipeFromAnX4SessionDirIsADeny`
+(one twin per clause: cwd outside, no cwd, no -x/-X/-d, dry run / unforced, soft reset, the
+explicit-folder form, a `cd` away) and `tools/x4validate/tests/test_x4guard_check.py`
+`test_JQ1_*` (end to end through protect-bash.sh). No verify-hook-tests mutant was added for the
+new line; the orchestrator may anchor one.
+
+## F149 — the `test-hooks.sh` 1/187 flake: 0 of 16 under synthetic load · **SCOPE (measured, open)** · confidence n/a
+
+**What was known.** Twice, under heavy load, one probe of 187 failed, and the probe was never
+recorded. `decide()` discarded the hook's stderr and exit code and read an EMPTY stdout as
+`allow`, so a hook that crashed looked exactly like one that allowed.
+
+**Instrument (shipped).** A failing `decide()` line now ends
+`[hook rc=N; stderr: <first 300 chars>]`. Counts, `EXPECT` and the `X4_DECIDE_DUMP` record are
+unchanged. Falsified on a scratch copy: a flipped expectation printed `[hook rc=0; stderr: ]`,
+and a missing hook printed `[hook rc=127; stderr: ... No such file or directory]`.
+
+**Reproduction attempt (MEASURED 2026-10-03).** 4 concurrent suite lanes, with `burn.py`
+running 24 busy-loop processes on 28 logical CPUs, and 3 other lanes' tests sharing the machine.
+16 runs completed (4 per lane), at 711-1187 s each against 126 s idle. Every run ended
+`186 passed, 1 failed`, and in all 16 the one failure was the identifier scan flagging 3 lines
+of the Plan 3 plan docs. That finding is pre-existing on master and fixed there in a791117, so
+it is not the flake. **0 of 16 reproduced it.** The 5th round was stopped unfinished: the
+orchestrator killed the burners because they held the machine at 100% CPU, which breaks the
+user's 80% rule. Any further hunt must stay within that rule: at most 8 idle-priority burners,
+at most 10 minutes per sample, and only when the machine is under 60% before the sample.
+
+**Classification:** decision-tree row 4 (NOT REPRODUCED). No fix. The instrument makes the next
+occurrence self-identifying. Recommended: tee every gate run's `test-hooks.sh` output to the
+scratchpad so that occurrence is kept.

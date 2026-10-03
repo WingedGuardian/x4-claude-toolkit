@@ -50,7 +50,7 @@ for _p in (HERE, HERE.parent / "claude-hooks"):         # rendered tree, then th
 import x4guard                     # noqa: E402  (sibling module; path set above)
 import patch_paths                 # noqa: E402
 
-BANNER = "X4 GUARDS LIVE (codex hooks v1) — every shell command and apply_patch is checked."
+BANNER = "X4 GUARDS LIVE (codex hooks v1) — shell commands and apply_patch are checked (input typed into a running shell is not)."
 EVENTS = {"session_start": "SessionStart", "pre_tool_use": "PreToolUse", "post_tool_use": "PostToolUse"}
 SHELL = "powershell" if sys.platform == "win32" else "bash"
 OP_KIND = {"add": "write", "update": "write", "move_to": "write", "delete": "delete", "move_from": "delete"}

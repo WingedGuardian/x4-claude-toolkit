@@ -60,17 +60,62 @@ for g in "${all_gates[@]}"; do
   run+=("$g")
 done
 
+# FULL PER-GATE LOGS + MACHINE STATE (GitHub issue #3). `cross_tool` once failed in a
+# release sweep and never reproduced; this runner kept only a short tail of its output and
+# nothing recorded memory or load, so the failure left nothing to read. Every attempted
+# gate's whole stdout+stderr now goes to <logdir>/<gate>.log, and <logdir>/system.txt gets
+# free memory and load at the start and at each failure. X4_GATE_LOG_DIR overrides the
+# default (a fresh temp dir); it is refused inside the game or reference tree.
+_under(){ # _under <path> <root>: is path inside (or equal to) root? Neither need exist.
+  local p r
+  p="$(realpath -m -- "$1" 2>/dev/null)" || return 1
+  r="$(realpath -m -- "$2" 2>/dev/null)" || return 1
+  p="$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')"; r="$(printf '%s' "$r" | tr '[:upper:]' '[:lower:]')"
+  case "$p/" in "$r"/*) return 0 ;; esac
+  return 1
+}
+if [ -n "${X4_GATE_LOG_DIR:-}" ]; then
+  for v in X4_GAME X4_REFERENCE; do
+    if [ -n "${!v:-}" ] && _under "$X4_GATE_LOG_DIR" "${!v}"; then
+      echo "REFUSING: X4_GATE_LOG_DIR ($X4_GATE_LOG_DIR) is inside $v (${!v}); gate logs never go there" >&2
+      exit 2
+    fi
+  done
+  logdir="$X4_GATE_LOG_DIR"
+  mkdir -p "$logdir" || { echo "REFUSING: cannot create X4_GATE_LOG_DIR $logdir" >&2; exit 2; }
+else
+  logdir="$(mktemp -d "${TMPDIR:-${TEMP:-/tmp}}/x4-gates.XXXXXX")" \
+    || { echo "REFUSING: cannot create a temp dir for the gate logs" >&2; exit 2; }
+fi
+# One spelling a reader can paste: the Windows form under Git Bash (pwd -W), else POSIX.
+logdir="$(cd "$logdir" && { pwd -W 2>/dev/null || pwd; })" || { echo "REFUSING: gate log dir vanished" >&2; exit 2; }
+sysstate(){ # sysstate <label>: append one machine-state block to system.txt
+  {
+    echo "=== $1 $(date '+%Y-%m-%dT%H:%M:%S%z')"
+    ma=""
+    [ -r /proc/meminfo ] && ma="$(awk '/^MemAvailable:/{print $2" kB"}' /proc/meminfo)"
+    [ -z "$ma" ] && [ -r /proc/meminfo ] && ma="$(awk '/^MemFree:/{print $2" kB (MemFree; no MemAvailable)"}' /proc/meminfo)"
+    echo "mem_available: ${ma:-unavailable (no /proc/meminfo)}"
+    if [ -r /proc/loadavg ]; then echo "load: $(cat /proc/loadavg)"; else echo "load: unavailable (no /proc/loadavg)"; fi
+    echo "cpus: $(nproc 2>/dev/null || echo unknown)"
+  } >> "$logdir/system.txt"
+}
+sysstate start
+
 echo "GATE RUN — mode=$mode — ${#all_gates[@]} gate(s) known"
+echo "GATE LOGS: $logdir"
 echo "=================================================================="
 pass=(); fail=(); cannot=()
 for g in "${run[@]}"; do
   # PYTHONDONTWRITEBYTECODE: a gate run must not leave a .pyc that a later run
   # could reuse against a same-second, same-size edit (see test_no_stale_bytecode).
-  out=$(PYTHONDONTWRITEBYTECODE=1 uv run python "gates/$g.py" 2>&1); rc=$?
+  PYTHONDONTWRITEBYTECODE=1 uv run python "gates/$g.py" > "$logdir/$g.log" 2>&1; rc=$?
+  out=$(cat "$logdir/$g.log")
   case $rc in
     0) pass+=("$g");   printf '  ok      %-26s\n' "$g" ;;
     2) cannot+=("$g"); printf '  CANNOT  %-26s %s\n' "$g" "$(echo "$out" | tail -1 | cut -c1-70)" ;;
     *) fail+=("$g");   printf '  FAIL    %-26s rc=%s\n' "$g" "$rc"
+       sysstate "FAIL $g rc=$rc"
        echo "$out" | tail -6 | sed 's/^/            /' ;;
   esac
 done
@@ -84,6 +129,7 @@ printf 'NOT ATTEMPTED %d  (buckets sum to %d of %d)\n' \
 [ ${#skip_slow[@]} -gt 0 ] && echo "  slow, use --all: ${skip_slow[*]}"
 [ ${#skip_mut[@]}  -gt 0 ] && echo "  MUTATING, run alone and announce it: ${skip_mut[*]}"
 [ ${#cannot[@]}    -gt 0 ] && echo "  could not run (missing baseline/fixture): ${cannot[*]}"
+echo "full output of every gate, and machine state: $logdir"
 
 [ ${#fail[@]} -gt 0 ] && exit 1
 [ ${#pass[@]} -eq 0 ] && { echo "NOTHING PASSED — this is not a green run." >&2; exit 2; }

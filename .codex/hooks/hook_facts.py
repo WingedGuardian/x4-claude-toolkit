@@ -2359,6 +2359,15 @@ def git_wipes_worktree_targets(seg):
     return _git_destructive(seg, {"clean", "reset"})
 
 
+def git_wipes_ignored_targets(seg):
+    """The subset of git_wipes_worktree_targets that reaches IGNORED files or whole untracked
+    directories: `clean` with -x, -X or -d, and `reset --hard` (Plan 3 decision J-Q1). In the
+    game-root repo `.gitignore` is a whitelist (`*`), so every untracked file there is ignored
+    and `git clean -fdx` removes the installation's own files. Judged from the SESSION cwd
+    (seeded) by `git_wipe_from_session_dir`, whose verdict is a DENY, never a prompt."""
+    return _git_destructive(seg, {"clean", "reset"}, deep=True)
+
+
 def git_discards_named_files(seg):
     """TARGETED destructive git: `checkout -- <path>`, `restore <path>`.
 
@@ -2371,7 +2380,7 @@ def git_discards_named_files(seg):
     return _git_destructive(seg, {"checkout", "restore"})
 
 
-def _git_destructive(seg, wanted):
+def _git_destructive(seg, wanted, deep=False):
     r"""The directory a destructive git subcommand would act on, or [].
 
     MEASURED 2026-09-04, and it is why this exists at all: **git ignores the
@@ -2477,6 +2486,11 @@ def _git_destructive(seg, wanted):
             return []
         hot = any(t.startswith("-") and not t.startswith("--") and "f" in t[1:]
                   for t in rest) or "--force" in rest
+        # deep (J-Q1): only a clean that reaches ignored files (-x / -X) or untracked
+        # directories (-d). A plain `clean -f` removes untracked NON-ignored files only.
+        if deep:
+            hot = hot and any(t.startswith("-") and not t.startswith("--")
+                              and set(t[1:]) & set("xXd") for t in rest)
     elif sub == "reset":
         hot = "--hard" in rest
     elif sub == "checkout":
@@ -3692,7 +3706,7 @@ def facts(payload: dict, roots: dict) -> dict:
 
     rm_t, copy_t, redir_t, mv_src = [], [], [], []
     sed_t, out_t, search_files = [], [], []
-    gitwipe_t, gitdiscard_t = [], []
+    gitwipe_t, gitdiscard_t, gitwipe_seed_t = [], [], []
     scoped_rm_t, mod_t = [], []
     search_seg, git_all = False, False
     for (s, c_cwd), prev, c_old in zip(seg_cwd, seg_prev, unseeded):
@@ -3720,6 +3734,9 @@ def facts(payload: dict, roots: dict) -> dict:
         # approval fatigue). MEASURED in the replay: 1 historical row, a probe harness.
         # The rule keeps exactly its pre-lane reach: an explicit `cd <root>` or `git -C`.
         gitwipe_t += prep(git_wipes_worktree_targets(s), c_old, c_old)
+        # ...and SEEDED for J-Q1's deny: the same wipe judged where the session runs. Its
+        # verdict is a deny with a reason, which reaches the agent and never the user.
+        gitwipe_seed_t += prep(git_wipes_ignored_targets(s), c_cwd, c_old)
         gitdiscard_t += prep(git_discards_named_files(s), c_cwd, c_old)
         search_seg = search_seg or searches(s)
         git_all = git_all or git_adds_everything(s)
@@ -3883,6 +3900,8 @@ def facts(payload: dict, roots: dict) -> dict:
                 if INVOKERS.search(b):
                     longjob = True
 
+    git_wipe_named = any(hit(gitwipe_t, k, conservative=True)
+                         for k in ("game", "profile", "mods", "toolkit", "reference"))
     return {
         "command": cmd,
         "timeout": timeout,
@@ -3944,8 +3963,11 @@ def facts(payload: dict, roots: dict) -> dict:
         # so x4lock cannot cover this and the hook is the only layer that sees it.
         # `conservative` for the same reason the delete rules use it: there is nothing
         # behind this one either.
-        "git_wipes_x4_dir": any(
-            hit(gitwipe_t, k, conservative=True)
+        "git_wipes_x4_dir": git_wipe_named,
+        # J-Q1 (Plan 3): the BARE form from an X4 session dir, which the ask above cannot
+        # see (unseeded). Exclusive of it: a command that names the folder keeps its ask.
+        "git_wipe_from_session_dir": (not git_wipe_named) and any(
+            hit(gitwipe_seed_t, k, conservative=True)
             for k in ("game", "profile", "mods", "toolkit", "reference")),
         "git_discards_x4_files": any(
             hit(gitdiscard_t, k, conservative=True)

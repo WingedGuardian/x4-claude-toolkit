@@ -11,7 +11,7 @@ heavy lifting so only structured findings + targeted reads enter context — nev
 mod's XML.
 
 Run tools via uv from the tool dir:
-`cd $X4_TOOLKIT/tools/x4validate && uv run <tool> <args>`
+`cd {{TOOLKIT}}/tools/x4validate && uv run <tool> <args>`
 (tools: `x4compat`, `x4xref`, `x4stats`, `x4similar`; all read-only, no game changes.)
 
 ## Pipeline (run in order; stop early if the question is narrow)

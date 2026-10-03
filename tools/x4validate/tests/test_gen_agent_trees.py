@@ -80,7 +80,11 @@ def test_every_skill_and_settings_is_generated():
 
 
 def test_tokens_are_rendered_everywhere():
-    leaks = [rel for rel, text in load().generate(REPO).items() if "{{" in text]
+    # ONE exemption (Plan 3 lane J): `{{TOOLKIT}}` in `.agents/skills/` is left for the
+    # INSTALLER to render per OS. Anything else with `{{` -- any other token, or that token
+    # anywhere else -- is a leak.
+    leaks = [rel for rel, text in load().generate(REPO).items()
+             if "{{" in (text.replace("{{TOOLKIT}}", "") if rel.startswith(".agents/skills/") else text)]
     assert leaks == []
 
 
@@ -623,13 +627,19 @@ def test_codex_skills_mirror_the_claude_skills_one_to_one():
     assert cl == cx and len(cx) >= 22          # 11 SKILL.md + 11 cli reference files
 
 
-def test_codex_skills_render_the_toolkit_token_for_codex():
-    # DECISIONS #2: the generated Codex tree carries `$X4_TOOLKIT`; install.ps1 rewrites it to
-    # `$env:X4_TOOLKIT`, install.sh keeps it. The in-repo copy cannot know the OS.
+def test_codex_skills_KEEP_the_toolkit_token_for_the_installer():
+    # Plan 2 user decision #2: the generated Codex/generic skills keep `{{TOOLKIT}}` and the
+    # INSTALLER renders it per OS (`$env:X4_TOOLKIT` on Windows, `$X4_TOOLKIT` elsewhere). The
+    # in-repo copy cannot know the OS. Lane J (Plan 3): the generator used to render it to
+    # `$X4_TOOLKIT` itself, so both installers' rewrite found no token and never fired.
     out = load().generate(REPO)
     cx = {p: t for p, t in out.items() if p.startswith(".agents/skills/")}
-    assert not any("CLAUDE_PROJECT_DIR" in t or "{{" in t for t in cx.values())
-    assert sum("$X4_TOOLKIT/tools/x4validate" in t for t in cx.values()) == _token_skills()
+    assert not any("CLAUDE_PROJECT_DIR" in t for t in cx.values())
+    assert not any("$X4_TOOLKIT" in t for t in cx.values()), \
+        [p for p, t in cx.items() if "$X4_TOOLKIT" in t]
+    assert sum("{{TOOLKIT}}/tools/x4validate" in t for t in cx.values()) == _token_skills()
+    # the only placeholder a Codex skill may carry is the one the installers render
+    assert {m for t in cx.values() for m in re.findall(r"\{\{[A-Z_]+\}\}", t)} == {"{{TOOLKIT}}"}
 
 
 def test_claude_skills_are_unchanged_by_the_codex_target():
@@ -652,3 +662,14 @@ def test_TWIN_a_hand_edited_codex_skill_is_STALE(fresh_copy):
     p = root / ".agents/skills/x4-debug/SKILL.md"
     p.write_bytes(p.read_bytes() + b"\nextra\n")
     assert g.problems(exp, root) == ["STALE    .agents/skills/x4-debug/SKILL.md"]
+
+
+def test_J4_every_x4guard_path_agents_md_names_ships_with_the_codex_target():
+    """--agent codex installs AGENTS.md .codex .agents -- not .claude (test_F8 in
+    test_install_over_existing.py pins `.claude/hooks` ABSENT for --agent codex). A guard path
+    AGENTS.md tells Codex to run must be in that set."""
+    text = load().generate(REPO)["AGENTS.md"]
+    cmds = [l.strip() for l in text.splitlines() if l.strip().startswith("python ") and "x4guard.py" in l]
+    assert len(cmds) >= 3, cmds
+    for l in cmds:
+        assert l.split()[1].startswith(".codex/hooks/"), l

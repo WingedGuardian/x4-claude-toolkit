@@ -44,10 +44,10 @@ jobs:
   tests:
     name: tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Ubuntu is INFORMATIONAL, not a gate. The toolkit targets Windows (that is where X4
-    # lives) and the suite is verified there; POSIX behaviour has never been measured, so
-    # gating on it would be asserting something unverified. It runs so the answer becomes
-    # known instead of assumed — promote it to a gate once it is green on its own merits.
+    # Both legs GATE: ubuntu was promoted on 2026-09-09 (the matrix note below records the run
+    # and why). `continue-on-error` stays keyed on `experimental` so demoting a leg is one
+    # visible edit. Ubuntu is the only POSIX evidence: Linux/macOS support is still "best
+    # effort, not device-tested" (README), so a green ubuntu leg is not a device test.
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false

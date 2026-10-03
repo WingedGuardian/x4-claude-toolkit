@@ -28,10 +28,20 @@ def test_banner_is_one_constant_and_the_adapter_prints_it():
     assert "parts = [BANNER]" in adapter
 
 
-@pytest.mark.xfail(strict=True, reason="lane A addendum pending: agent/instructions/codex.md must carry "
-                                       "the banner paragraph (lane B Task 11 hand-off text)")
 def test_banner_text_is_in_the_codex_addendum():
     adapter = (REPO / "agent" / "guards" / "adapters" / "codex.py").read_text(encoding="utf-8")
     addendum = (REPO / "agent" / "instructions" / "codex.md").read_text(encoding="utf-8")
     banner = re.search(r'^BANNER = "([^"]+)"', adapter, re.M).group(1)
     assert banner.split(" —")[0] in addendum      # the model is told to look for EXACTLY what is printed
+
+
+def test_J_Q2_the_banner_does_not_claim_EVERY_shell_command_is_checked():
+    """Plan 3 decision J-Q2: input typed into a running shell (`write_stdin`) and a shell
+    `workdir` reach no guard (MEASURED, codex-0160.md), so 'every shell command ... is checked'
+    over-claims. The pinned prefix stays; the tail names what is NOT checked."""
+    adapter = (REPO / "agent" / "guards" / "adapters" / "codex.py").read_text(encoding="utf-8")
+    banner = re.search(r'^BANNER = "([^"]+)"', adapter, re.M).group(1)
+    assert banner.startswith("X4 GUARDS LIVE (codex hooks v1) — "), banner
+    assert "every" not in banner.lower(), banner
+    assert "running shell" in banner and "not" in banner, banner
+
