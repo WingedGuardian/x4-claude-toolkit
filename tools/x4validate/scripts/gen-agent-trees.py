@@ -438,7 +438,7 @@ def render_codex_tree(src: Path) -> dict[str, str]:
 OWNED += (".opencode/hooks/", ".opencode/plugins/x4guard.js", ".opencode/skills/",
           ".opencode/X4-OPENCODE.md")
 OPENCODE_ADAPTERS: dict[str, str] = {"patch_paths.py": "patch_paths.py", "codex.py": "codex_adapter.py",
-                                     "opencode.py": "opencode_adapter.py"}
+                                     "opencode.py": "opencode_adapter.py", "opencode_config.py": "opencode_config.py"}
 OPENCODE_ADDENDUM = ".opencode/X4-OPENCODE.md"
 
 

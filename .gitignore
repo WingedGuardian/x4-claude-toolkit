@@ -113,3 +113,7 @@ release/nexus/
 # so deploy and the installers render it per install; the adapter's unknown-tool log is local.
 /.codex/hooks.json
 /.codex/x4-unknown-tools.log
+
+# OpenCode (Plan 3 lane L): the permission deny rules name this machine's absolute roots,
+# so the installers render them per install (.opencode/hooks/opencode_config.py write).
+/.opencode/opencode.jsonc
