@@ -602,6 +602,9 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     root = Path(__file__).resolve().parents[1]
 
+    def say(msg: str) -> None:
+        print(msg, flush=True)            # progress is visible while the run is still going
+
     def refuse(msg: str) -> int:
         sys.stdout.write(f"x4guard conformance: CANNOT EVALUATE: {msg}\n")
         return RC_ERROR
@@ -621,7 +624,7 @@ def main(argv=None) -> int:
         cmd = adapter_command(prof, adapter_argv, root, {"hook": "<hook>"})
     except ProfileError as e:
         return refuse(str(e))
-    sys.stdout.write("adapter: " + " ".join(shlex.quote(c) for c in cmd) + "\n")
+    say("adapter: " + " ".join(shlex.quote(c) for c in cmd))
     for kind, case in prof["cases"].items():
         if case["payload"] != "row" and not (Path(prof["_dir"]) / case["payload"]).is_file():
             return refuse(f"cases.{kind}: payload template not found: {Path(prof['_dir']) / case['payload']}")
@@ -634,6 +637,8 @@ def main(argv=None) -> int:
             except (OSError, ProfileError) as e:
                 return refuse(str(e))
         else:
+            say("dumping the guard corpus (scripts/test-hooks.sh; several minutes; a run that is KILLED "
+                "leaves .test-sandbox/conf-<pid> behind -- delete it)")
             try:
                 rows, sbx = dump_cases(root)
             except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
@@ -642,8 +647,8 @@ def main(argv=None) -> int:
             r["kind"] = r.get("kind") or classify(r)
         extras = [] if a.no_extras else extra_rows(root, rows)
         if not a.no_extras:
-            sys.stdout.write(f"extras: {len(extras)} neutral case(s)"
-                             + ("" if extras else " -- none: no case row names a sandbox toolkit") + "\n")
+            say(f"extras: {len(extras)} neutral case(s)"
+                + ("" if extras else " -- none: no case row names a sandbox toolkit"))
         for r in extras:                  # the reference CONTROL: the guards must still say `expect`
             got = reference_verdict(r, root)
             if got != r["expect"]:
@@ -651,6 +656,9 @@ def main(argv=None) -> int:
                               f"{r['expect']} -- the guard policy changed or the case is wrong; "
                               "fix scripts/conformance-extra-cases.json, never the adapter")
         rows = rows + extras
+        n_todo = sum((r.get("kind") or classify(r)) in prof["cases"] for r in rows)
+        say(f"replaying {n_todo} case(s) through the adapter, {a.workers} at a time (each case runs the guards "
+            "twice and the adapter once; this is the slow part)")
         try:
             results = replay(rows, prof, adapter_argv, root, workers=a.workers)
         except ProfileError as e:
@@ -662,6 +670,10 @@ def main(argv=None) -> int:
         n_other = len(rows) - len(results)
         if n_other:
             buckets["no_native_analogue"] = n_other
+            tools = sorted({str((r.get("payload") or {}).get("tool_name")) for r in rows
+                            if (r.get("kind") or classify(r)) not in prof["cases"]})
+            say(f"not replayed: {n_other} case(s) with no shell command or file path for an adapter to see "
+                f"(tools: {', '.join(tools)}), or of a kind the profile declares unsupported")
         rc, text = summarise(results, len(rows), buckets, prof.get("unsupported") or {}, a.min_cases)
         sys.stdout.write(text + "\n")
         return rc

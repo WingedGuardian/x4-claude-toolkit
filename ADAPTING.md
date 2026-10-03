@@ -96,13 +96,16 @@ It prints ONE line of JSON and exits 0 for every verdict (READ: `agent/guards/cl
 
 Exit 2 means a usage error (a wrong option). The rules for calling it:
 
-- **Run it in your agent's working directory** -- the `cwd` your agent reports for the call, not
-  wherever your adapter happens to be. A relative path, and a relative operand inside a shell
-  command, are judged from the process's own working directory (READ: x4guard resolves
-  `--path` with `abspath` and puts `os.getcwd()` into the shell payload). Set the subprocess
-  `cwd`; do not rewrite the paths yourself.
+- **Run it in the call's working directory** -- the directory your agent's payload says the call
+  runs in (often a field named `cwd` or `workdir`), NOT the directory your hook process was
+  started in; many agents start hooks somewhere else. A relative path, and a relative operand
+  inside a shell command, are judged from x4guard's own working directory (READ: x4guard
+  resolves `--path` with `abspath` and puts `os.getcwd()` into the shell payload). Set the
+  subprocess `cwd`; do not rewrite the paths yourself.
 - **`--shell` names the shell that will EXECUTE the command**, not what your agent calls the
   tool. If you cannot tell, measure it (section 1, SHELL ROUTING).
+- **`--kind write`** for any tool that creates a file OR changes an existing one (an edit is a
+  write).
 - **`--kind delete`** for anything that removes or moves a file away; x4guard judges it as the
   stricter of a write and an `rm -rf` of that path. A move is a delete of the source plus a
   write of the destination. A tool that touches several files is several checks; the worst
@@ -111,14 +114,23 @@ Exit 2 means a usage error (a wrong option). The rules for calling it:
   always arrives as `decision: "deny"`. Render it as a deny -- or as a question to the user if
   your agent can MEASURABLY ask -- and never as an allow.
 - **Treat everything unexpected as an inert deny**: a non-zero exit, empty output, output that is
-  not JSON, a `v` other than 1, or a timeout.
+  not JSON, a `v` other than 1, or a timeout. The same for a tool name, field or shell your
+  adapter does not recognise -- unless your capability report MEASURED that tool as unable to
+  write files or run commands (then let it through, as Claude Code lets unhooked tools through).
 - **Time budget.** `X4_GUARD_TIMEOUT_S` is x4guard's budget for one check. Its default value is
-  stated in the docstring of x4guard itself and deliberately not restated here. The worst case wall clock is
-  that budget plus `KILL_WAIT_S` plus `DRAIN_GRACE_S` (constants in the same file). Your own
-  timeout must sit ABOVE that worst case and BELOW your agent's hook timeout. If your agent's
-  hook timeout is too short for that, lower `X4_GUARD_TIMEOUT_S` for the check, and still
-  enforce your own deadline below the agent's: a check that has not answered in time is an
-  inert deny that YOU print.
+  deliberately not restated here, because it can change; print the three numbers that matter,
+  from the toolkit folder, with:
+
+  ```
+  python -c "import sys; sys.path.insert(0, '.claude/hooks'); import x4guard as g; print(g.TIMEOUT_S, g.KILL_WAIT_S, g.DRAIN_GRACE_S)"
+  ```
+
+  The worst case wall clock of one check is the first plus the other two. Your own timeout must
+  sit ABOVE that worst case and BELOW your agent's hook timeout. If your agent's hook timeout is
+  too short for that, set
+  `X4_GUARD_TIMEOUT_S` lower in the environment you run x4guard with, and still enforce your
+  own deadline below the agent's: a check that has not answered in time is an inert deny that
+  YOU print.
 - **Finding x4guard.py.** Locate it relative to your adapter's own file, or from a path the
   install configured. Do not build it from `X4_TOOLKIT` alone: under `x4guard conformance` that
   variable names a SANDBOX toolkit with an empty hooks folder, and in an install it may be unset.
@@ -127,9 +139,13 @@ Exit 2 means a usage error (a wrong option). The rules for calling it:
 - **`check` has no side effects**: it never makes the backup that the Claude hooks make before an
   edit. An adapter that wants backups runs `.claude/hooks/backup-before-edit.sh` itself after an
   allow, as the Codex adapter does.
-- **Context size.** Bound any `reason` or `context` you inject to `X4_HOOK_MAX_CHARS` characters
-  (its default is in `.claude/hooks/_x4-env.sh`), keeping the FIRST part: the directive comes first.
-  If your agent reads only one line, flatten newlines to spaces.
+- **Context size.** Bound any `reason` or `context` you inject to `X4_HOOK_MAX_CHARS` characters,
+  keeping the FIRST part: the directive comes first. Print its value, from the toolkit folder,
+  with `bash -c '. .claude/hooks/_x4-env.sh; echo "$X4_HOOK_MAX_CHARS"'`. If your agent reads
+  only one line, flatten newlines to spaces.
+- **Characters.** Guard reasons contain non-ASCII text (dashes, arrows). Emit them in the
+  encoding your agent reads hook output in; if you cannot be sure, replace non-ASCII characters.
+  MEASURED on the toy agent: one em dash crashed the agent's own console printing.
 
 Rendering -- from x4guard's decision to your agent's native answer:
 
@@ -235,8 +251,8 @@ Field by field:
 - `command`: your adapter's argv. Placeholders: `{TOOLKIT}` (the toolkit running the engine),
   `{HOOKS}` (its `.claude/hooks`), `{PYTHON}` (the engine's interpreter), `{BASH}`, `{PWSH}`.
   A relative path in it is relative to the directory the adapter runs in (see `run_cwd`), so use
-  an absolute path or pass the command after `--` instead. Anything after `--` on the command
-  line replaces `command`.
+  an absolute path or pass the command after `--` instead (forward slashes work on Windows too).
+  Anything after `--` on the command line replaces `command`.
 - `requires`: programs that must exist, or the run stops with exit 2.
 - `run_cwd`: `"neutral"` (the default, and what you want) runs your adapter in an EMPTY scratch
   folder, exactly like an agent that starts hooks somewhere unrelated. An adapter that ignores
@@ -274,7 +290,17 @@ Your adapter is supported when, and only when, all four of these hold:
 python .claude/hooks/x4guard.py conformance --profile path/to/profile.json -- python path/to/adapter.py
 ```
 
-It dumps the corpus fresh (a few minutes), replays it, and prints every disagreement by name.
+It dumps the corpus fresh, replays it, and prints every disagreement by name. **It is slow**:
+the dump alone takes several minutes, and every case then runs the guards twice and your
+adapter once -- budget tens of minutes on Windows (MEASURED: one cold run of a Python adapter
+took about 40 minutes there), so run it in the background or with a long timeout, one at a
+time. Progress lines appear as it goes; the verdict comes at the end. A run that is killed
+leaves its sandbox in the toolkit's `.test-sandbox/conf-<number>/` folder: delete that folder.
+
+The summary counts cases `no_native_analogue`: guard cases that carry no shell command and no
+file path (searches such as Grep and Glob), which no adapter could be shown. They are not your
+gap. A kind your profile declares `unsupported` is -- and it prints a GAP line.
+
 Exit codes: **0** every replayed case agrees and at least `--min-cases` (default 80) were
 replayed; **1** at least one disagreement or unreadable answer -- fix the ADAPTER; **2** it could
 not evaluate (a bad profile, a missing program, the corpus could not be built, or a reference
@@ -284,6 +310,11 @@ and a pass with a GAP line is a partial pass.
 **(b) A live canary in the real agent.** In a scratch copy, ask your agent to write into a decoy
 `reference/` file: the write must be blocked and the model must have seen the reason. Then the
 control: the same write into `dev/` must succeed. A block with no working control proves nothing.
+The guards find `reference/` and the game install through environment variables, so start your
+agent with them pointing at the decoy: `X4_TOOLKIT` at the scratch folder holding `dev/` and
+`reference/`, `X4_REFERENCE` at that `reference/`, and `X4_GAME` at a SEPARATE empty folder (a
+`dev/` inside `X4_GAME` is part of the game install, and is refused too). With none of them set,
+both writes are allowed (MEASURED on the toy agent) -- which is why the control matters.
 
 **(c) x4doctor shows the layer live.** `python scripts/x4doctor.py` reports per agent target. For
 an agent it does not know yet it reports no target for you: say so plainly. That is a gap until a
