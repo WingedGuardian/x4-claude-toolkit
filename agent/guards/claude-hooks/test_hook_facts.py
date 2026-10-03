@@ -3825,6 +3825,132 @@ class TestHK1FailsClosedWithoutPowerShell(unittest.TestCase):
                 os.environ["X4_PWSH"] = saved
 
 
+def FC(command, cwd, **kw):
+    """facts() with the payload's TOP-LEVEL `cwd`, where Claude Code and Codex put it."""
+    payload = {"tool_input": {"command": command}}
+    if cwd is not _NO_CWD:
+        payload["cwd"] = cwd
+    return H.facts(payload, ROOTS)
+
+
+_NO_CWD = object()
+#: The folder that HOLDS reference/ in these fixtures (TOOLKIT), and one that does not.
+_REL_DEL = D + " -f reference/libraries/w.xml"
+_REL_WRITE = "echo x > reference/libraries/w.xml"
+_ELSEWHERE = "C:/work/other"
+
+
+class TestRelativeOperandsResolveAgainstThePayloadCwd(unittest.TestCase):
+    """Lane F (2026-10-02). facts() called cwd_track(c) with no base, so a RELATIVE operand
+    with no preceding `cd` resolved to "" and reached NO path rule. MEASURED on the deployed
+    guard, cwd = the folder holding reference/: `rm -f reference/...` and `echo x >
+    reference/...` were ALLOW while the absolute spelling denied; a live Codex run
+    overwrote the file. The payload's `cwd` is the directory the shell starts in."""
+
+    def test_a_relative_delete_and_write_resolve_against_the_payload_cwd(self):
+        self.assertTrue(FC(_REL_DEL, TOOLKIT)["rm_targets_reference"])
+        self.assertTrue(FC(_REL_WRITE, TOOLKIT)["writes_reference"])
+        # Windows-spelled, as Claude Code sends it on Windows.
+        self.assertTrue(FC(_REL_DEL, TOOLKIT.replace("/", BS))["rm_targets_reference"])
+
+    def test_the_absolute_and_cd_spellings_still_deny(self):
+        self.assertTrue(FC(D + " -f " + REF + "/libraries/w.xml", TOOLKIT)["rm_targets_reference"])
+        self.assertTrue(FC("cd " + TOOLKIT + " && " + _REL_DEL, _NO_CWD)["rm_targets_reference"])
+
+    def test_TWIN_an_unrelated_cwd_resolves_elsewhere(self):
+        self.assertFalse(FC(_REL_DEL, _ELSEWHERE)["rm_targets_reference"])
+        self.assertFalse(FC(_REL_WRITE, _ELSEWHERE)["writes_reference"])
+
+    def test_TWIN_no_relative_or_garbage_cwd_is_unchanged_from_before(self):
+        for cwd in (_NO_CWD, "", None, "Modding/X4", "::", 5, ["C:/x"], {"a": 1}):
+            with self.subTest(cwd=cwd):
+                f = FC(_REL_DEL, cwd)
+                self.assertFalse(f["rm_targets_reference"])
+                self.assertFalse(FC(_REL_WRITE, cwd)["writes_reference"])
+
+    def test_TWIN_a_cd_wins_over_the_payload_cwd(self):
+        self.assertFalse(FC("cd " + _ELSEWHERE + " && " + _REL_DEL, TOOLKIT)["rm_targets_reference"])
+        # ...and a relative cd is joined ONTO the payload cwd.
+        self.assertTrue(FC("cd dev && " + D + " -f ../reference/libraries/w.xml", TOOLKIT)
+                        ["rm_targets_reference"])
+
+    def test_a_carrier_runs_in_the_session_cwd_when_nothing_changes_directory(self):
+        self.assertTrue(FC("bash -c '" + _REL_DEL + "'", TOOLKIT)["rm_targets_reference"])
+
+    def test_TWIN_a_carrier_after_a_directory_change_is_not_seeded(self):
+        """A carried command is walked on its own and cannot see the `cd` around it, so
+        after any directory change it keeps the old "unknowable" -- never the session cwd,
+        which is no longer where it runs. One case per clause of the directory-change test."""
+        for move in ("cd " + _ELSEWHERE, "pushd " + _ELSEWHERE, "popd"):
+            with self.subTest(move=move):
+                self.assertFalse(FC(move + " && bash -c '" + _REL_DEL + "'", TOOLKIT)
+                                 ["rm_targets_reference"])
+
+
+class TestTheSeedIsNarrowedWhereTheReplayFoundFalsePositives(unittest.TestCase):
+    """Lane F's history replay (OLD vs NEW per command, each with its own transcript cwd)
+    found the seed firing on work that touched no protected file. Each narrowing below is
+    pinned in BOTH directions: the false positive stays gone, the real case still fires."""
+
+    def test_an_unresolved_cd_from_the_seed_is_unknowable(self):
+        """`cd "$X4_TOOLKIT" && sed -i ... scripts/x` from the game root read as a sed -i of
+        the GAME (hard deny): the unresolved target was joined onto the seed."""
+        self.assertFalse(FC("cd \"$NOPE\" && sed -i s/a/b/ scripts/x.sh", GAME)
+                         ["sed_i_in_game_or_profile"])
+        self.assertFalse(FC("cd \"$NOPE\" && " + D + " -rf extensions", GAME)["rm_in_x4_dir"])
+
+    def test_TWIN_after_an_absolute_cd_the_sticky_join_stands(self):
+        """The 2026-09-02 rule: `cd <game> && cd "$NOPE" && rm -rf extensions` stays under
+        the root we last knew about -- with or without a session seed."""
+        cmd = "cd \"" + GAME + "\" && cd \"$NOPE\" && " + D + " -rf extensions"
+        self.assertTrue(FC(cmd, _ELSEWHERE)["rm_in_x4_dir"])
+        self.assertTrue(FC(cmd, _NO_CWD)["rm_in_x4_dir"])
+
+    def test_TWIN_an_unresolved_but_absolute_cd_target_is_joined(self):
+        self.assertTrue(FC("cd \"" + GAME + "/$SUB\" && " + D + " -rf extensions", _ELSEWHERE)
+                        ["rm_in_x4_dir"])
+
+    def test_popd_restores_whether_the_directory_is_the_seed(self):
+        cmd = ("pushd \"" + GAME + "/extensions\" && popd && cd \"$NOPE\" && "
+               + D + " -rf extensions")
+        self.assertFalse(FC(cmd, GAME)["rm_in_x4_dir"])
+
+    def test_the_bare_python_rule_keeps_its_own_base(self):
+        """`seeded` is for facts()'s path rules only; the bare-python rule's stand-in base
+        keeps its pre-lane join (an unresolved cd from a toolkit cwd still counts)."""
+        self.assertTrue(FC("cd \"$NOPE\" && python -m pytest -q", TOOLKIT + "/tools/x4validate")
+                        ["bare_python_on_project_code"])
+
+    def test_parse_debris_is_not_joined_onto_the_seed(self):
+        """`2>/dev/null` read as a sed -i target and an escaped quote as a path, both under
+        the game root -- hard denies on probe harnesses."""
+        self.assertFalse(FC("sed -i s/a/b/ /dev/null 2>/dev/null", GAME)["sed_i_in_game_or_profile"])
+        self.assertFalse(FC("sed -i s/a/b/ " + BS + DQ + "f.xml" + BS + DQ, GAME)
+                         ["sed_i_in_game_or_profile"])
+
+    def test_TWIN_a_clean_relative_operand_from_the_seed_still_fires(self):
+        self.assertTrue(FC("sed -i s/a/b/ libraries/x.xml", GAME)["sed_i_in_game_or_profile"])
+        self.assertTrue(FC("echo x > notes.txt", GAME)["redirect_truncate_into_game_or_profile"])
+
+    def test_a_windows_device_name_is_not_a_file_in_the_directory(self):
+        self.assertFalse(FC("echo x > nul", GAME)["redirect_truncate_into_game_or_profile"])
+        self.assertFalse(FC("echo x > NUL:", GAME)["redirect_truncate_into_game_or_profile"])
+
+    def test_git_wipe_does_not_ask_from_the_seed_alone(self):
+        """An ASK outside the profile is a new prompt (user, 2026-10-02): `git clean -fdx`
+        names no path, so with the seed every one from the game root would ask."""
+        self.assertFalse(FC("git clean -fdx", GAME)["git_wipes_x4_dir"])
+        self.assertTrue(FC("cd \"" + GAME + "\" && git clean -fdx", _ELSEWHERE)["git_wipes_x4_dir"])
+
+    def test_an_unknown_cmdlet_does_not_ask_from_the_seed_alone(self):
+        """ps_translate's `x4-unknown-cmdlet` ends in an ASK; its relative arguments are not
+        known to be paths (2 historical rows: a user-defined PowerShell function)."""
+        self.assertFalse(FC("x4-unknown-cmdlet Copy-Thing libraries/x.xml", GAME)
+                         ["carrier_untranslated"])
+        self.assertTrue(FC("x4-unknown-cmdlet Copy-Thing \"" + GAME + "/libraries/x.xml\"", _ELSEWHERE)
+                        ["carrier_untranslated"])
+
+
 def load_tests(loader, standard_tests, pattern):
     """unittest.main() collects TestCase SUBCLASSES ONLY, so every module-level
     `def test_*` in this file was invisible to it.

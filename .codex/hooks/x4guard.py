@@ -130,8 +130,11 @@ def resolve_bash() -> tuple[str | None, str | None]:
 
 def guard_payload(kind: str, shell: str | None, command: str | None, path: str | None) -> dict:
     if kind == "shell":
+        # `cwd` at the TOP level, where Claude Code and Codex put it: a relative operand is judged
+        # from the caller's directory, so `check` and the hooks agree (lane F). The Codex adapter
+        # has already entered the payload's cwd, so this is the Codex session cwd too.
         return {"tool_name": "PowerShell" if shell == "powershell" else "Bash",
-                "tool_input": {"command": command}}
+                "tool_input": {"command": command}, "cwd": os.getcwd()}
     return {"tool_name": "Write", "tool_input": {"file_path": path, "content": ""}}
 
 
