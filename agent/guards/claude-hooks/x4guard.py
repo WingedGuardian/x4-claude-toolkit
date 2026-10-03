@@ -177,9 +177,10 @@ def _failure_detail(out: bytes, err: bytes) -> str | None:
 
 
 def _deployed() -> bool:
-    """A deployed copy (.claude/hooks for Claude Code, .codex/hooks for Codex) finds its roots
-    through _x4-env.sh (HOOK_DIR/../..); any other copy needs X4_TOOLKIT."""
-    return HERE.name == "hooks" and HERE.parent.name in (".claude", ".codex")
+    """A deployed copy (.claude/hooks for Claude Code, .codex/hooks for Codex, .opencode/hooks
+    for OpenCode) finds its roots through _x4-env.sh (HOOK_DIR/../..); any other copy needs
+    X4_TOOLKIT."""
+    return HERE.name == "hooks" and HERE.parent.name in (".claude", ".codex", ".opencode")
 
 
 def run_guard(script: str, payload: dict, deadline: float | None = None) -> dict:
@@ -192,7 +193,7 @@ def run_guard(script: str, payload: dict, deadline: float | None = None) -> dict
     if not target.is_file():
         return _inert(f"guard script missing: {script}", guards)
     if not _deployed() and not os.environ.get("X4_TOOLKIT"):
-        return _inert(f"this copy is not under .claude/hooks or .codex/hooks and X4_TOOLKIT is unset, so the guard "
+        return _inert(f"this copy is not under .claude/hooks, .codex/hooks or .opencode/hooks and X4_TOOLKIT is unset, so the guard "
                       f"cannot find the configured roots; run the deployed .claude/hooks/x4guard.py", guards)
     bash, why = resolve_bash()
     if not bash:

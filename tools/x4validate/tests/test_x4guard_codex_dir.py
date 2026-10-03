@@ -44,7 +44,15 @@ def test_TWIN_claude_hooks_still_runs(tmp_path, env_without_toolkit):
     assert not check(env_without_toolkit, claude_hooks / "x4guard.py")["inert"]
 
 
-@pytest.mark.parametrize("where", [("x", "hooks"), (".codex", "guards"), (".codexx", "hooks")])
+def test_runs_when_deployed_under_opencode_hooks(tmp_path, env_without_toolkit):
+    oc_hooks = tmp_path / "root" / ".opencode" / "hooks"
+    shutil.copytree(GUARDS, oc_hooks)
+    v = check(env_without_toolkit, oc_hooks / "x4guard.py")
+    assert not v["inert"] and v["decision"] == "allow", v["reason"]
+
+
+@pytest.mark.parametrize("where", [("x", "hooks"), (".codex", "guards"), (".codexx", "hooks"),
+                                   (".opencode", "guards"), (".opencodex", "hooks")])
 def test_TWIN_other_dir_without_toolkit_still_inert(tmp_path, env_without_toolkit, where):
     lone = tmp_path.joinpath(*where)
     shutil.copytree(GUARDS, lone)
