@@ -28,7 +28,7 @@ dropping the defect that let this drift live:
     reads again. Any non-identical row is rc 1.
 
 THE POPULATION is what the game-root repository's own `.gitignore` whitelists as the
-deployment: `settings.json`, the two `.example` files, and everything under `hooks/`,
+deployment: `settings.json`, `settings.local.json.example`, and everything under `hooks/`,
 `skills/`, `agents/`, `commands/`. Per-machine files (install.sh's `X4_KEEP_LOCAL`:
 `x4-paths.env`, `settings.local.json`, `backups/`) are outside it by construction, and
 caches and editor backups are excluded explicitly.
@@ -59,7 +59,9 @@ from x4validate import _paths  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 #: The deployment, as the game-root repository's `.gitignore` whitelists it.
-TOP_FILES = ("settings.json", "settings.local.json.example", "x4-paths.env.example")
+#: `x4-paths.env.example` left in Plan 3 lane I: it lives at the toolkit root now, beside
+#: the `x4-paths.env` 4.x reads, so a game root's `.claude/` no longer carries it.
+TOP_FILES = ("settings.json", "settings.local.json.example")
 SUBTREES = ("hooks", "skills", "agents", "commands")
 
 #: Never part of a deployment, wherever they appear.

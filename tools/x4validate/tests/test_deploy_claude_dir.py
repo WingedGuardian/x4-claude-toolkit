@@ -196,11 +196,58 @@ def test_a_file_only_in_the_destination_is_REPORTED_never_deleted(repo, dest):
 
 
 def test_per_machine_files_are_never_touched(repo, dest):
+    """settings.local.json is per-machine and never in the plan. (The 3.x x4-paths.env is
+    the one exception, and it is MOVED, never edited: the rows below.)"""
     _commit(repo, "settings.json", b"{}\n")
-    (dest / "x4-paths.env").write_bytes(b"X4_GAME=here\n")
+    (dest / "settings.local.json").write_bytes(b"{\"mine\": 1}\n")
     assert dep.main(["--repo", str(repo), "--dest", str(dest), "--apply"]) == 0
-    assert (dest / "x4-paths.env").read_bytes() == b"X4_GAME=here\n"
-    assert "x4-paths.env" not in _kinds(dep.plan(repo, dest))
+    assert (dest / "settings.local.json").read_bytes() == b"{\"mine\": 1}\n"
+    assert "settings.local.json" not in _kinds(dep.plan(repo, dest))
+
+
+# --- Plan 3 lane I: a game root's 3.x path config is MOVED to the root ---------------- #
+
+def test_deploy_plans_a_MIGRATE_for_a_3x_config_and_never_an_update(repo, dest):
+    _commit(repo, "settings.json", b"{}\n")
+    body = b'X4_GAME="here"\nX4_NEXUS_KEY="secret"\n'
+    (dest / "x4-paths.env").write_bytes(body)
+    acts = [a for a in dep.plan(repo, dest) if "x4-paths.env" in a.name]
+    assert [a.kind for a in acts] == [dep.MIGRATE], acts
+    assert b"secret" not in acts[0].reason.encode()
+    assert dep.main(["--repo", str(repo), "--dest", str(dest)]) == 0        # dry run
+    assert (dest / "x4-paths.env").read_bytes() == body
+    assert not (dest.parent / "x4-paths.env").exists()
+    assert dep.main(["--repo", str(repo), "--dest", str(dest), "--apply"]) == 0
+    assert (dest.parent / "x4-paths.env").read_bytes() == body
+    assert not (dest / "x4-paths.env").exists()
+
+
+def test_deploy_REPORTS_two_differing_configs_and_touches_neither(repo, dest):
+    _commit(repo, "settings.json", b"{}\n")
+    (dest / "x4-paths.env").write_bytes(b'X4_GAME="old"\n')
+    (dest.parent / "x4-paths.env").write_bytes(b'X4_GAME="new"\n')
+    acts = [a for a in dep.plan(repo, dest) if "x4-paths.env" in a.name]
+    assert [a.kind for a in acts] == [dep.REPORT] and "X4_GAME" in acts[0].reason, acts
+    assert dep.main(["--repo", str(repo), "--dest", str(dest), "--apply"]) == 0
+    assert (dest / "x4-paths.env").read_bytes() == b'X4_GAME="old"\n'
+    assert (dest.parent / "x4-paths.env").read_bytes() == b'X4_GAME="new"\n'
+
+
+def test_deploy_retires_an_AGREEING_3x_copy(repo, dest):
+    _commit(repo, "settings.json", b"{}\n")
+    (dest / "x4-paths.env").write_bytes(b'X4_GAME="same"\n')
+    (dest.parent / "x4-paths.env").write_bytes(b'X4_GAME="same"\n')
+    acts = [a for a in dep.plan(repo, dest) if "x4-paths.env" in a.name]
+    assert [a.kind for a in acts] == [dep.MIGRATE], acts
+    assert dep.main(["--repo", str(repo), "--dest", str(dest), "--apply"]) == 0
+    assert not (dest / "x4-paths.env").exists()
+    assert len(list(dest.glob("x4-paths.env.bak-*"))) == 1
+
+
+def test_deploy_with_no_3x_config_plans_nothing_for_it(repo, dest):
+    _commit(repo, "settings.json", b"{}\n")
+    (dest.parent / "x4-paths.env").write_bytes(b'X4_GAME="new"\n')
+    assert not [a for a in dep.plan(repo, dest) if "x4-paths.env" in a.name]
 
 
 def test_after_apply_the_parity_gate_agrees(repo, dest):

@@ -184,7 +184,8 @@ def test_the_real_trees(capsys):
 def test_TARGETS_has_claude_with_todays_population():
     t = dp.TARGETS["claude"]
     assert t.root_rel == ".claude"
-    assert t.top_files == ("settings.json", "settings.local.json.example", "x4-paths.env.example")
+    # Plan 3 lane I: x4-paths.env.example lives at the toolkit root now, not in .claude/
+    assert t.top_files == ("settings.json", "settings.local.json.example")
     assert t.subtrees == ("hooks", "skills", "agents", "commands")
     assert t.rewrite_scope == ("skills/", "agents/")
     assert t.rewrite_from == b"$CLAUDE_PROJECT_DIR" and t.rewrite_to == (b"$X4_TOOLKIT",)
