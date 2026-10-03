@@ -185,6 +185,11 @@
   generated skills now keep the token and the installer renders it (`$env:X4_TOOLKIT` on
   Windows, `$X4_TOOLKIT` elsewhere), as the entry above describes. An installer test now
   installs the real generated tree instead of a hand-made one.
+- **`AGENTS.md` tells Codex to look for the hooks banner** (`X4 GUARDS LIVE (codex hooks v1)`)
+  and, if it is missing, to warn the user before any write or delete and suggest
+  `x4doctor.py --agent codex`. Its guard commands now name `.codex/hooks/x4guard.py`: a
+  Codex-only install has no `.claude/` folder, so the `.claude/hooks/x4guard.py` it named before
+  did not exist there.
 
 ## v3.3.1 — 2026-09-29
 

@@ -28,8 +28,6 @@ def test_banner_is_one_constant_and_the_adapter_prints_it():
     assert "parts = [BANNER]" in adapter
 
 
-@pytest.mark.xfail(strict=True, reason="lane A addendum pending: agent/instructions/codex.md must carry "
-                                       "the banner paragraph (lane B Task 11 hand-off text)")
 def test_banner_text_is_in_the_codex_addendum():
     adapter = (REPO / "agent" / "guards" / "adapters" / "codex.py").read_text(encoding="utf-8")
     addendum = (REPO / "agent" / "instructions" / "codex.md").read_text(encoding="utf-8")

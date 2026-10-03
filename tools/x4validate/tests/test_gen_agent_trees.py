@@ -661,3 +661,14 @@ def test_TWIN_a_hand_edited_codex_skill_is_STALE(fresh_copy):
     p = root / ".agents/skills/x4-debug/SKILL.md"
     p.write_bytes(p.read_bytes() + b"\nextra\n")
     assert g.problems(exp, root) == ["STALE    .agents/skills/x4-debug/SKILL.md"]
+
+
+def test_J4_every_x4guard_path_agents_md_names_ships_with_the_codex_target():
+    """--agent codex installs AGENTS.md .codex .agents -- not .claude (test_F8 in
+    test_install_over_existing.py pins `.claude/hooks` ABSENT for --agent codex). A guard path
+    AGENTS.md tells Codex to run must be in that set."""
+    text = load().generate(REPO)["AGENTS.md"]
+    cmds = [l.strip() for l in text.splitlines() if l.strip().startswith("python ") and "x4guard.py" in l]
+    assert len(cmds) >= 3, cmds
+    for l in cmds:
+        assert l.split()[1].startswith(".codex/hooks/"), l
