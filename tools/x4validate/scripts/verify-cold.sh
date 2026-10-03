@@ -10,7 +10,7 @@
 #
 # The reason is not obvious and is exactly why nobody gets it right from memory:
 # path resolution falls through to **$X4_TOOLKIT**, which points at the toolkit's
-# own .claude/x4-paths.env. Clear the two obvious variables and leave that one,
+# own x4-paths.env (or the 3.x .claude/x4-paths.env). Clear the two obvious variables and leave that one,
 # and a fully configured machine masquerades as a clean one.
 #
 # What it hid: every module under gates/ resolves paths at IMPORT time, and
@@ -67,7 +67,7 @@ if [ "$RESOLVED" != "None|None|None" ]; then
   echo "  registry|game_extensions|reference = $RESOLVED" >&2
   echo >&2
   echo "Something is still resolving X4 paths -- most likely \$X4_TOOLKIT, or a" >&2
-  echo ".claude/x4-paths.env in a PARENT of the temp checkout ($WORK)." >&2
+  echo "x4-paths.env or a 3.x .claude/x4-paths.env in a PARENT of the temp checkout ($WORK)." >&2
   echo "A green result from here would be meaningless, so it is not offered." >&2
   exit 3
 fi

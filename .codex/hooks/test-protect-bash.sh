@@ -213,7 +213,7 @@ echo
 # examined less than everything must say so.
 if [ "$S" != "0" ]; then
   echo "NOTE: $S probe(s) SKIPPED because their location is not configured."
-  echo "      Those rules were NOT exercised. Configure .claude/x4-paths.env to cover them."
+  echo "      Those rules were NOT exercised. Configure x4-paths.env to cover them."
 fi
 echo
 echo "--- a SUBSTITUTED command name (must DENY; must not touch substituted ARGS) ---"

@@ -178,7 +178,7 @@ def main() -> int:
         #   * blank every alias in _PATH_VARS, not a subset;
         #   * run from a directory OUTSIDE any toolkit, because
         #     `_paths._find_env_file()` walks up from CWD and will happily find
-        #     the developer's own `.claude/x4-paths.env` otherwise.
+        #     the developer's own `x4-paths.env` otherwise.
         blank = {k: "" for k in _PATH_VARS}
         away = tmp / "elsewhere"
         away.mkdir()

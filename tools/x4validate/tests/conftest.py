@@ -13,7 +13,7 @@ gate modules, so all three were affected; only the first showed up, because
 collection stops at the first internal error.
 
 It was invisible locally because unsetting `$X4_*` is NOT the same as having no
-game installed — `_paths` still resolved through `.claude/x4-paths.env` and the
+game installed — `_paths` still resolved through `x4-paths.env` and the
 real install. Only a genuinely clean machine (CI) could surface it.
 """
 
@@ -89,7 +89,7 @@ def import_gate(name: str, *, module_level: bool = True):
             raise
         reason = (f"gates/{name}.py needs a configured X4 install "
                   f"({type(exc).__name__} at import: {exc}). "
-                  f"Set $X4_GAME / $X4_EXTENSIONS, or see .claude/x4-paths.env.")
+                  f"Set $X4_GAME / $X4_EXTENSIONS, or see x4-paths.env.")
         if module_level:
             pytest.skip(reason, allow_module_level=True)
         pytest.skip(reason)
@@ -107,7 +107,7 @@ def import_gate(name: str, *, module_level: bool = True):
 # `hermetic_gate` / the `gate_install` fixture give the gate a CONFIGURED install that is
 # fake: empty tmp roots, handed over through the ENVIRONMENT layer of `_paths`, so the
 # gate's REAL `_env` resolution runs (nothing inside `_env` is stubbed). The env layer
-# outranks `.claude/x4-paths.env`, so a configured machine resolves to the same fake
+# outranks `x4-paths.env`, so a configured machine resolves to the same fake
 # roots and the test means the same thing cold and warm. The gate is loaded from
 # source under a PRIVATE module name, never the cached `import_gate` copy, which on a
 # configured machine was imported against the REAL install.

@@ -20,7 +20,7 @@ options:
                         (and which config file it read), then exit
   --reference REFERENCE
                         path to the unpacked base-game reference tree (default: $X4_REFERENCE /
-                        .claude/x4-paths.env)
+                        x4-paths.env)
   --tier {a,b}          a = base+DLC only (default, deterministic); b = also merge the ACTIVE
                         extensions (installed and enabled -- the profile entry decides, the
                         manifest's enabled= is only the default when the profile has none -- with

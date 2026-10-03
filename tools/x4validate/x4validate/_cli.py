@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     # isn't one — which the boundary turns into rc=2.
     p.add_argument("--reference", default=None,
                    help="path to the unpacked base-game reference tree "
-                        "(default: $X4_REFERENCE / .claude/x4-paths.env)")
+                        "(default: $X4_REFERENCE / x4-paths.env)")
     p.add_argument("--tier", choices=["a", "b"], default="a",
                    help="a = base+DLC only (default, deterministic); "
                         "b = also merge the ACTIVE extensions (installed and enabled -- the "
@@ -128,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
             resolved = default_debug_log(args.profile)
         if resolved is None:
             print("error: --debug needs a log to read. Configure $X4_PROFILE or $X4_DEBUGLOG "
-                  "(see .claude/x4-paths.env), pass --profile <id>, or give the path: "
+                  "(see x4-paths.env), pass --profile <id>, or give the path: "
                   "--debug <path/to/debug.txt>", file=sys.stderr)
             return 2
         debug_path = str(resolved)

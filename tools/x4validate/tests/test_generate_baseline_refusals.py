@@ -42,11 +42,13 @@ _spec.loader.exec_module(_gitbash)
 
 @pytest.fixture()
 def isolated(tmp_path: Path) -> Path:
-    """A copy of the script with NO x4-paths.env anywhere above it."""
+    """A copy of the script with NO x4-paths.env anywhere above it, and no guard copy
+    whose shared loader could find one (Plan 3 lane I: the script reads through it)."""
     (tmp_path / "scripts").mkdir()
     shutil.copy2(SCRIPT, tmp_path / "scripts" / SCRIPT.name)
-    assert not (tmp_path / ".claude").exists(), (
-        "the sandbox is not isolated -- the script would source a real config")
+    for leak in (".claude", ".codex", ".opencode", "x4-paths.env"):
+        assert not (tmp_path / leak).exists(), (
+            "the sandbox is not isolated -- the script would source a real config (%s)" % leak)
     return tmp_path / "scripts" / SCRIPT.name
 
 
@@ -251,3 +253,20 @@ def test_a_debug_txt_WITH_errors_is_still_fingerprinted(isolated, tmp_path):
           "error-fingerprint.txt").read_text(encoding="utf-8")
     assert "0xADDR" in fp, "the hex mask must still be applied: " + fp
     assert "2 [=ERROR=] lines captured" in r.stdout, r.stdout[-300:]
+
+
+def test_the_script_reads_the_ROOT_config_through_the_shared_loader(tmp_path):
+    """Plan 3 lane I: the script sourced `.claude/x4-paths.env` itself -- a THIRD loader,
+    with the file winning over the environment. It now goes through _x4-env.sh, so the
+    4.x root config is read: X4_GAME comes from it and the GAME_DIR refusal must not fire."""
+    (tmp_path / "scripts").mkdir()
+    shutil.copy2(SCRIPT, tmp_path / "scripts" / SCRIPT.name)
+    hooks = tmp_path / ".claude" / "hooks"
+    hooks.mkdir(parents=True)
+    shutil.copy2(ROOT / ".claude" / "hooks" / "_x4-env.sh", hooks / "_x4-env.sh")
+    game = tmp_path / "fakegame"
+    game.mkdir()
+    (tmp_path / "x4-paths.env").write_text('X4_GAME="%s"\n' % game.as_posix(), encoding="utf-8")
+    r = _run(tmp_path / "scripts" / SCRIPT.name, "", "")
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert "GAME_DIR" not in r.stderr and "PROFILE_DIR" in r.stderr, r.stderr

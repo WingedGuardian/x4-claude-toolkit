@@ -7,7 +7,7 @@
 #                                       (Z:\...), because XRCatTool reads a leading
 #                                       "/" as a switch and would choke on unix paths.
 #
-# Configure the tool location via $XRCATTOOL (see .claude/x4-paths.env).
+# Configure the tool location via $XRCATTOOL (see x4-paths.env in the toolkit root).
 set -uo pipefail
 
 XRCATTOOL="${XRCATTOOL:-XRCatTool.exe}"
@@ -15,7 +15,7 @@ XRCATTOOL="${XRCATTOOL:-XRCatTool.exe}"
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*|Windows*)            # Windows shells: run the exe as-is
     if [ ! -f "$XRCATTOOL" ] && ! command -v "$XRCATTOOL" >/dev/null 2>&1; then
-      echo "xrcat: XRCatTool not found at: $XRCATTOOL (set \$XRCATTOOL in .claude/x4-paths.env)" >&2
+      echo "xrcat: XRCatTool not found at: $XRCATTOOL (set \$XRCATTOOL in x4-paths.env)" >&2
       exit 1
     fi
     exec "$XRCATTOOL" "$@"

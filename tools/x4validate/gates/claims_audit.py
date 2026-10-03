@@ -66,7 +66,7 @@ def _registry_dir() -> Path:
         raise _paths.Unconfigured(
             "no registry is configured, so the claims file and effective store "
             "cannot be located. Set $X4_REGISTRY or $X4_MODS, or see "
-            ".claude/x4-paths.env.")
+            "x4-paths.env.")
     return Path(registry).parent
 
 
@@ -84,7 +84,7 @@ def _store() -> Path:
     if p is None:
         raise _paths.Unconfigured(
             "no effective store is configured. Set $X4_EFFECTIVE_DB, $X4_REGISTRY or "
-            "$X4_MODS, or see .claude/x4-paths.env.")
+            "$X4_MODS, or see x4-paths.env.")
     return Path(p)
 
 TIERS = {"vanilla", "effective"}
