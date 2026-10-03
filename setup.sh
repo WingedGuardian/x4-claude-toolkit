@@ -4,6 +4,10 @@
 
 set -uo pipefail
 ROOT="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+# --config-only: seed the path config and stop (no prerequisites, no dependency sync). For
+# tests and for a user who only wants the config; the installers do not pass it.
+_I_CONFIG_ONLY=0
+[ "${1:-}" = "--config-only" ] && _I_CONFIG_ONLY=1
 echo "=== X4 Claude Code Modding Toolkit setup ==="
 echo "Toolkit root: $ROOT"
 echo
@@ -16,6 +20,32 @@ warn() { echo "  [warn] $*"; }
 MISSING=""
 fail() { echo "  [FAIL] $*"; MISSING="$MISSING
   - $*"; }
+
+# The path config (Plan 3 lane I). 4.x reads <toolkit>/x4-paths.env; a 3.x one at
+# .claude/x4-paths.env is still read, deprecated. NEVER create the 4.x file beside a 3.x one:
+# the new location outranks the old, so a fresh copy of the (blank) example would SHADOW the
+# real config with empty values. Point at the one-command migration instead.
+_i_seed_config() {
+  CFG="$ROOT/x4-paths.env"
+  CFG_OLD="$ROOT/.claude/x4-paths.env"
+  CFG_EX="$ROOT/x4-paths.env.example"
+  if [ -f "$CFG" ]; then ok "x4-paths.env already present"
+  elif [ -f "$CFG_OLD" ]; then
+    warn "DEPRECATED location: $CFG_OLD is the 3.x path config (still read). 4.0 reads $CFG."
+    warn "  Move it: x4config.py migrate --apply, i.e. python \"$ROOT/scripts/x4config.py\" migrate --apply"
+  elif [ -f "$CFG_EX" ]; then
+    if cp "$CFG_EX" "$CFG" 2>/dev/null && [ -f "$CFG" ]; then
+      ok "created x4-paths.env from example (gitignored) — edit it to point at your game/profile"
+    else
+      fail "could not create x4-paths.env from the example (is $CFG a directory?)"
+    fi
+  else warn "no x4-paths.env.example to copy"; fi
+}
+if [ "$_I_CONFIG_ONLY" = 1 ]; then
+  _i_seed_config
+  [ -z "$MISSING" ] || { echo "setup --config-only FAILED:$MISSING"; exit 1; }
+  exit 0
+fi
 
 # --- detect OS for install hints ------------------------------------------
 case "$(uname -s 2>/dev/null)" in
@@ -100,22 +130,13 @@ elif [ -f "$EXAMPLE" ]; then
   fi
 else warn "no settings.local.json.example to copy"; fi
 
-CFG="$ROOT/.claude/x4-paths.env"
-CFG_EX="$ROOT/.claude/x4-paths.env.example"
-if [ -f "$CFG" ]; then ok "x4-paths.env already present"
-elif [ -f "$CFG_EX" ]; then
-  if cp "$CFG_EX" "$CFG" 2>/dev/null && [ -f "$CFG" ]; then
-    ok "created x4-paths.env from example (gitignored) — edit it to point at your game/profile"
-  else
-    fail "could not create x4-paths.env from the example (is $CFG a directory?)"
-  fi
-else warn "no x4-paths.env.example to copy"; fi
+_i_seed_config
 echo "     For a guided install (game folder / separate dir / global multi-repo) run:  bash install.sh   (or install.ps1 on Windows)"
 
 # --- 4. reference tree (your own game data — never redistributed) ----------
 echo
 echo "4) Base-game reference (you unpack your OWN copy):"
-echo "   Set X4_GAME in .claude/x4-paths.env, then:  bash bin/unpack-reference.sh"
+echo "   Set X4_GAME in x4-paths.env (toolkit root), then:  bash bin/unpack-reference.sh"
 echo "   (text-only unpack via XRCatTool → reference/, ~0.6 GB; gitignored, never redistributed.)"
 
 # --- 5. Nexus API (optional, your own key) ---------------------------------
@@ -123,9 +144,9 @@ echo
 echo "5) Nexus mod triage (optional): x4modlist uses the official Nexus API with YOUR OWN free key."
 echo "   Get one at https://www.nexusmods.com/users/myaccount?tab=api then set X4_NEXUS_KEY:"
 if [ "$OS" = "windows" ]; then
-  echo "       setx X4_NEXUS_KEY \"<your-key>\"          (or add it to .claude/x4-paths.env)"
+  echo "       setx X4_NEXUS_KEY \"<your-key>\"          (or add it to x4-paths.env)"
 else
-  echo "       export X4_NEXUS_KEY=\"<your-key>\"        (add to your shell rc, or to .claude/x4-paths.env)"
+  echo "       export X4_NEXUS_KEY=\"<your-key>\"        (add to your shell rc, or to x4-paths.env)"
 fi
 
 echo

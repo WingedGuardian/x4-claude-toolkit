@@ -360,7 +360,7 @@ def native(value: str) -> str:
     r"""Translate a POSIX drive path into one Python can actually open on Windows.
 
     `install.sh` detects Steam at `/c/Program Files (x86)/Steam` under Git Bash
-    (install.sh's `steam_roots`), and `.claude/x4-paths.env.example` explicitly
+    (install.sh's `steam_roots`), and `x4-paths.env.example` explicitly
     promises that either `C:\...` or `/c/...` is acceptable. The shell half honours
     that; Python does not — `Path("/c/Program Files")` becomes `\c\Program Files`,
     which does not exist. So the FIRST command the README gives a Windows user

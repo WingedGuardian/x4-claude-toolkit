@@ -1,7 +1,7 @@
 {
-  "_comment": "Copy to settings.local.json (gitignored). Machine-local permissions/env. The committed settings.json wires the hooks. Paths are best kept in .claude/x4-paths.env (sourced by hooks AND scripts); mirror them into env below only if you want them in-Claude too.",
+  "_comment": "Copy to settings.local.json (gitignored). Machine-local permissions/env. The committed settings.json wires the hooks. Paths are best kept in x4-paths.env at the toolkit root (sourced by hooks AND scripts); mirror them into env below only if you want them in-Claude too.",
   "env": {
-    "_comment": "Optional — canonical config is .claude/x4-paths.env. Uncomment/edit to also expose paths to Claude's own shell. EVERY path is overridable; examples are illustrative.",
+    "_comment": "Optional — canonical config is x4-paths.env (toolkit root). Uncomment/edit to also expose paths to Claude's own shell. EVERY path is overridable; examples are illustrative.",
     "X4_GAME": "",
     "X4_PROFILE": "",
     "X4_MODS": "",

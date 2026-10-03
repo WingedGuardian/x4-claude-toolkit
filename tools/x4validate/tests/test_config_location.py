@@ -233,3 +233,60 @@ def test_x4config_status_names_the_differing_KEYS_and_no_value(tk):
     r = _cli("status", "--root", str(tk), env=_clean_env(tk))
     assert "both-differ" in r.stdout and "X4_GAME" in r.stdout, r
     assert SECRET not in r.stdout + r.stderr and "/xgame/" not in r.stdout + r.stderr
+
+
+# --- setup.sh: the example lives at the root; setup never SHADOWS a 3.x config ---------
+
+import importlib.util
+import shutil
+
+REPO = Path(__file__).resolve().parents[3]
+
+
+def _gitbash():
+    spec = importlib.util.spec_from_file_location("gitbash_for_lanei", REPO / "scripts" / "gitbash.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    bash = mod.find_bash()
+    if bash is None:
+        pytest.skip("no Git Bash found (the WSL stub does not count) -- NOT CHECKED")
+    return bash
+
+
+def _setup_config_only(root: Path):
+    shutil.copy2(REPO / "setup.sh", root / "setup.sh")
+    shutil.copy2(REPO / "x4-paths.env.example", root / "x4-paths.env.example")
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("X4_") and k not in ("CLAUDE_PROJECT_DIR", "HOOK_DIR")}
+    env["CLAUDE_PROJECT_DIR"] = str(root)
+    return subprocess.run([_gitbash(), str(root / "setup.sh"), "--config-only"],
+                          capture_output=True, text=True, env=env, cwd=str(root), timeout=120)
+
+
+def test_setup_does_NOT_create_a_new_config_beside_a_legacy_one(tmp_path):
+    """The trap: new outranks legacy, so a fresh copy of the example at the root would
+    SHADOW a real 3.x config with blank values."""
+    put(tmp_path, OLD, "/xgame/old")
+    r = _setup_config_only(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (tmp_path / NEW).exists(), r.stdout
+    assert "DEPRECATED" in r.stdout and "x4config.py migrate" in r.stdout, r.stdout
+
+
+def test_setup_creates_the_config_from_the_example_when_there_is_none(tmp_path):
+    r = _setup_config_only(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (tmp_path / NEW).read_bytes() == (REPO / "x4-paths.env.example").read_bytes()
+    assert not (tmp_path / OLD).exists()
+
+
+def test_the_example_ships_at_the_root_and_not_in_claude():
+    def tracked(rel):
+        out = subprocess.run(["git", "-C", str(REPO), "ls-files", "--", rel],
+                             capture_output=True, text=True)
+        if out.returncode != 0:
+            pytest.skip("not a git checkout (cold extract) -- checked by file presence below")
+        return [l for l in out.stdout.splitlines() if l.strip()]
+    assert (REPO / "x4-paths.env.example").is_file()
+    assert tracked("x4-paths.env.example") == ["x4-paths.env.example"]
+    assert tracked(".claude/x4-paths.env.example") == []

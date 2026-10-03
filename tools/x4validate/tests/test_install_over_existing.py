@@ -532,7 +532,12 @@ def test_a_non_repo_REFUSES_rather_than_reading_as_NOT_IGNORED(tmp_path):
      "a backup of it, which the carry-over deliberately preserves the key into"),
     (".claude/settings.local.json", True, "per-machine settings"),
     (".claude/settings.local.json.bak-20260907-120000", True, "and its backups"),
-    (".claude/x4-paths.env.example", False,
+    (".claude/x4-paths.env.example", True,
+     "no longer the template (Plan 3 lane I moved it to the root); a 3.x leftover"),
+    ("x4-paths.env", True, "the 4.x live config at the toolkit root (Plan 3 lane I)"),
+    ("x4-paths.env.bak-20260907-120000", True, "a backup beside the root config"),
+    ("x4-paths.env.tmp12345", True, "the render target beside the root config"),
+    ("x4-paths.env.example", False,
      "the TEMPLATE is tracked on purpose; a blanket x4-paths.env* would swallow it"),
 ])
 def test_the_config_backups_cannot_be_committed(path, ignored, why, tmp_path):
