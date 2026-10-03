@@ -190,6 +190,11 @@
   `x4doctor.py --agent codex`. Its guard commands now name `.codex/hooks/x4guard.py`: a
   Codex-only install has no `.claude/` folder, so the `.claude/hooks/x4guard.py` it named before
   did not exist there.
+- The Codex session banner no longer claims that every shell command is checked. It now reads
+  `X4 GUARDS LIVE (codex hooks v1) — shell commands and apply_patch are checked (input typed
+  into a running shell is not).` The text lives in the adapter script; the frozen hook
+  definitions are unchanged, so no new hook review is expected (not yet confirmed with
+  `codex_trust.py report` on a deployed copy).
 
 ## v3.3.1 — 2026-09-29
 
