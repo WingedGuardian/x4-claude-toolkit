@@ -17,7 +17,8 @@ HOW TO USE:
     uv run python scripts/gen-cli-reference.py --check   # rc 1 if stale, missing or ghost
 
 Exit: 0 fresh / written - 1 stale, missing or ghost file(s), named - 2 could not
-generate (a partial reference is not written, and not reported as fresh).
+generate, or could not read a committed file (nothing is written, and nothing is
+reported as fresh).
 
 TWO MEASURED CHOICES:
 
@@ -208,8 +209,15 @@ def problems(expected: dict[str, str], skill_dir: Path | None = None) -> list[st
         p = skill_dir / rel
         if not p.is_file():
             out.append(f"MISSING  {rel}")
-        elif _norm(p.read_bytes()) != text:
-            out.append(f"STALE    {rel}")
+        else:
+            try:
+                text_on_disk = _norm(p.read_bytes())
+            except UnicodeDecodeError as exc:
+                raise GenerationError(
+                    f"{rel} is not UTF-8 ({exc.reason} at byte {exc.start}) -- it cannot be "
+                    f"checked or safely overwritten; delete it and re-run to regenerate") from exc
+            if text_on_disk != text:
+                out.append(f"STALE    {rel}")
     if skill_dir.is_dir():
         for p in sorted(skill_dir.rglob("*")):
             if p.is_file() and p.relative_to(skill_dir).as_posix() not in expected:
@@ -222,10 +230,10 @@ def main(argv: list[str] | None = None) -> int:
     check = "--check" in argv
     try:
         expected = generate()
+        found = problems(expected)
     except (GenerationError, _surface.SurfaceUnavailable, OSError) as exc:
         print(f"REFUSING: {exc}", file=sys.stderr)
         return 2
-    found = problems(expected)
     if check:
         if found:
             print("x4-cli-reference is out of date -- run scripts/gen-cli-reference.py:",

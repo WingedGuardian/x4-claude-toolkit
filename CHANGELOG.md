@@ -175,6 +175,10 @@
   `x4doctor` reports that state as `roots.config` FAIL.
 - `gates/deploy_parity.py` describes each agent tree with a `TargetSpec`. Claude's population is
   unchanged.
+- `gen-cli-reference.py` refuses (rc 2, `REFUSING: <file> is not UTF-8 ...`) when a committed
+  reference file cannot be decoded, in both `--check` and regenerate mode, and writes nothing.
+  It used to die with a traceback, which read as "stale" and also blocked the regenerate that
+  would have repaired it.
 
 ## v3.3.1 — 2026-09-29
 
