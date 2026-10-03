@@ -7766,9 +7766,9 @@ OLD was stricter: 0. New asks: 0. New denies: 0. Detail: Plan 2 `measure-F.md`.
 - Two historical commands get a false advisory from mis-segmented quoted text. That is a
   segmenter limit, not the seed.
 
-**RE-DERIVED BY:** `test_hook_facts.py`
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py`
 `TestRelativeOperandsResolveAgainstThePayloadCwd` and
 `TestTheSeedIsNarrowedWhereTheReplayFoundFalsePositives`, with 17 verify-hook-tests mutants, one
-per clause. Also `test_audit0924_hooks.py` `TestLaneFRelativePathsUseThePayloadCwd` (the 4-row
-table E2E), `test_x4guard_check.py` `test_F_*`, and the conformance extras
+per clause. Also `.claude/hooks/test_audit0924_hooks.py` `TestLaneFRelativePathsUseThePayloadCwd` (the 4-row
+table E2E), `tools/x4validate/tests/test_x4guard_check.py` `test_F_*`, and the conformance extras
 `*relative-delete*`.
