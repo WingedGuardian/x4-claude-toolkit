@@ -181,10 +181,12 @@ def is_abs(p: str) -> bool:
 def join_cwd(cwd: str, p: str) -> str:
     """Resolve `p` against the directory in force, or return "" when that is unknowable.
 
-    Returning "" rather than guessing is the whole safety property: the hook does not
-    know the shell's real starting directory, so `cd extensions && rm -rf amod` must
-    reach NO rule. Inventing a root there would fire on unrelated work, which is the
-    failure mode that gets a guard ignored.
+    Returning "" rather than guessing is the whole safety property: when the hook does
+    not know the shell's starting directory, `cd extensions && rm -rf amod` must reach
+    NO rule. Inventing a root there would fire on unrelated work, which is the failure
+    mode that gets a guard ignored. Since lane F (2026-10-02) the starting directory IS
+    known whenever the payload carries an absolute `cwd` (session_cwd); "" remains the
+    answer when it does not, or after a `cd` the hook cannot resolve.
     """
     if not p:
         return cwd
