@@ -1004,12 +1004,16 @@ def resolve_roots():
 #: mutates command SYNTAX around a fixed operand, so it cannot construct:
 #:   * carriers_truncated -- needs >_MAX_CARRIED carried commands, a pathological
 #:     INPUT SIZE rather than a syntax variation;
-#:   * timeout_over_cap   -- a numeric FIELD of the tool payload, not syntax at all.
-#: Both are covered by unit tests in test_hook_facts.py instead. If a mutator ever
+#:   * timeout_over_cap   -- a numeric FIELD of the tool payload, not syntax at all;
+#:   * git_wipe_from_session_dir -- true only through the payload's top-level `cwd`
+#:     (a bare `git clean -fdx` RUN FROM an X4 folder, Plan 3 J-Q1), and every seed
+#:     here is a command with no cwd. Naming the folder in the command reaches the
+#:     OTHER rule (git_wipes_x4_dir), which is seeded above.
+#: All three are covered by unit tests in test_hook_facts.py instead. If a mutator ever
 #: gains the ability to reach one, drop it from here and the floor rises by itself.
 #: Module level, 2026-09-09, so the suite can assert the seed floor against the SAME
 #: exemption set the run uses -- a second copy in a test is a second thing to drift.
-STRUCTURAL = {"carriers_truncated", "timeout_over_cap"}
+STRUCTURAL = {"carriers_truncated", "timeout_over_cap", "git_wipe_from_session_dir"}
 
 #: (label, scope, old, new) -- each MUST apply exactly ONCE, and within `scope`
 #: when one is given. A stale anchor silently
