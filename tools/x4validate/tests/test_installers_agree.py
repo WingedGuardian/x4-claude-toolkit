@@ -427,3 +427,43 @@ def test_the_repo_ships_exactly_ONE_AGENTS_md():
     names = [p for p in r.stdout.decode("utf-8").split("\0")
              if p and p.rsplit("/", 1)[-1].lower() == "agents.md"]
     assert names == ["AGENTS.md"], names
+
+
+# --- lane H: --agent auto detection tables -------------------------------------------- #
+#
+# Both installers walk one PATH with one name/extension list and read one marker table, so
+# Git Bash's `command -v` and PowerShell's `Get-Command` (which disagree about which codex
+# shim they find, MEASURED) are never consulted. Parsed from both files, never restated.
+
+def _sh_tables(prefix: str) -> dict[str, list[str]]:
+    text = SH.read_text(encoding="utf-8")
+    return {m.group(1): sorted(m.group(2).split())
+            for m in re.finditer(r'^%s(\w+)="([^"]*)"' % re.escape(prefix), text, re.M)}
+
+
+def _ps1_table(name: str) -> dict[str, list[str]]:
+    text = PS1.read_text(encoding="utf-8")
+    m = re.search(r"^\$%s\s*=\s*@\{(.*?)^\}" % re.escape(name), text, re.S | re.M)
+    assert m, f"no ${name} in install.ps1"
+    return {k: sorted(re.findall(r"'([^']+)'", v))
+            for k, v in re.findall(r"(\w+)\s*=\s*@\(([^)]*)\)", m.group(1))}
+
+
+def test_both_installers_detect_agents_with_the_SAME_names_extensions_and_markers():
+    sh_detect, ps_detect = _sh_tables("X4_AGENT_DETECT_"), _ps1_table("X4AgentDetect")
+    sh_mark, ps_mark = _sh_tables("X4_AGENT_MARK_"), _ps1_table("X4AgentMark")
+    assert sh_detect == ps_detect and sh_detect.get("claude") == ["claude"], (sh_detect, ps_detect)
+    assert sh_detect.get("codex") == ["codex"], sh_detect
+    # markers compared with one separator: install.ps1 may spell a path either way
+    norm = lambda t: {k: sorted(x.replace(chr(92), "/") for x in v) for k, v in t.items()}
+    assert norm(sh_mark) == norm(ps_mark), (sh_mark, ps_mark)
+    # F5: every install makes .claude/, so a bare .claude is NEVER a Claude marker
+    assert ".claude" not in sh_mark.get("claude", []), sh_mark
+    assert "CLAUDE.md" in sh_mark["claude"] and ".claude/settings.json" in sh_mark["claude"]
+    sh_ext = re.search(r'^X4_DETECT_EXTS="([^"]*)"', SH.read_text(encoding="utf-8"), re.M)
+    ps_ext = re.search(r"^\$X4DetectExts\s*=\s*@\(([^)]*)\)", PS1.read_text(encoding="utf-8"), re.M)
+    assert sh_ext and ps_ext, "an installer lost its detection extension list"
+    assert sorted(sh_ext.group(1).split()) == sorted(re.findall(r"'([^']+)'", ps_ext.group(1)))
+    # every detectable agent is a real agent name
+    names = re.search(r'^X4_AGENT_NAMES="([^"]*)"', SH.read_text(encoding="utf-8"), re.M).group(1).split()
+    assert set(sh_detect) | set(sh_mark) <= set(names), (sh_detect, sh_mark, names)

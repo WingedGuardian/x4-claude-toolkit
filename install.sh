@@ -41,8 +41,10 @@ Usage: bash install.sh --method in-game|separate|global [options]
   --reference DIR    unpacked base game (default <toolkit>/reference)
   --extensions DIR   live deploy target (default <game>/extensions)
   --xrcattool PATH   XRCatTool.exe location
-  --agent NAME       claude | codex | generic | all              [all]
-                     which agent's instructions, guards and skills to install
+  --agent NAME       claude | codex | generic | all | auto       [all]
+                     which agent's instructions, guards and skills to install;
+                     auto = the agents found on PATH or already in the destination
+                     (none found: all, and it says so)
   --unpack          also unpack reference/ now (needs --game + XRCatTool [+wine])
   --over-existing    REQUIRED to install over an existing installation
   --dry-run          print the destination and the item list; write nothing
@@ -523,6 +525,20 @@ X4_AGENT_ITEMS_codex="AGENTS.md .codex .agents"
 X4_AGENT_ITEMS_generic="AGENTS.md .agents"
 X4_AGENT_NAMES="claude codex generic"
 
+#: --agent auto (lane H): how each agent is DETECTED. One row per agent; an agent with no
+#: row is never detected, so a new agent adds rows here and touches no code. DETECT = a
+#: program name on PATH; MARK = a path in the destination. Never a bare `.claude/`: every
+#: install creates one (x4-paths.env lives there), whatever the agent. install.ps1 holds the
+#: same tables; test_installers_agree parses both.
+X4_AGENT_DETECT_claude="claude"
+X4_AGENT_MARK_claude="CLAUDE.md .claude/settings.json"
+X4_AGENT_DETECT_codex="codex"
+X4_AGENT_MARK_codex=".codex"
+#: On Windows a program is found as NAME or NAME + one of these. Git Bash's `command -v`
+#: and PowerShell's `Get-Command` disagree about which codex shim they find (MEASURED), so
+#: neither is used: both installers walk PATH themselves with this one list.
+X4_DETECT_EXTS=".exe .cmd .bat .ps1"
+
 #: The token the generated Codex/generic skills carry (gen-agent-trees.py's TOKEN), and
 #: what it is rendered to in the copy THIS install writes (user decision #2). Per OS, not
 #: per installer: Codex runs its shell commands through PowerShell on Windows, where
@@ -540,6 +556,7 @@ X4_CODEX_HOOKS_TMPL="agent/targets/codex/hooks.json.tmpl"
 # --- resolve --agent, BEFORE anything is written ------------------------------------
 case "$AGENT" in
   all) X4_AGENTS="$X4_AGENT_NAMES" ;;
+  auto) X4_AGENTS="" ;;   # resolved per destination by resolve_auto_agents, inside the arms
   claude|codex|generic) X4_AGENTS="$AGENT" ;;
   opencode)
     echo "REFUSING: --agent opencode is not yet supported (spec M8). Nothing has been changed." >&2
@@ -552,13 +569,74 @@ esac
 #: THE RESOLVED COPY SET: common items plus each selected agent's, once each. Every
 #: consumer -- the copy, the tracked-set filter, the dry-run listing and the locked-target
 #: precheck -- reads THIS, so they cannot disagree about what an install writes.
-X4_ITEMS="$X4_COPY_ITEMS"
-for _a in $X4_AGENTS; do
-  eval "_set=\$X4_AGENT_ITEMS_$_a"
-  for _i in $_set; do
-    case " $X4_ITEMS " in *" $_i "*) ;; *) X4_ITEMS="$X4_ITEMS $_i" ;; esac
+_h_resolve_items() {
+  local _a _i _set
+  X4_ITEMS="$X4_COPY_ITEMS"
+  for _a in $X4_AGENTS; do
+    eval "_set=\$X4_AGENT_ITEMS_$_a"
+    for _i in $_set; do
+      case " $X4_ITEMS " in *" $_i "*) ;; *) X4_ITEMS="$X4_ITEMS $_i" ;; esac
+    done
   done
-done
+}
+_h_resolve_items
+
+#: Print where NAME is found on the detect PATH, or fail. X4_INSTALL_DETECT_PATH is a TEST
+#: SEAM (the harness points it at a sandbox); unset, the real PATH is walked.
+_h_on_path() {   # NAME
+  local n="$1" p d e dirs
+  p="${X4_INSTALL_DETECT_PATH:-$PATH}"
+  # A Windows-form seam reaches Git Bash unconverted (MEASURED: `C:/x` stays `C:/x`), and
+  # splitting it on ':' would cut the drive letter off.
+  if [ "$OS" = windows ] && [ -n "${X4_INSTALL_DETECT_PATH:-}" ] && command -v cygpath >/dev/null 2>&1; then
+    p="$(cygpath -u -p "$p")"
+  fi
+  IFS=: read -r -a dirs <<< "$p"
+  for d in "${dirs[@]}"; do
+    [ -n "$d" ] || continue
+    if [ "$OS" = windows ]; then
+      for e in "" $X4_DETECT_EXTS; do
+        [ -f "$d/$n$e" ] && { printf '%s' "$d/$n$e"; return 0; }
+      done
+    else
+      [ -f "$d/$n" ] && [ -x "$d/$n" ] && { printf '%s' "$d/$n"; return 0; }
+    fi
+  done
+  return 1
+}
+
+#: --agent auto: select exactly the agents detected for DEST, each with its reason; none
+#: detected selects all (user decision H-Q1) and SAYS so. Then the copy set is re-derived.
+resolve_auto_agents() {   # DEST
+  [ "$AGENT" = auto ] || return 0
+  local dest="$1" a n m found why det="" says="" _dn _mk
+  for a in $X4_AGENT_NAMES; do
+    why=""
+    eval "_dn=\${X4_AGENT_DETECT_$a:-}"
+    eval "_mk=\${X4_AGENT_MARK_$a:-}"
+    for n in $_dn; do
+      if found="$(_h_on_path "$n")"; then why="on PATH: $found"; break; fi
+    done
+    if [ -z "$why" ]; then
+      for m in $_mk; do
+        if [ -d "$dest/$m" ]; then why="destination has $m/"; break; fi
+        if [ -e "$dest/$m" ]; then why="destination has $m"; break; fi
+      done
+    fi
+    [ -n "$why" ] || continue
+    det="$det${det:+ }$a"
+    says="$says${says:+, }$a ($why)"
+  done
+  if [ -n "$det" ]; then
+    X4_AGENTS="$det"
+    echo "  --agent auto: $says"
+  else
+    X4_AGENTS="$X4_AGENT_NAMES"
+    echo "  --agent auto: no agent detected (none on PATH, no marker in the destination);"
+    echo "                installing all: $X4_AGENT_NAMES"
+  fi
+  _h_resolve_items
+}
 
 #: Failures that make the install INCOMPLETE, accumulated and reported at the end.
 #: Defined HERE, above every writer that records into it.
@@ -1497,6 +1575,7 @@ case "$METHOD" in
     [ -n "$GAME" ] || { echo "ERROR: in-game needs --game"; exit 1; }
     TOOLKIT="$GAME"
     announce_target "$TOOLKIT"
+    resolve_auto_agents "$TOOLKIT"   # BEFORE anything reads X4_ITEMS
     # ORDER, and each position is load-bearing for a different reason:
     #   require_direction     FIRST, and only when a copy will happen. Both
     #                         prechecks can exit 1 telling the user to unlock and
@@ -1535,6 +1614,7 @@ case "$METHOD" in
     ask TOOLKIT "Toolkit folder" "$TOOLKIT"
     TOOLKIT="$(strip_trailing_sep "$TOOLKIT")"
     announce_target "$TOOLKIT"
+    resolve_auto_agents "$TOOLKIT"   # BEFORE anything reads X4_ITEMS
     # ORDER, and each position is load-bearing for a different reason:
     #   require_direction     FIRST, and only when a copy will happen. Both
     #                         prechecks can exit 1 telling the user to unlock and
@@ -1580,11 +1660,12 @@ case "$METHOD" in
         echo "  Nothing has been changed." >&2
         exit 2 ;;
     esac
-    if [ "$AGENT" = all ]; then
+    if [ "$AGENT" = all ] || [ "$AGENT" = auto ]; then
       echo "  [note] --method global is a Claude-only layout: only the Claude target is installed."
       echo "         Codex and generic agents need --method in-game or --method separate."
     fi
     X4_AGENTS="claude"
+    _h_resolve_items
     [ -n "$TOOLKIT" ] || TOOLKIT="$SRC"
     announce_target "$TOOLKIT"
     # THE GLOBAL DESTINATION WAS NEVER GATED. `require_direction` is called for

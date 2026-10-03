@@ -2068,6 +2068,100 @@ def test_TWIN_a_listed_hash_under_the_OTHER_name_does_not_count(installer, tmp_p
     assert (dest / "AGENTS.pre-4.0.md").read_bytes() == old.encode(), _ok(r)
 
 
+# --- --agent auto (lane H T3) ----------------------------------------------------------- #
+#
+# Detection walks ONE PATH (the harness pins it to `detect_path`, an empty directory by
+# default) with ONE name/extension list per installer, plus destination markers. A bare
+# `.claude/` is never a Claude signal: every install creates one (x4-paths.env lives there).
+
+def _stub_agents(tmp_path, *names):
+    d = tmp_path / "agents-on-path"
+    d.mkdir(exist_ok=True)
+    for n in names:
+        p = d / n
+        p.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        p.chmod(0o755)
+        if os.name == "nt":
+            (d / (n + ".cmd")).write_text("@exit /b 0\r\n", encoding="utf-8")
+    return d
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("on_path,present,absent", [
+    (("codex",), ["AGENTS.md", ".codex/hooks.json"], ["CLAUDE.md", ".claude/settings.json"]),
+    (("claude",), ["CLAUDE.md", ".claude/settings.json"], ["AGENTS.md", ".codex"]),
+    (("claude", "codex"), ["CLAUDE.md", "AGENTS.md", ".codex/hooks.json"], []),
+])
+def test_auto_installs_exactly_the_agents_found_on_PATH(installer, on_path, present, absent, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "auto", source=src,
+                 detect_path=_stub_agents(tmp_path, *on_path))
+    assert r.returncode == 0, _ok(r)
+    for rel in present:
+        assert (dest / rel).exists(), rel + "\n" + _ok(r)
+    for rel in absent:
+        assert not (dest / rel).exists(), rel + "\n" + _ok(r)
+    for n in on_path:
+        assert "%s (on PATH" % n in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_auto_with_NOTHING_found_installs_all_and_SAYS_so(installer, tmp_path):
+    """User decision H-Q1: nothing detected installs `all` and says nothing was detected."""
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "auto", source=src)   # harness PATH is empty
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "CLAUDE.md").exists() and (dest / ".codex/hooks.json").exists(), _ok(r)
+    assert "no agent detected" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_auto_reads_a_CLAUDE_marker_in_the_destination(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / ".claude").mkdir()
+    (dest / ".claude" / "settings.json").write_text("{}\n")
+    r = _install(installer, tmp_path, dest, "--agent", "auto", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "CLAUDE.md").exists() and not (dest / ".codex").exists(), _ok(r)
+    assert "destination has .claude/settings.json" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_bare_dot_claude_dir_is_NOT_a_claude_signal(installer, tmp_path):
+    """Every install makes .claude/ (x4-paths.env lives there) -- F5."""
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / ".claude").mkdir()
+    (dest / ".claude" / "x4-paths.env").write_text("X4_TOOLKIT=\n")
+    (dest / ".codex").mkdir()
+    r = _install(installer, tmp_path, dest, "--agent", "auto", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert not (dest / "CLAUDE.md").exists() and (dest / ".codex/hooks.json").exists(), _ok(r)
+    assert "codex (destination has .codex" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_non_agent_file_on_PATH_is_not_detected(installer, tmp_path):
+    d = _stub_agents(tmp_path, "claudette", "xcodex")          # near-miss names
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "auto", source=src, detect_path=d)
+    assert r.returncode == 0, _ok(r)
+    assert "no agent detected" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_auto_with_the_GLOBAL_layout_behaves_as_all_does_there(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "auto", "--dry-run", source=src, method="global")
+    assert r.returncode == 0, _ok(r)
+    assert "Claude-only" in r.stdout, _ok(r)
+
+
 # --- the REAL repository's tree (skips, counted, while a generated tree is absent) ---- #
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])

@@ -22,8 +22,9 @@ param(
   [ValidateSet('in-game','separate','global')] [string]$Method,
   [string]$Game, [string]$Profile, [string]$Toolkit, [string]$Mods,
   [string]$Reference, [string]$Extensions, [string]$XRCatTool,
-  # claude | codex | generic | all (user decision #10, 2026-10-02: default all). Validated
-  # by hand below, not by ValidateSet, so `opencode` can be refused naming spec M8.
+  # claude | codex | generic | all | auto (user decision #10, 2026-10-02: default all).
+  # auto = the agents found on PATH or already in the destination; none found = all, said.
+  # Validated by hand below, not by ValidateSet, so `opencode` can be refused naming spec M8.
   [string]$Agent = 'all',
   [switch]$Unpack, [switch]$Yes, [switch]$OverExisting, [switch]$DryRun, [switch]$NoEnv
 )
@@ -329,6 +330,21 @@ $X4AgentItems = @{
 }
 $X4AgentNames = @('claude','codex','generic')
 
+#: -Agent auto (lane H): how each agent is DETECTED -- the mirror of X4_AGENT_DETECT_* /
+#: X4_AGENT_MARK_* in install.sh. An agent with no row is never detected. Never a bare
+#: `.claude\`: every install creates one (x4-paths.env lives there), whatever the agent.
+$X4AgentDetect = @{
+  claude = @('claude')
+  codex  = @('codex')
+}
+$X4AgentMark = @{
+  claude = @('CLAUDE.md','.claude/settings.json')
+  codex  = @('.codex')
+}
+#: NAME or NAME + one of these, on Windows. Get-Command and Git Bash's `command -v` disagree
+#: about which codex shim they find (MEASURED), so both installers walk PATH themselves.
+$X4DetectExts = @('.exe','.cmd','.bat','.ps1')
+
 #: The skill token and its rendering PER OS, as in install.sh: Codex runs PowerShell on
 #: Windows, where `$X4_TOOLKIT` is an EMPTY variable (MEASURED, lane A).
 $X4ToolkitToken = '{{TOOLKIT}}'
@@ -340,6 +356,7 @@ $X4CodexHooksTmpl = 'agent/targets/codex/hooks.json.tmpl'
 
 # --- resolve -Agent, BEFORE anything is written --------------------------------------
 if ($Agent -ceq 'all') { $X4Agents = $X4AgentNames }
+elseif ($Agent -ceq 'auto') { $X4Agents = @() }   # resolved per destination by Resolve-HAutoAgents
 elseif ($X4AgentNames -ccontains $Agent) { $X4Agents = @($Agent) }
 elseif ($Agent -ceq 'opencode') {
   Write-Host 'REFUSING: -Agent opencode is not yet supported (spec M8). Nothing has been changed.' -ForegroundColor Red
@@ -351,8 +368,70 @@ elseif ($Agent -ceq 'opencode') {
 }
 #: THE RESOLVED COPY SET -- common items plus each selected agent's, once each. Every
 #: consumer reads this, so the copy, the listing and the prechecks cannot disagree.
-$X4Items = @($X4CopyItems)
-foreach ($a0 in $X4Agents) { foreach ($i0 in $X4AgentItems[$a0]) { if ($X4Items -notcontains $i0) { $X4Items += $i0 } } }
+function Resolve-HItems {
+  $script:X4Items = @($X4CopyItems)
+  foreach ($a0 in $script:X4Agents) {
+    foreach ($i0 in $X4AgentItems[$a0]) { if ($script:X4Items -notcontains $i0) { $script:X4Items += $i0 } }
+  }
+}
+Resolve-HItems
+
+#: Where $n is found on the detect PATH, or $null. X4_INSTALL_DETECT_PATH is a TEST SEAM
+#: (the harness points it at a sandbox); unset, the real PATH is walked.
+function Test-HOnPath($n) {
+  $p = if ($env:X4_INSTALL_DETECT_PATH) { $env:X4_INSTALL_DETECT_PATH } else { $env:PATH }
+  if (-not $p) { return $null }
+  foreach ($d in ($p -split [regex]::Escape([string][IO.Path]::PathSeparator))) {
+    if (-not $d) { continue }
+    if ($X4OnWindows) {
+      foreach ($e in (@('') + $X4DetectExts)) {
+        $f = Join-Path $d ($n + $e)
+        if (Test-Path -LiteralPath $f -PathType Leaf) { return $f }
+      }
+    } else {
+      $f = Join-Path $d $n
+      if (Test-Path -LiteralPath $f -PathType Leaf) {
+        $mode = $null
+        try { $mode = (Get-Item -LiteralPath $f).UnixMode } catch { }
+        if (-not $mode -or $mode -match 'x') { return $f }
+      }
+    }
+  }
+  return $null
+}
+
+#: -Agent auto: select exactly the agents detected for $dest, each with its reason; none
+#: detected selects all (user decision H-Q1) and SAYS so. Then the copy set is re-derived.
+function Resolve-HAutoAgents($dest) {
+  if ($Agent -cne 'auto') { return }
+  $det = @(); $says = @()
+  foreach ($a in $X4AgentNames) {
+    $why = $null
+    foreach ($n in @($X4AgentDetect[$a])) {
+      if (-not $n) { continue }
+      $f = Test-HOnPath $n
+      if ($f) { $why = 'on PATH: ' + $f; break }
+    }
+    if (-not $why) {
+      foreach ($m in @($X4AgentMark[$a])) {
+        if (-not $m) { continue }
+        $t = Join-Path $dest $m
+        if (Test-Path -LiteralPath $t -PathType Container) { $why = 'destination has ' + $m + '/'; break }
+        if (Test-Path -LiteralPath $t) { $why = 'destination has ' + $m; break }
+      }
+    }
+    if ($why) { $det += $a; $says += ($a + ' (' + $why + ')') }
+  }
+  if ($det.Count) {
+    $script:X4Agents = $det
+    Write-Host ('  -Agent auto: ' + ($says -join ', '))
+  } else {
+    $script:X4Agents = $X4AgentNames
+    Write-Host '  -Agent auto: no agent detected (none on PATH, no marker in the destination);'
+    Write-Host ('               installing all: ' + ($X4AgentNames -join ' '))
+  }
+  Resolve-HItems
+}
 
 #: Failures that make the install INCOMPLETE. Defined HERE, above every writer that
 #: records into it (the Codex writers run inside the dispatch).
@@ -1490,6 +1569,7 @@ switch ($Method) {
     if (-not $Game) { throw 'in-game needs -Game' }
     $Toolkit = $Game
     Show-Target $Toolkit
+    Resolve-HAutoAgents $Toolkit   # BEFORE anything reads $X4Items
     # Test-ConfigPrecheck OUTSIDE, Test-LockedTargetsPrecheck INSIDE -- the config
     # is written on both branches, the copy is not. install.sh makes the same split.
     # DIRECTION FIRST, matching install.sh, which carries a nine-line comment at
@@ -1519,6 +1599,7 @@ switch ($Method) {
     $Toolkit = Ask $Toolkit 'Toolkit folder' $Toolkit
     $Toolkit = Remove-TrailingSep $Toolkit
     Show-Target $Toolkit
+    Resolve-HAutoAgents $Toolkit   # BEFORE anything reads $X4Items
     # Test-ConfigPrecheck OUTSIDE, Test-LockedTargetsPrecheck INSIDE -- the config
     # is written on both branches, the copy is not. install.sh makes the same split.
     # DIRECTION FIRST, matching install.sh, which carries a nine-line comment at
@@ -1552,11 +1633,12 @@ switch ($Method) {
       Write-Host '  Nothing has been changed.' -ForegroundColor Red
       exit 2
     }
-    if ($Agent -ceq 'all') {
+    if ($Agent -ceq 'all' -or $Agent -ceq 'auto') {
       Write-Host '  [note] -Method global is a Claude-only layout: only the Claude target is installed.'
       Write-Host '         Codex and generic agents need -Method in-game or -Method separate.'
     }
     $X4Agents = @('claude')
+    Resolve-HItems
     if (-not $Toolkit) { $Toolkit = $SRC }
     Show-Target $Toolkit
     # Ahead of every write, exactly where install.sh gates its own global arm.
