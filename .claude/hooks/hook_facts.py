@@ -181,10 +181,12 @@ def is_abs(p: str) -> bool:
 def join_cwd(cwd: str, p: str) -> str:
     """Resolve `p` against the directory in force, or return "" when that is unknowable.
 
-    Returning "" rather than guessing is the whole safety property: the hook does not
-    know the shell's real starting directory, so `cd extensions && rm -rf amod` must
-    reach NO rule. Inventing a root there would fire on unrelated work, which is the
-    failure mode that gets a guard ignored.
+    Returning "" rather than guessing is the whole safety property: when the hook does
+    not know the shell's starting directory, `cd extensions && rm -rf amod` must reach
+    NO rule. Inventing a root there would fire on unrelated work, which is the failure
+    mode that gets a guard ignored. Since lane F (2026-10-02) the starting directory IS
+    known whenever the payload carries an absolute `cwd` (session_cwd); "" remains the
+    answer when it does not, or after a `cd` the hook cannot resolve.
     """
     if not p:
         return cwd
@@ -1685,6 +1687,16 @@ _UNKNOWN_CWD = "/x4-unknown-cwd"
 #: the shell's own cwd already being under toolkit code. Never a script.
 _REDIR_TOKEN = re.compile(r"^\d*(<<<|<<|<|>>|>\|?|&>)")
 
+#: Characters no relative PATH operand carries once the shell has parsed it, and that
+#: mis-split shell text does: a quote left by `\"$G\"`, the `)` of a `$(...)` the segmenter
+#: cut through, a glued `2>/dev/null`, a pipe. Lane F joins only CLEAN relative operands
+#: onto the session seed; debris keeps its pre-seed directory (see prep in facts()).
+_DEBRIS = re.compile("[\"'()<>|`]")
+#: A Windows DEVICE name is not a file in the directory: `2>nul` from the game root writes
+#: nothing there. MEASURED in the lane-F replay: 9 historical `2>nul` / `>nul` commands run
+#: from the game root became "redirecting into a game directory" advisories with the seed.
+_DEVICE = re.compile(r"^(nul|con|prn|aux|com[1-9]|lpt[1-9]):?$", re.I)
+
 
 def _python_script_target(rest: list):
     """(`"module"`|`"file"`, value) for the first thing a python invocation would
@@ -2215,9 +2227,25 @@ def search_paths(seg: str, require_recursive: bool = True) -> list[str]:
 DIR_VERBS = {"cd", "pushd"}
 
 
+def session_cwd(payload: dict) -> str:
+    """The directory the shell STARTS in: the payload's top-level `cwd`, when it is an
+    absolute path, else "" (unknowable -- join_cwd's safety property).
+
+    Claude Code and Codex both send it with every call (Codex: MEASURED 0.160.0, the
+    session cwd; Claude Code: the directory in force, which follows the Bash tool's own
+    `cd`). Without it a RELATIVE operand reached no path rule at all: MEASURED
+    2026-10-02, `rm -f reference/libraries/x.xml` from the folder holding reference/ was
+    ALLOW while the absolute spelling denied, and a live Codex run overwrote the file.
+    """
+    c = payload.get("cwd")
+    # Only a STRING is passed on; join_cwd already turns a relative or garbage base into
+    # "" for every operand, so an `is_abs` test here would be a clause no input can reach.
+    return c if isinstance(c, str) else ""
 
 
-def cwd_track(cmd: str, base: str = "") -> list:
+
+
+def cwd_track(cmd: str, base: str = "", seeded: bool = False) -> list:
     """[(segment, the directory in force FOR that segment)], in command order.
 
     Positional, not end-state: in `cd X && rm -rf Y` the `cd` itself still runs from
@@ -2229,6 +2257,17 @@ def cwd_track(cmd: str, base: str = "") -> list:
     needs a real parser, and for a guard the relocated directory is the safe error.
     """
     out, cwd, stack = [], base, []
+    #: True while the directory in force is still the SESSION's (the seed, or a resolved
+    #: relative `cd` from it) -- no absolute `cd` has said where the shell is. Lane F,
+    #: MEASURED over the history replay: from a seeded game root, `cd "$X4_TOOLKIT" && sed
+    #: -i ... scripts/x` joined the unresolved target ONTO the game root (the sticky join
+    #: below) and a toolkit edit read as a sed -i of the GAME -- a hard deny on routine
+    #: work. A seed is where the shell started, not evidence about where an unknown `cd`
+    #: lands, so from the seed an unresolved target is unknowable; after an absolute `cd`
+    #: the sticky join stands exactly as before.
+    #: Only for a caller that passes the SESSION cwd as `seeded`; the bare-python rule's
+    #: stand-in base keeps its own, older semantics.
+    from_seed = seeded and bool(base)
     #: The directory is what every later RELATIVE operand is judged against, so an
     #: operand read as literal text here disarms the path rules for the rest of the
     #: command -- `cd "$FZ" && rm -rf extensions` walked through a hard block on that.
@@ -2241,20 +2280,24 @@ def cwd_track(cmd: str, base: str = "") -> list:
             ops = _operands(seg)
             if ops:
                 if v == "pushd":
-                    stack.append(cwd)
+                    stack.append((cwd, from_seed))
+                tgt = resolve(ops[0], assigns)
                 # `cd -` returns somewhere this hook cannot know; refuse to guess.
                 if ops[0] == "-":
                     cwd = ""
+                elif from_seed and has_unresolved(tgt) and not is_abs(tgt):
+                    cwd = ""
                 else:
+                    from_seed = from_seed and not is_abs(tgt)
                     # RESOLVED, then joined exactly as before. Blanking the directory
                     # when the target stays unresolved looks more careful and is not:
                     # MEASURED 2026-09-02, `cd <game> && cd "$NOPE" && rm -rf extensions`
                     # went deny -> allow under that rule, because the sticky join keeps
                     # the operand under the root we last knew about. Leaving the join
                     # alone makes this change a pure tightening.
-                    cwd = join_cwd(cwd, resolve(ops[0], assigns))
+                    cwd = join_cwd(cwd, tgt)
         elif v == "popd" and stack:
-            cwd = stack.pop()
+            cwd, from_seed = stack.pop()
     return out
 
 
@@ -3555,12 +3598,22 @@ def facts(payload: dict, roots: dict) -> dict:
     # resolve_verb runs HERE, once per segment, with the assignment table already
     # computed above: a command name arriving through a variable (`RM=rm; $RM -rf ...`)
     # otherwise reaches no verb-keyed rule at all, hard blocks included.
-    seg_cwd, seg_prev = [], []
-    for c in all_cmds:
-        tracked = cwd_track(c)
+    seg_cwd, seg_prev, unseeded = [], [], []
+    base = session_cwd(payload)
+    # A carried command (bash -c, a heredoc fed to a shell, $(...)) is walked on its own,
+    # so it cannot see a `cd` made around it. When nothing anywhere changes directory it
+    # runs in the session's directory too; once anything does, where it runs is not
+    # known here, and it keeps today's "unknowable" rather than a guessed directory.
+    moves = any(verb(s) in DIR_VERBS or verb(s) == "popd"
+                for c_ in all_cmds for s in segments(c_))
+    for i_, c in enumerate(all_cmds):
+        tracked = cwd_track(c, base if (i_ == 0 or not moves) else "", seeded=True)
         seg_cwd += [(resolve_verb(s, assigns), d) for s, d in tracked]
         # The segment BEFORE each one in the same carried command: what feeds an xargs.
         seg_prev += [None] + [s for s, _d in tracked][:-1] if tracked else []
+        # The directory each segment had BEFORE lane F (no session seed), for the two
+        # rules whose verdict is an ASK outside the profile -- see `gitwipe_t` below.
+        unseeded += [d for _s, d in cwd_track(c)]
     # A SUBSTITUTED COMMAND NAME REACHES NO RULE AT ALL. An unknown OPERAND still
     # reaches the conservative branch; an unknown VERB reaches nothing, so it takes
     # all three hard blocks with it. MEASURED 2026-09-08 against the live hook:
@@ -3606,7 +3659,7 @@ def facts(payload: dict, roots: dict) -> dict:
     segs = [s for s, _ in seg_cwd]
     cwd = seg_cwd[-1][1] if seg_cwd else ""
 
-    def prep(paths, c_cwd, expand=True):
+    def prep(paths, c_cwd, c_old, expand=True):
         """(path resolved where it runs, unresolvable?, the token as written). A whole
         array reference -- a for-loop variable, `"${A[@]}"` -- yields one entry PER
         element (resolve_all).
@@ -3616,7 +3669,9 @@ def facts(payload: dict, roots: dict) -> dict:
         MEASURED in this lane's history replay: expanding them turned 37 historical
         commands from allow into a DENY on the /tmp and durable-record hygiene rules
         (`for g in ...; do ... > /tmp/g_$g.txt`), which is friction on rules the
-        pre-arc note never concerned -- so it was scoped out, not shipped."""
+        pre-arc note never concerned -- so it was scoped out, not shipped.
+
+        `c_old` is the segment's directory WITHOUT the session seed (lane F); see below."""
         out = []
         for p in paths:
             # expand=False: resolved exactly as before this lane -- loop words and
@@ -3624,7 +3679,15 @@ def facts(payload: dict, roots: dict) -> dict:
             rs = resolve_all(p, assigns) if expand else [resolve(p, plain_assigns)]
             for r in rs:
                 unres = has_unresolved(r)
-                out.append((r if unres else join_cwd(c_cwd, r), unres, r))
+                # PARSE DEBRIS IS NOT JOINED ONTO THE SESSION SEED (lane F). `c_old` is the
+                # directory this segment had before the seed existed; a token carrying a
+                # quote, a paren, a redirect or a pipe character, or naming a Windows
+                # device (`nul`), is judged against it, i.e. exactly as before. MEASURED in the history replay: with the seed,
+                # `2>/dev/null` read as a sed -i TARGET under the game root and an escaped
+                # `\"$G\"` as a relative path there -- 3 hard denies on probe harnesses and
+                # one-liners, every one a token no shell would treat as that path.
+                d = c_old if (_DEBRIS.search(r) or _DEVICE.match(r)) else c_cwd
+                out.append((r if unres else join_cwd(d, r), unres, r))
         return out
 
     rm_t, copy_t, redir_t, mv_src = [], [], [], []
@@ -3632,31 +3695,36 @@ def facts(payload: dict, roots: dict) -> dict:
     gitwipe_t, gitdiscard_t = [], []
     scoped_rm_t, mod_t = [], []
     search_seg, git_all = False, False
-    for (s, c_cwd), prev in zip(seg_cwd, seg_prev):
-        rm_t += prep(rm_paths(s), c_cwd)
-        rm_t += prep(xargs_feed(s, prev), c_cwd)
-        rm_t += prep(rsync_deletes(s), c_cwd)
+    for (s, c_cwd), prev, c_old in zip(seg_cwd, seg_prev, unseeded):
+        rm_t += prep(rm_paths(s), c_cwd, c_old)
+        rm_t += prep(xargs_feed(s, prev), c_cwd, c_old)
+        rm_t += prep(rsync_deletes(s), c_cwd, c_old)
         robo_copy, robo_del, robo_mv = robocopy_effects(s)
-        copy_t += prep(robo_copy, c_cwd)
-        rm_t += prep(robo_del, c_cwd)
-        mv_src += prep(robo_mv, c_cwd)
-        mod_t += prep(modify_targets(s), c_cwd)
+        copy_t += prep(robo_copy, c_cwd, c_old)
+        rm_t += prep(robo_del, c_cwd, c_old)
+        mv_src += prep(robo_mv, c_cwd, c_old)
+        mod_t += prep(modify_targets(s), c_cwd, c_old)
         # A FILTERED find-delete removes entries INSIDE its tree: it feeds every in-tree
         # delete rule, and never the whole-install hard block (see find_scoped_deletes).
-        scoped_rm_t += prep(find_scoped_deletes(s), c_cwd)
+        scoped_rm_t += prep(find_scoped_deletes(s), c_cwd, c_old)
         # truncate / dd of= are truncating writes, judged as `>` is (see clobber_targets).
-        redir_t += [("truncate",) + o for o in prep(clobber_targets(s), c_cwd, False)]
-        mv_src += prep(move_sources(s), c_cwd)
-        copy_t += prep(copy_dests(s), c_cwd)
-        sed_t += prep(sed_in_place_targets(s), c_cwd)
-        out_t += prep(output_targets(s), c_cwd, False)
-        search_files += prep(search_paths(s, require_recursive=False), c_cwd)
-        gitwipe_t += prep(git_wipes_worktree_targets(s), c_cwd)
-        gitdiscard_t += prep(git_discards_named_files(s), c_cwd)
+        redir_t += [("truncate",) + o for o in prep(clobber_targets(s), c_cwd, c_old, False)]
+        mv_src += prep(move_sources(s), c_cwd, c_old)
+        copy_t += prep(copy_dests(s), c_cwd, c_old)
+        sed_t += prep(sed_in_place_targets(s), c_cwd, c_old)
+        out_t += prep(output_targets(s), c_cwd, c_old, False)
+        search_files += prep(search_paths(s, require_recursive=False), c_cwd, c_old)
+        # UNSEEDED, deliberately (lane F). `git clean -f` / `reset --hard` name no path, so
+        # with the session seed EVERY one run from the game or toolkit root becomes an ASK
+        # -- a new prompt outside the profile, which the user has ruled out (2026-10-02:
+        # approval fatigue). MEASURED in the replay: 1 historical row, a probe harness.
+        # The rule keeps exactly its pre-lane reach: an explicit `cd <root>` or `git -C`.
+        gitwipe_t += prep(git_wipes_worktree_targets(s), c_old, c_old)
+        gitdiscard_t += prep(git_discards_named_files(s), c_cwd, c_old)
         search_seg = search_seg or searches(s)
         git_all = git_all or git_adds_everything(s)
         for mode, tgt in redirects(s):
-            redir_t += [(mode,) + o for o in prep([tgt], c_cwd, False)]
+            redir_t += [(mode,) + o for o in prep([tgt], c_cwd, c_old, False)]
 
     def hit(ops, key, conservative=False):
         """`conservative` is the delete-only rule (user decision 2026-09-01): an
@@ -3697,9 +3765,13 @@ def facts(payload: dict, roots: dict) -> dict:
     # the roots: if an argument names a PROTECTED tree, that write reached no rule, and
     # the part is reported untranslated -> ask. The workspaces (toolkit, mods) are not
     # protected trees, so ordinary module commands there stay silent.
-    for s, c_cwd in seg_cwd:
+    # UNSEEDED (lane F), for the same reason as `gitwipe_t`: this ends in an ASK, and an
+    # unknown cmdlet's RELATIVE arguments are not known to be paths at all. MEASURED in the
+    # replay: 2 historical rows, both a user-defined PowerShell function called with
+    # relative names from the game root -- each would have become a new prompt.
+    for (s, _c), c_old in zip(seg_cwd, unseeded):
         if verb(s) == "x4-unknown-cmdlet":
-            ops = prep(_operands(s), c_cwd)
+            ops = prep(_operands(s), c_old, c_old)
             if any(hit(ops, k, conservative=True)
                    for k in ("game", "reference", "profile", "saves", "documents")):
                 name = (_operands(s) or ["?"])[0]
