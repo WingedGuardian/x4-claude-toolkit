@@ -378,14 +378,16 @@ function Get-NormText($p) { return ([IO.File]::ReadAllText($p)).Replace("`r", ''
 # --- AGENTS.md: never overwrite one the toolkit did not write -------------------------
 # 0 of 23 tagged releases before 4.0 shipped AGENTS.md (MEASURED 2026-10-02), so one in a
 # destination today is its user's, and "differs from ours" is exactly "not ours".
-# WARNING: WHEN 4.0 SHIPS this rule must gain the hash list of every AGENTS.md a release
-# shipped (see install.sh).
+# A KNOWN shipped AGENTS.md (scripts/shipped-instruction-hashes.txt, generated from every
+# release tag) is ours, so it is replaced rather than moved aside -- see install.sh.
 function Get-AgentsMdMoveTarget($dest) {
   if (-not (Test-ItemSelected 'AGENTS.md')) { return $null }
   $s = Join-Path $SRC 'AGENTS.md'
   $d = Join-Path $dest 'AGENTS.md'
   if (-not (Test-Path -LiteralPath $s -PathType Leaf) -or -not (Test-Path -LiteralPath $d -PathType Leaf)) { return $null }
   if ((Get-NormText $s) -ceq (Get-NormText $d)) { return $null }
+  $h = Get-HCanonicalSha256 $d
+  if ($h -and ((Test-HKnownHash $h 'AGENTS.md') -eq 'yes')) { return $null }
   $n = 'AGENTS.pre-4.0.md'
   if (-not (Test-Path -LiteralPath (Join-Path $dest $n))) { return $n }
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -408,6 +410,96 @@ function Save-UserAgentsMd($dest) {
   }
   Write-Host '  [note] your AGENTS.md differs from the one this toolkit ships, so it was KEPT as:'
   Write-Host ('           ' + (Join-Path $dest $to))
+}
+
+# --- shipped-version hashes (lane H) -- the mirror of install.sh's _h_* helpers -------
+#: The data file both installers read; absent means nothing is known to be ours, so every
+#: differing file is KEPT (the safe direction).
+$X4ShippedHashes = 'scripts/shipped-instruction-hashes.txt'
+
+#: THE CANONICAL HASH (one definition, three implementations): drop a leading UTF-8 BOM,
+#: delete every CR (13), trim trailing LFs (10), SHA-256, lowercase hex. On BYTES, never
+#: decoded, so invalid UTF-8 cannot change the answer. $null when the file is unreadable.
+function Get-HCanonicalSha256($path) {
+  try { $b = [IO.File]::ReadAllBytes($path) } catch { return $null }
+  $start = 0
+  if ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) { $start = 3 }
+  $out = New-Object 'System.Collections.Generic.List[byte]' -ArgumentList $b.Length
+  for ($k = $start; $k -lt $b.Length; $k++) { if ($b[$k] -ne 13) { $out.Add($b[$k]) } }
+  $n = $out.Count
+  while ($n -gt 0 -and $out[$n - 1] -eq 10) { $n-- }
+  if ($n -lt $out.Count) { $out.RemoveRange($n, $out.Count - $n) }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { $h = $sha.ComputeHash($out.ToArray()) } finally { $sha.Dispose() }
+  return (-join ($h | ForEach-Object { $_.ToString('x2') }))
+}
+
+#: Is ($hash, $name) a row of the shipped list? 'yes', 'no', or 'nolist'.
+function Test-HKnownHash($hash, $name) {
+  $f = Join-Path $SRC $X4ShippedHashes
+  if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return 'nolist' }
+  foreach ($line in [IO.File]::ReadAllLines($f)) {
+    $p = $line.Trim() -split '\s+'
+    if ($p.Count -lt 2 -or $p[0] -eq '' -or $p[0].StartsWith('#')) { continue }
+    if ($p[0] -ceq $hash -and $p[1] -ceq $name) { return 'yes' }
+  }
+  return 'no'
+}
+
+#: Is $dest\$name a file the toolkit SHIPPED -- the source's copy, or any release's?
+function Test-HIsShipped($dest, $name) {
+  $h = Get-HCanonicalSha256 (Join-Path $dest $name)
+  if (-not $h) { return $false }
+  $s = Get-HCanonicalSha256 (Join-Path $SRC $name)
+  if ($s -and ($s -ceq $h)) { return $true }
+  return ((Test-HKnownHash $h $name) -eq 'yes')
+}
+
+#: The first free name $base.md / $base.<stamp>.md / $base.<stamp>-N.md in $dest.
+function Get-HAsideName($dest, $base) {
+  $n = "$base.md"
+  if (-not (Test-Path -LiteralPath (Join-Path $dest $n))) { return $n }
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $n = "$base.$stamp.md"
+  $k = 0
+  while (Test-Path -LiteralPath (Join-Path $dest $n)) { $k++; $n = "$base.$stamp-$k.md" }
+  return $n
+}
+
+#: 3.x -> 4.0: the name $dest's CLAUDE.md would be KEPT as, or $null when it is ours or no
+#: Claude copy happens. One function for the dry-run listing and the mover.
+function Get-HClaudeMdMoveTarget($dest) {
+  if (-not (Test-ItemSelected 'CLAUDE.md')) { return $null }
+  if (-not (Test-Path -LiteralPath (Join-Path $SRC 'CLAUDE.md') -PathType Leaf) -or
+      -not (Test-Path -LiteralPath (Join-Path $dest 'CLAUDE.md') -PathType Leaf)) { return $null }
+  if (Test-HIsShipped $dest 'CLAUDE.md') { return $null }
+  return (Get-HAsideName $dest 'X4-NOTES.pre-4.0')
+}
+
+#: Why that decision is narrower than it looks, when it is: SAID, never silent.
+function Show-HHashCaveat {
+  if (-not (Test-Path -LiteralPath (Join-Path $SRC $X4ShippedHashes) -PathType Leaf)) {
+    Write-Host ('  [note] this source has no ' + $X4ShippedHashes + ', so no shipped version is known:')
+    Write-Host '         any CLAUDE.md that differs from this one is treated as yours and kept.'
+  }
+}
+
+function Save-HUserClaudeMd($dest) {
+  $to = Get-HClaudeMdMoveTarget $dest
+  if (-not $to) { return }
+  Refuse-IfDryRun 'keeping your CLAUDE.md as X4-NOTES.pre-4.0 in' $dest
+  try {
+    Move-Item -LiteralPath (Join-Path $dest 'CLAUDE.md') -Destination (Join-Path $dest $to) -ErrorAction Stop
+  } catch {
+    Write-Host ("ERROR: could not move CLAUDE.md aside to " + $to + ": " + $_.Exception.Message) -ForegroundColor Red
+    Write-Host '       Nothing else has been changed.' -ForegroundColor Red
+    exit 1
+  }
+  Write-Host '  [note] your CLAUDE.md is not one this toolkit ever shipped, so it was KEPT as:'
+  Write-Host ('           ' + (Join-Path $dest $to))
+  Write-Host '         The 4.0 CLAUDE.md now loads every session. Move your own notes into'
+  Write-Host '         X4-NOTES.md in the same folder: the toolkit never writes that file.'
+  Show-HHashCaveat
 }
 
 # --- {{TOOLKIT}} in the Codex / generic skills ----------------------------------------
@@ -1046,9 +1138,10 @@ function Assert-Direction($dest, $named) {
       if (Test-Path -LiteralPath (Join-Path $dest $m)) { Write-Host "      $m" -ForegroundColor Red }
     }
     Write-Host "" -ForegroundColor Red
-    Write-Host "  Installing over it REPLACES those files. If any of them are yours - an" -ForegroundColor Red
-    Write-Host "  edited CLAUDE.md, your own KNOWLEDGEBASE.md, customised skills - they are" -ForegroundColor Red
-    Write-Host "  gone, and only .claude\x4-paths.env and settings.local.json are preserved." -ForegroundColor Red
+    Write-Host "  Installing over it REPLACES those files. An edited CLAUDE.md or AGENTS.md is" -ForegroundColor Red
+    Write-Host "  KEPT beside it (X4-NOTES.pre-4.0.md / AGENTS.pre-4.0.md); your own" -ForegroundColor Red
+    Write-Host "  KNOWLEDGEBASE.md and customised skills are replaced. .claude\x4-paths.env and" -ForegroundColor Red
+    Write-Host "  settings.local.json are preserved." -ForegroundColor Red
     Write-Host "" -ForegroundColor Red
     Write-Host "  To upgrade it anyway, say so explicitly:" -ForegroundColor Red
     Write-Host "      .\install.ps1 -Method $Method -OverExisting ..." -ForegroundColor Red
@@ -1080,6 +1173,11 @@ function Show-CopyPlan($dest) {
     # SAID in the dry run exactly as the real run would do it: one function decides both.
     $to = Get-AgentsMdMoveTarget $dest
     if ($to) { Write-Host ('  your AGENTS.md differs from the shipped one: it would be KEPT as ' + $to + ', not overwritten') }
+    $to = Get-HClaudeMdMoveTarget $dest
+    if ($to) {
+      Write-Host ('  your CLAUDE.md is not one this toolkit shipped: it would be KEPT as ' + $to + ', not overwritten')
+      Show-HHashCaveat
+    }
     Write-Host ""
     Write-Host "=== dry run complete: nothing was changed ==="
     exit 0
@@ -1407,6 +1505,7 @@ switch ($Method) {
       Test-LockedTargetsPrecheck $Toolkit
       Show-CopyPlan $Toolkit
       Save-UserAgentsMd $Toolkit        # after every precheck, before the copy
+      Save-HUserClaudeMd $Toolkit       # 3.x -> 4.0: same position, same shape
       Copy-Toolkit $Toolkit
       Invoke-ToolkitTokenRender $Toolkit
     } else {
@@ -1435,6 +1534,7 @@ switch ($Method) {
       Test-LockedTargetsPrecheck $Toolkit
       Show-CopyPlan $Toolkit
       Save-UserAgentsMd $Toolkit        # after every precheck, before the copy
+      Save-HUserClaudeMd $Toolkit       # 3.x -> 4.0: same position, same shape
       Copy-Toolkit $Toolkit
       Invoke-ToolkitTokenRender $Toolkit
     } else {

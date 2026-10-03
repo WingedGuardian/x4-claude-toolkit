@@ -1926,6 +1926,148 @@ def test_both_installers_render_the_SAME_hooks_json(installer, tmp_path):
     assert norm(dests["sh"], "sh") == norm(dests["ps1"], "ps1")
 
 
+# --- 3.x -> 4.0: a personalised CLAUDE.md is KEPT as X4-NOTES.pre-4.0.md (lane H T2) -- #
+#
+# "Personalised" = its canonical hash (BOM dropped, CR deleted, trailing LF stripped) is
+# neither the source's CLAUDE.md NOR any CLAUDE.md a release tag shipped
+# (scripts/shipped-instruction-hashes.txt). The same list makes a KNOWN shipped AGENTS.md
+# ours, so it is replaced rather than moved aside.
+
+_V3_SHIPPED = "# CLAUDE.md -- as v3.3.1 shipped it\nrule one\n"
+
+
+def _known(src, *texts, name="CLAUDE.md"):
+    """Write the data file the way the generator does, hashing with PYTHON -- so every
+    installer test below is also a three-implementation agreement test."""
+    import hashlib
+
+    def canon(b):
+        b = b[3:] if b.startswith(b"\xef\xbb\xbf") else b
+        return hashlib.sha256(b.replace(b"\r", b"").rstrip(b"\n")).hexdigest()
+    (src / "scripts").mkdir(exist_ok=True)
+    (src / "scripts" / "shipped-instruction-hashes.txt").write_text(
+        "# comment line\n" + "".join("%s  %s  vtest\n" % (canon(t.encode("utf-8")), name) for t in texts),
+        encoding="utf-8")
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_PERSONALISED_claude_md_is_kept_as_X4_NOTES_pre_4_0(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    _known(src, _V3_SHIPPED)
+    dest = _fresh(tmp_path)
+    mine = (_V3_SHIPPED + "my own rule\n").encode("utf-8")
+    (dest / "CLAUDE.md").write_bytes(mine)
+    r = _install(installer, tmp_path, dest, "--agent", "claude", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "X4-NOTES.pre-4.0.md").read_bytes() == mine, "the user's file was not kept BYTE-identical"
+    assert (dest / "CLAUDE.md").read_bytes() == b"# CLAUDE.md -- shipped\n"
+    assert "X4-NOTES.pre-4.0.md" in r.stdout and "X4-NOTES.md" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("variant", ["lf", "crlf", "bom_crlf", "extra_trailing_newlines", "lone_cr"])
+def test_TWIN_an_UNEDITED_shipped_claude_md_is_replaced_not_kept(installer, variant, tmp_path):
+    """One variant per canonicalisation clause: deleting any clause turns a named one RED.
+
+    `lone_cr` exists because Git Bash's sed reads in TEXT mode and already drops the CR of
+    every CRLF (MEASURED: deleting install.sh's `tr -d '\\r'` left `crlf` GREEN on Windows).
+    A CR not followed by LF survives that, so only this variant can see the clause there."""
+    src = _agent_source(tmp_path)
+    _known(src, _V3_SHIPPED)
+    dest = _fresh(tmp_path)
+    b = _V3_SHIPPED.encode("utf-8")
+    b = {"lf": b, "crlf": b.replace(b"\n", b"\r\n"),
+         "bom_crlf": b"\xef\xbb\xbf" + b.replace(b"\n", b"\r\n"),
+         "extra_trailing_newlines": b + b"\n\n",
+         "lone_cr": b.replace(b"rule one", b"rule\r one")}[variant]
+    (dest / "CLAUDE.md").write_bytes(b)
+    r = _install(installer, tmp_path, dest, "--agent", "claude", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert not list(dest.glob("X4-NOTES.pre-4.0*")), "an unedited shipped file was kept as the user's\n" + _ok(r)
+    assert (dest / "CLAUDE.md").read_bytes() == b"# CLAUDE.md -- shipped\n"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_claude_md_equal_to_the_SOURCE_is_not_kept_even_with_no_list(installer, tmp_path):
+    src = _agent_source(tmp_path)                   # no data file at all
+    dest = _fresh(tmp_path)
+    (dest / "CLAUDE.md").write_bytes(b"# CLAUDE.md -- shipped\r\n")
+    r = _install(installer, tmp_path, dest, "--agent", "claude", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert not list(dest.glob("X4-NOTES.pre-4.0*")), _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_with_NO_list_a_differing_claude_md_is_KEPT_and_the_run_SAYS_why(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / "CLAUDE.md").write_bytes(_V3_SHIPPED.encode())
+    r = _install(installer, tmp_path, dest, "--agent", "claude", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "X4-NOTES.pre-4.0.md").is_file(), _ok(r)
+    assert "shipped-instruction-hashes.txt" in r.stdout, "a narrowed decision must announce itself\n" + _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_codex_only_install_leaves_CLAUDE_md_ALONE(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / "CLAUDE.md").write_bytes(b"mine\n")
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "CLAUDE.md").read_bytes() == b"mine\n" and not list(dest.glob("X4-NOTES*"))
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_second_kept_CLAUDE_md_never_overwrites_the_first(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / "X4-NOTES.pre-4.0.md").write_bytes(b"first\n")
+    (dest / "CLAUDE.md").write_bytes(b"second\n")
+    r = _install(installer, tmp_path, dest, "--agent", "claude", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "X4-NOTES.pre-4.0.md").read_bytes() == b"first\n"
+    assert [p.read_bytes() for p in dest.glob("X4-NOTES.pre-4.0.*.md")] == [b"second\n"]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_DRY_RUN_keeps_nothing_and_SAYS_what_it_would_keep(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / "CLAUDE.md").write_bytes(b"mine\n")
+    r = _install(installer, tmp_path, dest, "--agent", "claude", "--dry-run", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "CLAUDE.md").read_bytes() == b"mine\n" and not list(dest.glob("X4-NOTES*"))
+    assert "X4-NOTES.pre-4.0.md" in r.stdout, _ok(r)
+    assert sorted(p.name for p in dest.iterdir()) == ["CLAUDE.md"], "the dry run wrote something"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_KNOWN_shipped_AGENTS_md_is_replaced_not_moved_aside(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    old = "# AGENTS.md as 4.0.0 shipped it\n"
+    _known(src, old, name="AGENTS.md")
+    dest = _fresh(tmp_path)
+    (dest / "AGENTS.md").write_bytes(old.replace("\n", "\r\n").encode())
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert not list(dest.glob("AGENTS.pre-4.0*")), _ok(r)
+    assert (dest / "AGENTS.md").read_text(encoding="utf-8") == _SHIPPED_AGENTS_MD
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_listed_hash_under_the_OTHER_name_does_not_count(installer, tmp_path):
+    """The list is keyed on (hash, NAME): a CLAUDE.md row never blesses an AGENTS.md."""
+    src = _agent_source(tmp_path)
+    old = "# shipped once, as CLAUDE.md\n"
+    _known(src, old, name="CLAUDE.md")
+    dest = _fresh(tmp_path)
+    (dest / "AGENTS.md").write_bytes(old.encode())
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "AGENTS.pre-4.0.md").read_bytes() == old.encode(), _ok(r)
+
+
 # --- the REAL repository's tree (skips, counted, while a generated tree is absent) ---- #
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])

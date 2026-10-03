@@ -585,12 +585,109 @@ _agents_landed() {
 #
 # 0 of 23 tagged releases before 4.0 shipped AGENTS.md (MEASURED 2026-10-02, per tag),
 # so an AGENTS.md in a destination today was written by its user, and "differs from the
-# one we ship" is exactly "not ours". It is MOVED ASIDE, never overwritten.
-# ⚠ WHEN 4.0 SHIPS this rule must gain the list of hashes of every AGENTS.md a release
-# shipped, or every upgrade will move the previous release's file aside as if it were
-# the user's -- safe (nothing is lost), but noisy and wrongly worded.
+# one we ship" is exactly "not ours". It is MOVED ASIDE, never overwritten -- unless its
+# hash is one a release SHIPPED (scripts/shipped-instruction-hashes.txt, generated from
+# every release tag by gen-shipped-hashes.py), which makes it ours to replace.
 _same_text() {   # _same_text A B -- equal once CRLF is ignored
   [ "$(tr -d '\r' < "$1")" = "$(tr -d '\r' < "$2")" ]
+}
+
+# --- shipped-version hashes (lane H) ---------------------------------------------------
+#: The data file both installers read. Absent (a synthetic or truncated source) means
+#: "nothing is known to be ours", so every differing file is KEPT -- the safe direction.
+X4_SHIPPED_HASHES="scripts/shipped-instruction-hashes.txt"
+
+#: SHA-256 of stdin as lowercase hex; fails when no tool exists or the output is not a hash.
+_h_sha256() {
+  local out
+  if command -v sha256sum >/dev/null 2>&1; then out="$(sha256sum)" || return 1
+  elif command -v shasum >/dev/null 2>&1; then out="$(shasum -a 256)" || return 1
+  elif command -v openssl >/dev/null 2>&1; then out="$(openssl dgst -sha256 -r)" || return 1
+  else return 1; fi
+  out="${out%% *}"
+  out="$(printf '%s' "$out" | tr 'A-F' 'a-f')"
+  case "$out" in *[!0-9a-f]*|'') return 1 ;; esac
+  [ "${#out}" -eq 64 ] || return 1
+  printf '%s' "$out"
+}
+
+#: THE CANONICAL HASH (one definition, three implementations: gen-shipped-hashes.py,
+#: this, Get-HCanonicalSha256): drop a leading UTF-8 BOM, delete every CR, strip trailing
+#: LFs (the command substitution does that), SHA-256. GNU sed MEASURED under Git Bash;
+#: BSD sed on macOS is NOT measured -- a failure there only over-keeps, never overwrites.
+_h_canonical_sha256() {   # FILE -> hex, or fails
+  [ -f "$1" ] && [ -r "$1" ] || return 1
+  printf '%s' "$(LC_ALL=C sed $'1s/^\xef\xbb\xbf//' "$1" | tr -d '\r')" | _h_sha256
+}
+
+#: Is (HASH, NAME) a row of the shipped list? rc 0 yes, 1 no, 2 there is no list.
+_h_known_hash() {   # HASH NAME
+  local f="$SRC/$X4_SHIPPED_HASHES" h n rest
+  [ -f "$f" ] || return 2
+  while IFS=' ' read -r h n rest || [ -n "$h" ]; do
+    h="${h%$CR}"; n="${n%$CR}"
+    case "$h" in '#'*|'') continue ;; esac
+    [ "$h" = "$1" ] && [ "$n" = "$2" ] && return 0
+  done < "$f"
+  return 1
+}
+
+#: Is DEST/NAME a file the toolkit SHIPPED -- the source's copy, or any release's?
+#: rc 0 yes; 1 no (it is the user's). Never fails open: no hash tool means "not known".
+_h_is_shipped() {   # DEST NAME
+  local h s
+  h="$(_h_canonical_sha256 "$1/$2")" || return 1
+  if s="$(_h_canonical_sha256 "$SRC/$2")" && [ "$h" = "$s" ]; then return 0; fi
+  _h_known_hash "$h" "$2"
+}
+
+#: The first free name BASE.md / BASE.<stamp>.md / BASE.<stamp>-N.md in DEST.
+_h_aside_name() {   # DEST BASE
+  local d="$1" n="$2.md" stamp i=0
+  [ -e "$d/$n" ] || { printf '%s' "$n"; return 0; }
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  n="$2.$stamp.md"
+  while [ -e "$d/$n" ]; do i=$((i + 1)); n="$2.$stamp-$i.md"; done
+  printf '%s' "$n"
+}
+
+#: 3.x -> 4.0. The name DEST's CLAUDE.md would be KEPT as, or fails when it is ours (the
+#: source's, or a shipped release's) or no Claude copy happens. Shared by the dry-run
+#: listing and the mover, so they cannot differ. No installer ever REWROTE a CLAUDE.md
+#: (READ, every tag), so a differing hash is the user's edit, not an installer's.
+_h_claude_md_move_target() {   # DEST
+  local dest="$1"
+  _item_selected CLAUDE.md || return 1
+  [ -f "$SRC/CLAUDE.md" ] && [ -f "$dest/CLAUDE.md" ] || return 1
+  _h_is_shipped "$dest" CLAUDE.md && return 1
+  _h_aside_name "$dest" "X4-NOTES.pre-4.0"
+}
+
+#: Why the decision above is narrower than it looks, when it is: SAID, never silent.
+_h_hash_caveat() {
+  if [ ! -f "$SRC/$X4_SHIPPED_HASHES" ]; then
+    echo "  [note] this source has no $X4_SHIPPED_HASHES, so no shipped version is known:"
+    echo "         any CLAUDE.md that differs from this one is treated as yours and kept."
+  elif ! printf '' | _h_sha256 >/dev/null 2>&1; then
+    echo "  [note] no SHA-256 tool (sha256sum / shasum / openssl) was found, so shipped versions"
+    echo "         cannot be recognised: any differing CLAUDE.md is treated as yours and kept."
+  fi
+  return 0
+}
+
+preserve_user_claude_md() {   # DEST -- AFTER every precheck, BEFORE the copy
+  local dest="$1" to
+  to="$(_h_claude_md_move_target "$dest")" || return 0
+  refuse_if_dry_run "keeping your CLAUDE.md as X4-NOTES.pre-4.0 in" "$dest"
+  if ! mv -- "$dest/CLAUDE.md" "$dest/$to"; then
+    echo "ERROR: could not move $dest/CLAUDE.md aside to $to. Nothing else has been changed." >&2
+    exit 1
+  fi
+  echo "  [note] your CLAUDE.md is not one this toolkit ever shipped, so it was KEPT as:"
+  echo "           $dest/$to"
+  echo "         The 4.0 CLAUDE.md now loads every session. Move your own notes into"
+  echo "         X4-NOTES.md in the same folder: the toolkit never writes that file."
+  _h_hash_caveat
 }
 
 _agents_md_aside_name() {   # DEST -> the first name that does not exist yet
@@ -609,6 +706,8 @@ _agents_md_move_target() {   # DEST
   _item_selected AGENTS.md || return 1
   [ -f "$SRC/AGENTS.md" ] && [ -f "$dest/AGENTS.md" ] || return 1
   _same_text "$dest/AGENTS.md" "$SRC/AGENTS.md" && return 1
+  local h
+  if h="$(_h_canonical_sha256 "$dest/AGENTS.md")" && _h_known_hash "$h" AGENTS.md; then return 1; fi
   _agents_md_aside_name "$dest"
 }
 
@@ -1275,9 +1374,10 @@ require_direction() {
       [ -e "$dest/$m" ] && echo "      $m" >&2
     done
     echo >&2
-    echo "  Installing over it REPLACES those files. If any of them are yours -- an" >&2
-    echo "  edited CLAUDE.md, your own KNOWLEDGEBASE.md, customised skills -- they are" >&2
-    echo "  gone, and only .claude/x4-paths.env and settings.local.json are preserved." >&2
+    echo "  Installing over it REPLACES those files. An edited CLAUDE.md or AGENTS.md is" >&2
+    echo "  KEPT beside it (X4-NOTES.pre-4.0.md / AGENTS.pre-4.0.md); your own" >&2
+    echo "  KNOWLEDGEBASE.md and customised skills are replaced. .claude/x4-paths.env and" >&2
+    echo "  settings.local.json are preserved." >&2
     echo >&2
     echo "  To upgrade it anyway, say so explicitly:" >&2
     echo "      bash install.sh --method $METHOD --over-existing ..." >&2
@@ -1316,6 +1416,10 @@ announce_copy_plan() {
   # read one function, so the preview cannot name a different file.
   if to="$(_agents_md_move_target "$1")"; then
     echo "  your AGENTS.md differs from the shipped one: it would be KEPT as $to, not overwritten"
+  fi
+  if to="$(_h_claude_md_move_target "$1")"; then
+    echo "  your CLAUDE.md is not one this toolkit shipped: it would be KEPT as $to, not overwritten"
+    _h_hash_caveat
   fi
   echo
   echo "=== dry run complete: nothing was changed ==="
@@ -1417,6 +1521,7 @@ case "$METHOD" in
       precheck_locked_targets "$TOOLKIT"
       announce_copy_plan "$TOOLKIT"
       preserve_user_agents_md "$TOOLKIT"   # after every precheck, before the copy
+      preserve_user_claude_md "$TOOLKIT"   # 3.x -> 4.0: same position, same shape
       copy_toolkit "$TOOLKIT"
       render_toolkit_token "$TOOLKIT"
     else
@@ -1454,6 +1559,7 @@ case "$METHOD" in
       precheck_locked_targets "$TOOLKIT"
       announce_copy_plan "$TOOLKIT"
       preserve_user_agents_md "$TOOLKIT"   # after every precheck, before the copy
+      preserve_user_claude_md "$TOOLKIT"   # 3.x -> 4.0: same position, same shape
       copy_toolkit "$TOOLKIT"
       render_toolkit_token "$TOOLKIT"
     else
