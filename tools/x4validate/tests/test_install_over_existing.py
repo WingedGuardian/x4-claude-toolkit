@@ -1815,9 +1815,17 @@ def test_both_installers_render_the_SAME_hooks_json(installer, tmp_path):
         r = _install(which, tmp_path, d, "--agent", "codex", source=src)
         assert r.returncode == 0, _ok(r)
         dests[which] = json.loads((d / ".codex/hooks.json").read_text(encoding="utf-8"))
-    norm = lambda d, w: json.dumps(d).replace(str((tmp_path / ("t-" + w)).resolve()).replace(BS, BS * 2), "<ROOT_WIN>") \
-        .replace((tmp_path / ("t-" + w)).resolve().as_posix(), "<ROOT>")
-    assert norm(dests["sh"], "sh") == norm(dests["ps1"], "ps1")
+    # `{{ROOT_WIN}}` is the root with every `/` turned into `\` -- on Linux too, where
+    # str(path) has no backslash at all. Normalising with str(path) left the Linux root in
+    # commandWindows un-replaced, so the two installers differed by their own dir names
+    # (CI ubuntu, run 37091872873). Build the backslash form from as_posix() on every OS.
+    def norm(d, w):
+        root = (tmp_path / ("t-" + w)).resolve().as_posix()
+        return (json.dumps(d).replace(root.replace("/", BS).replace(BS, BS * 2), "<ROOT_WIN>")
+                .replace(root, "<ROOT>"))
+    got = {w: norm(dests[w], w) for w in ("sh", "ps1")}
+    assert "<ROOT_WIN>" in got["sh"] and "<ROOT>" in got["sh"], got["sh"]   # the norm DID apply
+    assert got["sh"] == got["ps1"]
 
 
 # --- the REAL repository's tree (skips, counted, while a generated tree is absent) ---- #

@@ -295,10 +295,22 @@ def test_a_GENERIC_only_root_has_no_guard_toolchain_and_says_so(tmp_path, monkey
     assert {r.status for r in rows.values()} == {doc.NA}, rows
 
 
-def test_two_spellings_of_ONE_git_install_agree():
+def test_two_spellings_of_ONE_git_install_agree(monkeypatch):
     """MEASURED on the author's machine: x4guard resolves Git/usr/bin/bash.exe (PATH),
-    scripts/gitbash.py resolves Git/bin/bash.exe (its launcher). One install, one bash."""
+    scripts/gitbash.py resolves Git/bin/bash.exe (its launcher). One install, one bash.
+    The launcher relationship is a fact about Git for WINDOWS, so the host is pinned to
+    Windows here (CI ubuntu ran this unpinned and failed, run 37091872873); the twin below
+    pins the other side of the `_on_windows()` clause."""
+    monkeypatch.setattr(doc, "_on_windows", lambda: True)
     assert doc.same_bash("C:/Program Files/Git/usr/bin/bash.exe", "C:/Program Files/Git/bin/bash.exe")
+    assert doc.same_bash("/usr/bin/bash", "/usr/bin/bash")
+
+
+def test_TWIN_off_Windows_the_launcher_spelling_is_two_paths(monkeypatch):
+    """`/usr/bin/bash` and `/bin/bash` are NOT one install in general on POSIX."""
+    monkeypatch.setattr(doc, "_on_windows", lambda: False)
+    assert not doc.same_bash("C:/Program Files/Git/usr/bin/bash.exe", "C:/Program Files/Git/bin/bash.exe")
+    assert not doc.same_bash("/usr/bin/bash", "/bin/bash")
     assert doc.same_bash("/usr/bin/bash", "/usr/bin/bash")
 
 
