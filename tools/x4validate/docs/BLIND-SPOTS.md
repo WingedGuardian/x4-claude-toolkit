@@ -225,6 +225,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F144 | the installers' prune lists were a hand-kept copy of `.gitignore` and had drifted, so an install from a git checkout copied untracked derived files | **DEFECT (measured)** · ✅ FIXED 2026-09-27 (git sources) | 33 untracked files, 2.3 GB (BaseX databases, `_eff/`, coverage manifests, a `.pytest_cache`) reached the destination from one checkout | a checkout source copies `git ls-files`, filtered by the same lists (`c3f8e47`); derived BaseX paths are KEEP_LOCAL (never copied in, never deleted out). A non-git source still depends on the hand-kept lists |
 | F145 | The PowerShell/cmd guard judges an UNRESOLVABLE PowerShell WRITE target by its text (as Bash writes are), not fail-closed; a delete whose target is computed (a list read with Get-Content, an indexed nested array) ASKS; writer methods on unknown objects (`$xml.Save(path)`) are not modelled; a cmd.exe delete of an unquoted spaced path is judged on rejoined operand spans (at most 12 words) | **SCOPE (measured)** · ✅ FIXED 2026-09-27 (the gaps the release review found; these residuals stated) | failing closed on writes MEASURED at +28 false-positive asks and 0 catches over 50,061 historical commands; computed delete targets: 2 of 1,524 historical PowerShell commands | release review hooks lane `5f6f414` `60ff523` `a30d401` `a399e3c` `6d7e702` |
 | F146 | Grep and Glob honour `.gitignore`, so a search rooted in a git-ignored folder (a game root kept under git with a whitelist `.gitignore`) sees nothing, and the packed-archive advisory explained the zero as packing | **DEFECT (measured)** · ✅ FIXED 2026-10-02 (hook + agent text) | Grep: 0 of 133 installed manifests (rg --no-ignore: 133); a subagent reported them absent | `search-scope.sh` runs `git check-ignore` on the root: Grep there DENIED with `rg --no-ignore` as the way out, Glob advised, the above-root advisory names `.gitignore`. Open: `.ignore`/`.rgignore` files are not read |
+| F147 | A RELATIVE shell operand with no preceding `cd` reached NO path rule: the guard never used the payload's `cwd`, so `rm -f reference/...` from the folder holding reference/ was allowed while the absolute spelling denied | **DEFECT (measured)** · ✅ FIXED 2026-10-02 (Plan 2 lane F) | 4-row probe on the deployed guard: rows 1-2 ALLOW, 3-4 deny; a live Codex run overwrote the file (lane B) | `hook_facts.facts()` seeds `cwd_track` with the payload `cwd`, narrowed by a 53,828-command OLD-vs-NEW replay to 0 new asks and 0 new denies; `x4guard check` sends the caller's cwd. Open: the Codex shell `workdir` is invisible; `git clean`/unknown cmdlets stay unseeded |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -7723,3 +7724,51 @@ documented contract. The 5%: those.
 a whitelist `.gitignore`: Grep in an ignored folder denies, no-path with an ignored cwd denies,
 Glob advises, an un-ignored folder of the same repo is allowed, the above-root advisory names
 `.gitignore`).
+
+## F147 — a RELATIVE shell operand reached no path rule: the guard ignored the payload's `cwd` · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-02 (Plan 2 lane F)
+
+**Found 2026-10-02 by Plan 2 lane B** (4 of 4 probes, Claude hook and Codex chain alike). A live
+Codex run OVERWROTE a file in `reference/` through a relative path. With the payload `cwd` = the
+folder that holds `reference/`, on the deployed guard: `rm -f reference/libraries/__p.xml` and
+`echo x > reference/libraries/__p.xml` were ALLOW, while the absolute spelling and
+`cd <folder> && rm -f reference/...` denied.
+
+**Root cause (READ).** `hook_facts.facts()` called `cwd_track(c)` with no base, so a relative
+operand with no preceding `cd` joined to "" and reached no path rule. `join_cwd`'s docstring
+justified that with "the hook does not know the shell's starting directory". That is no longer
+true: Claude Code and Codex both send `cwd` at the payload's top level. `x4guard check --kind
+shell` sent no `cwd` at all.
+
+**Fix.** `session_cwd(payload)` seeds `cwd_track`, and `x4guard` puts `os.getcwd()` in the shell
+payload. The Codex adapter has already entered the Codex payload's cwd. Edit/Write paths were
+already absolute: 0 of 12,396 historical calls carried a relative one (MEASURED), so
+`protect-files.sh` is unchanged.
+
+**Narrowed by measurement, not taste.** The OLD-vs-NEW replay covered 53,828 unique historical
+Bash/PowerShell commands, each with its own transcript cwd. On the unnarrowed prototype, 113
+rows changed: 105 advise, 5 deny and 3 ask, and every deny and ask was a false positive. Each
+narrowing below removed a class:
+- a `cd` to an unresolved target, taken from the SEED, is unknowable (`cd "$X4_TOOLKIT" && sed
+  -i ...` from the game root);
+- parse debris (quote, paren, redirect, pipe, backtick) and Windows device names (`2>nul`)
+  keep their pre-seed directory;
+- carriers are seeded only when nothing changes directory;
+- `git clean`/`reset --hard` and unknown PowerShell cmdlets, which ASK outside the profile,
+  stay unseeded.
+
+Shipped: **3 of 53,828** rows change facts: 2 allow->advise and 1 deny that stays deny. Rows where
+OLD was stricter: 0. New asks: 0. New denies: 0. Detail: Plan 2 `measure-F.md`.
+
+**Still open (the 5%).**
+- Codex's shell `workdir` is invisible to hooks, so a relative operand is judged against the
+  session cwd.
+- A bare `git clean -fdx` from a toolkit or game cwd still reaches no rule, as before.
+- Two historical commands get a false advisory from mis-segmented quoted text. That is a
+  segmenter limit, not the seed.
+
+**RE-DERIVED BY:** `test_hook_facts.py`
+`TestRelativeOperandsResolveAgainstThePayloadCwd` and
+`TestTheSeedIsNarrowedWhereTheReplayFoundFalsePositives`, with 17 verify-hook-tests mutants, one
+per clause. Also `test_audit0924_hooks.py` `TestLaneFRelativePathsUseThePayloadCwd` (the 4-row
+table E2E), `test_x4guard_check.py` `test_F_*`, and the conformance extras
+`*relative-delete*`.

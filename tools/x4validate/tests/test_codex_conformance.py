@@ -202,7 +202,9 @@ def extra_claude(case, tmp, tk, env) -> str:
                        "tool_input": {"file_path": _fill(call["path"], tmp, tk), "content": ""}}
             hook = "protect-files.sh"
         else:
-            payload = {"tool_name": call.get("tool", "Bash"), "tool_input": {"command": _fill(call["command"], tmp, tk)}}
+            # `cwd` as Claude Code sends it: the same directory the Codex payload carries (lane F).
+            payload = {"tool_name": call.get("tool", "Bash"), "tool_input": {"command": _fill(call["command"], tmp, tk)},
+                       "cwd": _fill(case.get("cwd", "{TK}"), tmp, tk)}
             hook = "protect-bash.sh"
         d = claude_hook(hook, payload, env, str(tk))
         worst = max(worst, d, key=RANK.get)

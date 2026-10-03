@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A relative path in a shell command is now judged where the shell runs.** The guards ignored
+  the `cwd` that Claude Code and Codex send with every call. So `rm -f reference/...` or
+  `echo x > reference/...`, run from the folder holding `reference/`, was allowed, while the same
+  command with an absolute path was blocked (a live Codex run overwrote a file that way).
+  Relative operands now resolve against that `cwd`, in the Bash and PowerShell hooks, the Codex
+  adapter and `x4guard check` alike. It was measured over 53,828 historical commands before
+  shipping: it adds no new confirmation prompt and no new block. Three commands change, and only
+  two of those gain an advisory (BLIND-SPOTS F147).
 - **`AGENTS.md` now carries the full shared instructions** (Codex and other agents), not a
   stopgap pointing at `CLAUDE.md`. Both files are generated from one agent-neutral core
   (`agent/instructions/core.md`) plus a per-agent addendum (`claude.md`, `codex.md`):
