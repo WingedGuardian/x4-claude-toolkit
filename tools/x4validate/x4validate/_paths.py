@@ -17,8 +17,16 @@ development machine only because the hardcoded defaults there happened to be rig
   1. the INSTALLER's env var name (what `x4-paths.env` and the docs use)
   2. the LEGACY env var name (what the Python used to read) — nothing that works
      today may break
-  3. `.claude/x4-paths.env`, located via `$X4_TOOLKIT` or by walking up from CWD —
-     the common case, since a plain shell exports none of the above
+  3. the config FILE (the common case, since a plain shell exports none of the
+     above), chosen by ONE rule that `_x4-env.sh` mirrors exactly (Plan 3 lane I;
+     `tests/test_config_precedence_agrees.py` pins the two together):
+     `$X4_CONFIG` (explicit -- naming no file means NO file is read) >
+     `<toolkit>/x4-paths.env` > `<toolkit>/.claude/x4-paths.env` (the 3.x location,
+     still read for all of 4.x, with a one-line deprecation notice) > none.
+     `<toolkit>` is `$X4_TOOLKIT`; only when that is UNSET does the search walk up
+     from the CWD, new before legacy at each level. A named toolkit holding no config
+     is NOT rescued by the walk: bash never walks, and a walk here was a silent
+     disagreement between the two loaders.
   4. a derivation from an already-resolved location (`$X4_GAME/extensions`,
      `$X4_PROFILE/content.xml`, ...)
   5. `_LOCAL_FALLBACK` — development-machine defaults, empty in the public tree
@@ -134,19 +142,170 @@ def parse_env_file(path: Path) -> dict[str, str]:
     return out
 
 
-def _find_env_file() -> Path | None:
-    """`.claude/x4-paths.env` from `$X4_TOOLKIT`, else by walking up from CWD."""
+#: The config file's name, the same at the 4.x location (the toolkit root) and the
+#: 3.x one (`<toolkit>/.claude/`).
+CONFIG_NAME = "x4-paths.env"
+#: The 3.x location, relative to a toolkit root. Read for all of 4.x, deprecated.
+LEGACY_CONFIG = Path(".claude", CONFIG_NAME)
+
+#: Configs already given their one deprecation notice in this process.
+_NOTICED: set[str] = set()
+
+
+def _locate_config() -> tuple[Path | None, str, Path | None]:
+    """`(file read or None, state, the OTHER location)` by the module docstring's rule.
+
+    state is one of `explicit | explicit-missing | new | both | legacy | none`;
+    `config_state()` refines `both`. The other location is the 3.x copy for `both`
+    and the 4.x path a `legacy` config should move to; None otherwise.
+    """
+    explicit = os.environ.get("X4_CONFIG")
+    if explicit:                                  # empty counts as unset, like ${X4_CONFIG:-}
+        p = Path(native(explicit))
+        return (p, "explicit", None) if p.is_file() else (None, "explicit-missing", None)
     toolkit = os.environ.get("X4_TOOLKIT")
     if toolkit:
-        p = Path(toolkit) / ".claude" / "x4-paths.env"
-        if p.is_file():
-            return p
-    here = Path.cwd().resolve()
-    for d in [here, *here.parents]:
-        p = d / ".claude" / "x4-paths.env"
-        if p.is_file():
-            return p
-    return None
+        roots = [Path(native(toolkit))]
+    else:
+        here = Path.cwd().resolve()
+        roots = [here, *here.parents]
+    for d in roots:
+        new, old = d / CONFIG_NAME, d / LEGACY_CONFIG
+        if new.is_file():
+            return (new, "both", old) if old.is_file() else (new, "new", None)
+        if old.is_file():
+            return old, "legacy", new
+    return None, "none", None
+
+
+def _find_env_file() -> Path | None:
+    """The config file actually read (see `_locate_config`), or None."""
+    return _locate_config()[0]
+
+
+def _assignments(p: Path) -> list[str]:
+    """The comparable content of a config: its `KEY=value` lines, CR and indent
+    stripped, blank and comment lines dropped, sorted. A comment difference therefore
+    AGREES and a quoting difference DIFFERS -- conservative on purpose."""
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    out = []
+    for raw in text.split("\n"):
+        line = raw.replace("\r", "").lstrip()
+        if line and not line.startswith("#") and "=" in line:
+            out.append(line)
+    return sorted(out)
+
+
+def _key_of(line: str) -> str:
+    k = line.split("=", 1)[0].strip()
+    return k[len("export "):].strip() if k.startswith("export ") else k
+
+
+def _differing_keys(a: Path, b: Path) -> list[str]:
+    """KEY NAMES whose assignments differ between two configs -- never a value: the
+    file carries `X4_NEXUS_KEY`."""
+    sa, sb = set(_assignments(a)), set(_assignments(b))
+    return sorted({_key_of(l) for l in sa ^ sb})
+
+
+def config_state() -> str:
+    """`explicit | explicit-missing | new | both-agree | both-differ | legacy | none`."""
+    found, state, other = _locate_config()
+    if state == "both":
+        return "both-differ" if _differing_keys(found, other) else "both-agree"
+    return state
+
+
+def config_file_in(root: Path) -> Path:
+    """THE config file of the toolkit at *root*: the 4.x one if it exists, else the 3.x
+    one if THAT exists, else the 4.x path (the one to demand)."""
+    root = Path(root)
+    new, old = root / CONFIG_NAME, root / LEGACY_CONFIG
+    if new.is_file():
+        return new
+    return old if old.is_file() else new
+
+
+def _migrate_cmd(toolkit: Path) -> str:
+    """The one migration command every notice names: its short form first (what a
+    reader searches for), then the exact, quoted line to run."""
+    return f'x4config.py migrate --apply, i.e. python "{toolkit / "scripts" / "x4config.py"}" migrate --apply'
+
+
+def _notice(env_file: Path | None) -> None:
+    """ONE stderr line per process for a deprecated (`legacy`) or doubled (`both`)
+    config. Paths and KEY NAMES only, never a value. The bash loader prints nothing
+    per call (a hook's stderr beside an empty verdict is a refusal); this is Python,
+    where a CLI's stderr is read by a person."""
+    if env_file is None or os.environ.get("X4_CONFIG"):
+        return
+    key = str(env_file)
+    if key in _NOTICED:
+        return
+    if env_file.parent.name == ".claude" and env_file.name == CONFIG_NAME:
+        tk = env_file.parent.parent
+        msg = (f"x4 config: {env_file} is the 3.x location and is deprecated; 4.0 reads "
+               f"{tk / CONFIG_NAME}. Move it: {_migrate_cmd(tk)} (or re-run the installer).")
+    elif env_file.name == CONFIG_NAME and (env_file.parent / LEGACY_CONFIG).is_file():
+        tk, old = env_file.parent, env_file.parent / LEGACY_CONFIG
+        keys = _differing_keys(env_file, old)
+        differ = (f" They DIFFER on: {', '.join(keys)} -- older guard copies may protect a "
+                  f"different tree." if keys else " They agree.")
+        msg = (f"x4 config: reading {env_file}; the deprecated 3.x copy {old} is IGNORED."
+               f"{differ} Resolve: x4config.py status, i.e. python \"{tk / 'scripts' / 'x4config.py'}\" status")
+    else:
+        return
+    _NOTICED.add(key)
+    print(msg, file=sys.stderr)
+
+
+def migrate_legacy_config(root: Path, apply: bool = False) -> tuple[str, str]:
+    """Move a toolkit's 3.x `.claude/x4-paths.env` to `<root>/x4-paths.env`.
+
+    A MOVE, never a copy (a copy leaves two files that drift apart on the first edit).
+    A rename works on an x4lock-locked (read-only) file and the lock travels with it
+    (MEASURED, Plan 3 lane I M6), so no unlock is needed. Dry unless *apply*.
+
+    `(action, message)`, action one of:
+      none              -- no 3.x file
+      would-move/moved  -- only the 3.x file: it becomes the 4.x one, byte for byte
+      would-retire-old/retired-old -- both, AGREEING: the 3.x one is renamed to
+                           `.claude/x4-paths.env.bak-<stamp>` (gitignored)
+      refused           -- both, DIFFERING: nothing changes; the message names both
+                           paths and the differing KEY names, never a value
+    """
+    root = Path(root)
+    new, old = root / CONFIG_NAME, root / LEGACY_CONFIG
+    if not old.is_file():
+        return "none", f"nothing to migrate: no 3.x config at {old}"
+    if not new.exists():
+        if not apply:
+            return "would-move", f"would move {old} -> {new}"
+        os.rename(old, new)                       # target checked absent: never overwrites
+        return "moved", (f"[migrated] {old} -> {new} (the 3.x location; 4.0 reads the "
+                         f"toolkit root). To undo (e.g. to go back to 3.x): move it back.")
+    if not new.is_file():
+        return "refused", f"REFUSING: {new} exists and is not a file; {old} left in place."
+    keys = _differing_keys(new, old)
+    if keys:
+        return "refused", (f"REFUSING: {new} and the 3.x {old} both exist and DIFFER on: "
+                           f"{', '.join(keys)}. Nothing has been changed. Keep the values you "
+                           f"want in {new}, then delete or rename {old}.")
+    import time
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    bak = old.with_name(f"{CONFIG_NAME}.bak-{stamp}")
+    n = 1
+    while bak.exists():
+        bak = old.with_name(f"{CONFIG_NAME}.bak-{stamp}-{n}")
+        n += 1
+    if not apply:
+        return "would-retire-old", f"would rename the agreeing 3.x copy {old} -> {bak}"
+    os.rename(old, bak)
+    return "retired-old", (f"[migrated] the 3.x {old} agreed with {new}; renamed it to {bak}. "
+                           f"To undo: rename it back.")
 
 
 @lru_cache(maxsize=1)
@@ -159,6 +318,7 @@ def _file_layer() -> tuple[dict[str, str], Path | None]:
     var is precisely the kind of quiet misconfiguration this module exists to end.
     """
     env_file = _find_env_file()
+    _notice(env_file)
     return (parse_env_file(env_file) if env_file else {}), env_file
 
 
@@ -516,8 +676,19 @@ def describe() -> list[str]:
     Silent misconfiguration is the whole failure mode here, so there has to be a
     way to ask the tool where it thinks everything is.
     """
-    _, env_file = _file_layer()
-    lines = [f"config file: {env_file or '(none found — set $X4_TOOLKIT or run install)'}"]
+    file_layer, env_file = _file_layer()
+    label = ""
+    if env_file is not None:
+        if os.environ.get("X4_CONFIG"):
+            label = "   (explicit $X4_CONFIG)"
+        elif env_file.parent.name == ".claude":
+            label = "   (3.x location, DEPRECATED -- scripts/x4config.py migrate --apply)"
+    elif os.environ.get("X4_CONFIG"):
+        label = f"   ($X4_CONFIG names {os.environ['X4_CONFIG']}, which does not exist)"
+    lines = [f"config file: {env_file or '(none found — set $X4_TOOLKIT or run install)'}{label}"]
+    env = {k: v for k, v in os.environ.items() if k.startswith("X4_") and v}
+    ref_defaulted = not any(layer.get("X4_REFERENCE")
+                            for layer in (env, file_layer, _LOCAL_FALLBACK))
     for name, fn in (("game", game_root), ("extensions", game_extensions),
                      ("reference", reference), ("profile", profile),
                      ("profile content.xml", profile_content),
@@ -527,5 +698,7 @@ def describe() -> list[str]:
                      ("savegames", savegames)):
         p = fn()
         mark = "" if p is None else ("" if p.exists() else "   (does not exist)")
+        if name == "reference" and p is not None and ref_defaulted:
+            mark += "   (DEFAULT: <toolkit>/reference -- no X4_REFERENCE configured)"
         lines.append(f"  {name:<20} {p or '(unresolved)'}{mark}")
     return lines
