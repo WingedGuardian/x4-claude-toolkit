@@ -32,6 +32,8 @@ import re
 import stat
 import shutil
 import subprocess
+import sys
+import uuid
 
 import pytest
 
@@ -102,6 +104,43 @@ def _refuse_unless_sandboxed(tmp_path: pathlib.Path, *paths: pathlib.Path) -> No
                     "installation (matched %r), even though it is under the "
                     "sandbox root." % (rp, bad))
 
+#: The ONLY registry root an installer run from this suite may be pointed at, via the
+#: installers' test seam X4_INSTALL_ENV_REGKEY. Production writes HKCU\Environment, and
+#: that is the developer's real environment: one forgotten flag would repoint their
+#: X4_TOOLKIT. Every key handed out is recorded, and deleted at module teardown.
+_TEST_REGROOT = "HKCU\\Software\\X4ToolkitTests\\"
+_REGKEYS_HANDED_OUT: list[str] = []
+
+
+def _new_regkey(tmp_path: pathlib.Path) -> str:
+    key = "%s%s-%s" % (_TEST_REGROOT, tmp_path.name, uuid.uuid4().hex[:8])
+    _REGKEYS_HANDED_OUT.append(key)
+    return key
+
+
+def _reg_exists(key: str) -> bool:
+    return subprocess.run(["reg", "query", key], capture_output=True, text=True).returncode == 0
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _regkey_cleanup():
+    """Delete every test registry key this module handed out -- ONLY those, never the
+    whole X4ToolkitTests root, which a concurrent run in another worktree may be using --
+    and assert each delete worked, so a leak is a failure rather than residue."""
+    yield
+    if os.name != "nt":
+        return
+    leaked = []
+    for key in _REGKEYS_HANDED_OUT:
+        if not _reg_exists(key):
+            continue
+        subprocess.run(["reg", "delete", key, "/f"], capture_output=True, text=True)
+        if _reg_exists(key):
+            leaked.append(key)
+    _REGKEYS_HANDED_OUT.clear()
+    assert not leaked, "test registry keys survived teardown: %s" % leaked
+
+
 def _fresh(tmp_path: pathlib.Path) -> pathlib.Path:
     """An empty destination plus the directories the installer is pointed at."""
     dest = tmp_path / "toolkit"
@@ -113,7 +152,8 @@ def _fresh(tmp_path: pathlib.Path) -> pathlib.Path:
 def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra: str,
              method: str = "separate", from_dest: bool = False,
              source: pathlib.Path | None = None, over_existing: bool = True,
-             scrub: tuple = ()):
+             scrub: tuple = (), env_write: bool = False, regkey: str | None = None,
+             detect_path: pathlib.Path | None = None, shell: str = "/bin/bash"):
     """Run ONE of the two installers with identical intent.
 
     Parameterised rather than duplicated, because the point is that both reach the
@@ -121,10 +161,30 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     would pass on two installers that agree about item lists and disagree about
     whether they clean up -- which is exactly what was true here: install.ps1 had
     `finally` where install.sh had none, and both still failed this path.
+
+    THE USER ENVIRONMENT IS SANDBOXED HERE, for every run (Plan 3 lane H). The
+    installers now set X4_TOOLKIT at OS level, so an unsandboxed run would write the
+    developer's real HKCU\\Environment or ~/.bashrc. `--no-env` is passed unless the
+    test asks for the write (`env_write=True`), and even then the write lands in a
+    throwaway registry key (`regkey`, under `_TEST_REGROOT`) or a profile file under
+    tmp_path (HOME, ZDOTDIR). Agent detection walks `detect_path` (an empty directory
+    by default), never the developer's PATH.
     """
     fake_home = tmp_path / "fake-claude-home"
     _refuse_unless_sandboxed(tmp_path, dest, tmp_path / "game",
                              tmp_path / "profile", tmp_path / "mods", fake_home)
+    if regkey is None:
+        regkey = _new_regkey(tmp_path)
+    if not regkey.startswith(_TEST_REGROOT) or len(regkey) <= len(_TEST_REGROOT):
+        raise AssertionError(
+            "REFUSING to run the installer: registry key %r is not under %r. The "
+            "production key is the developer's real environment." % (regkey, _TEST_REGROOT))
+    if detect_path is None:
+        detect_path = tmp_path / "no-agents"
+        detect_path.mkdir(exist_ok=True)
+    zdot = tmp_path / "zdot"
+    zdot.mkdir(exist_ok=True)
+    _refuse_unless_sandboxed(tmp_path, detect_path, zdot)
     common = {
         "method": method,
         "toolkit": dest.as_posix(),
@@ -148,9 +208,14 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
             common["agent"] = next(it)
         elif a == "--dry-run":
             flags.append("dry-run")
+        elif a == "--codex-doc-max-bytes":
+            common["codex-doc-max-bytes"] = next(it)
         else:
             raise AssertionError("unmapped flag: %s" % a)
+    if not env_write:
+        flags.append("no-env")
 
+    _ps_names = {"dry-run": "DryRun", "no-env": "NoEnv", "codex-doc-max-bytes": "CodexDocMaxBytes"}
     if installer == "sh":
         exe = _bash()
         if exe is None:
@@ -168,9 +233,9 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
         script = (dest / "install.ps1") if from_dest else (source / "install.ps1" if source else INSTALL_PS1)
         cmd = [exe, "-NoProfile", "-File", script.as_posix()]
         for k, v in common.items():
-            cmd += ["-" + k[:1].upper() + k[1:], v]
+            cmd += ["-" + _ps_names.get(k, k[:1].upper() + k[1:]), v]
         cmd += (["-OverExisting"] if over_existing else []) + ["-Yes"]
-        cmd += ["-DryRun" if f == "dry-run" else "-" + f for f in flags]
+        cmd += ["-" + _ps_names[f] for f in flags]
     cwd = dest.as_posix() if from_dest else (source.as_posix() if source else ROOT.as_posix())
     # The global arm writes to <claude-dir>, which is NOT one of the six path
     # flags. Pin it into the sandbox for every run rather than hoping no test
@@ -183,6 +248,14 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     env["CODEX_HOME"] = (tmp_path / "fake-codex-home").as_posix()
     env["HOME"] = tmp_path.as_posix()
     env["USERPROFILE"] = tmp_path.as_posix()
+    # THE USER ENVIRONMENT, sandboxed (see the docstring). The developer's own
+    # X4_TOOLKIT is removed too: an inherited value is a NAMED destination to both
+    # installers, and a "different existing value" to the env writer.
+    env.pop("X4_TOOLKIT", None)
+    env["X4_INSTALL_ENV_REGKEY"] = regkey
+    env["X4_INSTALL_DETECT_PATH"] = str(detect_path)
+    env["ZDOTDIR"] = zdot.as_posix()
+    env["SHELL"] = shell
     # `scrub` REMOVES variables, so a Windows box can reproduce a POSIX
     # environment. Every name passed there is Windows-only, i.e. exactly
     # $null under PowerShell on Linux and macOS.
@@ -199,6 +272,40 @@ def test_the_harness_can_install_at_all(installer, tmp_path):
     r = _install(installer, tmp_path, dest)
     assert r.returncode == 0, "unlocked install failed, so the harness proves nothing:\n%s\n%s" % (r.stdout[-2000:], r.stderr[-2000:])
     assert (dest / "scripts").is_dir(), "the installer reported success and copied no scripts/"
+
+
+def test_the_harness_NEVER_lets_an_installer_reach_the_real_user_env(tmp_path, monkeypatch):
+    """Every installer run gets a sandboxed registry key, HOME, ZDOTDIR, SHELL and detect
+    PATH, and --no-env unless the test asks for the env write. A test that forgot cannot
+    reach HKCU\\Environment, the developer's ~/.zshenv or ~/.bashrc, or their real PATH."""
+    captured = {}
+    real_run = subprocess.run
+
+    def spy(cmd, **kw):
+        captured["cmd"], captured["env"] = cmd, kw["env"]
+        return real_run([sys.executable, "-c", "pass"], capture_output=True, text=True)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    monkeypatch.setattr(sys.modules[__name__], "_bash", lambda: "bash")   # never skip
+    monkeypatch.setenv("ZDOTDIR", "/opt/developer-zdotdir")
+    monkeypatch.setenv("X4_TOOLKIT", "/the/real/toolkit")
+    monkeypatch.setenv("X4_INSTALL_ENV_REGKEY", "HKCU\\Environment")
+    dest = _fresh(tmp_path)
+    _install("sh", tmp_path, dest)
+    env, cmd = captured["env"], captured["cmd"]
+    assert env["X4_INSTALL_ENV_REGKEY"].startswith("HKCU\\Software\\X4ToolkitTests\\"), env.get(
+        "X4_INSTALL_ENV_REGKEY")
+    assert pathlib.Path(env["ZDOTDIR"]).resolve().is_relative_to(tmp_path.resolve())
+    assert pathlib.Path(env["X4_INSTALL_DETECT_PATH"]).resolve().is_relative_to(tmp_path.resolve())
+    assert env["SHELL"] == "/bin/bash"
+    assert "X4_TOOLKIT" not in env, "the developer's own X4_TOOLKIT reached the installer"
+    assert "--no-env" in cmd                                   # the default
+    _install("sh", tmp_path, dest, env_write=True)
+    assert "--no-env" not in captured["cmd"]                   # twin: the opt-in reaches the CLI
+    _install("ps1", tmp_path, dest)
+    assert "-NoEnv" in captured["cmd"]                         # the PowerShell spelling
+    with pytest.raises(AssertionError, match="REFUSING"):
+        _install("sh", tmp_path, dest, env_write=True, regkey="HKCU\\Environment")
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
@@ -1537,6 +1644,10 @@ def _agent_source(tmp_path: pathlib.Path, *, codex: bool = True, template: bool 
         (src / ".opencode" / "opencode.jsonc").write_bytes(b"// SOURCE COPY -- must never be installed\n")
     for name in ("install.sh", "install.ps1"):
         shutil.copy2(ROOT / name, src / name)
+    # The REAL user-environment writer both installers call (lane H), so the env tests
+    # drive the shipped script; its seam keeps every write under _TEST_REGROOT.
+    (src / "scripts").mkdir()
+    shutil.copy2(ROOT / "scripts" / "x4-userenv.ps1", src / "scripts" / "x4-userenv.ps1")
     files = {
         "setup.sh": "#!/bin/bash\necho stub-setup\nexit 0\n",
         "CLAUDE.md": "# CLAUDE.md -- shipped\n",
@@ -1915,6 +2026,491 @@ def test_both_installers_render_the_SAME_hooks_json(installer, tmp_path):
     got = {w: norm(dests[w], w) for w in ("sh", "ps1")}
     assert "<ROOT_WIN>" in got["sh"] and "<ROOT>" in got["sh"], got["sh"]   # the norm DID apply
     assert got["sh"] == got["ps1"]
+
+
+# --- 3.x -> 4.0: a personalised CLAUDE.md is KEPT as X4-NOTES.pre-4.0.md (lane H T2) -- #
+#
+# "Personalised" = its canonical hash (BOM dropped, CR deleted, trailing LF stripped) is
+# neither the source's CLAUDE.md NOR any CLAUDE.md a release tag shipped
+# (scripts/shipped-instruction-hashes.txt). The same list makes a KNOWN shipped AGENTS.md
+# ours, so it is replaced rather than moved aside.
+
+_V3_SHIPPED = "# CLAUDE.md -- as v3.3.1 shipped it\nrule one\n"
+
+
+def _known(src, *texts, name="CLAUDE.md"):
+    """Write the data file the way the generator does, hashing with PYTHON -- so every
+    installer test below is also a three-implementation agreement test."""
+    import hashlib
+
+    def canon(b):
+        b = b[3:] if b.startswith(b"\xef\xbb\xbf") else b
+        return hashlib.sha256(b.replace(b"\r", b"").rstrip(b"\n")).hexdigest()
+    (src / "scripts").mkdir(exist_ok=True)
+    (src / "scripts" / "shipped-instruction-hashes.txt").write_text(
+        "# comment line\n" + "".join("%s  %s  vtest\n" % (canon(t.encode("utf-8")), name) for t in texts),
+        encoding="utf-8")
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_PERSONALISED_claude_md_is_kept_as_X4_NOTES_pre_4_0(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    _known(src, _V3_SHIPPED)
+    dest = _fresh(tmp_path)
+    mine = (_V3_SHIPPED + "my own rule\n").encode("utf-8")
+    (dest / "CLAUDE.md").write_bytes(mine)
+    r = _install(installer, tmp_path, dest, "--agent", "claude", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "X4-NOTES.pre-4.0.md").read_bytes() == mine, "the user's file was not kept BYTE-identical"
+    assert (dest / "CLAUDE.md").read_bytes() == b"# CLAUDE.md -- shipped\n"
+    assert "X4-NOTES.pre-4.0.md" in r.stdout and "X4-NOTES.md" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("variant", ["lf", "crlf", "bom_crlf", "extra_trailing_newlines", "lone_cr"])
+def test_TWIN_an_UNEDITED_shipped_claude_md_is_replaced_not_kept(installer, variant, tmp_path):
+    """One variant per canonicalisation clause: deleting any clause turns a named one RED.
+
+    `lone_cr` exists because Git Bash's sed reads in TEXT mode and already drops the CR of
+    every CRLF (MEASURED: deleting install.sh's `tr -d '\\r'` left `crlf` GREEN on Windows).
+    A CR not followed by LF survives that, so only this variant can see the clause there."""
+    src = _agent_source(tmp_path)
+    _known(src, _V3_SHIPPED)
+    dest = _fresh(tmp_path)
+    b = _V3_SHIPPED.encode("utf-8")
+    b = {"lf": b, "crlf": b.replace(b"\n", b"\r\n"),
+         "bom_crlf": b"\xef\xbb\xbf" + b.replace(b"\n", b"\r\n"),
+         "extra_trailing_newlines": b + b"\n\n",
+         "lone_cr": b.replace(b"rule one", b"rule\r one")}[variant]
+    (dest / "CLAUDE.md").write_bytes(b)
+    r = _install(installer, tmp_path, dest, "--agent", "claude", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert not list(dest.glob("X4-NOTES.pre-4.0*")), "an unedited shipped file was kept as the user's\n" + _ok(r)
+    assert (dest / "CLAUDE.md").read_bytes() == b"# CLAUDE.md -- shipped\n"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_claude_md_equal_to_the_SOURCE_is_not_kept_even_with_no_list(installer, tmp_path):
+    src = _agent_source(tmp_path)                   # no data file at all
+    dest = _fresh(tmp_path)
+    (dest / "CLAUDE.md").write_bytes(b"# CLAUDE.md -- shipped\r\n")
+    r = _install(installer, tmp_path, dest, "--agent", "claude", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert not list(dest.glob("X4-NOTES.pre-4.0*")), _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_with_NO_list_a_differing_claude_md_is_KEPT_and_the_run_SAYS_why(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / "CLAUDE.md").write_bytes(_V3_SHIPPED.encode())
+    r = _install(installer, tmp_path, dest, "--agent", "claude", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "X4-NOTES.pre-4.0.md").is_file(), _ok(r)
+    assert "shipped-instruction-hashes.txt" in r.stdout, "a narrowed decision must announce itself\n" + _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_codex_only_install_leaves_CLAUDE_md_ALONE(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / "CLAUDE.md").write_bytes(b"mine\n")
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "CLAUDE.md").read_bytes() == b"mine\n" and not list(dest.glob("X4-NOTES*"))
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_second_kept_CLAUDE_md_never_overwrites_the_first(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / "X4-NOTES.pre-4.0.md").write_bytes(b"first\n")
+    (dest / "CLAUDE.md").write_bytes(b"second\n")
+    r = _install(installer, tmp_path, dest, "--agent", "claude", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "X4-NOTES.pre-4.0.md").read_bytes() == b"first\n"
+    assert [p.read_bytes() for p in dest.glob("X4-NOTES.pre-4.0.*.md")] == [b"second\n"]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_DRY_RUN_keeps_nothing_and_SAYS_what_it_would_keep(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / "CLAUDE.md").write_bytes(b"mine\n")
+    r = _install(installer, tmp_path, dest, "--agent", "claude", "--dry-run", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "CLAUDE.md").read_bytes() == b"mine\n" and not list(dest.glob("X4-NOTES*"))
+    assert "X4-NOTES.pre-4.0.md" in r.stdout, _ok(r)
+    assert sorted(p.name for p in dest.iterdir()) == ["CLAUDE.md"], "the dry run wrote something"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_KNOWN_shipped_AGENTS_md_is_replaced_not_moved_aside(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    old = "# AGENTS.md as 4.0.0 shipped it\n"
+    _known(src, old, name="AGENTS.md")
+    dest = _fresh(tmp_path)
+    (dest / "AGENTS.md").write_bytes(old.replace("\n", "\r\n").encode())
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert not list(dest.glob("AGENTS.pre-4.0*")), _ok(r)
+    assert (dest / "AGENTS.md").read_text(encoding="utf-8") == _SHIPPED_AGENTS_MD
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_listed_hash_under_the_OTHER_name_does_not_count(installer, tmp_path):
+    """The list is keyed on (hash, NAME): a CLAUDE.md row never blesses an AGENTS.md."""
+    src = _agent_source(tmp_path)
+    old = "# shipped once, as CLAUDE.md\n"
+    _known(src, old, name="CLAUDE.md")
+    dest = _fresh(tmp_path)
+    (dest / "AGENTS.md").write_bytes(old.encode())
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "AGENTS.pre-4.0.md").read_bytes() == old.encode(), _ok(r)
+
+
+# --- --agent auto (lane H T3) ----------------------------------------------------------- #
+#
+# Detection walks ONE PATH (the harness pins it to `detect_path`, an empty directory by
+# default) with ONE name/extension list per installer, plus destination markers. A bare
+# `.claude/` is never a Claude signal: every install creates one (x4-paths.env lives there).
+
+def _stub_agents(tmp_path, *names):
+    d = tmp_path / "agents-on-path"
+    d.mkdir(exist_ok=True)
+    for n in names:
+        p = d / n
+        p.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        p.chmod(0o755)
+        if os.name == "nt":
+            (d / (n + ".cmd")).write_text("@exit /b 0\r\n", encoding="utf-8")
+    return d
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("on_path,present,absent", [
+    (("codex",), ["AGENTS.md", ".codex/hooks.json"], ["CLAUDE.md", ".claude/settings.json"]),
+    (("claude",), ["CLAUDE.md", ".claude/settings.json"], ["AGENTS.md", ".codex"]),
+    (("claude", "codex"), ["CLAUDE.md", "AGENTS.md", ".codex/hooks.json"], []),
+])
+def test_auto_installs_exactly_the_agents_found_on_PATH(installer, on_path, present, absent, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "auto", source=src,
+                 detect_path=_stub_agents(tmp_path, *on_path))
+    assert r.returncode == 0, _ok(r)
+    for rel in present:
+        assert (dest / rel).exists(), rel + "\n" + _ok(r)
+    for rel in absent:
+        assert not (dest / rel).exists(), rel + "\n" + _ok(r)
+    for n in on_path:
+        assert "%s (on PATH" % n in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_auto_with_NOTHING_found_installs_all_and_SAYS_so(installer, tmp_path):
+    """User decision H-Q1: nothing detected installs `all` and says nothing was detected."""
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "auto", source=src)   # harness PATH is empty
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "CLAUDE.md").exists() and (dest / ".codex/hooks.json").exists(), _ok(r)
+    assert "no agent detected" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_auto_reads_a_CLAUDE_marker_in_the_destination(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / ".claude").mkdir()
+    (dest / ".claude" / "settings.json").write_text("{}\n")
+    r = _install(installer, tmp_path, dest, "--agent", "auto", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "CLAUDE.md").exists() and not (dest / ".codex").exists(), _ok(r)
+    assert "destination has .claude/settings.json" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_bare_dot_claude_dir_is_NOT_a_claude_signal(installer, tmp_path):
+    """Every install makes .claude/ (x4-paths.env lives there) -- F5."""
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / ".claude").mkdir()
+    (dest / ".claude" / "x4-paths.env").write_text("X4_TOOLKIT=\n")
+    (dest / ".codex").mkdir()
+    r = _install(installer, tmp_path, dest, "--agent", "auto", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert not (dest / "CLAUDE.md").exists() and (dest / ".codex/hooks.json").exists(), _ok(r)
+    assert "codex (destination has .codex" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_non_agent_file_on_PATH_is_not_detected(installer, tmp_path):
+    d = _stub_agents(tmp_path, "claudette", "xcodex")          # near-miss names
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "auto", source=src, detect_path=d)
+    assert r.returncode == 0, _ok(r)
+    assert "no agent detected" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_auto_with_the_GLOBAL_layout_behaves_as_all_does_there(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "auto", "--dry-run", source=src, method="global")
+    assert r.returncode == 0, _ok(r)
+    assert "Claude-only" in r.stdout, _ok(r)
+
+
+# --- X4_TOOLKIT at OS user level (lane H T4; user decision 1) ----------------------------- #
+#
+# Set when unset; left alone and REPORTED when it names a different toolkit; nothing at
+# all under --no-env. Every Windows test writes a throwaway key under _TEST_REGROOT (the
+# installers' X4_INSTALL_ENV_REGKEY seam), never HKCU\Environment; every POSIX test writes a
+# profile file under tmp_path (HOME / ZDOTDIR).
+
+USERENV = ROOT / "scripts" / "x4-userenv.ps1"
+
+
+@pytest.fixture
+def regkey(tmp_path):
+    return _new_regkey(tmp_path)          # deleted, and the delete asserted, at module teardown
+
+
+def _reg_get(key, name="X4_TOOLKIT"):
+    r = subprocess.run(["reg", "query", key, "/v", name], capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) == 3 and parts[0] == name and parts[1].startswith("REG_"):
+            return parts[2]
+        if len(parts) == 2 and parts[0] == name:
+            return ""
+    return None
+
+
+def _reg_set(key, value, name="X4_TOOLKIT"):
+    subprocess.run(["reg", "add", key, "/v", name, "/t", "REG_SZ", "/d", value, "/f"],
+                   check=True, capture_output=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_UNSET_user_X4_TOOLKIT_is_set_to_this_toolkit_in_native_form(installer, tmp_path, regkey):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert _reg_get(regkey) == str(dest.resolve()), _ok(r)          # backslashes, no trailing sep
+    assert "X4_TOOLKIT set for your user" in r.stdout, _ok(r)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_DIFFERENT_existing_value_is_REPORTED_and_LEFT(installer, tmp_path, regkey):
+    _reg_set(regkey, r"D:\elsewhere")
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert _reg_get(regkey) == r"D:\elsewhere"
+    assert r"D:\elsewhere" in r.stdout and "Left unchanged" in r.stdout, _ok(r)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_the_SAME_value_spelled_differently_is_not_different(installer, tmp_path, regkey):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    spelled = dest.resolve().as_posix().upper() + "/"              # C:/.../TOOLKIT/
+    _reg_set(regkey, spelled)
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert _reg_get(regkey) == spelled and "already set" in r.stdout, _ok(r)
+    assert "WARNING" not in r.stdout, _ok(r)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_no_env_writes_NOTHING_and_prints_the_manual_command(installer, tmp_path, regkey):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src, env_write=False, regkey=regkey)
+    assert r.returncode == 0 and _reg_get(regkey) is None, _ok(r)
+    assert "X4_TOOLKIT" in r.stdout and ("--no-env" in r.stdout or "-NoEnv" in r.stdout), _ok(r)
+    assert not _reg_exists(regkey), "--no-env created the registry key"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_DRY_RUN_says_what_it_would_do_to_X4_TOOLKIT_and_writes_nothing(installer, tmp_path, regkey):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--dry-run", source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert not _reg_exists(regkey), "a dry run wrote the registry"
+    assert "X4_TOOLKIT would be set" in r.stdout, _ok(r)
+
+
+def _userenv(*args, key):
+    exe = shutil.which("pwsh") or shutil.which("powershell")
+    if exe is None:
+        pytest.skip("no PowerShell on this machine")
+    env = dict(os.environ)
+    env["X4_INSTALL_ENV_REGKEY"] = key
+    return subprocess.run([exe, "-NoProfile", "-NonInteractive", "-File", str(USERENV), *args],
+                          capture_output=True, text=True, env=env)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+def test_userenv_round_trips_and_never_REPLACES_an_existing_key(tmp_path, regkey):
+    r = _userenv("get", key=regkey)
+    assert r.returncode == 0 and r.stdout.strip() == "", (r.stdout, r.stderr)        # absent key: nothing
+    _reg_set(regkey, "keep me", name="SIBLING")                               # the key now exists
+    v = r"C:\Program Files\x4 & co\tool kit"
+    r = _userenv("set", v, key=regkey)
+    assert r.returncode == 0, r.stderr
+    assert _userenv("get", key=regkey).stdout.rstrip("\r\n") == v
+    assert _reg_get(regkey) == v
+    assert _reg_get(regkey, "SIBLING") == "keep me", "set REPLACED the key (the New-Item -Force trap)"
+    r = _userenv("unset", key=regkey)
+    assert r.returncode == 0 and _reg_get(regkey) is None, r.stderr
+    assert _reg_get(regkey, "SIBLING") == "keep me"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("key", ["HKCU\\Environment", "HKCU\\Software\\X4ToolkitTests\\",
+                                 "HKCU\\Software\\X4ToolkitTestsX\\a"])
+def test_userenv_REFUSES_a_seam_outside_the_test_root(key):
+    r = _userenv("set", "x", key=key)
+    assert r.returncode == 2 and "REFUSING" in r.stderr, (r.returncode, r.stderr)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell profile")
+@pytest.mark.parametrize("shell,rel", [("/bin/zsh", "zdot/.zshenv"), ("/bin/bash", ".bashrc")])
+def test_POSIX_writes_ONE_marked_block_to_the_shells_profile_and_is_idempotent(shell, rel, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    for _ in range(2):
+        r = _install("sh", tmp_path, dest, source=src, env_write=True, shell=shell)
+        assert r.returncode == 0, _ok(r)
+    body = (tmp_path / rel).read_text(encoding="utf-8")
+    assert body.count(">>> X4 toolkit") == 1, body
+    assert "export X4_TOOLKIT='%s'" % os.path.realpath(dest) in body, body
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell profile")
+def test_POSIX_an_existing_DIFFERENT_export_is_LEFT_and_reported(tmp_path):
+    (tmp_path / ".bashrc").write_text("export X4_TOOLKIT=/opt/other\n", encoding="utf-8")
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install("sh", tmp_path, dest, source=src, env_write=True, shell="/bin/bash")
+    assert r.returncode == 0, _ok(r)
+    assert (tmp_path / ".bashrc").read_text(encoding="utf-8") == "export X4_TOOLKIT=/opt/other\n"
+    assert "/opt/other" in r.stdout and "Left unchanged" in r.stdout, _ok(r)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell profile")
+def test_POSIX_an_UNKNOWN_shell_gets_NO_file_and_a_manual_line(tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install("sh", tmp_path, dest, source=src, env_write=True, shell="/usr/bin/fish")
+    assert r.returncode == 0, _ok(r)
+    assert not (tmp_path / ".config" / "fish").exists() and not (tmp_path / ".bashrc").exists()
+    assert "export X4_TOOLKIT" in r.stdout or "set -Ux X4_TOOLKIT" in r.stdout, _ok(r)
+
+
+# --- --codex-doc-max-bytes (lane H T5, opt-in) ------------------------------------------ #
+#
+# Codex reads the root AGENTS.md and every nested one into ONE 32,768-byte budget (MEASURED,
+# lane A), so a user's own AGENTS.md lower in the tree can cut the toolkit's tail off. The
+# flag raises the cap in the PROJECT .codex/config.toml; it never overwrites a value.
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_codex_doc_max_bytes_writes_a_ROOT_key_and_keeps_existing_tables(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / ".codex").mkdir()
+    (dest / ".codex" / "config.toml").write_bytes(b'[profiles.x]\nmodel = "m"\n')
+    r = _install(installer, tmp_path, dest, "--agent", "codex", "--codex-doc-max-bytes", "65536", source=src)
+    assert r.returncode == 0, _ok(r)
+    raw = (dest / ".codex" / "config.toml").read_bytes()
+    lines = raw.decode("utf-8").split("\n")
+    assert lines[0].startswith("project_doc_max_bytes = 65536"), lines
+    assert raw.endswith(b'\n[profiles.x]\nmodel = "m"\n'), raw          # the rest, byte for byte
+    assert b"\r" not in raw
+    assert "trust this folder" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_codex_doc_max_bytes_CREATES_the_config_and_a_rerun_changes_nothing(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    for _ in range(2):
+        r = _install(installer, tmp_path, dest, "--agent", "codex", "--codex-doc-max-bytes", "65536", source=src)
+        assert r.returncode == 0, _ok(r)
+    body = (dest / ".codex" / "config.toml").read_text(encoding="utf-8")
+    assert body.count("project_doc_max_bytes") == 1 and body.startswith("project_doc_max_bytes = 65536"), body
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_without_the_flag_no_codex_config_is_written(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 0 and not (dest / ".codex" / "config.toml").exists(), _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_DIFFERENT_existing_cap_is_LEFT_and_reported(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / ".codex").mkdir()
+    (dest / ".codex" / "config.toml").write_bytes(b"project_doc_max_bytes = 40000\n")
+    r = _install(installer, tmp_path, dest, "--agent", "codex", "--codex-doc-max-bytes", "65536", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / ".codex" / "config.toml").read_bytes() == b"project_doc_max_bytes = 40000\n"
+    assert "40000" in r.stdout and "65536" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_cap_inside_a_TABLE_is_not_the_root_key(installer, tmp_path):
+    """`[profiles.x] project_doc_max_bytes` is a different key: the root one is still added."""
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / ".codex").mkdir()
+    (dest / ".codex" / "config.toml").write_bytes(b"[profiles.x]\nproject_doc_max_bytes = 40000\n")
+    r = _install(installer, tmp_path, dest, "--agent", "codex", "--codex-doc-max-bytes", "65536", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / ".codex" / "config.toml").read_text(encoding="utf-8").startswith(
+        "project_doc_max_bytes = 65536"), _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("agent,value", [("claude", "65536"), ("codex", "abc"), ("codex", "1000"),
+                                         ("codex", "2000000")])
+def test_an_unusable_codex_doc_max_bytes_REFUSES_before_writing(installer, agent, value, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", agent, "--codex-doc-max-bytes", value, source=src)
+    assert r.returncode == 2, _ok(r)
+    # REFUSED BY THE CHECK, not by an argument parser that does not know the flag: before
+    # the flag existed, bash's "unknown option" also exited 2 having written nothing.
+    out = r.stdout + r.stderr
+    assert "REFUSING" in out and ("codex-doc-max-bytes" in out or "CodexDocMaxBytes" in out), _ok(r)
+    assert not any(dest.iterdir()), _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_codex_doc_max_bytes_with_the_GLOBAL_layout_REFUSES(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--codex-doc-max-bytes", "65536", source=src, method="global")
+    assert r.returncode == 2 and "Claude-only" in r.stdout + r.stderr, _ok(r)
+    assert not (tmp_path / "fake-claude-home").exists()
 
 
 # --- the REAL repository's tree (skips, counted, while a generated tree is absent) ---- #

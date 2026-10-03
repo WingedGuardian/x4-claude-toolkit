@@ -15,7 +15,7 @@ set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # repo / toolkit source
 
 # --- defaults (overridable by flags / env) ---------------------------------
-METHOD=""; ASSUME_YES=0; DO_UNPACK=0; OVER_EXISTING=0; DRY_RUN=0
+METHOD=""; ASSUME_YES=0; DO_UNPACK=0; OVER_EXISTING=0; DRY_RUN=0; NO_ENV=0; CODEX_DOC_MAX=""
 #: Which agent targets to install (user decision #10, 2026-10-02: default `all`). The
 #: Codex files are inert without Codex, and x4doctor reports which targets are live.
 AGENT="all"
@@ -24,6 +24,7 @@ AGENT="all"
 GAME_NAMED=$([ -n "${X4_GAME:-}" ] && echo named || echo detected)
 TOOLKIT_NAMED=$([ -n "${X4_TOOLKIT:-}" ] && echo named || echo detected)
 GAME="${X4_GAME:-}"; PROFILE="${X4_PROFILE:-}"; TOOLKIT="${X4_TOOLKIT:-}"
+X4_H_INHERITED_TOOLKIT="${X4_TOOLKIT:-}"   # what this shell already exports (POSIX "different" check)
 MODS="${X4_MODS:-}"; REFERENCE="${X4_REFERENCE:-}"; EXTENSIONS="${X4_EXTENSIONS:-}"
 XRCAT="${XRCATTOOL:-}"
 
@@ -41,14 +42,29 @@ Usage: bash install.sh --method in-game|separate|global [options]
   --reference DIR    unpacked base game (default <toolkit>/reference)
   --extensions DIR   live deploy target (default <game>/extensions)
   --xrcattool PATH   XRCatTool.exe location
-  --agent NAME       claude | codex | generic | opencode | all   [all]
-                     which agent's instructions, guards and skills to install
+  --agent NAME       claude | codex | generic | opencode | all | auto   [all]
+                     which agent's instructions, guards and skills to install;
+                     auto = the agents found on PATH or already in the destination
+                     (none found: all, and it says so)
   --unpack          also unpack reference/ now (needs --game + XRCatTool [+wine])
   --over-existing    REQUIRED to install over an existing installation
   --dry-run          print the destination and the item list; write nothing
+  --codex-doc-max-bytes N
+                     write project_doc_max_bytes = N (32768..1048576) into the
+                     project's .codex/config.toml (needs the Codex target). Codex
+                     reads the root AGENTS.md and every nested one into ONE
+                     32,768-byte budget, so an AGENTS.md of your own lower in the
+                     tree can cut the toolkit's off. Opt-in; never overwrites.
+  --no-env           do NOT set X4_TOOLKIT for your user (by default it is set when
+                     unset; a DIFFERENT existing value is reported and left alone)
   --yes              don't prompt; accept detected/blank values (never a
                      detected DESTINATION -- name that with --game/--toolkit)
   -h, --help         this help
+
+Test seams (for the installer test suite only, not for users):
+  X4_INSTALL_ENV_REGKEY   registry key used instead of HKCU\Environment
+                          (refused unless under HKCU\Software\X4ToolkitTests\)
+  X4_INSTALL_DETECT_PATH  the PATH --agent auto walks instead of $PATH
 USAGE
 }
 
@@ -72,6 +88,8 @@ while [ $# -gt 0 ]; do
     --agent) need2 "$1" $#; AGENT="$2"; shift 2;;
     --over-existing) OVER_EXISTING=1; shift;;
     --dry-run) DRY_RUN=1; shift;;
+    --no-env) NO_ENV=1; shift;;
+    --codex-doc-max-bytes) need2 "$1" $#; CODEX_DOC_MAX="$2"; shift 2;;
     --unpack) DO_UNPACK=1; shift;;
     --yes|-y) ASSUME_YES=1; shift;;
     -h|--help) usage; exit 0;;
@@ -185,7 +203,7 @@ X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/basex
 #: dual-meaning trap `.claude/backups` fell into. A checkout accumulates them (release
 #: review 2026-09-26: data/ alone was 2.3 GB) and a git source never copies them
 #: anyway (see _tracked_copy_set); this is the walk's defence in depth.
-X4_KEEP_LOCAL=".claude/x4-paths.env .claude/settings.local.json .claude/backups .codex/hooks.json .opencode/opencode.jsonc tools/basex/basex/data tools/basex/basex/coverage-x4raw.json tools/basex/basex/coverage-x4eff.json tools/basex/_eff tools/basex/stage-manifest.json"
+X4_KEEP_LOCAL=".claude/x4-paths.env .claude/settings.local.json .claude/backups .codex/hooks.json .codex/config.toml .opencode/opencode.jsonc tools/basex/basex/data tools/basex/basex/coverage-x4raw.json tools/basex/basex/coverage-x4eff.json tools/basex/_eff tools/basex/stage-manifest.json"
 
 #: THE TRACKED SET, when the source is a git checkout.
 #:
@@ -525,6 +543,22 @@ X4_AGENT_ITEMS_opencode="AGENTS.md .opencode"
 #: 2026-10-02). OpenCode is BEST EFFORT -- from its docs and source, not measured.
 X4_AGENT_NAMES="claude codex generic opencode"
 
+#: --agent auto (lane H): how each agent is DETECTED. One row per agent; an agent with no
+#: row is never detected, so a new agent adds rows here and touches no code. DETECT = a
+#: program name on PATH; MARK = a path in the destination. Never a bare `.claude/`: every
+#: install creates one (x4-paths.env lives there), whatever the agent. install.ps1 holds the
+#: same tables; test_installers_agree parses both.
+X4_AGENT_DETECT_claude="claude"
+X4_AGENT_MARK_claude="CLAUDE.md .claude/settings.json"
+X4_AGENT_DETECT_codex="codex"
+X4_AGENT_MARK_codex=".codex"
+X4_AGENT_DETECT_opencode="opencode"
+X4_AGENT_MARK_opencode=".opencode opencode.json opencode.jsonc"
+#: On Windows a program is found as NAME or NAME + one of these. Git Bash's `command -v`
+#: and PowerShell's `Get-Command` disagree about which codex shim they find (MEASURED), so
+#: neither is used: both installers walk PATH themselves with this one list.
+X4_DETECT_EXTS=".exe .cmd .bat .ps1"
+
 #: The token the generated Codex/generic skills carry (gen-agent-trees.py's TOKEN), and
 #: what it is rendered to in the copy THIS install writes (user decision #2). Per OS, not
 #: per installer: Codex runs its shell commands through PowerShell on Windows, where
@@ -542,6 +576,7 @@ X4_CODEX_HOOKS_TMPL="agent/targets/codex/hooks.json.tmpl"
 # --- resolve --agent, BEFORE anything is written ------------------------------------
 case "$AGENT" in
   all) X4_AGENTS="$X4_AGENT_NAMES" ;;
+  auto) X4_AGENTS="" ;;   # resolved per destination by resolve_auto_agents, inside the arms
   claude|codex|generic|opencode) X4_AGENTS="$AGENT" ;;
   *)
     echo "REFUSING: unknown --agent '$AGENT'. Supported: $X4_AGENT_NAMES all. Nothing has been changed." >&2
@@ -550,13 +585,91 @@ esac
 #: THE RESOLVED COPY SET: common items plus each selected agent's, once each. Every
 #: consumer -- the copy, the tracked-set filter, the dry-run listing and the locked-target
 #: precheck -- reads THIS, so they cannot disagree about what an install writes.
-X4_ITEMS="$X4_COPY_ITEMS"
-for _a in $X4_AGENTS; do
-  eval "_set=\$X4_AGENT_ITEMS_$_a"
-  for _i in $_set; do
-    case " $X4_ITEMS " in *" $_i "*) ;; *) X4_ITEMS="$X4_ITEMS $_i" ;; esac
+_h_resolve_items() {
+  local _a _i _set
+  X4_ITEMS="$X4_COPY_ITEMS"
+  for _a in $X4_AGENTS; do
+    eval "_set=\$X4_AGENT_ITEMS_$_a"
+    for _i in $_set; do
+      case " $X4_ITEMS " in *" $_i "*) ;; *) X4_ITEMS="$X4_ITEMS $_i" ;; esac
+    done
   done
-done
+}
+_h_resolve_items
+
+#: Print where NAME is found on the detect PATH, or fail. X4_INSTALL_DETECT_PATH is a TEST
+#: SEAM (the harness points it at a sandbox); unset, the real PATH is walked.
+_h_on_path() {   # NAME
+  local n="$1" p d e dirs
+  p="${X4_INSTALL_DETECT_PATH:-$PATH}"
+  # A Windows-form seam reaches Git Bash unconverted (MEASURED: `C:/x` stays `C:/x`), and
+  # splitting it on ':' would cut the drive letter off.
+  if [ "$OS" = windows ] && [ -n "${X4_INSTALL_DETECT_PATH:-}" ] && command -v cygpath >/dev/null 2>&1; then
+    p="$(cygpath -u -p "$p")"
+  fi
+  IFS=: read -r -a dirs <<< "$p"
+  for d in "${dirs[@]}"; do
+    [ -n "$d" ] || continue
+    if [ "$OS" = windows ]; then
+      for e in "" $X4_DETECT_EXTS; do
+        [ -f "$d/$n$e" ] && { printf '%s' "$d/$n$e"; return 0; }
+      done
+    else
+      [ -f "$d/$n" ] && [ -x "$d/$n" ] && { printf '%s' "$d/$n"; return 0; }
+    fi
+  done
+  return 1
+}
+
+#: --agent auto: select exactly the agents detected for DEST, each with its reason; none
+#: detected selects all (user decision H-Q1) and SAYS so. Then the copy set is re-derived.
+resolve_auto_agents() {   # DEST
+  [ "$AGENT" = auto ] || return 0
+  local dest="$1" a n m found why det="" says="" _dn _mk
+  for a in $X4_AGENT_NAMES; do
+    why=""
+    eval "_dn=\${X4_AGENT_DETECT_$a:-}"
+    eval "_mk=\${X4_AGENT_MARK_$a:-}"
+    for n in $_dn; do
+      if found="$(_h_on_path "$n")"; then why="on PATH: $found"; break; fi
+    done
+    if [ -z "$why" ]; then
+      for m in $_mk; do
+        if [ -d "$dest/$m" ]; then why="destination has $m/"; break; fi
+        if [ -e "$dest/$m" ]; then why="destination has $m"; break; fi
+      done
+    fi
+    [ -n "$why" ] || continue
+    det="$det${det:+ }$a"
+    says="$says${says:+, }$a ($why)"
+  done
+  if [ -n "$det" ]; then
+    X4_AGENTS="$det"
+    echo "  --agent auto: $says"
+  else
+    X4_AGENTS="$X4_AGENT_NAMES"
+    echo "  --agent auto: no agent detected (none on PATH, no marker in the destination);"
+    echo "                installing all: $X4_AGENT_NAMES"
+  fi
+  _h_resolve_items
+}
+
+#: --codex-doc-max-bytes (lane H): the NUMBER is checked here, before anything is written;
+#: that it needs the Codex target is checked per arm, once --agent auto has resolved.
+X4_CODEX_DOC_MIN=32768
+X4_CODEX_DOC_MAX=1048576
+if [ -n "$CODEX_DOC_MAX" ]; then
+  case "$CODEX_DOC_MAX" in
+    *[!0-9]*|0*) _h_bad=1 ;;
+    *) _h_bad=0; { [ "${#CODEX_DOC_MAX}" -le 7 ] && [ "$CODEX_DOC_MAX" -ge "$X4_CODEX_DOC_MIN" ] \
+         && [ "$CODEX_DOC_MAX" -le "$X4_CODEX_DOC_MAX" ]; } || _h_bad=1 ;;
+  esac
+  if [ "$_h_bad" = 1 ]; then
+    echo "REFUSING: --codex-doc-max-bytes '$CODEX_DOC_MAX' is not a whole number from $X4_CODEX_DOC_MIN to $X4_CODEX_DOC_MAX." >&2
+    echo "  Nothing has been changed." >&2
+    exit 2
+  fi
+fi
 
 #: Failures that make the install INCOMPLETE, accumulated and reported at the end.
 #: Defined HERE, above every writer that records into it.
@@ -583,12 +696,109 @@ _agents_landed() {
 #
 # 0 of 23 tagged releases before 4.0 shipped AGENTS.md (MEASURED 2026-10-02, per tag),
 # so an AGENTS.md in a destination today was written by its user, and "differs from the
-# one we ship" is exactly "not ours". It is MOVED ASIDE, never overwritten.
-# ⚠ WHEN 4.0 SHIPS this rule must gain the list of hashes of every AGENTS.md a release
-# shipped, or every upgrade will move the previous release's file aside as if it were
-# the user's -- safe (nothing is lost), but noisy and wrongly worded.
+# one we ship" is exactly "not ours". It is MOVED ASIDE, never overwritten -- unless its
+# hash is one a release SHIPPED (scripts/shipped-instruction-hashes.txt, generated from
+# every release tag by gen-shipped-hashes.py), which makes it ours to replace.
 _same_text() {   # _same_text A B -- equal once CRLF is ignored
   [ "$(tr -d '\r' < "$1")" = "$(tr -d '\r' < "$2")" ]
+}
+
+# --- shipped-version hashes (lane H) ---------------------------------------------------
+#: The data file both installers read. Absent (a synthetic or truncated source) means
+#: "nothing is known to be ours", so every differing file is KEPT -- the safe direction.
+X4_SHIPPED_HASHES="scripts/shipped-instruction-hashes.txt"
+
+#: SHA-256 of stdin as lowercase hex; fails when no tool exists or the output is not a hash.
+_h_sha256() {
+  local out
+  if command -v sha256sum >/dev/null 2>&1; then out="$(sha256sum)" || return 1
+  elif command -v shasum >/dev/null 2>&1; then out="$(shasum -a 256)" || return 1
+  elif command -v openssl >/dev/null 2>&1; then out="$(openssl dgst -sha256 -r)" || return 1
+  else return 1; fi
+  out="${out%% *}"
+  out="$(printf '%s' "$out" | tr 'A-F' 'a-f')"
+  case "$out" in *[!0-9a-f]*|'') return 1 ;; esac
+  [ "${#out}" -eq 64 ] || return 1
+  printf '%s' "$out"
+}
+
+#: THE CANONICAL HASH (one definition, three implementations: gen-shipped-hashes.py,
+#: this, Get-HCanonicalSha256): drop a leading UTF-8 BOM, delete every CR, strip trailing
+#: LFs (the command substitution does that), SHA-256. GNU sed MEASURED under Git Bash;
+#: BSD sed on macOS is NOT measured -- a failure there only over-keeps, never overwrites.
+_h_canonical_sha256() {   # FILE -> hex, or fails
+  [ -f "$1" ] && [ -r "$1" ] || return 1
+  printf '%s' "$(LC_ALL=C sed $'1s/^\xef\xbb\xbf//' "$1" | tr -d '\r')" | _h_sha256
+}
+
+#: Is (HASH, NAME) a row of the shipped list? rc 0 yes, 1 no, 2 there is no list.
+_h_known_hash() {   # HASH NAME
+  local f="$SRC/$X4_SHIPPED_HASHES" h n rest
+  [ -f "$f" ] || return 2
+  while IFS=' ' read -r h n rest || [ -n "$h" ]; do
+    h="${h%$CR}"; n="${n%$CR}"
+    case "$h" in '#'*|'') continue ;; esac
+    [ "$h" = "$1" ] && [ "$n" = "$2" ] && return 0
+  done < "$f"
+  return 1
+}
+
+#: Is DEST/NAME a file the toolkit SHIPPED -- the source's copy, or any release's?
+#: rc 0 yes; 1 no (it is the user's). Never fails open: no hash tool means "not known".
+_h_is_shipped() {   # DEST NAME
+  local h s
+  h="$(_h_canonical_sha256 "$1/$2")" || return 1
+  if s="$(_h_canonical_sha256 "$SRC/$2")" && [ "$h" = "$s" ]; then return 0; fi
+  _h_known_hash "$h" "$2"
+}
+
+#: The first free name BASE.md / BASE.<stamp>.md / BASE.<stamp>-N.md in DEST.
+_h_aside_name() {   # DEST BASE
+  local d="$1" n="$2.md" stamp i=0
+  [ -e "$d/$n" ] || { printf '%s' "$n"; return 0; }
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  n="$2.$stamp.md"
+  while [ -e "$d/$n" ]; do i=$((i + 1)); n="$2.$stamp-$i.md"; done
+  printf '%s' "$n"
+}
+
+#: 3.x -> 4.0. The name DEST's CLAUDE.md would be KEPT as, or fails when it is ours (the
+#: source's, or a shipped release's) or no Claude copy happens. Shared by the dry-run
+#: listing and the mover, so they cannot differ. No installer ever REWROTE a CLAUDE.md
+#: (READ, every tag), so a differing hash is the user's edit, not an installer's.
+_h_claude_md_move_target() {   # DEST
+  local dest="$1"
+  _item_selected CLAUDE.md || return 1
+  [ -f "$SRC/CLAUDE.md" ] && [ -f "$dest/CLAUDE.md" ] || return 1
+  _h_is_shipped "$dest" CLAUDE.md && return 1
+  _h_aside_name "$dest" "X4-NOTES.pre-4.0"
+}
+
+#: Why the decision above is narrower than it looks, when it is: SAID, never silent.
+_h_hash_caveat() {
+  if [ ! -f "$SRC/$X4_SHIPPED_HASHES" ]; then
+    echo "  [note] this source has no $X4_SHIPPED_HASHES, so no shipped version is known:"
+    echo "         any CLAUDE.md that differs from this one is treated as yours and kept."
+  elif ! printf '' | _h_sha256 >/dev/null 2>&1; then
+    echo "  [note] no SHA-256 tool (sha256sum / shasum / openssl) was found, so shipped versions"
+    echo "         cannot be recognised: any differing CLAUDE.md is treated as yours and kept."
+  fi
+  return 0
+}
+
+preserve_user_claude_md() {   # DEST -- AFTER every precheck, BEFORE the copy
+  local dest="$1" to
+  to="$(_h_claude_md_move_target "$dest")" || return 0
+  refuse_if_dry_run "keeping your CLAUDE.md as X4-NOTES.pre-4.0 in" "$dest"
+  if ! mv -- "$dest/CLAUDE.md" "$dest/$to"; then
+    echo "ERROR: could not move $dest/CLAUDE.md aside to $to. Nothing else has been changed." >&2
+    exit 1
+  fi
+  echo "  [note] your CLAUDE.md is not one this toolkit ever shipped, so it was KEPT as:"
+  echo "           $dest/$to"
+  echo "         The 4.0 CLAUDE.md now loads every session. Move your own notes into"
+  echo "         X4-NOTES.md in the same folder: the toolkit never writes that file."
+  _h_hash_caveat
 }
 
 _agents_md_aside_name() {   # DEST -> the first name that does not exist yet
@@ -607,6 +817,8 @@ _agents_md_move_target() {   # DEST
   _item_selected AGENTS.md || return 1
   [ -f "$SRC/AGENTS.md" ] && [ -f "$dest/AGENTS.md" ] || return 1
   _same_text "$dest/AGENTS.md" "$SRC/AGENTS.md" && return 1
+  local h
+  if h="$(_h_canonical_sha256 "$dest/AGENTS.md")" && _h_known_hash "$h" AGENTS.md; then return 1; fi
   _agents_md_aside_name "$dest"
 }
 
@@ -806,6 +1018,81 @@ write_codex_hooks_json() {   # DEST
   fi
   X4_CODEX_HOOKS_WRITTEN=1
   echo "  wrote $f"
+}
+
+# --- Codex project_doc_max_bytes (lane H, opt-in) -------------------------------------
+X4_CODEX_DOC_WRITTEN=""
+_h_codex_config() { printf '%s' "$1/.codex/config.toml"; }
+
+#: The ROOT-table project_doc_max_bytes value in FILE (keys before the first [table]).
+_h_codex_doc_value() {   # FILE -> value, or fails when absent
+  local line t k v
+  [ -f "$1" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$CR}"
+    t="${line#"${line%%[![:space:]]*}"}"            # leading whitespace off
+    case "$t" in '['*) return 1 ;; esac              # the first [table] ends the root keys
+    k="${t%%=*}"
+    [ "$k" != "$t" ] || continue                      # no '=' on this line
+    k="${k%"${k##*[![:space:]]}"}"                    # trailing whitespace off the key
+    [ "$k" = project_doc_max_bytes ] || continue
+    v="${t#*=}"; v="${v%%#*}"; v="$(printf '%s' "$v" | tr -d '[:space:]')"
+    printf '%s' "$v"; return 0
+  done < "$1"
+  return 1
+}
+
+#: A Codex-configuring flag on an install that does not select Codex is REFUSED (rc 2).
+require_codex_for_doc_cap() {
+  [ -n "$CODEX_DOC_MAX" ] || return 0
+  _codex_selected && return 0
+  echo "REFUSING: --codex-doc-max-bytes configures Codex, and this install does not select Codex" >&2
+  echo "  (agents: ${X4_AGENTS:-none}). Nothing has been changed." >&2
+  exit 2
+}
+
+#: PRECONDITION, before any write: a READ-ONLY config.toml this flag would CHANGE refuses.
+precheck_codex_doc_max_bytes() {   # DEST
+  local f old
+  [ -n "$CODEX_DOC_MAX" ] || return 0
+  f="$(_h_codex_config "$1")"
+  [ -e "$f" ] || return 0
+  [ -w "$f" ] && return 0
+  old="$(_h_codex_doc_value "$f")" && return 0          # present: never changed, so no write
+  echo                                                                          >&2
+  echo "REFUSING: --codex-doc-max-bytes must add a line to a READ-ONLY file."    >&2
+  echo "      $f"                                                               >&2
+  echo "  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:" >&2
+  echo "      python scripts/x4lock.py unlock \"$f\""                           >&2
+  echo "      <re-run this command>"                                            >&2
+  echo "      python scripts/x4lock.py lock"                                    >&2
+  exit 1
+}
+
+write_codex_doc_max_bytes() {   # DEST -- after the dispatch
+  local f old tmp line
+  [ -n "$CODEX_DOC_MAX" ] || return 0
+  f="$(_h_codex_config "$1")"
+  refuse_if_dry_run "writing project_doc_max_bytes into" "$f"
+  line="project_doc_max_bytes = $CODEX_DOC_MAX  # X4 toolkit installer (--codex-doc-max-bytes)"
+  if old="$(_h_codex_doc_value "$f")"; then
+    if [ "$old" = "$CODEX_DOC_MAX" ]; then
+      echo "  [note] $f already sets project_doc_max_bytes = $old; left untouched"
+    else
+      echo "  [WARNING] $f already sets project_doc_max_bytes = $old, not $CODEX_DOC_MAX. Left unchanged."
+    fi
+    return 0
+  fi
+  mkdir -p "$1/.codex"
+  tmp="$f.tmp$$"
+  # ROOT keys must precede every [table], so the line goes FIRST; the rest is kept as is.
+  if ! { printf '%s\n' "$line" > "$tmp" && { [ ! -f "$f" ] || cat "$f" >> "$tmp"; } && mv -f "$tmp" "$f"; }; then
+    rm -f "$tmp"
+    add_failed ".codex/config.toml (could not write project_doc_max_bytes into $f)"
+    return 0
+  fi
+  X4_CODEX_DOC_WRITTEN="$CODEX_DOC_MAX"
+  echo "  wrote project_doc_max_bytes = $CODEX_DOC_MAX into $f"
 }
 
 #: Destination files the copy would overwrite that CANNOT be written.
@@ -1320,9 +1607,10 @@ require_direction() {
       [ -e "$dest/$m" ] && echo "      $m" >&2
     done
     echo >&2
-    echo "  Installing over it REPLACES those files. If any of them are yours -- an" >&2
-    echo "  edited CLAUDE.md, your own KNOWLEDGEBASE.md, customised skills -- they are" >&2
-    echo "  gone, and only .claude/x4-paths.env and settings.local.json are preserved." >&2
+    echo "  Installing over it REPLACES those files. An edited CLAUDE.md or AGENTS.md is" >&2
+    echo "  KEPT beside it (X4-NOTES.pre-4.0.md / AGENTS.pre-4.0.md); your own" >&2
+    echo "  KNOWLEDGEBASE.md and customised skills are replaced. .claude/x4-paths.env and" >&2
+    echo "  settings.local.json are preserved." >&2
     echo >&2
     echo "  To upgrade it anyway, say so explicitly:" >&2
     echo "      bash install.sh --method $METHOD --over-existing ..." >&2
@@ -1362,6 +1650,11 @@ announce_copy_plan() {
   if to="$(_agents_md_move_target "$1")"; then
     echo "  your AGENTS.md differs from the shipped one: it would be KEPT as $to, not overwritten"
   fi
+  if to="$(_h_claude_md_move_target "$1")"; then
+    echo "  your CLAUDE.md is not one this toolkit shipped: it would be KEPT as $to, not overwritten"
+    _h_hash_caveat
+  fi
+  _h_userenv_preview "$TOOLKIT"
   echo
   echo "=== dry run complete: nothing was changed ==="
   exit 0
@@ -1411,6 +1704,166 @@ strip_trailing_sep() {
   printf '%s' "$p"
 }
 
+# --- X4_TOOLKIT in the user environment (lane H; user decision 1) ----------------------
+#: Set when unset; a DIFFERENT existing value is REPORTED and LEFT (never overwritten);
+#: --no-env touches nothing. "Same" is canonical: separators, case (Windows), trailing
+#: separator. Windows writes through scripts/x4-userenv.ps1 -- the ONE writer both
+#: installers call -- and POSIX appends one marked block to the shell's startup file.
+X4_USERENV_PS1="scripts/x4-userenv.ps1"
+X4_H_ENV_STATE=""; X4_H_ENV_MSG=""; X4_H_TAB="$(printf '\t')"
+
+#: The value as it is written: Windows form with backslashes, or POSIX `pwd -P`.
+_h_native_path() {   # DIR
+  local d
+  d="$(cd "$1" 2>/dev/null && pwd -P)" || d="$1"
+  if [ "$OS" = windows ] && command -v cygpath >/dev/null 2>&1; then d="$(cygpath -w "$d")"; fi
+  printf '%s' "$d"
+}
+
+#: Canonical spelling for comparison. Windows: one separator, no trailing one, lower case.
+_h_canon_path() {   # PATH
+  local v="$1" bs
+  bs="$(printf '%b' '\134')"
+  if [ "$OS" = windows ]; then
+    command -v cygpath >/dev/null 2>&1 && v="$(cygpath -w "$v" 2>/dev/null || printf '%s' "$v")"
+    v="$(_replace_all "$v" / "$bs")"
+    while [ "${#v}" -gt 3 ] && [ "${v%"$bs"}" != "$v" ]; do v="${v%"$bs"}"; done
+    printf '%s' "$v" | tr '[:upper:]' '[:lower:]'
+  else
+    if [ -d "$v" ]; then v="$(cd "$v" && pwd -P)"; fi
+    while [ "${#v}" -gt 1 ] && [ "${v%/}" != "$v" ]; do v="${v%/}"; done
+    printf '%s' "$v"
+  fi
+}
+
+_h_same_path() { [ "$(_h_canon_path "$1")" = "$(_h_canon_path "$2")" ]; }
+
+#: The shell startup file a new `claude` / `codex` would inherit from, or fails (unknown
+#: shell: fish needs `set -Ux`, and we do not edit configs whose syntax we do not own).
+_h_profile_file() {
+  case "$(basename "${SHELL:-}")" in
+    zsh)  printf '%s' "${ZDOTDIR:-$HOME}/.zshenv" ;;          # read by EVERY zsh, interactive or not
+    bash) if [ "$OS" = macos ]; then printf '%s' "$HOME/.bash_profile"   # Terminal.app: login shells
+          else printf '%s' "$HOME/.bashrc"; fi ;;
+    *)    return 1 ;;
+  esac
+}
+
+#: The manual command for THIS OS, for the user to run themselves.
+_h_manual_env_cmd() {   # VALUE
+  if [ "$OS" = windows ]; then printf 'setx X4_TOOLKIT "%s"' "$1"
+  else printf "echo 'export X4_TOOLKIT=\"%s\"' >> %s" "$1" "$(_h_profile_file 2>/dev/null || echo '~/.bashrc')"; fi
+}
+
+#: Run scripts/x4-userenv.ps1 through Windows PowerShell; stdout is the value (CR dropped).
+_h_win_userenv() {   # get | set VALUE
+  local ps script out
+  ps="$(command -v powershell.exe 2>/dev/null || command -v pwsh.exe 2>/dev/null)" || return 3
+  script="$SRC/$X4_USERENV_PS1"
+  [ -f "$script" ] || return 4
+  command -v cygpath >/dev/null 2>&1 && script="$(cygpath -w "$script")"
+  out="$("$ps" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$script" "$@" -Utf8Out)" || return 1
+  printf '%s' "${out%$CR}"
+}
+
+#: The last `export X4_TOOLKIT=` value in FILE, quotes removed; fails when there is none.
+_h_profile_value() {   # FILE
+  local line v=""
+  [ -f "$1" ] || return 1
+  line="$(grep -E '^[[:space:]]*export[[:space:]]+X4_TOOLKIT=' "$1" 2>/dev/null | tail -n 1)" || true
+  [ -n "$line" ] || return 1
+  v="${line#*X4_TOOLKIT=}"; v="${v%$CR}"
+  case "$v" in \'*\') v="${v#\'}"; v="${v%\'}" ;; \"*\") v="${v#\"}"; v="${v%\"}" ;; esac
+  printf '%s' "$v"
+}
+
+#: THE DECISION, one function read by the dry-run line and the writer. Prints one line:
+#: `set` | `same` | `different<TAB>OLD` | `skip<TAB>WHY` | `fail<TAB>WHY`.
+_h_userenv_plan() {   # TOOLKIT
+  local v old f rc=0 tab
+  tab="$(printf '\t')"
+  v="$(_h_native_path "$1")"
+  if [ "$OS" = windows ]; then
+    old="$(_h_win_userenv get)" || rc=$?
+    case "$rc" in
+      0) ;;
+      3) printf 'fail%sno powershell.exe on PATH' "$tab"; return 0 ;;
+      4) printf 'fail%sthe source has no %s' "$tab" "$X4_USERENV_PS1"; return 0 ;;
+      *) printf 'fail%s%s get failed' "$tab" "$X4_USERENV_PS1"; return 0 ;;
+    esac
+  else
+    if ! f="$(_h_profile_file)"; then
+      printf 'skip%syour shell (%s) is not bash or zsh, so no startup file is edited' "$tab" "${SHELL:-unset}"
+      return 0
+    fi
+    old="$(_h_profile_value "$f")" || old=""
+    [ -n "$old" ] || old="$X4_H_INHERITED_TOOLKIT"
+  fi
+  if [ -z "$old" ]; then printf 'set'
+  elif _h_same_path "$old" "$v"; then printf 'same'
+  else printf 'different%s%s' "$tab" "$old"; fi
+}
+
+#: The dry-run preview, from the same decision.
+_h_userenv_preview() {   # TOOLKIT
+  local plan v
+  if [ "$NO_ENV" = 1 ]; then echo "  --no-env: X4_TOOLKIT would not be touched"; return 0; fi
+  plan="$(_h_userenv_plan "$1")"; v="$(_h_native_path "$1")"
+  case "$plan" in
+    set)        echo "  X4_TOOLKIT would be set for your user: $v" ;;
+    same)       echo "  X4_TOOLKIT is already set to this toolkit: nothing would change" ;;
+    different*) echo "  X4_TOOLKIT is set to ${plan#*"$X4_H_TAB"}, not this toolkit: it would be left unchanged" ;;
+    *)          echo "  X4_TOOLKIT would not be set: ${plan#*"$X4_H_TAB"}" ;;
+  esac
+}
+
+set_user_toolkit_env() {   # TOOLKIT -- after the dispatch, before setup.sh
+  refuse_if_dry_run "setting X4_TOOLKIT for your user to" "$1"
+  local plan v old f why cmd
+  v="$(_h_native_path "$1")"
+  cmd="$(_h_manual_env_cmd "$v")"
+  plan="$(_h_userenv_plan "$1")"
+  case "$plan" in
+    same)
+      X4_H_ENV_STATE=same; X4_H_ENV_MSG="X4_TOOLKIT already set to this toolkit ($v)" ;;
+    different*)
+      old="${plan#*"$X4_H_TAB"}"
+      X4_H_ENV_STATE=different
+      X4_H_ENV_MSG="[WARNING] X4_TOOLKIT is set to $old, not this toolkit $v. Left unchanged. To point it here: $cmd" ;;
+    skip*)
+      X4_H_ENV_STATE=skip; X4_H_ENV_MSG="${plan#*"$X4_H_TAB"}" ;;
+    fail*)
+      why="${plan#*"$X4_H_TAB"}"
+      X4_H_ENV_STATE=fail; add_failed "X4_TOOLKIT (could not set: $why; run: $cmd)" ;;
+    set)
+      if [ "$OS" = windows ]; then
+        if _h_win_userenv set "$v" >/dev/null; then
+          X4_H_ENV_STATE=set; X4_H_ENV_MSG="X4_TOOLKIT set for your user: $v (new terminals only)"
+        else
+          X4_H_ENV_STATE=fail; add_failed "X4_TOOLKIT (could not set: $X4_USERENV_PS1 set failed; run: $cmd)"
+        fi
+      else
+        f="$(_h_profile_file)"
+        case "$v" in *"'"*|*"
+"*)
+          X4_H_ENV_STATE=fail
+          add_failed "X4_TOOLKIT (could not set: the path contains a quote or a newline; run: $cmd)"
+          return 0 ;;
+        esac
+        # APPENDED, never temp-then-move: a dotfile is often a SYMLINK (dotfile managers),
+        # and a move would replace the link with a copy and drop its mode. `>>` cannot
+        # truncate, and the block is written only when the file holds no X4_TOOLKIT line.
+        if printf '\n# >>> X4 toolkit: X4_TOOLKIT (written by install.sh; delete this block to undo) >>>\nexport X4_TOOLKIT='"'"'%s'"'"'\n# <<< X4 toolkit <<<\n' "$v" >> "$f"; then
+          X4_H_ENV_STATE=set; X4_H_ENV_MSG="X4_TOOLKIT set for your user in $f: $v (new terminals only)"
+        else
+          X4_H_ENV_STATE=fail; add_failed "X4_TOOLKIT (could not set: $f is not writable; run: $cmd)"
+        fi
+      fi ;;
+  esac
+  [ -n "$X4_H_ENV_MSG" ] && echo "  $X4_H_ENV_MSG"
+  return 0
+}
+
 # --- choose method ---------------------------------------------------------
 if [ -z "$METHOD" ]; then
   echo; echo "Install method:"; echo "  1) in-game    2) separate    3) global (multi-repo)"
@@ -1438,6 +1891,8 @@ case "$METHOD" in
     [ -n "$GAME" ] || { echo "ERROR: in-game needs --game"; exit 1; }
     TOOLKIT="$GAME"
     announce_target "$TOOLKIT"
+    resolve_auto_agents "$TOOLKIT"   # BEFORE anything reads X4_ITEMS
+    require_codex_for_doc_cap
     # ORDER, and each position is load-bearing for a different reason:
     #   require_direction     FIRST, and only when a copy will happen. Both
     #                         prechecks can exit 1 telling the user to unlock and
@@ -1458,10 +1913,12 @@ case "$METHOD" in
     fi
     precheck_config "$TOOLKIT"
     precheck_codex_hooks_json "$TOOLKIT"   # written on BOTH branches, so OUTSIDE the guard
+    precheck_codex_doc_max_bytes "$TOOLKIT"
     if ! same_dir "$SRC" "$TOOLKIT"; then
       precheck_locked_targets "$TOOLKIT"
       announce_copy_plan "$TOOLKIT"
       preserve_user_agents_md "$TOOLKIT"   # after every precheck, before the copy
+      preserve_user_claude_md "$TOOLKIT"   # 3.x -> 4.0: same position, same shape
       copy_toolkit "$TOOLKIT"
       render_toolkit_token "$TOOLKIT"
     else
@@ -1476,6 +1933,8 @@ case "$METHOD" in
     ask TOOLKIT "Toolkit folder" "$TOOLKIT"
     TOOLKIT="$(strip_trailing_sep "$TOOLKIT")"
     announce_target "$TOOLKIT"
+    resolve_auto_agents "$TOOLKIT"   # BEFORE anything reads X4_ITEMS
+    require_codex_for_doc_cap
     # ORDER, and each position is load-bearing for a different reason:
     #   require_direction     FIRST, and only when a copy will happen. Both
     #                         prechecks can exit 1 telling the user to unlock and
@@ -1496,10 +1955,12 @@ case "$METHOD" in
     fi
     precheck_config "$TOOLKIT"
     precheck_codex_hooks_json "$TOOLKIT"   # written on BOTH branches, so OUTSIDE the guard
+    precheck_codex_doc_max_bytes "$TOOLKIT"
     if ! same_dir "$SRC" "$TOOLKIT"; then
       precheck_locked_targets "$TOOLKIT"
       announce_copy_plan "$TOOLKIT"
       preserve_user_agents_md "$TOOLKIT"   # after every precheck, before the copy
+      preserve_user_claude_md "$TOOLKIT"   # 3.x -> 4.0: same position, same shape
       copy_toolkit "$TOOLKIT"
       render_toolkit_token "$TOOLKIT"
     else
@@ -1514,6 +1975,11 @@ case "$METHOD" in
     # home and nothing else. An explicit non-Claude target is REFUSED rather than half
     # installed; the default (`all`) proceeds and says what it leaves out. Codex's own
     # global skills are a follow-up, not a layout to fake.
+    if [ -n "$CODEX_DOC_MAX" ]; then
+      echo "REFUSING: --codex-doc-max-bytes configures Codex, and --method global is a Claude-only layout." >&2
+      echo "  Nothing has been changed." >&2
+      exit 2
+    fi
     case "$AGENT" in
       codex|generic|opencode)
         echo "REFUSING: --method global is a Claude-only layout; it cannot install --agent $AGENT." >&2
@@ -1521,11 +1987,12 @@ case "$METHOD" in
         echo "  Nothing has been changed." >&2
         exit 2 ;;
     esac
-    if [ "$AGENT" = all ]; then
+    if [ "$AGENT" = all ] || [ "$AGENT" = auto ]; then
       echo "  [note] --method global is a Claude-only layout: only the Claude target is installed."
       echo "         Codex, OpenCode and generic agents need --method in-game or --method separate."
     fi
     X4_AGENTS="claude"
+    _h_resolve_items
     [ -n "$TOOLKIT" ] || TOOLKIT="$SRC"
     announce_target "$TOOLKIT"
     # THE GLOBAL DESTINATION WAS NEVER GATED. `require_direction` is called for
@@ -1591,6 +2058,11 @@ case "$METHOD" in
     ;;
   *) echo "ERROR: unknown method '$METHOD' (in-game|separate|global)"; exit 2;;
 esac
+
+# Opt-in Codex doc cap: ONE call, after every arm (global refused it up front).
+write_codex_doc_max_bytes "$TOOLKIT"
+# X4_TOOLKIT for the user: ONE call, after every arm, so no arm can skip or repeat it.
+[ "$NO_ENV" = 1 ] || set_user_toolkit_env "$TOOLKIT"
 
 # wire x4validate + prereqs in the target toolkit
 # `|| true` swallowed a failed setup.sh entirely, and this script had no INCOMPLETE
@@ -1660,6 +2132,10 @@ if [ "$METHOD" != global ] && _codex_selected; then
   if [ "$X4_CODEX_HOOKS_WRITTEN" = 1 ]; then
     echo "           (the definitions were just (re)written: any earlier review no longer holds)"
   fi
+  if [ -n "$X4_CODEX_DOC_WRITTEN" ]; then
+    echo "           project_doc_max_bytes = $X4_CODEX_DOC_WRITTEN is in .codex/config.toml; it takes"
+    echo "           effect once you trust this folder in Codex."
+  fi
 fi
 if [ "$METHOD" != global ] && _opencode_selected; then
   echo
@@ -1670,11 +2146,18 @@ fi
 [ "$METHOD" = global ] && echo "Global:    skills/agents + X4_* env added to your ~/.claude — works from any mod repo."
 echo "Next:      set X4_GAME if blank, then  (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/."
 echo
-echo "IMPORTANT — set X4_TOOLKIT in your user environment so the tools find the config"
-echo "above from ANY directory (they are often run from the game folder, which has a"
-echo ".claude/ but no x4-paths.env). This installer cannot do it for you:"
-case "$OS" in
-  windows) echo "           setx X4_TOOLKIT \"$TOOLKIT\"        (takes effect in NEW shells)";;
-  *)       echo "           echo 'export X4_TOOLKIT=\"$TOOLKIT\"' >> ~/.bashrc   # or your shell's rc";;
+case "$X4_H_ENV_STATE" in
+  set|same)
+    echo "X4_TOOLKIT: ${X4_H_ENV_MSG}" ;;
+  *)
+    # --no-env, a different existing value, or a shell we do not edit: the user decides.
+    echo "IMPORTANT — set X4_TOOLKIT in your user environment so the tools find the config"
+    echo "above from ANY directory (they are often run from the game folder, which has a"
+    echo ".claude/ but no x4-paths.env)."
+    if [ "$NO_ENV" = 1 ]; then echo "  --no-env: this installer did not touch it. To set it yourself:"
+    elif [ "$X4_H_ENV_STATE" = different ]; then echo "  It names another toolkit (the [WARNING] above). To point it here instead:"
+    elif [ "$X4_H_ENV_STATE" = skip ]; then echo "  $X4_H_ENV_MSG. To set it yourself:"
+    else echo "  It was not set (see 'failed:' above). To set it yourself:"; fi
+    echo "           $(_h_manual_env_cmd "$(_h_native_path "$TOOLKIT")")        (takes effect in NEW shells)" ;;
 esac
 echo "Verify:    (cd \"$TOOLKIT/tools/x4validate\" && uv run x4validate --paths)"

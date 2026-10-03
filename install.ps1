@@ -13,6 +13,18 @@
   NOTE: the toolkit's hooks & bin/ scripts are bash; install with PowerShell, but to RUN the
   toolkit you still need Git Bash (https://git-scm.com/download/win), as upstream expects.
 
+  -CodexDocMaxBytes N: write project_doc_max_bytes = N (32768..1048576) into the project
+  .codex\config.toml (needs the Codex target). Codex reads the root AGENTS.md and every nested
+  one into ONE 32,768-byte budget. Opt-in; a different existing value is never overwritten.
+
+  X4_TOOLKIT: set for your user (HKCU\Environment) when unset; a DIFFERENT existing value is
+  reported and left alone; -NoEnv touches nothing. -Agent auto installs the agents found on
+  PATH or already in the destination (none found: all, and it says so).
+
+  Test seams (for the installer test suite only, not for users): X4_INSTALL_ENV_REGKEY
+  (a registry key used instead of HKCU\Environment; refused unless under
+  HKCU\Software\X4ToolkitTests\) and X4_INSTALL_DETECT_PATH (the PATH -Agent auto walks).
+
   Example:
     powershell -ExecutionPolicy Bypass -File install.ps1 -Method global
     powershell -ExecutionPolicy Bypass -File install.ps1 -Method separate -Game "D:\Steam\steamapps\common\X4 Foundations"
@@ -22,10 +34,14 @@ param(
   [ValidateSet('in-game','separate','global')] [string]$Method,
   [string]$Game, [string]$Profile, [string]$Toolkit, [string]$Mods,
   [string]$Reference, [string]$Extensions, [string]$XRCatTool,
-  # claude | codex | generic | opencode | all (user decision #10, 2026-10-02: default all;
-  # L-Q1: all includes opencode). Validated by hand below, case-sensitively, like install.sh.
+  # claude | codex | generic | opencode | all | auto (user decision #10, 2026-10-02: default all;
+  # L-Q1: all includes opencode). auto = the agents found on PATH or already in the destination;
+  # none found = all, said. Validated by hand below, case-sensitively, like install.sh.
   [string]$Agent = 'all',
-  [switch]$Unpack, [switch]$Yes, [switch]$OverExisting, [switch]$DryRun
+  [switch]$Unpack, [switch]$Yes, [switch]$OverExisting, [switch]$DryRun, [switch]$NoEnv,
+  # project_doc_max_bytes for the project .codex\config.toml (opt-in). A STRING, checked by
+  # hand below, so a bad value refuses with rc 2 like install.sh rather than a binding error.
+  [string]$CodexDocMaxBytes
 )
 $ErrorActionPreference = 'Stop'
 $SRC = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -172,7 +188,7 @@ $X4CopyPrune = @('tools\x4validate\.venv',
 #: destination's own, never copied in and never deleted out), so they live HERE and
 #: not in $X4CopyPrune, whose second meaning would erase a user's built databases
 #: on every upgrade. See X4_KEEP_LOCAL in install.sh.
-$X4KeepLocal = @('.claude\x4-paths.env','.claude\settings.local.json','.claude\backups','.codex\hooks.json',
+$X4KeepLocal = @('.claude\x4-paths.env','.claude\settings.local.json','.claude\backups','.codex\hooks.json','.codex\config.toml',
                  '.opencode\opencode.jsonc',
                  'tools\basex\basex\data','tools\basex\basex\coverage-x4raw.json',
                  'tools\basex\basex\coverage-x4eff.json','tools\basex\_eff',
@@ -333,6 +349,23 @@ $X4AgentItems = @{
 #: 2026-10-02). OpenCode is BEST EFFORT -- from its docs and source, not measured.
 $X4AgentNames = @('claude','codex','generic','opencode')
 
+#: -Agent auto (lane H): how each agent is DETECTED -- the mirror of X4_AGENT_DETECT_* /
+#: X4_AGENT_MARK_* in install.sh. An agent with no row is never detected. Never a bare
+#: `.claude\`: every install creates one (x4-paths.env lives there), whatever the agent.
+$X4AgentDetect = @{
+  claude = @('claude')
+  codex  = @('codex')
+  opencode = @('opencode')
+}
+$X4AgentMark = @{
+  claude = @('CLAUDE.md','.claude/settings.json')
+  codex  = @('.codex')
+  opencode = @('.opencode','opencode.json','opencode.jsonc')
+}
+#: NAME or NAME + one of these, on Windows. Get-Command and Git Bash's `command -v` disagree
+#: about which codex shim they find (MEASURED), so both installers walk PATH themselves.
+$X4DetectExts = @('.exe','.cmd','.bat','.ps1')
+
 #: The skill token and its rendering PER OS, as in install.sh: Codex runs PowerShell on
 #: Windows, where `$X4_TOOLKIT` is an EMPTY variable (MEASURED, lane A).
 $X4ToolkitToken = '{{TOOLKIT}}'
@@ -344,6 +377,7 @@ $X4CodexHooksTmpl = 'agent/targets/codex/hooks.json.tmpl'
 
 # --- resolve -Agent, BEFORE anything is written --------------------------------------
 if ($Agent -ceq 'all') { $X4Agents = $X4AgentNames }
+elseif ($Agent -ceq 'auto') { $X4Agents = @() }   # resolved per destination by Resolve-HAutoAgents
 elseif ($X4AgentNames -ccontains $Agent) { $X4Agents = @($Agent) }
 else {
   Write-Host ("REFUSING: unknown -Agent '" + $Agent + "'. Supported: " + ($X4AgentNames -join ' ') + ' all. Nothing has been changed.') -ForegroundColor Red
@@ -351,8 +385,83 @@ else {
 }
 #: THE RESOLVED COPY SET -- common items plus each selected agent's, once each. Every
 #: consumer reads this, so the copy, the listing and the prechecks cannot disagree.
-$X4Items = @($X4CopyItems)
-foreach ($a0 in $X4Agents) { foreach ($i0 in $X4AgentItems[$a0]) { if ($X4Items -notcontains $i0) { $X4Items += $i0 } } }
+function Resolve-HItems {
+  $script:X4Items = @($X4CopyItems)
+  foreach ($a0 in $script:X4Agents) {
+    foreach ($i0 in $X4AgentItems[$a0]) { if ($script:X4Items -notcontains $i0) { $script:X4Items += $i0 } }
+  }
+}
+Resolve-HItems
+
+#: Where $n is found on the detect PATH, or $null. X4_INSTALL_DETECT_PATH is a TEST SEAM
+#: (the harness points it at a sandbox); unset, the real PATH is walked.
+function Test-HOnPath($n) {
+  $p = if ($env:X4_INSTALL_DETECT_PATH) { $env:X4_INSTALL_DETECT_PATH } else { $env:PATH }
+  if (-not $p) { return $null }
+  foreach ($d in ($p -split [regex]::Escape([string][IO.Path]::PathSeparator))) {
+    if (-not $d) { continue }
+    if ($X4OnWindows) {
+      foreach ($e in (@('') + $X4DetectExts)) {
+        $f = Join-Path $d ($n + $e)
+        if (Test-Path -LiteralPath $f -PathType Leaf) { return $f }
+      }
+    } else {
+      $f = Join-Path $d $n
+      if (Test-Path -LiteralPath $f -PathType Leaf) {
+        $mode = $null
+        try { $mode = (Get-Item -LiteralPath $f).UnixMode } catch { }
+        if (-not $mode -or $mode -match 'x') { return $f }
+      }
+    }
+  }
+  return $null
+}
+
+#: -Agent auto: select exactly the agents detected for $dest, each with its reason; none
+#: detected selects all (user decision H-Q1) and SAYS so. Then the copy set is re-derived.
+function Resolve-HAutoAgents($dest) {
+  if ($Agent -cne 'auto') { return }
+  $det = @(); $says = @()
+  foreach ($a in $X4AgentNames) {
+    $why = $null
+    foreach ($n in @($X4AgentDetect[$a])) {
+      if (-not $n) { continue }
+      $f = Test-HOnPath $n
+      if ($f) { $why = 'on PATH: ' + $f; break }
+    }
+    if (-not $why) {
+      foreach ($m in @($X4AgentMark[$a])) {
+        if (-not $m) { continue }
+        $t = Join-Path $dest $m
+        if (Test-Path -LiteralPath $t -PathType Container) { $why = 'destination has ' + $m + '/'; break }
+        if (Test-Path -LiteralPath $t) { $why = 'destination has ' + $m; break }
+      }
+    }
+    if ($why) { $det += $a; $says += ($a + ' (' + $why + ')') }
+  }
+  if ($det.Count) {
+    $script:X4Agents = $det
+    Write-Host ('  -Agent auto: ' + ($says -join ', '))
+  } else {
+    $script:X4Agents = $X4AgentNames
+    Write-Host '  -Agent auto: no agent detected (none on PATH, no marker in the destination);'
+    Write-Host ('               installing all: ' + ($X4AgentNames -join ' '))
+  }
+  Resolve-HItems
+}
+
+#: -CodexDocMaxBytes (lane H): the NUMBER is checked here, before anything is written; that
+#: it needs the Codex target is checked per arm, once -Agent auto has resolved.
+$X4CodexDocMin = 32768
+$X4CodexDocMax = 1048576
+if ($CodexDocMaxBytes) {
+  $okN = ($CodexDocMaxBytes -match '^[1-9][0-9]{0,6}$') -and ([int]$CodexDocMaxBytes -ge $X4CodexDocMin) -and ([int]$CodexDocMaxBytes -le $X4CodexDocMax)
+  if (-not $okN) {
+    Write-Host ("REFUSING: -CodexDocMaxBytes '" + $CodexDocMaxBytes + "' is not a whole number from $X4CodexDocMin to $X4CodexDocMax.") -ForegroundColor Red
+    Write-Host '  Nothing has been changed.' -ForegroundColor Red
+    exit 2
+  }
+}
 
 #: Failures that make the install INCOMPLETE. Defined HERE, above every writer that
 #: records into it (the Codex writers run inside the dispatch).
@@ -378,14 +487,16 @@ function Get-NormText($p) { return ([IO.File]::ReadAllText($p)).Replace("`r", ''
 # --- AGENTS.md: never overwrite one the toolkit did not write -------------------------
 # 0 of 23 tagged releases before 4.0 shipped AGENTS.md (MEASURED 2026-10-02), so one in a
 # destination today is its user's, and "differs from ours" is exactly "not ours".
-# WARNING: WHEN 4.0 SHIPS this rule must gain the hash list of every AGENTS.md a release
-# shipped (see install.sh).
+# A KNOWN shipped AGENTS.md (scripts/shipped-instruction-hashes.txt, generated from every
+# release tag) is ours, so it is replaced rather than moved aside -- see install.sh.
 function Get-AgentsMdMoveTarget($dest) {
   if (-not (Test-ItemSelected 'AGENTS.md')) { return $null }
   $s = Join-Path $SRC 'AGENTS.md'
   $d = Join-Path $dest 'AGENTS.md'
   if (-not (Test-Path -LiteralPath $s -PathType Leaf) -or -not (Test-Path -LiteralPath $d -PathType Leaf)) { return $null }
   if ((Get-NormText $s) -ceq (Get-NormText $d)) { return $null }
+  $h = Get-HCanonicalSha256 $d
+  if ($h -and ((Test-HKnownHash $h 'AGENTS.md') -eq 'yes')) { return $null }
   $n = 'AGENTS.pre-4.0.md'
   if (-not (Test-Path -LiteralPath (Join-Path $dest $n))) { return $n }
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -408,6 +519,96 @@ function Save-UserAgentsMd($dest) {
   }
   Write-Host '  [note] your AGENTS.md differs from the one this toolkit ships, so it was KEPT as:'
   Write-Host ('           ' + (Join-Path $dest $to))
+}
+
+# --- shipped-version hashes (lane H) -- the mirror of install.sh's _h_* helpers -------
+#: The data file both installers read; absent means nothing is known to be ours, so every
+#: differing file is KEPT (the safe direction).
+$X4ShippedHashes = 'scripts/shipped-instruction-hashes.txt'
+
+#: THE CANONICAL HASH (one definition, three implementations): drop a leading UTF-8 BOM,
+#: delete every CR (13), trim trailing LFs (10), SHA-256, lowercase hex. On BYTES, never
+#: decoded, so invalid UTF-8 cannot change the answer. $null when the file is unreadable.
+function Get-HCanonicalSha256($path) {
+  try { $b = [IO.File]::ReadAllBytes($path) } catch { return $null }
+  $start = 0
+  if ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) { $start = 3 }
+  $out = New-Object 'System.Collections.Generic.List[byte]' -ArgumentList $b.Length
+  for ($k = $start; $k -lt $b.Length; $k++) { if ($b[$k] -ne 13) { $out.Add($b[$k]) } }
+  $n = $out.Count
+  while ($n -gt 0 -and $out[$n - 1] -eq 10) { $n-- }
+  if ($n -lt $out.Count) { $out.RemoveRange($n, $out.Count - $n) }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { $h = $sha.ComputeHash($out.ToArray()) } finally { $sha.Dispose() }
+  return (-join ($h | ForEach-Object { $_.ToString('x2') }))
+}
+
+#: Is ($hash, $name) a row of the shipped list? 'yes', 'no', or 'nolist'.
+function Test-HKnownHash($hash, $name) {
+  $f = Join-Path $SRC $X4ShippedHashes
+  if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return 'nolist' }
+  foreach ($line in [IO.File]::ReadAllLines($f)) {
+    $p = $line.Trim() -split '\s+'
+    if ($p.Count -lt 2 -or $p[0] -eq '' -or $p[0].StartsWith('#')) { continue }
+    if ($p[0] -ceq $hash -and $p[1] -ceq $name) { return 'yes' }
+  }
+  return 'no'
+}
+
+#: Is $dest\$name a file the toolkit SHIPPED -- the source's copy, or any release's?
+function Test-HIsShipped($dest, $name) {
+  $h = Get-HCanonicalSha256 (Join-Path $dest $name)
+  if (-not $h) { return $false }
+  $s = Get-HCanonicalSha256 (Join-Path $SRC $name)
+  if ($s -and ($s -ceq $h)) { return $true }
+  return ((Test-HKnownHash $h $name) -eq 'yes')
+}
+
+#: The first free name $base.md / $base.<stamp>.md / $base.<stamp>-N.md in $dest.
+function Get-HAsideName($dest, $base) {
+  $n = "$base.md"
+  if (-not (Test-Path -LiteralPath (Join-Path $dest $n))) { return $n }
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $n = "$base.$stamp.md"
+  $k = 0
+  while (Test-Path -LiteralPath (Join-Path $dest $n)) { $k++; $n = "$base.$stamp-$k.md" }
+  return $n
+}
+
+#: 3.x -> 4.0: the name $dest's CLAUDE.md would be KEPT as, or $null when it is ours or no
+#: Claude copy happens. One function for the dry-run listing and the mover.
+function Get-HClaudeMdMoveTarget($dest) {
+  if (-not (Test-ItemSelected 'CLAUDE.md')) { return $null }
+  if (-not (Test-Path -LiteralPath (Join-Path $SRC 'CLAUDE.md') -PathType Leaf) -or
+      -not (Test-Path -LiteralPath (Join-Path $dest 'CLAUDE.md') -PathType Leaf)) { return $null }
+  if (Test-HIsShipped $dest 'CLAUDE.md') { return $null }
+  return (Get-HAsideName $dest 'X4-NOTES.pre-4.0')
+}
+
+#: Why that decision is narrower than it looks, when it is: SAID, never silent.
+function Show-HHashCaveat {
+  if (-not (Test-Path -LiteralPath (Join-Path $SRC $X4ShippedHashes) -PathType Leaf)) {
+    Write-Host ('  [note] this source has no ' + $X4ShippedHashes + ', so no shipped version is known:')
+    Write-Host '         any CLAUDE.md that differs from this one is treated as yours and kept.'
+  }
+}
+
+function Save-HUserClaudeMd($dest) {
+  $to = Get-HClaudeMdMoveTarget $dest
+  if (-not $to) { return }
+  Refuse-IfDryRun 'keeping your CLAUDE.md as X4-NOTES.pre-4.0 in' $dest
+  try {
+    Move-Item -LiteralPath (Join-Path $dest 'CLAUDE.md') -Destination (Join-Path $dest $to) -ErrorAction Stop
+  } catch {
+    Write-Host ("ERROR: could not move CLAUDE.md aside to " + $to + ": " + $_.Exception.Message) -ForegroundColor Red
+    Write-Host '       Nothing else has been changed.' -ForegroundColor Red
+    exit 1
+  }
+  Write-Host '  [note] your CLAUDE.md is not one this toolkit ever shipped, so it was KEPT as:'
+  Write-Host ('           ' + (Join-Path $dest $to))
+  Write-Host '         The 4.0 CLAUDE.md now loads every session. Move your own notes into'
+  Write-Host '         X4-NOTES.md in the same folder: the toolkit never writes that file.'
+  Show-HHashCaveat
 }
 
 # --- {{TOOLKIT}} in the Codex / generic skills ----------------------------------------
@@ -1110,9 +1311,10 @@ function Assert-Direction($dest, $named) {
       if (Test-Path -LiteralPath (Join-Path $dest $m)) { Write-Host "      $m" -ForegroundColor Red }
     }
     Write-Host "" -ForegroundColor Red
-    Write-Host "  Installing over it REPLACES those files. If any of them are yours - an" -ForegroundColor Red
-    Write-Host "  edited CLAUDE.md, your own KNOWLEDGEBASE.md, customised skills - they are" -ForegroundColor Red
-    Write-Host "  gone, and only .claude\x4-paths.env and settings.local.json are preserved." -ForegroundColor Red
+    Write-Host "  Installing over it REPLACES those files. An edited CLAUDE.md or AGENTS.md is" -ForegroundColor Red
+    Write-Host "  KEPT beside it (X4-NOTES.pre-4.0.md / AGENTS.pre-4.0.md); your own" -ForegroundColor Red
+    Write-Host "  KNOWLEDGEBASE.md and customised skills are replaced. .claude\x4-paths.env and" -ForegroundColor Red
+    Write-Host "  settings.local.json are preserved." -ForegroundColor Red
     Write-Host "" -ForegroundColor Red
     Write-Host "  To upgrade it anyway, say so explicitly:" -ForegroundColor Red
     Write-Host "      .\install.ps1 -Method $Method -OverExisting ..." -ForegroundColor Red
@@ -1144,10 +1346,165 @@ function Show-CopyPlan($dest) {
     # SAID in the dry run exactly as the real run would do it: one function decides both.
     $to = Get-AgentsMdMoveTarget $dest
     if ($to) { Write-Host ('  your AGENTS.md differs from the shipped one: it would be KEPT as ' + $to + ', not overwritten') }
+    $to = Get-HClaudeMdMoveTarget $dest
+    if ($to) {
+      Write-Host ('  your CLAUDE.md is not one this toolkit shipped: it would be KEPT as ' + $to + ', not overwritten')
+      Show-HHashCaveat
+    }
+    Show-HUserEnvPreview $dest
     Write-Host ""
     Write-Host "=== dry run complete: nothing was changed ==="
     exit 0
   }
+}
+
+# --- Codex project_doc_max_bytes (lane H, opt-in) -- the mirror of install.sh ----------
+$script:X4CodexDocWritten = ''
+function Get-HCodexConfigPath($dest) { return (Join-Path (Join-Path $dest '.codex') 'config.toml') }
+
+#: The ROOT-table project_doc_max_bytes value (keys before the first [table]), or $null.
+function Get-HCodexDocValue($f) {
+  if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $null }
+  foreach ($line in [IO.File]::ReadAllLines($f)) {
+    if ($line -match '^\s*\[') { return $null }
+    if ($line -match '^\s*project_doc_max_bytes\s*=\s*([^#]*)') { return $Matches[1].Trim() }
+  }
+  return $null
+}
+
+function Assert-HCodexForDocCap {
+  if (-not $CodexDocMaxBytes) { return }
+  if (Test-CodexSelected) { return }
+  Write-Host ('REFUSING: -CodexDocMaxBytes configures Codex, and this install does not select Codex (agents: ' + ($X4Agents -join ' ') + '). Nothing has been changed.') -ForegroundColor Red
+  exit 2
+}
+
+function Test-HCodexDocCapPrecheck($dest) {
+  if (-not $CodexDocMaxBytes) { return }
+  $f = Get-HCodexConfigPath $dest
+  if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return }
+  if (-not (Get-Item -LiteralPath $f -Force).IsReadOnly) { return }
+  if ($null -ne (Get-HCodexDocValue $f)) { return }   # present: never changed, so no write
+  Write-Host ''
+  Write-Host 'REFUSING: -CodexDocMaxBytes must add a line to a READ-ONLY file.' -ForegroundColor Red
+  Write-Host ('      ' + $f) -ForegroundColor Red
+  Write-Host '  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:' -ForegroundColor Red
+  Write-Host ('      python scripts/x4lock.py unlock "' + $f + '"') -ForegroundColor Red
+  Write-Host '      <re-run this command>' -ForegroundColor Red
+  Write-Host '      python scripts/x4lock.py lock' -ForegroundColor Red
+  exit 1
+}
+
+function Write-HCodexDocCap($dest) {   # after the dispatch
+  if (-not $CodexDocMaxBytes) { return }
+  $f = Get-HCodexConfigPath $dest
+  Refuse-IfDryRun 'writing project_doc_max_bytes into' $f
+  $line = 'project_doc_max_bytes = ' + $CodexDocMaxBytes + '  # X4 toolkit installer (--codex-doc-max-bytes)'
+  $old = Get-HCodexDocValue $f
+  if ($null -ne $old) {
+    if ($old -ceq $CodexDocMaxBytes) { Write-Host ('  [note] ' + $f + ' already sets project_doc_max_bytes = ' + $old + '; left untouched') }
+    else { Write-Host ('  [WARNING] ' + $f + ' already sets project_doc_max_bytes = ' + $old + ', not ' + $CodexDocMaxBytes + '. Left unchanged.') }
+    return
+  }
+  try {
+    $dir = Join-Path $dest '.codex'
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { $null = New-Item -ItemType Directory -Path $dir }
+    # ROOT keys must precede every [table], so the line goes FIRST; the rest is kept BYTE for byte.
+    $rest = [byte[]]@()
+    if (Test-Path -LiteralPath $f -PathType Leaf) { $rest = [IO.File]::ReadAllBytes($f) }
+    $head = (New-Object System.Text.UTF8Encoding($false)).GetBytes($line + "`n")
+    $tmp = $f + '.tmp' + $PID
+    [IO.File]::WriteAllBytes($tmp, [byte[]]($head + $rest))
+    Move-Item -LiteralPath $tmp -Destination $f -Force -ErrorAction Stop
+  } catch {
+    if ($tmp -and (Test-Path -LiteralPath $tmp)) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    $script:failed += ('.codex/config.toml (could not write project_doc_max_bytes into ' + $f + ')')
+    return
+  }
+  $script:X4CodexDocWritten = $CodexDocMaxBytes
+  Write-Host ('  wrote project_doc_max_bytes = ' + $CodexDocMaxBytes + ' into ' + $f)
+}
+
+# --- X4_TOOLKIT in the user environment (lane H; user decision 1) ----------------------
+#: Set when unset; a DIFFERENT existing value is REPORTED and LEFT; -NoEnv touches nothing.
+#: The writer is scripts/x4-userenv.ps1, the ONE mechanism both installers call (install.sh
+#: through powershell.exe), so the two cannot write different things.
+$X4UserEnvPs1 = 'scripts/x4-userenv.ps1'
+$script:X4HEnvState = ''
+$script:X4HEnvMsg = ''
+
+#: The value as written: the resolved path, backslashes, no trailing separator.
+function Get-HNativePath($t) {
+  try { $v = (Resolve-Path -LiteralPath $t -ErrorAction Stop).ProviderPath } catch { $v = [string]$t }
+  if ($X4OnWindows) { $v = $v.Replace([string][char]47, [string][char]92) }
+  while ($v.Length -gt 3 -and ($v.EndsWith([string][char]92) -or $v.EndsWith([string][char]47))) {
+    $v = $v.Substring(0, $v.Length - 1)
+  }
+  return $v
+}
+
+#: Canonical equality: one separator, no trailing one, an MSYS /c/ drive, case-insensitive.
+function Get-HCanonPath($v) {
+  $v = ([string]$v).Replace([string][char]47, [string][char]92)
+  if ($v -match '^\\([A-Za-z])(\\|$)') { $v = $Matches[1] + ':' + [char]92 + $v.Substring([Math]::Min(3, $v.Length)) }
+  while ($v.Length -gt 3 -and $v.EndsWith([string][char]92)) { $v = $v.Substring(0, $v.Length - 1) }
+  return $v.ToLowerInvariant()
+}
+function Test-HSamePath($a, $b) { return ((Get-HCanonPath $a) -ceq (Get-HCanonPath $b)) }
+
+function Get-HManualEnvCmd($v) { return ('setx X4_TOOLKIT "' + $v + '"') }
+
+#: THE DECISION, read by the -DryRun line and the writer: @{State; Old; Why}.
+function Get-HUserEnvPlan($t) {
+  if (-not $X4OnWindows) {
+    return @{ State = 'skip'; Why = 'install.ps1 sets X4_TOOLKIT only on Windows; use install.sh on Linux/macOS' }
+  }
+  $ue = Join-Path $SRC $X4UserEnvPs1
+  if (-not (Test-Path -LiteralPath $ue -PathType Leaf)) { return @{ State = 'fail'; Why = ('the source has no ' + $X4UserEnvPs1) } }
+  $global:LASTEXITCODE = 0
+  $old = & $ue get
+  if ($LASTEXITCODE -ne 0) { return @{ State = 'fail'; Why = ($X4UserEnvPs1 + ' get failed') } }
+  $old = (@($old) -join '').Trim()
+  if (-not $old) { return @{ State = 'set' } }
+  if (Test-HSamePath $old (Get-HNativePath $t)) { return @{ State = 'same'; Old = $old } }
+  return @{ State = 'different'; Old = $old }
+}
+
+function Show-HUserEnvPreview($t) {
+  if ($NoEnv) { Write-Host '  -NoEnv: X4_TOOLKIT would not be touched'; return }
+  $plan = Get-HUserEnvPlan $t
+  switch ($plan.State) {
+    'set'       { Write-Host ('  X4_TOOLKIT would be set for your user: ' + (Get-HNativePath $t)) }
+    'same'      { Write-Host '  X4_TOOLKIT is already set to this toolkit: nothing would change' }
+    'different' { Write-Host ('  X4_TOOLKIT is set to ' + $plan.Old + ', not this toolkit: it would be left unchanged') }
+    default     { Write-Host ('  X4_TOOLKIT would not be set: ' + $plan.Why) }
+  }
+}
+
+function Set-HUserToolkitEnv($t) {   # after the dispatch, before setup.sh
+  Refuse-IfDryRun 'setting X4_TOOLKIT for your user to' $t
+  $v = Get-HNativePath $t
+  $cmd = Get-HManualEnvCmd $v
+  $plan = Get-HUserEnvPlan $t
+  switch ($plan.State) {
+    'same' { $script:X4HEnvState = 'same'; $script:X4HEnvMsg = "X4_TOOLKIT already set to this toolkit ($v)" }
+    'different' {
+      $script:X4HEnvState = 'different'
+      $script:X4HEnvMsg = ('[WARNING] X4_TOOLKIT is set to ' + $plan.Old + ', not this toolkit ' + $v + '. Left unchanged. To point it here: ' + $cmd)
+    }
+    'skip' { $script:X4HEnvState = 'skip'; $script:X4HEnvMsg = $plan.Why }
+    'fail' { $script:X4HEnvState = 'fail'; $script:failed += ('X4_TOOLKIT (could not set: ' + $plan.Why + '; run: ' + $cmd + ')') }
+    'set' {
+      $global:LASTEXITCODE = 0
+      & (Join-Path $SRC $X4UserEnvPs1) set $v
+      if ($LASTEXITCODE -eq 0) {
+        $script:X4HEnvState = 'set'; $script:X4HEnvMsg = "X4_TOOLKIT set for your user: $v (new terminals only)"
+      } else {
+        $script:X4HEnvState = 'fail'; $script:failed += ('X4_TOOLKIT (could not set: ' + $X4UserEnvPs1 + ' set failed; run: ' + $cmd + ')')
+      }
+    }
+  }
+  if ($script:X4HEnvMsg) { Write-Host ('  ' + $script:X4HEnvMsg) }
 }
 
 # ONE implementation of "where is the global Claude config". Install-Global resolved it
@@ -1456,6 +1813,8 @@ switch ($Method) {
     if (-not $Game) { throw 'in-game needs -Game' }
     $Toolkit = $Game
     Show-Target $Toolkit
+    Resolve-HAutoAgents $Toolkit   # BEFORE anything reads $X4Items
+    Assert-HCodexForDocCap
     # Test-ConfigPrecheck OUTSIDE, Test-LockedTargetsPrecheck INSIDE -- the config
     # is written on both branches, the copy is not. install.sh makes the same split.
     # DIRECTION FIRST, matching install.sh, which carries a nine-line comment at
@@ -1467,10 +1826,12 @@ switch ($Method) {
     if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $GameNamed }
     Test-ConfigPrecheck $Toolkit
     Test-CodexHooksPrecheck $Toolkit   # written on BOTH branches, so OUTSIDE the guard
+    Test-HCodexDocCapPrecheck $Toolkit
     if (-not (Test-SameDir $SRC $Toolkit)) {
       Test-LockedTargetsPrecheck $Toolkit
       Show-CopyPlan $Toolkit
       Save-UserAgentsMd $Toolkit        # after every precheck, before the copy
+      Save-HUserClaudeMd $Toolkit       # 3.x -> 4.0: same position, same shape
       Copy-Toolkit $Toolkit
       Invoke-ToolkitTokenRender $Toolkit
     } else {
@@ -1485,6 +1846,8 @@ switch ($Method) {
     $Toolkit = Ask $Toolkit 'Toolkit folder' $Toolkit
     $Toolkit = Remove-TrailingSep $Toolkit
     Show-Target $Toolkit
+    Resolve-HAutoAgents $Toolkit   # BEFORE anything reads $X4Items
+    Assert-HCodexForDocCap
     # Test-ConfigPrecheck OUTSIDE, Test-LockedTargetsPrecheck INSIDE -- the config
     # is written on both branches, the copy is not. install.sh makes the same split.
     # DIRECTION FIRST, matching install.sh, which carries a nine-line comment at
@@ -1496,10 +1859,12 @@ switch ($Method) {
     if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $ToolkitNamed }
     Test-ConfigPrecheck $Toolkit
     Test-CodexHooksPrecheck $Toolkit   # written on BOTH branches, so OUTSIDE the guard
+    Test-HCodexDocCapPrecheck $Toolkit
     if (-not (Test-SameDir $SRC $Toolkit)) {
       Test-LockedTargetsPrecheck $Toolkit
       Show-CopyPlan $Toolkit
       Save-UserAgentsMd $Toolkit        # after every precheck, before the copy
+      Save-HUserClaudeMd $Toolkit       # 3.x -> 4.0: same position, same shape
       Copy-Toolkit $Toolkit
       Invoke-ToolkitTokenRender $Toolkit
     } else {
@@ -1512,17 +1877,23 @@ switch ($Method) {
   'global'   {
     # THE GLOBAL LAYOUT IS CLAUDE-ONLY (see install.sh): an explicit non-Claude target is
     # REFUSED rather than half installed; the default proceeds and says what it leaves out.
+    if ($CodexDocMaxBytes) {
+      Write-Host 'REFUSING: -CodexDocMaxBytes configures Codex, and -Method global is a Claude-only layout.' -ForegroundColor Red
+      Write-Host '  Nothing has been changed.' -ForegroundColor Red
+      exit 2
+    }
     if ($Agent -ceq 'codex' -or $Agent -ceq 'generic' -or $Agent -ceq 'opencode') {
       Write-Host "REFUSING: -Method global is a Claude-only layout; it cannot install -Agent $Agent." -ForegroundColor Red
       Write-Host '  Use -Method in-game or -Method separate for Codex, OpenCode and generic agents.' -ForegroundColor Red
       Write-Host '  Nothing has been changed.' -ForegroundColor Red
       exit 2
     }
-    if ($Agent -ceq 'all') {
+    if ($Agent -ceq 'all' -or $Agent -ceq 'auto') {
       Write-Host '  [note] -Method global is a Claude-only layout: only the Claude target is installed.'
       Write-Host '         Codex, OpenCode and generic agents need -Method in-game or -Method separate.'
     }
     $X4Agents = @('claude')
+    Resolve-HItems
     if (-not $Toolkit) { $Toolkit = $SRC }
     Show-Target $Toolkit
     # Ahead of every write, exactly where install.sh gates its own global arm.
@@ -1533,6 +1904,11 @@ switch ($Method) {
     Install-Global $Toolkit
   }
 }
+
+# Opt-in Codex doc cap: ONE call, after every arm (global refused it up front).
+Write-HCodexDocCap $Toolkit
+# X4_TOOLKIT for the user: ONE call, after every arm, so no arm can skip or repeat it.
+if (-not $NoEnv) { Set-HUserToolkitEnv $Toolkit }
 
 # wire x4validate (needs bash/uv); skip gracefully if bash missing
 #
@@ -1614,6 +1990,10 @@ if ($Method -ne 'global' -and (Test-CodexSelected)) {
   Write-Host '         2. type  /hooks  and approve each X4 hook'
   Write-Host "         3. verify:  python scripts/x4doctor.py --root `"$Toolkit`""
   if ($script:X4CodexHooksWritten) { Write-Host '         (the definitions were just (re)written: any earlier review no longer holds)' }
+  if ($script:X4CodexDocWritten) {
+    Write-Host ('         project_doc_max_bytes = ' + $script:X4CodexDocWritten + ' is in .codex\config.toml; it takes')
+    Write-Host '         effect once you trust this folder in Codex.'
+  }
 }
 if ($Method -ne 'global' -and (Test-OpenCodeSelected)) {
   Write-Host ''
@@ -1623,8 +2003,17 @@ if ($Method -ne 'global' -and (Test-OpenCodeSelected)) {
 }
 if ($Method -eq 'global') { Write-Host "Global:  skills/agents + X4_* env added to your ~/.claude - works from any mod repo." }
 Write-Host ""
-Write-Host "IMPORTANT - set X4_TOOLKIT in your user environment so the tools find the config"
-Write-Host "above from ANY directory (they are often run from the game folder, which has a"
-Write-Host ".claude\ but no x4-paths.env). This installer cannot do it for you:"
-Write-Host "         setx X4_TOOLKIT `"$Toolkit`"        (takes effect in NEW shells)"
+if ($script:X4HEnvState -eq 'set' -or $script:X4HEnvState -eq 'same') {
+  Write-Host ('X4_TOOLKIT: ' + $script:X4HEnvMsg)
+} else {
+  # -NoEnv, a different existing value, or not Windows: the user decides.
+  Write-Host "IMPORTANT - set X4_TOOLKIT in your user environment so the tools find the config"
+  Write-Host "above from ANY directory (they are often run from the game folder, which has a"
+  Write-Host ".claude\ but no x4-paths.env)."
+  if ($NoEnv) { Write-Host '  -NoEnv: this installer did not touch it. To set it yourself:' }
+  elseif ($script:X4HEnvState -eq 'different') { Write-Host '  It names another toolkit (the [WARNING] above). To point it here instead:' }
+  elseif ($script:X4HEnvState -eq 'skip') { Write-Host ('  ' + $script:X4HEnvMsg + '. To set it yourself:') }
+  else { Write-Host "  It was not set (see 'failed:' above). To set it yourself:" }
+  Write-Host ('         ' + (Get-HManualEnvCmd (Get-HNativePath $Toolkit)) + '        (takes effect in NEW shells)')
+}
 Write-Host "Verify:  cd `"$Toolkit\tools\x4validate`" ; uv run x4validate --paths"
