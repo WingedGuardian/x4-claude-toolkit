@@ -636,3 +636,49 @@ def test_REAL_layer2_DELEGATES_to_x4refguard_report(monkeypatch):
     monkeypatch.setattr(real, "report", fake_report)
     assert x4lock._layer2() == {"state": "partial", "detail": "x"}
     assert called == {"full": False}
+
+
+# --- Plan 3 lane L: the OpenCode target is locked like the Codex one ------------------- #
+
+_OC_LOCKED = (".opencode/hooks/x4guard.py", ".opencode/hooks/protect-bash.sh",
+              ".opencode/hooks/ps_translate.ps1", ".opencode/plugins/x4guard.js",
+              ".opencode/opencode.jsonc", ".opencode/X4-OPENCODE.md",
+              ".opencode/skills/x4-cli-reference/SKILL.md",
+              ".opencode/skills/x4-cli-reference/reference/x4save.md")
+
+
+def test_opencode_guards_plugin_config_and_skills_are_locked_when_present(tmp_path, monkeypatch):
+    game = _game(tmp_path, monkeypatch)
+    for rel in _OC_LOCKED:
+        (game / rel).parent.mkdir(parents=True, exist_ok=True)
+        (game / rel).write_text("#\n", encoding="utf-8")
+    got = x4lock.manifest()
+    for rel in _OC_LOCKED:
+        assert _in(got, game, rel), rel
+
+
+def test_TWIN_a_users_own_opencode_plugin_is_NOT_locked(tmp_path, monkeypatch):
+    """A user's plugin beside ours, and what OpenCode itself writes into .opencode/, are theirs."""
+    game = _game(tmp_path, monkeypatch)
+    for rel in (".opencode/plugins/mine.js", ".opencode/package.json", ".opencode/opencode.json"):
+        (game / rel).parent.mkdir(parents=True, exist_ok=True)
+        (game / rel).write_text("#\n", encoding="utf-8")
+    got = x4lock.manifest()
+    for rel in (".opencode/plugins/mine.js", ".opencode/package.json", ".opencode/opencode.json"):
+        assert not _in(got, game, rel), rel
+
+
+def test_an_opencode_root_DEMANDS_AGENTS_md_and_its_plugin(tmp_path, monkeypatch):
+    game = _game(tmp_path, monkeypatch)
+    (game / ".opencode" / "hooks").mkdir(parents=True)
+    gone = x4lock.missing()
+    assert _in(gone, game, "AGENTS.md")
+    assert _in(gone, game, ".opencode/plugins/x4guard.js")
+
+
+def test_TWIN_a_users_own_opencode_dir_demands_nothing(tmp_path, monkeypatch):
+    game = _game(tmp_path, monkeypatch)
+    (game / ".opencode").mkdir()
+    (game / ".opencode" / "opencode.json").write_text("{}", encoding="utf-8")
+    gone = x4lock.missing()
+    assert not _in(gone, game, "AGENTS.md") and not _in(gone, game, ".opencode/plugins/x4guard.js")

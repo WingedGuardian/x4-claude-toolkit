@@ -16,6 +16,18 @@
 - **`SETUP_PROMPT.txt` works for any agent.** It asks the agent to identify itself, check for an
   adapter, never approve hooks on your behalf, read `ADAPTING.md` when it has none, and report
   `x4doctor`'s live/not-live layers honestly.
+
+- **OpenCode, best effort (CLI only, from docs, not measured).** `--agent opencode` installs
+  an OpenCode target instead of refusing, and `--agent all` (the default) now includes it.
+  Two layers: deny rules in a per-machine `.opencode/opencode.jsonc`, rendered at install
+  from the roots the guards resolve (edits into `reference/`, `.cat`/`.dat` writes, deletion
+  commands aimed at `reference/`), and a plugin, `.opencode/plugins/x4guard.js`, that asks the
+  same guards as Claude Code and Codex before every `bash`, `edit`, `write` and `apply_patch`
+  and blocks on a refusal. It fails closed when Python, the adapter or the guards cannot
+  answer. The OpenCode **desktop app is not supported** (its plugin hooks never fire,
+  anomalyco/opencode#38604). Nothing here was run inside OpenCode: README's OpenCode section
+  lists what was read and what can switch the layers off. `x4doctor --agent opencode` and
+  `x4lock` know the new target; the generator writes `.opencode/` from `agent/`.
 - **A relative path in a shell command is now judged where the shell runs.** The guards ignored
   the `cwd` that Claude Code and Codex send with every call. So `rm -f reference/...` or
   `echo x > reference/...`, run from the folder holding `reference/`, was allowed, while the same

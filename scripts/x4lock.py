@@ -114,6 +114,9 @@ _GAME_RELATIVE = (
 _TARGET_DEMANDS = {
     ".claude/hooks": ("CLAUDE.md", ".claude/settings.json"),
     ".codex/hooks": ("AGENTS.md", ".codex/hooks.json"),
+    # OpenCode (Plan 3 lane L, best effort): its guard copy is the marker, never a bare
+    # .opencode/ -- OpenCode writes that folder itself and a user may keep plugins there.
+    ".opencode/hooks": ("AGENTS.md", ".opencode/plugins/x4guard.js"),
 }
 
 #: The guards themselves. A protection that can silently disable itself is not one.
@@ -139,6 +142,16 @@ _GAME_GLOBS = (
     # Skills for Codex and generic agents, locked exactly like Claude's (decision #11).
     ".agents/skills/*/SKILL.md",
     ".agents/skills/*/reference/*.md",
+    # The OpenCode target (Plan 3 lane L): a full guard copy, OUR plugin by name (a user's
+    # own plugin beside it is theirs), the rendered deny rules, the addendum and the skills.
+    ".opencode/hooks/*.sh",
+    ".opencode/hooks/*.py",
+    ".opencode/hooks/*.ps1",
+    ".opencode/plugins/x4guard.js",
+    ".opencode/opencode.jsonc",
+    ".opencode/X4-OPENCODE.md",
+    ".opencode/skills/*/SKILL.md",
+    ".opencode/skills/*/reference/*.md",
 )
 
 

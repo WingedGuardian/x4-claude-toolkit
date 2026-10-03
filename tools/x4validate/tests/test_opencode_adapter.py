@@ -1,0 +1,230 @@
+"""The OpenCode adapter (Plan 3 lane L Task 3): an OpenCode tool call, as the plugin hands it over,
+judged by the SAME guards as Codex and Claude Code. Driven through the RENDERED
+.opencode/hooks/opencode_adapter.py.
+
+The payload shapes (tool ids `bash`/`edit`/`write`/`apply_patch`; args `command`, `workdir`,
+`filePath`, `patchText`) are READ from OpenCode's source (v1.18.34), never captured from a running
+OpenCode (user decision: no local install). Every routing clause has a test; each decisive one a
+twin showing the clause decided it.
+"""
+import json
+import os
+import subprocess
+import sys
+
+import pytest
+
+from codex_testlib import REPO, make_sandbox
+
+ADAPTER = REPO / ".opencode" / "hooks" / "opencode_adapter.py"
+
+
+@pytest.fixture
+def sandbox(tmp_path):
+    return make_sandbox(tmp_path)
+
+
+def run(env, payload=None, event="pre", raw: bytes | None = None, cwd=None):
+    data = raw if raw is not None else json.dumps(payload).encode("utf-8")
+    r = subprocess.run([sys.executable, str(ADAPTER), event], input=data, capture_output=True,
+                       env=env, timeout=180, cwd=cwd or str(REPO / "tools" / "x4validate"))
+    lines = r.stdout.decode("ascii").splitlines()
+    assert r.returncode == 0 and len(lines) == 1 and lines[0].startswith("X4OK "), (r.returncode, r.stdout, r.stderr)
+    v = json.loads(lines[0][len("X4OK "):])
+    assert set(v) == {"v", "decision", "inert", "reason", "context"} and v["v"] == 1, v
+    assert v["decision"] in ("allow", "advise", "deny"), v      # the plugin knows no other word
+    return v
+
+
+def call(tk, tool, args, shell="bash", directory=None):
+    return {"v": 1, "tool": tool, "args": args, "directory": str(directory or tk), "shell": shell}
+
+
+def test_rendered_adapter_exists():
+    assert ADAPTER.is_file(), "regenerate: cd tools/x4validate && uv run python scripts/gen-agent-trees.py"
+
+
+def _ref_cases(tk):
+    ref = (tk / "reference").as_posix()
+    return [
+        ("edit", {"filePath": f"{ref}/libraries/wares.xml", "oldString": "ref", "newString": "x"}),
+        ("write", {"filePath": f"{ref}/x.xml", "content": ""}),
+        ("apply_patch", {"patchText": f"*** Begin Patch\n*** Add File: {ref}/n.xml\n+x\n*** End Patch\n"}),
+        # the MOVE DESTINATION: OpenCode's permission layer checks only the source (R6), the guards both
+        ("apply_patch", {"patchText": "*** Begin Patch\n*** Update File: dev/mymod/a.xml\n"
+                                      f"*** Move to: {ref}/a.xml\n@@\n-a\n+b\n*** End Patch\n"}),
+        ("bash", {"command": f"rm -rf '{ref}/libraries'"}),
+    ]
+
+
+@pytest.mark.parametrize("n", range(5))
+def test_a_write_into_reference_is_DENIED(sandbox, n):
+    tmp, tk, env = sandbox
+    (tk / "dev" / "mymod" / "a.xml").write_text("a\n", encoding="utf-8")
+    tool, args = _ref_cases(tk)[n]
+    v = run(env, call(tk, tool, args))
+    assert v["decision"] == "deny" and not v["inert"], v
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("edit", {"filePath": "dev/mymod/a.xml", "oldString": "a", "newString": "b"}),
+    ("write", {"filePath": "dev/mymod/new.xml", "content": "<x/>"}),
+    ("apply_patch", {"patchText": "*** Begin Patch\n*** Update File: dev/mymod/a.xml\n@@\n-a\n+b\n*** End Patch\n"}),
+    ("bash", {"command": "rm -rf dev/mymod/tmp"}),
+])
+def test_TWIN_a_write_in_dev_is_allowed(sandbox, tool, args):
+    tmp, tk, env = sandbox
+    (tk / "dev" / "mymod" / "a.xml").write_text("a\n", encoding="utf-8")
+    v = run(env, call(tk, tool, args))
+    assert v["decision"] in ("allow", "advise") and not v["inert"], v
+
+
+def test_a_relative_filePath_resolves_against_the_payload_directory(sandbox):
+    tmp, tk, env = sandbox
+    v = run(env, call(tk, "edit", {"filePath": "../reference/libraries/wares.xml", "oldString": "r",
+                                   "newString": "x"}, directory=tk / "dev"))
+    assert v["decision"] == "deny" and not v["inert"], v
+
+
+def test_TWIN_the_same_relative_filePath_from_elsewhere_is_allowed(sandbox):
+    tmp, tk, env = sandbox
+    (tk / "dev" / "mymod" / "a.xml").write_text("a\n", encoding="utf-8")
+    v = run(env, call(tk, "edit", {"filePath": "../mymod/a.xml", "oldString": "a", "newString": "b"},
+                      directory=tk / "dev" / "mymod"))
+    assert v["decision"] in ("allow", "advise"), v
+
+
+def test_bash_workdir_is_the_cwd_for_a_relative_operand(sandbox):
+    tmp, tk, env = sandbox
+    v = run(env, call(tk, "bash", {"command": "rm -rf libraries", "workdir": str(tk / "reference")}))
+    assert v["decision"] == "deny" and not v["inert"], v
+
+
+def test_TWIN_bash_workdir_in_dev_allows_the_same_command(sandbox):
+    tmp, tk, env = sandbox
+    v = run(env, call(tk, "bash", {"command": "rm -rf libraries", "workdir": str(tk / "dev")}))
+    assert v["decision"] in ("allow", "advise"), v
+
+
+def test_a_relative_bash_workdir_resolves_against_the_payload_directory(sandbox):
+    tmp, tk, env = sandbox
+    v = run(env, call(tk, "bash", {"command": "rm -rf libraries", "workdir": "reference"}))
+    assert v["decision"] == "deny" and not v["inert"], v
+
+
+def test_an_ask_is_a_deny_that_says_ask_the_user(sandbox):
+    tmp, tk, env = sandbox
+    v = run(env, call(tk, "write", {"filePath": str(tmp / "profile" / "content.xml"), "content": "x"}))
+    assert v["decision"] == "deny" and not v["inert"], v
+    assert v["reason"].startswith("NEEDS YOUR APPROVAL: ")
+    assert v["reason"].endswith("Ask the user; do not retry until they agree.")
+
+
+@pytest.mark.parametrize("raw", [b"not json", b"[]", b'{"v": 2, "tool": "edit", "args": {}}',
+                                 b'{"v": 1, "tool": "edit", "args": "x", "directory": ".", "shell": "bash"}'])
+def test_an_unreadable_payload_is_an_INERT_deny(sandbox, raw):
+    tmp, tk, env = sandbox
+    v = run(env, raw=raw)
+    assert v["decision"] == "deny" and v["inert"] and "X4 GUARD INERT" in v["reason"], v
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("apply_patch", {"patchText": "*** Begin Patch\n*** Nope: x\n*** End Patch\n"}),
+    ("apply_patch", {}),
+    ("edit", {"oldString": "a"}),
+    ("bash", {"command": 5}),
+])
+def test_an_unparseable_patch_or_missing_arg_is_an_INERT_deny(sandbox, tool, args):
+    tmp, tk, env = sandbox
+    v = run(env, call(tk, tool, args))
+    assert v["decision"] == "deny" and v["inert"], v
+
+
+def test_a_directory_that_does_not_exist_is_an_INERT_deny(sandbox):
+    tmp, tk, env = sandbox
+    v = run(env, call(tk, "edit", {"filePath": "a.xml", "oldString": "a", "newString": "b"},
+                      directory=tmp / "nowhere"))
+    assert v["decision"] == "deny" and v["inert"], v
+
+
+@pytest.mark.parametrize("shell", ["cmd", "", None])
+def test_an_unknown_shell_is_an_INERT_deny(sandbox, shell):
+    tmp, tk, env = sandbox
+    v = run(env, call(tk, "bash", {"command": "echo hi"}, shell=shell))
+    assert v["decision"] == "deny" and v["inert"], v
+
+
+def test_TWIN_powershell_is_a_known_shell(sandbox):
+    tmp, tk, env = sandbox
+    v = run(env, call(tk, "bash", {"command": "Get-ChildItem"}, shell="powershell"))
+    assert not v["inert"], v
+
+
+@pytest.mark.parametrize("tool", ["read", "glob", "grep", "webfetch", "task", "skill"])
+def test_tools_that_write_nothing_are_allowed_without_a_guard_run(sandbox, tool):
+    tmp, tk, env = sandbox
+    # X4_BASH pointing nowhere: any guard run would be an inert deny, so an allow proves none ran
+    v = run(dict(env, X4_BASH=str(tmp / "no-bash.exe")), call(tk, tool, {"filePath": str(tk / "reference" / "x")}))
+    assert v["decision"] == "allow" and not v["inert"], v
+
+
+def test_TWIN_a_judged_tool_with_no_bash_is_inert(sandbox):
+    tmp, tk, env = sandbox
+    v = run(dict(env, X4_BASH=str(tmp / "no-bash.exe")), call(tk, "edit", {
+        "filePath": "dev/mymod/a.xml", "oldString": "a", "newString": "b"}))
+    assert v["decision"] == "deny" and v["inert"], v
+
+
+def test_backup_taken_before_an_allowed_edit_of_an_existing_file(sandbox):
+    tmp, tk, env = sandbox
+    (tk / "dev" / "mymod" / "a.xml").write_text("<a/>\n", encoding="utf-8")
+    v = run(env, call(tk, "edit", {"filePath": "dev/mymod/a.xml", "oldString": "a", "newString": "b"}))
+    assert v["decision"] in ("allow", "advise"), v
+    assert any((tmp / "backups").rglob("*")), "an allowed edit must be backed up first"
+
+
+def test_TWIN_no_backup_for_a_denied_edit(sandbox):
+    tmp, tk, env = sandbox
+    v = run(env, call(tk, "edit", {"filePath": "reference/libraries/wares.xml", "oldString": "r", "newString": "x"}))
+    assert v["decision"] == "deny"
+    assert not any((tmp / "backups").rglob("*"))
+
+
+def test_post_on_an_edit_returns_the_validator_advisory_or_nothing(sandbox):
+    tmp, tk, env = sandbox
+    (tk / "dev" / "mymod" / "a.xml").write_text("<diff/>\n", encoding="utf-8")
+    v = run(env, call(tk, "edit", {"filePath": "dev/mymod/a.xml", "oldString": "a", "newString": "b"}), event="post")
+    assert v["decision"] in ("allow", "advise") and not v["inert"], v
+
+
+def test_post_on_an_unparseable_patch_says_validation_did_not_run(sandbox):
+    tmp, tk, env = sandbox
+    v = run(env, call(tk, "apply_patch", {"patchText": "*** Begin Patch\n*** Nope: x\n*** End Patch\n"}), event="post")
+    assert v["decision"] == "advise" and v["context"].startswith("X4 VALIDATION DID NOT RUN"), v
+
+
+def test_post_never_denies_even_on_garbage(sandbox):
+    tmp, tk, env = sandbox
+    v = run(env, raw=b"garbage", event="post")
+    assert v["decision"] == "advise" and "DID NOT RUN" in v["context"], v
+
+
+def test_an_unknown_event_is_an_INERT_deny(sandbox):
+    tmp, tk, env = sandbox
+    v = run(env, call(tk, "edit", {"filePath": "dev/mymod/a.xml", "oldString": "a", "newString": "b"}), event="nope")
+    assert v["decision"] == "deny" and v["inert"], v
+
+
+def test_X4_GUARD_off_turns_a_deny_into_an_advise_naming_it(sandbox):
+    tmp, tk, env = sandbox
+    v = run(dict(env, X4_GUARD="off"), call(tk, "edit", {
+        "filePath": "reference/libraries/wares.xml", "oldString": "r", "newString": "x"}))
+    assert v["decision"] == "advise" and "X4 GUARDS OFF" in v["context"], v
+
+
+def test_the_output_is_one_ascii_line_even_for_non_ascii_paths(sandbox):
+    tmp, tk, env = sandbox
+    d = tk / "reference" / "café"
+    d.mkdir()
+    v = run(env, call(tk, "write", {"filePath": str(d / "x.xml"), "content": ""}))
+    assert v["decision"] == "deny"

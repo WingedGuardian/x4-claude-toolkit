@@ -35,7 +35,12 @@ touches Codex's config. Stdlib only, Python >= 3.10, so a broken uv or venv cann
 down the tool that diagnoses it.
 
 USAGE
-    python scripts/x4doctor.py [--root DIR] [--agent claude|codex|generic] [--json]
+    python scripts/x4doctor.py [--root DIR] [--agent claude|codex|generic|opencode] [--json]
+
+OPENCODE (Plan 3 lane L) is BEST EFFORT, from OpenCode's docs and source, not measured: its
+rows say whether the toolkit's two layers are IN PLACE (plugin + adapter, rendered deny
+rules), never that OpenCode loaded them -- only the `X4 GUARDS LIVE` line in an OpenCode
+session shows that. The OpenCode desktop app is not supported (anomalyco/opencode#38604).
 """
 from __future__ import annotations
 
@@ -50,7 +55,7 @@ from pathlib import Path
 
 OK, FAIL, UNKNOWN, NA = "OK", "FAIL", "UNKNOWN", "N/A"
 STATUSES = (OK, FAIL, UNKNOWN, NA)
-TARGETS = ("claude", "codex", "generic")
+TARGETS = ("claude", "codex", "generic", "opencode")
 HERE = Path(__file__).resolve().parent
 
 
@@ -115,6 +120,9 @@ def detect_targets(root: Path) -> dict[str, bool]:
         "claude": (root / ".claude" / "settings.json").is_file(),
         "codex": (root / ".codex" / "hooks").is_dir() or (root / ".codex" / "hooks.json").is_file(),
         "generic": (root / ".agents" / "skills").is_dir(),
+        # OUR plugin, never a bare .opencode/: OpenCode writes that folder itself (its
+        # .gitignore and package.json, READ config.ts) and a user may keep plugins there.
+        "opencode": (root / ".opencode" / "plugins" / "x4guard.js").is_file(),
     }
 
 
@@ -225,6 +233,8 @@ def guard_dirs(ctx: Ctx) -> list[tuple[str, Path]]:
         out.append(("claude", ctx.root / ".claude" / "hooks"))
     if ctx.targets.get("codex") and (ctx.root / ".codex" / "hooks" / "_x4-env.sh").is_file():
         out.append(("codex", ctx.root / ".codex" / "hooks"))
+    if ctx.targets.get("opencode") and (ctx.root / ".opencode" / "hooks" / "_x4-env.sh").is_file():
+        out.append(("opencode", ctx.root / ".opencode" / "hooks"))
     return out
 
 
@@ -297,7 +307,7 @@ def guard_probe(ctx: Ctx) -> tuple[dict | None, str]:
 def check_toolchain(ctx: Ctx) -> list[Check]:
     dirs = guard_dirs(ctx)
     if not dirs:
-        why = "no guard copy is installed here (.claude/hooks or .codex/hooks)"
+        why = "no guard copy is installed here (.claude/hooks, .codex/hooks or .opencode/hooks)"
         return [Check(i, "all", NA, why) for i in ("bash.guards", "bash.path", "bash.agree",
                                                     "python.guards", "jq")]
     rows = []
@@ -527,11 +537,11 @@ def _ask_guard(xg: Path, args: list[str], env: dict, cwd: str) -> dict:
 def check_guards(ctx: Ctx) -> list[Check]:
     dirs = guard_dirs(ctx)
     rows = []
-    for target in ("claude", "codex"):
+    for target in ("claude", "codex", "opencode"):
         if any(t == target for t, _ in dirs):
             continue
         if ctx.targets.get(target):
-            hooks = ctx.root / (".claude" if target == "claude" else ".codex") / "hooks"
+            hooks = ctx.root / ("." + target) / "hooks"
             rows.append(Check("guards.selftest." + target, target, FAIL,
                               "the %s target is installed but its guard copy is not (%s has no "
                               "_x4-env.sh): its hooks point at scripts that are absent, and a hook "
@@ -958,7 +968,11 @@ def check_common(ctx: Ctx) -> list[Check]:
 #: The first line of every generated instruction file carries this (gen-agent-trees.py's
 #: BANNER_CLAUDE_MD / BANNER_MD both begin with it).
 GENERATED_MARK = "<!-- GENERATED"
-INSTRUCTION_FILE = {"claude": "CLAUDE.md", "codex": "AGENTS.md", "generic": "AGENTS.md"}
+INSTRUCTION_FILE = {"claude": "CLAUDE.md", "codex": "AGENTS.md", "generic": "AGENTS.md",
+                    "opencode": "AGENTS.md"}
+#: OpenCode reads AGENTS.md plus its own addendum, named under `instructions` in the rendered
+#: .opencode/opencode.jsonc (READ opencode.ai/docs/rules).
+OPENCODE_ADDENDUM = Path(".opencode") / "X4-OPENCODE.md"
 
 
 def _parity_module(ctx: Ctx):
@@ -1054,7 +1068,7 @@ def check_parity(ctx: Ctx) -> list[Check]:
         rows.append(run_check(cid, target, _one, ctx))
 
     # The instruction files are in no deploy population (READ): reported here instead.
-    for target in ("claude", "codex", "generic"):
+    for target in ("claude", "codex", "generic", "opencode"):
         cid = "instructions." + target
         if not ctx.targets.get(target):
             rows.append(Check(cid, target, NA, "the %s target is not installed here" % target))
@@ -1066,22 +1080,149 @@ def check_parity(ctx: Ctx) -> list[Check]:
             if not p.is_file():
                 return FAIL, ("no %s here: the %s target runs without the toolkit's instructions"
                               % (name, target))
+            if target == "opencode" and not _has_banner(ctx.root / OPENCODE_ADDENDUM):
+                return FAIL, ("no generated %s: OpenCode runs without the toolkit's OpenCode rules "
+                              "(how its guards work, what to do when the plugin did not load)"
+                              % OPENCODE_ADDENDUM.as_posix())
             if _has_banner(p):
                 return OK, "%s is the toolkit's generated file" % name
             if target == "claude":
                 return OK, "%s has no GENERATED banner (hand-written or pre-4.0)" % name
             return FAIL, ("%s has no GENERATED banner: %s reads THIS file, and it is not the "
                           "toolkit's -- re-run the installer, which keeps yours as AGENTS.pre-4.0.md"
-                          % (name, "Codex" if target == "codex" else "a generic agent"))
+                          % (name, {"codex": "Codex", "opencode": "OpenCode"}.get(target, "a generic agent")))
         rows.append(run_check(cid, target, _instr, ctx))
 
     agents = ctx.root / "AGENTS.md"
-    if agents.is_file() and not (ctx.targets.get("codex") or ctx.targets.get("generic")):
+    if agents.is_file() and not (ctx.targets.get("codex") or ctx.targets.get("generic")
+                                 or ctx.targets.get("opencode")):
         kind = "the toolkit's generated file" if _has_banner(agents) else "a hand-written file"
         rows.append(Check("instructions.agents_md", "all", OK,
                           "NOTE: %s is %s; no Codex/generic target is installed, but any Codex "
                           "session started here reads it" % (agents.name, kind)))
     return rows
+
+
+# ----------------------------------------------------------------- OpenCode (lane L)
+#
+# BEST EFFORT, from OpenCode v1.18.34's docs and source (READ), never run here. What these
+# rows can answer: are the two layers IN PLACE -- the plugin with the adapter and guard copy
+# it calls, and the deny rules rendered for the roots the guards see now. What they cannot:
+# that OpenCode loaded either one (a plugin that fails to load is skipped with only a log
+# line, READ plugin/index.ts). That is the `X4 GUARDS LIVE` line inside a session.
+
+OPENCODE_NEEDS = ("plugins/x4guard.js", "hooks/opencode_adapter.py", "hooks/codex_adapter.py",
+                  "hooks/patch_paths.py", "hooks/x4guard.py", "hooks/_x4-env.sh",
+                  "hooks/opencode_config.py")
+
+
+def _jsonc_loads(text: str):
+    """JSON with // and /* */ comments and trailing commas (OpenCode accepts JSONC, READ)."""
+    import re
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i:j + 1])
+            i = j + 1
+        elif text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+        elif text.startswith("/*", i):
+            k = text.find("*/", i + 2)
+            i = n if k < 0 else k + 2
+        else:
+            out.append(c)
+            i += 1
+    return json.loads(re.sub(r",(\s*[}\]])", r"\1", "".join(out)))
+
+
+def opencode_user_configs(ctx: Ctx) -> list[Path]:
+    """The OpenCode config files merged BEFORE ours (READ config.ts): global
+    (<xdg config>/opencode/{config.json,opencode.json,opencode.jsonc}, xdg = XDG_CONFIG_HOME
+    else ~/.config), OPENCODE_CONFIG, the project's opencode.json(c), .opencode/opencode.json."""
+    xdg = Path(ctx.env["XDG_CONFIG_HOME"]) if ctx.env.get("XDG_CONFIG_HOME") else Path.home() / ".config"
+    cands = [xdg / "opencode" / n for n in ("config.json", "opencode.json", "opencode.jsonc")]
+    if ctx.env.get("OPENCODE_CONFIG"):
+        cands.append(Path(ctx.env["OPENCODE_CONFIG"]))
+    cands += [ctx.root / "opencode.json", ctx.root / "opencode.jsonc", ctx.root / ".opencode" / "opencode.json"]
+    return [p for p in cands if p.is_file()]
+
+
+@group
+def check_opencode(ctx: Ctx) -> list[Check]:
+    ids = ("opencode.plugin", "opencode.config", "opencode.userconfig", "opencode.cli")
+    if not ctx.targets.get("opencode"):
+        return [Check(i, "opencode", NA, "the opencode target is not installed here") for i in ids]
+    oc = ctx.root / ".opencode"
+
+    def _plugin(_):
+        gone = [n for n in OPENCODE_NEEDS if not (oc / n).is_file()]
+        if gone:
+            return FAIL, ("%s missing: the plugin would THROW 'X4 GUARD INERT' on every write (or not "
+                          "load at all). Re-run the installer" % ", ".join(".opencode/" + g for g in gone))
+        return OK, ("plugin, adapter and guard copy in place (.opencode/plugins/x4guard.js). Whether "
+                    "OpenCode LOADED it shows only in a session: the 'X4 GUARDS LIVE' line")
+
+    def _config(_):
+        cfg = oc / "opencode.jsonc"
+        fix = "python .opencode/hooks/opencode_config.py write --root \"%s\"" % ctx.root
+        if not cfg.is_file():
+            return FAIL, "no .opencode/opencode.jsonc: the deny-rule layer is ABSENT. Run: " + fix
+        r = _run([sys.executable, str(oc / "hooks" / "opencode_config.py"), "check", "--root", str(ctx.root)],
+                 env=ctx.env, cwd=str(ctx.root), timeout=120)
+        if r.returncode == 0:
+            return OK, "the deny rules match the roots the guards resolve now"
+        if r.returncode == 1:
+            return FAIL, ("the deny rules are stale -- rendered for roots the guards no longer see "
+                          "(reference/ or the game moved?). Run: " + fix)
+        return UNKNOWN, "the deny rules cannot be rendered here: " + (r.stderr or r.stdout).strip()[-300:]
+
+    def _userconfig(_):
+        hits, bad = [], []
+        for p in opencode_user_configs(ctx):
+            try:
+                d = _jsonc_loads(p.read_text(encoding="utf-8"))
+            except (OSError, ValueError, UnicodeDecodeError) as e:
+                bad.append("%s (%s)" % (p, type(e).__name__))
+                continue
+            perm = d.get("permission") if isinstance(d, dict) else None
+            if isinstance(perm, str):
+                hits.append('%s: "permission": "%s"' % (p, perm))
+            elif isinstance(perm, dict):
+                hits += ['%s: "permission.%s": "%s"' % (p, k, perm[k]) for k in ("edit", "bash")
+                         if isinstance(perm.get(k), str)]
+        if hits:
+            return UNKNOWN, ("NOT a guard failure: your own setting is REPLACED by the toolkit's deny "
+                             "object when OpenCode merges configs (READ: a string is replaced by an "
+                             "object), so it silently stops applying -- %s. Write it as "
+                             '{"*": "<value>"} instead' % "; ".join(hits))
+        if bad:
+            return UNKNOWN, "could not read: " + "; ".join(bad)
+        return OK, "no OpenCode config of yours sets permission/edit/bash as a plain string"
+
+    def _cli(_):
+        import shutil
+        exe = shutil.which("opencode", path=ctx.env.get("PATH"))
+        ver = ""
+        if exe:
+            try:
+                r = _run([exe, "--version"], env=ctx.env, timeout=30)
+                ver = (r.stdout or r.stderr).strip().splitlines()[0][:80] if (r.stdout or r.stderr).strip() else ""
+            except Exception:  # noqa: BLE001 -- informational row
+                ver = "(--version did not answer)"
+        where = ("opencode on PATH: %s %s" % (exe, ver)).strip() if exe else "opencode is not on PATH"
+        return OK, ("NOTE: %s. OpenCode support is BEST EFFORT (from docs, not measured), CLI only: "
+                    "the OpenCode desktop app is NOT supported (its plugin hooks never fire, "
+                    "anomalyco/opencode#38604)" % where)
+
+    return [run_check("opencode.plugin", "opencode", _plugin, ctx),
+            run_check("opencode.config", "opencode", _config, ctx),
+            run_check("opencode.userconfig", "opencode", _userconfig, ctx),
+            run_check("opencode.cli", "opencode", _cli, ctx)]
 
 
 def _verdict(code: int) -> str:
@@ -1095,7 +1236,7 @@ def render_text(ctx: Ctx, rows: list[Check], code: int, elapsed: float) -> str:
     present = [t for t in TARGETS if ctx.targets.get(t)]
     out = ["x4doctor: %s" % _verdict(code),
            "  root:    %s" % ctx.root,
-           "  targets: %s" % (", ".join(present) or "NONE (no .claude/settings.json, .codex/hooks or .agents/skills here)"),
+           "  targets: %s" % (", ".join(present) or "NONE (no .claude/settings.json, .codex/hooks, .agents/skills or .opencode/plugins/x4guard.js here)"),
            "  checked: %d row(s) in %.1fs -- %s" % (
                len(rows), elapsed,
                ", ".join("%d %s" % (sum(r.status == s for r in rows), s) for s in STATUSES))]

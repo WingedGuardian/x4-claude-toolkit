@@ -80,17 +80,19 @@ def test_json_output_is_one_parseable_document(tmp_path):
     r = _run("--root", str(tmp_path), "--json")
     d = json.loads(r.stdout)
     assert d["v"] == 1 and isinstance(d["checks"], list) and d["root"]
-    assert set(d["targets"]) == {"claude", "codex", "generic"}
+    assert set(d["targets"]) == {"claude", "codex", "generic", "opencode"}
     assert d["exit"] == r.returncode == 2
 
 
 def test_detect_targets(tmp_path):
-    assert doc.detect_targets(tmp_path) == {"claude": False, "codex": False, "generic": False}
+    assert doc.detect_targets(tmp_path) == {"claude": False, "codex": False, "generic": False,
+                                            "opencode": False}
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
     (tmp_path / ".codex" / "hooks").mkdir(parents=True)
     (tmp_path / ".agents" / "skills").mkdir(parents=True)
-    assert doc.detect_targets(tmp_path) == {"claude": True, "codex": True, "generic": True}
+    assert doc.detect_targets(tmp_path) == {"claude": True, "codex": True, "generic": True,
+                                            "opencode": False}
 
 
 def test_TWIN_a_users_own_AGENTS_md_alone_is_NOT_the_generic_target(tmp_path):
@@ -107,7 +109,8 @@ def test_TWIN_a_bare_claude_dir_holding_only_the_path_config_is_NOT_the_claude_t
     (tmp_path / ".claude" / "x4-paths.env").write_text("X4_TOOLKIT=x\n", encoding="utf-8")
     (tmp_path / ".codex").mkdir()
     (tmp_path / ".codex" / "config.toml").write_text("#\n", encoding="utf-8")
-    assert doc.detect_targets(tmp_path) == {"claude": False, "codex": False, "generic": False}
+    assert doc.detect_targets(tmp_path) == {"claude": False, "codex": False, "generic": False,
+                                            "opencode": False}
 
 
 def test_the_verdict_line_comes_FIRST(tmp_path):
@@ -117,7 +120,15 @@ def test_the_verdict_line_comes_FIRST(tmp_path):
 
 
 def test_an_unknown_agent_filter_is_a_usage_error(tmp_path):
-    assert _run("--root", str(tmp_path), "--agent", "opencode").returncode == 2
+    r = _run("--root", str(tmp_path), "--agent", "nonsense")
+    assert r.returncode == 2 and "unknown --agent" in r.stdout, r.stdout
+
+
+def test_TWIN_opencode_is_a_known_agent_filter(tmp_path):
+    """Plan 3 lane L: OpenCode is a target (best effort). Nothing installed here, so exit 2
+    still -- but for 'nothing answered', never for a usage error."""
+    r = _run("--root", str(tmp_path), "--agent", "opencode")
+    assert "unknown --agent" not in r.stdout, r.stdout
 
 
 def test_the_doctor_is_stdlib_only():
@@ -835,3 +846,134 @@ def test_a_TARGET_whose_guard_copy_is_MISSING_is_FAIL_not_NA(codex_root):
 def test_TWIN_a_target_that_is_not_installed_is_NA(sandbox):
     rows = {r.id: r for r in doc.check_guards(sandbox.ctx())}
     assert rows["guards.selftest.codex"].status == doc.NA
+
+
+# --- Plan 3 lane L: the OpenCode target (BEST EFFORT, from docs, not measured) --------- #
+
+OC_HOOKS = REPO / ".opencode" / "hooks"
+
+
+@pytest.fixture
+def oc_root(tmp_path, monkeypatch):
+    """An OpenCode-only install: the generated .opencode/ tree, AGENTS.md, the path config,
+    and the deny rules rendered by the toolkit's own renderer."""
+    for name in _LEAKY:
+        monkeypatch.delenv(name, raising=False)
+    root = tmp_path / "root"
+    game = tmp_path / "game"
+    ref = root / "reference"
+    for d in (game / "extensions", ref / "libraries"):
+        d.mkdir(parents=True)
+    for sub in ("hooks", "plugins"):
+        shutil.copytree(REPO / ".opencode" / sub, root / ".opencode" / sub,
+                        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    shutil.copy2(REPO / ".opencode" / "X4-OPENCODE.md", root / ".opencode" / "X4-OPENCODE.md")
+    shutil.copy2(REPO / "AGENTS.md", root / "AGENTS.md")
+    _env_file(root / ".claude" / "x4-paths.env", X4_TOOLKIT=root, X4_GAME=game, X4_REFERENCE=ref)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("OPENCODE_CONFIG", raising=False)
+    r = subprocess.run([sys.executable, str(root / ".opencode" / "hooks" / "opencode_config.py"),
+                        "write", "--root", str(root)], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+    return root
+
+
+def _oc_rows(root, fn, **kw):
+    return {r.id: r for r in fn(doc.Ctx(root=root, **kw))}
+
+
+def test_opencode_is_detected_by_its_plugin(tmp_path):
+    (tmp_path / ".opencode" / "plugins").mkdir(parents=True)
+    (tmp_path / ".opencode" / "plugins" / "x4guard.js").write_text("//\n", encoding="utf-8")
+    assert doc.detect_targets(tmp_path)["opencode"] is True
+
+
+def test_TWIN_a_users_own_opencode_dir_is_NOT_the_opencode_target(tmp_path):
+    """OpenCode itself writes .opencode/ (its .gitignore, package.json); a user may keep their
+    own plugins there. The toolkit's target is OUR plugin."""
+    (tmp_path / ".opencode" / "plugins").mkdir(parents=True)
+    (tmp_path / ".opencode" / "opencode.json").write_text("{}", encoding="utf-8")
+    (tmp_path / ".opencode" / "plugins" / "mine.js").write_text("//\n", encoding="utf-8")
+    assert doc.detect_targets(tmp_path)["opencode"] is False
+
+
+def test_a_healthy_opencode_install_is_OK_on_every_opencode_row(oc_root):
+    rows = _oc_rows(oc_root, doc.check_opencode)
+    for rid in ("opencode.plugin", "opencode.config", "opencode.userconfig", "opencode.cli"):
+        assert rows[rid].status == doc.OK, rows[rid]
+    assert "desktop app" in rows["opencode.cli"].detail.lower()
+
+
+def test_opencode_rows_are_NA_when_the_target_is_absent(sandbox):
+    rows = sandbox.rows(doc.check_opencode)
+    assert rows and all(r.status == doc.NA for r in rows.values()), rows
+
+
+@pytest.mark.parametrize("gone", ["opencode_adapter.py", "codex_adapter.py", "x4guard.py"])
+def test_a_missing_adapter_or_guard_is_an_opencode_plugin_FAIL(oc_root, gone):
+    (oc_root / ".opencode" / "hooks" / gone).unlink()
+    r = _oc_rows(oc_root, doc.check_opencode)["opencode.plugin"]
+    assert r.status == doc.FAIL and gone in r.detail, r
+
+
+def test_a_missing_config_is_an_opencode_config_FAIL(oc_root):
+    (oc_root / ".opencode" / "opencode.jsonc").unlink()
+    r = _oc_rows(oc_root, doc.check_opencode)["opencode.config"]
+    assert r.status == doc.FAIL and "opencode_config.py write" in r.detail, r
+
+
+def test_a_STALE_config_is_an_opencode_config_FAIL(oc_root, tmp_path):
+    moved = tmp_path / "moved-ref"
+    moved.mkdir()
+    _env_file(oc_root / ".claude" / "x4-paths.env", X4_TOOLKIT=oc_root, X4_REFERENCE=moved)
+    r = _oc_rows(oc_root, doc.check_opencode)["opencode.config"]
+    assert r.status == doc.FAIL and "stale" in r.detail, r
+
+
+def test_a_config_that_cannot_be_rendered_is_UNKNOWN(oc_root, tmp_path):
+    env = dict(os.environ, X4_REFERENCE=str(tmp_path / "a*b"))
+    r = _oc_rows(oc_root, doc.check_opencode, env=env)["opencode.config"]
+    assert r.status == doc.UNKNOWN, r
+
+
+@pytest.mark.parametrize("where,body", [
+    ("project", {"permission": {"edit": "ask"}}),
+    ("project", {"permission": "ask"}),
+    ("dotdir", {"permission": {"bash": "ask"}}),
+    ("global", {"permission": {"edit": "ask"}}),
+])
+def test_a_STRING_permission_in_the_users_config_is_flagged(oc_root, tmp_path, where, body):
+    """READ (config.ts + remeda mergeDeep): a string in an earlier config is REPLACED by our
+    deny object, so the user's own "ask" silently stops applying."""
+    p = {"project": oc_root / "opencode.json", "dotdir": oc_root / ".opencode" / "opencode.json",
+         "global": tmp_path / "xdg" / "opencode" / "opencode.jsonc"}[where]
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("// mine\n" + json.dumps(body), encoding="utf-8")
+    r = _oc_rows(oc_root, doc.check_opencode)["opencode.userconfig"]
+    assert r.status == doc.UNKNOWN and "REPLACED" in r.detail and str(p.name) in r.detail, r
+
+
+def test_TWIN_an_object_permission_in_the_users_config_is_fine(oc_root):
+    (oc_root / "opencode.json").write_text(json.dumps({"permission": {"edit": {"*": "ask"}}}),
+                                           encoding="utf-8")
+    r = _oc_rows(oc_root, doc.check_opencode)["opencode.userconfig"]
+    assert r.status == doc.OK, r
+
+
+def test_an_unreadable_user_config_is_UNKNOWN(oc_root):
+    (oc_root / "opencode.json").write_text("{ not json", encoding="utf-8")
+    r = _oc_rows(oc_root, doc.check_opencode)["opencode.userconfig"]
+    assert r.status == doc.UNKNOWN and "opencode.json" in r.detail, r
+
+
+def test_the_opencode_guard_copy_is_self_tested_with_its_OWN_x4guard(oc_root):
+    rows = _oc_rows(oc_root, doc.check_guards)
+    r = rows["guards.selftest.opencode"]
+    assert r.status == doc.OK and ".opencode" in r.detail.replace(chr(92), "/"), r
+
+
+def test_opencode_instructions_need_AGENTS_md_and_the_addendum(oc_root):
+    assert _oc_rows(oc_root, doc.check_parity)["instructions.opencode"].status == doc.OK
+    (oc_root / ".opencode" / "X4-OPENCODE.md").unlink()
+    r = _oc_rows(oc_root, doc.check_parity)["instructions.opencode"]
+    assert r.status == doc.FAIL and "X4-OPENCODE.md" in r.detail, r

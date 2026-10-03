@@ -22,8 +22,8 @@ param(
   [ValidateSet('in-game','separate','global')] [string]$Method,
   [string]$Game, [string]$Profile, [string]$Toolkit, [string]$Mods,
   [string]$Reference, [string]$Extensions, [string]$XRCatTool,
-  # claude | codex | generic | all (user decision #10, 2026-10-02: default all). Validated
-  # by hand below, not by ValidateSet, so `opencode` can be refused naming spec M8.
+  # claude | codex | generic | opencode | all (user decision #10, 2026-10-02: default all;
+  # L-Q1: all includes opencode). Validated by hand below, case-sensitively, like install.sh.
   [string]$Agent = 'all',
   [switch]$Unpack, [switch]$Yes, [switch]$OverExisting, [switch]$DryRun
 )
@@ -173,6 +173,7 @@ $X4CopyPrune = @('tools\x4validate\.venv',
 #: not in $X4CopyPrune, whose second meaning would erase a user's built databases
 #: on every upgrade. See X4_KEEP_LOCAL in install.sh.
 $X4KeepLocal = @('.claude\x4-paths.env','.claude\settings.local.json','.claude\backups','.codex\hooks.json',
+                 '.opencode\opencode.jsonc',
                  'tools\basex\basex\data','tools\basex\basex\coverage-x4raw.json',
                  'tools\basex\basex\coverage-x4eff.json','tools\basex\_eff',
                  'tools\basex\stage-manifest.json')
@@ -326,14 +327,17 @@ $X4AgentItems = @{
   claude  = @('.claude','CLAUDE.md')
   codex   = @('AGENTS.md','.codex','.agents')
   generic = @('AGENTS.md','.agents')
+  opencode = @('AGENTS.md','.opencode')
 }
-$X4AgentNames = @('claude','codex','generic')
+#: `all` (the default) installs EVERY name here, OpenCode included (user decision L-Q1,
+#: 2026-10-02). OpenCode is BEST EFFORT -- from its docs and source, not measured.
+$X4AgentNames = @('claude','codex','generic','opencode')
 
 #: The skill token and its rendering PER OS, as in install.sh: Codex runs PowerShell on
 #: Windows, where `$X4_TOOLKIT` is an EMPTY variable (MEASURED, lane A).
 $X4ToolkitToken = '{{TOOLKIT}}'
 $X4ToolkitRender = @{ windows = '$env:X4_TOOLKIT'; posix = '$X4_TOOLKIT' }
-$X4TokenDirs = @('.agents')
+$X4TokenDirs = @('.agents','.opencode')
 #: Windows PowerShell 5.1 has no $IsWindows and only runs on Windows.
 $X4OnWindows = ($PSVersionTable.PSEdition -ne 'Core') -or $IsWindows
 $X4CodexHooksTmpl = 'agent/targets/codex/hooks.json.tmpl'
@@ -341,11 +345,7 @@ $X4CodexHooksTmpl = 'agent/targets/codex/hooks.json.tmpl'
 # --- resolve -Agent, BEFORE anything is written --------------------------------------
 if ($Agent -ceq 'all') { $X4Agents = $X4AgentNames }
 elseif ($X4AgentNames -ccontains $Agent) { $X4Agents = @($Agent) }
-elseif ($Agent -ceq 'opencode') {
-  Write-Host 'REFUSING: -Agent opencode is not yet supported (spec M8). Nothing has been changed.' -ForegroundColor Red
-  Write-Host ('  Supported: ' + ($X4AgentNames -join ' ') + ' all') -ForegroundColor Red
-  exit 2
-} else {
+else {
   Write-Host ("REFUSING: unknown -Agent '" + $Agent + "'. Supported: " + ($X4AgentNames -join ' ') + ' all. Nothing has been changed.') -ForegroundColor Red
   exit 2
 }
@@ -528,6 +528,70 @@ function Write-CodexHooksJson($dest) {
   }
   $script:X4CodexHooksWritten = $true
   Write-Host "  wrote $f"
+}
+
+# --- the OpenCode permission deny rules (lane L, BEST EFFORT) -------------------------
+#: The mirror of write_opencode_config in install.sh: the toolkit's own renderer writes the
+#: per-machine .opencode\opencode.jsonc (deny rules for THIS install's roots, from the
+#: guards' own loader), never over a file without its banner, every failure NAMED.
+$X4OpenCodeNote = 'OpenCode:  BEST EFFORT, CLI only, from docs, not measured. The OpenCode desktop app is NOT supported (its plugin hooks never fire, anomalyco/opencode#38604).'
+function Test-OpenCodeSelected { return ((Test-ItemSelected '.opencode') -and (Test-Path -LiteralPath (Join-Path $SRC '.opencode') -PathType Container)) }
+
+#: The first Python >= 3.10 (X4_PYTHON, then py -3 on Windows, python3, python; with
+#: X4_NO_PYTHON_FALLBACK=1 only X4_PYTHON) -- the plugin's own order. $null when none.
+function Find-OcPython {
+  $cands = @()
+  if ($env:X4_PYTHON) { $cands += , @($env:X4_PYTHON) }
+  if ($env:X4_NO_PYTHON_FALLBACK -ne '1') {
+    if ($X4OnWindows) { $cands += , @('py', '-3') }
+    $cands += , @('python3'); $cands += , @('python')
+  }
+  foreach ($c in $cands) {
+    $cmd = Get-Command $c[0] -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $cmd) { continue }
+    $rest = @($c | Select-Object -Skip 1)
+    try {
+      & $cmd.Source @rest -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' *> $null
+      if ($LASTEXITCODE -eq 0) { return , (@($cmd.Source) + $rest) }
+    } catch { }
+  }
+  return $null
+}
+
+function Write-OpenCodeConfig($dest) {
+  if (-not (Test-OpenCodeSelected)) { return }
+  $cfg = Join-Path (Join-Path $dest '.opencode') 'opencode.jsonc'
+  Refuse-IfDryRun 'rendering the OpenCode deny rules into' $cfg
+  $renderer = Join-Path (Join-Path (Join-Path $dest '.opencode') 'hooks') 'opencode_config.py'
+  if (-not (Test-Path -LiteralPath $renderer -PathType Leaf)) {
+    $script:failed += '.opencode/opencode.jsonc (the permission deny layer was NOT installed: .opencode/hooks/opencode_config.py is missing)'
+    return
+  }
+  $py = Find-OcPython
+  if (-not $py) {
+    $script:failed += ('.opencode/opencode.jsonc (the permission deny layer was NOT installed: no Python >= 3.10; set X4_PYTHON and run: python .opencode/hooks/opencode_config.py write --root "' + $dest + '")')
+    return
+  }
+  # X4_TOOLKIT=DEST: the roots of THIS install, as its guards will see them once
+  # X4_TOOLKIT points here -- never a previous toolkit's that the caller still exports.
+  $prevTk = $env:X4_TOOLKIT
+  $env:X4_TOOLKIT = $dest
+  try {
+    $rest = @($py | Select-Object -Skip 1)
+    $out = (& $py[0] @rest $renderer 'write' '--root' $dest 2>&1 | Out-String).Trim()
+    $rc = $LASTEXITCODE
+  } catch {
+    $out = $_.Exception.Message; $rc = -1
+  } finally {
+    $env:X4_TOOLKIT = $prevTk
+  }
+  if ($rc -ne 0) {
+    $why = ($out -replace "[`r`n]+", ' ')
+    if ($why.Length -gt 300) { $why = $why.Substring(0, 300) }
+    $script:failed += ('.opencode/opencode.jsonc (the permission deny layer was NOT installed: ' + $why + '; fix it, then run: python .opencode/hooks/opencode_config.py write --root "' + $dest + '")')
+    return
+  }
+  Write-Host "  $out"
 }
 
 #: Destination files the copy would overwrite that CANNOT be written.
@@ -1414,6 +1478,7 @@ switch ($Method) {
     }
     Write-PathsEnv $Toolkit
     Write-CodexHooksJson $Toolkit
+    Write-OpenCodeConfig $Toolkit
   }
   'separate' {
     if (-not $Toolkit) { $Toolkit = $SRC }
@@ -1442,19 +1507,20 @@ switch ($Method) {
     }
     Write-PathsEnv $Toolkit
     Write-CodexHooksJson $Toolkit
+    Write-OpenCodeConfig $Toolkit
   }
   'global'   {
     # THE GLOBAL LAYOUT IS CLAUDE-ONLY (see install.sh): an explicit non-Claude target is
     # REFUSED rather than half installed; the default proceeds and says what it leaves out.
-    if ($Agent -ceq 'codex' -or $Agent -ceq 'generic') {
+    if ($Agent -ceq 'codex' -or $Agent -ceq 'generic' -or $Agent -ceq 'opencode') {
       Write-Host "REFUSING: -Method global is a Claude-only layout; it cannot install -Agent $Agent." -ForegroundColor Red
-      Write-Host '  Use -Method in-game or -Method separate for Codex and generic agents.' -ForegroundColor Red
+      Write-Host '  Use -Method in-game or -Method separate for Codex, OpenCode and generic agents.' -ForegroundColor Red
       Write-Host '  Nothing has been changed.' -ForegroundColor Red
       exit 2
     }
     if ($Agent -ceq 'all') {
       Write-Host '  [note] -Method global is a Claude-only layout: only the Claude target is installed.'
-      Write-Host '         Codex and generic agents need -Method in-game or -Method separate.'
+      Write-Host '         Codex, OpenCode and generic agents need -Method in-game or -Method separate.'
     }
     $X4Agents = @('claude')
     if (-not $Toolkit) { $Toolkit = $SRC }
@@ -1548,6 +1614,12 @@ if ($Method -ne 'global' -and (Test-CodexSelected)) {
   Write-Host '         2. type  /hooks  and approve each X4 hook'
   Write-Host "         3. verify:  python scripts/x4doctor.py --root `"$Toolkit`""
   if ($script:X4CodexHooksWritten) { Write-Host '         (the definitions were just (re)written: any earlier review no longer holds)' }
+}
+if ($Method -ne 'global' -and (Test-OpenCodeSelected)) {
+  Write-Host ''
+  Write-Host $X4OpenCodeNote
+  Write-Host "         start  opencode  in $Toolkit  (its config and plugin are found from there), then"
+  Write-Host "         verify:  python scripts/x4doctor.py --root `"$Toolkit`" --agent opencode"
 }
 if ($Method -eq 'global') { Write-Host "Global:  skills/agents + X4_* env added to your ~/.claude - works from any mod repo." }
 Write-Host ""

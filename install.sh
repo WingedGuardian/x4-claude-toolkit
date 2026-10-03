@@ -41,7 +41,7 @@ Usage: bash install.sh --method in-game|separate|global [options]
   --reference DIR    unpacked base game (default <toolkit>/reference)
   --extensions DIR   live deploy target (default <game>/extensions)
   --xrcattool PATH   XRCatTool.exe location
-  --agent NAME       claude | codex | generic | all              [all]
+  --agent NAME       claude | codex | generic | opencode | all   [all]
                      which agent's instructions, guards and skills to install
   --unpack          also unpack reference/ now (needs --game + XRCatTool [+wine])
   --over-existing    REQUIRED to install over an existing installation
@@ -185,7 +185,7 @@ X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/basex
 #: dual-meaning trap `.claude/backups` fell into. A checkout accumulates them (release
 #: review 2026-09-26: data/ alone was 2.3 GB) and a git source never copies them
 #: anyway (see _tracked_copy_set); this is the walk's defence in depth.
-X4_KEEP_LOCAL=".claude/x4-paths.env .claude/settings.local.json .claude/backups .codex/hooks.json tools/basex/basex/data tools/basex/basex/coverage-x4raw.json tools/basex/basex/coverage-x4eff.json tools/basex/_eff tools/basex/stage-manifest.json"
+X4_KEEP_LOCAL=".claude/x4-paths.env .claude/settings.local.json .claude/backups .codex/hooks.json .opencode/opencode.jsonc tools/basex/basex/data tools/basex/basex/coverage-x4raw.json tools/basex/basex/coverage-x4eff.json tools/basex/_eff tools/basex/stage-manifest.json"
 
 #: THE TRACKED SET, when the source is a git checkout.
 #:
@@ -520,7 +520,10 @@ X4_COPY_ITEMS="tools bin scripts mods KNOWLEDGEBASE.md README.md CHANGELOG.md LI
 X4_AGENT_ITEMS_claude=".claude CLAUDE.md"
 X4_AGENT_ITEMS_codex="AGENTS.md .codex .agents"
 X4_AGENT_ITEMS_generic="AGENTS.md .agents"
-X4_AGENT_NAMES="claude codex generic"
+X4_AGENT_ITEMS_opencode="AGENTS.md .opencode"
+#: `all` (the default) installs EVERY name here, OpenCode included (user decision L-Q1,
+#: 2026-10-02). OpenCode is BEST EFFORT -- from its docs and source, not measured.
+X4_AGENT_NAMES="claude codex generic opencode"
 
 #: The token the generated Codex/generic skills carry (gen-agent-trees.py's TOKEN), and
 #: what it is rendered to in the copy THIS install writes (user decision #2). Per OS, not
@@ -530,7 +533,7 @@ X4_AGENT_NAMES="claude codex generic"
 X4_TOOLKIT_TOKEN='{{TOOLKIT}}'
 X4_TOOLKIT_RENDER_windows='$env:X4_TOOLKIT'
 X4_TOOLKIT_RENDER_posix='$X4_TOOLKIT'
-X4_TOKEN_DIRS=".agents"
+X4_TOKEN_DIRS=".agents .opencode"
 
 #: The frozen Codex hook definitions (lane B), rendered for THIS destination's absolute
 #: root. The result is per-machine config (X4_KEEP_LOCAL): it never travels.
@@ -539,11 +542,7 @@ X4_CODEX_HOOKS_TMPL="agent/targets/codex/hooks.json.tmpl"
 # --- resolve --agent, BEFORE anything is written ------------------------------------
 case "$AGENT" in
   all) X4_AGENTS="$X4_AGENT_NAMES" ;;
-  claude|codex|generic) X4_AGENTS="$AGENT" ;;
-  opencode)
-    echo "REFUSING: --agent opencode is not yet supported (spec M8). Nothing has been changed." >&2
-    echo "  Supported: $X4_AGENT_NAMES all" >&2
-    exit 2 ;;
+  claude|codex|generic|opencode) X4_AGENTS="$AGENT" ;;
   *)
     echo "REFUSING: unknown --agent '$AGENT'. Supported: $X4_AGENT_NAMES all. Nothing has been changed." >&2
     exit 2 ;;
@@ -732,6 +731,53 @@ precheck_codex_hooks_json() {   # DEST
   echo "      <re-run this command>"                                            >&2
   echo "      python scripts/x4lock.py lock"                                    >&2
   exit 1
+}
+
+# --- the OpenCode permission deny rules (lane L, BEST EFFORT) ------------------------
+#: OpenCode's PRIMARY guard layer is a per-machine .opencode/opencode.jsonc holding explicit
+#: deny rules for THIS install's roots. The toolkit's own renderer writes it (it sources the
+#: guards' loader, so the roots are the ones the guards see); it never overwrites a file
+#: without its banner, and every failure is NAMED as INCOMPLETE, never silent.
+X4_OPENCODE_NOTE="OpenCode:  BEST EFFORT, CLI only, from docs, not measured. The OpenCode desktop app is NOT supported (its plugin hooks never fire, anomalyco/opencode#38604)."
+_opencode_selected() { _item_selected .opencode && [ -d "$SRC/.opencode" ]; }
+
+#: The first Python >= 3.10 (X4_PYTHON, then py -3 on Windows, python3, python; with
+#: X4_NO_PYTHON_FALLBACK=1 only X4_PYTHON) -- the plugin's own order. Sets the ARRAY
+#: X4_OC_PY (a path may hold spaces or a drive colon); fails when there is none.
+_oc_py_ok() { "$@" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; }
+_oc_python() {
+  local c
+  X4_OC_PY=()
+  if [ -n "${X4_PYTHON:-}" ] && _oc_py_ok "$X4_PYTHON"; then X4_OC_PY=("$X4_PYTHON"); return 0; fi
+  [ "${X4_NO_PYTHON_FALLBACK:-}" = 1 ] && return 1
+  if [ "$OS" = windows ] && _oc_py_ok py -3; then X4_OC_PY=(py -3); return 0; fi
+  for c in python3 python; do
+    if _oc_py_ok "$c"; then X4_OC_PY=("$c"); return 0; fi
+  done
+  return 1
+}
+
+write_opencode_config() {   # DEST
+  local dest="$1" out rc
+  _opencode_selected || return 0
+  refuse_if_dry_run "rendering the OpenCode deny rules into" "$dest/.opencode/opencode.jsonc"
+  if [ ! -f "$dest/.opencode/hooks/opencode_config.py" ]; then
+    add_failed ".opencode/opencode.jsonc (the permission deny layer was NOT installed: .opencode/hooks/opencode_config.py is missing)"
+    return 0
+  fi
+  if ! _oc_python; then
+    add_failed ".opencode/opencode.jsonc (the permission deny layer was NOT installed: no Python >= 3.10; set X4_PYTHON and run: python .opencode/hooks/opencode_config.py write --root \"$dest\")"
+    return 0
+  fi
+  # X4_TOOLKIT=DEST: the roots of THIS install, as its guards will see them once
+  # X4_TOOLKIT points here -- never a previous toolkit's that the caller still exports.
+  rc=0   # `|| rc=$?`, never a bare `rc=$?`: under `set -e` a failing assignment EXITS the installer
+  out="$(X4_TOOLKIT="$dest" "${X4_OC_PY[@]}" "$dest/.opencode/hooks/opencode_config.py" write --root "$dest" 2>&1)" || rc=$?
+  if [ "$rc" != 0 ]; then
+    add_failed ".opencode/opencode.jsonc (the permission deny layer was NOT installed: $(printf '%s' "$out" | tr '\r\n' '  ' | cut -c1-300); fix it, then run: python .opencode/hooks/opencode_config.py write --root \"$dest\")"
+    return 0
+  fi
+  echo "  $out"
 }
 
 X4_CODEX_HOOKS_WRITTEN=0
@@ -1423,6 +1469,7 @@ case "$METHOD" in
     fi
     write_paths_env "$TOOLKIT"
     write_codex_hooks_json "$TOOLKIT"
+    write_opencode_config "$TOOLKIT"
     ;;
   separate)
     [ -n "$TOOLKIT" ] || TOOLKIT="$SRC"
@@ -1460,6 +1507,7 @@ case "$METHOD" in
     fi
     write_paths_env "$TOOLKIT"
     write_codex_hooks_json "$TOOLKIT"
+    write_opencode_config "$TOOLKIT"
     ;;
   global)
     # THE GLOBAL LAYOUT IS CLAUDE-ONLY: it installs skills and agents into the Claude
@@ -1467,15 +1515,15 @@ case "$METHOD" in
     # installed; the default (`all`) proceeds and says what it leaves out. Codex's own
     # global skills are a follow-up, not a layout to fake.
     case "$AGENT" in
-      codex|generic)
+      codex|generic|opencode)
         echo "REFUSING: --method global is a Claude-only layout; it cannot install --agent $AGENT." >&2
-        echo "  Use --method in-game or --method separate for Codex and generic agents." >&2
+        echo "  Use --method in-game or --method separate for Codex, OpenCode and generic agents." >&2
         echo "  Nothing has been changed." >&2
         exit 2 ;;
     esac
     if [ "$AGENT" = all ]; then
       echo "  [note] --method global is a Claude-only layout: only the Claude target is installed."
-      echo "         Codex and generic agents need --method in-game or --method separate."
+      echo "         Codex, OpenCode and generic agents need --method in-game or --method separate."
     fi
     X4_AGENTS="claude"
     [ -n "$TOOLKIT" ] || TOOLKIT="$SRC"
@@ -1612,6 +1660,12 @@ if [ "$METHOD" != global ] && _codex_selected; then
   if [ "$X4_CODEX_HOOKS_WRITTEN" = 1 ]; then
     echo "           (the definitions were just (re)written: any earlier review no longer holds)"
   fi
+fi
+if [ "$METHOD" != global ] && _opencode_selected; then
+  echo
+  echo "$X4_OPENCODE_NOTE"
+  echo "           start  opencode  in $TOOLKIT  (its config and plugin are found from there), then"
+  echo "           verify:  python scripts/x4doctor.py --root \"$TOOLKIT\" --agent opencode"
 fi
 [ "$METHOD" = global ] && echo "Global:    skills/agents + X4_* env added to your ~/.claude — works from any mod repo."
 echo "Next:      set X4_GAME if blank, then  (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/."

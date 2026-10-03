@@ -309,6 +309,7 @@ dependencies, so a broken `uv` cannot take it down. It reports:
   allow, so a guard that denies everything cannot pass;
 - Claude's hook wiring and `disableAllHooks`;
 - Codex's project trust and per-hook review state;
+- OpenCode's plugin, adapter and rendered deny rules (in place and current, never "loaded");
 - `X4_GUARD`, the OS-level `reference\` protection and the x4lock state.
 
 Every row is OK, FAIL, UNKNOWN or N/A, and a check that cannot answer says UNKNOWN. Exit codes:
@@ -404,6 +405,44 @@ Without it, the config file is found only by walking up from the current directo
 are often run from the game folder, which has a `.claude/` but no `x4-paths.env`. You would see
 `(unresolved)` locations with a perfectly good config sitting one directory tree away.
 
+### OpenCode: best effort, CLI only, from docs, not measured
+
+`--agent opencode` (and `all`, the default) installs an OpenCode target. **Everything about
+OpenCode's behaviour below was READ from its docs and source (v1.18.34, `anomalyco/opencode`),
+not measured against a running OpenCode.** The reading is recorded in
+`docs/superpowers/measurements/2026-10-02-opencode-read.md`.
+
+- **The OpenCode desktop app is not supported.** Its plugin hooks never fire
+  ([anomalyco/opencode#38604](https://github.com/anomalyco/opencode/issues/38604), closed as not
+  planned). Use the OpenCode CLI.
+- **Two layers.** (1) Deny rules in `.opencode/opencode.jsonc`, rendered per machine at install
+  from the roots the guards resolve: edits into `reference/`, `.cat`/`.dat` writes under the game,
+  extensions, mods and toolkit folders, and deletion commands aimed at `reference/` by absolute
+  path. (2) A plugin, `.opencode/plugins/x4guard.js`, that asks the toolkit's guards before every
+  `bash`, `edit`, `write` and `apply_patch` and blocks the call when they refuse. It fails closed
+  when Python, the adapter or the guards cannot answer.
+- **The game-install block is plugin-only.** The guards allow a whitelist inside the game folder.
+  A deny-only rule list cannot express that without allow rules, and allow rules would loosen
+  your own OpenCode config.
+- **A plugin that fails to load is skipped silently** (READ). When it is loaded, the system prompt
+  carries a line starting `X4 GUARDS LIVE`. If that line is missing, only the deny rules apply.
+- **A deny is final only with OpenCode's defaults** (READ). If an edit or command ever *asks* and
+  you answer "always", that approval overrides a matching deny for the rest of the session. A
+  per-agent `permission` rule of yours can override it too. The plugin still applies.
+- **Subagents.** The plugin may not run inside a subagent session
+  ([#5894](https://github.com/anomalyco/opencode/issues/5894)); the deny rules do.
+- **Start OpenCode in the toolkit folder.** Its config and plugins are found walking up from where
+  it starts. `OPENCODE_DISABLE_PROJECT_CONFIG` turns BOTH layers off.
+- **Windows shell.** OpenCode runs commands in PowerShell unless you set `shell` in its config;
+  if you did, set `X4_OPENCODE_SHELL=bash` so the guards judge the right shell.
+- **Your own `permission.edit` or `permission.bash` written as a string** (`"edit": "ask"`) is
+  replaced by the toolkit's deny object when OpenCode merges configs (READ). Write it as
+  `{"*": "ask"}`. `x4doctor` flags it.
+- After moving `reference/` or the game, re-render the deny rules:
+  `python .opencode/hooks/opencode_config.py write --root .` An existing `opencode.jsonc` that
+  the toolkit did not write is never overwritten.
+- Verify with `python scripts/x4doctor.py --agent opencode`. MCP tools are not judged.
+
 ### Install methods (`install.sh` / `install.ps1`)
 One guided installer, three layouts — pick what fits. Every path is auto-detected where
 possible and overridable (`--game`, `--profile`, `--toolkit`, `--mods`, `--reference`,
@@ -438,7 +477,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Method global
 > Windows note: the hooks/scripts are bash, so running the toolkit needs **Git Bash**
 > (the PowerShell installer just does the setup).
 
-#### Which agent: `--agent claude | codex | generic | all` (default `all`)
+#### Which agent: `--agent claude | codex | generic | opencode | all` (default `all`)
 
 The installer ships each agent's own files and nothing else (`-Agent` on PowerShell):
 
@@ -447,7 +486,8 @@ The installer ships each agent's own files and nothing else (`-Agent` on PowerSh
 | `claude` | `CLAUDE.md` | `.claude/` hooks, registered in `.claude/settings.json` | `.claude/skills/` |
 | `codex` | `AGENTS.md` | `.codex/hooks.json` + a guard copy in `.codex/hooks/`; execpolicy rules in `.codex/rules/` | `.agents/skills/` |
 | `generic` | `AGENTS.md` | none -- a generic agent runs no hooks | `.agents/skills/` |
-| `all` | all of the above | | |
+| `opencode` | `AGENTS.md` + `.opencode/X4-OPENCODE.md` | deny rules in `.opencode/opencode.jsonc` + the `.opencode/plugins/x4guard.js` plugin over a guard copy in `.opencode/hooks/` (best effort, CLI only) | `.opencode/skills/` |
+| `all` | all of the above, OpenCode included | | |
 
 - **Codex runs no hook you have not reviewed, and says nothing when it skips one.** After a
   Codex install: run `codex` in the folder, trust it, open `/hooks` and approve each X4 hook,
@@ -456,7 +496,7 @@ The installer ships each agent's own files and nothing else (`-Agent` on PowerSh
 - **An `AGENTS.md` you wrote is never overwritten.** If the destination already has one that
   differs from the shipped file, it is moved aside to `AGENTS.pre-4.0.md` (or a dated name,
   if that exists) and the installer says so. `--dry-run` names the move without making it.
-- `--method global` is a Claude-only layout: `--agent codex` or `generic` there is refused,
+- `--method global` is a Claude-only layout: `--agent codex`, `generic` or `opencode` there is refused,
   and the default installs the Claude target only.
 - An installed toolkit is runtime-only: the `agent/` source the generator reads is not
   copied (the release zip still carries it).
