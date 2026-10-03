@@ -286,7 +286,7 @@ def test_the_harness_NEVER_lets_an_installer_reach_the_real_user_env(tmp_path, m
 
     monkeypatch.setattr(subprocess, "run", spy)
     monkeypatch.setattr(sys.modules[__name__], "_bash", lambda: "bash")   # never skip
-    monkeypatch.setenv("ZDOTDIR", "/sandbox/home/.config/zsh")
+    monkeypatch.setenv("ZDOTDIR", "/opt/developer-zdotdir")
     monkeypatch.setenv("X4_TOOLKIT", "/the/real/toolkit")
     monkeypatch.setenv("X4_INSTALL_ENV_REGKEY", "HKCU\\Environment")
     dest = _fresh(tmp_path)
@@ -1634,6 +1634,10 @@ def _agent_source(tmp_path: pathlib.Path, *, codex: bool = True, template: bool 
     src.mkdir()
     for name in ("install.sh", "install.ps1"):
         shutil.copy2(ROOT / name, src / name)
+    # The REAL user-environment writer both installers call (lane H), so the env tests
+    # drive the shipped script; its seam keeps every write under _TEST_REGROOT.
+    (src / "scripts").mkdir()
+    shutil.copy2(ROOT / "scripts" / "x4-userenv.ps1", src / "scripts" / "x4-userenv.ps1")
     files = {
         "setup.sh": "#!/bin/bash\necho stub-setup\nexit 0\n",
         "CLAUDE.md": "# CLAUDE.md -- shipped\n",
@@ -2160,6 +2164,165 @@ def test_auto_with_the_GLOBAL_layout_behaves_as_all_does_there(installer, tmp_pa
     r = _install(installer, tmp_path, dest, "--agent", "auto", "--dry-run", source=src, method="global")
     assert r.returncode == 0, _ok(r)
     assert "Claude-only" in r.stdout, _ok(r)
+
+
+# --- X4_TOOLKIT at OS user level (lane H T4; user decision 1) ----------------------------- #
+#
+# Set when unset; left alone and REPORTED when it names a different toolkit; nothing at
+# all under --no-env. Every Windows test writes a throwaway key under _TEST_REGROOT (the
+# installers' X4_INSTALL_ENV_REGKEY seam), never HKCU\Environment; every POSIX test writes a
+# profile file under tmp_path (HOME / ZDOTDIR).
+
+USERENV = ROOT / "scripts" / "x4-userenv.ps1"
+
+
+@pytest.fixture
+def regkey(tmp_path):
+    return _new_regkey(tmp_path)          # deleted, and the delete asserted, at module teardown
+
+
+def _reg_get(key, name="X4_TOOLKIT"):
+    r = subprocess.run(["reg", "query", key, "/v", name], capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) == 3 and parts[0] == name and parts[1].startswith("REG_"):
+            return parts[2]
+        if len(parts) == 2 and parts[0] == name:
+            return ""
+    return None
+
+
+def _reg_set(key, value, name="X4_TOOLKIT"):
+    subprocess.run(["reg", "add", key, "/v", name, "/t", "REG_SZ", "/d", value, "/f"],
+                   check=True, capture_output=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_UNSET_user_X4_TOOLKIT_is_set_to_this_toolkit_in_native_form(installer, tmp_path, regkey):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert _reg_get(regkey) == str(dest.resolve()), _ok(r)          # backslashes, no trailing sep
+    assert "X4_TOOLKIT set for your user" in r.stdout, _ok(r)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_DIFFERENT_existing_value_is_REPORTED_and_LEFT(installer, tmp_path, regkey):
+    _reg_set(regkey, r"D:\elsewhere")
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert _reg_get(regkey) == r"D:\elsewhere"
+    assert r"D:\elsewhere" in r.stdout and "Left unchanged" in r.stdout, _ok(r)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_the_SAME_value_spelled_differently_is_not_different(installer, tmp_path, regkey):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    spelled = dest.resolve().as_posix().upper() + "/"              # C:/.../TOOLKIT/
+    _reg_set(regkey, spelled)
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert _reg_get(regkey) == spelled and "already set" in r.stdout, _ok(r)
+    assert "WARNING" not in r.stdout, _ok(r)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_no_env_writes_NOTHING_and_prints_the_manual_command(installer, tmp_path, regkey):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src, env_write=False, regkey=regkey)
+    assert r.returncode == 0 and _reg_get(regkey) is None, _ok(r)
+    assert "X4_TOOLKIT" in r.stdout and ("--no-env" in r.stdout or "-NoEnv" in r.stdout), _ok(r)
+    assert not _reg_exists(regkey), "--no-env created the registry key"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_DRY_RUN_says_what_it_would_do_to_X4_TOOLKIT_and_writes_nothing(installer, tmp_path, regkey):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--dry-run", source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert not _reg_exists(regkey), "a dry run wrote the registry"
+    assert "X4_TOOLKIT would be set" in r.stdout, _ok(r)
+
+
+def _userenv(*args, key):
+    exe = shutil.which("pwsh") or shutil.which("powershell")
+    if exe is None:
+        pytest.skip("no PowerShell on this machine")
+    env = dict(os.environ)
+    env["X4_INSTALL_ENV_REGKEY"] = key
+    return subprocess.run([exe, "-NoProfile", "-NonInteractive", "-File", str(USERENV), *args],
+                          capture_output=True, text=True, env=env)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+def test_userenv_round_trips_and_never_REPLACES_an_existing_key(tmp_path, regkey):
+    r = _userenv("get", key=regkey)
+    assert r.returncode == 0 and r.stdout.strip() == "", (r.stdout, r.stderr)        # absent key: nothing
+    _reg_set(regkey, "keep me", name="SIBLING")                               # the key now exists
+    v = r"C:\Program Files\x4 & co\tool kit"
+    r = _userenv("set", v, key=regkey)
+    assert r.returncode == 0, r.stderr
+    assert _userenv("get", key=regkey).stdout.rstrip("\r\n") == v
+    assert _reg_get(regkey) == v
+    assert _reg_get(regkey, "SIBLING") == "keep me", "set REPLACED the key (the New-Item -Force trap)"
+    r = _userenv("unset", key=regkey)
+    assert r.returncode == 0 and _reg_get(regkey) is None, r.stderr
+    assert _reg_get(regkey, "SIBLING") == "keep me"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("key", ["HKCU\\Environment", "HKCU\\Software\\X4ToolkitTests\\",
+                                 "HKCU\\Software\\X4ToolkitTestsX\\a"])
+def test_userenv_REFUSES_a_seam_outside_the_test_root(key):
+    r = _userenv("set", "x", key=key)
+    assert r.returncode == 2 and "REFUSING" in r.stderr, (r.returncode, r.stderr)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell profile")
+@pytest.mark.parametrize("shell,rel", [("/bin/zsh", "zdot/.zshenv"), ("/bin/bash", ".bashrc")])
+def test_POSIX_writes_ONE_marked_block_to_the_shells_profile_and_is_idempotent(shell, rel, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    for _ in range(2):
+        r = _install("sh", tmp_path, dest, source=src, env_write=True, shell=shell)
+        assert r.returncode == 0, _ok(r)
+    body = (tmp_path / rel).read_text(encoding="utf-8")
+    assert body.count(">>> X4 toolkit") == 1, body
+    assert "export X4_TOOLKIT='%s'" % os.path.realpath(dest) in body, body
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell profile")
+def test_POSIX_an_existing_DIFFERENT_export_is_LEFT_and_reported(tmp_path):
+    (tmp_path / ".bashrc").write_text("export X4_TOOLKIT=/opt/other\n", encoding="utf-8")
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install("sh", tmp_path, dest, source=src, env_write=True, shell="/bin/bash")
+    assert r.returncode == 0, _ok(r)
+    assert (tmp_path / ".bashrc").read_text(encoding="utf-8") == "export X4_TOOLKIT=/opt/other\n"
+    assert "/opt/other" in r.stdout and "Left unchanged" in r.stdout, _ok(r)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell profile")
+def test_POSIX_an_UNKNOWN_shell_gets_NO_file_and_a_manual_line(tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install("sh", tmp_path, dest, source=src, env_write=True, shell="/usr/bin/fish")
+    assert r.returncode == 0, _ok(r)
+    assert not (tmp_path / ".config" / "fish").exists() and not (tmp_path / ".bashrc").exists()
+    assert "export X4_TOOLKIT" in r.stdout or "set -Ux X4_TOOLKIT" in r.stdout, _ok(r)
 
 
 # --- the REAL repository's tree (skips, counted, while a generated tree is absent) ---- #

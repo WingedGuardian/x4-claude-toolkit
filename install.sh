@@ -24,6 +24,7 @@ AGENT="all"
 GAME_NAMED=$([ -n "${X4_GAME:-}" ] && echo named || echo detected)
 TOOLKIT_NAMED=$([ -n "${X4_TOOLKIT:-}" ] && echo named || echo detected)
 GAME="${X4_GAME:-}"; PROFILE="${X4_PROFILE:-}"; TOOLKIT="${X4_TOOLKIT:-}"
+X4_H_INHERITED_TOOLKIT="${X4_TOOLKIT:-}"   # what this shell already exports (POSIX "different" check)
 MODS="${X4_MODS:-}"; REFERENCE="${X4_REFERENCE:-}"; EXTENSIONS="${X4_EXTENSIONS:-}"
 XRCAT="${XRCATTOOL:-}"
 
@@ -48,6 +49,8 @@ Usage: bash install.sh --method in-game|separate|global [options]
   --unpack          also unpack reference/ now (needs --game + XRCatTool [+wine])
   --over-existing    REQUIRED to install over an existing installation
   --dry-run          print the destination and the item list; write nothing
+  --no-env           do NOT set X4_TOOLKIT for your user (by default it is set when
+                     unset; a DIFFERENT existing value is reported and left alone)
   --yes              don't prompt; accept detected/blank values (never a
                      detected DESTINATION -- name that with --game/--toolkit)
   -h, --help         this help
@@ -1499,6 +1502,7 @@ announce_copy_plan() {
     echo "  your CLAUDE.md is not one this toolkit shipped: it would be KEPT as $to, not overwritten"
     _h_hash_caveat
   fi
+  _h_userenv_preview "$TOOLKIT"
   echo
   echo "=== dry run complete: nothing was changed ==="
   exit 0
@@ -1546,6 +1550,166 @@ strip_trailing_sep() {
     p="${p%?}"
   done
   printf '%s' "$p"
+}
+
+# --- X4_TOOLKIT in the user environment (lane H; user decision 1) ----------------------
+#: Set when unset; a DIFFERENT existing value is REPORTED and LEFT (never overwritten);
+#: --no-env touches nothing. "Same" is canonical: separators, case (Windows), trailing
+#: separator. Windows writes through scripts/x4-userenv.ps1 -- the ONE writer both
+#: installers call -- and POSIX appends one marked block to the shell's startup file.
+X4_USERENV_PS1="scripts/x4-userenv.ps1"
+X4_H_ENV_STATE=""; X4_H_ENV_MSG=""; X4_H_TAB="$(printf '\t')"
+
+#: The value as it is written: Windows form with backslashes, or POSIX `pwd -P`.
+_h_native_path() {   # DIR
+  local d
+  d="$(cd "$1" 2>/dev/null && pwd -P)" || d="$1"
+  if [ "$OS" = windows ] && command -v cygpath >/dev/null 2>&1; then d="$(cygpath -w "$d")"; fi
+  printf '%s' "$d"
+}
+
+#: Canonical spelling for comparison. Windows: one separator, no trailing one, lower case.
+_h_canon_path() {   # PATH
+  local v="$1" bs
+  bs="$(printf '%b' '\134')"
+  if [ "$OS" = windows ]; then
+    command -v cygpath >/dev/null 2>&1 && v="$(cygpath -w "$v" 2>/dev/null || printf '%s' "$v")"
+    v="$(_replace_all "$v" / "$bs")"
+    while [ "${#v}" -gt 3 ] && [ "${v%"$bs"}" != "$v" ]; do v="${v%"$bs"}"; done
+    printf '%s' "$v" | tr '[:upper:]' '[:lower:]'
+  else
+    if [ -d "$v" ]; then v="$(cd "$v" && pwd -P)"; fi
+    while [ "${#v}" -gt 1 ] && [ "${v%/}" != "$v" ]; do v="${v%/}"; done
+    printf '%s' "$v"
+  fi
+}
+
+_h_same_path() { [ "$(_h_canon_path "$1")" = "$(_h_canon_path "$2")" ]; }
+
+#: The shell startup file a new `claude` / `codex` would inherit from, or fails (unknown
+#: shell: fish needs `set -Ux`, and we do not edit configs whose syntax we do not own).
+_h_profile_file() {
+  case "$(basename "${SHELL:-}")" in
+    zsh)  printf '%s' "${ZDOTDIR:-$HOME}/.zshenv" ;;          # read by EVERY zsh, interactive or not
+    bash) if [ "$OS" = macos ]; then printf '%s' "$HOME/.bash_profile"   # Terminal.app: login shells
+          else printf '%s' "$HOME/.bashrc"; fi ;;
+    *)    return 1 ;;
+  esac
+}
+
+#: The manual command for THIS OS, for the user to run themselves.
+_h_manual_env_cmd() {   # VALUE
+  if [ "$OS" = windows ]; then printf 'setx X4_TOOLKIT "%s"' "$1"
+  else printf "echo 'export X4_TOOLKIT=\"%s\"' >> %s" "$1" "$(_h_profile_file 2>/dev/null || echo '~/.bashrc')"; fi
+}
+
+#: Run scripts/x4-userenv.ps1 through Windows PowerShell; stdout is the value (CR dropped).
+_h_win_userenv() {   # get | set VALUE
+  local ps script out
+  ps="$(command -v powershell.exe 2>/dev/null || command -v pwsh.exe 2>/dev/null)" || return 3
+  script="$SRC/$X4_USERENV_PS1"
+  [ -f "$script" ] || return 4
+  command -v cygpath >/dev/null 2>&1 && script="$(cygpath -w "$script")"
+  out="$("$ps" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$script" "$@" -Utf8Out)" || return 1
+  printf '%s' "${out%$CR}"
+}
+
+#: The last `export X4_TOOLKIT=` value in FILE, quotes removed; fails when there is none.
+_h_profile_value() {   # FILE
+  local line v=""
+  [ -f "$1" ] || return 1
+  line="$(grep -E '^[[:space:]]*export[[:space:]]+X4_TOOLKIT=' "$1" 2>/dev/null | tail -n 1)" || true
+  [ -n "$line" ] || return 1
+  v="${line#*X4_TOOLKIT=}"; v="${v%$CR}"
+  case "$v" in \'*\') v="${v#\'}"; v="${v%\'}" ;; \"*\") v="${v#\"}"; v="${v%\"}" ;; esac
+  printf '%s' "$v"
+}
+
+#: THE DECISION, one function read by the dry-run line and the writer. Prints one line:
+#: `set` | `same` | `different<TAB>OLD` | `skip<TAB>WHY` | `fail<TAB>WHY`.
+_h_userenv_plan() {   # TOOLKIT
+  local v old f rc=0 tab
+  tab="$(printf '\t')"
+  v="$(_h_native_path "$1")"
+  if [ "$OS" = windows ]; then
+    old="$(_h_win_userenv get)" || rc=$?
+    case "$rc" in
+      0) ;;
+      3) printf 'fail%sno powershell.exe on PATH' "$tab"; return 0 ;;
+      4) printf 'fail%sthe source has no %s' "$tab" "$X4_USERENV_PS1"; return 0 ;;
+      *) printf 'fail%s%s get failed' "$tab" "$X4_USERENV_PS1"; return 0 ;;
+    esac
+  else
+    if ! f="$(_h_profile_file)"; then
+      printf 'skip%syour shell (%s) is not bash or zsh, so no startup file is edited' "$tab" "${SHELL:-unset}"
+      return 0
+    fi
+    old="$(_h_profile_value "$f")" || old=""
+    [ -n "$old" ] || old="$X4_H_INHERITED_TOOLKIT"
+  fi
+  if [ -z "$old" ]; then printf 'set'
+  elif _h_same_path "$old" "$v"; then printf 'same'
+  else printf 'different%s%s' "$tab" "$old"; fi
+}
+
+#: The dry-run preview, from the same decision.
+_h_userenv_preview() {   # TOOLKIT
+  local plan v
+  if [ "$NO_ENV" = 1 ]; then echo "  --no-env: X4_TOOLKIT would not be touched"; return 0; fi
+  plan="$(_h_userenv_plan "$1")"; v="$(_h_native_path "$1")"
+  case "$plan" in
+    set)        echo "  X4_TOOLKIT would be set for your user: $v" ;;
+    same)       echo "  X4_TOOLKIT is already set to this toolkit: nothing would change" ;;
+    different*) echo "  X4_TOOLKIT is set to ${plan#*"$X4_H_TAB"}, not this toolkit: it would be left unchanged" ;;
+    *)          echo "  X4_TOOLKIT would not be set: ${plan#*"$X4_H_TAB"}" ;;
+  esac
+}
+
+set_user_toolkit_env() {   # TOOLKIT -- after the dispatch, before setup.sh
+  refuse_if_dry_run "setting X4_TOOLKIT for your user to" "$1"
+  local plan v old f why cmd
+  v="$(_h_native_path "$1")"
+  cmd="$(_h_manual_env_cmd "$v")"
+  plan="$(_h_userenv_plan "$1")"
+  case "$plan" in
+    same)
+      X4_H_ENV_STATE=same; X4_H_ENV_MSG="X4_TOOLKIT already set to this toolkit ($v)" ;;
+    different*)
+      old="${plan#*"$X4_H_TAB"}"
+      X4_H_ENV_STATE=different
+      X4_H_ENV_MSG="[WARNING] X4_TOOLKIT is set to $old, not this toolkit $v. Left unchanged. To point it here: $cmd" ;;
+    skip*)
+      X4_H_ENV_STATE=skip; X4_H_ENV_MSG="${plan#*"$X4_H_TAB"}" ;;
+    fail*)
+      why="${plan#*"$X4_H_TAB"}"
+      X4_H_ENV_STATE=fail; add_failed "X4_TOOLKIT (could not set: $why; run: $cmd)" ;;
+    set)
+      if [ "$OS" = windows ]; then
+        if _h_win_userenv set "$v" >/dev/null; then
+          X4_H_ENV_STATE=set; X4_H_ENV_MSG="X4_TOOLKIT set for your user: $v (new terminals only)"
+        else
+          X4_H_ENV_STATE=fail; add_failed "X4_TOOLKIT (could not set: $X4_USERENV_PS1 set failed; run: $cmd)"
+        fi
+      else
+        f="$(_h_profile_file)"
+        case "$v" in *"'"*|*"
+"*)
+          X4_H_ENV_STATE=fail
+          add_failed "X4_TOOLKIT (could not set: the path contains a quote or a newline; run: $cmd)"
+          return 0 ;;
+        esac
+        # APPENDED, never temp-then-move: a dotfile is often a SYMLINK (dotfile managers),
+        # and a move would replace the link with a copy and drop its mode. `>>` cannot
+        # truncate, and the block is written only when the file holds no X4_TOOLKIT line.
+        if printf '\n# >>> X4 toolkit: X4_TOOLKIT (written by install.sh; delete this block to undo) >>>\nexport X4_TOOLKIT='"'"'%s'"'"'\n# <<< X4 toolkit <<<\n' "$v" >> "$f"; then
+          X4_H_ENV_STATE=set; X4_H_ENV_MSG="X4_TOOLKIT set for your user in $f: $v (new terminals only)"
+        else
+          X4_H_ENV_STATE=fail; add_failed "X4_TOOLKIT (could not set: $f is not writable; run: $cmd)"
+        fi
+      fi ;;
+  esac
+  [ -n "$X4_H_ENV_MSG" ] && echo "  $X4_H_ENV_MSG"
+  return 0
 }
 
 # --- choose method ---------------------------------------------------------
@@ -1732,6 +1896,9 @@ case "$METHOD" in
   *) echo "ERROR: unknown method '$METHOD' (in-game|separate|global)"; exit 2;;
 esac
 
+# X4_TOOLKIT for the user: ONE call, after every arm, so no arm can skip or repeat it.
+[ "$NO_ENV" = 1 ] || set_user_toolkit_env "$TOOLKIT"
+
 # wire x4validate + prereqs in the target toolkit
 # `|| true` swallowed a failed setup.sh entirely, and this script had no INCOMPLETE
 # branch at all -- so a half-finished install printed exactly the same success text as
@@ -1804,11 +1971,18 @@ fi
 [ "$METHOD" = global ] && echo "Global:    skills/agents + X4_* env added to your ~/.claude — works from any mod repo."
 echo "Next:      set X4_GAME if blank, then  (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/."
 echo
-echo "IMPORTANT — set X4_TOOLKIT in your user environment so the tools find the config"
-echo "above from ANY directory (they are often run from the game folder, which has a"
-echo ".claude/ but no x4-paths.env). This installer cannot do it for you:"
-case "$OS" in
-  windows) echo "           setx X4_TOOLKIT \"$TOOLKIT\"        (takes effect in NEW shells)";;
-  *)       echo "           echo 'export X4_TOOLKIT=\"$TOOLKIT\"' >> ~/.bashrc   # or your shell's rc";;
+case "$X4_H_ENV_STATE" in
+  set|same)
+    echo "X4_TOOLKIT: ${X4_H_ENV_MSG}" ;;
+  *)
+    # --no-env, a different existing value, or a shell we do not edit: the user decides.
+    echo "IMPORTANT — set X4_TOOLKIT in your user environment so the tools find the config"
+    echo "above from ANY directory (they are often run from the game folder, which has a"
+    echo ".claude/ but no x4-paths.env)."
+    if [ "$NO_ENV" = 1 ]; then echo "  --no-env: this installer did not touch it. To set it yourself:"
+    elif [ "$X4_H_ENV_STATE" = different ]; then echo "  It names another toolkit (the [WARNING] above). To point it here instead:"
+    elif [ "$X4_H_ENV_STATE" = skip ]; then echo "  $X4_H_ENV_MSG. To set it yourself:"
+    else echo "  It was not set (see 'failed:' above). To set it yourself:"; fi
+    echo "           $(_h_manual_env_cmd "$(_h_native_path "$TOOLKIT")")        (takes effect in NEW shells)" ;;
 esac
 echo "Verify:    (cd \"$TOOLKIT/tools/x4validate\" && uv run x4validate --paths)"

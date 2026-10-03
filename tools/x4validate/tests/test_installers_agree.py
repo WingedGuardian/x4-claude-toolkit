@@ -467,3 +467,19 @@ def test_both_installers_detect_agents_with_the_SAME_names_extensions_and_marker
     # every detectable agent is a real agent name
     names = re.search(r'^X4_AGENT_NAMES="([^"]*)"', SH.read_text(encoding="utf-8"), re.M).group(1).split()
     assert set(sh_detect) | set(sh_mark) <= set(names), (sh_detect, sh_mark, names)
+
+
+def test_both_installers_set_X4_TOOLKIT_through_the_ONE_userenv_script_with_the_same_flags():
+    """Lane H T4: one Windows writer (scripts/x4-userenv.ps1), one opt-out flag per dialect,
+    the same test seams. A second mechanism is a second thing to keep equal."""
+    sh, ps = SH.read_text(encoding="utf-8"), PS1.read_text(encoding="utf-8")
+    assert re.search(r'^X4_USERENV_PS1="scripts/x4-userenv\.ps1"', sh, re.M), "install.sh"
+    assert re.search(r"^\$X4UserEnvPs1\s*=\s*'scripts/x4-userenv\.ps1'", ps, re.M), "install.ps1"
+    assert (ROOT / "scripts" / "x4-userenv.ps1").is_file()
+    assert "--no-env)" in sh and "[switch]$NoEnv" in ps
+    for seam in ("X4_INSTALL_ENV_REGKEY", "X4_INSTALL_DETECT_PATH"):
+        assert seam in sh or seam in (ROOT / "scripts" / "x4-userenv.ps1").read_text(encoding="utf-8"), seam
+    assert "X4_INSTALL_DETECT_PATH" in sh and "X4_INSTALL_DETECT_PATH" in ps
+    # neither installer reaches for setx/reg add to WRITE (the manual hint may name setx)
+    assert "reg add" not in sh and "reg add" not in ps
+    assert not re.search(r"^\s*setx\b", sh, re.M) and not re.search(r"^\s*setx\b", ps, re.M)

@@ -13,6 +13,10 @@
   NOTE: the toolkit's hooks & bin/ scripts are bash; install with PowerShell, but to RUN the
   toolkit you still need Git Bash (https://git-scm.com/download/win), as upstream expects.
 
+  X4_TOOLKIT: set for your user (HKCU\Environment) when unset; a DIFFERENT existing value is
+  reported and left alone; -NoEnv touches nothing. -Agent auto installs the agents found on
+  PATH or already in the destination (none found: all, and it says so).
+
   Example:
     powershell -ExecutionPolicy Bypass -File install.ps1 -Method global
     powershell -ExecutionPolicy Bypass -File install.ps1 -Method separate -Game "D:\Steam\steamapps\common\X4 Foundations"
@@ -1257,10 +1261,93 @@ function Show-CopyPlan($dest) {
       Write-Host ('  your CLAUDE.md is not one this toolkit shipped: it would be KEPT as ' + $to + ', not overwritten')
       Show-HHashCaveat
     }
+    Show-HUserEnvPreview $dest
     Write-Host ""
     Write-Host "=== dry run complete: nothing was changed ==="
     exit 0
   }
+}
+
+# --- X4_TOOLKIT in the user environment (lane H; user decision 1) ----------------------
+#: Set when unset; a DIFFERENT existing value is REPORTED and LEFT; -NoEnv touches nothing.
+#: The writer is scripts/x4-userenv.ps1, the ONE mechanism both installers call (install.sh
+#: through powershell.exe), so the two cannot write different things.
+$X4UserEnvPs1 = 'scripts/x4-userenv.ps1'
+$script:X4HEnvState = ''
+$script:X4HEnvMsg = ''
+
+#: The value as written: the resolved path, backslashes, no trailing separator.
+function Get-HNativePath($t) {
+  try { $v = (Resolve-Path -LiteralPath $t -ErrorAction Stop).ProviderPath } catch { $v = [string]$t }
+  if ($X4OnWindows) { $v = $v.Replace([string][char]47, [string][char]92) }
+  while ($v.Length -gt 3 -and ($v.EndsWith([string][char]92) -or $v.EndsWith([string][char]47))) {
+    $v = $v.Substring(0, $v.Length - 1)
+  }
+  return $v
+}
+
+#: Canonical equality: one separator, no trailing one, an MSYS /c/ drive, case-insensitive.
+function Get-HCanonPath($v) {
+  $v = ([string]$v).Replace([string][char]47, [string][char]92)
+  if ($v -match '^\\([A-Za-z])(\\|$)') { $v = $Matches[1] + ':' + [char]92 + $v.Substring([Math]::Min(3, $v.Length)) }
+  while ($v.Length -gt 3 -and $v.EndsWith([string][char]92)) { $v = $v.Substring(0, $v.Length - 1) }
+  return $v.ToLowerInvariant()
+}
+function Test-HSamePath($a, $b) { return ((Get-HCanonPath $a) -ceq (Get-HCanonPath $b)) }
+
+function Get-HManualEnvCmd($v) { return ('setx X4_TOOLKIT "' + $v + '"') }
+
+#: THE DECISION, read by the -DryRun line and the writer: @{State; Old; Why}.
+function Get-HUserEnvPlan($t) {
+  if (-not $X4OnWindows) {
+    return @{ State = 'skip'; Why = 'install.ps1 sets X4_TOOLKIT only on Windows; use install.sh on Linux/macOS' }
+  }
+  $ue = Join-Path $SRC $X4UserEnvPs1
+  if (-not (Test-Path -LiteralPath $ue -PathType Leaf)) { return @{ State = 'fail'; Why = ('the source has no ' + $X4UserEnvPs1) } }
+  $global:LASTEXITCODE = 0
+  $old = & $ue get
+  if ($LASTEXITCODE -ne 0) { return @{ State = 'fail'; Why = ($X4UserEnvPs1 + ' get failed') } }
+  $old = (@($old) -join '').Trim()
+  if (-not $old) { return @{ State = 'set' } }
+  if (Test-HSamePath $old (Get-HNativePath $t)) { return @{ State = 'same'; Old = $old } }
+  return @{ State = 'different'; Old = $old }
+}
+
+function Show-HUserEnvPreview($t) {
+  if ($NoEnv) { Write-Host '  -NoEnv: X4_TOOLKIT would not be touched'; return }
+  $plan = Get-HUserEnvPlan $t
+  switch ($plan.State) {
+    'set'       { Write-Host ('  X4_TOOLKIT would be set for your user: ' + (Get-HNativePath $t)) }
+    'same'      { Write-Host '  X4_TOOLKIT is already set to this toolkit: nothing would change' }
+    'different' { Write-Host ('  X4_TOOLKIT is set to ' + $plan.Old + ', not this toolkit: it would be left unchanged') }
+    default     { Write-Host ('  X4_TOOLKIT would not be set: ' + $plan.Why) }
+  }
+}
+
+function Set-HUserToolkitEnv($t) {   # after the dispatch, before setup.sh
+  Refuse-IfDryRun 'setting X4_TOOLKIT for your user to' $t
+  $v = Get-HNativePath $t
+  $cmd = Get-HManualEnvCmd $v
+  $plan = Get-HUserEnvPlan $t
+  switch ($plan.State) {
+    'same' { $script:X4HEnvState = 'same'; $script:X4HEnvMsg = "X4_TOOLKIT already set to this toolkit ($v)" }
+    'different' {
+      $script:X4HEnvState = 'different'
+      $script:X4HEnvMsg = ('[WARNING] X4_TOOLKIT is set to ' + $plan.Old + ', not this toolkit ' + $v + '. Left unchanged. To point it here: ' + $cmd)
+    }
+    'skip' { $script:X4HEnvState = 'skip'; $script:X4HEnvMsg = $plan.Why }
+    'fail' { $script:X4HEnvState = 'fail'; $script:failed += ('X4_TOOLKIT (could not set: ' + $plan.Why + '; run: ' + $cmd + ')') }
+    'set' {
+      $global:LASTEXITCODE = 0
+      & (Join-Path $SRC $X4UserEnvPs1) set $v
+      if ($LASTEXITCODE -eq 0) {
+        $script:X4HEnvState = 'set'; $script:X4HEnvMsg = "X4_TOOLKIT set for your user: $v (new terminals only)"
+      } else {
+        $script:X4HEnvState = 'fail'; $script:failed += ('X4_TOOLKIT (could not set: ' + $X4UserEnvPs1 + ' set failed; run: ' + $cmd + ')')
+      }
+    }
+  }
+  if ($script:X4HEnvMsg) { Write-Host ('  ' + $script:X4HEnvMsg) }
 }
 
 # ONE implementation of "where is the global Claude config". Install-Global resolved it
@@ -1650,6 +1737,9 @@ switch ($Method) {
   }
 }
 
+# X4_TOOLKIT for the user: ONE call, after every arm, so no arm can skip or repeat it.
+if (-not $NoEnv) { Set-HUserToolkitEnv $Toolkit }
+
 # wire x4validate (needs bash/uv); skip gracefully if bash missing
 #
 # `Get-Command bash` is NOT good enough. On any Windows machine with WSL enabled --
@@ -1733,8 +1823,17 @@ if ($Method -ne 'global' -and (Test-CodexSelected)) {
 }
 if ($Method -eq 'global') { Write-Host "Global:  skills/agents + X4_* env added to your ~/.claude - works from any mod repo." }
 Write-Host ""
-Write-Host "IMPORTANT - set X4_TOOLKIT in your user environment so the tools find the config"
-Write-Host "above from ANY directory (they are often run from the game folder, which has a"
-Write-Host ".claude\ but no x4-paths.env). This installer cannot do it for you:"
-Write-Host "         setx X4_TOOLKIT `"$Toolkit`"        (takes effect in NEW shells)"
+if ($script:X4HEnvState -eq 'set' -or $script:X4HEnvState -eq 'same') {
+  Write-Host ('X4_TOOLKIT: ' + $script:X4HEnvMsg)
+} else {
+  # -NoEnv, a different existing value, or not Windows: the user decides.
+  Write-Host "IMPORTANT - set X4_TOOLKIT in your user environment so the tools find the config"
+  Write-Host "above from ANY directory (they are often run from the game folder, which has a"
+  Write-Host ".claude\ but no x4-paths.env)."
+  if ($NoEnv) { Write-Host '  -NoEnv: this installer did not touch it. To set it yourself:' }
+  elseif ($script:X4HEnvState -eq 'different') { Write-Host '  It names another toolkit (the [WARNING] above). To point it here instead:' }
+  elseif ($script:X4HEnvState -eq 'skip') { Write-Host ('  ' + $script:X4HEnvMsg + '. To set it yourself:') }
+  else { Write-Host "  It was not set (see 'failed:' above). To set it yourself:" }
+  Write-Host ('         ' + (Get-HManualEnvCmd (Get-HNativePath $Toolkit)) + '        (takes effect in NEW shells)')
+}
 Write-Host "Verify:  cd `"$Toolkit\tools\x4validate`" ; uv run x4validate --paths"
