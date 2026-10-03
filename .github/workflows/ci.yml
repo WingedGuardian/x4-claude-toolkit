@@ -96,7 +96,13 @@ jobs:
             experimental: false
 
     steps:
+      # FULL HISTORY, for the tags (lane H). test_shipped_instruction_hashes pins
+      # scripts/shipped-instruction-hashes.txt to the CLAUDE.md/AGENTS.md of every v[0-9]*
+      # tag, and a depth-1 checkout has no tags -- so that test FAILS here by design
+      # (under CI it refuses to skip), rather than going quiet.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -616,7 +622,19 @@ jobs:
           #     3  real chmod semantics of the POSIX branch -- windows only (test_x4refguard)
           #    windows  56 + 3 = 59
           #    ubuntu   68 + 54 = 122
-          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '122' || '59' }}
+          #
+          # ** RAISED 2026-10-02 (lane H, installers), 122 -> 132 ubuntu, windows 59
+          # unchanged. ** INFERRED from the tests' skipif reasons, NOT read off a run --
+          # re-read the per-job -rs output on the first run and correct these:
+          #    +14 ubuntu  the user environment lives in the registry on Windows only
+          #                (test_install_over_existing: 5 registry tests x 2 installers,
+          #                the x4-userenv round trip 1, its seam refusal 3)
+          #     +4 windows POSIX shell profile (2 parametrised + 2)
+          #     -4 both    the tag v3.0.0 bucket above: this job now checks out with
+          #                fetch-depth: 0, so test_build_release finds its tag
+          #    windows  59 - 4 + 4 = 59
+          #    ubuntu   122 - 4 + 14 = 132
+          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '132' || '59' }}
           # No .pyc from CI: a stale cache cannot then masquerade as the source.
           PYTHONDONTWRITEBYTECODE: '1'
         run: uv run --frozen python -m pytest -q -rs
