@@ -905,6 +905,16 @@ def _x4lock_module(ctx: Ctx):
     return None
 
 
+def _x4refguard_module(ctx: Ctx):
+    """Layer 2 (the OS-level deny-delete on reference/) is scripts/x4refguard.py -- NOT x4lock,
+    which an earlier version of this check asked, so the row could never answer."""
+    for base in (ctx.root, ctx.toolkit, HERE.parent):
+        p = Path(base) / "scripts" / "x4refguard.py" if base else None
+        if p and p.is_file():
+            return _load("x4doctor_x4refguard", p)
+    return None
+
+
 @group
 def check_common(ctx: Ctx) -> list[Check]:
     def _escape(_):
@@ -923,25 +933,31 @@ def check_common(ctx: Ctx) -> list[Check]:
         return OK, "X4_GUARD is %s%s" % (repr(v) if v else "unset", note)
 
     def _layer2(_):
-        m = _x4lock_module(ctx)
-        fn = getattr(m, "deny_delete_state", None) if m is not None else None
+        m = _x4refguard_module(ctx)
+        fn = getattr(m, "report", None) if m is not None else None
         if fn is None:
             return UNKNOWN, ("the OS-level delete protection on reference/ cannot be queried here "
-                             "(x4lock has no deny_delete_state)")
+                             "(no scripts/x4refguard.py)")
         vals, why = guard_probe(ctx) if guard_dirs(ctx) else (None, "no guard copy")
         ref = (vals or {}).get("REFERENCE")
         if not ref:
             return UNKNOWN, "no reference root resolved: " + why
-        st = fn(Path(ref))
+        try:
+            r = fn(path=Path(ref))
+        except Exception as exc:  # noqa: BLE001 -- a query that raises is a non-answer, never OK
+            return UNKNOWN, "x4refguard could not report: %s" % exc
+        st, detail = r.get("state"), r.get("detail") or ""
         hookless = ctx.targets.get("codex") or ctx.targets.get("generic")
-        if st == "present":
+        if st == "protected":
             return OK, "reference/ carries the OS-level delete protection"
-        if st == "absent":
+        if st in ("absent", "partial"):
             if hookless:
-                return FAIL, ("reference/ has NO OS-level delete protection, and a Codex or generic "
-                              "agent here has no hook-level delete guard to fall back on")
-            return OK, "no OS-level delete protection on reference/; the Claude hooks cover deletes"
-        return UNKNOWN, "the OS-level protection state of reference/ is %r" % st
+                return FAIL, ("reference/ has %s OS-level delete protection, and a Codex or generic "
+                              "agent here has no hook-level delete guard to fall back on -- run: "
+                              "python scripts/x4refguard.py apply" % ("NO" if st == "absent" else "only PARTIAL"))
+            return OK, ("no OS-level delete protection on reference/ (%s); the Claude hooks cover "
+                        "deletes" % st)
+        return UNKNOWN, "the OS-level protection state of reference/ is %r: %s" % (st, detail)
 
     def _lock(_):
         m = _x4lock_module(ctx)

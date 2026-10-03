@@ -765,21 +765,42 @@ def test_TWIN_X4_GUARD_unset_is_OK(sandbox):
 
 
 def test_layer2_without_the_query_is_UNKNOWN(sandbox, monkeypatch):
-    monkeypatch.setattr(doc, "_x4lock_module", lambda ctx: type("M", (), {})())
+    monkeypatch.setattr(doc, "_x4refguard_module", lambda ctx: None)
     r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
     assert r.status == doc.UNKNOWN, r
 
 
-@pytest.mark.parametrize("state,codex,want", [("present", False, "OK"), ("absent", False, "OK"),
-                                              ("absent", True, "FAIL"), ("unknown", True, "UNKNOWN"),
-                                              ("present", True, "OK")])
+def _refguard_stub(state):
+    return type("M", (), {"report": staticmethod(
+        lambda full=False, path=None: {"state": state, "detail": "stub " + state})})()
+
+
+@pytest.mark.parametrize("state,codex,want", [
+    ("protected", False, "OK"), ("absent", False, "OK"), ("absent", True, "FAIL"),
+    ("partial", True, "FAIL"), ("unsupported", True, "UNKNOWN"), ("error", True, "UNKNOWN"),
+    ("foreign", True, "UNKNOWN"), ("unconfigured", True, "UNKNOWN"), ("protected", True, "OK")])
 def test_layer2_states(sandbox, monkeypatch, state, codex, want):
-    mod = type("M", (), {"deny_delete_state": staticmethod(lambda p: state)})()
-    monkeypatch.setattr(doc, "_x4lock_module", lambda ctx: mod)
+    monkeypatch.setattr(doc, "_x4refguard_module", lambda ctx: _refguard_stub(state))
     if codex:
         shutil.copytree(sandbox.root / ".claude" / "hooks", sandbox.root / ".codex" / "hooks")
     r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
     assert r.status == want, r
+
+
+def test_layer2_asks_the_REAL_x4refguard_and_FAILS_an_unprotected_codex_root(sandbox):
+    """Plan 3 live probe, 2026-10-03: x4doctor asked `x4lock.deny_delete_state`, which no
+    module ever had -- Layer 2 shipped as scripts/x4refguard.py -- so this row was UNKNOWN on
+    every machine, and the stubbed tests above (which invented the same function) agreed with
+    it. NO stub here: the sandbox reference/ carries no protection, a Codex agent has no
+    hook-level delete guard, so the real query must say FAIL."""
+    shutil.copytree(sandbox.root / ".claude" / "hooks", sandbox.root / ".codex" / "hooks")
+    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
+    assert r.status == doc.FAIL, r
+
+
+def test_TWIN_layer2_REAL_unprotected_claude_only_root_is_OK(sandbox):
+    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
+    assert r.status == doc.OK and "Claude hooks" in r.detail, r
 
 
 def test_x4lock_unlocked_files_are_UNKNOWN_informational_not_FAIL(sandbox, monkeypatch, tmp_path):

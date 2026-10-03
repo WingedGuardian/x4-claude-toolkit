@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`x4doctor` now really checks the OS-level delete protection on `reference/`.** Its
+  `layer2.reference` row asked a function no module had (`x4lock.deny_delete_state`; the protection
+  shipped as `scripts/x4refguard.py`), so it said UNKNOWN on every machine -- and a Codex install with
+  an unprotected `reference/` was never told. It now asks `x4refguard` and FAILs that case, naming
+  `python scripts/x4refguard.py apply`. The old tests stubbed the same missing function and agreed
+  with it; a new test uses the real module.
 - **Any agent can now be connected to the guards, and proved.** `ADAPTING.md` is written for an
   AI agent the toolkit has no adapter for: how to measure whether its hooks fail open or closed,
   the guard contract (`x4guard check`), worked Claude Code and Codex examples, where an adapter
