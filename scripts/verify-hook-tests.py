@@ -183,14 +183,14 @@ MUTANTS = [
      "test_a_FILTERED_find_is_scoped_and_does_not_fire"),
     # AUDIT-2026-09-24 HK-2: a filtered find-delete is SCOPED, not exempt ...
     ("a filtered find-delete still reaches the in-tree rules",
-     "        scoped_rm_t += prep(find_scoped_deletes(s), c_cwd)", "        pass",
+     "        scoped_rm_t += prep(find_scoped_deletes(s), c_cwd, c_old)", "        pass",
      "test_every_save_by_filter_asks"),
     # ... except a regenerable-cache cleanup, which is why the exemption existed.
     ("a cache-only filter stays exempt",
      "    return [] if _only_regenerable(toks) else paths", "    return paths",
      "test_TWIN_a_pycache_cleanup_is_still_silent_everywhere"),
     ("truncate / dd of= are truncating writes",
-     "        redir_t += [(\"truncate\",) + o for o in prep(clobber_targets(s), c_cwd, False)]",
+     "        redir_t += [(\"truncate\",) + o for o in prep(clobber_targets(s), c_cwd, c_old, False)]",
      "        pass",
      "test_truncate_into_reference"),
     ("a find WITHOUT -delete is not", 'deletes = "-delete" in toks', "deletes = True",
@@ -251,7 +251,7 @@ MUTANTS = [
     # Each clause gets its OWN mutant. Mutating the whole feature to a no-op cannot
     # distinguish "the join is untested" from "some earlier guard covers it".
     ("a relative operand is joined to the cwd",
-     'out.append((r if unres else join_cwd(c_cwd, r), unres, r))',
+     'out.append((r if unres else join_cwd(d, r), unres, r))',
      'out.append((r if unres else r, unres, r))',
      "test_cd_then_relative_delete_of_extensions_is_the_game_delete"),
     # The NAME backstop is the opposite call from hits_game_root, and the difference is
@@ -278,7 +278,7 @@ MUTANTS = [
      'DIR_VERBS = {"cd", "pushd"}', 'DIR_VERBS = {"cd"}',
      "test_pushd_relocates_like_cd"),
     ("popd pops, rather than being ignored",
-     'elif v == "popd" and stack:\n            cwd = stack.pop()',
+     'elif v == "popd" and stack:\n            cwd, from_seed = stack.pop()',
      'elif v == "popd" and stack:\n            pass',
      "test_popd_returns_to_the_previous_directory"),
     ("subshell punctuation is stripped from a segment",
@@ -375,8 +375,8 @@ MUTANTS = [
      '        for m in []:',
      "test_a_spaced_path_stays_ONE_element"),
     ("cd resolves its operand",
-     "                    cwd = join_cwd(cwd, resolve(ops[0], assigns))",
-     "                    cwd = join_cwd(cwd, ops[0])",
+     "                tgt = resolve(ops[0], assigns)",
+     "                tgt = ops[0]",
      "test_a_plain_variable"),
     # ---- round 3c: the IMPORTANTs -------------------------------------------
     ("find -execdir/-ok/-okdir are exec too",
@@ -388,7 +388,7 @@ MUTANTS = [
      "                nxt = toks[i + 1]",
      "test_an_absolute_delete_under_exec"),
     ("a mv SOURCE that is a root is a delete",
-     '        mv_src += prep(move_sources(s), c_cwd)',
+     '        mv_src += prep(move_sources(s), c_cwd, c_old)',
      '        mv_src += []',
      "test_moving_the_game_root_away"),
     ("mv keeps every operand but the LAST as a source",
