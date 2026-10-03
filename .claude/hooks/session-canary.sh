@@ -36,6 +36,11 @@ if x4_guards_off; then
   echo "            Unset X4_GUARD and restart the session to turn them back on."
 fi
 
+# The path config (Plan 3 lane I): a MISSING, DEPRECATED (3.x .claude/) or DOUBLED config is
+# named once per session, here, and in x4doctor's roots.config -- never per tool call, and no
+# guard verdict depends on it. Before the canary lookup, which can exit early. At most 2 lines.
+x4_config_banner
+
 # The canary lives in the toolkit, not beside the hooks: it is a tool, and it needs the
 # x4validate package to resolve roots. If the toolkit is not configured there is nothing
 # to say -- but say THAT, rather than printing a reassuring nothing.

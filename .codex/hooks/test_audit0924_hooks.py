@@ -901,5 +901,78 @@ class TestLaneFRelativePathsUseThePayloadCwd(_RR):
         self.assertEqual(self._v("cd " + other + " && " + rel_del, self.tmp.as_posix()), "allow")
 
 
+class TestLaneIConfigLocation(unittest.TestCase):
+    """Plan 3 lane I: the guards read <tk>/x4-paths.env, still read the 3.x copy, keep the
+    default reference HARD BLOCK with no config, and SAY so at session start."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="lanei_"))
+        self.tk = self.tmp / "tk"
+        (self.tk / "reference" / "libraries").mkdir(parents=True)
+        (self.tmp / "elsewhere" / "libraries").mkdir(parents=True)
+        self.env = {k: v for k, v in os.environ.items()
+                    if not k.startswith("X4_") and k not in ("CLAUDE_PROJECT_DIR", "HOOK_DIR")}
+        self.env["X4_TOOLKIT"] = str(self.tk)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def cfg(self, rel):
+        p = self.tk / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('X4_REFERENCE="%s"\n' % (self.tmp / "elsewhere").as_posix(),
+                     encoding="utf-8", newline="\n")
+
+    def edit(self, path):
+        payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": path.as_posix()}})
+        p = subprocess.run([BASH, str(HOOKS / "protect-files.sh")], input=payload,
+                           capture_output=True, text=True, env=self.env, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr[-300:])
+        if not p.stdout.strip():
+            return "allow"
+        return json.loads(p.stdout)["hookSpecificOutput"].get("permissionDecision", "advise")
+
+    def banner(self):
+        p = subprocess.run([BASH, str(HOOKS / "session-canary.sh")], input="{}",
+                           capture_output=True, text=True, env=self.env, timeout=60)
+        return [l for l in p.stdout.splitlines() if l.startswith("[x4 config]")]
+
+    def test_no_config_still_HARD_BLOCKS_the_default_reference(self):
+        self.assertEqual(self.edit(self.tk / "reference" / "libraries" / "w.xml"), "deny")
+
+    def test_the_NEW_file_is_read_by_the_hooks(self):
+        self.cfg("x4-paths.env")
+        self.assertEqual(self.edit(self.tmp / "elsewhere" / "libraries" / "w.xml"), "deny")
+
+    def test_TWIN_the_LEGACY_file_is_still_read_by_the_hooks(self):
+        self.cfg(".claude/x4-paths.env")
+        self.assertEqual(self.edit(self.tmp / "elsewhere" / "libraries" / "w.xml"), "deny")
+
+    def test_banner_NAMES_the_gap_when_nothing_is_configured(self):
+        lines = self.banner()
+        self.assertTrue(lines and "NO PATH CONFIG" in lines[0], lines)
+        joined = " ".join(lines)
+        self.assertIn((self.tk / "x4-paths.env").as_posix().lower(), joined.replace("\\", "/").lower())
+
+    def test_TWIN_no_banner_when_the_reference_is_EXPORTED(self):
+        self.env["X4_REFERENCE"] = str(self.tmp / "elsewhere")
+        self.assertEqual(self.banner(), [])
+
+    def test_TWIN_no_banner_when_the_NEW_file_exists(self):
+        self.cfg("x4-paths.env")
+        self.assertEqual(self.banner(), [])
+
+    def test_banner_says_DEPRECATED_for_the_legacy_location(self):
+        self.cfg(".claude/x4-paths.env")
+        lines = self.banner()
+        self.assertTrue(lines and "DEPRECATED" in lines[0] and "x4config.py migrate" in lines[0], lines)
+
+    def test_banner_says_TWO_when_both_exist_and_prints_no_VALUE(self):
+        self.cfg("x4-paths.env"); self.cfg(".claude/x4-paths.env")
+        lines = self.banner()
+        self.assertTrue(lines and "TWO path configs" in lines[0], lines)
+        self.assertNotIn("elsewhere", " ".join(lines))
+
+
 if __name__ == "__main__":
     unittest.main()
