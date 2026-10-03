@@ -73,6 +73,7 @@ USAGE
     python scripts/x4lock.py lock              lock every file in the manifest
     python scripts/x4lock.py unlock <path>     unlock ONE file (the choke point)
     python scripts/x4lock.py unlock --all      unlock everything
+    python scripts/x4lock.py protected <path>  exit 0 if it is in the manifest (for the guards)
 
 The manifest is derived from the configured roots, never hard-coded to one machine, and
 is extended by `X4_PROTECTED` (an os.pathsep-separated list) for anything site-specific.
@@ -517,6 +518,21 @@ def cmd_unlock(args) -> int:
     return _run([p], False)
 
 
+def cmd_protected(args) -> int:
+    """Exit 0 when PATH is in the manifest, 1 when it is not; prints nothing.
+
+    protect-files.sh asks this when a write targets a READ-ONLY file, to tell x4lock's
+    lock apart from any other read-only file -- by THIS manifest, so the guard never
+    carries a second list that could drift from it (lane N, 2026-10-03). An unresolvable
+    manifest is exit 2 (see main), never a "no".
+    """
+    try:
+        key = str(Path(args.path).resolve()).lower()
+    except OSError:
+        return 1
+    return 0 if key in {str(q.resolve()).lower() for q in manifest()} else 1
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="x4lock",
@@ -528,8 +544,12 @@ def main(argv=None) -> int:
     un = sub.add_parser("unlock", help="unlock ONE file (or --all)")
     un.add_argument("path", nargs="?")
     un.add_argument("--all", action="store_true")
+    pr = sub.add_parser("protected", help="exit 0 if PATH is in the manifest, 1 if not (for the guards)")
+    pr.add_argument("path")
     args = ap.parse_args(argv)
     try:
+        if args.cmd == "protected":
+            return cmd_protected(args)
         if args.cmd == "lock":
             return cmd_lock(args)
         if args.cmd == "unlock":

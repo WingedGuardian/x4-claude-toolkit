@@ -166,6 +166,33 @@ if [ -n "$_x4_maybe_deployed" ] && [ -n "${X4_GAME:-}" ] && [ -n "${X4_TOOLKIT:-
   fi
 fi
 
+# === ADVISORY — a write to a file x4lock has LOCKED (2026-10-03, lane N) ===
+# MEASURED in a live Codex run: KNOWLEDGEBASE.md was allowed HERE, then the write failed on
+# the read-only attribute x4lock sets, and nothing said why or how to proceed. The lock is
+# kept (user decision N2); the agent is told the unlock -> edit -> relock steps instead.
+# ADVISORY only, never ask/deny: the filesystem already refuses the write, so a prompt
+# would protect nothing. COST: `-f`/`-w` are shell builtins, so a writable or absent file
+# -- every ordinary edit -- costs no subprocess. Only a READ-ONLY file pays one python
+# call, which asks x4lock ITSELF whether it manages it, so there is one manifest, not two.
+# `-w` honours the Windows read-only attribute under Git Bash (MEASURED 2026-10-03, with an
+# unlocked control, in C:/, C:\ and /c/ spellings). ABOVE the whitelist: its `exit 0`s
+# would make an advisory placed under it unreachable (F84); flush_advice still emits it.
+if [ -f "$FILE_PATH" ] && [ ! -w "$FILE_PATH" ] && [ -n "$PY" ]; then
+  _lk=""
+  for _c in "${X4_TOOLKIT:-}/scripts/x4lock.py" "$HOOK_DIR/../../scripts/x4lock.py"; do
+    [ -f "$_c" ] && { _lk="$_c"; break; }
+  done
+  if [ -n "$_lk" ]; then
+    "$PY" "$_lk" protected "$FILE_PATH" >/dev/null 2>&1; _lkrc=$?
+    if [ "$_lkrc" -ne 1 ]; then
+      _lkcmd="python \"$_lk\" unlock \"$FILE_PATH\""
+      _lkmsg="LOCKED BY x4lock: $FILE_PATH is read-only, so this write will FAIL until it is unlocked. Run: $_lkcmd -- then make the edit -- then relock: python \"$_lk\" lock"
+      [ "$_lkrc" -eq 0 ] || _lkmsg="READ-ONLY: $FILE_PATH is read-only, so this write will fail; x4lock could not say whether it locked it (exit $_lkrc). If it did: $_lkcmd, edit, then python \"$_lk\" lock"
+      advise "$_lkmsg"
+    fi
+  fi
+fi
+
 # === WHITELIST — the toolkit's own working dirs & docs (editable in every install mode) ===
 # Every NAME test below reads the NORMALISED path (lowercase, forward slashes, `..`
 # RESOLVED), never the raw one. AUDIT-2026-09-24 HK-3, MEASURED: the `.claude/hooks/`
@@ -176,6 +203,25 @@ fi
 _NP="$(x4_norm "$FILE_PATH")"
 # AGENTS.md is Codex's instruction file, the CLAUDE.md of another agent (2026-09-30).
 case "$_NP" in */claude.md|*/agents.md|*/knowledgebase.md) exit 0;; esac
+# The agent's own notes (lane N, user decision N1): EXACTLY <project root>/X4-NOTES.md and
+# the 4.0 migration's X4-NOTES.pre-4.0.md -- the instructions send agents there, and the
+# game-install block below denied it (MEASURED, live Codex run 2026-10-03). The NAME alone
+# is not enough: the same name anywhere deeper in the game tree stays denied, so the
+# RESOLVED path must equal a root plus the name. The roots are X4_GAME and X4_TOOLKIT --
+# the two this hook already resolves in every channel (the x4guard write payload carries
+# no cwd, and CLAUDE_PROJECT_DIR is Claude-only). X4_GAME is the root that is denied;
+# X4_TOOLKIT covers the in-game layout with X4_GAME unset, where only the
+# `X4 Foundations/` name backstop protects it. The case is pure shell, so every other
+# path pays nothing.
+case "$_NP" in
+  */x4-notes.md|*/x4-notes.pre-4.0.md)
+    x4_canon_memo "$FILE_PATH"; _nfc="$_X4_CANON_RESULT"
+    for _nr in "${X4_GAME:-}" "${X4_TOOLKIT:-}"; do
+      [ -n "$_nr" ] || continue
+      x4_canon_memo "$_nr"
+      [ "$_nfc" = "${_X4_CANON_RESULT%/}/${_NP##*/}" ] && exit 0
+    done ;;
+esac
 # dev/ and dist/ are the documented mod workspace; they MUST be whitelisted before the
 # game-install block below, because in the "in-game" install method X4_TOOLKIT *is* the game
 # folder — without this, editing your own mod source is hard-denied in the default layout.
@@ -239,9 +285,13 @@ if x4_under "$FILE_PATH" "$X4_EXTENSIONS"; then
 fi
 
 # === HARD BLOCK — game installation files (base-game content that isn't the toolkit) ===
+# The reason ROUTES the agent (lane N, user decision N3): "work in your mod folder" alone
+# left a live Codex run with nowhere to put its notes (2026-10-03).
+_GR="${X4_GAME:-$X4_TOOLKIT}"; _GR="${_GR%[/\\]}"
+_GAME_DENY="BLOCKED: $FILE_PATH is in the game installation. Notes -> $_GR/X4-NOTES.md. Game/engine facts -> $_GR/KNOWLEDGEBASE.md (x4lock keeps it read-only: python \"$X4_TOOLKIT/scripts/x4lock.py\" unlock \"$_GR/KNOWLEDGEBASE.md\", edit, then relock with x4lock.py lock). Mod files -> your mod folder (dev/ or X4_MODS), then deploy."
 if [ -n "${X4_GAME:-}" ] && x4_under "$FILE_PATH" "$X4_GAME"; then
-  deny "BLOCKED: cannot edit files in the game installation directory. Work in your mod folder instead."
+  deny "$_GAME_DENY"
 fi
-echo "$FILE_PATH" | grep -qiE 'X4 Foundations[/\\]' && deny "BLOCKED: cannot edit files in the game installation directory. Work in your mod folder instead."
+echo "$FILE_PATH" | grep -qiE 'X4 Foundations[/\\]' && deny "$_GAME_DENY"
 
 exit 0
