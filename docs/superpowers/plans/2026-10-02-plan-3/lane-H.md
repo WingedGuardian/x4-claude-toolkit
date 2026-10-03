@@ -97,7 +97,7 @@ def test_the_harness_NEVER_lets_an_installer_reach_the_real_user_env(tmp_path, m
         return real_run(["python", "-c", "pass"], capture_output=True, text=True)
     monkeypatch.setattr(subprocess, "run", spy)
     monkeypatch.setattr(sys.modules[__name__], "_bash", lambda: "bash")   # never skip
-    monkeypatch.setenv("ZDOTDIR", "<HOME>/.config/zsh")
+    monkeypatch.setenv("ZDOTDIR", "/sandbox/home/.config/zsh")
     dest = _fresh(tmp_path)
     _install("sh", tmp_path, dest)
     env, cmd = captured["env"], captured["cmd"]

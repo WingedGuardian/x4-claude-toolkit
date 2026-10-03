@@ -535,7 +535,7 @@ bound is a follow-up decision.
 
 MEASURED (read-only git, this session):
 - `pr2` -> `a18ab2e` "feat: cross-platform support + guided installer (Linux/macOS/Windows)",
-  author **the original author**, 2026-06-27; history `a18ab2e <- b3554d0 <- 9dc393c` (v1.0).
+  author **an outside contributor**, 2026-06-27; history `a18ab2e <- b3554d0 <- 9dc393c` (v1.0).
 - Its reflog: `fetch origin pull/2/head:pr2` -- a local copy of **GitHub PR #2** (an external
   contribution), not a session branch. No upstream configured.
 - `git log master..pr2` = **0 commits**; `merge-base pr2 master` = `a18ab2e` itself; the commit
