@@ -8,8 +8,8 @@
 #             global Claude settings, so they work across MANY mod repos (multi-project).
 #
 # Every location is auto-detected where possible and overridable by flag/env. The chosen
-# paths are written to <toolkit>/.claude/x4-paths.env (the single source of truth the hooks
-# and bin/ scripts read).
+# paths are written to <toolkit>/x4-paths.env (the single source of truth the hooks, bin/
+# scripts and tools read). A 3.x config at <toolkit>/.claude/x4-paths.env is MOVED there.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # repo / toolkit source
@@ -203,7 +203,7 @@ X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/basex
 #: dual-meaning trap `.claude/backups` fell into. A checkout accumulates them (release
 #: review 2026-09-26: data/ alone was 2.3 GB) and a git source never copies them
 #: anyway (see _tracked_copy_set); this is the walk's defence in depth.
-X4_KEEP_LOCAL=".claude/x4-paths.env .claude/settings.local.json .claude/backups .codex/hooks.json .codex/config.toml .opencode/opencode.jsonc tools/basex/basex/data tools/basex/basex/coverage-x4raw.json tools/basex/basex/coverage-x4eff.json tools/basex/_eff tools/basex/stage-manifest.json"
+X4_KEEP_LOCAL="x4-paths.env .claude/x4-paths.env .claude/settings.local.json .claude/backups .codex/hooks.json .codex/config.toml .opencode/opencode.jsonc tools/basex/basex/data tools/basex/basex/coverage-x4raw.json tools/basex/basex/coverage-x4eff.json tools/basex/_eff tools/basex/stage-manifest.json"
 
 #: THE TRACKED SET, when the source is a git checkout.
 #:
@@ -528,7 +528,7 @@ _owned_lines_old() {   # _owned_lines_old CONFIG_FILE
 #: COMMON to every agent target. Each agent's own files are named once more, in its
 #: X4_AGENT_ITEMS_<name> set below, and never here: an item in both lists is an item
 #: two answers can disagree about.
-X4_COPY_ITEMS="tools bin scripts mods KNOWLEDGEBASE.md README.md CHANGELOG.md LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt ADAPTING.md .gitignore .gitattributes"
+X4_COPY_ITEMS="tools bin scripts mods KNOWLEDGEBASE.md README.md CHANGELOG.md LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt ADAPTING.md .gitignore .gitattributes x4-paths.env.example"
 
 #: PER-AGENT sets (audit F8: the installers shipped no AGENTS.md at all). `agent/` -- the
 #: neutral source the generator reads -- is in NO set: an installed toolkit is
@@ -546,7 +546,7 @@ X4_AGENT_NAMES="claude codex generic opencode"
 #: --agent auto (lane H): how each agent is DETECTED. One row per agent; an agent with no
 #: row is never detected, so a new agent adds rows here and touches no code. DETECT = a
 #: program name on PATH; MARK = a path in the destination. Never a bare `.claude/`: every
-#: install creates one (x4-paths.env lives there), whatever the agent. install.ps1 holds the
+#: 3.x install created one (x4-paths.env lived there), whatever the agent. install.ps1 holds the
 #: same tables; test_installers_agree parses both.
 X4_AGENT_DETECT_claude="claude"
 X4_AGENT_MARK_claude="CLAUDE.md .claude/settings.json"
@@ -1164,8 +1164,65 @@ precheck_locked_targets() {   # precheck_locked_targets DEST
   exit 1
 }
 
+#: _i_assign_lines FILE -> the comparable content of a path config (Plan 3 lane I): its
+#: KEY=value lines with CR and indent stripped, comments and blanks dropped, sorted. A comment
+#: difference AGREES and a quoting difference DIFFERS. The same rule as
+#: `_paths._assignments`; install.ps1 mirrors it in Get-IAssignLines.
+_i_assign_lines() {
+  tr -d '\r' < "$1" 2>/dev/null | sed 's/^[[:space:]]*//' | grep -v '^#' | grep '=' | LC_ALL=C sort || true
+}
+
+#: _i_differing_keys A B -> the KEY NAMES whose assignments differ; never a value (the file
+#: carries X4_NEXUS_KEY).
+_i_differing_keys() {
+  { _i_assign_lines "$1"; _i_assign_lines "$2"; } | LC_ALL=C sort | uniq -u | cut -d= -f1 \
+    | sed 's/^export[[:space:]][[:space:]]*//' | LC_ALL=C sort -u | tr '\n' ' ' || true
+}
+
+#: _i_migrate_paths_env TOOLKIT -- MOVE a 3.x `.claude/x4-paths.env` to `<toolkit>/x4-paths.env`.
+#: A rename, never a copy: two copies drift apart on the first edit. A read-only (x4lock)
+#: file is renamed too and stays read-only (MEASURED, Plan 3 lane I M6), so no unlock is
+#: needed. Both present and AGREEING: the 3.x one becomes `.claude/x4-paths.env.bak-<stamp>`.
+#: Both present and DIFFERING never reaches here: precheck_config refused it before any write.
+_i_migrate_paths_env() {
+  local new="$1/x4-paths.env" old="$1/.claude/x4-paths.env" bak
+  [ -f "$old" ] || return 0
+  if [ ! -e "$new" ]; then
+    mv "$old" "$new" || { echo "ERROR: could not move $old -> $new; it is still where it was." >&2; return 1; }
+    echo "  [migrated] $old -> $new (the 3.x location; 4.0 reads the toolkit root). To undo: move it back."
+    return 0
+  fi
+  if [ "$(_i_assign_lines "$new")" = "$(_i_assign_lines "$old")" ]; then
+    bak="$old.bak-$(date +%Y%m%d-%H%M%S)"
+    mv "$old" "$bak" || { echo "ERROR: could not rename the agreeing 3.x $old; it is still there." >&2; return 1; }
+    echo "  [migrated] the 3.x $old agreed with $new; renamed it to $bak (to undo: rename it back)"
+    return 0
+  fi
+  echo "ERROR: $new and the 3.x $old DIFFER on: $(_i_differing_keys "$new" "$old")-- refusing to choose." >&2
+  return 1
+}
+
 precheck_config() {   # precheck_config TOOLKIT_DIR
-  local t="$1" f="$1/.claude/x4-paths.env"
+  local t="$1" f="$1/x4-paths.env" old="$1/.claude/x4-paths.env"
+  # TWO CONFIGS THAT DIFFER (Plan 3 lane I): refused before anything is written, dry run too.
+  # The 4.x file outranks the 3.x one, so an older guard copy reading .claude/ would protect a
+  # different tree; which values are right is the user's call, never the installer's.
+  if [ -f "$f" ] && [ -f "$old" ] && [ "$(_i_assign_lines "$f")" != "$(_i_assign_lines "$old")" ]; then
+    echo                                                                        >&2
+    echo "REFUSING: two path configs that DIFFER:"                              >&2
+    echo "      $f"                                                             >&2
+    echo "      $old   (the 3.x location)"                                      >&2
+    echo "  They differ on: $(_i_differing_keys "$f" "$old")"                   >&2
+    echo "  Nothing has been changed. Keep the values you want in the first, delete" >&2
+    echo "  or rename the second, then re-run. To see them side by side:"       >&2
+    echo "      python \"$t/scripts/x4config.py\" status"                       >&2
+    exit 1
+  fi
+  if [ "$DRY_RUN" = 1 ] && [ -f "$old" ]; then
+    if [ -e "$f" ]; then echo "  --dry-run: would RENAME the agreeing 3.x $old to $old.bak-<stamp>"
+    else echo "  --dry-run: would MOVE $old -> $f (the 3.x location; 4.0 reads the toolkit root)"; fi
+  fi
+  [ -e "$f" ] || f="$old"                      # judged where it IS: the move keeps its bytes
   [ -e "$f" ] || return 0                      # nothing there to protect
   local _now; _now="$(_owned_lines_old "$f")"
   if [ "$_now" = "__X4_UNREADABLE__" ]; then
@@ -1195,7 +1252,7 @@ precheck_config() {   # precheck_config TOOLKIT_DIR
 }
 
 write_paths_env() {  # write_paths_env TOOLKIT_DIR
-  local t="$1" f="$1/.claude/x4-paths.env"
+  local t="$1" f="$1/x4-paths.env"
   # THE GATE IS THE FIRST STATEMENT, and it has to stay there.
   #
   # The "nothing to change" fast path below was inserted ABOVE it, which made
@@ -1208,7 +1265,10 @@ write_paths_env() {  # write_paths_env TOOLKIT_DIR
   # An early return added above a gate is invisible to a check that COUNTS call
   # sites, which is what install.ps1's own comment here already warned about --
   # and the same arc then moved the gate below a return anyway.
-  refuse_if_dry_run "writing the path config into" "$1/.claude/x4-paths.env"
+  refuse_if_dry_run "writing the path config into" "$f"
+  # A 3.x config MOVES to the root first (Plan 3 lane I), AFTER the gate, so the fast path
+  # below then judges it in its new place -- an unchanged locked config is left untouched.
+  _i_migrate_paths_env "$1" || return 1
   # NOTHING TO CHANGE, NOTHING TO WRITE. An upgrade that resolves the same
   # paths used to rewrite this file anyway -- which meant a config the user
   # had locked (as README instructs) failed the whole install for a write
@@ -1218,7 +1278,7 @@ write_paths_env() {  # write_paths_env TOOLKIT_DIR
     echo "  [note] $f already matches these paths; left untouched"
     return 0
   fi
-  mkdir -p "$1/.claude"
+  mkdir -p "$1"
 
   # BACKED UP HERE, not at the call sites. `copy_toolkit` backs this file up and puts it
   # back, which covers --method in-game and --method separate; --method global never
@@ -1609,7 +1669,7 @@ require_direction() {
     echo >&2
     echo "  Installing over it REPLACES those files. An edited CLAUDE.md or AGENTS.md is" >&2
     echo "  KEPT beside it (X4-NOTES.pre-4.0.md / AGENTS.pre-4.0.md); your own" >&2
-    echo "  KNOWLEDGEBASE.md and customised skills are replaced. .claude/x4-paths.env and" >&2
+    echo "  KNOWLEDGEBASE.md and customised skills are replaced. x4-paths.env and" >&2
     echo "  settings.local.json are preserved." >&2
     echo >&2
     echo "  To upgrade it anyway, say so explicitly:" >&2
@@ -2119,7 +2179,7 @@ fi
 echo "=== install complete ($METHOD) ==="
 echo "Toolkit:   $TOOLKIT"
 echo "Agents:    $(_agents_landed)"
-echo "Config:    $TOOLKIT/.claude/x4-paths.env  (edit any path here)"
+echo "Config:    $TOOLKIT/x4-paths.env  (edit any path here)"
 # CODEX RUNS NO HOOK IT HAS NOT REVIEWED, and it says nothing when it skips one
 # (MEASURED, spike 2026-09-30). The installer must never approve hooks or trust the
 # project on the user's behalf (spec section 8), so it says what to do instead.
@@ -2152,8 +2212,8 @@ case "$X4_H_ENV_STATE" in
   *)
     # --no-env, a different existing value, or a shell we do not edit: the user decides.
     echo "IMPORTANT — set X4_TOOLKIT in your user environment so the tools find the config"
-    echo "above from ANY directory (they are often run from the game folder, which has a"
-    echo ".claude/ but no x4-paths.env)."
+    echo "above from ANY directory (they are often run from the game folder, which may hold"
+    echo "no x4-paths.env)."
     if [ "$NO_ENV" = 1 ]; then echo "  --no-env: this installer did not touch it. To set it yourself:"
     elif [ "$X4_H_ENV_STATE" = different ]; then echo "  It names another toolkit (the [WARNING] above). To point it here instead:"
     elif [ "$X4_H_ENV_STATE" = skip ]; then echo "  $X4_H_ENV_MSG. To set it yourself:"
