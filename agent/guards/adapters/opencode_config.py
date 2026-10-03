@@ -90,7 +90,7 @@ def resolve_roots(root: Path) -> dict[str, str]:
     # Each root is printed RAW and converted: cygpath silently DROPS a `*` (MEASURED `b*c` ->
     # `bc`), so the wildcard refusal must look at the raw value.
     script = ('HOOK_DIR="$1"; . "$1/_x4-env.sh" >/dev/null 2>&1 || exit 3; '
-              'for _v in ' + " ".join(f'"${{{k}:-}}"' for k in ROOT_KEYS) + '; do _c="$_v"; '
+              'for _v in ' + " ".join('"${' + k + ':-}"' for k in ROOT_KEYS) + '; do _c="$_v"; '
               'if [ -n "$_v" ] && command -v cygpath >/dev/null 2>&1; then _c="$(cygpath -m "$_v")" || exit 4; fi; '
               'printf "%s\\0%s\\0" "$_v" "$_c"; done')
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
