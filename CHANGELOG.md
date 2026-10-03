@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Any agent can now be connected to the guards, and proved.** `ADAPTING.md` is written for an
+  AI agent the toolkit has no adapter for: how to measure whether its hooks fail open or closed,
+  the guard contract (`x4guard check`), worked Claude Code and Codex examples, where an adapter
+  goes, the proof required before claiming protection, and an upstream template. The proof is
+  the new **`x4guard conformance`**: it replays every guard case of the hook test suite, plus
+  neutral PowerShell, space-in-path and drive-path cases, through any adapter and compares each
+  answer with the guards' own, per case (exit 0 agree, 1 disagree, 2 cannot evaluate, 3 too
+  little examined -- never 0 on nothing). The Codex conformance test now runs on it, with its
+  sandbox under the toolkit rather than the system temp folder. A toy agent whose adapter was
+  written cold from `ADAPTING.md` alone runs through it in the test suite, and
+  `docs/ADAPTING-COLD-TEST.md` repeats that cold exercise once per release.
+- **`SETUP_PROMPT.txt` works for any agent.** It asks the agent to identify itself, check for an
+  adapter, never approve hooks on your behalf, read `ADAPTING.md` when it has none, and report
+  `x4doctor`'s live/not-live layers honestly.
 - **A relative path in a shell command is now judged where the shell runs.** The guards ignored
   the `cwd` that Claude Code and Codex send with every call. So `rm -f reference/...` or
   `echo x > reference/...`, run from the folder holding `reference/`, was allowed, while the same
