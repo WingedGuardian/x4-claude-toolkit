@@ -553,3 +553,33 @@ def test_FAKE_a_partly_applied_tree_is_PARTIAL(ref, monkeypatch):
     r = x4refguard.report()
     assert r["state"] == "partial" and r["sample_ok"] == r["sampled"] - 1
     assert x4refguard.main(["status"]) == 1
+
+
+# --- Plan 3 lane J (J9, CI run 37091872873): a PowerShell 7 parent must not break Get-Acl ---- #
+# MEASURED 2026-10-03: windows-latest CI and a local pwsh 7 parent both export a PSModulePath
+# whose first entries are PowerShell 7's own module folders. The Windows PowerShell 5.1 child
+# x4refguard starts then tries to load PS7's Microsoft.PowerShell.Security and fails:
+# "Get-Acl ... the module could not be loaded" -> every status/apply refused (exit 2). Codex
+# runs PowerShell 7 on Windows, so a Codex session hits it too.
+_PWSH7_MODULE_PATH = ";".join([
+    os.path.join(os.environ.get("USERPROFILE", "C:/Users/x"), "Documents", "PowerShell", "Modules"),
+    r"C:\Program Files\PowerShell\Modules",
+    r"C:\Program Files\PowerShell\7\Modules",
+    r"C:\Program Files\WindowsPowerShell\Modules",
+    r"C:\Windows\system32\WindowsPowerShell\v1.0\Modules"])
+
+
+@win
+def test_J9_a_PowerShell_7_PSModulePath_in_the_parent_does_not_break_the_ACL_read(ref, tripwire, monkeypatch):
+    monkeypatch.setenv("PSModulePath", _PWSH7_MODULE_PATH)
+    r = x4refguard.report()
+    assert r["state"] == "absent", r
+    assert x4refguard.main(["status"]) == 1
+
+
+@win
+def test_J9_TWIN_the_parents_environment_is_not_modified(ref, monkeypatch):
+    """The child gets a scrubbed copy; the caller's own PSModulePath is left alone."""
+    monkeypatch.setenv("PSModulePath", _PWSH7_MODULE_PATH)
+    x4refguard.report()
+    assert os.environ["PSModulePath"] == _PWSH7_MODULE_PATH

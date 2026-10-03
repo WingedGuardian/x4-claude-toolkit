@@ -318,6 +318,21 @@ def _as_list(v):
     return v if isinstance(v, list) else [v]
 
 
+def _ps51_env() -> dict:
+    """The environment for the Windows PowerShell 5.1 child, WITHOUT the parent's PSModulePath.
+
+    MEASURED 2026-10-03 (CI windows-latest and a local pwsh 7 parent): PowerShell 7 exports a
+    PSModulePath that starts with its OWN module folders, and a powershell.exe child inherits
+    it, finds PS7's Microsoft.PowerShell.Security first and cannot load it -- so Get-Acl fails
+    and every status/apply refused. Unset, powershell.exe rebuilds its own default path
+    (MEASURED: Get-Acl then works). Only built-in cmdlets run here, so nothing else is lost.
+    A copy: the caller's environment is never modified."""
+    env = dict(os.environ)
+    for k in [k for k in env if k.upper() == "PSMODULEPATH"]:
+        del env[k]
+    return env
+
+
 def _acl(paths) -> tuple[str, list[dict]]:
     """(user SID, one item per path, in order). Raises AclError on ANY doubt."""
     global _USER_SID
@@ -328,7 +343,7 @@ def _acl(paths) -> tuple[str, list[dict]]:
         try:
             r = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _PS_ACL],
-                input="\n".join(chunk).encode("utf-8"), capture_output=True)
+                input="\n".join(chunk).encode("utf-8"), capture_output=True, env=_ps51_env())
         except OSError as exc:
             raise AclError("powershell.exe could not be started: %s" % exc) from exc
         text = r.stdout.decode("utf-8", errors="replace").strip()

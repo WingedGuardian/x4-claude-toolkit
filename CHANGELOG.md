@@ -206,6 +206,11 @@
   a prompt for you. Naming the folder explicitly (`git -C "<folder>" clean ...` or
   `cd "<folder>" && ...`) still asks, as before. Under Codex the hook applies; a Codex prefix
   rule cannot see the folder.
+- **Fixed: `x4refguard.py` failed when started from PowerShell 7** (a pwsh terminal, Codex on
+  Windows, or the CI shell). PowerShell 7 passes its own module path to the Windows PowerShell
+  5.1 process that reads the folder permissions, which then could not load `Get-Acl`. So
+  `status` and `apply` refused, and an unpack could not finish protecting `reference/`. The
+  child process now starts without that inherited module path.
 
 ## v3.3.1 — 2026-09-29
 
