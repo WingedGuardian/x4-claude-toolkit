@@ -3,7 +3,12 @@
 # SOURCE this (do not execute). Single source of truth for the configurable X4 locations
 # so nothing is hardcoded to one OS or one user's folder layout.
 #
-# Resolution order for each value:  existing env var  >  .claude/x4-paths.env  >  default.
+# Resolution order for each value:  existing env var  >  `x4-paths.env` (see below)  >  default.
+#
+# WHICH config file (Plan 3 lane I): $X4_CONFIG if set (naming no file reads NONE), else
+# <toolkit>/x4-paths.env, else the 3.x <toolkit>/.claude/x4-paths.env (deprecated, still
+# read for all of 4.x). The same rule as `_paths._locate_config()`, pinned to it by
+# tools/x4validate/tests/test_config_precedence_agrees.py.
 #
 # THE ENVIRONMENT WINS, matching CLAUDE.md ("env var > x4-paths.env > default") and
 # the Python half (`_paths._layers()` returns [env, file, fallback]).
@@ -17,7 +22,7 @@
 # machine, so exporting X4_GAME pointed x4validate at one install while the guards
 # protecting the game folder read another. Protection and work aimed at different
 # trees, silently.
-# All locations are overridable; see .claude/x4-paths.env.example for the keys.
+# All locations are overridable; see x4-paths.env.example (toolkit root) for the keys.
 
 # Toolkit root (where this toolkit lives).
 # Prefer $CLAUDE_PROJECT_DIR; otherwise derive it from the hook's OWN location
@@ -58,8 +63,21 @@ _X4_ENV_KEYS="X4_TOOLKIT X4_GAME X4_REFERENCE X4_PROFILE X4_DEBUGLOG X4_MODS \
 X4_EXTENSIONS X4_SAVES X4_DOCUMENTS X4_APPMANIFEST X4_NEXUS_KEY XRCATTOOL"
 
 # Load the user's path config if present (KEY=VALUE lines).
-_x4_cfg="${X4_CONFIG:-$X4_TOOLKIT/.claude/x4-paths.env}"
-if [ -f "$_x4_cfg" ]; then
+# WHICH FILE (Plan 3 lane I). ONE rule, mirrored by _paths._locate_config and pinned to it by
+# tests/test_config_precedence_agrees.py: $X4_CONFIG (explicit; naming no file reads NONE) >
+# <toolkit>/x4-paths.env > <toolkit>/.claude/x4-paths.env (3.x, deprecated). Records the state
+# for session-canary.sh and x4doctor and PRINTS NOTHING: this runs on every tool call, and
+# stderr beside an empty verdict is a refusal to gates/hook_false_positives.py.
+_x4_cfg=""; _x4_cfg_src=none; _x4_cfg_tk="$X4_TOOLKIT"
+if [ -n "${X4_CONFIG:-}" ]; then
+  if [ -f "$X4_CONFIG" ]; then _x4_cfg="$X4_CONFIG"; _x4_cfg_src=explicit; else _x4_cfg_src=explicit-missing; fi
+elif [ -f "$X4_TOOLKIT/x4-paths.env" ]; then
+  _x4_cfg="$X4_TOOLKIT/x4-paths.env"; _x4_cfg_src=new
+  [ -f "$X4_TOOLKIT/.claude/x4-paths.env" ] && _x4_cfg_src=both
+elif [ -f "$X4_TOOLKIT/.claude/x4-paths.env" ]; then
+  _x4_cfg="$X4_TOOLKIT/.claude/x4-paths.env"; _x4_cfg_src=legacy
+fi
+if [ -n "$_x4_cfg" ]; then
   # SNAPSHOT, SOURCE, RESTORE. Re-implementing the parser was the alternative and it
   # is the riskier one: this file is sourced by every hook on every tool call, and
   # sourcing keeps quoting, escapes, comments and continuations behaving exactly as
@@ -90,7 +108,33 @@ EOF
 fi
 
 # Fill only what config/env did not set. (Game/profile/mods/etc. have no safe default — may be empty.)
-: "${X4_REFERENCE:=$X4_TOOLKIT/reference}"
+# The reference default is RECORDED (`_x4_ref_defaulted`), never silent: session-canary.sh and
+# x4doctor read it to name a machine whose guards ASSUME <toolkit>/reference (Plan 3 lane I).
+# Same assignment as the `: "${X4_REFERENCE:=...}"` it replaces.
+_x4_ref_defaulted=0
+if [ -z "${X4_REFERENCE:-}" ]; then X4_REFERENCE="$X4_TOOLKIT/reference"; _x4_ref_defaulted=1; fi
+
+# x4_config_banner -> the SessionStart lines naming a missing, deprecated or doubled path config,
+# on stdout (callers redirect), or NOTHING when the config is in order. Paths and KEY names only,
+# never a value: the file carries X4_NEXUS_KEY. Called once per session (session-canary.sh), never
+# per tool call -- every guard verdict is unchanged by the config's location or absence.
+x4_config_banner() {
+  case "$_x4_cfg_src" in
+    none|explicit-missing)
+      [ "$_x4_ref_defaulted" = 1 ] || return 0
+      if [ "$_x4_cfg_src" = explicit-missing ]; then
+        printf '%s\n' "[x4 config] NO PATH CONFIG: X4_CONFIG names $X4_CONFIG, which does not exist, so no config file is read, and X4_REFERENCE is not exported."
+      else
+        printf '%s\n' "[x4 config] NO PATH CONFIG: neither $_x4_cfg_tk/x4-paths.env nor the 3.x $_x4_cfg_tk/.claude/x4-paths.env exists, and X4_REFERENCE is not exported."
+      fi
+      printf '%s\n' "[x4 config] The guards ASSUME reference/ is $X4_REFERENCE (hard-blocked there) and know the game and profile only by folder NAME. Fix: re-run the installer, or copy $_x4_cfg_tk/x4-paths.env.example to $_x4_cfg_tk/x4-paths.env. Check: python \"$_x4_cfg_tk/scripts/x4doctor.py\"" ;;
+    legacy)
+      printf '%s\n' "[x4 config] DEPRECATED location: reading $_x4_cfg. 4.0 reads $_x4_cfg_tk/x4-paths.env. Move it: x4config.py migrate --apply, i.e. python \"$_x4_cfg_tk/scripts/x4config.py\" migrate --apply" ;;
+    both)
+      printf '%s\n' "[x4 config] TWO path configs: reading $_x4_cfg; the 3.x $_x4_cfg_tk/.claude/x4-paths.env is IGNORED. If they differ, older guard copies protect a different tree. Resolve: python \"$_x4_cfg_tk/scripts/x4config.py\" status" ;;
+  esac
+  return 0
+}
 
 # Derive the Steam app manifest from the game dir when possible (…/steamapps/common/X4 Foundations).
 if [ -z "${X4_APPMANIFEST:-}" ] && [ -n "${X4_GAME:-}" ]; then

@@ -115,3 +115,125 @@ def test_the_bash_half_lets_the_environment_win():
     # simply stopped reading the file would pass the assertion above.
     assert profile == "/profile/from/FILE", (
         f"the file no longer supplies an unset key (got {profile!r})")
+
+
+# --- Plan 3 lane I: the location MATRIX, both loaders, one table ------------------------
+#
+# Each row is the falsification twin of ONE clause of the selection rule:
+#   new_only -> "new is read"            old_only   -> "legacy still read"
+#   both_*   -> "new outranks legacy"    both_differ -> the ORDER (a swap reads /xgame/old)
+#   neither  -> "nothing is invented"    explicit*  -> "$X4_CONFIG decides, even when absent"
+#   env_wins -> "an exported value beats every file"
+import json
+import sys
+
+NEW, OLD = "x4-paths.env", ".claude/x4-paths.env"
+MATRIX = [
+    # id,                files {rel: X4_GAME},                         X4_CONFIG,      exported X4_GAME, file read,       state,              X4_GAME
+    ("new_only",         {NEW: "/xgame/new"},                          None,           None,     NEW,             "new",              "/xgame/new"),
+    ("old_only",         {OLD: "/xgame/old"},                          None,           None,     OLD,             "legacy",           "/xgame/old"),
+    ("both_agree",       {NEW: "/xgame/same", OLD: "/xgame/same"},     None,           None,     NEW,             "both",             "/xgame/same"),
+    ("both_differ",      {NEW: "/xgame/new", OLD: "/xgame/old"},       None,           None,     NEW,             "both",             "/xgame/new"),
+    ("neither",          {},                                           None,           None,     None,            "none",             ""),
+    ("explicit",         {NEW: "/xgame/new", "elsewhere.env": "/xgame/x"}, "elsewhere.env", None, "elsewhere.env", "explicit",        "/xgame/x"),
+    ("explicit_missing", {NEW: "/xgame/new"},                          "absent.env",   None,     None,            "explicit-missing", ""),
+    ("env_wins",         {NEW: "/xgame/new"},                          None,           "/xgame/env", NEW,         "new",              "/xgame/env"),
+]
+IDS = [r[0] for r in MATRIX]
+PKG = ROOT / "tools" / "x4validate"
+
+
+def _n(v):
+    return "" if v in (None, "") else str(v).replace("\\", "/").rstrip("/").lower()
+
+
+def _box(tmp: pathlib.Path, row):
+    _id, files, xcfg, xgame, *_ = row
+    tk = tmp / "tk"
+    tk.mkdir()
+    for rel, game in files.items():
+        p = tk / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f'X4_GAME="{game}"\n', encoding="utf-8", newline="\n")
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("X4_") and k not in ("CLAUDE_PROJECT_DIR", "HOOK_DIR")}
+    env["X4_TOOLKIT"] = str(tk)
+    if xcfg:
+        env["X4_CONFIG"] = str(tk / xcfg)
+    if xgame:
+        env["X4_GAME"] = xgame
+    return tk, env
+
+
+def _bash_view(tk, env):
+    bash = _bash()
+    if bash is None:
+        pytest.skip("no Git Bash found (the WSL stub does not count) -- NOT CHECKED")
+    r = subprocess.run([bash, "-c", '. "$1"; printf "%s\\n" "$_x4_cfg" "$_x4_cfg_src" '
+                        '"${X4_GAME:-}" "$X4_REFERENCE" "$_x4_ref_defaulted"', "_", str(ENV_SH)],
+                       capture_output=True, text=True, env=env, cwd=str(tk))
+    assert r.returncode == 0, r.stderr[-400:]
+    assert r.stderr == "", "the loader must print NOTHING per call (M5): " + r.stderr[-300:]
+    f, s, g, ref, d = (r.stdout.splitlines() + [""] * 5)[:5]
+    return {"file": f, "state": s, "game": g, "reference": ref, "defaulted": d}
+
+
+_PY = r'''
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from x4validate import _paths
+f = _paths._find_env_file(); g = _paths.game_root()
+print(json.dumps({"file": None if f is None else str(f), "state": _paths.config_state(),
+                  "game": "" if g is None else g.as_posix(), "reference": str(_paths.reference())}))
+'''
+
+
+def _py_view(tk, env):
+    r = subprocess.run([sys.executable, "-c", _PY, str(PKG)], capture_output=True, text=True,
+                       env=env, cwd=str(tk))
+    assert r.returncode == 0, r.stderr[-400:]
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+def _expect(tk, row, view, collapse=False):
+    _id, _f, _x, _g, want_file, want_state, want_game = row
+    state = view["state"]
+    if collapse and state in ("both-agree", "both-differ"):
+        state = "both"
+    assert _n(view["file"]) == _n(tk / want_file if want_file else None), (_id, view)
+    assert state == want_state, (_id, view)
+    assert _n(view["game"]) == _n(want_game), (_id, view)
+
+
+@pytest.mark.parametrize("row", MATRIX, ids=IDS)
+def test_bash_loader_matrix(tmp_path, row):
+    tk, env = _box(tmp_path, row)
+    v = _bash_view(tk, env)
+    _expect(tk, row, v)
+    # the reference default is RECORDED, never silent: defaulted only where no file gave one
+    assert v["defaulted"] == "1" and _n(v["reference"]) == _n(tk / "reference"), (row[0], v)
+
+
+@pytest.mark.parametrize("row", MATRIX, ids=IDS)
+def test_python_loader_matrix(tmp_path, row):
+    tk, env = _box(tmp_path, row)
+    _expect(tk, row, _py_view(tk, env), collapse=True)
+
+
+@pytest.mark.parametrize("row", MATRIX, ids=IDS)
+def test_config_precedence_agrees(tmp_path, row):
+    """Bash and Python, same box, same env: same file, same state, same game, same reference."""
+    tk, env = _box(tmp_path, row)
+    b, p = _bash_view(tk, env), _py_view(tk, env)
+    ps = "both" if p["state"] in ("both-agree", "both-differ") else p["state"]
+    assert (_n(b["file"]), b["state"], _n(b["game"]), _n(b["reference"])) == \
+           (_n(p["file"]), ps, _n(p["game"]), _n(p["reference"])), (row[0], b, p)
+
+
+def test_TWIN_an_exported_reference_is_not_DEFAULTED(tmp_path):
+    """The `_x4_ref_defaulted` flag is what the banner and x4doctor read: it must go to 0
+    the moment anything real names the reference."""
+    tk, env = _box(tmp_path, MATRIX[4])                   # neither
+    env["X4_REFERENCE"] = str(tmp_path / "realref")
+    v = _bash_view(tk, env)
+    assert v["defaulted"] == "0" and _n(v["reference"]) == _n(tmp_path / "realref")
