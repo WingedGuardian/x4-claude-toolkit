@@ -149,6 +149,21 @@ def test_reason_is_bounded_directive_first(sandbox):
     assert d in ("deny", "inert") and len(reason) <= 10_000 and reason.lstrip().startswith(("BLOCKED", "X4"))
 
 
+def test_the_adapter_budget_bounds_a_whole_batch(sandbox):
+    """MEASURED after merging lanes B+E: 400 deletes ran past the 180 s harness timeout under a
+    45 s adapter budget -- the budget was checked only BETWEEN batches, and every x4guard check
+    inside the one path batch started its OWN fresh deadline. One deadline must bound them all."""
+    import time as _t
+    tmp, tk, env = sandbox
+    many = "".join(f"*** Delete File: reference/libraries/f{i:04d}.xml\n" for i in range(400))
+    t0 = _t.monotonic()
+    d, _reason = run(dict(env, X4_CODEX_BUDGET_S="5"),
+                     native("apply_patch_delete", tk, command="*** Begin Patch\n" + many + "*** End Patch"))
+    took = _t.monotonic() - t0
+    assert d in ("deny", "inert"), d
+    assert took < 40, f"a 5 s budget took {took:.1f} s"
+
+
 def test_backup_taken_for_an_allowed_update(sandbox):
     tmp, tk, env = sandbox
     f = tk / "dev" / "mymod" / "a.xml"
