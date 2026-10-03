@@ -111,8 +111,8 @@ def run_check(cid: str, target: str, fn, ctx) -> Check:
 
 def detect_targets(root: Path) -> dict[str, bool]:
     """Which agent targets are installed at `root`. Keyed on each target's own PAYLOAD,
-    never a bare folder or a shared file: every install writes `.claude/x4-paths.env` (a
-    Codex-only one included), Codex reads a project `.codex/config.toml` of its own, and a
+    never a bare folder or a shared file: a 3.x install wrote `.claude/x4-paths.env` for
+    every agent (a Codex-only one included, and 4.x still reads it there), Codex reads a project `.codex/config.toml` of its own, and a
     hand-written AGENTS.md is not the toolkit's generic target (MEASURED on the author's
     game root). The instruction files are reported by the instructions rows instead."""
     root = Path(root)
@@ -272,6 +272,7 @@ _PROBE = r'''
 . "$HOOK_DIR/_x4-env.sh" >/dev/null 2>&1
 printf 'TOOLKIT=%s\nGAME=%s\nREFERENCE=%s\nPROFILE=%s\nMODS=%s\nCFG=%s\n' \
   "${X4_TOOLKIT:-}" "${X4_GAME:-}" "${X4_REFERENCE:-}" "${X4_PROFILE:-}" "${X4_MODS:-}" "${_x4_cfg:-}"
+printf 'CFGSRC=%s\nCFGTK=%s\nREFDEF=%s\n' "${_x4_cfg_src:-}" "${_x4_cfg_tk:-}" "${_x4_ref_defaulted:-}"
 x4_resolve_python
 printf 'PY=%s\n' "$X4_PY"
 if [ -n "$X4_PY" ]; then
@@ -405,6 +406,10 @@ for k in ("game_root", "reference", "profile", "_find_env_file"):
     except Exception as e:
         out[k] = None
         out[k + "_error"] = "%s: %s" % (type(e).__name__, e)
+try:
+    out["config_state"] = _paths.config_state()      # absent before 4.0
+except Exception:
+    out["config_state"] = None
 print(json.dumps(out))
 '''
 
@@ -422,6 +427,29 @@ def tools_roots(ctx: Ctx) -> tuple[dict | None, str]:
             except (ValueError, IndexError):
                 return None, "the tools' resolver failed (rc %s): %s" % (r.returncode, r.stderr[-300:])
     return None, "no tools/x4validate under X4_TOOLKIT or the root, so the tools' view cannot be asked"
+
+
+def _cfg_differing_keys(a: Path, b: Path) -> list[str]:
+    """KEY names whose assignments differ between two path configs -- the comparison of
+    `_paths._assignments` (CR and indent stripped, blank and comment lines dropped), restated
+    because the doctor is stdlib-only and may examine an install whose tools predate it.
+    Never a value: the file carries X4_NEXUS_KEY."""
+    def lines(p):
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return set()
+        out = set()
+        for raw in text.split("\n"):
+            ln = raw.replace("\r", "").lstrip()
+            if ln and not ln.startswith("#") and "=" in ln:
+                out.add(ln)
+        return out
+
+    def key(ln):
+        k = ln.split("=", 1)[0].strip()
+        return k[len("export "):].strip() if k.startswith("export ") else k
+    return sorted({key(ln) for ln in lines(a) ^ lines(b)})
 
 
 @group
@@ -475,15 +503,56 @@ def check_roots(ctx: Ctx) -> list[Check]:
     def _config(_):
         if vals is None:
             return UNKNOWN, why
-        cfg = vals.get("CFG", "")
+        cfg, src = vals.get("CFG", ""), vals.get("CFGSRC", "")
+        if not src:
+            return _config_pre40(cfg)
+        tk = vals.get("CFGTK") or vals.get("TOOLKIT") or "<toolkit>"
+        new, old = "%s/x4-paths.env" % tk, "%s/.claude/x4-paths.env" % tk
+        if src in ("new", "explicit"):
+            return OK, "the guards read %s" % cfg
+        if src == "legacy":
+            return OK, ("the guards read %s -- the 3.x location, DEPRECATED (still read for all of "
+                        "4.x); 4.0 reads %s. Move it: x4config.py migrate --apply, i.e. "
+                        "python \"%s/scripts/x4config.py\" migrate --apply" % (cfg, new, tk))
+        if src == "both":
+            tools, _where = tools_roots(ctx)
+            state = (tools or {}).get("config_state")
+            keys = []
+            if Path(new).is_file() and Path(old).is_file():
+                keys = _cfg_differing_keys(Path(new), Path(old))
+            if keys or state == "both-differ":
+                return FAIL, ("TWO path configs that DIFFER (on %s): the guards read %s and IGNORE the "
+                              "3.x %s, but an older guard copy elsewhere may still read it and protect "
+                              "a different tree. Keep the values you want in the first, then delete or "
+                              "rename the second; check with python \"%s/scripts/x4config.py\" status"
+                              % (", ".join(keys) or "unknown keys", new, old, tk))
+            return OK, ("the guards read %s; the 3.x %s agrees and is ignored. Retire it: "
+                        "python \"%s/scripts/x4config.py\" migrate --apply" % (new, old, tk))
+        # none / explicit-missing
+        if vals.get("REFDEF") == "1":
+            if src == "explicit-missing":
+                where = ("X4_CONFIG names %s, which does not exist, so no config file is read"
+                         % ctx.env.get("X4_CONFIG", "?"))
+            else:
+                where = "neither %s nor the 3.x %s exists" % (new, old)
+            return FAIL, ("the guards read NO path config: %s, and X4_REFERENCE is not exported. They "
+                          "ASSUME reference/ is %s (hard-blocked there) and know the game and profile "
+                          "only by folder NAME. Fix: re-run the installer, or copy "
+                          "%s/x4-paths.env.example to %s; or set X4_TOOLKIT in your user environment "
+                          "to the toolkit holding x4-paths.env" % (where, vals.get("REFERENCE", "?"), tk, new))
+        return OK, ("no config file is read; the roots come from the exported environment "
+                    "(X4_REFERENCE is set)")
+
+    def _config_pre40(cfg):
+        """A 3.x guard copy: `_x4_cfg` is always the path it LOOKED for, and there is no state."""
         if not cfg:
             return UNKNOWN, "the guards did not report which config they read (_x4_cfg is empty)"
         if not Path(cfg).is_file():
             return FAIL, ("the guards read NO path config: %s does not exist, so every root they "
                           "protect is a default guess (the reference falls back to <toolkit>/reference). "
-                          "Set X4_TOOLKIT in your user environment to the toolkit holding .claude/x4-paths.env"
+                          "Set X4_TOOLKIT in your user environment to the toolkit holding x4-paths.env"
                           % cfg)
-        return OK, "the guards read %s" % cfg
+        return OK, "the guards read %s (a pre-4.0 guard copy)" % cfg
 
     return [run_check("roots.config", "all", _config, ctx),
             run_check("roots.reference", "all", _ref, ctx),
