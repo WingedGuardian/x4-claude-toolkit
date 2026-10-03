@@ -15,7 +15,7 @@ set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # repo / toolkit source
 
 # --- defaults (overridable by flags / env) ---------------------------------
-METHOD=""; ASSUME_YES=0; DO_UNPACK=0; OVER_EXISTING=0; DRY_RUN=0; NO_ENV=0
+METHOD=""; ASSUME_YES=0; DO_UNPACK=0; OVER_EXISTING=0; DRY_RUN=0; NO_ENV=0; CODEX_DOC_MAX=""
 #: Which agent targets to install (user decision #10, 2026-10-02: default `all`). The
 #: Codex files are inert without Codex, and x4doctor reports which targets are live.
 AGENT="all"
@@ -49,6 +49,12 @@ Usage: bash install.sh --method in-game|separate|global [options]
   --unpack          also unpack reference/ now (needs --game + XRCatTool [+wine])
   --over-existing    REQUIRED to install over an existing installation
   --dry-run          print the destination and the item list; write nothing
+  --codex-doc-max-bytes N
+                     write project_doc_max_bytes = N (32768..1048576) into the
+                     project's .codex/config.toml (needs the Codex target). Codex
+                     reads the root AGENTS.md and every nested one into ONE
+                     32,768-byte budget, so an AGENTS.md of your own lower in the
+                     tree can cut the toolkit's off. Opt-in; never overwrites.
   --no-env           do NOT set X4_TOOLKIT for your user (by default it is set when
                      unset; a DIFFERENT existing value is reported and left alone)
   --yes              don't prompt; accept detected/blank values (never a
@@ -78,6 +84,7 @@ while [ $# -gt 0 ]; do
     --over-existing) OVER_EXISTING=1; shift;;
     --dry-run) DRY_RUN=1; shift;;
     --no-env) NO_ENV=1; shift;;
+    --codex-doc-max-bytes) need2 "$1" $#; CODEX_DOC_MAX="$2"; shift 2;;
     --unpack) DO_UNPACK=1; shift;;
     --yes|-y) ASSUME_YES=1; shift;;
     -h|--help) usage; exit 0;;
@@ -191,7 +198,7 @@ X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/basex
 #: dual-meaning trap `.claude/backups` fell into. A checkout accumulates them (release
 #: review 2026-09-26: data/ alone was 2.3 GB) and a git source never copies them
 #: anyway (see _tracked_copy_set); this is the walk's defence in depth.
-X4_KEEP_LOCAL=".claude/x4-paths.env .claude/settings.local.json .claude/backups .codex/hooks.json tools/basex/basex/data tools/basex/basex/coverage-x4raw.json tools/basex/basex/coverage-x4eff.json tools/basex/_eff tools/basex/stage-manifest.json"
+X4_KEEP_LOCAL=".claude/x4-paths.env .claude/settings.local.json .claude/backups .codex/hooks.json .codex/config.toml tools/basex/basex/data tools/basex/basex/coverage-x4raw.json tools/basex/basex/coverage-x4eff.json tools/basex/_eff tools/basex/stage-manifest.json"
 
 #: THE TRACKED SET, when the source is a git checkout.
 #:
@@ -641,6 +648,23 @@ resolve_auto_agents() {   # DEST
   _h_resolve_items
 }
 
+#: --codex-doc-max-bytes (lane H): the NUMBER is checked here, before anything is written;
+#: that it needs the Codex target is checked per arm, once --agent auto has resolved.
+X4_CODEX_DOC_MIN=32768
+X4_CODEX_DOC_MAX=1048576
+if [ -n "$CODEX_DOC_MAX" ]; then
+  case "$CODEX_DOC_MAX" in
+    *[!0-9]*|0*) _h_bad=1 ;;
+    *) _h_bad=0; { [ "${#CODEX_DOC_MAX}" -le 7 ] && [ "$CODEX_DOC_MAX" -ge "$X4_CODEX_DOC_MIN" ] \
+         && [ "$CODEX_DOC_MAX" -le "$X4_CODEX_DOC_MAX" ]; } || _h_bad=1 ;;
+  esac
+  if [ "$_h_bad" = 1 ]; then
+    echo "REFUSING: --codex-doc-max-bytes '$CODEX_DOC_MAX' is not a whole number from $X4_CODEX_DOC_MIN to $X4_CODEX_DOC_MAX." >&2
+    echo "  Nothing has been changed." >&2
+    exit 2
+  fi
+fi
+
 #: Failures that make the install INCOMPLETE, accumulated and reported at the end.
 #: Defined HERE, above every writer that records into it.
 FAILED=""
@@ -941,6 +965,81 @@ write_codex_hooks_json() {   # DEST
   fi
   X4_CODEX_HOOKS_WRITTEN=1
   echo "  wrote $f"
+}
+
+# --- Codex project_doc_max_bytes (lane H, opt-in) -------------------------------------
+X4_CODEX_DOC_WRITTEN=""
+_h_codex_config() { printf '%s' "$1/.codex/config.toml"; }
+
+#: The ROOT-table project_doc_max_bytes value in FILE (keys before the first [table]).
+_h_codex_doc_value() {   # FILE -> value, or fails when absent
+  local line t k v
+  [ -f "$1" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$CR}"
+    t="${line#"${line%%[![:space:]]*}"}"            # leading whitespace off
+    case "$t" in '['*) return 1 ;; esac              # the first [table] ends the root keys
+    k="${t%%=*}"
+    [ "$k" != "$t" ] || continue                      # no '=' on this line
+    k="${k%"${k##*[![:space:]]}"}"                    # trailing whitespace off the key
+    [ "$k" = project_doc_max_bytes ] || continue
+    v="${t#*=}"; v="${v%%#*}"; v="$(printf '%s' "$v" | tr -d '[:space:]')"
+    printf '%s' "$v"; return 0
+  done < "$1"
+  return 1
+}
+
+#: A Codex-configuring flag on an install that does not select Codex is REFUSED (rc 2).
+require_codex_for_doc_cap() {
+  [ -n "$CODEX_DOC_MAX" ] || return 0
+  _codex_selected && return 0
+  echo "REFUSING: --codex-doc-max-bytes configures Codex, and this install does not select Codex" >&2
+  echo "  (agents: ${X4_AGENTS:-none}). Nothing has been changed." >&2
+  exit 2
+}
+
+#: PRECONDITION, before any write: a READ-ONLY config.toml this flag would CHANGE refuses.
+precheck_codex_doc_max_bytes() {   # DEST
+  local f old
+  [ -n "$CODEX_DOC_MAX" ] || return 0
+  f="$(_h_codex_config "$1")"
+  [ -e "$f" ] || return 0
+  [ -w "$f" ] && return 0
+  old="$(_h_codex_doc_value "$f")" && return 0          # present: never changed, so no write
+  echo                                                                          >&2
+  echo "REFUSING: --codex-doc-max-bytes must add a line to a READ-ONLY file."    >&2
+  echo "      $f"                                                               >&2
+  echo "  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:" >&2
+  echo "      python scripts/x4lock.py unlock \"$f\""                           >&2
+  echo "      <re-run this command>"                                            >&2
+  echo "      python scripts/x4lock.py lock"                                    >&2
+  exit 1
+}
+
+write_codex_doc_max_bytes() {   # DEST -- after the dispatch
+  local f old tmp line
+  [ -n "$CODEX_DOC_MAX" ] || return 0
+  f="$(_h_codex_config "$1")"
+  refuse_if_dry_run "writing project_doc_max_bytes into" "$f"
+  line="project_doc_max_bytes = $CODEX_DOC_MAX  # X4 toolkit installer (--codex-doc-max-bytes)"
+  if old="$(_h_codex_doc_value "$f")"; then
+    if [ "$old" = "$CODEX_DOC_MAX" ]; then
+      echo "  [note] $f already sets project_doc_max_bytes = $old; left untouched"
+    else
+      echo "  [WARNING] $f already sets project_doc_max_bytes = $old, not $CODEX_DOC_MAX. Left unchanged."
+    fi
+    return 0
+  fi
+  mkdir -p "$1/.codex"
+  tmp="$f.tmp$$"
+  # ROOT keys must precede every [table], so the line goes FIRST; the rest is kept as is.
+  if ! { printf '%s\n' "$line" > "$tmp" && { [ ! -f "$f" ] || cat "$f" >> "$tmp"; } && mv -f "$tmp" "$f"; }; then
+    rm -f "$tmp"
+    add_failed ".codex/config.toml (could not write project_doc_max_bytes into $f)"
+    return 0
+  fi
+  X4_CODEX_DOC_WRITTEN="$CODEX_DOC_MAX"
+  echo "  wrote project_doc_max_bytes = $CODEX_DOC_MAX into $f"
 }
 
 #: Destination files the copy would overwrite that CANNOT be written.
@@ -1740,6 +1839,7 @@ case "$METHOD" in
     TOOLKIT="$GAME"
     announce_target "$TOOLKIT"
     resolve_auto_agents "$TOOLKIT"   # BEFORE anything reads X4_ITEMS
+    require_codex_for_doc_cap
     # ORDER, and each position is load-bearing for a different reason:
     #   require_direction     FIRST, and only when a copy will happen. Both
     #                         prechecks can exit 1 telling the user to unlock and
@@ -1760,6 +1860,7 @@ case "$METHOD" in
     fi
     precheck_config "$TOOLKIT"
     precheck_codex_hooks_json "$TOOLKIT"   # written on BOTH branches, so OUTSIDE the guard
+    precheck_codex_doc_max_bytes "$TOOLKIT"
     if ! same_dir "$SRC" "$TOOLKIT"; then
       precheck_locked_targets "$TOOLKIT"
       announce_copy_plan "$TOOLKIT"
@@ -1779,6 +1880,7 @@ case "$METHOD" in
     TOOLKIT="$(strip_trailing_sep "$TOOLKIT")"
     announce_target "$TOOLKIT"
     resolve_auto_agents "$TOOLKIT"   # BEFORE anything reads X4_ITEMS
+    require_codex_for_doc_cap
     # ORDER, and each position is load-bearing for a different reason:
     #   require_direction     FIRST, and only when a copy will happen. Both
     #                         prechecks can exit 1 telling the user to unlock and
@@ -1799,6 +1901,7 @@ case "$METHOD" in
     fi
     precheck_config "$TOOLKIT"
     precheck_codex_hooks_json "$TOOLKIT"   # written on BOTH branches, so OUTSIDE the guard
+    precheck_codex_doc_max_bytes "$TOOLKIT"
     if ! same_dir "$SRC" "$TOOLKIT"; then
       precheck_locked_targets "$TOOLKIT"
       announce_copy_plan "$TOOLKIT"
@@ -1817,6 +1920,11 @@ case "$METHOD" in
     # home and nothing else. An explicit non-Claude target is REFUSED rather than half
     # installed; the default (`all`) proceeds and says what it leaves out. Codex's own
     # global skills are a follow-up, not a layout to fake.
+    if [ -n "$CODEX_DOC_MAX" ]; then
+      echo "REFUSING: --codex-doc-max-bytes configures Codex, and --method global is a Claude-only layout." >&2
+      echo "  Nothing has been changed." >&2
+      exit 2
+    fi
     case "$AGENT" in
       codex|generic)
         echo "REFUSING: --method global is a Claude-only layout; it cannot install --agent $AGENT." >&2
@@ -1896,6 +2004,8 @@ case "$METHOD" in
   *) echo "ERROR: unknown method '$METHOD' (in-game|separate|global)"; exit 2;;
 esac
 
+# Opt-in Codex doc cap: ONE call, after every arm (global refused it up front).
+write_codex_doc_max_bytes "$TOOLKIT"
 # X4_TOOLKIT for the user: ONE call, after every arm, so no arm can skip or repeat it.
 [ "$NO_ENV" = 1 ] || set_user_toolkit_env "$TOOLKIT"
 
@@ -1966,6 +2076,10 @@ if [ "$METHOD" != global ] && _codex_selected; then
   echo "           3. verify:  python scripts/x4doctor.py --root \"$TOOLKIT\""
   if [ "$X4_CODEX_HOOKS_WRITTEN" = 1 ]; then
     echo "           (the definitions were just (re)written: any earlier review no longer holds)"
+  fi
+  if [ -n "$X4_CODEX_DOC_WRITTEN" ]; then
+    echo "           project_doc_max_bytes = $X4_CODEX_DOC_WRITTEN is in .codex/config.toml; it takes"
+    echo "           effect once you trust this folder in Codex."
   fi
 fi
 [ "$METHOD" = global ] && echo "Global:    skills/agents + X4_* env added to your ~/.claude — works from any mod repo."

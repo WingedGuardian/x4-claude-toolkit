@@ -483,3 +483,16 @@ def test_both_installers_set_X4_TOOLKIT_through_the_ONE_userenv_script_with_the_
     # neither installer reaches for setx/reg add to WRITE (the manual hint may name setx)
     assert "reg add" not in sh and "reg add" not in ps
     assert not re.search(r"^\s*setx\b", sh, re.M) and not re.search(r"^\s*setx\b", ps, re.M)
+
+
+def test_both_installers_keep_the_codex_config_local_and_use_the_SAME_doc_cap_bounds():
+    sh, ps = SH.read_text(encoding="utf-8"), PS1.read_text(encoding="utf-8")
+    keep_sh = re.search(r'^X4_KEEP_LOCAL="([^"]*)"', sh, re.M).group(1).split()
+    keep_ps = re.findall(r"'([^']+)'", re.search(r"\$X4KeepLocal\s*=\s*@\((.*?)\)", ps, re.S).group(1))
+    assert ".codex/config.toml" in keep_sh
+    assert ".codex" + chr(92) + "config.toml" in keep_ps
+    b_sh = (re.search(r"^X4_CODEX_DOC_MIN=(\d+)", sh, re.M), re.search(r"^X4_CODEX_DOC_MAX=(\d+)", sh, re.M))
+    b_ps = (re.search(r"^\$X4CodexDocMin\s*=\s*(\d+)", ps, re.M), re.search(r"^\$X4CodexDocMax\s*=\s*(\d+)", ps, re.M))
+    assert all(b_sh) and all(b_ps), "an installer lost its doc-cap bounds"
+    assert [m.group(1) for m in b_sh] == [m.group(1) for m in b_ps] == ["32768", "1048576"]
+    assert "--codex-doc-max-bytes)" in sh and "[string]$CodexDocMaxBytes" in ps

@@ -2325,6 +2325,96 @@ def test_POSIX_an_UNKNOWN_shell_gets_NO_file_and_a_manual_line(tmp_path):
     assert "export X4_TOOLKIT" in r.stdout or "set -Ux X4_TOOLKIT" in r.stdout, _ok(r)
 
 
+# --- --codex-doc-max-bytes (lane H T5, opt-in) ------------------------------------------ #
+#
+# Codex reads the root AGENTS.md and every nested one into ONE 32,768-byte budget (MEASURED,
+# lane A), so a user's own AGENTS.md lower in the tree can cut the toolkit's tail off. The
+# flag raises the cap in the PROJECT .codex/config.toml; it never overwrites a value.
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_codex_doc_max_bytes_writes_a_ROOT_key_and_keeps_existing_tables(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / ".codex").mkdir()
+    (dest / ".codex" / "config.toml").write_bytes(b'[profiles.x]\nmodel = "m"\n')
+    r = _install(installer, tmp_path, dest, "--agent", "codex", "--codex-doc-max-bytes", "65536", source=src)
+    assert r.returncode == 0, _ok(r)
+    raw = (dest / ".codex" / "config.toml").read_bytes()
+    lines = raw.decode("utf-8").split("\n")
+    assert lines[0].startswith("project_doc_max_bytes = 65536"), lines
+    assert raw.endswith(b'\n[profiles.x]\nmodel = "m"\n'), raw          # the rest, byte for byte
+    assert b"\r" not in raw
+    assert "trust this folder" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_codex_doc_max_bytes_CREATES_the_config_and_a_rerun_changes_nothing(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    for _ in range(2):
+        r = _install(installer, tmp_path, dest, "--agent", "codex", "--codex-doc-max-bytes", "65536", source=src)
+        assert r.returncode == 0, _ok(r)
+    body = (dest / ".codex" / "config.toml").read_text(encoding="utf-8")
+    assert body.count("project_doc_max_bytes") == 1 and body.startswith("project_doc_max_bytes = 65536"), body
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_without_the_flag_no_codex_config_is_written(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "codex", source=src)
+    assert r.returncode == 0 and not (dest / ".codex" / "config.toml").exists(), _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_DIFFERENT_existing_cap_is_LEFT_and_reported(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / ".codex").mkdir()
+    (dest / ".codex" / "config.toml").write_bytes(b"project_doc_max_bytes = 40000\n")
+    r = _install(installer, tmp_path, dest, "--agent", "codex", "--codex-doc-max-bytes", "65536", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / ".codex" / "config.toml").read_bytes() == b"project_doc_max_bytes = 40000\n"
+    assert "40000" in r.stdout and "65536" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_cap_inside_a_TABLE_is_not_the_root_key(installer, tmp_path):
+    """`[profiles.x] project_doc_max_bytes` is a different key: the root one is still added."""
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    (dest / ".codex").mkdir()
+    (dest / ".codex" / "config.toml").write_bytes(b"[profiles.x]\nproject_doc_max_bytes = 40000\n")
+    r = _install(installer, tmp_path, dest, "--agent", "codex", "--codex-doc-max-bytes", "65536", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert (dest / ".codex" / "config.toml").read_text(encoding="utf-8").startswith(
+        "project_doc_max_bytes = 65536"), _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("agent,value", [("claude", "65536"), ("codex", "abc"), ("codex", "1000"),
+                                         ("codex", "2000000")])
+def test_an_unusable_codex_doc_max_bytes_REFUSES_before_writing(installer, agent, value, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", agent, "--codex-doc-max-bytes", value, source=src)
+    assert r.returncode == 2, _ok(r)
+    # REFUSED BY THE CHECK, not by an argument parser that does not know the flag: before
+    # the flag existed, bash's "unknown option" also exited 2 having written nothing.
+    out = r.stdout + r.stderr
+    assert "REFUSING" in out and ("codex-doc-max-bytes" in out or "CodexDocMaxBytes" in out), _ok(r)
+    assert not any(dest.iterdir()), _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_codex_doc_max_bytes_with_the_GLOBAL_layout_REFUSES(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--codex-doc-max-bytes", "65536", source=src, method="global")
+    assert r.returncode == 2 and "Claude-only" in r.stdout + r.stderr, _ok(r)
+    assert not (tmp_path / "fake-claude-home").exists()
+
+
 # --- the REAL repository's tree (skips, counted, while a generated tree is absent) ---- #
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])

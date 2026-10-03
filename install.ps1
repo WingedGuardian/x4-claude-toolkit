@@ -13,6 +13,10 @@
   NOTE: the toolkit's hooks & bin/ scripts are bash; install with PowerShell, but to RUN the
   toolkit you still need Git Bash (https://git-scm.com/download/win), as upstream expects.
 
+  -CodexDocMaxBytes N: write project_doc_max_bytes = N (32768..1048576) into the project
+  .codex\config.toml (needs the Codex target). Codex reads the root AGENTS.md and every nested
+  one into ONE 32,768-byte budget. Opt-in; a different existing value is never overwritten.
+
   X4_TOOLKIT: set for your user (HKCU\Environment) when unset; a DIFFERENT existing value is
   reported and left alone; -NoEnv touches nothing. -Agent auto installs the agents found on
   PATH or already in the destination (none found: all, and it says so).
@@ -30,7 +34,10 @@ param(
   # auto = the agents found on PATH or already in the destination; none found = all, said.
   # Validated by hand below, not by ValidateSet, so `opencode` can be refused naming spec M8.
   [string]$Agent = 'all',
-  [switch]$Unpack, [switch]$Yes, [switch]$OverExisting, [switch]$DryRun, [switch]$NoEnv
+  [switch]$Unpack, [switch]$Yes, [switch]$OverExisting, [switch]$DryRun, [switch]$NoEnv,
+  # project_doc_max_bytes for the project .codex\config.toml (opt-in). A STRING, checked by
+  # hand below, so a bad value refuses with rc 2 like install.sh rather than a binding error.
+  [string]$CodexDocMaxBytes
 )
 $ErrorActionPreference = 'Stop'
 $SRC = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -177,7 +184,7 @@ $X4CopyPrune = @('tools\x4validate\.venv',
 #: destination's own, never copied in and never deleted out), so they live HERE and
 #: not in $X4CopyPrune, whose second meaning would erase a user's built databases
 #: on every upgrade. See X4_KEEP_LOCAL in install.sh.
-$X4KeepLocal = @('.claude\x4-paths.env','.claude\settings.local.json','.claude\backups','.codex\hooks.json',
+$X4KeepLocal = @('.claude\x4-paths.env','.claude\settings.local.json','.claude\backups','.codex\hooks.json','.codex\config.toml',
                  'tools\basex\basex\data','tools\basex\basex\coverage-x4raw.json',
                  'tools\basex\basex\coverage-x4eff.json','tools\basex\_eff',
                  'tools\basex\stage-manifest.json')
@@ -435,6 +442,19 @@ function Resolve-HAutoAgents($dest) {
     Write-Host ('               installing all: ' + ($X4AgentNames -join ' '))
   }
   Resolve-HItems
+}
+
+#: -CodexDocMaxBytes (lane H): the NUMBER is checked here, before anything is written; that
+#: it needs the Codex target is checked per arm, once -Agent auto has resolved.
+$X4CodexDocMin = 32768
+$X4CodexDocMax = 1048576
+if ($CodexDocMaxBytes) {
+  $okN = ($CodexDocMaxBytes -match '^[1-9][0-9]{0,6}$') -and ([int]$CodexDocMaxBytes -ge $X4CodexDocMin) -and ([int]$CodexDocMaxBytes -le $X4CodexDocMax)
+  if (-not $okN) {
+    Write-Host ("REFUSING: -CodexDocMaxBytes '" + $CodexDocMaxBytes + "' is not a whole number from $X4CodexDocMin to $X4CodexDocMax.") -ForegroundColor Red
+    Write-Host '  Nothing has been changed.' -ForegroundColor Red
+    exit 2
+  }
 }
 
 #: Failures that make the install INCOMPLETE. Defined HERE, above every writer that
@@ -1268,6 +1288,73 @@ function Show-CopyPlan($dest) {
   }
 }
 
+# --- Codex project_doc_max_bytes (lane H, opt-in) -- the mirror of install.sh ----------
+$script:X4CodexDocWritten = ''
+function Get-HCodexConfigPath($dest) { return (Join-Path (Join-Path $dest '.codex') 'config.toml') }
+
+#: The ROOT-table project_doc_max_bytes value (keys before the first [table]), or $null.
+function Get-HCodexDocValue($f) {
+  if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $null }
+  foreach ($line in [IO.File]::ReadAllLines($f)) {
+    if ($line -match '^\s*\[') { return $null }
+    if ($line -match '^\s*project_doc_max_bytes\s*=\s*([^#]*)') { return $Matches[1].Trim() }
+  }
+  return $null
+}
+
+function Assert-HCodexForDocCap {
+  if (-not $CodexDocMaxBytes) { return }
+  if (Test-CodexSelected) { return }
+  Write-Host ('REFUSING: -CodexDocMaxBytes configures Codex, and this install does not select Codex (agents: ' + ($X4Agents -join ' ') + '). Nothing has been changed.') -ForegroundColor Red
+  exit 2
+}
+
+function Test-HCodexDocCapPrecheck($dest) {
+  if (-not $CodexDocMaxBytes) { return }
+  $f = Get-HCodexConfigPath $dest
+  if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return }
+  if (-not (Get-Item -LiteralPath $f -Force).IsReadOnly) { return }
+  if ($null -ne (Get-HCodexDocValue $f)) { return }   # present: never changed, so no write
+  Write-Host ''
+  Write-Host 'REFUSING: -CodexDocMaxBytes must add a line to a READ-ONLY file.' -ForegroundColor Red
+  Write-Host ('      ' + $f) -ForegroundColor Red
+  Write-Host '  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:' -ForegroundColor Red
+  Write-Host ('      python scripts/x4lock.py unlock "' + $f + '"') -ForegroundColor Red
+  Write-Host '      <re-run this command>' -ForegroundColor Red
+  Write-Host '      python scripts/x4lock.py lock' -ForegroundColor Red
+  exit 1
+}
+
+function Write-HCodexDocCap($dest) {   # after the dispatch
+  if (-not $CodexDocMaxBytes) { return }
+  $f = Get-HCodexConfigPath $dest
+  Refuse-IfDryRun 'writing project_doc_max_bytes into' $f
+  $line = 'project_doc_max_bytes = ' + $CodexDocMaxBytes + '  # X4 toolkit installer (--codex-doc-max-bytes)'
+  $old = Get-HCodexDocValue $f
+  if ($null -ne $old) {
+    if ($old -ceq $CodexDocMaxBytes) { Write-Host ('  [note] ' + $f + ' already sets project_doc_max_bytes = ' + $old + '; left untouched') }
+    else { Write-Host ('  [WARNING] ' + $f + ' already sets project_doc_max_bytes = ' + $old + ', not ' + $CodexDocMaxBytes + '. Left unchanged.') }
+    return
+  }
+  try {
+    $dir = Join-Path $dest '.codex'
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { $null = New-Item -ItemType Directory -Path $dir }
+    # ROOT keys must precede every [table], so the line goes FIRST; the rest is kept BYTE for byte.
+    $rest = [byte[]]@()
+    if (Test-Path -LiteralPath $f -PathType Leaf) { $rest = [IO.File]::ReadAllBytes($f) }
+    $head = (New-Object System.Text.UTF8Encoding($false)).GetBytes($line + "`n")
+    $tmp = $f + '.tmp' + $PID
+    [IO.File]::WriteAllBytes($tmp, [byte[]]($head + $rest))
+    Move-Item -LiteralPath $tmp -Destination $f -Force -ErrorAction Stop
+  } catch {
+    if ($tmp -and (Test-Path -LiteralPath $tmp)) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    $script:failed += ('.codex/config.toml (could not write project_doc_max_bytes into ' + $f + ')')
+    return
+  }
+  $script:X4CodexDocWritten = $CodexDocMaxBytes
+  Write-Host ('  wrote project_doc_max_bytes = ' + $CodexDocMaxBytes + ' into ' + $f)
+}
+
 # --- X4_TOOLKIT in the user environment (lane H; user decision 1) ----------------------
 #: Set when unset; a DIFFERENT existing value is REPORTED and LEFT; -NoEnv touches nothing.
 #: The writer is scripts/x4-userenv.ps1, the ONE mechanism both installers call (install.sh
@@ -1657,6 +1744,7 @@ switch ($Method) {
     $Toolkit = $Game
     Show-Target $Toolkit
     Resolve-HAutoAgents $Toolkit   # BEFORE anything reads $X4Items
+    Assert-HCodexForDocCap
     # Test-ConfigPrecheck OUTSIDE, Test-LockedTargetsPrecheck INSIDE -- the config
     # is written on both branches, the copy is not. install.sh makes the same split.
     # DIRECTION FIRST, matching install.sh, which carries a nine-line comment at
@@ -1668,6 +1756,7 @@ switch ($Method) {
     if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $GameNamed }
     Test-ConfigPrecheck $Toolkit
     Test-CodexHooksPrecheck $Toolkit   # written on BOTH branches, so OUTSIDE the guard
+    Test-HCodexDocCapPrecheck $Toolkit
     if (-not (Test-SameDir $SRC $Toolkit)) {
       Test-LockedTargetsPrecheck $Toolkit
       Show-CopyPlan $Toolkit
@@ -1687,6 +1776,7 @@ switch ($Method) {
     $Toolkit = Remove-TrailingSep $Toolkit
     Show-Target $Toolkit
     Resolve-HAutoAgents $Toolkit   # BEFORE anything reads $X4Items
+    Assert-HCodexForDocCap
     # Test-ConfigPrecheck OUTSIDE, Test-LockedTargetsPrecheck INSIDE -- the config
     # is written on both branches, the copy is not. install.sh makes the same split.
     # DIRECTION FIRST, matching install.sh, which carries a nine-line comment at
@@ -1698,6 +1788,7 @@ switch ($Method) {
     if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $ToolkitNamed }
     Test-ConfigPrecheck $Toolkit
     Test-CodexHooksPrecheck $Toolkit   # written on BOTH branches, so OUTSIDE the guard
+    Test-HCodexDocCapPrecheck $Toolkit
     if (-not (Test-SameDir $SRC $Toolkit)) {
       Test-LockedTargetsPrecheck $Toolkit
       Show-CopyPlan $Toolkit
@@ -1714,6 +1805,11 @@ switch ($Method) {
   'global'   {
     # THE GLOBAL LAYOUT IS CLAUDE-ONLY (see install.sh): an explicit non-Claude target is
     # REFUSED rather than half installed; the default proceeds and says what it leaves out.
+    if ($CodexDocMaxBytes) {
+      Write-Host 'REFUSING: -CodexDocMaxBytes configures Codex, and -Method global is a Claude-only layout.' -ForegroundColor Red
+      Write-Host '  Nothing has been changed.' -ForegroundColor Red
+      exit 2
+    }
     if ($Agent -ceq 'codex' -or $Agent -ceq 'generic') {
       Write-Host "REFUSING: -Method global is a Claude-only layout; it cannot install -Agent $Agent." -ForegroundColor Red
       Write-Host '  Use -Method in-game or -Method separate for Codex and generic agents.' -ForegroundColor Red
@@ -1737,6 +1833,8 @@ switch ($Method) {
   }
 }
 
+# Opt-in Codex doc cap: ONE call, after every arm (global refused it up front).
+Write-HCodexDocCap $Toolkit
 # X4_TOOLKIT for the user: ONE call, after every arm, so no arm can skip or repeat it.
 if (-not $NoEnv) { Set-HUserToolkitEnv $Toolkit }
 
@@ -1820,6 +1918,10 @@ if ($Method -ne 'global' -and (Test-CodexSelected)) {
   Write-Host '         2. type  /hooks  and approve each X4 hook'
   Write-Host "         3. verify:  python scripts/x4doctor.py --root `"$Toolkit`""
   if ($script:X4CodexHooksWritten) { Write-Host '         (the definitions were just (re)written: any earlier review no longer holds)' }
+  if ($script:X4CodexDocWritten) {
+    Write-Host ('         project_doc_max_bytes = ' + $script:X4CodexDocWritten + ' is in .codex\config.toml; it takes')
+    Write-Host '         effect once you trust this folder in Codex.'
+  }
 }
 if ($Method -eq 'global') { Write-Host "Global:  skills/agents + X4_* env added to your ~/.claude - works from any mod repo." }
 Write-Host ""
