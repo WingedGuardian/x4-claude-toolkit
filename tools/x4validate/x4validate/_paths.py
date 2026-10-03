@@ -285,7 +285,7 @@ def migrate_legacy_config(root: Path, apply: bool = False) -> tuple[str, str]:
         if not apply:
             return "would-move", f"would move {old} -> {new}"
         os.rename(old, new)                       # target checked absent: never overwrites
-        return "moved", (f"[migrated] {old} -> {new} (the 3.x location; 4.0 reads the "
+        return "moved", (f"[migrated] moved {old} -> {new} (the 3.x location; 4.0 reads the "
                          f"toolkit root). To undo (e.g. to go back to 3.x): move it back.")
     if not new.is_file():
         return "refused", f"REFUSING: {new} exists and is not a file; {old} left in place."

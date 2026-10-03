@@ -183,3 +183,53 @@ def test_config_file_in_prefers_new_then_legacy_then_names_new(tk):
     assert _paths.config_file_in(tk) == tk / OLD
     put(tk, NEW, "/xgame/new")
     assert _paths.config_file_in(tk) == tk / NEW
+
+
+# --- scripts/x4config.py: the one command every notice names ---------------------------
+
+import subprocess
+import sys
+
+X4CONFIG = Path(__file__).resolve().parents[3] / "scripts" / "x4config.py"
+
+
+def _cli(*args, env=None):
+    return subprocess.run([sys.executable, str(X4CONFIG), *args], capture_output=True, text=True,
+                          env=env)
+
+
+def _clean_env(tk):
+    e = {k: v for k, v in os.environ.items() if not k.startswith("X4_")}
+    e["X4_TOOLKIT"] = str(tk)
+    return e
+
+
+def test_x4config_migrate_is_a_DRY_RUN_by_default(tk):
+    put(tk, OLD, "/xgame/old")
+    r = _cli("migrate", "--root", str(tk), env=_clean_env(tk))
+    assert r.returncode == 0 and "would move" in r.stdout and (tk / OLD).exists(), r
+
+
+def test_x4config_migrate_apply_moves_and_says_so(tk):
+    put(tk, OLD, "/xgame/old")
+    r = _cli("migrate", "--root", str(tk), "--apply", env=_clean_env(tk))
+    assert r.returncode == 0 and "moved" in r.stdout and (tk / NEW).exists() and not (tk / OLD).exists(), r
+
+
+def test_x4config_refuses_differing_copies_with_rc_1(tk):
+    put(tk, NEW, "/xgame/new"); put(tk, OLD, "/xgame/old")
+    r = _cli("migrate", "--root", str(tk), "--apply", env=_clean_env(tk))
+    assert r.returncode == 1 and "X4_GAME" in (r.stdout + r.stderr), r
+
+
+def test_x4config_status_names_the_state(tk):
+    put(tk, OLD, "/xgame/old")
+    r = _cli("status", "--root", str(tk), env=_clean_env(tk))
+    assert r.returncode == 0 and "legacy" in r.stdout, r
+
+
+def test_x4config_status_names_the_differing_KEYS_and_no_value(tk):
+    put(tk, NEW, "/xgame/new", f'X4_NEXUS_KEY="{SECRET}"\n'); put(tk, OLD, "/xgame/old")
+    r = _cli("status", "--root", str(tk), env=_clean_env(tk))
+    assert "both-differ" in r.stdout and "X4_GAME" in r.stdout, r
+    assert SECRET not in r.stdout + r.stderr and "/xgame/" not in r.stdout + r.stderr
