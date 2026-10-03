@@ -388,17 +388,38 @@ As of **v2.01** that is true of the Python tools too — they read the same
 names, so on the `separate` and `global` layouts a successful install still left the cross-mod
 commands pointed at CWD-relative paths. If you installed v2.0, take this update.
 
-**Set `X4_TOOLKIT` in your user environment yourself.** The installers write it *into*
-`x4-paths.env` but do not export it — nothing sets it for you:
+**The installers set `X4_TOOLKIT` in your user environment** (opt out with `--no-env` /
+`-NoEnv`). Without it, the config file is found only by walking up from the current directory,
+and the tools are often run from the game folder, which has a `.claude/` but no
+`x4-paths.env`. You would see `(unresolved)` locations with a perfectly good config sitting one
+directory tree away.
+
+| Your current `X4_TOOLKIT` | What the installer does |
+|---|---|
+| not set | sets it to this toolkit (new terminals only) |
+| already this toolkit (any spelling: `/` or `\`, case, trailing separator) | nothing |
+| a **different** toolkit | **nothing**: it prints a `[WARNING]` naming both, and the command to repoint it |
+| `--no-env` / `-NoEnv` | nothing; it prints the command to run yourself |
+
+Where it is written:
+
+- **Windows** (both installers): your user environment (`HKCU\Environment`), through
+  `scripts/x4-userenv.ps1` (`[Environment]::SetEnvironmentVariable(..., 'User')`). Open a
+  new terminal to see it.
+- **Linux / macOS** (`install.sh`): one marked block appended to your shell's startup file:
+  `~/.zshenv` (or `$ZDOTDIR/.zshenv`) for zsh, `~/.bash_profile` for bash on macOS, `~/.bashrc`
+  for bash elsewhere. Delete the block to undo it. Any other shell (fish, ksh) gets no file
+  edit, only the line to add yourself. `install.ps1` sets it on Windows only. The POSIX paths
+  are best effort and not device-tested.
+
+**A later re-run with no `--toolkit` installs into the folder `X4_TOOLKIT` names**, because both
+installers have always read an inherited `X4_TOOLKIT` as the destination. That is the upgrade
+in place you normally want. Pass `--toolkit` to install somewhere else.
 
 ```bash
-setx X4_TOOLKIT "C:\path\to\toolkit"                      # Windows (takes effect in new shells)
-echo 'export X4_TOOLKIT=/path/to/toolkit' >> ~/.bashrc    # Linux / macOS
+setx X4_TOOLKIT "C:\path\to\toolkit"                      # Windows, by hand (new shells only)
+echo 'export X4_TOOLKIT=/path/to/toolkit' >> ~/.bashrc    # Linux / macOS, by hand
 ```
-
-Without it, the config file is found only by walking up from the current directory — and the tools
-are often run from the game folder, which has a `.claude/` but no `x4-paths.env`. You would see
-`(unresolved)` locations with a perfectly good config sitting one directory tree away.
 
 ### Install methods (`install.sh` / `install.ps1`)
 One guided installer, three layouts — pick what fits. Every path is auto-detected where
@@ -408,9 +429,17 @@ possible and overridable (`--game`, `--profile`, `--toolkit`, `--mods`, `--refer
 
 > **Upgrading an existing install needs `--over-existing`** (`-OverExisting` on PowerShell).
 > Without it the installer refuses, names what it found, and tells you what to type. Installing
-> over a toolkit REPLACES `CLAUDE.md`, `KNOWLEDGEBASE.md`, the skills and the agents — so if you
-> have edited any of those, they are what you would lose. Only `.claude/x4-paths.env` and
+> over a toolkit REPLACES `KNOWLEDGEBASE.md`, the skills and the agents — so if you have edited
+> any of those, they are what you would lose. `.claude/x4-paths.env` and
 > `.claude/settings.local.json` are preserved (backed up, and kept in place).
+>
+> **Upgrading from 3.x: an edited `CLAUDE.md` is kept, not lost.** If your `CLAUDE.md` is not
+> one the toolkit ever shipped (it is compared, by hash, with the `CLAUDE.md` of every release
+> tag, listed in `scripts/shipped-instruction-hashes.txt`), it is moved to
+> `X4-NOTES.pre-4.0.md` (or a dated name, if that exists) before the 4.0 file is copied, and the
+> installer says so. The 4.0 `CLAUDE.md` loads every session; move the notes you want to keep
+> into **`X4-NOTES.md`**, which the toolkit never writes. An unedited shipped copy (whatever its
+> line endings) is simply replaced. `--dry-run` names the move without making it.
 >
 > `--yes` will also refuse an **auto-detected** destination: nothing named it and nobody is
 > watching, so name it with `--game` or `--toolkit`.
@@ -434,7 +463,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Method global
 > Windows note: the hooks/scripts are bash, so running the toolkit needs **Git Bash**
 > (the PowerShell installer just does the setup).
 
-#### Which agent: `--agent claude | codex | generic | all` (default `all`)
+#### Which agent: `--agent claude | codex | generic | all | auto` (default `all`)
 
 The installer ships each agent's own files and nothing else (`-Agent` on PowerShell):
 
@@ -445,13 +474,25 @@ The installer ships each agent's own files and nothing else (`-Agent` on PowerSh
 | `generic` | `AGENTS.md` | none -- a generic agent runs no hooks | `.agents/skills/` |
 | `all` | all of the above | | |
 
+- **`--agent auto` installs the agents it finds:** `claude` / `codex` on your `PATH`, or a
+  marker already in the destination (`CLAUDE.md` or `.claude/settings.json` for Claude;
+  `.codex/` for Codex; a bare `.claude/` does not count, because every install creates one).
+  It prints each one it found and why. If it finds none, it installs `all` and says nothing was
+  detected. With `--method global` it behaves as `all` does there.
+- **`--codex-doc-max-bytes N`** (`-CodexDocMaxBytes N`, opt-in, Codex target only) writes
+  `project_doc_max_bytes = N` (32768..1048576) as the first line of the project's
+  `.codex/config.toml`. Why: Codex reads the root `AGENTS.md` and every nested one into ONE
+  32,768-byte budget (MEASURED), so an `AGENTS.md` of your own lower in the tree can silently
+  cut the end of the toolkit's. An existing different value is reported and left alone, and
+  the file never travels between installs. It takes effect once you trust the folder in Codex.
 - **Codex runs no hook you have not reviewed, and says nothing when it skips one.** After a
   Codex install: run `codex` in the folder, trust it, open `/hooks` and approve each X4 hook,
   then run `python scripts/x4doctor.py`. The installer never trusts a folder or approves a
   hook for you, and it prints these steps.
 - **An `AGENTS.md` you wrote is never overwritten.** If the destination already has one that
-  differs from the shipped file, it is moved aside to `AGENTS.pre-4.0.md` (or a dated name,
-  if that exists) and the installer says so. `--dry-run` names the move without making it.
+  differs from the shipped file and from every `AGENTS.md` a release shipped, it is moved aside
+  to `AGENTS.pre-4.0.md` (or a dated name, if that exists) and the installer says so.
+  `--dry-run` names the move without making it.
 - `--method global` is a Claude-only layout: `--agent codex` or `generic` there is refused,
   and the default installs the Claude target only.
 - An installed toolkit is runtime-only: the `agent/` source the generator reads is not

@@ -60,6 +60,11 @@ Usage: bash install.sh --method in-game|separate|global [options]
   --yes              don't prompt; accept detected/blank values (never a
                      detected DESTINATION -- name that with --game/--toolkit)
   -h, --help         this help
+
+Test seams (for the installer test suite only, not for users):
+  X4_INSTALL_ENV_REGKEY   registry key used instead of HKCU\Environment
+                          (refused unless under HKCU\Software\X4ToolkitTests\)
+  X4_INSTALL_DETECT_PATH  the PATH --agent auto walks instead of $PATH
 USAGE
 }
 

@@ -21,6 +21,10 @@
   reported and left alone; -NoEnv touches nothing. -Agent auto installs the agents found on
   PATH or already in the destination (none found: all, and it says so).
 
+  Test seams (for the installer test suite only, not for users): X4_INSTALL_ENV_REGKEY
+  (a registry key used instead of HKCU\Environment; refused unless under
+  HKCU\Software\X4ToolkitTests\) and X4_INSTALL_DETECT_PATH (the PATH -Agent auto walks).
+
   Example:
     powershell -ExecutionPolicy Bypass -File install.ps1 -Method global
     powershell -ExecutionPolicy Bypass -File install.ps1 -Method separate -Game "D:\Steam\steamapps\common\X4 Foundations"
