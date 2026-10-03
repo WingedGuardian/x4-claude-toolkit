@@ -1,0 +1,32 @@
+{
+  "v": 1,
+  "agent": "claude",
+  "note": "The IDENTITY control: Claude Code's hooks ARE the guards, so this profile runs the row's own hook on the row's own payload. It must agree on every case; if it does not, the engine is wrong, not an adapter.",
+  "command": ["{BASH}", "{HOOKS}/{HOOK}"],
+  "requires": ["bash", "jq"],
+  "run_cwd": "case",
+  "timeout_s": 120,
+  "env": {"X4_GUARD_CHECK": "1"},
+  "cases": {
+    "shell-bash": {"payload": "row"},
+    "shell-powershell": {"payload": "row"},
+    "edit": {"payload": "row"},
+    "write": {"payload": "row"}
+  },
+  "unsupported": {},
+  "output": {
+    "format": "json",
+    "exit_codes": {"0": "decode", "2": "inert"},
+    "empty": "allow",
+    "inert_pattern": "X4 GUARD INERT|NO rule (?:below )?was evaluated|NEVER checked against any rule|could not be translated|could not be analysed",
+    "rules": [
+      {"when": {"/hookSpecificOutput/permissionDecision": "deny"},
+       "text": "/hookSpecificOutput/permissionDecisionReason", "decision": "deny"},
+      {"when": {"/hookSpecificOutput/permissionDecision": "ask"},
+       "text": "/hookSpecificOutput/permissionDecisionReason", "decision": "ask"},
+      {"when": {"/hookSpecificOutput/additionalContext": {"present": true}},
+       "text": "/hookSpecificOutput/additionalContext", "decision": "advise"},
+      {"when": {"/hookSpecificOutput": {"present": true}}, "decision": "allow"}
+    ]
+  }
+}
