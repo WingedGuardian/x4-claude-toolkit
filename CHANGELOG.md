@@ -211,6 +211,13 @@
   5.1 process that reads the folder permissions, which then could not load `Get-Acl`. So
   `status` and `apply` refused, and an unpack could not finish protecting `reference/`. The
   child process now starts without that inherited module path.
+- `run-gates.sh` keeps each gate's full output (GitHub issue #3). Every attempted gate's
+  complete stdout and stderr are saved to `<logdir>/<gate>.log`. Free memory, load and CPU
+  count are written to `<logdir>/system.txt` at the start and at each failure, and the run
+  prints where `<logdir>` is. It defaults to a fresh temp folder; set `X4_GATE_LOG_DIR` to
+  choose one, and a folder inside `X4_GAME` or `X4_REFERENCE` is refused. The console summary
+  is unchanged and still shows a short tail. Before this, a failure that never recurred left
+  nothing to read.
 
 ## v3.3.1 — 2026-09-29
 
