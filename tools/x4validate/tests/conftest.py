@@ -354,3 +354,24 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             "  FAIL: %d skips exceeds X4_MAX_SKIPS=%d. A test that stopped running is "
             "indistinguishable from one that passed unless something counts them." % (n, cap_n))
         terminalreporter._session.exitstatus = 1
+
+
+# --------------------------------------------------------------- conformance dump
+@pytest.fixture(scope="session")
+def conformance_dump():
+    """ONE test-hooks.sh dump per session, shared by the Codex and toy conformance tests. The base is
+    <repo>/.test-sandbox (the harness's own default, gitignored), never tmp_path: test-hooks.sh refuses
+    a sandbox under /tmp, which is where pytest puts tmp_path on Linux. Lazy: only a test that asks
+    for it pays for the dump. Without bash and jq it SKIPS (counted), never passes."""
+    import importlib.util
+    import shutil
+    if not (shutil.which("bash") and shutil.which("jq")):
+        pytest.skip("needs Git Bash and jq -- the guard corpus cannot be dumped here")
+    repo = Path(__file__).resolve().parents[3]
+    spec = importlib.util.spec_from_file_location("x4conformance", repo / "scripts" / "x4conformance.py")
+    xc = importlib.util.module_from_spec(spec); spec.loader.exec_module(xc)
+    rows, sbx = xc.dump_cases(repo)
+    try:
+        yield rows, sbx
+    finally:
+        xc.remove_sandbox(sbx, repo / ".test-sandbox")

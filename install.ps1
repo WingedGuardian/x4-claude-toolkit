@@ -317,7 +317,7 @@ function Get-OwnedEnvLinesFromFile($f) {
 #:
 #: COMMON to every agent target; each agent's own files live in $X4AgentItems only.
 $X4CopyItems = @('tools','bin','scripts','mods','KNOWLEDGEBASE.md','README.md',
-                 'CHANGELOG.md','LICENSE','setup.sh','install.sh','install.ps1','SETUP_PROMPT.txt',
+                 'CHANGELOG.md','LICENSE','setup.sh','install.sh','install.ps1','SETUP_PROMPT.txt','ADAPTING.md',
                  '.gitignore','.gitattributes')
 
 #: PER-AGENT sets -- the mirror of X4_AGENT_ITEMS_* in install.sh (audit F8). `agent\`,

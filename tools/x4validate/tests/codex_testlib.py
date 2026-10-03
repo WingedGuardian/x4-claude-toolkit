@@ -48,21 +48,28 @@ def native(name: str, cwd, **tool_input) -> dict:
     return d
 
 
+def _engine():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("x4conformance", REPO / "scripts" / "x4conformance.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+XC = _engine()
+#: The Codex output contract lives in ONE place: the conformance profile's output rules (the
+#: C4 shapes; allowed_keys = the keys Codex knows -- one extra key fails the hook OPEN).
+CODEX_PROFILE = XC.load_profile("codex", REPO)
+assert set(CODEX_PROFILE["output"]["allowed_keys"][""]) == ALLOWED_TOP
+assert set(CODEX_PROFILE["output"]["allowed_keys"]["/hookSpecificOutput"]) == ALLOWED_HSO
+
+
 def parse_output(stdout: bytes):
-    """(decision, text) from what a Codex hook printed; asserts the C4 shape contract."""
-    body = stdout.decode("utf-8").strip()
-    if not body:
-        return "allow", None
-    out = json.loads(body)
-    assert set(out) <= ALLOWED_TOP and set(out["hookSpecificOutput"]) <= ALLOWED_HSO, out   # extra key = fail-open
-    hso = out["hookSpecificOutput"]
-    if hso.get("permissionDecision") == "deny":
-        r = hso["permissionDecisionReason"]
-        if "X4 GUARD INERT" in r:
-            return "inert", r
-        return ("ask" if r.startswith("NEEDS YOUR APPROVAL:") else "deny"), r
-    assert "permissionDecision" not in hso, "Codex fails open on 'ask' and 'allow'-with-reason; never emit them"
-    return "advise", hso["additionalContext"]
+    """(decision, text) from what a Codex hook printed; asserts the C4 shape contract: an ask, an
+    allow-with-reason, an unknown key or unparseable output is "unreadable" and fails here."""
+    d, text = XC.decode(CODEX_PROFILE["output"], stdout, 0)
+    assert d != "unreadable", text
+    return d, text
 
 
 def run_adapter(env, payload, event="pre_tool_use", shell="powershell", adapter=ADAPTER, raw: bytes | None = None):

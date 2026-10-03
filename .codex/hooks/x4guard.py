@@ -3,10 +3,12 @@
 
     python x4guard.py check --kind shell --shell {bash,powershell} --command CMD
     python x4guard.py check --kind {write,delete} --path P
+    python x4guard.py conformance --profile NAME|PATH [-- ADAPTER ARGV]   (see ADAPTING.md)
 
-Prints ONE JSON verdict and exits 0:
+`check` prints ONE JSON verdict and exits 0:
     {"v":1,"decision":"allow|advise|ask|deny","reason":...,"context":...,"inert":bool,"guards":[...]}
-Exit 2 only on a usage error. It runs the SAME guard scripts Claude Code runs, with the payload
+Exit 2 only on a usage error. (`conformance` has its own exit codes: 0 agree, 1 disagree,
+2 cannot evaluate, 3 too little examined -- scripts/x4conformance.py.) `check` runs the SAME guard scripts Claude Code runs, with the payload
 shape they already read, and NO side effects: backup-before-edit.sh is never run by a check.
 
 --shell names the shell that will EXECUTE the command, not the tool that sent it. Codex, for
@@ -278,9 +280,38 @@ def _verdict(kind: str, shell: str | None, command: str | None, path: str | None
     return worst
 
 
+def _g_engine_path() -> Path | None:
+    """scripts/x4conformance.py of THIS copy's toolkit (repo .claude/hooks or the agent/ source),
+    else of $X4_TOOLKIT (a deployed copy)."""
+    cands = [HERE.parents[1] / "scripts", HERE.parents[2] / "scripts"] if len(HERE.parents) > 2 else []
+    if os.environ.get("X4_TOOLKIT"):
+        cands.append(Path(os.environ["X4_TOOLKIT"]) / "scripts")
+    return next((d / "x4conformance.py" for d in cands if (d / "x4conformance.py").is_file()), None)
+
+
+def _g_conformance(argv: list) -> int:
+    """`x4guard conformance ...`: hand the arguments to the engine. Nothing in `check` changes."""
+    path = _g_engine_path()
+    if path is None:
+        sys.stderr.write("x4guard conformance: scripts/x4conformance.py not found next to this copy "
+                         "or under $X4_TOOLKIT; run the toolkit's own .claude/hooks/x4guard.py\n")
+        return 2
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("x4conformance", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.main(argv)
+
+
 def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    # BEFORE argparse: an argparse REMAINDER does not capture leading options, and everything
+    # after `conformance` (its own flags, `--`, the adapter argv) belongs to the engine.
+    if argv[:1] == ["conformance"]:
+        return _g_conformance(argv[1:])
     ap = argparse.ArgumentParser(prog="x4guard", description="Ask the toolkit's guards for a verdict.")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("conformance", help="replay the guard corpus through an adapter (see ADAPTING.md)")
     c = sub.add_parser("check", help="verdict on one shell command or one file path; no side effects")
     c.add_argument("--kind", required=True, choices=("shell", "write", "delete"))
     c.add_argument("--shell", choices=("bash", "powershell"),
@@ -288,6 +319,8 @@ def main(argv=None) -> int:
     c.add_argument("--command")
     c.add_argument("--path")
     a = ap.parse_args(argv)
+    if a.cmd == "conformance":            # only reachable with options before the word
+        return _g_conformance(argv[argv.index("conformance") + 1:])
     if a.kind == "shell" and (not a.shell or a.command is None):
         ap.error("--kind shell needs --shell and --command")
     if a.kind != "shell" and not a.path:

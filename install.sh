@@ -510,7 +510,7 @@ _owned_lines_old() {   # _owned_lines_old CONFIG_FILE
 #: COMMON to every agent target. Each agent's own files are named once more, in its
 #: X4_AGENT_ITEMS_<name> set below, and never here: an item in both lists is an item
 #: two answers can disagree about.
-X4_COPY_ITEMS="tools bin scripts mods KNOWLEDGEBASE.md README.md CHANGELOG.md LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt .gitignore .gitattributes"
+X4_COPY_ITEMS="tools bin scripts mods KNOWLEDGEBASE.md README.md CHANGELOG.md LICENSE setup.sh install.sh install.ps1 SETUP_PROMPT.txt ADAPTING.md .gitignore .gitattributes"
 
 #: PER-AGENT sets (audit F8: the installers shipped no AGENTS.md at all). `agent/` -- the
 #: neutral source the generator reads -- is in NO set: an installed toolkit is

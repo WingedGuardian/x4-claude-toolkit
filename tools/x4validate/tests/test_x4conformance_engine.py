@@ -1,0 +1,178 @@
+"""x4conformance engine, pure parts: no bash, no dump. Every exit-code clause has a twin."""
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[3]
+spec = importlib.util.spec_from_file_location("x4conformance", REPO / "scripts" / "x4conformance.py")
+xc = importlib.util.module_from_spec(spec); spec.loader.exec_module(xc)
+
+CODEX = xc.load_profile("codex", REPO)
+CLAUDE = xc.load_profile("claude", REPO)
+
+
+def _old_codex_patch(op, path, content=""):          # verbatim from test_codex_conformance._patch
+    if op == "add":
+        body = "".join("+" + ln + "\n" for ln in (content.split("\n") if content else [""]))
+        return f"*** Begin Patch\n*** Add File: {path}\n{body}*** End Patch"
+    return f"*** Begin Patch\n*** Update File: {path}\n@@\n-x\n+y\n*** End Patch"
+
+
+@pytest.mark.parametrize("content", ["", "a", "a\nb", "a\n", "{{COMMAND}}"])
+def test_codex_write_template_reproduces_the_old_patch_builder(content):
+    t = CODEX["cases"]["write"]["set"]["/tool_input/command"]
+    assert xc.fill(t, {"PATH": "p q.xml", "CONTENT": content}) == _old_codex_patch("add", "p q.xml", content)
+
+
+def test_codex_edit_template_reproduces_the_old_patch_builder():
+    t = CODEX["cases"]["edit"]["set"]["/tool_input/command"]
+    assert xc.fill(t, {"PATH": "p q.xml"}) == _old_codex_patch("update", "p q.xml")
+
+
+def test_fill_never_re_expands_a_token_inside_a_value():
+    assert xc.fill("{{COMMAND}}", {"COMMAND": "echo {{PATH}}", "PATH": "X"}) == "echo {{PATH}}"
+
+
+def test_an_unknown_template_token_is_a_profile_error():
+    with pytest.raises(xc.ProfileError):
+        xc.fill("{{NOPE}}", {})
+
+
+def test_TWIN_a_known_token_without_a_value_is_also_a_profile_error():
+    with pytest.raises(xc.ProfileError):
+        xc.fill("{{PATH}}", {})
+
+
+def _profile(**over):
+    p = json.loads(json.dumps(CODEX)); p.update(over); return p
+
+
+def test_a_kind_neither_mapped_nor_unsupported_is_refused(tmp_path):
+    p = _profile(); del p["cases"]["shell-powershell"]
+    f = tmp_path / "p.json"; f.write_text(json.dumps(p), encoding="utf-8")
+    with pytest.raises(xc.ProfileError, match="shell-powershell"):
+        xc.load_profile(str(f), REPO)
+
+
+def test_TWIN_a_kind_declared_unsupported_loads_and_is_a_gap(tmp_path):
+    p = _profile(); del p["cases"]["shell-powershell"]; p["unsupported"] = {"shell-powershell": "no PS"}
+    f = tmp_path / "p.json"; f.write_text(json.dumps(p), encoding="utf-8")
+    assert xc.load_profile(str(f), REPO)["unsupported"] == {"shell-powershell": "no PS"}
+
+
+def test_a_missing_profile_file_is_a_profile_error(tmp_path):
+    with pytest.raises(xc.ProfileError):
+        xc.load_profile(str(tmp_path / "nope.json"), REPO)
+
+
+# --- decode: Codex shapes (the C4 contract), Claude shapes, text rules --------------------- #
+
+def _hso(**k):
+    return json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", **k}}).encode()
+
+
+@pytest.mark.parametrize("out,expect", [
+    (b"", "allow"),
+    (_hso(permissionDecision="deny", permissionDecisionReason="BLOCKED x"), "deny"),
+    (_hso(permissionDecision="deny", permissionDecisionReason="NEEDS YOUR APPROVAL: x"), "ask"),
+    (_hso(permissionDecision="deny", permissionDecisionReason="X4 GUARD INERT: y"), "inert"),
+    (_hso(additionalContext="note"), "advise"),
+    (_hso(permissionDecision="ask", permissionDecisionReason="x"), "unreadable"),    # Codex fails open on ask
+    (_hso(permissionDecision="allow", permissionDecisionReason="x"), "unreadable"),
+    (json.dumps({"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "r",
+                                        "extra": 1}}).encode(), "unreadable"),        # extra key = fail-open
+    (json.dumps({"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "r"},
+                 "extra": 1}).encode(), "unreadable"),                                # extra TOP key too
+    (b"not json", "unreadable"),
+])
+def test_codex_decode(out, expect):
+    assert xc.decode(CODEX["output"], out, 0)[0] == expect
+
+
+def test_codex_a_nonzero_exit_is_unreadable_never_a_verdict():
+    assert xc.decode(CODEX["output"], _hso(permissionDecision="deny", permissionDecisionReason="r"), 2)[0] == "unreadable"
+
+
+@pytest.mark.parametrize("out,rc,expect", [
+    (_hso(permissionDecision="ask", permissionDecisionReason="x"), 0, "ask"),          # Claude honours ask
+    (_hso(permissionDecision="ask", permissionDecisionReason="NO rule was evaluated"), 2, "inert"),
+    (_hso(permissionDecision="deny", permissionDecisionReason="x"), 0, "deny"),
+    (_hso(additionalContext="note"), 0, "advise"),
+    (b"", 0, "allow"),
+    (b"", 1, "unreadable"),
+])
+def test_claude_decode(out, rc, expect):
+    assert xc.decode(CLAUDE["output"], out, rc)[0] == expect
+
+
+TEXT_OUT = {"format": "text", "exit_codes": {"0": "decode"}, "empty": "allow",
+            "rules": [{"regex": "^B (?P<text>NEEDS YOUR APPROVAL:.*)$", "decision": "ask"},
+                      {"regex": "^B (?P<text>.*)$", "decision": "deny"},
+                      {"regex": "^N (?P<text>.*)$", "decision": "advise"}]}
+
+
+@pytest.mark.parametrize("out,expect", [
+    (b"", "allow"), (b"B no", "deny"), (b"B NEEDS YOUR APPROVAL: q", "ask"), (b"N hi", "advise"),
+    (b"B X4 GUARD INERT: z", "inert"), (b"garbage", "unreadable"),
+])
+def test_text_decode(out, expect):
+    assert xc.decode(TEXT_OUT, out, 0)[0] == expect
+
+
+def test_an_undeclared_empty_output_is_unreadable_never_an_allow():
+    o = dict(TEXT_OUT); del o["empty"]
+    assert xc.decode(o, b"", 0)[0] == "unreadable"
+
+
+# --- classify + summarise ------------------------------------------------------------------ #
+
+@pytest.mark.parametrize("payload,kind", [
+    ({"tool_name": "Bash", "tool_input": {"command": "ls"}}, "shell-bash"),
+    ({"tool_name": "PowerShell", "tool_input": {"command": "dir"}}, "shell-powershell"),
+    ({"tool_name": "Edit", "tool_input": {"file_path": "a"}}, "edit"),
+    ({"tool_name": "Write", "tool_input": {"file_path": "a", "content": ""}}, "write"),
+    ({"tool_name": "Bash", "tool_input": {"command": ""}}, "no_native_analogue"),
+    ({"tool_name": "Grep", "tool_input": {"pattern": "x"}}, "no_native_analogue"),
+    ({"tool_name": "Bash", "tool_input": "notadict"}, "no_native_analogue"),
+])
+def test_classify(payload, kind):
+    assert xc.classify({"payload": payload}) == kind
+
+
+def _res(n_agree, n_disagree=0):
+    r = [{"label": f"a{i}", "kind": "shell-bash", "reference": "deny", "adapter": "deny"} for i in range(n_agree)]
+    r += [{"label": f"d{i}", "kind": "write", "reference": "deny", "adapter": "allow"} for i in range(n_disagree)]
+    return r
+
+
+def test_zero_replayed_refuses_with_3():
+    rc, text = xc.summarise([], n_total=12, buckets={"no_native_analogue": 12}, gaps={}, min_cases=1)
+    assert rc == xc.RC_NOTHING and "0 replayed" in text
+
+
+def test_TWIN_one_agreeing_case_with_a_floor_of_one_passes():
+    assert xc.summarise(_res(1), n_total=1, buckets={"replayed": 1}, gaps={}, min_cases=1)[0] == xc.RC_OK
+
+
+def test_below_the_floor_refuses_with_3():
+    assert xc.summarise(_res(5), n_total=5, buckets={"replayed": 5}, gaps={}, min_cases=80)[0] == xc.RC_NOTHING
+
+
+def test_one_disagreement_is_1_and_names_the_item():
+    rc, text = xc.summarise(_res(90, 1), n_total=91, buckets={"replayed": 91}, gaps={}, min_cases=80)
+    assert rc == xc.RC_DISAGREE and "d0" in text
+
+
+def test_buckets_that_do_not_sum_to_the_total_are_an_engine_error():
+    with pytest.raises(AssertionError):
+        xc.summarise(_res(3), n_total=5, buckets={"replayed": 3}, gaps={}, min_cases=1)
+
+
+def test_a_gap_is_printed_on_a_passing_run():
+    rc, text = xc.summarise(_res(90), n_total=90, buckets={"replayed": 90}, gaps={"shell-powershell": "no PS"},
+                            min_cases=80)
+    assert rc == xc.RC_OK and "GAP" in text and "shell-powershell" in text

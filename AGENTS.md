@@ -4,6 +4,7 @@
 
 Guidance for the AI coding agent working in an X4: Foundations modding environment.
 This file is loaded automatically every session.
+An agent this toolkit has no adapter for: read `ADAPTING.md` before relying on any guard.
 
 ## What This Is
 

@@ -1,0 +1,1 @@
+{"event": "before_tool", "tool": "run_shell", "args": {"cmdline": "ls notes", "interpreter": "bash"}, "workdir": "/work/project"}
