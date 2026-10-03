@@ -1,0 +1,28 @@
+{
+  "v": 1,
+  "agent": "toy",
+  "command": ["{PYTHON}", "{TOOLKIT}/tools/x4validate/tests/fixtures/toy_agent/toy_adapter.py"],
+  "requires": ["bash", "jq"],
+  "run_cwd": "neutral",
+  "timeout_s": 120,
+  "env": {"X4_GUARD_PY": "{HOOKS}/x4guard.py"},
+  "cases": {
+    "shell-bash":       {"payload": "payloads/run_shell.json",
+                         "set": {"/args/cmdline": "{{COMMAND}}", "/args/interpreter": "bash", "/workdir": "{{CWD}}"}},
+    "shell-powershell": {"payload": "payloads/run_shell.json",
+                         "set": {"/args/cmdline": "{{COMMAND}}", "/args/interpreter": "powershell", "/workdir": "{{CWD}}"}},
+    "edit":  {"payload": "payloads/edit_file.json",  "set": {"/args/target": "{{PATH}}", "/workdir": "{{CWD}}"}},
+    "write": {"payload": "payloads/write_file.json", "set": {"/args/target": "{{PATH}}", "/args/text": "{{CONTENT}}", "/workdir": "{{CWD}}"}}
+  },
+  "unsupported": {},
+  "output": {
+    "format": "text",
+    "exit_codes": {"0": "decode"},
+    "empty": "allow",
+    "rules": [
+      {"regex": "^TOY-BLOCK (?P<text>NEEDS YOUR APPROVAL:.*)$", "decision": "ask"},
+      {"regex": "^TOY-BLOCK (?P<text>.*)$", "decision": "deny"},
+      {"regex": "^TOY-NOTE (?P<text>.*)$",  "decision": "advise"}
+    ]
+  }
+}
