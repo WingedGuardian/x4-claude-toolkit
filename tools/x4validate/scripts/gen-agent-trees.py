@@ -122,6 +122,12 @@ TARGETS: dict[str, dict] = {
               "tokens": {"{{TOOLKIT}}": "$X4_TOOLKIT",
                          "{{PROJECT_DIR}}": "the folder the agent was started in"}},
 }
+#: OpenCode (Plan 3 lane L, best effort): no entry file of its own -- it reads AGENTS.md (READ,
+#: opencode.ai/docs/rules) -- plus .opencode/X4-OPENCODE.md, which the per-machine
+#: .opencode/opencode.jsonc names under `instructions`. Skills render exactly as Codex's (the same
+#: token: whatever fixes the Codex skill token fixes both).
+TARGETS["opencode"] = {"entry": None, "addendum": "opencode.md", "skills": ".opencode/skills/",
+                       "tokens": dict(TARGETS["codex"]["tokens"])}
 _LEFTOVER_TOKEN = re.compile(r"\{\{[A-Z_]+\}\}")
 
 #: The core reaches EVERY agent, so it may not name a Claude-only mechanism. Each (regex, reason)
@@ -147,15 +153,16 @@ NEUTRALITY_ALLOWED: tuple[str, ...] = (
 )
 
 
-def check_neutral(core: str) -> None:
-    """Refuse a core that names a Claude-only mechanism, naming the line and the reason."""
+def check_neutral(core: str, where: str = "agent/instructions/core.md") -> None:
+    """Refuse a core that names a Claude-only mechanism, naming the line and the reason. `where`
+    names the source in the refusal (the OpenCode addendum is checked by the same list)."""
     for n, line in enumerate(core.replace("\r\n", "\n").split("\n"), 1):
         for allowed in NEUTRALITY_ALLOWED:
             line = line.replace(allowed, " " * len(allowed))
         for pattern, reason in NEUTRALITY_BANNED:
             m = re.search(pattern, line)
             if m:
-                raise GenerationError(f"agent/instructions/core.md is not agent-neutral: line {n}: "
+                raise GenerationError(f"{where} is not agent-neutral: line {n}: "
                                       f"{m.group(0)!r} -- {reason}")
 
 
@@ -423,6 +430,36 @@ def render_codex_tree(src: Path) -> dict[str, str]:
     return out
 
 
+# ------------------------------------------------------------------ OpenCode (Plan 3 lane L) --- #
+#: The OpenCode target tree, BEST EFFORT (from docs and source, not measured). .opencode/hooks/ =
+#: every guard VERBATIM plus the adapters below. Owned paths are named one by one: OpenCode itself
+#: writes .opencode/.gitignore, a user's own plugin in .opencode/plugins/ is not ours, and
+#: .opencode/opencode.jsonc is rendered per machine at install (never generated, never committed).
+OWNED += (".opencode/hooks/", ".opencode/plugins/x4guard.js", ".opencode/skills/",
+          ".opencode/X4-OPENCODE.md")
+OPENCODE_ADAPTERS: dict[str, str] = {"patch_paths.py": "patch_paths.py", "codex.py": "codex_adapter.py"}
+OPENCODE_ADDENDUM = ".opencode/X4-OPENCODE.md"
+
+
+def render_opencode_tree(src: Path) -> dict[str, str]:
+    guards = render_hooks(src)
+    out = {".opencode/hooks/" + rel[len(".claude/hooks/"):]: text for rel, text in guards.items()}
+    root = src / "guards" / "adapters"
+    for name, dest in OPENCODE_ADAPTERS.items():
+        out[".opencode/hooks/" + dest] = _read(root / name)
+    clash = set(OPENCODE_ADAPTERS.values()) & {rel[len(".claude/hooks/"):] for rel in guards}
+    if clash:
+        raise GenerationError(f"an OpenCode adapter file would overwrite a guard: {sorted(clash)}")
+    out.update(render_skills(src, "opencode"))
+    add_name = "agent/instructions/" + TARGETS["opencode"]["addendum"]
+    addendum = _read(src / "instructions" / TARGETS["opencode"]["addendum"])
+    if not addendum.startswith("# "):
+        raise GenerationError(f"{add_name}: line 1 must be an H1 title ('# ...')")
+    check_neutral(addendum, add_name)
+    out[OPENCODE_ADDENDUM] = _with_banner_after_first_line(addendum, BANNER_MD)
+    return out
+
+
 def generate(repo: Path) -> dict[str, str]:
     src = repo / "agent"
     if not src.is_dir():
@@ -444,6 +481,7 @@ def generate(repo: Path) -> dict[str, str]:
     out.update(render_skills(src, "codex"))
     out.update(render_hooks(src))
     out.update(render_codex_tree(src))
+    out.update(render_opencode_tree(src))
     out[".claude/settings.json"] = _read(src / "targets" / "claude" / "settings.json")
     return dict(sorted(out.items()))
 
