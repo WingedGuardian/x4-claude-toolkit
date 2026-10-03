@@ -195,6 +195,10 @@
   into a running shell is not).` The text lives in the adapter script; the frozen hook
   definitions are unchanged, so no new hook review is expected (not yet confirmed with
   `codex_trust.py report` on a deployed copy).
+- An `x4guard` timeout now names the budget that actually ran out. Under the Codex hooks the
+  adapter passes its own deadline (`X4_CODEX_BUDGET_S`), but the message always blamed
+  `X4_GUARD_TIMEOUT_S`, a setting that played no part there. It now says "the caller's
+  deadline" in that case and keeps naming `X4_GUARD_TIMEOUT_S` for a direct `x4guard check`.
 
 ## v3.3.1 — 2026-09-29
 
