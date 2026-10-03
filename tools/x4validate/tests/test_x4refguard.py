@@ -577,9 +577,11 @@ def test_J9_a_PowerShell_7_PSModulePath_in_the_parent_does_not_break_the_ACL_rea
     assert x4refguard.main(["status"]) == 1
 
 
-@win
-def test_J9_TWIN_the_parents_environment_is_not_modified(ref, monkeypatch):
-    """The child gets a scrubbed copy; the caller's own PSModulePath is left alone."""
+def test_J9_TWIN_the_child_env_drops_PSModulePath_and_the_parents_is_untouched(monkeypatch):
+    """Runs on every OS (no skip): the child gets a scrubbed COPY; the caller keeps its own."""
     monkeypatch.setenv("PSModulePath", _PWSH7_MODULE_PATH)
-    x4refguard.report()
+    monkeypatch.setenv("X4_J9_KEEP", "kept")
+    env = x4refguard._ps51_env()
+    assert not [k for k in env if k.upper() == "PSMODULEPATH"], sorted(env)
+    assert env["X4_J9_KEEP"] == "kept"                  # everything else is passed through
     assert os.environ["PSModulePath"] == _PWSH7_MODULE_PATH
