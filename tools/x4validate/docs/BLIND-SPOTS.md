@@ -228,6 +228,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F147 | A RELATIVE shell operand with no preceding `cd` reached NO path rule: the guard never used the payload's `cwd`, so `rm -f reference/...` from the folder holding reference/ was allowed while the absolute spelling denied | **DEFECT (measured)** · ✅ FIXED 2026-10-02 (Plan 2 lane F) | 4-row probe on the deployed guard: rows 1-2 ALLOW, 3-4 deny; a live Codex run overwrote the file (lane B) | `hook_facts.facts()` seeds `cwd_track` with the payload `cwd`, narrowed by a 53,828-command OLD-vs-NEW replay to 0 new asks and 0 new denies; `x4guard check` sends the caller's cwd. Open: the Codex shell `workdir` is invisible; `git clean`/unknown cmdlets stay unseeded |
 | F148 | A bare `git clean -fdx` / `-x` / `-X` / `-d` or `git reset --hard` run FROM the game folder (or another X4 folder) with no folder named reached no rule (F147's open item): the game-root repo's `.gitignore` is `*`, so `-x` there removes the installation's untracked files | **DEFECT (measured)** · ✅ FIXED 2026-10-03 (Plan 3 lane J, decision J-Q1) | the deployed `x4guard check` from the game cwd: `git clean -fdx` -> allow; master's x4guard in a sandbox game cwd -> allow, this tree -> deny | new fact `git_wipe_from_session_dir` (seeded cwd, -x/-X/-d or reset --hard, exclusive of the explicit-folder ASK) -> DENY with a reason, never a prompt |
 | F149 | `scripts/test-hooks.sh` 1/187 flake (seen twice under load, probe never recorded): NOT REPRODUCED, 0 of 16 runs under 24 CPU burners plus 3 other lanes | **SCOPE (measured, open)** | 16 runs (4 lanes x 4), 711-1187 s each; every run 186/1, the 1 being the pre-existing identifier finding in Plan 3 docs | a failing `decide()` probe now prints `[hook rc=N; stderr: ...]`, so the next occurrence names itself; open until it does |
+| F150 | The write guard judged the PATH, never the FILE: `<game>/KNOWLEDGEBASE.md` was ALLOW while x4lock's read-only lock made the write fail with no word why; and `<game>/X4-NOTES.md`, where the instructions send notes, was hard-denied as a game file | **DEFECT (measured)** · ✅ FIXED 2026-10-03 (Plan 3 lane N) | a live Codex run could not save its notes (orchestrator, 2 probes through `x4guard check`) | exactly `<X4_GAME or X4_TOOLKIT>/X4-NOTES.md` (+ `.pre-4.0.md`) allowed on the resolved path; a read-only file x4lock manages (`x4lock.py protected`) is ADVISED with unlock/edit/relock; the game deny routes notes, facts, mod files. Open: the `claude.md` / `agents.md` / `knowledgebase.md` name whitelist matches ANYWHERE in the game tree (MEASURED, 2 probes + controls) |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -7826,3 +7827,35 @@ at most 10 minutes per sample, and only when the machine is under 60% before the
 **Classification:** decision-tree row 4 (NOT REPRODUCED). No fix. The instrument makes the next
 occurrence self-identifying. Recommended: tee every gate run's `test-hooks.sh` output to the
 scratchpad so that occurrence is kept.
+
+## F150 — the write guard's ALLOW did not mean the write could succeed, and its deny contradicted the instructions · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-03 (Plan 3 lane N) · one adjacent hole OPEN
+
+**Found 2026-10-03 in a live Codex run** (game root = project root), MEASURED by the orchestrator:
+the agent could not save its investigation notes anywhere it was told to.
+
+- `x4guard check --kind write --path <game>/KNOWLEDGEBASE.md` said ALLOW, and the write failed:
+  `scripts/x4lock.py` keeps that file read-only. The guard judged the PATH and never the FILE, so
+  its allow answered an adjacent question ("may you?") and nothing said why the write failed or
+  that `x4lock.py unlock` was the way through.
+- `<game>/X4-NOTES.md` was hard-denied as a game-installation file, while `core.md` tells every
+  agent "your own notes go in `X4-NOTES.md` in the project root". The deny said only "work in your
+  mod folder".
+
+**Fix.** (1) exactly `<X4_GAME or X4_TOOLKIT>/X4-NOTES.md` and `X4-NOTES.pre-4.0.md` are allowed,
+decided on the RESOLVED path, so the same name deeper in the game tree stays denied. (2) A write to
+an existing read-only file asks `x4lock.py protected <path>` (x4lock's own manifest, exit 0/1/2)
+and, when x4lock manages it, ADVISES the exact unlock, edit and relock commands. A writable or
+absent file pays no subprocess (`-f`/`-w` are builtins; `-w` honours the Windows read-only
+attribute under Git Bash, MEASURED with an unlocked control in three path spellings). (3) The
+game-install deny names where notes, game facts and mod files go.
+
+**Still OPEN, found while fixing (MEASURED, 1 probe each plus a control, 2026-10-03).** The NAME
+whitelist `*/claude.md|*/agents.md|*/knowledgebase.md` matches those names ANYWHERE.
+`<game>/libraries/KNOWLEDGEBASE.md` and `<game>/extensions/x/CLAUDE.md` are ALLOW, while the
+controls `<game>/libraries/a.xml` (deny) and `<game>/extensions/x/a.xml` (ask) are not. It is the
+same shape as the X4-NOTES twins above. Not changed here: a mod may legitimately ship its own
+`CLAUDE.md`, so narrowing it needs a measurement over real edits first.
+
+**RE-DERIVED BY:** `tools/x4validate/tests/test_notes_and_locked_files.py` (19 tests through the
+Claude hook, `x4guard check` and the Codex adapter; a name-only mutant and an any-read-only mutant
+were each killed by a twin).
