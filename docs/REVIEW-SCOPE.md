@@ -51,6 +51,11 @@ a diff-scoped review cannot find a defect that predates the diff):
 **Release exit criterion:** zero CRITICAL and zero IMPORTANT **among in-arc findings**.
 Pre-existing findings are recorded to Track 2 and do not hold the release.
 
+**Release exercises** (run once per release, before this review closes):
+- The cold ADAPTING exercise, [`docs/ADAPTING-COLD-TEST.md`](ADAPTING-COLD-TEST.md): a fresh
+  subagent given only `ADAPTING.md` and the toy agent's docs must write an adapter that passes
+  `x4guard conformance`. A failure means `ADAPTING.md` is wrong or stale.
+
 ---
 
 ## Track 2 — the CODEBASE AUDIT (does not gate any release)

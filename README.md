@@ -358,10 +358,14 @@ XRCatTool, and writes the result to `<toolkit>/.claude/x4-paths.env`. Nothing is
 > Contributing or just reading the source? Clone it standalone instead:
 > `git clone https://github.com/WingedGuardian/x4-claude-toolkit.git`
 
-### 3. Open Claude Code in the toolkit folder and paste the setup prompt
-Paste the contents of `SETUP_PROMPT.txt`. Claude runs `bash setup.sh`, checks prerequisites
-(bash, jq, uv/Python 3.13), wires up x4validate, and walks you through unpacking your own
-`reference/` and (optionally) adding your Nexus API key. Answer any questions it asks.
+### 3. Open your AI agent in the toolkit folder and paste the setup prompt
+Paste the contents of `SETUP_PROMPT.txt` into Claude Code, Codex or any other agent. The agent
+says which agent it is and checks whether the toolkit has an adapter for it, runs
+`bash setup.sh`, checks prerequisites (bash, jq, uv/Python 3.13), wires up x4validate, runs
+`x4doctor` to report which guards are live, and walks you through unpacking your own
+`reference/` and (optionally) adding your Nexus API key. Answer any questions it asks. An agent
+with no adapter is pointed at [`ADAPTING.md`](ADAPTING.md), which shows how to build and prove
+one; until it has one, the toolkit's guards do not protect it.
 
 ### Prerequisites it will check for
 - **bash** — required. Every safety hook and both setup scripts run under it. Linux/macOS have it;
