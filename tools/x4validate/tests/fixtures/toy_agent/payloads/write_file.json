@@ -1,0 +1,1 @@
+{"event": "before_tool", "tool": "write_file", "args": {"target": "notes/today.txt", "text": "hello"}, "workdir": "/work/project"}

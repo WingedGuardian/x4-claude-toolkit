@@ -1,0 +1,1 @@
+{"event": "before_tool", "tool": "edit_file", "args": {"target": "notes/today.txt"}, "workdir": "/work/project"}
