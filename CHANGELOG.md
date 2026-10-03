@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **An agent can save its notes again, and is told how to edit a locked file.** A live Codex run
+  could not save its notes: the guard blocked `X4-NOTES.md` in the game root, though the
+  instructions send notes there, and `KNOWLEDGEBASE.md` failed silently on x4lock's read-only lock.
+  Now exactly `<project root>/X4-NOTES.md` (and the migration's `X4-NOTES.pre-4.0.md`) is allowed;
+  the same name deeper in the game folder is still blocked. A write to a file x4lock has locked
+  gets a note naming the unlock, edit and relock commands; the lock itself stays. The
+  game-folder block now says where notes, game facts and mod files go. New:
+  `x4lock.py protected <path>`.
 - **A relative path in a shell command is now judged where the shell runs.** The guards ignored
   the `cwd` that Claude Code and Codex send with every call. So `rm -f reference/...` or
   `echo x > reference/...`, run from the folder holding `reference/`, was allowed, while the same

@@ -415,3 +415,5 @@ say which regime a formula belongs to, and the packed-inclusive scoping rule.
 
 **Your own notes go in `X4-NOTES.md`** in the project root. Read it at session start if it exists. The toolkit never writes or overwrites it. Never edit `CLAUDE.md`, `AGENTS.md`, `.claude/agents/`, `.claude/skills/`, `.claude/settings.json`, `.claude/hooks/`, `.agents/skills/`, `.codex/hooks/`, `.codex/rules/`: they are regenerated and your edit is lost.
 
+**`KNOWLEDGEBASE.md` and the other protected files are kept read-only by x4lock**, so a write to one fails until you unlock it: `python <toolkit>/scripts/x4lock.py unlock <file>`, edit, then `python <toolkit>/scripts/x4lock.py lock`. The guard prints the exact commands.
+
