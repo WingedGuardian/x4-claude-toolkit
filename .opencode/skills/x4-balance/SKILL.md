@@ -11,7 +11,7 @@ from memory, and everything downstream inherits it. The tools that prevent that 
 are the ones least often reached for — so this skill starts by putting them in front of you.
 
 Run tools via uv from the tool dir:
-`cd $X4_TOOLKIT/tools/x4validate && uv run --python 3.13 <tool> <args>`
+`cd {{TOOLKIT}}/tools/x4validate && uv run --python 3.13 <tool> <args>`
 
 ## Step 0 — state the route BEFORE the sweep
 

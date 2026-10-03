@@ -2530,24 +2530,27 @@ def test_the_real_repo_installs_ONE_AGENTS_md_and_no_agent_source(installer, tmp
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
-def test_J_the_REAL_codex_skills_get_the_token_rendered_for_THIS_os(installer, tmp_path):
+@pytest.mark.parametrize("agent,skills_dir", [("codex", ".agents"), ("opencode", ".opencode")])
+def test_J_the_REAL_codex_skills_get_the_token_rendered_for_THIS_os(installer, tmp_path, agent, skills_dir):
     """Lane J (Plan 3), orchestrator finding 2026-10-02: the generator rendered the token
     to `$X4_TOOLKIT` itself, so the installers' per-OS rewrite never fired and Codex on
     Windows (PowerShell) saw an EMPTY variable. The synthetic-source row above could not
     see it -- it plants the token by hand. This row installs the COMMITTED generated tree."""
-    if not (ROOT / ".agents" / "skills").is_dir():
-        pytest.skip("the repo has no generated .agents/skills tree")
+    # The OpenCode row (Plan 3 merge of lanes J + L): lane L's target copied Codex's entry
+    # tokens but not the skill override, so .opencode/skills rendered `$X4_TOOLKIT` again.
+    if not (ROOT / skills_dir / "skills").is_dir():
+        pytest.skip("the repo has no generated %s/skills tree" % skills_dir)
     n_src = sum("{{TOOLKIT}}" in p.read_bytes().decode("utf-8")
                 for p in (ROOT / "agent" / "skills").glob("*/SKILL.md"))
     assert n_src >= 7, n_src          # derived, never retyped: an empty population cannot pass
     dest = _fresh(tmp_path)
-    r = _install(installer, tmp_path, dest, "--agent", "codex")
+    r = _install(installer, tmp_path, dest, "--agent", agent)
     assert r.returncode == 0, _ok(r)
     want = "$env:X4_TOOLKIT" if os.name == "nt" else "$X4_TOOLKIT"
     assert "rendered {{TOOLKIT}} as %s in" % want in r.stdout, (
         "the installer rendered nothing -- the tree it copied carries no token\n" + _ok(r))
     got = {p.relative_to(dest).as_posix(): p.read_bytes().decode("utf-8")
-           for p in (dest / ".agents" / "skills").rglob("*") if p.is_file()}
+           for p in (dest / skills_dir / "skills").rglob("*") if p.is_file()}
     assert not [k for k, t in got.items() if "{{TOOLKIT}}" in t]
     assert sum("%s/tools/x4validate" % want in t for k, t in got.items()
                if k.endswith("/SKILL.md")) == n_src, sorted(got)

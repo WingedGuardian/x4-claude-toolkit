@@ -34,5 +34,5 @@ def test_the_section_says_not_measured_and_names_what_turns_the_guards_off():
 
 def test_the_agent_table_lists_opencode_and_all_includes_it():
     text = (REPO / "README.md").read_text(encoding="utf-8")
-    assert "`--agent claude | codex | generic | opencode | all`" in text
+    assert "`--agent claude | codex | generic | opencode | all | auto`" in text
     assert "| `opencode` |" in text

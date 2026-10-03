@@ -80,11 +80,12 @@ def test_every_skill_and_settings_is_generated():
 
 
 def test_tokens_are_rendered_everywhere():
-    # ONE exemption (Plan 3 lane J): `{{TOOLKIT}}` in `.agents/skills/` is left for the
+    # ONE exemption (Plan 3 lane J): `{{TOOLKIT}}` in `.agents/skills/` (and OpenCode's
+    # `.opencode/skills/`, which render identically) is left for the
     # INSTALLER to render per OS. Anything else with `{{` -- any other token, or that token
     # anywhere else -- is a leak.
     leaks = [rel for rel, text in load().generate(REPO).items()
-             if "{{" in (text.replace("{{TOOLKIT}}", "") if rel.startswith(".agents/skills/") else text)]
+             if "{{" in (text.replace("{{TOOLKIT}}", "") if rel.startswith((".agents/skills/", ".opencode/skills/")) else text)]
     assert leaks == []
 
 

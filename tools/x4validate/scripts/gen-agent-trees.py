@@ -129,6 +129,7 @@ TARGETS: dict[str, dict] = {
 #: .opencode/opencode.jsonc names under `instructions`. Skills render exactly as Codex's (the same
 #: token: whatever fixes the Codex skill token fixes both).
 TARGETS["opencode"] = {"entry": None, "addendum": "opencode.md", "skills": ".opencode/skills/",
+                       "skill_toolkit": TARGETS["codex"]["skill_toolkit"],
                        "tokens": dict(TARGETS["codex"]["tokens"])}
 _LEFTOVER_TOKEN = re.compile(r"\{\{[A-Z_]+\}\}")
 

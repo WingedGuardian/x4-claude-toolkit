@@ -9,7 +9,7 @@ description: Use when you need the exact subcommands, flags, positional argument
 
 The exact surface of every toolkit CLI, generated from its own argparse help so it cannot drift from the code. **Which tool answers which question** is the routing table in CLAUDE.md / AGENTS.md, not this file.
 
-Run a CLI from `$X4_TOOLKIT/tools/x4validate` as `uv run <cli> ...`. The full `--help` of a CLI and of each of its subcommands is in `reference/<cli>.md` -- read it before composing a command line.
+Run a CLI from `{{TOOLKIT}}/tools/x4validate` as `uv run <cli> ...`. The full `--help` of a CLI and of each of its subcommands is in `reference/<cli>.md` -- read it before composing a command line.
 
 11 CLIs, 47 subcommands.
 
