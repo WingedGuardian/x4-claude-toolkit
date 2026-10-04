@@ -228,6 +228,60 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   `content.xml` edits as advisory, matching `CLAUDE.md`. `.gitignore` no longer swallows a skill's
   `reference/` folder under `agent/skills/`.
 
+### Release-review fixes: installers, x4doctor, tools
+
+- `x4doctor` can now exit 0 on a healthy fresh install (both installers, separate and in-game,
+  `--agent claude`, `--no-env`: exit 3 before, 0 after). On an installed toolkit, `parity.*`
+  is N/A, because parity checks a tree `deploy-claude-dir.py` copied from a source checkout. A
+  target that no deploy workflow ships (`.codex/`) is N/A, and the row says why. An unlocked
+  x4lock manifest is OK and marked as your choice. The x4lock row now asks the real
+  `x4lock.py` with the root's environment. `layer2.reference` fails an unprotected OpenCode
+  root too. An `X4_GUARD` line in a path config fails as **ignored**: the guards take
+  `X4_GUARD` only from the launch environment.
+- `x4lock` locks a **separate** install's guards, `CLAUDE.md` and settings in the toolkit
+  folder, and no longer expects them in that install's game folder. A source checkout is never
+  locked this way. The mod registry is expected only once its folder exists.
+- `install.ps1 -Help` exists and prints the same options as `install.sh --help`. Windows
+  refuses a bare `.\install.ps1` by default, so run it as
+  `powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Help`.
+- The installers never change OS permissions for you. When an existing `reference/` is not
+  OS-protected, they print the state and `python scripts/x4refguard.py apply`.
+- Before setting `X4_TOOLKIT`, the installers read every place it may already be set: the
+  user and machine environment on Windows, and every bash/zsh startup file (Git Bash's on
+  Windows). They report each value found, and they write nothing next to a value that
+  differs.
+- A dry run now also lists the Codex `hooks.json` render, the OpenCode deny-rule render, the
+  `.codex/config.toml` prepend and, in every layout, what would happen to `X4_TOOLKIT`. A
+  read-only, out-of-date `.opencode/opencode.jsonc` now stops the install before anything is
+  written.
+- The OpenCode skills' `{{TOOLKIT}}` becomes `$X4_TOOLKIT` on Windows when
+  `X4_OPENCODE_SHELL=bash`. Codex and generic skills keep `$env:X4_TOOLKIT`. Both installers
+  now write derived paths (`<toolkit>/reference`, `<profile>/debug.txt`, `<game>/extensions`)
+  with `/`.
+- `deploy-claude-dir.py` exits 1 when two path configs differ; it used to report them and
+  exit 0. Every message about two differing configs now names
+  `x4config.py status --root <that toolkit>`.
+- `bin/unpack-reference.sh` stops when x4refguard cannot read the protection state (`error`).
+- `x4xref`: a negative result over an index that is missing installed DLC exits 3 (degraded)
+  and is never presented as a certified absence.
+- `x4effective`: a broken pipe or a command's own error is no longer reported as "store
+  unreadable, rebuild". A store on a UNC path (`\\server\share\...`) now opens. `x4live
+  mappings` and the `cross_tool` gate refuse an unusable store instead of crashing with a
+  traceback.
+- `tools/basex/ask.py --help` runs without `lxml`. A `--limit`/`--offset` query that returns
+  attribute nodes is now counted and paged instead of refused.
+- Python tools say when `X4_CONFIG` names a missing file. The `_merge`/`_registry` refusals
+  name `<toolkit>/x4-paths.env`. Both modules are freshness engine sources, so this changes
+  the engine hash; this release already invalidates built stores (34d3fde), so nothing extra
+  needs rebuilding.
+- Gates: `run-gates.sh` checks `X4_GATE_LOG_DIR` against the roots the tools resolve,
+  including roots named only in the config, and no longer needs `realpath` (missing on
+  macOS). `edge_sweep` clears `X4_CONFIG`; `hook_false_positives` hashes the `X4_CONFIG`
+  file, under labels that name each file's location. The internal audit harness
+  (`tools/x4validate/audit/`) is left out of the release zip. `scan-identifiers.py` also
+  catches a bare X4 profile id. The ids come from the machine it runs on and are never
+  printed.
+
 ### Maintainers
 
 - After tagging a release, run `tools/x4validate/scripts/gen-shipped-hashes.py --write` and commit
