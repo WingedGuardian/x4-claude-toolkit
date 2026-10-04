@@ -1498,10 +1498,16 @@ def _verdict(code: int) -> str:
 
 def render_text(ctx: Ctx, rows: list[Check], code: int, elapsed: float) -> str:
     present = [t for t in TARGETS if ctx.targets.get(t)]
+    shown, suffix = present, ""
+    if ctx.targets.get("codex") and ctx.targets.get("generic"):
+        # A Codex install ships .agents/skills, which IS the generic payload: listing "generic"
+        # beside it read as a third install (cosmetic, install red-team 2026-10-04).
+        shown = [t for t in present if t != "generic"]
+        suffix = "   (a generic agent reads codex's AGENTS.md + .agents/skills too)"
     out = ["x4doctor: %s" % _verdict(code),
            "  root:    %s" % ctx.root,
            "  toolkit: %s" % (ctx.toolkit or "(none)"),
-           "  targets: %s" % (", ".join(present) or "NONE (no .claude/settings.json, .codex/hooks, .agents/skills or .opencode/plugins/x4guard.js here)"),
+           "  targets: %s" % ((", ".join(shown) + suffix) or "NONE (no .claude/settings.json, .codex/hooks, .agents/skills or .opencode/plugins/x4guard.js here)"),
            "  checked: %d row(s) in %.1fs -- %s" % (
                len(rows), elapsed,
                ", ".join("%d %s" % (sum(r.status == s for r in rows), s) for s in STATUSES))]

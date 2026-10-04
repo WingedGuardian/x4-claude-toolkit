@@ -1292,3 +1292,21 @@ def test_B2_INCIDENT_a_second_installed_copy_never_compares_against_the_first(tm
     rows = {c["id"]: c for c in got["checks"]}
     assert rows["parity.claude"]["status"] == "N/A", rows["parity.claude"]
     assert str(a) in got.get("toolkit_note", "") and str(b) in got.get("toolkit_note", ""), got.get("toolkit_note")
+
+
+# --- cosmetic (install red-team 2026-10-04): the targets line of a claude+codex install ---- #
+
+def test_targets_line_does_not_list_generic_for_a_codex_install(tmp_path):
+    """A Codex install ships .agents/skills, which is also the generic payload, so an
+    `--agent auto` claude+codex install read "targets: claude, codex, generic"."""
+    ctx = doc.Ctx(root=tmp_path, toolkit=None, env={},
+                  targets={"claude": True, "codex": True, "generic": True, "opencode": False})
+    line = [l for l in doc.render_text(ctx, [], 0, 0.0).splitlines() if l.startswith("  targets:")][0]
+    assert line.split("targets:")[1].split("(")[0].strip() == "claude, codex", line
+
+
+def test_TWIN_a_generic_only_install_still_lists_generic(tmp_path):
+    ctx = doc.Ctx(root=tmp_path, toolkit=None, env={},
+                  targets={"claude": False, "codex": False, "generic": True, "opencode": False})
+    line = [l for l in doc.render_text(ctx, [], 0, 0.0).splitlines() if l.startswith("  targets:")][0]
+    assert "generic" in line, line
