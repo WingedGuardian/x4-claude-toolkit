@@ -1,26 +1,31 @@
-# X4 Foundations Claude Code Modding Toolkit
+# X4 AI Assistant Toolkit
 
-An AI-assisted **X4: Foundations** modding environment for Claude Code. It handles the
-tedious, error-prone work of modding — coordinated multi-file XML edits, porting mods across
-game versions, validating diff patches, checking how a mod interacts with everything else
-you've installed, triaging your mod list, and reading debug logs — with safety hooks, pre-loaded
-engine knowledge, and a bundled cross-file validator.
+An AI-assisted **X4: Foundations** modding environment for coding agents — **Claude Code and
+OpenAI Codex** first-class, **OpenCode** best effort, and any other agent through
+[`ADAPTING.md`](ADAPTING.md). It handles the tedious, error-prone work of modding — coordinated
+multi-file XML edits, porting mods across game versions, validating diff patches, checking how a
+mod interacts with everything else you've installed, triaging your mod list, and reading debug
+logs — with safety guards, pre-loaded engine knowledge, and a bundled cross-file validator.
 
-Built from hands-on X4 v9.0 mod development. **Claude Code is the brain; this is the
+Built from hands-on X4 v9.0 mod development. **The agent is the brain; this is the
 environment with the setup prework already done.**
 
-> Independent fan project. Not affiliated with or endorsed by Egosoft. Ships **no** game data —
-> you unpack your own legally owned copy locally.
+> Independent fan project. Not affiliated with or endorsed by Egosoft, Anthropic or OpenAI.
+> Ships **no** game data — you unpack your own legally owned copy locally.
+
+> Until v4.0 this was the "X4 Foundations Claude Code Modding Toolkit" (repository `x4-claude-toolkit`);
+> GitHub redirects the old address.
 
 ---
 
-## What Is Claude Code?
+## What Is a Coding Agent?
 
-[Claude Code](https://claude.ai/code) is an AI assistant by Anthropic that runs on your
-computer. Unlike a chat window, it can **read your files, run commands, edit configs, and run
-scripts** — with your permission. For modding, that means it can actually do the mechanical
-work: write the diff patches, trace the cross-file fan-out, run the validator, and read the
-debug log back to you.
+A coding agent — [Claude Code](https://claude.ai/code) by Anthropic,
+[Codex](https://github.com/openai/codex) by OpenAI, [OpenCode](https://opencode.ai), and
+others — is an AI assistant that runs on your computer. Unlike a chat window, it can **read your
+files, run commands, edit configs, and run scripts** — with your permission. For modding, that
+means it can actually do the mechanical work: write the diff patches, trace the cross-file
+fan-out, run the validator, and read the debug log back to you.
 
 X4 modding is full of silent failure modes — a diff `sel=` that matches nothing, a forgotten
 file in a multi-file change, a script attribute a game update made mandatory. This toolkit
@@ -34,9 +39,10 @@ ships with those footguns already documented and guarded against.
 - **`KNOWLEDGEBASE.md`** — XML schema patterns, the diff-patch idioms, the **extension
   merge/load-order model** (what overrides vs unions), the **7.x→9.0 version migration map**
   (the `space=` requirement, the dead Lua_Loader, Protected UI Mode), a **mechanics interlock
-  map** for reasoning about balance ripples, and tool notes. `CLAUDE.md` (which IS loaded
-  automatically) tells Claude to consult it before making changes.
-- **`CLAUDE.md`** — the workflow: diff-patch-first, confidence levels (Claude rates 0–100% and
+  map** for reasoning about balance ripples, and tool notes. The instruction file (which IS
+  loaded automatically) tells the agent to consult it before making changes.
+- **`CLAUDE.md`** (Claude Code) / **`AGENTS.md`** (Codex, OpenCode and other agents) — the
+  workflow: diff-patch-first, confidence levels (the agent rates 0–100% and
   lists assumptions before any change), "vanilla as frame of reference," native-engine-solutions
   first, and a cognitive-co-pilot stance (surfaces what you *didn't* ask about).
 
@@ -222,7 +228,10 @@ tiers behind each answer.
 - `/x4-update-mod` — port a mod to a newer game version (mechanical checks + design brief).
 - `/x4-xml-patching` — the selector, merge-tree and load-order gotchas that make an X4 patch
   silently no-op, where a fix belongs, and how to validate it; invoke before the first XML edit.
-- `cross-file-impact` / `mod-research` subagents — trace the fan-out / research a mod before editing.
+- `cross-file-impact` / `mod-research` subagents (Claude Code only) — trace the fan-out / research a mod before editing.
+
+The `/name` form is Claude Code's. The same skills are installed for Codex and generic agents
+in `.agents/skills/` and for OpenCode in `.opencode/skills/`; ask for one by name.
 
 ### Safety, built in
 - **Command + file guards** — block writes to `reference\` and direct `.cat`/`.dat` edits; confirm edits to profile files. A mod manifest is ADVISED rather than confirmed
@@ -231,7 +240,7 @@ tiers behind each answer.
   own parser and judged by the same rules as Bash — it needs `pwsh` or Windows PowerShell,
   and asks rather than guesses without one), Edit, Write and NotebookEdit.
 - **Auto-backup** — every edited file is copied to `.claude\backups\` with an audit log.
-- **Confidence system** — no guessing; Claude rates confidence and lists assumptions first.
+- **Confidence system** — no guessing; the agent rates confidence and lists assumptions first.
 - **Baseline capture** — `scripts/generate-baseline.sh` records a known-good snapshot (game version, installed-mod hashes, a normalized debug.txt error fingerprint) to diff against later.
 - **Loss canary** — `python scripts/x4canary.py` refuses if a tracked file in a watched
   repository has been DELETED, EMPTIED or lost more than half its bytes. It runs
@@ -333,12 +342,17 @@ telemetry and independent filesystem protection remain separate roadmap work.
 
 ## Setup
 
-### 1. Install Claude Code
-Subscribe to Claude (Pro/Max), then install the desktop app from [claude.ai/code](https://claude.ai/code),
-or the CLI: install [Node.js](https://nodejs.org/) and run `npm install -g @anthropic-ai/claude-code`.
+### 1. Install an AI agent
+- **Claude Code** — subscribe to Claude (Pro/Max), then install the desktop app from
+  [claude.ai/code](https://claude.ai/code), or the CLI: install [Node.js](https://nodejs.org/) and
+  run `npm install -g @anthropic-ai/claude-code`.
+- **Codex** — install OpenAI's Codex CLI ([github.com/openai/codex](https://github.com/openai/codex)).
+- **OpenCode** — the CLI only (the desktop app is not supported; see below).
+- **Anything else** — install it the way its maker says, then read [`ADAPTING.md`](ADAPTING.md):
+  the toolkit's guards do not protect an agent it has no adapter for.
 
 ### 2. Get the toolkit and run the installer
-Download the latest release zip (from [Releases](https://github.com/WingedGuardian/x4-claude-toolkit/releases)
+Download the latest release zip (from [Releases](https://github.com/WingedGuardian/x4-ai-toolkit/releases)
 or Nexus) and extract it anywhere, then run the guided installer:
 
 ```bash
@@ -365,7 +379,7 @@ XRCatTool, and writes the result to `<toolkit>/x4-paths.env`. Nothing is hardcod
 > single-folder model. Pick **global** if you have several mod repos.
 
 > Contributing or just reading the source? Clone it standalone instead:
-> `git clone https://github.com/WingedGuardian/x4-claude-toolkit.git`
+> `git clone https://github.com/WingedGuardian/x4-ai-toolkit.git`
 
 ### 3. Open your AI agent in the toolkit folder and paste the setup prompt
 Paste the contents of `SETUP_PROMPT.txt` into Claude Code, Codex or any other agent. The agent
@@ -607,7 +621,7 @@ otherwise:
 
 ## Using It
 
-Open Claude Code in the toolkit folder and just talk. Some examples:
+Open your agent in the toolkit folder and just talk. Some examples:
 
 **Editing & balance**
 - *"Raise all L/XL shield regen by 15% — show me the dry-run first, then validate."*
@@ -626,7 +640,7 @@ Open Claude Code in the toolkit folder and just talk. Some examples:
 - *"Before I add this weapon mod — does it conflict with anything I have, and is it balanced for VRO?"*
 - *"Why does my death-alternative mod stop the vanilla eject sequence, and what would happen if I added an escape-pod mod too?"*
 
-If it involves X4 XML, diff patches, MD/Lua scripts, the economy, or mod files, ask. Claude has
+If it involves X4 XML, diff patches, MD/Lua scripts, the economy, or mod files, ask. The agent has
 the engine context loaded and will figure out the path — and validate before you burn an
 in-game test cycle.
 
@@ -649,6 +663,6 @@ Found a new X4 quirk or a 9.0 migration gotcha? PRs welcome — especially addit
 MIT — see [LICENSE](LICENSE). X4: Foundations is a trademark of Egosoft GmbH.
 
 ## Credits
-- [Claude Code](https://claude.ai/code) by Anthropic
+- [Claude Code](https://claude.ai/code) by Anthropic, [Codex](https://github.com/openai/codex) by OpenAI, [OpenCode](https://opencode.ai)
 - x4validate built on [lxml](https://lxml.de/); mod metadata via the [Nexus Mods API](https://api-docs.nexusmods.com/)
 - Sibling project: [skyrimvr-claude-toolkit](https://github.com/WingedGuardian/skyrimvr-claude-toolkit)

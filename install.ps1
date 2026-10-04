@@ -1,5 +1,5 @@
 <#
-  X4 Claude Toolkit installer - Windows (PowerShell).
+  X4 AI Assistant Toolkit installer - Windows (PowerShell).
 
   Three install methods, all with fully configurable paths (nothing hardcoded):
     in-game   Copy the toolkit INTO your X4 game folder (one workspace).
@@ -46,7 +46,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $SRC = Split-Path -Parent $MyInvocation.MyCommand.Path
-Write-Host "X4 Claude Toolkit installer (Windows) - source: $SRC"
+Write-Host "X4 AI Assistant Toolkit installer (Windows) - source: $SRC"
 
 # Did a HUMAN name the destination, or did we find it by scanning? An explicit
 # switch or an env var is a deliberate act; a Steam-folder scan is not.

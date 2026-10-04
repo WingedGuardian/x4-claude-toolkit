@@ -1,5 +1,5 @@
 #!/bin/bash
-# X4 Foundations Claude Code Modding Toolkit — setup (cross-platform: Linux / macOS / Windows Git Bash)
+# X4 AI Assistant Toolkit — setup (cross-platform: Linux / macOS / Windows Git Bash)
 # Checks prerequisites, wires up the bundled x4validate, and seeds local config. Idempotent.
 
 set -uo pipefail
@@ -8,7 +8,7 @@ ROOT="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 # tests and for a user who only wants the config; the installers do not pass it.
 _I_CONFIG_ONLY=0
 [ "${1:-}" = "--config-only" ] && _I_CONFIG_ONLY=1
-echo "=== X4 Claude Code Modding Toolkit setup ==="
+echo "=== X4 AI Assistant Toolkit setup ==="
 echo "Toolkit root: $ROOT"
 echo
 
@@ -158,5 +158,5 @@ if [ -n "$MISSING" ]; then
   exit 1
 fi
 echo "=== setup complete ==="
-echo "Open Claude Code in this folder and start modding. See README.md for examples."
+echo "Open your AI agent (Claude Code, Codex, ...) in this folder and start modding. See README.md for examples."
 exit 0

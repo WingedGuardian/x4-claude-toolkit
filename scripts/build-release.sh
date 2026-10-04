@@ -23,14 +23,14 @@
 # down and checked. `--selftest` re-proves that claim, which is what makes the build
 # method falsifiable instead of merely asserted.
 #
-#   scripts/build-release.sh <ref>     build dist/X4.Foundations...<ref>.zip
+#   scripts/build-release.sh <ref>     build dist/X4.Foundations.AI.Assistant.Toolkit-<ref>.zip
 #   scripts/build-release.sh --selftest  rebuild v3.0.0 and assert its known sha256
 #
 # Exit: 0 built and verified · 1 the archive does not match the ref · 2 cannot build
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 
-NAME_PREFIX="X4.Foundations.Claude.Code.Toolkit"
+NAME_PREFIX="X4.Foundations.AI.Assistant.Toolkit"
 V300_SHA="273d242c168b4cff5d0679a9251c9e230506c540fd22ff5c39f66edd03fd4de6"
 V300_SIZE=6508551
 
@@ -178,7 +178,7 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 
 mkdir -p dist || die "cannot create dist/"
-OUT="dist/${NAME_PREFIX}.${REF}.zip"
+OUT="dist/${NAME_PREFIX}-${REF}.zip"
 git archive --format=zip "$REF" -o "$OUT" || die "git archive failed"
 echo "built $OUT"
 verify "$OUT" "$REF" || { echo "the bundle does not match $REF — not shippable." >&2; exit 1; }

@@ -131,6 +131,27 @@ def test_an_EXTRA_file_in_the_bundle_is_REFUSED_too(planted_verifier):
     assert "IN THE BUNDLE, NOT IN THE REF" in r.stderr, r.stderr
 
 
+def test_the_bundle_is_named_for_the_v4_product(tmp_path):
+    """v4.0 renamed the product (Plan 3 DECISIONS, Wave 2): the asset is
+    `X4.Foundations.AI.Assistant.Toolkit-<tag>.zip`. Run the REAL script on a tiny tagged repo
+    and read the name it actually wrote, rather than grepping the script for a string."""
+    _needs(SCRIPT.is_file(), "no scripts/build-release.sh (dev-only script) - not checked")
+    import shutil
+    r = tmp_path / "repo"
+    (r / "scripts").mkdir(parents=True)
+    shutil.copy2(SCRIPT, r / "scripts" / "build-release.sh")
+    (r / "a.txt").write_text("x\n", encoding="utf-8")
+    for a in (["init", "-q", "."], ["config", "user.name", "t"], ["config", "user.email", "t@t"],
+              ["config", "core.autocrlf", "false"], ["add", "a.txt", "scripts/build-release.sh"],
+              ["commit", "-qm", "base"], ["tag", "v9.9.9"]):
+        assert subprocess.run(["git", "-C", str(r), *a], capture_output=True).returncode == 0, a
+    p = subprocess.run([_bash(), "scripts/build-release.sh", "v9.9.9"], cwd=str(r),
+                       capture_output=True, text=True, timeout=300)
+    assert p.returncode == 0, p.stdout + p.stderr
+    built = sorted(x.name for x in (r / "dist").iterdir())
+    assert built == ["X4.Foundations.AI.Assistant.Toolkit-v9.9.9.zip"], built
+
+
 @pytest.fixture()
 def planted_verifier(tmp_path):
     """The verifier body, extracted from the script, plus a tiny repo to run it on."""
