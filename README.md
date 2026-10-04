@@ -284,6 +284,9 @@ in `.agents/skills/` and for OpenCode in `.opencode/skills/`; ask for one by nam
 - **Reference lock (Layer 2)** — `python scripts/x4refguard.py status [--json] [--full] | apply | remove`
   protects the unpacked `reference/` tree at the OS level, so it holds against every
   process, hooks or no hooks. `bin/unpack-reference.sh` applies it after a verified unpack.
+  The installers do not apply it (it is an ACL change, yours to make), so a `reference/`
+  unpacked before 4.0 stays unprotected until you run `apply`; `x4doctor`'s
+  `layer2.reference` row shows whether it is on.
   - **Windows:** one inherited deny for your own account,
     `(OI)(CI)(DE,DC,WD,AD)` (mask 65606). It blocks deleting, renaming, overwriting,
     appending and creating anything inside the tree. Reads and copies OUT of it still
@@ -484,9 +487,11 @@ not measured against a running OpenCode.** The reading is recorded in
 - **The game-install block is plugin-only.** The guards allow a whitelist inside the game folder.
   A deny-only rule list cannot express that without allow rules, and allow rules would loosen
   your own OpenCode config.
-- **A plugin that fails to load is skipped silently** (READ). When it is loaded, the system prompt
+- **A plugin that fails to load is skipped** (READ: OpenCode writes a log line and carries on,
+  so a broken plugin fails open). When it is loaded, the system prompt
   carries a line starting `X4 GUARDS LIVE`. If that line is missing, only the deny rules apply.
-- **A deny is final only with OpenCode's defaults** (READ). If an edit or command ever *asks* and
+- **A deny is final only with OpenCode's defaults** (INFERRED from OpenCode's permission code,
+  not run). If an edit or command ever *asks* and
   you answer "always", that approval overrides a matching deny for the rest of the session. A
   per-agent `permission` rule of yours can override it too. The plugin still applies.
 - **Subagents.** The plugin may not run inside a subagent session
@@ -593,8 +598,8 @@ The installer ships each agent's own files and nothing else (`-Agent` on PowerSh
 
 | | Claude Code | Codex | Unknown agent |
 |---|---|---|---|
-| Deletes in `reference\` | blocked (hook + OS) | blocked (OS; and hook when live) | blocked (OS) |
-| Overwrites in `reference\` | blocked (hook + read-only) | blocked when the hook is live; read-only stops accidental ones | read-only stops accidental ones |
+| Deletes in `reference\` | blocked (hook; and the OS lock, once applied) | blocked when the hook is live; by the OS lock, once applied | blocked only by the OS lock, once applied |
+| Overwrites in `reference\` | blocked (hook; and the OS lock, once applied) | blocked when the hook is live; the OS lock, once applied, stops accidental ones | only the OS lock, once applied, stops accidental ones |
 | Destructive shell commands elsewhere | blocked or asked (hook) | blocked when the hook is live; the worst prefix cases by rules regardless | not blocked |
 | Ask before editing profile files | yes | **deny with instructions** (path-based; rules cannot express it) | no |
 | A guard that crashes | asks | **denies** (our wrapper), unless the interpreter cannot start: then **Codex runs the command** | -- |
@@ -618,7 +623,8 @@ otherwise:
    `.codex/x4-unknown-tools.log`. A subagent's own shell commands are still checked.
 5. **The `.codex/rules` fallback is narrow.** It matches command prefixes only, so it
    repeats just two of the command guard's rules: `git add -A` / `--all` / `.` (blocked) and
-   `x4refguard.py remove` (asks). Whether Codex loads it in a project you have not trusted is
+   `python scripts/x4refguard.py remove` (asks; `python3` or `py` too, but only with that
+   relative script path -- an absolute path does not match). Whether Codex loads it in a project you have not trusted is
    untested.
 6. **Moving the folder turns the hooks off** until you review them again in `/hooks`, because
    the hook definitions contain the folder's absolute path.

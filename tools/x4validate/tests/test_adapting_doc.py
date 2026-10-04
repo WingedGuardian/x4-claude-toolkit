@@ -115,3 +115,48 @@ def test_setup_prompt_is_agent_neutral_and_routes_unknown_agents():
 def test_setup_prompt_never_tells_the_agent_to_trust_or_approve_hooks_itself():
     low = PROMPT.lower()
     assert "never approve" in low or "do not approve" in low
+
+
+# --- release review v4.0.0: R6-01 and R6-04 ------------------------------------------------- #
+_USER_DOCS = ("SETUP_PROMPT.txt", "ADAPTING.md", "README.md")
+
+
+def _bare_ps1_invocations(text: str) -> list[str]:
+    """Every `install.ps1 -<Switch>` the doc tells someone to RUN, without the
+    `-ExecutionPolicy Bypass -File` prefix a stock Windows needs (README: a bare
+    `install.ps1` run directly is refused by the default execution policy before it runs anything)."""
+    bad = []
+    for m in re.finditer(r"(\S*install\.ps1) -[A-Z]\w*", text):
+        before = text[max(0, m.start() - 60):m.start()]
+        if not re.search(r"-ExecutionPolicy\s+Bypass\s+-File\s+$", before):
+            bad.append(m.group(0))
+    return bad
+
+
+@pytest.mark.parametrize("name", _USER_DOCS)
+def test_every_powershell_invocation_runs_on_a_stock_windows(name):
+    assert _bare_ps1_invocations((REPO / name).read_text(encoding="utf-8")) == []
+
+
+def _claims_reference_protection_unconditionally(text: str) -> list[str]:
+    """The OS lock on reference/ exists only once `x4refguard.py apply` ran (the installers never
+    apply it). A doc for an UNPROTECTED agent that calls it simply present is the R6-04 defect."""
+    hits = [p for p in ("tree is read-only on disk", "read-only protection of the reference folder")
+            if p in text]
+    if "x4refguard.py apply" not in text:
+        hits.append("names no `x4refguard.py apply`")
+    return hits
+
+
+@pytest.mark.parametrize("name", ("SETUP_PROMPT.txt", "ADAPTING.md"))
+def test_the_os_lock_is_described_as_applied_not_assumed(name):
+    assert _claims_reference_protection_unconditionally((REPO / name).read_text(encoding="utf-8")) == []
+
+
+def test_readme_agent_table_conditions_the_os_lock_on_being_applied():
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    rows = [ln for ln in text.splitlines() if ln.startswith(("| Deletes in `reference", "| Overwrites in `reference"))]
+    assert len(rows) == 2, rows
+    for row in rows:
+        cells = [c.strip() for c in row.strip("|").split("|")][1:]
+        assert all("once applied" in c for c in cells), row

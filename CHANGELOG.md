@@ -30,6 +30,11 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
    says nothing when it skips one. After installing: open `codex` in the folder, trust it, review
    the X4 hooks in `/hooks`, then run `python scripts/x4doctor.py --agent codex`. See below.
 6. `--dry-run` names the `CLAUDE.md` and `AGENTS.md` moves without making them.
+7. **A `reference/` you already have is NOT OS-protected until you apply it.** The installers do
+   not change its permissions (an ACL change is yours to make). Run
+   `python scripts/x4refguard.py status`, then `python scripts/x4refguard.py apply`;
+   `python scripts/x4doctor.py` shows the state in its `layer2.reference` row. A fresh
+   `bin/unpack-reference.sh` applies it for you. What it blocks is under *Safety*.
 
 ### Every agent: one source, per-agent files
 
@@ -72,9 +77,12 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   as the shell that runs them (PowerShell on Windows, where Codex labels them "Bash");
   `apply_patch`, also when run through the shell, by every file it adds, updates, deletes or
   moves. Only a JSON deny blocks in Codex (MEASURED: a crash or `exit 2` lets the command run), so
-  the entry wrappers turn every failure into a deny; one deadline bounds a whole patch. (2)
-  `.codex/rules/x4.rules` blocks `git add -A` and asks before `x4refguard.py remove` even when the
-  hooks are not running. (3) The OS-level protection of `reference/` (below). A conformance suite
+  the entry wrappers turn a guard's failure into a deny -- but not their own: when the
+  interpreter that runs the wrapper cannot start, Codex runs the command (README, *What each
+  class of agent gets*). One deadline bounds a whole patch. (2) `.codex/rules/x4.rules` blocks
+  `git add -A` and asks before `python scripts/x4refguard.py remove` even when the hooks are not
+  running. The rules match a command PREFIX only: `python`, `python3` or `py` followed by exactly
+  `scripts/x4refguard.py remove`; an absolute script path or another interpreter does not match. (3) The OS-level protection of `reference/` (below). A conformance suite
   replays every Claude hook case through the Codex chain and requires equal verdicts.
 - The installer renders `.codex/hooks.json` for the destination's absolute folder. It never trusts
   a folder or approves a hook for you; it prints the review steps.
@@ -144,7 +152,8 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   kept the trailing carriage return on every configured folder, `reference/` included, so the guards'
   folder rules could fail to match (BLIND-SPOTS F152; the effect on verdicts is inferred, the CR is
   measured). Windows was never affected. This was present in 3.x too.
-- **`reference/` is protected at the OS level.** `python scripts/x4refguard.py status | apply |
+- **`reference/` can be protected at the OS level, once you apply it** (`bin/unpack-reference.sh`
+  does after an unpack; the installers do not). `python scripts/x4refguard.py status | apply |
   remove`: on Windows one inherited deny for your own account, `(OI)(CI)(DE,DC,WD,AD)`, blocks
   deleting, renaming, overwriting and creating anything inside the tree; reads still work, and you
   can lift it yourself without elevation. Linux and macOS get `chattr +i` / `chflags uchg`, or a
@@ -159,9 +168,10 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   overwrote a file that way). Measured over 53,828 historical commands before shipping: no new
   confirmation prompt and no new block; three commands change, two of them gaining an advisory
   (BLIND-SPOTS F147).
-- **Fewer approval prompts: the guards ask only what is genuinely yours.** Measured over 793
-  transcripts: 54 hook prompts in 5 weeks, all 54 approved -- an ask that is always approved
-  protects nothing. A command `bash -n` rejects, or one nested past the guard's expansion bound,
+- **Fewer approval prompts: the guards ask only what is genuinely yours.** Measured over the
+  maintainer's own Claude Code transcripts (793 of them, 82,585 tool calls; commit `bd45eef`; the
+  counting script is not in the repo): 54 hook prompts in 5 weeks, all 54 approved -- an ask that
+  is always approved protects nothing. A command `bash -n` rejects, or one nested past the guard's expansion bound,
   is now a DENY with a reason the agent can act on. Deletes in X4 folders and writes under
   Documents are ADVISORIES. Still asks: the X4 profile, save games, a guard that cannot run, a
   failed backup. Still hard-blocked: the game install and `reference/`.
@@ -178,8 +188,9 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   game folder is still blocked. A write to a file x4lock has locked gets a note naming the unlock,
   edit and relock commands; the lock stays. The game-folder block now says where notes, game
   facts and mod files go. New: `x4lock.py protected <path>`.
-- The file guard allowed `CLAUDE.md` in the game root but denied **`AGENTS.md`**; it now treats
-  them alike, matched on the exact file name.
+- The file guard allowed `CLAUDE.md` in the game root but denied **`AGENTS.md`**; it now allows
+  `AGENTS.md` at the project root only (the resolved path must equal a root plus the name, as for
+  `X4-NOTES.md`); the same name deeper in the game folder is still blocked.
 - **x4lock protects `AGENTS.md`, the Codex and OpenCode trees and `.agents/skills`** where that
   agent is installed (marked by its guard directory), so a Claude-only root never reports
   `AGENTS.md` missing.

@@ -1,13 +1,19 @@
 # ADAPTING.md -- connecting an agent the X4 AI Assistant Toolkit does not support yet
 
 **Read this if you are an AI agent and this toolkit ships no adapter for you.**
-`bash install.sh --help` (or `install.ps1 -Help`) lists the agents it has adapters for; the two
-worked examples below are Claude Code (the guards ARE its hooks) and OpenAI Codex.
+`bash install.sh --help` (in Windows PowerShell:
+`powershell -ExecutionPolicy Bypass -File .\install.ps1 -Help`) lists the agents it has adapters
+for; the two worked examples below are Claude Code (the guards ARE its hooks) and OpenAI Codex.
 
 Until you have an adapter that passes the proof in section 5, **none of the toolkit's guards
-protect anything you do.** The only protection left is the operating system's: the
-`reference/` tree is read-only on disk. Tell your user that, in those words, before you start
-modding -- and do not tell them the guards are live because the files are present.
+protect anything you do.** The only protection left is the operating system's, and only once
+it has been applied: `python scripts/x4refguard.py apply` puts a deny on the `reference/` tree
+that blocks deleting, renaming, overwriting and creating files in it (Windows; Linux and macOS
+get a best-effort equivalent), while reads still work. `bin/unpack-reference.sh` applies it
+after an unpack; the installers do not. `python scripts/x4doctor.py` shows whether it is on
+(row `layer2.reference`). Tell your user that, in those words, before you start modding -- and
+do not tell them the guards are live because the files are present, or that `reference/` is
+protected before `x4doctor` says so.
 
 What an adapter is: a small program your agent runs as its "before a tool call" hook. It
 TRANSLATES your agent's payload into one question for the toolkit's guards, and TRANSLATES the
