@@ -331,7 +331,7 @@ checking them. One time budget covers the whole check (`X4_GUARD_TIMEOUT_S`, def
 shared by a delete's two guards; a check that runs out is an inert deny. The Codex hook path
 uses its own budget instead (`X4_CODEX_BUDGET_S`, 45 s).
 
-**`python scripts/x4doctor.py [--root DIR] [--agent NAME] [--json]` -- are the guards live
+**`python scripts/x4doctor.py [--root DIR] [--agent NAME] [--json] [--toolkit DIR]` -- are the guards live
 here?** A read-only health check, per installed agent target. It runs on Python 3.10 with no
 dependencies, so a broken `uv` cannot take it down. It reports:
 - the bash, python and jq the guards actually resolve, each one executed;
@@ -344,9 +344,14 @@ dependencies, so a broken `uv` cannot take it down. It reports:
 - OpenCode's plugin, adapter and rendered deny rules (in place and current, never "loaded");
 - `X4_GUARD`, the OS-level `reference\` protection and the x4lock state.
 
-Every row is OK, FAIL, UNKNOWN or N/A, and a check that cannot answer says UNKNOWN. Exit codes:
-0 all OK; 1 any FAIL; 3 UNKNOWN without FAIL; 2 nothing checked. A run that checked nothing
-never exits 0.
+Every row is OK, FAIL, UNKNOWN, TODO or N/A, and a check that cannot answer says UNKNOWN.
+**TODO means "installed correctly; YOUR step is pending"** -- trusting the folder in Codex,
+approving its hooks in `/hooks`, applying the `reference/` OS protection
+(`python scripts/x4refguard.py apply`): steps no installer may take for you. Exit codes:
+0 all OK; 1 any FAIL; 3 UNKNOWN without FAIL; **4 only TODO rows pending** (a fresh install,
+before your steps); 2 nothing checked. Precedence is FAIL > UNKNOWN > TODO, so a pending step
+never hides a defect, and a run that checked nothing never exits 0. It acts for the toolkit it
+lives in (`--toolkit DIR` to choose another) and says so when `X4_TOOLKIT` names a different one.
 
 These hooks inspect known command forms; they do not sandbox arbitrary interpreter programs.
 The loss canary detects file loss, not historical guard evaluation health. Persistent guard

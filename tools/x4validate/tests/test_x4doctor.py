@@ -60,6 +60,30 @@ def test_any_FAIL_wins_over_OK():
     assert doc.exit_code(rows) == 1
 
 
+def test_C2_only_user_steps_pending_is_exit_4():
+    rows = [doc.Check("a", "claude", doc.OK, ""), doc.Check("b", "codex", doc.TODO, "trust it")]
+    assert doc.exit_code(rows) == 4
+
+
+def test_C2_a_TODO_never_masks_a_FAIL():
+    rows = [doc.Check("a", "codex", doc.TODO, ""), doc.Check("b", "claude", doc.FAIL, "")]
+    assert doc.exit_code(rows) == 1
+
+
+def test_C2_an_UNKNOWN_outranks_a_TODO():
+    rows = [doc.Check("a", "codex", doc.TODO, ""), doc.Check("b", "claude", doc.UNKNOWN, "")]
+    assert doc.exit_code(rows) == 3
+
+
+def test_C2_a_TODO_counts_as_answered():
+    assert doc.exit_code([doc.Check("a", "codex", doc.TODO, "")]) == 4
+
+
+def test_C2_exit_4_is_documented_in_help():
+    r = _run("--help")
+    assert "4" in r.stdout and "TODO" in r.stdout, r.stdout
+
+
 def test_TWIN_all_OK_is_0():
     assert doc.exit_code([doc.Check("a", "claude", doc.OK, ""), doc.Check("b", "codex", doc.NA, "")]) == 0
 
@@ -699,9 +723,12 @@ def test_no_codex_config_is_UNKNOWN_never_ok(codex_root):
     assert rows["codex.trusted"].status == doc.UNKNOWN and rows["codex.reviewed"].status == doc.UNKNOWN
 
 
-def test_untrusted_project_is_FAIL(codex_root):
+def test_untrusted_project_is_TODO_the_users_step(codex_root):
+    """C2 (install red-team 2026-10-04): trusting the folder is the USER's step on a correct
+    fresh install, never a defect -- TODO, which can never mask a real FAIL."""
     _cfg(codex_root, trusted=False)
-    assert _codex(codex_root)["codex.trusted"].status == doc.FAIL
+    r = _codex(codex_root)["codex.trusted"]
+    assert r.status == doc.TODO and "trust" in r.detail, r
 
 
 def test_TWIN_trusted_lowercased_key_is_OK(codex_root):
@@ -727,7 +754,7 @@ def test_an_UNREVIEWED_hook_is_FAIL_naming_the_silent_skip(codex_root):
     first = sorted(exp)[0]
     _cfg(codex_root, entries={first: exp[first]})
     r = _codex(codex_root)["codex.reviewed"]
-    assert r.status == doc.FAIL and "SILENTLY" in r.detail and "/hooks" in r.detail, r
+    assert r.status == doc.TODO and "SILENTLY" in r.detail and "/hooks" in r.detail, r
 
 
 def test_a_DISABLED_hook_is_FAIL(codex_root):
@@ -919,7 +946,7 @@ def _refguard_stub(state):
 
 
 @pytest.mark.parametrize("state,codex,want", [
-    ("protected", False, "OK"), ("absent", False, "OK"), ("absent", True, "FAIL"),
+    ("protected", False, "OK"), ("absent", False, "OK"), ("absent", True, "TODO"),
     ("partial", True, "FAIL"), ("unsupported", True, "UNKNOWN"), ("error", True, "UNKNOWN"),
     ("foreign", True, "UNKNOWN"), ("unconfigured", True, "UNKNOWN"), ("protected", True, "OK")])
 def test_layer2_states(sandbox, monkeypatch, state, codex, want):
@@ -937,7 +964,7 @@ def test_layer2_an_unprotected_OPENCODE_root_is_FAIL_too(sandbox, monkeypatch):
     (sandbox.root / ".opencode" / "plugins").mkdir(parents=True)
     (sandbox.root / ".opencode" / "plugins" / "x4guard.js").write_text("//\n", encoding="utf-8")
     r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
-    assert r.status == doc.FAIL and "OpenCode" in r.detail, r
+    assert r.status == doc.TODO and "OpenCode" in r.detail, r
 
 
 def test_layer2_asks_the_REAL_x4refguard_and_FAILS_an_unprotected_codex_root(sandbox):
@@ -948,7 +975,7 @@ def test_layer2_asks_the_REAL_x4refguard_and_FAILS_an_unprotected_codex_root(san
     hook-level delete guard, so the real query must say FAIL."""
     shutil.copytree(sandbox.root / ".claude" / "hooks", sandbox.root / ".codex" / "hooks")
     r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
-    assert r.status == doc.FAIL, r
+    assert r.status == doc.TODO and "x4refguard.py apply --yes" in r.detail, r   # C2: the user's step
 
 
 def test_TWIN_layer2_REAL_unprotected_claude_only_root_is_OK(sandbox):

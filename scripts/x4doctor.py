@@ -18,13 +18,17 @@ None of those says anything. This command asks, per installed agent target:
                   X4_GUARD; the OS-level reference protection; the x4lock state.
 
 THE CONTRACT -- ABSENCE vs NON-ANSWER, structurally:
-  every row is OK, FAIL, UNKNOWN or N/A. N/A means only "this target is not installed
-  here" (or "this check cannot apply on this OS"). A check that RAISES becomes UNKNOWN
-  with the exception named, never a dropped row.
+  every row is OK, FAIL, UNKNOWN, TODO or N/A. N/A means only "this target is not installed
+  here" (or "this check cannot apply on this OS"). TODO means "correctly installed; YOUR
+  step is pending" -- trusting the folder in Codex, approving its hooks, applying the OS
+  protection of reference/: things the installer must never do for you (C2, install
+  red-team 2026-10-04: a correct fresh install exited 1 on those alone). A check that
+  RAISES becomes UNKNOWN with the exception named, never a dropped row.
 
     exit 0  every applicable check is OK, and at least one answered
-    exit 1  any FAIL
+    exit 1  any FAIL                             (a TODO never hides one)
     exit 3  no FAIL, but at least one UNKNOWN   (x4validate's degraded exit)
+    exit 4  no FAIL, no UNKNOWN: only YOUR steps (TODO rows) are pending
     exit 2  could not run: no agent target at --root, nothing answered, or a usage error
 
 The verdict line is printed FIRST (CLAUDE.md #38: a truncated report keeps its head).
@@ -35,7 +39,7 @@ touches Codex's config. Stdlib only, Python >= 3.10, so a broken uv or venv cann
 down the tool that diagnoses it.
 
 USAGE
-    python scripts/x4doctor.py [--root DIR] [--agent claude|codex|generic|opencode] [--json]
+    python scripts/x4doctor.py [--root DIR] [--agent claude|codex|generic|opencode] [--json] [--toolkit DIR]
 
 OPENCODE (Plan 3 lane L) is BEST EFFORT, from OpenCode's docs and source, not measured: its
 rows say whether the toolkit's two layers are IN PLACE (plugin + adapter, rendered deny
@@ -53,8 +57,8 @@ import traceback
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-OK, FAIL, UNKNOWN, NA = "OK", "FAIL", "UNKNOWN", "N/A"
-STATUSES = (OK, FAIL, UNKNOWN, NA)
+OK, FAIL, UNKNOWN, NA, TODO = "OK", "FAIL", "UNKNOWN", "N/A", "TODO"
+STATUSES = (OK, FAIL, UNKNOWN, TODO, NA)
 TARGETS = ("claude", "codex", "generic", "opencode")
 HERE = Path(__file__).resolve().parent
 
@@ -115,14 +119,18 @@ class Ctx:
 
 
 def exit_code(rows) -> int:
-    """0 all OK, 1 any FAIL, 3 UNKNOWN without FAIL, 2 nothing answered."""
+    """0 all OK, 1 any FAIL, 3 UNKNOWN without FAIL, 4 only user steps (TODO) pending,
+    2 nothing answered. Precedence FAIL > UNKNOWN > TODO: a pending user step never masks a
+    defect or a non-answer."""
     rows = list(rows)
-    answered = [r for r in rows if r.status in (OK, FAIL)]
+    answered = [r for r in rows if r.status in (OK, FAIL, TODO)]
     if not answered:
         return 2
     if any(r.status == FAIL for r in rows):
         return 1
-    return 3 if any(r.status == UNKNOWN for r in rows) else 0
+    if any(r.status == UNKNOWN for r in rows):
+        return 3
+    return 4 if any(r.status == TODO for r in rows) else 0
 
 
 def run_check(cid: str, target: str, fn, ctx) -> Check:
@@ -889,8 +897,8 @@ def check_codex(ctx: Ctx) -> list[Check]:
         if p == "ancestor":
             return UNKNOWN, ("only an ANCESTOR folder is trusted; whether Codex extends that trust to "
                              "%s is unverified" % ctx.root)
-        return FAIL, ("project NOT trusted: Codex will not load .codex/ here. Run `codex` in %s and "
-                      "trust the folder" % ctx.root)
+        return TODO, ("YOUR STEP: the project is not trusted yet, so Codex will not load .codex/ "
+                      "here. Run `codex` in %s and trust the folder" % ctx.root)
 
     def _reviewed(_):
         if not cfg.is_file() or not hj.is_file():
@@ -903,8 +911,9 @@ def check_codex(ctx: Ctx) -> list[Check]:
                for s in ("untrusted", "disabled", "mismatch")}
         n_ok = sum(h["status"] == "trusted" for h in hooks)
         if bad["untrusted"]:
-            return FAIL, ("%d hook(s) NOT REVIEWED (%s): Codex skips them SILENTLY. Open /hooks in "
-                          "Codex here and approve them" % (len(bad["untrusted"]), ", ".join(bad["untrusted"])))
+            return TODO, ("YOUR STEP: %d hook(s) NOT REVIEWED yet (%s): Codex skips them SILENTLY "
+                          "until you do. Open /hooks in Codex here and approve them"
+                          % (len(bad["untrusted"]), ", ".join(bad["untrusted"])))
         if bad["disabled"]:
             return FAIL, "%d hook(s) disabled in Codex's config (%s): they never run" % (
                 len(bad["disabled"]), ", ".join(bad["disabled"]))
@@ -1157,11 +1166,15 @@ def check_common(ctx: Ctx) -> list[Check]:
         if st in ("absent", "partial"):
             if hookless:
                 names = {"codex": "Codex", "opencode": "OpenCode", "generic": "generic"}
-                return FAIL, ("reference/ has %s OS-level delete protection, and a %s agent here has "
-                              "no Claude hook-level delete guard to fall back on -- run: "
-                              "python scripts/x4refguard.py apply"
-                              % ("NO" if st == "absent" else "only PARTIAL",
-                                 " / ".join(names[t] for t in hookless)))
+                # C2: ABSENT on a fresh install is the user's pending step (the installers never
+                # apply it); PARTIAL is a broken state and stays a FAIL.
+                return (TODO if st == "absent" else FAIL), (
+                    "%sreference/ has %s OS-level delete protection, and a %s agent here has "
+                    "no Claude hook-level delete guard to fall back on -- run: "
+                    "python scripts/x4refguard.py apply --yes"
+                    % ("YOUR STEP: " if st == "absent" else "",
+                       "NO" if st == "absent" else "only PARTIAL",
+                       " / ".join(names[t] for t in hookless)))
             return OK, ("no OS-level delete protection on reference/ (%s); the Claude hooks cover "
                         "deletes" % st)
         return UNKNOWN, "the OS-level protection state of reference/ is %r: %s" % (st, detail)
@@ -1467,6 +1480,7 @@ def _verdict(code: int) -> str:
     return {0: "OK -- every applicable check passed",
             1: "FAIL -- at least one check failed: the guards here are not fully live or not current (see FAIL rows)",
             3: "UNKNOWN -- nothing failed, but some checks could not answer (see UNKNOWN rows)",
+            4: "YOUR STEPS PENDING -- installed correctly; finish the TODO rows (things only you may do)",
             2: "COULD NOT RUN -- nothing was checked; this is not a pass"}[code]
 
 
@@ -1495,7 +1509,13 @@ def main(argv=None) -> int:
     if sys.version_info < (3, 10):
         print("x4doctor: COULD NOT RUN -- needs Python >= 3.10 (this is %d.%d)" % sys.version_info[:2])
         return 2
-    ap = argparse.ArgumentParser(prog="x4doctor", description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(
+        prog="x4doctor", description=__doc__.splitlines()[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="rows: OK, FAIL, UNKNOWN, TODO (your step: trust the folder in Codex, approve its\n"
+               "hooks, apply the reference/ OS protection), N/A (target not installed here)\n"
+               "exit: 0 all OK | 1 any FAIL | 3 no FAIL, some UNKNOWN | 4 only TODO rows pending\n"
+               "      | 2 could not run (FAIL > UNKNOWN > TODO: a TODO never hides a FAIL)")
     ap.add_argument("--root", help="the folder an agent runs in (default: nearest ancestor holding a target)")
     ap.add_argument("--agent", help="report only this target: " + ", ".join(TARGETS))
     ap.add_argument("--json", action="store_true", help="one JSON document on stdout")
