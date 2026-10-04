@@ -24,9 +24,9 @@ spawns native children. A freshly-named variable (`SBX_TMP` in both fixed
 files) carries no export attribute, so it cannot leak into a child's
 environment this way.
 
-Scoped to `scripts/`, `tools/basex/` and `.claude/hooks/` -- the three
-directories a real Claude Code session or CI job actually shells out from, per
-the fu-hang task brief -- rather than the whole repository, so a hit in, say,
+Scoped to `scripts/`, `tools/basex/`, `bin/` and every agent's hook tree (`.claude/`,
+`.codex/`, `.opencode/hooks/` and their source `agent/guards/`) -- the directories a real
+session or CI job actually shells out from -- rather than the whole repository, so a hit in, say,
 a vendored third-party script does not flood a check whose whole point is to
 stay actionable.
 """
@@ -38,9 +38,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 
-#: The three roots this scan covers, and why: everything a session or CI job
-#: actually shells out from. NOT `**/*.sh` repo-wide -- see the module docstring.
-ROOTS = ("scripts", "tools/basex", ".claude/hooks")
+#: The roots this scan covers, and why: everything a session or CI job actually shells out
+#: from. NOT `**/*.sh` repo-wide -- see the module docstring. `agent/guards` (the hook SOURCE,
+#: and codex-entry.sh, which Codex starts for every hook), the generated `.codex/hooks` and
+#: `.opencode/hooks` trees and `bin` joined in the v4.0 release review (R7-9).
+ROOTS = ("scripts", "tools/basex", ".claude/hooks", "agent/guards", ".codex/hooks",
+         ".opencode/hooks", "bin")
 
 #: A bare or `export`-prefixed assignment to TMP/TEMP/TMPDIR, anchored to the
 #: start of the (stripped) line so a mention inside a comment or a string
@@ -145,3 +148,15 @@ def test_scripts_test_hooks_and_smoke_basex_are_clean():
         assert p.is_file(), f"{rel} is expected to exist"
         hits = _tmp_reassignments(p.read_text(encoding="utf-8"))
         assert hits == [], f"{rel} still reassigns TMP/TEMP/TMPDIR at line(s) {hits}"
+
+
+def test_the_population_includes_every_agent_hook_tree_and_the_codex_entry():
+    """v4.0 release review R7-9: the roots were `scripts`, `tools/basex` and `.claude/hooks`, so
+    `agent/guards/adapters/codex-entry.sh` -- the script Codex starts for EVERY hook -- and the
+    generated `.codex/hooks/` and `.opencode/hooks/` trees were never scanned, though each is
+    shelled out from by a real session. Named directly, so a narrowed glob cannot hide them."""
+    scanned = {p.relative_to(REPO).as_posix() for p in _tracked_sh()}
+    for rel in ("agent/guards/adapters/codex-entry.sh", "agent/guards/claude-hooks/protect-bash.sh",
+                ".codex/hooks/protect-bash.sh", ".opencode/hooks/protect-bash.sh",
+                "bin/unpack-reference.sh"):
+        assert rel in scanned, f"{rel} is not in the scanned population"
