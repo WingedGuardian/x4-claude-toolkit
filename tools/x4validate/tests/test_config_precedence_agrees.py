@@ -270,3 +270,61 @@ def test_a_CRLF_config_gives_the_bash_loader_NO_carriage_return(tmp_path):
     assert r.returncode == 0, r.stderr[-400:]
     got = dict(zip(names, r.stdout.decode("utf-8").split("\0")))
     assert got == {**keys, "X4_SAVES": "/g/saves"}, got
+
+
+# --- R5-7 (v4.0.0 review): X4_TOOLKIT UNSET -- two anchors, documented and pinned ----------
+#
+# With X4_TOOLKIT unset the two loaders anchor differently, BY CONSTRUCTION: a guard knows
+# where its own copy lives (CLAUDE_PROJECT_DIR, else <hooks>/../..), a Python tool knows only
+# its working directory, so it walks up from the CWD. They agree whenever the tool runs in the
+# project or below it -- the way an agent runs it -- and that agreement is pinned here. Run
+# from anywhere else, the tool reads what the walk finds there; that divergence is documented
+# in _paths and pinned below, so a change to either side shows up as a failing test.
+
+def _unset_box(tmp_path):
+    tk = tmp_path / "tk"
+    (tk / "sub" / "deeper").mkdir(parents=True)
+    (tk / NEW).write_text('X4_GAME="/xgame/project"\n', encoding="utf-8", newline="\n")
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("X4_") and k not in ("CLAUDE_PROJECT_DIR", "HOOK_DIR")}
+    return tk, env
+
+
+def _bash_in(tk, env, cwd):
+    bash = _bash()
+    if bash is None:
+        pytest.skip("no Git Bash found (the WSL stub does not count) -- NOT CHECKED")
+    r = subprocess.run([bash, "-c", '. "$1"; printf "%s\n" "$_x4_cfg" "${X4_GAME:-}"', "_", str(ENV_SH)],
+                       capture_output=True, text=True, env=dict(env, CLAUDE_PROJECT_DIR=str(tk)),
+                       cwd=str(cwd))
+    assert r.returncode == 0, r.stderr[-400:]
+    f, g = (r.stdout.splitlines() + ["", ""])[:2]
+    return f, g
+
+
+def _py_in(env, cwd):
+    r = subprocess.run([sys.executable, "-c", _PY, str(PKG)], capture_output=True, text=True,
+                       env=env, cwd=str(cwd))
+    assert r.returncode == 0, r.stderr[-400:]
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+def test_UNSET_toolkit_a_tool_run_IN_the_project_agrees_with_the_guards(tmp_path):
+    tk, env = _unset_box(tmp_path)
+    bf, bg = _bash_in(tk, env, tk)
+    p = _py_in(env, tk / "sub" / "deeper")          # the walk climbs to the project root
+    assert _n(bf) == _n(p["file"]) == _n(tk / NEW), (bf, p)
+    assert _n(bg) == _n(p["game"]) == _n("/xgame/project"), (bg, p)
+
+
+def test_UNSET_toolkit_a_tool_run_ELSEWHERE_reads_what_its_walk_finds_DOCUMENTED(tmp_path):
+    """The documented divergence: the guard still reads its project's config; the tool, run
+    outside the project, does not see it. Set X4_TOOLKIT (the installers do) to remove it."""
+    tk, env = _unset_box(tmp_path)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    bf, _ = _bash_in(tk, env, outside)
+    p = _py_in(env, outside)
+    assert _n(bf) == _n(tk / NEW)
+    assert p["file"] is None and p["state"] == "none", p
+    assert "walk" in (PKG / "x4validate" / "_paths.py").read_text(encoding="utf-8").split('"""')[1]

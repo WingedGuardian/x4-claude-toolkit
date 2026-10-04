@@ -27,6 +27,13 @@ development machine only because the hardcoded defaults there happened to be rig
      from the CWD, new before legacy at each level. A named toolkit holding no config
      is NOT rescued by the walk: bash never walks, and a walk here was a silent
      disagreement between the two loaders.
+     ⚠ With X4_TOOLKIT UNSET the two anchor differently, by construction (v4.0.0 review
+     R5-7): a guard knows where its own copy lives (CLAUDE_PROJECT_DIR, else
+     <hooks>/../..), this module knows only the CWD and walks up from it. They AGREE for a
+     tool run in the project or below it -- how an agent runs one -- and a tool run from
+     anywhere else reads whatever its walk finds there. Both behaviours are pinned in
+     tests/test_config_precedence_agrees.py; set X4_TOOLKIT (the installers do) to remove
+     the difference.
   4. a derivation from an already-resolved location (`$X4_GAME/extensions`,
      `$X4_PROFILE/content.xml`, ...)
   5. `_LOCAL_FALLBACK` — development-machine defaults, empty in the public tree
@@ -244,7 +251,19 @@ def _notice(env_file: Path | None) -> None:
     config. Paths and KEY NAMES only, never a value. The bash loader prints nothing
     per call (a hook's stderr beside an empty verdict is a refusal); this is Python,
     where a CLI's stderr is read by a person."""
-    if env_file is None or os.environ.get("X4_CONFIG"):
+    explicit = os.environ.get("X4_CONFIG")
+    if env_file is None and explicit:
+        # v4.0.0 review R5-6: an X4_CONFIG naming no file means NO config is read, and every
+        # path silently fell back (reference -> <toolkit>/reference); only --paths said so.
+        key = "explicit-missing:" + explicit
+        if key not in _NOTICED:
+            _NOTICED.add(key)
+            print(f"x4 config: X4_CONFIG names {native(explicit)}, which does not exist -- NO "
+                  f"config file is read, so every path comes from the environment or a "
+                  f"default. Fix X4_CONFIG, or unset it to use <toolkit>/x4-paths.env.",
+                  file=sys.stderr)
+        return
+    if env_file is None or explicit:
         return
     key = str(env_file)
     if key in _NOTICED:
