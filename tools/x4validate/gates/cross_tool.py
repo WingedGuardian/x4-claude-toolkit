@@ -741,8 +741,11 @@ def check_sql_hardening() -> None:
     from x4validate import _effective
     try:
         con = _effective._connect(_env.effective_db())
-    except SystemExit:
-        print("     note  no store; read-only connection check skipped")
+    except (SystemExit, ValueError, sqlite3.Error) as exc:
+        # v4.0.0 review R5-4: `_connect` reports a missing or incompatible store with
+        # ValueError now, not SystemExit -- uncaught, it aborted the gate with a traceback.
+        print(f"     note  no usable store ({type(exc).__name__}); read-only connection "
+              "check NOT RUN")
         return
     blocked = 0
     probes = ["UPDATE entities SET origin='x'", "DROP TABLE attrs", "CREATE TABLE zzz(a)"]

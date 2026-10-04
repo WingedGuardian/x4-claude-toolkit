@@ -24,7 +24,8 @@ WHAT IT WILL NOT DO:
   `settings.local.json` and `backups/` are outside it by construction. ONE exception: a
   3.x path config at `<game>/.claude/x4-paths.env` is MOVED (bytes and x4lock lock kept)
   to `<game>/x4-paths.env`, where 4.x reads it -- never edited. Two copies that DIFFER are
-  reported and neither is touched (Plan 3 lane I; `_paths.migrate_legacy_config`).
+  a CONFLICT: neither is touched and the run exits 1 (Plan 3 lane I;
+  `_paths.migrate_legacy_config`).
 
 HOW IT WRITES, each measured as a failure mode somewhere in this workspace:
 
@@ -71,6 +72,10 @@ x4lock = _load("x4lock_for_deploy", REPO_ROOT / "scripts" / "x4lock.py")
 CREATE, UPDATE, SKIP, REFUSE, REPORT = "create", "update", "identical", "REFUSED", "only in game root"
 #: A game root's 3.x `.claude/x4-paths.env` moved to the root (Plan 3 lane I).
 MIGRATE = "migrate (3.x config)"
+#: Two path configs that DIFFER: neither is touched, and the run exits 1 (v4.0.0 review R4-9:
+#: it was a REPORT with rc 0, so a scripted deploy read "done" beside two configs that protect
+#: different trees).
+CONFLICT = "CONFLICT (two configs)"
 
 
 @dataclass
@@ -167,7 +172,7 @@ def _plan_config(dest_claude: Path) -> list[Action]:
     if action in ("would-move", "would-retire-old"):
         return [Action(name, MIGRATE, msg)]
     if action == "refused":
-        return [Action(name, REPORT, msg)]
+        return [Action(name, CONFLICT, msg)]
     return []
 
 
@@ -281,18 +286,23 @@ def main(argv: list[str] | None = None) -> int:
     print(f"DEPLOY .claude/ -- {mode}")
     print(f"  from {repo_root / '.claude'}")
     print(f"  to   {dest}   (installer rewrite: {'yes' if needs_rewrite(dest) else 'no'})")
-    width = max(len(k) for k in (CREATE, UPDATE, SKIP, REFUSE, REPORT, MIGRATE))
+    width = max(len(k) for k in (CREATE, UPDATE, SKIP, REFUSE, REPORT, MIGRATE, CONFLICT))
     for a in actions:
         if a.kind == SKIP:
             continue
         print(f"  {a.kind:<{width}}  {a.name}" + (f"  -- {a.reason}" if a.reason else ""))
     counts = {k: sum(1 for a in actions if a.kind == k)
-              for k in (CREATE, UPDATE, SKIP, REFUSE, REPORT, MIGRATE)}
+              for k in (CREATE, UPDATE, SKIP, REFUSE, REPORT, MIGRATE, CONFLICT)}
     print("  " + ", ".join(f"{v} {k}" for k, v in counts.items()))
 
     refused = [a for a in actions if a.kind == REFUSE]
+    conflicts = [a for a in actions if a.kind == CONFLICT]
+    if conflicts:
+        print(f"  {len(conflicts)} path-config CONFLICT(S) -- two configs that DIFFER; neither "
+              f"was touched. Resolve: python \"{REPO_ROOT / 'scripts' / 'x4config.py'}\" status "
+              f"--root \"{dest.parent}\"", file=sys.stderr)
     if not args.apply:
-        return 1 if refused else 0
+        return 1 if (refused or conflicts) else 0
 
     failures = apply(repo_root, dest, actions)
     for f in failures:
@@ -313,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
     if broken:
         print(f"  PARITY BROKEN after apply for {len(broken)} file(s) this deploy wrote or "
               "checked -- the plan and the write disagree", file=sys.stderr)
-    return 1 if (refused or failures or broken) else 0
+    return 1 if (refused or failures or broken or conflicts) else 0
 
 
 if __name__ == "__main__":  # pragma: no cover

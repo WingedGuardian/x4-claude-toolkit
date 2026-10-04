@@ -192,7 +192,8 @@ def require(value: Path | None, what: str, fix: str) -> Path:
     if value is None:
         print(f"error: {what} is not configured — {fix}", file=sys.stderr)
         print("       (run `x4validate --paths` to see what resolved; "
-              "config file: .claude/x4-paths.env)", file=sys.stderr)
+              "config file: <toolkit>/x4-paths.env, 3.x: <toolkit>/.claude/x4-paths.env)",
+              file=sys.stderr)
         raise SystemExit(2)
     return Path(value)
 

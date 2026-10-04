@@ -311,3 +311,24 @@ def test_the_example_ships_at_the_root_and_not_in_claude():
     assert (REPO / "x4-paths.env.example").is_file()
     assert tracked("x4-paths.env.example") == ["x4-paths.env.example"]
     assert tracked(".claude/x4-paths.env.example") == []
+
+
+def test_an_X4_CONFIG_naming_a_MISSING_file_is_NOTICED_not_silent(tk, monkeypatch, tmp_path, capsys):
+    """v4.0.0 review R5-6: X4_CONFIG naming a file that does not exist means NO config file is
+    read -- every path then falls back (reference -> <toolkit>/reference), and nothing outside
+    `x4validate --paths` said so. One stderr line, naming the variable and the path."""
+    gone = tmp_path / "nope" / "x4-paths.env"
+    monkeypatch.setenv("X4_CONFIG", str(gone))
+    _paths.reload()
+    _paths.reference()
+    err = capsys.readouterr().err
+    assert "X4_CONFIG" in err and str(gone) in err and "does not exist" in err, err
+
+
+def test_TWIN_an_X4_CONFIG_naming_a_REAL_file_says_nothing(tk, monkeypatch, tmp_path, capsys):
+    real = tmp_path / "real.env"
+    real.write_text("X4_GAME=/x\n", encoding="utf-8")
+    monkeypatch.setenv("X4_CONFIG", str(real))
+    _paths.reload()
+    _paths.reference()
+    assert "X4_CONFIG" not in capsys.readouterr().err

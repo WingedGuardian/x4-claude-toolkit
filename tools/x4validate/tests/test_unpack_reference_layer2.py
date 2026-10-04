@@ -230,3 +230,29 @@ def test_an_UNSUPPORTED_platform_continues_with_exit_0(tmp_path):
         assert "Layer 2: not available on this OS" in r.stdout
     finally:
         _unprotect(tmp_path, ref)
+
+
+def test_an_UNREADABLE_layer2_state_on_an_existing_tree_REFUSES(tmp_path):
+    """v4.0.0 review R4-10: x4refguard reporting `error` (the protection state could not be
+    read) let the unpack PROCEED into a tree that may be protected -- failing file by file,
+    part-way through. A state nobody could read is not 'unprotected': refuse and say why."""
+    ref = tmp_path / "reference"
+    (ref / "libraries").mkdir(parents=True)
+    stub = tmp_path / "stubguard.py"
+    stub.write_text("import sys\nprint('{\"state\": \"error\"}')\nsys.exit(2)\n", encoding="utf-8")
+    env = _env(tmp_path, ref, X4_REFGUARD_SCRIPT=str(stub))
+    r = _run(env, ref)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "REFUSING" in r.stderr and "error" in r.stderr
+    assert not (ref / "libraries" / "f1.xml").exists(), "the unpack ran"
+
+
+def test_TWIN_an_ABSENT_layer2_on_an_existing_tree_still_unpacks(tmp_path):
+    ref = tmp_path / "reference"
+    (ref / "libraries").mkdir(parents=True)
+    stub = tmp_path / "stubguard.py"
+    stub.write_text("import sys\nprint('{\"state\": \"absent\"}')\nsys.exit(1)\n", encoding="utf-8")
+    env = _env(tmp_path, ref, X4_REFGUARD_SCRIPT=str(stub))
+    r = _run(env, ref)
+    assert "REFUSING" not in r.stderr, r.stdout + r.stderr
+    assert (ref / "libraries" / "f1.xml").exists()

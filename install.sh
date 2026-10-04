@@ -835,8 +835,16 @@ preserve_user_agents_md() {   # DEST -- AFTER the locked-target precheck, BEFORE
 }
 
 # --- {{TOOLKIT}} in the Codex / generic skills ----------------------------------------
-_toolkit_render_value() {
-  if [ "$OS" = windows ]; then printf '%s' "$X4_TOOLKIT_RENDER_windows"
+#: PER TARGET SHELL, not only per OS (v4.0.0 review R4-6). Codex runs PowerShell on Windows;
+#: OpenCode runs bash when X4_OPENCODE_SHELL=bash -- the setting its plugin reads too -- and
+#: bash expands `$env:X4_TOOLKIT` to ':X4_TOOLKIT'. No single spelling expands in both shells
+#: (MEASURED: PowerShell splits `"C:/a b"/tools` into two arguments, so not even a quoted
+#: absolute path works). Only the EXPLICIT setting decides, never $SHELL: the installer's own
+#: shell is not OpenCode's, and the two installers must render alike. install.ps1 holds the
+#: same rule (Get-ToolkitRenderValue).
+_toolkit_render_value() {   # [TARGET DIR]
+  if [ "$OS" = windows ] && ! { [ "${1:-}" = .opencode ] && [ "${X4_OPENCODE_SHELL:-}" = bash ]; }; then
+    printf '%s' "$X4_TOOLKIT_RENDER_windows"
   else printf '%s' "$X4_TOOLKIT_RENDER_posix"; fi
 }
 
@@ -844,12 +852,13 @@ _toolkit_render_value() {
 #: from a destination glob, so a user's own file under .agents/ is never touched (the
 #: rule install_global_claude learned the hard way). Verified per file afterwards.
 render_toolkit_token() {   # DEST
-  local dest="$1" d f rel to n=0
+  local dest="$1" d f rel to n=0 said=""
   refuse_if_dry_run "rendering the skill token in" "$dest"
-  to="$(_toolkit_render_value)"
   for d in $X4_TOKEN_DIRS; do
     _item_selected "$d" || continue
     [ -d "$SRC/$d" ] || continue
+    to="$(_toolkit_render_value "$d")"
+    said="$said${said:+, }$d/ as $to"
     while IFS= read -r f; do
       rel="${f#"$SRC/"}"
       [ -f "$dest/$rel" ] || continue
@@ -862,7 +871,7 @@ render_toolkit_token() {   # DEST
       fi
     done < <(find "$SRC/$d" -type f 2>/dev/null)
   done
-  [ "$n" -gt 0 ] && echo "  rendered $X4_TOOLKIT_TOKEN as $to in $n skill file(s)"
+  [ "$n" -gt 0 ] && echo "  rendered $X4_TOOLKIT_TOKEN in $n skill file(s): $said"
   return 0
 }
 
@@ -875,7 +884,7 @@ note_in_place_token() {
     _item_selected "$d" || continue
     if [ -d "$SRC/$d" ] && grep -rqF "$X4_TOOLKIT_TOKEN" "$SRC/$d" 2>/dev/null; then
       echo "  [note] installing in place: $d/ keeps the $X4_TOOLKIT_TOKEN token unrendered."
-      echo "         An agent reading those skills should read it as $(_toolkit_render_value)."
+      echo "         An agent reading those skills should read it as $(_toolkit_render_value "$d")."
     fi
   done
   return 0
@@ -967,6 +976,56 @@ _oc_python() {
     if _oc_py_ok "$c"; then X4_OC_PY=("$c"); return 0; fi
   done
   return 1
+}
+
+# --- R6-04 (v4.0.0 review): the OS protection on reference/ is PRINTED, never applied -----
+#: Layer 2 (scripts/x4refguard.py) is an ACL / attribute change, so an installer never applies
+#: it on the user's behalf. setup.sh and bin/unpack-reference.sh apply it on a FRESH unpack;
+#: an install or upgrade over an EXISTING reference/ applied nothing and said nothing. So:
+#: when x4refguard reports reference/ present and not protected, say so and name the step.
+#: Silent when it is protected, when there is no reference/ yet ('unconfigured'), and where no
+#: mechanism exists ('unsupported'). install.ps1's Write-RefguardStep prints the same lines.
+X4_REFGUARD_STEP_CMD='python scripts/x4refguard.py apply'
+print_refguard_step() {   # TOOLKIT
+  local tk="$1" out state=""
+  [ -f "$tk/scripts/x4refguard.py" ] || return 0
+  if _oc_python; then
+    out="$(cd "$tk" && X4_TOOLKIT="$tk" "${X4_OC_PY[@]}" scripts/x4refguard.py status --json 2>/dev/null)" || true
+    state="$(printf '%s' "$out" | sed -n 's/.*"state": "\([a-z]*\)".*/\1/p' | head -n 1)"
+  elif [ -d "${REFERENCE:-$tk/reference}" ]; then
+    state="unknown (no Python >= 3.10 to ask x4refguard)"
+  fi
+  case "$state" in
+    ""|protected|unconfigured|unsupported) return 0 ;;
+  esac
+  echo
+  echo "Reference: reference/ exists and is NOT OS-protected (x4refguard state: $state)."
+  echo "           The installer never changes permissions for you. To add the OS-level"
+  echo "           deny-delete layer (any process, hooks or not), run in $tk:"
+  echo "             $X4_REFGUARD_STEP_CMD"
+}
+
+#: A READ-ONLY (x4lock'd) .opencode/opencode.jsonc that would have to change refuses UP FRONT,
+#: like the Codex hooks.json above (v4.0.0 review R4-5: it had no precheck, so an upgrade copied
+#: the whole toolkit and THEN failed at the render). "Would have to change" is the renderer's
+#: own `check`, run from the SOURCE (the destination's copy may be older) against the
+#: destination's roots. Cannot ask (no python, no renderer): the writer reports it.
+precheck_opencode_config() {   # DEST
+  local dest="$1" f="$1/.opencode/opencode.jsonc"
+  _opencode_selected || return 0
+  [ -e "$f" ] || return 0
+  [ -w "$f" ] && return 0
+  [ -f "$SRC/.opencode/hooks/opencode_config.py" ] || return 0
+  _oc_python || return 0
+  X4_TOOLKIT="$dest" "${X4_OC_PY[@]}" "$SRC/.opencode/hooks/opencode_config.py" check --root "$dest" >/dev/null 2>&1 && return 0
+  echo                                                                          >&2
+  echo "REFUSING: the OpenCode deny rules must change, and the file is READ-ONLY." >&2
+  echo "      $f"                                                               >&2
+  echo "  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:" >&2
+  echo "      python scripts/x4lock.py unlock \"$f\""                           >&2
+  echo "      <re-run this command>"                                            >&2
+  echo "      python scripts/x4lock.py lock"                                    >&2
+  exit 1
 }
 
 write_opencode_config() {   # DEST
@@ -1215,7 +1274,9 @@ precheck_config() {   # precheck_config TOOLKIT_DIR
     echo "  They differ on: $(_i_differing_keys "$f" "$old")"                   >&2
     echo "  Nothing has been changed. Keep the values you want in the first, delete" >&2
     echo "  or rename the second, then re-run. To see them side by side:"       >&2
-    echo "      python \"$t/scripts/x4config.py\" status"                       >&2
+    # --root, and the SOURCE's copy: without --root `status` reports X4_TOOLKIT's (or the
+    # cwd's) config -- possibly another toolkit (v4.0.0 review R4-11).
+    echo "      python \"$SRC/scripts/x4config.py\" status --root \"$t\""          >&2
     exit 1
   fi
   if [ "$DRY_RUN" = 1 ] && [ -f "$old" ]; then
@@ -1626,6 +1687,7 @@ refuse_if_dry_run() {
   echo
   echo "  --dry-run: NOT $1"
   echo "      $2"
+  announce_dry_run_extras "$TOOLKIT"
   echo
   echo "=== dry run complete: nothing was changed ==="
   exit 0
@@ -1694,6 +1756,35 @@ announce_target() {
 #: The dry-run listing, for the arms where a COPY would actually happen. The gate
 #: itself does not depend on this: refuse_if_dry_run sits inside all three writers,
 #: so an arm that copies nothing still stops before it writes.
+#: THE REST OF THE PREVIEW (v4.0.0 review R4-4). The copy plan listed the copied items and
+#: stopped, so three writes the real run makes -- the Codex hooks.json render, the OpenCode
+#: deny-rule render, the .codex/config.toml prepend -- were never named; and the in-place and
+#: global arms reach no copy, so they never printed the X4_TOOLKIT line either. ONE function,
+#: called by the copy plan AND by the dry-run gate every writer passes through. install.ps1's
+#: Show-DryRunExtras prints the same lines.
+X4_DRY_EXTRAS_SHOWN=0
+announce_dry_run_extras() {   # DEST
+  local dest="$1" f old
+  [ "$X4_DRY_EXTRAS_SHOWN" = 1 ] && return 0
+  X4_DRY_EXTRAS_SHOWN=1
+  [ -n "$dest" ] || return 0
+  if [ "$METHOD" != global ] && _codex_selected; then
+    echo "  .codex/hooks.json would be (re)rendered for this folder (Codex skips a changed hook until you re-approve it in /hooks)"
+  fi
+  if [ "$METHOD" != global ] && _opencode_selected; then
+    echo "  .opencode/opencode.jsonc (the OpenCode deny rules) would be rendered for this folder's roots"
+  fi
+  if [ -n "$CODEX_DOC_MAX" ]; then
+    f="$(_h_codex_config "$dest")"
+    if old="$(_h_codex_doc_value "$f")"; then
+      echo "  $f already sets project_doc_max_bytes = $old: it would be left unchanged"
+    else
+      echo "  project_doc_max_bytes = $CODEX_DOC_MAX would be prepended to $f"
+    fi
+  fi
+  _h_userenv_preview "$dest"
+}
+
 announce_copy_plan() {
   [ "$DRY_RUN" = 1 ] || return 0
   echo "  --dry-run: nothing will be written. Items that would be copied:"
@@ -1714,7 +1805,7 @@ announce_copy_plan() {
     echo "  your CLAUDE.md is not one this toolkit shipped: it would be KEPT as $to, not overwritten"
     _h_hash_caveat
   fi
-  _h_userenv_preview "$TOOLKIT"
+  announce_dry_run_extras "$TOOLKIT"
   echo
   echo "=== dry run complete: nothing was changed ==="
   exit 0
@@ -1837,12 +1928,33 @@ _h_profile_value() {   # FILE
   printf '%s' "$v"
 }
 
+#: EVERY startup file an X4_TOOLKIT export could already live in (v4.0.0 review R4-3: only
+#: the one this installer would write was read, so an export in another one -- a login
+#: shell's ~/.profile, Git Bash's ~/.bashrc on Windows -- was invisible, and a SECOND,
+#: conflicting value was written). Windows: Git Bash's own files.
+_h_profile_files() {
+  if [ "$OS" = windows ]; then
+    printf '%s\n' "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"
+  else
+    printf '%s\n' "${ZDOTDIR:-$HOME}/.zshenv" "${ZDOTDIR:-$HOME}/.zprofile" "${ZDOTDIR:-$HOME}/.zshrc" \
+      "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.bashrc"
+  fi
+}
+
 #: THE DECISION, one function read by the dry-run line and the writer. Prints one line:
-#: `set` | `same` | `different<TAB>OLD` | `skip<TAB>WHY` | `fail<TAB>WHY`.
+#: `set` | `same` | `different<TAB>FOUND` | `skip<TAB>WHY` | `fail<TAB>WHY`, where FOUND is
+#: EVERY existing value, `VALUE (WHERE)` joined by `; ` -- all of them, not the first.
+#: Nothing is written beside a value that differs: which one a terminal then sees depends on
+#: how it was started.
 _h_userenv_plan() {   # TOOLKIT
-  local v old f rc=0 tab
+  local v old f rc=0 tab found="" diff=0 pf
   tab="$(printf '\t')"
   v="$(_h_native_path "$1")"
+  _h_found() {   # VALUE WHERE
+    [ -n "$1" ] || return 0
+    found="$found${found:+; }$1 ($2)"
+    _h_same_path "$1" "$v" || diff=1
+  }
   if [ "$OS" = windows ]; then
     old="$(_h_win_userenv get)" || rc=$?
     case "$rc" in
@@ -1851,17 +1963,28 @@ _h_userenv_plan() {   # TOOLKIT
       4) printf 'fail%sthe source has no %s' "$tab" "$X4_USERENV_PS1"; return 0 ;;
       *) printf 'fail%s%s get failed' "$tab" "$X4_USERENV_PS1"; return 0 ;;
     esac
+    _h_found "$old" "your user environment"
+    old="$(_h_win_userenv get-machine)" || { printf 'fail%s%s get-machine failed' "$tab" "$X4_USERENV_PS1"; return 0; }
+    _h_found "$old" "the machine environment"
   else
     if ! f="$(_h_profile_file)"; then
       printf 'skip%syour shell (%s) is not bash or zsh, so no startup file is edited' "$tab" "${SHELL:-unset}"
       return 0
     fi
-    old="$(_h_profile_value "$f")" || old=""
-    [ -n "$old" ] || old="$X4_H_INHERITED_TOOLKIT"
   fi
-  if [ -z "$old" ]; then printf 'set'
-  elif _h_same_path "$old" "$v"; then printf 'same'
-  else printf 'different%s%s' "$tab" "$old"; fi
+  while IFS= read -r pf; do
+    [ -n "$pf" ] || continue
+    old="$(_h_profile_value "$pf")" || old=""
+    _h_found "$old" "$pf"
+  done <<EOF_PROFILES
+$(_h_profile_files)
+EOF_PROFILES
+  if [ "$OS" != windows ] && [ -z "$found" ]; then
+    _h_found "$X4_H_INHERITED_TOOLKIT" "this shell's environment"
+  fi
+  if [ -z "$found" ]; then printf 'set'
+  elif [ "$diff" = 0 ]; then printf 'same'
+  else printf 'different%s%s' "$tab" "$found"; fi
 }
 
 #: The dry-run preview, from the same decision.
@@ -1973,6 +2096,7 @@ case "$METHOD" in
     fi
     precheck_config "$TOOLKIT"
     precheck_codex_hooks_json "$TOOLKIT"   # written on BOTH branches, so OUTSIDE the guard
+    precheck_opencode_config "$TOOLKIT"    # likewise
     precheck_codex_doc_max_bytes "$TOOLKIT"
     if ! same_dir "$SRC" "$TOOLKIT"; then
       precheck_locked_targets "$TOOLKIT"
@@ -2015,6 +2139,7 @@ case "$METHOD" in
     fi
     precheck_config "$TOOLKIT"
     precheck_codex_hooks_json "$TOOLKIT"   # written on BOTH branches, so OUTSIDE the guard
+    precheck_opencode_config "$TOOLKIT"    # likewise
     precheck_codex_doc_max_bytes "$TOOLKIT"
     if ! same_dir "$SRC" "$TOOLKIT"; then
       precheck_locked_targets "$TOOLKIT"
@@ -2204,6 +2329,7 @@ if [ "$METHOD" != global ] && _opencode_selected; then
   echo "           verify:  python scripts/x4doctor.py --root \"$TOOLKIT\" --agent opencode"
 fi
 [ "$METHOD" = global ] && echo "Global:    skills/agents + X4_* env added to your ~/.claude — works from any mod repo."
+print_refguard_step "$TOOLKIT"
 echo "Next:      set X4_GAME if blank, then  (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/."
 echo
 case "$X4_H_ENV_STATE" in

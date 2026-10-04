@@ -103,3 +103,25 @@ def test_malformed_freshness_refused_without_traceback(tmp_path, capsys, field, 
     assert _xref.main(['who-calls', 'find_station', '--tsv', str(path)]) == 2
     err = capsys.readouterr().err
     assert 'rebuild' in err.lower() and 'Traceback' not in err
+
+
+def test_an_INCOMPLETE_index_negative_is_DEGRADED_rc_3_never_0(tmp_path, capsys, monkeypatch):
+    """v4.0.0 review R5-11: the coverage note said 'INCOMPLETE ... any negative here is a lead,
+    not a finding' while the verdict said 'a real negative' with exit 0. An index that misses
+    installed DLC cannot certify an absence: exit 3 (degraded), never 0, never 'real'."""
+    path, _ = built(tmp_path)
+    capsys.readouterr()
+    monkeypatch.setattr(_xref, '_expected_dlc', lambda: 1)
+    rc = _xref.main(['who-calls', 'absent', '--tsv', str(path)])
+    cap = capsys.readouterr()
+    assert 'INCOMPLETE' in cap.out, cap.out
+    assert rc == 3, (rc, cap.out, cap.err)
+    assert 'real negative' not in cap.out
+
+
+def test_TWIN_a_COMPLETE_index_negative_stays_certified(tmp_path, capsys, monkeypatch):
+    path, _ = built(tmp_path)
+    capsys.readouterr()
+    monkeypatch.setattr(_xref, '_expected_dlc', lambda: 0)
+    assert _xref.main(['who-calls', 'absent', '--tsv', str(path)]) == 0
+    assert 'real negative' in capsys.readouterr().out

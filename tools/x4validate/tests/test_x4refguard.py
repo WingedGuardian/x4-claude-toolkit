@@ -268,10 +268,14 @@ def protected_cleanup(ref, tmp_path):
 
 
 def test_SANDBOX_refuses_a_mutation_outside_it(tmp_path):         # falsification twin
+    # The OUTSIDE target is a SCRATCH sibling, never Path.home() (v4.0.0 review R7-5): if the
+    # sandbox check ever regressed, this twin would have chmod-ed the developer's home.
+    outside = tmp_path.parent / (tmp_path.name + "-outside")
+    outside.mkdir(exist_ok=True)
     with pytest.raises(x4refguard.SandboxViolation):
-        x4refguard._mutate_run(["icacls", Path.home(), "/?"], Path.home())
+        x4refguard._mutate_run(["icacls", outside, "/?"], outside)
     with pytest.raises(x4refguard.SandboxViolation):
-        x4refguard._mutate_chmod(Path.home(), 0o755)
+        x4refguard._mutate_chmod(outside, 0o755)
     with pytest.raises(x4refguard.SandboxViolation):       # the sandbox itself is not "under" it
         x4refguard._mutate_chmod(tmp_path, 0o755)
 

@@ -303,17 +303,32 @@ def _candidates() -> list[Path]:
     out: list[Path] = []
 
     game = _cfg("game_root")
-    if game:
-        game = Path(game)
-        for rel in _GAME_RELATIVE:
-            out.append(game / rel)
-        for marker in _demanded_targets(game):
-            out.extend(game / rel for rel in _TARGET_DEMANDS[marker])
+    game = Path(game) if game else None
+    roots = _agent_roots(game)
+    marked = [r for r in roots if _markers_in(r)]
+    for root in roots:
+        if root in marked:
+            demanded = _markers_in(root)
+        elif not marked and game is not None and root is game:
+            demanded = _demanded_targets(root)       # the pre-4.0 Claude fallback
+        else:
+            demanded = None                         # lock-if-present only
+        if demanded is None:
+            out.extend(root / rel for rel in _GAME_RELATIVE if (root / rel).is_file())
+        else:
+            out.extend(root / rel for rel in _GAME_RELATIVE)
+            for marker in demanded:
+                out.extend(root / rel for rel in _TARGET_DEMANDS[marker])
         for pat in _GAME_GLOBS:
-            out.extend(sorted(game.glob(pat)))
+            out.extend(sorted(root.glob(pat)))
 
+    # DEMANDED once its folder exists. The registry is created by the first x4modlist run,
+    # and before that its folder does not exist either: demanding it made every fresh install
+    # read MISSING (v4.0.0 review, MEASURED on scratch installs). A deleted registry whose
+    # folder remains -- the incident shape, a file replaced or removed -- is still MISSING;
+    # removing the whole `_registry/` folder is the residual gap, and it is named here.
     reg = _cfg("registry")
-    if reg:
+    if reg and (Path(reg).is_file() or Path(reg).parent.is_dir()):
         out.append(Path(reg))
 
     # Every `x4-paths.env` in play: the one this checkout carries, and the one the
@@ -337,6 +352,31 @@ def _candidates() -> list[Path]:
             out.append(Path(extra.strip()))
 
     return out
+
+
+def _is_installed_toolkit(root: Path) -> bool:
+    """An INSTALLED toolkit: the runtime the installers copy, and no agent/ source. A source
+    checkout's .claude/ etc. are GENERATED, and a read-only bit there would break
+    gen-agent-trees.py and `git checkout` -- so a checkout is never an agent root here."""
+    return ((root / "tools" / "x4validate" / "x4validate" / "_paths.py").is_file()
+            and not (root / "agent").is_dir())
+
+
+def _agent_roots(game: Path | None) -> list[Path]:
+    """The folders an agent runs in, whose guards and instructions are locked: the game root,
+    and -- for `install --method separate`, where the guards live in the toolkit folder and
+    none in the game folder -- the INSTALLED toolkit this script ships in (v4.0.0 review: a
+    separate install's guards were never locked). Deduplicated: in-game, they are one."""
+    roots = [game] if game is not None else []
+    tk = _HERE.parent
+    if _is_installed_toolkit(tk) and not any(_same_file(tk, r) for r in roots):
+        roots.append(tk)
+    return roots
+
+
+def _markers_in(root: Path) -> list[str]:
+    """The agent-target markers present in `root` (none: an empty list)."""
+    return [m for m in _TARGET_DEMANDS if (root / m).is_dir()]
 
 
 def _demanded_targets(game: Path) -> list[str]:

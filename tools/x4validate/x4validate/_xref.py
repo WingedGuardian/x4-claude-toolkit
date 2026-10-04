@@ -316,6 +316,23 @@ def _exclusions(tsv: Path | None) -> str:
             f"index at all (see {_sidecar(tsv).name})")
 
 
+def _expected_dlc() -> int | None:
+    """How many DLC roots the configured game has (`Config.dlc_dirs()`), or None when no game
+    root is configured -- a SETUP state, not a coverage claim."""
+    from x4validate import _merge
+    try:
+        return len(_merge.Config().dlc_dirs())
+    except Exception:  # silent-ok: no configured game root; coverage_note says nothing then
+        return None
+
+
+def coverage_incomplete(rows: list[XrefRow]) -> bool:
+    """True when the index holds fewer DLC than are installed (see coverage_note)."""
+    expected = _expected_dlc()
+    dlc = {r.source for r in rows if r.source.startswith("dlc:")}
+    return bool(expected) and len(dlc) < expected
+
+
 def coverage_note(rows: list[XrefRow]) -> str:
     """Describe the SCANNED SOURCE SET behind an answer, and flag a shortfall.
 
@@ -328,15 +345,14 @@ def coverage_note(rows: list[XrefRow]) -> str:
     Comparing the DLC actually present in the index against `Config.dlc_dirs()`
     turns that silence into a visible INCOMPLETE.
     """
-    from x4validate import _merge
     srcs = {r.source for r in rows}
     dlc = {s for s in srcs if s.startswith("dlc:")}
     mods = srcs - dlc - {"base"}
     note = (f" from base + {len(dlc)} DLC + {len(mods)} mod(s)")
-    try:
-        expected = len(_merge.Config().dlc_dirs())
-    except Exception:  # silent-ok: no configured game root is a SETUP state, not a
-        # coverage claim. Report what was scanned; assert nothing about what is missing.
+    expected = _expected_dlc()
+    if expected is None:
+        # No configured game root is a SETUP state, not a coverage claim. Report what was
+        # scanned; assert nothing about what is missing.
         return note
     if expected and len(dlc) < expected:
         note += (f" — ⚠ INCOMPLETE: {len(dlc)} of {expected} installed DLC are in this "
@@ -549,11 +565,20 @@ def main(argv: list[str] | None = None) -> int:
         print(_stale.banner("the x4xref index"), file=sys.stderr)
         print("!! Rebuild:  uv run x4xref build", file=sys.stderr)
 
-    certified = signed and exclusions_signed and _stale.fresh
+    intact = signed and exclusions_signed and _stale.fresh
+    # v4.0.0 review R5-11: an index that misses installed DLC said "INCOMPLETE ... a lead,
+    # not a finding" in its note and then certified the absence with exit 0 anyway.
+    incomplete = intact and coverage_incomplete(rows)
+    certified = intact and not incomplete
 
     def absence():
         if certified:
             return 0
+        if incomplete:
+            print('DEGRADED: the index is intact and fresh but holds fewer DLC than are '
+                  'installed, so this negative is a lead, not a finding (exit 3). Rebuild: '
+                  'uv run x4xref build', file=sys.stderr)
+            return 3
         print('NOT A NEGATIVE FINDING: index integrity or source freshness is unavailable; '
               'rebuild with uv run x4xref build.', file=sys.stderr)
         return 2

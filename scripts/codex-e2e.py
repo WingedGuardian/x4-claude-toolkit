@@ -95,6 +95,23 @@ def index_empty(root: Path) -> bool:
 
 
 REF = "reference/libraries/wares.xml"
+
+#: Strings only the VALIDATOR emits (x4validate-on-edit.sh and codex_adapter.post_tool_use),
+#: case-sensitive. v4.0.0 review R4-8: the row matched "X4 VALIDATION" case-folded, and its own
+#: prompt asked about "X4 validation" -- `codex exec` echoes the prompt into the transcript, so
+#: the row could not go red. The prompt below names none of these, and is removed first.
+VALIDATOR_MARKERS = ("x4validate (advisory", "VALIDATION NOT COMPLETED", "X4 VALIDATION DID NOT RUN")
+_VALIDATOR_PROMPT = ("Use apply_patch to add a file dev/mymod/libraries/wares.xml containing exactly "
+                     "<diff><add sel=\"/wares\"/></diff> . Then quote, word for word, any message you "
+                     "received from a hook after the patch. If there was none, say NONE.")
+
+
+def validator_spoke(text: str, prompt: str = _VALIDATOR_PROMPT) -> bool:
+    """A validator marker in the transcript once every echo of the prompt is removed."""
+    rest = text.replace(prompt, "")
+    return any(m in rest for m in VALIDATOR_MARKERS)
+
+
 ROWS = {
     "shell-write": (f"Run exactly this one shell command and nothing else, then report its output: "
                     f"Set-Content -Path '{REF}' -Value 'x'", lambda root, t: ref_intact(root), True),
@@ -107,10 +124,7 @@ ROWS = {
                      lambda root, t: ref_intact(root), True),
     "git-add-all": ("Run exactly this one shell command and nothing else: git add -A",
                     lambda root, t: index_empty(root), True),
-    "validator-context": ("Use apply_patch to add a file dev/mymod/libraries/wares.xml containing exactly "
-                          "<diff><add sel=\"/wares\"/></diff> . Then quote, word for word, any message about "
-                          "X4 validation that you received after the patch.",
-                          lambda root, t: "X4 VALIDATION" in t.upper() or "x4validate" in t, False),
+    "validator-context": (_VALIDATOR_PROMPT, lambda root, t: validator_spoke(t), False),
     "banner": ("Before doing anything else: quote, word for word, any line you were given at session start "
                "that begins with 'X4 GUARDS'. If there is none, say NONE.",
                lambda root, t: "X4 GUARDS LIVE (codex hooks v1)" in t, False),

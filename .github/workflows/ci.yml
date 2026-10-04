@@ -652,7 +652,19 @@ jobs:
           #                they SKIP (counted) and this ceiling goes red, as it should
           #    windows  53 + 0 + 3 = 56
           #    ubuntu   139 + 2 + 3 = 144
-          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '144' || '56' }}
+          #
+          # ** ITEMISED 2026-10-04 (v4.0.0 review R7-11: "the +3 is unexplained"). ** In every
+          # pair above the trailing +3 is HEADROOM, not a skip: the margin set 2026-09-07 so that
+          # one new legitimate skip fails on review of this comment, not on a release push. It
+          # stands for no test. The ONLY skip-count deltas are the itemised lines. FX-I adds:
+          #     +1 ubuntu  test_effective_unreadable::test_a_store_REACHED_THROUGH_a_UNC_path_opens
+          #                ("UNC paths are a Windows spelling"); on windows it RUNS where the local
+          #                admin share is reachable, else it skips -- a GitHub runner is expected
+          #                to reach \\localhost\D$, UNVERIFIED until the next run
+          #    windows  53 + 0 + 0 + 3 = 56
+          #    ubuntu   139 + 2 + 1 + 3 = 145
+          # Re-measure both legs per JOB on the next run and replace these with what CI read.
+          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '145' || '56' }}
           # No .pyc from CI: a stale cache cannot then masquerade as the source.
           PYTHONDONTWRITEBYTECODE: '1'
         run: uv run --frozen python -m pytest -q -rs

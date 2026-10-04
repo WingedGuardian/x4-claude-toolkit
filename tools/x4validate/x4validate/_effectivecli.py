@@ -224,17 +224,52 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "dump":
         return _cmd_dump(args)
 
+    # v4.0.0 review R5-2: the store-failure label ("unreadable ... Rebuild") belongs to
+    # STORE failures only -- opening it, its schema and freshness metadata, and SQLite errors
+    # while reading it. It used to wrap every OSError/ValueError a command raised, so
+    # `x4effective ls ware | head` (BrokenPipeError IS an OSError) told the user to rebuild a
+    # healthy store, and a command bug read as store damage.
     con = None
     try:
-        con = _connect(db)
-        return _read_store(con, args)
-    except (sqlite3.Error, OSError, ValueError) as exc:
-        print(f'effective store unreadable or incompatible: {db}: {exc}\n'
-              'Rebuild: uv run x4effective build', file=sys.stderr)
-        return 2
+        try:
+            con = _connect(db)
+            return _read_store(con, args)
+        except (sqlite3.Error, OSError, StoreMetadataError) as exc:
+            if isinstance(exc, BrokenPipeError):
+                raise
+            if con is not None and not isinstance(exc, (sqlite3.Error, StoreMetadataError)):
+                raise          # an OSError from a COMMAND, after the store opened fine
+            print(f'effective store unreadable or incompatible: {db}: {exc}\n'
+                  'Rebuild: uv run x4effective build', file=sys.stderr)
+            return 2
+        except ValueError as exc:
+            if con is not None:
+                raise          # a command's own ValueError is a bug, never store damage
+            print(f'effective store unreadable or incompatible: {db}: {exc}\n'
+                  'Rebuild: uv run x4effective build', file=sys.stderr)
+            return 2
+    except BrokenPipeError:
+        # The reader went away (`| head`): what was printed was printed. Python's own
+        # recipe: point stdout at devnull so the interpreter's exit flush cannot raise again.
+        _quiet_stdout()
+        return 0
     finally:
         if con is not None:
             con.close()
+
+
+class StoreMetadataError(ValueError):
+    """The store's freshness metadata is damaged: a STORE failure, unlike a command's own
+    ValueError."""
+
+
+def _quiet_stdout() -> None:
+    import os
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+    except (OSError, ValueError, AttributeError):  # silent-ok: best effort after a closed pipe
+        pass
 
 
 def _read_store(con, args) -> int:
@@ -243,11 +278,13 @@ def _read_store(con, args) -> int:
     # has moved on, and these are the commands a modlist decision leans on.
     try:
         _stale = store_freshness(con)
-    except (TypeError, AttributeError, KeyError) as exc:
+    except StoreMetadataError:
+        raise
+    except (TypeError, AttributeError, KeyError, ValueError) as exc:
         # A SQLite file may have a valid schema but damaged JSON freshness data.
         # Convert only this metadata boundary; SQL/user-command errors keep their
         # existing contracts in the dispatcher below.
-        raise ValueError(f'invalid freshness metadata: {exc}') from exc
+        raise StoreMetadataError(f'invalid freshness metadata: {exc}') from exc
     if not _stale.fresh:
         print(_stale.banner("the effective store"), file=sys.stderr)
         print("!! Rebuild:  uv run x4effective build", file=sys.stderr)

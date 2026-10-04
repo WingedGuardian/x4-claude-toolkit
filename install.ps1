@@ -42,10 +42,71 @@ param(
   [switch]$Unpack, [switch]$Yes, [switch]$OverExisting, [switch]$DryRun, [switch]$NoEnv,
   # project_doc_max_bytes for the project .codex\config.toml (opt-in). A STRING, checked by
   # hand below, so a bad value refuses with rc 2 like install.sh rather than a binding error.
-  [string]$CodexDocMaxBytes
+  [string]$CodexDocMaxBytes,
+  # -Help: the same help as `install.sh --help`, in this installer's spelling (v4.0.0 review
+  # R4-1: the docs named `.\install.ps1 -Help`, and there was no such parameter -- "A parameter
+  # cannot be found that matches parameter name 'Help'" on both 5.1 and 7).
+  [switch]$Help
 )
 $ErrorActionPreference = 'Stop'
 $SRC = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# THE HELP TEXT. test_installers_agree.py pins it to install.sh's usage(): every option
+# there must be named here, and every parameter here must be one install.sh has. Printed
+# BEFORE anything else runs, and nothing is read or written.
+function Show-Usage {
+  Write-Output @'
+X4 AI Assistant Toolkit installer - Windows (PowerShell).
+Three install methods, all with fully configurable paths (nothing hardcoded):
+
+  in-game   Copy the toolkit INTO your X4 game folder (the upstream model). One workspace.
+  separate  Keep the toolkit in its OWN folder, pointed at the game via config.
+  global    Install the skills/agents into %USERPROFILE%\.claude and write the X4_* paths into
+            your global Claude settings, so they work across MANY mod repos (multi-project).
+
+Every location is auto-detected where possible and overridable by parameter. The chosen
+paths are written to <toolkit>\x4-paths.env (the single source of truth the hooks, bin/
+scripts and tools read). A 3.x config at <toolkit>\.claude\x4-paths.env is MOVED there.
+
+Run it through powershell.exe: Windows' default execution policy refuses a bare .\install.ps1.
+
+Usage: powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Method in-game|separate|global [options]
+  -Game DIR          X4 install (folder with 01.cat..09.cat)   [auto-detected]
+  -Profile DIR       user profile (saves/config/debug log)     [auto-detected]
+  -Toolkit DIR       where the toolkit lives (separate/global) [repo dir / game dir]
+  -Mods DIR          your mod source repos root
+  -Reference DIR     unpacked base game (default <toolkit>\reference)
+  -Extensions DIR    live deploy target (default <game>\extensions)
+  -XRCatTool PATH    XRCatTool.exe location
+  -Agent NAME        claude | codex | generic | opencode | all | auto   [all]
+                     which agent's instructions, guards and skills to install;
+                     auto = the agents found on PATH or already in the destination
+                     (none found: all, and it says so)
+  -Unpack            also unpack reference/ now (needs -Game + XRCatTool, and Git Bash)
+  -OverExisting      REQUIRED to install over an existing installation
+  -DryRun            print the destination and the item list; write nothing
+  -CodexDocMaxBytes N
+                     write project_doc_max_bytes = N (32768..1048576) into the
+                     project's .codex\config.toml (needs the Codex target). Codex
+                     reads the root AGENTS.md and every nested one into ONE
+                     32,768-byte budget, so an AGENTS.md of your own lower in the
+                     tree can cut the toolkit's off. Opt-in; never overwrites.
+  -NoEnv             do NOT set X4_TOOLKIT for your user (by default it is set when
+                     unset; a DIFFERENT existing value is reported and left alone)
+  -Yes               don't prompt; accept detected/blank values (never a
+                     detected DESTINATION -- name that with -Game/-Toolkit)
+  -Help              this help
+
+NOTE: the toolkit's hooks and bin/ scripts are bash: install with PowerShell, but to RUN the
+toolkit you still need Git Bash (https://git-scm.com/download/win).
+
+Test seams (for the installer test suite only, not for users):
+  X4_INSTALL_ENV_REGKEY   registry key used instead of HKCU\Environment
+                          (refused unless under HKCU\Software\X4ToolkitTests\)
+  X4_INSTALL_DETECT_PATH  the PATH -Agent auto walks instead of $env:PATH
+'@
+}
+if ($Help) { Show-Usage; exit 0 }
 Write-Host "X4 AI Assistant Toolkit installer (Windows) - source: $SRC"
 
 # Did a HUMAN name the destination, or did we find it by scanning? An explicit
@@ -80,6 +141,7 @@ function Refuse-IfDryRun($what, $where) {
   Write-Host ''
   Write-Host ('  -DryRun: NOT ' + $what + ':')
   Write-Host ('      ' + $where)
+  Show-DryRunExtras $Toolkit
   Write-Host ''
   Write-Host '=== dry run complete: nothing was changed ==='
   exit 0
@@ -276,14 +338,21 @@ function Copy-TrackedSet($dest) {
 #: The key=value lines Write-PathsEnv OWNS, as it would write them now. Factored
 #: out so the precondition and the writer cannot disagree about what "would
 #: change" means.
+#: A DERIVED path, spelled as install.sh spells it: '<base>/<leaf>'. Join-Path wrote a
+#: backslash, so one input gave two configs (v4.0.0 review, pre-arc minor). The base keeps
+#: whatever spelling the user gave it; only the derived separator is pinned.
+function Join-DerivedPath($base, $leaf) {
+  return (([string]$base).TrimEnd([char]92, [char]47) + '/' + $leaf)
+}
+
 function Get-OwnedEnvLines($t) {
-  $ref = if ($Reference) { $Reference } else { Join-Path $t 'reference' }
-  $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-Path $Game 'extensions' } else { '' }
+  $ref = if ($Reference) { $Reference } else { Join-DerivedPath $t 'reference' }
+  $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-DerivedPath $Game 'extensions' } else { '' }
   $lines = @(('X4_TOOLKIT="' + (Get-EscapedEnvValue $t) + '"'))
   if ($Game)      { $lines += ('X4_GAME="' + (Get-EscapedEnvValue $Game) + '"') }
   $lines += ('X4_REFERENCE="' + (Get-EscapedEnvValue $ref) + '"')
   if ($Profile)   { $lines += ('X4_PROFILE="' + (Get-EscapedEnvValue $Profile) + '"')
-                    $lines += ('X4_DEBUGLOG="' + (Get-EscapedEnvValue (Join-Path $Profile 'debug.txt')) + '"') }
+                    $lines += ('X4_DEBUGLOG="' + (Get-EscapedEnvValue (Join-DerivedPath $Profile 'debug.txt')) + '"') }
   if ($Mods)      { $lines += ('X4_MODS="' + (Get-EscapedEnvValue $Mods) + '"') }
   if ($ext)       { $lines += ('X4_EXTENSIONS="' + (Get-EscapedEnvValue $ext) + '"') }
   if ($XRCatTool) { $lines += ('XRCATTOOL="' + (Get-EscapedEnvValue $XRCatTool) + '"') }
@@ -613,18 +682,25 @@ function Save-HUserClaudeMd($dest) {
 }
 
 # --- {{TOOLKIT}} in the Codex / generic skills ----------------------------------------
-function Get-ToolkitRenderValue { if ($X4OnWindows) { $X4ToolkitRender['windows'] } else { $X4ToolkitRender['posix'] } }
+#: PER TARGET SHELL (v4.0.0 review R4-6) -- install.sh's _toolkit_render_value: the OpenCode
+#: copy gets the bash form on Windows only when X4_OPENCODE_SHELL=bash says OpenCode runs bash.
+function Get-ToolkitRenderValue($d) {
+  if ($X4OnWindows -and -not ($d -eq '.opencode' -and $env:X4_OPENCODE_SHELL -eq 'bash')) { $X4ToolkitRender['windows'] }
+  else { $X4ToolkitRender['posix'] }
+}
 
 #: Rewrite the token in the files THIS install copied -- enumerated from the SOURCE,
 #: never from a destination glob -- and verify each file afterwards.
 function Invoke-ToolkitTokenRender($dest) {
   Refuse-IfDryRun 'rendering the skill token in' $dest
-  $to = Get-ToolkitRenderValue
   $n = 0
+  $said = @()
   foreach ($d in $X4TokenDirs) {
     if (-not (Test-ItemSelected $d)) { continue }
     $from = Join-Path $SRC $d
     if (-not (Test-Path -LiteralPath $from -PathType Container)) { continue }
+    $to = Get-ToolkitRenderValue $d
+    $said += ($d + '/ as ' + $to)
     $fromFull = (Get-Item -LiteralPath $from -Force).FullName
     foreach ($f in (Get-ChildItem -LiteralPath $from -Recurse -File -Force -ErrorAction SilentlyContinue)) {
       $rel = $f.FullName.Substring($fromFull.Length).TrimStart([char]92, [char]47)
@@ -638,7 +714,7 @@ function Invoke-ToolkitTokenRender($dest) {
       } else { $n++ }
     }
   }
-  if ($n -gt 0) { Write-Host ('  rendered ' + $X4ToolkitToken + ' as ' + $to + ' in ' + $n + ' skill file(s)') }
+  if ($n -gt 0) { Write-Host ('  rendered ' + $X4ToolkitToken + ' in ' + $n + ' skill file(s): ' + ($said -join ', ')) }
 }
 
 #: In place nothing is copied and nothing is rendered (a toolkit checkout holds the
@@ -652,7 +728,7 @@ function Show-InPlaceTokenNote {
            Where-Object { ([IO.File]::ReadAllText($_.FullName)).Contains($X4ToolkitToken) } | Select-Object -First 1
     if ($hit) {
       Write-Host ('  [note] installing in place: ' + $d + '/ keeps the ' + $X4ToolkitToken + ' token unrendered.')
-      Write-Host ('         An agent reading those skills should read it as ' + (Get-ToolkitRenderValue) + '.')
+      Write-Host ('         An agent reading those skills should read it as ' + (Get-ToolkitRenderValue $d) + '.')
     }
   }
 }
@@ -758,6 +834,72 @@ function Find-OcPython {
     } catch { }
   }
   return $null
+}
+
+# --- R6-04 (v4.0.0 review): the OS protection on reference/ is PRINTED, never applied -----
+#: The twin of install.sh's print_refguard_step: Layer 2 (scripts/x4refguard.py) is an ACL
+#: change, so it is never applied for the user; when x4refguard reports reference/ present and
+#: not protected, the step is named. Silent for protected / unconfigured / unsupported.
+$X4RefguardStepCmd = 'python scripts/x4refguard.py apply'
+function Write-RefguardStep($tk) {
+  $script = Join-Path (Join-Path $tk 'scripts') 'x4refguard.py'
+  if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { return }
+  $state = ''
+  $py = Find-OcPython
+  if ($py) {
+    $prevTk = $env:X4_TOOLKIT
+    $env:X4_TOOLKIT = $tk
+    Push-Location -LiteralPath $tk
+    try {
+      $rest = @($py | Select-Object -Skip 1)
+      $out = (& $py[0] @rest 'scripts/x4refguard.py' 'status' '--json' 2>$null) -join "`n"
+      $m = [regex]::Match([string]$out, '"state": "([a-z]*)"')
+      if ($m.Success) { $state = $m.Groups[1].Value }
+    } catch { } finally {
+      Pop-Location
+      $env:X4_TOOLKIT = $prevTk
+    }
+  } else {
+    $ref = if ($Reference) { $Reference } else { Join-Path $tk 'reference' }
+    if (Test-Path -LiteralPath $ref -PathType Container) { $state = 'unknown (no Python >= 3.10 to ask x4refguard)' }
+  }
+  if (@('', 'protected', 'unconfigured', 'unsupported') -contains $state) { return }
+  Write-Host ''
+  Write-Host ('Reference: reference/ exists and is NOT OS-protected (x4refguard state: ' + $state + ').')
+  Write-Host '           The installer never changes permissions for you. To add the OS-level'
+  Write-Host ('           deny-delete layer (any process, hooks or not), run in ' + $tk + ':')
+  Write-Host ('             ' + $X4RefguardStepCmd)
+}
+
+#: The twin of install.sh's precheck_opencode_config (v4.0.0 review R4-5): a READ-ONLY
+#: .opencode/opencode.jsonc that would have to change refuses before anything is written.
+function Test-OpenCodeConfigPrecheck($dest) {
+  if (-not (Test-OpenCodeSelected)) { return }
+  $f = Join-Path (Join-Path $dest '.opencode') 'opencode.jsonc'
+  if (-not (Test-Path -LiteralPath $f)) { return }
+  $ro = $false
+  try { $ro = (Get-Item -LiteralPath $f -Force).IsReadOnly } catch { $ro = $false }
+  if (-not $ro) { return }
+  $renderer = Join-Path (Join-Path (Join-Path $SRC '.opencode') 'hooks') 'opencode_config.py'
+  if (-not (Test-Path -LiteralPath $renderer -PathType Leaf)) { return }
+  $py = Find-OcPython
+  if (-not $py) { return }
+  $prev = $env:X4_TOOLKIT
+  $env:X4_TOOLKIT = $dest
+  try {
+    $rest = @($py | Select-Object -Skip 1)
+    & $py[0] @rest $renderer 'check' '--root' $dest *> $null
+    $fresh = ($LASTEXITCODE -eq 0)
+  } finally { $env:X4_TOOLKIT = $prev }
+  if ($fresh) { return }
+  Write-Host ''
+  Write-Host 'REFUSING: the OpenCode deny rules must change, and the file is READ-ONLY.'
+  Write-Host "      $f"
+  Write-Host '  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:'
+  Write-Host "      python scripts/x4lock.py unlock `"$f`""
+  Write-Host '      <re-run this command>'
+  Write-Host '      python scripts/x4lock.py lock'
+  exit 1
 }
 
 function Write-OpenCodeConfig($dest) {
@@ -941,7 +1083,9 @@ function Test-ConfigPrecheck($t) {
     Write-Host ('  They differ on: ' + (Get-IDifferingKeys $f $old))
     Write-Host '  Nothing has been changed. Keep the values you want in the first, delete'
     Write-Host '  or rename the second, then re-run. To see them side by side:'
-    Write-Host ('      python "' + (Join-Path $t (Join-Path 'scripts' 'x4config.py')) + '" status')
+    # --root, and the SOURCE's copy: without --root `status` reports X4_TOOLKIT's (or the
+    # cwd's) config -- possibly another toolkit (v4.0.0 review R4-11).
+    Write-Host ('      python "' + (Join-Path $SRC (Join-Path 'scripts' 'x4config.py')) + '" status --root "' + $t + '"')
     exit 1
   }
   if ($DryRun -and (Test-Path -LiteralPath $old -PathType Leaf)) {
@@ -1419,6 +1563,29 @@ function Show-Target($dest) {
   Write-Host "      $dest"
 }
 
+#: THE REST OF THE PREVIEW -- the twin of install.sh's announce_dry_run_extras (v4.0.0 review
+#: R4-4): the Codex hooks.json render, the OpenCode deny-rule render, the .codex/config.toml
+#: prepend, and the X4_TOOLKIT line, from the copy plan AND from the dry-run gate.
+$script:X4DryExtrasShown = $false
+function Show-DryRunExtras($dest) {
+  if ($script:X4DryExtrasShown) { return }
+  $script:X4DryExtrasShown = $true
+  if (-not $dest) { return }
+  if ($Method -ne 'global' -and (Test-CodexSelected)) {
+    Write-Host '  .codex/hooks.json would be (re)rendered for this folder (Codex skips a changed hook until you re-approve it in /hooks)'
+  }
+  if ($Method -ne 'global' -and (Test-OpenCodeSelected)) {
+    Write-Host "  .opencode/opencode.jsonc (the OpenCode deny rules) would be rendered for this folder's roots"
+  }
+  if ($CodexDocMaxBytes) {
+    $f = Get-HCodexConfigPath $dest
+    $old = Get-HCodexDocValue $f
+    if ($null -ne $old -and "$old" -ne '') { Write-Host ('  ' + $f + ' already sets project_doc_max_bytes = ' + $old + ': it would be left unchanged') }
+    else { Write-Host ('  project_doc_max_bytes = ' + $CodexDocMaxBytes + ' would be prepended to ' + $f) }
+  }
+  Show-HUserEnvPreview $dest
+}
+
 # The dry-run listing, for the arms where a COPY would actually happen. The gate
 # itself is Refuse-IfDryRun, which sits inside all three writers.
 function Show-CopyPlan($dest) {
@@ -1439,7 +1606,7 @@ function Show-CopyPlan($dest) {
       Write-Host ('  your CLAUDE.md is not one this toolkit shipped: it would be KEPT as ' + $to + ', not overwritten')
       Show-HHashCaveat
     }
-    Show-HUserEnvPreview $dest
+    Show-DryRunExtras $dest
     Write-Host ""
     Write-Host "=== dry run complete: nothing was changed ==="
     exit 0
@@ -1542,20 +1709,52 @@ function Test-HSamePath($a, $b) { return ((Get-HCanonPath $a) -ceq (Get-HCanonPa
 
 function Get-HManualEnvCmd($v) { return ('setx X4_TOOLKIT "' + $v + '"') }
 
-#: THE DECISION, read by the -DryRun line and the writer: @{State; Old; Why}.
+#: The last `export X4_TOOLKIT=` value in a startup file, quotes removed; $null when none.
+#: install.sh's _h_profile_value, for Git Bash's own files (v4.0.0 review R4-3).
+function Get-HProfileValue($f) {
+  if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $null }
+  $line = @(Get-Content -LiteralPath $f -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match '^\s*export\s+X4_TOOLKIT=' }) | Select-Object -Last 1
+  if (-not $line) { return $null }
+  $v = ($line -replace '^\s*export\s+X4_TOOLKIT=', '').TrimEnd([char]13)
+  if ($v.Length -ge 2 -and (($v[0] -eq [char]39 -and $v[-1] -eq [char]39) -or ($v[0] -eq [char]34 -and $v[-1] -eq [char]34))) {
+    $v = $v.Substring(1, $v.Length - 2)
+  }
+  return $v
+}
+
+#: Git Bash's startup files: $HOME when set (Git Bash honours it), else the profile folder.
+function Get-HProfileFiles {
+  $h = if ($env:HOME) { $env:HOME } else { Get-UserHome }
+  return @('.bashrc', '.bash_profile', '.profile') | ForEach-Object { Join-Path $h $_ }
+}
+
+#: THE DECISION, read by the -DryRun line and the writer: @{State; Old; Why}. Old lists EVERY
+#: existing value, 'VALUE (WHERE)' joined by '; ' (v4.0.0 review R4-3: only the user scope was
+#: read, so a MACHINE value or a Git Bash ~/.bashrc export was invisible and a SECOND,
+#: conflicting value was written). Nothing is written beside a value that differs.
 function Get-HUserEnvPlan($t) {
   if (-not $X4OnWindows) {
     return @{ State = 'skip'; Why = 'install.ps1 sets X4_TOOLKIT only on Windows; use install.sh on Linux/macOS' }
   }
   $ue = Join-Path $SRC $X4UserEnvPs1
   if (-not (Test-Path -LiteralPath $ue -PathType Leaf)) { return @{ State = 'fail'; Why = ('the source has no ' + $X4UserEnvPs1) } }
-  $global:LASTEXITCODE = 0
-  $old = & $ue get
-  if ($LASTEXITCODE -ne 0) { return @{ State = 'fail'; Why = ($X4UserEnvPs1 + ' get failed') } }
-  $old = (@($old) -join '').Trim()
-  if (-not $old) { return @{ State = 'set' } }
-  if (Test-HSamePath $old (Get-HNativePath $t)) { return @{ State = 'same'; Old = $old } }
-  return @{ State = 'different'; Old = $old }
+  $want = Get-HNativePath $t
+  $found = @(); $diff = $false
+  foreach ($scope in @(@('get', 'your user environment'), @('get-machine', 'the machine environment'))) {
+    $global:LASTEXITCODE = 0
+    $v = & $ue $scope[0]
+    if ($LASTEXITCODE -ne 0) { return @{ State = 'fail'; Why = ($X4UserEnvPs1 + ' ' + $scope[0] + ' failed') } }
+    $v = (@($v) -join '').Trim()
+    if ($v) { $found += ($v + ' (' + $scope[1] + ')'); if (-not (Test-HSamePath $v $want)) { $diff = $true } }
+  }
+  foreach ($f in Get-HProfileFiles) {
+    $v = Get-HProfileValue $f
+    if ($v) { $found += ($v + ' (' + $f + ')'); if (-not (Test-HSamePath $v $want)) { $diff = $true } }
+  }
+  if ($found.Count -eq 0) { return @{ State = 'set' } }
+  if (-not $diff) { return @{ State = 'same'; Old = ($found -join '; ') } }
+  return @{ State = 'different'; Old = ($found -join '; ') }
 }
 
 function Show-HUserEnvPreview($t) {
@@ -1834,11 +2033,11 @@ function Install-Global($t) {
     if ($null -eq $cfg) { $cfg = [pscustomobject]@{} }
   }
   if (-not $cfg.PSObject.Properties['env']) { $cfg | Add-Member -NotePropertyName env -NotePropertyValue ([pscustomobject]@{}) }
-  $ref = if ($Reference) { $Reference } else { Join-Path $t 'reference' }
-  $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-Path $Game 'extensions' } else { '' }
+  $ref = if ($Reference) { $Reference } else { Join-DerivedPath $t 'reference' }
+  $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-DerivedPath $Game 'extensions' } else { '' }
   function setenv($k,$v){ if ($v) { if ($cfg.env.PSObject.Properties[$k]) { $cfg.env.$k = $v } else { $cfg.env | Add-Member -NotePropertyName $k -NotePropertyValue $v } } }
   setenv X4_TOOLKIT $t; setenv X4_REFERENCE $ref; setenv X4_GAME $Game; setenv X4_PROFILE $Profile
-  if ($Profile) { setenv X4_DEBUGLOG (Join-Path $Profile 'debug.txt') }
+  if ($Profile) { setenv X4_DEBUGLOG (Join-DerivedPath $Profile 'debug.txt') }
   setenv X4_MODS $Mods; setenv X4_EXTENSIONS $ext; setenv XRCATTOOL $XRCatTool
   # BACK IT UP FIRST. Write-PathsEnv and Copy-Toolkit both do; this one did not, and
   # it rewrites the user's GLOBAL settings.json.
@@ -1914,6 +2113,7 @@ switch ($Method) {
     if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $GameNamed }
     Test-ConfigPrecheck $Toolkit
     Test-CodexHooksPrecheck $Toolkit   # written on BOTH branches, so OUTSIDE the guard
+    Test-OpenCodeConfigPrecheck $Toolkit   # likewise
     Test-HCodexDocCapPrecheck $Toolkit
     if (-not (Test-SameDir $SRC $Toolkit)) {
       Test-LockedTargetsPrecheck $Toolkit
@@ -1947,6 +2147,7 @@ switch ($Method) {
     if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $ToolkitNamed }
     Test-ConfigPrecheck $Toolkit
     Test-CodexHooksPrecheck $Toolkit   # written on BOTH branches, so OUTSIDE the guard
+    Test-OpenCodeConfigPrecheck $Toolkit   # likewise
     Test-HCodexDocCapPrecheck $Toolkit
     if (-not (Test-SameDir $SRC $Toolkit)) {
       Test-LockedTargetsPrecheck $Toolkit
@@ -2090,6 +2291,7 @@ if ($Method -ne 'global' -and (Test-OpenCodeSelected)) {
   Write-Host "         verify:  python scripts/x4doctor.py --root `"$Toolkit`" --agent opencode"
 }
 if ($Method -eq 'global') { Write-Host "Global:  skills/agents + X4_* env added to your ~/.claude - works from any mod repo." }
+Write-RefguardStep $Toolkit
 Write-Host ""
 if ($script:X4HEnvState -eq 'set' -or $script:X4HEnvState -eq 'same') {
   Write-Host ('X4_TOOLKIT: ' + $script:X4HEnvMsg)

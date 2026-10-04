@@ -48,6 +48,9 @@ def _tree(tmp_path: Path) -> Path:
     (root / "scripts").mkdir(parents=True)
     (root / "gates").mkdir()
     shutil.copy2(SCRIPT, root / "scripts" / "run-gates.sh")
+    # the log-dir refusal asks x4validate._paths which roots the TOOLS resolve
+    shutil.copytree(PKG / "x4validate", root / "x4validate",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     for name, body in (("aa_ok", OK_GATE), ("bb_fail", FAIL_GATE), ("cc_cannot", CANNOT_GATE)):
         (root / "gates" / f"{name}.py").write_text(body, encoding="utf-8")
     stub = tmp_path / "bin"
@@ -148,3 +151,26 @@ def test_TWIN_a_log_dir_OUTSIDE_a_configured_game_tree_runs(tmp_path):
                         X4_GATE_LOG_DIR=str(tmp_path / "protected-sibling" / "logs"))
     assert rc == 1 and "REFUSING" not in err, (rc, out, err)
     assert (tmp_path / "protected-sibling" / "logs" / "bb_fail.log").is_file()
+
+
+def test_a_log_dir_inside_a_game_named_ONLY_in_the_path_config_REFUSES(tmp_path):
+    """v4.0.0 review R4-7/R6-10: the refusal looked only at EXPORTED X4_GAME/X4_REFERENCE, so
+    a game root named in x4-paths.env -- the installers' normal setup -- was not protected."""
+    root = _tree(tmp_path)
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    tk = tmp_path / "tk"
+    tk.mkdir()
+    (tk / "x4-paths.env").write_text('X4_GAME="%s"' % protected.as_posix() + chr(10), encoding="utf-8")
+    rc, out, err = _run(tmp_path, root, drop=("X4_GATE_LOG_DIR", "X4_GAME", "X4_REFERENCE",
+                                              "X4_CONFIG", "X4_TOOLKIT"),
+                        X4_TOOLKIT=str(tk), X4_GATE_LOG_DIR=str(protected / "logs"))
+    assert rc == 2 and "REFUSING" in err and "X4_GAME" in err, (rc, out, err)
+    assert not (protected / "logs").exists()
+
+
+def test_the_containment_check_needs_no_realpath():
+    """`realpath -m` does not exist on macOS: the check failed OPEN there (R4-7)."""
+    code = [ln for ln in SCRIPT.read_text(encoding="utf-8").splitlines()
+            if not ln.lstrip().startswith("#")]
+    assert not [ln for ln in code if "realpath" in ln], "run-gates.sh still CALLS realpath"

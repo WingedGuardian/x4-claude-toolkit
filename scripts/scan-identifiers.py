@@ -117,6 +117,67 @@ PLACEHOLDER_USERS = {"tester", "user", "username", "you", "x", "someone", "youru
                      "public", "all users", "default", "example", "me", "dev"}
 
 
+#: THE BARE PROFILE ID (v4.0.0 review, R6-02/R7-1 follow-up). The pattern above catches an
+#: id only inside an `egosoft/x4/<id>` path, so a test that wrote it BARE ("profile <id>")
+#: shipped and had to be scrubbed from history. Banning the 8-digit SHAPE would flood (see
+#: above), so the actual VALUES are derived on the machine where the scan runs and banned
+#: as whole digit runs: the configured X4_PROFILE's last component, and every
+#: `Documents/Egosoft/X4/<digits>` folder that exists locally. Nothing is hardcoded here
+#: and the value is never printed -- only how many were derived. In CI no profile exists, so
+#: nothing is derived and the run says so.
+#:
+#: `X4_SCAN_HOME` replaces the home folder the walk starts from: a TEST seam, so a sandbox
+#: run never derives (and so never handles) the developer's real id.
+_PROFILE_ID = re.compile(r"^\d{4,}$")
+
+
+def _profile_values() -> list[str]:
+    """X4_PROFILE from the environment, else from the toolkit's path config (never fatal)."""
+    vals = []
+    if os.environ.get("X4_PROFILE"):
+        vals.append(os.environ["X4_PROFILE"])
+    else:
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools" / "x4validate"))
+            from x4validate import _paths  # noqa: PLC0415 -- optional, stdlib-only fallback below
+            prof = _paths.profile()
+            if prof:
+                vals.append(str(prof))
+        except Exception:  # noqa: BLE001 -- no config / no package: the env and the walk remain
+            pass
+    return vals
+
+
+def _profile_docs_dirs() -> list[Path]:
+    home = Path(os.environ["X4_SCAN_HOME"]) if os.environ.get("X4_SCAN_HOME") else Path.home()
+    return [home / "Documents" / "Egosoft" / "X4", home / "OneDrive" / "Documents" / "Egosoft" / "X4"]
+
+
+def profile_ids_from(values: list[str], docs_dirs: list[Path]) -> set[str]:
+    """Pure: the profile ids named by `values` (paths; the last component) and found as
+    `<digits>` folders under `docs_dirs`. Placeholders are never ids."""
+    out: set[str] = set()
+    for v in values:
+        name = Path(str(v).rstrip("/" + chr(92)).replace(chr(92), "/")).name
+        if _PROFILE_ID.match(name):
+            out.add(name)
+    for d in docs_dirs:
+        try:
+            out |= {e.name for e in d.iterdir() if e.is_dir() and _PROFILE_ID.match(e.name)}
+        except OSError:
+            continue
+    return out - PLACEHOLDER_IDS
+
+
+def derived_profile_ids() -> set[str]:
+    return profile_ids_from(_profile_values(), _profile_docs_dirs())
+
+
+def profile_id_match(line: str, ids: set[str]) -> bool:
+    """A derived id as a WHOLE digit run: never a substring of a longer number."""
+    return any(re.search(r"(?<!\d)" + re.escape(i) + r"(?!\d)", line) for i in ids if i in line)
+
+
 def _git(*args: str) -> str:
     out = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
     if out.returncode != 0:
@@ -295,6 +356,20 @@ def selftest() -> int:
          not _account_hit('received "C:/Users/.../AppData/Local/Temp/x/docs"')),
         ("...but a name that merely CONTAINS a dot still is",
          _account_hit("SRC = 'C:/Users/" + "ada" + ".lovelace/Desktop'")),
+        # --- the BARE profile id: only a DERIVED value, never the 8-digit shape -------
+        # Synthetic and ASSEMBLED (see above); derived through the same pure function the
+        # scan uses, from a profile PATH, as on a real machine.
+        ("a DERIVED profile id, written BARE, is caught",
+         profile_id_match("see profile " + "4242" + "4242 for the save",
+                          profile_ids_from(["C:/x/Egosoft/X4/" + "4242" + "4242"], []))),
+        ("an unrelated 8-digit number is NOT caught -- only a derived value is banned",
+         not profile_id_match("size " + "7171" + "7171",
+                              profile_ids_from(["C:/x/Egosoft/X4/" + "4242" + "4242"], []))),
+        ("a derived id INSIDE a longer number is NOT caught",
+         not profile_id_match("sha 9" + "4242" + "42429",
+                              profile_ids_from(["C:/x/Egosoft/X4/" + "4242" + "4242"], []))),
+        ("a PLACEHOLDER-named profile folder derives nothing",
+         profile_ids_from(["C:/x/Egosoft/X4/12345678"], []) == set()),
     ]
     bad = [n for n, ok in checks if not ok]
     for n, ok in checks:
@@ -377,7 +452,7 @@ def _token_hit(low: str, lowered: list) -> bool:
     return False
 
 
-def scan_history(rng: str, banned: list[str]) -> int:
+def scan_history(rng: str, banned: list[str], ids: set[str] | None = None) -> int:
     """Scan the diff every commit in *rng* INTRODUCES. Tree-clean is not enough.
 
     ★ `git push` publishes COMMITS, not the working tree. An identifier that was
@@ -457,7 +532,7 @@ def scan_history(rng: str, banned: list[str]) -> int:
 
         for _channel, line in scanned_lines:
             low = line.lower()
-            hit = _token_hit(low, lowered) or account_match(line)
+            hit = _token_hit(low, lowered) or account_match(line) or profile_id_match(line, ids or set())
             if hit:
                 # The SHA and nothing else. Echoing the line would publish the very
                 # thing being suppressed, in a log that is itself public.
@@ -513,6 +588,9 @@ def main() -> int:
         print(f"::error::cannot run the identifier scan: {exc}")
         return 2
 
+    ids = derived_profile_ids()
+    notes.append(f"{len(ids)} X4 profile id(s) derived on this machine (banned bare; never "
+                 f"printed){'' if ids else ' -- none here, so a bare id cannot be recognised'}")
     for n in notes:
         print(f"  {n}")
 
@@ -522,7 +600,7 @@ def main() -> int:
                   "scan proves nothing. Refusing rather than reporting a "
                   "vacuous pass.")
             return 2
-        return scan_history(hist, banned)
+        return scan_history(hist, banned, ids)
 
     files = merged_population(tracked, untracked)
     if not files:
@@ -584,6 +662,8 @@ def main() -> int:
                 found += 1
                 continue        # one report per line; the fix is the same either way
             what = account_match(line)
+            if not what and profile_id_match(line, ids):
+                what = "an X4 profile id (derived on this machine)"
             if what:
                 print(f"::error file={rel},line={i}::{what} appears here; "
                       f"replace it with a placeholder")

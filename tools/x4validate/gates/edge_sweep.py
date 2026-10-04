@@ -58,7 +58,10 @@ _PATH_VARS = ("X4_TOOLKIT", "X4_GAME", "X4_GAME_ROOT", "X4_GAME_EXTENSIONS",
               "X4_EXTENSIONS", "X4_REFERENCE", "X4_PROFILE", "X4_PROFILE_CONTENT",
               "X4_PROFILE_EXTENSIONS", "X4_WORKSHOP_CONTENT", "X4_REGISTRY",
               "X4_MODS", "X4_DEBUGLOG", "X4_SAVES", "X4_EFFECTIVE_DB",
-              "X4_ORACLE_LOG")
+              "X4_ORACLE_LOG",
+              # Which FILE `_paths` reads (v4.0.0 review R5-9): left set, the
+              # "unconfigured" sweep read whatever config it named.
+              "X4_CONFIG")
 
 
 def run(argv: list[str], env: dict | None = None, timeout: int = 900,

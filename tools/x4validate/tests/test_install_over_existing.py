@@ -153,7 +153,8 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
              method: str = "separate", from_dest: bool = False,
              source: pathlib.Path | None = None, over_existing: bool = True,
              scrub: tuple = (), env_write: bool = False, regkey: str | None = None,
-             detect_path: pathlib.Path | None = None, shell: str = "/bin/bash"):
+             detect_path: pathlib.Path | None = None, shell: str = "/bin/bash",
+             omit: tuple = ()):
     """Run ONE of the two installers with identical intent.
 
     Parameterised rather than duplicated, because the point is that both reach the
@@ -194,6 +195,8 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
         "reference": (dest / "reference").as_posix(),
         "extensions": (tmp_path / "game" / "extensions").as_posix(),
     }
+    for k in omit:                      # let the installer DERIVE these (e.g. reference)
+        common.pop(k)
     # OVERRIDES REPLACE, they do not append. Appending a second `--game` is
     # tolerated by bash (last wins) and REJECTED by PowerShell with "parameter
     # 'Game' is specified more than once" -- so the harness would have reported a
@@ -428,6 +431,10 @@ def test_a_DRY_RUN_writes_NOTHING_on_the_arm_that_SKIPS_the_copy(installer, tmp_
     assert not written, (
         "--dry-run wrote %d file(s): %s (rc=%s) %s"
         % (len(written), written[:8], r.returncode, (r.stdout + r.stderr)[-600:]))
+    # PROGRESS, not just absence (v4.0.0 review R7-P1): a run that crashed or refused on its
+    # first line also writes nothing. It must have got as far as the dry-run gate and said so.
+    assert r.returncode == 0, (r.stdout + r.stderr)[-1200:]
+    assert "dry run complete" in (r.stdout + r.stderr).lower(), (r.stdout + r.stderr)[-1200:]
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
 def test_a_LOCKED_file_anywhere_in_the_copy_set_refuses_UP_FRONT(installer, tmp_path):
     """precheck_config guarded ONE file; x4lock locks about twenty-six.
@@ -680,6 +687,7 @@ def test_an_IN_PLACE_dry_run_runs_NOTHING(installer, tmp_path):
     r = _install(installer, tmp_path, dest, "--dry-run", from_dest=True)
     out = (r.stdout + r.stderr)
     low = out.lower()
+    assert r.returncode == 0, out[-1200:]          # R7-P1: a crash also "runs nothing"
 
     assert "dry run complete" in low, (
         "an in-place --dry-run printed no dry-run banner:\n%s" % out[-1200:])
@@ -2335,6 +2343,64 @@ def test_a_DIFFERENT_existing_value_is_REPORTED_and_LEFT(installer, tmp_path, re
     assert r"D:\elsewhere" in r.stdout and "Left unchanged" in r.stdout, _ok(r)
 
 
+# --- R4-3 (v4.0.0 review): EVERY place an X4_TOOLKIT already lives is read --------------
+#
+# The check read ONE place: HKCU on Windows, the one startup file the shell would get on
+# POSIX. A MACHINE-level value (HKLM) or a Git Bash ~/.bashrc export was invisible, and the
+# installer then wrote a SECOND, conflicting value -- which one a given terminal sees depends
+# on how it was started. Now every source found is reported and nothing is written beside a
+# different one. Under the test seam the machine scope is `<seam>\Machine`.
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_different_MACHINE_value_is_REPORTED_and_no_user_value_is_written(installer, tmp_path, regkey):
+    _reg_set(regkey + "\\Machine", r"D:\machine-wide")
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert _reg_get(regkey) is None, "a SECOND, conflicting user value was written"
+    assert r"D:\machine-wide" in r.stdout and "Left unchanged" in r.stdout, _ok(r)
+    assert "machine" in r.stdout.lower(), _ok(r)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_different_GIT_BASH_profile_export_is_REPORTED_and_nothing_written(installer, tmp_path, regkey):
+    (tmp_path / ".bashrc").write_text("export X4_TOOLKIT='/d/gitbash-one'\n", encoding="utf-8")
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert _reg_get(regkey) is None, "a SECOND, conflicting user value was written"
+    assert "/d/gitbash-one" in r.stdout and ".bashrc" in r.stdout and "Left unchanged" in r.stdout, _ok(r)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_MACHINE_value_naming_THIS_toolkit_is_already_set(installer, tmp_path, regkey):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    _reg_set(regkey + "\\Machine", str(dest.resolve()))
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert "already set" in r.stdout and "WARNING" not in r.stdout, _ok(r)
+    assert _reg_get(regkey) is None, "a redundant user value was written over a matching machine one"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell profile")
+def test_POSIX_a_different_export_in_ANOTHER_startup_file_is_REPORTED(tmp_path):
+    """The shell is bash (.bashrc would be written) and ~/.profile already exports another
+    toolkit: a login shell would see one value and an interactive one the other."""
+    (tmp_path / ".profile").write_text("export X4_TOOLKIT=/opt/from-profile\n", encoding="utf-8")
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install("sh", tmp_path, dest, source=src, env_write=True, shell="/bin/bash")
+    assert r.returncode == 0, _ok(r)
+    assert not (tmp_path / ".bashrc").exists(), "a SECOND, conflicting export was written"
+    assert "/opt/from-profile" in r.stdout and ".profile" in r.stdout and "Left unchanged" in r.stdout, _ok(r)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
 def test_TWIN_the_SAME_value_spelled_differently_is_not_different(installer, tmp_path, regkey):
@@ -2400,7 +2466,11 @@ def test_userenv_round_trips_and_never_REPLACES_an_existing_key(tmp_path, regkey
 @pytest.mark.parametrize("key", ["HKCU\\Environment", "HKCU\\Software\\X4ToolkitTests\\",
                                  "HKCU\\Software\\X4ToolkitTestsX\\a"])
 def test_userenv_REFUSES_a_seam_outside_the_test_root(key):
-    r = _userenv("set", "x", key=key)
+    # PROBED WITH `get`, never `set` (v4.0.0 review R7-4): one of these keys IS the real
+    # HKCU\Environment, so if the refusal ever regressed a `set` probe would rewrite the
+    # developer's own X4_TOOLKIT. The seam is validated before the action is dispatched, so
+    # `get` reaches the same refusal and can only ever read.
+    r = _userenv("get", key=key)
     assert r.returncode == 2 and "REFUSING" in r.stderr, (r.returncode, r.stderr)
 
 
@@ -2546,7 +2616,8 @@ def test_the_real_repo_installs_ONE_AGENTS_md_and_no_agent_source(installer, tmp
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
 @pytest.mark.parametrize("agent,skills_dir", [("codex", ".agents"), ("opencode", ".opencode")])
-def test_J_the_REAL_codex_skills_get_the_token_rendered_for_THIS_os(installer, tmp_path, agent, skills_dir):
+def test_J_the_REAL_codex_skills_get_the_token_rendered_for_THIS_os(installer, tmp_path, agent, skills_dir,
+                                                                  monkeypatch):
     """Lane J (Plan 3), orchestrator finding 2026-10-02: the generator rendered the token
     to `$X4_TOOLKIT` itself, so the installers' per-OS rewrite never fired and Codex on
     Windows (PowerShell) saw an EMPTY variable. The synthetic-source row above could not
@@ -2558,11 +2629,12 @@ def test_J_the_REAL_codex_skills_get_the_token_rendered_for_THIS_os(installer, t
     n_src = sum("{{TOOLKIT}}" in p.read_bytes().decode("utf-8")
                 for p in (ROOT / "agent" / "skills").glob("*/SKILL.md"))
     assert n_src >= 7, n_src          # derived, never retyped: an empty population cannot pass
+    monkeypatch.delenv("X4_OPENCODE_SHELL", raising=False)   # R4-6: it moves the OpenCode form
     dest = _fresh(tmp_path)
     r = _install(installer, tmp_path, dest, "--agent", agent)
     assert r.returncode == 0, _ok(r)
     want = "$env:X4_TOOLKIT" if os.name == "nt" else "$X4_TOOLKIT"
-    assert "rendered {{TOOLKIT}} as %s in" % want in r.stdout, (
+    assert "rendered {{TOOLKIT}} in" in r.stdout and "%s/ as %s" % (skills_dir, want) in r.stdout, (
         "the installer rendered nothing -- the tree it copied carries no token\n" + _ok(r))
     got = {p.relative_to(dest).as_posix(): p.read_bytes().decode("utf-8")
            for p in (dest / skills_dir / "skills").rglob("*") if p.is_file()}
@@ -2669,6 +2741,11 @@ def test_two_DIFFERING_configs_refuse_before_anything_is_written(installer, tmp_
     assert "/somewhere/else" not in out, "a VALUE was printed"
     assert {f: f.read_bytes() for f in snap} == snap
     assert not (dest / "README.md").exists(), "the copy ran before the refusal"
+    # v4.0.0 review R4-11: the named command must look at THIS destination. Without --root,
+    # `x4config.py status` reports X4_TOOLKIT's (or the cwd's) config -- another toolkit.
+    m = re.search(r"x4config\.py\"? status --root \"?([^\"\r\n]+)", out)
+    assert m, out[-1500:]
+    assert pathlib.Path(m.group(1).strip()).resolve() == dest.resolve(), m.group(1)
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
@@ -2694,3 +2771,214 @@ def test_dry_run_names_the_migration_and_changes_nothing(installer, tmp_path):
     assert r.returncode == 0, out[-1500:]
     assert "would MOVE" in out, out[-1500:]
     assert old.read_bytes() == before and not (dest / "x4-paths.env").exists()
+
+
+# --- R4-2 (v4.0.0 review): x4doctor can say OK on a healthy FRESH install ---------------
+
+def _doctor_env(tmp_path: pathlib.Path, **extra) -> dict:
+    """The doctor run the way a user runs it after `--no-env`: no X4_* / CLAUDE_* from the
+    developer's shell, Claude's and Codex's homes in the sandbox."""
+    env = {k: v for k, v in os.environ.items()
+           if not (k.startswith("X4_") or k.startswith("CLAUDE_") or k in ("CODEX_HOME", "XRCATTOOL"))}
+    env.update(HOME=tmp_path.as_posix(), USERPROFILE=tmp_path.as_posix(),
+               CLAUDE_CONFIG_DIR=(tmp_path / "fake-claude-home").as_posix(),
+               CODEX_HOME=(tmp_path / "fake-codex-home").as_posix())
+    env.update(extra)
+    return env
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("method", ["separate", "in-game"])
+def test_x4doctor_EXITS_0_on_a_healthy_fresh_install(installer, method, tmp_path):
+    """MEASURED before the fix (scratch install, install.sh --method separate --agent claude):
+    x4doctor exit 3 -- parity.claude UNKNOWN ('X4_TOOLKIT is unset'), x4lock UNKNOWN ('1
+    unlocked'), and with X4_TOOLKIT set parity.claude read 'no agent/ source' UNKNOWN. A
+    doctor that cannot exit 0 on a healthy install trains its reader to ignore it. 'Healthy'
+    here: the Claude target, a game folder, an unpacked (here: present) reference/. Both
+    installers, both layouts that copy the guards, with X4_TOOLKIT unset (--no-env)."""
+    dest = _fresh(tmp_path)
+    game = tmp_path / "game"
+    for n in range(1, 10):
+        (game / ("%02d.cat" % n)).write_bytes(b"")
+    extra = ("--agent", "claude")
+    if method == "in-game":
+        dest = game
+    r = _install(installer, tmp_path, dest, *extra, method=method)
+    assert r.returncode == 0, (r.stdout[-1500:], r.stderr[-1500:])
+    (dest / "reference" / "libraries").mkdir(parents=True, exist_ok=True)
+    d = subprocess.run([sys.executable, str(dest / "scripts" / "x4doctor.py"), "--root", str(dest),
+                        "--json"], capture_output=True, text=True, timeout=300,
+                       env=_doctor_env(tmp_path), cwd=str(tmp_path))
+    got = json.loads(d.stdout)
+    bad = [(c["id"], c["status"], c["detail"][:200]) for c in got["checks"]
+           if c["status"] not in ("OK", "N/A")]
+    assert d.returncode == 0 and not bad, (d.returncode, bad)
+    assert sum(c["status"] == "OK" for c in got["checks"]) >= 10, got["checks"]
+
+
+def test_TWIN_x4doctor_on_a_fresh_install_still_FAILS_a_missing_game(tmp_path):
+    """The exit-0 above must be EARNED: the same install with its game folder gone is FAIL."""
+    dest = _fresh(tmp_path)
+    game = tmp_path / "game"
+    for n in range(1, 10):
+        (game / ("%02d.cat" % n)).write_bytes(b"")
+    r = _install("sh", tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, (r.stdout[-1500:], r.stderr[-1500:])
+    (dest / "reference" / "libraries").mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(game)
+    d = subprocess.run([sys.executable, str(dest / "scripts" / "x4doctor.py"), "--root", str(dest)],
+                       capture_output=True, text=True, timeout=300, env=_doctor_env(tmp_path),
+                       cwd=str(tmp_path))
+    assert d.returncode == 1 and "roots.game" in d.stdout, d.stdout[-2000:]
+
+
+# --- R6-04 (v4.0.0 review): the reference/ OS protection step is PRINTED, never applied ---
+
+_REFGUARD_STEP = "scripts/x4refguard.py apply"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_UNPROTECTED_existing_reference_PRINTS_the_x4refguard_step(installer, tmp_path):
+    """Layer 2 (x4refguard) was applied by nothing in install/upgrade: a user upgrading over
+    an unpacked reference/ never learned it existed. RULING: the installers do NOT apply it
+    (an ACL change is the user's act) -- they PRINT the step when reference/ exists and
+    x4refguard status is not 'protected'. Both installers, the same line."""
+    dest = _fresh(tmp_path)
+    (dest / "reference" / "libraries").mkdir(parents=True)
+    (dest / "reference" / "libraries" / "wares.xml").write_text("<wares/>", encoding="utf-8")
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, (r.stdout[-1500:], r.stderr[-1500:])
+    assert _REFGUARD_STEP in r.stdout, r.stdout[-2500:]
+    assert "absent" in r.stdout, "the step must name the state it saw: " + r.stdout[-1500:]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_no_reference_yet_prints_NO_refguard_step(installer, tmp_path):
+    """No reference/ yet: setup.sh / unpack-reference.sh apply the protection on a fresh
+    unpack, so there is nothing to tell the user here."""
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, (r.stdout[-1500:], r.stderr[-1500:])
+    assert _REFGUARD_STEP not in r.stdout, r.stdout[-2500:]
+
+
+# --- R4-4 (v4.0.0 review): the dry run names EVERY write the real run would make ---------
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_COPY_dry_run_names_the_rendered_codex_opencode_and_doc_cap_writes(installer, tmp_path):
+    """The preview listed the copied items and stopped: the Codex hooks.json render, the
+    OpenCode deny-rule render and the .codex/config.toml prepend -- three writes the real run
+    makes -- were never mentioned."""
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--dry-run", "--agent", "all",
+                 "--codex-doc-max-bytes", "65536")
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "dry run complete" in out.lower(), out[-1500:]
+    assert ".codex/hooks.json would be" in out, out[-2500:]
+    assert ".opencode/opencode.jsonc" in out and "would be rendered" in out, out[-2500:]
+    assert "project_doc_max_bytes = 65536 would be" in out, out[-2500:]
+    assert not [p for p in dest.rglob("*") if p.is_file()], "the dry run wrote"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_IN_PLACE_dry_run_names_what_it_would_do_to_X4_TOOLKIT(installer, tmp_path):
+    """The in-place and global arms reach no copy, so the copy plan -- the only place the
+    X4_TOOLKIT preview was printed -- never ran there."""
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    r = _install(installer, tmp_path, dest, "--dry-run", from_dest=True)
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out[-1500:]
+    assert "X4_TOOLKIT would not be touched" in out, out[-2500:]       # --no-env in the harness
+
+
+# --- R4-5 (v4.0.0 review): a READ-ONLY OpenCode deny-rule file refuses UP FRONT -----------
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_READ_ONLY_stale_opencode_config_refuses_before_anything_is_written(installer, tmp_path):
+    """x4lock locks .opencode/opencode.jsonc. The Codex hooks.json had a read-only precheck;
+    the OpenCode file had none, so an upgrade copied the whole toolkit and THEN failed at the
+    render -- an INCOMPLETE install over a half-upgraded tree."""
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest, "--agent", "opencode").returncode == 0, "first install failed"
+    cfg = dest / ".opencode" / "opencode.jsonc"
+    assert cfg.is_file()
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "// a stale line\n", encoding="utf-8")
+    (dest / "README.md").unlink()                      # proves whether the copy ran
+    cfg.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    try:
+        r = _install(installer, tmp_path, dest, "--agent", "opencode")
+        out = r.stdout + r.stderr
+        assert r.returncode == 1 and "REFUSING" in out and "READ-ONLY" in out, out[-1500:]
+        assert "opencode.jsonc" in out, out[-1500:]
+        assert not (dest / "README.md").exists(), "the copy ran before the refusal"
+    finally:
+        cfg.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_READ_ONLY_but_FRESH_opencode_config_does_not_refuse(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest, "--agent", "opencode").returncode == 0, "first install failed"
+    cfg = dest / ".opencode" / "opencode.jsonc"
+    cfg.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    try:
+        r = _install(installer, tmp_path, dest, "--agent", "opencode")
+        assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+    finally:
+        cfg.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+# --- R4-6 (v4.0.0 review): the OpenCode skills' token follows OpenCode's SHELL ------------
+
+@pytest.mark.skipif(os.name != "nt", reason="the PowerShell rendering exists on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("oc_shell,want,not_want", [("bash", "$X4_TOOLKIT/", "$env:X4_TOOLKIT"),
+                                                    (None, "$env:X4_TOOLKIT", "$X4_TOOLKIT/")])
+def test_the_opencode_token_is_rendered_for_OPENCODES_shell(installer, oc_shell, want, not_want,
+                                                            tmp_path, monkeypatch):
+    """{{TOOLKIT}} was rendered `$env:X4_TOOLKIT` for every Windows target. OpenCode runs bash
+    when told to (X4_OPENCODE_SHELL=bash, which its plugin also reads), and bash expands
+    `$env:X4_TOOLKIT` to ':X4_TOOLKIT' -- every skill command broke. The Codex/generic copy
+    keeps the PowerShell form (Codex runs PowerShell on Windows)."""
+    if oc_shell:
+        monkeypatch.setenv("X4_OPENCODE_SHELL", oc_shell)
+    else:
+        monkeypatch.delenv("X4_OPENCODE_SHELL", raising=False)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "all")
+    assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+    oc = (dest / ".opencode" / "skills" / "x4-balance" / "SKILL.md").read_text(encoding="utf-8")
+    ag = (dest / ".agents" / "skills" / "x4-balance" / "SKILL.md").read_text(encoding="utf-8")
+    assert want in oc and not_want not in oc, oc[:400]
+    assert "$env:X4_TOOLKIT" in ag and "{{TOOLKIT}}" not in ag, ag[:400]
+
+
+# --- pre-arc minor (v4.0.0 review): DERIVED paths are spelled alike by both installers ----
+
+def _cfg_values(f: pathlib.Path) -> dict:
+    out = {}
+    for line in f.read_text(encoding="utf-8").splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip().strip('"')
+    return out
+
+
+def test_both_installers_spell_the_DERIVED_suffix_the_SAME_way(tmp_path):
+    """install.sh derived `<toolkit>/reference`, `<profile>/debug.txt`, `<game>/extensions`
+    with '/', install.ps1 with Join-Path's backslash -- two configs from one input. The
+    derived suffix is '/' in both now (bash, PowerShell and Python all read it)."""
+    got = {}
+    for inst in ("sh", "ps1"):
+        base = tmp_path / inst
+        base.mkdir()
+        dest = _fresh(base)
+        r = _install(inst, base, dest, omit=("reference", "extensions"))
+        assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+        v = _cfg_values(dest / "x4-paths.env")
+        got[inst] = {k: v.get(k, "")[-len(suffix):] for k, suffix in
+                     (("X4_REFERENCE", "/reference"), ("X4_DEBUGLOG", "/debug.txt"),
+                      ("X4_EXTENSIONS", "/extensions"))}
+    assert got["sh"] == got["ps1"] == {"X4_REFERENCE": "/reference", "X4_DEBUGLOG": "/debug.txt",
+                                        "X4_EXTENSIONS": "/extensions"}, got
