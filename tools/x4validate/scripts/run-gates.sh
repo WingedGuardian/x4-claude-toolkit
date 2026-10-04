@@ -66,21 +66,45 @@ done
 # gate's whole stdout+stderr now goes to <logdir>/<gate>.log, and <logdir>/system.txt gets
 # free memory and load at the start and at each failure. X4_GATE_LOG_DIR overrides the
 # default (a fresh temp dir); it is refused inside the game or reference tree.
-_under(){ # _under <path> <root>: is path inside (or equal to) root? Neither need exist.
-  local p r
-  p="$(realpath -m -- "$1" 2>/dev/null)" || return 1
-  r="$(realpath -m -- "$2" 2>/dev/null)" || return 1
-  p="$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')"; r="$(printf '%s' "$r" | tr '[:upper:]' '[:lower:]')"
-  case "$p/" in "$r"/*) return 0 ;; esac
-  return 1
+#
+# WHICH game/reference: the ones the TOOLS resolve -- environment, then the path config --
+# asked of x4validate._paths, never only the exported variables (v4.0.0 review R4-7/R6-10:
+# a root named only in x4-paths.env was not seen). The containment test is Python's too:
+# `realpath -m` does not exist on macOS, where the old check failed OPEN. A resolver that
+# cannot run REFUSES: a log dir that cannot be checked is not a log dir that passed.
+_log_dir_inside_a_root(){ # prints "VAR (root)" when $1 is inside a resolved root; rc 2 = cannot tell
+  PYTHONDONTWRITEBYTECODE=1 uv run python - "$1" <<'PY'
+import os, sys
+try:
+    from x4validate import _paths
+except Exception as exc:
+    print("cannot import x4validate._paths: %s" % exc, file=sys.stderr)
+    sys.exit(2)
+d = os.path.normcase(os.path.abspath(_paths.native(sys.argv[1])))
+for name, fn in (("X4_GAME", _paths.game_root), ("X4_REFERENCE", _paths.reference)):
+    try:
+        root = fn()
+    except Exception as exc:
+        print("cannot resolve %s: %s" % (name, exc), file=sys.stderr)
+        sys.exit(2)
+    if root is None:
+        continue
+    r = os.path.normcase(os.path.abspath(str(root))).rstrip(os.sep)
+    if d == r or d.startswith(r + os.sep):
+        print("%s (%s)" % (name, root))
+        sys.exit(0)
+sys.exit(1)
+PY
 }
 if [ -n "${X4_GATE_LOG_DIR:-}" ]; then
-  for v in X4_GAME X4_REFERENCE; do
-    if [ -n "${!v:-}" ] && _under "$X4_GATE_LOG_DIR" "${!v}"; then
-      echo "REFUSING: X4_GATE_LOG_DIR ($X4_GATE_LOG_DIR) is inside $v (${!v}); gate logs never go there" >&2
-      exit 2
-    fi
-  done
+  _hit="$(_log_dir_inside_a_root "$X4_GATE_LOG_DIR")"; _rc=$?
+  if [ "$_rc" = 0 ]; then
+    echo "REFUSING: X4_GATE_LOG_DIR ($X4_GATE_LOG_DIR) is inside $_hit; gate logs never go there" >&2
+    exit 2
+  elif [ "$_rc" != 1 ]; then
+    echo "REFUSING: cannot check X4_GATE_LOG_DIR ($X4_GATE_LOG_DIR) against the game and reference trees (the resolver failed, rc $_rc); unset it to use a fresh temp dir" >&2
+    exit 2
+  fi
   logdir="$X4_GATE_LOG_DIR"
   mkdir -p "$logdir" || { echo "REFUSING: cannot create X4_GATE_LOG_DIR $logdir" >&2; exit 2; }
 else
