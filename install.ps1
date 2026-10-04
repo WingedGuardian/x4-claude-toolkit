@@ -1037,7 +1037,9 @@ function Test-ConfigPrecheck($t) {
     Write-Host ('  They differ on: ' + (Get-IDifferingKeys $f $old))
     Write-Host '  Nothing has been changed. Keep the values you want in the first, delete'
     Write-Host '  or rename the second, then re-run. To see them side by side:'
-    Write-Host ('      python "' + (Join-Path $t (Join-Path 'scripts' 'x4config.py')) + '" status')
+    # --root, and the SOURCE's copy: without --root `status` reports X4_TOOLKIT's (or the
+    # cwd's) config -- possibly another toolkit (v4.0.0 review R4-11).
+    Write-Host ('      python "' + (Join-Path $SRC (Join-Path 'scripts' 'x4config.py')) + '" status --root "' + $t + '"')
     exit 1
   }
   if ($DryRun -and (Test-Path -LiteralPath $old -PathType Leaf)) {

@@ -2669,6 +2669,11 @@ def test_two_DIFFERING_configs_refuse_before_anything_is_written(installer, tmp_
     assert "/somewhere/else" not in out, "a VALUE was printed"
     assert {f: f.read_bytes() for f in snap} == snap
     assert not (dest / "README.md").exists(), "the copy ran before the refusal"
+    # v4.0.0 review R4-11: the named command must look at THIS destination. Without --root,
+    # `x4config.py status` reports X4_TOOLKIT's (or the cwd's) config -- another toolkit.
+    m = re.search(r"x4config\.py\"? status --root \"?([^\"\r\n]+)", out)
+    assert m, out[-1500:]
+    assert pathlib.Path(m.group(1).strip()).resolve() == dest.resolve(), m.group(1)
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])

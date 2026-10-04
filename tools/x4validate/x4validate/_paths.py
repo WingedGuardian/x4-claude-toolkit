@@ -278,7 +278,8 @@ def _notice(env_file: Path | None) -> None:
         differ = (f" They DIFFER on: {', '.join(keys)} -- older guard copies may protect a "
                   f"different tree." if keys else " They agree.")
         msg = (f"x4 config: reading {env_file}; the deprecated 3.x copy {old} is IGNORED."
-               f"{differ} Resolve: x4config.py status, i.e. python \"{tk / 'scripts' / 'x4config.py'}\" status")
+               f"{differ} Resolve: x4config.py status, i.e. python \"{tk / 'scripts' / 'x4config.py'}\" "
+               f"status --root \"{tk}\"")
     else:
         return
     _NOTICED.add(key)

@@ -524,8 +524,8 @@ def check_roots(ctx: Ctx) -> list[Check]:
                 return FAIL, ("TWO path configs that DIFFER (on %s): the guards read %s and IGNORE the "
                               "3.x %s, but an older guard copy elsewhere may still read it and protect "
                               "a different tree. Keep the values you want in the first, then delete or "
-                              "rename the second; check with python \"%s/scripts/x4config.py\" status"
-                              % (", ".join(keys) or "unknown keys", new, old, tk))
+                              "rename the second; check with python \"%s/scripts/x4config.py\" status "
+                              "--root \"%s\"" % (", ".join(keys) or "unknown keys", new, old, tk, tk))
             return OK, ("the guards read %s; the 3.x %s agrees and is ignored. Retire it: "
                         "python \"%s/scripts/x4config.py\" migrate --apply" % (new, old, tk))
         # none / explicit-missing

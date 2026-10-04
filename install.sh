@@ -1242,7 +1242,9 @@ precheck_config() {   # precheck_config TOOLKIT_DIR
     echo "  They differ on: $(_i_differing_keys "$f" "$old")"                   >&2
     echo "  Nothing has been changed. Keep the values you want in the first, delete" >&2
     echo "  or rename the second, then re-run. To see them side by side:"       >&2
-    echo "      python \"$t/scripts/x4config.py\" status"                       >&2
+    # --root, and the SOURCE's copy: without --root `status` reports X4_TOOLKIT's (or the
+    # cwd's) config -- possibly another toolkit (v4.0.0 review R4-11).
+    echo "      python \"$SRC/scripts/x4config.py\" status --root \"$t\""          >&2
     exit 1
   fi
   if [ "$DRY_RUN" = 1 ] && [ -f "$old" ]; then
