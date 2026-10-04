@@ -511,7 +511,7 @@ on redirect_truncate_into_game_or_profile \
 # DENY is the verdict (user decision 2026-09-25, AUDIT-2026-09-24 HK-6); the reason used
 # to end "confirm: ...", which on a deny offers the reader nothing to confirm. There is a
 # correct alternative to take instead, so it names that.
-on sed_i_in_game_or_profile && deny "BLOCKED: in-place sed edit (sed -i) of a file in the game or profile directory. A Bash edit gets NO backup and bypasses the file-path guard. Use the Edit tool instead: it is backed up, checked by protect-files.sh, and fails loudly on a non-unique match. Command: $COMMAND"
+on sed_i_in_game_or_profile && deny "BLOCKED: in-place sed edit (sed -i) of a file in the game or profile directory. A shell edit gets NO backup and bypasses the file-path guard. Use your file-edit tool instead (Edit, apply_patch): it is backed up, checked by protect-files.sh, and fails loudly on a non-unique match. Command: $COMMAND"
 
 # === CONFIRM — direct reference to .cat/.dat archives ===
 # DROPPED 2026-08-29: this fired on any command whose TEXT mentioned a .cat -- including
@@ -546,10 +546,10 @@ on git_add_all && deny "GIT ADD -A / . IN A SHARED WORKSPACE: this stages EVERY 
 # Appends (`>>`) are deliberately NOT blocked — they cannot truncate.
 if on durable_truncating_redirect; then
   deny "BLOCKED: truncating redirect onto a durable record.
-A '>' replaces the file, and a Bash write gets NO backup (backup-before-edit.sh only covers Edit|Write).
+A '>' replaces the file, and a shell write gets NO backup (backup-before-edit.sh covers file-edit tools only).
 Use instead:
-  - the Edit tool for a surgical change (backed up, and it fails loudly if the match is not unique)
-  - the Write tool for a full replacement (backed up)
+  - your file-edit tool for a surgical change (Edit, apply_patch: backed up, and it fails loudly if the match is not unique)
+  - your file-write tool for a full replacement (Write, apply_patch: backed up)
   - '>>' to append — it cannot truncate
 Command: $COMMAND"
 fi
@@ -559,7 +559,7 @@ fi
 if on durable_python_open_w; then
   deny "python open(...,'w') in a command that names a durable record (memory / KNOWLEDGEBASE / CLAUDE.md / BLIND-SPOTS).
 open() TRUNCATES AT OPEN — if the write then raises, the file is left EMPTY. This wiped a memory file on 2026-08-22.
-Prefer the Edit/Write tools (backed up), or write to a temp and rename. If you proceed, VERIFY the size afterwards.
+Prefer your file-edit/-write tools (Edit, Write, apply_patch: backed up), or write to a temp and rename. If you proceed, VERIFY the size afterwards.
 Command: $COMMAND"
 fi
 
@@ -601,12 +601,12 @@ if on search_rooted_reference; then
   deny "WRONG TOOL: recursive text search that traverses the whole reference\\ tree (~60 GB).
 This fires whether the search is rooted AT reference\\ or at any directory ABOVE it --
 an ancestor walk reaches the 60 GB and everything beside it, so it is the worse case.
-Route the question first (CLAUDE.md 'Discovery vs. Proof'):
+Route the question first (the project instructions -- CLAUDE.md / AGENTS.md -- section 'Discovery vs. Proof'):
   - 'what values does attribute X take / who references X?' -> BaseX: cd tools\\basex && python ask.py ...
     (fast, and gives a DENOMINATOR — which a bare grep count never does)
   - 'what is the LIVE value and who set it?'                -> uv run x4effective
-  - 'does a file with this NAME exist?'                     -> the Glob tool (NOT grep: grep searches CONTENTS)
-  - 'find this text in ONE known area'                      -> the Grep tool (ripgrep), or scope this grep to a subdirectory
+  - 'does a file with this NAME exist?'                     -> a file-NAME search (Glob, rg --files, find) -- NOT grep: grep searches CONTENTS
+  - 'find this text in ONE known area'                      -> a content search (Grep, rg) scoped to that subdirectory
 If you truly need a full-tree scan, scope it to a subpath so it is deliberate rather than reflexive."
 fi
 
@@ -631,7 +631,7 @@ Route it instead:
   - 'what is this mod's id?'           -> read the mod's OWN extensions/<folder>/content.xml @id
   - and remember: the profile is a DECISION LOG, not an inventory. MEASURED 2026-08-23:
     348 entries, 287 FOSSILS (82.5%), and 54 of 115 installed mods absent from it entirely.
-    ABSENT != DISABLED -- X4 adds an unseen folder as ENABLED. See CLAUDE.md #30.
+    ABSENT != DISABLED -- X4 adds an unseen folder as ENABLED. See #30 in the x4-xml-patching skill.
 
 If you already have the manifest id and are grepping for THAT, proceed."
 fi
@@ -655,7 +655,7 @@ if on dollarq_after_pipe; then
   deny "\$? AFTER A PIPELINE reports the LAST command's exit code, not the one you mean.
   cmd | head; echo \$?      -> that is HEAD's exit code
 Measured 2026-08-22: this reported a stale-index refusal (real exit 5) as 'exit 0',
-and it was nearly written up as a tool defect. See CLAUDE.md #22.
+and it was nearly written up as a tool defect (check the checker first: #22, the x4-toolkit-dev skill).
 Use instead:
   cmd > out 2>&1; rc=\$?     # capture FIRST, format afterwards
   \${PIPESTATUS[0]}          # if you must keep the pipeline
@@ -688,10 +688,10 @@ It does not finish — MEASURED 2026-08-22: grep -r killed at 300 s, ripgrep tim
 20 s, because tools\\basex\\basex\\data\\ alone is GBs of binary database pages.
 Name the directory you actually mean:
   tools\\x4validate  ·  dev  ·  tools\\basex (excluding basex/data)
-Or route the question (CLAUDE.md 'Discovery vs. Proof'):
+Or route the question (the project instructions -- CLAUDE.md / AGENTS.md -- section 'Discovery vs. Proof'):
   values / who-references-X  -> BaseX ask.py (gives a DENOMINATOR)
   the LIVE value + who set it -> uv run x4effective
-  does a FILE by this name exist -> the Glob tool, not grep
+  does a FILE by this name exist -> a file-NAME search (Glob, rg --files, find), not grep
 Command: $COMMAND"
 fi
 

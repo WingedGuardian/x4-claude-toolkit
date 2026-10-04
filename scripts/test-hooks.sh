@@ -524,7 +524,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=230
+EXPECT=231
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -1152,6 +1152,27 @@ export HOME="$_pp_home"
 if [ -n "$_pp_docs" ]; then export X4_DOCUMENTS="$_pp_docs"; else unset X4_DOCUMENTS; fi
 [ -n "$_pp_prof" ] && export X4_PROFILE="$_pp_prof"
 [ -n "$_pp_saves" ] && export X4_SAVES="$_pp_saves"
+
+
+# =============================================================================
+# Refusals name AGENT-NEUTRAL remedies (v4.0 release review R3-1)
+# =============================================================================
+# The same protect-bash.sh judges Codex and OpenCode, and its reasons told every agent to "use
+# the Edit tool" and to "see CLAUDE.md #22" -- a tool Codex lacks and an anchor that no longer
+# exists in CLAUDE.md. Read the REASONS of four refusals that carried them.
+echo; echo "=== refusals name agent-neutral remedies ==="
+_r31=""
+for _c in "sed -i s/a/b/ '$SBX_TMP/game/X4 Foundations/libraries/w.xml'" \
+          "echo x > KNOWLEDGEBASE.md" "uv run pytest | tail -3; echo \$?" \
+          "grep -rn wares '$SBX_TMP/r31ref'"; do
+  _r31="$_r31$(X4_GAME="$SBX_TMP/game/X4 Foundations" X4_REFERENCE="$SBX_TMP/r31ref" bash -c 'printf "%s" "$1" | bash "$2"' _ "$(cj "$_c")" "$HOOKS/protect-bash.sh" 2>/dev/null)"
+done
+case "$_r31" in
+  *"the Edit tool"*|*"the Write tool"*|*"the Glob tool"*|*"the Grep tool"*|*"CLAUDE.md #"*)
+    no "a refusal names a Claude-only remedy or a dead CLAUDE.md anchor" ;;
+  *apply_patch*"Discovery vs. Proof"*) ok "the refusals name agent-neutral remedies and live anchors" ;;
+  *) no "the refusals did not render (or lost their remedies): ${_r31:0:200}" ;;
+esac
 
 echo "RESULT: $pass passed, $fail failed, $skipped skipped"
 if [ $((pass + fail + skipped)) -ne "$EXPECT" ]; then
