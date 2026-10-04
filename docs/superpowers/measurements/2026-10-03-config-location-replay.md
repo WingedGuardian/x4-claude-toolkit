@@ -70,6 +70,9 @@ into the unconfigured pass). All 18 control calls held.
 
 ## Re-running
 
-The harness lives in the session scratchpad (`plan3/laneI/replay_config.py`,
-`extract_files.py`; lane F's `plan2/laneF/corpus.jsonl`): `python replay_config.py stage1`, then
-`python replay_config.py stage2 --workers 4`. Seed 20261003.
+The harness is NOT in the repo. It lived in the maintainer's session scratchpad
+(`replay_config.py`, `extract_files.py`, and the command corpus of
+`2026-10-02-cwd-seed-replay.md`) and reads the maintainer's own transcripts, so this replay
+cannot be re-run from a clone; this file is the record of its method, controls and counts.
+It ran as `python replay_config.py stage1`, then `python replay_config.py stage2 --workers 4`.
+Seed 20261003.

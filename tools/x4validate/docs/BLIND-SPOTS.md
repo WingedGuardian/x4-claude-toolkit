@@ -7762,7 +7762,8 @@ narrowing below removed a class:
   stay unseeded.
 
 Shipped: **3 of 53,828** rows change facts: 2 allow->advise and 1 deny that stays deny. Rows where
-OLD was stricter: 0. New asks: 0. New denies: 0. Detail: Plan 2 `measure-F.md`.
+OLD was stricter: 0. New asks: 0. New denies: 0. Detail:
+`docs/superpowers/measurements/2026-10-02-cwd-seed-replay.md`.
 
 **Still open (the 5%).**
 - Codex's shell `workdir` is invisible to hooks, so a relative operand is judged against the
