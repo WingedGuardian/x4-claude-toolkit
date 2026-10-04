@@ -68,3 +68,11 @@ release/ export-ignore
 # Maintainer-only: plants mutants in the game-side mod while it runs, so it must never
 # reach a user. Tracked for maintainers; excluded from the bundle.
 tools/x4validate/scripts/mutate-mod-lua.py export-ignore
+
+# Maintainer working papers (v4.0.0 release review R6-12, lane FX-D). The implementation
+# plans and session handoffs are PUBLIC in the repo but are not product documentation: they
+# carry the maintainer's workspace details and per-lane process, and no installing user has
+# any use for them. The measurements under docs/superpowers/measurements/ STAY in the bundle:
+# the README and CHANGELOG cite them as evidence.
+docs/superpowers/plans/ export-ignore
+docs/handoffs/ export-ignore

@@ -73,12 +73,17 @@ conventional, or present in your memory does not change that.
 
 A missing required attribute fails the file exactly like a missing element.
 
-**Confirm against real usage, with a denominator:**
+**Confirm against real usage, with a denominator** (bash; the first line stops with an error
+when `X4_REFERENCE` is unset, where the counts below would print a silent 0):
 
+    : "${X4_REFERENCE:?is unset -- set it to your reference folder first}"
+    ls "$X4_REFERENCE"/md/*.xml | wc -l                       # the denominator
     grep -l "<wait" "$X4_REFERENCE"/md/*.xml | wc -l
+    ls "$X4_REFERENCE"/aiscripts/*.xml | wc -l
     grep -l "<wait" "$X4_REFERENCE"/aiscripts/*.xml | wc -l
 
-Zero of hundreds is an answer. One of hundreds is a lead worth reading.
+Zero of hundreds is an answer. Zero of zero is a wrong path. One of hundreds is a lead worth
+reading.
 
 ## 3. Copy, do not compose
 

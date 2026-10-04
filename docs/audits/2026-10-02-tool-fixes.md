@@ -3,7 +3,8 @@
 Status: repairs installed and verified after review and final E2E. The additional
 store-metadata failure found during E2E is fixed, installed, and included in the
 final full-suite run.
-Approved [plan](../superpowers/plans/2026-10-02-tool-fixes.md).
+Approved plan: `docs/superpowers/plans/2026-10-02-tool-fixes.md` in the repository (not
+shipped in the release bundle).
 Historical [audit](2026-10-01-tools.md) remains the pre-fix evidence.
 
 ## Changes and compatibility
@@ -137,8 +138,9 @@ external location named in the game-root AGENTS.md is absent; the agent-support
 handoff records that stale instruction. No duplicate suite is created.
 
 Both local tools are retained as requested. Their repositories own the patches;
-the toolkit does not silently become their source or deployer. See
-[Claude handoff](../handoffs/2026-10-02-legacy-tools.md).
+the toolkit does not silently become their source or deployer. See the
+handoff note `docs/handoffs/2026-10-02-legacy-tools.md` in the repository (not shipped in
+the release bundle).
 
 ## Workflow rulings
 
@@ -151,3 +153,54 @@ the toolkit does not silently become their source or deployer. See
   cycle. The later metadata follow-up is disclosed above and reviewed locally.
 - Audit worktrees and raw evidence are retained for inspection. Cleanup is
   deferred rather than discarding verification evidence; the cost is local disk.
+
+## Session notes (moved from KNOWLEDGEBASE.md, 2026-10-04)
+
+Moved verbatim by the v4.0.0 release review (R6-11): toolkit development history, not facts
+about the game. The first note lists the 2026-10-01 audit's findings as unfixed; this file
+records their repair, and the second note is the repair itself.
+
+### 2026-10-01 — individual tool audit (unfixed findings)
+
+Hands-on audit of toolkit `aa57efc` and local older tools, in an isolated worktree:
+see [evidence and scope](2026-10-01-tools.md). BaseX can incorrectly
+certify zero results when `attr` receives XPath syntax or a numeric predicate
+uses `if/then/else`; xref silently discards short TSV rows and can call the
+remaining index a real negative. Treat these negative claims cautiously until
+fixed. Invalid DEFLATE saves and corrupt effective SQLite stores produce
+uncaught exceptions. Local x4cat 1.2.6 accepts an empty template directory and
+reports scaffold success without required files. The legacy `dev/_tools/deploy.py`
+loses assertion-based safety guards under `python -O` and follows destination
+junctions outside the mod. These were reproduced only in scratch, with no tool
+implementation or production mod/profile changes. They are findings, not fixes.
+Final sweep: 125 mod folders, 250 ordinary/update reports, zero tool exceptions;
+existing suite 2,840 passed / 49 skipped with installer tests excluded. Initial
+24,878-file metadata / 50-hash comparison and expanded 526,564-file final-control
+metadata comparison found no differences, within their documented coverage.
+
+Audit lesson: fresh pytest temp folders must sit outside any parent Git checkout
+for tests that expect a non-repository directory; keep native MSYS argument
+conversion enabled when shell build scripts invoke native Python with `/c/...`
+script paths. Do not query a scratch BaseX database while it is rebuilding.
+
+### 2026-10-02 — individual-tool repair contract
+
+READ/MEASURED in isolated repair checkouts: BaseX attribute arguments are lexical
+QNames; raw-query zeros need a restricted content-search grammar. FLWOR and other
+unrecognized zeros remain non-answers (4), even when apparently innocent. Optional
+`--limit`/`--offset` display whole items with full totals; paging past the end is
+not absence. Unsupported requested paging returns 2 without unbounded fallback.
+Xref now validates all TSV rows and hashes both index and exclusions; unsigned
+older indexes can supply warned positives, never certified absence. Rebuild
+explicitly. Corrupt DEFLATE/SQLite inputs are rc 2 non-answers. SQLite URI filenames
+must escape `#`, `?` and `%` before appending `mode=ro`.
+Structurally valid SQLite can still contain a malformed JSON freshness vector;
+comparison failures are unreadable-metadata refusals, while valid stale stores
+remain readable with their warning. The repair has a read-only stale-store twin.
+
+Legacy deploy checks remain active under `-O`; batch preflight and reparse-point
+rejection run before apply. x4cat rejects invalid templates before creating output
+and supports explicit offline templates. Both are retained. Scratch regressions
+and final suites are recorded in the [repair follow-up](2026-10-02-tool-fixes.md).
+Repairs are installed after review and E2E (toolkit 2914 passed / 49 skipped). Reader changes alter effective-engine fingerprints: existing production
+artifacts need an explicit rebuild before fresh claims. No automatic rebuild/deploy.

@@ -125,9 +125,10 @@ If this folder has no `.codex/hooks/` (a Claude-only setup), the same guard is
 
 On Windows Codex runs shell commands in **PowerShell**: pass `--shell powershell` (judged as
 bash, a PowerShell write into `reference\` was measured to pass), and write the toolkit root
-as `$env:X4_TOOLKIT` (the installer writes the skills that way; an uninstalled copy says
-`$X4_TOOLKIT` or `TOOLKIT` in double braces for the same folder). On Linux/macOS pass
-`--shell bash` and use `python3`. Treat `deny` and `ask` as a stop and ask the user; treat
+as `$env:X4_TOOLKIT` wherever these instructions say `$X4_TOOLKIT` (in PowerShell that form
+expands to nothing). Installed skills already say `$env:X4_TOOLKIT` on Windows (the installer
+renders them); a skill in an uninstalled copy says `TOOLKIT` in double curly braces, meaning
+the same folder. On Linux/macOS pass `--shell bash`, use `python3` and `$X4_TOOLKIT`. Treat `deny` and `ask` as a stop and ask the user; treat
 `inert: true` as "nothing was checked", never a pass.
 
 **Check for the banner.** When the X4 hooks are live, your session context starts with
@@ -143,10 +144,17 @@ Never `git add -A` / `git add .`: stage explicit paths.
 - Writing to `reference\` (read-only base game data, ever)
 - Directly writing `.cat` / `.dat` files (use XRCatTool)
 - `sed -i` on a game or profile file (edit through your file-edit tool, which is backed up first)
+- Deleting the game installation folder itself (or its whole `extensions` folder), or anything in
+  `reference\`
+- A bare `git clean` with `-x`/`-X`/`-d`, or `git reset --hard`, run from an X4 directory (no
+  folder named): in the game folder git ignores every file, so it would delete the installation's
+  own files
 
 ### Requires confirmation
 - Edits to user-profile files (`Documents\Egosoft\X4\`); a `content.xml` edit is only ADVISED
-- Deleting in an X4 directory (a save above all); `git clean`/`reset --hard` there
+- Deleting a save or anything else in the X4 profile; other deletes in an X4 directory get an
+  advisory, not a prompt
+- `git -C "<X4 folder>" clean` / `reset --hard` (the folder named): it deletes untracked files
 
 ### General
 - One mod = one named folder, never a mega-file

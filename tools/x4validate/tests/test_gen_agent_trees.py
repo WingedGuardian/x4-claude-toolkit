@@ -402,6 +402,45 @@ def test_E6_duplicate_agent_names_refuse(tmp_path):
         g.generate(root)
 
 
+# --- v4.0.0 release review R3-5: no agent.yaml key is silently dropped; read_only is enforced.
+@pytest.mark.parametrize("old,new,why", [
+    # MEASURED before: a typo `tool:` was dropped, so the subagent was rendered with NO tools
+    # line -- Claude Code then gives it EVERY tool.
+    ("claude:\n  tools:", "claude:\n  tool:", "claude.tool"),
+    ("tier: balanced", "tier: balanced\nmodle: haiku", "modle"),
+])
+def test_R3_5_an_unknown_agent_yaml_key_refuses(tmp_path, old, new, why):
+    g = load()
+    root = _agent_copy(tmp_path)
+    _edit(root, CFI, old, new)
+    with pytest.raises(g.GenerationError, match=why):
+        g.generate(root)
+
+
+@pytest.mark.parametrize("old,new,why", [
+    ("tools: [Glob, Grep, Read, Bash]", "tools: [Glob, Grep, Read, Edit]", "Edit"),      # a write tool
+    ("tools: [Glob, Grep, Read, Bash]", "tools: [Glob, Write]", "Write"),
+    ("tools: [Glob, Grep, Read, Bash]", "tools: []", "every tool"),                     # empty = all
+    ("read_only: true", "read_only: yes please", "read_only"),                         # not a bool
+])
+def test_R3_5_read_only_is_enforced_one_twin_per_clause(tmp_path, old, new, why):
+    g = load()
+    root = _agent_copy(tmp_path)
+    _edit(root, CFI, old, new)
+    with pytest.raises(g.GenerationError, match=why):
+        g.generate(root)
+
+
+def test_R3_5_TWIN_without_read_only_a_write_tool_is_accepted(tmp_path):
+    """The control: the same Edit tool is fine on an agent that does not declare read_only, so
+    the refusal above is the read_only clause and not the tool name."""
+    g = load()
+    root = _agent_copy(tmp_path)
+    _edit(root, CFI, "read_only: true\n", "")
+    _edit(root, CFI, "tools: [Glob, Grep, Read, Bash]", "tools: [Glob, Grep, Read, Edit]")
+    assert "Edit" in _frontmatter(g.generate(root)[".claude/agents/cross-file-impact.md"])["tools"]
+
+
 @pytest.mark.parametrize("raw", ['"../../escaped"', '"sub/dir"', r"'sub\dir'", '"Upper-Case"',
                                  '"has space"', "123", '"-leading"', '""'])
 def test_E6_a_name_that_is_not_a_plain_agent_name_refuses(tmp_path, raw):
@@ -591,7 +630,10 @@ def test_the_generator_never_owns_x4_notes():
 # --- Plan 2 lane A, Task 5: the core is agent-neutral; Claude facts live in the claude addendum.
 #: One sample per NEUTRALITY_BANNED clause (#26: a falsification twin per clause).
 BANNED_SAMPLES = ["$CLAUDE_PROJECT_DIR", "Claude Code", "see CLAUDE.md", "MEMORY.md", "NotebookEdit",
-                  "settings.json", ".claude/hooks/x", ".claude\\settings", "use **Glob**", "the **Grep** tool"]
+                  "settings.json", ".claude/hooks/x", ".claude\\settings", "use **Glob**", "the **Grep** tool",
+                  # release review R3-2: each of these passed the list before
+                  "use the Grep/Glob tool", "the Edit tool", "run it in claude code", "the .claude folder",
+                  "$CLAUDE_PLUGIN_ROOT/hooks"]
 
 
 @pytest.mark.parametrize("sample", BANNED_SAMPLES)
@@ -641,6 +683,49 @@ def test_neutrality_refusal_names_the_line_number(tmp_path):
 
 def test_the_committed_core_is_neutral():
     load().check_neutral((REPO / "agent/instructions/core.md").read_bytes().decode("utf-8"))
+
+
+# --- release review R3-2: skills reach Codex and OpenCode verbatim, so they are checked too.
+def test_R3_2_the_committed_skills_are_neutral():
+    load().check_skills_neutral(REPO / "agent")
+
+
+def test_R3_2_a_skill_naming_a_claude_only_mechanism_refuses(tmp_path):
+    g = load()
+    src = _agent_src_copy(tmp_path)
+    p = src / "skills/x4-balance/SKILL.md"
+    p.write_bytes(p.read_bytes() + b"\nRead CLAUDE.md first.\n")
+    with pytest.raises(g.GenerationError, match=r"x4-balance/SKILL\.md is not agent-neutral"):
+        g.generate(tmp_path)
+
+
+def test_R3_2_TWIN_a_skill_allowance_is_scoped_to_its_own_file(tmp_path):
+    """The allowance for one file's exact text must not excuse the same text in another skill."""
+    g = load()
+    (rel, texts), = list(g.SKILL_NEUTRALITY_ALLOWED.items())[:1]
+    src = _agent_src_copy(tmp_path)
+    p = src / "skills/x4-balance/SKILL.md"
+    p.write_bytes(p.read_bytes() + ("\n" + texts[0] + "\n").encode("utf-8"))
+    with pytest.raises(g.GenerationError, match="x4-balance"):
+        g.generate(tmp_path)
+
+
+def test_R3_2_TWIN_a_stale_skill_allowance_refuses(tmp_path, monkeypatch):
+    g = load()
+    monkeypatch.setattr(g, "SKILL_NEUTRALITY_ALLOWED",
+                        {**g.SKILL_NEUTRALITY_ALLOWED, "x4-balance/SKILL.md": ("text that is not there",)})
+    with pytest.raises(g.GenerationError, match="stale"):
+        g.check_skills_neutral(REPO / "agent")
+
+
+def test_R3_2_skills_render_the_generated_file_list_from_OWNED():
+    """x4-toolkit-dev lists the generated paths through the token, never by hand (R3-6)."""
+    g = load()
+    out = g.generate(REPO)
+    phrase = g._generated_files_phrase()
+    for prefix in (".claude/skills/", ".agents/skills/", ".opencode/skills/"):
+        text = out[prefix + "x4-toolkit-dev/SKILL.md"]
+        assert phrase in text and "{{GENERATED_FILES}}" not in text, prefix
 
 
 def test_TWIN_an_empty_addendum_body_refuses(tmp_path):

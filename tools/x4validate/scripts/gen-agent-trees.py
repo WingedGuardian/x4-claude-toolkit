@@ -40,6 +40,12 @@ _IGNORED_PARTS = ("__pycache__",)
 #: Claude Code agent names are lowercase letters, digits and hyphens; anything else could also
 #: steer the output path (MEASURED: '../../escaped' rendered outside .claude/agents/).
 _AGENT_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+#: Every key agent.yaml may carry; anything else refuses (release review R3-5).
+AGENT_KEYS = frozenset({"name", "description", "tier", "read_only", "claude"})
+AGENT_CLAUDE_KEYS = frozenset({"tools"})
+#: `read_only: true` refuses these in claude.tools. Bash is NOT policed: a shell can write, so
+#: read_only states intent and keeps the file-editing tools out; it is no sandbox.
+WRITE_TOOLS = frozenset({"Edit", "MultiEdit", "Write", "NotebookEdit"})
 
 
 class GenerationError(Exception):
@@ -143,9 +149,14 @@ NEUTRALITY_BANNED: tuple[tuple[str, str], ...] = (
     (r"MEMORY\.md", "Claude Code's auto-memory index"),
     (r"NotebookEdit", "a Claude Code tool name"),
     (r"settings\.json", "Claude Code's hook/settings file"),
-    (r"\.claude[/\\]", "a .claude/ path (Claude-only tree)"),
+    (r"\.claude\b", "a .claude path (Claude-only tree), with or without a separator after it"),
     (r"\*\*Glob\*\*", "the Claude Code Glob tool"),
     (r"\*\*Grep\*\*", "the Claude Code Grep tool"),
+    # Release review R3-2: each of the clauses below let a Claude-only line through before.
+    (r"(?i)\bclaude[ -]code\b", "names Claude Code (any case): say 'the agent'"),
+    (r"\bCLAUDE_[A-Z][A-Z_]*", "a Claude Code environment variable (e.g. CLAUDE_PLUGIN_ROOT)"),
+    (r"\b(?:Grep|Glob|Edit|Write|Read|Bash|WebFetch)(?:\s*/\s*(?:Grep|Glob|Edit|Write|Read|Bash|WebFetch))*"
+     r"\s+tools?\b", "a Claude Code tool name ('the Grep tool'): say 'your search / file-edit tool'"),
 )
 #: Exact substrings exempted from NEUTRALITY_BANNED. Blanked to equal-length spaces BEFORE
 #: matching, so line numbers and the rest of the line are still checked.
@@ -166,6 +177,38 @@ def check_neutral(core: str, where: str = "agent/instructions/core.md") -> None:
             if m:
                 raise GenerationError(f"{where} is not agent-neutral: line {n}: "
                                       f"{m.group(0)!r} -- {reason}")
+
+
+#: Skills are copied to EVERY agent (.claude/skills, .agents/skills, .opencode/skills), so they
+#: are held to NEUTRALITY_BANNED too (release review R3-2). An exemption is an EXACT substring
+#: of ONE skill file (path relative to agent/skills/), blanked before matching like
+#: NEUTRALITY_ALLOWED; it must still occur in that file, or the generator refuses it as stale.
+#: Only text that is true for every agent belongs here -- a Claude-only INSTRUCTION is reworded
+#: or rendered per target (a {{TOKEN}}), never exempted.
+SKILL_NEUTRALITY_ALLOWED: dict[str, tuple[str, ...]] = {
+    # x4modlist's own --help text (gen-cli-reference.py copies argparse output verbatim; the
+    # source is tools/x4validate/x4modlist). It names where the function lives in the source
+    # tree, a fact for every agent, not a Claude mechanism to use.
+    "x4-cli-reference/reference/x4modlist.md": (".claude/hooks/_x4-env.sh",),
+}
+
+
+def check_skills_neutral(src: Path) -> None:
+    """Every file under agent/skills/ passes NEUTRALITY_BANNED, after its own exemptions."""
+    root = src / "skills"
+    files = {f.relative_to(root).as_posix(): f for f in sorted(root.rglob("*"))
+             if f.is_file() and not any(part in _IGNORED_PARTS for part in f.parts)} if root.is_dir() else {}
+    for rel, allowed in SKILL_NEUTRALITY_ALLOWED.items():
+        text = _read(files[rel]) if rel in files else ""
+        stale = [a for a in allowed if a not in text]
+        if stale:
+            raise GenerationError(f"SKILL_NEUTRALITY_ALLOWED is stale: agent/skills/{rel} no longer "
+                                  f"contains {stale[0]!r} -- drop the exemption")
+    for rel, f in files.items():
+        text = _read(f)
+        for allowed in SKILL_NEUTRALITY_ALLOWED.get(rel, ()):
+            text = text.replace(allowed, " " * len(allowed))
+        check_neutral(text, f"agent/skills/{rel}")
 
 
 def _generated_files_phrase() -> str:
@@ -257,13 +300,22 @@ def render_agents_md(src: Path) -> str:
 def render_agent_md(agent_dir: Path) -> tuple[str, str]:
     """agent.yaml contract: name matches _AGENT_NAME; description a non-empty string (emitted
     plain when YAML round-trips it, else JSON-quoted); tier in TIER_MODEL; claude, if present, a
-    mapping; claude.tools, if present, a YAML LIST of tool names. MEASURED before this: a tools
+    mapping; claude.tools, if present, a YAML LIST of tool names; no key outside AGENT_KEYS /
+    AGENT_CLAUDE_KEYS; read_only, if present, a bool, and when true an explicit tools list with
+    no WRITE_TOOLS in it. MEASURED before this: a tools
     STRING rendered as 'G, l, o, b', a ': ' in a description produced frontmatter that does not
     parse, and a name of '../../escaped' rendered outside .claude/agents/."""
     p = agent_dir / "agent.yaml"
     meta = _load_yaml(p)
     if not isinstance(meta, dict):
         raise GenerationError(f"{p}: not a mapping")
+    # An unknown key is a refusal, never a silent drop (release review R3-5, MEASURED: a typo
+    # `tool:` was dropped, the agent rendered with no tools line, and Claude Code then grants a
+    # subagent EVERY tool).
+    unknown = sorted(set(map(str, meta)) - AGENT_KEYS)
+    if unknown:
+        raise GenerationError(f"{p}: unknown key(s) {', '.join(unknown)} -- "
+                              f"allowed: {', '.join(sorted(AGENT_KEYS))}")
     for key in ("name", "description", "tier"):
         if not meta.get(key):
             raise GenerationError(f"{p}: missing {key}")
@@ -276,10 +328,26 @@ def render_agent_md(agent_dir: Path) -> tuple[str, str]:
     claude = meta.get("claude") or {}
     if not isinstance(claude, dict):
         raise GenerationError(f"{p}: claude must be a mapping")
+    unknown = sorted(set(map(str, claude)) - AGENT_CLAUDE_KEYS)
+    if unknown:
+        raise GenerationError(f"{p}: unknown key(s) {', '.join('claude.' + k for k in unknown)} -- "
+                              f"allowed: {', '.join('claude.' + k for k in sorted(AGENT_CLAUDE_KEYS))}")
     tools = claude.get("tools") or []
     if not isinstance(tools, list) or not all(
             isinstance(t, str) and t.strip() and "," not in t and "\n" not in t for t in tools):
         raise GenerationError(f"{p}: claude.tools must be a YAML list of tool names, e.g. [Read, Grep]")
+    read_only = meta.get("read_only", False)
+    if not isinstance(read_only, bool):
+        raise GenerationError(f"{p}: read_only must be true or false, got {read_only!r}")
+    if read_only:
+        # No tools line = Claude Code grants every tool, write tools included.
+        if not tools:
+            raise GenerationError(f"{p}: read_only: true needs an explicit claude.tools list -- "
+                                  f"without one Claude Code grants every tool")
+        writers = sorted(set(tools) & WRITE_TOOLS)
+        if writers:
+            raise GenerationError(f"{p}: read_only: true but claude.tools grants file-writing "
+                                  f"tool(s) {', '.join(writers)}")
     body = _read(agent_dir / "instructions.md").replace(TOKEN, CLAUDE_TOOLKIT)
     model = TIER_MODEL[meta["tier"]]
     lines = ["---", f"name: {meta['name']}", f"description: {_yaml_scalar(meta['description'])}"]
@@ -319,7 +387,8 @@ def render_skills(src: Path, agent: str = "claude") -> dict[str, str]:
         for f in sorted(d.rglob("*")):
             if not f.is_file() or any(part in _IGNORED_PARTS for part in f.parts):
                 continue
-            text = _read(f).replace(TOKEN, toolkit)
+            text = _read(f).replace(TOKEN, toolkit).replace("{{GENERATED_FILES}}",
+                                                            _generated_files_phrase())
             if f.name == "SKILL.md" and "<!-- GENERATED" not in text:
                 text = _with_banner_after_frontmatter(text, f)
             out[prefix + f.relative_to(root).as_posix()] = text
@@ -473,6 +542,7 @@ def generate(repo: Path) -> dict[str, str]:
     if not src.is_dir():
         raise GenerationError(f"no neutral source tree at {src}")
     check_neutral(_read(src / "instructions" / "core.md"))
+    check_skills_neutral(src)
     out: dict[str, str] = {"CLAUDE.md": render_claude_md(src), "AGENTS.md": render_agents_md(src)}
     agents = src / "agents"
     agent_dirs = sorted(p for p in agents.iterdir() if p.is_dir()) if agents.is_dir() else []
