@@ -45,6 +45,15 @@ def _write(rows, path):
     return path
 
 
+def _recorded_inert(xc, row):
+    """True when the row's RECORDED guard verdict says the guards could not check it."""
+    try:
+        hso = json.loads(row.get("out") or "{}").get("hookSpecificOutput") or {}
+    except ValueError:
+        return False
+    return bool(xc.NOT_CHECKED.search(hso.get("permissionDecisionReason") or ""))
+
+
 def test_the_toy_adapter_passes_full_conformance(conformance_dump, tmp_path):
     rows, _ = conformance_dump
     r = conformance(_write(rows, tmp_path / "all.jsonl"), TOY / "toy_adapter.py")
@@ -77,7 +86,11 @@ def test_each_adapter_mutant_turns_conformance_red(name, conformance_dump, tmp_p
     edits, pick = MUTANTS[name]
     rows, _ = conformance_dump
     pool = rows + xc.extra_rows(REPO, rows)
-    chosen = [r for r in pool if pick(r)][:12]
+    # Only rows the GUARDS can check: a row whose recorded verdict is "could not check"
+    # (e.g. the guards-off untranslatable-PowerShell case) is inert by design, the engine
+    # rightly refuses to count it (R2-F3), and it cannot express any mutant. Judged with the
+    # engine's own NOT_CHECKED pattern, never a copy of it.
+    chosen = [r for r in pool if pick(r) and not _recorded_inert(xc, r)][:12]
     assert chosen, f"{name}: no case can express this defect -- add one, never drop the mutant"
     cases = _write(chosen, tmp_path / "c.jsonl")
     src = (TOY / "toy_adapter.py").read_text(encoding="utf-8")
