@@ -44,8 +44,11 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   `agent/`, then regenerate; a test fails if a generated file drifts from its source. The
   generator rewrites only stale files and names each one, never deletes, and refuses (rc 2)
   rather than truncating or guessing: `AGENTS.md` over 32,768 bytes (where Codex cuts it,
-  MEASURED), `CLAUDE.md` over 40,000 characters, a shared core naming a Claude-only mechanism, a
-  leftover `{{TOKEN}}`, a non-UTF-8 file, invalid YAML or an unclosed frontmatter.
+  MEASURED), `CLAUDE.md` over 40,000 characters, a shared core or a skill naming a Claude-only
+  mechanism (skills reach every agent), an `agent.yaml` key it does not know (a typo `tool:`
+  used to be dropped, which gives a Claude Code subagent every tool), a `read_only` agent
+  granted a file-editing tool or no tools list, a leftover `{{TOKEN}}`, a non-UTF-8 file,
+  invalid YAML or an unclosed frontmatter.
 - **`AGENTS.md` carries the full shared instructions**, built from the same agent-neutral core as
   `CLAUDE.md` plus a per-agent addendum. Maintainer-only guidance moved verbatim into a new
   **`x4-toolkit-dev`** skill.
@@ -246,6 +249,13 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   ship an `AGENTS.md`, so this is what lets the next release replace it instead of moving it
   aside.
 - `scripts/build-release.sh <tag>` now writes `dist/X4.Foundations.AI.Assistant.Toolkit-<tag>.zip`.
+- The release bundle leaves out the maintainer's implementation plans and session handoffs
+  (`docs/superpowers/plans/`, `docs/handoffs/`; still in the repository). The measurements the
+  docs cite as evidence still ship, now including the 53,828-command replay behind the
+  relative-path fix (`docs/superpowers/measurements/2026-10-02-cwd-seed-replay.md`).
+- `KNOWLEDGEBASE.md` gained no toolkit development notes in this release: five that the 4.0
+  work had added to its Session Log moved to `docs/AUDIT-framework-2026-10-01.md` and
+  `docs/audits/2026-10-02-tool-fixes.md`.
 
 ## v3.3.1 — 2026-09-29
 
