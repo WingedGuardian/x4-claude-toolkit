@@ -835,8 +835,16 @@ preserve_user_agents_md() {   # DEST -- AFTER the locked-target precheck, BEFORE
 }
 
 # --- {{TOOLKIT}} in the Codex / generic skills ----------------------------------------
-_toolkit_render_value() {
-  if [ "$OS" = windows ]; then printf '%s' "$X4_TOOLKIT_RENDER_windows"
+#: PER TARGET SHELL, not only per OS (v4.0.0 review R4-6). Codex runs PowerShell on Windows;
+#: OpenCode runs bash when X4_OPENCODE_SHELL=bash -- the setting its plugin reads too -- and
+#: bash expands `$env:X4_TOOLKIT` to ':X4_TOOLKIT'. No single spelling expands in both shells
+#: (MEASURED: PowerShell splits `"C:/a b"/tools` into two arguments, so not even a quoted
+#: absolute path works). Only the EXPLICIT setting decides, never $SHELL: the installer's own
+#: shell is not OpenCode's, and the two installers must render alike. install.ps1 holds the
+#: same rule (Get-ToolkitRenderValue).
+_toolkit_render_value() {   # [TARGET DIR]
+  if [ "$OS" = windows ] && ! { [ "${1:-}" = .opencode ] && [ "${X4_OPENCODE_SHELL:-}" = bash ]; }; then
+    printf '%s' "$X4_TOOLKIT_RENDER_windows"
   else printf '%s' "$X4_TOOLKIT_RENDER_posix"; fi
 }
 
@@ -844,12 +852,13 @@ _toolkit_render_value() {
 #: from a destination glob, so a user's own file under .agents/ is never touched (the
 #: rule install_global_claude learned the hard way). Verified per file afterwards.
 render_toolkit_token() {   # DEST
-  local dest="$1" d f rel to n=0
+  local dest="$1" d f rel to n=0 said=""
   refuse_if_dry_run "rendering the skill token in" "$dest"
-  to="$(_toolkit_render_value)"
   for d in $X4_TOKEN_DIRS; do
     _item_selected "$d" || continue
     [ -d "$SRC/$d" ] || continue
+    to="$(_toolkit_render_value "$d")"
+    said="$said${said:+, }$d/ as $to"
     while IFS= read -r f; do
       rel="${f#"$SRC/"}"
       [ -f "$dest/$rel" ] || continue
@@ -862,7 +871,7 @@ render_toolkit_token() {   # DEST
       fi
     done < <(find "$SRC/$d" -type f 2>/dev/null)
   done
-  [ "$n" -gt 0 ] && echo "  rendered $X4_TOOLKIT_TOKEN as $to in $n skill file(s)"
+  [ "$n" -gt 0 ] && echo "  rendered $X4_TOOLKIT_TOKEN in $n skill file(s): $said"
   return 0
 }
 
@@ -875,7 +884,7 @@ note_in_place_token() {
     _item_selected "$d" || continue
     if [ -d "$SRC/$d" ] && grep -rqF "$X4_TOOLKIT_TOKEN" "$SRC/$d" 2>/dev/null; then
       echo "  [note] installing in place: $d/ keeps the $X4_TOOLKIT_TOKEN token unrendered."
-      echo "         An agent reading those skills should read it as $(_toolkit_render_value)."
+      echo "         An agent reading those skills should read it as $(_toolkit_render_value "$d")."
     fi
   done
   return 0

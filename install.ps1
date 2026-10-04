@@ -675,18 +675,25 @@ function Save-HUserClaudeMd($dest) {
 }
 
 # --- {{TOOLKIT}} in the Codex / generic skills ----------------------------------------
-function Get-ToolkitRenderValue { if ($X4OnWindows) { $X4ToolkitRender['windows'] } else { $X4ToolkitRender['posix'] } }
+#: PER TARGET SHELL (v4.0.0 review R4-6) -- install.sh's _toolkit_render_value: the OpenCode
+#: copy gets the bash form on Windows only when X4_OPENCODE_SHELL=bash says OpenCode runs bash.
+function Get-ToolkitRenderValue($d) {
+  if ($X4OnWindows -and -not ($d -eq '.opencode' -and $env:X4_OPENCODE_SHELL -eq 'bash')) { $X4ToolkitRender['windows'] }
+  else { $X4ToolkitRender['posix'] }
+}
 
 #: Rewrite the token in the files THIS install copied -- enumerated from the SOURCE,
 #: never from a destination glob -- and verify each file afterwards.
 function Invoke-ToolkitTokenRender($dest) {
   Refuse-IfDryRun 'rendering the skill token in' $dest
-  $to = Get-ToolkitRenderValue
   $n = 0
+  $said = @()
   foreach ($d in $X4TokenDirs) {
     if (-not (Test-ItemSelected $d)) { continue }
     $from = Join-Path $SRC $d
     if (-not (Test-Path -LiteralPath $from -PathType Container)) { continue }
+    $to = Get-ToolkitRenderValue $d
+    $said += ($d + '/ as ' + $to)
     $fromFull = (Get-Item -LiteralPath $from -Force).FullName
     foreach ($f in (Get-ChildItem -LiteralPath $from -Recurse -File -Force -ErrorAction SilentlyContinue)) {
       $rel = $f.FullName.Substring($fromFull.Length).TrimStart([char]92, [char]47)
@@ -700,7 +707,7 @@ function Invoke-ToolkitTokenRender($dest) {
       } else { $n++ }
     }
   }
-  if ($n -gt 0) { Write-Host ('  rendered ' + $X4ToolkitToken + ' as ' + $to + ' in ' + $n + ' skill file(s)') }
+  if ($n -gt 0) { Write-Host ('  rendered ' + $X4ToolkitToken + ' in ' + $n + ' skill file(s): ' + ($said -join ', ')) }
 }
 
 #: In place nothing is copied and nothing is rendered (a toolkit checkout holds the
@@ -714,7 +721,7 @@ function Show-InPlaceTokenNote {
            Where-Object { ([IO.File]::ReadAllText($_.FullName)).Contains($X4ToolkitToken) } | Select-Object -First 1
     if ($hit) {
       Write-Host ('  [note] installing in place: ' + $d + '/ keeps the ' + $X4ToolkitToken + ' token unrendered.')
-      Write-Host ('         An agent reading those skills should read it as ' + (Get-ToolkitRenderValue) + '.')
+      Write-Host ('         An agent reading those skills should read it as ' + (Get-ToolkitRenderValue $d) + '.')
     }
   }
 }

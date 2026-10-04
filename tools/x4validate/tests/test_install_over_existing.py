@@ -2613,7 +2613,8 @@ def test_the_real_repo_installs_ONE_AGENTS_md_and_no_agent_source(installer, tmp
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
 @pytest.mark.parametrize("agent,skills_dir", [("codex", ".agents"), ("opencode", ".opencode")])
-def test_J_the_REAL_codex_skills_get_the_token_rendered_for_THIS_os(installer, tmp_path, agent, skills_dir):
+def test_J_the_REAL_codex_skills_get_the_token_rendered_for_THIS_os(installer, tmp_path, agent, skills_dir,
+                                                                  monkeypatch):
     """Lane J (Plan 3), orchestrator finding 2026-10-02: the generator rendered the token
     to `$X4_TOOLKIT` itself, so the installers' per-OS rewrite never fired and Codex on
     Windows (PowerShell) saw an EMPTY variable. The synthetic-source row above could not
@@ -2625,11 +2626,12 @@ def test_J_the_REAL_codex_skills_get_the_token_rendered_for_THIS_os(installer, t
     n_src = sum("{{TOOLKIT}}" in p.read_bytes().decode("utf-8")
                 for p in (ROOT / "agent" / "skills").glob("*/SKILL.md"))
     assert n_src >= 7, n_src          # derived, never retyped: an empty population cannot pass
+    monkeypatch.delenv("X4_OPENCODE_SHELL", raising=False)   # R4-6: it moves the OpenCode form
     dest = _fresh(tmp_path)
     r = _install(installer, tmp_path, dest, "--agent", agent)
     assert r.returncode == 0, _ok(r)
     want = "$env:X4_TOOLKIT" if os.name == "nt" else "$X4_TOOLKIT"
-    assert "rendered {{TOOLKIT}} as %s in" % want in r.stdout, (
+    assert "rendered {{TOOLKIT}} in" in r.stdout and "%s/ as %s" % (skills_dir, want) in r.stdout, (
         "the installer rendered nothing -- the tree it copied carries no token\n" + _ok(r))
     got = {p.relative_to(dest).as_posix(): p.read_bytes().decode("utf-8")
            for p in (dest / skills_dir / "skills").rglob("*") if p.is_file()}
@@ -2922,3 +2924,28 @@ def test_TWIN_a_READ_ONLY_but_FRESH_opencode_config_does_not_refuse(installer, t
         assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
     finally:
         cfg.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+# --- R4-6 (v4.0.0 review): the OpenCode skills' token follows OpenCode's SHELL ------------
+
+@pytest.mark.skipif(os.name != "nt", reason="the PowerShell rendering exists on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("oc_shell,want,not_want", [("bash", "$X4_TOOLKIT/", "$env:X4_TOOLKIT"),
+                                                    (None, "$env:X4_TOOLKIT", "$X4_TOOLKIT/")])
+def test_the_opencode_token_is_rendered_for_OPENCODES_shell(installer, oc_shell, want, not_want,
+                                                            tmp_path, monkeypatch):
+    """{{TOOLKIT}} was rendered `$env:X4_TOOLKIT` for every Windows target. OpenCode runs bash
+    when told to (X4_OPENCODE_SHELL=bash, which its plugin also reads), and bash expands
+    `$env:X4_TOOLKIT` to ':X4_TOOLKIT' -- every skill command broke. The Codex/generic copy
+    keeps the PowerShell form (Codex runs PowerShell on Windows)."""
+    if oc_shell:
+        monkeypatch.setenv("X4_OPENCODE_SHELL", oc_shell)
+    else:
+        monkeypatch.delenv("X4_OPENCODE_SHELL", raising=False)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "all")
+    assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+    oc = (dest / ".opencode" / "skills" / "x4-balance" / "SKILL.md").read_text(encoding="utf-8")
+    ag = (dest / ".agents" / "skills" / "x4-balance" / "SKILL.md").read_text(encoding="utf-8")
+    assert want in oc and not_want not in oc, oc[:400]
+    assert "$env:X4_TOOLKIT" in ag and "{{TOOLKIT}}" not in ag, ag[:400]
