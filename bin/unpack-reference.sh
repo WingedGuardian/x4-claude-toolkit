@@ -4,19 +4,22 @@
 # audio, so the tree stays ~0.6 GB instead of ~29 GB. Cross-platform (uses bin/xrcat).
 #
 # reference/ is read-only base-game data: never edit it, never redistribute it.
-# Configure paths via .claude/x4-paths.env (X4_GAME, X4_REFERENCE) or env vars.
+# Configure paths via x4-paths.env in the toolkit root (X4_GAME, X4_REFERENCE) or env vars.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # X4_GAME, X4_REFERENCE, X4_TOOLKIT -- from whichever guard copy is installed. An
 # `install --agent codex` has .codex/hooks/ and no .claude/hooks/ (a byte-identical copy
-# of the same file), so naming one location killed --unpack in every Codex-only install.
+# of the same file), so naming one location killed --unpack in every Codex-only install --
+# and an OpenCode-only install has only .opencode/hooks/ (Plan 3 lane I).
 if [ -f "$HERE/../.claude/hooks/_x4-env.sh" ]; then
   . "$HERE/../.claude/hooks/_x4-env.sh"
 elif [ -f "$HERE/../.codex/hooks/_x4-env.sh" ]; then
   . "$HERE/../.codex/hooks/_x4-env.sh"
+elif [ -f "$HERE/../.opencode/hooks/_x4-env.sh" ]; then
+  . "$HERE/../.opencode/hooks/_x4-env.sh"
 else
-  echo "ERROR: no _x4-env.sh in .claude/hooks/ or .codex/hooks/ beside $HERE -- re-run the installer." >&2
+  echo "ERROR: no _x4-env.sh in .claude/hooks/, .codex/hooks/ or .opencode/hooks/ beside $HERE -- re-run the installer." >&2
   exit 2
 fi
 
@@ -47,9 +50,9 @@ INCLUDE='\.(xml|xsd|lua|xpl)$'               # text/markup only — keeps the tr
 # Exit 2 == "this toolkit is not configured", everywhere in the toolkit. Kept
 # distinct from 1 ("it ran and something was wrong") so a caller can tell "set
 # X4_GAME" from "the unpack failed" — they need opposite responses.
-[ -n "${X4_GAME:-}" ]  || { echo "ERROR: X4_GAME not set (path to 'X4 Foundations' with 01.cat..09.cat). Set it in .claude/x4-paths.env." >&2; exit 2; }
+[ -n "${X4_GAME:-}" ]  || { echo "ERROR: X4_GAME not set (path to 'X4 Foundations' with 01.cat..09.cat). Set it in x4-paths.env (toolkit root)." >&2; exit 2; }
 [ -d "$X4_GAME" ]      || { echo "ERROR: game dir not found: $X4_GAME" >&2; exit 2; }
-[ -n "${X4_REFERENCE:-}" ] || { echo "ERROR: X4_REFERENCE not set (where to write the unpacked tree). Set it in .claude/x4-paths.env." >&2; exit 2; }
+[ -n "${X4_REFERENCE:-}" ] || { echo "ERROR: X4_REFERENCE not set (where to write the unpacked tree). Set it in x4-paths.env (toolkit root)." >&2; exit 2; }
 REF="$X4_REFERENCE"
 
 # THE LOCK, CHECKED. The sentinel was only ever WRITTEN here (line ~60) and read

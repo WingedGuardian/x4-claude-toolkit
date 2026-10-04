@@ -1,7 +1,7 @@
 r"""Configuration is read through `_paths`, never straight from `os.environ`.
 
 THE DEFECT THIS PINS (MEASURED 2026-08-23). `_paths` resolves every setting in
-LAYERS — real environment, then `.claude/x4-paths.env`, then a local fallback.
+LAYERS — real environment, then `x4-paths.env`, then a local fallback.
 A caller that reads `os.environ` directly sees only the first layer, so a value
 the user put in the config file is invisible to it. Two consumers did:
 

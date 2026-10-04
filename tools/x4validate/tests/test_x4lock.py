@@ -254,7 +254,8 @@ def _checkout(tmp_path, kind: str) -> Path:
 
 
 def _local_env(root: Path) -> Path:
-    return root / ".claude" / "x4-paths.env"
+    """The config a checkout is demanded to carry: the 4.x root file (Plan 3 lane I)."""
+    return root / "x4-paths.env"
 
 
 def _named(paths, target: Path) -> bool:
@@ -299,7 +300,7 @@ def test_a_worktree_env_file_that_DOES_exist_is_still_protected(tmp_path, monkey
     the manifest, where it gets locked like any other."""
     root = _checkout(tmp_path, "worktree")
     env = _local_env(root)
-    env.parent.mkdir(parents=True)
+    env.parent.mkdir(parents=True, exist_ok=True)
     _fresh(env)
     monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
     assert _named(x4lock.manifest(), env)
@@ -315,7 +316,7 @@ def test_a_worktree_still_demands_the_CONFIGURED_toolkits_env(tmp_path, monkeypa
     (toolkit / ".claude").mkdir(parents=True)
     monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
     monkeypatch.setenv("X4_TOOLKIT", str(toolkit))
-    assert _named(x4lock.missing(), toolkit / ".claude" / "x4-paths.env")
+    assert _named(x4lock.missing(), toolkit / "x4-paths.env")
     assert not _named(x4lock.missing(), _local_env(root))
 
 
@@ -351,7 +352,7 @@ def test_a_worktree_demands_the_MAIN_checkouts_env_even_without_X4_TOOLKIT(tmp_p
     root = _checkout(tmp_path, "worktree")
     monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
     monkeypatch.delenv("X4_TOOLKIT", raising=False)
-    assert _named(x4lock.missing(), tmp_path / "main" / ".claude" / "x4-paths.env")
+    assert _named(x4lock.missing(), tmp_path / "main" / "x4-paths.env")
     assert not _named(x4lock.missing(), _local_env(root))
 
 
@@ -374,7 +375,7 @@ def test_a_RELATIVE_gitdir_is_resolved_against_the_checkout(tmp_path, monkeypatc
     monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
     monkeypatch.delenv("X4_TOOLKIT", raising=False)
     assert not _named(x4lock.missing(), _local_env(root))
-    assert _named(x4lock.missing(), tmp_path / "main" / ".claude" / "x4-paths.env")
+    assert _named(x4lock.missing(), tmp_path / "main" / "x4-paths.env")
 
 
 def test_the_note_NAMES_the_copy_checked_instead(tmp_path, monkeypatch, capsys):
@@ -384,7 +385,7 @@ def test_the_note_NAMES_the_copy_checked_instead(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("X4_PROTECTED", str(_fresh(tmp_path / "protected.md")))
     x4lock.main(["status"])
     out = capsys.readouterr().out
-    want = str((tmp_path / "main" / ".claude" / "x4-paths.env").resolve())
+    want = str((tmp_path / "main" / "x4-paths.env").resolve())
     assert want in out, out
 
 
@@ -409,7 +410,7 @@ def test_the_note_names_each_copy_ONCE(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("X4_PROTECTED", str(_fresh(tmp_path / "protected.md")))
     x4lock.main(["status"])
     out = capsys.readouterr().out
-    want = str((tmp_path / "main" / ".claude" / "x4-paths.env").resolve())
+    want = str((tmp_path / "main" / "x4-paths.env").resolve())
     assert out.count(want) == 1, out
     assert "points at this worktree" not in out, out
 
@@ -446,7 +447,7 @@ def test_a_CRLF_commondir_is_read(tmp_path, monkeypatch):
     monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
     monkeypatch.delenv("X4_TOOLKIT", raising=False)
     assert not _named(x4lock.missing(), _local_env(root))
-    assert _named(x4lock.missing(), tmp_path / "main" / ".claude" / "x4-paths.env")
+    assert _named(x4lock.missing(), tmp_path / "main" / "x4-paths.env")
 
 
 def test_an_ABSOLUTE_commondir_is_used_as_is(tmp_path, monkeypatch):
@@ -454,7 +455,7 @@ def test_an_ABSOLUTE_commondir_is_used_as_is(tmp_path, monkeypatch):
     root = _worktree_with_commondir(tmp_path, (main_git.as_posix() + "\n").encode("utf-8"))
     monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
     monkeypatch.delenv("X4_TOOLKIT", raising=False)
-    assert _named(x4lock.missing(), tmp_path / "main" / ".claude" / "x4-paths.env")
+    assert _named(x4lock.missing(), tmp_path / "main" / "x4-paths.env")
 
 
 def test_a_GARBLED_commondir_fails_closed_without_raising(tmp_path, monkeypatch):
@@ -550,7 +551,7 @@ def test_F9_a_CODEX_ONLY_root_does_not_report_CLAUDE_md_missing(tmp_path, monkey
     is the same false-MISSING as demanding AGENTS.md on a Claude-only root."""
     game = _game(tmp_path, monkeypatch, claude=False)
     (game / ".codex" / "hooks").mkdir(parents=True)
-    # every install writes its path config to .claude/x4-paths.env, so a Codex-only
+    # a 3.x install wrote its path config to .claude/x4-paths.env, so a Codex-only
     # root HAS a .claude/ directory -- that alone must not mean "Claude installed"
     (game / ".claude").mkdir()
     (game / ".claude" / "x4-paths.env").write_text("X4_TOOLKIT=x\n", encoding="utf-8")
@@ -682,3 +683,63 @@ def test_TWIN_a_users_own_opencode_dir_demands_nothing(tmp_path, monkeypatch):
     (game / ".opencode" / "opencode.json").write_text("{}", encoding="utf-8")
     gone = x4lock.missing()
     assert not _in(gone, game, "AGENTS.md") and not _in(gone, game, ".opencode/plugins/x4guard.js")
+
+
+# --- Plan 3 lane I: the manifest follows the config to the toolkit root ---------------- #
+
+def _main_checkout(tmp_path, monkeypatch) -> Path:
+    root = _checkout(tmp_path, "main")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    monkeypatch.delenv("X4_TOOLKIT", raising=False)
+    monkeypatch.delenv("X4_CONFIG", raising=False)
+    return root
+
+
+def _legacy(root: Path) -> Path:
+    p = root / ".claude" / "x4-paths.env"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return _fresh(p)
+
+
+def test_a_NEW_location_config_is_protected(tmp_path, monkeypatch):
+    root = _main_checkout(tmp_path, monkeypatch)
+    _fresh(root / "x4-paths.env")
+    assert _named(x4lock.manifest(), root / "x4-paths.env")
+    assert not _named(x4lock.missing(), root / "x4-paths.env")
+
+
+def test_a_LEGACY_only_checkout_still_protects_its_config(tmp_path, monkeypatch):
+    """A 3.x checkout not yet migrated: its config is still read, so it is still locked --
+    and the 4.x path it does not have yet is NOT reported missing."""
+    root = _main_checkout(tmp_path, monkeypatch)
+    old = _legacy(root)
+    assert _named(x4lock.manifest(), old)
+    missing = x4lock.missing()
+    assert not _named(missing, old) and not _named(missing, root / "x4-paths.env"), missing
+
+
+def test_neither_reports_the_NEW_path_missing(tmp_path, monkeypatch):
+    root = _main_checkout(tmp_path, monkeypatch)
+    missing = x4lock.missing()
+    assert _named(missing, root / "x4-paths.env"), missing
+    assert not _named(missing, root / ".claude" / "x4-paths.env"), missing
+
+
+def test_both_present_protects_BOTH(tmp_path, monkeypatch):
+    """A legacy copy beside a new one still carries keys (X4_NEXUS_KEY): lock it too."""
+    root = _main_checkout(tmp_path, monkeypatch)
+    _fresh(root / "x4-paths.env")
+    old = _legacy(root)
+    man = x4lock.manifest()
+    assert _named(man, root / "x4-paths.env") and _named(man, old), man
+
+
+def test_a_worktree_whose_MAIN_checkout_is_still_legacy_demands_the_legacy_file(tmp_path, monkeypatch):
+    """F119 waiver x lane I: the main checkout has not migrated yet. The waiver must demand
+    the file that EXISTS there, not report a phantom 4.x file missing."""
+    root = _checkout(tmp_path, "worktree")
+    monkeypatch.setattr(x4lock, "_HERE", root / "scripts")
+    monkeypatch.delenv("X4_TOOLKIT", raising=False)
+    main_old = _legacy(tmp_path / "main")
+    assert _named(x4lock.manifest(), main_old)
+    assert not _named(x4lock.missing(), tmp_path / "main" / "x4-paths.env")

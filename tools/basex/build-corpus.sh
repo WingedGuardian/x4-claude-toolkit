@@ -23,7 +23,7 @@ x4v_announce "$X4VALIDATE"
 # Resolve, never guess. These used to fall back to one developer's absolute
 # paths, so on any other machine the build ran happily over directories that do
 # not exist -- and reported success. (It also shipped a username.)
-# x4validate._paths is the ONE resolver: $VAR -> .claude/x4-paths.env -> default.
+# x4validate._paths is the ONE resolver: $VAR -> x4-paths.env -> default.
 # Fail BEFORE the long work, not after it.
 #
 # MEASURED 2026-08-24: this script runs stage.py to completion (:49) and does not
@@ -45,7 +45,7 @@ resolve_path() {  # $1 = env var name, $2 = _paths function
     v=$(cd "$X4VALIDATE" && uv run python -c "from x4validate import _paths; p=_paths.$2(); print(p or '')" 2>/dev/null)
   fi
   if [ -z "$v" ]; then
-    echo "ERROR: cannot resolve \$$1. Set it, or configure .claude/x4-paths.env." >&2
+    echo "ERROR: cannot resolve \$$1. Set it, or configure x4-paths.env." >&2
     echo "Refusing to guess: a corpus built over a path that does not exist indexes" >&2
     echo "ZERO documents and still exits 0." >&2
     exit 2

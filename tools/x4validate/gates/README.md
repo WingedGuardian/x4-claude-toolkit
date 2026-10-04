@@ -118,7 +118,7 @@ or libxml2 — never the tool's own index.
 ## Inputs
 
 Every input resolves through `gates/_env.py` → `x4validate._paths`, i.e. the same
-env → `.claude/x4-paths.env` → fallback chain the CLI uses. Nothing is hardcoded:
+env → `x4-paths.env` → fallback chain the CLI uses. Nothing is hardcoded:
 
 | | from |
 |---|---|

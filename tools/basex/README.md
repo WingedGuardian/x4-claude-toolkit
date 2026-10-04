@@ -19,7 +19,7 @@ It is not the authority on correctness. `x4validate` is. See
 | **Java 17 or newer** | BaseX 12.4's classes are bytecode **major 61**. An older JVM does not run slowly — it refuses to load them (`UnsupportedClassVersionError`). Read out of the shipped jar: `Build-Jdk-Spec: 17`. |
 | **`uv`** (with Python 3.13) | the build scripts drive `x4validate` through `uv run python` |
 | **~3 GB free disk** | the index is the durable artifact — measured **942 MB** (`x4raw`) + **949 MB** (`x4eff`) — plus a transient staging tree during the build |
-| **a configured toolkit** | `$X4_REFERENCE` and `$X4_EXTENSIONS`, or `.claude/x4-paths.env`. The scripts **refuse** rather than guess: a corpus built over a path that does not exist indexes zero documents and would otherwise still exit 0. |
+| **a configured toolkit** | `$X4_REFERENCE` and `$X4_EXTENSIONS`, or `x4-paths.env` (toolkit root). The scripts **refuse** rather than guess: a corpus built over a path that does not exist indexes zero documents and would otherwise still exit 0. |
 
 `preflight.py` checks all of these and refuses with **exit 2** before any long work
 starts. You should never see a raw `[WinError 2]` or `Could not find or load main

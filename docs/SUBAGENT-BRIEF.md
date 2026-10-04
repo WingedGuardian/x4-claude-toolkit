@@ -23,7 +23,7 @@ the specific, checkable version.
 > 2. **Clearing `X4_*` environment variables is NOT a sandbox — it is how the worst
 >    incident happened.** With `X4_GAME` unset, `install.sh` fell through to detecting
 >    the user's real Steam install and wrote 1,642 files into it. Resolution also falls
->    through `$X4_TOOLKIT` → `.claude/x4-paths.env`, so a "cold" environment can still
+>    through `$X4_TOOLKIT` → `x4-paths.env`, so a "cold" environment can still
 >    be fully configured. Cold means *proven* cold: assert the roots resolve to `None`,
 >    or use `tools/x4validate/scripts/verify-cold.sh`, which refuses to run until it has
 >    proved that.

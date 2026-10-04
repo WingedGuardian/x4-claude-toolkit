@@ -2561,7 +2561,7 @@ def check_packed_dlc_available(config: _merge.Config, report: Report) -> None:
                 f"the live game install is not reachable at '{_merge.GAME_ROOT}', so DLC that "
                 "were never unpacked into reference/ (the Hyperion and Envoy mini-DLC) are NOT "
                 "in the tree. Patches targeting their content cannot be verified. Set $X4_GAME "
-                "(see .claude/x4-paths.env) or run `x4validate --paths` to see what resolved")
+                "(see x4-paths.env) or run `x4validate --paths` to see what resolved")
 
 
 def reference_ready(config: _merge.Config, report: Report) -> bool:

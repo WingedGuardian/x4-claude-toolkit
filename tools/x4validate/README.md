@@ -432,13 +432,16 @@ in a layer are tried before dropping to the next:
    `X4_PROFILE`, `X4_MODS`, `X4_REFERENCE`, `X4_DEBUGLOG` — then the older
    `X4_GAME_ROOT`, `X4_GAME_EXTENSIONS`, `X4_PROFILE_CONTENT`,
    `X4_PROFILE_EXTENSIONS`, `X4_WORKSHOP_CONTENT`, `X4_REGISTRY`.
-2. **`.claude/x4-paths.env`** — the file `install.sh` / `install.ps1` write. Found via
-   `$X4_TOOLKIT`, else by walking up from the current directory.
+2. **`x4-paths.env`** in the toolkit root — the file `install.sh` / `install.ps1` write.
+   `$X4_CONFIG` names it explicitly (naming no file means none is read); else it is
+   `$X4_TOOLKIT/x4-paths.env`, else the 3.x `$X4_TOOLKIT/.claude/x4-paths.env` (deprecated, one
+   notice per run; `python scripts/x4config.py migrate --apply` moves it). Only when
+   `$X4_TOOLKIT` is unset is it found by walking up from the current directory.
 3. `_paths._LOCAL_FALLBACK` — deliberately empty; the documented seam for a local
    override, so nobody hardcodes one somewhere else.
 
-**Set `X4_TOOLKIT` in your user environment yourself** — the installers write it
-*into* `x4-paths.env` but do not export it, so nothing sets it for you:
+**`X4_TOOLKIT` must be in your user environment.** The installers set it (unless
+`--no-env` / `-NoEnv`); otherwise set it yourself:
 
 ```sh
 setx X4_TOOLKIT "C:\path\to\toolkit"           # Windows (new shells only)
@@ -446,8 +449,7 @@ echo 'export X4_TOOLKIT=/path/to/toolkit' >> ~/.bashrc   # Linux / macOS
 ```
 
 Without it, resolution depends on walking up from the current directory — and the
-CLI and gates are often run from the game folder, which has a `.claude/` but no
-`x4-paths.env`. You would get `(unresolved)` locations with a perfectly good config
+CLI and gates are often run from the game folder, which may hold no `x4-paths.env`. You would get `(unresolved)` locations with a perfectly good config
 file sitting one directory tree away.
 
 Prefer the **installer names**. The two schemes exist because until v2.01 the

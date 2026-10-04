@@ -48,8 +48,8 @@ def clean(monkeypatch, tmp_path):
 def _write_env(tmp_path, body: str, monkeypatch) -> Path:
     """Make a config file the one that `_paths` will find."""
     toolkit = tmp_path / "toolkit"
-    (toolkit / ".claude").mkdir(parents=True, exist_ok=True)
-    path = toolkit / ".claude" / "x4-paths.env"
+    toolkit.mkdir(parents=True, exist_ok=True)
+    path = toolkit / "x4-paths.env"          # the 4.x location (Plan 3 lane I)
     path.write_text(body, encoding="utf-8")
     monkeypatch.setattr(_paths, "_find_env_file", lambda: path)
     _paths.reload()

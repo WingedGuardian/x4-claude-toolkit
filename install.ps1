@@ -8,7 +8,8 @@
               into your global Claude settings, so they work across MANY mod repos.
 
   Every location is auto-detected where possible and overridable by parameter. Chosen paths
-  are written to <toolkit>\.claude\x4-paths.env (the source of truth the hooks/scripts read).
+  are written to <toolkit>\x4-paths.env (the source of truth the hooks/scripts/tools read). A
+  3.x config at <toolkit>\.claude\x4-paths.env is MOVED there.
 
   NOTE: the toolkit's hooks & bin/ scripts are bash; install with PowerShell, but to RUN the
   toolkit you still need Git Bash (https://git-scm.com/download/win), as upstream expects.
@@ -188,7 +189,7 @@ $X4CopyPrune = @('tools\x4validate\.venv',
 #: destination's own, never copied in and never deleted out), so they live HERE and
 #: not in $X4CopyPrune, whose second meaning would erase a user's built databases
 #: on every upgrade. See X4_KEEP_LOCAL in install.sh.
-$X4KeepLocal = @('.claude\x4-paths.env','.claude\settings.local.json','.claude\backups','.codex\hooks.json','.codex\config.toml',
+$X4KeepLocal = @('x4-paths.env','.claude\x4-paths.env','.claude\settings.local.json','.claude\backups','.codex\hooks.json','.codex\config.toml',
                  '.opencode\opencode.jsonc',
                  'tools\basex\basex\data','tools\basex\basex\coverage-x4raw.json',
                  'tools\basex\basex\coverage-x4eff.json','tools\basex\_eff',
@@ -335,7 +336,7 @@ function Get-OwnedEnvLinesFromFile($f) {
 #: COMMON to every agent target; each agent's own files live in $X4AgentItems only.
 $X4CopyItems = @('tools','bin','scripts','mods','KNOWLEDGEBASE.md','README.md',
                  'CHANGELOG.md','LICENSE','setup.sh','install.sh','install.ps1','SETUP_PROMPT.txt','ADAPTING.md',
-                 '.gitignore','.gitattributes')
+                 '.gitignore','.gitattributes','x4-paths.env.example')
 
 #: PER-AGENT sets -- the mirror of X4_AGENT_ITEMS_* in install.sh (audit F8). `agent\`,
 #: the neutral source, is in NO set: an installed toolkit is runtime-only (decision #9).
@@ -351,7 +352,7 @@ $X4AgentNames = @('claude','codex','generic','opencode')
 
 #: -Agent auto (lane H): how each agent is DETECTED -- the mirror of X4_AGENT_DETECT_* /
 #: X4_AGENT_MARK_* in install.sh. An agent with no row is never detected. Never a bare
-#: `.claude\`: every install creates one (x4-paths.env lives there), whatever the agent.
+#: `.claude\`: every 3.x install created one (x4-paths.env lived there), whatever the agent.
 $X4AgentDetect = @{
   claude = @('claude')
   codex  = @('codex')
@@ -862,8 +863,92 @@ function Test-LockedTargetsPrecheck($dest) {
   exit 1
 }
 
+#: Get-IAssignLines FILE -> the comparable content of a path config (Plan 3 lane I): its
+#: KEY=value lines with CR and indent stripped, comments and blanks dropped, sorted ordinally.
+#: The mirror of install.sh's _i_assign_lines and of _paths._assignments.
+function Get-IAssignLines($file) {
+  $text = ''
+  try { $text = [IO.File]::ReadAllText($file) } catch { return @() }
+  $out = New-Object System.Collections.Generic.List[string]
+  foreach ($ln in ($text -split "`n")) {
+    $l = $ln.Replace("`r", '').TrimStart(' ', "`t")
+    if ($l -and -not $l.StartsWith('#') -and $l.Contains('=')) { $out.Add($l) }
+  }
+  $arr = $out.ToArray()
+  [Array]::Sort($arr, [StringComparer]::Ordinal)
+  return ,$arr
+}
+
+#: Get-IDifferingKeys A B -> the KEY NAMES whose assignments differ; never a value.
+function Get-IDifferingKeys($a, $b) {
+  $la = @(Get-IAssignLines $a); $lb = @(Get-IAssignLines $b)
+  $keys = @{}
+  foreach ($l in ($la + $lb)) {
+    if ((@($la) -ccontains $l) -and (@($lb) -ccontains $l)) { continue }
+    $k = ($l -split '=', 2)[0].Trim()
+    if ($k.StartsWith('export ')) { $k = $k.Substring(7).Trim() }
+    $keys[$k] = 1
+  }
+  $names = @($keys.Keys)
+  [Array]::Sort($names, [StringComparer]::Ordinal)
+  return ($names -join ' ')
+}
+
+function Test-IConfigsAgree($a, $b) {
+  return (((Get-IAssignLines $a) -join "`n") -ceq ((Get-IAssignLines $b) -join "`n"))
+}
+
+#: Move-ILegacyPathsEnv TOOLKIT -- MOVE a 3.x .claude\x4-paths.env to <toolkit>\x4-paths.env.
+#: The mirror of install.sh's _i_migrate_paths_env: a rename, never a copy; a read-only
+#: (x4lock) file is renamed too and stays read-only (MEASURED, Plan 3 lane I M6); agreeing
+#: copies retire the 3.x one to .bak-<stamp>; differing copies were refused by the precheck.
+function Move-ILegacyPathsEnv($t) {
+  $new = Join-Path $t 'x4-paths.env'
+  $old = Join-Path $t (Join-Path '.claude' 'x4-paths.env')
+  if (-not (Test-Path -LiteralPath $old -PathType Leaf)) { return }
+  if (-not (Test-Path -LiteralPath $new)) {
+    try { Move-Item -LiteralPath $old -Destination $new -ErrorAction Stop } catch {
+      Write-Host ("ERROR: could not move " + $old + " -> " + $new + ": " + $_.Exception.Message) -ForegroundColor Red
+      Write-Host '       It is still where it was.' -ForegroundColor Red
+      exit 1
+    }
+    Write-Host ("  [migrated] " + $old + " -> " + $new + " (the 3.x location; 4.0 reads the toolkit root). To undo: move it back.")
+    return
+  }
+  if (Test-IConfigsAgree $new $old) {
+    $bak = $old + '.bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+    try { Move-Item -LiteralPath $old -Destination $bak -ErrorAction Stop } catch {
+      Write-Host ("ERROR: could not rename the agreeing 3.x " + $old + ": " + $_.Exception.Message) -ForegroundColor Red
+      exit 1
+    }
+    Write-Host ("  [migrated] the 3.x " + $old + " agreed with " + $new + "; renamed it to " + $bak + " (to undo: rename it back)")
+    return
+  }
+  Write-Host ("ERROR: " + $new + " and the 3.x " + $old + " DIFFER on: " + (Get-IDifferingKeys $new $old) + " -- refusing to choose.") -ForegroundColor Red
+  exit 1
+}
+
 function Test-ConfigPrecheck($t) {
-  $f = Join-Path $t (Join-Path '.claude' 'x4-paths.env')
+  $f = Join-Path $t 'x4-paths.env'
+  $old = Join-Path $t (Join-Path '.claude' 'x4-paths.env')
+  # TWO CONFIGS THAT DIFFER (Plan 3 lane I): refused before anything is written, -DryRun too.
+  if ((Test-Path -LiteralPath $f -PathType Leaf) -and (Test-Path -LiteralPath $old -PathType Leaf) -and
+      -not (Test-IConfigsAgree $f $old)) {
+    Write-Host ''
+    Write-Host 'REFUSING: two path configs that DIFFER:'
+    Write-Host "      $f"
+    Write-Host "      $old   (the 3.x location)"
+    Write-Host ('  They differ on: ' + (Get-IDifferingKeys $f $old))
+    Write-Host '  Nothing has been changed. Keep the values you want in the first, delete'
+    Write-Host '  or rename the second, then re-run. To see them side by side:'
+    Write-Host ('      python "' + (Join-Path $t (Join-Path 'scripts' 'x4config.py')) + '" status')
+    exit 1
+  }
+  if ($DryRun -and (Test-Path -LiteralPath $old -PathType Leaf)) {
+    if (Test-Path -LiteralPath $f) { Write-Host ("  -DryRun: would RENAME the agreeing 3.x " + $old + " to " + $old + ".bak-<stamp>") }
+    else { Write-Host ("  -DryRun: would MOVE " + $old + " -> " + $f + " (the 3.x location; 4.0 reads the toolkit root)") }
+  }
+  if (-not (Test-Path -LiteralPath $f)) { $f = $old }    # judged where it IS: the move keeps its bytes
   if (-not (Test-Path -LiteralPath $f)) { return }
   $now = (Get-OwnedEnvLinesFromFile $f) -join "`n"
   if ($now -eq '__X4_UNREADABLE__') {
@@ -1097,7 +1182,7 @@ function Write-PathsEnv($t) {
   # `test_installers_agree.py::test_every_powershell_WRITER_consults_the_dry_run_flag`
   # asserts `ps.count("Refuse-IfDryRun '") >= 3` -- a COUNT OF CALL SITES CANNOT SEE
   # ORDERING, which is why this survived. -DryRun is executed nowhere in CI.
-  $dir = Join-Path $t '.claude'
+  $dir = $t
   $f = Join-Path $dir 'x4-paths.env'
   # THE GATE IS THE FIRST STATEMENT, and it has to stay there. The fast path
   # below was inserted ABOVE it, which made -DryRun perform a REAL install
@@ -1108,6 +1193,9 @@ function Write-PathsEnv($t) {
   # return anyway. A count cannot see nesting either, and neither can it see a
   # return placed in front.
   Refuse-IfDryRun 'writing the path config into' $f
+  # A 3.x config MOVES to the root first (Plan 3 lane I), AFTER the gate, so the fast path
+  # below then judges it in its new place -- an unchanged locked config is left untouched.
+  Move-ILegacyPathsEnv $t
 
   # NOTHING TO CHANGE, NOTHING TO WRITE. An upgrade resolving the same paths used
   # to rewrite this file anyway, which failed a locked config for a write that
@@ -1313,7 +1401,7 @@ function Assert-Direction($dest, $named) {
     Write-Host "" -ForegroundColor Red
     Write-Host "  Installing over it REPLACES those files. An edited CLAUDE.md or AGENTS.md is" -ForegroundColor Red
     Write-Host "  KEPT beside it (X4-NOTES.pre-4.0.md / AGENTS.pre-4.0.md); your own" -ForegroundColor Red
-    Write-Host "  KNOWLEDGEBASE.md and customised skills are replaced. .claude\x4-paths.env and" -ForegroundColor Red
+    Write-Host "  KNOWLEDGEBASE.md and customised skills are replaced. x4-paths.env and" -ForegroundColor Red
     Write-Host "  settings.local.json are preserved." -ForegroundColor Red
     Write-Host "" -ForegroundColor Red
     Write-Host "  To upgrade it anyway, say so explicitly:" -ForegroundColor Red
@@ -1980,7 +2068,7 @@ if ($failed.Count) {
 Write-Host "`n=== install complete ($Method) ==="
 Write-Host "Toolkit: $Toolkit"
 Write-Host ('Agents:  ' + (Get-AgentsLanded))
-Write-Host "Config:  $Toolkit\.claude\x4-paths.env  (edit any path here)"
+Write-Host "Config:  $Toolkit\x4-paths.env  (edit any path here)"
 # CODEX RUNS NO HOOK IT HAS NOT REVIEWED, silently (MEASURED, spike 2026-09-30), and the
 # installer must never approve hooks or trust the project for the user (spec section 8).
 if ($Method -ne 'global' -and (Test-CodexSelected)) {
@@ -2008,8 +2096,8 @@ if ($script:X4HEnvState -eq 'set' -or $script:X4HEnvState -eq 'same') {
 } else {
   # -NoEnv, a different existing value, or not Windows: the user decides.
   Write-Host "IMPORTANT - set X4_TOOLKIT in your user environment so the tools find the config"
-  Write-Host "above from ANY directory (they are often run from the game folder, which has a"
-  Write-Host ".claude\ but no x4-paths.env)."
+  Write-Host "above from ANY directory (they are often run from the game folder, which may hold"
+  Write-Host "no x4-paths.env)."
   if ($NoEnv) { Write-Host '  -NoEnv: this installer did not touch it. To set it yourself:' }
   elseif ($script:X4HEnvState -eq 'different') { Write-Host '  It names another toolkit (the [WARNING] above). To point it here instead:' }
   elseif ($script:X4HEnvState -eq 'skip') { Write-Host ('  ' + $script:X4HEnvMsg + '. To set it yourself:') }

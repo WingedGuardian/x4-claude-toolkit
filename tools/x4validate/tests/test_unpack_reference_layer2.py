@@ -3,7 +3,7 @@ must never lift the protection itself, and must apply it after a verified unpack
 
 ISOLATION, ASSERTED BEFORE ANY WRITE. `_x4-env.sh` lets an exported X4_* win over the
 config file (READ: its header + snapshot/restore block), and X4_TOOLKIT points at a
-tmp dir with no `.claude/x4-paths.env`, so no real config is in play. Every run's banner
+tmp dir with no `x4-paths.env`, so no real config is in play. Every run's banner
 line `Reference: <path>` is checked against tmp_path -- the fake xrcat refuses to write
 anywhere else, so a misresolved reference fails the run instead of touching a real tree.
 X4_REFGUARD_SANDBOX confines x4refguard's own mutating calls to tmp_path.

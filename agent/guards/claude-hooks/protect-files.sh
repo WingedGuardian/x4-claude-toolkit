@@ -1,6 +1,6 @@
 #!/bin/bash
 # Protect X4 mod files from unintended edits. Cross-platform & config-driven.
-# Locations come from .claude/x4-paths.env / env vars (see _x4-env.sh); when those are
+# Locations come from x4-paths.env / env vars (see _x4-env.sh); when those are
 # unset the legacy path-name patterns act as a backstop, so it still protects out of the box.
 # - Hard blocks: reference/ (read-only base game), .cat/.dat, the game installation
 # - Confirmation: user profile, live extensions/ (deploy target)

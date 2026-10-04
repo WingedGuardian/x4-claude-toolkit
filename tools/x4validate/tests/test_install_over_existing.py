@@ -319,7 +319,7 @@ def test_UPGRADING_over_a_LOCKED_config_succeeds(installer, tmp_path):
     """
     dest = _fresh(tmp_path)
     assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
-    cfg = dest / ".claude" / "x4-paths.env"
+    cfg = dest / "x4-paths.env"
     before = cfg.read_bytes()
     cfg.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)      # what x4lock does
 
@@ -328,7 +328,7 @@ def test_UPGRADING_over_a_LOCKED_config_succeeds(installer, tmp_path):
         "upgrade over a read-only x4-paths.env failed (rc=%s). The toolkit tells "
         "users to lock, so this IS the documented upgrade path:\n%s" % (r.returncode, r.stderr[-2000:]))
     assert cfg.read_bytes() == before, "the upgrade rewrote a config it did not need to change"
-    leftovers = sorted(p.name for p in (dest / ".claude").glob("x4-paths.env.bak-*"))
+    leftovers = sorted(p.name for p in dest.glob("x4-paths.env.bak-*"))
     assert not leftovers, (
         "a backup was left behind: %s -- nothing should be backed up, because "
         "nothing should have been overwritten" % leftovers)
@@ -344,7 +344,7 @@ def test_a_locked_config_that_MUST_change_refuses_UP_FRONT(installer, tmp_path):
     """
     dest = _fresh(tmp_path)
     assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
-    cfg = dest / ".claude" / "x4-paths.env"
+    cfg = dest / "x4-paths.env"
     cfg.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
     (tmp_path / "game2").mkdir()
 
@@ -376,7 +376,7 @@ def test_the_DRY_RUN_predicts_a_refusal_it_would_hit(installer, tmp_path):
     """
     dest = _fresh(tmp_path)
     assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
-    (dest / ".claude" / "x4-paths.env").chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    (dest / "x4-paths.env").chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
     (tmp_path / "game2").mkdir()
 
     r = _install(installer, tmp_path, dest, "--game", (tmp_path / "game2").as_posix(), "--dry-run")
@@ -398,7 +398,7 @@ def test_the_dry_run_still_passes_when_the_install_WOULD_work(installer, tmp_pat
     """The twin. A precondition that always refuses is not a check."""
     dest = _fresh(tmp_path)
     assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
-    (dest / ".claude" / "x4-paths.env").chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    (dest / "x4-paths.env").chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
     r = _install(installer, tmp_path, dest, "--dry-run")
     assert r.returncode == 0, (
         "the dry run refused an upgrade that needs no config change:\n%s" % (r.stdout + r.stderr)[-1500:])
@@ -532,7 +532,12 @@ def test_a_non_repo_REFUSES_rather_than_reading_as_NOT_IGNORED(tmp_path):
      "a backup of it, which the carry-over deliberately preserves the key into"),
     (".claude/settings.local.json", True, "per-machine settings"),
     (".claude/settings.local.json.bak-20260907-120000", True, "and its backups"),
-    (".claude/x4-paths.env.example", False,
+    (".claude/x4-paths.env.example", True,
+     "no longer the template (Plan 3 lane I moved it to the root); a 3.x leftover"),
+    ("x4-paths.env", True, "the 4.x live config at the toolkit root (Plan 3 lane I)"),
+    ("x4-paths.env.bak-20260907-120000", True, "a backup beside the root config"),
+    ("x4-paths.env.tmp12345", True, "the render target beside the root config"),
+    ("x4-paths.env.example", False,
      "the TEMPLATE is tracked on purpose; a blanket x4-paths.env* would swallow it"),
 ])
 def test_the_config_backups_cannot_be_committed(path, ignored, why, tmp_path):
@@ -639,9 +644,9 @@ def test_the_config_write_leaves_no_temp_behind(installer, tmp_path):
     """
     dest = _fresh(tmp_path)
     assert _install(installer, tmp_path, dest).returncode == 0, "install failed"
-    cfg = dest / ".claude" / "x4-paths.env"
+    cfg = dest / "x4-paths.env"
     assert cfg.is_file(), "no config was written"
-    strays = sorted(p.name for p in (dest / ".claude").glob("x4-paths.env.tmp*"))
+    strays = sorted(p.name for p in dest.glob("x4-paths.env.tmp*"))
     assert not strays, "the config write left a temp behind: %s" % strays
     body = cfg.read_text(encoding="utf-8")
     assert "X4_TOOLKIT=" in body, "the installed config is not the rendered one"
@@ -702,7 +707,7 @@ def test_an_UNREADABLE_config_REFUSES_with_a_crafted_message(installer, tmp_path
     """
     dest = _fresh(tmp_path)
     assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
-    cfg = dest / ".claude" / "x4-paths.env"
+    cfg = dest / "x4-paths.env"
     cfg.unlink()
     cfg.mkdir()                      # unreadable as a file, and creatable
 
@@ -730,9 +735,13 @@ def _synthetic_source(tmp_path: pathlib.Path) -> pathlib.Path:
     (src / ".claude" / "x4-paths.env").write_text(secret, encoding="utf-8")
     (src / ".claude" / "x4-paths.env.bak-20260101-000000").write_text(secret, encoding="utf-8")
     (src / ".claude" / "x4-paths.env.tmp4242").write_text(secret, encoding="utf-8")
+    # ...and the 4.x siblings at the ROOT (Plan 3 lane I): none of them may travel either
+    (src / "x4-paths.env").write_text(secret, encoding="utf-8")
+    (src / "x4-paths.env.bak-20260101-000000").write_text(secret, encoding="utf-8")
+    (src / "x4-paths.env.tmp4242").write_text(secret, encoding="utf-8")
     (src / ".claude" / "settings.local.json.bak-20260101-000000").write_text(secret, encoding="utf-8")
     # the two TEMPLATES ship and must still travel
-    (src / ".claude" / "x4-paths.env.example").write_text("X4_TOOLKIT=\n", encoding="utf-8")
+    (src / "x4-paths.env.example").write_text("X4_TOOLKIT=\n", encoding="utf-8")   # at the ROOT since 4.0
     (src / ".claude" / "settings.local.json.example").write_text("{}\n", encoding="utf-8")
     return src
 
@@ -773,8 +782,8 @@ def test_the_SOURCE_machines_config_siblings_do_not_travel(installer, tmp_path):
         "the source machine's secret travelled to the destination in %d file(s): %s"
         % (len(leaked), leaked))
 
-    for tpl in ("x4-paths.env.example", "settings.local.json.example"):
-        assert (dest / ".claude" / tpl).is_file(), (
+    for tpl in ("x4-paths.env.example", ".claude/settings.local.json.example"):
+        assert (dest / tpl).is_file(), (
             "%s did not travel -- the skip is too broad and the installer no "
             "longer ships its own template" % tpl)
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
@@ -800,7 +809,7 @@ def test_a_CRLF_config_is_still_recognised_as_UNCHANGED(installer, tmp_path):
     """
     dest = _fresh(tmp_path)
     assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
-    cfg = dest / ".claude" / "x4-paths.env"
+    cfg = dest / "x4-paths.env"
     body = cfg.read_bytes()
     assert b"\r\n" not in body, "fixture assumption broken: the installer wrote CRLF"
     cfg.write_bytes(body.replace(b"\n", b"\r\n"))          # the only change
@@ -1147,7 +1156,7 @@ def test_a_READ_ONLY_file_INSIDE_a_shipped_skill_refuses_BEFORE_any_write(
         assert "could not be copied" not in out, (
             "the run reached the COPY and failed there, so the guard did not fire "
             "up front:\n%s" % out[-900:])
-        cfg = dest / ".claude" / "x4-paths.env"
+        cfg = dest / "x4-paths.env"
         assert not cfg.exists(), (
             "the path config was written BEFORE the refusal, so a refused run left a "
             "partial write -- which is the shape of the bug, not the fix")
@@ -1181,7 +1190,7 @@ def test_an_INDENTED_owned_key_does_not_survive_and_WIN(installer, tmp_path):
     """
     dest = _fresh(tmp_path)
     assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
-    cfg = dest / ".claude" / "x4-paths.env"
+    cfg = dest / "x4-paths.env"
 
     body = cfg.read_text(encoding="utf-8")
     assert "X4_GAME=" in body, "fixture assumption broken: no X4_GAME in the config"
@@ -2233,7 +2242,8 @@ def test_auto_reads_a_CLAUDE_marker_in_the_destination(installer, tmp_path):
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
 def test_TWIN_a_bare_dot_claude_dir_is_NOT_a_claude_signal(installer, tmp_path):
-    """Every install makes .claude/ (x4-paths.env lives there) -- F5."""
+    """A 3.x install made .claude/ for every agent (x4-paths.env lived there) -- F5. This
+    fixture stays a 3.x shape ON PURPOSE: that is the destination an upgrade meets."""
     src = _agent_source(tmp_path)
     dest = _fresh(tmp_path)
     (dest / ".claude").mkdir()
@@ -2580,3 +2590,102 @@ def test_the_installers_render_hooks_json_exactly_as_the_GENERATOR_does(tmp_path
         assert r.returncode == 0, _ok(r)
         got = json.loads((d / ".codex/hooks.json").read_text(encoding="utf-8"))
         assert got == json.loads(gen.render_codex_hooks_json(d.resolve())), which
+
+
+# --- Plan 3 lane I: the path config lives at the toolkit ROOT -------------------------- #
+
+def _as_3x(dest: pathlib.Path, extra: str = "") -> pathlib.Path:
+    """Turn a fresh 4.x install into what a 3.x one left behind: the config in .claude/."""
+    new, old = dest / "x4-paths.env", dest / ".claude" / "x4-paths.env"
+    old.parent.mkdir(exist_ok=True)
+    old.write_bytes(new.read_bytes() + extra.encode("utf-8"))
+    new.unlink()
+    return old
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_fresh_install_writes_the_ROOT_config_and_no_claude_one(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "codex")
+    assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+    assert (dest / "x4-paths.env").is_file(), r.stdout[-1500:]
+    assert not (dest / ".claude" / "x4-paths.env").exists()
+    assert (dest / "x4-paths.env.example").is_file(), "the template did not ship to the root"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_upgrade_MOVES_a_3x_config_and_says_so(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    old = _as_3x(dest, 'X4_NEXUS_KEY="carried-key"\n')
+    r = _install(installer, tmp_path, dest)
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out[-1500:]
+    assert not old.exists(), "the 3.x config is still there:\n" + out[-1500:]
+    assert 'X4_NEXUS_KEY="carried-key"' in (dest / "x4-paths.env").read_text(encoding="utf-8")
+    assert "[migrated]" in out, out[-1500:]
+    flat = out.replace("\\", "/")
+    assert (dest / ".claude" / "x4-paths.env").as_posix() in flat, out[-1500:]
+    assert (dest / "x4-paths.env").as_posix() in flat, out[-1500:]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_upgrade_over_a_LOCKED_3x_config_with_unchanged_paths_succeeds(installer, tmp_path):
+    """The M6 case end to end: a rename passes the read-only bit, and the lock travels."""
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    old = _as_3x(dest)
+    before = old.read_bytes()
+    old.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    r = _install(installer, tmp_path, dest)
+    new = dest / "x4-paths.env"
+    try:
+        assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+        assert not old.exists() and new.read_bytes() == before
+        assert not os.access(new, os.W_OK), "the lock did not travel with the file"
+    finally:
+        for f in (old, new):
+            if f.exists():
+                f.chmod(stat.S_IWRITE | stat.S_IREAD)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_two_DIFFERING_configs_refuse_before_anything_is_written(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    new, old = dest / "x4-paths.env", dest / ".claude" / "x4-paths.env"
+    old.write_text('X4_GAME="/somewhere/else"\n', encoding="utf-8")
+    snap = {f: f.read_bytes() for f in (new, old)}
+    (dest / "README.md").unlink()                      # proves whether the copy ran
+    r = _install(installer, tmp_path, dest)
+    out = r.stdout + r.stderr
+    assert r.returncode == 1, out[-1500:]
+    assert "REFUSING" in out and "X4_GAME" in out, out[-1500:]
+    assert "/somewhere/else" not in out, "a VALUE was printed"
+    assert {f: f.read_bytes() for f in snap} == snap
+    assert not (dest / "README.md").exists(), "the copy ran before the refusal"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_two_AGREEING_configs_retire_the_old_one_to_a_bak(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    new, old = dest / "x4-paths.env", dest / ".claude" / "x4-paths.env"
+    old.write_bytes(new.read_bytes())
+    r = _install(installer, tmp_path, dest)
+    assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+    assert not old.exists() and new.is_file()
+    assert len(list((dest / ".claude").glob("x4-paths.env.bak-*"))) == 1
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_dry_run_names_the_migration_and_changes_nothing(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    old = _as_3x(dest)
+    before = old.read_bytes()
+    r = _install(installer, tmp_path, dest, "--dry-run")
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out[-1500:]
+    assert "would MOVE" in out, out[-1500:]
+    assert old.read_bytes() == before and not (dest / "x4-paths.env").exists()

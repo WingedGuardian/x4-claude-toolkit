@@ -9,7 +9,7 @@ paths stays clean rather than learning to ignore a known hit. The note in
 which is worse, because a false "this is clean" is what stops the next check.
 
 Everything here resolves through `x4validate._paths` (the same layered
-env → `.claude/x4-paths.env` → fallback chain the CLI uses), with one addition:
+env → `x4-paths.env` → fallback chain the CLI uses), with one addition:
 
 **`$X4_ORACLE_LOG`** — a *captured* `debug.txt` snapshot to measure against. It has
 to be pinned rather than live, or the denominator moves between game sessions and
@@ -69,7 +69,7 @@ def extensions() -> Path:
     p = _paths.game_extensions()
     if p is None or not p.is_dir():
         skip(f"no installed extension set (resolved to {p or 'nothing'})",
-             "set $X4_GAME or $X4_EXTENSIONS (see .claude/x4-paths.env), "
+             "set $X4_GAME or $X4_EXTENSIONS (see x4-paths.env), "
              "then check with `x4validate --paths`")
     return p
 
@@ -79,7 +79,7 @@ def mods_dir() -> Path:
     p = _paths.mods()
     if p is None or not p.is_dir():
         skip(f"no mod source directory (resolved to {p or 'nothing'})",
-             "set $X4_MODS (see .claude/x4-paths.env)")
+             "set $X4_MODS (see x4-paths.env)")
     return p
 
 
@@ -88,7 +88,7 @@ def reference() -> Path:
     p = _paths.reference()
     if p is None or not p.is_dir():
         skip(f"no reference tree (resolved to {p or 'nothing'})",
-             "set $X4_REFERENCE (see .claude/x4-paths.env), then check with "
+             "set $X4_REFERENCE (see x4-paths.env), then check with "
              "`x4validate --paths`")
     return p
 

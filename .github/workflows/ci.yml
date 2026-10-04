@@ -206,7 +206,8 @@ jobs:
           # freshly built venv cannot contain this file; a copied one must.
           echo "source-venv sentinel" > tools/x4validate/.venv/.X4_SOURCE_VENV_SENTINEL
           bash install.sh --method separate --toolkit "$TK" --yes
-          test -f "$TK/.claude/x4-paths.env" || { echo "no x4-paths.env"; exit 1; }
+          test -f "$TK/x4-paths.env" || { echo "no x4-paths.env at the toolkit root"; exit 1; }
+          test ! -e "$TK/.claude/x4-paths.env" || { echo "a fresh install wrote the 3.x .claude/x4-paths.env"; exit 1; }
           test -d "$TK/tools/x4validate"     || { echo "no tools/x4validate"; exit 1; }
           test -d "$TK/mods"                 || { echo "no mods/ (x4live extension)"; exit 1; }
           # A VENV MUST NOT TRAVEL. The source has one (asserted above), so this
@@ -224,7 +225,7 @@ jobs:
           test -d "$TK/tools/x4validate/.venv" || {
             echo "no destination venv: setup.sh did not run, so the sentinel check proved nothing"; exit 1; }
           # The config bash cannot source is the failure the escaping exists to stop.
-          ( set -a; . "$TK/.claude/x4-paths.env" ) || { echo "x4-paths.env does not source"; exit 1; }
+          ( set -a; . "$TK/x4-paths.env" ) || { echo "x4-paths.env does not source"; exit 1; }
 
           # DIRECTION: a second install over the same toolkit must REFUSE without the
           # flag. This is the defect that overwrote a developer's game folder.
@@ -235,7 +236,7 @@ jobs:
           # ...and with the flag it proceeds AND keeps the user's own settings in the
           # LIVE file. `grep -r` over .claude/ is NOT the test: the .bak satisfies it
           # whether or not the live config kept anything.
-          printf '\nX4_NEXUS_KEY="CI_MARKER"\n' >> "$TK/.claude/x4-paths.env"
+          printf '\nX4_NEXUS_KEY="CI_MARKER"\n' >> "$TK/x4-paths.env"
           # The upgrade path, with a virtualenv on BOTH sides -- the exact
           # arrangement that used to break it. uv hardlinks package files from a
           # shared cache, so once both trees are synced the same file has the same
@@ -257,7 +258,7 @@ jobs:
           if grep -q "are the same file" "$RUNNER_TEMP/upgrade.log"; then
             echo "the upgrade copy hit a hardlink collision -- a venv travelled"; exit 1
           fi
-          grep -q CI_MARKER "$TK/.claude/x4-paths.env" || {
+          grep -q CI_MARKER "$TK/x4-paths.env" || {
             echo "a re-install reverted the LIVE user config"; exit 1; }
           echo "installer smoke OK"
 
@@ -275,9 +276,10 @@ jobs:
           $tk = Join-Path $env:RUNNER_TEMP 'tk ps51'
           & .\install.ps1 -Method separate -Toolkit $tk -Yes
           if ($LASTEXITCODE -ne 0) { Write-Error "the 5.1 install failed (exit $LASTEXITCODE)" }
-          foreach ($p in @('.claude\x4-paths.env','tools\x4validate','mods')) {
+          foreach ($p in @('x4-paths.env','tools\x4validate','mods')) {
             if (-not (Test-Path -LiteralPath (Join-Path $tk $p))) { Write-Error "missing: $p" }
           }
+          if (Test-Path -LiteralPath (Join-Path $tk '.claude\x4-paths.env')) { Write-Error 'a fresh install wrote the 3.x .claude\x4-paths.env' }
           # A FILE COUNT, because the failure produced a half-install of ~243
           # files that still carried x4-paths.env and tools/x4validate -- so
           # every existence check above passed straight through it.
@@ -292,9 +294,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $tk = Join-Path $env:RUNNER_TEMP 'tk-ps'
           & .\install.ps1 -Method separate -Toolkit $tk -Yes
-          foreach ($p in @('.claude\x4-paths.env','tools\x4validate','mods')) {
+          foreach ($p in @('x4-paths.env','tools\x4validate','mods')) {
             if (-not (Test-Path -LiteralPath (Join-Path $tk $p))) { Write-Error "missing: $p" }
           }
+          if (Test-Path -LiteralPath (Join-Path $tk '.claude\x4-paths.env')) { Write-Error 'a fresh install wrote the 3.x .claude\x4-paths.env' }
 
           # DIRECTION, mirrored from the bash leg. Two legs claiming to test the same
           # contract while testing different things is how a released claim goes false
@@ -303,10 +306,10 @@ jobs:
           & .\install.ps1 -Method separate -Toolkit $tk -Yes
           if ($LASTEXITCODE -eq 0) { Write-Error 'installing over an existing install was ALLOWED without -OverExisting' }
 
-          Add-Content -LiteralPath (Join-Path $tk '.claude\x4-paths.env') -Value 'X4_NEXUS_KEY="CI_MARKER"'
+          Add-Content -LiteralPath (Join-Path $tk 'x4-paths.env') -Value 'X4_NEXUS_KEY="CI_MARKER"'
           & .\install.ps1 -Method separate -Toolkit $tk -OverExisting -Yes
           if ($LASTEXITCODE -ne 0) { Write-Error 'the -OverExisting upgrade failed' }
-          if (-not ((Get-Content -Raw -LiteralPath (Join-Path $tk '.claude\x4-paths.env')) -match 'CI_MARKER')) {
+          if (-not ((Get-Content -Raw -LiteralPath (Join-Path $tk 'x4-paths.env')) -match 'CI_MARKER')) {
             Write-Error 'a re-install reverted the LIVE user config'
           }
           Write-Host 'installer smoke OK'
@@ -414,7 +417,8 @@ jobs:
           rm -rf "$GAME"; mkdir -p "$GAME/extensions"
           for n in 01 02 03 04 05 06 07 08 09; do : > "$GAME/$n.cat"; done
           bash install.sh --method in-game --game "$GAME" --yes
-          test -f "$GAME/.claude/x4-paths.env" || { echo "no x4-paths.env in the game folder"; exit 1; }
+          test -f "$GAME/x4-paths.env" || { echo "no x4-paths.env in the game folder"; exit 1; }
+          test ! -e "$GAME/.claude/x4-paths.env" || { echo "a fresh install wrote the 3.x .claude/x4-paths.env"; exit 1; }
           test -d "$GAME/tools/x4validate"     || { echo "no tools/x4validate"; exit 1; }
           test -d "$GAME/.claude/hooks"        || { echo "no .claude/hooks: in-game is the layout that HAS the guards"; exit 1; }
           # The .cat files must still be there. For every user of this method the
@@ -438,9 +442,10 @@ jobs:
             Set-Content -LiteralPath (Join-Path $game ($n + '.cat')) -Value '' }
           & .\install.ps1 -Method in-game -Game $game -Yes
           if ($LASTEXITCODE -ne 0) { Write-Error "the in-game install failed (exit $LASTEXITCODE)" }
-          foreach ($p in @('.claude/x4-paths.env','.claude/hooks','tools/x4validate','mods')) {
+          foreach ($p in @('x4-paths.env','.claude/hooks','tools/x4validate','mods')) {
             if (-not (Test-Path -LiteralPath (Join-Path $game $p))) { Write-Error "missing: $p" }
           }
+          if (Test-Path -LiteralPath (Join-Path $game '.claude/x4-paths.env')) { Write-Error 'a fresh install wrote the 3.x .claude/x4-paths.env' }
           if (-not (Test-Path -LiteralPath (Join-Path $game '01.cat'))) {
             Write-Error "the installer disturbed the game's own files" }
           & .\install.ps1 -Method in-game -Game $game -Yes
@@ -534,7 +539,7 @@ jobs:
           # `env -u X4_*` gave 14 skips (falls through $X4_TOOLKIT to x4-paths.env,
           # CLAUDE.md #26), and pointing X4_TOOLKIT at an empty directory still
           # resolved every root. A CI runner IS genuinely cold, because
-          # `.claude/x4-paths.env` is gitignored and never checked out.
+          # `x4-paths.env` is gitignored and never checked out.
           #
           # ATTRIBUTED, not just raised. The 53 breaks down per file, and the four
           # largest are all "no game / not this repo" causes that hold identically on a

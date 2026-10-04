@@ -155,7 +155,7 @@ def _mapped(what: str, fn, *args):
 
 
 def nexus_key() -> str:
-    """The personal API key, from the environment OR `.claude/x4-paths.env`.
+    """The personal API key, from the environment OR `x4-paths.env`.
 
     Resolved through `_paths`, not `os.environ`: `setup.sh` tells users they may
     put `X4_NEXUS_KEY` in the config file, and reading only the environment made
@@ -165,7 +165,7 @@ def nexus_key() -> str:
     k = _paths.value("X4_NEXUS_KEY")
     if not k:
         raise NexusAuthError("X4_NEXUS_KEY not set (Nexus personal API key). Export it, "
-                         "or add it to .claude/x4-paths.env.")
+                         "or add it to x4-paths.env.")
     return k
 
 

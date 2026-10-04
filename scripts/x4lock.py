@@ -107,8 +107,8 @@ _GAME_RELATIVE = (
 #: The marker is the target's own GUARD directory, so a Claude-only root is never reported
 #: as missing a Codex file -- 0 of 23 releases before 4.0 shipped AGENTS.md -- and an
 #: `install --agent codex` root is never reported as missing CLAUDE.md. Not the bare
-#: `.claude/` or `.codex/`: every install writes its path config to `.claude/x4-paths.env`,
-#: and Codex itself reads a project `.codex/config.toml`, so either directory can exist
+#: `.claude/` or `.codex/`: a 3.x install wrote its path config to `.claude/x4-paths.env`
+#: (4.x still reads it there, deprecated), and Codex itself reads a project `.codex/config.toml`, so either directory can exist
 #: with that target absent. A root with NO marker keeps the pre-4.0 Claude demand (see
 #: `_demanded_targets`), so deleting `.claude/` wholesale never makes CLAUDE.md's absence
 #: silent.
@@ -225,8 +225,28 @@ def _same_file(a: Path, b: Path) -> bool:
         return str(a).lower() == str(b).lower()
 
 
+def _config_in(root: Path) -> Path:
+    """THE path config of the toolkit at *root* (Plan 3 lane I): the 4.x `x4-paths.env` if it
+    exists, else the 3.x `.claude/x4-paths.env` if THAT exists, else the 4.x path -- the one
+    to demand. `_paths.config_file_in` is the one implementation."""
+    if _paths is not None:
+        return _paths.config_file_in(root)
+    return Path(root) / "x4-paths.env"
+
+
+def _config_files_in(root: Path) -> list[Path]:
+    """`_config_in(root)`, plus a 3.x copy that still EXISTS beside a 4.x one: it is ignored
+    by every loader but still carries keys (X4_NEXUS_KEY), so it stays locked until it is
+    retired (`scripts/x4config.py migrate --apply`). Lock-if-present: never demanded."""
+    out = [_config_in(root)]
+    legacy = Path(root) / ".claude" / "x4-paths.env"
+    if legacy.is_file() and not _same_file(legacy, out[0]):
+        out.append(legacy)
+    return out
+
+
 def _local_env_waived() -> Path | None:
-    """This checkout's own `.claude/x4-paths.env` when it is ABSENT from a linked worktree
+    """This checkout's own path config when it is ABSENT from a linked worktree
     AND something can stand in for it -- the one case where its absence is by design, not
     a loss (F119). Else None.
 
@@ -234,7 +254,7 @@ def _local_env_waived() -> Path | None:
     $X4_TOOLKIT), the local file is demanded as before. A false MISSING is visible; a
     waiver with nothing in its place is silent.
     """
-    local_env = _HERE.parent / ".claude" / "x4-paths.env"
+    local_env = _config_in(_HERE.parent)
     if (not local_env.is_file() and _worktree_common_dir(_HERE.parent) is not None
             and _waiver_replacements()):
         return local_env
@@ -255,9 +275,9 @@ def _waiver_replacements() -> list[Path]:
     # submodule's `.git/modules/<name>` and a `--separate-git-dir` layout derive nothing --
     # and then the waiver applies only if $X4_TOOLKIT names a copy (see _local_env_waived).
     if common is not None and common.name == ".git":
-        out.append(common.parent / ".claude" / "x4-paths.env")
+        out.extend(_config_files_in(common.parent))
     if os.environ.get("X4_TOOLKIT"):
-        out.append(Path(os.environ["X4_TOOLKIT"]) / ".claude" / "x4-paths.env")
+        out.extend(_config_files_in(Path(os.environ["X4_TOOLKIT"])))
     return out
 
 
@@ -305,7 +325,7 @@ def _candidates() -> list[Path]:
     # there is not MISSING. The waiver costs nothing: the copies it stands in for are
     # demanded explicitly instead (see `_waiver_replacements`).
     if _local_env_waived() is None:
-        out.append(_HERE.parent / ".claude" / "x4-paths.env")
+        out.extend(_config_files_in(_HERE.parent))
     else:
         out.extend(_waiver_replacements())
     env_file = _paths._find_env_file() if _paths is not None else None

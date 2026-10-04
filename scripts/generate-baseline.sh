@@ -12,11 +12,23 @@
 
 set -euo pipefail
 
-# Honour the toolkit's own config: .claude/x4-paths.env (X4_GAME / X4_PROFILE),
-# then this script's legacy GAME_DIR / PROFILE_DIR names, then CWD as last resort.
+# Honour the toolkit's own config (X4_GAME / X4_PROFILE) through the ONE shared loader,
+# then this script's legacy GAME_DIR / PROFILE_DIR names. Plan 3 lane I: this used to
+# source `.claude/x4-paths.env` itself -- a THIRD loader, in which the file beat the
+# environment and the 4.x root config was never read. Now it sources _x4-env.sh from the
+# first guard copy installed beside it (any agent), and reads NOTHING when there is none.
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck disable=SC1091
-[ -f "$_here/.claude/x4-paths.env" ] && . "$_here/.claude/x4-paths.env"
+for _gd in "$_here/.claude/hooks" "$_here/.codex/hooks" "$_here/.opencode/hooks"; do
+  if [ -f "$_gd/_x4-env.sh" ]; then
+    set +eu
+    HOOK_DIR="$_gd"
+    # shellcheck disable=SC1091
+    . "$_gd/_x4-env.sh"
+    set -eu
+    break
+  fi
+done
+unset _gd
 # Never $(pwd). A baseline is a RECOVERY artifact: silently taking it from
 # whatever directory you happened to stand in writes a "known-good" snapshot of
 # the wrong game install, and you find out at the moment you need to restore.
@@ -26,7 +38,7 @@ PROFILE_DIR="${PROFILE_DIR:-${X4_PROFILE:-}}"
 
 if [ -z "$GAME_DIR" ] || [ ! -d "$GAME_DIR" ]; then
   echo "ERROR: set GAME_DIR (or X4_GAME) to your X4 install — the folder holding 01.cat..09.cat." >&2
-  echo "       Configure it in .claude/x4-paths.env, or pass GAME_DIR=... on the command line." >&2
+  echo "       Configure it in x4-paths.env (toolkit root), or pass GAME_DIR=... on the command line." >&2
   exit 2
 fi
 STAMP="${STAMP:-baseline}"   # pass a date, e.g. STAMP=2026-06-23, to name the folder
@@ -38,7 +50,7 @@ OUT="$GAME_DIR/.claude/backups/known-good-${STAMP}"
 # unpack failed' -- they need opposite responses." (bin/unpack-reference.sh)
 if [ -z "$PROFILE_DIR" ] || [ ! -d "$PROFILE_DIR" ]; then
   echo "ERROR: set PROFILE_DIR (or X4_PROFILE) to your active X4 user profile (Documents/Egosoft/X4/<id>)." >&2
-  echo "       Configure it in .claude/x4-paths.env, or pass PROFILE_DIR=... on the command line." >&2
+  echo "       Configure it in x4-paths.env (toolkit root), or pass PROFILE_DIR=... on the command line." >&2
   echo "       Tip: the active profile has the newest debug.txt / save timestamps." >&2
   exit 2
 fi

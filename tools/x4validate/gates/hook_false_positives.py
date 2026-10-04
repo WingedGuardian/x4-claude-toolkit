@@ -16,7 +16,7 @@ STABLE INSTRUMENT (2026-08-30). The first F82 baseline was measured while the li
 hook was REDEPLOYED mid-run (launched 22:28, hook deployed 00:08:29, finished
 00:15:36). Bash re-reads the script on every spawn, so the tail of that run used a
 different rule set from the head, and its per-rule table was not reproducible. This
-version hashes the hook files (and the optional x4-paths.env they source) before and
+version hashes the hook files (and the optional x4-paths.env files they source) before and
 after, re-resolves the paths at the end, and VOIDS the run if anything moved.
 
 COUNTS, NOT EXAMPLES. The first artifact stored 25 examples per rule and no
@@ -79,8 +79,9 @@ BASH = shutil.which("bash.exe") or "bash"
 PATH_VARS = ("X4_GAME", "X4_PROFILE", "X4_REFERENCE", "X4_MODS", "X4_TOOLKIT",
              "X4_DOCUMENTS", "X4_SAVES")
 # Every file whose bytes decide a verdict. Hashed before and after the run.
-# _x4-env.sh ALSO sources $X4_TOOLKIT/.claude/x4-paths.env when it exists; that
-# file is hashed too, with an "absent" sentinel so its appearance is a change.
+# _x4-env.sh ALSO sources $X4_TOOLKIT/x4-paths.env, else the 3.x
+# $X4_TOOLKIT/.claude/x4-paths.env (Plan 3 lane I). BOTH are hashed, each with an
+# "absent" sentinel, so either appearing, vanishing or changing voids the run.
 HOOK_FILES = ("protect-bash.sh", "_x4-env.sh")
 EXAMPLE_CAP = 25
 
@@ -309,10 +310,14 @@ def _sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
-def hash_hooks(hook_dir: Path, paths_env: Path | None = None) -> dict[str, str]:
+def hash_hooks(hook_dir: Path, paths_envs: dict[str, Path] | None = None) -> dict[str, str]:
+    """The hook files plus each named config, `label -> sha | "absent"`. Labels are
+    `x4-paths.env` (the 4.x root file -- the key older artifacts used) and
+    `.claude/x4-paths.env` (3.x), so `hook_same`'s common-key rule keeps old baselines
+    comparable."""
     out = {f: _sha((hook_dir / f).read_bytes()) for f in HOOK_FILES}
-    if paths_env is not None:
-        out["x4-paths.env"] = _sha(paths_env.read_bytes()) if paths_env.is_file() else "absent"
+    for label, p in (paths_envs or {}).items():
+        out[label] = _sha(p.read_bytes()) if p.is_file() else "absent"
     return out
 
 
@@ -480,9 +485,10 @@ def run(argv: list[str]) -> int:
 
     resolved = resolve()
     print("resolved:", ", ".join(f"{k}={'set' if v else 'EMPTY'}" for k, v in resolved.items()))
-    paths_env = (Path(resolved["X4_TOOLKIT"]) / ".claude" / "x4-paths.env"
-                 if resolved.get("X4_TOOLKIT") else None)
-    sha_before = hash_hooks(hook_dir, paths_env)
+    _tk = Path(resolved["X4_TOOLKIT"]) if resolved.get("X4_TOOLKIT") else None
+    paths_envs = ({"x4-paths.env": _tk / "x4-paths.env",
+                   ".claude/x4-paths.env": _tk / ".claude" / "x4-paths.env"} if _tk else None)
+    sha_before = hash_hooks(hook_dir, paths_envs)
 
     try:
         pos, _ = decide('rm -rf "' + str(game) + '"')
@@ -617,7 +623,7 @@ def run(argv: list[str]) -> int:
             print("   ", e, file=sys.stderr)
         return 2
     try:
-        assert_stable(sha_before, hash_hooks(hook_dir, paths_env))
+        assert_stable(sha_before, hash_hooks(hook_dir, paths_envs))
         assert_stable(resolved, resolve())
     except UnstableInstrument as e:
         print("REFUSING:", e, "-- the run mixed two rule sets and is void.", file=sys.stderr)

@@ -388,7 +388,7 @@ def var_name() -> str:
     not bake one in. Resolved through `_paths.value()` -- not `os.environ` -- because
     the config file is a layer too, and two earlier consumers read the environment
     directly and so could not see a value users had been told to put in
-    `.claude/x4-paths.env`.
+    `x4-paths.env`.
     """
     return _paths.value("X4_LIVE_VAR") or DEFAULT_VAR
 

@@ -35,9 +35,8 @@ def _root(tmp_path: Path, guards: tuple[str, ...]) -> Path:
     for g in guards:
         (root / g).mkdir(parents=True)
         shutil.copy2(REPO / "agent" / "guards" / "claude-hooks" / "_x4-env.sh", root / g / "_x4-env.sh")
-    (root / ".claude").mkdir(exist_ok=True)
-    (root / ".claude" / "x4-paths.env").write_text('X4_REFERENCE="%s"\n' % (root / "reference").as_posix(),
-                                                   encoding="utf-8")
+    (root / "x4-paths.env").write_text('X4_REFERENCE="%s"\n' % (root / "reference").as_posix(),
+                                       encoding="utf-8")                # the 4.x location
     return root
 
 
@@ -51,7 +50,8 @@ def _unpack(root: Path, monkeypatch):
                           capture_output=True, text=True, timeout=120, cwd=str(root))
 
 
-@pytest.mark.parametrize("guards", [(".codex/hooks",), (".claude/hooks",), (".claude/hooks", ".codex/hooks")])
+@pytest.mark.parametrize("guards", [(".codex/hooks",), (".claude/hooks",), (".claude/hooks", ".codex/hooks"),
+                                    (".opencode/hooks",)])
 def test_the_env_is_sourced_from_WHICHEVER_guard_copy_is_installed(guards, tmp_path, monkeypatch):
     r = _unpack(_root(tmp_path, guards), monkeypatch)
     assert r.returncode == 2 and "X4_GAME not set" in r.stderr, (r.returncode, r.stdout, r.stderr)
@@ -61,3 +61,4 @@ def test_TWIN_with_NO_guard_copy_it_refuses_naming_both_places(tmp_path, monkeyp
     r = _unpack(_root(tmp_path, ()), monkeypatch)
     assert r.returncode != 0 and "X4_GAME not set" not in r.stderr
     assert ".claude/hooks" in r.stderr and ".codex/hooks" in r.stderr, r.stderr
+    assert ".opencode/hooks" in r.stderr, r.stderr

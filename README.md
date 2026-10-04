@@ -352,7 +352,13 @@ powershell -ExecutionPolicy Bypass -File install.ps1    # Windows PowerShell
 with scripts disabled — a bare `.\install.ps1` would be refused before it ran anything.)
 
 It asks which **layout** you want (see the table below), auto-detects your game, profile and
-XRCatTool, and writes the result to `<toolkit>/.claude/x4-paths.env`. Nothing is hardcoded.
+XRCatTool, and writes the result to `<toolkit>/x4-paths.env`. Nothing is hardcoded.
+
+> **Upgrading from 3.x:** 3.x kept the config at `<toolkit>/.claude/x4-paths.env`. 4.0 still
+> reads it there (deprecated, with a notice), and the installers and
+> `python scripts/x4config.py migrate --apply` MOVE it to the toolkit root (a read-only,
+> x4lock'd file moves too and stays locked). Two copies that differ are refused, never merged.
+> To go back to 3.x, move the file back.
 
 > **Which layout?** If you're unsure, pick **separate** — it keeps the game folder untouched and
 > avoids needing write access to `C:\Program Files`. Pick **in-game** only if you want the
@@ -387,18 +393,17 @@ one; until it has one, the toolkit's guards do not protect it.
 
 ### Platform support
 Runs on **Linux, macOS, and Windows (Git Bash)**. All locations are configurable via
-`.claude/x4-paths.env` (no hardcoded OS paths); the hooks accept both `/` and `\` styles.
+`x4-paths.env` in the toolkit root (no hardcoded OS paths); the hooks accept both `/` and `\` styles.
 On Linux/macOS, XRCatTool is invoked through Wine automatically by `bin/xrcat`.
 
 As of **v2.01** that is true of the Python tools too — they read the same
-`.claude/x4-paths.env` the installer writes. Before v2.01 they read a *different* set of variable
+`x4-paths.env` the installer writes. Before v2.01 they read a *different* set of variable
 names, so on the `separate` and `global` layouts a successful install still left the cross-mod
 commands pointed at CWD-relative paths. If you installed v2.0, take this update.
 
 **The installers set `X4_TOOLKIT` in your user environment** (opt out with `--no-env` /
 `-NoEnv`). Without it, the config file is found only by walking up from the current directory,
-and the tools are often run from the game folder, which has a `.claude/` but no
-`x4-paths.env`. You would see `(unresolved)` locations with a perfectly good config sitting one
+and the tools are often run from the game folder, which may hold no `x4-paths.env`. You would see `(unresolved)` locations with a perfectly good config sitting one
 directory tree away.
 
 | Your current `X4_TOOLKIT` | What the installer does |
@@ -454,6 +459,9 @@ not measured against a running OpenCode.** The reading is recorded in
   per-agent `permission` rule of yours can override it too. The plugin still applies.
 - **Subagents.** The plugin may not run inside a subagent session
   ([#5894](https://github.com/anomalyco/opencode/issues/5894)); the deny rules do.
+- **No session-start banner.** OpenCode has no session-start hook, so a missing, deprecated or
+  doubled path config is reported only by `python scripts/x4doctor.py` (Claude Code and Codex
+  are told at session start).
 - **Start OpenCode in the toolkit folder.** Its config and plugins are found walking up from where
   it starts. `OPENCODE_DISABLE_PROJECT_CONFIG` turns BOTH layers off.
 - **Windows shell.** OpenCode runs commands in PowerShell unless you set `shell` in its config;
@@ -475,7 +483,7 @@ possible and overridable (`--game`, `--profile`, `--toolkit`, `--mods`, `--refer
 > **Upgrading an existing install needs `--over-existing`** (`-OverExisting` on PowerShell).
 > Without it the installer refuses, names what it found, and tells you what to type. Installing
 > over a toolkit REPLACES `KNOWLEDGEBASE.md`, the skills and the agents — so if you have edited
-> any of those, they are what you would lose. `.claude/x4-paths.env` and
+> any of those, they are what you would lose. `x4-paths.env` and
 > `.claude/settings.local.json` are preserved (backed up, and kept in place).
 >
 > **Upgrading from 3.x: an edited `CLAUDE.md` is kept, not lost.** If your `CLAUDE.md` is not
@@ -488,7 +496,7 @@ possible and overridable (`--game`, `--profile`, `--toolkit`, `--mods`, `--refer
 >
 > `--yes` will also refuse an **auto-detected** destination: nothing named it and nobody is
 > watching, so name it with `--game` or `--toolkit`.
-The chosen paths are written to `<toolkit>/.claude/x4-paths.env`.
+The chosen paths are written to `<toolkit>/x4-paths.env`.
 
 | Method | What it does | When to use |
 |--------|--------------|-------------|

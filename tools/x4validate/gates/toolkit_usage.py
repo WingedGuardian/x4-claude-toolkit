@@ -128,7 +128,7 @@ def transcript_dir() -> Path:
     for i, a in enumerate(sys.argv):
         if a == "--transcripts" and i + 1 < len(sys.argv):
             return Path(sys.argv[i + 1])
-    # Through `_paths`, not `os.environ` -- so `.claude/x4-paths.env` is honoured
+    # Through `_paths`, not `os.environ` -- so `x4-paths.env` is honoured
     # like every other setting. Reading the environment directly is the two-doors
     # shape that produced F30.
     env = _paths.path_value("X4_TRANSCRIPTS")

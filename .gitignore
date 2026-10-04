@@ -17,9 +17,15 @@
 .claude/settings.local.json
 .claude/settings.local.json.*
 !.claude/settings.local.json.example
+# The path config lives at the toolkit root since 4.0 (Plan 3 lane I), its template beside it.
+# Anchored: only the ROOT copy is per-machine config.
+/x4-paths.env
+/x4-paths.env.*
+!/x4-paths.env.example
+# 3.x leftovers in .claude/ (still read, deprecated) carry the key too -- and the old
+# template there is no longer the template, so it is not re-included.
 .claude/x4-paths.env
 .claude/x4-paths.env.*
-!.claude/x4-paths.env.example
 .claude/.reference-buildid
 
 # --- Runtime backups (generated as Claude edits files) ---

@@ -238,13 +238,30 @@ def test_compare_reports_a_rule_swap_as_moved_commands():
     assert rep["moved"] == {("R1", "R2"): 1, ("R2", "R1"): 1}
 
 
+def _cfgs(tk):
+    return {"x4-paths.env": tk / "x4-paths.env", ".claude/x4-paths.env": tk / ".claude" / "x4-paths.env"}
+
+
 def test_hash_hooks_includes_paths_env_with_absent_sentinel(tmp_path):
     (tmp_path / "protect-bash.sh").write_text("a")
     (tmp_path / "_x4-env.sh").write_text("b")
-    h = hfp.hash_hooks(tmp_path, paths_env=tmp_path / "x4-paths.env")
-    assert h["x4-paths.env"] == "absent"
+    h = hfp.hash_hooks(tmp_path, paths_envs=_cfgs(tmp_path))
+    assert h["x4-paths.env"] == "absent" and h[".claude/x4-paths.env"] == "absent"
     (tmp_path / "x4-paths.env").write_text("X4_GAME=/g")
-    assert hfp.hash_hooks(tmp_path, paths_env=tmp_path / "x4-paths.env")["x4-paths.env"] != "absent"
+    assert hfp.hash_hooks(tmp_path, paths_envs=_cfgs(tmp_path))["x4-paths.env"] != "absent"
+
+
+def test_a_LEGACY_config_changing_mid_run_voids_it_too(tmp_path):
+    """Plan 3 lane I: the loader reads the root file, else the 3.x one -- either moving
+    changes what the hooks resolve, so the run must void if EITHER moves."""
+    (tmp_path / "protect-bash.sh").write_text("a")
+    (tmp_path / "_x4-env.sh").write_text("b")
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "x4-paths.env").write_text("X4_GAME=/g")
+    before = hfp.hash_hooks(tmp_path, paths_envs=_cfgs(tmp_path))
+    (tmp_path / ".claude" / "x4-paths.env").write_text("X4_GAME=/other")
+    same, _ = hfp.hook_same(before, hfp.hash_hooks(tmp_path, paths_envs=_cfgs(tmp_path)))
+    assert same is False
 
 
 # ---- the artifact must never carry a secret VALUE, whatever the corpus said ----

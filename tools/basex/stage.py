@@ -198,7 +198,7 @@ def main(argv=None) -> int:
     resolved_ext = args.extensions or _paths.game_extensions()
     if resolved_ext is None:
         print("error: cannot resolve the game's extensions directory. Set "
-              "$X4_EXTENSIONS, configure .claude/x4-paths.env, or pass "
+              "$X4_EXTENSIONS, configure x4-paths.env, or pass "
               "--extensions.\n"
               "       Refusing to guess: staging a path that does not exist "
               "indexes ZERO documents and still exits 0.", file=sys.stderr)

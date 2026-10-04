@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **Changed: the path config lives at `<toolkit>/x4-paths.env`** (for `--method in-game`, the game
+  folder), beside `x4-paths.env.example`, instead of `<toolkit>/.claude/x4-paths.env` -- so a Codex-
+  or OpenCode-only install no longer needs a `.claude/` folder for it. The 3.x location is still
+  read for all of 4.x, with a one-line deprecation notice. It is MOVED, never copied, by the
+  installers on upgrade, by `deploy-claude-dir.py` for a game root, and by the new
+  `python scripts/x4config.py migrate --apply` for a `git pull` upgrade (`status` shows what is
+  read). A read-only (x4lock'd) config moves too and stays locked. Two copies that differ are
+  refused, naming the differing keys, never their values.
+- **Fixed: with no path config the guards no longer assume `<toolkit>/reference` silently.** Every
+  verdict is unchanged (the default `reference/` hard block stays), and the gap is now named once
+  per session (Claude Code and Codex) and by `x4doctor` (`roots.config` FAILs; OpenCode has no
+  session start, so only `x4doctor` reports it there). A deprecated or doubled config is named the
+  same way.
+- **Fixed: the bash and Python loaders now pick the config file by one rule**, pinned by a matrix
+  test: Python honours `$X4_CONFIG` (naming no file reads none) and no longer walks up from the
+  current directory past a named `$X4_TOOLKIT`. `scripts/generate-baseline.sh` stopped reading the
+  config itself (a third loader, in which the file beat the environment) and uses the shared one.
+- **Fixed: an OpenCode-only install can unpack the reference tree** (`bin/unpack-reference.sh`
+  looks in `.opencode/hooks/` too), and `setup.sh` never creates a blank root config that would
+  shadow a 3.x one.
+- **Upgrade note:** to go back to 3.x, move `x4-paths.env` back to `.claude/x4-paths.env`.
+
 - **`x4doctor` now really checks the OS-level delete protection on `reference/`.** Its
   `layer2.reference` row asked a function no module had (`x4lock.deny_delete_state`; the protection
   shipped as `scripts/x4refguard.py`), so it said UNKNOWN on every machine -- and a Codex install with

@@ -21,7 +21,10 @@ WHAT IT WILL NOT DO:
 * DELETE. A file only in the game root is reported, never removed.
 * TOUCH a per-machine file. The population is `deploy_parity.population()` -- the
   deployment as the game-root repository whitelists it -- so `x4-paths.env`,
-  `settings.local.json` and `backups/` are outside it by construction.
+  `settings.local.json` and `backups/` are outside it by construction. ONE exception: a
+  3.x path config at `<game>/.claude/x4-paths.env` is MOVED (bytes and x4lock lock kept)
+  to `<game>/x4-paths.env`, where 4.x reads it -- never edited. Two copies that DIFFER are
+  reported and neither is touched (Plan 3 lane I; `_paths.migrate_legacy_config`).
 
 HOW IT WRITES, each measured as a failure mode somewhere in this workspace:
 
@@ -66,6 +69,8 @@ parity = _load("deploy_parity_for_deploy", PKG / "gates" / "deploy_parity.py")
 x4lock = _load("x4lock_for_deploy", REPO_ROOT / "scripts" / "x4lock.py")
 
 CREATE, UPDATE, SKIP, REFUSE, REPORT = "create", "update", "identical", "REFUSED", "only in game root"
+#: A game root's 3.x `.claude/x4-paths.env` moved to the root (Plan 3 lane I).
+MIGRATE = "migrate (3.x config)"
 
 
 @dataclass
@@ -150,7 +155,20 @@ def plan(repo_root: Path, dest_claude: Path, force: set[str] | frozenset = froze
                 "the deployed copy matches no version the repo has EVER committed -- an edit "
                 "made in the game root that was never ported. Port it to the repo first, or "
                 f"pass --force {n}"))
+    actions.extend(_plan_config(dest_claude))
     return actions
+
+
+def _plan_config(dest_claude: Path) -> list[Action]:
+    """The 3.x path config beside the deployed tree: MIGRATE it, REPORT a conflict, or
+    nothing. Asked of the one implementation, dry."""
+    action, msg = parity._paths.migrate_legacy_config(dest_claude.parent, apply=False)
+    name = parity._paths.CONFIG_NAME
+    if action in ("would-move", "would-retire-old"):
+        return [Action(name, MIGRATE, msg)]
+    if action == "refused":
+        return [Action(name, REPORT, msg)]
+    return []
 
 
 def target_bytes(repo_root: Path, dest_claude: Path, name: str) -> bytes:
@@ -186,6 +204,13 @@ def apply(repo_root: Path, dest_claude: Path, actions: list[Action]) -> list[str
     failures: list[str] = []
     created: list[Path] = []
     for a in actions:
+        if a.kind == MIGRATE:
+            got, msg = parity._paths.migrate_legacy_config(dest_claude.parent, apply=True)
+            if got not in ("moved", "retired-old"):
+                failures.append(f"{a.name}: the 3.x config was NOT migrated ({got}): {msg}")
+            else:
+                print(f"  {msg}")
+            continue
         if a.kind not in (CREATE, UPDATE):
             continue
         dst = dest_claude / a.name
@@ -256,13 +281,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"DEPLOY .claude/ -- {mode}")
     print(f"  from {repo_root / '.claude'}")
     print(f"  to   {dest}   (installer rewrite: {'yes' if needs_rewrite(dest) else 'no'})")
-    width = max(len(k) for k in (CREATE, UPDATE, SKIP, REFUSE, REPORT))
+    width = max(len(k) for k in (CREATE, UPDATE, SKIP, REFUSE, REPORT, MIGRATE))
     for a in actions:
         if a.kind == SKIP:
             continue
         print(f"  {a.kind:<{width}}  {a.name}" + (f"  -- {a.reason}" if a.reason else ""))
     counts = {k: sum(1 for a in actions if a.kind == k)
-              for k in (CREATE, UPDATE, SKIP, REFUSE, REPORT)}
+              for k in (CREATE, UPDATE, SKIP, REFUSE, REPORT, MIGRATE)}
     print("  " + ", ".join(f"{v} {k}" for k, v in counts.items()))
 
     refused = [a for a in actions if a.kind == REFUSE]

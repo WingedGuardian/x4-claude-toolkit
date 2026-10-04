@@ -104,7 +104,8 @@ def test_TWIN_a_users_own_AGENTS_md_alone_is_NOT_the_generic_target(tmp_path):
 
 
 def test_TWIN_a_bare_claude_dir_holding_only_the_path_config_is_NOT_the_claude_target(tmp_path):
-    """Every install writes .claude/x4-paths.env -- a Codex-only install included."""
+    """A 3.x install wrote .claude/x4-paths.env for every agent -- a Codex-only one included --
+    and 4.x still reads it there (deprecated), so a bare .claude/ is still no Claude signal."""
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude" / "x4-paths.env").write_text("X4_TOOLKIT=x\n", encoding="utf-8")
     (tmp_path / ".codex").mkdir()
@@ -184,7 +185,7 @@ def sandbox(tmp_path, monkeypatch):
     shutil.copytree(REPO / ".claude" / "hooks", root / ".claude" / "hooks",
                     ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
     shutil.copy2(REPO / ".claude" / "settings.json", root / ".claude" / "settings.json")
-    _env_file(root / ".claude" / "x4-paths.env", X4_TOOLKIT=root, X4_GAME=game, X4_REFERENCE=ref)
+    _env_file(root / "x4-paths.env", X4_TOOLKIT=root, X4_GAME=game, X4_REFERENCE=ref)
     codex_home = tmp_path / "codex-home"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     return Sandbox(root, game, ref, codex_home)
@@ -251,18 +252,39 @@ def test_a_MISSING_jq_AND_python_is_FAIL(sandbox, tmp_path, monkeypatch):
     assert rows["jq"].status == doc.FAIL, rows["jq"]
 
 
-def test_bash_and_python_DISAGREEING_on_reference_is_FAIL(sandbox, tmp_path, monkeypatch):
-    """X4_CONFIG is honoured by the guards' _x4-env.sh and ignored by the tools'
-    _paths: the two then protect and read different trees."""
+def _as_3x_guard(sandbox) -> None:
+    """Make the sandbox's guard copy a 3.x one: it reads only `.claude/x4-paths.env`."""
+    f = sandbox.root / ".claude" / "hooks" / "_x4-env.sh"
+    src = f.read_text(encoding="utf-8")
+    new_branch = 'elif [ -f "$X4_TOOLKIT/x4-paths.env" ]; then'
+    assert src.count(new_branch) == 1
+    f.write_text(src.replace(new_branch, "elif false; then"), encoding="utf-8", newline="\n")
+
+
+def test_bash_and_python_DISAGREEING_on_reference_is_FAIL(sandbox, tmp_path):
+    """An OLDER guard copy reads the 3.x `.claude/x4-paths.env` while the tools read the 4.x
+    root file: the two then protect and read different trees. (Until Plan 3 lane I the split
+    came from X4_CONFIG, which only bash honoured -- see the twin below.)"""
+    other = tmp_path / "other-ref"
+    other.mkdir()
+    _env_file(sandbox.root / ".claude" / "x4-paths.env", X4_TOOLKIT=sandbox.root,
+              X4_GAME=sandbox.game, X4_REFERENCE=other)
+    _as_3x_guard(sandbox)
+    rows = sandbox.rows(doc.check_roots)
+    r = rows["roots.agree"]
+    assert r.status == doc.FAIL, r
+    assert "other-ref" in r.detail and "reference" in r.detail
+
+
+def test_TWIN_X4_CONFIG_now_moves_BOTH_sides(sandbox, tmp_path, monkeypatch):
+    """Plan 3 lane I: Python honours X4_CONFIG too, so it no longer splits the two."""
     other = tmp_path / "other-ref"
     other.mkdir()
     _env_file(tmp_path / "elsewhere.env", X4_TOOLKIT=sandbox.root, X4_GAME=sandbox.game,
               X4_REFERENCE=other)
     monkeypatch.setenv("X4_CONFIG", (tmp_path / "elsewhere.env").as_posix())
-    rows = sandbox.rows(doc.check_roots)
-    r = rows["roots.agree"]
-    assert r.status == doc.FAIL, r
-    assert "other-ref" in r.detail and "reference" in r.detail
+    r = sandbox.rows(doc.check_roots)["roots.agree"]
+    assert r.status == doc.OK and "other-ref" not in r.detail.split("guards read")[0], r
 
 
 def test_TWIN_agreeing_roots_are_OK(sandbox):
@@ -273,14 +295,14 @@ def test_TWIN_agreeing_roots_are_OK(sandbox):
 
 
 def test_an_UNSET_game_root_is_FAIL(sandbox):
-    _env_file(sandbox.root / ".claude" / "x4-paths.env", X4_TOOLKIT=sandbox.root,
+    _env_file(sandbox.root / "x4-paths.env", X4_TOOLKIT=sandbox.root,
               X4_REFERENCE=sandbox.ref)
     rows = sandbox.rows(doc.check_roots)
     assert rows["roots.game"].status == doc.FAIL, rows["roots.game"]
 
 
 def test_a_reference_not_unpacked_YET_is_UNKNOWN_not_FAIL_nor_OK(sandbox, tmp_path):
-    _env_file(sandbox.root / ".claude" / "x4-paths.env", X4_TOOLKIT=sandbox.root,
+    _env_file(sandbox.root / "x4-paths.env", X4_TOOLKIT=sandbox.root,
               X4_GAME=sandbox.game, X4_REFERENCE=tmp_path / "not-yet")
     rows = sandbox.rows(doc.check_roots)
     assert rows["roots.reference"].status == doc.UNKNOWN, rows["roots.reference"]
@@ -296,6 +318,7 @@ def test_the_guards_config_variable_still_exists():
     If _x4-env.sh renames it, this goes red instead of the doctor going quiet."""
     src = (REPO / "agent" / "guards" / "claude-hooks" / "_x4-env.sh").read_text(encoding="utf-8")
     assert "_x4_cfg=" in src and "x4_resolve_python()" in src and "X4_PY=" in src
+    assert "_x4_cfg_src=" in src and "_x4_ref_defaulted=" in src
 
 
 def test_a_GENERIC_only_root_has_no_guard_toolchain_and_says_so(tmp_path, monkeypatch):
@@ -453,20 +476,69 @@ def test_a_source_whose_comparer_PREDATES_TargetSpec_falls_back_to_the_doctors_o
 
 # --- roots.config: the guards read NO config file -------------------------------------- #
 
-def test_the_guards_reading_NO_config_file_is_FAIL(sandbox):
+def test_roots_config_FAILS_with_no_config_and_no_exported_reference(sandbox):
     """MEASURED 2026-10-02 on the author's machine, check-only: with X4_TOOLKIT unset, the
     game root's guards derive the toolkit from CLAUDE_PROJECT_DIR, find no x4-paths.env
     there, default the reference to <game>/reference -- and ALLOW a write and a delete
     into the configured reference (4 of 4 deny controls became allow)."""
-    (sandbox.root / ".claude" / "x4-paths.env").unlink()
-    rows = sandbox.rows(doc.check_roots)
-    assert rows["roots.config"].status == doc.FAIL, rows["roots.config"]
-    assert "x4-paths.env" in rows["roots.config"].detail
+    (sandbox.root / "x4-paths.env").unlink()
+    r = sandbox.rows(doc.check_roots)["roots.config"]
+    assert r.status == doc.FAIL, r
+    d = r.detail.replace("\\", "/")
+    assert "/x4-paths.env" in d and ".claude/x4-paths.env" in d and "ASSUME" in d, r
 
 
 def test_TWIN_the_guards_reading_their_config_is_OK(sandbox):
     rows = sandbox.rows(doc.check_roots)
     assert rows["roots.config"].status == doc.OK, rows["roots.config"]
+
+
+def test_roots_config_OK_names_the_new_file(sandbox):
+    r = sandbox.rows(doc.check_roots)["roots.config"]
+    assert r.status == doc.OK and "x4-paths.env" in r.detail, r
+    assert ".claude" not in r.detail and "DEPRECATED" not in r.detail, r
+
+
+def test_roots_config_legacy_is_OK_but_says_DEPRECATED(sandbox):
+    (sandbox.root / "x4-paths.env").rename(sandbox.root / ".claude" / "x4-paths.env")
+    r = sandbox.rows(doc.check_roots)["roots.config"]
+    assert r.status == doc.OK and "DEPRECATED" in r.detail and "x4config.py migrate" in r.detail, r
+
+
+def test_roots_config_FAILS_when_two_copies_DIFFER(sandbox, tmp_path):
+    _env_file(sandbox.root / ".claude" / "x4-paths.env", X4_TOOLKIT=sandbox.root,
+              X4_GAME=sandbox.game, X4_REFERENCE=tmp_path / "other-ref")
+    r = sandbox.rows(doc.check_roots)["roots.config"]
+    assert r.status == doc.FAIL and "X4_REFERENCE" in r.detail, r
+    assert "other-ref" not in r.detail, "a VALUE was printed: " + r.detail
+
+
+def test_roots_config_two_AGREEING_copies_are_OK(sandbox):
+    (sandbox.root / ".claude" / "x4-paths.env").write_bytes((sandbox.root / "x4-paths.env").read_bytes())
+    r = sandbox.rows(doc.check_roots)["roots.config"]
+    assert r.status == doc.OK and "x4config.py" in r.detail, r
+
+
+def test_roots_config_env_only_is_OK(sandbox):
+    (sandbox.root / "x4-paths.env").unlink()
+    env = {k: v for k, v in os.environ.items()}
+    env.update(X4_REFERENCE=sandbox.ref.as_posix(), X4_GAME=sandbox.game.as_posix())
+    rows = {r.id: r for r in doc.check_roots(sandbox.ctx(env=env))}
+    r = rows["roots.config"]
+    assert r.status == doc.OK and "exported environment" in r.detail, r
+
+
+@pytest.mark.parametrize("exists", [True, False])
+def test_roots_config_reads_an_OLD_guard_copy_without_CFGSRC(sandbox, monkeypatch, tmp_path, exists):
+    """A 3.x deployed guard prints CFG (always the path it LOOKED for) and no CFGSRC: the
+    pre-4.0 logic still gives it a verdict."""
+    cfg = tmp_path / "old.env"
+    if exists:
+        cfg.write_text("X4_GAME=x\n", encoding="utf-8")
+    probe = {"CFG": cfg.as_posix(), "CFGSRC": "", "PY": "python", "REFERENCE": "", "GAME": ""}
+    monkeypatch.setattr(doc, "guard_probe", lambda ctx: (probe, ""))
+    r = sandbox.rows(doc.check_roots)["roots.config"]
+    assert r.status == (doc.OK if exists else doc.FAIL), r
 
 
 # --- Task 8: guard self-test -- controls that MUST deny and controls that MUST allow -- #
@@ -902,7 +974,7 @@ def oc_root(tmp_path, monkeypatch):
                         ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
     shutil.copy2(REPO / ".opencode" / "X4-OPENCODE.md", root / ".opencode" / "X4-OPENCODE.md")
     shutil.copy2(REPO / "AGENTS.md", root / "AGENTS.md")
-    _env_file(root / ".claude" / "x4-paths.env", X4_TOOLKIT=root, X4_GAME=game, X4_REFERENCE=ref)
+    _env_file(root / "x4-paths.env", X4_TOOLKIT=root, X4_GAME=game, X4_REFERENCE=ref)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.delenv("OPENCODE_CONFIG", raising=False)
     r = subprocess.run([sys.executable, str(root / ".opencode" / "hooks" / "opencode_config.py"),
@@ -958,7 +1030,7 @@ def test_a_missing_config_is_an_opencode_config_FAIL(oc_root):
 def test_a_STALE_config_is_an_opencode_config_FAIL(oc_root, tmp_path):
     moved = tmp_path / "moved-ref"
     moved.mkdir()
-    _env_file(oc_root / ".claude" / "x4-paths.env", X4_TOOLKIT=oc_root, X4_REFERENCE=moved)
+    _env_file(oc_root / "x4-paths.env", X4_TOOLKIT=oc_root, X4_REFERENCE=moved)
     r = _oc_rows(oc_root, doc.check_opencode)["opencode.config"]
     assert r.status == doc.FAIL and "stale" in r.detail, r
 

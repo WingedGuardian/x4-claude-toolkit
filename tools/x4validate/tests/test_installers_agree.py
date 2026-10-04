@@ -531,3 +531,33 @@ def test_both_installers_keep_the_codex_config_local_and_use_the_SAME_doc_cap_bo
     assert all(b_sh) and all(b_ps), "an installer lost its doc-cap bounds"
     assert [m.group(1) for m in b_sh] == [m.group(1) for m in b_ps] == ["32768", "1048576"]
     assert "--codex-doc-max-bytes)" in sh and "[string]$CodexDocMaxBytes" in ps
+
+
+# --- Plan 3 lane I: the path config at the toolkit root -------------------------------- #
+
+def _body(text: str, start: str, end_marker: str) -> str:
+    i = text.index(start)
+    j = text.index(end_marker, i + len(start))
+    return text[i:j]
+
+
+def test_both_installers_migrate_inside_the_writer_AFTER_the_dry_run_gate():
+    sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+    ps = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    sb = _body(sh, "write_paths_env() {", "\n}\n")
+    pb = _body(ps, "function Write-PathsEnv($t) {", "\n}\n")
+    assert 0 <= sb.index("refuse_if_dry_run") < sb.index("_i_migrate_paths_env"), "install.sh"
+    assert 0 <= pb.index("Refuse-IfDryRun") < pb.index("Move-ILegacyPathsEnv"), "install.ps1"
+
+
+def test_both_installers_keep_the_root_config_local():
+    sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+    ps = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    keep_sh = sh.split('X4_KEEP_LOCAL="', 1)[1].split('"', 1)[0].split()
+    copy_sh = sh.split('X4_COPY_ITEMS="', 1)[1].split('"', 1)[0].split()
+    keep_ps = ps.split("$X4KeepLocal = @(", 1)[1].split(")", 1)[0]
+    copy_ps = ps.split("$X4CopyItems = @(", 1)[1].split(")", 1)[0]
+    assert "x4-paths.env" in keep_sh and ".claude/x4-paths.env" in keep_sh, keep_sh
+    assert "'x4-paths.env'" in keep_ps and ".claude" + chr(92) + "x4-paths.env" in keep_ps, keep_ps
+    assert "x4-paths.env.example" in copy_sh, copy_sh
+    assert "'x4-paths.env.example'" in copy_ps, copy_ps

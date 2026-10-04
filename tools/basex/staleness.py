@@ -252,7 +252,7 @@ def _defaults() -> tuple[Path, list[Path], Path]:
     grammar of a measured one, which is the defect this toolkit exists to stop.
     (It also shipped a username.)
 
-    `x4validate._paths` is the ONE resolver (env var -> .claude/x4-paths.env ->
+    `x4validate._paths` is the ONE resolver (env var -> x4-paths.env ->
     project-relative). Delegating rather than copying is the same lesson as
     `_core()` above: the DLC-enumeration bug was written seven times because
     every caller rolled its own.
@@ -273,7 +273,7 @@ def _defaults() -> tuple[Path, list[Path], Path]:
     if missing:
         raise EngineUnavailable(
             f"cannot resolve {' and '.join(missing)}. Set $X4_REFERENCE / $X4_EXTENSIONS, "
-            f"or configure .claude/x4-paths.env. Refusing to guess: a fingerprint taken "
+            f"or configure x4-paths.env. Refusing to guess: a fingerprint taken "
             f"over a path that does not exist reports FRESH forever.")
     # RESOLVING is not EXISTING, and only the second one makes a fingerprint mean
     # anything. `_paths` returns a Path for any non-empty setting, so until now a typo

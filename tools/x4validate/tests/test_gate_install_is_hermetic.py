@@ -3,7 +3,7 @@
 `gate_install` / `hermetic_gate` exist so gate-logic tests RUN on a machine with no X4
 (v3.3.0 CI: 16 such tests skipped and broke the skip ceiling). They hand the fake roots
 over through the environment layer of `_paths`. If that layer ever stopped outranking
-`.claude/x4-paths.env`, a CONFIGURED machine would import the gate against the REAL
+`x4-paths.env`, a CONFIGURED machine would import the gate against the REAL
 install -- and every converted test would silently mean something different warm than
 cold. These pin that the gate saw the fake, on whatever machine runs them.
 """
