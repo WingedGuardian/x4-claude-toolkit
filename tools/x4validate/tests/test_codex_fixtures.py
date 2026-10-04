@@ -77,3 +77,18 @@ def test_fixtures_carry_exactly_the_schema_required_keys():
         assert required <= set(d) <= allowed, (p.name, set(d) ^ required)
         n += 1
     assert n >= 10, f"only {n} PreToolUse fixtures were checked"
+
+
+def test_the_output_key_contract_is_codexs_own_schema():
+    """R7-10 (v4.0.0 review): the allowed output keys were typed by hand in codex_testlib AND the
+    conformance profile. codex_testlib now READS them from the captured 0.160.0 schemas and holds
+    the profile to them (at import); this pins the other events the adapter renders, and the
+    wrapper's own allow-list, to the same source."""
+    from codex_testlib import ALLOWED_HSO, CODEX_PROFILE, REPO, schema_keys
+    assert set(CODEX_PROFILE["output"]["allowed_keys"]["/hookSpecificOutput"]) == ALLOWED_HSO
+    for ev in ("post-tool-use", "session-start"):
+        top, hso = schema_keys(ev)
+        assert "hookSpecificOutput" in top and {"hookEventName", "additionalContext"} <= hso, (ev, hso)
+    ps = (REPO / "agent" / "guards" / "adapters" / "codex-entry.ps1").read_text(encoding="utf-8")
+    allowed = set(re.findall(r"'(\w+)'", re.search(r"\$allowed = @\(([^)]*)\)", ps).group(1)))
+    assert allowed and allowed <= ALLOWED_HSO, allowed - ALLOWED_HSO
