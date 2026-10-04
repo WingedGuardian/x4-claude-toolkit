@@ -71,6 +71,38 @@ def test_the_SELFTEST_still_reproduces_the_published_v300_asset():
     assert "SELFTEST PASSED" in r.stdout
 
 
+@pytest.mark.parametrize("hostile", ["tz_utc", "eol_lf"])
+def test_the_SELFTEST_does_not_depend_on_the_builders_TZ_or_line_ending(hostile, tmp_path):
+    """The published v3.0.0 zip encodes TWO facts about the machine that built it, and the
+    selftest must pin both rather than inherit them. MEASURED 2026-10-04 (CI run 37172347642,
+    the first run with tags -- the earlier one SKIPPED this control for want of v3.0.0):
+    - TZ: a zip member's DOS timestamp is LOCAL time. TZ=UTC here reproduced the windows
+      runner's sha 7287d2ac... exactly (same size, other bytes); TZ=EST5EDT gives 273d242c....
+    - line ending: `* text=auto` checks text out with the NATIVE eol, so a Windows build wrote
+      CRLF into 37 members. Ubuntu (UTC, LF) reproduced the ubuntu runner's 6,506,664 B
+      sha 1e514962... exactly in an ubuntu:24.04 container; TZ=EST5EDT plus core.eol=crlf
+      there reproduced 273d242c....
+    One hostile axis per case, so each pin is proved separately."""
+    _needs(SCRIPT.is_file(), "no scripts/build-release.sh (dev-only script) — not checked")
+    _needs(_git("rev-parse", "-q", "--verify", "v3.0.0^{}").returncode == 0,
+           "tag v3.0.0 not present in this clone — not checked")
+    import os
+    env = dict(os.environ)
+    cfg = tmp_path / "gitconfig"
+    if hostile == "tz_utc":
+        env["TZ"] = "UTC"
+        cfg.write_text("", encoding="utf-8")
+    else:
+        env["TZ"] = "EST5EDT"
+        cfg.write_text("[core]\n\teol = lf\n\tautocrlf = false\n", encoding="utf-8")
+        env["GIT_CONFIG_NOSYSTEM"] = "1"     # a system autocrlf=true would otherwise rescue it
+    env["GIT_CONFIG_GLOBAL"] = str(cfg)
+    r = subprocess.run([_bash(), str(SCRIPT), "--selftest"], cwd=str(REPO), env=env,
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, (hostile, r.stdout + r.stderr)
+    assert "SELFTEST PASSED" in r.stdout
+
+
 def test_a_bundle_that_is_NOT_the_ref_is_REFUSED():
     """The twin, and the point of the whole script: not "did a zip appear" but "is
     what is in it what the tag says". Both directions matter -- a missing file ships a
