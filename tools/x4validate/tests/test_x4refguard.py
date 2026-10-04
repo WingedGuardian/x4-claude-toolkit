@@ -181,8 +181,8 @@ def test_UNCONFIGURED_is_exit_2_and_says_so(monkeypatch, capsys):
     rc = x4refguard.main(["status", "--json"])
     out = json.loads(capsys.readouterr().out)
     assert rc == 2 and out["state"] == "unconfigured"
-    assert x4refguard.main(["apply"]) == 2
-    assert x4refguard.main(["remove"]) == 2
+    assert x4refguard.main(["apply", "--yes"]) == 2
+    assert x4refguard.main(["remove", "--yes"]) == 2
 
 
 def test_a_paths_IMPORT_failure_is_never_unconfigured_by_accident(monkeypatch):
@@ -198,8 +198,8 @@ def test_an_unknown_platform_is_UNSUPPORTED_exit_3_never_protected(ref, monkeypa
     rc = x4refguard.main(["status", "--json"])
     out = json.loads(capsys.readouterr().out)
     assert rc == 3 and out["state"] == "unsupported"
-    assert x4refguard.main(["apply"]) == 3
-    assert x4refguard.main(["remove"]) == 3
+    assert x4refguard.main(["apply", "--yes"]) == 3
+    assert x4refguard.main(["remove", "--yes"]) == 3
 
 
 def test_status_json_is_ONE_object_even_when_refusing(monkeypatch, capsys):
@@ -308,7 +308,7 @@ def test_status_before_apply_is_ABSENT_exit_1(ref, tripwire):
 
 @win
 def test_apply_then_status_is_PROTECTED_with_the_exact_mask(protected_cleanup, tripwire):
-    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
     r = x4refguard.report()
     assert r["state"] == "protected"
     assert r["mask"] == x4refguard.EXPECTED_MASK == 65606
@@ -320,17 +320,17 @@ def test_apply_then_status_is_PROTECTED_with_the_exact_mask(protected_cleanup, t
 
 @win
 def test_apply_is_IDEMPOTENT_one_ace_no_second_write(protected_cleanup, tripwire):
-    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
     n = len(tripwire)
-    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
     assert len(tripwire) == n, "a second apply re-ran icacls"
     assert x4refguard._explicit_denies(protected_cleanup) == [x4refguard.EXPECTED_MASK]
 
 
 @win
 def test_remove_leaves_ZERO_deny_entries_anywhere(protected_cleanup, tripwire):
-    assert x4refguard.main(["apply"]) == 0
-    assert x4refguard.main(["remove"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
+    assert x4refguard.main(["remove", "--yes"]) == 0
     assert x4refguard.report(full=True)["state"] == "absent"
     objs = [protected_cleanup, *protected_cleanup.rglob("*")]
     _, items = x4refguard._acl(objs)
@@ -341,7 +341,7 @@ def test_remove_leaves_ZERO_deny_entries_anywhere(protected_cleanup, tripwire):
 
 @win
 def test_remove_when_nothing_is_applied_is_a_verified_noop(ref, tripwire):
-    assert x4refguard.main(["remove"]) == 0
+    assert x4refguard.main(["remove", "--yes"]) == 0
     assert not tripwire
 
 
@@ -349,8 +349,8 @@ def test_remove_when_nothing_is_applied_is_a_verified_noop(ref, tripwire):
 def test_a_FOREIGN_deny_is_refused_and_left_alone(protected_cleanup, tripwire, tmp_path):
     sid = x4refguard._user_sid()
     scratch_icacls(tmp_path, protected_cleanup, "/deny", "*%s:(WEA)" % sid)
-    assert x4refguard.main(["apply"]) == 2
-    assert x4refguard.main(["remove"]) == 2
+    assert x4refguard.main(["apply", "--yes"]) == 2
+    assert x4refguard.main(["remove", "--yes"]) == 2
     assert x4refguard.report()["state"] == "foreign"
     assert 16 in x4refguard._explicit_denies(protected_cleanup)    # WriteExtendedAttributes untouched
 
@@ -358,7 +358,7 @@ def test_a_FOREIGN_deny_is_refused_and_left_alone(protected_cleanup, tripwire, t
 @win
 def test_apply_REFUSES_a_root_the_user_does_not_own(protected_cleanup, tripwire, monkeypatch):
     monkeypatch.setattr(x4refguard, "_owner_is_user", lambda p: False)
-    assert x4refguard.main(["apply"]) == 2                  # the lockout precondition (x4lock history)
+    assert x4refguard.main(["apply", "--yes"]) == 2                  # the lockout precondition (x4lock history)
     assert not tripwire
 
 
@@ -419,40 +419,40 @@ def test_OWNERSHIP_the_real_setowner_command_is_accepted(tmp_path):
 @win
 def test_an_APPLY_verification_mismatch_is_exit_1_never_0(protected_cleanup, tripwire, monkeypatch):
     monkeypatch.setattr(x4refguard, "_explicit_denies", lambda *a, **k: [])   # icacls "succeeded", ACL disagrees
-    assert x4refguard.main(["apply"]) == 1
+    assert x4refguard.main(["apply", "--yes"]) == 1
     assert tripwire
 
 
 @win
 def test_a_REMOVE_verification_mismatch_is_exit_1_never_0(protected_cleanup, tripwire, monkeypatch):
-    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
     monkeypatch.setattr(x4refguard, "_explicit_denies",
                         lambda *a, **k: [x4refguard.EXPECTED_MASK])        # the deny "survives"
-    assert x4refguard.main(["remove"]) == 1
+    assert x4refguard.main(["remove", "--yes"]) == 1
 
 
 @win
 def test_remove_on_an_OLD_root_needs_our_exact_ace(protected_cleanup, tripwire, tmp_path, monkeypatch):
-    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
     new = tmp_path / "newref"
     new.mkdir()
     monkeypatch.setenv("X4_REFERENCE", str(new))
     _paths.reload()
-    assert x4refguard.main(["remove", "--path", str(protected_cleanup)]) == 0   # carries our ACE
+    assert x4refguard.main(["remove", "--yes", "--path", str(protected_cleanup)]) == 0   # carries our ACE
     other = tmp_path / "other"
     other.mkdir()
-    assert x4refguard.main(["remove", "--path", str(other)]) == 2               # carries none
+    assert x4refguard.main(["remove", "--yes", "--path", str(other)]) == 2               # carries none
 
 
 @win
 def test_PARTIAL_is_named_when_a_child_has_inheritance_cut(protected_cleanup, tripwire, tmp_path):
-    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
     child = protected_cleanup / "libraries" / "wares.xml"
     scratch_icacls(tmp_path, child, "/inheritance:r", "/grant", "*%s:F" % x4refguard._user_sid())
     r = x4refguard.report(full=True)
     assert r["state"] == "partial" and r["sample_ok"] < r["sampled"]
     assert x4refguard.main(["status"]) == 1
-    assert x4refguard.main(["apply"]) == 1          # re-applying cannot fix a cut child: never 0
+    assert x4refguard.main(["apply", "--yes"]) == 1          # re-applying cannot fix a cut child: never 0
 
 
 @win
@@ -463,7 +463,7 @@ def test_status_with_an_UNREADABLE_acl_is_error_never_absent(ref, monkeypatch):
     r = x4refguard.report()
     assert r["state"] == "error"
     assert x4refguard.main(["status"]) == 2
-    assert x4refguard.main(["apply"]) == 2
+    assert x4refguard.main(["apply", "--yes"]) == 2
 
 
 # --------------------------------------------- Task 3: the POSIX mechanism (#15)
@@ -473,12 +473,12 @@ def test_POSIX_chmod_apply_status_remove_round_trip(protected_cleanup, monkeypat
     monkeypatch.setattr(x4refguard, "_geteuid", lambda: 12345)       # force the chmod branch
     monkeypatch.setattr(x4refguard, "_owner_is_user", lambda p: True)
     assert x4refguard.report()["state"] == "absent"
-    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
     r = x4refguard.report(full=True)
     assert r["state"] == "protected" and r["mechanism"].startswith("chmod")
     assert r["sample_ok"] == r["sampled"] >= 4
     assert any("root" in g for g in r["does_not_stop"])
-    assert x4refguard.main(["remove"]) == 0
+    assert x4refguard.main(["remove", "--yes"]) == 0
     assert x4refguard.report()["state"] == "absent"
     (protected_cleanup / "libraries" / "wares.xml").write_text("ok")   # writable again
 
@@ -489,7 +489,7 @@ def test_POSIX_chmod_actually_stops_delete_and_write(protected_cleanup, monkeypa
         pytest.skip("root bypasses permission bits (a disclosed gap, not a test failure)")
     monkeypatch.setattr(x4refguard, "_geteuid", lambda: 12345)
     monkeypatch.setattr(x4refguard, "_owner_is_user", lambda p: True)
-    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
     f = protected_cleanup / "libraries" / "wares.xml"
 
     def _try(fn):
@@ -556,17 +556,17 @@ class _FakeFS:
 
 def test_FAKE_linux_as_root_uses_chattr_and_verifies(ref, monkeypatch):
     fs = _FakeFS(monkeypatch, "linux", 0, {"chattr", "lsattr"})
-    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
     assert fs.calls[0][1:] == ["-R", "+i", str(ref.resolve())]
     r = x4refguard.report()
     assert r["state"] == "protected" and r["mechanism"] == "chattr +i"
-    assert x4refguard.main(["remove"]) == 0
+    assert x4refguard.main(["remove", "--yes"]) == 0
     assert fs.calls[-1][1:] == ["-R", "-i", str(ref.resolve())]
 
 
 def test_FAKE_linux_unprivileged_falls_back_to_chmod_on_dirs_AND_files(ref, monkeypatch):
     fs = _FakeFS(monkeypatch, "linux", 1000, {"chattr", "lsattr"})
-    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
     chmodded = {c[2] for c in fs.calls if c[0] == "chmod"}
     assert str(ref.resolve()) in chmodded                                   # a directory
     assert str(ref.resolve() / "libraries" / "wares.xml") in chmodded       # a file
@@ -576,24 +576,24 @@ def test_FAKE_linux_unprivileged_falls_back_to_chmod_on_dirs_AND_files(ref, monk
 
 def test_FAKE_linux_immutable_tree_cannot_be_lifted_unprivileged(ref, monkeypatch):
     _FakeFS(monkeypatch, "linux", 0, {"chattr", "lsattr"})
-    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
     monkeypatch.setattr(x4refguard, "_geteuid", lambda: 1000)
-    assert x4refguard.main(["remove"]) == 2        # names `sudo chattr -R -i`, changes nothing
+    assert x4refguard.main(["remove", "--yes"]) == 2        # names `sudo chattr -R -i`, changes nothing
     assert x4refguard.report()["state"] == "protected"
 
 
 def test_FAKE_macos_uses_chflags_uchg(ref, monkeypatch):
     fs = _FakeFS(monkeypatch, "darwin", 501, {"chflags"})
-    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
     assert fs.calls[0][1:] == ["-R", "uchg", str(ref.resolve())]
     assert x4refguard.report()["mechanism"] == "chflags uchg"
-    assert x4refguard.main(["remove"]) == 0
+    assert x4refguard.main(["remove", "--yes"]) == 0
     assert fs.calls[-1][1:] == ["-R", "nouchg", str(ref.resolve())]
 
 
 def test_FAKE_macos_without_chflags_falls_back_to_chmod(ref, monkeypatch):
     fs = _FakeFS(monkeypatch, "darwin", 501, set())
-    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
     assert fs.calls and all(c[0] == "chmod" for c in fs.calls)
 
 
@@ -603,14 +603,14 @@ def test_FAKE_macos_without_chflags_falls_back_to_chmod(ref, monkeypatch):
 def test_FAKE_a_mechanism_that_does_not_take_is_exit_1_never_0(ref, monkeypatch, plat, euid, tools):
     fs = _FakeFS(monkeypatch, plat, euid, tools)
     fs.honour = False                                   # the tool "ran", the filesystem ignored it
-    assert x4refguard.main(["apply"]) == 1
+    assert x4refguard.main(["apply", "--yes"]) == 1
     assert fs.calls
     assert x4refguard.report()["state"] == "absent"
 
 
 def test_FAKE_a_partly_applied_tree_is_PARTIAL(ref, monkeypatch):
     fs = _FakeFS(monkeypatch, "linux", 1000, set())
-    assert x4refguard.main(["apply"]) == 0
+    assert x4refguard.main(["apply", "--yes"]) == 0
     fs.ro.discard(str(ref.resolve() / "libraries" / "wares.xml"))
     r = x4refguard.report()
     assert r["state"] == "partial" and r["sample_ok"] == r["sampled"] - 1
@@ -647,3 +647,101 @@ def test_J9_TWIN_the_child_env_drops_PSModulePath_and_the_parents_is_untouched(m
     assert not [k for k in env if k.upper() == "PSMODULEPATH"], sorted(env)
     assert env["X4_J9_KEEP"] == "kept"                  # everything else is passed through
     assert os.environ["PSModulePath"] == _PWSH7_MODULE_PATH
+
+
+# --------------------------------------------- B3 (install red-team 2026-10-04): ask first
+#
+# An apply ran >2 minutes on a 60 GB tree with no output and no question. Now: the target
+# root and an object count come FIRST, then a confirmation; --yes answers it; with neither a
+# terminal nor --yes the command refuses with exit 2 and changes nothing.
+
+def _b3_platform(monkeypatch):
+    """The POSIX chmod fallback, whatever the host OS: the confirmation sits in front of BOTH
+    mechanisms, and this one runs everywhere without an ACL."""
+    monkeypatch.setattr(x4refguard, "_platform", lambda: "linux")
+    monkeypatch.setattr(x4refguard, "_geteuid", lambda: 1000)
+    monkeypatch.setattr(x4refguard, "_owner_is_user", lambda p: True)
+    monkeypatch.setattr(x4refguard, "_which", lambda n: None)
+
+
+def test_B3_apply_without_yes_and_without_a_terminal_REFUSES_and_changes_nothing(
+        ref, monkeypatch, capsys):
+    _b3_platform(monkeypatch)
+    monkeypatch.setattr(x4refguard, "_isatty", lambda: False)
+    calls = []
+    monkeypatch.setattr(x4refguard, "_mutate_chmod", lambda p, m: calls.append(p))
+    assert x4refguard.main(["apply"]) == 2
+    err = capsys.readouterr().err
+    assert not calls, "it changed %d object(s) without confirmation" % len(calls)
+    assert str(ref.resolve()) in err and "--yes" in err, err
+    assert "4 object(s)" in err, "no object count before the question: " + err   # root, libraries, wares.xml, sentinel
+
+
+def test_B3_the_count_comes_BEFORE_the_question(ref, monkeypatch, capsys):
+    _b3_platform(monkeypatch)
+    monkeypatch.setattr(x4refguard, "_isatty", lambda: True)
+    seen = {}
+
+    def ask(prompt):
+        seen["err_so_far"] = capsys.readouterr().err
+        return "n"
+    monkeypatch.setattr(x4refguard, "_ask", ask)
+    monkeypatch.setattr(x4refguard, "_mutate_chmod", lambda p, m: pytest.fail("changed after a NO"))
+    assert x4refguard.main(["apply"]) == 2
+    assert "target: %s" % ref.resolve() in seen["err_so_far"] and "4 object(s)" in seen["err_so_far"]
+
+
+def test_B3_an_interactive_YES_proceeds(ref, monkeypatch):
+    _b3_platform(monkeypatch)
+    monkeypatch.setattr(x4refguard, "_isatty", lambda: True)
+    monkeypatch.setattr(x4refguard, "_ask", lambda prompt: "y")
+    calls = []
+    monkeypatch.setattr(x4refguard, "_mutate_chmod", lambda p, m: calls.append(p))
+    x4refguard.main(["apply"])          # verification then fails (nothing really chmodded)
+    assert len(calls) == 4, calls
+
+
+def test_B3_yes_flag_proceeds_without_asking(ref, monkeypatch):
+    _b3_platform(monkeypatch)
+    monkeypatch.setattr(x4refguard, "_isatty", lambda: True)
+    monkeypatch.setattr(x4refguard, "_ask", lambda prompt: pytest.fail("asked despite --yes"))
+    calls = []
+    monkeypatch.setattr(x4refguard, "_mutate_chmod", lambda p, m: calls.append(p))
+    x4refguard.main(["apply", "--yes"])
+    assert len(calls) == 4, calls
+
+
+def test_B3_remove_also_asks(ref, monkeypatch, capsys):
+    _b3_platform(monkeypatch)
+    monkeypatch.setattr(x4refguard, "_posix_mark", lambda root: "readonly")
+    monkeypatch.setattr(x4refguard, "_isatty", lambda: False)
+    monkeypatch.setattr(x4refguard, "_mutate_chmod", lambda p, m: pytest.fail("changed unasked"))
+    assert x4refguard.main(["remove"]) == 2
+    assert "--yes" in capsys.readouterr().err
+
+
+def test_B3_progress_lines_while_counting(ref, monkeypatch, capsys):
+    monkeypatch.setattr(x4refguard, "PROGRESS_EVERY", 2)
+    assert x4refguard._count(ref) == 4
+    assert capsys.readouterr().err.count("counting:") == 2
+
+
+def test_B3_a_long_OS_call_has_a_heartbeat(monkeypatch, capsys):
+    import time
+    monkeypatch.setattr(x4refguard, "HEARTBEAT_S", 0.05)
+    assert x4refguard._with_heartbeat("applying", lambda: time.sleep(0.3) or 7) == 7
+    assert capsys.readouterr().err.count("still applying") >= 2
+
+
+def test_C6_unconfigured_says_how_to_fix(monkeypatch, capsys):
+    monkeypatch.setattr(x4refguard, "_configured_root", lambda: None)
+    x4refguard.main(["status", "--json"])
+    detail = json.loads(capsys.readouterr().out)["detail"]
+    assert "unpack-reference.sh" in detail and "X4_REFERENCE" in detail, detail
+
+
+def test_C6_a_missing_configured_root_says_how_to_fix(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(x4refguard, "_configured_root", lambda: tmp_path / "nope")
+    x4refguard.main(["status", "--json"])
+    detail = json.loads(capsys.readouterr().out)["detail"]
+    assert "unpack-reference.sh" in detail and "X4_REFERENCE" in detail, detail

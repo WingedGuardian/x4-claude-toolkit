@@ -160,6 +160,9 @@ class Sandbox:
         self.root, self.game, self.ref, self.codex_home = root, game, ref, codex_home
 
     def ctx(self, **kw):
+        # The sandbox models an INSTALLED toolkit at the root, so the doctor acts for it (B2:
+        # a doctor acts for the toolkit it lives in; this one lives in the checkout).
+        kw.setdefault("toolkit", self.root)
         return doc.Ctx(root=self.root, **kw)
 
     def rows(self, fn):
@@ -372,7 +375,7 @@ def _pair(tmp_path, monkeypatch, src: dict, dst: dict) -> doc.Ctx:
     tk = _tree(tmp_path / "tk", src)
     root = _tree(tmp_path / "root", dst)
     monkeypatch.setenv("X4_TOOLKIT", str(tk))
-    return doc.Ctx(root=root)
+    return doc.Ctx(root=root, toolkit=tk)
 
 
 _CLAUDE = {".claude/settings.json": "{}\n", ".claude/hooks/a.sh": "echo a\n",
@@ -404,7 +407,7 @@ def test_parity_a_CRLF_only_difference_is_not_drift(tmp_path, monkeypatch):
 def test_parity_with_NO_source_is_UNKNOWN(tmp_path, monkeypatch):
     ctx = _pair(tmp_path, monkeypatch, _CLAUDE, _CLAUDE)
     monkeypatch.delenv("X4_TOOLKIT")
-    ctx = doc.Ctx(root=ctx.root)
+    ctx = doc.Ctx(root=ctx.root, toolkit=None)      # a doctor outside any toolkit, no env
     r = _prow(ctx, "parity.claude")
     assert r.status == doc.UNKNOWN and "X4_TOOLKIT" in r.detail, r
 
@@ -421,7 +424,7 @@ def test_same_tree_without_source_is_NA_never_UNKNOWN(tmp_path, monkeypatch):
     files = dict(_CLAUDE, **_RUNTIME)
     ctx = _pair(tmp_path, monkeypatch, files, files)
     monkeypatch.setenv("X4_TOOLKIT", str(ctx.root))
-    r = _prow(doc.Ctx(root=ctx.root), "parity.claude")
+    r = _prow(doc.Ctx(root=ctx.root, toolkit=ctx.root), "parity.claude")
     assert r.status == doc.NA and "deploy" in r.detail and "agent/" in r.detail, r
 
 
@@ -430,7 +433,7 @@ def test_an_installed_root_with_X4_TOOLKIT_UNSET_is_NA_too(tmp_path, monkeypatch
     files = dict(_CLAUDE, **_RUNTIME)
     ctx = _pair(tmp_path, monkeypatch, files, files)
     monkeypatch.delenv("X4_TOOLKIT")
-    r = _prow(doc.Ctx(root=ctx.root), "parity.claude")
+    r = _prow(doc.Ctx(root=ctx.root, toolkit=None), "parity.claude")
     assert r.status == doc.NA and "deploy" in r.detail, r
 
 
@@ -441,7 +444,7 @@ def test_TWIN_a_toolkit_root_WITH_an_agent_source_is_still_checked(tmp_path, mon
                                          "tools/x4validate/scripts/gen-agent-trees.py": "#\n"})
     ctx = _pair(tmp_path, monkeypatch, files, files)
     monkeypatch.setenv("X4_TOOLKIT", str(ctx.root))
-    r = _prow(doc.Ctx(root=ctx.root), "parity.claude")
+    r = _prow(doc.Ctx(root=ctx.root, toolkit=ctx.root), "parity.claude")
     assert r.status == doc.UNKNOWN and "venv" in r.detail, r
 
 
@@ -1217,3 +1220,36 @@ def test_doctor_guard_line_agrees_with_the_loader_parser(tmp_path, line):
     parser_says = any(reason == "guard" for _n, reason in ignored)
     doctor_says = f in doc.config_guard_lines_in([f])
     assert doctor_says == parser_says, (line, doctor_says, parser_says)
+
+
+
+# --- B2 (install red-team 2026-10-04): the doctor acts for the toolkit it LIVES IN -------- #
+
+def test_B2_the_default_toolkit_is_the_doctors_own_not_X4_TOOLKIT(tmp_path):
+    ctx = doc.Ctx(root=tmp_path, env={"X4_TOOLKIT": str(tmp_path / "other")})
+    assert ctx.toolkit == REPO, ctx.toolkit
+    assert str(REPO) in ctx.toolkit_note and str(tmp_path / "other") in ctx.toolkit_note
+
+
+def test_B2_TWIN_no_note_when_X4_TOOLKIT_names_the_doctors_own(tmp_path):
+    ctx = doc.Ctx(root=tmp_path, env={"X4_TOOLKIT": str(REPO)})
+    assert ctx.toolkit == REPO and ctx.toolkit_note == ""
+
+
+def test_B2_INCIDENT_a_second_installed_copy_never_compares_against_the_first(tmp_path):
+    """The red-team shape: B (an installed toolkit, runtime only) diagnosed by B's own doctor
+    while X4_TOOLKIT names A, a source tree that differs. Parity must not compare B to A."""
+    a = _tree(tmp_path / "A", dict(_CLAUDE, **{".claude/hooks/a.sh": "echo A-DIFFERS\n",
+                                                "agent/core.md": "#\n"}))
+    b = _tree(tmp_path / "B", dict(_CLAUDE, **{"tools/x4validate/x4validate/_paths.py": "#\n"}))
+    (b / "scripts").mkdir()
+    shutil.copy2(REPO / "scripts" / "x4doctor.py", b / "scripts" / "x4doctor.py")
+    env = {k: v for k, v in os.environ.items() if k not in _LEAKY}
+    env.update(X4_TOOLKIT=str(a), X4_CONFIG="", X4_REFERENCE="", PYTHONDONTWRITEBYTECODE="1")
+    r = subprocess.run([sys.executable, str(b / "scripts" / "x4doctor.py"), "--root", str(b),
+                        "--agent", "claude", "--json"], capture_output=True, text=True, env=env,
+                       timeout=300)
+    got = json.loads(r.stdout)
+    rows = {c["id"]: c for c in got["checks"]}
+    assert rows["parity.claude"]["status"] == "N/A", rows["parity.claude"]
+    assert str(a) in got.get("toolkit_note", "") and str(b) in got.get("toolkit_note", ""), got.get("toolkit_note")

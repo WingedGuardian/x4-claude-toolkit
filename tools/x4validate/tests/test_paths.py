@@ -331,7 +331,10 @@ def test_an_exported_X4_REFERENCE_still_beats_the_config_file(clean, monkeypatch
 def test_the_X4_TOOLKIT_derivation_STILL_works_when_nothing_explicit_exists(
         clean, monkeypatch):
     """The other twin: the derivation is the feature, not the bug. With no explicit
-    X4_REFERENCE anywhere, deriving from the toolkit must still answer."""
+    X4_REFERENCE anywhere, deriving from the toolkit must still answer.
+    The exported X4_TOOLKIT names the toolkit this code lives in -- the installed shape;
+    a FOREIGN one is test_toolkit_binding.py's subject (B2)."""
+    monkeypatch.setattr(_paths, "_SELF", Path(_abs("kit")))
     monkeypatch.setenv("X4_TOOLKIT", _abs("kit"))
     assert _paths.reference() == Path(_abs("kit", "reference"))
 
@@ -346,6 +349,7 @@ def test_a_fallback_X4_REFERENCE_does_not_outrank_an_exported_X4_TOOLKIT(
     The same must hold here.
     """
     monkeypatch.setattr(_paths, "_LOCAL_FALLBACK", {"X4_REFERENCE": _abs("dev-machine")})
+    monkeypatch.setattr(_paths, "_SELF", Path(_abs("kit")))     # the installed shape (B2)
     monkeypatch.setenv("X4_TOOLKIT", _abs("kit"))
     assert _paths.reference() == Path(_abs("kit", "reference")), \
         "a dev-machine fallback outranked a toolkit the user actually exported"

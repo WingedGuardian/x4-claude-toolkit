@@ -192,6 +192,9 @@ _PY = r'''
 import json, sys
 sys.path.insert(0, sys.argv[1])
 from x4validate import _paths
+from pathlib import Path
+if len(sys.argv) > 2:   # where the tools LIVE (B2): "" = outside the toolkit layout
+    _paths._SELF = Path(sys.argv[2]) if sys.argv[2] else None
 f = _paths._find_env_file(); g = _paths.game_root()
 print(json.dumps({"file": None if f is None else str(f), "state": _paths.config_state(),
                   "game": "" if g is None else g.as_posix(), "reference": str(_paths.reference())}))
@@ -199,8 +202,10 @@ print(json.dumps({"file": None if f is None else str(f), "state": _paths.config_
 
 
 def _py_view(tk, env):
-    r = subprocess.run([sys.executable, "-c", _PY, str(PKG)], capture_output=True, text=True,
-                       env=env, cwd=str(tk))
+    # The installed shape: the tools live in the toolkit X4_TOOLKIT names (B2 -- a tool acts
+    # for the toolkit it lives in; a FOREIGN X4_TOOLKIT is test_toolkit_binding.py's subject).
+    r = subprocess.run([sys.executable, "-c", _PY, str(PKG), str(tk)], capture_output=True,
+                       text=True, env=env, cwd=str(tk))
     assert r.returncode == 0, r.stderr[-400:]
     return json.loads(r.stdout.strip().splitlines()[-1])
 
@@ -274,12 +279,11 @@ def test_a_CRLF_config_gives_the_bash_loader_NO_carriage_return(tmp_path):
 
 # --- R5-7 (v4.0.0 review): X4_TOOLKIT UNSET -- two anchors, documented and pinned ----------
 #
-# With X4_TOOLKIT unset the two loaders anchor differently, BY CONSTRUCTION: a guard knows
-# where its own copy lives (CLAUDE_PROJECT_DIR, else <hooks>/../..), a Python tool knows only
-# its working directory, so it walks up from the CWD. They agree whenever the tool runs in the
-# project or below it -- the way an agent runs it -- and that agreement is pinned here. Run
-# from anywhere else, the tool reads what the walk finds there; that divergence is documented
-# in _paths and pinned below, so a change to either side shows up as a failing test.
+# With X4_TOOLKIT unset a guard anchors on where its own copy lives (CLAUDE_PROJECT_DIR, else
+# <hooks>/../..). Since B2 (install red-team 2026-10-04) a Python tool anchors on where IT
+# lives -- the toolkit holding tools/x4validate -- so in an installed toolkit the two agree
+# from ANY working directory, which closed R5-7's divergence for that shape. The CWD walk is
+# left only for code outside the toolkit layout (`_SELF` None), pinned below.
 
 def _unset_box(tmp_path):
     tk = tmp_path / "tk"
@@ -302,9 +306,9 @@ def _bash_in(tk, env, cwd):
     return f, g
 
 
-def _py_in(env, cwd):
-    r = subprocess.run([sys.executable, "-c", _PY, str(PKG)], capture_output=True, text=True,
-                       env=env, cwd=str(cwd))
+def _py_in(env, cwd, self_root=""):
+    r = subprocess.run([sys.executable, "-c", _PY, str(PKG), str(self_root)], capture_output=True,
+                       text=True, env=env, cwd=str(cwd))
     assert r.returncode == 0, r.stderr[-400:]
     return json.loads(r.stdout.strip().splitlines()[-1])
 
@@ -312,14 +316,26 @@ def _py_in(env, cwd):
 def test_UNSET_toolkit_a_tool_run_IN_the_project_agrees_with_the_guards(tmp_path):
     tk, env = _unset_box(tmp_path)
     bf, bg = _bash_in(tk, env, tk)
-    p = _py_in(env, tk / "sub" / "deeper")          # the walk climbs to the project root
+    p = _py_in(env, tk / "sub" / "deeper")          # outside the layout: the walk climbs
     assert _n(bf) == _n(p["file"]) == _n(tk / NEW), (bf, p)
     assert _n(bg) == _n(p["game"]) == _n("/xgame/project"), (bg, p)
 
 
+def test_UNSET_toolkit_an_INSTALLED_tool_run_ELSEWHERE_still_agrees_B2(tmp_path):
+    """B2: a tool living in the toolkit reads THAT toolkit's config from any working
+    directory -- the guard and the tool agree even run from elsewhere."""
+    tk, env = _unset_box(tmp_path)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    bf, _ = _bash_in(tk, env, outside)
+    p = _py_in(env, outside, self_root=tk)
+    assert _n(bf) == _n(p["file"]) == _n(tk / NEW), (bf, p)
+
+
 def test_UNSET_toolkit_a_tool_run_ELSEWHERE_reads_what_its_walk_finds_DOCUMENTED(tmp_path):
-    """The documented divergence: the guard still reads its project's config; the tool, run
-    outside the project, does not see it. Set X4_TOOLKIT (the installers do) to remove it."""
+    """Code OUTSIDE the toolkit layout (no own toolkit) keeps the documented divergence: the
+    guard still reads its project's config; the tool, run outside the project, does not see
+    it. Set X4_TOOLKIT (the installers do) to remove it."""
     tk, env = _unset_box(tmp_path)
     outside = tmp_path / "elsewhere"
     outside.mkdir()

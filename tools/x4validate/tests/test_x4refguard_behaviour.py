@@ -142,7 +142,7 @@ def protected(tmp_path, monkeypatch):
     monkeypatch.setenv("X4_REFERENCE", str(root))
     _paths.reload()
     try:
-        assert x4refguard.main(["apply"]) == 0
+        assert x4refguard.main(["apply", "--yes"]) == 0
         assert x4refguard.report()["state"] == "protected"
         yield root
     finally:
@@ -202,9 +202,9 @@ def test_apply_and_remove_move_no_mtime_or_size(tmp_path, monkeypatch):   # the 
     monkeypatch.setenv("X4_REFERENCE", str(root))
     _paths.reload()
     try:
-        assert x4refguard.main(["apply"]) == 0
+        assert x4refguard.main(["apply", "--yes"]) == 0
         mid = stamp()
-        assert x4refguard.main(["remove"]) == 0
+        assert x4refguard.main(["remove", "--yes"]) == 0
     finally:
         _reset(tmp_path, root)
         _paths.reload()

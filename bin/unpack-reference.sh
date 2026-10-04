@@ -8,6 +8,42 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# WHICH TOOLKIT (B2, install red-team 2026-10-04). This script acts for the toolkit it LIVES
+# IN (or --toolkit DIR). An inherited $X4_TOOLKIT naming another toolkit made a second copy's
+# x4refguard target the first copy's REAL reference tree; here it would also unpack into the
+# other toolkit's X4_REFERENCE. So a foreign $X4_TOOLKIT gets one line naming both roots and
+# a REFUSAL unless --toolkit names the toolkit explicitly (the installers always pass it).
+ACT_TK="$(cd "$HERE/.." && pwd)"
+EXPLICIT_TK=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --toolkit)
+      [ $# -ge 2 ] && ACT_TK="$(cd "$2" 2>/dev/null && pwd)" \
+        || { echo "ERROR: --toolkit needs an existing directory (got '${2:-}')" >&2; exit 2; }
+      EXPLICIT_TK=1; shift 2 ;;
+    -h|--help)
+      echo "usage: bash bin/unpack-reference.sh [--toolkit DIR]"
+      echo "  Unpacks the base game + DLC text into X4_REFERENCE, then protects it (x4refguard)."
+      echo "  --toolkit DIR  act for this toolkit's x4-paths.env (default: the toolkit this"
+      echo "                 script lives in; REQUIRED when \$X4_TOOLKIT names a different one)"
+      exit 0 ;;
+    *) echo "ERROR: unknown argument '$1' (see --help)" >&2; exit 2 ;;
+  esac
+done
+_x4_lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+if [ -n "${X4_TOOLKIT:-}" ]; then
+  _x4_env_tk="$(cd "$X4_TOOLKIT" 2>/dev/null && pwd || printf '%s' "$X4_TOOLKIT")"
+  if [ "$(_x4_lc "$_x4_env_tk")" != "$(_x4_lc "$ACT_TK")" ]; then
+    echo "x4 toolkit: acting for $ACT_TK; \$X4_TOOLKIT names a different toolkit, $X4_TOOLKIT, which is NOT used here." >&2
+    if [ "$EXPLICIT_TK" != 1 ]; then
+      echo "REFUSED: the unpack writes the reference tree and protects it, and \$X4_TOOLKIT names $X4_TOOLKIT while this script lives in $ACT_TK. Nothing was changed. To act for THIS toolkit: bash bin/unpack-reference.sh --toolkit \"$ACT_TK\"" >&2
+      exit 2
+    fi
+  fi
+fi
+export X4_TOOLKIT="$ACT_TK"
+
 # X4_GAME, X4_REFERENCE, X4_TOOLKIT -- from whichever guard copy is installed. An
 # `install --agent codex` has .codex/hooks/ and no .claude/hooks/ (a byte-identical copy
 # of the same file), so naming one location killed --unpack in every Codex-only install --
@@ -36,7 +72,7 @@ x4_resolve_python                            # sets X4_PY (empty if none)
 # matters (after the unpack), not turned into a refusal here.
 x4_refguard_state() {
   [ -n "$X4_PY" ] || return 0
-  X4_REFERENCE="$REF" "$X4_PY" "$REFGUARD" status --json 2>/dev/null \
+  X4_REFERENCE="$REF" "$X4_PY" "$REFGUARD" status --json --toolkit "$ACT_TK" 2>/dev/null \
     | grep -oE '"state": "[a-z]+"' | head -1 | sed -E 's/.*"([a-z]+)"$/\1/' || true
 }
 x4_lift_steps() {
@@ -208,11 +244,15 @@ echo "DONE: $NFILES files, $(du -sh "$REF" | cut -f1)"
 # second one is not true. Exit 3 is a platform with no mechanism: disclosed, not failed.
 if [ -z "$X4_PY" ]; then
   echo "Layer 2: FAILED -- no python found to run x4refguard.py, so reference/ is NOT OS-protected." >&2
-  echo "  The unpack itself is complete. Install python, then: python scripts/x4refguard.py apply" >&2
+  echo "  The unpack itself is complete. Install python, then: python scripts/x4refguard.py apply --yes" >&2
   exit 1
 fi
+# --yes (B3): x4refguard asks before an apply, and refuses when nobody can answer. The user
+# ran THIS script, whose stated job (header, README) includes protecting the tree it has just
+# unpacked and counted above -- and its `--unpack` caller is non-interactive -- so the
+# confirmation is given here, for exactly this tree (X4_REFERENCE is pinned to $REF).
 set +e
-X4_REFERENCE="$REF" "$X4_PY" "$REFGUARD" apply
+X4_REFERENCE="$REF" "$X4_PY" "$REFGUARD" apply --yes --toolkit "$ACT_TK"
 L2RC=$?
 set -e
 case "$L2RC" in
@@ -220,6 +260,6 @@ case "$L2RC" in
   3) echo "Layer 2: not available on this OS (disclosed gap; see README)" ;;
   *) echo "Layer 2: FAILED (x4refguard.py apply exit $L2RC) -- reference/ is NOT confirmed protected." >&2
      echo "  The unpack itself is complete and stays on disk. Fix the cause above, then:" >&2
-     echo "  python scripts/x4refguard.py apply   (from $TKDIR)" >&2
+     echo "  python scripts/x4refguard.py apply --yes   (from $TKDIR)" >&2
      exit 1 ;;
 esac

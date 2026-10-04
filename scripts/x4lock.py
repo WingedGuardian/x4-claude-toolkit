@@ -75,6 +75,10 @@ USAGE
     python scripts/x4lock.py unlock --all      unlock everything
     python scripts/x4lock.py protected <path>  exit 0 if it is in the manifest (for the guards)
 
+    Every subcommand takes --toolkit DIR. Default: the toolkit this script LIVES IN (B2,
+    install red-team 2026-10-04); lock/unlock REFUSE (exit 2) while $X4_TOOLKIT names a
+    different toolkit unless --toolkit is given.
+
 The manifest is derived from the configured roots, never hard-coded to one machine, and
 is extended by `X4_PROTECTED` (an os.pathsep-separated list) for anything site-specific.
 """
@@ -619,7 +623,27 @@ def main(argv=None) -> int:
     un.add_argument("--all", action="store_true")
     pr = sub.add_parser("protected", help="exit 0 if PATH is in the manifest, 1 if not (for the guards)")
     pr.add_argument("path")
+    for p in sub.choices.values():
+        p.add_argument("--toolkit", metavar="DIR",
+                       help="act for this toolkit's configuration. Default: the toolkit this "
+                            "script lives in; REQUIRED for lock/unlock when $X4_TOOLKIT names "
+                            "a different one")
     args = ap.parse_args(argv)
+    # B2 (install red-team 2026-10-04): act for the toolkit this script LIVES IN; a lock or an
+    # unlock while $X4_TOOLKIT names another toolkit needs that choice made explicitly.
+    if _paths is not None:
+        if getattr(args, "toolkit", None):
+            if not Path(args.toolkit).is_dir():
+                print("REFUSING: --toolkit %s is not a directory" % args.toolkit, file=sys.stderr)
+                return 2
+            _paths.use_toolkit(args.toolkit)
+        else:
+            _paths.toolkit_notice()
+            if args.cmd in ("lock", "unlock"):
+                refusal = _paths.foreign_toolkit_refusal("x4lock " + args.cmd)
+                if refusal:
+                    print(refusal, file=sys.stderr)
+                    return 2
     try:
         if args.cmd == "protected":
             return cmd_protected(args)

@@ -74,11 +74,16 @@ def _env(tmp_path, ref, **kw):
     return env
 
 
-def _run(env, ref):
+def _run(env, ref, *args, explicit=True):
+    """The installer's shape: it names the toolkit it installs (`--toolkit`), because the
+    script acts for the toolkit it LIVES in and refuses a foreign $X4_TOOLKIT otherwise (B2)."""
     b = gitbash.find_bash()
     if not b:
         pytest.skip("no Git Bash")
-    r = subprocess.run([b, str(UNPACK)], env=env, capture_output=True, text=True, errors="replace")
+    if explicit and env.get("X4_TOOLKIT") and "--toolkit" not in args:
+        args = ("--toolkit", env["X4_TOOLKIT"], *args)
+    r = subprocess.run([b, str(UNPACK), *args], env=env, capture_output=True, text=True,
+                       errors="replace")
     m = re.search(r"^Reference: (.*)$", r.stdout, re.M)
     if m:   # the banner is printed only once the script gets past its refusals
         assert os.path.normcase(m.group(1).strip().replace("/", os.sep)) == \
@@ -87,6 +92,8 @@ def _run(env, ref):
 
 
 def _guard(env, *args):
+    if args and args[0] in ("apply", "remove"):     # B3 confirmation; B2 explicit toolkit
+        args = (*args, "--yes", "--toolkit", env["X4_TOOLKIT"])
     return subprocess.run([sys.executable, str(GUARD), *args], env=env, capture_output=True,
                           text=True, errors="replace")
 
@@ -256,3 +263,38 @@ def test_TWIN_an_ABSENT_layer2_on_an_existing_tree_still_unpacks(tmp_path):
     r = _run(env, ref)
     assert "REFUSING" not in r.stderr, r.stdout + r.stderr
     assert (ref / "libraries" / "f1.xml").exists()
+
+
+# --------------------------------------------- B2 (install red-team 2026-10-04)
+
+def test_B2_a_FOREIGN_X4_TOOLKIT_without_toolkit_REFUSES_before_writing(tmp_path):
+    ref = tmp_path / "reference"
+    env = _env(tmp_path, ref)                  # X4_TOOLKIT = tmp/toolkit, not this checkout
+    r = _run(env, ref, explicit=False)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "--toolkit" in r.stderr and str(REPO.name) in r.stderr, r.stderr
+    assert not ref.exists(), "it unpacked anyway"
+
+
+def test_B2_TWIN_X4_TOOLKIT_naming_this_toolkit_is_not_refused(tmp_path):
+    ref = tmp_path / "reference"
+    env = _env(tmp_path, ref, X4_TOOLKIT=str(REPO))
+    try:
+        r = _run(env, ref, explicit=False)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "--toolkit" not in r.stderr, r.stderr
+    finally:
+        _unprotect(tmp_path, ref)
+
+
+def test_B3_the_unpack_confirms_its_own_apply_with_yes(tmp_path):
+    """The user ran the unpack, whose job includes protecting the tree it just counted; it
+    passes --yes so its apply never blocks on a question nobody can answer (B3)."""
+    ref = tmp_path / "reference"
+    stub = tmp_path / "stubguard.py"
+    stub.write_text("import sys\nprint(' '.join(sys.argv[1:]))\nsys.exit(0)\n", encoding="utf-8")
+    env = _env(tmp_path, ref, X4_REFGUARD_SCRIPT=str(stub))
+    r = _run(env, ref)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert any(ln.startswith("apply") and "--yes" in ln and "--toolkit" in ln
+               for ln in r.stdout.splitlines()), r.stdout

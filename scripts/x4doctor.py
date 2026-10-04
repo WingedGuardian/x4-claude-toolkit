@@ -67,17 +67,49 @@ class Check:
     detail: str
 
 
+#: Ctx(toolkit=...) default: the toolkit this doctor LIVES IN (B2). Pass None for "no toolkit".
+AUTO = object()
+
+
+def own_toolkit() -> Path | None:
+    """The toolkit this doctor ships in, or None outside the toolkit layout."""
+    tk = HERE.parent
+    return tk if (tk / "tools" / "x4validate" / "x4validate" / "_paths.py").is_file() else None
+
+
+def _same_dir(a, b) -> bool:
+    try:
+        return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+    except OSError:
+        return os.path.normcase(str(a)) == os.path.normcase(str(b))
+
+
 @dataclass
 class Ctx:
+    """`toolkit` is the toolkit this doctor acts for: --toolkit, else the one it LIVES IN (B2,
+    install red-team 2026-10-04: an inherited X4_TOOLKIT naming another copy made a second
+    toolkit's parity row compare against the FIRST toolkit's source). $X4_TOOLKIT decides only
+    when the doctor lives outside the toolkit layout. The guard probes still run with the real
+    environment: what the guards at the root read is the thing being diagnosed."""
     root: Path
-    toolkit: Path | None = None
+    toolkit: object = AUTO
     env: dict = field(default_factory=lambda: dict(os.environ))
     targets: dict = field(default_factory=dict)
+    toolkit_note: str = ""
 
     def __post_init__(self):
         self.root = Path(self.root)
-        if self.toolkit is None and self.env.get("X4_TOOLKIT"):
-            self.toolkit = Path(self.env["X4_TOOLKIT"])
+        if self.toolkit is AUTO:
+            self.toolkit = own_toolkit()
+            if self.toolkit is None and self.env.get("X4_TOOLKIT"):
+                self.toolkit = Path(self.env["X4_TOOLKIT"])
+        elif self.toolkit is not None:
+            self.toolkit = Path(self.toolkit)
+        env_tk = self.env.get("X4_TOOLKIT")
+        if env_tk and self.toolkit is not None and not _same_dir(env_tk, self.toolkit):
+            self.toolkit_note = ("acting for toolkit %s; $X4_TOOLKIT names a different toolkit, %s, "
+                                 "which this doctor does NOT use (the guards at the root still read "
+                                 "whatever their own environment names)" % (self.toolkit, env_tk))
         if not self.targets:
             self.targets = detect_targets(self.root)
 
@@ -398,6 +430,8 @@ _PY_ROOTS = r'''
 import json, sys
 sys.path.insert(0, sys.argv[1])
 from x4validate import _paths
+if len(sys.argv) > 2 and sys.argv[2] and hasattr(_paths, "use_toolkit"):
+    _paths.use_toolkit(sys.argv[2])                  # the doctor's toolkit, explicitly (B2)
 out = {}
 for k in ("game_root", "reference", "profile", "_find_env_file"):
     try:
@@ -421,7 +455,8 @@ def tools_roots(ctx: Ctx) -> tuple[dict | None, str]:
     for base in (ctx.toolkit, ctx.root, HERE.parent):
         if base and (Path(base) / "tools" / "x4validate" / "x4validate" / "_paths.py").is_file():
             pkg = Path(base) / "tools" / "x4validate"
-            r = _run([sys.executable, "-c", _PY_ROOTS, str(pkg)], env=dict(ctx.env), cwd=str(ctx.root))
+            r = _run([sys.executable, "-c", _PY_ROOTS, str(pkg), str(ctx.toolkit or "")],
+                     env=dict(ctx.env), cwd=str(ctx.root))
             try:
                 return json.loads(r.stdout.strip().splitlines()[-1]), str(pkg)
             except (ValueError, IndexError):
@@ -1041,6 +1076,8 @@ spec = importlib.util.spec_from_file_location("x4lock_probe", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 sys.modules["x4lock_probe"] = m
 spec.loader.exec_module(m)
+if len(sys.argv) > 2 and sys.argv[2] and hasattr(getattr(m, "_paths", None), "use_toolkit"):
+    m._paths.use_toolkit(sys.argv[2])                # the doctor's toolkit, explicitly (B2)
 try:
     items, gone = m.manifest(), m.missing()
 except m.Unresolvable as e:
@@ -1058,8 +1095,8 @@ def _x4lock_answer(ctx: Ctx) -> tuple[dict | None, str]:
     for base in (ctx.root, ctx.toolkit, HERE.parent):
         p = Path(base) / "scripts" / "x4lock.py" if base else None
         if p and p.is_file():
-            r = _run([sys.executable, "-c", _PY_LOCK, str(p)], env=dict(ctx.env), cwd=str(ctx.root),
-                     timeout=120)
+            r = _run([sys.executable, "-c", _PY_LOCK, str(p), str(ctx.toolkit or "")],
+                     env=dict(ctx.env), cwd=str(ctx.root), timeout=120)
             try:
                 got = json.loads(r.stdout.strip().splitlines()[-1])
             except (ValueError, IndexError):
@@ -1437,10 +1474,13 @@ def render_text(ctx: Ctx, rows: list[Check], code: int, elapsed: float) -> str:
     present = [t for t in TARGETS if ctx.targets.get(t)]
     out = ["x4doctor: %s" % _verdict(code),
            "  root:    %s" % ctx.root,
+           "  toolkit: %s" % (ctx.toolkit or "(none)"),
            "  targets: %s" % (", ".join(present) or "NONE (no .claude/settings.json, .codex/hooks, .agents/skills or .opencode/plugins/x4guard.js here)"),
            "  checked: %d row(s) in %.1fs -- %s" % (
                len(rows), elapsed,
                ", ".join("%d %s" % (sum(r.status == s for r in rows), s) for s in STATUSES))]
+    if ctx.toolkit_note:
+        out.append("  note:    " + ctx.toolkit_note)
     if ctx.targets.get("generic"):
         out.append("  note:    a GENERIC agent runs no hooks here (by design, spec D13): nothing enforces "
                    "the guards for it; only x4lock and the OS-level reference protection apply")
@@ -1459,6 +1499,8 @@ def main(argv=None) -> int:
     ap.add_argument("--root", help="the folder an agent runs in (default: nearest ancestor holding a target)")
     ap.add_argument("--agent", help="report only this target: " + ", ".join(TARGETS))
     ap.add_argument("--json", action="store_true", help="one JSON document on stdout")
+    ap.add_argument("--toolkit", metavar="DIR",
+                    help="the toolkit to compare and ask (default: the one this doctor lives in)")
     try:
         a = ap.parse_args(argv)
     except SystemExit as e:
@@ -1467,7 +1509,7 @@ def main(argv=None) -> int:
         print("x4doctor: COULD NOT RUN -- unknown --agent %r (one of: %s)" % (a.agent, ", ".join(TARGETS)))
         return 2
     root = Path(a.root).resolve() if a.root else default_root(Path.cwd())
-    ctx = Ctx(root=root)
+    ctx = Ctx(root=root, toolkit=Path(a.toolkit).resolve() if a.toolkit else AUTO)
     t0 = time.monotonic()
     rows = collect(ctx, a.agent) if any(ctx.targets.values()) else []
     elapsed = time.monotonic() - t0
@@ -1477,6 +1519,8 @@ def main(argv=None) -> int:
                           "targets": {t: ("present" if ctx.targets.get(t) else "absent") for t in TARGETS},
                           "checks": [asdict(r) for r in rows],
                           "summary": _verdict(code), "exit": code,
+                          "toolkit": str(ctx.toolkit) if ctx.toolkit else None,
+                          "toolkit_note": ctx.toolkit_note,
                           "elapsed_s": round(elapsed, 2)}, indent=1))
     else:
         sys.stdout.write(render_text(ctx, rows, code, elapsed))
