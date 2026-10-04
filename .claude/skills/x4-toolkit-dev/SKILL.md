@@ -7,7 +7,7 @@ description: Use when working ON the X4 toolkit itself: editing tools/, gates/, 
 
 # Working ON the toolkit (maintainer guidance)
 
-Relocated verbatim from the project instructions (CLAUDE.md / AGENTS.md), which must fit
+Relocated verbatim from the project instructions (built from `agent/instructions/`), which must fit
 Codex's 32,768-byte AGENTS.md limit. A player or modder using the tools does not need it;
 anyone changing them does.
 
@@ -81,7 +81,7 @@ never a PASS, and the gate refuses to run against a stale store.
 
 ## Memory and loaded context are LEADS, not facts
 
-**Memory files are NOT durable — anything essential goes in `CLAUDE.md` or `KNOWLEDGEBASE.md`.**
+**Memory files are NOT durable — anything essential goes in the project instructions (`agent/instructions/`) or `KNOWLEDGEBASE.md`.**
 Memory is a convenience index, and **the one artifact class with no freshness signal at all**,
 while being consulted FIRST: a line reading *"still X"*, *"not yet done"* or *"pending"* reports
 success indefinitely. The fingerprint above exists because an artifact can be fresh by its own
@@ -95,7 +95,7 @@ checking whether it is already made**. When you correct such a line, mark the ol
 the change.
 
 ★★ **And your loaded context is a snapshot of a file that has since moved.** On a long session
-with concurrent writers, `CLAUDE.md`, `MEMORY.md` and every memory file were read **once, at
+with concurrent writers, the project instructions and every memory file were read **once, at
 session start**. A peer once asserted a release was on hold while the record on disk already said
 SUPERSEDED — nothing was stale on disk, the READER was. Before asserting anything load-bearing
 from memory — especially a *hold*, a *decision*, a *"not yet done"* — **re-read the file, not
@@ -184,20 +184,28 @@ own content, so same-day writers cannot collide. Existing `#N` entries stay as c
 # Working in the toolkit repo
 
 **Edit hooks in `agent/guards/claude-hooks/`, regenerate, then run
-`bash scripts/test-hooks.sh`.** `.claude/hooks/` is generated. Tests do not prove host enforcement.
+`bash scripts/test-hooks.sh`.** Every agent's hook folder is a generated copy. Tests do not
+prove host enforcement.
 
 ## Edit `agent/`, never the generated files
 
-`CLAUDE.md`, `AGENTS.md` and `.claude/` (agents, skills, `settings.json`, hooks; not the
-per-machine `x4-paths.env*`, `settings.local.json` or `backups/`) are **generated** from `agent/`:
+These paths are **generated** from `agent/` (the generator renders this list from its own
+`OWNED` tuple, so it cannot drift): `CLAUDE.md`, `AGENTS.md`, `.claude/agents/`, `.claude/skills/`, `.claude/settings.json`, `.claude/hooks/`, `.agents/skills/`, `.codex/hooks/`, `.codex/rules/`, `.opencode/hooks/`, `.opencode/plugins/x4guard.js`, `.opencode/skills/`, `.opencode/X4-OPENCODE.md`. Not generated, and never written
+by the generator: the per-machine path config `x4-paths.env` (at the toolkit root since 4.0;
+the 3.x location is still read, with a notice),
+`settings.local.json`, the `backups/` folder, and the Codex `hooks.json` (the installers and
+`deploy-claude-dir.py` render it per install from `agent/targets/codex/hooks.json.tmpl`).
 
-- hook scripts: `agent/guards/claude-hooks/`
+- hook scripts: `agent/guards/claude-hooks/`, plus the adapters in `agent/guards/adapters/`
 - skills: `agent/skills/<name>/` (skill bodies name the toolkit root through a `TOOLKIT`
-  placeholder in double curly braces, which the generator renders; keep it, and never write
-  an agent-specific variable there instead)
-- subagents: `agent/agents/<name>/`
-- `CLAUDE.md`: `agent/instructions/core.md` + the addendum `agent/instructions/claude.md`
-- `AGENTS.md`: `agent/instructions/core.md` + the addendum `agent/instructions/codex.md`
+  placeholder in double curly braces, which the generator renders per agent; keep it, and
+  never write an agent-specific variable there instead)
+- subagents: `agent/agents/<name>/` (`agent.yaml` keys outside the known set refuse)
+- each entry file: `agent/instructions/core.md` + that agent's addendum
+  `agent/instructions/<agent>.md` (`claude.md`, `codex.md`; OpenCode's `opencode.md` becomes
+  `.opencode/X4-OPENCODE.md`)
+- Codex rules: `agent/rules/codex-rules.yaml`; per-agent files (hook settings, the OpenCode
+  plugin, the Codex hooks template): `agent/targets/<agent>/`
 
 After editing, regenerate:
 
