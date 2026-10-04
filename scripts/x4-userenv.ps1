@@ -3,6 +3,10 @@
   installers (install.ps1 calls it in-process; install.sh calls it through powershell.exe).
 
     x4-userenv.ps1 get              print the persisted user value (nothing if unset); rc 0
+    x4-userenv.ps1 get-machine      print the MACHINE-scope value (HKLM; nothing if unset);
+                                    read-only. A machine value is what every user inherits
+                                    when they have none, so a user value beside a different
+                                    one is a SECOND, conflicting value (v4.0.0 review R4-3)
     x4-userenv.ps1 set  <value>     persist it for the user, then read it back;   rc 0 / 1
     x4-userenv.ps1 unset            remove it (the undo for `set`);                 rc 0 / 1
     -Name <NAME>                    the variable (default X4_TOOLKIT)
@@ -17,7 +21,8 @@
 
   TEST SEAM, not a feature: X4_INSTALL_ENV_REGKEY names a registry key to use INSTEAD of
   HKCU\Environment. It must lie under HKCU\Software\X4ToolkitTests\ -- anything else is
-  REFUSED (rc 2), so the seam can never be aimed at a real environment.
+  REFUSED (rc 2), so the seam can never be aimed at a real environment. Under the seam the
+  machine scope is read from `<seam>\Machine`, never from HKLM.
 
   Exit codes: 0 ok, 1 the write or read-back failed, 2 usage / refused seam / not Windows.
 #>
@@ -37,7 +42,7 @@ function Fail($rc, $msg) { [Console]::Error.WriteLine('x4-userenv: ' + $msg); ex
 
 $onWindows = ($PSVersionTable.PSEdition -ne 'Core') -or $IsWindows
 if (-not $onWindows) { Fail 2 'the user environment lives in the registry on Windows only' }
-if ($Action -notin @('get', 'set', 'unset')) { Fail 2 'usage: x4-userenv.ps1 get | set <value> | unset  [-Name NAME]' }
+if ($Action -notin @('get', 'get-machine', 'set', 'unset')) { Fail 2 'usage: x4-userenv.ps1 get | get-machine | set <value> | unset  [-Name NAME]' }
 if ($Name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { Fail 2 ('not a variable name: ' + $Name) }
 
 $seam = $env:X4_INSTALL_ENV_REGKEY
@@ -59,7 +64,23 @@ function Get-Persisted {
   return [Environment]::GetEnvironmentVariable($Name, 'User')
 }
 
+function Get-Machine {
+  if ($key) {
+    $mk = $key + [char]92 + 'Machine'
+    if (-not (Test-Path -LiteralPath $mk)) { return $null }
+    $p = Get-ItemProperty -LiteralPath $mk -Name $Name -ErrorAction SilentlyContinue
+    if ($null -eq $p) { return $null }
+    return [string]$p.$Name
+  }
+  return [Environment]::GetEnvironmentVariable($Name, 'Machine')
+}
+
 switch ($Action) {
+  'get-machine' {
+    $v = Get-Machine
+    if ($v) { Write-Output $v }
+    exit 0
+  }
   'get' {
     $v = Get-Persisted
     if ($v) { Write-Output $v }

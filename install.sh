@@ -1866,12 +1866,33 @@ _h_profile_value() {   # FILE
   printf '%s' "$v"
 }
 
+#: EVERY startup file an X4_TOOLKIT export could already live in (v4.0.0 review R4-3: only
+#: the one this installer would write was read, so an export in another one -- a login
+#: shell's ~/.profile, Git Bash's ~/.bashrc on Windows -- was invisible, and a SECOND,
+#: conflicting value was written). Windows: Git Bash's own files.
+_h_profile_files() {
+  if [ "$OS" = windows ]; then
+    printf '%s\n' "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"
+  else
+    printf '%s\n' "${ZDOTDIR:-$HOME}/.zshenv" "${ZDOTDIR:-$HOME}/.zprofile" "${ZDOTDIR:-$HOME}/.zshrc" \
+      "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.bashrc"
+  fi
+}
+
 #: THE DECISION, one function read by the dry-run line and the writer. Prints one line:
-#: `set` | `same` | `different<TAB>OLD` | `skip<TAB>WHY` | `fail<TAB>WHY`.
+#: `set` | `same` | `different<TAB>FOUND` | `skip<TAB>WHY` | `fail<TAB>WHY`, where FOUND is
+#: EVERY existing value, `VALUE (WHERE)` joined by `; ` -- all of them, not the first.
+#: Nothing is written beside a value that differs: which one a terminal then sees depends on
+#: how it was started.
 _h_userenv_plan() {   # TOOLKIT
-  local v old f rc=0 tab
+  local v old f rc=0 tab found="" diff=0 pf
   tab="$(printf '\t')"
   v="$(_h_native_path "$1")"
+  _h_found() {   # VALUE WHERE
+    [ -n "$1" ] || return 0
+    found="$found${found:+; }$1 ($2)"
+    _h_same_path "$1" "$v" || diff=1
+  }
   if [ "$OS" = windows ]; then
     old="$(_h_win_userenv get)" || rc=$?
     case "$rc" in
@@ -1880,17 +1901,28 @@ _h_userenv_plan() {   # TOOLKIT
       4) printf 'fail%sthe source has no %s' "$tab" "$X4_USERENV_PS1"; return 0 ;;
       *) printf 'fail%s%s get failed' "$tab" "$X4_USERENV_PS1"; return 0 ;;
     esac
+    _h_found "$old" "your user environment"
+    old="$(_h_win_userenv get-machine)" || { printf 'fail%s%s get-machine failed' "$tab" "$X4_USERENV_PS1"; return 0; }
+    _h_found "$old" "the machine environment"
   else
     if ! f="$(_h_profile_file)"; then
       printf 'skip%syour shell (%s) is not bash or zsh, so no startup file is edited' "$tab" "${SHELL:-unset}"
       return 0
     fi
-    old="$(_h_profile_value "$f")" || old=""
-    [ -n "$old" ] || old="$X4_H_INHERITED_TOOLKIT"
   fi
-  if [ -z "$old" ]; then printf 'set'
-  elif _h_same_path "$old" "$v"; then printf 'same'
-  else printf 'different%s%s' "$tab" "$old"; fi
+  while IFS= read -r pf; do
+    [ -n "$pf" ] || continue
+    old="$(_h_profile_value "$pf")" || old=""
+    _h_found "$old" "$pf"
+  done <<EOF_PROFILES
+$(_h_profile_files)
+EOF_PROFILES
+  if [ "$OS" != windows ] && [ -z "$found" ]; then
+    _h_found "$X4_H_INHERITED_TOOLKIT" "this shell's environment"
+  fi
+  if [ -z "$found" ]; then printf 'set'
+  elif [ "$diff" = 0 ]; then printf 'same'
+  else printf 'different%s%s' "$tab" "$found"; fi
 }
 
 #: The dry-run preview, from the same decision.

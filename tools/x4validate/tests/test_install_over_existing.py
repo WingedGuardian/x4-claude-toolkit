@@ -2340,6 +2340,64 @@ def test_a_DIFFERENT_existing_value_is_REPORTED_and_LEFT(installer, tmp_path, re
     assert r"D:\elsewhere" in r.stdout and "Left unchanged" in r.stdout, _ok(r)
 
 
+# --- R4-3 (v4.0.0 review): EVERY place an X4_TOOLKIT already lives is read --------------
+#
+# The check read ONE place: HKCU on Windows, the one startup file the shell would get on
+# POSIX. A MACHINE-level value (HKLM) or a Git Bash ~/.bashrc export was invisible, and the
+# installer then wrote a SECOND, conflicting value -- which one a given terminal sees depends
+# on how it was started. Now every source found is reported and nothing is written beside a
+# different one. Under the test seam the machine scope is `<seam>\Machine`.
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_different_MACHINE_value_is_REPORTED_and_no_user_value_is_written(installer, tmp_path, regkey):
+    _reg_set(regkey + "\\Machine", r"D:\machine-wide")
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert _reg_get(regkey) is None, "a SECOND, conflicting user value was written"
+    assert r"D:\machine-wide" in r.stdout and "Left unchanged" in r.stdout, _ok(r)
+    assert "machine" in r.stdout.lower(), _ok(r)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_different_GIT_BASH_profile_export_is_REPORTED_and_nothing_written(installer, tmp_path, regkey):
+    (tmp_path / ".bashrc").write_text("export X4_TOOLKIT='/d/gitbash-one'\n", encoding="utf-8")
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert _reg_get(regkey) is None, "a SECOND, conflicting user value was written"
+    assert "/d/gitbash-one" in r.stdout and ".bashrc" in r.stdout and "Left unchanged" in r.stdout, _ok(r)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_MACHINE_value_naming_THIS_toolkit_is_already_set(installer, tmp_path, regkey):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    _reg_set(regkey + "\\Machine", str(dest.resolve()))
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert "already set" in r.stdout and "WARNING" not in r.stdout, _ok(r)
+    assert _reg_get(regkey) is None, "a redundant user value was written over a matching machine one"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell profile")
+def test_POSIX_a_different_export_in_ANOTHER_startup_file_is_REPORTED(tmp_path):
+    """The shell is bash (.bashrc would be written) and ~/.profile already exports another
+    toolkit: a login shell would see one value and an interactive one the other."""
+    (tmp_path / ".profile").write_text("export X4_TOOLKIT=/opt/from-profile\n", encoding="utf-8")
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install("sh", tmp_path, dest, source=src, env_write=True, shell="/bin/bash")
+    assert r.returncode == 0, _ok(r)
+    assert not (tmp_path / ".bashrc").exists(), "a SECOND, conflicting export was written"
+    assert "/opt/from-profile" in r.stdout and ".profile" in r.stdout and "Left unchanged" in r.stdout, _ok(r)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="user environment lives in the registry on Windows only")
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
 def test_TWIN_the_SAME_value_spelled_differently_is_not_different(installer, tmp_path, regkey):

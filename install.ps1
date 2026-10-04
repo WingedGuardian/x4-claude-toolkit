@@ -1640,20 +1640,52 @@ function Test-HSamePath($a, $b) { return ((Get-HCanonPath $a) -ceq (Get-HCanonPa
 
 function Get-HManualEnvCmd($v) { return ('setx X4_TOOLKIT "' + $v + '"') }
 
-#: THE DECISION, read by the -DryRun line and the writer: @{State; Old; Why}.
+#: The last `export X4_TOOLKIT=` value in a startup file, quotes removed; $null when none.
+#: install.sh's _h_profile_value, for Git Bash's own files (v4.0.0 review R4-3).
+function Get-HProfileValue($f) {
+  if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $null }
+  $line = @(Get-Content -LiteralPath $f -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match '^\s*export\s+X4_TOOLKIT=' }) | Select-Object -Last 1
+  if (-not $line) { return $null }
+  $v = ($line -replace '^\s*export\s+X4_TOOLKIT=', '').TrimEnd([char]13)
+  if ($v.Length -ge 2 -and (($v[0] -eq [char]39 -and $v[-1] -eq [char]39) -or ($v[0] -eq [char]34 -and $v[-1] -eq [char]34))) {
+    $v = $v.Substring(1, $v.Length - 2)
+  }
+  return $v
+}
+
+#: Git Bash's startup files: $HOME when set (Git Bash honours it), else the profile folder.
+function Get-HProfileFiles {
+  $h = if ($env:HOME) { $env:HOME } else { Get-UserHome }
+  return @('.bashrc', '.bash_profile', '.profile') | ForEach-Object { Join-Path $h $_ }
+}
+
+#: THE DECISION, read by the -DryRun line and the writer: @{State; Old; Why}. Old lists EVERY
+#: existing value, 'VALUE (WHERE)' joined by '; ' (v4.0.0 review R4-3: only the user scope was
+#: read, so a MACHINE value or a Git Bash ~/.bashrc export was invisible and a SECOND,
+#: conflicting value was written). Nothing is written beside a value that differs.
 function Get-HUserEnvPlan($t) {
   if (-not $X4OnWindows) {
     return @{ State = 'skip'; Why = 'install.ps1 sets X4_TOOLKIT only on Windows; use install.sh on Linux/macOS' }
   }
   $ue = Join-Path $SRC $X4UserEnvPs1
   if (-not (Test-Path -LiteralPath $ue -PathType Leaf)) { return @{ State = 'fail'; Why = ('the source has no ' + $X4UserEnvPs1) } }
-  $global:LASTEXITCODE = 0
-  $old = & $ue get
-  if ($LASTEXITCODE -ne 0) { return @{ State = 'fail'; Why = ($X4UserEnvPs1 + ' get failed') } }
-  $old = (@($old) -join '').Trim()
-  if (-not $old) { return @{ State = 'set' } }
-  if (Test-HSamePath $old (Get-HNativePath $t)) { return @{ State = 'same'; Old = $old } }
-  return @{ State = 'different'; Old = $old }
+  $want = Get-HNativePath $t
+  $found = @(); $diff = $false
+  foreach ($scope in @(@('get', 'your user environment'), @('get-machine', 'the machine environment'))) {
+    $global:LASTEXITCODE = 0
+    $v = & $ue $scope[0]
+    if ($LASTEXITCODE -ne 0) { return @{ State = 'fail'; Why = ($X4UserEnvPs1 + ' ' + $scope[0] + ' failed') } }
+    $v = (@($v) -join '').Trim()
+    if ($v) { $found += ($v + ' (' + $scope[1] + ')'); if (-not (Test-HSamePath $v $want)) { $diff = $true } }
+  }
+  foreach ($f in Get-HProfileFiles) {
+    $v = Get-HProfileValue $f
+    if ($v) { $found += ($v + ' (' + $f + ')'); if (-not (Test-HSamePath $v $want)) { $diff = $true } }
+  }
+  if ($found.Count -eq 0) { return @{ State = 'set' } }
+  if (-not $diff) { return @{ State = 'same'; Old = ($found -join '; ') } }
+  return @{ State = 'different'; Old = ($found -join '; ') }
 }
 
 function Show-HUserEnvPreview($t) {
