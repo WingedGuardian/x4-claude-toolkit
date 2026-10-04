@@ -428,6 +428,10 @@ def test_a_DRY_RUN_writes_NOTHING_on_the_arm_that_SKIPS_the_copy(installer, tmp_
     assert not written, (
         "--dry-run wrote %d file(s): %s (rc=%s) %s"
         % (len(written), written[:8], r.returncode, (r.stdout + r.stderr)[-600:]))
+    # PROGRESS, not just absence (v4.0.0 review R7-P1): a run that crashed or refused on its
+    # first line also writes nothing. It must have got as far as the dry-run gate and said so.
+    assert r.returncode == 0, (r.stdout + r.stderr)[-1200:]
+    assert "dry run complete" in (r.stdout + r.stderr).lower(), (r.stdout + r.stderr)[-1200:]
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
 def test_a_LOCKED_file_anywhere_in_the_copy_set_refuses_UP_FRONT(installer, tmp_path):
     """precheck_config guarded ONE file; x4lock locks about twenty-six.
@@ -680,6 +684,7 @@ def test_an_IN_PLACE_dry_run_runs_NOTHING(installer, tmp_path):
     r = _install(installer, tmp_path, dest, "--dry-run", from_dest=True)
     out = (r.stdout + r.stderr)
     low = out.lower()
+    assert r.returncode == 0, out[-1200:]          # R7-P1: a crash also "runs nothing"
 
     assert "dry run complete" in low, (
         "an in-place --dry-run printed no dry-run banner:\n%s" % out[-1200:])
