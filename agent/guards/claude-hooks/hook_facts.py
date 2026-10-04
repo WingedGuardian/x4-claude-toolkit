@@ -2383,11 +2383,11 @@ def git_adds_everything(seg):
 #: Subcommands that OVERWRITE OR DELETE the working tree. Deliberately not every
 #: destructive git command -- only the ones that discard uncommitted work in files
 #: that already exist, which is the shape that loses data nobody else has.
-_GIT_DESTRUCTIVE = {"clean", "reset", "checkout", "restore"}
+_GIT_DESTRUCTIVE = {"clean", "reset", "stash", "checkout", "restore"}
 
 
 def git_wipes_worktree_targets(seg):
-    """UNBOUNDED destructive git: `clean -f` and `reset --hard`.
+    """UNBOUNDED destructive git: `clean -f`, `reset --hard` and `stash -u`/`-a` (P2).
 
     Split from the targeted form deliberately. These name no paths, so they reach
     every file in the repository INCLUDING untracked ones -- which have no history and
@@ -2395,16 +2395,18 @@ def git_wipes_worktree_targets(seg):
     one CLAUDE.md's hook policy calls genuinely the user's decision ('deleting inside
     an X4 directory').
     """
-    return _git_destructive(seg, {"clean", "reset"})
+    return _git_destructive(seg, {"clean", "reset", "stash"})
 
 
 def git_wipes_ignored_targets(seg):
     """The subset of git_wipes_worktree_targets that reaches IGNORED files or whole untracked
-    directories: `clean` with -x, -X or -d, and `reset --hard` (Plan 3 decision J-Q1). In the
+    directories: `clean` with -x, -X or -d, `reset --hard` (Plan 3 decision J-Q1), and
+    `stash --all`/`-a` (v4.0.0 review P2), which stashes the ignored files and then DELETES
+    them from the working tree. In the
     game-root repo `.gitignore` is a whitelist (`*`), so every untracked file there is ignored
     and `git clean -fdx` removes the installation's own files. Judged from the SESSION cwd
     (seeded) by `git_wipe_from_session_dir`, whose verdict is a DENY, never a prompt."""
-    return _git_destructive(seg, {"clean", "reset"}, deep=True)
+    return _git_destructive(seg, {"clean", "reset", "stash"}, deep=True)
 
 
 def git_discards_named_files(seg):
@@ -2532,11 +2534,62 @@ def _git_destructive(seg, wanted, deep=False):
                               and set(t[1:]) & set("xXd") for t in rest)
     elif sub == "reset":
         hot = "--hard" in rest
+    elif sub == "stash":
+        hot = _stash_removes_untracked(rest, deep)
     elif sub == "checkout":
         hot = "--" in rest          # the pathspec form; a branch name is navigation
     else:                            # restore -- always about file contents
         hot = True
     return [base] if hot else []
+
+
+def _stash_removes_untracked(rest, deep):
+    """Does this `git stash` remove UNTRACKED files from the working tree? (v4.0.0 review P2)
+
+    A plain stash touches tracked files only, and every one is recoverable from the stash
+    ref. `-u` / `--include-untracked` also stashes-and-deletes untracked NOT-ignored files --
+    the reach of `git clean -f`, so it answers the shallow rule only. `-a` / `--all` takes
+    the IGNORED files too -- the reach of `git clean -fdx`, so it answers `deep` as well: in
+    the game-root repo, whose `.gitignore` is a whitelist (`*`), the ignored files ARE the
+    installation.
+
+    Git's own dispatch: no argument, or a first argument starting with `-`, is `push`;
+    otherwise the first argument names the action, and only `push` / `save` stash anything.
+    `-m`/`--message` (and `--pathspec-from-file`) consume the next token, so a message that
+    reads `-a` is not the flag; in a short cluster an `m` ends it (`-am wip`). `--no-all` /
+    `--no-include-untracked` undo an earlier flag, as parse_options does.
+    """
+    if rest and not rest[0].startswith("-"):
+        if rest[0] not in ("push", "save"):
+            return False        # list / show / pop / apply / drop / clear / branch / ...
+        rest = rest[1:]
+    every = untracked = skip = False
+    for t in rest:
+        if skip:
+            skip = False
+            continue
+        if t == "--":
+            break
+        if t in ("-m", "--message", "--pathspec-from-file"):
+            skip = True
+        elif t == "--all":
+            every = True
+        elif t == "--no-all":
+            every = False
+        elif t == "--include-untracked":
+            untracked = True
+        elif t == "--no-include-untracked":
+            untracked = False
+        elif t.startswith("-") and not t.startswith("--"):
+            for k, ch in enumerate(t[1:], 1):
+                if ch == "a":
+                    every = True
+                elif ch == "u":
+                    untracked = True
+                elif ch == "m":
+                    skip = k == len(t) - 1      # `-am <msg>`; `-mfoo` carries its own
+                    break
+    return every if deep else (every or untracked)
 
 
 def sed_in_place_targets(seg):

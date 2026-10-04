@@ -4111,6 +4111,84 @@ class TestJQ1BareGitWipeFromAnX4SessionDirIsADeny(unittest.TestCase):
     def test_TWIN_a_cd_AWAY_from_the_x4_session_dir_does_not_fire(self):
         self.assertFalse(FC("cd " + DQ + _ELSEWHERE + DQ + " && git clean -fdx", GAME)[self.FACT])
 
+
+class TestP2GitStashAllIsAWipe(unittest.TestCase):
+    """v4.0.0 review P2 (pre-arc, user chose to fix): `git stash --all` / `-a` stashes the
+    IGNORED files and then DELETES them from the working tree -- in the game-root repo, whose
+    `.gitignore` is a whitelist (`*`), that is the installation itself. It is the same wipe as
+    `git clean -fdx` with a stash ref on the side, so it takes the same two verdicts: DENY when
+    bare from an X4 session dir (J-Q1), ASK when a folder is named.
+    `-u` / `--include-untracked` removes untracked NOT-ignored files only -- the reach of a
+    plain `git clean -f` -- so it takes exactly that rule's verdict: the named ASK, no deny."""
+    FACT = "git_wipe_from_session_dir"
+    ALL = ("git stash -a", "git stash --all", "git stash push -a", "git stash push --all",
+           "git stash save -a", "git stash save --all wip", "git stash -ka", "git stash -am wip",
+           "git stash push -m wip --all", "git stash push -q -a -- libraries",
+           "git -c core.x=y stash --all")
+
+    def test_bare_stash_all_from_the_game_root_is_the_deny(self):
+        for c in self.ALL:
+            with self.subTest(c=c):
+                self.assertTrue(FC(c, GAME)[self.FACT], c)
+
+    def test_bare_stash_all_from_every_x4_dir(self):
+        for d in (PROF, REF, TOOLKIT, TOOLKIT + "/dev/mymod"):
+            with self.subTest(d=d):
+                self.assertTrue(FC("git stash --all", d)[self.FACT], d)
+
+    def test_a_named_folder_ASKS_and_is_not_the_deny(self):
+        for cmd in ("git -C " + DQ + GAME + DQ + " stash -a",
+                    "cd " + DQ + GAME + DQ + " && git stash push --all"):
+            for cwd in (_ELSEWHERE, GAME):
+                with self.subTest(cmd=cmd, cwd=cwd):
+                    f = FC(cmd, cwd)
+                    self.assertTrue(f["git_wipes_x4_dir"], cmd)
+                    self.assertFalse(f[self.FACT], cmd)
+
+    def test_include_untracked_takes_the_plain_clean_f_verdict(self):
+        """Named: ASK (as `git -C <game> clean -f` does). Bare: no deny (as `git clean -f`)."""
+        for c in ("stash -u", "stash --include-untracked", "stash push -u", "stash -ku"):
+            with self.subTest(c=c):
+                self.assertTrue(FC("git -C " + DQ + GAME + DQ + " " + c, _ELSEWHERE)
+                                ["git_wipes_x4_dir"], c)
+                self.assertFalse(FC("git " + c, GAME)[self.FACT], c)
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_a_plain_stash_is_not_a_wipe(self):
+        """Clause: -a/--all. A plain stash touches tracked files only, all recoverable."""
+        for c in ("git stash", "git stash push", "git stash -k", "git stash push -m wip",
+                  "git stash save wip", "git stash -p"):
+            with self.subTest(c=c):
+                self.assertFalse(FC(c, GAME)[self.FACT], c)
+                self.assertFalse(FC("git -C " + DQ + GAME + DQ + c[3:], _ELSEWHERE)
+                                 ["git_wipes_x4_dir"], c)
+
+    def test_TWIN_a_stash_subcommand_other_than_push_is_not_a_wipe(self):
+        """Clause: the action is push/save. `list -a`-shaped spellings included, so the flag
+        clause alone cannot be what decides."""
+        for c in ("git stash list", "git stash pop", "git stash apply", "git stash show -p",
+                  "git stash drop", "git stash branch a", "git stash list --all",
+                  "git stash show -a"):
+            with self.subTest(c=c):
+                self.assertFalse(FC(c, GAME)[self.FACT], c)
+                self.assertFalse(FC("git -C " + DQ + GAME + DQ + c[3:], _ELSEWHERE)
+                                 ["git_wipes_x4_dir"], c)
+
+    def test_TWIN_a_message_that_reads_like_the_flag_is_not_the_flag(self):
+        for c in ("git stash -m -a", "git stash push --message --all", "git stash -m all"):
+            with self.subTest(c=c):
+                self.assertFalse(FC(c, GAME)[self.FACT], c)
+
+    def test_TWIN_a_negated_all_is_not_a_wipe(self):
+        self.assertFalse(FC("git stash --all --no-all", GAME)[self.FACT])
+
+    def test_TWIN_stash_all_from_a_non_x4_dir_does_not_fire(self):
+        """Clause: the session dir is an X4 dir."""
+        for c in self.ALL:
+            with self.subTest(c=c):
+                self.assertFalse(FC(c, _ELSEWHERE)[self.FACT], c)
+        self.assertFalse(FC("git stash -a", _NO_CWD)[self.FACT])
+
 def load_tests(loader, standard_tests, pattern):
     """unittest.main() collects TestCase SUBCLASSES ONLY, so every module-level
     `def test_*` in this file was invisible to it.

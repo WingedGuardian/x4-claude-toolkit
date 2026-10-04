@@ -249,6 +249,11 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   apply_patch)") and sections that exist, instead of "the Edit tool" and `CLAUDE.md #22`.
 - A backup that fails no longer writes its audit line outside the trail, or to wherever an
   inherited `AUDIT_LOG` variable pointed, and no longer prints a write error beside its verdict.
+- **`git stash --all` / `-a` is treated as the wipe it is** (present in 3.x too): it stashes the
+  ignored files and then deletes them, and in the game folder the ignored files are the
+  installation. Bare from an X4 folder it is blocked like `git clean -fdx`; with the folder named
+  (`git -C <folder> stash -a`) it asks. `git stash -u` asks with the folder named, like
+  `git clean -f`. A plain `git stash`, `stash list`, `pop` and friends are unaffected.
 
 ### Configuration
 
