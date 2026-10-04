@@ -1214,6 +1214,7 @@ alarms, and did:
 | F157 | F146's Grep deny asked `git check-ignore` about the ROOT, which answers "is the folder ignored", not "can Grep see its files": a `dir/`-style ignore (the toolkit's `reference/`) leaves every child visible, so Grep into a reference subfolder was wrongly denied | **DEFECT (measured)** · ✅ FIXED 2026-10-04 (v4.0.0 review, fix lane FX-S) | release review R1-F4 | search-scope.sh decides from the matching pattern: a directory-only pattern leaves the root visible (no deny); a last component matching any name (`*`) hides it (deny) |
 | F158 | A heredoc INSIDE a carried command (`$(...)`, `bash -c`) was never stripped or routed: the top level rightly ignores a `<<` inside double quotes, so in `git commit -m "$(cat <<'EOF' ... EOF)"` the body reached the carrier walk as text and every body line was a command -- a message mentioning `> KNOWLEDGEBASE.md` was DENIED. Mirror image: `x=$(bash <<'EOF' ... EOF)` was ALLOW, because the shell test read the opener line's segments (`x=$(bash`) | **DEFECT (measured)** · PRE-ARC · ✅ FIXED 2026-10-04 (v4.0.0 review, fix lane FX-P2) | another lane's false-positive report, reproduced with x4guard | `_carrier_parts`: every carried command gets the top level's heredoc strip plus its shell-fed bodies; `_opener_feeds` also reads the command after a `$(`/backtick on the opener line |
 | F159 | An UNQUOTED heredoc body (`<<EOF`) is expanded by bash, so its `$(...)` and backticks RUN -- but the whole body was stripped as data: `cat > notes.md <<EOF` / `$(<delete the game>)` / `EOF` was a silent ALLOW against a hard block | **DEFECT (measured)** · PRE-ARC · ✅ FIXED 2026-10-04 (v4.0.0 review, fix lane FX-P2) | found while reproducing F158 | `heredoc_substitutions`: an expanding body contributes its substitutions (quotes are letters there; backslash escapes; `$((` is arithmetic); a quoted delimiter contributes nothing |
+| F160 | A toolkit COPY acted for ANOTHER toolkit: `_paths` located the config through an inherited `$X4_TOOLKIT` (and derived `<X4_TOOLKIT>/reference` from it), so a second copy's `x4refguard apply` resolved the FIRST copy's real reference tree -- 36 `_paths` importers plus x4config, x4doctor and unpack-reference.sh shared the shape | **DEFECT (measured: incident)** · PRE-ARC · ✅ FIXED 2026-10-04 (install red-team, fix lane FX-R) | the 2026-10-04 cold install red-team, live: killed after ~2 min, census 518,056 objects / 0 protected | `_paths.toolkit_root()` = --toolkit > the toolkit the module LIVES IN > `$X4_TOOLKIT` only outside the layout; a differing `$X4_TOOLKIT` gets one notice naming both; system-changing commands refuse without --toolkit |
 | UNION-KEY | winner supplies the entity → `entities.origin` | 2/2 | 2/2 |
 | **HARD** | winner owns the VALUE → **`attrs.origin`** | 34 agree, **6 FALSE disagreements** | **40/40** |
 | **SUBTREE** | winner is the WIPER → assert the **victim** is gone, scoped to `w0` | file-wide: **6 FALSE alarms** | **148/148** |
@@ -8123,3 +8124,47 @@ the top level. **RE-DERIVED BY:** `TestAnUnquotedHeredocRunsItsSubstitutions` (R
 8 subtests; 4 twins: quoted delimiter, escaped substitution, plain body text, arithmetic) and three
 mutants ("FX-P2: an expanding body runs its substitutions", "... a quoted delimiter expands nothing",
 "... an escaped substitution in a body is text").
+
+## F160 — a toolkit copy acted for ANOTHER toolkit through an inherited `X4_TOOLKIT` · **DEFECT (measured: incident)** · PRE-ARC · confidence 95% · ✅ FIXED 2026-10-04 (install red-team, fix lane FX-R)
+
+**The incident (2026-10-04, live).** A cold, docs-only install red-team installed a second toolkit
+copy (B) in a scratch folder, in a shell that had inherited `X4_TOOLKIT` naming the user's real
+toolkit (A), and ran B's `x4refguard.py apply`. B's script imported B's own `_paths`, which located
+the config through `$X4_TOOLKIT` -- A's `x4-paths.env` -- and resolved A's `X4_REFERENCE`: the
+user's REAL reference tree. It was killed after ~2 minutes. A full census afterwards: 518,056
+objects, 0 protected, state absent -> nothing was applied. The same red-team saw `x4doctor`'s
+parity row compare B's deployed tree against A's source.
+
+**Two routes, one shape.** (1) `_locate_config` took `<toolkit>` from `$X4_TOOLKIT`. (2) Even with
+no config in B, the env layer's `X4_TOOLKIT` answered `reference()` by derivation
+(`<X4_TOOLKIT>/reference`) -- the second route to A's tree, pinned RED by
+`test_INCIDENT_B_without_its_own_config_never_derives_A_reference`.
+
+**Population (MEASURED by grep over tools/, scripts/, bin/, tests excluded):** 36 modules import
+`_paths` (all inherit the fix centrally); scripts reading `X4_TOOLKIT` themselves: `x4config._root`
+(fixed), `x4doctor.Ctx` (fixed), `bin/unpack-reference.sh` via the guards' `_x4-env.sh` (fixed: it
+now exports its own toolkit, or --toolkit, before sourcing), `x4refguard._dangerous` (reads it to
+REFUSE more roots -- safety-only, kept), `x4lock._waiver_replacements` (kept, residual below),
+`x4conformance` / `codex-e2e` / `fuzz-guard` / `test-hooks.sh` (set or snapshot it for child
+processes: not a resolution of their own toolkit). The deployed GUARD copies keep reading
+`$X4_TOOLKIT` by design: they live in a game root and legitimately reach a separate toolkit.
+
+**Fix (policy: DECISIONS.md, lane FX-R).** `_paths.toolkit_root()` = `--toolkit` (`use_toolkit`) >
+the toolkit the module lives in (`<root>/tools/x4validate/x4validate/`) > `$X4_TOOLKIT` only for
+code outside that layout. A differing `$X4_TOOLKIT` earns ONE stderr line naming both roots, is not
+used for the config, and is replaced by the acting root in the env layer (closing route 2).
+`x4refguard apply/remove`, `x4config migrate --apply`, `x4lock lock/unlock` and
+`bin/unpack-reference.sh` REFUSE (exit 2) under a foreign `$X4_TOOLKIT` unless `--toolkit` is given.
+`x4doctor` acts for its own toolkit (`--toolkit` to choose) and names the conflict.
+
+**Known residual (unmeasured):** `x4lock._waiver_replacements` still demands `$X4_TOOLKIT`'s config
+inside a LINKED git worktree (F119's waiver); lock/unlock are refused under a conflict without
+--toolkit, so it can widen a status manifest but not a write by accident. A user-level `X4_CONFIG`
+naming another toolkit's file is still honoured as explicit (no installer sets one).
+
+**RE-DERIVED BY:** `tests/test_toolkit_binding.py` -- two scratch toolkit copies A and B,
+`X4_TOOLKIT=A`, B's scripts run with `X4_CONFIG=""`, `X4_REFERENCE=""` and
+`X4_REFGUARD_SANDBOX` confined to B: status acts for B and names both roots; apply/remove/migrate
+--apply/lock/unlock refuse; `--toolkit B` is accepted and protects B and never A (Windows, real
+icacls on scratch). RED before the fix on 18 of 20 (the 2 passing were the designed twins); the
+doctor's three B2 tests RED against master's x4doctor.
