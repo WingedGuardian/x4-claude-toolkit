@@ -826,6 +826,30 @@ preserve_user_claude_md() {   # DEST -- AFTER every precheck, BEFORE the copy
   _h_hash_caveat
 }
 
+#: The 3.x example config `.claude/x4-paths.env.example` (install red-team 2026-10-04: an
+#: upgrade left it beside 4.0's root example). Prints `remove` when it is an UNEDITED shipped
+#: copy (a `.claude/x4-paths.env.example` row of the shipped list), `keep` when it differs from
+#: every one, nothing when there is none. Never deletes a file a user may have edited.
+_old_example_action() {   # DEST
+  [ -f "$1/.claude/x4-paths.env.example" ] && [ -f "$SRC/x4-paths.env.example" ] || return 0
+  if _h_is_shipped "$1" ".claude/x4-paths.env.example"; then printf remove; else printf keep; fi
+}
+retire_old_paths_example() {   # DEST -- AFTER the copy
+  local dest="$1" old="$1/.claude/x4-paths.env.example"
+  case "$(_old_example_action "$dest")" in
+    remove)
+      if rm -f -- "$old" && [ ! -e "$old" ]; then
+        echo "  [note] removed the 3.x .claude/x4-paths.env.example (an unedited shipped copy); 4.0's"
+        echo "         example is x4-paths.env.example at the toolkit root."
+      else
+        echo "  [warn] could not remove the stale 3.x $old (it is unedited, so deleting it is safe)."
+      fi ;;
+    keep)
+      echo "  [note] kept $dest/.claude/x4-paths.env.example: it differs from every example a"
+      echo "         release shipped (your edits?). 4.0 never reads it; delete it when you are done." ;;
+  esac
+}
+
 _agents_md_aside_name() {   # DEST -> the first name that does not exist yet
   local d="$1" n="AGENTS.pre-4.0.md" stamp i=0
   [ -e "$d/$n" ] || { printf '%s' "$n"; return 0; }
@@ -1839,6 +1863,10 @@ announce_copy_plan() {
     echo "  your CLAUDE.md is not one this toolkit shipped: it would be KEPT as $to, not overwritten"
     _h_hash_caveat
   fi
+  case "$(_old_example_action "$1")" in
+    remove) echo "  the 3.x .claude/x4-paths.env.example (an unedited shipped copy) would be removed" ;;
+    keep)   echo "  the 3.x .claude/x4-paths.env.example differs from every shipped one: it would be KEPT" ;;
+  esac
   announce_dry_run_extras "$TOOLKIT"
   echo
   echo "=== dry run complete: nothing was changed ==="
@@ -2138,6 +2166,7 @@ case "$METHOD" in
       preserve_user_agents_md "$TOOLKIT"   # after every precheck, before the copy
       preserve_user_claude_md "$TOOLKIT"   # 3.x -> 4.0: same position, same shape
       copy_toolkit "$TOOLKIT"
+      retire_old_paths_example "$TOOLKIT"   # after the copy: the 4.0 example is in place
       render_toolkit_token "$TOOLKIT"
     else
       note_in_place_token
@@ -2181,6 +2210,7 @@ case "$METHOD" in
       preserve_user_agents_md "$TOOLKIT"   # after every precheck, before the copy
       preserve_user_claude_md "$TOOLKIT"   # 3.x -> 4.0: same position, same shape
       copy_toolkit "$TOOLKIT"
+      retire_old_paths_example "$TOOLKIT"   # after the copy: the 4.0 example is in place
       render_toolkit_token "$TOOLKIT"
     else
       note_in_place_token

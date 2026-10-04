@@ -3075,3 +3075,56 @@ def test_C5_setup_says_the_config_is_IN_PLACE_not_already_present(tmp_path):
     r = subprocess.run([b, str(root / "setup.sh"), "--config-only"], capture_output=True, text=True,
                        env=env, cwd=str(root))
     assert "already present" not in r.stdout and "in place" in r.stdout, r.stdout + r.stderr
+
+
+# --- cosmetic (install red-team 2026-10-04): the 3.x .claude/x4-paths.env.example ---------- #
+#
+# An upgrade left the 3.x example beside the 4.0 one at the root. It is removed ONLY when it is
+# an unedited shipped copy (its canonical hash is a `.claude/x4-paths.env.example` row of
+# scripts/shipped-instruction-hashes.txt: 3 distinct over 19 of 23 tags, MEASURED); an edited
+# one is KEPT and said so -- a user's file is never deleted.
+
+def _v3_example() -> bytes:
+    r = subprocess.run(["git", "-C", str(ROOT), "cat-file", "blob", "v3.3.1:.claude/x4-paths.env.example"],
+                       capture_output=True)
+    if r.returncode != 0:
+        pytest.skip("no v3.3.1 tag in this clone (shallow?) -- NOT CHECKED")
+    return r.stdout
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_UNEDITED_3x_example_is_removed_by_the_upgrade(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    old = dest / ".claude" / "x4-paths.env.example"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(_v3_example().replace(b"\n", b"\r\n"))       # CRLF: still the shipped file
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "x4-paths.env.example").is_file()
+    assert not old.exists(), "the unedited 3.x example was left behind\n" + _ok(r)
+    assert "removed" in r.stdout and ".claude/x4-paths.env.example" in r.stdout.replace("\\", "/"), _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_an_EDITED_3x_example_is_KEPT_and_said_so(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    old = dest / ".claude" / "x4-paths.env.example"
+    old.parent.mkdir(parents=True)
+    mine = _v3_example() + b"# my own note\n"
+    old.write_bytes(mine)
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, _ok(r)
+    assert old.read_bytes() == mine, "an EDITED example was changed or deleted"
+    assert "kept" in r.stdout.lower() and ".claude/x4-paths.env.example" in r.stdout.replace("\\", "/"), _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_dry_run_names_the_3x_example_removal(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    old = dest / ".claude" / "x4-paths.env.example"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(_v3_example())
+    r = _install(installer, tmp_path, dest, "--agent", "claude", "--dry-run")
+    assert r.returncode == 0, _ok(r)
+    assert old.is_file(), "the dry run deleted it"
+    assert "would be removed" in r.stdout, _ok(r)

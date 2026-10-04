@@ -687,6 +687,35 @@ function Show-HHashCaveat {
   }
 }
 
+#: The twin of install.sh's _old_example_action / retire_old_paths_example (install red-team
+#: 2026-10-04): the 3.x `.claude/x4-paths.env.example` is removed ONLY when it is an unedited
+#: shipped copy; an edited one is kept and named. Returns 'remove', 'keep' or ''.
+function Get-HOldExampleAction($dest) {
+  $old = Join-Path (Join-Path $dest '.claude') 'x4-paths.env.example'
+  if (-not (Test-Path -LiteralPath $old -PathType Leaf)) { return '' }
+  if (-not (Test-Path -LiteralPath (Join-Path $SRC 'x4-paths.env.example') -PathType Leaf)) { return '' }
+  if (Test-HIsShipped $dest '.claude/x4-paths.env.example') { return 'remove' }
+  return 'keep'
+}
+function Remove-HOldPathsExample($dest) {   # AFTER the copy
+  $old = Join-Path (Join-Path $dest '.claude') 'x4-paths.env.example'
+  switch (Get-HOldExampleAction $dest) {
+    'remove' {
+      try { Remove-Item -LiteralPath $old -ErrorAction Stop } catch { }
+      if (Test-Path -LiteralPath $old) {
+        Write-Host ('  [warn] could not remove the stale 3.x ' + $old + ' (it is unedited, so deleting it is safe).')
+      } else {
+        Write-Host "  [note] removed the 3.x .claude/x4-paths.env.example (an unedited shipped copy); 4.0's"
+        Write-Host '         example is x4-paths.env.example at the toolkit root.'
+      }
+    }
+    'keep' {
+      Write-Host ('  [note] kept ' + $dest + '/.claude/x4-paths.env.example: it differs from every example a')
+      Write-Host '         release shipped (your edits?). 4.0 never reads it; delete it when you are done.'
+    }
+  }
+}
+
 function Save-HUserClaudeMd($dest) {
   $to = Get-HClaudeMdMoveTarget $dest
   if (-not $to) { return }
@@ -1656,6 +1685,10 @@ function Show-CopyPlan($dest) {
       Write-Host ('  your CLAUDE.md is not one this toolkit shipped: it would be KEPT as ' + $to + ', not overwritten')
       Show-HHashCaveat
     }
+    switch (Get-HOldExampleAction $dest) {
+      'remove' { Write-Host '  the 3.x .claude/x4-paths.env.example (an unedited shipped copy) would be removed' }
+      'keep'   { Write-Host '  the 3.x .claude/x4-paths.env.example differs from every shipped one: it would be KEPT' }
+    }
     Show-DryRunExtras $dest
     Write-Host ""
     Write-Host "=== dry run complete: nothing was changed ==="
@@ -2186,6 +2219,7 @@ switch ($Method) {
       Save-UserAgentsMd $Toolkit        # after every precheck, before the copy
       Save-HUserClaudeMd $Toolkit       # 3.x -> 4.0: same position, same shape
       Copy-Toolkit $Toolkit
+      Remove-HOldPathsExample $Toolkit   # after the copy: the 4.0 example is in place
       Invoke-ToolkitTokenRender $Toolkit
     } else {
       Show-InPlaceTokenNote
@@ -2220,6 +2254,7 @@ switch ($Method) {
       Save-UserAgentsMd $Toolkit        # after every precheck, before the copy
       Save-HUserClaudeMd $Toolkit       # 3.x -> 4.0: same position, same shape
       Copy-Toolkit $Toolkit
+      Remove-HOldPathsExample $Toolkit   # after the copy: the 4.0 example is in place
       Invoke-ToolkitTokenRender $Toolkit
     } else {
       Show-InPlaceTokenNote
