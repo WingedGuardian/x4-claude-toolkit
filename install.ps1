@@ -42,10 +42,71 @@ param(
   [switch]$Unpack, [switch]$Yes, [switch]$OverExisting, [switch]$DryRun, [switch]$NoEnv,
   # project_doc_max_bytes for the project .codex\config.toml (opt-in). A STRING, checked by
   # hand below, so a bad value refuses with rc 2 like install.sh rather than a binding error.
-  [string]$CodexDocMaxBytes
+  [string]$CodexDocMaxBytes,
+  # -Help: the same help as `install.sh --help`, in this installer's spelling (v4.0.0 review
+  # R4-1: the docs named `.\install.ps1 -Help`, and there was no such parameter -- "A parameter
+  # cannot be found that matches parameter name 'Help'" on both 5.1 and 7).
+  [switch]$Help
 )
 $ErrorActionPreference = 'Stop'
 $SRC = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# THE HELP TEXT. test_installers_agree.py pins it to install.sh's usage(): every option
+# there must be named here, and every parameter here must be one install.sh has. Printed
+# BEFORE anything else runs, and nothing is read or written.
+function Show-Usage {
+  Write-Output @'
+X4 AI Assistant Toolkit installer - Windows (PowerShell).
+Three install methods, all with fully configurable paths (nothing hardcoded):
+
+  in-game   Copy the toolkit INTO your X4 game folder (the upstream model). One workspace.
+  separate  Keep the toolkit in its OWN folder, pointed at the game via config.
+  global    Install the skills/agents into %USERPROFILE%\.claude and write the X4_* paths into
+            your global Claude settings, so they work across MANY mod repos (multi-project).
+
+Every location is auto-detected where possible and overridable by parameter. The chosen
+paths are written to <toolkit>\x4-paths.env (the single source of truth the hooks, bin/
+scripts and tools read). A 3.x config at <toolkit>\.claude\x4-paths.env is MOVED there.
+
+Run it through powershell.exe: Windows' default execution policy refuses a bare .\install.ps1.
+
+Usage: powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Method in-game|separate|global [options]
+  -Game DIR          X4 install (folder with 01.cat..09.cat)   [auto-detected]
+  -Profile DIR       user profile (saves/config/debug log)     [auto-detected]
+  -Toolkit DIR       where the toolkit lives (separate/global) [repo dir / game dir]
+  -Mods DIR          your mod source repos root
+  -Reference DIR     unpacked base game (default <toolkit>\reference)
+  -Extensions DIR    live deploy target (default <game>\extensions)
+  -XRCatTool PATH    XRCatTool.exe location
+  -Agent NAME        claude | codex | generic | opencode | all | auto   [all]
+                     which agent's instructions, guards and skills to install;
+                     auto = the agents found on PATH or already in the destination
+                     (none found: all, and it says so)
+  -Unpack            also unpack reference/ now (needs -Game + XRCatTool, and Git Bash)
+  -OverExisting      REQUIRED to install over an existing installation
+  -DryRun            print the destination and the item list; write nothing
+  -CodexDocMaxBytes N
+                     write project_doc_max_bytes = N (32768..1048576) into the
+                     project's .codex\config.toml (needs the Codex target). Codex
+                     reads the root AGENTS.md and every nested one into ONE
+                     32,768-byte budget, so an AGENTS.md of your own lower in the
+                     tree can cut the toolkit's off. Opt-in; never overwrites.
+  -NoEnv             do NOT set X4_TOOLKIT for your user (by default it is set when
+                     unset; a DIFFERENT existing value is reported and left alone)
+  -Yes               don't prompt; accept detected/blank values (never a
+                     detected DESTINATION -- name that with -Game/-Toolkit)
+  -Help              this help
+
+NOTE: the toolkit's hooks and bin/ scripts are bash: install with PowerShell, but to RUN the
+toolkit you still need Git Bash (https://git-scm.com/download/win).
+
+Test seams (for the installer test suite only, not for users):
+  X4_INSTALL_ENV_REGKEY   registry key used instead of HKCU\Environment
+                          (refused unless under HKCU\Software\X4ToolkitTests\)
+  X4_INSTALL_DETECT_PATH  the PATH -Agent auto walks instead of $env:PATH
+'@
+}
+if ($Help) { Show-Usage; exit 0 }
 Write-Host "X4 AI Assistant Toolkit installer (Windows) - source: $SRC"
 
 # Did a HUMAN name the destination, or did we find it by scanning? An explicit

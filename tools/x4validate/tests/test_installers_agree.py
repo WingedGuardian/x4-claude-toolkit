@@ -561,3 +561,56 @@ def test_both_installers_keep_the_root_config_local():
     assert "'x4-paths.env'" in keep_ps and ".claude" + chr(92) + "x4-paths.env" in keep_ps, keep_ps
     assert "x4-paths.env.example" in copy_sh, copy_sh
     assert "'x4-paths.env.example'" in copy_ps, copy_ps
+
+
+# --- R4-1 (v4.0.0 review): install.ps1 -Help, the same help as install.sh --help ---------
+
+#: install.sh flag -> install.ps1 parameter where the mechanical CamelCase is not the name.
+_PS_SPELLING = {"xrcattool": "XRCatTool"}
+
+
+def _ps_name(flag: str) -> str:
+    return _PS_SPELLING.get(flag) or "".join(w[:1].upper() + w[1:] for w in flag.split("-"))
+
+
+def _run_help(cmd: list, cwd: pathlib.Path):
+    import subprocess
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd), timeout=120)
+
+
+def test_install_ps1_HAS_a_Help_switch_naming_every_install_sh_option(tmp_path):
+    """The docs and SETUP_PROMPT named `install.ps1 -Help`, and there was no such parameter:
+    'A parameter cannot be found that matches parameter name Help' on 5.1 and 7 (MEASURED by
+    the reviewer, review/scratch-R4/help51.txt). The two help texts must name the SAME options,
+    each in its own spelling, read from what each installer PRINTS -- never a third list."""
+    import shutil
+    ps = shutil.which("powershell") or shutil.which("pwsh")
+    bash = shutil.which("bash")
+    if not ps or not bash:
+        import pytest
+        pytest.skip("needs both PowerShell and bash to compare the two help texts")
+    rs = _run_help([bash, SH.as_posix(), "--help"], tmp_path)
+    rp = _run_help([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(PS1), "-Help"], tmp_path)
+    assert rs.returncode == 0, rs.stderr
+    assert rp.returncode == 0, (rp.stdout + rp.stderr)[-800:]
+    assert list(tmp_path.iterdir()) == [], "a help run WROTE something"
+    sh_flags = set(re.findall(r"^\s+--([a-z][a-z-]*)", rs.stdout, re.M)) - {"help"}
+    ps_flags = set(re.findall(r"^\s+-([A-Z][A-Za-z]*)", rp.stdout, re.M)) - {"Help"}
+    assert len(sh_flags) >= 14, sorted(sh_flags)            # a parser that found nothing agrees
+    assert {_ps_name(f) for f in sh_flags} == ps_flags, (
+        "the help texts DIFFER -- only in install.sh: %s; only in install.ps1: %s" % (
+            sorted({_ps_name(f) for f in sh_flags} - ps_flags),
+            sorted(ps_flags - {_ps_name(f) for f in sh_flags})))
+    assert "-Method" in rp.stdout and "--method" in rs.stdout
+    # the invocation the help itself names must be one Windows accepts by default
+    assert "powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1" in rp.stdout
+
+
+def test_every_ps1_help_option_is_a_REAL_parameter():
+    """The help may not name a parameter param() does not declare (the -Help defect, inverted)."""
+    text = PS1.read_text(encoding="utf-8")
+    block = text.split("param(", 1)[1].split("\n)", 1)[0]
+    declared = set(re.findall(r"\$([A-Z][A-Za-z]*)\s*(?:=|,|$)", block, re.M))
+    usage = text.split("function Show-Usage", 1)[1].split("'@", 1)[0]
+    named = set(re.findall(r"^\s+-([A-Z][A-Za-z]*)", usage, re.M))
+    assert named and named <= declared, sorted(named - declared)
