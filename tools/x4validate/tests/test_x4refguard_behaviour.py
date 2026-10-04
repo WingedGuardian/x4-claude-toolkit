@@ -38,6 +38,9 @@ x4refguard = _load("x4refguard", "scripts/x4refguard.py")
 gitbash = _load("gitbash_rg", "scripts/gitbash.py")
 from x4validate import _paths  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from refguard_owner import own_or_skip  # noqa: E402
+
 ORIG = "<wares/>"
 
 
@@ -135,6 +138,7 @@ def _sandbox(tmp_path, monkeypatch):
 @pytest.fixture
 def protected(tmp_path, monkeypatch):
     root = _tree(tmp_path / "reference")
+    own_or_skip(root, x4refguard)          # an elevated runner creates it owned by Administrators
     monkeypatch.setenv("X4_REFERENCE", str(root))
     _paths.reload()
     try:
@@ -190,6 +194,7 @@ def test_reads_still_work(protected, tmp_path):
 
 def test_apply_and_remove_move_no_mtime_or_size(tmp_path, monkeypatch):   # the _freshness axes
     root = _tree(tmp_path / "reference")
+    own_or_skip(root, x4refguard)
 
     def stamp():
         return {str(p): (p.stat().st_mtime_ns, p.stat().st_size) for p in root.rglob("*") if p.is_file()}
