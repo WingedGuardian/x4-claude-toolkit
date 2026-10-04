@@ -111,10 +111,17 @@ For any bulk XML operation (mass stat changes, adding content to many files):
 - Writing to `reference\` (read-only base game data, ever)
 - Directly writing `.cat` / `.dat` files (use XRCatTool)
 - `sed -i` on a game or profile file (edit through your file-edit tool, which is backed up first)
+- Deleting the game installation folder itself (or its whole `extensions` folder), or anything in
+  `reference\`
+- A bare `git clean` with `-x`/`-X`/`-d`, or `git reset --hard`, run from an X4 directory (no
+  folder named): in the game folder git ignores every file, so it would delete the installation's
+  own files
 
 ### Requires confirmation
 - Edits to user-profile files (`Documents\Egosoft\X4\`); a `content.xml` edit is only ADVISED
-- Deleting in an X4 directory (a save above all); `git clean`/`reset --hard` there
+- Deleting a save or anything else in the X4 profile; other deletes in an X4 directory get an
+  advisory, not a prompt
+- `git -C "<X4 folder>" clean` / `reset --hard` (the folder named): it deletes untracked files
 
 ### General
 - One mod = one named folder, never a mega-file

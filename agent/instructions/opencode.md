@@ -20,8 +20,11 @@ installation. Where AGENTS.md shows a guard command, run the copy in `.opencode/
     python .opencode/hooks/x4guard.py check --kind delete --path "<file>"
 
 On Windows OpenCode runs shell commands in **PowerShell** unless it was configured for bash:
-pass `--shell powershell` there, and write the toolkit root as `$env:X4_TOOLKIT` where a skill
-says `$X4_TOOLKIT`. On Linux/macOS pass `--shell bash` and use `python3`.
+pass `--shell powershell` there. Skills and AGENTS.md name the toolkit root as `$env:X4_TOOLKIT`,
+`$X4_TOOLKIT`, or (in a copy the installer has not rendered) `TOOLKIT` in double curly braces:
+all three mean the folder in the X4_TOOLKIT environment variable. Write `$env:X4_TOOLKIT` in
+PowerShell and `$X4_TOOLKIT` in bash, whichever form the text shows. On Linux/macOS pass
+`--shell bash` and use `python3`.
 
 Treat `deny` and `ask` as a stop: ask the user before going on. Treat `inert: true` as "nothing
 was checked", never a pass. A refusal that starts `NEEDS YOUR APPROVAL` is the guards asking
