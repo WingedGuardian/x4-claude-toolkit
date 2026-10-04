@@ -310,11 +310,26 @@ def _sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
+def config_files_to_hash(toolkit: Path | None, environ) -> dict[str, Path]:
+    """`label -> path` of every config the hooks could read, for `hash_hooks`.
+
+    THE LABEL NAMES THE LOCATION (v4.0.0 review R5-13). Up to v3.3.1 the label `x4-paths.env`
+    hashed `<tk>/.claude/x4-paths.env`; 4.0 pointed that same label at the root file, so an
+    old baseline and a new run compared two DIFFERENT files under one key. These labels cannot
+    collide with that one, so `hook_same`'s common-key rule names the old key instead of
+    comparing it. X4_CONFIG's file is hashed too when it is set (R5-9): the hooks read it."""
+    out: dict[str, Path] = {}
+    if toolkit is not None:
+        out["x4-paths.env (4.x root)"] = Path(toolkit) / "x4-paths.env"
+        out[".claude/x4-paths.env (3.x)"] = Path(toolkit) / ".claude" / "x4-paths.env"
+    if environ.get("X4_CONFIG"):
+        out["X4_CONFIG"] = Path(environ["X4_CONFIG"])
+    return out
+
+
 def hash_hooks(hook_dir: Path, paths_envs: dict[str, Path] | None = None) -> dict[str, str]:
-    """The hook files plus each named config, `label -> sha | "absent"`. Labels are
-    `x4-paths.env` (the 4.x root file -- the key older artifacts used) and
-    `.claude/x4-paths.env` (3.x), so `hook_same`'s common-key rule keeps old baselines
-    comparable."""
+    """The hook files plus each named config, `label -> sha | "absent"`. The labels come
+    from `config_files_to_hash`."""
     out = {f: _sha((hook_dir / f).read_bytes()) for f in HOOK_FILES}
     for label, p in (paths_envs or {}).items():
         out[label] = _sha(p.read_bytes()) if p.is_file() else "absent"
@@ -486,8 +501,7 @@ def run(argv: list[str]) -> int:
     resolved = resolve()
     print("resolved:", ", ".join(f"{k}={'set' if v else 'EMPTY'}" for k, v in resolved.items()))
     _tk = Path(resolved["X4_TOOLKIT"]) if resolved.get("X4_TOOLKIT") else None
-    paths_envs = ({"x4-paths.env": _tk / "x4-paths.env",
-                   ".claude/x4-paths.env": _tk / ".claude" / "x4-paths.env"} if _tk else None)
+    paths_envs = config_files_to_hash(_tk, env)
     sha_before = hash_hooks(hook_dir, paths_envs)
 
     try:

@@ -455,3 +455,32 @@ def test_the_timeout_failure_is_a_HookOutputError_which_forces_a_REFUSAL():
     for h in timeout_handlers:
         raises = [n for n in ast.walk(h) if isinstance(n, ast.Raise)]
         assert raises, "the timeout handler must RAISE, never fall through to a verdict"
+
+
+# --- R5-9 / R5-13 (v4.0.0 review): which config the hash covers, under an honest label ----
+
+def test_config_hash_labels_cannot_collide_with_the_3x_artifacts_label(tmp_path):
+    """In v3.3.1 the label `x4-paths.env` hashed `<tk>/.claude/x4-paths.env`; 4.0 pointed the
+    SAME label at the root file, so an old baseline and a new run compared two different files
+    under one key. Each label now names its location, so hook_same never compares them."""
+    tk = tmp_path / "tk"
+    got = hfp.config_files_to_hash(tk, {})
+    assert set(got) == {"x4-paths.env (4.x root)", ".claude/x4-paths.env (3.x)"}, got
+    assert got["x4-paths.env (4.x root)"] == tk / "x4-paths.env"
+    assert "x4-paths.env" not in got
+
+
+def test_an_X4_CONFIG_file_is_hashed_too(tmp_path):
+    """The hooks read X4_CONFIG's file when it is set; a run whose X4_CONFIG file changed
+    mid-run is as void as one whose hook changed (R5-9: it was never hashed)."""
+    cfg = tmp_path / "elsewhere.env"
+    got = hfp.config_files_to_hash(tmp_path / "tk", {"X4_CONFIG": str(cfg)})
+    assert got.get("X4_CONFIG") == cfg, got
+
+
+def test_edge_sweep_blanks_X4_CONFIG_with_the_other_path_vars():
+    """R5-9: blanking every _paths variable but X4_CONFIG left the 'unconfigured' sweep
+    reading whatever file X4_CONFIG named."""
+    from conftest import import_gate as _ig
+    es = _ig("edge_sweep")
+    assert "X4_CONFIG" in es._PATH_VARS
