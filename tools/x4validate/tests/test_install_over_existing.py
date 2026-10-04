@@ -3012,3 +3012,66 @@ def test_C1_every_item_of_a_list_is_validated_before_writing(installer, agent, w
     assert r.returncode == 2, _ok(r)
     assert word in r.stdout + r.stderr, _ok(r)
     assert not any(dest.iterdir()), "a refused install wrote something"
+
+
+# --- C4 / C5 (install red-team 2026-10-04): every summary line true and specific -------- #
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_C4_the_summary_ALWAYS_states_the_reference_protection(installer, tmp_path):
+    """No reference/ yet: the summary still says the protection is not applied by the
+    installer, and how it gets applied -- never silence."""
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, _ok(r)
+    line = [ln for ln in r.stdout.splitlines() if ln.startswith("Reference:")]
+    assert line, "the summary says nothing about reference/ protection\n" + _ok(r)
+    body = r.stdout[r.stdout.index(line[0]):]
+    assert "not applied by the installer" in body and "unpack-reference.sh" in body, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_C4_an_unprotected_reference_names_the_exact_apply_command(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    (dest / "reference" / "libraries").mkdir(parents=True)
+    (dest / "reference" / "libraries" / "wares.xml").write_text("<wares/>", encoding="utf-8")
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, _ok(r)
+    assert "python scripts/x4refguard.py apply --yes" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_C5_Next_does_not_ask_to_set_X4_GAME_when_it_is_set(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, _ok(r)
+    assert "set X4_GAME if blank" not in r.stdout, _ok(r)
+    nxt = [ln for ln in r.stdout.splitlines() if ln.startswith("Next:")]
+    assert nxt and "unpack-reference.sh" in nxt[0] and "X4_GAME" not in nxt[0], _ok(r)
+
+
+def test_C5_TWIN_both_installers_name_X4_GAME_only_on_the_BLANK_branch():
+    """Static on purpose: an install run with no --game AUTO-DETECTS the game, which on a
+    developer machine is the real install -- a test must never resolve that. So the blank
+    branch is pinned by text: each installer tests the game value and names X4_GAME there."""
+    sh = INSTALL_SH.read_text(encoding="utf-8")
+    ps = INSTALL_PS1.read_text(encoding="utf-8")
+    assert 'if [ -z "$GAME" ]; then' in sh and 'Next:      X4_GAME is blank' in sh
+    assert 'if (-not $Game) {' in ps and 'Next:      X4_GAME is blank' in ps
+    assert 'set X4_GAME if blank' not in sh + ps
+
+
+def test_C5_setup_says_the_config_is_IN_PLACE_not_already_present(tmp_path):
+    """The installers write x4-paths.env and then run setup.sh, which said 'already present'
+    about the file the installer wrote seconds earlier."""
+    b = _bash()
+    if b is None:
+        pytest.skip("no Git Bash")
+    root = tmp_path / "tk"
+    root.mkdir()
+    shutil.copy2(ROOT / "setup.sh", root / "setup.sh")
+    (root / "x4-paths.env").write_text('X4_GAME="/g"\n', encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("X4_")}
+    env["CLAUDE_PROJECT_DIR"] = str(root)
+    r = subprocess.run([b, str(root / "setup.sh"), "--config-only"], capture_output=True, text=True,
+                       env=env, cwd=str(root))
+    assert "already present" not in r.stdout and "in place" in r.stdout, r.stdout + r.stderr

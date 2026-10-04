@@ -1179,6 +1179,18 @@ def test_a_STALE_config_is_an_opencode_config_FAIL(oc_root, tmp_path):
     _env_file(oc_root / "x4-paths.env", X4_TOOLKIT=oc_root, X4_REFERENCE=moved)
     r = _oc_rows(oc_root, doc.check_opencode)["opencode.config"]
     assert r.status == doc.FAIL and "stale" in r.detail, r
+    # C5 (install red-team 2026-10-04): never a bare "stale" -- say what differs and why
+    assert "rule(s)" in r.detail and "moved" in r.detail, r
+
+
+def test_C5_a_foreign_X4_TOOLKIT_is_NAMED_as_the_cause_of_a_stale_config(oc_root, tmp_path):
+    other = tmp_path / "other-toolkit"
+    other.mkdir()
+    _env_file(other / "x4-paths.env", X4_TOOLKIT=other, X4_REFERENCE=tmp_path / "other-ref")
+    (tmp_path / "other-ref").mkdir()
+    env = dict(os.environ, X4_TOOLKIT=str(other))
+    r = _oc_rows(oc_root, doc.check_opencode, env=env)["opencode.config"]
+    assert r.status == doc.FAIL and "X4_TOOLKIT=" in r.detail and str(other) in r.detail, r
 
 
 def test_a_config_that_cannot_be_rendered_is_UNKNOWN(oc_root, tmp_path):

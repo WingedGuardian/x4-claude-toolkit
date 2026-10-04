@@ -194,6 +194,35 @@ def _current(root: Path) -> str | None:
         return ""
 
 
+def _rules_of(text: str) -> set[str] | None:
+    """`kind:pattern` for every rule in a rendered file, or None when it does not parse."""
+    try:
+        body = json.loads("\n".join(ln for ln in text.splitlines() if not ln.startswith("//")))
+        perm = body.get("permission") or {}
+        return {f"{k}:{p}" for k in ("edit", "bash") for p in (perm.get(k) or {})}
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _stale_why(cur: str, text: str) -> str:
+    """WHY a check says stale (C5, install red-team 2026-10-04: a bare "stale" explained
+    nothing). The deny rules are rendered from the roots the guards resolve NOW -- through
+    the guards' loader, i.e. $X4_TOOLKIT's config -- so the usual causes are a moved
+    reference/ or game, or a check run under a different X4_TOOLKIT than the install."""
+    have, want = _rules_of(cur), _rules_of(text)
+    if have is None or want is None:
+        return " (the file on disk is not a rendered deny-rule file this version can read)"
+    add, drop = sorted(want - have), sorted(have - want)
+    if not add and not drop:
+        return " (same rules, different header: the install root in its first line differs)"
+    eg = "; ".join(x for x in (f"e.g. needs {add[0]}" if add else "",
+                               f"e.g. still holds {drop[0]}" if drop else "") if x)
+    return (f" ({len(add)} rule(s) the current roots need are missing and {len(drop)} on disk are "
+            f"no longer wanted -- {eg}. The rules follow the roots the guards resolve now: "
+            f"reference/ or the game moved, or this check ran under a different X4_TOOLKIT "
+            f"than the install)")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="opencode_config", description=__doc__.splitlines()[0])
     ap.add_argument("action", choices=("render", "write", "check"))
@@ -213,7 +242,8 @@ def main(argv=None) -> int:
         if cur == text:
             print(f"{CONFIG_REL} is fresh")
             return 0
-        print(f"{CONFIG_REL} is {'missing' if cur is None else 'stale'}: run "
+        why = "" if cur is None else _stale_why(cur, text)
+        print(f"{CONFIG_REL} is {'missing' if cur is None else 'stale'}{why}: run "
               f"python .opencode/hooks/opencode_config.py write --root .", file=sys.stderr)
         return 1
     if cur == text:                          # unchanged: never rewritten (a locked file survives)

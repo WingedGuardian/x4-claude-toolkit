@@ -865,7 +865,9 @@ function Find-OcPython {
 #: The twin of install.sh's print_refguard_step: Layer 2 (scripts/x4refguard.py) is an ACL
 #: change, so it is never applied for the user; when x4refguard reports reference/ present and
 #: not protected, the step is named. Silent for protected / unconfigured / unsupported.
-$X4RefguardStepCmd = 'python scripts/x4refguard.py apply'
+#: C4 (install red-team 2026-10-04): the summary ALWAYS states the protection, and the command
+#: carries --yes because x4refguard now counts and ASKS (B3).
+$X4RefguardStepCmd = 'python scripts/x4refguard.py apply --yes'
 function Write-RefguardStep($tk) {
   $script = Join-Path (Join-Path $tk 'scripts') 'x4refguard.py'
   if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { return }
@@ -888,12 +890,35 @@ function Write-RefguardStep($tk) {
     $ref = if ($Reference) { $Reference } else { Join-Path $tk 'reference' }
     if (Test-Path -LiteralPath $ref -PathType Container) { $state = 'unknown (no Python >= 3.10 to ask x4refguard)' }
   }
-  if (@('', 'protected', 'unconfigured', 'unsupported') -contains $state) { return }
   Write-Host ''
-  Write-Host ('Reference: reference/ exists and is NOT OS-protected (x4refguard state: ' + $state + ').')
-  Write-Host '           The installer never changes permissions for you. To add the OS-level'
-  Write-Host ('           deny-delete layer (any process, hooks or not), run in ' + $tk + ':')
-  Write-Host ('             ' + $X4RefguardStepCmd)
+  if ($state -ceq 'protected') {
+    Write-Host 'Reference: reference/ carries the OS-level deny-delete protection (x4refguard: protected).'
+  } elseif ($state -ceq '' -or $state -ceq 'unconfigured') {
+    Write-Host 'Reference: no reference/ tree yet, so nothing is OS-protected. The protection is not applied by the installer:'
+    Write-Host '           bin/unpack-reference.sh applies it to the tree it unpacks (see Next below).'
+  } elseif ($state -ceq 'unsupported') {
+    Write-Host 'Reference: this platform has no OS-level protection mechanism (a disclosed gap; not applied by the installer).'
+  } else {
+    Write-Host ('Reference: reference/ exists and is NOT OS-protected (x4refguard state: ' + $state + ').')
+    Write-Host '           It is not applied by the installer (a permission change is yours to make). To add the'
+    Write-Host ('           OS-level deny-delete layer (any process, hooks or not), run in ' + $tk + ':')
+    Write-Host ('             ' + $X4RefguardStepCmd)
+  }
+}
+
+#: C5 (install red-team 2026-10-04): the twin of install.sh's Next line -- true for THIS install.
+#: The unpack runs through Git Bash: from PowerShell a bare `bash` is the WSL stub (B1).
+function Write-NextStep($tk) {
+  $bashCmd = if ($env:X4_BASH) { '& "' + $env:X4_BASH + '"' } else { '& "<Git Bash>"' }
+  $unpack = 'cd "' + $tk + '"; ' + $bashCmd + ' bin/unpack-reference.sh'
+  $ref = if ($Reference) { $Reference } else { Join-Path $tk 'reference' }
+  if (-not $Game) {
+    Write-Host ('Next:      X4_GAME is blank -- set it in ' + (Join-Path $tk 'x4-paths.env') + ', then  ' + $unpack + '  to build reference/.')
+  } elseif (Test-Path -LiteralPath (Join-Path $ref '.unpacked-and-locked') -PathType Leaf) {
+    Write-Host ('Next:      reference/ is already unpacked; open your agent in "' + $tk + '" and paste SETUP_PROMPT.txt.')
+  } else {
+    Write-Host ('Next:      ' + $unpack + '  to build reference/ from your game.')
+  }
 }
 
 #: The twin of install.sh's precheck_opencode_config (v4.0.0 review R4-5): a READ-ONLY
@@ -2332,6 +2357,7 @@ if ($Method -ne 'global' -and (Test-OpenCodeSelected)) {
 }
 if ($Method -eq 'global') { Write-Host "Global:  skills/agents + X4_* env added to your ~/.claude - works from any mod repo." }
 Write-RefguardStep $Toolkit
+Write-NextStep $Toolkit
 Write-Host ""
 if ($script:X4HEnvState -eq 'set' -or $script:X4HEnvState -eq 'same') {
   Write-Host ('X4_TOOLKIT: ' + $script:X4HEnvMsg)

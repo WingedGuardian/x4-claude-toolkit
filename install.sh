@@ -1010,7 +1010,9 @@ _oc_python() {
 #: when x4refguard reports reference/ present and not protected, say so and name the step.
 #: Silent when it is protected, when there is no reference/ yet ('unconfigured'), and where no
 #: mechanism exists ('unsupported'). install.ps1's Write-RefguardStep prints the same lines.
-X4_REFGUARD_STEP_CMD='python scripts/x4refguard.py apply'
+#: C4 (install red-team 2026-10-04): the summary ALWAYS states the protection -- silence read
+#: as "handled" -- and the command carries --yes, because x4refguard now counts and ASKS (B3).
+X4_REFGUARD_STEP_CMD='python scripts/x4refguard.py apply --yes'
 print_refguard_step() {   # TOOLKIT
   local tk="$1" out state=""
   [ -f "$tk/scripts/x4refguard.py" ] || return 0
@@ -1020,14 +1022,21 @@ print_refguard_step() {   # TOOLKIT
   elif [ -d "${REFERENCE:-$tk/reference}" ]; then
     state="unknown (no Python >= 3.10 to ask x4refguard)"
   fi
-  case "$state" in
-    ""|protected|unconfigured|unsupported) return 0 ;;
-  esac
   echo
-  echo "Reference: reference/ exists and is NOT OS-protected (x4refguard state: $state)."
-  echo "           The installer never changes permissions for you. To add the OS-level"
-  echo "           deny-delete layer (any process, hooks or not), run in $tk:"
-  echo "             $X4_REFGUARD_STEP_CMD"
+  case "$state" in
+    protected)
+      echo "Reference: reference/ carries the OS-level deny-delete protection (x4refguard: protected)." ;;
+    ""|unconfigured)
+      echo "Reference: no reference/ tree yet, so nothing is OS-protected. The protection is not applied by the installer:"
+      echo "           bin/unpack-reference.sh applies it to the tree it unpacks (see Next below)." ;;
+    unsupported)
+      echo "Reference: this platform has no OS-level protection mechanism (a disclosed gap; not applied by the installer)." ;;
+    *)
+      echo "Reference: reference/ exists and is NOT OS-protected (x4refguard state: $state)."
+      echo "           It is not applied by the installer (a permission change is yours to make). To add the"
+      echo "           OS-level deny-delete layer (any process, hooks or not), run in $tk:"
+      echo "             $X4_REFGUARD_STEP_CMD" ;;
+  esac
 }
 
 #: A READ-ONLY (x4lock'd) .opencode/opencode.jsonc that would have to change refuses UP FRONT,
@@ -2358,7 +2367,14 @@ if [ "$METHOD" != global ] && _opencode_selected; then
 fi
 [ "$METHOD" = global ] && echo "Global:    skills/agents + X4_* env added to your ~/.claude — works from any mod repo."
 print_refguard_step "$TOOLKIT"
-echo "Next:      set X4_GAME if blank, then  (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/."
+# C5 (install red-team 2026-10-04): the Next line asked to set X4_GAME even when it was set.
+if [ -z "$GAME" ]; then
+  echo "Next:      X4_GAME is blank -- set it in $TOOLKIT/x4-paths.env, then  (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/."
+elif [ -f "${REFERENCE:-$TOOLKIT/reference}/.unpacked-and-locked" ]; then
+  echo "Next:      reference/ is already unpacked; open your agent in \"$TOOLKIT\" and paste SETUP_PROMPT.txt."
+else
+  echo "Next:      (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/ from your game."
+fi
 echo
 case "$X4_H_ENV_STATE" in
   set|same)

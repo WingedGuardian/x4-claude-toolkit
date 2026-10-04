@@ -1428,8 +1428,20 @@ def check_opencode(ctx: Ctx) -> list[Check]:
         if r.returncode == 0:
             return OK, "the deny rules match the roots the guards resolve now"
         if r.returncode == 1:
-            return FAIL, ("the deny rules are stale -- rendered for roots the guards no longer see "
-                          "(reference/ or the game moved?). Run: " + fix)
+            # C5 (install red-team 2026-10-04): "stale" alone explained nothing. Carry the
+            # renderer's own reason, and name the commonest cause when it applies here: the
+            # guards resolve their roots through $X4_TOOLKIT's config, so an X4_TOOLKIT naming
+            # another toolkit makes a fresh file look stale (and protects the wrong tree).
+            why = (r.stderr or r.stdout).strip().splitlines()
+            why = why[-1][:400] if why else ""
+            tk = ctx.env.get("X4_TOOLKIT")
+            hint = ""
+            if tk and not _same_dir(tk, ctx.root):
+                hint = (" NOTE: the guards here read the config of X4_TOOLKIT=%s, not this root's "
+                        "-- that alone makes the rules differ; point X4_TOOLKIT here (new shells) "
+                        "if this is the toolkit you use." % tk)
+            return FAIL, ("the deny rules on disk differ from what the guards' current roots render: "
+                          "%s.%s Run: %s" % (why or "stale", hint, fix))
         return UNKNOWN, "the deny rules cannot be rendered here: " + (r.stderr or r.stdout).strip()[-300:]
 
     def _userconfig(_):
