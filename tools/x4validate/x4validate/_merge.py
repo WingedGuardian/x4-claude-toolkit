@@ -135,7 +135,7 @@ class Config:
         if self.reference is None:
             raise _paths.Unconfigured(
                 "no reference tree is configured. Set $X4_REFERENCE (or $X4_TOOLKIT) "
-                "in the environment or in .claude/x4-paths.env, or pass --reference. "
+                "in the environment or in <toolkit>/x4-paths.env, or pass --reference. "
                 "Refusing to guess: a relative fallback validates against a tree that "
                 "does not exist and reports every base-game file as a mod error.")
 
