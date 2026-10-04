@@ -7990,7 +7990,7 @@ OLD (f35ff82) vs NEW `hook_facts.facts()` over the 52,276 Bash commands of the h
 payload cwd: 276 rows changed, 275 of them only the informational `cwd` fact (no rule reads it; READ, two
 greps), 1 `rm_in_x4_dir` (an advisory) and 1 `search_rooted_workspace` (a deny: `cd "$X4_TOOLKIT" && grep -r
 ... .`, which the literal-path spelling already got). 0 errors. **RE-DERIVED BY:**
-`test_hook_facts.py::TestARootVariableCdIsTheRoot` (each cd form judged like its literal-path form, with twins
+`.claude/hooks/test_hook_facts.py::TestARootVariableCdIsTheRoot` (each cd form judged like its literal-path form, with twins
 for an unset root, an assignment, a non-root variable and a sibling suffix) and the verify-hook-tests mutants
 "a cd to a root variable lands in that root", "an unset root is never substituted", "only the LEADING variable
 is replaced".

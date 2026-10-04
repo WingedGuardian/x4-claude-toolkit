@@ -1052,7 +1052,7 @@ def test_ask_help_RUNS_without_lxml(tmp_path):
     import os, subprocess, sys
     from pathlib import Path as P
     here = P(ask.__file__).resolve().parent
-    env = dict(os.environ, PYTHONPATH=str(_no_lxml_dir(tmp_path)))
+    env = dict(os.environ, PYTHONPATH=str(_no_lxml_dir(tmp_path)))  # env-ok: a child process's environment, not configuration
     r = subprocess.run([sys.executable, str(here / "ask.py"), "--help"], capture_output=True,
                        text=True, env=env, cwd=str(tmp_path), timeout=120)
     assert r.returncode == 0, r.stderr[-800:]
@@ -1061,7 +1061,7 @@ def test_ask_help_RUNS_without_lxml(tmp_path):
 
 def test_TWIN_the_shadow_really_hides_lxml(tmp_path):
     import os, subprocess, sys
-    env = dict(os.environ, PYTHONPATH=str(_no_lxml_dir(tmp_path)))
+    env = dict(os.environ, PYTHONPATH=str(_no_lxml_dir(tmp_path)))  # env-ok: a child process's environment, not configuration
     r = subprocess.run([sys.executable, "-c", "import lxml"], capture_output=True, text=True,
                        env=env, cwd=str(tmp_path), timeout=60)
     assert r.returncode != 0 and "test shadow" in r.stderr
