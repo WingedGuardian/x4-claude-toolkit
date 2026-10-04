@@ -153,7 +153,8 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
              method: str = "separate", from_dest: bool = False,
              source: pathlib.Path | None = None, over_existing: bool = True,
              scrub: tuple = (), env_write: bool = False, regkey: str | None = None,
-             detect_path: pathlib.Path | None = None, shell: str = "/bin/bash"):
+             detect_path: pathlib.Path | None = None, shell: str = "/bin/bash",
+             omit: tuple = ()):
     """Run ONE of the two installers with identical intent.
 
     Parameterised rather than duplicated, because the point is that both reach the
@@ -194,6 +195,8 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
         "reference": (dest / "reference").as_posix(),
         "extensions": (tmp_path / "game" / "extensions").as_posix(),
     }
+    for k in omit:                      # let the installer DERIVE these (e.g. reference)
+        common.pop(k)
     # OVERRIDES REPLACE, they do not append. Appending a second `--game` is
     # tolerated by bash (last wins) and REJECTED by PowerShell with "parameter
     # 'Game' is specified more than once" -- so the harness would have reported a
@@ -2949,3 +2952,33 @@ def test_the_opencode_token_is_rendered_for_OPENCODES_shell(installer, oc_shell,
     ag = (dest / ".agents" / "skills" / "x4-balance" / "SKILL.md").read_text(encoding="utf-8")
     assert want in oc and not_want not in oc, oc[:400]
     assert "$env:X4_TOOLKIT" in ag and "{{TOOLKIT}}" not in ag, ag[:400]
+
+
+# --- pre-arc minor (v4.0.0 review): DERIVED paths are spelled alike by both installers ----
+
+def _cfg_values(f: pathlib.Path) -> dict:
+    out = {}
+    for line in f.read_text(encoding="utf-8").splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip().strip('"')
+    return out
+
+
+def test_both_installers_spell_the_DERIVED_suffix_the_SAME_way(tmp_path):
+    """install.sh derived `<toolkit>/reference`, `<profile>/debug.txt`, `<game>/extensions`
+    with '/', install.ps1 with Join-Path's backslash -- two configs from one input. The
+    derived suffix is '/' in both now (bash, PowerShell and Python all read it)."""
+    got = {}
+    for inst in ("sh", "ps1"):
+        base = tmp_path / inst
+        base.mkdir()
+        dest = _fresh(base)
+        r = _install(inst, base, dest, omit=("reference", "extensions"))
+        assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+        v = _cfg_values(dest / "x4-paths.env")
+        got[inst] = {k: v.get(k, "")[-len(suffix):] for k, suffix in
+                     (("X4_REFERENCE", "/reference"), ("X4_DEBUGLOG", "/debug.txt"),
+                      ("X4_EXTENSIONS", "/extensions"))}
+    assert got["sh"] == got["ps1"] == {"X4_REFERENCE": "/reference", "X4_DEBUGLOG": "/debug.txt",
+                                        "X4_EXTENSIONS": "/extensions"}, got

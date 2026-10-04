@@ -338,14 +338,21 @@ function Copy-TrackedSet($dest) {
 #: The key=value lines Write-PathsEnv OWNS, as it would write them now. Factored
 #: out so the precondition and the writer cannot disagree about what "would
 #: change" means.
+#: A DERIVED path, spelled as install.sh spells it: '<base>/<leaf>'. Join-Path wrote a
+#: backslash, so one input gave two configs (v4.0.0 review, pre-arc minor). The base keeps
+#: whatever spelling the user gave it; only the derived separator is pinned.
+function Join-DerivedPath($base, $leaf) {
+  return (([string]$base).TrimEnd([char]92, [char]47) + '/' + $leaf)
+}
+
 function Get-OwnedEnvLines($t) {
-  $ref = if ($Reference) { $Reference } else { Join-Path $t 'reference' }
-  $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-Path $Game 'extensions' } else { '' }
+  $ref = if ($Reference) { $Reference } else { Join-DerivedPath $t 'reference' }
+  $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-DerivedPath $Game 'extensions' } else { '' }
   $lines = @(('X4_TOOLKIT="' + (Get-EscapedEnvValue $t) + '"'))
   if ($Game)      { $lines += ('X4_GAME="' + (Get-EscapedEnvValue $Game) + '"') }
   $lines += ('X4_REFERENCE="' + (Get-EscapedEnvValue $ref) + '"')
   if ($Profile)   { $lines += ('X4_PROFILE="' + (Get-EscapedEnvValue $Profile) + '"')
-                    $lines += ('X4_DEBUGLOG="' + (Get-EscapedEnvValue (Join-Path $Profile 'debug.txt')) + '"') }
+                    $lines += ('X4_DEBUGLOG="' + (Get-EscapedEnvValue (Join-DerivedPath $Profile 'debug.txt')) + '"') }
   if ($Mods)      { $lines += ('X4_MODS="' + (Get-EscapedEnvValue $Mods) + '"') }
   if ($ext)       { $lines += ('X4_EXTENSIONS="' + (Get-EscapedEnvValue $ext) + '"') }
   if ($XRCatTool) { $lines += ('XRCATTOOL="' + (Get-EscapedEnvValue $XRCatTool) + '"') }
@@ -2026,11 +2033,11 @@ function Install-Global($t) {
     if ($null -eq $cfg) { $cfg = [pscustomobject]@{} }
   }
   if (-not $cfg.PSObject.Properties['env']) { $cfg | Add-Member -NotePropertyName env -NotePropertyValue ([pscustomobject]@{}) }
-  $ref = if ($Reference) { $Reference } else { Join-Path $t 'reference' }
-  $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-Path $Game 'extensions' } else { '' }
+  $ref = if ($Reference) { $Reference } else { Join-DerivedPath $t 'reference' }
+  $ext = if ($Extensions) { $Extensions } elseif ($Game) { Join-DerivedPath $Game 'extensions' } else { '' }
   function setenv($k,$v){ if ($v) { if ($cfg.env.PSObject.Properties[$k]) { $cfg.env.$k = $v } else { $cfg.env | Add-Member -NotePropertyName $k -NotePropertyValue $v } } }
   setenv X4_TOOLKIT $t; setenv X4_REFERENCE $ref; setenv X4_GAME $Game; setenv X4_PROFILE $Profile
-  if ($Profile) { setenv X4_DEBUGLOG (Join-Path $Profile 'debug.txt') }
+  if ($Profile) { setenv X4_DEBUGLOG (Join-DerivedPath $Profile 'debug.txt') }
   setenv X4_MODS $Mods; setenv X4_EXTENSIONS $ext; setenv XRCATTOOL $XRCatTool
   # BACK IT UP FIRST. Write-PathsEnv and Copy-Toolkit both do; this one did not, and
   # it rewrites the user's GLOBAL settings.json.
