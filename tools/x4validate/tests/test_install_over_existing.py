@@ -685,7 +685,12 @@ def test_an_IN_PLACE_dry_run_runs_NOTHING(installer, tmp_path):
         "an in-place --dry-run printed no dry-run banner:\n%s" % out[-1200:])
     assert "install complete" not in low, (
         "an in-place --dry-run reported a completed INSTALL:\n%s" % out[-1200:])
-    assert "modding toolkit setup" not in low, (
+    # DERIVED from setup.sh's own banner, never retyped: the v4.0 rename changed it, and a
+    # retyped literal of the OLD banner would have made this assertion unable to go red.
+    banner = re.search(r'^echo "(=== .+ setup ===)"', (ROOT / "setup.sh").read_text(
+        encoding="utf-8"), re.M)
+    assert banner, "setup.sh has no '=== ... setup ===' banner to look for -- not checked"
+    assert banner.group(1).lower() not in low, (
         "an in-place --dry-run RAN setup.sh -- it syncs dependencies and writes to "
         "disk:\n%s" % out[-1500:])
     assert marker.exists() == had_venv, "a dry run created or removed the virtualenv"

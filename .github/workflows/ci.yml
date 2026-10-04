@@ -1,4 +1,4 @@
-# Continuous integration for the X4 Claude Code Modding Toolkit.
+# Continuous integration for the X4 AI Assistant Toolkit.
 #
 # WHY THIS EXISTS. Until now every release was verified only on the author's machine,
 # against the author's own large mod install. That is the one environment guaranteed NOT

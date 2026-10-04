@@ -1,302 +1,236 @@
 # Changelog
 
-## Unreleased
+## v4.0.0 — 2026-10-03
 
-- **Changed: the path config lives at `<toolkit>/x4-paths.env`** (for `--method in-game`, the game
-  folder), beside `x4-paths.env.example`, instead of `<toolkit>/.claude/x4-paths.env` -- so a Codex-
-  or OpenCode-only install no longer needs a `.claude/` folder for it. The 3.x location is still
-  read for all of 4.x, with a one-line deprecation notice. It is MOVED, never copied, by the
-  installers on upgrade, by `deploy-claude-dir.py` for a game root, and by the new
-  `python scripts/x4config.py migrate --apply` for a `git pull` upgrade (`status` shows what is
-  read). A read-only (x4lock'd) config moves too and stays locked. Two copies that differ are
-  refused, naming the differing keys, never their values.
-- **Fixed: with no path config the guards no longer assume `<toolkit>/reference` silently.** Every
-  verdict is unchanged (the default `reference/` hard block stays), and the gap is now named once
-  per session (Claude Code and Codex) and by `x4doctor` (`roots.config` FAILs; OpenCode has no
-  session start, so only `x4doctor` reports it there). A deprecated or doubled config is named the
-  same way.
-- **Fixed: the bash and Python loaders now pick the config file by one rule**, pinned by a matrix
-  test: Python honours `$X4_CONFIG` (naming no file reads none) and no longer walks up from the
-  current directory past a named `$X4_TOOLKIT`. `scripts/generate-baseline.sh` stopped reading the
-  config itself (a third loader, in which the file beat the environment) and uses the shared one.
-- **Fixed: an OpenCode-only install can unpack the reference tree** (`bin/unpack-reference.sh`
-  looks in `.opencode/hooks/` too), and `setup.sh` never creates a blank root config that would
-  shadow a 3.x one.
-- **Upgrade note:** to go back to 3.x, move `x4-paths.env` back to `.claude/x4-paths.env`.
+**The toolkit is now the "X4 AI Assistant Toolkit"** and works with more than one coding agent:
+**Claude Code and OpenAI Codex** are first-class, **OpenCode** is best effort (CLI only, built from
+its docs and source, not measured), and any other agent can be connected through `ADAPTING.md`.
+The repository becomes `x4-ai-toolkit` (GitHub redirects the old `x4-claude-toolkit` address), and
+the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
 
-- **`x4doctor` now really checks the OS-level delete protection on `reference/`.** Its
-  `layer2.reference` row asked a function no module had (`x4lock.deny_delete_state`; the protection
-  shipped as `scripts/x4refguard.py`), so it said UNKNOWN on every machine -- and a Codex install with
-  an unprotected `reference/` was never told. It now asks `x4refguard` and FAILs that case, naming
-  `python scripts/x4refguard.py apply`. The old tests stubbed the same missing function and agreed
-  with it; a new test uses the real module.
-- **Any agent can now be connected to the guards, and proved.** `ADAPTING.md` is written for an
-  AI agent the toolkit has no adapter for: how to measure whether its hooks fail open or closed,
-  the guard contract (`x4guard check`), worked Claude Code and Codex examples, where an adapter
-  goes, the proof required before claiming protection, and an upstream template. The proof is
-  the new **`x4guard conformance`**: it replays every guard case of the hook test suite, plus
-  neutral PowerShell, space-in-path and drive-path cases, through any adapter and compares each
-  answer with the guards' own, per case (exit 0 agree, 1 disagree, 2 cannot evaluate, 3 too
-  little examined -- never 0 on nothing). The Codex conformance test now runs on it, with its
-  sandbox under the toolkit rather than the system temp folder. A toy agent whose adapter was
-  written cold from `ADAPTING.md` alone runs through it in the test suite, and
-  `docs/ADAPTING-COLD-TEST.md` repeats that cold exercise once per release.
-- **`SETUP_PROMPT.txt` works for any agent.** It asks the agent to identify itself, check for an
-  adapter, never approve hooks on your behalf, read `ADAPTING.md` when it has none, and report
-  `x4doctor`'s live/not-live layers honestly.
+### Upgrading from 3.x
 
-- **OpenCode, best effort (CLI only, from docs, not measured).** `--agent opencode` installs
-  an OpenCode target instead of refusing, and `--agent all` (the default) now includes it.
-  Two layers: deny rules in a per-machine `.opencode/opencode.jsonc`, rendered at install
-  from the roots the guards resolve (edits into `reference/`, `.cat`/`.dat` writes, deletion
-  commands aimed at `reference/`), and a plugin, `.opencode/plugins/x4guard.js`, that asks the
-  same guards as Claude Code and Codex before every `bash`, `edit`, `write` and `apply_patch`
-  and blocks on a refusal. It fails closed when Python, the adapter or the guards cannot
-  answer. The OpenCode **desktop app is not supported** (its plugin hooks never fire,
-  anomalyco/opencode#38604). Nothing here was run inside OpenCode: README's OpenCode section
-  lists what was read and what can switch the layers off. `x4doctor --agent opencode` and
-  `x4lock` know the new target; the generator writes `.opencode/` from `agent/`.
-- **An agent can save its notes again, and is told how to edit a locked file.** A live Codex run
-  could not save its notes: the guard blocked `X4-NOTES.md` in the game root, though the
-  instructions send notes there, and `KNOWLEDGEBASE.md` failed silently on x4lock's read-only lock.
-  Now exactly `<project root>/X4-NOTES.md` (and the migration's `X4-NOTES.pre-4.0.md`) is allowed;
-  the same name deeper in the game folder is still blocked. A write to a file x4lock has locked
-  gets a note naming the unlock, edit and relock commands; the lock itself stays. The
-  game-folder block now says where notes, game facts and mod files go. New:
-  `x4lock.py protected <path>`.
-- **The installers now set `X4_TOOLKIT` for you** (Windows: your user environment, through the
-  new `scripts/x4-userenv.ps1`; Linux/macOS: one marked block in `~/.zshenv`, `~/.bash_profile`
-  on macOS bash, or `~/.bashrc`). A value already pointing at another toolkit is reported and
-  left alone; `--no-env` / `-NoEnv` opts out. The POSIX paths are not device-tested.
-- **`--agent auto`** installs the agents found on `PATH` or already in the destination, says
-  which and why, and installs `all` (saying so) when it finds none.
-- **Upgrading from 3.x keeps an edited `CLAUDE.md`** as `X4-NOTES.pre-4.0.md`. "Edited" means
-  its hash matches no `CLAUDE.md` a release tag shipped (`scripts/shipped-instruction-hashes.txt`,
-  generated by `tools/x4validate/scripts/gen-shipped-hashes.py`). A known shipped `AGENTS.md`
-  is replaced rather than moved aside. The canonical hash drops a BOM, CRs and trailing
-  newlines; macOS `sed` is not measured, and a failure there only keeps a file, never loses one.
-- **`--codex-doc-max-bytes N`** (opt-in) raises Codex's `project_doc_max_bytes` in the
-  project's `.codex/config.toml`, because the root and nested `AGENTS.md` share one 32 KiB budget.
-- Maintainers: after tagging a release, run `gen-shipped-hashes.py --write` and commit the
-  result; `test_shipped_instruction_hashes.py` fails until you do.
+1. **The path config moves to the toolkit root**: `<toolkit>/x4-paths.env` (for `--method
+   in-game`, the game folder) instead of `<toolkit>/.claude/x4-paths.env`. The installers MOVE it
+   on upgrade; after a `git pull`, run `python scripts/x4config.py migrate --apply` (`status` shows
+   which file is read). The 3.x location is still read for all of 4.x, with a one-line notice. A
+   read-only (x4lock'd) config moves too and stays locked. Two copies that differ are refused,
+   naming the differing keys, never their values. To go back to 3.x, move the file back.
+2. **The installers set `X4_TOOLKIT` for you** at OS level (Windows: your user environment;
+   Linux/macOS: one marked block in your shell's startup file). A value that already names a
+   different toolkit is reported and left alone. `--no-env` / `-NoEnv` opts out and prints the
+   command to run yourself. Open a new terminal afterwards.
+3. **An edited `CLAUDE.md` is kept, not overwritten**: if its hash matches no `CLAUDE.md` a release
+   tag shipped, it is moved to `X4-NOTES.pre-4.0.md` (or a dated name) before the 4.0 file is
+   copied. Move the notes you want into **`X4-NOTES.md`**, which the toolkit never writes.
+4. **`AGENTS.md` is new** (the instruction file for Codex, OpenCode and other agents). No release
+   before 4.0 shipped one (0 of 23 tags), so an `AGENTS.md` already in the destination is yours:
+   it is moved aside to `AGENTS.pre-4.0.md` (or a dated name), never overwritten.
+5. **Codex users must review the hooks.** Codex runs a project hook only after you review it, and
+   says nothing when it skips one. After installing: open `codex` in the folder, trust it, review
+   the X4 hooks in `/hooks`, then run `python scripts/x4doctor.py --agent codex`. See below.
+6. `--dry-run` names the `CLAUDE.md` and `AGENTS.md` moves without making them.
 
-- **A relative path in a shell command is now judged where the shell runs.** The guards ignored
-  the `cwd` that Claude Code and Codex send with every call. So `rm -f reference/...` or
-  `echo x > reference/...`, run from the folder holding `reference/`, was allowed, while the same
-  command with an absolute path was blocked (a live Codex run overwrote a file that way).
-  Relative operands now resolve against that `cwd`, in the Bash and PowerShell hooks, the Codex
-  adapter and `x4guard check` alike. It was measured over 53,828 historical commands before
-  shipping: it adds no new confirmation prompt and no new block. Three commands change, and only
-  two of those gain an advisory (BLIND-SPOTS F147).
-- **`AGENTS.md` now carries the full shared instructions** (Codex and other agents), not a
-  stopgap pointing at `CLAUDE.md`. Both files are generated from one agent-neutral core
-  (`agent/instructions/core.md`) plus a per-agent addendum (`claude.md`, `codex.md`):
-  - the generator refuses, never truncates: `AGENTS.md` over 32,768 bytes (Codex's measured cut),
-    `CLAUDE.md` over 40,000 characters, a core naming a Claude-only mechanism, or a leftover
-    `{{TOKEN}}`. Every run prints both sizes;
-  - maintainer-only guidance (derived-artifact freshness, narrowing steps, the bug funnel,
-    concurrent sessions, trusting tools before a modlist lock, and the Python-internal routing
-    rows) moved verbatim into a new **`x4-toolkit-dev`** skill;
-  - your own notes go in `X4-NOTES.md`, which the toolkit never writes.
-- **Skills for Codex and generic agents** are generated under `.agents/skills/` (the same 11
-  skills; the toolkit root is written `$X4_TOOLKIT`, which `$env:X4_TOOLKIT` replaces in
-  PowerShell).
-- **`reference/` is now protected at the OS level (Layer 2).** The new
-  `scripts/x4refguard.py status | apply | remove` covers it on Windows with one inherited
-  deny for your own account, `(OI)(CI)(DE,DC,WD,AD)`. That blocks deleting, renaming,
-  overwriting and creating anything inside the tree. Reads still work, and you can lift
-  it yourself without elevation. Linux and macOS get `chattr +i` / `chflags uchg`, or a
-  `chmod a-w` fallback: best effort, not device-tested. `bin/unpack-reference.sh` applies
-  it after a verified unpack. It refuses a forced re-unpack while the protection is on,
-  and every recovery message now names the lift (`x4refguard.py remove`) before the `rm`.
-  `x4lock status` prints one informational line for it.
+### Every agent: one source, per-agent files
+
+- **Agent-facing files are generated from one neutral source tree, `agent/`**, by
+  `tools/x4validate/scripts/gen-agent-trees.py`: `CLAUDE.md`, `AGENTS.md`, `.claude/`
+  (agents, skills, `settings.json`, hooks), `.codex/`, `.agents/skills/` and `.opencode/`. Edit
+  `agent/`, then regenerate; a test fails if a generated file drifts from its source. The
+  generator rewrites only stale files and names each one, never deletes, and refuses (rc 2)
+  rather than truncating or guessing: `AGENTS.md` over 32,768 bytes (where Codex cuts it,
+  MEASURED), `CLAUDE.md` over 40,000 characters, a shared core naming a Claude-only mechanism, a
+  leftover `{{TOKEN}}`, a non-UTF-8 file, invalid YAML or an unclosed frontmatter.
+- **`AGENTS.md` carries the full shared instructions**, built from the same agent-neutral core as
+  `CLAUDE.md` plus a per-agent addendum. Maintainer-only guidance moved verbatim into a new
+  **`x4-toolkit-dev`** skill.
+- **The 11 skills are installed for every agent**: `.claude/skills/` (Claude Code),
+  `.agents/skills/` (Codex and generic agents), `.opencode/skills/` (OpenCode). Outside Claude
+  Code they name the toolkit `{{TOOLKIT}}`, which the installer renders as `$env:X4_TOOLKIT` on
+  Windows (Codex runs PowerShell there) and `$X4_TOOLKIT` elsewhere.
+- **The installers ship each agent's own files: `--agent claude | codex | generic | opencode |
+  all | auto`** (default `all`, which includes OpenCode). `auto` installs the agents it finds on
+  `PATH` or already in the destination, says which and why, and installs `all` (saying so) when
+  it finds none. Both installers hold the same item sets (a test requires it). `agent/` is never
+  installed. `--method global` stays a Claude-only layout; another agent there is refused.
+- **`--codex-doc-max-bytes N`** (opt-in) writes `project_doc_max_bytes = N` into the project's
+  `.codex/config.toml`, because the root and every nested `AGENTS.md` share one 32 KiB budget
+  (MEASURED). An existing different value is reported and left alone.
+
+### Codex
+
 - **Codex users must re-review hooks** (first Codex hook definitions, template v1).
   codex-hooks-template: d6fef82e09d3f54afbda775d1646bd8968a02b2893de8c867476aca17eef4d19
   Codex runs a project hook only after you review it, and silently skips one whose definition
-  changed. After installing or updating, open Codex in the game folder, review the X4 hooks
-  (`/hooks`), and check that each session starts with `X4 GUARDS LIVE (codex hooks v1)`.
-- **Codex adapter (Plan 2 lane B).** `.codex/hooks/` carries every guard byte for byte plus
-  `codex_adapter.py`, which translates Codex hook payloads to the same guards Claude Code runs:
-  shell commands are judged as the shell that runs them (PowerShell on Windows, where Codex
-  labels them "Bash"), `apply_patch` (also when run through the shell) by every file it adds,
-  updates, deletes or moves, relative to the session folder. Only a JSON deny blocks in Codex
-  (measured: a crash or `exit 2` lets the command run), so the PowerShell/bash entry wrappers turn
-  every failure into a deny. `codex_trust.py report` tells whether Codex is actually running the
-  hooks (trusted / untrusted / modified / disabled); `.codex/rules/x4.rules` blocks `git add -A`
-  even when the hooks are not running. A conformance suite replays every Claude hook case
-  through the Codex chain and requires equal verdicts.
+  changed (MEASURED). After installing or updating, open Codex in the game folder, review the X4
+  hooks (`/hooks`), and check that each session starts with `X4 GUARDS LIVE (codex hooks v1)`.
+  `AGENTS.md` tells Codex to look for that banner and, if it is missing, to warn you before any
+  write or delete. The banner says what is checked: `shell commands and apply_patch are checked
+  (input typed into a running shell is not)`.
+- **Three layers.** (1) `.codex/hooks/` carries every guard byte for byte plus an adapter that
+  translates Codex's hook payloads to the same guards Claude Code runs. Shell commands are judged
+  as the shell that runs them (PowerShell on Windows, where Codex labels them "Bash");
+  `apply_patch`, also when run through the shell, by every file it adds, updates, deletes or
+  moves. Only a JSON deny blocks in Codex (MEASURED: a crash or `exit 2` lets the command run), so
+  the entry wrappers turn every failure into a deny; one deadline bounds a whole patch. (2)
+  `.codex/rules/x4.rules` blocks `git add -A` and asks before `x4refguard.py remove` even when the
+  hooks are not running. (3) The OS-level protection of `reference/` (below). A conformance suite
+  replays every Claude hook case through the Codex chain and requires equal verdicts.
+- The installer renders `.codex/hooks.json` for the destination's absolute folder. It never trusts
+  a folder or approves a hook for you; it prints the review steps.
+- `codex_trust.py report` tells whether Codex is actually running the hooks (trusted, untrusted,
+  modified, disabled), reproducing Codex's own trust hash.
+- **What the Codex hooks cannot see is disclosed in the README**: a shell `workdir`, input typed
+  into a running shell, new and MCP tools (logged, allowed), the narrow rules fallback, a moved
+  folder (hooks off until re-reviewed), and validator feedback for a patch applied through the
+  shell. Linux and macOS support for Codex is best effort and not device-tested.
 
-- Individual-tool audit fixes: BaseX validates attribute QNames and certifies raw
-  zeros only for a restricted whole-database content-search grammar. Other raw
-  queries still report positives; unrecognized zeros return 4.
-- BaseX `refs`, `attr` and `xq` accept optional `--limit`/`--offset` over whole
-  items, retaining unlimited defaults and full-result totals/negative checks.
-  Unsupported requested paging returns 2 without unbounded fallback.
-- Xref validates every TSV row and binds newly built indexes and exclusions to
-  SHA-256 digests. Unsigned legacy positives warn; uncertifiable absence returns 2.
-- Invalid DEFLATE saves and corrupt/incompatible effective SQLite stores return
-  2 without tracebacks. SQLite filenames escape URI characters and remain read-only.
-  Malformed effective-store freshness vectors that fail comparison also return 2;
-  valid stale-store reads and ordinary SQL error semantics are preserved.
-  Effective-store reader changes invalidate existing engine freshness fingerprints;
-  rebuild artifacts explicitly before making fresh claims.
+### OpenCode (best effort, CLI only, from docs, not measured)
 
-- **The file guard allowed `CLAUDE.md` in the game root but denied `AGENTS.md`**, the same file
-  for another agent (Codex). `protect-files.sh` now treats `AGENTS.md` like `CLAUDE.md`, matched on
-  the exact file name; a twin test keeps `notagents.md` denied.
-- The `cross-file-impact` subagent pointed at a "gameplay-impact advisor" that does not exist; it
-  now names the `x4-balance` and `x4-mod-interaction` skills. Both subagents run on `sonnet`.
-- `x4-scaffold` treats `content.xml` edits as advisory, matching `CLAUDE.md`.
-- **Agent-facing files are now generated from a neutral source tree, `agent/`.** That covers
-  `CLAUDE.md`, `.claude/agents/`, `.claude/skills/`, `.claude/settings.json` and `.claude/hooks/`.
-  Edit `agent/`, then run `tools/x4validate/scripts/gen-agent-trees.py`.
-  - The markdown files differ from before only by a `GENERATED` banner line. `settings.json`
-    and the hook scripts are byte-identical copies.
-  - A test fails if any of them drifts from its source.
-  - The generator rewrites only stale files, and names each one it overwrites.
-  - It never deletes: a file it did not produce is reported, and the run refuses.
-- **A generated `AGENTS.md`** in the toolkit repo (from `agent/instructions/codex.md`; the
-  installers do not ship it yet) gives Codex and other agents the rules they could not otherwise
-  see:
-  - read `CLAUDE.md` in full;
-  - edit `agent/`, not generated files;
-  - the guards do not protect you under Codex (its hooks fail open, measured);
-  - git hygiene.
+- `--agent opencode` installs two layers: deny rules in a per-machine `.opencode/opencode.jsonc`,
+  rendered at install from the roots the guards resolve (edits into `reference/`, `.cat`/`.dat`
+  writes, deletion commands aimed at `reference/`), and a plugin, `.opencode/plugins/x4guard.js`,
+  that asks the same guards before every `bash`, `edit`, `write` and `apply_patch` and blocks on a
+  refusal. It fails closed when Python, the adapter or the guards cannot answer. The game-install
+  block is plugin-only.
+- The OpenCode **desktop app is not supported** (its plugin hooks never fire,
+  anomalyco/opencode#38604). Nothing here was run inside OpenCode: the README's OpenCode section
+  lists what was read and what can switch the layers off.
 
-  It is a stopgap until the shared instructions fit Codex's 32 KiB limit. The generator refuses
-  to write it any larger, because Codex silently drops text past that size.
-- **`x4guard check`** (`.claude/hooks/x4guard.py`): ask the guards for a verdict from any agent,
-  with no side effects. `--shell` names the shell that will EXECUTE the command, because Codex
-  labels PowerShell "Bash".
-  - A relative `--path` is resolved from the caller's working directory.
-  - A delete is judged as the stricter of a write and an `rm` of that path.
-  - Each of these is an inert deny, never an allow: a guard that cannot run, a guard that
-    reports it checked nothing, and a copy outside `.claude/hooks` with `X4_TOOLKIT` unset.
-  - A guard that hangs is bounded: its whole process tree is killed (Windows `taskkill /T`,
-    POSIX process group), and `check` returns within `X4_GUARD_TIMEOUT_S` + 8 s even when the
-    kill fails. Before this, a guard's child process held the pipes open and stretched a 2 s
-    budget to 10.9 s.
-  - `X4_GUARD_TIMEOUT_S` (default 25) is now ONE budget per check: a delete's two guards share
-    it. An invalid value is an inert deny naming it, not a traceback.
-  - An inert verdict names the failing guard's own reason (or its stderr). A delete keeps every
-    guard's advisory. The delete probe is `rm -rf --`; that changes no verdict today.
-- **`X4_GUARD=off`**, the launch-time escape hatch the design describes, now exists. With the
-  variable set to exactly `off` (any other value leaves the guards on), `protect-bash.sh` and
-  `protect-files.sh` turn a deny or an ask into an advisory that names what it would have been,
-  every override is logged to `GUARDS-OFF.log` beside the backups, the session starts with a
-  GUARDS OFF banner, and `x4guard check` reports GUARDS OFF on every verdict instead of an
-  allow. A guard that could not check still asks.
-- **Lifting the OS protection on `reference/` asks first.** `x4refguard.py remove`, and a raw
-  `icacls ... /remove` or `/reset` aimed at the reference root (or, with `/T`, a folder above
-  it), now ask for confirmation: lifting a protection is the user's step. The locked-reference
-  refusal now says to lift that protection before removing the sentinel.
-- `gen-agent-trees.py` refuses (rc 2) on a malformed `agent/` source: a non-UTF-8 file, invalid
-  YAML, an unclosed frontmatter, `tools` that is not a list, or an agent name that is not plain
-  or is duplicated. A description that YAML would misread is emitted quoted. A non-UTF-8
-  generated file is reported STALE instead of crashing `--check`.
+### Any other agent
+
+- **`ADAPTING.md`** is written for an agent the toolkit has no adapter for: how to measure whether
+  its hooks fail open or closed, the guard contract, worked Claude Code and Codex examples, where
+  an adapter goes, the proof required before claiming protection, and an upstream template.
+- **`x4guard check`** (`.claude/hooks/x4guard.py`, also under `.codex/hooks/` and
+  `.opencode/hooks/`) asks the guards for a verdict with no side effects. `--shell` names the
+  shell that will EXECUTE the command. A relative `--path` resolves from the caller's working
+  directory; a delete is judged as the stricter of a write and an `rm -rf --` of that path and
+  keeps every guard's advisory. A guard that cannot run, reports it checked nothing, or a copy outside
+  the agent hook folders with `X4_TOOLKIT` unset gives an inert DENY naming the reason, never an allow. One budget
+  (`X4_GUARD_TIMEOUT_S`, default 25 s) covers the whole check; a hung guard's process tree is
+  killed and the check returns within that budget + 8 s even when the kill fails (a guard's child
+  once stretched a 2 s budget to 10.9 s). A timeout names the budget that ran out.
+- **`x4guard conformance`** is the proof: it replays every guard case of the hook test suite,
+  plus neutral PowerShell, space-in-path and drive-path cases, through any adapter and compares
+  each answer with the guards' own, per case (exit 0 agree, 1 disagree, 2 cannot evaluate, 3 too
+  little examined -- never 0 on nothing). A toy agent whose adapter was written cold from
+  `ADAPTING.md` alone runs through it in the test suite, and `docs/ADAPTING-COLD-TEST.md` repeats
+  that cold exercise once per release.
+- **`SETUP_PROMPT.txt` works for any agent**: it asks the agent to identify itself, check for an
+  adapter, never approve hooks on your behalf, read `ADAPTING.md` when it has none, and report
+  `x4doctor`'s live and not-live layers honestly.
+
+### New: `x4doctor` -- are the guards live here?
+
+- **`python scripts/x4doctor.py [--root DIR] [--agent NAME] [--json]`** is a read-only health
+  check per installed agent target, on Python 3.10 with no dependencies: the bash, python and jq
+  the guards resolve (each executed), the roots the guards see vs the tools, deployed-vs-source
+  parity, a guard self-test with controls that must deny and controls that must allow (so a guard
+  that denies everything cannot pass), Claude's hook wiring and `disableAllHooks`, Codex's trust
+  and per-hook review state, OpenCode's plugin and rendered rules, `X4_GUARD`, the OS-level
+  `reference/` protection and the x4lock state. Every row is OK, FAIL, UNKNOWN or N/A; a run that
+  checked nothing never exits 0.
+- Measured while building it: with `X4_TOOLKIT` unset and no path config in a game root, the
+  guards fell back to `<game>/reference` and ALLOWED a write and a delete into the configured
+  reference tree (4 of 4 deny controls, check-only). The verdicts are unchanged in 4.0, but the
+  state is no longer silent: `x4doctor`'s `roots.config` FAILs, and Claude Code and Codex name it
+  once per session (OpenCode has no session start, so only `x4doctor` reports it there). A
+  deprecated or doubled config is named the same way.
+
+### Safety
+
+- **`reference/` is protected at the OS level.** `python scripts/x4refguard.py status | apply |
+  remove`: on Windows one inherited deny for your own account, `(OI)(CI)(DE,DC,WD,AD)`, blocks
+  deleting, renaming, overwriting and creating anything inside the tree; reads still work, and you
+  can lift it yourself without elevation. Linux and macOS get `chattr +i` / `chflags uchg`, or a
+  `chmod a-w` fallback: best effort, not device-tested. `bin/unpack-reference.sh` applies it after
+  a verified unpack and refuses a forced re-unpack while it is on; every recovery message names
+  the lift first. It works from PowerShell 7 too (a pwsh terminal, Codex on Windows, CI).
+- **Lifting that protection asks you first**: `x4refguard.py remove`, and a raw `icacls ...
+  /remove` or `/reset` aimed at the reference root (or, with `/T`, a folder above it).
+- **A relative path in a shell command is judged where the shell runs.** The guards ignored the
+  `cwd` Claude Code and Codex send with every call, so `rm -f reference/...` run from the folder
+  holding `reference/` was allowed while the absolute form was blocked (a live Codex run
+  overwrote a file that way). Measured over 53,828 historical commands before shipping: no new
+  confirmation prompt and no new block; three commands change, two of them gaining an advisory
+  (BLIND-SPOTS F147).
 - **Fewer approval prompts: the guards ask only what is genuinely yours.** Measured over 793
-  transcripts: 54 hook prompts in 5 weeks, all 54 approved, 0 refused -- an ask that is always
-  approved protects nothing.
-  - A command `bash -n` rejects, or one nested past the guard's expansion bound, is now a DENY with
-    a reason the agent can act on (bash would not run it either). Was a prompt.
-  - Deletes in X4 folders and writes under Documents are now ADVISORIES. Was a prompt.
-  - Still asks: the X4 profile (mod list, config), save games, a guard that cannot run, a failed
-    backup. Still hard-blocked: the game install and `reference/`.
-- **A Grep over a git-ignored folder is now denied** (`search-scope.sh`, BLIND-SPOTS F146).
-  Grep and Glob honour `.gitignore`. A game root kept under git with a whitelist `.gitignore`
-  hid all 133 installed mods' manifests from Grep, which answered "No files found". The
-  packed-archive advisory then explained the zero wrongly.
-  - The deny names the alternative: `rg --no-ignore`, or a single file.
-  - A Glob there gets an "unreliable zero" advisory instead.
-  - The `mod-research` and `cross-file-impact` subagents now say how to search installed mods.
-- **Backups no longer overwrite each other** (framework audit F2). Two edits in the same second
-  shared one backup name, so the second snapshot replaced the first and the original text was
-  lost. Each backup now reserves a unique file (`<timestamp>__<name>.XXXXXX`); older names still
-  restore.
-- **The post-edit validator says when it could not validate** (framework audit F3). A missing
-  or crashing `uv`, unreadable output, or a DEGRADED result used to be silent, which read as
-  "no findings". It now advises "VALIDATION NOT COMPLETED". A routine `--file` skip stays
-  silent: it is on every edit (50 of 50 measured).
-- **CI checks that `uv.lock` matches `pyproject.toml`** (framework audit F4). `uv sync --frozen`
-  installs from a stale lock without complaint.
-- **The timeout guard no longer denies a background command for exceeding the foreground cap.**
-  Background calls are judged against their own 2-hour cap, and the messages no longer claim a
-  background call is uncapped.
-- `.gitignore` no longer swallows a skill's `reference/` folder under `agent/skills/`. The game-data
-  rule matched it there too, as it once did under `.claude/skills/`.
-- **The installers ship each agent's own files: `--agent claude|codex|generic|all`, default
-  `all`** (framework audit F8). They used to copy `CLAUDE.md` and `.claude/` only, and no
-  `AGENTS.md` at all; this supersedes "the installers do not ship it yet" above.
-  - Each agent's items are named once per installer, and a test requires both installers
-    to hold the same sets.
-  - `agent/` is never installed: an installed toolkit is runtime-only.
-  - `--method global` with a non-Claude agent is refused. (`opencode` was refused here at first;
-    it now installs best effort -- see the OpenCode entry above.)
-  - Codex's `.codex/hooks.json` is rendered for the destination's absolute folder. The
-    installer never trusts a folder or approves a hook; it prints the `/hooks` review steps.
-  - The `{{TOOLKIT}}` token in `.agents/skills` is rendered per OS: `$env:X4_TOOLKIT` on
-    Windows, where Codex runs PowerShell, and `$X4_TOOLKIT` elsewhere.
-  - `bin/unpack-reference.sh` now finds `_x4-env.sh` in `.codex/hooks/` too, so `--unpack`
-    works in a Codex-only install.
-- **An `AGENTS.md` the toolkit did not write is moved aside, never overwritten.** If it differs
-  from the shipped file, it is kept as `AGENTS.pre-4.0.md`, and the installer names it. No
-  release before 4.0 shipped an `AGENTS.md` (0 of 23 tags), so any existing one is yours.
-  ⚠ Before 4.0 ships, this rule needs the hashes of every shipped `AGENTS.md`. Without them,
-  each upgrade moves the previous release's file aside.
-- **x4lock protects `AGENTS.md`, the Codex tree and `.agents/skills`** when present (framework
-  audit F9). Each agent's files are demanded only where that agent is installed, which is
-  marked by its guard directory. So a Claude-only root never reports `AGENTS.md` missing, and a
-  Codex-only root never reports `CLAUDE.md` missing.
-- **New: `scripts/x4doctor.py`, a read-only check of whether the guards are live here,** per
-  agent target (see README). Measured while building it: with `X4_TOOLKIT` unset, the guards in a
-  game root that has no `x4-paths.env` fall back to `<game>/reference`, and they ALLOWED a
-  write and a delete into the configured reference tree (4 of 4 deny controls, check-only).
-  `x4doctor` reports that state as `roots.config` FAIL.
-- `gates/deploy_parity.py` describes each agent tree with a `TargetSpec`. Claude's population is
-  unchanged.
-- `gen-cli-reference.py` refuses (rc 2, `REFUSING: <file> is not UTF-8 ...`) when a committed
-  reference file cannot be decoded, in both `--check` and regenerate mode, and writes nothing.
-  It used to die with a traceback, which read as "stale" and also blocked the regenerate that
-  would have repaired it.
-- **Fixed: Codex on Windows saw an empty toolkit path in every skill.** The generator wrote
-  `$X4_TOOLKIT` into `.agents/skills/` itself, so the installers' per-OS rewrite found no
-  `{{TOOLKIT}}` token and never ran, and in PowerShell `$X4_TOOLKIT` expands to nothing. The
-  generated skills now keep the token and the installer renders it (`$env:X4_TOOLKIT` on
-  Windows, `$X4_TOOLKIT` elsewhere), as the entry above describes. An installer test now
-  installs the real generated tree instead of a hand-made one.
-- **`AGENTS.md` tells Codex to look for the hooks banner** (`X4 GUARDS LIVE (codex hooks v1)`)
-  and, if it is missing, to warn the user before any write or delete and suggest
-  `x4doctor.py --agent codex`. Its guard commands now name `.codex/hooks/x4guard.py`: a
-  Codex-only install has no `.claude/` folder, so the `.claude/hooks/x4guard.py` it named before
-  did not exist there.
-- The Codex session banner no longer claims that every shell command is checked. It now reads
-  `X4 GUARDS LIVE (codex hooks v1) — shell commands and apply_patch are checked (input typed
-  into a running shell is not).` The text lives in the adapter script; the frozen hook
-  definitions are unchanged, so no new hook review is expected (not yet confirmed with
-  `codex_trust.py report` on a deployed copy).
-- An `x4guard` timeout now names the budget that actually ran out. Under the Codex hooks the
-  adapter passes its own deadline (`X4_CODEX_BUDGET_S`), but the message always blamed
-  `X4_GUARD_TIMEOUT_S`, a setting that played no part there. It now says "the caller's
-  deadline" in that case and keeps naming `X4_GUARD_TIMEOUT_S` for a direct `x4guard check`.
-- **A bare `git clean -fdx` (or `-x`, `-X`, `-d`) or `git reset --hard` run from the game folder
-  or another X4 folder is now blocked.** It used to be allowed when the command named no folder.
-  The game folder's git repo ignores every file except its own, so `git clean -fdx` there would
-  delete the installation's untracked files. This is a block with a reason for the agent, not
-  a prompt for you. Naming the folder explicitly (`git -C "<folder>" clean ...` or
-  `cd "<folder>" && ...`) still asks, as before. Under Codex the hook applies; a Codex prefix
-  rule cannot see the folder.
-- **Fixed: `x4refguard.py` failed when started from PowerShell 7** (a pwsh terminal, Codex on
-  Windows, or the CI shell). PowerShell 7 passes its own module path to the Windows PowerShell
-  5.1 process that reads the folder permissions, which then could not load `Get-Acl`. So
-  `status` and `apply` refused, and an unpack could not finish protecting `reference/`. The
-  child process now starts without that inherited module path.
-- `run-gates.sh` keeps each gate's full output (GitHub issue #3). Every attempted gate's
-  complete stdout and stderr are saved to `<logdir>/<gate>.log`. Free memory, load and CPU
-  count are written to `<logdir>/system.txt` at the start and at each failure, and the run
-  prints where `<logdir>` is. It defaults to a fresh temp folder; set `X4_GATE_LOG_DIR` to
-  choose one, and a folder inside `X4_GAME` or `X4_REFERENCE` is refused. The console summary
-  is unchanged and still shows a short tail. Before this, a failure that never recurred left
-  nothing to read.
+  transcripts: 54 hook prompts in 5 weeks, all 54 approved -- an ask that is always approved
+  protects nothing. A command `bash -n` rejects, or one nested past the guard's expansion bound,
+  is now a DENY with a reason the agent can act on. Deletes in X4 folders and writes under
+  Documents are ADVISORIES. Still asks: the X4 profile, save games, a guard that cannot run, a
+  failed backup. Still hard-blocked: the game install and `reference/`.
+- **A bare `git clean` with `-x`, `-X` or `-d`, or `git reset --hard`, run from the game folder
+  or another X4 folder is blocked** (a deny with a reason, not a prompt). The game folder's git
+  repo ignores every file except its own, so `git clean -fdx` there would delete the
+  installation's untracked files. Naming the folder (`git -C "<folder>" ...`) still asks.
+- **`X4_GUARD=off`**, the launch-time escape hatch: set to exactly `off`, the Bash and file guards
+  turn a deny or an ask into an advisory naming what it would have been, log every override to
+  `GUARDS-OFF.log`, and the session starts with a GUARDS OFF banner. A guard that could not check
+  still asks.
+- **An agent can save its notes, and is told how to edit a locked file.** Exactly
+  `<project root>/X4-NOTES.md` (and `X4-NOTES.pre-4.0.md`) is allowed; the same name deeper in the
+  game folder is still blocked. A write to a file x4lock has locked gets a note naming the unlock,
+  edit and relock commands; the lock stays. The game-folder block now says where notes, game
+  facts and mod files go. New: `x4lock.py protected <path>`.
+- The file guard allowed `CLAUDE.md` in the game root but denied **`AGENTS.md`**; it now treats
+  them alike, matched on the exact file name.
+- **x4lock protects `AGENTS.md`, the Codex and OpenCode trees and `.agents/skills`** where that
+  agent is installed (marked by its guard directory), so a Claude-only root never reports
+  `AGENTS.md` missing.
+- **A Grep over a git-ignored folder is denied** (BLIND-SPOTS F146): Grep and Glob honour
+  `.gitignore`, and a game root kept under git with a whitelist `.gitignore` hid all 133 installed
+  mods' manifests from Grep, which answered "No files found". The deny names `rg --no-ignore` or a
+  single file; a Glob there gets an "unreliable zero" advisory.
+- **Backups no longer overwrite each other**: two edits in the same second shared one backup
+  name. Each backup now reserves a unique file; older names still restore.
+- **The post-edit validator says when it could not validate** ("VALIDATION NOT COMPLETED") instead
+  of staying silent on a missing or crashing `uv`, unreadable output or a DEGRADED result. A
+  routine `--file` skip stays silent (it is on every edit: 50 of 50 measured).
+- The timeout guard judges a background command against its own 2-hour cap, not the foreground
+  one.
+
+### Configuration
+
+- With no path config the guards no longer assume `<toolkit>/reference` silently (see `x4doctor`
+  above). The bash and Python loaders now pick the config file by one rule, pinned by a matrix
+  test: Python honours `$X4_CONFIG` (naming no file reads none) and no longer walks up past a
+  named `$X4_TOOLKIT`. `scripts/generate-baseline.sh` uses the shared loader instead of its own,
+  in which the file beat the environment.
+- `setup.sh` never creates a blank root config that would shadow a 3.x one, and
+  `bin/unpack-reference.sh` works in a Codex-only or OpenCode-only install.
+
+### Tools
+
+- BaseX validates attribute QNames and certifies raw zeros only for a restricted whole-database
+  content-search grammar; other raw queries still report positives, and unrecognized zeros return
+  4. `refs`, `attr` and `xq` accept optional `--limit` / `--offset` over whole items (unlimited by
+  default, totals and negative checks over the full result); unsupported paging returns 2.
+- The xref index validates every TSV row and binds newly built indexes and exclusions to SHA-256
+  digests. Unsigned legacy positives warn; uncertifiable absence returns 2.
+- Invalid DEFLATE saves and corrupt or incompatible effective SQLite stores return 2 without
+  tracebacks; SQLite filenames escape URI characters and stay read-only; malformed freshness
+  vectors return 2. These reader changes invalidate existing engine freshness fingerprints:
+  rebuild the artifacts before making fresh claims.
+- `gen-cli-reference.py` refuses (rc 2) on a committed reference file that is not UTF-8, in both
+  modes, instead of a traceback that read as "stale".
+- `run-gates.sh` keeps every gate's full output in `<logdir>/<gate>.log` and the machine's free
+  memory, load and CPU count in `<logdir>/system.txt` (GitHub issue #3). Set `X4_GATE_LOG_DIR` to
+  choose the folder; one inside `X4_GAME` or `X4_REFERENCE` is refused.
+- CI checks that `uv.lock` matches `pyproject.toml`.
+- The `cross-file-impact` subagent names the real `x4-balance` and `x4-mod-interaction` skills
+  instead of an advisor that does not exist; both subagents run on `sonnet`. `x4-scaffold` treats
+  `content.xml` edits as advisory, matching `CLAUDE.md`. `.gitignore` no longer swallows a skill's
+  `reference/` folder under `agent/skills/`.
+
+### Maintainers
+
+- After tagging a release, run `tools/x4validate/scripts/gen-shipped-hashes.py --write` and commit
+  the result; `test_shipped_instruction_hashes.py` fails until you do. v4.0.0 is the first tag to
+  ship an `AGENTS.md`, so this is what lets the next release replace it instead of moving it
+  aside.
+- `scripts/build-release.sh <tag>` now writes `dist/X4.Foundations.AI.Assistant.Toolkit-<tag>.zip`.
 
 ## v3.3.1 — 2026-09-29
 

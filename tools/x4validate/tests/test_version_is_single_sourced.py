@@ -48,3 +48,16 @@ def test_the_version_is_a_release_shaped_string():
     v = _pyproject_version()
     parts = v.split(".")
     assert len(parts) == 3 and all(p.isdigit() for p in parts), v
+
+
+def test_the_newest_changelog_release_is_this_version():
+    """A FOURTH copy: the CHANGELOG's newest `## vX.Y.Z` heading. v4.0.0's notes were written
+    before the bump (Plan 3 Wave 2); a release whose notes and package disagree tells a user
+    reading either one the wrong version. An `## Unreleased` section above it is allowed."""
+    import re
+    log = (ROOT.parent.parent / "CHANGELOG.md").read_text(encoding="utf-8")
+    m = re.search(r"^## v(\d+\.\d+\.\d+)\b", log, re.M)
+    assert m, "CHANGELOG.md has no '## vX.Y.Z' release heading"
+    assert m.group(1) == _pyproject_version(), (
+        "the newest CHANGELOG release is v%s but pyproject.toml says %s"
+        % (m.group(1), _pyproject_version()))

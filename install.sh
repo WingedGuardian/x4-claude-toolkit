@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# X4 Claude Toolkit installer — Linux / macOS / Windows (Git Bash).
+# X4 AI Assistant Toolkit installer — Linux / macOS / Windows (Git Bash).
 # Three install methods, all with fully configurable paths (nothing hardcoded):
 #
 #   in-game   Copy the toolkit INTO your X4 game folder (the upstream model). One workspace.
@@ -100,7 +100,7 @@ done
 case "$(uname -s 2>/dev/null)" in
   Linux*) OS=linux;; Darwin*) OS=macos;; MINGW*|MSYS*|CYGWIN*|Windows*) OS=windows;; *) OS=unknown;;
 esac
-echo "X4 Claude Toolkit installer — OS: $OS, source: $SRC"
+echo "X4 AI Assistant Toolkit installer — OS: $OS, source: $SRC"
 
 # --- helpers ---------------------------------------------------------------
 ask() {  # ask VAR "prompt" "default"

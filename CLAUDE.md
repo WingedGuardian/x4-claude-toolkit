@@ -1,4 +1,4 @@
-# CLAUDE.md — X4 Foundations Modding (Claude Code Toolkit)
+# CLAUDE.md — X4 Foundations Modding (X4 AI Assistant Toolkit)
 
 <!-- GENERATED from agent/ -->
 
