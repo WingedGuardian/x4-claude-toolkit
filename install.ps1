@@ -141,6 +141,7 @@ function Refuse-IfDryRun($what, $where) {
   Write-Host ''
   Write-Host ('  -DryRun: NOT ' + $what + ':')
   Write-Host ('      ' + $where)
+  Show-DryRunExtras $Toolkit
   Write-Host ''
   Write-Host '=== dry run complete: nothing was changed ==='
   exit 0
@@ -1517,6 +1518,29 @@ function Show-Target($dest) {
   Write-Host "      $dest"
 }
 
+#: THE REST OF THE PREVIEW -- the twin of install.sh's announce_dry_run_extras (v4.0.0 review
+#: R4-4): the Codex hooks.json render, the OpenCode deny-rule render, the .codex/config.toml
+#: prepend, and the X4_TOOLKIT line, from the copy plan AND from the dry-run gate.
+$script:X4DryExtrasShown = $false
+function Show-DryRunExtras($dest) {
+  if ($script:X4DryExtrasShown) { return }
+  $script:X4DryExtrasShown = $true
+  if (-not $dest) { return }
+  if ($Method -ne 'global' -and (Test-CodexSelected)) {
+    Write-Host '  .codex/hooks.json would be (re)rendered for this folder (Codex skips a changed hook until you re-approve it in /hooks)'
+  }
+  if ($Method -ne 'global' -and (Test-OpenCodeSelected)) {
+    Write-Host "  .opencode/opencode.jsonc (the OpenCode deny rules) would be rendered for this folder's roots"
+  }
+  if ($CodexDocMaxBytes) {
+    $f = Get-HCodexConfigPath $dest
+    $old = Get-HCodexDocValue $f
+    if ($null -ne $old -and "$old" -ne '') { Write-Host ('  ' + $f + ' already sets project_doc_max_bytes = ' + $old + ': it would be left unchanged') }
+    else { Write-Host ('  project_doc_max_bytes = ' + $CodexDocMaxBytes + ' would be prepended to ' + $f) }
+  }
+  Show-HUserEnvPreview $dest
+}
+
 # The dry-run listing, for the arms where a COPY would actually happen. The gate
 # itself is Refuse-IfDryRun, which sits inside all three writers.
 function Show-CopyPlan($dest) {
@@ -1537,7 +1561,7 @@ function Show-CopyPlan($dest) {
       Write-Host ('  your CLAUDE.md is not one this toolkit shipped: it would be KEPT as ' + $to + ', not overwritten')
       Show-HHashCaveat
     }
-    Show-HUserEnvPreview $dest
+    Show-DryRunExtras $dest
     Write-Host ""
     Write-Host "=== dry run complete: nothing was changed ==="
     exit 0

@@ -1655,6 +1655,7 @@ refuse_if_dry_run() {
   echo
   echo "  --dry-run: NOT $1"
   echo "      $2"
+  announce_dry_run_extras "$TOOLKIT"
   echo
   echo "=== dry run complete: nothing was changed ==="
   exit 0
@@ -1723,6 +1724,35 @@ announce_target() {
 #: The dry-run listing, for the arms where a COPY would actually happen. The gate
 #: itself does not depend on this: refuse_if_dry_run sits inside all three writers,
 #: so an arm that copies nothing still stops before it writes.
+#: THE REST OF THE PREVIEW (v4.0.0 review R4-4). The copy plan listed the copied items and
+#: stopped, so three writes the real run makes -- the Codex hooks.json render, the OpenCode
+#: deny-rule render, the .codex/config.toml prepend -- were never named; and the in-place and
+#: global arms reach no copy, so they never printed the X4_TOOLKIT line either. ONE function,
+#: called by the copy plan AND by the dry-run gate every writer passes through. install.ps1's
+#: Show-DryRunExtras prints the same lines.
+X4_DRY_EXTRAS_SHOWN=0
+announce_dry_run_extras() {   # DEST
+  local dest="$1" f old
+  [ "$X4_DRY_EXTRAS_SHOWN" = 1 ] && return 0
+  X4_DRY_EXTRAS_SHOWN=1
+  [ -n "$dest" ] || return 0
+  if [ "$METHOD" != global ] && _codex_selected; then
+    echo "  .codex/hooks.json would be (re)rendered for this folder (Codex skips a changed hook until you re-approve it in /hooks)"
+  fi
+  if [ "$METHOD" != global ] && _opencode_selected; then
+    echo "  .opencode/opencode.jsonc (the OpenCode deny rules) would be rendered for this folder's roots"
+  fi
+  if [ -n "$CODEX_DOC_MAX" ]; then
+    f="$(_h_codex_config "$dest")"
+    if old="$(_h_codex_doc_value "$f")"; then
+      echo "  $f already sets project_doc_max_bytes = $old: it would be left unchanged"
+    else
+      echo "  project_doc_max_bytes = $CODEX_DOC_MAX would be prepended to $f"
+    fi
+  fi
+  _h_userenv_preview "$dest"
+}
+
 announce_copy_plan() {
   [ "$DRY_RUN" = 1 ] || return 0
   echo "  --dry-run: nothing will be written. Items that would be copied:"
@@ -1743,7 +1773,7 @@ announce_copy_plan() {
     echo "  your CLAUDE.md is not one this toolkit shipped: it would be KEPT as $to, not overwritten"
     _h_hash_caveat
   fi
-  _h_userenv_preview "$TOOLKIT"
+  announce_dry_run_extras "$TOOLKIT"
   echo
   echo "=== dry run complete: nothing was changed ==="
   exit 0

@@ -2855,3 +2855,33 @@ def test_TWIN_no_reference_yet_prints_NO_refguard_step(installer, tmp_path):
     r = _install(installer, tmp_path, dest, "--agent", "claude")
     assert r.returncode == 0, (r.stdout[-1500:], r.stderr[-1500:])
     assert _REFGUARD_STEP not in r.stdout, r.stdout[-2500:]
+
+
+# --- R4-4 (v4.0.0 review): the dry run names EVERY write the real run would make ---------
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_COPY_dry_run_names_the_rendered_codex_opencode_and_doc_cap_writes(installer, tmp_path):
+    """The preview listed the copied items and stopped: the Codex hooks.json render, the
+    OpenCode deny-rule render and the .codex/config.toml prepend -- three writes the real run
+    makes -- were never mentioned."""
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--dry-run", "--agent", "all",
+                 "--codex-doc-max-bytes", "65536")
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "dry run complete" in out.lower(), out[-1500:]
+    assert ".codex/hooks.json would be" in out, out[-2500:]
+    assert ".opencode/opencode.jsonc" in out and "would be rendered" in out, out[-2500:]
+    assert "project_doc_max_bytes = 65536 would be" in out, out[-2500:]
+    assert not [p for p in dest.rglob("*") if p.is_file()], "the dry run wrote"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_IN_PLACE_dry_run_names_what_it_would_do_to_X4_TOOLKIT(installer, tmp_path):
+    """The in-place and global arms reach no copy, so the copy plan -- the only place the
+    X4_TOOLKIT preview was printed -- never ran there."""
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest).returncode == 0, "first install failed"
+    r = _install(installer, tmp_path, dest, "--dry-run", from_dest=True)
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out[-1500:]
+    assert "X4_TOOLKIT would not be touched" in out, out[-2500:]       # --no-env in the harness
