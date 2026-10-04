@@ -118,7 +118,7 @@ SAMPLE_SCOPE = ("root + sentinel + first file of each top-level dir "
 
 ESCAPE_HATCH = """\
 To lift it (a USER's step, never an agent's on its own):
-  1. python scripts/x4refguard.py remove
+  1. python scripts/x4refguard.py remove        (shows the folder and a count, then asks; --yes skips)
   2. root moved since?  python scripts/x4refguard.py remove --path <old root>
   3. tool broken? Windows, from cmd.exe: icacls "<root>" /remove:d *<your SID>  (whoami /user)
      Linux: sudo chattr -R -i "<root>" or chmod -R u+w "<root>"; macOS: chflags -R nouchg "<root>"

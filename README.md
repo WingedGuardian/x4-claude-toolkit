@@ -283,7 +283,13 @@ in `.agents/skills/` and for OpenCode in `.opencode/skills/`; ask for one by nam
   > has genuinely changed upstream.
 - **Reference lock (Layer 2)** — `python scripts/x4refguard.py status [--json] [--full] | apply | remove`
   protects the unpacked `reference/` tree at the OS level, so it holds against every
-  process, hooks or no hooks. `bin/unpack-reference.sh` applies it after a verified unpack.
+  process, hooks or no hooks. **`apply` and `remove` show the target folder and count the
+  files under it (with progress), then ask you to confirm**; `--yes` confirms up front, and
+  without a terminal to ask on they refuse rather than act (`--yes` is how an agent runs it
+  once you have agreed). On a full unpack expect about a minute, with a "still applying"
+  line every 10 s. Like every script here it acts for the toolkit it lives in: if
+  `X4_TOOLKIT` names a different toolkit it says so and `apply`/`remove` refuse until you
+  pass `--toolkit <folder>`. `bin/unpack-reference.sh` applies it after a verified unpack.
   The installers do not apply it (it is an ACL change, yours to make), so a `reference/`
   unpacked before 4.0 stays unprotected until you run `apply`; `x4doctor`'s
   `layer2.reference` row shows whether it is on.
@@ -300,7 +306,7 @@ in `.agents/skills/` and for OpenCode in `.opencode/skills/`; ask for one by nam
     that, and `status` then reports the root missing); you lifting it on purpose; an
     Administrator or root.
   - **To re-unpack after a game update**, lift it first. Each step is yours to take; an agent should not take it on its own:
-    1. `python scripts/x4refguard.py remove`
+    1. `python scripts/x4refguard.py remove` (it asks you to confirm; `--yes` skips the question)
     2. root moved since? `python scripts/x4refguard.py remove --path <old root>` (only
        accepted on a folder that carries this tool's exact protection)
     3. tool broken? from **cmd.exe**: `icacls "<root>" /remove:d *<your SID>`
