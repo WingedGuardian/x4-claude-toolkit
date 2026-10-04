@@ -229,6 +229,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F148 | A bare `git clean -fdx` / `-x` / `-X` / `-d` or `git reset --hard` run FROM the game folder (or another X4 folder) with no folder named reached no rule (F147's open item): the game-root repo's `.gitignore` is `*`, so `-x` there removes the installation's untracked files | **DEFECT (measured)** · ✅ FIXED 2026-10-03 (Plan 3 lane J, decision J-Q1) | the deployed `x4guard check` from the game cwd: `git clean -fdx` -> allow; master's x4guard in a sandbox game cwd -> allow, this tree -> deny | new fact `git_wipe_from_session_dir` (seeded cwd, -x/-X/-d or reset --hard, exclusive of the explicit-folder ASK) -> DENY with a reason, never a prompt |
 | F149 | `scripts/test-hooks.sh` 1/187 flake (seen twice under load, probe never recorded): NOT REPRODUCED, 0 of 16 runs under 24 CPU burners plus 3 other lanes | **SCOPE (measured, open)** | 16 runs (4 lanes x 4), 711-1187 s each; every run 186/1, the 1 being the pre-existing identifier finding in Plan 3 docs | a failing `decide()` probe now prints `[hook rc=N; stderr: ...]`, so the next occurrence names itself; open until it does |
 | F150 | The write guard judged the PATH, never the FILE: `<game>/KNOWLEDGEBASE.md` was ALLOW while x4lock's read-only lock made the write fail with no word why; and `<game>/X4-NOTES.md`, where the instructions send notes, was hard-denied as a game file | **DEFECT (measured)** · ✅ FIXED 2026-10-03 (Plan 3 lane N) | a live Codex run could not save its notes (orchestrator, 2 probes through `x4guard check`) | exactly `<X4_GAME or X4_TOOLKIT>/X4-NOTES.md` (+ `.pre-4.0.md`) allowed on the resolved path; a read-only file x4lock manages (`x4lock.py protected`) is ADVISED with unlock/edit/relock; the game deny routes notes, facts, mod files. Open: the `claude.md` / `agents.md` / `knowledgebase.md` name whitelist matches ANYWHERE in the game tree (MEASURED, 2 probes + controls) |
+| F151 | With NO path config the guards defaulted `reference/` to `<toolkit>/reference` SILENTLY, and the two loaders chose the config file by different rules (bash honoured `$X4_CONFIG`, Python ignored it and walked up from the cwd past a named `$X4_TOOLKIT`); a third loader in `generate-baseline.sh` let the file beat the environment | **DEFECT (read + measured)** · ✅ FIXED 2026-10-03 (Plan 3 lane I) | planning census + the matrix test (17 bash/agree rows red before) | ONE rule in both loaders (`$X4_CONFIG` > `<tk>/x4-paths.env` > 3.x `<tk>/.claude/x4-paths.env` > none); state recorded, named once per session and by `x4doctor`; verdicts unchanged: replay 0 of 17,916 hook calls changed (3 passes x 2 hooks), 0 ERROR |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -7859,3 +7860,37 @@ same shape as the X4-NOTES twins above. Not changed here: a mod may legitimately
 **RE-DERIVED BY:** `tools/x4validate/tests/test_notes_and_locked_files.py` (19 tests through the
 Claude hook, `x4guard check` and the Codex adapter; a name-only mutant and an any-read-only mutant
 were each killed by a twin).
+
+
+## F151 — no path config was a SILENT `<toolkit>/reference` default, and the two loaders picked the config file by different rules · **DEFECT (read + measured)** · confidence 95% · ✅ FIXED 2026-10-03 (Plan 3 lane I)
+
+**Found while planning the config move (Plan 3 lane I), READ then MEASURED.**
+
+- `_x4-env.sh` filled `X4_REFERENCE` with `<toolkit>/reference` when nothing configured it
+  (`: "${X4_REFERENCE:=...}"`), and nothing said so: no hook suite exercised the no-config state,
+  because every harness exports the roots or sets `X4_CONFIG=/nonexistent` beside an exported
+  `X4_REFERENCE`. A deleted config therefore protected a guessed tree with no word anywhere.
+- The two loaders disagreed on which FILE to read. Bash honoured `$X4_CONFIG`; Python ignored it.
+  With `$X4_TOOLKIT` naming a toolkit that held no config, Python walked up from the cwd and could
+  read an unrelated file; bash never walked. `scripts/generate-baseline.sh` sourced the config
+  itself -- a third loader, in which the FILE beat the environment.
+
+**Fix.** One selection rule, mirrored in `_x4-env.sh` and `_paths._locate_config`:
+`$X4_CONFIG` (explicit; naming no file reads NONE) > `<tk>/x4-paths.env` > the 3.x
+`<tk>/.claude/x4-paths.env` (deprecated, read for all of 4.x) > none; Python walks only when
+`$X4_TOOLKIT` is unset. Bash records `_x4_cfg_src` / `_x4_ref_defaulted` and prints nothing per
+call; the gap is named once per session (`session-canary.sh`, Claude Code and Codex) and by
+`x4doctor roots.config` (FAIL). Every verdict is unchanged -- the default `reference/` hard block
+stays. `generate-baseline.sh` uses the shared loader.
+
+**Denominators (MEASURED 2026-10-03,** `docs/superpowers/measurements/2026-10-03-config-location-replay.md`).
+Stage 1: the post-source shell state was identical OLD vs NEW outside 5 allowlisted names in all 3
+passes (configured, legacy, unconfigured). Stage 2: 0 of 17,916 hook calls changed verdict
+(1,986 shell + 1,000 edit rows x 2 trees x 3 passes), 0 ERROR, all 18 controls held.
+⚠ The replay's own first stage-1 run compared 13 of ~130 variables (a split at the first of two
+`@@FUNCS@@` markers) and called that identical -- caught by reading the counts, then made a refusal.
+
+**RE-DERIVED BY:** `tools/x4validate/tests/test_config_precedence_agrees.py` (the 8-row location
+matrix for both loaders plus their agreement) and
+`.claude/hooks/test_audit0924_hooks.py::TestLaneIConfigLocation` (the hard block without a config,
+both locations read by the hooks, the banner per state).
