@@ -200,6 +200,44 @@ def test_the_repo_ships_no_second_agents_md():
     assert agents == ["AGENTS.md"], agents
 
 
+def _generator_owned_paths() -> list[str]:
+    """Every path a generator writes: gen-agent-trees' output, the CLI-reference SOURCE it
+    renders from (gen-cli-reference writes agent/skills/x4-cli-reference/), and the
+    shipped-hashes data file. Derived from the generators, never typed out per tree."""
+    out = set(load().generate(REPO))
+    cli = ".claude/skills/x4-cli-reference/"
+    out |= {"agent/skills/x4-cli-reference/" + p[len(cli):] for p in out if p.startswith(cli)}
+    out.add("scripts/shipped-instruction-hashes.txt")
+    return sorted(out)
+
+
+def test_every_generator_owned_path_is_TRACKED_and_SHIPS():
+    """Present on disk is not committed. MEASURED 2026-10-04 (CI run 37172347642): the bare
+    `reference/` rule in .gitignore swallowed all 11 `.opencode/skills/x4-cli-reference/
+    reference/*.md`; locally they existed untracked, so every freshness test was green on the
+    machine that generated them and red on every clone. The earlier per-tree check-ignore pin
+    listed the trees by hand and so could not see a fourth one. This asks git: each generated
+    path must be TRACKED (`ls-files`), and must not be `export-ignore`d out of the release
+    archive that build-release.sh makes with `git archive`."""
+    r = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z"], capture_output=True)
+    if r.returncode != 0:
+        pytest.skip("not a git checkout -- tracked-ness NOT checked here")
+    tracked = {p for p in r.stdout.decode("utf-8").split("\0") if p}
+    assert len(tracked) > 100, len(tracked)              # a real population, not an empty listing
+    owned = _generator_owned_paths()
+    assert len(owned) > 100, len(owned)                  # the generators enumerated something
+    untracked = [p for p in owned if p not in tracked]
+    assert untracked == [], f"{len(untracked)} generated file(s) not tracked by git: {untracked}"
+    a = subprocess.run(["git", "-C", str(REPO), "check-attr", "-z", "export-ignore", "--stdin"],
+                       input="\0".join(owned).encode("utf-8") + b"\0", capture_output=True)
+    assert a.returncode == 0, a.stderr
+    f = a.stdout.decode("utf-8").split("\0")
+    rows = list(zip(f[0::3], f[1::3], f[2::3]))
+    assert len(rows) == len(owned), (len(rows), len(owned))   # one answer per path, or refuse
+    dropped = [p for p, _, v in rows if v not in ("unspecified", "unset")]
+    assert dropped == [], f"export-ignore drops generated file(s) from the release: {dropped}"
+
+
 def test_missing_source_refuses_rather_than_skipping(tmp_path):
     g = load()
     with pytest.raises(g.GenerationError):
