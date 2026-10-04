@@ -227,8 +227,11 @@ def test_deploy_REPORTS_two_differing_configs_and_touches_neither(repo, dest):
     (dest / "x4-paths.env").write_bytes(b'X4_GAME="old"\n')
     (dest.parent / "x4-paths.env").write_bytes(b'X4_GAME="new"\n')
     acts = [a for a in dep.plan(repo, dest) if "x4-paths.env" in a.name]
-    assert [a.kind for a in acts] == [dep.REPORT] and "X4_GAME" in acts[0].reason, acts
-    assert dep.main(["--repo", str(repo), "--dest", str(dest), "--apply"]) == 0
+    assert [a.kind for a in acts] == [dep.CONFLICT] and "X4_GAME" in acts[0].reason, acts
+    # v4.0.0 review R4-9: REPORTED and still rc 0, so a scripted deploy read "done" while two
+    # configs that protect DIFFERENT trees stood side by side. Non-zero, dry run and apply.
+    assert dep.main(["--repo", str(repo), "--dest", str(dest)]) == 1
+    assert dep.main(["--repo", str(repo), "--dest", str(dest), "--apply"]) == 1
     assert (dest / "x4-paths.env").read_bytes() == b'X4_GAME="old"\n'
     assert (dest.parent / "x4-paths.env").read_bytes() == b'X4_GAME="new"\n'
 
