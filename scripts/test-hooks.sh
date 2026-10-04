@@ -120,6 +120,13 @@ run_layout(){ # run_layout <name> <toolkit> <game>
   # exception to the exact NAME: a looser `*agents.md` pattern would let this one through.
   decide allow protect-files.sh "$(fj "$GAME/AGENTS.md")"                   "AGENTS.md in the game root"
   decide deny  protect-files.sh "$(fj "$GAME/notagents.md")"                "a NAME merely ending in agents.md is still a game file"
+  # ...and the exception is the project ROOT, not the name anywhere (v4.0 release review
+  # R1-F6/R6-09, pre-arc F150): the same names deeper in the game tree are game files.
+  decide deny  protect-files.sh "$(fj "$GAME/libraries/AGENTS.md")"         "an AGENTS.md deeper in the game is a game file"
+  decide deny  protect-files.sh "$(fj "$GAME/libraries/CLAUDE.md")"         "a CLAUDE.md deeper in the game is a game file"
+  decide deny  protect-files.sh "$(fj "$GAME/libraries/KNOWLEDGEBASE.md")"  "a KNOWLEDGEBASE.md deeper in the game is a game file"
+  decide allow protect-files.sh "$(fj "$GAME/KNOWLEDGEBASE.md")"            "KNOWLEDGEBASE.md at the game root"
+  decide allow protect-files.sh "$(fj "$GAME/.claude/CLAUDE.md")"           "Claude's .claude/CLAUDE.md at the game root"
   decide deny  protect-files.sh "$(fj "$TK/reference/libraries/wares.xml")" "reference/ is read-only"
   # A BACKSLASH path, which the harness could not carry until 2026-08-30: fj
   # interpolated raw, so a Windows path was invalid JSON (\U is not a valid
@@ -517,7 +524,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=220
+EXPECT=230
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written

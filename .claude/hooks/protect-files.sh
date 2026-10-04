@@ -220,25 +220,32 @@ fi
 # BLOCK was reached. A whitelist decided on text the filesystem does not resolve that
 # way is a whitelist for a different file.
 _NP="$(x4_norm "$FILE_PATH")"
-# AGENTS.md is Codex's instruction file, the CLAUDE.md of another agent (2026-09-30).
-case "$_NP" in */claude.md|*/agents.md|*/knowledgebase.md) exit 0;; esac
-# The agent's own notes (lane N, user decision N1): EXACTLY <project root>/X4-NOTES.md and
-# the 4.0 migration's X4-NOTES.pre-4.0.md -- the instructions send agents there, and the
-# game-install block below denied it (MEASURED, live Codex run 2026-10-03). The NAME alone
-# is not enough: the same name anywhere deeper in the game tree stays denied, so the
-# RESOLVED path must equal a root plus the name. The roots are X4_GAME and X4_TOOLKIT --
-# the two this hook already resolves in every channel (the x4guard write payload carries
-# no cwd, and CLAUDE_PROJECT_DIR is Claude-only). X4_GAME is the root that is denied;
-# X4_TOOLKIT covers the in-game layout with X4_GAME unset, where only the
-# `X4 Foundations/` name backstop protects it. The case is pure shell, so every other
-# path pays nothing.
+# The project's instruction and notes files, at the PROJECT ROOT ONLY: CLAUDE.md (and
+# Claude's .claude/CLAUDE.md), AGENTS.md (Codex's CLAUDE.md, 2026-09-30), KNOWLEDGEBASE.md,
+# and the agent's own notes -- X4-NOTES.md and the 4.0 migration's X4-NOTES.pre-4.0.md (lane
+# N, user decision N1: the instructions send agents there, and the game-install block below
+# denied it, MEASURED in a live Codex run 2026-10-03). The NAME alone is not enough: the same
+# name anywhere deeper in the game tree stays denied (or asked, in a deployed mod), so the
+# RESOLVED path must equal a root plus the name. The instruction files were a NAME-ANYWHERE
+# whitelist until the v4.0 release review (R1-F6/R6-09; pre-arc F150 for CLAUDE.md and
+# KNOWLEDGEBASE.md): `<game>/extensions/<mod>/AGENTS.md` and `<game>/libraries/CLAUDE.md`
+# walked past every rule below. MEASURED 2026-10-04 before narrowing: 4 of 60,228 files under
+# the reference machine's game root carry one of those names -- the 3 at its root and 1 under
+# .claude/backups/ (whitelisted below) -- and 0 under extensions/.
+# The roots are X4_GAME and X4_TOOLKIT -- the two this hook already resolves in every channel
+# (the x4guard write payload carries no cwd, and CLAUDE_PROJECT_DIR is Claude-only). X4_GAME
+# is the root that is denied; X4_TOOLKIT covers the in-game layout with X4_GAME unset, where
+# only the `X4 Foundations/` name backstop protects it. The case is pure shell, so every
+# other path pays nothing.
 case "$_NP" in
-  */x4-notes.md|*/x4-notes.pre-4.0.md)
+  */x4-notes.md|*/x4-notes.pre-4.0.md|*/claude.md|*/agents.md|*/knowledgebase.md)
+    _nrel="${_NP##*/}"
+    case "$_NP" in */.claude/claude.md) _nrel=".claude/claude.md" ;; esac
     x4_canon_memo "$FILE_PATH"; _nfc="$_X4_CANON_RESULT"
     for _nr in "${X4_GAME:-}" "${X4_TOOLKIT:-}"; do
       [ -n "$_nr" ] || continue
       x4_canon_memo "$_nr"
-      [ "$_nfc" = "${_X4_CANON_RESULT%/}/${_NP##*/}" ] && exit 0
+      [ "$_nfc" = "${_X4_CANON_RESULT%/}/$_nrel" ] && exit 0
     done ;;
 esac
 # dev/ and dist/ are the documented mod workspace; they MUST be whitelisted before the
