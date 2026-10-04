@@ -2086,6 +2086,10 @@ def test_a_PERSONALISED_claude_md_is_kept_as_X4_NOTES_pre_4_0(installer, tmp_pat
     assert (dest / "X4-NOTES.pre-4.0.md").read_bytes() == mine, "the user's file was not kept BYTE-identical"
     assert (dest / "CLAUDE.md").read_bytes() == b"# CLAUDE.md -- shipped\n"
     assert "X4-NOTES.pre-4.0.md" in r.stdout and "X4-NOTES.md" in r.stdout, _ok(r)
+    # C3 (install red-team 2026-10-04): "KEPT" alone read as "still in effect". Say it is NOT
+    # loaded any more, and how to bring the content back.
+    low = r.stdout.lower()
+    assert "no longer loaded" in low and "merge" in low, _ok(r)
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])

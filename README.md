@@ -539,12 +539,13 @@ possible and overridable (`--game`, `--profile`, `--toolkit`, `--mods`, `--refer
 > any of those, they are what you would lose. `x4-paths.env` and
 > `.claude/settings.local.json` are preserved (backed up, and kept in place).
 >
-> **Upgrading from 3.x: an edited `CLAUDE.md` is kept, not lost.** If your `CLAUDE.md` is not
-> one the toolkit ever shipped (it is compared, by hash, with the `CLAUDE.md` of every release
-> tag, listed in `scripts/shipped-instruction-hashes.txt`), it is moved to
+> **Upgrading from 3.x: an edited `CLAUDE.md` is kept on disk, but no longer loaded.** If your
+> `CLAUDE.md` is not one the toolkit ever shipped (it is compared, by hash, with the `CLAUDE.md`
+> of every release tag, listed in `scripts/shipped-instruction-hashes.txt`), it is moved to
 > `X4-NOTES.pre-4.0.md` (or a dated name, if that exists) before the 4.0 file is copied, and the
-> installer says so. The 4.0 `CLAUDE.md` loads every session; move the notes you want to keep
-> into **`X4-NOTES.md`**, which the toolkit never writes. An unedited shipped copy (whatever its
+> installer says so. **No agent reads that copy**: the 4.0 `CLAUDE.md` replaces it. To bring your
+> notes back, merge what you want into **`X4-NOTES.md`**, which every agent's instructions read
+> and the toolkit never writes. An unedited shipped copy (whatever its
 > line endings) is simply replaced. `--dry-run` names the move without making it.
 >
 > `--yes` will also refuse an **auto-detected** destination: nothing named it and nobody is

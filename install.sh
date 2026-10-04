@@ -818,10 +818,11 @@ preserve_user_claude_md() {   # DEST -- AFTER every precheck, BEFORE the copy
     echo "ERROR: could not move $dest/CLAUDE.md aside to $to. Nothing else has been changed." >&2
     exit 1
   fi
-  echo "  [note] your CLAUDE.md is not one this toolkit ever shipped, so it was KEPT as:"
+  echo "  [note] your CLAUDE.md is not one this toolkit ever shipped, so it was KEPT (not lost) as:"
   echo "           $dest/$to"
-  echo "         The 4.0 CLAUDE.md now loads every session. Move your own notes into"
-  echo "         X4-NOTES.md in the same folder: the toolkit never writes that file."
+  echo "         That copy is NO LONGER LOADED by any agent: the 4.0 CLAUDE.md replaced it."
+  echo "         To bring your notes back, merge what you want into X4-NOTES.md in the same"
+  echo "         folder -- every agent's instructions read it, and the toolkit never writes it."
   _h_hash_caveat
 }
 

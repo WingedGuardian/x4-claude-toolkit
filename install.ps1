@@ -698,10 +698,11 @@ function Save-HUserClaudeMd($dest) {
     Write-Host '       Nothing else has been changed.' -ForegroundColor Red
     exit 1
   }
-  Write-Host '  [note] your CLAUDE.md is not one this toolkit ever shipped, so it was KEPT as:'
+  Write-Host '  [note] your CLAUDE.md is not one this toolkit ever shipped, so it was KEPT (not lost) as:'
   Write-Host ('           ' + (Join-Path $dest $to))
-  Write-Host '         The 4.0 CLAUDE.md now loads every session. Move your own notes into'
-  Write-Host '         X4-NOTES.md in the same folder: the toolkit never writes that file.'
+  Write-Host '         That copy is NO LONGER LOADED by any agent: the 4.0 CLAUDE.md replaced it.'
+  Write-Host '         To bring your notes back, merge what you want into X4-NOTES.md in the same'
+  Write-Host '         folder -- every agent''s instructions read it, and the toolkit never writes it.'
   Show-HHashCaveat
 }
 
