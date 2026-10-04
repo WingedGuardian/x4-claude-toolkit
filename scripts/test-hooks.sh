@@ -517,7 +517,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=216
+EXPECT=220
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -1123,6 +1123,28 @@ unset X4_GUARD
 if [ -n "$_ss_ext" ]; then export X4_EXTENSIONS="$_ss_ext"; else unset X4_EXTENSIONS; fi
 if [ -n "$_ss_game" ]; then export X4_GAME="$_ss_game"; else unset X4_GAME; fi
 if [ -n "$_ss_gc" ]; then export GIT_CEILING_DIRECTORIES="$_ss_gc"; else unset GIT_CEILING_DIRECTORIES; fi
+
+
+# =============================================================================
+# The X4 PROFILE with X4_PROFILE unset (v4.0 release review R1-F3)
+# =============================================================================
+# A delete or write in the profile asks -- but only through the configured X4_PROFILE root.
+# Unconfigured, it fell to the Documents rule, which became an ADVISORY (2026-10-02): v3.3.1
+# asked, v4.0 advised. protect-files.sh keeps an `Egosoft/X4/` NAME backstop for this; the
+# Bash side now gets the same tree as a root, from Documents (Windows) or ~/.config (Linux).
+echo; echo "=== protect-bash.sh: the X4 profile with X4_PROFILE unset ==="
+_pp_prof="${X4_PROFILE-}"; _pp_docs="${X4_DOCUMENTS-}"; _pp_saves="${X4_SAVES-}"; _pp_home="$HOME"
+unset X4_PROFILE X4_SAVES
+export X4_DOCUMENTS="$SBX_TMP/pdocs"; mkdir -p "$X4_DOCUMENTS/Egosoft/X4/123/save" "$X4_DOCUMENTS/Other Game"
+decide ask    protect-bash.sh "$(cj "rm -f '$X4_DOCUMENTS/Egosoft/X4/123/save/s1.xml.gz'")" "X4_PROFILE unset: deleting a save in Documents/Egosoft/X4 still ASKS"
+decide ask    protect-bash.sh "$(cj "echo x > '$X4_DOCUMENTS/Egosoft/X4/123/content.xml'")" "X4_PROFILE unset: writing the profile content.xml still ASKS"
+decide advise protect-bash.sh "$(cj "rm -f '$X4_DOCUMENTS/Other Game/a.txt'")"            "TWIN: another game's file in Documents is only advised"
+export X4_DOCUMENTS="$SBX_TMP/no-docs-here" HOME="$SBX_TMP/phome"; mkdir -p "$HOME/.config/EgoSoft/X4/123"
+decide ask    protect-bash.sh "$(cj "rm -f '$HOME/.config/EgoSoft/X4/123/content.xml'")"   "X4_PROFILE unset, Linux layout: ~/.config/EgoSoft/X4 still ASKS"
+export HOME="$_pp_home"
+if [ -n "$_pp_docs" ]; then export X4_DOCUMENTS="$_pp_docs"; else unset X4_DOCUMENTS; fi
+[ -n "$_pp_prof" ] && export X4_PROFILE="$_pp_prof"
+[ -n "$_pp_saves" ] && export X4_SAVES="$_pp_saves"
 
 echo "RESULT: $pass passed, $fail failed, $skipped skipped"
 if [ $((pass + fail + skipped)) -ne "$EXPECT" ]; then

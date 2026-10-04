@@ -185,9 +185,21 @@ fi
 # "/tmp/x/docs" -- so no path rule could ever match. The README tells users they may
 # write roots as "C:\..." OR "/c/...", so this is a real installation, not a test-only
 # concern. A byte stream on stdin is not translated.
+# THE PROFILE WITH X4_PROFILE UNSET (v4.0 release review R1-F3). The profile rules ask through
+# this root alone, so an unconfigured machine fell through to the Documents rule -- an
+# ADVISORY since 2026-10-02 -- and a save delete that v3.3.1 asked about was only advised.
+# protect-files.sh keeps an `Egosoft[/\\]X4[/\\]` NAME backstop for the same case; this is
+# its Bash twin as a ROOT: the folder that holds every X4 profile, from Documents (Windows)
+# or ~/.config (Linux). Only when X4_PROFILE is unset; a configured profile is unchanged.
+_x4_prof_root="${X4_PROFILE:-}"
+if [ -z "$_x4_prof_root" ]; then
+  for _pr in "${X4_DOCUMENTS:+$X4_DOCUMENTS/Egosoft/X4}" "${HOME:+$HOME/.config/EgoSoft/X4}"; do
+    [ -n "$_pr" ] && [ -d "$_pr" ] && { _x4_prof_root="$_pr"; break; }
+  done
+fi
 emit_roots() {
   printf 'game\t%s\n'       "$X4_GAME"
-  printf 'profile\t%s\n'    "$X4_PROFILE"
+  printf 'profile\t%s\n'    "$_x4_prof_root"
   printf 'reference\t%s\n'  "$X4_REFERENCE"
   printf 'toolkit\t%s\n'    "$X4_TOOLKIT"
   printf 'mods\t%s\n'       "$X4_MODS"
