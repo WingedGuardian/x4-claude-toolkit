@@ -38,7 +38,8 @@ fi
 
 # The path config (Plan 3 lane I): a MISSING, DEPRECATED (3.x .claude/) or DOUBLED config is
 # named once per session, here, and in x4doctor's roots.config -- never per tool call, and no
-# guard verdict depends on it. Before the canary lookup, which can exit early. At most 2 lines.
+# guard verdict depends on it. Before the canary lookup, which can exit early. At most 4 lines:
+# the config's IGNORED lines (an X4_GUARD line first, R1-F1), then its location.
 x4_config_banner
 
 # The canary lives in the toolkit, not beside the hooks: it is a tool, and it needs the

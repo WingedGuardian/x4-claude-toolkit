@@ -328,3 +328,141 @@ def test_UNSET_toolkit_a_tool_run_ELSEWHERE_reads_what_its_walk_finds_DOCUMENTED
     assert _n(bf) == _n(tk / NEW)
     assert p["file"] is None and p["state"] == "none", p
     assert "walk" in (PKG / "x4validate" / "_paths.py").read_text(encoding="utf-8").split('"""')[1]
+# --- v4.0 release review R1-F1 / R1-P1: the config is PARSED, by ONE grammar, in BOTH loaders --
+#
+# The bash loader SOURCED the file (`set -a; . "$cfg"`), so the config was shell CODE to the
+# guards and DATA to Python -- and the agent can write it: a line `exit 0` ended every hook
+# before it spoke (silence is ALLOW), `X4_GUARD=off` in it relaxed every deny. Each row below
+# is one clause of the grammar both loaders now share (`_x4_cfg_read` / `parse_env_report`).
+# A row lists the file's lines, the values it must configure (absent = must NOT be set), and
+# the ignored (line, reason) pairs. FXSBASE is exported as "/base" for every row.
+BS = chr(92)
+PARSE_KEYS = ("X4_GAME", "X4_MODS", "X4_PROFILE", "X4_DEBUGLOG", "X4_SAVES", "XRCATTOOL",
+              "X4_GUARD", "X4_GUARD_CHECK", "X4_APPMANIFEST", "X4_BACKUPS")
+PARSER = [
+    # id, lines, want values, want ignored
+    ("double_quotes",   ['X4_GAME="/a b/c"'],                          {"X4_GAME": "/a b/c"}, []),
+    ("single_quotes_literal", ["X4_GAME='/a $FXSBASE/c'"],             {"X4_GAME": "/a $FXSBASE/c"}, []),
+    ("export",          ['export X4_GAME="/e"'],                       {"X4_GAME": "/e"}, []),
+    ("blanks_around_eq", ['X4_GAME = "/sp"'],                          {"X4_GAME": "/sp"}, []),
+    ("comments",        ["# X4_GAME=/no", "X4_GAME=/m # note", "  # indented"], {"X4_GAME": "/m"}, []),
+    ("hash_mid_word",   ["X4_GAME=/a#b"],                              {"X4_GAME": "/a#b"}, []),
+    ("quoted_hash",     ['X4_GAME="/My Mods #2/x" # c'],               {"X4_GAME": "/My Mods #2/x"}, []),
+    ("concatenation",   ["X4_GAME='/x'\"/y\"z"],                       {"X4_GAME": "/x/yz"}, []),
+    ("expand_env",      ['X4_GAME="$FXSBASE/g"', "X4_MODS=${FXSBASE}/m"],
+                        {"X4_GAME": "/base/g", "X4_MODS": "/base/m"}, []),
+    ("expand_file_key", ['X4_GAME="/g"', 'X4_MODS="$X4_GAME/m"'],      {"X4_GAME": "/g", "X4_MODS": "/g/m"}, []),
+    ("unknown_name_empty", ['X4_GAME="$FXS_NOT_SET/g"'],               {"X4_GAME": "/g"}, []),
+    ("escaped_dollar_literal", ['X4_GAME="/a' + BS + '$FXSBASE"'],     {"X4_GAME": "/a$FXSBASE"}, []),
+    ("braced_default_literal", ['X4_GAME="${FXSBASE:-/x}"'],           {"X4_GAME": "${FXSBASE:-/x}"}, []),
+    # what both installers write: \\ \" \$ \` escaped inside double quotes
+    ("installer_escapes", ['X4_GAME="C:' + BS * 2 + "Users" + BS * 2 + "me " + BS + '"q' + BS
+                           + '" ' + BS + "$x " + BS + "`b" + BS + '`"'],
+                        {"X4_GAME": "C:" + BS + "Users" + BS + 'me "q" $x `b`'}, []),
+    ("unquoted_backslashes_kept", ["X4_GAME=C:" + BS + "Games" + BS + "X4"],
+                        {"X4_GAME": "C:" + BS + "Games" + BS + "X4"}, []),
+    # a hand-typed trailing separator: the quote is escaped, so it is UNTERMINATED -> legacy
+    ("unterminated_legacy", ['X4_GAME="C:' + BS + "Games" + BS + 'X4' + BS + '"'],
+                        {"X4_GAME": "C:" + BS + "Games" + BS + "X4" + BS}, []),
+    ("empty_configures_nothing", ['X4_GAME=""'],                       {}, []),
+    ("crlf",            ["X4_GAME=\"/c\"\r", "X4_MODS=/m\r"],          {"X4_GAME": "/c", "X4_MODS": "/m"}, []),
+    ("bom",             ["﻿X4_GAME=/bom"],                        {"X4_GAME": "/bom"}, []),
+    # --- shell CODE: ignored, reported, and NEVER run ------------------------------------
+    ("exit_0_line",     ["exit 0", "X4_GAME=/after"],                  {"X4_GAME": "/after"}, [(1, "shape")]),
+    ("command_line",    ["touch MARK", "source /x"],                   {}, [(1, "shape"), (2, "shape")]),
+    ("subst_dollar",    ['X4_GAME="$(touch MARK)/x"', "X4_MODS=/m"],   {"X4_MODS": "/m"}, [(1, "subst")]),
+    ("subst_backtick",  ["X4_GAME=`touch MARK`"],                      {}, [(1, "subst")]),
+    ("subst_unterminated", ['X4_GAME="$(touch MARK)'],                 {}, [(1, "subst")]),
+    ("operator",        ["X4_GAME=/a; touch MARK", "X4_MODS=/a&b"],    {}, [(1, "operator"), (2, "operator")]),
+    ("single_quoted_code_is_data", ["X4_GAME='$(touch MARK); x'"],     {"X4_GAME": "$(touch MARK); x"}, []),
+    ("not_our_key",     ["PATH=/evil", "JQ=/evil", "X4_lower=/x"],     {}, [(1, "key"), (2, "key"), (3, "key")]),
+    ("guard_keys",      ["X4_GUARD=off", "X4_GUARD_CHECK=1", "X4_GAME=/g"],
+                        {"X4_GAME": "/g"}, [(1, "guard"), (2, "guard")]),
+    ("xrcattool_key",   ['XRCATTOOL="/x/XRCatTool.exe"'],              {"XRCATTOOL": "/x/XRCatTool.exe"}, []),
+    ("any_x4_key",      ["X4_APPMANIFEST=/a.acf"],                     {"X4_APPMANIFEST": "/a.acf"}, []),
+]
+PARSER_IDS = [r[0] for r in PARSER]
+
+
+def _parse_box(tmp: pathlib.Path, lines):
+    tk = tmp / "tk"
+    tk.mkdir()
+    (tk / NEW).write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("X4_") and k not in ("CLAUDE_PROJECT_DIR", "HOOK_DIR")}
+    env["X4_TOOLKIT"] = str(tk)
+    env["FXSBASE"] = "/base"
+    env.pop("FXS_NOT_SET", None)
+    return tk, env
+
+
+def _bash_parse(tk, env):
+    bash = _bash()
+    if bash is None:
+        pytest.skip("no Git Bash found (the WSL stub does not count) -- NOT CHECKED")
+    # NUL-separated: VALUE, then whether it is EXPORTED (a child process must see it), per key;
+    # then the ignored list and the PATH check last.
+    script = ('. "$1"; shift; for k in "$@"; do eval "v=\\${$k-}"; printf "%s\\0" "$v"; '
+              'case "$(declare -p "$k" 2>/dev/null)" in "declare -x"*) printf "x\\0";; *) printf "%s\\0" -;; esac; done; '
+              'printf "%s\\0" "$_x4_cfg_ignored"; case "$PATH" in /evil*) printf "HIJACKED";; *) printf "ok";; esac')
+    r = subprocess.run([bash, "-c", script, "_", str(ENV_SH), *PARSE_KEYS],
+                       capture_output=True, env=env, cwd=str(tk))
+    assert r.returncode == 0, r.stderr[-400:]
+    assert r.stderr == b"", "the loader must print NOTHING per call (M5): " + r.stderr[-300:].decode()
+    parts = r.stdout.decode("utf-8").split("\0")
+    vals, exported = {}, {}
+    for i, k in enumerate(PARSE_KEYS):
+        v, x = parts[2 * i], parts[2 * i + 1]
+        if v:
+            vals[k] = v
+            exported[k] = x == "x"
+    ignored = [(int(a), b) for a, b in (t.split(":") for t in parts[2 * len(PARSE_KEYS)].split())]
+    return vals, exported, ignored, parts[-1]
+
+
+def _py_parse(tk, env):
+    code = ("import json, sys; sys.path.insert(0, sys.argv[1]); from x4validate import _paths; "
+            "v, ig = _paths.parse_env_report(_paths.Path(sys.argv[2])); "
+            "print(json.dumps({'v': v, 'ig': ig}))")
+    r = subprocess.run([sys.executable, "-c", code, str(PKG), str(tk / NEW)],
+                       capture_output=True, text=True, env=env, cwd=str(tk))
+    assert r.returncode == 0, r.stderr[-400:]
+    d = json.loads(r.stdout.strip().splitlines()[-1])
+    return d["v"], [tuple(x) for x in d["ig"]]
+
+
+@pytest.mark.parametrize("row", PARSER, ids=PARSER_IDS)
+def test_both_loaders_parse_the_config_by_one_grammar(tmp_path, row):
+    _id, lines, want, want_ignored = row
+    tk, env = _parse_box(tmp_path, lines)
+    bvals, bexp, bign, path_check = _bash_parse(tk, env)
+    pvals, pign = _py_parse(tk, env)
+    pvals = {k: v for k, v in pvals.items() if k in PARSE_KEYS}
+    assert bvals == want, ("bash", _id, bvals)
+    assert pvals == want, ("python", _id, pvals)
+    assert bign == want_ignored, ("bash ignored", _id, bign)
+    assert pign == want_ignored, ("python ignored", _id, pign)
+    assert all(bexp.values()), ("a configured value must be EXPORTED, as `set -a` did", _id, bexp)
+    assert path_check == "ok", "a config line changed the hook's PATH"
+    assert not (tk / "MARK").exists(), f"{_id}: a config line was EXECUTED"
+
+
+def test_an_exported_value_still_wins_for_a_key_the_old_loader_did_not_protect(tmp_path):
+    """The sourcing loader restored only twelve named keys after `. "$cfg"`; any other X4_*
+    key (X4_BACKUPS, X4_PYTHON ...) was won by the FILE, while Python's env layer won for all.
+    One rule now: the environment wins for every key, in both loaders."""
+    tk, env = _parse_box(tmp_path, ['X4_BACKUPS="/from/file"'])
+    env["X4_BACKUPS"] = "/from/env"
+    bvals, *_ = _bash_parse(tk, env)
+    assert bvals.get("X4_BACKUPS") == "/from/env", bvals
+
+
+def test_TWIN_a_config_X4_GUARD_never_reaches_the_guards_but_the_launch_one_does(tmp_path):
+    """R1-F1, both halves: the file's X4_GUARD=off is ignored; the LAUNCH environment's is
+    honoured. Without the second assertion, a loader that dropped X4_GUARD everywhere passes."""
+    tk, env = _parse_box(tmp_path, ["X4_GUARD=off"])
+    bvals, _x, bign, _p = _bash_parse(tk, env)
+    assert "X4_GUARD" not in bvals and bign == [(1, "guard")], (bvals, bign)
+    env["X4_GUARD"] = "off"
+    bvals, *_ = _bash_parse(tk, env)
+    assert bvals.get("X4_GUARD") == "off", bvals

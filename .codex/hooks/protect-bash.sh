@@ -65,11 +65,10 @@ x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it ch
 # and a filed reason is a preview of itself.
 emit() {
   # X4_GUARD=off (spec 5.7): a deny or an ask becomes an advisory that names what it would
-  # have been, and is logged. See x4_guard_overridden in _x4-env.sh.
-  if [ "$1" != advise ] && x4_guards_off; then
-    set -- advise "$(x4_guard_overridden protect-bash.sh "$1" "$2")"
-  fi
-  set -- "$1" "$(x4_bound "$2")"
+  # have been, and is logged -- except an INABILITY (_X4_UNRELAXED), which still asks
+  # (R1-F2). See x4_guard_relax in _x4-env.sh.
+  x4_guard_relax protect-bash.sh "$1" "$2"
+  set -- "$_x4_rk" "$(x4_bound "$_x4_rr")"
   if jq_works; then
     if [ "$1" = "advise" ]; then
       "$JQ" -n --arg r "$2" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'
@@ -88,7 +87,18 @@ sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": h}).encode("utf-8"))'
   fi
 }
 
-deny() { VERDICT=deny; emit deny "$1"; exit 0; }
+# Under X4_GUARD=off a rule's deny is relaxed -- but an INABILITY ask recorded earlier in this
+# call (_X4_UNRELAXED) still asks, and this deny's (relaxed) reason rides along (R1-F2).
+deny() {
+  VERDICT=deny
+  if [ -n "${_X4_UNRELAXED:-}" ] && [ -n "$ASKS" ] && x4_guards_off; then
+    emit ask "$ASKS
+$(x4_guard_overridden protect-bash.sh deny "$1")"
+  else
+    emit deny "$1"
+  fi
+  exit 0
+}
 # Records and RETURNS -- see the precedence note below. A deny further down must
 # still be able to win.
 ask()  { VERDICT=ask; if [ -n "$ASKS" ]; then ASKS="$ASKS
@@ -175,9 +185,21 @@ fi
 # "/tmp/x/docs" -- so no path rule could ever match. The README tells users they may
 # write roots as "C:\..." OR "/c/...", so this is a real installation, not a test-only
 # concern. A byte stream on stdin is not translated.
+# THE PROFILE WITH X4_PROFILE UNSET (v4.0 release review R1-F3). The profile rules ask through
+# this root alone, so an unconfigured machine fell through to the Documents rule -- an
+# ADVISORY since 2026-10-02 -- and a save delete that v3.3.1 asked about was only advised.
+# protect-files.sh keeps an `Egosoft[/\\]X4[/\\]` NAME backstop for the same case; this is
+# its Bash twin as a ROOT: the folder that holds every X4 profile, from Documents (Windows)
+# or ~/.config (Linux). Only when X4_PROFILE is unset; a configured profile is unchanged.
+_x4_prof_root="${X4_PROFILE:-}"
+if [ -z "$_x4_prof_root" ]; then
+  for _pr in "${X4_DOCUMENTS:+$X4_DOCUMENTS/Egosoft/X4}" "${HOME:+$HOME/.config/EgoSoft/X4}"; do
+    [ -n "$_pr" ] && [ -d "$_pr" ] && { _x4_prof_root="$_pr"; break; }
+  done
+fi
 emit_roots() {
   printf 'game\t%s\n'       "$X4_GAME"
-  printf 'profile\t%s\n'    "$X4_PROFILE"
+  printf 'profile\t%s\n'    "$_x4_prof_root"
   printf 'reference\t%s\n'  "$X4_REFERENCE"
   printf 'toolkit\t%s\n'    "$X4_TOOLKIT"
   printf 'mods\t%s\n'       "$X4_MODS"
@@ -193,6 +215,7 @@ PARSE_RC=$?
 # an actionable reason rather than a prompt spent on the user (v3.3.0 release review,
 # finding 7). A command that parses but cannot be RESOLVED still asks (below).
 if [ "$PARSE_RC" = 5 ]; then
+  _X4_UNRELAXED=1     # an inability: X4_GUARD=off never relaxes it below ask (R1-F2)
   deny "This PowerShell command does not parse, so the guard could evaluate NO rule against it -- and PowerShell would reject it too: ${FACTS_RAW:-no reason given}. Fix the syntax and re-run."
 fi
 # rc 4: a PowerShell TOOL command could not be translated (no PowerShell was found to
@@ -200,7 +223,7 @@ fi
 # as an unparseable Bash command does below -- nothing was analysed, so this is neither
 # a clean pass nor evidence for a deny.
 if [ "$PARSE_RC" = 4 ]; then
-  VERDICT=ask
+  _X4_UNRELAXED=1; VERDICT=ask
   emit ask "X4 GUARD: this PowerShell command could not be analysed, so NO rule was evaluated against it: ${FACTS_RAW:-no reason given}. The guard reads PowerShell through PowerShell's own parser (pwsh, else powershell; X4_PWSH overrides). Fix the syntax, or confirm only if you know the command is safe."
   x4_guard_check_inert
   exit 0
@@ -229,7 +252,7 @@ COMMAND="${FACTS_RAW#*$SENT}"
 if [ -z "$COMMAND" ]; then
   case $'\n'"${FACT_LINES//$'\r'/}"$'\n' in
     *$'\ncarrier_untranslated\t1\n'*)
-      VERDICT=ask
+      _X4_UNRELAXED=1; VERDICT=ask
       emit ask "X4 GUARD: nothing in this command could be translated into something the guard can check -- every write/delete in it names a target it cannot resolve (a splat that is not a literal hashtable, Invoke-Expression of computed text, a .Delete()-style method on an unidentified object), so it could not be analysed and NO rule was evaluated. Write the target literally, or confirm only if you know what it touches."
       x4_guard_check_inert
       exit 0 ;;
@@ -310,6 +333,7 @@ if [ "$_x4_plain" != 1 ] && ! bash -n -c "$COMMAND" 2>/dev/null; then
   # so the reason must be something Claude can act on. Check-mode signal FIRST: under
   # X4_GUARD_CHECK this still exits 2 ("checked nothing"), which x4guard reports as inert.
   x4_guard_check_inert
+  _X4_UNRELAXED=1
   deny "This command does not PARSE (bash -n rejects it), so bash would not run it and the guard could evaluate NO rule against it. Fix the quoting and re-run -- a Windows path ending in a backslash inside double quotes, or a heredoc whose body contains its own terminator line, are the usual causes."
 fi
 
@@ -335,6 +359,7 @@ fi
 # presence of `$(` anywhere in the command, which would deny ordinary substitution
 # in an argument.
 if on verb_unresolved; then
+  _X4_UNRELAXED=1
   deny "A command name here arrives through substitution (\$(...) or backticks), so the guard cannot tell what command this is and NO rule -- including the hard blocks on the game install -- was evaluated for it. Write the command name literally and re-run."
 fi
 
@@ -351,6 +376,7 @@ fi
 # that part reached no rule. Same verdict as an unparseable command -- and a deny
 # elsewhere in the command still wins, because `ask` accumulates.
 if on carrier_untranslated; then
+  _X4_UNRELAXED=1
   ask "Part of this command could not be analysed, so it was NEVER checked against any rule: nested PowerShell that does not parse (or no PowerShell was found to parse it), or a PowerShell write/delete whose TARGET the guard cannot resolve -- a splat that is not a literal hashtable, a .Delete()/.MoveTo()-style method on an object it cannot identify, Invoke-Expression of computed text. Write the target literally, or confirm only if you know what it touches."
   x4_guard_check_inert
 fi
@@ -358,6 +384,7 @@ fi
 if on carriers_truncated; then
   # DENY, not ask (2026-10-02, same reasoning as the parse failure above): Claude can split it.
   x4_guard_check_inert
+  _X4_UNRELAXED=1
   deny "This command nests so many substitutions/wrappers that the guard stopped expanding them, so part of it was NEVER checked against any rule. Split it into simpler commands (or a script file) and re-run."
 fi
 
@@ -378,6 +405,37 @@ on rm_targets_reference && deny "BLOCKED: reference/ is the read-only unpacked b
 # channel (protect-files.sh) hard-blocks the identical write for Edit/Write, and
 # CLAUDE.md lists it under "Hard blocked". Two channels, one tree, opposite verdicts.
 on writes_reference && deny "BLOCKED: reference/ is the read-only unpacked base game data — never write into it (re-unpack only via bin/unpack-reference.sh). Work in a mod folder under extensions/ instead."
+
+# === HARD BLOCK — WRITE or DELETE the toolkit's PATH CONFIG (v4.0 release review R1-F1/R1-P1) ===
+# Every guard reads its roots from x4-paths.env; an agent that could rewrite it could move or
+# drop what they protect. The SAME parse pass judges it: hook_facts runs once more with the
+# config file as its only `reference` root, and its write/delete facts for that root answer
+# "does this command write or delete the config?" -- a redirect (truncating or appending), cp,
+# mv, tee, sed -i, rm. COST: only a command whose TEXT names the config (or X4_CONFIG) pays
+# that second pass; every other command pays one pure-shell case. ACCEPTED RESIDUAL: a name
+# built so its text never appears (`x4-pa""ths.env`, a variable from outside the command) or
+# a write from inside an interpreter (python -c) is not seen -- this stops accidents, not
+# intent, like the reference/ OS-deny rule below.
+_x4_cfgm=0
+case "$COMMAND" in *[xX]4-[pP][aA][tT][hH][sS]*|*X4_CONFIG*) _x4_cfgm=1 ;; esac
+if [ "$_x4_cfgm" = 0 ] && [ -n "${X4_CONFIG:-}" ]; then
+  case "$COMMAND" in *"${X4_CONFIG##*[/\\]}"*) _x4_cfgm=1 ;; esac
+fi
+if [ "$_x4_cfgm" = 1 ]; then
+  x4_cfg_candidates
+  while IFS= read -r _cf; do
+    [ -n "$_cf" ] || continue
+    _cfacts=$( { printf 'reference\t%s\n' "$_cf"; printf -- '--X4-ROOTS-END--'; printf '%s' "$INPUT"; } \
+               | "$PY" "$HOOK_DIR/hook_facts.py" 2>/dev/null)
+    _cfacts="${_cfacts%%$SENT*}"
+    case $'\n'"${_cfacts//$'\r'/}"$'\n' in
+      *$'\nwrites_reference\t1\n'*|*$'\nrm_targets_reference\t1\n'*)
+        x4_cfg_why "$_cf"; deny "$_x4_cfg_why Command: $COMMAND" ;;
+    esac
+  done <<EOF
+$_x4_cfg_paths
+EOF
+fi
 
 # === HARD BLOCK — re-unpack into a locked reference/ ===
 # Sentinel-gated: once reference/.unpacked-and-locked exists, block accidental re-unpacks.
@@ -453,7 +511,7 @@ on redirect_truncate_into_game_or_profile \
 # DENY is the verdict (user decision 2026-09-25, AUDIT-2026-09-24 HK-6); the reason used
 # to end "confirm: ...", which on a deny offers the reader nothing to confirm. There is a
 # correct alternative to take instead, so it names that.
-on sed_i_in_game_or_profile && deny "BLOCKED: in-place sed edit (sed -i) of a file in the game or profile directory. A Bash edit gets NO backup and bypasses the file-path guard. Use the Edit tool instead: it is backed up, checked by protect-files.sh, and fails loudly on a non-unique match. Command: $COMMAND"
+on sed_i_in_game_or_profile && deny "BLOCKED: in-place sed edit (sed -i) of a file in the game or profile directory. A shell edit gets NO backup and bypasses the file-path guard. Use your file-edit tool instead (Edit, apply_patch): it is backed up, checked by protect-files.sh, and fails loudly on a non-unique match. Command: $COMMAND"
 
 # === CONFIRM — direct reference to .cat/.dat archives ===
 # DROPPED 2026-08-29: this fired on any command whose TEXT mentioned a .cat -- including
@@ -488,10 +546,10 @@ on git_add_all && deny "GIT ADD -A / . IN A SHARED WORKSPACE: this stages EVERY 
 # Appends (`>>`) are deliberately NOT blocked — they cannot truncate.
 if on durable_truncating_redirect; then
   deny "BLOCKED: truncating redirect onto a durable record.
-A '>' replaces the file, and a Bash write gets NO backup (backup-before-edit.sh only covers Edit|Write).
+A '>' replaces the file, and a shell write gets NO backup (backup-before-edit.sh covers file-edit tools only).
 Use instead:
-  - the Edit tool for a surgical change (backed up, and it fails loudly if the match is not unique)
-  - the Write tool for a full replacement (backed up)
+  - your file-edit tool for a surgical change (Edit, apply_patch: backed up, and it fails loudly if the match is not unique)
+  - your file-write tool for a full replacement (Write, apply_patch: backed up)
   - '>>' to append — it cannot truncate
 Command: $COMMAND"
 fi
@@ -501,7 +559,7 @@ fi
 if on durable_python_open_w; then
   deny "python open(...,'w') in a command that names a durable record (memory / KNOWLEDGEBASE / CLAUDE.md / BLIND-SPOTS).
 open() TRUNCATES AT OPEN — if the write then raises, the file is left EMPTY. This wiped a memory file on 2026-08-22.
-Prefer the Edit/Write tools (backed up), or write to a temp and rename. If you proceed, VERIFY the size afterwards.
+Prefer your file-edit/-write tools (Edit, Write, apply_patch: backed up), or write to a temp and rename. If you proceed, VERIFY the size afterwards.
 Command: $COMMAND"
 fi
 
@@ -543,12 +601,12 @@ if on search_rooted_reference; then
   deny "WRONG TOOL: recursive text search that traverses the whole reference\\ tree (~60 GB).
 This fires whether the search is rooted AT reference\\ or at any directory ABOVE it --
 an ancestor walk reaches the 60 GB and everything beside it, so it is the worse case.
-Route the question first (CLAUDE.md 'Discovery vs. Proof'):
+Route the question first (the project instructions -- CLAUDE.md / AGENTS.md -- section 'Discovery vs. Proof'):
   - 'what values does attribute X take / who references X?' -> BaseX: cd tools\\basex && python ask.py ...
     (fast, and gives a DENOMINATOR — which a bare grep count never does)
   - 'what is the LIVE value and who set it?'                -> uv run x4effective
-  - 'does a file with this NAME exist?'                     -> the Glob tool (NOT grep: grep searches CONTENTS)
-  - 'find this text in ONE known area'                      -> the Grep tool (ripgrep), or scope this grep to a subdirectory
+  - 'does a file with this NAME exist?'                     -> a file-NAME search (Glob, rg --files, find) -- NOT grep: grep searches CONTENTS
+  - 'find this text in ONE known area'                      -> a content search (Grep, rg) scoped to that subdirectory
 If you truly need a full-tree scan, scope it to a subpath so it is deliberate rather than reflexive."
 fi
 
@@ -573,7 +631,7 @@ Route it instead:
   - 'what is this mod's id?'           -> read the mod's OWN extensions/<folder>/content.xml @id
   - and remember: the profile is a DECISION LOG, not an inventory. MEASURED 2026-08-23:
     348 entries, 287 FOSSILS (82.5%), and 54 of 115 installed mods absent from it entirely.
-    ABSENT != DISABLED -- X4 adds an unseen folder as ENABLED. See CLAUDE.md #30.
+    ABSENT != DISABLED -- X4 adds an unseen folder as ENABLED. See #30 in the x4-xml-patching skill.
 
 If you already have the manifest id and are grepping for THAT, proceed."
 fi
@@ -597,7 +655,7 @@ if on dollarq_after_pipe; then
   deny "\$? AFTER A PIPELINE reports the LAST command's exit code, not the one you mean.
   cmd | head; echo \$?      -> that is HEAD's exit code
 Measured 2026-08-22: this reported a stale-index refusal (real exit 5) as 'exit 0',
-and it was nearly written up as a tool defect. See CLAUDE.md #22.
+and it was nearly written up as a tool defect (check the checker first: #22, the x4-toolkit-dev skill).
 Use instead:
   cmd > out 2>&1; rc=\$?     # capture FIRST, format afterwards
   \${PIPESTATUS[0]}          # if you must keep the pipeline
@@ -630,10 +688,10 @@ It does not finish — MEASURED 2026-08-22: grep -r killed at 300 s, ripgrep tim
 20 s, because tools\\basex\\basex\\data\\ alone is GBs of binary database pages.
 Name the directory you actually mean:
   tools\\x4validate  ·  dev  ·  tools\\basex (excluding basex/data)
-Or route the question (CLAUDE.md 'Discovery vs. Proof'):
+Or route the question (the project instructions -- CLAUDE.md / AGENTS.md -- section 'Discovery vs. Proof'):
   values / who-references-X  -> BaseX ask.py (gives a DENOMINATOR)
   the LIVE value + who set it -> uv run x4effective
-  does a FILE by this name exist -> the Glob tool, not grep
+  does a FILE by this name exist -> a file-NAME search (Glob, rg --files, find), not grep
 Command: $COMMAND"
 fi
 

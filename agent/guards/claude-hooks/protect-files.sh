@@ -25,10 +25,10 @@ x4_resolve_python; PY="$X4_PY"   # shared: refuses a misconfigured X4_PYTHON
 
 emit() {   # emit <deny|ask|advise> <reason>
   # X4_GUARD=off (spec 5.7): a deny or an ask becomes an advisory that names what it would
-  # have been, and is logged. See x4_guard_overridden in _x4-env.sh.
-  if [ "$1" != advise ] && x4_guards_off; then
-    set -- advise "$(x4_guard_overridden protect-files.sh "$1" "$2")"
-  fi
+  # have been, and is logged -- except an INABILITY (_X4_UNRELAXED), which still asks
+  # (R1-F2). See x4_guard_relax in _x4-env.sh.
+  x4_guard_relax protect-files.sh "$1" "$2"
+  set -- "$_x4_rk" "$_x4_rr"
   if [ "$JQ_OK" = 1 ]; then
     if [ "$1" = "advise" ]; then
       "$JQ" -n --arg r "$2" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'
@@ -75,7 +75,7 @@ fi
 # An EMPTY path and an UNREADABLE payload are different facts, and conflating them is
 # how a guard reports success over nothing. Only the first is an allow.
 if [ "$FP_OK" != 1 ]; then
-  VERDICT=1
+  VERDICT=1; _X4_UNRELAXED=1     # an inability: never relaxed below ask (R1-F2)
   emit ask "X4 GUARD: could not read the file path from this payload (no working jq or python), so NO rule below was evaluated. This is not a clean pass. Confirm only if you know the edit is safe."
   x4_guard_check_inert
   exit 0
@@ -111,6 +111,27 @@ ask()  { VERDICT=1; emit ask "$1"; exit 0; }
 # === HARD BLOCK — read-only reference data (unpacked base game, never edit) ===
 # X4_REFERENCE defaults to $X4_TOOLKIT/reference, so this covers the default layout too.
 x4_under "$FILE_PATH" "$X4_REFERENCE" && deny "BLOCKED: reference/ is read-only unpacked base game data — never edit. Make a diff patch in your mod instead."
+
+# === HARD BLOCK — the toolkit's PATH CONFIG (v4.0 release review R1-F1 / R1-P1, ruling 3) ===
+# Every guard reads its roots from x4-paths.env. An agent that could write it could point
+# reference/ somewhere else or drop the game root, and the guards would protect a different
+# tree, silently. COST: a pure-shell NAME test first (case-insensitive), so every other path
+# pays no subprocess; only a file NAMED like a config pays the x4_under checks.
+_x4_fn="${FILE_PATH##*[/\\]}"
+# `shopt -q`, not `$(shopt -p ...)`: a builtin test, so the restore costs no subshell (HK-4).
+_x4_nm=0; shopt -q nocasematch && _x4_nm=1
+shopt -s nocasematch
+_x4_cfgname=0
+[[ "$_x4_fn" == "x4-paths.env" || ( -n "${X4_CONFIG:-}" && "$_x4_fn" == "${X4_CONFIG##*[/\\]}" ) ]] && _x4_cfgname=1
+[ "$_x4_nm" = 1 ] || shopt -u nocasematch
+if [ "$_x4_cfgname" = 1 ]; then
+  x4_cfg_candidates
+  while IFS= read -r _cf; do
+    [ -n "$_cf" ] && x4_under "$FILE_PATH" "$_cf" && { x4_cfg_why "$FILE_PATH"; deny "$_x4_cfg_why"; }
+  done <<EOF
+$_x4_cfg_paths
+EOF
+fi
 
 # === HARD BLOCK — CAT/DAT archive files (use bin/xrcat / XRCatTool only) ===
 # Scoped 2026-08-29: only where X4 keeps archives. `.dat` is a generic extension --
@@ -201,25 +222,32 @@ fi
 # BLOCK was reached. A whitelist decided on text the filesystem does not resolve that
 # way is a whitelist for a different file.
 _NP="$(x4_norm "$FILE_PATH")"
-# AGENTS.md is Codex's instruction file, the CLAUDE.md of another agent (2026-09-30).
-case "$_NP" in */claude.md|*/agents.md|*/knowledgebase.md) exit 0;; esac
-# The agent's own notes (lane N, user decision N1): EXACTLY <project root>/X4-NOTES.md and
-# the 4.0 migration's X4-NOTES.pre-4.0.md -- the instructions send agents there, and the
-# game-install block below denied it (MEASURED, live Codex run 2026-10-03). The NAME alone
-# is not enough: the same name anywhere deeper in the game tree stays denied, so the
-# RESOLVED path must equal a root plus the name. The roots are X4_GAME and X4_TOOLKIT --
-# the two this hook already resolves in every channel (the x4guard write payload carries
-# no cwd, and CLAUDE_PROJECT_DIR is Claude-only). X4_GAME is the root that is denied;
-# X4_TOOLKIT covers the in-game layout with X4_GAME unset, where only the
-# `X4 Foundations/` name backstop protects it. The case is pure shell, so every other
-# path pays nothing.
+# The project's instruction and notes files, at the PROJECT ROOT ONLY: CLAUDE.md (and
+# Claude's .claude/CLAUDE.md), AGENTS.md (Codex's CLAUDE.md, 2026-09-30), KNOWLEDGEBASE.md,
+# and the agent's own notes -- X4-NOTES.md and the 4.0 migration's X4-NOTES.pre-4.0.md (lane
+# N, user decision N1: the instructions send agents there, and the game-install block below
+# denied it, MEASURED in a live Codex run 2026-10-03). The NAME alone is not enough: the same
+# name anywhere deeper in the game tree stays denied (or asked, in a deployed mod), so the
+# RESOLVED path must equal a root plus the name. The instruction files were a NAME-ANYWHERE
+# whitelist until the v4.0 release review (R1-F6/R6-09; pre-arc F150 for CLAUDE.md and
+# KNOWLEDGEBASE.md): `<game>/extensions/<mod>/AGENTS.md` and `<game>/libraries/CLAUDE.md`
+# walked past every rule below. MEASURED 2026-10-04 before narrowing: 4 of 60,228 files under
+# the reference machine's game root carry one of those names -- the 3 at its root and 1 under
+# .claude/backups/ (whitelisted below) -- and 0 under extensions/.
+# The roots are X4_GAME and X4_TOOLKIT -- the two this hook already resolves in every channel
+# (the x4guard write payload carries no cwd, and CLAUDE_PROJECT_DIR is Claude-only). X4_GAME
+# is the root that is denied; X4_TOOLKIT covers the in-game layout with X4_GAME unset, where
+# only the `X4 Foundations/` name backstop protects it. The case is pure shell, so every
+# other path pays nothing.
 case "$_NP" in
-  */x4-notes.md|*/x4-notes.pre-4.0.md)
+  */x4-notes.md|*/x4-notes.pre-4.0.md|*/claude.md|*/agents.md|*/knowledgebase.md)
+    _nrel="${_NP##*/}"
+    case "$_NP" in */.claude/claude.md) _nrel=".claude/claude.md" ;; esac
     x4_canon_memo "$FILE_PATH"; _nfc="$_X4_CANON_RESULT"
     for _nr in "${X4_GAME:-}" "${X4_TOOLKIT:-}"; do
       [ -n "$_nr" ] || continue
       x4_canon_memo "$_nr"
-      [ "$_nfc" = "${_X4_CANON_RESULT%/}/${_NP##*/}" ] && exit 0
+      [ "$_nfc" = "${_X4_CANON_RESULT%/}/$_nrel" ] && exit 0
     done ;;
 esac
 # dev/ and dist/ are the documented mod workspace; they MUST be whitelisted before the

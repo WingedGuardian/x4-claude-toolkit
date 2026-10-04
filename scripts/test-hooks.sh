@@ -120,6 +120,13 @@ run_layout(){ # run_layout <name> <toolkit> <game>
   # exception to the exact NAME: a looser `*agents.md` pattern would let this one through.
   decide allow protect-files.sh "$(fj "$GAME/AGENTS.md")"                   "AGENTS.md in the game root"
   decide deny  protect-files.sh "$(fj "$GAME/notagents.md")"                "a NAME merely ending in agents.md is still a game file"
+  # ...and the exception is the project ROOT, not the name anywhere (v4.0 release review
+  # R1-F6/R6-09, pre-arc F150): the same names deeper in the game tree are game files.
+  decide deny  protect-files.sh "$(fj "$GAME/libraries/AGENTS.md")"         "an AGENTS.md deeper in the game is a game file"
+  decide deny  protect-files.sh "$(fj "$GAME/libraries/CLAUDE.md")"         "a CLAUDE.md deeper in the game is a game file"
+  decide deny  protect-files.sh "$(fj "$GAME/libraries/KNOWLEDGEBASE.md")"  "a KNOWLEDGEBASE.md deeper in the game is a game file"
+  decide allow protect-files.sh "$(fj "$GAME/KNOWLEDGEBASE.md")"            "KNOWLEDGEBASE.md at the game root"
+  decide allow protect-files.sh "$(fj "$GAME/.claude/CLAUDE.md")"           "Claude's .claude/CLAUDE.md at the game root"
   decide deny  protect-files.sh "$(fj "$TK/reference/libraries/wares.xml")" "reference/ is read-only"
   # A BACKSLASH path, which the harness could not carry until 2026-08-30: fj
   # interpolated raw, so a Windows path was invalid JSON (\U is not a valid
@@ -517,7 +524,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=187
+EXPECT=234
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -1021,6 +1028,185 @@ if [ "${#_big_out}" -le "$CAP" ]; then
 else
   no "the short-circuit let an over-cap payload through: ${#_big_out} chars"
 fi
+
+
+# =============================================================================
+# THE PATH CONFIG IS DATA (v4.0 release review R1-F1 / R1-P1)
+# =============================================================================
+# _x4-env.sh SOURCED x4-paths.env, and an agent can write it: a line `exit 0` made every hook
+# exit before it spoke (empty stdout = ALLOW), and `X4_GUARD=off` in it relaxed every deny
+# under a banner that said "at launch". It is parsed now, and agents may not write it.
+echo; echo "=== the path config is DATA, never run ==="
+_cfg_saved="$(export -p | grep -E '^declare -x (X4_[A-Z0-9_]*|CLAUDE_PROJECT_DIR)=')"
+for _v in $(export -p | sed -nE 's/^declare -x (X4_[A-Z0-9_]*|CLAUDE_PROJECT_DIR)=.*/\1/p'); do unset "$_v"; done
+_ct="$SBX_TMP/cfgtk"; mkdir -p "$_ct/reference/libraries" "$_ct/ref2/libraries" "$_ct/.claude"
+export X4_TOOLKIT="$_ct" CLAUDE_PROJECT_DIR="$_ct"
+# Lines AFTER an `exit 0` are still read: ref2 is configured below it and must be protected.
+printf '%s\n' '# cfg' 'exit 0' "X4_REFERENCE=\"$_ct/ref2\"" > "$_ct/x4-paths.env"
+decide deny protect-files.sh "$(fj "$_ct/ref2/libraries/w.xml")" "an 'exit 0' line in the config no longer silences the guards"
+decide deny protect-bash.sh  "$(cj "echo x > '$_ct/ref2/libraries/w.xml'")" "an 'exit 0' line: protect-bash still reads the roots after it"
+# X4_GUARD=off in the FILE is ignored ...
+printf '%s\n' 'X4_GUARD=off' > "$_ct/x4-paths.env"
+decide deny protect-files.sh "$(fj "$_ct/reference/libraries/w.xml")" "X4_GUARD=off in the config does NOT switch the guards off"
+_ban="$(bash "$HOOKS/session-canary.sh" 2>/dev/null)"
+case "$_ban" in
+  *"X4_GUARD in "*IGNORED*) ok "the session banner names the ignored config X4_GUARD" ;;
+  *) no "the session banner does not name the ignored config X4_GUARD: ${_ban:0:200}" ;;
+esac
+# ... while the LAUNCH environment's still does (the twin: a loader that dropped X4_GUARD
+# everywhere would pass the probe above).
+export X4_GUARD=off
+decide advise protect-files.sh "$(fj "$_ct/reference/libraries/w.xml")" "TWIN: X4_GUARD=off at LAUNCH still relaxes the deny"
+unset X4_GUARD
+: > "$_ct/x4-paths.env"
+# Agents may not write the config, in either location, by Edit/Write or by a shell command.
+decide deny  protect-files.sh "$(fj "$_ct/x4-paths.env")"          "Write the path config: denied"
+decide deny  protect-files.sh "$(fj "$_ct/.claude/x4-paths.env")"  "Write the 3.x path config: denied"
+decide deny  protect-files.sh "$(fj "$(printf '%s' "$_ct/X4-PATHS.ENV" | tr / '\\')")" "Write the path config, other case + backslashes: denied"
+decide allow protect-files.sh "$(fj "$_ct/x4-paths.env.example")"  "TWIN: the .example beside it is not the config"
+decide allow protect-files.sh "$(fj "$_ct/dev/x4-paths.env")"      "TWIN: a same-named file elsewhere is not the config"
+decide deny  protect-bash.sh "$(cj "echo X4_GUARD=off >> '$_ct/x4-paths.env'")"  "append to the path config: denied"
+decide deny  protect-bash.sh "$(cj "cd '$_ct' && cp x4-paths.env.example x4-paths.env")" "cp onto the path config (relative): denied"
+decide deny  protect-bash.sh "$(cj "rm -f '$_ct/.claude/x4-paths.env'")" "delete the 3.x path config: denied"
+decide allow protect-bash.sh "$(cj "cat '$_ct/x4-paths.env'")"     "TWIN: READING the path config is allowed"
+decide allow protect-bash.sh "$(cj "echo x >> '$_ct/notes-x4-paths.txt'")" "TWIN: a write to a file merely NAMED like it is allowed"
+export X4_CONFIG="$_ct/elsewhere.env"; : > "$X4_CONFIG"
+decide deny  protect-files.sh "$(fj "$X4_CONFIG")"                 "Write an explicit X4_CONFIG file: denied"
+decide deny  protect-bash.sh "$(cj "echo x > '$X4_CONFIG'")"       "redirect into an explicit X4_CONFIG file: denied"
+unset X4_CONFIG X4_TOOLKIT CLAUDE_PROJECT_DIR
+eval "$_cfg_saved"
+
+
+# =============================================================================
+# X4_GUARD=off relaxes VERDICTS, never an INABILITY (v4.0 release review R1-F2)
+# =============================================================================
+# The CHANGELOG promises "a guard that could not check still asks" under X4_GUARD=off; every
+# inability verdict went through the same emitter as a rule's deny and became an advisory.
+echo; echo "=== X4_GUARD=off: a guard that could not check still asks ==="
+_ig_game="${X4_GAME-}"; export X4_GUARD=off X4_GAME="$SBX_TMP/g/X4 Foundations"; mkdir -p "$X4_GAME"
+decide ask protect-bash.sh "$(cj 'echo "unterminated')"   "guards off: a command bash -n rejects still ASKS"
+decide ask protect-bash.sh "$(cj "\$(echo rm) -rf '$X4_GAME'")"     "guards off: a command name built by substitution still ASKS"
+_psj='{"tool_name":"PowerShell","tool_input":{"command":"Remove-Item x"}}'
+export X4_PWSH="$SBX_TMP/no-such-pwsh"
+decide ask protect-bash.sh "$_psj" "guards off: PowerShell that could not be translated still ASKS"
+unset X4_PWSH
+_pf_out="$(printf '%s' '{"tool_name":"Edit","tool_input":' | JQ=no-such-jq bash "$HOOKS/protect-files.sh" 2>/dev/null)"
+case "$_pf_out" in
+  *'"permissionDecision":"ask"'*|*'"permissionDecision": "ask"'*) ok "guards off: protect-files with an unreadable payload still ASKS" ;;
+  *) no "guards off: protect-files with an unreadable payload did not ask: ${_pf_out:0:200}" ;;
+esac
+# TWIN: an ordinary rule's deny IS relaxed -- the switch still works for verdicts.
+decide advise protect-bash.sh "$(cj "rm -rf '$X4_GAME'")" "TWIN: guards off: a rule's deny is still an advisory"
+unset X4_GUARD; if [ -n "$_ig_game" ]; then export X4_GAME="$_ig_game"; else unset X4_GAME; fi
+
+# =============================================================================
+# search-scope.sh: an ignored ROOT is not an invisible TREE (v4.0 release review R1-F4, R1-F5)
+# =============================================================================
+# Grep (ripgrep) given a root that git ignores as a DIRECTORY (`reference/`, `build/`) still
+# reads every file under it -- only a pattern that matches the CHILDREN themselves (the game
+# root's `*`) hides them. MEASURED 2026-10-04: rg --files under `reference/` -> 1 of 1 files,
+# under `*` -> 0 of 1. The deny fired on both, so the toolkit's own reference/libraries could
+# not be searched with Grep in the default layout.
+echo; echo "=== search-scope.sh: a dir/-ignored root is still searchable ==="
+_ss_gc="${GIT_CEILING_DIRECTORIES-}"; export GIT_CEILING_DIRECTORIES="$_SBX"
+_ss_ext="${X4_EXTENSIONS-}"; _ss_game="${X4_GAME-}"
+DTK="$SBX_TMP/dtk"; mkdir -p "$DTK/reference/libraries" "$DTK/build/sub"
+: > "$DTK/reference/libraries/a.xml"; : > "$DTK/build/sub/b.txt"
+printf '%s\n' 'reference/' 'build/' > "$DTK/.gitignore"; git -C "$DTK" init -q
+SG="$SBX_TMP/sgame/X4 Foundations"; mkdir -p "$SG/extensions/loosemod/md"
+: > "$SG/extensions/loosemod/md/a.xml"; printf '%s\n' '*' '!.gitignore' > "$SG/.gitignore"; git -C "$SG" init -q
+export X4_GAME="$SG" X4_EXTENSIONS="$SG/extensions"
+ssj(){ printf '{"tool_name":"%s","tool_input":{"pattern":"x","path":%s}}' "$1" "$(printf '%s' "$2" | jq -Rs .)"; }
+decide allow  search-scope.sh "$(ssj Grep "$DTK/reference/libraries")" "Grep under a dir/-ignored reference/ sees its files: no deny"
+decide allow  search-scope.sh "$(ssj Grep "$DTK/build")"               "Grep AT a dir/-ignored root sees its files: no deny"
+decide allow  search-scope.sh "$(ssj Glob "$DTK/build")"               "Glob AT a dir/-ignored root: no unreliable-zero advisory"
+mkdir -p "$DTK/extra1/d"; : > "$DTK/extra1/d/c.txt"; printf '%s\n' 'extra*' >> "$DTK/.gitignore"
+decide allow  search-scope.sh "$(ssj Grep "$DTK/extra1")"              "a pattern naming the ROOT (extra*) does not hide its children: no deny"
+decide deny   search-scope.sh "$(ssj Grep "$SG/extensions/loosemod")"  "TWIN: a *-ignored root's children are invisible: still denied"
+decide advise search-scope.sh "$(ssj Glob "$SG/extensions/loosemod")"  "TWIN: Glob in a *-ignored root: still advised"
+export X4_GUARD=off
+decide advise search-scope.sh "$(ssj Grep "$SG/extensions/loosemod")"  "guards off: search-scope's deny is an advisory too (R1-F5)"
+unset X4_GUARD
+if [ -n "$_ss_ext" ]; then export X4_EXTENSIONS="$_ss_ext"; else unset X4_EXTENSIONS; fi
+if [ -n "$_ss_game" ]; then export X4_GAME="$_ss_game"; else unset X4_GAME; fi
+if [ -n "$_ss_gc" ]; then export GIT_CEILING_DIRECTORIES="$_ss_gc"; else unset GIT_CEILING_DIRECTORIES; fi
+
+
+# =============================================================================
+# The X4 PROFILE with X4_PROFILE unset (v4.0 release review R1-F3)
+# =============================================================================
+# A delete or write in the profile asks -- but only through the configured X4_PROFILE root.
+# Unconfigured, it fell to the Documents rule, which became an ADVISORY (2026-10-02): v3.3.1
+# asked, v4.0 advised. protect-files.sh keeps an `Egosoft/X4/` NAME backstop for this; the
+# Bash side now gets the same tree as a root, from Documents (Windows) or ~/.config (Linux).
+echo; echo "=== protect-bash.sh: the X4 profile with X4_PROFILE unset ==="
+_pp_prof="${X4_PROFILE-}"; _pp_docs="${X4_DOCUMENTS-}"; _pp_saves="${X4_SAVES-}"; _pp_home="$HOME"
+unset X4_PROFILE X4_SAVES
+export X4_DOCUMENTS="$SBX_TMP/pdocs"; mkdir -p "$X4_DOCUMENTS/Egosoft/X4/123/save" "$X4_DOCUMENTS/Other Game"
+decide ask    protect-bash.sh "$(cj "rm -f '$X4_DOCUMENTS/Egosoft/X4/123/save/s1.xml.gz'")" "X4_PROFILE unset: deleting a save in Documents/Egosoft/X4 still ASKS"
+decide ask    protect-bash.sh "$(cj "echo x > '$X4_DOCUMENTS/Egosoft/X4/123/content.xml'")" "X4_PROFILE unset: writing the profile content.xml still ASKS"
+decide advise protect-bash.sh "$(cj "rm -f '$X4_DOCUMENTS/Other Game/a.txt'")"            "TWIN: another game's file in Documents is only advised"
+export X4_DOCUMENTS="$SBX_TMP/no-docs-here" HOME="$SBX_TMP/phome"; mkdir -p "$HOME/.config/EgoSoft/X4/123"
+decide ask    protect-bash.sh "$(cj "rm -f '$HOME/.config/EgoSoft/X4/123/content.xml'")"   "X4_PROFILE unset, Linux layout: ~/.config/EgoSoft/X4 still ASKS"
+export HOME="$_pp_home"
+if [ -n "$_pp_docs" ]; then export X4_DOCUMENTS="$_pp_docs"; else unset X4_DOCUMENTS; fi
+[ -n "$_pp_prof" ] && export X4_PROFILE="$_pp_prof"
+[ -n "$_pp_saves" ] && export X4_SAVES="$_pp_saves"
+
+
+# =============================================================================
+# Refusals name AGENT-NEUTRAL remedies (v4.0 release review R3-1)
+# =============================================================================
+# The same protect-bash.sh judges Codex and OpenCode, and its reasons told every agent to "use
+# the Edit tool" and to "see CLAUDE.md #22" -- a tool Codex lacks and an anchor that no longer
+# exists in CLAUDE.md. Read the REASONS of four refusals that carried them.
+echo; echo "=== refusals name agent-neutral remedies ==="
+_r31=""
+for _c in "sed -i s/a/b/ '$SBX_TMP/game/X4 Foundations/libraries/w.xml'" \
+          "echo x > KNOWLEDGEBASE.md" "uv run pytest | tail -3; echo \$?" \
+          "grep -rn wares '$SBX_TMP/r31ref'"; do
+  _r31="$_r31$(X4_GAME="$SBX_TMP/game/X4 Foundations" X4_REFERENCE="$SBX_TMP/r31ref" bash -c 'printf "%s" "$1" | bash "$2"' _ "$(cj "$_c")" "$HOOKS/protect-bash.sh" 2>/dev/null)"
+done
+case "$_r31" in
+  *"the Edit tool"*|*"the Write tool"*|*"the Glob tool"*|*"the Grep tool"*|*"CLAUDE.md #"*)
+    no "a refusal names a Claude-only remedy or a dead CLAUDE.md anchor" ;;
+  *apply_patch*"Discovery vs. Proof"*) ok "the refusals name agent-neutral remedies and live anchors" ;;
+  *) no "the refusals did not render (or lost their remedies): ${_r31:0:200}" ;;
+esac
+
+
+# =============================================================================
+# backup-before-edit.sh: the FAILURE paths keep the trail and stderr honest (release review P4)
+# =============================================================================
+# The could-not-create-the-backup-dir path wrote its audit line to ${AUDIT_LOG:-<dir>/../AUDIT_LOG.txt}:
+# a file OUTSIDE the trail (and any inherited AUDIT_LOG variable could redirect it anywhere),
+# and every other audit append let a write error reach stderr -- stderr beside a verdict.
+echo; echo "=== backup-before-edit.sh: failure paths ==="
+_bk_saved="${X4_BACKUPS-}"
+_bkd="$SBX_TMP/bkfail"; mkdir -p "$_bkd/src"; echo '<diff/>' > "$_bkd/src/f.xml"
+: > "$_bkd/notadir"                                   # a FILE where the backup dir should go
+export X4_BACKUPS="$_bkd/notadir/backups"
+_bo="$(printf '%s' "$(fj "$_bkd/src/f.xml")" | AUDIT_LOG="$_bkd/redirected.txt" bash "$HOOKS/backup-before-edit.sh" 2>"$_bkd/err1")"
+case "$_bo" in
+  *'"ask"'*"no audit line"*) ok "backup dir cannot be created: ASKS and says no audit line was written" ;;
+  *) no "backup dir cannot be created: expected an ask naming the missing audit line: ${_bo:0:160}" ;;
+esac
+if [ -s "$_bkd/err1" ] || [ -e "$_bkd/redirected.txt" ] || [ -e "$_bkd/notadir/AUDIT_LOG.txt" ]; then
+  no "backup dir failure leaked: stderr=$(head -c 120 "$_bkd/err1") redirected=$([ -e "$_bkd/redirected.txt" ] && echo yes)"
+else
+  ok "backup dir failure: nothing on stderr, no stray audit file, an inherited AUDIT_LOG is ignored"
+fi
+export X4_BACKUPS="$_bkd/bk2"; mkdir -p "$X4_BACKUPS/AUDIT_LOG.txt"   # the trail cannot be appended
+_bo="$(printf '%s' "$(fj "$_bkd/src/f.xml")" | bash "$HOOKS/backup-before-edit.sh" 2>"$_bkd/err2")"
+if [ -s "$_bkd/err2" ]; then
+  no "an unwritable audit log leaked to stderr: $(head -c 120 "$_bkd/err2")"
+else
+  case "$_bo" in
+    *"AUDIT"*) ok "an unwritable audit log: no stderr, and the note says the trail was not appended" ;;
+    *) no "an unwritable audit log was silent: ${_bo:0:160}" ;;
+  esac
+fi
+if [ -n "$_bk_saved" ]; then export X4_BACKUPS="$_bk_saved"; else unset X4_BACKUPS; fi
 
 echo "RESULT: $pass passed, $fail failed, $skipped skipped"
 if [ $((pass + fail + skipped)) -ne "$EXPECT" ]; then
