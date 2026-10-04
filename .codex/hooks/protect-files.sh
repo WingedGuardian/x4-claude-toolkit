@@ -118,10 +118,12 @@ x4_under "$FILE_PATH" "$X4_REFERENCE" && deny "BLOCKED: reference/ is read-only 
 # tree, silently. COST: a pure-shell NAME test first (case-insensitive), so every other path
 # pays no subprocess; only a file NAMED like a config pays the x4_under checks.
 _x4_fn="${FILE_PATH##*[/\\]}"
-_x4_nm="$(shopt -p nocasematch)"; shopt -s nocasematch
+# `shopt -q`, not `$(shopt -p ...)`: a builtin test, so the restore costs no subshell (HK-4).
+_x4_nm=0; shopt -q nocasematch && _x4_nm=1
+shopt -s nocasematch
 _x4_cfgname=0
 [[ "$_x4_fn" == "x4-paths.env" || ( -n "${X4_CONFIG:-}" && "$_x4_fn" == "${X4_CONFIG##*[/\\]}" ) ]] && _x4_cfgname=1
-eval "$_x4_nm"
+[ "$_x4_nm" = 1 ] || shopt -u nocasematch
 if [ "$_x4_cfgname" = 1 ]; then
   x4_cfg_candidates
   while IFS= read -r _cf; do
