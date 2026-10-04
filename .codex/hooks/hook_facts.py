@@ -1142,7 +1142,21 @@ def _quote_mask(s: str) -> list[bool]:
 
 
 def heredoc_marker(line: str):
-    """The terminator opened by this line, or None.
+    """The terminator opened by this line, or None. See `_heredoc_open`."""
+    o = _heredoc_open(line)
+    return o[0] if o else None
+
+
+def heredoc_expands(line: str) -> bool:
+    """Does the heredoc this line opens EXPAND its body? Bash: only when no part of the
+    delimiter word is quoted or escaped (`<<EOF`, never `<<'EOF'`, `<<"EOF"`, `<<\\EOF`).
+    An expanding body RUNS every `$(...)` and backtick in it (see heredoc_substitutions)."""
+    o = _heredoc_open(line)
+    return bool(o) and o[1]
+
+
+def _heredoc_open(line: str):
+    """(terminator, expands) for the heredoc this line opens, or None.
 
     The `<<` must be OUTSIDE quotes -- otherwise `echo "a <<MARK b"` opens a skip region
     and hides every following command from three refusal rules. But the MARKER ITSELF is
@@ -1168,7 +1182,9 @@ def heredoc_marker(line: str):
                 # ONE group now, dequoted: bash removes quoting from the
                 # delimiter, so `<<\\EOF`, `<<E'OF'` and `<<'EOF'` all
                 # terminate at the same word.
-                return _dequote_marker(m.group(1))
+                word = m.group(1)
+                return (_dequote_marker(word),
+                        not any(ch in word for ch in ("'", '"', chr(92))))
     return None
 
 
@@ -1250,7 +1266,7 @@ def heredoc_bodies(cmd: str, sink=None) -> list[str]:
                 # pipeline: for `cat <<EOF | bash` the first verb is `cat`, so asking
                 # only that one stripped the body as file payload and the shell on the
                 # other end of the pipe ran it unseen.
-                if any(sink(sg) for sg in segments(opener)):
+                if _opener_feeds(opener, sink):
                     out.append(chr(10).join(cur))
                 cur, term, opener = None, None, ""
             else:
@@ -1259,9 +1275,96 @@ def heredoc_bodies(cmd: str, sink=None) -> list[str]:
         t = heredoc_marker(line)
         if t:
             term, cur, opener = t, [], line
-    if cur is not None and any(sink(sg) for sg in segments(opener)):
+    if cur is not None and _opener_feeds(opener, sink):
         out.append(chr(10).join(cur))   # unterminated: still what the shell would run
     return out
+
+
+def _opener_feeds(opener: str, sink) -> bool:
+    """Does any command on a heredoc's opening line take the body? The line's own segments,
+    AND the text after each `$(` / `<(` / `>(` / backtick it opens (FX-P2): in
+    `x=$(bash <<'EOF'` the command that owns the heredoc is `bash`, but the line's only
+    segment is `x=$(bash <<'EOF'`, whose verb is not a shell -- so a heredoc that really
+    feeds a shell reached no rule. Only ever ADDS candidates."""
+    cands = [opener]
+    for i, c in enumerate(opener):
+        if c in "$<>" and opener[i + 1:i + 2] == "(" and opener[i + 2:i + 3] != "(":
+            cands.append(opener[i + 2:])
+        elif c == chr(96):
+            cands.append(opener[i + 1:])
+    return any(sink(sg) for c in cands for sg in segments(c))
+
+
+def heredoc_substitutions(cmd: str) -> list[str]:
+    """The commands an EXPANDING heredoc body runs: every `$(...)` and backtick in it.
+
+    FX-P2, MEASURED: `cat > notes.md <<EOF` / `$(<delete the game>)` / `EOF` was a silent
+    ALLOW against a hard block -- the body was stripped as data whole, and with an
+    unquoted delimiter bash expands it. Only the substitutions run; the rest stays data.
+    Quotes are NOT quoting inside a heredoc body (an apostrophe in `it's` is a letter), so
+    this scan ignores them; a backslash escapes `$`, backtick and itself; `$((` is
+    arithmetic. A quoted delimiter expands nothing and contributes nothing here."""
+    out, cur, term, expands = [], None, None, False
+    for line in cmd.split(chr(10)):
+        if cur is not None:
+            if line.strip() == term or line.strip() == term + ";":
+                if expands:
+                    out += _body_substitutions(chr(10).join(cur))
+                cur = None
+            else:
+                cur.append(line)
+            continue
+        o = _heredoc_open(line)
+        if o:
+            (term, expands), cur = o, []
+    if cur is not None and expands:
+        out += _body_substitutions(chr(10).join(cur))
+    return out
+
+
+def _body_substitutions(body: str) -> list[str]:
+    """`$(...)` and backtick texts in an expanding heredoc body (see heredoc_substitutions)."""
+    out = []
+    i = 0
+    while i < len(body):
+        c = body[i]
+        if c == chr(92):
+            i += 2                              # an escaped character is text
+            continue
+        if c == "$" and body[i + 1:i + 2] == "(":
+            end = _match_paren(body, i + 1)
+            if body[i + 2:i + 3] == "(":        # arithmetic, not a command
+                i = (end + 1) if end != -1 else i + 3
+                continue
+            if end != -1:
+                out.append(body[i + 2:end])
+                i = end + 1
+                continue
+        elif c == chr(96):
+            j = i + 1
+            while j < len(body) and body[j] != chr(96):
+                j += 2 if body[j] == chr(92) else 1
+            if j < len(body):
+                out.append(body[i + 1:j])
+                i = j + 1
+                continue
+        i += 1
+    return [t for t in out if t.strip()]  # (distinct line: a mutant anchors the other)
+
+
+def _carrier_parts(text: str) -> list[str]:
+    """A carried command as the rules must see it (FX-P2): its heredoc bodies STRIPPED, as
+    the top level's are, plus the bodies that really run -- fed to a shell, or the
+    substitutions of an expanding body. The top level could not do this for it: a `<<`
+    inside a double-quoted `"$(cat <<'EOF' ...)"` is correctly not a heredoc THERE, so the
+    body reached the carrier walk as text and every body line became a command --
+    `git commit -m "$(cat <<'EOF' ... > KNOWLEDGEBASE.md ...)"` was a DENY.
+    A body fed to a PowerShell host is kept as raw text, exactly as before this change,
+    so nothing that was analysed stops being analysed."""
+    if "<<" not in text or not any(heredoc_marker(ln) for ln in text.split(chr(10))):
+        return [text]
+    return ([strip_heredocs(text)] + heredoc_bodies(text) + ps_heredoc_bodies(text)
+            + heredoc_substitutions(text))
 
 
 def strip_heredocs(cmd: str) -> str:
@@ -2383,11 +2486,11 @@ def git_adds_everything(seg):
 #: Subcommands that OVERWRITE OR DELETE the working tree. Deliberately not every
 #: destructive git command -- only the ones that discard uncommitted work in files
 #: that already exist, which is the shape that loses data nobody else has.
-_GIT_DESTRUCTIVE = {"clean", "reset", "checkout", "restore"}
+_GIT_DESTRUCTIVE = {"clean", "reset", "stash", "checkout", "restore"}
 
 
 def git_wipes_worktree_targets(seg):
-    """UNBOUNDED destructive git: `clean -f` and `reset --hard`.
+    """UNBOUNDED destructive git: `clean -f`, `reset --hard` and `stash -u`/`-a` (P2).
 
     Split from the targeted form deliberately. These name no paths, so they reach
     every file in the repository INCLUDING untracked ones -- which have no history and
@@ -2395,16 +2498,18 @@ def git_wipes_worktree_targets(seg):
     one CLAUDE.md's hook policy calls genuinely the user's decision ('deleting inside
     an X4 directory').
     """
-    return _git_destructive(seg, {"clean", "reset"})
+    return _git_destructive(seg, {"clean", "reset", "stash"})
 
 
 def git_wipes_ignored_targets(seg):
     """The subset of git_wipes_worktree_targets that reaches IGNORED files or whole untracked
-    directories: `clean` with -x, -X or -d, and `reset --hard` (Plan 3 decision J-Q1). In the
+    directories: `clean` with -x, -X or -d, `reset --hard` (Plan 3 decision J-Q1), and
+    `stash --all`/`-a` (v4.0.0 review P2), which stashes the ignored files and then DELETES
+    them from the working tree. In the
     game-root repo `.gitignore` is a whitelist (`*`), so every untracked file there is ignored
     and `git clean -fdx` removes the installation's own files. Judged from the SESSION cwd
     (seeded) by `git_wipe_from_session_dir`, whose verdict is a DENY, never a prompt."""
-    return _git_destructive(seg, {"clean", "reset"}, deep=True)
+    return _git_destructive(seg, {"clean", "reset", "stash"}, deep=True)
 
 
 def git_discards_named_files(seg):
@@ -2532,11 +2637,62 @@ def _git_destructive(seg, wanted, deep=False):
                               and set(t[1:]) & set("xXd") for t in rest)
     elif sub == "reset":
         hot = "--hard" in rest
+    elif sub == "stash":
+        hot = _stash_removes_untracked(rest, deep)
     elif sub == "checkout":
         hot = "--" in rest          # the pathspec form; a branch name is navigation
     else:                            # restore -- always about file contents
         hot = True
     return [base] if hot else []
+
+
+def _stash_removes_untracked(rest, deep):
+    """Does this `git stash` remove UNTRACKED files from the working tree? (v4.0.0 review P2)
+
+    A plain stash touches tracked files only, and every one is recoverable from the stash
+    ref. `-u` / `--include-untracked` also stashes-and-deletes untracked NOT-ignored files --
+    the reach of `git clean -f`, so it answers the shallow rule only. `-a` / `--all` takes
+    the IGNORED files too -- the reach of `git clean -fdx`, so it answers `deep` as well: in
+    the game-root repo, whose `.gitignore` is a whitelist (`*`), the ignored files ARE the
+    installation.
+
+    Git's own dispatch: no argument, or a first argument starting with `-`, is `push`;
+    otherwise the first argument names the action, and only `push` / `save` stash anything.
+    `-m`/`--message` (and `--pathspec-from-file`) consume the next token, so a message that
+    reads `-a` is not the flag; in a short cluster an `m` ends it (`-am wip`). `--no-all` /
+    `--no-include-untracked` undo an earlier flag, as parse_options does.
+    """
+    if rest and not rest[0].startswith("-"):
+        if rest[0] not in ("push", "save"):
+            return False        # list / show / pop / apply / drop / clear / branch / ...
+        rest = rest[1:]
+    every = untracked = skip = False
+    for t in rest:
+        if skip:
+            skip = False
+            continue
+        if t == "--":
+            break
+        if t in ("-m", "--message", "--pathspec-from-file"):
+            skip = True
+        elif t == "--all":
+            every = True
+        elif t == "--no-all":
+            every = False
+        elif t == "--include-untracked":
+            untracked = True
+        elif t == "--no-include-untracked":
+            untracked = False
+        elif t.startswith("-") and not t.startswith("--"):
+            for k, ch in enumerate(t[1:], 1):
+                if ch == "a":
+                    every = True
+                elif ch == "u":
+                    untracked = True
+                elif ch == "m":
+                    skip = k == len(t) - 1      # `-am <msg>`; `-mfoo` carries its own
+                    break
+    return every if deep else (every or untracked)
 
 
 def sed_in_place_targets(seg):
@@ -3538,7 +3694,8 @@ def carried_commands(body: str, extra: list) -> tuple:
     for _ in range(_MAX_CARRIER_DEPTH):
         nxt = []
         for c in frontier:
-            for inner in _inner_commands(c) + substitutions(c):
+            for inner in (p_ for i_ in _inner_commands(c) + substitutions(c)
+                          for p_ in _carrier_parts(i_)):
                 if inner and inner not in seen:
                     seen.add(inner)
                     nxt.append(inner)
@@ -3622,6 +3779,8 @@ def facts(payload: dict, roots: dict) -> dict:
     # Heredoc bodies come from the RAW command: strip_heredocs has already removed
     # them from `body`, and only the ones opened by a shell are commands at all.
     extra = [strip_comments(h) for h in heredoc_bodies(spliced)]
+    # ...and an EXPANDING body (unquoted delimiter) runs its `$(...)` / backticks (FX-P2).
+    extra += heredoc_substitutions(spliced)
     # A heredoc fed to a PowerShell host is a PowerShell PROGRAM (finding 2): translated,
     # or reported untranslated -- never dropped as file payload.
     for h in ps_heredoc_bodies(spliced):

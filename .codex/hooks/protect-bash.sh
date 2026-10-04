@@ -473,9 +473,10 @@ on rm_in_x4_dir && advise "This deletes files in an X4 directory (game extension
 # `reset --hard`, run with no folder named while the SESSION is in an X4 dir. In the game
 # folder `.gitignore` is `*`, so every untracked file there is ignored and `git clean -fdx`
 # deletes the installation's own files. A deny reaches the agent, never the user; naming
-# the folder explicitly (`git -C`) still reaches the ask below.
-on git_wipe_from_session_dir && deny "BLOCKED: git clean -x/-X/-d or git reset --hard with no folder named, run from an X4 directory (the game folder, profile, mods, reference or the toolkit). In the game folder git ignores every untracked file, so this would delete the installation's own files, which have no history and no other copy. If you really mean it, name the folder explicitly: git -C \"<folder>\" clean ... -- that asks the user. Command: $COMMAND"
-on git_wipes_x4_dir && ask "git clean/reset --hard in an X4 directory DELETES untracked files too, which have no history and no other copy -- and git ignores the read-only protection x4lock applies. Confirm: $COMMAND"
+# the folder explicitly (`git -C`) still reaches the ask below. `git stash --all`/`-a`
+# (v4.0.0 review P2) is the same wipe -- it stashes the ignored files and DELETES them.
+on git_wipe_from_session_dir && deny "BLOCKED: git clean -x/-X/-d, git reset --hard or git stash -a/--all with no folder named, run from an X4 directory (the game folder, profile, mods, reference or the toolkit). In the game folder git ignores every untracked file, so this would delete the installation's own files, which have no history and no other copy. If you really mean it, name the folder explicitly: git -C \"<folder>\" clean ... (or stash ...) -- that asks the user. Command: $COMMAND"
+on git_wipes_x4_dir && ask "git clean, reset --hard or stash -u/-a in an X4 directory DELETES untracked files too, which have no history and no other copy -- and git ignores the read-only protection x4lock applies. Confirm: $COMMAND"
 on git_discards_x4_files && advise "This discards working-tree changes to files in an X4 directory, and git IGNORES the read-only protection x4lock applies (measured: git checkout over a locked file overwrote it AND left it unlocked). The named paths are tracked, so the content is recoverable -- but re-lock afterwards with: python scripts/x4lock.py lock"
 
 # === CONFIRM - deleting a SAVE GAME ===
