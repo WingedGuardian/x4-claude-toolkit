@@ -857,6 +857,37 @@ function Write-RefguardStep($tk) {
   Write-Host ('             ' + $X4RefguardStepCmd)
 }
 
+#: The twin of install.sh's precheck_opencode_config (v4.0.0 review R4-5): a READ-ONLY
+#: .opencode/opencode.jsonc that would have to change refuses before anything is written.
+function Test-OpenCodeConfigPrecheck($dest) {
+  if (-not (Test-OpenCodeSelected)) { return }
+  $f = Join-Path (Join-Path $dest '.opencode') 'opencode.jsonc'
+  if (-not (Test-Path -LiteralPath $f)) { return }
+  $ro = $false
+  try { $ro = (Get-Item -LiteralPath $f -Force).IsReadOnly } catch { $ro = $false }
+  if (-not $ro) { return }
+  $renderer = Join-Path (Join-Path (Join-Path $SRC '.opencode') 'hooks') 'opencode_config.py'
+  if (-not (Test-Path -LiteralPath $renderer -PathType Leaf)) { return }
+  $py = Find-OcPython
+  if (-not $py) { return }
+  $prev = $env:X4_TOOLKIT
+  $env:X4_TOOLKIT = $dest
+  try {
+    $rest = @($py | Select-Object -Skip 1)
+    & $py[0] @rest $renderer 'check' '--root' $dest *> $null
+    $fresh = ($LASTEXITCODE -eq 0)
+  } finally { $env:X4_TOOLKIT = $prev }
+  if ($fresh) { return }
+  Write-Host ''
+  Write-Host 'REFUSING: the OpenCode deny rules must change, and the file is READ-ONLY.'
+  Write-Host "      $f"
+  Write-Host '  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:'
+  Write-Host "      python scripts/x4lock.py unlock `"$f`""
+  Write-Host '      <re-run this command>'
+  Write-Host '      python scripts/x4lock.py lock'
+  exit 1
+}
+
 function Write-OpenCodeConfig($dest) {
   if (-not (Test-OpenCodeSelected)) { return }
   $cfg = Join-Path (Join-Path $dest '.opencode') 'opencode.jsonc'
@@ -2068,6 +2099,7 @@ switch ($Method) {
     if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $GameNamed }
     Test-ConfigPrecheck $Toolkit
     Test-CodexHooksPrecheck $Toolkit   # written on BOTH branches, so OUTSIDE the guard
+    Test-OpenCodeConfigPrecheck $Toolkit   # likewise
     Test-HCodexDocCapPrecheck $Toolkit
     if (-not (Test-SameDir $SRC $Toolkit)) {
       Test-LockedTargetsPrecheck $Toolkit
@@ -2101,6 +2133,7 @@ switch ($Method) {
     if (-not (Test-SameDir $SRC $Toolkit)) { Assert-Direction $Toolkit $ToolkitNamed }
     Test-ConfigPrecheck $Toolkit
     Test-CodexHooksPrecheck $Toolkit   # written on BOTH branches, so OUTSIDE the guard
+    Test-OpenCodeConfigPrecheck $Toolkit   # likewise
     Test-HCodexDocCapPrecheck $Toolkit
     if (-not (Test-SameDir $SRC $Toolkit)) {
       Test-LockedTargetsPrecheck $Toolkit

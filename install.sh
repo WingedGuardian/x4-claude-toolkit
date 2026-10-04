@@ -996,6 +996,29 @@ print_refguard_step() {   # TOOLKIT
   echo "             $X4_REFGUARD_STEP_CMD"
 }
 
+#: A READ-ONLY (x4lock'd) .opencode/opencode.jsonc that would have to change refuses UP FRONT,
+#: like the Codex hooks.json above (v4.0.0 review R4-5: it had no precheck, so an upgrade copied
+#: the whole toolkit and THEN failed at the render). "Would have to change" is the renderer's
+#: own `check`, run from the SOURCE (the destination's copy may be older) against the
+#: destination's roots. Cannot ask (no python, no renderer): the writer reports it.
+precheck_opencode_config() {   # DEST
+  local dest="$1" f="$1/.opencode/opencode.jsonc"
+  _opencode_selected || return 0
+  [ -e "$f" ] || return 0
+  [ -w "$f" ] && return 0
+  [ -f "$SRC/.opencode/hooks/opencode_config.py" ] || return 0
+  _oc_python || return 0
+  X4_TOOLKIT="$dest" "${X4_OC_PY[@]}" "$SRC/.opencode/hooks/opencode_config.py" check --root "$dest" >/dev/null 2>&1 && return 0
+  echo                                                                          >&2
+  echo "REFUSING: the OpenCode deny rules must change, and the file is READ-ONLY." >&2
+  echo "      $f"                                                               >&2
+  echo "  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:" >&2
+  echo "      python scripts/x4lock.py unlock \"$f\""                           >&2
+  echo "      <re-run this command>"                                            >&2
+  echo "      python scripts/x4lock.py lock"                                    >&2
+  exit 1
+}
+
 write_opencode_config() {   # DEST
   local dest="$1" out rc
   _opencode_selected || return 0
@@ -2064,6 +2087,7 @@ case "$METHOD" in
     fi
     precheck_config "$TOOLKIT"
     precheck_codex_hooks_json "$TOOLKIT"   # written on BOTH branches, so OUTSIDE the guard
+    precheck_opencode_config "$TOOLKIT"    # likewise
     precheck_codex_doc_max_bytes "$TOOLKIT"
     if ! same_dir "$SRC" "$TOOLKIT"; then
       precheck_locked_targets "$TOOLKIT"
@@ -2106,6 +2130,7 @@ case "$METHOD" in
     fi
     precheck_config "$TOOLKIT"
     precheck_codex_hooks_json "$TOOLKIT"   # written on BOTH branches, so OUTSIDE the guard
+    precheck_opencode_config "$TOOLKIT"    # likewise
     precheck_codex_doc_max_bytes "$TOOLKIT"
     if ! same_dir "$SRC" "$TOOLKIT"; then
       precheck_locked_targets "$TOOLKIT"

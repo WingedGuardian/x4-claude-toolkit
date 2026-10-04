@@ -2885,3 +2885,40 @@ def test_an_IN_PLACE_dry_run_names_what_it_would_do_to_X4_TOOLKIT(installer, tmp
     out = r.stdout + r.stderr
     assert r.returncode == 0, out[-1500:]
     assert "X4_TOOLKIT would not be touched" in out, out[-2500:]       # --no-env in the harness
+
+
+# --- R4-5 (v4.0.0 review): a READ-ONLY OpenCode deny-rule file refuses UP FRONT -----------
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_a_READ_ONLY_stale_opencode_config_refuses_before_anything_is_written(installer, tmp_path):
+    """x4lock locks .opencode/opencode.jsonc. The Codex hooks.json had a read-only precheck;
+    the OpenCode file had none, so an upgrade copied the whole toolkit and THEN failed at the
+    render -- an INCOMPLETE install over a half-upgraded tree."""
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest, "--agent", "opencode").returncode == 0, "first install failed"
+    cfg = dest / ".opencode" / "opencode.jsonc"
+    assert cfg.is_file()
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "// a stale line\n", encoding="utf-8")
+    (dest / "README.md").unlink()                      # proves whether the copy ran
+    cfg.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    try:
+        r = _install(installer, tmp_path, dest, "--agent", "opencode")
+        out = r.stdout + r.stderr
+        assert r.returncode == 1 and "REFUSING" in out and "READ-ONLY" in out, out[-1500:]
+        assert "opencode.jsonc" in out, out[-1500:]
+        assert not (dest / "README.md").exists(), "the copy ran before the refusal"
+    finally:
+        cfg.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_a_READ_ONLY_but_FRESH_opencode_config_does_not_refuse(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest, "--agent", "opencode").returncode == 0, "first install failed"
+    cfg = dest / ".opencode" / "opencode.jsonc"
+    cfg.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    try:
+        r = _install(installer, tmp_path, dest, "--agent", "opencode")
+        assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+    finally:
+        cfg.chmod(stat.S_IRUSR | stat.S_IWUSR)
