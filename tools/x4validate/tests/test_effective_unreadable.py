@@ -76,3 +76,56 @@ def test_valid_stale_metadata_remains_readable(tmp_path, capsys, monkeypatch):
     cap = capsys.readouterr()
     assert 'ore' in cap.out and 'STALE' in cap.err
     assert path.read_bytes() == before
+
+
+def test_a_BROKEN_PIPE_is_not_relabelled_store_unreadable(tmp_path, capsys, monkeypatch):
+    """v4.0.0 review R5-2: the dispatcher caught OSError/ValueError around EVERY command, so
+    `x4effective ls ware | head` (BrokenPipeError is an OSError) printed 'effective store
+    unreadable ... Rebuild' -- sending the user to rebuild a healthy store."""
+    path = store(tmp_path/'ok.sqlite')
+    def pipe(con, args):
+        raise BrokenPipeError(32, 'Broken pipe')
+    monkeypatch.setattr(_effectivecli, '_cmd_ls', pipe)
+    monkeypatch.setattr(_effectivecli, '_quiet_stdout', lambda: None)
+    rc = _effectivecli.main(['--db', str(path), 'ls', 'ware'])
+    err = capsys.readouterr().err
+    assert 'unreadable' not in err, err
+    assert rc == 0
+
+
+def test_a_command_BUG_ValueError_propagates_and_is_not_relabelled(tmp_path, capsys, monkeypatch):
+    path = store(tmp_path/'ok.sqlite')
+    def bug(con, args):
+        raise ValueError('a bug in the command, not in the store')
+    monkeypatch.setattr(_effectivecli, '_cmd_ls', bug)
+    with pytest.raises(ValueError, match='a bug in the command'):
+        _effectivecli.main(['--db', str(path), 'ls', 'ware'])
+    assert 'unreadable' not in capsys.readouterr().err
+
+
+def test_a_UNC_store_path_gets_a_URI_sqlite_accepts():
+    """v4.0.0 review R5-3: Path.as_uri() spells a UNC path `file://server/share/...`, and
+    SQLite refuses a URI authority ('invalid uri authority'), so a store on a network share
+    could never be opened. The authority is folded into the path: `file:////server/share/...`."""
+    from pathlib import PureWindowsPath
+    bs = chr(92)
+    unc = PureWindowsPath(bs * 2 + 'fileserver' + bs + 'share' + bs + 'effective.sqlite')
+    assert _effective._sqlite_ro_uri(unc) == 'file:////fileserver/share/effective.sqlite?mode=ro'
+    drive = PureWindowsPath('C:' + bs + 'x' + bs + 'effective.sqlite')
+    assert _effective._sqlite_ro_uri(drive) == 'file:///C:/x/effective.sqlite?mode=ro'
+
+
+def test_a_store_REACHED_THROUGH_a_UNC_path_opens(tmp_path, capsys):
+    """MEASURED on Windows through the local admin share: the plain URI 'unable to open
+    database file', the folded one opens. Skipped where no admin share is reachable."""
+    import os
+    if os.name != 'nt':
+        pytest.skip('UNC paths are a Windows spelling')
+    path = store(tmp_path/'unc.sqlite')
+    bs = chr(92)
+    drive, rest = os.path.splitdrive(str(path))
+    unc = bs * 2 + 'localhost' + bs + drive[0] + '$' + rest
+    if not os.path.exists(unc):
+        pytest.skip('no reachable local admin share -- not checked')
+    assert _effectivecli.main(['--db', unc, 'ls', 'ware']) == 0
+    assert 'ore' in capsys.readouterr().out

@@ -1090,11 +1090,24 @@ def store_freshness(con, config=None):
         engine_dependent=True)
 
 
+def _sqlite_ro_uri(p) -> str:
+    """A read-only SQLite URI for `p` (a resolved path). `as_uri()` escapes URI-significant
+    characters, but spells a UNC path `file://server/share/...`, and SQLite refuses a URI
+    authority ("invalid uri authority") -- so a store on a network share could never open
+    (v4.0.0 review R5-3). The authority is folded into the path: `file:////server/share/...`,
+    which SQLite hands to the OS as `//server/share/...` (MEASURED through the local admin
+    share: the plain form fails, this one opens)."""
+    uri = p.as_uri()
+    if uri.startswith("file://") and not uri.startswith("file:///"):
+        uri = "file:////" + uri[len("file://"):]
+    return uri + "?mode=ro"
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     if not db_path.is_file():
         raise ValueError(f"no store at {db_path} — run `x4effective build` first")
     # Escape URI-significant characters (#, ?, %) before adding read-only mode.
-    con = sqlite3.connect(db_path.resolve().as_uri() + '?mode=ro', uri=True)
+    con = sqlite3.connect(_sqlite_ro_uri(db_path.resolve()), uri=True)
     con.row_factory = sqlite3.Row
     try:
         version = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
