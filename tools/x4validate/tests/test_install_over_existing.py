@@ -2982,3 +2982,29 @@ def test_both_installers_spell_the_DERIVED_suffix_the_SAME_way(tmp_path):
                       ("X4_EXTENSIONS", "/extensions"))}
     assert got["sh"] == got["ps1"] == {"X4_REFERENCE": "/reference", "X4_DEBUGLOG": "/debug.txt",
                                         "X4_EXTENSIONS": "/extensions"}, got
+
+
+# --- C1 (install red-team 2026-10-04): --agent / -Agent takes a COMMA LIST ---------------- #
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_C1_a_comma_list_installs_exactly_those_agents(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "claude,codex", source=src)
+    assert r.returncode == 0, _ok(r)
+    for rel in ("CLAUDE.md", ".claude/settings.json", "AGENTS.md", ".codex/hooks.json"):
+        assert (dest / rel).exists(), "--agent claude,codex did not install %s\n%s" % (rel, _ok(r))
+    assert not (dest / ".opencode").exists(), "--agent claude,codex installed OpenCode"
+    assert "claude, codex" in r.stdout and "opencode" not in r.stdout.split("Agents:")[-1].splitlines()[0], _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("agent,word", [("claude,nonsense", "'nonsense'"), ("claude,all", "cannot be combined"),
+                                        ("claude,", "empty")])
+def test_C1_every_item_of_a_list_is_validated_before_writing(installer, agent, word, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", agent, source=src)
+    assert r.returncode == 2, _ok(r)
+    assert word in r.stdout + r.stderr, _ok(r)
+    assert not any(dest.iterdir()), "a refused install wrote something"

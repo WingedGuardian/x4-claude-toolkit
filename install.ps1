@@ -78,7 +78,8 @@ Usage: powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Method i
   -Reference DIR     unpacked base game (default <toolkit>\reference)
   -Extensions DIR    live deploy target (default <game>\extensions)
   -XRCatTool PATH    XRCatTool.exe location
-  -Agent NAME        claude | codex | generic | opencode | all | auto   [all]
+  -Agent LIST        claude | codex | generic | opencode | all | auto   [all]
+                     (a comma list picks several: claude,codex)
                      which agent's instructions, guards and skills to install;
                      auto = the agents found on PATH or already in the destination
                      (none found: all, and it says so)
@@ -449,6 +450,29 @@ $X4CodexHooksTmpl = 'agent/targets/codex/hooks.json.tmpl'
 if ($Agent -ceq 'all') { $X4Agents = $X4AgentNames }
 elseif ($Agent -ceq 'auto') { $X4Agents = @() }   # resolved per destination by Resolve-HAutoAgents
 elseif ($X4AgentNames -ccontains $Agent) { $X4Agents = @($Agent) }
+elseif ($Agent -match '[,\s]') {
+  # C1 (install red-team 2026-10-04): a COMMA LIST (`claude,codex`), each item validated before
+  # anything is written; duplicates collapse; all/auto stand alone. Whitespace separates too:
+  # `-Agent claude,codex` typed inside PowerShell binds an ARRAY, which [string] joins with spaces.
+  $X4Agents = @()
+  foreach ($it in ($Agent -split '\s*,\s*|\s+')) {
+    if ($it -ceq '') {
+      Write-Host ("REFUSING: -Agent '" + $Agent + "' has an empty item. Supported: " + ($X4AgentNames -join ' ') + ' (comma-separated), all, auto. Nothing has been changed.') -ForegroundColor Red
+      exit 2
+    }
+    if ($it -ceq 'all' -or $it -ceq 'auto') {
+      Write-Host ("REFUSING: -Agent '" + $it + "' cannot be combined with other agents in a list ('" + $Agent + "'). Nothing has been changed.") -ForegroundColor Red
+      exit 2
+    }
+    if (-not ($X4AgentNames -ccontains $it)) {
+      Write-Host ("REFUSING: unknown agent '" + $it + "' in -Agent '" + $Agent + "'. Supported: " + ($X4AgentNames -join ' ') + ' (comma-separated), all, auto. Nothing has been changed.') -ForegroundColor Red
+      exit 2
+    }
+    if (-not ($X4Agents -ccontains $it)) { $X4Agents += $it }
+  }
+  $picked = $X4Agents
+  $X4Agents = @($X4AgentNames | Where-Object { $picked -ccontains $_ })   # canonical order, as install.sh
+}
 else {
   Write-Host ("REFUSING: unknown -Agent '" + $Agent + "'. Supported: " + ($X4AgentNames -join ' ') + ' all. Nothing has been changed.') -ForegroundColor Red
   exit 2
@@ -2186,7 +2210,7 @@ switch ($Method) {
       Write-Host '  Nothing has been changed.' -ForegroundColor Red
       exit 2
     }
-    if ($Agent -ceq 'codex' -or $Agent -ceq 'generic' -or $Agent -ceq 'opencode') {
+    if ($Agent -cne 'all' -and $Agent -cne 'auto' -and (($X4Agents -join ' ') -cne 'claude')) {   # C1: a list too
       Write-Host "REFUSING: -Method global is a Claude-only layout; it cannot install -Agent $Agent." -ForegroundColor Red
       Write-Host '  Use -Method in-game or -Method separate for Codex, OpenCode and generic agents.' -ForegroundColor Red
       Write-Host '  Nothing has been changed.' -ForegroundColor Red

@@ -568,7 +568,9 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Method global
 
 #### Which agent: `--agent claude | codex | generic | opencode | all | auto` (default `all`)
 
-The installer ships each agent's own files and nothing else (`-Agent` on PowerShell):
+The installer ships each agent's own files and nothing else (`-Agent` on PowerShell). A comma
+list picks several, e.g. `--agent claude,codex` (each name is checked before anything is
+written; `all` and `auto` stand alone):
 
 | `--agent` | Instructions | Guards | Skills |
 |---|---|---|---|

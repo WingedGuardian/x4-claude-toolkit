@@ -42,7 +42,8 @@ Usage: bash install.sh --method in-game|separate|global [options]
   --reference DIR    unpacked base game (default <toolkit>/reference)
   --extensions DIR   live deploy target (default <game>/extensions)
   --xrcattool PATH   XRCatTool.exe location
-  --agent NAME       claude | codex | generic | opencode | all | auto   [all]
+  --agent LIST       claude | codex | generic | opencode | all | auto   [all]
+                     (a comma list picks several: claude,codex)
                      which agent's instructions, guards and skills to install;
                      auto = the agents found on PATH or already in the destination
                      (none found: all, and it says so)
@@ -578,6 +579,29 @@ case "$AGENT" in
   all) X4_AGENTS="$X4_AGENT_NAMES" ;;
   auto) X4_AGENTS="" ;;   # resolved per destination by resolve_auto_agents, inside the arms
   claude|codex|generic|opencode) X4_AGENTS="$AGENT" ;;
+  *,*)
+    # C1 (install red-team 2026-10-04): a COMMA LIST (`claude,codex`), each item validated
+    # before anything is written; duplicates collapse; `all`/`auto` stand alone.
+    X4_AGENTS=""
+    _rest="$AGENT,"
+    while [ -n "$_rest" ]; do
+      _it="${_rest%%,*}"; _rest="${_rest#*,}"
+      case "$_it" in
+        "") echo "REFUSING: --agent '$AGENT' has an empty item. Supported: $X4_AGENT_NAMES (comma-separated), all, auto. Nothing has been changed." >&2
+            exit 2 ;;
+        all|auto) echo "REFUSING: --agent '$_it' cannot be combined with other agents in a list ('$AGENT'). Nothing has been changed." >&2
+            exit 2 ;;
+        claude|codex|generic|opencode)
+          case " $X4_AGENTS " in *" $_it "*) ;; *) X4_AGENTS="${X4_AGENTS:+$X4_AGENTS }$_it" ;; esac ;;
+        *) echo "REFUSING: unknown agent '$_it' in --agent '$AGENT'. Supported: $X4_AGENT_NAMES (comma-separated), all, auto. Nothing has been changed." >&2
+           exit 2 ;;
+      esac
+    done
+    _picked=" $X4_AGENTS "; X4_AGENTS=""    # canonical order, as install.ps1
+    for _it in $X4_AGENT_NAMES; do
+      case "$_picked" in *" $_it "*) X4_AGENTS="${X4_AGENTS:+$X4_AGENTS }$_it" ;; esac
+    done
+    ;;
   *)
     echo "REFUSING: unknown --agent '$AGENT'. Supported: $X4_AGENT_NAMES all. Nothing has been changed." >&2
     exit 2 ;;
@@ -2166,11 +2190,14 @@ case "$METHOD" in
       exit 2
     fi
     case "$AGENT" in
-      codex|generic|opencode)
-        echo "REFUSING: --method global is a Claude-only layout; it cannot install --agent $AGENT." >&2
-        echo "  Use --method in-game or --method separate for Codex, OpenCode and generic agents." >&2
-        echo "  Nothing has been changed." >&2
-        exit 2 ;;
+      all|auto) ;;
+      *)    # codex, generic, opencode -- or a list naming any of them (C1)
+        if [ "$X4_AGENTS" != claude ]; then
+          echo "REFUSING: --method global is a Claude-only layout; it cannot install --agent $AGENT." >&2
+          echo "  Use --method in-game or --method separate for Codex, OpenCode and generic agents." >&2
+          echo "  Nothing has been changed." >&2
+          exit 2
+        fi ;;
     esac
     if [ "$AGENT" = all ] || [ "$AGENT" = auto ]; then
       echo "  [note] --method global is a Claude-only layout: only the Claude target is installed."
