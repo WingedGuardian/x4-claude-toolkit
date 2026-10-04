@@ -315,9 +315,9 @@ x4_config_banner() {
       fi
       printf '%s\n' "[x4 config] The guards ASSUME reference/ is $X4_REFERENCE (hard-blocked there) and know the game and profile only by folder NAME. Fix: re-run the installer, or copy $_x4_cfg_tk/x4-paths.env.example to $_x4_cfg_tk/x4-paths.env. Check: python \"$_x4_cfg_tk/scripts/x4doctor.py\"" ;;
     legacy)
-      printf '%s\n' "[x4 config] DEPRECATED location: reading $_x4_cfg. 4.0 reads $_x4_cfg_tk/x4-paths.env. Move it: x4config.py migrate --apply, i.e. python \"$_x4_cfg_tk/scripts/x4config.py\" migrate --apply" ;;
+      printf '%s\n' "[x4 config] DEPRECATED location: reading $_x4_cfg. 4.0 reads $_x4_cfg_tk/x4-paths.env. Move it: x4config.py migrate --apply, i.e. python \"$_x4_cfg_tk/scripts/x4config.py\" migrate --apply --root \"$_x4_cfg_tk\"" ;;
     both)
-      printf '%s\n' "[x4 config] TWO path configs: reading $_x4_cfg; the 3.x $_x4_cfg_tk/.claude/x4-paths.env is IGNORED. If they differ, older guard copies protect a different tree. Resolve: python \"$_x4_cfg_tk/scripts/x4config.py\" status" ;;
+      printf '%s\n' "[x4 config] TWO path configs: reading $_x4_cfg; the 3.x $_x4_cfg_tk/.claude/x4-paths.env is IGNORED. If they differ, older guard copies protect a different tree. Resolve: python \"$_x4_cfg_tk/scripts/x4config.py\" status --root \"$_x4_cfg_tk\"" ;;
   esac
   return 0
 }

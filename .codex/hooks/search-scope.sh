@@ -80,11 +80,13 @@ R="${ROOT//"$BS"//}"
 # game root's `*` -> 0 of 1. `check-ignore` alone cannot tell them apart -- it calls every child
 # of an ignored directory ignored (MEASURED: `build/x` -> `build/`) -- and rg is not on PATH in
 # a hook (Claude Code ships it as a shell function). So the PATTERN that ignores the root
-# decides (`-v`, same one process): a directory-only pattern (`build/`) leaves the children
-# visible; one whose last component matches ANY name (`*`) hides them. Anything else -- a
-# pattern naming the root itself (`ext*`) -- cannot hide children, so it does not fire.
+# decides (`-v`): a directory-only pattern (`build/`) leaves the children visible; one whose
+# last component matches ANY name (`*`) hides them. Anything else -- a pattern naming the root
+# itself (`ext*`) -- cannot hide children, so it does not fire. COST: the plain `-q` test runs
+# first, in no subshell, so a root that is NOT ignored -- nearly every search -- still pays one
+# process; only an ignored root pays the second (`-v`, captured).
 _ign=""
-if [ -n "$R" ] && [ -d "$R" ]; then
+if [ -n "$R" ] && [ -d "$R" ] && git -C "$R" check-ignore -q -- "$R" 2>/dev/null; then
   _ign="$(git -C "$R" check-ignore -v -- "$R" 2>/dev/null)" || _ign=""
 fi
 if [ -n "$_ign" ]; then
