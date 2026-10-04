@@ -97,6 +97,14 @@ if [ -n "$_x4_cfg" ]; then
 "
   done
   set -a; . "$_x4_cfg"; set +a
+  # A CRLF config (any Windows editor) leaves a trailing CR on every value under a POSIX bash
+  # (MEASURED 2026-10-04, ubuntu:24.04: `X4_REFERENCE="/a/b"<CR>` -> `/a/b<CR>`; Git Bash strips
+  # it). No real path ends in a CR, so every root compare would miss. Strip it here, in-shell,
+  # for the config keys only; the environment restored below never carried one.
+  for _k in $_X4_ENV_KEYS; do
+    eval "_v=\${$_k:-}"
+    case "$_v" in *$'\r') export "$_k=${_v%$'\r'}" ;; esac
+  done
   if [ -n "$_x4_pre" ]; then
     while IFS='=' read -r _k _v; do
       [ -n "$_k" ] && export "$_k=$_v"
