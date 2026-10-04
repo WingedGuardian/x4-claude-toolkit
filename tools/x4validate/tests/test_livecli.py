@@ -1589,3 +1589,24 @@ def test_with_ramp_help_no_longer_claims_the_game_runs_ONLY_in_the_foreground(ca
     out = capsys.readouterr().out
     assert "only in the foreground" not in out, out
     assert "MINIMIZ" in out.upper(), out
+
+
+@pytest.mark.parametrize("exc", [ValueError("incompatible effective-store schema: 7; expected 8"),
+                                 __import__("sqlite3").DatabaseError("file is not a database")])
+def test_mappings_REFUSES_an_unreadable_store_instead_of_a_traceback(tmp_path, monkeypatch, capsys, exc):
+    """v4.0.0 review R5-4: `_connect` reports a missing/incompatible store with ValueError
+    (it used to SystemExit), and cmd_mappings called it bare -- a traceback, where cmd_oracle
+    two screens up refuses rc 2 naming the store."""
+    import io
+    from x4validate import _effective as E
+    store_path = tmp_path / "effective.sqlite3"
+    store_path.write_bytes(b"")
+    monkeypatch.setattr(E, "effective_db", lambda: store_path)
+
+    def boom(db):
+        raise exc
+    monkeypatch.setattr(E, "_connect", boom)
+    rc = C.cmd_mappings(None, out=io.StringIO(),
+                        groundtruth=str(_gt(tmp_path, ["t\tm1\tfoo\t100"])))
+    assert rc == 2
+    assert "could not be opened" in capsys.readouterr().err

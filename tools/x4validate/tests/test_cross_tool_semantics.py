@@ -339,3 +339,19 @@ def test_the_replay_skips_DLC_removals_already_in_the_base_tree(tmp_path, monkey
     ct = _cross_tool_with(monkeypatch, tmp_path, db, [_hard(vp, "/wares/ware[4]", "mod_a")],
                           tree)
     assert not ct.failures and not ct.cannot, (ct.failures, ct.cannot)
+
+
+def test_sql_hardening_survives_an_UNUSABLE_store(monkeypatch, capsys):
+    """v4.0.0 review R5-4: `_effective._connect` reports a missing/incompatible store with
+    ValueError now; the gate caught only SystemExit and died with a traceback."""
+    from x4validate import _effective
+    monkeypatch.setattr(cross_tool, "run", lambda *a, **k: (1, "refused"))
+
+    def boom(db):
+        raise ValueError("no store at x -- run `x4effective build` first")
+    monkeypatch.setattr(_effective, "_connect", boom)
+    # the store path must RESOLVE, or _env.effective_db() refuses first and _connect is
+    # never reached (the first draft of this test passed for exactly that reason)
+    monkeypatch.setattr(cross_tool._env, "effective_db", lambda: Path("effective.sqlite"))
+    cross_tool.check_sql_hardening()
+    assert "check NOT RUN" in capsys.readouterr().out

@@ -1068,8 +1068,13 @@ def cmd_mappings(path: str | None, out=None, groundtruth: str | None = None) -> 
     db = effective_db()
     if db is None or not db.exists():
         return _fmt_rc("the effective store does not exist - run `x4effective build`", 2)
-    con = _connect(db)
-    fresh = store_freshness(con)
+    # v4.0.0 review R5-4: `_connect` reports a missing or incompatible store with ValueError
+    # (it used to SystemExit); called bare here, that was a traceback. Refused like cmd_oracle.
+    try:
+        con = _connect(db)
+        fresh = store_freshness(con)
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return _fmt_rc(f"the effective store could not be opened: {exc}", 2)
     if not fresh.fresh:
         print(fresh.banner("the effective store"), file=sys.stderr)
         print("!! Rebuild first:  uv run x4effective build", file=sys.stderr)
