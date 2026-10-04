@@ -2753,3 +2753,33 @@ def test_TWIN_x4doctor_on_a_fresh_install_still_FAILS_a_missing_game(tmp_path):
                        capture_output=True, text=True, timeout=300, env=_doctor_env(tmp_path),
                        cwd=str(tmp_path))
     assert d.returncode == 1 and "roots.game" in d.stdout, d.stdout[-2000:]
+
+
+# --- R6-04 (v4.0.0 review): the reference/ OS protection step is PRINTED, never applied ---
+
+_REFGUARD_STEP = "scripts/x4refguard.py apply"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_UNPROTECTED_existing_reference_PRINTS_the_x4refguard_step(installer, tmp_path):
+    """Layer 2 (x4refguard) was applied by nothing in install/upgrade: a user upgrading over
+    an unpacked reference/ never learned it existed. RULING: the installers do NOT apply it
+    (an ACL change is the user's act) -- they PRINT the step when reference/ exists and
+    x4refguard status is not 'protected'. Both installers, the same line."""
+    dest = _fresh(tmp_path)
+    (dest / "reference" / "libraries").mkdir(parents=True)
+    (dest / "reference" / "libraries" / "wares.xml").write_text("<wares/>", encoding="utf-8")
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, (r.stdout[-1500:], r.stderr[-1500:])
+    assert _REFGUARD_STEP in r.stdout, r.stdout[-2500:]
+    assert "absent" in r.stdout, "the step must name the state it saw: " + r.stdout[-1500:]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_no_reference_yet_prints_NO_refguard_step(installer, tmp_path):
+    """No reference/ yet: setup.sh / unpack-reference.sh apply the protection on a fresh
+    unpack, so there is nothing to tell the user here."""
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, (r.stdout[-1500:], r.stderr[-1500:])
+    assert _REFGUARD_STEP not in r.stdout, r.stdout[-2500:]

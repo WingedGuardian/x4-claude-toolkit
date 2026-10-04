@@ -969,6 +969,33 @@ _oc_python() {
   return 1
 }
 
+# --- R6-04 (v4.0.0 review): the OS protection on reference/ is PRINTED, never applied -----
+#: Layer 2 (scripts/x4refguard.py) is an ACL / attribute change, so an installer never applies
+#: it on the user's behalf. setup.sh and bin/unpack-reference.sh apply it on a FRESH unpack;
+#: an install or upgrade over an EXISTING reference/ applied nothing and said nothing. So:
+#: when x4refguard reports reference/ present and not protected, say so and name the step.
+#: Silent when it is protected, when there is no reference/ yet ('unconfigured'), and where no
+#: mechanism exists ('unsupported'). install.ps1's Write-RefguardStep prints the same lines.
+X4_REFGUARD_STEP_CMD='python scripts/x4refguard.py apply'
+print_refguard_step() {   # TOOLKIT
+  local tk="$1" out state=""
+  [ -f "$tk/scripts/x4refguard.py" ] || return 0
+  if _oc_python; then
+    out="$(cd "$tk" && X4_TOOLKIT="$tk" "${X4_OC_PY[@]}" scripts/x4refguard.py status --json 2>/dev/null)" || true
+    state="$(printf '%s' "$out" | sed -n 's/.*"state": "\([a-z]*\)".*/\1/p' | head -n 1)"
+  elif [ -d "${REFERENCE:-$tk/reference}" ]; then
+    state="unknown (no Python >= 3.10 to ask x4refguard)"
+  fi
+  case "$state" in
+    ""|protected|unconfigured|unsupported) return 0 ;;
+  esac
+  echo
+  echo "Reference: reference/ exists and is NOT OS-protected (x4refguard state: $state)."
+  echo "           The installer never changes permissions for you. To add the OS-level"
+  echo "           deny-delete layer (any process, hooks or not), run in $tk:"
+  echo "             $X4_REFGUARD_STEP_CMD"
+}
+
 write_opencode_config() {   # DEST
   local dest="$1" out rc
   _opencode_selected || return 0
@@ -2204,6 +2231,7 @@ if [ "$METHOD" != global ] && _opencode_selected; then
   echo "           verify:  python scripts/x4doctor.py --root \"$TOOLKIT\" --agent opencode"
 fi
 [ "$METHOD" = global ] && echo "Global:    skills/agents + X4_* env added to your ~/.claude — works from any mod repo."
+print_refguard_step "$TOOLKIT"
 echo "Next:      set X4_GAME if blank, then  (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/."
 echo
 case "$X4_H_ENV_STATE" in

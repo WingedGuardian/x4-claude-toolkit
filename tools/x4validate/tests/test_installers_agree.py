@@ -614,3 +614,14 @@ def test_every_ps1_help_option_is_a_REAL_parameter():
     usage = text.split("function Show-Usage", 1)[1].split("'@", 1)[0]
     named = set(re.findall(r"^\s+-([A-Z][A-Za-z]*)", usage, re.M))
     assert named and named <= declared, sorted(named - declared)
+
+
+def test_both_installers_PRINT_the_same_refguard_step_and_neither_APPLIES_it():
+    """R6-04: Layer 2 is an ACL change -- named, never applied by an installer."""
+    sh = SH.read_text(encoding="utf-8")
+    ps = PS1.read_text(encoding="utf-8")
+    assert "X4_REFGUARD_STEP_CMD='python scripts/x4refguard.py apply'" in sh
+    assert "$X4RefguardStepCmd = 'python scripts/x4refguard.py apply'" in ps
+    assert "print_refguard_step \"$TOOLKIT\"" in sh and "Write-RefguardStep $Toolkit" in ps
+    for text, name in ((sh, "install.sh"), (ps, "install.ps1")):
+        assert "x4refguard.py' 'apply'" not in text and "x4refguard.py apply\"" not in text, name

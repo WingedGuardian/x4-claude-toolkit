@@ -821,6 +821,41 @@ function Find-OcPython {
   return $null
 }
 
+# --- R6-04 (v4.0.0 review): the OS protection on reference/ is PRINTED, never applied -----
+#: The twin of install.sh's print_refguard_step: Layer 2 (scripts/x4refguard.py) is an ACL
+#: change, so it is never applied for the user; when x4refguard reports reference/ present and
+#: not protected, the step is named. Silent for protected / unconfigured / unsupported.
+$X4RefguardStepCmd = 'python scripts/x4refguard.py apply'
+function Write-RefguardStep($tk) {
+  $script = Join-Path (Join-Path $tk 'scripts') 'x4refguard.py'
+  if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { return }
+  $state = ''
+  $py = Find-OcPython
+  if ($py) {
+    $prevTk = $env:X4_TOOLKIT
+    $env:X4_TOOLKIT = $tk
+    Push-Location -LiteralPath $tk
+    try {
+      $rest = @($py | Select-Object -Skip 1)
+      $out = (& $py[0] @rest 'scripts/x4refguard.py' 'status' '--json' 2>$null) -join "`n"
+      $m = [regex]::Match([string]$out, '"state": "([a-z]*)"')
+      if ($m.Success) { $state = $m.Groups[1].Value }
+    } catch { } finally {
+      Pop-Location
+      $env:X4_TOOLKIT = $prevTk
+    }
+  } else {
+    $ref = if ($Reference) { $Reference } else { Join-Path $tk 'reference' }
+    if (Test-Path -LiteralPath $ref -PathType Container) { $state = 'unknown (no Python >= 3.10 to ask x4refguard)' }
+  }
+  if (@('', 'protected', 'unconfigured', 'unsupported') -contains $state) { return }
+  Write-Host ''
+  Write-Host ('Reference: reference/ exists and is NOT OS-protected (x4refguard state: ' + $state + ').')
+  Write-Host '           The installer never changes permissions for you. To add the OS-level'
+  Write-Host ('           deny-delete layer (any process, hooks or not), run in ' + $tk + ':')
+  Write-Host ('             ' + $X4RefguardStepCmd)
+}
+
 function Write-OpenCodeConfig($dest) {
   if (-not (Test-OpenCodeSelected)) { return }
   $cfg = Join-Path (Join-Path $dest '.opencode') 'opencode.jsonc'
@@ -2151,6 +2186,7 @@ if ($Method -ne 'global' -and (Test-OpenCodeSelected)) {
   Write-Host "         verify:  python scripts/x4doctor.py --root `"$Toolkit`" --agent opencode"
 }
 if ($Method -eq 'global') { Write-Host "Global:  skills/agents + X4_* env added to your ~/.claude - works from any mod repo." }
+Write-RefguardStep $Toolkit
 Write-Host ""
 if ($script:X4HEnvState -eq 'set' -or $script:X4HEnvState -eq 'same') {
   Write-Host ('X4_TOOLKIT: ' + $script:X4HEnvMsg)
