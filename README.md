@@ -31,6 +31,23 @@ X4 modding is full of silent failure modes — a diff `sel=` that matches nothin
 file in a multi-file change, a script attribute a game update made mandatory. This toolkit
 ships with those footguns already documented and guarded against.
 
+## Which agents, and how well each one is protected
+
+Every agent gets the same knowledge and tools. What differs is how much of the toolkit's
+**guarding** it can actually run, and the honest answer is not the same for each:
+
+| | Claude Code | Codex | OpenCode (best effort) | Any other agent |
+|---|---|---|---|---|
+| Instructions | `CLAUDE.md` | `AGENTS.md` | `AGENTS.md` + `.opencode/X4-OPENCODE.md` | `AGENTS.md` (`--agent generic`) |
+| Skills | `.claude/skills/` (+ two subagents) | `.agents/skills/` | `.opencode/skills/` | `.agents/skills/` |
+| Command + file guards | hooks on Bash, PowerShell, Edit, Write, NotebookEdit; a guard that crashes **asks** | hooks, **only after you review them in `/hooks`** (silently off otherwise); a crash is turned into a deny unless the interpreter cannot start; seven disclosed gaps, listed under Setup | a plugin plus deny rules, **read from OpenCode's docs and source, not measured**; CLI only | **none**, until an adapter passes `x4guard conformance` (see [`ADAPTING.md`](ADAPTING.md)) |
+| OS-level lock on `reference/` (`x4refguard`, once applied) | yes | yes | yes | yes |
+| How to check it is live | `python scripts/x4doctor.py` | the `X4 GUARDS LIVE (codex hooks v1)` session banner + `x4doctor --agent codex` | the `X4 GUARDS LIVE` system-prompt line + `x4doctor --agent opencode` | -- |
+
+Codex on Linux/macOS and the OS lock on Linux/macOS are best effort and not device-tested.
+The per-agent details are under [Setup](#setup): *What each class of agent gets*, *What the
+Codex hooks cannot see*, and *OpenCode: best effort*.
+
 ---
 
 ## What You Get
@@ -234,7 +251,8 @@ The `/name` form is Claude Code's. The same skills are installed for Codex and g
 in `.agents/skills/` and for OpenCode in `.opencode/skills/`; ask for one by name.
 
 ### Safety, built in
-- **Command + file guards** — block writes to `reference\` and direct `.cat`/`.dat` edits; confirm edits to profile files. A mod manifest is ADVISED rather than confirmed
+- **Command + file guards** (as Claude Code runs them; Codex and OpenCode reach the same guards
+  through an adapter, see the agent table above) — block writes to `reference\` and direct `.cat`/`.dat` edits; confirm edits to profile files. A mod manifest is ADVISED rather than confirmed
   (a deliberate 2026-08-29 choice: the note is worth having, the interruption is not).
   They cover every tool that can change a file: Bash, **PowerShell** (parsed by PowerShell's
   own parser and judged by the same rules as Bash — it needs `pwsh` or Windows PowerShell,
