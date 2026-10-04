@@ -2400,7 +2400,11 @@ def test_userenv_round_trips_and_never_REPLACES_an_existing_key(tmp_path, regkey
 @pytest.mark.parametrize("key", ["HKCU\\Environment", "HKCU\\Software\\X4ToolkitTests\\",
                                  "HKCU\\Software\\X4ToolkitTestsX\\a"])
 def test_userenv_REFUSES_a_seam_outside_the_test_root(key):
-    r = _userenv("set", "x", key=key)
+    # PROBED WITH `get`, never `set` (v4.0.0 review R7-4): one of these keys IS the real
+    # HKCU\Environment, so if the refusal ever regressed a `set` probe would rewrite the
+    # developer's own X4_TOOLKIT. The seam is validated before the action is dispatched, so
+    # `get` reaches the same refusal and can only ever read.
+    r = _userenv("get", key=key)
     assert r.returncode == 2 and "REFUSING" in r.stderr, (r.returncode, r.stderr)
 
 
