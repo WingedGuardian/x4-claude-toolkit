@@ -286,8 +286,9 @@ in `.agents/skills/` and for OpenCode in `.opencode/skills/`; ask for one by nam
   process, hooks or no hooks. **`apply` and `remove` show the target folder and count the
   files under it (with progress), then ask you to confirm**; `--yes` confirms up front, and
   without a terminal to ask on they refuse rather than act (`--yes` is how an agent runs it
-  once you have agreed). On a full unpack expect about a minute, with a "still applying"
-  line every 10 s. Like every script here it acts for the toolkit it lives in: if
+  once you have agreed). It is not instant: about 8 s per 100,000 files was measured on
+  scratch trees, and one apply over a full ~510,000-file tree was still running after 2
+  minutes, so a "still applying" line appears every 10 s. Like every script here it acts for the toolkit it lives in: if
   `X4_TOOLKIT` names a different toolkit it says so and `apply`/`remove` refuse until you
   pass `--toolkit <folder>`. `bin/unpack-reference.sh` applies it after a verified unpack.
   The installers do not apply it (it is an ACL change, yours to make), so a `reference/`
