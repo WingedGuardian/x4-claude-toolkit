@@ -7862,6 +7862,13 @@ same shape as the X4-NOTES twins above. Not changed here: a mod may legitimately
 Claude hook, `x4guard check` and the Codex adapter; a name-only mutant and an any-read-only mutant
 were each killed by a twin).
 
+**✅ 2026-10-04: the adjacent hole is CLOSED** (v4.0 release review R1-F6 / R6-09, lane FX-S).
+CLAUDE.md, AGENTS.md and KNOWLEDGEBASE.md now take the X4-NOTES path (root-exact, plus Claude's
+.claude/CLAUDE.md). The measurement asked for above, MEASURED 2026-10-04: 4 of 60,228 files under
+the reference machine's game root carry one of those names -- 3 at its root, 1 under
+.claude/backups/ (whitelisted) -- and 0 under extensions/. RE-DERIVED BY: scripts/test-hooks.sh
+(5 probes per layout; RED against master 6 of 10).
+
 
 ## F151 — no path config was a SILENT `<toolkit>/reference` default, and the two loaders picked the config file by different rules · **DEFECT (read + measured)** · confidence 95% · ✅ FIXED 2026-10-03 (Plan 3 lane I)
 
@@ -7914,3 +7921,72 @@ CRLF config before the fix.
 **Fix.** `_x4-env.sh` strips one trailing CR from the configured keys only, in-shell; the restored
 environment never carried one. **RE-DERIVED BY:** `tools/x4validate/tests/test_config_precedence_agrees.py`
 (bash and Python read one CRLF file to the same values, with no CR in either).
+
+**SUPERSEDED IN PART 2026-10-04 (F153):** the config is now PARSED, and the parser drops a
+trailing CR from EVERY line, for every key -- the per-key strip above is gone with the `source`
+it compensated for. The same test row still pins it (`crlf` in the grammar matrix).
+
+
+
+## F153 — the guards RAN the path config as shell code: an `exit 0` line silenced every hook, and `X4_GUARD=off` in it switched them off · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-04 (v4.0 release review, lane FX-S)
+
+**Found by the v4.0 release review (R1-F1 in-arc, R1-P1 pre-arc), MEASURED.** `_x4-env.sh` loaded
+`x4-paths.env` with `set -a; . "$cfg"; set +a` -- the file was CODE to every guard, on every tool
+call, while `_paths` PARSED it as data. An agent can write that file (protect-files allowed
+`<toolkit>/x4-paths.env` in the separate layout). Three consequences, each reproduced:
+
+- **PRE-ARC (every release since the loader existed):** a line `exit 0` ended the sourcing hook
+  before it emitted anything, and an empty hook output is ALLOW -- the reference/ hard block
+  included. RED probe: master's protect-files.sh returned `allow` for a Write into a configured
+  reference/ whose config began `exit 0`; protect-bash.sh likewise. Any other command in the file
+  ran on every tool call.
+- **IN-ARC (v4.0's X4_GUARD):** `X4_GUARD=off` in the file turned every deny into an advisory,
+  under a banner and an advisory both saying "X4_GUARD=off at launch", and x4doctor reported the
+  environment's (unset) value as OK.
+- The sourcing loader kept the file's value for every key except a named twelve, so an exported
+  `X4_BACKUPS` or `X4_PYTHON` lost to the file in bash while it won in Python.
+
+**Fix.** `_x4_cfg_read` PARSES the file in-shell (no process), by the grammar of
+`_paths.parse_env_report` (new): `[export ]KEY=value`, KEY `X4_[A-Z0-9_]+` or `XRCATTOOL`; `'..'`
+literal; `".."` with `\\ \" \$ \`` and `$NAME`/`${NAME}` expansion; unquoted ` #` comments; CR and BOM
+dropped for every key (supersedes F152's per-key strip). A line that is not configuration is IGNORED
+and recorded as LINE:REASON (`shape`, `key`, `subst`, `operator`, `guard`), never a value; the
+session banner names it. `X4_GUARD`/`X4_GUARD_CHECK` come from the launch environment only.
+protect-files.sh DENIES an agent Edit/Write of the config (both locations, an explicit X4_CONFIG);
+protect-bash.sh DENIES a command that writes or deletes it (hook_facts re-run with the config as
+its only `reference` root, only for a command whose text names it). The environment wins for every
+key. x4doctor (lane FX-I) reads X4_GUARD from the environment and reports a config line.
+
+**Residual (accepted, stated in protect-bash.sh):** a write whose target text never names the file
+(`x4-pa""ths.env`, a variable set outside the command, a python -c open()) is not seen by the Bash
+rule; this stops accidents, not intent. The config is still read, so a USER who writes a bad line
+gets it ignored and named, not run.
+
+**Denominators (MEASURED 2026-10-04).** Grammar: 30 rows through BOTH loaders + 2 twins
+(`tests/test_config_precedence_agrees.py`); RED -- old bash 14 of 32 failing, master `_paths` 30 of 30
+rows (no report API; 9 with wrong values). Hooks: 17 probes in `scripts/test-hooks.sh`, RED against
+master 12 of 17. Verdict replay, OLD f35ff82 vs NEW: lane I's harness (same seed-20261003 sample: 1,986 shell + 1,000 edit rows), OLD f35ff82 vs NEW 3e765e5, 3 passes, 17,916 hook calls: configured and 3.x-legacy config 0 of 5,972 changed; unconfigured 2 of 2,986 changed -- both a write under Documents/Egosoft/X4 going advise -> ask, the predicted R1-F3 class, written down before the run; 0 ERROR; all 18 controls held. Stage 1: the 12 configured X4_*/XRCATTOOL variables identical in value AND export flag OLD vs NEW (5 unconfigured).
+
+**RE-DERIVED BY:** `tests/test_config_precedence_agrees.py` (`test_both_loaders_parse_the_config_by_one_grammar`,
+the X4_GUARD twin), `scripts/test-hooks.sh` section "the path config is DATA, never run".
+
+
+## F154 — F146's "ignored root" test answered an adjacent question: a root git ignores AS A DIRECTORY is still fully visible to Grep · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-04 (v4.0 release review, lane FX-S)
+
+**Found by the v4.0 release review (R1-F4), MEASURED.** search-scope.sh denied a Grep whenever
+`git check-ignore -q -- <root>` said the root was ignored. That is not the question Grep's
+visibility turns on: ripgrep reads every file under a root it was GIVEN unless a pattern matches the
+children themselves. MEASURED 2026-10-04: `rg --files` under a `reference/`-ignored folder -> 1 of 1
+file; under the game root's `*` -> 0 of 1. So in the default layout (the toolkit's `.gitignore`
+lists `reference/`) a Grep of `<toolkit>/reference/libraries` was DENIED with a reason that was false.
+
+**The reviewer's suggested fix would not have worked, and the instrument said why.** "Deny only when a
+child path is also ignored" fails because `git check-ignore` calls EVERY child of an ignored directory
+ignored (MEASURED: `build/x` -> matched by `build/`). And `rg` itself is not on PATH in a hook (Claude
+Code provides it as a shell function), so it cannot be the oracle.
+
+**Fix.** `check-ignore -v` (the same one process) names the PATTERN: directory-only (`build/`) ->
+children visible, no deny; a last component that matches any name (`*`) -> invisible, deny (Grep) /
+advisory (Glob); a pattern that names the root itself (`extra*`) -> no fire. One probe per clause.
+The deny also honours X4_GUARD=off now (R1-F5). **RE-DERIVED BY:** `scripts/test-hooks.sh` section
+"search-scope.sh: a dir/-ignored root is still searchable" (RED against master 5 of 7).
