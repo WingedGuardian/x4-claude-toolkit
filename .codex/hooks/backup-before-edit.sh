@@ -88,14 +88,21 @@ shopt -u nocasematch
 # known place — the old "${CLAUDE_PROJECT_DIR:-.}" fallback scattered them into
 # whatever directory the shell happened to be in.
 BACKUP_DIR="${X4_BACKUPS:-$X4_TOOLKIT/.claude/backups}"
+# THE trail, set ONCE and never read from the environment (v4.0 release review P4): the failure
+# path below used `${AUDIT_LOG:-$BACKUP_DIR/../AUDIT_LOG.txt}`, so an inherited AUDIT_LOG
+# variable -- a generic name -- sent the line anywhere, and without one it landed OUTSIDE the
+# trail, in a file nobody reads. Every append is checked and silent: a write error on stderr
+# beside a verdict is a refusal to gates/hook_false_positives.py, and it told nobody anything.
+AUDIT_LOG="$BACKUP_DIR/AUDIT_LOG.txt"
 # A backup directory that cannot be created is the SAME failure as a cp that fails --
 # "the backup did not happen" -- and that one _ask()s and writes an audit line. This
 # one exited 0 in silence, leaving nothing in the trail to notice it by. Given that
 # AUDIT_LOG.txt once sat empty for five weeks while CLAUDE.md asserted every edit was
 # backed up, the silent path is the wrong one to keep.
 if ! mkdir -p "$BACKUP_DIR" 2>/dev/null; then
-  echo "$(date +%Y-%m-%d\ %H:%M:%S) | $TOOL_NAME | $FILE_PATH | (BACKUP FAILED - could not create $BACKUP_DIR)" >> "${AUDIT_LOG:-$BACKUP_DIR/../AUDIT_LOG.txt}" 2>/dev/null || true
-  _ask "X4 BACKUP FAILED for $FILE_PATH: could not create the backup directory $BACKUP_DIR, so NO copy was made. Confirm only if you accept this edit being unrecoverable."
+  # The trail lives IN that directory, so no audit line can be written either -- and the ask
+  # says so rather than pretending to a record that does not exist.
+  _ask "X4 BACKUP FAILED for $FILE_PATH: could not create the backup directory $BACKUP_DIR, so NO copy was made and no audit line could be written (the trail, $AUDIT_LOG, lives there). Confirm only if you accept this edit being unrecoverable."
 fi
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -112,13 +119,13 @@ if [ "${#SAFE_NAME}" -gt 180 ]; then
   _ck="$(printf '%s' "$FILE_PATH" | cksum)"; _ck="${_ck%% *}"
   SAFE_NAME="${_ck}~${SAFE_NAME: -150}"
 fi
-AUDIT_LOG="$BACKUP_DIR/AUDIT_LOG.txt"
 # Reserve a unique file atomically: seconds-resolution names collided during rapid
 # edits and parallel hook calls. mktemp creates the destination, rather than testing
 # for absence and racing another writer. The bounded name still fits a path component.
 if ! BACKUP_PATH=$(mktemp "$BACKUP_DIR/${TIMESTAMP}__${SAFE_NAME}.XXXXXX" 2>/dev/null); then
-  echo "[$TIMESTAMP] $TOOL_NAME → $FILE_PATH (BACKUP FAILED — could not reserve a unique file)" >> "$AUDIT_LOG"
-  _ask "X4 BACKUP FAILED for $FILE_PATH: could not reserve a unique backup file. No snapshot was taken."
+  _al="an audit line was written"
+  { echo "[$TIMESTAMP] $TOOL_NAME → $FILE_PATH (BACKUP FAILED — could not reserve a unique file)" >> "$AUDIT_LOG"; } 2>/dev/null || _al="no audit line could be written to $AUDIT_LOG either"
+  _ask "X4 BACKUP FAILED for $FILE_PATH: could not reserve a unique backup file. No snapshot was taken, and $_al."
 fi
 
 # The cp result is CHECKED, and the audit line records what actually happened.
@@ -129,10 +136,14 @@ fi
 # one, exit 0, stderr swallowed. An audit trail that can lie is worse than none, because
 # it is consulted precisely when something has gone wrong.
 if cp "$SRC" "$BACKUP_PATH" 2>/dev/null && [ -f "$BACKUP_PATH" ]; then
-  echo "[$TIMESTAMP] $TOOL_NAME → $FILE_PATH (backup: ${BACKUP_PATH##*/})" >> "$AUDIT_LOG"
+  { echo "[$TIMESTAMP] $TOOL_NAME → $FILE_PATH (backup: ${BACKUP_PATH##*/})" >> "$AUDIT_LOG"; } 2>/dev/null && exit 0
+  # The copy exists; only the trail line is missing. An ADVISORY, not an ask: the edit IS
+  # recoverable, and the note is what makes the gap in the trail findable.
+  x4_advise "X4 BACKUP AUDIT NOT WRITTEN: $FILE_PATH was backed up to $BACKUP_PATH, but the line recording it could not be appended to $AUDIT_LOG, so the trail does not show this backup."
   exit 0
 fi
 
 rm -f -- "$BACKUP_PATH"    # only the empty/partial reservation owned by this call
-echo "[$TIMESTAMP] $TOOL_NAME → $FILE_PATH (BACKUP FAILED — no copy was made)" >> "$AUDIT_LOG"
-_ask "X4 BACKUP FAILED for $FILE_PATH — the copy into $BACKUP_DIR did not succeed (commonly a path-length limit on the flattened backup name). This edit would NOT be recoverable from the backup trail. Confirm only if you accept that."
+_al=""
+{ echo "[$TIMESTAMP] $TOOL_NAME → $FILE_PATH (BACKUP FAILED — no copy was made)" >> "$AUDIT_LOG"; } 2>/dev/null || _al=" No audit line could be written to $AUDIT_LOG either."
+_ask "X4 BACKUP FAILED for $FILE_PATH — the copy into $BACKUP_DIR did not succeed (commonly a path-length limit on the flattened backup name). This edit would NOT be recoverable from the backup trail.$_al Confirm only if you accept that."

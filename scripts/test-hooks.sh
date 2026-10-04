@@ -524,7 +524,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=231
+EXPECT=234
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -1173,6 +1173,40 @@ case "$_r31" in
   *apply_patch*"Discovery vs. Proof"*) ok "the refusals name agent-neutral remedies and live anchors" ;;
   *) no "the refusals did not render (or lost their remedies): ${_r31:0:200}" ;;
 esac
+
+
+# =============================================================================
+# backup-before-edit.sh: the FAILURE paths keep the trail and stderr honest (release review P4)
+# =============================================================================
+# The could-not-create-the-backup-dir path wrote its audit line to ${AUDIT_LOG:-<dir>/../AUDIT_LOG.txt}:
+# a file OUTSIDE the trail (and any inherited AUDIT_LOG variable could redirect it anywhere),
+# and every other audit append let a write error reach stderr -- stderr beside a verdict.
+echo; echo "=== backup-before-edit.sh: failure paths ==="
+_bk_saved="${X4_BACKUPS-}"
+_bkd="$SBX_TMP/bkfail"; mkdir -p "$_bkd/src"; echo '<diff/>' > "$_bkd/src/f.xml"
+: > "$_bkd/notadir"                                   # a FILE where the backup dir should go
+export X4_BACKUPS="$_bkd/notadir/backups"
+_bo="$(printf '%s' "$(fj "$_bkd/src/f.xml")" | AUDIT_LOG="$_bkd/redirected.txt" bash "$HOOKS/backup-before-edit.sh" 2>"$_bkd/err1")"
+case "$_bo" in
+  *'"ask"'*"no audit line"*) ok "backup dir cannot be created: ASKS and says no audit line was written" ;;
+  *) no "backup dir cannot be created: expected an ask naming the missing audit line: ${_bo:0:160}" ;;
+esac
+if [ -s "$_bkd/err1" ] || [ -e "$_bkd/redirected.txt" ] || [ -e "$_bkd/notadir/AUDIT_LOG.txt" ]; then
+  no "backup dir failure leaked: stderr=$(head -c 120 "$_bkd/err1") redirected=$([ -e "$_bkd/redirected.txt" ] && echo yes)"
+else
+  ok "backup dir failure: nothing on stderr, no stray audit file, an inherited AUDIT_LOG is ignored"
+fi
+export X4_BACKUPS="$_bkd/bk2"; mkdir -p "$X4_BACKUPS/AUDIT_LOG.txt"   # the trail cannot be appended
+_bo="$(printf '%s' "$(fj "$_bkd/src/f.xml")" | bash "$HOOKS/backup-before-edit.sh" 2>"$_bkd/err2")"
+if [ -s "$_bkd/err2" ]; then
+  no "an unwritable audit log leaked to stderr: $(head -c 120 "$_bkd/err2")"
+else
+  case "$_bo" in
+    *"AUDIT"*) ok "an unwritable audit log: no stderr, and the note says the trail was not appended" ;;
+    *) no "an unwritable audit log was silent: ${_bo:0:160}" ;;
+  esac
+fi
+if [ -n "$_bk_saved" ]; then export X4_BACKUPS="$_bk_saved"; else unset X4_BACKUPS; fi
 
 echo "RESULT: $pass passed, $fail failed, $skipped skipped"
 if [ $((pass + fail + skipped)) -ne "$EXPECT" ]; then
