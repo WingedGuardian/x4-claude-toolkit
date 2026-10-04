@@ -40,6 +40,12 @@ _IGNORED_PARTS = ("__pycache__",)
 #: Claude Code agent names are lowercase letters, digits and hyphens; anything else could also
 #: steer the output path (MEASURED: '../../escaped' rendered outside .claude/agents/).
 _AGENT_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+#: Every key agent.yaml may carry; anything else refuses (release review R3-5).
+AGENT_KEYS = frozenset({"name", "description", "tier", "read_only", "claude"})
+AGENT_CLAUDE_KEYS = frozenset({"tools"})
+#: `read_only: true` refuses these in claude.tools. Bash is NOT policed: a shell can write, so
+#: read_only states intent and keeps the file-editing tools out; it is no sandbox.
+WRITE_TOOLS = frozenset({"Edit", "MultiEdit", "Write", "NotebookEdit"})
 
 
 class GenerationError(Exception):
@@ -257,13 +263,22 @@ def render_agents_md(src: Path) -> str:
 def render_agent_md(agent_dir: Path) -> tuple[str, str]:
     """agent.yaml contract: name matches _AGENT_NAME; description a non-empty string (emitted
     plain when YAML round-trips it, else JSON-quoted); tier in TIER_MODEL; claude, if present, a
-    mapping; claude.tools, if present, a YAML LIST of tool names. MEASURED before this: a tools
+    mapping; claude.tools, if present, a YAML LIST of tool names; no key outside AGENT_KEYS /
+    AGENT_CLAUDE_KEYS; read_only, if present, a bool, and when true an explicit tools list with
+    no WRITE_TOOLS in it. MEASURED before this: a tools
     STRING rendered as 'G, l, o, b', a ': ' in a description produced frontmatter that does not
     parse, and a name of '../../escaped' rendered outside .claude/agents/."""
     p = agent_dir / "agent.yaml"
     meta = _load_yaml(p)
     if not isinstance(meta, dict):
         raise GenerationError(f"{p}: not a mapping")
+    # An unknown key is a refusal, never a silent drop (release review R3-5, MEASURED: a typo
+    # `tool:` was dropped, the agent rendered with no tools line, and Claude Code then grants a
+    # subagent EVERY tool).
+    unknown = sorted(set(map(str, meta)) - AGENT_KEYS)
+    if unknown:
+        raise GenerationError(f"{p}: unknown key(s) {', '.join(unknown)} -- "
+                              f"allowed: {', '.join(sorted(AGENT_KEYS))}")
     for key in ("name", "description", "tier"):
         if not meta.get(key):
             raise GenerationError(f"{p}: missing {key}")
@@ -276,10 +291,26 @@ def render_agent_md(agent_dir: Path) -> tuple[str, str]:
     claude = meta.get("claude") or {}
     if not isinstance(claude, dict):
         raise GenerationError(f"{p}: claude must be a mapping")
+    unknown = sorted(set(map(str, claude)) - AGENT_CLAUDE_KEYS)
+    if unknown:
+        raise GenerationError(f"{p}: unknown key(s) {', '.join('claude.' + k for k in unknown)} -- "
+                              f"allowed: {', '.join('claude.' + k for k in sorted(AGENT_CLAUDE_KEYS))}")
     tools = claude.get("tools") or []
     if not isinstance(tools, list) or not all(
             isinstance(t, str) and t.strip() and "," not in t and "\n" not in t for t in tools):
         raise GenerationError(f"{p}: claude.tools must be a YAML list of tool names, e.g. [Read, Grep]")
+    read_only = meta.get("read_only", False)
+    if not isinstance(read_only, bool):
+        raise GenerationError(f"{p}: read_only must be true or false, got {read_only!r}")
+    if read_only:
+        # No tools line = Claude Code grants every tool, write tools included.
+        if not tools:
+            raise GenerationError(f"{p}: read_only: true needs an explicit claude.tools list -- "
+                                  f"without one Claude Code grants every tool")
+        writers = sorted(set(tools) & WRITE_TOOLS)
+        if writers:
+            raise GenerationError(f"{p}: read_only: true but claude.tools grants file-writing "
+                                  f"tool(s) {', '.join(writers)}")
     body = _read(agent_dir / "instructions.md").replace(TOKEN, CLAUDE_TOOLKIT)
     model = TIER_MODEL[meta["tier"]]
     lines = ["---", f"name: {meta['name']}", f"description: {_yaml_scalar(meta['description'])}"]

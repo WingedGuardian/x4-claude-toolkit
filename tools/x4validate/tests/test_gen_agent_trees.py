@@ -402,6 +402,45 @@ def test_E6_duplicate_agent_names_refuse(tmp_path):
         g.generate(root)
 
 
+# --- v4.0.0 release review R3-5: no agent.yaml key is silently dropped; read_only is enforced.
+@pytest.mark.parametrize("old,new,why", [
+    # MEASURED before: a typo `tool:` was dropped, so the subagent was rendered with NO tools
+    # line -- Claude Code then gives it EVERY tool.
+    ("claude:\n  tools:", "claude:\n  tool:", "claude.tool"),
+    ("tier: balanced", "tier: balanced\nmodle: haiku", "modle"),
+])
+def test_R3_5_an_unknown_agent_yaml_key_refuses(tmp_path, old, new, why):
+    g = load()
+    root = _agent_copy(tmp_path)
+    _edit(root, CFI, old, new)
+    with pytest.raises(g.GenerationError, match=why):
+        g.generate(root)
+
+
+@pytest.mark.parametrize("old,new,why", [
+    ("tools: [Glob, Grep, Read, Bash]", "tools: [Glob, Grep, Read, Edit]", "Edit"),      # a write tool
+    ("tools: [Glob, Grep, Read, Bash]", "tools: [Glob, Write]", "Write"),
+    ("tools: [Glob, Grep, Read, Bash]", "tools: []", "every tool"),                     # empty = all
+    ("read_only: true", "read_only: yes please", "read_only"),                         # not a bool
+])
+def test_R3_5_read_only_is_enforced_one_twin_per_clause(tmp_path, old, new, why):
+    g = load()
+    root = _agent_copy(tmp_path)
+    _edit(root, CFI, old, new)
+    with pytest.raises(g.GenerationError, match=why):
+        g.generate(root)
+
+
+def test_R3_5_TWIN_without_read_only_a_write_tool_is_accepted(tmp_path):
+    """The control: the same Edit tool is fine on an agent that does not declare read_only, so
+    the refusal above is the read_only clause and not the tool name."""
+    g = load()
+    root = _agent_copy(tmp_path)
+    _edit(root, CFI, "read_only: true\n", "")
+    _edit(root, CFI, "tools: [Glob, Grep, Read, Bash]", "tools: [Glob, Grep, Read, Edit]")
+    assert "Edit" in _frontmatter(g.generate(root)[".claude/agents/cross-file-impact.md"])["tools"]
+
+
 @pytest.mark.parametrize("raw", ['"../../escaped"', '"sub/dir"', r"'sub\dir'", '"Upper-Case"',
                                  '"has space"', "123", '"-leading"', '""'])
 def test_E6_a_name_that_is_not_a_plain_agent_name_refuses(tmp_path, raw):
