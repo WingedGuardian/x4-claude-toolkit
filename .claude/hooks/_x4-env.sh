@@ -55,12 +55,183 @@ if [ -z "${X4_TOOLKIT:-}" ]; then
   fi
 fi
 
-#: The keys whose precedence this file guarantees. Named explicitly rather than
-#: derived from the environment: a `X4_*` glob would also capture whatever a test
-#: harness happens to set, and the guarantee is about the CONFIGURATION, not about
-#: every variable that shares the prefix.
-_X4_ENV_KEYS="X4_TOOLKIT X4_GAME X4_REFERENCE X4_PROFILE X4_DEBUGLOG X4_MODS \
-X4_EXTENSIONS X4_SAVES X4_DOCUMENTS X4_APPMANIFEST X4_NEXUS_KEY XRCATTOOL"
+# --- the path config is DATA, never code (v4.0 release review R1-F1 / R1-P1) -------------
+# ONE grammar, the same as `_paths.parse_env_report` (tests/test_config_precedence_agrees.py
+# runs both over the same files):
+#   * blank lines and `#` lines are skipped; a trailing CR (CRLF file) and a leading UTF-8
+#     BOM are dropped from every line, for every key;
+#   * `[export ]KEY=value`, KEY = X4_[A-Z0-9_]+ or XRCATTOOL, blanks around `=` allowed;
+#   * the value: '...' is literal; "..." honours \\ \" \$ \` and expands $NAME / ${NAME}
+#     (NAME = [A-Z0-9_]+); unquoted text expands too, keeps backslashes, and ends at a ` #`
+#     comment; adjacent segments concatenate; an unterminated quote falls back to the whole
+#     value with its outer quotes stripped (`_paths._unquote_legacy`);
+#   * $NAME is the file's own earlier value, else the shell's; an unknown name is empty.
+#     That is a STRING substitution: nothing is ever run.
+# A line that does not fit is IGNORED and recorded in `_x4_cfg_ignored` as LINE:REASON --
+#   shape (not KEY=value: `exit 0`, `source x`), key (not an X4 key: PATH=, JQ=),
+#   subst ($( ) or a backtick), operator (an unquoted ; & | < >), guard (X4_GUARD or
+#   X4_GUARD_CHECK: the guards are switched off only by the LAUNCH environment, never by a
+#   file an agent could write).
+# Line numbers and reasons only, never a value: the file may hold X4_NEXUS_KEY.
+# An EMPTY value configures nothing. An exported (non-empty) value always wins -- for EVERY
+# key, as in Python's `_layers()`; the sourcing loader protected only a named twelve -- except
+# a DERIVED X4_TOOLKIT, which the file may replace (see _X4_TK_FROM_ENV above).
+# No subshell and no process anywhere below: this runs on every hook call (HK-4).
+#: ASCII name characters, spelled out: a bracket RANGE such as [A-Z] follows the locale's
+#: collation in a bash pattern and can admit lowercase letters.
+_X4_UC=ABCDEFGHIJKLMNOPQRSTUVWXYZ
+_X4_NMC="${_X4_UC}0123456789_"
+_X4_IDC="${_X4_NMC}abcdefghijklmnopqrstuvwxyz"
+
+_x4_cfg_lookup() {   # NAME -> _x4_lv: the file's latest value for NAME, else the shell's
+  local j=${#_X4_FK[@]}
+  while [ "$j" -gt 0 ]; do
+    j=$((j - 1))
+    if [ "${_X4_FK[$j]}" = "$1" ]; then _x4_lv="${_X4_FV[$j]}"; return 0; fi
+  done
+  case "$1" in [0123456789]*) _x4_lv=""; return 0 ;; esac   # not a variable name
+  _x4_lv="${!1:-}"
+}
+
+_x4_cfg_dollar() {   # TEXT-AFTER-$ -> _x4_dt (replacement), _x4_dn (chars consumed incl. $)
+  local r="$1" nm t
+  _x4_dt='$'; _x4_dn=1
+  case "$r" in
+    '('*) _x4_bad=subst ;;
+    '{'*)
+      t="${r#?}"; nm="${t%%\}*}"
+      [ "$nm" != "$t" ] || return 0                       # no closing brace: a literal $
+      case "$nm" in ''|*[!$_X4_NMC]*) return 0 ;; esac
+      _x4_cfg_lookup "$nm"; _x4_dt="$_x4_lv"; _x4_dn=$(( ${#nm} + 3 )) ;;
+    [$_X4_NMC]*)
+      nm="${r%%[!$_X4_NMC]*}"
+      _x4_cfg_lookup "$nm"; _x4_dt="$_x4_lv"; _x4_dn=$(( ${#nm} + 1 )) ;;
+  esac
+  return 0
+}
+
+_x4_cfg_legacy() {   # an UNTERMINATED quote: the whole value, outer quotes stripped, $NAME expanded
+  local v="$1" out="" i=0 c
+  case "$v" in *'$('*|*'`'*) _x4_bad=subst; return 0 ;; esac
+  v="${v%% #*}"
+  v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+  if [ "${#v}" -ge 2 ]; then
+    case "$v" in \"*\"|\'*\') v="${v:1:$((${#v} - 2))}" ;; esac
+  fi
+  while [ "$i" -lt "${#v}" ]; do
+    c="${v:$i:1}"
+    if [ "$c" = '$' ]; then
+      _x4_cfg_dollar "${v:$((i + 1))}"; out="$out$_x4_dt"; i=$((i + _x4_dn))
+    else
+      out="$out$c"; i=$((i + 1))
+    fi
+  done
+  _x4_v="$out"
+}
+
+_x4_cfg_value() {    # RAW-VALUE -> _x4_v, or _x4_bad=subst|operator (and _x4_v unset)
+  local s="$1" i=0 j n c out="" ws="" seg
+  _x4_bad=""; _x4_v=""
+  s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"
+  # Fast paths: what the installers write ("..." with nothing to escape or expand), and a
+  # plain unquoted word. Everything else takes the full scan below.
+  case "$s" in
+    \"*\")
+      seg="${s:1:$((${#s} - 2))}"
+      case "$seg" in *[\"\\\$\`]*) ;; *) _x4_v="$seg"; return 0 ;; esac ;;
+    \'*\')
+      seg="${s:1:$((${#s} - 2))}"
+      case "$seg" in *\'*) ;; *) _x4_v="$seg"; return 0 ;; esac ;;
+    *[[:space:]\"\'\$\`\;\&\|\<\>]*) ;;
+    *) _x4_v="$s"; return 0 ;;
+  esac
+  n=${#s}
+  while [ "$i" -lt "$n" ]; do
+    c="${s:$i:1}"
+    case "$c" in
+      \')
+        seg="${s:$((i + 1))}"
+        case "$seg" in *\'*) ;; *) _x4_cfg_legacy "$s"; return 0 ;; esac
+        seg="${seg%%\'*}"
+        out="$out$ws$seg"; ws=""; i=$((i + ${#seg} + 2)) ;;
+      \")
+        j=$((i + 1)); seg=""
+        while :; do
+          if [ "$j" -ge "$n" ]; then _x4_cfg_legacy "$s"; return 0; fi
+          c="${s:$j:1}"
+          case "$c" in
+            \") break ;;
+            \\)
+              case "${s:$((j + 1)):1}" in
+                \\|\"|\$|\`) seg="$seg${s:$((j + 1)):1}"; j=$((j + 2)) ;;
+                *) seg="$seg$c"; j=$((j + 1)) ;;
+              esac ;;
+            \$)
+              _x4_cfg_dollar "${s:$((j + 1))}"
+              [ -n "$_x4_bad" ] && return 0
+              seg="$seg$_x4_dt"; j=$((j + _x4_dn)) ;;
+            \`) _x4_bad=subst; return 0 ;;
+            *) seg="$seg$c"; j=$((j + 1)) ;;
+          esac
+        done
+        out="$out$ws$seg"; ws=""; i=$((j + 1)) ;;
+      \#)
+        if [ "$i" -gt 0 ]; then
+          case "${s:$((i - 1)):1}" in [[:space:]]) break ;; esac
+        fi
+        out="$out$ws$c"; ws=""; i=$((i + 1)) ;;
+      [[:space:]]) ws="$ws$c"; i=$((i + 1)) ;;
+      \$)
+        _x4_cfg_dollar "${s:$((i + 1))}"
+        [ -n "$_x4_bad" ] && return 0
+        out="$out$ws$_x4_dt"; ws=""; i=$((i + _x4_dn)) ;;
+      \`) _x4_bad=subst; return 0 ;;
+      \;|\&|\||\<|\>) _x4_bad=operator; return 0 ;;
+      *) out="$out$ws$c"; ws=""; i=$((i + 1)) ;;
+    esac
+  done
+  _x4_v="$out"
+}
+
+# _x4_cfg_read FILE -- parse FILE and EXPORT what it configures (the environment winning).
+# Sets _x4_cfg_ignored ("LINE:REASON ..."), read by x4_config_banner and x4doctor.
+_x4_cfg_read() {
+  local line l k n=0 j known
+  _X4_FK=(); _X4_FV=(); _x4_cfg_ignored=""
+  local pinned=" "
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    line="${line%$'\r'}"
+    [ "$n" = 1 ] && line="${line#$'\357\273\277'}"
+    l="${line#"${line%%[![:space:]]*}"}"
+    case "$l" in ''|\#*) continue ;; esac
+    case "$l" in export[[:space:]]*) l="${l#export}"; l="${l#"${l%%[![:space:]]*}"}" ;; esac
+    case "$l" in *=*) ;; *) _x4_cfg_ignored="$_x4_cfg_ignored $n:shape"; continue ;; esac
+    k="${l%%=*}"; k="${k%"${k##*[![:space:]]}"}"
+    case "$k" in
+      ''|[0123456789]*|*[!$_X4_IDC]*) _x4_cfg_ignored="$_x4_cfg_ignored $n:shape"; continue ;;
+      XRCATTOOL) ;;
+      X4_?*) case "${k#X4_}" in *[!$_X4_NMC]*) _x4_cfg_ignored="$_x4_cfg_ignored $n:key"; continue ;; esac ;;
+      *) _x4_cfg_ignored="$_x4_cfg_ignored $n:key"; continue ;;
+    esac
+    case "$k" in X4_GUARD|X4_GUARD_CHECK) _x4_cfg_ignored="$_x4_cfg_ignored $n:guard"; continue ;; esac
+    _x4_cfg_value "${l#*=}"
+    if [ -n "$_x4_bad" ]; then _x4_cfg_ignored="$_x4_cfg_ignored $n:$_x4_bad"; continue; fi
+    [ -n "$_x4_v" ] || continue
+    known=0; j=${#_X4_FK[@]}
+    while [ "$j" -gt 0 ]; do j=$((j - 1)); [ "${_X4_FK[$j]}" = "$k" ] && { known=1; break; }; done
+    _X4_FK[${#_X4_FK[@]}]="$k"; _X4_FV[${#_X4_FV[@]}]="$_x4_v"
+    case "$pinned" in *" $k "*) continue ;; esac
+    if [ "$known" = 0 ] && [ -n "${!k:-}" ] && { [ "$k" != X4_TOOLKIT ] || [ "$_X4_TK_FROM_ENV" = 1 ]; }; then
+      pinned="$pinned$k "             # exported before the file was read: the environment wins
+      continue
+    fi
+    export "$k=$_x4_v"
+  done < "$1"
+  _x4_cfg_ignored="${_x4_cfg_ignored# }"
+  unset _X4_FK _X4_FV _x4_v _x4_bad _x4_lv _x4_dt _x4_dn
+  return 0
+}
 
 # Load the user's path config if present (KEY=VALUE lines).
 # WHICH FILE (Plan 3 lane I). ONE rule, mirrored by _paths._locate_config and pinned to it by
@@ -77,42 +248,15 @@ elif [ -f "$X4_TOOLKIT/x4-paths.env" ]; then
 elif [ -f "$X4_TOOLKIT/.claude/x4-paths.env" ]; then
   _x4_cfg="$X4_TOOLKIT/.claude/x4-paths.env"; _x4_cfg_src=legacy
 fi
+_x4_cfg_ignored=""
 if [ -n "$_x4_cfg" ]; then
-  # SNAPSHOT, SOURCE, RESTORE. Re-implementing the parser was the alternative and it
-  # is the riskier one: this file is sourced by every hook on every tool call, and
-  # sourcing keeps quoting, escapes, comments and continuations behaving exactly as
-  # they always have. Only the precedence changes.
-  #
-  # A path never contains a newline, so one line per variable is a safe transport.
-  # `IFS='=' read -r k v` puts everything after the FIRST `=` into v, so a value
-  # containing `=` survives.
-  # Built in THIS shell, not in a `$( )` subshell: this runs on every hook call, and a
-  # subshell is a process on Windows (AUDIT-2026-09-24 HK-4). Same lines, same order.
-  _x4_pre=""
-  for _k in $_X4_ENV_KEYS; do
-    # a DERIVED toolkit root must not outrank the config file (see above)
-    [ "$_k" = X4_TOOLKIT ] && [ "$_X4_TK_FROM_ENV" != 1 ] && continue
-    eval "_v=\${$_k:-}"
-    [ -n "$_v" ] && _x4_pre="$_x4_pre$_k=$_v
-"
-  done
-  set -a; . "$_x4_cfg"; set +a
-  # A CRLF config (any Windows editor) leaves a trailing CR on every value under a POSIX bash
-  # (MEASURED 2026-10-04, ubuntu:24.04: `X4_REFERENCE="/a/b"<CR>` -> `/a/b<CR>`; Git Bash strips
-  # it). No real path ends in a CR, so every root compare would miss. Strip it here, in-shell,
-  # for the config keys only; the environment restored below never carried one.
-  for _k in $_X4_ENV_KEYS; do
-    eval "_v=\${$_k:-}"
-    case "$_v" in *$'\r') export "$_k=${_v%$'\r'}" ;; esac
-  done
-  if [ -n "$_x4_pre" ]; then
-    while IFS='=' read -r _k _v; do
-      [ -n "$_k" ] && export "$_k=$_v"
-    done <<EOF
-$_x4_pre
-EOF
-  fi
-  unset _x4_pre _k _v
+  # PARSED, NEVER SOURCED (v4.0 release review R1-F1 / R1-P1). This file used to run the
+  # config as shell code (`set -a; . "$cfg"`), and the agent can write the config: a line
+  # `exit 0` ended every hook before it spoke (silence is ALLOW), and `X4_GUARD=off` in it
+  # turned every deny into an advisory -- under a banner saying "set at launch". The parse
+  # is _x4_cfg_read below, the same rule as the Python half (`_paths.parse_env_report`),
+  # pinned to it by tests/test_config_precedence_agrees.py. The environment still wins.
+  _x4_cfg_read "$_x4_cfg"
 fi
 
 # Fill only what config/env did not set. (Game/profile/mods/etc. have no safe default — may be empty.)
@@ -127,6 +271,16 @@ if [ -z "${X4_REFERENCE:-}" ]; then X4_REFERENCE="$X4_TOOLKIT/reference"; _x4_re
 # never a value: the file carries X4_NEXUS_KEY. Called once per session (session-canary.sh), never
 # per tool call -- every guard verdict is unchanged by the config's location or absence.
 x4_config_banner() {
+  # IGNORED LINES FIRST (R1-F1): a config the guards read as data but the user wrote as shell
+  # code -- and above all an X4_GUARD line, which the user may believe has switched the guards
+  # off. Line numbers and reasons only, never a value.
+  if [ -n "${_x4_cfg_ignored:-}" ]; then
+    case " $_x4_cfg_ignored" in
+      *:guard*)
+        printf '%s\n' "[x4 config] X4_GUARD in $_x4_cfg is IGNORED: the guards are switched off only by the environment the agent is LAUNCHED from (X4_GUARD=off), never by a file an agent can write. They are ON unless that says otherwise." ;;
+    esac
+    printf '%s\n' "[x4 config] $_x4_cfg is read as DATA, never run, and these lines were IGNORED (line:reason): $_x4_cfg_ignored. Reasons: shape = not KEY=value; key = not an X4_* key; subst = \$( ) or a backtick; operator = an unquoted ; & | < >; guard = X4_GUARD/X4_GUARD_CHECK. Fix them by hand; check with: python \"$_x4_cfg_tk/scripts/x4doctor.py\""
+  fi
   case "$_x4_cfg_src" in
     none|explicit-missing)
       [ "$_x4_ref_defaulted" = 1 ] || return 0
@@ -588,7 +742,9 @@ x4_guard_check_inert() {
   return 0
 }
 
-# X4_GUARD=off -- the user's LAUNCH-time escape hatch (spec 5.7, user decision #19). Exactly
+# X4_GUARD=off -- the user's LAUNCH-time escape hatch (spec 5.7, user decision #19). Read from
+# the ENVIRONMENT only: _x4_cfg_read never sets X4_GUARD (or X4_GUARD_CHECK) from the path
+# config, which an agent could write (R1-F1), and x4doctor reads it the same way. Exactly
 # "off": any other value (OFF, 0, false, " off") leaves every guard ON, because a typo must
 # never be what disables protection. Only a VERDICT is relaxed: a guard that could not check
 # still says so, and Codex .rules and the OS deny on reference\ do not read this at all.

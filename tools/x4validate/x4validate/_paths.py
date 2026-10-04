@@ -64,82 +64,178 @@ STEAM_APPID = "392160"
 #: paper over precisely the misconfiguration the tool is built to shout about.
 _LOCAL_FALLBACK: dict[str, str] = {}
 
-_LINE = re.compile(r"""^\s*(?:export\s+)?(?P<key>X4_[A-Z0-9_]+|XRCATTOOL)\s*=\s*(?P<val>.*?)\s*$""")
-_REF = re.compile(r"\$\{(?P<b>[A-Z0-9_]+)\}|\$(?P<p>[A-Z0-9_]+)")
+#: `[export ]KEY = value`, KEY any shell name. Which KEYS count is decided after the match,
+#: so a line naming another key is REPORTED (`key`), not silently skipped.
+_LINE = re.compile(r"""^\s*(?:export\s+)?(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<val>.*?)\s*$""")
+_OUR_KEY = re.compile(r"^(?:X4_[A-Z0-9_]+|XRCATTOOL)$")
+#: The guard switches. Read from the LAUNCH environment only (v4.0 release review R1-F1): a
+#: config line naming one is ignored and reported, in both loaders.
+GUARD_KEYS = frozenset({"X4_GUARD", "X4_GUARD_CHECK"})
+_NAME = re.compile(r"\{(?P<b>[A-Z0-9_]+)\}|(?P<p>[A-Z0-9_]+)")
+_OPERATORS = frozenset(";&|<>")
 
 
-def _unquote(v: str) -> str:
-    """A shell-style value: a QUOTED value runs to its closing quote, whatever it holds;
-    an unquoted one ends at a ` #` comment.
+class _Refused(Exception):
+    """A value the grammar refuses (`subst` | `operator`): the whole LINE is ignored."""
 
-    The comment was cut first, for both, so `X4_MODS="C:/My Mods #2/x4"` became
-    `"C:/My Mods` with a dangling quote (AUDIT-2026-09-24 RG-5). Inside quotes a `#` is
-    data, exactly as when the shell sources the same file.
 
-    Adjacent segments CONCATENATE, as in the shell: `"a"b` is `ab` and `'C:/x'"/y"` is
-    `C:/x/y` (a first version returned only the first quoted segment -- review of RG-5).
-    An unquoted `#` starts a comment only after whitespace; mid-word it is data. Unquoted
-    whitespace is kept inside the value (lenient, as before -- a shell would split
-    there) and trimmed at the ends. An UNTERMINATED quote falls back to the older
-    whole-value reading below rather than guessing where the value ends.
+def _dollar(rest: str, lookup) -> tuple[str, int]:
+    """`$` followed by *rest* -> (replacement, characters consumed including the `$`).
+
+    `$NAME` / `${NAME}` (NAME = [A-Z0-9_]+) expand through *lookup*; `$(` refuses the line;
+    anything else is a literal `$`. A string substitution -- nothing is ever run."""
+    if rest.startswith("("):
+        raise _Refused("subst")
+    m = _NAME.match(rest)
+    if not m:
+        return "$", 1
+    name = m.group("b") or m.group("p")
+    return lookup(name), 1 + m.end()
+
+
+def _unquote(v: str, lookup=lambda n: "") -> str:
+    r"""A shell-style value -- the SAME grammar as `_x4_cfg_value` in `_x4-env.sh`.
+
+    '...' is literal. "..." honours the escapes \\ \" \$ \` (any other backslash is kept)
+    and expands $NAME / ${NAME}. Unquoted text expands too, keeps its backslashes (a
+    hand-written `C:\\Games` stays a Windows path) and ends at a ` #` comment -- a `#`
+    mid-word is data. Adjacent segments CONCATENATE, as in the shell: `"a"b` is `ab`
+    (review of RG-5). Unquoted whitespace is kept inside the value and trimmed at its ends.
+    An UNTERMINATED quote falls back to `_unquote_legacy`. `$( )`, a backtick, or an unquoted
+    ; & | < > raise `_Refused`: the line is shell code, and code is never run (R1-P1).
+
+    The comment was cut first, for both quoting styles, until AUDIT-2026-09-24 RG-5, so
+    `X4_MODS="C:/My Mods #2/x4"` became `"C:/My Mods` with a dangling quote.
     """
     s = v.strip()
-    parts: list[tuple[str, bool]] = []          # (text, quoted)
+    out: list[str] = []
+    ws = ""                                       # unquoted whitespace not yet known to be inner
     i, n = 0, len(s)
     while i < n:
         c = s[i]
-        if c in "\"'":
-            end = s.find(c, i + 1)
+        if c == "'":
+            end = s.find("'", i + 1)
             if end < 0:
-                return _unquote_legacy(v)
-            parts.append((s[i + 1:end], True))
+                return _unquote_legacy(v, lookup)
+            out.append(ws + s[i + 1:end]); ws = ""
             i = end + 1
+        elif c == '"':
+            j, seg = i + 1, []
+            while True:
+                if j >= n:
+                    return _unquote_legacy(v, lookup)
+                d = s[j]
+                if d == '"':
+                    break
+                if d == "\\":
+                    nxt = s[j + 1:j + 2]
+                    if nxt in ("\\", '"', "$", "`") and nxt:
+                        seg.append(nxt); j += 2
+                    else:
+                        seg.append(d); j += 1
+                elif d == "$":
+                    t, k = _dollar(s[j + 1:], lookup)
+                    seg.append(t); j += k
+                elif d == "`":
+                    raise _Refused("subst")
+                else:
+                    seg.append(d); j += 1
+            out.append(ws + "".join(seg)); ws = ""
+            i = j + 1
         elif c == "#" and i > 0 and s[i - 1].isspace():
-            break                                # a comment: the value ended before it
+            break                                 # a comment: the value ended before it
+        elif c.isspace():
+            ws += c; i += 1
+        elif c == "$":
+            t, k = _dollar(s[i + 1:], lookup)
+            out.append(ws + t); ws = ""
+            i += k
+        elif c == "`":
+            raise _Refused("subst")
+        elif c in _OPERATORS:
+            raise _Refused("operator")
         else:
-            parts.append((c, False))
+            out.append(ws + c); ws = ""
             i += 1
-    while parts and not parts[-1][1] and parts[-1][0].isspace():
-        parts.pop()                              # unquoted whitespace before a comment
-    return "".join(t for t, _ in parts)
+    return "".join(out)
 
 
-def _unquote_legacy(v: str) -> str:
-    """The pre-concatenation reading, kept ONLY for a value with an unterminated quote."""
+def _unquote_legacy(v: str, lookup=lambda n: "") -> str:
+    """The pre-concatenation reading, kept ONLY for a value with an unterminated quote:
+    the value up to ` #`, outer quotes stripped, then $NAME expanded over the whole."""
+    if "$(" in v or "`" in v:
+        raise _Refused("subst")
     v = v.split(" #", 1)[0].strip()
     if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-        return v[1:-1]
-    return v
+        v = v[1:-1]
+    out, i = [], 0
+    while i < len(v):
+        if v[i] == "$":
+            t, k = _dollar(v[i + 1:], lookup)
+            out.append(t); i += k
+        else:
+            out.append(v[i]); i += 1
+    return "".join(out)
 
 
-def parse_env_file(path: Path) -> dict[str, str]:
-    """`KEY="value"` pairs from an x4-paths.env, with `$OTHER` references expanded.
+def parse_env_report(path: Path) -> tuple[dict[str, str], list[tuple[int, str]]]:
+    """`(values, ignored)` for an x4-paths.env, PARSED and never executed.
 
-    Expansion is against keys already seen in the file, then the real environment —
-    matching what a shell would do when sourcing it top-to-bottom. Unknown
-    references expand to empty, exactly as a shell would, rather than being left
-    as a literal `$X4_TOOLKIT` that would later become a bogus directory name.
+    THE SAME GRAMMAR as `_x4_cfg_read` in `.claude/hooks/_x4-env.sh` (the guards' loader,
+    which SOURCED the file as shell code until the v4.0 release review: R1-F1 / R1-P1), and
+    tests/test_config_precedence_agrees.py runs both over the same files. *ignored* lists
+    `(line number, reason)` for every line that is neither blank nor a comment and not a
+    configuration -- reasons `shape` (not KEY=value), `key` (not an X4 key), `subst`
+    (`$( )` / backtick), `operator` (an unquoted ; & | < >), `guard` (X4_GUARD /
+    X4_GUARD_CHECK: launch environment only). Line numbers and reasons, never a value:
+    the file may hold X4_NEXUS_KEY.
+
+    `$NAME` expands against keys already seen in the file, then the real environment --
+    what a shell sourcing it top-to-bottom would do. Unknown names expand to empty rather
+    than staying a literal `$X4_TOOLKIT` that would later become a bogus directory name.
+    An empty value configures nothing. A CR (CRLF file) and a leading BOM are dropped.
     """
     out: dict[str, str] = {}
+    ignored: list[tuple[int, str]] = []
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         # silent-ok: an unreadable config file is simply "no config" — the caller
         # falls through to the next resolution layer, and `describe()` reports
         # which file (if any) was actually used.
-        return out
-    for raw in text.splitlines():
+        return out, ignored
+
+    def lookup(name: str) -> str:
+        return out.get(name, os.environ.get(name, ""))
+
+    for n, raw in enumerate(text.split("\n"), 1):
+        raw = raw[:-1] if raw.endswith("\r") else raw
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
         m = _LINE.match(raw)
         if not m:
+            ignored.append((n, "shape"))
             continue
-        val = _unquote(m.group("val"))
-        val = _REF.sub(lambda r: out.get(r.group("b") or r.group("p"),
-                                        os.environ.get(r.group("b") or r.group("p"), "")), val)
+        key = m.group("key")
+        if not _OUR_KEY.match(key):
+            ignored.append((n, "key"))
+            continue
+        if key in GUARD_KEYS:
+            ignored.append((n, "guard"))
+            continue
+        try:
+            val = _unquote(m.group("val"), lookup)
+        except _Refused as why:
+            ignored.append((n, str(why)))
+            continue
         if val:
-            out[m.group("key")] = val
-    return out
+            out[key] = val
+    return out, ignored
+
+
+def parse_env_file(path: Path) -> dict[str, str]:
+    """`KEY="value"` pairs from an x4-paths.env -- `parse_env_report` without the report."""
+    return parse_env_report(path)[0]
 
 
 #: The config file's name, the same at the 4.x location (the toolkit root) and the
