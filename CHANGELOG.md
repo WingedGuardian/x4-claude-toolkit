@@ -254,6 +254,13 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   installation. Bare from an X4 folder it is blocked like `git clean -fdx`; with the folder named
   (`git -C <folder> stash -a`) it asks. `git stash -u` asks with the folder named, like
   `git clean -f`. A plain `git stash`, `stash list`, `pop` and friends are unaffected.
+- **A commit message written with `git commit -m "$(cat <<'EOF' ... EOF)"` is text again**
+  (present in 3.x too): a message that mentioned `> KNOWLEDGEBASE.md` was refused as a write to
+  it, because a heredoc inside `"$(...)"` had its lines read as commands. The reverse gap is
+  closed with it: `x=$(bash <<'EOF' ... EOF)` really runs its body, and the guards now check it.
+- **An unquoted heredoc's `$(...)` and backticks are checked** (present in 3.x too): with
+  `<<EOF` (not `<<'EOF'`) the shell runs them while writing the text, and a game-folder delete
+  hidden there was allowed. The rest of the body is still treated as text.
 
 ### Configuration
 

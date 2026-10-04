@@ -1212,6 +1212,8 @@ alarms, and did:
 | F155 | The "lifting the reference/ OS deny asks" rule judged an icacls operand without the segment's cwd and without root variables, and knew a fixed interpreter list: `icacls "$X4_REFERENCE" /reset /T`, `icacls reference /reset /T` from the folder above it, and `"$X4_PYTHON" scripts/x4refguard.py remove` (the toolkit's own spelling) were ALLOW | **DEFECT (measured)** · ✅ FIXED 2026-10-04 (v4.0.0 review, fix lane FX-G) | release review R2-F2 | operands go through `subst_root_var` + `join_cwd` like every other path rule; a verb named by a variable, and the conda/pipx/poetry/pdm/hatch/rye/pixi launchers, count as runners. 6 clause mutants in verify-hook-tests |
 | F156 | The guards RAN the path config as shell code (`set -a; . x4-paths.env`) while Python parsed it as data, and the agent could write the file: an `exit 0` line silenced every hook (silence is ALLOW) and `X4_GUARD=off` in it relaxed every deny | **DEFECT (measured)** · ✅ FIXED 2026-10-04 (v4.0.0 review, fix lane FX-S); PRE-ARC in its `exit 0` form | release review R1-F1 / R1-P1 | one grammar in both loaders (parsed, never run; code-shaped lines ignored and named); `X4_GUARD` only from the launch environment; agent writes into `x4-paths.env` denied. Grammar matrix in `test_config_precedence_agrees.py`; verdict replay 0 of 5,972 configured rows changed |
 | F157 | F146's Grep deny asked `git check-ignore` about the ROOT, which answers "is the folder ignored", not "can Grep see its files": a `dir/`-style ignore (the toolkit's `reference/`) leaves every child visible, so Grep into a reference subfolder was wrongly denied | **DEFECT (measured)** · ✅ FIXED 2026-10-04 (v4.0.0 review, fix lane FX-S) | release review R1-F4 | search-scope.sh decides from the matching pattern: a directory-only pattern leaves the root visible (no deny); a last component matching any name (`*`) hides it (deny) |
+| F158 | A heredoc INSIDE a carried command (`$(...)`, `bash -c`) was never stripped or routed: the top level rightly ignores a `<<` inside double quotes, so in `git commit -m "$(cat <<'EOF' ... EOF)"` the body reached the carrier walk as text and every body line was a command -- a message mentioning `> KNOWLEDGEBASE.md` was DENIED. Mirror image: `x=$(bash <<'EOF' ... EOF)` was ALLOW, because the shell test read the opener line's segments (`x=$(bash`) | **DEFECT (measured)** · PRE-ARC · ✅ FIXED 2026-10-04 (v4.0.0 review, fix lane FX-P2) | another lane's false-positive report, reproduced with x4guard | `_carrier_parts`: every carried command gets the top level's heredoc strip plus its shell-fed bodies; `_opener_feeds` also reads the command after a `$(`/backtick on the opener line |
+| F159 | An UNQUOTED heredoc body (`<<EOF`) is expanded by bash, so its `$(...)` and backticks RUN -- but the whole body was stripped as data: `cat > notes.md <<EOF` / `$(<delete the game>)` / `EOF` was a silent ALLOW against a hard block | **DEFECT (measured)** · PRE-ARC · ✅ FIXED 2026-10-04 (v4.0.0 review, fix lane FX-P2) | found while reproducing F158 | `heredoc_substitutions`: an expanding body contributes its substitutions (quotes are letters there; backslash escapes; `$((` is arithmetic); a quoted delimiter contributes nothing |
 | UNION-KEY | winner supplies the entity → `entities.origin` | 2/2 | 2/2 |
 | **HARD** | winner owns the VALUE → **`attrs.origin`** | 34 agree, **6 FALSE disagreements** | **40/40** |
 | **SUBTREE** | winner is the WIPER → assert the **victim** is gone, scoped to `w0` | file-wide: **6 FALSE alarms** | **148/148** |
@@ -8074,3 +8076,50 @@ children visible, no deny; a last component that matches any name (`*`) -> invis
 advisory (Glob); a pattern that names the root itself (`extra*`) -> no fire. One probe per clause.
 The deny also honours X4_GUARD=off now (R1-F5). **RE-DERIVED BY:** `scripts/test-hooks.sh` section
 "search-scope.sh: a dir/-ignored root is still searchable" (RED against master 5 of 7).
+
+## F158 — a heredoc inside a carried command was read as commands, and one feeding a shell inside `$(...)` was not read at all · **DEFECT (measured)** · PRE-ARC · confidence 95% · ✅ FIXED 2026-10-04 (v4.0.0 review, fix lane FX-P2)
+
+**Reported by another lane** as a false DENY ("truncating redirect onto a durable record") on a
+commit whose message was fed by a heredoc. `git commit -F - <<'EOF'` itself does NOT reproduce it:
+MEASURED with `x4guard check`, 160 of 160 `-F -` shapes (8 openers x 20 bodies containing `>`,
+`> KNOWLEDGEBASE.md`, `CHANGELOG.md`, `x > y`, backticks, quotes) were allow. The idiom that does is
+`git commit -m "$(cat <<'EOF' ... EOF)"` -- deny on 3 of 3 bodies naming a durable record.
+
+**Root cause.** `heredoc_marker` correctly ignores a `<<` inside quotes (`echo "a <<M b"` opens
+nothing), so at the top level the double-quoted substitution's body is not stripped. The `$(...)`
+text is then walked by `carried_commands` -- and carried commands never got the heredoc handling the
+top level gets, so each body line became a command. The same gap had a silent-allow twin:
+`x=$(bash <<'EOF'` / `<delete the game>` / `EOF` / `)` was ALLOW (and `x=$(sh -s <<EOF ...)` with a
+durable redirect), because `heredoc_bodies` asked whether the opener LINE's segments run a shell, and
+the only segment there is `x=$(bash <<'EOF'`.
+
+**Fix.** `_carrier_parts`: each carried command is the top level's shape -- bodies stripped, plus the
+bodies that really run (fed to a shell, or fed to a PowerShell host, kept as raw text exactly as
+before so nothing previously analysed goes dark, plus an expanding body's substitutions, F159).
+`_opener_feeds` also tests the command after each `$(` / `<(` / `>(` / backtick on the opener line;
+it only adds candidates. **Priced:** an in-process replay of 41,756 distinct historical
+(command, cwd) pairs from 455 transcripts (8,776 containing `<<`), old blob vs new: **0 fact
+changes, 0 errors**; controls -- a game delete True in both, `ls` False in both, and the reported
+idiom True (old) -> False (new) through the same instrument. **RE-DERIVED BY:**
+`TestAHeredocInsideASubstitutionIsStillData` in test_hook_facts.py (RED before the fix on 5 subtests)
+and two `verify-hook-tests.py` mutants ("FX-P2: a carried command's heredoc body is stripped",
+"... a shell inside the opener's substitution takes the body").
+
+## F159 — an unquoted heredoc's `$(...)` and backticks run, and no rule saw them · **DEFECT (measured)** · PRE-ARC · confidence 95% · ✅ FIXED 2026-10-04 (v4.0.0 review, fix lane FX-P2)
+
+**Found while reproducing F158, MEASURED with `x4guard check`:** `cat <<EOF` / `$(rm -rf "<game>")` /
+`EOF` and the backtick form were both **allow**, while the bare delete is the hard block. With an
+UNQUOTED delimiter bash expands the body, so the substitution RUNS; `strip_heredocs` removed the whole
+body as data. A quoted delimiter (`<<'EOF'`, `<<"EOF"`, `<<\EOF`, `<<E'OF'`) expands nothing.
+
+**Fix.** `_heredoc_open` reports whether the delimiter word carries any quote or backslash;
+`heredoc_substitutions` returns the `$(...)` / backtick texts of every expanding body (any opener),
+which join the carried commands. Inside a body quotes are letters (`it's` must not hide what follows),
+a backslash escapes the next character, `$((` is arithmetic. The rest of the body stays data, so
+`cat > notes.md <<EOF` with prose -- including prose quoting a delete -- is unchanged. **Priced** by
+the same replay as F158: 0 of 41,756 changed. **Known residual (unmeasured):** a `$((...))` that
+itself contains a command substitution runs it too and is skipped here, as `substitutions()` does at
+the top level. **RE-DERIVED BY:** `TestAnUnquotedHeredocRunsItsSubstitutions` (RED before the fix on
+8 subtests; 4 twins: quoted delimiter, escaped substitution, plain body text, arithmetic) and three
+mutants ("FX-P2: an expanding body runs its substitutions", "... a quoted delimiter expands nothing",
+"... an escaped substitution in a body is text").

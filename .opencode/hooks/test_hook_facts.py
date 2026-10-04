@@ -1638,6 +1638,90 @@ class TestHeredocBodiesOnlyRunForAShell(unittest.TestCase):
         self.assertEqual(H.heredoc_bodies(self._hd("cat > n.md", "ls")), [])
 
 
+NL = chr(10)
+BQ = chr(96)                       # backtick
+
+
+class TestAHeredocInsideASubstitutionIsStillData(unittest.TestCase):
+    """v4.0.0 review FX-P2, reported by another lane: `git commit -m "$(cat <<'EOF' ... EOF
+    )"` -- the standard commit-message idiom -- was DENIED as "truncating redirect onto a
+    durable record" when the message mentioned `> KNOWLEDGEBASE.md`. Root cause: the top
+    level correctly ignores a `<<` inside double quotes (`echo "a <<M b"` opens nothing), so
+    the body stayed in the text; the `$(...)` was then walked as a carried command WITHOUT
+    the heredoc strip the top level gets, and its body lines became commands.
+    The mirror image was a miss: `x=$(bash <<'EOF' ... EOF)` -- a heredoc that really feeds a
+    shell -- reached no rule, because the shell test looked at the opener LINE's segments
+    (`x=$(bash`), not at the command inside the substitution."""
+
+    def _sub(self, opener, body, tail="", dq=True):
+        q = DQ if dq else ""
+        return ("x=" + q + "$(" + opener + " <<" + Q + "EOF" + Q + NL + body + NL + "EOF" + NL
+                + tail + ")" + q)
+
+    def test_the_reported_commit_idiom_is_not_a_durable_write(self):
+        cmd = ("git commit -m " + DQ + "$(cat <<" + Q + "EOF" + Q + NL
+               + "fix: a > KNOWLEDGEBASE.md is now denied" + NL + NL
+               + "Co-Authored-By: X <noreply@example.com>" + NL + "EOF" + NL + ")" + DQ)
+        self.assertFalse(F(cmd)["durable_truncating_redirect"])
+
+    def test_a_delete_in_a_data_body_inside_a_substitution_is_not_a_delete(self):
+        for dq in (True, False):
+            with self.subTest(dq=dq):
+                self.assertFalse(F(self._sub("cat", DEL_GAME, dq=dq))["rm_hits_game"])
+
+    def test_a_shell_fed_body_inside_a_substitution_still_runs(self):
+        """The control the fix must keep (quoted) and the miss it closes (unquoted)."""
+        for opener in ("bash", "sh -s", "cat | bash"):
+            for dq in (True, False):
+                with self.subTest(opener=opener, dq=dq):
+                    self.assertTrue(F(self._sub(opener, DEL_GAME, dq=dq))["rm_hits_game"])
+        self.assertTrue(F(self._sub("sh -s", "echo a > KNOWLEDGEBASE.md", dq=False))
+                        ["durable_truncating_redirect"])
+
+    def test_a_real_command_after_the_body_in_the_same_substitution_still_runs(self):
+        for dq in (True, False):
+            with self.subTest(dq=dq):
+                self.assertTrue(F(self._sub("cat", "text", "echo a > KNOWLEDGEBASE.md", dq=dq))
+                                ["durable_truncating_redirect"])
+                self.assertTrue(F(self._sub("cat", "text", DEL_GAME, dq=dq))["rm_hits_game"])
+
+
+class TestAnUnquotedHeredocRunsItsSubstitutions(unittest.TestCase):
+    """v4.0.0 review FX-P2, found while reproducing the false positive above: with an
+    UNQUOTED delimiter bash expands the body, so a `$(...)` or backtick in it RUNS. The body
+    was stripped as data whole, so `cat <<EOF` / `$(<delete the game>)` / `EOF` was a silent
+    ALLOW against a hard block. Only the substitutions run -- the rest is still data."""
+
+    def _hd(self, delim, body, opener="cat > notes.md"):
+        return opener + " <<" + delim + NL + body + NL + "EOF"
+
+    def test_dollar_paren_and_backticks_in_an_unquoted_body_run(self):
+        for body in ("$(" + DEL_GAME + ")", BQ + DEL_GAME + BQ,
+                     "it" + Q + "s prose, then $(" + DEL_GAME + ")",
+                     'a " quote, then ' + BQ + DEL_GAME + BQ):
+            for opener in ("cat > notes.md", "git commit -F -"):
+                with self.subTest(body=body, opener=opener):
+                    self.assertTrue(F(self._hd("EOF", body, opener))["rm_hits_game"])
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_a_quoted_delimiter_expands_nothing(self):
+        for delim in (Q + "EOF" + Q, DQ + "EOF" + DQ, BS + "EOF", "E" + Q + "OF" + Q):
+            with self.subTest(delim=delim):
+                self.assertFalse(F(self._hd(delim, "$(" + DEL_GAME + ")"))["rm_hits_game"])
+
+    def test_TWIN_an_escaped_substitution_is_text(self):
+        for body in (BS + "$(" + DEL_GAME + ")", BS + BQ + DEL_GAME + BS + BQ):
+            with self.subTest(body=body):
+                self.assertFalse(F(self._hd("EOF", body))["rm_hits_game"])
+
+    def test_TWIN_body_text_outside_a_substitution_is_still_data(self):
+        self.assertFalse(F(self._hd("EOF", DEL_GAME))["rm_hits_game"])
+        self.assertFalse(F(self._hd("EOF", "a > KNOWLEDGEBASE.md"))["durable_truncating_redirect"])
+
+    def test_TWIN_arithmetic_in_an_unquoted_body_is_not_a_command(self):
+        self.assertFalse(F(self._hd("EOF", "$((1 << 4)) " + DEL_GAME))["rm_hits_game"])
+
+
 class TestCarriersNest(unittest.TestCase):
     def test_a_shell_inside_a_shell(self):
         self.assertTrue(F("bash -c " + chr(39) + "sh -c " + chr(34) + D + " -rf "
