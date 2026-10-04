@@ -259,6 +259,30 @@ if [ -n "$_x4_cfg" ]; then
   _x4_cfg_read "$_x4_cfg"
 fi
 
+# x4_cfg_candidates -> _x4_cfg_paths: every file that IS (or would be) this toolkit's path
+# config: the one read, an explicit $X4_CONFIG, and both standard locations under the toolkit
+# root before AND after the file named one. Newline-separated, no duplicates. An agent may not
+# write any of them (R1-F1 ruling 3) -- see protect-files.sh / protect-bash.sh.
+# x4_cfg_why <path> -> _x4_cfg_why, the refusal both guards give. No subshell: a global.
+x4_cfg_candidates() {
+  local c
+  _x4_cfg_paths=""
+  for c in "${_x4_cfg:-}" "${X4_CONFIG:-}" "$_x4_cfg_tk/x4-paths.env" "$_x4_cfg_tk/.claude/x4-paths.env" \
+           "${X4_TOOLKIT:-}/x4-paths.env" "${X4_TOOLKIT:-}/.claude/x4-paths.env"; do
+    case "$c" in ''|/x4-paths.env|/.claude/x4-paths.env) continue ;; esac
+    case "
+$_x4_cfg_paths
+" in *"
+$c
+"*) continue ;; esac
+    _x4_cfg_paths="${_x4_cfg_paths:+$_x4_cfg_paths
+}$c"
+  done
+}
+x4_cfg_why() {
+  _x4_cfg_why="BLOCKED: $1 is the toolkit's PATH CONFIG -- every guard reads its roots from it, so an agent edit could move or drop what they protect. Agents may not write or delete it, by a file edit or a shell command (v4.0). Ask the user to edit it by hand or re-run the installer; to see what is read: python \"$_x4_cfg_tk/scripts/x4config.py\" status --root \"$_x4_cfg_tk\""
+}
+
 # Fill only what config/env did not set. (Game/profile/mods/etc. have no safe default — may be empty.)
 # The reference default is RECORDED (`_x4_ref_defaulted`), never silent: session-canary.sh and
 # x4doctor read it to name a machine whose guards ASSUME <toolkit>/reference (Plan 3 lane I).

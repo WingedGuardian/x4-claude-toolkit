@@ -379,6 +379,37 @@ on rm_targets_reference && deny "BLOCKED: reference/ is the read-only unpacked b
 # CLAUDE.md lists it under "Hard blocked". Two channels, one tree, opposite verdicts.
 on writes_reference && deny "BLOCKED: reference/ is the read-only unpacked base game data — never write into it (re-unpack only via bin/unpack-reference.sh). Work in a mod folder under extensions/ instead."
 
+# === HARD BLOCK — WRITE or DELETE the toolkit's PATH CONFIG (v4.0 release review R1-F1/R1-P1) ===
+# Every guard reads its roots from x4-paths.env; an agent that could rewrite it could move or
+# drop what they protect. The SAME parse pass judges it: hook_facts runs once more with the
+# config file as its only `reference` root, and its write/delete facts for that root answer
+# "does this command write or delete the config?" -- a redirect (truncating or appending), cp,
+# mv, tee, sed -i, rm. COST: only a command whose TEXT names the config (or X4_CONFIG) pays
+# that second pass; every other command pays one pure-shell case. ACCEPTED RESIDUAL: a name
+# built so its text never appears (`x4-pa""ths.env`, a variable from outside the command) or
+# a write from inside an interpreter (python -c) is not seen -- this stops accidents, not
+# intent, like the reference/ OS-deny rule below.
+_x4_cfgm=0
+case "$COMMAND" in *[xX]4-[pP][aA][tT][hH][sS]*|*X4_CONFIG*) _x4_cfgm=1 ;; esac
+if [ "$_x4_cfgm" = 0 ] && [ -n "${X4_CONFIG:-}" ]; then
+  case "$COMMAND" in *"${X4_CONFIG##*[/\\]}"*) _x4_cfgm=1 ;; esac
+fi
+if [ "$_x4_cfgm" = 1 ]; then
+  x4_cfg_candidates
+  while IFS= read -r _cf; do
+    [ -n "$_cf" ] || continue
+    _cfacts=$( { printf 'reference\t%s\n' "$_cf"; printf -- '--X4-ROOTS-END--'; printf '%s' "$INPUT"; } \
+               | "$PY" "$HOOK_DIR/hook_facts.py" 2>/dev/null)
+    _cfacts="${_cfacts%%$SENT*}"
+    case $'\n'"${_cfacts//$'\r'/}"$'\n' in
+      *$'\nwrites_reference\t1\n'*|*$'\nrm_targets_reference\t1\n'*)
+        x4_cfg_why "$_cf"; deny "$_x4_cfg_why Command: $COMMAND" ;;
+    esac
+  done <<EOF
+$_x4_cfg_paths
+EOF
+fi
+
 # === HARD BLOCK — re-unpack into a locked reference/ ===
 # Sentinel-gated: once reference/.unpacked-and-locked exists, block accidental re-unpacks.
 # The FILESYSTEM test stays here; the parse pass never touches the disk.

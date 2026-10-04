@@ -112,6 +112,25 @@ ask()  { VERDICT=1; emit ask "$1"; exit 0; }
 # X4_REFERENCE defaults to $X4_TOOLKIT/reference, so this covers the default layout too.
 x4_under "$FILE_PATH" "$X4_REFERENCE" && deny "BLOCKED: reference/ is read-only unpacked base game data — never edit. Make a diff patch in your mod instead."
 
+# === HARD BLOCK — the toolkit's PATH CONFIG (v4.0 release review R1-F1 / R1-P1, ruling 3) ===
+# Every guard reads its roots from x4-paths.env. An agent that could write it could point
+# reference/ somewhere else or drop the game root, and the guards would protect a different
+# tree, silently. COST: a pure-shell NAME test first (case-insensitive), so every other path
+# pays no subprocess; only a file NAMED like a config pays the x4_under checks.
+_x4_fn="${FILE_PATH##*[/\\]}"
+_x4_nm="$(shopt -p nocasematch)"; shopt -s nocasematch
+_x4_cfgname=0
+[[ "$_x4_fn" == "x4-paths.env" || ( -n "${X4_CONFIG:-}" && "$_x4_fn" == "${X4_CONFIG##*[/\\]}" ) ]] && _x4_cfgname=1
+eval "$_x4_nm"
+if [ "$_x4_cfgname" = 1 ]; then
+  x4_cfg_candidates
+  while IFS= read -r _cf; do
+    [ -n "$_cf" ] && x4_under "$FILE_PATH" "$_cf" && { x4_cfg_why "$FILE_PATH"; deny "$_x4_cfg_why"; }
+  done <<EOF
+$_x4_cfg_paths
+EOF
+fi
+
 # === HARD BLOCK — CAT/DAT archive files (use bin/xrcat / XRCatTool only) ===
 # Scoped 2026-08-29: only where X4 keeps archives. `.dat` is a generic extension --
 # this denied editing another game's save in Documents, which is not ours to block.

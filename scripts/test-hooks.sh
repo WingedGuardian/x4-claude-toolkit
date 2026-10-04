@@ -517,7 +517,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=187
+EXPECT=204
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -1021,6 +1021,53 @@ if [ "${#_big_out}" -le "$CAP" ]; then
 else
   no "the short-circuit let an over-cap payload through: ${#_big_out} chars"
 fi
+
+
+# =============================================================================
+# THE PATH CONFIG IS DATA (v4.0 release review R1-F1 / R1-P1)
+# =============================================================================
+# _x4-env.sh SOURCED x4-paths.env, and an agent can write it: a line `exit 0` made every hook
+# exit before it spoke (empty stdout = ALLOW), and `X4_GUARD=off` in it relaxed every deny
+# under a banner that said "at launch". It is parsed now, and agents may not write it.
+echo; echo "=== the path config is DATA, never run ==="
+_cfg_saved="$(export -p | grep -E '^declare -x (X4_[A-Z0-9_]*|CLAUDE_PROJECT_DIR)=')"
+for _v in $(export -p | sed -nE 's/^declare -x (X4_[A-Z0-9_]*|CLAUDE_PROJECT_DIR)=.*/\1/p'); do unset "$_v"; done
+_ct="$SBX_TMP/cfgtk"; mkdir -p "$_ct/reference/libraries" "$_ct/ref2/libraries" "$_ct/.claude"
+export X4_TOOLKIT="$_ct" CLAUDE_PROJECT_DIR="$_ct"
+# Lines AFTER an `exit 0` are still read: ref2 is configured below it and must be protected.
+printf '%s\n' '# cfg' 'exit 0' "X4_REFERENCE=\"$_ct/ref2\"" > "$_ct/x4-paths.env"
+decide deny protect-files.sh "$(fj "$_ct/ref2/libraries/w.xml")" "an 'exit 0' line in the config no longer silences the guards"
+decide deny protect-bash.sh  "$(cj "echo x > '$_ct/ref2/libraries/w.xml'")" "an 'exit 0' line: protect-bash still reads the roots after it"
+# X4_GUARD=off in the FILE is ignored ...
+printf '%s\n' 'X4_GUARD=off' > "$_ct/x4-paths.env"
+decide deny protect-files.sh "$(fj "$_ct/reference/libraries/w.xml")" "X4_GUARD=off in the config does NOT switch the guards off"
+_ban="$(bash "$HOOKS/session-canary.sh" 2>/dev/null)"
+case "$_ban" in
+  *"X4_GUARD in "*IGNORED*) ok "the session banner names the ignored config X4_GUARD" ;;
+  *) no "the session banner does not name the ignored config X4_GUARD: ${_ban:0:200}" ;;
+esac
+# ... while the LAUNCH environment's still does (the twin: a loader that dropped X4_GUARD
+# everywhere would pass the probe above).
+export X4_GUARD=off
+decide advise protect-files.sh "$(fj "$_ct/reference/libraries/w.xml")" "TWIN: X4_GUARD=off at LAUNCH still relaxes the deny"
+unset X4_GUARD
+: > "$_ct/x4-paths.env"
+# Agents may not write the config, in either location, by Edit/Write or by a shell command.
+decide deny  protect-files.sh "$(fj "$_ct/x4-paths.env")"          "Write the path config: denied"
+decide deny  protect-files.sh "$(fj "$_ct/.claude/x4-paths.env")"  "Write the 3.x path config: denied"
+decide deny  protect-files.sh "$(fj "$(printf '%s' "$_ct/X4-PATHS.ENV" | tr / '\\')")" "Write the path config, other case + backslashes: denied"
+decide allow protect-files.sh "$(fj "$_ct/x4-paths.env.example")"  "TWIN: the .example beside it is not the config"
+decide allow protect-files.sh "$(fj "$_ct/dev/x4-paths.env")"      "TWIN: a same-named file elsewhere is not the config"
+decide deny  protect-bash.sh "$(cj "echo X4_GUARD=off >> '$_ct/x4-paths.env'")"  "append to the path config: denied"
+decide deny  protect-bash.sh "$(cj "cd '$_ct' && cp x4-paths.env.example x4-paths.env")" "cp onto the path config (relative): denied"
+decide deny  protect-bash.sh "$(cj "rm -f '$_ct/.claude/x4-paths.env'")" "delete the 3.x path config: denied"
+decide allow protect-bash.sh "$(cj "cat '$_ct/x4-paths.env'")"     "TWIN: READING the path config is allowed"
+decide allow protect-bash.sh "$(cj "echo x >> '$_ct/notes-x4-paths.txt'")" "TWIN: a write to a file merely NAMED like it is allowed"
+export X4_CONFIG="$_ct/elsewhere.env"; : > "$X4_CONFIG"
+decide deny  protect-files.sh "$(fj "$X4_CONFIG")"                 "Write an explicit X4_CONFIG file: denied"
+decide deny  protect-bash.sh "$(cj "echo x > '$X4_CONFIG'")"       "redirect into an explicit X4_CONFIG file: denied"
+unset X4_CONFIG X4_TOOLKIT CLAUDE_PROJECT_DIR
+eval "$_cfg_saved"
 
 echo "RESULT: $pass passed, $fail failed, $skipped skipped"
 if [ $((pass + fail + skipped)) -ne "$EXPECT" ]; then
