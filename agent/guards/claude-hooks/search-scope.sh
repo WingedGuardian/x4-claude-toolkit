@@ -74,9 +74,37 @@ BS=$(printf '\134')
 # It is a cost guard, not the correctness one: `git -C <file>` fails too (MEASURED by a twin).
 ROOT="$FP"; [ -z "$ROOT" ] && ROOT="$(x4_field "$INPUT" 'cwd')"
 R="${ROOT//"$BS"//}"
-if [ -n "$R" ] && [ -d "$R" ] && git -C "$R" check-ignore -q -- "$R" 2>/dev/null; then
+# ...BUT AN IGNORED ROOT IS NOT AN INVISIBLE TREE (v4.0 release review R1-F4). Grep (ripgrep)
+# reads every file under a root it was GIVEN, unless a pattern matches the children themselves.
+# MEASURED 2026-10-04: rg --files under a `reference/`-ignored folder -> 1 of 1 file; under the
+# game root's `*` -> 0 of 1. `check-ignore` alone cannot tell them apart -- it calls every child
+# of an ignored directory ignored (MEASURED: `build/x` -> `build/`) -- and rg is not on PATH in
+# a hook (Claude Code ships it as a shell function). So the PATTERN that ignores the root
+# decides (`-v`, same one process): a directory-only pattern (`build/`) leaves the children
+# visible; one whose last component matches ANY name (`*`) hides them. Anything else -- a
+# pattern naming the root itself (`ext*`) -- cannot hide children, so it does not fire.
+_ign=""
+if [ -n "$R" ] && [ -d "$R" ]; then
+  _ign="$(git -C "$R" check-ignore -v -- "$R" 2>/dev/null)" || _ign=""
+fi
+if [ -n "$_ign" ]; then
+  _pat="${_ign%%$'\t'*}"
+  [[ "$_pat" =~ :[0-9]+:(.*)$ ]] && _pat="${BASH_REMATCH[1]}" || _pat=""
+  case "$_pat" in
+    ''|*/) _ign="" ;;                              # unreadable, or directory-only: children visible
+    *)
+      _pat="${_pat##*/}"                           # its last component, the part a CHILD is matched by
+      # shellcheck disable=SC2254 -- the pattern IS a glob, deliberately unquoted
+      case "x4-any-child-name" in $_pat) ;; *) _ign="" ;; esac ;;
+  esac
+fi
+if [ -n "$_ign" ]; then
   if [ "$TOOL" = "Grep" ]; then
-    _why="BLOCKED: $ROOT is git-ignored, and Grep honours .gitignore -- it cannot see ONE file under this root and would answer 'No files found' whatever is there. Search with Bash instead: rg --no-ignore <pattern> '<root>' (add -uu to include hidden files), or give Grep a single FILE as path."
+    _why="BLOCKED: $ROOT is git-ignored by a pattern that matches every name under it, and Grep honours .gitignore -- it cannot see ONE file under this root and would answer 'No files found' whatever is there. Search with Bash instead: rg --no-ignore <pattern> '<root>' (add -uu to include hidden files), or give Grep a single FILE as path."
+    # X4_GUARD=off relaxes this deny too, by the shared rule (R1-F5): its banner says EVERY
+    # verdict is an advisory, and this one was not.
+    x4_guard_relax search-scope.sh deny "$_why"
+    [ "$_x4_rk" = advise ] && advise "$_x4_rr"
     if "${JQ:-jq}" -n --arg r "$_why" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null; then exit 0; fi
     x4_resolve_python
     if [ -n "$X4_PY" ]; then

@@ -65,11 +65,10 @@ x4_require_input "$INPUT" "X4 GUARD INERT: this hook received NO INPUT, so it ch
 # and a filed reason is a preview of itself.
 emit() {
   # X4_GUARD=off (spec 5.7): a deny or an ask becomes an advisory that names what it would
-  # have been, and is logged. See x4_guard_overridden in _x4-env.sh.
-  if [ "$1" != advise ] && x4_guards_off; then
-    set -- advise "$(x4_guard_overridden protect-bash.sh "$1" "$2")"
-  fi
-  set -- "$1" "$(x4_bound "$2")"
+  # have been, and is logged -- except an INABILITY (_X4_UNRELAXED), which still asks
+  # (R1-F2). See x4_guard_relax in _x4-env.sh.
+  x4_guard_relax protect-bash.sh "$1" "$2"
+  set -- "$_x4_rk" "$(x4_bound "$_x4_rr")"
   if jq_works; then
     if [ "$1" = "advise" ]; then
       "$JQ" -n --arg r "$2" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'
@@ -88,7 +87,18 @@ sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": h}).encode("utf-8"))'
   fi
 }
 
-deny() { VERDICT=deny; emit deny "$1"; exit 0; }
+# Under X4_GUARD=off a rule's deny is relaxed -- but an INABILITY ask recorded earlier in this
+# call (_X4_UNRELAXED) still asks, and this deny's (relaxed) reason rides along (R1-F2).
+deny() {
+  VERDICT=deny
+  if [ -n "${_X4_UNRELAXED:-}" ] && [ -n "$ASKS" ] && x4_guards_off; then
+    emit ask "$ASKS
+$(x4_guard_overridden protect-bash.sh deny "$1")"
+  else
+    emit deny "$1"
+  fi
+  exit 0
+}
 # Records and RETURNS -- see the precedence note below. A deny further down must
 # still be able to win.
 ask()  { VERDICT=ask; if [ -n "$ASKS" ]; then ASKS="$ASKS
@@ -193,6 +203,7 @@ PARSE_RC=$?
 # an actionable reason rather than a prompt spent on the user (v3.3.0 release review,
 # finding 7). A command that parses but cannot be RESOLVED still asks (below).
 if [ "$PARSE_RC" = 5 ]; then
+  _X4_UNRELAXED=1     # an inability: X4_GUARD=off never relaxes it below ask (R1-F2)
   deny "This PowerShell command does not parse, so the guard could evaluate NO rule against it -- and PowerShell would reject it too: ${FACTS_RAW:-no reason given}. Fix the syntax and re-run."
 fi
 # rc 4: a PowerShell TOOL command could not be translated (no PowerShell was found to
@@ -200,7 +211,7 @@ fi
 # as an unparseable Bash command does below -- nothing was analysed, so this is neither
 # a clean pass nor evidence for a deny.
 if [ "$PARSE_RC" = 4 ]; then
-  VERDICT=ask
+  _X4_UNRELAXED=1; VERDICT=ask
   emit ask "X4 GUARD: this PowerShell command could not be analysed, so NO rule was evaluated against it: ${FACTS_RAW:-no reason given}. The guard reads PowerShell through PowerShell's own parser (pwsh, else powershell; X4_PWSH overrides). Fix the syntax, or confirm only if you know the command is safe."
   x4_guard_check_inert
   exit 0
@@ -229,7 +240,7 @@ COMMAND="${FACTS_RAW#*$SENT}"
 if [ -z "$COMMAND" ]; then
   case $'\n'"${FACT_LINES//$'\r'/}"$'\n' in
     *$'\ncarrier_untranslated\t1\n'*)
-      VERDICT=ask
+      _X4_UNRELAXED=1; VERDICT=ask
       emit ask "X4 GUARD: nothing in this command could be translated into something the guard can check -- every write/delete in it names a target it cannot resolve (a splat that is not a literal hashtable, Invoke-Expression of computed text, a .Delete()-style method on an unidentified object), so it could not be analysed and NO rule was evaluated. Write the target literally, or confirm only if you know what it touches."
       x4_guard_check_inert
       exit 0 ;;
@@ -310,6 +321,7 @@ if [ "$_x4_plain" != 1 ] && ! bash -n -c "$COMMAND" 2>/dev/null; then
   # so the reason must be something Claude can act on. Check-mode signal FIRST: under
   # X4_GUARD_CHECK this still exits 2 ("checked nothing"), which x4guard reports as inert.
   x4_guard_check_inert
+  _X4_UNRELAXED=1
   deny "This command does not PARSE (bash -n rejects it), so bash would not run it and the guard could evaluate NO rule against it. Fix the quoting and re-run -- a Windows path ending in a backslash inside double quotes, or a heredoc whose body contains its own terminator line, are the usual causes."
 fi
 
@@ -335,6 +347,7 @@ fi
 # presence of `$(` anywhere in the command, which would deny ordinary substitution
 # in an argument.
 if on verb_unresolved; then
+  _X4_UNRELAXED=1
   deny "A command name here arrives through substitution (\$(...) or backticks), so the guard cannot tell what command this is and NO rule -- including the hard blocks on the game install -- was evaluated for it. Write the command name literally and re-run."
 fi
 
@@ -351,6 +364,7 @@ fi
 # that part reached no rule. Same verdict as an unparseable command -- and a deny
 # elsewhere in the command still wins, because `ask` accumulates.
 if on carrier_untranslated; then
+  _X4_UNRELAXED=1
   ask "Part of this command could not be analysed, so it was NEVER checked against any rule: nested PowerShell that does not parse (or no PowerShell was found to parse it), or a PowerShell write/delete whose TARGET the guard cannot resolve -- a splat that is not a literal hashtable, a .Delete()/.MoveTo()-style method on an object it cannot identify, Invoke-Expression of computed text. Write the target literally, or confirm only if you know what it touches."
   x4_guard_check_inert
 fi
@@ -358,6 +372,7 @@ fi
 if on carriers_truncated; then
   # DENY, not ask (2026-10-02, same reasoning as the parse failure above): Claude can split it.
   x4_guard_check_inert
+  _X4_UNRELAXED=1
   deny "This command nests so many substitutions/wrappers that the guard stopped expanding them, so part of it was NEVER checked against any rule. Split it into simpler commands (or a script file) and re-run."
 fi
 

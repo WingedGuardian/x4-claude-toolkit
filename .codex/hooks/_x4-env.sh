@@ -789,6 +789,26 @@ x4_guard_overridden() {
     "$1" "$_x4_was" "$3"
 }
 
+# x4_guard_relax <hook> <deny|ask|advise> <reason> -> _x4_rk, _x4_rr: the verdict to EMIT.
+# Unchanged with the guards on, and for an advisory. Under X4_GUARD=off a rule's deny or ask
+# becomes an advisory (logged) -- but NOT an INABILITY: a caller that could not check the call
+# sets _X4_UNRELAXED=1 first, and that stays an ASK (v4.0 release review R1-F2; the CHANGELOG
+# promises "a guard that could not check still asks"). One function, so every guard relaxes by
+# the same rule -- search-scope.sh's deny ignored the switch while its own banner said
+# "every verdict is an advisory" (R1-F5).
+x4_guard_relax() {
+  _x4_rk="$2"; _x4_rr="$3"
+  { [ "$2" != advise ] && x4_guards_off; } || return 0
+  if [ -n "${_X4_UNRELAXED:-}" ]; then
+    _x4_rk=ask
+    _x4_rr="X4 GUARDS ARE OFF (X4_GUARD=off at launch), but this guard COULD NOT CHECK this call -- the switch relaxes verdicts, never that, so it still asks: $3"
+  else
+    _x4_rk=advise
+    _x4_rr="$(x4_guard_overridden "$1" "$2" "$3")"
+  fi
+  return 0
+}
+
 x4_require_input() {
   [ -n "$1" ] && return 0
   "${JQ:-jq}" -n --arg r "$2" --arg e "${3:-PreToolUse}" \

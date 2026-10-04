@@ -25,10 +25,10 @@ x4_resolve_python; PY="$X4_PY"   # shared: refuses a misconfigured X4_PYTHON
 
 emit() {   # emit <deny|ask|advise> <reason>
   # X4_GUARD=off (spec 5.7): a deny or an ask becomes an advisory that names what it would
-  # have been, and is logged. See x4_guard_overridden in _x4-env.sh.
-  if [ "$1" != advise ] && x4_guards_off; then
-    set -- advise "$(x4_guard_overridden protect-files.sh "$1" "$2")"
-  fi
+  # have been, and is logged -- except an INABILITY (_X4_UNRELAXED), which still asks
+  # (R1-F2). See x4_guard_relax in _x4-env.sh.
+  x4_guard_relax protect-files.sh "$1" "$2"
+  set -- "$_x4_rk" "$_x4_rr"
   if [ "$JQ_OK" = 1 ]; then
     if [ "$1" = "advise" ]; then
       "$JQ" -n --arg r "$2" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$r}}'
@@ -75,7 +75,7 @@ fi
 # An EMPTY path and an UNREADABLE payload are different facts, and conflating them is
 # how a guard reports success over nothing. Only the first is an allow.
 if [ "$FP_OK" != 1 ]; then
-  VERDICT=1
+  VERDICT=1; _X4_UNRELAXED=1     # an inability: never relaxed below ask (R1-F2)
   emit ask "X4 GUARD: could not read the file path from this payload (no working jq or python), so NO rule below was evaluated. This is not a clean pass. Confirm only if you know the edit is safe."
   x4_guard_check_inert
   exit 0

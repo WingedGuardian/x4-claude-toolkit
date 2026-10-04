@@ -517,7 +517,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=204
+EXPECT=216
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -1068,6 +1068,61 @@ decide deny  protect-files.sh "$(fj "$X4_CONFIG")"                 "Write an exp
 decide deny  protect-bash.sh "$(cj "echo x > '$X4_CONFIG'")"       "redirect into an explicit X4_CONFIG file: denied"
 unset X4_CONFIG X4_TOOLKIT CLAUDE_PROJECT_DIR
 eval "$_cfg_saved"
+
+
+# =============================================================================
+# X4_GUARD=off relaxes VERDICTS, never an INABILITY (v4.0 release review R1-F2)
+# =============================================================================
+# The CHANGELOG promises "a guard that could not check still asks" under X4_GUARD=off; every
+# inability verdict went through the same emitter as a rule's deny and became an advisory.
+echo; echo "=== X4_GUARD=off: a guard that could not check still asks ==="
+_ig_game="${X4_GAME-}"; export X4_GUARD=off X4_GAME="$SBX_TMP/g/X4 Foundations"; mkdir -p "$X4_GAME"
+decide ask protect-bash.sh "$(cj 'echo "unterminated')"   "guards off: a command bash -n rejects still ASKS"
+decide ask protect-bash.sh "$(cj "\$(echo rm) -rf '$X4_GAME'")"     "guards off: a command name built by substitution still ASKS"
+_psj='{"tool_name":"PowerShell","tool_input":{"command":"Remove-Item x"}}'
+export X4_PWSH="$SBX_TMP/no-such-pwsh"
+decide ask protect-bash.sh "$_psj" "guards off: PowerShell that could not be translated still ASKS"
+unset X4_PWSH
+_pf_out="$(printf '%s' '{"tool_name":"Edit","tool_input":' | JQ=no-such-jq bash "$HOOKS/protect-files.sh" 2>/dev/null)"
+case "$_pf_out" in
+  *'"permissionDecision":"ask"'*|*'"permissionDecision": "ask"'*) ok "guards off: protect-files with an unreadable payload still ASKS" ;;
+  *) no "guards off: protect-files with an unreadable payload did not ask: ${_pf_out:0:200}" ;;
+esac
+# TWIN: an ordinary rule's deny IS relaxed -- the switch still works for verdicts.
+decide advise protect-bash.sh "$(cj "rm -rf '$X4_GAME'")" "TWIN: guards off: a rule's deny is still an advisory"
+unset X4_GUARD; if [ -n "$_ig_game" ]; then export X4_GAME="$_ig_game"; else unset X4_GAME; fi
+
+# =============================================================================
+# search-scope.sh: an ignored ROOT is not an invisible TREE (v4.0 release review R1-F4, R1-F5)
+# =============================================================================
+# Grep (ripgrep) given a root that git ignores as a DIRECTORY (`reference/`, `build/`) still
+# reads every file under it -- only a pattern that matches the CHILDREN themselves (the game
+# root's `*`) hides them. MEASURED 2026-10-04: rg --files under `reference/` -> 1 of 1 files,
+# under `*` -> 0 of 1. The deny fired on both, so the toolkit's own reference/libraries could
+# not be searched with Grep in the default layout.
+echo; echo "=== search-scope.sh: a dir/-ignored root is still searchable ==="
+_ss_gc="${GIT_CEILING_DIRECTORIES-}"; export GIT_CEILING_DIRECTORIES="$_SBX"
+_ss_ext="${X4_EXTENSIONS-}"; _ss_game="${X4_GAME-}"
+DTK="$SBX_TMP/dtk"; mkdir -p "$DTK/reference/libraries" "$DTK/build/sub"
+: > "$DTK/reference/libraries/a.xml"; : > "$DTK/build/sub/b.txt"
+printf '%s\n' 'reference/' 'build/' > "$DTK/.gitignore"; git -C "$DTK" init -q
+SG="$SBX_TMP/sgame/X4 Foundations"; mkdir -p "$SG/extensions/loosemod/md"
+: > "$SG/extensions/loosemod/md/a.xml"; printf '%s\n' '*' '!.gitignore' > "$SG/.gitignore"; git -C "$SG" init -q
+export X4_GAME="$SG" X4_EXTENSIONS="$SG/extensions"
+ssj(){ printf '{"tool_name":"%s","tool_input":{"pattern":"x","path":%s}}' "$1" "$(printf '%s' "$2" | jq -Rs .)"; }
+decide allow  search-scope.sh "$(ssj Grep "$DTK/reference/libraries")" "Grep under a dir/-ignored reference/ sees its files: no deny"
+decide allow  search-scope.sh "$(ssj Grep "$DTK/build")"               "Grep AT a dir/-ignored root sees its files: no deny"
+decide allow  search-scope.sh "$(ssj Glob "$DTK/build")"               "Glob AT a dir/-ignored root: no unreliable-zero advisory"
+mkdir -p "$DTK/extra1/d"; : > "$DTK/extra1/d/c.txt"; printf '%s\n' 'extra*' >> "$DTK/.gitignore"
+decide allow  search-scope.sh "$(ssj Grep "$DTK/extra1")"              "a pattern naming the ROOT (extra*) does not hide its children: no deny"
+decide deny   search-scope.sh "$(ssj Grep "$SG/extensions/loosemod")"  "TWIN: a *-ignored root's children are invisible: still denied"
+decide advise search-scope.sh "$(ssj Glob "$SG/extensions/loosemod")"  "TWIN: Glob in a *-ignored root: still advised"
+export X4_GUARD=off
+decide advise search-scope.sh "$(ssj Grep "$SG/extensions/loosemod")"  "guards off: search-scope's deny is an advisory too (R1-F5)"
+unset X4_GUARD
+if [ -n "$_ss_ext" ]; then export X4_EXTENSIONS="$_ss_ext"; else unset X4_EXTENSIONS; fi
+if [ -n "$_ss_game" ]; then export X4_GAME="$_ss_game"; else unset X4_GAME; fi
+if [ -n "$_ss_gc" ]; then export GIT_CEILING_DIRECTORIES="$_ss_gc"; else unset GIT_CEILING_DIRECTORIES; fi
 
 echo "RESULT: $pass passed, $fail failed, $skipped skipped"
 if [ $((pass + fail + skipped)) -ne "$EXPECT" ]; then
