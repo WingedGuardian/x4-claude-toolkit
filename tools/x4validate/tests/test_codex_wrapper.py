@@ -27,6 +27,10 @@ FAULTS = {
     "ask_decision": "print('X4OK {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"r\"}}')",
     "inner_extra": "print('X4OK {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"r\",\"inert\":true}}')",
     "badjson": "print('X4OK {not json')",
+    # R2-F8: Codex's schema is case-sensitive; PowerShell's -ne / -notcontains were not
+    "case_top_key": "print('X4OK {\"HookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"r\"}}')",
+    "case_inner_key": "print('X4OK {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"PermissionDecision\":\"deny\",\"permissionDecisionReason\":\"r\"}}')",
+    "case_decision": "print('X4OK {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"Deny\",\"permissionDecisionReason\":\"r\"}}')",
     "hang": "import time; time.sleep(600)",
     "raise_after_partial": "import sys; sys.stdout.write('X4O'); raise SystemExit(0)",
 }

@@ -3,13 +3,18 @@ shapes Codex honours (C4). Driven through the RENDERED .codex/hooks/codex_adapte
 
 Every routing branch has a test; each decisive one has a twin that shows the branch decided it.
 """
+import importlib.util
 import json
+import re
+import shutil
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 import pytest
 
-from codex_testlib import ADAPTER, FIX, HAS_PWSH, make_sandbox, native, run_adapter as run
+from codex_testlib import ADAPTER, FAKE_FINDING, FIX, HAS_PWSH, fake_validator, make_sandbox, native, run_adapter as run
 
 
 @pytest.fixture
@@ -185,6 +190,78 @@ def test_backup_taken_for_an_allowed_update(sandbox):
     assert any((tmp / "backups").rglob("*")), "an allowed update must be backed up first"
 
 
+def _as_input(d: dict) -> dict:
+    """The same call with the patch under `input` instead of `command` -- the other key translate()
+    has always read (R2-F9)."""
+    d["tool_input"]["input"] = d["tool_input"].pop("command")
+    return d
+
+
+def test_a_patch_under_input_is_backed_up_like_one_under_command(sandbox):
+    """R2-F9 (v4.0.0 review): translate() read `command` or `input`, the backup and post paths
+    `command` only -- a patch under `input` was judged, never backed up, never validated."""
+    tmp, tk, env = sandbox
+    f = tk / "dev" / "mymod" / "a.xml"
+    f.write_text("<a/>\n", encoding="utf-8")
+    patch = "*** Begin Patch\n*** Update File: dev/mymod/a.xml\n@@\n-<a/>\n+<b/>\n*** End Patch"
+    assert run(env, _as_input(native("apply_patch_update", tk, command=patch)))[0] == "allow"
+    assert any((tmp / "backups").rglob("*")), "the `input` patch was not backed up"
+
+
+def test_a_patch_under_input_is_validated_like_one_under_command(sandbox):
+    tmp, tk, env = sandbox
+    env = fake_validator(tmp, env, tk)
+    (tk / "dev" / "mymod" / "a.xml").write_text("<diff/>\n", encoding="utf-8")
+    d = _as_input(native("post_tool_use_apply_patch", tk,
+                         command="*** Begin Patch\n*** Add File: dev/mymod/a.xml\n+<diff/>\n*** End Patch"))
+    kind, ctx = run(env, d, event="post_tool_use")
+    assert kind == "advise" and FAKE_FINDING in (ctx or ""), (kind, ctx)
+
+
+def test_a_hook_whose_grandchild_holds_the_pipes_is_still_bounded(sandbox, tmp_path):
+    """R2-F6 (v4.0.0 review): _run_hook used subprocess.run(timeout=), whose timeout path on
+    Windows waits for EVERY pipe holder -- a backup hook's grandchild stretched the call to its own
+    lifetime. It now uses x4guard's bounded runner."""
+    tmp, tk, env = sandbox
+    tree = tmp_path / "root" / ".codex" / "hooks"
+    shutil.copytree(ADAPTER.parent, tree)
+    py = Path(sys.executable).as_posix()
+    (tree / "backup-before-edit.sh").write_bytes(
+        f"cat >/dev/null\n'{py}' -c \"import time; time.sleep(60)\" &\nsleep 60\n".encode("utf-8"))
+    (tk / "dev" / "mymod" / "a.xml").write_text("<a/>\n", encoding="utf-8")
+    patch = "*** Begin Patch\n*** Update File: dev/mymod/a.xml\n@@\n-<a/>\n+<b/>\n*** End Patch"
+    t0 = time.monotonic()
+    kind, text = run(dict(env, X4_CODEX_BUDGET_S="12"), native("apply_patch_update", tk, command=patch),
+                     adapter=tree / "codex_adapter.py")
+    wall = time.monotonic() - t0
+    assert kind in ("ask", "deny") and "timed out" in (text or ""), (kind, text)
+    assert wall < 40, f"{wall:.1f}s: a 12 s budget did not bound the backup hook"
+
+
+def test_session_start_fits_inside_the_wrappers_limit(monkeypatch):
+    """R2-F7 (v4.0.0 review): each session hook got min(20 s, budget) -- two of them could take
+    40 s, and the wrappers kill session_start at 25 s and report the guards NOT LIVE. The two
+    hooks now SHARE one budget below that limit."""
+    src = {n: (ADAPTER.parent / n).read_text(encoding="utf-8") for n in ("codex-entry.ps1", "codex-entry.sh")}
+    limits = {int(re.search(r"session_start'\) \{ \$limit = (\d+)", src["codex-entry.ps1"]).group(1)),
+              int(re.search(r'session_start \]\s*&&\s*LIMIT=(\d+)', src["codex-entry.sh"]).group(1))}
+    assert len(limits) == 1, limits
+    spec = importlib.util.spec_from_file_location("codex_adapter_f7", ADAPTER)
+    ad = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ad)
+    clock, given = [100.0], []
+
+    def slow_hook(script, payload, timeout):           # each hook burns ALL the time it is given
+        given.append(timeout)
+        clock[0] += timeout
+        return None, f"{script} timed out"
+    monkeypatch.setattr(ad, "_run_hook", slow_hook)
+    monkeypatch.setattr(ad.time, "monotonic", lambda: clock[0])
+    ad.session_start(clock[0] + ad.budget_s())
+    spent = clock[0] - 100.0
+    assert spent <= ad.SESSION_START_BUDGET_S < min(limits) - 5, (given, spent, limits)
+
+
 def test_TWIN_no_backup_for_a_denied_patch(sandbox):
     tmp, tk, env = sandbox
     patch = "*** Begin Patch\n*** Update File: reference/libraries/wares.xml\n@@\n-ref\n+x\n*** End Patch"
@@ -192,13 +269,22 @@ def test_TWIN_no_backup_for_a_denied_patch(sandbox):
     assert not any((tmp / "backups").rglob("*"))
 
 
-def test_post_tool_use_validation_context_or_did_not_run(sandbox):
+def test_post_tool_use_carries_the_validators_finding(sandbox):
+    """R7-2: this accepted `allow` and the sandbox mod had no content.xml, so the validator never
+    ran and the test passed whatever the adapter did. Now the validator path runs (a stand-in
+    validator, see fake_validator) and its finding must reach Codex. Catches: post_tool_use not
+    calling the validator, dropping its context, or resolving the patch path against the wrong
+    directory (the hook then finds no file and stays silent)."""
     tmp, tk, env = sandbox
+    env = fake_validator(tmp, env, tk)
     (tk / "dev" / "mymod" / "a.xml").write_text("<diff><add sel=\"/x\"/></diff>\n", encoding="utf-8")
     d = native("post_tool_use_apply_patch", tk,
                command="*** Begin Patch\n*** Add File: dev/mymod/a.xml\n+<diff/>\n*** End Patch")
     kind, ctx = run(env, d, event="post_tool_use")
-    assert kind in ("allow", "advise")                 # never a deny from PostToolUse
+    assert kind == "advise" and FAKE_FINDING in (ctx or ""), (kind, ctx)
+    # twin: the same patch from a cwd where dev/mymod/a.xml does not exist -> nothing to validate
+    d["cwd"] = str(tmp)
+    assert run(env, d, event="post_tool_use")[0] == "allow"
 
 
 def test_post_tool_use_unparseable_patch_says_validation_did_not_run(sandbox):

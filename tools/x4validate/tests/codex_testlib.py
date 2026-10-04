@@ -16,8 +16,22 @@ HOOKS = REPO / ".codex" / "hooks"
 ADAPTER = HOOKS / "codex_adapter.py"
 FIX = PKG / "tests" / "fixtures" / "codex" / "0.160.0"
 HAS_PWSH = bool(shutil.which("pwsh") or shutil.which("powershell"))
-ALLOWED_TOP = {"continue", "decision", "hookSpecificOutput", "reason", "stopReason", "suppressOutput", "systemMessage"}
-ALLOWED_HSO = {"additionalContext", "hookEventName", "permissionDecision", "permissionDecisionReason", "updatedInput"}
+
+
+def schema_keys(event: str) -> tuple[set, set]:
+    """(top-level keys, hookSpecificOutput keys) Codex 0.160.0 accepts in an `event` hook's output,
+    read from the schema extracted from the binary (fixtures/codex/0.160.0/schemas/). R7-10: these
+    were typed by hand, twice, and could drift from what Codex actually enforces."""
+    d = json.loads((FIX / "schemas" / f"{event}.command.output.json").read_text(encoding="utf-8"))
+    assert d.get("additionalProperties") is False, f"{event}: the schema no longer forbids extra keys"
+    hso = d["properties"]["hookSpecificOutput"]
+    ref = (hso.get("allOf") or [hso])[0].get("$ref", "")
+    inner = d["definitions"][ref.rsplit("/", 1)[-1]] if ref else hso
+    assert inner.get("additionalProperties") is False, f"{event}: hookSpecificOutput allows extra keys"
+    return set(d["properties"]), set(inner["properties"])
+
+
+ALLOWED_TOP, ALLOWED_HSO = schema_keys("pre-tool-use")
 SANDBOX_KEYS = ("X4_TOOLKIT", "X4_GAME", "X4_REFERENCE", "X4_PROFILE", "X4_MODS", "X4_EXTENSIONS",
                 "X4_SAVES", "X4_DOCUMENTS", "X4_BACKUPS", "X4_CONFIG")
 
@@ -36,6 +50,25 @@ def make_sandbox(tmp_path: Path):
     env.pop("X4_BASH", None)
     env.pop("X4_CODEX_SHELL", None)
     return tmp_path, tk, env
+
+
+FAKE_FINDING = "FAKE-VALIDATOR-FINDING"
+
+
+def fake_validator(tmp_path: Path, env: dict, tk: Path, mod: str = "mymod") -> dict:
+    """Make the post-edit validator path REAL up to the validator itself (R7-2): the mod gets a
+    content.xml (without one x4validate-on-edit.sh exits silently, so a post test passed whatever
+    the adapter did), and UV/X4V point at a stand-in `uv` that prints one error finding in the
+    validator's JSON shape. A post test can then require the finding in the adapter's output."""
+    (tk / "dev" / mod / "content.xml").write_text('<content id="m" version="1"/>\n', encoding="utf-8")
+    x4v = tmp_path / "fake-x4validate"
+    x4v.mkdir(exist_ok=True)
+    uv = tmp_path / "fake-uv"
+    out = json.dumps({"error_count": 1, "degraded": False, "skipped": [],
+                      "findings": [{"severity": "error", "message": FAKE_FINDING, "vpath": "a.xml", "line": 1}]})
+    uv.write_bytes(("#!/bin/sh\ncat <<'X4FAKE'\n" + out + "\nX4FAKE\n").encode("utf-8"))
+    uv.chmod(0o755)
+    return dict(env, UV=uv.as_posix(), X4V=x4v.as_posix())
 
 
 def native(name: str, cwd, **tool_input) -> dict:

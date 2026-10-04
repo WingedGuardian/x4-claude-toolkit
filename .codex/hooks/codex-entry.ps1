@@ -58,18 +58,20 @@ function Find-Python {
 function Test-Body([string]$body) {
     # Exactly the shapes Codex honours: one top-level key hookSpecificOutput; only known inner
     # keys; a permissionDecision, if any, is "deny" (Codex fails OPEN on "ask" and "allow").
+    # CASE-SENSITIVE, like Codex's schema (R2-F8): PowerShell's -ne/-notcontains ignore case, so
+    # "Deny" or a "HookSpecificOutput" key passed here and failed OPEN in Codex.
     try { $o = $body | ConvertFrom-Json } catch { return 'adapter output is not JSON' }
     if ($null -eq $o -or $o -isnot [psobject]) { return 'adapter output is not a JSON object' }
     $top = @($o.PSObject.Properties | ForEach-Object { $_.Name })
-    if ($top.Count -ne 1 -or $top[0] -ne 'hookSpecificOutput') { return 'adapter output has keys other than hookSpecificOutput' }
+    if ($top.Count -ne 1 -or $top[0] -cne 'hookSpecificOutput') { return 'adapter output has keys other than hookSpecificOutput' }
     $h = $o.hookSpecificOutput
     if ($null -eq $h -or $h -isnot [psobject]) { return 'hookSpecificOutput is not an object' }
     $allowed = @('hookEventName', 'permissionDecision', 'permissionDecisionReason', 'additionalContext')
     foreach ($p in $h.PSObject.Properties) {
-        if ($allowed -notcontains $p.Name) { return 'hookSpecificOutput has an unknown key' }
+        if ($allowed -cnotcontains $p.Name) { return 'hookSpecificOutput has an unknown key' }
     }
     $pd = $h.PSObject.Properties['permissionDecision']
-    if ($pd -and $pd.Value -ne 'deny') { return 'adapter answered a permissionDecision other than deny' }
+    if ($pd -and $pd.Value -cne 'deny') { return 'adapter answered a permissionDecision other than deny' }
     return $null
 }
 
