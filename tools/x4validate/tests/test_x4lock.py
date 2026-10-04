@@ -582,6 +582,73 @@ def test_F9_a_root_with_BOTH_targets_demands_both(tmp_path, monkeypatch):
     (game / "CLAUDE.md").unlink()
     gone = x4lock.missing()
     assert _in(gone, game, "CLAUDE.md") and _in(gone, game, "AGENTS.md")
+# ------------------------------------- a SEPARATE install: the guards live in the toolkit
+#
+# v4.0.0 review (FX-I, pre-arc minor): `install --method separate` puts the guards, CLAUDE.md
+# and settings.json in the TOOLKIT folder -- the folder the agent runs in -- and nothing in the
+# game folder. x4lock walked only the game root, so it locked none of that install's guards,
+# and demanded CLAUDE.md / settings.json in a game folder that was never meant to hold them
+# (MEASURED on a scratch separate install: 1 protected, 4 missing). DECISION: an INSTALLED
+# toolkit (runtime only, no agent/ source) is an agent root like the game root. A source
+# CHECKOUT is not: its .claude/ etc. are generated, and a read-only bit there would break
+# gen-agent-trees.py and git checkout.
+
+def _installed_tk(tmp_path, monkeypatch, *, source=False):
+    tk = tmp_path / "tk"
+    for rel, text in (("tools/x4validate/x4validate/_paths.py", "#\n"), (".claude/hooks/a.sh", "#\n"),
+                      (".claude/settings.json", "{}\n"), ("CLAUDE.md", "c\n"),
+                      ("KNOWLEDGEBASE.md", "k\n"), ("x4-paths.env", "X4_TOOLKIT=x\n")):
+        (tk / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tk / rel).write_text(text, encoding="utf-8")
+    if source:
+        (tk / "agent").mkdir()
+    (tk / "scripts").mkdir()
+    monkeypatch.setattr(x4lock, "_HERE", tk / "scripts")
+    return tk
+
+
+def test_a_SEPARATE_install_locks_the_TOOLKITs_guards(tmp_path, monkeypatch):
+    tk = _installed_tk(tmp_path, monkeypatch)
+    game = _game(tmp_path, monkeypatch, claude=False)
+    got, gone = x4lock.manifest(), x4lock.missing()
+    for rel in (".claude/hooks/a.sh", ".claude/settings.json", "CLAUDE.md", "KNOWLEDGEBASE.md"):
+        assert _in(got, tk, rel), rel
+    for rel in ("CLAUDE.md", ".claude/settings.json", "KNOWLEDGEBASE.md"):
+        assert not _in(gone, game, rel), "a separate install's GAME folder was demanded %s" % rel
+
+
+def test_TWIN_a_separate_install_that_LOST_its_CLAUDE_md_reports_it(tmp_path, monkeypatch):
+    tk = _installed_tk(tmp_path, monkeypatch)
+    _game(tmp_path, monkeypatch, claude=False)
+    (tk / "CLAUDE.md").unlink()
+    assert _in(x4lock.missing(), tk, "CLAUDE.md")
+
+
+def test_TWIN_a_SOURCE_checkout_is_never_locked_as_an_agent_root(tmp_path, monkeypatch):
+    tk = _installed_tk(tmp_path, monkeypatch, source=True)
+    game = _game(tmp_path, monkeypatch, claude=False)
+    got = x4lock.manifest()
+    assert not _in(got, tk, ".claude/hooks/a.sh")
+    assert _in(x4lock.missing(), game, "CLAUDE.md"), "the pre-4.0 fallback demand must stand"
+
+
+def test_a_FRESH_install_with_no_registry_yet_does_not_report_it_missing(tmp_path, monkeypatch):
+    """The registry is created by the first x4modlist run. Before that its folder does not
+    exist either, and its absence is not a loss (MEASURED: every fresh install read MISSING)."""
+    game = _game(tmp_path, monkeypatch)
+    reg = tmp_path / "mods" / "_registry" / "modlist.yaml"
+    monkeypatch.setattr(x4lock, "_cfg", lambda n: game if n == "game_root" else reg if n == "registry" else None)
+    assert not any(str(p).endswith("modlist.yaml") for p in x4lock.missing())
+
+
+def test_TWIN_a_DELETED_registry_whose_folder_remains_is_MISSING(tmp_path, monkeypatch):
+    game = _game(tmp_path, monkeypatch)
+    reg = tmp_path / "mods" / "_registry" / "modlist.yaml"
+    reg.parent.mkdir(parents=True)
+    monkeypatch.setattr(x4lock, "_cfg", lambda n: game if n == "game_root" else reg if n == "registry" else None)
+    assert any(str(p).endswith("modlist.yaml") for p in x4lock.missing())
+
+
 # --------------------------------------------- Layer 2 (x4refguard), informational only
 
 @pytest.fixture(autouse=True)

@@ -2694,3 +2694,62 @@ def test_dry_run_names_the_migration_and_changes_nothing(installer, tmp_path):
     assert r.returncode == 0, out[-1500:]
     assert "would MOVE" in out, out[-1500:]
     assert old.read_bytes() == before and not (dest / "x4-paths.env").exists()
+
+
+# --- R4-2 (v4.0.0 review): x4doctor can say OK on a healthy FRESH install ---------------
+
+def _doctor_env(tmp_path: pathlib.Path, **extra) -> dict:
+    """The doctor run the way a user runs it after `--no-env`: no X4_* / CLAUDE_* from the
+    developer's shell, Claude's and Codex's homes in the sandbox."""
+    env = {k: v for k, v in os.environ.items()
+           if not (k.startswith("X4_") or k.startswith("CLAUDE_") or k in ("CODEX_HOME", "XRCATTOOL"))}
+    env.update(HOME=tmp_path.as_posix(), USERPROFILE=tmp_path.as_posix(),
+               CLAUDE_CONFIG_DIR=(tmp_path / "fake-claude-home").as_posix(),
+               CODEX_HOME=(tmp_path / "fake-codex-home").as_posix())
+    env.update(extra)
+    return env
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("method", ["separate", "in-game"])
+def test_x4doctor_EXITS_0_on_a_healthy_fresh_install(installer, method, tmp_path):
+    """MEASURED before the fix (scratch install, install.sh --method separate --agent claude):
+    x4doctor exit 3 -- parity.claude UNKNOWN ('X4_TOOLKIT is unset'), x4lock UNKNOWN ('1
+    unlocked'), and with X4_TOOLKIT set parity.claude read 'no agent/ source' UNKNOWN. A
+    doctor that cannot exit 0 on a healthy install trains its reader to ignore it. 'Healthy'
+    here: the Claude target, a game folder, an unpacked (here: present) reference/. Both
+    installers, both layouts that copy the guards, with X4_TOOLKIT unset (--no-env)."""
+    dest = _fresh(tmp_path)
+    game = tmp_path / "game"
+    for n in range(1, 10):
+        (game / ("%02d.cat" % n)).write_bytes(b"")
+    extra = ("--agent", "claude")
+    if method == "in-game":
+        dest = game
+    r = _install(installer, tmp_path, dest, *extra, method=method)
+    assert r.returncode == 0, (r.stdout[-1500:], r.stderr[-1500:])
+    (dest / "reference" / "libraries").mkdir(parents=True, exist_ok=True)
+    d = subprocess.run([sys.executable, str(dest / "scripts" / "x4doctor.py"), "--root", str(dest),
+                        "--json"], capture_output=True, text=True, timeout=300,
+                       env=_doctor_env(tmp_path), cwd=str(tmp_path))
+    got = json.loads(d.stdout)
+    bad = [(c["id"], c["status"], c["detail"][:200]) for c in got["checks"]
+           if c["status"] not in ("OK", "N/A")]
+    assert d.returncode == 0 and not bad, (d.returncode, bad)
+    assert sum(c["status"] == "OK" for c in got["checks"]) >= 10, got["checks"]
+
+
+def test_TWIN_x4doctor_on_a_fresh_install_still_FAILS_a_missing_game(tmp_path):
+    """The exit-0 above must be EARNED: the same install with its game folder gone is FAIL."""
+    dest = _fresh(tmp_path)
+    game = tmp_path / "game"
+    for n in range(1, 10):
+        (game / ("%02d.cat" % n)).write_bytes(b"")
+    r = _install("sh", tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, (r.stdout[-1500:], r.stderr[-1500:])
+    (dest / "reference" / "libraries").mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(game)
+    d = subprocess.run([sys.executable, str(dest / "scripts" / "x4doctor.py"), "--root", str(dest)],
+                       capture_output=True, text=True, timeout=300, env=_doctor_env(tmp_path),
+                       cwd=str(tmp_path))
+    assert d.returncode == 1 and "roots.game" in d.stdout, d.stdout[-2000:]

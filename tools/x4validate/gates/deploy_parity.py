@@ -86,9 +86,13 @@ class TargetSpec:
     """One agent's deployed tree: where it lives under a root, what its population is,
     and which subtrees the installer rewrites (from one token to any of its renderings).
 
-    `claude` is defined here; the Codex tree's entry is appended by the Codex adapter
-    lane. x4doctor reads the same table, so the gate and the doctor cannot disagree on
-    what a deployment contains.
+    Only `claude` is defined: deploy-claude-dir.py deploys `.claude/` and nothing else,
+    so no other agent tree HAS a deploy workflow to be at parity with (`.codex/` and
+    `.opencode/` reach a root only through the installer). x4doctor reads the same table
+    and reports a target with no entry here as N/A, naming that reason (v4.0.0 review
+    R4-2/R5-10: this docstring promised a Codex entry "appended by the Codex adapter
+    lane", and nothing ever appended one). Add an entry only together with a deploy
+    workflow that writes that tree.
     """
     name: str
     root_rel: str

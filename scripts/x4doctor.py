@@ -966,14 +966,6 @@ def check_claude(ctx: Ctx) -> list[Check]:
             run_check("claude.enabled", "claude", _enabled, ctx)]
 
 
-def _x4lock_module(ctx: Ctx):
-    for base in (ctx.root, ctx.toolkit, HERE.parent):
-        p = Path(base) / "scripts" / "x4lock.py" if base else None
-        if p and p.is_file():
-            return _load("x4doctor_x4lock", p)
-    return None
-
-
 def _x4refguard_module(ctx: Ctx):
     """Layer 2 (the OS-level deny-delete on reference/) is scripts/x4refguard.py -- NOT x4lock,
     which an earlier version of this check asked, so the row could never answer."""
@@ -984,9 +976,103 @@ def _x4refguard_module(ctx: Ctx):
     return None
 
 
+import re as _re
+
+#: An ASSIGNMENT of X4_GUARD in a config, in any shape the loaders accept (`KEY=`, `export
+#: KEY=`, indented, spaced). A comment that merely names it is not one.
+_GUARD_LINE = _re.compile(r"^\s*(?:export\s+)?X4_GUARD\s*=")
+
+
+def config_files(ctx: Ctx) -> list[Path]:
+    """Every path config a guard or tool of this root could read: X4_CONFIG, the one the
+    guards report reading, and the 4.x and 3.x files of the root and of X4_TOOLKIT.
+    Existing files only, deduplicated."""
+    cands = []
+    if ctx.env.get("X4_CONFIG"):
+        cands.append(Path(ctx.env["X4_CONFIG"]))
+    vals = (guard_probe(ctx)[0] if guard_dirs(ctx) else None) or {}
+    if vals.get("CFG"):
+        cands.append(Path(vals["CFG"]))
+    for base in (ctx.root, ctx.toolkit, vals.get("CFGTK") or None):
+        if base:
+            cands += [Path(base) / "x4-paths.env", Path(base) / ".claude" / "x4-paths.env"]
+    out, seen = [], set()
+    for c in cands:
+        try:
+            key = os.path.normcase(str(c.resolve()))
+        except OSError:
+            continue
+        if key not in seen and c.is_file():
+            seen.add(key)
+            out.append(c)
+    return out
+
+
+def config_guard_lines(ctx: Ctx) -> list[Path]:
+    """The config files that ASSIGN X4_GUARD (see _GUARD_LINE)."""
+    hits = []
+    for f in config_files(ctx):
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if any(_GUARD_LINE.match(ln) for ln in text.replace("\r", "").split("\n")):
+            hits.append(f)
+    return hits
+
+
+#: The x4lock state, asked of the REAL scripts/x4lock.py in a child process run the way an
+#: agent runs it from the root: the root's environment and cwd. In-process it inherited the
+#: DOCTOR's cwd and os.environ, resolved no game root, and reported one config file as the
+#: whole manifest (MEASURED, v4.0.0 review R7-8 probe: '1 protected').
+_PY_LOCK = r'''
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("x4lock_probe", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["x4lock_probe"] = m
+spec.loader.exec_module(m)
+try:
+    items, gone = m.manifest(), m.missing()
+except m.Unresolvable as e:
+    print(json.dumps({"error": "unresolvable: %s" % e}))
+    raise SystemExit(0)
+states = {}
+for p in items:
+    s = m.state(p)
+    states[s] = states.get(s, 0) + 1
+print(json.dumps({"states": states, "missing": len(gone)}))
+'''
+
+
+def _x4lock_answer(ctx: Ctx) -> tuple[dict | None, str]:
+    for base in (ctx.root, ctx.toolkit, HERE.parent):
+        p = Path(base) / "scripts" / "x4lock.py" if base else None
+        if p and p.is_file():
+            r = _run([sys.executable, "-c", _PY_LOCK, str(p)], env=dict(ctx.env), cwd=str(ctx.root),
+                     timeout=120)
+            try:
+                got = json.loads(r.stdout.strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                return None, "x4lock printed no answer (rc %s): %s" % (r.returncode, r.stderr[-300:])
+            if "error" in got:
+                return None, "x4lock cannot build its manifest: %s" % got["error"]
+            return got, str(p)
+    return None, "no scripts/x4lock.py to ask"
+
+
 @group
 def check_common(ctx: Ctx) -> list[Check]:
     def _escape(_):
+        # R1-F1 (v4.0.0 review, FX-S ruling 4): X4_GUARD is honoured ONLY from the launch
+        # environment. The config is a file an agent can write, so a line there is ignored
+        # by the guards -- and reported here as a FAIL, because someone tried. KEY names and
+        # paths only, never a value (the same file carries X4_NEXUS_KEY).
+        tried = config_guard_lines(ctx)
+        if tried:
+            return FAIL, ("an X4_GUARD line in the path config (%s) is ignored: the guards take "
+                          "X4_GUARD only from the environment a session is launched from, never "
+                          "from a file an agent can write. Someone tried to switch the guards "
+                          "from that file; remove the line" % ", ".join(str(f) for f in tried))
         v = (ctx.env.get("X4_GUARD") or "").strip().lower()
         readers = 0
         for _t, hooks in guard_dirs(ctx):
@@ -1016,31 +1102,36 @@ def check_common(ctx: Ctx) -> list[Check]:
         except Exception as exc:  # noqa: BLE001 -- a query that raises is a non-answer, never OK
             return UNKNOWN, "x4refguard could not report: %s" % exc
         st, detail = r.get("state"), r.get("detail") or ""
-        hookless = ctx.targets.get("codex") or ctx.targets.get("generic")
+        # R6-15: every target that is not Claude -- OpenCode was left out, so an OpenCode
+        # root read "the Claude hooks cover deletes" with no Claude target installed.
+        hookless = [t for t in ("codex", "opencode", "generic") if ctx.targets.get(t)]
         if st == "protected":
             return OK, "reference/ carries the OS-level delete protection"
         if st in ("absent", "partial"):
             if hookless:
-                return FAIL, ("reference/ has %s OS-level delete protection, and a Codex or generic "
-                              "agent here has no hook-level delete guard to fall back on -- run: "
-                              "python scripts/x4refguard.py apply" % ("NO" if st == "absent" else "only PARTIAL"))
+                names = {"codex": "Codex", "opencode": "OpenCode", "generic": "generic"}
+                return FAIL, ("reference/ has %s OS-level delete protection, and a %s agent here has "
+                              "no Claude hook-level delete guard to fall back on -- run: "
+                              "python scripts/x4refguard.py apply"
+                              % ("NO" if st == "absent" else "only PARTIAL",
+                                 " / ".join(names[t] for t in hookless)))
             return OK, ("no OS-level delete protection on reference/ (%s); the Claude hooks cover "
                         "deletes" % st)
         return UNKNOWN, "the OS-level protection state of reference/ is %r: %s" % (st, detail)
 
     def _lock(_):
-        m = _x4lock_module(ctx)
-        if m is None:
-            return UNKNOWN, "no scripts/x4lock.py to ask"
-        items, gone = m.manifest(), m.missing()
-        counts: dict = {}
-        for p in items:
-            s = m.state(p)
-            counts[s] = counts.get(s, 0) + 1
-        detail = "%d protected: %s; %d missing" % (len(items), ", ".join(
-            "%d %s" % (v, k) for k, v in sorted(counts.items())) or "none", len(gone))
-        if counts.get("unlocked") or gone:
-            return UNKNOWN, detail + " (informational: locking is your choice -- python scripts/x4lock.py lock)"
+        got, why = _x4lock_answer(ctx)
+        if got is None:
+            return UNKNOWN, why
+        counts, gone = got.get("states") or {}, int(got.get("missing") or 0)
+        detail = "%d protected: %s; %d missing" % (sum(counts.values()), ", ".join(
+            "%d %s" % (v, k) for k, v in sorted(counts.items())) or "none", gone)
+        if gone:
+            return UNKNOWN, detail + (" -- a protected file the manifest expects is ABSENT "
+                                      "(deleted, renamed, or never installed): python scripts/x4lock.py status")
+        if counts.get("unlocked"):
+            # R4-2: locking is the user's CHOICE, so this is an answer, never UNKNOWN.
+            return OK, detail + " (informational: locking is your choice -- python scripts/x4lock.py lock)"
         return OK, detail
 
     return [run_check("guard.escape", "all", _escape, ctx),
@@ -1080,6 +1171,12 @@ def _parity_targets(mod) -> dict:
     return dict(getattr(mod, "TARGETS", {}) or {})
 
 
+def _is_installed_toolkit(root: Path) -> bool:
+    """`root` holds the toolkit RUNTIME the installers copy (scripts/ + tools/x4validate)."""
+    return ((Path(root) / "scripts" / "x4doctor.py").is_file()
+            and (Path(root) / "tools" / "x4validate" / "x4validate" / "_paths.py").is_file())
+
+
 def _venv_python(tk: Path) -> Path | None:
     for rel in (("Scripts", "python.exe"), ("bin", "python")):
         p = tk / "tools" / "x4validate" / ".venv" / Path(*rel)
@@ -1113,24 +1210,24 @@ def check_parity(ctx: Ctx) -> list[Check]:
             continue
 
         def _one(_, target=target):
-            if ctx.toolkit is None:
+            # R4-2 (v4.0.0 review). Parity is a DEPLOY-workflow check: deploy-claude-dir.py
+            # copies a source checkout's .claude/ into a root. It is N/A where no deploy
+            # relationship exists (an INSTALLED toolkit: runtime-only, decision #9), UNKNOWN
+            # only where one exists and cannot be checked. Both used to be UNKNOWN, so
+            # x4doctor could never exit 0 on any installed root.
+            if ctx.toolkit is None and not _is_installed_toolkit(ctx.root):
                 return UNKNOWN, ("X4_TOOLKIT is unset, so there is no SOURCE to compare against "
                                  "(never this doctor's own folder: an installed copy would compare "
                                  "to itself)")
-            src = Path(ctx.toolkit)
-            m = mod()
-            if m is None:
-                return UNKNOWN, "no gates/deploy_parity.py to compare with"
-            spec = _parity_targets(m).get(target)
-            if spec is None:
-                return UNKNOWN, ("deploy_parity has no TargetSpec for %r yet, so the %s tree "
-                                 "cannot be compared" % (target, target))
+            src = Path(ctx.toolkit) if ctx.toolkit is not None else ctx.root
             if src.resolve() == ctx.root.resolve():
                 gen = src / "tools" / "x4validate" / "scripts" / "gen-agent-trees.py"
                 py = _venv_python(src)
                 if not (src / "agent").is_dir() or not gen.is_file():
-                    return UNKNOWN, ("this root IS the toolkit and has no agent/ source, so parity "
-                                     "cannot be checked here (an installed toolkit is runtime-only)")
+                    return NA, ("this root IS an installed toolkit (no agent/ source: runtime-only), "
+                                "so no deploy relationship exists here -- parity checks a tree "
+                                "deploy-claude-dir.py copied from a source checkout. The installed "
+                                "guards are checked by guards.selftest and %s.*" % target)
                 if py is None:
                     return UNKNOWN, ("this root is the toolkit; its generator needs the venv "
                                      "(tools/x4validate/.venv), which is absent -- run setup.sh")
@@ -1139,6 +1236,15 @@ def check_parity(ctx: Ctx) -> list[Check]:
                     return OK, "the generated trees match agent/ (gen-agent-trees.py --check)"
                 return FAIL, ("gen-agent-trees.py --check rc %s: %s"
                               % (r.returncode, (r.stdout + r.stderr).strip()[-400:]))
+            m = mod()
+            if m is None:
+                return UNKNOWN, "no gates/deploy_parity.py to compare with"
+            spec = _parity_targets(m).get(target)
+            if spec is None:
+                return NA, ("no deploy workflow ships .%s/: deploy_parity defines only the %s "
+                            "deployment (deploy-claude-dir.py deploys .claude/), and .%s/ reaches a "
+                            "root only through the installer -- whose output %s.* checks"
+                            % (target, ", ".join(sorted(_parity_targets(m))) or "no", target, target))
             a, b = src / spec.root_rel, ctx.root / spec.root_rel
             rws = m.compare_trees(a, b, spec)
             if not rws:

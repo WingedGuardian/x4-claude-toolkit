@@ -409,21 +409,63 @@ def test_parity_with_NO_source_is_UNKNOWN(tmp_path, monkeypatch):
     assert r.status == doc.UNKNOWN and "X4_TOOLKIT" in r.detail, r
 
 
-def test_same_tree_without_source_is_UNKNOWN_not_OK(tmp_path, monkeypatch):
-    """An in-game install IS the toolkit, and runtime-only (decision #9): no agent/ source
-    to regenerate from, so parity cannot be checked there -- and must say so."""
-    ctx = _pair(tmp_path, monkeypatch, _CLAUDE, _CLAUDE)
+#: What makes a root an INSTALLED toolkit: the runtime the installers copy, no agent/ source.
+_RUNTIME = {"scripts/x4doctor.py": "#\n", "tools/x4validate/x4validate/_paths.py": "#\n"}
+
+
+def test_same_tree_without_source_is_NA_never_UNKNOWN(tmp_path, monkeypatch):
+    """R4-2 (v4.0.0 review): an installed toolkit IS the toolkit, and runtime-only (decision
+    #9). Parity is a DEPLOY-workflow check (deploy-claude-dir.py), and nothing was deployed
+    into an installed root -- so the row is N/A with that reason. As UNKNOWN it made a healthy
+    fresh install exit 3 forever: x4doctor could never say OK on any installed root."""
+    files = dict(_CLAUDE, **_RUNTIME)
+    ctx = _pair(tmp_path, monkeypatch, files, files)
     monkeypatch.setenv("X4_TOOLKIT", str(ctx.root))
     r = _prow(doc.Ctx(root=ctx.root), "parity.claude")
-    assert r.status == doc.UNKNOWN and "agent/" in r.detail, r
+    assert r.status == doc.NA and "deploy" in r.detail and "agent/" in r.detail, r
 
 
-def test_a_target_with_no_TargetSpec_is_UNKNOWN_never_NA(tmp_path, monkeypatch):
+def test_an_installed_root_with_X4_TOOLKIT_UNSET_is_NA_too(tmp_path, monkeypatch):
+    """`install --no-env` leaves X4_TOOLKIT unset; the root still IS the installed toolkit."""
+    files = dict(_CLAUDE, **_RUNTIME)
+    ctx = _pair(tmp_path, monkeypatch, files, files)
+    monkeypatch.delenv("X4_TOOLKIT")
+    r = _prow(doc.Ctx(root=ctx.root), "parity.claude")
+    assert r.status == doc.NA and "deploy" in r.detail, r
+
+
+def test_TWIN_a_toolkit_root_WITH_an_agent_source_is_still_checked(tmp_path, monkeypatch):
+    """A source checkout (agent/ + the generator) keeps the gen-agent-trees --check path:
+    without its venv that is UNKNOWN, never the installed root's N/A."""
+    files = dict(_CLAUDE, **_RUNTIME, **{"agent/core.md": "#\n",
+                                         "tools/x4validate/scripts/gen-agent-trees.py": "#\n"})
+    ctx = _pair(tmp_path, monkeypatch, files, files)
+    monkeypatch.setenv("X4_TOOLKIT", str(ctx.root))
+    r = _prow(doc.Ctx(root=ctx.root), "parity.claude")
+    assert r.status == doc.UNKNOWN and "venv" in r.detail, r
+
+
+def test_a_codex_target_with_no_deploy_workflow_is_NA_with_the_reason(tmp_path, monkeypatch):
+    """R4-2: deploy_parity defines only the Claude deployment; .codex/ reaches a root only
+    through the installer (deploy-claude-dir.py deploys .claude/). With no TargetSpec there
+    is no deploy relationship to check -- N/A naming why, never an UNKNOWN that blocks exit 0."""
     files = dict(_CLAUDE, **{".codex/hooks/x.sh": "#\n", "AGENTS.md": GEN_BANNER + "\n"})
     ctx = _pair(tmp_path, monkeypatch, files, files)
     monkeypatch.setattr(doc, "_parity_targets", lambda mod: {"claude": mod.TARGETS["claude"]})
     r = _prow(ctx, "parity.codex")
-    assert r.status == doc.UNKNOWN and "TargetSpec" in r.detail, r
+    assert r.status == doc.NA and "deploy" in r.detail and ".codex" in r.detail, r
+
+
+def test_TWIN_a_codex_TargetSpec_when_one_exists_is_compared(tmp_path, monkeypatch):
+    files = dict(_CLAUDE, **{".codex/hooks/x.sh": "#\n", "AGENTS.md": GEN_BANNER + "\n"})
+    ctx = _pair(tmp_path, monkeypatch, files, files)
+
+    def with_codex(mod):
+        c = mod.TARGETS["claude"]
+        return {"claude": c, "codex": mod.TargetSpec("codex", ".codex", (), ("hooks",), ())}
+    monkeypatch.setattr(doc, "_parity_targets", with_codex)
+    r = _prow(ctx, "parity.codex")
+    assert r.status == doc.OK and "1 file" in r.detail, r
 
 
 def test_an_absent_target_is_NA(tmp_path, monkeypatch):
@@ -836,6 +878,32 @@ def test_TWIN_X4_GUARD_unset_is_OK(sandbox):
     assert r.status == doc.OK, r
 
 
+@pytest.mark.parametrize("line", ["X4_GUARD=off", "export X4_GUARD='off'", "  X4_GUARD = on"])
+def test_an_X4_GUARD_line_in_the_CONFIG_is_FAIL_and_named_ignored(sandbox, line):
+    """R1-F1 / FX-S ruling 4: X4_GUARD is honoured ONLY from the launch environment; the
+    config is a file an agent can write. A line there is ignored by the guards -- and
+    reported as a FAIL, because someone tried to switch the guards off from a file."""
+    cfg = sandbox.root / "x4-paths.env"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + line + "\n", encoding="utf-8")
+    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["guard.escape"]
+    assert r.status == doc.FAIL and "ignored" in r.detail and str(cfg) in r.detail, r
+    assert "off" not in r.detail.replace("OFF", ""), "a config VALUE was printed: %s" % r
+
+
+def test_TWIN_a_config_merely_MENTIONING_X4_GUARD_in_a_comment_is_OK(sandbox):
+    cfg = sandbox.root / "x4-paths.env"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "# X4_GUARD=off is ignored here\n",
+                   encoding="utf-8")
+    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["guard.escape"]
+    assert r.status == doc.OK, r
+
+
+def test_the_ENV_value_stays_authoritative_beside_a_config_line(sandbox, monkeypatch):
+    monkeypatch.setenv("X4_GUARD", "off")
+    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["guard.escape"]
+    assert r.status == doc.FAIL and "OFF" in r.detail, r
+
+
 def test_layer2_without_the_query_is_UNKNOWN(sandbox, monkeypatch):
     monkeypatch.setattr(doc, "_x4refguard_module", lambda ctx: None)
     r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
@@ -859,6 +927,16 @@ def test_layer2_states(sandbox, monkeypatch, state, codex, want):
     assert r.status == want, r
 
 
+def test_layer2_an_unprotected_OPENCODE_root_is_FAIL_too(sandbox, monkeypatch):
+    """R6-15: 'hookless' named codex|generic and left OpenCode out, so an OpenCode root with
+    no OS-level protection read OK 'the Claude hooks cover deletes' -- with no Claude target."""
+    monkeypatch.setattr(doc, "_x4refguard_module", lambda ctx: _refguard_stub("absent"))
+    (sandbox.root / ".opencode" / "plugins").mkdir(parents=True)
+    (sandbox.root / ".opencode" / "plugins" / "x4guard.js").write_text("//\n", encoding="utf-8")
+    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
+    assert r.status == doc.FAIL and "OpenCode" in r.detail, r
+
+
 def test_layer2_asks_the_REAL_x4refguard_and_FAILS_an_unprotected_codex_root(sandbox):
     """Plan 3 live probe, 2026-10-03: x4doctor asked `x4lock.deny_delete_state`, which no
     module ever had -- Layer 2 shipped as scripts/x4refguard.py -- so this row was UNKNOWN on
@@ -875,24 +953,62 @@ def test_TWIN_layer2_REAL_unprotected_claude_only_root_is_OK(sandbox):
     assert r.status == doc.OK and "Claude hooks" in r.detail, r
 
 
-def test_x4lock_unlocked_files_are_UNKNOWN_informational_not_FAIL(sandbox, monkeypatch, tmp_path):
-    f = tmp_path / "f.md"
-    f.write_text("x", encoding="utf-8")
-    mod = type("M", (), {"manifest": staticmethod(lambda: [f]), "missing": staticmethod(lambda: []),
-                         "state": staticmethod(lambda p: "unlocked"), "Unresolvable": RuntimeError})()
-    monkeypatch.setattr(doc, "_x4lock_module", lambda ctx: mod)
-    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["x4lock"]
-    assert r.status == doc.UNKNOWN and "1 unlocked" in r.detail, r
+def _lock_row(ctx):
+    return {r.id: r for r in doc.check_common(ctx)}["x4lock"]
 
 
-def test_TWIN_x4lock_all_locked_is_OK(sandbox, monkeypatch, tmp_path):
-    f = tmp_path / "f.md"
-    f.write_text("x", encoding="utf-8")
-    mod = type("M", (), {"manifest": staticmethod(lambda: [f]), "missing": staticmethod(lambda: []),
-                         "state": staticmethod(lambda p: "locked"), "Unresolvable": RuntimeError})()
-    monkeypatch.setattr(doc, "_x4lock_module", lambda ctx: mod)
-    r = {r.id: r for r in doc.check_common(sandbox.ctx())}["x4lock"]
-    assert r.status == doc.OK, r
+def _fake_lock(monkeypatch, states: dict, missing: int = 0):
+    monkeypatch.setattr(doc, "_x4lock_answer", lambda ctx: ({"states": states, "missing": missing}, ""))
+
+
+def test_x4lock_unlocked_files_are_OK_informational_never_UNKNOWN(sandbox, monkeypatch):
+    """R4-2: locking is the user's CHOICE, so an unlocked manifest is an ANSWER, not a
+    non-answer. As UNKNOWN it kept every fresh install at exit 3."""
+    _fake_lock(monkeypatch, {"unlocked": 1})
+    r = _lock_row(sandbox.ctx())
+    assert r.status == doc.OK and "1 unlocked" in r.detail and "informational" in r.detail, r
+
+
+def test_TWIN_x4lock_all_locked_is_OK(sandbox, monkeypatch):
+    _fake_lock(monkeypatch, {"locked": 1})
+    r = _lock_row(sandbox.ctx())
+    assert r.status == doc.OK and "informational" not in r.detail, r
+
+
+def test_x4lock_a_MISSING_protected_file_is_UNKNOWN(sandbox, monkeypatch):
+    _fake_lock(monkeypatch, {"unlocked": 1}, missing=2)
+    r = _lock_row(sandbox.ctx())
+    assert r.status == doc.UNKNOWN and "2 missing" in r.detail, r
+
+
+def _as_in_game_install(sandbox):
+    """The sandbox root as an in-game install: the game folder IS the toolkit."""
+    for name, text in (("CLAUDE.md", "# c\n"), ("KNOWLEDGEBASE.md", "# kb\n")):
+        (sandbox.root / name).write_text(text, encoding="utf-8")
+    _env_file(sandbox.root / "x4-paths.env", X4_TOOLKIT=sandbox.root, X4_GAME=sandbox.root,
+              X4_REFERENCE=sandbox.ref)
+
+
+def test_x4lock_row_asks_the_REAL_x4lock_with_the_roots_environment(sandbox):
+    """R7-8: the row was only ever stub-tested. NO stub here: the real scripts/x4lock.py, run
+    the way an agent runs it from the root (X4_TOOLKIT = the root), must find the root's
+    guards and instructions -- more than the lone config file it found when it inherited the
+    DOCTOR's cwd and environment instead (MEASURED on a scratch install: '1 protected')."""
+    _as_in_game_install(sandbox)
+    ctx = sandbox.ctx(env=dict(os.environ, X4_TOOLKIT=str(sandbox.root)))
+    r = _lock_row(ctx)
+    assert r.status == doc.OK and "0 missing" in r.detail, r
+    n = int(r.detail.split(" protected")[0])
+    hooks = len(list((sandbox.root / ".claude" / "hooks").glob("*.sh")))
+    assert n >= hooks + 3, r          # the hooks, CLAUDE.md, KNOWLEDGEBASE.md, settings.json
+
+
+def test_TWIN_x4lock_REAL_a_deleted_CLAUDE_md_is_MISSING(sandbox):
+    _as_in_game_install(sandbox)
+    (sandbox.root / "CLAUDE.md").unlink()
+    ctx = sandbox.ctx(env=dict(os.environ, X4_TOOLKIT=str(sandbox.root)))
+    r = _lock_row(ctx)
+    assert r.status == doc.UNKNOWN and "1 missing" in r.detail, r
 
 
 def test_the_doctor_never_WRITES_the_codex_config(codex_root):
