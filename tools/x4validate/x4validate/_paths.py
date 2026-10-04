@@ -183,14 +183,15 @@ def _find_env_file() -> Path | None:
     return _locate_config()[0]
 
 
-def _assignments(p: Path) -> list[str]:
+def _assignments(p: Path) -> list[str] | None:
     """The comparable content of a config: its `KEY=value` lines, CR and indent
     stripped, blank and comment lines dropped, sorted. A comment difference therefore
-    AGREES and a quoting difference DIFFERS -- conservative on purpose."""
+    AGREES and a quoting difference DIFFERS -- conservative on purpose. None = the file
+    could not be read: a NON-ANSWER, which `_differing_keys` never lets compare equal."""
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
+    except OSError:  # silent-ok: not silent -- None reaches _differing_keys, which reports "<unreadable config>"
+        return None
     out = []
     for raw in text.split("\n"):
         line = raw.replace("\r", "").lstrip()
@@ -207,7 +208,10 @@ def _key_of(line: str) -> str:
 def _differing_keys(a: Path, b: Path) -> list[str]:
     """KEY NAMES whose assignments differ between two configs -- never a value: the
     file carries `X4_NEXUS_KEY`."""
-    sa, sb = set(_assignments(a)), set(_assignments(b))
+    la, lb = _assignments(a), _assignments(b)
+    if la is None or lb is None:
+        return ["<unreadable config>"]
+    sa, sb = set(la), set(lb)
     return sorted({_key_of(l) for l in sa ^ sb})
 
 

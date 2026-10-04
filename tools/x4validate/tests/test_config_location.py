@@ -67,6 +67,27 @@ def test_agreeing_copies_are_told_apart_from_differing_ones(tk):
     assert _paths.config_state() == "both-agree"
 
 
+def test_UNREADABLE_copies_are_never_reported_as_agreeing(tk, monkeypatch):
+    """An unreadable config is a NON-ANSWER, not an empty one: comparing two unreadable
+    copies as `[] == []` once said 'both-agree' (test_no_silent_swallow found the bare
+    `except OSError: return []`). It must say they differ -- the conservative answer that
+    makes the notice name both files."""
+    put(tk, NEW, "/xgame/same"); put(tk, OLD, "/xgame/same")
+    real = Path.read_text
+
+    def boom(self, *a, **k):
+        if self.name == "x4-paths.env":
+            raise OSError("simulated: access denied")
+        return real(self, *a, **k)
+    monkeypatch.setattr(Path, "read_text", boom)
+    assert _paths.config_state() == "both-differ"
+
+
+def test_TWIN_readable_identical_copies_still_agree(tk):
+    put(tk, NEW, "/xgame/same"); put(tk, OLD, "/xgame/same")
+    assert _paths.config_state() == "both-agree"
+
+
 def test_explicit_X4_CONFIG_wins_and_an_absent_one_reads_NOTHING(tk, monkeypatch):
     put(tk, NEW, "/xgame/new")
     other = put(tk, Path("elsewhere.env"), "/xgame/x")
