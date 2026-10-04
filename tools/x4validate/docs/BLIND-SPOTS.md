@@ -8102,7 +8102,7 @@ it only adds candidates. **Priced:** an in-process replay of 41,756 distinct his
 (command, cwd) pairs from 455 transcripts (8,776 containing `<<`), old blob vs new: **0 fact
 changes, 0 errors**; controls -- a game delete True in both, `ls` False in both, and the reported
 idiom True (old) -> False (new) through the same instrument. **RE-DERIVED BY:**
-`TestAHeredocInsideASubstitutionIsStillData` in test_hook_facts.py (RED before the fix on 5 subtests)
+`.claude/hooks/test_hook_facts.py::TestAHeredocInsideASubstitutionIsStillData` (RED before the fix on 5 subtests)
 and two `verify-hook-tests.py` mutants ("FX-P2: a carried command's heredoc body is stripped",
 "... a shell inside the opener's substitution takes the body").
 
@@ -8120,7 +8120,7 @@ a backslash escapes the next character, `$((` is arithmetic. The rest of the bod
 `cat > notes.md <<EOF` with prose -- including prose quoting a delete -- is unchanged. **Priced** by
 the same replay as F158: 0 of 41,756 changed. **Known residual (unmeasured):** a `$((...))` that
 itself contains a command substitution runs it too and is skipped here, as `substitutions()` does at
-the top level. **RE-DERIVED BY:** `TestAnUnquotedHeredocRunsItsSubstitutions` (RED before the fix on
+the top level. **RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py::TestAnUnquotedHeredocRunsItsSubstitutions` (RED before the fix on
 8 subtests; 4 twins: quoted delimiter, escaped substitution, plain body text, arithmetic) and three
 mutants ("FX-P2: an expanding body runs its substitutions", "... a quoted delimiter expands nothing",
 "... an escaped substitution in a body is text").
