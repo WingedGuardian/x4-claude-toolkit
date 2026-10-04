@@ -6,18 +6,22 @@ rejection says only that we cannot certify its zero. BaseX still executes it.
 from __future__ import annotations
 
 import re
-from lxml import etree
+
+#: XML 1.0 (5th edition) NameStartChar / NameChar, without ':' -- i.e. an NCName. STDLIB on
+#: purpose (v4.0.0 review R5-1): this module imported lxml at load only to validate a QName,
+#: so `python ask.py --help` on an interpreter without lxml crashed with rc 1 before printing
+#: anything. test_ask.py pins this pattern to lxml's own verdict where lxml is installed.
+_NC_START = ("A-Z_a-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF"
+             "\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF"
+             "\uFDF0-\uFFFD\U00010000-\U000EFFFF")
+_NC_NAME = re.compile("[%s][%s\\-.0-9\u00B7\u0300-\u036F\u203F-\u2040]*" % (_NC_START, _NC_START))
 
 
 def is_qname(text: str) -> bool:
     parts = text.split(':')
     if len(parts) > 2:
         return False
-    try:
-        return all(p and etree.QName(p).namespace is None
-                   and etree.QName(p).localname == p for p in parts)
-    except ValueError:
-        return False
+    return all(p and _NC_NAME.fullmatch(p) is not None for p in parts)
 
 
 class Unsupported(ValueError):

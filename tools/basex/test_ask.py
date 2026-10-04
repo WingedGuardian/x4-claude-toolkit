@@ -1030,3 +1030,58 @@ def test_TWIN_no_catalog_line_when_none_is_unreadable(monkeypatch, capsys):
     _unexplained_with_catalog(monkeypatch, [])
     assert ask.main(["--db", "x4eff", "xq", "collection('x4eff')//ware[@id='zz']"]) == 4
     assert "never enumerated" not in capsys.readouterr().out
+
+
+
+# --- R5-1 (v4.0.0 review): ask.py must start WITHOUT lxml --------------------------------
+
+def _no_lxml_dir(tmp_path):
+    """A PYTHONPATH entry whose `lxml` raises on import: the interpreter of a user who never
+    installed it (ask.py is run with a bare `python`, not the x4validate venv)."""
+    shadow = tmp_path / "shadow" / "lxml"
+    shadow.mkdir(parents=True)
+    (shadow / "__init__.py").write_text("raise ImportError('lxml is not installed (test shadow)')\n",
+                                        encoding="utf-8")
+    return shadow.parent
+
+
+def test_ask_help_RUNS_without_lxml(tmp_path):
+    """MEASURED by the reviewer (review/scratch-R5-tools/ask_bare.txt): `python ask.py --help`
+    crashed with ModuleNotFoundError, rc 1 -- content_query imported lxml at load only to
+    validate a QName."""
+    import os, subprocess, sys
+    from pathlib import Path as P
+    here = P(ask.__file__).resolve().parent
+    env = dict(os.environ, PYTHONPATH=str(_no_lxml_dir(tmp_path)))
+    r = subprocess.run([sys.executable, str(here / "ask.py"), "--help"], capture_output=True,
+                       text=True, env=env, cwd=str(tmp_path), timeout=120)
+    assert r.returncode == 0, r.stderr[-800:]
+    assert "usage" in r.stdout.lower()
+
+
+def test_TWIN_the_shadow_really_hides_lxml(tmp_path):
+    import os, subprocess, sys
+    env = dict(os.environ, PYTHONPATH=str(_no_lxml_dir(tmp_path)))
+    r = subprocess.run([sys.executable, "-c", "import lxml"], capture_output=True, text=True,
+                       env=env, cwd=str(tmp_path), timeout=60)
+    assert r.returncode != 0 and "test shadow" in r.stderr
+
+
+@pytest.mark.parametrize("name", ["name", "xml:lang", "\u00e9nergie", "foo-bar_2", "_x", "a.b",
+                                  "x\u00b7y", "\u4e2d\u6587", "", "1a", "-a", ".a", "a b", "a:b:c",
+                                  ":a", "a:", "a\u00b2", "\u00d7a", "a/b", "a=b"])
+def test_the_stdlib_QName_check_AGREES_with_lxml(name):
+    """is_qname no longer needs lxml; where lxml IS present the two must agree name for name,
+    so dropping the import did not widen what may certify a zero."""
+    from content_query import is_qname
+    try:
+        from lxml import etree
+    except ImportError:
+        pytest.skip("lxml absent: nothing to compare the stdlib check against")
+    parts = name.split(":")
+    try:
+        want = len(parts) <= 2 and all(p and etree.QName(p).namespace is None
+                                       and etree.QName(p).localname == p for p in parts)
+    except ValueError:
+        want = False
+    assert is_qname(name) is want, (name, want)
