@@ -639,7 +639,20 @@ jobs:
           #                fetch-depth: 0, so test_build_release finds its tag
           #    windows  59 - 4 + 4 = 59
           #    ubuntu   122 - 4 + 14 = 132
-          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '132' || '59' }}
+          #
+          # ** RE-SET 2026-10-04 (Plan 3 CI-fix lane): 132 -> 144 ubuntu, 59 -> 56 windows. **
+          # MEASURED base = run 37172347642 (ci/plan2 @ 1147709), the per-job -rs lists summed
+          # by their [N] counts: ubuntu 139, windows 53 (the ubuntu leg FAILED on 139 > 132).
+          # The lane-H estimate above was 7 short on ubuntu. Deltas from this lane, DERIVED from
+          # skipif reasons, NOT yet read off a run -- confirm both on the next run:
+          #     +2 ubuntu  NTFS ACLs: the Windows mechanism (test_x4refguard: a real
+          #                foreign-owner refusal twin + the real /setowner form)
+          #      0 windows the x4refguard / Layer 2 tests that errored on the elevated runner
+          #                now take ownership of their own scratch tree; if that ever fails
+          #                they SKIP (counted) and this ceiling goes red, as it should
+          #    windows  53 + 0 + 3 = 56
+          #    ubuntu   139 + 2 + 3 = 144
+          X4_MAX_SKIPS: ${{ matrix.os == 'ubuntu-latest' && '144' || '56' }}
           # No .pyc from CI: a stale cache cannot then masquerade as the source.
           PYTHONDONTWRITEBYTECODE: '1'
         run: uv run --frozen python -m pytest -q -rs
