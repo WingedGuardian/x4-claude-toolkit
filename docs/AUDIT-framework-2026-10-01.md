@@ -25,8 +25,27 @@ deployment, including the scope correction, are recorded below. Hook edits belon
   dropped, because MEASURED over 50 real edits in 23 dev mods, 50 of 50 carry a routine `--file`
   skip. F4 is fixed in CI only. The user decided (2026-10-02) that end-user setup does NOT refuse
   a stale lock: CI catches it before release, and setup keeps resolving.
-- **Still open:** F1 (opaque interpreter writes), F8/F9 (installers and x4lock omit `AGENTS.md`
-  and `agent/`), guard-health telemetry. These go to Plan 2.
+- **Still open (SUPERSEDED 2026-10-04, see the next section):** F1 (opaque interpreter writes),
+  F8/F9 (installers and x4lock omit `AGENTS.md` and `agent/`), guard-health telemetry. These go
+  to Plan 2.
+
+## Status — 2026-10-04 (v4.0.0 release review)
+
+- **F8 CLOSED.** The installers ship `AGENTS.md` per agent (`install.sh`
+  `X4_AGENT_ITEMS_codex` / `_generic` / `_opencode`, mirrored in `install.ps1`; a test requires
+  the two to agree). `agent/` is deliberately NOT installed: an installed toolkit is
+  runtime-only (README, *What each class of agent gets*).
+- **F9 CLOSED.** x4lock locks `AGENTS.md` when present, and demands it where a Codex or
+  OpenCode guard directory marks that agent as installed (`scripts/x4lock.py`).
+- **F1 NARROWED, still open.** For `reference/` only, `python scripts/x4refguard.py apply`
+  adds an OS-level deny that an interpreter write cannot pass (MEASURED on scratch trees:
+  writes 20/20 blocked); it holds only once applied. Interpreter writes anywhere else are
+  still outside what command inspection can enforce.
+- **Guard-health telemetry: still open.** `scripts/x4doctor.py` (4.0) is an on-demand health
+  check of the guards, not telemetry of their history.
+- The per-session notes that were in `KNOWLEDGEBASE.md` § Session Log moved to the end of
+  this file and of `docs/audits/2026-10-02-tool-fixes.md`: they are toolkit development
+  history, not facts about the game.
 
 ## Reconciliation with master — 2026-10-02
 
@@ -346,3 +365,55 @@ attempted additional regression test was discarded after the user clarified scop
    preserve legitimate scripting while documenting and measuring the remaining limits.
 5. Verify host adapters end to end with disposable deny controls, crashes, timeouts and
    dependency failures. Keep live-host enforcement and script-level smoke tests distinct.
+
+## Session notes (moved from KNOWLEDGEBASE.md, 2026-10-04)
+
+Moved verbatim by the v4.0.0 release review (R6-11): they are toolkit development history,
+not facts about the game, and `KNOWLEDGEBASE.md` ships to players. They are DATED records;
+an item one of them calls open may have been fixed since -- the status sections at the
+top of this file are current, these are not.
+
+### 2026-10-01 — framework-protection-boundaries
+
+MEASURED against `aa57efc`: a Bash-carried Python write to a disposable reference path
+received no refusal, although direct Write and shell redirection were denied. Two backup
+calls within one second overwrote the first snapshot. A missing UV executable left the
+post-edit validator silent; a synthetic finding control did emit an advisory. In a disposable
+project, `uv sync --frozen` accepted a stale lockfile while `uv lock --check` rejected it.
+These findings survive passing regression suites; command inspection is not filesystem
+enforcement. Details and test limits: `docs/AUDIT-framework-2026-10-01.md`.
+
+MEASURED at `7bd554f`: x4guard's delete-path endpoint allowed a disposable mod-file
+deletion that its shell endpoint required confirmation for. A missing Python interpreter
+returned ask with inert false despite the underlying guard reporting GUARD INERT. Both
+reproduced after all 34 front-door/generator tests passed; keep API operation semantics
+and successful payload parsing distinct from successful guard evaluation.
+
+IMPLEMENTED after review: delete checks compose file protection with shell deletion policy;
+check-only guard failures return inert deny while native Claude approval behavior stays intact.
+Scope correction: only those two front-door fixes were authorized. Additional backup,
+validator, lock-check and package-manager-tripwire implementations were rolled back;
+their measured audit findings remain open. No relative-path production fix was applied:
+a relative `reference/...` write checked from the toolkit root returned allow while its
+absolute-path equivalent denied. The parallel session has a pending fix; it is not verified
+or integrated here. Arbitrary script writes and guard-health telemetry also remain unresolved.
+
+### 2026-10-01 — audit-only migration integration probes
+
+MEASURED with both real installers in disposable destinations and a stubbed setup: each
+returned 0 and copied CLAUDE.md, but omitted AGENTS.md and the neutral agent/ tree. Copy-list
+agreement tests pass because neither list requires those new artifacts. In a disposable
+configured game root, x4lock's default manifest included CLAUDE.md but omitted AGENTS.md;
+no lock attributes were changed. A guard inert denial followed by a clean file-loss canary
+is expected: the canary monitors tracked file loss, not guard-evaluation history. These are
+audit findings only, not additional fixes. See F8/F9 and the roadmap in the framework report.
+
+### 2026-10-02 - framework-audit rebase reconciliation
+
+Master `74b38fe` incorporates F5/F6 and native caller-relative file-path resolution (F7).
+The audit branch now retains master's wrapper and tests; its former shared delete timeout
+is superseded by a per-guard timeout. No additional fixes or deployment were performed.
+Master documents AGENTS.md as toolkit-repository instructions, so the measured installer
+and lock omissions (F8/F9) need the portability ownership decision before a remedy.
+Historical verification counts still apply only to their named baselines; current rebase
+verification is recorded in `docs/AUDIT-framework-2026-10-01.md`.
