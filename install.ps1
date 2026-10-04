@@ -78,7 +78,8 @@ Usage: powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Method i
   -Reference DIR     unpacked base game (default <toolkit>\reference)
   -Extensions DIR    live deploy target (default <game>\extensions)
   -XRCatTool PATH    XRCatTool.exe location
-  -Agent NAME        claude | codex | generic | opencode | all | auto   [all]
+  -Agent LIST        claude | codex | generic | opencode | all | auto   [all]
+                     (a comma list picks several: claude,codex)
                      which agent's instructions, guards and skills to install;
                      auto = the agents found on PATH or already in the destination
                      (none found: all, and it says so)
@@ -449,6 +450,29 @@ $X4CodexHooksTmpl = 'agent/targets/codex/hooks.json.tmpl'
 if ($Agent -ceq 'all') { $X4Agents = $X4AgentNames }
 elseif ($Agent -ceq 'auto') { $X4Agents = @() }   # resolved per destination by Resolve-HAutoAgents
 elseif ($X4AgentNames -ccontains $Agent) { $X4Agents = @($Agent) }
+elseif ($Agent -match '[,\s]') {
+  # C1 (install red-team 2026-10-04): a COMMA LIST (`claude,codex`), each item validated before
+  # anything is written; duplicates collapse; all/auto stand alone. Whitespace separates too:
+  # `-Agent claude,codex` typed inside PowerShell binds an ARRAY, which [string] joins with spaces.
+  $X4Agents = @()
+  foreach ($it in ($Agent -split '\s*,\s*|\s+')) {
+    if ($it -ceq '') {
+      Write-Host ("REFUSING: -Agent '" + $Agent + "' has an empty item. Supported: " + ($X4AgentNames -join ' ') + ' (comma-separated), all, auto. Nothing has been changed.') -ForegroundColor Red
+      exit 2
+    }
+    if ($it -ceq 'all' -or $it -ceq 'auto') {
+      Write-Host ("REFUSING: -Agent '" + $it + "' cannot be combined with other agents in a list ('" + $Agent + "'). Nothing has been changed.") -ForegroundColor Red
+      exit 2
+    }
+    if (-not ($X4AgentNames -ccontains $it)) {
+      Write-Host ("REFUSING: unknown agent '" + $it + "' in -Agent '" + $Agent + "'. Supported: " + ($X4AgentNames -join ' ') + ' (comma-separated), all, auto. Nothing has been changed.') -ForegroundColor Red
+      exit 2
+    }
+    if (-not ($X4Agents -ccontains $it)) { $X4Agents += $it }
+  }
+  $picked = $X4Agents
+  $X4Agents = @($X4AgentNames | Where-Object { $picked -ccontains $_ })   # canonical order, as install.sh
+}
 else {
   Write-Host ("REFUSING: unknown -Agent '" + $Agent + "'. Supported: " + ($X4AgentNames -join ' ') + ' all. Nothing has been changed.') -ForegroundColor Red
   exit 2
@@ -663,6 +687,35 @@ function Show-HHashCaveat {
   }
 }
 
+#: The twin of install.sh's _old_example_action / retire_old_paths_example (install red-team
+#: 2026-10-04): the 3.x `.claude/x4-paths.env.example` is removed ONLY when it is an unedited
+#: shipped copy; an edited one is kept and named. Returns 'remove', 'keep' or ''.
+function Get-HOldExampleAction($dest) {
+  $old = Join-Path (Join-Path $dest '.claude') 'x4-paths.env.example'
+  if (-not (Test-Path -LiteralPath $old -PathType Leaf)) { return '' }
+  if (-not (Test-Path -LiteralPath (Join-Path $SRC 'x4-paths.env.example') -PathType Leaf)) { return '' }
+  if (Test-HIsShipped $dest '.claude/x4-paths.env.example') { return 'remove' }
+  return 'keep'
+}
+function Remove-HOldPathsExample($dest) {   # AFTER the copy
+  $old = Join-Path (Join-Path $dest '.claude') 'x4-paths.env.example'
+  switch (Get-HOldExampleAction $dest) {
+    'remove' {
+      try { Remove-Item -LiteralPath $old -ErrorAction Stop } catch { }
+      if (Test-Path -LiteralPath $old) {
+        Write-Host ('  [warn] could not remove the stale 3.x ' + $old + ' (it is unedited, so deleting it is safe).')
+      } else {
+        Write-Host "  [note] removed the 3.x .claude/x4-paths.env.example (an unedited shipped copy); 4.0's"
+        Write-Host '         example is x4-paths.env.example at the toolkit root.'
+      }
+    }
+    'keep' {
+      Write-Host ('  [note] kept ' + $dest + '/.claude/x4-paths.env.example: it differs from every example a')
+      Write-Host '         release shipped (your edits?). 4.0 never reads it; delete it when you are done.'
+    }
+  }
+}
+
 function Save-HUserClaudeMd($dest) {
   $to = Get-HClaudeMdMoveTarget $dest
   if (-not $to) { return }
@@ -674,10 +727,11 @@ function Save-HUserClaudeMd($dest) {
     Write-Host '       Nothing else has been changed.' -ForegroundColor Red
     exit 1
   }
-  Write-Host '  [note] your CLAUDE.md is not one this toolkit ever shipped, so it was KEPT as:'
+  Write-Host '  [note] your CLAUDE.md is not one this toolkit ever shipped, so it was KEPT (not lost) as:'
   Write-Host ('           ' + (Join-Path $dest $to))
-  Write-Host '         The 4.0 CLAUDE.md now loads every session. Move your own notes into'
-  Write-Host '         X4-NOTES.md in the same folder: the toolkit never writes that file.'
+  Write-Host '         That copy is NO LONGER LOADED by any agent: the 4.0 CLAUDE.md replaced it.'
+  Write-Host '         To bring your notes back, merge what you want into X4-NOTES.md in the same'
+  Write-Host '         folder -- every agent''s instructions read it, and the toolkit never writes it.'
   Show-HHashCaveat
 }
 
@@ -840,7 +894,9 @@ function Find-OcPython {
 #: The twin of install.sh's print_refguard_step: Layer 2 (scripts/x4refguard.py) is an ACL
 #: change, so it is never applied for the user; when x4refguard reports reference/ present and
 #: not protected, the step is named. Silent for protected / unconfigured / unsupported.
-$X4RefguardStepCmd = 'python scripts/x4refguard.py apply'
+#: C4 (install red-team 2026-10-04): the summary ALWAYS states the protection, and the command
+#: carries --yes because x4refguard now counts and ASKS (B3).
+$X4RefguardStepCmd = 'python scripts/x4refguard.py apply --yes'
 function Write-RefguardStep($tk) {
   $script = Join-Path (Join-Path $tk 'scripts') 'x4refguard.py'
   if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { return }
@@ -863,12 +919,35 @@ function Write-RefguardStep($tk) {
     $ref = if ($Reference) { $Reference } else { Join-Path $tk 'reference' }
     if (Test-Path -LiteralPath $ref -PathType Container) { $state = 'unknown (no Python >= 3.10 to ask x4refguard)' }
   }
-  if (@('', 'protected', 'unconfigured', 'unsupported') -contains $state) { return }
   Write-Host ''
-  Write-Host ('Reference: reference/ exists and is NOT OS-protected (x4refguard state: ' + $state + ').')
-  Write-Host '           The installer never changes permissions for you. To add the OS-level'
-  Write-Host ('           deny-delete layer (any process, hooks or not), run in ' + $tk + ':')
-  Write-Host ('             ' + $X4RefguardStepCmd)
+  if ($state -ceq 'protected') {
+    Write-Host 'Reference: reference/ carries the OS-level deny-delete protection (x4refguard: protected).'
+  } elseif ($state -ceq '' -or $state -ceq 'unconfigured') {
+    Write-Host 'Reference: no reference/ tree yet, so nothing is OS-protected. The protection is not applied by the installer:'
+    Write-Host '           bin/unpack-reference.sh applies it to the tree it unpacks (see Next below).'
+  } elseif ($state -ceq 'unsupported') {
+    Write-Host 'Reference: this platform has no OS-level protection mechanism (a disclosed gap; not applied by the installer).'
+  } else {
+    Write-Host ('Reference: reference/ exists and is NOT OS-protected (x4refguard state: ' + $state + ').')
+    Write-Host '           It is not applied by the installer (a permission change is yours to make). To add the'
+    Write-Host ('           OS-level deny-delete layer (any process, hooks or not), run in ' + $tk + ':')
+    Write-Host ('             ' + $X4RefguardStepCmd)
+  }
+}
+
+#: C5 (install red-team 2026-10-04): the twin of install.sh's Next line -- true for THIS install.
+#: The unpack runs through Git Bash: from PowerShell a bare `bash` is the WSL stub (B1).
+function Write-NextStep($tk) {
+  $bashCmd = if ($env:X4_BASH) { '& "' + $env:X4_BASH + '"' } else { '& "<Git Bash>"' }
+  $unpack = 'cd "' + $tk + '"; ' + $bashCmd + ' bin/unpack-reference.sh'
+  $ref = if ($Reference) { $Reference } else { Join-Path $tk 'reference' }
+  if (-not $Game) {
+    Write-Host ('Next:      X4_GAME is blank -- set it in ' + (Join-Path $tk 'x4-paths.env') + ', then  ' + $unpack + '  to build reference/.')
+  } elseif (Test-Path -LiteralPath (Join-Path $ref '.unpacked-and-locked') -PathType Leaf) {
+    Write-Host ('Next:      reference/ is already unpacked; open your agent in "' + $tk + '" and paste SETUP_PROMPT.txt.')
+  } else {
+    Write-Host ('Next:      ' + $unpack + '  to build reference/ from your game.')
+  }
 }
 
 #: The twin of install.sh's precheck_opencode_config (v4.0.0 review R4-5): a READ-ONLY
@@ -1606,6 +1685,10 @@ function Show-CopyPlan($dest) {
       Write-Host ('  your CLAUDE.md is not one this toolkit shipped: it would be KEPT as ' + $to + ', not overwritten')
       Show-HHashCaveat
     }
+    switch (Get-HOldExampleAction $dest) {
+      'remove' { Write-Host '  the 3.x .claude/x4-paths.env.example (an unedited shipped copy) would be removed' }
+      'keep'   { Write-Host '  the 3.x .claude/x4-paths.env.example differs from every shipped one: it would be KEPT' }
+    }
     Show-DryRunExtras $dest
     Write-Host ""
     Write-Host "=== dry run complete: nothing was changed ==="
@@ -2095,6 +2178,21 @@ $Game    = Remove-TrailingSep $Game
 $Profile = Remove-TrailingSep $Profile
 $Toolkit = Remove-TrailingSep $Toolkit
 
+# B1 (install red-team 2026-10-04): Git Bash, resolved ONCE, BEFORE the dispatch. On a stock
+# Windows PATH `bash` is the WSL stub (Git for Windows adds only <Git>\cmd), so the OpenCode
+# renderer -- which runs inside the dispatch, through the guards' resolver -- found no bash and
+# `-Agent all` ended INCOMPLETE. Found here, it is exported as X4_BASH for THIS run, which every
+# resolver below (x4guard.resolve_bash, setup.sh's children) honours first. The user's own
+# environment is never changed by this; a missing bash prints the exact setx line instead.
+$bash = Find-GitBash
+if ($bash -and -not $env:X4_BASH) { $env:X4_BASH = $bash.Source }
+if (-not $bash) {
+  Write-Host '  [warn] no Git Bash found (Git for Windows locations, then PATH past the WSL stub).'
+  Write-Host '         The guards, setup.sh and the OpenCode renderer need it. Install Git for Windows,'
+  Write-Host '         or point the toolkit at your bash.exe (takes effect in NEW shells):'
+  Write-Host '           setx X4_BASH "C:\Program Files\Git\bin\bash.exe"   (adjust if Git lives elsewhere)'
+}
+
 switch ($Method) {
   'in-game'  {
     if (-not $Game) { throw 'in-game needs -Game' }
@@ -2121,6 +2219,7 @@ switch ($Method) {
       Save-UserAgentsMd $Toolkit        # after every precheck, before the copy
       Save-HUserClaudeMd $Toolkit       # 3.x -> 4.0: same position, same shape
       Copy-Toolkit $Toolkit
+      Remove-HOldPathsExample $Toolkit   # after the copy: the 4.0 example is in place
       Invoke-ToolkitTokenRender $Toolkit
     } else {
       Show-InPlaceTokenNote
@@ -2155,6 +2254,7 @@ switch ($Method) {
       Save-UserAgentsMd $Toolkit        # after every precheck, before the copy
       Save-HUserClaudeMd $Toolkit       # 3.x -> 4.0: same position, same shape
       Copy-Toolkit $Toolkit
+      Remove-HOldPathsExample $Toolkit   # after the copy: the 4.0 example is in place
       Invoke-ToolkitTokenRender $Toolkit
     } else {
       Show-InPlaceTokenNote
@@ -2171,7 +2271,7 @@ switch ($Method) {
       Write-Host '  Nothing has been changed.' -ForegroundColor Red
       exit 2
     }
-    if ($Agent -ceq 'codex' -or $Agent -ceq 'generic' -or $Agent -ceq 'opencode') {
+    if ($Agent -cne 'all' -and $Agent -cne 'auto' -and (($X4Agents -join ' ') -cne 'claude')) {   # C1: a list too
       Write-Host "REFUSING: -Method global is a Claude-only layout; it cannot install -Agent $Agent." -ForegroundColor Red
       Write-Host '  Use -Method in-game or -Method separate for Codex, OpenCode and generic agents.' -ForegroundColor Red
       Write-Host '  Nothing has been changed.' -ForegroundColor Red
@@ -2212,7 +2312,7 @@ if (-not $NoEnv) { Set-HUserToolkitEnv $Toolkit }
 #
 # So: prefer a real Git Bash, and refuse the known stubs by path.
 
-$bash = Find-GitBash
+# ($bash was resolved once, before the dispatch -- B1.)
 # ($failed is defined above the dispatch, beside -Agent's resolution: the Codex writers
 #  inside the dispatch record into it.)
 if ($bash) {
@@ -2251,11 +2351,11 @@ if ($bash) {
   # Git for Windows only adds ...\Git\cmd to PATH by default; bash.exe lives in
   # ...\Git\bin. Name the actual fix rather than telling them to run a command
   # they equally cannot run.
-  Write-Host "  [note] bash not found on PATH, so x4validate was NOT wired up."
+  Write-Host "  [note] no Git Bash found, so x4validate was NOT wired up."
   Write-Host "         Git for Windows ships bash in <install>\bin (e.g. C:\Program Files\Git\bin)."
-  Write-Host "         Either add that to PATH, or run setup from Git Bash:"
-  Write-Host "           cd '$Toolkit' && CLAUDE_PROJECT_DIR='$Toolkit' bash setup.sh"
-  $failed += "bash not found (x4validate not wired up)"
+  Write-Host "         Point the toolkit at it, open a NEW PowerShell, and re-run this installer:"
+  Write-Host '           setx X4_BASH "C:\Program Files\Git\bin\bash.exe"   (adjust if Git lives elsewhere)'
+  $failed += 'Git Bash not found (x4validate not wired up): setx X4_BASH "C:\Program Files\Git\bin\bash.exe", then re-run'
 }
 
 if ($failed.Count) {
@@ -2292,6 +2392,7 @@ if ($Method -ne 'global' -and (Test-OpenCodeSelected)) {
 }
 if ($Method -eq 'global') { Write-Host "Global:  skills/agents + X4_* env added to your ~/.claude - works from any mod repo." }
 Write-RefguardStep $Toolkit
+Write-NextStep $Toolkit
 Write-Host ""
 if ($script:X4HEnvState -eq 'set' -or $script:X4HEnvState -eq 'same') {
   Write-Host ('X4_TOOLKIT: ' + $script:X4HEnvMsg)

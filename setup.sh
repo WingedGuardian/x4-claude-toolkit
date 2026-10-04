@@ -29,7 +29,7 @@ _i_seed_config() {
   CFG="$ROOT/x4-paths.env"
   CFG_OLD="$ROOT/.claude/x4-paths.env"
   CFG_EX="$ROOT/x4-paths.env.example"
-  if [ -f "$CFG" ]; then ok "x4-paths.env already present"
+  if [ -f "$CFG" ]; then ok "x4-paths.env in place ($CFG) -- left as it is; edit it to change a path"
   elif [ -f "$CFG_OLD" ]; then
     warn "DEPRECATED location: $CFG_OLD is the 3.x path config (still read). 4.0 reads $CFG."
     warn "  Move it: x4config.py migrate --apply, i.e. python \"$ROOT/scripts/x4config.py\" migrate --apply"
@@ -116,7 +116,8 @@ echo
 echo "3) Local settings & path config..."
 LOCAL="$ROOT/.claude/settings.local.json"
 EXAMPLE="$ROOT/.claude/settings.local.json.example"
-if [ -f "$LOCAL" ]; then ok "settings.local.json already present"
+if [ ! -d "$ROOT/.claude" ]; then ok "no Claude target here, so no .claude/settings.local.json is needed"
+elif [ -f "$LOCAL" ]; then ok ".claude/settings.local.json in place -- left as it is"
 # VERIFY THE ARTIFACT, not the intention. `cp ...; ok "created ..."` uses `;` not
 # `&&`, so a cp that failed -- or that succeeded INTO A DIRECTORY of that name --
 # still printed [ok] and contributed nothing to MISSING. MEASURED 2026-09-05 with
@@ -124,7 +125,7 @@ if [ -f "$LOCAL" ]; then ok "settings.local.json already present"
 # and neither file existed. Line 76 in this same file already checks its artifact.
 elif [ -f "$EXAMPLE" ]; then
   if cp "$EXAMPLE" "$LOCAL" 2>/dev/null && [ -f "$LOCAL" ]; then
-    ok "created settings.local.json from example (gitignored)"
+    ok "created .claude/settings.local.json from its example (your per-machine Claude settings; gitignored)"
   else
     fail "could not create settings.local.json from the example (is $LOCAL a directory?)"
   fi

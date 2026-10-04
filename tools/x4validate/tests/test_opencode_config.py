@@ -250,7 +250,10 @@ def test_check_reports_missing_then_stale_after_the_reference_moves(box):
     assert run(env, "write", root)[0] == 0
     moved = ref.parent / "moved-ref"
     moved.mkdir()
-    assert run(dict(env, X4_REFERENCE=str(moved)), "check", root)[0] == 1
+    rc, _out, err = run(dict(env, X4_REFERENCE=str(moved)), "check", root)
+    assert rc == 1
+    # C5 (install red-team 2026-10-04): the stale verdict says WHAT differs and the likely cause
+    assert "stale (" in err and "rule(s)" in err and "X4_TOOLKIT" in err, err
 
 
 def test_check_cannot_render_is_rc_2(box):

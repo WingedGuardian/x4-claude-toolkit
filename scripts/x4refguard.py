@@ -41,9 +41,19 @@ WHAT IT DOES NOT STOP (the honest gaps)
     denied, so the deny stays removable). POSIX chmod: root, and `chmod u+w` by the owner.
 
 USAGE
-    python scripts/x4refguard.py status [--json] [--full]
-    python scripts/x4refguard.py apply  [--path P]     P must be the configured root
-    python scripts/x4refguard.py remove [--path P]     the escape hatch, step 1/2
+    python scripts/x4refguard.py status [--json] [--full] [--toolkit DIR]
+    python scripts/x4refguard.py apply  [--path P] [--yes] [--toolkit DIR]   P must be the configured root
+    python scripts/x4refguard.py remove [--path P] [--yes] [--toolkit DIR]   the escape hatch, step 1/2
+
+BEFORE CHANGING ANYTHING (B3, install red-team 2026-10-04: an apply ran >2 minutes on a
+60 GB tree with no output and no question): apply and remove print the target root and
+count the objects under it (a progress line every 50,000), then ASK. `--yes` answers for
+you; without it and without a terminal to ask on, they refuse with exit 2. While the OS
+call runs, a heartbeat line says it is still working.
+
+WHICH TOOLKIT (B2, same red-team): this script acts for the toolkit it LIVES IN. If
+$X4_TOOLKIT names a different one, one line says so, and apply/remove REFUSE (exit 2)
+unless --toolkit DIR names the toolkit to act for explicitly.
 
 `status` samples: the root, the sentinel, and the first file found depth-first in each
 top-level directory -- NOT a census, and it says so on every run. `--full` walks every
@@ -108,11 +118,23 @@ SAMPLE_SCOPE = ("root + sentinel + first file of each top-level dir "
 
 ESCAPE_HATCH = """\
 To lift it (a USER's step, never an agent's on its own):
-  1. python scripts/x4refguard.py remove
+  1. python scripts/x4refguard.py remove        (shows the folder and a count, then asks; --yes skips)
   2. root moved since?  python scripts/x4refguard.py remove --path <old root>
   3. tool broken? Windows, from cmd.exe: icacls "<root>" /remove:d *<your SID>  (whoami /user)
      Linux: sudo chattr -R -i "<root>" or chmod -R u+w "<root>"; macOS: chflags -R nouchg "<root>"
   4. last resort, Windows, elevated: icacls "<root>" /reset /T /C"""
+
+
+#: C6 (install red-team): "unconfigured / moved?" said WHAT, never how to fix it.
+HOW_TO_CONFIGURE = ("To fix: unpack the game first (bash bin/unpack-reference.sh, which "
+                    "writes the tree X4_REFERENCE names), or set X4_REFERENCE in "
+                    "x4-paths.env at the toolkit root to where your unpacked tree is "
+                    "(`x4validate --paths` shows what is resolved).")
+
+#: A progress line every this many objects (B3).
+PROGRESS_EVERY = 50_000
+#: A heartbeat line every this many seconds while one long OS call runs (B3).
+HEARTBEAT_S = 10.0
 
 
 class Refused(Exception):
@@ -190,6 +212,74 @@ def _mutate_run(argv: list, target) -> subprocess.CompletedProcess:
                           errors="replace")
 
 
+def _isatty() -> bool:
+    """Can we ASK? The seam tests steer (a pytest run has no terminal on stdin)."""
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _ask(prompt: str) -> str:
+    return input(prompt)
+
+
+def _count(root: Path) -> int:
+    """Every directory and file under root (symlinks not followed), announcing progress."""
+    n = 0
+    for _ in _walk(root):
+        n += 1
+        if n % PROGRESS_EVERY == 0:
+            print("  counting: %d object(s) so far ..." % n, file=sys.stderr, flush=True)
+    return n
+
+
+def _confirm(root: Path, action: str, yes: bool) -> int | None:
+    """B3: say WHAT and HOW MUCH before changing anything, then ask. None = proceed; an int
+    is the exit code to return (2: not confirmed -- nothing was changed)."""
+    print("x4refguard %s -- target: %s" % (action, root), file=sys.stderr, flush=True)
+    n = _count(root)
+    verb = "protect" if action == "apply" else "lift the protection from"
+    print("  %d object(s) (directories + files) under it. This will %s all of them; on "
+          "Windows that takes about 8 s per 100,000 objects (MEASURED), longer on a slow "
+          "disk." % (n, verb), file=sys.stderr, flush=True)
+    if yes:
+        return None
+    if not _isatty():
+        print("REFUSED: not confirmed. This is not an interactive terminal, so there is no one "
+              "to ask -- re-run with --yes to confirm. Nothing was changed.", file=sys.stderr)
+        return 2
+    try:
+        answer = _ask("%s %d object(s) under %s? [y/N] " % (verb.capitalize(), n, root))
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        return None
+    print("Not confirmed; nothing was changed.", file=sys.stderr)
+    return 2
+
+
+def _with_heartbeat(label: str, fn):
+    """Run fn(), printing `still <label>: N s elapsed` every HEARTBEAT_S seconds, so a long
+    OS call (one icacls propagating to ~500,000 objects) is never silent (B3)."""
+    import threading
+    import time
+    done = threading.Event()
+    start = time.monotonic()
+
+    def beat():
+        while not done.wait(HEARTBEAT_S):
+            print("  still %s: %d s elapsed ..." % (label, time.monotonic() - start),
+                  file=sys.stderr, flush=True)
+    t = threading.Thread(target=beat, daemon=True)
+    t.start()
+    try:
+        return fn()
+    finally:
+        done.set()
+        t.join(1.0)
+
+
 def _mutate_chmod(path, mode: int) -> None:
     """THE choke point for every chmod."""
     _sandbox_check(path)
@@ -216,6 +306,8 @@ def _dangerous(root: Path):
     toolkits = [_TOOLKIT]
     if os.environ.get("X4_TOOLKIT"):
         toolkits.append(Path(os.environ["X4_TOOLKIT"]))
+    if _paths is not None and _paths.explicit_toolkit() is not None:
+        toolkits.append(_paths.explicit_toolkit())
     for tk in toolkits:
         if _is_same_or_ancestor(root, tk):
             return "it is the toolkit root or contains it (%s)" % tk
@@ -234,8 +326,7 @@ def resolve_target(path, action: str) -> Path:
     """
     configured = _configured_root()
     if configured is None:
-        raise Refused("no reference root is configured (set X4_REFERENCE, see "
-                      "`x4validate --paths`)")
+        raise Refused("no reference root is configured. " + HOW_TO_CONFIGURE)
     if path is not None and _norm(path) != _norm(configured):
         if action == "remove" and Path(path).is_dir() and _carries_our_protection(Path(path)):
             return Path(path).resolve()
@@ -243,7 +334,8 @@ def resolve_target(path, action: str) -> Path:
     root = Path(configured)
     if not root.is_dir():
         raise Refused("the configured reference root %s is not an existing directory "
-                      "(renamed or moved? status cannot vouch for it)" % root)
+                      "(renamed or moved? status cannot vouch for it). %s"
+                      % (root, HOW_TO_CONFIGURE))
     root = root.resolve()
     if action == "apply":
         why = _dangerous(root)
@@ -479,7 +571,7 @@ def _win_report(root: Path, full: bool) -> dict:
     return r
 
 
-def _win_apply(root: Path) -> int:
+def _win_apply(root: Path, yes: bool = False) -> int:
     before = _win_report(root, False)
     if before["state"] in ("error", "foreign"):
         print("REFUSED: %s" % before["detail"], file=sys.stderr)
@@ -492,8 +584,12 @@ def _win_apply(root: Path) -> int:
     if before["state"] == "protected":
         print("already protected: %s (%s)" % (root, before["detail"]))
         return 0
-    res = _mutate_run(["icacls", root, "/deny", "*%s:%s" % (_user_sid(), ICACLS_SPEC),
-                       "/C", "/Q"], root)
+    rc = _confirm(root, "apply", yes)
+    if rc is not None:
+        return rc
+    sid = _user_sid()
+    res = _with_heartbeat("applying", lambda: _mutate_run(
+        ["icacls", root, "/deny", "*%s:%s" % (sid, ICACLS_SPEC), "/C", "/Q"], root))
     after = _win_report(root, False)
     if after["state"] == "protected":
         print("Layer 2 applied: %s -- %s" % (root, after["detail"]))
@@ -505,7 +601,7 @@ def _win_apply(root: Path) -> int:
     return 1
 
 
-def _win_remove(root: Path) -> int:
+def _win_remove(root: Path, yes: bool = False) -> int:
     item = _item(root)
     explicit = _explicit_denies(root, item)
     if explicit and (explicit != [EXPECTED_MASK] or not _ours_in(item)):
@@ -516,7 +612,12 @@ def _win_remove(root: Path) -> int:
     if not explicit:
         print("nothing to remove: %s carries no deny for your SID" % root)
         return 0
-    res = _mutate_run(["icacls", root, "/remove:d", "*%s" % _user_sid(), "/C", "/Q"], root)
+    rc = _confirm(root, "remove", yes)
+    if rc is not None:
+        return rc
+    sid = _user_sid()
+    res = _with_heartbeat("removing", lambda: _mutate_run(
+        ["icacls", root, "/remove:d", "*%s" % sid, "/C", "/Q"], root))
     left = _explicit_denies(root)
     if not left:
         print("Layer 2 lifted: %s" % root)
@@ -627,7 +728,9 @@ def _chmod_tree(root: Path, writable: bool) -> int:
     """Clear (or restore the OWNER's) write bits on every dir and file. Symlinks are
     never followed. Returns the number of objects that could not be changed."""
     failed = 0
-    for p in _walk(root):
+    for n, p in enumerate(_walk(root), 1):
+        if n % PROGRESS_EVERY == 0:
+            print("  chmod: %d object(s) done ..." % n, file=sys.stderr, flush=True)
         try:
             m = stat.S_IMODE(_mode(p))
             _mutate_chmod(p, (m | stat.S_IWUSR) if writable else (m & ~0o222))
@@ -636,7 +739,7 @@ def _chmod_tree(root: Path, writable: bool) -> int:
     return failed
 
 
-def _posix_apply(root: Path) -> int:
+def _posix_apply(root: Path, yes: bool = False) -> int:
     before = _posix_report(root, False)
     if not _owner_is_user(root):
         print("REFUSED: %s is not owned by you; not applying." % root, file=sys.stderr)
@@ -644,12 +747,15 @@ def _posix_apply(root: Path) -> int:
     if before["state"] == "protected":
         print("already protected: %s (%s)" % (root, before["detail"]))
         return 0
+    rc = _confirm(root, "apply", yes)
+    if rc is not None:
+        return rc
     plat, note = _platform(), ""
     if plat == "linux" and _geteuid() == 0 and _which("chattr"):
-        res = _mutate_run([_which("chattr"), "-R", "+i", root], root)
+        res = _with_heartbeat("applying", lambda: _mutate_run([_which("chattr"), "-R", "+i", root], root))
         note = "chattr rc %d %s" % (res.returncode, res.stderr.strip()[:200])
     elif plat == "darwin" and _which("chflags"):
-        res = _mutate_run([_which("chflags"), "-R", "uchg", root], root)
+        res = _with_heartbeat("applying", lambda: _mutate_run([_which("chflags"), "-R", "uchg", root], root))
         note = "chflags rc %d %s" % (res.returncode, res.stderr.strip()[:200])
     else:
         failed = _chmod_tree(root, writable=False)
@@ -666,11 +772,14 @@ def _posix_apply(root: Path) -> int:
     return 1
 
 
-def _posix_remove(root: Path) -> int:
+def _posix_remove(root: Path, yes: bool = False) -> int:
     mark = _posix_mark(root)
     if mark is None:
         print("nothing to remove: %s carries no protection this tool recognises" % root)
         return 0
+    rc = _confirm(root, "remove", yes)
+    if rc is not None:
+        return rc
     plat = _platform()
     if mark == "immutable":
         if plat == "linux":
@@ -764,11 +873,13 @@ def report(full: bool = False, path=None) -> dict:
     except Unresolvable as exc:
         return _blank("error", detail=str(exc))
     if configured is None and path is None:
-        return _blank("unconfigured", detail="no reference root is configured")
+        return _blank("unconfigured", detail="no reference root is configured. "
+                      + HOW_TO_CONFIGURE)
     root = Path(path) if path is not None else Path(configured)
     if not root.is_dir():
         return _blank("unconfigured", root, "the configured reference root %s does not "
-                      "exist (renamed or moved?)" % root)
+                      "exist (not unpacked yet, or renamed or moved). %s"
+                      % (root, HOW_TO_CONFIGURE))
     root = root.resolve()
     if plat == "windows":
         return _win_report(root, full)
@@ -804,6 +915,11 @@ def _act(args, action: str) -> int:
               "%s." % (_platform(), "applied" if action == "apply" else "removed"),
               file=sys.stderr)
         return 3
+    refusal = _paths.foreign_toolkit_refusal("x4refguard " + action) if _paths is not None else None
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 2
+    yes = bool(getattr(args, "yes", False))
     try:
         root = resolve_target(args.path, action)
     except (Refused, Unresolvable) as exc:
@@ -812,8 +928,8 @@ def _act(args, action: str) -> int:
         return 2
     try:
         if _platform() == "windows":
-            return _win_apply(root) if action == "apply" else _win_remove(root)
-        return _posix_apply(root) if action == "apply" else _posix_remove(root)
+            return _win_apply(root, yes) if action == "apply" else _win_remove(root, yes)
+        return _posix_apply(root, yes) if action == "apply" else _posix_remove(root, yes)
     except AclError as exc:
         print("ERROR: could not read the ACL, so nothing can be verified: %s" % exc,
               file=sys.stderr)
@@ -834,7 +950,23 @@ def main(argv=None) -> int:
     ap_.add_argument("--path")
     rm = sub.add_parser("remove", help="lift the protection (the escape hatch)")
     rm.add_argument("--path")
+    for p in (ap_, rm):
+        p.add_argument("--yes", action="store_true",
+                       help="confirm without being asked (required when not run in a terminal)")
+    for p in (st, ap_, rm):
+        p.add_argument("--toolkit", metavar="DIR",
+                       help="act for this toolkit's configuration. Default: the toolkit this "
+                            "script lives in; REQUIRED for apply/remove when $X4_TOOLKIT names "
+                            "a different one")
     args = ap.parse_args(argv)
+    if getattr(args, "toolkit", None):
+        if _paths is None or not Path(args.toolkit).is_dir():
+            print("REFUSED: --toolkit %s is not a directory (or the x4validate package could "
+                  "not be imported)" % args.toolkit, file=sys.stderr)
+            return 2
+        _paths.use_toolkit(args.toolkit)
+    elif _paths is not None:
+        _paths.toolkit_notice()
     if args.cmd == "status":
         return cmd_status(args)
     if args.cmd in ("apply", "remove"):

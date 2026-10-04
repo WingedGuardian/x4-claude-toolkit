@@ -2086,6 +2086,10 @@ def test_a_PERSONALISED_claude_md_is_kept_as_X4_NOTES_pre_4_0(installer, tmp_pat
     assert (dest / "X4-NOTES.pre-4.0.md").read_bytes() == mine, "the user's file was not kept BYTE-identical"
     assert (dest / "CLAUDE.md").read_bytes() == b"# CLAUDE.md -- shipped\n"
     assert "X4-NOTES.pre-4.0.md" in r.stdout and "X4-NOTES.md" in r.stdout, _ok(r)
+    # C3 (install red-team 2026-10-04): "KEPT" alone read as "still in effect". Say it is NOT
+    # loaded any more, and how to bring the content back.
+    low = r.stdout.lower()
+    assert "no longer loaded" in low and "merge" in low, _ok(r)
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
@@ -2982,3 +2986,145 @@ def test_both_installers_spell_the_DERIVED_suffix_the_SAME_way(tmp_path):
                       ("X4_EXTENSIONS", "/extensions"))}
     assert got["sh"] == got["ps1"] == {"X4_REFERENCE": "/reference", "X4_DEBUGLOG": "/debug.txt",
                                         "X4_EXTENSIONS": "/extensions"}, got
+
+
+# --- C1 (install red-team 2026-10-04): --agent / -Agent takes a COMMA LIST ---------------- #
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_C1_a_comma_list_installs_exactly_those_agents(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "claude,codex", source=src)
+    assert r.returncode == 0, _ok(r)
+    for rel in ("CLAUDE.md", ".claude/settings.json", "AGENTS.md", ".codex/hooks.json"):
+        assert (dest / rel).exists(), "--agent claude,codex did not install %s\n%s" % (rel, _ok(r))
+    assert not (dest / ".opencode").exists(), "--agent claude,codex installed OpenCode"
+    assert "claude, codex" in r.stdout and "opencode" not in r.stdout.split("Agents:")[-1].splitlines()[0], _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+@pytest.mark.parametrize("agent,word", [("claude,nonsense", "'nonsense'"), ("claude,all", "cannot be combined"),
+                                        ("claude,", "empty")])
+def test_C1_every_item_of_a_list_is_validated_before_writing(installer, agent, word, tmp_path):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", agent, source=src)
+    assert r.returncode == 2, _ok(r)
+    assert word in r.stdout + r.stderr, _ok(r)
+    assert not any(dest.iterdir()), "a refused install wrote something"
+
+
+# --- C4 / C5 (install red-team 2026-10-04): every summary line true and specific -------- #
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_C4_the_summary_ALWAYS_states_the_reference_protection(installer, tmp_path):
+    """No reference/ yet: the summary still says the protection is not applied by the
+    installer, and how it gets applied -- never silence."""
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, _ok(r)
+    line = [ln for ln in r.stdout.splitlines() if ln.startswith("Reference:")]
+    assert line, "the summary says nothing about reference/ protection\n" + _ok(r)
+    body = r.stdout[r.stdout.index(line[0]):]
+    assert "not applied by the installer" in body and "unpack-reference.sh" in body, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_C4_an_unprotected_reference_names_the_exact_apply_command(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    (dest / "reference" / "libraries").mkdir(parents=True)
+    (dest / "reference" / "libraries" / "wares.xml").write_text("<wares/>", encoding="utf-8")
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, _ok(r)
+    assert "python scripts/x4refguard.py apply --yes" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_C5_Next_does_not_ask_to_set_X4_GAME_when_it_is_set(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, _ok(r)
+    assert "set X4_GAME if blank" not in r.stdout, _ok(r)
+    nxt = [ln for ln in r.stdout.splitlines() if ln.startswith("Next:")]
+    assert nxt and "unpack-reference.sh" in nxt[0] and "X4_GAME" not in nxt[0], _ok(r)
+
+
+def test_C5_TWIN_both_installers_name_X4_GAME_only_on_the_BLANK_branch():
+    """Static on purpose: an install run with no --game AUTO-DETECTS the game, which on a
+    developer machine is the real install -- a test must never resolve that. So the blank
+    branch is pinned by text: each installer tests the game value and names X4_GAME there."""
+    sh = INSTALL_SH.read_text(encoding="utf-8")
+    ps = INSTALL_PS1.read_text(encoding="utf-8")
+    assert 'if [ -z "$GAME" ]; then' in sh and 'Next:      X4_GAME is blank' in sh
+    assert 'if (-not $Game) {' in ps and 'Next:      X4_GAME is blank' in ps
+    assert 'set X4_GAME if blank' not in sh + ps
+
+
+def test_C5_setup_says_the_config_is_IN_PLACE_not_already_present(tmp_path):
+    """The installers write x4-paths.env and then run setup.sh, which said 'already present'
+    about the file the installer wrote seconds earlier."""
+    b = _bash()
+    if b is None:
+        pytest.skip("no Git Bash")
+    root = tmp_path / "tk"
+    root.mkdir()
+    shutil.copy2(ROOT / "setup.sh", root / "setup.sh")
+    (root / "x4-paths.env").write_text('X4_GAME="/g"\n', encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("X4_")}
+    env["CLAUDE_PROJECT_DIR"] = str(root)
+    r = subprocess.run([b, str(root / "setup.sh"), "--config-only"], capture_output=True, text=True,
+                       env=env, cwd=str(root))
+    assert "already present" not in r.stdout and "in place" in r.stdout, r.stdout + r.stderr
+
+
+# --- cosmetic (install red-team 2026-10-04): the 3.x .claude/x4-paths.env.example ---------- #
+#
+# An upgrade left the 3.x example beside the 4.0 one at the root. It is removed ONLY when it is
+# an unedited shipped copy (its canonical hash is a `.claude/x4-paths.env.example` row of
+# scripts/shipped-instruction-hashes.txt: 3 distinct over 19 of 23 tags, MEASURED); an edited
+# one is KEPT and said so -- a user's file is never deleted.
+
+def _v3_example() -> bytes:
+    r = subprocess.run(["git", "-C", str(ROOT), "cat-file", "blob", "v3.3.1:.claude/x4-paths.env.example"],
+                       capture_output=True)
+    if r.returncode != 0:
+        pytest.skip("no v3.3.1 tag in this clone (shallow?) -- NOT CHECKED")
+    return r.stdout
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_an_UNEDITED_3x_example_is_removed_by_the_upgrade(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    old = dest / ".claude" / "x4-paths.env.example"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(_v3_example().replace(b"\n", b"\r\n"))       # CRLF: still the shipped file
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "x4-paths.env.example").is_file()
+    assert not old.exists(), "the unedited 3.x example was left behind\n" + _ok(r)
+    assert "removed" in r.stdout and ".claude/x4-paths.env.example" in r.stdout.replace("\\", "/"), _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_TWIN_an_EDITED_3x_example_is_KEPT_and_said_so(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    old = dest / ".claude" / "x4-paths.env.example"
+    old.parent.mkdir(parents=True)
+    mine = _v3_example() + b"# my own note\n"
+    old.write_bytes(mine)
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, _ok(r)
+    assert old.read_bytes() == mine, "an EDITED example was changed or deleted"
+    assert "kept" in r.stdout.lower() and ".claude/x4-paths.env.example" in r.stdout.replace("\\", "/"), _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_dry_run_names_the_3x_example_removal(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    old = dest / ".claude" / "x4-paths.env.example"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(_v3_example())
+    r = _install(installer, tmp_path, dest, "--agent", "claude", "--dry-run")
+    assert r.returncode == 0, _ok(r)
+    assert old.is_file(), "the dry run deleted it"
+    assert "would be removed" in r.stdout, _ok(r)

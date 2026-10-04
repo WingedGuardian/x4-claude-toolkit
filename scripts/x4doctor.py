@@ -18,13 +18,17 @@ None of those says anything. This command asks, per installed agent target:
                   X4_GUARD; the OS-level reference protection; the x4lock state.
 
 THE CONTRACT -- ABSENCE vs NON-ANSWER, structurally:
-  every row is OK, FAIL, UNKNOWN or N/A. N/A means only "this target is not installed
-  here" (or "this check cannot apply on this OS"). A check that RAISES becomes UNKNOWN
-  with the exception named, never a dropped row.
+  every row is OK, FAIL, UNKNOWN, TODO or N/A. N/A means only "this target is not installed
+  here" (or "this check cannot apply on this OS"). TODO means "correctly installed; YOUR
+  step is pending" -- trusting the folder in Codex, approving its hooks, applying the OS
+  protection of reference/: things the installer must never do for you (C2, install
+  red-team 2026-10-04: a correct fresh install exited 1 on those alone). A check that
+  RAISES becomes UNKNOWN with the exception named, never a dropped row.
 
     exit 0  every applicable check is OK, and at least one answered
-    exit 1  any FAIL
+    exit 1  any FAIL                             (a TODO never hides one)
     exit 3  no FAIL, but at least one UNKNOWN   (x4validate's degraded exit)
+    exit 4  no FAIL, no UNKNOWN: only YOUR steps (TODO rows) are pending
     exit 2  could not run: no agent target at --root, nothing answered, or a usage error
 
 The verdict line is printed FIRST (CLAUDE.md #38: a truncated report keeps its head).
@@ -35,7 +39,7 @@ touches Codex's config. Stdlib only, Python >= 3.10, so a broken uv or venv cann
 down the tool that diagnoses it.
 
 USAGE
-    python scripts/x4doctor.py [--root DIR] [--agent claude|codex|generic|opencode] [--json]
+    python scripts/x4doctor.py [--root DIR] [--agent claude|codex|generic|opencode] [--json] [--toolkit DIR]
 
 OPENCODE (Plan 3 lane L) is BEST EFFORT, from OpenCode's docs and source, not measured: its
 rows say whether the toolkit's two layers are IN PLACE (plugin + adapter, rendered deny
@@ -53,8 +57,8 @@ import traceback
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-OK, FAIL, UNKNOWN, NA = "OK", "FAIL", "UNKNOWN", "N/A"
-STATUSES = (OK, FAIL, UNKNOWN, NA)
+OK, FAIL, UNKNOWN, NA, TODO = "OK", "FAIL", "UNKNOWN", "N/A", "TODO"
+STATUSES = (OK, FAIL, UNKNOWN, TODO, NA)
 TARGETS = ("claude", "codex", "generic", "opencode")
 HERE = Path(__file__).resolve().parent
 
@@ -67,30 +71,66 @@ class Check:
     detail: str
 
 
+#: Ctx(toolkit=...) default: the toolkit this doctor LIVES IN (B2). Pass None for "no toolkit".
+AUTO = object()
+
+
+def own_toolkit() -> Path | None:
+    """The toolkit this doctor ships in, or None outside the toolkit layout."""
+    tk = HERE.parent
+    return tk if (tk / "tools" / "x4validate" / "x4validate" / "_paths.py").is_file() else None
+
+
+def _same_dir(a, b) -> bool:
+    try:
+        return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+    except OSError:
+        return os.path.normcase(str(a)) == os.path.normcase(str(b))
+
+
 @dataclass
 class Ctx:
+    """`toolkit` is the toolkit this doctor acts for: --toolkit, else the one it LIVES IN (B2,
+    install red-team 2026-10-04: an inherited X4_TOOLKIT naming another copy made a second
+    toolkit's parity row compare against the FIRST toolkit's source). $X4_TOOLKIT decides only
+    when the doctor lives outside the toolkit layout. The guard probes still run with the real
+    environment: what the guards at the root read is the thing being diagnosed."""
     root: Path
-    toolkit: Path | None = None
+    toolkit: object = AUTO
     env: dict = field(default_factory=lambda: dict(os.environ))
     targets: dict = field(default_factory=dict)
+    toolkit_note: str = ""
 
     def __post_init__(self):
         self.root = Path(self.root)
-        if self.toolkit is None and self.env.get("X4_TOOLKIT"):
-            self.toolkit = Path(self.env["X4_TOOLKIT"])
+        if self.toolkit is AUTO:
+            self.toolkit = own_toolkit()
+            if self.toolkit is None and self.env.get("X4_TOOLKIT"):
+                self.toolkit = Path(self.env["X4_TOOLKIT"])
+        elif self.toolkit is not None:
+            self.toolkit = Path(self.toolkit)
+        env_tk = self.env.get("X4_TOOLKIT")
+        if env_tk and self.toolkit is not None and not _same_dir(env_tk, self.toolkit):
+            self.toolkit_note = ("acting for toolkit %s; $X4_TOOLKIT names a different toolkit, %s, "
+                                 "which this doctor does NOT use (the guards at the root still read "
+                                 "whatever their own environment names)" % (self.toolkit, env_tk))
         if not self.targets:
             self.targets = detect_targets(self.root)
 
 
 def exit_code(rows) -> int:
-    """0 all OK, 1 any FAIL, 3 UNKNOWN without FAIL, 2 nothing answered."""
+    """0 all OK, 1 any FAIL, 3 UNKNOWN without FAIL, 4 only user steps (TODO) pending,
+    2 nothing answered. Precedence FAIL > UNKNOWN > TODO: a pending user step never masks a
+    defect or a non-answer."""
     rows = list(rows)
-    answered = [r for r in rows if r.status in (OK, FAIL)]
+    answered = [r for r in rows if r.status in (OK, FAIL, TODO)]
     if not answered:
         return 2
     if any(r.status == FAIL for r in rows):
         return 1
-    return 3 if any(r.status == UNKNOWN for r in rows) else 0
+    if any(r.status == UNKNOWN for r in rows):
+        return 3
+    return 4 if any(r.status == TODO for r in rows) else 0
 
 
 def run_check(cid: str, target: str, fn, ctx) -> Check:
@@ -398,6 +438,8 @@ _PY_ROOTS = r'''
 import json, sys
 sys.path.insert(0, sys.argv[1])
 from x4validate import _paths
+if len(sys.argv) > 2 and sys.argv[2] and hasattr(_paths, "use_toolkit"):
+    _paths.use_toolkit(sys.argv[2])                  # the doctor's toolkit, explicitly (B2)
 out = {}
 for k in ("game_root", "reference", "profile", "_find_env_file"):
     try:
@@ -421,7 +463,8 @@ def tools_roots(ctx: Ctx) -> tuple[dict | None, str]:
     for base in (ctx.toolkit, ctx.root, HERE.parent):
         if base and (Path(base) / "tools" / "x4validate" / "x4validate" / "_paths.py").is_file():
             pkg = Path(base) / "tools" / "x4validate"
-            r = _run([sys.executable, "-c", _PY_ROOTS, str(pkg)], env=dict(ctx.env), cwd=str(ctx.root))
+            r = _run([sys.executable, "-c", _PY_ROOTS, str(pkg), str(ctx.toolkit or "")],
+                     env=dict(ctx.env), cwd=str(ctx.root))
             try:
                 return json.loads(r.stdout.strip().splitlines()[-1]), str(pkg)
             except (ValueError, IndexError):
@@ -854,8 +897,8 @@ def check_codex(ctx: Ctx) -> list[Check]:
         if p == "ancestor":
             return UNKNOWN, ("only an ANCESTOR folder is trusted; whether Codex extends that trust to "
                              "%s is unverified" % ctx.root)
-        return FAIL, ("project NOT trusted: Codex will not load .codex/ here. Run `codex` in %s and "
-                      "trust the folder" % ctx.root)
+        return TODO, ("YOUR STEP: the project is not trusted yet, so Codex will not load .codex/ "
+                      "here. Run `codex` in %s and trust the folder" % ctx.root)
 
     def _reviewed(_):
         if not cfg.is_file() or not hj.is_file():
@@ -868,8 +911,9 @@ def check_codex(ctx: Ctx) -> list[Check]:
                for s in ("untrusted", "disabled", "mismatch")}
         n_ok = sum(h["status"] == "trusted" for h in hooks)
         if bad["untrusted"]:
-            return FAIL, ("%d hook(s) NOT REVIEWED (%s): Codex skips them SILENTLY. Open /hooks in "
-                          "Codex here and approve them" % (len(bad["untrusted"]), ", ".join(bad["untrusted"])))
+            return TODO, ("YOUR STEP: %d hook(s) NOT REVIEWED yet (%s): Codex skips them SILENTLY "
+                          "until you do. Open /hooks in Codex here and approve them"
+                          % (len(bad["untrusted"]), ", ".join(bad["untrusted"])))
         if bad["disabled"]:
             return FAIL, "%d hook(s) disabled in Codex's config (%s): they never run" % (
                 len(bad["disabled"]), ", ".join(bad["disabled"]))
@@ -1041,6 +1085,8 @@ spec = importlib.util.spec_from_file_location("x4lock_probe", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 sys.modules["x4lock_probe"] = m
 spec.loader.exec_module(m)
+if len(sys.argv) > 2 and sys.argv[2] and hasattr(getattr(m, "_paths", None), "use_toolkit"):
+    m._paths.use_toolkit(sys.argv[2])                # the doctor's toolkit, explicitly (B2)
 try:
     items, gone = m.manifest(), m.missing()
 except m.Unresolvable as e:
@@ -1058,8 +1104,8 @@ def _x4lock_answer(ctx: Ctx) -> tuple[dict | None, str]:
     for base in (ctx.root, ctx.toolkit, HERE.parent):
         p = Path(base) / "scripts" / "x4lock.py" if base else None
         if p and p.is_file():
-            r = _run([sys.executable, "-c", _PY_LOCK, str(p)], env=dict(ctx.env), cwd=str(ctx.root),
-                     timeout=120)
+            r = _run([sys.executable, "-c", _PY_LOCK, str(p), str(ctx.toolkit or "")],
+                     env=dict(ctx.env), cwd=str(ctx.root), timeout=120)
             try:
                 got = json.loads(r.stdout.strip().splitlines()[-1])
             except (ValueError, IndexError):
@@ -1120,11 +1166,15 @@ def check_common(ctx: Ctx) -> list[Check]:
         if st in ("absent", "partial"):
             if hookless:
                 names = {"codex": "Codex", "opencode": "OpenCode", "generic": "generic"}
-                return FAIL, ("reference/ has %s OS-level delete protection, and a %s agent here has "
-                              "no Claude hook-level delete guard to fall back on -- run: "
-                              "python scripts/x4refguard.py apply"
-                              % ("NO" if st == "absent" else "only PARTIAL",
-                                 " / ".join(names[t] for t in hookless)))
+                # C2: ABSENT on a fresh install is the user's pending step (the installers never
+                # apply it); PARTIAL is a broken state and stays a FAIL.
+                return (TODO if st == "absent" else FAIL), (
+                    "%sreference/ has %s OS-level delete protection, and a %s agent here has "
+                    "no Claude hook-level delete guard to fall back on -- run: "
+                    "python scripts/x4refguard.py apply --yes"
+                    % ("YOUR STEP: " if st == "absent" else "",
+                       "NO" if st == "absent" else "only PARTIAL",
+                       " / ".join(names[t] for t in hookless)))
             return OK, ("no OS-level delete protection on reference/ (%s); the Claude hooks cover "
                         "deletes" % st)
         return UNKNOWN, "the OS-level protection state of reference/ is %r: %s" % (st, detail)
@@ -1378,8 +1428,20 @@ def check_opencode(ctx: Ctx) -> list[Check]:
         if r.returncode == 0:
             return OK, "the deny rules match the roots the guards resolve now"
         if r.returncode == 1:
-            return FAIL, ("the deny rules are stale -- rendered for roots the guards no longer see "
-                          "(reference/ or the game moved?). Run: " + fix)
+            # C5 (install red-team 2026-10-04): "stale" alone explained nothing. Carry the
+            # renderer's own reason, and name the commonest cause when it applies here: the
+            # guards resolve their roots through $X4_TOOLKIT's config, so an X4_TOOLKIT naming
+            # another toolkit makes a fresh file look stale (and protects the wrong tree).
+            why = (r.stderr or r.stdout).strip().splitlines()
+            why = why[-1][:400] if why else ""
+            tk = ctx.env.get("X4_TOOLKIT")
+            hint = ""
+            if tk and not _same_dir(tk, ctx.root):
+                hint = (" NOTE: the guards here read the config of X4_TOOLKIT=%s, not this root's "
+                        "-- that alone makes the rules differ; point X4_TOOLKIT here (new shells) "
+                        "if this is the toolkit you use." % tk)
+            return FAIL, ("the deny rules on disk differ from what the guards' current roots render: "
+                          "%s.%s Run: %s" % (why or "stale", hint, fix))
         return UNKNOWN, "the deny rules cannot be rendered here: " + (r.stderr or r.stdout).strip()[-300:]
 
     def _userconfig(_):
@@ -1430,17 +1492,27 @@ def _verdict(code: int) -> str:
     return {0: "OK -- every applicable check passed",
             1: "FAIL -- at least one check failed: the guards here are not fully live or not current (see FAIL rows)",
             3: "UNKNOWN -- nothing failed, but some checks could not answer (see UNKNOWN rows)",
+            4: "YOUR STEPS PENDING -- installed correctly; finish the TODO rows (things only you may do)",
             2: "COULD NOT RUN -- nothing was checked; this is not a pass"}[code]
 
 
 def render_text(ctx: Ctx, rows: list[Check], code: int, elapsed: float) -> str:
     present = [t for t in TARGETS if ctx.targets.get(t)]
+    shown, suffix = present, ""
+    if ctx.targets.get("codex") and ctx.targets.get("generic"):
+        # A Codex install ships .agents/skills, which IS the generic payload: listing "generic"
+        # beside it read as a third install (cosmetic, install red-team 2026-10-04).
+        shown = [t for t in present if t != "generic"]
+        suffix = "   (a generic agent reads codex's AGENTS.md + .agents/skills too)"
     out = ["x4doctor: %s" % _verdict(code),
            "  root:    %s" % ctx.root,
-           "  targets: %s" % (", ".join(present) or "NONE (no .claude/settings.json, .codex/hooks, .agents/skills or .opencode/plugins/x4guard.js here)"),
+           "  toolkit: %s" % (ctx.toolkit or "(none)"),
+           "  targets: %s" % ((", ".join(shown) + suffix) or "NONE (no .claude/settings.json, .codex/hooks, .agents/skills or .opencode/plugins/x4guard.js here)"),
            "  checked: %d row(s) in %.1fs -- %s" % (
                len(rows), elapsed,
                ", ".join("%d %s" % (sum(r.status == s for r in rows), s) for s in STATUSES))]
+    if ctx.toolkit_note:
+        out.append("  note:    " + ctx.toolkit_note)
     if ctx.targets.get("generic"):
         out.append("  note:    a GENERIC agent runs no hooks here (by design, spec D13): nothing enforces "
                    "the guards for it; only x4lock and the OS-level reference protection apply")
@@ -1455,10 +1527,18 @@ def main(argv=None) -> int:
     if sys.version_info < (3, 10):
         print("x4doctor: COULD NOT RUN -- needs Python >= 3.10 (this is %d.%d)" % sys.version_info[:2])
         return 2
-    ap = argparse.ArgumentParser(prog="x4doctor", description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(
+        prog="x4doctor", description=__doc__.splitlines()[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="rows: OK, FAIL, UNKNOWN, TODO (your step: trust the folder in Codex, approve its\n"
+               "hooks, apply the reference/ OS protection), N/A (target not installed here)\n"
+               "exit: 0 all OK | 1 any FAIL | 3 no FAIL, some UNKNOWN | 4 only TODO rows pending\n"
+               "      | 2 could not run (FAIL > UNKNOWN > TODO: a TODO never hides a FAIL)")
     ap.add_argument("--root", help="the folder an agent runs in (default: nearest ancestor holding a target)")
     ap.add_argument("--agent", help="report only this target: " + ", ".join(TARGETS))
     ap.add_argument("--json", action="store_true", help="one JSON document on stdout")
+    ap.add_argument("--toolkit", metavar="DIR",
+                    help="the toolkit to compare and ask (default: the one this doctor lives in)")
     try:
         a = ap.parse_args(argv)
     except SystemExit as e:
@@ -1467,7 +1547,7 @@ def main(argv=None) -> int:
         print("x4doctor: COULD NOT RUN -- unknown --agent %r (one of: %s)" % (a.agent, ", ".join(TARGETS)))
         return 2
     root = Path(a.root).resolve() if a.root else default_root(Path.cwd())
-    ctx = Ctx(root=root)
+    ctx = Ctx(root=root, toolkit=Path(a.toolkit).resolve() if a.toolkit else AUTO)
     t0 = time.monotonic()
     rows = collect(ctx, a.agent) if any(ctx.targets.values()) else []
     elapsed = time.monotonic() - t0
@@ -1477,6 +1557,8 @@ def main(argv=None) -> int:
                           "targets": {t: ("present" if ctx.targets.get(t) else "absent") for t in TARGETS},
                           "checks": [asdict(r) for r in rows],
                           "summary": _verdict(code), "exit": code,
+                          "toolkit": str(ctx.toolkit) if ctx.toolkit else None,
+                          "toolkit_note": ctx.toolkit_note,
                           "elapsed_s": round(elapsed, 2)}, indent=1))
     else:
         sys.stdout.write(render_text(ctx, rows, code, elapsed))

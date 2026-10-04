@@ -23,17 +23,19 @@ development machine only because the hardcoded defaults there happened to be rig
      `$X4_CONFIG` (explicit -- naming no file means NO file is read) >
      `<toolkit>/x4-paths.env` > `<toolkit>/.claude/x4-paths.env` (the 3.x location,
      still read for all of 4.x, with a one-line deprecation notice) > none.
-     `<toolkit>` is `$X4_TOOLKIT`; only when that is UNSET does the search walk up
-     from the CWD, new before legacy at each level. A named toolkit holding no config
-     is NOT rescued by the walk: bash never walks, and a walk here was a silent
-     disagreement between the two loaders.
-     ⚠ With X4_TOOLKIT UNSET the two anchor differently, by construction (v4.0.0 review
-     R5-7): a guard knows where its own copy lives (CLAUDE_PROJECT_DIR, else
-     <hooks>/../..), this module knows only the CWD and walks up from it. They AGREE for a
-     tool run in the project or below it -- how an agent runs one -- and a tool run from
-     anywhere else reads whatever its walk finds there. Both behaviours are pinned in
-     tests/test_config_precedence_agrees.py; set X4_TOOLKIT (the installers do) to remove
-     the difference.
+     `<toolkit>` is the toolkit this module LIVES IN (B2, install red-team 2026-10-04:
+     an inherited `$X4_TOOLKIT` naming another copy made a second toolkit's
+     `x4refguard apply` target the first one's reference tree), or `--toolkit` when a
+     command was given one (`use_toolkit`). `$X4_TOOLKIT` naming a different directory
+     earns one stderr line naming both roots and is otherwise NOT used. Only code living
+     outside the `<root>/tools/x4validate/x4validate/` layout falls back to `$X4_TOOLKIT`,
+     and only when that is unset too does the search walk up from the CWD, new before
+     legacy at each level.
+     The bash loader (`_x4-env.sh`, in the DEPLOYED guard copies) still reads
+     `$X4_TOOLKIT`: a guard lives in a game root and legitimately reaches a separate
+     toolkit through it. The two agree whenever `$X4_TOOLKIT` names the toolkit whose
+     tools run -- the installed shape -- which tests/test_config_precedence_agrees.py
+     pins.
   4. a derivation from an already-resolved location (`$X4_GAME/extensions`,
      `$X4_PROFILE/content.xml`, ...)
   5. `_LOCAL_FALLBACK` — development-machine defaults, empty in the public tree
@@ -255,6 +257,111 @@ LEGACY_CONFIG = Path(".claude", CONFIG_NAME)
 _NOTICED: set[str] = set()
 
 
+# --- WHICH toolkit this process acts for (B2, install red-team 2026-10-04) ---------------
+#
+# THE INCIDENT. A second toolkit copy's `x4refguard.py apply`, run in a shell that had
+# inherited X4_TOOLKIT naming the user's REAL toolkit, imported its own `_paths` -- which
+# located the config through $X4_TOOLKIT and so resolved the OTHER toolkit's reference tree.
+# A script now acts for the toolkit it LIVES IN; $X4_TOOLKIT naming a different directory
+# earns one notice naming both, and system-changing commands refuse unless the caller passes
+# --toolkit (`use_toolkit`). The deployed GUARD copies are a different case and keep reading
+# $X4_TOOLKIT: they live in a game root and legitimately reach a separate toolkit.
+
+def _self_toolkit_of(module_file: Path) -> Path | None:
+    """`<root>` when *module_file* sits at `<root>/tools/x4validate/x4validate/<file>`, the
+    layout every toolkit copy has (a checkout, an installed copy). None for any other
+    layout, e.g. the package installed into a site-packages -- which then has no "own"
+    toolkit, and $X4_TOOLKIT stays the only answer, exactly as before."""
+    pkg = Path(module_file).resolve().parent
+    proj = pkg.parent
+    if pkg.name == "x4validate" and proj.name == "x4validate" and proj.parent.name == "tools":
+        return proj.parent.parent
+    return None
+
+
+#: The toolkit this module lives in (see `_self_toolkit_of`). A module attribute so an
+#: in-process test can model "installed outside any toolkit" without moving files.
+_SELF: Path | None = _self_toolkit_of(Path(__file__))
+#: The toolkit named by an explicit --toolkit (`use_toolkit`), else None.
+_EXPLICIT: Path | None = None
+
+
+def self_toolkit() -> Path | None:
+    """The toolkit this code lives in, or None outside the toolkit layout."""
+    return _SELF
+
+
+def use_toolkit(root) -> None:
+    """--toolkit: act for *root*, explicitly. The one way a system-changing command may act
+    while $X4_TOOLKIT names a different toolkit."""
+    global _EXPLICIT
+    _EXPLICIT = Path(native(str(root)))
+    reload()
+
+
+def explicit_toolkit() -> Path | None:
+    """The --toolkit given to this process, or None."""
+    return _EXPLICIT
+
+
+def _env_toolkit() -> Path | None:
+    v = os.environ.get("X4_TOOLKIT")
+    return Path(native(v)) if v else None
+
+
+def toolkit_root() -> Path | None:
+    """The toolkit this process acts for: --toolkit > the toolkit this code lives in >
+    $X4_TOOLKIT (only when the code lives outside the toolkit layout) > None."""
+    if _EXPLICIT is not None:
+        return _EXPLICIT
+    if _SELF is not None:
+        return _SELF
+    return _env_toolkit()
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+    except OSError:
+        return os.path.normcase(os.path.abspath(str(a))) == os.path.normcase(os.path.abspath(str(b)))
+
+
+def toolkit_conflict() -> tuple[Path, Path] | None:
+    """`(acting toolkit, the different one $X4_TOOLKIT names)`, or None when they agree,
+    when X4_TOOLKIT is unset, or when there is no acting toolkit to differ from."""
+    env, acting = _env_toolkit(), toolkit_root()
+    if env is None or acting is None or _same_dir(env, acting):
+        return None
+    return acting, env
+
+
+def toolkit_notice() -> None:
+    """ONE stderr line per process when $X4_TOOLKIT names another toolkit: both ROOTS, never
+    a config value."""
+    c = toolkit_conflict()
+    if c is None or "toolkit-conflict" in _NOTICED:
+        return
+    _NOTICED.add("toolkit-conflict")
+    acting, env = c
+    why = "--toolkit" if _EXPLICIT is not None else "the toolkit this tool lives in"
+    print(f"x4 toolkit: acting for {acting} ({why}); $X4_TOOLKIT names a different toolkit, "
+          f"{env}, which is NOT used here -- run that toolkit's own copy to act for it.",
+          file=sys.stderr)
+
+
+def foreign_toolkit_refusal(action: str) -> str | None:
+    """The refusal for a SYSTEM-CHANGING *action* while $X4_TOOLKIT names a different
+    toolkit and no --toolkit was given, else None. Callers print it and exit 2."""
+    c = toolkit_conflict()
+    if c is None or _EXPLICIT is not None:
+        return None
+    acting, env = c
+    return (f"REFUSED: `{action}` changes your system, and $X4_TOOLKIT names {env} while "
+            f"this tool lives in {acting}. Nothing was changed. To act for THIS toolkit, "
+            f"re-run with --toolkit \"{acting}\"; to act for the other one, run its own copy "
+            f"(or fix X4_TOOLKIT).")
+
+
 def _locate_config() -> tuple[Path | None, str, Path | None]:
     """`(file read or None, state, the OTHER location)` by the module docstring's rule.
 
@@ -266,9 +373,9 @@ def _locate_config() -> tuple[Path | None, str, Path | None]:
     if explicit:                                  # empty counts as unset, like ${X4_CONFIG:-}
         p = Path(native(explicit))
         return (p, "explicit", None) if p.is_file() else (None, "explicit-missing", None)
-    toolkit = os.environ.get("X4_TOOLKIT")
-    if toolkit:
-        roots = [Path(native(toolkit))]
+    toolkit = toolkit_root()                      # B2: the toolkit this code lives in
+    if toolkit is not None:
+        roots = [toolkit]
     else:
         here = Path.cwd().resolve()
         roots = [here, *here.parents]
@@ -437,6 +544,7 @@ def _file_layer() -> tuple[dict[str, str], Path | None]:
     having to remember `reload()` — a cache that silently ignores a freshly-set env
     var is precisely the kind of quiet misconfiguration this module exists to end.
     """
+    toolkit_notice()
     env_file = _find_env_file()
     _notice(env_file)
     return (parse_env_file(env_file) if env_file else {}), env_file
@@ -457,6 +565,10 @@ def _layers() -> list[dict[str, str]]:
     """
     env = {k: v for k, v in os.environ.items()
            if (k.startswith("X4_") or k == "XRCATTOOL") and v}
+    # B2: an exported X4_TOOLKIT naming ANOTHER toolkit must not answer by derivation either
+    # (`<X4_TOOLKIT>/reference` was the second route to the other toolkit's tree).
+    if env.get("X4_TOOLKIT") and toolkit_conflict() is not None:
+        env["X4_TOOLKIT"] = str(toolkit_root())
     file_layer, _ = _file_layer()
     return [env, file_layer, _LOCAL_FALLBACK]
 

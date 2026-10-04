@@ -1,4 +1,4 @@
-r"""Locate a REAL bash on Windows, never the WSL stub.
+r"""Locate a REAL bash on Windows, never the WSL stub -- by asking the GUARDS' resolver.
 
 `shutil.which("bash")` on Windows returns `C:\Windows\System32\bash.exe` -- the WSL
 launcher -- whenever Git Bash is not on PATH, which is the normal state in PowerShell
@@ -13,54 +13,63 @@ The second is the important one: `scripts/fuzz-guard.py` carried
 It did not -- the stub IS named bash.exe. A defence that names the right threat and
 does not stop it is worse than none, because it stops anyone looking again.
 
-Cost so far: three separate debugging sessions in this workspace, and one harness
-written to falsify a guard that was itself running under WSL.
+ONE RESOLVER (B1, install red-team 2026-10-04). This module used to carry its own list of
+Git for Windows locations while the guards' `x4guard.resolve_bash()` asked only PATH -- so on
+a stock machine the tools found Git Bash and the guards (and the OpenCode renderer, and
+x4doctor's rows) did not. The algorithm now lives in ONE place, `x4guard.resolve_bash()`,
+because a deployed guard copy has no scripts/ to import from; this module loads the toolkit's
+own guard copy and asks it.
 """
 
 from __future__ import annotations
 
-import os
-import shutil
-import sys
+import importlib.util
 from pathlib import Path
 
-#: Directories whose `bash.exe` is a stub, not a shell.
-_STUB_DIRS = ("system32", "syswow64", "windowsapps")
+_TOOLKIT = Path(__file__).resolve().parent.parent
 
-#: Where Git for Windows actually installs. `usr/bin` first: it is the real binary,
-#: `bin/bash.exe` being a wrapper.
-_GIT_BASH = (
-    r"C:\Program Files\Git\bin\bash.exe",
-    r"C:\Program Files\Git\usr\bin\bash.exe",
-    r"C:\Program Files (x86)\Git\bin\bash.exe",
-    r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
+#: Where this toolkit's x4guard.py lives: the agent/ source in a checkout, else whichever
+#: guard copy an install carries (all are byte-identical generated copies).
+_GUARD_COPIES = (
+    _TOOLKIT / "agent" / "guards" / "claude-hooks" / "x4guard.py",
+    _TOOLKIT / ".claude" / "hooks" / "x4guard.py",
+    _TOOLKIT / ".codex" / "hooks" / "x4guard.py",
+    _TOOLKIT / ".opencode" / "hooks" / "x4guard.py",
 )
 
+_MOD = None
 
-def _is_stub(p: str | os.PathLike) -> bool:
-    parts = [q.lower() for q in Path(p).parts]
-    return any(d in parts for d in _STUB_DIRS)
+
+def _resolver():
+    """The toolkit's x4guard module (loaded once), or None when no guard copy exists."""
+    global _MOD
+    if _MOD is None:
+        for p in _GUARD_COPIES:
+            if p.is_file():
+                spec = importlib.util.spec_from_file_location("x4guard_for_gitbash", p)
+                m = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(m)
+                _MOD = m
+                break
+    return _MOD
+
+
+def _is_stub(p) -> bool:
+    m = _resolver()
+    return bool(m and m.is_stub_bash(p))
 
 
 def find_bash() -> str | None:
     """A usable bash, or None. Never a WSL/Store stub on Windows."""
-    override = os.environ.get("X4_BASH")
-    if override and Path(override).is_file():
-        return override
+    m = _resolver()
+    if m is None:
+        return None
+    return m.resolve_bash()[0]
 
-    if sys.platform != "win32":
-        return shutil.which("bash")
 
-    for c in _GIT_BASH:
-        if Path(c).is_file():
-            return c
-
-    # Fall back to PATH, skipping the stubs. `which` returns only the first hit, so the
-    # PATH is walked by hand -- otherwise a System32 hit masks a real Git Bash later on.
-    for d in os.environ.get("PATH", "").split(os.pathsep):
-        if not d:
-            continue
-        cand = Path(d) / "bash.exe"
-        if cand.is_file() and not _is_stub(cand):
-            return str(cand)
-    return None
+def why_not() -> str:
+    """Why find_bash() returned None (the exact `setx X4_BASH` line on Windows)."""
+    m = _resolver()
+    if m is None:
+        return "no x4guard.py in this toolkit to resolve bash with (re-run the installer)"
+    return m.resolve_bash()[1] or ""

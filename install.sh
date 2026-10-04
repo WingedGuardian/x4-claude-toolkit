@@ -42,7 +42,8 @@ Usage: bash install.sh --method in-game|separate|global [options]
   --reference DIR    unpacked base game (default <toolkit>/reference)
   --extensions DIR   live deploy target (default <game>/extensions)
   --xrcattool PATH   XRCatTool.exe location
-  --agent NAME       claude | codex | generic | opencode | all | auto   [all]
+  --agent LIST       claude | codex | generic | opencode | all | auto   [all]
+                     (a comma list picks several: claude,codex)
                      which agent's instructions, guards and skills to install;
                      auto = the agents found on PATH or already in the destination
                      (none found: all, and it says so)
@@ -578,6 +579,29 @@ case "$AGENT" in
   all) X4_AGENTS="$X4_AGENT_NAMES" ;;
   auto) X4_AGENTS="" ;;   # resolved per destination by resolve_auto_agents, inside the arms
   claude|codex|generic|opencode) X4_AGENTS="$AGENT" ;;
+  *,*)
+    # C1 (install red-team 2026-10-04): a COMMA LIST (`claude,codex`), each item validated
+    # before anything is written; duplicates collapse; `all`/`auto` stand alone.
+    X4_AGENTS=""
+    _rest="$AGENT,"
+    while [ -n "$_rest" ]; do
+      _it="${_rest%%,*}"; _rest="${_rest#*,}"
+      case "$_it" in
+        "") echo "REFUSING: --agent '$AGENT' has an empty item. Supported: $X4_AGENT_NAMES (comma-separated), all, auto. Nothing has been changed." >&2
+            exit 2 ;;
+        all|auto) echo "REFUSING: --agent '$_it' cannot be combined with other agents in a list ('$AGENT'). Nothing has been changed." >&2
+            exit 2 ;;
+        claude|codex|generic|opencode)
+          case " $X4_AGENTS " in *" $_it "*) ;; *) X4_AGENTS="${X4_AGENTS:+$X4_AGENTS }$_it" ;; esac ;;
+        *) echo "REFUSING: unknown agent '$_it' in --agent '$AGENT'. Supported: $X4_AGENT_NAMES (comma-separated), all, auto. Nothing has been changed." >&2
+           exit 2 ;;
+      esac
+    done
+    _picked=" $X4_AGENTS "; X4_AGENTS=""    # canonical order, as install.ps1
+    for _it in $X4_AGENT_NAMES; do
+      case "$_picked" in *" $_it "*) X4_AGENTS="${X4_AGENTS:+$X4_AGENTS }$_it" ;; esac
+    done
+    ;;
   *)
     echo "REFUSING: unknown --agent '$AGENT'. Supported: $X4_AGENT_NAMES all. Nothing has been changed." >&2
     exit 2 ;;
@@ -794,11 +818,36 @@ preserve_user_claude_md() {   # DEST -- AFTER every precheck, BEFORE the copy
     echo "ERROR: could not move $dest/CLAUDE.md aside to $to. Nothing else has been changed." >&2
     exit 1
   fi
-  echo "  [note] your CLAUDE.md is not one this toolkit ever shipped, so it was KEPT as:"
+  echo "  [note] your CLAUDE.md is not one this toolkit ever shipped, so it was KEPT (not lost) as:"
   echo "           $dest/$to"
-  echo "         The 4.0 CLAUDE.md now loads every session. Move your own notes into"
-  echo "         X4-NOTES.md in the same folder: the toolkit never writes that file."
+  echo "         That copy is NO LONGER LOADED by any agent: the 4.0 CLAUDE.md replaced it."
+  echo "         To bring your notes back, merge what you want into X4-NOTES.md in the same"
+  echo "         folder -- every agent's instructions read it, and the toolkit never writes it."
   _h_hash_caveat
+}
+
+#: The 3.x example config `.claude/x4-paths.env.example` (install red-team 2026-10-04: an
+#: upgrade left it beside 4.0's root example). Prints `remove` when it is an UNEDITED shipped
+#: copy (a `.claude/x4-paths.env.example` row of the shipped list), `keep` when it differs from
+#: every one, nothing when there is none. Never deletes a file a user may have edited.
+_old_example_action() {   # DEST
+  [ -f "$1/.claude/x4-paths.env.example" ] && [ -f "$SRC/x4-paths.env.example" ] || return 0
+  if _h_is_shipped "$1" ".claude/x4-paths.env.example"; then printf remove; else printf keep; fi
+}
+retire_old_paths_example() {   # DEST -- AFTER the copy
+  local dest="$1" old="$1/.claude/x4-paths.env.example"
+  case "$(_old_example_action "$dest")" in
+    remove)
+      if rm -f -- "$old" && [ ! -e "$old" ]; then
+        echo "  [note] removed the 3.x .claude/x4-paths.env.example (an unedited shipped copy); 4.0's"
+        echo "         example is x4-paths.env.example at the toolkit root."
+      else
+        echo "  [warn] could not remove the stale 3.x $old (it is unedited, so deleting it is safe)."
+      fi ;;
+    keep)
+      echo "  [note] kept $dest/.claude/x4-paths.env.example: it differs from every example a"
+      echo "         release shipped (your edits?). 4.0 never reads it; delete it when you are done." ;;
+  esac
 }
 
 _agents_md_aside_name() {   # DEST -> the first name that does not exist yet
@@ -985,7 +1034,9 @@ _oc_python() {
 #: when x4refguard reports reference/ present and not protected, say so and name the step.
 #: Silent when it is protected, when there is no reference/ yet ('unconfigured'), and where no
 #: mechanism exists ('unsupported'). install.ps1's Write-RefguardStep prints the same lines.
-X4_REFGUARD_STEP_CMD='python scripts/x4refguard.py apply'
+#: C4 (install red-team 2026-10-04): the summary ALWAYS states the protection -- silence read
+#: as "handled" -- and the command carries --yes, because x4refguard now counts and ASKS (B3).
+X4_REFGUARD_STEP_CMD='python scripts/x4refguard.py apply --yes'
 print_refguard_step() {   # TOOLKIT
   local tk="$1" out state=""
   [ -f "$tk/scripts/x4refguard.py" ] || return 0
@@ -995,14 +1046,21 @@ print_refguard_step() {   # TOOLKIT
   elif [ -d "${REFERENCE:-$tk/reference}" ]; then
     state="unknown (no Python >= 3.10 to ask x4refguard)"
   fi
-  case "$state" in
-    ""|protected|unconfigured|unsupported) return 0 ;;
-  esac
   echo
-  echo "Reference: reference/ exists and is NOT OS-protected (x4refguard state: $state)."
-  echo "           The installer never changes permissions for you. To add the OS-level"
-  echo "           deny-delete layer (any process, hooks or not), run in $tk:"
-  echo "             $X4_REFGUARD_STEP_CMD"
+  case "$state" in
+    protected)
+      echo "Reference: reference/ carries the OS-level deny-delete protection (x4refguard: protected)." ;;
+    ""|unconfigured)
+      echo "Reference: no reference/ tree yet, so nothing is OS-protected. The protection is not applied by the installer:"
+      echo "           bin/unpack-reference.sh applies it to the tree it unpacks (see Next below)." ;;
+    unsupported)
+      echo "Reference: this platform has no OS-level protection mechanism (a disclosed gap; not applied by the installer)." ;;
+    *)
+      echo "Reference: reference/ exists and is NOT OS-protected (x4refguard state: $state)."
+      echo "           It is not applied by the installer (a permission change is yours to make). To add the"
+      echo "           OS-level deny-delete layer (any process, hooks or not), run in $tk:"
+      echo "             $X4_REFGUARD_STEP_CMD" ;;
+  esac
 }
 
 #: A READ-ONLY (x4lock'd) .opencode/opencode.jsonc that would have to change refuses UP FRONT,
@@ -1805,6 +1863,10 @@ announce_copy_plan() {
     echo "  your CLAUDE.md is not one this toolkit shipped: it would be KEPT as $to, not overwritten"
     _h_hash_caveat
   fi
+  case "$(_old_example_action "$1")" in
+    remove) echo "  the 3.x .claude/x4-paths.env.example (an unedited shipped copy) would be removed" ;;
+    keep)   echo "  the 3.x .claude/x4-paths.env.example differs from every shipped one: it would be KEPT" ;;
+  esac
   announce_dry_run_extras "$TOOLKIT"
   echo
   echo "=== dry run complete: nothing was changed ==="
@@ -2104,6 +2166,7 @@ case "$METHOD" in
       preserve_user_agents_md "$TOOLKIT"   # after every precheck, before the copy
       preserve_user_claude_md "$TOOLKIT"   # 3.x -> 4.0: same position, same shape
       copy_toolkit "$TOOLKIT"
+      retire_old_paths_example "$TOOLKIT"   # after the copy: the 4.0 example is in place
       render_toolkit_token "$TOOLKIT"
     else
       note_in_place_token
@@ -2147,6 +2210,7 @@ case "$METHOD" in
       preserve_user_agents_md "$TOOLKIT"   # after every precheck, before the copy
       preserve_user_claude_md "$TOOLKIT"   # 3.x -> 4.0: same position, same shape
       copy_toolkit "$TOOLKIT"
+      retire_old_paths_example "$TOOLKIT"   # after the copy: the 4.0 example is in place
       render_toolkit_token "$TOOLKIT"
     else
       note_in_place_token
@@ -2166,11 +2230,14 @@ case "$METHOD" in
       exit 2
     fi
     case "$AGENT" in
-      codex|generic|opencode)
-        echo "REFUSING: --method global is a Claude-only layout; it cannot install --agent $AGENT." >&2
-        echo "  Use --method in-game or --method separate for Codex, OpenCode and generic agents." >&2
-        echo "  Nothing has been changed." >&2
-        exit 2 ;;
+      all|auto) ;;
+      *)    # codex, generic, opencode -- or a list naming any of them (C1)
+        if [ "$X4_AGENTS" != claude ]; then
+          echo "REFUSING: --method global is a Claude-only layout; it cannot install --agent $AGENT." >&2
+          echo "  Use --method in-game or --method separate for Codex, OpenCode and generic agents." >&2
+          echo "  Nothing has been changed." >&2
+          exit 2
+        fi ;;
     esac
     if [ "$AGENT" = all ] || [ "$AGENT" = auto ]; then
       echo "  [note] --method global is a Claude-only layout: only the Claude target is installed."
@@ -2330,7 +2397,14 @@ if [ "$METHOD" != global ] && _opencode_selected; then
 fi
 [ "$METHOD" = global ] && echo "Global:    skills/agents + X4_* env added to your ~/.claude — works from any mod repo."
 print_refguard_step "$TOOLKIT"
-echo "Next:      set X4_GAME if blank, then  (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/."
+# C5 (install red-team 2026-10-04): the Next line asked to set X4_GAME even when it was set.
+if [ -z "$GAME" ]; then
+  echo "Next:      X4_GAME is blank -- set it in $TOOLKIT/x4-paths.env, then  (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/."
+elif [ -f "${REFERENCE:-$TOOLKIT/reference}/.unpacked-and-locked" ]; then
+  echo "Next:      reference/ is already unpacked; open your agent in \"$TOOLKIT\" and paste SETUP_PROMPT.txt."
+else
+  echo "Next:      (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/ from your game."
+fi
 echo
 case "$X4_H_ENV_STATE" in
   set|same)

@@ -60,6 +60,30 @@ def test_any_FAIL_wins_over_OK():
     assert doc.exit_code(rows) == 1
 
 
+def test_C2_only_user_steps_pending_is_exit_4():
+    rows = [doc.Check("a", "claude", doc.OK, ""), doc.Check("b", "codex", doc.TODO, "trust it")]
+    assert doc.exit_code(rows) == 4
+
+
+def test_C2_a_TODO_never_masks_a_FAIL():
+    rows = [doc.Check("a", "codex", doc.TODO, ""), doc.Check("b", "claude", doc.FAIL, "")]
+    assert doc.exit_code(rows) == 1
+
+
+def test_C2_an_UNKNOWN_outranks_a_TODO():
+    rows = [doc.Check("a", "codex", doc.TODO, ""), doc.Check("b", "claude", doc.UNKNOWN, "")]
+    assert doc.exit_code(rows) == 3
+
+
+def test_C2_a_TODO_counts_as_answered():
+    assert doc.exit_code([doc.Check("a", "codex", doc.TODO, "")]) == 4
+
+
+def test_C2_exit_4_is_documented_in_help():
+    r = _run("--help")
+    assert "4" in r.stdout and "TODO" in r.stdout, r.stdout
+
+
 def test_TWIN_all_OK_is_0():
     assert doc.exit_code([doc.Check("a", "claude", doc.OK, ""), doc.Check("b", "codex", doc.NA, "")]) == 0
 
@@ -160,6 +184,9 @@ class Sandbox:
         self.root, self.game, self.ref, self.codex_home = root, game, ref, codex_home
 
     def ctx(self, **kw):
+        # The sandbox models an INSTALLED toolkit at the root, so the doctor acts for it (B2:
+        # a doctor acts for the toolkit it lives in; this one lives in the checkout).
+        kw.setdefault("toolkit", self.root)
         return doc.Ctx(root=self.root, **kw)
 
     def rows(self, fn):
@@ -372,7 +399,7 @@ def _pair(tmp_path, monkeypatch, src: dict, dst: dict) -> doc.Ctx:
     tk = _tree(tmp_path / "tk", src)
     root = _tree(tmp_path / "root", dst)
     monkeypatch.setenv("X4_TOOLKIT", str(tk))
-    return doc.Ctx(root=root)
+    return doc.Ctx(root=root, toolkit=tk)
 
 
 _CLAUDE = {".claude/settings.json": "{}\n", ".claude/hooks/a.sh": "echo a\n",
@@ -404,7 +431,7 @@ def test_parity_a_CRLF_only_difference_is_not_drift(tmp_path, monkeypatch):
 def test_parity_with_NO_source_is_UNKNOWN(tmp_path, monkeypatch):
     ctx = _pair(tmp_path, monkeypatch, _CLAUDE, _CLAUDE)
     monkeypatch.delenv("X4_TOOLKIT")
-    ctx = doc.Ctx(root=ctx.root)
+    ctx = doc.Ctx(root=ctx.root, toolkit=None)      # a doctor outside any toolkit, no env
     r = _prow(ctx, "parity.claude")
     assert r.status == doc.UNKNOWN and "X4_TOOLKIT" in r.detail, r
 
@@ -421,7 +448,7 @@ def test_same_tree_without_source_is_NA_never_UNKNOWN(tmp_path, monkeypatch):
     files = dict(_CLAUDE, **_RUNTIME)
     ctx = _pair(tmp_path, monkeypatch, files, files)
     monkeypatch.setenv("X4_TOOLKIT", str(ctx.root))
-    r = _prow(doc.Ctx(root=ctx.root), "parity.claude")
+    r = _prow(doc.Ctx(root=ctx.root, toolkit=ctx.root), "parity.claude")
     assert r.status == doc.NA and "deploy" in r.detail and "agent/" in r.detail, r
 
 
@@ -430,7 +457,7 @@ def test_an_installed_root_with_X4_TOOLKIT_UNSET_is_NA_too(tmp_path, monkeypatch
     files = dict(_CLAUDE, **_RUNTIME)
     ctx = _pair(tmp_path, monkeypatch, files, files)
     monkeypatch.delenv("X4_TOOLKIT")
-    r = _prow(doc.Ctx(root=ctx.root), "parity.claude")
+    r = _prow(doc.Ctx(root=ctx.root, toolkit=None), "parity.claude")
     assert r.status == doc.NA and "deploy" in r.detail, r
 
 
@@ -441,7 +468,7 @@ def test_TWIN_a_toolkit_root_WITH_an_agent_source_is_still_checked(tmp_path, mon
                                          "tools/x4validate/scripts/gen-agent-trees.py": "#\n"})
     ctx = _pair(tmp_path, monkeypatch, files, files)
     monkeypatch.setenv("X4_TOOLKIT", str(ctx.root))
-    r = _prow(doc.Ctx(root=ctx.root), "parity.claude")
+    r = _prow(doc.Ctx(root=ctx.root, toolkit=ctx.root), "parity.claude")
     assert r.status == doc.UNKNOWN and "venv" in r.detail, r
 
 
@@ -696,9 +723,12 @@ def test_no_codex_config_is_UNKNOWN_never_ok(codex_root):
     assert rows["codex.trusted"].status == doc.UNKNOWN and rows["codex.reviewed"].status == doc.UNKNOWN
 
 
-def test_untrusted_project_is_FAIL(codex_root):
+def test_untrusted_project_is_TODO_the_users_step(codex_root):
+    """C2 (install red-team 2026-10-04): trusting the folder is the USER's step on a correct
+    fresh install, never a defect -- TODO, which can never mask a real FAIL."""
     _cfg(codex_root, trusted=False)
-    assert _codex(codex_root)["codex.trusted"].status == doc.FAIL
+    r = _codex(codex_root)["codex.trusted"]
+    assert r.status == doc.TODO and "trust" in r.detail, r
 
 
 def test_TWIN_trusted_lowercased_key_is_OK(codex_root):
@@ -724,7 +754,7 @@ def test_an_UNREVIEWED_hook_is_FAIL_naming_the_silent_skip(codex_root):
     first = sorted(exp)[0]
     _cfg(codex_root, entries={first: exp[first]})
     r = _codex(codex_root)["codex.reviewed"]
-    assert r.status == doc.FAIL and "SILENTLY" in r.detail and "/hooks" in r.detail, r
+    assert r.status == doc.TODO and "SILENTLY" in r.detail and "/hooks" in r.detail, r
 
 
 def test_a_DISABLED_hook_is_FAIL(codex_root):
@@ -916,7 +946,7 @@ def _refguard_stub(state):
 
 
 @pytest.mark.parametrize("state,codex,want", [
-    ("protected", False, "OK"), ("absent", False, "OK"), ("absent", True, "FAIL"),
+    ("protected", False, "OK"), ("absent", False, "OK"), ("absent", True, "TODO"),
     ("partial", True, "FAIL"), ("unsupported", True, "UNKNOWN"), ("error", True, "UNKNOWN"),
     ("foreign", True, "UNKNOWN"), ("unconfigured", True, "UNKNOWN"), ("protected", True, "OK")])
 def test_layer2_states(sandbox, monkeypatch, state, codex, want):
@@ -934,7 +964,7 @@ def test_layer2_an_unprotected_OPENCODE_root_is_FAIL_too(sandbox, monkeypatch):
     (sandbox.root / ".opencode" / "plugins").mkdir(parents=True)
     (sandbox.root / ".opencode" / "plugins" / "x4guard.js").write_text("//\n", encoding="utf-8")
     r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
-    assert r.status == doc.FAIL and "OpenCode" in r.detail, r
+    assert r.status == doc.TODO and "OpenCode" in r.detail, r
 
 
 def test_layer2_asks_the_REAL_x4refguard_and_FAILS_an_unprotected_codex_root(sandbox):
@@ -945,7 +975,7 @@ def test_layer2_asks_the_REAL_x4refguard_and_FAILS_an_unprotected_codex_root(san
     hook-level delete guard, so the real query must say FAIL."""
     shutil.copytree(sandbox.root / ".claude" / "hooks", sandbox.root / ".codex" / "hooks")
     r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
-    assert r.status == doc.FAIL, r
+    assert r.status == doc.TODO and "x4refguard.py apply --yes" in r.detail, r   # C2: the user's step
 
 
 def test_TWIN_layer2_REAL_unprotected_claude_only_root_is_OK(sandbox):
@@ -1149,6 +1179,18 @@ def test_a_STALE_config_is_an_opencode_config_FAIL(oc_root, tmp_path):
     _env_file(oc_root / "x4-paths.env", X4_TOOLKIT=oc_root, X4_REFERENCE=moved)
     r = _oc_rows(oc_root, doc.check_opencode)["opencode.config"]
     assert r.status == doc.FAIL and "stale" in r.detail, r
+    # C5 (install red-team 2026-10-04): never a bare "stale" -- say what differs and why
+    assert "rule(s)" in r.detail and "moved" in r.detail, r
+
+
+def test_C5_a_foreign_X4_TOOLKIT_is_NAMED_as_the_cause_of_a_stale_config(oc_root, tmp_path):
+    other = tmp_path / "other-toolkit"
+    other.mkdir()
+    _env_file(other / "x4-paths.env", X4_TOOLKIT=other, X4_REFERENCE=tmp_path / "other-ref")
+    (tmp_path / "other-ref").mkdir()
+    env = dict(os.environ, X4_TOOLKIT=str(other))
+    r = _oc_rows(oc_root, doc.check_opencode, env=env)["opencode.config"]
+    assert r.status == doc.FAIL and "X4_TOOLKIT=" in r.detail and str(other) in r.detail, r
 
 
 def test_a_config_that_cannot_be_rendered_is_UNKNOWN(oc_root, tmp_path):
@@ -1217,3 +1259,54 @@ def test_doctor_guard_line_agrees_with_the_loader_parser(tmp_path, line):
     parser_says = any(reason == "guard" for _n, reason in ignored)
     doctor_says = f in doc.config_guard_lines_in([f])
     assert doctor_says == parser_says, (line, doctor_says, parser_says)
+
+
+
+# --- B2 (install red-team 2026-10-04): the doctor acts for the toolkit it LIVES IN -------- #
+
+def test_B2_the_default_toolkit_is_the_doctors_own_not_X4_TOOLKIT(tmp_path):
+    ctx = doc.Ctx(root=tmp_path, env={"X4_TOOLKIT": str(tmp_path / "other")})
+    assert ctx.toolkit == REPO, ctx.toolkit
+    assert str(REPO) in ctx.toolkit_note and str(tmp_path / "other") in ctx.toolkit_note
+
+
+def test_B2_TWIN_no_note_when_X4_TOOLKIT_names_the_doctors_own(tmp_path):
+    ctx = doc.Ctx(root=tmp_path, env={"X4_TOOLKIT": str(REPO)})
+    assert ctx.toolkit == REPO and ctx.toolkit_note == ""
+
+
+def test_B2_INCIDENT_a_second_installed_copy_never_compares_against_the_first(tmp_path):
+    """The red-team shape: B (an installed toolkit, runtime only) diagnosed by B's own doctor
+    while X4_TOOLKIT names A, a source tree that differs. Parity must not compare B to A."""
+    a = _tree(tmp_path / "A", dict(_CLAUDE, **{".claude/hooks/a.sh": "echo A-DIFFERS\n",
+                                                "agent/core.md": "#\n"}))
+    b = _tree(tmp_path / "B", dict(_CLAUDE, **{"tools/x4validate/x4validate/_paths.py": "#\n"}))
+    (b / "scripts").mkdir()
+    shutil.copy2(REPO / "scripts" / "x4doctor.py", b / "scripts" / "x4doctor.py")
+    env = {k: v for k, v in os.environ.items() if k not in _LEAKY}
+    env.update(X4_TOOLKIT=str(a), X4_CONFIG="", X4_REFERENCE="", PYTHONDONTWRITEBYTECODE="1")
+    r = subprocess.run([sys.executable, str(b / "scripts" / "x4doctor.py"), "--root", str(b),
+                        "--agent", "claude", "--json"], capture_output=True, text=True, env=env,
+                       timeout=300)
+    got = json.loads(r.stdout)
+    rows = {c["id"]: c for c in got["checks"]}
+    assert rows["parity.claude"]["status"] == "N/A", rows["parity.claude"]
+    assert str(a) in got.get("toolkit_note", "") and str(b) in got.get("toolkit_note", ""), got.get("toolkit_note")
+
+
+# --- cosmetic (install red-team 2026-10-04): the targets line of a claude+codex install ---- #
+
+def test_targets_line_does_not_list_generic_for_a_codex_install(tmp_path):
+    """A Codex install ships .agents/skills, which is also the generic payload, so an
+    `--agent auto` claude+codex install read "targets: claude, codex, generic"."""
+    ctx = doc.Ctx(root=tmp_path, toolkit=None, env={},
+                  targets={"claude": True, "codex": True, "generic": True, "opencode": False})
+    line = [l for l in doc.render_text(ctx, [], 0, 0.0).splitlines() if l.startswith("  targets:")][0]
+    assert line.split("targets:")[1].split("(")[0].strip() == "claude, codex", line
+
+
+def test_TWIN_a_generic_only_install_still_lists_generic(tmp_path):
+    ctx = doc.Ctx(root=tmp_path, toolkit=None, env={},
+                  targets={"claude": False, "codex": False, "generic": True, "opencode": False})
+    line = [l for l in doc.render_text(ctx, [], 0, 0.0).splitlines() if l.startswith("  targets:")][0]
+    assert "generic" in line, line

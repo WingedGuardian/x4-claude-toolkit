@@ -283,7 +283,14 @@ in `.agents/skills/` and for OpenCode in `.opencode/skills/`; ask for one by nam
   > has genuinely changed upstream.
 - **Reference lock (Layer 2)** — `python scripts/x4refguard.py status [--json] [--full] | apply | remove`
   protects the unpacked `reference/` tree at the OS level, so it holds against every
-  process, hooks or no hooks. `bin/unpack-reference.sh` applies it after a verified unpack.
+  process, hooks or no hooks. **`apply` and `remove` show the target folder and count the
+  files under it (with progress), then ask you to confirm**; `--yes` confirms up front, and
+  without a terminal to ask on they refuse rather than act (`--yes` is how an agent runs it
+  once you have agreed). It is not instant: about 8 s per 100,000 files was measured on
+  scratch trees, and one apply over a full ~510,000-file tree was still running after 2
+  minutes, so a "still applying" line appears every 10 s. Like every script here it acts for the toolkit it lives in: if
+  `X4_TOOLKIT` names a different toolkit it says so and `apply`/`remove` refuse until you
+  pass `--toolkit <folder>`. `bin/unpack-reference.sh` applies it after a verified unpack.
   The installers do not apply it (it is an ACL change, yours to make), so a `reference/`
   unpacked before 4.0 stays unprotected until you run `apply`; `x4doctor`'s
   `layer2.reference` row shows whether it is on.
@@ -300,7 +307,7 @@ in `.agents/skills/` and for OpenCode in `.opencode/skills/`; ask for one by nam
     that, and `status` then reports the root missing); you lifting it on purpose; an
     Administrator or root.
   - **To re-unpack after a game update**, lift it first. Each step is yours to take; an agent should not take it on its own:
-    1. `python scripts/x4refguard.py remove`
+    1. `python scripts/x4refguard.py remove` (it asks you to confirm; `--yes` skips the question)
     2. root moved since? `python scripts/x4refguard.py remove --path <old root>` (only
        accepted on a folder that carries this tool's exact protection)
     3. tool broken? from **cmd.exe**: `icacls "<root>" /remove:d *<your SID>`
@@ -331,7 +338,7 @@ checking them. One time budget covers the whole check (`X4_GUARD_TIMEOUT_S`, def
 shared by a delete's two guards; a check that runs out is an inert deny. The Codex hook path
 uses its own budget instead (`X4_CODEX_BUDGET_S`, 45 s).
 
-**`python scripts/x4doctor.py [--root DIR] [--agent NAME] [--json]` -- are the guards live
+**`python scripts/x4doctor.py [--root DIR] [--agent NAME] [--json] [--toolkit DIR]` -- are the guards live
 here?** A read-only health check, per installed agent target. It runs on Python 3.10 with no
 dependencies, so a broken `uv` cannot take it down. It reports:
 - the bash, python and jq the guards actually resolve, each one executed;
@@ -344,9 +351,14 @@ dependencies, so a broken `uv` cannot take it down. It reports:
 - OpenCode's plugin, adapter and rendered deny rules (in place and current, never "loaded");
 - `X4_GUARD`, the OS-level `reference\` protection and the x4lock state.
 
-Every row is OK, FAIL, UNKNOWN or N/A, and a check that cannot answer says UNKNOWN. Exit codes:
-0 all OK; 1 any FAIL; 3 UNKNOWN without FAIL; 2 nothing checked. A run that checked nothing
-never exits 0.
+Every row is OK, FAIL, UNKNOWN, TODO or N/A, and a check that cannot answer says UNKNOWN.
+**TODO means "installed correctly; YOUR step is pending"** -- trusting the folder in Codex,
+approving its hooks in `/hooks`, applying the `reference/` OS protection
+(`python scripts/x4refguard.py apply`): steps no installer may take for you. Exit codes:
+0 all OK; 1 any FAIL; 3 UNKNOWN without FAIL; **4 only TODO rows pending** (a fresh install,
+before your steps); 2 nothing checked. Precedence is FAIL > UNKNOWN > TODO, so a pending step
+never hides a defect, and a run that checked nothing never exits 0. It acts for the toolkit it
+lives in (`--toolkit DIR` to choose another) and says so when `X4_TOOLKIT` names a different one.
 
 These hooks inspect known command forms; they do not sandbox arbitrary interpreter programs.
 The loss canary detects file loss, not historical guard evaluation health. Persistent guard
@@ -374,7 +386,11 @@ telemetry and independent filesystem protection remain separate roadmap work.
 
 ### 2. Get the toolkit and run the installer
 Download the latest release zip (from [Releases](https://github.com/WingedGuardian/x4-ai-toolkit/releases)
-or Nexus) and extract it anywhere, then run the guided installer:
+or Nexus) and extract it, then run the guided installer. **On Windows, pick a SHORT folder**
+(e.g. `C:\X4AI`): Windows' classic 260-character path limit is reached once the folder's own
+path is longer than about 165 characters, because the deepest file in the toolkit sits 92
+characters below its root -- extracting under a long Downloads or OneDrive path can fail for
+the deepest files (a 2026-10-04 install test hit this with 2 test fixtures).
 
 ```bash
 bash install.sh          # Linux / macOS / Windows (Git Bash)
@@ -414,7 +430,14 @@ one; until it has one, the toolkit's guards do not protect it.
 ### Prerequisites it will check for
 - **bash** — required. Every safety hook and both setup scripts run under it. Linux/macOS have it;
   on **Windows install [Git for Windows](https://git-scm.com/download/win)** (Git Bash) — without
-  it the hooks silently do nothing, so the safety guards below would not be active.
+  it the hooks silently do nothing, so the safety guards below would not be active. **Git Bash
+  must be FOUND**, and a stock Windows `PATH` does not find it: Git for Windows adds only
+  `<Git>\cmd` to `PATH`, and `bash` there is the WSL stub in `System32`, which cannot run the
+  toolkit. The toolkit looks in the standard Git for Windows locations (`Program Files`,
+  `Program Files (x86)`, `%LOCALAPPDATA%\Programs`) and then along `PATH` past the stub. If Git
+  lives anywhere else, set `X4_BASH` (new shells only):
+  `setx X4_BASH "C:\Program Files\Git\bin\bash.exe"` (with your path), or put Git's `bin`
+  folder ahead of `System32` on `PATH`. `python scripts/x4doctor.py` shows which bash was found.
 - **jq** — Windows `winget install jqlang.jq` · Linux `sudo pacman -S jq` / `apt install jq` · macOS `brew install jq`
 - **Python 3** — required, and **not only for the tools**: the Bash guard (`protect-bash.sh`) analyses
   each command with `hook_facts.py`, so without an interpreter on `PATH` (or `X4_PYTHON` pointing at
@@ -527,12 +550,13 @@ possible and overridable (`--game`, `--profile`, `--toolkit`, `--mods`, `--refer
 > any of those, they are what you would lose. `x4-paths.env` and
 > `.claude/settings.local.json` are preserved (backed up, and kept in place).
 >
-> **Upgrading from 3.x: an edited `CLAUDE.md` is kept, not lost.** If your `CLAUDE.md` is not
-> one the toolkit ever shipped (it is compared, by hash, with the `CLAUDE.md` of every release
-> tag, listed in `scripts/shipped-instruction-hashes.txt`), it is moved to
+> **Upgrading from 3.x: an edited `CLAUDE.md` is kept on disk, but no longer loaded.** If your
+> `CLAUDE.md` is not one the toolkit ever shipped (it is compared, by hash, with the `CLAUDE.md`
+> of every release tag, listed in `scripts/shipped-instruction-hashes.txt`), it is moved to
 > `X4-NOTES.pre-4.0.md` (or a dated name, if that exists) before the 4.0 file is copied, and the
-> installer says so. The 4.0 `CLAUDE.md` loads every session; move the notes you want to keep
-> into **`X4-NOTES.md`**, which the toolkit never writes. An unedited shipped copy (whatever its
+> installer says so. **No agent reads that copy**: the 4.0 `CLAUDE.md` replaces it. To bring your
+> notes back, merge what you want into **`X4-NOTES.md`**, which every agent's instructions read
+> and the toolkit never writes. An unedited shipped copy (whatever its
 > line endings) is simply replaced. `--dry-run` names the move without making it.
 >
 > `--yes` will also refuse an **auto-detected** destination: nothing named it and nobody is
@@ -554,12 +578,16 @@ bash install.sh --method global            # multi-repo: skills+paths into ~/.cl
 # Windows (PowerShell)
 powershell -ExecutionPolicy Bypass -File install.ps1 -Method global
 ```
-> Windows note: the hooks/scripts are bash, so running the toolkit needs **Git Bash**
-> (the PowerShell installer just does the setup).
+> Windows note: the hooks/scripts are bash, so running the toolkit needs **Git Bash** — found in
+> its standard install location, or named by `X4_BASH` (see Prerequisites). The PowerShell
+> installer finds it, runs `setup.sh` through it for you, and prints the `setx X4_BASH` line when
+> it cannot.
 
 #### Which agent: `--agent claude | codex | generic | opencode | all | auto` (default `all`)
 
-The installer ships each agent's own files and nothing else (`-Agent` on PowerShell):
+The installer ships each agent's own files and nothing else (`-Agent` on PowerShell). A comma
+list picks several, e.g. `--agent claude,codex` (each name is checked before anything is
+written; `all` and `auto` stand alone):
 
 | `--agent` | Instructions | Guards | Skills |
 |---|---|---|---|

@@ -25,6 +25,9 @@ def tk(monkeypatch, tmp_path):
     root = tmp_path / "tk"
     (root / "sub" / "deeper").mkdir(parents=True)
     monkeypatch.setenv("X4_TOOLKIT", str(root))
+    # B2: the toolkit is the one the code LIVES in; model the installed shape, where the
+    # tools live in the toolkit X4_TOOLKIT names (test_toolkit_binding.py: a foreign one).
+    monkeypatch.setattr(_paths, "_SELF", root)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(_paths, "_NOTICED", set(), raising=False)
     _paths.reload()
@@ -106,6 +109,7 @@ def test_a_NAMED_toolkit_without_a_config_is_not_rescued_by_the_cwd_walk(tk, mon
 
 def test_with_no_toolkit_named_the_walk_finds_new_before_legacy(tk, monkeypatch):
     monkeypatch.delenv("X4_TOOLKIT")
+    monkeypatch.setattr(_paths, "_SELF", None)    # code outside the toolkit layout (B2)
     put(tk, NEW, "/xgame/new"); put(tk, OLD, "/xgame/old")
     monkeypatch.chdir(tk / "sub" / "deeper"); _paths.reload()
     assert _paths._find_env_file() == tk / NEW
@@ -114,6 +118,7 @@ def test_with_no_toolkit_named_the_walk_finds_new_before_legacy(tk, monkeypatch)
 def test_with_no_toolkit_named_the_walk_still_finds_a_legacy_only_config(tk, monkeypatch):
     """Twin of the walk above: the walk keeps the 3.x location readable too."""
     monkeypatch.delenv("X4_TOOLKIT")
+    monkeypatch.setattr(_paths, "_SELF", None)    # code outside the toolkit layout (B2)
     put(tk, OLD, "/xgame/old")
     monkeypatch.chdir(tk / "sub" / "deeper"); _paths.reload()
     assert _paths._find_env_file() == tk / OLD

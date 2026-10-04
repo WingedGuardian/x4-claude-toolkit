@@ -20,9 +20,11 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
    Linux/macOS: one marked block in your shell's startup file). A value that already names a
    different toolkit is reported and left alone. `--no-env` / `-NoEnv` opts out and prints the
    command to run yourself. Open a new terminal afterwards.
-3. **An edited `CLAUDE.md` is kept, not overwritten**: if its hash matches no `CLAUDE.md` a release
-   tag shipped, it is moved to `X4-NOTES.pre-4.0.md` (or a dated name) before the 4.0 file is
-   copied. Move the notes you want into **`X4-NOTES.md`**, which the toolkit never writes.
+3. **An edited `CLAUDE.md` is kept on disk, but no longer loaded**: if its hash matches no
+   `CLAUDE.md` a release tag shipped, it is moved to `X4-NOTES.pre-4.0.md` (or a dated name)
+   before the 4.0 file is copied. No agent reads that copy; to bring your notes back, merge what
+   you want into **`X4-NOTES.md`**, which every agent's instructions read and the toolkit never
+   writes. An unedited 3.x `.claude/x4-paths.env.example` is removed (an edited one is kept).
 4. **`AGENTS.md` is new** (the instruction file for Codex, OpenCode and other agents). No release
    before 4.0 shipped one (0 of 23 tags), so an `AGENTS.md` already in the destination is yours:
    it is moved aside to `AGENTS.pre-4.0.md` (or a dated name), never overwritten.
@@ -31,10 +33,44 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
    the X4 hooks in `/hooks`, then run `python scripts/x4doctor.py --agent codex`. See below.
 6. `--dry-run` names the `CLAUDE.md` and `AGENTS.md` moves without making them.
 7. **A `reference/` you already have is NOT OS-protected until you apply it.** The installers do
-   not change its permissions (an ACL change is yours to make). Run
-   `python scripts/x4refguard.py status`, then `python scripts/x4refguard.py apply`;
-   `python scripts/x4doctor.py` shows the state in its `layer2.reference` row. A fresh
-   `bin/unpack-reference.sh` applies it for you. What it blocks is under *Safety*.
+   not change its permissions (an ACL change is yours to make); every install summary now says
+   which state it is in. Run `python scripts/x4refguard.py status`, then
+   `python scripts/x4refguard.py apply` -- it shows the folder and a file count and asks first
+   (`--yes` confirms up front); `python scripts/x4doctor.py` shows the state in its
+   `layer2.reference` row. A fresh `bin/unpack-reference.sh` applies it for you. What it blocks
+   is under *Safety*.
+
+### Fixed before release: the install red-team (2026-10-04)
+
+A cold, docs-only install test on a fresh clone found three blockers and six smaller defects.
+All are fixed:
+
+- **A toolkit copy acted for ANOTHER toolkit.** Scripts and tools located their config through an
+  inherited `X4_TOOLKIT`, so a second copy's `x4refguard apply` targeted the first copy's
+  reference tree (stopped after ~2 minutes; nothing was applied). Every script and tool now acts
+  for the toolkit it **lives in**; an `X4_TOOLKIT` naming a different one gets one line naming
+  both, and `x4refguard apply/remove`, `x4config migrate --apply`, `x4lock lock/unlock` and
+  `bin/unpack-reference.sh` **refuse** unless you pass `--toolkit <folder>`. `x4doctor` compares
+  against its own toolkit (`--toolkit` to choose).
+- **`x4refguard apply/remove` ask first.** They print the target folder, count the files (with
+  progress), then ask; `--yes` confirms; with no terminal and no `--yes` they refuse (exit 2). A
+  "still applying" line appears every 10 s while the OS call runs.
+- **Git Bash is found on a stock Windows `PATH`.** `bash` there is the WSL stub, so
+  `install.ps1 -Agent all` ended INCOMPLETE and `x4doctor` failed six rows. One resolver now looks
+  in Git for Windows' install locations, then along `PATH` past the stub; `install.ps1` passes
+  what it finds to everything it runs, and prints the exact `setx X4_BASH "..."` line when it
+  finds nothing. `SETUP_PROMPT.txt` no longer has a PowerShell agent run `bash setup.sh` (the
+  PowerShell installer already ran it).
+- **`--agent` / `-Agent` take a comma list** (`claude,codex`), every name checked before
+  anything is written.
+- **`x4doctor` has a TODO row status and exit 4**: "installed correctly; only YOUR steps are
+  pending" (trusting the folder in Codex, approving its hooks, applying the `reference/`
+  protection). A TODO never hides a FAIL (exit 1) or an UNKNOWN (exit 3).
+- Install summaries say only true things: `Next:` asks for `X4_GAME` only when it is blank;
+  `setup.sh` no longer calls the config it was just given "already present"; a stale OpenCode
+  deny-rule file says what differs and why; `x4refguard`'s "unconfigured" says how to fix it;
+  `x4doctor`'s targets line no longer lists "generic" beside Codex. On Windows, extract to a
+  short folder: the deepest file is 92 characters below the toolkit root.
 
 ### Every agent: one source, per-agent files
 

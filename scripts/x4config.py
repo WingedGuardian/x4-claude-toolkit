@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """See where the toolkit's path config lives, and move a 3.x one to the 4.x place.
 
-    python scripts/x4config.py status  [--root DIR]
-    python scripts/x4config.py migrate [--root DIR] [--apply]
+    python scripts/x4config.py status  [--toolkit DIR]
+    python scripts/x4config.py migrate [--toolkit DIR] [--apply]
+
+WHICH TOOLKIT (B2, install red-team 2026-10-04): this script acts for the toolkit it LIVES IN,
+or for `--toolkit DIR` (`--root` is the older spelling of the same option). If $X4_TOOLKIT
+names a different toolkit, one line says so, and `migrate --apply` REFUSES (exit 2) unless
+--toolkit is given: a copy of this script must never move another toolkit's config by accident.
 
 4.x reads `<toolkit>/x4-paths.env`. 3.x kept it at `<toolkit>/.claude/x4-paths.env`; that
 location is still read for all of 4.x, with a deprecation notice, and this is the one
@@ -18,7 +23,8 @@ ever printed: the file carries `X4_NEXUS_KEY`.
 To undo a move (e.g. to go back to 3.x): move `x4-paths.env` back to `.claude/x4-paths.env`.
 
 Exit codes: 0 ok (including "nothing to do") / 1 refused (two differing configs) /
-2 could not run (the x4validate package is not importable, or the root is not a directory).
+2 could not run (the x4validate package is not importable, the root is not a directory, or
+`migrate --apply` under a foreign $X4_TOOLKIT without --toolkit).
 """
 
 from __future__ import annotations
@@ -39,11 +45,10 @@ except ImportError as exc:              # pragma: no cover - packaging accident
 
 
 def _root(arg: str | None) -> Path:
+    """--toolkit, else the toolkit this script lives in (B2) -- never $X4_TOOLKIT."""
     if arg:
         return Path(arg)
-    if os.environ.get("X4_TOOLKIT"):
-        return Path(_paths.native(os.environ["X4_TOOLKIT"]))
-    return _HERE.parent
+    return _paths.toolkit_root() or _HERE.parent
 
 
 def _status(root: Path) -> int:
@@ -52,8 +57,7 @@ def _status(root: Path) -> int:
         print(f"note: X4_CONFIG is set ({explicit}), so the tools read THAT file and ignore "
               f"the two below.")
     os.environ.pop("X4_CONFIG", None)
-    os.environ["X4_TOOLKIT"] = str(root)          # this process only: look in --root
-    _paths.reload()
+    _paths.use_toolkit(root)                      # this process only: look in --root
     state = _paths.config_state()
     found = _paths._find_env_file()
     new, old = root / _paths.CONFIG_NAME, root / _paths.LEGACY_CONFIG
@@ -88,7 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("status", "migrate"):
         p = sub.add_parser(name)
-        p.add_argument("--root", help="the toolkit root (default: $X4_TOOLKIT, else this checkout)")
+        p.add_argument("--toolkit", "--root", dest="root", metavar="DIR",
+                       help="the toolkit to act for (default: the one this script lives in; "
+                            "REQUIRED for migrate --apply when $X4_TOOLKIT names another)")
         if name == "migrate":
             p.add_argument("--apply", action="store_true", help="do it (default: dry run)")
     args = ap.parse_args(argv)
@@ -96,6 +102,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: cannot run -- the x4validate package is not importable "
               f"({_IMPORT_ERROR})", file=sys.stderr)
         return 2
+    if args.root is None:
+        _paths.toolkit_notice()
+        if args.cmd == "migrate" and args.apply:
+            refusal = _paths.foreign_toolkit_refusal("x4config migrate --apply")
+            if refusal:
+                print(refusal, file=sys.stderr)
+                return 2
     root = _root(args.root)
     if not root.is_dir():
         print(f"error: cannot run -- {root} is not a directory", file=sys.stderr)

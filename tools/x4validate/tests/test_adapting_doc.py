@@ -160,3 +160,16 @@ def test_readme_agent_table_conditions_the_os_lock_on_being_applied():
     for row in rows:
         cells = [c.strip() for c in row.strip("|").split("|")][1:]
         assert all("once applied" in c for c in cells), row
+
+
+# --- install red-team 2026-10-04 (lane FX-R) ----------------------------------------------- #
+
+def test_B1_setup_prompt_does_not_send_a_PowerShell_agent_to_bash_setup_sh():
+    """A stock Windows PATH resolves `bash` to the WSL stub, so `bash setup.sh` typed in
+    PowerShell FAILS -- and install.ps1 already ran setup.sh through Git Bash."""
+    assert 'Then run "bash setup.sh"' not in PROMPT
+    assert "install.ps1 already ran" in PROMPT and "bash setup.sh" in PROMPT
+
+
+def test_B3_setup_prompt_names_the_confirmation_of_the_reference_apply():
+    assert "x4refguard.py apply" in PROMPT and "--yes" in PROMPT

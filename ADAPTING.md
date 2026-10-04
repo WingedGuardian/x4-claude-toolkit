@@ -7,7 +7,8 @@ for; the two worked examples below are Claude Code (the guards ARE its hooks) an
 
 Until you have an adapter that passes the proof in section 5, **none of the toolkit's guards
 protect anything you do.** The only protection left is the operating system's, and only once
-it has been applied: `python scripts/x4refguard.py apply` puts a deny on the `reference/` tree
+it has been applied: `python scripts/x4refguard.py apply` (it shows the folder and a file count
+and asks first; `--yes` confirms once your user has agreed) puts a deny on the `reference/` tree
 that blocks deleting, renaming, overwriting and creating files in it (Windows; Linux and macOS
 get a best-effort equivalent), while reads still work. `bin/unpack-reference.sh` applies it
 after an unpack; the installers do not. `python scripts/x4doctor.py` shows whether it is on
