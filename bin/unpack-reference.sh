@@ -89,6 +89,13 @@ if [ -d "$REF" ]; then
       echo "  so nothing can be written into it, and this script never lifts it itself." >&2
       x4_lift_steps
       exit 2 ;;
+    # v4.0.0 review R4-10: `error` means the protection state could NOT be read -- not that
+    # there is none. Proceeding wrote into a tree that may be protected, failing part-way.
+    error)
+      echo "REFUSING: the Layer-2 OS protection state of $REF could not be read (x4refguard" >&2
+      echo "  state: error), so this script cannot tell whether it may write there. See:" >&2
+      echo "    python scripts/x4refguard.py status      (from $TKDIR)" >&2
+      exit 2 ;;
   esac
 fi
 
