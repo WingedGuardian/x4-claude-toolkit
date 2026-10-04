@@ -230,6 +230,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F149 | `scripts/test-hooks.sh` 1/187 flake (seen twice under load, probe never recorded): NOT REPRODUCED, 0 of 16 runs under 24 CPU burners plus 3 other lanes | **SCOPE (measured, open)** | 16 runs (4 lanes x 4), 711-1187 s each; every run 186/1, the 1 being the pre-existing identifier finding in Plan 3 docs | a failing `decide()` probe now prints `[hook rc=N; stderr: ...]`, so the next occurrence names itself; open until it does |
 | F150 | The write guard judged the PATH, never the FILE: `<game>/KNOWLEDGEBASE.md` was ALLOW while x4lock's read-only lock made the write fail with no word why; and `<game>/X4-NOTES.md`, where the instructions send notes, was hard-denied as a game file | **DEFECT (measured)** · ✅ FIXED 2026-10-03 (Plan 3 lane N) | a live Codex run could not save its notes (orchestrator, 2 probes through `x4guard check`) | exactly `<X4_GAME or X4_TOOLKIT>/X4-NOTES.md` (+ `.pre-4.0.md`) allowed on the resolved path; a read-only file x4lock manages (`x4lock.py protected`) is ADVISED with unlock/edit/relock; the game deny routes notes, facts, mod files. Open: the `claude.md` / `agents.md` / `knowledgebase.md` name whitelist matches ANYWHERE in the game tree (MEASURED, 2 probes + controls) |
 | F151 | With NO path config the guards defaulted `reference/` to `<toolkit>/reference` SILENTLY, and the two loaders chose the config file by different rules (bash honoured `$X4_CONFIG`, Python ignored it and walked up from the cwd past a named `$X4_TOOLKIT`); a third loader in `generate-baseline.sh` let the file beat the environment | **DEFECT (read + measured)** · ✅ FIXED 2026-10-03 (Plan 3 lane I) | planning census + the matrix test (17 bash/agree rows red before) | ONE rule in both loaders (`$X4_CONFIG` > `<tk>/x4-paths.env` > 3.x `<tk>/.claude/x4-paths.env` > none); state recorded, named once per session and by `x4doctor`; verdicts unchanged: replay 0 of 17,916 hook calls changed (3 passes x 2 hooks), 0 ERROR |
+| F152 | Under a POSIX bash (Linux/macOS), a CRLF `x4-paths.env` (saved by any Windows editor) left a trailing CR on EVERY configured root when `_x4-env.sh` sourced it -- `X4_REFERENCE` included -- so every root compare in the guards could miss; Git Bash strips the CR, so no Windows run could see it | **DEFECT (measured in ubuntu:24.04; guard-verdict effect INFERRED)** · ✅ FIXED 2026-10-04 (Plan 3 CI lane, `0e5f7e9`) | CI run 37172347642 (ubuntu): the OpenCode renderer refused "X4_REFERENCE contains a line break" -- correctly | `_x4-env.sh` strips a trailing CR from the config keys only; `test_config_precedence_agrees.py` pins bash and Python reading one CRLF file to the same CR-free values |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -7894,3 +7895,22 @@ passes (configured, legacy, unconfigured). Stage 2: 0 of 17,916 hook calls chang
 matrix for both loaders plus their agreement) and
 `.claude/hooks/test_audit0924_hooks.py::TestLaneIConfigLocation` (the hard block without a config,
 both locations read by the hooks, the banner per state).
+
+
+## F152 — a CRLF path config put a carriage return on every guard root under POSIX bash · **DEFECT (measured; verdict effect inferred)** · confidence 85% · ✅ FIXED 2026-10-04 (Plan 3 CI lane)
+
+**Found 2026-10-04** by CI run 37172347642 (ubuntu): `test_a_CRLF_config_is_still_recognised_as_UNCHANGED`
+failed because the OpenCode deny-rule renderer refused `X4_REFERENCE contains a line break`. The renderer
+was right; the cause is upstream. `. x4-paths.env` under a POSIX bash KEEPS the CR of a CRLF line
+(MEASURED in an ubuntu:24.04 container: `X4_REFERENCE="/a/b"<CR>` -> `/a/b<CR>`); Git Bash strips it,
+which is why every Windows run, local and CI, was green.
+
+**Scope.** PRE-ARC: every shipped release's `_x4-env.sh` sourced the config the same way, so a Linux or
+macOS user whose config was saved with CRLF had every guard root ending in a CR. **INFERRED, not run end to
+end:** a path compare against `<root><CR>` matches nothing, so the hard block on `reference/` (and every
+other root rule) would not fire for them. What would confirm it: a POSIX run of `test-hooks.sh` with a
+CRLF config before the fix.
+
+**Fix.** `_x4-env.sh` strips one trailing CR from the configured keys only, in-shell; the restored
+environment never carried one. **RE-DERIVED BY:** `tools/x4validate/tests/test_config_precedence_agrees.py`
+(bash and Python read one CRLF file to the same values, with no CR in either).

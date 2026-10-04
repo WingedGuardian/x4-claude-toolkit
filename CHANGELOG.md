@@ -140,6 +140,10 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
 
 ### Safety
 
+- **Linux/macOS: a path config saved with Windows line endings no longer weakens the guards.** Bash
+  kept the trailing carriage return on every configured folder, `reference/` included, so the guards'
+  folder rules could fail to match (BLIND-SPOTS F152; the effect on verdicts is inferred, the CR is
+  measured). Windows was never affected. This was present in 3.x too.
 - **`reference/` is protected at the OS level.** `python scripts/x4refguard.py status | apply |
   remove`: on Windows one inherited deny for your own account, `(OI)(CI)(DE,DC,WD,AD)`, blocks
   deleting, renaming, overwriting and creating anything inside the tree; reads still work, and you
