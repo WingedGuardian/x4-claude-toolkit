@@ -76,7 +76,7 @@ def test_every_generated_file_is_COMMITTABLE(expected):
     # and .agents/ (Plan 2: MEASURED 2026-10-02, the bare `reference/` rule matched .agents/ too).
     for rel in expected:
         for path in (f"agent/skills/x4-cli-reference/{rel}", f".claude/skills/x4-cli-reference/{rel}",
-                     f".agents/skills/x4-cli-reference/{rel}"):
+                     f".agents/skills/x4-cli-reference/{rel}", f".opencode/skills/x4-cli-reference/{rel}"):
             r = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "--no-index", path])
             if r.returncode == 0:
                 ignored.append(path)

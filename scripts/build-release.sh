@@ -149,7 +149,15 @@ if [ "${1:-}" = "--selftest" ]; then
   git rev-parse -q --verify "v3.0.0^{}" >/dev/null || die "tag v3.0.0 not present, so the control cannot run"
   tmp="$(mktemp -d)" || die "no temp dir"
   trap 'rm -rf "$tmp"' EXIT
-  git archive --format=zip v3.0.0 -o "$tmp/x.zip" || die "git archive failed"
+  # The published asset encodes TWO facts about the machine that built it, so the control
+  # pins both instead of inheriting the caller's (MEASURED 2026-10-04, CI run 37172347642):
+  # a zip member's DOS timestamp is LOCAL time (built in US Eastern; TZ=UTC gives other
+  # bytes at the same size), and `* text=auto` writes the NATIVE line ending (built on
+  # Windows: CRLF in 37 members; an LF build is 1,887 B smaller). EST5EDT is a POSIX TZ
+  # string both glibc and the Windows CRT read. Only the control is pinned: a real build
+  # below still inherits both, which is why a rebuild elsewhere can differ.
+  TZ=EST5EDT git -c core.eol=crlf -c core.autocrlf=false archive --format=zip v3.0.0 -o "$tmp/x.zip" \
+    || die "git archive failed"
   got_sha="$(sha_of "$tmp/x.zip")"; got_size="$(wc -c < "$tmp/x.zip" | tr -d ' ')"
   echo "selftest: rebuilt v3.0.0 -> $got_size bytes, sha256 $got_sha"
   verify "$tmp/x.zip" v3.0.0 || exit 1

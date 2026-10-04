@@ -49,6 +49,10 @@ reference/
 # Codex and generic agents get the same skills under .agents/skills/ (Plan 2); MEASURED 2026-10-02
 # the bare rule matched there too. Pinned by the same COMMITTABLE test.
 !.agents/skills/*/reference/
+# OpenCode gets them under .opencode/skills/ (Plan 3). MEASURED 2026-10-04 (CI run 37172347642):
+# the bare rule matched there too and all 11 files were never committed. Pinned by
+# test_every_generator_owned_path_is_TRACKED_and_SHIPS, which asks git ls-files per generated path.
+!.opencode/skills/*/reference/
 extensions/
 *.cat
 *.dat

@@ -299,7 +299,10 @@ leaves its sandbox in the toolkit's `.test-sandbox/conf-<number>/` folder: delet
 
 The summary counts cases `no_native_analogue`: guard cases that carry no shell command and no
 file path (searches such as Grep and Glob), which no adapter could be shown. They are not your
-gap. A kind your profile declares `unsupported` is -- and it prints a GAP line.
+gap. A kind your profile declares `unsupported` is -- and it prints a GAP line. Off Windows it
+also counts `windows_path_dialect`: file-path cases spelled with backslashes, which on Linux and
+macOS name a single file in the current folder rather than the path the guards judge, so they are
+not replayed there.
 
 Exit codes: **0** every replayed case agrees and at least `--min-cases` (default 80) were
 replayed; **1** at least one disagreement or unreadable answer -- fix the ADAPTER; **2** it could

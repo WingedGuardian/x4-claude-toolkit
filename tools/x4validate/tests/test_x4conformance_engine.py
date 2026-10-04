@@ -143,6 +143,53 @@ def test_classify(payload, kind):
     assert xc.classify({"payload": payload}) == kind
 
 
+# A Windows path DIALECT off Windows (CI run 37172347642, ubuntu): `\home\u\tk\reference\x`
+# is ONE relative filename on POSIX -- a write lands in the cwd, never in reference/ -- so the
+# adapter's ALLOW is the truth there while the hook (which folds backslashes everywhere) says
+# deny. Such a row is counted in its own bucket off Windows, never replayed and never dropped.
+@pytest.mark.parametrize("tool", ["Edit", "Write"])
+def test_a_BACKSLASH_path_off_windows_is_its_own_kind(tool):
+    row = {"payload": {"tool_name": tool, "tool_input": {"file_path": "C:" + chr(92) + "tk" + chr(92) + "x"}}}
+    assert xc.classify(row, windows=False) == "windows_path_dialect"
+
+
+@pytest.mark.parametrize("tool", ["Edit", "Write"])
+def test_TWIN_the_same_path_ON_windows_is_replayed(tool):
+    row = {"payload": {"tool_name": tool, "tool_input": {"file_path": "C:" + chr(92) + "tk" + chr(92) + "x"}}}
+    assert xc.classify(row, windows=True) == tool.lower()
+
+
+def test_TWIN_a_forward_slash_path_off_windows_is_replayed():
+    assert xc.classify({"payload": {"tool_name": "Edit", "tool_input": {"file_path": "/tk/x"}}},
+                       windows=False) == "edit"
+
+
+def test_TWIN_a_backslash_in_a_SHELL_command_off_windows_is_still_replayed():
+    row = {"payload": {"tool_name": "Bash", "tool_input": {"command": "echo a" + chr(92) + "b"}}}
+    assert xc.classify(row, windows=False) == "shell-bash"
+
+
+def test_the_dialect_rows_get_their_OWN_bucket_and_the_buckets_sum():
+    rows = [{"kind": "edit"}, {"kind": "windows_path_dialect"}, {"kind": "no_native_analogue"},
+            {"kind": "shell-bash"}]
+    b = xc.bucket_counts(rows, n_replayed=2, profile=CODEX)
+    assert b == {"replayed": 2, "windows_path_dialect": 1, "no_native_analogue": 1}, b
+
+
+def test_the_neutral_run_dir_is_NOT_the_system_temp():
+    """On POSIX the system temp is /tmp, and the guards DENY a write into /tmp (the shared-/tmp
+    measurement rule) -- so a "neutral" run dir there judged every relative case by that rule
+    instead, and the ignores_workdir mutant survived on ubuntu (CI run 37172347642)."""
+    import tempfile
+    d = xc.neutral_run_dir(REPO)
+    try:
+        assert d.is_dir()
+        assert not d.resolve().is_relative_to(Path(tempfile.gettempdir()).resolve()), d
+        assert d.resolve().is_relative_to((REPO / ".test-sandbox").resolve()), d
+    finally:
+        d.rmdir()
+
+
 def _res(n_agree, n_disagree=0):
     r = [{"label": f"a{i}", "kind": "shell-bash", "reference": "deny", "adapter": "deny"} for i in range(n_agree)]
     r += [{"label": f"d{i}", "kind": "write", "reference": "deny", "adapter": "allow"} for i in range(n_disagree)]

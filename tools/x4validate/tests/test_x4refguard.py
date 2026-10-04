@@ -25,6 +25,9 @@ sys.modules["x4refguard"] = x4refguard
 _spec.loader.exec_module(x4refguard)
 from x4validate import _paths  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from refguard_owner import own_or_skip  # noqa: E402
+
 SENTINEL = ".unpacked-and-locked"
 
 
@@ -47,6 +50,7 @@ def ref(tmp_path, monkeypatch):
     (root / "libraries").mkdir(parents=True)
     (root / "libraries" / "wares.xml").write_text("<wares/>", encoding="utf-8")
     (root / SENTINEL).write_text("Re-unpacked from X4 (steam buildid 1) on 2026-10-02.", encoding="utf-8")
+    own_or_skip(root, x4refguard)          # an elevated runner creates it owned by Administrators
     monkeypatch.setenv("X4_REFERENCE", str(root))
     _paths.reload()
     yield root
@@ -352,6 +356,60 @@ def test_apply_REFUSES_a_root_the_user_does_not_own(protected_cleanup, tripwire,
     monkeypatch.setattr(x4refguard, "_owner_is_user", lambda p: False)
     assert x4refguard.main(["apply"]) == 2                  # the lockout precondition (x4lock history)
     assert not tripwire
+
+
+@win
+def test_the_refusal_sees_a_REAL_foreign_owner():
+    """The twin of the monkeypatched refusal above, on a real object: the Windows directory is
+    owned by TrustedInstaller on every install, never by the user -- elevated or not."""
+    sysroot = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    assert sysroot.is_dir()
+    assert x4refguard._owner_is_user(sysroot) is False
+
+
+class _Owner:
+    """Fakes the owner read: `owned` flips to True only when /setowner names the user's SID."""
+
+    def __init__(self, monkeypatch, settable):
+        self.owned, self.calls, self.settable = False, [], settable
+        monkeypatch.setattr(x4refguard, "_owner_is_user", lambda p: self.owned)
+        monkeypatch.setattr(x4refguard, "_user_sid", lambda: "S-1-5-21-1-2-3-1001")
+
+        def run(argv, target):
+            self.calls.append([str(a) for a in argv])
+            if self.settable and "/setowner" in self.calls[-1] and "*S-1-5-21-1-2-3-1001" in self.calls[-1]:
+                self.owned = True
+            return subprocess.CompletedProcess(argv, 0 if self.settable else 5, "", "denied")
+        monkeypatch.setattr(x4refguard, "_mutate_run", run)
+
+
+def test_OWNERSHIP_fixture_takes_the_root_when_it_can(tmp_path, monkeypatch):
+    o = _Owner(monkeypatch, settable=True)
+    own_or_skip(tmp_path, x4refguard, windows=True)
+    assert o.owned and len(o.calls) == 1 and o.calls[0][:3] == ["icacls", str(tmp_path), "/setowner"]
+
+
+def test_OWNERSHIP_fixture_SKIPS_when_it_cannot__never_passes(tmp_path, monkeypatch):
+    _Owner(monkeypatch, settable=False)
+    with pytest.raises(pytest.skip.Exception, match="NOT CHECKED"):
+        own_or_skip(tmp_path, x4refguard, windows=True)
+
+
+def test_OWNERSHIP_fixture_is_a_NO_OP_on_a_tree_already_owned(tmp_path, monkeypatch):
+    o = _Owner(monkeypatch, settable=True)
+    o.owned = True
+    own_or_skip(tmp_path, x4refguard, windows=True)
+    assert o.calls == []
+
+
+@win
+def test_OWNERSHIP_the_real_setowner_command_is_accepted(tmp_path):
+    """The exact icacls form the fixture uses, run for real on a scratch dir this user owns."""
+    d = tmp_path / "own"
+    d.mkdir()
+    r = x4refguard._mutate_run(["icacls", d, "/setowner", "*" + x4refguard._user_sid(), "/C", "/Q"], d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert x4refguard._owner_is_user(d) is True
 
 
 @win

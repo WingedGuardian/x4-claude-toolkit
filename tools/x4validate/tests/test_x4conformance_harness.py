@@ -20,13 +20,34 @@ def test_the_dump_is_big_enough_and_every_row_is_classified(conformance_dump):
     rows, _ = conformance_dump
     assert len(rows) >= 100
     kinds = [xc.classify(r) for r in rows]
-    assert set(kinds) <= set(xc.KINDS) | {"no_native_analogue"}
+    assert set(kinds) <= set(xc.KINDS) | {"no_native_analogue", xc.WINDOWS_PATH_DIALECT}
     assert sum(k != "no_native_analogue" for k in kinds) >= 80
 
 
 def test_the_dump_sandbox_is_under_the_toolkit_never_tmp(conformance_dump):
     _, sbx = conformance_dump
     assert (REPO / ".test-sandbox") in sbx.parents
+
+
+def test_the_neutral_run_dir_is_one_the_guards_have_NO_opinion_about(conformance_dump):
+    """`run_cwd: neutral` is only neutral if a harmless relative write from it is ALLOWED. On
+    ubuntu the old run dir sat in /tmp, which protect-bash denies writes into, so a mutant adapter
+    that ignored the case's workdir still got the case's deny -- for the wrong reason (CI run
+    37172347642). The row's own env, so the guards see the same configuration as a replay."""
+    rows, _ = conformance_dump
+    env_row = next(r for r in rows if (r.get("env") or {}).get("X4_TOOLKIT"))
+    d = xc.neutral_run_dir(REPO)
+    try:
+        row = {"hook": "protect-bash.sh", "env": env_row["env"], "cwd": str(d),
+               "payload": {"tool_name": "Bash", "tool_input": {"command": "echo x > libraries/w.xml"},
+                           "cwd": str(d)}}
+        assert xc.reference_verdict(row, REPO) == "allow", d
+        # the control: the same relative write from the sandbox's reference/ IS denied
+        ref = Path(xc._native_path(env_row["env"]["X4_TOOLKIT"])) / "reference"
+        twin = dict(row, cwd=str(ref), payload=dict(row["payload"], cwd=str(ref)))
+        assert xc.reference_verdict(twin, REPO) == "deny", ref
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_neutral_extras_add_powershell_cases_and_their_reference_controls_hold(conformance_dump):

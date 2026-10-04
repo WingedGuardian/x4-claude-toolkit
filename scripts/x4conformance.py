@@ -248,8 +248,18 @@ def decode(output: dict, stdout: bytes, rc: int) -> tuple:
 
 # ------------------------------------------------------------------ classify / summarise --- #
 
-def classify(row: dict) -> str:
-    """The native kind a Claude-shaped dump row maps to, or "no_native_analogue"."""
+#: The kind of an Edit/Write row whose path is spelled with BACKSLASHES, off Windows. On POSIX a
+#: backslash is a filename character: `\home\u\tk\reference\x` is ONE relative name, so a write
+#: lands in the cwd and never in reference/ -- the adapter's allow is the truth there, while the
+#: hooks fold backslashes on every OS and deny. MEASURED, CI run 37172347642 (ubuntu): the only
+#: disagreement of both the Codex and the toy adapter. Counted in its own bucket, never dropped.
+WINDOWS_PATH_DIALECT = "windows_path_dialect"
+
+
+def classify(row: dict, windows: bool | None = None) -> str:
+    """The native kind a Claude-shaped dump row maps to, or "no_native_analogue", or (off Windows)
+    WINDOWS_PATH_DIALECT. `windows` defaults to this OS; tests pass it to judge both."""
+    windows = (os.name == "nt") if windows is None else windows
     p = row.get("payload") or {}
     tool = p.get("tool_name")
     ti = p.get("tool_input") if isinstance(p.get("tool_input"), dict) else None
@@ -258,8 +268,34 @@ def classify(row: dict) -> str:
     if tool in ("Bash", "PowerShell") and isinstance(ti.get("command"), str) and ti["command"]:
         return "shell-powershell" if tool == "PowerShell" else "shell-bash"
     if tool in ("Edit", "Write") and isinstance(ti.get("file_path"), str) and ti["file_path"]:
+        if not windows and "\\" in ti["file_path"]:
+            return WINDOWS_PATH_DIALECT
         return tool.lower()
     return "no_native_analogue"
+
+
+def bucket_counts(rows: list, n_replayed: int, profile: dict) -> dict:
+    """Every row in exactly one bucket: replayed, WINDOWS_PATH_DIALECT, or no_native_analogue
+    (no shell command or file path, or a kind the profile declares unsupported)."""
+    b = {"replayed": n_replayed}
+    rest = [r for r in rows if (r.get("kind") or classify(r)) not in profile["cases"]]
+    n_dialect = sum((r.get("kind") or classify(r)) == WINDOWS_PATH_DIALECT for r in rest)
+    if n_dialect:
+        b[WINDOWS_PATH_DIALECT] = n_dialect
+    if len(rest) - n_dialect:
+        b["no_native_analogue"] = len(rest) - n_dialect
+    return b
+
+
+def neutral_run_dir(root: Path) -> Path:
+    """The directory an adapter runs in when the profile says `run_cwd: neutral`: one the guards
+    have no opinion about. NOT the system temp: on POSIX that is /tmp, which protect-bash denies
+    writes into (shared-/tmp rule), so every relative case was judged by THAT rule and the
+    ignores_workdir mutant survived on ubuntu (MEASURED, CI run 37172347642). Under
+    <root>/.test-sandbox, where the corpus dump already lives (gitignored)."""
+    base = Path(root) / ".test-sandbox"
+    base.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix="x4conf-run-", dir=str(base)))
 
 
 def summarise(results, n_total, buckets, gaps, min_cases) -> tuple:
@@ -510,7 +546,7 @@ def replay(rows, profile, argv, root, workers=4) -> list:
     """Judge every row whose kind the profile maps: reference and adapter, side by side, per item."""
     root = Path(root)
     todo = [r for r in rows if (r.get("kind") or classify(r)) in profile["cases"]]
-    run_dir = Path(tempfile.mkdtemp(prefix="x4conf-run-"))
+    run_dir = neutral_run_dir(root)
 
     def one(row):
         ref = reference_verdict(row, root)
@@ -666,12 +702,15 @@ def main(argv=None) -> int:
         unreadable_ref = [r["label"] for r in results if r["reference"] == "unreadable"]
         if unreadable_ref:
             return refuse(f"the guards' own verdict was unreadable for: {', '.join(map(str, unreadable_ref[:20]))}")
-        buckets = {"replayed": len(results)}
-        n_other = len(rows) - len(results)
+        buckets = bucket_counts(rows, len(results), prof)
+        if buckets.get(WINDOWS_PATH_DIALECT):
+            say(f"not replayed: {buckets[WINDOWS_PATH_DIALECT]} case(s) whose file path is spelled with "
+                "backslashes -- off Windows that is one relative filename, not the path the guards judge")
+        n_other = buckets.get("no_native_analogue", 0)
         if n_other:
-            buckets["no_native_analogue"] = n_other
             tools = sorted({str((r.get("payload") or {}).get("tool_name")) for r in rows
-                            if (r.get("kind") or classify(r)) not in prof["cases"]})
+                            if (r.get("kind") or classify(r)) not in prof["cases"]
+                            and (r.get("kind") or classify(r)) != WINDOWS_PATH_DIALECT})
             say(f"not replayed: {n_other} case(s) with no shell command or file path for an adapter to see "
                 f"(tools: {', '.join(tools)}), or of a kind the profile declares unsupported")
         rc, text = summarise(results, len(rows), buckets, prof.get("unsupported") or {}, a.min_cases)

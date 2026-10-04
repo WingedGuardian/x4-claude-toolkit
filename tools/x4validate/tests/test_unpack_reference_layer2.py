@@ -35,6 +35,8 @@ def _load(name, rel):
 
 gitbash = _load("gitbash_up", "scripts/gitbash.py")
 x4refguard = _load("x4refguard", "scripts/x4refguard.py")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from refguard_owner import own_or_skip  # noqa: E402
 
 win = pytest.mark.skipif(os.name != "nt", reason="the Windows deny (POSIX path: test_the_sentinel...)")
 
@@ -135,6 +137,7 @@ def test_FORCE_unpack_REFUSES_while_the_deny_is_on_and_names_the_lift(tmp_path):
     ref = tmp_path / "reference"
     ref.mkdir()
     (ref / ".unpacked-and-locked").write_text("buildid 1")
+    own_or_skip(ref, x4refguard)          # an elevated runner creates it owned by Administrators
     env = _env(tmp_path, ref)
     assert _guard(env, "apply").returncode == 0
     try:
@@ -152,6 +155,7 @@ def test_FORCE_unpack_WITHOUT_the_deny_still_runs(tmp_path):
     ref = tmp_path / "reference"
     ref.mkdir()
     (ref / ".unpacked-and-locked").write_text("buildid 1")
+    own_or_skip(ref, x4refguard)          # an elevated runner creates it owned by Administrators
     env = _env(tmp_path, ref)
     try:
         r = _run({**env, "X4_FORCE_UNPACK": "1"}, ref)

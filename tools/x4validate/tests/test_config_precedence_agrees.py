@@ -247,3 +247,26 @@ def test_TWIN_an_exported_reference_is_not_DEFAULTED(tmp_path):
     env["X4_REFERENCE"] = str(tmp_path / "realref")
     v = _bash_view(tk, env)
     assert v["defaulted"] == "0" and _n(v["reference"]) == _n(tmp_path / "realref")
+
+
+def test_a_CRLF_config_gives_the_bash_loader_NO_carriage_return(tmp_path):
+    """A config saved by any Windows editor is CRLF, and `. file` under a POSIX bash KEEPS the
+    CR: MEASURED 2026-10-04 in ubuntu:24.04, `X4_REFERENCE="/a/b"<CR>` sourced to `/a/b<CR>`
+    (Git Bash strips it, so this machine never saw it). Every guard then compares paths against
+    a root that ends in a CR, which no real path does. CI run 37172347642 surfaced it only
+    because the OpenCode renderer refused the value ("X4_REFERENCE contains a line break").
+    Bash and Python must read the same CRLF file to the same values, with no CR in either."""
+    tk, env = _box(tmp_path, MATRIX[4])                   # neither: the file is written below
+    keys = {"X4_GAME": "/g/game", "X4_REFERENCE": "/g/ref", "X4_PROFILE": "/g/profile",
+            "X4_MODS": "/g/mods"}
+    body = "# a comment\n" + "".join(f'{k}="{v}"\n' for k, v in keys.items()) + "X4_SAVES=/g/saves\n"
+    (tk / NEW).write_bytes(body.replace("\n", "\r\n").encode("utf-8"))
+    bash = _bash()
+    if bash is None:
+        pytest.skip("no Git Bash found (the WSL stub does not count) -- NOT CHECKED")
+    names = [*keys, "X4_SAVES"]
+    r = subprocess.run([bash, "-c", '. "$1"; shift; for k in "$@"; do eval "v=\\${$k}"; printf "%s\\0" "$v"; done',
+                        "_", str(ENV_SH), *names], capture_output=True, env=env, cwd=str(tk))
+    assert r.returncode == 0, r.stderr[-400:]
+    got = dict(zip(names, r.stdout.decode("utf-8").split("\0")))
+    assert got == {**keys, "X4_SAVES": "/g/saves"}, got
