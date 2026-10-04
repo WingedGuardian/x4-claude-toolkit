@@ -980,7 +980,7 @@ import re as _re
 
 #: An ASSIGNMENT of X4_GUARD in a config, in any shape the loaders accept (`KEY=`, `export
 #: KEY=`, indented, spaced). A comment that merely names it is not one.
-_GUARD_LINE = _re.compile(r"^\s*(?:export\s+)?X4_GUARD\s*=")
+_GUARD_LINE = _re.compile(r"^\s*(?:export\s+)?X4_GUARD(?:_CHECK)?\s*=")
 
 
 def config_files(ctx: Ctx) -> list[Path]:
@@ -1008,17 +1008,27 @@ def config_files(ctx: Ctx) -> list[Path]:
     return out
 
 
-def config_guard_lines(ctx: Ctx) -> list[Path]:
-    """The config files that ASSIGN X4_GUARD (see _GUARD_LINE)."""
+def config_guard_lines_in(files) -> list[Path]:
+    """Of *files*, those that ASSIGN X4_GUARD or X4_GUARD_CHECK (see _GUARD_LINE) -- exactly the
+    lines the loaders' parser ignores with reason `guard` (`_paths.parse_env_report`; pinned
+    line by line in test_x4doctor). A leading BOM is dropped, as the parser drops it."""
     hits = []
-    for f in config_files(ctx):
+    for f in files:
         try:
             text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if any(_GUARD_LINE.match(ln) for ln in text.replace("\r", "").split("\n")):
+        lines = text.replace("\r", "").split("\n")
+        if lines and lines[0].startswith("﻿"):
+            lines[0] = lines[0][1:]
+        if any(_GUARD_LINE.match(ln) for ln in lines):
             hits.append(f)
     return hits
+
+
+def config_guard_lines(ctx: Ctx) -> list[Path]:
+    """The config files of this root that ASSIGN X4_GUARD (see config_guard_lines_in)."""
+    return config_guard_lines_in(config_files(ctx))
 
 
 #: The x4lock state, asked of the REAL scripts/x4lock.py in a child process run the way an

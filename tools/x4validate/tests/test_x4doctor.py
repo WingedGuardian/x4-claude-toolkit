@@ -1198,3 +1198,22 @@ def test_opencode_instructions_need_AGENTS_md_and_the_addendum(oc_root):
     (oc_root / ".opencode" / "X4-OPENCODE.md").unlink()
     r = _oc_rows(oc_root, doc.check_parity)["instructions.opencode"]
     assert r.status == doc.FAIL and "X4-OPENCODE.md" in r.detail, r
+
+# --- the doctor's X4_GUARD-line detector and the loaders' parser are ONE rule (v4.0.0 merge) ---
+# x4doctor stays stdlib-only, so it cannot import _paths (relative imports); it keeps its own
+# matcher, and this pins it to the parser line by line, so the two cannot drift.
+_BOM = chr(0xFEFF)
+_GUARD_SHAPES = ["X4_GUARD=off", "export X4_GUARD=off", "  X4_GUARD = off", _BOM + "X4_GUARD=off",
+                 "X4_GUARD_CHECK=1", "X4_GUARD=", "# X4_GUARD=off", "X4_GUARDS=off", "X4_GAME=/g",
+                 "echo X4_GUARD=off", "X4_GUARD=off" + chr(13)]
+
+
+@pytest.mark.parametrize("line", _GUARD_SHAPES, ids=lambda s: repr(s))
+def test_doctor_guard_line_agrees_with_the_loader_parser(tmp_path, line):
+    from x4validate import _paths
+    f = tmp_path / "x4-paths.env"
+    f.write_bytes((line + chr(10)).encode("utf-8"))
+    _vals, ignored = _paths.parse_env_report(f)
+    parser_says = any(reason == "guard" for _n, reason in ignored)
+    doctor_says = f in doc.config_guard_lines_in([f])
+    assert doctor_says == parser_says, (line, doctor_says, parser_says)
