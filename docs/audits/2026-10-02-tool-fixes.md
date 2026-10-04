@@ -3,7 +3,8 @@
 Status: repairs installed and verified after review and final E2E. The additional
 store-metadata failure found during E2E is fixed, installed, and included in the
 final full-suite run.
-Approved [plan](../superpowers/plans/2026-10-02-tool-fixes.md).
+Approved plan: `docs/superpowers/plans/2026-10-02-tool-fixes.md` in the repository (not
+shipped in the release bundle).
 Historical [audit](2026-10-01-tools.md) remains the pre-fix evidence.
 
 ## Changes and compatibility
@@ -137,8 +138,9 @@ external location named in the game-root AGENTS.md is absent; the agent-support
 handoff records that stale instruction. No duplicate suite is created.
 
 Both local tools are retained as requested. Their repositories own the patches;
-the toolkit does not silently become their source or deployer. See
-[Claude handoff](../handoffs/2026-10-02-legacy-tools.md).
+the toolkit does not silently become their source or deployer. See the
+handoff note `docs/handoffs/2026-10-02-legacy-tools.md` in the repository (not shipped in
+the release bundle).
 
 ## Workflow rulings
 
