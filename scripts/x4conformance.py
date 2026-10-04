@@ -16,13 +16,16 @@ ask it gives is re-run under X4_GUARD_CHECK=1, and an exit 2 there means "checke
 stdout. They are compared PER ITEM; a total is never the verdict.
 
 Exit codes:
-  0  every replayed case agrees, and replayed >= --min-cases (default 80)
+  0  every replayed case agrees, and the cases the guards CHECKED (reference verdict not
+     inert) number >= --min-cases (default 80)
   1  at least one case disagrees, or the adapter's output was unreadable (each one is listed)
   2  cannot evaluate: bad or incomplete profile, no adapter command, toolkit / .claude/hooks /
-     a required program missing, the dump harness failed, a reference verdict unreadable, or a
-     reference CONTROL (an extra case's `expect`) failed
-  3  nothing, or too little, examined: replayed == 0 or replayed < --min-cases.
-     Never 0 on an empty population.
+     a required program missing, the dump harness failed, a reference verdict unreadable, a
+     reference CONTROL (an extra case's `expect`) failed, or the extra cases were wanted (no
+     --no-extras) and could not be built
+  3  nothing, or too little, examined: replayed == 0, or fewer than --min-cases replayed cases
+     were CHECKED by the guards -- an inert guard agreeing with an inert adapter examined
+     nothing. Never 0 on an empty population.
 
 Profile format v1 (scripts/conformance-profiles/<name>.json; ADAPTING.md explains each field):
   v: 1;  agent: name;  command: [argv...] with {TOOLKIT} {HOOKS} {PYTHON} {BASH} {PWSH} {HOOK};
@@ -317,10 +320,18 @@ def summarise(results, n_total, buckets, gaps, min_cases) -> tuple:
     if not results:
         lines.append("REFUSING: 0 replayed -- nothing was examined, so nothing is proven")
         return RC_NOTHING, "\n".join(lines)
-    if len(results) < min_cases:
-        lines.append(f"REFUSING: {len(results)} replayed is below --min-cases {min_cases}: too little examined")
+    # INERT AGREEING WITH INERT EXAMINED NOTHING (R2-F3, v4.0.0 review): a broken X4_PYTHON made
+    # every guard and the adapter answer "checked nothing", and 3 of 3 "agreed". Only a case the
+    # guards actually CHECKED counts toward the floor.
+    checked = sum(r["reference"] != "inert" for r in results)
+    if checked < len(results):
+        lines.append(f"{len(results) - checked} replayed case(s) were INERT in the guards (checked "
+                     "nothing): they agree, and prove nothing")
+    if checked == 0 or checked < min_cases:
+        lines.append(f"REFUSING: {checked} of {len(results)} replayed case(s) were checked by the guards, "
+                     f"below --min-cases {max(min_cases, 1)}: too little examined")
         return RC_NOTHING, "\n".join(lines)
-    lines.append(f"OK: all {len(results)} replayed cases agree")
+    lines.append(f"OK: all {len(results)} replayed cases agree ({checked} checked by the guards)")
     return RC_OK, "\n".join(lines)
 
 
@@ -682,9 +693,14 @@ def main(argv=None) -> int:
         for r in rows:
             r["kind"] = r.get("kind") or classify(r)
         extras = [] if a.no_extras else extra_rows(root, rows)
+        if not a.no_extras and rows and not extras:
+            # R2-F3 (v4.0.0 review): the neutral cases were WANTED and could not be built -- this
+            # was a printed note and the run went on to pass without them.
+            return refuse("the neutral extra cases (scripts/conformance-extra-cases.json) could not be "
+                          "built: no case row names a sandbox toolkit (env X4_TOOLKIT). Replay a dumped "
+                          "corpus, or pass --no-extras to run without them")
         if not a.no_extras:
-            say(f"extras: {len(extras)} neutral case(s)"
-                + ("" if extras else " -- none: no case row names a sandbox toolkit"))
+            say(f"extras: {len(extras)} neutral case(s)")
         for r in extras:                  # the reference CONTROL: the guards must still say `expect`
             got = reference_verdict(r, root)
             if got != r["expect"]:

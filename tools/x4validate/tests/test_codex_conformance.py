@@ -49,14 +49,54 @@ pytestmark = pytest.mark.skipif(not (PWSH and BASH and shutil.which("jq")),
 
 # ------------------------------------------------------------------ tests ------------- #
 
+#: The four Claude tools with a native Codex form, and the field each must carry (an oracle written
+#: from the payloads, independent of xc.classify).
+NATIVE = {"Bash": "command", "PowerShell": "command", "Edit": "file_path", "Write": "file_path"}
+
+
+def _bucket_problems(rows, classify) -> list:
+    """Where the ENGINE's buckets (xc.bucket_counts over `classify`) disagree with a per-row tally
+    taken straight from the payloads. R7-6: the old test summed a partition it had just made
+    itself, so it could not fail."""
+    want = {"replayed": 0}
+    for r in rows:
+        p = r.get("payload") or {}
+        ti = p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
+        field = NATIVE.get(p.get("tool_name"))
+        v = ti.get(field) if field else None
+        if not (isinstance(v, str) and v):
+            key = "no_native_analogue"
+        elif field == "file_path" and os.name != "nt" and chr(92) in v:
+            key = xc.WINDOWS_PATH_DIALECT
+        else:
+            key = "replayed"
+        want[key] = want.get(key, 0) + 1
+    rows = [dict(r, kind=classify(r)) for r in rows]
+    got = xc.bucket_counts(rows, sum(r["kind"] in CODEX["cases"] for r in rows), CODEX)
+    problems = [] if got == want else [f"engine buckets {got} != per-row tally {want}"]
+    if sum(got.values()) != len(rows):
+        problems.append(f"engine buckets {got} do not sum to {len(rows)} rows")
+    return problems
+
+
 def test_buckets_sum(conformance_dump):
     rows, _ = conformance_dump
-    kinds = [xc.classify(r) for r in rows]
-    counts = {"replayed": sum(k in CODEX["cases"] for k in kinds),
-              "no_native_analogue": sum(k not in CODEX["cases"] for k in kinds)}
-    assert sum(counts.values()) == len(rows), counts
-    assert counts["replayed"] >= 80, counts
-    print("conformance buckets:", counts)
+    assert _bucket_problems(rows, xc.classify) == []
+    n = sum(xc.classify(r) in CODEX["cases"] for r in rows)
+    assert n >= 80, n
+    print("conformance buckets:", xc.bucket_counts(rows, n, CODEX))
+
+
+def test_TWIN_the_bucket_check_can_fail():
+    """A classify that loses Write rows must be caught, or the check above is decoration."""
+    rows = [{"payload": {"tool_name": "Write", "tool_input": {"file_path": "a.xml", "content": ""}}},
+            {"payload": {"tool_name": "Bash", "tool_input": {"command": "ls"}}},
+            {"payload": {"tool_name": "Grep", "tool_input": {"pattern": "x"}}}]
+    assert _bucket_problems(rows, xc.classify) == []
+
+    def broken(r):
+        return "no_native_analogue" if r["payload"]["tool_name"] == "Write" else xc.classify(r)
+    assert _bucket_problems(rows, broken)
 
 
 def test_live_claude_verdicts_matched_the_harness(conformance_dump):
@@ -78,9 +118,10 @@ def test_every_replayable_case_agrees(conformance_dump):
     diffs = [(r["label"], r["kind"], r["reference"], r["adapter"], r["text"]) for r in results
              if r["reference"] != r["adapter"]]
     print(f"replayed {len(results)}; replay drift vs the live harness verdict: {len(drift)}")
-    for d in drift:
-        print("  DRIFT", d)
     assert not diffs, "\n".join(map(str, diffs))     # PER ITEM, never a total
+    # R7-3: the guards re-run NOW must still say what the harness recorded at decide() time; a
+    # drift means the reference verdict is not the one the harness judged (it was only printed).
+    assert not drift, "\n".join(f"DRIFT {d}" for d in drift)
 
 
 # ------------------------------------------------------------------ extras ------------ #
