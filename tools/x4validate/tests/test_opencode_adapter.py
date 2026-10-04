@@ -66,6 +66,30 @@ def test_a_write_into_reference_is_DENIED(sandbox, n):
     assert v["decision"] == "deny" and not v["inert"], v
 
 
+def test_a_patch_is_read_with_OPENCODES_grammar(sandbox):
+    """R2-F1: OpenCode's parser is not Codex's. `*** Delete File:x` (no space) is a delete to
+    OpenCode and a parse error to Codex: read with Codex's grammar it would be an inert refusal,
+    with OpenCode's it is judged by its path -- a real deny in reference, an allow in dev."""
+    tmp, tk, env = sandbox
+    ref = (tk / "reference").as_posix()
+    (tk / "dev" / "mymod" / "a.xml").write_text("a\n", encoding="utf-8")
+    v = run(env, call(tk, "apply_patch", {"patchText": f"*** Begin Patch\n*** Delete File:{ref}/libraries/wares.xml\n*** End Patch\n"}))
+    assert v["decision"] == "deny" and not v["inert"], v
+    v = run(env, call(tk, "apply_patch", {"patchText": "*** Begin Patch\n*** Delete File:dev/mymod/a.xml\n*** End Patch\n"}))
+    assert v["decision"] in ("allow", "advise") and not v["inert"], v
+
+
+def test_TWIN_an_indented_header_OpenCode_skips_is_not_judged(sandbox):
+    """The other direction: Codex obeys an indented Delete, OpenCode skips the line (headers only
+    at column 0, READ from patch/index.ts and checked against it under node). Read with Codex's
+    grammar this would be a deny for a delete OpenCode never performs."""
+    tmp, tk, env = sandbox
+    ref = (tk / "reference").as_posix()
+    v = run(env, call(tk, "apply_patch", {"patchText": "*** Begin Patch\n*** Add File: dev/mymod/h.xml\n+x\n"
+                                                       f"  *** Delete File: {ref}/libraries/wares.xml\n*** End Patch\n"}))
+    assert v["decision"] in ("allow", "advise") and not v["inert"], v
+
+
 @pytest.mark.parametrize("tool,args", [
     ("edit", {"filePath": "dev/mymod/a.xml", "oldString": "a", "newString": "b"}),
     ("write", {"filePath": "dev/mymod/new.xml", "content": "<x/>"}),

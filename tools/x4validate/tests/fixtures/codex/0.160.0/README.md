@@ -23,6 +23,12 @@ Sanitised: `cwd` -> `<CWD>` (also inside `tool_input`), `transcript_path` -> `<T
 | `bash_subagent.json` | P5 | a subagent's shell call is hooked and carries `agent_id`/`agent_type` |
 | `spawn_agent.json` / `wait_agent.json` | P5 | the parent's subagent tools arrive as `collaborationspawn_agent` / `collaborationwait_agent` |
 
+`patch_grammar_oracle.json` is NOT a hook payload: it is what Codex's own apply_patch
+(`codex --codex-run-as-apply-patch`, offline, no model) did with each patch shape in
+`scripts/capture-codex-patch-oracle.py` -- exit code, first stderr line (scratch path ->
+`<WORK>`), and every file it added, removed or changed. `tests/test_patch_paths.py` holds the
+guard's parser to it (R2-F1, v4.0.0). Re-capture it on a Codex upgrade.
+
 `schemas/` holds the per-event command input/output JSON schemas extracted from the 0.160.0
 binary (all events, not only the three the adapter uses). The PreToolUse output schema is
 `additionalProperties: false` at both levels: an extra key makes the hook `Failed`, and a

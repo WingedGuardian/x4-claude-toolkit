@@ -14,7 +14,8 @@ FIX = Path(__file__).parent / "fixtures" / "codex" / "0.160.0"
 PERSONAL = re.compile(r"\b[A-Za-z]:[\\/]|/home/|/Users/|\b\d{8}\b")
 
 
-NOT_PAYLOADS = {"trust_vectors.json"}       # Codex-produced hash vectors (test_codex_trust.py)
+NOT_PAYLOADS = {"trust_vectors.json",       # Codex-produced hash vectors (test_codex_trust.py)
+                "patch_grammar_oracle.json"}  # Codex's apply_patch outcomes (test_patch_paths.py)
 
 
 def payloads():
@@ -48,6 +49,13 @@ def test_fixtures_are_sanitised():
         assert not hits, f"{p.name} carries a personal path: {hits[:3]}"
         assert d["cwd"] == "<CWD>", f"{p.name}: cwd placeholder missing"
         assert d["transcript_path"] == "<TRANSCRIPT>", p.name
+
+
+def test_the_patch_oracle_is_sanitised_too():
+    """Its stderr lines named the scratch folder until the capture replaced it with <WORK>."""
+    d = json.loads((FIX / "patch_grammar_oracle.json").read_text(encoding="utf-8"))
+    hits = [s for s in _strings(d) if PERSONAL.search(s)]
+    assert not hits and len(d["rows"]) >= 60, f"patch_grammar_oracle.json carries a personal path: {hits[:3]}"
 
 
 def test_TWIN_the_personal_pattern_can_fire():

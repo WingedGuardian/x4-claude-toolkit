@@ -1,0 +1,917 @@
+{
+ "codex_version": "0.160.0",
+ "rows": [
+  {
+   "name": "flush-add",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "h.txt": "added"
+   }
+  },
+  {
+   "name": "flush-update",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed"
+   }
+  },
+  {
+   "name": "flush-delete",
+   "patch": "*** Begin Patch\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "flush-move",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n*** Move to: moved.txt\n@@\n-x\n+y\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "removed",
+    "moved.txt": "added"
+   }
+  },
+  {
+   "name": "flush-multi",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n*** Update File: a.txt\n@@\n-x\n+y\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed",
+    "h.txt": "added",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "flush-delete-after-add",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "h.txt": "added",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "flush-delete-after-update",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "flush-delete-after-delete",
+   "patch": "*** Begin Patch\n*** Delete File: b.txt\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "b.txt": "removed",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "flush-delete-after-eof",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n*** End of File\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "update-no-at-at",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n-x\n+y\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed"
+   }
+  },
+  {
+   "name": "update-two-chunks",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n@@\n-q\n+r\n*** End Patch",
+   "files": {
+    "a.txt": "x\nq\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed"
+   }
+  },
+  {
+   "name": "indented-after-add",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n  *** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "h.txt": "added",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "tab-indented-after-add",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n\t*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "h.txt": "added",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "indented-first",
+   "patch": "*** Begin Patch\n   *** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "indented-first-add",
+   "patch": "*** Begin Patch\n  *** Add File: h.txt\n+hi\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "h.txt": "added"
+   }
+  },
+  {
+   "name": "indented-after-delete",
+   "patch": "*** Begin Patch\n*** Delete File: b.txt\n  *** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "b.txt": "removed",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "indented-after-update",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n  *** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n *** Delete File: victim.txt\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed"
+   }
+  },
+  {
+   "name": "indented1-after-update",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n *** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n*** Delete File: victim.txt\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed"
+   }
+  },
+  {
+   "name": "indented-after-eof",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n*** End of File\n  *** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 7: Expected update hunk to start with a @@ context marker, got: '  *** Delete File: victim.txt'",
+   "touched": {}
+  },
+  {
+   "name": "indented-add-after-update",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n  *** Add File: moved.txt\n+z\n*** End Patch",
+   "files": {
+    "a.txt": "x\n *** Add File: moved.txt\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed"
+   }
+  },
+  {
+   "name": "indented-move",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n  *** Move to: moved.txt\n@@\n-x\n+y\n*** End Patch",
+   "files": {
+    "a.txt": " *** Move to: moved.txt\nx\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed"
+   }
+  },
+  {
+   "name": "indented-eof",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n  *** End of File\n*** End Patch",
+   "files": {
+    "a.txt": "x\n *** End of File\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed"
+   }
+  },
+  {
+   "name": "indented-update-after-add",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n  *** Update File: a.txt\n@@\n-x\n+y\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed",
+    "h.txt": "added"
+   }
+  },
+  {
+   "name": "vt-indented-after-add",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n\u000b*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "h.txt": "added",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "ff-indented-after-add",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n\f*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "h.txt": "added",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "nbsp-indented-after-add",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n *** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "h.txt": "added",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "ideo-indented-after-add",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n　*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "h.txt": "added",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "fs-indented-after-add",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n\u001c*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 4: '",
+   "touched": {}
+  },
+  {
+   "name": "lowercase",
+   "patch": "*** Begin Patch\n*** delete file: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 2: '*** delete file: victim.txt' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+   "touched": {}
+  },
+  {
+   "name": "nospace-after-stars",
+   "patch": "*** Begin Patch\n***Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 2: '***Delete File: victim.txt' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+   "touched": {}
+  },
+  {
+   "name": "nospace-after-colon",
+   "patch": "*** Begin Patch\n*** Delete File:victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 2: '*** Delete File:victim.txt' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+   "touched": {}
+  },
+  {
+   "name": "two-spaces-after-colon",
+   "patch": "*** Begin Patch\n*** Delete File:  victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n",
+    " victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    " victim.txt": "removed"
+   }
+  },
+  {
+   "name": "double-space-in-name",
+   "patch": "*** Begin Patch\n***  Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 2: '***  Delete File: victim.txt' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+   "touched": {}
+  },
+  {
+   "name": "trailing-ws-header",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n*** Delete File: victim.txt  \n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "move-nospace",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n*** Move to:moved.txt\n@@\n-x\n+y\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 3: Unexpected line found in update hunk: '*** Move to:moved.txt'. Every line should start with ' ' (context line), '+' (added line), or '-' (removed line)",
+   "touched": {}
+  },
+  {
+   "name": "eof-trailing-ws",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n*** End of File  \n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed"
+   }
+  },
+  {
+   "name": "unknown-header",
+   "patch": "*** Begin Patch\n*** Rename File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 2: '*** Rename File: victim.txt' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+   "touched": {}
+  },
+  {
+   "name": "add-bare-content",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\nhi\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 3: 'hi' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+   "touched": {}
+  },
+  {
+   "name": "add-then-blank-then-delete",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 4: '' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+   "touched": {}
+  },
+  {
+   "name": "update-then-blank-then-delete",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "delete-then-plus-line",
+   "patch": "*** Begin Patch\n*** Delete File: victim.txt\n+junk\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 3: '+junk' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+   "touched": {}
+  },
+  {
+   "name": "update-empty",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 2: Update file hunk for path 'a.txt' is empty",
+   "touched": {}
+  },
+  {
+   "name": "content-before-header",
+   "patch": "*** Begin Patch\n+x\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 2: '+x' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+   "touched": {}
+  },
+  {
+   "name": "add-content-header-text",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "h.txt": "added"
+   }
+  },
+  {
+   "name": "update-context-header-text",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n x\n+*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed"
+   }
+  },
+  {
+   "name": "move-twice",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n*** Move to: moved.txt\n*** Move to: b.txt\n@@\n-x\n+y\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 4: Unexpected line found in update hunk: '*** Move to: b.txt'. Every line should start with ' ' (context line), '+' (added line), or '-' (removed line)",
+   "touched": {}
+  },
+  {
+   "name": "move-without-update",
+   "patch": "*** Begin Patch\n*** Move to: moved.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 2: '*** Move to: moved.txt' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+   "touched": {}
+  },
+  {
+   "name": "begin-indented",
+   "patch": "  *** Begin Patch\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "end-indented",
+   "patch": "*** Begin Patch\n*** Delete File: victim.txt\n  *** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "second-begin-inside",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n*** Begin Patch\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 4: '*** Begin Patch' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+   "touched": {}
+  },
+  {
+   "name": "indented-end-inside",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n  *** End Patch\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch: The last line of the patch must be '*** End Patch'",
+   "touched": {}
+  },
+  {
+   "name": "text-after-end",
+   "patch": "*** Begin Patch\n*** Delete File: victim.txt\n*** End Patch\n*** Delete File: b.txt",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch: The last line of the patch must be '*** End Patch'",
+   "touched": {}
+  },
+  {
+   "name": "junk-before-begin",
+   "patch": "junk\n*** Begin Patch\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch: The first line of the patch must be '*** Begin Patch'",
+   "touched": {}
+  },
+  {
+   "name": "crlf",
+   "patch": "*** Begin Patch\r\n*** Add File: h.txt\r\n+hi\r\n*** Delete File: victim.txt\r\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "h.txt": "added",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "empty-patch",
+   "patch": "*** Begin Patch\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "No files were modified.",
+   "touched": {}
+  },
+  {
+   "name": "heredoc-wrapped",
+   "patch": "<<'EOF'\n*** Begin Patch\n*** Delete File: victim.txt\n*** End Patch\nEOF",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "heredoc-wrapped-bare",
+   "patch": "<<EOF\n*** Begin Patch\n*** Delete File: victim.txt\n*** End Patch\nEOF",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "environment-id",
+   "patch": "*** Begin Patch\n*** Environment ID: local\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "blank-after-begin",
+   "patch": "*** Begin Patch\n\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 2: '' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+   "touched": {}
+  },
+  {
+   "name": "blank-after-delete",
+   "patch": "*** Begin Patch\n*** Delete File: b.txt\n\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 3: '' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+   "touched": {}
+  },
+  {
+   "name": "update-ws-only-context",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n  \n*** End Patch",
+   "files": {
+    "a.txt": "x\n \n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed"
+   }
+  },
+  {
+   "name": "update-eof-blank-delete",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n*** End of File\n\n*** Delete File: victim.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "a.txt": "changed",
+    "victim.txt": "removed"
+   }
+  },
+  {
+   "name": "move-after-chunk",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-x\n+y\n*** Move to: moved.txt\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 6: Expected update hunk to start with a @@ context marker, got: '*** Move to: moved.txt'",
+   "touched": {}
+  },
+  {
+   "name": "move-two-spaces",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n*** Move to:  moved.txt\n@@\n-x\n+y\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    " moved.txt": "added",
+    "a.txt": "removed"
+   }
+  },
+  {
+   "name": "at-at-twice-empty",
+   "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n@@\n-x\n+y\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 1,
+   "stderr": "Invalid patch hunk on line 4: Unexpected line found in update hunk: '@@'. Every line should start with ' ' (context line), '+' (added line), or '-' (removed line)",
+   "touched": {}
+  },
+  {
+   "name": "end-inside-then-blank",
+   "patch": "*** Begin Patch\n*** Add File: h.txt\n+hi\n*** End Patch\n\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "h.txt": "added"
+   }
+  },
+  {
+   "name": "cr-cr-lf",
+   "patch": "*** Begin Patch\r\r\n*** Add File: h.txt\r\r\n+hi\r\r\n*** Delete File: victim.txt\r\r\n*** End Patch",
+   "files": {
+    "a.txt": "x\n",
+    "b.txt": "x\n",
+    "victim.txt": "keep\n"
+   },
+   "rc": 0,
+   "stderr": "",
+   "touched": {
+    "h.txt": "added",
+    "victim.txt": "removed"
+   }
+  }
+ ]
+}

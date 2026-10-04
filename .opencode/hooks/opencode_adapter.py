@@ -22,7 +22,7 @@ BEST EFFORT, from OpenCode's docs and source (v1.18.34), NOT measured against a 
 Routing (pre):
   bash         -> the shell guard (cwd = workdir), plus the patch paths of a shell-run apply_patch
   edit, write  -> a write of filePath
-  apply_patch  -> parse_patch: add/update/move_to are writes, delete/move_from are deletes
+  apply_patch  -> parse_patch_opencode (OpenCode's grammar, not Codex's): add/update/move_to are writes, delete/move_from are deletes
   anything else-> allow, no guard run (read, glob, grep, webfetch, task, skill, MCP tools ...)
 On allow/advise the backup hook runs for existing edit/write targets and patch update/delete
 ops (Claude Code runs backup-before-edit on Edit/Write). `post` runs the validator hook on each
@@ -108,6 +108,8 @@ def translate(p: dict) -> tuple[list[tuple], list[tuple] | None, str | None]:
         ops = None
         found = patch_paths.shell_patch(cmd)
         if found is not None:
+            # OpenCode does not intercept a shell apply_patch (only its patch/index.ts tests call
+            # maybeParseApplyPatch, READ v1.18.34); if one runs, it is Codex's: Codex's grammar
             body, cd = found
             pbase = core._abspath(cd, cwd) if cd else cwd
             calls += core._patch_calls(body, pbase)
@@ -118,9 +120,11 @@ def translate(p: dict) -> tuple[list[tuple], list[tuple] | None, str | None]:
         path = core._abspath(raw, base)
         return [("write", None, None, path, f"{tool} {raw}")], [("update", path)], None
     if tool == PATCH_TOOL:
+        # OpenCode's apply_patch runs OpenCode's OWN parser, not Codex's (R2-F1): read it that way
         text = _arg(args, "patchText", tool)
-        ops = patch_paths.parse_patch(text)
-        return core._patch_calls(text, base), [(op, core._abspath(x, base)) for op, x in ops], None
+        ops = patch_paths.parse_patch_opencode(text)
+        return (core._patch_calls(text, base, patch_paths.parse_patch_opencode),
+                [(op, core._abspath(x, base)) for op, x in ops], None)
     return [], None, None
 
 
@@ -162,7 +166,7 @@ def _written(p: dict) -> list[str]:
     if tool in FILE_TOOLS:
         return [core._abspath(_arg(args, "filePath", tool), base)]
     if tool == PATCH_TOOL:
-        return [core._abspath(x, base) for op, x in patch_paths.parse_patch(_arg(args, "patchText", tool))
+        return [core._abspath(x, base) for op, x in patch_paths.parse_patch_opencode(_arg(args, "patchText", tool))
                 if op in core.VALIDATE_OPS]
     return []
 

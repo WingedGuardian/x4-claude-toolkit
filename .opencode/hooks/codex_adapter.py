@@ -98,10 +98,12 @@ def _abspath(p: str, base: str) -> str:
     return os.path.abspath(os.path.join(base, p)) if not os.path.isabs(p) else os.path.abspath(p)
 
 
-def _patch_calls(text: str, base: str) -> list[tuple]:
-    """GuardCalls for one patch; a PatchParseError propagates to the caller."""
+def _patch_calls(text: str, base: str, parse=patch_paths.parse_patch) -> list[tuple]:
+    """GuardCalls for one patch, read with `parse` -- the grammar of the agent that will apply it
+    (Codex's by default; the OpenCode adapter passes parse_patch_opencode). A PatchParseError
+    propagates to the caller."""
     calls = []
-    ops = patch_paths.parse_patch(text)
+    ops = parse(text)
     for op, p in ops:
         kind = OP_KIND.get(op)
         if kind is None:

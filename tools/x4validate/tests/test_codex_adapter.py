@@ -73,6 +73,18 @@ def test_delete_file_patch_denies_in_reference(sandbox):
     assert run(env, native("apply_patch_delete", tk, command=patch))[0] == "deny"
 
 
+@pytest.mark.parametrize("pad", ["  ", "\t"])
+def test_an_indented_delete_after_an_add_is_judged(sandbox, pad):
+    """R2-F1 (MEASURED against codex --codex-run-as-apply-patch): Codex trims a line before asking
+    whether it is a header, so this indented Delete after an Add deletes the file. The guard read
+    it as Add content and ALLOWED it."""
+    tmp, tk, env = sandbox
+    patch = f"*** Begin Patch\n*** Add File: dev/mymod/h.txt\n+hi\n{pad}*** Delete File: reference/libraries/wares.xml\n*** End Patch"
+    assert run(env, native("apply_patch_add", tk, command=patch))[0] == "deny"
+    ok = patch.replace("reference/libraries/wares.xml", "dev/mymod/old.xml")
+    assert run(env, native("apply_patch_add", tk, command=ok))[0] in ("allow", "advise")   # twin
+
+
 def test_shell_heredoc_patch_is_judged_by_its_paths(sandbox):
     """P3 (MEASURED): apply_patch through the shell arrives as Bash and IS applied."""
     tmp, tk, env = sandbox

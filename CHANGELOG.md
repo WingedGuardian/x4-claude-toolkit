@@ -76,6 +76,7 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   `.codex/rules/x4.rules` blocks `git add -A` and asks before `x4refguard.py remove` even when the
   hooks are not running. (3) The OS-level protection of `reference/` (below). A conformance suite
   replays every Claude hook case through the Codex chain and requires equal verdicts.
+- **A patch is read exactly as Codex reads it.** The guard's apply_patch parser is a port of Codex 0.160.0's own, held to a recorded run of Codex's apply_patch over 67 patch shapes (`scripts/capture-codex-patch-oracle.py`). Found in review before release: an INDENTED `*** Delete File:` line after an added file was a delete to Codex and file content to the guard, so a delete inside `reference/` was allowed (BLIND-SPOTS F153).
 - The installer renders `.codex/hooks.json` for the destination's absolute folder. It never trusts
   a folder or approves a hook for you; it prints the review steps.
 - `codex_trust.py report` tells whether Codex is actually running the hooks (trusted, untrusted,
@@ -93,6 +94,7 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   that asks the same guards before every `bash`, `edit`, `write` and `apply_patch` and blocks on a
   refusal. It fails closed when Python, the adapter or the guards cannot answer. The game-install
   block is plugin-only.
+- A patch is read with **OpenCode's own grammar** (column-0 headers, unknown lines skipped), not Codex's, checked against OpenCode v1.18.34's parser run under node (BLIND-SPOTS F153).
 - The OpenCode **desktop app is not supported** (its plugin hooks never fire,
   anomalyco/opencode#38604). Nothing here was run inside OpenCode: the README's OpenCode section
   lists what was read and what can switch the layers off.

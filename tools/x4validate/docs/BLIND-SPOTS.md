@@ -1207,6 +1207,7 @@ alarms, and did:
 | kind | assertion | first attempt | corrected |
 |---|---|---|---|
 | FULL-OVERRIDE | winner supplies the entity → `entities.origin` | 14/14 | 14/14 |
+| F153 | The apply_patch path parser read a patch by a grammar NEITHER agent uses: a header only at column 0. Codex trims the line first, so `  *** Delete File: <reference>/x` after an Add was a DELETE to Codex and Add content to the guard -- ALLOW; and OpenCode, whose own parser differs again, was judged by Codex's grammar | **DEFECT (measured)** · CRITICAL · ✅ FIXED 2026-10-04 (v4.0.0 review fix lane FX-G) | release review R2 (`codex --codex-run-as-apply-patch`, 12 shapes) | one port per agent: `parse_patch` = Codex 0.160.0's streaming parser, held to a MEASURED record of Codex over 67 shapes (`patch_grammar_oracle.json`); `parse_patch_opencode` = OpenCode v1.18.34's parser, held to the vendored original under node over 85 shapes; the OpenCode adapter uses its own. Before: 8 of 67 shapes had Codex touch a file the guard never named, 2 more named the wrong file |
 | UNION-KEY | winner supplies the entity → `entities.origin` | 2/2 | 2/2 |
 | **HARD** | winner owns the VALUE → **`attrs.origin`** | 34 agree, **6 FALSE disagreements** | **40/40** |
 | **SUBTREE** | winner is the WIPER → assert the **victim** is gone, scoped to `w0` | file-wide: **6 FALSE alarms** | **148/148** |
@@ -7914,3 +7915,42 @@ CRLF config before the fix.
 **Fix.** `_x4-env.sh` strips one trailing CR from the configured keys only, in-shell; the restored
 environment never carried one. **RE-DERIVED BY:** `tools/x4validate/tests/test_config_precedence_agrees.py`
 (bash and Python read one CRLF file to the same values, with no CR in either).
+
+## F153 — the guard read apply_patch by a grammar no agent uses · **DEFECT (measured)** · CRITICAL · confidence 95% · ✅ FIXED 2026-10-04 (v4.0.0 review, fix lane FX-G)
+
+**Found 2026-10-04** by the v4.0.0 release review (R2-F1): `patch_paths.parse_patch` decided header-ness with
+`line.startswith("*** ")` on the RAW line. Codex 0.160.0 trims the line first (`streaming_parser.rs`
+`process_line`: `line.trim()` in the Begin/Add/Delete states). So
+
+    *** Begin Patch
+    *** Add File: h.txt
+    +hi
+      *** Delete File: <reference>/libraries/wares.xml
+    *** End Patch
+
+was an Add to the guard (the indented line read as Add content) and an Add plus a DELETE to Codex. MEASURED end
+to end: the rendered `.codex/hooks/codex_adapter.py` printed nothing (allow) for it and a deny for the flush form.
+
+**Scope -- MEASURED over 67 shapes** (`scripts/capture-codex-patch-oracle.py`, each run through
+`codex --codex-run-as-apply-patch` in a scratch folder): before the fix, 8 shapes had Codex change a file the
+guard never named (an indented header after an Add or a Delete, in five whitespace spellings: space, tab, VT,
+FF, NBSP, U+3000), and 2 more had the guard name a different file than Codex touched (Codex keeps the space
+in `*** Delete File:  x` as part of the name; the guard stripped it). A further 18 shapes were read as patches
+the guard would judge while Codex refused them -- harmless (Codex applies nothing) but not a match. The
+grammar was introduced in this release arc (Plan 2 lane B), so no 3.x user had it.
+
+**OpenCode, same root cause.** The OpenCode adapter used the same Codex-shaped parser, but OpenCode runs
+its OWN (`packages/opencode/src/patch/index.ts`, READ at v1.18.34): headers only at column 0, any unknown line
+skipped, `*** Add File:x` accepted, paths trimmed. Codex's grammar refuses `*** Delete File:x`, so the
+guard turned an OpenCode delete into an inert refusal instead of judging its path.
+
+**Fix.** One port per agent, each held to that agent: `parse_patch` ports Codex's parser (boundaries
+from `parser.rs`, then `streaming_parser.rs` line by line: trimmed headers in the Begin/Add/Delete states,
+RIGHT-trimmed only inside an Update -- where an indented header is a context line -- Rust's whitespace set,
+not Python's, verbatim paths, the `<<EOF` leniency and `*** Environment ID:`); `parse_patch_opencode` ports
+OpenCode's. **RE-DERIVED BY:** `tests/test_patch_paths.py` -- every row of the Codex record
+(`fixtures/codex/0.160.0/patch_grammar_oracle.json`) must name exactly the files Codex touched or refuse
+where Codex refused, and the vendored OpenCode parser (`fixtures/opencode/patch-v1.18.34.mts`) is run under
+node over the same 67 shapes plus 18 OpenCode-specific ones. Seven clause mutants of the port (raw-line
+header test, full trim inside an Update, Python's whitespace set, stripped paths, no heredoc leniency, no
+environment id, any Add content) each turn the record red. Re-capture the record on every Codex upgrade.
