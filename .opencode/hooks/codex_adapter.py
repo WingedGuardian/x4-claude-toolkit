@@ -98,16 +98,25 @@ def _abspath(p: str, base: str) -> str:
     return os.path.abspath(os.path.join(base, p)) if not os.path.isabs(p) else os.path.abspath(p)
 
 
-def _patch_calls(text: str, base: str) -> list[tuple]:
-    """GuardCalls for one patch; a PatchParseError propagates to the caller."""
+def _patch_calls(text: str, base: str, parse=patch_paths.parse_patch) -> list[tuple]:
+    """GuardCalls for one patch, read with `parse` -- the grammar of the agent that will apply it
+    (Codex's by default; the OpenCode adapter passes parse_patch_opencode). A PatchParseError
+    propagates to the caller."""
     calls = []
-    ops = patch_paths.parse_patch(text)
+    ops = parse(text)
     for op, p in ops:
         kind = OP_KIND.get(op)
         if kind is None:
             continue
         calls.append((kind, None, None, _abspath(p, base), f"{op} {p}"))
     return calls
+
+
+def _patch_text(ti: dict):
+    """The patch text of an apply_patch call: `command` (0.160.0 captures), else `input`. ONE
+    reader for the pre, backup and post paths (R2-F9: backup and post read `command` only, so a
+    patch under `input` was judged but never backed up or validated)."""
+    return ti.get("command") if isinstance(ti.get("command"), str) else ti.get("input")
 
 
 def translate(payload: dict, event: str, *, shell: str) -> list[tuple]:
@@ -127,8 +136,7 @@ def translate(payload: dict, event: str, *, shell: str) -> list[tuple]:
             calls += _patch_calls(body, _abspath(cd, cwd) if cd else cwd)
         return calls
     if tool in PATCH_TOOLS:
-        text = ti.get("command") if isinstance(ti.get("command"), str) else ti.get("input")
-        return _patch_calls(text, cwd)
+        return _patch_calls(_patch_text(ti), cwd)
     if tool in STDIN_TOOLS:
         chars = ti.get("chars")
         if not isinstance(chars, str) or "\n" not in chars.replace("\r", "\n"):
@@ -258,16 +266,18 @@ def _run_hook(script: str, payload: dict, timeout: float) -> tuple[str | None, s
     target = HERE / script
     if not target.is_file():
         return None, f"{script} is missing"
+    # x4guard's bounded runner, never subprocess.run(timeout=): on Windows that ends in an
+    # UNBOUNDED communicate() that waits for every pipe holder (R2-F6; x4guard._run_bounded).
     try:
-        r = subprocess.run([bash, str(target)], input=json.dumps(payload).encode("utf-8"),
-                           capture_output=True, timeout=max(1, timeout))
-    except subprocess.TimeoutExpired:
-        return None, f"{script} timed out"
+        rc, out, _err = x4guard._run_bounded([bash, str(target)], json.dumps(payload).encode("utf-8"),
+                                             dict(os.environ), max(1, timeout))
     except OSError as e:
         return None, f"{script} could not start: {e}"
-    if r.returncode != 0:
-        return None, f"{script} exited {r.returncode}"
-    return r.stdout.decode("utf-8", "replace"), None
+    if rc is None:
+        return None, f"{script} timed out"
+    if rc != 0:
+        return None, f"{script} exited {rc}"
+    return out.decode("utf-8", "replace"), None
 
 
 def run_backups(ops: list[tuple], base: str, deadline: float) -> dict | None:
@@ -317,7 +327,7 @@ def _ops_for_backup(payload: dict):
     ti = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
     try:
         if payload.get("tool_name") in PATCH_TOOLS:
-            return patch_paths.parse_patch(ti.get("command")), os.getcwd()
+            return patch_paths.parse_patch(_patch_text(ti)), os.getcwd()
         if payload.get("tool_name") in SHELL_TOOLS and isinstance(ti.get("command"), str):
             found = patch_paths.shell_patch(ti["command"])
             if found:
@@ -333,7 +343,7 @@ def post_tool_use(payload: dict, deadline: float) -> dict:
     if payload.get("tool_name") not in PATCH_TOOLS:
         return {"decision": "allow"}
     try:
-        ops = patch_paths.parse_patch(ti.get("command"))
+        ops = patch_paths.parse_patch(_patch_text(ti))
     except patch_paths.PatchParseError as e:
         return {"decision": "advise", "context": f"X4 VALIDATION DID NOT RUN: the patch could not be read ({e})."}
     notes = []
@@ -360,11 +370,22 @@ def post_tool_use(payload: dict, deadline: float) -> dict:
     return {"decision": "advise", "context": bounded(notes[0], [("", n) for n in notes[1:]])}
 
 
+#: The WHOLE session_start, both hooks together: under the wrapper's 25 s session_start limit
+#: (codex-entry.ps1/.sh) with room for Python's start-up and the render. Each hook used to get
+#: min(20, budget) -- 2 x 20 s could outrun the wrapper, which then reports the guards NOT LIVE
+#: (R2-F7).
+SESSION_START_BUDGET_S = 18.0
+
+
 def session_start(deadline: float) -> dict:
     parts = [BANNER]
+    deadline = min(deadline, time.monotonic() + SESSION_START_BUDGET_S)
     for script in ("check-reference-version.sh", "session-canary.sh"):
-        out, err = _run_hook(script, {"hook_event_name": "SessionStart", "source": "startup"},
-                             min(20.0, deadline - time.monotonic()))
+        left = deadline - time.monotonic()
+        if left < 1:
+            parts.append(f"[x4] {script} did not run: the session-start budget was spent")
+            continue
+        out, err = _run_hook(script, {"hook_event_name": "SessionStart", "source": "startup"}, left)
         if err:
             parts.append(f"[x4] {script} did not run: {err}")
         elif out and out.strip():

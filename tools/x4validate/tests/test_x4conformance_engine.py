@@ -219,6 +219,29 @@ def test_buckets_that_do_not_sum_to_the_total_are_an_engine_error():
         xc.summarise(_res(3), n_total=5, buckets={"replayed": 3}, gaps={}, min_cases=1)
 
 
+def _inert(n):
+    return [{"label": f"i{i}", "kind": "shell-bash", "reference": "inert", "adapter": "inert"} for i in range(n)]
+
+
+def test_inert_agreeing_with_inert_is_not_a_pass():
+    """R2-F3 (v4.0.0 review): with a broken X4_PYTHON every guard answered "checked nothing" and
+    so did the adapter -- 3 of 3 "agree", exit 0. Inert on both sides examined nothing."""
+    rc, text = xc.summarise(_inert(3), n_total=3, buckets={"replayed": 3}, gaps={}, min_cases=1)
+    assert rc == xc.RC_NOTHING and "inert" in text.lower()
+
+
+def test_the_floor_counts_only_CHECKED_cases():
+    rc, _ = xc.summarise(_res(79) + _inert(10), n_total=89, buckets={"replayed": 89}, gaps={}, min_cases=80)
+    assert rc == xc.RC_NOTHING
+
+
+def test_TWIN_a_few_inert_cases_beside_enough_checked_ones_pass():
+    assert xc.summarise(_res(80) + _inert(10), n_total=90, buckets={"replayed": 90}, gaps={},
+                        min_cases=80)[0] == xc.RC_OK
+    assert xc.summarise(_res(1) + _inert(2), n_total=3, buckets={"replayed": 3}, gaps={},
+                        min_cases=1)[0] == xc.RC_OK
+
+
 def test_a_gap_is_printed_on_a_passing_run():
     rc, text = xc.summarise(_res(90), n_total=90, buckets={"replayed": 90}, gaps={"shell-powershell": "no PS"},
                             min_cases=80)

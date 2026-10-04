@@ -20,8 +20,11 @@ timeout, a non-zero exit, unreadable output or an invalid X4_GUARD_TIMEOUT_S all
 decision "deny" with inert=true and the cause named.
 
 X4_GUARD_TIMEOUT_S (default 25, a positive number of seconds) is the budget for the WHOLE
-check: a delete's two guards share it. On a timeout the guard's whole process tree is killed,
-and the worst-case wall clock is that budget plus KILL_WAIT_S + DRAIN_GRACE_S. An agent that can ask its user may present an inert deny as a question; it may
+check: a delete's two guards share it. On a timeout the guard and every descendant are killed:
+on Windows through a Job Object the guard starts in (MSYS descendants included, which
+`taskkill /T` cannot see -- R2-F4), falling back to `taskkill /T` if no job could be made; on
+POSIX through the guard's own process group, which a descendant that calls setsid() leaves.
+The worst-case wall clock is that budget plus KILL_WAIT_S + DRAIN_GRACE_S. An agent that can ask its user may present an inert deny as a question; it may
 not present it as an allow. Stdlib only; Python >= 3.10.
 """
 from __future__ import annotations
@@ -68,19 +71,83 @@ NOT_CHECKED = re.compile(r"X4 GUARD INERT|NO rule (?:below )?was evaluated|NEVER
 KILL_WAIT_S = 5
 DRAIN_GRACE_S = 3
 _TASKKILL = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32", "taskkill.exe")
+_CREATE_SUSPENDED = 0x00000004
 
 
 def _clock() -> float:
     return time.monotonic()
 
 
-def _kill_tree(proc: subprocess.Popen) -> None:
-    """Kill the guard AND its descendants. On Windows a killed bash.exe leaves its children
-    running and holding the pipes (MEASURED 2026-10-02, 3 of 3 process shapes), so the tree is
-    killed while the root is still known: taskkill /T walks parent PIDs from it. The PID cannot
-    be reused meanwhile -- Popen holds a handle to the process. On POSIX the guard leads its own
-    process group (start_new_session), so killpg reaches every descendant that did not leave it."""
+class _Job:
+    """A Windows Job Object holding one guard and EVERY process it starts (R2-F4, v4.0.0
+    review). `taskkill /T` walks Windows parent PIDs, and an MSYS grandchild -- a backgrounded
+    subshell's `sleep` under Git Bash -- is not linked to the guard that way: it survived the
+    tree kill (MEASURED, review probe scratch-R2/killprobe.py: `sleep 41`/`sleep 42` alive after
+    the check returned). A job is inherited by every descendant that cannot break away, and this
+    one does not allow breakaway. The guard starts SUSPENDED and is resumed only after it is in
+    the job, so nothing it starts can escape. Any failure here is reported by `ok` False and the
+    caller keeps the taskkill path; the guard is resumed whatever happens."""
+    JOB_INFO_EXTENDED = 9
+    LIMIT_KILL_ON_CLOSE = 0x2000
+
+    def __init__(self):
+        self.handle = None
+        self.ok = False
+        try:
+            import ctypes
+            from ctypes import wintypes
+            self._k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            self._ntdll = ctypes.WinDLL("ntdll")
+            self._k32.CreateJobObjectW.restype = wintypes.HANDLE
+            self._k32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+            self._k32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+            self._k32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+            self._k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            self._ntdll.NtResumeProcess.argtypes = (wintypes.HANDLE,)
+            self.handle = self._k32.CreateJobObjectW(None, None)
+        except (OSError, AttributeError, ImportError):
+            self.handle = None
+
+    def adopt(self, proc: subprocess.Popen) -> None:
+        """Put the SUSPENDED guard in the job, then resume it -- always resume."""
+        try:
+            if self.handle:
+                self.ok = bool(self._k32.AssignProcessToJobObject(self.handle, int(proc._handle)))
+        except (OSError, AttributeError):
+            self.ok = False
+        finally:
+            try:
+                self._ntdll.NtResumeProcess(int(proc._handle))
+            except (OSError, AttributeError):
+                proc.kill()          # a guard we cannot resume must not hang the budget
+
+    def kill(self) -> None:
+        if self.handle and self.ok:
+            try:
+                self._k32.TerminateJobObject(self.handle, 1)
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        if self.handle:
+            try:
+                self._k32.CloseHandle(self.handle)
+            except OSError:
+                pass
+            self.handle = None
+
+
+def _kill_tree(proc: subprocess.Popen, job: "_Job | None" = None) -> None:
+    """Kill the guard AND its descendants. On Windows the guard's Job Object is terminated first
+    (it holds every descendant, MSYS ones included -- see _Job); taskkill /T stays as the
+    fallback for a job that could not be made: a killed bash.exe leaves its children running and
+    holding the pipes (MEASURED 2026-10-02, 3 of 3 process shapes), and taskkill walks parent PIDs
+    from the root while it is still known. The PID cannot be reused meanwhile -- Popen holds a
+    handle to the process. On POSIX the guard leads its own process group (start_new_session),
+    so killpg reaches every descendant that did not leave it."""
     if os.name == "nt":
+        if job is not None:
+            job.kill()
         try:
             subprocess.run([_TASKKILL, "/F", "/T", "/PID", str(proc.pid)],
                            capture_output=True, timeout=KILL_WAIT_S)
@@ -102,19 +169,27 @@ def _run_bounded(argv: list, payload: bytes, env: dict, timeout: float):
     on Windows its timeout path ends in an UNBOUNDED communicate() that waits for every pipe
     holder, so a guard's grandchild stretched a 2 s budget to 10.9 s (MEASURED). Not
     `with Popen(...)` either: its __exit__ waits."""
-    extra = {} if os.name == "nt" else {"start_new_session": True}
-    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, env=env, **extra)
+    job = _Job() if os.name == "nt" else None
+    extra = {"creationflags": _CREATE_SUSPENDED} if job is not None and job.handle else (
+        {} if os.name == "nt" else {"start_new_session": True})
     try:
-        out, err = proc.communicate(payload, timeout=timeout)
-        return proc.returncode, out, err
-    except subprocess.TimeoutExpired:
-        _kill_tree(proc)
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, env=env, **extra)
+        if "creationflags" in extra:
+            job.adopt(proc)
         try:
-            proc.communicate(timeout=DRAIN_GRACE_S)
+            out, err = proc.communicate(payload, timeout=timeout)
+            return proc.returncode, out, err
         except subprocess.TimeoutExpired:
-            pass        # abandon: the reader threads are daemons and die with this process
-        return None, b"", b""
+            _kill_tree(proc, job)
+            try:
+                proc.communicate(timeout=DRAIN_GRACE_S)
+            except subprocess.TimeoutExpired:
+                pass        # abandon: the reader threads are daemons and die with this process
+            return None, b"", b""
+    finally:
+        if job is not None:
+            job.close()     # no KILL_ON_CLOSE: a guard that finished in time keeps its children
 
 
 def resolve_bash() -> tuple[str | None, str | None]:

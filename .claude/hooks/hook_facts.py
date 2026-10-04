@@ -1019,6 +1019,33 @@ def has_unresolved(tok: str) -> bool:
     return bool(_EXPANSION.search(tok) or _SUBST.search(tok))
 
 
+_ROOT_VAR_HEAD = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def subst_root_var(tok: str, roots: dict | None) -> str:
+    """A token that STARTS with a root variable -- `$X4_REFERENCE`, `${X4_GAME}/extensions` --
+    as that root's configured path plus the rest; every other token unchanged.
+
+    R2-P1 (v4.0.0 review): a `cd "$X4_REFERENCE"` left the shell's directory unknowable, so
+    `cd "$X4_REFERENCE" && rm -rf libraries` reached no rule while `rm -rf
+    "$X4_REFERENCE/libraries"` was refused -- the variable NAME is what identifies the root
+    (ROOT_VARS), for a directory exactly as for an operand. Only a LEADING variable is
+    taken; what follows stays as written (`$X4_REFERENCE/$SUB` -> `<ref>/$SUB`, still inside
+    the root; `${X4_REFERENCE}x` -> a sibling `<ref>x`, inside nothing). A root that is not
+    configured is not substituted: the token stays unresolved, as before. Call it AFTER
+    resolve(): an assignment in the command itself wins."""
+    if not roots:
+        return tok
+    m = _ROOT_VAR_HEAD.match(tok)
+    if not m:
+        return tok
+    key = ROOT_VARS.get((m.group(1) or m.group(2)).upper())
+    root = (roots.get(key) or "") if key else ""
+    if not root:
+        return tok
+    return root + tok[m.end():]
+
+
 def root_vars_named(tok: str) -> set:
     """Root KEYS named by an unexpanded environment variable in this token."""
     out = set()
@@ -1511,20 +1538,28 @@ def tokens_of(seg: str) -> list[str]:
     return [t for t, _q in tokens(seg)]
 
 
-#: Verbs that can RUN x4refguard.py: an interpreter or launcher, or the script itself.
-_REFGUARD_RUNNERS = ("python", "py", "uv", "uvx", "x4refguard")
+#: Verbs that can RUN x4refguard.py: an interpreter or launcher, or the script itself. A
+#: verb named by a VARIABLE (`"$X4_PYTHON"`, the toolkit's own spelling) counts too: what
+#: it runs is unknowable here, and the docs tell agents to run the script exactly that way.
+_REFGUARD_RUNNERS = ("python", "py", "uv", "uvx", "x4refguard", "conda", "mamba", "micromamba",
+                     "pipx", "poetry", "pdm", "hatch", "rye", "pixi")
 
 
-def _lifts_reference_deny(seg: str, assigns: dict, ref: str) -> bool:
+def _lifts_reference_deny(seg: str, assigns: dict, roots: dict, cwd: str = "") -> bool:
     """Does this segment lift the OS deny-delete/write on reference/? Two shapes:
     `x4refguard.py remove` RUN by an interpreter (not merely named, e.g. by echo), whatever
     root is configured -- its --path form reaches an old root; and a raw `icacls` with
     /remove or /reset whose OWN operand is the reference root or inside it, or -- with /T --
     an ancestor that a recursive reset walks into. Applying the deny (/deny) or reading
-    the ACL is not a lift."""
+    the ACL is not a lift.
+
+    An operand is judged WHERE IT RUNS, like every other path rule (R2-F2, v4.0.0 review):
+    a root variable is its root (subst_root_var), and a relative operand joins the segment's
+    `cwd` -- `icacls reference /reset /T` from the folder above it is a lift."""
+    ref = roots.get("reference") or ""
     toks = [t.lower() for t in tokens_of(seg)]
     v = _verb_name(verb(seg)).lower()
-    if v.startswith(_REFGUARD_RUNNERS):
+    if v.startswith(_REFGUARD_RUNNERS) or has_unresolved(v):
         for i, t in enumerate(toks):
             if t.replace(chr(92), "/").rsplit("/", 1)[-1] in ("x4refguard.py", "x4refguard") \
                     and "remove" in toks[i + 1:]:
@@ -1535,7 +1570,7 @@ def _lifts_reference_deny(seg: str, assigns: dict, ref: str) -> bool:
         return False
     recursive = "/t" in toks
     for o_ in _operands(seg):
-        r = resolve(o_, assigns)
+        r = join_cwd(cwd, subst_root_var(resolve(o_, assigns), roots))
         if under(r, ref) or (recursive and contains_root(r, ref)):
             return True
     return False
@@ -2245,7 +2280,7 @@ def session_cwd(payload: dict) -> str:
 
 
 
-def cwd_track(cmd: str, base: str = "", seeded: bool = False) -> list:
+def cwd_track(cmd: str, base: str = "", seeded: bool = False, roots: dict | None = None) -> list:
     """[(segment, the directory in force FOR that segment)], in command order.
 
     Positional, not end-state: in `cd X && rm -rf Y` the `cd` itself still runs from
@@ -2255,6 +2290,10 @@ def cwd_track(cmd: str, base: str = "", seeded: bool = False) -> list:
 
     A subshell's `cd` is deliberately NOT unwound at the closing paren. Modelling that
     needs a real parser, and for a guard the relocated directory is the safe error.
+
+    `roots`: a `cd` to a root VARIABLE lands in that root (subst_root_var, R2-P1). Without
+    it the directory after `cd "$X4_REFERENCE"` was unknowable and every later relative
+    operand reached no rule.
     """
     out, cwd, stack = [], base, []
     #: True while the directory in force is still the SESSION's (the seed, or a resolved
@@ -2281,7 +2320,7 @@ def cwd_track(cmd: str, base: str = "", seeded: bool = False) -> list:
             if ops:
                 if v == "pushd":
                     stack.append((cwd, from_seed))
-                tgt = resolve(ops[0], assigns)
+                tgt = subst_root_var(resolve(ops[0], assigns), roots)
                 # `cd -` returns somewhere this hook cannot know; refuse to guess.
                 if ops[0] == "-":
                     cwd = ""
@@ -3621,13 +3660,13 @@ def facts(payload: dict, roots: dict) -> dict:
     moves = any(verb(s) in DIR_VERBS or verb(s) == "popd"
                 for c_ in all_cmds for s in segments(c_))
     for i_, c in enumerate(all_cmds):
-        tracked = cwd_track(c, base if (i_ == 0 or not moves) else "", seeded=True)
+        tracked = cwd_track(c, base if (i_ == 0 or not moves) else "", seeded=True, roots=roots)
         seg_cwd += [(resolve_verb(s, assigns), d) for s, d in tracked]
         # The segment BEFORE each one in the same carried command: what feeds an xargs.
         seg_prev += [None] + [s for s, _d in tracked][:-1] if tracked else []
         # The directory each segment had BEFORE lane F (no session seed), for the two
         # rules whose verdict is an ASK outside the profile -- see `gitwipe_t` below.
-        unseeded += [d for _s, d in cwd_track(c)]
+        unseeded += [d for _s, d in cwd_track(c, roots=roots)]
     # A SUBSTITUTED COMMAND NAME REACHES NO RULE AT ALL. An unknown OPERAND still
     # reaches the conservative branch; an unknown VERB reaches nothing, so it takes
     # all three hard blocks with it. MEASURED 2026-09-08 against the live hook:
@@ -3706,7 +3745,7 @@ def facts(payload: dict, roots: dict) -> dict:
 
     rm_t, copy_t, redir_t, mv_src = [], [], [], []
     sed_t, out_t, search_files = [], [], []
-    gitwipe_t, gitdiscard_t, gitwipe_seed_t = [], [], []
+    gitwipe_t, gitdiscard_t, gitwipe_pairs = [], [], []
     scoped_rm_t, mod_t = [], []
     search_seg, git_all = False, False
     for (s, c_cwd), prev, c_old in zip(seg_cwd, seg_prev, unseeded):
@@ -3736,7 +3775,10 @@ def facts(payload: dict, roots: dict) -> dict:
         gitwipe_t += prep(git_wipes_worktree_targets(s), c_old, c_old)
         # ...and SEEDED for J-Q1's deny: the same wipe judged where the session runs. Its
         # verdict is a deny with a reason, which reaches the agent and never the user.
-        gitwipe_seed_t += prep(git_wipes_ignored_targets(s), c_cwd, c_old)
+        # PER SEGMENT (R2-F5): (this segment's named form, its seeded form), so a folder
+        # named by ANOTHER segment cannot excuse this one -- see git_wipe_from_session_dir.
+        gitwipe_pairs.append((prep(git_wipes_worktree_targets(s), c_old, c_old),
+                              prep(git_wipes_ignored_targets(s), c_cwd, c_old)))
         gitdiscard_t += prep(git_discards_named_files(s), c_cwd, c_old)
         search_seg = search_seg or searches(s)
         git_all = git_all or git_adds_everything(s)
@@ -3900,8 +3942,16 @@ def facts(payload: dict, roots: dict) -> dict:
                 if INVOKERS.search(b):
                     longjob = True
 
-    git_wipe_named = any(hit(gitwipe_t, k, conservative=True)
-                         for k in ("game", "profile", "mods", "toolkit", "reference"))
+    _wipe_keys = ("game", "profile", "mods", "toolkit", "reference")
+    git_wipe_named = any(hit(gitwipe_t, k, conservative=True) for k in _wipe_keys)
+    # J-Q1's deny, per SEGMENT: a bare wipe judged from the session dir, unless THAT segment
+    # names its own folder (then it keeps the ask above). R2-F5 (v4.0.0 review): this was
+    # `not git_wipe_named` over the whole command, so `git -C <mods> clean -fdx; git clean
+    # -fdx` from the game root traded the bare segment's deny for the named one's ask.
+    git_wipe_bare = any(
+        not any(hit(named, k, conservative=True) for k in _wipe_keys)
+        and any(hit(seeded, k, conservative=True) for k in _wipe_keys)
+        for named, seeded in gitwipe_pairs)
     return {
         "command": cmd,
         "timeout": timeout,
@@ -3966,9 +4016,7 @@ def facts(payload: dict, roots: dict) -> dict:
         "git_wipes_x4_dir": git_wipe_named,
         # J-Q1 (Plan 3): the BARE form from an X4 session dir, which the ask above cannot
         # see (unseeded). Exclusive of it: a command that names the folder keeps its ask.
-        "git_wipe_from_session_dir": (not git_wipe_named) and any(
-            hit(gitwipe_seed_t, k, conservative=True)
-            for k in ("game", "profile", "mods", "toolkit", "reference")),
+        "git_wipe_from_session_dir": git_wipe_bare,
         "git_discards_x4_files": any(
             hit(gitdiscard_t, k, conservative=True)
             for k in ("game", "profile", "mods", "toolkit", "reference")),
@@ -4140,7 +4188,7 @@ def facts(payload: dict, roots: dict) -> dict:
             for sg, _c in seg_cwd),
         # Lifting the OS deny on reference/ (Plan 2 lane D). D8: only the USER lifts a
         # protection, so an agent's lift is an ASK. Segment-scoped like xrcat_reunpack.
-        "lifts_reference_deny": any(_lifts_reference_deny(sg, assigns, roots.get("reference") or "")
+        "lifts_reference_deny": any(_lifts_reference_deny(sg, assigns, roots, _c)
                                     for sg, _c in seg_cwd),
         "cwd": cwd,
     }

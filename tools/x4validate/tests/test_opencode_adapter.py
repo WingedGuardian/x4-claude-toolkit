@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-from codex_testlib import REPO, make_sandbox
+from codex_testlib import FAKE_FINDING, REPO, fake_validator, make_sandbox
 
 ADAPTER = REPO / ".opencode" / "hooks" / "opencode_adapter.py"
 
@@ -64,6 +64,30 @@ def test_a_write_into_reference_is_DENIED(sandbox, n):
     tool, args = _ref_cases(tk)[n]
     v = run(env, call(tk, tool, args))
     assert v["decision"] == "deny" and not v["inert"], v
+
+
+def test_a_patch_is_read_with_OPENCODES_grammar(sandbox):
+    """R2-F1: OpenCode's parser is not Codex's. `*** Delete File:x` (no space) is a delete to
+    OpenCode and a parse error to Codex: read with Codex's grammar it would be an inert refusal,
+    with OpenCode's it is judged by its path -- a real deny in reference, an allow in dev."""
+    tmp, tk, env = sandbox
+    ref = (tk / "reference").as_posix()
+    (tk / "dev" / "mymod" / "a.xml").write_text("a\n", encoding="utf-8")
+    v = run(env, call(tk, "apply_patch", {"patchText": f"*** Begin Patch\n*** Delete File:{ref}/libraries/wares.xml\n*** End Patch\n"}))
+    assert v["decision"] == "deny" and not v["inert"], v
+    v = run(env, call(tk, "apply_patch", {"patchText": "*** Begin Patch\n*** Delete File:dev/mymod/a.xml\n*** End Patch\n"}))
+    assert v["decision"] in ("allow", "advise") and not v["inert"], v
+
+
+def test_TWIN_an_indented_header_OpenCode_skips_is_not_judged(sandbox):
+    """The other direction: Codex obeys an indented Delete, OpenCode skips the line (headers only
+    at column 0, READ from patch/index.ts and checked against it under node). Read with Codex's
+    grammar this would be a deny for a delete OpenCode never performs."""
+    tmp, tk, env = sandbox
+    ref = (tk / "reference").as_posix()
+    v = run(env, call(tk, "apply_patch", {"patchText": "*** Begin Patch\n*** Add File: dev/mymod/h.xml\n+x\n"
+                                                       f"  *** Delete File: {ref}/libraries/wares.xml\n*** End Patch\n"}))
+    assert v["decision"] in ("allow", "advise") and not v["inert"], v
 
 
 @pytest.mark.parametrize("tool,args", [
@@ -190,11 +214,22 @@ def test_TWIN_no_backup_for_a_denied_edit(sandbox):
     assert not any((tmp / "backups").rglob("*"))
 
 
-def test_post_on_an_edit_returns_the_validator_advisory_or_nothing(sandbox):
+@pytest.mark.parametrize("tool,args", [
+    ("edit", {"filePath": "dev/mymod/a.xml", "oldString": "a", "newString": "b"}),
+    ("apply_patch", {"patchText": "*** Begin Patch\n*** Update File: dev/mymod/a.xml\n@@\n-a\n+b\n*** End Patch\n"}),
+])
+def test_post_carries_the_validators_finding(sandbox, tool, args):
+    """R7-2: this accepted `allow` and the sandbox mod had no content.xml, so the validator never
+    ran. Now it runs (a stand-in validator, see fake_validator) and its finding must reach the
+    model. Catches: post() not calling the validator, dropping its context, or resolving the
+    path against the wrong directory."""
     tmp, tk, env = sandbox
+    env = fake_validator(tmp, env, tk)
     (tk / "dev" / "mymod" / "a.xml").write_text("<diff/>\n", encoding="utf-8")
-    v = run(env, call(tk, "edit", {"filePath": "dev/mymod/a.xml", "oldString": "a", "newString": "b"}), event="post")
-    assert v["decision"] in ("allow", "advise") and not v["inert"], v
+    v = run(env, call(tk, tool, args), event="post")
+    assert v["decision"] == "advise" and not v["inert"] and FAKE_FINDING in (v["context"] or ""), v
+    v = run(env, call(tk, tool, args, directory=tmp), event="post")     # twin: no such file there
+    assert v["decision"] == "allow", v
 
 
 def test_post_on_an_unparseable_patch_says_validation_did_not_run(sandbox):
@@ -228,3 +263,17 @@ def test_the_output_is_one_ascii_line_even_for_non_ascii_paths(sandbox):
     d.mkdir()
     v = run(env, call(tk, "write", {"filePath": str(d / "x.xml"), "content": ""}))
     assert v["decision"] == "deny"
+
+
+def test_the_plugin_judges_every_built_in_tool_that_writes():
+    """R7-13 (v4.0.0 review): JUDGED was four tools with no record of why four. READ at OpenCode
+    v1.18.34 (docs/superpowers/measurements/2026-10-02-opencode-read.md, R15): of the built-in
+    tools only bash, edit, write and apply_patch write a file or run a command. MCP and custom
+    tools are not judged and README discloses it. A new writing tool upstream means re-reading
+    the registry and changing BOTH this set and R15."""
+    import re
+    js = (REPO / "agent" / "targets" / "opencode" / "x4guard.js").read_text(encoding="utf-8")
+    judged = set(re.findall(r'"(\w+)"', re.search(r"const JUDGED = new Set\(\[([^\]]*)\]\)", js).group(1)))
+    assert judged == {"bash", "edit", "write", "apply_patch"}, judged
+    doc = (REPO / "docs" / "superpowers" / "measurements" / "2026-10-02-opencode-read.md").read_text(encoding="utf-8")
+    assert re.search(r"^\| R15 \|.*exactly bash, edit, write, apply_patch", doc, re.M)

@@ -19,6 +19,12 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
+// Every BUILT-IN OpenCode tool that writes a file or runs a command (R7-13, READ at v1.18.34:
+// tool/registry.ts registers shell(bash), read, glob, grep, edit, write, task, webfetch, todowrite,
+// websearch, skill, apply_patch, question, lsp (9 read-only queries), plan_exit and, when enabled,
+// code-mode `execute`, which calls MCP tools only). NOT judged, and disclosed: MCP tools (also
+// through `execute`), custom tools from `.opencode/tool(s)/*.{js,ts}` and plugin-defined tools.
+// Recorded in docs/superpowers/measurements/2026-10-02-opencode-read.md (R15).
 const JUDGED = new Set(["bash", "edit", "write", "apply_patch"])
 const WRITES = new Set(["edit", "write", "apply_patch"])
 const DECISIONS = new Set(["allow", "advise", "deny"])

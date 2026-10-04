@@ -340,6 +340,34 @@ def test_E1_a_timeout_is_bounded_and_kills_the_guards_descendants(sandbox, tmp_p
         _reap(pid)
 
 
+def _msys_grandchild(pidfile: Path) -> str:
+    """A guard that backgrounds an MSYS program (Git Bash's own `sleep`) and records its OS PID
+    (/proc/<pid>/winpid under MSYS, the bash PID elsewhere). Under Git Bash such a process is not
+    linked to the guard by Windows parent PIDs, so `taskkill /T` never reaches it."""
+    return (f"cat >/dev/null\nsleep 61 & p=$!\n"
+            f"cat /proc/$p/winpid > '{pidfile.as_posix()}' 2>/dev/null || echo $p > '{pidfile.as_posix()}'\n"
+            "sleep 62\n")
+
+
+def test_E1_an_MSYS_grandchild_dies_with_the_guard_too(sandbox, tmp_path):
+    """R2-F4 (v4.0.0 review, MEASURED with scratch-R2/killprobe.py): after a timed-out check,
+    a backgrounded `sleep` and the foreground `sleep` of the guard were still alive -- the
+    docstring's "the guard's whole process tree is killed" was false for MSYS descendants. The
+    guard now runs in a Job Object that holds every descendant."""
+    _, tk, env = sandbox
+    pidfile = tmp_path / "msys.pid"
+    hooks = _stub_hooks(tmp_path, {"protect-bash.sh": _msys_grandchild(pidfile)})
+    v = _check_in(dict(env, X4_GUARD_TIMEOUT_S="3"), tk, "--kind", "shell", "--shell", "bash",
+                  "--command", "echo hi", script=hooks / "x4guard.py")
+    assert pidfile.exists() and pidfile.read_text().strip(), "the grandchild never started -- this test proved nothing"
+    pid = int(pidfile.read_text().strip())
+    try:
+        assert v["decision"] == "deny" and v["inert"] and "timed out" in v["reason"], v
+        assert _wait_dead(pid), "the guard's MSYS grandchild survived the timeout"
+    finally:
+        _reap(pid)
+
+
 def test_E1_TWIN_the_bound_holds_even_when_the_tree_kill_does_not(sandbox, tmp_path, monkeypatch):
     """Twin for the DRAIN clause: with the tree kill reduced to killing the root only, the
     grandchild keeps the pipes open -- and the check must STILL return on time."""
@@ -350,7 +378,7 @@ def test_E1_TWIN_the_bound_holds_even_when_the_tree_kill_does_not(sandbox, tmp_p
         monkeypatch.setenv(k, val)
     g = _load(hooks / "x4guard.py")
     monkeypatch.setattr(g, "TIMEOUT_S", 3.0)
-    monkeypatch.setattr(g, "_kill_tree", lambda proc: proc.kill())
+    monkeypatch.setattr(g, "_kill_tree", lambda proc, job=None: proc.kill())
     t0 = time.monotonic()
     v = g.verdict_for("shell", "bash", "echo hi", None)
     wall = time.monotonic() - t0

@@ -87,6 +87,7 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   running. The rules match a command PREFIX only: `python`, `python3` or `py` followed by exactly
   `scripts/x4refguard.py remove`; an absolute script path or another interpreter does not match. (3) The OS-level protection of `reference/` (below). A conformance suite
   replays every Claude hook case through the Codex chain and requires equal verdicts.
+- **A patch is read exactly as Codex reads it.** The guard's apply_patch parser is a port of Codex 0.160.0's own, held to a recorded run of Codex's apply_patch over 67 patch shapes (`scripts/capture-codex-patch-oracle.py`). Found in review before release: an INDENTED `*** Delete File:` line after an added file was a delete to Codex and file content to the guard, so a delete inside `reference/` was allowed (BLIND-SPOTS F153).
 - The installer renders `.codex/hooks.json` for the destination's absolute folder. It never trusts
   a folder or approves a hook for you; it prints the review steps.
 - `codex_trust.py report` tells whether Codex is actually running the hooks (trusted, untrusted,
@@ -104,6 +105,7 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   that asks the same guards before every `bash`, `edit`, `write` and `apply_patch` and blocks on a
   refusal. It fails closed when Python, the adapter or the guards cannot answer. The game-install
   block is plugin-only.
+- A patch is read with **OpenCode's own grammar** (column-0 headers, unknown lines skipped), not Codex's, checked against OpenCode v1.18.34's parser run under node (BLIND-SPOTS F153).
 - The OpenCode **desktop app is not supported** (its plugin hooks never fire,
   anomalyco/opencode#38604). Nothing here was run inside OpenCode: the README's OpenCode section
   lists what was read and what can switch the layers off.
@@ -208,6 +210,15 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   routine `--file` skip stays silent (it is on every edit: 50 of 50 measured).
 - The timeout guard judges a background command against its own 2-hour cap, not the foreground
   one.
+- **A `cd` to a root variable is judged as that root** (BLIND-SPOTS F154, present in 3.x too):
+  `cd "$X4_REFERENCE" && rm -rf libraries` was allowed while `rm -rf "$X4_REFERENCE/libraries"` was
+  refused. Replayed over 52,276 past commands: 2 verdicts change, each now matching the same
+  command spelled with the literal folder.
+- The ask before lifting the `reference/` protection also sees `icacls "$X4_REFERENCE" /reset /T`,
+  `icacls reference /reset /T` from the folder above it, and `"$X4_PYTHON" scripts/x4refguard.py
+  remove` (BLIND-SPOTS F155).
+- A bare `git clean -fdx` from the game folder is blocked even when the same command also names
+  another folder (`git -C <mods> clean -fdx; git clean -fdx` turned the block into a question).
 
 ### Configuration
 
@@ -256,6 +267,16 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
 - `KNOWLEDGEBASE.md` gained no toolkit development notes in this release: five that the 4.0
   work had added to its Session Log moved to `docs/AUDIT-framework-2026-10-01.md` and
   `docs/audits/2026-10-02-tool-fixes.md`.
+- `x4guard conformance` refuses (exit 3) when the guards checked nothing -- an inert guard agreeing
+  with an inert adapter is not a pass -- and refuses (exit 2) when the extra cases were wanted but
+  could not be built, instead of passing without them.
+- Codex: a timed-out guard's MSYS descendants (a backgrounded `sleep` under Git Bash) are now killed
+  too, through a Windows Job Object; the adapter's backup, validator and session hooks use the same
+  bounded runner; the session-start hooks share one 18 s budget inside the wrapper's 25 s; the
+  Windows wrapper checks Codex's output keys case-sensitively, as Codex does; a patch sent under
+  `input` is backed up and validated like one under `command`.
+- `scripts/capture-codex-patch-oracle.py` re-records Codex's own apply_patch behaviour; run it on
+  a Codex upgrade.
 
 ## v3.3.1 — 2026-09-29
 

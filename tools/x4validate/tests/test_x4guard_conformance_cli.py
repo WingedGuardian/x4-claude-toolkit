@@ -36,6 +36,33 @@ def test_an_empty_case_file_refuses_with_3(tmp_path):
     assert "0 replayed" in r.stdout
 
 
+def _rows(tmp_path, commands, env):
+    return "".join(json.dumps({"label": f"probe{i}", "hook": "protect-bash.sh",
+                               "payload": {"tool_name": "Bash", "tool_input": {"command": c}, "cwd": str(tmp_path)},
+                               "cwd": str(tmp_path), "env": env}) + "\n" for i, c in enumerate(commands))
+
+
+@pytest.mark.skipif(not (shutil.which("bash") and shutil.which("jq")), reason="needs Git Bash and jq")
+def test_extras_that_could_not_be_built_are_2_not_a_silent_skip(tmp_path):
+    """R2-F3 (v4.0.0 review): no case row names a sandbox X4_TOOLKIT, so the neutral extras
+    (PowerShell, spaces, drive paths) were dropped with a note and the run still passed."""
+    f = tmp_path / "c.jsonl"; f.write_text(_rows(tmp_path, ["echo hi"], {}), encoding="utf-8")
+    r = run("conformance", "--profile", "claude", "--cases", str(f), "--min-cases", "1")
+    assert r.returncode == 2 and "extras" in r.stdout, (r.returncode, r.stdout)
+    r = run("conformance", "--profile", "claude", "--cases", str(f), "--min-cases", "1", "--no-extras")
+    assert r.returncode == 0, (r.returncode, r.stdout)                          # twin: asked for none
+
+
+@pytest.mark.skipif(not (shutil.which("bash") and shutil.which("jq")), reason="needs Git Bash and jq")
+def test_every_case_inert_on_both_sides_is_3(tmp_path):
+    """R2-F3: a broken X4_PYTHON made every guard and the adapter say "checked nothing"; the run
+    reported 3 of 3 agree, exit 0 (MEASURED by the reviewer, review/scratch-R2/inert_cases.jsonl)."""
+    f = tmp_path / "c.jsonl"
+    f.write_text(_rows(tmp_path, ["echo hi", "git add -A"], {"X4_PYTHON": "no-such-python-x4"}), encoding="utf-8")
+    r = run("conformance", "--profile", "claude", "--cases", str(f), "--min-cases", "1", "--no-extras")
+    assert r.returncode == 3 and "inert" in r.stdout.lower(), (r.returncode, r.stdout)
+
+
 def test_a_missing_profile_is_2(tmp_path):
     r = run("conformance", "--profile", str(tmp_path / "nope.json"))
     # The message too: argparse's own usage error is ALSO exit 2, and the bare code passed

@@ -51,6 +51,23 @@ def test_runs_when_deployed_under_opencode_hooks(tmp_path, env_without_toolkit):
     assert not v["inert"] and v["decision"] == "allow", v["reason"]
 
 
+@pytest.mark.parametrize("agent_dir", [".codex", ".opencode", ".claude"])
+def test_a_write_into_reference_is_DENIED_from_every_hooks_dir(tmp_path, env_without_toolkit, agent_dir):
+    """R7-12 (v4.0.0 review): the tests above prove only an ALLOW of `echo hi`, which guards that
+    found no roots at all would also give. A write into the configured reference/ must be a real
+    deny (not inert) from each deployed location -- the roots were found and a rule fired."""
+    hooks = tmp_path / "root" / agent_dir / "hooks"
+    shutil.copytree(GUARDS, hooks)
+    ref = Path(env_without_toolkit["X4_REFERENCE"])
+    (ref / "libraries").mkdir(parents=True)
+    r = subprocess.run([sys.executable, str(hooks / "x4guard.py"), "check", "--kind", "write",
+                        "--path", str(ref / "libraries" / "wares.xml")],
+                       capture_output=True, env=env_without_toolkit, timeout=120)
+    assert r.returncode == 0, r.stderr
+    v = json.loads(r.stdout)
+    assert v["decision"] == "deny" and not v["inert"], v
+
+
 @pytest.mark.parametrize("where", [("x", "hooks"), (".codex", "guards"), (".codexx", "hooks"),
                                    (".opencode", "guards"), (".opencodex", "hooks")])
 def test_TWIN_other_dir_without_toolkit_still_inert(tmp_path, env_without_toolkit, where):

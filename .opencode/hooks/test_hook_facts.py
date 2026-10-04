@@ -3840,6 +3840,94 @@ _REL_WRITE = "echo x > reference/libraries/w.xml"
 _ELSEWHERE = "C:/work/other"
 
 
+class TestARootVariableCdIsTheRoot(unittest.TestCase):
+    """R2-P1 (pre-arc, v4.0.0 review): `cd "$X4_REFERENCE" && rm -rf libraries` was ALLOW while
+    `rm -rf "$X4_REFERENCE/libraries"` was refused. cwd_track never mapped a root VARIABLE to
+    its root, so the cd target stayed unresolved and every later relative operand reached no
+    rule. A root variable names its root (ROOT_VARS) for a `cd` exactly as for an operand."""
+
+    #: (the cd form, the same action spelled with the root's literal path)
+    PAIRS = [
+        ('cd "$X4_REFERENCE" && ' + D + ' -rf libraries', D + ' -rf "' + REF + '/libraries"'),
+        ('cd "${X4_REFERENCE}/libraries" && ' + D + ' -f wares.xml', D + ' -f "' + REF + '/libraries/wares.xml"'),
+        ("cd $X4_REFERENCE; echo x > libraries/w.xml", 'echo x > "' + REF + '/libraries/w.xml"'),
+        ('cd "$X4_GAME" && ' + D + ' -rf extensions', D + ' -rf "' + GAME + '/extensions"'),
+        ('pushd "$X4_PROFILE" && ' + D + ' -f content.xml', D + ' -f "' + PROF + '/content.xml"'),
+    ]
+    KEYS = ("rm_targets_reference", "writes_reference", "rm_in_x4_dir", "rm_in_profile")
+
+    def test_a_cd_to_a_root_variable_judges_like_the_direct_form(self):
+        for cd_form, direct in self.PAIRS:
+            for cwd in (_ELSEWHERE, _NO_CWD):
+                with self.subTest(cmd=cd_form, cwd=cwd):
+                    a, b = FC(cd_form, cwd), FC(direct, cwd)
+                    self.assertEqual({k: a[k] for k in self.KEYS}, {k: b[k] for k in self.KEYS})
+                    self.assertTrue(any(a[k] for k in self.KEYS), cd_form)
+
+    def test_TWIN_a_non_root_variable_or_an_unset_root_still_reaches_nothing(self):
+        self.assertFalse(FC('cd "$BUILD_DIR" && ' + D + ' -rf libraries', _ELSEWHERE)["rm_targets_reference"])
+        roots = dict(ROOTS, reference="")
+        payload = {"tool_input": {"command": 'cd "$X4_REFERENCE" && ' + D + " -rf libraries"},
+                   "cwd": _ELSEWHERE}
+        self.assertFalse(H.facts(payload, roots)["rm_targets_reference"])
+
+    def test_what_follows_the_variable_is_kept(self):
+        self.assertTrue(FC('cd "$X4_REFERENCE/$SUB" && ' + D + ' -rf x', _ELSEWHERE)["rm_targets_reference"])
+        self.assertFalse(FC('cd "${X4_REFERENCE}x" && ' + D + ' -rf libraries', _ELSEWHERE)["rm_targets_reference"])
+
+    def test_TWIN_an_unset_root_is_not_the_session_directory(self):
+        """With the game root unset, `cd "$X4_GAME"` goes somewhere unknowable -- it must not
+        read as staying in the session dir (cwd TOOLKIT holds reference/ here)."""
+        payload = {"tool_input": {"command": 'cd "$X4_GAME" && ' + D + " -rf reference/libraries"},
+                   "cwd": TOOLKIT}
+        self.assertFalse(H.facts(payload, dict(ROOTS, game=""))["rm_targets_reference"])
+        payload["tool_input"]["command"] = D + " -rf reference/libraries"            # control
+        self.assertTrue(H.facts(payload, dict(ROOTS, game=""))["rm_targets_reference"])
+
+    def test_TWIN_an_assignment_in_the_command_wins_over_the_root(self):
+        cmd = 'X4_REFERENCE=/c/tmp/x; cd "$X4_REFERENCE" && ' + D + " -rf libraries"
+        self.assertFalse(FC(cmd, _ELSEWHERE)["rm_targets_reference"])
+
+
+class TestLiftingTheReferenceDenyIsJudgedWhereItRuns(unittest.TestCase):
+    """R2-F2 (v4.0.0 review): _lifts_reference_deny resolved an icacls operand with no cwd join
+    and no root variable, and knew a fixed interpreter list -- so `icacls "$X4_REFERENCE" /reset
+    /T`, `icacls reference /reset /T` from the folder above it and `"$X4_PYTHON"
+    scripts/x4refguard.py remove` were ALLOW where they must ask."""
+
+    def test_a_root_variable_operand_lifts(self):
+        for cmd in ('icacls "$X4_REFERENCE" /reset /T', 'icacls "${X4_REFERENCE}/libraries" /reset',
+                    'icacls "$X4_TOOLKIT" /reset /T'):          # TOOLKIT holds reference/ here
+            with self.subTest(cmd=cmd):
+                self.assertTrue(F(cmd)["lifts_reference_deny"], cmd)
+
+    def test_a_relative_operand_resolves_against_the_cwd(self):
+        self.assertTrue(FC("icacls reference /reset /T", TOOLKIT)["lifts_reference_deny"])
+        self.assertTrue(FC("icacls . /reset /T", REF)["lifts_reference_deny"])
+        self.assertTrue(FC('cd "$X4_REFERENCE" && icacls . /reset /T', _ELSEWHERE)["lifts_reference_deny"])
+
+    def test_TWIN_the_same_relative_operand_elsewhere_or_not_recursive_does_not_lift(self):
+        self.assertFalse(FC("icacls reference /reset /T", _ELSEWHERE)["lifts_reference_deny"])
+        self.assertFalse(FC("icacls . /reset", TOOLKIT)["lifts_reference_deny"])
+        self.assertFalse(F('icacls "$X4_GAME" /reset /T')["lifts_reference_deny"])  # a separate tree
+        self.assertFalse(F('icacls "$X4_REFERENCE"')["lifts_reference_deny"])       # a read
+
+    def test_a_runner_named_by_a_variable_or_a_launcher_lifts(self):
+        for cmd in ('"$X4_PYTHON" scripts/x4refguard.py remove',
+                    "${PY} scripts/x4refguard.py remove",
+                    "conda run -n x4 python scripts/x4refguard.py remove",
+                    "pipx run x4refguard remove"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(F(cmd)["lifts_reference_deny"], cmd)
+
+    def test_TWIN_a_variable_runner_that_does_not_remove_or_a_mention_does_not_lift(self):
+        for cmd in ('"$X4_PYTHON" scripts/x4refguard.py status',
+                    'echo "$X4_PYTHON" scripts/x4refguard.py remove',
+                    '"$X4_PYTHON" scripts/other.py remove'):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(F(cmd)["lifts_reference_deny"], cmd)
+
+
 class TestRelativeOperandsResolveAgainstThePayloadCwd(unittest.TestCase):
     """Lane F (2026-10-02). facts() called cwd_track(c) with no base, so a RELATIVE operand
     with no preceding `cd` resolved to "" and reached NO path rule. MEASURED on the deployed
@@ -4008,6 +4096,17 @@ class TestJQ1BareGitWipeFromAnX4SessionDirIsADeny(unittest.TestCase):
         f = FC("git -C " + DQ + GAME + DQ + " clean -fdx", GAME)
         self.assertTrue(f["git_wipes_x4_dir"])
         self.assertFalse(f[self.FACT])
+
+    def test_a_named_wipe_ELSEWHERE_in_the_command_does_not_hide_a_bare_one(self):
+        """R2-F5 (v4.0.0 review): the exclusion was command-wide, so `git -C <mods> clean -fdx;
+        git clean -fdx` from the game root turned the bare segment's DENY into the named one's
+        ASK. The exclusion is per SEGMENT: only a segment that names its own folder asks."""
+        for cmd in ("git -C " + DQ + TOOLKIT + "/dev" + DQ + " clean -fdx; git clean -fdx",
+                    "git clean -fdx; git -C " + DQ + PROF + DQ + " clean -fdx"):
+            with self.subTest(cmd=cmd):
+                f = FC(cmd, GAME)
+                self.assertTrue(f[self.FACT], cmd)
+                self.assertTrue(f["git_wipes_x4_dir"], cmd)
 
     def test_TWIN_a_cd_AWAY_from_the_x4_session_dir_does_not_fire(self):
         self.assertFalse(FC("cd " + DQ + _ELSEWHERE + DQ + " && git clean -fdx", GAME)[self.FACT])
