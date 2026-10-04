@@ -36,7 +36,7 @@ def test_the_module_ships():
 def test_it_returns_None_rather_than_the_stub(monkeypatch):
     """The branch that matters: nothing but the stub is reachable."""
     m = _mod()
-    monkeypatch.setattr(m, "_GIT_BASH", ())
+    monkeypatch.setattr(m._resolver(), "git_bash_candidates", lambda: [])   # B1: one resolver
     monkeypatch.delenv("X4_BASH", raising=False)
     monkeypatch.setenv("PATH", r"C:\Windows\system32")
     assert m.find_bash() is None, "handed back the WSL stub"
@@ -50,7 +50,7 @@ def test_it_finds_a_real_bash_on_PATH_past_the_stub(monkeypatch, tmp_path):
     real = tmp_path / "bin"
     real.mkdir()
     (real / "bash.exe").write_bytes(b"MZ")
-    monkeypatch.setattr(m, "_GIT_BASH", ())
+    monkeypatch.setattr(m._resolver(), "git_bash_candidates", lambda: [])   # B1: one resolver
     monkeypatch.delenv("X4_BASH", raising=False)
     monkeypatch.setenv("PATH", r"C:\Windows\system32;" + str(real))
     assert m.find_bash() == str(real / "bash.exe")

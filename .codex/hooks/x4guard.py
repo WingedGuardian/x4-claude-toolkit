@@ -192,17 +192,68 @@ def _run_bounded(argv: list, payload: bytes, env: dict, timeout: float):
             job.close()     # no KILL_ON_CLOSE: a guard that finished in time keeps its children
 
 
+#: Directories whose `bash.exe` is a stub (the WSL launcher, the Store alias), never a shell.
+BASH_STUB_DIRS = ("system32", "syswow64", "windowsapps")
+#: The documented Git for Windows default, named in every "not found" message.
+GIT_BASH_DEFAULT = r"C:\Program Files\Git\bin\bash.exe"
+
+
+def is_stub_bash(p) -> bool:
+    parts = [q.lower() for q in Path(str(p).replace("/", "\\") if os.name == "nt" else p).parts]
+    return any(d in parts for d in BASH_STUB_DIRS)
+
+
+def git_bash_candidates() -> list[str]:
+    """Where Git for Windows installs bash, from the environment (machine-wide, 32-bit,
+    per-user): `<base>\\Git\\bin\\bash.exe` (the wrapper that sets up Git's PATH) first, then
+    `<base>\\Git\\usr\\bin\\bash.exe`. install.ps1's Find-GitBash probes the same bases."""
+    bases = [os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")]
+    la = os.environ.get("LOCALAPPDATA")
+    bases.append(os.path.join(la, "Programs") if la else None)
+    out = []
+    for b in (b for b in bases if b):
+        out += [os.path.join(b, "Git", "bin", "bash.exe"), os.path.join(b, "Git", "usr", "bin", "bash.exe")]
+    return out
+
+
 def resolve_bash() -> tuple[str | None, str | None]:
-    """Git Bash, never the WSL stub. `bash` alone can resolve to C:\\Windows\\System32\\bash.exe,
-    which cannot run a Windows-path script (gates/hook_false_positives.py records this)."""
-    cand = os.environ.get("X4_BASH") or shutil.which("bash.exe") or shutil.which("bash")
-    if not cand:
-        return None, "no bash found (set X4_BASH to Git Bash)"
-    if "system32" in cand.replace("/", "\\").lower():
-        return None, f"refusing the WSL bash stub ({cand}): it cannot run a Windows-path guard; set X4_BASH to Git Bash"
-    if not Path(cand).is_file():
-        return None, f"X4_BASH points at nothing: {cand}"
-    return cand, None
+    """THE bash resolver (B1, install red-team 2026-10-04): the guards, the OpenCode renderer,
+    x4doctor and scripts/gitbash.py all ask this one function. Git Bash, never a stub: `bash`
+    alone on a stock Windows PATH is C:\\Windows\\System32\\bash.exe, which cannot run a
+    Windows-path script (gates/hook_false_positives.py records this), and Git for Windows puts
+    only `<Git>\\cmd` on PATH by default -- so asking PATH alone found NOTHING on a stock
+    machine and the install ended INCOMPLETE.
+
+    Order: X4_BASH (explicit; a stub or a missing file is an ERROR, never a silent fallback) >
+    on Windows the Git for Windows locations > PATH, walked past any stub (`which` returns only
+    the first hit, which is how the stub won). (None, reason) names the exact `setx` line."""
+    explicit = os.environ.get("X4_BASH")
+    if explicit:
+        if os.name == "nt" and is_stub_bash(explicit):
+            return None, (f"refusing the WSL/Store bash stub X4_BASH names ({explicit}): it cannot run a "
+                          f"Windows-path guard. Point it at Git Bash: setx X4_BASH \"{GIT_BASH_DEFAULT}\"")
+        if not Path(explicit).is_file():
+            return None, f"X4_BASH points at nothing: {explicit}"
+        return explicit, None
+    if os.name != "nt":
+        cand = shutil.which("bash")
+        return (cand, None) if cand else (None, "no bash found on PATH (set X4_BASH)")
+    for c in git_bash_candidates():
+        if Path(c).is_file():
+            return c, None
+    stubs = []
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        cand = Path(d) / "bash.exe" if d else None
+        if cand is None or not cand.is_file():
+            continue
+        if is_stub_bash(cand):
+            stubs.append(str(cand))
+            continue
+        return str(cand), None
+    seen = f" (only the stub {stubs[0]} is on PATH)" if stubs else ""
+    return None, (f"no Git Bash found{seen}: install Git for Windows, or point the toolkit at your "
+                  f"bash.exe for NEW shells with: setx X4_BASH \"{GIT_BASH_DEFAULT}\" "
+                  f"(adjust the path if Git is installed elsewhere)")
 
 
 def guard_payload(kind: str, shell: str | None, command: str | None, path: str | None) -> dict:

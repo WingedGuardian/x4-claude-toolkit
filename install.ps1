@@ -2095,6 +2095,21 @@ $Game    = Remove-TrailingSep $Game
 $Profile = Remove-TrailingSep $Profile
 $Toolkit = Remove-TrailingSep $Toolkit
 
+# B1 (install red-team 2026-10-04): Git Bash, resolved ONCE, BEFORE the dispatch. On a stock
+# Windows PATH `bash` is the WSL stub (Git for Windows adds only <Git>\cmd), so the OpenCode
+# renderer -- which runs inside the dispatch, through the guards' resolver -- found no bash and
+# `-Agent all` ended INCOMPLETE. Found here, it is exported as X4_BASH for THIS run, which every
+# resolver below (x4guard.resolve_bash, setup.sh's children) honours first. The user's own
+# environment is never changed by this; a missing bash prints the exact setx line instead.
+$bash = Find-GitBash
+if ($bash -and -not $env:X4_BASH) { $env:X4_BASH = $bash.Source }
+if (-not $bash) {
+  Write-Host '  [warn] no Git Bash found (Git for Windows locations, then PATH past the WSL stub).'
+  Write-Host '         The guards, setup.sh and the OpenCode renderer need it. Install Git for Windows,'
+  Write-Host '         or point the toolkit at your bash.exe (takes effect in NEW shells):'
+  Write-Host '           setx X4_BASH "C:\Program Files\Git\bin\bash.exe"   (adjust if Git lives elsewhere)'
+}
+
 switch ($Method) {
   'in-game'  {
     if (-not $Game) { throw 'in-game needs -Game' }
@@ -2212,7 +2227,7 @@ if (-not $NoEnv) { Set-HUserToolkitEnv $Toolkit }
 #
 # So: prefer a real Git Bash, and refuse the known stubs by path.
 
-$bash = Find-GitBash
+# ($bash was resolved once, before the dispatch -- B1.)
 # ($failed is defined above the dispatch, beside -Agent's resolution: the Codex writers
 #  inside the dispatch record into it.)
 if ($bash) {
@@ -2251,11 +2266,11 @@ if ($bash) {
   # Git for Windows only adds ...\Git\cmd to PATH by default; bash.exe lives in
   # ...\Git\bin. Name the actual fix rather than telling them to run a command
   # they equally cannot run.
-  Write-Host "  [note] bash not found on PATH, so x4validate was NOT wired up."
+  Write-Host "  [note] no Git Bash found, so x4validate was NOT wired up."
   Write-Host "         Git for Windows ships bash in <install>\bin (e.g. C:\Program Files\Git\bin)."
-  Write-Host "         Either add that to PATH, or run setup from Git Bash:"
-  Write-Host "           cd '$Toolkit' && CLAUDE_PROJECT_DIR='$Toolkit' bash setup.sh"
-  $failed += "bash not found (x4validate not wired up)"
+  Write-Host "         Point the toolkit at it, open a NEW PowerShell, and re-run this installer:"
+  Write-Host '           setx X4_BASH "C:\Program Files\Git\bin\bash.exe"   (adjust if Git lives elsewhere)'
+  $failed += 'Git Bash not found (x4validate not wired up): setx X4_BASH "C:\Program Files\Git\bin\bash.exe", then re-run'
 }
 
 if ($failed.Count) {

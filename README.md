@@ -414,7 +414,14 @@ one; until it has one, the toolkit's guards do not protect it.
 ### Prerequisites it will check for
 - **bash** — required. Every safety hook and both setup scripts run under it. Linux/macOS have it;
   on **Windows install [Git for Windows](https://git-scm.com/download/win)** (Git Bash) — without
-  it the hooks silently do nothing, so the safety guards below would not be active.
+  it the hooks silently do nothing, so the safety guards below would not be active. **Git Bash
+  must be FOUND**, and a stock Windows `PATH` does not find it: Git for Windows adds only
+  `<Git>\cmd` to `PATH`, and `bash` there is the WSL stub in `System32`, which cannot run the
+  toolkit. The toolkit looks in the standard Git for Windows locations (`Program Files`,
+  `Program Files (x86)`, `%LOCALAPPDATA%\Programs`) and then along `PATH` past the stub. If Git
+  lives anywhere else, set `X4_BASH` (new shells only):
+  `setx X4_BASH "C:\Program Files\Git\bin\bash.exe"` (with your path), or put Git's `bin`
+  folder ahead of `System32` on `PATH`. `python scripts/x4doctor.py` shows which bash was found.
 - **jq** — Windows `winget install jqlang.jq` · Linux `sudo pacman -S jq` / `apt install jq` · macOS `brew install jq`
 - **Python 3** — required, and **not only for the tools**: the Bash guard (`protect-bash.sh`) analyses
   each command with `hook_facts.py`, so without an interpreter on `PATH` (or `X4_PYTHON` pointing at
@@ -554,8 +561,10 @@ bash install.sh --method global            # multi-repo: skills+paths into ~/.cl
 # Windows (PowerShell)
 powershell -ExecutionPolicy Bypass -File install.ps1 -Method global
 ```
-> Windows note: the hooks/scripts are bash, so running the toolkit needs **Git Bash**
-> (the PowerShell installer just does the setup).
+> Windows note: the hooks/scripts are bash, so running the toolkit needs **Git Bash** — found in
+> its standard install location, or named by `X4_BASH` (see Prerequisites). The PowerShell
+> installer finds it, runs `setup.sh` through it for you, and prints the `setx X4_BASH` line when
+> it cannot.
 
 #### Which agent: `--agent claude | codex | generic | opencode | all | auto` (default `all`)
 
