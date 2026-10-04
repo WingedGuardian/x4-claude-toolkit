@@ -385,7 +385,11 @@ telemetry and independent filesystem protection remain separate roadmap work.
 
 ### 2. Get the toolkit and run the installer
 Download the latest release zip (from [Releases](https://github.com/WingedGuardian/x4-ai-toolkit/releases)
-or Nexus) and extract it anywhere, then run the guided installer:
+or Nexus) and extract it, then run the guided installer. **On Windows, pick a SHORT folder**
+(e.g. `C:\X4AI`): Windows' classic 260-character path limit is reached once the folder's own
+path is longer than about 165 characters, because the deepest file in the toolkit sits 92
+characters below its root -- extracting under a long Downloads or OneDrive path can fail for
+the deepest files (a 2026-10-04 install test hit this with 2 test fixtures).
 
 ```bash
 bash install.sh          # Linux / macOS / Windows (Git Bash)
