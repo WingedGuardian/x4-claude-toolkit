@@ -509,7 +509,11 @@ not measured against a running OpenCode.** The reading is recorded in
 - After moving `reference/` or the game, re-render the deny rules:
   `python .opencode/hooks/opencode_config.py write --root .` An existing `opencode.jsonc` that
   the toolkit did not write is never overwritten.
-- Verify with `python scripts/x4doctor.py --agent opencode`. MCP tools are not judged.
+- Verify with `python scripts/x4doctor.py --agent opencode`. **Not judged** (READ, OpenCode v1.18.34
+  `tool/registry.ts`): MCP tools, custom tools you add as `tool/*.ts` / `tools/*.ts` in an OpenCode
+  config folder, and tools another plugin defines. Only the four built-in tools that write a file
+  or run a command (`bash`, `edit`, `write`, `apply_patch`) are checked. See
+  `docs/superpowers/measurements/2026-10-02-opencode-read.md` (R15).
 
 ### Install methods (`install.sh` / `install.ps1`)
 One guided installer, three layouts — pick what fits. Every path is auto-detected where
