@@ -202,3 +202,19 @@ def planted_verifier(tmp_path):
     subprocess.run(["git", "-C", str(r), "add", "a.txt"], capture_output=True)
     subprocess.run(["git", "-C", str(r), "commit", "-qm", "base"], capture_output=True)
     return v, str(r), "HEAD"
+
+
+def test_the_internal_audit_harness_is_NOT_in_the_bundle():
+    """v4.0.0 review R5-12: tools/x4validate/audit/ is a maintainer's audit harness (its own
+    README: "a local audit instrument, not a shipped CLI") and shipped in every install.
+    `export-ignore` keeps it in the repo and out of `git archive`, like release/."""
+    import subprocess
+    root = Path(__file__).resolve().parents[3]
+    r = subprocess.run(["git", "-C", str(root), "check-attr", "export-ignore", "--",
+                        "tools/x4validate/audit/driver.py", "tools/x4validate/x4validate/_paths.py"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        pytest.skip("not a git checkout: " + r.stderr.strip())
+    got = dict(line.split(": export-ignore: ") for line in r.stdout.strip().splitlines())
+    assert got["tools/x4validate/audit/driver.py"] == "set", got
+    assert got["tools/x4validate/x4validate/_paths.py"] == "unspecified", got   # twin

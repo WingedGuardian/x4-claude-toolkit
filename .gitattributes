@@ -68,3 +68,7 @@ release/ export-ignore
 # Maintainer-only: plants mutants in the game-side mod while it runs, so it must never
 # reach a user. Tracked for maintainers; excluded from the bundle.
 tools/x4validate/scripts/mutate-mod-lua.py export-ignore
+
+# Maintainer-only: the isolated tool-audit harness (its README: "a local audit instrument,
+# not a shipped CLI"). Tracked for maintainers; excluded from the bundle (v4.0.0 review R5-12).
+tools/x4validate/audit/** export-ignore
