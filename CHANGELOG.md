@@ -194,6 +194,36 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   routine `--file` skip stays silent (it is on every edit: 50 of 50 measured).
 - The timeout guard judges a background command against its own 2-hour cap, not the foreground
   one.
+- **The path config is read as data, never run** (BLIND-SPOTS F153; present in 3.x too). The
+  guards ran `x4-paths.env` as shell code on every tool call: a line `exit 0` in it made every
+  hook end before it decided anything, which reads as "allowed", and any other command in it ran
+  each time. It is now parsed by one rule that the guards and the Python tools share. A line
+  that is not configuration is ignored, and the session start names it (line number and reason,
+  never a value).
+- **`X4_GUARD` is read only from the environment the agent is launched from.** Written into
+  `x4-paths.env`, it switched every guard off under a banner saying it had been set at launch.
+  A config line naming it is now ignored, and the session start says so.
+- **Agents may not write or delete `x4-paths.env`** (either location, or the file `X4_CONFIG`
+  names), by a file edit or a shell command: every guard reads its folders from it. Edit it
+  yourself, or re-run the installer. Reading it is unchanged.
+- **With `X4_GUARD=off`, a guard that could not check still asks**, as promised above. A
+  command that does not parse, a command name built by substitution, PowerShell that could not
+  be translated and an unreadable file-edit payload had become advisories. The Grep deny on a
+  git-ignored folder now honours `X4_GUARD=off` like every other verdict.
+- **Grep under a folder git ignores AS A FOLDER works again** (`reference/`, `build/`): ripgrep
+  still reads every file under such a root, so the F146 deny was wrong there. The toolkit's own
+  `reference/libraries` could not be searched. Only a pattern matching every name under the root
+  (the game folder's `*`) hides its files, and only that is denied (BLIND-SPOTS F154).
+- **The X4 profile asks again with `X4_PROFILE` unset**, for shell deletes and writes under
+  `Documents/Egosoft/X4` (or `~/.config/EgoSoft/X4`). They had become advisories along with the
+  rest of Documents.
+- **`CLAUDE.md`, `AGENTS.md` and `KNOWLEDGEBASE.md` are allowed at the project root only**,
+  like `X4-NOTES.md`. The same names deeper in the game folder are game files again. All three
+  were allowed anywhere (the first two since 3.x).
+- The Bash guard's refusals name remedies every agent has ("your file-edit tool (Edit,
+  apply_patch)") and sections that exist, instead of "the Edit tool" and `CLAUDE.md #22`.
+- A backup that fails no longer writes its audit line outside the trail, or to wherever an
+  inherited `AUDIT_LOG` variable pointed, and no longer prints a write error beside its verdict.
 
 ### Configuration
 
@@ -204,6 +234,13 @@ the release asset is `X4.Foundations.AI.Assistant.Toolkit-v4.0.0.zip`.
   in which the file beat the environment.
 - `setup.sh` never creates a blank root config that would shadow a 3.x one, and
   `bin/unpack-reference.sh` works in a Codex-only or OpenCode-only install.
+- **How `x4-paths.env` is read** (the guards and the Python tools, one rule):
+  `KEY="value"`, `KEY='value'` or `export KEY=value`, with `KEY` an `X4_*` name or `XRCATTOOL`.
+  `$NAME` and `${NAME}` still expand, from earlier lines and then the environment; inside single
+  quotes, or written `\$`, they stay literal. A Windows line ending and a leading byte-order mark
+  are ignored. A line with `$(`, a backtick or an unquoted `;` `&` `|` `<` `>` is ignored.
+  Everything the installers, `setup.sh` and `x4-paths.env.example` write reads as before. An
+  exported value now beats the file for every key in the guards too, as it already did in Python.
 
 ### Tools
 
