@@ -109,3 +109,14 @@ def test_offset_without_limit_and_empty_item_page(real_db, capsys):
     assert '2 displayed of 3' in capsys.readouterr().out
     assert ask.main(['xq', '(1, "")', '--limit', '1', '--offset', '1']) == 0
     assert '1 displayed of 2' in capsys.readouterr().out
+
+
+def test_a_page_of_ATTRIBUTE_nodes_is_counted_not_refused(real_db, capsys):
+    """v4.0.0 review R5-5: the paging wrapper called serialize() on every item, and an
+    attribute node cannot be serialized standalone (SENR0001) -- so `--limit` over any
+    `//@attr` query was refused as 'cannot safely count and page this query'."""
+    rc = ask.main(['xq', "collection('x4raw')//ware/@id", '--limit', '1'])
+    out = capsys.readouterr()
+    assert rc == 0, (out.out, out.err)
+    assert 'cannot safely count' not in out.err
+    assert 'ore' in out.out

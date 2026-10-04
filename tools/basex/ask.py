@@ -138,15 +138,20 @@ def run_page(xquery: str, limit: int, offset: int) -> Page:
     """Measure the FULL sequence once, then display whole items; never fall back."""
     selected = (f'subsequence($__ask, {offset+1}, {limit})' if limit
                 else f'subsequence($__ask, {offset+1})')
+    # An ATTRIBUTE (or namespace) node cannot be serialized standalone (SENR0001), so
+    # serialize() of one raised and every `--limit` over an `//@attr` query was refused
+    # (v4.0.0 review R5-5). Its string value is what a reader sees, so that is measured.
     wrapped = f'''let $__ask := ( {xquery} )
 let $__total := count($__ask)
 let $__page := {selected}
+let $__ser := function($__i) {{ serialize(
+  if ($__i instance of attribute() or $__i instance of namespace-node()) then string($__i) else $__i) }}
 let $__meaning :=
   if ($__total = 0) then "empty"
-  else if (every $__item in $__ask satisfies normalize-space(serialize($__item)) = "")
+  else if (every $__item in $__ask satisfies normalize-space($__ser($__item)) = "")
        then "empty-serialization"
-  else if ($__total = 1 and normalize-space(serialize($__ask)) = "false") then "false"
-  else if ($__total = 1 and normalize-space(serialize($__ask)) = "0") then "zero"
+  else if ($__total = 1 and normalize-space($__ser($__ask)) = "false") then "false"
+  else if ($__total = 1 and normalize-space($__ser($__ask)) = "0") then "zero"
   else "positive"
 return (concat($__total, ":", count($__page), ":", $__meaning), "{_SEP}", $__page)'''
     try:
