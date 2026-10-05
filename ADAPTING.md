@@ -51,6 +51,7 @@ TOOLS THAT WRITE: every tool that can change a file or run a command; which of t
 SHELL ROUTING: which shell executes the shell tool, per OS (a tool called "Bash" may run PowerShell)
 VERDICT SHAPES HONOURED: deny / ask / add-context -- each one MEASURED as honoured or not
 FAIL MODE: the five rows of the table below, each "blocked" or "ran", MEASURED
+HOOK TIMEOUT: the agent's hook timeout in seconds, READ from its docs and bracketed by a measurement
 HOOK APPROVAL: can a changed hook definition silently stop running until someone re-approves it?
 CONTEXT CAP: how much hook text your agent shows the model before truncating it
 NATIVE POLICY LAYER: any built-in permission rules you can also use (deny-lists, sandboxes)
@@ -58,6 +59,13 @@ INSTRUCTION FILE AND BYTE CAP: the file your agent reads at start, and where it 
 EVIDENCE: the tier of every row above, and the commands or transcripts behind each MEASURED one
 ```
 
+**A row whose answer is "none" is still filled in, with its tier and its source.** For example:
+`INSTRUCTION FILE AND BYTE CAP: none (READ: the agent's hook docs say it has no instruction
+file)`, or `VERDICT SHAPES HONOURED: deny MEASURED (row a below); ask: none, the docs say there
+is no ask; add-context MEASURED`. Never leave a row blank: a blank row cannot be told apart from
+one you skipped. A "none" that matters for safety (HOOK APPROVAL: "never re-approved") is worth
+one measurement when it is cheap: change the hook definition, restart, and see that it still
+runs.
 Two examples of why each row matters (MEASURED on Codex 0.160.0, 2026-09-30, in
 `docs/superpowers/measurements/2026-09-30-codex-spike.md`): Codex labels PowerShell commands
 "Bash" on Windows, so an adapter that judged them as bash let a PowerShell write into
@@ -82,6 +90,24 @@ continuing. **Any other "ran" means your agent fails open on that path**, and yo
 never take it: every failure inside the adapter has to end as a printed deny, exit 0, in time.
 If your adapter itself can crash (it can), put a small fail-closed WRAPPER in front of it that
 turns anything unexpected into a deny -- the Codex example in section 3 does exactly that.
+
+**Your agent's hook timeout.** READ the number from your agent's own docs first; you need it for
+row (d) and for the time budget in section 2. Then confirm it with two hooks, since docs can be
+wrong: one that sleeps 3 seconds LESS than the documented timeout and then prints the deny (it
+must be "blocked", so the timeout is at least that long), and row (d), which sleeps 10 seconds
+MORE (it shows what happens past it). If the first one is not blocked, the real timeout is shorter
+than the docs say: lower the sleep until it is blocked, and use that measured number.
+
+**How your agent launches the hook command.** Find out from the agent's docs (or its code) whether
+it runs the hook command through a shell, and which one, because that decides how a path with
+spaces must be quoted. A command run through a shell on Windows usually goes to `cmd.exe` (Python's
+`subprocess.run(cmd, shell=True)` does, and so does the toy agent): there, only DOUBLE quotes
+group a path. MEASURED 2026-10-05 on Windows 11, a script in a folder with a space, through
+`shell=True`: `"<python>" "<script>"` ran; the same with single quotes failed ("The filename,
+directory name, or volume label syntax is incorrect"); unquoted, Python could not open the
+file. On Linux and macOS the shell is usually `/bin/sh`, where both quote styles work. If a hook
+silently never runs, check the quoting before anything else -- and remember that a hook that
+cannot start is one more fail-open path on many agents.
 
 ## 2. The guard contract
 
@@ -116,7 +142,11 @@ Exit 2 means a usage error (a wrong option). The rules for calling it:
 - **`--kind delete`** for anything that removes or moves a file away; x4guard judges it as the
   stricter of a write and an `rm -rf` of that path. A move is a delete of the source plus a
   write of the destination. A tool that touches several files is several checks; the worst
-  verdict wins (deny > ask > advise > allow).
+  verdict wins (deny > ask > advise > allow). `--kind delete` is for a DEDICATED delete or move
+  tool. If your agent has none, and deletes only through its shell tool (`rm`, `mv`,
+  `Remove-Item`), you need nothing extra: send the whole command as `--kind shell`, and the shell
+  guard judges the deletion inside it (READ: the corpus in `scripts/test-hooks.sh` has `rm` and
+  `Remove-Item` cases, and conformance replays them as `shell-bash` and `shell-powershell`).
 - **`inert: true` means the guard could not run** (no bash, a timeout, a missing script). It
   always arrives as `decision: "deny"`. Render it as a deny -- or as a question to the user if
   your agent can MEASURABLY ask -- and never as an allow.
@@ -124,20 +154,8 @@ Exit 2 means a usage error (a wrong option). The rules for calling it:
   not JSON, a `v` other than 1, or a timeout. The same for a tool name, field or shell your
   adapter does not recognise -- unless your capability report MEASURED that tool as unable to
   write files or run commands (then let it through, as Claude Code lets unhooked tools through).
-- **Time budget.** `X4_GUARD_TIMEOUT_S` is x4guard's budget for one check. Its default value is
-  deliberately not restated here, because it can change; print the three numbers that matter,
-  from the toolkit folder, with:
-
-  ```
-  python -c "import sys; sys.path.insert(0, '.claude/hooks'); import x4guard as g; print(g.TIMEOUT_S, g.KILL_WAIT_S, g.DRAIN_GRACE_S)"
-  ```
-
-  The worst case wall clock of one check is the first plus the other two. Your own timeout must
-  sit ABOVE that worst case and BELOW your agent's hook timeout. If your agent's hook timeout is
-  too short for that, set
-  `X4_GUARD_TIMEOUT_S` lower in the environment you run x4guard with, and still enforce your
-  own deadline below the agent's: a check that has not answered in time is an inert deny that
-  YOU print.
+- **Time budget.** See "Choosing the time budget" below: get it wrong and your adapter turns
+  real verdicts into inert denies under load.
 - **Finding x4guard.py.** Locate it relative to your adapter's own file, or from a path the
   install configured. Do not build it from `X4_TOOLKIT` alone: under `x4guard conformance` that
   variable names a SANDBOX toolkit with an empty hooks folder, and in an install it may be unset.
@@ -150,9 +168,25 @@ Exit 2 means a usage error (a wrong option). The rules for calling it:
   keeping the FIRST part: the directive comes first. Print its value, from the toolkit folder,
   with `bash -c '. .claude/hooks/_x4-env.sh; echo "$X4_HOOK_MAX_CHARS"'`. If your agent reads
   only one line, flatten newlines to spaces.
-- **Characters.** Guard reasons contain non-ASCII text (dashes, arrows). Emit them in the
-  encoding your agent reads hook output in; if you cannot be sure, replace non-ASCII characters.
-  MEASURED on the toy agent: one em dash crashed the agent's own console printing.
+- **Characters.** Guard reasons contain non-ASCII text. MEASURED 2026-10-05 over the 9 guard
+  scripts: em dash, middle dot, rightwards arrow, warning sign and ellipsis. Two things can break,
+  and either one can be a fail-open crash:
+  - **your adapter's own output.** A Python adapter on Windows whose stdout is a pipe writes in
+    the ANSI code page, not UTF-8 (MEASURED 2026-10-05: `sys.stdout.encoding` was `cp1252`;
+    printing an em dash wrote the single byte `0x97`, and printing an arrow raised
+    `UnicodeEncodeError`). Never `print()` a reason as it is: encode it yourself and write bytes
+    (`sys.stdout.buffer.write(line.encode(ENCODING, "replace"))`).
+  - **your agent's reading of it.** MEASURED on the toy agent (2026-10-03): one em dash crashed
+    the agent's own console printing.
+
+  Choose the encoding by measurement. **UTF-8** keeps every character, but only if your agent
+  decodes hook output as UTF-8 AND shows it without crashing: test it by sending a deny whose
+  reason contains an em dash and an arrow through the real agent, and check the call was blocked
+  and the model saw the reason intact. **ASCII** (the fallback when you cannot test, or the test
+  fails) cannot crash anything but loses characters; transliterate the common ones first (an em
+  dash to `--`, an arrow to `->`, an ellipsis to `...`) and only then replace what is left with
+  `?`. The words that carry the verdict (`X4 GUARD INERT`, `NEEDS YOUR APPROVAL:`, `BLOCKED`)
+  are ASCII, so an ASCII adapter loses no decision, only some punctuation.
 
 Rendering -- from x4guard's decision to your agent's native answer:
 
@@ -163,6 +197,101 @@ Rendering -- from x4guard's decision to your agent's native answer:
 | `ask` | a native ask ONLY if you MEASURED that your agent honours one. Otherwise a DENY whose reason starts with `NEEDS YOUR APPROVAL:` followed by the reason, so the model stops and asks its user |
 | `deny` | a native deny carrying `reason` |
 | `deny` with `inert: true` | a deny carrying `reason` (it starts `X4 GUARD INERT`); never an allow |
+
+**If your agent has no ask at all** (its docs say so, or row (a)-style testing of an ask showed it
+runs the call anyway), use the `NEEDS YOUR APPROVAL:` deny for every `ask` -- that needs no
+measurement of an ask, because it is a deny, and row (a) already measured that your agent honours
+a deny. Record it in the capability report as `ask: none (READ: <where the docs say so>)`. The
+measurement is needed only for the opposite choice: rendering `ask` as a NATIVE ask.
+
+### Choosing the time budget
+
+These numbers are READ from `agent/guards/claude-hooks/x4guard.py` (the source of every deployed
+`x4guard.py`) at v4.0.0:
+
+| constant | default | what it bounds |
+|---|---|---|
+| `TIMEOUT_S` | 25 s | the guards' budget for ONE check, set by `X4_GUARD_TIMEOUT_S` (default 25 seconds); a delete's two guards share it |
+| `KILL_WAIT_S` | 5 s | after a timeout: how long killing the guard's process tree may take |
+| `DRAIN_GRACE_S` | 3 s | after the kill: how long x4guard waits for the guard's output pipes to close |
+
+**The worst-case wall clock of one check is `TIMEOUT_S + KILL_WAIT_S + DRAIN_GRACE_S`: 25 + 5 + 3
+= 33 s with the defaults**, plus the time to start Python (MEASURED 2026-10-05: a `check` that
+refuses at once, on a bad `X4_GUARD_TIMEOUT_S`, took 0.05 s end to end). To print the values
+that are in force -- the defaults, or what `X4_GUARD_TIMEOUT_S` in your environment makes of the
+first one -- without opening the file, run from the toolkit folder:
+
+```
+python -c "import sys; sys.path.insert(0, '.claude/hooks'); import x4guard as g; print(g.TIMEOUT_S, g.KILL_WAIT_S, g.DRAIN_GRACE_S)"
+```
+
+(MEASURED 2026-10-05: it prints `25.0 5 3` with the variable unset.) Use `.codex/hooks` in place of
+`.claude/hooks` if that is the guard tree you have.
+
+**Choose three numbers, in this order:**
+
+1. **H, your agent's hook timeout** -- READ, then bracketed (section 1). With no timeout at all,
+   H is however long you are willing to let a tool call wait.
+2. **D, your adapter's own deadline**, a few seconds below H: `D = H - 3` or lower. When D runs
+   out, YOUR adapter prints the inert deny, so your agent never reaches its own timeout (which
+   fails open on many agents).
+3. **B, x4guard's budget** (`X4_GUARD_TIMEOUT_S`). If `D >= 33 + 3`, leave the variable unset:
+   the default fits. Otherwise set `B = D - KILL_WAIT_S - DRAIN_GRACE_S - 3`, i.e. `B = D - 11`,
+   so that x4guard's own worst case ends at least 3 s before your deadline. Example, a 30 s hook
+   timeout (the toy agent's): D = 26, B = 15, x4guard's worst case 23 s. Those are the numbers of
+   the committed toy adapter (`tools/x4validate/tests/fixtures/toy_agent/toy_adapter.py`), which
+   passes the full conformance replay.
+
+**Take the LARGEST budget that fits, never a smaller one "for safety".** A budget that is too
+small does not fail safe in a useful way: every check that overruns becomes an inert deny,
+blocking a call the guards would have judged. How much headroom the typical latency leaves, on
+one machine (Windows 11, 28 logical CPUs, Git Bash), MEASURED 2026-10-05 with x4guard's
+`check`, environment pinned to a scratch toolkit:
+
+| load | checks | max | median range |
+|---|---|---|---|
+| quiet, one at a time | 30 each of write (deny), write (allow), bash shell, delete; 10 PowerShell shell | 0.81 s | 0.25-0.70 s |
+| 2 idle-priority CPU burners running | 43 write, 43 bash shell | 0.79 s | 0.25-0.29 s |
+| 4 checks at a time (the conformance replay's `--workers 4` shape) | 10 each of write, write (allow), shell, delete | 0.87 s | 0.39-0.72 s |
+
+**Do not size the budget from that table.** On the same machine, the day before, a full
+conformance replay with a cold adapter whose budget was 10 s had ONE check run past it
+(MEASURED: 1 of 151 cases, `protect-files.sh timed out: this check's 10s budget
+(X4_GUARD_TIMEOUT_S) ran out`), while no check in the table took even 1 s: the tail under real
+load is more than ten times the worst we could provoke on purpose. So the evidence does NOT say a
+10 s budget is too tight for every machine -- typical checks take under a second -- but it does say
+10 s is too tight to pass conformance reliably on this one. 15 s has passed the full replay (the
+committed toy adapter, MEASURED 2026-10-03 in
+`docs/superpowers/measurements/2026-10-03-adapting-cold-test.md`); below that you are guessing,
+and if your agent's timeout forces you there, say so in your report.
+
+**The ADAPTER sets `X4_GUARD_TIMEOUT_S`**, in the environment of the x4guard process it starts
+(copy its own environment and add the variable). Not your user's shell: the variable would then
+depend on how the agent was launched. Verify that x4guard honours it with a budget too small to
+finish (MEASURED 2026-10-05, both forms below). In bash:
+
+```
+X4_GUARD_TIMEOUT_S=0.05 python .claude/hooks/x4guard.py check --kind write --path x.txt
+```
+
+In PowerShell:
+
+```
+$env:X4_GUARD_TIMEOUT_S = '0.05'
+python .claude/hooks/x4guard.py check --kind write --path x.txt
+Remove-Item Env:X4_GUARD_TIMEOUT_S
+```
+
+It must answer an inert deny whose reason names the budget you set: `... timed out: this
+check's 0.05s budget (X4_GUARD_TIMEOUT_S) ran out`. A value that is not a positive number gives
+an inert deny saying so. Then do the same THROUGH YOUR ADAPTER (temporarily set its budget to
+0.05) and check that it renders that inert deny -- that is what proves your adapter really passes
+the variable on.
+
+**How a budget that is too small shows up in conformance:** a line like `DISAGREE #9 ... guards
+say deny, adapter says inert -- X4 GUARD INERT: protect-files.sh timed out: this check's 10s
+budget (X4_GUARD_TIMEOUT_S) ran out`. The fix is a larger budget (within your deadline), never
+fewer `--workers`: a replay that passes only on a quiet machine will fail your user on a busy one.
 
 ## 3. Worked examples
 
@@ -259,7 +388,13 @@ Field by field:
   `{HOOKS}` (its `.claude/hooks`), `{PYTHON}` (the engine's interpreter), `{BASH}`, `{PWSH}`.
   A relative path in it is relative to the directory the adapter runs in (see `run_cwd`), so use
   an absolute path or pass the command after `--` instead (forward slashes work on Windows too).
-  Anything after `--` on the command line replaces `command`.
+  **Anything after `--` on the command line replaces `command` entirely** -- the profile's
+  `command` is then not used at all (the placeholders work after `--` too). So `command` is REQUIRED only
+  when you run conformance without `--`; with neither, the run stops with exit 2 ("no adapter
+  command") (READ: `scripts/x4conformance.py`, `adapter_command` and `main`). Keep a `command`
+  in the profile anyway, written with `{PYTHON}` and `{TOOLKIT}`: an upstreamed profile is run by
+  NAME, without `--`. The FIRST line conformance prints, `adapter: ...`, is the argv it really
+  uses -- check it to see which one won.
 - `requires`: programs that must exist, or the run stops with exit 2.
 - `run_cwd`: `"neutral"` (the default, and what you want) runs your adapter in an EMPTY scratch
   folder, exactly like an agent that starts hooks somewhere unrelated. An adapter that ignores
@@ -283,9 +418,17 @@ Field by field:
   `format` `"json"`: each rule is `{"when": {pointer: value or {"present": true}}, "absent":
   [pointer], "text": pointer, "decision": D, "prefix_decisions": {"NEEDS YOUR APPROVAL:": "ask"}}`;
   `allowed_keys` (`{"": [...], "/inner": [...]}`) makes an unexpected key unreadable -- use it
-  when your agent fails open on unknown keys. Optional: `strip_prefix`, `single_line`. A deny or
-  ask whose text contains `X4 GUARD INERT` is read as `inert`. Output no rule matches is
-  `unreadable`, which counts as a disagreement, never as an allow.
+  when your agent fails open on unknown keys. Optional: `strip_prefix`, `single_line`. Output no
+  rule matches is `unreadable`, which counts as a disagreement, never as an allow.
+
+  **Inert answers need no rule of their own.** After a rule matches, a decoded `deny` or `ask`
+  whose TEXT contains `X4 GUARD INERT` (or the regex in the optional `inert_pattern`) becomes
+  `inert` (READ: `scripts/x4conformance.py`, `_finish`). So in the text example above, the
+  generic `TOY-BLOCK` deny rule already reads an inert deny correctly -- PROVIDED its named group
+  `text` captures the reason. A rule without a `text` group (or a JSON rule without `text`)
+  decodes every inert deny as a plain `deny`, and every case the guards could not check then
+  disagrees. An `exit_codes` entry may also map a status straight to `"inert"`. Whether your
+  inert reading works is shown by the run itself: see the INERT summary line in section 5(a).
 
 ## 5. Required proof
 
@@ -299,10 +442,33 @@ python .claude/hooks/x4guard.py conformance --profile path/to/profile.json -- py
 
 It dumps the corpus fresh, replays it, and prints every disagreement by name. **It is slow**:
 the dump alone takes several minutes, and every case then runs the guards twice and your
-adapter once -- budget tens of minutes on Windows (MEASURED: one cold run of a Python adapter
-took about 40 minutes there), so run it in the background or with a long timeout, one at a
-time. Progress lines appear as it goes; the verdict comes at the end. A run that is killed
-leaves its sandbox in the toolkit's `.test-sandbox/conf-<number>/` folder: delete that folder.
+adapter once -- budget up to an hour on Windows, so run it in the background or with a long
+timeout, one at a time. How long it takes depends on the machine and its load: one cold run of
+a Python adapter took about 40 minutes on 2026-10-03, and on 2026-10-04 two full runs on the
+same machine each finished in under 8 minutes (MEASURED from file timestamps: the adapter file
+to the first run's log, then that log to the second run's). The output is NOT held back until
+the end: each progress line is flushed as it happens (READ: `say(..., flush=True)` in the
+engine) -- `adapter: ...`, `dumping the guard corpus ...`, `extras: ...`, `replaying N case(s)
+...` -- and then nothing appears during the replay, which is the long part; the summary comes at
+the end. Silence after `replaying` is normal, not a hang. A run that is killed leaves its sandbox
+in the toolkit's `.test-sandbox/conf-<number>/` folder: delete that folder.
+
+How to read the summary lines (READ: `summarise` in `scripts/x4conformance.py`):
+
+- `conformance: N replayed of M cases; buckets: ...` -- what was replayed, and why the rest was not.
+- `GAP: <kind> is not covered by this adapter ...` -- a kind your profile declares `unsupported`.
+- `DISAGREE #<n> <case> [<kind>]: guards say X, adapter says Y -- <text>` -- one per disagreement,
+  then `FAIL: ...`. When there is any disagreement, the lines below are not printed.
+- `K replayed case(s) were INERT in the guards (checked nothing): they agree, and prove nothing`
+  -- in K cases the GUARDS THEMSELVES could not check the command (for instance a command they
+  cannot analyse), so the right answer was an inert deny, and your adapter gave one. It is
+  EXPECTED, not caused by your adapter, and it is good news about your inert reading: each of
+  those cases agreed only because your adapter's answer decoded as `inert`. They still had to
+  agree -- an adapter that turned one into a plain deny or an allow would have failed -- but they
+  do NOT count toward `--min-cases`, because agreeing about "checked nothing" proves no rule.
+  (MEASURED: the 2026-10-04 cold run had 4 of 151.)
+- `OK: all N replayed cases agree (C checked by the guards)` -- the pass. C is N minus the INERT
+  cases, and C is what must reach `--min-cases`.
 
 The summary counts cases `no_native_analogue`: guard cases that carry no shell command and no
 file path (searches such as Grep and Glob), which no adapter could be shown. They are not your
@@ -311,8 +477,8 @@ also counts `windows_path_dialect`: file-path cases spelled with backslashes, wh
 macOS name a single file in the current folder rather than the path the guards judge, so they are
 not replayed there.
 
-Exit codes: **0** every replayed case agrees and at least `--min-cases` (default 80) were
-replayed; **1** at least one disagreement or unreadable answer -- fix the ADAPTER; **2** it could
+Exit codes: **0** every replayed case agrees and at least `--min-cases` (default 80) of them were
+CHECKED by the guards (not inert); **1** at least one disagreement or unreadable answer -- fix the ADAPTER; **2** it could
 not evaluate (a bad profile, a missing program, the corpus could not be built, or a reference
 control failed) -- nothing was proven either way; **3** too little was examined. Only 0 is a pass,
 and a pass with a GAP line is a partial pass.
@@ -326,14 +492,29 @@ agent with them pointing at the decoy: `X4_TOOLKIT` at the scratch folder holdin
 `dev/` inside `X4_GAME` is part of the game install, and is refused too). With none of them set,
 both writes are allowed (MEASURED on the toy agent) -- which is why the control matters.
 
+The scratch folder needs ONLY `dev/` and `reference/` (with the decoy file in it): no `.claude/`,
+no copy of the toolkit. Your adapter keeps running the toolkit's REAL `x4guard.py`; only the
+environment points the guards at the scratch tree, and the environment wins over the toolkit's
+`x4-paths.env` (READ: `_x4-env.sh`). MEASURED both ways: the 2026-10-04 cold run (`X4_TOOLKIT`,
+`X4_REFERENCE`, `X4_GAME`, through the toy agent) and a 2026-10-05 probe of x4guard's `check`
+that also set `X4_PROFILE` to a scratch folder and `X4_CONFIG` to an EMPTY scratch file both
+blocked the `reference/` write and allowed the `dev/` one, with no `.claude/` in the scratch
+tree. Setting those last two as well is the safer
+canary: then nothing from your real install's config or game profile is read.
+
 **(c) x4doctor shows the layer live.** `python scripts/x4doctor.py` reports per agent target. For
 an agent it does not know yet it reports no target for you: say so plainly. That is a gap until a
-doctor probe for your agent is upstreamed.
+doctor probe for your agent is upstreamed. **This is the expected state of EVERY new adapter**,
+not a fault in yours. Run x4doctor once, record (c) as `x4doctor: no target for <agent> (gap
+until a doctor probe is upstreamed)`, quote its `layer2.reference` row as it is, and carry on
+with (d). A doctor probe is part of upstreaming (section 7), not of passing locally.
 
 **(d) The fail-mode table** of section 1, every row MEASURED.
 
 Until all four hold, your agent is "partially supported, with these gaps: ..." -- name each gap
-to your user.
+to your user. With (a), (b) and (d) done and only (c) missing, that sentence is: "partially
+supported, with this gap: x4doctor has no probe for <agent> yet, so it cannot show whether the
+hook is live."
 
 ## 6. Rules
 
@@ -360,6 +541,7 @@ TOOLS THAT WRITE:
 SHELL ROUTING:
 VERDICT SHAPES HONOURED:
 FAIL MODE:
+HOOK TIMEOUT:
 HOOK APPROVAL:
 CONTEXT CAP:
 NATIVE POLICY LAYER:

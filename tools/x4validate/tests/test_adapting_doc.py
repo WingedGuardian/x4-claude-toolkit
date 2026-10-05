@@ -78,6 +78,90 @@ def test_the_timeout_default_is_never_restated_wrongly(monkeypatch, _guard_src):
         assert float(m.group(1)) == default, m.group(0)
 
 
+# --- FX-AD (2026-10-05): the time-budget guidance states numbers, so each is pinned ---------- #
+# A cold adapter took a 10 s budget with no guidance and lost 1 of 151 conformance cases to a
+# timeout. The doc now states x4guard's defaults, the worst-case sum and the budget formula;
+# every one of those numbers is derived here from the module, never retyped.
+
+def _budget_problems(text: str, timeout_s: float, kill_wait_s: float, drain_s: float,
+                     toy: dict | None = None) -> list[str]:
+    """Every place the 'Choosing the time budget' section disagrees with the given constants."""
+    probs = []
+    table = {}
+    for name in ("TIMEOUT_S", "KILL_WAIT_S", "DRAIN_GRACE_S"):
+        m = re.search(r"^\| `" + name + r"` \| (\d+(?:\.\d+)?) s \|", text, re.M)
+        if not m:
+            probs.append(f"no table row for {name}")
+        else:
+            table[name] = float(m.group(1))
+    want = {"TIMEOUT_S": timeout_s, "KILL_WAIT_S": kill_wait_s, "DRAIN_GRACE_S": drain_s}
+    for k, v in table.items():
+        if v != want[k]:
+            probs.append(f"table says {k} = {v:g}, x4guard says {want[k]:g}")
+    worst = timeout_s + kill_wait_s + drain_s
+    m = re.search(r"(\d+) \+ (\d+) \+ (\d+)\s*\n?\s*= (\d+) s with the defaults", text)
+    if not m:
+        probs.append("no 'A + B + C = W s with the defaults' sentence")
+    elif [float(x) for x in m.groups()] != [timeout_s, kill_wait_s, drain_s, worst]:
+        probs.append(f"worst-case sum {m.group(0)!r} != {timeout_s:g} + {kill_wait_s:g} + {drain_s:g} = {worst:g}")
+    m = re.search(r"`D >= (\d+) \+ 3`", text)
+    if not m or float(m.group(1)) != worst:
+        probs.append(f"the 'leave it unset' threshold is not D >= {worst:g} + 3")
+    m = re.search(r"`B = D - (\d+)`", text)
+    if not m or float(m.group(1)) != kill_wait_s + drain_s + 3:
+        probs.append(f"the budget formula is not B = D - {kill_wait_s + drain_s + 3:g}")
+    m = re.search(r"D = (\d+), B = (\d+), x4guard's worst case (\d+) s", text)
+    if not m:
+        probs.append("no worked example 'D = .., B = .., x4guard's worst case .. s'")
+    else:
+        d, b, w = (float(x) for x in m.groups())
+        if b != d - (kill_wait_s + drain_s + 3) or w != b + kill_wait_s + drain_s:
+            probs.append(f"worked example {m.group(0)!r} does not follow the formula")
+        if toy is not None and (toy.get("GUARD_BUDGET_S"), toy.get("DEADLINE_S")) != (b, d):
+            probs.append(f"worked example says B={b:g}, D={d:g}; the committed toy adapter has {toy}")
+    return probs
+
+
+def _toy_adapter_numbers() -> dict | None:
+    f = REPO / "tools/x4validate/tests/fixtures/toy_agent/toy_adapter.py"
+    if not f.is_file():
+        return None
+    src = f.read_text(encoding="utf-8")
+    return {k: float(re.search(r"^" + k + r"\s*=\s*(\d+)", src, re.M).group(1))
+            for k in ("GUARD_BUDGET_S", "DEADLINE_S")}
+
+
+def _guard_constants(monkeypatch):
+    monkeypatch.delenv("X4_GUARD_TIMEOUT_S", raising=False)
+    x4g = importlib.util.module_from_spec(spec); spec.loader.exec_module(x4g)
+    return x4g.TIMEOUT_S, x4g.KILL_WAIT_S, x4g.DRAIN_GRACE_S
+
+
+def test_the_time_budget_section_states_x4guards_real_defaults(monkeypatch, _guard_src):
+    consts = _guard_constants(monkeypatch)
+    assert _budget_problems(TEXT, *consts, toy=_toy_adapter_numbers()) == []
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda t, c: t.replace("| `KILL_WAIT_S` | 5 s |", "| `KILL_WAIT_S` | 6 s |"),     # a table row
+    lambda t, c: t.replace("= 33 s with the defaults", "= 34 s with the defaults"),   # the sum
+    lambda t, c: t.replace("`B = D - 11`", "`B = D - 10`"),                           # the formula
+    lambda t, c: t.replace("D = 26, B = 15", "D = 26, B = 16"),                       # the example
+])
+def test_TWIN_each_stated_budget_number_can_go_red(monkeypatch, _guard_src, mutate):
+    consts = _guard_constants(monkeypatch)
+    mutated = mutate(TEXT, consts)
+    assert mutated != TEXT, "the mutation did not apply: the doc no longer says what this twin edits"
+    assert _budget_problems(mutated, *consts) != []
+
+
+def test_TWIN_a_moved_x4guard_default_is_caught(monkeypatch, _guard_src):
+    """The other direction: x4guard's constant changes and the doc does not follow."""
+    t, k, d = _guard_constants(monkeypatch)
+    assert _budget_problems(TEXT, t, k + 1, d) != []
+    assert _budget_problems(TEXT, t + 5, k, d) != []
+
+
 def test_capability_report_fields_match_the_upstream_template():
     def fields(section):
         body = TEXT.split(section, 1)[1].split("\n## ", 1)[0]
