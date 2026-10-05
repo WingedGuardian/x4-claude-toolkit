@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from _layout import require_repo  # noqa: E402  (R2-B1: repo-only content skips, counted)
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -29,6 +30,8 @@ def _bash():
 
 
 def _root(tmp_path: Path, guards: tuple[str, ...]) -> Path:
+    if guards:
+        require_repo("agent/guards/claude-hooks/_x4-env.sh", why="the guard loader SOURCE")
     root = tmp_path / "root"
     (root / "bin").mkdir(parents=True)
     shutil.copy2(REPO / "bin" / "unpack-reference.sh", root / "bin" / "unpack-reference.sh")

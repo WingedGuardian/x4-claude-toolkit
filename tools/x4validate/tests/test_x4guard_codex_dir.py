@@ -10,10 +10,13 @@ import sys
 from pathlib import Path
 
 import pytest
+from _layout import require_repo  # noqa: E402  (R2-B1: repo-only content skips, counted)
 
 PKG = Path(__file__).resolve().parents[1]
 REPO = PKG.parents[1]
 GUARDS = REPO / "agent" / "guards" / "claude-hooks"
+require_repo("agent/guards/claude-hooks", module_level=True,
+             why="every test here copies the guard SOURCE tree")
 
 
 @pytest.fixture

@@ -26,6 +26,7 @@ _spec.loader.exec_module(x4refguard)
 from x4validate import _paths  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import refguard_owner  # noqa: E402
 from refguard_owner import own_or_skip  # noqa: E402
 
 SENTINEL = ".unpacked-and-locked"
@@ -390,7 +391,16 @@ class _Owner:
 def test_OWNERSHIP_fixture_takes_the_root_when_it_can(tmp_path, monkeypatch):
     o = _Owner(monkeypatch, settable=True)
     own_or_skip(tmp_path, x4refguard, windows=True)
-    assert o.owned and len(o.calls) == 1 and o.calls[0][:3] == ["icacls", str(tmp_path), "/setowner"]
+    assert o.owned and len(o.calls) == 2 and o.calls[0][:3] == ["icacls", str(tmp_path), "/setowner"]
+    # FX-R2: the access the owner change can drop is granted back, so the tree stays removable
+    assert o.calls[1][:4] == ["icacls", str(tmp_path), "/grant", "*S-1-5-21-1-2-3-1001:(OI)(CI)F"]
+
+
+def test_OWNERSHIP_fixture_does_not_GRANT_when_the_owner_change_failed(tmp_path, monkeypatch):
+    o = _Owner(monkeypatch, settable=False)
+    with pytest.raises(pytest.skip.Exception):
+        own_or_skip(tmp_path, x4refguard, windows=True)
+    assert len(o.calls) == 1 and "/setowner" in o.calls[0]
 
 
 def test_OWNERSHIP_fixture_SKIPS_when_it_cannot__never_passes(tmp_path, monkeypatch):
@@ -408,12 +418,21 @@ def test_OWNERSHIP_fixture_is_a_NO_OP_on_a_tree_already_owned(tmp_path, monkeypa
 
 @win
 def test_OWNERSHIP_the_real_setowner_command_is_accepted(tmp_path):
-    """The exact icacls form the fixture uses, run for real on a scratch dir this user owns."""
+    """The exact icacls step the fixture uses, run for real on a scratch dir this user owns.
+
+    FX-R2 (2026-10-05): it also must leave a tree the user can still READ and DELETE. MEASURED
+    under Python 3.13, whose mkdir(0o700) -- pytest's temp root -- grants access only through
+    an OWNER RIGHTS ACE: `/setowner` (even to the same owner) left the folder unreadable and
+    undeletable without a repair, and every run stranded one in pytest's garbage (20 found)."""
     d = tmp_path / "own"
     d.mkdir()
-    r = x4refguard._mutate_run(["icacls", d, "/setowner", "*" + x4refguard._user_sid(), "/C", "/Q"], d)
+    r = refguard_owner.take_ownership(d, x4refguard)
     assert r.returncode == 0, r.stdout + r.stderr
     assert x4refguard._owner_is_user(d) is True
+    (d / "f.txt").write_text("x", encoding="utf-8")      # still writable ...
+    assert os.listdir(d) == ["f.txt"]                     # ... readable ...
+    (d / "f.txt").unlink()
+    d.rmdir()                                             # ... and removable, no admin
 
 
 @win
@@ -745,3 +764,74 @@ def test_C6_a_missing_configured_root_says_how_to_fix(tmp_path, monkeypatch, cap
     x4refguard.main(["status", "--json"])
     detail = json.loads(capsys.readouterr().out)["detail"]
     assert "unpack-reference.sh" in detail and "X4_REFERENCE" in detail, detail
+
+
+# ------------------------- R2 (second install red-team, 2026-10-04): messages a human acts on
+
+def test_R2a_the_no_sentinel_refusal_names_it_what_it_means_and_both_fixes(ref, monkeypatch, capsys):
+    (ref / SENTINEL).unlink()
+    assert x4refguard.main(["apply", "--yes"]) == 2
+    err = capsys.readouterr().err
+    assert SENTINEL in err and str(ref.resolve()) in err, err
+    assert "bin/unpack-reference.sh" in err, err                    # fix 1: unpack with the toolkit
+    assert "& \"" in err and "bash.exe\" bin/unpack-reference.sh" in err, err   # its PowerShell form
+    assert "printf" in err and "Set-Content" in err, err             # fix 2: mark a hand-made tree
+    assert "To lift it" not in err, "the lift block answers a question nobody asked here: " + err
+
+
+def test_R2a_the_printed_MARK_command_really_satisfies_apply(ref, monkeypatch, capsys):
+    """README's pre-4.0 / hand-unpacked advice must WORK, not just be printed: run the printed
+    Git Bash line, then the sentinel clause passes."""
+    import re
+    import subprocess
+    sys.path.insert(0, str(REPO / "scripts"))
+    import gitbash
+    bash = gitbash.find_bash()
+    if not bash:
+        pytest.skip("no Git Bash to run the printed command with")
+    (ref / SENTINEL).unlink()
+    x4refguard.main(["apply", "--yes"])
+    err = capsys.readouterr().err
+    line = next(l.split(":", 1)[1].strip() for l in err.splitlines()
+                if "printf" in l and l.strip().startswith("Git Bash"))
+    r = subprocess.run([bash, "-c", line], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert (ref / SENTINEL).is_file()
+    assert x4refguard.resolve_target(None, action="apply") == ref.resolve()
+    assert re.search(r"build id", (ref / SENTINEL).read_text(encoding="utf-8"))
+
+
+def test_R2c_status_names_the_folder_it_checked(ref, monkeypatch, capsys):
+    _b3_platform(monkeypatch)
+    x4refguard.main(["status"])
+    out = capsys.readouterr().out
+    assert "folder: %s" % ref.resolve() in out, out
+
+
+def test_R2_status_ABSENT_reads_not_applied_and_names_apply_not_the_lift_block(ref, monkeypatch,
+                                                                               capsys):
+    _b3_platform(monkeypatch)
+    assert x4refguard.main(["status"]) == 1
+    out = capsys.readouterr().out
+    assert "not applied" in out and "x4refguard.py apply" in out, out
+    assert "To lift it" not in out, out
+
+
+def test_R2_TWIN_status_PARTIAL_still_prints_the_lift_block(ref, monkeypatch, capsys):
+    _b3_platform(monkeypatch)
+    monkeypatch.setattr(x4refguard, "report",
+                        lambda full=False, path=None: x4refguard._blank("partial", ref, "cut"))
+    x4refguard.main(["status"])
+    assert "To lift it" in capsys.readouterr().out
+
+
+@win
+def test_R2d_apply_and_status_report_the_SAME_sample_count(protected_cleanup, tripwire, capsys):
+    import re
+    assert x4refguard.main(["apply", "--yes"]) == 0
+    a = capsys.readouterr().out
+    assert x4refguard.main(["status"]) == 0
+    s = capsys.readouterr().out
+    pa = re.findall(r"(\d+) of (\d+) sampled", a)
+    ps = re.findall(r"(\d+) of (\d+) sampled", s)
+    assert pa and ps and set(pa) == set(ps), (a, s)

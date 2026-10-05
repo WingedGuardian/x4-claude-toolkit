@@ -131,6 +131,44 @@ HOW_TO_CONFIGURE = ("To fix: unpack the game first (bash bin/unpack-reference.sh
                     "x4-paths.env at the toolkit root to where your unpacked tree is "
                     "(`x4validate --paths` shows what is resolved).")
 
+def _bash_for_humans() -> str:
+    """The Git Bash a human should type in PowerShell: the toolkit's own resolver's answer,
+    else Git for Windows' default location. Never bare `bash` (the WSL stub there)."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("x4refguard_gitbash", _HERE / "gitbash.py")
+        gb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gb)
+        found = gb.find_bash()
+    except Exception:                       # noqa: BLE001 - a hint, never a verdict
+        found = None
+    return found or "C:\\Program Files\\Git\\bin\\bash.exe"
+
+
+def no_sentinel_help(root: Path) -> str:
+    """R2-a (second install red-team, 2026-10-04): the refusal named a file and stopped. It now
+    says what the sentinel IS and gives both ways out, per shell."""
+    native = str(root)
+    posix = root.as_posix()
+    mark = "Unpacked by hand on a date not recorded; the Steam build id is unknown."
+    return (
+        "%s has no %s sentinel, so it is not a finished unpack -- protecting it would lock a "
+        "possibly broken tree.\n"
+        "  WHAT IT IS: the LAST thing bin/unpack-reference.sh writes, after it has counted a "
+        "complete unpack (every toolkit release since 1.0 writes it). A tree without it is "
+        "unfinished, or was unpacked by hand.\n"
+        "  TO RESOLVE, either:\n"
+        "    1. unpack it with the toolkit (it writes the sentinel, then applies this protection):\n"
+        "         Git Bash / Linux / macOS:  bash bin/unpack-reference.sh\n"
+        "         PowerShell:                & \"%s\" bin/unpack-reference.sh\n"
+        "    2. or, ONLY if this folder is a COMPLETE unpack you made yourself, mark it:\n"
+        "         Git Bash / Linux / macOS:  printf '%%s\\n' '%s' > \"%s/%s\"\n"
+        "         PowerShell:                Set-Content -LiteralPath \"%s%s%s\" -Value '%s'\n"
+        "       then run:  python scripts/x4refguard.py apply"
+        % (native, SENTINEL, _bash_for_humans(), mark, posix, SENTINEL,
+           native, chr(92), SENTINEL, mark))
+
+
 #: A progress line every this many objects (B3).
 PROGRESS_EVERY = 50_000
 #: A heartbeat line every this many seconds while one long OS call runs (B3).
@@ -342,8 +380,7 @@ def resolve_target(path, action: str) -> Path:
         if why:
             raise Refused("refusing to protect %s: %s" % (root, why))
         if not (root / SENTINEL).is_file():
-            raise Refused("%s has no %s sentinel, so it is not a finished unpack -- "
-                          "protecting it would lock a broken tree" % (root, SENTINEL))
+            raise Refused(no_sentinel_help(root))
     return root
 
 
@@ -561,8 +598,10 @@ def _win_report(root: Path, full: bool) -> dict:
     r.update(mechanism="icacls-deny %s" % ICACLS_SPEC, sampled=len(items), sample_ok=ok,
              stops=list(_WIN_STOPS), does_not_stop=list(_WIN_GAPS))
     if ok == len(items):
-        r.update(state="protected", detail="deny ACE %d on the root, inherited by %d of %d "
-                 "sampled object(s)" % (EXPECTED_MASK, ok - 1, len(items) - 1))
+        # R2-d: "N of M sampled" counts the ROOT too, as status's own line does. This said
+        # "3 of 3" (children only) where status said "4 of 4" for the same tree.
+        r.update(state="protected", detail="deny ACE %d on the root, held by %d of %d "
+                 "sampled object(s), root included" % (EXPECTED_MASK, ok, len(items)))
     else:
         bad = [it["path"] for it in items[1:] if not _child_ok(it)]
         r.update(state="partial", detail="the root carries the deny but %d of %d sampled "
@@ -892,8 +931,21 @@ _EXIT = {"protected": 0, "absent": 1, "partial": 1, "foreign": 2, "unconfigured"
 
 # ---------------------------------------------------------------- commands
 
+#: The words a human reads for a state. The JSON keeps the state itself (a contract the
+#: doctor and the installers parse); "absent" read like a missing FILE (R2 cosmetic).
+_HUMAN_STATE = {"absent": "not applied"}
+
+#: States with a protection in place that a user may want to lift (R2: the long lift block
+#: was printed for "absent" too, where there is nothing to lift).
+_LIFTABLE = ("protected", "partial", "foreign")
+
+APPLY_HINT = ("To apply it: python scripts/x4refguard.py apply   (shows the folder and a count, "
+              "then asks you; --yes answers for you, e.g. when an agent runs it after you agreed)")
+
+
 def _human(r: dict) -> str:
-    return "reference deny-delete: %s -- %s" % (r["state"], r["detail"])
+    return "reference deny-delete: %s -- %s" % (_HUMAN_STATE.get(r["state"], r["state"]),
+                                                 r["detail"])
 
 
 def cmd_status(args) -> int:
@@ -902,9 +954,12 @@ def cmd_status(args) -> int:
         print(json.dumps(r, sort_keys=True))
     else:
         print(_human(r))
-        print("  sample scope: %s; %d of %d sampled object(s) protected" % (
+        print("  folder: %s" % (r["root"] or "(none configured)"))
+        print("  sample scope: %s; %d of %d sampled object(s) protected, root included" % (
             "FULL walk" if args.full else r["sample_scope"], r["sample_ok"], r["sampled"]))
-        if r["state"] not in ("protected", "unsupported"):
+        if r["state"] == "absent":
+            print(APPLY_HINT)
+        elif r["state"] in ("partial", "foreign"):
             print(ESCAPE_HATCH)
     return _EXIT.get(r["state"], 2)
 
@@ -924,7 +979,8 @@ def _act(args, action: str) -> int:
         root = resolve_target(args.path, action)
     except (Refused, Unresolvable) as exc:
         print("REFUSED: %s" % exc, file=sys.stderr)
-        print(ESCAPE_HATCH, file=sys.stderr)
+        if action == "remove":          # R2: the lift block answers a remove, not an apply
+            print(ESCAPE_HATCH, file=sys.stderr)
         return 2
     try:
         if _platform() == "windows":

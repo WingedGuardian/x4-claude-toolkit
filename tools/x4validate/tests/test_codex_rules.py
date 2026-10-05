@@ -13,7 +13,11 @@ import sys
 import pytest
 from ruamel.yaml import YAML
 
+from _layout import require_repo
 from codex_testlib import REPO, make_sandbox
+
+require_repo("agent/rules/codex-rules.yaml", module_level=True,
+             why="the rule rows the rendered .codex/rules are checked against")
 
 ROWS = YAML(typ="safe").load((REPO / "agent" / "rules" / "codex-rules.yaml").read_text(encoding="utf-8"))
 RULES = REPO / ".codex" / "rules" / "x4.rules"

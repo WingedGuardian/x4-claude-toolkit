@@ -50,6 +50,24 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $SRC = Split-Path -Parent $MyInvocation.MyCommand.Path
+#: R2-f (second install red-team): the -OverExisting refusal ended in `...`. It now prints the
+#: user's OWN command line back, plus the switch that was missing. Captured at SCRIPT scope:
+#: inside a function $PSBoundParameters is that function's.
+$X4OrigParams = [ordered]@{}
+foreach ($k in $PSBoundParameters.Keys) { $X4OrigParams[$k] = $PSBoundParameters[$k] }
+$X4ScriptPath = $MyInvocation.MyCommand.Path
+function Get-R2RerunCmd([string]$extra) {
+  $out = 'powershell -ExecutionPolicy Bypass -File "' + $X4ScriptPath + '"'
+  foreach ($k in $X4OrigParams.Keys) {
+    $v = $X4OrigParams[$k]
+    if ($v -is [System.Management.Automation.SwitchParameter]) {
+      if ($v.IsPresent) { $out += ' -' + $k }
+    } else {
+      $out += ' -' + $k + ' "' + [string]$v + '"'
+    }
+  }
+  return ($out + ' ' + $extra)
+}
 
 # THE HELP TEXT. test_installers_agree.py pins it to install.sh's usage(): every option
 # there must be named here, and every parameter here must be one install.sh has. Printed
@@ -716,9 +734,35 @@ function Remove-HOldPathsExample($dest) {   # AFTER the copy
   }
 }
 
+#: R2-e (second install red-team): the kept copy is the WHOLE old CLAUDE.md, and the user wants
+#: their EDITS. The release that shipped the original is named by the destination's
+#: CHANGELOG.md (read BEFORE the copy replaces it): its first `## vX` heading. install.sh's
+#: _r2_prev_version / _r2_your_edits_hint are the twin.
+$X4ReleasesUrl = 'https://github.com/WingedGuardian/x4-ai-toolkit/releases'
+$X4RawUrl = 'https://raw.githubusercontent.com/WingedGuardian/x4-ai-toolkit'
+function Get-R2PrevVersion($dest) {
+  $f = Join-Path $dest 'CHANGELOG.md'
+  if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return '' }
+  foreach ($line in (Get-Content -LiteralPath $f -Encoding UTF8)) {
+    $m = [regex]::Match($line, '^## (v[0-9][0-9.]*[0-9])')
+    if ($m.Success) { return $m.Groups[1].Value }
+  }
+  return ''
+}
+function Write-R2YourEditsHint($dest, $to, $prev) {
+  Write-Host '         To see only YOUR edits, compare it with the CLAUDE.md the toolkit shipped:'
+  if ($prev) {
+    Write-Host ('           ' + $X4RawUrl + '/' + $prev + '/CLAUDE.md   (' + $prev + ': your previous install, per its CHANGELOG.md)')
+  } else {
+    Write-Host ('           the CLAUDE.md of the release you had installed: ' + $X4ReleasesUrl)
+  }
+  Write-Host ('           save it, then:  git diff --no-index "<saved CLAUDE.md>" "' + (Join-Path $dest $to) + '"')
+}
+
 function Save-HUserClaudeMd($dest) {
   $to = Get-HClaudeMdMoveTarget $dest
   if (-not $to) { return }
+  $prev = Get-R2PrevVersion $dest
   Refuse-IfDryRun 'keeping your CLAUDE.md as X4-NOTES.pre-4.0 in' $dest
   try {
     Move-Item -LiteralPath (Join-Path $dest 'CLAUDE.md') -Destination (Join-Path $dest $to) -ErrorAction Stop
@@ -732,6 +776,7 @@ function Save-HUserClaudeMd($dest) {
   Write-Host '         That copy is NO LONGER LOADED by any agent: the 4.0 CLAUDE.md replaced it.'
   Write-Host '         To bring your notes back, merge what you want into X4-NOTES.md in the same'
   Write-Host '         folder -- every agent''s instructions read it, and the toolkit never writes it.'
+  Write-R2YourEditsHint $dest $to $prev
   Show-HHashCaveat
 }
 
@@ -896,11 +941,14 @@ function Find-OcPython {
 #: not protected, the step is named. Silent for protected / unconfigured / unsupported.
 #: C4 (install red-team 2026-10-04): the summary ALWAYS states the protection, and the command
 #: carries --yes because x4refguard now counts and ASKS (B3).
-$X4RefguardStepCmd = 'python scripts/x4refguard.py apply --yes'
+#: R2-b (second install red-team): a HUMAN reads this, so plain `apply` -- it shows the folder
+#: and a count and ASKS (B3). `--yes` is for a non-interactive caller (an agent, after you agreed).
+$X4RefguardStepCmd = 'python scripts/x4refguard.py apply'
 function Write-RefguardStep($tk) {
   $script = Join-Path (Join-Path $tk 'scripts') 'x4refguard.py'
   if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { return }
   $state = ''
+  $sentinel = ''
   $py = Find-OcPython
   if ($py) {
     $prevTk = $env:X4_TOOLKIT
@@ -911,6 +959,8 @@ function Write-RefguardStep($tk) {
       $out = (& $py[0] @rest 'scripts/x4refguard.py' 'status' '--json' 2>$null) -join "`n"
       $m = [regex]::Match([string]$out, '"state": "([a-z]*)"')
       if ($m.Success) { $state = $m.Groups[1].Value }
+      $ms = [regex]::Match([string]$out, '"sentinel": ([a-z]*)')
+      if ($ms.Success) { $sentinel = $ms.Groups[1].Value }
     } catch { } finally {
       Pop-Location
       $env:X4_TOOLKIT = $prevTk
@@ -927,11 +977,18 @@ function Write-RefguardStep($tk) {
     Write-Host '           bin/unpack-reference.sh applies it to the tree it unpacks (see Next below).'
   } elseif ($state -ceq 'unsupported') {
     Write-Host 'Reference: this platform has no OS-level protection mechanism (a disclosed gap; not applied by the installer).'
+  } elseif ($sentinel -ceq 'false') {
+    # R2-a: apply REFUSES a tree without the sentinel, so naming it here was a dead end.
+    Write-Host 'Reference: reference/ exists but has no .unpacked-and-locked sentinel, i.e. it is not a finished unpack,'
+    Write-Host '           so it is not OS-protected and cannot be yet (see Next below).'
   } else {
-    Write-Host ('Reference: reference/ exists and is NOT OS-protected (x4refguard state: ' + $state + ').')
+    $shown = if ($state -ceq 'absent') { 'not applied' } else { $state }
+    Write-Host ('Reference: reference/ exists and is NOT OS-protected (x4refguard: ' + $shown + ').')
     Write-Host '           It is not applied by the installer (a permission change is yours to make). To add the'
     Write-Host ('           OS-level deny-delete layer (any process, hooks or not), run in ' + $tk + ':')
     Write-Host ('             ' + $X4RefguardStepCmd)
+    Write-Host '           (it shows the folder and a file count, then asks you; --yes answers for you, e.g. when'
+    Write-Host '           an agent runs it after you agreed)'
   }
 }
 
@@ -945,6 +1002,9 @@ function Write-NextStep($tk) {
     Write-Host ('Next:      X4_GAME is blank -- set it in ' + (Join-Path $tk 'x4-paths.env') + ', then  ' + $unpack + '  to build reference/.')
   } elseif (Test-Path -LiteralPath (Join-Path $ref '.unpacked-and-locked') -PathType Leaf) {
     Write-Host ('Next:      reference/ is already unpacked; open your agent in "' + $tk + '" and paste SETUP_PROMPT.txt.')
+  } elseif ((Test-Path -LiteralPath $ref -PathType Container) -and @(Get-ChildItem -LiteralPath $ref -Force -ErrorAction SilentlyContinue).Count -gt 0) {
+    # R2 cosmetic: reference/ exists, but without .unpacked-and-locked nothing says it is finished.
+    Write-Host ('Next:      reference/ exists but has no .unpacked-and-locked (not a finished unpack): ' + $unpack + '  to unpack it; if it IS a complete unpack you made yourself, python scripts/x4refguard.py apply  prints how to mark it.')
   } else {
     Write-Host ('Next:      ' + $unpack + '  to build reference/ from your game.')
   }
@@ -1627,8 +1687,8 @@ function Assert-Direction($dest, $named) {
     Write-Host "  KNOWLEDGEBASE.md and customised skills are replaced. x4-paths.env and" -ForegroundColor Red
     Write-Host "  settings.local.json are preserved." -ForegroundColor Red
     Write-Host "" -ForegroundColor Red
-    Write-Host "  To upgrade it anyway, say so explicitly:" -ForegroundColor Red
-    Write-Host "      .\install.ps1 -Method $Method -OverExisting ..." -ForegroundColor Red
+    Write-Host "  To upgrade it anyway, say so explicitly -- your own command, plus -OverExisting:" -ForegroundColor Red
+    Write-Host ("      " + (Get-R2RerunCmd '-OverExisting')) -ForegroundColor Red
     exit 2
   }
 }
@@ -1954,8 +2014,8 @@ function Assert-GlobalOverExisting($t) {
   Write-Host "  place, they are gone -- this method keeps no backup of skills. It also" -ForegroundColor Red
   Write-Host "  rewrites $hc\settings.json (that half IS backed up)." -ForegroundColor Red
   Write-Host "" -ForegroundColor Red
-  Write-Host "  To replace them anyway, say so explicitly:" -ForegroundColor Red
-  Write-Host "      .\install.ps1 -Method global -OverExisting ..." -ForegroundColor Red
+  Write-Host "  To replace them anyway, say so explicitly -- your own command, plus -OverExisting:" -ForegroundColor Red
+  Write-Host ("      " + (Get-R2RerunCmd '-OverExisting')) -ForegroundColor Red
   exit 2
 }
 
@@ -2336,7 +2396,8 @@ if ($bash) {
       Write-Host '  --dry-run: NOT running setup.sh'
       if ($Unpack) { Write-Host '  --dry-run: NOT unpacking reference/' }
     } else {
-    & $bash.Source setup.sh
+    $env:X4_SETUP_CONFIG_WRITTEN = '1'
+    try { & $bash.Source setup.sh } finally { Remove-Item -LiteralPath env:X4_SETUP_CONFIG_WRITTEN -ErrorAction SilentlyContinue }
     if ($LASTEXITCODE -ne 0) { $failed += "setup.sh (exit $LASTEXITCODE)" }
     if ($Unpack) {
       & $bash.Source bin/unpack-reference.sh
@@ -2367,6 +2428,9 @@ if ($failed.Count) {
 }
 
 Write-Host "`n=== install complete ($Method) ==="
+# R2 cosmetic: -Toolkit may be typed with `/`, and Join-Path adds `\`: the summary mixed both.
+# Shown in the platform's own spelling from here on (Test-Path accepts either).
+if ([System.IO.Path]::DirectorySeparatorChar -eq [char]92) { $Toolkit = $Toolkit -replace '/', '\' }
 Write-Host "Toolkit: $Toolkit"
 Write-Host ('Agents:  ' + (Get-AgentsLanded))
 Write-Host "Config:  $Toolkit\x4-paths.env  (edit any path here)"

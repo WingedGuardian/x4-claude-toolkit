@@ -145,6 +145,9 @@ def test_the_classifier_can_go_red_and_each_keep_clause_is_needed(path, line, wa
     ("SETUP_PROMPT.txt", NEW),
 ])
 def test_each_current_surface_carries_the_new_name(path, needle):
+    if path.startswith((".github/", "agent/")):          # R2-B1: never installed
+        from _layout import require_repo
+        require_repo(path)
     assert needle in (REPO / path).read_text(encoding="utf-8"), (path, needle)
 
 

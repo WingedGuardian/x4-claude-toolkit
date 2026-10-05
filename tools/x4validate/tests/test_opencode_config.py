@@ -297,5 +297,7 @@ def test_the_python_matcher_agrees_with_opencodes_own(box, tmp_path):
 
 def test_the_rendered_config_is_never_committed():
     """It names this machine's absolute roots: rendered at install, git-ignored."""
+    from _layout import require_repo
+    require_repo(".git", why="git-ignore is a property of the repository")
     r = subprocess.run(["git", "-C", str(REPO), "check-ignore", "-q", ".opencode/opencode.jsonc"])
     assert r.returncode == 0, ".opencode/opencode.jsonc must be git-ignored"

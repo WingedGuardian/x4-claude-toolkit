@@ -89,6 +89,8 @@ def test_the_output_key_contract_is_codexs_own_schema():
     for ev in ("post-tool-use", "session-start"):
         top, hso = schema_keys(ev)
         assert "hookSpecificOutput" in top and {"hookEventName", "additionalContext"} <= hso, (ev, hso)
+    from _layout import require_repo
+    require_repo("agent/guards/adapters/codex-entry.ps1", why="the wrapper SOURCE")
     ps = (REPO / "agent" / "guards" / "adapters" / "codex-entry.ps1").read_text(encoding="utf-8")
     allowed = set(re.findall(r"'(\w+)'", re.search(r"\$allowed = @\(([^)]*)\)", ps).group(1)))
     assert allowed and allowed <= ALLOWED_HSO, allowed - ALLOWED_HSO

@@ -8,11 +8,14 @@ import time
 from pathlib import Path
 
 import pytest
+from _layout import require_repo  # noqa: E402  (R2-B1: repo-only content skips, counted)
 
 from test_gen_codex_tree import TEMPLATE_SHA256
 
 REPO = Path(__file__).resolve().parents[3]
 ADAPTER_SRC = REPO / "agent" / "guards" / "adapters" / "codex.py"
+require_repo("agent/guards/adapters/codex.py", "agent/instructions/codex.md", module_level=True,
+             why="the adapter SOURCE and the Codex instruction source")
 
 
 def _banner() -> str:

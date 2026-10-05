@@ -293,7 +293,12 @@ in `.agents/skills/` and for OpenCode in `.opencode/skills/`; ask for one by nam
   pass `--toolkit <folder>`. `bin/unpack-reference.sh` applies it after a verified unpack.
   The installers do not apply it (it is an ACL change, yours to make), so a `reference/`
   unpacked before 4.0 stays unprotected until you run `apply`; `x4doctor`'s
-  `layer2.reference` row shows whether it is on.
+  `layer2.reference` row shows whether it is on. `apply` acts only on a FINISHED unpack: one
+  carrying the `.unpacked-and-locked` sentinel, which `bin/unpack-reference.sh` writes as its
+  last step (every release since 1.0), so a tree the toolkit unpacked before 4.0 qualifies. A
+  tree without it (unpacked by hand, or unfinished) is refused, and the refusal prints both
+  ways out: unpack it with the toolkit, or, only for a complete unpack you made yourself, the
+  one-line command (bash or PowerShell) that writes the sentinel.
   - **Windows:** one inherited deny for your own account,
     `(OI)(CI)(DE,DC,WD,AD)` (mask 65606). It blocks deleting, renaming, overwriting,
     appending and creating anything inside the tree. Reads and copies OUT of it still
@@ -423,7 +428,12 @@ Paste the contents of `SETUP_PROMPT.txt` into Claude Code, Codex or any other ag
 says which agent it is and checks whether the toolkit has an adapter for it, runs
 `bash setup.sh`, checks prerequisites (bash, jq, uv/Python 3.13), wires up x4validate, runs
 `x4doctor` to report which guards are live, and walks you through unpacking your own
-`reference/` and (optionally) adding your Nexus API key. Answer any questions it asks. An agent
+`reference/` and (optionally) adding your Nexus API key.
+To run x4validate's test suite yourself, from the toolkit folder: in Git Bash, Linux or macOS
+`cd tools/x4validate && uv run pytest -q`; in Windows PowerShell (5.1 rejects `&&`)
+`cd tools/x4validate; uv run pytest -q`. It passes with **0 failed and 0 errors**. Skips are
+expected and each names its reason: an installed toolkit does not carry the repository-only
+`agent/` source, so the tests that read it skip as `REPO-ONLY`. Answer any questions it asks. An agent
 with no adapter is pointed at [`ADAPTING.md`](ADAPTING.md), which shows how to build and prove
 one; until it has one, the toolkit's guards do not protect it.
 

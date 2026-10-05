@@ -620,9 +620,10 @@ def test_both_installers_PRINT_the_same_refguard_step_and_neither_APPLIES_it():
     """R6-04: Layer 2 is an ACL change -- named, never applied by an installer."""
     sh = SH.read_text(encoding="utf-8")
     ps = PS1.read_text(encoding="utf-8")
-    # --yes: x4refguard counts and ASKS before it changes anything (B3, install red-team 2026-10-04)
-    assert "X4_REFGUARD_STEP_CMD='python scripts/x4refguard.py apply --yes'" in sh
-    assert "$X4RefguardStepCmd = 'python scripts/x4refguard.py apply --yes'" in ps
+    # R2-b (second install red-team 2026-10-04): a HUMAN reads this, so plain `apply`, which
+    # shows the folder and a count and ASKS (B3); --yes is only explained, for an agent.
+    assert "X4_REFGUARD_STEP_CMD='python scripts/x4refguard.py apply'" in sh
+    assert "$X4RefguardStepCmd = 'python scripts/x4refguard.py apply'" in ps
     assert "print_refguard_step \"$TOOLKIT\"" in sh and "Write-RefguardStep $Toolkit" in ps
     for text, name in ((sh, "install.sh"), (ps, "install.ps1")):
         assert "x4refguard.py' 'apply'" not in text and "x4refguard.py apply\"" not in text, name

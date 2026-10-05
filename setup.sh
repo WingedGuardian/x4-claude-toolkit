@@ -29,7 +29,11 @@ _i_seed_config() {
   CFG="$ROOT/x4-paths.env"
   CFG_OLD="$ROOT/.claude/x4-paths.env"
   CFG_EX="$ROOT/x4-paths.env.example"
-  if [ -f "$CFG" ]; then ok "x4-paths.env in place ($CFG) -- left as it is; edit it to change a path"
+  # R2 cosmetic: "left as it is" read oddly about a file the installer wrote seconds earlier;
+  # both installers set X4_SETUP_CONFIG_WRITTEN=1 when they call this script.
+  if [ -f "$CFG" ] && [ "${X4_SETUP_CONFIG_WRITTEN:-0}" = 1 ]; then
+    ok "x4-paths.env written by the installer just now ($CFG); edit it to change a path"
+  elif [ -f "$CFG" ]; then ok "x4-paths.env in place ($CFG) -- left as it is; edit it to change a path"
   elif [ -f "$CFG_OLD" ]; then
     warn "DEPRECATED location: $CFG_OLD is the 3.x path config (still read). 4.0 reads $CFG."
     warn "  Move it: x4config.py migrate --apply, i.e. python \"$ROOT/scripts/x4config.py\" migrate --apply"
@@ -105,8 +109,13 @@ X4V="$ROOT/tools/x4validate"
 if [ -d "$X4V" ] && command -v uv >/dev/null 2>&1; then
   ( cd "$X4V" && uv sync >/dev/null 2>&1 ) && ok "x4validate dependencies synced (uv)" \
     || fail "uv sync failed — x4validate will not run. Try it manually:  cd tools/x4validate && uv sync"
-  echo "     test it:  cd tools/x4validate && uv run pytest -q"
-  echo "     run it:   cd tools/x4validate && uv run x4validate <your_mod>"
+  # R2-g (second install red-team): `&&` is rejected by Windows PowerShell 5.1, so each shell
+  # gets its own line. An INSTALLED toolkit skips the tests that need the repo-only agent/
+  # source (counted, with a REPO-ONLY reason): a skip there is expected, not a failure.
+  echo "     test it:  Git Bash / Linux / macOS:  cd tools/x4validate && uv run pytest -q"
+  echo "               PowerShell:                cd tools/x4validate; uv run pytest -q"
+  echo "               passing = 0 failed and 0 errors; skips are expected (each names its reason)"
+  echo "     run it:   cd tools/x4validate, then:  uv run x4validate <your_mod>"
 else
   fail "x4validate NOT wired up (need uv + tools/x4validate)"
 fi
@@ -137,8 +146,32 @@ echo "     For a guided install (game folder / separate dir / global multi-repo)
 # --- 4. reference tree (your own game data — never redistributed) ----------
 echo
 echo "4) Base-game reference (you unpack your OWN copy):"
-echo "   Set X4_GAME in x4-paths.env (toolkit root), then:  bash bin/unpack-reference.sh"
-echo "   (text-only unpack via XRCatTool → reference/, ~0.6 GB; gitignored, never redistributed.)"
+# R2 cosmetic: this said "Set X4_GAME" after the installer had set it, and named a Git Bash
+# command only. Read the config it just seeded; give the PowerShell form too (bare `bash`
+# there is usually the WSL stub, which cannot run it).
+_i_cfg_val() {   # KEY -> the value in x4-paths.env, quotes stripped (empty when unset)
+  [ -f "$ROOT/x4-paths.env" ] || return 0
+  sed -n "s/^[[:space:]]*$1=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*\$/\1/p" "$ROOT/x4-paths.env" | tail -n 1
+}
+_I_GAME="$(_i_cfg_val X4_GAME)"
+_I_REF="$(_i_cfg_val X4_REFERENCE)"; _I_REF="${_I_REF:-$ROOT/reference}"
+_I_PSBASH='& "C:\Program Files\Git\bin\bash.exe"'
+if [ -n "${X4_BASH:-}" ]; then _I_PSBASH="& \"$X4_BASH\""
+elif [ "$OS" = windows ] && command -v cygpath >/dev/null 2>&1; then
+  _I_PSBASH="& \"$(cygpath -w "$(command -v bash)")\""
+fi
+if [ -f "$_I_REF/.unpacked-and-locked" ]; then
+  echo "   reference/ is already unpacked ($_I_REF)."
+else
+  if [ -n "$_I_GAME" ]; then
+    echo "   X4_GAME is set in x4-paths.env. Build reference/ from the toolkit root with:"
+  else
+    echo "   Set X4_GAME in x4-paths.env (toolkit root), then build reference/ from the toolkit root with:"
+  fi
+  echo "     Git Bash / Linux / macOS:  bash bin/unpack-reference.sh"
+  [ "$OS" = windows ] && echo "     PowerShell:                $_I_PSBASH bin/unpack-reference.sh"
+  echo "   (text-only unpack via XRCatTool → reference/, ~0.6 GB; gitignored, never redistributed.)"
+fi
 
 # --- 5. Nexus API (optional, your own key) ---------------------------------
 echo
