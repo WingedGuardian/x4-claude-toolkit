@@ -1159,8 +1159,10 @@ _HASH_CASES = [
 
 def test_the_doctor_and_lane_Bs_codex_trust_compute_the_SAME_hash():
     src = REPO / "agent" / "guards" / "adapters" / "codex_trust.py"
-    if not src.is_file():
-        pytest.skip("lane B's codex_trust.py has not landed")
+    from _layout import require_repo
+    # codex_trust.py landed in Plan 2: in a checkout its absence is a FAILURE, not a skip.
+    require_repo("agent/guards/adapters/codex_trust.py", root=REPO,
+                 why="the doctor's hash is compared with the adapter source's")
     spec = importlib.util.spec_from_file_location("codex_trust_for_doctor", src)
     ct = importlib.util.module_from_spec(spec)
     sys.modules["codex_trust_for_doctor"] = ct

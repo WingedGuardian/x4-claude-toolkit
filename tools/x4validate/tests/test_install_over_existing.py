@@ -2661,9 +2661,10 @@ def test_the_installers_render_hooks_json_exactly_as_the_GENERATOR_does(tmp_path
     """Lane B owns `render_codex_hooks_json`; both installers re-implement it natively,
     because a bare installer cannot import the generator (it needs ruamel.yaml). This
     pins the three renderings to one answer once the template exists."""
-    tmpl = ROOT / "agent" / "targets" / "codex" / "hooks.json.tmpl"
-    if not tmpl.is_file():
-        pytest.skip("lane B's Codex hook template has not landed")
+    from _layout import require_repo
+    # The template landed in Plan 2: in a checkout its absence is a FAILURE, not a skip.
+    require_repo("agent/targets/codex/hooks.json.tmpl", "tools/x4validate/scripts/gen-agent-trees.py",
+                 why="the installers' hooks.json is compared with the generator's")
     spec = importlib.util.spec_from_file_location(
         "gen_agent_trees_for_installer", ROOT / "tools/x4validate/scripts/gen-agent-trees.py")
     gen = importlib.util.module_from_spec(spec)

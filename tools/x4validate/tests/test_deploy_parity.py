@@ -172,7 +172,8 @@ def test_the_real_trees(capsys):
     """END TO END on this machine. Skips only when no game root is configured -- a
     machine WITH one must be at parity, or the deploy script has work to do."""
     if dp.game_claude_dir() is None:
-        pytest.skip("no game root configured -- deploy parity NOT CHECKED")
+        pytest.skip("no game root configured, or it has no .claude/ (nothing deployed there) "
+                    "-- deploy parity NOT CHECKED")
     rc = dp.main()
     out = capsys.readouterr()
     assert rc == 0, out.out + out.err
