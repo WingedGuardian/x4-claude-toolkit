@@ -84,8 +84,46 @@ run #2; a UTF-8 canary through the toy agent; and the cause of the >10 s check o
 
 ## Run #2
 
-_Placeholder for the orchestrator: a NEW fresh subagent, on the ADAPTING.md of commit
-`9f33484` or later, following `docs/ADAPTING-COLD-TEST.md`. Record: the date, the toolkit commit,
-the model, the conformance exit code and bucket counts of the subagent's run AND of the
-dispatcher's unedited re-run, the budget numbers the adapter chose (H, D, B) and why, every gap
-reported and what was done, and whether the pass criterion held unedited._
+2026-10-05. Toolkit: worktree branch `session/p3-ad` at `5fd1fd2` (master `77f0c02` plus the
+FX-AD fixes). Model: `sonnet`, fresh, dispatched with the exact prompt of
+`docs/ADAPTING-COLD-TEST.md` plus a dispatcher's machine-rules note (no printing of env
+values, scratch-only writes, run long commands through the user's resource-budget launcher,
+give bash by full path). The scratch folder held only `ADAPTING.md`, `TOY-AGENT.md`,
+`toy_agent.py` and `payloads/`.
+
+**Subagent's run (its report):** conformance exit 0 on the FIRST run, no iteration;
+`conformance: 151 replayed of 173 cases; buckets: no_native_analogue=22, replayed=151`;
+`4 replayed case(s) were INERT in the guards (checked nothing): they agree, and prove nothing`;
+`OK: all 151 replayed cases agree (147 checked by the guards)`; 159.8 s under the launcher.
+Budget it chose: H=30 (Toy Agent's documented timeout, bracketed by a 27 s sleep that was still
+blocked), D=26, B=15 -- the section 2 formula. It verified that x4guard honours the variable (a
+0.05 s budget gave the inert deny naming it). Fail-mode table: blocks only on a clean
+`TOY-BLOCK`; exit 2, a crash, a 40 s sleep and garbage output all RAN (fails open). Canary
+(all five variables pinned to scratch): `reference/decoy.txt` blocked, the decoy still
+`ORIGINAL`; control `dev/control.txt` written. x4doctor: no target for Toy Agent (expected gap).
+
+**Dispatcher's unedited re-run (MEASURED):** sha256 of `adapter.py` and `profile.json` recorded
+before the re-run and re-checked after it (both OK). `x4guard.py conformance --profile
+<scratch>/profile.json` (no `--`; the profile's own `command`) from the toolkit worktree, through
+the budget launcher: exit 0, the same buckets and summary lines as above, `grep -c -E
+'GAP|DISAGREE'` = 0, 136.5 s. **The pass criterion held unedited.** Run #1's single timed-out case
+(a 10 s budget) did not recur at the documented 15 s budget.
+
+**Gaps it reported (10) and what was done:**
+
+| # | gap | action |
+|---|---|---|
+| 1 | `X4_GUARD_PY` is never said to be an adapter convention | FIXED: section 2 "Finding x4guard.py" says the toolkit does not read it; it is between a profile and its adapter; inert deny if unresolved |
+| 2 | no command to check `bash`/`jq` | FIXED: section 0 gives `command -v bash jq` / `Get-Command bash, jq` (both MEASURED here) and the WSL-launcher trap |
+| 3 | are placeholders expanded with no `--`? | no change: section 4 already lists them for `command`; the run confirmed `{PYTHON}` expands |
+| 4 | how to wait for a backgrounded run | FIXED: section 5(a) says wait for the summary line and exit code, not the tool's background status |
+| 5 | payload paths relative to the profile | no change: section 4 says so |
+| 6 | edit judged as write or delete? | no change: section 2 says an edit is a write; the profile's case kind agrees |
+| 7 | forward slashes in Windows paths | no change: section 4 already says forward slashes work on Windows |
+| 8 | what "ran" looks like in the fail-mode table | no change: reading the decoy's content is the intended measurement |
+| 9 | `X4_PROFILE`/`X4_CONFIG` easy to skip | FIXED: 5(b) lists all five variables in the main sentence |
+| 10 | nothing on `.test-sandbox` when not killed | no change: only a killed run leaves one, as documented |
+
+Not re-tested by a third cold reader: the four fixes above are clarifications of behaviour
+the run itself confirmed, and the pass criterion already held, so `docs/ADAPTING-COLD-TEST.md`
+does not call for another run.

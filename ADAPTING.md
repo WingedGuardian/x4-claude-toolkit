@@ -32,6 +32,10 @@ code, file named), **INFERRED** (reasoned, not run). Write your own findings the
   `X4_AGENT_ITEMS_generic`).
 - `x4guard conformance` (section 5) additionally needs the toolkit's `scripts/` folder, Git
   Bash (on Windows) and `jq`. A toolkit installed by either installer has all three locations.
+  Check the two programs first: `command -v bash jq` (bash) or `Get-Command bash, jq`
+  (PowerShell) must name both. If one is missing, the profile's `requires` stops the run with
+  exit 2 before anything is replayed. On Windows, make sure the `bash` found is Git Bash: a
+  `bash.exe` in `C:\Windows\System32` is the WSL launcher, which fails without a distribution.
 - Python 3.10 or newer for the guard front door; it is stdlib only.
 - Never edit a guard, the test corpus or another agent's adapter to make yours pass (section 6).
 
@@ -159,6 +163,11 @@ Exit 2 means a usage error (a wrong option). The rules for calling it:
 - **Finding x4guard.py.** Locate it relative to your adapter's own file, or from a path the
   install configured. Do not build it from `X4_TOOLKIT` alone: under `x4guard conformance` that
   variable names a SANDBOX toolkit with an empty hooks folder, and in an install it may be unset.
+  `X4_GUARD_PY`, which the section 4 example profile sets, is NOT read by the toolkit: it is a
+  convention between a profile and its own adapter (the committed toy adapter reads it first,
+  then falls back). Under conformance, read it from the profile's `env`; in a live install, fall
+  back to the path relative to your adapter's file. If neither resolves, answer with an inert
+  deny that names the missing path -- never an allow.
 - **`X4_GUARD=off`** is the user's launch-time escape hatch. x4guard handles it (every verdict
   becomes an advisory saying so); your adapter does nothing special.
 - **`check` has no side effects**: it never makes the backup that the Claude hooks make before an
@@ -452,7 +461,10 @@ to the first run's log, then that log to the second run's). The output is NOT he
 the end: each progress line is flushed as it happens (READ: `say(..., flush=True)` in the
 engine) -- `adapter: ...`, `dumping the guard corpus ...`, `extras: ...`, `replaying N case(s)
 ...` -- and then nothing appears during the replay, which is the long part; the summary comes at
-the end. Silence after `replaying` is normal, not a hang. A run that is killed leaves its sandbox
+the end. Silence after `replaying` is normal, not a hang. To know it has FINISHED, redirect
+its output to a file and wait for the summary line (`OK: ...` or the list of disagreements)
+and the exit code -- not for your own tool's "background job done": a `&` inside an already
+backgrounded call detaches conformance, and the call then reports done while it still runs. A run that is killed leaves its sandbox
 in the toolkit's `.test-sandbox/conf-<number>/` folder: delete that folder.
 
 How to read the summary lines (READ: `summarise` in `scripts/x4conformance.py`):
@@ -491,7 +503,9 @@ control: the same write into `dev/` must succeed. A block with no working contro
 The guards find `reference/` and the game install through environment variables, so start your
 agent with them pointing at the decoy: `X4_TOOLKIT` at the scratch folder holding `dev/` and
 `reference/`, `X4_REFERENCE` at that `reference/`, and `X4_GAME` at a SEPARATE empty folder (a
-`dev/` inside `X4_GAME` is part of the game install, and is refused too). With none of them set,
+`dev/` inside `X4_GAME` is part of the game install, and is refused too), plus `X4_PROFILE` at
+another empty scratch folder and `X4_CONFIG` at an EMPTY scratch file, so nothing from your real
+install's config or game profile is read (all five, see below). With none of them set,
 both writes are allowed (MEASURED on the toy agent) -- which is why the control matters.
 
 The scratch folder needs ONLY `dev/` and `reference/` (with the decoy file in it): no `.claude/`,
