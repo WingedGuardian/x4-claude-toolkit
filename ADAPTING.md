@@ -240,7 +240,9 @@ python -c "import sys; sys.path.insert(0, '.claude/hooks'); import x4guard as g;
    so that x4guard's own worst case ends at least 3 s before your deadline. Example, a 30 s hook
    timeout (the toy agent's): D = 26, B = 15, x4guard's worst case 23 s. Those are the numbers of
    the committed toy adapter (`tools/x4validate/tests/fixtures/toy_agent/toy_adapter.py`), which
-   passes the full conformance replay.
+   passes the full conformance replay. If B comes out at zero or below (a hook timeout under
+   about 15 s), your agent's timeout is too short for the guards' kill-and-drain bounds: report
+   that as a gap rather than squeezing B.
 
 **Take the LARGEST budget that fits, never a smaller one "for safety".** A budget that is too
 small does not fail safe in a useful way: every check that overruns becomes an inert deny,
