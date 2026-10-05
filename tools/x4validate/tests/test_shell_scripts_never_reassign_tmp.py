@@ -52,10 +52,21 @@ ROOTS = ("scripts", "tools/basex", ".claude/hooks", "agent/guards", ".codex/hook
 _TMP_REASSIGN = re.compile(r"^\s*(export\s+)?(TMP|TEMP|TMPDIR)=")
 
 
-def _tracked_sh(roots=ROOTS) -> list[Path]:
+def _roots() -> tuple:
+    """ROOTS, or -- in an INSTALLED toolkit (R2-B1) -- the ones present there: an install carries
+    no agent/ source, and only the agent targets it was installed for. What is on disk there IS the
+    shipped population; the repository run keeps every root mandatory."""
+    from _layout import installed_layout
+    if not installed_layout():
+        return ROOTS
+    return tuple(r for r in ROOTS if (REPO / r).is_dir())
+
+
+def _tracked_sh(roots=None) -> list[Path]:
     """Every tracked `*.sh` under *roots*, via `git ls-files` -- the tracked
     INDEX, not a directory walk, so an untracked scratch script never enters
     the population and a renamed/deleted file never lingers in it."""
+    roots = _roots() if roots is None else roots
     out = subprocess.run(
         ["git", "ls-files", *(f"{r}/*.sh" for r in roots)],
         cwd=REPO, capture_output=True, text=True, check=False)
@@ -78,11 +89,12 @@ def _tmp_reassignments(text: str) -> list[int]:
 def test_no_tracked_script_reassigns_tmp_temp_or_tmpdir():
     offenders = []
     scanned = 0
-    per_root = {r: 0 for r in ROOTS}
+    roots = _roots()
+    per_root = {r: 0 for r in roots}
     for path in _tracked_sh():
         scanned += 1
         rel = path.relative_to(REPO).as_posix()
-        for root in ROOTS:
+        for root in roots:
             if rel.startswith(root + "/"):
                 per_root[root] += 1
                 break
@@ -159,4 +171,6 @@ def test_the_population_includes_every_agent_hook_tree_and_the_codex_entry():
     for rel in ("agent/guards/adapters/codex-entry.sh", "agent/guards/claude-hooks/protect-bash.sh",
                 ".codex/hooks/protect-bash.sh", ".opencode/hooks/protect-bash.sh",
                 "bin/unpack-reference.sh"):
+        if not any(rel.startswith(r + "/") for r in _roots()):
+            continue              # R2-B1: a root an installed toolkit does not carry
         assert rel in scanned, f"{rel} is not in the scanned population"

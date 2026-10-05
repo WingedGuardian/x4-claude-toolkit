@@ -272,6 +272,9 @@ def test_the_plugin_judges_every_built_in_tool_that_writes():
     tools are not judged and README discloses it. A new writing tool upstream means re-reading
     the registry and changing BOTH this set and R15."""
     import re
+    from _layout import require_repo
+    require_repo("agent/targets/opencode/x4guard.js", "docs/superpowers",
+                 why="the plugin SOURCE and the measurement record")
     js = (REPO / "agent" / "targets" / "opencode" / "x4guard.js").read_text(encoding="utf-8")
     judged = set(re.findall(r'"(\w+)"', re.search(r"const JUDGED = new Set\(\[([^\]]*)\]\)", js).group(1)))
     assert judged == {"bash", "edit", "write", "apply_patch"}, judged

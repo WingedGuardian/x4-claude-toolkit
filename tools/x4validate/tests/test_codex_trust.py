@@ -12,7 +12,11 @@ from pathlib import Path
 
 import pytest
 
+from _layout import require_repo  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[3]
+require_repo("agent/guards/adapters/codex_trust.py", module_level=True,
+             why="the adapter SOURCE this suite loads")
 SRC = REPO / "agent" / "guards" / "adapters" / "codex_trust.py"
 FIX = Path(__file__).parent / "fixtures" / "codex" / "0.160.0"
 spec = importlib.util.spec_from_file_location("codex_trust", SRC)

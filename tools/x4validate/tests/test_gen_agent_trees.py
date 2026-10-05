@@ -23,11 +23,11 @@ def load():
 @pytest.fixture(autouse=True)
 def _source_checkout(request):
     # An installed copy has no agent/ (installers do not ship it): the freshness tests have
-    # nothing to compare there. The tmp-tree tests do not need it, so they opt out by name.
+    # nothing to compare there. The tmp-tree tests opt out here; their fixture skips on its own.
     if "fresh_copy" in request.fixturenames or request.node.name.startswith("test_missing_source"):
         return
-    if not (REPO / "agent").is_dir():
-        pytest.skip("not a source checkout (no agent/) -- generated-file freshness NOT checked here")
+    from _layout import require_repo
+    require_repo("agent", why="generated-file freshness NOT checked here")
 
 
 def test_generation_has_a_denominator():
@@ -246,6 +246,10 @@ def test_missing_source_refuses_rather_than_skipping(tmp_path):
 
 @pytest.fixture
 def fresh_copy(tmp_path):
+    # R2-B1: it GENERATES from agent/ (the comment above said these tests need no agent/; MEASURED
+    # in an installed toolkit: 9 setup errors here).
+    from _layout import require_repo
+    require_repo("agent", why="the tmp tree is generated from the agent/ source")
     g = load()
     exp = g.generate(REPO)
     for rel, text in exp.items():

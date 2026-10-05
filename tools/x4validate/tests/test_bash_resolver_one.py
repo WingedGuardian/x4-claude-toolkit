@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from _layout import require_repo  # noqa: E402  (R2-B1: repo-only content skips, counted)
 
 REPO = Path(__file__).resolve().parents[3]
 XG = REPO / "agent" / "guards" / "claude-hooks" / "x4guard.py"
@@ -43,6 +44,7 @@ def xg(monkeypatch, tmp_path):
     for k in ("X4_BASH", "ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA", "ProgramW6432"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    require_repo("agent/guards/claude-hooks/x4guard.py", why="the resolver SOURCE")
     return _load(XG, "x4guard_b1")
 
 
@@ -118,6 +120,7 @@ def test_gitbash_DELEGATES_to_the_guards_resolver(monkeypatch, tmp_path):
 
 def test_install_ps1_Find_GitBash_probes_the_same_locations():
     """Pinned, not shared: the PowerShell installer resolves bash before any Python is known."""
+    require_repo("agent/guards/claude-hooks/x4guard.py", why="the resolver SOURCE")
     ps = (REPO / "install.ps1").read_text(encoding="utf-8")
     fn = ps[ps.index("function Find-GitBash"):]
     fn = fn[:fn.index("\n}\n")]

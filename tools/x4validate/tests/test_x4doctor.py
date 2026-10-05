@@ -436,6 +436,8 @@ def test_the_roots_rows_NAME_the_config_file_each_side_read(sandbox):
 def test_the_guards_config_variable_still_exists():
     """x4doctor reads `_x4_cfg` (an internal name) to say which config the guards read.
     If _x4-env.sh renames it, this goes red instead of the doctor going quiet."""
+    from _layout import require_repo
+    require_repo("agent/guards/claude-hooks/_x4-env.sh", why="the guard loader SOURCE")
     src = (REPO / "agent" / "guards" / "claude-hooks" / "_x4-env.sh").read_text(encoding="utf-8")
     assert "_x4_cfg=" in src and "x4_resolve_python()" in src and "X4_PY=" in src
     assert "_x4_cfg_src=" in src and "_x4_ref_defaulted=" in src
