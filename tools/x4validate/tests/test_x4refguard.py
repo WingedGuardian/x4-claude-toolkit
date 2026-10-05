@@ -26,6 +26,7 @@ _spec.loader.exec_module(x4refguard)
 from x4validate import _paths  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import refguard_owner  # noqa: E402
 from refguard_owner import own_or_skip  # noqa: E402
 
 SENTINEL = ".unpacked-and-locked"
@@ -390,7 +391,16 @@ class _Owner:
 def test_OWNERSHIP_fixture_takes_the_root_when_it_can(tmp_path, monkeypatch):
     o = _Owner(monkeypatch, settable=True)
     own_or_skip(tmp_path, x4refguard, windows=True)
-    assert o.owned and len(o.calls) == 1 and o.calls[0][:3] == ["icacls", str(tmp_path), "/setowner"]
+    assert o.owned and len(o.calls) == 2 and o.calls[0][:3] == ["icacls", str(tmp_path), "/setowner"]
+    # FX-R2: the access the owner change can drop is granted back, so the tree stays removable
+    assert o.calls[1][:4] == ["icacls", str(tmp_path), "/grant", "*S-1-5-21-1-2-3-1001:(OI)(CI)F"]
+
+
+def test_OWNERSHIP_fixture_does_not_GRANT_when_the_owner_change_failed(tmp_path, monkeypatch):
+    o = _Owner(monkeypatch, settable=False)
+    with pytest.raises(pytest.skip.Exception):
+        own_or_skip(tmp_path, x4refguard, windows=True)
+    assert len(o.calls) == 1 and "/setowner" in o.calls[0]
 
 
 def test_OWNERSHIP_fixture_SKIPS_when_it_cannot__never_passes(tmp_path, monkeypatch):
@@ -408,12 +418,21 @@ def test_OWNERSHIP_fixture_is_a_NO_OP_on_a_tree_already_owned(tmp_path, monkeypa
 
 @win
 def test_OWNERSHIP_the_real_setowner_command_is_accepted(tmp_path):
-    """The exact icacls form the fixture uses, run for real on a scratch dir this user owns."""
+    """The exact icacls step the fixture uses, run for real on a scratch dir this user owns.
+
+    FX-R2 (2026-10-05): it also must leave a tree the user can still READ and DELETE. MEASURED
+    under Python 3.13, whose mkdir(0o700) -- pytest's temp root -- grants access only through
+    an OWNER RIGHTS ACE: `/setowner` (even to the same owner) left the folder unreadable and
+    undeletable without a repair, and every run stranded one in pytest's garbage (20 found)."""
     d = tmp_path / "own"
     d.mkdir()
-    r = x4refguard._mutate_run(["icacls", d, "/setowner", "*" + x4refguard._user_sid(), "/C", "/Q"], d)
+    r = refguard_owner.take_ownership(d, x4refguard)
     assert r.returncode == 0, r.stdout + r.stderr
     assert x4refguard._owner_is_user(d) is True
+    (d / "f.txt").write_text("x", encoding="utf-8")      # still writable ...
+    assert os.listdir(d) == ["f.txt"]                     # ... readable ...
+    (d / "f.txt").unlink()
+    d.rmdir()                                             # ... and removable, no admin
 
 
 @win

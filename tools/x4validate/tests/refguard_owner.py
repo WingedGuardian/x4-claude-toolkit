@@ -22,6 +22,26 @@ from pathlib import Path
 import pytest
 
 
+def take_ownership(root, x4refguard):
+    """`icacls /setowner` this user on `root`, then GRANT this user full control back, both
+    through x4refguard's sandboxed choke point. Returns the first failing step's result, else
+    the last one.
+
+    WHY THE GRANT (FX-R2, 2026-10-05). MEASURED: under Python 3.13 pytest's temp root is made
+    with mkdir(0o700), whose ACL reaches the user only through an OWNER RIGHTS ACE. After
+    `/setowner` -- even to the SAME owner -- the folder was unreadable and undeletable (WinError
+    5), and each run stranded one in pytest's garbage (20 found). The owner keeps WRITE_DAC, so
+    an explicit grant restores access without elevation; nothing here may leave a tree the user
+    cannot remove."""
+    root = Path(root)
+    sid = x4refguard._user_sid()
+    first = x4refguard._mutate_run(["icacls", root, "/setowner", "*" + sid, "/C", "/Q"], root)
+    if first.returncode != 0:
+        return first
+    return x4refguard._mutate_run(["icacls", root, "/grant", "*%s:(OI)(CI)F" % sid, "/T", "/C",
+                                   "/Q"], root)
+
+
 def own_or_skip(root, x4refguard, windows: bool | None = None) -> None:
     """Ensure `root` (inside the X4_REFGUARD_SANDBOX scratch tree) is owned by this user.
     `windows` defaults to this OS; the fixture's own tests pass True to run on every OS."""
@@ -30,8 +50,7 @@ def own_or_skip(root, x4refguard, windows: bool | None = None) -> None:
     root = Path(root)
     if x4refguard._owner_is_user(root):
         return
-    res = x4refguard._mutate_run(["icacls", root, "/setowner", "*" + x4refguard._user_sid(),
-                                  "/C", "/Q"], root)
+    res = take_ownership(root, x4refguard)
     if x4refguard._owner_is_user(root):
         return
     pytest.skip("the test's scratch tree is not owned by this user and /setowner could not change "
