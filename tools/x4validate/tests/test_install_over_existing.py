@@ -2850,10 +2850,15 @@ def test_an_UNPROTECTED_existing_reference_PRINTS_the_x4refguard_step(installer,
     dest = _fresh(tmp_path)
     (dest / "reference" / "libraries").mkdir(parents=True)
     (dest / "reference" / "libraries" / "wares.xml").write_text("<wares/>", encoding="utf-8")
+    # A FINISHED unpack (R2-a: apply refuses a tree without the sentinel; that case is
+    # test_R2_a_reference_WITHOUT_the_sentinel_is_named_as_unfinished_not_sent_to_apply).
+    (dest / "reference" / ".unpacked-and-locked").write_text("Re-unpacked on 2026-10-04." + chr(10),
+                                                           encoding="utf-8")
     r = _install(installer, tmp_path, dest, "--agent", "claude")
     assert r.returncode == 0, (r.stdout[-1500:], r.stderr[-1500:])
     assert _REFGUARD_STEP in r.stdout, r.stdout[-2500:]
-    assert "absent" in r.stdout, "the step must name the state it saw: " + r.stdout[-1500:]
+    # R2 cosmetic: the state is named in words ("absent" read like a missing file)
+    assert "not applied" in r.stdout, "the step must name the state it saw: " + r.stdout[-1500:]
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
@@ -3031,12 +3036,37 @@ def test_C4_the_summary_ALWAYS_states_the_reference_protection(installer, tmp_pa
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
 def test_C4_an_unprotected_reference_names_the_exact_apply_command(installer, tmp_path):
+    """R2-b (second install red-team): the command a HUMAN types is plain `apply`, which shows
+    the folder and a count and ASKS (B3); `--yes` skipped that question. The reference here is
+    a FINISHED unpack (it carries the sentinel), so apply would act on it."""
+    dest = _fresh(tmp_path)
+    (dest / "reference" / "libraries").mkdir(parents=True)
+    (dest / "reference" / "libraries" / "wares.xml").write_text("<wares/>", encoding="utf-8")
+    (dest / "reference" / ".unpacked-and-locked").write_text("Re-unpacked on 2026-10-04.\n",
+                                                           encoding="utf-8")
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, _ok(r)
+    assert "python scripts/x4refguard.py apply" in r.stdout, _ok(r)
+    assert "apply --yes" not in r.stdout, _ok(r)
+    assert "state: absent" not in r.stdout and "not applied" in r.stdout, _ok(r)
+    nxt = [ln for ln in r.stdout.splitlines() if ln.startswith("Next:")]
+    assert nxt and "unpack-reference.sh" not in nxt[0], "asked to unpack a finished tree\n" + _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_R2_a_reference_WITHOUT_the_sentinel_is_named_as_unfinished_not_sent_to_apply(installer,
+                                                                                     tmp_path):
+    """apply REFUSES a tree without .unpacked-and-locked, so telling the user to run it was a
+    dead end (R2-a). The summary says why, and Next names the unpack."""
     dest = _fresh(tmp_path)
     (dest / "reference" / "libraries").mkdir(parents=True)
     (dest / "reference" / "libraries" / "wares.xml").write_text("<wares/>", encoding="utf-8")
     r = _install(installer, tmp_path, dest, "--agent", "claude")
     assert r.returncode == 0, _ok(r)
-    assert "python scripts/x4refguard.py apply --yes" in r.stdout, _ok(r)
+    ref = [ln for ln in r.stdout.splitlines() if ln.startswith("Reference:")]
+    assert ref and ".unpacked-and-locked" in ref[0], _ok(r)
+    nxt = [ln for ln in r.stdout.splitlines() if ln.startswith("Next:")]
+    assert nxt and "unpack-reference.sh" in nxt[0] and ".unpacked-and-locked" in nxt[0], _ok(r)
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
@@ -3128,3 +3158,117 @@ def test_the_dry_run_names_the_3x_example_removal(installer, tmp_path):
     assert r.returncode == 0, _ok(r)
     assert old.is_file(), "the dry run deleted it"
     assert "would be removed" in r.stdout, _ok(r)
+
+
+
+# --- R2 (second install red-team, 2026-10-04): every message names what to do next ---- #
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_R2e_the_kept_CLAUDE_md_says_how_to_see_only_YOUR_edits(installer, tmp_path):
+    """The kept X4-NOTES.pre-4.0.md is the WHOLE old CLAUDE.md. The previous install's
+    CHANGELOG names its version, so point at THAT release's shipped CLAUDE.md and a diff."""
+    src = _agent_source(tmp_path)
+    _known(src, _V3_SHIPPED)
+    dest = _fresh(tmp_path)
+    (dest / "CLAUDE.md").write_bytes((_V3_SHIPPED + "my own rule\n").encode("utf-8"))
+    (dest / "CHANGELOG.md").write_text("# Changelog\n\n## v3.3.1 \u2014 2026-09-29\n\nx\n\n"
+                                       "## v3.3.0 \u2014 2026-09-27\n", encoding="utf-8")
+    r = _install(installer, tmp_path, dest, "--agent", "claude", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert "/v3.3.1/CLAUDE.md" in r.stdout and "v3.3.0" not in r.stdout, _ok(r)
+    assert "git diff --no-index" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_R2e_TWIN_no_previous_CHANGELOG_points_at_the_releases_page(installer, tmp_path):
+    src = _agent_source(tmp_path)
+    _known(src, _V3_SHIPPED)
+    dest = _fresh(tmp_path)
+    (dest / "CLAUDE.md").write_bytes((_V3_SHIPPED + "my own rule\n").encode("utf-8"))
+    r = _install(installer, tmp_path, dest, "--agent", "claude", source=src)
+    assert r.returncode == 0, _ok(r)
+    assert "/releases" in r.stdout and "git diff --no-index" in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_R2f_the_over_existing_refusal_prints_the_FULL_rerun_command(installer, tmp_path):
+    """It ended in `...`. Now: the user's own flags, plus the one that was missing."""
+    import shlex
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest, "--agent", "claude", source=src).returncode == 0
+    r = _install(installer, tmp_path, dest, "--agent", "claude", source=src, over_existing=False)
+    assert r.returncode == 2, _ok(r)
+    out = r.stdout + r.stderr
+    flag = "--over-existing" if installer == "sh" else "-OverExisting"
+    line = next((ln.strip() for ln in out.splitlines() if flag in ln and "install." in ln), None)
+    assert line, _ok(r)
+    assert not line.endswith("..."), line
+    toks = shlex.split(line, posix=installer == "sh")
+    norm = [t.strip('"').replace(chr(92), "/") for t in toks]
+    want_dest = dest.as_posix()
+    if installer == "sh":
+        assert "--toolkit" in norm and norm[norm.index("--toolkit") + 1] == want_dest, line
+        assert "--agent" in norm and norm[norm.index("--agent") + 1] == "claude", line
+        assert norm[-1] == "--over-existing" and "--no-env" in norm and "--yes" in norm, line
+    else:
+        assert "-Toolkit" in norm and norm[norm.index("-Toolkit") + 1] == want_dest, line
+        assert "-Agent" in norm and norm[norm.index("-Agent") + 1] == "claude", line
+        assert norm[-1] == "-OverExisting" and "-NoEnv" in norm and "-Yes" in norm, line
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_R2_cosmetic_setup_does_not_ask_for_what_the_installer_just_did(installer, tmp_path):
+    """setup.sh said 'x4-paths.env in place -- left as it is' about a file written seconds
+    earlier, and 'Set X4_GAME in x4-paths.env' after --game had set it."""
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, _ok(r)
+    assert "left as it is" not in r.stdout and "written by the installer" in r.stdout, _ok(r)
+    assert "Set X4_GAME in x4-paths.env" not in r.stdout, _ok(r)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the MSYS path spelling is Git Bash on Windows")
+def test_R2_cosmetic_the_git_bash_installer_prints_a_WINDOWS_source_path(tmp_path):
+    dest = _fresh(tmp_path)
+    r = _install("sh", tmp_path, dest, "--agent", "claude", "--dry-run")
+    first = next(ln for ln in r.stdout.splitlines() if "source:" in ln)
+    src = first.split("source:", 1)[1].strip()
+    assert not src.startswith("/"), first
+    assert src.replace(chr(92), "/").lower() == ROOT.as_posix().lower(), first
+
+
+@pytest.mark.skipif(os.name != "nt", reason="path separators are a Windows display question")
+def test_R2_cosmetic_install_ps1_prints_ONE_separator_in_its_summary(tmp_path):
+    dest = _fresh(tmp_path)
+    r = _install("ps1", tmp_path, dest, "--agent", "claude")
+    assert r.returncode == 0, _ok(r)
+    summary = r.stdout[r.stdout.index("=== install complete"):]
+    for ln in summary.splitlines():
+        if ln.startswith(("Toolkit:", "Config:", "Verify:")):
+            assert "/" not in ln.split(":", 1)[1], ln
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_R2B1_an_INSTALLED_toolkits_suite_COLLECTS_and_counts_its_repo_only_skips(installer,
+                                                                                tmp_path):
+    """SETUP_PROMPT.txt has the user run the installed toolkit's suite. Before R2-B1 it died in
+    collection (3 errors: modules reading the repo-only agent/ source at import). A REAL install
+    (both installers), then `pytest --collect-only` inside it, every X4_* path pinned to the
+    sandbox: no collection error, and the repo-only modules are SKIPPED with the counted reason."""
+    if shutil.which("uv") is None:
+        pytest.skip("no uv to run the installed suite with")
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "all")
+    assert r.returncode == 0, _ok(r)
+    assert not (dest / "agent").exists(), "an install copied the repo-only agent/ source"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("X4_")}
+    env.update({"X4_TOOLKIT": str(dest), "X4_CONFIG": str(dest / "x4-paths.env"),
+                "X4_GAME": str(tmp_path / "game"), "X4_PROFILE": str(tmp_path / "profile"),
+                "X4_REFERENCE": str(dest / "reference"), "X4_MODS": str(tmp_path / "mods")})
+    c = subprocess.run(["uv", "run", "python", "-m", "pytest", "--collect-only", "-q", "-rs",
+                        "-p", "no:cacheprovider"], cwd=str(dest / "tools" / "x4validate"),
+                       env=env, capture_output=True, text=True, timeout=600)
+    out = c.stdout + c.stderr
+    assert c.returncode == 0 and "ERROR collecting" not in out, out[-3000:]
+    assert out.count("REPO-ONLY") >= 3, out[-3000:]

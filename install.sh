@@ -13,6 +13,9 @@
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # repo / toolkit source
+#: R2-f (second install red-team): the --over-existing refusal ended in `...`. It now prints
+#: the user's OWN command line back, plus the flag that was missing.
+X4_ORIG_ARGS=("$@")
 
 # --- defaults (overridable by flags / env) ---------------------------------
 METHOD=""; ASSUME_YES=0; DO_UNPACK=0; OVER_EXISTING=0; DRY_RUN=0; NO_ENV=0; CODEX_DOC_MAX=""
@@ -101,7 +104,26 @@ done
 case "$(uname -s 2>/dev/null)" in
   Linux*) OS=linux;; Darwin*) OS=macos;; MINGW*|MSYS*|CYGWIN*|Windows*) OS=windows;; *) OS=unknown;;
 esac
-echo "X4 AI Assistant Toolkit installer — OS: $OS, source: $SRC"
+# R2 cosmetic: under Git Bash $SRC is MSYS-style (/c/Users/...), which no Windows tool accepts.
+SRC_SHOW="$SRC"
+if [ "$OS" = windows ] && command -v cygpath >/dev/null 2>&1; then
+  SRC_SHOW="$(cygpath -m "$SRC" 2>/dev/null || printf '%s' "$SRC")"
+fi
+echo "X4 AI Assistant Toolkit installer — OS: $OS, source: $SRC_SHOW"
+
+#: One argument, quoted for bash only when it needs it (R2-f).
+_r2_shquote() {
+  case "$1" in
+    ''|*[!A-Za-z0-9_./:=,+@%-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+#: The command that re-runs THIS install with EXTRA appended (R2-f).
+_r2_rerun_cmd() {   # EXTRA...
+  local out="bash $(_r2_shquote "$0")" a
+  for a in "${X4_ORIG_ARGS[@]}" "$@"; do out="$out $(_r2_shquote "$a")"; done
+  printf '%s' "$out"
+}
 
 # --- helpers ---------------------------------------------------------------
 ask() {  # ask VAR "prompt" "default"
@@ -810,9 +832,32 @@ _h_hash_caveat() {
   return 0
 }
 
+#: R2-e (second install red-team): the kept copy is the WHOLE old CLAUDE.md, and the user
+#: wants their EDITS. The release that shipped the original is named by the destination's
+#: CHANGELOG.md (read BEFORE the copy replaces it): its first `## vX` heading.
+X4_RELEASES_URL="https://github.com/WingedGuardian/x4-ai-toolkit/releases"
+X4_RAW_URL="https://raw.githubusercontent.com/WingedGuardian/x4-ai-toolkit"
+_r2_prev_version() {   # DEST -> vX.Y.Z, or fails
+  local v
+  [ -f "$1/CHANGELOG.md" ] || return 1
+  v="$(sed -n 's/^## \(v[0-9][0-9.]*[0-9]\).*/\1/p' "$1/CHANGELOG.md" | head -n 1)"
+  [ -n "$v" ] || return 1
+  printf '%s' "$v"
+}
+_r2_your_edits_hint() {   # DEST KEPT-NAME VERSION-or-empty
+  echo "         To see only YOUR edits, compare it with the CLAUDE.md the toolkit shipped:"
+  if [ -n "$3" ]; then
+    echo "           $X4_RAW_URL/$3/CLAUDE.md   ($3: your previous install, per its CHANGELOG.md)"
+  else
+    echo "           the CLAUDE.md of the release you had installed: $X4_RELEASES_URL"
+  fi
+  echo "           save it, then:  git diff --no-index \"<saved CLAUDE.md>\" \"$1/$2\""
+}
+
 preserve_user_claude_md() {   # DEST -- AFTER every precheck, BEFORE the copy
-  local dest="$1" to
+  local dest="$1" to prev
   to="$(_h_claude_md_move_target "$dest")" || return 0
+  prev="$(_r2_prev_version "$dest" || true)"
   refuse_if_dry_run "keeping your CLAUDE.md as X4-NOTES.pre-4.0 in" "$dest"
   if ! mv -- "$dest/CLAUDE.md" "$dest/$to"; then
     echo "ERROR: could not move $dest/CLAUDE.md aside to $to. Nothing else has been changed." >&2
@@ -823,6 +868,7 @@ preserve_user_claude_md() {   # DEST -- AFTER every precheck, BEFORE the copy
   echo "         That copy is NO LONGER LOADED by any agent: the 4.0 CLAUDE.md replaced it."
   echo "         To bring your notes back, merge what you want into X4-NOTES.md in the same"
   echo "         folder -- every agent's instructions read it, and the toolkit never writes it."
+  _r2_your_edits_hint "$dest" "$to" "$prev"
   _h_hash_caveat
 }
 
@@ -1036,13 +1082,16 @@ _oc_python() {
 #: mechanism exists ('unsupported'). install.ps1's Write-RefguardStep prints the same lines.
 #: C4 (install red-team 2026-10-04): the summary ALWAYS states the protection -- silence read
 #: as "handled" -- and the command carries --yes, because x4refguard now counts and ASKS (B3).
-X4_REFGUARD_STEP_CMD='python scripts/x4refguard.py apply --yes'
+#: R2-b (second install red-team): a HUMAN reads this, so plain `apply` -- it shows the folder
+#: and a count and ASKS (B3). `--yes` is for a non-interactive caller (an agent, after you agreed).
+X4_REFGUARD_STEP_CMD='python scripts/x4refguard.py apply'
 print_refguard_step() {   # TOOLKIT
-  local tk="$1" out state=""
+  local tk="$1" out state="" sentinel=""
   [ -f "$tk/scripts/x4refguard.py" ] || return 0
   if _oc_python; then
     out="$(cd "$tk" && X4_TOOLKIT="$tk" "${X4_OC_PY[@]}" scripts/x4refguard.py status --json 2>/dev/null)" || true
     state="$(printf '%s' "$out" | sed -n 's/.*"state": "\([a-z]*\)".*/\1/p' | head -n 1)"
+    sentinel="$(printf '%s' "$out" | sed -n 's/.*"sentinel": \([a-z]*\).*/\1/p' | head -n 1)"
   elif [ -d "${REFERENCE:-$tk/reference}" ]; then
     state="unknown (no Python >= 3.10 to ask x4refguard)"
   fi
@@ -1056,10 +1105,19 @@ print_refguard_step() {   # TOOLKIT
     unsupported)
       echo "Reference: this platform has no OS-level protection mechanism (a disclosed gap; not applied by the installer)." ;;
     *)
-      echo "Reference: reference/ exists and is NOT OS-protected (x4refguard state: $state)."
+      # R2-a: apply REFUSES a tree without the sentinel, so naming it here was a dead end.
+      if [ "$sentinel" = false ]; then
+        echo "Reference: reference/ exists but has no .unpacked-and-locked sentinel, i.e. it is not a finished unpack,"
+        echo "           so it is not OS-protected and cannot be yet (see Next below)."
+        return 0
+      fi
+      [ "$state" = absent ] && state="not applied"
+      echo "Reference: reference/ exists and is NOT OS-protected (x4refguard: $state)."
       echo "           It is not applied by the installer (a permission change is yours to make). To add the"
       echo "           OS-level deny-delete layer (any process, hooks or not), run in $tk:"
-      echo "             $X4_REFGUARD_STEP_CMD" ;;
+      echo "             $X4_REFGUARD_STEP_CMD"
+      echo "           (it shows the folder and a file count, then asks you; --yes answers for you, e.g. when"
+      echo "           an agent runs it after you agreed)" ;;
   esac
 }
 
@@ -1792,8 +1850,8 @@ require_direction() {
     echo "  KNOWLEDGEBASE.md and customised skills are replaced. x4-paths.env and" >&2
     echo "  settings.local.json are preserved." >&2
     echo >&2
-    echo "  To upgrade it anyway, say so explicitly:" >&2
-    echo "      bash install.sh --method $METHOD --over-existing ..." >&2
+    echo "  To upgrade it anyway, say so explicitly -- your own command, plus --over-existing:" >&2
+    echo "      $(_r2_rerun_cmd --over-existing)" >&2
     exit 2
   fi
 }
@@ -2294,7 +2352,8 @@ case "$METHOD" in
       echo "REFUSING: $_hc already carries files this install would REPLACE." >&2
       printf '%s' "$_hits" >&2
       echo "  Re-run with --over-existing to replace them, after checking you have not" >&2
-      echo "  edited them in place. This method also rewrites $_hc/settings.json." >&2
+      echo "  edited them in place. This method also rewrites $_hc/settings.json:" >&2
+      echo "      $(_r2_rerun_cmd --over-existing)" >&2
       exit 2
     fi
     # BEFORE the first write. `install_global_claude` checks jq at its own top and
@@ -2343,7 +2402,7 @@ write_codex_doc_max_bytes "$TOOLKIT"
 if [ "$DRY_RUN" = 1 ]; then
   echo "  --dry-run: NOT running setup.sh"
 else
-( cd "$TOOLKIT" && CLAUDE_PROJECT_DIR="$TOOLKIT" bash setup.sh ) || add_failed "setup.sh"
+( cd "$TOOLKIT" && CLAUDE_PROJECT_DIR="$TOOLKIT" X4_SETUP_CONFIG_WRITTEN=1 bash setup.sh ) || add_failed "setup.sh"
 fi
 
 if [ "$DO_UNPACK" = 1 ] && [ "$DRY_RUN" = 1 ]; then
@@ -2402,6 +2461,9 @@ if [ -z "$GAME" ]; then
   echo "Next:      X4_GAME is blank -- set it in $TOOLKIT/x4-paths.env, then  (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/."
 elif [ -f "${REFERENCE:-$TOOLKIT/reference}/.unpacked-and-locked" ]; then
   echo "Next:      reference/ is already unpacked; open your agent in \"$TOOLKIT\" and paste SETUP_PROMPT.txt."
+elif [ -d "${REFERENCE:-$TOOLKIT/reference}" ] && [ -n "$(ls -A "${REFERENCE:-$TOOLKIT/reference}" 2>/dev/null)" ]; then
+  # R2 cosmetic: reference/ exists, but without .unpacked-and-locked nothing says it is finished.
+  echo "Next:      reference/ exists but has no .unpacked-and-locked (not a finished unpack): (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to unpack it; if it IS a complete unpack you made yourself, python scripts/x4refguard.py apply  prints how to mark it."
 else
   echo "Next:      (cd \"$TOOLKIT\" && bash bin/unpack-reference.sh)  to build reference/ from your game."
 fi
