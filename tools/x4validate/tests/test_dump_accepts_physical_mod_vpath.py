@@ -108,9 +108,9 @@ def test_relative_case_is_preserved():
 
 # --- end to end ---------------------------------------------------------------
 
-needs_reference = pytest.mark.skipif(
-    _paths.reference() is None,
-    reason="needs a real reference tree (no X4 installed on this machine)")
+from _layout import NEEDS_REFERENCE, reference_unpacked  # noqa: E402
+
+needs_reference = pytest.mark.skipif(not reference_unpacked(), reason=NEEDS_REFERENCE)
 
 
 @needs_reference

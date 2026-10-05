@@ -42,9 +42,9 @@ from x4validate import _check, _merge, _paths
 #: every CI runner while passing here (F63's shape, and gotcha #26 -- "cold is the
 #: check that lies most"). `scripts/verify-cold.sh` is the instrument that catches
 #: it; I did not run it on these before pushing, and public CI went red.
-needs_reference = pytest.mark.skipif(
-    _paths.reference() is None,
-    reason="needs a real reference tree (no X4 installed on this machine)")
+from _layout import NEEDS_REFERENCE, reference_unpacked  # noqa: E402
+
+needs_reference = pytest.mark.skipif(not reference_unpacked(), reason=NEEDS_REFERENCE)
 
 
 

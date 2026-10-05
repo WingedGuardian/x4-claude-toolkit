@@ -32,6 +32,23 @@ def installed_layout(root: Path = ROOT) -> bool:
     return not (Path(root) / "agent").is_dir()
 
 
+def reference_unpacked() -> bool:
+    """A reference tree is configured AND unpacked (it holds libraries/wares.xml).
+
+    R2-B1: three markers asked only `_paths.reference() is None`. An install configures
+    X4_REFERENCE before anything is unpacked -- SETUP_PROMPT has the suite run BEFORE the
+    unpack step -- so on every fresh install those tests ran against a folder that did not
+    exist yet, and failed. Configured is not unpacked."""
+    from x4validate import _paths
+    p = _paths.reference()
+    return p is not None and (Path(p) / "libraries" / "wares.xml").is_file()
+
+
+#: The reason every needs-a-reference skip carries.
+NEEDS_REFERENCE = ("needs an UNPACKED reference tree (none configured, or not unpacked yet: "
+                   "bash bin/unpack-reference.sh)")
+
+
 def require_repo(*rel: str, why: str = "", module_level: bool = False, root: Path = ROOT) -> None:
     """Skip when this is an installed layout and any of `rel` (paths relative to the toolkit
     root, e.g. "agent/rules/codex-rules.yaml" or ".git") is absent; otherwise return.

@@ -15,6 +15,12 @@ TEXT = DOC.read_text(encoding="utf-8") if DOC.is_file() else ""
 spec = importlib.util.spec_from_file_location("x4guard_src", REPO / "agent/guards/claude-hooks/x4guard.py")
 
 
+@pytest.fixture
+def _guard_src():
+    from _layout import require_repo
+    require_repo("agent/guards/claude-hooks/x4guard.py", why="the guard SOURCE")
+
+
 def test_it_exists_and_names_the_product():
     assert "X4 AI Assistant Toolkit" in TEXT
 
@@ -31,7 +37,7 @@ def _x4guard_lines():
             if "x4guard.py check" in ln and not ln.strip().startswith(("#", ">"))]
 
 
-def test_every_check_command_it_shows_parses_with_the_real_cli(monkeypatch):
+def test_every_check_command_it_shows_parses_with_the_real_cli(monkeypatch, _guard_src):
     lines = _x4guard_lines()
     assert len(lines) >= 3                                   # shell, write, delete at least
     x4g = importlib.util.module_from_spec(spec); spec.loader.exec_module(x4g)
@@ -42,7 +48,7 @@ def test_every_check_command_it_shows_parses_with_the_real_cli(monkeypatch):
         assert x4g.main(argv) == 0, ln
 
 
-def test_TWIN_a_wrong_flag_would_have_failed(monkeypatch):
+def test_TWIN_a_wrong_flag_would_have_failed(monkeypatch, _guard_src):
     x4g = importlib.util.module_from_spec(spec); spec.loader.exec_module(x4g)
     with pytest.raises(SystemExit) as e:
         x4g.main(["check", "--agent", "toy", "--kind", "write", "--path", "x"])   # the spec's --agent: not real
@@ -64,7 +70,7 @@ def test_every_repo_path_it_cites_exists():
                      why="%d citation(s) under agent/ or docs/ NOT checked here" % len(repo_only))
 
 
-def test_the_timeout_default_is_never_restated_wrongly(monkeypatch):
+def test_the_timeout_default_is_never_restated_wrongly(monkeypatch, _guard_src):
     monkeypatch.delenv("X4_GUARD_TIMEOUT_S", raising=False)
     x4g = importlib.util.module_from_spec(spec); spec.loader.exec_module(x4g)
     default = x4g._timeout_setting()[0]

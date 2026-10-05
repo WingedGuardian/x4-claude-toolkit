@@ -290,9 +290,11 @@ def _environment_is_unresolvable() -> bool:
         from x4validate import _paths
     except ImportError:
         return True
-    return (_paths.registry() is None
-            or _paths.game_extensions() is None
-            or _paths.reference() is None)
+    # R2-B1: CONFIGURED is not PRESENT. A fresh install configures every root before anything
+    # exists there (SETUP_PROMPT runs the suite before the unpack), and a gate then exits 2 on
+    # the missing folder -- re-raised here as an ERROR, 12 of them in an installed toolkit.
+    return any(p is None or not Path(p).exists()
+               for p in (_paths.registry(), _paths.game_extensions(), _paths.reference()))
 
 
 # --------------------------------------------------------------- skip accounting

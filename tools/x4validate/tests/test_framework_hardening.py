@@ -140,6 +140,8 @@ def test_F3_TWIN_a_ROUTINE_skip_on_a_clean_edit_stays_quiet(tmp_path, hook_env, 
 def test_F4_CI_checks_the_lockfile_is_fresh_not_only_frozen():
     """`uv sync --frozen` consumes uv.lock without checking it against pyproject.toml
     (MEASURED by the audit: frozen sync rc 0 on a stale lock, `uv lock --check` rc 1)."""
+    from _layout import require_repo
+    require_repo(".github/workflows/ci.yml", why="CI configuration is not installed")
     ci = YAML(typ="safe").load((REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
     steps = [s for job in ci["jobs"].values() for s in job.get("steps", [])]
     checks = [s for s in steps if "uv lock --check" in str(s.get("run", ""))]
