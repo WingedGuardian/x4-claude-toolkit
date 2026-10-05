@@ -1215,6 +1215,9 @@ alarms, and did:
 | F158 | A heredoc INSIDE a carried command (`$(...)`, `bash -c`) was never stripped or routed: the top level rightly ignores a `<<` inside double quotes, so in `git commit -m "$(cat <<'EOF' ... EOF)"` the body reached the carrier walk as text and every body line was a command -- a message mentioning `> KNOWLEDGEBASE.md` was DENIED. Mirror image: `x=$(bash <<'EOF' ... EOF)` was ALLOW, because the shell test read the opener line's segments (`x=$(bash`) | **DEFECT (measured)** · PRE-ARC · ✅ FIXED 2026-10-04 (v4.0.0 review, fix lane FX-P2) | another lane's false-positive report, reproduced with x4guard | `_carrier_parts`: every carried command gets the top level's heredoc strip plus its shell-fed bodies; `_opener_feeds` also reads the command after a `$(`/backtick on the opener line |
 | F159 | An UNQUOTED heredoc body (`<<EOF`) is expanded by bash, so its `$(...)` and backticks RUN -- but the whole body was stripped as data: `cat > notes.md <<EOF` / `$(<delete the game>)` / `EOF` was a silent ALLOW against a hard block | **DEFECT (measured)** · PRE-ARC · ✅ FIXED 2026-10-04 (v4.0.0 review, fix lane FX-P2) | found while reproducing F158 | `heredoc_substitutions`: an expanding body contributes its substitutions (quotes are letters there; backslash escapes; `$((` is arithmetic); a quoted delimiter contributes nothing |
 | F160 | A toolkit COPY acted for ANOTHER toolkit: `_paths` located the config through an inherited `$X4_TOOLKIT` (and derived `<X4_TOOLKIT>/reference` from it), so a second copy's `x4refguard apply` resolved the FIRST copy's real reference tree -- 36 `_paths` importers plus x4config, x4doctor and unpack-reference.sh shared the shape | **DEFECT (measured: incident)** · PRE-ARC · ✅ FIXED 2026-10-04 (install red-team, fix lane FX-R) | the 2026-10-04 cold install red-team, live: killed after ~2 min, census 518,056 objects / 0 protected | `_paths.toolkit_root()` = --toolkit > the toolkit the module LIVES IN > `$X4_TOOLKIT` only outside the layout; a differing `$X4_TOOLKIT` gets one notice naming both; system-changing commands refuse without --toolkit |
+| F161 | The INSTALLED toolkit's own suite -- which SETUP_PROMPT tells every user to run -- could not run: 3 collection errors, then (measured, full run) 142 failed + 43 errors, from tests that read repo-only content (agent/, docs/, .github/, git) and tests that took a CONFIGURED root for a PRESENT one (an install configures roots before anything is unpacked) | **DEFECT (measured)** · PRE-ARC · ✅ FIXED 2026-10-05 (second install red-team, fix lane FX-R2) | the 2026-10-04 cold install red-team #2 (BLOCKER 1), then real installs by both installers + the full installed suite | `tests/_layout.py`: `require_repo` (skip, REPO-ONLY reason, only in an installed layout AND only when absent) and `reference_unpacked`; conftest treats a configured-but-missing root as unresolvable |
+| F162 | `x4doctor`'s `bash.path` row FAILED every stock Windows install: it judged the first `bash` on the Windows PATH (the WSL stub) although no installed hook starts bash from that PATH (Claude runs hooks in Git Bash, Codex uses its PowerShell commandWindows, the guards resolve Git Bash themselves) -- the instrument answered an ADJACENT question; it was also the whole rc 1 (PowerShell) vs 3 (Git Bash) difference | **DEFECT (measured)** · IN-ARC (4.0 doctor) · ✅ FIXED 2026-10-05 (fix lane FX-R2) | the 2026-10-04 cold install red-team #2 (BLOCKER 2) | the row reads the hook definitions (`windows_path_bash_sites`): FAIL only when a hook would start bare bash from a stub-first PATH, or no Git Bash resolves (with the `setx X4_BASH` line) |
+| F163 | A test made its scratch folder UNREADABLE and UNDELETABLE: under Python 3.13 pytest's temp root grants access only through an OWNER RIGHTS ACE, and `icacls /setowner` -- even to the same owner -- dropped it; every run stranded one folder (20+ found) | **DEFECT (measured)** · IN-ARC (FX-R test fixture) · ✅ FIXED 2026-10-05 (fix lane FX-R2) | the orchestrator's pytest-temp census | `refguard_owner.take_ownership` grants the user full control back after the owner change; the test asserts write, read and rmdir |
 | UNION-KEY | winner supplies the entity → `entities.origin` | 2/2 | 2/2 |
 | **HARD** | winner owns the VALUE → **`attrs.origin`** | 34 agree, **6 FALSE disagreements** | **40/40** |
 | **SUBTREE** | winner is the WIPER → assert the **victim** is gone, scoped to `w0` | file-wide: **6 FALSE alarms** | **148/148** |
@@ -8168,3 +8171,73 @@ naming another toolkit's file is still honoured as explicit (no installer sets o
 --apply/lock/unlock refuse; `--toolkit B` is accepted and protects B and never A (Windows, real
 icacls on scratch). RED before the fix on 18 of 20 (the 2 passing were the designed twins); the
 doctor's three B2 tests RED against master's x4doctor.
+
+## F161 — the installed toolkit's own suite could not run where the setup prompt runs it · **DEFECT (measured)** · PRE-ARC · confidence 90% · ✅ FIXED 2026-10-05 (second install red-team, fix lane FX-R2)
+
+**Finding (2026-10-04, cold red-team #2, BLOCKER 1).** `SETUP_PROMPT.txt` has every user's agent
+run x4validate's suite in the installed toolkit. There `uv run pytest -q` stopped in collection:
+3 errors, `FileNotFoundError` on `agent/rules/codex-rules.yaml` and two `agent/guards/adapters/`
+sources, read at import. An install is runtime-only BY DESIGN (no `agent/`, no root `docs/`, no
+`.github/`, no `.git`), so this was never the install's defect -- the suite assumed a checkout.
+
+**Population (MEASURED, real install by `install.sh`, full suite with `--continue-on-collection-errors`):**
+142 failed + 43 errors of 4,398 collected. Classified BY FILE (32 files; the 75 installer-harness failures in bulk, one cause confirmed by a re-run): (a) repo-only content -- agent/ sources,
+generator inputs, docs/, .github/, git-only facts, and the installer harness installing FROM the
+toolkit it lives in; (b) a CONFIGURED root taken for a PRESENT one -- three `needs_reference`
+markers asked only `_paths.reference() is None`, and `import_gate`'s "unresolvable" check asked
+only for None, while an install configures every root before anything is unpacked (SETUP_PROMPT
+runs the suite BEFORE the unpack); (c) instrument artefacts of the first measurement -- X4_* roots
+pinned in the environment over the install's own config, and the scratch box sitting under
+%TEMP% (one test asserts the conformance run dir is NOT under the system temp). (d) this lane's own new tests run against an install made before their code (a sync artefact).
+(c) and (d) were removed from the harness, not from the suite. (b) also failed in a fresh worktree of master (stash
+baseline: 5 failed), green only where a real reference is unpacked.
+
+**Fix.** `tests/_layout.py` is the one door: `require_repo(...)` skips -- reason prefixed
+`REPO-ONLY` and naming what is absent -- only when the tree is an installed layout (no `agent/` at
+the root) AND the content is absent; a checkout that lost such a file still FAILS.
+`reference_unpacked()` is the one definition of "a reference is usable" (configured AND holding
+`libraries/wares.xml`); conftest's `_environment_is_unresolvable` treats a configured root that
+does not exist as unresolvable (consulted only after a gate import FAILED, so a gate that imports
+still runs). Known residual (UNMEASURED): only `--agent all` installs were run end to end; an
+install of fewer targets lacks e.g. `.claude/`, which several sandbox fixtures copy.
+
+**RE-DERIVED BY:** `tests/test_layout_repo_only.py` (each clause and its twin) and
+`tests/test_install_over_existing.py::test_R2B1_an_INSTALLED_toolkits_suite_COLLECTS_and_counts_its_repo_only_skips`
+(a real install by each installer, then `pytest --collect-only` inside it: RED before `_layout.py`
+shipped -- ModuleNotFoundError -- green after). Full installed run after the fix: 4,017 passed, 366 skipped, 6 failed (install.sh install, 17 min); the 6 had three causes, all fixed and re-run focused: a non-LiteralPath Remove-Item this lane added to install.ps1 (an in-arc regression test_installer_literal_paths caught), a token census reading agent/skills, and the freshness skip calling iterdir on a missing root. A full re-run after those fixes and a full run of an install.ps1 install were NOT done.
+
+## F162 — `x4doctor`'s `bash.path` judged the Windows PATH, not what the hooks run · **DEFECT (measured)** · IN-ARC · confidence 90% · ✅ FIXED 2026-10-05 (fix lane FX-R2)
+
+**Finding (cold red-team #2, BLOCKER 2).** On a stock Windows PATH the first `bash` is
+System32's WSL stub, so the row FAILED on every fresh install -- while the toolkit resolves Git
+Bash itself. READ from the installed hook definitions: Claude's `.claude/settings.json` commands
+are `bash "$CLAUDE_PROJECT_DIR/..."`, run by Claude Code in Git Bash (MEASURED here: this
+machine's PowerShell PATH has the stub first and those hooks run); Codex's `hooks.json` carries a
+`commandWindows` PowerShell wrapper; OpenCode starts python, and every guard resolves bash via
+`x4guard.resolve_bash`. The row answered "what does PATH say", not "what would a hook run" --
+the adjacent-question shape. It was also the whole difference between the doctor's exit 1 from
+PowerShell and 3 from Git Bash on the same install (MEASURED: the same 5 UNKNOWN rows in both).
+
+**Fix.** `windows_path_bash_sites` reads the hook definitions: a Claude hook with a non-bash
+`shell`, or a Codex hook whose Windows command (`commandWindows`, else `command` under cmd.exe)
+starts bare `bash`. FAIL only when such a hook exists AND the first bash on PATH is a stub, or
+when no Git Bash resolves (the `setx X4_BASH` line is printed); otherwise OK, naming the stub as
+information. **RE-DERIVED BY:** `tests/test_x4doctor.py` -k R2B2 -- one falsification twin per
+clause (stub + no site OK; stub + codex site without commandWindows FAIL; the same with a
+PowerShell commandWindows OK; site + Git Bash first OK; Claude hook with `shell: powershell`
+FAIL; no Git Bash FAIL with the setx line).
+
+## F163 — a test stranded an undeletable folder on every run · **DEFECT (measured)** · IN-ARC · confidence 95% · ✅ FIXED 2026-10-05 (fix lane FX-R2)
+
+**Finding.** `test_OWNERSHIP_the_real_setowner_command_is_accepted` ran `icacls /setowner` on a
+folder its user already owned. MEASURED (Python 3.13.14): pytest's temp root is made with
+`mkdir(0o700)`, whose ACL reaches the user only through an OWNER RIGHTS ACE; after `/setowner`
+the folder was unreadable and undeletable (WinError 5). 20+ such folders were found in pytest's
+garbage. The owner keeps WRITE_DAC, so `icacls <dir> /grant *<SID>:(OI)(CI)F` repairs one
+WITHOUT elevation (MEASURED on a probe folder: grant, then delete, succeeded).
+
+**Fix.** `refguard_owner.take_ownership` (one helper, used by `own_or_skip` and the test) grants
+the user full control back after the owner change; a failed owner change grants nothing.
+**RE-DERIVED BY:** `tests/test_x4refguard.py::test_OWNERSHIP_the_real_setowner_command_is_accepted`
+(asserts the folder is still writable, readable and removable: RED before -- Errno 13 on the
+write -- green after) and the fake-owner fixture tests pinning both steps.

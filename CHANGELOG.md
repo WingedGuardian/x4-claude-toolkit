@@ -72,6 +72,44 @@ All are fixed:
   `x4doctor`'s targets line no longer lists "generic" beside Codex. On Windows, extract to a
   short folder: the deepest file is 92 characters below the toolkit root.
 
+### Fixed before release: the second install red-team (2026-10-04)
+
+A second cold, docs-only install test (fresh clone, both installers) found two blockers, eight
+confusing messages and six cosmetic ones. All are fixed:
+
+- **The installed toolkit's own test suite could not run.** `SETUP_PROMPT.txt` says to check it,
+  and in an installed toolkit `uv run pytest -q` stopped in collection (3 errors: tests that read
+  the repository-only `agent/` source, which no install copies). Every test that needs
+  repository-only content now SKIPS there, counted and with a `REPO-ONLY` reason; a checkout that
+  lost such a file still fails. Measured on real installs from both installers: a full run of an install.sh install ended 4,017 passed, 366 skipped, 6 failed; the 6 were fixed afterwards and re-run individually (no second full run), and a real install by each installer collects with no error.
+  `SETUP_PROMPT.txt`, `setup.sh` and the README give the command per shell (Windows PowerShell 5.1
+  rejects `&&`) and say what passing means: 0 failed and 0 errors; skips are expected.
+- **`x4doctor`'s `bash.path` row failed every stock Windows install.** It failed whenever the first
+  `bash` on `PATH` was the WSL stub, but no installed hook starts bash from that `PATH`: Claude
+  Code runs its hooks in Git Bash, Codex uses its PowerShell `commandWindows`, and the guards find
+  Git Bash themselves. The row now reads the hook definitions. It fails only when a hook would
+  start a bare `bash` from that `PATH`, or when no Git Bash can be found (the fix is printed:
+  `setx X4_BASH ...`, or re-run the installer). Otherwise it names the stub as information. This
+  was also the whole difference between `x4doctor` exiting 1 from PowerShell and 3 from Git Bash.
+- `x4refguard apply` on a `reference/` without `.unpacked-and-locked` now says what that file is
+  (the last thing `bin/unpack-reference.sh` writes, every release since 1.0) and prints both ways
+  out, per shell: unpack it with the toolkit, or mark a complete unpack you made yourself. The
+  README says the same. `status` names the folder it checked, says "not applied" instead of
+  "absent", and prints the long "To lift it" block only when there is something to lift. `apply`
+  and `status` count the same sample (root included).
+- Install summaries and `x4doctor` print plain `python scripts/x4refguard.py apply`, which shows
+  the folder and asks; `--yes` is explained as the agent's form. A `reference/` without the
+  sentinel is named as unfinished instead of being sent to `apply`.
+- A personalised `CLAUDE.md` kept as `X4-NOTES.pre-4.0.md`: the installer now points at the
+  `CLAUDE.md` your previous version shipped (from its `CHANGELOG.md`) and prints a
+  `git diff --no-index` line, so you can find your own edits.
+- The `--over-existing` / `-OverExisting` refusal prints your full command, plus the missing
+  flag, instead of ending in `...`.
+- `setup.sh` gives the `reference/` unpack command for PowerShell too, and no longer asks you to
+  set `X4_GAME` after the installer set it, or calls a config it was just given "left as it
+  is". The Git Bash installer prints its source as a Windows path, and `install.ps1` prints
+  one path separator in its summary.
+
 ### Every agent: one source, per-agent files
 
 - **Agent-facing files are generated from one neutral source tree, `agent/`**, by
