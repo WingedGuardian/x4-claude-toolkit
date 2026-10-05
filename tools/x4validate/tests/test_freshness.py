@@ -334,7 +334,7 @@ def test_a_REAL_root_still_digests():
     root = _registry.default_installed_dirs()
     if not root:
         pytest.skip("no configured extensions root on this machine")
-    if not any(d.is_dir() for r in root for d in Path(r).iterdir()):
+    if not any(d.is_dir() for r in root if Path(r).is_dir() for d in Path(r).iterdir()):
         # R2-B1: a fresh install configures the extensions root before the user has any mod
         # or DLC folder there; "configured" is not "holds mods".
         pytest.skip("the configured extensions root(s) hold no extension folder yet")

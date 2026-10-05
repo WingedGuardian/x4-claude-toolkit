@@ -2636,6 +2636,8 @@ def test_J_the_REAL_codex_skills_get_the_token_rendered_for_THIS_os(installer, t
     # tokens but not the skill override, so .opencode/skills rendered `$X4_TOOLKIT` again.
     if not (ROOT / skills_dir / "skills").is_dir():
         pytest.skip("the repo has no generated %s/skills tree" % skills_dir)
+    from _layout import require_repo
+    require_repo("agent/skills", why="the token census reads the skill SOURCE")
     n_src = sum("{{TOOLKIT}}" in p.read_bytes().decode("utf-8")
                 for p in (ROOT / "agent" / "skills").glob("*/SKILL.md"))
     assert n_src >= 7, n_src          # derived, never retyped: an empty population cannot pass

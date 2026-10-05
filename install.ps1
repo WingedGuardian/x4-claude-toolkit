@@ -2397,7 +2397,7 @@ if ($bash) {
       if ($Unpack) { Write-Host '  --dry-run: NOT unpacking reference/' }
     } else {
     $env:X4_SETUP_CONFIG_WRITTEN = '1'
-    try { & $bash.Source setup.sh } finally { Remove-Item env:X4_SETUP_CONFIG_WRITTEN -ErrorAction SilentlyContinue }
+    try { & $bash.Source setup.sh } finally { Remove-Item -LiteralPath env:X4_SETUP_CONFIG_WRITTEN -ErrorAction SilentlyContinue }
     if ($LASTEXITCODE -ne 0) { $failed += "setup.sh (exit $LASTEXITCODE)" }
     if ($Unpack) {
       & $bash.Source bin/unpack-reference.sh
