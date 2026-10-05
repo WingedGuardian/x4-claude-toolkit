@@ -87,7 +87,7 @@ decide(){
   [ -n "${X4_DECIDE_DUMP:-}" ] && jq -cn --arg e "$exp" --arg g "$got" --arg h "$hook" --argjson j "$json" \
       --arg l "$label" --arg cwd "$(pwd)" --arg out "$out" \
       '{exp:$e,got:$g,hook:$h,payload:$j,label:$l,cwd:$cwd,out:$out,
-        env:(env|with_entries(select((.key|test("^(X4_|CLAUDE_PROJECT_DIR$|GIT_CEILING_DIRECTORIES$)"))
+        env:(env|with_entries(select((.key|test("^(X4_|CLAUDE_PROJECT_DIR$|GIT_CEILING_DIRECTORIES$|HOME$)"))
                                      and (.key|test("KEY|TOKEN|SECRET|PASS")|not))))}' \
       >> "$X4_DECIDE_DUMP" 2>/dev/null
   [ "$got" = "$exp" ] && ok "$label ($got)" \

@@ -39,6 +39,10 @@ def _env(tmp_path: Path, **extra) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith("X4_")}
     env.pop("EXTRA_FORBIDDEN", None)
     env["X4_SCAN_HOME"] = str(tmp_path / "home")
+    # Hermetic for the CONFIG too: since the v4.0.0 B2 fix a script binds to its OWN toolkit,
+    # so with X4_* stripped _paths still finds this checkout's real x4-paths.env and its
+    # X4_PROFILE. An X4_CONFIG naming a missing file means "read NO config" (_paths rule).
+    env["X4_CONFIG"] = str(tmp_path / "no-such-x4-paths.env")
     env.update(extra)
     return env
 
