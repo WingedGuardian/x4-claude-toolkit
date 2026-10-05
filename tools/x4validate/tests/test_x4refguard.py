@@ -745,3 +745,74 @@ def test_C6_a_missing_configured_root_says_how_to_fix(tmp_path, monkeypatch, cap
     x4refguard.main(["status", "--json"])
     detail = json.loads(capsys.readouterr().out)["detail"]
     assert "unpack-reference.sh" in detail and "X4_REFERENCE" in detail, detail
+
+
+# ------------------------- R2 (second install red-team, 2026-10-04): messages a human acts on
+
+def test_R2a_the_no_sentinel_refusal_names_it_what_it_means_and_both_fixes(ref, monkeypatch, capsys):
+    (ref / SENTINEL).unlink()
+    assert x4refguard.main(["apply", "--yes"]) == 2
+    err = capsys.readouterr().err
+    assert SENTINEL in err and str(ref.resolve()) in err, err
+    assert "bin/unpack-reference.sh" in err, err                    # fix 1: unpack with the toolkit
+    assert "& \"" in err and "bash.exe\" bin/unpack-reference.sh" in err, err   # its PowerShell form
+    assert "printf" in err and "Set-Content" in err, err             # fix 2: mark a hand-made tree
+    assert "To lift it" not in err, "the lift block answers a question nobody asked here: " + err
+
+
+def test_R2a_the_printed_MARK_command_really_satisfies_apply(ref, monkeypatch, capsys):
+    """README's pre-4.0 / hand-unpacked advice must WORK, not just be printed: run the printed
+    Git Bash line, then the sentinel clause passes."""
+    import re
+    import subprocess
+    sys.path.insert(0, str(REPO / "scripts"))
+    import gitbash
+    bash = gitbash.find_bash()
+    if not bash:
+        pytest.skip("no Git Bash to run the printed command with")
+    (ref / SENTINEL).unlink()
+    x4refguard.main(["apply", "--yes"])
+    err = capsys.readouterr().err
+    line = next(l.split(":", 1)[1].strip() for l in err.splitlines()
+                if "printf" in l and l.strip().startswith("Git Bash"))
+    r = subprocess.run([bash, "-c", line], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert (ref / SENTINEL).is_file()
+    assert x4refguard.resolve_target(None, action="apply") == ref.resolve()
+    assert re.search(r"build id", (ref / SENTINEL).read_text(encoding="utf-8"))
+
+
+def test_R2c_status_names_the_folder_it_checked(ref, monkeypatch, capsys):
+    _b3_platform(monkeypatch)
+    x4refguard.main(["status"])
+    out = capsys.readouterr().out
+    assert "folder: %s" % ref.resolve() in out, out
+
+
+def test_R2_status_ABSENT_reads_not_applied_and_names_apply_not_the_lift_block(ref, monkeypatch,
+                                                                               capsys):
+    _b3_platform(monkeypatch)
+    assert x4refguard.main(["status"]) == 1
+    out = capsys.readouterr().out
+    assert "not applied" in out and "x4refguard.py apply" in out, out
+    assert "To lift it" not in out, out
+
+
+def test_R2_TWIN_status_PARTIAL_still_prints_the_lift_block(ref, monkeypatch, capsys):
+    _b3_platform(monkeypatch)
+    monkeypatch.setattr(x4refguard, "report",
+                        lambda full=False, path=None: x4refguard._blank("partial", ref, "cut"))
+    x4refguard.main(["status"])
+    assert "To lift it" in capsys.readouterr().out
+
+
+@win
+def test_R2d_apply_and_status_report_the_SAME_sample_count(protected_cleanup, tripwire, capsys):
+    import re
+    assert x4refguard.main(["apply", "--yes"]) == 0
+    a = capsys.readouterr().out
+    assert x4refguard.main(["status"]) == 0
+    s = capsys.readouterr().out
+    pa = re.findall(r"(\d+) of (\d+) sampled", a)
+    ps = re.findall(r"(\d+) of (\d+) sampled", s)
+    assert pa and ps and set(pa) == set(ps), (a, s)

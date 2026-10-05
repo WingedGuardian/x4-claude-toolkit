@@ -1239,7 +1239,8 @@ def check_common(ctx: Ctx) -> list[Check]:
                 return (TODO if st == "absent" else FAIL), (
                     "%sreference/ has %s OS-level delete protection, and a %s agent here has "
                     "no Claude hook-level delete guard to fall back on -- run: "
-                    "python scripts/x4refguard.py apply --yes"
+                    "python scripts/x4refguard.py apply (it shows the folder and a count, then "
+                    "asks; --yes answers for you, e.g. when an agent runs it after you agreed)"
                     % ("YOUR STEP: " if st == "absent" else "",
                        "NO" if st == "absent" else "only PARTIAL",
                        " / ".join(names[t] for t in hookless)))

@@ -1068,7 +1068,9 @@ def test_layer2_asks_the_REAL_x4refguard_and_FAILS_an_unprotected_codex_root(san
     hook-level delete guard, so the real query must say FAIL."""
     shutil.copytree(sandbox.root / ".claude" / "hooks", sandbox.root / ".codex" / "hooks")
     r = {r.id: r for r in doc.check_common(sandbox.ctx())}["layer2.reference"]
-    assert r.status == doc.TODO and "x4refguard.py apply --yes" in r.detail, r   # C2: the user's step
+    assert r.status == doc.TODO and "x4refguard.py apply " in r.detail, r   # C2: the user's step
+    # R2-b: a HUMAN reads this row, so plain `apply` (it asks); --yes only as an explanation
+    assert "apply --yes" not in r.detail, r
 
 
 def test_TWIN_layer2_REAL_unprotected_claude_only_root_is_OK(sandbox):
