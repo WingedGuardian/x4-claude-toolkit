@@ -140,6 +140,13 @@ Search with **Glob** for file names and the **Grep** tool for contents (never `g
 ### General
 - One mod = one named folder, never a mega-file
 - `reference\` is never edited — it is source-of-truth for base game XML
+- **Deletions go to the Recycle Bin / Trash, always** (Windows: `Microsoft.VisualBasic.FileIO.FileSystem`
+  `DeleteFile`/`DeleteDirectory` with `SendToRecycleBin`; Linux: `gio trash`; macOS: Finder Trash).
+  A permanent delete needs the user's OK for that deletion. Report what went and what failed.
+- **Never saturate the machine.** Before any heavy job (full test suites, corpus builds, load
+  tests, parallel workers), measure what is already running and keep every resource — CPU, RAM,
+  free disk on each drive written to, GPU — at or under 80% of the total. If it would not fit:
+  wait, shrink it, or tell the user before starting.
 
 ### Iteration snapshots (standing process)
 Before experimenting on a working state, snapshot it to `.claude\backups\known-good-<name>\`.
