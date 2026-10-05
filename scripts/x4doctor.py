@@ -307,6 +307,50 @@ def guard_bash(ctx: Ctx) -> tuple[str | None, str]:
     return bash, (why or "")
 
 
+def _starts_bare_bash(command) -> bool:
+    """Does this hook command line start with an UNQUALIFIED bash (resolved from PATH)?"""
+    if not isinstance(command, str):
+        return False
+    tok = command.strip().split(None, 1)[0].strip('"\'').lower() if command.strip() else ""
+    return tok in ("bash", "bash.exe")
+
+
+def windows_path_bash_sites(ctx: Ctx) -> list[str]:
+    """The installed hooks that would start bare `bash` from the WINDOWS PATH (R2-B2).
+
+    READ from the hook definitions, never assumed: Claude Code runs a hook command in its Git
+    Bash unless the hook names another `shell`, so only such a hook resolves `bash` from the
+    Windows PATH; Codex runs `commandWindows` (else `command`) through cmd.exe on Windows."""
+    out = []
+    if ctx.targets.get("claude"):
+        for name in ("settings.json", "settings.local.json"):
+            f = ctx.root / ".claude" / name
+            try:
+                d = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+            except (OSError, ValueError):
+                continue
+            for ev, groups in (d.get("hooks") or {}).items():
+                for g in groups or []:
+                    for h in (g or {}).get("hooks") or []:
+                        sh = str(h.get("shell") or "bash").lower()
+                        if "bash" not in sh and _starts_bare_bash(h.get("command")):
+                            out.append("the Claude %s hook in .claude/%s (shell %s)" % (ev, name, sh))
+    if ctx.targets.get("codex"):
+        f = ctx.root / ".codex" / "hooks.json"
+        try:
+            d = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+        except (OSError, ValueError):
+            d = {}
+        for ev, groups in (d.get("hooks") or {}).items():
+            for g in groups or []:
+                for h in (g or {}).get("hooks") or []:
+                    if _starts_bare_bash(h.get("commandWindows") or h.get("command")):
+                        out.append("the Codex %s hook in .codex/hooks.json (%s)"
+                                   % (ev, "commandWindows" if h.get("commandWindows")
+                                      else "no commandWindows, so `command` runs under cmd.exe"))
+    return out
+
+
 #: Sourced through the guards' bash: the values the guards see, one KEY=VALUE per line.
 _PROBE = r'''
 . "$HOOK_DIR/_x4-env.sh" >/dev/null 2>&1
@@ -366,16 +410,40 @@ def check_toolchain(ctx: Ctx) -> list[Check]:
     rows.append(run_check("bash.guards", "all", _bash_guards, ctx))
 
     def _bash_path(_):
+        # R2-B2 (second install red-team, 2026-10-04): this row FAILED on every stock Windows
+        # PATH, where System32's WSL stub is the first bash, although no installed hook ever
+        # starts bash from that PATH. It now judges what the HOOKS would run: FAIL only when a
+        # hook WOULD start bare `bash` from the Windows PATH while that resolves to a stub, or
+        # when no Git Bash can be resolved at all. A stub that nothing reaches is named, as
+        # information.
         if not _on_windows():
             return NA, "the bash-stub trap is Windows-only"
         import shutil
         first = shutil.which("bash", path=ctx.env.get("PATH"))
+        stub_first = bool(first) and _is_stub(first)
+        if not bash or _is_stub(bash):
+            nob = why or "x4guard found none"
+            if "setx X4_BASH" not in nob:
+                nob += ('. Fix (NEW shells): setx X4_BASH "C:%sProgram Files%sGit%sbin%sbash.exe" '
+                         '(adjust the path if Git is installed elsewhere)' % ((chr(92),) * 4))
+            if stub_first:
+                return FAIL, ("the first bash on PATH is the WSL/Store STUB (%s) and the guards "
+                              "resolve no Git Bash: %s" % (first, nob))
+            return FAIL, "the guards resolve no Git Bash: %s" % nob
+        sites = windows_path_bash_sites(ctx)
+        if stub_first and sites:
+            return FAIL, ("the first bash on PATH is a STUB (%s), and %s start(s) bare `bash` from "
+                          "that PATH, so the hook fails OPEN. Fix: re-run the installer for this "
+                          "root (its hook definitions never start bash from PATH), or edit those "
+                          "hooks to call Git Bash by path (\"%s\")" % (first, "; ".join(sites), bash))
+        if stub_first:
+            return OK, ("no installed hook starts bash from the Windows PATH (Claude Code runs its "
+                        "hooks in Git Bash, Codex uses its PowerShell commandWindows, the guards "
+                        "resolve %s themselves); informational: the first bash on this PATH is the "
+                        "stub %s, so do not type `bash ...` in PowerShell or cmd" % (bash, first))
         if not first:
-            return UNKNOWN, "no bash on PATH at all"
-        if _is_stub(first):
-            return FAIL, ("the first bash on PATH is a STUB (%s). A host that starts a hook as "
-                          "`bash ...` gets it, and the hook fails OPEN. Put Git's bin first on PATH."
-                          % first)
+            return OK, ("no bash on the Windows PATH, and no installed hook needs one (the guards "
+                        "resolve %s themselves)" % bash)
         return OK, first
     rows.append(run_check("bash.path", "all", _bash_path, ctx))
 

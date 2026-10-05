@@ -225,15 +225,108 @@ def _write_failing_exe(path: Path) -> None:
     path.chmod(0o755)
 
 
-@pytest.mark.skipif(os.name != "nt", reason="the WSL-stub trap is Windows-only")
-def test_a_WSL_stub_first_on_PATH_is_a_FAIL_naming_it(sandbox, tmp_path, monkeypatch):
+def _stub_first(tmp_path, monkeypatch):
     stub = tmp_path / "Windows" / "System32"
     stub.mkdir(parents=True)
     (stub / "bash.exe").write_bytes(b"MZ")              # resolves; cannot run anything
     monkeypatch.setenv("PATH", str(stub) + os.pathsep + os.environ["PATH"])
+    return stub
+
+
+# R2-B2 (second install red-team, 2026-10-04): bash.path FAILED on every stock Windows PATH
+# (System32's WSL stub comes first) although no installed hook ever starts bash from that
+# PATH: Claude Code runs its hook commands in Git Bash (whose own PATH puts /usr/bin first --
+# MEASURED: this machine's PowerShell PATH has the stub first and its `bash "..."` hooks run),
+# Codex on Windows uses `commandWindows` (PowerShell), and every guard resolves Git Bash itself
+# (x4guard.resolve_bash). The row now judges what the HOOKS would run. FAIL needs one of:
+# a hook that WOULD start bash from the Windows PATH, or no Git Bash the resolver can find.
+
+@pytest.mark.skipif(os.name != "nt", reason="the WSL-stub trap is Windows-only")
+def test_R2B2_a_stub_first_on_PATH_is_OK_when_no_hook_starts_bash_from_PATH(sandbox, tmp_path,
+                                                                            monkeypatch):
+    _stub_first(tmp_path, monkeypatch)
+    rows = sandbox.rows(doc.check_toolchain)
+    assert rows["bash.path"].status == doc.OK, rows["bash.path"]
+    d = rows["bash.path"].detail
+    assert "System32" in d and "informational" in d, d     # the stub is still NAMED
+
+
+def _codex_hooks(root: Path, windows: str | None):
+    h = {"type": "command", "command": 'bash "x/.codex/hooks/codex-entry.sh" pre_tool_use'}
+    if windows is not None:
+        h["commandWindows"] = windows
+    (root / ".codex" / "hooks").mkdir(parents=True, exist_ok=True)
+    (root / ".codex" / "hooks.json").write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"matcher": ".*", "hooks": [h]}]}}), encoding="utf-8")
+
+
+_ALL_TARGETS = {"claude": True, "codex": True, "generic": False, "opencode": False}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the WSL-stub trap is Windows-only")
+def test_R2B2_a_codex_hook_with_NO_windows_command_and_a_stub_first_is_FAIL(sandbox, tmp_path,
+                                                                           monkeypatch):
+    """Codex runs `command` through cmd.exe when there is no `commandWindows`: bare `bash`
+    is then the stub, the hook fails, and Codex runs the tool call (fails OPEN)."""
+    _stub_first(tmp_path, monkeypatch)
+    _codex_hooks(sandbox.root, None)
+    row = {r.id: r for r in doc.check_toolchain(sandbox.ctx(targets=_ALL_TARGETS))}["bash.path"]
+    assert row.status == doc.FAIL, row
+    assert "System32" in row.detail and "codex" in row.detail.lower(), row.detail
+    assert "install" in row.detail, row.detail          # the fix: re-run the installer
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the WSL-stub trap is Windows-only")
+def test_R2B2_TWIN_the_same_codex_hook_WITH_a_powershell_windows_command_is_OK(sandbox, tmp_path,
+                                                                             monkeypatch):
+    _stub_first(tmp_path, monkeypatch)
+    _codex_hooks(sandbox.root, "pwsh -NoProfile -File x/codex-entry.ps1 pre_tool_use")
+    row = {r.id: r for r in doc.check_toolchain(sandbox.ctx(targets=_ALL_TARGETS))}["bash.path"]
+    assert row.status == doc.OK, row
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the WSL-stub trap is Windows-only")
+def test_R2B2_TWIN_a_bare_bash_hook_with_GIT_BASH_first_on_PATH_is_OK(sandbox, tmp_path,
+                                                                    monkeypatch):
+    """The other clause: the same bare-bash hook is fine when PATH's first bash is not a stub."""
+    gb = doc.guard_bash(sandbox.ctx())[0]
+    assert gb and not doc._is_stub(gb), gb
+    monkeypatch.setenv("PATH", str(Path(gb).parent) + os.pathsep + os.environ["PATH"])
+    _codex_hooks(sandbox.root, None)
+    row = {r.id: r for r in doc.check_toolchain(sandbox.ctx(targets=_ALL_TARGETS))}["bash.path"]
+    assert row.status == doc.OK, row
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the WSL-stub trap is Windows-only")
+def test_R2B2_a_codex_windows_command_that_IS_bare_bash_is_FAIL(sandbox, tmp_path, monkeypatch):
+    _stub_first(tmp_path, monkeypatch)
+    _codex_hooks(sandbox.root, 'bash "x/codex-entry.sh" pre_tool_use')
+    row = {r.id: r for r in doc.check_toolchain(sandbox.ctx(targets=_ALL_TARGETS))}["bash.path"]
+    assert row.status == doc.FAIL, row
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the WSL-stub trap is Windows-only")
+def test_R2B2_a_claude_hook_run_by_POWERSHELL_that_starts_bare_bash_is_FAIL(sandbox, tmp_path,
+                                                                           monkeypatch):
+    _stub_first(tmp_path, monkeypatch)
+    s = sandbox.root / ".claude" / "settings.json"
+    d = json.loads(s.read_text(encoding="utf-8"))
+    ev = next(iter(d["hooks"]))
+    d["hooks"][ev][0]["hooks"][0]["shell"] = "powershell"
+    s.write_text(json.dumps(d), encoding="utf-8")
     rows = sandbox.rows(doc.check_toolchain)
     assert rows["bash.path"].status == doc.FAIL, rows["bash.path"]
-    assert "System32" in rows["bash.path"].detail
+    assert "claude" in rows["bash.path"].detail.lower(), rows["bash.path"].detail
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the WSL-stub trap is Windows-only")
+def test_R2B2_a_stub_first_and_NO_git_bash_resolvable_is_FAIL_with_the_setx_line(sandbox, tmp_path,
+                                                                                monkeypatch):
+    _stub_first(tmp_path, monkeypatch)
+    monkeypatch.setenv("X4_BASH", str(tmp_path / "no-such-bash.exe"))
+    rows = sandbox.rows(doc.check_toolchain)
+    assert rows["bash.path"].status == doc.FAIL, rows["bash.path"]
+    assert "setx X4_BASH" in rows["bash.path"].detail, rows["bash.path"].detail
 
 
 def test_TWIN_the_real_bash_is_OK(sandbox):
