@@ -571,6 +571,12 @@ def test_F9_TWIN_a_claude_root_still_demands_CLAUDE_md(tmp_path, monkeypatch):
 def test_F9_TWIN_a_root_with_NO_agent_marker_still_demands_CLAUDE_md(tmp_path, monkeypatch):
     """Deleting .claude/ wholesale must not make CLAUDE.md's absence silent: with no
     target marker at all, the pre-4.0 (Claude) demand stands."""
+    # R2-B1: the fallback applies when NO agent root is marked. Run from an INSTALLED separate
+    # toolkit, this script's own folder is a marked agent root, so the game root is rightly
+    # lock-if-present (MEASURED: this failed only in an installed toolkit). Pin the script to a
+    # checkout-shaped folder so the case means the same wherever the suite runs.
+    (tmp_path / "checkout" / "scripts").mkdir(parents=True)
+    monkeypatch.setattr(x4lock, "_HERE", tmp_path / "checkout" / "scripts")
     game = _game(tmp_path, monkeypatch, claude=False)
     gone = x4lock.missing()
     assert _in(gone, game, "CLAUDE.md")

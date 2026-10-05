@@ -171,6 +171,12 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     tmp_path (HOME, ZDOTDIR). Agent detection walks `detect_path` (an empty directory
     by default), never the developer's PATH.
     """
+    if source is None and not from_dest:
+        # R2-B1: the installers install FROM a repository or release tree; an installed toolkit
+        # has no agent/ (MEASURED: "the source has no agent/targets/codex/hooks.json.tmpl").
+        from _layout import require_repo
+        require_repo("agent/targets/codex/hooks.json.tmpl",
+                     why="the installers install FROM a repository or release tree")
     fake_home = tmp_path / "fake-claude-home"
     _refuse_unless_sandboxed(tmp_path, dest, tmp_path / "game",
                              tmp_path / "profile", tmp_path / "mods", fake_home)
