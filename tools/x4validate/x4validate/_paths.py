@@ -344,8 +344,13 @@ def toolkit_notice() -> None:
     _NOTICED.add("toolkit-conflict")
     acting, env = c
     why = "--toolkit" if _EXPLICIT is not None else "the toolkit this tool lives in"
+    # FX-B2: "NOT used here" is true of X4_TOOLKIT alone. Any other exported root still
+    # outranks the config, so the line names those instead of offering false comfort.
+    still = sorted(k for keys in ROOT_KEYS.values() for k in keys if os.environ.get(k))
+    tail = (f" Other exported roots ARE still read and outrank the config: {', '.join(still)}."
+            if still else "")
     print(f"x4 toolkit: acting for {acting} ({why}); $X4_TOOLKIT names a different toolkit, "
-          f"{env}, which is NOT used here -- run that toolkit's own copy to act for it.",
+          f"{env}, which is NOT used here -- run that toolkit's own copy to act for it.{tail}",
           file=sys.stderr)
 
 
@@ -563,14 +568,123 @@ def _layers() -> list[dict[str, str]]:
     wrong: a `_LOCAL_FALLBACK` value for `X4_GAME` would then outrank a real
     `$X4_GAME_EXTENSIONS` the user actually exported.
     """
+    file_layer, _ = _file_layer()
+    if _CONFIG_ONLY:
+        # What the acting toolkit's CONFIG says, the inherited environment ignored (see
+        # `env_root_conflicts`). X4_TOOLKIT stays: it is the acting toolkit, not a config value.
+        tk = toolkit_root()
+        return [{"X4_TOOLKIT": str(tk)} if tk is not None else {}, file_layer, _LOCAL_FALLBACK]
     env = {k: v for k, v in os.environ.items()
            if (k.startswith("X4_") or k == "XRCATTOOL") and v}
     # B2: an exported X4_TOOLKIT naming ANOTHER toolkit must not answer by derivation either
     # (`<X4_TOOLKIT>/reference` was the second route to the other toolkit's tree).
     if env.get("X4_TOOLKIT") and toolkit_conflict() is not None:
         env["X4_TOOLKIT"] = str(toolkit_root())
-    file_layer, _ = _file_layer()
-    return [env, file_layer, _LOCAL_FALLBACK]
+    # An explicit --reference (`use_root`) sits above the environment, and only when given:
+    # without one the order is the documented [env, file, fallback].
+    explicit = [dict(_EXPLICIT_ROOTS)] if _EXPLICIT_ROOTS else []
+    return [*explicit, env, file_layer, _LOCAL_FALLBACK]
+
+
+# --- an INHERITED root vs the acting toolkit's config (FX-B2, delta review of F160) -----------
+#
+# THE INCIDENT, second route. F160 stopped an inherited $X4_TOOLKIT from choosing which config
+# is read -- but the ENVIRONMENT layer still outranks that config, so a shell that had inherited
+# X4_REFERENCE=<A>/reference made `x4refguard apply --toolkit B --yes` protect A's tree and
+# `remove --toolkit B --yes` lift A's protection (exit 0, MEASURED), with no notice at all when
+# X4_TOOLKIT itself was not inherited. A system-changing command therefore compares each root
+# it acts on, resolved WITH the environment, against the same root resolved from the acting
+# toolkit's config alone, and refuses on a difference unless the root was chosen explicitly
+# (`use_root`, e.g. x4refguard --reference). A read-only command gets a notice instead.
+
+#: Accessor -> the variables that can set it (every alias and every derivation source).
+ROOT_KEYS: dict[str, tuple[str, ...]] = {
+    "reference": ("X4_REFERENCE",),
+    "game_root": ("X4_GAME", "X4_GAME_ROOT", "X4_EXTENSIONS", "X4_GAME_EXTENSIONS"),
+    "registry": ("X4_REGISTRY", "X4_MODS"),
+}
+#: Roots chosen by an explicit command-line flag (`use_root`): the top layer, never a conflict.
+_EXPLICIT_ROOTS: dict[str, str] = {}
+#: Set only inside `_config_answer`: `_layers` then drops the inherited environment.
+_CONFIG_ONLY = False
+
+
+def use_root(key: str, value) -> None:
+    """An explicit flag (e.g. `--reference DIR`) chose *key*: it outranks the environment and
+    the config, and `env_root_conflicts` no longer reports the root it sets."""
+    _EXPLICIT_ROOTS[key] = native(str(value))
+
+
+def _config_answer(fn):
+    """*fn*() as the acting toolkit's config alone answers it (no inherited X4_* variable)."""
+    global _CONFIG_ONLY
+    _CONFIG_ONLY = True
+    try:
+        return fn()
+    finally:
+        _CONFIG_ONLY = False
+
+
+def env_root_conflicts(*names: str) -> list[tuple[str, tuple[str, ...], Path, Path]]:
+    """`(accessor, the exported variables, answer WITH the environment, the config's answer)`
+    for each accessor in *names* (keys of `ROOT_KEYS`) whose answer an EXPORTED variable
+    changes away from what the acting toolkit's config file says.
+
+    Only when a config file IS read: with none, the environment is the only configuration
+    there is, and nothing disagrees with it. A config silent on the key still has an answer
+    (`<toolkit>/reference`) and is compared. A root chosen by `use_root` is never reported."""
+    if _file_layer()[1] is None:
+        return []
+    out = []
+    for name in names:
+        keys = ROOT_KEYS[name]
+        if any(k in _EXPLICIT_ROOTS for k in keys):
+            continue
+        exported = tuple(k for k in keys if os.environ.get(k))
+        if not exported:
+            continue
+        fn = globals()[name]
+        eff, cfg = fn(), _config_answer(fn)
+        if eff is None or cfg is None or _same_dir(eff, cfg):
+            continue
+        out.append((name, exported, eff, cfg))
+    return out
+
+
+def env_root_refusal(action: str, flags: dict[str, str], *names: str) -> str | None:
+    """The refusal for a SYSTEM-CHANGING *action* while an exported variable moves one of
+    *names* away from the acting toolkit's config, else None. *flags* maps an accessor to the
+    command-line flag that chooses it explicitly. Paths and variable NAMES, never a secret."""
+    found = env_root_conflicts(*names)
+    if not found:
+        return None
+    lines = [f"REFUSED: `{action}` changes your system, and the environment and this toolkit's "
+             f"config ({_file_layer()[1]}) name DIFFERENT roots. Nothing was changed."]
+    for name, keys, eff, cfg in found:
+        flag = flags.get(name, "")
+        lines.append(f"  {name}: ${'/$'.join(keys)} in the environment -> {eff}")
+        lines.append(f"  {name}: this toolkit's config -> {cfg}")
+        if flag:
+            lines.append(f"  Choose one explicitly: {flag} \"{cfg}\"  (the config's)  or  "
+                         f"{flag} \"{eff}\"  (the environment's) -- or unset "
+                         f"{' / '.join(keys)} in this shell.")
+        else:
+            lines.append(f"  Unset {' / '.join(keys)} in this shell (or make it match the "
+                         f"config) to act on the config's root.")
+    return "\n".join(lines)
+
+
+def env_root_notice(*names: str) -> None:
+    """ONE stderr line per root per process for a read-only command: the environment moves
+    a root away from the config, and the answer below follows the environment."""
+    for name, keys, eff, cfg in env_root_conflicts(*names):
+        key = "env-root:" + name
+        if key in _NOTICED:
+            continue
+        _NOTICED.add(key)
+        print(f"x4 config: {name} follows ${'/$'.join(keys)} from the environment ({eff}); "
+              f"this toolkit's config says {cfg}. Commands that change your system refuse "
+              f"until one is chosen.", file=sys.stderr)
 
 
 #: WSL first — `/mnt/c/x` also matches the MSYS shape as drive "m" + "nt/c/x".

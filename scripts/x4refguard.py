@@ -41,9 +41,9 @@ WHAT IT DOES NOT STOP (the honest gaps)
     denied, so the deny stays removable). POSIX chmod: root, and `chmod u+w` by the owner.
 
 USAGE
-    python scripts/x4refguard.py status [--json] [--full] [--toolkit DIR]
-    python scripts/x4refguard.py apply  [--path P] [--yes] [--toolkit DIR]   P must be the configured root
-    python scripts/x4refguard.py remove [--path P] [--yes] [--toolkit DIR]   the escape hatch, step 1/2
+    python scripts/x4refguard.py status [--json] [--full] [--toolkit DIR] [--reference DIR]
+    python scripts/x4refguard.py apply  [--path P] [--yes] [--toolkit DIR] [--reference DIR]   P must be the configured root
+    python scripts/x4refguard.py remove [--path P] [--yes] [--toolkit DIR] [--reference DIR]   the escape hatch, step 1/2
 
 BEFORE CHANGING ANYTHING (B3, install red-team 2026-10-04: an apply ran >2 minutes on a
 60 GB tree with no output and no question): apply and remove print the target root and
@@ -53,7 +53,10 @@ call runs, a heartbeat line says it is still working.
 
 WHICH TOOLKIT (B2, same red-team): this script acts for the toolkit it LIVES IN. If
 $X4_TOOLKIT names a different one, one line says so, and apply/remove REFUSE (exit 2)
-unless --toolkit DIR names the toolkit to act for explicitly.
+unless --toolkit DIR names the toolkit to act for explicitly. And an EXPORTED X4_REFERENCE
+naming a different root from the acting toolkit's config makes apply/remove REFUSE (exit 2),
+printing both roots, unless --reference DIR chooses one (FX-B2: `--toolkit B` alone still
+acted on another copy's tree through an inherited X4_REFERENCE); status prints one line.
 
 `status` samples: the root, the sentinel, and the first file found depth-first in each
 top-level directory -- NOT a census, and it says so on every run. `--full` walks every
@@ -971,6 +974,12 @@ def _act(args, action: str) -> int:
               file=sys.stderr)
         return 3
     refusal = _paths.foreign_toolkit_refusal("x4refguard " + action) if _paths is not None else None
+    # FX-B2: an INHERITED X4_REFERENCE outranks the acting toolkit's config, so `--toolkit B`
+    # alone still protected (or lifted) another copy's tree. A difference refuses, naming
+    # both roots and --reference, the flag that chooses one.
+    if not refusal and _paths is not None:
+        refusal = _paths.env_root_refusal("x4refguard " + action,
+                                          {"reference": "--reference"}, "reference")
     if refusal:
         print(refusal, file=sys.stderr)
         return 2
@@ -1010,6 +1019,10 @@ def main(argv=None) -> int:
         p.add_argument("--yes", action="store_true",
                        help="confirm without being asked (required when not run in a terminal)")
     for p in (st, ap_, rm):
+        p.add_argument("--reference", metavar="DIR",
+                       help="act on this reference root, chosen explicitly. Needed for "
+                            "apply/remove when an exported X4_REFERENCE and this toolkit's "
+                            "config name different roots (both are printed)")
         p.add_argument("--toolkit", metavar="DIR",
                        help="act for this toolkit's configuration. Default: the toolkit this "
                             "script lives in; REQUIRED for apply/remove when $X4_TOOLKIT names "
@@ -1023,6 +1036,14 @@ def main(argv=None) -> int:
         _paths.use_toolkit(args.toolkit)
     elif _paths is not None:
         _paths.toolkit_notice()
+    if getattr(args, "reference", None):
+        if _paths is None:
+            print("REFUSED: --reference needs the x4validate package, which could not be "
+                  "imported", file=sys.stderr)
+            return 2
+        _paths.use_root("X4_REFERENCE", args.reference)
+    if args.cmd == "status" and _paths is not None:
+        _paths.env_root_notice("reference")
     if args.cmd == "status":
         return cmd_status(args)
     if args.cmd in ("apply", "remove"):

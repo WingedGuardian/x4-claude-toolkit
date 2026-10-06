@@ -67,12 +67,15 @@ def kits(tmp_path):
     return a, b
 
 
-def _env(x4_toolkit, sandbox: Path) -> dict:
+def _env(x4_toolkit, sandbox: Path, **inherited) -> dict:
+    """*inherited*: X4_* variables the calling shell EXPORTS (FX-B2: F160's tests blanked
+    X4_REFERENCE, which is exactly the inherited variable that still reached A's tree)."""
     e = {k: v for k, v in os.environ.items() if not k.startswith("X4_")}
     e.update(X4_CONFIG="", X4_REFERENCE="", X4_REFGUARD_SANDBOX=str(sandbox),
              PYTHONDONTWRITEBYTECODE="1")
     if x4_toolkit is not None:
         e["X4_TOOLKIT"] = str(x4_toolkit)
+    e.update({k: str(v) for k, v in inherited.items()})
     return e
 
 
@@ -217,9 +220,94 @@ def test_x4lock_lock_and_unlock_REFUSE_under_a_foreign_X4_TOOLKIT(kits, args):
 
 
 def test_x4lock_status_is_read_only_and_allowed(kits):
+    """Reviewer C: this asserted `"--toolkit" not in err or "REFUS" not in err` and nothing
+    else -- no exit code, no state -- so a refusal that happened to omit one word passed. Now:
+    status RAN (rc 0/1: 1 = unlocked or missing files; 2 = refused or unresolvable), and it
+    changed nothing (B's config is still writable)."""
     a, b = kits
+    cfg = b / "x4-paths.env"
     r = _run(b, "x4lock.py", "status", env=_env(a, b))
-    assert "--toolkit" not in r.stderr or "REFUS" not in r.stderr, r.stderr
+    assert r.returncode in (0, 1), (r.returncode, r.stdout, r.stderr)
+    assert "protected file(s)" in r.stdout, r.stdout
+    assert "REFUS" not in r.stderr, r.stderr
+    assert os.access(cfg, os.W_OK), "a READ-ONLY status locked a file"
+
+
+# ------------------------- FX-B2: an INHERITED X4_REFERENCE / X4_GAME, left SET (not blanked)
+
+@pytest.mark.parametrize("op", ["apply", "remove"])
+@pytest.mark.parametrize("with_toolkit_env", [True, False], ids=["X4_TOOLKIT=A", "X4_TOOLKIT-unset"])
+def test_FXB2_inherited_X4_REFERENCE_makes_toolkit_B_REFUSE_naming_both(kits, op, with_toolkit_env):
+    """The delta review's probe: `--toolkit B --yes` with X4_REFERENCE=<A>/refA exported
+    protected (apply) or lifted (remove) A's tree, exit 0. With only X4_REFERENCE inherited
+    there was no notice at all. Both shapes must refuse, name both roots and --reference, and
+    reach no mutating call (the sandbox is B: a call on A raises SandboxViolation)."""
+    a, b = kits
+    env = _env(a if with_toolkit_env else None, b, X4_REFERENCE=a / "refA")
+    r = _run(b, "x4refguard.py", op, "--toolkit", str(b), "--yes", env=env)
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert "--reference" in r.stderr and "DIFFERENT" in r.stderr, r.stderr
+    assert str(a / "refA") in r.stderr and str(b / "refB") in r.stderr, r.stderr
+    assert "SandboxViolation" not in r.stderr and "Layer 2" not in r.stdout, r.stdout + r.stderr
+
+
+def test_FXB2_TWIN_inherited_X4_REFERENCE_EQUAL_to_the_config_is_not_refused(kits):
+    a, b = kits
+    env = _env(None, b, X4_REFERENCE=b / "refB")
+    r = _run(b, "x4refguard.py", "remove", "--yes", env=env)
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    assert "DIFFERENT" not in r.stderr, r.stderr
+
+
+def test_FXB2_TWIN_reference_flag_chooses_and_acts_on_the_chosen_root(kits):
+    a, b = kits
+    env = _env(a, b, X4_REFERENCE=a / "refA")
+    r = _run(b, "x4refguard.py", "remove", "--toolkit", str(b), "--reference", str(b / "refB"),
+             "--yes", env=env)
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    assert str(b / "refB").lower() in r.stdout.lower(), r.stdout
+
+
+def test_FXB2_TWIN_no_config_file_means_the_environment_IS_the_config(tmp_path):
+    """Clause twin: only a toolkit whose config file is READ can disagree with the
+    environment. With none, X4_REFERENCE is the only configuration -- not refused."""
+    a = _kit(tmp_path / "A", "refA")
+    b = _kit(tmp_path / "B", None)
+    r = _run(b, "x4refguard.py", "remove", "--yes", env=_env(None, b, X4_REFERENCE=a / "refA"))
+    assert "DIFFERENT" not in r.stderr, r.stderr
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+
+
+def test_FXB2_status_notice_and_the_toolkit_notice_no_longer_offers_false_comfort(kits):
+    a, b = kits
+    r = _run(b, "x4refguard.py", "status", "--json", env=_env(a, b, X4_REFERENCE=a / "refA"))
+    assert "ARE still read" in r.stderr and "X4_REFERENCE" in r.stderr, r.stderr
+    assert "follows $X4_REFERENCE" in r.stderr, r.stderr
+
+
+def test_FXB2_x4lock_lock_REFUSES_on_an_inherited_X4_GAME_differing_from_the_config(kits, tmp_path):
+    a, b = kits
+    (tmp_path / "gameA").mkdir()
+    (tmp_path / "gameB").mkdir()
+    with (b / "x4-paths.env").open("a", encoding="utf-8", newline="\n") as f:
+        f.write('X4_GAME="%s"\n' % (tmp_path / "gameB").as_posix())
+    (tmp_path / "gameA" / "KNOWLEDGEBASE.md").write_text("a", encoding="utf-8")
+    env = _env(None, b, X4_GAME=tmp_path / "gameA")
+    r = _run(b, "x4lock.py", "lock", env=env)
+    assert r.returncode == 2 and "--game" in r.stderr and "DIFFERENT" in r.stderr, (r.stdout, r.stderr)
+    assert os.access(tmp_path / "gameA" / "KNOWLEDGEBASE.md", os.W_OK), "it locked A's file"
+    assert os.access(b / "x4-paths.env", os.W_OK), "it locked a file although it refused"
+
+
+def test_FXB2_TWIN_x4lock_game_flag_chooses(kits, tmp_path):
+    a, b = kits
+    (tmp_path / "gameB").mkdir()
+    with (b / "x4-paths.env").open("a", encoding="utf-8", newline="\n") as f:
+        f.write('X4_GAME="%s"\n' % (tmp_path / "gameB").as_posix())
+    env = _env(None, b, X4_GAME=tmp_path / "gameA")
+    r = _run(b, "x4lock.py", "unlock", "--all", "--game", str(tmp_path / "gameB"), env=env)
+    assert "DIFFERENT" not in r.stderr, r.stderr
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
 
 
 # ------------------------------------------------------------- _paths, in process
@@ -271,3 +359,24 @@ def test_outside_a_toolkit_X4_TOOLKIT_still_decides(clean, monkeypatch, tmp_path
     monkeypatch.setattr(_paths, "_SELF", None, raising=False)
     monkeypatch.setenv("X4_TOOLKIT", str(tmp_path))
     assert _paths.toolkit_root() == tmp_path and _paths.toolkit_conflict() is None
+
+
+def test_FXB2_env_root_conflicts_in_process(clean, monkeypatch, tmp_path):
+    cfg = tmp_path / "c.env"
+    cfg.write_text('X4_REFERENCE="%s"\n' % (tmp_path / "cfgref").as_posix(), encoding="utf-8")
+    monkeypatch.setenv("X4_CONFIG", str(cfg))
+    monkeypatch.setenv("X4_REFERENCE", str(tmp_path / "envref"))
+    _paths.reload()
+    found = _paths.env_root_conflicts("reference")
+    assert [(n, k) for n, k, _e, _c in found] == [("reference", ("X4_REFERENCE",))], found
+    assert found[0][2] == tmp_path / "envref" and found[0][3] == tmp_path / "cfgref"
+    assert _paths.env_root_refusal("x", {"reference": "--reference"}, "reference")
+    # twin: equal -> nothing
+    monkeypatch.setenv("X4_REFERENCE", str(tmp_path / "cfgref"))
+    assert _paths.env_root_conflicts("reference") == []
+    # twin: an explicit choice -> nothing, and it outranks the environment
+    monkeypatch.setenv("X4_REFERENCE", str(tmp_path / "envref"))
+    monkeypatch.setattr(_paths, "_EXPLICIT_ROOTS", {}, raising=False)
+    _paths.use_root("X4_REFERENCE", tmp_path / "chosen")
+    assert _paths.env_root_conflicts("reference") == []
+    assert _paths.reference() == Path(_paths.native(str(tmp_path / "chosen")))

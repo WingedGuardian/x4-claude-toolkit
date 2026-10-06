@@ -77,7 +77,9 @@ USAGE
 
     Every subcommand takes --toolkit DIR. Default: the toolkit this script LIVES IN (B2,
     install red-team 2026-10-04); lock/unlock REFUSE (exit 2) while $X4_TOOLKIT names a
-    different toolkit unless --toolkit is given.
+    different toolkit unless --toolkit is given -- and while an exported X4_GAME/X4_MODS/...
+    names a different root from that toolkit's config, unless --game / --registry chooses one
+    (FX-B2). Both roots are printed.
 
 The manifest is derived from the configured roots, never hard-coded to one machine, and
 is extended by `X4_PROTECTED` (an os.pathsep-separated list) for anything site-specific.
@@ -623,6 +625,12 @@ def main(argv=None) -> int:
     un.add_argument("--all", action="store_true")
     pr = sub.add_parser("protected", help="exit 0 if PATH is in the manifest, 1 if not (for the guards)")
     pr.add_argument("path")
+    for name in ("lock", "unlock"):
+        # FX-B2: the explicit choice when an exported root and the config disagree.
+        sub.choices[name].add_argument("--game", metavar="DIR",
+                                       help="the game root to act on, chosen explicitly")
+        sub.choices[name].add_argument("--registry", metavar="FILE",
+                                       help="the mod registry to act on, chosen explicitly")
     for p in sub.choices.values():
         p.add_argument("--toolkit", metavar="DIR",
                        help="act for this toolkit's configuration. Default: the toolkit this "
@@ -644,6 +652,21 @@ def main(argv=None) -> int:
                 if refusal:
                     print(refusal, file=sys.stderr)
                     return 2
+        if getattr(args, "game", None):
+            _paths.use_root("X4_GAME", args.game)
+        if getattr(args, "registry", None):
+            _paths.use_root("X4_REGISTRY", args.registry)
+        if args.cmd in ("lock", "unlock"):
+            # FX-B2: an INHERITED X4_GAME / X4_MODS outranks the acting toolkit's config, so a
+            # lock could act on another install's files. A difference refuses, naming both.
+            refusal = _paths.env_root_refusal("x4lock " + args.cmd,
+                                              {"game_root": "--game", "registry": "--registry"},
+                                              "game_root", "registry")
+            if refusal:
+                print(refusal, file=sys.stderr)
+                return 2
+        elif args.cmd == "status":      # not `protected`: a guard calls it, and reads stderr
+            _paths.env_root_notice("game_root", "registry")
     try:
         if args.cmd == "protected":
             return cmd_protected(args)
