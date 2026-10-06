@@ -85,9 +85,10 @@ def import_gate(name: str, *, module_level: bool = True):
         # on the exception type. A blanket catch would silently swallow a real
         # TypeError in a gate on a properly configured machine -- turning a defect
         # into a green skip, which is the exact inversion this suite exists to stop.
-        if not _environment_is_unresolvable():
+        why = _environment_unresolvable_reason()
+        if why is None:
             raise
-        reason = (f"gates/{name}.py needs a configured X4 install "
+        reason = (f"gates/{name}.py needs a usable X4 install -- {why} "
                   f"({type(exc).__name__} at import: {exc}). "
                   f"Set $X4_GAME / $X4_EXTENSIONS, or see x4-paths.env.")
         if module_level:
@@ -280,21 +281,45 @@ def fs_is_case_insensitive(directory) -> bool:
 
 
 def _environment_is_unresolvable() -> bool:
-    """True when this machine has no usable X4 configuration.
+    """True when this machine has no usable X4 configuration (see the reason function)."""
+    return _environment_unresolvable_reason() is not None
+
+
+def _environment_unresolvable_reason(root: Path | None = None) -> str | None:
+    """Why this machine has no usable X4 configuration, or None when it has one.
 
     Deliberately checks the THREE things the gates actually need, rather than
     trusting any single one: a machine can have a reference tree but no registry,
     and the failure mode differs per gate.
+      * any root NOT CONFIGURED                -> unresolvable, in any layout
+      * every root configured, some MISSING    -> unresolvable ONLY in an installed layout
+    R2-B1: CONFIGURED is not PRESENT on a fresh install -- it configures every root before
+    anything exists there (SETUP_PROMPT runs the suite before the unpack), and a gate then
+    exits 2 on the missing folder; 12 ERRORs in an installed toolkit. v4.0.0 delta review:
+    that branch applied in a CHECKOUT as well, so on a configured dev machine whose root had
+    moved, a gate raising TypeError/OSError at import SKIPPED instead of erroring. In a
+    checkout a configured root that is missing is a broken configuration, and it must show.
     """
     try:
         from x4validate import _paths
     except ImportError:
-        return True
-    # R2-B1: CONFIGURED is not PRESENT. A fresh install configures every root before anything
-    # exists there (SETUP_PROMPT runs the suite before the unpack), and a gate then exits 2 on
-    # the missing folder -- re-raised here as an ERROR, 12 of them in an installed toolkit.
-    return any(p is None or not Path(p).exists()
-               for p in (_paths.registry(), _paths.game_extensions(), _paths.reference()))
+        return "x4validate is not importable"
+    ref = _paths.reference()
+    if ref is not None and not _paths.value("X4_REFERENCE") and not Path(ref).exists():
+        ref = None      # only the derived <X4_TOOLKIT>/reference default, never unpacked
+    roots = {"registry": _paths.registry(), "game extensions": _paths.game_extensions(),
+             "reference": ref}
+    unset = [k for k, v in roots.items() if v is None]
+    if unset:
+        return "not configured: " + ", ".join(unset)
+    missing = [k for k, v in roots.items() if not Path(v).exists()]
+    if not missing:
+        return None
+    import _layout
+    if _layout.installed_layout(_layout.ROOT if root is None else root):
+        return ("configured but not present yet (an installed toolkit before setup/unpack): "
+                + ", ".join(missing))
+    return None
 
 
 # --------------------------------------------------------------- skip accounting

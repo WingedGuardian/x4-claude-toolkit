@@ -42,9 +42,11 @@ from x4validate import _check, _merge, _paths, _xsd
 #: See the note in test_fast_script_pass_runs_by_default.py -- the
 #: effective-schema disclosure needs a REAL reference tree. A skip, never a
 #: silent pass.
-from _layout import NEEDS_REFERENCE, reference_unpacked  # noqa: E402
+from _layout import needs_reference_mark  # noqa: E402
 
-needs_reference = pytest.mark.skipif(not reference_unpacked(), reason=NEEDS_REFERENCE)
+# Skips only when no reference is configured, or in an INSTALLED toolkit before the unpack.
+# A checkout whose configured reference is not unpacked RUNS, and fails (delta review).
+needs_reference = needs_reference_mark()
 
 
 def _script_mod(tmp_path: Path, body: str, rel: str = "md/probe.xml") -> Path:

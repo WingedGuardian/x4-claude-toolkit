@@ -328,16 +328,40 @@ def test_an_EMPTY_extensions_list_is_UNKNOWN_not_a_digest():
     assert fp["detail"] == []
 
 
+def _real_root_skip_reason(root, installed: bool) -> str | None:
+    """Why test_a_REAL_root_still_digests must skip, or None when it must run.
+
+    R2-B1: a fresh install configures the extensions root before the user has any mod or DLC
+    folder there; "configured" is not "holds mods". v4.0.0 delta review: that is the
+    INSTALLED-toolkit state only -- in a checkout an empty configured root is a broken
+    configuration, so the test runs on and fails."""
+    if not root:
+        return "no configured extensions root on this machine"
+    if not any(d.is_dir() for r in root if Path(r).is_dir() for d in Path(r).iterdir()):
+        if installed:
+            return ("the configured extensions root(s) hold no extension folder yet "
+                    "(installed toolkit, before setup)")
+    return None
+
+
+def test_an_EMPTY_configured_extensions_root_skips_only_in_an_INSTALL(tmp_path):
+    empty = tmp_path / "extensions"
+    empty.mkdir()
+    assert "installed toolkit" in (_real_root_skip_reason([empty], installed=True) or "")
+    assert _real_root_skip_reason([empty], installed=False) is None      # checkout: run, fail
+    assert _real_root_skip_reason([], installed=False)                    # unconfigured: skip
+    (empty / "ego_dlc_x").mkdir()
+    assert _real_root_skip_reason([empty], installed=True) is None        # holds a folder: run
+
+
 def test_a_REAL_root_still_digests():
     """The twin. Without it the assertion above is satisfied by a fingerprint() that
     returns None for everything, which would disable the content axis entirely."""
+    from _layout import installed_layout
     root = _registry.default_installed_dirs()
-    if not root:
-        pytest.skip("no configured extensions root on this machine")
-    if not any(d.is_dir() for r in root if Path(r).is_dir() for d in Path(r).iterdir()):
-        # R2-B1: a fresh install configures the extensions root before the user has any mod
-        # or DLC folder there; "configured" is not "holds mods".
-        pytest.skip("the configured extensions root(s) hold no extension folder yet")
+    why = _real_root_skip_reason(root, installed_layout())
+    if why:
+        pytest.skip(why)
     fp = _freshness.fingerprint(_merge.Config(), extensions=root)
     assert fp["content"] is not None
     assert len(fp["detail"]) > 0, "a configured root with mods must enumerate them"
