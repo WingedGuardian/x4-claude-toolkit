@@ -353,5 +353,52 @@ def test_sql_hardening_survives_an_UNUSABLE_store(monkeypatch, capsys):
     # the store path must RESOLVE, or _env.effective_db() refuses first and _connect is
     # never reached (the first draft of this test passed for exactly that reason)
     monkeypatch.setattr(cross_tool._env, "effective_db", lambda: Path("effective.sqlite"))
+    monkeypatch.setattr(cross_tool, "failures", [])
+    monkeypatch.setattr(cross_tool, "cannot", [])
     cross_tool.check_sql_hardening()
-    assert "check NOT RUN" in capsys.readouterr().out
+    # v4.0.0 delta review: the first fix only PRINTED "check NOT RUN", so a gate whose
+    # read-only check never ran still exited 0. It must be counted as NOT RUN (exit 2).
+    assert any("read-only" in c for c in cross_tool.cannot), cross_tool.cannot
+    capsys.readouterr()
+
+
+def test_an_UNUSABLE_store_makes_the_gate_exit_2_not_0(monkeypatch, capsys):
+    """End to end through main(): every other section passes, the sql-hardening
+    connection cannot be opened -> the verdict is 2 (could not run), never 0."""
+    from x4validate import _effective
+    for name in ("check_sensitivity", "check_cross_tool_agreement",
+                 "check_builder_idempotence", "check_path_edges"):
+        monkeypatch.setattr(cross_tool, name, lambda *a, **k: None)
+    monkeypatch.setattr(cross_tool, "run", lambda *a, **k: (1, "refused"))
+    monkeypatch.setattr(cross_tool, "failures", [])
+    monkeypatch.setattr(cross_tool, "cannot", [])
+
+    def boom(db):
+        raise ValueError("incompatible store")
+    monkeypatch.setattr(_effective, "_connect", boom)
+    monkeypatch.setattr(cross_tool._env, "effective_db", lambda: Path("effective.sqlite"))
+    assert cross_tool.main() == 2
+    capsys.readouterr()
+
+
+def test_a_USABLE_store_lets_the_sql_hardening_section_pass(monkeypatch, capsys, tmp_path):
+    """Twin: a real read-only store -> the section counts nothing as NOT RUN, so the
+    exit-2 above is caused by the unusable store and nothing else."""
+    import sqlite3 as _sq
+    from x4validate import _effective
+    db = tmp_path / "e.sqlite"
+    c = _sq.connect(db)
+    c.execute("CREATE TABLE entities(origin)")
+    c.execute("CREATE TABLE attrs(a)")
+    c.commit()
+    c.close()
+    monkeypatch.setattr(cross_tool, "run", lambda *a, **k: (1, "refused"))
+    monkeypatch.setattr(cross_tool, "failures", [])
+    monkeypatch.setattr(cross_tool, "cannot", [])
+    monkeypatch.setattr(_effective, "_connect",
+                        lambda p: _sq.connect(f"file:{p}?mode=ro", uri=True))
+    monkeypatch.setattr(cross_tool._env, "effective_db", lambda: db)
+    cross_tool.check_sql_hardening()
+    assert not cross_tool.cannot and not cross_tool.failures, (cross_tool.cannot,
+                                                                cross_tool.failures)
+    capsys.readouterr()

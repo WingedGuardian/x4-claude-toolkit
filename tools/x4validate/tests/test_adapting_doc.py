@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -137,9 +138,48 @@ def _guard_constants(monkeypatch):
     return x4g.TIMEOUT_S, x4g.KILL_WAIT_S, x4g.DRAIN_GRACE_S
 
 
+TOY_ADAPTER = "tools/x4validate/tests/fixtures/toy_agent/toy_adapter.py"
+
+
+def _toy_numbers_or_refuse() -> dict:
+    """The committed toy adapter's numbers. v4.0.0 delta review: a None here used to drop the
+    worked-example comparison SILENTLY (`toy=None` skips that clause). Now: an installed layout
+    without the fixture SKIPS, counted and named; anywhere else the missing fixture FAILS."""
+    toy = _toy_adapter_numbers()
+    if toy is None:
+        from _layout import require_repo
+        require_repo(TOY_ADAPTER, why="the worked example's B/D are compared against it")
+        pytest.fail(f"{TOY_ADAPTER} is missing, so the worked example cannot be compared "
+                    "against the committed toy adapter")
+    return toy
+
+
 def test_the_time_budget_section_states_x4guards_real_defaults(monkeypatch, _guard_src):
     consts = _guard_constants(monkeypatch)
-    assert _budget_problems(TEXT, *consts, toy=_toy_adapter_numbers()) == []
+    assert _budget_problems(TEXT, *consts, toy=_toy_numbers_or_refuse()) == []
+
+
+def test_TWIN_a_missing_toy_adapter_FAILS_in_a_checkout(monkeypatch, tmp_path):
+    import _layout
+    monkeypatch.setattr(sys.modules[__name__], "_toy_adapter_numbers", lambda: None)
+    real = _layout.require_repo
+    monkeypatch.setattr(_layout, "require_repo",
+                        lambda *rel, **k: real(*rel, **{**k, "root": tmp_path}))
+    (tmp_path / "agent").mkdir()                                   # a checkout
+    with pytest.raises(pytest.fail.Exception, match="is missing"):
+        _toy_numbers_or_refuse()
+
+
+def test_TWIN_a_missing_toy_adapter_is_a_COUNTED_skip_in_an_install(monkeypatch, tmp_path):
+    import _layout
+    monkeypatch.setattr(sys.modules[__name__], "_toy_adapter_numbers", lambda: None)
+    real = _layout.require_repo
+    monkeypatch.setattr(_layout, "require_repo",
+                        lambda *rel, **k: real(*rel, **{**k, "root": tmp_path}))
+    (tmp_path / "tools").mkdir()                                   # an install: no agent/, no .git
+    with pytest.raises(pytest.skip.Exception) as e:
+        _toy_numbers_or_refuse()
+    assert _layout.REASON in str(e.value) and "toy_adapter.py" in str(e.value)
 
 
 @pytest.mark.parametrize("mutate", [
@@ -229,15 +269,43 @@ _USER_DOCS = ("SETUP_PROMPT.txt", "ADAPTING.md", "README.md")
 
 
 def _bare_ps1_invocations(text: str) -> list[str]:
-    """Every `install.ps1 -<Switch>` the doc tells someone to RUN, without the
-    `-ExecutionPolicy Bypass -File` prefix a stock Windows needs (README: a bare
-    `install.ps1` run directly is refused by the default execution policy before it runs anything)."""
+    r"""Every `install.ps1` the doc tells someone to RUN without the `-ExecutionPolicy Bypass
+    -File` prefix a stock Windows needs (README: a bare `install.ps1` run directly is refused
+    by the default execution policy before it runs anything). Three invocation shapes:
+      * `install.ps1 -<Switch>` anywhere;
+      * a line that STARTS with the script (`.\install.ps1`, `& ./install.ps1`), switch or not
+        -- v4.0.0 delta review: a bare run with no switch slipped past the first shape;
+      * `powershell`/`pwsh ... install.ps1` on one line.
+    A prose MENTION ("install.ps1 already ran", a backticked name mid-sentence) is none of these."""
+    ok_prefix = r"-ExecutionPolicy\s+Bypass\s+-File\s+$"
     bad = []
     for m in re.finditer(r"(\S*install\.ps1) -[A-Z]\w*", text):
         before = text[max(0, m.start() - 60):m.start()]
-        if not re.search(r"-ExecutionPolicy\s+Bypass\s+-File\s+$", before):
+        if not re.search(ok_prefix, before):
+            bad.append(m.group(0))
+    for m in re.finditer(r"^[ \t]*(?:&[ \t]*)?[\"']?(?:\.[\\/])?install\.ps1\b[^\n]*", text, re.M):
+        if m.group(0) not in bad and not any(m.group(0).strip().startswith(b) for b in bad):
+            bad.append(m.group(0).strip())
+    for m in re.finditer(r"\b(?:powershell|pwsh)(?:\.exe)?[ \t]+[^\n]*?(\S*install\.ps1)", text):
+        before = text[m.start():m.start(1)]
+        if not re.search(ok_prefix, before) and m.group(0) not in bad:
             bad.append(m.group(0))
     return bad
+
+
+@pytest.mark.parametrize("snippet,flagged", [
+    ("```\n.\\install.ps1\n```", True),                                  # bare run, no switch
+    ("```\n& ./install.ps1\n```", True),
+    ("run `powershell .\\install.ps1` now", True),
+    ("run `powershell -File install.ps1` now", True),                     # -File alone: refused
+    ("```\n.\\install.ps1 -Method global\n```", True),                    # the original shape
+    ("powershell -ExecutionPolicy Bypass -File install.ps1    # Windows", False),
+    ("powershell -ExecutionPolicy Bypass -File .\\install.ps1 -Help", False),
+    ("if I installed with install.ps1 from PowerShell, install.ps1 already ran", False),
+    ("a bare `.\\install.ps1` would be refused before it ran anything", False),
+])
+def test_TWIN_bare_ps1_detector_per_shape(snippet, flagged):
+    assert bool(_bare_ps1_invocations(snippet)) is flagged, (snippet, _bare_ps1_invocations(snippet))
 
 
 @pytest.mark.parametrize("name", _USER_DOCS)

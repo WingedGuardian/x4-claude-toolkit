@@ -3264,7 +3264,15 @@ def test_R2B1_an_INSTALLED_toolkits_suite_COLLECTS_and_counts_its_repo_only_skip
     """SETUP_PROMPT.txt has the user run the installed toolkit's suite. Before R2-B1 it died in
     collection (3 errors: modules reading the repo-only agent/ source at import). A REAL install
     (both installers), then `pytest --collect-only` inside it, every X4_* path pinned to the
-    sandbox: no collection error, and the repo-only modules are SKIPPED with the counted reason."""
+    sandbox: no collection error, and the repo-only modules are SKIPPED with the counted reason.
+
+    ⚠ SCOPE: this proves COLLECTION only. `--collect-only` imports every module and evaluates
+    skip markers, but RUNS NO TEST BODY -- a test that fails at runtime in an installed tree
+    (a false red such as the export-ignore audit inside a game-root repo, delta review C) is
+    NOT covered here. Running the installed suite for real is left to the release's cold
+    install check. COST (MEASURED 2026-10-05, Windows): each parametrization makes a fresh
+    install and `uv run` builds that install's own .venv, so the two cases build TWO venvs;
+    18.3 s (sh) + 12.9 s (ps1) = ~31 s, ~0.1 GB written to the temp drive."""
     if shutil.which("uv") is None:
         pytest.skip("no uv to run the installed suite with")
     dest = _fresh(tmp_path)

@@ -208,13 +208,51 @@ def test_the_internal_audit_harness_is_NOT_in_the_bundle():
     """v4.0.0 review R5-12: tools/x4validate/audit/ is a maintainer's audit harness (its own
     README: "a local audit instrument, not a shipped CLI") and shipped in every install.
     `export-ignore` keeps it in the repo and out of `git archive`, like release/."""
+    _audit_export_ignore(Path(__file__).resolve().parents[3])
+
+
+def _audit_export_ignore(root: Path) -> None:
     import subprocess
-    root = Path(__file__).resolve().parents[3]
+    # v4.0.0 delta review: "git check-attr failed" was the only skip, so an INSTALLED toolkit
+    # sitting inside ANOTHER git repo (the in-game method installs into the game root, which
+    # can be one) asked that repo and went red. Not this toolkit's own checkout -> counted
+    # skip; in a checkout a failing git is a FAILURE, not a skip.
+    from _layout import REASON, installed_layout
+    if installed_layout(root):
+        pytest.skip(f"{REASON}: the export-ignore audit needs this toolkit's own git checkout")
     r = subprocess.run(["git", "-C", str(root), "check-attr", "export-ignore", "--",
                         "tools/x4validate/audit/driver.py", "tools/x4validate/x4validate/_paths.py"],
                        capture_output=True, text=True)
-    if r.returncode != 0:
-        pytest.skip("not a git checkout: " + r.stderr.strip())
+    assert r.returncode == 0, r.stderr
     got = dict(line.split(": export-ignore: ") for line in r.stdout.strip().splitlines())
     assert got["tools/x4validate/audit/driver.py"] == "set", got
     assert got["tools/x4validate/x4validate/_paths.py"] == "unspecified", got   # twin
+
+
+def _tiny_repo(root: Path, files: dict) -> Path:
+    import subprocess
+    root.mkdir(parents=True)
+    for rel, body in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(body, encoding="utf-8")
+    for a in (("init", "-q"), ("add", *files),
+              ("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+               "commit", "-qm", "x")):
+        assert subprocess.run(["git", *a], cwd=root, capture_output=True).returncode == 0, a
+    return root
+
+
+def test_TWIN_an_install_inside_ANOTHER_git_repo_SKIPS_the_export_ignore_audit(tmp_path):
+    game = _tiny_repo(tmp_path / "game", {"readme.txt": "x"})        # no agent/ tracked
+    (game / "tools").mkdir()
+    with pytest.raises(pytest.skip.Exception, match="export-ignore audit"):
+        _audit_export_ignore(game)
+
+
+def test_TWIN_a_CHECKOUT_without_the_attribute_FAILS_the_export_ignore_audit(tmp_path):
+    co = _tiny_repo(tmp_path / "co", {"agent/a.md": "x", "tools/x4validate/audit/driver.py": ""})
+    with pytest.raises(AssertionError):
+        _audit_export_ignore(co)
+    (co / ".gitattributes").write_text("tools/x4validate/audit/** export-ignore\n",
+                                       encoding="utf-8")
+    _audit_export_ignore(co)                                           # and with it, passes

@@ -22,8 +22,20 @@ SCRIPT = REPO / "scripts" / "codex-e2e.py"
 
 @pytest.fixture(scope="module")
 def e2e():
-    if not SCRIPT.is_file():
-        pytest.skip("no scripts/codex-e2e.py")
+    return _load()
+
+
+def test_a_MISSING_codex_e2e_script_FAILS_rather_than_skips(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys.modules[__name__], "SCRIPT", tmp_path / "codex-e2e.py")
+    with pytest.raises(AssertionError, match="ships in every layout"):
+        _load()
+
+
+def _load():
+    # v4.0.0 delta review: this was an unconditional skip. scripts/codex-e2e.py is tracked,
+    # not export-ignored, and copied by both installers (`scripts` is in the copy set), so
+    # every layout carries it: a missing one is a broken tree, never a reason to skip.
+    assert SCRIPT.is_file(), f"{SCRIPT} is missing -- it ships in every layout"
     spec = importlib.util.spec_from_file_location("codex_e2e_rows", SCRIPT)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["codex_e2e_rows"] = mod

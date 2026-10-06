@@ -48,8 +48,10 @@ def _env(tmp_path: Path, **extra) -> dict:
 
 
 def _repo(tmp_path: Path, body: str) -> Path:
-    if not SCRIPT.is_file():
-        pytest.skip("no scripts/scan-identifiers.py (dev-only script) -- not checked")
+    # v4.0.0 delta review: this was an unconditional skip calling the script "dev-only". It
+    # is tracked, not export-ignored, and copied by both installers, so it ships in every
+    # layout: a missing one must FAIL.
+    assert SCRIPT.is_file(), f"{SCRIPT} is missing -- it ships in every layout"
     r = tmp_path / "repo"
     (r / "scripts").mkdir(parents=True)
     shutil.copy2(SCRIPT, r / "scripts" / SCRIPT.name)
@@ -146,3 +148,9 @@ def test_the_selftest_covers_the_bare_id_both_ways():
                        text=True, timeout=120)
     assert r.returncode == 0, r.stdout
     assert "DERIVED profile id" in r.stdout and "unrelated 8-digit" in r.stdout
+
+
+def test_a_MISSING_scan_identifiers_script_FAILS_rather_than_skips(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys.modules[__name__], "SCRIPT", tmp_path / "scan-identifiers.py")
+    with pytest.raises(AssertionError, match="ships in every layout"):
+        _repo(tmp_path, "x")

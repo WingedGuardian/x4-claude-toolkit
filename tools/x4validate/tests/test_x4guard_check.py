@@ -119,7 +119,14 @@ def test_wsl_bash_refused(sandbox):
     _, _, env = sandbox
     env = dict(env, X4_BASH=r"C:\Windows\System32\bash.exe")
     _, v, _ = check(env, "--kind", "shell", "--shell", "bash", "--command", "echo hi")
-    assert v["decision"] == "deny" and v["inert"] and "WSL" in v["reason"]
+    assert v["decision"] == "deny" and v["inert"], v
+    # The WSL-stub trap exists on Windows only (resolve_bash checks it under os.name == "nt").
+    # Off Windows the same X4_BASH is a path to nothing, and THAT must be the reason given --
+    # still an inert deny, never an allow (CI5, ubuntu 2026-10-05).
+    if os.name == "nt":
+        assert "WSL" in v["reason"], v
+    else:
+        assert "points at nothing" in v["reason"] and "WSL" not in v["reason"], v
 
 
 def test_missing_bash_is_inert_deny(sandbox, tmp_path):

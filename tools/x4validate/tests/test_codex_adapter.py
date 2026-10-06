@@ -226,8 +226,10 @@ def test_a_hook_whose_grandchild_holds_the_pipes_is_still_bounded(sandbox, tmp_p
     tree = tmp_path / "root" / ".codex" / "hooks"
     shutil.copytree(ADAPTER.parent, tree)
     py = Path(sys.executable).as_posix()
+    pidfile = (tmp_path / "grandchild.pid").as_posix()
     (tree / "backup-before-edit.sh").write_bytes(
-        f"cat >/dev/null\n'{py}' -c \"import time; time.sleep(60)\" &\nsleep 60\n".encode("utf-8"))
+        (f"cat >/dev/null\n'{py}' -c \"import os, time; open('{pidfile}', 'w').write(str(os.getpid())); "
+         f"time.sleep(60)\" &\nsleep 60\n").encode("utf-8"))
     (tk / "dev" / "mymod" / "a.xml").write_text("<a/>\n", encoding="utf-8")
     patch = "*** Begin Patch\n*** Update File: dev/mymod/a.xml\n@@\n-<a/>\n+<b/>\n*** End Patch"
     t0 = time.monotonic()
@@ -236,6 +238,62 @@ def test_a_hook_whose_grandchild_holds_the_pipes_is_still_bounded(sandbox, tmp_p
     wall = time.monotonic() - t0
     assert kind in ("ask", "deny") and "timed out" in (text or ""), (kind, text)
     assert wall < 40, f"{wall:.1f}s: a 12 s budget did not bound the backup hook"
+    # v4.0.0 delta review C: bounding the CALL is not the same as reaping the TREE -- the python
+    # grandchild could outlive the test by its full 60 s. MEASURED 2026-10-05 (Windows, outside
+    # rb's job object): no survivor. Pinned here: the grandchild must have started (else this
+    # proves nothing) and must be gone; a survivor is killed before the test fails.
+    pf = Path(pidfile)
+    assert pf.is_file(), "the grandchild never started -- the bound above was not exercised"
+    pid = int(pf.read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 5
+    while _alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if _alive(pid):
+        _terminate(pid)
+        pytest.fail(f"the hook's grandchild (pid {pid}) outlived the bounded call: orphaned")
+
+
+def _alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(0x1000, False, pid)          # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            return bool(k32.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == 259
+        finally:
+            k32.CloseHandle(h)
+    import os
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _terminate(pid: int) -> None:
+    import os
+    import signal
+    try:
+        os.kill(pid, signal.SIGTERM)                     # TerminateProcess on Windows
+    except OSError:
+        pass
+
+
+def test_TWIN_the_liveness_probe_sees_a_live_process_and_a_dead_one():
+    """The orphan check above is only as good as `_alive`: it must say True for a running
+    process and False once that process is gone."""
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        assert _alive(p.pid) is True
+    finally:
+        p.kill()
+        p.wait(timeout=10)
+    assert _alive(p.pid) is False
 
 
 def test_session_start_fits_inside_the_wrappers_limit(monkeypatch):

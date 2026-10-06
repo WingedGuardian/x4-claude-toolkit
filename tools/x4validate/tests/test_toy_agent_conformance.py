@@ -90,7 +90,12 @@ def test_each_adapter_mutant_turns_conformance_red(name, conformance_dump, tmp_p
     # (e.g. the guards-off untranslatable-PowerShell case) is inert by design, the engine
     # rightly refuses to count it (R2-F3), and it cannot express any mutant. Judged with the
     # engine's own NOT_CHECKED pattern, never a copy of it.
-    chosen = [r for r in pool if pick(r) and not _recorded_inert(xc, r)][:12]
+    # And only rows REPLAYABLE on this platform. CI (ubuntu, 2026-10-05): one of the 12 picked
+    # rows spelled its path with backslashes, the engine bucketed it windows_path_dialect off
+    # Windows, 11 < --min-cases 12, and the CONTROL refused (rc 3) -- the floor, not the mutant,
+    # decided. The engine's own classifier picks them out, so the floor is what really runs.
+    chosen = [r for r in pool if pick(r) and not _recorded_inert(xc, r)
+              and _replayable_here(xc, r)][:12]
     assert chosen, f"{name}: no case can express this defect -- add one, never drop the mutant"
     cases = _write(chosen, tmp_path / "c.jsonl")
     src = (TOY / "toy_adapter.py").read_text(encoding="utf-8")
@@ -104,6 +109,22 @@ def test_each_adapter_mutant_turns_conformance_red(name, conformance_dump, tmp_p
     assert control.returncode == 0, control.stdout[-3000:]          # control first
     red = conformance(cases, mutant, *floor)
     assert red.returncode == 1, (name, red.returncode, red.stdout[-3000:])
+    assert "below --min-cases" not in red.stdout, red.stdout[-3000:]   # red for the defect
+
+
+def _replayable_here(xc, row, windows=None) -> bool:
+    """False for a row the engine would bucket WINDOWS_PATH_DIALECT on this platform."""
+    kind = row.get("kind") or xc.classify(row, windows=windows)
+    return kind != xc.WINDOWS_PATH_DIALECT
+
+
+def test_TWIN_a_backslash_path_row_is_replayable_on_Windows_only():
+    xc = _engine()
+    row = {"payload": {"tool_name": "Write", "tool_input": {"file_path": "C:\\tk\\reference\\x"}}}
+    assert _replayable_here(xc, row, windows=True) is True
+    assert _replayable_here(xc, row, windows=False) is False
+    fwd = {"payload": {"tool_name": "Write", "tool_input": {"file_path": "/tk/reference/x"}}}
+    assert _replayable_here(xc, fwd, windows=False) is True
 
 
 def test_live_canary_through_the_toy_agent_blocks_and_its_control_writes(conformance_dump, tmp_path):
