@@ -157,7 +157,9 @@ Exit 2 means a usage error (a wrong option). The rules for calling it:
   block there reaches every hook, so the guard must see whether it would set X4_GUARD. A tool that
   writes the WHOLE file passes it as `--content "<the new file>"` (judged exactly as Claude Code's
   Write); a patch or any partial text passes it as `--command "<the patch>"` (judged more
-  strictly: a patch cannot prove an existing key is removed). Never both. The shipped adapters
+  strictly: a patch cannot prove an existing key is removed); add `--patch` when that text IS an
+  apply_patch, so an add-only patch is judged on the file it writes (without the flag the text
+  is never read as a patch). Never `--content` with `--command`. The shipped adapters
   pass it only for settings files (READ: `agent/guards/adapters/codex.py`, `opencode.py`); a
   large file through the command line can exceed the OS argument limit.
 - **`--kind delete`** for anything that removes or moves a file away; x4guard judges it as the

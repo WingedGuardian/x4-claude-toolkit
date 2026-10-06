@@ -124,17 +124,76 @@ def _apply(text: str, edits: list):
     return text
 
 
+def _could_form_key(new: str) -> bool:
+    """Could `new`, spliced into text this guard has not seen at a place it does not know, make
+    a key appear? (FX-G6 / reviewer K I5: an edit that does not apply to the file as read here
+    is judged this way -- fail closed.) Yes when it names one or holds a JSON backslash-u
+    escape; when it is a piece of `X4_GUARD`; when it STARTS with the key's tail or ENDS with
+    its head (the surrounding text supplies the rest); or when its first characters could
+    finish a backslash-u escape the text before it opened, or its last could open one."""
+    u, k = new.upper(), KEYS[0]
+    if _MENTION.search(new) or _ESCAPE.search(new) or (u and u in k):
+        return True
+    if any(u.startswith(k[i:]) or u.endswith(k[:i]) for i in range(1, len(k))):
+        return True
+    return bool(re.match(r"(?i)[u0-9a-f]", new) or _OPEN_ESCAPE.search(new))
+
+
+#: Text ending in a backslash, or a backslash-u with fewer than four hex digits after it.
+_OPEN_ESCAPE = re.compile("(?i)" + re.escape(chr(92)) + "(u[0-9a-f]{0,3})?$")
+
+
+def _judge_edit(path: str, edit) -> str:
+    """One string replacement -- {old, new, replace_all} -- applied to the file as it is NOW and
+    the RESULT judged, as for a Claude Code Edit (FX-G6 / reviewer K I5, MEASURED: an OpenCode
+    edit was judged on its new text alone, so `"X4_GUA": "x"` then `A": "x"` -> `ARD": "off"`
+    built X4_GUARD=off from two innocent texts). Everything the text reading refused stays
+    refused: a file that already names the key, a new text that names it. An edit that does not
+    apply here (another spelling of the path, a fuzzy match the agent's tool makes) is refused
+    when its text could form a key wherever it lands (_could_form_key), else allowed."""
+    old = edit.get("old") if isinstance(edit, dict) else None
+    new = edit.get("new") if isinstance(edit, dict) else None
+    if not isinstance(old, str) or not isinstance(new, str):
+        return UNKNOWN.format(path=path, why="The edit carries no old/new text.")
+    cur = _read(path)
+    if cur is None:
+        return UNKNOWN.format(path=path, why="The file cannot be read.")
+    cur_keys, ok = guard_keys(cur)
+    if not ok or cur_keys:
+        return UNKNOWN.format(path=path, why="The file already sets (or may set) the key, and an "
+                              "edit's result is not proven here to remove it.")
+    if _MENTION.search(new) or _ESCAPE.search(new):
+        return REASON.format(key="X4_GUARD", path=path)
+    if old == "":
+        # The new text is the file (OpenCode) -- or, read as Claude Code reads an empty
+        # old_string, goes before it: judged both ways.
+        results = [new, new + cur]
+    elif old in cur:
+        results = [cur.replace(old, new) if edit.get("replace_all") else cur.replace(old, new, 1)]
+    else:
+        return REASON.format(key="X4_GUARD", path=path) if _could_form_key(new) else ""
+    for result in results:
+        keys, ok = guard_keys(result)
+        if keys or not ok:
+            return REASON.format(key=(keys or ["X4_GUARD"])[0], path=path)
+    return ""
+
+
 def judge(tool_input: dict) -> str:
     """'' to allow, else the refusal."""
     path = tool_input.get("file_path") or tool_input.get("filePath") or ""
     if not is_settings(path):
         return ""
+    if "x4_edit" in tool_input:                    # one replacement: applied, the RESULT judged
+        return _judge_edit(path, tool_input.get("x4_edit"))
     if "x4_written" in tool_input:                 # a patch / opaque write: its TEXT is all we see
         written = tool_input.get("x4_written")
         if not isinstance(written, str):
             return UNKNOWN.format(path=path, why="The caller passed no written text (x4guard check: "
                                   "--command <the text>).")
-        if _add_only(written):
+        # Patch semantics only when the CALLER says it is a patch (FX-G6 / reviewer K M1): a
+        # text that merely CONTAINS `*** Begin Patch` / `*** Add File:` is not one.
+        if tool_input.get("x4_patch") is True and _add_only(written):
             # FX-G5 item 10: an add-only patch REPLACES the file (or fails), so the old content
             # cannot survive it -- only its own text matters (checked below).
             cur = ""

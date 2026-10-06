@@ -125,11 +125,19 @@ def translate(p: dict) -> tuple[list[tuple], list[tuple] | None, str | None]:
     if tool in FILE_TOOLS:
         raw = _arg(args, "filePath", tool)
         path = core._abspath(raw, base)
-        text = None
-        if core.x4guard.is_agent_settings(path):   # settings_guard.py judges what is written
-            parts = [args.get(k) for k in ("content", "newString")]
-            text = chr(10).join(x for x in parts if isinstance(x, str))
-        return [("write", None, text, path, f"{tool} {raw}")], [("update", path)], None
+        call = ("write", None, None, path, f"{tool} {raw}")
+        if core.x4guard.is_agent_settings(path):   # settings_guard.py judges the RESULT
+            # FX-G6 / reviewer K I5 (MEASURED: a two-step edit built X4_GUARD=off, each step's
+            # text innocent): an `edit` is one replacement the guard APPLIES to the file as it is
+            # now, as for Claude Code's Edit. A `write` keeps its text reading (unchanged: the
+            # text, and a file that already names the key is refused); no text, refused blind.
+            if (tool == "edit" and isinstance(args.get("oldString"), str)
+                    and isinstance(args.get("newString"), str)):
+                call += ({"edit": {"old": args["oldString"], "new": args["newString"],
+                                   "replace_all": bool(args.get("replaceAll"))}},)
+            elif tool == "write" and isinstance(args.get("content"), str):
+                call = ("write", None, args["content"], path, f"{tool} {raw}")
+        return [call], [("update", path)], None
     if tool == PATCH_TOOL:
         # OpenCode's apply_patch runs OpenCode's OWN parser, not Codex's (R2-F1): read it that way
         text = _arg(args, "patchText", tool)

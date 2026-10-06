@@ -109,8 +109,12 @@ def _patch_calls(text: str, base: str, parse=patch_paths.parse_patch) -> list[tu
         if kind is None:
             continue
         ap = _abspath(p, base)
-        # A Claude Code settings file: the guard judges the patch TEXT (settings_guard.py).
-        calls.append((kind, None, text if x4guard.is_agent_settings(ap) else None, ap, f"{op} {p}"))
+        # A Claude Code settings file: the guard judges the patch TEXT (settings_guard.py), told
+        # that it IS a patch (FX-G6 / reviewer K M1) -- never left to guess from the text.
+        if x4guard.is_agent_settings(ap):
+            calls.append((kind, None, text, ap, f"{op} {p}", {"patch": True}))
+        else:
+            calls.append((kind, None, None, ap, f"{op} {p}"))
     return calls
 
 
@@ -167,12 +171,12 @@ PARALLEL = 4
 
 
 def _one(call: tuple, deadline: float | None = None) -> dict:
-    kind, sh, cmd, path, label = call
+    kind, sh, cmd, path, label, *extra = call     # extra: verdict_for options (FX-G6 / K I5, M1)
     # ONE deadline for the whole batch (MEASURED after merging lanes B+E: 400 deletes under a 45 s
     # budget ran past 180 s, because each check started its own fresh x4guard deadline). x4guard
     # refuses to START a guard once it has passed, and bounds one already running.
     try:
-        v = dict(x4guard.verdict_for(kind, sh, cmd, path, deadline=deadline))
+        v = dict(x4guard.verdict_for(kind, sh, cmd, path, deadline=deadline, **(extra[0] if extra else {})))
     except Exception as e:                # a guard that raised checked nothing
         v = inert(f"the guard raised {type(e).__name__}: {e}", label)
     v["label"] = label
