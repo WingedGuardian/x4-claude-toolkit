@@ -381,6 +381,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # FX-B3 (reviewer F M4): isolated like the two separate legs -- its own test key and no
+          # inherited X4_TOOLKIT (HKCU persists across steps; see the 5.1 leg).
+          $env:X4_INSTALL_ENV_REGKEY = 'HKCU\Software\X4ToolkitTests\ci-ps-global'
+          Remove-Item -LiteralPath env:X4_TOOLKIT -ErrorAction SilentlyContinue
           $tk = Join-Path $env:RUNNER_TEMP 'tk-ps'      # installed by the separate leg above
           if (-not (Test-Path -LiteralPath (Join-Path $tk '.claude/skills'))) {
             Write-Error 'the separate leg did not run; nothing to install FROM' }
@@ -444,6 +448,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # FX-B3 (reviewer F M4): isolated like the two separate legs (see the 5.1 leg).
+          $env:X4_INSTALL_ENV_REGKEY = 'HKCU\Software\X4ToolkitTests\ci-ps-ingame'
+          Remove-Item -LiteralPath env:X4_TOOLKIT -ErrorAction SilentlyContinue
           $game = Join-Path $env:RUNNER_TEMP 'fakegame-ps'
           if (Test-Path -LiteralPath $game) { Remove-Item -Recurse -Force -LiteralPath $game }
           New-Item -ItemType Directory -Force -Path (Join-Path $game 'extensions') | Out-Null

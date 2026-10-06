@@ -3680,3 +3680,27 @@ def test_FXB3_TWIN_an_explicit_game_with_an_inherited_X4_GAME_proceeds(installer
                  inherit={"X4_GAME": (tmp_path / "another-game").as_posix()})
     out = r.stdout + r.stderr
     assert r.returncode == 0 and "REFUSING" not in out, out[-2000:]
+
+
+def test_FXB3_every_CI_powershell_install_leg_is_ISOLATED():
+    """Reviewer F M4: ci.yml isolated only the two `separate` PowerShell legs (FX-B2: HKCU
+    persists across a runner's steps, so one leg's X4_TOOLKIT write reached the next as a
+    "different existing value"). The in-game and global legs ran on the default key with the
+    inherited X4_TOOLKIT. Every step that runs install.ps1 must set its OWN test key under
+    X4ToolkitTests and drop X4_TOOLKIT, before its first install.ps1 call."""
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    # one block per step (no YAML library in the venv): split at each `- name:` item
+    blocks = re.split(r"(?m)^\s*- name: ", text)[1:]
+    steps = [{"name": b.splitlines()[0], "run": b} for b in blocks
+             if "install.ps1" in b and ("shell: pwsh" in b or "shell: powershell" in b)]
+    assert len(steps) >= 4, [st["name"] for st in steps]
+    keys = []
+    for st in steps:
+        run = st["run"]
+        first = run.index("install.ps1 -Method")
+        m = re.search(r"\$env:X4_INSTALL_ENV_REGKEY = '(HKCU\\Software\\X4ToolkitTests\\[^']+)'",
+                      run[:first])
+        assert m, "%s: no isolated test key before install.ps1" % st["name"]
+        assert "Remove-Item -LiteralPath env:X4_TOOLKIT" in run[:first], st["name"]
+        keys.append(m.group(1))
+    assert len(set(keys)) == len(keys), keys
