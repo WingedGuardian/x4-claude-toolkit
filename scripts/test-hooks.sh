@@ -514,17 +514,8 @@ decide allow protect-bash.sh "$(cj 'echo $(date)')" \
 decide allow protect-bash.sh "$(cj 'cd $(git rev-parse --show-toplevel) && ls')" \
   "a substituted argument in a cd is untouched"
 
-# directory is invisible to `git status`, which is how a stray `n/` accumulated.
-_CWD_AFTER="$(ls -A 2>/dev/null | sort)"
-_NEW="$(comm -13 <(printf "%s" "$_CWD_BEFORE") <(printf "%s" "$_CWD_AFTER") | tr "
-" " ")"
-if [ -n "$(printf "%s" "$_NEW" | tr -d "[:space:]")" ]; then
-  no "the suite left new paths in the caller directory: $_NEW"
-else
-  ok "the suite left nothing behind in the caller directory"
-fi
 
-EXPECT=234
+EXPECT=261
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -1038,7 +1029,12 @@ fi
 # under a banner that said "at launch". It is parsed now, and agents may not write it.
 echo; echo "=== the path config is DATA, never run ==="
 _cfg_saved="$(export -p | grep -E '^declare -x (X4_[A-Z0-9_]*|CLAUDE_PROJECT_DIR)=')"
-for _v in $(export -p | sed -nE 's/^declare -x (X4_[A-Z0-9_]*|CLAUDE_PROJECT_DIR)=.*/\1/p'); do unset "$_v"; done
+# X4_DECIDE_DUMP is the HARNESS's own switch, not a root: unsetting it with the rest silently
+# kept every probe in this section out of the Codex conformance replay (reviewer E8, MEASURED:
+# 16 config-write denies never reached the dump).
+for _v in $(export -p | sed -nE 's/^declare -x (X4_[A-Z0-9_]*|CLAUDE_PROJECT_DIR)=.*/\1/p'); do
+  [ "$_v" = X4_DECIDE_DUMP ] || unset "$_v"
+done
 _ct="$SBX_TMP/cfgtk"; mkdir -p "$_ct/reference/libraries" "$_ct/ref2/libraries" "$_ct/.claude"
 export X4_TOOLKIT="$_ct" CLAUDE_PROJECT_DIR="$_ct"
 # Lines AFTER an `exit 0` are still read: ref2 is configured below it and must be protected.
@@ -1070,11 +1066,53 @@ decide deny  protect-bash.sh "$(cj "cd '$_ct' && cp x4-paths.env.example x4-path
 decide deny  protect-bash.sh "$(cj "rm -f '$_ct/.claude/x4-paths.env'")" "delete the 3.x path config: denied"
 decide allow protect-bash.sh "$(cj "cat '$_ct/x4-paths.env'")"     "TWIN: READING the path config is allowed"
 decide allow protect-bash.sh "$(cj "echo x >> '$_ct/notes-x4-paths.txt'")" "TWIN: a write to a file merely NAMED like it is allowed"
+# FX-G2 item 1 (v4.0.0 delta review): the config pass sent the config ALONE, so a ROOT VARIABLE
+# was never substituted -- every spelling below was ALLOWED (and the rm only advised).
+decide deny  protect-bash.sh "$(cj "echo X4_REFERENCE=/x > \"\$X4_TOOLKIT/x4-paths.env\"")" "redirect via \$X4_TOOLKIT onto the config: denied"
+decide deny  protect-bash.sh "$(cj "cp /dev/null \"\${X4_TOOLKIT}/x4-paths.env\"")" "cp via \${X4_TOOLKIT} onto the config: denied"
+decide deny  protect-bash.sh "$(cj "cd \"\$X4_TOOLKIT\" && echo a > x4-paths.env")" "cd \$X4_TOOLKIT, then a relative redirect onto the config: denied"
+decide deny  protect-bash.sh "$(cj "rm \"\$X4_TOOLKIT/x4-paths.env\"")" "rm via \$X4_TOOLKIT of the config: denied (was an advisory)"
+decide allow protect-bash.sh "$(cj "echo a > \"\$X4_TOOLKIT/x4-paths.env.example\"")" "TWIN: via the variable, the .example beside it is not the config"
 export X4_CONFIG="$_ct/elsewhere.env"; : > "$X4_CONFIG"
 decide deny  protect-files.sh "$(fj "$X4_CONFIG")"                 "Write an explicit X4_CONFIG file: denied"
 decide deny  protect-bash.sh "$(cj "echo x > '$X4_CONFIG'")"       "redirect into an explicit X4_CONFIG file: denied"
+decide deny  protect-bash.sh "$(cj "echo x > \"\$X4_CONFIG\"")"    "redirect into \$X4_CONFIG, by the variable: denied (FX-G2)"
 unset X4_CONFIG X4_TOOLKIT CLAUDE_PROJECT_DIR
 eval "$_cfg_saved"
+
+# =============================================================================
+# WINDOWS PATH ALIASES (FX-G2 item 3, v4.0.0 delta review)
+# =============================================================================
+# Windows opens `x.`, `x `, `x::$DATA` and `dir./x` as the real file, and an 8.3 short name as
+# its long name. MEASURED 2026-10-05: Python wrote INTO x4-paths.env through the first three,
+# and 11 of 17 protect-files probes (19 of 28 overall) were ALLOWED.
+echo; echo "=== Windows path aliases: trailing dot/space, stream suffix, 8.3 short name ==="
+_wa_saved="$(export -p | grep -E '^declare -x (X4_[A-Z0-9_]*|CLAUDE_PROJECT_DIR)=')"
+_wt="$SBX_TMP/aliastk"; mkdir -p "$_wt/reference/libraries" "$_wt/A Long Game Folder Name/extensions"
+: > "$_wt/x4-paths.env"
+export X4_TOOLKIT="$_wt" X4_REFERENCE="$_wt/reference" X4_GAME="$_wt/A Long Game Folder Name" \
+       X4_CONFIG="$_wt/x4-paths.env" CLAUDE_PROJECT_DIR="$_wt"
+decide deny  protect-files.sh "$(fj "$_wt/x4-paths.env.")"                  "Write the config + a trailing dot: denied"
+decide deny  protect-files.sh "$(fj "$_wt/x4-paths.env ")"                  "Write the config + a trailing space: denied"
+decide deny  protect-files.sh "$(fj "$_wt/x4-paths.env::\$DATA")"           "Write the config's ::\$DATA stream: denied"
+decide deny  protect-files.sh "$(fj "$_wt/reference./libraries/w.xml")"     "Write reference./ (a trailing dot on the DIR): denied"
+decide deny  protect-files.sh "$(fj "$_wt/reference::\$INDEX_ALLOCATION/libraries/w.xml")" "Write via the dir's ::\$INDEX_ALLOCATION: denied"
+decide deny  protect-files.sh "$(fj "$X4_GAME./libraries/a.xml")"           "Write the game dir + a trailing dot: denied"
+decide allow protect-files.sh "$(fj "$_wt/reference..old/w.xml")"           "TWIN: dots INSIDE a name are another folder"
+decide allow protect-files.sh "$(fj "$_wt/x4-paths.env.example")"           "TWIN: the .example is still not the config"
+decide deny  protect-bash.sh  "$(cj "echo x > '$_wt/reference./libraries/w.xml'")" "Bash: a redirect into reference./: denied"
+decide deny  protect-bash.sh  "$(cj "echo x > '$_wt/x4-paths.env.'")"       "Bash: a redirect onto the config + a dot: denied"
+decide allow protect-bash.sh  "$(cj "echo x > '$_wt/reference..old/w.xml'")" "TWIN: Bash, dots INSIDE a name"
+_ws="$(cygpath -m -s "$X4_GAME" 2>/dev/null)"
+case "$_ws" in
+  *~[0-9]*)
+    decide deny protect-files.sh "$(fj "$_ws/libraries/a.xml")"  "Write the game dir by its 8.3 SHORT name: denied"
+    decide deny protect-bash.sh  "$(cj "rm -rf '$_ws'")"         "Bash: delete the game dir by its 8.3 SHORT name: denied" ;;
+  *) skip "8.3 short name (no cygpath, or 8.3 names disabled on this volume): files"
+     skip "8.3 short name (no cygpath, or 8.3 names disabled on this volume): bash" ;;
+esac
+unset X4_CONFIG X4_TOOLKIT X4_REFERENCE X4_GAME CLAUDE_PROJECT_DIR
+eval "$_wa_saved"
 
 
 # =============================================================================
@@ -1161,18 +1199,27 @@ if [ -n "$_pp_docs" ]; then export X4_DOCUMENTS="$_pp_docs"; else unset X4_DOCUM
 # the Edit tool" and to "see CLAUDE.md #22" -- a tool Codex lacks and an anchor that no longer
 # exists in CLAUDE.md. Read the REASONS of four refusals that carried them.
 echo; echo "=== refusals name agent-neutral remedies ==="
-_r31=""
-for _c in "sed -i s/a/b/ '$SBX_TMP/game/X4 Foundations/libraries/w.xml'" \
-          "echo x > KNOWLEDGEBASE.md" "uv run pytest | tail -3; echo \$?" \
-          "grep -rn wares '$SBX_TMP/r31ref'"; do
-  _r31="$_r31$(X4_GAME="$SBX_TMP/game/X4 Foundations" X4_REFERENCE="$SBX_TMP/r31ref" bash -c 'printf "%s" "$1" | bash "$2"' _ "$(cj "$_c")" "$HOOKS/protect-bash.sh" 2>/dev/null)"
-done
-case "$_r31" in
-  *"the Edit tool"*|*"the Write tool"*|*"the Glob tool"*|*"the Grep tool"*|*"CLAUDE.md #"*)
-    no "a refusal names a Claude-only remedy or a dead CLAUDE.md anchor" ;;
-  *apply_patch*"Discovery vs. Proof"*) ok "the refusals name agent-neutral remedies and live anchors" ;;
-  *) no "the refusals did not render (or lost their remedies): ${_r31:0:200}" ;;
-esac
+# PER REFUSAL (reviewer E, minor): the four reasons used to be joined and matched once, so one
+# refusal that rendered nothing -- or lost its remedy -- hid behind the others' text. Each now
+# must be a DENY, carry no Claude-only remedy, and name its OWN agent-neutral remedy.
+_r31_one(){ # _r31_one <command> <the remedy its reason must name> <label>
+  local out
+  out="$(X4_GAME="$SBX_TMP/game/X4 Foundations" X4_REFERENCE="$SBX_TMP/r31ref" bash -c 'printf "%s" "$1" | bash "$2"' _ "$(cj "$1")" "$HOOKS/protect-bash.sh" 2>/dev/null)"
+  case "$out" in
+    *'"deny"'*) ;;
+    *) no "$3: not a deny (or did not render): ${out:0:160}"; return ;;
+  esac
+  case "$out" in
+    *"the Edit tool"*|*"the Write tool"*|*"the Glob tool"*|*"the Grep tool"*|*"CLAUDE.md #"*)
+      no "$3: names a Claude-only remedy or a dead CLAUDE.md anchor" ;;
+    *"$2"*) ok "$3: names an agent-neutral remedy ($2)" ;;
+    *) no "$3: lost its remedy '$2': ${out:0:200}" ;;
+  esac
+}
+_r31_one "sed -i s/a/b/ '$SBX_TMP/game/X4 Foundations/libraries/w.xml'" "apply_patch" "sed -i in the game"
+_r31_one "echo x > KNOWLEDGEBASE.md" "apply_patch" "truncating a durable record"
+_r31_one "uv run pytest | tail -3; echo \$?" "PIPESTATUS" "\$? after a pipeline"
+_r31_one "grep -rn wares '$SBX_TMP/r31ref'" "Discovery vs. Proof" "a recursive search of reference/"
 
 
 # =============================================================================
@@ -1207,6 +1254,40 @@ else
   esac
 fi
 if [ -n "$_bk_saved" ]; then export X4_BACKUPS="$_bk_saved"; else unset X4_BACKUPS; fi
+
+# =============================================================================
+# X4_GUARD IN A CLAUDE CODE SETTINGS FILE (user decision 2026-10-05: "Block X4_GUARD there")
+# =============================================================================
+# A settings `env` block reaches every hook (MEASURED, Claude Code 2.1.290). The file tools are
+# judged on the RESULTING content; a shell write cannot be seen, so it is refused outright.
+echo; echo "=== X4_GUARD in a settings env: refused in every channel, reported at startup ==="
+_st="$SBX_TMP/settk"; mkdir -p "$_st/.claude"; printf '%s' '{"env":{"OTHER":"1"}}' > "$_st/.claude/settings.json"
+_sj(){ printf '{"tool_name":"Write","tool_input":{"file_path":%s,"content":%s}}' \
+         "$(printf '%s' "$_st/.claude/settings.json" | jq -Rs .)" "$(printf '%s' "$1" | jq -Rs .)"; }
+decide deny  protect-files.sh "$(_sj '{"env":{"X4_GUARD":"off"}}')"   "Write settings.json with X4_GUARD in env: denied"
+decide allow protect-files.sh "$(_sj '{"env":{"OTHER":"2"}}')"         "TWIN: Write settings.json without X4_GUARD: allowed"
+decide deny  protect-bash.sh  "$(cj "echo '{}' > '$_st/.claude/settings.local.json'")" "Bash: a redirect into settings.local.json: denied"
+decide allow protect-bash.sh  "$(cj "cat '$_st/.claude/settings.json'")" "TWIN: Bash: reading settings.json: allowed"
+printf '%s' '{"env":{"X4_GUARD":"off"}}' > "$_st/.claude/settings.json"
+_sc="$(CLAUDE_PROJECT_DIR="$_st" HOME="$SBX_TMP/nohome" bash "$HOOKS/session-canary.sh" 2>/dev/null)"
+case "$_sc" in
+  "[x4 guards] X4_GUARD is set in a Claude Code settings env block"*|*$'\n'"[x4 guards] X4_GUARD is set in a Claude Code settings env block"*)
+    ok "session-canary names the settings file that sets X4_GUARD" ;;
+  *) no "session-canary did not report X4_GUARD in the settings env: ${_sc:0:200}" ;;
+esac
+
+# THE CALLER-DIRECTORY CHECK RUNS LAST (reviewer E, minor): it sat above every section added
+# since, so a probe below it that leaked a path into the caller's directory went unseen.
+# (Its history, and why the baseline is taken AFTER the sandbox exists, is at _CWD_BEFORE.)
+# directory is invisible to `git status`, which is how a stray `n/` accumulated.
+_CWD_AFTER="$(ls -A 2>/dev/null | sort)"
+_NEW="$(comm -13 <(printf "%s" "$_CWD_BEFORE") <(printf "%s" "$_CWD_AFTER") | tr "
+" " ")"
+if [ -n "$(printf "%s" "$_NEW" | tr -d "[:space:]")" ]; then
+  no "the suite left new paths in the caller directory: $_NEW"
+else
+  ok "the suite left nothing behind in the caller directory"
+fi
 
 echo "RESULT: $pass passed, $fail failed, $skipped skipped"
 if [ $((pass + fail + skipped)) -ne "$EXPECT" ]; then

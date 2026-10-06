@@ -868,6 +868,8 @@ def seeds(roots):
         # tried to walk past it. The seed list was assembled from the shapes that had
         # already bitten us -- which is precisely why the untested one was untested.
         ("write into reference", "echo x > " + QU + ref + "/f.xml" + QU),
+        # The settings rule (user decision 2026-10-05): a shell write to a settings env file.
+        ("write a settings file", "echo x > " + QU + tk + "/.claude/settings.json" + QU),
         ("recursive search at reference", "grep -rn foo " + QU + ref + QU),
         ("rg at reference", "rg foo " + QU + ref + QU),
         ("git add -A", "git add -A"),
@@ -1043,15 +1045,16 @@ _HOLES = [
     ("no continuation splicing", None,
      "    spliced = join_continuations(cmd)",
      "    spliced = cmd"),
+    # RE-ANCHORED FX-G2 (E5): the walk is _qwalk, shared by _scan and the quote masks.
     ("no escape handling", None,
-     "        elif c == chr(92) and i + 1 < len(s):" + NL
-     + "            yield c, False" + NL
+     "        elif c == chr(92) and i + 1 < n:" + NL
+     + '            yield i, c, False, ""' + NL
      + "            i += 1" + NL
-     + "            yield s[i], False          # escaped: never opens a quote",
+     + '            yield i, s[i], False, ""          # escaped: never opens a quote',
      "        elif False:" + NL
-     + "            yield c, False" + NL
+     + '            yield i, c, False, ""' + NL
      + "            i += 1" + NL
-     + "            yield s[i], False"),
+     + '            yield i, s[i], False, ""'),
     # RE-ANCHORED 2026-09-06. This used to plant `stripped = strip_heredocs(cmd)` over
     # `stripped = body`. Both lines are gone: the longjob loop moved onto `all_cmds`
     # (B4) and that left `stripped` DEAD, so the locals were removed. The fuzzer then

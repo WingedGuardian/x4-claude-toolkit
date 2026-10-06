@@ -82,6 +82,15 @@ fi
 _X4_UC=ABCDEFGHIJKLMNOPQRSTUVWXYZ
 _X4_NMC="${_X4_UC}0123456789_"
 _X4_IDC="${_X4_NMC}abcdefghijklmnopqrstuvwxyz"
+# FX-G2 item 8: the six ASCII whitespace characters, and every character Python's str.isspace()
+# adds beyond them, as UTF-8. A config line holding one of the latter is refused (`shape`) here
+# and in _paths.parse_env_report alike: `X4_GAME<NBSP>=/g` WAS a configuration to Python and a
+# refused line to bash (whose [:space:] is ASCII in the C locale and locale-dependent otherwise).
+_X4_AWS=$' \t\v\f\r'
+_X4_ODDSP=($'\x1c' $'\x1d' $'\x1e' $'\x1f' $'\xc2\x85' $'\xc2\xa0' $'\xe1\x9a\x80'
+  $'\xe2\x80\x80' $'\xe2\x80\x81' $'\xe2\x80\x82' $'\xe2\x80\x83' $'\xe2\x80\x84' $'\xe2\x80\x85'
+  $'\xe2\x80\x86' $'\xe2\x80\x87' $'\xe2\x80\x88' $'\xe2\x80\x89' $'\xe2\x80\x8a' $'\xe2\x80\xa8'
+  $'\xe2\x80\xa9' $'\xe2\x80\xaf' $'\xe2\x81\x9f' $'\xe3\x80\x80')
 
 _x4_cfg_lookup() {   # NAME -> _x4_lv: the file's latest value for NAME, else the shell's
   local j=${#_X4_FK[@]}
@@ -203,8 +212,11 @@ _x4_cfg_read() {
     n=$((n + 1))
     line="${line%$'\r'}"
     [ "$n" = 1 ] && line="${line#$'\357\273\277'}"
-    l="${line#"${line%%[![:space:]]*}"}"
+    l="${line#"${line%%[!$_X4_AWS]*}"}"
     case "$l" in ''|\#*) continue ;; esac
+    _x4_odd=0
+    for _x4_sp in "${_X4_ODDSP[@]}"; do case "$line" in *"$_x4_sp"*) _x4_odd=1; break ;; esac; done
+    if [ "$_x4_odd" = 1 ]; then _x4_cfg_ignored="$_x4_cfg_ignored $n:shape"; continue; fi
     case "$l" in export[[:space:]]*) l="${l#export}"; l="${l#"${l%%[![:space:]]*}"}" ;; esac
     case "$l" in *=*) ;; *) _x4_cfg_ignored="$_x4_cfg_ignored $n:shape"; continue ;; esac
     k="${l%%=*}"; k="${k%"${k##*[![:space:]]}"}"
@@ -229,7 +241,7 @@ _x4_cfg_read() {
     export "$k=$_x4_v"
   done < "$1"
   _x4_cfg_ignored="${_x4_cfg_ignored# }"
-  unset _X4_FK _X4_FV _x4_v _x4_bad _x4_lv _x4_dt _x4_dn
+  unset _X4_FK _X4_FV _x4_v _x4_bad _x4_lv _x4_dt _x4_dn _x4_odd _x4_sp
   return 0
 }
 
@@ -415,6 +427,13 @@ x4_norm() {
   #
   # \\?\UNC\server\share is the same prefix over a network path and unwraps to
   # //server/share.
+  #
+  # WINDOWS ALIASES (FX-G2 item 3), the three lines after `tslash`: per component, an NTFS
+  # stream suffix is dropped (`x::$DATA` and `x:alt` are x, `dir::$INDEX_ALLOCATION` is dir)
+  # and so are trailing dots and spaces (`reference./` is reference). MEASURED 2026-10-05:
+  # Python wrote INTO x4-paths.env through `x4-paths.env.`, `x4-paths.env ` and
+  # `x4-paths.env::$DATA`, and every guard compared them equal to nothing. Twin of
+  # hook_facts._win_alias -- the same conservative superset, on every platform.
   printf '%s' "$1" | sed -E 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ\\/abcdefghijklmnopqrstuvwxyz\//
 s#^//[?.]/unc/#//#
 s#^//[?.]/##
@@ -422,6 +441,9 @@ s#(^|[^a-z0-9])([a-z]):/#\1/\2/#g
 :slash
 s#(.)//+#\1/#g
 tslash
+s#([^/]):[^/]+(/|$)#\1\2#g
+s#([^/]):$#\1#
+s#([^/]*[^/. ])[. ]+(/|$)#\1\2#g
 :dot
 s#/[.]/#/#g
 tdot
@@ -431,11 +453,40 @@ s#/[^/]+/[.][.](/|$)#/#
 tdotdot
 s#(.)/$#\1#'
 }
+# x4_winpath PATH -> _X4_WP: PATH as WINDOWS opens it, CASE KEPT (FX-G2 item 3) -- NTFS stream
+# suffixes and trailing dots/spaces dropped per component (as x4_norm does), and an 8.3 SHORT
+# name (`C:/PROGRA~2/.../X4FOUN~1`, MEASURED on this machine's game root) resolved to its long
+# form via `cygpath -m -l` on the longest EXISTING prefix (it answers only for a path that
+# exists). For the NAME tests in protect-files.sh, which read the path as written. COST: pure
+# shell unless the path ends a component in a dot/space, carries a colon past the drive, or a
+# `~<digit>`; then one sed, plus one cygpath for a short name (MEASURED ~17 ms). No cygpath
+# (Linux/macOS: no 8.3 names) -> the short name is kept, i.e. today's verdict.
+x4_winpath() {
+  _X4_WP="$1"
+  local need=0 r="${1#*[A-Za-z]:[/\\]}" d rest="" nd l
+  case "$1" in *[.\ ]|*[.\ ]/*|*[.\ ]\\*|*~[0-9]*) need=1 ;; esac
+  case "$r" in *:*) need=1 ;; esac
+  [ "$need" = 1 ] || return 0
+  _X4_WP="$(printf '%s' "$1" | sed -E 's#([^/\\]):[^/\\]+([/\\]|$)#\1\2#g
+s#([^/\\]):$#\1#
+s#([^/\\]*[^/\\. ])[. ]+([/\\]|$)#\1\2#g')"
+  case "$_X4_WP" in *~[0-9]*) ;; *) return 0 ;; esac
+  command -v cygpath >/dev/null 2>&1 || return 0
+  d="$_X4_WP"
+  while [ -n "$d" ] && [ ! -e "$d" ]; do
+    nd="${d%[/\\]*}"; [ "$nd" = "$d" ] && return 0
+    rest="/${d##*[/\\]}$rest"; d="$nd"
+  done
+  case "$d" in *~[0-9]*) ;; *) return 0 ;; esac
+  l="$(cygpath -m -l -- "$d" 2>/dev/null)" && [ -n "$l" ] && _X4_WP="$l$rest"
+  return 0
+}
 # x4_canon PATH -> resolve symlinks + .. (so e.g. a game-dir 'extensions' symlink and its real
 # target compare equal). Uses realpath -m when available (no need for the file to exist);
 # falls back to the raw path otherwise. Then normalized for case/slash-insensitive compare.
 x4_canon() {
-  local p="$1"
+  x4_winpath "$1"
+  local p="$_X4_WP"
   # STRIPPED BEFORE realpath, not after. `realpath -m` rewrites `//./X` to `//X`, which
   # x4_norm then renders `///c/...` -- under no root -- so the ordering fix written
   # inside x4_norm was defeated by its only caller. MEASURED 2026-09-02:

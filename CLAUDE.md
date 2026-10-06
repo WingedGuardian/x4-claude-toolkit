@@ -143,6 +143,7 @@ Search with **Glob** for file names and the **Grep** tool for contents (never `g
 - **Deletions go to the Recycle Bin / Trash, always** (Windows: `Microsoft.VisualBasic.FileIO.FileSystem`
   `DeleteFile`/`DeleteDirectory` with `SendToRecycleBin`; Linux: `gio trash`; macOS: Finder Trash).
   A permanent delete needs the user's OK for that deletion. Report what went and what failed.
+  The guards judge a move to the trash exactly as a delete (same blocks and confirmations).
 - **Never saturate the machine.** Before any heavy job (full test suites, corpus builds, load
   tests, parallel workers), measure what is already running and keep every resource — CPU, RAM,
   free disk on each drive written to, GPU — at or under 80% of the total. If it would not fit:

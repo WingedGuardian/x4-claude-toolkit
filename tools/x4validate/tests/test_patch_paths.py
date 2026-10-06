@@ -99,6 +99,57 @@ def test_shell_patch_it_cannot_read_refuses(cmd):
         pp.parse_patch(body)
 
 
+# --- FX-G2 item 6 (v4.0.0 delta review): every way the shell can RUN a patch is judged --------
+# MEASURED by reviewer A: `codex --codex-run-as-apply-patch '<patch>'` deleted a file in scratch
+# and shell_patch returned None; so did `{ apply_patch`, `FOO=1 apply_patch`, `apply_patch.bat`
+# (11 of 11 forms unseen before this fix). A single-quoted Codex argument is literal, so it is
+# READ; every other form is REFUSED (an unread patch is never an allow).
+_PATCH = "*** Begin Patch\n*** Delete File: victim.txt\n*** End Patch"
+
+
+@pytest.mark.parametrize("cmd,cd", [
+    ("codex --codex-run-as-apply-patch '" + _PATCH + "'", None),
+    ("C:/x/codex.exe --codex-run-as-apply-patch '" + _PATCH + "'", None),
+    ("cd 'dev/m' && codex --codex-run-as-apply-patch '" + _PATCH + "'", "dev/m"),
+])
+def test_codex_run_as_apply_patch_is_read_as_a_patch(cmd, cd):
+    body, got_cd = pp.shell_patch(cmd)
+    assert pp.parse_patch(body) == [("delete", "victim.txt")] and got_cd == cd
+
+
+@pytest.mark.parametrize("cmd", [
+    'codex --codex-run-as-apply-patch "' + _PATCH + '"',          # double quotes: the shell edits it
+    "npx codex --codex-run-as-apply-patch '" + _PATCH + "'",
+    "apply_patch.bat <<'E'\n" + _PATCH + "\nE",
+    "{ apply_patch <<'E'\n" + _PATCH + "\nE\n}",
+    "FOO=1 apply_patch <<'E'\n" + _PATCH + "\nE",
+    "timeout 5 apply_patch <<'E'\n" + _PATCH + "\nE",
+    "bash -c \"apply_patch <<'E'\n" + _PATCH + "\nE\"",
+    "'apply_patch' <<'E'\n" + _PATCH + "\nE",
+])
+def test_every_other_spelling_of_a_patch_run_is_refused(cmd):
+    found = pp.shell_patch(cmd)
+    assert found is not None, cmd
+    with pytest.raises(pp.PatchParseError):
+        pp.parse_patch(found[0])
+
+
+@pytest.mark.parametrize("cmd", [
+    "echo apply_patch", "grep -rn apply_patch agent/", "ls -la",
+    "grep -rn -e --codex-run-as-apply-patch scripts/",              # the flag under a non-runner
+    "codex exec 'hello'",                                            # codex WITHOUT the flag
+])
+def test_TWIN_a_mention_is_not_a_patch_run(cmd):
+    assert pp.shell_patch(cmd) is None, cmd
+
+
+def test_TWIN_no_shell_parser_fails_closed(monkeypatch):
+    """Clause: the parser answered. Without it, the name anywhere is a run (refused)."""
+    monkeypatch.setattr(pp, "_hook_facts", lambda: None)
+    assert pp.shell_patch("echo apply_patch") is not None
+    assert pp.shell_patch("ls -la") is None
+
+
 # --- R2-F1 (v4.0.0): the guard must read a patch exactly as the AGENT does --------------------
 #
 # The Codex record is MEASURED: scripts/capture-codex-patch-oracle.py ran every shape through

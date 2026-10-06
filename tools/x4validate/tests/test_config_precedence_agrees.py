@@ -106,10 +106,13 @@ def test_the_bash_half_lets_the_environment_win():
         (tk / ".claude" / "x4-paths.env").write_text(
             'X4_GAME="/from/the/FILE"\nX4_PROFILE="/profile/from/FILE"\n',
             encoding="utf-8", newline="\n")
-        env = dict(os.environ)
+        # HERMETIC (FX-G2 item 9): the caller's X4_* -- above all X4_CONFIG, which names the
+        # file to read and so bypasses the one written here -- must not leak in. MEASURED: with
+        # X4_CONFIG set in the environment this test FAILED for a reason unrelated to its claim.
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("X4_") and k not in ("CLAUDE_PROJECT_DIR", "XRCATTOOL")}
         env["X4_TOOLKIT"] = str(tk)
         env["X4_GAME"] = "/from/the/ENV"
-        env.pop("X4_PROFILE", None)
         r = subprocess.run(
             [bash, "-c",
              '. "$1"; printf "%s\\n%s\\n" "$X4_GAME" "$X4_PROFILE"',
