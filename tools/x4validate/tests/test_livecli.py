@@ -268,7 +268,7 @@ def test_a_wrong_unit_transform_is_CAUGHT_and_NAMED(tmp_path, capsys, monkeypatc
     class _Fresh:
         fresh = True
     monkeypatch.setattr("x4validate._effective.store_freshness", lambda con: _Fresh())
-    monkeypatch.setattr("x4validate._effective._connect", lambda db: object())
+    monkeypatch.setattr("x4validate._effective._connect", lambda db: _StubCon())
     monkeypatch.setattr("x4validate._effective.effective_db",
                         lambda: __import__("pathlib").Path(__file__))
 
@@ -289,7 +289,7 @@ def _fake_store(monkeypatch, props):
         fresh = True
     monkeypatch.setattr(C, "_store_props", lambda con, macro: props)
     monkeypatch.setattr("x4validate._effective.store_freshness", lambda con: _Fresh())
-    monkeypatch.setattr("x4validate._effective._connect", lambda db: object())
+    monkeypatch.setattr("x4validate._effective._connect", lambda db: _StubCon())
     monkeypatch.setattr("x4validate._effective.effective_db",
                         lambda: pathlib.Path(__file__))
 
@@ -448,6 +448,16 @@ def test_the_ramp_cannot_probe_past_our_own_buffer():
 TAB, NL = chr(9), chr(10)
 
 
+class _StubCon:
+    """A stand-in store connection. cmd_oracle/cmd_mappings now CLOSE the connection they
+    open (v4.0.0 delta review), so a stub must be closable -- and records that it was."""
+    def __init__(self):
+        self.closed = 0
+
+    def close(self):
+        self.closed += 1
+
+
 def _gt(tmp_path, rows):
     p = tmp_path / "gt.tsv"
     p.write_text("# header comment" + NL + "librarytype\tmacro\tfield\tengine_value" + NL
@@ -459,8 +469,7 @@ def _mappings_out(tmp_path, monkeypatch, rows, store):
     """cmd_mappings over a groundtruth TSV and a stubbed store."""
     import io
 
-    class _Con:
-        pass
+    _Con = _StubCon
 
     # Stub the REAL preconditions, and with raising=True (the default) so a rename cannot
     # make the patch a silent no-op. The first version used `_store_exists`, which does not
@@ -1610,3 +1619,47 @@ def test_mappings_REFUSES_an_unreadable_store_instead_of_a_traceback(tmp_path, m
                         groundtruth=str(_gt(tmp_path, ["t\tm1\tfoo\t100"])))
     assert rc == 2
     assert "could not be opened" in capsys.readouterr().err
+
+
+# --- v4.0.0 delta review: the store connection is closed on EVERY path --------- #
+
+def _stub_store_for(monkeypatch, tmp_path, freshness):
+    from x4validate import _effective as E
+    store_path = tmp_path / "effective.sqlite3"
+    store_path.write_bytes(b"")
+    con = _StubCon()
+    monkeypatch.setattr(E, "effective_db", lambda: store_path)
+    monkeypatch.setattr(E, "_connect", lambda db: con)
+    monkeypatch.setattr(E, "store_freshness", freshness)
+    monkeypatch.setattr(C, "_store_props", lambda c, macro: {"x.y": "100"})
+    return con
+
+
+def _raises(con):
+    raise __import__("sqlite3").DatabaseError("file is not a database")
+
+
+def _stale(con):
+    return type("F", (), {"fresh": False, "banner": lambda self, w: "STALE"})()
+
+
+def _fresh(con):
+    return type("F", (), {"fresh": True, "banner": lambda self, w: ""})()
+
+
+@pytest.mark.parametrize("cmd", ["cmd_mappings", "cmd_oracle"])
+@pytest.mark.parametrize("freshness,want_rc", [(_raises, 2), (_stale, 3), (_fresh, None)],
+                         ids=["freshness-raises", "stale", "fresh"])
+def test_the_store_connection_is_CLOSED_on_every_path(tmp_path, monkeypatch, capsys,
+                                                      cmd, freshness, want_rc):
+    """Delta review C: `_connect` succeeded, then `store_freshness` raised -- and the
+    connection was never closed (nor on the stale refusal, nor on success). Each path is
+    its own case, so a close added to one branch only cannot pass the others; the
+    raising case also pins the refusal (rc 2), where cmd_oracle used to traceback."""
+    import io
+    con = _stub_store_for(monkeypatch, tmp_path, freshness)
+    rc = getattr(C, cmd)(None, out=io.StringIO(),
+                         groundtruth=str(_gt(tmp_path, ["t	m1	foo	100"])))
+    if want_rc is not None:
+        assert rc == want_rc, (rc, capsys.readouterr().err)
+    assert con.closed == 1, f"{cmd}: connection closed {con.closed} time(s) on this path"

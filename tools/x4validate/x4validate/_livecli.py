@@ -746,12 +746,24 @@ def cmd_oracle(path: str | None, out=None, show_derived: bool = False,
         con = _connect(db)
     except Exception as exc:                       # noqa: BLE001 - reported, not hidden
         return _fmt_rc(f"the effective store could not be opened: {exc}", 2)
+    # v4.0.0 delta review: the same leak as cmd_mappings -- no path closed `con`, and a
+    # store_freshness that raised escaped as a traceback. ONE owner closes it.
+    try:
+        return _oracle_over(con, entries, out, show_derived, store_freshness)
+    finally:
+        con.close()
 
+
+def _oracle_over(con, entries, out, show_derived, store_freshness) -> int:
+    """The body of `cmd_oracle` once the store is open. The caller owns `con`."""
     # A STALE store is refused here, not merely warned about. Everywhere else a
     # stale answer is still an answer about a slightly older world; here the whole
     # output is a VERDICT on whether our model matches the engine, so staleness
     # does not degrade the result, it inverts what it means.
-    fresh = store_freshness(con)
+    try:
+        fresh = store_freshness(con)
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return _fmt_rc(f"the effective store could not be opened: {exc}", 2)
     if not fresh.fresh:
         print(fresh.banner("the effective store"), file=sys.stderr)
         print("!! Rebuild first:  uv run x4effective build", file=sys.stderr)
@@ -1072,6 +1084,20 @@ def cmd_mappings(path: str | None, out=None, groundtruth: str | None = None) -> 
     # (it used to SystemExit); called bare here, that was a traceback. Refused like cmd_oracle.
     try:
         con = _connect(db)
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        return _fmt_rc(f"the effective store could not be opened: {exc}", 2)
+    # v4.0.0 delta review: the connection was closed on NO path -- not when
+    # store_freshness raised after _connect succeeded, not on the stale refusal, not on
+    # success. ONE owner closes it, whatever the body returns or raises.
+    try:
+        return _mappings_over(con, entries, out, store_freshness)
+    finally:
+        con.close()
+
+
+def _mappings_over(con, entries, out, store_freshness) -> int:
+    """The body of `cmd_mappings` once the store is open. The caller owns `con`."""
+    try:
         fresh = store_freshness(con)
     except Exception as exc:                       # noqa: BLE001 - reported, not hidden
         return _fmt_rc(f"the effective store could not be opened: {exc}", 2)
