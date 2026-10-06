@@ -132,7 +132,15 @@ def _reset(tmp_path, root):
 def _sandbox(tmp_path, monkeypatch):
     assert _under_temp(tmp_path)
     monkeypatch.setenv(x4refguard.SANDBOX_ENV, str(tmp_path))
+    # FX-B2: NO real config. Without this the resolver read the CHECKOUT's own x4-paths.env --
+    # on a developer machine a real one, whose X4_REFERENCE differs from the scratch tree the
+    # tests export, and an apply/remove then (correctly) refuses on the disagreement. An
+    # X4_CONFIG naming no file means "read none": the exported X4_REFERENCE is the config.
+    monkeypatch.setenv("X4_CONFIG", str(tmp_path / "no-x4-paths.env"))
+    monkeypatch.setattr(_paths, "_NOTICED", set(), raising=False)
+    _paths.reload()
     yield
+    _paths.reload()
 
 
 @pytest.fixture

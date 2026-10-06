@@ -112,6 +112,14 @@ def check(repo: pathlib.Path) -> list[str]:
     return out
 
 
+def count_line(rows, n_tags: int) -> str:
+    """One count per NAME, every name (FX-B2, delta review: the line named CLAUDE.md and
+    AGENTS.md and never .claude/x4-paths.env.example, so its rows were checked and uncounted)."""
+    counts = {n: sum(1 for _, rn, _ in rows if rn == n) for n in NAMES}
+    return "%d row(s) over %d tags: %s" % (
+        sum(counts.values()), n_tags, "; ".join("%d %s" % (counts[n], n) for n in NAMES))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     g = ap.add_mutually_exclusive_group(required=True)
@@ -133,9 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: no %s tags in %s -- a shallow clone? Nothing was checked." % (TAG_GLOB, repo),
               file=sys.stderr)
         return 2
-    counts = {n: sum(1 for _, rn, _ in rows if rn == n) for n in NAMES}
-    print("%d CLAUDE.md hashes over %d tags; %d AGENTS.md" % (counts["CLAUDE.md"], n_tags,
-                                                             counts["AGENTS.md"]))
+    print(count_line(rows, n_tags))
     if bad:
         print("\n".join(bad))
         print("%s is out of date: run gen-shipped-hashes.py --write and commit it." % REL)

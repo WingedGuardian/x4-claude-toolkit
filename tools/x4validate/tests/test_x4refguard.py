@@ -42,7 +42,15 @@ def _under_temp(p: Path) -> bool:
 def _sandbox(tmp_path, monkeypatch):
     assert _under_temp(tmp_path), "pytest tmp_path is not under the system temp dir: %s" % tmp_path
     monkeypatch.setenv(x4refguard.SANDBOX_ENV, str(tmp_path))
+    # FX-B2: NO real config. Without this the resolver read the CHECKOUT's own x4-paths.env --
+    # on a developer machine a real one, whose X4_REFERENCE differs from the scratch tree the
+    # tests export, and an apply/remove then (correctly) refuses on the disagreement. An
+    # X4_CONFIG naming no file means "read none": the exported X4_REFERENCE is the config.
+    monkeypatch.setenv("X4_CONFIG", str(tmp_path / "no-x4-paths.env"))
+    monkeypatch.setattr(_paths, "_NOTICED", set(), raising=False)
+    _paths.reload()
     yield
+    _paths.reload()
 
 
 @pytest.fixture
@@ -774,7 +782,16 @@ def test_R2a_the_no_sentinel_refusal_names_it_what_it_means_and_both_fixes(ref, 
     err = capsys.readouterr().err
     assert SENTINEL in err and str(ref.resolve()) in err, err
     assert "bin/unpack-reference.sh" in err, err                    # fix 1: unpack with the toolkit
-    assert "& \"" in err and "bash.exe\" bin/unpack-reference.sh" in err, err   # its PowerShell form
+    # its PowerShell form, PLATFORM-CORRECT (CI3: this pinned `bash.exe"`, which only Windows
+    # prints; pwsh on Linux runs bash by its own path, `& "/usr/bin/bash"`, and that is right).
+    want = '& "%s" bin/unpack-reference.sh' % x4refguard._bash_for_humans()
+    assert want in err, err
+    if os.name == "nt":
+        assert 'bash.exe" bin/unpack-reference.sh' in err, err
+    else:
+        assert ".exe" not in want and want.startswith('& "/'), want
+    # the PowerShell mark line uses THIS platform's separator (a backslash only on Windows)
+    assert "%s%s%s" % (str(ref.resolve()), os.sep, SENTINEL) in err, err
     assert "printf" in err and "Set-Content" in err, err             # fix 2: mark a hand-made tree
     assert "To lift it" not in err, "the lift block answers a question nobody asked here: " + err
 
@@ -813,7 +830,7 @@ def test_R2_status_ABSENT_reads_not_applied_and_names_apply_not_the_lift_block(r
     _b3_platform(monkeypatch)
     assert x4refguard.main(["status"]) == 1
     out = capsys.readouterr().out
-    assert "not applied" in out and "x4refguard.py apply" in out, out
+    assert "not applied" in out and 'x4refguard.py" apply' in out, out
     assert "To lift it" not in out, out
 
 

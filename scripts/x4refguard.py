@@ -150,7 +150,11 @@ def _bash_for_humans() -> str:
         found = gb.find_bash()
     except Exception:                       # noqa: BLE001 - a hint, never a verdict
         found = None
-    return found or "C:\\Program Files\\Git\\bin\\bash.exe"
+    # CI3 (ubuntu): off Windows PowerShell (pwsh) runs bash by its own path -- `& "/usr/bin/bash"`
+    # is the correct line there; Git for Windows' default exists only on Windows.
+    if found:
+        return found
+    return "C:\\Program Files\\Git\\bin\\bash.exe" if os.name == "nt" else "/bin/bash"
 
 
 def no_sentinel_help(root: Path) -> str:
@@ -172,9 +176,9 @@ def no_sentinel_help(root: Path) -> str:
         "    2. or, ONLY if this folder is a COMPLETE unpack you made yourself, mark it:\n"
         "         Git Bash / Linux / macOS:  printf '%%s\\n' '%s' > \"%s/%s\"\n"
         "         PowerShell:                Set-Content -LiteralPath \"%s%s%s\" -Value '%s'\n"
-        "       then run:  python scripts/x4refguard.py apply"
+        "       then run:  %s apply"
         % (native, SENTINEL, _bash_for_humans(), mark, posix, SENTINEL,
-           native, chr(92), SENTINEL, mark))
+           native, os.sep, SENTINEL, mark, SELF_CMD))
 
 
 #: A progress line every this many objects (B3).

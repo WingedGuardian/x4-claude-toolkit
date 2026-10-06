@@ -43,11 +43,25 @@ def test_the_ECHOED_prompt_alone_does_NOT_satisfy_the_validator_row(e2e):
 
 
 @pytest.mark.parametrize("said", ["x4validate (advisory) flagged this edit:",
-                                  "VALIDATION NOT COMPLETED: one or more requested checks could not run",
-                                  "X4 VALIDATION DID NOT RUN for dev/mymod/libraries/wares.xml: x"])
+                                  "VALIDATION NOT COMPLETED: one or more requested checks could not run"])
 def test_TWIN_a_message_the_VALIDATOR_emits_does(e2e, said):
     prompt = e2e.ROWS["validator-context"][0]
     assert _check(e2e, "user\n" + prompt + "\ncodex\nThe message was: " + said + "\n")
+
+
+@pytest.mark.parametrize("said", [
+    "X4 VALIDATION DID NOT RUN for dev/mymod/libraries/wares.xml: x",
+    "X4 VALIDATION DID NOT RUN: the toolkit hook failed (boom). x4validate (advisory) earlier"])
+def test_FXB2_a_DID_NOT_RUN_context_FAILS_the_row(e2e, said):
+    """FX-B2 (delta review): "X4 VALIDATION DID NOT RUN" is the ADAPTER saying the hook FAILED
+    -- no validator ran -- and it passed the row whose point is that the validator's context
+    reached the model. It now fails it, even beside a validator marker."""
+    prompt = e2e.ROWS["validator-context"][0]
+    assert not _check(e2e, "user\n" + prompt + "\ncodex\nThe message was: " + said + "\n")
+
+
+def test_FXB2_the_prompt_does_not_name_the_failure_marker_either(e2e):
+    assert e2e.VALIDATOR_FAILED.lower() not in e2e.ROWS["validator-context"][0].lower()
 
 
 def test_the_prompt_names_none_of_the_markers(e2e):

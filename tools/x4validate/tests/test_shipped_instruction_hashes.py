@@ -108,3 +108,14 @@ def test_the_list_holds_NOTHING_that_was_never_shipped():
     have = g.read_rows(ROOT)
     assert have, "the shipped list is empty"
     assert {(h, n) for h, n, _ in have} == {(h, n) for h, n, _ in g.expected(ROOT)}
+
+
+def test_FXB2_the_count_line_names_EVERY_name():
+    """The summary counted CLAUDE.md and AGENTS.md only; .claude/x4-paths.env.example rows
+    were checked and never counted. One twin per NAME: each count is its own rows'."""
+    g = _gen()
+    rows = [("a" * 64, n, "v1.0.0") for n in g.NAMES] + [("b" * 64, g.NAMES[2], "v1.1.0")]
+    line = g.count_line(rows, 2)
+    assert line.startswith("4 row(s) over 2 tags"), line
+    assert "1 CLAUDE.md" in line and "1 AGENTS.md" in line, line
+    assert "2 .claude/x4-paths.env.example" in line, line

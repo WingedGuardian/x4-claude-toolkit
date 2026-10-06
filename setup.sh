@@ -149,9 +149,22 @@ echo "4) Base-game reference (you unpack your OWN copy):"
 # R2 cosmetic: this said "Set X4_GAME" after the installer had set it, and named a Git Bash
 # command only. Read the config it just seeded; give the PowerShell form too (bare `bash`
 # there is usually the WSL stub, which cannot run it).
-_i_cfg_val() {   # KEY -> the value in x4-paths.env, quotes stripped (empty when unset)
+#: FX-B2 (delta review): THE SAME GRAMMAR as every other reader -- the guards' own loader,
+#: parsing x4-paths.env alone (X4_CONFIG pinned to it, the key unset so the environment cannot
+#: answer). The sed it replaces ignored `export KEY=` lines, so a config written that way read
+#: as "X4_GAME is blank". The sed stays only for a root with no guard copy, and takes `export`.
+_i_loader=""
+for _i_l in .claude .codex .opencode; do
+  [ -f "$ROOT/$_i_l/hooks/_x4-env.sh" ] && { _i_loader="$ROOT/$_i_l/hooks/_x4-env.sh"; break; }
+done
+_i_cfg_val() {   # KEY -> the value in x4-paths.env (empty when unset)
   [ -f "$ROOT/x4-paths.env" ] || return 0
-  sed -n "s/^[[:space:]]*$1=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*\$/\1/p" "$ROOT/x4-paths.env" | tail -n 1
+  if [ -n "$_i_loader" ]; then
+    ( unset "$1"; X4_TOOLKIT="$ROOT"; X4_CONFIG="$ROOT/x4-paths.env"; export X4_TOOLKIT X4_CONFIG
+      . "$_i_loader" >/dev/null 2>&1; printf '%s' "${!1:-}" )
+    return 0
+  fi
+  sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$1[[:space:]]*=[[:space:]]*[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*\$/\2/p" "$ROOT/x4-paths.env" | tail -n 1
 }
 _I_GAME="$(_i_cfg_val X4_GAME)"
 _I_REF="$(_i_cfg_val X4_REFERENCE)"; _I_REF="${_I_REF:-$ROOT/reference}"

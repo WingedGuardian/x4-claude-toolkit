@@ -62,7 +62,13 @@ def _tree(tmp_path: Path) -> Path:
     return root
 
 
-def _run(tmp_path, root, drop=("X4_GATE_LOG_DIR", "X4_GAME", "X4_REFERENCE"), **env_extra):
+#: FX-B2 (reviewer C): the default leaked the developer's X4_TOOLKIT / X4_CONFIG, and the
+#: copied resolver (no toolkit layout here) then read THEIR config. Every X4 root is dropped.
+_DROP = ("X4_GATE_LOG_DIR", "X4_GAME", "X4_REFERENCE", "X4_TOOLKIT", "X4_CONFIG", "X4_EXTENSIONS",
+         "X4_GAME_EXTENSIONS", "X4_GAME_ROOT", "X4_PROFILE", "X4_MODS")
+
+
+def _run(tmp_path, root, drop=_DROP, **env_extra):
     env = {k: v for k, v in os.environ.items() if k not in drop}
     stub = (tmp_path / "bin").as_posix()
     if os.name == "nt":
@@ -162,9 +168,7 @@ def test_a_log_dir_inside_a_game_named_ONLY_in_the_path_config_REFUSES(tmp_path)
     tk = tmp_path / "tk"
     tk.mkdir()
     (tk / "x4-paths.env").write_text('X4_GAME="%s"' % protected.as_posix() + chr(10), encoding="utf-8")
-    rc, out, err = _run(tmp_path, root, drop=("X4_GATE_LOG_DIR", "X4_GAME", "X4_REFERENCE",
-                                              "X4_CONFIG", "X4_TOOLKIT"),
-                        X4_TOOLKIT=str(tk), X4_GATE_LOG_DIR=str(protected / "logs"))
+    rc, out, err = _run(tmp_path, root, X4_TOOLKIT=str(tk), X4_GATE_LOG_DIR=str(protected / "logs"))
     assert rc == 2 and "REFUSING" in err and "X4_GAME" in err, (rc, out, err)
     assert not (protected / "logs").exists()
 
@@ -173,4 +177,30 @@ def test_the_containment_check_needs_no_realpath():
     """`realpath -m` does not exist on macOS: the check failed OPEN there (R4-7)."""
     code = [ln for ln in SCRIPT.read_text(encoding="utf-8").splitlines()
             if not ln.lstrip().startswith("#")]
-    assert not [ln for ln in code if "realpath" in ln], "run-gates.sh still CALLS realpath"
+    # The SHELL command; Python's os.path.realpath (FX-B2: links are resolved) is portable.
+    calls = [ln for ln in code if "realpath" in ln and "os.path.realpath" not in ln]
+    assert not calls, "run-gates.sh still CALLS realpath"
+
+
+def _link_dir(link: Path, target: Path) -> None:
+    """A directory link: a symlink on POSIX, a JUNCTION on Windows (no privilege needed)."""
+    if os.name == "nt":
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            pytest.skip("cannot create a junction here: " + r.stdout + r.stderr)
+    else:
+        os.symlink(target, link, target_is_directory=True)
+
+
+def test_FXB2_a_log_dir_reached_through_a_LINK_into_the_game_REFUSES(tmp_path):
+    """Delta review: containment compared abspath only, so a log dir that is a symlink or
+    junction INTO a protected tree passed as "outside". Links are resolved now."""
+    root = _tree(tmp_path)
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    link = tmp_path / "innocent-looking"
+    _link_dir(link, protected)
+    rc, out, err = _run(tmp_path, root, X4_GAME=str(protected), X4_GATE_LOG_DIR=str(link / "logs"))
+    assert rc == 2 and "REFUSING" in err, (rc, out, err)
+    assert not (protected / "logs").exists()

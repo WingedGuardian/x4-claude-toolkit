@@ -2851,9 +2851,13 @@ def test_x4doctor_EXITS_0_on_a_healthy_fresh_install(installer, method, tmp_path
                         "--json"], capture_output=True, text=True, timeout=300,
                        env=_doctor_env(tmp_path), cwd=str(tmp_path))
     got = json.loads(d.stdout)
+    # FX-B2: an unprotected reference/ is the USER's pending step on every root (TODO, exit 4),
+    # never OK -- the installers do not apply Layer 2. It is the ONLY item allowed to be open.
     bad = [(c["id"], c["status"], c["detail"][:200]) for c in got["checks"]
-           if c["status"] not in ("OK", "N/A")]
-    assert d.returncode == 0 and not bad, (d.returncode, bad)
+           if c["status"] not in ("OK", "N/A")
+           and not (c["id"] == "layer2.reference" and c["status"] == "TODO")]
+    todo = [c["id"] for c in got["checks"] if c["status"] == "TODO"]
+    assert d.returncode == 4 and not bad and todo == ["layer2.reference"], (d.returncode, bad, todo)
     assert sum(c["status"] == "OK" for c in got["checks"]) >= 10, got["checks"]
 
 
@@ -2896,6 +2900,12 @@ def test_an_UNPROTECTED_existing_reference_PRINTS_the_x4refguard_step(installer,
     assert _REFGUARD_STEP in r.stdout, r.stdout[-2500:]
     # R2 cosmetic: the state is named in words ("absent" read like a missing file)
     assert "not applied" in r.stdout, "the step must name the state it saw: " + r.stdout[-1500:]
+    # ...and NEITHER installer applied it -- measured on the tree, not read from the source
+    # (FX-B2, reviewer C: test_installers_agree's "neither APPLIES it" was a substring negation).
+    st = subprocess.run([sys.executable, str(dest / "scripts" / "x4refguard.py"), "status", "--json",
+                         "--toolkit", str(dest)], capture_output=True, text=True,
+                        env=_doctor_env(tmp_path), timeout=300)
+    assert json.loads(st.stdout)["state"] == "absent", (st.stdout, st.stderr)
 
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
@@ -3529,3 +3539,31 @@ def test_FXB2_6_R4_3_TWIN_an_EQUAL_process_env_value_still_SETS_the_user_value(i
                  inherit={"X4_TOOLKIT": dest})
     assert r.returncode == 0, _ok(r)
     assert _reg_get(regkey) == str(dest.resolve()), _ok(r)
+
+
+@pytest.mark.parametrize("loader", [True, False], ids=["guard-loader", "no-guard-copy"])
+@pytest.mark.parametrize("line,set_", [('export X4_GAME="/g"', True), ("X4_GAME='/g'", True),
+                                       ("# X4_GAME=/g", False)])
+def test_FXB2_6_setup_reads_the_config_with_the_SAME_grammar(tmp_path, loader, line, set_):
+    """setup.sh's _i_cfg_val was a sed that ignored `export KEY=` lines, so a config written
+    that way read as "Set X4_GAME" right after it was set. It now asks the guards' own loader
+    (the parser every tool shares); the sed fallback, for a root with no guard copy, takes
+    `export` too. A commented line is a twin: still unset."""
+    b = _bash()
+    if b is None:
+        pytest.skip("no Git Bash")
+    root = tmp_path / "tk"
+    root.mkdir()
+    shutil.copy2(ROOT / "setup.sh", root / "setup.sh")
+    if loader:
+        (root / ".claude" / "hooks").mkdir(parents=True)
+        shutil.copy2(ROOT / ".claude" / "hooks" / "_x4-env.sh", root / ".claude" / "hooks" / "_x4-env.sh")
+    (root / "x4-paths.env").write_text(line + "\n", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("X4_")}
+    env["CLAUDE_PROJECT_DIR"] = str(root)
+    r = subprocess.run([b, str(root / "setup.sh")], capture_output=True, text=True, env=env,
+                       cwd=str(root), timeout=300)
+    if set_:
+        assert "X4_GAME is set in x4-paths.env" in r.stdout, r.stdout[-2000:]
+    else:
+        assert "Set X4_GAME in x4-paths.env" in r.stdout, r.stdout[-2000:]
