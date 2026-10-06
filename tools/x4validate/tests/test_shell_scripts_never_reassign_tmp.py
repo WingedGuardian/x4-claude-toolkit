@@ -36,6 +36,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[3]
 
 #: The roots this scan covers, and why: everything a session or CI job actually shells out
@@ -66,7 +68,14 @@ def _tracked_sh(roots=None) -> list[Path]:
     """Every tracked `*.sh` under *roots*, via `git ls-files` -- the tracked
     INDEX, not a directory walk, so an untracked scratch script never enters
     the population and a renamed/deleted file never lingers in it."""
+    from _layout import installed_layout
     roots = _roots() if roots is None else roots
+    if installed_layout(REPO):
+        # An INSTALLED toolkit: what is on disk IS the shipped set. v4.0.0 delta review: the
+        # git branch below ran here too, and an install inside ANOTHER repo (the in-game
+        # method installs into the game root, which can be a git repo) asked THAT repo's
+        # index -- which tracks none of these files -- so the population came back EMPTY.
+        return _walk_sh(roots)
     out = subprocess.run(
         ["git", "ls-files", *(f"{r}/*.sh" for r in roots)],
         cwd=REPO, capture_output=True, text=True, check=False)
@@ -75,8 +84,46 @@ def _tracked_sh(roots=None) -> list[Path]:
     if inside.returncode != 0 or inside.stdout.strip() != "true":
         # NOT a git checkout: the release bundle, or the cold-clone verification's
         # extract. Every file in it IS the shipped set, so the walk is the tracked set.
-        return sorted(p for r in roots for p in (REPO / r).rglob("*.sh") if p.is_file())
+        return _walk_sh(roots)
     return [REPO / n for n in out.stdout.split() if n]
+
+
+def _walk_sh(roots) -> list[Path]:
+    return sorted(p for r in roots for p in (REPO / r).rglob("*.sh") if p.is_file())
+
+
+def _skip_if_installed_and_empty(population, roots, installed=None) -> None:
+    """An installed toolkit installed for an agent whose tree carries no .sh can have an empty
+    population; that is a counted SKIP there. In a checkout an empty population is a broken
+    scan and the assertions below FAIL it -- never skipped."""
+    from _layout import REASON, installed_layout
+    installed = installed_layout(REPO) if installed is None else installed
+    if installed and not population:
+        pytest.skip(f"{REASON}: no shell script under {list(roots)} in this install -- "
+                    "the TMP-reassignment scan has nothing to examine")
+
+
+def test_TWIN_an_empty_population_skips_only_in_an_install():
+    with pytest.raises(pytest.skip.Exception, match="nothing to examine"):
+        _skip_if_installed_and_empty([], ("scripts",), installed=True)
+    _skip_if_installed_and_empty([], ("scripts",), installed=False)      # checkout: no skip
+    _skip_if_installed_and_empty([REPO / "x.sh"], ("scripts",), installed=True)
+
+
+def test_an_install_INSIDE_another_git_repo_still_walks_its_own_files(tmp_path, monkeypatch):
+    """The in-game layout: the toolkit sits in a game root that is its OWN git repo, tracking
+    none of the toolkit's scripts. The population must come from disk, not that index."""
+    import sys
+    game = tmp_path / "game"
+    (game / "scripts").mkdir(parents=True)
+    (game / "scripts" / "a.sh").write_text("echo hi\n", encoding="utf-8")
+    (game / "readme.txt").write_text("x", encoding="utf-8")
+    for a in (("init", "-q"), ("add", "readme.txt"),
+              ("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+               "commit", "-qm", "game")):
+        assert subprocess.run(["git", *a], cwd=game, capture_output=True).returncode == 0, a
+    monkeypatch.setattr(sys.modules[__name__], "REPO", game)
+    assert [p.name for p in _tracked_sh(("scripts",))] == ["a.sh"]
 
 
 def _tmp_reassignments(text: str) -> list[int]:
@@ -90,6 +137,7 @@ def test_no_tracked_script_reassigns_tmp_temp_or_tmpdir():
     offenders = []
     scanned = 0
     roots = _roots()
+    _skip_if_installed_and_empty(_tracked_sh(), roots)
     per_root = {r: 0 for r in roots}
     for path in _tracked_sh():
         scanned += 1
