@@ -1186,6 +1186,26 @@ def _missing_tree_row(ctx: Ctx, ref, todo_text: str):
                      % (ref, moved, _unpack_cmd(ctx, ref)))
 
 
+def _refguard_cmd(ctx: Ctx, m, action: str, ref) -> str:
+    """The ABSOLUTE `x4refguard <action>` command, with --toolkit and --reference -- the same
+    approach as `_unpack_cmd` (FX-Z, the FX-B4 lead). A bare `apply` REFUSES in the very shell
+    the doctor judged whenever an exported X4_REFERENCE differs from the config (FX-B2) or an
+    inherited X4_CONFIG names a config outside the toolkit (FX-B3); --reference naming the tree
+    the doctor JUDGED lifts both for x4refguard, and --toolkit a foreign $X4_TOOLKIT."""
+    f = getattr(m, "__file__", None)
+    p = Path(f) if f else None
+    if p is None or not p.is_file():
+        p = next((Path(b) / "scripts" / "x4refguard.py" for b in (ctx.root, ctx.toolkit, HERE.parent)
+                  if b and (Path(b) / "scripts" / "x4refguard.py").is_file()), None)
+    if p is None:
+        return "python scripts/x4refguard.py %s   (from the toolkit folder)" % action
+    p = p.resolve()
+    cmd = 'python "%s" %s --toolkit "%s"' % (p, action, p.parent.parent.as_posix())
+    if ref:
+        cmd += ' --reference "%s"' % Path(ref).as_posix()
+    return cmd
+
+
 def _x4refguard_module(ctx: Ctx):
     """Layer 2 (the OS-level deny-delete on reference/) is scripts/x4refguard.py -- NOT x4lock,
     which an earlier version of this check asked, so the row could never answer."""
@@ -1339,7 +1359,7 @@ def check_common(ctx: Ctx) -> list[Check]:
         hookless = [t for t in ("codex", "opencode", "generic") if ctx.targets.get(t)]
         if st == "protected":
             return OK, "reference/ carries the OS-level delete protection"
-        apply_cmd = 'python "%s" apply' % Path(getattr(m, "__file__", "scripts/x4refguard.py")).resolve()
+        apply_cmd = _refguard_cmd(ctx, m, "apply", ref)
         # FX-B3 (reviewer F M2/M3): the hint must be a command that WORKS in this case.
         if st == "unconfigured" and not Path(ref).is_dir():
             # A fresh install before its unpack step: a normal, KNOWN state -- the user's step
@@ -1365,7 +1385,7 @@ def check_common(ctx: Ctx) -> list[Check]:
             return FAIL, (
                 "reference/ has only PARTIAL OS-level delete protection and is not a finished "
                 "unpack (no %s): neither `apply` nor the unpack will act on it as it is -- run: "
-                "%s, then %s" % (_REF_SENTINEL, apply_cmd[:-len(" apply")] + ' remove',
+                "%s, then %s" % (_REF_SENTINEL, _refguard_cmd(ctx, m, "remove", ref),
                                  _unpack_cmd(ctx, ref)))
         if st in ("absent", "partial") and not hookless:
             # FX-B2 (delta review): a Claude-only root read OK here whatever the state, saying
