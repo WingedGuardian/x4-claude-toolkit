@@ -744,8 +744,10 @@ def check_sql_hardening() -> None:
     except (SystemExit, ValueError, sqlite3.Error) as exc:
         # v4.0.0 review R5-4: `_connect` reports a missing or incompatible store with
         # ValueError now, not SystemExit -- uncaught, it aborted the gate with a traceback.
-        print(f"     note  no usable store ({type(exc).__name__}); read-only connection "
-              "check NOT RUN")
+        # v4.0.0 delta review: PRINTING "NOT RUN" was not enough -- the gate still exited 0
+        # with a section that examined nothing. Count it, so the verdict is 2.
+        not_run("connection itself is read-only (mode=ro)",
+                f"no usable store ({type(exc).__name__}); the read-only check did not run")
         return
     blocked = 0
     probes = ["UPDATE entities SET origin='x'", "DROP TABLE attrs", "CREATE TABLE zzz(a)"]
