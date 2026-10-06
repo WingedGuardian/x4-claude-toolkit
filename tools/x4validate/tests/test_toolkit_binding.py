@@ -380,3 +380,105 @@ def test_FXB2_env_root_conflicts_in_process(clean, monkeypatch, tmp_path):
     _paths.use_root("X4_REFERENCE", tmp_path / "chosen")
     assert _paths.env_root_conflicts("reference") == []
     assert _paths.reference() == Path(_paths.native(str(tmp_path / "chosen")))
+
+
+# ---------------- FX-B3: an INHERITED X4_CONFIG, left SET (reviewer F, delta review)
+#
+# `env_root_conflicts` compared against "the acting toolkit's config" -- a file X4_CONFIG
+# chose. With X4_CONFIG naming A's config, B's `apply --toolkit B --yes` targeted A's tree and
+# `remove` reported on it, exit 0, no warning. These tests leave X4_CONFIG SET.
+
+@pytest.mark.parametrize("op", ["apply", "remove"])
+@pytest.mark.parametrize("toolkit_flag", [True, False], ids=["--toolkit-B", "own-toolkit"])
+def test_FXB3_inherited_X4_CONFIG_naming_A_makes_B_REFUSE_naming_both(kits, op, toolkit_flag):
+    a, b = kits
+    flag = ["--toolkit", str(b)] if toolkit_flag else []
+    r = _run(b, "x4refguard.py", op, *flag, "--yes",
+             env=_env(None, b, X4_CONFIG=a / "x4-paths.env"))
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert "X4_CONFIG" in r.stderr and str(a / "x4-paths.env") in r.stderr, r.stderr
+    assert str(b) in r.stderr and "Unset X4_CONFIG" in r.stderr, r.stderr
+    assert "SandboxViolation" not in r.stderr and str(a / "refA") not in r.stdout, r.stdout + r.stderr
+
+
+def test_FXB3_X4_CONFIG_naming_a_MISSING_file_REFUSES_too(kits, tmp_path):
+    a, b = kits
+    r = _run(b, "x4refguard.py", "remove", "--yes",
+             env=_env(None, b, X4_CONFIG=tmp_path / "nope.env"))
+    assert r.returncode == 2 and "does not exist" in r.stderr, (r.returncode, r.stdout, r.stderr)
+
+
+def test_FXB3_TWIN_X4_CONFIG_naming_B_s_OWN_config_is_not_refused(kits):
+    a, b = kits
+    r = _run(b, "x4refguard.py", "remove", "--yes",
+             env=_env(None, b, X4_CONFIG=b / "x4-paths.env"))
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    assert "X4_CONFIG" not in r.stderr and str(b / "refB").lower() in r.stdout.lower(), r.stdout
+
+
+def test_FXB3_TWIN_X4_CONFIG_unset_is_not_refused(kits):
+    a, b = kits
+    r = _run(b, "x4refguard.py", "remove", "--yes", env=_env(None, b))   # X4_CONFIG=""
+    assert r.returncode == 0 and "X4_CONFIG" not in r.stderr, (r.returncode, r.stderr)
+
+
+def test_FXB3_TWIN_reference_flag_lifts_it_for_x4refguard(kits):
+    """--reference chooses the one root x4refguard acts on, so X4_CONFIG decides nothing."""
+    a, b = kits
+    r = _run(b, "x4refguard.py", "remove", "--reference", str(b / "refB"), "--yes",
+             env=_env(None, b, X4_CONFIG=a / "x4-paths.env"))
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    assert str(b / "refB").lower() in r.stdout.lower(), r.stdout
+
+
+def test_FXB3_status_prints_ONE_notice_line_and_is_not_refused(kits, tmp_path):
+    a, b = kits
+    for cfg in (a / "x4-paths.env", tmp_path / "nope.env"):
+        r = _run(b, "x4refguard.py", "status", "--json", env=_env(None, b, X4_CONFIG=cfg))
+        json.loads(r.stdout)                  # it ANSWERED (rc is the state's: absent 1,
+        assert "REFUSED" not in r.stderr, r.stderr  # unconfigured 2) -- a status never refuses
+        lines = [ln for ln in r.stderr.splitlines() if "X4_CONFIG" in ln]
+        assert len(lines) == 1 and str(b) in lines[0], r.stderr
+
+
+@pytest.mark.parametrize("args", [("lock",), ("unlock", "--all"),
+                                  ("lock", "--game", "G", "--registry", "R")])
+def test_FXB3_x4lock_REFUSES_on_an_inherited_X4_CONFIG_and_flags_do_not_lift_it(kits, tmp_path, args):
+    a, b = kits
+    args = tuple(str(tmp_path / x) if x in ("G", "R") else x for x in args)
+    r = _run(b, "x4lock.py", *args, "--toolkit", str(b),
+             env=_env(None, b, X4_CONFIG=a / "x4-paths.env"))
+    assert r.returncode == 2 and "X4_CONFIG" in r.stderr, (r.returncode, r.stdout, r.stderr)
+    assert os.access(a / "x4-paths.env", os.W_OK) and os.access(b / "x4-paths.env", os.W_OK)
+
+
+def test_FXB3_x4lock_status_toolkit_B_lists_B_s_config(kits):
+    a, b = kits
+    r = _run(b, "x4lock.py", "status", "--toolkit", str(b),
+             env=_env(None, b, X4_CONFIG=a / "x4-paths.env"))
+    assert r.returncode in (0, 1), (r.returncode, r.stdout, r.stderr)
+    assert str(b / "x4-paths.env").lower() in r.stdout.lower(), r.stdout
+    assert len([ln for ln in r.stderr.splitlines() if "X4_CONFIG" in ln]) == 1, r.stderr
+
+
+def test_FXB3_config_conflict_one_twin_per_clause(clean, monkeypatch, tmp_path):
+    """Clauses: X4_CONFIG set / names a missing-or-outside file / the acting toolkit is
+    explicit (not merely $X4_TOOLKIT)."""
+    out = tmp_path / "other.env"
+    out.write_text("", encoding="utf-8")
+    monkeypatch.setattr(_paths, "_SELF", tmp_path / "kit", raising=False)
+    (tmp_path / "kit").mkdir()
+    own = tmp_path / "kit" / "x4-paths.env"
+    own.write_text("", encoding="utf-8")
+    assert _paths.config_conflict() is None                                   # unset
+    monkeypatch.setenv("X4_CONFIG", str(out))
+    assert _paths.config_conflict() == (tmp_path / "kit", out, True)          # outside
+    monkeypatch.setenv("X4_CONFIG", str(own))
+    assert _paths.config_conflict() is None                                   # inside
+    monkeypatch.setenv("X4_CONFIG", str(tmp_path / "kit" / "gone.env"))
+    assert _paths.config_conflict()[2] is False                               # missing, inside
+    monkeypatch.setenv("X4_CONFIG", str(out))
+    monkeypatch.setattr(_paths, "_SELF", None, raising=False)
+    assert _paths.config_conflict() is None                                   # no explicit kit
+    _paths.use_toolkit(tmp_path / "kit")
+    assert _paths.config_conflict() is not None                               # --toolkit is
