@@ -80,7 +80,13 @@ try:
 except Exception as exc:
     print("cannot import x4validate._paths: %s" % exc, file=sys.stderr)
     sys.exit(2)
-d = os.path.normcase(os.path.abspath(_paths.native(sys.argv[1])))
+# BOTH spellings, links RESOLVED too (FX-B2, delta review: abspath alone let a log dir that is
+# a symlink/junction INTO the reference tree pass as "outside"). realpath is non-strict: a
+# path that does not exist yet still resolves its existing prefix.
+def _forms(p):
+    return {os.path.normcase(os.path.abspath(p)).rstrip(os.sep),
+            os.path.normcase(os.path.realpath(p)).rstrip(os.sep)}
+ds = _forms(_paths.native(sys.argv[1]))
 for name, fn in (("X4_GAME", _paths.game_root), ("X4_REFERENCE", _paths.reference)):
     try:
         root = fn()
@@ -89,10 +95,10 @@ for name, fn in (("X4_GAME", _paths.game_root), ("X4_REFERENCE", _paths.referenc
         sys.exit(2)
     if root is None:
         continue
-    r = os.path.normcase(os.path.abspath(str(root))).rstrip(os.sep)
-    if d == r or d.startswith(r + os.sep):
-        print("%s (%s)" % (name, root))
-        sys.exit(0)
+    for r in _forms(str(root)):
+        if any(d == r or d.startswith(r + os.sep) for d in ds):
+            print("%s (%s)" % (name, root))
+            sys.exit(0)
 sys.exit(1)
 PY
 }

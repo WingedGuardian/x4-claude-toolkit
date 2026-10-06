@@ -41,9 +41,9 @@ WHAT IT DOES NOT STOP (the honest gaps)
     denied, so the deny stays removable). POSIX chmod: root, and `chmod u+w` by the owner.
 
 USAGE
-    python scripts/x4refguard.py status [--json] [--full] [--toolkit DIR]
-    python scripts/x4refguard.py apply  [--path P] [--yes] [--toolkit DIR]   P must be the configured root
-    python scripts/x4refguard.py remove [--path P] [--yes] [--toolkit DIR]   the escape hatch, step 1/2
+    python scripts/x4refguard.py status [--json] [--full] [--toolkit DIR] [--reference DIR]
+    python scripts/x4refguard.py apply  [--path P] [--yes] [--toolkit DIR] [--reference DIR]   P must be the configured root
+    python scripts/x4refguard.py remove [--path P] [--yes] [--toolkit DIR] [--reference DIR]   the escape hatch, step 1/2
 
 BEFORE CHANGING ANYTHING (B3, install red-team 2026-10-04: an apply ran >2 minutes on a
 60 GB tree with no output and no question): apply and remove print the target root and
@@ -53,7 +53,10 @@ call runs, a heartbeat line says it is still working.
 
 WHICH TOOLKIT (B2, same red-team): this script acts for the toolkit it LIVES IN. If
 $X4_TOOLKIT names a different one, one line says so, and apply/remove REFUSE (exit 2)
-unless --toolkit DIR names the toolkit to act for explicitly.
+unless --toolkit DIR names the toolkit to act for explicitly. And an EXPORTED X4_REFERENCE
+naming a different root from the acting toolkit's config makes apply/remove REFUSE (exit 2),
+printing both roots, unless --reference DIR chooses one (FX-B2: `--toolkit B` alone still
+acted on another copy's tree through an inherited X4_REFERENCE); status prints one line.
 
 `status` samples: the root, the sentinel, and the first file found depth-first in each
 top-level directory -- NOT a census, and it says so on every run. `--full` walks every
@@ -116,13 +119,18 @@ SUPPORTED = ("windows", "linux", "darwin")
 SAMPLE_SCOPE = ("root + sentinel + first file of each top-level dir "
                 "(not a census; use --full)")
 
+#: THIS script, as a command that works from ANY directory (FX-B2, delta review: the hints said
+#: `python scripts/x4refguard.py`, relative to a cwd that is often the game folder or another
+#: toolkit -- where it names a different script or none).
+SELF_CMD = 'python "%s"' % Path(__file__).resolve()
+
 ESCAPE_HATCH = """\
 To lift it (a USER's step, never an agent's on its own):
-  1. python scripts/x4refguard.py remove        (shows the folder and a count, then asks; --yes skips)
-  2. root moved since?  python scripts/x4refguard.py remove --path <old root>
+  1. %(self)s remove        (shows the folder and a count, then asks; --yes skips)
+  2. root moved since?  %(self)s remove --path <old root>
   3. tool broken? Windows, from cmd.exe: icacls "<root>" /remove:d *<your SID>  (whoami /user)
      Linux: sudo chattr -R -i "<root>" or chmod -R u+w "<root>"; macOS: chflags -R nouchg "<root>"
-  4. last resort, Windows, elevated: icacls "<root>" /reset /T /C"""
+  4. last resort, Windows, elevated: icacls "<root>" /reset /T /C""" % {"self": SELF_CMD}
 
 
 #: C6 (install red-team): "unconfigured / moved?" said WHAT, never how to fix it.
@@ -142,7 +150,11 @@ def _bash_for_humans() -> str:
         found = gb.find_bash()
     except Exception:                       # noqa: BLE001 - a hint, never a verdict
         found = None
-    return found or "C:\\Program Files\\Git\\bin\\bash.exe"
+    # CI3 (ubuntu): off Windows PowerShell (pwsh) runs bash by its own path -- `& "/usr/bin/bash"`
+    # is the correct line there; Git for Windows' default exists only on Windows.
+    if found:
+        return found
+    return "C:\\Program Files\\Git\\bin\\bash.exe" if os.name == "nt" else "/bin/bash"
 
 
 def no_sentinel_help(root: Path) -> str:
@@ -164,9 +176,9 @@ def no_sentinel_help(root: Path) -> str:
         "    2. or, ONLY if this folder is a COMPLETE unpack you made yourself, mark it:\n"
         "         Git Bash / Linux / macOS:  printf '%%s\\n' '%s' > \"%s/%s\"\n"
         "         PowerShell:                Set-Content -LiteralPath \"%s%s%s\" -Value '%s'\n"
-        "       then run:  python scripts/x4refguard.py apply"
+        "       then run:  %s apply"
         % (native, SENTINEL, _bash_for_humans(), mark, posix, SENTINEL,
-           native, chr(92), SENTINEL, mark))
+           native, os.sep, SENTINEL, mark, SELF_CMD))
 
 
 #: A progress line every this many objects (B3).
@@ -939,8 +951,9 @@ _HUMAN_STATE = {"absent": "not applied"}
 #: was printed for "absent" too, where there is nothing to lift).
 _LIFTABLE = ("protected", "partial", "foreign")
 
-APPLY_HINT = ("To apply it: python scripts/x4refguard.py apply   (shows the folder and a count, "
-              "then asks you; --yes answers for you, e.g. when an agent runs it after you agreed)")
+APPLY_HINT = ("To apply it: %s apply   (shows the folder and a count, "
+              "then asks you; --yes answers for you, e.g. when an agent runs it after you agreed)"
+              % SELF_CMD)
 
 
 def _human(r: dict) -> str:
@@ -971,6 +984,12 @@ def _act(args, action: str) -> int:
               file=sys.stderr)
         return 3
     refusal = _paths.foreign_toolkit_refusal("x4refguard " + action) if _paths is not None else None
+    # FX-B2: an INHERITED X4_REFERENCE outranks the acting toolkit's config, so `--toolkit B`
+    # alone still protected (or lifted) another copy's tree. A difference refuses, naming
+    # both roots and --reference, the flag that chooses one.
+    if not refusal and _paths is not None:
+        refusal = _paths.env_root_refusal("x4refguard " + action,
+                                          {"reference": "--reference"}, "reference")
     if refusal:
         print(refusal, file=sys.stderr)
         return 2
@@ -1010,6 +1029,10 @@ def main(argv=None) -> int:
         p.add_argument("--yes", action="store_true",
                        help="confirm without being asked (required when not run in a terminal)")
     for p in (st, ap_, rm):
+        p.add_argument("--reference", metavar="DIR",
+                       help="act on this reference root, chosen explicitly. Needed for "
+                            "apply/remove when an exported X4_REFERENCE and this toolkit's "
+                            "config name different roots (both are printed)")
         p.add_argument("--toolkit", metavar="DIR",
                        help="act for this toolkit's configuration. Default: the toolkit this "
                             "script lives in; REQUIRED for apply/remove when $X4_TOOLKIT names "
@@ -1023,6 +1046,14 @@ def main(argv=None) -> int:
         _paths.use_toolkit(args.toolkit)
     elif _paths is not None:
         _paths.toolkit_notice()
+    if getattr(args, "reference", None):
+        if _paths is None:
+            print("REFUSED: --reference needs the x4validate package, which could not be "
+                  "imported", file=sys.stderr)
+            return 2
+        _paths.use_root("X4_REFERENCE", args.reference)
+    if args.cmd == "status" and _paths is not None:
+        _paths.env_root_notice("reference")
     if args.cmd == "status":
         return cmd_status(args)
     if args.cmd in ("apply", "remove"):

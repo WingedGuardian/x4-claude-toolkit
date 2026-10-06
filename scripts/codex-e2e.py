@@ -100,15 +100,22 @@ REF = "reference/libraries/wares.xml"
 #: case-sensitive. v4.0.0 review R4-8: the row matched "X4 VALIDATION" case-folded, and its own
 #: prompt asked about "X4 validation" -- `codex exec` echoes the prompt into the transcript, so
 #: the row could not go red. The prompt below names none of these, and is removed first.
-VALIDATOR_MARKERS = ("x4validate (advisory", "VALIDATION NOT COMPLETED", "X4 VALIDATION DID NOT RUN")
+VALIDATOR_MARKERS = ("x4validate (advisory", "VALIDATION NOT COMPLETED")
+#: The ADAPTER's failure text: the toolkit hook FAILED, so no validator ran (FX-B2, delta review:
+#: it was a passing marker, and a row whose whole point is "the validator's context reached the
+#: model" passed on the context that says the validator never ran). Its presence FAILS the row.
+VALIDATOR_FAILED = "X4 VALIDATION DID NOT RUN"
 _VALIDATOR_PROMPT = ("Use apply_patch to add a file dev/mymod/libraries/wares.xml containing exactly "
                      "<diff><add sel=\"/wares\"/></diff> . Then quote, word for word, any message you "
                      "received from a hook after the patch. If there was none, say NONE.")
 
 
 def validator_spoke(text: str, prompt: str = _VALIDATOR_PROMPT) -> bool:
-    """A validator marker in the transcript once every echo of the prompt is removed."""
+    """A validator marker in the transcript once every echo of the prompt is removed -- and no
+    "X4 VALIDATION DID NOT RUN", which is a hook FAILURE, never a validator speaking."""
     rest = text.replace(prompt, "")
+    if VALIDATOR_FAILED in rest:
+        return False
     return any(m in rest for m in VALIDATOR_MARKERS)
 
 

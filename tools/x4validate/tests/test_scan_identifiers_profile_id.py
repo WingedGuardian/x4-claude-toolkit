@@ -186,3 +186,51 @@ def test_TWIN_the_real_path_ALONE_is_caught_too(tmp_path):
     repo = _repo(tmp_path, "cp C:/Users/%s/Desktop/b\n" % REAL_USER)
     r = _scan(repo, _env(tmp_path))
     assert r.returncode == 1, r.stdout + r.stderr
+
+
+# --- FX-B2 (delta review): the walk covers Linux, and says when it was PARTIAL --------------
+
+def _linux_profile(tmp_path: Path, pid: str) -> Path:
+    d = tmp_path / "home" / ".config" / "EgoSoft" / "X4" / pid
+    d.mkdir(parents=True)
+    return d
+
+
+def test_FXB2_a_LINUX_profile_folder_is_derived_too(tmp_path):
+    """The native Linux client keeps profiles under ~/.config/EgoSoft/X4/<id>; the walk read
+    only the two Windows Documents locations, so a Linux machine derived nothing."""
+    repo = _repo(tmp_path, "see profile %s for the save\n" % FAKE_ID)
+    _linux_profile(tmp_path, FAKE_ID)
+    r = _scan(repo, _env(tmp_path))
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "1 X4 profile id(s) derived" in r.stdout, r.stdout
+    assert FAKE_ID not in r.stdout + r.stderr
+    assert "profile-id walk: 1 of 3 known profile location(s)" in r.stdout, r.stdout
+
+
+def _load_scanner():
+    import importlib.util
+    assert SCRIPT.is_file(), "scripts/scan-identifiers.py ships in every layout: %s is missing" % SCRIPT
+    spec = importlib.util.spec_from_file_location("scan_identifiers_fxb2", SCRIPT)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_FXB2_an_UNREADABLE_location_makes_the_walk_say_PARTIAL(tmp_path, monkeypatch):
+    m = _load_scanner()
+    home = tmp_path / "home"
+    (home / "Documents" / "Egosoft").mkdir(parents=True)
+    (home / "Documents" / "Egosoft" / "X4").write_text("not a folder", encoding="utf-8")
+    monkeypatch.setenv("X4_SCAN_HOME", str(home))
+    m.profile_ids_from([], m._profile_docs_dirs())
+    note = m.profile_walk_note()
+    assert "PARTIAL" in note and "1 could not be read" in note, note
+
+
+def test_FXB2_TWIN_absent_locations_are_not_PARTIAL(tmp_path, monkeypatch):
+    m = _load_scanner()
+    monkeypatch.setenv("X4_SCAN_HOME", str(tmp_path / "home"))
+    m.profile_ids_from([], m._profile_docs_dirs())
+    note = m.profile_walk_note()
+    assert "PARTIAL" not in note and "0 of 3" in note, note

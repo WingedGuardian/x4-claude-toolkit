@@ -417,3 +417,40 @@ def test_env_value_comment_and_quote_rules(tmp_path, line, want):
     env = tmp_path / "x4-paths.env"
     env.write_text(line + "\n", encoding="utf-8")
     assert _paths.parse_env_file(env)["X4_MODS"] == want
+
+
+# --- FX-B2 (reviewer C I1): an IGNORED config line is REPORTED, never dropped silently ------
+
+_IGNORED = [
+    ("operator", "X4_REFERENCE=C:/ref&SECRETVALUE"),
+    ("subst", "X4_MODS=$(echo SECRETVALUE)"),
+    ("shape", "SECRETVALUE is not an assignment"),
+    ("key", "OTHER_SETTING=SECRETVALUE"),
+]
+
+
+@pytest.mark.parametrize("reason,line", _IGNORED, ids=[r for r, _l in _IGNORED])
+def test_FXB2_an_ignored_line_is_NAMED_on_stderr_and_in_paths(clean, monkeypatch, capsys,
+                                                             reason, line):
+    """Every Python tool dropped such a line SILENTLY and fell back to a default, exit 0,
+    nothing on stderr. Now: one stderr line per process and a --paths line, each naming
+    line:reason -- one twin per reason -- and never the value (the file may hold a key)."""
+    monkeypatch.setattr(_paths, "_NOTICED", set())
+    _write_env(clean, 'X4_GAME="/g"\n' + line + "\n", monkeypatch)
+    assert _paths.game_root() == Path(_paths.native("/g"))
+    err = capsys.readouterr().err
+    assert ("2:%s" % reason) in err and "IGNORED" in err, err
+    assert "SECRETVALUE" not in err, err
+    lines = _paths.describe()
+    hit = [ln for ln in lines if "IGNORED config lines" in ln]
+    assert hit and ("2:%s" % reason) in hit[0] and "SECRETVALUE" not in hit[0], lines
+    assert _paths.config_ignored() == [(2, reason)]
+
+
+def test_FXB2_TWIN_a_clean_config_prints_no_ignored_notice(clean, monkeypatch, capsys):
+    monkeypatch.setattr(_paths, "_NOTICED", set())
+    _write_env(clean, 'X4_GAME="/g"\nX4_MODS="C:/a&b"\n', monkeypatch)
+    assert _paths.game_root() == Path(_paths.native("/g"))
+    assert "IGNORED" not in capsys.readouterr().err
+    assert not any("IGNORED" in ln for ln in _paths.describe())
+    assert _paths.config_ignored() == []

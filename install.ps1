@@ -130,8 +130,25 @@ Write-Host "X4 AI Assistant Toolkit installer (Windows) - source: $SRC"
 
 # Did a HUMAN name the destination, or did we find it by scanning? An explicit
 # switch or an env var is a deliberate act; a Steam-folder scan is not.
+# EXCEPT X4_TOOLKIT (FX-B2, delta review): it is INHERITED by every shell a working toolkit has
+# touched -- it names the user's LIVE toolkit -- so adopting it as a "named" destination made a
+# second install's refusal offer -OverExisting against that live toolkit, and -Method global
+# copied ITS skills. Only -Toolkit names the toolkit destination; an inherited value is a
+# default, said out loud ($X4ToolkitFromEnv) and never paired with an -OverExisting suggestion.
 $GameNamed    = if ($Game)    { 'named' } elseif ($env:X4_GAME)    { 'named' } else { 'detected' }
-$ToolkitNamed = if ($Toolkit) { 'named' } elseif ($env:X4_TOOLKIT) { 'named' } else { 'detected' }
+$ToolkitNamed = if ($Toolkit) { 'named' } else { 'detected' }
+$X4ToolkitFromEnv = (-not $Toolkit) -and [bool]$env:X4_TOOLKIT
+#: What this process inherited as X4_TOOLKIT, before anything here sets it (R4-3: the process
+#: environment is one more place an existing value lives).
+$X4InheritedToolkit = $env:X4_TOOLKIT
+#: The path variables this run takes from the ENVIRONMENT, not a parameter. Each is printed
+#: before any write (FX-B2: an inherited X4_REFERENCE went into a new config silently).
+$X4InheritedPaths = @()
+foreach ($pair in @(@('X4_GAME', $Game), @('X4_PROFILE', $Profile), @('X4_MODS', $Mods),
+                    @('X4_REFERENCE', $Reference), @('X4_EXTENSIONS', $Extensions),
+                    @('XRCATTOOL', $XRCatTool))) {
+  if (-not $pair[1] -and [Environment]::GetEnvironmentVariable($pair[0])) { $X4InheritedPaths += $pair[0] }
+}
 
 # env fallbacks
 if (-not $Game)      { $Game      = $env:X4_GAME }
@@ -171,6 +188,29 @@ function Refuse-IfDryRun($what, $where) {
 # x4-paths.env - the whole bash half of the toolkit then fails on line 1.
 function Write-Utf8NoBom($path, [string]$content) {
   [IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+#: THE ONE WAY this script runs a native command whose stderr it redirects (FX-B2, delta
+#: review). Under $ErrorActionPreference='Stop', Windows PowerShell 5.1 -- what
+#: `powershell -ExecutionPolicy Bypass -File install.ps1` runs -- turns ANY line a native
+#: command writes to a redirected stderr (`2>$null`, `*> $null`, `2>&1`) into a TERMINATING
+#: NativeCommandError; pwsh 7 does not. MEASURED: the read-only OpenCode precheck died with a
+#: raw error and exit 1 instead of its READ-ONLY refusal, and the Layer-2 summary swallowed the
+#: exception and said "no reference/ tree yet". The preference is relaxed in THIS function's
+#: scope only. -MergeStderr returns stderr lines as plain text (5.1 wraps them in ErrorRecords);
+#: without it stderr is discarded. Returns @{ Out = <text>; Rc = <exit code> }; Rc is -1 when
+#: the command could not be started at all.
+function Invoke-X4Native {
+  param([string]$Exe, [object[]]$Arguments = @(), [switch]$MergeStderr)
+  $ErrorActionPreference = 'Continue'
+  $global:LASTEXITCODE = 0
+  try {
+    if ($MergeStderr) { $o = & $Exe @Arguments 2>&1 | ForEach-Object { "$_" } }
+    else { $o = & $Exe @Arguments 2>$null }
+    return @{ Out = (@($o) -join "`n"); Rc = $LASTEXITCODE }
+  } catch {
+    return @{ Out = $_.Exception.Message; Rc = -1 }
+  }
 }
 
 function Ask($cur, $prompt, $def) {
@@ -855,6 +895,24 @@ function Get-CodexHooksJson($dest) {
 }
 
 #: PRECONDITION before any write: a READ-ONLY hooks.json this install would CHANGE.
+#: The "unlock, re-run, lock" steps, aimed at the DESTINATION's own x4lock (FX-B2, delta review;
+#: install.sh's _x4lock_steps). `scripts/x4lock.py` relative to the cwd is the SOURCE's copy,
+#: whose manifest never holds a separate install's files: `unlock` answered "not in the
+#: protected manifest", exit 0, and the re-run refused again -- a loop. No file: --all.
+function Write-HX4LockSteps($d, $file, [switch]$Red) {
+  $lk = Join-Path (Join-Path $d 'scripts') 'x4lock.py'
+  $what = if ($file) { '"' + $file + '"' } else { '--all' }
+  if (Test-Path -LiteralPath $lk -PathType Leaf) {
+    $lines = @(('      python "' + $lk + '" unlock ' + $what + ' --toolkit "' + $d + '"'),
+               '      <re-run this command>',
+               ('      python "' + $lk + '" lock --toolkit "' + $d + '"'))
+  } else {
+    $lines = @(('      (no x4lock in ' + $d + ': clear the read-only attribute on the file(s) above by hand --'),
+               '       attrib -R on Windows, chmod u+w elsewhere -- then re-run this command)')
+  }
+  foreach ($l in $lines) { if ($Red) { Write-Host $l -ForegroundColor Red } else { Write-Host $l } }
+}
+
 function Test-CodexHooksPrecheck($dest) {
   if (-not (Test-CodexSelected)) { return }
   $f = Get-CodexHooksJsonPath $dest
@@ -870,9 +928,7 @@ function Test-CodexHooksPrecheck($dest) {
   Write-Host 'REFUSING: the Codex hook definitions must change, and the file is READ-ONLY.'
   Write-Host "      $f"
   Write-Host '  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:'
-  Write-Host "      python scripts/x4lock.py unlock `"$f`""
-  Write-Host '      <re-run this command>'
-  Write-Host '      python scripts/x4lock.py lock'
+  Write-HX4LockSteps $dest $f
   exit 1
 }
 
@@ -927,10 +983,8 @@ function Find-OcPython {
     $cmd = Get-Command $c[0] -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $cmd) { continue }
     $rest = @($c | Select-Object -Skip 1)
-    try {
-      & $cmd.Source @rest -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' *> $null
-      if ($LASTEXITCODE -eq 0) { return , (@($cmd.Source) + $rest) }
-    } catch { }
+    $r = Invoke-X4Native $cmd.Source (@($rest) + @('-c', 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'))
+    if ($r.Rc -eq 0) { return , (@($cmd.Source) + $rest) }
   }
   return $null
 }
@@ -938,9 +992,10 @@ function Find-OcPython {
 # --- R6-04 (v4.0.0 review): the OS protection on reference/ is PRINTED, never applied -----
 #: The twin of install.sh's print_refguard_step: Layer 2 (scripts/x4refguard.py) is an ACL
 #: change, so it is never applied for the user; when x4refguard reports reference/ present and
-#: not protected, the step is named. Silent for protected / unconfigured / unsupported.
-#: C4 (install red-team 2026-10-04): the summary ALWAYS states the protection, and the command
-#: carries --yes because x4refguard now counts and ASKS (B3).
+#: not protected, the step is named. Every state is stated (C4 below), none silently.
+#: C4 (install red-team 2026-10-04): the summary ALWAYS states the protection.
+#: FX-B2: a state x4refguard could not give (no parseable answer) is said as such, never as
+#: "no reference/ tree yet".
 #: R2-b (second install red-team): a HUMAN reads this, so plain `apply` -- it shows the folder
 #: and a count and ASKS (B3). `--yes` is for a non-interactive caller (an agent, after you agreed).
 $X4RefguardStepCmd = 'python scripts/x4refguard.py apply'
@@ -956,12 +1011,13 @@ function Write-RefguardStep($tk) {
     Push-Location -LiteralPath $tk
     try {
       $rest = @($py | Select-Object -Skip 1)
-      $out = (& $py[0] @rest 'scripts/x4refguard.py' 'status' '--json' 2>$null) -join "`n"
+      $out = (Invoke-X4Native $py[0] (@($rest) + @('scripts/x4refguard.py', 'status', '--json'))).Out
       $m = [regex]::Match([string]$out, '"state": "([a-z]*)"')
-      if ($m.Success) { $state = $m.Groups[1].Value }
+      # FX-B2: no parseable state is a NON-ANSWER -- never "no reference/ tree yet".
+      $state = if ($m.Success) { $m.Groups[1].Value } else { 'noanswer' }
       $ms = [regex]::Match([string]$out, '"sentinel": ([a-z]*)')
       if ($ms.Success) { $sentinel = $ms.Groups[1].Value }
-    } catch { } finally {
+    } finally {
       Pop-Location
       $env:X4_TOOLKIT = $prevTk
     }
@@ -977,6 +1033,9 @@ function Write-RefguardStep($tk) {
     Write-Host '           bin/unpack-reference.sh applies it to the tree it unpacks (see Next below).'
   } elseif ($state -ceq 'unsupported') {
     Write-Host 'Reference: this platform has no OS-level protection mechanism (a disclosed gap; not applied by the installer).'
+  } elseif ($state -ceq 'noanswer') {
+    Write-Host 'Reference: the OS-level protection state could NOT be read (x4refguard gave no answer). Check it, in'
+    Write-Host ('           ' + $tk + ':  python scripts/x4refguard.py status')
   } elseif ($sentinel -ceq 'false') {
     # R2-a: apply REFUSES a tree without the sentinel, so naming it here was a dead end.
     Write-Host 'Reference: reference/ exists but has no .unpacked-and-locked sentinel, i.e. it is not a finished unpack,'
@@ -1027,17 +1086,14 @@ function Test-OpenCodeConfigPrecheck($dest) {
   $env:X4_TOOLKIT = $dest
   try {
     $rest = @($py | Select-Object -Skip 1)
-    & $py[0] @rest $renderer 'check' '--root' $dest *> $null
-    $fresh = ($LASTEXITCODE -eq 0)
+    $fresh = ((Invoke-X4Native $py[0] (@($rest) + @($renderer, 'check', '--root', $dest))).Rc -eq 0)
   } finally { $env:X4_TOOLKIT = $prev }
   if ($fresh) { return }
   Write-Host ''
   Write-Host 'REFUSING: the OpenCode deny rules must change, and the file is READ-ONLY.'
   Write-Host "      $f"
   Write-Host '  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:'
-  Write-Host "      python scripts/x4lock.py unlock `"$f`""
-  Write-Host '      <re-run this command>'
-  Write-Host '      python scripts/x4lock.py lock'
+  Write-HX4LockSteps $dest $f
   exit 1
 }
 
@@ -1061,10 +1117,8 @@ function Write-OpenCodeConfig($dest) {
   $env:X4_TOOLKIT = $dest
   try {
     $rest = @($py | Select-Object -Skip 1)
-    $out = (& $py[0] @rest $renderer 'write' '--root' $dest 2>&1 | Out-String).Trim()
-    $rc = $LASTEXITCODE
-  } catch {
-    $out = $_.Exception.Message; $rc = -1
+    $r = Invoke-X4Native $py[0] (@($rest) + @($renderer, 'write', '--root', $dest)) -MergeStderr
+    $out = ([string]$r.Out).Trim(); $rc = $r.Rc
   } finally {
     $env:X4_TOOLKIT = $prevTk
   }
@@ -1138,9 +1192,7 @@ function Test-LockedTargetsPrecheck($dest) {
   Write-Host '  Nothing has been changed.'
   Write-Host ''
   Write-Host '  Unlock, re-run this installer, then lock again:'
-  Write-Host '      python scripts/x4lock.py unlock --all'
-  Write-Host '      <re-run this command>'
-  Write-Host '      python scripts/x4lock.py lock'
+  Write-HX4LockSteps $dest
   exit 1
 }
 
@@ -1254,9 +1306,7 @@ function Test-ConfigPrecheck($t) {
   Write-Host '  Nothing has been changed.'
   Write-Host ''
   Write-Host '  Unlock, re-run this installer, then lock again:'
-  Write-Host '      python scripts/x4lock.py unlock --all'
-  Write-Host '      <re-run this command>'
-  Write-Host '      python scripts/x4lock.py lock'
+  Write-HX4LockSteps $t
   Write-Host ''
   Write-Host '  (An upgrade that does NOT change your paths does not need this: it'
   Write-Host '   leaves the config untouched and the lock never applies.)'
@@ -1669,9 +1719,15 @@ function Assert-Direction($dest, $named) {
       Write-Host "REFUSING: an auto-detected destination with no terminal to confirm on." -ForegroundColor Red
     }
     Write-Host "  Detected: $dest" -ForegroundColor Red
-    Write-Host "  Nothing named that path - it came from scanning the usual Steam locations," -ForegroundColor Red
-    Write-Host "  and -Yes means no one will see this before the write starts." -ForegroundColor Red
-    Write-Host "  Name it explicitly:  -Game `"$dest`"   (or -Toolkit for separate/global)" -ForegroundColor Red
+    if ($X4ToolkitFromEnv -and $Method -ne 'in-game') {
+      Write-Host '  Nothing named that path - it came from $env:X4_TOOLKIT, INHERITED from your environment' -ForegroundColor Red
+      Write-Host '  (usually your live toolkit), and no one will see this before the write starts.' -ForegroundColor Red
+      Write-Host '  Name the destination explicitly:  -Toolkit "<the folder you mean>"' -ForegroundColor Red
+    } else {
+      Write-Host "  Nothing named that path - it came from scanning the usual Steam locations," -ForegroundColor Red
+      Write-Host "  and -Yes means no one will see this before the write starts." -ForegroundColor Red
+      Write-Host "  Name it explicitly:  -Game `"$dest`"   (or -Toolkit for separate/global)" -ForegroundColor Red
+    }
     exit 2
   }
   if ((Test-LooksInstalled $dest) -and -not $OverExisting) {
@@ -1687,6 +1743,13 @@ function Assert-Direction($dest, $named) {
     Write-Host "  KNOWLEDGEBASE.md and customised skills are replaced. x4-paths.env and" -ForegroundColor Red
     Write-Host "  settings.local.json are preserved." -ForegroundColor Red
     Write-Host "" -ForegroundColor Red
+    if ($named -ne 'named') {
+      # FX-B2: NOT the rerun line -- see install.sh's require_direction.
+      Write-Host '  This destination was not named on the command line, so no upgrade command is offered.' -ForegroundColor Red
+      Write-Host '  Name the folder you mean with -Toolkit DIR (-Game DIR for in-game); add' -ForegroundColor Red
+      Write-Host '  -OverExisting only if you mean to UPGRADE the installation at that path.' -ForegroundColor Red
+      exit 2
+    }
     Write-Host "  To upgrade it anyway, say so explicitly -- your own command, plus -OverExisting:" -ForegroundColor Red
     Write-Host ("      " + (Get-R2RerunCmd '-OverExisting')) -ForegroundColor Red
     exit 2
@@ -1787,9 +1850,7 @@ function Test-HCodexDocCapPrecheck($dest) {
   Write-Host 'REFUSING: -CodexDocMaxBytes must add a line to a READ-ONLY file.' -ForegroundColor Red
   Write-Host ('      ' + $f) -ForegroundColor Red
   Write-Host '  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:' -ForegroundColor Red
-  Write-Host ('      python scripts/x4lock.py unlock "' + $f + '"') -ForegroundColor Red
-  Write-Host '      <re-run this command>' -ForegroundColor Red
-  Write-Host '      python scripts/x4lock.py lock' -ForegroundColor Red
+  Write-HX4LockSteps $dest $f -Red
   exit 1
 }
 
@@ -1866,6 +1927,19 @@ function Get-HProfileValue($f) {
   return $v
 }
 
+#: The X4_TOOLKIT in the `env` block of the global Claude settings.json (-Method global writes
+#: it), or $null. Read ONCE, before the dispatch ($X4SettingsToolkit), for the reason
+#: install.sh's _h_settings_toolkit gives: the global arm rewrites that file.
+function Get-HSettingsToolkit {
+  $f = Join-Path (Get-GlobalClaudeDir) 'settings.json'
+  if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $null }
+  try {
+    $j = Get-Content -Raw -LiteralPath $f | ConvertFrom-Json
+    if ($j.env -and $j.env.X4_TOOLKIT) { return [string]$j.env.X4_TOOLKIT }
+  } catch { }
+  return $null
+}
+
 #: Git Bash's startup files: $HOME when set (Git Bash honours it), else the profile folder.
 function Get-HProfileFiles {
   $h = if ($env:HOME) { $env:HOME } else { Get-UserHome }
@@ -1894,6 +1968,17 @@ function Get-HUserEnvPlan($t) {
   foreach ($f in Get-HProfileFiles) {
     $v = Get-HProfileValue $f
     if ($v) { $found += ($v + ' (' + $f + ')'); if (-not (Test-HSamePath $v $want)) { $diff = $true } }
+  }
+  # FX-B2 (R4-3 completed): the global settings.json env block, and this PROCESS's environment.
+  # Each counted only when it DIFFERS (see install.sh): an equal value there is not where the
+  # user-level variable lives, and must not turn "set" into "already set" with nothing written.
+  $v = $script:X4SettingsToolkit
+  if ($v -and -not (Test-HSamePath $v $want)) {
+    $found += ($v + ' (' + (Join-Path (Get-GlobalClaudeDir) 'settings.json') + ' env)'); $diff = $true
+  }
+  $v = $X4InheritedToolkit
+  if ($found.Count -eq 0 -and $v -and -not (Test-HSamePath $v $want)) {
+    $found += ($v + " (this process's environment)"); $diff = $true
   }
   if ($found.Count -eq 0) { return @{ State = 'set' } }
   if (-not $diff) { return @{ State = 'same'; Old = ($found -join '; ') } }
@@ -2226,6 +2311,14 @@ if (-not $Method) {
   $Method = switch ($m) { '1' {'in-game'} '3' {'global'} default {'separate'} }
 }
 Write-Host "Method: $Method"
+$script:X4SettingsToolkit = Get-HSettingsToolkit   # BEFORE any write (see Get-HSettingsToolkit)
+foreach ($n in $X4InheritedPaths) {
+  Write-Host ('  [note] ' + $n + ' from your environment (not a parameter): ' + [Environment]::GetEnvironmentVariable($n) + ' -- this install''s config will use it; pass the parameter to choose another.')
+}
+if ($X4ToolkitFromEnv -and $Method -ne 'in-game') {
+  Write-Host ('  [note] no -Toolkit given: the destination below comes from $env:X4_TOOLKIT, inherited from your')
+  Write-Host ('         environment (' + $env:X4_TOOLKIT + '). An inherited value is NOT a named destination.')
+}
 
 $Game = Detect-Game; $Profile = Detect-Profile; $XRCatTool = Detect-XRCat
 $Game      = Ask $Game      'X4 game folder (01.cat..09.cat)' $Game
@@ -2344,6 +2437,14 @@ switch ($Method) {
     $X4Agents = @('claude')
     Resolve-HItems
     if (-not $Toolkit) { $Toolkit = $SRC }
+    # FX-B2: global copies the skills and agents of the toolkit at $Toolkit. An INHERITED
+    # X4_TOOLKIT naming another toolkit silently installed THAT toolkit's skills.
+    if ($X4ToolkitFromEnv -and -not (Test-SameDir $SRC $Toolkit)) {
+      Write-Host ('REFUSING: -Method global installs the skills of the toolkit at ' + $Toolkit + ', which came from') -ForegroundColor Red
+      Write-Host '  $env:X4_TOOLKIT inherited from your environment, not from a parameter. Nothing has been changed.' -ForegroundColor Red
+      Write-Host ('  Name it:  -Toolkit "' + $SRC + '"   (this toolkit)   or   -Toolkit "' + $Toolkit + '"   (that one)') -ForegroundColor Red
+      exit 2
+    }
     Show-Target $Toolkit
     # Ahead of every write, exactly where install.sh gates its own global arm.
     Assert-GlobalOverExisting $Toolkit
@@ -2400,7 +2501,9 @@ if ($bash) {
     try { & $bash.Source setup.sh } finally { Remove-Item -LiteralPath env:X4_SETUP_CONFIG_WRITTEN -ErrorAction SilentlyContinue }
     if ($LASTEXITCODE -ne 0) { $failed += "setup.sh (exit $LASTEXITCODE)" }
     if ($Unpack) {
-      & $bash.Source bin/unpack-reference.sh
+      # --toolkit (FX-B2): the unpack acts for the toolkit it LIVES in and refuses an inherited
+      # X4_TOOLKIT naming another one unless told -- and this run INSTALLED $Toolkit.
+      & $bash.Source bin/unpack-reference.sh --toolkit $Toolkit
       if ($LASTEXITCODE -ne 0) { $failed += "bin/unpack-reference.sh (exit $LASTEXITCODE)" }
     }
     }
@@ -2472,3 +2575,8 @@ if ($script:X4HEnvState -eq 'set' -or $script:X4HEnvState -eq 'same') {
   Write-Host ('         ' + (Get-HManualEnvCmd (Get-HNativePath $Toolkit)) + '        (takes effect in NEW shells)')
 }
 Write-Host "Verify:  cd `"$Toolkit\tools\x4validate`" ; uv run x4validate --paths"
+# A COMPLETE INSTALL EXITS 0, EXPLICITLY (FX-B2, CI on da93d2d). Without it the script fell off
+# its end and the caller saw whatever native command ran LAST: Write-RefguardStep's
+# `x4refguard status` exits 2 for "no reference/ tree yet", so `& .\install.ps1` printed
+# "=== install complete ===" and left $LASTEXITCODE = 2 (MEASURED, 5.1 and 7).
+exit 0

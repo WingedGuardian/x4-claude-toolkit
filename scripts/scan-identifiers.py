@@ -149,8 +149,16 @@ def _profile_values() -> list[str]:
 
 
 def _profile_docs_dirs() -> list[Path]:
+    """Every place X4 keeps its profile folders: Windows Documents (plain and OneDrive-
+    redirected) and the native Linux client's ~/.config/EgoSoft/X4 (FX-B2, delta review: the
+    walk covered the two Windows ones only, so a Linux machine derived nothing, silently)."""
     home = Path(os.environ["X4_SCAN_HOME"]) if os.environ.get("X4_SCAN_HOME") else Path.home()
-    return [home / "Documents" / "Egosoft" / "X4", home / "OneDrive" / "Documents" / "Egosoft" / "X4"]
+    return [home / "Documents" / "Egosoft" / "X4", home / "OneDrive" / "Documents" / "Egosoft" / "X4",
+            home / ".config" / "EgoSoft" / "X4"]
+
+
+#: Locations the last walk could NOT read although they exist (FX-B2): the walk was PARTIAL.
+_UNREADABLE: list[Path] = []
 
 
 def profile_ids_from(values: list[str], docs_dirs: list[Path]) -> set[str]:
@@ -164,9 +172,25 @@ def profile_ids_from(values: list[str], docs_dirs: list[Path]) -> set[str]:
     for d in docs_dirs:
         try:
             out |= {e.name for e in d.iterdir() if e.is_dir() and _PROFILE_ID.match(e.name)}
+        except FileNotFoundError:
+            continue                       # not this platform's location: nothing to read
         except OSError:
+            _UNREADABLE.append(d)          # exists, could not be read: the walk is PARTIAL
             continue
     return out - PLACEHOLDER_IDS
+
+
+def profile_walk_note() -> str:
+    """How much of the profile-id walk actually ran -- PARTIAL when a known location exists
+    but could not be read (FX-B2: such a location was skipped in silence)."""
+    dirs = _profile_docs_dirs()
+    present = [d for d in dirs if d.is_dir()]
+    note = ("profile-id walk: %d of %d known profile location(s) exist here"
+            % (len(present), len(dirs)))
+    if _UNREADABLE:
+        note += ("; PARTIAL -- %d could not be read, so an id there is NOT banned: %s"
+                 % (len(_UNREADABLE), ", ".join(str(d) for d in _UNREADABLE)))
+    return note
 
 
 def derived_profile_ids() -> set[str]:
@@ -601,6 +625,7 @@ def main() -> int:
     ids = derived_profile_ids()
     notes.append(f"{len(ids)} X4 profile id(s) derived on this machine (banned bare; never "
                  f"printed){'' if ids else ' -- none here, so a bare id cannot be recognised'}")
+    notes.append(profile_walk_note())
     for n in notes:
         print(f"  {n}")
 

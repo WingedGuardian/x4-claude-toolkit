@@ -273,6 +273,12 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          # ISOLATED from the earlier steps (FX-B2, CI on da93d2d): a runner keeps HKCU across
+          # steps, so the bash leg's X4_TOOLKIT write reached this one as a "different
+          # existing value". Each leg gets its own test key (the installers' seam) and no
+          # inherited X4_TOOLKIT.
+          $env:X4_INSTALL_ENV_REGKEY = 'HKCU\Software\X4ToolkitTests\ci-ps51'
+          Remove-Item -LiteralPath env:X4_TOOLKIT -ErrorAction SilentlyContinue
           $tk = Join-Path $env:RUNNER_TEMP 'tk ps51'
           & .\install.ps1 -Method separate -Toolkit $tk -Yes
           if ($LASTEXITCODE -ne 0) { Write-Error "the 5.1 install failed (exit $LASTEXITCODE)" }
@@ -292,8 +298,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $env:X4_INSTALL_ENV_REGKEY = 'HKCU\Software\X4ToolkitTests\ci-ps7'   # isolated: see the 5.1 leg
+          Remove-Item -LiteralPath env:X4_TOOLKIT -ErrorAction SilentlyContinue
           $tk = Join-Path $env:RUNNER_TEMP 'tk-ps'
           & .\install.ps1 -Method separate -Toolkit $tk -Yes
+          if ($LASTEXITCODE -ne 0) { Write-Error "the pwsh install failed (exit $LASTEXITCODE)" }
           foreach ($p in @('x4-paths.env','tools\x4validate','mods')) {
             if (-not (Test-Path -LiteralPath (Join-Path $tk $p))) { Write-Error "missing: $p" }
           }

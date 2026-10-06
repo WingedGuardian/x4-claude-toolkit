@@ -13,20 +13,31 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # IN (or --toolkit DIR). An inherited $X4_TOOLKIT naming another toolkit made a second copy's
 # x4refguard target the first copy's REAL reference tree; here it would also unpack into the
 # other toolkit's X4_REFERENCE. So a foreign $X4_TOOLKIT gets one line naming both roots and
-# a REFUSAL unless --toolkit names the toolkit explicitly (the installers always pass it).
+# a REFUSAL unless --toolkit names the toolkit explicitly (both installers pass it: FX-B2,
+# where the delta review found that neither did).
 ACT_TK="$(cd "$HERE/.." && pwd)"
 EXPLICIT_TK=0
+#: FX-B2: what the CALLER's environment exported, captured before the loader below exports the
+#: config's values -- an inherited X4_REFERENCE outranks the config, and is checked against it.
+_X4_INHERITED_REF="${X4_REFERENCE:-}"
+EXPLICIT_REF=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --toolkit)
       [ $# -ge 2 ] && ACT_TK="$(cd "$2" 2>/dev/null && pwd)" \
         || { echo "ERROR: --toolkit needs an existing directory (got '${2:-}')" >&2; exit 2; }
       EXPLICIT_TK=1; shift 2 ;;
+    --reference)
+      [ $# -ge 2 ] && [ -n "$2" ] \
+        || { echo "ERROR: --reference needs a directory" >&2; exit 2; }
+      EXPLICIT_REF="$2"; shift 2 ;;
     -h|--help)
-      echo "usage: bash bin/unpack-reference.sh [--toolkit DIR]"
+      echo "usage: bash bin/unpack-reference.sh [--toolkit DIR] [--reference DIR]"
       echo "  Unpacks the base game + DLC text into X4_REFERENCE, then protects it (x4refguard)."
-      echo "  --toolkit DIR  act for this toolkit's x4-paths.env (default: the toolkit this"
-      echo "                 script lives in; REQUIRED when \$X4_TOOLKIT names a different one)"
+      echo "  --toolkit DIR    act for this toolkit's x4-paths.env (default: the toolkit this"
+      echo "                   script lives in; REQUIRED when \$X4_TOOLKIT names a different one)"
+      echo "  --reference DIR  unpack into DIR, chosen explicitly (REQUIRED when an exported"
+      echo "                   X4_REFERENCE names a different tree from the toolkit's config)"
       exit 0 ;;
     *) echo "ERROR: unknown argument '$1' (see --help)" >&2; exit 2 ;;
   esac
@@ -59,6 +70,46 @@ else
   exit 2
 fi
 
+# AN INHERITED X4_REFERENCE (FX-B2, delta review of F160). The loader lets the environment win,
+# so a shell that had exported another toolkit's X4_REFERENCE unpacked into -- and protected --
+# THAT tree, even with --toolkit naming this one. Compare it with what the acting toolkit's
+# config alone says (the same loader, X4_REFERENCE unset), and refuse a difference unless
+# --reference chose the tree explicitly. Only when a config file is read: with none, the
+# environment is the only configuration there is.
+_x4_canon() {    # a path in one spelling: its nearest EXISTING ancestor via cd+pwd, plus the rest
+  local p="$1" rest="" base
+  case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) p="${p//\\//}" ;; esac
+  p="${p%/}"
+  while [ -n "$p" ] && [ ! -d "$p" ]; do
+    base="${p##*/}"; rest="/$base$rest"
+    case "$p" in */*) p="${p%/*}" ;; *) p="" ;; esac
+  done
+  if [ -n "$p" ]; then p="$(cd "$p" 2>/dev/null && pwd -P)"; fi
+  p="${p%/}$rest"
+  case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) p="$(_x4_lc "$p")" ;; esac
+  printf '%s' "$p"
+}
+_x4_samedir() { [ "$(_x4_canon "$1")" = "$(_x4_canon "$2")" ]; }   # case-folded on Windows only
+if [ -n "$EXPLICIT_REF" ]; then
+  X4_REFERENCE="$EXPLICIT_REF"; export X4_REFERENCE
+elif [ -n "$_X4_INHERITED_REF" ] && [ -n "${_x4_cfg:-}" ]; then
+  _X4_LOADER=""
+  for _l in "$HERE/../.claude/hooks/_x4-env.sh" "$HERE/../.codex/hooks/_x4-env.sh" "$HERE/../.opencode/hooks/_x4-env.sh"; do
+    [ -f "$_l" ] && { _X4_LOADER="$_l"; break; }
+  done
+  _X4_CFG_REF="$(unset X4_REFERENCE; . "$_X4_LOADER" >/dev/null 2>&1; printf '%s' "${X4_REFERENCE:-}")"
+  if [ -n "$_X4_CFG_REF" ] && ! _x4_samedir "$_X4_INHERITED_REF" "$_X4_CFG_REF"; then
+    echo "REFUSED: the unpack writes the reference tree and protects it, and the environment and" >&2
+    echo "  this toolkit's config ($_x4_cfg) name DIFFERENT trees. Nothing was changed." >&2
+    echo "    \$X4_REFERENCE in the environment -> $_X4_INHERITED_REF" >&2
+    echo "    this toolkit's config            -> $_X4_CFG_REF" >&2
+    echo "  Choose one explicitly: bash bin/unpack-reference.sh --reference \"$_X4_CFG_REF\"  (the config's)" >&2
+    echo "                     or: bash bin/unpack-reference.sh --reference \"$_X4_INHERITED_REF\"  (the environment's)" >&2
+    echo "  -- or unset X4_REFERENCE in this shell." >&2
+    exit 2
+  fi
+fi
+
 # X4_XRCAT is a TEST SEAM (like X4_UNPACK_FLOOR): it changes only which binary extracts,
 # so the unpack -> sentinel -> Layer 2 flow can be tested end to end without a game.
 # X4_REFGUARD_SCRIPT likewise changes only which guard script runs.
@@ -72,7 +123,7 @@ x4_resolve_python                            # sets X4_PY (empty if none)
 # matters (after the unpack), not turned into a refusal here.
 x4_refguard_state() {
   [ -n "$X4_PY" ] || return 0
-  X4_REFERENCE="$REF" "$X4_PY" "$REFGUARD" status --json --toolkit "$ACT_TK" 2>/dev/null \
+  X4_REFERENCE="$REF" "$X4_PY" "$REFGUARD" status --json --toolkit "$ACT_TK" --reference "$REF" 2>/dev/null \
     | grep -oE '"state": "[a-z]+"' | head -1 | sed -E 's/.*"([a-z]+)"$/\1/' || true
 }
 x4_lift_steps() {
@@ -131,6 +182,22 @@ if [ -d "$REF" ]; then
       echo "REFUSING: the Layer-2 OS protection state of $REF could not be read (x4refguard" >&2
       echo "  state: error), so this script cannot tell whether it may write there. See:" >&2
       echo "    python scripts/x4refguard.py status      (from $TKDIR)" >&2
+      exit 2 ;;
+    # The states that mean "nothing is in the way": proceed.
+    absent|unconfigured|unsupported) ;;
+    # FX-B2 (delta review): an EMPTY or unknown answer (no python, a crash, output that does
+    # not parse) proceeded as though the tree were unprotected. It is a non-answer, not "absent".
+    *)
+      if [ -z "$X4_PY" ]; then
+        echo "REFUSING: no python (>= 3.10) was found to read the Layer-2 OS protection state of" >&2
+        echo "  $REF, so this script cannot tell whether it may write there. Install python," >&2
+        echo "  then re-run (it also applies the protection after the unpack)." >&2
+      else
+        echo "REFUSING: the Layer-2 OS protection state of $REF could not be read (x4refguard" >&2
+        echo "  answered '${L2STATE:-nothing}', not a known state), so this script cannot tell whether" >&2
+        echo "  it may write there. See:" >&2
+        echo "    python scripts/x4refguard.py status      (from $TKDIR)" >&2
+      fi
       exit 2 ;;
   esac
 fi
@@ -252,7 +319,7 @@ fi
 # unpacked and counted above -- and its `--unpack` caller is non-interactive -- so the
 # confirmation is given here, for exactly this tree (X4_REFERENCE is pinned to $REF).
 set +e
-X4_REFERENCE="$REF" "$X4_PY" "$REFGUARD" apply --yes --toolkit "$ACT_TK"
+X4_REFERENCE="$REF" "$X4_PY" "$REFGUARD" apply --yes --toolkit "$ACT_TK" --reference "$REF"
 L2RC=$?
 set -e
 case "$L2RC" in

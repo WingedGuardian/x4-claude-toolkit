@@ -74,9 +74,13 @@ def _env(tmp_path, ref, **kw):
     return env
 
 
-def _run(env, ref, *args, explicit=True):
-    """The installer's shape: it names the toolkit it installs (`--toolkit`), because the
-    script acts for the toolkit it LIVES in and refuses a foreign $X4_TOOLKIT otherwise (B2)."""
+def _run(env, ref, *args, explicit=False):
+    """Run the unpack with EXACTLY *args*. `explicit=True` adds `--toolkit $X4_TOOLKIT` -- the
+    script acts for the toolkit it LIVES in and refuses a foreign $X4_TOOLKIT otherwise (B2) --
+    and every caller says so itself. It used to be the DEFAULT, described as "the installer's
+    shape", while neither installer passed it (FX-B2): a default that supplies the very
+    argument under test is how a test cannot go red. The installers' own call is pinned in
+    test_installers_agree.py."""
     b = gitbash.find_bash()
     if not b:
         pytest.skip("no Git Bash")
@@ -121,7 +125,7 @@ def test_the_xrcat_override_is_honoured_and_the_unpack_lands_in_tmp(tmp_path):
     ref = tmp_path / "reference"
     env = _env(tmp_path, ref)
     try:
-        r = _run(env, ref)
+        r = _run(env, ref, explicit=True)
         assert r.returncode == 0, r.stdout + r.stderr
         assert len(list((ref / "libraries").glob("f*.xml"))) == 5
         assert (ref / ".unpacked-and-locked").is_file()
@@ -133,7 +137,7 @@ def test_a_plain_rerun_REFUSES_and_names_the_lift_first(tmp_path):
     ref = tmp_path / "reference"
     ref.mkdir()
     (ref / ".unpacked-and-locked").write_text("buildid 1")
-    r = _run(_env(tmp_path, ref), ref)
+    r = _run(_env(tmp_path, ref), ref, explicit=True)
     assert r.returncode == 2
     assert "x4refguard.py remove" in r.stderr and ".unpacked-and-locked" in r.stderr
     assert r.stderr.index("x4refguard.py remove") < r.stderr.index("rm ")
@@ -148,7 +152,7 @@ def test_FORCE_unpack_REFUSES_while_the_deny_is_on_and_names_the_lift(tmp_path):
     env = _env(tmp_path, ref)
     assert _guard(env, "apply").returncode == 0
     try:
-        r = _run({**env, "X4_FORCE_UNPACK": "1"}, ref)
+        r = _run({**env, "X4_FORCE_UNPACK": "1"}, ref, explicit=True)
         assert r.returncode == 2 and "x4refguard.py remove" in r.stderr, r.stdout + r.stderr
         assert not (ref / "libraries").exists()          # it never started extracting
         assert _guard(env, "status", "--json").stdout.count('"state": "protected"') == 1
@@ -165,7 +169,7 @@ def test_FORCE_unpack_WITHOUT_the_deny_still_runs(tmp_path):
     own_or_skip(ref, x4refguard)          # an elevated runner creates it owned by Administrators
     env = _env(tmp_path, ref)
     try:
-        r = _run({**env, "X4_FORCE_UNPACK": "1"}, ref)
+        r = _run({**env, "X4_FORCE_UNPACK": "1"}, ref, explicit=True)
         assert r.returncode == 0, r.stdout + r.stderr
     finally:
         _unprotect(tmp_path, ref)
@@ -176,14 +180,14 @@ def test_a_fresh_unpack_ends_PROTECTED_and_the_lift_then_rm_path_works(tmp_path)
     ref = tmp_path / "reference"
     env = _env(tmp_path, ref)
     try:
-        r = _run(env, ref)
+        r = _run(env, ref, explicit=True)
         assert r.returncode == 0, r.stdout + r.stderr
         assert "Layer 2: reference/ protected" in r.stdout
         assert '"state": "protected"' in _guard(env, "status", "--json").stdout
         # THE ESCAPE HATCH, end to end (D8): lift, rm sentinel, re-unpack succeeds.
         assert _guard(env, "remove").returncode == 0
         (ref / ".unpacked-and-locked").unlink()
-        r2 = _run(env, ref)
+        r2 = _run(env, ref, explicit=True)
         assert r2.returncode == 0, r2.stdout + r2.stderr
         assert '"state": "protected"' in _guard(env, "status", "--json").stdout
     finally:
@@ -198,7 +202,7 @@ def test_a_FAILED_apply_is_exit_1_and_loud_but_the_unpack_stays(tmp_path):
     other.mkdir()
     env = _env(tmp_path, ref, **{x4refguard.SANDBOX_ENV: str(other)})
     try:
-        r = _run(env, ref)
+        r = _run(env, ref, explicit=True)
         assert r.returncode == 1, r.stdout + r.stderr
         assert "Layer 2: FAILED" in r.stderr
         assert (ref / ".unpacked-and-locked").is_file() and (ref / "libraries" / "f1.xml").is_file()
@@ -213,7 +217,7 @@ def test_the_sentinel_still_parses_and_names_the_lift(tmp_path):
                    encoding="utf-8", newline="\n")
     env = _env(tmp_path, ref, X4_APPMANIFEST=str(acf))
     try:
-        r = _run(env, ref)
+        r = _run(env, ref, explicit=True)
         assert r.returncode == 0, r.stdout + r.stderr
         text = (ref / ".unpacked-and-locked").read_text(encoding="utf-8")
         # the parser in check-reference-version.sh: the FIRST buildid[^0-9]*[0-9]+
@@ -232,7 +236,7 @@ def test_an_UNSUPPORTED_platform_continues_with_exit_0(tmp_path):
     stub.write_text("import sys\nprint('unsupported')\nsys.exit(3)\n", encoding="utf-8")
     env = _env(tmp_path, ref, X4_REFGUARD_SCRIPT=str(stub))
     try:
-        r = _run(env, ref)
+        r = _run(env, ref, explicit=True)
         assert r.returncode == 0, r.stdout + r.stderr
         assert "Layer 2: not available on this OS" in r.stdout
     finally:
@@ -248,7 +252,7 @@ def test_an_UNREADABLE_layer2_state_on_an_existing_tree_REFUSES(tmp_path):
     stub = tmp_path / "stubguard.py"
     stub.write_text("import sys\nprint('{\"state\": \"error\"}')\nsys.exit(2)\n", encoding="utf-8")
     env = _env(tmp_path, ref, X4_REFGUARD_SCRIPT=str(stub))
-    r = _run(env, ref)
+    r = _run(env, ref, explicit=True)
     assert r.returncode == 2, r.stdout + r.stderr
     assert "REFUSING" in r.stderr and "error" in r.stderr
     assert not (ref / "libraries" / "f1.xml").exists(), "the unpack ran"
@@ -260,7 +264,7 @@ def test_TWIN_an_ABSENT_layer2_on_an_existing_tree_still_unpacks(tmp_path):
     stub = tmp_path / "stubguard.py"
     stub.write_text("import sys\nprint('{\"state\": \"absent\"}')\nsys.exit(1)\n", encoding="utf-8")
     env = _env(tmp_path, ref, X4_REFGUARD_SCRIPT=str(stub))
-    r = _run(env, ref)
+    r = _run(env, ref, explicit=True)
     assert "REFUSING" not in r.stderr, r.stdout + r.stderr
     assert (ref / "libraries" / "f1.xml").exists()
 
@@ -278,7 +282,11 @@ def test_B2_a_FOREIGN_X4_TOOLKIT_without_toolkit_REFUSES_before_writing(tmp_path
 
 def test_B2_TWIN_X4_TOOLKIT_naming_this_toolkit_is_not_refused(tmp_path):
     ref = tmp_path / "reference"
-    env = _env(tmp_path, ref, X4_TOOLKIT=str(REPO))
+    # FX-B2 (reviewer C): pin the config. X4_TOOLKIT=REPO made the loader read the CHECKOUT's
+    # own x4-paths.env -- on a developer machine, a real one.
+    cfg = tmp_path / "pinned.env"
+    cfg.write_text('X4_REFERENCE="%s"\n' % ref.as_posix(), encoding="utf-8")
+    env = _env(tmp_path, ref, X4_TOOLKIT=str(REPO), X4_CONFIG=str(cfg))
     try:
         r = _run(env, ref, explicit=False)
         assert r.returncode == 0, r.stdout + r.stderr
@@ -294,7 +302,69 @@ def test_B3_the_unpack_confirms_its_own_apply_with_yes(tmp_path):
     stub = tmp_path / "stubguard.py"
     stub.write_text("import sys\nprint(' '.join(sys.argv[1:]))\nsys.exit(0)\n", encoding="utf-8")
     env = _env(tmp_path, ref, X4_REFGUARD_SCRIPT=str(stub))
-    r = _run(env, ref)
+    r = _run(env, ref, explicit=True)
     assert r.returncode == 0, r.stdout + r.stderr
     assert any(ln.startswith("apply") and "--yes" in ln and "--toolkit" in ln
-               for ln in r.stdout.splitlines()), r.stdout
+               and "--reference" in ln for ln in r.stdout.splitlines()), r.stdout
+
+
+# --------------------------------- FX-B2: an INHERITED X4_REFERENCE vs the toolkit's config
+
+def _tk_with_config(tmp_path, cfg_ref):
+    """A toolkit (tmp/toolkit) whose x4-paths.env names *cfg_ref*."""
+    tk = tmp_path / "toolkit"
+    (tk / ".claude").mkdir(parents=True, exist_ok=True)
+    (tk / "x4-paths.env").write_text('X4_REFERENCE="%s"\n' % Path(cfg_ref).as_posix(),
+                                     encoding="utf-8")
+    return tk
+
+
+def test_FXB2_an_INHERITED_X4_REFERENCE_differing_from_the_config_REFUSES(tmp_path):
+    """X4_REFERENCE stays SET (F160's test blanked it): the inherited tree is NOT the config's,
+    so the unpack must refuse naming both and --reference, and write neither."""
+    ref, other = tmp_path / "reference", tmp_path / "inherited"
+    _tk_with_config(tmp_path, ref)
+    env = _env(tmp_path, other)               # X4_REFERENCE = the inherited, foreign tree
+    r = _run(env, other, explicit=True)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "--reference" in r.stderr and "DIFFERENT" in r.stderr, r.stderr
+    assert "inherited" in r.stderr and "reference" in r.stderr, r.stderr
+    assert not other.exists() and not ref.exists(), "it unpacked anyway"
+
+
+def test_FXB2_TWIN_an_inherited_X4_REFERENCE_EQUAL_to_the_config_proceeds(tmp_path):
+    ref = tmp_path / "reference"
+    _tk_with_config(tmp_path, ref)
+    env = _env(tmp_path, ref)
+    try:
+        r = _run(env, ref, explicit=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "DIFFERENT" not in r.stderr, r.stderr
+    finally:
+        _unprotect(tmp_path, ref)
+
+
+def test_FXB2_TWIN_reference_chooses_the_tree_explicitly(tmp_path):
+    ref, other = tmp_path / "reference", tmp_path / "inherited"
+    _tk_with_config(tmp_path, ref)
+    env = _env(tmp_path, other)
+    try:
+        r = _run(env, ref, "--reference", str(ref), explicit=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert (ref / "libraries" / "f1.xml").exists() and not other.exists()
+    finally:
+        _unprotect(tmp_path, ref)
+
+
+def test_FXB2_an_EMPTY_layer2_state_on_an_existing_tree_REFUSES(tmp_path):
+    """A guard that answers NOTHING (a crash, unparseable output) is a non-answer, not
+    `absent` -- the TWIN is test_TWIN_an_ABSENT_layer2_on_an_existing_tree_still_unpacks."""
+    ref = tmp_path / "reference"
+    (ref / "libraries").mkdir(parents=True)
+    stub = tmp_path / "stubguard.py"
+    stub.write_text("import sys\nprint('Traceback: boom')\nsys.exit(1)\n", encoding="utf-8")
+    env = _env(tmp_path, ref, X4_REFGUARD_SCRIPT=str(stub))
+    r = _run(env, ref, explicit=True)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "REFUSING" in r.stderr and "not a known state" in r.stderr, r.stderr
+    assert not (ref / "libraries" / "f1.xml").exists(), "the unpack ran"

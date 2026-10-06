@@ -583,9 +583,15 @@ def test_install_ps1_HAS_a_Help_switch_naming_every_install_sh_option(tmp_path):
     'A parameter cannot be found that matches parameter name Help' on 5.1 and 7 (MEASURED by
     the reviewer, review/scratch-R4/help51.txt). The two help texts must name the SAME options,
     each in its own spelling, read from what each installer PRINTS -- never a third list."""
+    import importlib.util
     import shutil
     ps = shutil.which("powershell") or shutil.which("pwsh")
-    bash = shutil.which("bash")
+    # The repo's Git Bash resolver, never `shutil.which("bash")`: on Windows that is often the
+    # WSL stub, which cannot open a C:/ path (FX-B2, reviewer C).
+    spec = importlib.util.spec_from_file_location("gitbash_agree", SH.parent / "scripts" / "gitbash.py")
+    gb = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gb)
+    bash = gb.find_bash()
     if not ps or not bash:
         import pytest
         pytest.skip("needs both PowerShell and bash to compare the two help texts")
@@ -617,7 +623,9 @@ def test_every_ps1_help_option_is_a_REAL_parameter():
 
 
 def test_both_installers_PRINT_the_same_refguard_step_and_neither_APPLIES_it():
-    """R6-04: Layer 2 is an ACL change -- named, never applied by an installer."""
+    """R6-04: Layer 2 is an ACL change -- named, never applied by an installer. This reads the
+    SOURCE; the behaviour (a real install leaves the state `absent`) is measured by
+    test_install_over_existing.test_an_UNPROTECTED_existing_reference_PRINTS_the_x4refguard_step."""
     sh = SH.read_text(encoding="utf-8")
     ps = PS1.read_text(encoding="utf-8")
     # R2-b (second install red-team 2026-10-04): a HUMAN reads this, so plain `apply`, which
