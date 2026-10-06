@@ -4873,6 +4873,29 @@ class TestH2RootVariableUnderAnOperator(unittest.TestCase):
         self.assertEqual(H.root_vars_named("${#X4_GAME}"), set())
 
 
+class TestJ2AlternateOfAnUnknownVariable(unittest.TestCase):
+    """FX-G5 / reviewer J2 item 9 (pre-arc, MEASURED: allowed): `${PATH:+$X4_GAME}` -- a variable
+    the command never assigned was read as UNSET, so the alternate word was dropped. Its value
+    is unknown, so the alternate may be what the shell substitutes: it is judged."""
+
+    def test_the_alternate_of_an_unassigned_variable_is_judged(self):
+        for op in (":+", "+"):
+            c = D + ' -rf "${PATH' + op + '$X4_GAME}"'
+            with self.subTest(c=c):
+                self.assertTrue(FC(c, _ELSEWHERE)["rm_hits_game"], c)
+        self.assertEqual(H._apply_op("NOPE", None, ":+/x", {}), "/x")
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_an_assigned_variable_still_decides(self):
+        # assigned EMPTY: `:+` gives "" (and `+` the alternate: set-but-empty is set)
+        self.assertEqual(H._apply_op("V", None, ":+/x", {"V": ""}), "")
+        self.assertEqual(H._apply_op("V", None, "+/x", {"V": ""}), "/x")
+        self.assertEqual(H._apply_op("V", None, ":+/x", {"V": "v"}), "/x")
+        self.assertFalse(FC('V=; ' + D + ' -rf "${V:+$X4_GAME}"', _ELSEWHERE)["rm_hits_game"])
+        # `:-` of an unknown non-root variable is unchanged: the default word
+        self.assertEqual(H._apply_op("NOPE", None, ":-/x", {}), "/x")
+
+
 class TestH6GitConfigFromTheEnvironment(unittest.TestCase):
     """H6 (MEASURED: deletes): git config from the ENVIRONMENT switches requireForce off."""
 
@@ -4893,6 +4916,41 @@ class TestH6GitConfigFromTheEnvironment(unittest.TestCase):
         for pre in ("", "GIT_AUTHOR_NAME=x ", "MY_GIT_CONFIG_X=1 "):
             with self.subTest(pre=pre):
                 self.assertFalse(FC(pre + self.C, _ELSEWHERE)["git_wipes_x4_dir"], pre)
+
+
+class TestJ2GitCleanForcedByConfigIncludeOrCommand(unittest.TestCase):
+    """FX-G5 / reviewer J2 item 5: `-c include.path=<file>` (any `include.*`/`includeIf.*`, any
+    `--config-env`) reads config the guard cannot see, and an in-command `git config ...
+    requireForce` switches it off -- a clean after either counts as forced (an ask)."""
+
+    C = 'git -C "' + GAME + '" clean -dx'
+
+    def test_an_include_or_config_env_forces_the_clean(self):
+        for opt in ("-c include.path=C:/w/c.cfg", "-c Include.Path=/w/c", "-c includeIf.gitdir:/x/.path=/w/c",
+                    "--config-env include.path=V", "--config-env=core.x=V",
+                    # a later `-c` does not undo the include before it
+                    "-c include.path=/w/c -c clean.requireForce=true"):
+            c = "git " + opt + ' -C "' + GAME + '" clean -dx'
+            with self.subTest(c=c):
+                self.assertTrue(FC(c, _ELSEWHERE)["git_wipes_x4_dir"], c)
+
+    def test_an_in_command_git_config_of_requireForce_forces_the_clean(self):
+        for pre in ('git -C "' + GAME + '" config clean.requireForce false && ',
+                    'git -C "' + GAME + '" config --local clean.requireforce 0; ',
+                    'git config set clean.requireForce false; ',
+                    'git -C "' + GAME + '" config include.path /w/c && '):
+            with self.subTest(pre=pre):
+                self.assertTrue(FC(pre + self.C, _ELSEWHERE)["git_wipes_x4_dir"], pre)
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_other_config_leaves_the_clean_unforced(self):
+        for c in ("git -c core.fileMode=false -C " + DQ + GAME + DQ + " clean -dx",
+                  "git -c user.include=x -C " + DQ + GAME + DQ + " clean -dx",
+                  'git -C "' + GAME + '" config user.name x && ' + self.C,
+                  'echo requireForce && ' + self.C,
+                  'git log --grep requireForce && ' + self.C):
+            with self.subTest(c=c):
+                self.assertFalse(FC(c, _ELSEWHERE)["git_wipes_x4_dir"], c)
 
 
 class TestH7H8TextPipedIntoAShell(unittest.TestCase):
@@ -4924,6 +4982,20 @@ class TestH7H8TextPipedIntoAShell(unittest.TestCase):
                 self.assertTrue(F(c)["rm_hits_game"], c)
         self.assertTrue(F("printf '%5s' x | bash")["carrier_untranslated"])
 
+    def test_only_the_shells_OWN_options_and_their_values_are_stepped_over(self):
+        """FX-G5 / reviewer J2 item 2 (MEASURED: allowed): an `echo -n` INSIDE the substitution
+        or a `-n` AFTER the script (its $1) was read as `bash -n`; and `-o pipefail` left
+        `pipefail` standing as the script operand."""
+        for c in ("bash <(echo -n " + DEL_GAME + ")", "bash <(echo " + DEL_GAME + ") -n",
+                  "bash <(echo " + DEL_GAME + ") x -n", "bash -o pipefail <(echo " + DEL_GAME + ")",
+                  "bash -O extglob <(echo " + DEL_GAME + ")", "bash +o posix <(echo " + DEL_GAME + ")",
+                  "bash -eo pipefail <(echo " + DEL_GAME + ")", "bash -x <(echo " + DEL_GAME + ")",
+                  "bash --rcfile /w/rc <(echo " + DEL_GAME + ")",
+                  "bash --init-file /w/rc --norc <(echo " + DEL_GAME + ")",
+                  "bash -o pipefail -- <(echo " + DEL_GAME + ")", "sh +n <(echo " + DEL_GAME + ")"):
+            with self.subTest(c=c):
+                self.assertTrue(F(c)["rm_hits_game"], c)
+
     # --- one falsification twin per clause ---
     def test_TWIN_a_harmless_program_a_non_shell_or_a_script_argument_is_not(self):
         for c in ("echo ls | bash", "diff <(echo " + DEL_GAME + ") <(echo b)",
@@ -4932,7 +5004,14 @@ class TestH7H8TextPipedIntoAShell(unittest.TestCase):
                   # USER DECISION 2026-10-06: a non-echo producer is allowed as before (an
                   # opaque script), and `bash -n` executes nothing -- never ask or deny.
                   "bash <(curl -s http://x)", 'source <(sed -n "/^f()/,/^}/p" install.sh)',
-                  "bash -n <(echo " + DEL_GAME + ")", "bash -n <(sed -n 1,9p ci.yml)"):
+                  "bash -n <(echo " + DEL_GAME + ")", "bash -n <(sed -n 1,9p ci.yml)",
+                  # FX-G5 twins: `-n` among the shell's own options, wherever they sit there
+                  "bash -o pipefail -n <(echo " + DEL_GAME + ")", "bash -en <(echo " + DEL_GAME + ")",
+                  "bash --norc -n <(echo " + DEL_GAME + ")",
+                  # ...a value option before a script FILE: the substitution is its argument
+                  "bash -o pipefail ./x.sh <(echo " + DEL_GAME + ")",
+                  # ...and a non-echo producer behind options stays allowed (user decision)
+                  "bash -O extglob <(curl -s http://x)"):
             with self.subTest(c=c):
                 f = F(c)
                 self.assertFalse(f["rm_hits_game"] or f["carrier_untranslated"], c)
@@ -4962,6 +5041,29 @@ class TestGOutSubstitutedVerb(unittest.TestCase):
                 f = FC(c, _ELSEWHERE)
                 self.assertTrue(f["rm_in_x4_dir"] and not f["verb_unresolved"], c)
 
+    def test_a_prefix_ASSIGNMENT_does_not_hide_the_verb(self):
+        """FX-G5 / reviewer J2 item 3 (MEASURED: allowed): an earlier token holding `$(` refused
+        the command position, so `A=$(true) $x` hid the verb; and an UNQUOTED multi-word
+        substitution in a prefix assignment (`A=$(echo a b) rm ...`) split into words, one of
+        which became the verb -- every hard block bypassed (MEASURED E2E: deny -> allow)."""
+        for c in ("x=$(printf rm); A=$(true) $x -rf " + DQ + REF + DQ,
+                  "x=$(printf rm); A=" + BT + "true" + BT + " B=$(echo a b) $x -rf " + DQ + REF + DQ,
+                  "x=$(printf rm); env A=$(true) $x -rf " + DQ + REF + DQ,
+                  "x=$(printf rm); A=" + DQ + "$(echo a b)" + DQ + " $x -rf " + DQ + REF + DQ,
+                  "x=$(printf rm); A=$(echo " + DQ + "(" + DQ + ") $x -rf " + DQ + REF + DQ,
+                  "x=$(printf rm); sudo -u $(whoami) $x -rf " + DQ + REF + DQ):
+            with self.subTest(c=c):
+                self.assertTrue(FC(c, _ELSEWHERE)["verb_unresolved"], c)
+        for c in ("A=$(echo a b) " + DEL_GAME, "A=" + BT + "echo a b" + BT + " " + DEL_GAME,
+                  "A=$(echo $(echo a b) c) B=x " + DEL_GAME, "A=$((1 + 2)) " + DEL_GAME):
+            with self.subTest(c=c):
+                self.assertTrue(F(c)["rm_hits_game"], c)
+        self.assertTrue(F("A=$(echo a b) " + DEL_REF)["rm_targets_reference"])
+        self.assertEqual(H.verb("A=$(echo a b) " + D + " -rf x"), D)
+        # twin: the collapsed prefix leaves a harmless command harmless
+        self.assertFalse(F("A=$(echo a b) ls " + DQ + GAME + DQ)["rm_hits_game"])
+        self.assertEqual(H.verb("A=$(echo a b) ls x"), "ls")
+
     # --- one falsification twin per clause ---
     def test_TWIN_a_literal_verb_variable_or_an_operand_elsewhere_is_not_this_rule(self):
         for c in ("x=rm; $x -rf /tmp/a", "x=$(printf ls); $x /tmp/a", "$(echo ls) /tmp/a",
@@ -4971,7 +5073,10 @@ class TestGOutSubstitutedVerb(unittest.TestCase):
                   'P=$(ls -d "' + GAME + '/extensions/x" 2>/dev/null); f=$(find "$P" -name ' + Q + 'a.lua' + Q
                   + ' -type f 2>/dev/null | head -1); echo "$f"',
                   # ...with an ABSOLUTE operand in that fragment (the session cwd plays no part)
-                  'P=$(ls -d /c/w/x); f=$(find "$P" "' + GAME + '/extensions" -name a.lua)'):
+                  'P=$(ls -d /c/w/x); f=$(find "$P" "' + GAME + '/extensions" -name a.lua)',
+                  # FX-G5: ...and with the ROOT itself as an operand, the fragment's `$P` (holding a
+                  # substitution) is still not a command position -- the UNCLOSED `$(` says so
+                  'P=$(printf x); f=$(find "$P" "' + REF + '" -name a.lua | head -1)'):
             with self.subTest(c=c):
                 f = FC(c, GAME)                 # run FROM the game root, as the replay's were
                 self.assertFalse(f["verb_unresolved"] or f["rm_in_x4_dir"], c)
