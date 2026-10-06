@@ -528,7 +528,7 @@ decide allow protect-bash.sh "$(cj 'cd $(git rev-parse --show-toplevel) && ls')"
   "a substituted argument in a cd is untouched"
 
 
-EXPECT=282
+EXPECT=290
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -1313,6 +1313,15 @@ decide deny   protect-bash.sh "$(cj "x=\$(printf rm); \$x -rf \"$_g4r\"")"      
 decide advise protect-bash.sh "$(cj "\$(echo rm) -rf \"$_g4g/libraries\"")"              "F183: a substituted verb below the game root advises"
 decide allow  protect-bash.sh "$(cj 'python scripts/x4refguard.py apply --toolkit "$X4_TOOLKIT"')" "H9: a variable in an OPTION value is not the action"
 decide ask    protect-bash.sh "$(cj 'python scripts/x4refguard.py "$ACT"')"                "TWIN H9: an unresolved ACTION still asks"
+# FX-G5 / reviewer J2: each was ALLOWED before
+decide deny   protect-bash.sh "$(cj "A=\$(echo a b) ${_RMG}")"                            "J2-3: an unquoted multi-word prefix substitution hides no verb"
+decide deny   protect-bash.sh "$(cj "x=\$(printf rm); A=\$(true) \$x -rf \"$_g4r\"")"    "J2-3: a prefix assignment hides no substituted verb"
+decide deny   protect-bash.sh "$(cj "bash <(echo -n ${_RMG})")"                           "J2-2: an echo -n INSIDE is not bash -n"
+decide deny   protect-bash.sh "$(cj "bash -o pipefail <(echo ${_RMG})")"                  "J2-2: an option's value is not the script"
+decide allow  protect-bash.sh "$(cj "bash -o pipefail -n <(echo ${_RMG})")"               "TWIN J2-2: the shell's own -n still checks syntax only"
+decide deny   protect-bash.sh "$(cj 'rm -rf "${PATH:+$X4_GAME}"')"                        "J2-9: the alternate of an unassigned variable is judged"
+decide ask    protect-bash.sh "$(cj "git -c include.path=/w/c.cfg -C \"$_g4tk\" clean -dx")" "J2-5: -c include.path forces a clean"
+decide allow  protect-bash.sh "$(cj "git -c core.x=1 -C \"$_g4tk\" clean -dx")"          "TWIN J2-5: other -c leaves an unforced clean alone"
 decide ask    protect-bash.sh "$(cj "takeown /f \"$_g4r\" /r")"                           "H-M5: takeown of reference asks"
 decide deny   protect-bash.sh "$(cj "gio trash \"file://${_g4g// /%20}\"")"               "H-M3: a percent-encoded file:// URL is decoded"
 _hk(){ printf '{"tool_name":"Write","tool_input":{"file_path":%s,"content":%s}}' \
