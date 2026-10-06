@@ -262,6 +262,21 @@ def test_a_case_with_NO_reference_verdict_cannot_pass(ref):
     assert rc == xc.RC_ERROR
 
 
+def test_ONE_bash_resolver_the_engine_asks_gitbash(monkeypatch, tmp_path):
+    """FX-G3: x4conformance carried its own X4_BASH > which() resolver beside gitbash.py's. The
+    shared resolver REFUSES an X4_BASH that points at nothing; the old private one returned it."""
+    import gitbash
+    assert xc.find_bash is gitbash.find_bash
+    monkeypatch.setenv("X4_BASH", str(tmp_path / "no-such-bash.exe"))
+    assert xc._bash() is None
+
+
+def test_TWIN_an_X4_BASH_that_exists_is_used(monkeypatch, tmp_path):
+    fake = tmp_path / "bash.exe"; fake.write_bytes(b"")
+    monkeypatch.setenv("X4_BASH", str(fake))
+    assert xc._bash() == str(fake)
+
+
 def test_TWIN_the_same_case_WITH_a_reference_verdict_passes():
     ok = {"label": "x0", "kind": "shell-bash", "reference": "allow", "reference_why": "", "adapter": "allow"}
     assert xc.summarise(_res(90) + [ok], n_total=91, buckets={"replayed": 91}, gaps={},
