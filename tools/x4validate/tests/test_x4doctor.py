@@ -1514,7 +1514,8 @@ def test_FXB3_layer2_PARTIAL_without_the_sentinel_says_remove_then_unpack(sandbo
     monkeypatch.setattr(doc, "_x4refguard_module", lambda ctx: _refguard_stub("partial"))
     (sandbox.ref / ".unpacked-and-locked").unlink()
     r = _layer2_row(sandbox)
-    assert r.status == doc.FAIL and '" remove, then bash' in r.detail, r
+    assert r.status == doc.FAIL and re.search(r'" remove --toolkit "[^"]+" --reference "[^"]+", then bash',
+                                              r.detail), r
 
 
 def test_FXB3_layer2_NO_reference_yet_is_a_TODO_with_the_unpack_command(sandbox):
@@ -1620,3 +1621,118 @@ def test_FXB4_TWIN_an_empty_default_folder_is_no_evidence_of_a_move(sandbox, tmp
     (sandbox.root / "reference").mkdir()
     for row in (_roots_ref_row(sandbox), _layer2_row(sandbox)):
         assert row.status == doc.TODO, row
+
+
+# ------------- FX-Z (FX-B4 lead): the `x4refguard apply` hint carries --toolkit and --reference,
+#               as the unpack hint does -- an exported X4_REFERENCE or a foreign X4_CONFIG made
+#               the bare `apply` REFUSE (FX-B2/FX-B3), so the row named a command that could not run
+
+_REFGUARD_HINT = re.compile(r'python "([^"]+x4refguard\.py)" (apply|remove)((?: --[a-z]+ "[^"]+")*)')
+
+
+def _mini_toolkit(sandbox):
+    """The sandbox root as an INSTALLED toolkit carrying its own x4refguard + x4validate, so
+    the hint's script acts for the sandbox's config and never for this checkout's."""
+    (sandbox.root / "scripts").mkdir(exist_ok=True)
+    for name in ("x4refguard.py", "gitbash.py"):
+        shutil.copy2(REPO / "scripts" / name, sandbox.root / "scripts" / name)
+    shutil.copytree(REPO / "tools" / "x4validate" / "x4validate",
+                    sandbox.root / "tools" / "x4validate" / "x4validate",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+
+
+def _alt_tree(tmp_path):
+    alt = tmp_path / "alt-ref"
+    (alt / "libraries").mkdir(parents=True)
+    (alt / "libraries" / "wares.xml").write_text("<wares/>\n", encoding="utf-8")
+    (alt / ".unpacked-and-locked").write_text("buildid 1\n", encoding="utf-8")
+    return alt
+
+
+def _run_hint(detail, env, cwd):
+    """Run the row's x4refguard command as printed. No terminal (stdin is an empty pipe) and no --yes,
+    so x4refguard can only REFUSE before changing anything -- the question is WHICH refusal:
+    the root-conflict one (the hint cannot run) or "not confirmed" after naming its target."""
+    m = _REFGUARD_HINT.search(detail)
+    assert m, detail
+    flags = re.findall(r'(--[a-z]+) "([^"]+)"', m.group(3))
+    argv = [sys.executable, m.group(1), m.group(2)] + [x for kv in flags for x in kv]
+    r = subprocess.run(argv, env=env, cwd=cwd, capture_output=True, text=True, timeout=120,
+                       input="")   # a PIPE: NUL reads as a terminal on Windows
+    return dict(flags), r
+
+
+def _clean_env(**kv):
+    env = {k: v for k, v in os.environ.items() if k not in _LEAKY}
+    env.update({k: str(v) for k, v in kv.items()})
+    return env
+
+
+def _names_target(stderr, tree):
+    m = re.search(r"x4refguard apply -- target: (.+)", stderr)
+    return bool(m) and os.path.normcase(str(Path(m.group(1).strip()).resolve())) == \
+        os.path.normcase(str(Path(tree).resolve()))
+
+
+def test_FXZ_the_apply_hint_RUNS_under_an_exported_X4_REFERENCE(sandbox, tmp_path):
+    """MEASURED RED at 4d92732: the row printed `python ".../x4refguard.py" apply`, and that
+    command, run in the shell the doctor judged, refused "name DIFFERENT roots" (FX-B2) -- the
+    doctor judged the exported tree, the bare apply acts on the config's."""
+    _mini_toolkit(sandbox)
+    alt = _alt_tree(tmp_path)
+    env = _clean_env(X4_REFERENCE=alt, CODEX_HOME=sandbox.codex_home)
+    row = {r.id: r for r in doc.check_common(sandbox.ctx(env=env))}["layer2.reference"]
+    assert row.status == doc.TODO, row
+    flags, r = _run_hint(row.detail, env, tmp_path)
+    assert "DIFFERENT roots" not in r.stderr and "X4_CONFIG" not in r.stderr, r.stderr
+    assert _names_target(r.stderr, alt), r.stderr          # it acts on the tree it JUDGED
+    assert "REFUSED: not confirmed" in r.stderr and r.returncode == 2, r.stderr   # changed nothing
+    assert os.path.normcase(str(Path(flags["--toolkit"]).resolve())) == \
+        os.path.normcase(str(sandbox.root.resolve())), flags
+
+
+def test_FXZ_the_apply_hint_RUNS_under_a_FOREIGN_X4_CONFIG(sandbox, tmp_path):
+    """Second clause: an inherited X4_CONFIG outside the toolkit refuses every mutating call
+    (FX-B3) unless the root is chosen by its flag; --reference lifts it for x4refguard."""
+    _mini_toolkit(sandbox)
+    alt = _alt_tree(tmp_path)
+    foreign = tmp_path / "elsewhere" / "x4-paths.env"
+    _env_file(foreign, X4_TOOLKIT=sandbox.root, X4_GAME=sandbox.game, X4_REFERENCE=alt)
+    env = _clean_env(X4_CONFIG=foreign, CODEX_HOME=sandbox.codex_home)
+    row = {r.id: r for r in doc.check_common(sandbox.ctx(env=env))}["layer2.reference"]
+    assert row.status == doc.TODO, row
+    _flags, r = _run_hint(row.detail, env, tmp_path)
+    assert "REFUSED: `x4refguard apply`" not in r.stderr, r.stderr
+    assert _names_target(r.stderr, alt), r.stderr
+
+
+def test_FXZ_TWIN_the_apply_hint_with_NOTHING_exported_acts_on_the_config_tree(sandbox, tmp_path):
+    """Control: the flags must not move the target when nothing in the environment does."""
+    _mini_toolkit(sandbox)
+    env = _clean_env(CODEX_HOME=sandbox.codex_home)
+    row = {r.id: r for r in doc.check_common(sandbox.ctx(env=env))}["layer2.reference"]
+    _flags, r = _run_hint(row.detail, env, tmp_path)
+    assert _names_target(r.stderr, sandbox.ref), r.stderr
+
+
+def test_FXZ_TWIN_a_hint_WITHOUT_the_flags_REFUSES_under_the_same_export(sandbox, tmp_path):
+    """The instrument can go red: the same run with the flags stripped is the 4d92732 hint,
+    and it must hit the root-conflict refusal -- else the tests above prove nothing."""
+    _mini_toolkit(sandbox)
+    alt = _alt_tree(tmp_path)
+    env = _clean_env(X4_REFERENCE=alt, CODEX_HOME=sandbox.codex_home)
+    row = {r.id: r for r in doc.check_common(sandbox.ctx(env=env))}["layer2.reference"]
+    m = _REFGUARD_HINT.search(row.detail)
+    assert m, row
+    r = subprocess.run([sys.executable, m.group(1), m.group(2)], env=env, cwd=tmp_path,
+                       capture_output=True, text=True, timeout=120, input="")   # a PIPE: NUL reads as a terminal on Windows
+    assert r.returncode == 2 and "DIFFERENT roots" in r.stderr, r.stderr
+
+
+def test_FXZ_the_PARTIAL_remove_hint_carries_the_same_flags(sandbox, monkeypatch):
+    monkeypatch.setattr(doc, "_x4refguard_module", lambda ctx: _refguard_stub("partial"))
+    (sandbox.ref / ".unpacked-and-locked").unlink()
+    r = _layer2_row(sandbox)
+    m = _REFGUARD_HINT.search(r.detail)
+    assert r.status == doc.FAIL and m and m.group(2) == "remove", r
+    assert "--toolkit" in m.group(3) and "--reference" in m.group(3), r

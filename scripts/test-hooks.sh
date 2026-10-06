@@ -443,8 +443,21 @@ mkdir -p "$SBX_TMP/elsewhere"
 echo; echo "=== check-reference-version.sh ==="
 printf '"AppState"\n{\n\t"buildid"\t\t"99999999"\n}\n' > "$SBX_TMP/acf"
 echo "11111111" > "$TK/.claude/.reference-buildid"
-X4_APPMANIFEST="$SBX_TMP/acf" bash "$HOOKS/check-reference-version.sh" 2>/dev/null \
-  | grep -q "stale-reference" && ok "warns on build mismatch" || no "no stale-reference warning"
+_crv_out="$(X4_APPMANIFEST="$SBX_TMP/acf" bash "$HOOKS/check-reference-version.sh" 2>/dev/null)"
+case "$_crv_out" in *stale-reference*) ok "warns on build mismatch" ;; *) no "no stale-reference warning" ;; esac
+# FX-Z (FX-B4 lead): the re-unpack steps were RELATIVE (`python scripts/x4refguard.py remove`,
+# `bin/unpack-reference.sh`) -- runnable only from the toolkit folder, and the bare forms
+# refuse under an exported X4_REFERENCE/X4_TOOLKIT that differs from the config. Each step now
+# names its absolute path, --toolkit and --reference. One clause per command.
+case "$_crv_out" in *"\"$X4_TOOLKIT/scripts/x4refguard.py\" remove --toolkit \"$X4_TOOLKIT\" --reference \"$X4_REFERENCE\""*)
+  ok "stale-reference: the x4refguard remove step is absolute, with --toolkit and --reference" ;;
+  *) no "stale-reference: the x4refguard step is not the absolute command: ${_crv_out:0:300}" ;; esac
+case "$_crv_out" in *"bash \"$X4_TOOLKIT/bin/unpack-reference.sh\" --toolkit \"$X4_TOOLKIT\" --reference \"$X4_REFERENCE\""*)
+  ok "stale-reference: the unpack step is absolute, with --toolkit and --reference" ;;
+  *) no "stale-reference: the unpack step is not the absolute command: ${_crv_out:0:300}" ;; esac
+case "$_crv_out" in *"$X4_REFERENCE/.unpacked-and-locked"*"$X4_TOOLKIT/.claude/.reference-buildid"*)
+  ok "stale-reference: the sentinel and the detached build-id file are named by absolute path" ;;
+  *) no "stale-reference: a file in the steps is not absolute: ${_crv_out:0:300}" ;; esac
 echo "99999999" > "$TK/.claude/.reference-buildid"
 [ -z "$(X4_APPMANIFEST="$SBX_TMP/acf" bash "$HOOKS/check-reference-version.sh" 2>/dev/null)" ] \
   && ok "silent when builds match" || no "warned when builds match"
@@ -515,7 +528,7 @@ decide allow protect-bash.sh "$(cj 'cd $(git rev-parse --show-toplevel) && ls')"
   "a substituted argument in a cd is untouched"
 
 
-EXPECT=279
+EXPECT=282
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written

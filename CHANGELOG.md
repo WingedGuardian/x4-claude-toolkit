@@ -51,7 +51,9 @@ All are fixed:
   for the toolkit it **lives in**; an `X4_TOOLKIT` naming a different one gets one line naming
   both, and `x4refguard apply/remove`, `x4config migrate --apply`, `x4lock lock/unlock` and
   `bin/unpack-reference.sh` **refuse** unless you pass `--toolkit <folder>`. `x4doctor` compares
-  against its own toolkit (`--toolkit` to choose).
+  against its own toolkit (`--toolkit` to choose). `x4refguard`, `x4lock` and the unpack also
+  refuse an exported root or an inherited `X4_CONFIG` that would point them at another toolkit's
+  files (see *Release-review fixes*).
 - **`x4refguard apply/remove` ask first.** They print the target folder, count the files (with
   progress), then ask; `--yes` confirms; with no terminal and no `--yes` they refuse (exit 2). A
   "still applying" line appears every 10 s while the OS call runs.
@@ -101,8 +103,9 @@ confusing messages and six cosmetic ones. All are fixed:
   README says the same. `status` names the folder it checked, says "not applied" instead of
   "absent", and prints the long "To lift it" block only when there is something to lift. `apply`
   and `status` count the same sample (root included).
-- Install summaries and `x4doctor` print plain `python scripts/x4refguard.py apply`, which shows
-  the folder and asks; `--yes` is explained as the agent's form. A `reference/` without the
+- Install summaries print plain `python scripts/x4refguard.py apply` (`x4doctor` prints it by
+  absolute path, with `--toolkit` and `--reference`), which shows the folder and asks; `--yes` is
+  explained as the agent's form. A `reference/` without the
   sentinel is named as unfinished instead of being sent to `apply`.
 - A personalised `CLAUDE.md` kept as `X4-NOTES.pre-4.0.md`: the installer now points at the
   `CLAUDE.md` your previous version shipped (from its `CHANGELOG.md`) and prints a
@@ -206,7 +209,9 @@ confusing messages and six cosmetic ones. All are fixed:
   says to set OpenCode's own `shell` to pwsh, powershell or bash. A configured shell that does not
   resolve to a program (OpenCode would silently fall back to another) is refused too, and so is
   every `bash` call when `X4_OPENCODE_SHELL` disagrees with the detected shell: it is a
-  declaration the installers read, never an override of the grammar.
+  declaration the installers read, never an override of the grammar (following the old advice to
+  set it made a `cmd` delete into `reference/` read as bash and pass). Each OpenCode instance
+  keeps its own configured shell (BLIND-SPOTS F213-F215).
 - A patch is read with **OpenCode's own grammar** (column-0 headers, unknown lines skipped), not Codex's, checked against OpenCode v1.18.34's parser run under node (BLIND-SPOTS F153).
 - The OpenCode **desktop app is not supported** (its plugin hooks never fire,
   anomalyco/opencode#38604). Nothing here was run inside OpenCode: the README's OpenCode section
@@ -256,10 +261,20 @@ confusing messages and six cosmetic ones. All are fixed:
   one included (that root read OK before, "the Claude hooks cover deletes"), and partial
   protection is FAIL; the x4lock row with unlocked files moved from UNKNOWN to **OK**
   (informational: locking is your choice). So **a fresh install whose `reference/` is unpacked
-  but not yet protected exits 4**, whichever agents it has, until you run `x4refguard.py apply`
-  (with no `reference/` at all the row is UNKNOWN: x4refguard reports it unconfigured). A caller
+  but not yet protected exits 4**, whichever agents it has, until you run `x4refguard.py apply`.
+  With no `reference/` at all the row is a TODO too, naming the unpack command -- or UNKNOWN when
+  something says the tree was moved rather than never unpacked (below). A caller
   that tests only for exit 1 no longer sees "Codex hooks are not running": that state now exits
   4, and `--json` lists those rows with status `TODO`.
+- **Every command `x4doctor` prints runs where it is printed.** The `reference/` rows print the
+  unpack and `x4refguard apply`/`remove` by absolute path, with `--toolkit` and `--reference`
+  naming the tree the row judged: without them, an exported `X4_REFERENCE` differing from the
+  config, or an inherited `X4_CONFIG` outside the toolkit, made the printed command refuse in the
+  very shell the doctor had checked. A `reference/` without `.unpacked-and-locked` (which `apply`
+  refuses) names the unpack instead; where no flag lifts a refusal, the hint says to clear
+  `X4_CONFIG` first. A missing tree that looks MOVED -- `.claude/.reference-buildid` exists, or a
+  finished unpack sits at `<toolkit>/reference` -- is UNKNOWN (exit 3), not "run the ~27 GB
+  unpack"; a move that leaves neither sign still reads as not unpacked (BLIND-SPOTS F222, F226).
 - **`roots.config` FAILs on a path-config line every loader ignores** (not KEY=value, a `$( )` or
   backtick, an unquoted `; & | < >`, or non-ASCII whitespace), naming line and reason, never the
   value: what that line would set had silently fallen back to a default. The Python tools say the
@@ -390,15 +405,39 @@ confusing messages and six cosmetic ones. All are fixed:
   into a shell on a LATER line (`cat <<EOF |` ... `bash`); (4) `cmd` with no `/c`, which reads its
   program from stdin; (5) an ANSI-C string with an escaped quote (`$'it\'s'`), which no scanner
   closed (BLIND-SPOTS F191).
+- **Security: nine more ways past the hard blocks and asks are closed** (found in the delta
+  review, each reproduced first; (1), (2), (3) and (7) present in 3.x too). (1) `<<` inside `(( ))`,
+  `for ((;;))`, `$[ ]`, `${ }` or `a[ ]=` -- a shift -- opened a heredoc that hid every later line;
+  (2) `echo rm -rf <game> | bash`: what `echo`/`printf` prints into a shell is now its program, and
+  a format that cannot be reproduced asks; (3) `bash <(echo ...)`, `source <(...)`: a process
+  substitution that IS the script is its program; (4) `cmd /k <cmd>` and `cmd /c cmd` read further
+  commands from stdin; (5) a root variable under a brace operator (`${X4_GAME:-/x}`) is its root;
+  (6) git configuration from the environment (`GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS`,
+  `--config-env=...`) makes a `git clean` forced; (7) `x=$(printf rm); $x -rf <reference>`, a verb
+  from a variable holding a substitution, is an unresolved verb; (8) `takeown` of the reference
+  tree asks, like `icacls /setowner`; (9) a `file://` operand is percent-decoded (`X4%20Foundations`
+  hid the game folder). A substituted delete verb below the game folder gets the X4-folder delete
+  advisory back, and `x4refguard.py apply --toolkit "$X4_TOOLKIT"` no longer asks (only the action
+  word decides; `remove` still asks). A process substitution fed by any other program (`bash <(curl
+  ...)`) runs unjudged, like a script file (the maintainer's decision, 2026-10-06; 4 of 44,009 past commands),
+  and `bash -n <(...)` never asks (BLIND-SPOTS F201, F202, F206-F212, F183, F219).
+- **A Codex or OpenCode patch run through the shell after `cd $X4_REFERENCE`** (or `$env:...`, or
+  any `cd` whose target the shell expands) is refused with a reason; it was judged against the
+  literal text `$X4_REFERENCE` and allowed (BLIND-SPOTS F203).
 - **An agent may not switch the guards off through a Claude Code settings file** (the maintainer's decision,
   2026-10-05). A `.claude/settings.json` `env` block reaches every hook (measured on Claude Code
   2.1.290), so `"env": {"X4_GUARD": "off"}` written there turned the guards off at the next
   launch. Now: a file-edit tool's write is judged on the RESULTING file, and setting `X4_GUARD` or
-  `X4_GUARD_CHECK` in any `env` is refused; a shell write to `.claude/settings*.json` is refused
-  (use the file-edit tool, whose content can be checked); Codex and OpenCode patches are judged
-  on their text; every other settings edit is unchanged. The session start names any settings
-  file that sets it. Not seen: a settings file written from inside an interpreter (`python -c`)
-  or by a relative write from an unknown folder (BLIND-SPOTS F193, F198).
+  `X4_GUARD_CHECK` anywhere in the file is refused -- in `env`, in a hooks command
+  (`X4_GUARD=off bash .../protect-bash.sh` switched one hook off) or any other key or string --
+  except inside the top-level `permissions` block, where a rule string sets nothing (the
+  maintainer's decisions, 2026-10-06). An Edit whose `old_string` does not match the file is judged on its new
+  text. A shell write to `.claude/settings*.json` is refused (use the file-edit tool, whose
+  content can be checked); Codex and OpenCode patches are judged on their raw text, so a patch
+  adding a `permissions` entry that mentions `X4_GUARD` is refused too; every other settings edit
+  is unchanged. The session start names any settings file that sets it. Not seen: a settings file
+  written from inside an interpreter (`python -c`) or by a relative write from an unknown folder;
+  for other settings changes see *Known limitations* (BLIND-SPOTS F193, F198, F204, F205, F220).
 - **A root variable is its root for every rule**, not only after `cd` (F154): writes such as
   `> "$X4_TOOLKIT/x4-paths.env"` or `cp x "$X4_REFERENCE/..."` (and `$env:X4_REFERENCE` in
   PowerShell) were allowed where the literal folder was refused -- 34 of 40 Bash and 6 of 8
@@ -529,17 +568,30 @@ confusing messages and six cosmetic ones. All are fixed:
   (`tools/x4validate/audit/`) is left out of the release zip. `scan-identifiers.py` also
   catches a bare X4 profile id. The ids come from the machine it runs on and are never
   printed: Windows `Documents` (plain and OneDrive) and the native Linux client's
-  `~/.config/EgoSoft/X4`; a location that exists but cannot be read makes the scan say PARTIAL.
-  Every identifier on a line is checked: a placeholder earlier on the line hid a real one later
-  (BLIND-SPOTS F175, F182).
+  `~/.config/EgoSoft/X4`; a location that exists but cannot be read makes the scan say PARTIAL
+  and exit 3 when it found nothing (it exited 0 -- a partial walk reported clean); its advice
+  names only a remedy that works. Every identifier on a line is checked: a placeholder earlier on
+  the line hid a real one later (BLIND-SPOTS F175, F182). On macOS a privacy-protected
+  `Documents` may read as unreadable (exit 3; not verified on a Mac, F228).
 - **The commands that change your system also refuse an exported ROOT that differs from the
   toolkit's config**: `x4refguard apply/remove`, `x4lock lock/unlock` and
   `bin/unpack-reference.sh`, when an exported `X4_REFERENCE`, `X4_GAME` or `X4_MODS` names a
   different folder than the acting toolkit's `x4-paths.env`. The environment outranks the
   config, so `x4refguard apply --toolkit B --yes` with A's `X4_REFERENCE` exported protected A's
   tree, exit 0. The refusal names both folders and the flag that chooses one (`--reference`,
-  `--game`, `--registry`); `status` prints one line. An exported `X4_CONFIG` naming another
-  toolkit's file is still honoured (BLIND-SPOTS F177).
+  `--game`, `--registry`); `status` prints one line. **The same commands refuse while an
+  inherited `X4_CONFIG` names a config outside the acting toolkit, or a file that does not
+  exist** (the maintainer's decision, 2026-10-06: keep the refusal); `status` prints one notice line.
+  `--reference` lifts it for `x4refguard`, which acts on that one tree. Nothing lifts it for
+  `x4lock` (its manifest locks the config `X4_CONFIG` picks) or for `bin/unpack-reference.sh`,
+  which reads six keys from the config that no flag can choose (with `--reference` alone it
+  filled the tree from the OTHER config's game). The refusal names the way out: clear
+  `X4_CONFIG` (BLIND-SPOTS F177).
+- **Bash and Python read the same file for every `X4_CONFIG` spelling.** `x4-paths.env/` and, on
+  Windows, `x4-paths.env.` or `x4-paths.env ` were read by the Python tools and "missing" to the
+  guards, which fell back to the default reference root (6 of 16 spellings disagreed; now 0).
+  `bin/unpack-reference.sh` resolves a relative `X4_CONFIG` or `X4_REFERENCE` against the
+  current folder; it turned one into `/<name>` and refused it (BLIND-SPOTS F224, F225).
 - **`install.ps1` works under Windows PowerShell 5.1** when a Python step writes a warning: 5.1
   made redirected native stderr a terminating error, so the read-only OpenCode check died with a
   raw error (exit 1) instead of its refusal, the OpenCode render failed on any warning, and the
@@ -552,11 +604,28 @@ confusing messages and six cosmetic ones. All are fixed:
   refuses one that names another toolkit. Every inherited path variable used is printed before
   it is written. The check for an existing `X4_TOOLKIT` also reads the global Claude
   `settings.json` env block and, on Windows, the process environment, each reported only when
-  it differs.
+  it differs. **An inherited `X4_GAME` is not a named in-game destination either**: under `--yes`
+  or with no terminal the installer refuses without `--game`, naming `X4_GAME` (BLIND-SPOTS F223).
+- `install --unpack` runs the unpack against this run's own config, game and reference
+  (`--reference` passed), not whatever the shell inherited. Every refusal and lift step of
+  `bin/unpack-reference.sh` prints an absolute command with `--toolkit` (and `--reference`), and
+  the stale-reference message at session start gives its steps the same way (BLIND-SPOTS F222).
 - Both installers pass `--toolkit` to `bin/unpack-reference.sh`. `setup.sh` reads the config
   with the guards' own loader (one grammar). `--agent` also accepts a whitespace-separated list,
   like `-Agent`. `scripts/codex-e2e.py` fails the validator row on "X4 VALIDATION DID NOT RUN"
   instead of passing it.
+
+### Known limitations (recorded, not fixed in 4.0)
+
+- **Settings and the `.claude` folder can still be used to weaken the guards** (the maintainer's
+  decision, 2026-10-06: record only for 4.0). Measured allowed: `"disableAllHooks": true` in a settings
+  file; `X4_CONFIG`, `X4_GAME`, `X4_PYTHON` or `PATH` in a settings `env` block, which moves every
+  root or the guards' interpreter; a write through a directory junction to `.claude`; and replacing
+  `.claude` from the shell (`mv`, `cp -r`, `ln -s`). The OS-level `reference/` protection, once
+  applied, still blocks a delete inside it whatever the guards do (BLIND-SPOTS F221).
+- Two false refusals fail closed: a `..` in a not-yet-existing part of a path given to the unpack,
+  and an `X4_REFERENCE` ending in a dot, can read as a different tree; the refusal prints both
+  paths (BLIND-SPOTS F229).
 
 ### Maintainers
 
@@ -576,8 +645,9 @@ confusing messages and six cosmetic ones. All are fixed:
   with an inert adapter is not a pass -- and refuses (exit 2) when the extra cases were wanted but
   could not be built, instead of passing without them. It also refuses (exit 2), naming each
   case, when a reference guard hook cannot start, times out or exits non-zero: such a run had
-  decoded as a checked allow and could pass (BLIND-SPOTS F174). It finds Git Bash with the one
-  resolver the guards use.
+  decoded as a checked allow and could pass (BLIND-SPOTS F174). A re-run under `X4_GUARD_CHECK`
+  that fails with anything but exit 2 is an error too; it used to fall back to the first run's
+  verdict and count as checked (F216). It finds Git Bash with the one resolver the guards use.
 - Codex: a timed-out guard's MSYS descendants (a backgrounded `sleep` under Git Bash) are now killed
   too, through a Windows Job Object; the adapter's backup, validator and session hooks use the same
   bounded runner; the session-start hooks share one 18 s budget inside the wrapper's 25 s; the
@@ -598,13 +668,18 @@ confusing messages and six cosmetic ones. All are fixed:
   ~0.1 GB; F171); the Codex adapter test requires the hook's grandchild process to be reaped; the
   toy-conformance mutants use only cases this platform can replay (F172); the WSL-bash test
   asserts the platform's own reason; the x4doctor and x4refguard tests no longer read the
-  checkout's per-machine config (F180); CI's PowerShell install legs no longer inherit an earlier
-  step's user-environment writes.
+  checkout's per-machine config (F180). No CI install leg that runs on Windows -- PowerShell or
+  bash -- writes the runner's real user environment any more: each uses its own test registry key
+  and drops the inherited `X4_TOOLKIT` (F227).
 - `scripts/verify-hook-tests.py` credits a test to a predicate only when the test names it (one
   catch-all test had been credited to all 31; F196), and credits a mutant only when the
   qualified `Class.method` it targets fails (3 of 618 test names exist in two classes; F197).
   `scripts/test-hooks.sh` keeps its decision dump on for the path-config section, so the Codex
-  conformance replay sees those denies too (F194).
+  conformance replay sees those denies too (F194). Its silent? column found a test for none of
+  the 32 predicates (a `Class.method` name looked up in a bare-name index; F217), now fixed.
+  `scripts/fuzz-guard.py` gained 7 seeds and 6 syntax-class mutators for the delta-review rules;
+  their first run found 13 weakenings, all fixed; the second, 5,311 mutants over 47 seeds x 113
+  mutators, found none.
 
 ## v3.3.1 — 2026-09-29
 

@@ -100,6 +100,12 @@ produces a silent no-op or a false alarm:
 - **`if=` guards** gate an op before `sel=` is evaluated, so a guarded no-op is by design, not an error.
 - **`extensions/<target>/<rel>`** paths are owned by `<target>`, not the base game.
 
+> **A companion for your editor (third-party, new, not part of this toolkit):**
+> [X4CodeSense](https://www.nexusmods.com/x4foundations/mods/2422) by ChemODun (Apache-2.0, v1.0.0
+> released 2026-10-05) is a VS Code / Open VSX extension with live schema, expression and
+> reference checks for MD, aiscript and diff XML as you type; it also has a CLI
+> (`x4-script-check`) and an MCP server. It complements x4validate; nothing here uses or needs it.
+
 ### `x4effective` — see every final value, and who set it
 An "xEdit for X4": the effective value of every ware/macro/job across base + DLC + all your mods,
 with **per-attribute provenance** (`base → modA replace-attr:12 → modB`), in a SQLite store you can
@@ -360,8 +366,10 @@ dependencies, so a broken `uv` cannot take it down. It reports:
 
 Every row is OK, FAIL, UNKNOWN, TODO or N/A, and a check that cannot answer says UNKNOWN.
 **TODO means "installed correctly; YOUR step is pending"** -- trusting the folder in Codex,
-approving its hooks in `/hooks`, applying the `reference/` OS protection
-(`python scripts/x4refguard.py apply`): steps no installer may take for you. Exit codes:
+approving its hooks in `/hooks`, unpacking `reference/` when it is not there yet
+(`bin/unpack-reference.sh`, which then applies the OS protection), applying the `reference/` OS
+protection to a tree you already have (`python scripts/x4refguard.py apply`): steps no installer
+may take for you. The `reference/` rows print their command by absolute path, ready to paste. Exit codes:
 0 all OK; 1 any FAIL; 3 UNKNOWN without FAIL; **4 only TODO rows pending** (a fresh install,
 before your steps); 2 nothing checked. Precedence is FAIL > UNKNOWN > TODO, so a pending step
 never hides a defect, and a run that checked nothing never exits 0. It acts for the toolkit it

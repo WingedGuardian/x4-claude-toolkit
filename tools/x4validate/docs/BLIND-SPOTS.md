@@ -255,13 +255,13 @@ memory or from another session -- a remembered id was stale within a day here.
 | F174 | `x4guard conformance` decoded a reference guard hook that FAILED TO RUN (bash exit 127, empty stdout) as a CHECKED allow, so the run passed: CLI rc 0, "1 checked" | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-05 (fix lane FX-G3, `37c32c5`) | FX-G3 reproduction with a renamed hook | a reference run that cannot start, times out or exits non-zero is an error with a reason; the CLI refuses (rc 2) naming each case; one bash resolver (`c521e30`) |
 | F175 | `scan-identifiers.py`'s account patterns checked only the FIRST occurrence on a line, so a placeholder earlier on the line (`C:/Users/tester/...`, an elided profile path) hid a real identifier later on it | **DEFECT (measured)** · PRE-ARC · ✅ FIXED 2026-10-05 (fix lane FX-G3, `9fa6c7a`) | FX-G3: `account_match` returned None on the mixed line | every occurrence is checked (`finditer`); the full-repo scan over 684 files stays clean |
 | F176 | The OpenCode plugin judged every `bash` call as bash off Windows and as PowerShell on Windows, never reading OpenCode's configured `shell`: under a `pwsh` shell `Remove-Item -Recurse -Force <reference>/libraries` was judged as bash -- allow -- where the PowerShell verdict is deny | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-05 (fix lane FX-G3, `7107827`) | FX-G3 with `x4guard check` (`--shell bash` allow, `--shell powershell` deny) | `X4_OPENCODE_SHELL` > configured `shell` > `$SHELL`, fish/nu -> platform default, as OpenCode's `acceptable()`; `cmd` is refused inert. Residual: the configured shell's EXISTENCE is not checked, so OpenCode's own fallback for a missing shell is not mirrored |
-| F177 | `x4refguard apply/remove`, `x4lock lock/unlock` and `bin/unpack-reference.sh` (3 mutating CLIs) compared the TOOLKIT (F160) but not the ROOTS: an exported `X4_REFERENCE` outranks the config, so `x4refguard apply --toolkit B --yes` with A's reference exported protected A's tree, exit 0 | **DEFECT (measured)** · IN-ARC (F160 residual) · ✅ FIXED 2026-10-05 (fix lane FX-B2, `0c76880`); inherited `X4_CONFIG` ⏳ OPEN | delta review | `_paths.env_root_conflicts`: an exported `X4_REFERENCE`/`X4_GAME`/`X4_MODS` differing from the acting toolkit's config refuses, naming both and `--reference`/`--game`/`--registry`. Open: an inherited `X4_CONFIG` naming another toolkit's file is still honoured |
+| F177 | `x4refguard apply/remove`, `x4lock lock/unlock` and `bin/unpack-reference.sh` (3 mutating CLIs) compared the TOOLKIT (F160) but not the ROOTS: an exported `X4_REFERENCE` outranks the config, so `x4refguard apply --toolkit B --yes` with A's reference exported protected A's tree, exit 0 | **DEFECT (measured)** · IN-ARC (F160 residual) · ✅ FIXED 2026-10-05 (fix lane FX-B2, `0c76880`); inherited `X4_CONFIG` ✅ CLOSED 2026-10-06 (FX-B3 `b5087bc`, `2e34d3a`; FX-B4 `baeea35`) | delta review; `X4_CONFIG`: 3 Python mutating entry points + 1 bash | `_paths.env_root_conflicts`: an exported `X4_REFERENCE`/`X4_GAME`/`X4_MODS` differing from the acting toolkit's config refuses, naming both and `--reference`/`--game`/`--registry`. An inherited `X4_CONFIG` naming a config outside the toolkit (or a missing file) refuses too; `--reference` lifts it for x4refguard only (USER DECISION 2026-10-06: keep the refusal) |
 | F178 | A path-config line the grammar refuses (5 reasons: shape, key, subst, operator, guard) was dropped SILENTLY by every Python tool, which fell back to a default with exit 0 | **DEFECT (measured)** · IN-ARC (the F156 grammar) · ✅ FIXED 2026-10-05 (fix lane FX-B2, `73a31f9`) | delta review C I1 | one stderr line per process (line:reason, never a value), `--paths` lists them, `x4doctor`'s `roots.config` FAILs on shape/subst/operator |
 | F179 | Windows PowerShell 5.1 turns a native command's REDIRECTED stderr into a terminating NativeCommandError: in `install.ps1` the read-only OpenCode precheck died raw (exit 1), the OpenCode render failed on any warning, and the Layer-2 summary misreported | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-05 (fix lane FX-B2, `d524bf4`) | delta review, reproduced under powershell.exe 5.1 | all 4 such call sites go through `Invoke-X4Native` (error preference relaxed in its own scope) |
 | F180 | `test_x4doctor` built `Ctx` without a toolkit, so the doctor acted for the CHECKOUT and read its per-machine `x4-paths.env`; the real-x4lock tests did the same (in CI, with no config, "1 missing" became "2") | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-05 (fix lane FX-B2, `73a31f9`) | CI2 | 6 Ctx sites (4 direct, 2 shared helpers) name a scratch toolkit; the real-x4lock tests carry their own `scripts/x4lock.py` and resolver |
 | F181 | `run-gates.sh`'s log-dir containment compared `abspath` only, so a log dir that is a symlink or junction INTO the game or reference tree passed as "outside" | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-05 (fix lane FX-B2, `22350b3`) | delta review | both `abspath` and `realpath` forms are compared; the test uses a real junction/symlink |
-| F182 | `scan-identifiers.py`'s profile-id walk read 2 known locations (Windows Documents, OneDrive Documents) and skipped an unreadable one in silence, so a Linux machine derived no id | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-05 (fix lane FX-B2, `22350b3`) | delta review | 3 locations (adds `~/.config/EgoSoft/X4`); the scan prints how many exist and PARTIAL when one exists but cannot be read |
-| F183 | A delete whose command NAME arrives by substitution loses the delete ADVISORY: `$(echo rm) -rf <game>/libraries` (and the backtick form) is a plain ALLOW while `rm -rf <game>/libraries` gets the X4-directory delete advisory; the substituted verb is denied only when the operand is a root itself | **SCOPE (measured, open)** · ⏳ OPEN | FX-DOC's lead; re-measured at c6fb158 with `x4guard check`, 6 probes | advisory loss, not a missing block: the game root and `reference/` operands are still denied. Open lead for the guard lane |
+| F182 | `scan-identifiers.py`'s profile-id walk read 2 known locations (Windows Documents, OneDrive Documents) and skipped an unreadable one in silence, so a Linux machine derived no id | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-05 (fix lane FX-B2, `22350b3`) | delta review; the PARTIAL exit: 1 walk over 3 locations | 3 locations (adds `~/.config/EgoSoft/X4`); the scan prints how many exist and PARTIAL when one exists but cannot be read. ADDENDUM 2026-10-06: a PARTIAL walk that found nothing exits 3, not 0 (FX-B3 `45efbf0`); its advice names only a remedy that works, and an unreadable location counts as existing (FX-B4 `efb4b3c`) |
+| F183 | A delete whose command NAME arrives by substitution loses the delete ADVISORY: `$(echo rm) -rf <game>/libraries` (and the backtick form) is a plain ALLOW while `rm -rf <game>/libraries` gets the X4-directory delete advisory; the substituted verb is denied only when the operand is a root itself | **SCOPE (measured)** · ✅ FIXED 2026-10-06 (fix lane FX-G4, `b1e394f`, `893a319`, `64bce54`) | FX-DOC's lead; re-measured at c6fb158 with `x4guard check`, 6 probes | the advisory is back below a root. With it, reviewer G's PRE-ARC hard-block bypass `x=$(printf rm); $x -rf <reference>` (ALLOW in v3.3.1) is an unresolved verb: deny at a root or inside `reference/` |
 | F184 | A root VARIABLE operand (`"$X4_REFERENCE/..."`, `"$X4_TOOLKIT/x4-paths.env"`, `$env:X4_REFERENCE`) was its root for a `cd` (F154) but not for the other rules: writes through it were ALLOWED | **DEFECT (measured)** · ✅ FIXED 2026-10-05 (fix lane FX-G2, `84330ba`) | FX-G2: 34 of 40 Bash and 6 of 8 PowerShell probes allowed; `rm "$X4_TOOLKIT/x4-paths.env"` only advised; `rm -rf "$X4_GAME"` advised instead of the game hard block | `prep()` applies `subst_root_var` to every operand; the config pass sends every root. After: 0 of 48; variable and literal spellings agree on 126 of 126 probes |
 | F185 | Windows path ALIASES opened the protected file while the guards read another name: trailing dots/spaces, NTFS stream suffixes (`::$DATA`, `:alt`, `::$INDEX_ALLOCATION`) and 8.3 short names | **DEFECT (measured)** · ✅ FIXED 2026-10-05 (fix lane FX-G2, `7c0954d`) | FX-G2: 19 of 28 probes allowed (x4-paths.env, reference, the game via `X4 Foundations./` and its 8.3 form) | both normalisers drop stream suffixes and trailing dots/spaces per component; an 8.3 name resolves to its long form. After: 0 of 28 |
 | F186 | `$((` was stepped over whole as arithmetic, so a command substitution INSIDE arithmetic (`echo $(( $(rm -rf <game>) + 0 ))`, and the backtick form) passed the game hard block | **DEFECT (measured)** · ✅ FIXED 2026-10-05 (fix lane FX-G2, `38416b9`) | FX-G2: 6 of 14 probes allowed | arithmetic yields the substitutions inside it; `$((cmd) )` is a command (one helper, `_dollar_double_paren`) |
@@ -279,6 +279,35 @@ memory or from another session -- a remembered id was stale within a day here.
 | F198 | The settings rule (F193) cannot see a settings file written from inside an opaque interpreter (`python -c`, a script) or by a RELATIVE write whose cwd is unknown | **SCOPE (open, accepted)** · ⏳ OPEN | FX-G2 residual, not re-measured here | accepted residual of F193; the session canary still names a settings file that sets `X4_GUARD` at the next start |
 | F199 | A patch run whose runner NAME is built from a variable (`$P` with `P=apply_patch`) is not recognised as a patch run | **SCOPE (open, accepted)** · ⏳ OPEN | FX-G2 residual of F188, not re-measured here | accepted residual |
 | F200 | An escaped backtick inside double quotes (`"\``) is read as a command substitution | **SCOPE (open, accepted)** · PRE-ARC · ⏳ OPEN | FX-G2 residual, not re-measured here | an ADVISORY false positive only, never a missed block |
+| F201 | `cmd /k <cmd>` runs its inline command and THEN reads further commands from stdin, and `cmd /c cmd` hands stdin to a child cmd that reads it; the guard read neither stdin as a cmd program, so a program piped into either reached no rule | **DEFECT (measured)** · ✅ FIXED 2026-10-06 (fix lane FX-G4, `b1e394f`) | reviewer H; `cmd /k` measured in Git Bash | both forms read their stdin as a cmd program, like bare `cmd` (F191 item 4); `/c` and `/r` with another child take none |
+| F202 | A root variable under a brace operator (`${X4_GAME:-/x}`, `${X4_REFERENCE%/}`, `:=`, ...) was not its root, and an unassigned root variable under `:-` read as UNSET, so the operator's default was judged instead | **DEFECT (measured)** · ✅ FIXED 2026-10-06 (fix lane FX-G4, `b1e394f`) | reviewer H | a root variable under any brace operator is its configured root; an unconfigured one still refuses a delete; another variable or an in-command assignment is not a root |
+| F203 | The Codex/OpenCode adapters judged a shell-run patch after `cd $X4_REFERENCE` (or `$env:X4_REFERENCE`, or `apply_patch <<EOF` after such a cd) against the LITERAL path `<cwd>/$X4_REFERENCE/...` -- inside nothing, ALLOW | **DEFECT (measured)** · ✅ FIXED 2026-10-06 (fix lane FX-G4, `643b598`) | reviewer H | a `cd` target the shell EXPANDS (`$`, `%VAR%`, `~`, a substitution) raises PatchParseError -> the caller's inert refusal, naming the fix; single-quoted text stays literal. 16 refused forms, 3 literal twins |
+| F204 | The settings rule (F193) read only a settings file's `env` block: `X4_GUARD=off bash .../protect-bash.sh` as a `hooks` COMMAND string switched that hook off and was ALLOWED | **DEFECT (measured)** · ✅ FIXED 2026-10-06 (fix lane FX-G4, `0da4749`, `16d0ec5`; USER DECISIONS 2026-10-06) | reviewer H; RED against e39f675 | `X4_GUARD`/`X4_GUARD_CHECK` in any key or string of the resulting file is refused, except inside the top-level `permissions` block (a rule string sets nothing) |
+| F205 | A settings-file Edit whose `old_string` did not apply to the file as the guard read it was ALLOWED whatever its `new_string` wrote | **DEFECT (measured)** · ✅ FIXED 2026-10-06 (fix lane FX-G4, `0da4749`) | reviewer H (H-M1); RED against e39f675 | the `new_string` is judged on its own; a non-matching edit without the key stays allowed |
+| F206 | A `file://` operand was read undecoded, so `X4%20Foundations` hid the game root from every path rule | **DEFECT (measured)** · ✅ FIXED 2026-10-06 (fix lane FX-G4, `b1e394f`) | reviewer H (H-M3) | a `file://` operand is percent-decoded before the path rules see it |
+| F207 | `takeown /f <reference> [/r]` lifts the reference deny (ownership grants the right to rewrite the ACL) and reached no rule, while `icacls /setowner` asked | **DEFECT (measured)** · ✅ FIXED 2026-10-06 (fix lane FX-G4, `b1e394f`) | reviewer H (H-M5) | asks like the other lift forms (F192); elsewhere, or an ancestor without `/r`, is not this rule |
+| F208 | `<<` inside `(( ))`, `for ((;;))`, `$[ ]`, `${ }` or an assignment subscript `a[ ]=` -- a SHIFT, not a heredoc -- opened a heredoc and hid every later line: `rm -rf <game>` on line 2 was ALLOWED | **DEFECT (measured)** · PRE-ARC · SECURITY · ✅ FIXED 2026-10-06 (fix lane FX-G4, `b1e394f`, `5c05e6f`) | reviewer H (H5); fuzz-guard's 6 syntax-class mutators | those regions are blanked for the heredoc-opener scan; `EOF` followed by a backtick ends a body; a real heredoc beside them still opens |
+| F209 | Git config supplied by the ENVIRONMENT (`GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_n`, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_GLOBAL`, ..., or `--config-env=...requireForce`) can set `clean.requireForce=false`, and an unforced `git clean` was judged as the no-op it is by default | **DEFECT (measured)** · ✅ FIXED 2026-10-06 (fix lane FX-G4, `b1e394f`) | reviewer H (H6) | any of them, prefixed or assigned anywhere in the command, makes `git clean` forced |
+| F210 | What `echo`/`printf` PRINTS into a shell is that shell's program: `echo rm -rf "<game>" \| bash` (unquoted words too) was ALLOWED | **DEFECT (measured)** · PRE-ARC · SECURITY · ✅ FIXED 2026-10-06 (fix lane FX-G4, `b1e394f`, `5c05e6f`) | reviewer H (H7); allowed at e39853f and at v3.3.1 | the printed text is judged as the program; a printf format that cannot be reproduced is the inability path (ask); a quoted, ANSI-C or pathed `echo` is still the producer (fuzz finding) |
+| F211 | A process substitution that IS the script (`bash <(echo rm -rf <game>)`, `source <(...)`, `. <(...)`) was not read as a program: ALLOWED | **DEFECT (measured)** · PRE-ARC · SECURITY · ✅ FIXED 2026-10-06 for an `echo`/`printf` producer (fix lane FX-G4, `b1e394f`, `16d0ec5`); other producers F219 | reviewer H (H8) | an echo/printf producer is judged fully; `bash -n <(...)` executes nothing and never asks or denies |
+| F212 | The x4refguard lift rule (F192) asked on ANY unresolved word in an x4refguard call, so the toolkit's own `x4refguard.py apply --toolkit "$X4_TOOLKIT"` asked -- an IN-ARC regression of `ee040bc` | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-06 (fix lane FX-G4, `b1e394f`) | reviewer H (H9) | only the ACTION position names the action: `remove` and an unresolved action still ask; a variable in an option value does not |
+| F213 | The OpenCode plugin's refusal for a shell it cannot judge said "set X4_OPENCODE_SHELL", and following it made the guards judge a cmd command as bash: `del /s /q <reference>\libraries`, `rmdir /s /q <reference>` ALLOWED under `--shell bash` | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-06 (fix lane FX-G4, `a0af3c8`) | reviewer G (G-I1) | `X4_OPENCODE_SHELL` can only CONFIRM the detected shell: disagreeing, every bash call is refused (inert); the refusal says to set OpenCode's own `shell` to pwsh, powershell or bash |
+| F214 | A configured OpenCode `shell` (or `$SHELL`) that does not resolve to a program makes OpenCode fall back to its platform default, while the plugin judged the configured one | **DEFECT (read)** · IN-ARC · ✅ FIXED 2026-10-06 (fix lane FX-G4, `a0af3c8`) | reviewer G (G-M2), READ `packages/core/src/shell.ts` `select()` | the plugin checks resolvability (rooted: a file; bare: PATH/PATHEXT; Windows `bash`: Git Bash) and refuses rather than guess the fallback |
+| F215 | The OpenCode plugin's `configShell` was module-global, so one OpenCode instance's config decided the grammar for every other instance in the process | **DEFECT (inferred, then tested)** · IN-ARC · ✅ FIXED 2026-10-06 (fix lane FX-G4, `a0af3c8`) | reviewer G (G-M3, INFERRED); the node driver now runs two instances | per plugin instance |
+| F216 | `x4guard conformance` re-ran a reference deny/ask with `X4_GUARD_CHECK` and treated only exit 2 as special: exit 1 or 127 fell back to the FIRST run's verdict and counted as checked | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-06 (fix lane FX-G4, `56866be`) | reviewer G (G-M4) | any other non-zero re-run is an error, like a failing first run; twins: exit 0 keeps the deny, exit 2 stays inert |
+| F217 | `verify-hook-tests.py`'s silent? column showed NONE for all 32 of 32 predicates: `failed_tests()` returns `Class.method` (F197) while `test_sources()` is keyed by method name, so no failing test was ever found -- a VERIFIER bug | **DEFECT (measured)** · ✅ FIXED 2026-10-06 (fix lane FX-G4, `141bb8c`) | FX-G4's coverage run; present at e39f675 | the lookup uses the method part; the G-OUT twin, which the mutant no longer reached after `64bce54`, gained an absolute operand (red with the clause removed) |
+| F218 | F183's restored advisory joined a substitution fragment's relative "operand" to the SESSION cwd: debris such as `C=$(jq -r '.x' < f); bash -n -c "$C"` read as a delete in the game root | **DEFECT (measured)** · IN-LANE · ✅ FIXED 2026-10-06 (fix lane FX-G4, `64bce54`) before merge | 6 false X4-directory advisories over the 44,009-command replay | the advisory's operands are judged unseeded; `cd <game> && $(echo rm) -rf libraries` still advises |
+| F219 | A process substitution run as a script whose producer is NOT `echo`/`printf` (`bash <(curl ...)`, `source <(sed -n ... f.sh)`) is allowed unjudged, as running a script file the guards cannot see into | **SCOPE (measured, accepted)** · ⏳ OPEN (USER DECISION 2026-10-06) | 4 of 44,009 replay commands (all ordinary work; they asked before the decision) | accepted residual of F211; the same class as running a script file |
+| F220 | A Codex/OpenCode patch to a `.claude` settings file is judged on its RAW text, not on the resulting file, so a patch adding a `permissions` entry that merely mentions `X4_GUARD` is still DENIED (the file-edit tool exempts that block, F204) | **SCOPE (read, accepted)** · ⏳ OPEN | FX-G4 residual, not re-measured here | a false DENY on a rare edit, never a missed one; use the file-edit tool |
+| F221 | Four ways to weaken the guards through settings or the `.claude` tree are ALLOWED: (a) `"disableAllHooks": true` in a settings file; (b) `X4_CONFIG`, `X4_GAME`, `X4_PYTHON` or `PATH` in a settings `env` (moves every root, or the guards' interpreter); (c) a Write through a junction to `.claude` (`mklink /J jl .claude`, then `jl/settings.json`); (d) a shell REPLACEMENT of `.claude` (`mv <dir> .claude`, `cp -r x/.claude .`, `ln -s` onto `settings.json`) | **SCOPE (measured, open)** · ⏳ OPEN (USER DECISION 2026-10-06: record only for v4.0) | reviewer H, all 4 MEASURED allowed | not fixed in 4.0; the OS-level `reference/` protection, once applied, still blocks a delete inside it whatever the guards do |
+| F222 | Hints named a command that REFUSES in the very case they were printed for: `x4doctor`'s `layer2.reference` / `roots.reference` (apply on a tree without the sentinel; the unpack with no `--reference` under an exported `X4_REFERENCE`, or under a foreign `X4_CONFIG`; a bare `x4refguard apply`/`remove`), `unpack-reference.sh`'s lift steps and Layer-2 hints, and the stale-reference session message (relative paths) | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-06 (FX-B3 `c412708`; FX-B4 `892970c`, `3e4b404`; FX-Z `c13afcf`, `14becad`) | reviewers F and I; each hint run against its refusal | every hint is an absolute command with `--toolkit` and `--reference` (the tree judged); one the flags cannot lift says to clear `X4_CONFIG` first |
+| F223 | The installers took an INHERITED root variable for user intent: an exported `X4_TOOLKIT` was a "named" destination and `X4_GAME` a named in-game destination, so `--yes` (or no terminal) installed into whatever the shell happened to carry | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-05/06 (FX-B2 `d524bf4`: X4_TOOLKIT; FX-B3 `0255bc3`: X4_GAME) | delta review; 2 of 2 inherited root variables an installer reads as a destination | an inherited value is a default, said out loud; `--yes`/no terminal refuses naming its source; an explicit flag proceeds |
+| F224 | Bash and Python read DIFFERENT files for the same `X4_CONFIG` spelling: `x4-paths.env/` and (Windows) `x4-paths.env.` / `x4-paths.env ` were read by every Python tool and "missing" to every guard, which fell back to the default reference root | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-06 (fix lane FX-B4, `e69c8fb`) | reviewer I: 6 of 16 spellings disagreed, now 0 | the bash loader takes the spelling Python opens (trailing separators; on Windows trailing dots/spaces) and exports it, so the guards' name checks see the file read |
+| F225 | `bin/unpack-reference.sh`'s `_x4_canon` turned a bare RELATIVE path into `/<name>`: `X4_CONFIG=x4-paths.env` from the toolkit folder was refused as foreign (Python accepts it), and a relative `X4_REFERENCE` was refused as DIFFERENT from the config's own tree | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-06 (fix lane FX-B4, `e69c8fb`) | reviewer I | relative paths resolve against the cwd; the check judges the file the loader read; one spelling on Windows. Residual leads F229 |
+| F226 | `x4doctor` read a MISSING reference tree as "not unpacked yet" (TODO: run the ~27 GB unpack) although x4refguard says only "not unpacked yet, or renamed or moved" -- for a tree the user moved, the advice was a needless re-unpack | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-06, PARTIAL (fix lane FX-B4, `892970c`) | reviewer I | UNKNOWN (exit 3), in x4refguard's words, when `<toolkit>/.claude/.reference-buildid` exists or a finished unpack sits at `<toolkit>/reference`; PARTIAL: a move that leaves neither signal still reads TODO |
+| F227 | CI's install legs wrote `X4_TOOLKIT` into the Windows runner's REAL `HKCU\Environment`, which persists across steps, so a later leg inherited an earlier leg's toolkit | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-05/06 (FX-B2 `d524bf4`; FX-B3 `6a209da`; FX-B4 `572fc57`) | every install leg that runs on Windows: the PowerShell legs, then the 2 of 2 bash legs with no `if:` | each leg exports its own `X4_INSTALL_ENV_REGKEY` under `X4ToolkitTests` and drops `X4_TOOLKIT`; a test requires every such leg isolated with a unique key |
+| F228 | On macOS, a privacy-protected (TCC) `~/Documents` may read as UNREADABLE, so `scan-identifiers.py` would report PARTIAL (exit 3) on a machine with nothing to find | **SCOPE (inferred, open)** · ⏳ OPEN | unverified on a Mac; a simulated EPERM is tested | fails closed (exit 3, never clean); a permission refusal no longer crashes the note |
+| F229 | Two FALSE refusals in the root comparisons, both failing closed: `_x4_canon` resolves `..` lexically in a not-yet-existing tail, and an `X4_REFERENCE` ending in a dot is reported DIFFERENT from the same tree in the config | **SCOPE (reported, open)** · ⏳ OPEN | FX-B4 leads, not re-measured here | a refusal with both paths printed, never a wrong action; open leads |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -8478,19 +8507,22 @@ adapter refuses it INERT. The node tests were run by the orchestrator at merge (
 passed). The 85% is that nothing was run inside a real OpenCode (its section in the README says
 so). **Residual (READ, open):** the configured shell is not checked for EXISTENCE, so OpenCode's
 own fallback to the platform default for a shell that is not installed is not mirrored.
+**SUPERSEDED IN PART 2026-10-06 (the record above is kept as written):** `X4_OPENCODE_SHELL` no
+longer outranks the detected shell, it can only confirm it (F213), and the residual is fixed: an
+unresolvable configured shell is refused (F214).
 
 **RE-DERIVED BY:** `tests/test_opencode_plugin_node.py` -- `test_SHELL_decides_the_grammar`,
 `test_the_CONFIGURED_shell_beats_SHELL`,
 `test_TWIN_a_REFUSED_configured_shell_falls_back_to_the_default_NOT_to_SHELL`,
 `test_TWIN_a_config_without_a_shell_leaves_SHELL_in_charge`,
-`test_X4_OPENCODE_SHELL_overrides_config_and_SHELL`,
+`test_X4_OPENCODE_SHELL_can_only_CONFIRM_the_detected_shell` (it replaced `X4_OPENCODE_SHELL_overrides_config_and_SHELL` when the override became confirm-only, F213),
 `test_a_shell_OpenCode_refuses_falls_back_to_the_platform_default`,
 `test_no_SHELL_at_all_is_the_platform_default`,
 `test_a_cmd_SHELL_is_named_cmd_and_the_REAL_adapter_refuses_it_inert`,
 `test_TWIN_cmd_through_the_REAL_adapter_is_INERT`,
 `test_a_POWERSHELL_delete_under_a_pwsh_config_THROWS_through_the_real_guards`.
 
-## F177 — an exported root moved a mutating command off the acting toolkit's config · **DEFECT (measured)** · IN-ARC · confidence 90% · ✅ FIXED 2026-10-05 (fix lane FX-B2) · inherited `X4_CONFIG` ⏳ OPEN
+## F177 — an exported root moved a mutating command off the acting toolkit's config · **DEFECT (measured)** · IN-ARC · confidence 90% · ✅ FIXED 2026-10-05 (fix lane FX-B2) · inherited `X4_CONFIG` ✅ CLOSED 2026-10-06 (FX-B3, FX-B4)
 
 **Finding (delta review).** F160's fix made `x4refguard apply/remove`, `x4lock lock/unlock` and
 `bin/unpack-reference.sh` -- the 3 programs that change the system -- refuse an inherited
@@ -8502,8 +8534,29 @@ compare each root resolved WITH the environment against the acting toolkit's con
 difference refuses, naming both roots and the flag that chooses one (`--reference`, `--game`,
 `--registry`). Only when a config file is read: with none, the environment IS the configuration.
 `status` prints one line; `unpack-reference.sh` refuses the same way and also refuses an empty or
-unknown refguard state. **Open:** an inherited `X4_CONFIG` naming another toolkit's file is still
-honoured as explicit (F160's residual; no installer sets one).
+unknown refguard state. ~~**Open:** an inherited `X4_CONFIG` naming another toolkit's file is still
+honoured as explicit (F160's residual; no installer sets one).~~ **CLOSED 2026-10-06** (the
+record above is kept as written): `X4_CONFIG` was trusted as "this toolkit's config" by 3 Python
+mutating entry points and 1 bash one (`bin/unpack-reference.sh`); the commands are
+`x4refguard apply/remove`, `x4lock lock/unlock` and the unpack. Each now refuses while an inherited `X4_CONFIG` names a config
+outside the acting toolkit, or a file that does not exist (FX-B3 `b5087bc`, `2e34d3a`); `status`
+prints one notice line. **USER DECISION 2026-10-06: keep the refusal.** `--reference` lifts it
+for x4refguard, which acts on that one root; nothing lifts it for x4lock (its manifest locks
+the config `X4_CONFIG` picks) or for the unpack (FX-B4 `baeea35`: with `--reference` the
+foreign config still supplied `X4_GAME` and `X4_APPMANIFEST`, so the tree was filled from THE
+OTHER game -- MEASURED RED -- and 6 of the 8 keys the unpack reads have no flag). The refusal
+names the way out (clear `X4_CONFIG`).
+
+**RE-DERIVED BY (the `X4_CONFIG` part):** `tests/test_toolkit_binding.py` --
+`test_FXB3_inherited_X4_CONFIG_naming_A_makes_B_REFUSE_naming_both`,
+`test_FXB3_X4_CONFIG_naming_a_MISSING_file_REFUSES_too`,
+`test_FXB3_TWIN_X4_CONFIG_naming_B_s_OWN_config_is_not_refused`,
+`test_FXB3_TWIN_reference_flag_lifts_it_for_x4refguard`,
+`test_FXB3_x4lock_REFUSES_on_an_inherited_X4_CONFIG_and_flags_do_not_lift_it`; and
+`tests/test_unpack_reference_layer2.py` --
+`test_FXB3_an_X4_CONFIG_OUTSIDE_the_toolkit_REFUSES_and_writes_nothing`,
+`test_FXB4_reference_does_NOT_lift_the_X4_CONFIG_refusal_the_config_still_supplies_the_game`,
+`test_FXB4_TWIN_reference_with_X4_CONFIG_UNSET_proceeds`.
 
 **RE-DERIVED BY:** `tests/test_toolkit_binding.py` --
 `test_FXB2_inherited_X4_REFERENCE_makes_toolkit_B_REFUSE_naming_both`,
@@ -8579,7 +8632,7 @@ log dir and of each root are compared.
 **RE-DERIVED BY:** `tests/test_run_gates_logs.py::test_FXB2_a_log_dir_reached_through_a_LINK_into_the_game_REFUSES`
 (a real junction on Windows, a symlink elsewhere).
 
-## F182 — the profile-id walk covered Windows only and skipped an unreadable location in silence · **DEFECT (measured)** · IN-ARC · confidence 90% · ✅ FIXED 2026-10-05 (fix lane FX-B2)
+## F182 — the profile-id walk covered Windows only and skipped an unreadable location in silence · **DEFECT (measured)** · IN-ARC · confidence 90% · ✅ FIXED 2026-10-05 (fix lane FX-B2) · PARTIAL exit ✅ FIXED 2026-10-06 (FX-B3, FX-B4)
 
 **Finding (delta review).** `scan-identifiers.py` derives the machine's X4 profile ids (banned bare,
 never printed) by walking the known profile locations: 2 of them, Windows `Documents` and
@@ -8593,7 +8646,26 @@ the location, when one exists but cannot be read.
 `test_FXB2_an_UNREADABLE_location_makes_the_walk_say_PARTIAL`,
 `test_FXB2_TWIN_absent_locations_are_not_PARTIAL`.
 
-## F183 — a substituted command name drops the delete advisory below a root · **SCOPE (measured, open)** · confidence 90% · ⏳ OPEN
+**ADDENDUM 2026-10-06 (delta review, FX-B3 and FX-B4).** The fix SAID "PARTIAL" and still exited
+0 when nothing was found: a partial input walk reported clean (1 walk, 3 locations), the shape
+this register exists for. **Fix (`45efbf0`):** a PARTIAL walk with nothing found exits 3 (the
+history mode too); a finding still wins (exit 1); the unreadable list is per call, not
+module-global. **Then (`efb4b3c`):** the exit-3 advice "or name the id through X4_PROFILE" is
+dropped -- exit 3 stands whatever X4_PROFILE says, correctly: one named id says nothing of what
+an unreadable location may hold; and the note counted `is_dir()`, which is False for an
+unreadable location ("0 of 3 exist; PARTIAL -- 1 could not be read") and re-raised EPERM, so a
+macOS-style permission refusal crashed it after the walk. One classification feeds both. macOS
+itself: F228.
+
+**RE-DERIVED BY (addendum):** `tests/test_scan_identifiers_profile_id.py` --
+`test_FXB3_a_PARTIAL_walk_with_nothing_found_EXITS_3_not_0`,
+`test_FXB3_TWIN_the_same_scan_with_the_location_ABSENT_is_clean`,
+`test_FXB3_TWIN_a_FINDING_still_wins_over_PARTIAL`,
+`test_FXB3_the_unreadable_list_is_PER_CALL_not_module_global`,
+`test_FXB4_the_PARTIAL_verdict_does_not_advise_X4_PROFILE_which_cannot_lift_it`,
+`test_FXB4_the_note_counts_an_UNREADABLE_location_as_one_that_EXISTS`.
+
+## F183 — a substituted command name drops the delete advisory below a root · **SCOPE (measured)** · confidence 90% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
 
 **Lead (FX-DOC, 2026-10-05; re-measured by FX-DOC2 at c6fb158 with `x4guard check`, bash grammar,
 every root pinned to scratch, 6 probes):**
@@ -8613,6 +8685,21 @@ level below it the command reaches no rule and the advisory the plain spelling e
 the sandbox game folder was a scratch tree, not a real install. Open lead for the guard lane:
 treat a substituted verb with an operand inside an X4 folder at least as the plain delete is
 treated.
+
+**FIXED 2026-10-06 (fix lane FX-G4; the lead above is kept as written).** Reviewer G found the
+harder case beside it, PRE-ARC: `x=$(printf rm); $x -rf "<reference>"` was ALLOW (v3.3.1,
+f35ff82, c6fb158) while `x=rm; $x` denies (F111 covered only the literal value). **Fix
+(`b1e394f`):** a verb from a variable holding a substitution is an unresolved verb (deny at a
+root or inside `reference/`), and a substituted verb below the game root gets the X4-directory
+delete advisory back. Two in-lane false-advisory sources, each MEASURED over the 44,009-command
+replay and fixed before merge: a token after a `$(`/backtick in its segment is not a command
+position (`893a319`, 13 advisories), and the advisory's relative operands do not join the session
+folder (`64bce54`, 6 advisories; F218).
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (class `TestGOutSubstitutedVerb`:
+`test_a_variable_holding_a_substitution_is_an_unresolved_verb`,
+`test_a_substituted_verb_below_the_game_root_keeps_the_delete_advisory`,
+`test_TWIN_a_literal_verb_variable_or_an_operand_elsewhere_is_not_this_rule`).
 
 ## F184 — a root variable operand was its root for `cd` only, not for the write and delete rules · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-05 (fix lane FX-G2)
 
@@ -8846,3 +8933,377 @@ $P ...`) is not recognised. Accepted residual.
 `\`` is a literal backtick to bash, but the scanner reads it as opening a command substitution.
 The effect is an ADVISORY false positive only: text is judged as a command, never a command
 missed. Accepted.
+
+## F201 — `cmd /k` and `cmd /c cmd` read their program from stdin, and the guard did not · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (reviewer H, delta review).** F191 item 4 made bare `cmd` (no `/c`) read its stdin as a
+program. Two more forms do the same: `cmd /k <cmd>` runs its inline command and then reads stdin
+(MEASURED in Git Bash), and `cmd /c cmd` hands stdin to a child cmd that reads it. A deletion piped
+into either reached no rule. **Fix (`b1e394f`):** both are read as cmd programs; `/c` and `/r`
+with another child take no stdin program. Each reproduced RED end to end (protect-bash.sh, scratch
+roots, deny control) and at the facts level against e39f675; a named mutant in
+verify-hook-tests.py (re-anchored E4).
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (class `TestH1CmdKReadsStdin`:
+`test_cmd_k_reads_its_program_from_stdin_too`, `test_cmd_c_cmd_reads_stdin_through_the_child`,
+`test_TWIN_c_and_r_with_another_child_take_no_stdin_program`) and `scripts/test-hooks.sh` (the
+FX-G4 H1 row).
+
+## F202 — a root variable under a brace operator was not its root · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (reviewer H).** F184 made a root variable its root for every rule, but only in the plain
+`$X4_GAME` / `${X4_GAME}` spellings. Under a brace operator (`${X4_GAME:-/x}`, `${X4_REFERENCE%/}`,
+`:=`, ...) the operand was judged as text, and an unassigned root variable under `:-` was read as
+UNSET, so the operator's default was judged instead of the root. **Fix (`b1e394f`; fuzz follow-up
+`5c05e6f`: `${OTHER:-${X4_GAME}}`, another variable whose default is a root variable, is that
+root):** a root variable under any brace operator is its configured root; an unconfigured root
+still refuses a delete; another variable, or an assignment in the command, is not a root.
+Re-anchored: the two root-variable anchors in verify-hook-tests.py.
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (class `TestH2RootVariableUnderAnOperator`:
+`test_a_root_variable_under_a_brace_operator_is_its_root`,
+`test_an_unconfigured_root_under_an_operator_still_refuses_a_delete`,
+`test_TWIN_another_variable_or_an_assignment_in_the_command_is_not_a_root`).
+
+## F203 — an adapter judged a shell patch after an EXPANDED `cd` as a literal path · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (MEASURED by reviewer H).** `cd $X4_REFERENCE && codex --codex-run-as-apply-patch
+'...Add File: libraries/x.xml...'` (also `$env:X4_REFERENCE`, and `apply_patch <<EOF` after such a
+cd) was judged against `<cwd>/$X4_REFERENCE/libraries/x.xml`, a path inside nothing: ALLOW. The
+value the agent's shell gives the variable cannot be known in the adapter (the configured roots
+live in the bash guards, and a shell environment policy may differ). **Fix (`643b598`):** a `cd`
+target holding `$`, `%VAR%`, `~` or a substitution raises PatchParseError, which the caller turns
+into an inert refusal whose reason names the fix; single-quoted text stays literal. 16 refused
+forms, 3 literal twins.
+
+**RE-DERIVED BY:** `tests/test_patch_paths.py` -- `test_a_shell_patch_after_an_EXPANDED_cd_is_refused`,
+`test_TWIN_a_literal_cd_still_names_the_directory`.
+
+## F204 — the settings rule read only `env`: `X4_GUARD=off` in a hooks command switched a hook off · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06 (fix lane FX-G4; user decisions)
+
+**Finding (MEASURED by reviewer H).** F193's rule judged a `.claude` settings file's `env` block
+only. `X4_GUARD=off bash .../protect-bash.sh` written as a `hooks` COMMAND string switched that one
+hook off at the next launch and was allowed. **USER DECISION 2026-10-06 ("block X4_GUARD there"),
+fix `0da4749`:** the resulting content is refused when `X4_GUARD` or `X4_GUARD_CHECK` appears in any
+key or string (the `env` block is still read as before). RED against e39f675. **USER DECISION
+2026-10-06, `16d0ec5`:** the top-level `permissions` block is exempt -- a rule string such as
+`Bash(export X4_GUARD=off)` sets nothing; the same text in `env`, a hooks command or anywhere else
+is still denied. Residual: F220 (a patch is judged on its raw text).
+
+**RE-DERIVED BY:** `tests/test_settings_guard.py` --
+`test_X4_GUARD_ANYWHERE_in_the_file_is_denied_not_only_in_env`,
+`test_a_PERMISSIONS_rule_mentioning_X4_GUARD_is_allowed_the_same_text_elsewhere_is_not`.
+
+## F205 — a settings Edit whose `old_string` did not apply was allowed whatever it wrote · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (reviewer H, H-M1).** F193 judges an Edit on the RESULTING file. When the `old_string`
+did not occur in the file as the guard read it, there was no resulting file to judge, and the edit
+was allowed whatever its `new_string` wrote. **Fix (`0da4749`):** the `new_string` is then judged
+on its own; a non-matching edit without the key stays allowed. RED against e39f675.
+
+**RE-DERIVED BY:** `tests/test_settings_guard.py` --
+`test_an_edit_whose_old_string_does_not_apply_is_judged_on_its_new_text`.
+
+## F206 — a percent-encoded `file://` operand hid the game root · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (reviewer H, H-M3).** A `file://` operand was compared undecoded, so
+`file:///C:/Program%20Files%20(x86)/.../X4%20Foundations` named no root. **Fix (`b1e394f`):** the
+operand is percent-decoded before the path rules see it.
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` -- `test_a_percent_encoded_file_url_is_decoded`.
+
+## F207 — `takeown` of the reference tree reached no rule · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (reviewer H, H-M5).** Taking ownership of `reference/` lets the owner rewrite its ACL, so
+it lifts the Layer-2 deny as `icacls /setowner` does (F192), but `takeown /f <reference> [/r]` was
+allowed. **Fix (`b1e394f`):** it asks like the other lift forms; `takeown` elsewhere, or of an
+ancestor without `/r`, is not this rule.
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` -- `test_takeown_of_reference_lifts_its_deny`,
+`test_TWIN_takeown_elsewhere_or_of_an_ancestor_without_r`.
+
+## F208 — a `<<` shift inside arithmetic opened a heredoc and hid every later line · **DEFECT (measured)** · PRE-ARC · SECURITY · confidence 95% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (reviewer H, H5; present before 4.0).** `<<` inside `(( ))`, `for ((;;))`, `$[ ]`, `${ }`
+or an assignment subscript `a[ ]=` is a left SHIFT, but the heredoc-opener scan read it as a heredoc
+and treated every later line as its body: `rm -rf <game>` on line 2 was ALLOWED. A body ended by
+`EOF` followed by a backtick was not seen to end either. **Fix (`b1e394f`):** those regions are
+blanked for the opener scan, and `EOF` followed by a backtick ends a body. `5c05e6f` added six
+syntax-class mutators to fuzz-guard for exactly these regions (`(( ))`, `for ((;;))`, `$[ ]`,
+`a[ ]=`, `${x//<<EOF/}`, `EOF` + backtick); re-anchored E2 (`EOF)`).
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (classes `TestH5ShiftIsNotAHeredoc`,
+`TestH5BacktickTerminator`: `test_shift_in_arithmetic_command_subscript_or_expansion_opens_no_heredoc`,
+`test_TWIN_a_real_heredoc_after_or_beside_those_forms_still_opens`, `test_EOF_backtick_ends_the_body`,
+`test_TWIN_a_backtick_elsewhere_on_the_line_is_body`) and `scripts/fuzz-guard.py`.
+
+## F209 — git config from the environment can unforce `git clean`, and the guard did not see it · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (reviewer H, H6).** An unforced `git clean` is a no-op by default (`clean.requireForce`),
+so the wipe rules judge it as harmless. Git also reads configuration from the environment
+(`GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_n`, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_GLOBAL`, ...) and
+from `--config-env=...requireForce`, any of which can set `requireForce=false`; F192 covered only
+`-c clean.requireForce=false`. **Fix (`b1e394f`):** any of them, as a prefix or assigned anywhere in
+the command, makes `git clean` forced. The fuzz seed (`5c05e6f`) starts with `env`: a path glued
+onto an assignment is a command that never runs git (a mutant, not a bypass).
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (class `TestH6GitConfigFromTheEnvironment`:
+`test_git_config_env_forces_an_unforced_clean`, `test_TWIN_other_env_or_no_env_leaves_the_clean_unforced`).
+
+## F210 — what `echo`/`printf` prints into a shell is its program · **DEFECT (measured)** · PRE-ARC · SECURITY · confidence 90% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (reviewer H, H7; allowed at e39853f and in v3.3.1).** `echo rm -rf "<game>" | bash` (the
+words unquoted too) ran the deletion and was ALLOWED: text piped into a shell was not read as a
+program. **Fix (`b1e394f`):** what `echo`/`printf` prints into a shell is judged as its program; a
+printf format that cannot be reproduced is the inability path (ask). The fuzz run (`5c05e6f`) found
+that a quoted, ANSI-C or pathed `echo` left a quote residue that swallowed the program; fixed with a
+regression test.
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (class `TestH7H8TextPipedIntoAShell`:
+`test_echo_or_printf_piped_into_a_shell_is_its_program`,
+`test_TWIN_a_harmless_program_a_non_shell_or_a_script_argument_is_not`,
+`test_a_quoted_or_pathed_echo_is_still_the_producer`).
+
+## F211 — a process substitution run as the script was not read as a program · **DEFECT (measured)** · PRE-ARC · SECURITY · confidence 90% · ✅ FIXED 2026-10-06 for an echo/printf producer (fix lane FX-G4)
+
+**Finding (reviewer H, H8; allowed at e39853f and in v3.3.1).** `bash <(echo rm -rf <game>)` (and
+`sh`, `source`, `.` with a `<(...)`) runs what the substitution prints, and was ALLOWED. **Fix
+(`b1e394f`):** a process substitution that IS the script is its program. The fuzz run (`5c05e6f`)
+found `x) bash <(echo ...) ;;` read as an unclosed `<(` (an ask); fixed. **USER DECISION 2026-10-06
+(`16d0ec5`):** a producer other than echo/printf is allowed unjudged (F219); `bash -n <(...)`
+executes nothing and never asks or denies. Echo/printf producers stay fully judged.
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` --
+`test_a_process_substitution_run_as_a_script_is_its_program`.
+
+## F212 — the x4refguard lift rule asked on the toolkit's own `apply --toolkit "$X4_TOOLKIT"` · **DEFECT (measured)** · IN-ARC · confidence 90% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (reviewer H, H9).** `ee040bc` (F192) made an x4refguard action passed through a variable
+ask, by asking on ANY unresolved word in the call -- so the documented
+`x4refguard.py apply --toolkit "$X4_TOOLKIT"` asked too: an in-arc regression. **Fix (`b1e394f`):**
+only the ACTION position names the action; `remove` and an unresolved action still ask, a variable
+in an option value does not.
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` (class `TestH9RefguardActionPosition`:
+`test_an_unresolved_ACTION_asks`, `test_TWIN_a_variable_in_an_OPTION_value_is_not_the_action`).
+
+## F213 — following the OpenCode refusal's advice made cmd commands judged as bash · **DEFECT (measured)** · IN-ARC · confidence 90% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (MEASURED by reviewer G, G-I1).** For a shell it cannot judge (`cmd`) the plugin refused
+every bash call and said "set X4_OPENCODE_SHELL". Since F176's fix the override BEAT the detected
+shell, so following that advice made the guards judge a cmd command as bash: `del /s /q
+<reference>\libraries` and `rmdir /s /q <reference>` were allowed under `--shell bash`. **Fix
+(`a0af3c8`):** `X4_OPENCODE_SHELL` no longer replaces the detected grammar. When it disagrees with
+the shell derived from OpenCode's `shell` config (or `$SHELL`) every bash call is refused (inert);
+when it agrees it changes nothing. It remains the installers' declaration for rendering the
+OpenCode skills for bash on Windows. The refusal now says to set OpenCode's own `shell` to pwsh,
+powershell or bash.
+
+**RE-DERIVED BY:** `tests/test_opencode_plugin_node.py` --
+`test_X4_OPENCODE_SHELL_can_only_CONFIRM_the_detected_shell`,
+`test_TWIN_an_AGREEING_X4_OPENCODE_SHELL_changes_nothing`, `test_SHELL_decides_the_grammar`.
+
+## F214 — an unresolvable configured shell: OpenCode falls back, the plugin did not · **DEFECT (read)** · IN-ARC · confidence 85% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (reviewer G, G-M2; READ OpenCode `packages/core/src/shell.ts` `select()`).** When the
+configured `shell` (or `$SHELL`) does not resolve to a program, OpenCode silently runs its platform
+default (Windows `shell: zsh` without zsh runs pwsh), while the plugin judged the configured one.
+**Fix (`a0af3c8`):** the plugin checks resolvability (rooted: a file; bare: PATH/PATHEXT; Windows
+`bash`: Git Bash) and refuses rather than guess the fallback.
+
+**RE-DERIVED BY:** `tests/test_opencode_plugin_node.py` --
+`test_a_shell_that_does_not_RESOLVE_is_refused_not_guessed`.
+
+## F215 — the OpenCode plugin's configured shell was shared across instances · **DEFECT (inferred, then tested)** · IN-ARC · confidence 85% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (reviewer G, G-M3, INFERRED).** `configShell` was a module-global, so in one process one
+OpenCode instance's config decided the grammar for every other. **Fix (`a0af3c8`):** per plugin
+instance; the node driver gained `instances` to test it.
+
+**RE-DERIVED BY:** `tests/test_opencode_plugin_node.py` -- `test_the_configured_shell_is_PER_INSTANCE`.
+
+## F216 — a conformance re-run that failed counted as checked · **DEFECT (measured)** · IN-ARC · confidence 90% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (reviewer G, G-M4).** `x4guard conformance` re-runs each reference deny/ask under
+`X4_GUARD_CHECK` to tell an inert verdict from a checked one. Only exit 2 was special: exit 1 or 127
+fell back to the first run's verdict and counted as checked -- the F174 shape, one step later.
+**Fix (`56866be`):** any other non-zero re-run is an error, like a failing first run. Twins: re-run
+exit 0 keeps the deny, exit 2 stays inert.
+
+**RE-DERIVED BY:** `tests/test_x4guard_conformance_cli.py` --
+`test_reference_the_GUARD_CHECK_rerun_exit_decides`.
+
+## F217 — `verify-hook-tests`' silent? column found no test for any predicate · **DEFECT (measured)** · VERIFIER · confidence 95% · ✅ FIXED 2026-10-06 (fix lane FX-G4)
+
+**Finding (MEASURED by FX-G4's coverage run).** The silent? column (which test must NOT fire for each
+predicate) read NONE for all 32 of 32 predicates. `failed_tests()` returns `Class.method` since F197
+(`a2c6590`), while `test_sources()` is keyed by the bare method name (F196), so the lookup found no
+source for any failing test. Present at e39f675 -- a defect in the CHECKER, not in any guard.
+**Fix (`141bb8c`):** the
+lookup uses the method part. The same run found the mutant "G-OUT: only at a real command position"
+no longer caught after `64bce54` (the unseeded join hid the twin's operand); the twin gained an
+absolute operand inside the fragment (red with the clause removed, green with it).
+
+**RE-DERIVED BY:** `scripts/verify-hook-tests.py` (its silent? lookup) and
+`.claude/hooks/test_hook_facts.py` -- `test_TWIN_a_relative_operand_does_not_join_the_SESSION_directory`.
+
+## F218 — the restored F183 advisory joined substitution debris to the session folder · **DEFECT (measured)** · IN-LANE · confidence 95% · ✅ FIXED 2026-10-06 (fix lane FX-G4, before merge)
+
+**Finding (MEASURED over the 44,009-command replay).** F183's fix gave a substituted verb below the
+game root the X4-directory delete advisory back. Its operands joined the SESSION cwd -- the game root
+in the replay -- so a substitution fragment the segmenter read as a verb (`C=$(jq -r '.x' < f); bash
+-n -c "$C"`, `$([ "$(git ...)" = ...`) put its debris operand inside the game folder: 6 false
+advisories. Never on master (fixed inside the lane). **Fix (`64bce54`):** the advisory's operands
+are judged unseeded (as lane F's other ask-or-advise rules that name no path); `cd <game> && $(echo
+rm) -rf libraries` still advises. Twin: the replay's own shape (red with the seed).
+
+**RE-DERIVED BY:** `.claude/hooks/test_hook_facts.py` --
+`test_TWIN_a_relative_operand_does_not_join_the_SESSION_directory`.
+
+## F219 — a process substitution from another producer is run unjudged · **SCOPE (measured, accepted)** · confidence 90% · ⏳ OPEN (USER DECISION 2026-10-06)
+
+**Accepted residual of F211.** A process substitution run as a script whose producer is not
+`echo`/`printf` (`bash <(curl ...)`, `source <(sed -n ... f.sh)`) is allowed unjudged: what it
+prints cannot be known before it runs, as with running a script file the guards cannot see into.
+Judging it as the inability path asked on 4 of the 44,009 replay commands, all ordinary work
+(reported by FX-G4); **USER DECISION 2026-10-06:** allow them. `bash -n <(...)` executes nothing.
+
+## F220 — a settings patch is judged on its raw text, so a harmless `permissions` mention is denied · **SCOPE (read, accepted)** · confidence 80% · ⏳ OPEN
+
+**Accepted residual of F204 (reported by FX-G4, not re-measured here).** The file-edit tools are
+judged on the RESULTING settings file, where the top-level `permissions` block is exempt. A
+Codex/OpenCode patch to a `.claude` settings file is judged on its raw text, so a patch adding a
+`permissions` entry that merely mentions `X4_GUARD` is still DENIED. A false deny on a rare edit,
+never a missed one; the remedy is the file-edit tool.
+
+## F221 — four ways to weaken the guards through settings or the `.claude` tree · **SCOPE (measured, open)** · confidence 90% · ⏳ OPEN (USER DECISION 2026-10-06: record only for v4.0)
+
+**Finding (MEASURED by reviewer H, delta review; every probe allowed).** (a) `"disableAllHooks":
+true` in a Claude Code settings file switches every hook off. (b) `X4_CONFIG`, `X4_GAME`,
+`X4_PYTHON` or `PATH` in a settings `env` block reaches every hook, so it can move every root (or
+the interpreter the guards run under) away from what they protect. (c) A Write through a directory
+junction to `.claude` (`mklink /J jl .claude`, then a Write to `jl/settings.json`) lands in `.claude`
+under a path no rule names. (d) A shell REPLACEMENT of `.claude` (`mv <dir> .claude`, `cp -r
+x/.claude .`, `ln -s` onto `settings.json`) was allowed. **USER DECISION 2026-10-06:** record only; not fixed in 4.0. What still holds: the OS-level
+`reference/` protection, once applied, blocks a delete inside it whatever the guards do; and the
+session start names a settings file that sets `X4_GUARD` (F193).
+
+## F222 — hints named a command that refuses in the case they were printed for · **DEFECT (measured)** · IN-ARC · confidence 90% · ✅ FIXED 2026-10-06 (FX-B3, FX-B4, FX-Z)
+
+**Finding (reviewers F and I, delta review; every case run against its refusal).** The 4.0 refusals
+(F160, F177, `X4_CONFIG`) made several printed hints commands that cannot run where they are
+printed. `x4doctor`'s `layer2.reference` said `apply` for a tree without `.unpacked-and-locked`,
+which `apply` refuses (FX-B3 `c412708`). Its unpack hint had no `--reference`, refused under an
+exported `X4_REFERENCE` differing from the config, and said nothing of a foreign `X4_CONFIG`, which
+the unpack refuses whatever the flags (FX-B4 `892970c`). `unpack-reference.sh`'s lift steps and its
+no-python, failed-apply and unreadable-state hints were relative (`python scripts/x4refguard.py
+remove`, `bash bin/unpack-reference.sh`): runnable only from the toolkit folder, refused by a foreign
+`X4_TOOLKIT` (FX-B4 `3e4b404`). And (FX-Z, MEASURED RED at 4d92732) `x4doctor`'s
+`python ".../x4refguard.py" apply` refused "name DIFFERENT roots" under an exported `X4_REFERENCE`
+and "names a config OUTSIDE this toolkit" under a foreign `X4_CONFIG` (`c13afcf`), while the
+stale-reference session message gave relative commands (`14becad`). **Fix:** every hint is an
+absolute command with `--toolkit` and `--reference` naming the tree just judged; where no flag can
+lift a refusal, the hint says to clear `X4_CONFIG` first (bash and PowerShell spellings).
+
+**RE-DERIVED BY:** `tests/test_x4doctor.py` -- `test_FXB3_layer2_WITHOUT_the_sentinel_says_UNPACK_not_apply`,
+`test_FXB4_the_unpack_hint_names_the_tree_the_doctor_JUDGED`,
+`test_FXB4_an_inherited_FOREIGN_X4_CONFIG_hint_says_clear_it_FIRST`,
+`test_FXZ_the_apply_hint_RUNS_under_an_exported_X4_REFERENCE`,
+`test_FXZ_the_apply_hint_RUNS_under_a_FOREIGN_X4_CONFIG`,
+`test_FXZ_TWIN_a_hint_WITHOUT_the_flags_REFUSES_under_the_same_export` (the instrument can go red);
+`tests/test_unpack_reference_layer2.py` -- `test_FXB4_the_LIFT_steps_are_absolute_commands_with_toolkit`,
+`test_FXB4_a_FAILED_apply_hint_is_an_absolute_command_with_toolkit`,
+`test_FXB4_the_NO_PYTHON_hint_is_an_absolute_command_with_toolkit`,
+`test_FXB4_the_UNREADABLE_layer2_hint_is_an_absolute_command_with_toolkit`; and `scripts/test-hooks.sh`
+(the three stale-reference rows).
+
+## F223 — the installers took an inherited root variable for a destination the user named · **DEFECT (measured)** · IN-ARC · confidence 90% · ✅ FIXED 2026-10-06 (FX-B2, FX-B3)
+
+**Finding (delta review).** Both installers read two root variables as a destination: `X4_TOOLKIT`
+(the separate layout) and `X4_GAME` (the in-game layout). An exported value was treated as one the
+user had NAMED, so `--yes` (or no terminal) installed into whatever the shell happened to carry, and
+the over-existing refusal offered a rerun line for it. 2 of 2 such variables. **Fix:** FX-B2
+`d524bf4` (`X4_TOOLKIT`) and FX-B3 `0255bc3` (`X4_GAME`): an inherited value is a default, said out
+loud; `--yes`/no terminal refuses naming its source; no rerun line is offered for it; `--method
+global` refuses an inherited `X4_TOOLKIT` naming another toolkit; an explicit flag proceeds.
+
+**RE-DERIVED BY:** `tests/test_install_over_existing.py` --
+`test_FXB2_3_an_INHERITED_X4_TOOLKIT_is_not_a_named_destination`,
+`test_FXB2_3_TWIN_an_explicit_toolkit_with_an_inherited_one_proceeds`,
+`test_FXB3_an_INHERITED_X4_GAME_is_not_a_named_in_game_destination`,
+`test_FXB3_TWIN_an_explicit_game_with_an_inherited_X4_GAME_proceeds`.
+
+## F224 — bash and Python read different files for the same `X4_CONFIG` spelling · **DEFECT (measured)** · IN-ARC · confidence 95% · ✅ FIXED 2026-10-06 (fix lane FX-B4)
+
+**Finding (reviewer I; 6 of 16 spellings disagreed).** The bash loader tested the raw `X4_CONFIG`
+with `-f`, while Python opens the path the OS resolves: `x4-paths.env/` and, on Windows,
+`x4-paths.env.` and `x4-paths.env ` were READ by every Python tool and "missing" to every guard,
+which then fell back to the default reference root -- the two halves of the toolkit configured from
+different files (the F151 shape). **Fix (`e69c8fb`):** the bash loader takes the spelling Python
+opens (trailing separators; on Windows trailing dots and spaces), only when that is a file, and
+`X4_CONFIG` carries it, so the guards' name checks see the file actually read. 0 of 16 disagree
+after; every clause mutation-killed.
+
+**RE-DERIVED BY:** `tests/test_config_precedence_agrees.py` --
+`test_FXB4_both_loaders_read_the_SAME_file_for_every_X4_CONFIG_spelling`; and
+`tests/test_unpack_reference_layer2.py` -- `test_FXB4_the_unpack_and_python_AGREE_on_every_X4_CONFIG_spelling`.
+
+## F225 — the unpack turned a relative path into `/<name>` · **DEFECT (measured)** · IN-ARC · confidence 90% · ✅ FIXED 2026-10-06 (fix lane FX-B4)
+
+**Finding (MEASURED by FX-B4 for reviewer I).** `bin/unpack-reference.sh`'s `_x4_canon` made a bare
+relative path absolute at `/`: `cd <toolkit>; X4_CONFIG=x4-paths.env bash bin/unpack-reference.sh`
+was refused as a foreign config (Python accepts it), and `X4_REFERENCE=refrel` was refused as
+DIFFERENT from the config's own tree while that tree did not exist. **Fix (`e69c8fb`):** relative
+paths resolve against the cwd; the check judges the file the loader read; on Windows the result is
+one spelling (`pwd -P` says `/tmp/...` for `C:/...Temp` and `/c/...` for `/c/...Temp`, MEASURED).
+Residual leads: F229.
+
+**RE-DERIVED BY:** `tests/test_unpack_reference_layer2.py` --
+`test_FXB4_an_inherited_RELATIVE_X4_REFERENCE_is_the_tree_it_names`.
+
+## F226 — `x4doctor` read a moved reference tree as "not unpacked yet" · **DEFECT (measured)** · IN-ARC · confidence 85% · ✅ FIXED 2026-10-06, PARTIAL (fix lane FX-B4)
+
+**Finding (reviewer I).** x4refguard reports a missing tree as "does not exist (not unpacked yet, or
+renamed or moved)": it cannot tell. `x4doctor`'s `roots.reference` and `layer2.reference` said "not
+unpacked" (TODO: run the ~27 GB unpack) regardless -- for a tree the user had moved, a needless
+re-unpack into the old place. **Fix (`892970c`):** TODO only when nothing suggests a move; UNKNOWN
+(exit 3), in x4refguard's words, when `<toolkit>/.claude/.reference-buildid` exists (written only
+after a finished unpack) or a finished unpack (its sentinel) sits at `<toolkit>/reference` while the
+config names somewhere else. **PARTIAL:** a move that leaves neither signal still reads TODO.
+
+**RE-DERIVED BY:** `tests/test_x4doctor.py` --
+`test_FXB4_a_MOVED_tree_is_UNKNOWN_not_a_fresh_unpack__buildid_marker`,
+`test_FXB4_a_MOVED_tree_is_UNKNOWN__a_finished_unpack_at_the_DEFAULT_place`,
+`test_FXB4_TWIN_an_empty_default_folder_is_no_evidence_of_a_move`.
+
+## F227 — CI install legs wrote the Windows runner's real user environment · **DEFECT (measured)** · IN-ARC · confidence 90% · ✅ FIXED 2026-10-06 (FX-B2, FX-B3, FX-B4)
+
+**Finding (delta review).** The installers set `X4_TOOLKIT` at OS level (Windows: `HKCU\Environment`
+through `scripts/x4-userenv.ps1`). A GitHub Windows runner keeps HKCU across steps, so a later
+install leg inherited an earlier leg's toolkit -- the F160 shape inside CI. Fixed in three passes as
+each set of legs was found: the separate PowerShell legs (FX-B2 `d524bf4`), the in-game and global
+PowerShell legs (FX-B3 `6a209da`), and the 2 of 2 bash legs with no `if:`, which also run on Windows
+(FX-B4 `572fc57`). **Fix:** each leg exports its own `X4_INSTALL_ENV_REGKEY` under `X4ToolkitTests`
+(the seam `x4-userenv.ps1` honours; nothing reads it on Linux) and drops `X4_TOOLKIT`.
+
+**RE-DERIVED BY:** `tests/test_install_over_existing.py` --
+`test_FXB3_every_CI_powershell_install_leg_is_ISOLATED`,
+`test_FXB4_every_CI_BASH_install_leg_that_runs_on_Windows_is_ISOLATED_too` (every install step not
+gated to Linux, with keys unique across bash and PowerShell legs).
+
+## F228 — a macOS privacy-protected Documents folder may make the identifier scan PARTIAL · **SCOPE (inferred, open)** · confidence 60% · ⏳ OPEN
+
+**Lead (FX-B4, unverified on a Mac).** macOS can refuse a process access to `~/Documents` (TCC)
+without the folder being missing. `scan-identifiers.py` would then report that location unreadable,
+PARTIAL, exit 3 (F182), on a machine with nothing to find. It fails closed (never "clean"), and a
+permission refusal no longer crashes the note (`efb4b3c`, tested with a simulated EPERM:
+`test_FXB4_a_PERMISSION_refusal_like_macOS_privacy_is_PARTIAL_and_never_crashes`). Open until run on
+a Mac.
+
+## F229 — two false refusals in the root comparisons, both failing closed · **SCOPE (reported, open)** · confidence 60% · ⏳ OPEN
+
+**Leads (reported by FX-B4, not re-measured here).** (1) `_x4_canon` in `bin/unpack-reference.sh`
+resolves `..` lexically in a tail that does not exist yet, which can refuse a path that names the
+same tree. (2) An `X4_REFERENCE` ending in a dot (`<tree>.`) is reported DIFFERENT
+from the same tree in the config, although Windows opens both as one folder (the F185 alias). Each
+is a refusal printing both paths, never a wrong action. Open leads.
