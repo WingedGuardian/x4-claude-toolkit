@@ -36,8 +36,9 @@ it exists to suppress. Only `path:line` is ever printed.
 Exit codes: 0 clean - 1 identifiers found - 2 cannot run (so a failure to scan
 can never be mistaken for a clean scan) - 3 nothing found, but the profile-id walk
 was PARTIAL: a known X4 profile location exists and could not be read, so a profile
-id kept there was never banned. NOT clean (FX-B3); fix the location's permissions,
-or name the id through X4_PROFILE, and re-run.
+id kept there was never banned. NOT clean (FX-B3); make the location readable and
+re-run. X4_PROFILE does not lift it (FX-B4): naming one id says nothing about the
+others an unreadable location may hold.
 """
 
 from __future__ import annotations
@@ -179,7 +180,11 @@ def profile_ids_from(values: list[str], docs_dirs: list[Path],
         except FileNotFoundError:
             continue                       # not this platform's location: nothing to read
         except OSError:
-            if unreadable is not None:     # exists, could not be read: the walk is PARTIAL
+            # Exists, could not be read: the walk is PARTIAL. macOS (UNVERIFIED -- no Mac here):
+            # a privacy-protected ~/Documents answers EPERM, and if it does so for a folder
+            # that does not exist too, an absent location cannot be told from a hidden one
+            # without that access. It then fails CLOSED here (exit 3), never clean.
+            if unreadable is not None:
                 unreadable.append(d)
             continue
     return out - PLACEHOLDER_IDS
@@ -190,7 +195,12 @@ def profile_walk_note(unreadable: list[Path]) -> str:
     but could not be read (FX-B2: such a location was skipped in silence). *unreadable* is
     the list THAT walk filled (`profile_ids_from`)."""
     dirs = _profile_docs_dirs()
-    present = [d for d in dirs if d.is_dir()]
+    # FX-B4: ONE classification. It counted `d.is_dir()`, which is False for a location the
+    # walk could not read -- "0 of 3 exist; PARTIAL -- 1 could not be read" -- and which
+    # RE-RAISES EPERM (pathlib ignores only ENOENT/ENOTDIR/EBADF/ELOOP), so a permission
+    # refusal crashed the note after the walk had recorded it. os.path.isdir never raises.
+    seen = {str(d) for d in unreadable}
+    present = [d for d in dirs if str(d) in seen or os.path.isdir(d)]
     note = ("profile-id walk: %d of %d known profile location(s) exist here"
             % (len(present), len(dirs)))
     if unreadable:
@@ -205,10 +215,13 @@ def derived_profile_ids(unreadable: list[Path] | None = None) -> set[str]:
 
 def _partial_verdict(unreadable: list[Path]) -> int:
     """Exit 3 and why, for a scan that found nothing over a PARTIAL profile-id walk."""
+    # FX-B4 (reviewer I): it also advised "or name the id through X4_PROFILE" -- and exit 3
+    # stood regardless, correctly: one named id says nothing about the others the unreadable
+    # location may hold. Only the remedy that works is named.
     print(f"::error::nothing found, but the profile-id walk was PARTIAL: {len(unreadable)} "
           f"known profile location(s) exist and could not be read, so a profile id there was "
-          f"never banned. This is NOT a clean result (exit 3). Fix the permissions, or name "
-          f"the id through X4_PROFILE, and re-run.")
+          f"never banned. This is NOT a clean result (exit 3). Make the location(s) readable "
+          f"and re-run.")
     return 3
 
 
