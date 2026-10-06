@@ -4355,6 +4355,65 @@ class TestG2ARootVariableOperandIsItsRoot(unittest.TestCase):
         self.assertFalse(F('cat "$X4_REFERENCE/libraries/wares.xml" > out.txt')["writes_reference"])
 
 
+class TestG2WindowsPathAliases(unittest.TestCase):
+    """FX-G2 item 3 (v4.0.0 delta review): Windows opens `x.`, `x `, `x::$DATA`, `x:alt`,
+    `dir::$INDEX_ALLOCATION` and `dir./` as the real x / dir (MEASURED 2026-10-05 on NTFS:
+    Python wrote INTO x4-paths.env through each), and an 8.3 short name as its long name --
+    while norm() compared every one equal to nothing."""
+
+    def test_trailing_dots_spaces_and_stream_suffixes_are_the_file(self):
+        base = H.norm(REF + "/libraries/wares.xml")
+        for alias in (REF + "./libraries/wares.xml", REF + " /libraries/wares.xml",
+                      REF + "/libraries/wares.xml.", REF + "/libraries/wares.xml. . ",
+                      REF + "/libraries/wares.xml::$DATA", REF + "/libraries/wares.xml:alt",
+                      REF + "::$INDEX_ALLOCATION/libraries/wares.xml",
+                      REF.replace("/", BS) + "." + BS + "libraries" + BS + "wares.xml"):
+            with self.subTest(alias=alias):
+                self.assertEqual(H.norm(alias), base)
+
+    def test_the_rules_see_the_aliases(self):
+        self.assertTrue(F('echo x > "' + REF + './libraries/w.xml"')["writes_reference"])
+        self.assertTrue(F(D + ' -rf "' + REF + '."')["rm_targets_reference"])
+        self.assertTrue(F(D + ' -rf "' + GAME + '. "')["rm_hits_game"])
+        self.assertTrue(F("cp a '" + REF + "/w.xml::$DATA'")["writes_reference"])
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_dots_INSIDE_a_name_and_dot_segments_are_kept(self):
+        """Clause: TRAILING only. `a.b`, `reference..old` and `...` are other names."""
+        self.assertEqual(H.norm("/c/a.b/x"), "/c/a.b/x")
+        self.assertFalse(F('echo x > "' + REF + '..old/w.xml"')["writes_reference"])
+        self.assertEqual(H.norm("/c/a/.../b"), "/c/a/.../b")
+        self.assertEqual(H.norm("/c/a/./b/../d"), "/c/a/d")
+
+    def test_TWIN_a_url_scheme_colon_is_not_a_stream(self):
+        """Clause: the colon is IN a component, not a `scheme://`."""
+        self.assertEqual(H.norm("https://a/b"), "https://a/b")
+
+    def test_TWIN_a_sibling_is_still_not_the_root(self):
+        self.assertFalse(F('echo x > "' + REF + 'x/w.xml"')["writes_reference"])
+
+    @unittest.skipUnless(os.name == "nt", "8.3 short names exist only on Windows")
+    def test_an_8dot3_short_name_is_its_long_name(self):
+        import ctypes
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            longdir = os.path.join(td, "A Long Folder Name For Short")
+            os.makedirs(longdir)
+            buf = ctypes.create_unicode_buffer(32768)
+            ctypes.windll.kernel32.GetShortPathNameW(longdir, buf, 32768)
+            sdir = buf.value
+            if "~" not in os.path.basename(sdir):
+                self.skipTest("8.3 name generation is disabled on this volume")
+            # the existing prefix resolves; a tail that does not exist yet is kept
+            got = H.long_name(sdir + BS + "new" + BS + "f.xml")
+            self.assertEqual(H.norm(got), H.norm(longdir + "/new/f.xml"))
+            roots = dict(ROOTS, reference=longdir.replace(BS, "/"))
+            payload = {"tool_input": {"command": 'echo x > "' + sdir.replace(BS, "/") + '/w.xml"'}}
+            self.assertTrue(H.facts(payload, roots)["writes_reference"])
+            # TWIN: a path with no `~<digit>` is returned untouched (no syscall)
+            self.assertEqual(H.long_name(longdir + "/x"), longdir + "/x")
+
+
 def load_tests(loader, standard_tests, pattern):
     """unittest.main() collects TestCase SUBCLASSES ONLY, so every module-level
     `def test_*` in this file was invisible to it.

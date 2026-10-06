@@ -65,6 +65,65 @@ _PROVIDER = re.compile(r"^(microsoft[.]powershell[.]core/)?filesystem::")
 _SLASHES = re.compile(r"/{2,}")
 
 
+def _win_alias(s: str) -> str:
+    """Each `/`-separated component as WINDOWS opens it: an NTFS stream suffix dropped
+    (`x::$DATA` IS x, `dir::$INDEX_ALLOCATION` IS dir, `x:alt` is a stream OF x) and trailing
+    dots and spaces dropped (`reference.` IS reference). `.`, `..` and an all-dot/space
+    component are kept for normpath / as written.
+
+    FX-G2 item 3, MEASURED 2026-10-05 on NTFS: Python wrote INTO `x4-paths.env.`,
+    `x4-paths.env `, `x4-paths.env::$DATA` and `<dir>./file` -- each the real file -- while
+    every guard compared them equal to nothing. GetFullPathNameW strips a final component's
+    trailing dots AND spaces but only ONE trailing dot of an intermediate one; this strips
+    all of both everywhere, the conservative superset (a folder genuinely named `a ` is
+    judged as `a`). Not Windows-gated: on POSIX `foo.` is a different file, and reading it
+    as `foo` can only make a rule fire, never stop one."""
+    out = []
+    for n, c in enumerate(s.split("/")):
+        if c and c not in (".", ".."):
+            i = c.find(":")
+            # Not in the FIRST component of a relative token: there a colon is a drive-relative
+            # `C:x` or a command NAME (verb() reads names through norm -- `C:toolsrm` must stay
+            # that word, test_an_UNQUOTED_windows_path_is_not_that_command_at_all). A relative
+            # OPERAND reaches the rules joined to its directory, i.e. absolute, so it is covered.
+            if i > 0 and n > 0:
+                c = c[:i]
+            c = c.rstrip(". ") or c
+        out.append(c)
+    return "/".join(out)
+
+
+_SHORT_NAME = re.compile(r"~[0-9]")
+_MSYS_DRIVE = re.compile(r"^/([A-Za-z])(/|$)")
+
+
+def long_name(p: str) -> str:
+    """An 8.3 SHORT name (`C:/PROGRA~2/.../X4FOUN~1`) as its long form, so it compares equal
+    to the configured root. FX-G2 item 3, MEASURED 2026-10-05: this machine's game root has
+    the short form `C:/PROGRA~2/Steam/STEAMA~1/common/X4FOUN~1`, and `rm -rf` of it reached no
+    rule (the name backstop reads `x4 foundations`). GetLongPathNameW answers only for a path
+    that EXISTS, so the longest existing prefix is resolved and the rest kept as written.
+    One syscall per prefix, and only for a path carrying `~<digit>` on Windows: every other
+    path returns at the regex. Any failure returns the path unchanged (today's verdict)."""
+    if os.name != "nt" or not p or not _SHORT_NAME.search(p):
+        return p
+    try:
+        import ctypes
+        w = _MSYS_DRIVE.sub(lambda m: m.group(1) + ":/", p.replace(chr(92), "/"))
+        parts = w.split("/")
+        buf = ctypes.create_unicode_buffer(32768)
+        for i in range(len(parts), 0, -1):
+            head = "/".join(parts[:i])
+            if not _SHORT_NAME.search(head):
+                return p
+            n = ctypes.windll.kernel32.GetLongPathNameW(head, buf, 32768)
+            if 0 < n < 32768:
+                return "/".join([buf.value.replace(chr(92), "/")] + parts[i:])
+    except Exception:
+        pass
+    return p
+
+
 def norm(p: str) -> str:
     """Lowercase, backslashes to slashes, drive dialect unified, dot segments resolved.
 
@@ -114,7 +173,7 @@ def norm(p: str) -> str:
     # normalise it. The extended-length rewrite above emits `//` for that reason.
     if "://" not in s:
         head, rest = (s[:2], s[2:]) if s.startswith("//") else ("", s)
-        s = head + _SLASHES.sub("/", rest)
+        s = head + _SLASHES.sub("/", _win_alias(_SLASHES.sub("/", rest)))
     # Only canonicalise something that is actually a path. normpath would happily
     # rewrite "https://a/b" to "https:/a/b".
     if "://" not in s and ("/./" in s or "/../" in s or s.endswith(("/.", "/.."))):
@@ -3913,7 +3972,8 @@ def facts(payload: dict, roots: dict) -> dict:
                 # `\"$G\"` as a relative path there -- 3 hard denies on probe harnesses and
                 # one-liners, every one a token no shell would treat as that path.
                 d = c_old if (_DEBRIS.search(r) or _DEVICE.match(r)) else c_cwd
-                out.append((r if unres else join_cwd(d, r), unres, r))
+                # An 8.3 short name is its long name (FX-G2 item 3; see long_name).
+                out.append((r if unres else long_name(join_cwd(d, r)), unres, r))
         return out
 
     rm_t, copy_t, redir_t, mv_src = [], [], [], []
@@ -4405,7 +4465,7 @@ def main() -> int:
         for line in head.splitlines():
             if "\t" in line:
                 k, v = line.split("\t", 1)
-                roots[k.strip()] = v.strip()
+                roots[k.strip()] = long_name(v.strip())   # a short-name ROOT too (FX-G2)
     try:
         payload = json.loads(raw)
     except ValueError:

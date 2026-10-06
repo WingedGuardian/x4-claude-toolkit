@@ -81,6 +81,11 @@ if [ "$FP_OK" != 1 ]; then
   exit 0
 fi
 [ -z "$FILE_PATH" ] && exit 0
+# The path AS WINDOWS OPENS IT, before any rule reads it (FX-G2 item 3): `x4-paths.env.`,
+# `x4-paths.env::$DATA`, `<ref>./libraries/x`, `C:/PROGRA~2/.../X4FOUN~1/...` each ARE the
+# protected file, and every NAME test below (the config name, `X4 Foundations/`, `.cat`) reads
+# the path as written. MEASURED: 11 of 17 such writes were allowed. See x4_winpath.
+x4_winpath "$FILE_PATH"; FILE_PATH="$_X4_WP"
 
 deny() { VERDICT=1; emit deny "$1"; exit 0; }
 # advise <reason> -- ALLOW, and explain to CLAUDE. Added 2026-08-29 when the user

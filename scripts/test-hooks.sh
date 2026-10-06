@@ -524,7 +524,7 @@ else
   ok "the suite left nothing behind in the caller directory"
 fi
 
-EXPECT=234
+EXPECT=253
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -1083,6 +1083,40 @@ decide deny  protect-bash.sh "$(cj "echo x > '$X4_CONFIG'")"       "redirect int
 decide deny  protect-bash.sh "$(cj "echo x > \"\$X4_CONFIG\"")"    "redirect into \$X4_CONFIG, by the variable: denied (FX-G2)"
 unset X4_CONFIG X4_TOOLKIT CLAUDE_PROJECT_DIR
 eval "$_cfg_saved"
+
+# =============================================================================
+# WINDOWS PATH ALIASES (FX-G2 item 3, v4.0.0 delta review)
+# =============================================================================
+# Windows opens `x.`, `x `, `x::$DATA` and `dir./x` as the real file, and an 8.3 short name as
+# its long name. MEASURED 2026-10-05: Python wrote INTO x4-paths.env through the first three,
+# and 11 of 17 protect-files probes (19 of 28 overall) were ALLOWED.
+echo; echo "=== Windows path aliases: trailing dot/space, stream suffix, 8.3 short name ==="
+_wa_saved="$(export -p | grep -E '^declare -x (X4_[A-Z0-9_]*|CLAUDE_PROJECT_DIR)=')"
+_wt="$SBX_TMP/aliastk"; mkdir -p "$_wt/reference/libraries" "$_wt/A Long Game Folder Name/extensions"
+: > "$_wt/x4-paths.env"
+export X4_TOOLKIT="$_wt" X4_REFERENCE="$_wt/reference" X4_GAME="$_wt/A Long Game Folder Name" \
+       X4_CONFIG="$_wt/x4-paths.env" CLAUDE_PROJECT_DIR="$_wt"
+decide deny  protect-files.sh "$(fj "$_wt/x4-paths.env.")"                  "Write the config + a trailing dot: denied"
+decide deny  protect-files.sh "$(fj "$_wt/x4-paths.env ")"                  "Write the config + a trailing space: denied"
+decide deny  protect-files.sh "$(fj "$_wt/x4-paths.env::\$DATA")"           "Write the config's ::\$DATA stream: denied"
+decide deny  protect-files.sh "$(fj "$_wt/reference./libraries/w.xml")"     "Write reference./ (a trailing dot on the DIR): denied"
+decide deny  protect-files.sh "$(fj "$_wt/reference::\$INDEX_ALLOCATION/libraries/w.xml")" "Write via the dir's ::\$INDEX_ALLOCATION: denied"
+decide deny  protect-files.sh "$(fj "$X4_GAME./libraries/a.xml")"           "Write the game dir + a trailing dot: denied"
+decide allow protect-files.sh "$(fj "$_wt/reference..old/w.xml")"           "TWIN: dots INSIDE a name are another folder"
+decide allow protect-files.sh "$(fj "$_wt/x4-paths.env.example")"           "TWIN: the .example is still not the config"
+decide deny  protect-bash.sh  "$(cj "echo x > '$_wt/reference./libraries/w.xml'")" "Bash: a redirect into reference./: denied"
+decide deny  protect-bash.sh  "$(cj "echo x > '$_wt/x4-paths.env.'")"       "Bash: a redirect onto the config + a dot: denied"
+decide allow protect-bash.sh  "$(cj "echo x > '$_wt/reference..old/w.xml'")" "TWIN: Bash, dots INSIDE a name"
+_ws="$(cygpath -m -s "$X4_GAME" 2>/dev/null)"
+case "$_ws" in
+  *~[0-9]*)
+    decide deny protect-files.sh "$(fj "$_ws/libraries/a.xml")"  "Write the game dir by its 8.3 SHORT name: denied"
+    decide deny protect-bash.sh  "$(cj "rm -rf '$_ws'")"         "Bash: delete the game dir by its 8.3 SHORT name: denied" ;;
+  *) skip "8.3 short name (no cygpath, or 8.3 names disabled on this volume): files"
+     skip "8.3 short name (no cygpath, or 8.3 names disabled on this volume): bash" ;;
+esac
+unset X4_CONFIG X4_TOOLKIT X4_REFERENCE X4_GAME CLAUDE_PROJECT_DIR
+eval "$_wa_saved"
 
 
 # =============================================================================
