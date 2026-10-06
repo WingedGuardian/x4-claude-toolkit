@@ -2832,8 +2832,17 @@ def _doctor_env(tmp_path: pathlib.Path, **extra) -> dict:
 
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
 @pytest.mark.parametrize("method", ["separate", "in-game"])
-def test_x4doctor_EXITS_0_on_a_healthy_fresh_install(installer, method, tmp_path):
-    """MEASURED before the fix (scratch install, install.sh --method separate --agent claude):
+def test_x4doctor_on_a_healthy_fresh_install_leaves_ONLY_the_users_steps_open_exit_4(
+        installer, method, tmp_path):
+    """FX-B3 (reviewer F M3): this was named `..._EXITS_0_...` while it asserted exit 4 -- the
+    name described a goal the FX-B2 change had (rightly) given up, not what is checked.
+
+    Two states of the same install: BEFORE the unpack (no reference/ -- the user's steps are
+    the unpack, rows roots.reference + layer2.reference, both TODO; was UNKNOWN, exit 3) and
+    with a reference/ that is not a finished unpack (layer2 alone, and its hint is the unpack,
+    because `apply` refuses a tree without the sentinel).
+
+    MEASURED before the fix (scratch install, install.sh --method separate --agent claude):
     x4doctor exit 3 -- parity.claude UNKNOWN ('X4_TOOLKIT is unset'), x4lock UNKNOWN ('1
     unlocked'), and with X4_TOOLKIT set parity.claude read 'no agent/ source' UNKNOWN. A
     doctor that cannot exit 0 on a healthy install trains its reader to ignore it. 'Healthy'
@@ -2848,11 +2857,23 @@ def test_x4doctor_EXITS_0_on_a_healthy_fresh_install(installer, method, tmp_path
         dest = game
     r = _install(installer, tmp_path, dest, *extra, method=method)
     assert r.returncode == 0, (r.stdout[-1500:], r.stderr[-1500:])
+
+    def doctor():
+        d = subprocess.run([sys.executable, str(dest / "scripts" / "x4doctor.py"), "--root",
+                            str(dest), "--json"], capture_output=True, text=True, timeout=300,
+                           env=_doctor_env(tmp_path), cwd=str(tmp_path))
+        return d, json.loads(d.stdout)
+
+    assert not (dest / "reference").exists(), "fixture: the install unpacked nothing"
+    d0, got0 = doctor()
+    open0 = sorted((c["id"], c["status"]) for c in got0["checks"] if c["status"] not in ("OK", "N/A"))
+    assert d0.returncode == 4 and open0 == [("layer2.reference", "TODO"),
+                                            ("roots.reference", "TODO")], (d0.returncode, open0)
+    assert all("unpack-reference.sh" in c["detail"] for c in got0["checks"]
+               if c["status"] == "TODO"), got0["checks"]
+
     (dest / "reference" / "libraries").mkdir(parents=True, exist_ok=True)
-    d = subprocess.run([sys.executable, str(dest / "scripts" / "x4doctor.py"), "--root", str(dest),
-                        "--json"], capture_output=True, text=True, timeout=300,
-                       env=_doctor_env(tmp_path), cwd=str(tmp_path))
-    got = json.loads(d.stdout)
+    d, got = doctor()
     # FX-B2: an unprotected reference/ is the USER's pending step on every root (TODO, exit 4),
     # never OK -- the installers do not apply Layer 2. It is the ONLY item allowed to be open.
     bad = [(c["id"], c["status"], c["detail"][:200]) for c in got["checks"]
@@ -2861,6 +2882,8 @@ def test_x4doctor_EXITS_0_on_a_healthy_fresh_install(installer, method, tmp_path
     todo = [c["id"] for c in got["checks"] if c["status"] == "TODO"]
     assert d.returncode == 4 and not bad and todo == ["layer2.reference"], (d.returncode, bad, todo)
     assert sum(c["status"] == "OK" for c in got["checks"]) >= 10, got["checks"]
+    l2 = [c["detail"] for c in got["checks"] if c["id"] == "layer2.reference"][0]
+    assert "not a finished unpack" in l2 and "unpack-reference.sh" in l2, l2
 
 
 def test_TWIN_x4doctor_on_a_fresh_install_still_FAILS_a_missing_game(tmp_path):
