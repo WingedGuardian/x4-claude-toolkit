@@ -528,7 +528,7 @@ decide allow protect-bash.sh "$(cj 'cd $(git rev-parse --show-toplevel) && ls')"
   "a substituted argument in a cd is untouched"
 
 
-EXPECT=279
+EXPECT=282
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
