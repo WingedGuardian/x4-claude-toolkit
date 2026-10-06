@@ -3,6 +3,7 @@
 a TOY-BLOCK line and exits 0 (Toy Agent fails open on non-zero exit, crash or >30 s)."""
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -11,6 +12,7 @@ MAX_CHARS = 10000            # X4_HOOK_MAX_CHARS default (measured by sourcing _
 GUARD_BUDGET_S = 15          # x4guard worst case = 15 + KILL_WAIT 5 + DRAIN 3 = 23 s
 DEADLINE_S = 26              # ours: above 23, below Toy Agent's 30 s hook timeout
 HERE = os.path.dirname(os.path.abspath(__file__))
+SETTINGS = re.compile(r"(^|/)\.claude/settings[^/]*\.json$")
 
 
 def emit(line):
@@ -80,6 +82,10 @@ def main():
         checks = [["--kind", "shell", "--shell", sh, "--command", args["cmdline"]]]
     elif tool in ("write_file", "edit_file"):
         checks = [["--kind", "write", "--path", args["target"]]]
+        # ADAPTING.md 2: a settings file's WHOLE new content goes with it (FX-G5 item 10).
+        # edit_file carries no text, so such an edit stays a deny.
+        if tool == "write_file" and SETTINGS.search(str(args["target"]).replace("\\", "/").lower()):
+            checks[0] += ["--content", str(args.get("text") or "")]
     else:
         return deny("X4 GUARD INERT: unknown tool %r" % (tool,))
     worst = None
