@@ -337,7 +337,9 @@ backups or executing its command. Supply `--kind shell --shell bash|powershell -
 or `--kind write|delete --path ...`. A delete check applies both file protection and deletion
 confirmation; the stricter verdict wins. An evaluation failure is `deny` with `inert: true`.
 An ordinary `ask` requires approval. Neither exit 0 nor a passing check installs enforcement
-in an agent host. On Windows set `X4_BASH` to Git Bash when PATH resolves to WSL.
+in an agent host. On Windows the guards find Git Bash themselves: `X4_BASH` if set, then
+Git for Windows' standard install locations, then `PATH` walked past the WSL stub. Set
+`X4_BASH` only when Git Bash is installed somewhere else (see Prerequisites).
 The current wrapper resolves relative file paths from the caller's working directory before
 checking them. One time budget covers the whole check (`X4_GUARD_TIMEOUT_S`, default 25 s),
 shared by a delete's two guards; a check that runs out is an inert deny. The Codex hook path
@@ -431,8 +433,12 @@ says which agent it is and checks whether the toolkit has an adapter for it, run
 `reference/` and (optionally) adding your Nexus API key.
 To run x4validate's test suite yourself, from the toolkit folder: in Git Bash, Linux or macOS
 `cd tools/x4validate && uv run pytest -q`; in Windows PowerShell (5.1 rejects `&&`)
-`cd tools/x4validate; uv run pytest -q`. It passes with **0 failed and 0 errors**. Skips are
-expected and each names its reason: an installed toolkit does not carry the repository-only
+`cd tools/x4validate; uv run pytest -q`. Passing means **0 failed and 0 errors**; skips are
+expected. What was measured (2026-10-05, on Windows: a fresh `--agent all` install by each
+installer, separate method, then the full installed suite): the `install.ps1` install passed with 4,018 passed, 377 skipped, 0 failed;
+the `install.sh` install ended 4,017 passed, 366 skipped, 6 failed, from three causes that were
+then fixed and re-run individually (no second full run; BLIND-SPOTS F161). Installs with fewer
+agents were not measured. Each skip names its reason: an installed toolkit does not carry the repository-only
 `agent/` source, so the tests that read it skip as `REPO-ONLY`. Answer any questions it asks. An agent
 with no adapter is pointed at [`ADAPTING.md`](ADAPTING.md), which shows how to build and prove
 one; until it has one, the toolkit's guards do not protect it.

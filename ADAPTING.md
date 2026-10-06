@@ -26,15 +26,22 @@ code, file named), **INFERRED** (reasoned, not run). Write your own findings the
 
 ## 0. Before you start
 
-- You need a guard tree: `.claude/hooks/` or `.codex/hooks/`, from an install that included
-  Claude Code or Codex (`--agent all` includes both), from the release zip, or from a git clone.
-  An install made with `--agent generic` ships no guard tree at all (READ: `install.sh`,
-  `X4_AGENT_ITEMS_generic`).
-- `x4guard conformance` (section 5) additionally needs the toolkit's `scripts/` folder, Git
-  Bash (on Windows) and `jq`. A toolkit installed by either installer has all three locations.
-  Check the two programs first: `command -v bash jq` (bash) or `Get-Command bash, jq`
-  (PowerShell) must name both. If one is missing, the profile's `requires` stops the run with
-  exit 2 before anything is replayed. On Windows, make sure the `bash` found is Git Bash: a
+- You need a guard tree: `.claude/hooks/`, `.codex/hooks/` or `.opencode/hooks/` (each carries
+  the same guards and an `x4guard.py` whose `check` answers), from an install that included
+  Claude Code, Codex or OpenCode (`--agent all` includes all three), from the release zip, or
+  from a git clone. An install made with `--agent generic` ships no guard tree at all (READ:
+  `install.sh`, `X4_AGENT_ITEMS_generic`).
+- `x4guard conformance` (section 5) needs more than `check` does: the toolkit's `scripts/`
+  folder, a **`.claude/hooks/`** folder at the toolkit root (the reference guards it replays
+  against, and what `{HOOKS}` names in a profile), Git Bash (on Windows) and `jq`. So run it from
+  an install that includes the Claude target (`--agent all`, or a list naming `claude`) or from a
+  git clone: in a `--agent codex` or `--agent opencode` install it refuses with exit 2
+  (`.claude/hooks is missing`) whichever guard tree's `x4guard.py` you start it from. Every
+  install carries `scripts/`; neither installer provides Git Bash or `jq` -- they are yours to
+  install (`setup.sh` warns when `jq` is missing). Check the two programs first:
+  `command -v bash jq` (bash) or `Get-Command bash, jq`
+  (PowerShell) must name both. If one is missing, the run stops with exit 2 before anything is
+  replayed (both are always required, whatever the profile's `requires` lists). On Windows, make sure the `bash` found is Git Bash: a
   `bash.exe` in `C:\Windows\System32` is the WSL launcher, which fails without a distribution.
 - Python 3.10 or newer for the guard front door; it is stdlib only.
 - Never edit a guard, the test corpus or another agent's adapter to make yours pass (section 6).
@@ -115,7 +122,8 @@ cannot start is one more fail-open path on many agents.
 
 ## 2. The guard contract
 
-The toolkit's front door is `x4guard.py`, in `.claude/hooks/` (or `.codex/hooks/`). It takes
+The toolkit's front door is `x4guard.py`, in `.claude/hooks/` (or `.codex/hooks/`,
+`.opencode/hooks/`). It takes
 ARGUMENTS, not stdin, and there is no agent option -- describe the action, not yourself:
 
 ```
@@ -168,8 +176,11 @@ Exit 2 means a usage error (a wrong option). The rules for calling it:
   then falls back). Under conformance, read it from the profile's `env`; in a live install, fall
   back to the path relative to your adapter's file. If neither resolves, answer with an inert
   deny that names the missing path -- never an allow.
-- **`X4_GUARD=off`** is the user's launch-time escape hatch. x4guard handles it (every verdict
-  becomes an advisory saying so); your adapter does nothing special.
+- **`X4_GUARD=off`** is the user's launch-time escape hatch. x4guard handles it; your adapter
+  does nothing special. Under it a deny or an ask becomes an advisory naming what it would have
+  been, and an allow comes back as an advisory carrying the GUARDS OFF note. Two answers are NOT
+  relaxed: a guard that could not check the call still asks, and an inert verdict stays an inert
+  deny (a guard that could not run judged nothing to relax).
 - **`check` has no side effects**: it never makes the backup that the Claude hooks make before an
   edit. An adapter that wants backups runs `.claude/hooks/backup-before-edit.sh` itself after an
   allow, as the Codex adapter does.
@@ -234,8 +245,8 @@ first one -- without opening the file, run from the toolkit folder:
 python -c "import sys; sys.path.insert(0, '.claude/hooks'); import x4guard as g; print(g.TIMEOUT_S, g.KILL_WAIT_S, g.DRAIN_GRACE_S)"
 ```
 
-(MEASURED 2026-10-05: it prints `25.0 5 3` with the variable unset.) Use `.codex/hooks` in place of
-`.claude/hooks` if that is the guard tree you have.
+(MEASURED 2026-10-05: it prints `25.0 5 3` with the variable unset.) Use `.codex/hooks` or
+`.opencode/hooks` in place of `.claude/hooks` if that is the guard tree you have.
 
 **Choose three numbers, in this order:**
 
@@ -485,8 +496,10 @@ How to read the summary lines (READ: `summarise` in `scripts/x4conformance.py`):
   cases, and C is what must reach `--min-cases`.
 
 The summary counts cases `no_native_analogue`: guard cases that carry no shell command and no
-file path (searches such as Grep and Glob), which no adapter could be shown. They are not your
-gap. A kind your profile declares `unsupported` is -- and it prints a GAP line. Off Windows it
+file path (searches such as Grep and Glob), which no adapter could be shown -- those are not your
+gap -- AND the cases of every kind your profile declares `unsupported`, which are. The count does
+not tell the two apart: the GAP line printed for each `unsupported` kind is what names your gap.
+Off Windows it
 also counts `windows_path_dialect`: file-path cases spelled with backslashes, which on Linux and
 macOS name a single file in the current folder rather than the path the guards judge, so they are
 not replayed there.

@@ -138,6 +138,14 @@ confusing messages and six cosmetic ones. All are fixed:
 - **`--codex-doc-max-bytes N`** (opt-in) writes `project_doc_max_bytes = N` into the project's
   `.codex/config.toml`, because the root and every nested `AGENTS.md` share one 32 KiB budget
   (MEASURED). An existing different value is reported and left alone.
+- **Two new standing instructions for every agent** (`agent/instructions/core.md`, *Safety Rules >
+  General*, so both `CLAUDE.md` and `AGENTS.md` carry them): deletions go to the Recycle Bin or
+  Trash (Windows: `Microsoft.VisualBasic.FileIO.FileSystem` with `SendToRecycleBin`; Linux:
+  `gio trash`; macOS: the Finder Trash), and a permanent delete needs your OK for that deletion;
+  and the agent never saturates the machine -- before a heavy job (full test suites, corpus
+  builds, load tests, parallel workers) it measures what is already running and keeps CPU, RAM,
+  free disk on each drive it writes to and GPU at or under 80% of the total, or waits, shrinks
+  the job or tells you before starting.
 
 ### Codex
 
@@ -216,8 +224,18 @@ confusing messages and six cosmetic ones. All are fixed:
   parity, a guard self-test with controls that must deny and controls that must allow (so a guard
   that denies everything cannot pass), Claude's hook wiring and `disableAllHooks`, Codex's trust
   and per-hook review state, OpenCode's plugin and rendered rules, `X4_GUARD`, the OS-level
-  `reference/` protection and the x4lock state. Every row is OK, FAIL, UNKNOWN or N/A; a run that
-  checked nothing never exits 0.
+  `reference/` protection and the x4lock state. Every row is OK, FAIL, UNKNOWN, TODO (installed
+  correctly; a step only you may take is pending) or N/A. Exit 0 every applicable row OK, 1 any
+  FAIL, 3 an UNKNOWN and no FAIL, 4 only TODO rows pending, 2 could not run; a run that checked
+  nothing never exits 0, and a TODO never hides a FAIL or an UNKNOWN.
+- **If you script against `x4doctor`, check exit 4 (or the TODO rows), not only exit 1.** Three
+  row states changed on purpose during the 4.0 release work (`x4doctor` shipped in no earlier
+  release): Codex's `codex.trusted` (folder not trusted) and `codex.reviewed` (hooks not reviewed,
+  so Codex skips them silently) moved from FAIL to **TODO**, and so did `layer2.reference` when
+  `reference/` has no OS-level protection on a root with no Claude target; the x4lock row with
+  unlocked files moved from UNKNOWN to **OK** (informational: locking is your choice). A caller
+  that tests only for exit 1 no longer sees "Codex hooks are not running": that state now exits
+  4, and `--json` lists those rows with status `TODO`.
 - Measured while building it: with `X4_TOOLKIT` unset and no path config in a game root, the
   guards fell back to `<game>/reference` and ALLOWED a write and a delete into the configured
   reference tree (4 of 4 deny controls, check-only). The verdicts are unchanged in 4.0, but the
@@ -248,8 +266,9 @@ confusing messages and six cosmetic ones. All are fixed:
   confirmation prompt and no new block; three commands change, two of them gaining an advisory
   (BLIND-SPOTS F147).
 - **Fewer approval prompts: the guards ask only what is genuinely yours.** Measured over the
-  maintainer's own Claude Code transcripts (793 of them, 82,585 tool calls; commit `bd45eef`; the
-  counting script is not in the repo): 54 hook prompts in 5 weeks, all 54 approved -- an ask that
+  maintainer's own Claude Code transcripts (793 of them, 82,585 tool calls; commit `bd45eef`).
+  These figures cannot be reproduced from this repository: neither the transcripts nor the
+  counting script are in it. 54 hook prompts in 5 weeks, all 54 approved -- an ask that
   is always approved protects nothing. A command `bash -n` rejects, or one nested past the guard's expansion bound,
   is now a DENY with a reason the agent can act on. Deletes in X4 folders and writes under
   Documents are ADVISORIES. Still asks: the X4 profile, save games, a guard that cannot run, a
@@ -383,8 +402,9 @@ confusing messages and six cosmetic ones. All are fixed:
   is N/A, because parity checks a tree `deploy-claude-dir.py` copied from a source checkout. A
   target that no deploy workflow ships (`.codex/`) is N/A, and the row says why. An unlocked
   x4lock manifest is OK and marked as your choice. The x4lock row now asks the real
-  `x4lock.py` with the root's environment. `layer2.reference` fails an unprotected OpenCode
-  root too. An `X4_GUARD` line in a path config fails as **ignored**: the guards take
+  `x4lock.py` with the root's environment. `layer2.reference` judges an OpenCode root too, like
+  Codex and generic ones (no Claude hook to fall back on): no protection there is a TODO row
+  (your step; exit 4), only partial protection a FAIL. An `X4_GUARD` line in a path config fails as **ignored**: the guards take
   `X4_GUARD` only from the launch environment.
 - `x4lock` locks a **separate** install's guards, `CLAUDE.md` and settings in the toolkit
   folder, and no longer expects them in that install's game folder. A source checkout is never
