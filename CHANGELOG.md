@@ -421,7 +421,7 @@ confusing messages and six cosmetic ones. All are fixed:
   word decides; `remove` still asks). A process substitution fed by any other program (`bash <(curl
   ...)`) runs unjudged, like a script file (the maintainer's decision, 2026-10-06; 4 of 44,009 past commands),
   and `bash -n <(...)` never asks (BLIND-SPOTS F201, F202, F206-F212, F183, F219).
-- **Security: eight more ways past the hard blocks and asks are closed** (fix lane FX-G5, each
+- **Security: six more ways past the hard blocks and asks are closed** (fix lane FX-G5, each
   reproduced first; (1) and (6) present in 3.x too). (1) `A=$(echo a b) rm -rf <game>`: an unquoted
   multi-word substitution in a prefix assignment no longer names the command; (2) `A=$(true) $x`
   no longer hides a substituted verb; (3) `bash <(echo -n ...)`, `bash <(...) -n` and `bash -o
@@ -429,7 +429,29 @@ confusing messages and six cosmetic ones. All are fixed:
   (4) a `cd ''$X4_REFERENCE''` before a shell patch is an expanded `cd`, refused; (5) `git -c
   include.path=...`, any `--config-env`, or `git config clean.requireForce false` in the same command
   make a `git clean` forced (ask); (6) `rm -rf "${PATH:+$X4_GAME}"`: the alternate word of a
-  variable the command did not assign is judged (BLIND-SPOTS F230-F235).
+  variable the command did not assign is judged (BLIND-SPOTS F230-F235). Two of these fixes opened
+  holes of their own, closed in the next entry: (6) judged the alternate word ALONE and lost the
+  empty one, and (3) took a lone `-` as the script.
+- **Security: nine more ways past the guards are closed** (fix lane FX-G6, reviewer K, each
+  reproduced first). (1) `rm -rf "${NOPE:+zz}<reference>"` (and `${NOPE+zz}`, `"${NOPE:+./junk}<game>"`)
+  was ALLOWED after FX-G5: a variable the command did not assign is now judged under EVERY value it
+  can have -- unset, empty, set -- for `+`, `-` and `=` with or without the colon, each name on its
+  own, also inside `bash -c`, `eval` and `cmd /c`; (2) `bash - <(echo rm -rf <game>)`, `sh - <(...)`, `bash -x - <(...)`: a lone `-` ends the
+  options and the next word is the script (also allowed after FX-G5); (3) `bash -n +n <(...)`: `+n`
+  (and `+o noexec`) turns `-n` back off, so only the last toggle counts; (4) `A=${X:-echo a} rm -rf
+  <game>`, `A=$(echo a; echo b) rm -rf <game>` and `env -C $(echo /tmp ) rm -rf <game>`: a word
+  holding a `$(...)`, backtick or `${...}` span is one word, and a substitution the command
+  splitter cut no longer hides the command after it; (5) a shell patch after `cd '<reference>'/sub`
+  or `cd "<reference>"'/sub'` (mixed quoting) is refused, not read with its quotes; (6) ANY `git
+  config` that may write (`"clean.require""Force"`, `clean.require\Force`, a key in a variable)
+  and a `HOME=` / `XDG_CONFIG_HOME=` prefix make a following `git clean` forced (ask); a read
+  (`--get`, `--list`, `--show-*`, `get`, `list`) does not; (7) an OpenCode `edit` of a Claude Code
+  settings file is applied to the file and the RESULT judged, so two innocent edits can no longer
+  build `X4_GUARD=off`; (8) the settings rule gives a text apply_patch semantics only when the
+  caller says it is a patch (`x4guard check --patch`), never by spotting `*** Begin Patch` in it;
+  (9) an `X4_CONFIG` with a `::` stream suffix other than exactly one trailing `::$DATA`
+  (`x4-paths.env::$DATA/.`) names no config in the tools and `x4doctor`, as in the guards
+  (BLIND-SPOTS F241-F249).
 - **A Codex or OpenCode patch run through the shell after `cd $X4_REFERENCE`** (or `$env:...`, or
   any `cd` whose target the shell expands) is refused with a reason; it was judged against the
   literal text `$X4_REFERENCE` and allowed (BLIND-SPOTS F203).

@@ -310,15 +310,24 @@ memory or from another session -- a remembered id was stale within a day here.
 | F229 | Two FALSE refusals in the root comparisons, both failing closed: `_x4_canon` resolves `..` lexically in a not-yet-existing tail, and an `X4_REFERENCE` ending in a dot is reported DIFFERENT from the same tree in the config | **SCOPE (reported, open)** · ⏳ OPEN | FX-B4 leads, not re-measured here | a refusal with both paths printed, never a wrong action; open leads |
 | F230 | A prefix assignment holding an UNQUOTED multi-word substitution named the verb: `A=$(echo a b) rm -rf <game>` (and a backtick form, and `<reference>`) took `a` as the command, so every hard block passed | **DEFECT (measured)** · PRE-ARC (v3.3.1) · ✅ FIXED 2026-10-06 (fix lane FX-G5) | J2 item 3; E2E 3 of 3 spellings deny -> ALLOW, now deny | `_verb_token` collapses an assignment word's substitutions before tokenising |
 | F231 | A substituted verb through a variable was hidden by any EARLIER token holding `$(`: `x=$(printf rm); A=$(true) $x -rf <reference>` was allowed | **DEFECT (measured)** · IN-ARC (G-OUT, F183) · ✅ FIXED 2026-10-06 (fix lane FX-G5) | J2 item 3 | only an UNCLOSED substitution (a cut fragment) still refuses the command position |
-| F232 | The process-substitution rule (F211) read `bash -n` from ANY `-n` word -- an `echo -n` inside the substitution, or a `-n` after the script -- and took an option's VALUE (`-o pipefail`) as the script operand: `bash <(echo -n rm -rf <game>)` and `bash -o pipefail <(echo ...)` were allowed | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-06 (fix lane FX-G5) | J2 item 2; 4 of 4 probe shapes allowed, now deny | residual (false positive only): `bash -o noexec <(...)` is judged, not exempted |
-| F233 | A shell-patch `cd` operand that merely starts and ends with a single quote (`''$X4_REFERENCE''`, `'a'$X'b'`) was dequoted as literal text, though the shell expands it | **DEFECT (measured)** · IN-ARC (F203) · ✅ FIXED 2026-10-06 (fix lane FX-G5) | J2 item 1; 3 spellings x 2 forms | only one fully single-quoted word is literal |
+| F232 | The process-substitution rule (F211) read `bash -n` from ANY `-n` word -- an `echo -n` inside the substitution, or a `-n` after the script -- and took an option's VALUE (`-o pipefail`) as the script operand: `bash <(echo -n rm -rf <game>)` and `bash -o pipefail <(echo ...)` were allowed | **DEFECT (measured)** · IN-ARC · ✅ FIXED 2026-10-06 (fix lane FX-G5) | J2 item 2; 4 of 4 probe shapes allowed, now deny | residual NOT false-positive only (reviewer K, MEASURED): this fix read a lone `-` as the script (`bash - <(...)` deny -> ALLOW, F242), and `bash -n +n <(...)` stayed allowed (F243); `bash -o noexec <(...)` is judged, not exempted |
+| F233 | A shell-patch `cd` operand that merely starts and ends with a single quote (`''$X4_REFERENCE''`, `'a'$X'b'`) was dequoted as literal text, though the shell expands it | **DEFECT (measured)** · IN-ARC (F203) · ✅ FIXED 2026-10-06 (fix lane FX-G5) | J2 item 1; 3 spellings x 2 forms | only one fully single-quoted word is literal; residual (reviewer K, MEASURED): MIXED quoting with no expansion (`'<REF>'/libraries`, `"<REF>"'/sub'`) was still taken with its quotes -- 2 of 3 spellings, closed by F245 |
 | F234 | `git -c include.path=<file>` (any `include.*`/`includeIf.*`), any `--config-env`, and an in-command `git ... config ... clean.requireForce false` before a clean left an unforced `git clean -dx` in the game folder allowed | **DEFECT (measured)** · IN-ARC (F192, F210) · ✅ FIXED 2026-10-06 (fix lane FX-G5) | J2 item 5; 2 of 2 allowed, now ask | the in-command form is order-blind (a config AFTER the clean also asks) |
-| F235 | `${V:+word}` / `${V+word}` of a variable the command never assigned resolved to "" -- `rm -rf "${PATH:+$X4_GAME}"` was allowed | **DEFECT (measured)** · PRE-ARC · ✅ FIXED 2026-10-06 (fix lane FX-G5) | J2 item 9 | an unassigned variable may be set: the alternate word is judged |
+| F235 | `${V:+word}` / `${V+word}` of a variable the command never assigned resolved to "" -- `rm -rf "${PATH:+$X4_GAME}"` was allowed | **DEFECT (measured)** · PRE-ARC · ✅ FIXED 2026-10-06 (fix lane FX-G5) | J2 item 9 | an unassigned variable may be set: the alternate word is judged -- but ONLY it: the empty (unset) branch was LOST by this fix (`rm -rf "${NOPE:+zz}<reference>"` deny -> ALLOW) and is RESTORED by F241, which judges every value |
 | F236 | Bash and Python still read different files for `x4-paths.env/.`, `./x4-paths.env/./`, `sub/../x4-paths.env/.`, `<tk>/x4-paths.env/.` and (Windows) `x4-paths.env::$DATA` | **DEFECT (measured)** · IN-ARC (F224) · ✅ FIXED 2026-10-06 (fix lane FX-G5) | J2 item 4; 5 of 7 probe spellings disagreed, now 0 of 25 table rows | open lead: a NAMED stream (`x4-paths.env:other`) is left as written and not measured |
 | F237 | `.claude/.reference-buildid` was in neither installer's keep-local nor prune list, so installing from an unpacked (non-git) source tree copied it and `x4doctor` read a fresh install as a MOVED reference tree | **DEFECT (measured)** · IN-ARC (F226) · ✅ FIXED 2026-10-06 (fix lane FX-G5) | J2 item 7; 2 of 2 installers | keep-local: never copied in, the destination's own kept |
 | F238 | `verify-hook-tests.py`'s silent? column looked a failing test's source up by bare METHOD name, pooling the sources of same-named tests in different classes | **DEFECT (read)** · IN-ARC (141bb8c) · ✅ FIXED 2026-10-06 (fix lane FX-G5) | J2 item 8; 3 shared names in test_hook_facts.py | keyed `Class.method`, as failures and targets are |
 | F239 | ADAPTING.md never told an adapter to pass a settings write's TEXT, and `x4guard check` had no way to say "this is the whole file": every adapter built from the doc denied every `.claude/settings*.json` write, and Codex's `Add File` over a settings file that held X4_GUARD was denied where the Write it mirrors is allowed | **DEFECT (measured)** · IN-ARC (F193) · ✅ FIXED 2026-10-06 (fix lane FX-G5) | conformance DISAGREE #204 (Codex, toy) and #224 (toy) on 44c2d00 | `--content`; an add-only patch is judged on its own text; residual: an OpenCode `write` over a file that holds the key is still judged as raw text (F220, false deny) |
 | F240 | Two conformance rows (the `exit 0` config probes) replayed as ALLOW against the harness's DENY: the harness rewrote the shared config they were judged with, and the replay re-runs every row against the kept sandbox's END state. The R7-3 drift assertion was masked on 44c2d00 by the #204 failure before it | **DEFECT (measured)** · IN-ARC (test harness) · ✅ FIXED 2026-10-06 (fix lane FX-G5) | 2 of 210 replayed rows | the two rows get their own never-rewritten toolkit folder; other rows sharing a later-rewritten file are not audited |
+| F241 | The F235 fix judged `${V:+w}` / `${V+w}` of an UNASSIGNED variable as the alternate word ALONE and lost the empty branch: `rm -rf "${NOPE:+zz}<reference>"`, `"${NOPE+zz}<reference>"` and `"${NOPE:+./junk}<game>"` went deny -> ALLOW (and `"${NOPE:+x}$X4_GAME"` deny -> advise) | **DEFECT (measured)** · IN-ARC (regression of FX-G5 f03d19b) · ✅ FIXED 2026-10-06 (fix lane FX-G6) | reviewer K C1; 4 of K's 11 rows worse than at 44c2d00; now all 11 (+4 new) deny where a root can result and allow the 4 ordinary forms | `resolve_variants`: every state (unset / empty / set) PER NAME, exhaustive to 4 names; past 4, each name in each state with the rest uniform (a mixed 5-name combination is not enumerated); carriers carry every value too, except a PowerShell host payload (one value) |
+| F242 | The F232 fix took a lone `-` as the shell's script operand: `bash - <(echo rm -rf <game>)`, `sh - <(...)`, `bash -x - <(...)` went deny -> ALLOW | **DEFECT (measured)** · IN-ARC (regression of FX-G5 f03d19b) · ✅ FIXED 2026-10-06 (fix lane FX-G6) | reviewer K C2; 3 of 3 deny -> allow | `-` and `--` end the options; the NEXT word is the script |
+| F243 | `+n` after `-n` (`bash -n +n <(echo rm -rf <game>)`) runs the script and was exempted as a syntax check | **DEFECT (measured)** · IN-ARC (F211, F232) · ✅ FIXED 2026-10-06 (fix lane FX-G6) | reviewer K I3; allowed at 44c2d00 and 47d06cd | only the LAST n-toggle counts, in clustered words (`-xn`, `+xn`) and as `+o noexec`; `-o noexec` is still judged, not exempted (false positive only) |
+| F244 | A word holding a `${...}` with a blank, a substitution holding a separator, or a wrapper option VALUE with a blank offered a piece of itself as the command name: `A=${X:-echo a} rm -rf <game>`, `A=$(echo a; echo b) rm -rf <game>`, `env -C $(echo /tmp ) rm -rf <game>` were ALLOWED | **DEFECT (measured)** · PRE-ARC (allowed at 44c2d00) · ✅ FIXED 2026-10-06 (fix lane FX-G6) | reviewer K I4; 3 of 11 c3 rows allowed, now 11 of 11 deny | `_raw_words` (span-aware words) for the verb; `_spanning_view` collapses a separator-holding substitution in an ADDITIONAL view, so no fact is lost; open: other verb-keyed scans that tokenise on their own (e.g. `_git_destructive`'s token walk) were not audited for spans |
+| F245 | A shell-patch `cd` operand with MIXED quoting (`'<REF>'/libraries`, `"<REF>"'/sub'`) was taken literally, quotes and all -- a path under no root -- so a Codex/OpenCode shell patch wrote into reference/ unjudged | **DEFECT (measured)** · IN-ARC (F203, F233) · ✅ FIXED 2026-10-06 (fix lane FX-G6) | reviewer K I1; 2 of 3 cd spellings | only ONE fully quoted word is dequoted; any other word holding a quote is refused |
+| F246 | Only the literal `requireForce` in an in-command `git config` forced a clean: `"clean.require""Force"`, `clean.require\Force`, `K=clean.requireForce; git config $K false`, and a `HOME=/x` prefix (a global config the guard cannot read) left `git clean -dx` in an X4 folder allowed | **DEFECT (measured)** · IN-ARC (F234); the HOME form PRE-ARC · ✅ FIXED 2026-10-06 (fix lane FX-G6) | reviewer K I2; 4 of 4 allowed, now ask | ANY non-read `git config` in the command (any carried command too), order-blind; the read set is `--get*`, `--list`, `-l`, `--show-*`, `get`, `list`; a `git config user.name x && git clean -dx` now ASKS (the brief's rule) |
+| F247 | The OpenCode adapter judged an `edit` of a Claude Code settings file on its NEW TEXT only, so two innocent edits (`"X4_GUA": "x"`, then `A": "x"` -> `ARD": "off"`) built `X4_GUARD=off` | **DEFECT (measured)** · IN-ARC (F193, F220) · ✅ FIXED 2026-10-06 (fix lane FX-G6) | reviewer K I5; 1 of 1 | the edit is APPLIED to the file as read and the result judged; an edit that does not apply here is refused when its text could form the key wherever it lands (fail closed); everything the text reading refused stays refused (a file already naming the key) |
+| F248 | The settings rule gave a text apply_patch semantics (the add-only "replaces the file" reading) by SNIFFING it for `*** Begin Patch` / `*** Add File:`, whoever sent it | **DEFECT (read)** · IN-ARC (F239) · ✅ FIXED 2026-10-06 (fix lane FX-G6) | reviewer K M1 | only an explicit patch: the Codex adapter's patch calls, `x4guard check --patch` |
+| F249 | `X4_CONFIG` = `x4-paths.env::$DATA/.`, `::$DATA::$DATA` or `::$DATA ` (Windows): Python read the file, the guards read none | **DEFECT (measured)** · IN-ARC (F236 residual) · ✅ FIXED 2026-10-06 (fix lane FX-G6) | reviewer K M2; 3 of 16 probe spellings disagreed, now 0 of 16 | any `::` beyond exactly one trailing `::$DATA` names no config in `_paths` and `x4doctor`; bash already found none (its `-f`), so no bash change |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9346,7 +9355,10 @@ script operand was the first non-dash word, so `bash <(echo -n rm -rf <game>)`, 
 and `bash -o pipefail <(echo ...)` were allowed. **Fix:** only the shell's own option words before
 the operand count; `-o`/`-O`/`+o` (also clustered) and `--rcfile`/`--init-file` step over their
 value; `+n` is not `-n`. Producers other than echo/printf stay allowed (F219, user decision).
-Residual, false positive only: `bash -o noexec <(...)` is judged. **RE-DERIVED BY:**
+Residual (corrected by reviewer K, MEASURED): not false-positive only -- the fix took a lone `-`
+as the script, so `bash - <(echo rm -rf <game>)`, `sh - <(...)` and `bash -x - <(...)` went deny ->
+ALLOW (F242), and `bash -n +n <(...)` stayed allowed (F243); `bash -o noexec <(...)` is judged.
+**RE-DERIVED BY:**
 `TestH7H8TextPipedIntoAShell.test_only_the_shells_OWN_options_and_their_values_are_stepped_over`.
 
 ## F233 — a quoted-looking `cd` concatenation was taken as literal · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-06
@@ -9354,7 +9366,9 @@ Residual, false positive only: `bash -o noexec <(...)` is judged. **RE-DERIVED B
 **Finding (reviewer J2 item 1).** `patch_paths._literal_cd` dequoted any operand that started and
 ended with `'`, so `cd ''$X4_REFERENCE'' && codex --codex-run-as-apply-patch ...` judged a literal
 path. **Fix:** literal only when the operand is exactly `'[^']*'`; anything else meets the
-expanded-cd refusal (F203). **RE-DERIVED BY:** `tests/test_patch_paths.py`
+expanded-cd refusal (F203). Residual (reviewer K, MEASURED): a MIXED-quoted operand with no
+expansion (`'<REF>'/libraries`, `"<REF>"'/sub'`) was still read with its quotes and judged under no
+root -- closed by F245. **RE-DERIVED BY:** `tests/test_patch_paths.py`
 `test_a_shell_patch_after_an_EXPANDED_cd_is_refused` (3 new spellings x 2 forms).
 
 ## F234 — git configuration from a file or from the same command forced no clean · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06
@@ -9371,7 +9385,11 @@ naming requireForce or an include make the clean forced (the rule asks). Order-b
 **Finding (reviewer J2 item 9; PRE-ARC).** `_apply_op` read a variable the command never assigned
 as UNSET, so `${PATH:+$X4_GAME}` resolved to "" and `rm -rf "${PATH:+$X4_GAME}"` was allowed.
 **Fix:** for `+`/`:+` the alternate word is judged unless the command itself assigned the variable
-(an assigned empty value still gives "" for `:+`). **RE-DERIVED BY:** `TestJ2AlternateOfAnUnknownVariable`.
+(an assigned empty value still gives "" for `:+`). **This fix lost the empty branch** (reviewer K
+C1, MEASURED): judging the alternate word ALONE allowed `rm -rf "${NOPE:+zz}<reference>"`,
+`"${NOPE+zz}<reference>"` and `"${NOPE:+./junk}<game>"`, denied at 44c2d00. **Restored by F241**:
+every value is judged. **RE-DERIVED BY:** `TestJ2AlternateOfAnUnknownVariable`,
+`TestK_C1EveryValueOfAnUnknownVariable`.
 
 ## F236 — `.`/`..` components and `::$DATA` in `X4_CONFIG` · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06
 
@@ -9427,3 +9445,102 @@ same end-state shape made #204 replay against a settings.json holding X4_GUARD. 
 use their own folder (`cfgtk-exit0`) that nothing rewrites. **Open:** no audit of other rows whose
 inputs the harness rewrites later; the drift assertion is what would show one. **RE-DERIVED BY:**
 `tests/test_codex_conformance.py::test_every_replayable_case_agrees` (0 drift of 210).
+
+## F241 — the F235 fix judged one value of an unassigned variable and lost the empty one · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-06
+
+**Finding (reviewer K C1; IN-ARC, FX-G5 f03d19b).** F235 made `${V:+w}` of a variable the command
+never assigned return the alternate word -- ONE of its values. The unset value (`""`) was no longer
+judged: `rm -rf "${NOPE:+zz}<reference>"` IS `rm -rf <reference>` when NOPE is unset, and it went
+deny -> ALLOW, with `${NOPE+zz}<reference>` and `"${NOPE:+./junk}<game>"`. **Fix:**
+`hook_facts.resolve_variants` returns every value: each unassigned name under `-`/`=`/`+` (colon or
+not) is unset, empty or set (its own value, unresolved), enumerated PER NAME (exhaustive to 4
+names, then each name in each state with the rest uniform). Every path rule iterates them (operands
+via `resolve_all`, the substituted-verb root test, the search roots, `xrcat`, `icacls`/`takeown`, the
+durable-record rule) and every carrier (`bash -c`, `eval`, `cmd /c`) carries one command per
+value -- found by this lane's fuzz seeds: one resolve() there judged `bash -c 'rm -rf
+"${NOPE:+zz}<reference>"'` as the alternate only; a `cd` takes the first value landing under a
+root, else the plain one. **Open:** a PowerShell host payload (`powershell -c ...`) still
+resolves ONE value (a translation per value costs a pwsh run).
+**RE-DERIVED BY:** `TestK_C1EveryValueOfAnUnknownVariable`; E2E rows `K-C1` in `scripts/test-hooks.sh`.
+
+## F242 — a lone `-` was read as the script of a process-substitution shell · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-06
+
+**Finding (reviewer K C2; IN-ARC, FX-G5 f03d19b).** `_procsub_program` treated `-` as the script
+operand, so `bash - <(echo rm -rf <game>)`, `sh - <(...)` and `bash -x - <(...)` (deny at 44c2d00)
+were allowed. In bash `-`, like `--`, ends the options and the NEXT word is the script. **Fix:**
+exactly that. **RE-DERIVED BY:** `test_a_lone_dash_ends_the_options_and_plus_n_cancels_minus_n` and
+its twin (`bash -n -- +n <(...)`: the script is the file `+n`).
+
+## F243 — `+n` after `-n` still counted as a syntax check · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-06
+
+**Finding (reviewer K I3).** `bash -n +n <(echo rm -rf <game>)` executes the script; any `-n` among
+the options exempted it. **Fix:** the LAST n-toggle decides (`-n`/`+n`, clustered `-xn`/`+xn`, and
+`+o noexec` turning it off). `-o noexec` is not exempted (false positive only, as before).
+**RE-DERIVED BY:** the same two tests as F242.
+
+## F244 — a word holding a span with a blank or a separator split into a false command name · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06
+
+**Finding (reviewer K I4; allowed at 44c2d00 and 47d06cd).** `tokens()` splits at every unquoted
+blank and `segments()` at every unquoted separator, inside `$(...)`, backticks and `${...}` too. So
+`A=${X:-echo a} rm -rf <game>` named `a}` the command, `env -C $(echo /tmp ) rm -rf <game>` named
+`/tmp`, and `A=$(echo a; echo b) rm -rf <game>` was cut into `A=$(echo a` and `echo b) rm -rf
+<game>` (verb `echo`) -- all allowed. **Fix:** `_verb_token` walks `_raw_words` (a word ends only
+outside every span; an UNCLOSED span -- a cut fragment -- splits as before), the substituted-verb
+position test reads the same words, and `facts()` walks `_spanning_view` of each command (closed,
+unquoted, separator-holding substitutions collapsed) IN ADDITION to the command as written, the
+top level's view seeded like the top level. Additive: no fact the written command produces is lost.
+**Open:** scans that tokenise a segment on their own (`_git_destructive`'s token walk, the wrapper
+skips in other rules) were not audited for spans. **RE-DERIVED BY:**
+`test_a_word_holding_a_span_is_ONE_word`, `test_TWIN_spans_and_views_change_nothing_else`.
+
+## F245 — a mixed-quoted `cd` before a shell patch kept its quotes · **DEFECT (measured)** · confidence 95% · ✅ FIXED 2026-10-06
+
+**Finding (reviewer K I1).** `patch_paths._literal_cd` dequoted only an operand wrapped whole in one
+pair of quotes and took any other spelling as written, so `cd '<REF>'/libraries && codex
+--codex-run-as-apply-patch '...'` judged the path `'<REF>'/libraries/...` -- under no root.
+**Fix:** ONE fully single- or double-quoted word is dequoted (a double-quoted one is still checked
+for expansions); any other word holding a quote is refused. **RE-DERIVED BY:** `tests/test_patch_paths.py`
+`test_a_shell_patch_after_an_EXPANDED_cd_is_refused` (6 new spellings x 2 forms) and the literal-cd twin.
+
+## F246 — other spellings of a git config write, and a moved HOME, left a clean unforced · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06
+
+**Finding (reviewer K I2).** F234 matched the literal word `requireForce`, but git accepts the key
+spelled `"clean.require""Force"` or `clean.require\Force`, or through a variable; and `HOME=/x` (or
+`XDG_CONFIG_HOME`) makes git read a global config the guard cannot see. All left `git clean -dx`
+in an X4 folder allowed. **Fix:** any `git config` in the command that is not a read (`--get*`,
+`--list`, `-l`, `--show-*`, the `get`/`list` subcommands; and not a bare `git config`) forces the
+clean, order-blind, in any carried command; a `HOME=` / `XDG_CONFIG_HOME=` assignment anywhere does
+too. Behaviour change: `git config user.name x && git clean -dx` in an X4 folder now asks.
+**RE-DERIVED BY:** `test_ANY_writing_git_config_or_a_moved_HOME_forces_the_clean`,
+`test_TWIN_a_READ_of_git_config_leaves_the_clean_unforced`.
+
+## F247 — an OpenCode settings edit was judged on its text, not its result · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06
+
+**Finding (reviewer K I5).** `opencode.translate` passed an `edit`'s new text as the written text,
+and `settings_guard` judged that text plus the file's CURRENT keys -- never the file after the
+edit. Two edits, neither naming the key, built `"X4_GUARD": "off"`. **Fix:** the adapter passes the
+edit (`old`, `new`, `replace_all`) and `settings_guard._judge_edit` applies it to the file as read
+and judges the result; an empty `old` is judged both as the whole file and as prepended text. An
+edit that does not apply here (the agent's tool may match fuzzily) is refused when its text could
+form the key wherever it lands (`_could_form_key`: names it, holds a `\u` escape, is a piece of it,
+starts with its tail, ends with its head, or could finish/open a `\u` escape) -- fail closed. A file
+that already names the key still refuses any edit, as before. **RE-DERIVED BY:**
+`tests/test_opencode_adapter.py` `test_a_two_step_edit_that_BUILDS_X4_GUARD_is_denied` and its twin.
+
+## F248 — patch semantics chosen by sniffing the text · **DEFECT (read)** · confidence 90% · ✅ FIXED 2026-10-06
+
+**Finding (reviewer K M1).** `settings_guard` read any written text containing `*** Begin Patch`
+and only `*** Add File:` headers as an add-only patch -- whose result ignores the file's current
+content -- whoever sent it. **Fix:** only when the caller says so: `x4guard.guard_payload(...,
+patch=True)` sets `x4_patch`, from the Codex adapter's patch calls and `x4guard check --patch`.
+**RE-DERIVED BY:** `tests/test_settings_guard.py` `test_patch_semantics_only_when_the_caller_SAYS_it_is_a_patch`.
+
+## F249 — further `::` stream suffixes on `X4_CONFIG` · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06
+
+**Finding (reviewer K M2; residual of F236).** On Windows, `x4-paths.env::$DATA/.`,
+`x4-paths.env::$DATA::$DATA` and `x4-paths.env::$DATA ` open the file from Python and are missing
+to the bash loader (3 of 16 probe spellings disagreed). **Fix:** a `::` beyond exactly one trailing
+`::$DATA` names no config in `_paths` (`config_names_stream`) and `x4doctor` (`_config_stream`); the
+bash loader already found none, so it is unchanged. **RE-DERIVED BY:** the spelling table in
+`tests/test_config_precedence_agrees.py` (+7 rows) and `test_FXG6_a_further_stream_suffix_names_NO_config`.
+
