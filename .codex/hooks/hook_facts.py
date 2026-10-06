@@ -1007,7 +1007,11 @@ _SUBST = re.compile(r"\$\(|" + chr(96))
 # variable NAME is what identifies the root.
 ROOT_VARS = {"X4_GAME": "game", "X4_REFERENCE": "reference", "X4_PROFILE": "profile",
              "X4_SAVES": "saves", "X4_MODS": "mods", "X4_TOOLKIT": "toolkit",
-             "X4_DOCUMENTS": "documents"}
+             "X4_DOCUMENTS": "documents",
+             # The path config itself (FX-G2 item 1). Only protect-bash.sh's config pass sends
+             # a `config` root, so `> "$X4_CONFIG"` resolves to the file it names there; no
+             # rule targets the key, so everywhere else it is inert.
+             "X4_CONFIG": "config"}
 
 
 #: Interpreters this rule is about. Spelled through `_verb_name`, so an absolute
@@ -3890,6 +3894,16 @@ def facts(payload: dict, roots: dict) -> dict:
             # `$(...)` values are not substituted, so such an operand stays unresolved.
             rs = resolve_all(p, assigns) if expand else [resolve(p, plain_assigns)]
             for r in rs:
+                # A LEADING ROOT VARIABLE IS ITS ROOT, for every operand (FX-G2 items 1-2,
+                # v4.0.0 delta review). Only `cd` (R2-P1) and the icacls rule substituted it,
+                # so a WRITE through the variable stayed unresolved -- and the write rules are
+                # deliberately not conservative about unresolved operands. MEASURED: `echo x >
+                # "$X4_REFERENCE/libraries/wares.xml"`, `cp f "$X4_TOOLKIT/reference/..."`, the
+                # same into "$X4_PROFILE", and every spelling of a write to
+                # "$X4_TOOLKIT/x4-paths.env" were ALLOWED (34 of 40 probes) while the literal
+                # path was refused. The variable NAME identifies the root (ROOT_VARS); a root
+                # that is not configured is left unsubstituted, exactly as before.
+                r = subst_root_var(r, roots)
                 unres = has_unresolved(r)
                 # PARSE DEBRIS IS NOT JOINED ONTO THE SESSION SEED (lane F). `c_old` is the
                 # directory this segment had before the seed existed; a token carrying a

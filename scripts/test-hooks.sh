@@ -1070,9 +1070,17 @@ decide deny  protect-bash.sh "$(cj "cd '$_ct' && cp x4-paths.env.example x4-path
 decide deny  protect-bash.sh "$(cj "rm -f '$_ct/.claude/x4-paths.env'")" "delete the 3.x path config: denied"
 decide allow protect-bash.sh "$(cj "cat '$_ct/x4-paths.env'")"     "TWIN: READING the path config is allowed"
 decide allow protect-bash.sh "$(cj "echo x >> '$_ct/notes-x4-paths.txt'")" "TWIN: a write to a file merely NAMED like it is allowed"
+# FX-G2 item 1 (v4.0.0 delta review): the config pass sent the config ALONE, so a ROOT VARIABLE
+# was never substituted -- every spelling below was ALLOWED (and the rm only advised).
+decide deny  protect-bash.sh "$(cj "echo X4_REFERENCE=/x > \"\$X4_TOOLKIT/x4-paths.env\"")" "redirect via \$X4_TOOLKIT onto the config: denied"
+decide deny  protect-bash.sh "$(cj "cp /dev/null \"\${X4_TOOLKIT}/x4-paths.env\"")" "cp via \${X4_TOOLKIT} onto the config: denied"
+decide deny  protect-bash.sh "$(cj "cd \"\$X4_TOOLKIT\" && echo a > x4-paths.env")" "cd \$X4_TOOLKIT, then a relative redirect onto the config: denied"
+decide deny  protect-bash.sh "$(cj "rm \"\$X4_TOOLKIT/x4-paths.env\"")" "rm via \$X4_TOOLKIT of the config: denied (was an advisory)"
+decide allow protect-bash.sh "$(cj "echo a > \"\$X4_TOOLKIT/x4-paths.env.example\"")" "TWIN: via the variable, the .example beside it is not the config"
 export X4_CONFIG="$_ct/elsewhere.env"; : > "$X4_CONFIG"
 decide deny  protect-files.sh "$(fj "$X4_CONFIG")"                 "Write an explicit X4_CONFIG file: denied"
 decide deny  protect-bash.sh "$(cj "echo x > '$X4_CONFIG'")"       "redirect into an explicit X4_CONFIG file: denied"
+decide deny  protect-bash.sh "$(cj "echo x > \"\$X4_CONFIG\"")"    "redirect into \$X4_CONFIG, by the variable: denied (FX-G2)"
 unset X4_CONFIG X4_TOOLKIT CLAUDE_PROJECT_DIR
 eval "$_cfg_saved"
 

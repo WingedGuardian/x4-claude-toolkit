@@ -4273,6 +4273,88 @@ class TestP2GitStashAllIsAWipe(unittest.TestCase):
                 self.assertFalse(FC(c, _ELSEWHERE)[self.FACT], c)
         self.assertFalse(FC("git stash -a", _NO_CWD)[self.FACT])
 
+class TestG2ARootVariableOperandIsItsRoot(unittest.TestCase):
+    """FX-G2 items 1-2 (v4.0.0 delta review): a WRITE through a root variable was never
+    substituted -- only `cd` (R2-P1) and icacls were -- and the write rules are not conservative
+    about an unresolved operand. MEASURED, 34 of 40 probes ALLOWED: `echo x >
+    "$X4_REFERENCE/libraries/wares.xml"`, `cp f "$X4_TOOLKIT/reference/..."`, the same into
+    "$X4_PROFILE", and every spelling of a write to "$X4_TOOLKIT/x4-paths.env". Now every
+    operand's leading root variable is its root (prep -> subst_root_var), so the variable and
+    the literal spelling judge alike."""
+
+    KEYS = ("writes_reference", "rm_targets_reference", "writes_profile", "rm_in_profile",
+            "rm_hits_game", "rm_in_x4_dir", "sed_i_in_game_or_profile",
+            "copy_into_game_or_profile", "redirect_truncate_into_game_or_profile")
+    VARS = {"X4_REFERENCE": REF, "X4_PROFILE": PROF, "X4_GAME": GAME, "X4_TOOLKIT": TOOLKIT}
+    VERBS = ("echo x > {}", "echo x >> {}", "cp a {}", "mv /x/y {}", "echo x | tee {}",
+             "sed -i s/a/b/ {}", D + " -rf {}", "mv {} /x/y")
+
+    def test_every_root_variable_and_verb_judges_like_the_literal(self):
+        for var, lit in self.VARS.items():
+            for tail in ("", "/libraries/wares.xml", "/reference/libraries/w.xml"):
+                for v in self.VERBS:
+                    for spell in ("$" + var, "${" + var + "}"):
+                        a = F(v.format(DQ + spell + tail + DQ))
+                        b = F(v.format(DQ + lit + tail + DQ))
+                        with self.subTest(var=spell, tail=tail, verb=v):
+                            self.assertEqual({k: a[k] for k in self.KEYS},
+                                             {k: b[k] for k in self.KEYS})
+
+    def test_the_measured_bypasses_are_refused(self):
+        for cmd in ('echo x > "$X4_REFERENCE/libraries/wares.xml"',
+                    'cp f "$X4_REFERENCE/libraries/wares.xml"',
+                    'echo x > "$X4_TOOLKIT/reference/libraries/wares.xml"',
+                    'sed -i s/a/b/ "${X4_REFERENCE}/libraries/wares.xml"'):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(F(cmd)["writes_reference"], cmd)
+        self.assertTrue(F('echo x > "$X4_PROFILE/content.xml"')["writes_profile"])
+        self.assertTrue(F(D + ' -rf "$X4_GAME"')["rm_hits_game"])
+
+    def test_the_config_pass_sees_every_root_variable_spelling(self):
+        """protect-bash.sh's config pass: the config IN PLACE OF the reference root, every
+        other root kept. Sending the config ALONE left `$X4_TOOLKIT` unsubstituted."""
+        cfg = TOOLKIT + "/x4-paths.env"
+        roots = dict(ROOTS, reference=cfg, config=cfg)
+        for cmd in ('echo X4_REFERENCE=/x > "$X4_TOOLKIT/x4-paths.env"',
+                    'echo a >> "${X4_TOOLKIT}/x4-paths.env"',
+                    'cp /dev/null "$X4_TOOLKIT/x4-paths.env"',
+                    'cd "$X4_TOOLKIT" && echo a > x4-paths.env',
+                    'echo a > "$X4_CONFIG"',
+                    D + ' "$X4_TOOLKIT/x4-paths.env"'):
+            with self.subTest(cmd=cmd):
+                f = H.facts({"tool_input": {"command": cmd}, "cwd": _ELSEWHERE}, roots)
+                self.assertTrue(f["writes_reference"] or f["rm_targets_reference"], cmd)
+        # TWIN: the config ALONE (the old pass) cannot resolve the toolkit variable.
+        f = H.facts({"tool_input": {"command": 'echo a > "$X4_TOOLKIT/x4-paths.env"'}},
+                    {"reference": cfg})
+        self.assertFalse(f["writes_reference"])
+
+    # --- one falsification twin per clause ---
+    def test_TWIN_an_unconfigured_root_is_not_substituted(self):
+        """Clause: the root is configured. Unset, the token stays unresolved as before."""
+        f = H.facts({"tool_input": {"command": 'echo x > "$X4_REFERENCE/libraries/w.xml"'}},
+                    dict(ROOTS, reference=""))
+        self.assertFalse(f["writes_reference"])
+
+    def test_TWIN_only_a_LEADING_root_variable_is_its_root(self):
+        """Clause: the variable leads the token. `${X4_REFERENCE}x` is a sibling, and a root
+        variable in the MIDDLE of a path is not the root."""
+        self.assertFalse(F('echo x > "${X4_REFERENCE}x/w.xml"')["writes_reference"])
+        self.assertFalse(F('echo x > "/c/build/$X4_REFERENCE/w.xml"')["writes_reference"])
+
+    def test_TWIN_a_non_root_variable_is_not_a_root(self):
+        """Clause: the name is in ROOT_VARS."""
+        self.assertFalse(F('echo x > "$X4_REFERENCES/w.xml"')["writes_reference"])
+        self.assertFalse(F('echo x > "$BUILD/w.xml"')["writes_reference"])
+
+    def test_TWIN_an_assignment_in_the_command_wins(self):
+        self.assertFalse(F('X4_REFERENCE=/c/tmp/x; echo x > "$X4_REFERENCE/w.xml"')
+                         ["writes_reference"])
+
+    def test_TWIN_a_READ_through_the_variable_is_not_a_write(self):
+        self.assertFalse(F('cat "$X4_REFERENCE/libraries/wares.xml" > out.txt')["writes_reference"])
+
+
 def load_tests(loader, standard_tests, pattern):
     """unittest.main() collects TestCase SUBCLASSES ONLY, so every module-level
     `def test_*` in this file was invisible to it.
