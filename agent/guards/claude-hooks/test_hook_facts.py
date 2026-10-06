@@ -4949,6 +4949,13 @@ class TestGOutSubstitutedVerb(unittest.TestCase):
             with self.subTest(c=c):
                 self.assertTrue(FC(c, _ELSEWHERE)["verb_unresolved"], c)
 
+    def test_TWIN_a_relative_operand_does_not_join_the_SESSION_directory(self):
+        """Corpus replay: debris of a substitution (`$(jq -r '.tool_input.command' < f)`) read
+        as a verb with a relative operand, joined to a session cwd in the game -> advisory."""
+        c = "C=$(jq -r " + Q + ".tool_input.command" + Q + ' < /c/w/p.json); bash -n -c "$C"'
+        self.assertFalse(FC(c, GAME)["rm_in_x4_dir"])
+        self.assertTrue(FC('cd "' + GAME + '" && $(echo rm) -rf libraries', _ELSEWHERE)["rm_in_x4_dir"])
+
     def test_a_substituted_verb_below_the_game_root_keeps_the_delete_advisory(self):
         for c in ("$(echo rm) -rf " + DQ + GAME + "/libraries" + DQ, BT + "echo rm" + BT + " -rf " + DQ + GAME + "/x" + DQ):
             with self.subTest(c=c):

@@ -4571,7 +4571,10 @@ def facts(payload: dict, roots: dict) -> dict:
         # <game>/libraries` was a plain allow where `rm -rf` advises). Advisory only; an
         # operand that IS a root is denied by verb_unresolved above.
         if _subst_verb(s):
-            subst_rm_t += prep(_operands(s), c_cwd, c_old)
+            # UNSEEDED (lane F): a relative operand joins only a directory the COMMAND entered,
+            # never the session's. MEASURED in the corpus replay: 6 false advisories, each a
+            # parse fragment of a substitution whose debris joined the session cwd (the game).
+            subst_rm_t += prep(_operands(s), c_old, c_old)
         # truncate / dd of=are truncating writes, judged as `>` is (see clobber_targets).
         redir_t += [("truncate",) + o for o in prep(clobber_targets(s), c_cwd, c_old, False)]
         mv_src += prep(move_sources(s), c_cwd, c_old)
