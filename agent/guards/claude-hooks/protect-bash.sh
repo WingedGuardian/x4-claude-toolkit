@@ -197,10 +197,13 @@ if [ -z "$_x4_prof_root" ]; then
     [ -n "$_pr" ] && [ -d "$_pr" ] && { _x4_prof_root="$_pr"; break; }
   done
 fi
+# emit_roots [REFERENCE] -- an argument REPLACES the reference root, for the config pass below.
+# Every other root stays, so a root VARIABLE resolves there too (FX-G2 item 1).
 emit_roots() {
   printf 'game\t%s\n'       "$X4_GAME"
   printf 'profile\t%s\n'    "$_x4_prof_root"
-  printf 'reference\t%s\n'  "$X4_REFERENCE"
+  printf 'reference\t%s\n'  "${1:-$X4_REFERENCE}"
+  printf 'config\t%s\n'     "${X4_CONFIG:-}"
   printf 'toolkit\t%s\n'    "$X4_TOOLKIT"
   printf 'mods\t%s\n'       "$X4_MODS"
   printf 'documents\t%s\n'  "${X4_DOCUMENTS:-}"
@@ -409,7 +412,9 @@ on writes_reference && deny "BLOCKED: reference/ is the read-only unpacked base 
 # === HARD BLOCK — WRITE or DELETE the toolkit's PATH CONFIG (v4.0 release review R1-F1/R1-P1) ===
 # Every guard reads its roots from x4-paths.env; an agent that could rewrite it could move or
 # drop what they protect. The SAME parse pass judges it: hook_facts runs once more with the
-# config file as its only `reference` root, and its write/delete facts for that root answer
+# config file IN PLACE OF the `reference` root -- every other root kept, so `$X4_TOOLKIT/...`
+# and `cd "$X4_TOOLKIT"` still resolve (FX-G2: sending the config ALONE left every root-variable
+# spelling of the write allowed) -- and its write/delete facts for that root answer
 # "does this command write or delete the config?" -- a redirect (truncating or appending), cp,
 # mv, tee, sed -i, rm. COST: only a command whose TEXT names the config (or X4_CONFIG) pays
 # that second pass; every other command pays one pure-shell case. ACCEPTED RESIDUAL: a name
@@ -425,7 +430,7 @@ if [ "$_x4_cfgm" = 1 ]; then
   x4_cfg_candidates
   while IFS= read -r _cf; do
     [ -n "$_cf" ] || continue
-    _cfacts=$( { printf 'reference\t%s\n' "$_cf"; printf -- '--X4-ROOTS-END--'; printf '%s' "$INPUT"; } \
+    _cfacts=$( { emit_roots "$_cf"; printf '%s' "$INPUT"; } \
                | "$PY" "$HOOK_DIR/hook_facts.py" 2>/dev/null)
     _cfacts="${_cfacts%%$SENT*}"
     case $'\n'"${_cfacts//$'\r'/}"$'\n' in
@@ -436,6 +441,15 @@ if [ "$_x4_cfgm" = 1 ]; then
 $_x4_cfg_paths
 EOF
 fi
+
+# === DENY — a SHELL write to a Claude Code settings file (user decision 2026-10-05) ===
+# A settings `env` block reaches every hook (MEASURED, Claude Code 2.1.290), so `"X4_GUARD":
+# "off"` written there switches the guards off at the next launch. A shell write's resulting
+# content cannot be seen, so it is refused outright -- a DENY with a remedy, never an ask (the
+# user's no-prompt rule) -- and the file-edit tools, whose content settings_guard.py judges,
+# stay open for every other settings edit. ACCEPTED RESIDUAL: a write from inside an opaque
+# interpreter (`python -c "open(...)"`) is not seen.
+on writes_agent_settings && deny "BLOCKED: a shell command may not write a Claude Code settings file (.claude/settings*.json): its env block reaches every hook, and the guard cannot see what a shell write leaves there -- X4_GUARD in it would switch the X4 guards off. Make the edit with your file-edit tool (Write / Edit / apply_patch), whose content the guard checks; X4_GUARD itself is the user's to set, at launch. Command: $COMMAND"
 
 # === HARD BLOCK — re-unpack into a locked reference/ ===
 # Sentinel-gated: once reference/.unpacked-and-locked exists, block accidental re-unpacks.

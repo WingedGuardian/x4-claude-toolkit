@@ -49,6 +49,78 @@ _SHELL_FORM = re.compile(
 _ANY_POSITION = re.compile(r"(?:^|[;&|\n]|\$\()\s*(?:apply_patch|applypatch)(?=\s|$|<)")
 
 
+#: Codex's own entry point to its patch applier, which it puts on the shell PATH: `codex
+#: --codex-run-as-apply-patch '<patch>'` applies the patch given as an ARGUMENT. FX-G2 item 6
+#: (v4.0.0 delta review), MEASURED by reviewer A: that form deleted a file in scratch while
+#: shell_patch never looked at it. A SINGLE-quoted argument is literal text, so it is read as
+#: the patch; any other spelling of it is refused (see _runs_patch).
+_CODEX_FLAG = "--codex-run-as-apply-patch"
+_CODEX_ARG = re.compile(
+    r"""^\s*(?:cd\s+(?P<dir>"[^"]*"|'[^']*'|[^\s;&|]+)\s*(?:&&|;)\s*)?"""
+    r"""(?:[^\s;&|<>'"]*[/\\])?codex(?:\.exe|\.cmd)?\s+--codex-run-as-apply-patch\s+'(?P<body>[^']*)'\s*$""")
+_PATCH_NAMES = ("apply_patch", "applypatch")
+_RUNNER_EXT = re.compile(r"\.(?:exe|bat|cmd|com|ps1|sh)$", re.IGNORECASE)
+_PATCH_RUNNERS = ("codex", "node", "npx", "bunx", "bun", "pnpm", "yarn")
+#: With no shell parser to ask, the name or the flag ANYWHERE is a patch run (fail closed).
+_ANYWHERE = re.compile(r"(?:apply_?patch|--codex-run-as-apply-patch)", re.IGNORECASE)
+
+
+def _hook_facts():
+    """hook_facts, the shell parser every guard shares -- beside this file in a rendered tree,
+    in ../claude-hooks in the source tree -- or None."""
+    try:
+        import hook_facts
+        return hook_facts
+    except Exception:
+        import sys
+        from pathlib import Path
+        here = Path(__file__).resolve().parent
+        for d in (here, here.parent / "claude-hooks"):
+            if (d / "hook_facts.py").is_file() and str(d) not in sys.path:
+                sys.path.insert(0, str(d))
+        try:
+            import hook_facts
+            return hook_facts
+        except Exception:
+            return None
+
+
+def _runs_patch(cmd: str) -> bool:
+    """Does ANY command in this shell text run apply_patch? Judged by the guards' own shell
+    parser, which already sees through what a regex over the text does not: `{ apply_patch`,
+    `FOO=1 apply_patch`, `(apply_patch`, wrappers (`timeout 5`, `env`, `exec`), a path or a
+    `.exe/.bat/.cmd` suffix, `bash -c '...'` and the other carriers -- plus Codex's
+    `--codex-run-as-apply-patch` under a codex/node launcher (item 6). A mention (`echo
+    apply_patch`, `grep -rn apply_patch`) is not a run. A parser that is missing, raises, or
+    stopped walking (carriers truncated) answers YES: an unread patch is never an allow."""
+    # COST GATE: every shell command passes here, and the walk can translate a PowerShell
+    # carrier (a subprocess). Neither name can run without "patch" in the text once quotes and
+    # backslashes are removed (`app""ly_pat'c'h` included). ACCEPTED RESIDUAL: a name built
+    # from a variable (`$P <<EOF`) -- the shell guard still judges that command as shell.
+    if "patch" not in re.sub(r"""["'\\]""", "", cmd).lower():
+        return False
+    H = _hook_facts()
+    if H is None:
+        return bool(_ANYWHERE.search(cmd))
+    try:
+        spliced = H.join_continuations(cmd)
+        body = H.strip_comments(H.strip_heredocs(spliced))
+        extra = [H.strip_comments(h) for h in H.heredoc_bodies(spliced)]
+        cmds, truncated = H.carried_commands(body, extra)
+        if truncated:
+            return True
+        for c in cmds:
+            for seg in H.segments(c):
+                name = _RUNNER_EXT.sub("", H._verb_name(H.verb(seg)) or "")
+                if name in _PATCH_NAMES:
+                    return True
+                if _CODEX_FLAG in H.tokens_of(seg) and (name.startswith("codex") or name in _PATCH_RUNNERS):
+                    return True
+    except Exception:
+        return True
+    return False
+
+
 class PatchParseError(ValueError):
     pass
 
@@ -298,8 +370,15 @@ def shell_patch(cmd: str) -> tuple[str, str | None] | None:
         cd = m.group("dir")
         if cd and cd[0] in "'\"":
             cd = cd[1:-1]
-    elif not _ANY_POSITION.search(cmd):
-        return None
+    else:
+        mc = _CODEX_ARG.match(cmd)
+        if mc:                               # `codex --codex-run-as-apply-patch '<patch>'` (item 6)
+            cd = mc.group("dir")
+            if cd and cd[0] in "'\"":
+                cd = cd[1:-1]
+            return mc.group("body"), cd
+        if not (_ANY_POSITION.search(cmd) or _runs_patch(cmd)):
+            return None
     start, end = cmd.find(BEGIN), cmd.rfind(END)
     if start < 0 or end < start:
         return "", cd

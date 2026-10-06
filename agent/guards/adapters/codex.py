@@ -108,7 +108,9 @@ def _patch_calls(text: str, base: str, parse=patch_paths.parse_patch) -> list[tu
         kind = OP_KIND.get(op)
         if kind is None:
             continue
-        calls.append((kind, None, None, _abspath(p, base), f"{op} {p}"))
+        ap = _abspath(p, base)
+        # A Claude Code settings file: the guard judges the patch TEXT (settings_guard.py).
+        calls.append((kind, None, text if x4guard.is_agent_settings(ap) else None, ap, f"{op} {p}"))
     return calls
 
 

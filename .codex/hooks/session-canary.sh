@@ -42,6 +42,25 @@ fi
 # the config's IGNORED lines (an X4_GUARD line first, R1-F1), then its location.
 x4_config_banner
 
+# X4_GUARD IN A SETTINGS FILE'S env (user decision 2026-10-05). A settings `env` block reaches
+# every hook (MEASURED, Claude Code 2.1.290), so a key there switches the guards from inside the
+# project rather than at launch. Agents may not write one (settings_guard.py); this names one
+# that is already there. Directive first, then the files -- paths only, never a value.
+_x4_sg_files=()
+for _f in "${CLAUDE_PROJECT_DIR:-}/.claude/settings.json" "${CLAUDE_PROJECT_DIR:-}/.claude/settings.local.json"           "${HOME:-}/.claude/settings.json" "${HOME:-}/.claude/settings.local.json"; do
+  case "$_f" in /.claude/*) continue ;; esac
+  [ -f "$_f" ] && _x4_sg_files[${#_x4_sg_files[@]}]="$_f"
+done
+_x4_sgpy="$(x4_python)"
+if [ "${#_x4_sg_files[@]}" -gt 0 ] && [ -n "$_x4_sgpy" ]; then
+  _x4_sghit="$("$_x4_sgpy" "$HOOK_DIR/settings_guard.py" --scan "${_x4_sg_files[@]}" 2>/dev/null)"
+  if [ -n "$_x4_sghit" ]; then
+    echo "[x4 guards] X4_GUARD is set in a Claude Code settings env block -- it reaches every hook. Tell the user; do not edit it yourself (the guards refuse). File(s):"
+    printf '%s
+' "$_x4_sghit" | sed 's/^/            /'
+  fi
+fi
+
 # The canary lives in the toolkit, not beside the hooks: it is a tool, and it needs the
 # x4validate package to resolve roots. If the toolkit is not configured there is nothing
 # to say -- but say THAT, rather than printing a reassuring nothing.

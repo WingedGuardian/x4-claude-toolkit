@@ -65,6 +65,65 @@ _PROVIDER = re.compile(r"^(microsoft[.]powershell[.]core/)?filesystem::")
 _SLASHES = re.compile(r"/{2,}")
 
 
+def _win_alias(s: str) -> str:
+    """Each `/`-separated component as WINDOWS opens it: an NTFS stream suffix dropped
+    (`x::$DATA` IS x, `dir::$INDEX_ALLOCATION` IS dir, `x:alt` is a stream OF x) and trailing
+    dots and spaces dropped (`reference.` IS reference). `.`, `..` and an all-dot/space
+    component are kept for normpath / as written.
+
+    FX-G2 item 3, MEASURED 2026-10-05 on NTFS: Python wrote INTO `x4-paths.env.`,
+    `x4-paths.env `, `x4-paths.env::$DATA` and `<dir>./file` -- each the real file -- while
+    every guard compared them equal to nothing. GetFullPathNameW strips a final component's
+    trailing dots AND spaces but only ONE trailing dot of an intermediate one; this strips
+    all of both everywhere, the conservative superset (a folder genuinely named `a ` is
+    judged as `a`). Not Windows-gated: on POSIX `foo.` is a different file, and reading it
+    as `foo` can only make a rule fire, never stop one."""
+    out = []
+    for n, c in enumerate(s.split("/")):
+        if c and c not in (".", ".."):
+            i = c.find(":")
+            # Not in the FIRST component of a relative token: there a colon is a drive-relative
+            # `C:x` or a command NAME (verb() reads names through norm -- `C:toolsrm` must stay
+            # that word, test_an_UNQUOTED_windows_path_is_not_that_command_at_all). A relative
+            # OPERAND reaches the rules joined to its directory, i.e. absolute, so it is covered.
+            if i > 0 and n > 0:
+                c = c[:i]
+            c = c.rstrip(". ") or c
+        out.append(c)
+    return "/".join(out)
+
+
+_SHORT_NAME = re.compile(r"~[0-9]")
+_MSYS_DRIVE = re.compile(r"^/([A-Za-z])(/|$)")
+
+
+def long_name(p: str) -> str:
+    """An 8.3 SHORT name (`C:/PROGRA~2/.../X4FOUN~1`) as its long form, so it compares equal
+    to the configured root. FX-G2 item 3, MEASURED 2026-10-05: this machine's game root has
+    the short form `C:/PROGRA~2/Steam/STEAMA~1/common/X4FOUN~1`, and `rm -rf` of it reached no
+    rule (the name backstop reads `x4 foundations`). GetLongPathNameW answers only for a path
+    that EXISTS, so the longest existing prefix is resolved and the rest kept as written.
+    One syscall per prefix, and only for a path carrying `~<digit>` on Windows: every other
+    path returns at the regex. Any failure returns the path unchanged (today's verdict)."""
+    if os.name != "nt" or not p or not _SHORT_NAME.search(p):
+        return p
+    try:
+        import ctypes
+        w = _MSYS_DRIVE.sub(lambda m: m.group(1) + ":/", p.replace(chr(92), "/"))
+        parts = w.split("/")
+        buf = ctypes.create_unicode_buffer(32768)
+        for i in range(len(parts), 0, -1):
+            head = "/".join(parts[:i])
+            if not _SHORT_NAME.search(head):
+                return p
+            n = ctypes.windll.kernel32.GetLongPathNameW(head, buf, 32768)
+            if 0 < n < 32768:
+                return "/".join([buf.value.replace(chr(92), "/")] + parts[i:])
+    except Exception:
+        pass
+    return p
+
+
 def norm(p: str) -> str:
     """Lowercase, backslashes to slashes, drive dialect unified, dot segments resolved.
 
@@ -114,7 +173,7 @@ def norm(p: str) -> str:
     # normalise it. The extended-length rewrite above emits `//` for that reason.
     if "://" not in s:
         head, rest = (s[:2], s[2:]) if s.startswith("//") else ("", s)
-        s = head + _SLASHES.sub("/", rest)
+        s = head + _SLASHES.sub("/", _win_alias(_SLASHES.sub("/", rest)))
     # Only canonicalise something that is actually a path. normpath would happily
     # rewrite "https://a/b" to "https:/a/b".
     if "://" not in s and ("/./" in s or "/../" in s or s.endswith(("/.", "/.."))):
@@ -212,8 +271,59 @@ _OPERATORS = ("&&", "||", ";", "|", "&", "\n")
 _DQ_ESCAPES = "$" + chr(96) + chr(34) + chr(92) + chr(10)
 
 
+def _qwalk(s: str, q0: str = "", end=None):
+    """THE quote walk every scanner here shares: yield (index, char, in_quote, kind), where
+    kind is the quote in force -- "'" single, '"' double, "$'" ANSI-C, "" none. `q0` is the
+    quote state the text STARTS in (a line inside a multi-line string); `end`, a list, receives
+    the state it ENDS in.
+
+    ANSI-C QUOTING (FX-G2 / reviewer E5, v4.0.0 delta review): inside `$'...'` a backslash
+    escapes ANY character, the quote included. Every scanner here read `$'it\\'s'` as a single-
+    quoted `it\\` and then OPENED a new quote at `s'` that never closed -- so `echo $'it\\'s';
+    rm -rf <game>` was ONE segment whose verb is echo, and the hard block never saw the rm.
+    tokens() already decoded the form; the scanners that decide where commands start did not.
+
+    A BACKSLASH OUTSIDE QUOTES ESCAPES THE NEXT CHARACTER, so `don\\'t` opens nothing and
+    `\\$'x'` is not ANSI-C. Inside double quotes it escapes only `$ \\` " \\\\ newline`."""
+    q = q0
+    dollar = False
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if q:
+            yield i, c, True, q
+            if q == "$'":
+                if c == chr(92) and i + 1 < n:
+                    i += 1
+                    yield i, s[i], True, q
+                elif c == "'":
+                    q = ""
+            elif c == q:
+                q = ""
+            elif (c == chr(92) and q == '"' and i + 1 < n
+                  and s[i + 1] in _DQ_ESCAPES):
+                i += 1
+                yield i, s[i], True, q
+            dollar = False
+        elif c == chr(92) and i + 1 < n:
+            yield i, c, False, ""
+            i += 1
+            yield i, s[i], False, ""          # escaped: never opens a quote
+            dollar = False
+        elif c in "\"'":
+            q = "$'" if (c == "'" and dollar) else c
+            yield i, c, True, q
+            dollar = False
+        else:
+            yield i, c, False, ""
+            dollar = c == "$"
+        i += 1
+    if end is not None:
+        end.append(q)
+
+
 def _scan(s: str):
-    """Yield (char, in_quote) so every helper can respect quoting identically.
+    """Yield (char, in_quote) so every helper can respect quoting identically (_qwalk).
 
     A BACKSLASH OUTSIDE QUOTES ESCAPES THE NEXT CHARACTER. Without that, `don\\'t`
     opened a quote state that never closed, and everything after it read as quoted --
@@ -221,28 +331,8 @@ def _scan(s: str):
     honoured the escape, so the two disagreed: tokens saw `dont`, _scan saw an open
     quote (MEASURED 2026-09-01).
     """
-    q = ""
-    i = 0
-    while i < len(s):
-        c = s[i]
-        if q:
-            yield c, True
-            if c == q:
-                q = ""
-            elif (c == chr(92) and q == '"' and i + 1 < len(s)
-                  and s[i + 1] in _DQ_ESCAPES):
-                i += 1
-                yield s[i], True
-        elif c == chr(92) and i + 1 < len(s):
-            yield c, False
-            i += 1
-            yield s[i], False          # escaped: never opens a quote
-        elif c in "\"'":
-            q = c
-            yield c, True
-        else:
-            yield c, False
-        i += 1
+    for _i, c, inq, _k in _qwalk(s):
+        yield c, inq
 
 
 def join_continuations(s: str) -> str:
@@ -307,7 +397,14 @@ def strip_comments(s: str) -> str:
     out, q, i, prev = [], "", 0, ""
     while i < len(s):
         c = s[i]
-        if q:
+        if q == "$'":                               # ANSI-C: `\'` does not close (E5)
+            out.append(c)
+            if c == chr(92) and i + 1 < len(s):
+                i += 1
+                out.append(s[i])
+            elif c == "'":
+                q = ""
+        elif q:
             out.append(c)
             if c == q:
                 q = ""
@@ -320,7 +417,7 @@ def strip_comments(s: str) -> str:
             i += 1
             out.append(s[i])
         elif c in "\"'":
-            q = c
+            q = "$'" if (c == "'" and prev == "$") else c
             out.append(c)
         elif c == "#" and (prev == "" or prev.isspace()):
             while i < len(s) and s[i] != "\n":      # keep the newline: it is a separator
@@ -351,11 +448,18 @@ def blank_single_quoted(s: str) -> str:
     is right for flag and marker detection and wrong for expansion detection -- using
     it in dollarq_after_pipe would have silenced `echo "rc=$?"`, a genuine hit.
     """
-    out, q = [], ""
+    out, q, prev = [], "", ""
     i = 0
     while i < len(s):
         c = s[i]
-        if q == "'":
+        if q == "$'":                               # ANSI-C: literal, `\'` does not close (E5)
+            out.append(c if c == "'" else " ")
+            if c == chr(92) and i + 1 < len(s):
+                i += 1
+                out.append(" ")
+            elif c == "'":
+                q = ""
+        elif q == "'":
             out.append(c if c == "'" else " ")
             if c == "'":
                 q = ""
@@ -371,10 +475,11 @@ def blank_single_quoted(s: str) -> str:
             i += 1
             out.append(s[i])
         elif c in "\"'":
-            q = c
+            q = "$'" if (c == "'" and prev == "$") else c
             out.append(c)
         else:
             out.append(c)
+        prev = c
         i += 1
     return "".join(out)
 
@@ -436,6 +541,11 @@ def piped_in(cmd: str) -> list:
         part = "".join(buf)
         if part.strip():
             out.append(sep == "|")
+        elif sep == "|" and next_sep == chr(10):
+            # `a |` NEWLINE `b` is ONE pipeline: bash continues a line that ends in `|`.
+            # The newline used to overwrite the pipe, so `b` read as not piped (E3/E4).
+            buf = []
+            return
         buf = []
         sep = next_sep
     while i < len(chars):
@@ -1007,7 +1117,11 @@ _SUBST = re.compile(r"\$\(|" + chr(96))
 # variable NAME is what identifies the root.
 ROOT_VARS = {"X4_GAME": "game", "X4_REFERENCE": "reference", "X4_PROFILE": "profile",
              "X4_SAVES": "saves", "X4_MODS": "mods", "X4_TOOLKIT": "toolkit",
-             "X4_DOCUMENTS": "documents"}
+             "X4_DOCUMENTS": "documents",
+             # The path config itself (FX-G2 item 1). Only protect-bash.sh's config pass sends
+             # a `config` root, so `> "$X4_CONFIG"` resolves to the file it names there; no
+             # rule targets the key, so everywhere else it is inert.
+             "X4_CONFIG": "config"}
 
 
 #: Interpreters this rule is about. Spelled through `_verb_name`, so an absolute
@@ -1119,26 +1233,25 @@ def _dequote_marker(word: str) -> str:
     return "".join(out)
 
 
+def _line_quotes(s: str, q0: str = "") -> tuple:
+    """(mask, quote state at the END of `s`) for one LINE that starts in quote state `q0`.
+    The mask is True at every index inside (or on) a quote. A word-initial `#` outside quotes
+    ends the line's code: a quote in a comment opens nothing (`# it's`). FX-G2 / reviewer E1:
+    the heredoc scan carries this state from line to line, so a `<<WORD` on the second line of
+    a multi-line quoted string is TEXT, as bash reads it -- not a skip region that never ends."""
+    mask = [False] * len(s)
+    end = []
+    for i, c, inq, _k in _qwalk(s, q0, end):
+        if (not inq and c == chr(35) and (i == 0 or s[i - 1] in " " + chr(9))
+                and not (i > 0 and s[i - 1] == chr(92))):
+            return mask, ""
+        mask[i] = inq
+    return mask, (end[0] if end else q0)
+
+
 def _quote_mask(s: str) -> list[bool]:
     """True at every index that sits inside (or is) a quote. Index-aligned with `s`."""
-    mask = [False] * len(s)
-    q = ""
-    i = 0
-    while i < len(s):
-        c = s[i]
-        if q:
-            mask[i] = True
-            if c == q:
-                q = ""
-            elif (c == chr(92) and q == '"' and i + 1 < len(s)
-                  and s[i + 1] in _DQ_ESCAPES):
-                mask[i + 1] = True
-                i += 1
-        elif c in "\"'":
-            q = c
-            mask[i] = True
-        i += 1
-    return mask
+    return _line_quotes(s)[0]
 
 
 def heredoc_marker(line: str):
@@ -1155,7 +1268,7 @@ def heredoc_expands(line: str) -> bool:
     return bool(o) and o[1]
 
 
-def _heredoc_open(line: str):
+def _heredoc_open(line: str, q0: str = ""):
     """(terminator, expands) for the heredoc this line opens, or None.
 
     The `<<` must be OUTSIDE quotes -- otherwise `echo "a <<MARK b"` opens a skip region
@@ -1164,7 +1277,16 @@ def _heredoc_open(line: str):
     blanking quoted strings before searching blanked the marker name and stopped
     recognising heredocs at all. Test both directions or one of them silently wins.
     """
-    mask = _quote_mask(line)
+    o = _heredoc_opens(line, q0)
+    return o[0] if o else None
+
+
+def _heredoc_opens(line: str, q0: str = "") -> list:
+    """Every (terminator, expands) this line opens, IN ORDER -- bash reads their bodies one
+    after another (`cat <<A; cat <<B`). `q0` is the quote state the line starts in (see
+    _heredoc_walk): a `<<` inside a string that began on an earlier line is text (E1)."""
+    found = []
+    mask = _line_quotes(line, q0)[0]
     line = _blank_arith(line, mask)
     stop = _comment_start(line, mask)
     for i in range(min(len(line) - 1, stop)):
@@ -1183,9 +1305,9 @@ def _heredoc_open(line: str):
                 # delimiter, so `<<\\EOF`, `<<E'OF'` and `<<'EOF'` all
                 # terminate at the same word.
                 word = m.group(1)
-                return (_dequote_marker(word),
-                        not any(ch in word for ch in ("'", '"', chr(92))))
-    return None
+                found.append((_dequote_marker(word),
+                              not any(ch in word for ch in ("'", '"', chr(92)))))
+    return found
 
 
 def _comment_start(line: str, mask: list) -> int:
@@ -1240,6 +1362,91 @@ def ps_heredoc_bodies(cmd: str) -> list[str]:
                           and _ps_reads_stdin(_unwrap(sg)))
 
 
+def _is_heredoc_end(line: str, term: str) -> bool:
+    """Does this body line END the heredoc? Its stripped text is the delimiter (or the
+    delimiter and `;`, a deliberate over-reading kept from before) -- or the delimiter followed
+    by `)`, which closes the `$(` the heredoc was opened in. FX-G2 / reviewer E2, MEASURED in
+    bash: `x=$(cat <<EOF` / `hi` / `EOF)` ENDS the body (with a warning) and the next line
+    RUNS, while this scan kept reading body to the end of the input -- so `rm -rf <game>` on
+    the next line reached no rule. Ending a body too EARLY shows the rules more text; too
+    late hides it, so every doubt resolves toward ending."""
+    s = line.strip()
+    if s == term or s == term + ";":
+        return True
+    return s.startswith(term) and s[len(term):].lstrip().startswith(")")
+
+
+def _heredoc_walk(cmd: str) -> tuple:
+    """(docs, kept): every heredoc in `cmd` as (opening line, terminator, expands, body lines),
+    and the lines that are NOT body -- the command with its bodies removed.
+
+    ONE walk for strip_heredocs, heredoc_bodies and heredoc_substitutions, carrying the QUOTE
+    STATE from line to line. FX-G2 / reviewer E1, MEASURED: each line was scanned as if it
+    began unquoted, so `git commit -m "notes` / `use cat <<EOF here"` opened a heredoc on the
+    SECOND line of a quoted message -- a skip region that never closed -- and `rm -rf <game>`
+    on the next line was ALLOWED past the hard block (single quotes too, and a > write into
+    reference/). A line that opens several heredocs has their bodies read in order, as bash
+    does; a terminator line's text after the delimiter (`EOF)` -> `)`) is kept as code."""
+    lines = cmd.split(chr(10))
+    docs, kept = [], []
+    q = ""
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        opens = _heredoc_opens(line, q)
+        q = _line_quotes(line, q)[1]
+        kept.append(line)
+        i += 1
+        for term, expands in opens:
+            body = []
+            while i < len(lines):
+                ln = lines[i]
+                i += 1
+                if _is_heredoc_end(ln, term):
+                    rest = ln.strip()[len(term):].strip()
+                    if rest and rest != ";":
+                        kept.append(rest)
+                    break
+                body.append(ln)
+            docs.append((line, term, expands, body))
+    return docs, kept
+
+
+_CMD_RUN_SWITCH = re.compile(r"/{1,2}[cCkKrR]")
+
+
+def _cmd_reads_stdin(sg: str) -> bool:
+    """A cmd.exe with no /c /k /r: its program is its stdin (E4)."""
+    toks = tokens_of(sg)
+    k = next((i for i, t in enumerate(toks) if _verb_name(t) == "cmd"), None)
+    return k is not None and not any(_CMD_RUN_SWITCH.fullmatch(t) for t in toks[k + 1:])
+
+
+def cmd_heredoc_bodies(cmd: str) -> list[str]:
+    """Heredoc bodies fed to a cmd.exe reading its program from stdin, TRANSLATED line by
+    line (cmd_to_sh) -- `cmd <<EOF` / `rd /s /q <ref>` / `EOF` was ALLOWED (reviewer E4)."""
+    out = []
+    for h in heredoc_bodies(cmd, sink=lambda sg: _verb_name(verb(_unwrap(sg))) == "cmd"
+                            and _cmd_reads_stdin(_unwrap(sg))):
+        sh = chr(10).join(cmd_to_sh([ln]) for ln in h.split(chr(10)) if ln.strip())
+        if sh.strip():
+            out.append(sh)
+    return out
+
+
+def _flows_to(cmd_without_bodies: str, sink) -> bool:
+    """Is any segment that READS A PIPE a `sink`? FX-G2 / reviewer E3, MEASURED: `cat <<EOF |`
+    / body / `EOF` / `bash` and `{ cat <<EOF` / body / `EOF` / `} | bash` ran the body as
+    commands while the opener line named no shell, so it was stripped as data. Where a
+    heredoc's output goes cannot be proven from its opener alone, so when ANY piped-into
+    segment of the command is a sink, every body in it is treated as possibly executed."""
+    segs = segments(cmd_without_bodies)
+    pins = piped_in(cmd_without_bodies)
+    if len(pins) != len(segs):
+        pins = [True] * len(segs)
+    return any(p and sink(sg) for sg, p in zip(segs, pins))
+
+
 def heredoc_bodies(cmd: str, sink=None) -> list[str]:
     """Bodies whose OPENING LINE runs a SHELL, because a shell executes its heredoc.
 
@@ -1254,30 +1461,17 @@ def heredoc_bodies(cmd: str, sink=None) -> list[str]:
       * `python - <<PY ... PY` is PYTHON. A line such as an assignment of a path to a
         name would parse as a delete verb under a shell tokeniser, so routing it would
         invent deletes out of assignments. Python writes have their own rule already.
+    ...plus every body of a command in which a sink READS A PIPE (E3, see _flows_to).
     """
     if sink is None:
         def sink(sg):
             return verb(_unwrap(sg)) in _SHELL_SINKS
-    out, cur, term, opener = [], None, None, ""
-    for line in cmd.split(chr(10)):
-        if cur is not None:
-            if line.strip() == term or line.strip() == term + ";":
-                # ANY segment of the opener, not just the first. The opener is a
-                # pipeline: for `cat <<EOF | bash` the first verb is `cat`, so asking
-                # only that one stripped the body as file payload and the shell on the
-                # other end of the pipe ran it unseen.
-                if _opener_feeds(opener, sink):
-                    out.append(chr(10).join(cur))
-                cur, term, opener = None, None, ""
-            else:
-                cur.append(line)
-            continue
-        t = heredoc_marker(line)
-        if t:
-            term, cur, opener = t, [], line
-    if cur is not None and _opener_feeds(opener, sink):
-        out.append(chr(10).join(cur))   # unterminated: still what the shell would run
-    return out
+    docs, kept = _heredoc_walk(cmd)
+    if not docs:
+        return []
+    piped = _flows_to(chr(10).join(kept), sink)
+    return [chr(10).join(body) for opener, _t, _e, body in docs
+            if piped or _opener_feeds(opener, sink)]
 
 
 def _opener_feeds(opener: str, sink) -> bool:
@@ -1304,21 +1498,10 @@ def heredoc_substitutions(cmd: str) -> list[str]:
     Quotes are NOT quoting inside a heredoc body (an apostrophe in `it's` is a letter), so
     this scan ignores them; a backslash escapes `$`, backtick and itself; `$((` is
     arithmetic. A quoted delimiter expands nothing and contributes nothing here."""
-    out, cur, term, expands = [], None, None, False
-    for line in cmd.split(chr(10)):
-        if cur is not None:
-            if line.strip() == term or line.strip() == term + ";":
-                if expands:
-                    out += _body_substitutions(chr(10).join(cur))
-                cur = None
-            else:
-                cur.append(line)
-            continue
-        o = _heredoc_open(line)
-        if o:
-            (term, expands), cur = o, []
-    if cur is not None and expands:
-        out += _body_substitutions(chr(10).join(cur))
+    out = []
+    for _opener, _term, expands, body in _heredoc_walk(cmd)[0]:
+        if expands:
+            out += _body_substitutions(chr(10).join(body))
     return out
 
 
@@ -1333,7 +1516,12 @@ def _body_substitutions(body: str) -> list[str]:
             continue
         if c == "$" and body[i + 1:i + 2] == "(":
             end = _match_paren(body, i + 1)
-            if body[i + 2:i + 3] == "(":        # arithmetic, not a command
+            if body[i + 2:i + 3] == "(":        # arithmetic -- whose substitutions RUN (item 4)
+                kind, text, end = _dollar_double_paren(body, i)
+                if kind == "arith":
+                    out.extend(_body_substitutions(text))
+                elif kind == "subst":
+                    out.append(text)
                 i = (end + 1) if end != -1 else i + 3
                 continue
             if end != -1:
@@ -1361,29 +1549,19 @@ def _carrier_parts(text: str) -> list[str]:
     `git commit -m "$(cat <<'EOF' ... > KNOWLEDGEBASE.md ...)"` was a DENY.
     A body fed to a PowerShell host is kept as raw text, exactly as before this change,
     so nothing that was analysed stops being analysed."""
-    if "<<" not in text or not any(heredoc_marker(ln) for ln in text.split(chr(10))):
+    if "<<" not in text or not _heredoc_walk(text)[0]:
         return [text]
     return ([strip_heredocs(text)] + heredoc_bodies(text) + ps_heredoc_bodies(text)
-            + heredoc_substitutions(text))
+            + cmd_heredoc_bodies(text) + heredoc_substitutions(text))
 
 
 def strip_heredocs(cmd: str) -> str:
     """Remove heredoc BODIES: they are the payload of a file being written, not
     commands being run."""
-    out, skip, term = [], False, None
-    for line in cmd.split("\n"):
-        if skip:
-            if line.strip() == term or line.strip() == term + ";":
-                skip = False
-            continue
-        t = heredoc_marker(line)
-        if t:
-            term, skip = t, True
-        out.append(line)
-    return "\n".join(out)
+    # ONE walk, quote state carried across lines (E1) -- see _heredoc_walk.
+    return chr(10).join(_heredoc_walk(cmd)[1])
 
 
-# ----------------------------------------------------------------- redirects
 _REDIR = re.compile(r"(\d?)>(\|?)(>?)")
 
 
@@ -1665,18 +1843,58 @@ def _lifts_reference_deny(seg: str, assigns: dict, roots: dict, cwd: str = "") -
     if v.startswith(_REFGUARD_RUNNERS) or has_unresolved(v):
         for i, t in enumerate(toks):
             if t.replace(chr(92), "/").rsplit("/", 1)[-1] in ("x4refguard.py", "x4refguard") \
-                    and "remove" in toks[i + 1:]:
+                    and ("remove" in toks[i + 1:]
+                         # FX-G2 / reviewer E7: the action may not be IN the text -- `echo
+                         # remove | xargs python x4refguard.py` (xargs supplies it), or a
+                         # variable/substitution. An action the guard cannot read is asked.
+                         or "xargs" in toks[:i]
+                         or any(has_unresolved(a) for a in toks[i + 1:])):
                 return True
     if "icacls" not in v:                # an unset ref: under()/contains_root() are False for ""
         return False
-    if not any(t.startswith(("/remove", "/reset")) for t in toks):
+    # EVERY ACL-modifying switch, not only /remove and /reset (reviewer E7, MEASURED): an
+    # explicit /grant overrides the INHERITED deny (x4refguard's own _child_ok says so),
+    # /inheritance:r strips it, /setowner hands the object to someone who may rewrite it,
+    # /restore and /substitute rewrite ACLs wholesale. /deny (applying) and a read are not lifts.
+    if not any(t.startswith(_ICACLS_LIFTS) for t in toks):
         return False
     recursive = "/t" in toks
-    for o_ in _operands(seg):
+    # /restore applies a saved ACL file to paths UNDER the folder named: an ancestor of
+    # reference/ reaches it without /T.
+    walks = recursive or any(t.startswith("/restore") for t in toks)
+    for o_ in _icacls_paths(seg):
         r = join_cwd(cwd, subst_root_var(resolve(o_, assigns), roots))
-        if under(r, ref) or (recursive and contains_root(r, ref)):
+        if under(r, ref) or (walks and contains_root(r, ref)):
             return True
     return False
+
+
+#: icacls switches that change an ACL in a way that can lift a deny (E7), and those that take
+#: a VALUE -- a trustee:perm spec or a file -- which is not a path the ACL is applied to.
+_ICACLS_LIFTS = ("/remove", "/reset", "/grant", "/inheritance", "/restore", "/setowner",
+                 "/substitute")
+_ICACLS_VALUED = ("/grant", "/deny", "/remove", "/setowner", "/restore", "/save",
+                  "/setintegritylevel", "/substitute")
+
+
+def _icacls_paths(seg: str) -> list:
+    """The PATH operands of an icacls segment: switches and their values excluded."""
+    toks = tokens_of(seg)
+    k = next((i for i, t in enumerate(toks) if "icacls" in _verb_name(t).lower()), None)
+    out, take = [], 0
+    for o in ([] if k is None else toks[k + 1:]):
+        if take:
+            take -= 1
+            continue
+        lo = o.lower()
+        if lo.startswith("/"):
+            if lo.startswith(_ICACLS_VALUED):
+                take = 2 if lo.startswith("/substitute") else 1
+            continue
+        if not _drop_redirects([o]):
+            continue
+        out.append(o)
+    return out
 
 
 def _operands(seg: str) -> list[str]:
@@ -2297,10 +2515,52 @@ def move_sources(seg: str) -> list[str]:
     return ops[:-1] if len(ops) > 1 else []
 
 
+#: MOVE-TO-TRASH commands, which are DELETES of their operands (FX-G2 item 7, v4.0.0 delta
+#: review, reviewer D-1). The user's rule -- deletions go to the Recycle Bin / Trash -- stays;
+#: core.md tells Linux/macOS agents to delete this way, and the guards ALLOWED `gio trash
+#: '<X4_GAME>'`, `gio trash '<X4_REFERENCE>/a.xml'`, `kioclient5 move <game> trash:/` and a
+#: Finder `delete` through osascript. A trashed install is as gone for the game as a deleted one,
+#: so each takes rm's verdicts exactly: game/extensions deny, reference deny, saves/profile ask.
+_TRASH_VERBS = {"trash", "trash-put", "gvfs-trash", "gvfs-rm", "rmtrash"}
+_GIO_DELETE = {"trash", "remove", "rm"}
+_KIO_DELETE = {"remove", "rm", "del"}
+_KIOCLIENT = re.compile(r"^kioclient\d*$")
+_FILE_URL = re.compile(r"^file://(?:localhost)?(?:/(?=[A-Za-z]:))?", re.IGNORECASE)
+#: A Finder object an AppleScript `delete` names by path: `POSIX file "/x"`, `folder "x"`, ...
+_AS_PATH = re.compile(r"(?:POSIX\s+file|POSIX\s+path|file|folder|alias|item|disk\s+item)\s+"
+                      r"\"([^\"]+)\"", re.IGNORECASE)
+
+
+def trash_paths(seg: str) -> list[str]:
+    """Operands a move-to-trash command takes out of their folder (see _TRASH_VERBS)."""
+    v = verb(seg)
+    if v in _TRASH_VERBS:
+        return [_FILE_URL.sub("", o) for o in _operands(seg)]
+    ops = _operands(seg)
+    if v == "gio" and ops:
+        if ops[0] in _GIO_DELETE:
+            return [_FILE_URL.sub("", o) for o in ops[1:]]
+        if ops[0] in ("move", "mv") and len(ops) > 2 and ops[-1].lower().startswith("trash:"):
+            return [_FILE_URL.sub("", o) for o in ops[1:-1]]
+        return []
+    if _KIOCLIENT.match(v or "") and ops:
+        if ops[0] in _KIO_DELETE:
+            return [_FILE_URL.sub("", o) for o in ops[1:]]
+        if ops[0] in ("move", "mv") and len(ops) > 2 and ops[-1].lower().startswith("trash:"):
+            return [_FILE_URL.sub("", o) for o in ops[1:-1]]
+        return []
+    if v == "osascript":
+        toks = tokens_of(seg)
+        script = " ".join(toks[i + 1] for i, t in enumerate(toks[:-1]) if t == "-e")
+        if re.search(r"\bdelete\b", script, re.IGNORECASE):
+            return _AS_PATH.findall(script)
+    return []
+
+
 def rm_paths(seg: str) -> list[str]:
     if verb(seg) in DELETE_VERBS:
         return _operands(seg)
-    return find_deletes(seg)
+    return trash_paths(seg) or find_deletes(seg)
 
 
 # ------------------------------------------------------------------ searches
@@ -2563,11 +2823,39 @@ def _git_destructive(seg, wanted, deep=False):
     # subcommand: the same denominator this file already accepted for `find -delete`.
     _GIT_VALUE_OPTS = ("-C", "-c", "--git-dir", "--work-tree", "--namespace",
                        "--exec-path", "--config-env")
+    # WHERE THE FILES ARE, and whether -f is needed (FX-G2 / reviewer E6). `--work-tree X`,
+    # `--work-tree=X` and a `GIT_WORK_TREE=X` prefix NAME the tree a clean/reset deletes in --
+    # only -C was read, so `git --git-dir=<game>/.git --work-tree <game> clean -fdx` reached no
+    # rule. A `--git-dir`/`GIT_DIR` repo's own folder is judged too (its core.worktree may point
+    # there; reading it as a target can only add an ask). And `-c clean.requireForce=false`
+    # makes a clean with NO -f delete (MEASURED by the reviewer), so it counts as forced.
+    worktree, gitdirs, forced = None, [], False
+
+    def _gitdir_parent(v):
+        v = v.rstrip("/" + chr(92))
+        return v[:-5] if v.lower().endswith(".git") and v[-5:-4] in ("/", chr(92)) else v
+
     for i, t in enumerate(toks):
         if t in _GIT_VALUE_OPTS and i + 1 < len(toks):
             if t == "-C":          # only -C names the directory acted on
                 base = toks[i + 1]
+            elif t == "--work-tree":
+                worktree = toks[i + 1]
+            elif t == "--git-dir":
+                gitdirs.append(_gitdir_parent(toks[i + 1]))
+            elif t == "-c" and toks[i + 1].lower().split("=", 1)[0] == "clean.requireforce":
+                # git's false spellings; a bare `-c clean.requireForce` means true.
+                kv = toks[i + 1].lower().split("=", 1)
+                forced = len(kv) == 2 and kv[1] in ("false", "no", "off", "0", "")
             skip.add(i + 1)
+        elif t.startswith("--work-tree="):
+            worktree = t.split("=", 1)[1]
+        elif t.startswith("--git-dir="):
+            gitdirs.append(_gitdir_parent(t.split("=", 1)[1]))
+        elif t.startswith("GIT_WORK_TREE="):
+            worktree = t.split("=", 1)[1]
+        elif t.startswith("GIT_DIR="):
+            gitdirs.append(_gitdir_parent(t.split("=", 1)[1]))
     # THE VERB IS NOT ALWAYS toks[0]. `verb()` skips leading VAR=value assignments,
     # this scan did not, and `toks[1:]` therefore started ON the `git` token when a
     # prefix was present -- so `sub` became "git", matched nothing in `wanted`, and
@@ -2626,24 +2914,42 @@ def _git_destructive(seg, wanted, deep=False):
     rest = toks[si + 1:]
     if sub == "clean":
         # -f is required by git itself before it deletes anything; -n/--dry-run wins.
-        if any(t in ("-n", "--dry-run") for t in rest):
+        if any(t == "-n" or _git_long(t, "--dry-run") for t in rest):
             return []
         hot = any(t.startswith("-") and not t.startswith("--") and "f" in t[1:]
-                  for t in rest) or "--force" in rest
+                  for t in rest) or any(_git_long(t, "--force") for t in rest) or forced
         # deep (J-Q1): only a clean that reaches ignored files (-x / -X) or untracked
         # directories (-d). A plain `clean -f` removes untracked NON-ignored files only.
         if deep:
             hot = hot and any(t.startswith("-") and not t.startswith("--")
                               and set(t[1:]) & set("xXd") for t in rest)
     elif sub == "reset":
-        hot = "--hard" in rest
+        hot = any(_git_long(t, "--hard") for t in rest)
     elif sub == "stash":
         hot = _stash_removes_untracked(rest, deep)
     elif sub == "checkout":
         hot = "--" in rest          # the pathspec form; a branch name is navigation
     else:                            # restore -- always about file contents
         hot = True
-    return [base] if hot else []
+    if not hot:
+        return []
+    if worktree is not None:          # the work tree REPLACES the -C/cwd folder (E6)
+        tree = worktree if (is_abs(worktree) or not base) else base.rstrip("/") + "/" + worktree
+        return [tree] + gitdirs
+    return [base] + gitdirs
+
+
+def _git_long(tok, opt, least=3):
+    """`tok` spells git's long option `opt`: exactly, or as an ABBREVIATION, which git's
+    parse-options accepts for any unambiguous prefix (`--al` is `--all`, `--har` is `--hard`,
+    `--fo` is `--force`, `--dry` is `--dry-run`). FX-G2 item 5 (v4.0.0 delta review), MEASURED
+    in a scratch repo: `git stash --a` deleted an ignored file and `git clean --fo -X` another,
+    while this file matched the full spellings only. An AMBIGUOUS prefix makes git refuse and
+    do nothing, so reading one as the option can only cost a false positive. `least` is the
+    shortest accepted spelling (`--x`; 6 = `--no-x` for a negation). A `=value` is not part of
+    the name."""
+    name = tok.split("=", 1)[0]
+    return len(name) >= least and name.startswith("--") and opt.startswith(name)
 
 
 def _stash_removes_untracked(rest, deep):
@@ -2673,16 +2979,16 @@ def _stash_removes_untracked(rest, deep):
             continue
         if t == "--":
             break
-        if t in ("-m", "--message", "--pathspec-from-file"):
-            skip = True
-        elif t == "--all":
-            every = True
-        elif t == "--no-all":
+        if t == "-m" or _git_long(t, "--message") or _git_long(t, "--pathspec-from-file"):
+            skip = "=" not in t
+        elif _git_long(t, "--no-all", 6):
             every = False
-        elif t == "--include-untracked":
-            untracked = True
-        elif t == "--no-include-untracked":
+        elif _git_long(t, "--no-include-untracked", 6):
             untracked = False
+        elif _git_long(t, "--all"):
+            every = True
+        elif _git_long(t, "--include-untracked"):
+            untracked = True
         elif t.startswith("-") and not t.startswith("--"):
             for k, ch in enumerate(t[1:], 1):
                 if ch == "a":
@@ -2992,22 +3298,8 @@ def _quote_kinds(s: str) -> list:
     quotes a command substitution still runs, inside SINGLE quotes it is literal text.
     """
     kinds = [""] * len(s)
-    q = ""
-    i = 0
-    while i < len(s):
-        c = s[i]
-        if q:
-            kinds[i] = q
-            if c == q:
-                q = ""
-            elif (c == chr(92) and q == chr(34) and i + 1 < len(s)
-                  and s[i + 1] in _DQ_ESCAPES):
-                kinds[i + 1] = q
-                i += 1
-        elif c in (chr(34), chr(39)):
-            q = c
-            kinds[i] = c
-        i += 1
+    for i, _c, inq, k in _qwalk(s):
+        kinds[i] = ("'" if k == "$'" else k) if inq else ""   # ANSI-C is literal too (E5)
     return kinds
 
 
@@ -3022,6 +3314,25 @@ def _match_paren(s: str, start: int) -> int:
             if depth == 0:
                 return j
     return -1
+
+
+def _dollar_double_paren(s: str, i: int) -> tuple:
+    """`$((` at `i`: ("arith", the expression, end) for `$(( ... ))`, or ("subst", the command,
+    end) for `$( (subshell) ... )` -- whose inner paren closes BEFORE the outer one -- or
+    ("", "", -1) when unbalanced.
+
+    FX-G2 item 4 (v4.0.0 delta review), MEASURED: `$((` was stepped over WHOLE as arithmetic,
+    so `echo $(( $(rm -rf <game>) + 0 ))`, the backtick form, and the same inside an expanding
+    heredoc were ALLOWED past the game hard block -- an arithmetic expression EXPANDS its
+    substitutions before it evaluates them. And `$((rm -rf <game>) )` is not arithmetic at all
+    (bash reads it as a command substitution holding a subshell; MEASURED: `$((echo hi) )`
+    prints hi, `$((echo hi))` is an arithmetic syntax error)."""
+    end = _match_paren(s, i + 1)
+    if end == -1:
+        return "", "", -1
+    if _match_paren(s, i + 2) == end - 1:
+        return "arith", s[i + 3:end - 1], end
+    return "subst", s[i + 2:end], end
 
 
 def substitutions(cmd: str) -> list[str]:
@@ -3049,9 +3360,17 @@ def substitutions(cmd: str) -> list[str]:
             continue
         if c == "$" and i + 1 < len(cmd) and cmd[i + 1] == "(":
             if i + 2 < len(cmd) and cmd[i + 2] == "(":
-                end = _match_paren(cmd, i + 1)
-                i = (end + 1) if end != -1 else i + 3
-                continue                        # arithmetic, not a command
+                kind, text, end = _dollar_double_paren(cmd, i)
+                if kind == "arith":
+                    out.extend(substitutions(text))
+                    i = end + 1
+                    continue
+                if kind == "subst":
+                    out.append(text)
+                    i = i + 2
+                    continue
+                i += 3
+                continue
             end = _match_paren(cmd, i + 1)
             if end != -1:
                 out.append(cmd[i + 2:end])
@@ -3542,7 +3861,17 @@ def _windows_carrier(seg: str, cmd: str, prev=None) -> list:
             if re.fullmatch(r"/{1,2}[cCkKrR]", t):
                 rest = [resolve(x, _text_assignments(cmd)) for x in toks[i + 1:]]
                 return [cmd_to_sh(rest)] if rest else []
-        return []
+        # NO /c: cmd reads its PROGRAM FROM STDIN, one command per line (FX-G2 / reviewer E4,
+        # MEASURED: `echo rd /s /q "<ref>" | cmd` and `cmd <<EOF` were ALLOWED, and Git Bash
+        # runs both). Read exactly as a PowerShell host's stdin is (_ps_stdin_program): an
+        # echo/printf or a here-string is translated; a file or any other producer is
+        # UNREADABLE and reported; the heredoc form is cmd_heredoc_bodies' job.
+        texts, unreadable = _ps_stdin_program(seg, prev)
+        if unreadable:
+            _UNTRANSLATED.append("a cmd reading its program from stdin, fed by something "
+                                 "the guard cannot read")
+            return []
+        return [cmd_to_sh([ln]) for t_ in texts for ln in t_.split(chr(10)) if ln.strip()]
     kind, payload = _ps_host_payload(toks)
     if kind == "cmd":
         text = resolve(payload, _text_assignments(cmd))
@@ -3747,6 +4076,10 @@ def _as_ms(v) -> float:
         return 0.0
 
 
+#: A Claude Code settings file, any level (FX-G2 settings rule, user decision 2026-10-05).
+_AGENT_SETTINGS = re.compile(r"(^|/)\.claude/settings[^/]*\.json$")
+
+
 def facts(payload: dict, roots: dict) -> dict:
     inp = payload.get("tool_input") or {}
     cmd = inp.get("command") or ""
@@ -3781,6 +4114,8 @@ def facts(payload: dict, roots: dict) -> dict:
     extra = [strip_comments(h) for h in heredoc_bodies(spliced)]
     # ...and an EXPANDING body (unquoted delimiter) runs its `$(...)` / backticks (FX-P2).
     extra += heredoc_substitutions(spliced)
+    # ...and a heredoc fed to a cmd.exe reading stdin is a cmd PROGRAM (reviewer E4).
+    extra += cmd_heredoc_bodies(spliced)
     # A heredoc fed to a PowerShell host is a PowerShell PROGRAM (finding 2): translated,
     # or reported untranslated -- never dropped as file payload.
     for h in ps_heredoc_bodies(spliced):
@@ -3890,6 +4225,16 @@ def facts(payload: dict, roots: dict) -> dict:
             # `$(...)` values are not substituted, so such an operand stays unresolved.
             rs = resolve_all(p, assigns) if expand else [resolve(p, plain_assigns)]
             for r in rs:
+                # A LEADING ROOT VARIABLE IS ITS ROOT, for every operand (FX-G2 items 1-2,
+                # v4.0.0 delta review). Only `cd` (R2-P1) and the icacls rule substituted it,
+                # so a WRITE through the variable stayed unresolved -- and the write rules are
+                # deliberately not conservative about unresolved operands. MEASURED: `echo x >
+                # "$X4_REFERENCE/libraries/wares.xml"`, `cp f "$X4_TOOLKIT/reference/..."`, the
+                # same into "$X4_PROFILE", and every spelling of a write to
+                # "$X4_TOOLKIT/x4-paths.env" were ALLOWED (34 of 40 probes) while the literal
+                # path was refused. The variable NAME identifies the root (ROOT_VARS); a root
+                # that is not configured is left unsubstituted, exactly as before.
+                r = subst_root_var(r, roots)
                 unres = has_unresolved(r)
                 # PARSE DEBRIS IS NOT JOINED ONTO THE SESSION SEED (lane F). `c_old` is the
                 # directory this segment had before the seed existed; a token carrying a
@@ -3899,7 +4244,8 @@ def facts(payload: dict, roots: dict) -> dict:
                 # `\"$G\"` as a relative path there -- 3 hard denies on probe harnesses and
                 # one-liners, every one a token no shell would treat as that path.
                 d = c_old if (_DEBRIS.search(r) or _DEVICE.match(r)) else c_cwd
-                out.append((r if unres else join_cwd(d, r), unres, r))
+                # An 8.3 short name is its long name (FX-G2 item 3; see long_name).
+                out.append((r if unres else long_name(join_cwd(d, r)), unres, r))
         return out
 
     rm_t, copy_t, redir_t, mv_src = [], [], [], []
@@ -4181,6 +4527,14 @@ def facts(payload: dict, roots: dict) -> dict:
             for k in ("game", "profile", "mods", "toolkit", "reference")),
 
         "writes_documents": hit(writes_any, "documents"),
+        # A shell WRITE to a Claude Code settings file (user decision 2026-10-05: "Block
+        # X4_GUARD there"). Its `env` block reaches every hook, so `"X4_GUARD": "off"` there turns
+        # the guards off at the next launch -- and a shell write's resulting content cannot be
+        # seen, so every one is refused with the file-edit tool as the remedy (settings_guard.py
+        # judges that channel's content). A delete or a move AWAY is not a write and sets nothing.
+        "writes_agent_settings": any(
+            _AGENT_SETTINGS.search(norm(pp or rr))
+            for pp, _u, rr in copy_t + redir_t_all + sed_t + out_t),
         "writes_profile": hit(writes_any, "profile"),
         "copy_into_game_or_profile": bool(copy_t) and (
             hit(copy_t, "game") or hit(copy_t, "profile")),
@@ -4391,7 +4745,7 @@ def main() -> int:
         for line in head.splitlines():
             if "\t" in line:
                 k, v = line.split("\t", 1)
-                roots[k.strip()] = v.strip()
+                roots[k.strip()] = long_name(v.strip())   # a short-name ROOT too (FX-G2)
     try:
         payload = json.loads(raw)
     except ValueError:

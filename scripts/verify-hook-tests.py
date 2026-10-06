@@ -144,11 +144,11 @@ MUTANTS = [
      "test_marker_inside_quotes_does_NOT_open_a_skip"),
     # Anchored on strip_heredocs' own call: heredoc_bodies() added a SECOND
     # `t = heredoc_marker(line)` and the bare line now matches twice.
+    # Re-anchored FX-G2 (E1): strip_heredocs, heredoc_bodies and heredoc_substitutions now
+    # share ONE walk, _heredoc_walk, which carries the quote state between lines.
     ("the heredoc marker may itself be QUOTED",
-     "        t = heredoc_marker(line)" + NL + "        if t:" + NL
-     + "            term, skip = t, True",
-     "        t = heredoc_marker(blank_quoted(line))" + NL + "        if t:" + NL
-     + "            term, skip = t, True",
+     "        opens = _heredoc_opens(line, q)",
+     "        opens = _heredoc_opens(blank_quoted(line), q)",
      "test_a_QUOTED_marker_still_opens_a_heredoc"),
     ("noclobber >| is a redirect", r'_REDIR = re.compile(r"(\d?)>(\|?)(>?)")',
      r'_REDIR = re.compile(r"(\d?)>()(>?)")', "test_noclobber_override_is_a_truncate"),
@@ -175,8 +175,12 @@ MUTANTS = [
     ("last assignment wins", "found[m.group(1)] = m.group(2)",
      "found.setdefault(m.group(1), m.group(2))", "test_last_assignment_wins"),
     # --- delete verbs and timeout shapes (2026-09-01) -----------------------------
-    ("find -delete is a delete", "    return find_deletes(seg)", "    return []",
+    ("find -delete is a delete", "    return trash_paths(seg) or find_deletes(seg)",
+     "    return trash_paths(seg)",
      "test_find_delete_on_the_game_is_a_game_delete"),
+    ("FX-G2 item 7: a move to the trash is a delete",
+     "    return trash_paths(seg) or find_deletes(seg)", "    return find_deletes(seg)",
+     "test_every_trash_form_judges_like_rm"),
     ("a FILTERED find is scoped, not a tree delete",
      "    filtered = any(_narrows(toks, i) for i, t in enumerate(toks) if t in _FIND_FILTERS)",
      "    filtered = False",
@@ -217,8 +221,9 @@ MUTANTS = [
     # clauses had to change; each gets its own mutant, because mutating the feature as a
     # whole cannot tell which clause a test is actually exercising.
     ("a backslash outside quotes escapes the next char",
-     "        elif c == chr(92) and i + 1 < len(s):\n            yield c, False\n            i += 1\n            yield s[i], False          # escaped: never opens a quote",
-     "        elif False:\n            yield c, False\n            i += 1\n            yield s[i], False",
+     # Re-anchored FX-G2 (E5): the walk is _qwalk now, shared by _scan and the masks.
+     "        elif c == chr(92) and i + 1 < n:\n            yield i, c, False, \"\"\n            i += 1\n            yield i, s[i], False, \"\"          # escaped: never opens a quote",
+     "        elif False:\n            yield i, c, False, \"\"\n            i += 1\n            yield i, s[i], False, \"\"",
      "test_an_escaped_apostrophe_does_not_blind_the_next_command"),
     ("comments are stripped before parsing",
      "    body = strip_comments(strip_heredocs(spliced))",
@@ -251,8 +256,8 @@ MUTANTS = [
     # Each clause gets its OWN mutant. Mutating the whole feature to a no-op cannot
     # distinguish "the join is untested" from "some earlier guard covers it".
     ("a relative operand is joined to the cwd",
-     'out.append((r if unres else join_cwd(d, r), unres, r))',
-     'out.append((r if unres else r, unres, r))',
+     'out.append((r if unres else long_name(join_cwd(d, r)), unres, r))',
+     'out.append((r if unres else long_name(r), unres, r))',
      "test_cd_then_relative_delete_of_extensions_is_the_game_delete"),
     # The NAME backstop is the opposite call from hits_game_root, and the difference is
     # load-bearing: it must NOT skip unresolved operands, because on an unconfigured
@@ -453,7 +458,7 @@ MUTANTS = [
      "test_a_named_operand_after_a_RELATIVE_cd_fires"),
     # --- lifting the OS deny on reference/ (Plan 2 lane E), one mutant per clause ----
     ("x4refguard REMOVE is a lift",
-     '                    and "remove" in toks[i + 1:]:', "                    and False:",
+     '                    and ("remove" in toks[i + 1:]', "                    and (False",
      "test_x4refguard_remove_fires"),
     ("only a RUN x4refguard counts, not a mention",
      "    if v.startswith(_REFGUARD_RUNNERS) or has_unresolved(v):", "    if True:",
@@ -491,18 +496,18 @@ MUTANTS = [
      "    return root + tok[m.end():]", "    return root",
      "test_what_follows_the_variable_is_kept"),
     ("an icacls lift needs /remove or /reset",
-     '    if not any(t.startswith(("/remove", "/reset")) for t in toks):', "    if False:",
+     "    if not any(t.startswith(_ICACLS_LIFTS) for t in toks):", "    if False:",
      "test_icacls_reading_applying_or_elsewhere_does_not_fire"),
     ("an icacls ancestor counts only with /T",
      '    recursive = "/t" in toks', "    recursive = True",
      "test_icacls_reading_applying_or_elsewhere_does_not_fire"),
     ("an icacls ancestor with /T counts",
-     "        if under(r, ref) or (recursive and contains_root(r, ref)):",
+     "        if under(r, ref) or (walks and contains_root(r, ref)):",
      "        if under(r, ref):",
      "test_icacls_reset_recursive_from_an_ANCESTOR_of_reference_fires"),
     ("an icacls lift INSIDE reference counts",
-     "        if under(r, ref) or (recursive and contains_root(r, ref)):",
-     "        if is_root(r, ref) or (recursive and contains_root(r, ref)):",
+     "        if under(r, ref) or (walks and contains_root(r, ref)):",
+     "        if is_root(r, ref) or (walks and contains_root(r, ref)):",
      "test_icacls_remove_or_reset_on_reference_fires"),
     # --- lane F: relative operands resolve against the payload cwd, one mutant per clause ---
     ("the payload cwd seeds the shell's directory",
@@ -583,7 +588,7 @@ MUTANTS = [
      "    return every or untracked",
      "test_include_untracked_takes_the_plain_clean_f_verdict"),
     ("P2: a stash message is not a flag",
-     '        if t in ("-m", "--message", "--pathspec-from-file"):',
+     '        if t == "-m" or _git_long(t, "--message") or _git_long(t, "--pathspec-from-file"):',
      "        if False:",
      "test_TWIN_a_message_that_reads_like_the_flag_is_not_the_flag"),
     # v4.0.0 review FX-P2: heredocs inside a carried command, and expanding heredoc bodies.
@@ -611,6 +616,59 @@ MUTANTS = [
      "            ops = prep(_operands(s), c_old, c_old)",
      "            ops = prep(_operands(s), _c, c_old)",
      "test_an_unknown_cmdlet_does_not_ask_from_the_seed_alone"),
+    # --- FX-G2 (v4.0.0 delta review): one mutant per fix --------------------------------
+    ("G2 items 1-2: a root variable operand is its root",
+     "                r = subst_root_var(r, roots)", "                pass",
+     "test_every_root_variable_and_verb_judges_like_the_literal"),
+    ("G2 item 3: Windows aliases are the file",
+     '        s = head + _SLASHES.sub("/", _win_alias(_SLASHES.sub("/", rest)))',
+     '        s = head + _SLASHES.sub("/", rest)',
+     "test_trailing_dots_spaces_and_stream_suffixes_are_the_file"),
+    ("G2 item 3: a command NAME keeps its colon",
+     "            if i > 0 and n > 0:", "            if i > 0:",
+     "test_an_UNQUOTED_windows_path_is_not_that_command_at_all"),
+    ("G2 item 4: arithmetic yields its substitutions",
+     "                    out.extend(substitutions(text))", "                    pass",
+     "test_a_substitution_inside_arithmetic_reaches_the_hard_block"),
+    ("G2 item 5: a git long-option PREFIX is the option",
+     '    return len(name) >= least and name.startswith("--") and opt.startswith(name)',
+     "    return name == opt",
+     "test_an_abbreviated_destructive_option_is_the_option"),
+    ("E1: the quote state crosses lines",
+     "        q = _line_quotes(line, q)[1]", '        q = ""',
+     "test_a_marker_inside_a_multiline_quote_hides_nothing"),
+    ("E2: `EOF)` ends a heredoc",
+     '    return s.startswith(term) and s[len(term):].lstrip().startswith(")")',
+     "    return False",
+     "test_EOF_paren_ends_the_body"),
+    ("E3: a body flowing into a piped shell runs",
+     "            if piped or _opener_feeds(opener, sink)]",
+     "            if _opener_feeds(opener, sink)]",
+     "test_a_body_that_flows_into_a_piped_shell_is_commands"),
+    ("E3: a trailing `|` continues the pipeline",
+     "        elif sep == \"|\" and next_sep == chr(10):", "        elif False:",
+     "test_a_pipe_ending_a_line_continues_onto_the_next"),
+    ("E4: cmd with no /c reads stdin",
+     "        return [cmd_to_sh([ln]) for t_ in texts for ln in t_.split(chr(10)) if ln.strip()]",
+     "        return []",
+     "test_echo_into_cmd_and_a_cmd_heredoc"),
+    ("E5: `$'` opens an ANSI-C quote",
+     "            q = \"$'\" if (c == \"'\" and dollar) else c", "            q = c",
+     "test_an_escaped_quote_in_ansi_c_ends_nothing"),
+    ("E6: --work-tree names the wiped folder",
+     "            elif t == \"--work-tree\":", "            elif False:",
+     "test_the_work_tree_spellings_name_the_folder"),
+    ("E6: clean.requireForce=false forces a clean",
+     'or any(_git_long(t, "--force") for t in rest) or forced',
+     'or any(_git_long(t, "--force") for t in rest)',
+     "test_requireForce_false_makes_an_unforced_clean_delete"),
+    ("E7: every ACL-modifying icacls switch lifts",
+     '_ICACLS_LIFTS = ("/remove", "/reset", "/grant", "/inheritance", "/restore", "/setowner",',
+     '_ICACLS_LIFTS = ("/remove", "/reset", "/zz1", "/zz2", "/zz3", "/zz4",',
+     "test_every_acl_modifying_switch_lifts"),
+    ("settings rule: a shell write to .claude/settings*.json",
+     "            _AGENT_SETTINGS.search(norm(pp or rr))", "            False",
+     "test_every_write_primitive_to_a_settings_file_fires"),
 ]
 
 SHIM = '''
@@ -631,6 +689,38 @@ def facts(payload, roots):          # noqa: F811
 # `background` is a passthrough of the caller's own flag -- an INPUT the long-job rule
 # consumes, not a rule predicate. Excluded by name and printed, never quietly dropped.
 NOT_A_RULE = {"background"}
+
+
+def test_sources(text: str) -> dict:
+    """{test METHOD name: its own source, plus its class's non-test body (FACT/KEYS
+    attributes)}. A name defined in two classes gets both sources.
+
+    For the silent? column (reviewer E10, v4.0.0 delta review): pinning a predicate TRUE broke
+    the catch-all `test_TWIN_a_read_is_not_a_write` -- which asserts EVERY fact is false -- for
+    every predicate at once, so every rule read "probed" whether or not any test meant to keep
+    THAT rule silent existed. A failing test now credits a predicate only when its source
+    names the predicate (`"rm_hits_game"`), i.e. it was written about that rule."""
+    import ast
+    lines = text.splitlines(keepends=True)
+
+    def src(node):
+        return "".join(lines[node.lineno - 1:node.end_lineno])
+
+    out: dict = {}
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+            out[node.name] = out.get(node.name, "") + src(node)
+        elif isinstance(node, ast.ClassDef):
+            attrs = "".join(src(n) for n in node.body
+                            if not (isinstance(n, ast.FunctionDef) and n.name.startswith("test_")))
+            for n in node.body:
+                if isinstance(n, ast.FunctionDef) and n.name.startswith("test_"):
+                    out[n.name] = out.get(n.name, "") + src(n) + attrs
+    return out
+
+
+def names_predicate(source: str, key: str) -> bool:
+    return ('"%s"' % key) in source or ("'%s'" % key) in source
 
 
 def run(work: Path):
@@ -747,12 +837,16 @@ def main() -> int:
         print(f"\n{'PREDICATE':<42} {'fires?':<14} silent?")
         print("-" * 78)
         gaps = 0
+        srcs = test_sources(source)
         for k in keys:
             row = []
             for val in ("False", "True"):
                 target.write_text(pristine + SHIM.format(key=k, val=val),
                                   encoding="utf-8", newline="")
                 _rc, f, r = run(work)
+                if val == "True":
+                    # silent?: only a must-NOT-fire test ABOUT this predicate counts (E10).
+                    f = {t for t in f if names_predicate(srcs.get(t, ""), k)}
                 row.append("BROKE" if r < 20 else ("probed" if f else "*** NONE ***"))
             if "*** NONE ***" in row or "BROKE" in row:
                 gaps += 1
@@ -763,7 +857,7 @@ def main() -> int:
     print(f"mutations not caught by their target test: {bad} of {len(MUTANTS)}")
     print(f"predicates with a coverage gap:            {gaps} of {len(keys)}")
     print("  fires?   = predicate pinned FALSE, so a must-FIRE test must break")
-    print("  silent?  = predicate pinned TRUE,  so a must-NOT-fire test must break")
+    print("  silent?  = predicate pinned TRUE,  so a must-NOT-fire test NAMING it must break")
     return 1 if (bad or gaps) else 0
 
 

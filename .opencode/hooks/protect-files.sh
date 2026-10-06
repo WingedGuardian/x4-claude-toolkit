@@ -81,6 +81,11 @@ if [ "$FP_OK" != 1 ]; then
   exit 0
 fi
 [ -z "$FILE_PATH" ] && exit 0
+# The path AS WINDOWS OPENS IT, before any rule reads it (FX-G2 item 3): `x4-paths.env.`,
+# `x4-paths.env::$DATA`, `<ref>./libraries/x`, `C:/PROGRA~2/.../X4FOUN~1/...` each ARE the
+# protected file, and every NAME test below (the config name, `X4 Foundations/`, `.cat`) reads
+# the path as written. MEASURED: 11 of 17 such writes were allowed. See x4_winpath.
+x4_winpath "$FILE_PATH"; FILE_PATH="$_X4_WP"
 
 deny() { VERDICT=1; emit deny "$1"; exit 0; }
 # advise <reason> -- ALLOW, and explain to CLAUDE. Added 2026-08-29 when the user
@@ -132,6 +137,26 @@ if [ "$_x4_cfgname" = 1 ]; then
 $_x4_cfg_paths
 EOF
 fi
+
+# === HARD BLOCK — X4_GUARD in a Claude Code SETTINGS file's env (user decision 2026-10-05) ===
+# A settings `env` block reaches every hook process (MEASURED, Claude Code 2.1.290), so an agent
+# writing `"env": {"X4_GUARD": "off"}` there turns every guard off at the next launch. The
+# RESULTING content is judged by settings_guard.py (the one implementation, shared with the
+# adapters and session-canary.sh); every other settings edit stays allowed. COST: a pure-shell
+# name test; only a file named settings*.json pays the python call.
+case "$FILE_PATH" in
+  *[Ss][Ee][Tt][Tt][Ii][Nn][Gg][Ss]*.[Jj][Ss][Oo][Nn])
+    if [ -n "$PY" ]; then
+      _x4_sg="$(printf '%s' "$INPUT" | "$PY" "$HOOK_DIR/settings_guard.py" --path "$FILE_PATH" 2>/dev/null)"
+      _x4_sgrc=$?
+      [ "$_x4_sgrc" = 0 ] || _x4_sg="BLOCKED: the settings-file check could not run (exit $_x4_sgrc), so this write to $FILE_PATH was not judged. Retry; if it persists, the user should edit the file."
+      [ -n "$_x4_sg" ] && deny "$_x4_sg"
+    else
+      case "$(printf '%s' "$FILE_PATH" | tr 'A-Z\\' 'a-z/')" in
+        */.claude/settings*.json) deny "BLOCKED: no Python was found, so the guard cannot check what this write leaves in $FILE_PATH, a Claude Code settings file whose env reaches every hook. Set X4_PYTHON (or put python on PATH) and retry." ;;
+      esac
+    fi ;;
+esac
 
 # === HARD BLOCK — CAT/DAT archive files (use bin/xrcat / XRCatTool only) ===
 # Scoped 2026-08-29: only where X4 keeps archives. `.dat` is a generic extension --

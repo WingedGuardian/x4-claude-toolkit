@@ -31,6 +31,10 @@ FAULTS = {
     "case_top_key": "print('X4OK {\"HookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"r\"}}')",
     "case_inner_key": "print('X4OK {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"PermissionDecision\":\"deny\",\"permissionDecisionReason\":\"r\"}}')",
     "case_decision": "print('X4OK {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"Deny\",\"permissionDecisionReason\":\"r\"}}')",
+    # FX-G2 (reviewer E, minor): PowerShell's `@('deny') -cne 'deny'` is an EMPTY array, i.e.
+    # falsy, so an array-valued decision passed the .ps1 check that the .sh one rejects.
+    "array_decision": "print('X4OK {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":[\"deny\"],\"permissionDecisionReason\":\"r\"}}')",
+    "object_decision": "print('X4OK {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":{\"deny\":1},\"permissionDecisionReason\":\"r\"}}')",
     "hang": "import time; time.sleep(600)",
     "raise_after_partial": "import sys; sys.stdout.write('X4O'); raise SystemExit(0)",
 }
