@@ -1027,7 +1027,10 @@ def _apply_op(name: str, idx, op: str, assigns: dict) -> str:
     if kind in ("-", "="):
         return value if known else rest
     if kind == "+":
-        return rest if known else ""
+        # FX-G5 / reviewer J2 item 9 (pre-arc, MEASURED: `rm -rf "${PATH:+$X4_GAME}"` was
+        # allowed): a variable this command never ASSIGNED is not known to be unset -- its value
+        # comes from the environment -- so the alternate word may be what the shell gives.
+        return rest if (known or name not in assigns) else ""
     if kind == "?":
         return value if known else None
     if not known:
@@ -1813,6 +1816,54 @@ _WRAPPER_VALUE_OPTS = {
 }
 
 
+#: An assignment word's start: `NAME=` at the segment start or after a blank/separator.
+_ASSIGN_WORD_AT = re.compile(r"(?:^|(?<=[\s;&|(]))[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _collapse_assignment_substs(seg: str) -> str:
+    """`seg` with every UNQUOTED `$(...)` / backtick span inside an assignment WORD replaced
+    by `$(_)` / `` `_` `` (FX-G5 / reviewer J2 item 3), so tokens() keeps `A=$(echo a b)` as
+    ONE word instead of splitting it at the spaces and offering `a` as the command name.
+    Quote-aware paren matching; an unbalanced span (a segment cut inside the substitution)
+    is left exactly as written. Only assignment words change, and the command word after
+    them is untouched text, so the token _verb_token returns is still found in `seg`."""
+    if "$(" not in seg and chr(96) not in seg:
+        return seg
+    mask = _quote_mask(seg)
+    n, out, i = len(seg), [], 0
+    for m in _ASSIGN_WORD_AT.finditer(seg):
+        if m.start() < i or mask[m.start()]:
+            continue
+        j = m.end()
+        while j < n and (mask[j] or not seg[j].isspace()):
+            if mask[j]:
+                j += 1
+                continue
+            end = -1
+            if seg.startswith("$(", j):
+                depth = 0
+                for e in range(j + 1, n):
+                    if mask[e]:
+                        continue
+                    depth += {"(": 1, ")": -1}.get(seg[e], 0)
+                    if depth == 0:
+                        end = e
+                        break
+                rep = "$(_)"
+            elif seg[j] == chr(96):
+                end = next((e for e in range(j + 1, n) if seg[e] == chr(96) and not mask[e]), -1)
+                rep = chr(96) + "_" + chr(96)
+            else:
+                j += 1
+                continue
+            if end < 0:
+                break                   # unbalanced: leave the rest as written
+            out.append(seg[i:j] + rep)
+            i = j = end + 1
+    out.append(seg[i:])
+    return "".join(out)
+
+
 def _verb_token(seg: str) -> str:
     """The RAW token carrying the command name, exactly as written.
 
@@ -1849,7 +1900,10 @@ def _verb_token(seg: str) -> str:
     # ahead of the skip that exists to step over it. Realized incidence in 33,837 real
     # commands: 568 parse errors, 0 carrying a dangerous verb -- ranked on failure mode,
     # not on frequency.
-    for t, _quoted in tokens(seg):
+    # FX-G5 / reviewer J2 item 3, MEASURED E2E (deny -> ALLOW): tokens() splits an UNQUOTED
+    # `A=$(echo a b)` at its spaces, and the word `a` became the verb, so `A=$(echo a b) rm
+    # -rf <game>` passed every hard block. An assignment's substitutions are collapsed first.
+    for t, _quoted in tokens(_collapse_assignment_substs(seg)):
         if want_value:
             # The previous token was a wrapper flag that takes a separate value, so
             # THIS token is that value and never the command.
@@ -2926,6 +2980,12 @@ def git_discards_named_files(seg):
 _GIT_CONFIG_ENV_SET = re.compile(r"(?<![A-Za-z0-9_])GIT_CONFIG[A-Z0-9_]*\s*=", re.I)
 #: Set per facts() call: does this command set git config through the environment?
 _GIT_ENV_CONFIG = [False]
+#: FX-G5 / reviewer J2 item 5: a `git ... config ...` IN THE COMMAND that writes requireForce
+#: or an include (`git -C <game> config clean.requireForce false && git -C <game> clean -dx`).
+#: Order-blind on purpose -- a config after the clean only costs an ask. The span stops at a
+#: command separator, so `git log --grep requireForce` and `echo requireForce` do not match.
+_GIT_CONFIG_IN_COMMAND = re.compile(
+    r"(?<![A-Za-z0-9_.-])git(?:\.exe)?\b[^;&|\n]*?\sconfig\s[^;&|\n]*?(?:requireforce|include)", re.I)
 
 
 def _git_destructive(seg, wanted, deep=False):
@@ -2987,14 +3047,20 @@ def _git_destructive(seg, wanted, deep=False):
                 worktree = toks[i + 1]
             elif t == "--git-dir":
                 gitdirs.append(_gitdir_parent(toks[i + 1]))
-            elif t == "--config-env" and "requireforce" in toks[i + 1].lower():
+            elif t == "--config-env":
+                # Its VALUE lives in an environment variable the guard cannot read, so ANY
+                # key may be (or include) requireForce (FX-G5 / reviewer J2 item 5).
+                forced = True
+            elif t == "-c" and toks[i + 1].lower().startswith(("include.", "includeif.")):
+                # `-c include.path=<file>` reads a config FILE the guard cannot see (J2 item 5).
                 forced = True
             elif t == "-c" and toks[i + 1].lower().split("=", 1)[0] == "clean.requireforce":
                 # git's false spellings; a bare `-c clean.requireForce` means true.
                 kv = toks[i + 1].lower().split("=", 1)
-                forced = len(kv) == 2 and kv[1] in ("false", "no", "off", "0", "")
+                # `forced or`: a later `-c` must not undo an include seen before it.
+                forced = forced or (len(kv) == 2 and kv[1] in ("false", "no", "off", "0", ""))
             skip.add(i + 1)
-        elif t.startswith("--config-env=") and "requireforce" in t.lower():
+        elif t.startswith("--config-env="):
             forced = True
         elif t.startswith("--work-tree="):
             worktree = t.split("=", 1)[1]
@@ -3707,10 +3773,26 @@ def _procsub_program(seg: str) -> list:
     k = next((i for i, (t, _q) in enumerate(toks) if t == vt), None)
     if k is None:
         return []
-    first = next(((t, q) for t, q in toks[k + 1:] if q or not t.startswith("-")), None)
+    # The SHELL'S OWN option words, up to its script operand (FX-G5 / reviewer J2 item 2,
+    # MEASURED: allowed). Only these can make it `bash -n`: an `echo -n` inside the
+    # substitution, or a `-n` after the script (its $1), is not one. An option that takes a
+    # VALUE (`-o pipefail`, `-O extglob`, `+o posix`, `-eo pipefail`, `--rcfile f`,
+    # `--init-file f`) is stepped over WITH its value, or the value reads as the script.
+    first, syntax_only, j = None, False, k + 1
+    while j < len(toks):
+        t, q = toks[j]
+        if q or t[:1] not in ("-", "+") or t in ("-", "+"):
+            first = (t, q)
+            break
+        if t.startswith("--"):
+            j += 2 if t in ("--rcfile", "--init-file") else 1
+            continue
+        if t[0] == "-" and "n" in t[1:]:
+            syntax_only = True
+        j += 1 + sum(1 for ch in t[1:] if ch in "oO")   # each o/O takes the next word
     if not first or first[1] or not first[0].startswith("<("):
         return []
-    if any(not q and re.fullmatch(r"-[A-Za-z]*n[A-Za-z]*", t) for t, q in toks[k + 1:]):
+    if syntax_only:
         return []                      # `bash -n`: a syntax check, nothing is executed
     mask = _quote_mask(seg)
     at = next((i for i in range(len(seg) - 1)
@@ -4387,7 +4469,8 @@ def facts(payload: dict, roots: dict) -> dict:
     body = strip_comments(strip_heredocs(spliced))
     # FX-G4 / reviewer H6: git config from the ENVIRONMENT (see _git_destructive).
     _GIT_ENV_CONFIG[0] = bool(_GIT_CONFIG_ENV_SET.search(body)
-                              or _GIT_CONFIG_ENV_SET.search(inp.get("command") or ""))
+                              or _GIT_CONFIG_ENV_SET.search(inp.get("command") or "")
+                              or _GIT_CONFIG_IN_COMMAND.search(body))
     # Heredoc bodies come from the RAW command: strip_heredocs has already removed
     # them from `body`, and only the ones opened by a shell are commands at all.
     extra = [strip_comments(h) for h in heredoc_bodies(spliced)]
@@ -4474,9 +4557,18 @@ def facts(payload: dict, roots: dict) -> dict:
         # Through a variable only at a real COMMAND position: a segment cut inside an
         # assignment's own substitution (`f=$(find "$P" ...` -- the verb token reads `$P`)
         # is not one. MEASURED in the corpus replay: 13 false advisories before this.
-        toks = tokens_of(seg)
+        # A prefix word whose substitutions CLOSE is not that case (FX-G5 / reviewer J2 item 3,
+        # MEASURED: `x=$(printf rm); A=$(true) $x -rf <reference>` was allowed): an assignment, or
+        # a wrapper's value (`sudo -u $(whoami) $x`), is stepped over exactly as _verb_token steps
+        # over it to find the command word. Only an UNCLOSED one is the cut fragment above.
+        toks = tokens_of(_collapse_assignment_substs(seg))
         k = toks.index(t) if t in toks else 0
-        if any("$(" in x or chr(96) in x for x in toks[:k]):
+
+        def _hides_position(x):
+            if "$(" not in x and chr(96) not in x:
+                return False
+            return not (x.count("(") == x.count(")") and x.count(chr(96)) % 2 == 0)
+        if any(_hides_position(x) for x in toks[:k]):
             return False
         return bool(_SUBST.search(resolve(t, assigns)))
 

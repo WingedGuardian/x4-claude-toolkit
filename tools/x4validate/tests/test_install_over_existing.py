@@ -836,6 +836,25 @@ def test_the_SOURCE_machines_config_siblings_do_not_travel(installer, tmp_path):
             "%s did not travel -- the skip is too broad and the installer no "
             "longer ships its own template" % tpl)
 @pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_the_SOURCE_machines_reference_buildid_marker_does_not_travel(installer, tmp_path):
+    """FX-G5 / reviewer J2 item 7: `.claude/.reference-buildid` is written by THIS machine's
+    finished unpack, and x4doctor reads it as evidence the reference tree was MOVED. It was in
+    neither installer list, so installing from an unpacked (non-git) source tree carried it and
+    a fresh install read "moved". Keep-local, not prune: the destination's OWN marker survives."""
+    src = _synthetic_source(tmp_path)
+    (src / ".claude" / ".reference-buildid").write_text("SRC-BUILD\n", encoding="utf-8")
+    dest = _fresh(tmp_path)
+    _install(installer, tmp_path, dest, source=src)
+    assert (dest / ".claude").is_dir(), "the copy did not run; this proves nothing"
+    assert (dest / ".claude" / "settings.local.json.example").is_file(), "the copy did not run"
+    assert not (dest / ".claude" / ".reference-buildid").exists()
+    # twin: the destination's own marker is left exactly as it was
+    (dest / ".claude" / ".reference-buildid").write_text("DEST-BUILD\n", encoding="utf-8")
+    _install(installer, tmp_path, dest, source=src)
+    assert (dest / ".claude" / ".reference-buildid").read_text(encoding="utf-8") == "DEST-BUILD\n"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
 def test_a_CRLF_config_is_still_recognised_as_UNCHANGED(installer, tmp_path):
     """One input, and the two installers reached opposite verdicts on it.
 

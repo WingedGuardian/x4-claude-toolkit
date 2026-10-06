@@ -3,6 +3,7 @@
 
     python x4guard.py check --kind shell --shell {bash,powershell} --command CMD
     python x4guard.py check --kind {write,delete} --path P
+    python x4guard.py check --kind write --path P {--content WHOLE_FILE | --command PATCH_TEXT}
     python x4guard.py conformance --profile NAME|PATH [-- ADAPTER ARGV]   (see ADAPTING.md)
 
 `check` prints ONE JSON verdict and exits 0:
@@ -264,13 +265,18 @@ def is_agent_settings(path: str | None) -> bool:
                                          str(path).replace(chr(92), "/").lower()))
 
 
-def guard_payload(kind: str, shell: str | None, command: str | None, path: str | None) -> dict:
+def guard_payload(kind: str, shell: str | None, command: str | None, path: str | None,
+                  content: str | None = None) -> dict:
     if kind == "shell":
         # `cwd` at the TOP level, where Claude Code and Codex put it: a relative operand is judged
         # from the caller's directory, so `check` and the hooks agree (lane F). The Codex adapter
         # has already entered the payload's cwd, so this is the Codex session cwd too.
         return {"tool_name": "PowerShell" if shell == "powershell" else "Bash",
                 "tool_input": {"command": command}, "cwd": os.getcwd()}
+    if content is not None:
+        # The file's WHOLE new content (a whole-file write tool, `--content`): exactly a Claude Code
+        # Write, so every rule judges it as the reference hooks do (FX-G5 item 10).
+        return {"tool_name": "Write", "tool_input": {"file_path": path, "content": content}}
     if command is not None or is_agent_settings(path):
         # The TEXT this write applies (an apply_patch, an OpenCode write/edit), for the
         # settings-file rule (settings_guard.py, user decision 2026-10-05). Not `content`: a
@@ -385,12 +391,12 @@ GUARDS_OFF_NOTE = ("X4 GUARDS OFF (X4_GUARD=off at launch): every guard verdict 
 
 
 def verdict_for(kind: str, shell: str | None, command: str | None, path: str | None,
-                deadline: float | None = None) -> dict:
+                deadline: float | None = None, content: str | None = None) -> dict:
     """The verdict, plus spec 5.7's escape hatch: with X4_GUARD exactly "off" the guards turn a
     deny/ask into an advisory naming what it would have been (they read the variable
     themselves), and this says GUARDS OFF on every verdict -- a would-be allow included. An inert
     verdict stays an inert deny: a guard that could not run judged nothing to relax."""
-    v = _verdict(kind, shell, command, path, deadline)
+    v = _verdict(kind, shell, command, path, deadline, content)
     if os.environ.get("X4_GUARD") != "off" or v["inert"]:
         return v
     v = dict(v)
@@ -401,7 +407,7 @@ def verdict_for(kind: str, shell: str | None, command: str | None, path: str | N
 
 
 def _verdict(kind: str, shell: str | None, command: str | None, path: str | None,
-             deadline: float | None = None) -> dict:
+             deadline: float | None = None, content: str | None = None) -> dict:
     """A relative path is resolved from the CALLER's working directory (Codex apply_patch paths
     are relative). A delete is judged as the stricter of a write and an `rm -rf --` of that path:
     recursive, because the path may be a directory. No protect-bash rule distinguishes it from
@@ -415,7 +421,8 @@ def _verdict(kind: str, shell: str | None, command: str | None, path: str | None
     if kind == "shell":
         return run_guard("protect-bash.sh", guard_payload(kind, shell, command, None), deadline, budget)
     path = os.path.abspath(path)
-    parts = [run_guard("protect-files.sh", guard_payload("write", None, command, path), deadline, budget)]
+    parts = [run_guard("protect-files.sh", guard_payload("write", None, command, path, content),
+                       deadline, budget)]
     if kind == "delete":
         quoted = path.replace("\\", "/").replace("'", "'\"'\"'")    # close, "'", reopen
         rm = "rm -rf -- '" + quoted + "'"
@@ -468,6 +475,9 @@ def main(argv=None) -> int:
                    help="the shell that will EXECUTE the command (not the tool that sent it)")
     c.add_argument("--command", help="shell: the command; write/delete: the TEXT written, which "
                    "the guard needs for a .claude/settings*.json (without it, such a write is denied)")
+    c.add_argument("--content", help="write: the file's WHOLE new content, from a tool that writes a "
+                   "complete file -- judged exactly as a Claude Code Write. Use --command instead for "
+                   "a patch or any partial text")
     c.add_argument("--path")
     a = ap.parse_args(argv)
     if a.cmd == "conformance":            # only reachable with options before the word
@@ -476,7 +486,9 @@ def main(argv=None) -> int:
         ap.error("--kind shell needs --shell and --command")
     if a.kind != "shell" and not a.path:
         ap.error(f"--kind {a.kind} needs --path")
-    v = verdict_for(a.kind, a.shell, a.command, a.path)
+    if a.content is not None and (a.kind != "write" or a.command is not None):
+        ap.error("--content is for --kind write only, and never with --command")
+    v = verdict_for(a.kind, a.shell, a.command, a.path, content=a.content)
     sys.stdout.write(json.dumps(v) + "\n")
     return 0
 

@@ -302,7 +302,10 @@ _ADD = "*** Begin Patch\n*** Add File: libraries/x.xml\n+<a/>\n*** End Patch"
 
 
 @pytest.mark.parametrize("cd", ["$X4_REFERENCE", '"$X4_REFERENCE"', "${X4_REFERENCE}", "$env:X4_REFERENCE",
-                                "%X4_REFERENCE%", "~/ref", '"$(echo ref)"', "`echo ref`"])
+                                "%X4_REFERENCE%", "~/ref", '"$(echo ref)"', "`echo ref`",
+                                # FX-G5 / reviewer J2: STARTS and ENDS with a single quote but is
+                                # a concatenation the shell expands -- not one quoted word.
+                                "''$X4_REFERENCE''", "'a'$X4_REFERENCE'b'", "'a'\"$X4_REFERENCE\"'b'"])
 @pytest.mark.parametrize("form", ["codex --codex-run-as-apply-patch '{p}'", "apply_patch <<'EOF'\n{p}\nEOF"])
 def test_a_shell_patch_after_an_EXPANDED_cd_is_refused(cd, form):
     """Refused either way: `expands` when the cd form is recognised; a cd word the pattern cannot
@@ -313,6 +316,7 @@ def test_a_shell_patch_after_an_EXPANDED_cd_is_refused(cd, form):
 
 
 @pytest.mark.parametrize("cd, want", [("dev/mymod", "dev/mymod"), ("'dev/$weird'", "dev/$weird"),
+                                      ("'a b'", "a b"),
                                       ('"dev/my mod"', "dev/my mod")])
 def test_TWIN_a_literal_cd_still_names_the_directory(cd, want):
     """A single-quoted `$` is literal text in bash and PowerShell: not an expansion."""

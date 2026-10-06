@@ -47,6 +47,17 @@ UNKNOWN = ("BLOCKED: the guard cannot tell what this write leaves in {path}, a C
            "at launch.")
 
 
+#: An apply_patch whose every operation is `*** Add File:` -- no Update, Delete or Move header
+#: ANYWHERE in the text (an indented header counts: Codex obeys one), so it can only write the
+#: added lines as a whole file.
+_PATCH_OP = re.compile(r"\*\*\* (Add File|Update File|Delete File|Move to):")
+
+
+def _add_only(text: str) -> bool:
+    ops = {m.group(1) for m in _PATCH_OP.finditer(text)}
+    return "*** Begin Patch" in text and ops == {"Add File"}
+
+
 def norm(p: str) -> str:
     return (p or "").replace(chr(92), "/").lower()
 
@@ -123,7 +134,12 @@ def judge(tool_input: dict) -> str:
         if not isinstance(written, str):
             return UNKNOWN.format(path=path, why="The caller passed no written text (x4guard check: "
                                   "--command <the text>).")
-        cur = _read(path)
+        if _add_only(written):
+            # FX-G5 item 10: an add-only patch REPLACES the file (or fails), so the old content
+            # cannot survive it -- only its own text matters (checked below).
+            cur = ""
+        else:
+            cur = _read(path)
         if cur is None:
             return UNKNOWN.format(path=path, why="The file cannot be read.")
         cur_keys, ok = guard_keys(cur)

@@ -316,7 +316,7 @@ $X4CopyPrune = @('tools\x4validate\.venv',
 #: not in $X4CopyPrune, whose second meaning would erase a user's built databases
 #: on every upgrade. See X4_KEEP_LOCAL in install.sh.
 $X4KeepLocal = @('x4-paths.env','.claude\x4-paths.env','.claude\settings.local.json','.claude\backups','.codex\hooks.json','.codex\config.toml',
-                 '.opencode\opencode.jsonc',
+                 '.opencode\opencode.jsonc','.claude\.reference-buildid',
                  'tools\basex\basex\data','tools\basex\basex\coverage-x4raw.json',
                  'tools\basex\basex\coverage-x4eff.json','tools\basex\_eff',
                  'tools\basex\stage-manifest.json')

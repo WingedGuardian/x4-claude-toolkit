@@ -373,7 +373,9 @@ def _literal_cd(raw: str | None) -> str | None:
     shell expands is REFUSED, never guessed: the patch must name its directory literally."""
     if not raw:
         return None
-    if raw[0] == "'" and raw[-1:] == "'" and len(raw) > 1:
+    # ONE fully single-quoted word only (FX-G5 / reviewer J2, MEASURED): `''$X4_REFERENCE''`
+    # and `'a'$X'b'` also start and end with a quote, but are concatenations the shell expands.
+    if re.fullmatch(r"'[^']*'", raw):
         return raw[1:-1]
     cd = raw[1:-1] if raw[0] == '"' and raw[-1:] == '"' and len(raw) > 1 else raw
     if _EXPANDS.search(cd):

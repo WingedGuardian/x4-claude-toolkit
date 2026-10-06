@@ -421,6 +421,15 @@ confusing messages and six cosmetic ones. All are fixed:
   word decides; `remove` still asks). A process substitution fed by any other program (`bash <(curl
   ...)`) runs unjudged, like a script file (the maintainer's decision, 2026-10-06; 4 of 44,009 past commands),
   and `bash -n <(...)` never asks (BLIND-SPOTS F201, F202, F206-F212, F183, F219).
+- **Security: eight more ways past the hard blocks and asks are closed** (fix lane FX-G5, each
+  reproduced first; (1) and (6) present in 3.x too). (1) `A=$(echo a b) rm -rf <game>`: an unquoted
+  multi-word substitution in a prefix assignment no longer names the command; (2) `A=$(true) $x`
+  no longer hides a substituted verb; (3) `bash <(echo -n ...)`, `bash <(...) -n` and `bash -o
+  pipefail <(...)`: only the shell's own options count, and an option's value is not the script;
+  (4) a `cd ''$X4_REFERENCE''` before a shell patch is an expanded `cd`, refused; (5) `git -c
+  include.path=...`, any `--config-env`, or `git config clean.requireForce false` in the same command
+  make a `git clean` forced (ask); (6) `rm -rf "${PATH:+$X4_GAME}"`: the alternate word of a
+  variable the command did not assign is judged (BLIND-SPOTS F230-F235).
 - **A Codex or OpenCode patch run through the shell after `cd $X4_REFERENCE`** (or `$env:...`, or
   any `cd` whose target the shell expands) is refused with a reason; it was judged against the
   literal text `$X4_REFERENCE` and allowed (BLIND-SPOTS F203).
@@ -478,6 +487,14 @@ confusing messages and six cosmetic ones. All are fixed:
   are ignored. A line with `$(`, a backtick or an unquoted `;` `&` `|` `<` `>` is ignored.
   Everything the installers, `setup.sh` and `x4-paths.env.example` write reads as before. An
   exported value now beats the file for every key in the guards too, as it already did in Python.
+- `X4_CONFIG` spellings with `.`/`..` components (`x4-paths.env/.`, `sub/../x4-paths.env`) or a
+  `::$DATA` suffix now name the same file in the guards, the tools and `x4doctor` (BLIND-SPOTS F236).
+- The installers no longer copy a source machine's `.claude/.reference-buildid`, which made
+  `x4doctor` read a fresh install's missing reference tree as MOVED (BLIND-SPOTS F237).
+- `x4guard check --kind write --content "<whole file>"`: a whole-file write tool passes the new file,
+  judged exactly as Claude Code's Write. ADAPTING.md now says a `.claude/settings*.json` write must
+  carry its text (`--content`, or `--command` for a patch); a Codex `Add File` patch to a settings
+  file is judged on what it writes (BLIND-SPOTS F239).
 
 ### Tools
 
@@ -629,6 +646,8 @@ confusing messages and six cosmetic ones. All are fixed:
 
 ### Maintainers
 
+- `verify-hook-tests.py`'s silent? column keys test sources by `Class.method`, so two classes
+  sharing a test name no longer pool their sources (BLIND-SPOTS F238).
 - After tagging a release, run `tools/x4validate/scripts/gen-shipped-hashes.py --write` and commit
   the result; `test_shipped_instruction_hashes.py` fails until you do. v4.0.0 is the first tag to
   ship an `AGENTS.md`, so this is what lets the next release replace it instead of moving it

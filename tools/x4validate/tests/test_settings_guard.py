@@ -129,6 +129,20 @@ def test_a_PERMISSIONS_rule_mentioning_X4_GUARD_is_allowed_the_same_text_elsewhe
 
 
 @needs_bash
+def test_only_the_TOP_LEVEL_permissions_block_is_exempt(sandbox):
+    """FX-G5 / reviewer J2 item 6: the exemption is `o is doc` -- a `permissions` key NESTED
+    anywhere else is ordinary text, and X4_GUARD in it is still denied. Twin: the top level."""
+    _tmp, _tk, env, s = sandbox
+    text = "Bash(export X4_GUARD=off)"
+    for doc, want in (({"hooks": {"permissions": {"deny": [text]}}}, "deny"),
+                      ({"x": [{"permissions": text}]}, "deny"),
+                      ({"permissions": {"deny": [text]}}, "allow")):
+        d, _ = _hook(env, "protect-files.sh", {"tool_name": "Write", "tool_input": {
+            "file_path": str(s), "content": json.dumps(doc)}})
+        assert d == want, (doc, d)
+
+
+@needs_bash
 def test_an_edit_whose_old_string_does_not_apply_is_judged_on_its_new_text(sandbox):
     """FX-G4 / reviewer H-M1: an Edit whose old_string is not in the file as read here was ALLOWED
     whatever it wrote -- the file the tool sees may differ. Twin: the same miss without the key."""
@@ -194,6 +208,21 @@ def test_codex_patch_on_a_file_that_ALREADY_sets_it_is_denied(sandbox):
     assert run_adapter(env, native("apply_patch_update", tk, command=ok))[0] == "deny"
 
 
+def test_codex_ADD_FILE_over_a_file_that_sets_it_is_judged_on_what_it_writes(sandbox):
+    """FX-G5 item 10 (MEASURED: conformance DISAGREE #204): an add-only patch REPLACES the file
+    (or fails), so what the file held before cannot survive it -- only the added text is
+    judged. Twins: the same Add with the key is denied; an Update, or an Add beside an Update,
+    still cannot be proven to remove the existing key."""
+    _tmp, tk, env, s = sandbox
+    s.write_text(json.dumps(ON, indent=2), encoding="utf-8")
+    add = lambda body: "*** Begin Patch\n*** Add File: .claude/settings.json\n+" + body + "\n*** End Patch"
+    assert run_adapter(env, native("apply_patch_add", tk, command=add(json.dumps(OFF))))[0] == "allow"
+    assert run_adapter(env, native("apply_patch_add", tk, command=add(json.dumps(ON))))[0] == "deny"
+    both = ("*** Begin Patch\n*** Add File: .claude/settings.json\n+" + json.dumps(OFF)
+            + "\n*** Update File: .claude/settings.json\n@@\n-x\n+y\n*** End Patch")
+    assert run_adapter(env, native("apply_patch_add", tk, command=both))[0] == "deny"
+
+
 # --- x4guard check (any other agent) ------------------------------------------------------------
 def _check(env, *args):
     r = subprocess.run([sys.executable, str(HOOKS / "x4guard.py"), "check", *args],
@@ -206,6 +235,24 @@ def test_x4guard_check_needs_the_written_text_for_a_settings_file(sandbox):
     assert _check(env, "--kind", "write", "--path", str(s)) == "deny"            # text not given
     assert _check(env, "--kind", "write", "--path", str(s), "--command", json.dumps(ON)) == "deny"
     assert _check(env, "--kind", "write", "--path", str(s), "--command", json.dumps(OFF)) == "allow"
+
+
+def test_x4guard_check_content_is_judged_as_the_whole_resulting_file(sandbox):
+    """FX-G5 item 10 (MEASURED: the toy adapter's conformance DISAGREE #204/#224): a whole-file
+    write tool passes `--content`, judged exactly as a Claude Code Write -- so a file that sets
+    the key now may be REPLACED by one that does not. `--command` (a patch / partial text)
+    keeps the conservative reading. Both at once is a usage error, never a guess."""
+    _tmp, _tk, env, s = sandbox
+    s.write_text(json.dumps(ON), encoding="utf-8")
+    assert _check(env, "--kind", "write", "--path", str(s), "--content", json.dumps(OFF)) == "allow"
+    assert _check(env, "--kind", "write", "--path", str(s), "--content", json.dumps(ON)) == "deny"
+    assert _check(env, "--kind", "write", "--path", str(s), "--command", json.dumps(OFF)) == "deny"
+    r = subprocess.run([sys.executable, str(HOOKS / "x4guard.py"), "check", "--kind", "write", "--path",
+                        str(s), "--content", "{}", "--command", "{}"], capture_output=True, env=env, timeout=120)
+    assert r.returncode == 2
+    r = subprocess.run([sys.executable, str(HOOKS / "x4guard.py"), "check", "--kind", "delete", "--path",
+                        str(s), "--content", "{}"], capture_output=True, env=env, timeout=120)
+    assert r.returncode == 2
 
 
 # --- session-canary -----------------------------------------------------------------------------

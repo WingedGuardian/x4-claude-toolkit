@@ -130,6 +130,7 @@ ARGUMENTS, not stdin, and there is no agent option -- describe the action, not y
 python .claude/hooks/x4guard.py check --kind shell --shell bash --command "<command>"
 python .claude/hooks/x4guard.py check --kind shell --shell powershell --command "<command>"
 python .claude/hooks/x4guard.py check --kind write --path "<file>"
+python .claude/hooks/x4guard.py check --kind write --path "<file>" --content "<whole new file>"
 python .claude/hooks/x4guard.py check --kind delete --path "<file>"
 ```
 
@@ -151,6 +152,14 @@ Exit 2 means a usage error (a wrong option). The rules for calling it:
   tool. If you cannot tell, measure it (section 1, SHELL ROUTING).
 - **`--kind write`** for any tool that creates a file OR changes an existing one (an edit is a
   write).
+- **Pass the written TEXT for a Claude Code settings file** (a path matching
+  `.claude/settings*.json`, any case and slash). Without it every such write is DENIED: an `env`
+  block there reaches every hook, so the guard must see whether it would set X4_GUARD. A tool that
+  writes the WHOLE file passes it as `--content "<the new file>"` (judged exactly as Claude Code's
+  Write); a patch or any partial text passes it as `--command "<the patch>"` (judged more
+  strictly: a patch cannot prove an existing key is removed). Never both. The shipped adapters
+  pass it only for settings files (READ: `agent/guards/adapters/codex.py`, `opencode.py`); a
+  large file through the command line can exceed the OS argument limit.
 - **`--kind delete`** for anything that removes or moves a file away; x4guard judges it as the
   stricter of a write and an `rm -rf` of that path. A move is a delete of the source plus a
   write of the destination. A tool that touches several files is several checks; the worst

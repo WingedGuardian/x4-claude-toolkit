@@ -702,8 +702,8 @@ MUTANTS = [
      "                out.extend(_echo_printf_program(prev))", "                pass",
      "test_echo_or_printf_piped_into_a_shell_is_its_program"),
     ("H8: `bash -n` executes nothing",
-     '    if any(not q and re.fullmatch(r"-[A-Za-z]*n[A-Za-z]*", t) for t, q in toks[k + 1:]):',
-     "    if False:",
+     '        if t[0] == "-" and "n" in t[1:]:',
+     "        if False:",
      "test_TWIN_a_harmless_program_a_non_shell_or_a_script_argument_is_not"),
     ("H8: a process substitution run as a script is its program",
      "        out.extend(_procsub_program(seg))", "        pass",
@@ -713,7 +713,7 @@ MUTANTS = [
      "        return False",
      "test_a_variable_holding_a_substitution_is_an_unresolved_verb"),
     ("G-OUT: only at a real command position",
-     '        if any("$(" in x or chr(96) in x for x in toks[:k]):',
+     "        if any(_hides_position(x) for x in toks[:k]):",
      "        if False:",
      "test_TWIN_a_literal_verb_variable_or_an_operand_elsewhere_is_not_this_rule"),
     ("F183: a substituted verb below the game root advises",
@@ -737,6 +737,27 @@ MUTANTS = [
     ("H-M3: a file:// URL is percent-decoded",
      "    return unquote(_FILE_URL.sub(\"\", o))", "    return _FILE_URL.sub(\"\", o)",
      "test_a_percent_encoded_file_url_is_decoded"),
+    # --- FX-G5 (v4.0.0 delta review, reviewer J2) --------------------------------------------
+    ("J2-9: the alternate of an UNASSIGNED variable is judged",
+     '        return rest if (known or name not in assigns) else ""',
+     '        return rest if known else ""',
+     "test_the_alternate_of_an_unassigned_variable_is_judged"),
+    ("J2-5: -c include.* forces a clean",
+     '            elif t == "-c" and toks[i + 1].lower().startswith(("include.", "includeif.")):',
+     "            elif False:",
+     "test_an_include_or_config_env_forces_the_clean"),
+    ("J2-5: an in-command git config of requireForce forces a clean",
+     "                              or _GIT_CONFIG_IN_COMMAND.search(body))",
+     "                              or False)",
+     "test_an_in_command_git_config_of_requireForce_forces_the_clean"),
+    ("J2-2: a shell option's VALUE is stepped over",
+     '        j += 1 + sum(1 for ch in t[1:] if ch in "oO")   # each o/O takes the next word',
+     "        j += 1",
+     "test_only_the_shells_OWN_options_and_their_values_are_stepped_over"),
+    ("J2-3: an assignment's substitution is one word",
+     "    for t, _quoted in tokens(_collapse_assignment_substs(seg)):",
+     "    for t, _quoted in tokens(seg):",
+     "test_a_prefix_ASSIGNMENT_does_not_hide_the_verb"),
 ]
 
 SHIM = '''
@@ -760,8 +781,11 @@ NOT_A_RULE = {"background"}
 
 
 def test_sources(text: str) -> dict:
-    """{test METHOD name: its own source, plus its class's non-test body (FACT/KEYS
-    attributes)}. A name defined in two classes gets both sources.
+    """{"Class.method" (a module-level test: its bare name): its own source, plus its class's
+    non-test body (FACT/KEYS attributes)}. Keyed exactly as failed_tests() reports a failure
+    and test_index()/qualify() name a target (FX-G5 / reviewer J2 item 8): keyed by the bare
+    METHOD, two classes sharing a name POOLED their sources, so a red test in one class was
+    credited with the predicate its namesake in another class mentions.
 
     For the silent? column (reviewer E10, v4.0.0 delta review): pinning a predicate TRUE broke
     the catch-all `test_TWIN_a_read_is_not_a_write` -- which asserts EVERY fact is false -- for
@@ -783,12 +807,17 @@ def test_sources(text: str) -> dict:
                             if not (isinstance(n, ast.FunctionDef) and n.name.startswith("test_")))
             for n in node.body:
                 if isinstance(n, ast.FunctionDef) and n.name.startswith("test_"):
-                    out[n.name] = out.get(n.name, "") + src(n) + attrs
+                    out[f"{node.name}.{n.name}"] = src(n) + attrs
     return out
 
 
 def names_predicate(source: str, key: str) -> bool:
     return ('"%s"' % key) in source or ("'%s'" % key) in source
+
+
+def credited(failed: set, srcs: dict, key: str) -> set:
+    """The failed tests ("Class.method") whose OWN source names predicate *key* (E10)."""
+    return {t for t in failed if names_predicate(srcs.get(t, ""), key)}
 
 
 def run(work: Path):
@@ -964,10 +993,10 @@ def main() -> int:
                 _rc, f, r = run(work)
                 if val == "True":
                     # silent?: only a must-NOT-fire test ABOUT this predicate counts (E10).
-                    # `f` holds "Class.method" (FX-G3) while srcs is keyed by METHOD: looking up
-                    # the qualified name found no source, so EVERY predicate read NONE (FX-G4,
-                    # MEASURED: 32 of 32 -- present since the two patches met at e39f675).
-                    f = {t for t in f if names_predicate(srcs.get(t.rsplit(".", 1)[-1], ""), k)}
+                    # `f` holds "Class.method" (FX-G3), and so does srcs (FX-G5 / J2 item 8): a
+                    # bare-method lookup first found nothing (FX-G4, 32 of 32 NONE), then pooled
+                    # the sources of same-named tests in different classes.
+                    f = credited(f, srcs, k)
                 row.append("BROKE" if r < 20 else ("probed" if f else "*** NONE ***"))
             if "*** NONE ***" in row or "BROKE" in row:
                 gaps += 1
