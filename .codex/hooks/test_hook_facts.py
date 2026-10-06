@@ -4911,7 +4911,11 @@ class TestK_C1EveryValueOfAnUnknownVariable(unittest.TestCase):
                   # states are PER NAME: A unset and B set
                   D + ' -rf "${A:+./junk}${B:+' + REF + '}"',
                   # past _MAX_BRANCH_NAMES: one name set, the rest uniform
-                  D + ' -rf "${A:+./j}${B:+x}${C:+y}${D:+z}${E:+' + REF + '}"'):
+                  D + ' -rf "${A:+./j}${B:+x}${C:+y}${D:+z}${E:+' + REF + '}"',
+                  # ...and inside a CARRIER, whose text was resolved to ONE value (fuzz-guard)
+                  "bash -c " + Q + D + ' -rf "${NOPE:+zz}' + REF + '"' + Q,
+                  "eval " + Q + D + ' -rf "${NOPE:+zz}' + REF + '"' + Q,
+                  "cmd //c rd /s /q " + DQ + "${NOPE:+zz}" + REF + DQ):
             with self.subTest(c=c):
                 self.assertTrue(FC(c, _ELSEWHERE)["rm_targets_reference"], c)
         for c in (D + ' -rf "${NOPE:+./junk}' + GAME + '"', D + ' -rf "${NOPE:+x}$X4_GAME"',
@@ -5185,6 +5189,8 @@ class TestGOutSubstitutedVerb(unittest.TestCase):
             with self.subTest(c=c):
                 self.assertTrue(F(c)["rm_hits_game"], c)
         self.assertTrue(F("A=$(echo a; echo b) " + DEL_REF)["rm_targets_reference"])
+        # ...inside a carrier too, whose text resolve() rewrote (`A=echo a rm`): fuzz-guard
+        self.assertTrue(F("bash -c " + Q + "A=${X:-echo a} " + DEL_REF + Q)["rm_targets_reference"])
         # the top level's view runs where the top level runs: a `cd` INSIDE the substitution
         # (a subshell) moves nothing, and the relative operand is judged from the session cwd
         self.assertTrue(FC("A=$(cd /x; echo b) " + D + " -rf extensions", GAME)["rm_hits_game"])

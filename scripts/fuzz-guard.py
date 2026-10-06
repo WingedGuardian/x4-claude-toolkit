@@ -987,7 +987,10 @@ def seeds(roots):
         ("empty branch of an unassigned :+", d + " -rf " + QU + "${G6_NOPE:+zz}" + ref + QU),
         ("lone dash before a process substitution", "bash - <(echo " + d + " -rf " + QU + g + QU + ")"),
         ("+n cancels -n", "bash -n +n <(echo " + d + " -rf " + QU + g + QU + ")"),
-        ("brace span with a blank in a prefix", "A=${G6_X:-echo a} " + d + " -rf " + QU + g + QU),
+        # NOT seeded: `A=${X:-echo a} rm -rf <game>` (K I4). Bare, the VERB mutators rewrite the
+        # assignment into a command NAME (`/usr/bin/A=${X:-echo`) that deletes nothing; inside
+        # `bash -c '...'` the two-shells-deep mutator breaks its single quotes. Both are mutants,
+        # not bypasses (MEASURED, FX-G6). Pinned by test_hook_facts and test-hooks.sh instead.
         ("separator inside a prefix substitution", "A=$(echo a; echo b) " + d + " -rf " + QU + g + QU),
         ("wrapper value with a blank", "env -C $(echo /tmp ) " + d + " -rf " + QU + g + QU),
         # NOT seeded: `cmd //c "cd /d <game> && rd /s /q extensions"`. Its dangerous part

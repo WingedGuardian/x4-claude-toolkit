@@ -4386,8 +4386,11 @@ def _windows_carrier(seg: str, cmd: str, prev=None) -> list:
         for i, t in enumerate(toks[1:], 1):
             # /R is cmd's older synonym of /C (finding 3).
             if re.fullmatch(r"/{1,2}[cCkKrR]", t):
-                rest = [resolve(x, _text_assignments(cmd)) for x in toks[i + 1:]]
-                inline = [cmd_to_sh(rest)] if rest else []
+                # Every value of the text (FX-G6 / reviewer K C1, fuzz-guard): one carried
+                # command per value of an unassigned `${V:+w}`, joined on a NUL no token holds.
+                raw = chr(0).join(toks[i + 1:])
+                inline = [cmd_to_sh(r_.split(chr(0)))
+                          for r_ in resolve_variants(raw, _text_assignments(cmd))] if raw else []
                 break
         if not _cmd_toks_read_stdin(toks):
             return inline
@@ -4490,7 +4493,9 @@ def _inner_commands(cmd: str) -> list[str]:
                     # were using it. Same-command assignment is exactly what that
                     # machinery is for; the carrier walk was the one consumer not using
                     # it, so a two-statement command any script writes lost the block.
-                    out.append(resolve(toks[i + 1][0], assignments(cmd)))
+                    # EVERY value (FX-G6 / reviewer K C1, found by fuzz-guard): one resolve()
+                    # judged `bash -c 'rm -rf "${NOPE:+zz}<ref>"'` as the alternate only.
+                    out.extend(resolve_variants(toks[i + 1][0], assignments(cmd)))
                     break
         elif v == "eval":
             # `eval` concatenates its arguments and runs the result.
@@ -4504,7 +4509,7 @@ def _inner_commands(cmd: str) -> list[str]:
                       if _verb_name(t) == "eval"), 0)
             parts = [t for t, _ in toks[k + 1:] if not t.startswith("-")]
             if parts:
-                out.append(resolve(" ".join(parts), assignments(cmd)))
+                out.extend(resolve_variants(" ".join(parts), assignments(cmd)))   # FX-G6 / K C1
         elif v == "trap":
             # `trap <cmd> <SIGNAL...>` runs its first operand as a command when the
             # signal fires. That operand is normally single-quoted, which is exactly
