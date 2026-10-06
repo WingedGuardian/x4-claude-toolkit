@@ -190,6 +190,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # ISOLATED (FX-B4, reviewer I): no `if:`, so on the Windows runner install.sh writes
+          # X4_TOOLKIT through scripts/x4-userenv.ps1 -- the runner's REAL HKCU\Environment, which
+          # persists into later steps. That script honours the installers' test seam instead
+          # (refused outside X4ToolkitTests); on Linux nothing reads it.
+          export X4_INSTALL_ENV_REGKEY='HKCU\Software\X4ToolkitTests\ci-sh-separate'
+          unset X4_TOOLKIT
           TK="$RUNNER_TEMP/tk-sh"
           # A REAL SETUP. Without a virtualenv in the source, the venv assertions
           # below describe a situation that cannot arise, and the collision grep
@@ -426,6 +432,9 @@ jobs:
           # destination with --yes is refused outright, which is the rule that exists
           # because an auto-detected install once wrote 1,642 files into a real Steam
           # install and exited 0.
+          # ISOLATED like the separate bash leg (FX-B4): no `if:`, so it runs on Windows too.
+          export X4_INSTALL_ENV_REGKEY='HKCU\Software\X4ToolkitTests\ci-sh-ingame'
+          unset X4_TOOLKIT
           GAME="$RUNNER_TEMP/fakegame-sh"
           rm -rf "$GAME"; mkdir -p "$GAME/extensions"
           for n in 01 02 03 04 05 06 07 08 09; do : > "$GAME/$n.cat"; done
