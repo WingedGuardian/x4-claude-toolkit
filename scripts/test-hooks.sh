@@ -1049,11 +1049,16 @@ for _v in $(export -p | sed -nE 's/^declare -x (X4_[A-Z0-9_]*|CLAUDE_PROJECT_DIR
   [ "$_v" = X4_DECIDE_DUMP ] || unset "$_v"
 done
 _ct="$SBX_TMP/cfgtk"; mkdir -p "$_ct/reference/libraries" "$_ct/ref2/libraries" "$_ct/.claude"
-export X4_TOOLKIT="$_ct" CLAUDE_PROJECT_DIR="$_ct"
 # Lines AFTER an `exit 0` are still read: ref2 is configured below it and must be protected.
-printf '%s\n' '# cfg' 'exit 0' "X4_REFERENCE=\"$_ct/ref2\"" > "$_ct/x4-paths.env"
-decide deny protect-files.sh "$(fj "$_ct/ref2/libraries/w.xml")" "an 'exit 0' line in the config no longer silences the guards"
-decide deny protect-bash.sh  "$(cj "echo x > '$_ct/ref2/libraries/w.xml'")" "an 'exit 0' line: protect-bash still reads the roots after it"
+# Its OWN toolkit folder, whose config is never rewritten (FX-G5): the conformance replay re-runs
+# each row against the kept sandbox, and rewriting a shared config below made these two rows
+# replay as ALLOW (MEASURED: DRIFT #153/#154 in test_codex_conformance).
+_ce="$SBX_TMP/cfgtk-exit0"; mkdir -p "$_ce/ref2/libraries"
+export X4_TOOLKIT="$_ce" CLAUDE_PROJECT_DIR="$_ce"
+printf '%s\n' '# cfg' 'exit 0' "X4_REFERENCE=\"$_ce/ref2\"" > "$_ce/x4-paths.env"
+decide deny protect-files.sh "$(fj "$_ce/ref2/libraries/w.xml")" "an 'exit 0' line in the config no longer silences the guards"
+decide deny protect-bash.sh  "$(cj "echo x > '$_ce/ref2/libraries/w.xml'")" "an 'exit 0' line: protect-bash still reads the roots after it"
+export X4_TOOLKIT="$_ct" CLAUDE_PROJECT_DIR="$_ct"
 # X4_GUARD=off in the FILE is ignored ...
 printf '%s\n' 'X4_GUARD=off' > "$_ct/x4-paths.env"
 decide deny protect-files.sh "$(fj "$_ct/reference/libraries/w.xml")" "X4_GUARD=off in the config does NOT switch the guards off"

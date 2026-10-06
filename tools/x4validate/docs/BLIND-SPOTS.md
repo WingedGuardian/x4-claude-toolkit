@@ -318,6 +318,7 @@ memory or from another session -- a remembered id was stale within a day here.
 | F237 | `.claude/.reference-buildid` was in neither installer's keep-local nor prune list, so installing from an unpacked (non-git) source tree copied it and `x4doctor` read a fresh install as a MOVED reference tree | **DEFECT (measured)** · IN-ARC (F226) · ✅ FIXED 2026-10-06 (fix lane FX-G5) | J2 item 7; 2 of 2 installers | keep-local: never copied in, the destination's own kept |
 | F238 | `verify-hook-tests.py`'s silent? column looked a failing test's source up by bare METHOD name, pooling the sources of same-named tests in different classes | **DEFECT (read)** · IN-ARC (141bb8c) · ✅ FIXED 2026-10-06 (fix lane FX-G5) | J2 item 8; 3 shared names in test_hook_facts.py | keyed `Class.method`, as failures and targets are |
 | F239 | ADAPTING.md never told an adapter to pass a settings write's TEXT, and `x4guard check` had no way to say "this is the whole file": every adapter built from the doc denied every `.claude/settings*.json` write, and Codex's `Add File` over a settings file that held X4_GUARD was denied where the Write it mirrors is allowed | **DEFECT (measured)** · IN-ARC (F193) · ✅ FIXED 2026-10-06 (fix lane FX-G5) | conformance DISAGREE #204 (Codex, toy) and #224 (toy) on 44c2d00 | `--content`; an add-only patch is judged on its own text; residual: an OpenCode `write` over a file that holds the key is still judged as raw text (F220, false deny) |
+| F240 | Two conformance rows (the `exit 0` config probes) replayed as ALLOW against the harness's DENY: the harness rewrote the shared config they were judged with, and the replay re-runs every row against the kept sandbox's END state. The R7-3 drift assertion was masked on 44c2d00 by the #204 failure before it | **DEFECT (measured)** · IN-ARC (test harness) · ✅ FIXED 2026-10-06 (fix lane FX-G5) | 2 of 210 replayed rows | the two rows get their own never-rewritten toolkit folder; other rows sharing a later-rewritten file are not audited |
 | — | 3 suspected findings that were **NOT** defects | correct | see "Cleared" | — |
 
 > F-numbers in this file are **local to this register** and unrelated to the F-series in the
@@ -9415,3 +9416,14 @@ the text for settings files in real use. Residual: an OpenCode `write` (whole fi
 text, so over a file that already holds the key it is a false deny (F220). **RE-DERIVED BY:**
 `test_settings_guard.py` `test_x4guard_check_content_is_judged_as_the_whole_resulting_file`,
 `test_codex_ADD_FILE_over_a_file_that_sets_it_is_judged_on_what_it_writes`; the two conformance tests.
+
+## F240 — conformance rows judged against a config the harness later rewrote · **DEFECT (measured)** · confidence 90% · ✅ FIXED 2026-10-06
+
+**Finding (FX-G5, while closing F239).** With #204/#224 fixed, `test_every_replayable_case_agrees`
+went on to its drift assertion (R7-3) and failed: #153/#154 ("an 'exit 0' line ...") were DENY at
+decide() time and ALLOW on replay, because `scripts/test-hooks.sh` overwrites `cfgtk/x4-paths.env`
+(to `X4_GUARD=off`, then empty) after them, and the replay reads the sandbox as it was LEFT. The
+same end-state shape made #204 replay against a settings.json holding X4_GUARD. **Fix:** the two rows
+use their own folder (`cfgtk-exit0`) that nothing rewrites. **Open:** no audit of other rows whose
+inputs the harness rewrites later; the drift assertion is what would show one. **RE-DERIVED BY:**
+`tests/test_codex_conformance.py::test_every_replayable_case_agrees` (0 drift of 210).
