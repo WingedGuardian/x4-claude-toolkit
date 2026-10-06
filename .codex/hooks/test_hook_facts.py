@@ -4853,6 +4853,8 @@ class TestH2RootVariableUnderAnOperator(unittest.TestCase):
                 self.assertTrue(FC(c, _ELSEWHERE)["rm_hits_game"], c)
         self.assertTrue(FC('echo x > "${X4_REFERENCE:-/nope}/libraries/w.xml"', _ELSEWHERE)["writes_reference"])
         self.assertEqual(H.subst_root_var("${X4_REFERENCE:-/n}/a", ROOTS), REF + "/a")
+        # another variable whose DEFAULT is a root variable (fuzz-guard, FX-G4)
+        self.assertTrue(FC(D + ' -rf "${FZ_UNSET:-${X4_GAME:-/x}}"', _ELSEWHERE)["rm_hits_game"])
         # a default holding a space cuts the word inside the braces: still that root
         self.assertTrue(FC("G=${X4_GAME:-" + GAME + '}; ' + D + ' -rf "$G"', _ELSEWHERE)["rm_hits_game"])
 
@@ -4908,6 +4910,16 @@ class TestH7H8TextPipedIntoAShell(unittest.TestCase):
     def test_a_process_substitution_run_as_a_script_is_its_program(self):
         for v in ("bash", "sh", "source", "."):
             c = v + " <(echo " + DEL_GAME + ")"
+            with self.subTest(c=c):
+                self.assertTrue(F(c)["rm_hits_game"], c)
+        # fuzz-guard (FX-G4): in a case arm the segmenter takes the `)`
+        self.assertTrue(F("case x in x) bash <(echo " + DEL_GAME + ") ;; esac")["rm_hits_game"])
+
+    def test_a_quoted_or_pathed_echo_is_still_the_producer(self):
+        """fuzz-guard (FX-G4): `"echo"`, `$'echo'` and a Windows path to echo.exe left a quote
+        residue that swallowed the program as written."""
+        for v in (DQ + "echo" + DQ, "$" + Q + "echo" + Q, DQ + "C:" + BS + "tools" + BS + "echo.exe" + DQ):
+            c = v + " " + DEL_GAME + " | bash"
             with self.subTest(c=c):
                 self.assertTrue(F(c)["rm_hits_game"], c)
         self.assertTrue(F("bash <(curl -s http://x)")["carrier_untranslated"])

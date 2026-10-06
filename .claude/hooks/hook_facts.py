@@ -1172,6 +1172,16 @@ def subst_root_var(tok: str, roots: dict | None) -> str:
             # UNCLOSED: the word was cut at a space inside the braces (`G=${X4_GAME:-C:/X4
             # Foundations}` tokenises as `${X4_GAME:-C:/X4`). The whole token is that root.
             end = len(tok)
+        if not ROOT_VARS.get(name.upper()):
+            # `${OTHER:-${X4_GAME}}`: another variable whose DEFAULT is a root variable may
+            # expand to that root (fuzz-guard's default-value mutator, FX-G4).
+            op = re.match(r":?[-=]", tok[m2.end():])
+            if op:
+                inner = tok[m2.end() + op.end():(end - 1 if tok[end - 1:end] == "}" else end)]
+                sub = subst_root_var(inner, roots)
+                if sub != inner:
+                    return sub + tok[end:]
+            return tok
     key = ROOT_VARS.get(name.upper())
     root = (roots.get(key) or "") if key else ""
     if not root:
@@ -3652,7 +3662,7 @@ def _echo_printf_program(prev: str) -> list:
     k = next((i for i, (t, _q) in enumerate(toks) if t == vt), 0)
     args = [t for t, _q in toks[k + 1:]]
     args = _drop_redirects(args)
-    if verb(prev) == "echo":
+    if _verb_name(verb(prev)) == "echo":
         while args and re.fullmatch(r"-[neE]+", args[0]):
             args = args[1:]
         printed = " ".join(args)
@@ -3665,8 +3675,17 @@ def _echo_printf_program(prev: str) -> list:
                                  "piped into a shell")
             return []
     out = [ln for ln in printed.split(chr(10)) if ln.strip()]
-    m = re.search(re.escape(vt), prev) if vt else None
-    raw = prev[m.end():].strip() if m else ""
+    # The producer's words AS WRITTEN: everything after the verb WORD -- stepping past the rest
+    # of a quoted or ANSI-C verb (`"echo"`, `$'echo'`, `"C:/x/echo.exe"`), whose closing
+    # quote would otherwise open a string over the program (fuzz-guard, FX-G4).
+    i = prev.find(vt) if vt else -1
+    raw = ""
+    if i >= 0:
+        mask = _quote_mask(prev)
+        j = i + len(vt)
+        while j < len(prev) and (mask[j] or not prev[j].isspace()):
+            j += 1
+        raw = prev[j:].strip()
     if raw:
         out.append(raw)
     return out
@@ -3693,12 +3712,14 @@ def _procsub_program(seg: str) -> list:
     at = next((i for i in range(len(seg) - 1)
                if seg[i:i + 2] == "<(" and not mask[i]), -1)
     close = _match_paren(seg, at + 1) if at >= 0 else -1
-    if close < 0:
+    # No `)` in the segment: the segmenter took it as a case-arm/subshell close (`x) bash
+    # <(echo ...) ;;`). What is left of the segment is the inner text (fuzz-guard, FX-G4).
+    if at < 0:
         _UNTRANSLATED.append("a process substitution run as a shell script, unreadable")
         return []
-    inner = seg[at + 2:close]
+    inner = seg[at + 2:close] if close >= 0 else seg[at + 2:]
     segs = segments(inner)
-    if segs and verb(segs[-1]) in ("echo", "printf"):
+    if segs and _verb_name(verb(segs[-1])) in ("echo", "printf"):
         return _echo_printf_program(segs[-1])
     _UNTRANSLATED.append("a process substitution run as a shell script, fed by something "
                          "the guard cannot read")
@@ -4172,7 +4193,7 @@ def _inner_commands(cmd: str) -> list[str]:
         # cannot pair by accident.
         if n and _reads_stdin_program(seg):
             prev = segs[n - 1]
-            if verb(prev) in ("echo", "printf"):
+            if _verb_name(verb(prev)) in ("echo", "printf"):
                 lit = [t for t, q in tokens(prev)[1:] if q and not t.startswith("-")]
                 for piece in lit:
                     if piece.strip() and piece not in ("%s", "%s" + chr(92) + "n"):

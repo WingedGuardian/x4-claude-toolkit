@@ -265,6 +265,31 @@ def _m_arith_nested(c):
     return "n=$(( (1 << 2) + $((3 >> 1)) ))" + NL + c
 
 
+# FX-G4 / reviewer H5: every place bash reads `<<` as a SHIFT or text, not a heredoc opener.
+def _m_arith_command_shift(c):
+    return "((x=1<<EOF))" + NL + c
+
+
+def _m_arith_for_shift(c):
+    return "for ((i=0;i<1<<EOF;i++)); do :; done" + NL + c
+
+
+def _m_dollar_bracket_shift(c):
+    return "echo $[1<<EOF]" + NL + c
+
+
+def _m_subscript_shift(c):
+    return "a[1<<EOF]=1" + NL + c
+
+
+def _m_param_pattern_shift(c):
+    return "y=${x//<<EOF/z}" + NL + c
+
+
+def _m_heredoc_backtick_end(c):
+    return "x=" + BT + "cat <<EOF" + NL + "hi" + NL + "EOF" + BT + NL + c
+
+
 # --- class: comments carrying shell metacharacters --------------------------
 def _m_comment_heredoc_marker(c):
     return "# example: cat <<EOF" + NL + c
@@ -799,6 +824,12 @@ MUTATORS = [
     ("arithmetic: left shift", _m_arith_lshift),
     ("arithmetic: right shift", _m_arith_rshift),
     ("arithmetic: nested shifts", _m_arith_nested),
+    ("arithmetic: (( )) command shift", _m_arith_command_shift),
+    ("arithmetic: for (( )) shift", _m_arith_for_shift),
+    ("arithmetic: $[ ] shift", _m_dollar_bracket_shift),
+    ("subscript assignment shift", _m_subscript_shift),
+    ("param expansion: << in a pattern", _m_param_pattern_shift),
+    ("heredoc closed by EOF + backtick", _m_heredoc_backtick_end),
     ("comment: contains a heredoc marker", _m_comment_heredoc_marker),
     ("comment: contains a here-string", _m_comment_herestring),
     ("comment: contains redirects", _m_comment_redirect),
@@ -941,6 +972,17 @@ def seeds(roots):
         ("robocopy /MIR into the game", "robocopy C:/empty " + QU + g + QU + " /MIR"),
         ("touch into reference", "touch " + QU + ref + "/f.xml" + QU),
         ("cmd /r carrier at reference", "cmd //r rd /s /q " + QU + ref + QU),
+        # FX-G4 (v4.0.0 delta review, reviewers G and H): one seed per rule the lane added.
+        ("cmd /k reads stdin at reference", "echo rd /s /q " + QU + ref + QU + " | cmd //k"),
+        ("root variable under an operator", d + " -rf " + QU + "${X4_GAME:-/x}" + QU),
+        # `env` first: the VERB mutators rewrite the first word, and a path glued onto an
+        # ASSIGNMENT makes a command that never runs git (a mutant that is not a bypass).
+        ("git config env forces a clean", "env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=clean.requireForce "
+         "GIT_CONFIG_VALUE_0=false git -C " + QU + g + QU + " clean -dx"),
+        ("unquoted echo into bash", "echo " + d + " -rf " + QU + g + QU + " | bash"),
+        ("process substitution as a script", "bash <(echo " + d + " -rf " + QU + g + QU + ")"),
+        ("verb from a substitution variable", "x=$(printf " + d + "); $x -rf " + QU + ref + QU),
+        ("takeown lifts the reference deny", "takeown /f " + QU + ref + QU + " /r"),
         # NOT seeded: `cmd //c "cd /d <game> && rd /s /q extensions"`. Its dangerous part
         # is cmd.exe text inside one quoted word, and every mutator here rewrites BASH
         # syntax -- `timeout -s KILL 5 rd` or `$'rd'` inside that word is a different cmd
