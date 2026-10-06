@@ -139,8 +139,9 @@ def test_a_plain_rerun_REFUSES_and_names_the_lift_first(tmp_path):
     (ref / ".unpacked-and-locked").write_text("buildid 1")
     r = _run(_env(tmp_path, ref), ref, explicit=True)
     assert r.returncode == 2
-    assert "x4refguard.py remove" in r.stderr and ".unpacked-and-locked" in r.stderr
-    assert r.stderr.index("x4refguard.py remove") < r.stderr.index("rm ")
+    # FX-B4: the script path is now absolute and quoted -- `x4refguard.py" remove --toolkit`
+    assert 'x4refguard.py" remove' in r.stderr and ".unpacked-and-locked" in r.stderr
+    assert r.stderr.index('x4refguard.py" remove') < r.stderr.index("rm ")
 
 
 @win
@@ -153,7 +154,7 @@ def test_FORCE_unpack_REFUSES_while_the_deny_is_on_and_names_the_lift(tmp_path):
     assert _guard(env, "apply").returncode == 0
     try:
         r = _run({**env, "X4_FORCE_UNPACK": "1"}, ref, explicit=True)
-        assert r.returncode == 2 and "x4refguard.py remove" in r.stderr, r.stdout + r.stderr
+        assert r.returncode == 2 and 'x4refguard.py" remove' in r.stderr, r.stdout + r.stderr
         assert not (ref / "libraries").exists()          # it never started extracting
         assert _guard(env, "status", "--json").stdout.count('"state": "protected"') == 1
     finally:
@@ -614,3 +615,82 @@ def test_FXB4_an_inherited_RELATIVE_X4_REFERENCE_is_the_tree_it_names(tmp_path, 
     cwd = {"tk": tk, "sub": tk / "sub", "tmp": tmp_path}[where]
     assert _unpack_verdict(tk, env, cwd) == want, _id
     assert not (tmp_path / "nogame").exists()
+
+
+# ------------- FX-B4 #5 (reviewer I): every hint is a command that runs from ANY cwd, for THIS
+#               toolkit -- an absolute script path and --toolkit, as the B3 refusals already are
+
+def _is_abs(p: str) -> bool:
+    return p.startswith("/") or bool(re.match(r"^[A-Za-z]:[/\\]", p))
+
+
+def _cmd_lines(text: str, script: str) -> list[str]:
+    return [ln for ln in text.splitlines() if script in ln and ("bash " in ln or '" ' in ln)]
+
+
+def _assert_runnable(ln: str, script: str, tk: str):
+    m = re.search(r'"([^"]*%s)"' % re.escape(script), ln)
+    assert m and _is_abs(m.group(1)), ("not an absolute script path", ln)
+    t = re.search(r'--toolkit "([^"]+)"', ln)
+    assert t, ("no --toolkit", ln)
+    assert os.path.normcase(os.path.abspath(t.group(1))) == os.path.normcase(os.path.abspath(tk)) \
+        or t.group(1).startswith("/"), ln
+
+
+def test_FXB4_the_LIFT_steps_are_absolute_commands_with_toolkit(tmp_path):
+    """They read `python scripts/x4refguard.py remove (from <dir>)` and `bash bin/unpack-
+    reference.sh` -- relative, and with no --toolkit, which a foreign X4_TOOLKIT refuses."""
+    ref = tmp_path / "reference"
+    ref.mkdir()
+    (ref / ".unpacked-and-locked").write_text("buildid 1")
+    env = _env(tmp_path, ref)
+    r = _run(env, ref, explicit=True)
+    assert r.returncode == 2, r.stdout + r.stderr
+    guard = _cmd_lines(r.stderr, "x4refguard.py")
+    unpack = _cmd_lines(r.stderr, "unpack-reference.sh")
+    assert len(guard) == 1 and len(unpack) == 1, r.stderr
+    _assert_runnable(guard[0], "scripts/x4refguard.py", env["X4_TOOLKIT"])
+    _assert_runnable(unpack[0], "unpack-reference.sh", env["X4_TOOLKIT"])
+    assert " remove " in guard[0] + " " and '--reference "' in unpack[0], r.stderr
+    assert r.stderr.index("x4refguard.py") < r.stderr.index("rm "), r.stderr   # the lift FIRST
+
+
+def test_FXB4_a_FAILED_apply_hint_is_an_absolute_command_with_toolkit(tmp_path):
+    ref = tmp_path / "reference"
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    env = _env(tmp_path, ref, **{x4refguard.SANDBOX_ENV: str(other)})
+    try:
+        r = _run(env, ref, explicit=True)
+        assert r.returncode == 1 and "Layer 2: FAILED" in r.stderr, r.stdout + r.stderr
+        hint = [ln for ln in _cmd_lines(r.stderr, "x4refguard.py") if "apply --yes" in ln]
+        assert len(hint) == 1, r.stderr
+        _assert_runnable(hint[0], "scripts/x4refguard.py", env["X4_TOOLKIT"])
+        assert '--reference "' in hint[0], hint
+    finally:
+        _unprotect(tmp_path, ref)
+
+
+def test_FXB4_the_NO_PYTHON_hint_is_an_absolute_command_with_toolkit(tmp_path):
+    """X4_PYTHON naming nothing resolves NO python (deliberately): the unpack completes and
+    Layer 2 fails loud, naming the apply to run once python is installed."""
+    ref = tmp_path / "reference"
+    env = _env(tmp_path, ref, X4_PYTHON="no-such-python-x4b4")
+    r = _run(env, ref, explicit=True)
+    assert r.returncode == 1 and "no python found" in r.stderr, r.stdout + r.stderr
+    hint = [ln for ln in _cmd_lines(r.stderr, "x4refguard.py") if "apply --yes" in ln]
+    assert len(hint) == 1, r.stderr
+    _assert_runnable(hint[0], "scripts/x4refguard.py", env["X4_TOOLKIT"])
+
+
+def test_FXB4_the_UNREADABLE_layer2_hint_is_an_absolute_command_with_toolkit(tmp_path):
+    ref = tmp_path / "reference"
+    (ref / "libraries").mkdir(parents=True)
+    stub = tmp_path / "stubguard.py"
+    stub.write_text("import sys\nprint('Traceback: boom')\nsys.exit(1)\n", encoding="utf-8")
+    env = _env(tmp_path, ref, X4_REFGUARD_SCRIPT=str(stub))
+    r = _run(env, ref, explicit=True)
+    assert r.returncode == 2, r.stdout + r.stderr
+    hint = [ln for ln in _cmd_lines(r.stderr, "x4refguard.py") if " status" in ln]
+    assert len(hint) == 1, r.stderr
+    _assert_runnable(hint[0], "scripts/x4refguard.py", env["X4_TOOLKIT"])

@@ -170,11 +170,20 @@ x4_refguard_state() {
   X4_REFERENCE="$REF" "$X4_PY" "$REFGUARD" status --json --toolkit "$ACT_TK" --reference "$REF" 2>/dev/null \
     | grep -oE '"state": "[a-z]+"' | head -1 | sed -E 's/.*"([a-z]+)"$/\1/' || true
 }
+# FX-B4 (reviewer I): every hint below is a command that runs from ANY directory, for THIS
+# toolkit -- an absolute script path plus --toolkit (and the tree, --reference), as the B3
+# refusals above already were. `python scripts/x4refguard.py ... (from DIR)` ran only from the
+# toolkit root, and with no --toolkit a foreign $X4_TOOLKIT refused it again.
+x4_guard_cmd() {   # SUBCOMMAND [ARGS...] -> the x4refguard command line, on stdout
+  local py="${X4_PY:-python}"
+  case "$py" in *" "*) py="\"$py\"" ;; esac
+  printf '%s "%s" %s --toolkit "%s" --reference "%s"' "$py" "$TKDIR/scripts/x4refguard.py" "$*" "$ACT_TK" "$REF_ABS"
+}
 x4_lift_steps() {
   echo "  To re-unpack (e.g. after a game update), as the USER -- never an agent on its own:" >&2
-  echo "    1. python scripts/x4refguard.py remove      (from $TKDIR; lifts the OS protection)" >&2
-  echo "    2. rm \"$REF/.unpacked-and-locked\"" >&2
-  echo "    3. bash bin/unpack-reference.sh" >&2
+  echo "    1. $(x4_guard_cmd remove)      (lifts the OS protection)" >&2
+  echo "    2. rm \"$REF_ABS/.unpacked-and-locked\"" >&2
+  echo "    3. bash \"$HERE/unpack-reference.sh\" --toolkit \"$ACT_TK\" --reference \"$REF_ABS\"" >&2
 }
 INCLUDE='\.(xml|xsd|lua|xpl)$'               # text/markup only — keeps the tree small
 
@@ -185,6 +194,7 @@ INCLUDE='\.(xml|xsd|lua|xpl)$'               # text/markup only — keeps the tr
 [ -d "$X4_GAME" ]      || { echo "ERROR: game dir not found: $X4_GAME" >&2; exit 2; }
 [ -n "${X4_REFERENCE:-}" ] || { echo "ERROR: X4_REFERENCE not set (where to write the unpacked tree). Set it in x4-paths.env (toolkit root)." >&2; exit 2; }
 REF="$X4_REFERENCE"
+case "$REF" in /*|[A-Za-z]:[/\\]*) REF_ABS="$REF" ;; *) REF_ABS="$PWD/$REF" ;; esac   # for the hints
 
 # THE LOCK, CHECKED. The sentinel was only ever WRITTEN here (line ~60) and read
 # nowhere in this script -- so its own text, "reference/ is read-only; remove this
@@ -225,7 +235,7 @@ if [ -d "$REF" ]; then
     error)
       echo "REFUSING: the Layer-2 OS protection state of $REF could not be read (x4refguard" >&2
       echo "  state: error), so this script cannot tell whether it may write there. See:" >&2
-      echo "    python scripts/x4refguard.py status      (from $TKDIR)" >&2
+      echo "    $(x4_guard_cmd status)" >&2
       exit 2 ;;
     # The states that mean "nothing is in the way": proceed.
     absent|unconfigured|unsupported) ;;
@@ -240,7 +250,7 @@ if [ -d "$REF" ]; then
         echo "REFUSING: the Layer-2 OS protection state of $REF could not be read (x4refguard" >&2
         echo "  answered '${L2STATE:-nothing}', not a known state), so this script cannot tell whether" >&2
         echo "  it may write there. See:" >&2
-        echo "    python scripts/x4refguard.py status      (from $TKDIR)" >&2
+        echo "    $(x4_guard_cmd status)" >&2
       fi
       exit 2 ;;
   esac
@@ -355,7 +365,7 @@ echo "DONE: $NFILES files, $(du -sh "$REF" | cut -f1)"
 # second one is not true. Exit 3 is a platform with no mechanism: disclosed, not failed.
 if [ -z "$X4_PY" ]; then
   echo "Layer 2: FAILED -- no python found to run x4refguard.py, so reference/ is NOT OS-protected." >&2
-  echo "  The unpack itself is complete. Install python, then: python scripts/x4refguard.py apply --yes" >&2
+  echo "  The unpack itself is complete. Install python, then: $(x4_guard_cmd apply --yes)" >&2
   exit 1
 fi
 # --yes (B3): x4refguard asks before an apply, and refuses when nobody can answer. The user
@@ -371,6 +381,6 @@ case "$L2RC" in
   3) echo "Layer 2: not available on this OS (disclosed gap; see README)" ;;
   *) echo "Layer 2: FAILED (x4refguard.py apply exit $L2RC) -- reference/ is NOT confirmed protected." >&2
      echo "  The unpack itself is complete and stays on disk. Fix the cause above, then:" >&2
-     echo "  python scripts/x4refguard.py apply --yes   (from $TKDIR)" >&2
+     echo "  $(x4_guard_cmd apply --yes)" >&2
      exit 1 ;;
 esac
