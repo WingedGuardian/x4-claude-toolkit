@@ -583,11 +583,13 @@ def check_roots(ctx: Ctx) -> list[Check]:
             return FAIL, "the guards resolve NO reference root: nothing under it is protected"
         if not Path(ref).is_dir():
             # FX-B3: a fresh install before its unpack step is a KNOWN, normal state -- the
-            # user's step (TODO, exit 4), not a can't-tell (UNKNOWN, exit 3).
-            return TODO, ("YOUR STEP: the guards protect %s, which does not exist yet (not "
-                          "unpacked) -- run: %s. Nothing is there to damage meanwhile. If your "
-                          "unpacked tree is elsewhere, set X4_REFERENCE in x4-paths.env instead."
-                          % (ref, _unpack_cmd(ctx)))
+            # user's step (TODO, exit 4), not a can't-tell (UNKNOWN, exit 3). FX-B4: unless
+            # something says the tree was MOVED (_missing_tree_row).
+            return _missing_tree_row(ctx, ref, (
+                "YOUR STEP: the guards protect %s, which does not exist yet (not "
+                "unpacked) -- run: %s. Nothing is there to damage meanwhile. If your "
+                "unpacked tree is elsewhere, set X4_REFERENCE in x4-paths.env instead."
+                % (ref, _unpack_cmd(ctx, ref))))
         return OK, ref
 
     def _game(_):
@@ -1116,15 +1118,72 @@ def _claude_delete_hook_wired(root: Path) -> bool:
 _REF_SENTINEL = ".unpacked-and-locked"
 
 
-def _unpack_cmd(ctx: Ctx) -> str:
+def _unpack_cmd(ctx: Ctx, ref=None) -> str:
     """The ABSOLUTE unpack command for this root's toolkit, with --toolkit (FX-B3: a hint the
-    user can paste from any cwd, and one a foreign $X4_TOOLKIT does not refuse)."""
+    user can paste from any cwd, and one a foreign $X4_TOOLKIT does not refuse).
+
+    FX-B4 (reviewer I): and `--reference` naming the tree the doctor JUDGED -- without it, an
+    exported X4_REFERENCE differing from the config makes the command refuse (FX-B2). An
+    inherited X4_CONFIG outside the toolkit is refused whatever the flags (FX-B4 #3), so the
+    hint then says to clear it FIRST."""
     for base in (ctx.root, ctx.toolkit, HERE.parent):
         p = Path(base) / "bin" / "unpack-reference.sh" if base else None
         if p and p.is_file():
             tk = p.resolve().parent.parent
-            return 'bash "%s" --toolkit "%s"' % (p.resolve().as_posix(), tk.as_posix())
+            cmd = 'bash "%s" --toolkit "%s"' % (p.resolve().as_posix(), tk.as_posix())
+            if ref:
+                cmd += ' --reference "%s"' % Path(ref).as_posix()
+            return _foreign_config_first(ctx, tk) + cmd
     return "bash bin/unpack-reference.sh   (from the toolkit folder)"
+
+
+def _foreign_config_first(ctx: Ctx, tk: Path) -> str:
+    """'' unless the environment's X4_CONFIG names a missing file or one outside *tk* -- the
+    unpack's own test (bin/unpack-reference.sh), which no flag lifts."""
+    cfg = ctx.env.get("X4_CONFIG") or ""
+    if not cfg:
+        return ""
+    f = Path(cfg)
+    try:
+        inside = f.is_file() and os.path.normcase(str(f.resolve())).startswith(
+            os.path.normcase(str(Path(tk).resolve())) + os.sep)
+    except OSError:
+        inside = False
+    if inside:
+        return ""
+    why = "names a config outside this toolkit" if f.is_file() else "names a file that does not exist"
+    return ("first clear the inherited X4_CONFIG (%s; the unpack refuses it whatever the flags): "
+            "`unset X4_CONFIG` in bash, `Remove-Item env:X4_CONFIG` in PowerShell -- then " % why)
+
+
+def _moved_tree_evidence(ctx: Ctx, ref) -> str:
+    """Why a MISSING reference tree looks MOVED rather than never unpacked, or ''. x4refguard
+    reports both as "does not exist (not unpacked yet, or renamed or moved)": it cannot tell.
+    Two local facts can (FX-B4, reviewer I): the unpack writes .claude/.reference-buildid only
+    after a counted, finished unpack; and a finished unpack (its sentinel) at the toolkit's
+    default <toolkit>/reference while the config names somewhere else."""
+    seen = []
+    for base in dict.fromkeys(Path(b) for b in (ctx.root, ctx.toolkit) if b):
+        marker = base / ".claude" / ".reference-buildid"
+        if marker.is_file():
+            seen.append("%s exists (the unpack writes it only after a finished unpack)" % marker)
+        default = base / "reference"
+        if (default / _REF_SENTINEL).is_file():     # never *ref* itself: that one is missing
+            seen.append("a finished unpack is at %s (it carries %s)" % (default, _REF_SENTINEL))
+    return "; ".join(seen)
+
+
+def _missing_tree_row(ctx: Ctx, ref, todo_text: str):
+    """TODO with *todo_text* for a fresh install; UNKNOWN (exit 3) in x4refguard's words when
+    something says the tree was MOVED -- re-unpacking ~27 GB into the old place is the wrong
+    step for a tree that only moved."""
+    moved = _moved_tree_evidence(ctx, ref)
+    if not moved:
+        return TODO, todo_text
+    return UNKNOWN, ("%s does not exist -- not unpacked yet, or renamed or moved (x4refguard cannot "
+                     "tell), and %s. If you moved or renamed it, set X4_REFERENCE in x4-paths.env "
+                     "to where it is now; only if it is really gone, run: %s"
+                     % (ref, moved, _unpack_cmd(ctx, ref)))
 
 
 def _x4refguard_module(ctx: Ctx):
@@ -1286,10 +1345,11 @@ def check_common(ctx: Ctx) -> list[Check]:
             # A fresh install before its unpack step: a normal, KNOWN state -- the user's step
             # (TODO, exit 4), not a can't-tell (UNKNOWN, exit 3). x4refguard reports it as
             # "unconfigured" ("does not exist (not unpacked yet, or renamed or moved)").
-            return TODO, ("YOUR STEP: reference/ is not unpacked yet (%s does not exist) -- run: "
-                          "%s (it unpacks, then applies the OS-level delete protection). If your "
-                          "unpacked tree is elsewhere, set X4_REFERENCE in x4-paths.env instead."
-                          % (ref, _unpack_cmd(ctx)))
+            return _missing_tree_row(ctx, ref, (
+                "YOUR STEP: reference/ is not unpacked yet (%s does not exist) -- run: "
+                "%s (it unpacks, then applies the OS-level delete protection). If your "
+                "unpacked tree is elsewhere, set X4_REFERENCE in x4-paths.env instead."
+                % (ref, _unpack_cmd(ctx, ref))))
         if st in ("absent", "partial") and not (Path(ref) / _REF_SENTINEL).is_file():
             # `apply` REFUSES a tree without the sentinel (x4refguard resolve_target), so
             # "run: apply" was a hint that could only fail. The unpack writes the sentinel and
@@ -1301,12 +1361,12 @@ def check_common(ctx: Ctx) -> list[Check]:
                     "finished unpack (no %s), so `apply` would refuse it -- run: %s (it writes "
                     "that file, then applies the protection). Only if it IS a complete unpack you "
                     "made yourself: %s prints how to mark it."
-                    % (_REF_SENTINEL, _unpack_cmd(ctx), apply_cmd))
+                    % (_REF_SENTINEL, _unpack_cmd(ctx, ref), apply_cmd))
             return FAIL, (
                 "reference/ has only PARTIAL OS-level delete protection and is not a finished "
                 "unpack (no %s): neither `apply` nor the unpack will act on it as it is -- run: "
                 "%s, then %s" % (_REF_SENTINEL, apply_cmd[:-len(" apply")] + ' remove',
-                                 _unpack_cmd(ctx)))
+                                 _unpack_cmd(ctx, ref)))
         if st in ("absent", "partial") and not hookless:
             # FX-B2 (delta review): a Claude-only root read OK here whatever the state, saying
             # "the Claude hooks cover deletes" -- true only if they are WIRED. absent is the
