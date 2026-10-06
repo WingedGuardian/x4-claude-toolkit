@@ -24,8 +24,21 @@ METHOD=""; ASSUME_YES=0; DO_UNPACK=0; OVER_EXISTING=0; DRY_RUN=0; NO_ENV=0; CODE
 AGENT="all"
 #: Did a HUMAN name the destination, or did we find it by scanning? Recorded at
 #: parse time: an env var is a deliberate act, a Steam-folder scan is not.
+#: EXCEPT X4_TOOLKIT (FX-B2, delta review): it is INHERITED by every shell a working toolkit
+#: has touched -- it names the user's LIVE toolkit -- so adopting it as a "named" destination
+#: meant a second install's refusal offered `--over-existing` against that live toolkit, and
+#: `--method global` copied ITS skills. Only `--toolkit` names the toolkit destination; an
+#: inherited value is a default, said out loud (TOOLKIT_FROM_ENV) and never paired with an
+#: --over-existing suggestion.
 GAME_NAMED=$([ -n "${X4_GAME:-}" ] && echo named || echo detected)
-TOOLKIT_NAMED=$([ -n "${X4_TOOLKIT:-}" ] && echo named || echo detected)
+TOOLKIT_NAMED=detected
+TOOLKIT_FROM_ENV=$([ -n "${X4_TOOLKIT:-}" ] && echo 1 || echo 0)
+#: The path variables this run INHERITED (not flags). Each one used is printed before any
+#: write (FX-B2: an inherited X4_REFERENCE was copied into a new install's config silently).
+X4_INHERITED_PATHS=""
+for _v in X4_GAME X4_PROFILE X4_MODS X4_REFERENCE X4_EXTENSIONS XRCATTOOL; do
+  [ -n "${!_v:-}" ] && X4_INHERITED_PATHS="$X4_INHERITED_PATHS $_v"
+done
 GAME="${X4_GAME:-}"; PROFILE="${X4_PROFILE:-}"; TOOLKIT="${X4_TOOLKIT:-}"
 X4_H_INHERITED_TOOLKIT="${X4_TOOLKIT:-}"   # what this shell already exports (POSIX "different" check)
 MODS="${X4_MODS:-}"; REFERENCE="${X4_REFERENCE:-}"; EXTENSIONS="${X4_EXTENSIONS:-}"
@@ -78,17 +91,19 @@ USAGE
 need2() {
   [ "$2" -ge 2 ] || { echo "ERROR: $1 requires a value" >&2; echo >&2; usage >&2; exit 2; }
 }
+#: A flag replaced an inherited value: it is no longer "from the environment".
+_x4_unherit() { X4_INHERITED_PATHS=" ${X4_INHERITED_PATHS# } "; X4_INHERITED_PATHS="${X4_INHERITED_PATHS/ $1 / }"; X4_INHERITED_PATHS="${X4_INHERITED_PATHS% }"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --method) need2 "$1" $#; METHOD="$2"; shift 2;;
-    --game) need2 "$1" $#; GAME="$2"; GAME_NAMED=named; shift 2;;
-    --profile) need2 "$1" $#; PROFILE="$2"; shift 2;;
-    --toolkit) need2 "$1" $#; TOOLKIT="$2"; TOOLKIT_NAMED=named; shift 2;;
-    --mods) need2 "$1" $#; MODS="$2"; shift 2;;
-    --reference) need2 "$1" $#; REFERENCE="$2"; shift 2;;
-    --extensions) need2 "$1" $#; EXTENSIONS="$2"; shift 2;;
-    --xrcattool) need2 "$1" $#; XRCAT="$2"; shift 2;;
+    --game) need2 "$1" $#; GAME="$2"; GAME_NAMED=named; _x4_unherit X4_GAME; shift 2;;
+    --profile) need2 "$1" $#; PROFILE="$2"; _x4_unherit X4_PROFILE; shift 2;;
+    --toolkit) need2 "$1" $#; TOOLKIT="$2"; TOOLKIT_NAMED=named; TOOLKIT_FROM_ENV=0; shift 2;;
+    --mods) need2 "$1" $#; MODS="$2"; _x4_unherit X4_MODS; shift 2;;
+    --reference) need2 "$1" $#; REFERENCE="$2"; _x4_unherit X4_REFERENCE; shift 2;;
+    --extensions) need2 "$1" $#; EXTENSIONS="$2"; _x4_unherit X4_EXTENSIONS; shift 2;;
+    --xrcattool) need2 "$1" $#; XRCAT="$2"; _x4_unherit XRCATTOOL; shift 2;;
     --agent) need2 "$1" $#; AGENT="$2"; shift 2;;
     --over-existing) OVER_EXISTING=1; shift;;
     --dry-run) DRY_RUN=1; shift;;
@@ -597,6 +612,13 @@ X4_TOKEN_DIRS=".agents .opencode"
 X4_CODEX_HOOKS_TMPL="agent/targets/codex/hooks.json.tmpl"
 
 # --- resolve --agent, BEFORE anything is written ------------------------------------
+# WHITESPACE SEPARATES TOO, as in install.ps1 (FX-B2: `-Agent "claude codex"` was accepted and
+# `--agent "claude codex"` refused). install.ps1 needs it -- `-Agent claude,codex` typed inside
+# PowerShell binds an ARRAY, joined with spaces -- so the two agree on its split rule,
+# `\s*,\s*|\s+`: an empty item (",," or a stray edge space) is still refused below.
+case "$AGENT" in
+  *[[:space:]]*) AGENT="$(printf '%s' "$AGENT" | sed -E 's/[[:space:]]*,[[:space:]]*/,/g; s/[[:space:]]+/,/g')" ;;
+esac
 case "$AGENT" in
   all) X4_AGENTS="$X4_AGENT_NAMES" ;;
   auto) X4_AGENTS="" ;;   # resolved per destination by resolve_auto_agents, inside the arms
@@ -1029,6 +1051,25 @@ render_codex_hooks_json() {   # DEST -> stdout (no trailing newline)
 
 _codex_selected() { _item_selected .codex && [ -d "$SRC/.codex" ]; }
 
+#: _x4lock_steps DEST [FILE] -- the "unlock, re-run, lock" steps, aimed at the DESTINATION's own
+#: x4lock (FX-B2, delta review). They named `scripts/x4lock.py` relative to the cwd -- the SOURCE's
+#: copy, whose manifest never holds a separate install's files: `unlock` answered "not in the
+#: protected manifest", exit 0, and the re-run refused again, a loop. No FILE: --all.
+_x4lock_steps() {
+  local d="$1" dn what
+  dn="$d"
+  command -v cygpath >/dev/null 2>&1 && dn="$(cygpath -m "$d" 2>/dev/null || printf '%s' "$d")"
+  if [ -n "${2:-}" ]; then what="\"$2\""; else what="--all"; fi
+  if [ -f "$d/scripts/x4lock.py" ]; then
+    echo "      python \"$dn/scripts/x4lock.py\" unlock $what --toolkit \"$dn\"" >&2
+    echo "      <re-run this command>"                                              >&2
+    echo "      python \"$dn/scripts/x4lock.py\" lock --toolkit \"$dn\""        >&2
+  else
+    echo "      (no x4lock in $dn: clear the read-only attribute on the file(s) above by hand --" >&2
+    echo "       attrib -R on Windows, chmod u+w elsewhere -- then re-run this command)"       >&2
+  fi
+}
+
 #: PRECONDITION, before any write: a READ-ONLY hooks.json (x4lock protects it) that this
 #: install would CHANGE refuses up front. Unchanged, the lock never applies.
 precheck_codex_hooks_json() {   # DEST
@@ -1043,9 +1084,7 @@ precheck_codex_hooks_json() {   # DEST
   echo "REFUSING: the Codex hook definitions must change, and the file is READ-ONLY." >&2
   echo "      $f"                                                               >&2
   echo "  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:" >&2
-  echo "      python scripts/x4lock.py unlock \"$f\""                           >&2
-  echo "      <re-run this command>"                                            >&2
-  echo "      python scripts/x4lock.py lock"                                    >&2
+  _x4lock_steps "$dest" "$f"
   exit 1
 }
 
@@ -1075,13 +1114,13 @@ _oc_python() {
 
 # --- R6-04 (v4.0.0 review): the OS protection on reference/ is PRINTED, never applied -----
 #: Layer 2 (scripts/x4refguard.py) is an ACL / attribute change, so an installer never applies
-#: it on the user's behalf. setup.sh and bin/unpack-reference.sh apply it on a FRESH unpack;
-#: an install or upgrade over an EXISTING reference/ applied nothing and said nothing. So:
-#: when x4refguard reports reference/ present and not protected, say so and name the step.
-#: Silent when it is protected, when there is no reference/ yet ('unconfigured'), and where no
-#: mechanism exists ('unsupported'). install.ps1's Write-RefguardStep prints the same lines.
-#: C4 (install red-team 2026-10-04): the summary ALWAYS states the protection -- silence read
-#: as "handled" -- and the command carries --yes, because x4refguard now counts and ASKS (B3).
+#: it on the user's behalf. bin/unpack-reference.sh applies it to a tree it has just unpacked
+#: (setup.sh only PRINTS the unpack command); an install or upgrade over an EXISTING reference/
+#: applied nothing and said nothing. So: when x4refguard reports reference/ present and not
+#: protected, say so and name the step. install.ps1's Write-RefguardStep prints the same lines.
+#: C4 (install red-team 2026-10-04): the summary ALWAYS states the protection, in every state --
+#: silence read as "handled". FX-B2: a state x4refguard could not give (no parseable answer) is
+#: said as such, never as "no reference/ tree yet".
 #: R2-b (second install red-team): a HUMAN reads this, so plain `apply` -- it shows the folder
 #: and a count and ASKS (B3). `--yes` is for a non-interactive caller (an agent, after you agreed).
 X4_REFGUARD_STEP_CMD='python scripts/x4refguard.py apply'
@@ -1092,6 +1131,8 @@ print_refguard_step() {   # TOOLKIT
     out="$(cd "$tk" && X4_TOOLKIT="$tk" "${X4_OC_PY[@]}" scripts/x4refguard.py status --json 2>/dev/null)" || true
     state="$(printf '%s' "$out" | sed -n 's/.*"state": "\([a-z]*\)".*/\1/p' | head -n 1)"
     sentinel="$(printf '%s' "$out" | sed -n 's/.*"sentinel": \([a-z]*\).*/\1/p' | head -n 1)"
+    # FX-B2: python ran and gave no parseable state: a NON-ANSWER, never "no reference/ tree yet".
+    [ -n "$state" ] || state=noanswer
   elif [ -d "${REFERENCE:-$tk/reference}" ]; then
     state="unknown (no Python >= 3.10 to ask x4refguard)"
   fi
@@ -1104,6 +1145,9 @@ print_refguard_step() {   # TOOLKIT
       echo "           bin/unpack-reference.sh applies it to the tree it unpacks (see Next below)." ;;
     unsupported)
       echo "Reference: this platform has no OS-level protection mechanism (a disclosed gap; not applied by the installer)." ;;
+    noanswer)
+      echo "Reference: the OS-level protection state could NOT be read (x4refguard gave no answer). Check it, in"
+      echo "           $tk:  python scripts/x4refguard.py status" ;;
     *)
       # R2-a: apply REFUSES a tree without the sentinel, so naming it here was a dead end.
       if [ "$sentinel" = false ]; then
@@ -1138,9 +1182,7 @@ precheck_opencode_config() {   # DEST
   echo "REFUSING: the OpenCode deny rules must change, and the file is READ-ONLY." >&2
   echo "      $f"                                                               >&2
   echo "  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:" >&2
-  echo "      python scripts/x4lock.py unlock \"$f\""                           >&2
-  echo "      <re-run this command>"                                            >&2
-  echo "      python scripts/x4lock.py lock"                                    >&2
+  _x4lock_steps "$dest" "$f"
   exit 1
 }
 
@@ -1238,9 +1280,7 @@ precheck_codex_doc_max_bytes() {   # DEST
   echo "REFUSING: --codex-doc-max-bytes must add a line to a READ-ONLY file."    >&2
   echo "      $f"                                                               >&2
   echo "  This is x4lock doing its job. Nothing has been changed. Unlock, re-run, lock:" >&2
-  echo "      python scripts/x4lock.py unlock \"$f\""                           >&2
-  echo "      <re-run this command>"                                            >&2
-  echo "      python scripts/x4lock.py lock"                                    >&2
+  _x4lock_steps "$1" "$f"
   exit 1
 }
 
@@ -1333,9 +1373,7 @@ precheck_locked_targets() {   # precheck_locked_targets DEST
   echo "  Nothing has been changed."                                            >&2
   echo                                                                          >&2
   echo "  Unlock, re-run this installer, then lock again:"                       >&2
-  echo "      python scripts/x4lock.py unlock --all"                                   >&2
-  echo "      <re-run this command>"                                             >&2
-  echo "      python scripts/x4lock.py lock"                                     >&2
+  _x4lock_steps "$dest"
   exit 1
 }
 
@@ -1419,9 +1457,7 @@ precheck_config() {   # precheck_config TOOLKIT_DIR
   echo "  Nothing has been changed."                                          >&2
   echo                                                                        >&2
   echo "  Unlock, re-run this installer, then lock again:"                    >&2
-  echo "      python scripts/x4lock.py unlock --all"                                >&2
-  echo "      <re-run this command>"                                          >&2
-  echo "      python scripts/x4lock.py lock"                                  >&2
+  _x4lock_steps "$t"
   echo                                                                        >&2
   echo "  (An upgrade that does NOT change your paths does not need this: it" >&2
   echo "   leaves the config untouched and the lock never applies.)"          >&2
@@ -1830,9 +1866,15 @@ require_direction() {
       echo "REFUSING: an auto-detected destination with no terminal to confirm on." >&2
     fi
     echo "  Detected: $dest" >&2
-    echo "  Nothing named that path -- it came from scanning the usual Steam locations," >&2
-    echo "  and nobody will see a prompt before the write starts." >&2
-    echo "  Name it explicitly:  --game \"$dest\"   (or --toolkit for separate/global)" >&2
+    if [ "$TOOLKIT_FROM_ENV" = 1 ] && [ "$METHOD" != in-game ]; then
+      echo "  Nothing named that path -- it came from \$X4_TOOLKIT, INHERITED from your environment" >&2
+      echo "  (usually your live toolkit), and nobody will see a prompt before the write starts." >&2
+      echo "  Name the destination explicitly:  --toolkit \"<the folder you mean>\"" >&2
+    else
+      echo "  Nothing named that path -- it came from scanning the usual Steam locations," >&2
+      echo "  and nobody will see a prompt before the write starts." >&2
+      echo "  Name it explicitly:  --game \"$dest\"   (or --toolkit for separate/global)" >&2
+    fi
     exit 2
   fi
 
@@ -1850,6 +1892,15 @@ require_direction() {
     echo "  KNOWLEDGEBASE.md and customised skills are replaced. x4-paths.env and" >&2
     echo "  settings.local.json are preserved." >&2
     echo >&2
+    if [ "$named" != named ]; then
+      # FX-B2: NOT the rerun line. This destination was never named by a flag (an inherited
+      # X4_TOOLKIT, a scan, or a prompt's default), and "your command plus --over-existing"
+      # would overwrite whatever installation lives there -- typically the user's live one.
+      echo "  This destination was not named on the command line, so no upgrade command is offered." >&2
+      echo "  Name the folder you mean with --toolkit DIR (--game DIR for in-game); add" >&2
+      echo "  --over-existing only if you mean to UPGRADE the installation at that path." >&2
+      exit 2
+    fi
     echo "  To upgrade it anyway, say so explicitly -- your own command, plus --over-existing:" >&2
     echo "      $(_r2_rerun_cmd --over-existing)" >&2
     exit 2
@@ -2061,6 +2112,22 @@ _h_profile_files() {
   fi
 }
 
+#: The X4_TOOLKIT in the `env` block of the global Claude settings.json (`--method global`
+#: writes it there), or nothing. R4-3 / FX-B2: one more place an existing value lives. Read
+#: ONCE, before the dispatch (X4_H_SETTINGS_TOOLKIT below): the global arm rewrites that file,
+#: and reading it afterwards would find this install's own value and call it "already set".
+_h_settings_toolkit() {
+  local f="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" v=""
+  [ -f "$f" ] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    v="$(jq -r '.env.X4_TOOLKIT // empty' "$f" 2>/dev/null)" || v=""
+  else
+    v="$(grep -o '"X4_TOOLKIT"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null | head -n 1 |
+         sed -e 's/^.*:[[:space:]]*"//' -e 's/"$//' -e 's/\\\\/\\/g')" || v=""
+  fi
+  printf '%s' "${v%$CR}"
+}
+
 #: THE DECISION, one function read by the dry-run line and the writer. Prints one line:
 #: `set` | `same` | `different<TAB>FOUND` | `skip<TAB>WHY` | `fail<TAB>WHY`, where FOUND is
 #: EVERY existing value, `VALUE (WHERE)` joined by `; ` -- all of them, not the first.
@@ -2099,8 +2166,18 @@ _h_userenv_plan() {   # TOOLKIT
   done <<EOF_PROFILES
 $(_h_profile_files)
 EOF_PROFILES
-  if [ "$OS" != windows ] && [ -z "$found" ]; then
-    _h_found "$X4_H_INHERITED_TOOLKIT" "this shell's environment"
+  # FX-B2 (R4-3 completed): the global settings.json env block, and on Windows this PROCESS's
+  # environment -- each counted only when it DIFFERS: an equal value there is not where the
+  # user-level variable lives, and must not turn "set" into "already set" with nothing written.
+  if [ -n "${X4_H_SETTINGS_TOOLKIT:-}" ] && ! _h_same_path "$X4_H_SETTINGS_TOOLKIT" "$v"; then
+    _h_found "$X4_H_SETTINGS_TOOLKIT" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json env"
+  fi
+  if [ -z "$found" ]; then
+    if [ "$OS" != windows ]; then
+      _h_found "$X4_H_INHERITED_TOOLKIT" "this shell's environment"
+    elif [ -n "$X4_H_INHERITED_TOOLKIT" ] && ! _h_same_path "$X4_H_INHERITED_TOOLKIT" "$v"; then
+      _h_found "$X4_H_INHERITED_TOOLKIT" "this process's environment"
+    fi
   fi
   if [ -z "$found" ]; then printf 'set'
   elif [ "$diff" = 0 ]; then printf 'same'
@@ -2176,6 +2253,16 @@ if [ -z "$METHOD" ]; then
   fi
 fi
 echo "Method: $METHOD"
+X4_H_SETTINGS_TOOLKIT="$(_h_settings_toolkit)"   # BEFORE any write (see _h_settings_toolkit)
+# FX-B2: what this run took from the ENVIRONMENT rather than a flag, before anything is written
+# -- they go into the new install's config. Paths only (no secret is among these keys).
+for _v in $X4_INHERITED_PATHS; do
+  echo "  [note] $_v from your environment (not a flag): ${!_v} -- this install's config will use it; pass the flag to choose another."
+done
+if [ "$TOOLKIT_FROM_ENV" = 1 ] && [ "$METHOD" != in-game ]; then
+  echo "  [note] no --toolkit given: the destination below comes from \$X4_TOOLKIT, inherited from your"
+  echo "         environment ($X4_TOOLKIT). An inherited value is NOT a named destination."
+fi
 
 detect_game; detect_profile; detect_xrcat
 ask GAME    "X4 game folder (01.cat..09.cat)" "$GAME"
@@ -2304,6 +2391,14 @@ case "$METHOD" in
     X4_AGENTS="claude"
     _h_resolve_items
     [ -n "$TOOLKIT" ] || TOOLKIT="$SRC"
+    # FX-B2: global copies the skills and agents of the toolkit at $TOOLKIT. An INHERITED
+    # X4_TOOLKIT naming another toolkit silently installed THAT toolkit's skills.
+    if [ "$TOOLKIT_FROM_ENV" = 1 ] && ! same_dir "$SRC" "$TOOLKIT"; then
+      echo "REFUSING: --method global installs the skills of the toolkit at $TOOLKIT, which came from" >&2
+      echo "  \$X4_TOOLKIT inherited from your environment, not from a flag. Nothing has been changed." >&2
+      echo "  Name it:  --toolkit \"$SRC_SHOW\"   (this toolkit)   or   --toolkit \"$TOOLKIT\"   (that one)" >&2
+      exit 2
+    fi
     announce_target "$TOOLKIT"
     # THE GLOBAL DESTINATION WAS NEVER GATED. `require_direction` is called for
     # in-game and separate and never here, and `looks_installed` was never asked about
@@ -2409,7 +2504,9 @@ if [ "$DO_UNPACK" = 1 ] && [ "$DRY_RUN" = 1 ]; then
   echo "  --dry-run: NOT unpacking reference/"
 elif [ "$DO_UNPACK" = 1 ]; then
   echo "Unpacking reference/ ..."
-  ( cd "$TOOLKIT" && CLAUDE_PROJECT_DIR="$TOOLKIT" bash bin/unpack-reference.sh ) \
+  # --toolkit (FX-B2): the unpack acts for the toolkit it LIVES in and refuses an inherited
+  # X4_TOOLKIT naming another one unless told -- and this run INSTALLED $TOOLKIT.
+  ( cd "$TOOLKIT" && CLAUDE_PROJECT_DIR="$TOOLKIT" bash bin/unpack-reference.sh --toolkit "$TOOLKIT" ) \
     || add_failed "bin/unpack-reference.sh"
 fi
 

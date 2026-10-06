@@ -154,7 +154,7 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
              source: pathlib.Path | None = None, over_existing: bool = True,
              scrub: tuple = (), env_write: bool = False, regkey: str | None = None,
              detect_path: pathlib.Path | None = None, shell: str = "/bin/bash",
-             omit: tuple = ()):
+             omit: tuple = (), inherit: dict | None = None, inproc: bool = False):
     """Run ONE of the two installers with identical intent.
 
     Parameterised rather than duplicated, because the point is that both reach the
@@ -170,6 +170,14 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     throwaway registry key (`regkey`, under `_TEST_REGROOT`) or a profile file under
     tmp_path (HOME, ZDOTDIR). Agent detection walks `detect_path` (an empty directory
     by default), never the developer's PATH.
+
+    FX-B2: the developer's own X4_* PATH variables are removed too (X4_REFERENCE and
+    X4_EXTENSIONS leaked: with `omit=("reference",)` the installer took the developer's
+    exported tree). *inherit* sets the ones a test means the installer to INHERIT.
+    `installer="ps51"` runs Windows PowerShell 5.1 (powershell.exe) -- what the README's
+    `powershell -ExecutionPolicy Bypass -File install.ps1` runs; "ps1" runs pwsh 7 when
+    present. *inproc* runs install.ps1 IN-PROCESS (`& 'install.ps1' ...; exit $LASTEXITCODE`),
+    the CI step's shape, where a script that falls off its end leaks the last native exit.
     """
     if source is None and not from_dest:
         # R2-B1: the installers install FROM a repository or release tree; an installed toolkit
@@ -217,6 +225,8 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
             common["agent"] = next(it)
         elif a == "--dry-run":
             flags.append("dry-run")
+        elif a == "--unpack":
+            flags.append("unpack")
         elif a == "--codex-doc-max-bytes":
             common["codex-doc-max-bytes"] = next(it)
         else:
@@ -224,7 +234,8 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     if not env_write:
         flags.append("no-env")
 
-    _ps_names = {"dry-run": "DryRun", "no-env": "NoEnv", "codex-doc-max-bytes": "CodexDocMaxBytes"}
+    _ps_names = {"dry-run": "DryRun", "no-env": "NoEnv", "codex-doc-max-bytes": "CodexDocMaxBytes",
+                 "unpack": "Unpack"}
     if installer == "sh":
         exe = _bash()
         if exe is None:
@@ -236,15 +247,28 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
         cmd += (["--over-existing"] if over_existing else []) + ["--yes"]
         cmd += ["--" + f for f in flags]
     else:
-        exe = shutil.which("pwsh") or shutil.which("powershell")
+        if installer == "ps51":
+            exe = shutil.which("powershell") if os.name == "nt" else None
+            if exe is None:
+                pytest.skip("no Windows PowerShell 5.1 (powershell.exe) on this machine")
+        else:
+            exe = shutil.which("pwsh") or shutil.which("powershell")
         if exe is None:
             pytest.skip("no PowerShell on this machine")
         script = (dest / "install.ps1") if from_dest else (source / "install.ps1" if source else INSTALL_PS1)
-        cmd = [exe, "-NoProfile", "-File", script.as_posix()]
+        args = []
         for k, v in common.items():
-            cmd += ["-" + _ps_names.get(k, k[:1].upper() + k[1:]), v]
-        cmd += (["-OverExisting"] if over_existing else []) + ["-Yes"]
-        cmd += ["-" + _ps_names[f] for f in flags]
+            args += ["-" + _ps_names.get(k, k[:1].upper() + k[1:]), v]
+        args += (["-OverExisting"] if over_existing else []) + ["-Yes"]
+        args += ["-" + _ps_names[f] for f in flags]
+        if inproc:
+            def _q(a):
+                return a if a.startswith("-") else "'" + a.replace("'", "''") + "'"
+            line = "& " + _q(script.as_posix()) + " " + " ".join(_q(a) for a in args)
+            cmd = [exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                   line + "; exit $LASTEXITCODE"]
+        else:
+            cmd = [exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script.as_posix()] + args
     cwd = dest.as_posix() if from_dest else (source.as_posix() if source else ROOT.as_posix())
     # The global arm writes to <claude-dir>, which is NOT one of the six path
     # flags. Pin it into the sandbox for every run rather than hoping no test
@@ -261,6 +285,10 @@ def _install(installer: str, tmp_path: pathlib.Path, dest: pathlib.Path, *extra:
     # X4_TOOLKIT is removed too: an inherited value is a NAMED destination to both
     # installers, and a "different existing value" to the env writer.
     env.pop("X4_TOOLKIT", None)
+    for _k in ("X4_GAME", "X4_PROFILE", "X4_MODS", "X4_REFERENCE", "X4_EXTENSIONS", "XRCATTOOL",
+               "X4_CONFIG"):
+        env.pop(_k, None)
+    env.update({k: str(v) for k, v in (inherit or {}).items()})
     env["X4_INSTALL_ENV_REGKEY"] = regkey
     env["X4_INSTALL_DETECT_PATH"] = str(detect_path)
     env["ZDOTDIR"] = zdot.as_posix()
@@ -3281,3 +3309,223 @@ def test_R2B1_an_INSTALLED_toolkits_suite_COLLECTS_and_counts_its_repo_only_skip
     out = c.stdout + c.stderr
     assert c.returncode == 0 and "ERROR collecting" not in out, out[-3000:]
     assert out.count("REPO-ONLY") >= 3, out[-3000:]
+
+
+# ======================================================================================
+# FX-B2 (v4.0.0 delta review + CI on da93d2d)
+# ======================================================================================
+
+@pytest.mark.parametrize("installer", ["ps1", "ps51"])
+def test_FXB2_CI1_a_COMPLETE_install_run_IN_PROCESS_exits_0(installer, tmp_path):
+    """CI on da93d2d: `& .\\install.ps1 ... -Yes` printed "=== install complete ===" and left
+    $LASTEXITCODE = 2 -- the script fell off its end and the caller saw the LAST native exit
+    (Write-RefguardStep's `x4refguard status`, 2 = "no reference/ tree yet"). MEASURED on 5.1
+    and 7 in a sandbox. A complete install exits 0, explicitly."""
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "claude", inproc=True)
+    assert "=== install complete" in r.stdout, _ok(r)
+    assert r.returncode == 0, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1", "ps51"])
+def test_FXB2_2_the_READ_ONLY_opencode_refusal_is_the_crafted_one_on_EVERY_powershell(installer, tmp_path):
+    """R4-5's refusal, on Windows PowerShell 5.1 too (the test ran under pwsh only). Under
+    $ErrorActionPreference='Stop', 5.1 turns the renderer's stderr behind `*> $null` into a
+    terminating NativeCommandError: a raw error and exit 1 instead of the READ-ONLY refusal."""
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest, "--agent", "opencode").returncode == 0, "first install failed"
+    cfg = dest / ".opencode" / "opencode.jsonc"
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "// a stale line\n", encoding="utf-8")
+    (dest / "README.md").unlink()
+    cfg.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    try:
+        r = _install(installer, tmp_path, dest, "--agent", "opencode")
+        out = r.stdout + r.stderr
+        assert r.returncode == 1 and "REFUSING" in out and "READ-ONLY" in out, out[-1500:]
+        assert "NativeCommandError" not in out, out[-1500:]
+        assert not (dest / "README.md").exists(), "the copy ran before the refusal"
+        # ...and the unlock it prints is the DESTINATION's x4lock, which really unlocks it
+        # (FX-B2 #6: `scripts/x4lock.py` relative to the cwd was the SOURCE's, and looped).
+        m = re.search(r'python "([^"]+x4lock\.py)" unlock "([^"]+)" --toolkit "([^"]+)"', out)
+        assert m, out[-1500:]
+        assert pathlib.Path(m.group(1)).resolve() == (dest / "scripts" / "x4lock.py").resolve()
+        u = subprocess.run([sys.executable, m.group(1), "unlock", m.group(2), "--toolkit", m.group(3)],
+                           capture_output=True, text=True, env=_doctor_env(tmp_path), timeout=300)
+        assert u.returncode == 0 and os.access(cfg, os.W_OK), (u.returncode, u.stdout, u.stderr)
+    finally:
+        cfg.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1", "ps51"])
+def test_FXB2_2_the_summary_names_an_UNREADABLE_protection_state_not_no_tree(installer, tmp_path):
+    """Write-RefguardStep swallowed x4refguard's stderr (5.1: a terminating error, caught) and
+    said "no reference/ tree yet". A guard that gives NO answer is said as such. Driven by a
+    destination x4refguard.py that prints nothing parseable."""
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest, "--agent", "claude").returncode == 0, "first install failed"
+    (dest / "scripts" / "x4refguard.py").write_text(
+        "import sys\nsys.stderr.write('boom\\n')\nprint('not json')\nsys.exit(1)\n", encoding="utf-8")
+    r = _install(installer, tmp_path, dest, "--agent", "claude", from_dest=True)
+    assert r.returncode == 0, _ok(r)
+    assert "could NOT be read" in r.stdout, _ok(r)
+    assert "no reference/ tree yet" not in r.stdout, _ok(r)
+
+
+def _other_toolkit(tmp_path):
+    """A second, installed-looking toolkit: what an inherited X4_TOOLKIT usually names."""
+    other = tmp_path / "live-toolkit"
+    (other / "tools" / "x4validate").mkdir(parents=True)
+    (other / "CLAUDE.md").write_text("the user's live toolkit\n", encoding="utf-8")
+    return other
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB2_3_an_INHERITED_X4_TOOLKIT_is_not_a_named_destination(installer, tmp_path):
+    """The installers adopted an inherited X4_TOOLKIT as the destination AND counted it as
+    "named", so -Yes went straight to the over-existing refusal, whose re-run line added only
+    --over-existing -- i.e. offered to overwrite the user's LIVE toolkit. Now: refused as an
+    unnamed destination, said to come from the environment, no --over-existing offered."""
+    _fresh(tmp_path)
+    other = _other_toolkit(tmp_path)
+    r = _install(installer, tmp_path, other, omit=("toolkit",), over_existing=False,
+                 inherit={"X4_TOOLKIT": other})
+    out = r.stdout + r.stderr
+    assert r.returncode == 2, out[-2000:]
+    assert "INHERITED" in out and "X4_TOOLKIT" in out, out[-2000:]
+    assert "over-existing" not in out and "OverExisting" not in out, out[-2000:]
+    assert not (other / "scripts").exists(), "it wrote into the inherited toolkit"
+    assert (other / "CLAUDE.md").read_text(encoding="utf-8") == "the user's live toolkit\n"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB2_3_TWIN_an_explicit_toolkit_with_an_inherited_one_proceeds(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    other = _other_toolkit(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "claude", inherit={"X4_TOOLKIT": other})
+    assert r.returncode == 0, _ok(r)
+    assert (dest / "scripts").is_dir() and not (other / "scripts").exists()
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB2_3_TWIN_a_NAMED_destination_still_gets_the_over_existing_rerun_line(installer, tmp_path):
+    """Clause twin: the rerun line is withheld only for an UNNAMED destination."""
+    dest = _fresh(tmp_path)
+    assert _install(installer, tmp_path, dest, "--agent", "claude").returncode == 0
+    r = _install(installer, tmp_path, dest, "--agent", "claude", over_existing=False)
+    out = r.stdout + r.stderr
+    assert r.returncode == 2, out[-2000:]
+    assert "--over-existing" in out or "-OverExisting" in out, out[-2000:]
+    assert "no upgrade command is offered" not in out, out[-2000:]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB2_3_global_REFUSES_an_inherited_X4_TOOLKIT_naming_another_toolkit(installer, tmp_path):
+    _fresh(tmp_path)
+    other = _other_toolkit(tmp_path)
+    (other / ".claude" / "skills" / "x4-foreign").mkdir(parents=True)
+    r = _install(installer, tmp_path, tmp_path / "unused", method="global", omit=("toolkit",),
+                 inherit={"X4_TOOLKIT": other})
+    out = r.stdout + r.stderr
+    assert r.returncode == 2 and "REFUSING" in out and "X4_TOOLKIT" in out, out[-2000:]
+    assert not (tmp_path / "fake-claude-home" / "skills").exists(), "it installed skills anyway"
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB2_1b_an_INHERITED_X4_REFERENCE_is_printed_before_it_is_written(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    ref = tmp_path / "inherited-ref"
+    r = _install(installer, tmp_path, dest, "--agent", "claude", omit=("reference",),
+                 inherit={"X4_REFERENCE": ref.as_posix()})
+    assert r.returncode == 0, _ok(r)
+    line = [ln for ln in r.stdout.splitlines() if "X4_REFERENCE from your environment" in ln]
+    assert line and "inherited-ref" in line[0], _ok(r)
+    assert "inherited-ref" in (dest / "x4-paths.env").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB2_1b_TWIN_a_reference_FLAG_is_not_called_inherited(installer, tmp_path):
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", "claude",
+                 inherit={"X4_REFERENCE": (tmp_path / "inherited-ref").as_posix()})
+    assert r.returncode == 0, _ok(r)
+    assert "X4_REFERENCE from your environment" not in r.stdout, _ok(r)
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB2_4_unpack_is_given_the_installed_toolkit(installer, tmp_path):
+    """Neither installer passed --toolkit to bin/unpack-reference.sh, although its comment said
+    "the installers always pass it": with an inherited X4_TOOLKIT naming another toolkit and
+    --unpack, the unpack REFUSED and the install ended INCOMPLETE. Driven with a fake xrcat and
+    a stub x4refguard (the real unpack path, no game, no ACL)."""
+    dest = _fresh(tmp_path)
+    other = _other_toolkit(tmp_path)
+    (tmp_path / "game" / "01.cat").write_text("", encoding="utf-8")
+    fake = tmp_path / "fakexrcat"
+    fake.write_text('#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = -out ] && o="$2"; shift; done\n'
+                    'mkdir -p "$o/libraries"; echo x > "$o/libraries/f.xml"\n',
+                    encoding="utf-8", newline="\n")
+    fake.chmod(0o755)
+    stub = tmp_path / "stubguard.py"
+    stub.write_text("import sys\nprint('{\"state\": \"absent\"}')\nsys.exit(0)\n", encoding="utf-8")
+    r = _install(installer, tmp_path, dest, "--agent", "claude", "--unpack",
+                 inherit={"X4_TOOLKIT": other, "X4_XRCAT": fake.as_posix(), "X4_UNPACK_FLOOR": "1",
+                          "X4_REFGUARD_SCRIPT": stub.as_posix()})
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out[-2500:]
+    assert "INCOMPLETE" not in out and "REFUSED" not in out, out[-2500:]
+    assert (dest / "reference" / "libraries" / "f.xml").is_file(), out[-2500:]
+
+
+@pytest.mark.parametrize("installer", ["sh", "ps1", "ps51"])
+@pytest.mark.parametrize("agent,ok", [("claude codex", True), ("claude, codex", True),
+                                      ("claude,,codex", False)])
+def test_FXB2_6_agent_list_SEPARATORS_agree_across_installers(installer, agent, ok, tmp_path):
+    """`-Agent "claude codex"` was accepted and `--agent "claude codex"` refused. Both now split
+    on `\\s*,\\s*|\\s+`; an empty item is refused by both."""
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, "--agent", agent, "--dry-run")
+    out = r.stdout + r.stderr
+    if ok:
+        assert r.returncode == 0, out[-1500:]
+    else:
+        assert r.returncode == 2 and "empty item" in out, out[-1500:]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the registry seam is Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB2_6_R4_3_a_DIFFERENT_settings_json_env_value_is_REPORTED_and_nothing_written(
+        installer, tmp_path, regkey):
+    home = tmp_path / "fake-claude-home"
+    home.mkdir()
+    (home / "settings.json").write_text(json.dumps({"env": {"X4_TOOLKIT": r"D:\elsewhere"}}),
+                                        encoding="utf-8")
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey)
+    assert r.returncode == 0, _ok(r)
+    assert _reg_get(regkey) is None, "a SECOND, conflicting value was written"
+    assert "settings.json env" in r.stdout and "Left unchanged" in r.stdout, _ok(r)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the registry seam is Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB2_6_R4_3_a_DIFFERENT_process_env_value_is_REPORTED_on_windows(installer, tmp_path, regkey):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    other = _other_toolkit(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey,
+                 inherit={"X4_TOOLKIT": other})
+    assert r.returncode == 0, _ok(r)
+    assert _reg_get(regkey) is None, "a SECOND, conflicting value was written"
+    assert "environment)" in r.stdout and "Left unchanged" in r.stdout, _ok(r)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the registry seam is Windows only")
+@pytest.mark.parametrize("installer", ["sh", "ps1"])
+def test_FXB2_6_R4_3_TWIN_an_EQUAL_process_env_value_still_SETS_the_user_value(installer, tmp_path, regkey):
+    src = _agent_source(tmp_path)
+    dest = _fresh(tmp_path)
+    r = _install(installer, tmp_path, dest, source=src, env_write=True, regkey=regkey,
+                 inherit={"X4_TOOLKIT": dest})
+    assert r.returncode == 0, _ok(r)
+    assert _reg_get(regkey) == str(dest.resolve()), _ok(r)
