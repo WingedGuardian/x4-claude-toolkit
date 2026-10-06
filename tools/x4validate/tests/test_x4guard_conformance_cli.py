@@ -173,6 +173,24 @@ def test_reference_exit_1_with_NO_output_is_an_error(tmp_path):
     assert d == "error" and "exited 1" in why, why
 
 
+_DENY = ('printf \'{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny",'
+         '"permissionDecisionReason":"no"}}\'')
+
+
+@_needs_bash
+@pytest.mark.parametrize("rerun_rc, want", [(0, "deny"), (2, "inert"), (1, "error"), (127, "error")])
+def test_reference_the_GUARD_CHECK_rerun_exit_decides(tmp_path, rerun_rc, want):
+    """FX-G4 / reviewer G-M4: a deny is re-run under X4_GUARD_CHECK=1. Exit 2 is inert; ANY other
+    non-zero exit of the re-run is no verdict -- it used to fall back to the first run's deny and
+    count as checked. Twins: exit 0 keeps the deny, exit 2 stays inert."""
+    xc = _engine()
+    body = f'{_DENY}\nif [ -n "$X4_GUARD_CHECK" ]; then exit {rerun_rc}; fi\nexit 0'
+    d, why = xc.reference_verdict_detail(_row(tmp_path), _hook_root(tmp_path, body))
+    assert d == want, (d, why)
+    if want == "error":
+        assert f"re-run exited {rerun_rc}" in why, why
+
+
 @_needs_bash
 def test_reference_a_TIMEOUT_is_an_error(tmp_path, monkeypatch):
     xc = _engine()

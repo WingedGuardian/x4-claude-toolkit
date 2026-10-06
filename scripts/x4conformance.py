@@ -516,6 +516,13 @@ def reference_verdict_detail(row: dict, root: Path) -> tuple:
             return "error", f"the X4_GUARD_CHECK re-run: {why}"
         if c.returncode == 2:
             return "inert", ""
+        if c.returncode != 0:
+            # FX-G4 / reviewer G-M4: any OTHER non-zero exit of the re-run is no verdict either
+            # (as for the first run) -- it fell back to the first run's verdict and counted as
+            # checked.
+            err = c.stderr.decode("utf-8", "replace").strip()[-300:]
+            return "error", (f"the X4_GUARD_CHECK re-run exited {c.returncode} (no verdict)"
+                             + (f"; stderr: {err}" if err else ""))
     return d, ""
 
 
