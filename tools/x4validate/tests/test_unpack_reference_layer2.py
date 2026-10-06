@@ -442,3 +442,120 @@ def test_FXB3_the_DIFFERENT_refusal_names_an_ABSOLUTE_command_with_toolkit(tmp_p
         assert "bash bin/" not in ln and "--toolkit" in ln, ln
         cmd_path = ln.split('bash "', 1)[1].split('"', 1)[0]
         assert cmd_path.endswith("/unpack-reference.sh") and cmd_path.startswith("/"), ln
+
+
+# ------------- FX-B4 #2 (reviewer I): bash and Python agree on WHICH config $X4_CONFIG names
+#
+# `_x4_canon` turned a bare relative path into `/<name>`, so `cd <toolkit>; X4_CONFIG=x4-paths.env
+# bash bin/unpack-reference.sh` was refused as a foreign config while every Python command took
+# it; `x4-paths.env/` and (Windows) `x4-paths.env.` were "missing" to bash and read by Python.
+# Each row runs BOTH: the unpack (which stops at "game dir not found" once past the check --
+# X4_GAME names nothing -- so nothing is ever written) and `_paths.config_conflict()`.
+
+_PY_CONFLICT = r'''
+import sys
+sys.path.insert(0, sys.argv[1])
+from x4validate import _paths
+_paths.use_toolkit(sys.argv[2])
+print("CONFLICT" if _paths.config_conflict() is not None else "NONE")
+'''
+
+
+def _agree_box(tmp_path):
+    tk = tmp_path / "tk long"
+    (tk / ".claude").mkdir(parents=True)
+    (tk / "sub").mkdir()
+    (tk / "x4-paths.env").write_text('X4_GAME="%s"\nX4_REFERENCE="%s"\n' % (
+        (tmp_path / "nogame").as_posix(), (tk / "refrel").as_posix()), encoding="utf-8")
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "x4-paths.env").write_text('X4_GAME="%s"\n' % (tmp_path / "nogame").as_posix(),
+                                                     encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("X4_")}
+    env.update(X4_TOOLKIT=str(tk), X4_PROFILE=str(tmp_path / "profile"))
+    return tk, env
+
+
+def _unpack_verdict(tk, env, cwd):
+    b = gitbash.find_bash() or pytest.skip("no Git Bash -- NOT CHECKED")
+    r = subprocess.run([b, str(UNPACK), "--toolkit", str(tk)], env=env, cwd=str(cwd),
+                       capture_output=True, text=True, errors="replace", timeout=120)
+    if "REFUSED: the unpack" in r.stderr and "X4_CONFIG" in r.stderr:
+        return "CONFLICT"
+    if "DIFFERENT" in r.stderr:
+        return "DIFFERENT"
+    if "game dir not found" in r.stderr:
+        return "NONE"
+    raise AssertionError("an answer this table does not know: " + (r.stdout + r.stderr)[-600:])
+
+
+_BS = chr(92)
+CFG_SPELLINGS = [
+    # id,                   spelling ({tk}, {tmp}; else relative to cwd), cwd ("tk"|"sub"|"tmp"), want, windows-only
+    ("plain",               "{tk}/x4-paths.env",               "tmp", "NONE",     False),
+    ("relative-bare",       "x4-paths.env",                    "tk",  "NONE",     False),
+    ("relative-dot",        "./x4-paths.env",                  "tk",  "NONE",     False),
+    ("relative-up-inside",  "../x4-paths.env",                 "sub", "NONE",     False),
+    ("relative-other",      "../other/x4-paths.env",           "tk",  "CONFLICT", False),
+    ("trailing-slash",      "{tk}/x4-paths.env/",              "tmp", "NONE",     False),
+    ("relative-trailing",   "x4-paths.env/",                   "tk",  "NONE",     False),
+    ("dotdot-escape",       "{tk}/../other/x4-paths.env",      "tmp", "CONFLICT", False),
+    ("other",               "{tmp}/other/x4-paths.env",        "tmp", "CONFLICT", False),
+    ("missing",             "{tk}/nope.env",                   "tmp", "CONFLICT", False),
+    ("relative-missing",    "nope.env",                        "tk",  "CONFLICT", False),
+    ("trailing-dot",        "{tk}/x4-paths.env.",              "tmp", "NONE",     True),
+    ("backslashes",         "{tk}" + _BS + "x4-paths.env",     "tmp", "NONE",     True),
+    ("upper-case",          "{TK}/X4-PATHS.ENV",               "tmp", "NONE",     True),
+    ("msys-form",           "{msys_tk}/x4-paths.env",          "tmp", "NONE",     True),
+]
+
+
+def _msys(p) -> str:
+    """C:/x/y -> /c/x/y, the Git Bash spelling of the same folder."""
+    s = Path(p).as_posix()
+    return "/" + s[0].lower() + s[2:] if os.name == "nt" and s[1:2] == ":" else s
+
+
+@pytest.mark.parametrize("row", CFG_SPELLINGS, ids=[r[0] for r in CFG_SPELLINGS])
+def test_FXB4_the_unpack_and_python_AGREE_on_every_X4_CONFIG_spelling(tmp_path, row):
+    _id, spelling, where, want, win_only = row
+    if win_only and os.name != "nt":
+        pytest.skip("a Windows path spelling")
+    tk, env = _agree_box(tmp_path)
+    env["X4_CONFIG"] = spelling.format(tk=str(tk), TK=str(tk).upper(), tmp=str(tmp_path),
+                                       msys_tk=_msys(tk))
+    cwd = {"tk": tk, "sub": tk / "sub", "tmp": tmp_path}[where]
+    py = subprocess.run([sys.executable, "-c", _PY_CONFLICT, str(REPO / "tools" / "x4validate"),
+                         str(tk)], env=env, cwd=str(cwd), capture_output=True, text=True,
+                        timeout=120)
+    assert py.returncode == 0, py.stderr[-600:]
+    assert (_unpack_verdict(tk, env, cwd), py.stdout.strip()) == (want, want), _id
+    assert not (tk / "refrel").exists() and not (tmp_path / "nogame").exists()
+
+
+REF_SPELLINGS = [
+    # an INHERITED X4_REFERENCE spelling the config's tree ({tk}/refrel) relative to cwd
+    ("absolute",           "{tk}/refrel",      "tmp", "NONE"),
+    ("relative-bare",      "refrel",           "tk",  "NONE"),
+    ("relative-dot",       "./refrel",         "tk",  "NONE"),
+    ("relative-up",        "../refrel",        "sub", "NONE"),
+    ("relative-trailing",  "refrel/",          "tk",  "NONE"),
+    ("relative-OTHER",     "otherref",         "tk",  "DIFFERENT"),
+    ("absolute-OTHER",     "{tmp}/refrel",     "tmp", "DIFFERENT"),
+    # MEASURED: under %TEMP% Git Bash's `pwd -P` says /tmp/... for C:/... and /c/... for /c/...
+    ("msys-form",          "{msys_tk}/refrel", "tmp", "NONE"),
+]
+
+
+@pytest.mark.parametrize("present", [False, True], ids=["tree-absent", "tree-present"])
+@pytest.mark.parametrize("row", REF_SPELLINGS, ids=[r[0] for r in REF_SPELLINGS])
+def test_FXB4_an_inherited_RELATIVE_X4_REFERENCE_is_the_tree_it_names(tmp_path, row, present):
+    """MEASURED before the fix: every relative spelling of the config's own tree was REFUSED
+    as "DIFFERENT" while the tree did not exist (`refrel` -> `/refrel`)."""
+    _id, spelling, where, want = row
+    tk, env = _agree_box(tmp_path)
+    if present:
+        (tk / "refrel").mkdir()
+    env["X4_REFERENCE"] = spelling.format(tk=str(tk), tmp=str(tmp_path), msys_tk=_msys(tk))
+    cwd = {"tk": tk, "sub": tk / "sub", "tmp": tmp_path}[where]
+    assert _unpack_verdict(tk, env, cwd) == want, _id
+    assert not (tmp_path / "nogame").exists()

@@ -77,16 +77,29 @@ fi
 # --reference chose the tree explicitly. Only when a config file is read: with none, the
 # environment is the only configuration there is.
 _x4_canon() {    # a path in one spelling: its nearest EXISTING ancestor via cd+pwd, plus the rest
-  local p="$1" rest="" base
-  case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) p="${p//\\//}" ;; esac
-  p="${p%/}"
+  local p="$1" rest="" base win=0
+  case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) win=1; p="${p//\\//}" ;; esac
+  # FX-B4 (reviewer I): RELATIVE to the working directory, as Python resolves it. A bare name
+  # (no `/`) walked up to nothing and came out as `/<name>`, so `cd <toolkit>;
+  # X4_CONFIG=x4-paths.env bash bin/unpack-reference.sh` was refused as a foreign config.
+  case "$p" in
+    /*) ;;
+    [A-Za-z]:/*) [ "$win" = 1 ] || p="$PWD/$p" ;;
+    *) p="$PWD/$p" ;;
+  esac
+  while [ "${#p}" -gt 1 ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done
   while [ -n "$p" ] && [ ! -d "$p" ]; do
     base="${p##*/}"; rest="/$base$rest"
     case "$p" in */*) p="${p%/*}" ;; *) p="" ;; esac
   done
-  if [ -n "$p" ]; then p="$(cd "$p" 2>/dev/null && pwd -P)"; fi
+  if [ -n "$p" ]; then p="$(cd "$p/" 2>/dev/null && pwd -P)"; fi
+  # ONE spelling on Windows: Git Bash's `pwd -P` answers /tmp/... for a folder under %TEMP%
+  # reached as C:/..., and /c/... for the same folder reached as /c/... (MEASURED, FX-B4).
+  if [ "$win" = 1 ] && [ -n "$p" ] && command -v cygpath >/dev/null 2>&1; then
+    p="$(cygpath -m "$p" 2>/dev/null || printf '%s' "$p")"
+  fi
   p="${p%/}$rest"
-  case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) p="$(_x4_lc "$p")" ;; esac
+  if [ "$win" = 1 ]; then p="$(_x4_lc "$p")"; fi
   printf '%s' "$p"
 }
 _x4_samedir() { [ "$(_x4_canon "$1")" = "$(_x4_canon "$2")" ]; }   # case-folded on Windows only
@@ -98,11 +111,13 @@ _x4_samedir() { [ "$(_x4_canon "$1")" = "$(_x4_canon "$2")" ]; }   # case-folded
 # was compared. Refuse unless --reference chose the tree explicitly.
 if [ -n "${X4_CONFIG:-}" ] && [ -z "$EXPLICIT_REF" ]; then
   _x4_cfg_in=0
-  if [ -f "$X4_CONFIG" ]; then
-    case "$(_x4_canon "$X4_CONFIG")" in "$(_x4_canon "$ACT_TK")"/*) _x4_cfg_in=1 ;; esac
+  # FX-B4: judge the file the loader READ (`_x4_cfg`, its normalized spelling of X4_CONFIG),
+  # not the raw string -- `-f "x4-paths.env/"` said "does not exist" for a file Python reads.
+  if [ -n "${_x4_cfg:-}" ]; then
+    case "$(_x4_canon "$_x4_cfg")" in "$(_x4_canon "$ACT_TK")"/*) _x4_cfg_in=1 ;; esac
   fi
   if [ "$_x4_cfg_in" != 1 ]; then
-    if [ -f "$X4_CONFIG" ]; then _x4_why="names a config OUTSIDE this toolkit"; else _x4_why="names a file that does not exist (so NO config is read)"; fi
+    if [ -n "${_x4_cfg:-}" ]; then _x4_why="names a config OUTSIDE this toolkit"; else _x4_why="names a file that does not exist (so NO config is read)"; fi
     echo "REFUSED: the unpack writes the reference tree and protects it, and \$X4_CONFIG ($X4_CONFIG) $_x4_why. Nothing was changed." >&2
     echo "  acting toolkit: $ACT_TK" >&2
     echo "  Unset X4_CONFIG in this shell to use this toolkit's config, or choose the tree explicitly:" >&2

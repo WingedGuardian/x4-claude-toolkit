@@ -253,6 +253,25 @@ _x4_cfg_read() {
 # stderr beside an empty verdict is a refusal to gates/hook_false_positives.py.
 _x4_cfg=""; _x4_cfg_src=none; _x4_cfg_tk="$X4_TOOLKIT"
 if [ -n "${X4_CONFIG:-}" ]; then
+  # FX-B4 (reviewer I): the SPELLING the Python half opens. pathlib drops trailing separators
+  # everywhere, and Windows drops a final component's trailing dots and spaces -- so
+  # `x4-paths.env/` and (Windows) `x4-paths.env.` were READ by Python and "missing" here,
+  # and the guards fell back to the DEFAULT reference root. When only the
+  # normalized spelling is a file, X4_CONFIG takes that spelling, so every guard's name check
+  # sees the file actually read. String operations only: this runs on every tool call.
+  if [ ! -f "$X4_CONFIG" ]; then
+    _x4_cn="$X4_CONFIG"
+    case "${OSTYPE:-}" in msys*|cygwin*) _x4_cn="${_x4_cn//\\//}" ;; esac
+    while [ "${#_x4_cn}" -gt 1 ] && [ "${_x4_cn%/}" != "$_x4_cn" ]; do _x4_cn="${_x4_cn%/}"; done
+    case "${OSTYPE:-}" in msys*|cygwin*)
+      case "${_x4_cn##*/}" in
+        .|..) ;;
+        *) while case "$_x4_cn" in *[.\ ]) true ;; *) false ;; esac; do _x4_cn="${_x4_cn%?}"; done ;;
+      esac ;;
+    esac
+    if [ -n "$_x4_cn" ] && [ "$_x4_cn" != "$X4_CONFIG" ] && [ -f "$_x4_cn" ]; then X4_CONFIG="$_x4_cn"; fi
+    unset _x4_cn
+  fi
   if [ -f "$X4_CONFIG" ]; then _x4_cfg="$X4_CONFIG"; _x4_cfg_src=explicit; else _x4_cfg_src=explicit-missing; fi
 elif [ -f "$X4_TOOLKIT/x4-paths.env" ]; then
   _x4_cfg="$X4_TOOLKIT/x4-paths.env"; _x4_cfg_src=new

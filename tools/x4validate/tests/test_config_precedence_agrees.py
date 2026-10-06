@@ -485,3 +485,53 @@ def test_TWIN_a_config_X4_GUARD_never_reaches_the_guards_but_the_launch_one_does
     env["X4_GUARD"] = "off"
     bvals, *_ = _bash_parse(tk, env)
     assert bvals.get("X4_GUARD") == "off", bvals
+
+
+# --- FX-B4 (reviewer I): ONE spelling rule for $X4_CONFIG ----------------------------------
+#
+# Python opens what pathlib + the OS make of the string: trailing separators dropped
+# everywhere, a final component's trailing dots and spaces dropped on Windows, a relative path
+# taken against the working directory. The bash loader tested the raw string with `-f`, so
+# `x4-paths.env/` and (Windows) `x4-paths.env.` were READ by every Python tool and "missing"
+# for every guard -- which then fell back to the DEFAULT reference root. Each row is one
+# spelling of the SAME file; `reads` is what both must answer (so a both-read-nothing pass
+# is impossible for the rows that name the file).
+_WIN = os.name == "nt"
+SPELLINGS = [
+    # id,                 spelling (relative to cwd = the toolkit, or {tk}-absolute), reads, windows-only
+    ("plain",             "{tk}/x4-paths.env",            True,  False),
+    ("relative-bare",     "x4-paths.env",                 True,  False),
+    ("relative-dot",      "./x4-paths.env",               True,  False),
+    ("relative-up",       "../tk/x4-paths.env",           True,  False),
+    ("dotdot-inside",     "{tk}/sub/../x4-paths.env",     True,  False),
+    ("trailing-slash",    "{tk}/x4-paths.env/",           True,  False),
+    ("trailing-slashes",  "x4-paths.env//",               True,  False),
+    ("trailing-dot",      "{tk}/x4-paths.env.",           True,  True),
+    ("trailing-dots-rel", "x4-paths.env..",               True,  True),
+    ("trailing-space",    "{tk}/x4-paths.env ",           True,  True),
+    ("trailing-backslash", "{tk}" + chr(92) + "x4-paths.env" + chr(92), True, True),
+    ("upper-case",        "{TK}/X4-PATHS.ENV",            True,  True),
+    ("missing",           "{tk}/nope.env",                False, False),
+    ("missing-dot",       "{tk}/nope.env.",               False, False),
+    ("a-directory",       "{tk}/sub/",                    False, False),
+    ("dot-only",          ".",                            False, False),
+]
+
+
+@pytest.mark.parametrize("row", SPELLINGS, ids=[r[0] for r in SPELLINGS])
+def test_FXB4_both_loaders_read_the_SAME_file_for_every_X4_CONFIG_spelling(tmp_path, row):
+    _id, spelling, reads, win_only = row
+    if win_only and not _WIN:
+        pytest.skip("a Windows path spelling (Win32 drops trailing dots/spaces; case-folds)")
+    tk = tmp_path / "tk"
+    (tk / "sub").mkdir(parents=True)
+    (tk / NEW).write_text('X4_GAME="/xgame/spelled"\n', encoding="utf-8", newline="\n")
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("X4_") and k not in ("CLAUDE_PROJECT_DIR", "HOOK_DIR")}
+    env["X4_TOOLKIT"] = str(tk)
+    env["X4_CONFIG"] = spelling.format(tk=str(tk), TK=str(tk).upper())
+    bf, bg = _bash_in(tk, env, tk)
+    p = _py_in(env, tk, self_root=tk)
+    assert (bool(bf), _n(bg)) == (p["file"] is not None, _n(p["game"])), (_id, bf, bg, p)
+    assert bool(bf) is reads, (_id, "bash", bf)
+    assert _n(bg) == (_n("/xgame/spelled") if reads else ""), (_id, bg)
