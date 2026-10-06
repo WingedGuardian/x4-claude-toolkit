@@ -71,7 +71,9 @@ function Test-Body([string]$body) {
         if ($allowed -cnotcontains $p.Name) { return 'hookSpecificOutput has an unknown key' }
     }
     $pd = $h.PSObject.Properties['permissionDecision']
-    if ($pd -and $pd.Value -cne 'deny') { return 'adapter answered a permissionDecision other than deny' }
+    # A STRING "deny", nothing else: `@('deny') -cne 'deny'` is an empty array -- falsy -- so an
+    # array-valued decision passed here while codex-entry.sh rejects it (FX-G2, reviewer E).
+    if ($pd -and (($pd.Value -isnot [string]) -or ($pd.Value -cne 'deny'))) { return 'adapter answered a permissionDecision other than deny' }
     return $null
 }
 

@@ -514,17 +514,8 @@ decide allow protect-bash.sh "$(cj 'echo $(date)')" \
 decide allow protect-bash.sh "$(cj 'cd $(git rev-parse --show-toplevel) && ls')" \
   "a substituted argument in a cd is untouched"
 
-# directory is invisible to `git status`, which is how a stray `n/` accumulated.
-_CWD_AFTER="$(ls -A 2>/dev/null | sort)"
-_NEW="$(comm -13 <(printf "%s" "$_CWD_BEFORE") <(printf "%s" "$_CWD_AFTER") | tr "
-" " ")"
-if [ -n "$(printf "%s" "$_NEW" | tr -d "[:space:]")" ]; then
-  no "the suite left new paths in the caller directory: $_NEW"
-else
-  ok "the suite left nothing behind in the caller directory"
-fi
 
-EXPECT=253
+EXPECT=256
 
 # =============================================================================
 # PATH DIALECT -- a verdict must not depend on HOW the path was written
@@ -1038,7 +1029,12 @@ fi
 # under a banner that said "at launch". It is parsed now, and agents may not write it.
 echo; echo "=== the path config is DATA, never run ==="
 _cfg_saved="$(export -p | grep -E '^declare -x (X4_[A-Z0-9_]*|CLAUDE_PROJECT_DIR)=')"
-for _v in $(export -p | sed -nE 's/^declare -x (X4_[A-Z0-9_]*|CLAUDE_PROJECT_DIR)=.*/\1/p'); do unset "$_v"; done
+# X4_DECIDE_DUMP is the HARNESS's own switch, not a root: unsetting it with the rest silently
+# kept every probe in this section out of the Codex conformance replay (reviewer E8, MEASURED:
+# 16 config-write denies never reached the dump).
+for _v in $(export -p | sed -nE 's/^declare -x (X4_[A-Z0-9_]*|CLAUDE_PROJECT_DIR)=.*/\1/p'); do
+  [ "$_v" = X4_DECIDE_DUMP ] || unset "$_v"
+done
 _ct="$SBX_TMP/cfgtk"; mkdir -p "$_ct/reference/libraries" "$_ct/ref2/libraries" "$_ct/.claude"
 export X4_TOOLKIT="$_ct" CLAUDE_PROJECT_DIR="$_ct"
 # Lines AFTER an `exit 0` are still read: ref2 is configured below it and must be protected.
@@ -1203,18 +1199,27 @@ if [ -n "$_pp_docs" ]; then export X4_DOCUMENTS="$_pp_docs"; else unset X4_DOCUM
 # the Edit tool" and to "see CLAUDE.md #22" -- a tool Codex lacks and an anchor that no longer
 # exists in CLAUDE.md. Read the REASONS of four refusals that carried them.
 echo; echo "=== refusals name agent-neutral remedies ==="
-_r31=""
-for _c in "sed -i s/a/b/ '$SBX_TMP/game/X4 Foundations/libraries/w.xml'" \
-          "echo x > KNOWLEDGEBASE.md" "uv run pytest | tail -3; echo \$?" \
-          "grep -rn wares '$SBX_TMP/r31ref'"; do
-  _r31="$_r31$(X4_GAME="$SBX_TMP/game/X4 Foundations" X4_REFERENCE="$SBX_TMP/r31ref" bash -c 'printf "%s" "$1" | bash "$2"' _ "$(cj "$_c")" "$HOOKS/protect-bash.sh" 2>/dev/null)"
-done
-case "$_r31" in
-  *"the Edit tool"*|*"the Write tool"*|*"the Glob tool"*|*"the Grep tool"*|*"CLAUDE.md #"*)
-    no "a refusal names a Claude-only remedy or a dead CLAUDE.md anchor" ;;
-  *apply_patch*"Discovery vs. Proof"*) ok "the refusals name agent-neutral remedies and live anchors" ;;
-  *) no "the refusals did not render (or lost their remedies): ${_r31:0:200}" ;;
-esac
+# PER REFUSAL (reviewer E, minor): the four reasons used to be joined and matched once, so one
+# refusal that rendered nothing -- or lost its remedy -- hid behind the others' text. Each now
+# must be a DENY, carry no Claude-only remedy, and name its OWN agent-neutral remedy.
+_r31_one(){ # _r31_one <command> <the remedy its reason must name> <label>
+  local out
+  out="$(X4_GAME="$SBX_TMP/game/X4 Foundations" X4_REFERENCE="$SBX_TMP/r31ref" bash -c 'printf "%s" "$1" | bash "$2"' _ "$(cj "$1")" "$HOOKS/protect-bash.sh" 2>/dev/null)"
+  case "$out" in
+    *'"deny"'*) ;;
+    *) no "$3: not a deny (or did not render): ${out:0:160}"; return ;;
+  esac
+  case "$out" in
+    *"the Edit tool"*|*"the Write tool"*|*"the Glob tool"*|*"the Grep tool"*|*"CLAUDE.md #"*)
+      no "$3: names a Claude-only remedy or a dead CLAUDE.md anchor" ;;
+    *"$2"*) ok "$3: names an agent-neutral remedy ($2)" ;;
+    *) no "$3: lost its remedy '$2': ${out:0:200}" ;;
+  esac
+}
+_r31_one "sed -i s/a/b/ '$SBX_TMP/game/X4 Foundations/libraries/w.xml'" "apply_patch" "sed -i in the game"
+_r31_one "echo x > KNOWLEDGEBASE.md" "apply_patch" "truncating a durable record"
+_r31_one "uv run pytest | tail -3; echo \$?" "PIPESTATUS" "\$? after a pipeline"
+_r31_one "grep -rn wares '$SBX_TMP/r31ref'" "Discovery vs. Proof" "a recursive search of reference/"
 
 
 # =============================================================================
@@ -1249,6 +1254,19 @@ else
   esac
 fi
 if [ -n "$_bk_saved" ]; then export X4_BACKUPS="$_bk_saved"; else unset X4_BACKUPS; fi
+
+# THE CALLER-DIRECTORY CHECK RUNS LAST (reviewer E, minor): it sat above every section added
+# since, so a probe below it that leaked a path into the caller's directory went unseen.
+# (Its history, and why the baseline is taken AFTER the sandbox exists, is at _CWD_BEFORE.)
+# directory is invisible to `git status`, which is how a stray `n/` accumulated.
+_CWD_AFTER="$(ls -A 2>/dev/null | sort)"
+_NEW="$(comm -13 <(printf "%s" "$_CWD_BEFORE") <(printf "%s" "$_CWD_AFTER") | tr "
+" " ")"
+if [ -n "$(printf "%s" "$_NEW" | tr -d "[:space:]")" ]; then
+  no "the suite left new paths in the caller directory: $_NEW"
+else
+  ok "the suite left nothing behind in the caller directory"
+fi
 
 echo "RESULT: $pass passed, $fail failed, $skipped skipped"
 if [ $((pass + fail + skipped)) -ne "$EXPECT" ]; then

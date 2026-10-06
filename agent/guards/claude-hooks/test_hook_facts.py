@@ -3938,7 +3938,8 @@ class TestARootVariableCdIsTheRoot(unittest.TestCase):
         ('cd "$X4_GAME" && ' + D + ' -rf extensions', D + ' -rf "' + GAME + '/extensions"'),
         ('pushd "$X4_PROFILE" && ' + D + ' -f content.xml', D + ' -f "' + PROF + '/content.xml"'),
     ]
-    KEYS = ("rm_targets_reference", "writes_reference", "rm_in_x4_dir", "rm_in_profile")
+    KEYS = ("rm_targets_reference", "writes_reference", "rm_in_x4_dir", "rm_in_profile",
+            "rm_hits_game")          # the game pair names extensions/ wholesale (reviewer E)
 
     def test_a_cd_to_a_root_variable_judges_like_the_direct_form(self):
         for cd_form, direct in self.PAIRS:
