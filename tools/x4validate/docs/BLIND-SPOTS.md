@@ -8241,7 +8241,7 @@ install of fewer targets lacks e.g. `.claude/`, which several sandbox fixtures c
 **RE-DERIVED BY:** `tests/test_layout_repo_only.py` (each clause and its twin) and
 `tests/test_install_over_existing.py::test_R2B1_an_INSTALLED_toolkits_suite_COLLECTS_and_counts_its_repo_only_skips`
 (a real install by each installer, then `pytest --collect-only` inside it: RED before `_layout.py`
-shipped -- ModuleNotFoundError -- green after). Full installed run after the fix: 4,017 passed, 366 skipped, 6 failed (install.sh install, 17 min); the 6 had three causes, all fixed and re-run focused: a non-LiteralPath Remove-Item this lane added to install.ps1 (an in-arc regression test_installer_literal_paths caught), a token census reading agent/skills, and the freshness skip calling iterdir on a missing root. A full re-run after those fixes and a full run of an install.ps1 install were NOT done.
+shipped -- ModuleNotFoundError -- green after). Full installed run after the fix: 4,017 passed, 366 skipped, 6 failed (install.sh install, 17 min); the 6 had three causes, all fixed and re-run focused: a non-LiteralPath Remove-Item this lane added to install.ps1 (an in-arc regression test_installer_literal_paths caught), a token census reading agent/skills, and the freshness skip calling iterdir on a missing root. A full re-run of the install.sh install after those fixes was NOT done. A full run of an install.ps1 install (2026-10-05, Windows, `--agent all`, separate method, `--no-env`) WAS done afterwards: 4,018 passed, 377 skipped, 0 failed, rc 0, 19 min 20 s.
 
 ## F162 — `x4doctor`'s `bash.path` judged the Windows PATH, not what the hooks run · **DEFECT (measured)** · IN-ARC · confidence 90% · ✅ FIXED 2026-10-05 (fix lane FX-R2)
 
