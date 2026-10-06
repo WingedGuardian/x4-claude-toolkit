@@ -71,7 +71,11 @@ if [ -z "$STORED" ] && [ -f "$STORE" ]; then
   STORED=$(tr -d '[:space:]' < "$STORE")
   [ -n "$STORED" ] && SRC=".claude/.reference-buildid"
 fi
+# FX-Z (FX-B4 lead): every step is an ABSOLUTE command with --toolkit and --reference. The
+# relative forms ran only from the toolkit folder, and the bare ones refuse under an exported
+# X4_REFERENCE/X4_TOOLKIT that differs from the config -- in the very shell this hook judged.
 if [ -n "$STORED" ] && [ "$STORED" != "$CUR" ]; then
-  echo "[x4 stale-reference] reference/ was unpacked from build $STORED (per $SRC) but the game is now build $CUR. Re-unpack (the USER lifts the OS protection with python scripts/x4refguard.py remove, removes reference/.unpacked-and-locked, then runs bin/unpack-reference.sh) before trusting line numbers in deep fixes; update .claude/.reference-buildid afterward so the detached copy stops disagreeing."
+  _tk="--toolkit \"$X4_TOOLKIT\" --reference \"$X4_REFERENCE\""
+  echo "[x4 stale-reference] reference/ ($X4_REFERENCE) was unpacked from build $STORED (per $SRC) but the game is now build $CUR. Re-unpack before trusting line numbers in deep fixes -- the USER lifts the OS protection: python \"$X4_TOOLKIT/scripts/x4refguard.py\" remove $_tk ; removes \"$X4_REFERENCE/.unpacked-and-locked\" ; then runs: bash \"$X4_TOOLKIT/bin/unpack-reference.sh\" $_tk -- and afterward updates \"$X4_TOOLKIT/.claude/.reference-buildid\" so the detached copy stops disagreeing."
 fi
 exit 0
