@@ -16,6 +16,9 @@ HOW TO USE:
     uv run python scripts/gen-cli-reference.py           # regenerate in place
     uv run python scripts/gen-cli-reference.py --check   # rc 1 if stale, missing or ghost
 
+A GHOST (a file in the skill directory that no CLI generates) is never deleted: the write mode
+writes every generated file, then names each ghost and exits 1 with the `git rm` to run.
+
 Exit: 0 fresh / written - 1 stale, missing or ghost file(s), named - 2 could not
 generate, or could not read a committed file (nothing is written, and nothing is
 reported as fresh).
@@ -248,12 +251,24 @@ def main(argv: list[str] | None = None) -> int:
         p.parent.mkdir(parents=True, exist_ok=True)
         data = text.encode("utf-8")        # encode FIRST: a failed encode cannot truncate
         p.write_bytes(data)
-    for f in found:
-        if f.startswith("GHOST"):
-            rel = f.split(None, 1)[1]
-            (SKILL_DIR / rel).unlink()
-            print(f"  removed ghost {rel}")
     print(f"wrote {len(expected)} file(s) to {SKILL_DIR}")
+    # A GHOST is REPORTED, never deleted (FX-G3, v4.0.0 delta review). This used to unlink()
+    # each one -- a permanent delete, against the rule that deletions go to the Recycle Bin and
+    # are the user's call. The tool's own temp files are exempt from that rule; a file sitting in
+    # the committed skill directory is not one of those. Exit 1 with the list and the command.
+    ghosts = [f.split(None, 1)[1] for f in found if f.startswith("GHOST")]
+    if ghosts:
+        def shown(g: str) -> str:
+            p = SKILL_DIR / g
+            return (p.relative_to(REPO) if p.is_relative_to(REPO) else p).as_posix()
+        print(f"NOT DELETED: {len(ghosts)} ghost file(s) in {SKILL_DIR} that no CLI generates:",
+              file=sys.stderr)
+        for g in ghosts:
+            print(f"  GHOST    {g}", file=sys.stderr)
+        print("remove them yourself (from the repo root), e.g.: git rm -- "
+              + " ".join(f'"{shown(g)}"' for g in ghosts), file=sys.stderr)
+        print("  (an untracked one: move it to the Recycle Bin), then re-run with --check", file=sys.stderr)
+        return 1
     return 0
 
 

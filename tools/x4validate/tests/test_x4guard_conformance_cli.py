@@ -125,3 +125,77 @@ def test_the_double_dash_adapter_argv_overrides_the_profile_and_is_stripped(tmp_
     r = run("conformance", "--profile", "claude", "--cases", str(tmp_path / "c.jsonl"),
             "--min-cases", "1", "--", sys.executable, "-c", "pass")
     assert r.returncode == 3 and "adapter: " in r.stdout and " -- " not in r.stdout.split("adapter: ")[1].splitlines()[0]
+
+
+# --- FX-G3: a reference hook that FAILS TO RUN is no verdict, never an allow ----------------- #
+# MEASURED before the fix: a renamed hook (bash exit 127, empty stdout) came back "allow" -- a
+# CHECKED allow, counted toward the floor. One twin per clause: rc 127, rc 1 with no output,
+# a timeout, and an interpreter that is missing (None) or cannot start.
+
+def _engine():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("x4conformance_fxg3", REPO / "scripts" / "x4conformance.py")
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    return m
+
+
+def _hook_root(tmp_path, body):
+    hooks = tmp_path / ".claude" / "hooks"; hooks.mkdir(parents=True)
+    (hooks / "h.sh").write_bytes(("#!/bin/bash\ncat >/dev/null\n" + body + "\n").encode("utf-8"))
+    return tmp_path
+
+
+def _row(tmp_path, hook="h.sh"):
+    return {"hook": hook, "payload": {"tool_name": "Bash", "tool_input": {"command": "echo hi"}},
+            "cwd": str(tmp_path), "env": {}}
+
+
+_needs_bash = pytest.mark.skipif(not _engine()._bash(), reason="needs Git Bash")
+
+
+@_needs_bash
+def test_reference_CONTROL_exit_0_empty_stdout_is_allow(tmp_path):
+    xc = _engine()
+    assert xc.reference_verdict_detail(_row(tmp_path), _hook_root(tmp_path, "exit 0")) == ("allow", "")
+
+
+@_needs_bash
+def test_reference_a_MISSING_hook_exit_127_is_an_error(tmp_path):
+    xc = _engine()
+    d, why = xc.reference_verdict_detail(_row(tmp_path, "renamed.sh"), _hook_root(tmp_path, "exit 0"))
+    assert d == "error" and "127" in why, why
+
+
+@_needs_bash
+def test_reference_exit_1_with_NO_output_is_an_error(tmp_path):
+    xc = _engine()
+    d, why = xc.reference_verdict_detail(_row(tmp_path), _hook_root(tmp_path, "exit 1"))
+    assert d == "error" and "exited 1" in why, why
+
+
+@_needs_bash
+def test_reference_a_TIMEOUT_is_an_error(tmp_path, monkeypatch):
+    xc = _engine()
+    monkeypatch.setattr(xc, "REFERENCE_TIMEOUT_S", 1)
+    d, why = xc.reference_verdict_detail(_row(tmp_path), _hook_root(tmp_path, "sleep 5"))
+    assert d == "error" and "within 1s" in why, why
+
+
+@pytest.mark.parametrize("bash", [None, "C:/no/such/bash-x4.exe"])
+def test_reference_a_MISSING_interpreter_is_an_error(tmp_path, monkeypatch, bash):
+    xc = _engine()
+    monkeypatch.setattr(xc, "_bash", lambda: bash)
+    d, why = xc.reference_verdict_detail(_row(tmp_path), _hook_root(tmp_path, "exit 0"))
+    assert d == "error" and ("no bash" in why or "could not start" in why), why
+
+
+@_needs_bash
+@pytest.mark.skipif(not shutil.which("jq"), reason="needs jq")
+def test_the_CLI_refuses_2_when_a_reference_hook_cannot_run(tmp_path):
+    """End to end: a case row naming a hook that does not exist, through an adapter that ALLOWS.
+    Before the fix both sides said allow and the case counted as checked."""
+    f = tmp_path / "c.jsonl"
+    f.write_text(json.dumps(dict(_row(tmp_path, "no-such-hook-x4.sh"), label="ghost")) + "\n", encoding="utf-8")
+    r = run("conformance", "--profile", "claude", "--cases", str(f), "--no-extras", "--min-cases", "1",
+            "--", sys.executable, "-c", "pass")
+    assert r.returncode == 2 and "NO verdict" in r.stdout and "ghost" in r.stdout, (r.returncode, r.stdout)

@@ -189,6 +189,26 @@ def test_the_check_mode_exits_0_on_a_fresh_tree(monkeypatch, fresh_copy):
     assert gen.main(["--check"]) == 0
 
 
+def test_write_mode_REPORTS_a_ghost_and_never_deletes_it(monkeypatch, fresh_copy, capsys):
+    """FX-G3 (v4.0.0 delta review): the write mode unlink()ed every ghost -- a permanent delete
+    of a file in the committed skill directory. Now it is named, kept, and the run exits 1."""
+    ghost = fresh_copy / "reference" / "x4retired.md"
+    ghost.write_bytes(b"old\n")
+    monkeypatch.setattr(gen, "SKILL_DIR", fresh_copy)
+    assert gen.main([]) == 1
+    assert ghost.read_bytes() == b"old\n", "the ghost was deleted"
+    err = capsys.readouterr().err
+    assert "NOT DELETED" in err and "reference/x4retired.md" in err and "git rm" in err, err
+
+
+def test_TWIN_write_mode_with_NO_ghost_exits_0(monkeypatch, fresh_copy):
+    p = fresh_copy / "SKILL.md"
+    p.write_bytes(p.read_bytes() + b"hand edit\n")          # stale, not a ghost: rewritten, rc 0
+    monkeypatch.setattr(gen, "SKILL_DIR", fresh_copy)
+    assert gen.main([]) == 0
+    assert gen.main(["--check"]) == 0
+
+
 def test_the_generator_writes_into_the_repos_skills_dir():
     """The skill's SOURCE is the repo's agent/skills (gen-agent-trees.py then renders it into
     .claude/skills, the directory both installers copy from), never the package's."""

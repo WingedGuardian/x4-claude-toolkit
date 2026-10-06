@@ -275,19 +275,20 @@ def account_match(line: str) -> str | None:
     re-implements the predicate can only ever prove the two copies agree, which is the
     least interesting thing it could tell you.
     """
+    # EVERY occurrence on the line, not the first (FX-G3, v4.0.0 delta review). `search`
+    # stopped at the first match, so a placeholder EARLIER on a line (`C:/Users/tester/...`)
+    # was skipped and hid a real identifier LATER on the same line. MEASURED: None.
     for rx, what in ACCOUNT_PATTERNS:
-        m = rx.search(line)
-        if not m:
-            continue
-        val = m.group(1)
-        if val in PLACEHOLDER_IDS or val.lower() in PLACEHOLDER_USERS:
-            continue
-        # An ELISION is not a name. `C:/Users/.../AppData/...` is how these comments
-        # already redact a path, and firing on it would demand "fixing" three lines
-        # that are the redaction. MEASURED: 3 of 3 first hits were exactly this.
-        if not re.search(r"[A-Za-z0-9]", val):
-            continue
-        return what
+        for m in rx.finditer(line):
+            val = m.group(1)
+            if val in PLACEHOLDER_IDS or val.lower() in PLACEHOLDER_USERS:
+                continue
+            # An ELISION is not a name. `C:/Users/.../AppData/...` is how these comments
+            # already redact a path, and firing on it would demand "fixing" three lines
+            # that are the redaction. MEASURED: 3 of 3 first hits were exactly this.
+            if not re.search(r"[A-Za-z0-9]", val):
+                continue
+            return what
     return None
 
 
@@ -356,6 +357,15 @@ def selftest() -> int:
          not _account_hit('received "C:/Users/.../AppData/Local/Temp/x/docs"')),
         ("...but a name that merely CONTAINS a dot still is",
          _account_hit("SRC = 'C:/Users/" + "ada" + ".lovelace/Desktop'")),
+        # --- EVERY occurrence on a line (FX-G3): a placeholder first must not hide a real one ---
+        ("a PLACEHOLDER path EARLIER on the line does not hide a real one LATER",
+         _account_hit("cp C:/Users/tester/a C:/Users/" + "dev" + "user/Desktop/b")),
+        ("...nor does an ELIDED one",
+         _account_hit("C:/Users/.../x and C:/Users/" + "dev" + "user/work")),
+        ("...nor a placeholder profile id before a real one",
+         _account_hit("Egosoft/X4/12345678 vs Egosoft/X4/" + "8765" + "4321")),
+        ("TWIN: two placeholders on one line are still NOT caught",
+         not _account_hit("cp C:/Users/tester/a C:/Users/youruser/b")),
         # --- the BARE profile id: only a DERIVED value, never the 8-digit shape -------
         # Synthetic and ASSEMBLED (see above); derived through the same pure function the
         # scan uses, from a profile PATH, as on a real machine.
