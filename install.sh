@@ -246,7 +246,10 @@ X4_COPY_PRUNE="tools/x4validate/.venv tools/x4validate/.pytest_cache tools/basex
 #: dual-meaning trap `.claude/backups` fell into. A checkout accumulates them (release
 #: review 2026-09-26: data/ alone was 2.3 GB) and a git source never copies them
 #: anyway (see _tracked_copy_set); this is the walk's defence in depth.
-X4_KEEP_LOCAL="x4-paths.env .claude/x4-paths.env .claude/settings.local.json .claude/backups .codex/hooks.json .codex/config.toml .opencode/opencode.jsonc tools/basex/basex/data tools/basex/basex/coverage-x4raw.json tools/basex/basex/coverage-x4eff.json tools/basex/_eff tools/basex/stage-manifest.json"
+#: `.claude/.reference-buildid` too (FX-G5 / reviewer J2 item 7): THIS machine's finished-unpack
+#: marker, which x4doctor reads as evidence of a MOVED tree -- copied in, a fresh install read
+#: "moved"; pruned, an upgrade would erase the destination's own.
+X4_KEEP_LOCAL="x4-paths.env .claude/x4-paths.env .claude/settings.local.json .claude/backups .claude/.reference-buildid .codex/hooks.json .codex/config.toml .opencode/opencode.jsonc tools/basex/basex/data tools/basex/basex/coverage-x4raw.json tools/basex/basex/coverage-x4eff.json tools/basex/_eff tools/basex/stage-manifest.json"
 
 #: THE TRACKED SET, when the source is a git checkout.
 #:
