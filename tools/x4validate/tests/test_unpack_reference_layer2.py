@@ -139,8 +139,9 @@ def test_a_plain_rerun_REFUSES_and_names_the_lift_first(tmp_path):
     (ref / ".unpacked-and-locked").write_text("buildid 1")
     r = _run(_env(tmp_path, ref), ref, explicit=True)
     assert r.returncode == 2
-    assert "x4refguard.py remove" in r.stderr and ".unpacked-and-locked" in r.stderr
-    assert r.stderr.index("x4refguard.py remove") < r.stderr.index("rm ")
+    # FX-B4: the script path is now absolute and quoted -- `x4refguard.py" remove --toolkit`
+    assert 'x4refguard.py" remove' in r.stderr and ".unpacked-and-locked" in r.stderr
+    assert r.stderr.index('x4refguard.py" remove') < r.stderr.index("rm ")
 
 
 @win
@@ -153,7 +154,7 @@ def test_FORCE_unpack_REFUSES_while_the_deny_is_on_and_names_the_lift(tmp_path):
     assert _guard(env, "apply").returncode == 0
     try:
         r = _run({**env, "X4_FORCE_UNPACK": "1"}, ref, explicit=True)
-        assert r.returncode == 2 and "x4refguard.py remove" in r.stderr, r.stdout + r.stderr
+        assert r.returncode == 2 and 'x4refguard.py" remove' in r.stderr, r.stdout + r.stderr
         assert not (ref / "libraries").exists()          # it never started extracting
         assert _guard(env, "status", "--json").stdout.count('"state": "protected"') == 1
     finally:
@@ -282,14 +283,14 @@ def test_B2_a_FOREIGN_X4_TOOLKIT_without_toolkit_REFUSES_before_writing(tmp_path
 
 def test_B2_TWIN_X4_TOOLKIT_naming_this_toolkit_is_not_refused(tmp_path):
     ref = tmp_path / "reference"
-    # FX-B2 (reviewer C): pin the config. X4_TOOLKIT=REPO made the loader read the CHECKOUT's
-    # own x4-paths.env -- on a developer machine, a real one.
-    cfg = tmp_path / "pinned.env"
-    cfg.write_text('X4_REFERENCE="%s"\n' % ref.as_posix(), encoding="utf-8")
-    env = _env(tmp_path, ref, X4_TOOLKIT=str(REPO), X4_CONFIG=str(cfg))
+    # FX-B2 (reviewer C): X4_TOOLKIT=REPO makes the loader read the CHECKOUT's own
+    # x4-paths.env -- on a developer machine, a real one. FX-B4: a pinned X4_CONFIG outside
+    # the toolkit is now refused whatever the flags, so instead EVERY key the unpack reads is
+    # pinned in the environment, which outranks any config (X4_CONFIG="" = no override).
+    env = _env(tmp_path, ref, X4_TOOLKIT=str(REPO), X4_CONFIG="",
+               X4_APPMANIFEST=str(tmp_path / "no-manifest.acf"), X4_FORCE_UNPACK="0",
+               X4_REFGUARD_SCRIPT=str(GUARD), X4_PYTHON=sys.executable)
     try:
-        # FX-B3: an X4_CONFIG outside the acting toolkit now refuses unless --reference
-        # chooses the tree -- so the pin is paired with the explicit choice it needs.
         r = _run(env, ref, "--reference", str(ref), explicit=False)
         assert r.returncode == 0, r.stdout + r.stderr
         assert "--toolkit" not in r.stderr, r.stderr
@@ -392,7 +393,8 @@ def test_FXB3_an_X4_CONFIG_OUTSIDE_the_toolkit_REFUSES_and_writes_nothing(tmp_pa
                         "--toolkit", env["X4_TOOLKIT"]], env=env, capture_output=True,
                        text=True, errors="replace")
     assert r.returncode == 2, r.stdout + r.stderr
-    assert "X4_CONFIG" in r.stderr and "OUTSIDE" in r.stderr and "--reference" in r.stderr, r.stderr
+    # FX-B4: the way out is clearing X4_CONFIG; --reference no longer lifts it (see below).
+    assert "X4_CONFIG" in r.stderr and "OUTSIDE" in r.stderr and "Unset X4_CONFIG" in r.stderr, r.stderr
     assert not other.exists() and not ref.exists(), "it unpacked anyway"
 
 
@@ -417,14 +419,68 @@ def test_FXB3_TWIN_X4_CONFIG_naming_the_toolkit_s_OWN_config_proceeds(tmp_path):
         _unprotect(tmp_path, ref)
 
 
-def test_FXB3_TWIN_reference_lifts_the_X4_CONFIG_refusal(tmp_path):
+def test_FXB4_reference_does_NOT_lift_the_X4_CONFIG_refusal_the_config_still_supplies_the_game(tmp_path):
+    """Reviewer I: `--reference R` lifted the refusal, but the foreign config still supplied
+    X4_GAME and X4_APPMANIFEST -- so R was filled from THE OTHER game and this toolkit's
+    .claude/.reference-buildid recorded THAT game's build. The unpack also reads X4_XRCAT,
+    X4_PYTHON, X4_REFGUARD_SCRIPT, X4_UNPACK_FLOOR and X4_FORCE_UNPACK from whatever config
+    is loaded, and has no flag for any of them -- so no flag can lift it (as x4lock:
+    config_lifted_by_flags=False)."""
+    ref = tmp_path / "reference"
+    tk = _tk_with_config(tmp_path, ref)
+    theirs = tmp_path / "their-game"
+    theirs.mkdir()
+    (theirs / "01.cat").write_text("")
+    acf = tmp_path / "their-appmanifest.acf"
+    acf.write_text('"AppState"\n{\n\t"buildid"\t\t"999"\n}\n', encoding="utf-8")
+    cfg = tmp_path / "elsewhere" / "x4-paths.env"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('X4_GAME="%s"\nX4_APPMANIFEST="%s"\n' % (theirs.as_posix(), acf.as_posix()),
+                   encoding="utf-8")
+    env = _env(tmp_path, ref, X4_CONFIG=str(cfg))
+    env.pop("X4_GAME")                         # the game comes from the foreign config
+    try:
+        r = _run(env, ref, "--reference", str(ref), explicit=True)
+        assert r.returncode == 2 and "X4_CONFIG" in r.stderr, r.stdout + r.stderr
+        assert not ref.exists(), "it unpacked the OTHER game into the chosen tree"
+        assert not (tk / ".claude" / ".reference-buildid").exists(), "it recorded THEIR build id"
+    finally:
+        _unprotect(tmp_path, ref)
+
+
+def test_FXB4_the_X4_CONFIG_refusal_names_no_flag_that_cannot_lift_it(tmp_path):
     ref, other = tmp_path / "reference", tmp_path / "theirs"
     _tk_with_config(tmp_path, ref)
     env = _env(tmp_path, ref, X4_CONFIG=str(_foreign_cfg(tmp_path, other)))
+    r = _run(env, ref, explicit=True)
+    assert r.returncode == 2 and "X4_CONFIG" in r.stderr, r.stdout + r.stderr
+    assert "--reference" not in r.stderr, r.stderr
+    assert "unset X4_CONFIG" in r.stderr.lower() or "Unset X4_CONFIG" in r.stderr, r.stderr
+
+
+def test_FXB4_TWIN_reference_with_X4_CONFIG_UNSET_proceeds(tmp_path):
+    """The way out the refusal names: clear X4_CONFIG and --reference still chooses the tree."""
+    ref = tmp_path / "reference"
+    _tk_with_config(tmp_path, tmp_path / "configured")
+    env = _env(tmp_path, ref)
+    env.pop("X4_REFERENCE")
     try:
         r = _run(env, ref, "--reference", str(ref), explicit=True)
         assert r.returncode == 0, r.stdout + r.stderr
-        assert (ref / "libraries" / "f1.xml").exists() and not other.exists()
+        assert (ref / "libraries" / "f1.xml").exists()
+    finally:
+        _unprotect(tmp_path, ref)
+
+
+def test_FXB4_TWIN_reference_with_X4_CONFIG_naming_the_OWN_config_proceeds(tmp_path):
+    ref = tmp_path / "reference"
+    tk = _tk_with_config(tmp_path, tmp_path / "configured")
+    env = _env(tmp_path, ref, X4_CONFIG=str(tk / "x4-paths.env"))
+    env.pop("X4_REFERENCE")
+    try:
+        r = _run(env, ref, "--reference", str(ref), explicit=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert (ref / "libraries" / "f1.xml").exists()
     finally:
         _unprotect(tmp_path, ref)
 
@@ -442,3 +498,199 @@ def test_FXB3_the_DIFFERENT_refusal_names_an_ABSOLUTE_command_with_toolkit(tmp_p
         assert "bash bin/" not in ln and "--toolkit" in ln, ln
         cmd_path = ln.split('bash "', 1)[1].split('"', 1)[0]
         assert cmd_path.endswith("/unpack-reference.sh") and cmd_path.startswith("/"), ln
+
+
+# ------------- FX-B4 #2 (reviewer I): bash and Python agree on WHICH config $X4_CONFIG names
+#
+# `_x4_canon` turned a bare relative path into `/<name>`, so `cd <toolkit>; X4_CONFIG=x4-paths.env
+# bash bin/unpack-reference.sh` was refused as a foreign config while every Python command took
+# it; `x4-paths.env/` and (Windows) `x4-paths.env.` were "missing" to bash and read by Python.
+# Each row runs BOTH: the unpack (which stops at "game dir not found" once past the check --
+# X4_GAME names nothing -- so nothing is ever written) and `_paths.config_conflict()`.
+
+_PY_CONFLICT = r'''
+import sys
+sys.path.insert(0, sys.argv[1])
+from x4validate import _paths
+_paths.use_toolkit(sys.argv[2])
+print("CONFLICT" if _paths.config_conflict() is not None else "NONE")
+'''
+
+
+def _agree_box(tmp_path):
+    tk = tmp_path / "tk long"
+    (tk / ".claude").mkdir(parents=True)
+    (tk / "sub").mkdir()
+    (tk / "x4-paths.env").write_text('X4_GAME="%s"\nX4_REFERENCE="%s"\n' % (
+        (tmp_path / "nogame").as_posix(), (tk / "refrel").as_posix()), encoding="utf-8")
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "x4-paths.env").write_text('X4_GAME="%s"\n' % (tmp_path / "nogame").as_posix(),
+                                                     encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("X4_")}
+    env.update(X4_TOOLKIT=str(tk), X4_PROFILE=str(tmp_path / "profile"))
+    return tk, env
+
+
+def _unpack_verdict(tk, env, cwd):
+    b = gitbash.find_bash() or pytest.skip("no Git Bash -- NOT CHECKED")
+    r = subprocess.run([b, str(UNPACK), "--toolkit", str(tk)], env=env, cwd=str(cwd),
+                       capture_output=True, text=True, errors="replace", timeout=120)
+    if "REFUSED: the unpack" in r.stderr and "X4_CONFIG" in r.stderr:
+        return "CONFLICT"
+    if "DIFFERENT" in r.stderr:
+        return "DIFFERENT"
+    if "game dir not found" in r.stderr:
+        return "NONE"
+    raise AssertionError("an answer this table does not know: " + (r.stdout + r.stderr)[-600:])
+
+
+_BS = chr(92)
+CFG_SPELLINGS = [
+    # id,                   spelling ({tk}, {tmp}; else relative to cwd), cwd ("tk"|"sub"|"tmp"), want, windows-only
+    ("plain",               "{tk}/x4-paths.env",               "tmp", "NONE",     False),
+    ("relative-bare",       "x4-paths.env",                    "tk",  "NONE",     False),
+    ("relative-dot",        "./x4-paths.env",                  "tk",  "NONE",     False),
+    ("relative-up-inside",  "../x4-paths.env",                 "sub", "NONE",     False),
+    ("relative-other",      "../other/x4-paths.env",           "tk",  "CONFLICT", False),
+    ("trailing-slash",      "{tk}/x4-paths.env/",              "tmp", "NONE",     False),
+    ("relative-trailing",   "x4-paths.env/",                   "tk",  "NONE",     False),
+    ("dotdot-escape",       "{tk}/../other/x4-paths.env",      "tmp", "CONFLICT", False),
+    ("other",               "{tmp}/other/x4-paths.env",        "tmp", "CONFLICT", False),
+    ("missing",             "{tk}/nope.env",                   "tmp", "CONFLICT", False),
+    ("relative-missing",    "nope.env",                        "tk",  "CONFLICT", False),
+    ("trailing-dot",        "{tk}/x4-paths.env.",              "tmp", "NONE",     True),
+    ("backslashes",         "{tk}" + _BS + "x4-paths.env",     "tmp", "NONE",     True),
+    ("upper-case",          "{TK}/X4-PATHS.ENV",               "tmp", "NONE",     True),
+    ("msys-form",           "{msys_tk}/x4-paths.env",          "tmp", "NONE",     True),
+]
+
+
+def _msys(p) -> str:
+    """C:/x/y -> /c/x/y, the Git Bash spelling of the same folder."""
+    s = Path(p).as_posix()
+    return "/" + s[0].lower() + s[2:] if os.name == "nt" and s[1:2] == ":" else s
+
+
+@pytest.mark.parametrize("row", CFG_SPELLINGS, ids=[r[0] for r in CFG_SPELLINGS])
+def test_FXB4_the_unpack_and_python_AGREE_on_every_X4_CONFIG_spelling(tmp_path, row):
+    _id, spelling, where, want, win_only = row
+    if win_only and os.name != "nt":
+        pytest.skip("a Windows path spelling")
+    tk, env = _agree_box(tmp_path)
+    env["X4_CONFIG"] = spelling.format(tk=str(tk), TK=str(tk).upper(), tmp=str(tmp_path),
+                                       msys_tk=_msys(tk))
+    cwd = {"tk": tk, "sub": tk / "sub", "tmp": tmp_path}[where]
+    py = subprocess.run([sys.executable, "-c", _PY_CONFLICT, str(REPO / "tools" / "x4validate"),
+                         str(tk)], env=env, cwd=str(cwd), capture_output=True, text=True,
+                        timeout=120)
+    assert py.returncode == 0, py.stderr[-600:]
+    assert (_unpack_verdict(tk, env, cwd), py.stdout.strip()) == (want, want), _id
+    assert not (tk / "refrel").exists() and not (tmp_path / "nogame").exists()
+
+
+REF_SPELLINGS = [
+    # an INHERITED X4_REFERENCE spelling the config's tree ({tk}/refrel) relative to cwd
+    ("absolute",           "{tk}/refrel",      "tmp", "NONE"),
+    ("relative-bare",      "refrel",           "tk",  "NONE"),
+    ("relative-dot",       "./refrel",         "tk",  "NONE"),
+    ("relative-up",        "../refrel",        "sub", "NONE"),
+    ("relative-trailing",  "refrel/",          "tk",  "NONE"),
+    ("relative-OTHER",     "otherref",         "tk",  "DIFFERENT"),
+    ("absolute-OTHER",     "{tmp}/refrel",     "tmp", "DIFFERENT"),
+    # MEASURED: under %TEMP% Git Bash's `pwd -P` says /tmp/... for C:/... and /c/... for /c/...
+    ("msys-form",          "{msys_tk}/refrel", "tmp", "NONE"),
+]
+
+
+@pytest.mark.parametrize("present", [False, True], ids=["tree-absent", "tree-present"])
+@pytest.mark.parametrize("row", REF_SPELLINGS, ids=[r[0] for r in REF_SPELLINGS])
+def test_FXB4_an_inherited_RELATIVE_X4_REFERENCE_is_the_tree_it_names(tmp_path, row, present):
+    """MEASURED before the fix: every relative spelling of the config's own tree was REFUSED
+    as "DIFFERENT" while the tree did not exist (`refrel` -> `/refrel`)."""
+    _id, spelling, where, want = row
+    tk, env = _agree_box(tmp_path)
+    if present:
+        (tk / "refrel").mkdir()
+    env["X4_REFERENCE"] = spelling.format(tk=str(tk), tmp=str(tmp_path), msys_tk=_msys(tk))
+    cwd = {"tk": tk, "sub": tk / "sub", "tmp": tmp_path}[where]
+    assert _unpack_verdict(tk, env, cwd) == want, _id
+    assert not (tmp_path / "nogame").exists()
+
+
+# ------------- FX-B4 #5 (reviewer I): every hint is a command that runs from ANY cwd, for THIS
+#               toolkit -- an absolute script path and --toolkit, as the B3 refusals already are
+
+def _is_abs(p: str) -> bool:
+    return p.startswith("/") or bool(re.match(r"^[A-Za-z]:[/\\]", p))
+
+
+def _cmd_lines(text: str, script: str) -> list[str]:
+    return [ln for ln in text.splitlines() if script in ln and ("bash " in ln or '" ' in ln)]
+
+
+def _assert_runnable(ln: str, script: str, tk: str):
+    m = re.search(r'"([^"]*%s)"' % re.escape(script), ln)
+    assert m and _is_abs(m.group(1)), ("not an absolute script path", ln)
+    t = re.search(r'--toolkit "([^"]+)"', ln)
+    assert t, ("no --toolkit", ln)
+    assert os.path.normcase(os.path.abspath(t.group(1))) == os.path.normcase(os.path.abspath(tk)) \
+        or t.group(1).startswith("/"), ln
+
+
+def test_FXB4_the_LIFT_steps_are_absolute_commands_with_toolkit(tmp_path):
+    """They read `python scripts/x4refguard.py remove (from <dir>)` and `bash bin/unpack-
+    reference.sh` -- relative, and with no --toolkit, which a foreign X4_TOOLKIT refuses."""
+    ref = tmp_path / "reference"
+    ref.mkdir()
+    (ref / ".unpacked-and-locked").write_text("buildid 1")
+    env = _env(tmp_path, ref)
+    r = _run(env, ref, explicit=True)
+    assert r.returncode == 2, r.stdout + r.stderr
+    guard = _cmd_lines(r.stderr, "x4refguard.py")
+    unpack = _cmd_lines(r.stderr, "unpack-reference.sh")
+    assert len(guard) == 1 and len(unpack) == 1, r.stderr
+    _assert_runnable(guard[0], "scripts/x4refguard.py", env["X4_TOOLKIT"])
+    _assert_runnable(unpack[0], "unpack-reference.sh", env["X4_TOOLKIT"])
+    assert " remove " in guard[0] + " " and '--reference "' in unpack[0], r.stderr
+    assert r.stderr.index("x4refguard.py") < r.stderr.index("rm "), r.stderr   # the lift FIRST
+
+
+def test_FXB4_a_FAILED_apply_hint_is_an_absolute_command_with_toolkit(tmp_path):
+    ref = tmp_path / "reference"
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    env = _env(tmp_path, ref, **{x4refguard.SANDBOX_ENV: str(other)})
+    try:
+        r = _run(env, ref, explicit=True)
+        assert r.returncode == 1 and "Layer 2: FAILED" in r.stderr, r.stdout + r.stderr
+        hint = [ln for ln in _cmd_lines(r.stderr, "x4refguard.py") if "apply --yes" in ln]
+        assert len(hint) == 1, r.stderr
+        _assert_runnable(hint[0], "scripts/x4refguard.py", env["X4_TOOLKIT"])
+        assert '--reference "' in hint[0], hint
+    finally:
+        _unprotect(tmp_path, ref)
+
+
+def test_FXB4_the_NO_PYTHON_hint_is_an_absolute_command_with_toolkit(tmp_path):
+    """X4_PYTHON naming nothing resolves NO python (deliberately): the unpack completes and
+    Layer 2 fails loud, naming the apply to run once python is installed."""
+    ref = tmp_path / "reference"
+    env = _env(tmp_path, ref, X4_PYTHON="no-such-python-x4b4")
+    r = _run(env, ref, explicit=True)
+    assert r.returncode == 1 and "no python found" in r.stderr, r.stdout + r.stderr
+    hint = [ln for ln in _cmd_lines(r.stderr, "x4refguard.py") if "apply --yes" in ln]
+    assert len(hint) == 1, r.stderr
+    _assert_runnable(hint[0], "scripts/x4refguard.py", env["X4_TOOLKIT"])
+
+
+def test_FXB4_the_UNREADABLE_layer2_hint_is_an_absolute_command_with_toolkit(tmp_path):
+    ref = tmp_path / "reference"
+    (ref / "libraries").mkdir(parents=True)
+    stub = tmp_path / "stubguard.py"
+    stub.write_text("import sys\nprint('Traceback: boom')\nsys.exit(1)\n", encoding="utf-8")
+    env = _env(tmp_path, ref, X4_REFGUARD_SCRIPT=str(stub))
+    r = _run(env, ref, explicit=True)
+    assert r.returncode == 2, r.stdout + r.stderr
+    hint = [ln for ln in _cmd_lines(r.stderr, "x4refguard.py") if " status" in ln]
+    assert len(hint) == 1, r.stderr
+    _assert_runnable(hint[0], "scripts/x4refguard.py", env["X4_TOOLKIT"])

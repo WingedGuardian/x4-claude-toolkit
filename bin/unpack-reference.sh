@@ -77,16 +77,29 @@ fi
 # --reference chose the tree explicitly. Only when a config file is read: with none, the
 # environment is the only configuration there is.
 _x4_canon() {    # a path in one spelling: its nearest EXISTING ancestor via cd+pwd, plus the rest
-  local p="$1" rest="" base
-  case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) p="${p//\\//}" ;; esac
-  p="${p%/}"
+  local p="$1" rest="" base win=0
+  case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) win=1; p="${p//\\//}" ;; esac
+  # FX-B4 (reviewer I): RELATIVE to the working directory, as Python resolves it. A bare name
+  # (no `/`) walked up to nothing and came out as `/<name>`, so `cd <toolkit>;
+  # X4_CONFIG=x4-paths.env bash bin/unpack-reference.sh` was refused as a foreign config.
+  case "$p" in
+    /*) ;;
+    [A-Za-z]:/*) [ "$win" = 1 ] || p="$PWD/$p" ;;
+    *) p="$PWD/$p" ;;
+  esac
+  while [ "${#p}" -gt 1 ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done
   while [ -n "$p" ] && [ ! -d "$p" ]; do
     base="${p##*/}"; rest="/$base$rest"
     case "$p" in */*) p="${p%/*}" ;; *) p="" ;; esac
   done
-  if [ -n "$p" ]; then p="$(cd "$p" 2>/dev/null && pwd -P)"; fi
+  if [ -n "$p" ]; then p="$(cd "$p/" 2>/dev/null && pwd -P)"; fi
+  # ONE spelling on Windows: Git Bash's `pwd -P` answers /tmp/... for a folder under %TEMP%
+  # reached as C:/..., and /c/... for the same folder reached as /c/... (MEASURED, FX-B4).
+  if [ "$win" = 1 ] && [ -n "$p" ] && command -v cygpath >/dev/null 2>&1; then
+    p="$(cygpath -m "$p" 2>/dev/null || printf '%s' "$p")"
+  fi
   p="${p%/}$rest"
-  case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) p="$(_x4_lc "$p")" ;; esac
+  if [ "$win" = 1 ]; then p="$(_x4_lc "$p")"; fi
   printf '%s' "$p"
 }
 _x4_samedir() { [ "$(_x4_canon "$1")" = "$(_x4_canon "$2")" ]; }   # case-folded on Windows only
@@ -95,18 +108,27 @@ _x4_samedir() { [ "$(_x4_canon "$1")" = "$(_x4_canon "$2")" ]; }   # case-folded
 # "this toolkit's config" -- but the loader took THAT file from $X4_CONFIG, which the shell
 # inherits like any other variable: naming another toolkit's config made the unpack write (and
 # protect) THAT toolkit's tree, and naming a missing file read no config at all, so nothing
-# was compared. Refuse unless --reference chose the tree explicitly.
-if [ -n "${X4_CONFIG:-}" ] && [ -z "$EXPLICIT_REF" ]; then
+# was compared. Refuse.
+#
+# NO FLAG LIFTS IT (FX-B4, reviewer I; as x4lock's config_lifted_by_flags=False). --reference
+# did, but the foreign config still supplied X4_GAME and X4_APPMANIFEST: the chosen tree was
+# filled from THE OTHER game and this toolkit's .claude/.reference-buildid recorded THAT
+# game's build. The unpack also reads X4_XRCAT, X4_PYTHON, X4_REFGUARD_SCRIPT,
+# X4_UNPACK_FLOOR and X4_FORCE_UNPACK from whatever config is loaded, with no flag for any.
+if [ -n "${X4_CONFIG:-}" ]; then
   _x4_cfg_in=0
-  if [ -f "$X4_CONFIG" ]; then
-    case "$(_x4_canon "$X4_CONFIG")" in "$(_x4_canon "$ACT_TK")"/*) _x4_cfg_in=1 ;; esac
+  # FX-B4: judge the file the loader READ (`_x4_cfg`, its normalized spelling of X4_CONFIG),
+  # not the raw string -- `-f "x4-paths.env/"` said "does not exist" for a file Python reads.
+  if [ -n "${_x4_cfg:-}" ]; then
+    case "$(_x4_canon "$_x4_cfg")" in "$(_x4_canon "$ACT_TK")"/*) _x4_cfg_in=1 ;; esac
   fi
   if [ "$_x4_cfg_in" != 1 ]; then
-    if [ -f "$X4_CONFIG" ]; then _x4_why="names a config OUTSIDE this toolkit"; else _x4_why="names a file that does not exist (so NO config is read)"; fi
+    if [ -n "${_x4_cfg:-}" ]; then _x4_why="names a config OUTSIDE this toolkit"; else _x4_why="names a file that does not exist (so NO config is read)"; fi
     echo "REFUSED: the unpack writes the reference tree and protects it, and \$X4_CONFIG ($X4_CONFIG) $_x4_why. Nothing was changed." >&2
     echo "  acting toolkit: $ACT_TK" >&2
-    echo "  Unset X4_CONFIG in this shell to use this toolkit's config, or choose the tree explicitly:" >&2
-    echo "    bash \"$HERE/unpack-reference.sh\" --toolkit \"$ACT_TK\" --reference DIR" >&2
+    echo "  No flag lifts this: the config would still supply the game, its build id and more." >&2
+    echo "  Unset X4_CONFIG in this shell (or point it at this toolkit's x4-paths.env), then:" >&2
+    echo "    bash \"$HERE/unpack-reference.sh\" --toolkit \"$ACT_TK\"" >&2
     exit 2
   fi
 fi
@@ -148,11 +170,20 @@ x4_refguard_state() {
   X4_REFERENCE="$REF" "$X4_PY" "$REFGUARD" status --json --toolkit "$ACT_TK" --reference "$REF" 2>/dev/null \
     | grep -oE '"state": "[a-z]+"' | head -1 | sed -E 's/.*"([a-z]+)"$/\1/' || true
 }
+# FX-B4 (reviewer I): every hint below is a command that runs from ANY directory, for THIS
+# toolkit -- an absolute script path plus --toolkit (and the tree, --reference), as the B3
+# refusals above already were. `python scripts/x4refguard.py ... (from DIR)` ran only from the
+# toolkit root, and with no --toolkit a foreign $X4_TOOLKIT refused it again.
+x4_guard_cmd() {   # SUBCOMMAND [ARGS...] -> the x4refguard command line, on stdout
+  local py="${X4_PY:-python}"
+  case "$py" in *" "*) py="\"$py\"" ;; esac
+  printf '%s "%s" %s --toolkit "%s" --reference "%s"' "$py" "$TKDIR/scripts/x4refguard.py" "$*" "$ACT_TK" "$REF_ABS"
+}
 x4_lift_steps() {
   echo "  To re-unpack (e.g. after a game update), as the USER -- never an agent on its own:" >&2
-  echo "    1. python scripts/x4refguard.py remove      (from $TKDIR; lifts the OS protection)" >&2
-  echo "    2. rm \"$REF/.unpacked-and-locked\"" >&2
-  echo "    3. bash bin/unpack-reference.sh" >&2
+  echo "    1. $(x4_guard_cmd remove)      (lifts the OS protection)" >&2
+  echo "    2. rm \"$REF_ABS/.unpacked-and-locked\"" >&2
+  echo "    3. bash \"$HERE/unpack-reference.sh\" --toolkit \"$ACT_TK\" --reference \"$REF_ABS\"" >&2
 }
 INCLUDE='\.(xml|xsd|lua|xpl)$'               # text/markup only — keeps the tree small
 
@@ -163,6 +194,7 @@ INCLUDE='\.(xml|xsd|lua|xpl)$'               # text/markup only — keeps the tr
 [ -d "$X4_GAME" ]      || { echo "ERROR: game dir not found: $X4_GAME" >&2; exit 2; }
 [ -n "${X4_REFERENCE:-}" ] || { echo "ERROR: X4_REFERENCE not set (where to write the unpacked tree). Set it in x4-paths.env (toolkit root)." >&2; exit 2; }
 REF="$X4_REFERENCE"
+case "$REF" in /*|[A-Za-z]:[/\\]*) REF_ABS="$REF" ;; *) REF_ABS="$PWD/$REF" ;; esac   # for the hints
 
 # THE LOCK, CHECKED. The sentinel was only ever WRITTEN here (line ~60) and read
 # nowhere in this script -- so its own text, "reference/ is read-only; remove this
@@ -203,7 +235,7 @@ if [ -d "$REF" ]; then
     error)
       echo "REFUSING: the Layer-2 OS protection state of $REF could not be read (x4refguard" >&2
       echo "  state: error), so this script cannot tell whether it may write there. See:" >&2
-      echo "    python scripts/x4refguard.py status      (from $TKDIR)" >&2
+      echo "    $(x4_guard_cmd status)" >&2
       exit 2 ;;
     # The states that mean "nothing is in the way": proceed.
     absent|unconfigured|unsupported) ;;
@@ -218,7 +250,7 @@ if [ -d "$REF" ]; then
         echo "REFUSING: the Layer-2 OS protection state of $REF could not be read (x4refguard" >&2
         echo "  answered '${L2STATE:-nothing}', not a known state), so this script cannot tell whether" >&2
         echo "  it may write there. See:" >&2
-        echo "    python scripts/x4refguard.py status      (from $TKDIR)" >&2
+        echo "    $(x4_guard_cmd status)" >&2
       fi
       exit 2 ;;
   esac
@@ -333,7 +365,7 @@ echo "DONE: $NFILES files, $(du -sh "$REF" | cut -f1)"
 # second one is not true. Exit 3 is a platform with no mechanism: disclosed, not failed.
 if [ -z "$X4_PY" ]; then
   echo "Layer 2: FAILED -- no python found to run x4refguard.py, so reference/ is NOT OS-protected." >&2
-  echo "  The unpack itself is complete. Install python, then: python scripts/x4refguard.py apply --yes" >&2
+  echo "  The unpack itself is complete. Install python, then: $(x4_guard_cmd apply --yes)" >&2
   exit 1
 fi
 # --yes (B3): x4refguard asks before an apply, and refuses when nobody can answer. The user
@@ -349,6 +381,6 @@ case "$L2RC" in
   3) echo "Layer 2: not available on this OS (disclosed gap; see README)" ;;
   *) echo "Layer 2: FAILED (x4refguard.py apply exit $L2RC) -- reference/ is NOT confirmed protected." >&2
      echo "  The unpack itself is complete and stays on disk. Fix the cause above, then:" >&2
-     echo "  python scripts/x4refguard.py apply --yes   (from $TKDIR)" >&2
+     echo "  $(x4_guard_cmd apply --yes)" >&2
      exit 1 ;;
 esac

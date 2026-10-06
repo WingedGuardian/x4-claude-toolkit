@@ -293,3 +293,77 @@ def test_FXB3_the_unreadable_list_is_PER_CALL_not_module_global(tmp_path, monkey
     assert len(first) == 1 and second == [], (first, second)
     assert "PARTIAL" not in m.profile_walk_note(second)
     assert not hasattr(m, "_UNREADABLE"), "the module-global list is back"
+
+
+# ------------------ FX-B4 (reviewer I): the PARTIAL advice must be true; the note must count
+#                    an unreadable location as one that EXISTS
+
+def test_FXB4_the_PARTIAL_verdict_does_not_advise_X4_PROFILE_which_cannot_lift_it(tmp_path):
+    """It said "or name the id through X4_PROFILE, and re-run" -- and a re-run with X4_PROFILE
+    naming an id still exits 3: naming ONE id says nothing about the others an unreadable
+    location may hold, so the walk stays PARTIAL. The advice was false; the exit was right."""
+    repo = _repo(tmp_path, "nothing to see\n")
+    _unreadable_home(tmp_path)
+    r = _scan(repo, _env(tmp_path, X4_PROFILE=str(tmp_path / "prof" / FAKE_ID)))
+    assert r.returncode == 3, r.stdout + r.stderr          # still not clean: fail closed
+    verdict = [ln for ln in r.stdout.splitlines() if ln.startswith("::error::")]
+    assert verdict and "PARTIAL" in verdict[-1], r.stdout
+    assert "X4_PROFILE" not in verdict[-1], verdict[-1]
+    assert "name the id through X4_PROFILE" not in _load_scanner().__doc__, "the docstring advises it"
+
+
+def test_FXB4_the_note_counts_an_UNREADABLE_location_as_one_that_EXISTS(tmp_path, monkeypatch):
+    """It read "0 of 3 known profile location(s) exist here; PARTIAL -- 1 could not be read":
+    the count used is_dir() (False for the unreadable one) and the PARTIAL clause the walk's
+    own list. One classification now feeds both."""
+    m = _load_scanner()
+    _unreadable_home(tmp_path)
+    monkeypatch.setenv("X4_SCAN_HOME", str(tmp_path / "home"))
+    bad = []
+    m.profile_ids_from([], m._profile_docs_dirs(), bad)
+    note = m.profile_walk_note(bad)
+    assert "1 of 3 known profile location(s) exist" in note and "1 could not be read" in note, note
+
+
+def test_FXB4_TWIN_a_READABLE_location_still_counts_and_is_not_PARTIAL(tmp_path, monkeypatch):
+    m = _load_scanner()
+    (tmp_path / "home" / "Documents" / "Egosoft" / "X4").mkdir(parents=True)
+    monkeypatch.setenv("X4_SCAN_HOME", str(tmp_path / "home"))
+    bad = []
+    m.profile_ids_from([], m._profile_docs_dirs(), bad)
+    note = m.profile_walk_note(bad)
+    assert bad == [] and "1 of 3" in note and "PARTIAL" not in note, note
+
+
+def test_FXB4_a_PERMISSION_refusal_like_macOS_privacy_is_PARTIAL_and_never_crashes(tmp_path, monkeypatch):
+    """macOS refuses a read under a privacy-protected ~/Documents with EPERM. pathlib's
+    is_dir() re-raises EPERM (it ignores only ENOENT/ENOTDIR/EBADF/ELOOP), so the note --
+    which asked is_dir() -- CRASHED the scan where the walk had recorded PARTIAL. Simulated:
+    both the listing and the stat of the location are refused."""
+    import errno
+    import pathlib
+    m = _load_scanner()
+    home = tmp_path / "home"
+    monkeypatch.setenv("X4_SCAN_HOME", str(home))
+    target = home / "Documents" / "Egosoft" / "X4"
+    real_iterdir, real_stat = pathlib.Path.iterdir, pathlib.Path.stat
+
+    def deny(p):
+        return str(p) == str(target)
+
+    def iterdir(self):
+        if deny(self):
+            raise PermissionError(errno.EPERM, "Operation not permitted", str(self))
+        return real_iterdir(self)
+
+    def stat(self, *a, **kw):
+        if deny(self):
+            raise PermissionError(errno.EPERM, "Operation not permitted", str(self))
+        return real_stat(self, *a, **kw)
+    monkeypatch.setattr(pathlib.Path, "iterdir", iterdir)
+    monkeypatch.setattr(pathlib.Path, "stat", stat)
+    bad = []
+    m.profile_ids_from([], m._profile_docs_dirs(), bad)
+    assert [str(d) for d in bad] == [str(target)], bad          # fail closed: PARTIAL
+    note = m.profile_walk_note(bad)                            # and no crash
+    assert "1 of 3" in note and "PARTIAL" in note, note

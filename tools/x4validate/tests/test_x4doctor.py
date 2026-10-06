@@ -428,6 +428,9 @@ def test_an_UNSET_game_root_is_FAIL(sandbox):
 def test_a_reference_not_unpacked_YET_is_the_users_STEP_not_FAIL_nor_OK(sandbox, tmp_path):
     """FX-B3: was UNKNOWN (exit 3, "can't tell"). A fresh install before its unpack step is a
     KNOWN state: TODO (exit 4), naming the unpack command."""
+    # FX-B4: a FRESH install has no finished unpack anywhere -- the fixture's own finished tree
+    # at <root>/reference would now (correctly) read as a MOVED tree.
+    shutil.rmtree(sandbox.ref)
     _env_file(sandbox.root / "x4-paths.env", X4_TOOLKIT=sandbox.root,
               X4_GAME=sandbox.game, X4_REFERENCE=tmp_path / "not-yet")
     rows = sandbox.rows(doc.check_roots)
@@ -1529,3 +1532,91 @@ def test_FXB3_TWIN_unconfigured_with_the_tree_PRESENT_stays_UNKNOWN(sandbox, mon
     monkeypatch.setattr(doc, "_x4refguard_module", lambda ctx: _refguard_stub("unconfigured"))
     r = _layer2_row(sandbox)
     assert r.status == doc.UNKNOWN, r
+
+
+# ------------- FX-B4 #4 (reviewer I): the unpack hint names the tree it judged; a MOVED tree is
+#               not "not unpacked"
+
+def _roots_ref_row(sandbox, **kw):
+    return {r.id: r for r in doc.check_roots(sandbox.ctx(**kw))}["roots.reference"]
+
+
+def _fresh(sandbox, tmp_path, name="not-yet"):
+    """A fresh install: the config names a tree that is not there, and none exists anywhere.
+    The root gets its own bin/unpack-reference.sh, as an installed toolkit has, so the hint's
+    --toolkit is the sandbox and not this checkout."""
+    shutil.rmtree(sandbox.ref)
+    (sandbox.root / "bin").mkdir(exist_ok=True)
+    shutil.copy2(REPO / "bin" / "unpack-reference.sh", sandbox.root / "bin" / "unpack-reference.sh")
+    _env_file(sandbox.root / "x4-paths.env", X4_TOOLKIT=sandbox.root, X4_GAME=sandbox.game,
+              X4_REFERENCE=tmp_path / name)
+    return tmp_path / name
+
+
+def _reference_arg(detail):
+    m = re.search(r'unpack-reference\.sh" --toolkit "[^"]+" --reference "([^"]+)"', detail)
+    return m and m.group(1)
+
+
+def test_FXB4_the_unpack_hint_names_the_tree_the_doctor_JUDGED(sandbox, tmp_path):
+    """It printed `bash ".../unpack-reference.sh" --toolkit TK` -- with an exported
+    X4_REFERENCE differing from the config, that command REFUSES (FX-B2). The doctor judged
+    the guards' tree, so the command names it."""
+    want = _fresh(sandbox, tmp_path)
+    for row in (_roots_ref_row(sandbox), _layer2_row(sandbox)):
+        assert row.status == doc.TODO, row
+        got = _reference_arg(row.detail)
+        assert got and os.path.normcase(str(Path(got))) == os.path.normcase(str(want)), row
+
+
+def test_FXB4_an_inherited_FOREIGN_X4_CONFIG_hint_says_clear_it_FIRST(sandbox, tmp_path):
+    """The unpack refuses a foreign X4_CONFIG whatever the flags (FX-B4 #3): a hint that does
+    not say so names a command that cannot run in this shell."""
+    want = _fresh(sandbox, tmp_path)
+    foreign = tmp_path / "elsewhere" / "x4-paths.env"
+    _env_file(foreign, X4_TOOLKIT=sandbox.root, X4_GAME=sandbox.game, X4_REFERENCE=want)
+    env = {k: v for k, v in os.environ.items() if k not in _LEAKY}
+    env["X4_CONFIG"] = str(foreign)
+    row = _roots_ref_row(sandbox, env=env)
+    assert row.status == doc.TODO, row
+    assert "X4_CONFIG" in row.detail and "unset X4_CONFIG" in row.detail, row
+    assert row.detail.index("X4_CONFIG") < row.detail.index("unpack-reference.sh"), row
+
+
+def test_FXB4_TWIN_X4_CONFIG_naming_the_root_s_OWN_config_needs_no_clearing(sandbox, tmp_path):
+    _fresh(sandbox, tmp_path)
+    env = {k: v for k, v in os.environ.items() if k not in _LEAKY}
+    env["X4_CONFIG"] = str(sandbox.root / "x4-paths.env")
+    row = _roots_ref_row(sandbox, env=env)
+    assert row.status == doc.TODO and "unset X4_CONFIG" not in row.detail, row
+
+
+def test_FXB4_a_MOVED_tree_is_UNKNOWN_not_a_fresh_unpack__buildid_marker(sandbox, tmp_path):
+    """x4refguard says "does not exist (not unpacked yet, or renamed or moved)" -- it cannot
+    tell. The doctor said "not unpacked" (TODO, run the unpack): for a tree the user MOVED, a
+    27 GB re-unpack into the old place. The unpack writes .claude/.reference-buildid only after
+    a counted, finished unpack, so its presence says one was made."""
+    _fresh(sandbox, tmp_path)
+    (sandbox.root / ".claude" / ".reference-buildid").write_text("123\n", encoding="utf-8")
+    for row in (_roots_ref_row(sandbox), _layer2_row(sandbox)):
+        assert row.status == doc.UNKNOWN, row
+        assert "renamed or moved" in row.detail and ".reference-buildid" in row.detail, row
+
+
+def test_FXB4_a_MOVED_tree_is_UNKNOWN__a_finished_unpack_at_the_DEFAULT_place(sandbox, tmp_path):
+    """Second clause: the config names a missing tree while <toolkit>/reference holds a
+    finished unpack (its sentinel) -- the tree is somewhere, just not where the config says."""
+    _fresh(sandbox, tmp_path)
+    (sandbox.root / "reference").mkdir()
+    (sandbox.root / "reference" / ".unpacked-and-locked").write_text("buildid 1\n", encoding="utf-8")
+    for row in (_roots_ref_row(sandbox), _layer2_row(sandbox)):
+        assert row.status == doc.UNKNOWN, row
+        assert "renamed or moved" in row.detail and ".unpacked-and-locked" in row.detail, row
+
+
+def test_FXB4_TWIN_an_empty_default_folder_is_no_evidence_of_a_move(sandbox, tmp_path):
+    """Clause twin: a <toolkit>/reference WITHOUT the sentinel is not a finished unpack."""
+    _fresh(sandbox, tmp_path)
+    (sandbox.root / "reference").mkdir()
+    for row in (_roots_ref_row(sandbox), _layer2_row(sandbox)):
+        assert row.status == doc.TODO, row

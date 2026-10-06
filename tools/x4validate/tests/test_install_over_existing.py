@@ -3704,3 +3704,28 @@ def test_FXB3_every_CI_powershell_install_leg_is_ISOLATED():
         assert "Remove-Item -LiteralPath env:X4_TOOLKIT" in run[:first], st["name"]
         keys.append(m.group(1))
     assert len(set(keys)) == len(keys), keys
+
+
+def test_FXB4_every_CI_BASH_install_leg_that_runs_on_Windows_is_ISOLATED_too():
+    """Reviewer I: the bash `separate` and `in-game` legs have no `if:`, so they run on the
+    Windows runner too -- where install.sh writes X4_TOOLKIT through scripts/x4-userenv.ps1,
+    i.e. the runner's REAL HKCU\\Environment. That script honours X4_INSTALL_ENV_REGKEY (its
+    test seam, refused outside HKCU\\Software\\X4ToolkitTests\\), inherited from the leg. Every
+    bash step not gated to Linux must export its OWN key, distinct from every other leg's
+    (PowerShell legs included), and drop X4_TOOLKIT, before its first install.sh call."""
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    blocks = re.split(r"(?m)^\s*- name: ", text)[1:]
+    bash_steps = [b for b in blocks if "bash install.sh --method" in b and "shell: bash" in b
+                  and "if: runner.os == 'Linux'" not in b]
+    assert len(bash_steps) >= 2, [b.splitlines()[0] for b in bash_steps]
+    keys = []
+    for b in bash_steps:
+        first = b.index("bash install.sh --method")
+        m = re.search(r"export X4_INSTALL_ENV_REGKEY='(HKCU\\Software\\X4ToolkitTests\\[^']+)'",
+                      b[:first])
+        assert m, "%s: no isolated test key before install.sh" % b.splitlines()[0]
+        assert "unset X4_TOOLKIT" in b[:first], b.splitlines()[0]
+        keys.append(m.group(1))
+    ps_keys = re.findall(r"\$env:X4_INSTALL_ENV_REGKEY = '(HKCU\\Software\\X4ToolkitTests\\[^']+)'",
+                         text)
+    assert len(set(keys + ps_keys)) == len(keys + ps_keys), keys + ps_keys
