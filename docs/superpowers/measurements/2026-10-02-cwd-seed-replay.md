@@ -96,6 +96,12 @@ after the device rule). The final full run above has 3.
 - `git clean -f` / `reset --hard` and unknown PowerShell cmdlets do NOT use the seed. A bare `git
   clean -fdx` from the toolkit root is therefore still allowed, as it was before lane F. Making it
   ask would be a new prompt outside the profile (user, 2026-10-02).
+  **SUPERSEDED 2026-10-03** (`aefdf25`, decision J-Q1; the record above is kept as written): a
+  bare `git clean -x/-X/-d` or `git reset --hard` run from an X4 folder, the toolkit root
+  included, is now a DENY with a reason, not an allow and not a prompt. MEASURED 2026-10-05 with
+  `x4guard check`, every root pinned to scratch: `git clean -fdx` from the toolkit root and from
+  the game root deny; controls `git status` from the toolkit root and `git clean -fdx` from an
+  unrelated folder allow.
 - Codex: the shell `workdir` is not visible to hooks (lane B, C7). A relative operand is judged
   against the session cwd, which may differ from where the command runs.
 - A cd target that cannot be resolved, taken from the seed, now makes later relative operands
