@@ -4955,9 +4955,13 @@ class TestGOutSubstitutedVerb(unittest.TestCase):
     # --- one falsification twin per clause ---
     def test_TWIN_a_literal_verb_variable_or_an_operand_elsewhere_is_not_this_rule(self):
         for c in ("x=rm; $x -rf /tmp/a", "x=$(printf ls); $x /tmp/a", "$(echo ls) /tmp/a",
-                  '"$X4_PYTHON" ' + DQ + REF + DQ):
+                  '"$X4_PYTHON" ' + DQ + REF + DQ,
+                  # the corpus replay's false advisory: a segment cut inside an assignment's
+                  # own substitution reads `$P` as its verb -- not a command position
+                  'P=$(ls -d "' + GAME + '/extensions/x" 2>/dev/null); f=$(find "$P" -name ' + Q + 'a.lua' + Q
+                  + ' -type f 2>/dev/null | head -1); echo "$f"'):
             with self.subTest(c=c):
-                f = FC(c, _ELSEWHERE)
+                f = FC(c, GAME)                 # run FROM the game root, as the replay's were
                 self.assertFalse(f["verb_unresolved"] or f["rm_in_x4_dir"], c)
 
 

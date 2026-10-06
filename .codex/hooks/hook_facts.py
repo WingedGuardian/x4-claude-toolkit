@@ -4466,7 +4466,18 @@ def facts(payload: dict, roots: dict) -> dict:
         reviewer G-OUT, MEASURED: `x=$(printf rm); $x -rf "<reference>"` was ALLOWED while
         `x=rm; $x` denied) through a variable this command assigned a substitution to?"""
         t = _verb_token(seg)
-        return bool(t) and bool(_SUBST.search(t) or _SUBST.search(resolve(t, assigns)))
+        if not t:
+            return False
+        if _SUBST.search(t):
+            return True
+        # Through a variable only at a real COMMAND position: a segment cut inside an
+        # assignment's own substitution (`f=$(find "$P" ...` -- the verb token reads `$P`)
+        # is not one. MEASURED in the corpus replay: 13 false advisories before this.
+        toks = tokens_of(seg)
+        k = toks.index(t) if t in toks else 0
+        if any("$(" in x or chr(96) in x for x in toks[:k]):
+            return False
+        return bool(_SUBST.search(resolve(t, assigns)))
 
     def _subst_verb_at_root(seg, d=""):
         t = _verb_token(seg)
